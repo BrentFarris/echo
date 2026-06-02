@@ -327,6 +327,21 @@ export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallback
   bindCodeFileRowEvents(root, workspaceID, callbacks);
 
   root.querySelectorAll<HTMLElement>("[data-code-tab-main]").forEach((element) => {
+    element.addEventListener("mousedown", (event) => {
+      if (event.button !== 1) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    element.addEventListener("auxclick", (event) => {
+      if (event.button !== 1) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      closeCodeTab(workspaceID, element.dataset.codePath ?? "", callbacks);
+    });
     element.addEventListener("dblclick", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -727,6 +742,7 @@ async function mountActiveCodeEditor(
   const token = ++editorMountToken;
   const extensions = [
     basicSetup,
+    EditorState.lineSeparator.of(tab.lineSeparator),
     EditorView.lineWrapping,
     codeEditorTheme,
     syntaxHighlighting(codeHighlightStyle),
@@ -741,7 +757,7 @@ async function mountActiveCodeEditor(
       updateTabContent(
         workspaceID,
         tab.path,
-        editorTextToFileContent(update.state.doc.toString(), tab.lineSeparator),
+        editorStateToFileContent(update.state),
       );
     }),
   ];
@@ -1689,10 +1705,7 @@ function saveMountedEditorContent() {
   updateTabContent(
     mountedEditorWorkspaceID,
     mountedEditorPath,
-    editorTextToFileContent(
-      mountedEditor.state.doc.toString(),
-      findTab(mountedEditorWorkspaceID, mountedEditorPath)?.lineSeparator ?? "\n",
-    ),
+    editorStateToFileContent(mountedEditor.state),
   );
 }
 
@@ -1842,11 +1855,8 @@ function detectLineSeparator(content: string): string {
   return content.includes("\r\n") ? "\r\n" : "\n";
 }
 
-function editorTextToFileContent(content: string, lineSeparator: string): string {
-  if (lineSeparator === "\n") {
-    return content;
-  }
-  return content.replaceAll("\n", lineSeparator);
+function editorStateToFileContent(state: EditorState): string {
+  return state.sliceDoc(0);
 }
 
 function escapeHtml(value: string): string {
