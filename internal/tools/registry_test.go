@@ -163,6 +163,28 @@ func TestDefaultRegistryIncludesFilesystemTools(t *testing.T) {
 	}
 }
 
+func TestReadOnlyLLMSchemaIncludesOnlyInspectionTools(t *testing.T) {
+	schema := ReadOnlyLLMSchema()
+	names := make(map[string]bool, len(schema))
+	for _, tool := range schema {
+		names[tool.Function.Name] = true
+	}
+
+	for _, name := range []string{"filesystem_list", "filesystem_read_text", "filesystem_stat"} {
+		if !names[name] {
+			t.Fatalf("expected read-only schema to include %s, got %#v", name, names)
+		}
+	}
+	for _, name := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "shell_command"} {
+		if names[name] {
+			t.Fatalf("expected read-only schema to exclude %s, got %#v", name, names)
+		}
+	}
+	if len(names) != 3 {
+		t.Fatalf("expected exactly three read-only tools, got %#v", names)
+	}
+}
+
 func testTool(name string, run func(ctx ExecutionContext, arguments json.RawMessage) (any, error)) ToolFunc {
 	return ToolFunc{
 		Meta: Metadata{

@@ -14,6 +14,12 @@ var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 var defaultRegistry = NewRegistry()
 
+var readOnlyToolNames = map[string]bool{
+	"filesystem_list":      true,
+	"filesystem_read_text": true,
+	"filesystem_stat":      true,
+}
+
 type Registry struct {
 	mu    sync.RWMutex
 	tools map[string]Tool
@@ -79,11 +85,29 @@ func LLMSchema() []llm.Tool {
 	return defaultRegistry.LLMSchema()
 }
 
+func ReadOnlyLLMSchema() []llm.Tool {
+	return defaultRegistry.ReadOnlyLLMSchema()
+}
+
+func IsReadOnlyToolName(name string) bool {
+	return readOnlyToolNames[name]
+}
+
 func (r *Registry) LLMSchema() []llm.Tool {
-	registered := r.Registered()
+	return schemaForTools(r.Registered(), nil)
+}
+
+func (r *Registry) ReadOnlyLLMSchema() []llm.Tool {
+	return schemaForTools(r.Registered(), readOnlyToolNames)
+}
+
+func schemaForTools(registered []Tool, include map[string]bool) []llm.Tool {
 	schema := make([]llm.Tool, 0, len(registered))
 	for _, tool := range registered {
 		metadata := tool.Metadata()
+		if include != nil && !include[metadata.Name] {
+			continue
+		}
 		schema = append(schema, llm.Tool{
 			Type: "function",
 			Function: llm.ToolFunction{

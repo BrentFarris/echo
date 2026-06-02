@@ -334,19 +334,72 @@ h3 {
   min-width: 0;
 }
 
-.chat-heading,
-.chat-heading > div {
-  align-items: center;
+.panel-heading.chat-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
 }
 
 .chat-heading > div:first-child {
-  display: grid;
-  gap: 3px;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+}
+
+.chat-heading #chat-title {
+  font-size: 0.98rem;
+  line-height: 1.15;
 }
 
 .chat-actions {
   display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.chat-plan-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 800;
+  line-height: 1;
+  user-select: none;
+}
+
+.chat-plan-toggle input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--color-accent);
+}
+
+.chat-plan-toggle:has(input:checked) {
+  border-color: color-mix(in srgb, var(--color-accent) 36%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 9%, var(--color-bg));
+  color: var(--color-text);
+}
+
+.chat-plan-toggle:has(input:focus-visible) {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 48%, transparent);
+  outline-offset: 2px;
+}
+
+.chat-plan-toggle:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.56;
 }
 
 .kanban-actions {

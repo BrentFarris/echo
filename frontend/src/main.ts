@@ -31,7 +31,7 @@ import {
   ResolveWorkspaceTextFilePath,
   SaveSettings,
   SearchWorkspaceFiles,
-  SendChatMessage,
+  SendChatMessageWithPlanMode,
   SetActiveWorkspace,
   SetWorkspaceLetter,
   StartKanbanExecution,
@@ -75,6 +75,7 @@ let appMode: AppMode = "chat-kanban";
 let formError = "";
 const chatSessions = new Map<string, services.ChatSession>();
 const chatDrafts = new Map<string, string>();
+const chatPlanModes = new Map<string, boolean>();
 const chatFileLinkCache = new Map<string, Promise<string | null>>();
 let chatMention: ChatMentionState | null = null;
 const kanbanBoards = new Map<string, services.KanbanBoard>();
@@ -194,6 +195,10 @@ function chatSessionFor(workspaceID: string): services.ChatSession {
       busy: false,
     })
   );
+}
+
+function chatPlanModeFor(workspaceID: string): boolean {
+  return chatPlanModes.get(workspaceID) ?? true;
 }
 
 function kanbanBoardFor(workspaceID: string): services.KanbanBoard {
@@ -1228,14 +1233,24 @@ function renderChatPanel(workspace: services.Workspace | null, expanded = false)
   const sizeLabel = expanded ? "Collapse chat" : "Expand chat";
   const executeLabel = executing ? "Decomposing cards" : "Execute plan";
   const mentionOpen = Boolean(chatMentionFor(workspace.id));
+  const planMode = chatPlanModeFor(workspace.id);
   return `
     <section class="work-panel chat-panel" aria-labelledby="chat-title" aria-busy="${session.busy || executing}" data-chat-panel data-workspace-id="${escapeAttribute(workspace.id)}">
       <div class="panel-heading chat-heading">
         <div>
-          <span>Chat</span>
+          <span>Chat -</span>
           <strong id="chat-title">${executing ? renderSpinnerLabel("Decomposing cards") : session.busy ? "Working" : "Ready"}</strong>
         </div>
         <div class="chat-actions">
+          <label class="chat-plan-toggle" title="Plan mode researches and plans without changing files">
+            <input
+              type="checkbox"
+              data-chat-plan-toggle
+              ${planMode ? "checked" : ""}
+              ${session.busy || executing ? "disabled" : ""}
+            >
+            <span>Plan</span>
+          </label>
           <button class="icon-button" type="button" title="${sizeLabel}" aria-label="${sizeLabel}" aria-pressed="${expanded}" data-action="toggle-chat-size">
             ${expanded ? icons.collapse : icons.expand}
           </button>
@@ -1521,6 +1536,9 @@ function bindChatEvents(root: ParentNode) {
       input.addEventListener("input", handleChatInput);
       input.addEventListener("keydown", handleChatKeydown);
     });
+  root
+    .querySelectorAll<HTMLInputElement>("[data-chat-plan-toggle]")
+    .forEach((input) => input.addEventListener("change", handleChatPlanModeChange));
   bindChatMentionOptions(root);
   bindChatFileLinks(root);
 }
@@ -1834,6 +1852,7 @@ async function handleAction(event: Event) {
       selectedKanbanCards.delete(workspaceID);
       expandedChatWorkspaces.delete(workspaceID);
       expandedKanbanWorkspaces.delete(workspaceID);
+      chatPlanModes.delete(workspaceID);
       clearKanbanRun(workspaceID);
       if (!activeWorkspace() || activeWorkspace()?.missing) {
         appMode = "chat-kanban";
@@ -1974,6 +1993,15 @@ function handleChatInput(event: Event) {
   patchChatControls();
 }
 
+function handleChatPlanModeChange(event: Event) {
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    return;
+  }
+  const input = event.currentTarget as HTMLInputElement;
+  chatPlanModes.set(workspace.id, input.checked);
+}
+
 function handleChatKeydown(event: KeyboardEvent) {
   if (handleChatMentionKeydown(event)) {
     return;
@@ -2046,7 +2074,10 @@ async function handleChatSubmit(event: SubmitEvent) {
   try {
     chatDrafts.set(workspace.id, "");
     clearChatMention();
-    chatSessions.set(workspace.id, await SendChatMessage(workspace.id, message));
+    chatSessions.set(
+      workspace.id,
+      await SendChatMessageWithPlanMode(workspace.id, message, chatPlanModeFor(workspace.id)),
+    );
     render();
     scrollChatToBottom();
   } catch (error) {
@@ -2308,6 +2339,7 @@ function patchChatControls() {
   const stop = appRoot.querySelector<HTMLButtonElement>(".stop-button");
   const execute = appRoot.querySelector<HTMLButtonElement>(".execute-button");
   const clear = appRoot.querySelector<HTMLButtonElement>('[data-action="clear-chat"]');
+  const planToggle = appRoot.querySelector<HTMLInputElement>("[data-chat-plan-toggle]");
   const title = appRoot.querySelector<HTMLElement>("#chat-title");
   const panel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
   const executing = executingPlans.has(workspace.id);
@@ -2329,6 +2361,10 @@ function patchChatControls() {
   }
   if (clear) {
     clear.disabled = session.busy || executing || (session.messages ?? []).length === 0;
+  }
+  if (planToggle) {
+    planToggle.disabled = session.busy || executing;
+    planToggle.checked = chatPlanModeFor(workspace.id);
   }
   if (title) {
     title.innerHTML = executing ? renderSpinnerLabel("Decomposing cards") : session.busy ? "Working" : "Ready";

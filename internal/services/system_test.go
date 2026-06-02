@@ -147,6 +147,132 @@ func TestSystemServiceChatIncludesWorkspaceInstructions(t *testing.T) {
 	assertSystemPromptOperatingContext(t, captured.Messages[0].Content, root)
 }
 
+func TestSystemServiceChatPlanModeUsesReadOnlyPlanningRequest(t *testing.T) {
+	root := t.TempDir()
+	var captured llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"Plan only."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+
+	if _, err := service.SendChatMessageWithPlanMode(workspaceID, "Inspect and plan this", true); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	waitForChatIdle(t, service, workspaceID)
+
+	if len(captured.Messages) == 0 || captured.Messages[0].Role != llm.RoleSystem {
+		t.Fatalf("expected system message first, got %#v", captured.Messages)
+	}
+	prompt := captured.Messages[0].Content
+	for _, expected := range []string{
+		"planning changes only",
+		"do not make workspace changes",
+		"available read-only tools",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected plan-mode prompt to include %q, got %q", expected, prompt)
+		}
+	}
+
+	names := chatRequestToolNames(captured)
+	for _, expected := range []string{"filesystem_list", "filesystem_read_text", "filesystem_stat"} {
+		if !names[expected] {
+			t.Fatalf("expected plan mode to include read-only tool %s, got %#v", expected, names)
+		}
+	}
+	for _, denied := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "shell_command"} {
+		if names[denied] {
+			t.Fatalf("expected plan mode to exclude mutating tool %s, got %#v", denied, names)
+		}
+	}
+	if captured.ToolChoice != "auto" {
+		t.Fatalf("expected auto tool choice, got %#v", captured.ToolChoice)
+	}
+}
+
+func TestSystemServiceChatNonPlanModeUsesFullToolRequest(t *testing.T) {
+	root := t.TempDir()
+	var captured llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"Ready to work."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+
+	if _, err := service.SendChatMessageWithPlanMode(workspaceID, "Do this", false); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	waitForChatIdle(t, service, workspaceID)
+
+	names := chatRequestToolNames(captured)
+	for _, expected := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "filesystem_list", "filesystem_read_text", "filesystem_stat", "shell_command"} {
+		if !names[expected] {
+			t.Fatalf("expected non-plan mode to include %s, got %#v", expected, names)
+		}
+	}
+}
+
+func TestSystemServiceChatPlanModeBlocksInlineMutatingToolCall(t *testing.T) {
+	root := t.TempDir()
+	var requestCount atomic.Int32
+	var secondRequest llm.ChatRequest
+	inlineToolCall := `<tool_call> <function=filesystem_create_text> <parameter=path> blocked.txt </parameter> <parameter=content> should not exist </parameter> </function> </tool_call>`
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"reasoning_content":%q}}]}`, inlineToolCall),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		case 2:
+			if err := json.NewDecoder(r.Body).Decode(&secondRequest); err != nil {
+				t.Fatalf("decode second request: %v", err)
+			}
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"I cannot make changes in plan mode."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+
+	if _, err := service.SendChatMessageWithPlanMode(workspaceID, "Create a file", true); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+
+	if requestCount.Load() != 2 {
+		t.Fatalf("expected denied tool call to be returned to model, got %d requests", requestCount.Load())
+	}
+	if _, err := os.Stat(filepath.Join(root, "blocked.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected mutating tool call not to create blocked.txt, stat error: %v", err)
+	}
+	requestData, err := json.Marshal(secondRequest.Messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(requestData), "tool_not_allowed") {
+		t.Fatalf("expected denied tool result in second request, got %s", requestData)
+	}
+	assistant := session.Messages[1]
+	if len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].Status != "error" {
+		t.Fatalf("expected blocked tool call to be shown as an error, got %#v", assistant.ToolCalls)
+	}
+}
+
 func TestSystemServiceChatShowsReasoningAndToolActivity(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hello"), 0o600); err != nil {
@@ -781,6 +907,14 @@ func waitForChatContent(t *testing.T, service *SystemService, workspaceID string
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for chat content %q", content)
+}
+
+func chatRequestToolNames(request llm.ChatRequest) map[string]bool {
+	names := make(map[string]bool, len(request.Tools))
+	for _, tool := range request.Tools {
+		names[tool.Function.Name] = true
+	}
+	return names
 }
 
 func assertSystemPromptOperatingContext(t *testing.T, content string, workspaceRoot string) {

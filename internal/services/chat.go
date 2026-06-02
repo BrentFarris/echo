@@ -72,6 +72,14 @@ func (s *SystemService) LoadChatSession(workspaceID string) (ChatSession, error)
 }
 
 func (s *SystemService) SendChatMessage(workspaceID string, content string) (ChatSession, error) {
+	return s.sendChatMessage(workspaceID, content, false)
+}
+
+func (s *SystemService) SendChatMessageWithPlanMode(workspaceID string, content string, planMode bool) (ChatSession, error) {
+	return s.sendChatMessage(workspaceID, content, planMode)
+}
+
+func (s *SystemService) sendChatMessage(workspaceID string, content string, planMode bool) (ChatSession, error) {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return ChatSession{}, fmt.Errorf("message is required")
@@ -119,7 +127,7 @@ func (s *SystemService) SendChatMessage(workspaceID string, content string) (Cha
 		Type:        "started",
 	})
 
-	go s.runChatTurn(runContext, cancel, workspace, settings, streamID, assistantMessage.ID)
+	go s.runChatTurn(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, planMode)
 
 	return clone, nil
 }
@@ -152,7 +160,7 @@ func (s *SystemService) ClearChat(workspaceID string) (ChatSession, error) {
 	return clone, nil
 }
 
-func (s *SystemService) runChatTurn(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, streamID string, messageID string) {
+func (s *SystemService) runChatTurn(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, streamID string, messageID string, planMode bool) {
 	defer cancel()
 	defer s.finishChatStream(workspace.ID, streamID)
 
@@ -162,14 +170,18 @@ func (s *SystemService) runChatTurn(ctx context.Context, cancel context.CancelFu
 		return
 	}
 
-	messages := append([]llm.Message{chatSystemMessage(workspace)}, s.chatHistory(workspace.ID)...)
+	messages := append([]llm.Message{chatSystemMessage(workspace, planMode)}, s.chatHistory(workspace.ID)...)
+	toolSchema := tools.LLMSchema()
+	if planMode {
+		toolSchema = tools.ReadOnlyLLMSchema()
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			s.cancelChatMessage(workspace.ID, streamID, messageID)
 			return
 		}
 
-		request, err := llm.NewChatRequest(settings, messages, llm.WithTools(tools.LLMSchema()), llm.WithToolChoice("auto"))
+		request, err := llm.NewChatRequest(settings, messages, llm.WithTools(toolSchema), llm.WithToolChoice("auto"))
 		if err != nil {
 			s.failChatMessage(workspace.ID, streamID, messageID, err.Error())
 			return
@@ -207,7 +219,7 @@ func (s *SystemService) runChatTurn(ctx context.Context, cancel context.CancelFu
 				s.cancelChatMessage(workspace.ID, streamID, messageID)
 				return
 			}
-			resultMessage := s.executeToolCall(ctx, workspace, streamID, messageID, call)
+			resultMessage := s.executeToolCall(ctx, workspace, streamID, messageID, call, planMode)
 			messages = append(messages, resultMessage)
 			s.appendChatHistory(workspace.ID, resultMessage)
 		}
@@ -333,9 +345,18 @@ func (s *SystemService) streamAssistantResponseAttempt(ctx context.Context, clie
 	return chatStreamAttemptResult{content: content.String(), toolCalls: orderedToolCalls(toolCalls), finished: finished, finishReason: finishReason}
 }
 
-func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, streamID string, messageID string, call llm.ToolCall) llm.Message {
+func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, streamID string, messageID string, call llm.ToolCall, readOnlyOnly bool) llm.Message {
 	if call.ID == "" {
 		call.ID = s.nextChatID("call")
+	}
+	if readOnlyOnly && !tools.IsReadOnlyToolName(call.Function.Name) {
+		data := fmt.Sprintf(`{"tool":%q,"success":false,"error":{"code":"tool_not_allowed","message":"tool is not available in plan mode"}}`, call.Function.Name)
+		s.updateToolActivity(workspace.ID, streamID, messageID, call, "error", data, "tool is not available in plan mode")
+		return llm.Message{
+			Role:       llm.RoleTool,
+			ToolCallID: call.ID,
+			Content:    data,
+		}
 	}
 	s.updateToolActivity(workspace.ID, streamID, messageID, call, "running", "", "")
 
@@ -582,16 +603,20 @@ func (s *SystemService) emitChatEvent(event ChatStreamEvent) {
 	}
 }
 
-func chatSystemMessage(workspace Workspace) llm.Message {
+func chatSystemMessage(workspace Workspace, planMode bool) llm.Message {
+	instructions := "You are Echo, a personal AI assistant helping plan work inside the active workspace. " +
+		"Use available tools when workspace facts are needed. " +
+		"When the user mentions @path, treat it as a workspace-relative file reference and read it before relying on its contents. " +
+		"Keep plans concrete and concise."
+	if planMode {
+		instructions = "You are Echo, a personal AI assistant helping research and plan work inside the active workspace. " +
+			"This chat is for planning changes only; do not make workspace changes, edit files, delete files, create files, run shell commands, or otherwise execute the plan. " +
+			"Use the available read-only tools to inspect files and gather the facts needed to answer the user. " +
+			"Create a concrete, concise plan that follows the user's request and clearly describes the intended changes."
+	}
 	return llm.Message{
-		Role: llm.RoleSystem,
-		Content: workspaceSystemPrompt(
-			"You are Echo, a personal AI assistant helping plan work inside the active workspace. "+
-				"Use available tools when workspace facts are needed. "+
-				"When the user mentions @path, treat it as a workspace-relative file reference and read it before relying on its contents. "+
-				"Keep plans concrete and concise.",
-			workspace,
-		),
+		Role:    llm.RoleSystem,
+		Content: workspaceSystemPrompt(instructions, workspace),
 	}
 }
 
