@@ -1,0 +1,1147 @@
+package services
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/brent/echo/internal/llm"
+)
+
+func TestSystemServiceAppInfo(t *testing.T) {
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+	info := service.AppInfo()
+
+	if info.Name != "Echo" {
+		t.Fatalf("expected Echo, got %q", info.Name)
+	}
+	if info.Phase != "release-readiness" {
+		t.Fatalf("expected release-readiness phase, got %q", info.Phase)
+	}
+	if info.AccentHex != "#8f1d2c" {
+		t.Fatalf("expected dark red accent, got %q", info.AccentHex)
+	}
+}
+
+func TestSystemServiceReturnsEmptyCollectionsForUI(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "state.json")
+	service := NewSystemServiceWithStorePath(storePath)
+
+	state := service.LoadState()
+	if state.Workspaces == nil {
+		t.Fatal("expected empty workspace list to be a non-nil slice")
+	}
+	if state.KanbanCards == nil {
+		t.Fatal("expected empty kanban card list to be a non-nil slice")
+	}
+
+	if err := os.WriteFile(storePath, []byte(`{"workspaces":null,"kanbanCards":null}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state = NewSystemServiceWithStorePath(storePath).LoadState()
+	if state.Workspaces == nil || state.KanbanCards == nil {
+		t.Fatalf("expected persisted null collections to normalize to empty slices, got %#v", state)
+	}
+	data, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("read normalized state: %v", err)
+	}
+	if strings.Contains(string(data), "kanbanCards") {
+		t.Fatalf("expected legacy kanban cards key to be removed, got %s", data)
+	}
+
+	workspacePath := filepath.Join(root, "project")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state, err = service.AddWorkspace(workspacePath)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+
+	session, err := service.LoadChatSession(state.ActiveWorkspaceID)
+	if err != nil {
+		t.Fatalf("load chat session: %v", err)
+	}
+	if session.Messages == nil {
+		t.Fatal("expected empty chat messages to be a non-nil slice")
+	}
+
+	board, err := service.LoadKanbanBoard(state.ActiveWorkspaceID)
+	if err != nil {
+		t.Fatalf("load kanban board: %v", err)
+	}
+	if board.Ready == nil || board.InProgress == nil || board.Blocked == nil || board.Done == nil {
+		t.Fatalf("expected empty board lanes to be non-nil slices, got %#v", board)
+	}
+}
+
+func TestSystemServiceChatSendStreamsAssistantMessage(t *testing.T) {
+	root := t.TempDir()
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"Hello **there**"}}]}`,
+			`{"choices":[{"index":0,"delta":{"content":"."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+
+	session, err := service.SendChatMessage(workspaceID, "Plan this")
+	if err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	if !session.Busy {
+		t.Fatal("expected chat to be busy after send")
+	}
+	if len(session.Messages) != 2 || session.Messages[0].Role != llm.RoleUser || session.Messages[1].Role != llm.RoleAssistant {
+		t.Fatalf("unexpected starting messages: %#v", session.Messages)
+	}
+
+	session = waitForChatIdle(t, service, workspaceID)
+	if got := session.Messages[1].Content; got != "Hello **there**." {
+		t.Fatalf("expected streamed assistant content, got %q", got)
+	}
+	if session.Messages[1].Status != "complete" {
+		t.Fatalf("expected complete assistant message, got %#v", session.Messages[1])
+	}
+}
+
+func TestSystemServiceChatIncludesWorkspaceInstructions(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("Always run the Echo workspace checks."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var captured llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"Noted."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+
+	if _, err := service.SendChatMessage(workspaceID, "What should I do?"); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	waitForChatIdle(t, service, workspaceID)
+
+	if len(captured.Messages) == 0 || captured.Messages[0].Role != llm.RoleSystem {
+		t.Fatalf("expected system message first, got %#v", captured.Messages)
+	}
+	if !strings.Contains(captured.Messages[0].Content, "Always run the Echo workspace checks.") {
+		t.Fatalf("expected AGENTS.md content in system prompt, got %q", captured.Messages[0].Content)
+	}
+	assertSystemPromptOperatingContext(t, captured.Messages[0].Content, root)
+}
+
+func TestSystemServiceChatShowsReasoningAndToolActivity(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var requestCount atomic.Int32
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"reasoning_content":"Checking files."}}]}`,
+				`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"filesystem_list","arguments":"{\"path\":\".\"}"}}]}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 2:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Found README.md."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+
+	if _, err := service.SendChatMessage(workspaceID, "Inspect the workspace"); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+	assistant := session.Messages[1]
+	if assistant.Reasoning != "Checking files." {
+		t.Fatalf("expected reasoning to stream, got %q", assistant.Reasoning)
+	}
+	if assistant.Content != "Found README.md." {
+		t.Fatalf("expected final assistant content, got %q", assistant.Content)
+	}
+	if len(assistant.ToolCalls) != 1 {
+		t.Fatalf("expected one tool call, got %#v", assistant.ToolCalls)
+	}
+	toolCall := assistant.ToolCalls[0]
+	if toolCall.Name != "filesystem_list" || toolCall.Status != "complete" {
+		t.Fatalf("unexpected tool activity: %#v", toolCall)
+	}
+	if !strings.Contains(toolCall.Result, "README.md") {
+		t.Fatalf("expected tool result to include file listing, got %q", toolCall.Result)
+	}
+}
+
+func TestSystemServiceChatHandlesInlineReasoningToolCall(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inlineToolCall := `<tool_call> <function=filesystem_list> <parameter=path> . </parameter> </function> </tool_call>`
+	var requestCount atomic.Int32
+	var secondRequest llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"reasoning_content":%q}}]}`, "Checking files.\n"+inlineToolCall),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		case 2:
+			if err := json.NewDecoder(r.Body).Decode(&secondRequest); err != nil {
+				t.Fatalf("decode second request: %v", err)
+			}
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Found README.md."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+
+	if _, err := service.SendChatMessage(workspaceID, "Inspect the workspace"); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+	if requestCount.Load() != 2 {
+		t.Fatalf("expected tool result follow-up request, got %d requests", requestCount.Load())
+	}
+	assistant := session.Messages[1]
+	if !strings.Contains(assistant.Reasoning, "Checking files.") || strings.Contains(assistant.Reasoning, "tool_call") {
+		t.Fatalf("expected clean reasoning without inline tool markup, got %q", assistant.Reasoning)
+	}
+	if assistant.Content != "Found README.md." {
+		t.Fatalf("expected final assistant content, got %q", assistant.Content)
+	}
+	if len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].Name != "filesystem_list" || assistant.ToolCalls[0].Status != "complete" {
+		t.Fatalf("expected completed inline tool activity, got %#v", assistant.ToolCalls)
+	}
+
+	var assistantToolID string
+	var toolMessageID string
+	for _, message := range secondRequest.Messages {
+		if message.Role == llm.RoleAssistant && len(message.ToolCalls) == 1 {
+			assistantToolID = message.ToolCalls[0].ID
+		}
+		if message.Role == llm.RoleTool {
+			toolMessageID = message.ToolCallID
+		}
+	}
+	if assistantToolID == "" || toolMessageID != assistantToolID {
+		t.Fatalf("expected matching assistant/tool call ids, got assistant=%q tool=%q in %#v", assistantToolID, toolMessageID, secondRequest.Messages)
+	}
+}
+
+func TestSystemServiceChatRetriesWhenStreamLoops(t *testing.T) {
+	root := t.TempDir()
+	loopPhrase := "checking the workspace now "
+	retryRequest := make(chan llm.ChatRequest, 1)
+	var requestCount atomic.Int32
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"content":%q}}]}`, loopPhrase),
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"content":%q}}]}`, loopPhrase),
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"content":%q}}]}`, loopPhrase),
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"content":%q}}]}`, loopPhrase),
+			)
+		case 2:
+			var captured llm.ChatRequest
+			if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode retry request: %v", err)
+			}
+			retryRequest <- captured
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Recovered without repeating."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+
+	if _, err := service.SendChatMessage(workspaceID, "Plan this"); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+	if requestCount.Load() != 2 {
+		t.Fatalf("expected one retry request, got %d", requestCount.Load())
+	}
+	assistant := session.Messages[1]
+	if assistant.Status != "complete" || !strings.Contains(assistant.Content, "Recovered without repeating.") {
+		t.Fatalf("expected recovered assistant message, got %#v", assistant)
+	}
+
+	var captured llm.ChatRequest
+	select {
+	case captured = <-retryRequest:
+	case <-time.After(time.Second):
+		t.Fatal("retry request was not captured")
+	}
+	requestData, err := json.Marshal(captured.Messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestText := string(requestData)
+	if !strings.Contains(requestText, "started repeating itself") || !strings.Contains(requestText, "already sent to the user") {
+		t.Fatalf("expected retry guidance in request, got %s", requestText)
+	}
+}
+
+func TestSystemServiceChatReportsTokenLimitFinishReason(t *testing.T) {
+	root := t.TempDir()
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"Partial plan:"}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`,
+		)
+	}))
+
+	if _, err := service.SendChatMessage(workspaceID, "Plan this"); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+	if len(session.Messages) != 2 {
+		t.Fatalf("expected user and assistant messages, got %#v", session.Messages)
+	}
+	assistant := session.Messages[1]
+	if assistant.Content != "Partial plan:" {
+		t.Fatalf("expected partial content to remain visible, got %q", assistant.Content)
+	}
+	if assistant.Status != "error" {
+		t.Fatalf("expected token-limit finish to mark message as error, got %#v", assistant)
+	}
+	if !strings.Contains(assistant.Error, "token limit") {
+		t.Fatalf("expected token-limit error, got %q", assistant.Error)
+	}
+}
+
+func TestSystemServiceStopChatStreamCancelsAndReturnsIdle(t *testing.T) {
+	root := t.TempDir()
+	requestCanceled := make(chan struct{})
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+		close(requestCanceled)
+	}))
+
+	if _, err := service.SendChatMessage(workspaceID, "Start"); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	waitForChatContent(t, service, workspaceID, "partial")
+	if _, err := service.StopChatStream(workspaceID); err != nil {
+		t.Fatalf("stop chat: %v", err)
+	}
+
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("server did not observe cancellation")
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+	if session.Messages[1].Status != "canceled" {
+		t.Fatalf("expected canceled assistant message, got %#v", session.Messages[1])
+	}
+}
+
+func TestSystemServiceChatBadEndpointShowsRecoverableError(t *testing.T) {
+	root := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	endpoint := server.URL + "/v1"
+	server.Close()
+
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+	state, err := service.AddWorkspace(root)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	settings := state.Settings
+	settings.Endpoint = endpoint
+	settings.Model = "test-model"
+	settings.TimeoutSeconds = 1
+	if _, err := service.SaveSettings(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	if _, err := service.SendChatMessage(state.ActiveWorkspaceID, "Plan while offline"); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, state.ActiveWorkspaceID)
+	if len(session.Messages) != 2 {
+		t.Fatalf("expected user and assistant messages, got %#v", session.Messages)
+	}
+	assistant := session.Messages[1]
+	if assistant.Status != "error" {
+		t.Fatalf("expected assistant error status, got %#v", assistant)
+	}
+	if !strings.Contains(assistant.Error, "Could not reach the LLM endpoint") {
+		t.Fatalf("expected recoverable endpoint error, got %q", assistant.Error)
+	}
+}
+
+func TestSystemServiceClearChatLeavesWorkspaceStateIntact(t *testing.T) {
+	root := t.TempDir()
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"Done"}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+
+	if _, err := service.SendChatMessage(workspaceID, "Hello"); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	waitForChatIdle(t, service, workspaceID)
+
+	session, err := service.ClearChat(workspaceID)
+	if err != nil {
+		t.Fatalf("clear chat: %v", err)
+	}
+	if len(session.Messages) != 0 || session.Busy {
+		t.Fatalf("expected empty idle chat, got %#v", session)
+	}
+
+	state := service.LoadState()
+	if len(state.Workspaces) != 1 || state.Workspaces[0].ID != workspaceID {
+		t.Fatalf("expected workspace state to remain, got %#v", state.Workspaces)
+	}
+}
+
+func TestSystemServiceExecutePlanExcludesHiddenChatState(t *testing.T) {
+	root := t.TempDir()
+	var captured llm.ChatRequest
+	service, workspaceID := newDecompositionTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertCompleteRequest(t, r)
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeChatResponse(t, w, `{"cards":[{"id":"phase-1","title":"Build visible work","description":"Use only visible plan text.","acceptanceCriteria":["Ready card exists"],"dependencies":[]}]}`)
+	}))
+	seedChatPlan(service, workspaceID, []ChatMessage{
+		{ID: "msg-1", Role: llm.RoleUser, Content: "Please plan the visible work.", Status: "complete"},
+		{
+			ID:        "msg-2",
+			Role:      llm.RoleAssistant,
+			Content:   "Visible approved plan: build the visible work card.",
+			Reasoning: "hidden thinking must stay out",
+			ToolCalls: []ChatToolActivity{{
+				ID:     "call-1",
+				Name:   "filesystem_list",
+				Status: "complete",
+				Result: "hidden tool result must stay out",
+			}},
+			Status: "complete",
+		},
+	}, []llm.Message{
+		{Role: llm.RoleUser, Content: "Please plan the visible work."},
+		{Role: llm.RoleAssistant, Content: "Visible approved plan", ToolCalls: []llm.ToolCall{{ID: "call-1"}}},
+		{Role: llm.RoleTool, ToolCallID: "call-1", Content: "hidden tool result must stay out"},
+	})
+
+	if _, err := service.ExecutePlan(workspaceID); err != nil {
+		t.Fatalf("execute plan: %v", err)
+	}
+	if len(captured.Messages) != 2 {
+		t.Fatalf("expected system plus one combined user message, got %#v", captured.Messages)
+	}
+	if captured.Messages[0].Role != llm.RoleSystem || captured.Messages[1].Role != llm.RoleUser {
+		t.Fatalf("expected decomposition to use system plus user prompt, got %#v", captured.Messages)
+	}
+	visiblePrompt := captured.Messages[1].Content
+	for _, expected := range []string{
+		"--- USER MESSAGE 1 ---",
+		"Please plan the visible work.",
+		"--- ASSISTANT MESSAGE 1 ---",
+		"Visible approved plan: build the visible work card.",
+	} {
+		if !strings.Contains(visiblePrompt, expected) {
+			t.Fatalf("expected visible transcript prompt to contain %q, got %q", expected, visiblePrompt)
+		}
+	}
+	requestData, err := json.Marshal(captured.Messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestText := string(requestData)
+	for _, hidden := range []string{"hidden thinking", "hidden tool result", "tool_call_id", "tool_calls", `"role":"assistant"`} {
+		if strings.Contains(requestText, hidden) {
+			t.Fatalf("decomposition request leaked %q in %s", hidden, requestText)
+		}
+	}
+	if len(captured.Tools) != 0 || captured.ToolChoice != nil || captured.Stream {
+		t.Fatalf("expected decomposition to avoid tools and streaming, got %#v", captured)
+	}
+}
+
+func TestSystemServiceExecutePlanCreatesReadyCardsWithValidDependencies(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "state.json")
+	service, workspaceID := newDecompositionTestServiceWithStore(t, root, storePath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertCompleteRequest(t, r)
+		writeChatResponse(t, w, `{"cards":[{"id":"phase-1","title":"Foundation","description":"Prepare the base slice.","acceptanceCriteria":["Foundation test passes"],"dependencies":[]},{"id":"phase-2","title":"Feature","description":"Build on the base slice.","acceptanceCriteria":["Feature is visible"],"dependencies":["phase-1"]}]}`)
+	}))
+	seedChatPlan(service, workspaceID, []ChatMessage{
+		{ID: "msg-1", Role: llm.RoleUser, Content: "Break this approved plan into cards.", Status: "complete"},
+		{ID: "msg-2", Role: llm.RoleAssistant, Content: "Approved plan: first foundation, then feature.", Status: "complete"},
+	}, nil)
+
+	board, err := service.ExecutePlan(workspaceID)
+	if err != nil {
+		t.Fatalf("execute plan: %v", err)
+	}
+	if len(board.Ready) != 2 || len(board.InProgress) != 0 || len(board.Blocked) != 0 || len(board.Done) != 0 {
+		t.Fatalf("expected two ready cards only, got %#v", board)
+	}
+	if board.Ready[0].ID == "" || board.Ready[1].ID == "" || board.Ready[0].ID == board.Ready[1].ID {
+		t.Fatalf("expected unique card ids, got %#v", board.Ready)
+	}
+	if got := board.Ready[1].Dependencies; len(got) != 1 || got[0] != board.Ready[0].ID {
+		t.Fatalf("expected dependency to map to first card id, got %#v", got)
+	}
+
+	reloaded := NewSystemServiceWithStorePath(storePath)
+	reloadedBoard, err := reloaded.LoadKanbanBoard(workspaceID)
+	if err != nil {
+		t.Fatalf("load reloaded board: %v", err)
+	}
+	if len(reloadedBoard.Ready) != 0 {
+		t.Fatalf("expected cards to be runtime-only after reload, got %#v", reloadedBoard)
+	}
+	data, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	if strings.Contains(string(data), "kanbanCards") {
+		t.Fatalf("expected state file to omit kanban cards, got %s", data)
+	}
+}
+
+func TestSystemServiceExecutePlanAcceptsJSONWithSurroundingText(t *testing.T) {
+	root := t.TempDir()
+	service, workspaceID := newDecompositionTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertCompleteRequest(t, r)
+		writeChatResponse(t, w, "Let's convert that plan into cards.\n\n```json\n{\"cards\":[{\"id\":\"phase-1\",\"title\":\"Apply neon theme\",\"description\":\"Update the editor theme colors to use neon values.\",\"acceptanceCriteria\":[\"Editor theme uses neon colors\"],\"dependencies\":[]}]}\n```")
+	}))
+	seedChatPlan(service, workspaceID, []ChatMessage{
+		{ID: "msg-1", Role: llm.RoleUser, Content: "Break this approved plan into cards.", Status: "complete"},
+		{ID: "msg-2", Role: llm.RoleAssistant, Content: "Approved plan: update the editor theme colors to neon.", Status: "complete"},
+	}, nil)
+
+	board, err := service.ExecutePlan(workspaceID)
+	if err != nil {
+		t.Fatalf("execute plan: %v", err)
+	}
+	if len(board.Ready) != 1 {
+		t.Fatalf("expected one ready card, got %#v", board)
+	}
+	if board.Ready[0].Title != "Apply neon theme" {
+		t.Fatalf("expected extracted JSON card title, got %#v", board.Ready[0])
+	}
+}
+
+func TestSystemServiceExecutePlanSkipsNonJSONBracePreamble(t *testing.T) {
+	root := t.TempDir()
+	service, workspaceID := newDecompositionTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertCompleteRequest(t, r)
+		writeChatResponse(t, w, "Thinking note: {based on the visible plan}\n\n{\"cards\":[{\"id\":\"phase-1\",\"title\":\"Apply neon theme\",\"description\":\"Update the editor theme colors to use neon values.\",\"acceptanceCriteria\":[\"Editor theme uses neon colors\"],\"dependencies\":[]}]}")
+	}))
+	seedChatPlan(service, workspaceID, []ChatMessage{
+		{ID: "msg-1", Role: llm.RoleUser, Content: "Break this approved plan into cards.", Status: "complete"},
+		{ID: "msg-2", Role: llm.RoleAssistant, Content: "Approved plan: update the editor theme colors to neon.", Status: "complete"},
+	}, nil)
+
+	board, err := service.ExecutePlan(workspaceID)
+	if err != nil {
+		t.Fatalf("execute plan: %v", err)
+	}
+	if len(board.Ready) != 1 || board.Ready[0].Title != "Apply neon theme" {
+		t.Fatalf("expected parser to skip prose braces and find card JSON, got %#v", board.Ready)
+	}
+}
+
+func TestSystemServiceExecutePlanRejectsInvalidOutputWithoutPartialCards(t *testing.T) {
+	root := t.TempDir()
+	service, workspaceID := newDecompositionTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertCompleteRequest(t, r)
+		writeChatResponse(t, w, `{"cards":[{"id":"phase-1","title":"Foundation","description":"Prepare the base slice.","acceptanceCriteria":["Done"],"dependencies":["missing-phase"]}]}`)
+	}))
+	seedChatPlan(service, workspaceID, []ChatMessage{
+		{ID: "msg-1", Role: llm.RoleUser, Content: "Break this approved plan into cards.", Status: "complete"},
+		{ID: "msg-2", Role: llm.RoleAssistant, Content: "Approved plan: create one card.", Status: "complete"},
+	}, nil)
+
+	if _, err := service.ExecutePlan(workspaceID); err == nil {
+		t.Fatal("expected invalid dependency to be rejected")
+	}
+	board, err := service.LoadKanbanBoard(workspaceID)
+	if err != nil {
+		t.Fatalf("load board: %v", err)
+	}
+	if len(board.Ready) != 0 {
+		t.Fatalf("expected no partial cards, got %#v", board.Ready)
+	}
+}
+
+func TestSystemServiceExecutePlanRequiresVisibleAssistantPlan(t *testing.T) {
+	root := t.TempDir()
+	called := false
+	service, workspaceID := newDecompositionTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		t.Fatal("decomposition endpoint should not be called without a visible plan")
+	}))
+	seedChatPlan(service, workspaceID, []ChatMessage{
+		{ID: "msg-1", Role: llm.RoleUser, Content: "Please make cards.", Status: "complete"},
+	}, nil)
+
+	_, err := service.ExecutePlan(workspaceID)
+	if err == nil {
+		t.Fatal("expected insufficient plan error")
+	}
+	if called {
+		t.Fatal("unexpected decomposition request")
+	}
+	if !strings.Contains(err.Error(), "visible plan") {
+		t.Fatalf("expected helpful visible plan error, got %q", err.Error())
+	}
+	board, err := service.LoadKanbanBoard(workspaceID)
+	if err != nil {
+		t.Fatalf("load board: %v", err)
+	}
+	if len(board.Ready) != 0 {
+		t.Fatalf("expected no cards, got %#v", board.Ready)
+	}
+}
+
+func newChatTestService(t *testing.T, workspacePath string, handler http.Handler) (*SystemService, string) {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+	state, err := service.AddWorkspace(workspacePath)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	settings := state.Settings
+	settings.Endpoint = server.URL + "/v1"
+	settings.Model = "test-model"
+	settings.TimeoutSeconds = 10
+	if _, err := service.SaveSettings(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	return service, state.ActiveWorkspaceID
+}
+
+func newDecompositionTestService(t *testing.T, workspacePath string, handler http.Handler) (*SystemService, string) {
+	t.Helper()
+	return newDecompositionTestServiceWithStore(t, workspacePath, filepath.Join(t.TempDir(), "state.json"), handler)
+}
+
+func newDecompositionTestServiceWithStore(t *testing.T, workspacePath string, storePath string, handler http.Handler) (*SystemService, string) {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	service := NewSystemServiceWithStorePath(storePath)
+	state, err := service.AddWorkspace(workspacePath)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	settings := state.Settings
+	settings.Endpoint = server.URL + "/v1"
+	settings.Model = "test-model"
+	settings.TimeoutSeconds = 10
+	if _, err := service.SaveSettings(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	return service, state.ActiveWorkspaceID
+}
+
+func seedChatPlan(service *SystemService, workspaceID string, messages []ChatMessage, history []llm.Message) {
+	service.chatMu.Lock()
+	defer service.chatMu.Unlock()
+	service.chatSessions[workspaceID] = &chatSessionState{
+		WorkspaceID: workspaceID,
+		Messages:    messages,
+		History:     history,
+	}
+}
+
+func assertChatStreamRequest(t *testing.T, r *http.Request) {
+	t.Helper()
+	if r.Method != http.MethodPost {
+		t.Fatalf("expected POST, got %s", r.Method)
+	}
+	if r.URL.Path != "/v1/chat/completions" {
+		t.Fatalf("expected chat completions path, got %s", r.URL.Path)
+	}
+	if r.Header.Get("Accept") != "text/event-stream" {
+		t.Fatalf("expected event-stream accept header, got %q", r.Header.Get("Accept"))
+	}
+}
+
+func assertCompleteRequest(t *testing.T, r *http.Request) {
+	t.Helper()
+	if r.Method != http.MethodPost {
+		t.Fatalf("expected POST, got %s", r.Method)
+	}
+	if r.URL.Path != "/v1/chat/completions" {
+		t.Fatalf("expected chat completions path, got %s", r.URL.Path)
+	}
+	if r.Header.Get("Accept") != "application/json" {
+		t.Fatalf("expected JSON accept header, got %q", r.Header.Get("Accept"))
+	}
+}
+
+func writeChatResponse(t *testing.T, w http.ResponseWriter, content string) {
+	t.Helper()
+	_ = json.NewEncoder(w).Encode(llm.ChatResponse{
+		Choices: []llm.ChatChoice{{
+			Index:   0,
+			Message: llm.Message{Role: llm.RoleAssistant, Content: content},
+		}},
+	})
+}
+
+func writeSSE(t *testing.T, w http.ResponseWriter, payloads ...string) {
+	t.Helper()
+	w.Header().Set("Content-Type", "text/event-stream")
+	for _, payload := range payloads {
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+			t.Fatalf("write stream: %v", err)
+		}
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}
+}
+
+func waitForChatIdle(t *testing.T, service *SystemService, workspaceID string) ChatSession {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		session, err := service.LoadChatSession(workspaceID)
+		if err != nil {
+			t.Fatalf("load chat: %v", err)
+		}
+		if !session.Busy {
+			return session
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for chat to become idle")
+	return ChatSession{}
+}
+
+func waitForChatContent(t *testing.T, service *SystemService, workspaceID string, content string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		session, err := service.LoadChatSession(workspaceID)
+		if err != nil {
+			t.Fatalf("load chat: %v", err)
+		}
+		if len(session.Messages) > 1 && strings.Contains(session.Messages[1].Content, content) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for chat content %q", content)
+}
+
+func assertSystemPromptOperatingContext(t *testing.T, content string, workspaceRoot string) {
+	t.Helper()
+
+	for _, expected := range []string{
+		"Operating context:",
+		"- Operating system: " + runtime.GOOS,
+		"- OS user: ",
+		"- Workspace: " + workspaceRoot,
+		"- Current time: ",
+	} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("expected system prompt to include %q, got %q", expected, content)
+		}
+	}
+
+	username := lineValue(content, "- OS user: ")
+	if username == "" {
+		t.Fatalf("expected system prompt to include a non-empty OS user, got %q", content)
+	}
+
+	currentTime := lineValue(content, "- Current time: ")
+	if currentTime == "" {
+		t.Fatalf("expected system prompt to include current time, got %q", content)
+	}
+	if _, err := time.Parse(time.RFC3339, currentTime); err != nil {
+		t.Fatalf("expected current time to be RFC3339, got %q: %v", currentTime, err)
+	}
+}
+
+func lineValue(content string, prefix string) string {
+	for _, line := range strings.Split(content, "\n") {
+		if value, ok := strings.CutPrefix(line, prefix); ok {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func TestSystemServiceAddWorkspaceCreatesAndSelectsFolder(t *testing.T) {
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "project")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	service := NewSystemServiceWithStorePath(filepath.Join(root, "state.json"))
+	state, err := service.AddWorkspace(workspacePath)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+
+	if len(state.Workspaces) != 1 {
+		t.Fatalf("expected one workspace, got %d", len(state.Workspaces))
+	}
+	workspace := state.Workspaces[0]
+	if workspace.ID == "" {
+		t.Fatal("expected workspace id")
+	}
+	if workspace.DisplayName != "project" {
+		t.Fatalf("expected display name from folder, got %q", workspace.DisplayName)
+	}
+	if workspace.FolderPath != filepath.Clean(workspacePath) {
+		t.Fatalf("expected folder path %q, got %q", filepath.Clean(workspacePath), workspace.FolderPath)
+	}
+	if state.ActiveWorkspaceID != workspace.ID {
+		t.Fatalf("expected active workspace id %q, got %q", workspace.ID, state.ActiveWorkspaceID)
+	}
+	if !workspace.Active {
+		t.Fatal("expected added workspace to be active")
+	}
+	if workspace.Missing {
+		t.Fatalf("expected workspace to exist, got error %q", workspace.Error)
+	}
+}
+
+func TestSystemServiceDuplicateWorkspaceSelectsExisting(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first")
+	second := filepath.Join(root, "second")
+	for _, path := range []string{first, second} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	service := NewSystemServiceWithStorePath(filepath.Join(root, "state.json"))
+	firstState, err := service.AddWorkspace(first)
+	if err != nil {
+		t.Fatalf("add first workspace: %v", err)
+	}
+	firstID := firstState.ActiveWorkspaceID
+	if _, err := service.AddWorkspace(second); err != nil {
+		t.Fatalf("add second workspace: %v", err)
+	}
+
+	state, err := service.AddWorkspace(filepath.Join(first, "."))
+	if err != nil {
+		t.Fatalf("add duplicate workspace: %v", err)
+	}
+	if len(state.Workspaces) != 2 {
+		t.Fatalf("expected duplicate to keep two workspaces, got %d", len(state.Workspaces))
+	}
+	if state.ActiveWorkspaceID != firstID {
+		t.Fatalf("expected duplicate to select existing workspace %q, got %q", firstID, state.ActiveWorkspaceID)
+	}
+	for _, workspace := range state.Workspaces {
+		if workspace.ID == firstID && !workspace.Active {
+			t.Fatal("expected duplicate workspace to be active")
+		}
+	}
+}
+
+func TestSystemServiceWorkspaceListPersistsAcrossRestart(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first")
+	second := filepath.Join(root, "second")
+	for _, path := range []string{first, second} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	storePath := filepath.Join(root, "state.json")
+	service := NewSystemServiceWithStorePath(storePath)
+	if _, err := service.AddWorkspace(first); err != nil {
+		t.Fatalf("add first workspace: %v", err)
+	}
+	state, err := service.AddWorkspace(second)
+	if err != nil {
+		t.Fatalf("add second workspace: %v", err)
+	}
+	activeID := state.ActiveWorkspaceID
+
+	reloaded := NewSystemServiceWithStorePath(storePath).LoadState()
+	if len(reloaded.Workspaces) != 2 {
+		t.Fatalf("expected two persisted workspaces, got %d", len(reloaded.Workspaces))
+	}
+	if reloaded.ActiveWorkspaceID != activeID {
+		t.Fatalf("expected active workspace %q after restart, got %q", activeID, reloaded.ActiveWorkspaceID)
+	}
+	for _, workspace := range reloaded.Workspaces {
+		if workspace.ID == activeID && !workspace.Active {
+			t.Fatal("expected active workspace flag after restart")
+		}
+	}
+}
+
+func TestSystemServiceMissingWorkspaceShowsRecoverableState(t *testing.T) {
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "project")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	storePath := filepath.Join(root, "state.json")
+	service := NewSystemServiceWithStorePath(storePath)
+	state, err := service.AddWorkspace(workspacePath)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	workspaceID := state.ActiveWorkspaceID
+
+	if err := os.RemoveAll(workspacePath); err != nil {
+		t.Fatal(err)
+	}
+	missing := NewSystemServiceWithStorePath(storePath).LoadState()
+	if len(missing.Workspaces) != 1 {
+		t.Fatalf("expected one workspace, got %d", len(missing.Workspaces))
+	}
+	if missing.Workspaces[0].ID != workspaceID {
+		t.Fatalf("expected workspace %q, got %q", workspaceID, missing.Workspaces[0].ID)
+	}
+	if !missing.Workspaces[0].Missing {
+		t.Fatal("expected deleted folder to be marked missing")
+	}
+	if missing.Workspaces[0].Error == "" {
+		t.Fatal("expected recoverable workspace error")
+	}
+
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recovered := NewSystemServiceWithStorePath(storePath).LoadState()
+	if recovered.Workspaces[0].Missing {
+		t.Fatalf("expected restored folder to recover, got %q", recovered.Workspaces[0].Error)
+	}
+}
+
+func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "state.json")
+	service := NewSystemServiceWithStorePath(storePath)
+
+	state := service.LoadState()
+	if state.Settings.Endpoint != llm.DefaultEndpoint {
+		t.Fatalf("expected default endpoint, got %q", state.Settings.Endpoint)
+	}
+	if state.Settings.Model != llm.DefaultModel {
+		t.Fatalf("expected default model, got %q", state.Settings.Model)
+	}
+	if state.Settings.MinP != 0 {
+		t.Fatalf("expected default min-p 0, got %v", state.Settings.MinP)
+	}
+	if state.Settings.PresencePenalty != 1.5 {
+		t.Fatalf("expected default presence penalty 1.5, got %v", state.Settings.PresencePenalty)
+	}
+	if state.Settings.RepetitionPenalty != 1 {
+		t.Fatalf("expected default repetition penalty 1, got %v", state.Settings.RepetitionPenalty)
+	}
+
+	settings := state.Settings
+	settings.Endpoint = "https://example.test/v1"
+	settings.Model = "test-model"
+	settings.Temperature = 0.2
+	settings.TopK = 16
+	settings.TopP = 0.8
+	settings.MinP = 0.1
+	settings.ContextLength = 8192
+	settings.MaxTokens = 1024
+	settings.PresencePenalty = 1.25
+	settings.RepetitionPenalty = 1.05
+
+	if _, err := service.SaveSettings(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	reloaded := NewSystemServiceWithStorePath(storePath).LoadState()
+	if reloaded.Settings.Endpoint != settings.Endpoint {
+		t.Fatalf("expected persisted endpoint, got %q", reloaded.Settings.Endpoint)
+	}
+	if reloaded.Settings.Model != settings.Model {
+		t.Fatalf("expected persisted model, got %q", reloaded.Settings.Model)
+	}
+	if reloaded.Settings.MaxTokens != settings.MaxTokens {
+		t.Fatalf("expected persisted max tokens, got %d", reloaded.Settings.MaxTokens)
+	}
+	if reloaded.Settings.MinP != settings.MinP {
+		t.Fatalf("expected persisted min-p, got %v", reloaded.Settings.MinP)
+	}
+	if reloaded.Settings.PresencePenalty != settings.PresencePenalty {
+		t.Fatalf("expected persisted presence penalty, got %v", reloaded.Settings.PresencePenalty)
+	}
+	if reloaded.Settings.RepetitionPenalty != settings.RepetitionPenalty {
+		t.Fatalf("expected persisted repetition penalty, got %v", reloaded.Settings.RepetitionPenalty)
+	}
+}
+
+func TestSystemServiceRejectsInvalidSettings(t *testing.T) {
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+	settings := service.LoadState().Settings
+
+	settings.Endpoint = ""
+	if _, err := service.SaveSettings(settings); err == nil {
+		t.Fatal("expected empty endpoint to be rejected")
+	}
+
+	settings.Endpoint = "notaurl"
+	if _, err := service.SaveSettings(settings); err == nil {
+		t.Fatal("expected invalid endpoint to be rejected")
+	}
+
+	settings.Endpoint = llm.DefaultEndpoint
+	settings.Model = ""
+	if _, err := service.SaveSettings(settings); err == nil {
+		t.Fatal("expected empty model to be rejected")
+	}
+
+	settings.Model = llm.DefaultModel
+	settings.MinP = -0.1
+	if _, err := service.SaveSettings(settings); err == nil {
+		t.Fatal("expected invalid min-p to be rejected")
+	}
+
+	settings.MinP = 0
+	settings.RepetitionPenalty = -0.1
+	if _, err := service.SaveSettings(settings); err == nil {
+		t.Fatal("expected invalid repetition penalty to be rejected")
+	}
+}
+
+func TestSystemServiceDeleteWorkspaceUpdatesActiveState(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first")
+	second := filepath.Join(root, "second")
+	for _, path := range []string{first, second} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	service := NewSystemServiceWithStorePath(filepath.Join(root, "state.json"))
+	state, err := service.AddWorkspace(first)
+	if err != nil {
+		t.Fatalf("add first workspace: %v", err)
+	}
+	firstID := state.ActiveWorkspaceID
+	state, err = service.AddWorkspace(second)
+	if err != nil {
+		t.Fatalf("add second workspace: %v", err)
+	}
+	secondID := state.ActiveWorkspaceID
+	if firstID == secondID {
+		t.Fatal("expected unique workspace ids")
+	}
+
+	state, err = service.DeleteWorkspace(secondID)
+	if err != nil {
+		t.Fatalf("delete active workspace: %v", err)
+	}
+	if len(state.Workspaces) != 1 {
+		t.Fatalf("expected one workspace, got %d", len(state.Workspaces))
+	}
+	if state.ActiveWorkspaceID != firstID {
+		t.Fatalf("expected active workspace to fall back to first, got %q", state.ActiveWorkspaceID)
+	}
+
+	state, err = service.DeleteWorkspace(firstID)
+	if err != nil {
+		t.Fatalf("delete final workspace: %v", err)
+	}
+	if len(state.Workspaces) != 0 {
+		t.Fatalf("expected no workspaces, got %d", len(state.Workspaces))
+	}
+	if state.ActiveWorkspaceID != "" {
+		t.Fatalf("expected no active workspace, got %q", state.ActiveWorkspaceID)
+	}
+}
+
+func TestSystemServiceSetWorkspaceLetterPersists(t *testing.T) {
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	storePath := filepath.Join(root, "state.json")
+	service := NewSystemServiceWithStorePath(storePath)
+	state, err := service.AddWorkspace(workspacePath)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	workspaceID := state.ActiveWorkspaceID
+
+	state, err = service.SetWorkspaceLetter(workspaceID, "  zed ")
+	if err != nil {
+		t.Fatalf("set workspace letter: %v", err)
+	}
+	if got := state.Workspaces[0].Letter; got != "Z" {
+		t.Fatalf("expected normalized letter Z, got %q", got)
+	}
+
+	reloaded := NewSystemServiceWithStorePath(storePath).LoadState()
+	if got := reloaded.Workspaces[0].Letter; got != "Z" {
+		t.Fatalf("expected persisted letter Z, got %q", got)
+	}
+
+	state, err = service.SetWorkspaceLetter(workspaceID, " ")
+	if err != nil {
+		t.Fatalf("clear workspace letter: %v", err)
+	}
+	if got := state.Workspaces[0].Letter; got != "" {
+		t.Fatalf("expected cleared letter, got %q", got)
+	}
+}
