@@ -223,6 +223,185 @@ func TestSystemServiceChatNonPlanModeUsesFullToolRequest(t *testing.T) {
 	}
 }
 
+func TestSystemServiceChatSendsPastedImageAsContentPart(t *testing.T) {
+	root := t.TempDir()
+	var captured llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"Looks good."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+
+	if _, err := service.SendChatMessageWithAttachments(workspaceID, ChatMessageRequest{
+		Content:  "Review this screenshot.",
+		PlanMode: true,
+		Images: []ChatImageInput{{
+			Name:      "screen.png",
+			MediaType: "image/png",
+			DataURL:   tinyPNGDataURL(),
+			Bytes:     int64(len(tinyPNGBytes())),
+		}},
+	}); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+
+	if len(session.Messages) < 1 || len(session.Messages[0].Images) != 1 {
+		t.Fatalf("expected user message image metadata, got %#v", session.Messages)
+	}
+	if session.Messages[0].Images[0].Name != "screen.png" || !strings.HasPrefix(session.Messages[0].Images[0].DataURL, "data:image/png;base64,") {
+		t.Fatalf("unexpected user image metadata: %#v", session.Messages[0].Images[0])
+	}
+	if len(captured.Messages) < 2 {
+		t.Fatalf("expected system and user messages, got %#v", captured.Messages)
+	}
+	user := captured.Messages[1]
+	if len(user.ContentParts) != 2 {
+		t.Fatalf("expected text plus image content parts, got %#v", user)
+	}
+	if user.ContentParts[0].Type != "text" || !strings.Contains(user.ContentParts[0].Text, "Attached images:") {
+		t.Fatalf("expected attached image labels in text part, got %#v", user.ContentParts[0])
+	}
+	if strings.Contains(user.ContentParts[0].Text, "data:image") {
+		t.Fatalf("expected text part to omit base64 image data, got %q", user.ContentParts[0].Text)
+	}
+	if user.ContentParts[1].Type != "image_url" || user.ContentParts[1].ImageURL == nil || !strings.HasPrefix(user.ContentParts[1].ImageURL.URL, "data:image/png;base64,") {
+		t.Fatalf("expected image_url data URL part, got %#v", user.ContentParts[1])
+	}
+	if user.ContentParts[1].ImageURL.Detail != "" {
+		t.Fatalf("expected image detail to be omitted, got %#v", user.ContentParts[1].ImageURL)
+	}
+}
+
+func TestSystemServiceChatSendsWorkspaceImageMentionAsContentPart(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "ui.png"), tinyPNGBytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var captured llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"Reviewed."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+
+	if _, err := service.SendChatMessageWithPlanMode(workspaceID, "Review @ui.png", true); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+
+	if len(session.Messages[0].Images) != 1 || session.Messages[0].Images[0].Path != "ui.png" {
+		t.Fatalf("expected workspace image metadata, got %#v", session.Messages[0].Images)
+	}
+	user := captured.Messages[1]
+	if len(user.ContentParts) != 2 || user.ContentParts[1].ImageURL == nil {
+		t.Fatalf("expected workspace image content part, got %#v", user)
+	}
+	if !strings.Contains(user.ContentParts[0].Text, "ui.png") {
+		t.Fatalf("expected text part to name workspace image, got %q", user.ContentParts[0].Text)
+	}
+}
+
+func TestSystemServiceChatRejectsUnsupportedPastedImage(t *testing.T) {
+	root := t.TempDir()
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("chat request should not be sent for an unsupported image")
+	}))
+
+	_, err := service.SendChatMessageWithAttachments(workspaceID, ChatMessageRequest{
+		Content: "Review this.",
+		Images: []ChatImageInput{{
+			Name:    "vector.svg",
+			DataURL: "data:image/svg+xml;base64,PHN2Zy8+",
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported image format") {
+		t.Fatalf("expected unsupported image error, got %v", err)
+	}
+}
+
+func TestSystemServiceChatRejectsOversizedWorkspaceImage(t *testing.T) {
+	root := t.TempDir()
+	data := append(tinyPNGBytes(), make([]byte, maxChatImageBytes+1)...)
+	if err := os.WriteFile(filepath.Join(root, "huge.png"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("chat request should not be sent for an oversized image")
+	}))
+
+	_, err := service.SendChatMessage(workspaceID, "Review @huge.png")
+	if err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("expected oversized image error, got %v", err)
+	}
+}
+
+func TestSystemServiceChatRejectsWorkspaceImageTraversal(t *testing.T) {
+	root := t.TempDir()
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("chat request should not be sent for path traversal")
+	}))
+
+	_, err := service.SendChatMessage(workspaceID, "Review @../outside.png")
+	if err == nil || !strings.Contains(err.Error(), "escapes the workspace") {
+		t.Fatalf("expected traversal error, got %v", err)
+	}
+}
+
+func TestSystemServiceChatPreservesImageContentInRuntimeHistory(t *testing.T) {
+	root := t.TempDir()
+	var requestCount atomic.Int32
+	var secondRequest llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		count := requestCount.Add(1)
+		var captured llm.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if count == 2 {
+			secondRequest = captured
+		}
+		writeSSE(t, w,
+			fmt.Sprintf(`{"choices":[{"index":0,"delta":{"content":"Response %d."}}]}`, count),
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+
+	if _, err := service.SendChatMessageWithAttachments(workspaceID, ChatMessageRequest{
+		Content: "Review this image.",
+		Images: []ChatImageInput{{
+			Name:    "first.png",
+			DataURL: tinyPNGDataURL(),
+		}},
+	}); err != nil {
+		t.Fatalf("send first chat: %v", err)
+	}
+	waitForChatIdle(t, service, workspaceID)
+	if _, err := service.SendChatMessage(workspaceID, "Now compare it with the plan."); err != nil {
+		t.Fatalf("send second chat: %v", err)
+	}
+	waitForChatIdle(t, service, workspaceID)
+
+	if len(secondRequest.Messages) < 4 {
+		t.Fatalf("expected second request to include prior history, got %#v", secondRequest.Messages)
+	}
+	priorUser := secondRequest.Messages[1]
+	if len(priorUser.ContentParts) != 2 || priorUser.ContentParts[1].ImageURL == nil {
+		t.Fatalf("expected prior image content parts in runtime history, got %#v", priorUser)
+	}
+}
+
 func TestSystemServiceChatPlanModeBlocksInlineMutatingToolCall(t *testing.T) {
 	root := t.TempDir()
 	var requestCount atomic.Int32
@@ -633,6 +812,61 @@ func TestSystemServiceExecutePlanExcludesHiddenChatState(t *testing.T) {
 	}
 }
 
+func TestSystemServiceExecutePlanIncludesImageLabelsWithoutImageData(t *testing.T) {
+	root := t.TempDir()
+	var captured llm.ChatRequest
+	service, workspaceID := newDecompositionTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertCompleteRequest(t, r)
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeChatResponse(t, w, `{"cards":[{"id":"phase-1","title":"Review screenshot","description":"Use the image-backed user request labels.","acceptanceCriteria":["Screenshot review is represented"],"dependencies":[]}]}`)
+	}))
+	imageDataURL := tinyPNGDataURL()
+	visibleContent := "Review the visual issue.\n\nAttached images:\n- Image 1: screenshot.png (screens/screenshot.png), image/png, 12 B"
+	seedChatPlan(service, workspaceID, []ChatMessage{
+		{
+			ID:      "msg-1",
+			Role:    llm.RoleUser,
+			Content: visibleContent,
+			Images: []ChatImageAttachment{{
+				ID:        "img-1",
+				Source:    "workspace",
+				Name:      "screenshot.png",
+				Path:      "screens/screenshot.png",
+				MediaType: "image/png",
+				Bytes:     int64(len(tinyPNGBytes())),
+				DataURL:   imageDataURL,
+			}},
+			Status: "complete",
+		},
+		{ID: "msg-2", Role: llm.RoleAssistant, Content: "Approved plan: review and fix the visual issue.", Status: "complete"},
+	}, []llm.Message{
+		{
+			Role:    llm.RoleUser,
+			Content: visibleContent,
+			ContentParts: []llm.MessageContentPart{
+				llm.TextContentPart(visibleContent),
+				llm.ImageURLContentPart(imageDataURL),
+			},
+		},
+	})
+
+	if _, err := service.ExecutePlan(workspaceID); err != nil {
+		t.Fatalf("execute plan: %v", err)
+	}
+	if len(captured.Messages) != 2 {
+		t.Fatalf("expected system plus combined visible prompt, got %#v", captured.Messages)
+	}
+	visiblePrompt := captured.Messages[1].Content
+	if !strings.Contains(visiblePrompt, "Attached images:") || !strings.Contains(visiblePrompt, "screenshot.png") {
+		t.Fatalf("expected visible image labels in decomposition prompt, got %q", visiblePrompt)
+	}
+	if strings.Contains(visiblePrompt, "data:image") || strings.Contains(visiblePrompt, "base64") {
+		t.Fatalf("expected decomposition prompt to omit image data, got %q", visiblePrompt)
+	}
+}
+
 func TestSystemServiceExecutePlanCreatesReadyCardsWithValidDependencies(t *testing.T) {
 	root := t.TempDir()
 	storePath := filepath.Join(root, "state.json")
@@ -915,6 +1149,14 @@ func chatRequestToolNames(request llm.ChatRequest) map[string]bool {
 		names[tool.Function.Name] = true
 	}
 	return names
+}
+
+func tinyPNGBytes() []byte {
+	return []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}
+}
+
+func tinyPNGDataURL() string {
+	return chatImageDataURL("image/png", tinyPNGBytes())
 }
 
 func assertSystemPromptOperatingContext(t *testing.T, content string, workspaceRoot string) {

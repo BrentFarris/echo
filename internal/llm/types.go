@@ -1,6 +1,9 @@
 package llm
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 const (
 	RoleSystem    = "system"
@@ -10,11 +13,110 @@ const (
 )
 
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	Name       string     `json:"name,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	Role         string               `json:"role"`
+	Content      string               `json:"content,omitempty"`
+	ContentParts []MessageContentPart `json:"-"`
+	Name         string               `json:"name,omitempty"`
+	ToolCallID   string               `json:"tool_call_id,omitempty"`
+	ToolCalls    []ToolCall           `json:"tool_calls,omitempty"`
+}
+
+type MessageContentPart struct {
+	Type     string           `json:"type"`
+	Text     string           `json:"text,omitempty"`
+	ImageURL *MessageImageURL `json:"image_url,omitempty"`
+}
+
+type MessageImageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
+}
+
+func TextContentPart(text string) MessageContentPart {
+	return MessageContentPart{
+		Type: "text",
+		Text: text,
+	}
+}
+
+func ImageURLContentPart(url string) MessageContentPart {
+	return MessageContentPart{
+		Type: "image_url",
+		ImageURL: &MessageImageURL{
+			URL: url,
+		},
+	}
+}
+
+func (m Message) MarshalJSON() ([]byte, error) {
+	type messageJSON struct {
+		Role       string     `json:"role"`
+		Content    any        `json:"content,omitempty"`
+		Name       string     `json:"name,omitempty"`
+		ToolCallID string     `json:"tool_call_id,omitempty"`
+		ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	}
+
+	output := messageJSON{
+		Role:       m.Role,
+		Name:       m.Name,
+		ToolCallID: m.ToolCallID,
+		ToolCalls:  m.ToolCalls,
+	}
+	if len(m.ContentParts) > 0 {
+		output.Content = append([]MessageContentPart(nil), m.ContentParts...)
+	} else if m.Content != "" {
+		output.Content = m.Content
+	}
+	return json.Marshal(output)
+}
+
+func (m *Message) UnmarshalJSON(data []byte) error {
+	type messageJSON struct {
+		Role       string          `json:"role"`
+		Content    json.RawMessage `json:"content,omitempty"`
+		Name       string          `json:"name,omitempty"`
+		ToolCallID string          `json:"tool_call_id,omitempty"`
+		ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
+	}
+
+	var input messageJSON
+	if err := json.Unmarshal(data, &input); err != nil {
+		return err
+	}
+	m.Role = input.Role
+	m.Name = input.Name
+	m.ToolCallID = input.ToolCallID
+	m.ToolCalls = input.ToolCalls
+	m.Content = ""
+	m.ContentParts = nil
+
+	content := strings.TrimSpace(string(input.Content))
+	if content == "" || content == "null" {
+		return nil
+	}
+	if strings.HasPrefix(content, "[") {
+		var parts []MessageContentPart
+		if err := json.Unmarshal(input.Content, &parts); err != nil {
+			return err
+		}
+		m.ContentParts = parts
+		textParts := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if part.Type == "text" && part.Text != "" {
+				textParts = append(textParts, part.Text)
+			}
+		}
+		m.Content = strings.Join(textParts, "\n")
+		return nil
+	}
+
+	var text string
+	if err := json.Unmarshal(input.Content, &text); err != nil {
+		return err
+	}
+	m.Content = text
+	return nil
 }
 
 type Tool struct {

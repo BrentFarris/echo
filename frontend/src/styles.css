@@ -582,6 +582,75 @@ h3 {
   font-weight: 700;
 }
 
+.chat-message-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.chat-message-image {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+
+.chat-message-image img {
+  width: 100%;
+  height: 112px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: var(--color-bg);
+}
+
+.chat-message-image > span {
+  display: grid;
+  place-items: center;
+  height: 112px;
+  color: var(--color-text-muted);
+  border-radius: 6px;
+  background: var(--color-bg);
+}
+
+.chat-message-image svg {
+  width: 28px;
+  height: 28px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.chat-message-image figcaption {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chat-message-image figcaption strong,
+.chat-message-image figcaption span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-message-image figcaption strong {
+  color: var(--color-text);
+  font-size: 0.78rem;
+}
+
+.chat-message-image figcaption span {
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
 .chat-file-link {
   cursor: pointer;
   text-decoration: underline;
@@ -693,6 +762,8 @@ h3 {
 
 .chat-input-wrap {
   position: relative;
+  display: grid;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -707,6 +778,64 @@ h3 {
   background: var(--color-bg);
   color: var(--color-text);
   line-height: 1.35;
+}
+
+.chat-image-drafts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chat-image-chip {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 8px;
+  max-width: min(100%, 260px);
+  min-height: 46px;
+  padding: 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+
+.chat-image-chip img {
+  width: 38px;
+  height: 38px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--color-bg);
+}
+
+.chat-image-chip span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chat-image-chip strong,
+.chat-image-chip small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-image-chip strong {
+  color: var(--color-text);
+  font-size: 0.78rem;
+}
+
+.chat-image-chip small {
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.chat-image-chip .icon-button {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
 }
 
 .chat-mention-picker {

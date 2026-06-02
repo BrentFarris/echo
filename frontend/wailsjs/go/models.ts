@@ -113,6 +113,50 @@ export namespace services {
 		    return a;
 		}
 	}
+	export class ChatImageAttachment {
+	    id: string;
+	    source: string;
+	    name: string;
+	    path?: string;
+	    mediaType: string;
+	    bytes: number;
+	    dataUrl?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatImageAttachment(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.source = source["source"];
+	        this.name = source["name"];
+	        this.path = source["path"];
+	        this.mediaType = source["mediaType"];
+	        this.bytes = source["bytes"];
+	        this.dataUrl = source["dataUrl"];
+	    }
+	}
+	export class ChatImageInput {
+	    id?: string;
+	    name?: string;
+	    mediaType?: string;
+	    dataUrl: string;
+	    bytes?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatImageInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.mediaType = source["mediaType"];
+	        this.dataUrl = source["dataUrl"];
+	        this.bytes = source["bytes"];
+	    }
+	}
 	export class ChatToolActivity {
 	    id: string;
 	    name?: string;
@@ -139,6 +183,7 @@ export namespace services {
 	    id: string;
 	    role: string;
 	    content?: string;
+	    images?: ChatImageAttachment[];
 	    reasoning?: string;
 	    toolCalls?: ChatToolActivity[];
 	    status: string;
@@ -153,10 +198,45 @@ export namespace services {
 	        this.id = source["id"];
 	        this.role = source["role"];
 	        this.content = source["content"];
+	        this.images = this.convertValues(source["images"], ChatImageAttachment);
 	        this.reasoning = source["reasoning"];
 	        this.toolCalls = this.convertValues(source["toolCalls"], ChatToolActivity);
 	        this.status = source["status"];
 	        this.error = source["error"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ChatMessageRequest {
+	    content: string;
+	    planMode: boolean;
+	    images?: ChatImageInput[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatMessageRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.content = source["content"];
+	        this.planMode = source["planMode"];
+	        this.images = this.convertValues(source["images"], ChatImageInput);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

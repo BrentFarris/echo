@@ -45,6 +45,8 @@ export function SearchWorkspaceFiles(arg1:string,arg2:string,arg3:boolean):Promi
 
 export function SendChatMessage(arg1:string,arg2:string):Promise<services.ChatSession>;
 
+export function SendChatMessageWithAttachments(arg1:string,arg2:services.ChatMessageRequest):Promise<services.ChatSession>;
+
 export function SendChatMessageWithPlanMode(arg1:string,arg2:string,arg3:boolean):Promise<services.ChatSession>;
 
 export function SetActiveWorkspace(arg1:string):Promise<services.AppState>;

@@ -99,6 +99,63 @@ func TestChatRequestSerialization(t *testing.T) {
 	}
 }
 
+func TestMessageSerializesStringContent(t *testing.T) {
+	data, err := json.Marshal(Message{Role: RoleUser, Content: "hello"})
+	if err != nil {
+		t.Fatalf("marshal message: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode message: %v", err)
+	}
+	if decoded["content"] != "hello" {
+		t.Fatalf("expected string content, got %#v", decoded["content"])
+	}
+}
+
+func TestMessageSerializesTextAndImageContentParts(t *testing.T) {
+	message := Message{
+		Role:    RoleUser,
+		Content: "Review this image.",
+		ContentParts: []MessageContentPart{
+			TextContentPart("Review this image."),
+			ImageURLContentPart("data:image/png;base64,abc123"),
+		},
+	}
+	data, err := json.Marshal(message)
+	if err != nil {
+		t.Fatalf("marshal message: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode message: %v", err)
+	}
+	parts, ok := decoded["content"].([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("expected content parts array, got %#v", decoded["content"])
+	}
+	textPart := parts[0].(map[string]any)
+	if textPart["type"] != "text" || textPart["text"] != "Review this image." {
+		t.Fatalf("unexpected text part: %#v", textPart)
+	}
+	imagePart := parts[1].(map[string]any)
+	imageURL := imagePart["image_url"].(map[string]any)
+	if imagePart["type"] != "image_url" || imageURL["url"] != "data:image/png;base64,abc123" {
+		t.Fatalf("unexpected image part: %#v", imagePart)
+	}
+	if _, ok := imageURL["detail"]; ok {
+		t.Fatalf("expected image detail to be omitted, got %#v", imageURL)
+	}
+
+	var roundTrip Message
+	if err := json.Unmarshal(data, &roundTrip); err != nil {
+		t.Fatalf("unmarshal message: %v", err)
+	}
+	if roundTrip.Content != "Review this image." || len(roundTrip.ContentParts) != 2 {
+		t.Fatalf("unexpected round-trip message: %#v", roundTrip)
+	}
+}
+
 func TestCompleteUsesOpenAICompatibleRequestShape(t *testing.T) {
 	var captured ChatRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

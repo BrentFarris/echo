@@ -86,6 +86,10 @@ export function SendChatMessage(arg1, arg2) {
   return window['go']['services']['SystemService']['SendChatMessage'](arg1, arg2);
 }
 
+export function SendChatMessageWithAttachments(arg1, arg2) {
+  return window['go']['services']['SystemService']['SendChatMessageWithAttachments'](arg1, arg2);
+}
+
 export function SendChatMessageWithPlanMode(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['SendChatMessageWithPlanMode'](arg1, arg2, arg3);
 }

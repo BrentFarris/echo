@@ -23,13 +23,14 @@ type ChatSession struct {
 }
 
 type ChatMessage struct {
-	ID        string             `json:"id"`
-	Role      string             `json:"role"`
-	Content   string             `json:"content,omitempty"`
-	Reasoning string             `json:"reasoning,omitempty"`
-	ToolCalls []ChatToolActivity `json:"toolCalls,omitempty"`
-	Status    string             `json:"status"`
-	Error     string             `json:"error,omitempty"`
+	ID        string                `json:"id"`
+	Role      string                `json:"role"`
+	Content   string                `json:"content,omitempty"`
+	Images    []ChatImageAttachment `json:"images,omitempty"`
+	Reasoning string                `json:"reasoning,omitempty"`
+	ToolCalls []ChatToolActivity    `json:"toolCalls,omitempty"`
+	Status    string                `json:"status"`
+	Error     string                `json:"error,omitempty"`
 }
 
 type ChatToolActivity struct {
@@ -72,22 +73,34 @@ func (s *SystemService) LoadChatSession(workspaceID string) (ChatSession, error)
 }
 
 func (s *SystemService) SendChatMessage(workspaceID string, content string) (ChatSession, error) {
-	return s.sendChatMessage(workspaceID, content, false)
+	return s.SendChatMessageWithAttachments(workspaceID, ChatMessageRequest{Content: content})
 }
 
 func (s *SystemService) SendChatMessageWithPlanMode(workspaceID string, content string, planMode bool) (ChatSession, error) {
-	return s.sendChatMessage(workspaceID, content, planMode)
+	return s.SendChatMessageWithAttachments(workspaceID, ChatMessageRequest{Content: content, PlanMode: planMode})
 }
 
-func (s *SystemService) sendChatMessage(workspaceID string, content string, planMode bool) (ChatSession, error) {
-	content = strings.TrimSpace(content)
-	if content == "" {
-		return ChatSession{}, fmt.Errorf("message is required")
-	}
+func (s *SystemService) SendChatMessageWithAttachments(workspaceID string, request ChatMessageRequest) (ChatSession, error) {
+	return s.sendChatMessage(workspaceID, request)
+}
 
+func (s *SystemService) sendChatMessage(workspaceID string, request ChatMessageRequest) (ChatSession, error) {
+	content := strings.TrimSpace(request.Content)
 	workspace, settings, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {
 		return ChatSession{}, err
+	}
+	images, err := s.prepareChatImages(workspace, content, request.Images)
+	if err != nil {
+		return ChatSession{}, err
+	}
+	content = chatImageTextContent(content, images)
+	if content == "" {
+		return ChatSession{}, fmt.Errorf("message is required")
+	}
+	userHistory := llm.Message{Role: llm.RoleUser, Content: content}
+	if len(images) > 0 {
+		userHistory.ContentParts = chatImageContentParts(request.Content, images)
 	}
 
 	runContext, cancel := context.WithCancel(context.Background())
@@ -104,6 +117,7 @@ func (s *SystemService) sendChatMessage(workspaceID string, content string, plan
 		ID:      s.nextChatIDLocked("msg"),
 		Role:    llm.RoleUser,
 		Content: content,
+		Images:  images,
 		Status:  "complete",
 	}
 	assistantMessage := ChatMessage{
@@ -113,7 +127,7 @@ func (s *SystemService) sendChatMessage(workspaceID string, content string, plan
 	}
 	streamID := s.nextChatIDLocked("stream")
 	session.Messages = append(session.Messages, userMessage, assistantMessage)
-	session.History = append(session.History, llm.Message{Role: llm.RoleUser, Content: content})
+	session.History = append(session.History, userHistory)
 	session.Busy = true
 	session.StreamID = streamID
 	s.chatStreams[workspaceID] = cancel
@@ -127,7 +141,7 @@ func (s *SystemService) sendChatMessage(workspaceID string, content string, plan
 		Type:        "started",
 	})
 
-	go s.runChatTurn(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, planMode)
+	go s.runChatTurn(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, request.PlanMode)
 
 	return clone, nil
 }
@@ -684,6 +698,7 @@ func cloneChatSession(session *chatSessionState) ChatSession {
 	}
 	for i := range clone.Messages {
 		clone.Messages[i].ToolCalls = append([]ChatToolActivity(nil), clone.Messages[i].ToolCalls...)
+		clone.Messages[i].Images = append([]ChatImageAttachment(nil), clone.Messages[i].Images...)
 	}
 	return clone
 }

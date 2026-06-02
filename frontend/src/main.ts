@@ -31,7 +31,7 @@ import {
   ResolveWorkspaceTextFilePath,
   SaveSettings,
   SearchWorkspaceFiles,
-  SendChatMessageWithPlanMode,
+  SendChatMessageWithAttachments,
   SetActiveWorkspace,
   SetWorkspaceLetter,
   StartKanbanExecution,
@@ -58,6 +58,7 @@ const icons = {
   stop: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>`,
   execute: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7Z"/><path d="M4 5v14"/></svg>`,
   file: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>`,
+  image: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>`,
   trash: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>`,
   expand: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="M9 21H3v-6"/><path d="m3 21 7-7"/></svg>`,
   collapse: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3v5H3"/><path d="m3 8 6-6"/><path d="M16 21v-5h5"/><path d="m21 16-6 6"/></svg>`,
@@ -75,6 +76,7 @@ let appMode: AppMode = "chat-kanban";
 let formError = "";
 const chatSessions = new Map<string, services.ChatSession>();
 const chatDrafts = new Map<string, string>();
+const chatImageDrafts = new Map<string, ChatImageDraft[]>();
 const chatPlanModes = new Map<string, boolean>();
 const chatFileLinkCache = new Map<string, Promise<string | null>>();
 let chatMention: ChatMentionState | null = null;
@@ -134,6 +136,14 @@ type ChatMentionState = {
   timerID: number | null;
 };
 
+type ChatImageDraft = {
+  id: string;
+  name: string;
+  mediaType: string;
+  dataUrl: string;
+  bytes: number;
+};
+
 type ScrollSnapshot = {
   scrollTop: number;
   atBottom: boolean;
@@ -142,6 +152,10 @@ type ScrollSnapshot = {
 const scrollStickinessThreshold = 48;
 const chatMentionSearchDelay = 160;
 const chatMentionResultLimit = 8;
+const maxChatImageDrafts = 4;
+const maxChatImageBytes = 10 * 1024 * 1024;
+const maxChatImageMessageBytes = 20 * 1024 * 1024;
+const supportedChatImageTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 
 function cloneSettings(settings: llm.Settings): llm.Settings {
   return llm.Settings.createFrom(JSON.parse(JSON.stringify(settings)));
@@ -184,6 +198,27 @@ function formatBytes(bytes: number): string {
     return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
   }
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function chatImageDraftsFor(workspaceID: string): ChatImageDraft[] {
+  return chatImageDrafts.get(workspaceID) ?? [];
+}
+
+function chatImageDraftTotalBytes(workspaceID: string): number {
+  return chatImageDraftsFor(workspaceID).reduce((total, image) => total + image.bytes, 0);
+}
+
+function isSupportedChatImageType(mediaType: string): boolean {
+  return supportedChatImageTypes.has(mediaType.toLowerCase());
+}
+
+function fileToDataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result ?? "")));
+    reader.addEventListener("error", () => reject(reader.error ?? new Error("Unable to read pasted image.")));
+    reader.readAsDataURL(file);
+  });
 }
 
 function chatSessionFor(workspaceID: string): services.ChatSession {
@@ -1228,8 +1263,9 @@ function renderChatPanel(workspace: services.Workspace | null, expanded = false)
   const session = chatSessionFor(workspace.id);
   const messages = session.messages ?? [];
   const draft = chatDrafts.get(workspace.id) ?? "";
+  const imageDrafts = chatImageDraftsFor(workspace.id);
   const executing = executingPlans.has(workspace.id);
-  const canSend = !session.busy && !executing && draft.trim().length > 0;
+  const canSend = !session.busy && !executing && (draft.trim().length > 0 || imageDrafts.length > 0);
   const sizeLabel = expanded ? "Collapse chat" : "Expand chat";
   const executeLabel = executing ? "Decomposing cards" : "Execute plan";
   const mentionOpen = Boolean(chatMentionFor(workspace.id));
@@ -1285,6 +1321,7 @@ function renderChatPanel(workspace: services.Workspace | null, expanded = false)
             data-chat-input
             ${session.busy || executing ? "disabled" : ""}
           >${escapeHtml(draft)}</textarea>
+          ${renderChatImageDrafts(workspace.id, session.busy || executing)}
           ${renderChatMentionPicker(workspace.id)}
         </div>
         <button class="primary-button icon-button send-button" type="submit" title="Send" aria-label="Send message" ${canSend ? "" : "disabled"}>
@@ -1292,6 +1329,33 @@ function renderChatPanel(workspace: services.Workspace | null, expanded = false)
         </button>
       </form>
     </section>
+  `;
+}
+
+function renderChatImageDrafts(workspaceID: string, disabled: boolean): string {
+  const drafts = chatImageDraftsFor(workspaceID);
+  if (!drafts.length) {
+    return "";
+  }
+  return `
+    <div class="chat-image-drafts" data-chat-image-drafts>
+      ${drafts
+        .map(
+          (draft) => `
+            <div class="chat-image-chip">
+              <img src="${escapeAttribute(draft.dataUrl)}" alt="">
+              <span>
+                <strong>${escapeHtml(draft.name)}</strong>
+                <small>${escapeHtml(formatBytes(draft.bytes))}</small>
+              </span>
+              <button class="icon-button" type="button" title="Remove image" aria-label="Remove ${escapeAttribute(draft.name)}" data-action="remove-chat-image" data-image-id="${escapeAttribute(draft.id)}" ${disabled ? "disabled" : ""}>
+                ${icons.x}
+              </button>
+            </div>
+          `,
+        )
+        .join("")}
+    </div>
   `;
 }
 
@@ -1306,10 +1370,35 @@ function renderChatMessage(message: services.ChatMessage): string {
         <strong>${roleLabel}</strong>
         ${status}
       </header>
+      ${renderChatMessageImages(message)}
       <div class="markdown-body" data-message-content>${renderMarkdown(message.content ?? "")}</div>
       ${message.error ? `<p class="message-error" data-message-error>${escapeHtml(message.error)}</p>` : `<p class="message-error" data-message-error hidden></p>`}
       ${renderDebugSections(message)}
     </article>
+  `;
+}
+
+function renderChatMessageImages(message: services.ChatMessage): string {
+  const images = message.images ?? [];
+  if (!images.length) {
+    return "";
+  }
+  return `
+    <div class="chat-message-images">
+      ${images
+        .map(
+          (image) => `
+            <figure class="chat-message-image">
+              ${image.dataUrl ? `<img src="${escapeAttribute(image.dataUrl)}" alt="${escapeAttribute(image.name)}">` : `<span>${icons.image}</span>`}
+              <figcaption>
+                <strong>${escapeHtml(image.name)}</strong>
+                <span>${escapeHtml(image.path || image.source)} - ${escapeHtml(formatBytes(image.bytes ?? 0))}</span>
+              </figcaption>
+            </figure>
+          `,
+        )
+        .join("")}
+    </div>
   `;
 }
 
@@ -1535,6 +1624,7 @@ function bindChatEvents(root: ParentNode) {
     .forEach((input) => {
       input.addEventListener("input", handleChatInput);
       input.addEventListener("keydown", handleChatKeydown);
+      input.addEventListener("paste", handleChatPaste);
     });
   root
     .querySelectorAll<HTMLInputElement>("[data-chat-plan-toggle]")
@@ -1743,6 +1833,19 @@ async function handleAction(event: Event) {
       }
       render();
     }
+    if (action === "remove-chat-image") {
+      const workspace = activeWorkspace();
+      const imageID = target.dataset.imageId ?? "";
+      if (!workspace || !imageID) {
+        return;
+      }
+      chatImageDrafts.set(
+        workspace.id,
+        chatImageDraftsFor(workspace.id).filter((image) => image.id !== imageID),
+      );
+      patchChatPanel();
+      patchChatControls();
+    }
     if (action === "start-agents") {
       const workspace = activeWorkspace();
       if (!workspace || runningKanbanWorkspaces.has(workspace.id)) {
@@ -1839,6 +1942,7 @@ async function handleAction(event: Event) {
       }
       chatSessions.set(workspace.id, await ClearChat(workspace.id));
       chatDrafts.set(workspace.id, "");
+      chatImageDrafts.delete(workspace.id);
       patchChatPanel();
     }
     if (action === "delete-workspace") {
@@ -1853,6 +1957,7 @@ async function handleAction(event: Event) {
       expandedChatWorkspaces.delete(workspaceID);
       expandedKanbanWorkspaces.delete(workspaceID);
       chatPlanModes.delete(workspaceID);
+      chatImageDrafts.delete(workspaceID);
       clearKanbanRun(workspaceID);
       if (!activeWorkspace() || activeWorkspace()?.missing) {
         appMode = "chat-kanban";
@@ -1993,6 +2098,66 @@ function handleChatInput(event: Event) {
   patchChatControls();
 }
 
+function handleChatPaste(event: ClipboardEvent) {
+  const workspace = activeWorkspace();
+  if (!workspace || chatSessionFor(workspace.id).busy || executingPlans.has(workspace.id)) {
+    return;
+  }
+  const files = Array.from(event.clipboardData?.items ?? [])
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file !== null && file.type.startsWith("image/"));
+  if (!files.length) {
+    return;
+  }
+  event.preventDefault();
+  void addPastedChatImages(workspace.id, files);
+}
+
+async function addPastedChatImages(workspaceID: string, files: File[]) {
+  const current = chatImageDraftsFor(workspaceID);
+  const accepted: ChatImageDraft[] = [];
+  let totalBytes = chatImageDraftTotalBytes(workspaceID);
+  for (const file of files) {
+    const mediaType = file.type.toLowerCase();
+    if (!isSupportedChatImageType(mediaType)) {
+      pushToast(`Unsupported image format: ${file.type || file.name}`, "error");
+      continue;
+    }
+    if (file.size > maxChatImageBytes) {
+      pushToast(`${file.name || "Pasted image"} is larger than ${formatBytes(maxChatImageBytes)}.`, "error");
+      continue;
+    }
+    if (current.length + accepted.length >= maxChatImageDrafts) {
+      pushToast(`A message can include at most ${maxChatImageDrafts} images.`, "error");
+      break;
+    }
+    if (totalBytes + file.size > maxChatImageMessageBytes) {
+      pushToast(`Attached images are larger than ${formatBytes(maxChatImageMessageBytes)}.`, "error");
+      break;
+    }
+    try {
+      accepted.push({
+        id: `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        name: file.name || `pasted-image-${current.length + accepted.length + 1}`,
+        mediaType,
+        dataUrl: await fileToDataURL(file),
+        bytes: file.size,
+      });
+      totalBytes += file.size;
+    } catch (error) {
+      pushToast(errorMessage(error), "error");
+    }
+  }
+  if (!accepted.length) {
+    return;
+  }
+  chatImageDrafts.set(workspaceID, [...current, ...accepted]);
+  patchChatPanel();
+  patchChatControls();
+  appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus();
+}
+
 function handleChatPlanModeChange(event: Event) {
   const workspace = activeWorkspace();
   if (!workspace) {
@@ -2066,18 +2231,33 @@ async function handleChatSubmit(event: SubmitEvent) {
     return;
   }
   const message = (chatDrafts.get(workspace.id) ?? "").trim();
+  const imageDrafts = chatImageDraftsFor(workspace.id);
   const session = chatSessionFor(workspace.id);
-  if (!message || session.busy || executingPlans.has(workspace.id)) {
+  if ((!message && imageDrafts.length === 0) || session.busy || executingPlans.has(workspace.id)) {
     return;
   }
 
   try {
-    chatDrafts.set(workspace.id, "");
-    clearChatMention();
-    chatSessions.set(
+    const nextSession = await SendChatMessageWithAttachments(
       workspace.id,
-      await SendChatMessageWithPlanMode(workspace.id, message, chatPlanModeFor(workspace.id)),
+      services.ChatMessageRequest.createFrom({
+        content: message,
+        planMode: chatPlanModeFor(workspace.id),
+        images: imageDrafts.map((image) =>
+          services.ChatImageInput.createFrom({
+            id: image.id,
+            name: image.name,
+            mediaType: image.mediaType,
+            dataUrl: image.dataUrl,
+            bytes: image.bytes,
+          }),
+        ),
+      }),
     );
+    chatDrafts.set(workspace.id, "");
+    chatImageDrafts.delete(workspace.id);
+    clearChatMention();
+    chatSessions.set(workspace.id, nextSession);
     render();
     scrollChatToBottom();
   } catch (error) {
@@ -2334,6 +2514,7 @@ function patchChatControls() {
   }
   const session = chatSessionFor(workspace.id);
   const draft = chatDrafts.get(workspace.id) ?? "";
+  const imageDrafts = chatImageDraftsFor(workspace.id);
   const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
   const send = appRoot.querySelector<HTMLButtonElement>(".send-button");
   const stop = appRoot.querySelector<HTMLButtonElement>(".stop-button");
@@ -2347,7 +2528,7 @@ function patchChatControls() {
     input.disabled = session.busy || executing;
   }
   if (send) {
-    send.disabled = session.busy || executing || draft.trim().length === 0;
+    send.disabled = session.busy || executing || (draft.trim().length === 0 && imageDrafts.length === 0);
   }
   if (stop) {
     stop.disabled = !session.busy;
