@@ -51,6 +51,11 @@ type CodeFileTab = {
   scrollLeft: number;
 };
 
+type CodeTabSwitcherState = {
+  paths: string[];
+  selectedIndex: number;
+};
+
 type InlineCodeChatState = {
   path: string;
   anchorPosition: number;
@@ -80,6 +85,8 @@ type CodeWorkspaceState = {
   expandedPaths: Set<string>;
   tabs: CodeFileTab[];
   activePath: string;
+  tabMruPaths: string[];
+  tabSwitcher: CodeTabSwitcherState | null;
   showIgnored: boolean;
   openingPath: string;
   explorerWidth: number;
@@ -213,6 +220,8 @@ export function ensureCodeState(workspaceID: string): CodeWorkspaceState {
       expandedPaths: new Set(["."]),
       tabs: [],
       activePath: "",
+      tabMruPaths: [],
+      tabSwitcher: null,
       showIgnored: false,
       openingPath: "",
       explorerWidth: storedExplorerWidth(),
@@ -297,6 +306,7 @@ export function renderCodeView(workspace: services.Workspace): string {
         <div class="code-resizer" role="separator" aria-label="Resize file list" aria-orientation="vertical" tabindex="0" data-code-resizer></div>
         <section class="code-editor-pane" aria-label="Code editor">
           ${renderCodeTabs(workspace.id)}
+          ${renderCodeTabSwitcher(workspace.id)}
           <div class="code-editor-frame">
             ${
               activeTab
@@ -435,6 +445,65 @@ export function hasDirtyCodeTabs(workspaceID: string): boolean {
   return ensureCodeState(workspaceID).tabs.some((tab) => tab.dirty);
 }
 
+export function handleCodeTabSwitcherKeydown(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+  event: KeyboardEvent,
+): boolean {
+  if (!event.ctrlKey || event.altKey || event.key !== "Tab") {
+    return false;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  saveMountedEditorContent();
+
+  const state = ensureCodeState(workspaceID);
+  pruneTabMruPaths(state);
+  if (state.tabs.length <= 1) {
+    state.tabSwitcher = null;
+    return true;
+  }
+
+  const direction = event.shiftKey ? -1 : 1;
+  if (!state.tabSwitcher) {
+    const paths = tabSwitcherPaths(state);
+    const activeIndex = Math.max(0, paths.indexOf(state.activePath));
+    const selectedIndex = wrapIndex(activeIndex + direction, paths.length);
+    state.tabSwitcher = { paths, selectedIndex };
+    state.activePath = paths[selectedIndex] ?? state.activePath;
+    callbacks.render();
+    return true;
+  }
+
+  state.tabSwitcher.selectedIndex = wrapIndex(
+    state.tabSwitcher.selectedIndex + direction,
+    state.tabSwitcher.paths.length,
+  );
+  state.activePath =
+    state.tabSwitcher.paths[state.tabSwitcher.selectedIndex] ?? state.activePath;
+  callbacks.render();
+  return true;
+}
+
+export function finishCodeTabSwitcher(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+): boolean {
+  const state = ensureCodeState(workspaceID);
+  if (!state.tabSwitcher) {
+    return false;
+  }
+  const activePath = state.activePath;
+  state.tabSwitcher = null;
+  promoteTabMruPath(state, activePath);
+  callbacks.render();
+  return true;
+}
+
+export function clearCodeTabSwitcher(workspaceID: string) {
+  ensureCodeState(workspaceID).tabSwitcher = null;
+}
+
 export async function saveActiveCodeFile(workspaceID: string, callbacks: CodeViewCallbacks) {
   saveMountedEditorContent();
   const tab = activeCodeTab(workspaceID);
@@ -502,9 +571,11 @@ async function handleCodeAction(
     return;
   }
   if (action === "activate-tab") {
-    saveMountedEditorContent();
-    ensureCodeState(workspaceID).activePath = path;
-    callbacks.render();
+    activateCodeTab(workspaceID, path, callbacks);
+    return;
+  }
+  if (action === "activate-switcher-tab") {
+    activateCodeTab(workspaceID, path, callbacks);
     return;
   }
   if (action === "close-tab") {
@@ -622,12 +693,15 @@ async function openCodeFile(
   }
   const existing = findTab(workspaceID, path);
   if (existing) {
-    state.activePath = existing.path;
-    callbacks.render();
+    activateCodeTab(workspaceID, existing.path, callbacks);
     return;
   }
 
   const temporaryIndex = state.tabs.findIndex((tab) => tab.temporary && !tab.dirty);
+  const replacedTemporaryPath =
+    options.temporary && temporaryIndex >= 0
+      ? state.tabs[temporaryIndex]?.path ?? ""
+      : "";
   state.openingPath = path;
   callbacks.render();
   try {
@@ -651,10 +725,12 @@ async function openCodeFile(
     };
     if (options.temporary && temporaryIndex >= 0) {
       state.tabs[temporaryIndex] = nextTab;
+      removeTabMruPath(state, replacedTemporaryPath);
     } else {
       state.tabs.push(nextTab);
     }
     state.activePath = opened.path;
+    promoteTabMruPath(state, opened.path);
   } catch (error) {
     callbacks.pushToast(callbacks.errorMessage(error), "error");
   } finally {
@@ -709,10 +785,14 @@ function closeCodeTab(
     return;
   }
   state.tabs.splice(index, 1);
+  removeTabMruPath(state, path);
   if (state.activePath === path) {
     state.activePath =
       state.tabs[Math.max(0, index - 1)]?.path ?? state.tabs[0]?.path ?? "";
+    promoteTabMruPath(state, state.activePath);
   }
+  state.tabSwitcher = null;
+  pruneTabMruPaths(state);
   callbacks.render();
 }
 
@@ -1604,6 +1684,43 @@ function renderCodeTabs(workspaceID: string): string {
   `;
 }
 
+function renderCodeTabSwitcher(workspaceID: string): string {
+  const state = ensureCodeState(workspaceID);
+  const switcher = state.tabSwitcher;
+  if (!switcher || switcher.paths.length <= 1) {
+    return "";
+  }
+  const tabsByPath = new Map(state.tabs.map((tab) => [tab.path, tab]));
+  return `
+    <div class="code-tab-switcher" role="listbox" aria-label="Open file tabs">
+      ${switcher.paths
+        .map((path, index) => {
+          const tab = tabsByPath.get(path);
+          if (!tab) {
+            return "";
+          }
+          const selected = index === switcher.selectedIndex;
+          return `
+            <button
+              class="code-tab-switcher-item ${selected ? "is-selected" : ""}"
+              type="button"
+              role="option"
+              aria-selected="${selected}"
+              title="${escapeAttribute(tab.path)}"
+              data-code-action="activate-switcher-tab"
+              data-code-path="${escapeAttribute(tab.path)}"
+            >
+              <span class="code-tab-switcher-name">${escapeHtml(fileName(tab.path))}</span>
+              <span class="code-tab-switcher-path">${escapeHtml(tab.path)}</span>
+              ${tab.dirty ? `<span class="dirty-dot" aria-label="Unsaved changes"></span>` : ""}
+            </button>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
 function renderCodeStatus(tab: CodeFileTab | null, openingPath: string): string {
   if (openingPath) {
     return `Opening ${escapeHtml(openingPath)}...`;
@@ -1732,6 +1849,22 @@ function sleep(delay: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, delay));
 }
 
+function activateCodeTab(
+  workspaceID: string,
+  path: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const state = ensureCodeState(workspaceID);
+  if (!path || !state.tabs.some((tab) => tab.path === path)) {
+    return;
+  }
+  saveMountedEditorContent();
+  state.tabSwitcher = null;
+  state.activePath = path;
+  promoteTabMruPath(state, path);
+  callbacks.render();
+}
+
 function activeCodeTab(workspaceID: string): CodeFileTab | null {
   const state = ensureCodeState(workspaceID);
   return state.tabs.find((tab) => tab.path === state.activePath) ?? null;
@@ -1739,6 +1872,74 @@ function activeCodeTab(workspaceID: string): CodeFileTab | null {
 
 function findTab(workspaceID: string, path: string): CodeFileTab | null {
   return ensureCodeState(workspaceID).tabs.find((tab) => tab.path === path) ?? null;
+}
+
+function tabSwitcherPaths(state: CodeWorkspaceState): string[] {
+  pruneTabMruPaths(state);
+  if (state.activePath && !state.tabMruPaths.includes(state.activePath)) {
+    return [state.activePath, ...state.tabMruPaths];
+  }
+  return [...state.tabMruPaths];
+}
+
+function promoteTabMruPath(state: CodeWorkspaceState, path: string) {
+  if (!path) {
+    return;
+  }
+  pruneTabMruPaths(state);
+  if (!state.tabs.some((tab) => tab.path === path)) {
+    return;
+  }
+  state.tabMruPaths = [
+    path,
+    ...state.tabMruPaths.filter((candidate) => candidate !== path),
+  ];
+}
+
+function removeTabMruPath(state: CodeWorkspaceState, path: string) {
+  if (!path) {
+    return;
+  }
+  state.tabMruPaths = state.tabMruPaths.filter((candidate) => candidate !== path);
+  if (state.tabSwitcher) {
+    state.tabSwitcher.paths = state.tabSwitcher.paths.filter(
+      (candidate) => candidate !== path,
+    );
+    state.tabSwitcher.selectedIndex = clamp(
+      state.tabSwitcher.selectedIndex,
+      0,
+      Math.max(0, state.tabSwitcher.paths.length - 1),
+    );
+  }
+}
+
+function pruneTabMruPaths(state: CodeWorkspaceState) {
+  const openPaths = state.tabs.map((tab) => tab.path);
+  const openPathSet = new Set(openPaths);
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  state.tabMruPaths.forEach((path) => {
+    if (!openPathSet.has(path) || seen.has(path)) {
+      return;
+    }
+    seen.add(path);
+    paths.push(path);
+  });
+  openPaths.forEach((path) => {
+    if (seen.has(path)) {
+      return;
+    }
+    seen.add(path);
+    paths.push(path);
+  });
+  state.tabMruPaths = paths;
+}
+
+function wrapIndex(index: number, length: number): number {
+  if (length <= 0) {
+    return 0;
+  }
+  return ((index % length) + length) % length;
 }
 
 function directoryStateFor(

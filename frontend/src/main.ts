@@ -2,8 +2,11 @@ import "./styles.css";
 import {
   applyInlineCodePromptEvent,
   bindCodeViewEvents,
+  clearCodeTabSwitcher,
   destroyCodeEditor,
   ensureCodeViewRootLoaded,
+  finishCodeTabSwitcher,
+  handleCodeTabSwitcherKeydown,
   openWorkspaceCodeFile,
   renderCodeView,
   saveActiveCodeFile,
@@ -1851,6 +1854,15 @@ function handleGlobalPointerDown(event: PointerEvent) {
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
+  if (appMode === "code" && !settingsOpen) {
+    const workspace = activeWorkspace();
+    if (
+      workspace &&
+      handleCodeTabSwitcherKeydown(workspace.id, codeViewCallbacks(), event)
+    ) {
+      return;
+    }
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
     if (appMode !== "code" || settingsOpen) {
       return;
@@ -1920,6 +1932,30 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   void closeSelectedCardDetail(workspace.id).finally(render);
 }
 
+function handleGlobalKeyup(event: KeyboardEvent) {
+  if (appMode !== "code" || settingsOpen || event.key !== "Control") {
+    return;
+  }
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    return;
+  }
+  if (finishCodeTabSwitcher(workspace.id, codeViewCallbacks())) {
+    event.preventDefault();
+  }
+}
+
+function handleGlobalWindowBlur() {
+  if (appMode !== "code") {
+    return;
+  }
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    return;
+  }
+  finishCodeTabSwitcher(workspace.id, codeViewCallbacks());
+}
+
 function scrollChangeReview(direction: 1 | -1) {
   const review = appRoot.querySelector<HTMLElement>("[data-change-review]");
   if (!review) {
@@ -1968,11 +2004,19 @@ async function handleAction(event: Event) {
       return;
     }
     if (action === "close-code-view") {
+      const workspace = activeWorkspace();
+      if (workspace) {
+        clearCodeTabSwitcher(workspace.id);
+      }
       appMode = "chat-kanban";
       render();
       return;
     }
     if (action === "open-settings") {
+      const workspace = activeWorkspace();
+      if (workspace) {
+        clearCodeTabSwitcher(workspace.id);
+      }
       settingsOpen = true;
       formError = "";
       settingsDraft ??= cloneSettings(appState!.settings);
@@ -2942,6 +2986,8 @@ EventsOn("echo:file-changes:event", (event: FileChangesEvent) => {
 });
 
 document.addEventListener("keydown", handleGlobalKeydown, true);
+document.addEventListener("keyup", handleGlobalKeyup, true);
 document.addEventListener("pointerdown", handleGlobalPointerDown);
+window.addEventListener("blur", handleGlobalWindowBlur);
 
 void initialize();

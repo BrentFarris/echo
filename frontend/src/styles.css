@@ -1973,6 +1973,7 @@ h3 {
 .code-editor-pane {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
+  position: relative;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -2057,6 +2058,73 @@ h3 {
   aspect-ratio: 1;
   border-radius: 999px;
   background: var(--color-accent);
+}
+
+.code-tab-switcher {
+  position: absolute;
+  top: 54px;
+  left: 50%;
+  z-index: 20;
+  display: grid;
+  width: min(520px, calc(100% - 32px));
+  max-height: min(360px, calc(100% - 86px));
+  overflow: auto;
+  transform: translateX(-50%);
+  padding: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  box-shadow: 0 18px 44px color-mix(in srgb, black 24%, transparent);
+}
+
+.code-tab-switcher-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.code-tab-switcher-item.is-selected,
+.code-tab-switcher-item:hover,
+.code-tab-switcher-item:focus-visible {
+  background: var(--color-surface-muted);
+  outline: none;
+}
+
+.code-tab-switcher-item.is-selected {
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+.code-tab-switcher-name,
+.code-tab-switcher-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.code-tab-switcher-name {
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.code-tab-switcher-path {
+  grid-column: 1 / -1;
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+}
+
+.code-tab-switcher-item .dirty-dot {
+  grid-column: 2;
+  grid-row: 1;
 }
 
 .code-editor-frame {
