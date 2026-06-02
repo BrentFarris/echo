@@ -7,7 +7,8 @@
   color: var(--color-text);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-
+  
+  --edge-padding: 1em;
   --color-bg: #f7f3f1;
   --color-surface: #fffdfa;
   --color-surface-muted: #eee6e3;
@@ -231,7 +232,7 @@ textarea:focus-visible {
 .main-content {
   min-width: 0;
   min-height: 0;
-  padding: clamp(18px, 3vw, 36px);
+  padding: var(--edge-padding);
   overflow: auto;
 }
 
@@ -241,7 +242,7 @@ textarea:focus-visible {
   align-content: start;
   gap: 16px;
   width: 100%;
-  height: calc(100vh - clamp(36px, 6vw, 72px));
+  height: calc(100vh - (var(--edge-padding)*2));
   min-height: 0;
 }
 

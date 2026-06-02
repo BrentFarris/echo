@@ -414,9 +414,7 @@ function bindCodeFileRowEvents(
     });
     element.addEventListener("dblclick", (event) => {
       event.preventDefault();
-      void openCodeFile(workspaceID, element.dataset.codePath ?? "", callbacks, {
-        temporary: true,
-      });
+      void openPinnedCodeFile(workspaceID, element.dataset.codePath ?? "", callbacks);
     });
     element.addEventListener("keydown", (event) => {
       if (event.key !== "Enter") {
@@ -737,6 +735,33 @@ async function openCodeFile(
     state.openingPath = "";
     callbacks.render();
   }
+}
+
+async function openPinnedCodeFile(
+  workspaceID: string,
+  path: string,
+  callbacks: CodeViewCallbacks,
+) {
+  if (!path) {
+    return;
+  }
+  const state = ensureCodeState(workspaceID);
+  if (state.openingPath === path) {
+    await waitForOpeningPath(workspaceID, path);
+    const opened = findTab(workspaceID, path);
+    if (opened) {
+      opened.temporary = false;
+      activateCodeTab(workspaceID, opened.path, callbacks);
+    }
+    return;
+  }
+  const existing = findTab(workspaceID, path);
+  if (existing) {
+    existing.temporary = false;
+    activateCodeTab(workspaceID, existing.path, callbacks);
+    return;
+  }
+  await openCodeFile(workspaceID, path, callbacks, { temporary: false });
 }
 
 export async function openWorkspaceCodeFile(
@@ -1847,6 +1872,15 @@ function applySavedFile(workspaceID: string, file: services.WorkspaceFile) {
 
 function sleep(delay: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, delay));
+}
+
+async function waitForOpeningPath(workspaceID: string, path: string) {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (ensureCodeState(workspaceID).openingPath !== path) {
+      return;
+    }
+    await sleep(25);
+  }
 }
 
 function activateCodeTab(
