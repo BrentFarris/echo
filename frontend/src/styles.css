@@ -267,9 +267,9 @@ h3 {
 }
 
 h1 {
-  max-width: 24ch;
-  font-size: clamp(2.1rem, 3.4vw, 3.2rem);
-  line-height: 1;
+  font-size: 1.55rem;
+  line-height: 1.2;
+  margin: 0;
 }
 
 h2 {
@@ -279,6 +279,16 @@ h2 {
 
 h3 {
   font-size: 1rem;
+}
+
+.heading-path {
+  color: var(--color-text-muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-left: 8px;
 }
 
 .split-panels {
@@ -1219,9 +1229,9 @@ h3 {
 .workspace-heading-row,
 .code-view-heading {
   display: flex;
-  align-items: start;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   min-width: 0;
 }
 
@@ -1657,12 +1667,13 @@ h3 {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 42px;
-  padding: 0 18px;
+  min-height: 34px;
+  padding: 0 14px;
   border: 1px solid var(--color-border);
   border-radius: 8px;
   cursor: pointer;
   font-weight: 800;
+  font-size: 0.84rem;
 }
 
 .primary-button {
@@ -1677,8 +1688,8 @@ h3 {
 }
 
 .icon-text-button svg {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;

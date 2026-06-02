@@ -255,8 +255,7 @@ export function renderCodeView(workspace: services.Workspace): string {
     >
       <header class="code-view-heading">
         <div>
-          <p class="eyebrow">${escapeHtml(workspace.folderPath)}</p>
-          <h1 id="code-title">${escapeHtml(workspace.displayName)}</h1>
+          <strong id="code-title">${escapeHtml(workspace.displayName)}</strong><span class="heading-path">${escapeHtml(workspace.folderPath)}</span>
         </div>
         <div class="code-view-actions">
           <button class="secondary-button icon-text-button" type="button" data-action="close-code-view">

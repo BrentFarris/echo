@@ -560,10 +560,7 @@ function render() {
               ? renderCodeView(workspace)
               : `
                 <div class="workspace-heading-row">
-                  <div>
-                    <p class="eyebrow">${workspace ? escapeHtml(workspace.folderPath) : "Echo"}</p>
-                    <h1 id="workspace-title">${workspace ? escapeHtml(workspace.displayName) : "Workspace"}</h1>
-                  </div>
+                  <strong id="workspace-title">${workspace ? escapeHtml(workspace.displayName) : "Workspace"}</strong><span class="heading-path">${workspace ? escapeHtml(workspace.folderPath) : ""}</span>
                   ${
                     workspace && !workspace.missing
                       ? `<button class="secondary-button icon-text-button" type="button" data-action="open-code-view">
