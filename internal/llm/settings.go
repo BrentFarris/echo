@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	DefaultEndpoint      = "http://192.168.50.178:8023/v1"
+	DefaultEndpoint      = "http://localhost:11434/v1"
 	DefaultModel         = "Qwen3.6-35B-A3B"
 	DefaultContextLength = 262144
 	DefaultMaxTokens     = 32168

@@ -40,7 +40,7 @@ Echo stores app state in the current user's config directory at `Echo/state.json
 
 Open Settings from the left gutter and set:
 
-- `Endpoint`: base URL for an OpenAI-compatible API, for example `http://localhost:8023/v1`
+- `Endpoint`: base URL for an OpenAI-compatible API, for example `http://localhost:11434/v1`
 - `Model`: model name accepted by the endpoint
 - Generation options: temperature, top-k, top-p, context length, max tokens, penalties, and timeout
 
