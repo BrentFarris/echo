@@ -40,6 +40,7 @@ type ExecutionContext struct {
 	Context       context.Context
 	WorkspacePath string
 	Emit          EventEmitter
+	FileChanges   FileChangeSink
 }
 
 func (c ExecutionContext) context() context.Context {
@@ -55,7 +56,25 @@ func (c ExecutionContext) emit(event Event) {
 	}
 }
 
+func (c ExecutionContext) recordFileChanges(changes ...FileChange) {
+	if c.FileChanges == nil || len(changes) == 0 {
+		return
+	}
+	filtered := make([]FileChange, 0, len(changes))
+	for _, change := range changes {
+		if change.Path == "" || IsIgnoredChangePath(change.Path) || changeSnapshotsEqual(change.Before, change.After) {
+			continue
+		}
+		filtered = append(filtered, change)
+	}
+	if len(filtered) > 0 {
+		c.FileChanges(filtered)
+	}
+}
+
 type EventEmitter func(Event)
+
+type FileChangeSink func([]FileChange)
 
 type Event struct {
 	Type    string `json:"type"`

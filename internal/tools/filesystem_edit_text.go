@@ -70,6 +70,8 @@ func editTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error) 
 	if args.Path == "" {
 		return nil, SafeError{Code: "invalid_arguments", Message: "path is required"}
 	}
+	args.OldText = normalizeToolTextLineBreaks(args.OldText)
+	args.NewText = normalizeToolTextLineBreaks(args.NewText)
 	if args.OldText == "" {
 		return nil, SafeError{Code: "invalid_arguments", Message: "oldText is required"}
 	}
@@ -96,11 +98,22 @@ func editTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error) 
 	if !isTextLike(data) || !utf8.Valid(data) {
 		return nil, SafeError{Code: "binary_file", Message: "file appears to be binary"}
 	}
+	sumBefore := snapshotHash(data)
 	content := string(data)
-	matches := literalMatches(content, args.OldText)
+	oldText := normalizeToolTextLineBreaksForFile(args.OldText, content)
+	newText := normalizeToolTextLineBreaksForFile(args.NewText, content)
+	before := &FileSnapshot{
+		Path:          relativeWorkspacePath(ctx.WorkspacePath, path),
+		Exists:        true,
+		Bytes:         int64(len(data)),
+		SHA256:        sumBefore,
+		Text:          content,
+		TextAvailable: true,
+	}
+	matches := literalMatches(content, oldText)
 	switch len(matches) {
 	case 0:
-		matches = flexibleWhitespaceMatches(content, args.OldText)
+		matches = flexibleWhitespaceMatches(content, oldText)
 		if len(matches) == 0 {
 			return nil, SafeError{Code: "match_not_found", Message: "oldText was not found in the file"}
 		}
@@ -122,10 +135,15 @@ func editTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error) 
 		return nil, err
 	}
 	match := matches[0]
-	updated := content[:match.start] + args.NewText + content[match.end:]
+	updated := content[:match.start] + newText + content[match.end:]
 	if err := os.WriteFile(path, []byte(updated), info.Mode().Perm()); err != nil {
 		return nil, fmt.Errorf("write file: %w", err)
 	}
+	after, err := snapshotExistingFile(ctx.WorkspacePath, path)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot file after edit: %w", err)
+	}
+	ctx.recordFileChanges(fileChangeForPath(ctx.WorkspacePath, path, before, after))
 	return editTextFileOutput{
 		Path:         relativeWorkspacePath(ctx.WorkspacePath, path),
 		Replacements: 1,

@@ -390,11 +390,11 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 			})
 		}
 	}
-	result := tools.Execute(tools.ExecutionContext{
-		Context:       ctx,
-		WorkspacePath: workspace.FolderPath,
-		Emit:          events,
-	}, call.Function.Name, json.RawMessage(call.Function.Arguments))
+	execution := s.executeTrackedToolCall(ctx, workspace, call, WorkspaceChangeSource{
+		Type:      "chat",
+		MessageID: messageID,
+	}, events)
+	result := execution.Result
 
 	data, err := json.Marshal(result)
 	if err != nil {

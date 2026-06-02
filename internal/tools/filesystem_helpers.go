@@ -125,6 +125,52 @@ func isTextLike(data []byte) bool {
 	return true
 }
 
+func normalizeToolTextLineBreaks(text string) string {
+	// XML-ish inline tool calls can decode newline character references to
+	// Unicode line controls that editors render as glyphs instead of lines.
+	return strings.NewReplacer(
+		"\u0085", "\n",
+		"\u2028", "\n",
+		"\u2029", "\n",
+	).Replace(text)
+}
+
+func normalizeToolTextLineBreaksForFile(text, fileContent string) string {
+	return normalizeTextLineBreaks(text, preferredTextLineBreak(fileContent))
+}
+
+func normalizeTextLineBreaks(text, lineBreak string) string {
+	text = normalizeToolTextLineBreaks(text)
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	if lineBreak == "\r\n" {
+		text = strings.ReplaceAll(text, "\n", "\r\n")
+	}
+	return text
+}
+
+func preferredTextLineBreak(text string) string {
+	crlf := 0
+	lf := 0
+	for index := 0; index < len(text); index++ {
+		switch text[index] {
+		case '\r':
+			if index+1 < len(text) && text[index+1] == '\n' {
+				crlf++
+				index++
+			} else {
+				lf++
+			}
+		case '\n':
+			lf++
+		}
+	}
+	if crlf > 0 && crlf >= lf {
+		return "\r\n"
+	}
+	return "\n"
+}
+
 func fileKind(info os.FileInfo) string {
 	if info.IsDir() {
 		return "directory"

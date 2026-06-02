@@ -20,6 +20,13 @@ var readOnlyToolNames = map[string]bool{
 	"filesystem_stat":      true,
 }
 
+var mutatingToolNames = map[string]bool{
+	"filesystem_create_text": true,
+	"filesystem_delete_file": true,
+	"filesystem_edit_text":   true,
+	"shell_command":          true,
+}
+
 type Registry struct {
 	mu    sync.RWMutex
 	tools map[string]Tool
@@ -91,6 +98,10 @@ func ReadOnlyLLMSchema() []llm.Tool {
 
 func IsReadOnlyToolName(name string) bool {
 	return readOnlyToolNames[name]
+}
+
+func IsMutatingToolName(name string) bool {
+	return mutatingToolNames[name]
 }
 
 func (r *Registry) LLMSchema() []llm.Tool {

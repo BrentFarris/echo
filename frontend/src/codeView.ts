@@ -633,12 +633,13 @@ async function openCodeFile(
   try {
     const file = await ReadWorkspaceFile(workspaceID, path);
     const opened = services.WorkspaceFile.createFrom(file);
+    const editable = editableWorkspaceFile(opened);
     const nextTab = {
       path: opened.path,
-      content: opened.content,
-      savedContent: opened.content,
-      lineSeparator: detectLineSeparator(opened.content),
-      bytes: opened.bytes,
+      content: editable.content,
+      savedContent: editable.content,
+      lineSeparator: editable.lineSeparator,
+      bytes: editable.bytes,
       modifiedAt: opened.modifiedAt,
       dirty: false,
       saving: false,
@@ -1273,7 +1274,8 @@ async function reloadInlineCodePromptTabs(
         continue;
       }
       applySavedFile(workspaceID, file);
-      replaceMountedEditorContent(workspaceID, path, file.content);
+      const reloadedTab = findTab(workspaceID, path);
+      replaceMountedEditorContent(workspaceID, path, reloadedTab?.content ?? editableWorkspaceFile(file).content);
       reloaded = true;
     } catch (error) {
       callbacks.pushToast(callbacks.errorMessage(error), "error");
@@ -1318,10 +1320,11 @@ function workspaceFileChanged(
   tab: CodeFileTab,
   file: services.WorkspaceFile,
 ) {
+  const editable = editableWorkspaceFile(file);
   return (
-    tab.content !== file.content ||
-    tab.savedContent !== file.content ||
-    tab.bytes !== file.bytes ||
+    tab.content !== editable.content ||
+    tab.savedContent !== editable.content ||
+    tab.bytes !== editable.bytes ||
     tab.modifiedAt !== file.modifiedAt
   );
 }
@@ -1714,10 +1717,11 @@ function applySavedFile(workspaceID: string, file: services.WorkspaceFile) {
   if (!tab) {
     return;
   }
-  tab.content = file.content;
-  tab.savedContent = file.content;
-  tab.lineSeparator = detectLineSeparator(file.content);
-  tab.bytes = file.bytes;
+  const editable = editableWorkspaceFile(file);
+  tab.content = editable.content;
+  tab.savedContent = editable.content;
+  tab.lineSeparator = editable.lineSeparator;
+  tab.bytes = editable.bytes;
   tab.modifiedAt = file.modifiedAt;
   tab.dirty = false;
   tab.selectionAnchor = clamp(tab.selectionAnchor, 0, tab.content.length);
@@ -1852,7 +1856,37 @@ function fileName(path: string): string {
 }
 
 function detectLineSeparator(content: string): string {
-  return content.includes("\r\n") ? "\r\n" : "\n";
+  let crlf = 0;
+  let lf = 0;
+  for (let index = 0; index < content.length; index++) {
+    const char = content[index];
+    if (char === "\r") {
+      if (content[index + 1] === "\n") {
+        crlf++;
+        index++;
+      } else {
+        lf++;
+      }
+    } else if (char === "\n") {
+      lf++;
+    }
+  }
+  return crlf > 0 && crlf >= lf ? "\r\n" : "\n";
+}
+
+function editableWorkspaceFile(file: services.WorkspaceFile) {
+  const lineSeparator = detectLineSeparator(file.content);
+  const content = normalizeEditorLineBreaks(file.content, lineSeparator);
+  return {
+    content,
+    lineSeparator,
+    bytes: new TextEncoder().encode(content).length,
+  };
+}
+
+function normalizeEditorLineBreaks(content: string, lineSeparator: string): string {
+  const normalized = content.replace(/\r\n?|\n|\u0085|\u2028|\u2029/g, "\n");
+  return lineSeparator === "\r\n" ? normalized.replaceAll("\n", "\r\n") : normalized;
 }
 
 function editorStateToFileContent(state: EditorState): string {

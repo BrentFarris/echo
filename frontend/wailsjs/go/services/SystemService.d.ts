@@ -13,6 +13,8 @@ export function ChooseWorkspaceFolder():Promise<services.AppState>;
 
 export function ClearChat(arg1:string):Promise<services.ChatSession>;
 
+export function ClearWorkspaceChangeReview(arg1:string):Promise<services.WorkspaceChangeReview>;
+
 export function CloseKanbanCardDetail(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
 export function DeleteWorkspace(arg1:string):Promise<services.AppState>;
@@ -26,6 +28,8 @@ export function LoadChatSession(arg1:string):Promise<services.ChatSession>;
 export function LoadKanbanBoard(arg1:string):Promise<services.KanbanBoard>;
 
 export function LoadState():Promise<services.AppState>;
+
+export function LoadWorkspaceChangeReview(arg1:string):Promise<services.WorkspaceChangeReview>;
 
 export function MoveKanbanCard(arg1:string,arg2:string,arg3:string):Promise<services.KanbanBoard>;
 

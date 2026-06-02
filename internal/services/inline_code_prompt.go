@@ -136,8 +136,11 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 		}
 
 		for _, call := range toolCalls {
+			if call.ID == "" {
+				call.ID = s.nextChatID("call")
+			}
 			s.emitInlineCodeToolCallEvent(eventBase, call, "running", "", "")
-			activity, resultMessage, changedPath := executeInlineCodeToolCall(workspace, call)
+			activity, resultMessage, changedPaths := s.executeInlineCodeToolCall(workspace, eventBase, call)
 			s.emitInlineCodePromptEvent(InlineCodePromptEvent{
 				WorkspaceID: eventBase.WorkspaceID,
 				RequestID:   eventBase.RequestID,
@@ -146,7 +149,7 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 				ToolCall:    &activity,
 			})
 			output.ToolCalls = append(output.ToolCalls, activity)
-			if changedPath != "" {
+			for _, changedPath := range changedPaths {
 				affected[changedPath] = true
 			}
 			messages = append(messages, resultMessage)
@@ -273,11 +276,12 @@ func inlineCodeAssistantContentAndToolCalls(message llm.Message) (string, []llm.
 	return content, toolCalls
 }
 
-func executeInlineCodeToolCall(workspace Workspace, call llm.ToolCall) (ChatToolActivity, llm.Message, string) {
-	result := tools.Execute(tools.ExecutionContext{
-		Context:       context.Background(),
-		WorkspacePath: workspace.FolderPath,
-	}, call.Function.Name, json.RawMessage(call.Function.Arguments))
+func (s *SystemService) executeInlineCodeToolCall(workspace Workspace, eventBase InlineCodePromptEvent, call llm.ToolCall) (ChatToolActivity, llm.Message, []string) {
+	execution := s.executeTrackedToolCall(context.Background(), workspace, call, WorkspaceChangeSource{
+		Type:      "inline",
+		RequestID: eventBase.RequestID,
+	}, nil)
+	result := execution.Result
 
 	data, err := json.Marshal(result)
 	if err != nil {
@@ -304,7 +308,7 @@ func executeInlineCodeToolCall(workspace Workspace, call llm.ToolCall) (ChatTool
 		Role:       llm.RoleTool,
 		ToolCallID: call.ID,
 		Content:    string(data),
-	}, affectedInlinePath(result)
+	}, affectedPathsFromChanges(execution.Changes)
 }
 
 func (s *SystemService) emitInlineCodeToolCallEvent(eventBase InlineCodePromptEvent, call llm.ToolCall, status string, result string, errorText string) {
@@ -332,28 +336,6 @@ func (s *SystemService) emitInlineCodePromptEvent(event InlineCodePromptEvent) {
 	if s.ctx != nil {
 		runtime.EventsEmit(s.ctx, inlineCodePromptEventName, event)
 	}
-}
-
-func affectedInlinePath(result tools.ExecutionResult) string {
-	if !result.Success {
-		return ""
-	}
-	switch result.Tool {
-	case "filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text":
-	default:
-		return ""
-	}
-	data, err := json.Marshal(result.Output)
-	if err != nil {
-		return ""
-	}
-	var output struct {
-		Path string `json:"path"`
-	}
-	if err := json.Unmarshal(data, &output); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(output.Path)
 }
 
 func sortedAffectedInlinePaths(paths map[string]bool) []string {

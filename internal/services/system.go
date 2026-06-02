@@ -72,21 +72,26 @@ type AppState struct {
 }
 
 type SystemService struct {
-	info                AppInfo
-	ctx                 context.Context
-	storePath           string
-	mu                  sync.Mutex
-	state               AppState
-	chatMu              sync.Mutex
-	chatSessions        map[string]*chatSessionState
-	chatStreams         map[string]context.CancelFunc
-	chatSeq             uint64
-	kanbanRuns          map[string]context.CancelFunc
-	kanbanAgents        map[string]*kanbanAgentRun
-	kanbanAgentSeq      uint64
-	kanbanDetailViews   map[string]string
-	kanbanEventSink     func(KanbanEvent)
-	inlineCodeEventSink func(InlineCodePromptEvent)
+	info                 AppInfo
+	ctx                  context.Context
+	storePath            string
+	mu                   sync.Mutex
+	state                AppState
+	chatMu               sync.Mutex
+	chatSessions         map[string]*chatSessionState
+	chatStreams          map[string]context.CancelFunc
+	chatSeq              uint64
+	kanbanRuns           map[string]context.CancelFunc
+	kanbanAgents         map[string]*kanbanAgentRun
+	kanbanAgentSeq       uint64
+	kanbanDetailViews    map[string]string
+	fileChangeMu         sync.Mutex
+	fileChangeSeq        uint64
+	fileChanges          map[string][]trackedFileChange
+	workspaceToolLocks   map[string]*sync.Mutex
+	kanbanEventSink      func(KanbanEvent)
+	fileChangesEventSink func(FileChangesEvent)
+	inlineCodeEventSink  func(InlineCodePromptEvent)
 }
 
 func NewSystemService() *SystemService {
@@ -104,13 +109,15 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 			Phase:     "release-readiness",
 			AccentHex: "#8f1d2c",
 		},
-		storePath:         storePath,
-		state:             defaultAppState(),
-		chatSessions:      make(map[string]*chatSessionState),
-		chatStreams:       make(map[string]context.CancelFunc),
-		kanbanRuns:        make(map[string]context.CancelFunc),
-		kanbanAgents:      make(map[string]*kanbanAgentRun),
-		kanbanDetailViews: make(map[string]string),
+		storePath:          storePath,
+		state:              defaultAppState(),
+		chatSessions:       make(map[string]*chatSessionState),
+		chatStreams:        make(map[string]context.CancelFunc),
+		kanbanRuns:         make(map[string]context.CancelFunc),
+		kanbanAgents:       make(map[string]*kanbanAgentRun),
+		kanbanDetailViews:  make(map[string]string),
+		fileChanges:        make(map[string][]trackedFileChange),
+		workspaceToolLocks: make(map[string]*sync.Mutex),
 	}
 	_ = service.load()
 	return service
@@ -286,6 +293,7 @@ func (s *SystemService) DeleteWorkspace(id string) (AppState, error) {
 	s.chatMu.Lock()
 	delete(s.kanbanDetailViews, id)
 	s.chatMu.Unlock()
+	s.dropWorkspaceChangeReview(id)
 	return cloneState(s.state), nil
 }
 

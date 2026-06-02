@@ -528,19 +528,24 @@ func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Wor
 		Content: strings.TrimSpace(call.Function.Arguments),
 	})
 
-	result := tools.Execute(tools.ExecutionContext{
-		Context:       ctx,
-		WorkspacePath: workspace.FolderPath,
-		Emit: func(event tools.Event) {
-			if event.Message != "" {
-				s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
-					Type:    "tool_event",
-					Title:   "Tool event: " + event.Type,
-					Content: event.Message,
-				})
-			}
-		},
-	}, call.Function.Name, json.RawMessage(call.Function.Arguments))
+	cardTitle := ""
+	if card, ok := s.cardSnapshot(workspace.ID, cardID); ok {
+		cardTitle = card.Title
+	}
+	execution := s.executeTrackedToolCall(ctx, workspace, call, WorkspaceChangeSource{
+		Type:      "kanban",
+		CardID:    cardID,
+		CardTitle: cardTitle,
+	}, func(event tools.Event) {
+		if event.Message != "" {
+			s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
+				Type:    "tool_event",
+				Title:   "Tool event: " + event.Type,
+				Content: event.Message,
+			})
+		}
+	})
+	result := execution.Result
 
 	data, err := json.Marshal(result)
 	if err != nil {

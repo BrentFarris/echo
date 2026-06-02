@@ -1218,7 +1218,19 @@ h3 {
   backdrop-filter: blur(6px);
 }
 
-.card-detail {
+.change-review-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  justify-items: end;
+  padding: 16px;
+  background: rgba(18, 18, 20, 0.42);
+  backdrop-filter: blur(6px);
+}
+
+.card-detail,
+.change-review {
   display: grid;
   align-content: start;
   gap: 18px;
@@ -1234,11 +1246,199 @@ h3 {
   box-shadow: var(--shadow-modal);
 }
 
-.card-detail-header {
+.card-detail-header,
+.change-review-header {
   display: flex;
   align-items: start;
   justify-content: space-between;
   gap: 16px;
+}
+
+.change-review-button {
+  min-height: 36px;
+  padding-inline: 10px;
+}
+
+.change-count-badge {
+  display: grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  font-size: 0.74rem;
+  font-weight: 900;
+}
+
+.change-review-summary,
+.change-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.change-review-summary span {
+  padding: 5px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.change-file-list {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.change-file {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+}
+
+.change-file header,
+.change-file-title {
+  display: flex;
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.change-file header {
+  justify-content: space-between;
+}
+
+.change-file-title {
+  flex: 1 1 auto;
+}
+
+.change-file-title svg {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  color: var(--color-text-muted);
+}
+
+.change-file-title strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: 0.9rem;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.change-operation {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface));
+  color: var(--color-accent-strong);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.change-operation.is-deleted {
+  background: color-mix(in srgb, var(--color-danger) 12%, var(--color-surface));
+  color: var(--color-danger);
+}
+
+.change-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.change-sources span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 4px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-text-muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.change-sources em {
+  overflow: hidden;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.change-diff {
+  max-width: 100%;
+  min-width: 0;
+  max-height: 360px;
+  margin: 0;
+  padding: 8px 0;
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--code-editor-bg);
+  color: var(--code-editor-text);
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.change-diff code {
+  display: grid;
+  min-width: max-content;
+}
+
+.change-diff-line {
+  display: block;
+  min-height: 1.45em;
+  padding: 0 10px;
+  white-space: pre;
+}
+
+.change-diff-line.is-added {
+  background: color-mix(in srgb, #1a7f37 16%, transparent);
+  color: color-mix(in srgb, #1a7f37 76%, var(--code-editor-text));
+}
+
+.change-diff-line.is-removed {
+  background: color-mix(in srgb, #cf222e 16%, transparent);
+  color: color-mix(in srgb, #cf222e 78%, var(--code-editor-text));
+}
+
+.change-diff-line.is-meta {
+  color: var(--code-token-meta);
+}
+
+.change-diff-line.is-current {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 70%, transparent);
+  outline-offset: -2px;
+}
+
+.change-metadata {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-size: 0.82rem;
+}
+
+.change-metadata code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .status-controls {

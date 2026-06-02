@@ -22,6 +22,10 @@ export function ClearChat(arg1) {
   return window['go']['services']['SystemService']['ClearChat'](arg1);
 }
 
+export function ClearWorkspaceChangeReview(arg1) {
+  return window['go']['services']['SystemService']['ClearWorkspaceChangeReview'](arg1);
+}
+
 export function CloseKanbanCardDetail(arg1, arg2) {
   return window['go']['services']['SystemService']['CloseKanbanCardDetail'](arg1, arg2);
 }
@@ -48,6 +52,10 @@ export function LoadKanbanBoard(arg1) {
 
 export function LoadState() {
   return window['go']['services']['SystemService']['LoadState']();
+}
+
+export function LoadWorkspaceChangeReview(arg1) {
+  return window['go']['services']['SystemService']['LoadWorkspaceChangeReview'](arg1);
 }
 
 export function MoveKanbanCard(arg1, arg2, arg3) {

@@ -60,6 +60,7 @@ func createTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error
 	if args.Path == "" {
 		return nil, SafeError{Code: "invalid_arguments", Message: "path is required"}
 	}
+	args.Content = normalizeToolTextLineBreaks(args.Content)
 	if len(args.Content) > maxTextFileBytes {
 		return nil, SafeError{Code: "file_too_large", Message: fmt.Sprintf("content is larger than the %d byte creation limit", maxTextFileBytes)}
 	}
@@ -67,6 +68,10 @@ func createTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error
 	path, err := resolveWorkspaceChildPath(ctx.WorkspacePath, args.Path)
 	if err != nil {
 		return nil, err
+	}
+	before, err := snapshotExistingFile(ctx.WorkspacePath, path)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot file before create: %w", err)
 	}
 	overwritten := false
 	if info, err := os.Stat(path); err == nil {
@@ -105,6 +110,11 @@ func createTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error
 	if err := file.Close(); err != nil {
 		return nil, fmt.Errorf("close file: %w", err)
 	}
+	after, err := snapshotExistingFile(ctx.WorkspacePath, path)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot file after create: %w", err)
+	}
+	ctx.recordFileChanges(fileChangeForPath(ctx.WorkspacePath, path, before, after))
 
 	return createTextFileOutput{
 		Path:         relativeWorkspacePath(ctx.WorkspacePath, path),

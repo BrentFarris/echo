@@ -18,6 +18,7 @@ import {
 import {
   ChooseWorkspaceFolder,
   CloseKanbanCardDetail,
+  ClearWorkspaceChangeReview,
   ClearChat,
   DeleteWorkspace,
   ExecutePlan,
@@ -25,6 +26,7 @@ import {
   LoadChatSession,
   LoadKanbanBoard,
   LoadState,
+  LoadWorkspaceChangeReview,
   MoveKanbanCard,
   OpenKanbanCardDetail,
   ResetKanbanCard,
@@ -63,6 +65,8 @@ const icons = {
   expand: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="M9 21H3v-6"/><path d="m3 21 7-7"/></svg>`,
   collapse: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3v5H3"/><path d="m3 8 6-6"/><path d="M16 21v-5h5"/><path d="m21 16-6 6"/></svg>`,
   code: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></svg>`,
+  arrowUp: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg>`,
+  arrowDown: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`,
   x: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>`,
 };
 
@@ -81,10 +85,12 @@ const chatPlanModes = new Map<string, boolean>();
 const chatFileLinkCache = new Map<string, Promise<string | null>>();
 let chatMention: ChatMentionState | null = null;
 const kanbanBoards = new Map<string, services.KanbanBoard>();
+const changeReviews = new Map<string, services.WorkspaceChangeReview>();
 const executingPlans = new Set<string>();
 const runningKanbanWorkspaces = new Set<string>();
 const kanbanRunStarts = new Map<string, number>();
 const selectedKanbanCards = new Map<string, string>();
+const openChangeReviewWorkspaces = new Set<string>();
 const cardMessageDrafts = new Map<string, string>();
 const expandedChatWorkspaces = new Set<string>();
 const expandedKanbanWorkspaces = new Set<string>();
@@ -116,6 +122,13 @@ type KanbanEvent = {
   cardId?: string;
   type: string;
   board: services.KanbanBoard;
+};
+
+type FileChangesEvent = {
+  workspaceId: string;
+  type: string;
+  fileCount: number;
+  changeCount: number;
 };
 
 type Toast = {
@@ -249,6 +262,19 @@ function kanbanBoardFor(workspaceID: string): services.KanbanBoard {
   );
 }
 
+function changeReviewFor(workspaceID: string): services.WorkspaceChangeReview {
+  return (
+    changeReviews.get(workspaceID) ??
+    services.WorkspaceChangeReview.createFrom({
+      workspaceId: workspaceID,
+      fileCount: 0,
+      changeCount: 0,
+      files: [],
+      changes: [],
+    })
+  );
+}
+
 function kanbanCards(board: services.KanbanBoard): services.KanbanCard[] {
   return [
     ...(board.ready ?? []),
@@ -265,6 +291,32 @@ function selectedKanbanCard(board: services.KanbanBoard): services.KanbanCard | 
 
 function laneLabel(lane = "ready"): string {
   return kanbanLaneLabels[lane] ?? "Ready";
+}
+
+function changeOperationLabel(operation = ""): string {
+  switch (operation) {
+    case "created":
+      return "Created";
+    case "deleted":
+      return "Deleted";
+    case "edited":
+      return "Edited";
+    default:
+      return operation || "Changed";
+  }
+}
+
+function changeSourceLabel(source: services.WorkspaceChangeSource): string {
+  if (source.type === "kanban") {
+    return `Kanban ${source.cardTitle || source.cardId || "card"}`;
+  }
+  if (source.type === "inline") {
+    return "Inline code";
+  }
+  if (source.type === "chat") {
+    return "Chat";
+  }
+  return source.type || "AI";
 }
 
 function formatElapsedTime(milliseconds: number): string {
@@ -883,6 +935,7 @@ function render() {
   destroyCodeEditor();
   const chatScroll = captureScrollSnapshot("[data-chat-log]");
   const cardDetailScroll = captureScrollSnapshot("[data-card-detail]");
+  const changeReviewScroll = captureScrollSnapshot("[data-change-review]");
   const hadDialog = Boolean(appRoot.querySelector('[role="dialog"]'));
   const workspace = activeWorkspace();
   const workspaces = appState?.workspaces ?? [];
@@ -952,6 +1005,7 @@ function render() {
   bindEvents();
   restoreScrollSnapshot("[data-chat-log]", chatScroll);
   restoreScrollSnapshot("[data-card-detail]", cardDetailScroll);
+  restoreScrollSnapshot("[data-change-review]", changeReviewScroll);
   if (!hadDialog) {
     focusInitialElement();
   }
@@ -960,12 +1014,14 @@ function render() {
 
 function renderWorkspacePanels(workspace: services.Workspace | null, workspaceCount: number): string {
   const board = workspace ? kanbanBoardFor(workspace.id) : null;
+  const review = workspace ? changeReviewFor(workspace.id) : null;
   const running = workspace ? runningKanbanWorkspaces.has(workspace.id) : false;
   const decomposing = workspace ? executingPlans.has(workspace.id) : false;
   const hasCards = board ? kanbanCards(board).length > 0 : false;
   const chatExpanded = workspace ? expandedChatWorkspaces.has(workspace.id) : false;
   const kanbanExpanded = workspace && !chatExpanded ? expandedKanbanWorkspaces.has(workspace.id) : false;
   const kanbanSizeLabel = kanbanExpanded ? "Collapse Kanban" : "Expand Kanban";
+  const reviewCount = review?.fileCount ?? 0;
   return `
     <div class="split-panels ${chatExpanded ? "is-chat-expanded" : ""} ${kanbanExpanded ? "is-kanban-expanded" : ""}">
       ${renderChatPanel(workspace, chatExpanded)}
@@ -979,6 +1035,11 @@ function renderWorkspacePanels(workspace: services.Workspace | null, workspaceCo
           ${
             workspace
               ? `<div class="kanban-actions">
+                  <button class="secondary-button icon-text-button change-review-button" type="button" title="Review AI file changes" data-action="open-change-review">
+                    ${icons.file}
+                    <span>Changes</span>
+                    <span class="change-count-badge">${escapeHtml(String(reviewCount))}</span>
+                  </button>
                   <button class="icon-button" type="button" title="${kanbanSizeLabel}" aria-label="${kanbanSizeLabel}" aria-pressed="${kanbanExpanded}" data-action="toggle-kanban-size">
                     ${kanbanExpanded ? icons.collapse : icons.expand}
                   </button>
@@ -1005,6 +1066,7 @@ function renderWorkspacePanels(workspace: services.Workspace | null, workspaceCo
       </section>
     </div>
     ${board ? renderKanbanDetail(board) : ""}
+    ${workspace && openChangeReviewWorkspaces.has(workspace.id) ? renderChangeReviewDrawer(workspace, review ?? changeReviewFor(workspace.id)) : ""}
   `;
 }
 
@@ -1207,6 +1269,123 @@ function renderKanbanDetail(board: services.KanbanBoard): string {
         }
       </section>
     </aside>
+  `;
+}
+
+function renderChangeReviewDrawer(
+  workspace: services.Workspace,
+  review: services.WorkspaceChangeReview,
+): string {
+  const files = review.files ?? [];
+  const hasChanges = (review.changeCount ?? 0) > 0;
+  return `
+    <aside class="change-review-backdrop" role="dialog" aria-modal="true" aria-labelledby="change-review-title">
+      <section class="change-review" data-change-review>
+        <header class="change-review-header">
+          <div>
+            <p class="eyebrow">${escapeHtml(workspace.displayName)}</p>
+            <h2 id="change-review-title">AI Changes</h2>
+          </div>
+          <button class="icon-button close-button" type="button" title="Close" aria-label="Close AI changes" data-action="close-change-review">
+            ${icons.x}
+          </button>
+        </header>
+
+        <div class="change-review-summary" aria-label="Change summary">
+          <span>${escapeHtml(String(review.fileCount ?? files.length))} files</span>
+          <span>${escapeHtml(String(review.changeCount ?? 0))} tool changes</span>
+        </div>
+
+        <div class="change-review-actions">
+          <button class="icon-button" type="button" title="Previous change" aria-label="Previous change" data-action="previous-change" ${files.length ? "" : "disabled"}>
+            ${icons.arrowUp}
+          </button>
+          <button class="icon-button" type="button" title="Next change" aria-label="Next change" data-action="next-change" ${files.length ? "" : "disabled"}>
+            ${icons.arrowDown}
+          </button>
+          <button class="secondary-button icon-text-button" type="button" data-action="clear-change-review" ${hasChanges ? "" : "disabled"}>
+            ${icons.trash}
+            <span>Clear</span>
+          </button>
+        </div>
+
+        ${
+          files.length
+            ? `<div class="change-file-list">${files.map(renderChangedFile).join("")}</div>`
+            : `<div class="empty-state compact">No AI file changes recorded.</div>`
+        }
+      </section>
+    </aside>
+  `;
+}
+
+function renderChangedFile(file: services.WorkspaceChangedFile): string {
+  return `
+    <article class="change-file" data-change-file>
+      <header>
+        <div class="change-file-title">
+          ${icons.file}
+          <strong title="${escapeAttribute(file.path)}">${escapeHtml(file.path)}</strong>
+        </div>
+        <span class="change-operation is-${escapeAttribute(file.operation)}">${escapeHtml(changeOperationLabel(file.operation))}</span>
+      </header>
+      ${renderChangeSources(file.sources ?? [])}
+      ${file.diffAvailable && file.diff ? renderChangeDiff(file.diff) : renderChangeMetadata(file)}
+    </article>
+  `;
+}
+
+function renderChangeSources(sources: services.WorkspaceChangeSource[]): string {
+  if (!sources.length) {
+    return "";
+  }
+  return `
+    <div class="change-sources" aria-label="Change sources">
+      ${sources
+        .map(
+          (source) => `
+            <span title="${escapeAttribute(source.toolName || "AI tool")}">
+              ${escapeHtml(changeSourceLabel(source))}
+              ${source.toolName ? `<em>${escapeHtml(source.toolName)}</em>` : ""}
+            </span>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderChangeDiff(diff: string): string {
+  const lines = diff.split("\n");
+  const rendered = lines
+    .map((line) => {
+      let kind = "context";
+      if (line.startsWith("+") && !line.startsWith("+++")) {
+        kind = "added";
+      } else if (line.startsWith("-") && !line.startsWith("---")) {
+        kind = "removed";
+      } else if (line.startsWith("@@") || line.startsWith("---") || line.startsWith("+++")) {
+        kind = "meta";
+      }
+      const marker = kind === "added" || kind === "removed" ? " data-change-line" : "";
+      return `<span class="change-diff-line is-${kind}"${marker}>${escapeHtml(line || " ")}</span>`;
+    })
+    .join("");
+  return `<pre class="change-diff"><code>${rendered}</code></pre>`;
+}
+
+function renderChangeMetadata(file: services.WorkspaceChangedFile): string {
+  const before = file.before;
+  const after = file.after;
+  const beforeLabel = before ? `${formatBytes(before.bytes || 0)} ${before.binary ? "binary" : before.large ? "large" : "file"}` : "not present";
+  const afterLabel = after ? `${formatBytes(after.bytes || 0)} ${after.binary ? "binary" : after.large ? "large" : "file"}` : "not present";
+  return `
+    <div class="change-metadata">
+      <span>Before: ${escapeHtml(beforeLabel)}</span>
+      <span>After: ${escapeHtml(afterLabel)}</span>
+      ${before?.sha256 ? `<code title="${escapeAttribute(before.sha256)}">before ${escapeHtml(before.sha256.slice(0, 12))}</code>` : ""}
+      ${after?.sha256 ? `<code title="${escapeAttribute(after.sha256)}">after ${escapeHtml(after.sha256.slice(0, 12))}</code>` : ""}
+    </div>
   `;
 }
 
@@ -1684,13 +1863,34 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     void saveActiveCodeFile(workspace.id, codeViewCallbacks());
     return;
   }
-  if (event.key !== "Escape") {
-    return;
-  }
   if (chatMention) {
+    if (event.key !== "Escape") {
+      return;
+    }
     event.preventDefault();
     clearChatMention();
     patchChatMentionPicker();
+    return;
+  }
+  const workspace = activeWorkspace();
+  if (
+    workspace &&
+    openChangeReviewWorkspaces.has(workspace.id) &&
+    (event.key === "ArrowDown" || event.key === "ArrowUp")
+  ) {
+    const target = event.target;
+    if (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement
+    ) {
+      return;
+    }
+    event.preventDefault();
+    scrollChangeReview(event.key === "ArrowDown" ? 1 : -1);
+    return;
+  }
+  if (event.key !== "Escape") {
     return;
   }
   if (settingsOpen) {
@@ -1703,8 +1903,13 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   if (appMode === "code") {
     return;
   }
-  const workspace = activeWorkspace();
   if (!workspace) {
+    return;
+  }
+  if (openChangeReviewWorkspaces.has(workspace.id)) {
+    event.preventDefault();
+    openChangeReviewWorkspaces.delete(workspace.id);
+    render();
     return;
   }
   const cardID = selectedKanbanCards.get(workspace.id) ?? "";
@@ -1713,6 +1918,31 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   }
   event.preventDefault();
   void closeSelectedCardDetail(workspace.id).finally(render);
+}
+
+function scrollChangeReview(direction: 1 | -1) {
+  const review = appRoot.querySelector<HTMLElement>("[data-change-review]");
+  if (!review) {
+    return;
+  }
+  const changes = Array.from(review.querySelectorAll<HTMLElement>("[data-change-line]"));
+  if (!changes.length) {
+    return;
+  }
+
+  const currentIndex = changes.findIndex((change) =>
+    change.classList.contains("is-current"),
+  );
+  let targetIndex: number;
+  if (direction > 0) {
+    targetIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % changes.length;
+  } else {
+    targetIndex = currentIndex <= 0 ? changes.length - 1 : currentIndex - 1;
+  }
+  const target = changes[targetIndex];
+  changes.forEach((change) => change.classList.remove("is-current"));
+  target.classList.add("is-current");
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 async function handleAction(event: Event) {
@@ -1764,6 +1994,7 @@ async function handleAction(event: Event) {
       appState = await ChooseWorkspaceFolder();
       await loadActiveChatSession();
       await loadActiveKanbanBoard();
+      await loadActiveChangeReview();
       await loadActiveCodeViewIfNeeded();
       pushToast("Workspace list updated.", "success");
       render();
@@ -1772,6 +2003,7 @@ async function handleAction(event: Event) {
       appState = await LoadState();
       await loadActiveChatSession();
       await loadActiveKanbanBoard();
+      await loadActiveChangeReview();
       await loadActiveCodeViewIfNeeded();
       pushToast(
         activeWorkspace()?.missing
@@ -1785,10 +2017,12 @@ async function handleAction(event: Event) {
       const current = activeWorkspace();
       if (current && current.id !== workspaceID) {
         await closeSelectedCardDetail(current.id);
+        openChangeReviewWorkspaces.delete(current.id);
       }
       appState = await SetActiveWorkspace(workspaceID);
       await loadActiveChatSession();
       await loadActiveKanbanBoard();
+      await loadActiveChangeReview();
       await loadActiveCodeViewIfNeeded();
       render();
     }
@@ -1832,6 +2066,39 @@ async function handleAction(event: Event) {
         expandedChatWorkspaces.delete(workspace.id);
       }
       render();
+    }
+    if (action === "open-change-review") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      await closeSelectedCardDetail(workspace.id);
+      changeReviews.set(workspace.id, await LoadWorkspaceChangeReview(workspace.id));
+      openChangeReviewWorkspaces.add(workspace.id);
+      render();
+    }
+    if (action === "close-change-review") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      openChangeReviewWorkspaces.delete(workspace.id);
+      render();
+    }
+    if (action === "clear-change-review") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      changeReviews.set(workspace.id, await ClearWorkspaceChangeReview(workspace.id));
+      pushToast("AI change review cleared.");
+      render();
+    }
+    if (action === "previous-change") {
+      scrollChangeReview(-1);
+    }
+    if (action === "next-change") {
+      scrollChangeReview(1);
     }
     if (action === "remove-chat-image") {
       const workspace = activeWorkspace();
@@ -1953,7 +2220,9 @@ async function handleAction(event: Event) {
       await closeSelectedCardDetail(workspaceID);
       appState = await DeleteWorkspace(workspaceID);
       kanbanBoards.delete(workspaceID);
+      changeReviews.delete(workspaceID);
       selectedKanbanCards.delete(workspaceID);
+      openChangeReviewWorkspaces.delete(workspaceID);
       expandedChatWorkspaces.delete(workspaceID);
       expandedKanbanWorkspaces.delete(workspaceID);
       chatPlanModes.delete(workspaceID);
@@ -2282,6 +2551,14 @@ async function loadActiveKanbanBoard() {
   kanbanBoards.set(workspace.id, await LoadKanbanBoard(workspace.id));
 }
 
+async function loadActiveChangeReview() {
+  const workspace = activeWorkspace();
+  if (!workspace || workspace.missing) {
+    return;
+  }
+  changeReviews.set(workspace.id, await LoadWorkspaceChangeReview(workspace.id));
+}
+
 async function loadActiveCodeViewIfNeeded() {
   if (appMode !== "code") {
     return;
@@ -2366,12 +2643,44 @@ function applyKanbanEvent(event: KanbanEvent) {
   }
   if (event.type === "scheduler_complete") {
     clearKanbanRun(event.workspaceId);
+    void refreshWorkspaceChangeReview(event.workspaceId);
   }
   if (activeWorkspace()?.id === event.workspaceId) {
     if (event.type === "card_progress" && patchOpenCardProgress(event)) {
       return;
     }
     render();
+  }
+}
+
+function applyFileChangesEvent(event: FileChangesEvent) {
+  const existing = changeReviewFor(event.workspaceId);
+  changeReviews.set(
+    event.workspaceId,
+    services.WorkspaceChangeReview.createFrom({
+      ...existing,
+      workspaceId: event.workspaceId,
+      fileCount: event.fileCount,
+      changeCount: event.changeCount,
+    }),
+  );
+  if (openChangeReviewWorkspaces.has(event.workspaceId)) {
+    void refreshWorkspaceChangeReview(event.workspaceId);
+    return;
+  }
+  if (activeWorkspace()?.id === event.workspaceId) {
+    render();
+  }
+}
+
+async function refreshWorkspaceChangeReview(workspaceID: string) {
+  try {
+    changeReviews.set(workspaceID, await LoadWorkspaceChangeReview(workspaceID));
+    if (activeWorkspace()?.id === workspaceID) {
+      render();
+    }
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
   }
 }
 
@@ -2603,6 +2912,7 @@ async function initialize() {
     settingsDraft = cloneSettings(appState.settings);
     await loadActiveChatSession();
     await loadActiveKanbanBoard();
+    await loadActiveChangeReview();
   } catch (error) {
     appState = services.AppState.createFrom({
       settings: llm.Settings.createFrom({ endpoint: "", model: "" }),
@@ -2627,7 +2937,11 @@ EventsOn("echo:kanban:event", (event: KanbanEvent) => {
   applyKanbanEvent(event);
 });
 
-document.addEventListener("keydown", handleGlobalKeydown);
+EventsOn("echo:file-changes:event", (event: FileChangesEvent) => {
+  applyFileChangesEvent(event);
+});
+
+document.addEventListener("keydown", handleGlobalKeydown, true);
 document.addEventListener("pointerdown", handleGlobalPointerDown);
 
 void initialize();

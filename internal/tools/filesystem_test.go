@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -164,6 +165,94 @@ func TestFilesystemCreateAndDeleteFile(t *testing.T) {
 	}
 }
 
+func TestFilesystemMutationsEmitFileChanges(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "notes.txt"), []byte("before\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var changes []FileChange
+	ctx := ExecutionContext{
+		Context:       context.Background(),
+		WorkspacePath: workspace,
+		FileChanges: func(next []FileChange) {
+			changes = append(changes, next...)
+		},
+	}
+
+	createResult := Execute(ctx, "filesystem_create_text", mustJSON(t, map[string]any{"path": "created.txt", "content": "new\n"}))
+	if !createResult.Success {
+		t.Fatalf("create failed: %#v", createResult)
+	}
+	editResult := Execute(ctx, "filesystem_edit_text", mustJSON(t, map[string]any{"path": "notes.txt", "oldText": "before\n", "newText": "after\n"}))
+	if !editResult.Success {
+		t.Fatalf("edit failed: %#v", editResult)
+	}
+	deleteResult := Execute(ctx, "filesystem_delete_file", mustJSON(t, map[string]any{"path": "created.txt"}))
+	if !deleteResult.Success {
+		t.Fatalf("delete failed: %#v", deleteResult)
+	}
+
+	if len(changes) != 3 {
+		t.Fatalf("expected three changes, got %#v", changes)
+	}
+	if changes[0].Operation != FileChangeCreated || changes[0].Path != "created.txt" || changes[0].After == nil || changes[0].After.Text != "new\n" {
+		t.Fatalf("unexpected create change: %#v", changes[0])
+	}
+	if changes[1].Operation != FileChangeEdited || changes[1].Path != "notes.txt" || changes[1].Before.Text != "before\n" || changes[1].After.Text != "after\n" {
+		t.Fatalf("unexpected edit change: %#v", changes[1])
+	}
+	if changes[2].Operation != FileChangeDeleted || changes[2].Path != "created.txt" || changes[2].Before == nil || changes[2].Before.Text != "new\n" || changes[2].After != nil {
+		t.Fatalf("unexpected delete change: %#v", changes[2])
+	}
+}
+
+func TestShellCommandEmitsWorkspaceSnapshotChangesAndSkipsNoisyDirectories(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "keep.txt"), []byte("before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "gone.txt"), []byte("remove"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var command string
+	if runtime.GOOS == "windows" {
+		command = "Set-Content -LiteralPath keep.txt -NoNewline -Value changed; Set-Content -LiteralPath fresh.txt -NoNewline -Value fresh; Remove-Item -LiteralPath gone.txt; New-Item -ItemType Directory -Force -Path node_modules | Out-Null; Set-Content -LiteralPath node_modules\\ignored.txt -NoNewline -Value ignored"
+	} else {
+		command = "printf changed > keep.txt; printf fresh > fresh.txt; rm gone.txt; mkdir -p node_modules; printf ignored > node_modules/ignored.txt"
+	}
+	var changes []FileChange
+	result := Execute(ExecutionContext{
+		Context:       context.Background(),
+		WorkspacePath: workspace,
+		FileChanges: func(next []FileChange) {
+			changes = append(changes, next...)
+		},
+	}, "shell_command", mustJSON(t, map[string]any{"command": command}))
+	if !result.Success {
+		t.Fatalf("shell failed: %#v", result)
+	}
+
+	byPath := map[string]FileChange{}
+	for _, change := range changes {
+		byPath[change.Path] = change
+	}
+	if len(byPath) != 3 {
+		t.Fatalf("expected three tracked paths, got %#v", changes)
+	}
+	if byPath["keep.txt"].Operation != FileChangeEdited || byPath["keep.txt"].Before.Text != "before" || byPath["keep.txt"].After.Text != "changed" {
+		t.Fatalf("unexpected keep change: %#v", byPath["keep.txt"])
+	}
+	if byPath["fresh.txt"].Operation != FileChangeCreated || byPath["fresh.txt"].After.Text != "fresh" {
+		t.Fatalf("unexpected fresh change: %#v", byPath["fresh.txt"])
+	}
+	if byPath["gone.txt"].Operation != FileChangeDeleted || byPath["gone.txt"].Before.Text != "remove" {
+		t.Fatalf("unexpected gone change: %#v", byPath["gone.txt"])
+	}
+	if _, ok := byPath["node_modules/ignored.txt"]; ok {
+		t.Fatalf("expected node_modules change to be ignored, got %#v", changes)
+	}
+}
+
 func TestFilesystemCreateRejectsParentOutsideWorkspace(t *testing.T) {
 	workspace := t.TempDir()
 	outside := t.TempDir()
@@ -314,6 +403,81 @@ func TestFilesystemEditMatchesEquivalentWhitespace(t *testing.T) {
 		"}",
 		"",
 	}, "\n")
+	if string(edited) != expected {
+		t.Fatalf("unexpected edited content: %q", edited)
+	}
+}
+
+func TestFilesystemMutationsNormalizeUnicodeLineControls(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "main.go"), []byte("func main() {\n}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	editResult := Execute(
+		ExecutionContext{Context: context.Background(), WorkspacePath: workspace},
+		"filesystem_edit_text",
+		mustJSON(t, map[string]any{
+			"path":    "main.go",
+			"oldText": "{\u0085}",
+			"newText": "{\u0085\tprintln(\"Hello, World!\")\u2028}",
+		}),
+	)
+	if !editResult.Success {
+		t.Fatalf("edit failed: %#v", editResult)
+	}
+	edited, err := os.ReadFile(filepath.Join(workspace, "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(edited) != "func main() {\n\tprintln(\"Hello, World!\")\n}\n" {
+		t.Fatalf("unexpected edited content: %q", edited)
+	}
+
+	createResult := Execute(
+		ExecutionContext{Context: context.Background(), WorkspacePath: workspace},
+		"filesystem_create_text",
+		mustJSON(t, map[string]any{
+			"path":    "notes.txt",
+			"content": "one\u0085two\u2028three\u2029",
+		}),
+	)
+	if !createResult.Success {
+		t.Fatalf("create failed: %#v", createResult)
+	}
+	created, err := os.ReadFile(filepath.Join(workspace, "notes.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(created) != "one\ntwo\nthree\n" {
+		t.Fatalf("unexpected created content: %q", created)
+	}
+}
+
+func TestFilesystemEditPreservesCRLFLineBreaks(t *testing.T) {
+	workspace := t.TempDir()
+	content := "func main() {\r\n}\r\n"
+	if err := os.WriteFile(filepath.Join(workspace, "main.go"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := Execute(
+		ExecutionContext{Context: context.Background(), WorkspacePath: workspace},
+		"filesystem_edit_text",
+		mustJSON(t, map[string]any{
+			"path":    "main.go",
+			"oldText": "{\n}",
+			"newText": "{\n\tprintln(\"Hello, World!\")\n}",
+		}),
+	)
+	if !result.Success {
+		t.Fatalf("edit failed: %#v", result)
+	}
+	edited, err := os.ReadFile(filepath.Join(workspace, "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := "func main() {\r\n\tprintln(\"Hello, World!\")\r\n}\r\n"
 	if string(edited) != expected {
 		t.Fatalf("unexpected edited content: %q", edited)
 	}

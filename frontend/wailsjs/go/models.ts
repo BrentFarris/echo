@@ -484,6 +484,182 @@ export namespace services {
 	
 	
 	
+	export class WorkspaceFileChange {
+	    id: string;
+	    workspaceId: string;
+	    path: string;
+	    operation: string;
+	    source: WorkspaceChangeSource;
+	    before?: WorkspaceFileSnapshot;
+	    after?: WorkspaceFileSnapshot;
+	    createdAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceFileChange(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.workspaceId = source["workspaceId"];
+	        this.path = source["path"];
+	        this.operation = source["operation"];
+	        this.source = this.convertValues(source["source"], WorkspaceChangeSource);
+	        this.before = this.convertValues(source["before"], WorkspaceFileSnapshot);
+	        this.after = this.convertValues(source["after"], WorkspaceFileSnapshot);
+	        this.createdAt = source["createdAt"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class WorkspaceChangeSource {
+	    type: string;
+	    cardId?: string;
+	    cardTitle?: string;
+	    messageId?: string;
+	    requestId?: string;
+	    toolCallId?: string;
+	    toolName?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceChangeSource(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.type = source["type"];
+	        this.cardId = source["cardId"];
+	        this.cardTitle = source["cardTitle"];
+	        this.messageId = source["messageId"];
+	        this.requestId = source["requestId"];
+	        this.toolCallId = source["toolCallId"];
+	        this.toolName = source["toolName"];
+	    }
+	}
+	export class WorkspaceFileSnapshot {
+	    path: string;
+	    exists: boolean;
+	    bytes?: number;
+	    sha256?: string;
+	    textAvailable?: boolean;
+	    binary?: boolean;
+	    large?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceFileSnapshot(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.exists = source["exists"];
+	        this.bytes = source["bytes"];
+	        this.sha256 = source["sha256"];
+	        this.textAvailable = source["textAvailable"];
+	        this.binary = source["binary"];
+	        this.large = source["large"];
+	    }
+	}
+	export class WorkspaceChangedFile {
+	    path: string;
+	    operation: string;
+	    diff?: string;
+	    diffAvailable: boolean;
+	    before?: WorkspaceFileSnapshot;
+	    after?: WorkspaceFileSnapshot;
+	    sources?: WorkspaceChangeSource[];
+	    changeCount: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceChangedFile(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.operation = source["operation"];
+	        this.diff = source["diff"];
+	        this.diffAvailable = source["diffAvailable"];
+	        this.before = this.convertValues(source["before"], WorkspaceFileSnapshot);
+	        this.after = this.convertValues(source["after"], WorkspaceFileSnapshot);
+	        this.sources = this.convertValues(source["sources"], WorkspaceChangeSource);
+	        this.changeCount = source["changeCount"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class WorkspaceChangeReview {
+	    workspaceId: string;
+	    fileCount: number;
+	    changeCount: number;
+	    files: WorkspaceChangedFile[];
+	    changes?: WorkspaceFileChange[];
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceChangeReview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.fileCount = source["fileCount"];
+	        this.changeCount = source["changeCount"];
+	        this.files = this.convertValues(source["files"], WorkspaceChangedFile);
+	        this.changes = this.convertValues(source["changes"], WorkspaceFileChange);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
 	export class WorkspaceFileEntry {
 	    name: string;
 	    path: string;
@@ -558,6 +734,7 @@ export namespace services {
 	        this.modifiedAt = source["modifiedAt"];
 	    }
 	}
+	
 	
 	export class WorkspaceFileSearchResult {
 	    workspaceId: string;

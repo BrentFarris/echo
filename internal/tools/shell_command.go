@@ -128,9 +128,22 @@ func executeShellCommand(ctx ExecutionContext, arguments json.RawMessage) (any, 
 	command.Stdout = stdout
 	command.Stderr = stderr
 
+	var before workspaceSnapshot
+	trackChanges := ctx.FileChanges != nil
+	if trackChanges {
+		if snapshot, err := snapshotWorkspaceChanges(ctx.context(), ctx.WorkspacePath); err == nil {
+			before = snapshot
+		}
+	}
+
 	started := time.Now()
 	runErr := command.Run()
 	duration := time.Since(started)
+	if trackChanges && before != nil {
+		if after, err := snapshotWorkspaceChanges(ctx.context(), ctx.WorkspacePath); err == nil {
+			ctx.recordFileChanges(diffWorkspaceSnapshots(before, after)...)
+		}
+	}
 	timedOut := commandContext.Err() == context.DeadlineExceeded
 	exitCode := 0
 	if runErr != nil {
