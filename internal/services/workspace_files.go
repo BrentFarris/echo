@@ -97,14 +97,11 @@ func (s *SystemService) SearchWorkspaceFiles(workspaceID string, query string, i
 	if err != nil {
 		return WorkspaceFileSearchResult{}, err
 	}
-	query = strings.ToLower(strings.TrimSpace(query))
+	query = strings.ReplaceAll(strings.ToLower(strings.TrimSpace(query)), "\\", "/")
 	output := WorkspaceFileSearchResult{
 		WorkspaceID: workspace.ID,
 		Query:       query,
 		Entries:     []WorkspaceFileEntry{},
-	}
-	if query == "" {
-		return output, nil
 	}
 	root, err := resolveWorkspaceServicePath(workspace.FolderPath, ".")
 	if err != nil {

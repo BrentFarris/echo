@@ -30,6 +30,7 @@ import {
   ResetKanbanCard,
   ResolveWorkspaceTextFilePath,
   SaveSettings,
+  SearchWorkspaceFiles,
   SendChatMessage,
   SetActiveWorkspace,
   SetWorkspaceLetter,
@@ -56,6 +57,7 @@ const icons = {
   send: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>`,
   stop: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>`,
   execute: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7Z"/><path d="M4 5v14"/></svg>`,
+  file: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>`,
   trash: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>`,
   expand: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="M9 21H3v-6"/><path d="m3 21 7-7"/></svg>`,
   collapse: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3v5H3"/><path d="m3 8 6-6"/><path d="M16 21v-5h5"/><path d="m21 16-6 6"/></svg>`,
@@ -74,6 +76,7 @@ let formError = "";
 const chatSessions = new Map<string, services.ChatSession>();
 const chatDrafts = new Map<string, string>();
 const chatFileLinkCache = new Map<string, Promise<string | null>>();
+let chatMention: ChatMentionState | null = null;
 const kanbanBoards = new Map<string, services.KanbanBoard>();
 const executingPlans = new Set<string>();
 const runningKanbanWorkspaces = new Set<string>();
@@ -118,12 +121,26 @@ type Toast = {
   message: string;
 };
 
+type ChatMentionState = {
+  workspaceId: string;
+  triggerStart: number;
+  query: string;
+  results: services.WorkspaceFileEntry[];
+  loading: boolean;
+  error: string;
+  selectedIndex: number;
+  requestSeq: number;
+  timerID: number | null;
+};
+
 type ScrollSnapshot = {
   scrollTop: number;
   atBottom: boolean;
 };
 
 const scrollStickinessThreshold = 48;
+const chatMentionSearchDelay = 160;
+const chatMentionResultLimit = 8;
 
 function cloneSettings(settings: llm.Settings): llm.Settings {
   return llm.Settings.createFrom(JSON.parse(JSON.stringify(settings)));
@@ -152,6 +169,20 @@ function escapeHtml(value: string): string {
 
 function escapeAttribute(value: string): string {
   return escapeHtml(value).replaceAll("`", "&#096;");
+}
+
+function fileName(path: string): string {
+  return path.split("/").pop() || path;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function chatSessionFor(workspaceID: string): services.ChatSession {
@@ -485,6 +516,298 @@ async function handleChatFileLinkClick(event: MouseEvent) {
   await openWorkspaceCodeFile(workspace.id, path, codeViewCallbacks());
 }
 
+type ChatMentionMatch = {
+  triggerStart: number;
+  query: string;
+  caret: number;
+};
+
+function activeChatMentionMatch(input: HTMLTextAreaElement): ChatMentionMatch | null {
+  if (input.selectionStart !== input.selectionEnd) {
+    return null;
+  }
+  const caret = input.selectionStart;
+  const beforeCaret = input.value.slice(0, caret);
+  const match = beforeCaret.match(/(^|\s)@([^\s@]*)$/);
+  if (!match) {
+    return null;
+  }
+  const query = match[2] ?? "";
+  return {
+    triggerStart: beforeCaret.length - query.length - 1,
+    query,
+    caret,
+  };
+}
+
+function chatMentionFor(workspaceID: string): ChatMentionState | null {
+  return chatMention?.workspaceId === workspaceID ? chatMention : null;
+}
+
+function clearChatMention() {
+  const timerID = chatMention?.timerID;
+  if (timerID !== undefined && timerID !== null) {
+    window.clearTimeout(timerID);
+  }
+  chatMention = null;
+}
+
+function syncChatMentionForInput(workspaceID: string, input: HTMLTextAreaElement) {
+  const match = activeChatMentionMatch(input);
+  if (!match) {
+    if (chatMentionFor(workspaceID)) {
+      clearChatMention();
+      patchChatMentionPicker();
+    }
+    return;
+  }
+
+  let mention = chatMentionFor(workspaceID);
+  const changed =
+    !mention ||
+    mention.query !== match.query ||
+    mention.triggerStart !== match.triggerStart;
+
+  if (!mention) {
+    mention = {
+      workspaceId: workspaceID,
+      triggerStart: match.triggerStart,
+      query: match.query,
+      results: [],
+      loading: false,
+      error: "",
+      selectedIndex: 0,
+      requestSeq: 0,
+      timerID: null,
+    };
+    chatMention = mention;
+  }
+
+  mention.triggerStart = match.triggerStart;
+  mention.query = match.query;
+
+  if (!changed) {
+    patchChatMentionPicker();
+    return;
+  }
+
+  mention.requestSeq++;
+  mention.loading = true;
+  mention.error = "";
+  mention.results = [];
+  mention.selectedIndex = 0;
+  if (mention.timerID !== null) {
+    window.clearTimeout(mention.timerID);
+  }
+  const sequence = mention.requestSeq;
+  mention.timerID = window.setTimeout(() => {
+    void runChatMentionSearch(workspaceID, sequence);
+  }, chatMentionSearchDelay);
+  patchChatMentionPicker();
+}
+
+async function runChatMentionSearch(workspaceID: string, sequence: number) {
+  const mention = chatMentionFor(workspaceID);
+  if (!mention || sequence !== mention.requestSeq) {
+    return;
+  }
+  mention.timerID = null;
+  patchChatMentionPicker();
+  try {
+    const result = await SearchWorkspaceFiles(workspaceID, mention.query, false);
+    const model = services.WorkspaceFileSearchResult.createFrom(result);
+    const latest = chatMentionFor(workspaceID);
+    if (!latest || sequence !== latest.requestSeq) {
+      return;
+    }
+    latest.results = (model.entries ?? []).filter((entry) => entry.kind === "file");
+    latest.error = "";
+    clampChatMentionSelection(latest);
+  } catch (error) {
+    const latest = chatMentionFor(workspaceID);
+    if (latest && sequence === latest.requestSeq) {
+      latest.results = [];
+      latest.error = errorMessage(error);
+      latest.selectedIndex = 0;
+    }
+  } finally {
+    const latest = chatMentionFor(workspaceID);
+    if (latest && sequence === latest.requestSeq) {
+      latest.loading = false;
+      latest.timerID = null;
+      patchChatMentionPicker();
+    }
+  }
+}
+
+function visibleChatMentionEntries(mention: ChatMentionState): services.WorkspaceFileEntry[] {
+  return mention.results.slice(0, chatMentionResultLimit);
+}
+
+function clampChatMentionSelection(mention: ChatMentionState) {
+  const count = visibleChatMentionEntries(mention).length;
+  mention.selectedIndex = count
+    ? Math.min(Math.max(mention.selectedIndex, 0), count - 1)
+    : 0;
+}
+
+function moveChatMentionSelection(delta: number) {
+  if (!chatMention) {
+    return;
+  }
+  const entries = visibleChatMentionEntries(chatMention);
+  if (!entries.length) {
+    return;
+  }
+  chatMention.selectedIndex =
+    (chatMention.selectedIndex + delta + entries.length) % entries.length;
+  patchChatMentionPicker();
+}
+
+function selectChatMentionIndex(index: number) {
+  if (!chatMention) {
+    return;
+  }
+  chatMention.selectedIndex = index;
+  clampChatMentionSelection(chatMention);
+  const entry = visibleChatMentionEntries(chatMention)[chatMention.selectedIndex];
+  if (entry) {
+    insertChatMention(entry);
+  }
+}
+
+function insertChatMention(entry: services.WorkspaceFileEntry) {
+  const workspace = activeWorkspace();
+  const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
+  if (!workspace || !input || !chatMentionFor(workspace.id)) {
+    return;
+  }
+  const match = activeChatMentionMatch(input);
+  const mention = chatMentionFor(workspace.id);
+  if (!mention) {
+    return;
+  }
+  const triggerStart = match?.triggerStart ?? mention.triggerStart;
+  const caret = match?.caret ?? input.selectionStart;
+  const suffix = input.value.slice(caret);
+  const trailingSpace = suffix.length === 0 || !/^\s/.test(suffix) ? " " : "";
+  const replacement = formatChatMentionPath(entry.path);
+  const nextValue =
+    input.value.slice(0, triggerStart) + replacement + trailingSpace + suffix;
+  const nextCaret = triggerStart + replacement.length + trailingSpace.length;
+  input.value = nextValue;
+  chatDrafts.set(workspace.id, nextValue);
+  clearChatMention();
+  input.focus();
+  input.setSelectionRange(nextCaret, nextCaret);
+  patchChatControls();
+  patchChatMentionPicker();
+}
+
+function formatChatMentionPath(path: string): string {
+  if (!/\s/.test(path)) {
+    return `@${path}`;
+  }
+  return `@"${path.replaceAll('"', '\\"')}"`;
+}
+
+function renderChatMentionPicker(workspaceID: string): string {
+  const mention = chatMentionFor(workspaceID);
+  if (!mention) {
+    return "";
+  }
+  const entries = visibleChatMentionEntries(mention);
+  let content = "";
+  if (mention.loading) {
+    content = `<div class="chat-mention-status"><span class="spinner" aria-hidden="true"></span><span>Searching files...</span></div>`;
+  } else if (mention.error) {
+    content = `<div class="chat-mention-status is-error">${escapeHtml(mention.error)}</div>`;
+  } else if (!entries.length) {
+    content = `<div class="chat-mention-status">No matching files.</div>`;
+  } else {
+    content = entries
+      .map((entry, index) => renderChatMentionOption(entry, index, index === mention.selectedIndex))
+      .join("");
+  }
+  return `
+    <div class="chat-mention-picker" id="chat-mention-list" role="listbox" aria-label="Workspace files" data-chat-mention-picker>
+      ${content}
+    </div>
+  `;
+}
+
+function renderChatMentionOption(
+  entry: services.WorkspaceFileEntry,
+  index: number,
+  selected: boolean,
+): string {
+  return `
+    <button
+      class="chat-mention-option ${selected ? "is-active" : ""}"
+      id="chat-mention-option-${index}"
+      type="button"
+      role="option"
+      aria-selected="${selected}"
+      title="${escapeAttribute(entry.path)}"
+      data-chat-mention-option
+      data-mention-index="${index}"
+    >
+      <span class="chat-mention-icon">${icons.file}</span>
+      <span class="chat-mention-name">
+        <strong>${escapeHtml(fileName(entry.path))}</strong>
+        <span>${escapeHtml(entry.path)}</span>
+      </span>
+      <span class="chat-mention-size">${escapeHtml(formatBytes(entry.bytes ?? 0))}</span>
+    </button>
+  `;
+}
+
+function patchChatMentionPicker() {
+  const workspace = activeWorkspace();
+  const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
+  const wrapper = appRoot.querySelector<HTMLElement>("[data-chat-input-wrap]");
+  if (!workspace || !input || !wrapper) {
+    return;
+  }
+  const existing = wrapper.querySelector<HTMLElement>("[data-chat-mention-picker]");
+  const nextHtml = renderChatMentionPicker(workspace.id).trim();
+  if (!nextHtml) {
+    existing?.remove();
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-controls");
+    input.removeAttribute("aria-activedescendant");
+    return;
+  }
+
+  const next = elementFromHtml(nextHtml);
+  if (existing) {
+    existing.replaceWith(next);
+  } else {
+    wrapper.append(next);
+  }
+  bindChatMentionOptions(wrapper);
+  input.setAttribute("aria-expanded", "true");
+  input.setAttribute("aria-controls", "chat-mention-list");
+  const mention = chatMentionFor(workspace.id);
+  if (mention && visibleChatMentionEntries(mention).length) {
+    input.setAttribute("aria-activedescendant", `chat-mention-option-${mention.selectedIndex}`);
+  } else {
+    input.removeAttribute("aria-activedescendant");
+  }
+}
+
+function bindChatMentionOptions(root: ParentNode) {
+  root.querySelectorAll<HTMLElement>("[data-chat-mention-option]").forEach((option) => {
+    option.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+    });
+    option.addEventListener("click", (event) => {
+      event.preventDefault();
+      selectChatMentionIndex(Number(option.dataset.mentionIndex ?? "0"));
+    });
+  });
+}
+
 function renderToasts(): string {
   if (!toasts.length) {
     return "";
@@ -524,6 +847,12 @@ function render() {
   const workspace = activeWorkspace();
   const workspaces = appState?.workspaces ?? [];
   const showingCode = appMode === "code" && Boolean(workspace) && !workspace?.missing;
+  if (
+    chatMention &&
+    (!workspace || workspace.missing || showingCode || settingsOpen || workspace.id !== chatMention.workspaceId)
+  ) {
+    clearChatMention();
+  }
 
   appRoot.innerHTML = `
     <div class="app-shell">
@@ -898,6 +1227,7 @@ function renderChatPanel(workspace: services.Workspace | null, expanded = false)
   const canSend = !session.busy && !executing && draft.trim().length > 0;
   const sizeLabel = expanded ? "Collapse chat" : "Expand chat";
   const executeLabel = executing ? "Decomposing cards" : "Execute plan";
+  const mentionOpen = Boolean(chatMentionFor(workspace.id));
   return `
     <section class="work-panel chat-panel" aria-labelledby="chat-title" aria-busy="${session.busy || executing}" data-chat-panel data-workspace-id="${escapeAttribute(workspace.id)}">
       <div class="panel-heading chat-heading">
@@ -928,14 +1258,20 @@ function renderChatPanel(workspace: services.Workspace | null, expanded = false)
         }
       </div>
       <form class="chat-composer" data-chat-form>
-        <textarea
-          name="message"
-          rows="3"
-          placeholder="Ask for a plan..."
-          aria-label="Message Echo"
-          data-chat-input
-          ${session.busy || executing ? "disabled" : ""}
-        >${escapeHtml(draft)}</textarea>
+        <div class="chat-input-wrap" data-chat-input-wrap>
+          <textarea
+            name="message"
+            rows="3"
+            placeholder="Ask for a plan..."
+            aria-label="Message Echo"
+            aria-autocomplete="list"
+            aria-expanded="${mentionOpen}"
+            ${mentionOpen ? `aria-controls="chat-mention-list"` : ""}
+            data-chat-input
+            ${session.busy || executing ? "disabled" : ""}
+          >${escapeHtml(draft)}</textarea>
+          ${renderChatMentionPicker(workspace.id)}
+        </div>
         <button class="primary-button icon-button send-button" type="submit" title="Send" aria-label="Send message" ${canSend ? "" : "disabled"}>
           ${icons.send}
         </button>
@@ -1185,6 +1521,7 @@ function bindChatEvents(root: ParentNode) {
       input.addEventListener("input", handleChatInput);
       input.addEventListener("keydown", handleChatKeydown);
     });
+  bindChatMentionOptions(root);
   bindChatFileLinks(root);
 }
 
@@ -1210,6 +1547,22 @@ function focusInitialElement() {
   focusTarget?.focus();
 }
 
+function handleGlobalPointerDown(event: PointerEvent) {
+  if (!chatMention) {
+    return;
+  }
+  const target = event.target;
+  if (!(target instanceof Node)) {
+    return;
+  }
+  const form = appRoot.querySelector<HTMLElement>("[data-chat-form]");
+  if (form?.contains(target)) {
+    return;
+  }
+  clearChatMention();
+  patchChatMentionPicker();
+}
+
 function handleGlobalKeydown(event: KeyboardEvent) {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
     if (appMode !== "code" || settingsOpen) {
@@ -1224,6 +1577,12 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     return;
   }
   if (event.key !== "Escape") {
+    return;
+  }
+  if (chatMention) {
+    event.preventDefault();
+    clearChatMention();
+    patchChatMentionPicker();
     return;
   }
   if (settingsOpen) {
@@ -1611,16 +1970,65 @@ function handleChatInput(event: Event) {
   }
   const input = event.currentTarget as HTMLTextAreaElement;
   chatDrafts.set(workspace.id, input.value);
+  syncChatMentionForInput(workspace.id, input);
   patchChatControls();
 }
 
 function handleChatKeydown(event: KeyboardEvent) {
+  if (handleChatMentionKeydown(event)) {
+    return;
+  }
   if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
     return;
   }
   event.preventDefault();
   const input = event.currentTarget as HTMLTextAreaElement;
   input.form?.requestSubmit();
+}
+
+function handleChatMentionKeydown(event: KeyboardEvent): boolean {
+  const workspace = activeWorkspace();
+  const input = event.currentTarget as HTMLTextAreaElement;
+  const mention = workspace ? chatMentionFor(workspace.id) : null;
+  if (!workspace || !mention) {
+    return false;
+  }
+  const match = activeChatMentionMatch(input);
+  if (!match || match.triggerStart !== mention.triggerStart) {
+    clearChatMention();
+    patchChatMentionPicker();
+    return false;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    clearChatMention();
+    patchChatMentionPicker();
+    return true;
+  }
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    event.stopPropagation();
+    moveChatMentionSelection(1);
+    return true;
+  }
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    event.stopPropagation();
+    moveChatMentionSelection(-1);
+    return true;
+  }
+  if (event.key !== "Enter" && event.key !== "Tab") {
+    return false;
+  }
+  const entries = visibleChatMentionEntries(mention);
+  if (!entries.length) {
+    return false;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  insertChatMention(entries[mention.selectedIndex] ?? entries[0]);
+  return true;
 }
 
 async function handleChatSubmit(event: SubmitEvent) {
@@ -1637,6 +2045,7 @@ async function handleChatSubmit(event: SubmitEvent) {
 
   try {
     chatDrafts.set(workspace.id, "");
+    clearChatMention();
     chatSessions.set(workspace.id, await SendChatMessage(workspace.id, message));
     render();
     scrollChatToBottom();
@@ -2002,5 +2411,6 @@ EventsOn("echo:kanban:event", (event: KanbanEvent) => {
 });
 
 document.addEventListener("keydown", handleGlobalKeydown);
+document.addEventListener("pointerdown", handleGlobalPointerDown);
 
 void initialize();

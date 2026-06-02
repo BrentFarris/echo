@@ -587,7 +587,9 @@ func chatSystemMessage(workspace Workspace) llm.Message {
 		Role: llm.RoleSystem,
 		Content: workspaceSystemPrompt(
 			"You are Echo, a personal AI assistant helping plan work inside the active workspace. "+
-				"Use available tools when workspace facts are needed. Keep plans concrete and concise.",
+				"Use available tools when workspace facts are needed. "+
+				"When the user mentions @path, treat it as a workspace-relative file reference and read it before relying on its contents. "+
+				"Keep plans concrete and concise.",
 			workspace,
 		),
 	}

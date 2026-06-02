@@ -237,6 +237,14 @@ func TestSystemServiceSearchWorkspaceFilesFindsNestedMatches(t *testing.T) {
 	if strings.Join(paths, ",") != "src/feature/search_handler.go" {
 		t.Fatalf("expected nested search match, got %v", paths)
 	}
+
+	backslashResult, err := service.SearchWorkspaceFiles(workspaceID, `src\feature\search`, false)
+	if err != nil {
+		t.Fatalf("search workspace with backslashes: %v", err)
+	}
+	if got := strings.Join(entryPaths(backslashResult.Entries), ","); got != "src/feature/search_handler.go" {
+		t.Fatalf("expected backslash query to match nested path, got %v", got)
+	}
 }
 
 func TestSystemServiceSearchWorkspaceFilesSkipsIgnoredFoldersByDefault(t *testing.T) {
@@ -264,6 +272,39 @@ func TestSystemServiceSearchWorkspaceFilesSkipsIgnoredFoldersByDefault(t *testin
 	}
 	if got := strings.Join(entryPaths(included.Entries), ","); got != "needle.txt,node_modules/pkg/needle.js" {
 		t.Fatalf("expected ignored folder match when included, got %v", got)
+	}
+}
+
+func TestSystemServiceSearchWorkspaceFilesEmptyQueryListsWorkspaceEntries(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "node_modules", "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("readme"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "node_modules", "pkg", "ignored.js"), []byte("module"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.SearchWorkspaceFiles(workspaceID, "", false)
+	if err != nil {
+		t.Fatalf("search workspace: %v", err)
+	}
+	paths := strings.Join(entryPaths(result.Entries), ",")
+	for _, expected := range []string{"README.md", "src", "src/main.go"} {
+		if !strings.Contains(paths, expected) {
+			t.Fatalf("expected empty query results to include %q, got %v", expected, paths)
+		}
+	}
+	if strings.Contains(paths, "node_modules") {
+		t.Fatalf("expected ignored folders to be skipped, got %v", paths)
 	}
 }
 

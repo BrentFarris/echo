@@ -638,6 +638,11 @@ h3 {
   align-items: end;
 }
 
+.chat-input-wrap {
+  position: relative;
+  min-width: 0;
+}
+
 .chat-composer textarea {
   width: 100%;
   min-width: 0;
@@ -649,6 +654,111 @@ h3 {
   background: var(--color-bg);
   color: var(--color-text);
   line-height: 1.35;
+}
+
+.chat-mention-picker {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 8;
+  display: grid;
+  gap: 4px;
+  max-height: min(300px, 42vh);
+  padding: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-modal);
+}
+
+.chat-mention-option {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 42px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.chat-mention-option:hover,
+.chat-mention-option:focus-visible,
+.chat-mention-option.is-active {
+  border-color: color-mix(in srgb, var(--color-accent) 32%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  outline: none;
+}
+
+.chat-mention-icon {
+  display: grid;
+  place-items: center;
+  color: var(--color-text-muted);
+}
+
+.chat-mention-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.chat-mention-name {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chat-mention-name strong,
+.chat-mention-name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-mention-name strong {
+  color: var(--color-text);
+  font-size: 0.84rem;
+}
+
+.chat-mention-name span,
+.chat-mention-size,
+.chat-mention-status {
+  color: var(--color-text-muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.chat-mention-size {
+  white-space: nowrap;
+}
+
+.chat-mention-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 8px;
+}
+
+.chat-mention-status.is-error {
+  color: var(--color-danger);
+  overflow-wrap: anywhere;
+}
+
+.chat-mention-status .spinner {
+  width: 13px;
 }
 
 .send-button {
