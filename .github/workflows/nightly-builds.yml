@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -13,8 +14,57 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  check-changes:
+    name: Check for changes
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      reason: ${{ steps.check.outputs.reason }}
+
+    steps:
+      - name: Compare with last successful nightly build
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.ref_name }}
+          CURRENT_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+        run: |
+          if [ "$EVENT_NAME" != "schedule" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "reason=Manual run requested." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          last_successful_sha="$(gh run list \
+            --workflow "$WORKFLOW_NAME" \
+            --branch "$BRANCH" \
+            --event schedule \
+            --status success \
+            --limit 1 \
+            --json headSha \
+            --jq '.[0].headSha // ""')"
+
+          if [ -z "$last_successful_sha" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "reason=No previous successful nightly build found." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$last_successful_sha" = "$CURRENT_SHA" ]; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "reason=No commits since the last successful nightly build." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "should_build=true" >> "$GITHUB_OUTPUT"
+          echo "reason=Current commit differs from the last successful nightly build." >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.target }}
+    needs: check-changes
+    if: needs.check-changes.outputs.should_build == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
 
