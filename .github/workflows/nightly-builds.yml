@@ -7,7 +7,7 @@ on:
 
 permissions:
   actions: read
-  contents: read
+  contents: write
 
 concurrency:
   group: nightly-builds-${{ github.ref }}
@@ -153,3 +153,40 @@ jobs:
           path: dist/${{ matrix.archive }}
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    name: Create nightly release
+    needs:
+      - check-changes
+      - build
+    if: github.event_name == 'schedule' && needs.check-changes.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: echo-*-nightly
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+          CHECK_REASON: ${{ needs.check-changes.outputs.reason }}
+        run: |
+          release_date="$(date -u +%Y-%m-%d)"
+          tag="nightly-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"
+
+          {
+            echo "Automated nightly build for ${SOURCE_SHA}."
+            echo
+            echo "${CHECK_REASON}"
+          } > release-notes.md
+
+          gh release create "$tag" release-assets/* \
+            --target "$SOURCE_SHA" \
+            --title "Echo Nightly $release_date" \
+            --notes-file release-notes.md
