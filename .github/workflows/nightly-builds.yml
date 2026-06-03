@@ -1,0 +1,105 @@
+name: Nightly Builds
+
+on:
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-builds-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows
+            os: windows-latest
+            archive: echo-windows-nightly.zip
+            wails_tags: ""
+          - target: linux
+            os: ubuntu-24.04
+            archive: echo-linux-nightly.tar.gz
+            wails_tags: "-tags webkit2_41"
+          - target: macos
+            os: macos-latest
+            archive: echo-macos-nightly.tar.gz
+            wails_tags: ""
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Add Go tools to PATH
+        shell: pwsh
+        run: |
+          "$(go env GOPATH)/bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.11.0
+
+      - name: Build Echo
+        shell: pwsh
+        run: wails build -clean ${{ matrix.wails_tags }}
+
+      - name: Package build output
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+          if ($env:RUNNER_OS -eq "Windows") {
+            if (-not (Test-Path -LiteralPath "build/bin/echo.exe")) {
+              Get-ChildItem -Recurse build/bin
+              exit 1
+            }
+            Compress-Archive -LiteralPath "build/bin/echo.exe" -DestinationPath "dist/${{ matrix.archive }}" -Force
+          } elseif ($env:RUNNER_OS -eq "macOS") {
+            $appBundle = Get-ChildItem -Path "build/bin" -Directory -Filter "*.app" | Select-Object -First 1
+            if ($null -eq $appBundle) {
+              Get-ChildItem -Recurse build/bin
+              exit 1
+            }
+            tar -czf "dist/${{ matrix.archive }}" -C "build/bin" $appBundle.Name
+          } else {
+            if (-not (Test-Path -LiteralPath "build/bin/echo")) {
+              Get-ChildItem -Recurse build/bin
+              exit 1
+            }
+            tar -czf "dist/${{ matrix.archive }}" -C "build/bin" "echo"
+          }
+
+      - name: Upload nightly artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: echo-${{ matrix.target }}-nightly
+          path: dist/${{ matrix.archive }}
+          if-no-files-found: error
+          retention-days: 14
