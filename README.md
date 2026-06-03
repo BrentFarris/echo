@@ -1,9 +1,11 @@
 # Echo
 
-I am one of those programmers who still actually writes code and programs. I use AI to augment my development. I also use local models like Qwen, Gemma, Deepseek, and others. VS Code sucks hard with local models, it errors and times out all the time. This software fixes that and adds special features that I use for development, like the LLM Kanban board.
+Echo is a local-first programmer's AI harness. it's made for serious/actual programmers. It's design is to allow you to work with your AI on creating and modifying program code. You can break down large ideas into Kanban tasks for the AI to execute. You can easily review all code changes, you can even manually write code directly using Echo.
+
+Use local models like Qwen, Gemma, Deepseek, and others; and I only intend to use local models. VS Code sucks hard with local models, it errors and times out all the time. This software fixes that and adds special features that I use for development, like the LLM Kanban board.
 
 ## Features
-There are 2 primary features that make up Echo. A Kanban board for large tasks and features, and a code editor for fine tuning and working with individual functions and routines.
+There are 2 primary features that make up Echo. A Kanban board for large tasks and features, and a code editor for fine tuning and working with individual functions and routines. See [the wiki](https://github.com/BrentFarris/echo/wiki) for some tips and the list of hotkeys.
 
 ### Kanban
 The Kanban view has a chat for you to come up with a plan for implementing a feature. Once the plan in the chat looks good, you just click the decompose chat button to have the LLM break it down into tasks. Tasks will show up in the Kanban view, you can review them and if you like the plan, you can run the Kanban cards.
