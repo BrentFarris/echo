@@ -18,6 +18,7 @@ var readOnlyToolNames = map[string]bool{
 	"filesystem_list":      true,
 	"filesystem_read_text": true,
 	"filesystem_stat":      true,
+	"web_search":           true,
 }
 
 var mutatingToolNames = map[string]bool{

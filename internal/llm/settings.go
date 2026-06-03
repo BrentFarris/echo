@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/brent/echo/internal/searxng"
 )
 
 const (
@@ -11,6 +13,7 @@ const (
 	DefaultModel         = "Qwen3.6-35B-A3B"
 	DefaultContextLength = 262144
 	DefaultMaxTokens     = 32168
+	DefaultSearxngURL    = searxng.DefaultURL
 )
 
 type Settings struct {
@@ -26,6 +29,7 @@ type Settings struct {
 	PresencePenalty   float64 `json:"presencePenalty"`
 	RepetitionPenalty float64 `json:"repetitionPenalty"`
 	TimeoutSeconds    int     `json:"timeoutSeconds"`
+	SearxngURL        string  `json:"searxngUrl"`
 }
 
 func DefaultSettings() Settings {
@@ -41,12 +45,17 @@ func DefaultSettings() Settings {
 		PresencePenalty:   1.5,
 		RepetitionPenalty: 1,
 		TimeoutSeconds:    120,
+		SearxngURL:        DefaultSearxngURL,
 	}
 }
 
 func (s Settings) Normalized() Settings {
 	s.Endpoint = strings.TrimSpace(s.Endpoint)
 	s.Model = strings.TrimSpace(s.Model)
+	s.SearxngURL = strings.TrimSpace(s.SearxngURL)
+	if s.SearxngURL == "" {
+		s.SearxngURL = DefaultSearxngURL
+	}
 	if s.ContextLength == 0 {
 		s.ContextLength = DefaultContextLength
 	}
@@ -71,12 +80,11 @@ func (s Settings) Validate() error {
 		return fmt.Errorf("model is required")
 	}
 
-	parsed, err := url.ParseRequestURI(s.Endpoint)
-	if err != nil || parsed.Host == "" {
-		return fmt.Errorf("endpoint must be a valid HTTP or HTTPS URL")
+	if err := validateHTTPURL(s.Endpoint, "endpoint"); err != nil {
+		return err
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("endpoint must use http or https")
+	if err := validateHTTPURL(s.SearxngURL, "searxng url"); err != nil {
+		return err
 	}
 
 	if s.Temperature < 0 || s.Temperature > 2 {
@@ -108,6 +116,23 @@ func (s Settings) Validate() error {
 	}
 	if s.TimeoutSeconds < 1 {
 		return fmt.Errorf("timeout must be at least 1 second")
+	}
+	return nil
+}
+
+func validateHTTPURL(value string, label string) error {
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed.Host == "" {
+		if label == "endpoint" {
+			return fmt.Errorf("endpoint must be a valid HTTP or HTTPS URL")
+		}
+		return fmt.Errorf("%s must be a valid HTTP or HTTPS URL", label)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		if label == "endpoint" {
+			return fmt.Errorf("endpoint must use http or https")
+		}
+		return fmt.Errorf("%s must use http or https", label)
 	}
 	return nil
 }

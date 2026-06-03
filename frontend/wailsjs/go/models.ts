@@ -13,6 +13,7 @@ export namespace llm {
 	    presencePenalty: number;
 	    repetitionPenalty: number;
 	    timeoutSeconds: number;
+	    searxngUrl: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -32,6 +33,7 @@ export namespace llm {
 	        this.presencePenalty = source["presencePenalty"];
 	        this.repetitionPenalty = source["repetitionPenalty"];
 	        this.timeoutSeconds = source["timeoutSeconds"];
+	        this.searxngUrl = source["searxngUrl"];
 	    }
 	}
 

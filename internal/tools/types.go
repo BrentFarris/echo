@@ -39,6 +39,7 @@ func (t ToolFunc) Execute(ctx ExecutionContext, arguments json.RawMessage) (any,
 type ExecutionContext struct {
 	Context       context.Context
 	WorkspacePath string
+	SearxngURL    string
 	Emit          EventEmitter
 	FileChanges   FileChangeSink
 }

@@ -1679,6 +1679,10 @@ function renderSettingsOverlay(workspaces: services.Workspace[]): string {
             <input name="endpoint" required type="url" value="${escapeHtml(fieldValue("endpoint"))}" autocomplete="off" data-initial-focus />
           </label>
           <label class="field field-wide">
+            <span>SearXNG URL</span>
+            <input name="searxngUrl" type="url" value="${escapeHtml(fieldValue("searxngUrl"))}" autocomplete="off" />
+          </label>
+          <label class="field field-wide">
             <span>Model</span>
             <input name="model" required type="text" value="${escapeHtml(fieldValue("model"))}" autocomplete="off" />
           </label>
