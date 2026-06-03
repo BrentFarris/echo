@@ -99,6 +99,7 @@ const openChangeReviewWorkspaces = new Set<string>();
 const cardMessageDrafts = new Map<string, string>();
 const expandedChatWorkspaces = new Set<string>();
 const expandedKanbanWorkspaces = new Set<string>();
+const expandedChangeReviewWorkspaces = new Set<string>();
 let toastSeq = 0;
 let toasts: Toast[] = [];
 let kanbanTimerID: number | null = null;
@@ -1291,17 +1292,24 @@ function renderChangeReviewDrawer(
 ): string {
   const files = review.files ?? [];
   const hasChanges = (review.changeCount ?? 0) > 0;
+  const expanded = expandedChangeReviewWorkspaces.has(workspace.id);
+  const sizeLabel = expanded ? "Collapse AI changes" : "Expand AI changes";
   return `
-    <aside class="change-review-backdrop" role="dialog" aria-modal="true" aria-labelledby="change-review-title">
-      <section class="change-review" data-change-review>
+    <aside class="change-review-backdrop ${expanded ? "is-expanded" : ""}" role="dialog" aria-modal="true" aria-labelledby="change-review-title">
+      <section class="change-review ${expanded ? "is-expanded" : ""}" data-change-review>
         <header class="change-review-header">
           <div>
             <p class="eyebrow">${escapeHtml(workspace.displayName)}</p>
             <h2 id="change-review-title">AI Changes</h2>
           </div>
-          <button class="icon-button close-button" type="button" title="Close" aria-label="Close AI changes" data-action="close-change-review">
-            ${icons.x}
-          </button>
+          <div class="change-review-header-actions">
+            <button class="icon-button" type="button" title="${sizeLabel}" aria-label="${sizeLabel}" aria-pressed="${expanded}" data-action="toggle-change-review-size">
+              ${expanded ? icons.collapse : icons.expand}
+            </button>
+            <button class="icon-button close-button" type="button" title="Close" aria-label="Close AI changes" data-action="close-change-review">
+              ${icons.x}
+            </button>
+          </div>
         </header>
 
         <div class="change-review-summary" aria-label="Change summary">
@@ -2214,6 +2222,19 @@ async function handleAction(event: Event) {
         return;
       }
       openChangeReviewWorkspaces.delete(workspace.id);
+      expandedChangeReviewWorkspaces.delete(workspace.id);
+      render();
+    }
+    if (action === "toggle-change-review-size") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      if (expandedChangeReviewWorkspaces.has(workspace.id)) {
+        expandedChangeReviewWorkspaces.delete(workspace.id);
+      } else {
+        expandedChangeReviewWorkspaces.add(workspace.id);
+      }
       render();
     }
     if (action === "clear-change-review") {
@@ -2356,6 +2377,7 @@ async function handleAction(event: Event) {
       openChangeReviewWorkspaces.delete(workspaceID);
       expandedChatWorkspaces.delete(workspaceID);
       expandedKanbanWorkspaces.delete(workspaceID);
+      expandedChangeReviewWorkspaces.delete(workspaceID);
       chatPlanModes.delete(workspaceID);
       chatImageDrafts.delete(workspaceID);
       clearKanbanRun(workspaceID);
