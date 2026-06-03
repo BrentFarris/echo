@@ -1,5 +1,7 @@
 # Echo
 
+Echo is a local-first programmer's AI harness. it's made for serious/actual programmers. It's design is to allow you to work with your AI on creating and modifying program code. You can break down large ideas into Kanban tasks for the AI to execute. You can easily review all code changes, you can even manually write code directly using Echo.
+
 I am one of those programmers who still actually writes code and programs. I use AI to augment my development. I also use local models like Qwen, Gemma, Deepseek, and others. VS Code sucks hard with local models, it errors and times out all the time. This software fixes that and adds special features that I use for development, like the LLM Kanban board.
 
 ## Features
