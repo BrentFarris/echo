@@ -43,6 +43,8 @@ import {
   StopKanbanCard,
   StopKanbanExecution,
   StopChatStream,
+  RetryChatMessage,
+  EditChatMessage,
 } from "../wailsjs/go/services/SystemService";
 import { llm, services } from "../wailsjs/go/models";
 import { EventsOn } from "../wailsjs/runtime/runtime";
@@ -71,6 +73,8 @@ const icons = {
   arrowUp: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg>`,
   arrowDown: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`,
   x: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>`,
+  edit: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 3a2.85 2.85 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>`,
+  retry: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/></svg>`,
 };
 
 type AppMode = "chat-kanban" | "code";
@@ -97,6 +101,7 @@ const openChangeReviewWorkspaces = new Set<string>();
 const cardMessageDrafts = new Map<string, string>();
 const expandedChatWorkspaces = new Set<string>();
 const expandedKanbanWorkspaces = new Set<string>();
+const editingMessageIds = new Set<string>();
 let toastSeq = 0;
 let toasts: Toast[] = [];
 let kanbanTimerID: number | null = null;
@@ -1546,17 +1551,56 @@ function renderChatMessage(message: services.ChatMessage): string {
   const status = message.status && message.status !== "complete"
     ? `<span data-message-status>${escapeHtml(message.status)}</span>`
     : "";
+  const isUser = message.role === "user";
+  const isEditing = editingMessageIds.has(message.id);
   return `
-    <article class="chat-message ${message.role === "user" ? "from-user" : "from-assistant"}" data-message-id="${escapeAttribute(message.id)}">
+    <article class="chat-message ${isUser ? "from-user" : "from-assistant"}" data-message-id="${escapeAttribute(message.id)}">
       <header>
         <strong>${roleLabel}</strong>
         ${status}
+        ${isUser ? renderEditControls(message, isEditing) : renderRetryButton(message)}
       </header>
       ${renderChatMessageImages(message)}
-      <div class="markdown-body" data-message-content>${renderMarkdown(message.content ?? "")}</div>
+      ${isEditing
+        ? renderEditTextarea(message)
+        : `<div class="markdown-body" data-message-content>${renderMarkdown(message.content ?? "")}</div>`
+      }
       ${message.error ? `<p class="message-error" data-message-error>${escapeHtml(message.error)}</p>` : `<p class="message-error" data-message-error hidden></p>`}
       ${renderDebugSections(message)}
     </article>
+  `;
+}
+
+function renderRetryButton(message: services.ChatMessage): string {
+  const isStreaming = message.status === 'retrying' || message.status === 'in_progress';
+  return `
+    <button class="icon-button chat-retry-trigger" type="button" title="Regenerate response" aria-label="Regenerate response" data-action="retry-message" data-message-id="${escapeAttribute(message.id)}">
+      ${isStreaming ? '<span class="spinner" aria-hidden="true"></span>' : icons.retry}
+    </button>
+  `;
+}
+
+function renderEditControls(message: services.ChatMessage, isEditing: boolean): string {
+  if (isEditing) {
+    return "";
+  }
+  return `
+    <button class="icon-button chat-edit-trigger" type="button" title="Edit message" aria-label="Edit message" data-action="edit-message" data-message-id="${escapeAttribute(message.id)}">
+      ${icons.edit}
+    </button>
+  `;
+}
+
+function renderEditTextarea(message: services.ChatMessage): string {
+  const escapedContent = escapeHtml(message.content ?? "");
+  return `
+    <form class="chat-edit-form" data-chat-edit-form data-message-id="${escapeAttribute(message.id)}">
+      <textarea class="chat-edit-textarea" rows="3" data-chat-edit-input aria-label="Edit message">${escapedContent}</textarea>
+      <div class="chat-edit-actions">
+        <button class="primary-button" type="submit" data-action="save-message-edit">Save</button>
+        <button class="secondary-button" type="button" data-action="cancel-message-edit">Cancel</button>
+      </div>
+    </form>
   `;
 }
 
@@ -1813,6 +1857,7 @@ function bindChatEvents(root: ParentNode) {
     .forEach((input) => input.addEventListener("change", handleChatPlanModeChange));
   bindChatMentionOptions(root);
   bindChatFileLinks(root);
+  bindChatEditForms(root);
 }
 
 function bindCardMessageEvents(root: ParentNode) {
@@ -1821,6 +1866,17 @@ function bindCardMessageEvents(root: ParentNode) {
   root
     .querySelectorAll<HTMLTextAreaElement>("[data-card-message-input]")
     .forEach((input) => input.addEventListener("input", handleCardMessageInput));
+}
+
+function bindChatEditForms(root: ParentNode) {
+  root
+    .querySelectorAll<HTMLFormElement>("[data-chat-edit-form]")
+    .forEach((form) => form.addEventListener("submit", handleChatEditSubmit));
+  root
+    .querySelectorAll<HTMLTextAreaElement>("[data-chat-edit-input]")
+    .forEach((input) => {
+      input.addEventListener("keydown", handleChatEditKeydown);
+    });
 }
 
 function focusInitialElement() {
@@ -2238,6 +2294,23 @@ async function handleAction(event: Event) {
       pushToast(`Card moved to ${laneLabel(lane)}.`, "success");
       render();
     }
+    if (action === "retry-message") {
+      const workspace = activeWorkspace();
+      const messageID = target.dataset.messageId ?? "";
+      if (!workspace || !messageID) {
+        return;
+      }
+      editingMessageIds.delete(messageID);
+      try {
+        chatSessions.set(workspace.id, await RetryChatMessage(workspace.id, messageID));
+        pushToast("Response regenerated.", "success");
+      } catch (error) {
+        pushToast(errorMessage(error), "error");
+      }
+      render();
+      scrollChatToBottom();
+      return;
+    }
     if (action === "stop-chat") {
       const workspace = activeWorkspace();
       if (!workspace) {
@@ -2255,6 +2328,30 @@ async function handleAction(event: Event) {
       chatDrafts.set(workspace.id, "");
       chatImageDrafts.delete(workspace.id);
       patchChatPanel();
+    }
+    if (action === "edit-message") {
+      const workspace = activeWorkspace();
+      const messageID = target.dataset.messageId ?? "";
+      if (!workspace || !messageID) {
+        return;
+      }
+      editingMessageIds.add(messageID);
+      render();
+      const textarea = appRoot.querySelector<HTMLTextAreaElement>(`[data-chat-edit-input][data-message-id="${CSS.escape(messageID)}"]`);
+      textarea?.focus();
+      textarea?.setSelectionRange(textarea.value.length, textarea.value.length);
+      return;
+    }
+    if (action === "cancel-message-edit") {
+      const form = (event.currentTarget as HTMLElement).closest<HTMLFormElement>(
+        "[data-chat-edit-form]",
+      );
+      const messageID = form?.dataset.messageId ?? "";
+      if (messageID) {
+        editingMessageIds.delete(messageID);
+        render();
+      }
+      return;
     }
     if (action === "delete-workspace") {
       const workspace = appState?.workspaces.find((item) => item.id === workspaceID);
@@ -2577,6 +2674,52 @@ async function handleChatSubmit(event: SubmitEvent) {
     pushToast(errorMessage(error), "error");
     render();
   }
+}
+
+async function handleChatEditSubmit(event: SubmitEvent) {
+  event.preventDefault();
+  const workspace = activeWorkspace();
+  const form = event.currentTarget as HTMLFormElement;
+  const messageID = form.dataset.messageId ?? "";
+  if (!workspace || !messageID) {
+    return;
+  }
+  const textarea = form.querySelector<HTMLTextAreaElement>("[data-chat-edit-input]");
+  const newContent = textarea?.value ?? "";
+  const trimmed = newContent.trim();
+  if (!trimmed) {
+    pushToast("Message cannot be empty.", "error");
+    return;
+  }
+
+  try {
+    chatSessions.set(workspace.id, await EditChatMessage(workspace.id, messageID, trimmed));
+    editingMessageIds.delete(messageID);
+    render();
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+    render();
+  }
+}
+
+function handleChatEditKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    const input = event.currentTarget as HTMLTextAreaElement;
+    const form = input.closest<HTMLFormElement>("[data-chat-edit-form]");
+    const messageID = form?.dataset.messageId ?? "";
+    if (messageID) {
+      editingMessageIds.delete(messageID);
+      render();
+    }
+    return;
+  }
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
+    return;
+  }
+  event.preventDefault();
+  const input = event.currentTarget as HTMLTextAreaElement;
+  input.form?.requestSubmit();
 }
 
 async function loadActiveChatSession() {

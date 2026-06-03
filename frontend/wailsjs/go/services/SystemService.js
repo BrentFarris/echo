@@ -34,6 +34,10 @@ export function DeleteWorkspace(arg1) {
   return window['go']['services']['SystemService']['DeleteWorkspace'](arg1);
 }
 
+export function EditChatMessage(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['EditChatMessage'](arg1, arg2, arg3);
+}
+
 export function ExecutePlan(arg1) {
   return window['go']['services']['SystemService']['ExecutePlan'](arg1);
 }
@@ -76,6 +80,10 @@ export function ResetKanbanCard(arg1, arg2) {
 
 export function ResolveWorkspaceTextFilePath(arg1, arg2) {
   return window['go']['services']['SystemService']['ResolveWorkspaceTextFilePath'](arg1, arg2);
+}
+
+export function RetryChatMessage(arg1, arg2) {
+  return window['go']['services']['SystemService']['RetryChatMessage'](arg1, arg2);
 }
 
 export function SaveSettings(arg1) {

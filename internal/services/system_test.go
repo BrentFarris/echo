@@ -1521,3 +1521,64 @@ func TestSystemServiceSetWorkspaceLetterPersists(t *testing.T) {
 		t.Fatalf("expected cleared letter, got %q", got)
 	}
 }
+
+func TestSystemServiceChatHistoryUpToLocked(t *testing.T) {
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+	workspacePath := t.TempDir()
+	state, err := service.AddWorkspace(workspacePath)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	workspaceID := state.ActiveWorkspaceID
+
+	history := []llm.Message{
+		{Role: llm.RoleUser, Content: "hello"},
+		{Role: llm.RoleAssistant, Content: "hi there"},
+		{Role: llm.RoleUser, Content: "second question"},
+		{Role: llm.RoleAssistant, Content: "second answer"},
+	}
+	seedChatPlan(service, workspaceID, nil, history)
+
+	tests := []struct {
+		name       string
+		index      int
+		wantLen    int
+		wantNil    bool
+	}{
+		{"zero returns nil", 0, 0, true},
+		{"one returns first message", 1, 1, false},
+		{"two returns first two", 2, 2, false},
+		{"full length returns all", 4, 4, false},
+		{"excess clamps to full", 10, 4, false},
+		{"negative clamps to zero", -1, 0, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := service.chatHistoryUpToLocked(workspaceID, tc.index)
+			if tc.wantNil && result != nil {
+				t.Fatalf("expected nil, got %d messages", len(result))
+			}
+			if !tc.wantNil && result == nil {
+				t.Fatalf("expected non-nil, got nil")
+			}
+			if len(result) != tc.wantLen {
+				t.Fatalf("expected %d messages, got %d", tc.wantLen, len(result))
+			}
+			// Verify returned slice is a copy (mutating it doesn't affect internal state).
+			if len(result) > 0 {
+				result[0] = llm.Message{Role: llm.RoleUser, Content: "mutated"}
+			}
+			internal := service.chatHistory(workspaceID)
+			if len(internal) > 0 && internal[0].Content == "mutated" {
+				t.Fatal("history was mutated by caller")
+			}
+		})
+	}
+
+	// Non-existent workspace returns nil.
+	result := service.chatHistoryUpToLocked("nonexistent", 2)
+	if result != nil {
+		t.Fatalf("expected nil for nonexistent workspace, got %d messages", len(result))
+	}
+}

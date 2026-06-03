@@ -103,9 +103,33 @@ func resolveWorkspaceChildPath(workspacePath, requestedPath string) (string, err
 }
 
 func relativeWorkspacePath(workspacePath, absolutePath string) string {
-	relative, err := filepath.Rel(workspacePath, absolutePath)
-	if err != nil {
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
 		return filepath.ToSlash(absolutePath)
+	}
+	absPath := strings.TrimSpace(absolutePath)
+	if absPath == "" {
+		return filepath.ToSlash(absolutePath)
+	}
+	// Normalize both paths to their real absolute forms so filepath.Rel
+	// produces correct results even when symlinks or mixed casing are involved.
+	workspaceAbs, err := filepath.Abs(workspacePath)
+	if err != nil {
+		return filepath.ToSlash(absPath)
+	}
+	if realWS, err := filepath.EvalSymlinks(workspaceAbs); err == nil {
+		workspaceAbs = realWS
+	}
+	absAbs, err := filepath.Abs(absPath)
+	if err != nil {
+		return filepath.ToSlash(absPath)
+	}
+	if realAbs, err := filepath.EvalSymlinks(absAbs); err == nil {
+		absAbs = realAbs
+	}
+	relative, err := filepath.Rel(workspaceAbs, absAbs)
+	if err != nil {
+		return filepath.ToSlash(absPath)
 	}
 	if relative == "." {
 		return "."
