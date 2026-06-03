@@ -34,6 +34,7 @@ import {
   LoadWorkspaceChangeReview,
   MoveKanbanCard,
   OpenKanbanCardDetail,
+  OpenWorkspaceExplorer,
   ResetKanbanCard,
   ResolveWorkspaceTextFilePath,
   SaveSettings,
@@ -103,6 +104,13 @@ const expandedChangeReviewWorkspaces = new Set<string>();
 let toastSeq = 0;
 let toasts: Toast[] = [];
 let kanbanTimerID: number | null = null;
+type ContextMenuState = {
+  workspaceId: string;
+  folderPath: string;
+  x: number;
+  y: number;
+};
+let contextMenu: ContextMenuState | null = null;
 
 const kanbanLaneLabels: Record<string, string> = {
   ready: "Ready",
@@ -914,6 +922,30 @@ function bindChatMentionOptions(root: ParentNode) {
   });
 }
 
+function renderContextMenu(state: ContextMenuState): string {
+  return `\
+    <div class="workspace-context-menu" data-context-menu style="left:${state.x}px;top:${state.y}px">\
+      <button\
+        class="workspace-context-menu-item"\
+        type="button"\
+        data-action="show-in-explorer"\
+        data-workspace-id="${escapeAttribute(state.workspaceId)}"\
+      >\
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9l-6-6H5a2 2 0 0 0-2 2Z"/></svg>\
+        <span class="workspace-context-menu-label">${escapeHtml(state.folderPath)}</span>\
+      </button>\
+    </div>\
+  `;
+}
+
+function dismissContextMenu() {
+  if (!contextMenu) {
+    return;
+  }
+  contextMenu = null;
+  render();
+}
+
 function renderToasts(): string {
   if (!toasts.length) {
     return "";
@@ -1013,6 +1045,7 @@ function render() {
       </main>
       ${settingsOpen ? renderSettingsOverlay(workspaces) : ""}
       ${renderToasts()}
+      ${contextMenu ? renderContextMenu(contextMenu) : ""}
     </div>
   `;
 
@@ -1812,6 +1845,60 @@ function bindEvents() {
   bindChatEvents(appRoot);
   bindCardMessageEvents(appRoot);
   bindCodeViewEvents(appRoot, codeViewCallbacks());
+
+  // Context menu on workspace gutter buttons
+  appRoot.querySelectorAll<HTMLElement>('[data-action="activate-workspace"]').forEach((button) => {
+    button.addEventListener("contextmenu", (event: MouseEvent) => {
+      event.preventDefault();
+      const workspaceId = button.dataset.workspaceId ?? "";
+      const folderPath = button.title ?? "";
+      if (!workspaceId || !folderPath) {
+        return;
+      }
+      contextMenu = { workspaceId, folderPath, x: event.clientX, y: event.clientY };
+      render();
+
+      // Clamp to viewport boundaries so the menu stays fully visible
+      const menuEl = appRoot.querySelector<HTMLElement>("[data-context-menu]");
+      if (menuEl && contextMenu) {
+        const rect = menuEl.getBoundingClientRect();
+        let newX = contextMenu.x;
+        let newY = contextMenu.y;
+
+        if (rect.right > window.innerWidth) {
+          newX = Math.max(0, window.innerWidth - rect.width - 4);
+        }
+        if (rect.bottom > window.innerHeight) {
+          newY = Math.max(0, window.innerHeight - rect.height - 4);
+        }
+
+        if (newX !== contextMenu.x || newY !== contextMenu.y) {
+          contextMenu = { ...contextMenu, x: newX, y: newY };
+          render();
+        }
+      }
+    });
+  });
+
+  // Dismiss context menu on outside pointer down
+  document.addEventListener(
+    "pointerdown",
+    (event: PointerEvent) => {
+      if (!contextMenu) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+      const menuEl = appRoot.querySelector<HTMLElement>("[data-context-menu]");
+      if (menuEl && menuEl.contains(target)) {
+        return;
+      }
+      dismissContextMenu();
+    },
+    true,
+  );
 }
 
 function codeViewCallbacks() {
@@ -2074,6 +2161,20 @@ async function handleAction(event: Event) {
   try {
     if (action === "dismiss-toast") {
       dismissToast(target.dataset.toastId ?? "");
+      return;
+    }
+    if (action === "show-in-explorer") {
+      const workspaceID = target.dataset.workspaceId ?? "";
+      if (!workspaceID) {
+        return;
+      }
+      try {
+        await OpenWorkspaceExplorer(workspaceID);
+        pushToast("Opened folder in Explorer.", "success");
+      } catch (error) {
+        pushToast(errorMessage(error), "error");
+      }
+      dismissContextMenu();
       return;
     }
     if (action === "open-code-view") {
