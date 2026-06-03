@@ -159,7 +159,7 @@ jobs:
     needs:
       - check-changes
       - build
-    if: github.event_name == 'schedule' && needs.check-changes.outputs.should_build == 'true'
+    if: needs.check-changes.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
