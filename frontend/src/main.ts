@@ -1903,7 +1903,12 @@ function handleGlobalKeydown(event: KeyboardEvent) {
       return;
     }
     event.preventDefault();
-    scrollChangeReview(event.key === "ArrowDown" ? 1 : -1);
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    if (event.ctrlKey || event.metaKey) {
+      scrollChangeReviewFile(direction);
+    } else {
+      scrollChangeReview(direction);
+    }
     return;
   }
   if (event.key !== "Escape") {
@@ -1980,9 +1985,59 @@ function scrollChangeReview(direction: 1 | -1) {
     targetIndex = currentIndex <= 0 ? changes.length - 1 : currentIndex - 1;
   }
   const target = changes[targetIndex];
-  changes.forEach((change) => change.classList.remove("is-current"));
-  target.classList.add("is-current");
+  markCurrentChangeTarget(review, target);
   target.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function scrollChangeReviewFile(direction: 1 | -1) {
+  const review = appRoot.querySelector<HTMLElement>("[data-change-review]");
+  if (!review) {
+    return;
+  }
+  const files = Array.from(review.querySelectorAll<HTMLElement>("[data-change-file]"));
+  if (!files.length) {
+    return;
+  }
+
+  const currentIndex = currentChangeFileIndex(files);
+  let targetIndex: number;
+  if (direction > 0) {
+    targetIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % files.length;
+  } else {
+    targetIndex = currentIndex <= 0 ? files.length - 1 : currentIndex - 1;
+  }
+  const targetFile = files[targetIndex];
+  const fileChanges = Array.from(targetFile.querySelectorAll<HTMLElement>("[data-change-line]"));
+  const targetLine = direction > 0 ? fileChanges[0] : fileChanges[fileChanges.length - 1];
+  markCurrentChangeTarget(review, targetLine ?? targetFile);
+  targetFile.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function currentChangeFileIndex(files: HTMLElement[]): number {
+  const currentFileIndex = files.findIndex((file) =>
+    file.classList.contains("is-current"),
+  );
+  if (currentFileIndex >= 0) {
+    return currentFileIndex;
+  }
+  return files.findIndex((file) =>
+    Boolean(file.querySelector("[data-change-line].is-current")),
+  );
+}
+
+function markCurrentChangeTarget(review: HTMLElement, target: HTMLElement) {
+  review
+    .querySelectorAll<HTMLElement>("[data-change-line].is-current")
+    .forEach((change) => change.classList.remove("is-current"));
+  review
+    .querySelectorAll<HTMLElement>("[data-change-file].is-current")
+    .forEach((file) => file.classList.remove("is-current"));
+
+  const targetFile = target.closest<HTMLElement>("[data-change-file]");
+  targetFile?.classList.add("is-current");
+  if (target.matches("[data-change-line]")) {
+    target.classList.add("is-current");
+  }
 }
 
 async function handleAction(event: Event) {
