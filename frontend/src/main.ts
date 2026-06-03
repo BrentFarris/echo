@@ -20,9 +20,11 @@ import {
 } from "./markdown";
 import {
   ChooseWorkspaceFolder,
+  ChooseWorkspaceIcon,
   CloseKanbanCardDetail,
   ClearWorkspaceChangeReview,
   ClearChat,
+  ClearWorkspaceIcon,
   DeleteWorkspace,
   ExecutePlan,
   AddKanbanCardMessage,
@@ -387,6 +389,14 @@ function fieldValue<K extends keyof llm.Settings>(key: K): string {
 
 function workspaceLetter(workspace: services.Workspace): string {
   return (workspace.letter ?? "").trim() || workspace.displayName.slice(0, 1).toUpperCase() || "W";
+}
+
+function renderWorkspaceIcon(workspace: services.Workspace): string {
+  const iconURL = (workspace.iconUrl ?? "").trim();
+  if (iconURL) {
+    return `<img class="workspace-icon-image" src="${escapeAttribute(iconURL)}" alt="">`;
+  }
+  return `<span class="workspace-icon-label">${escapeHtml(workspaceLetter(workspace))}</span>`;
 }
 
 function workspaceLetterDraft(workspace: services.Workspace): string {
@@ -964,7 +974,7 @@ function render() {
                   aria-label="${escapeHtml(item.displayName)}${item.missing ? " missing" : ""}"
                   data-action="activate-workspace"
                   data-workspace-id="${escapeHtml(item.id)}"
-                >${escapeHtml(workspaceLetter(item))}</button>
+                >${renderWorkspaceIcon(item)}</button>
               `,
             )
             .join("")}
@@ -1741,14 +1751,22 @@ function renderSettingsOverlay(workspaces: services.Workspace[]): string {
                             <strong>${escapeHtml(workspace.displayName)}${workspace.missing ? " - Missing" : ""}</strong>
                             <span>${escapeHtml(workspace.folderPath)}</span>
                           </div>
+                          <div class="workspace-icon-setting" aria-label="Workspace icon for ${escapeAttribute(workspace.displayName)}">
+                            <span class="workspace-icon-preview" aria-hidden="true">${renderWorkspaceIcon(workspace)}</span>
+                            <button class="icon-button" type="button" title="Choose workspace icon" aria-label="Choose icon for ${escapeAttribute(workspace.displayName)}" data-action="choose-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}">
+                              ${icons.image}
+                            </button>
+                            <button class="icon-button" type="button" title="Clear workspace icon" aria-label="Clear icon for ${escapeAttribute(workspace.displayName)}" data-action="clear-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}" ${(workspace.iconUrl ?? "").trim() ? "" : "disabled"}>
+                              ${icons.x}
+                            </button>
+                          </div>
                           <label class="workspace-letter-field">
-                            <span>Letter</span>
+                            <span>Label</span>
                             <input
                               name="workspaceLetter"
                               type="text"
-                              maxlength="2"
                               value="${escapeHtml(workspaceLetterDraft(workspace))}"
-                              aria-label="Workspace letter for ${escapeHtml(workspace.displayName)}"
+                              aria-label="Workspace icon label for ${escapeHtml(workspace.displayName)}"
                               data-workspace-letter
                               data-workspace-id="${escapeHtml(workspace.id)}"
                             />
@@ -2114,6 +2132,16 @@ async function handleAction(event: Event) {
           : "Workspace folder recovered.",
         activeWorkspace()?.missing ? "error" : "success",
       );
+      render();
+    }
+    if (action === "choose-workspace-icon") {
+      appState = await ChooseWorkspaceIcon(workspaceID);
+      pushToast("Workspace icon updated.", "success");
+      render();
+    }
+    if (action === "clear-workspace-icon") {
+      appState = await ClearWorkspaceIcon(workspaceID);
+      pushToast("Workspace icon cleared.", "success");
       render();
     }
     if (action === "activate-workspace") {

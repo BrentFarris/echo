@@ -1517,13 +1517,13 @@ func TestSystemServiceSetWorkspaceLetterPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("set workspace letter: %v", err)
 	}
-	if got := state.Workspaces[0].Letter; got != "Z" {
-		t.Fatalf("expected normalized letter Z, got %q", got)
+	if got := state.Workspaces[0].Letter; got != "ZED" {
+		t.Fatalf("expected normalized letter ZED, got %q", got)
 	}
 
 	reloaded := NewSystemServiceWithStorePath(storePath).LoadState()
-	if got := reloaded.Workspaces[0].Letter; got != "Z" {
-		t.Fatalf("expected persisted letter Z, got %q", got)
+	if got := reloaded.Workspaces[0].Letter; got != "ZED" {
+		t.Fatalf("expected persisted letter ZED, got %q", got)
 	}
 
 	state, err = service.SetWorkspaceLetter(workspaceID, " ")
@@ -1532,5 +1532,184 @@ func TestSystemServiceSetWorkspaceLetterPersists(t *testing.T) {
 	}
 	if got := state.Workspaces[0].Letter; got != "" {
 		t.Fatalf("expected cleared letter, got %q", got)
+	}
+}
+
+func TestSystemServiceWorkspaceIconPersistsBesideState(t *testing.T) {
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(root, "icon.png")
+	if err := os.WriteFile(sourcePath, tinyPNGBytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	storePath := filepath.Join(root, "Echo", "state.json")
+	service := NewSystemServiceWithStorePath(storePath)
+	state, err := service.AddWorkspace(workspacePath)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	workspaceID := state.ActiveWorkspaceID
+
+	state, err = service.setWorkspaceIconFromPath(workspaceID, sourcePath)
+	if err != nil {
+		t.Fatalf("set workspace icon: %v", err)
+	}
+	iconPath := state.Workspaces[0].IconPath
+	if iconPath == "" {
+		t.Fatal("expected persisted workspace icon path")
+	}
+	if filepath.Dir(iconPath) != filepath.Join(filepath.Dir(storePath), "icons") {
+		t.Fatalf("expected icon beside state file, got %q", iconPath)
+	}
+	if state.Workspaces[0].IconURL == "" || !strings.HasPrefix(state.Workspaces[0].IconURL, workspaceIconRoutePrefix) {
+		t.Fatalf("expected app-served URL for icon, got %q", state.Workspaces[0].IconURL)
+	}
+	if data, err := os.ReadFile(iconPath); err != nil || string(data) != string(tinyPNGBytes()) {
+		t.Fatalf("expected copied icon bytes at %q, got data %q err %v", iconPath, data, err)
+	}
+
+	reloaded := NewSystemServiceWithStorePath(storePath).LoadState()
+	if reloaded.Workspaces[0].IconPath != iconPath {
+		t.Fatalf("expected persisted icon path %q, got %q", iconPath, reloaded.Workspaces[0].IconPath)
+	}
+	if reloaded.Workspaces[0].IconURL == "" {
+		t.Fatal("expected icon URL after reload")
+	}
+}
+
+func TestSystemServiceWorkspaceIconHandlerServesStoredIcon(t *testing.T) {
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(root, "icon.png")
+	if err := os.WriteFile(sourcePath, tinyPNGBytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	service := NewSystemServiceWithStorePath(filepath.Join(root, "Echo", "state.json"))
+	state, err := service.AddWorkspace(workspacePath)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	state, err = service.setWorkspaceIconFromPath(state.ActiveWorkspaceID, sourcePath)
+	if err != nil {
+		t.Fatalf("set workspace icon: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, state.Workspaces[0].IconURL, nil)
+	response := httptest.NewRecorder()
+	service.WorkspaceIconHandler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected stored icon to be served, got status %d body %q", response.Code, response.Body.String())
+	}
+	if got := response.Body.Bytes(); string(got) != string(tinyPNGBytes()) {
+		t.Fatalf("expected stored icon bytes, got %q", got)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, workspaceIconRoutePrefix+"../state.json", nil)
+	response = httptest.NewRecorder()
+	service.WorkspaceIconHandler().ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expected traversal request to be rejected, got status %d", response.Code)
+	}
+}
+
+func TestSystemServiceWorkspaceIconMiddlewareBypassesFrontendFallback(t *testing.T) {
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(root, "icon.png")
+	if err := os.WriteFile(sourcePath, tinyPNGBytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	service := NewSystemServiceWithStorePath(filepath.Join(root, "Echo", "state.json"))
+	state, err := service.AddWorkspace(workspacePath)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	state, err = service.setWorkspaceIconFromPath(state.ActiveWorkspaceID, sourcePath)
+	if err != nil {
+		t.Fatalf("set workspace icon: %v", err)
+	}
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<!doctype html>"))
+	})
+	request := httptest.NewRequest(http.MethodGet, state.Workspaces[0].IconURL, nil)
+	response := httptest.NewRecorder()
+	service.WorkspaceIconMiddleware(next).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected middleware to serve icon, got status %d body %q", response.Code, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "image/") {
+		t.Fatalf("expected image content type, got %q", contentType)
+	}
+	if got := response.Body.Bytes(); string(got) != string(tinyPNGBytes()) {
+		t.Fatalf("expected stored icon bytes, got %q", got)
+	}
+}
+
+func TestSystemServiceWorkspaceIconReplaceAndClear(t *testing.T) {
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	firstSource := filepath.Join(root, "icon.png")
+	secondSource := filepath.Join(root, "icon.jpg")
+	if err := os.WriteFile(firstSource, []byte("first"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secondSource, []byte("second"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	service := NewSystemServiceWithStorePath(filepath.Join(root, "Echo", "state.json"))
+	state, err := service.AddWorkspace(workspacePath)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	workspaceID := state.ActiveWorkspaceID
+
+	state, err = service.setWorkspaceIconFromPath(workspaceID, firstSource)
+	if err != nil {
+		t.Fatalf("set first workspace icon: %v", err)
+	}
+	firstPath := state.Workspaces[0].IconPath
+
+	state, err = service.setWorkspaceIconFromPath(workspaceID, secondSource)
+	if err != nil {
+		t.Fatalf("replace workspace icon: %v", err)
+	}
+	secondPath := state.Workspaces[0].IconPath
+	if firstPath == secondPath {
+		t.Fatal("expected replacement with a new extension to use a different file path")
+	}
+	if _, err := os.Stat(firstPath); !os.IsNotExist(err) {
+		t.Fatalf("expected previous icon to be removed, stat error: %v", err)
+	}
+	if data, err := os.ReadFile(secondPath); err != nil || string(data) != "second" {
+		t.Fatalf("expected replacement icon bytes, got data %q err %v", data, err)
+	}
+
+	state, err = service.ClearWorkspaceIcon(workspaceID)
+	if err != nil {
+		t.Fatalf("clear workspace icon: %v", err)
+	}
+	if state.Workspaces[0].IconPath != "" || state.Workspaces[0].IconURL != "" {
+		t.Fatalf("expected cleared icon fields, got %#v", state.Workspaces[0])
+	}
+	if _, err := os.Stat(secondPath); !os.IsNotExist(err) {
+		t.Fatalf("expected cleared icon file to be removed, stat error: %v", err)
 	}
 }

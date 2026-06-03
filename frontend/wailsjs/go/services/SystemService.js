@@ -18,12 +18,20 @@ export function ChooseWorkspaceFolder() {
   return window['go']['services']['SystemService']['ChooseWorkspaceFolder']();
 }
 
+export function ChooseWorkspaceIcon(arg1) {
+  return window['go']['services']['SystemService']['ChooseWorkspaceIcon'](arg1);
+}
+
 export function ClearChat(arg1) {
   return window['go']['services']['SystemService']['ClearChat'](arg1);
 }
 
 export function ClearWorkspaceChangeReview(arg1) {
   return window['go']['services']['SystemService']['ClearWorkspaceChangeReview'](arg1);
+}
+
+export function ClearWorkspaceIcon(arg1) {
+  return window['go']['services']['SystemService']['ClearWorkspaceIcon'](arg1);
 }
 
 export function CloseKanbanCardDetail(arg1, arg2) {
@@ -132,4 +140,12 @@ export function StopKanbanExecution(arg1) {
 
 export function SubmitInlineCodePrompt(arg1, arg2) {
   return window['go']['services']['SystemService']['SubmitInlineCodePrompt'](arg1, arg2);
+}
+
+export function WorkspaceIconHandler() {
+  return window['go']['services']['SystemService']['WorkspaceIconHandler']();
+}
+
+export function WorkspaceIconMiddleware(arg1) {
+  return window['go']['services']['SystemService']['WorkspaceIconMiddleware'](arg1);
 }

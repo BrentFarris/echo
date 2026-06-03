@@ -216,7 +216,26 @@ textarea:focus-visible {
 
 .workspace-button {
   position: relative;
+  overflow: hidden;
+  font-size: 0.82rem;
   font-weight: 800;
+  line-height: 1;
+}
+
+.workspace-icon-label {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: clip;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.workspace-icon-image {
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
+  object-fit: cover;
 }
 
 .icon-button svg {
@@ -1680,7 +1699,7 @@ h3 {
 
 .workspace-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 12px;
   min-height: 68px;
@@ -1694,6 +1713,31 @@ h3 {
   display: grid;
   gap: 4px;
   min-width: 0;
+}
+
+.workspace-icon-setting {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.workspace-icon-preview {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.workspace-icon-setting .icon-button {
+  width: 34px;
 }
 
 .workspace-row strong,
@@ -1712,7 +1756,7 @@ h3 {
 }
 
 .workspace-letter-field input {
-  width: 44px;
+  width: 56px;
   height: 34px;
   padding: 0 8px;
   border: 1px solid var(--color-border);

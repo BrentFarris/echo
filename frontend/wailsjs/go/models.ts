@@ -62,6 +62,8 @@ export namespace services {
 	    folderPath: string;
 	    displayName: string;
 	    letter?: string;
+	    iconPath?: string;
+	    iconUrl?: string;
 	    active: boolean;
 	    missing: boolean;
 	    error?: string;
@@ -76,6 +78,8 @@ export namespace services {
 	        this.folderPath = source["folderPath"];
 	        this.displayName = source["displayName"];
 	        this.letter = source["letter"];
+	        this.iconPath = source["iconPath"];
+	        this.iconUrl = source["iconUrl"];
 	        this.active = source["active"];
 	        this.missing = source["missing"];
 	        this.error = source["error"];
