@@ -35,6 +35,8 @@ export function MoveKanbanCard(arg1:string,arg2:string,arg3:string):Promise<serv
 
 export function OpenKanbanCardDetail(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
+export function OpenWorkspaceExplorer(arg1:string):Promise<void>;
+
 export function ReadWorkspaceFile(arg1:string,arg2:string):Promise<services.WorkspaceFile>;
 
 export function ResetKanbanCard(arg1:string,arg2:string):Promise<services.KanbanBoard>;

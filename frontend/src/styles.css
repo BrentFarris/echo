@@ -944,6 +944,82 @@ h3 {
   width: 13px;
 }
 
+.chat-mention-status .spinner {
+  width: 13px;
+}
+
+.workspace-context-menu {
+  position: fixed;
+  z-index: 30;
+  display: grid;
+  gap: 4px;
+  min-width: 180px;
+  max-width: min(260px, calc(100vw - 32px));
+  padding: 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-modal);
+}
+
+.workspace-context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-context-menu-item:hover,
+.workspace-context-menu-item:focus-visible {
+  background: var(--color-surface-muted);
+  outline: none;
+}
+
+.workspace-context-menu-item.is-danger {
+  color: var(--color-danger);
+}
+
+.workspace-context-menu-item.is-danger:hover,
+.workspace-context-menu-item.is-danger:focus-visible {
+  background: color-mix(in srgb, var(--color-danger) 10%, var(--color-surface));
+}
+
+.workspace-context-menu-divider {
+  height: 1px;
+  margin: 3px 8px;
+  background: var(--color-border);
+  border: 0;
+}
+
+.workspace-context-menu-item svg {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.workspace-context-menu-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .send-button {
   width: 44px;
   min-height: 44px;

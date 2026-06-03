@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 
@@ -295,6 +297,52 @@ func (s *SystemService) DeleteWorkspace(id string) (AppState, error) {
 	s.chatMu.Unlock()
 	s.dropWorkspaceChangeReview(id)
 	return cloneState(s.state), nil
+}
+
+func (s *SystemService) OpenWorkspaceExplorer(id string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("workspace id is required")
+	}
+
+	s.mu.Lock()
+	var folderPath string
+	for _, workspace := range s.state.Workspaces {
+		if workspace.ID == id {
+			folderPath = workspace.FolderPath
+			break
+		}
+	}
+	s.mu.Unlock()
+
+	if folderPath == "" {
+		return fmt.Errorf("workspace was not found")
+	}
+
+	info, err := os.Stat(folderPath)
+	if err != nil {
+		return fmt.Errorf("workspace folder does not exist: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("workspace path is not a folder")
+	}
+
+	var cmd *exec.Cmd
+	switch goruntime.GOOS {
+	case "windows":
+		cmd = exec.Command("explorer.exe", folderPath)
+	case "darwin":
+		cmd = exec.Command("open", folderPath)
+	default:
+		cmd = exec.Command("xdg-open", folderPath)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to open workspace explorer: %w", err)
+	}
+
+	// Don't Wait() — we don't want to block the caller waiting for the
+	// external process to finish. The OS handles cleanup.
+	return nil
 }
 
 func (s *SystemService) load() error {

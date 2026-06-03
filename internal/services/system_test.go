@@ -1521,3 +1521,50 @@ func TestSystemServiceSetWorkspaceLetterPersists(t *testing.T) {
 		t.Fatalf("expected cleared letter, got %q", got)
 	}
 }
+
+func TestSystemServiceOpenWorkspaceExplorer(t *testing.T) {
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "project")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	service := NewSystemServiceWithStorePath(filepath.Join(root, "state.json"))
+	state, err := service.AddWorkspace(workspacePath)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	workspaceID := state.ActiveWorkspaceID
+
+	// Valid workspace should succeed (cmd starts in background, so no error).
+	err = service.OpenWorkspaceExplorer(workspaceID)
+	if err != nil {
+		t.Fatalf("expected success for valid workspace, got %v", err)
+	}
+
+	// Non-existent workspace ID should fail.
+	err = service.OpenWorkspaceExplorer("nonexistent-id")
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected not-found error, got %v", err)
+	}
+
+	// Empty id should fail.
+	err = service.OpenWorkspaceExplorer("")
+	if err == nil || !strings.Contains(err.Error(), "required") {
+		t.Fatalf("expected required error for empty id, got %v", err)
+	}
+
+	// Missing folder workspace should fail.
+	state2, err := service.AddWorkspace(root)
+	if err != nil {
+		t.Fatalf("add second workspace: %v", err)
+	}
+	// Remove the folder so it becomes missing
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatal(err)
+	}
+	err = service.OpenWorkspaceExplorer(state2.ActiveWorkspaceID)
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("expected does-not-exist error, got %v", err)
+	}
+}
