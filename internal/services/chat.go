@@ -174,7 +174,162 @@ func (s *SystemService) ClearChat(workspaceID string) (ChatSession, error) {
 	return clone, nil
 }
 
+func (s *SystemService) RetryChatMessage(workspaceID string, messageID string) (ChatSession, error) {
+	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
+		return ChatSession{}, err
+	}
+
+	s.chatMu.Lock()
+	defer s.chatMu.Unlock()
+
+	session := s.ensureChatSessionLocked(workspaceID)
+
+	if session.Busy {
+		return ChatSession{}, fmt.Errorf("chat is already busy")
+	}
+
+	msgIndex := -1
+	for i := range session.Messages {
+		if session.Messages[i].ID == messageID {
+			msgIndex = i
+			break
+		}
+	}
+	if msgIndex < 0 {
+		return ChatSession{}, fmt.Errorf("message was not found")
+	}
+
+	if session.Messages[msgIndex].Role != llm.RoleAssistant || session.Messages[msgIndex].Status != "complete" {
+		return ChatSession{}, fmt.Errorf("can only retry complete assistant messages")
+	}
+
+	// Truncate messages and history up to (not including) the message being retried.
+	history := append([]llm.Message(nil), session.History[:msgIndex]...)
+	session.Messages = session.Messages[:msgIndex]
+	session.History = session.History[:msgIndex]
+
+	assistantMessage := ChatMessage{
+		ID:     s.nextChatIDLocked("msg"),
+		Role:   llm.RoleAssistant,
+		Status: "streaming",
+	}
+	streamID := s.nextChatIDLocked("stream")
+	session.Messages = append(session.Messages, assistantMessage)
+	session.Busy = true
+	session.StreamID = streamID
+
+	runContext, cancel := context.WithCancel(context.Background())
+	s.chatStreams[workspaceID] = cancel
+
+	clone := cloneChatSession(session)
+
+	s.emitChatEvent(ChatStreamEvent{
+		WorkspaceID: workspaceID,
+		StreamID:    streamID,
+		MessageID:   assistantMessage.ID,
+		Type:        "started",
+	})
+
+	go func() {
+		workspace, settings, err := s.workspaceAndSettings(workspaceID)
+		if err != nil {
+			s.failChatMessage(workspaceID, streamID, assistantMessage.ID, err.Error())
+			return
+		}
+		s.runChatTurnWithHistory(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, history, false)
+	}()
+
+	return clone, nil
+}
+
+func (s *SystemService) EditChatMessage(workspaceID string, messageID string, content string) (ChatSession, error) {
+	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
+		return ChatSession{}, err
+	}
+
+	s.chatMu.Lock()
+
+	session := s.ensureChatSessionLocked(workspaceID)
+
+	if session.Busy {
+		s.chatMu.Unlock()
+		return ChatSession{}, fmt.Errorf("chat is already busy")
+	}
+
+	msgIndex := -1
+	for i := range session.Messages {
+		if session.Messages[i].ID == messageID {
+			msgIndex = i
+			break
+		}
+	}
+	if msgIndex < 0 {
+		s.chatMu.Unlock()
+		return ChatSession{}, fmt.Errorf("message was not found")
+	}
+
+	if session.Messages[msgIndex].Role != llm.RoleUser {
+		s.chatMu.Unlock()
+		return ChatSession{}, fmt.Errorf("can only edit user messages")
+	}
+
+	content = strings.TrimSpace(content)
+	if content == "" {
+		s.chatMu.Unlock()
+		return ChatSession{}, fmt.Errorf("message content is required")
+	}
+
+	// Update the message content.
+	session.Messages[msgIndex].Content = content
+
+	// Rebuild the LLM history entry for this message.
+	session.History[msgIndex] = llm.Message{Role: llm.RoleUser, Content: content}
+
+	// Truncate messages and history at the target index.
+	history := append([]llm.Message(nil), session.History[:msgIndex+1]...)
+	session.Messages = session.Messages[:msgIndex+1]
+	session.History = session.History[:msgIndex+1]
+
+	assistantMessage := ChatMessage{
+		ID:     s.nextChatIDLocked("msg"),
+		Role:   llm.RoleAssistant,
+		Status: "streaming",
+	}
+	streamID := s.nextChatIDLocked("stream")
+	session.Messages = append(session.Messages, assistantMessage)
+	session.Busy = true
+	session.StreamID = streamID
+
+	runContext, cancel := context.WithCancel(context.Background())
+	s.chatStreams[workspaceID] = cancel
+
+	clone := cloneChatSession(session)
+	s.chatMu.Unlock()
+
+	s.emitChatEvent(ChatStreamEvent{
+		WorkspaceID: workspaceID,
+		StreamID:    streamID,
+		MessageID:   assistantMessage.ID,
+		Type:        "started",
+	})
+
+	go func() {
+		workspace, settings, err := s.workspaceAndSettings(workspaceID)
+		if err != nil {
+			s.failChatMessage(workspaceID, streamID, assistantMessage.ID, err.Error())
+			return
+		}
+		s.runChatTurnWithHistory(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, history, false)
+	}()
+
+	return clone, nil
+}
+
 func (s *SystemService) runChatTurn(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, streamID string, messageID string, planMode bool) {
+	s.runChatTurnWithHistory(ctx, cancel, workspace, settings, streamID, messageID, s.chatHistory(workspace.ID), planMode)
+}
+
+func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, streamID string, messageID string, history []llm.Message, planMode bool) {
 	defer cancel()
 	defer s.finishChatStream(workspace.ID, streamID)
 
@@ -184,7 +339,7 @@ func (s *SystemService) runChatTurn(ctx context.Context, cancel context.CancelFu
 		return
 	}
 
-	messages := append([]llm.Message{chatSystemMessage(workspace, planMode)}, s.chatHistory(workspace.ID)...)
+	messages := append([]llm.Message{chatSystemMessage(workspace, planMode)}, history...)
 	toolSchema := tools.LLMSchema()
 	if planMode {
 		toolSchema = tools.ReadOnlyLLMSchema()
@@ -550,6 +705,16 @@ func (s *SystemService) dropChatSession(workspaceID string) {
 	}
 	delete(s.chatSessions, workspaceID)
 	s.chatMu.Unlock()
+}
+
+func (s *SystemService) chatHistoryUpToLocked(workspaceID string, messageIndex int) []llm.Message {
+	if session := s.chatSessions[workspaceID]; session != nil && messageIndex > 0 {
+		if messageIndex > len(session.History) {
+			messageIndex = len(session.History)
+		}
+		return append([]llm.Message(nil), session.History[:messageIndex]...)
+	}
+	return nil
 }
 
 func (s *SystemService) chatHistory(workspaceID string) []llm.Message {

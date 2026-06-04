@@ -494,6 +494,63 @@ h3 {
   text-transform: uppercase;
 }
 
+.chat-message header .icon-button {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.chat-message:hover header .icon-button {
+  opacity: 1;
+}
+
+.chat-message.from-user header .icon-button:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-accent-strong);
+}
+
+.chat-message.from-assistant:hover header .icon-button.chat-retry-trigger {
+  opacity: 1;
+}
+
+.chat-message.from-assistant header .icon-button.chat-retry-trigger:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-accent-strong);
+}
+
+.chat-edit-form {
+  display: grid;
+  gap: 8px;
+}
+
+.chat-edit-textarea {
+  width: 100%;
+  min-width: 0;
+  max-height: 200px;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.chat-edit-textarea:focus {
+  border-color: var(--color-accent);
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 26%, transparent);
+  outline-offset: 2px;
+}
+
+.chat-edit-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .markdown-body {
   display: grid;
   gap: 8px;
