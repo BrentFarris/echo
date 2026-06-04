@@ -1696,12 +1696,14 @@ h3 {
   white-space: pre-wrap;
 }
 
+.card-description-form,
 .card-message-form {
   display: grid;
   gap: 10px;
   padding-top: 4px;
 }
 
+.card-description-form textarea,
 .card-message-form textarea {
   width: 100%;
   min-width: 0;
@@ -1714,6 +1716,7 @@ h3 {
   line-height: 1.35;
 }
 
+.card-description-form button,
 .card-message-form button {
   justify-self: end;
 }

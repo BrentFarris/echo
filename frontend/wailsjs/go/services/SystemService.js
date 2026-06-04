@@ -146,6 +146,10 @@ export function SubmitInlineCodePrompt(arg1, arg2) {
   return window['go']['services']['SystemService']['SubmitInlineCodePrompt'](arg1, arg2);
 }
 
+export function UpdateKanbanCardDescription(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['UpdateKanbanCardDescription'](arg1, arg2, arg3);
+}
+
 export function WorkspaceIconHandler() {
   return window['go']['services']['SystemService']['WorkspaceIconHandler']();
 }

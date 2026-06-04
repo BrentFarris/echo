@@ -46,6 +46,7 @@ import {
   StopKanbanCard,
   StopKanbanExecution,
   StopChatStream,
+  UpdateKanbanCardDescription,
 } from "../wailsjs/go/services/SystemService";
 import { llm, services } from "../wailsjs/go/models";
 import { EventsOn } from "../wailsjs/runtime/runtime";
@@ -73,6 +74,7 @@ const icons = {
   code: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></svg>`,
   arrowUp: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg>`,
   arrowDown: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`,
+  check: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>`,
   x: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>`,
 };
 
@@ -1229,6 +1231,7 @@ function renderKanbanDetail(board: services.KanbanBoard): string {
   const transcript = card.progressTranscript ?? [];
   const blocked = card.lane === "ready" && !card.eligible;
   const canReset = card.lane !== "ready" || transcript.length > 0;
+  const canEditDescription = card.lane === "ready" && !runningKanbanWorkspaces.has(board.workspaceId);
   const draftKey = `${board.workspaceId}:${card.id}`;
   const cardDraft = cardMessageDrafts.get(draftKey) ?? "";
   return `
@@ -1269,7 +1272,17 @@ function renderKanbanDetail(board: services.KanbanBoard): string {
 
         <section class="detail-section">
           <h3>Description</h3>
-          <p>${escapeHtml(card.description)}</p>
+          ${
+            canEditDescription
+              ? `<form class="card-description-form" data-card-description-form data-card-id="${escapeAttribute(card.id)}">
+                  <textarea name="description" rows="5" aria-label="Card description" data-card-description-input>${escapeHtml(card.description)}</textarea>
+                  <button class="primary-button icon-text-button" type="submit" disabled>
+                    ${icons.check}
+                    <span>Save</span>
+                  </button>
+                </form>`
+              : `<p>${escapeHtml(card.description)}</p>`
+          }
         </section>
 
         <section class="detail-section">
@@ -1843,6 +1856,7 @@ function bindEvents() {
     .forEach((input) => input.addEventListener("input", handleSettingsInput));
 
   bindChatEvents(appRoot);
+  bindCardDescriptionEvents(appRoot);
   bindCardMessageEvents(appRoot);
   bindCodeViewEvents(appRoot, codeViewCallbacks());
 
@@ -1938,6 +1952,14 @@ function bindCardMessageEvents(root: ParentNode) {
   root
     .querySelectorAll<HTMLTextAreaElement>("[data-card-message-input]")
     .forEach((input) => input.addEventListener("input", handleCardMessageInput));
+}
+
+function bindCardDescriptionEvents(root: ParentNode) {
+  const form = root.querySelector<HTMLFormElement>("[data-card-description-form]");
+  form?.addEventListener("submit", handleCardDescriptionSubmit);
+  root
+    .querySelectorAll<HTMLTextAreaElement>("[data-card-description-input]")
+    .forEach((input) => input.addEventListener("input", handleCardDescriptionInput));
 }
 
 function focusInitialElement() {
@@ -2498,6 +2520,45 @@ async function handleAction(event: Event) {
       formError = "";
       pushToast(message, "error");
     }
+    render();
+  }
+}
+
+function handleCardDescriptionInput(event: Event) {
+  const workspace = activeWorkspace();
+  const card = workspace ? selectedKanbanCard(kanbanBoardFor(workspace.id)) : null;
+  if (!workspace || !card) {
+    return;
+  }
+  const input = event.currentTarget as HTMLTextAreaElement;
+  const button = input.form?.querySelector<HTMLButtonElement>('button[type="submit"]');
+  if (button) {
+    const nextDescription = input.value.trim();
+    button.disabled = nextDescription.length === 0 || nextDescription === card.description.trim();
+  }
+}
+
+async function handleCardDescriptionSubmit(event: SubmitEvent) {
+  event.preventDefault();
+  const workspace = activeWorkspace();
+  const form = event.currentTarget as HTMLFormElement;
+  const cardID = form.dataset.cardId ?? "";
+  const input = form.querySelector<HTMLTextAreaElement>("[data-card-description-input]");
+  if (!workspace || !cardID || !input) {
+    return;
+  }
+  const description = input.value.trim();
+  if (!description) {
+    return;
+  }
+
+  try {
+    kanbanBoards.set(workspace.id, await UpdateKanbanCardDescription(workspace.id, cardID, description));
+    selectedKanbanCards.set(workspace.id, cardID);
+    pushToast("Card description updated.", "success");
+    render();
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
     render();
   }
 }

@@ -76,6 +76,8 @@ export function StopKanbanExecution(arg1:string):Promise<services.KanbanBoard>;
 
 export function SubmitInlineCodePrompt(arg1:string,arg2:services.InlineCodePromptRequest):Promise<services.InlineCodePromptResponse>;
 
+export function UpdateKanbanCardDescription(arg1:string,arg2:string,arg3:string):Promise<services.KanbanBoard>;
+
 export function WorkspaceIconHandler():Promise<http.Handler>;
 
 export function WorkspaceIconMiddleware(arg1:http.Handler):Promise<http.Handler>;
