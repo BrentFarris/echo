@@ -1171,7 +1171,7 @@ function renderDecompositionState(): string {
   return `
     <div class="empty-state board-empty decomposition-state" role="status" aria-live="polite">
       <span class="spinner decomposition-spinner" aria-hidden="true"></span>
-      <strong>Decomposing cards</strong>
+      <strong>Triage</strong>
       <span>Echo is converting the chat plan into Ready cards.</span>
     </div>
   `;
