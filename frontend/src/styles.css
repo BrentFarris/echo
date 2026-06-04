@@ -195,7 +195,7 @@ textarea:focus-visible {
 }
 
 .gutter-button.is-active {
-  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 44%, transparent);
   color: var(--color-accent-strong);
 }
 
