@@ -66,6 +66,10 @@ export function LoadWorkspaceChangeReview(arg1) {
   return window['go']['services']['SystemService']['LoadWorkspaceChangeReview'](arg1);
 }
 
+export function LoadWorkspaceGitChanges(arg1) {
+  return window['go']['services']['SystemService']['LoadWorkspaceGitChanges'](arg1);
+}
+
 export function MoveKanbanCard(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['MoveKanbanCard'](arg1, arg2, arg3);
 }

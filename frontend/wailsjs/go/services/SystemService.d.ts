@@ -36,6 +36,8 @@ export function LoadState():Promise<services.AppState>;
 
 export function LoadWorkspaceChangeReview(arg1:string):Promise<services.WorkspaceChangeReview>;
 
+export function LoadWorkspaceGitChanges(arg1:string):Promise<services.WorkspaceGitChangeReview>;
+
 export function MoveKanbanCard(arg1:string,arg2:string,arg3:string):Promise<services.KanbanBoard>;
 
 export function OpenKanbanCardDetail(arg1:string,arg2:string):Promise<services.KanbanBoard>;

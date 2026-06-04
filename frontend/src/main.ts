@@ -32,6 +32,7 @@ import {
   LoadKanbanBoard,
   LoadState,
   LoadWorkspaceChangeReview,
+  LoadWorkspaceGitChanges,
   MoveKanbanCard,
   OpenKanbanCardDetail,
   OpenWorkspaceExplorer,
@@ -94,15 +95,19 @@ const chatFileLinkCache = new Map<string, Promise<string | null>>();
 let chatMention: ChatMentionState | null = null;
 const kanbanBoards = new Map<string, services.KanbanBoard>();
 const changeReviews = new Map<string, services.WorkspaceChangeReview>();
+const gitChangeReviews = new Map<string, services.WorkspaceGitChangeReview>();
 const executingPlans = new Set<string>();
 const runningKanbanWorkspaces = new Set<string>();
 const kanbanRunStarts = new Map<string, number>();
 const selectedKanbanCards = new Map<string, string>();
 const openChangeReviewWorkspaces = new Set<string>();
+const openGitChangeWorkspaces = new Set<string>();
 const cardMessageDrafts = new Map<string, string>();
 const expandedChatWorkspaces = new Set<string>();
 const expandedKanbanWorkspaces = new Set<string>();
 const expandedChangeReviewWorkspaces = new Set<string>();
+const expandedGitChangeWorkspaces = new Set<string>();
+const loadingGitChangeWorkspaces = new Set<string>();
 let toastSeq = 0;
 let toasts: Toast[] = [];
 let kanbanTimerID: number | null = null;
@@ -291,6 +296,17 @@ function changeReviewFor(workspaceID: string): services.WorkspaceChangeReview {
   );
 }
 
+function gitChangeReviewFor(workspaceID: string): services.WorkspaceGitChangeReview {
+  return (
+    gitChangeReviews.get(workspaceID) ??
+    services.WorkspaceGitChangeReview.createFrom({
+      workspaceId: workspaceID,
+      fileCount: 0,
+      files: [],
+    })
+  );
+}
+
 function kanbanCards(board: services.KanbanBoard): services.KanbanCard[] {
   return [
     ...(board.ready ?? []),
@@ -317,6 +333,12 @@ function changeOperationLabel(operation = ""): string {
       return "Deleted";
     case "edited":
       return "Edited";
+    case "renamed":
+      return "Renamed";
+    case "copied":
+      return "Copied";
+    case "conflicted":
+      return "Conflicted";
     default:
       return operation || "Changed";
   }
@@ -1044,6 +1066,7 @@ function render() {
               `
           }
         </section>
+        ${showingCode && workspace && openGitChangeWorkspaces.has(workspace.id) ? renderGitChangesDrawer(workspace, gitChangeReviewFor(workspace.id)) : ""}
       </main>
       ${settingsOpen ? renderSettingsOverlay(workspaces) : ""}
       ${renderToasts()}
@@ -1386,6 +1409,60 @@ function renderChangeReviewDrawer(
   `;
 }
 
+function renderGitChangesDrawer(
+  workspace: services.Workspace,
+  review: services.WorkspaceGitChangeReview,
+): string {
+  const files = review.files ?? [];
+  const expanded = expandedGitChangeWorkspaces.has(workspace.id);
+  const loading = loadingGitChangeWorkspaces.has(workspace.id);
+  const sizeLabel = expanded ? "Collapse Git changes" : "Expand Git changes";
+  return `
+    <aside class="change-review-backdrop ${expanded ? "is-expanded" : ""}" role="dialog" aria-modal="true" aria-labelledby="git-change-review-title">
+      <section class="change-review ${expanded ? "is-expanded" : ""}" data-change-review>
+        <header class="change-review-header">
+          <div>
+            <p class="eyebrow">${escapeHtml(workspace.displayName)}</p>
+            <h2 id="git-change-review-title">Git Changes</h2>
+          </div>
+          <div class="change-review-header-actions">
+            <button class="icon-button" type="button" title="${sizeLabel}" aria-label="${sizeLabel}" aria-pressed="${expanded}" data-action="toggle-git-changes-size">
+              ${expanded ? icons.collapse : icons.expand}
+            </button>
+            <button class="icon-button close-button" type="button" title="Close" aria-label="Close Git changes" data-action="close-git-changes">
+              ${icons.x}
+            </button>
+          </div>
+        </header>
+
+        <div class="change-review-summary" aria-label="Git change summary">
+          <span>${escapeHtml(String(review.fileCount ?? files.length))} files</span>
+          ${loading ? `<span><span class="spinner" aria-hidden="true"></span>Refreshing</span>` : ""}
+        </div>
+
+        <div class="change-review-actions">
+          <button class="icon-button" type="button" title="Previous change" aria-label="Previous change" data-action="previous-change" ${files.length ? "" : "disabled"}>
+            ${icons.arrowUp}
+          </button>
+          <button class="icon-button" type="button" title="Next change" aria-label="Next change" data-action="next-change" ${files.length ? "" : "disabled"}>
+            ${icons.arrowDown}
+          </button>
+          <button class="secondary-button icon-text-button" type="button" data-action="refresh-git-changes" ${loading ? "disabled" : ""}>
+            ${loading ? `<span class="spinner" aria-hidden="true"></span>` : icons.refresh}
+            <span>Refresh</span>
+          </button>
+        </div>
+
+        ${
+          files.length
+            ? `<div class="change-file-list">${files.map(renderGitChangedFile).join("")}</div>`
+            : `<div class="empty-state compact">${loading ? renderSpinnerLabel("Loading Git changes") : "No Git changes."}</div>`
+        }
+      </section>
+    </aside>
+  `;
+}
+
 function renderChangedFile(file: services.WorkspaceChangedFile): string {
   return `
     <article class="change-file" data-change-file>
@@ -1400,6 +1477,42 @@ function renderChangedFile(file: services.WorkspaceChangedFile): string {
       ${file.diffAvailable && file.diff ? renderChangeDiff(file.diff) : renderChangeMetadata(file)}
     </article>
   `;
+}
+
+function renderGitChangedFile(file: services.WorkspaceGitChangedFile): string {
+  return `
+    <article class="change-file" data-change-file>
+      <header>
+        <div class="change-file-title">
+          ${icons.file}
+          <strong title="${escapeAttribute(file.path)}">${escapeHtml(file.path)}</strong>
+        </div>
+        <span class="change-operation is-${escapeAttribute(file.operation)}">${escapeHtml(changeOperationLabel(file.operation))}</span>
+      </header>
+      ${renderGitChangeStatus(file)}
+      ${file.diffAvailable && file.diff ? renderChangeDiff(file.diff) : renderGitChangeMetadata(file)}
+    </article>
+  `;
+}
+
+function renderGitChangeStatus(file: services.WorkspaceGitChangedFile): string {
+  const chips: string[] = [];
+  if (file.oldPath) {
+    chips.push(`<span title="${escapeAttribute(file.oldPath)}">from <em>${escapeHtml(file.oldPath)}</em></span>`);
+  }
+  if (file.status) {
+    chips.push(`<span>status <em>${escapeHtml(file.status)}</em></span>`);
+  }
+  if (file.indexStatus) {
+    chips.push(`<span>index <em>${escapeHtml(gitStatusLabel(file.indexStatus))}</em></span>`);
+  }
+  if (file.worktreeStatus) {
+    chips.push(`<span>worktree <em>${escapeHtml(gitStatusLabel(file.worktreeStatus))}</em></span>`);
+  }
+  if (!chips.length) {
+    return "";
+  }
+  return `<div class="change-sources" aria-label="Git status">${chips.join("")}</div>`;
 }
 
 function renderChangeSources(sources: services.WorkspaceChangeSource[]): string {
@@ -1420,6 +1533,42 @@ function renderChangeSources(sources: services.WorkspaceChangeSource[]): string 
         .join("")}
     </div>
   `;
+}
+
+function renderGitChangeMetadata(file: services.WorkspaceGitChangedFile): string {
+  return `
+    <div class="change-metadata">
+      <span>${escapeHtml(gitDiffUnavailableLabel(file))}</span>
+    </div>
+  `;
+}
+
+function gitDiffUnavailableLabel(file: services.WorkspaceGitChangedFile): string {
+  if (file.operation === "created" && file.status === "??") {
+    return "Diff is unavailable for this untracked file.";
+  }
+  return "Diff is unavailable for this Git change.";
+}
+
+function gitStatusLabel(status: string): string {
+  switch (status) {
+    case "A":
+      return "added";
+    case "C":
+      return "copied";
+    case "D":
+      return "deleted";
+    case "M":
+      return "modified";
+    case "R":
+      return "renamed";
+    case "U":
+      return "unmerged";
+    case "?":
+      return "untracked";
+    default:
+      return status;
+  }
 }
 
 function renderChangeDiff(diff: string): string {
@@ -2026,7 +2175,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   const workspace = activeWorkspace();
   if (
     workspace &&
-    openChangeReviewWorkspaces.has(workspace.id) &&
+    (openChangeReviewWorkspaces.has(workspace.id) || openGitChangeWorkspaces.has(workspace.id)) &&
     (event.key === "ArrowDown" || event.key === "ArrowUp")
   ) {
     const target = event.target;
@@ -2053,6 +2202,14 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     event.preventDefault();
     settingsOpen = false;
     formError = "";
+    render();
+    return;
+  }
+  if (workspace && openGitChangeWorkspaces.has(workspace.id)) {
+    event.preventDefault();
+    openGitChangeWorkspaces.delete(workspace.id);
+    expandedGitChangeWorkspaces.delete(workspace.id);
+    loadingGitChangeWorkspaces.delete(workspace.id);
     render();
     return;
   }
@@ -2215,8 +2372,70 @@ async function handleAction(event: Event) {
       const workspace = activeWorkspace();
       if (workspace) {
         clearCodeTabSwitcher(workspace.id);
+        openGitChangeWorkspaces.delete(workspace.id);
+        expandedGitChangeWorkspaces.delete(workspace.id);
+        loadingGitChangeWorkspaces.delete(workspace.id);
       }
       appMode = "chat-kanban";
+      render();
+      return;
+    }
+    if (action === "open-git-changes") {
+      const workspace = activeWorkspace();
+      if (!workspace || workspace.missing) {
+        return;
+      }
+      openGitChangeWorkspaces.add(workspace.id);
+      loadingGitChangeWorkspaces.add(workspace.id);
+      render();
+      try {
+        gitChangeReviews.set(workspace.id, await LoadWorkspaceGitChanges(workspace.id));
+      } catch (error) {
+        openGitChangeWorkspaces.delete(workspace.id);
+        expandedGitChangeWorkspaces.delete(workspace.id);
+        throw error;
+      } finally {
+        loadingGitChangeWorkspaces.delete(workspace.id);
+      }
+      render();
+      return;
+    }
+    if (action === "close-git-changes") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      openGitChangeWorkspaces.delete(workspace.id);
+      expandedGitChangeWorkspaces.delete(workspace.id);
+      loadingGitChangeWorkspaces.delete(workspace.id);
+      render();
+      return;
+    }
+    if (action === "toggle-git-changes-size") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      if (expandedGitChangeWorkspaces.has(workspace.id)) {
+        expandedGitChangeWorkspaces.delete(workspace.id);
+      } else {
+        expandedGitChangeWorkspaces.add(workspace.id);
+      }
+      render();
+      return;
+    }
+    if (action === "refresh-git-changes") {
+      const workspace = activeWorkspace();
+      if (!workspace || loadingGitChangeWorkspaces.has(workspace.id)) {
+        return;
+      }
+      loadingGitChangeWorkspaces.add(workspace.id);
+      render();
+      try {
+        gitChangeReviews.set(workspace.id, await LoadWorkspaceGitChanges(workspace.id));
+      } finally {
+        loadingGitChangeWorkspaces.delete(workspace.id);
+      }
       render();
       return;
     }
@@ -2280,6 +2499,9 @@ async function handleAction(event: Event) {
       if (current && current.id !== workspaceID) {
         await closeSelectedCardDetail(current.id);
         openChangeReviewWorkspaces.delete(current.id);
+        openGitChangeWorkspaces.delete(current.id);
+        expandedGitChangeWorkspaces.delete(current.id);
+        loadingGitChangeWorkspaces.delete(current.id);
       }
       appState = await SetActiveWorkspace(workspaceID);
       await loadActiveChatSession();
@@ -2496,11 +2718,15 @@ async function handleAction(event: Event) {
       appState = await DeleteWorkspace(workspaceID);
       kanbanBoards.delete(workspaceID);
       changeReviews.delete(workspaceID);
+      gitChangeReviews.delete(workspaceID);
       selectedKanbanCards.delete(workspaceID);
       openChangeReviewWorkspaces.delete(workspaceID);
+      openGitChangeWorkspaces.delete(workspaceID);
       expandedChatWorkspaces.delete(workspaceID);
       expandedKanbanWorkspaces.delete(workspaceID);
       expandedChangeReviewWorkspaces.delete(workspaceID);
+      expandedGitChangeWorkspaces.delete(workspaceID);
+      loadingGitChangeWorkspaces.delete(workspaceID);
       chatPlanModes.delete(workspaceID);
       chatImageDrafts.delete(workspaceID);
       clearKanbanRun(workspaceID);
