@@ -43,7 +43,7 @@ func DefaultSettings() Settings {
 		ContextLength:     DefaultContextLength,
 		MaxTokens:         DefaultMaxTokens,
 		PresencePenalty:   1.5,
-		RepetitionPenalty: 1,
+		RepetitionPenalty: 1.05,
 		TimeoutSeconds:    120,
 		SearxngURL:        DefaultSearxngURL,
 	}
