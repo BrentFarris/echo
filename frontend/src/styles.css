@@ -1192,6 +1192,12 @@ h3 {
   width: 12px;
 }
 
+.kanban-runtime svg {
+  flex: 0 0 auto;
+  width: 12px;
+  aspect-ratio: 1;
+}
+
 .kanban-runtime time {
   font-variant-numeric: tabular-nums;
 }

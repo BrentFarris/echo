@@ -103,6 +103,7 @@ const gitChangeReviews = new Map<string, services.WorkspaceGitChangeReview>();
 const executingPlans = new Set<string>();
 const runningKanbanWorkspaces = new Set<string>();
 const kanbanRunStarts = new Map<string, number>();
+const kanbanRunElapsed = new Map<string, number>();
 const selectedKanbanCards = new Map<string, string>();
 const openChangeReviewWorkspaces = new Set<string>();
 const openGitChangeWorkspaces = new Set<string>();
@@ -376,20 +377,40 @@ function formatElapsedTime(milliseconds: number): string {
 
 function kanbanElapsedLabel(workspaceID: string, now = Date.now()): string {
   const startedAt = kanbanRunStarts.get(workspaceID);
-  return startedAt ? formatElapsedTime(now - startedAt) : "0:00";
+  if (startedAt) {
+    return formatElapsedTime(now - startedAt);
+  }
+  const elapsed = kanbanRunElapsed.get(workspaceID);
+  return elapsed === undefined ? "0:00" : formatElapsedTime(elapsed);
+}
+
+function hasKanbanRuntime(workspaceID: string): boolean {
+  return kanbanRunStarts.has(workspaceID) || kanbanRunElapsed.has(workspaceID);
 }
 
 function markKanbanRunStarted(workspaceID: string) {
   if (!kanbanRunStarts.has(workspaceID)) {
     kanbanRunStarts.set(workspaceID, Date.now());
+    kanbanRunElapsed.set(workspaceID, 0);
   }
   runningKanbanWorkspaces.add(workspaceID);
   syncKanbanTimer();
 }
 
-function clearKanbanRun(workspaceID: string) {
+function finishKanbanRun(workspaceID: string) {
+  const startedAt = kanbanRunStarts.get(workspaceID);
+  if (startedAt) {
+    kanbanRunElapsed.set(workspaceID, Math.max(0, Date.now() - startedAt));
+  }
   runningKanbanWorkspaces.delete(workspaceID);
   kanbanRunStarts.delete(workspaceID);
+  syncKanbanTimer();
+}
+
+function forgetKanbanRun(workspaceID: string) {
+  runningKanbanWorkspaces.delete(workspaceID);
+  kanbanRunStarts.delete(workspaceID);
+  kanbanRunElapsed.delete(workspaceID);
   syncKanbanTimer();
 }
 
@@ -408,15 +429,17 @@ function patchKanbanElapsedTimes() {
   const now = Date.now();
   appRoot.querySelectorAll<HTMLElement>("[data-kanban-elapsed]").forEach((element) => {
     const workspaceID = element.dataset.workspaceId ?? "";
-    const startedAt = kanbanRunStarts.get(workspaceID);
-    if (!startedAt) {
+    if (!hasKanbanRuntime(workspaceID)) {
       return;
     }
-    const label = formatElapsedTime(now - startedAt);
+    const label = kanbanElapsedLabel(workspaceID, now);
     element.textContent = label;
     element
       .closest<HTMLElement>("[data-kanban-runtime]")
-      ?.setAttribute("aria-label", `Echo has been working for ${label}`);
+      ?.setAttribute(
+        "aria-label",
+        runningKanbanWorkspaces.has(workspaceID) ? `Echo has been working for ${label}` : `Echo worked for ${label}`,
+      );
   });
 }
 
@@ -1107,7 +1130,7 @@ function renderWorkspacePanels(workspace: services.Workspace | null, workspaceCo
           <div class="kanban-heading-main">
             <span>Kanban</span>
             <strong id="kanban-title">${workspace ? escapeHtml(workspace.displayName) : `${workspaceCount} workspace${workspaceCount === 1 ? "" : "s"}`}</strong>
-            ${workspace && running ? renderKanbanRuntime(workspace.id) : ""}
+            ${workspace && hasKanbanRuntime(workspace.id) ? renderKanbanRuntime(workspace.id, running) : ""}
           </div>
           ${
             workspace
@@ -1147,12 +1170,13 @@ function renderWorkspacePanels(workspace: services.Workspace | null, workspaceCo
   `;
 }
 
-function renderKanbanRuntime(workspaceID: string): string {
+function renderKanbanRuntime(workspaceID: string, running: boolean): string {
   const elapsed = kanbanElapsedLabel(workspaceID);
+  const status = running ? "Working" : "Finished";
   return `
-    <div class="kanban-runtime" role="timer" aria-label="Echo has been working for ${elapsed}" data-kanban-runtime>
-      <span class="spinner" aria-hidden="true"></span>
-      <span>Working</span>
+    <div class="kanban-runtime" role="timer" aria-label="${running ? "Echo has been working" : "Echo worked"} for ${elapsed}" data-kanban-runtime>
+      ${running ? `<span class="spinner" aria-hidden="true"></span>` : icons.check}
+      <span>${status}</span>
       <time data-kanban-elapsed data-workspace-id="${escapeAttribute(workspaceID)}">${escapeHtml(elapsed)}</time>
     </div>
   `;
@@ -2679,7 +2703,7 @@ async function handleAction(event: Event) {
       try {
         kanbanBoards.set(workspace.id, await StartKanbanExecution(workspace.id, 2));
       } catch (error) {
-        clearKanbanRun(workspace.id);
+        forgetKanbanRun(workspace.id);
         throw error;
       }
       pushToast("Kanban agents started.", "success");
@@ -2691,7 +2715,7 @@ async function handleAction(event: Event) {
         return;
       }
       kanbanBoards.set(workspace.id, await StopKanbanExecution(workspace.id));
-      clearKanbanRun(workspace.id);
+      finishKanbanRun(workspace.id);
       pushToast("Kanban agents stopped.");
       render();
     }
@@ -2829,7 +2853,7 @@ async function handleAction(event: Event) {
       loadingGitChangeWorkspaces.delete(workspaceID);
       chatPlanModes.delete(workspaceID);
       chatImageDrafts.delete(workspaceID);
-      clearKanbanRun(workspaceID);
+      forgetKanbanRun(workspaceID);
       if (!activeWorkspace() || activeWorkspace()?.missing) {
         appMode = "chat-kanban";
       } else {
@@ -3329,7 +3353,7 @@ function applyKanbanEvent(event: KanbanEvent) {
     markKanbanRunStarted(event.workspaceId);
   }
   if (event.type === "scheduler_complete") {
-    clearKanbanRun(event.workspaceId);
+    finishKanbanRun(event.workspaceId);
     void refreshWorkspaceChangeReview(event.workspaceId);
   }
   if (activeWorkspace()?.id === event.workspaceId) {
