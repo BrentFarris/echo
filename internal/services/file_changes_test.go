@@ -139,6 +139,47 @@ func TestWorkspaceChangeReviewTracksKanbanToolChanges(t *testing.T) {
 	}
 }
 
+func TestWorkspaceChangeReviewSkipsWorkspaceGitignoredFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("*.log\nignored/\n!important.log\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+	state, err := service.AddWorkspace(root)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	workspaceID := state.ActiveWorkspaceID
+
+	service.recordToolFileChanges(workspaceID, WorkspaceChangeSource{Type: "kanban", CardID: "card-1", ToolName: "filesystem_create_text"}, []tools.FileChange{
+		textCreateChange("visible.txt", "visible\n"),
+		textCreateChange("debug.log", "ignored log\n"),
+		textCreateChange("ignored/generated.txt", "ignored directory\n"),
+		textCreateChange("important.log", "negated\n"),
+	})
+
+	review, err := service.LoadWorkspaceChangeReview(workspaceID)
+	if err != nil {
+		t.Fatalf("load review: %v", err)
+	}
+	if review.FileCount != 2 || review.ChangeCount != 2 {
+		t.Fatalf("expected only non-ignored changes, got %#v", review)
+	}
+	files := map[string]WorkspaceChangedFile{}
+	for _, file := range review.Files {
+		files[file.Path] = file
+	}
+	if files["visible.txt"].Operation != tools.FileChangeCreated || files["important.log"].Operation != tools.FileChangeCreated {
+		t.Fatalf("expected visible and negated files in review, got %#v", review.Files)
+	}
+	if _, ok := files["debug.log"]; ok {
+		t.Fatalf("expected ignored log file to be skipped, got %#v", review.Files)
+	}
+	if _, ok := files["ignored/generated.txt"]; ok {
+		t.Fatalf("expected ignored directory file to be skipped, got %#v", review.Files)
+	}
+}
+
 func TestWorkspaceChangeReviewTracksInlineToolChangesAndAffectedPaths(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("before\n"), 0o600); err != nil {
@@ -295,5 +336,20 @@ func TestWorkspaceChangeReviewConsolidatesNetFileDiff(t *testing.T) {
 	file := review.Files[0]
 	if file.Operation != tools.FileChangeCreated || !strings.Contains(file.Diff, "+second") || len(file.Sources) != 2 {
 		t.Fatalf("unexpected consolidated file: %#v", file)
+	}
+}
+
+func textCreateChange(path string, content string) tools.FileChange {
+	return tools.FileChange{
+		Path:      path,
+		Operation: tools.FileChangeCreated,
+		After: &tools.FileSnapshot{
+			Path:          path,
+			Exists:        true,
+			Bytes:         int64(len(content)),
+			SHA256:        path + "-hash",
+			Text:          content,
+			TextAvailable: true,
+		},
 	}
 }

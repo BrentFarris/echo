@@ -158,10 +158,12 @@ func (s *SystemService) recordToolFileChanges(workspaceID string, source Workspa
 	if len(changes) == 0 {
 		return
 	}
+	ignoredPaths := ignoredWorkspaceChangePaths(s.workspaceFolderPath(workspaceID), changes)
 	s.fileChangeMu.Lock()
 	now := time.Now().UTC()
 	for _, change := range changes {
-		if strings.TrimSpace(change.Path) == "" || tools.IsIgnoredChangePath(change.Path) {
+		path := cleanChangePath(change.Path)
+		if path == "" || tools.IsIgnoredChangePath(path) || ignoredPaths[path] {
 			continue
 		}
 		s.fileChangeSeq++
@@ -169,7 +171,7 @@ func (s *SystemService) recordToolFileChanges(workspaceID string, source Workspa
 		s.fileChanges[workspaceID] = append(s.fileChanges[workspaceID], trackedFileChange{
 			ID:          id,
 			WorkspaceID: workspaceID,
-			Path:        change.Path,
+			Path:        path,
 			Operation:   change.Operation,
 			Source:      source,
 			Before:      cloneToolSnapshot(change.Before),
@@ -186,6 +188,17 @@ func (s *SystemService) recordToolFileChanges(workspaceID string, source Workspa
 		FileCount:   review.FileCount,
 		ChangeCount: review.ChangeCount,
 	})
+}
+
+func (s *SystemService) workspaceFolderPath(workspaceID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, workspace := range s.state.Workspaces {
+		if workspace.ID == workspaceID {
+			return workspace.FolderPath
+		}
+	}
+	return ""
 }
 
 func (s *SystemService) workspaceChangeReview(workspaceID string) WorkspaceChangeReview {
