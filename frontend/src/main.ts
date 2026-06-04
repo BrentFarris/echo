@@ -1668,20 +1668,12 @@ function renderChatPanel(workspace: services.Workspace | null, expanded = false)
   return `
     <section class="work-panel chat-panel" aria-labelledby="chat-title" aria-busy="${session.busy || executing}" data-chat-panel data-workspace-id="${escapeAttribute(workspace.id)}">
       <div class="panel-heading chat-heading">
-        <div>
-          <span>Chat -</span>
+        <div class="chat-actions">
+        <div style="width: 5em;">
+          <span>Chat</span>
+          <br/>
           <strong id="chat-title">${executing ? renderSpinnerLabel("Decomposing cards") : session.busy ? "Working" : "Ready"}</strong>
         </div>
-        <div class="chat-actions">
-          <label class="chat-plan-toggle" title="Plan mode researches and plans without changing files">
-            <input
-              type="checkbox"
-              data-chat-plan-toggle
-              ${planMode ? "checked" : ""}
-              ${session.busy || executing ? "disabled" : ""}
-            >
-            <span>Plan</span>
-          </label>
           <button class="icon-button" type="button" title="${sizeLabel}" aria-label="${sizeLabel}" aria-pressed="${expanded}" data-action="toggle-chat-size">
             ${expanded ? icons.collapse : icons.expand}
           </button>
@@ -1719,9 +1711,20 @@ function renderChatPanel(workspace: services.Workspace | null, expanded = false)
           ${renderChatImageDrafts(workspace.id, session.busy || executing)}
           ${renderChatMentionPicker(workspace.id)}
         </div>
-        <button class="primary-button icon-button send-button" type="submit" title="Send" aria-label="Send message" ${canSend ? "" : "disabled"}>
+        <div>
+        <label class="chat-plan-toggle" title="Plan mode researches and plans without changing files">
+          <span>Plan</span><br/>
+            <input
+              type="checkbox"
+              data-chat-plan-toggle
+              ${planMode ? "checked" : ""}
+              ${session.busy || executing ? "disabled" : ""}
+            >
+          </label>
+          <button class="primary-button icon-button send-button" type="submit" title="Send" aria-label="Send message" ${canSend ? "" : "disabled"}>
           ${icons.send}
-        </button>
+          </button>
+        </div>
       </form>
     </section>
   `;
