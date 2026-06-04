@@ -363,7 +363,6 @@ h3 {
 
 .chat-heading > div:first-child {
   display: flex;
-  align-items: baseline;
   gap: 5px;
   min-width: 0;
 }
@@ -383,7 +382,7 @@ h3 {
 }
 
 .chat-plan-toggle {
-  display: inline-flex;
+  display: inline-block;
   align-items: center;
   gap: 6px;
   min-height: 34px;
@@ -396,7 +395,14 @@ h3 {
   font-size: 0.8rem;
   font-weight: 800;
   line-height: 1;
+  line-height: 1.5em;
   user-select: none;
+  text-align: center;
+  margin-bottom: 0.25em;
+}
+
+.chat-plan-toggle span {
+  color: #888;
 }
 
 .chat-plan-toggle input {
