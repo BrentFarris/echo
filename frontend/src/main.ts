@@ -1171,7 +1171,7 @@ function renderDecompositionState(): string {
   return `
     <div class="empty-state board-empty decomposition-state" role="status" aria-live="polite">
       <span class="spinner decomposition-spinner" aria-hidden="true"></span>
-      <strong>Triage</strong>
+      <strong>Decomposing cards</strong>
       <span>Echo is converting the chat plan into Ready cards.</span>
     </div>
   `;
@@ -1677,7 +1677,7 @@ function renderChatPanel(workspace: services.Workspace | null, expanded = false)
         <div style="width: 5em;">
           <span>Chat</span>
           <br/>
-          <strong id="chat-title">${executing ? renderSpinnerLabel("Decomposing cards") : session.busy ? "Working" : "Ready"}</strong>
+          <strong id="chat-title">${executing ? renderSpinnerLabel("Triage") : session.busy ? "Working" : "Ready"}</strong>
         </div>
           <button class="icon-button" type="button" title="${sizeLabel}" aria-label="${sizeLabel}" aria-pressed="${expanded}" data-action="toggle-chat-size">
             ${expanded ? icons.collapse : icons.expand}
@@ -3544,7 +3544,7 @@ function patchChatControls() {
     planToggle.checked = chatPlanModeFor(workspace.id);
   }
   if (title) {
-    title.innerHTML = executing ? renderSpinnerLabel("Decomposing cards") : session.busy ? "Working" : "Ready";
+    title.innerHTML = executing ? renderSpinnerLabel("Triage") : session.busy ? "Working" : "Ready";
   }
   if (panel) {
     panel.setAttribute("aria-busy", String(session.busy || executing));
