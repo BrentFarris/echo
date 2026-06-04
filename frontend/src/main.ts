@@ -1122,7 +1122,7 @@ function renderWorkspacePanels(workspace: services.Workspace | null, workspaceCo
                   </button>
                   <button class="icon-text-button primary-button" type="button" data-action="start-agents" ${running || !hasCards ? "disabled" : ""}>
                     ${icons.execute}
-                    <span>Run</span>
+                    <span class="run-button">Run</span>
                   </button>
                   <button class="icon-button stop-button" type="button" title="Stop agents" aria-label="Stop agents" data-action="stop-agents" ${running ? "" : "disabled"}>
                     ${icons.stop}
