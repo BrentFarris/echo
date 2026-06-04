@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 )
@@ -69,6 +70,63 @@ func TestKanbanCardCanStartAfterDependenciesAreDone(t *testing.T) {
 	}
 	if len(board.InProgress) != 1 || board.InProgress[0].ID != "card-2" {
 		t.Fatalf("expected dependent card in progress, got %#v", board.InProgress)
+	}
+}
+
+func TestUpdateKanbanCardDescriptionBeforeExecution(t *testing.T) {
+	service, workspaceID := newKanbanTestService(t)
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Ready work", Description: "Original", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneReady},
+	})
+
+	board, err := service.UpdateKanbanCardDescription(workspaceID, "card-1", "  Updated detail  ")
+	if err != nil {
+		t.Fatalf("update description: %v", err)
+	}
+	if len(board.Ready) != 1 {
+		t.Fatalf("expected ready card, got %#v", board)
+	}
+	card := board.Ready[0]
+	if card.Description != "Updated detail" {
+		t.Fatalf("expected trimmed description, got %q", card.Description)
+	}
+	if len(card.ProgressTranscript) != 1 || card.ProgressTranscript[0].Title != "Description updated" {
+		t.Fatalf("expected description update in transcript, got %#v", card.ProgressTranscript)
+	}
+}
+
+func TestUpdateKanbanCardDescriptionRejectsStartedCard(t *testing.T) {
+	service, workspaceID := newKanbanTestService(t)
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Active work", Description: "Original", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneInProgress},
+	})
+
+	if _, err := service.UpdateKanbanCardDescription(workspaceID, "card-1", "Updated"); err == nil {
+		t.Fatal("expected started card description edit to be rejected")
+	}
+
+	board, err := service.LoadKanbanBoard(workspaceID)
+	if err != nil {
+		t.Fatalf("load board: %v", err)
+	}
+	if len(board.InProgress) != 1 || board.InProgress[0].Description != "Original" {
+		t.Fatalf("expected original description to be preserved, got %#v", board)
+	}
+}
+
+func TestUpdateKanbanCardDescriptionRejectsRunningWorkspace(t *testing.T) {
+	service, workspaceID := newKanbanTestService(t)
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Ready work", Description: "Original", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneReady},
+	})
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.chatMu.Lock()
+	service.kanbanRuns[workspaceID] = cancel
+	service.chatMu.Unlock()
+
+	if _, err := service.UpdateKanbanCardDescription(workspaceID, "card-1", "Updated"); err == nil {
+		t.Fatal("expected running workspace description edit to be rejected")
 	}
 }
 

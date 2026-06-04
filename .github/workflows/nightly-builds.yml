@@ -1,0 +1,193 @@
+name: Nightly Builds
+
+on:
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: nightly-builds-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check-changes:
+    name: Check for changes
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      reason: ${{ steps.check.outputs.reason }}
+
+    steps:
+      - name: Compare with last successful nightly build
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.ref_name }}
+          CURRENT_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+        run: |
+          if [ "$EVENT_NAME" != "schedule" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "reason=Manual run requested." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          last_successful_sha="$(gh run list \
+            --workflow "$WORKFLOW_NAME" \
+            --branch "$BRANCH" \
+            --event schedule \
+            --status success \
+            --limit 1 \
+            --json headSha \
+            --jq '.[0].headSha // ""')"
+
+          if [ -z "$last_successful_sha" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "reason=No previous successful nightly build found." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$last_successful_sha" = "$CURRENT_SHA" ]; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "reason=No commits since the last successful nightly build." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "should_build=true" >> "$GITHUB_OUTPUT"
+          echo "reason=Current commit differs from the last successful nightly build." >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: check-changes
+    if: needs.check-changes.outputs.should_build == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows
+            os: windows-latest
+            archive: echo-windows-nightly.zip
+            wails_tags: ""
+          - target: linux
+            os: ubuntu-24.04
+            archive: echo-linux-nightly.tar.gz
+            wails_tags: "-tags webkit2_41"
+          - target: macos
+            os: macos-latest
+            archive: echo-macos-nightly.tar.gz
+            wails_tags: ""
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Add Go tools to PATH
+        shell: pwsh
+        run: |
+          "$(go env GOPATH)/bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.11.0
+
+      - name: Build Echo
+        shell: pwsh
+        run: wails build -clean ${{ matrix.wails_tags }}
+
+      - name: Package build output
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+          if ($env:RUNNER_OS -eq "Windows") {
+            if (-not (Test-Path -LiteralPath "build/bin/echo.exe")) {
+              Get-ChildItem -Recurse build/bin
+              exit 1
+            }
+            Compress-Archive -LiteralPath "build/bin/echo.exe" -DestinationPath "dist/${{ matrix.archive }}" -Force
+          } elseif ($env:RUNNER_OS -eq "macOS") {
+            $appBundle = Get-ChildItem -Path "build/bin" -Directory -Filter "*.app" | Select-Object -First 1
+            if ($null -eq $appBundle) {
+              Get-ChildItem -Recurse build/bin
+              exit 1
+            }
+            tar -czf "dist/${{ matrix.archive }}" -C "build/bin" $appBundle.Name
+          } else {
+            if (-not (Test-Path -LiteralPath "build/bin/echo")) {
+              Get-ChildItem -Recurse build/bin
+              exit 1
+            }
+            tar -czf "dist/${{ matrix.archive }}" -C "build/bin" "echo"
+          }
+
+      - name: Upload nightly artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: echo-${{ matrix.target }}-nightly
+          path: dist/${{ matrix.archive }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Create nightly release
+    needs:
+      - check-changes
+      - build
+    if: needs.check-changes.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: echo-*-nightly
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+          CHECK_REASON: ${{ needs.check-changes.outputs.reason }}
+        run: |
+          release_date="$(date -u +%Y-%m-%d)"
+          tag="nightly-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"
+
+          {
+            echo "Automated nightly build for ${SOURCE_SHA}."
+            echo
+            echo "${CHECK_REASON}"
+          } > release-notes.md
+
+          gh release create "$tag" release-assets/* \
+            --target "$SOURCE_SHA" \
+            --title "Echo Nightly $release_date" \
+            --notes-file release-notes.md

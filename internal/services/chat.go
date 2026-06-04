@@ -388,7 +388,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 				s.cancelChatMessage(workspace.ID, streamID, messageID)
 				return
 			}
-			resultMessage := s.executeToolCall(ctx, workspace, streamID, messageID, call, planMode)
+			resultMessage := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, planMode)
 			messages = append(messages, resultMessage)
 			s.appendChatHistory(workspace.ID, resultMessage)
 		}
@@ -514,7 +514,7 @@ func (s *SystemService) streamAssistantResponseAttempt(ctx context.Context, clie
 	return chatStreamAttemptResult{content: content.String(), toolCalls: orderedToolCalls(toolCalls), finished: finished, finishReason: finishReason}
 }
 
-func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, streamID string, messageID string, call llm.ToolCall, readOnlyOnly bool) llm.Message {
+func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, streamID string, messageID string, call llm.ToolCall, readOnlyOnly bool) llm.Message {
 	if call.ID == "" {
 		call.ID = s.nextChatID("call")
 	}
@@ -545,7 +545,7 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 			})
 		}
 	}
-	execution := s.executeTrackedToolCall(ctx, workspace, call, WorkspaceChangeSource{
+	execution := s.executeTrackedToolCall(ctx, workspace, settings, call, WorkspaceChangeSource{
 		Type:      "chat",
 		MessageID: messageID,
 	}, events)

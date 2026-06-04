@@ -140,7 +140,7 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 				call.ID = s.nextChatID("call")
 			}
 			s.emitInlineCodeToolCallEvent(eventBase, call, "running", "", "")
-			activity, resultMessage, changedPaths := s.executeInlineCodeToolCall(workspace, eventBase, call)
+			activity, resultMessage, changedPaths := s.executeInlineCodeToolCall(workspace, settings, eventBase, call)
 			s.emitInlineCodePromptEvent(InlineCodePromptEvent{
 				WorkspaceID: eventBase.WorkspaceID,
 				RequestID:   eventBase.RequestID,
@@ -276,8 +276,8 @@ func inlineCodeAssistantContentAndToolCalls(message llm.Message) (string, []llm.
 	return content, toolCalls
 }
 
-func (s *SystemService) executeInlineCodeToolCall(workspace Workspace, eventBase InlineCodePromptEvent, call llm.ToolCall) (ChatToolActivity, llm.Message, []string) {
-	execution := s.executeTrackedToolCall(context.Background(), workspace, call, WorkspaceChangeSource{
+func (s *SystemService) executeInlineCodeToolCall(workspace Workspace, settings llm.Settings, eventBase InlineCodePromptEvent, call llm.ToolCall) (ChatToolActivity, llm.Message, []string) {
+	execution := s.executeTrackedToolCall(context.Background(), workspace, settings, call, WorkspaceChangeSource{
 		Type:      "inline",
 		RequestID: eventBase.RequestID,
 	}, nil)

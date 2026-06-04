@@ -20,9 +20,11 @@ import {
 } from "./markdown";
 import {
   ChooseWorkspaceFolder,
+  ChooseWorkspaceIcon,
   CloseKanbanCardDetail,
   ClearWorkspaceChangeReview,
   ClearChat,
+  ClearWorkspaceIcon,
   DeleteWorkspace,
   ExecutePlan,
   AddKanbanCardMessage,
@@ -30,8 +32,10 @@ import {
   LoadKanbanBoard,
   LoadState,
   LoadWorkspaceChangeReview,
+  LoadWorkspaceGitChanges,
   MoveKanbanCard,
   OpenKanbanCardDetail,
+  OpenWorkspaceExplorer,
   ResetKanbanCard,
   ResolveWorkspaceTextFilePath,
   SaveSettings,
@@ -45,6 +49,7 @@ import {
   StopChatStream,
   RetryChatMessage,
   EditChatMessage,
+  UpdateKanbanCardDescription,
 } from "../wailsjs/go/services/SystemService";
 import { llm, services } from "../wailsjs/go/models";
 import { EventsOn } from "../wailsjs/runtime/runtime";
@@ -72,6 +77,7 @@ const icons = {
   code: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></svg>`,
   arrowUp: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg>`,
   arrowDown: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`,
+  check: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>`,
   x: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>`,
   edit: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 3a2.85 2.85 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>`,
   retry: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/></svg>`,
@@ -93,18 +99,30 @@ const chatFileLinkCache = new Map<string, Promise<string | null>>();
 let chatMention: ChatMentionState | null = null;
 const kanbanBoards = new Map<string, services.KanbanBoard>();
 const changeReviews = new Map<string, services.WorkspaceChangeReview>();
+const gitChangeReviews = new Map<string, services.WorkspaceGitChangeReview>();
 const executingPlans = new Set<string>();
 const runningKanbanWorkspaces = new Set<string>();
 const kanbanRunStarts = new Map<string, number>();
 const selectedKanbanCards = new Map<string, string>();
 const openChangeReviewWorkspaces = new Set<string>();
+const openGitChangeWorkspaces = new Set<string>();
 const cardMessageDrafts = new Map<string, string>();
 const expandedChatWorkspaces = new Set<string>();
 const expandedKanbanWorkspaces = new Set<string>();
 const editingMessageIds = new Set<string>();
+const expandedChangeReviewWorkspaces = new Set<string>();
+const expandedGitChangeWorkspaces = new Set<string>();
+const loadingGitChangeWorkspaces = new Set<string>();
 let toastSeq = 0;
 let toasts: Toast[] = [];
 let kanbanTimerID: number | null = null;
+type ContextMenuState = {
+  workspaceId: string;
+  folderPath: string;
+  x: number;
+  y: number;
+};
+let contextMenu: ContextMenuState | null = null;
 
 const kanbanLaneLabels: Record<string, string> = {
   ready: "Ready",
@@ -283,6 +301,17 @@ function changeReviewFor(workspaceID: string): services.WorkspaceChangeReview {
   );
 }
 
+function gitChangeReviewFor(workspaceID: string): services.WorkspaceGitChangeReview {
+  return (
+    gitChangeReviews.get(workspaceID) ??
+    services.WorkspaceGitChangeReview.createFrom({
+      workspaceId: workspaceID,
+      fileCount: 0,
+      files: [],
+    })
+  );
+}
+
 function kanbanCards(board: services.KanbanBoard): services.KanbanCard[] {
   return [
     ...(board.ready ?? []),
@@ -309,6 +338,12 @@ function changeOperationLabel(operation = ""): string {
       return "Deleted";
     case "edited":
       return "Edited";
+    case "renamed":
+      return "Renamed";
+    case "copied":
+      return "Copied";
+    case "conflicted":
+      return "Conflicted";
     default:
       return operation || "Changed";
   }
@@ -392,6 +427,14 @@ function fieldValue<K extends keyof llm.Settings>(key: K): string {
 
 function workspaceLetter(workspace: services.Workspace): string {
   return (workspace.letter ?? "").trim() || workspace.displayName.slice(0, 1).toUpperCase() || "W";
+}
+
+function renderWorkspaceIcon(workspace: services.Workspace): string {
+  const iconURL = (workspace.iconUrl ?? "").trim();
+  if (iconURL) {
+    return `<img class="workspace-icon-image" src="${escapeAttribute(iconURL)}" alt="">`;
+  }
+  return `<span class="workspace-icon-label">${escapeHtml(workspaceLetter(workspace))}</span>`;
 }
 
 function workspaceLetterDraft(workspace: services.Workspace): string {
@@ -908,6 +951,30 @@ function bindChatMentionOptions(root: ParentNode) {
   });
 }
 
+function renderContextMenu(state: ContextMenuState): string {
+  return `\
+    <div class="workspace-context-menu" data-context-menu style="left:${state.x}px;top:${state.y}px">\
+      <button\
+        class="workspace-context-menu-item"\
+        type="button"\
+        data-action="show-in-explorer"\
+        data-workspace-id="${escapeAttribute(state.workspaceId)}"\
+      >\
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9l-6-6H5a2 2 0 0 0-2 2Z"/></svg>\
+        <span class="workspace-context-menu-label">${escapeHtml(state.folderPath)}</span>\
+      </button>\
+    </div>\
+  `;
+}
+
+function dismissContextMenu() {
+  if (!contextMenu) {
+    return;
+  }
+  contextMenu = null;
+  render();
+}
+
 function renderToasts(): string {
   if (!toasts.length) {
     return "";
@@ -969,7 +1036,7 @@ function render() {
                   aria-label="${escapeHtml(item.displayName)}${item.missing ? " missing" : ""}"
                   data-action="activate-workspace"
                   data-workspace-id="${escapeHtml(item.id)}"
-                >${escapeHtml(workspaceLetter(item))}</button>
+                >${renderWorkspaceIcon(item)}</button>
               `,
             )
             .join("")}
@@ -1004,9 +1071,11 @@ function render() {
               `
           }
         </section>
+        ${showingCode && workspace && openGitChangeWorkspaces.has(workspace.id) ? renderGitChangesDrawer(workspace, gitChangeReviewFor(workspace.id)) : ""}
       </main>
       ${settingsOpen ? renderSettingsOverlay(workspaces) : ""}
       ${renderToasts()}
+      ${contextMenu ? renderContextMenu(contextMenu) : ""}
     </div>
   `;
 
@@ -1190,6 +1259,7 @@ function renderKanbanDetail(board: services.KanbanBoard): string {
   const transcript = card.progressTranscript ?? [];
   const blocked = card.lane === "ready" && !card.eligible;
   const canReset = card.lane !== "ready" || transcript.length > 0;
+  const canEditDescription = card.lane === "ready" && !runningKanbanWorkspaces.has(board.workspaceId);
   const draftKey = `${board.workspaceId}:${card.id}`;
   const cardDraft = cardMessageDrafts.get(draftKey) ?? "";
   return `
@@ -1230,7 +1300,17 @@ function renderKanbanDetail(board: services.KanbanBoard): string {
 
         <section class="detail-section">
           <h3>Description</h3>
-          <p>${escapeHtml(card.description)}</p>
+          ${
+            canEditDescription
+              ? `<form class="card-description-form" data-card-description-form data-card-id="${escapeAttribute(card.id)}">
+                  <textarea name="description" rows="5" aria-label="Card description" data-card-description-input>${escapeHtml(card.description)}</textarea>
+                  <button class="primary-button icon-text-button" type="submit" disabled>
+                    ${icons.check}
+                    <span>Save</span>
+                  </button>
+                </form>`
+              : `<p>${escapeHtml(card.description)}</p>`
+          }
         </section>
 
         <section class="detail-section">
@@ -1286,17 +1366,24 @@ function renderChangeReviewDrawer(
 ): string {
   const files = review.files ?? [];
   const hasChanges = (review.changeCount ?? 0) > 0;
+  const expanded = expandedChangeReviewWorkspaces.has(workspace.id);
+  const sizeLabel = expanded ? "Collapse AI changes" : "Expand AI changes";
   return `
-    <aside class="change-review-backdrop" role="dialog" aria-modal="true" aria-labelledby="change-review-title">
-      <section class="change-review" data-change-review>
+    <aside class="change-review-backdrop ${expanded ? "is-expanded" : ""}" role="dialog" aria-modal="true" aria-labelledby="change-review-title">
+      <section class="change-review ${expanded ? "is-expanded" : ""}" data-change-review>
         <header class="change-review-header">
           <div>
             <p class="eyebrow">${escapeHtml(workspace.displayName)}</p>
             <h2 id="change-review-title">AI Changes</h2>
           </div>
-          <button class="icon-button close-button" type="button" title="Close" aria-label="Close AI changes" data-action="close-change-review">
-            ${icons.x}
-          </button>
+          <div class="change-review-header-actions">
+            <button class="icon-button" type="button" title="${sizeLabel}" aria-label="${sizeLabel}" aria-pressed="${expanded}" data-action="toggle-change-review-size">
+              ${expanded ? icons.collapse : icons.expand}
+            </button>
+            <button class="icon-button close-button" type="button" title="Close" aria-label="Close AI changes" data-action="close-change-review">
+              ${icons.x}
+            </button>
+          </div>
         </header>
 
         <div class="change-review-summary" aria-label="Change summary">
@@ -1327,6 +1414,60 @@ function renderChangeReviewDrawer(
   `;
 }
 
+function renderGitChangesDrawer(
+  workspace: services.Workspace,
+  review: services.WorkspaceGitChangeReview,
+): string {
+  const files = review.files ?? [];
+  const expanded = expandedGitChangeWorkspaces.has(workspace.id);
+  const loading = loadingGitChangeWorkspaces.has(workspace.id);
+  const sizeLabel = expanded ? "Collapse Git changes" : "Expand Git changes";
+  return `
+    <aside class="change-review-backdrop ${expanded ? "is-expanded" : ""}" role="dialog" aria-modal="true" aria-labelledby="git-change-review-title">
+      <section class="change-review ${expanded ? "is-expanded" : ""}" data-change-review>
+        <header class="change-review-header">
+          <div>
+            <p class="eyebrow">${escapeHtml(workspace.displayName)}</p>
+            <h2 id="git-change-review-title">Git Changes</h2>
+          </div>
+          <div class="change-review-header-actions">
+            <button class="icon-button" type="button" title="${sizeLabel}" aria-label="${sizeLabel}" aria-pressed="${expanded}" data-action="toggle-git-changes-size">
+              ${expanded ? icons.collapse : icons.expand}
+            </button>
+            <button class="icon-button close-button" type="button" title="Close" aria-label="Close Git changes" data-action="close-git-changes">
+              ${icons.x}
+            </button>
+          </div>
+        </header>
+
+        <div class="change-review-summary" aria-label="Git change summary">
+          <span>${escapeHtml(String(review.fileCount ?? files.length))} files</span>
+          ${loading ? `<span><span class="spinner" aria-hidden="true"></span>Refreshing</span>` : ""}
+        </div>
+
+        <div class="change-review-actions">
+          <button class="icon-button" type="button" title="Previous change" aria-label="Previous change" data-action="previous-change" ${files.length ? "" : "disabled"}>
+            ${icons.arrowUp}
+          </button>
+          <button class="icon-button" type="button" title="Next change" aria-label="Next change" data-action="next-change" ${files.length ? "" : "disabled"}>
+            ${icons.arrowDown}
+          </button>
+          <button class="secondary-button icon-text-button" type="button" data-action="refresh-git-changes" ${loading ? "disabled" : ""}>
+            ${loading ? `<span class="spinner" aria-hidden="true"></span>` : icons.refresh}
+            <span>Refresh</span>
+          </button>
+        </div>
+
+        ${
+          files.length
+            ? `<div class="change-file-list">${files.map(renderGitChangedFile).join("")}</div>`
+            : `<div class="empty-state compact">${loading ? renderSpinnerLabel("Loading Git changes") : "No Git changes."}</div>`
+        }
+      </section>
+    </aside>
+  `;
+}
+
 function renderChangedFile(file: services.WorkspaceChangedFile): string {
   return `
     <article class="change-file" data-change-file>
@@ -1341,6 +1482,42 @@ function renderChangedFile(file: services.WorkspaceChangedFile): string {
       ${file.diffAvailable && file.diff ? renderChangeDiff(file.diff) : renderChangeMetadata(file)}
     </article>
   `;
+}
+
+function renderGitChangedFile(file: services.WorkspaceGitChangedFile): string {
+  return `
+    <article class="change-file" data-change-file>
+      <header>
+        <div class="change-file-title">
+          ${icons.file}
+          <strong title="${escapeAttribute(file.path)}">${escapeHtml(file.path)}</strong>
+        </div>
+        <span class="change-operation is-${escapeAttribute(file.operation)}">${escapeHtml(changeOperationLabel(file.operation))}</span>
+      </header>
+      ${renderGitChangeStatus(file)}
+      ${file.diffAvailable && file.diff ? renderChangeDiff(file.diff) : renderGitChangeMetadata(file)}
+    </article>
+  `;
+}
+
+function renderGitChangeStatus(file: services.WorkspaceGitChangedFile): string {
+  const chips: string[] = [];
+  if (file.oldPath) {
+    chips.push(`<span title="${escapeAttribute(file.oldPath)}">from <em>${escapeHtml(file.oldPath)}</em></span>`);
+  }
+  if (file.status) {
+    chips.push(`<span>status <em>${escapeHtml(file.status)}</em></span>`);
+  }
+  if (file.indexStatus) {
+    chips.push(`<span>index <em>${escapeHtml(gitStatusLabel(file.indexStatus))}</em></span>`);
+  }
+  if (file.worktreeStatus) {
+    chips.push(`<span>worktree <em>${escapeHtml(gitStatusLabel(file.worktreeStatus))}</em></span>`);
+  }
+  if (!chips.length) {
+    return "";
+  }
+  return `<div class="change-sources" aria-label="Git status">${chips.join("")}</div>`;
 }
 
 function renderChangeSources(sources: services.WorkspaceChangeSource[]): string {
@@ -1361,6 +1538,42 @@ function renderChangeSources(sources: services.WorkspaceChangeSource[]): string 
         .join("")}
     </div>
   `;
+}
+
+function renderGitChangeMetadata(file: services.WorkspaceGitChangedFile): string {
+  return `
+    <div class="change-metadata">
+      <span>${escapeHtml(gitDiffUnavailableLabel(file))}</span>
+    </div>
+  `;
+}
+
+function gitDiffUnavailableLabel(file: services.WorkspaceGitChangedFile): string {
+  if (file.operation === "created" && file.status === "??") {
+    return "Diff is unavailable for this untracked file.";
+  }
+  return "Diff is unavailable for this Git change.";
+}
+
+function gitStatusLabel(status: string): string {
+  switch (status) {
+    case "A":
+      return "added";
+    case "C":
+      return "copied";
+    case "D":
+      return "deleted";
+    case "M":
+      return "modified";
+    case "R":
+      return "renamed";
+    case "U":
+      return "unmerged";
+    case "?":
+      return "untracked";
+    default:
+      return status;
+  }
 }
 
 function renderChangeDiff(diff: string): string {
@@ -1460,20 +1673,12 @@ function renderChatPanel(workspace: services.Workspace | null, expanded = false)
   return `
     <section class="work-panel chat-panel" aria-labelledby="chat-title" aria-busy="${session.busy || executing}" data-chat-panel data-workspace-id="${escapeAttribute(workspace.id)}">
       <div class="panel-heading chat-heading">
-        <div>
-          <span>Chat -</span>
+        <div class="chat-actions">
+        <div style="width: 5em;">
+          <span>Chat</span>
+          <br/>
           <strong id="chat-title">${executing ? renderSpinnerLabel("Decomposing cards") : session.busy ? "Working" : "Ready"}</strong>
         </div>
-        <div class="chat-actions">
-          <label class="chat-plan-toggle" title="Plan mode researches and plans without changing files">
-            <input
-              type="checkbox"
-              data-chat-plan-toggle
-              ${planMode ? "checked" : ""}
-              ${session.busy || executing ? "disabled" : ""}
-            >
-            <span>Plan</span>
-          </label>
           <button class="icon-button" type="button" title="${sizeLabel}" aria-label="${sizeLabel}" aria-pressed="${expanded}" data-action="toggle-chat-size">
             ${expanded ? icons.collapse : icons.expand}
           </button>
@@ -1511,9 +1716,20 @@ function renderChatPanel(workspace: services.Workspace | null, expanded = false)
           ${renderChatImageDrafts(workspace.id, session.busy || executing)}
           ${renderChatMentionPicker(workspace.id)}
         </div>
-        <button class="primary-button icon-button send-button" type="submit" title="Send" aria-label="Send message" ${canSend ? "" : "disabled"}>
+        <div>
+        <label class="chat-plan-toggle" title="Plan mode researches and plans without changing files">
+          <span>Plan</span><br/>
+            <input
+              type="checkbox"
+              data-chat-plan-toggle
+              ${planMode ? "checked" : ""}
+              ${session.busy || executing ? "disabled" : ""}
+            >
+          </label>
+          <button class="primary-button icon-button send-button" type="submit" title="Send" aria-label="Send message" ${canSend ? "" : "disabled"}>
           ${icons.send}
-        </button>
+          </button>
+        </div>
       </form>
     </section>
   `;
@@ -1723,6 +1939,10 @@ function renderSettingsOverlay(workspaces: services.Workspace[]): string {
             <input name="endpoint" required type="url" value="${escapeHtml(fieldValue("endpoint"))}" autocomplete="off" data-initial-focus />
           </label>
           <label class="field field-wide">
+            <span>SearXNG URL</span>
+            <input name="searxngUrl" type="url" value="${escapeHtml(fieldValue("searxngUrl"))}" autocomplete="off" />
+          </label>
+          <label class="field field-wide">
             <span>Model</span>
             <input name="model" required type="text" value="${escapeHtml(fieldValue("model"))}" autocomplete="off" />
           </label>
@@ -1781,14 +2001,22 @@ function renderSettingsOverlay(workspaces: services.Workspace[]): string {
                             <strong>${escapeHtml(workspace.displayName)}${workspace.missing ? " - Missing" : ""}</strong>
                             <span>${escapeHtml(workspace.folderPath)}</span>
                           </div>
+                          <div class="workspace-icon-setting" aria-label="Workspace icon for ${escapeAttribute(workspace.displayName)}">
+                            <span class="workspace-icon-preview" aria-hidden="true">${renderWorkspaceIcon(workspace)}</span>
+                            <button class="icon-button" type="button" title="Choose workspace icon" aria-label="Choose icon for ${escapeAttribute(workspace.displayName)}" data-action="choose-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}">
+                              ${icons.image}
+                            </button>
+                            <button class="icon-button" type="button" title="Clear workspace icon" aria-label="Clear icon for ${escapeAttribute(workspace.displayName)}" data-action="clear-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}" ${(workspace.iconUrl ?? "").trim() ? "" : "disabled"}>
+                              ${icons.x}
+                            </button>
+                          </div>
                           <label class="workspace-letter-field">
-                            <span>Letter</span>
+                            <span>Label</span>
                             <input
                               name="workspaceLetter"
                               type="text"
-                              maxlength="2"
                               value="${escapeHtml(workspaceLetterDraft(workspace))}"
-                              aria-label="Workspace letter for ${escapeHtml(workspace.displayName)}"
+                              aria-label="Workspace icon label for ${escapeHtml(workspace.displayName)}"
                               data-workspace-letter
                               data-workspace-id="${escapeHtml(workspace.id)}"
                             />
@@ -1824,8 +2052,63 @@ function bindEvents() {
     .forEach((input) => input.addEventListener("input", handleSettingsInput));
 
   bindChatEvents(appRoot);
+  bindCardDescriptionEvents(appRoot);
   bindCardMessageEvents(appRoot);
   bindCodeViewEvents(appRoot, codeViewCallbacks());
+
+  // Context menu on workspace gutter buttons
+  appRoot.querySelectorAll<HTMLElement>('[data-action="activate-workspace"]').forEach((button) => {
+    button.addEventListener("contextmenu", (event: MouseEvent) => {
+      event.preventDefault();
+      const workspaceId = button.dataset.workspaceId ?? "";
+      const folderPath = button.title ?? "";
+      if (!workspaceId || !folderPath) {
+        return;
+      }
+      contextMenu = { workspaceId, folderPath, x: event.clientX, y: event.clientY };
+      render();
+
+      // Clamp to viewport boundaries so the menu stays fully visible
+      const menuEl = appRoot.querySelector<HTMLElement>("[data-context-menu]");
+      if (menuEl && contextMenu) {
+        const rect = menuEl.getBoundingClientRect();
+        let newX = contextMenu.x;
+        let newY = contextMenu.y;
+
+        if (rect.right > window.innerWidth) {
+          newX = Math.max(0, window.innerWidth - rect.width - 4);
+        }
+        if (rect.bottom > window.innerHeight) {
+          newY = Math.max(0, window.innerHeight - rect.height - 4);
+        }
+
+        if (newX !== contextMenu.x || newY !== contextMenu.y) {
+          contextMenu = { ...contextMenu, x: newX, y: newY };
+          render();
+        }
+      }
+    });
+  });
+
+  // Dismiss context menu on outside pointer down
+  document.addEventListener(
+    "pointerdown",
+    (event: PointerEvent) => {
+      if (!contextMenu) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+      const menuEl = appRoot.querySelector<HTMLElement>("[data-context-menu]");
+      if (menuEl && menuEl.contains(target)) {
+        return;
+      }
+      dismissContextMenu();
+    },
+    true,
+  );
 }
 
 function codeViewCallbacks() {
@@ -1877,6 +2160,14 @@ function bindChatEditForms(root: ParentNode) {
     .forEach((input) => {
       input.addEventListener("keydown", handleChatEditKeydown);
     });
+}
+
+function bindCardDescriptionEvents(root: ParentNode) {
+  const form = root.querySelector<HTMLFormElement>("[data-card-description-form]");
+  form?.addEventListener("submit", handleCardDescriptionSubmit);
+  root
+    .querySelectorAll<HTMLTextAreaElement>("[data-card-description-input]")
+    .forEach((input) => input.addEventListener("input", handleCardDescriptionInput));
 }
 
 function focusInitialElement() {
@@ -1943,7 +2234,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   const workspace = activeWorkspace();
   if (
     workspace &&
-    openChangeReviewWorkspaces.has(workspace.id) &&
+    (openChangeReviewWorkspaces.has(workspace.id) || openGitChangeWorkspaces.has(workspace.id)) &&
     (event.key === "ArrowDown" || event.key === "ArrowUp")
   ) {
     const target = event.target;
@@ -1955,7 +2246,12 @@ function handleGlobalKeydown(event: KeyboardEvent) {
       return;
     }
     event.preventDefault();
-    scrollChangeReview(event.key === "ArrowDown" ? 1 : -1);
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    if (event.ctrlKey || event.metaKey) {
+      scrollChangeReviewFile(direction);
+    } else {
+      scrollChangeReview(direction);
+    }
     return;
   }
   if (event.key !== "Escape") {
@@ -1965,6 +2261,14 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     event.preventDefault();
     settingsOpen = false;
     formError = "";
+    render();
+    return;
+  }
+  if (workspace && openGitChangeWorkspaces.has(workspace.id)) {
+    event.preventDefault();
+    openGitChangeWorkspaces.delete(workspace.id);
+    expandedGitChangeWorkspaces.delete(workspace.id);
+    loadingGitChangeWorkspaces.delete(workspace.id);
     render();
     return;
   }
@@ -2032,9 +2336,59 @@ function scrollChangeReview(direction: 1 | -1) {
     targetIndex = currentIndex <= 0 ? changes.length - 1 : currentIndex - 1;
   }
   const target = changes[targetIndex];
-  changes.forEach((change) => change.classList.remove("is-current"));
-  target.classList.add("is-current");
+  markCurrentChangeTarget(review, target);
   target.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function scrollChangeReviewFile(direction: 1 | -1) {
+  const review = appRoot.querySelector<HTMLElement>("[data-change-review]");
+  if (!review) {
+    return;
+  }
+  const files = Array.from(review.querySelectorAll<HTMLElement>("[data-change-file]"));
+  if (!files.length) {
+    return;
+  }
+
+  const currentIndex = currentChangeFileIndex(files);
+  let targetIndex: number;
+  if (direction > 0) {
+    targetIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % files.length;
+  } else {
+    targetIndex = currentIndex <= 0 ? files.length - 1 : currentIndex - 1;
+  }
+  const targetFile = files[targetIndex];
+  const fileChanges = Array.from(targetFile.querySelectorAll<HTMLElement>("[data-change-line]"));
+  const targetLine = direction > 0 ? fileChanges[0] : fileChanges[fileChanges.length - 1];
+  markCurrentChangeTarget(review, targetLine ?? targetFile);
+  targetFile.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function currentChangeFileIndex(files: HTMLElement[]): number {
+  const currentFileIndex = files.findIndex((file) =>
+    file.classList.contains("is-current"),
+  );
+  if (currentFileIndex >= 0) {
+    return currentFileIndex;
+  }
+  return files.findIndex((file) =>
+    Boolean(file.querySelector("[data-change-line].is-current")),
+  );
+}
+
+function markCurrentChangeTarget(review: HTMLElement, target: HTMLElement) {
+  review
+    .querySelectorAll<HTMLElement>("[data-change-line].is-current")
+    .forEach((change) => change.classList.remove("is-current"));
+  review
+    .querySelectorAll<HTMLElement>("[data-change-file].is-current")
+    .forEach((file) => file.classList.remove("is-current"));
+
+  const targetFile = target.closest<HTMLElement>("[data-change-file]");
+  targetFile?.classList.add("is-current");
+  if (target.matches("[data-change-line]")) {
+    target.classList.add("is-current");
+  }
 }
 
 async function handleAction(event: Event) {
@@ -2045,6 +2399,20 @@ async function handleAction(event: Event) {
   try {
     if (action === "dismiss-toast") {
       dismissToast(target.dataset.toastId ?? "");
+      return;
+    }
+    if (action === "show-in-explorer") {
+      const workspaceID = target.dataset.workspaceId ?? "";
+      if (!workspaceID) {
+        return;
+      }
+      try {
+        await OpenWorkspaceExplorer(workspaceID);
+        pushToast("Opened folder in Explorer.", "success");
+      } catch (error) {
+        pushToast(errorMessage(error), "error");
+      }
+      dismissContextMenu();
       return;
     }
     if (action === "open-code-view") {
@@ -2063,8 +2431,70 @@ async function handleAction(event: Event) {
       const workspace = activeWorkspace();
       if (workspace) {
         clearCodeTabSwitcher(workspace.id);
+        openGitChangeWorkspaces.delete(workspace.id);
+        expandedGitChangeWorkspaces.delete(workspace.id);
+        loadingGitChangeWorkspaces.delete(workspace.id);
       }
       appMode = "chat-kanban";
+      render();
+      return;
+    }
+    if (action === "open-git-changes") {
+      const workspace = activeWorkspace();
+      if (!workspace || workspace.missing) {
+        return;
+      }
+      openGitChangeWorkspaces.add(workspace.id);
+      loadingGitChangeWorkspaces.add(workspace.id);
+      render();
+      try {
+        gitChangeReviews.set(workspace.id, await LoadWorkspaceGitChanges(workspace.id));
+      } catch (error) {
+        openGitChangeWorkspaces.delete(workspace.id);
+        expandedGitChangeWorkspaces.delete(workspace.id);
+        throw error;
+      } finally {
+        loadingGitChangeWorkspaces.delete(workspace.id);
+      }
+      render();
+      return;
+    }
+    if (action === "close-git-changes") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      openGitChangeWorkspaces.delete(workspace.id);
+      expandedGitChangeWorkspaces.delete(workspace.id);
+      loadingGitChangeWorkspaces.delete(workspace.id);
+      render();
+      return;
+    }
+    if (action === "toggle-git-changes-size") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      if (expandedGitChangeWorkspaces.has(workspace.id)) {
+        expandedGitChangeWorkspaces.delete(workspace.id);
+      } else {
+        expandedGitChangeWorkspaces.add(workspace.id);
+      }
+      render();
+      return;
+    }
+    if (action === "refresh-git-changes") {
+      const workspace = activeWorkspace();
+      if (!workspace || loadingGitChangeWorkspaces.has(workspace.id)) {
+        return;
+      }
+      loadingGitChangeWorkspaces.add(workspace.id);
+      render();
+      try {
+        gitChangeReviews.set(workspace.id, await LoadWorkspaceGitChanges(workspace.id));
+      } finally {
+        loadingGitChangeWorkspaces.delete(workspace.id);
+      }
       render();
       return;
     }
@@ -2113,11 +2543,24 @@ async function handleAction(event: Event) {
       );
       render();
     }
+    if (action === "choose-workspace-icon") {
+      appState = await ChooseWorkspaceIcon(workspaceID);
+      pushToast("Workspace icon updated.", "success");
+      render();
+    }
+    if (action === "clear-workspace-icon") {
+      appState = await ClearWorkspaceIcon(workspaceID);
+      pushToast("Workspace icon cleared.", "success");
+      render();
+    }
     if (action === "activate-workspace") {
       const current = activeWorkspace();
       if (current && current.id !== workspaceID) {
         await closeSelectedCardDetail(current.id);
         openChangeReviewWorkspaces.delete(current.id);
+        openGitChangeWorkspaces.delete(current.id);
+        expandedGitChangeWorkspaces.delete(current.id);
+        loadingGitChangeWorkspaces.delete(current.id);
       }
       appState = await SetActiveWorkspace(workspaceID);
       await loadActiveChatSession();
@@ -2183,6 +2626,19 @@ async function handleAction(event: Event) {
         return;
       }
       openChangeReviewWorkspaces.delete(workspace.id);
+      expandedChangeReviewWorkspaces.delete(workspace.id);
+      render();
+    }
+    if (action === "toggle-change-review-size") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      if (expandedChangeReviewWorkspaces.has(workspace.id)) {
+        expandedChangeReviewWorkspaces.delete(workspace.id);
+      } else {
+        expandedChangeReviewWorkspaces.add(workspace.id);
+      }
       render();
     }
     if (action === "clear-change-review") {
@@ -2362,10 +2818,15 @@ async function handleAction(event: Event) {
       appState = await DeleteWorkspace(workspaceID);
       kanbanBoards.delete(workspaceID);
       changeReviews.delete(workspaceID);
+      gitChangeReviews.delete(workspaceID);
       selectedKanbanCards.delete(workspaceID);
       openChangeReviewWorkspaces.delete(workspaceID);
+      openGitChangeWorkspaces.delete(workspaceID);
       expandedChatWorkspaces.delete(workspaceID);
       expandedKanbanWorkspaces.delete(workspaceID);
+      expandedChangeReviewWorkspaces.delete(workspaceID);
+      expandedGitChangeWorkspaces.delete(workspaceID);
+      loadingGitChangeWorkspaces.delete(workspaceID);
       chatPlanModes.delete(workspaceID);
       chatImageDrafts.delete(workspaceID);
       clearKanbanRun(workspaceID);
@@ -2385,6 +2846,45 @@ async function handleAction(event: Event) {
       formError = "";
       pushToast(message, "error");
     }
+    render();
+  }
+}
+
+function handleCardDescriptionInput(event: Event) {
+  const workspace = activeWorkspace();
+  const card = workspace ? selectedKanbanCard(kanbanBoardFor(workspace.id)) : null;
+  if (!workspace || !card) {
+    return;
+  }
+  const input = event.currentTarget as HTMLTextAreaElement;
+  const button = input.form?.querySelector<HTMLButtonElement>('button[type="submit"]');
+  if (button) {
+    const nextDescription = input.value.trim();
+    button.disabled = nextDescription.length === 0 || nextDescription === card.description.trim();
+  }
+}
+
+async function handleCardDescriptionSubmit(event: SubmitEvent) {
+  event.preventDefault();
+  const workspace = activeWorkspace();
+  const form = event.currentTarget as HTMLFormElement;
+  const cardID = form.dataset.cardId ?? "";
+  const input = form.querySelector<HTMLTextAreaElement>("[data-card-description-input]");
+  if (!workspace || !cardID || !input) {
+    return;
+  }
+  const description = input.value.trim();
+  if (!description) {
+    return;
+  }
+
+  try {
+    kanbanBoards.set(workspace.id, await UpdateKanbanCardDescription(workspace.id, cardID, description));
+    selectedKanbanCards.set(workspace.id, cardID);
+    pushToast("Card description updated.", "success");
+    render();
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
     render();
   }
 }

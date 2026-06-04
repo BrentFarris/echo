@@ -113,7 +113,7 @@ func (s *SystemService) ClearWorkspaceChangeReview(workspaceID string) (Workspac
 	return review, nil
 }
 
-func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Workspace, call llm.ToolCall, source WorkspaceChangeSource, emit tools.EventEmitter) toolExecution {
+func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, call llm.ToolCall, source WorkspaceChangeSource, emit tools.EventEmitter) toolExecution {
 	source.ToolCallID = call.ID
 	source.ToolName = call.Function.Name
 
@@ -131,6 +131,7 @@ func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Wo
 	result := tools.Execute(tools.ExecutionContext{
 		Context:       ctx,
 		WorkspacePath: workspace.FolderPath,
+		SearxngURL:    settings.SearxngURL,
 		Emit:          emit,
 		FileChanges:   sink,
 	}, call.Function.Name, json.RawMessage(call.Function.Arguments))
@@ -157,10 +158,12 @@ func (s *SystemService) recordToolFileChanges(workspaceID string, source Workspa
 	if len(changes) == 0 {
 		return
 	}
+	ignoredPaths := ignoredWorkspaceChangePaths(s.workspaceFolderPath(workspaceID), changes)
 	s.fileChangeMu.Lock()
 	now := time.Now().UTC()
 	for _, change := range changes {
-		if strings.TrimSpace(change.Path) == "" || tools.IsIgnoredChangePath(change.Path) {
+		path := cleanChangePath(change.Path)
+		if path == "" || tools.IsIgnoredChangePath(path) || ignoredPaths[path] {
 			continue
 		}
 		s.fileChangeSeq++
@@ -168,7 +171,7 @@ func (s *SystemService) recordToolFileChanges(workspaceID string, source Workspa
 		s.fileChanges[workspaceID] = append(s.fileChanges[workspaceID], trackedFileChange{
 			ID:          id,
 			WorkspaceID: workspaceID,
-			Path:        change.Path,
+			Path:        path,
 			Operation:   change.Operation,
 			Source:      source,
 			Before:      cloneToolSnapshot(change.Before),
@@ -185,6 +188,17 @@ func (s *SystemService) recordToolFileChanges(workspaceID string, source Workspa
 		FileCount:   review.FileCount,
 		ChangeCount: review.ChangeCount,
 	})
+}
+
+func (s *SystemService) workspaceFolderPath(workspaceID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, workspace := range s.state.Workspaces {
+		if workspace.ID == workspaceID {
+			return workspace.FolderPath
+		}
+	}
+	return ""
 }
 
 func (s *SystemService) workspaceChangeReview(workspaceID string) WorkspaceChangeReview {

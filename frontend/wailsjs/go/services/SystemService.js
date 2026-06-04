@@ -18,12 +18,20 @@ export function ChooseWorkspaceFolder() {
   return window['go']['services']['SystemService']['ChooseWorkspaceFolder']();
 }
 
+export function ChooseWorkspaceIcon(arg1) {
+  return window['go']['services']['SystemService']['ChooseWorkspaceIcon'](arg1);
+}
+
 export function ClearChat(arg1) {
   return window['go']['services']['SystemService']['ClearChat'](arg1);
 }
 
 export function ClearWorkspaceChangeReview(arg1) {
   return window['go']['services']['SystemService']['ClearWorkspaceChangeReview'](arg1);
+}
+
+export function ClearWorkspaceIcon(arg1) {
+  return window['go']['services']['SystemService']['ClearWorkspaceIcon'](arg1);
 }
 
 export function CloseKanbanCardDetail(arg1, arg2) {
@@ -62,12 +70,20 @@ export function LoadWorkspaceChangeReview(arg1) {
   return window['go']['services']['SystemService']['LoadWorkspaceChangeReview'](arg1);
 }
 
+export function LoadWorkspaceGitChanges(arg1) {
+  return window['go']['services']['SystemService']['LoadWorkspaceGitChanges'](arg1);
+}
+
 export function MoveKanbanCard(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['MoveKanbanCard'](arg1, arg2, arg3);
 }
 
 export function OpenKanbanCardDetail(arg1, arg2) {
   return window['go']['services']['SystemService']['OpenKanbanCardDetail'](arg1, arg2);
+}
+
+export function OpenWorkspaceExplorer(arg1) {
+  return window['go']['services']['SystemService']['OpenWorkspaceExplorer'](arg1);
 }
 
 export function ReadWorkspaceFile(arg1, arg2) {
@@ -140,4 +156,16 @@ export function StopKanbanExecution(arg1) {
 
 export function SubmitInlineCodePrompt(arg1, arg2) {
   return window['go']['services']['SystemService']['SubmitInlineCodePrompt'](arg1, arg2);
+}
+
+export function UpdateKanbanCardDescription(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['UpdateKanbanCardDescription'](arg1, arg2, arg3);
+}
+
+export function WorkspaceIconHandler() {
+  return window['go']['services']['SystemService']['WorkspaceIconHandler']();
+}
+
+export function WorkspaceIconMiddleware(arg1) {
+  return window['go']['services']['SystemService']['WorkspaceIconMiddleware'](arg1);
 }

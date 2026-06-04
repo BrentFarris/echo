@@ -141,6 +141,7 @@ const codeIcons = {
   code: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></svg>`,
   file: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>`,
   folder: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>`,
+  git: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 3 6 6-6 6"/><path d="M21 9H9a6 6 0 0 0 0 12h1"/><path d="M3 3v5h5"/><path d="M3 8a6 6 0 0 1 6-5h2"/></svg>`,
   refresh: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/></svg>`,
   save: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>`,
 };
@@ -270,6 +271,10 @@ export function renderCodeView(workspace: services.Workspace): string {
           <button class="secondary-button icon-text-button" type="button" data-action="close-code-view">
             ${codeIcons.back}
             <span>Chat</span>
+          </button>
+          <button class="secondary-button icon-text-button" type="button" data-action="open-git-changes">
+            ${codeIcons.git}
+            <span>Git</span>
           </button>
           <button class="secondary-button icon-text-button" type="button" data-code-action="toggle-filter" aria-pressed="${state.showIgnored}">
             ${codeIcons.code}
@@ -414,9 +419,7 @@ function bindCodeFileRowEvents(
     });
     element.addEventListener("dblclick", (event) => {
       event.preventDefault();
-      void openCodeFile(workspaceID, element.dataset.codePath ?? "", callbacks, {
-        temporary: true,
-      });
+      void openPinnedCodeFile(workspaceID, element.dataset.codePath ?? "", callbacks);
     });
     element.addEventListener("keydown", (event) => {
       if (event.key !== "Enter") {
@@ -737,6 +740,33 @@ async function openCodeFile(
     state.openingPath = "";
     callbacks.render();
   }
+}
+
+async function openPinnedCodeFile(
+  workspaceID: string,
+  path: string,
+  callbacks: CodeViewCallbacks,
+) {
+  if (!path) {
+    return;
+  }
+  const state = ensureCodeState(workspaceID);
+  if (state.openingPath === path) {
+    await waitForOpeningPath(workspaceID, path);
+    const opened = findTab(workspaceID, path);
+    if (opened) {
+      opened.temporary = false;
+      activateCodeTab(workspaceID, opened.path, callbacks);
+    }
+    return;
+  }
+  const existing = findTab(workspaceID, path);
+  if (existing) {
+    existing.temporary = false;
+    activateCodeTab(workspaceID, existing.path, callbacks);
+    return;
+  }
+  await openCodeFile(workspaceID, path, callbacks, { temporary: false });
 }
 
 export async function openWorkspaceCodeFile(
@@ -1847,6 +1877,15 @@ function applySavedFile(workspaceID: string, file: services.WorkspaceFile) {
 
 function sleep(delay: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, delay));
+}
+
+async function waitForOpeningPath(workspaceID: string, path: string) {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (ensureCodeState(workspaceID).openingPath !== path) {
+      return;
+    }
+    await sleep(25);
+  }
 }
 
 function activateCodeTab(

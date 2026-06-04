@@ -106,6 +106,55 @@ func (s *SystemService) MoveKanbanCard(workspaceID string, cardID string, lane s
 	return boardForWorkspace(workspaceID, s.state.KanbanCards), nil
 }
 
+func (s *SystemService) UpdateKanbanCardDescription(workspaceID string, cardID string, description string) (KanbanBoard, error) {
+	description = strings.TrimSpace(description)
+	if description == "" {
+		return KanbanBoard{}, fmt.Errorf("description is required")
+	}
+	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
+		return KanbanBoard{}, err
+	}
+
+	s.chatMu.Lock()
+	if _, running := s.kanbanRuns[workspaceID]; running {
+		s.chatMu.Unlock()
+		return KanbanBoard{}, fmt.Errorf("kanban descriptions cannot be edited while cards are running")
+	}
+
+	s.mu.Lock()
+	for index := range s.state.KanbanCards {
+		card := &s.state.KanbanCards[index]
+		if card.WorkspaceID != workspaceID || card.ID != cardID {
+			continue
+		}
+		if normalizeKanbanLane(card.Lane) != KanbanLaneReady {
+			s.mu.Unlock()
+			s.chatMu.Unlock()
+			return KanbanBoard{}, fmt.Errorf("only Ready card descriptions can be edited")
+		}
+		card.Description = description
+		card.ProgressTranscript = append(card.ProgressTranscript, KanbanProgressEntry{
+			Type:    "message",
+			Title:   "Description updated",
+			Content: "User edited the card description before execution.",
+			Status:  KanbanLaneReady,
+		})
+		if err := s.saveLocked(); err != nil {
+			s.mu.Unlock()
+			s.chatMu.Unlock()
+			return KanbanBoard{}, err
+		}
+		board := boardForWorkspace(workspaceID, s.state.KanbanCards)
+		s.mu.Unlock()
+		s.chatMu.Unlock()
+		s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_updated", Board: board})
+		return board, nil
+	}
+	s.mu.Unlock()
+	s.chatMu.Unlock()
+	return KanbanBoard{}, fmt.Errorf("kanban card was not found")
+}
+
 func (s *SystemService) ResetKanbanCard(workspaceID string, cardID string) (KanbanBoard, error) {
 	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
 		return KanbanBoard{}, err

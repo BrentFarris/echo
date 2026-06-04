@@ -1367,10 +1367,14 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	if state.Settings.RepetitionPenalty != 1 {
 		t.Fatalf("expected default repetition penalty 1, got %v", state.Settings.RepetitionPenalty)
 	}
+	if state.Settings.SearxngURL != llm.DefaultSearxngURL {
+		t.Fatalf("expected default SearXNG URL, got %q", state.Settings.SearxngURL)
+	}
 
 	settings := state.Settings
 	settings.Endpoint = "https://example.test/v1"
 	settings.Model = "test-model"
+	settings.SearxngURL = "https://search.example.test/"
 	settings.Temperature = 0.2
 	settings.TopK = 16
 	settings.TopP = 0.8
@@ -1390,6 +1394,9 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	}
 	if reloaded.Settings.Model != settings.Model {
 		t.Fatalf("expected persisted model, got %q", reloaded.Settings.Model)
+	}
+	if reloaded.Settings.SearxngURL != settings.SearxngURL {
+		t.Fatalf("expected persisted SearXNG URL, got %q", reloaded.Settings.SearxngURL)
 	}
 	if reloaded.Settings.MaxTokens != settings.MaxTokens {
 		t.Fatalf("expected persisted max tokens, got %d", reloaded.Settings.MaxTokens)
@@ -1426,6 +1433,12 @@ func TestSystemServiceRejectsInvalidSettings(t *testing.T) {
 	}
 
 	settings.Model = llm.DefaultModel
+	settings.SearxngURL = "notaurl"
+	if _, err := service.SaveSettings(settings); err == nil {
+		t.Fatal("expected invalid SearXNG URL to be rejected")
+	}
+
+	settings.SearxngURL = llm.DefaultSearxngURL
 	settings.MinP = -0.1
 	if _, err := service.SaveSettings(settings); err == nil {
 		t.Fatal("expected invalid min-p to be rejected")
@@ -1504,13 +1517,13 @@ func TestSystemServiceSetWorkspaceLetterPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("set workspace letter: %v", err)
 	}
-	if got := state.Workspaces[0].Letter; got != "Z" {
-		t.Fatalf("expected normalized letter Z, got %q", got)
+	if got := state.Workspaces[0].Letter; got != "ZED" {
+		t.Fatalf("expected normalized letter ZED, got %q", got)
 	}
 
 	reloaded := NewSystemServiceWithStorePath(storePath).LoadState()
-	if got := reloaded.Workspaces[0].Letter; got != "Z" {
-		t.Fatalf("expected persisted letter Z, got %q", got)
+	if got := reloaded.Workspaces[0].Letter; got != "ZED" {
+		t.Fatalf("expected persisted letter ZED, got %q", got)
 	}
 
 	state, err = service.SetWorkspaceLetter(workspaceID, " ")

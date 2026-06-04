@@ -379,7 +379,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 				s.blockKanbanCard(workspace.ID, cardID, agentID, "Canceled", agentCancellationText)
 				return
 			}
-			messages = append(messages, s.executeKanbanToolCall(ctx, workspace, cardID, agentID, call))
+			messages = append(messages, s.executeKanbanToolCall(ctx, workspace, settings, cardID, agentID, call))
 		}
 	}
 }
@@ -518,7 +518,7 @@ func (s *SystemService) streamKanbanAgentResponseAttempt(ctx context.Context, cl
 	return kanbanStreamAttemptResult{content: content.String(), reasoning: reasoning.String(), toolCalls: orderedToolCalls(toolCalls), finished: finished, finishReason: finishReason}
 }
 
-func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Workspace, cardID string, agentID uint64, call llm.ToolCall) llm.Message {
+func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, cardID string, agentID uint64, call llm.ToolCall) llm.Message {
 	if call.ID == "" {
 		call.ID = s.nextChatID("call")
 	}
@@ -532,7 +532,7 @@ func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Wor
 	if card, ok := s.cardSnapshot(workspace.ID, cardID); ok {
 		cardTitle = card.Title
 	}
-	execution := s.executeTrackedToolCall(ctx, workspace, call, WorkspaceChangeSource{
+	execution := s.executeTrackedToolCall(ctx, workspace, settings, call, WorkspaceChangeSource{
 		Type:      "kanban",
 		CardID:    cardID,
 		CardTitle: cardTitle,
