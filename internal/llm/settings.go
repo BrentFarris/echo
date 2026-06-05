@@ -14,6 +14,7 @@ const (
 	DefaultContextLength = 262144
 	DefaultMaxTokens     = 32168
 	DefaultSearxngURL    = searxng.DefaultURL
+	defaultTimout        = 600
 )
 
 type Settings struct {
@@ -44,7 +45,7 @@ func DefaultSettings() Settings {
 		MaxTokens:         DefaultMaxTokens,
 		PresencePenalty:   1.5,
 		RepetitionPenalty: 1.05,
-		TimeoutSeconds:    120,
+		TimeoutSeconds:    defaultTimout,
 		SearxngURL:        DefaultSearxngURL,
 	}
 }
@@ -66,7 +67,7 @@ func (s Settings) Normalized() Settings {
 		s.RepetitionPenalty = 1
 	}
 	if s.TimeoutSeconds == 0 {
-		s.TimeoutSeconds = 120
+		s.TimeoutSeconds = defaultTimout
 	}
 	return s
 }
