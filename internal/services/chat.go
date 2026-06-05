@@ -388,9 +388,11 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 				s.cancelChatMessage(workspace.ID, streamID, messageID)
 				return
 			}
-			resultMessage := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, planMode)
-			messages = append(messages, resultMessage)
-			s.appendChatHistory(workspace.ID, resultMessage)
+			resultMessages := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, planMode)
+			messages = append(messages, resultMessages...)
+			for _, resultMessage := range resultMessages {
+				s.appendChatHistory(workspace.ID, resultMessage)
+			}
 		}
 	}
 }
@@ -514,18 +516,18 @@ func (s *SystemService) streamAssistantResponseAttempt(ctx context.Context, clie
 	return chatStreamAttemptResult{content: content.String(), toolCalls: orderedToolCalls(toolCalls), finished: finished, finishReason: finishReason}
 }
 
-func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, streamID string, messageID string, call llm.ToolCall, readOnlyOnly bool) llm.Message {
+func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, streamID string, messageID string, call llm.ToolCall, readOnlyOnly bool) []llm.Message {
 	if call.ID == "" {
 		call.ID = s.nextChatID("call")
 	}
 	if readOnlyOnly && !tools.IsReadOnlyToolName(call.Function.Name) {
 		data := fmt.Sprintf(`{"tool":%q,"success":false,"error":{"code":"tool_not_allowed","message":"tool is not available in plan mode"}}`, call.Function.Name)
 		s.updateToolActivity(workspace.ID, streamID, messageID, call, "error", data, "tool is not available in plan mode")
-		return llm.Message{
+		return []llm.Message{{
 			Role:       llm.RoleTool,
 			ToolCallID: call.ID,
 			Content:    data,
-		}
+		}}
 	}
 	s.updateToolActivity(workspace.ID, streamID, messageID, call, "running", "", "")
 
@@ -565,11 +567,7 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 	}
 	s.updateToolActivity(workspace.ID, streamID, messageID, call, status, string(data), errorText)
 
-	return llm.Message{
-		Role:       llm.RoleTool,
-		ToolCallID: call.ID,
-		Content:    string(data),
-	}
+	return toolResultMessages(call, result, data)
 }
 
 func (s *SystemService) appendChatContent(workspaceID string, streamID string, messageID string, content string) {

@@ -156,7 +156,7 @@ func TestDefaultRegistryIncludesFilesystemTools(t *testing.T) {
 	for _, tool := range schema {
 		names[tool.Function.Name] = true
 	}
-	for _, name := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "filesystem_list", "filesystem_read_text", "filesystem_stat", "shell_command", "web_search"} {
+	for _, name := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_stat", "shell_command", "web_search"} {
 		if !names[name] {
 			t.Fatalf("expected default registry to include %s, got %#v", name, names)
 		}
@@ -170,7 +170,7 @@ func TestReadOnlyLLMSchemaIncludesOnlyInspectionTools(t *testing.T) {
 		names[tool.Function.Name] = true
 	}
 
-	for _, name := range []string{"filesystem_list", "filesystem_read_text", "filesystem_stat", "web_search"} {
+	for _, name := range []string{"filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_stat", "web_search"} {
 		if !names[name] {
 			t.Fatalf("expected read-only schema to include %s, got %#v", name, names)
 		}
@@ -180,8 +180,8 @@ func TestReadOnlyLLMSchemaIncludesOnlyInspectionTools(t *testing.T) {
 			t.Fatalf("expected read-only schema to exclude %s, got %#v", name, names)
 		}
 	}
-	if len(names) != 4 {
-		t.Fatalf("expected exactly four read-only tools, got %#v", names)
+	if len(names) != 5 {
+		t.Fatalf("expected exactly five read-only tools, got %#v", names)
 	}
 }
 

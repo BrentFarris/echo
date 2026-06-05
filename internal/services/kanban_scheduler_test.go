@@ -127,6 +127,66 @@ func TestKanbanSchedulerHandlesInlineReasoningToolCall(t *testing.T) {
 	}
 }
 
+func TestKanbanSchedulerReadImageToolSendsImageContentPart(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "ui.png"), tinyPNGBytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var requestCount atomic.Int32
+	var secondRequest llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_image","type":"function","function":{"name":"filesystem_read_image","arguments":%q}}]}}]}`, `{"path":"ui.png"}`),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 2:
+			if err := json.NewDecoder(r.Body).Decode(&secondRequest); err != nil {
+				t.Fatalf("decode second request: %v", err)
+			}
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Image reviewed."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Inspect screenshot", Description: "Look at ui.png", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneReady},
+	})
+
+	if _, err := service.StartKanbanExecution(workspaceID, 1); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	board := waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
+		return len(board.Done) == 1
+	})
+
+	if requestCount.Load() != 2 {
+		t.Fatalf("expected image tool follow-up request, got %d requests", requestCount.Load())
+	}
+	if !transcriptContains(board.Done[0].ProgressTranscript, `"contentType":"image_url"`) {
+		t.Fatalf("expected image tool metadata in transcript, got %#v", board.Done[0].ProgressTranscript)
+	}
+	var imageMessage *llm.Message
+	for i := range secondRequest.Messages {
+		message := &secondRequest.Messages[i]
+		if message.Role == llm.RoleUser && len(message.ContentParts) == 2 && message.ContentParts[1].ImageURL != nil {
+			imageMessage = message
+		}
+		if message.Role == llm.RoleTool && strings.Contains(message.Content, "data:image") {
+			t.Fatalf("expected tool message to omit image data URL, got %q", message.Content)
+		}
+	}
+	if imageMessage == nil || imageMessage.ContentParts[1].Type != "image_url" || !strings.HasPrefix(imageMessage.ContentParts[1].ImageURL.URL, "data:image/png;base64,") {
+		t.Fatalf("expected image content-parts message, got %#v", secondRequest.Messages)
+	}
+}
+
 func TestKanbanSchedulerRetriesWhenThinkingStreamLoops(t *testing.T) {
 	root := t.TempDir()
 	loopPhrase := "checking the workspace now "

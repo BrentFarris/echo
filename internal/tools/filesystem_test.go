@@ -84,6 +84,57 @@ func TestFilesystemToolsInvestigateWorkspace(t *testing.T) {
 	}
 }
 
+func TestFilesystemReadImageReturnsLLMImageContent(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "screen.png"), testPNGBytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := Execute(
+		ExecutionContext{Context: context.Background(), WorkspacePath: workspace},
+		"filesystem_read_image",
+		mustJSON(t, map[string]any{"path": "screen.png", "detail": "low"}),
+	)
+	if !result.Success {
+		t.Fatalf("read image failed: %#v", result)
+	}
+	output, ok := result.Output.(readImageFileOutput)
+	if !ok {
+		t.Fatalf("unexpected read image output type: %#v", result.Output)
+	}
+	if output.Path != "screen.png" || output.MediaType != "image/png" || output.ContentType != "image_url" || output.Detail != "low" {
+		t.Fatalf("unexpected image output: %#v", output)
+	}
+	image, ok := output.LLMImageContent()
+	if !ok || !strings.HasPrefix(image.DataURL, "data:image/png;base64,") {
+		t.Fatalf("expected image_url data URL content, got ok=%v image=%#v", ok, image)
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "data:image") {
+		t.Fatalf("expected serialized tool result to omit image data URL, got %s", data)
+	}
+}
+
+func TestFilesystemReadImageRejectsUnsupportedImage(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "vector.svg"), []byte("<svg></svg>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := Execute(
+		ExecutionContext{Context: context.Background(), WorkspacePath: workspace},
+		"filesystem_read_image",
+		mustJSON(t, map[string]any{"path": "vector.svg"}),
+	)
+
+	if result.Success || result.Error == nil || result.Error.Code != "unsupported_image" {
+		t.Fatalf("expected unsupported image error, got %#v", result)
+	}
+}
+
 func TestFilesystemCreateAndDeleteFile(t *testing.T) {
 	workspace := t.TempDir()
 	if err := os.Mkdir(filepath.Join(workspace, "src"), 0o755); err != nil {
@@ -546,4 +597,8 @@ func mustJSON(t *testing.T, value any) json.RawMessage {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func testPNGBytes() []byte {
+	return []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}
 }

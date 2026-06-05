@@ -181,7 +181,7 @@ func TestSystemServiceChatPlanModeUsesReadOnlyPlanningRequest(t *testing.T) {
 	}
 
 	names := chatRequestToolNames(captured)
-	for _, expected := range []string{"filesystem_list", "filesystem_read_text", "filesystem_stat"} {
+	for _, expected := range []string{"filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_stat"} {
 		if !names[expected] {
 			t.Fatalf("expected plan mode to include read-only tool %s, got %#v", expected, names)
 		}
@@ -216,7 +216,7 @@ func TestSystemServiceChatNonPlanModeUsesFullToolRequest(t *testing.T) {
 	waitForChatIdle(t, service, workspaceID)
 
 	names := chatRequestToolNames(captured)
-	for _, expected := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "filesystem_list", "filesystem_read_text", "filesystem_stat", "shell_command"} {
+	for _, expected := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_stat", "shell_command"} {
 		if !names[expected] {
 			t.Fatalf("expected non-plan mode to include %s, got %#v", expected, names)
 		}
@@ -309,6 +309,79 @@ func TestSystemServiceChatSendsWorkspaceImageMentionAsContentPart(t *testing.T) 
 	}
 	if !strings.Contains(user.ContentParts[0].Text, "ui.png") {
 		t.Fatalf("expected text part to name workspace image, got %q", user.ContentParts[0].Text)
+	}
+}
+
+func TestSystemServiceChatReadImageToolSendsImageContentPart(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "ui.png"), tinyPNGBytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var requestCount atomic.Int32
+	var secondRequest llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_image","type":"function","function":{"name":"filesystem_read_image","arguments":%q}}]}}]}`, `{"path":"ui.png","detail":"high"}`),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 2:
+			if err := json.NewDecoder(r.Body).Decode(&secondRequest); err != nil {
+				t.Fatalf("decode second request: %v", err)
+			}
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"The screenshot shows the UI."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+
+	if _, err := service.SendChatMessageWithPlanMode(workspaceID, "Inspect ui.png visually.", true); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+
+	if requestCount.Load() != 2 {
+		t.Fatalf("expected image tool follow-up request, got %d requests", requestCount.Load())
+	}
+	if len(session.Messages[1].ToolCalls) != 1 || !strings.Contains(session.Messages[1].ToolCalls[0].Result, `"contentType":"image_url"`) {
+		t.Fatalf("expected visible image tool result metadata, got %#v", session.Messages[1].ToolCalls)
+	}
+	if strings.Contains(session.Messages[1].ToolCalls[0].Result, "data:image") {
+		t.Fatalf("expected visible tool result to omit image data URL, got %q", session.Messages[1].ToolCalls[0].Result)
+	}
+
+	var toolMessage *llm.Message
+	var imageMessage *llm.Message
+	for i := range secondRequest.Messages {
+		message := &secondRequest.Messages[i]
+		if message.Role == llm.RoleTool && message.ToolCallID == "call_image" {
+			toolMessage = message
+		}
+		if message.Role == llm.RoleUser && len(message.ContentParts) == 2 && message.ContentParts[1].ImageURL != nil {
+			imageMessage = message
+		}
+	}
+	if toolMessage == nil || !strings.Contains(toolMessage.Content, `"contentType":"image_url"`) {
+		t.Fatalf("expected compact tool result message, got %#v", secondRequest.Messages)
+	}
+	if strings.Contains(toolMessage.Content, "data:image") {
+		t.Fatalf("expected tool message to omit image data URL, got %q", toolMessage.Content)
+	}
+	if imageMessage == nil {
+		t.Fatalf("expected image content-parts user message, got %#v", secondRequest.Messages)
+	}
+	if imageMessage.ContentParts[0].Type != "text" || !strings.Contains(imageMessage.ContentParts[0].Text, "filesystem_read_image") {
+		t.Fatalf("expected image message text to name the tool, got %#v", imageMessage.ContentParts[0])
+	}
+	imagePart := imageMessage.ContentParts[1]
+	if imagePart.Type != "image_url" || imagePart.ImageURL == nil || !strings.HasPrefix(imagePart.ImageURL.URL, "data:image/png;base64,") || imagePart.ImageURL.Detail != "high" {
+		t.Fatalf("expected image_url data URL with detail, got %#v", imagePart)
 	}
 }
 
@@ -1553,10 +1626,10 @@ func TestSystemServiceChatHistoryUpToLocked(t *testing.T) {
 	seedChatPlan(service, workspaceID, nil, history)
 
 	tests := []struct {
-		name       string
-		index      int
-		wantLen    int
-		wantNil    bool
+		name    string
+		index   int
+		wantLen int
+		wantNil bool
 	}{
 		{"zero returns nil", 0, 0, true},
 		{"one returns first message", 1, 1, false},
