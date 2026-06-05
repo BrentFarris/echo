@@ -1,6 +1,6 @@
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { languages as languageData } from "@codemirror/language-data";
-import { EditorState, Prec, StateEffect, StateField, type Text } from "@codemirror/state";
+import { EditorState, Prec, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
@@ -121,6 +121,7 @@ const minExplorerWidth = 220;
 const maxExplorerWidth = 640;
 const inlineSnippetContextLines = 40;
 const inlineSnippetMaxBytes = 24 * 1024;
+const tabSize = 4;
 const inlineFocusSubstringMaxBytes = 4 * 1024;
 const inlineReloadRetryDelays = [75, 175, 350, 650];
 
@@ -212,6 +213,29 @@ const codeHighlightStyle = HighlightStyle.define([
   { tag: tags.meta, color: "var(--code-token-meta)" },
   { tag: tags.invalid, color: "var(--code-editor-invalid)" },
 ]);
+
+function tabIndentionExtensions(): Extension[] {
+  return [
+    EditorState.tabSize.of(tabSize),
+    Prec.highest(
+      keymap.of([
+        {
+          key: "Tab",
+          run: (view) => {
+            view.dispatch({
+              changes: {
+                from: view.state.selection.main.from,
+                to: view.state.selection.main.to,
+                insert: "\t",
+              },
+            });
+            return true;
+          },
+        },
+      ]),
+    ),
+  ];
+}
 
 export function ensureCodeState(workspaceID: string): CodeWorkspaceState {
   let state = codeStates.get(workspaceID);
@@ -853,6 +877,7 @@ async function mountActiveCodeEditor(
   const token = ++editorMountToken;
   const extensions = [
     basicSetup,
+    ...tabIndentionExtensions(),
     EditorState.lineSeparator.of(tab.lineSeparator),
     EditorView.lineWrapping,
     codeEditorTheme,
