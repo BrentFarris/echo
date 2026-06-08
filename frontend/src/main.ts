@@ -28,6 +28,7 @@ import {
   DeleteWorkspace,
   ExecutePlan,
   AddKanbanCardMessage,
+  CreateKanbanCardFromChatMessage,
   LoadChatSession,
   LoadKanbanBoard,
   LoadState,
@@ -69,6 +70,7 @@ const icons = {
   send: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>`,
   stop: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>`,
   execute: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7Z"/><path d="M4 5v14"/></svg>`,
+  kanban: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="4" height="11" rx="1"/><rect x="16" y="4" width="5" height="14" rx="1"/></svg>`,
   file: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>`,
   image: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>`,
   trash: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>`,
@@ -1799,7 +1801,7 @@ function renderChatMessage(message: services.ChatMessage): string {
       <header>
         <strong>${roleLabel}</strong>
         ${status}
-        ${isUser ? renderEditControls(message, isEditing) : renderRetryButton(message)}
+        ${isUser ? renderEditControls(message, isEditing) : renderAssistantControls(message)}
       </header>
       ${renderChatMessageImages(message)}
       ${isEditing
@@ -1812,13 +1814,27 @@ function renderChatMessage(message: services.ChatMessage): string {
   `;
 }
 
-function renderRetryButton(message: services.ChatMessage): string {
-  const isStreaming = message.status === 'retrying' || message.status === 'in_progress';
+function renderAssistantControls(message: services.ChatMessage): string {
+  const isStreaming = isAssistantMessageStreaming(message);
+  const canCreateCard = canCreateKanbanCardFromMessage(message);
   return `
-    <button class="icon-button chat-retry-trigger" type="button" title="Regenerate response" aria-label="Regenerate response" data-action="retry-message" data-message-id="${escapeAttribute(message.id)}">
-      ${isStreaming ? '<span class="spinner" aria-hidden="true"></span>' : icons.retry}
-    </button>
+    <div class="chat-message-actions">
+      <button class="icon-button chat-retry-trigger" type="button" title="Regenerate response" aria-label="Regenerate response" data-action="retry-message" data-message-id="${escapeAttribute(message.id)}">
+        ${isStreaming ? '<span class="spinner" aria-hidden="true"></span>' : icons.retry}
+      </button>
+      <button class="icon-button chat-kanban-trigger" type="button" title="Create Kanban card" aria-label="Create Kanban card from response" data-action="create-card-from-message" data-message-id="${escapeAttribute(message.id)}" ${canCreateCard ? "" : "disabled"}>
+        ${icons.kanban}
+      </button>
+    </div>
   `;
+}
+
+function isAssistantMessageStreaming(message: services.ChatMessage): boolean {
+  return message.status === "streaming" || message.status === "retrying" || message.status === "in_progress";
+}
+
+function canCreateKanbanCardFromMessage(message: services.ChatMessage): boolean {
+  return message.status === "complete" && (message.content ?? "").trim().length > 0;
 }
 
 function renderEditControls(message: services.ChatMessage, isEditing: boolean): string {
@@ -1826,9 +1842,11 @@ function renderEditControls(message: services.ChatMessage, isEditing: boolean): 
     return "";
   }
   return `
-    <button class="icon-button chat-edit-trigger" type="button" title="Edit message" aria-label="Edit message" data-action="edit-message" data-message-id="${escapeAttribute(message.id)}">
-      ${icons.edit}
-    </button>
+    <div class="chat-message-actions">
+      <button class="icon-button chat-edit-trigger" type="button" title="Edit message" aria-label="Edit message" data-action="edit-message" data-message-id="${escapeAttribute(message.id)}">
+        ${icons.edit}
+      </button>
+    </div>
   `;
 }
 
@@ -2775,6 +2793,17 @@ async function handleAction(event: Event) {
       pushToast(`Card moved to ${laneLabel(lane)}.`, "success");
       render();
     }
+    if (action === "create-card-from-message") {
+      const workspace = activeWorkspace();
+      const messageID = target.dataset.messageId ?? "";
+      if (!workspace || !messageID) {
+        return;
+      }
+      kanbanBoards.set(workspace.id, await CreateKanbanCardFromChatMessage(workspace.id, messageID));
+      pushToast("Message converted into a Ready card.", "success");
+      render();
+      return;
+    }
     if (action === "retry-message") {
       const workspace = activeWorkspace();
       const messageID = target.dataset.messageId ?? "";
@@ -3414,6 +3443,7 @@ function patchChatMessage(message: services.ChatMessage, patchDebug = true) {
     error.hidden = !message.error;
   }
   patchMessageStatus(element, message);
+  patchMessageActions(element, message);
   const debugStack = element.querySelector<HTMLElement>("[data-debug-stack]");
   if (patchDebug && debugStack) {
     patchDebugSections(debugStack, message);
@@ -3437,9 +3467,30 @@ function patchMessageStatus(element: HTMLElement, message: services.ChatMessage)
   if (!statusElement) {
     statusElement = document.createElement("span");
     statusElement.dataset.messageStatus = "";
-    header.appendChild(statusElement);
+    header.insertBefore(statusElement, header.querySelector(".chat-message-actions"));
   }
   statusElement.textContent = status;
+}
+
+function patchMessageActions(element: HTMLElement, message: services.ChatMessage) {
+  if (message.role !== "assistant") {
+    return;
+  }
+  const retry = element.querySelector<HTMLButtonElement>(".chat-retry-trigger");
+  if (retry) {
+    const shouldShowSpinner = isAssistantMessageStreaming(message);
+    const hasSpinner = Boolean(retry.querySelector(".spinner"));
+    if (shouldShowSpinner && !hasSpinner) {
+      retry.innerHTML = '<span class="spinner" aria-hidden="true"></span>';
+    }
+    if (!shouldShowSpinner && hasSpinner) {
+      retry.innerHTML = icons.retry;
+    }
+  }
+  const kanban = element.querySelector<HTMLButtonElement>(".chat-kanban-trigger");
+  if (kanban) {
+    kanban.disabled = !canCreateKanbanCardFromMessage(message);
+  }
 }
 
 function patchDebugSections(stack: HTMLElement, message: services.ChatMessage) {

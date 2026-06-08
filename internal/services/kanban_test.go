@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -127,6 +128,56 @@ func TestUpdateKanbanCardDescriptionRejectsRunningWorkspace(t *testing.T) {
 
 	if _, err := service.UpdateKanbanCardDescription(workspaceID, "card-1", "Updated"); err == nil {
 		t.Fatal("expected running workspace description edit to be rejected")
+	}
+}
+
+func TestCreateKanbanCardFromChatMessageUsesAssistantContentOnly(t *testing.T) {
+	service, workspaceID := newKanbanTestService(t)
+	content := "# Build search panel\n\nImplement the visible assistant plan."
+	service.chatMu.Lock()
+	service.chatSessions[workspaceID] = &chatSessionState{
+		WorkspaceID: workspaceID,
+		Messages: []ChatMessage{
+			{ID: "msg-user", Role: "user", Content: "Plan search UI", Status: "complete"},
+			{
+				ID:        "msg-assistant",
+				Role:      "assistant",
+				Content:   content,
+				Reasoning: "hidden thinking should not be copied",
+				ToolCalls: []ChatToolActivity{{
+					ID:     "call-1",
+					Name:   "filesystem_read_text",
+					Status: "complete",
+					Result: "tool result should not be copied",
+				}},
+				Status: "complete",
+			},
+		},
+	}
+	service.chatMu.Unlock()
+
+	board, err := service.CreateKanbanCardFromChatMessage(workspaceID, "msg-assistant")
+	if err != nil {
+		t.Fatalf("create card from chat message: %v", err)
+	}
+	if len(board.Ready) != 1 {
+		t.Fatalf("expected one ready card, got %#v", board)
+	}
+	card := board.Ready[0]
+	if card.Title != "Build search panel" {
+		t.Fatalf("expected title from visible message, got %q", card.Title)
+	}
+	if card.Description != content {
+		t.Fatalf("expected description to be visible content, got %q", card.Description)
+	}
+	if strings.Contains(card.Description, "hidden thinking") || strings.Contains(card.Description, "tool result") {
+		t.Fatalf("description included hidden debug state: %q", card.Description)
+	}
+	if len(card.AcceptanceCriteria) != 1 || card.AcceptanceCriteria[0] == "" {
+		t.Fatalf("expected default acceptance criteria, got %#v", card.AcceptanceCriteria)
+	}
+	if len(card.ProgressTranscript) != 1 || card.ProgressTranscript[0].Content != "Created directly from an Echo chat message." {
+		t.Fatalf("expected direct creation transcript, got %#v", card.ProgressTranscript)
 	}
 }
 

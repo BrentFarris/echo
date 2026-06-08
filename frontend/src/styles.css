@@ -494,6 +494,14 @@ h3 {
   text-transform: uppercase;
 }
 
+.chat-message-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
 .chat-message header .icon-button {
   flex: 0 0 auto;
   width: 30px;
@@ -502,7 +510,8 @@ h3 {
   transition: opacity 120ms ease;
 }
 
-.chat-message:hover header .icon-button {
+.chat-message:hover header .icon-button,
+.chat-message header .icon-button:focus-visible {
   opacity: 1;
 }
 
@@ -511,11 +520,13 @@ h3 {
   color: var(--color-accent-strong);
 }
 
-.chat-message.from-assistant:hover header .icon-button.chat-retry-trigger {
+.chat-message.from-assistant:hover header .icon-button.chat-retry-trigger,
+.chat-message.from-assistant:hover header .icon-button.chat-kanban-trigger {
   opacity: 1;
 }
 
-.chat-message.from-assistant header .icon-button.chat-retry-trigger:hover {
+.chat-message.from-assistant header .icon-button.chat-retry-trigger:hover,
+.chat-message.from-assistant header .icon-button.chat-kanban-trigger:hover {
   background: var(--color-surface-muted);
   color: var(--color-accent-strong);
 }

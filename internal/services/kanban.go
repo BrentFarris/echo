@@ -60,6 +60,52 @@ func (s *SystemService) LoadKanbanBoard(workspaceID string) (KanbanBoard, error)
 	return boardForWorkspace(workspaceID, s.state.KanbanCards), nil
 }
 
+func (s *SystemService) CreateKanbanCardFromChatMessage(workspaceID string, messageID string) (KanbanBoard, error) {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return KanbanBoard{}, fmt.Errorf("message id is required")
+	}
+	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
+		return KanbanBoard{}, err
+	}
+
+	s.chatMu.Lock()
+	session := s.chatSessions[workspaceID]
+	if session == nil {
+		s.chatMu.Unlock()
+		return KanbanBoard{}, fmt.Errorf("message was not found")
+	}
+
+	found := false
+	content := ""
+	for _, message := range session.Messages {
+		if message.ID != messageID {
+			continue
+		}
+		found = true
+		if message.Role != "assistant" {
+			s.chatMu.Unlock()
+			return KanbanBoard{}, fmt.Errorf("can only create cards from assistant messages")
+		}
+		if message.Status != "complete" {
+			s.chatMu.Unlock()
+			return KanbanBoard{}, fmt.Errorf("can only create cards from complete assistant messages")
+		}
+		content = strings.TrimSpace(message.Content)
+		break
+	}
+	s.chatMu.Unlock()
+
+	if !found {
+		return KanbanBoard{}, fmt.Errorf("message was not found")
+	}
+	if content == "" {
+		return KanbanBoard{}, fmt.Errorf("message content is required")
+	}
+
+	return s.appendAssistantMessageReadyCard(workspaceID, content)
+}
+
 func (s *SystemService) MoveKanbanCard(workspaceID string, cardID string, lane string) (KanbanBoard, error) {
 	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
 		return KanbanBoard{}, err
@@ -275,6 +321,72 @@ func (s *SystemService) appendReadyCards(workspaceID string, cards []decomposedC
 		return KanbanBoard{}, err
 	}
 	return boardForWorkspace(workspaceID, s.state.KanbanCards), nil
+}
+
+func (s *SystemService) appendAssistantMessageReadyCard(workspaceID string, content string) (KanbanBoard, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.refreshWorkspaceStatusesLocked() {
+		_ = s.saveLocked()
+	}
+	if !workspaceExists(s.state.Workspaces, workspaceID) {
+		return KanbanBoard{}, fmt.Errorf("workspace was not found")
+	}
+	for _, workspace := range s.state.Workspaces {
+		if workspace.ID == workspaceID && workspace.Missing {
+			return KanbanBoard{}, fmt.Errorf("workspace folder is unavailable")
+		}
+	}
+
+	card := KanbanCard{
+		ID:                 fmt.Sprintf("card-%d", s.nextKanbanCardNumberLocked()),
+		WorkspaceID:        workspaceID,
+		Title:              assistantMessageKanbanTitle(content),
+		Description:        content,
+		AcceptanceCriteria: []string{"Complete the work described in the assistant message."},
+		Lane:               KanbanLaneReady,
+		Status:             KanbanLaneReady,
+		ProgressTranscript: []KanbanProgressEntry{{
+			Type:    "message",
+			Title:   "Card created",
+			Content: "Created directly from an Echo chat message.",
+			Status:  KanbanLaneReady,
+		}},
+	}
+	s.state.KanbanCards = append(s.state.KanbanCards, card)
+
+	if err := s.saveLocked(); err != nil {
+		return KanbanBoard{}, err
+	}
+	return boardForWorkspace(workspaceID, s.state.KanbanCards), nil
+}
+
+func assistantMessageKanbanTitle(content string) string {
+	const maxTitleRunes = 80
+	for _, line := range strings.Split(content, "\n") {
+		title := strings.Join(strings.Fields(strings.TrimSpace(line)), " ")
+		if title == "" || strings.HasPrefix(title, "```") {
+			continue
+		}
+		title = strings.TrimSpace(strings.TrimLeft(title, "#"))
+		for _, prefix := range []string{"- ", "* ", "+ "} {
+			if strings.HasPrefix(title, prefix) {
+				title = strings.TrimSpace(strings.TrimPrefix(title, prefix))
+				break
+			}
+		}
+		title = strings.Trim(title, "`*_")
+		if title == "" {
+			continue
+		}
+		runes := []rune(title)
+		if len(runes) <= maxTitleRunes {
+			return title
+		}
+		return strings.TrimSpace(string(runes[:maxTitleRunes-3])) + "..."
+	}
+	return "Echo message"
 }
 
 func (s *SystemService) nextKanbanCardNumberLocked() int {

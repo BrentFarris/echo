@@ -22,6 +22,8 @@ export function ClearWorkspaceIcon(arg1:string):Promise<services.AppState>;
 
 export function CloseKanbanCardDetail(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
+export function CreateKanbanCardFromChatMessage(arg1:string,arg2:string):Promise<services.KanbanBoard>;
+
 export function DeleteWorkspace(arg1:string):Promise<services.AppState>;
 
 export function EditChatMessage(arg1:string,arg2:string,arg3:string):Promise<services.ChatSession>;
