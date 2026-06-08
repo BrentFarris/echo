@@ -181,7 +181,7 @@ func TestSystemServiceChatPlanModeUsesReadOnlyPlanningRequest(t *testing.T) {
 	}
 
 	names := chatRequestToolNames(captured)
-	for _, expected := range []string{"filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_stat"} {
+	for _, expected := range []string{"filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_search_text", "filesystem_stat"} {
 		if !names[expected] {
 			t.Fatalf("expected plan mode to include read-only tool %s, got %#v", expected, names)
 		}
@@ -216,7 +216,7 @@ func TestSystemServiceChatNonPlanModeUsesFullToolRequest(t *testing.T) {
 	waitForChatIdle(t, service, workspaceID)
 
 	names := chatRequestToolNames(captured)
-	for _, expected := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_stat", "shell_command"} {
+	for _, expected := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_search_text", "filesystem_stat", "shell_command"} {
 		if !names[expected] {
 			t.Fatalf("expected non-plan mode to include %s, got %#v", expected, names)
 		}
@@ -1238,6 +1238,8 @@ func assertSystemPromptOperatingContext(t *testing.T, content string, workspaceR
 	for _, expected := range []string{
 		"Operating context:",
 		"- Operating system: " + runtime.GOOS,
+		"- Default shell: ",
+		"- Shell command guidance: ",
 		"- OS user: ",
 		"- Workspace: " + workspaceRoot,
 		"- Current time: ",
@@ -1250,6 +1252,12 @@ func assertSystemPromptOperatingContext(t *testing.T, content string, workspaceR
 	username := lineValue(content, "- OS user: ")
 	if username == "" {
 		t.Fatalf("expected system prompt to include a non-empty OS user, got %q", content)
+	}
+	if shell := lineValue(content, "- Default shell: "); shell == "" {
+		t.Fatalf("expected system prompt to include default shell, got %q", content)
+	}
+	if guidance := lineValue(content, "- Shell command guidance: "); guidance == "" {
+		t.Fatalf("expected system prompt to include shell command guidance, got %q", content)
 	}
 
 	currentTime := lineValue(content, "- Current time: ")

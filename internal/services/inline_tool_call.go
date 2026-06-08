@@ -13,9 +13,16 @@ import (
 
 const inlineToolCallIndexBase = 10000
 
+var inlineToolCallEndMarkers = []string{
+	"</tool_call>",
+	"<tool_call|>",
+}
+
 var (
-	inlineFunctionTagPattern  = regexp.MustCompile(`(?is)<function\s*=\s*["']?([A-Za-z0-9_-]+)["']?\s*>(.*?)</function\s*>`)
-	inlineParameterTagPattern = regexp.MustCompile(`(?is)<parameter\s*=\s*["']?([A-Za-z0-9_-]+)["']?\s*>(.*?)</parameter\s*>`)
+	inlineFunctionTagPattern       = regexp.MustCompile(`(?is)<function\s*=\s*["']?([A-Za-z0-9_-]+)["']?\s*>(.*?)</function\s*>`)
+	inlineParameterTagPattern      = regexp.MustCompile(`(?is)<parameter\s*=\s*["']?([A-Za-z0-9_-]+)["']?\s*>(.*?)</parameter\s*>`)
+	inlineCallStylePattern         = regexp.MustCompile(`(?is)^call:([A-Za-z0-9_-]+)\s*(\{.*\})?\s*$`)
+	inlineCallStyleArgumentPattern = regexp.MustCompile(`(?is)^\s*,?\s*([A-Za-z0-9_-]+)\s*:\s*(?:<\|"\|>(.*?)<\|"\|>|"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([^,}]+))\s*`)
 )
 
 type inlineToolCallParseResult struct {
@@ -60,7 +67,7 @@ func (p *inlineToolCallStreamParser) drain(flush bool) inlineToolCallParseResult
 			p.buffer = p.buffer[start:]
 		}
 
-		close := indexFold(p.buffer, "</tool_call>")
+		close, closeLength := indexInlineToolCallEnd(p.buffer)
 		if close < 0 {
 			if flush {
 				if call, ok := parseInlineToolCallBlock(p.buffer); ok {
@@ -74,7 +81,7 @@ func (p *inlineToolCallStreamParser) drain(flush bool) inlineToolCallParseResult
 			return result
 		}
 
-		end := close + len("</tool_call>")
+		end := close + closeLength
 		block := p.buffer[:end]
 		if call, ok := parseInlineToolCallBlock(block); ok {
 			result.ToolCalls = append(result.ToolCalls, call)
@@ -89,7 +96,10 @@ func parseInlineToolCallBlock(block string) (llm.ToolCall, bool) {
 	if call, ok := parseTaggedInlineToolCall(block); ok {
 		return call, true
 	}
-	return parseJSONInlineToolCall(block)
+	if call, ok := parseJSONInlineToolCall(block); ok {
+		return call, true
+	}
+	return parseCallStyleInlineToolCall(block)
 }
 
 func parseTaggedInlineToolCall(block string) (llm.ToolCall, bool) {
@@ -174,10 +184,85 @@ func stripInlineToolCallWrapper(block string) string {
 	if indexInlineToolCallStart(block) == 0 && startEnd >= 0 {
 		block = block[startEnd+1:]
 	}
-	if close := indexFold(block, "</tool_call>"); close >= 0 {
+	if close, _ := indexInlineToolCallEnd(block); close >= 0 {
 		block = block[:close]
 	}
 	return html.UnescapeString(strings.TrimSpace(block))
+}
+
+func parseCallStyleInlineToolCall(block string) (llm.ToolCall, bool) {
+	body := strings.TrimSpace(stripInlineToolCallWrapper(block))
+	match := inlineCallStylePattern.FindStringSubmatch(body)
+	if match == nil {
+		return llm.ToolCall{}, false
+	}
+
+	name := strings.TrimSpace(match[1])
+	if name == "" {
+		return llm.ToolCall{}, false
+	}
+
+	args, ok := parseCallStyleInlineArguments(match[2])
+	if !ok {
+		return llm.ToolCall{}, false
+	}
+
+	arguments, err := json.Marshal(args)
+	if err != nil {
+		return llm.ToolCall{}, false
+	}
+	return llm.ToolCall{
+		Type: "function",
+		Function: llm.FunctionCall{
+			Name:      name,
+			Arguments: string(arguments),
+		},
+	}, true
+}
+
+func parseCallStyleInlineArguments(text string) (map[string]any, bool) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return map[string]any{}, true
+	}
+	if !strings.HasPrefix(text, "{") || !strings.HasSuffix(text, "}") {
+		return nil, false
+	}
+
+	args := map[string]any{}
+	body := strings.TrimSpace(text[1 : len(text)-1])
+	for body != "" {
+		match := inlineCallStyleArgumentPattern.FindStringSubmatchIndex(body)
+		if match == nil || match[0] != 0 {
+			return nil, false
+		}
+		key := body[match[2]:match[3]]
+		value, ok := inlineCallStyleArgumentValue(body, match)
+		if !ok {
+			return nil, false
+		}
+		args[key] = inlineToolParameterValue(key, value)
+		body = strings.TrimSpace(body[match[1]:])
+	}
+	return args, true
+}
+
+func inlineCallStyleArgumentValue(text string, match []int) (string, bool) {
+	for group := 2; group <= 5; group++ {
+		start := match[group*2]
+		end := match[group*2+1]
+		if start < 0 || end < 0 {
+			continue
+		}
+		value := text[start:end]
+		if group == 3 || group == 4 {
+			value = strings.ReplaceAll(value, `\"`, `"`)
+			value = strings.ReplaceAll(value, `\'`, `'`)
+			value = strings.ReplaceAll(value, `\\`, `\`)
+		}
+		return value, true
+	}
+	return "", false
 }
 
 func inlineToolParameterValue(name string, raw string) any {
@@ -246,6 +331,18 @@ func firstJSONRaw(values ...json.RawMessage) json.RawMessage {
 
 func indexInlineToolCallStart(text string) int {
 	lower := strings.ToLower(text)
+	tagged := indexTaggedInlineToolCallStart(text, lower)
+	sentinel := strings.Index(lower, "<|tool_call>")
+	if tagged < 0 {
+		return sentinel
+	}
+	if sentinel < 0 || tagged < sentinel {
+		return tagged
+	}
+	return sentinel
+}
+
+func indexTaggedInlineToolCallStart(text string, lower string) int {
 	offset := 0
 	for {
 		index := strings.Index(lower[offset:], "<tool_call")
@@ -267,21 +364,38 @@ func indexInlineToolCallStart(text string) int {
 
 func splitPossibleInlineToolCallPrefix(text string) (string, string) {
 	lower := strings.ToLower(text)
-	marker := "<tool_call"
-	limit := len(marker)
-	if len(lower) < limit {
-		limit = len(lower)
-	}
-	for size := limit; size > 0; size-- {
-		if strings.HasPrefix(marker, lower[len(lower)-size:]) {
-			return text[:len(text)-size], text[len(text)-size:]
+	markers := []string{"<tool_call", "<|tool_call>"}
+	best := 0
+	for _, marker := range markers {
+		limit := len(marker)
+		if len(lower) < limit {
+			limit = len(lower)
 		}
+		for size := limit; size > best; size-- {
+			if strings.HasPrefix(marker, lower[len(lower)-size:]) {
+				best = size
+				break
+			}
+		}
+	}
+	if best > 0 {
+		return text[:len(text)-best], text[len(text)-best:]
 	}
 	return text, ""
 }
 
-func indexFold(text string, needle string) int {
-	return strings.Index(strings.ToLower(text), strings.ToLower(needle))
+func indexInlineToolCallEnd(text string) (int, int) {
+	lower := strings.ToLower(text)
+	bestIndex := -1
+	bestLength := 0
+	for _, marker := range inlineToolCallEndMarkers {
+		index := strings.Index(lower, marker)
+		if index >= 0 && (bestIndex < 0 || index < bestIndex) {
+			bestIndex = index
+			bestLength = len(marker)
+		}
+	}
+	return bestIndex, bestLength
 }
 
 func utf8RuneAt(text string, byteIndex int) (rune, int) {

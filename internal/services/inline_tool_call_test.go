@@ -61,3 +61,34 @@ func TestInlineToolCallParserExtractsJSONToolCall(t *testing.T) {
 		t.Fatalf("unexpected arguments: %#v", args)
 	}
 }
+
+func TestInlineToolCallParserExtractsSentinelCallSyntax(t *testing.T) {
+	parser := inlineToolCallStreamParser{}
+
+	first := parser.Consume("Checking <|tool")
+	if first.Text != "Checking " || len(first.ToolCalls) != 0 {
+		t.Fatalf("expected visible prefix only, got %#v", first)
+	}
+
+	second := parser.Consume(`_call>call:filesystem_list{path:<|"|>Public/PlayerController<|"|>}<tool_call|>`)
+	if second.Text != "" || len(second.ToolCalls) != 1 {
+		t.Fatalf("expected sentinel call to be extracted, got %#v", second)
+	}
+	if strings.Contains(second.Text, "tool_call") {
+		t.Fatalf("tool markup leaked into visible text: %q", second.Text)
+	}
+
+	call := second.ToolCalls[0]
+	if call.Function.Name != "filesystem_list" {
+		t.Fatalf("expected filesystem_list, got %#v", call)
+	}
+	var args struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+		t.Fatalf("decode arguments: %v", err)
+	}
+	if args.Path != "Public/PlayerController" {
+		t.Fatalf("unexpected arguments: %#v", args)
+	}
+}

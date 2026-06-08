@@ -72,7 +72,7 @@ func readTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error) 
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, SafeError{Code: "path_not_found", Message: "file was not found"}
+		return nil, SafeError{Code: "path_not_found", Message: fmt.Sprintf("file %s was not found", relativeWorkspacePath(ctx.WorkspacePath, path))}
 	}
 	if !info.Mode().IsRegular() {
 		return nil, SafeError{Code: "not_file", Message: "path is not a regular file"}

@@ -26,12 +26,31 @@ func workspaceSystemPrompt(base string, workspace Workspace) string {
 }
 
 func workspaceOperatingContext(workspace Workspace) string {
-	return fmt.Sprintf("Operating context:\n- Operating system: %s\n- OS user: %s\n- Workspace: %s\n- Current time: %s",
+	return fmt.Sprintf("Operating context:\n- Operating system: %s\n- Default shell: %s\n- Shell command guidance: %s\n- OS user: %s\n- Workspace: %s\n- Current time: %s",
 		runtime.GOOS,
+		defaultShellDescription(),
+		shellCommandGuidance(),
 		currentOSUser(),
 		workspace.FolderPath,
 		time.Now().Format(time.RFC3339),
 	)
+}
+
+func defaultShellDescription() string {
+	if runtime.GOOS == "windows" {
+		return "PowerShell (pwsh.exe when available, otherwise powershell.exe)"
+	}
+	if shell := strings.TrimSpace(os.Getenv("SHELL")); shell != "" {
+		return shell
+	}
+	return "/bin/sh"
+}
+
+func shellCommandGuidance() string {
+	if runtime.GOOS == "windows" {
+		return "shell_command runs through PowerShell; use PowerShell-native commands such as Select-String instead of assuming Unix utilities like grep are installed."
+	}
+	return "shell_command runs through $SHELL when set, otherwise /bin/sh; use POSIX sh-compatible commands unless workspace tooling requires otherwise."
 }
 
 func currentOSUser() string {

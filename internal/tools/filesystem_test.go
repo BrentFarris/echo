@@ -84,6 +84,90 @@ func TestFilesystemToolsInvestigateWorkspace(t *testing.T) {
 	}
 }
 
+func TestFilesystemSearchTextReturnsContextAndMultilineRegex(t *testing.T) {
+	workspace := t.TempDir()
+	content := strings.Join([]string{
+		"package main",
+		"",
+		"func target() {",
+		"\ttargetCall()",
+		"}",
+		"",
+		"func other() {",
+		"}",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(workspace, "main.go"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	literalResult := Execute(
+		ExecutionContext{Context: context.Background(), WorkspacePath: workspace},
+		"filesystem_search_text",
+		mustJSON(t, map[string]any{"path": "main.go", "query": "targetCall", "contextLines": 1}),
+	)
+	if !literalResult.Success {
+		t.Fatalf("literal search failed: %#v", literalResult)
+	}
+	literalOutput, ok := literalResult.Output.(searchTextFileOutput)
+	if !ok {
+		t.Fatalf("unexpected literal search output type: %#v", literalResult.Output)
+	}
+	if literalOutput.MatchCount != 1 || literalOutput.ReturnedMatches != 1 {
+		t.Fatalf("unexpected literal match counts: %#v", literalOutput)
+	}
+	literalMatch := literalOutput.Matches[0]
+	if literalMatch.Line != 4 || literalMatch.Column != 2 || len(literalMatch.Lines) != 3 {
+		t.Fatalf("unexpected literal match context: %#v", literalMatch)
+	}
+	if literalMatch.Lines[0].Text != "func target() {" || literalMatch.Lines[1].Text != "\ttargetCall()" || literalMatch.Lines[2].Text != "}" {
+		t.Fatalf("unexpected literal context lines: %#v", literalMatch.Lines)
+	}
+
+	regexResult := Execute(
+		ExecutionContext{Context: context.Background(), WorkspacePath: workspace},
+		"filesystem_search_text",
+		mustJSON(t, map[string]any{
+			"path":         "main.go",
+			"query":        `(?s)func target\(\) \{.*?\n\}`,
+			"regex":        true,
+			"multiline":    true,
+			"contextLines": 0,
+		}),
+	)
+	if !regexResult.Success {
+		t.Fatalf("regex search failed: %#v", regexResult)
+	}
+	regexOutput, ok := regexResult.Output.(searchTextFileOutput)
+	if !ok {
+		t.Fatalf("unexpected regex search output type: %#v", regexResult.Output)
+	}
+	if regexOutput.MatchCount != 1 || regexOutput.ReturnedMatches != 1 {
+		t.Fatalf("unexpected regex match counts: %#v", regexOutput)
+	}
+	regexMatch := regexOutput.Matches[0]
+	if regexMatch.Line != 3 || regexMatch.EndLine != 5 || len(regexMatch.Lines) != 3 {
+		t.Fatalf("expected multiline function block context, got %#v", regexMatch)
+	}
+}
+
+func TestFilesystemReadTextMissingFileNamesAttemptedPath(t *testing.T) {
+	workspace := t.TempDir()
+
+	result := Execute(
+		ExecutionContext{Context: context.Background(), WorkspacePath: workspace},
+		"filesystem_read_text",
+		mustJSON(t, map[string]any{"path": "missing/notes.txt"}),
+	)
+
+	if result.Success || result.Error == nil || result.Error.Code != "path_not_found" {
+		t.Fatalf("expected missing path error, got %#v", result)
+	}
+	if !strings.Contains(result.Error.Message, "missing/notes.txt") {
+		t.Fatalf("expected missing path in error message, got %q", result.Error.Message)
+	}
+}
+
 func TestFilesystemReadImageReturnsLLMImageContent(t *testing.T) {
 	workspace := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workspace, "screen.png"), testPNGBytes(), 0o600); err != nil {
