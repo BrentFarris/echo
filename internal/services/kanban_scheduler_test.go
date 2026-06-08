@@ -19,9 +19,14 @@ func TestKanbanSchedulerRespectsDependencies(t *testing.T) {
 	root := t.TempDir()
 	var service *SystemService
 	var workspaceID string
+	dependentRequest := make(chan llm.ChatRequest, 1)
 	service, workspaceID = newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertChatStreamRequest(t, r)
-		title := requestedCardTitle(t, r)
+		var request llm.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		title := cardTitleFromRequest(t, request)
 		if title == "Dependent" {
 			board, err := service.LoadKanbanBoard(workspaceID)
 			if err != nil {
@@ -29,6 +34,10 @@ func TestKanbanSchedulerRespectsDependencies(t *testing.T) {
 			}
 			if len(board.Done) != 1 || board.Done[0].ID != "card-1" {
 				t.Fatalf("dependent started before prerequisite was done: %#v", board)
+			}
+			select {
+			case dependentRequest <- request:
+			default:
 			}
 		}
 		writeSSE(t, w,
@@ -49,6 +58,26 @@ func TestKanbanSchedulerRespectsDependencies(t *testing.T) {
 	})
 	if len(board.Blocked) != 0 || len(board.Ready) != 0 || len(board.InProgress) != 0 {
 		t.Fatalf("expected all cards done, got %#v", board)
+	}
+
+	var captured llm.ChatRequest
+	select {
+	case captured = <-dependentRequest:
+	case <-time.After(time.Second):
+		t.Fatal("dependent card request was not captured")
+	}
+	requestData, err := json.Marshal(captured.Messages)
+	if err != nil {
+		t.Fatalf("marshal dependent request: %v", err)
+	}
+	for _, expected := range []string{
+		"Completed dependency outputs:",
+		"card-1 (Prerequisite):",
+		"Completed Prerequisite.",
+	} {
+		if !strings.Contains(string(requestData), expected) {
+			t.Fatalf("expected dependent request to include %q, got %s", expected, requestData)
+		}
 	}
 }
 
@@ -311,6 +340,9 @@ func TestKanbanAgentIncludesWorkspaceInstructions(t *testing.T) {
 	if !strings.Contains(captured.Messages[0].Content, "Kanban agents must follow the workspace playbook.") {
 		t.Fatalf("expected AGENTS.md content in system prompt, got %q", captured.Messages[0].Content)
 	}
+	if !strings.Contains(captured.Messages[0].Content, "Write the final message as a concise handoff summary for dependent cards") {
+		t.Fatalf("expected dependency handoff summary instruction in system prompt, got %q", captured.Messages[0].Content)
+	}
 	assertSystemPromptOperatingContext(t, captured.Messages[0].Content, root)
 }
 
@@ -538,6 +570,11 @@ func requestedCardTitle(t *testing.T, r *http.Request) string {
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		t.Fatalf("decode request: %v", err)
 	}
+	return cardTitleFromRequest(t, request)
+}
+
+func cardTitleFromRequest(t *testing.T, request llm.ChatRequest) string {
+	t.Helper()
 	for _, message := range request.Messages {
 		if message.Role != llm.RoleUser {
 			continue

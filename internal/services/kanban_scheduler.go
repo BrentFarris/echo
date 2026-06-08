@@ -37,6 +37,12 @@ type kanbanAgentResult struct {
 	cardID string
 }
 
+type kanbanDependencyOutput struct {
+	ID      string
+	Title   string
+	Content string
+}
+
 func (s *SystemService) StartKanbanExecution(workspaceID string, concurrency int) (KanbanBoard, error) {
 	workspace, settings, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {
@@ -321,7 +327,7 @@ func (s *SystemService) startKanbanAgent(parent context.Context, workspace Works
 }
 
 func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace, settings llm.Settings, cardID string, agentID uint64) {
-	card, ok := s.cardSnapshot(workspace.ID, cardID)
+	card, dependencyOutputs, ok := s.agentCardSnapshot(workspace.ID, cardID)
 	if !ok {
 		return
 	}
@@ -334,7 +340,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 
 	messages := []llm.Message{
 		kanbanAgentSystemMessage(workspace),
-		kanbanAgentUserMessage(card),
+		kanbanAgentUserMessage(card, dependencyOutputs),
 	}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -655,6 +661,40 @@ func (s *SystemService) cardSnapshot(workspaceID string, cardID string) (KanbanC
 	return KanbanCard{}, false
 }
 
+func (s *SystemService) agentCardSnapshot(workspaceID string, cardID string) (KanbanCard, []kanbanDependencyOutput, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cardsByID := kanbanCardsByID(s.state.KanbanCards)
+	card, ok := cardsByID[cardID]
+	if !ok || card.WorkspaceID != workspaceID {
+		return KanbanCard{}, nil, false
+	}
+
+	outputs := make([]kanbanDependencyOutput, 0, len(card.Dependencies))
+	for _, dependencyID := range card.Dependencies {
+		dependency, ok := cardsByID[dependencyID]
+		if !ok || dependency.WorkspaceID != workspaceID {
+			continue
+		}
+		content := kanbanDependencyResultContent(dependency.ProgressTranscript)
+		if content == "" {
+			continue
+		}
+		title := strings.TrimSpace(dependency.Title)
+		if title == "" {
+			title = dependency.ID
+		}
+		outputs = append(outputs, kanbanDependencyOutput{
+			ID:      dependency.ID,
+			Title:   title,
+			Content: content,
+		})
+	}
+
+	return cloneKanbanCard(card), outputs, true
+}
+
 func (s *SystemService) appendKanbanProgress(workspaceID string, cardID string, entry KanbanProgressEntry) {
 	s.mu.Lock()
 	if s.appendKanbanProgressLocked(workspaceID, cardID, entry) {
@@ -888,17 +928,18 @@ func kanbanAgentSystemMessage(workspace Workspace) llm.Message {
 		Role: llm.RoleSystem,
 		Content: workspaceSystemPrompt(
 			"You are Echo's autonomous Kanban agent. Complete the assigned card inside the active workspace. "+
-				"Use available tools when you need workspace facts. Keep the final message concise and include what changed and how it was verified.",
+				"Use available tools when you need workspace facts. Write the final message as a concise handoff summary for dependent cards, including what was done, important files or decisions, and how it was verified.",
 			workspace,
 		),
 	}
 }
 
-func kanbanAgentUserMessage(card KanbanCard) llm.Message {
+func kanbanAgentUserMessage(card KanbanCard, dependencyOutputs []kanbanDependencyOutput) llm.Message {
 	criteria := "None recorded."
 	if len(card.AcceptanceCriteria) > 0 {
 		criteria = "- " + strings.Join(card.AcceptanceCriteria, "\n- ")
 	}
+	dependencies := kanbanDependencyOutputsPrompt(card, dependencyOutputs)
 	progress := "No prior card messages or progress."
 	if len(card.ProgressTranscript) > 0 {
 		lines := make([]string, 0, len(card.ProgressTranscript))
@@ -922,9 +963,55 @@ func kanbanAgentUserMessage(card KanbanCard) llm.Message {
 	}
 	return llm.Message{
 		Role: llm.RoleUser,
-		Content: fmt.Sprintf("Complete this Kanban card.\n\nID: %s\nTitle: %s\nDescription: %s\nAcceptance criteria:\n%s\n\nPrior card log:\n%s",
-			card.ID, card.Title, card.Description, criteria, progress),
+		Content: fmt.Sprintf("Complete this Kanban card.\n\nID: %s\nTitle: %s\nDescription: %s\nAcceptance criteria:\n%s\n\nCompleted dependency outputs:\n%s\n\nPrior card log:\n%s",
+			card.ID, card.Title, card.Description, criteria, dependencies, progress),
 	}
+}
+
+func kanbanDependencyOutputsPrompt(card KanbanCard, outputs []kanbanDependencyOutput) string {
+	if len(card.Dependencies) == 0 {
+		return "No dependencies."
+	}
+	if len(outputs) == 0 {
+		return "No completed dependency outputs were recorded."
+	}
+
+	lines := make([]string, 0, len(outputs)*3)
+	for _, output := range outputs {
+		title := strings.TrimSpace(output.Title)
+		if title == "" {
+			title = output.ID
+		}
+		lines = append(lines, fmt.Sprintf("- %s (%s):", output.ID, title))
+		lines = append(lines, indentKanbanPromptBlock(output.Content))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func kanbanDependencyResultContent(transcript []KanbanProgressEntry) string {
+	for i := len(transcript) - 1; i >= 0; i-- {
+		entry := transcript[i]
+		if entry.Type != "result" && !strings.EqualFold(strings.TrimSpace(entry.Title), "Final result") {
+			continue
+		}
+		if content := strings.TrimSpace(entry.Content); content != "" {
+			return content
+		}
+	}
+	for i := len(transcript) - 1; i >= 0; i-- {
+		if content := strings.TrimSpace(transcript[i].Content); content != "" {
+			return content
+		}
+	}
+	return ""
+}
+
+func indentKanbanPromptBlock(content string) string {
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	for i := range lines {
+		lines[i] = "  " + strings.TrimRight(lines[i], " \t")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func normalizeAgentLimit(concurrency int) int {
