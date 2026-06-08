@@ -1734,6 +1734,7 @@ function renderChatPanel(workspace: services.Workspace | null, expanded = false)
             aria-autocomplete="list"
             aria-expanded="${mentionOpen}"
             ${mentionOpen ? `aria-controls="chat-mention-list"` : ""}
+            spellcheck="true"
             data-chat-input
             ${session.busy || executing ? "disabled" : ""}
           >${escapeHtml(draft)}</textarea>
@@ -1835,7 +1836,7 @@ function renderEditTextarea(message: services.ChatMessage): string {
   const escapedContent = escapeHtml(message.content ?? "");
   return `
     <form class="chat-edit-form" data-chat-edit-form data-message-id="${escapeAttribute(message.id)}">
-      <textarea class="chat-edit-textarea" rows="3" data-chat-edit-input aria-label="Edit message">${escapedContent}</textarea>
+      <textarea class="chat-edit-textarea" rows="3" spellcheck="true" data-chat-edit-input aria-label="Edit message">${escapedContent}</textarea>
       <div class="chat-edit-actions">
         <button class="primary-button" type="submit" data-action="save-message-edit">Save</button>
         <button class="secondary-button" type="button" data-action="cancel-message-edit">Cancel</button>

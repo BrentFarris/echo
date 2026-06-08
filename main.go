@@ -30,9 +30,10 @@ func main() {
 			Handler:    app.System.WorkspaceIconHandler(),
 			Middleware: app.System.WorkspaceIconMiddleware,
 		},
-		BackgroundColour: &options.RGBA{R: 18, G: 18, B: 20, A: 1},
-		OnStartup:        app.startup,
-		OnShutdown:       app.shutdown,
+		BackgroundColour:         &options.RGBA{R: 18, G: 18, B: 20, A: 1},
+		EnableDefaultContextMenu: true,
+		OnStartup:                app.startup,
+		OnShutdown:               app.shutdown,
 		Linux: &linux.Options{
 			Icon: appIcon,
 		},
