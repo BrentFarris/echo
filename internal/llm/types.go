@@ -142,20 +142,22 @@ type FunctionCall struct {
 }
 
 type ChatRequest struct {
-	Model             string    `json:"model"`
-	Messages          []Message `json:"messages"`
-	Tools             []Tool    `json:"tools,omitempty"`
-	ToolChoice        any       `json:"tool_choice,omitempty"`
-	Stream            bool      `json:"stream,omitempty"`
-	Temperature       *float64  `json:"temperature,omitempty"`
-	TopK              *int      `json:"top_k,omitempty"`
-	TopP              *float64  `json:"top_p,omitempty"`
-	MinP              *float64  `json:"min_p,omitempty"`
-	ContextLength     *int      `json:"context_length,omitempty"`
-	MaxTokens         *int      `json:"max_tokens,omitempty"`
-	FrequencyPenalty  *float64  `json:"frequency_penalty,omitempty"`
-	PresencePenalty   *float64  `json:"presence_penalty,omitempty"`
-	RepetitionPenalty *float64  `json:"repetition_penalty,omitempty"`
+	Model       string    `json:"model"`
+	Messages    []Message `json:"messages"`
+	Tools       []Tool    `json:"tools,omitempty"`
+	ToolChoice  any       `json:"tool_choice,omitempty"`
+	Stream      bool      `json:"stream,omitempty"`
+	Temperature *float64  `json:"temperature,omitempty"`
+	TopK        *int      `json:"top_k,omitempty"`
+	TopP        *float64  `json:"top_p,omitempty"`
+	// Temporarily removing MinP as it's not supported with MTP on vLLM
+	// MinP              *float64 `json:"min_p,omitempty"`
+	MinP              *float64 `json:"-"`
+	ContextLength     *int     `json:"context_length,omitempty"`
+	MaxTokens         *int     `json:"max_tokens,omitempty"`
+	FrequencyPenalty  *float64 `json:"frequency_penalty,omitempty"`
+	PresencePenalty   *float64 `json:"presence_penalty,omitempty"`
+	RepetitionPenalty *float64 `json:"repetition_penalty,omitempty"`
 }
 
 type ChatResponse struct {
