@@ -60,6 +60,50 @@ func (s *SystemService) LoadKanbanBoard(workspaceID string) (KanbanBoard, error)
 	return boardForWorkspace(workspaceID, s.state.KanbanCards), nil
 }
 
+func (s *SystemService) ClearDoneKanbanCards(workspaceID string) (KanbanBoard, error) {
+	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
+		return KanbanBoard{}, err
+	}
+
+	s.mu.Lock()
+	doneIDsToKeep := doneKanbanCardsWithUnfinishedDependents(workspaceID, s.state.KanbanCards)
+	deletedIDs := make(map[string]struct{})
+	next := s.state.KanbanCards[:0]
+	for _, card := range s.state.KanbanCards {
+		if card.WorkspaceID != workspaceID {
+			next = append(next, card)
+			continue
+		}
+		if effectiveKanbanLane(card) != KanbanLaneDone {
+			next = append(next, card)
+			continue
+		}
+		if _, keep := doneIDsToKeep[card.ID]; keep {
+			next = append(next, card)
+			continue
+		}
+		deletedIDs[card.ID] = struct{}{}
+	}
+	s.state.KanbanCards = next
+	if err := s.saveLocked(); err != nil {
+		s.mu.Unlock()
+		return KanbanBoard{}, err
+	}
+	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
+	s.mu.Unlock()
+
+	if len(deletedIDs) > 0 {
+		s.chatMu.Lock()
+		if activeCardID := s.kanbanDetailViews[workspaceID]; activeCardID != "" {
+			if _, deleted := deletedIDs[activeCardID]; deleted {
+				delete(s.kanbanDetailViews, workspaceID)
+			}
+		}
+		s.chatMu.Unlock()
+	}
+	return board, nil
+}
+
 func (s *SystemService) CreateKanbanCardFromChatMessage(workspaceID string, messageID string) (KanbanBoard, error) {
 	messageID = strings.TrimSpace(messageID)
 	if messageID == "" {
@@ -464,14 +508,44 @@ func kanbanCardsByID(cards []KanbanCard) map[string]KanbanCard {
 	return byID
 }
 
+func effectiveKanbanLane(card KanbanCard) string {
+	lane := normalizeKanbanLane(card.Lane)
+	if lane == "" {
+		lane = normalizeKanbanLane(card.Status)
+	}
+	if lane == "" {
+		lane = KanbanLaneReady
+	}
+	return lane
+}
+
+func doneKanbanCardsWithUnfinishedDependents(workspaceID string, cards []KanbanCard) map[string]struct{} {
+	doneIDs := make(map[string]struct{})
+	for _, card := range cards {
+		if card.WorkspaceID == workspaceID && effectiveKanbanLane(card) == KanbanLaneDone {
+			doneIDs[card.ID] = struct{}{}
+		}
+	}
+	if len(doneIDs) == 0 {
+		return doneIDs
+	}
+
+	keep := make(map[string]struct{})
+	for _, card := range cards {
+		if card.WorkspaceID != workspaceID || effectiveKanbanLane(card) == KanbanLaneDone {
+			continue
+		}
+		for _, dependencyID := range card.Dependencies {
+			if _, done := doneIDs[dependencyID]; done {
+				keep[dependencyID] = struct{}{}
+			}
+		}
+	}
+	return keep
+}
+
 func enrichKanbanCard(card KanbanCard, byID map[string]KanbanCard) KanbanCard {
-	card.Lane = normalizeKanbanLane(card.Lane)
-	if card.Lane == "" {
-		card.Lane = normalizeKanbanLane(card.Status)
-	}
-	if card.Lane == "" {
-		card.Lane = KanbanLaneReady
-	}
+	card.Lane = effectiveKanbanLane(card)
 	card.Status = card.Lane
 	card.DependencyStatuses = nil
 	card.BlockedBy = nil

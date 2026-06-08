@@ -26,6 +26,10 @@ export function ClearChat(arg1) {
   return window['go']['services']['SystemService']['ClearChat'](arg1);
 }
 
+export function ClearDoneKanbanCards(arg1) {
+  return window['go']['services']['SystemService']['ClearDoneKanbanCards'](arg1);
+}
+
 export function ClearWorkspaceChangeReview(arg1) {
   return window['go']['services']['SystemService']['ClearWorkspaceChangeReview'](arg1);
 }

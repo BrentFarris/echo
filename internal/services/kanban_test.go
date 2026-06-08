@@ -74,6 +74,69 @@ func TestKanbanCardCanStartAfterDependenciesAreDone(t *testing.T) {
 	}
 }
 
+func TestClearDoneKanbanCardsKeepsDonePrerequisitesForUnfinishedCards(t *testing.T) {
+	service, workspaceID := newKanbanTestService(t)
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Kept prerequisite", Description: "First", AcceptanceCriteria: []string{"First"}, Lane: KanbanLaneDone},
+		{ID: "card-2", WorkspaceID: workspaceID, Title: "Unfinished dependent", Description: "Second", AcceptanceCriteria: []string{"Second"}, Dependencies: []string{"card-1"}, Lane: KanbanLaneReady},
+		{ID: "card-3", WorkspaceID: workspaceID, Title: "Cleared done card", Description: "Third", AcceptanceCriteria: []string{"Third"}, Lane: KanbanLaneDone},
+	})
+
+	board, err := service.ClearDoneKanbanCards(workspaceID)
+	if err != nil {
+		t.Fatalf("clear done cards: %v", err)
+	}
+	if len(board.Done) != 1 || board.Done[0].ID != "card-1" {
+		t.Fatalf("expected only the unfinished dependent prerequisite to remain done, got %#v", board.Done)
+	}
+	if len(board.Ready) != 1 || board.Ready[0].ID != "card-2" {
+		t.Fatalf("expected unfinished dependent to remain ready, got %#v", board.Ready)
+	}
+	if len(board.Ready[0].BlockedBy) != 0 || !board.Ready[0].Eligible {
+		t.Fatalf("expected retained done prerequisite to keep dependent eligible, got %#v", board.Ready[0])
+	}
+
+	board, err = service.MoveKanbanCard(workspaceID, "card-2", KanbanLaneDone)
+	if err != nil {
+		t.Fatalf("move dependent done: %v", err)
+	}
+	if len(board.Done) != 2 {
+		t.Fatalf("expected prerequisite and dependent in done lane, got %#v", board.Done)
+	}
+
+	board, err = service.ClearDoneKanbanCards(workspaceID)
+	if err != nil {
+		t.Fatalf("clear done cards after dependent done: %v", err)
+	}
+	if len(board.Done) != 0 || len(kanbanCardsForTest(board)) != 0 {
+		t.Fatalf("expected all done cards to clear after dependents are done, got %#v", board)
+	}
+}
+
+func TestClearDoneKanbanCardsClearsDeletedDetailSelection(t *testing.T) {
+	service, workspaceID := newKanbanTestService(t)
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Done", Description: "Done", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneDone},
+	})
+	if _, err := service.OpenKanbanCardDetail(workspaceID, "card-1"); err != nil {
+		t.Fatalf("open detail: %v", err)
+	}
+
+	board, err := service.ClearDoneKanbanCards(workspaceID)
+	if err != nil {
+		t.Fatalf("clear done cards: %v", err)
+	}
+	if len(kanbanCardsForTest(board)) != 0 {
+		t.Fatalf("expected done card to clear, got %#v", board)
+	}
+	service.chatMu.Lock()
+	activeDetail := service.kanbanDetailViews[workspaceID]
+	service.chatMu.Unlock()
+	if activeDetail != "" {
+		t.Fatalf("expected deleted card detail selection to clear, got %q", activeDetail)
+	}
+}
+
 func TestUpdateKanbanCardDescriptionBeforeExecution(t *testing.T) {
 	service, workspaceID := newKanbanTestService(t)
 	seedKanbanCards(t, service, []KanbanCard{
@@ -270,4 +333,8 @@ func seedKanbanCards(t *testing.T, service *SystemService, cards []KanbanCard) {
 	if err := service.saveLocked(); err != nil {
 		t.Fatalf("save seeded cards: %v", err)
 	}
+}
+
+func kanbanCardsForTest(board KanbanBoard) []KanbanCard {
+	return append(append(append(append([]KanbanCard{}, board.Ready...), board.InProgress...), board.Blocked...), board.Done...)
 }

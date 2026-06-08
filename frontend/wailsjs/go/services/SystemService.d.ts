@@ -16,6 +16,8 @@ export function ChooseWorkspaceIcon(arg1:string):Promise<services.AppState>;
 
 export function ClearChat(arg1:string):Promise<services.ChatSession>;
 
+export function ClearDoneKanbanCards(arg1:string):Promise<services.KanbanBoard>;
+
 export function ClearWorkspaceChangeReview(arg1:string):Promise<services.WorkspaceChangeReview>;
 
 export function ClearWorkspaceIcon(arg1:string):Promise<services.AppState>;

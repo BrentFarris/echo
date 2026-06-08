@@ -22,6 +22,7 @@ import {
   ChooseWorkspaceFolder,
   ChooseWorkspaceIcon,
   CloseKanbanCardDetail,
+  ClearDoneKanbanCards,
   ClearWorkspaceChangeReview,
   ClearChat,
   ClearWorkspaceIcon,
@@ -1120,6 +1121,7 @@ function renderWorkspacePanels(workspace: services.Workspace | null, workspaceCo
   const running = workspace ? runningKanbanWorkspaces.has(workspace.id) : false;
   const decomposing = workspace ? executingPlans.has(workspace.id) : false;
   const hasCards = board ? kanbanCards(board).length > 0 : false;
+  const hasDoneCards = board ? (board.done ?? []).length > 0 : false;
   const chatExpanded = workspace ? expandedChatWorkspaces.has(workspace.id) : false;
   const kanbanExpanded = workspace && !chatExpanded ? expandedKanbanWorkspaces.has(workspace.id) : false;
   const kanbanSizeLabel = kanbanExpanded ? "Collapse Kanban" : "Expand Kanban";
@@ -1148,6 +1150,9 @@ function renderWorkspacePanels(workspace: services.Workspace | null, workspaceCo
                   <button class="icon-text-button primary-button" type="button" data-action="start-agents" ${running || !hasCards ? "disabled" : ""}>
                     ${icons.execute}
                     <span class="run-button">Run</span>
+                  </button>
+                  <button class="icon-button danger-button" type="button" title="Clear done cards" aria-label="Clear done Kanban cards" data-action="clear-done-cards" ${hasDoneCards ? "" : "disabled"}>
+                    ${icons.trash}
                   </button>
                   <button class="icon-button stop-button" type="button" title="Stop agents" aria-label="Stop agents" data-action="stop-agents" ${running ? "" : "disabled"}>
                     ${icons.stop}
@@ -2736,6 +2741,30 @@ async function handleAction(event: Event) {
       kanbanBoards.set(workspace.id, await StopKanbanExecution(workspace.id));
       finishKanbanRun(workspace.id);
       pushToast("Kanban agents stopped.");
+      render();
+    }
+    if (action === "clear-done-cards") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      const beforeDoneCount = kanbanBoardFor(workspace.id).done?.length ?? 0;
+      if (beforeDoneCount === 0) {
+        return;
+      }
+      const board = await ClearDoneKanbanCards(workspace.id);
+      kanbanBoards.set(workspace.id, board);
+      const selectedID = selectedKanbanCards.get(workspace.id);
+      if (selectedID && !kanbanCards(board).some((card) => card.id === selectedID)) {
+        selectedKanbanCards.delete(workspace.id);
+      }
+      const clearedCount = beforeDoneCount - (board.done?.length ?? 0);
+      pushToast(
+        clearedCount > 0
+          ? `${clearedCount} done card${clearedCount === 1 ? "" : "s"} cleared.`
+          : "Done cards are still needed by unfinished cards.",
+        clearedCount > 0 ? "success" : "info",
+      );
       render();
     }
     if (action === "open-card") {
