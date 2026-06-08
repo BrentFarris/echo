@@ -26,6 +26,7 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           BRANCH: ${{ github.ref_name }}
           CURRENT_SHA: ${{ github.sha }}
           EVENT_NAME: ${{ github.event_name }}
