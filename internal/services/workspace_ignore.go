@@ -68,6 +68,7 @@ func gitIgnoredWorkspacePaths(workspacePath string, paths []string) (map[string]
 	cmd := exec.CommandContext(ctx, "git", commandArgs...)
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
 	cmd.Stdin = strings.NewReader(strings.Join(paths, "\n") + "\n")
+	configureWorkspaceCommandProcess(cmd)
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
