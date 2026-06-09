@@ -834,6 +834,9 @@ func (s *SystemService) normalizeToolCall(call llm.ToolCall) llm.ToolCall {
 	if call.Type == "" {
 		call.Type = "function"
 	}
+	if repaired, ok := tools.RepairToolArgumentsJSON(json.RawMessage(call.Function.Arguments)); ok {
+		call.Function.Arguments = string(repaired)
+	}
 	return call
 }
 

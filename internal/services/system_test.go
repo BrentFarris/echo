@@ -573,6 +573,68 @@ func TestSystemServiceChatShowsReasoningAndToolActivity(t *testing.T) {
 	}
 }
 
+func TestSystemServiceChatRepairsMalformedToolArguments(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var requestCount atomic.Int32
+	var secondRequest llm.ChatRequest
+	malformedArgs := `{"path":"."`
+	repairedArgs := `{"path":"."}`
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"filesystem_list","arguments":%q}}]}}]}`, malformedArgs),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 2:
+			if err := json.NewDecoder(r.Body).Decode(&secondRequest); err != nil {
+				t.Fatalf("decode second request: %v", err)
+			}
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Found README.md."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+
+	if _, err := service.SendChatMessage(workspaceID, "Inspect the workspace"); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+	if requestCount.Load() != 2 {
+		t.Fatalf("expected tool result follow-up request, got %d requests", requestCount.Load())
+	}
+	assistant := session.Messages[1]
+	if len(assistant.ToolCalls) != 1 {
+		t.Fatalf("expected one tool call, got %#v", assistant.ToolCalls)
+	}
+	toolCall := assistant.ToolCalls[0]
+	if toolCall.Status != "complete" || toolCall.Arguments != repairedArgs {
+		t.Fatalf("expected repaired complete tool activity, got %#v", toolCall)
+	}
+
+	var assistantHistory *llm.Message
+	for i := range secondRequest.Messages {
+		message := &secondRequest.Messages[i]
+		if message.Role == llm.RoleAssistant && len(message.ToolCalls) == 1 {
+			assistantHistory = message
+			break
+		}
+	}
+	if assistantHistory == nil {
+		t.Fatalf("expected repaired assistant tool call in follow-up request, got %#v", secondRequest.Messages)
+	}
+	if got := assistantHistory.ToolCalls[0].Function.Arguments; got != repairedArgs {
+		t.Fatalf("expected repaired arguments in follow-up request, got %q", got)
+	}
+}
+
 func TestSystemServiceChatHandlesInlineReasoningToolCall(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hello"), 0o600); err != nil {

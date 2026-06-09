@@ -53,7 +53,7 @@ func createTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error
 	}
 	var args createTextFileArgs
 	if len(arguments) > 0 {
-		if err := json.Unmarshal(arguments, &args); err != nil {
+		if err := DecodeToolArguments(arguments, &args); err != nil {
 			return nil, SafeError{Code: "invalid_arguments", Message: "arguments must be valid JSON"}
 		}
 	}
