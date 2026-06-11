@@ -1,4 +1,4 @@
-import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { HighlightStyle, indentUnit, syntaxHighlighting } from "@codemirror/language";
 import type { Completion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import { languages as languageData } from "@codemirror/language-data";
 import { EditorSelection, EditorState, Prec, RangeSetBuilder, StateEffect, StateField, Transaction, type Extension, type Text } from "@codemirror/state";
@@ -251,6 +251,7 @@ const codeHighlightStyle = HighlightStyle.define([
 function tabIndentionExtensions(): Extension[] {
   return [
     EditorState.tabSize.of(tabSize),
+    indentUnit.of("\t"),
     Prec.highest(
       keymap.of([
         {
