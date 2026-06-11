@@ -28,6 +28,7 @@ type CodeViewCallbacks = {
   render: () => void;
   pushToast: (message: string, tone?: ToastTone) => void;
   errorMessage: (error: unknown) => string;
+  leadingWhitespaceIndicatorsEnabled: () => boolean;
   showCodePathContextMenu: (
     workspaceID: string,
     path: string,
@@ -1058,7 +1059,6 @@ async function mountActiveCodeEditor(
     EditorView.lineWrapping,
     codeEditorTheme,
     syntaxHighlighting(codeHighlightStyle),
-    leadingWhitespaceIndicatorExtension(),
     altClickCaretToggleExtension(),
     inlineCodeChatExtension(workspaceID, tab.path, callbacks),
     EditorView.updateListener.of((update) => {
@@ -1075,6 +1075,9 @@ async function mountActiveCodeEditor(
       );
     }),
   ];
+  if (callbacks.leadingWhitespaceIndicatorsEnabled()) {
+    extensions.push(leadingWhitespaceIndicatorExtension());
+  }
   const language = await languageExtensionForPath(tab.path);
   if (token !== editorMountToken) {
     return;

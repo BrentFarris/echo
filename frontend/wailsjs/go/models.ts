@@ -14,6 +14,7 @@ export namespace llm {
 	    repetitionPenalty: number;
 	    timeoutSeconds: number;
 	    searxngUrl: string;
+	    hideLeadingWhitespaceIndicators?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -34,6 +35,7 @@ export namespace llm {
 	        this.repetitionPenalty = source["repetitionPenalty"];
 	        this.timeoutSeconds = source["timeoutSeconds"];
 	        this.searxngUrl = source["searxngUrl"];
+	        this.hideLeadingWhitespaceIndicators = source["hideLeadingWhitespaceIndicators"];
 	    }
 	}
 

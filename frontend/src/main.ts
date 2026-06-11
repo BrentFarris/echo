@@ -454,6 +454,11 @@ function fieldValue<K extends keyof llm.Settings>(key: K): string {
   return value === undefined || value === null ? "" : String(value);
 }
 
+function leadingWhitespaceIndicatorsEnabled(settings: llm.Settings | null | undefined): boolean {
+  return (settings as { hideLeadingWhitespaceIndicators?: boolean } | null | undefined)
+    ?.hideLeadingWhitespaceIndicators !== true;
+}
+
 function workspaceLetter(workspace: services.Workspace): string {
   return (workspace.letter ?? "").trim() || workspace.displayName.slice(0, 1).toUpperCase() || "W";
 }
@@ -2000,7 +2005,7 @@ function renderSettingsOverlay(workspaces: services.Workspace[]): string {
         <header class="settings-header">
           <div>
             <p class="eyebrow">Settings</p>
-            <h2 id="settings-title">LLM Configuration</h2>
+            <h2 id="settings-title">Settings</h2>
           </div>
           <button class="icon-button close-button" type="button" title="Close" aria-label="Close settings" data-action="close-settings">
             ${icons.x}
@@ -2010,63 +2015,79 @@ function renderSettingsOverlay(workspaces: services.Workspace[]): string {
         ${formError ? `<p class="form-error" role="alert">${escapeHtml(formError)}</p>` : ""}
         ${hasSettingsValues ? "" : `<p class="empty-state compact">No settings are loaded. Enter an OpenAI-compatible endpoint and model to recover.</p>`}
 
-        <div class="settings-grid">
-          <label class="field field-wide">
-            <span>Endpoint</span>
-            <input name="endpoint" required type="url" value="${escapeHtml(fieldValue("endpoint"))}" autocomplete="off" data-initial-focus />
-          </label>
-          <label class="field field-wide">
-            <span>SearXNG URL</span>
-            <input name="searxngUrl" type="url" value="${escapeHtml(fieldValue("searxngUrl"))}" autocomplete="off" />
-          </label>
-          <label class="field field-wide">
-            <span>Model</span>
-            <input name="model" required type="text" value="${escapeHtml(fieldValue("model"))}" autocomplete="off" />
-          </label>
-          <label class="field">
-            <span>Temperature</span>
-            <input name="temperature" type="number" min="0" max="2" step="0.01" value="${escapeHtml(fieldValue("temperature"))}" />
-          </label>
-          <label class="field">
-            <span>Top K</span>
-            <input name="topK" type="number" min="0" step="1" value="${escapeHtml(fieldValue("topK"))}" />
-          </label>
-          <label class="field">
-            <span>Top P</span>
-            <input name="topP" type="number" min="0" max="1" step="0.01" value="${escapeHtml(fieldValue("topP"))}" />
-          </label>
-          <label class="field">
-            <span>Min P</span>
-            <input name="minP" type="number" min="0" max="1" step="0.01" value="${escapeHtml(fieldValue("minP"))}" />
-          </label>
-          <label class="field">
-            <span>Context Length</span>
-            <input name="contextLength" type="number" min="1" step="1" value="${escapeHtml(fieldValue("contextLength"))}" />
-          </label>
-          <label class="field">
-            <span>Max Tokens</span>
-            <input name="maxTokens" type="number" min="1" step="1" value="${escapeHtml(fieldValue("maxTokens"))}" />
-          </label>
-          <label class="field">
-            <span>Timeout Seconds</span>
-            <input name="timeoutSeconds" type="number" min="1" step="1" value="${escapeHtml(fieldValue("timeoutSeconds"))}" />
-          </label>
-          <label class="field">
-            <span>Frequency Penalty</span>
-            <input name="frequencyPenalty" type="number" min="-2" max="2" step="0.01" value="${escapeHtml(fieldValue("frequencyPenalty"))}" />
-          </label>
-          <label class="field">
-            <span>Presence Penalty</span>
-            <input name="presencePenalty" type="number" min="-2" max="2" step="0.01" value="${escapeHtml(fieldValue("presencePenalty"))}" />
-          </label>
-          <label class="field">
-            <span>Repetition Penalty</span>
-            <input name="repetitionPenalty" type="number" min="0" step="0.01" value="${escapeHtml(fieldValue("repetitionPenalty"))}" />
-          </label>
-        </div>
+        <section class="settings-section" aria-labelledby="llm-settings-title">
+          <h3 id="llm-settings-title" class="settings-section-title">LLM Configuration</h3>
+          <div class="settings-grid">
+            <label class="field field-wide">
+              <span>Endpoint</span>
+              <input name="endpoint" required type="url" value="${escapeHtml(fieldValue("endpoint"))}" autocomplete="off" data-initial-focus />
+            </label>
+            <label class="field field-wide">
+              <span>SearXNG URL</span>
+              <input name="searxngUrl" type="url" value="${escapeHtml(fieldValue("searxngUrl"))}" autocomplete="off" />
+            </label>
+            <label class="field field-wide">
+              <span>Model</span>
+              <input name="model" required type="text" value="${escapeHtml(fieldValue("model"))}" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>Temperature</span>
+              <input name="temperature" type="number" min="0" max="2" step="0.01" value="${escapeHtml(fieldValue("temperature"))}" />
+            </label>
+            <label class="field">
+              <span>Top K</span>
+              <input name="topK" type="number" min="0" step="1" value="${escapeHtml(fieldValue("topK"))}" />
+            </label>
+            <label class="field">
+              <span>Top P</span>
+              <input name="topP" type="number" min="0" max="1" step="0.01" value="${escapeHtml(fieldValue("topP"))}" />
+            </label>
+            <label class="field">
+              <span>Min P</span>
+              <input name="minP" type="number" min="0" max="1" step="0.01" value="${escapeHtml(fieldValue("minP"))}" />
+            </label>
+            <label class="field">
+              <span>Context Length</span>
+              <input name="contextLength" type="number" min="1" step="1" value="${escapeHtml(fieldValue("contextLength"))}" />
+            </label>
+            <label class="field">
+              <span>Max Tokens</span>
+              <input name="maxTokens" type="number" min="1" step="1" value="${escapeHtml(fieldValue("maxTokens"))}" />
+            </label>
+            <label class="field">
+              <span>Timeout Seconds</span>
+              <input name="timeoutSeconds" type="number" min="1" step="1" value="${escapeHtml(fieldValue("timeoutSeconds"))}" />
+            </label>
+            <label class="field">
+              <span>Frequency Penalty</span>
+              <input name="frequencyPenalty" type="number" min="-2" max="2" step="0.01" value="${escapeHtml(fieldValue("frequencyPenalty"))}" />
+            </label>
+            <label class="field">
+              <span>Presence Penalty</span>
+              <input name="presencePenalty" type="number" min="-2" max="2" step="0.01" value="${escapeHtml(fieldValue("presencePenalty"))}" />
+            </label>
+            <label class="field">
+              <span>Repetition Penalty</span>
+              <input name="repetitionPenalty" type="number" min="0" step="0.01" value="${escapeHtml(fieldValue("repetitionPenalty"))}" />
+            </label>
+          </div>
+        </section>
 
-        <section class="workspace-settings" aria-labelledby="workspace-settings-title">
-          <h3 id="workspace-settings-title">Workspaces</h3>
+        <section class="settings-section" aria-labelledby="programming-settings-title">
+          <h3 id="programming-settings-title" class="settings-section-title">Programming</h3>
+          <label class="settings-toggle">
+            <span>Leading whitespace indicators</span>
+            <input
+              name="hideLeadingWhitespaceIndicators"
+              type="checkbox"
+              data-settings-inverted-boolean
+              ${leadingWhitespaceIndicatorsEnabled(settingsDraft) ? "checked" : ""}
+            />
+          </label>
+        </section>
+
+        <section class="settings-section workspace-settings" aria-labelledby="workspace-settings-title">
+          <h3 id="workspace-settings-title" class="settings-section-title">Workspaces</h3>
           <div class="workspace-list">
             ${
               workspaces.length
@@ -2177,6 +2198,8 @@ function codeViewCallbacks() {
     render,
     pushToast,
     errorMessage,
+    leadingWhitespaceIndicatorsEnabled: () =>
+      leadingWhitespaceIndicatorsEnabled(appState?.settings ?? settingsDraft),
     showCodePathContextMenu(
       workspaceId: string,
       path: string,
@@ -3069,10 +3092,18 @@ function handleSettingsInput(event: Event) {
     "repetitionPenalty",
     "timeoutSeconds",
   ]);
-  const value = numericFields.has(input.name) ? Number(input.value) : input.value;
+  let value: number | string | boolean;
+  if (input.type === "checkbox") {
+    value =
+      input.dataset.settingsInvertedBoolean !== undefined
+        ? !input.checked
+        : input.checked;
+  } else {
+    value = numericFields.has(input.name) ? Number(input.value) : input.value;
+  }
   settingsDraft = llm.Settings.createFrom({
     ...settingsDraft,
-    [input.name]: Number.isNaN(value) ? 0 : value,
+    [input.name]: typeof value === "number" && Number.isNaN(value) ? 0 : value,
   });
   formError = "";
 }

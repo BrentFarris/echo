@@ -18,19 +18,20 @@ const (
 )
 
 type Settings struct {
-	Endpoint          string  `json:"endpoint"`
-	Model             string  `json:"model"`
-	Temperature       float64 `json:"temperature"`
-	TopK              int     `json:"topK"`
-	TopP              float64 `json:"topP"`
-	MinP              float64 `json:"minP"`
-	ContextLength     int     `json:"contextLength"`
-	MaxTokens         int     `json:"maxTokens"`
-	FrequencyPenalty  float64 `json:"frequencyPenalty"`
-	PresencePenalty   float64 `json:"presencePenalty"`
-	RepetitionPenalty float64 `json:"repetitionPenalty"`
-	TimeoutSeconds    int     `json:"timeoutSeconds"`
-	SearxngURL        string  `json:"searxngUrl"`
+	Endpoint                        string  `json:"endpoint"`
+	Model                           string  `json:"model"`
+	Temperature                     float64 `json:"temperature"`
+	TopK                            int     `json:"topK"`
+	TopP                            float64 `json:"topP"`
+	MinP                            float64 `json:"minP"`
+	ContextLength                   int     `json:"contextLength"`
+	MaxTokens                       int     `json:"maxTokens"`
+	FrequencyPenalty                float64 `json:"frequencyPenalty"`
+	PresencePenalty                 float64 `json:"presencePenalty"`
+	RepetitionPenalty               float64 `json:"repetitionPenalty"`
+	TimeoutSeconds                  int     `json:"timeoutSeconds"`
+	SearxngURL                      string  `json:"searxngUrl"`
+	HideLeadingWhitespaceIndicators bool    `json:"hideLeadingWhitespaceIndicators,omitempty"`
 }
 
 func DefaultSettings() Settings {
