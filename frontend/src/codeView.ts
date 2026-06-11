@@ -1,10 +1,12 @@
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { languages as languageData } from "@codemirror/language-data";
-import { EditorSelection, EditorState, Prec, StateEffect, StateField, Transaction, type Extension, type Text } from "@codemirror/state";
+import { EditorSelection, EditorState, Prec, RangeSetBuilder, StateEffect, StateField, Transaction, type Extension, type Text } from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
   EditorView,
+  ViewPlugin,
+  type ViewUpdate,
   WidgetType,
   keymap,
 } from "@codemirror/view";
@@ -204,6 +206,17 @@ const codeEditorTheme = EditorView.theme({
   },
   ".cm-nonmatchingBracket": {
     color: "var(--code-editor-invalid)",
+  },
+  ".cm-leading-space-indicator": {
+    backgroundImage: "radial-gradient(circle, var(--code-editor-whitespace-indicator) 1px, transparent 1.2px)",
+    backgroundPosition: "center",
+    backgroundRepeat: "no-repeat",
+  },
+  ".cm-leading-tab-indicator": {
+    backgroundImage: "linear-gradient(90deg, transparent 18%, var(--code-editor-whitespace-indicator) 18% 64%, transparent 64%)",
+    backgroundPosition: "center",
+    backgroundRepeat: "no-repeat",
+    backgroundSize: "100% 1px",
   },
   "&.cm-focused": {
     outline: "none",
@@ -1045,6 +1058,7 @@ async function mountActiveCodeEditor(
     EditorView.lineWrapping,
     codeEditorTheme,
     syntaxHighlighting(codeHighlightStyle),
+    leadingWhitespaceIndicatorExtension(),
     altClickCaretToggleExtension(),
     inlineCodeChatExtension(workspaceID, tab.path, callbacks),
     EditorView.updateListener.of((update) => {
@@ -1129,6 +1143,59 @@ function toggleCaretAtPosition(view: EditorView, pos: number) {
     selection: selection.addRange(EditorSelection.cursor(pos), true),
     userEvent: "select.pointer",
   });
+}
+
+function leadingWhitespaceIndicatorExtension() {
+  return ViewPlugin.fromClass(
+    class {
+      decorations: DecorationSet;
+
+      constructor(view: EditorView) {
+        this.decorations = buildLeadingWhitespaceDecorations(view);
+      }
+
+      update(update: ViewUpdate) {
+        if (update.docChanged || update.viewportChanged) {
+          this.decorations = buildLeadingWhitespaceDecorations(update.view);
+        }
+      }
+    },
+    {
+      decorations: (plugin) => plugin.decorations,
+    },
+  );
+}
+
+function buildLeadingWhitespaceDecorations(view: EditorView) {
+  const builder = new RangeSetBuilder<Decoration>();
+  const doc = view.state.doc;
+  for (const { from, to } of view.visibleRanges) {
+    let line = doc.lineAt(from);
+    for (;;) {
+      addLeadingWhitespaceDecorations(builder, line.from, line.text);
+      if (line.to >= to || line.number >= doc.lines) {
+        break;
+      }
+      line = doc.line(line.number + 1);
+    }
+  }
+  return builder.finish();
+}
+
+function addLeadingWhitespaceDecorations(
+  builder: RangeSetBuilder<Decoration>,
+  lineFrom: number,
+  text: string,
+) {
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (char !== " " && char !== "\t") {
+      return;
+    }
+    const className =
+      char === "\t" ? "cm-leading-tab-indicator" : "cm-leading-space-indicator";
+    builder.add(lineFrom + index, lineFrom + index + 1, Decoration.mark({ class: className }));
+  }
 }
 
 function inlineCodeChatExtension(
