@@ -83,16 +83,18 @@ type lspServerCommand struct {
 	args []string
 }
 
-var lspCommandForLanguage = defaultLSPCommandForLanguage
-
-func defaultLSPCommandForLanguage(languageID string) (lspServerCommand, bool) {
-	switch languageID {
-	case "go":
-		return lspServerCommand{name: "gopls"}, true
-	default:
-		return lspServerCommand{}, false
-	}
+type lspLanguageDefinition struct {
+	ID               string
+	Extensions       []string
+	Command          lspServerCommand
+	CompletionFilter func([]WorkspaceCompletionItem) []WorkspaceCompletionItem
 }
+
+var (
+	lspCommandForLanguage = registeredLSPCommandForLanguage
+	lspLanguagesByID      = map[string]lspLanguageDefinition{}
+	lspLanguageIDsByExt   = map[string]string{}
+)
 
 type lspClient struct {
 	languageID    string
@@ -486,9 +488,7 @@ func (c *lspClient) complete(ctx context.Context, absolutePath string, request W
 	if err != nil {
 		return WorkspaceCompletionResponse{}, err
 	}
-	if c.languageID == "go" {
-		response.Items = filterGoCompletionItems(response.Items)
-	}
+	response.Items = filterLSPCompletionItems(c.languageID, response.Items)
 	return response, nil
 }
 
@@ -805,13 +805,62 @@ func workspaceLSPClientKey(workspaceID string, languageID string) string {
 	return workspaceID + ":" + languageID
 }
 
-func lspLanguageIDForPath(path string) (string, bool) {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".go":
-		return "go", true
-	default:
-		return "", false
+func registerLSPLanguage(definition lspLanguageDefinition) {
+	definition.ID = strings.TrimSpace(definition.ID)
+	if definition.ID == "" {
+		panic("LSP language ID is required")
 	}
+	if strings.TrimSpace(definition.Command.name) == "" {
+		panic(fmt.Sprintf("LSP command is required for %s", definition.ID))
+	}
+	if len(definition.Extensions) == 0 {
+		panic(fmt.Sprintf("at least one LSP file extension is required for %s", definition.ID))
+	}
+	if _, exists := lspLanguagesByID[definition.ID]; exists {
+		panic(fmt.Sprintf("LSP language %s is already registered", definition.ID))
+	}
+
+	normalizedExtensions := make([]string, 0, len(definition.Extensions))
+	for _, extension := range definition.Extensions {
+		extension = strings.ToLower(strings.TrimSpace(extension))
+		if extension == "" {
+			panic(fmt.Sprintf("empty LSP file extension for %s", definition.ID))
+		}
+		if !strings.HasPrefix(extension, ".") {
+			extension = "." + extension
+		}
+		if existingID, exists := lspLanguageIDsByExt[extension]; exists {
+			panic(fmt.Sprintf("LSP file extension %s is already registered for %s", extension, existingID))
+		}
+		normalizedExtensions = append(normalizedExtensions, extension)
+	}
+
+	definition.Extensions = normalizedExtensions
+	lspLanguagesByID[definition.ID] = definition
+	for _, extension := range normalizedExtensions {
+		lspLanguageIDsByExt[extension] = definition.ID
+	}
+}
+
+func registeredLSPCommandForLanguage(languageID string) (lspServerCommand, bool) {
+	definition, ok := lspLanguagesByID[languageID]
+	if !ok {
+		return lspServerCommand{}, false
+	}
+	return definition.Command, true
+}
+
+func lspLanguageIDForPath(path string) (string, bool) {
+	languageID, ok := lspLanguageIDsByExt[strings.ToLower(filepath.Ext(path))]
+	return languageID, ok
+}
+
+func filterLSPCompletionItems(languageID string, items []WorkspaceCompletionItem) []WorkspaceCompletionItem {
+	definition, ok := lspLanguagesByID[languageID]
+	if !ok || definition.CompletionFilter == nil {
+		return items
+	}
+	return definition.CompletionFilter(items)
 }
 
 func parseLSPDefinitionResponse(raw json.RawMessage) ([]lspDefinitionLocation, error) {
@@ -933,115 +982,6 @@ func completionListToResponse(list lspCompletionList, content string, position i
 		IsIncomplete: list.IsIncomplete,
 		Items:        items,
 	}
-}
-
-func filterGoCompletionItems(items []WorkspaceCompletionItem) []WorkspaceCompletionItem {
-	if len(items) == 0 {
-		return items
-	}
-	filtered := make([]WorkspaceCompletionItem, 0, len(items))
-	for _, item := range items {
-		if isPublicGoCompletionItem(item) {
-			filtered = append(filtered, item)
-		}
-	}
-	return filtered
-}
-
-func isPublicGoCompletionItem(item WorkspaceCompletionItem) bool {
-	switch item.Kind {
-	case 9, 14, 15, 17, 18, 19, 24:
-		return true
-	}
-	name := leadingGoIdentifier(item.Label)
-	if name == "" {
-		return true
-	}
-	if goPredeclaredIdentifier(name) {
-		return true
-	}
-	return goIdentifierExported(name)
-}
-
-func leadingGoIdentifier(label string) string {
-	label = strings.TrimSpace(label)
-	if label == "" {
-		return ""
-	}
-	var builder strings.Builder
-	for index, char := range label {
-		if index == 0 {
-			if char != '_' && !unicode.IsLetter(char) {
-				return ""
-			}
-			builder.WriteRune(char)
-			continue
-		}
-		if char != '_' && !unicode.IsLetter(char) && !unicode.IsDigit(char) {
-			break
-		}
-		builder.WriteRune(char)
-	}
-	return builder.String()
-}
-
-func goIdentifierExported(name string) bool {
-	for _, char := range name {
-		return unicode.IsUpper(char)
-	}
-	return false
-}
-
-func goPredeclaredIdentifier(name string) bool {
-	_, ok := goPredeclaredIdentifiers[name]
-	return ok
-}
-
-var goPredeclaredIdentifiers = map[string]struct{}{
-	"any":        {},
-	"append":     {},
-	"bool":       {},
-	"byte":       {},
-	"cap":        {},
-	"clear":      {},
-	"close":      {},
-	"comparable": {},
-	"complex":    {},
-	"complex64":  {},
-	"complex128": {},
-	"copy":       {},
-	"delete":     {},
-	"error":      {},
-	"false":      {},
-	"float32":    {},
-	"float64":    {},
-	"imag":       {},
-	"int":        {},
-	"int8":       {},
-	"int16":      {},
-	"int32":      {},
-	"int64":      {},
-	"iota":       {},
-	"len":        {},
-	"make":       {},
-	"max":        {},
-	"min":        {},
-	"new":        {},
-	"nil":        {},
-	"panic":      {},
-	"print":      {},
-	"println":    {},
-	"real":       {},
-	"recover":    {},
-	"rune":       {},
-	"string":     {},
-	"true":       {},
-	"uint":       {},
-	"uint8":      {},
-	"uint16":     {},
-	"uint32":     {},
-	"uint64":     {},
-	"uintptr":    {},
 }
 
 func parseLSPCompletionTextEdit(raw json.RawMessage) (string, lspRange, bool) {
