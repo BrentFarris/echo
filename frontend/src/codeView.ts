@@ -1,6 +1,6 @@
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { languages as languageData } from "@codemirror/language-data";
-import { EditorState, Prec, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
+import { EditorState, Prec, StateEffect, StateField, Transaction, type Extension, type Text } from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
@@ -124,6 +124,7 @@ const inlineSnippetMaxBytes = 24 * 1024;
 const tabSize = 4;
 const inlineFocusSubstringMaxBytes = 4 * 1024;
 const inlineReloadRetryDelays = [75, 175, 350, 650];
+const openTabFileWatchIntervalMs = 1500;
 
 let mountedEditor: EditorView | null = null;
 let mountedEditorWorkspaceID = "";
@@ -131,6 +132,10 @@ let mountedEditorPath = "";
 let editorMountToken = 0;
 let inlineChatRenderSeq = 0;
 let inlinePromptRequestSeq = 0;
+let openTabFileWatchTimerID: number | null = null;
+let openTabFileWatchRunning = false;
+let openTabFileWatchCallbacks: CodeViewCallbacks | null = null;
+const openTabFileWatchErrors = new Map<string, string>();
 
 const setInlineCodeChatEffect = StateEffect.define<number>();
 const clearInlineCodeChatEffect = StateEffect.define<void>();
@@ -412,6 +417,7 @@ export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallback
   });
 
   restoreCodeTreeScroll(workspaceID);
+  startOpenTabFileWatch(callbacks);
   void mountActiveCodeEditor(workspaceID, callbacks);
 }
 
@@ -466,6 +472,131 @@ export function destroyCodeEditor() {
   mountedEditorWorkspaceID = "";
   mountedEditorPath = "";
   editorMountToken++;
+}
+
+export async function refreshOpenCodeTabsFromDisk(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  if (!workspaceID) {
+    return;
+  }
+  startOpenTabFileWatch(callbacks);
+  await reloadOpenCodeTabsFromDisk([workspaceID], callbacks);
+}
+
+function startOpenTabFileWatch(callbacks: CodeViewCallbacks) {
+  openTabFileWatchCallbacks = callbacks;
+  if (openTabFileWatchTimerID !== null) {
+    return;
+  }
+  openTabFileWatchTimerID = window.setInterval(() => {
+    const latestCallbacks = openTabFileWatchCallbacks;
+    if (!latestCallbacks) {
+      return;
+    }
+    void reloadOpenCodeTabsFromDisk(watchedOpenTabWorkspaceIDs(), latestCallbacks);
+  }, openTabFileWatchIntervalMs);
+}
+
+function stopOpenTabFileWatch() {
+  if (openTabFileWatchTimerID !== null) {
+    window.clearInterval(openTabFileWatchTimerID);
+    openTabFileWatchTimerID = null;
+  }
+  openTabFileWatchRunning = false;
+}
+
+function watchedOpenTabWorkspaceIDs() {
+  const workspaceIDs: string[] = [];
+  codeStates.forEach((state, workspaceID) => {
+    if (state.tabs.length > 0) {
+      workspaceIDs.push(workspaceID);
+    }
+  });
+  return workspaceIDs;
+}
+
+async function reloadOpenCodeTabsFromDisk(
+  workspaceIDs: string[],
+  callbacks: CodeViewCallbacks,
+) {
+  if (openTabFileWatchRunning) {
+    return;
+  }
+  const uniqueWorkspaceIDs = [...new Set(workspaceIDs.filter(Boolean))];
+  if (uniqueWorkspaceIDs.length === 0) {
+    stopOpenTabFileWatch();
+    return;
+  }
+
+  openTabFileWatchRunning = true;
+  try {
+    saveMountedEditorContent();
+    for (const workspaceID of uniqueWorkspaceIDs) {
+      await reloadWorkspaceOpenCodeTabsFromDisk(workspaceID, callbacks);
+    }
+  } finally {
+    openTabFileWatchRunning = false;
+    if (watchedOpenTabWorkspaceIDs().length === 0) {
+      stopOpenTabFileWatch();
+    }
+  }
+}
+
+async function reloadWorkspaceOpenCodeTabsFromDisk(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const state = codeStates.get(workspaceID);
+  if (!state || state.tabs.length === 0) {
+    return;
+  }
+
+  const openPaths = state.tabs.map((tab) => tab.path);
+  for (const path of openPaths) {
+    const tab = findTab(workspaceID, path);
+    if (!tab || tab.dirty || tab.saving) {
+      continue;
+    }
+
+    try {
+      const file = services.WorkspaceFile.createFrom(
+        await ReadWorkspaceFile(workspaceID, path),
+      );
+      const latest = findTab(workspaceID, path);
+      if (!latest || latest.dirty || latest.saving) {
+        continue;
+      }
+      openTabFileWatchErrors.delete(openTabFileWatchKey(workspaceID, path));
+      if (!workspaceFileChanged(latest, file)) {
+        continue;
+      }
+      applySavedFile(workspaceID, file);
+      const reloadedTab = findTab(workspaceID, path);
+      replaceMountedEditorContent(
+        workspaceID,
+        path,
+        reloadedTab?.content ?? editableWorkspaceFile(file).content,
+      );
+    } catch (error) {
+      const latest = findTab(workspaceID, path);
+      if (!latest || latest.dirty) {
+        continue;
+      }
+      const message = callbacks.errorMessage(error);
+      const key = openTabFileWatchKey(workspaceID, path);
+      if (openTabFileWatchErrors.get(key) === message) {
+        continue;
+      }
+      openTabFileWatchErrors.set(key, message);
+      callbacks.pushToast(`Could not reload ${path}: ${message}`, "error");
+    }
+  }
+}
+
+function openTabFileWatchKey(workspaceID: string, path: string) {
+  return `${workspaceID}\u0000${path}`;
 }
 
 export function hasDirtyCodeTabs(workspaceID: string): boolean {
@@ -1828,6 +1959,7 @@ function replaceMountedEditorContent(workspaceID: string, path: string, content:
       anchor: clamp(selection.anchor, 0, content.length),
       head: clamp(selection.head, 0, content.length),
     },
+    annotations: Transaction.addToHistory.of(false),
   });
   mountedEditor.scrollDOM.scrollTop = scrollTop;
   mountedEditor.scrollDOM.scrollLeft = scrollLeft;

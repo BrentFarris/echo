@@ -8,6 +8,7 @@ import {
   finishCodeTabSwitcher,
   handleCodeTabSwitcherKeydown,
   openWorkspaceCodeFile,
+  refreshOpenCodeTabsFromDisk,
   renderCodeView,
   saveActiveCodeFile,
 } from "./codeView";
@@ -3424,6 +3425,7 @@ function applyKanbanEvent(event: KanbanEvent) {
 }
 
 function applyFileChangesEvent(event: FileChangesEvent) {
+  void refreshOpenCodeTabsFromDisk(event.workspaceId, codeViewCallbacks());
   const existing = changeReviewFor(event.workspaceId);
   changeReviews.set(
     event.workspaceId,
