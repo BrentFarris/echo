@@ -1,6 +1,6 @@
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { languages as languageData } from "@codemirror/language-data";
-import { EditorState, Prec, StateEffect, StateField, Transaction, type Extension, type Text } from "@codemirror/state";
+import { EditorSelection, EditorState, Prec, StateEffect, StateField, Transaction, type Extension, type Text } from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
@@ -1045,6 +1045,7 @@ async function mountActiveCodeEditor(
     EditorView.lineWrapping,
     codeEditorTheme,
     syntaxHighlighting(codeHighlightStyle),
+    altClickCaretToggleExtension(),
     inlineCodeChatExtension(workspaceID, tab.path, callbacks),
     EditorView.updateListener.of((update) => {
       if (update.selectionSet || update.docChanged) {
@@ -1083,6 +1084,51 @@ async function mountActiveCodeEditor(
   mountedEditor.scrollDOM.scrollTop = tab.scrollTop;
   mountedEditor.scrollDOM.scrollLeft = tab.scrollLeft;
   mountedEditor.focus();
+}
+
+function altClickCaretToggleExtension() {
+  return Prec.highest(EditorView.domEventHandlers({
+    mousedown(event, view) {
+      if (!event.altKey || event.button !== 0) {
+        return false;
+      }
+      const pos = view.posAtCoords({
+        x: event.clientX,
+        y: event.clientY,
+      });
+      if (pos === null) {
+        return false;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      toggleCaretAtPosition(view, pos);
+      return true;
+    },
+  }));
+}
+
+function toggleCaretAtPosition(view: EditorView, pos: number) {
+  const selection = view.state.selection;
+  const existingIndex = selection.ranges.findIndex(
+    (range) => range.empty && range.from === pos,
+  );
+  if (existingIndex >= 0) {
+    const ranges = selection.ranges.filter((_, index) => index !== existingIndex);
+    view.dispatch({
+      selection: EditorSelection.create(
+        ranges.length ? ranges : [EditorSelection.cursor(pos)],
+        clamp(selection.mainIndex, 0, Math.max(0, ranges.length - 1)),
+      ),
+      userEvent: "select.pointer",
+    });
+    return;
+  }
+
+  view.dispatch({
+    selection: selection.addRange(EditorSelection.cursor(pos), true),
+    userEvent: "select.pointer",
+  });
 }
 
 function inlineCodeChatExtension(
