@@ -22,6 +22,7 @@ import (
 
 const (
 	lspCompletionTimeout = 15 * time.Second
+	lspDefinitionTimeout = 15 * time.Second
 	lspInitializeTimeout = 20 * time.Second
 	lspMaxDocumentation  = 4096
 )
@@ -58,6 +59,23 @@ type WorkspaceTextEdit struct {
 	From    int    `json:"from"`
 	To      int    `json:"to"`
 	NewText string `json:"newText"`
+}
+
+type WorkspaceDefinitionRequest struct {
+	FilePath string `json:"filePath"`
+	Content  string `json:"content"`
+	Position int    `json:"position"`
+}
+
+type WorkspaceDefinitionResponse struct {
+	WorkspaceID string `json:"workspaceId"`
+	SourcePath  string `json:"sourcePath"`
+	TargetPath  string `json:"targetPath,omitempty"`
+	Position    int    `json:"position"`
+	Line        int    `json:"line"`
+	Character   int    `json:"character"`
+	Found       bool   `json:"found"`
+	Message     string `json:"message,omitempty"`
 }
 
 type lspServerCommand struct {
@@ -162,6 +180,17 @@ type lspCompletionItem struct {
 	AdditionalTextEdits []json.RawMessage `json:"additionalTextEdits"`
 }
 
+type lspDefinitionLocation struct {
+	URI   string   `json:"uri"`
+	Range lspRange `json:"range"`
+}
+
+type lspDefinitionLocationLink struct {
+	TargetURI            string   `json:"targetUri"`
+	TargetRange          lspRange `json:"targetRange"`
+	TargetSelectionRange lspRange `json:"targetSelectionRange"`
+}
+
 func (s *SystemService) CompleteWorkspaceFile(workspaceID string, request WorkspaceCompletionRequest) (WorkspaceCompletionResponse, error) {
 	workspace, _, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {
@@ -214,6 +243,91 @@ func (s *SystemService) CompleteWorkspaceFile(workspaceID string, request Worksp
 	return response, nil
 }
 
+func (s *SystemService) FindWorkspaceFileDefinition(workspaceID string, request WorkspaceDefinitionRequest) (WorkspaceDefinitionResponse, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return WorkspaceDefinitionResponse{}, err
+	}
+	if strings.TrimSpace(request.FilePath) == "" {
+		return WorkspaceDefinitionResponse{}, fmt.Errorf("file path is required")
+	}
+	if len([]byte(request.Content)) > maxWorkspaceEditorFileBytes {
+		return WorkspaceDefinitionResponse{}, fmt.Errorf("content is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
+	}
+	if request.Position < 0 || request.Position > utf16Length(request.Content) {
+		return WorkspaceDefinitionResponse{}, fmt.Errorf("definition position is outside the file")
+	}
+
+	response := WorkspaceDefinitionResponse{
+		WorkspaceID: workspace.ID,
+		SourcePath:  request.FilePath,
+	}
+	languageID, ok := lspLanguageIDForPath(request.FilePath)
+	if !ok {
+		response.Message = "Definition lookup is not available for this file type."
+		return response, nil
+	}
+
+	resolved, err := resolveWorkspaceServicePath(workspace.FolderPath, request.FilePath)
+	if err != nil {
+		return WorkspaceDefinitionResponse{}, err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return WorkspaceDefinitionResponse{}, fmt.Errorf("file was not found")
+	}
+	if !info.Mode().IsRegular() {
+		return WorkspaceDefinitionResponse{}, fmt.Errorf("path is not a regular file")
+	}
+	response.SourcePath = workspaceRelativePath(workspace.FolderPath, resolved)
+
+	client, err := s.workspaceLSPClient(workspace, languageID)
+	if err != nil {
+		return WorkspaceDefinitionResponse{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), lspDefinitionTimeout)
+	defer cancel()
+	locations, err := client.definition(ctx, resolved, request)
+	if err != nil {
+		return WorkspaceDefinitionResponse{}, err
+	}
+	if len(locations) == 0 {
+		response.Message = "No definition found."
+		return response, nil
+	}
+
+	outsideWorkspace := false
+	for _, location := range locations {
+		targetPath, err := pathFromFileURI(location.URI)
+		if err != nil {
+			continue
+		}
+		if _, err := workspaceRelativeCandidate(workspace.FolderPath, targetPath); err != nil {
+			outsideWorkspace = true
+			continue
+		}
+		file, err := readWorkspaceTextFile(workspace, targetPath)
+		if err != nil {
+			continue
+		}
+		response.TargetPath = file.Path
+		response.Position = utf16OffsetForPosition(file.Content, location.Range.Start)
+		response.Line = location.Range.Start.Line
+		response.Character = location.Range.Start.Character
+		response.Found = true
+		response.Message = ""
+		return response, nil
+	}
+
+	if outsideWorkspace {
+		response.Message = "Definition is outside the active workspace."
+	} else {
+		response.Message = "No workspace text file definition found."
+	}
+	return response, nil
+}
+
 func (s *SystemService) workspaceLSPClient(workspace Workspace, languageID string) (*lspClient, error) {
 	key := workspaceLSPClientKey(workspace.ID, languageID)
 	s.lspMu.Lock()
@@ -251,9 +365,7 @@ func startWorkspaceLSPClient(workspace Workspace, languageID string) (*lspClient
 		return nil, fmt.Errorf("resolve workspace path: %w", err)
 	}
 	rootURI := fileURI(rootPath)
-	cmd := exec.Command(command.name, command.args...)
-	cmd.Dir = rootPath
-	cmd.Env = os.Environ()
+	cmd := newLSPServerProcess(command, rootPath)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("open language server stdin: %w", err)
@@ -295,6 +407,14 @@ func startWorkspaceLSPClient(workspace Workspace, languageID string) (*lspClient
 		return nil, err
 	}
 	return client, nil
+}
+
+func newLSPServerProcess(command lspServerCommand, rootPath string) *exec.Cmd {
+	cmd := exec.Command(command.name, command.args...)
+	cmd.Dir = rootPath
+	cmd.Env = os.Environ()
+	configureWorkspaceCommandProcess(cmd)
+	return cmd
 }
 
 func (c *lspClient) initialize(ctx context.Context, workspaceName string) error {
@@ -358,14 +478,33 @@ func (c *lspClient) complete(ctx context.Context, absolutePath string, request W
 		}
 		params["context"] = context
 	}
-	raw, err := c.completionRequestWithRetry(ctx, params)
+	raw, err := c.requestWithRetry(ctx, "textDocument/completion", params)
 	if err != nil {
 		return WorkspaceCompletionResponse{}, err
 	}
 	return parseLSPCompletionResponse(raw, request.Content, request.Position)
 }
 
-func (c *lspClient) completionRequestWithRetry(ctx context.Context, params map[string]any) (json.RawMessage, error) {
+func (c *lspClient) definition(ctx context.Context, absolutePath string, request WorkspaceDefinitionRequest) ([]lspDefinitionLocation, error) {
+	c.operationMu.Lock()
+	defer c.operationMu.Unlock()
+
+	uri := fileURI(absolutePath)
+	if err := c.syncDocument(uri, request.Content); err != nil {
+		return nil, err
+	}
+	params := map[string]any{
+		"textDocument": map[string]string{"uri": uri},
+		"position":     lspPositionFromUTF16Offset(request.Content, request.Position),
+	}
+	raw, err := c.requestWithRetry(ctx, "textDocument/definition", params)
+	if err != nil {
+		return nil, err
+	}
+	return parseLSPDefinitionResponse(raw)
+}
+
+func (c *lspClient) requestWithRetry(ctx context.Context, method string, params map[string]any) (json.RawMessage, error) {
 	var lastErr error
 	delays := []time.Duration{0, 150 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond}
 	for _, delay := range delays {
@@ -376,19 +515,19 @@ func (c *lspClient) completionRequestWithRetry(ctx context.Context, params map[s
 				return nil, ctx.Err()
 			}
 		}
-		raw, err := c.request(ctx, "textDocument/completion", params)
+		raw, err := c.request(ctx, method, params)
 		if err == nil {
 			return raw, nil
 		}
 		lastErr = err
-		if !isRetryableLSPCompletionError(err) {
+		if !isRetryableLSPRequestError(err) {
 			return nil, err
 		}
 	}
 	return nil, lastErr
 }
 
-func isRetryableLSPCompletionError(err error) bool {
+func isRetryableLSPRequestError(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -668,6 +807,52 @@ func lspLanguageIDForPath(path string) (string, bool) {
 	}
 }
 
+func parseLSPDefinitionResponse(raw json.RawMessage) ([]lspDefinitionLocation, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return []lspDefinitionLocation{}, nil
+	}
+
+	if bytes.HasPrefix(trimmed, []byte("[")) {
+		var rawItems []json.RawMessage
+		if err := json.Unmarshal(trimmed, &rawItems); err != nil {
+			return nil, fmt.Errorf("parse definition response: %w", err)
+		}
+		locations := make([]lspDefinitionLocation, 0, len(rawItems))
+		for _, item := range rawItems {
+			if location, ok := parseLSPDefinitionLocation(item); ok {
+				locations = append(locations, location)
+			}
+		}
+		return locations, nil
+	}
+
+	if location, ok := parseLSPDefinitionLocation(trimmed); ok {
+		return []lspDefinitionLocation{location}, nil
+	}
+	return []lspDefinitionLocation{}, nil
+}
+
+func parseLSPDefinitionLocation(raw json.RawMessage) (lspDefinitionLocation, bool) {
+	var location lspDefinitionLocation
+	if err := json.Unmarshal(raw, &location); err == nil && location.URI != "" {
+		return location, true
+	}
+
+	var link lspDefinitionLocationLink
+	if err := json.Unmarshal(raw, &link); err == nil && link.TargetURI != "" {
+		targetRange := link.TargetSelectionRange
+		if targetRange == (lspRange{}) {
+			targetRange = link.TargetRange
+		}
+		return lspDefinitionLocation{
+			URI:   link.TargetURI,
+			Range: targetRange,
+		}, true
+	}
+	return lspDefinitionLocation{}, false
+}
+
 func parseLSPCompletionResponse(raw json.RawMessage, content string, position int) (WorkspaceCompletionResponse, error) {
 	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return WorkspaceCompletionResponse{Items: []WorkspaceCompletionItem{}}, nil
@@ -941,6 +1126,28 @@ func fileURI(path string) string {
 		slashed = "/" + slashed
 	}
 	return (&url.URL{Scheme: "file", Path: slashed}).String()
+}
+
+func pathFromFileURI(value string) (string, error) {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", err
+	}
+	if parsed.Scheme != "file" {
+		return "", fmt.Errorf("definition URI is not a file")
+	}
+	path := parsed.Path
+	if parsed.Host != "" {
+		path = "//" + parsed.Host + path
+	}
+	path = filepath.FromSlash(path)
+	if strings.HasPrefix(path, string(filepath.Separator)) {
+		withoutLeadingSeparator := strings.TrimPrefix(path, string(filepath.Separator))
+		if filepath.VolumeName(withoutLeadingSeparator) != "" {
+			path = withoutLeadingSeparator
+		}
+	}
+	return filepath.Clean(path), nil
 }
 
 func lspIDKey(raw json.RawMessage) string {

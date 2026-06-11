@@ -15,6 +15,7 @@ import { basicSetup } from "codemirror";
 import { tags } from "@lezer/highlight";
 import {
   CompleteWorkspaceFile,
+  FindWorkspaceFileDefinition,
   ListWorkspaceDirectory,
   ReadWorkspaceFile,
   SaveWorkspaceFile,
@@ -61,6 +62,7 @@ type CodeFileTab = {
   selectionHead: number;
   scrollTop: number;
   scrollLeft: number;
+  pendingRevealPosition?: number;
 };
 
 type CodeTabSwitcherState = {
@@ -890,7 +892,7 @@ async function openCodeFile(
   workspaceID: string,
   path: string,
   callbacks: CodeViewCallbacks,
-  options: { temporary: boolean },
+  options: { temporary: boolean; selectionPosition?: number },
 ) {
   if (!path) {
     return;
@@ -903,6 +905,7 @@ async function openCodeFile(
   }
   const existing = findTab(workspaceID, path);
   if (existing) {
+    applyCodeTabSelection(existing, options.selectionPosition);
     activateCodeTab(workspaceID, existing.path, callbacks);
     return;
   }
@@ -918,7 +921,7 @@ async function openCodeFile(
     const file = await ReadWorkspaceFile(workspaceID, path);
     const opened = services.WorkspaceFile.createFrom(file);
     const editable = editableWorkspaceFile(opened);
-    const nextTab = {
+    const nextTab: CodeFileTab = {
       path: opened.path,
       content: editable.content,
       savedContent: editable.content,
@@ -933,6 +936,7 @@ async function openCodeFile(
       scrollTop: 0,
       scrollLeft: 0,
     };
+    applyCodeTabSelection(nextTab, options.selectionPosition);
     if (options.temporary && temporaryIndex >= 0) {
       state.tabs[temporaryIndex] = nextTab;
       removeTabMruPath(state, replacedTemporaryPath);
@@ -947,6 +951,16 @@ async function openCodeFile(
     state.openingPath = "";
     callbacks.render();
   }
+}
+
+function applyCodeTabSelection(tab: CodeFileTab, position: number | undefined) {
+  if (position === undefined) {
+    return;
+  }
+  const target = clamp(position, 0, tab.content.length);
+  tab.selectionAnchor = target;
+  tab.selectionHead = target;
+  tab.pendingRevealPosition = target;
 }
 
 async function openPinnedCodeFile(
@@ -1066,6 +1080,7 @@ async function mountActiveCodeEditor(
     codeEditorTheme,
     syntaxHighlighting(codeHighlightStyle),
     altClickCaretToggleExtension(),
+    lspDefinitionExtension(workspaceID, tab.path, callbacks),
     inlineCodeChatExtension(workspaceID, tab.path, callbacks),
     EditorView.updateListener.of((update) => {
       if (update.selectionSet || update.docChanged) {
@@ -1107,6 +1122,13 @@ async function mountActiveCodeEditor(
   mountedEditorPath = tab.path;
   mountedEditor.scrollDOM.scrollTop = tab.scrollTop;
   mountedEditor.scrollDOM.scrollLeft = tab.scrollLeft;
+  if (tab.pendingRevealPosition !== undefined) {
+    const position = clamp(tab.pendingRevealPosition, 0, mountedEditor.state.doc.length);
+    tab.pendingRevealPosition = undefined;
+    mountedEditor.dispatch({
+      effects: EditorView.scrollIntoView(position, { y: "center" }),
+    });
+  }
   mountedEditor.focus();
 }
 
@@ -1812,6 +1834,57 @@ function nextInlineChatRenderKey() {
 function nextInlinePromptRequestID() {
   inlinePromptRequestSeq++;
   return `inline-${Date.now()}-${inlinePromptRequestSeq}`;
+}
+
+function lspDefinitionExtension(
+  workspaceID: string,
+  path: string,
+  callbacks: CodeViewCallbacks,
+): Extension {
+  if (!isGoSourcePath(path)) {
+    return [];
+  }
+  return Prec.highest(
+    keymap.of([
+      {
+        key: "F12",
+        run: (view) => {
+          void goToLspDefinition(workspaceID, path, view, callbacks);
+          return true;
+        },
+      },
+    ]),
+  );
+}
+
+async function goToLspDefinition(
+  workspaceID: string,
+  path: string,
+  view: EditorView,
+  callbacks: CodeViewCallbacks,
+) {
+  try {
+    const response = services.WorkspaceDefinitionResponse.createFrom(
+      await FindWorkspaceFileDefinition(
+        workspaceID,
+        services.WorkspaceDefinitionRequest.createFrom({
+          filePath: path,
+          content: view.state.sliceDoc(0),
+          position: view.state.selection.main.head,
+        }),
+      ),
+    );
+    if (!response.found || !response.targetPath) {
+      callbacks.pushToast(response.message || "No definition found.", "info");
+      return;
+    }
+    await openCodeFile(workspaceID, response.targetPath, callbacks, {
+      temporary: false,
+      selectionPosition: response.position,
+    });
+  } catch (error) {
+    callbacks.pushToast(callbacks.errorMessage(error), "error");
+  }
 }
 
 function lspCompletionExtension(

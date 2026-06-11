@@ -112,6 +112,43 @@ func TestParseLSPCompletionResponseUsesFallbackRange(t *testing.T) {
 	}
 }
 
+func TestParseLSPDefinitionResponse(t *testing.T) {
+	raw := json.RawMessage(`[
+		{
+			"targetUri": "file:///C:/work/main.go",
+			"targetRange": {
+				"start": {"line": 2, "character": 0},
+				"end": {"line": 4, "character": 1}
+			},
+			"targetSelectionRange": {
+				"start": {"line": 3, "character": 5},
+				"end": {"line": 3, "character": 11}
+			}
+		},
+		{
+			"uri": "file:///C:/work/other.go",
+			"range": {
+				"start": {"line": 6, "character": 2},
+				"end": {"line": 6, "character": 8}
+			}
+		}
+	]`)
+
+	locations, err := parseLSPDefinitionResponse(raw)
+	if err != nil {
+		t.Fatalf("parse definition response: %v", err)
+	}
+	if len(locations) != 2 {
+		t.Fatalf("expected two locations, got %#v", locations)
+	}
+	if locations[0].URI != "file:///C:/work/main.go" || locations[0].Range.Start != (lspPosition{Line: 3, Character: 5}) {
+		t.Fatalf("expected location link target selection range, got %#v", locations[0])
+	}
+	if locations[1].URI != "file:///C:/work/other.go" || locations[1].Range.Start != (lspPosition{Line: 6, Character: 2}) {
+		t.Fatalf("expected location range, got %#v", locations[1])
+	}
+}
+
 func TestSystemServiceCompleteWorkspaceFileWithGopls(t *testing.T) {
 	if os.Getenv("ECHO_RUN_GOPLS_INTEGRATION") != "1" {
 		t.Skip("set ECHO_RUN_GOPLS_INTEGRATION=1 to run the real gopls integration test")
@@ -166,7 +203,7 @@ func TestSystemServiceCompleteWorkspaceFileWithGopls(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/echo_lsp_test\n\ngo 1.23\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	content := "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Pr\n}\n"
+	content := "package main\n\nimport \"fmt\"\n\nfunc helper() {}\n\nfunc main() {\n\thelper()\n\tfmt.Pr\n}\n"
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -186,6 +223,17 @@ func TestSystemServiceCompleteWorkspaceFileWithGopls(t *testing.T) {
 	}
 	for _, item := range response.Items {
 		if item.Label == "Println" {
+			definition, err := service.FindWorkspaceFileDefinition(workspaceID, WorkspaceDefinitionRequest{
+				FilePath: "main.go",
+				Content:  content,
+				Position: utf16Length(content[:strings.LastIndex(content, "helper()")+len("helper")]),
+			})
+			if err != nil {
+				t.Fatalf("find definition: %v", err)
+			}
+			if !definition.Found || definition.TargetPath != "main.go" {
+				t.Fatalf("expected main definition in main.go, got %#v", definition)
+			}
 			return
 		}
 	}

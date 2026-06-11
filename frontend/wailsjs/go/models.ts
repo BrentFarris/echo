@@ -788,6 +788,48 @@ export namespace services {
 		    return a;
 		}
 	}
+	export class WorkspaceDefinitionRequest {
+	    filePath: string;
+	    content: string;
+	    position: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceDefinitionRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.filePath = source["filePath"];
+	        this.content = source["content"];
+	        this.position = source["position"];
+	    }
+	}
+	export class WorkspaceDefinitionResponse {
+	    workspaceId: string;
+	    sourcePath: string;
+	    targetPath?: string;
+	    position: number;
+	    line: number;
+	    character: number;
+	    found: boolean;
+	    message?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceDefinitionResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.sourcePath = source["sourcePath"];
+	        this.targetPath = source["targetPath"];
+	        this.position = source["position"];
+	        this.line = source["line"];
+	        this.character = source["character"];
+	        this.found = source["found"];
+	        this.message = source["message"];
+	    }
+	}
 	export class WorkspaceFileEntry {
 	    name: string;
 	    path: string;

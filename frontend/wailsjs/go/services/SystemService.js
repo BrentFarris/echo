@@ -62,6 +62,10 @@ export function ExecutePlan(arg1) {
   return window['go']['services']['SystemService']['ExecutePlan'](arg1);
 }
 
+export function FindWorkspaceFileDefinition(arg1, arg2) {
+  return window['go']['services']['SystemService']['FindWorkspaceFileDefinition'](arg1, arg2);
+}
+
 export function ListWorkspaceDirectory(arg1, arg2) {
   return window['go']['services']['SystemService']['ListWorkspaceDirectory'](arg1, arg2);
 }
