@@ -39,6 +39,7 @@ import {
   MoveKanbanCard,
   OpenKanbanCardDetail,
   OpenWorkspaceExplorer,
+  OpenWorkspacePathExplorer,
   ResetKanbanCard,
   ResolveWorkspaceTextFilePath,
   SaveSettings,
@@ -123,7 +124,8 @@ let toasts: Toast[] = [];
 let kanbanTimerID: number | null = null;
 type ContextMenuState = {
   workspaceId: string;
-  folderPath: string;
+  displayPath: string;
+  workspacePath?: string;
   x: number;
   y: number;
 };
@@ -986,12 +988,38 @@ function renderContextMenu(state: ContextMenuState): string {
         type="button"\
         data-action="show-in-explorer"\
         data-workspace-id="${escapeAttribute(state.workspaceId)}"\
+        data-workspace-path="${escapeAttribute(state.workspacePath ?? "")}"\
       >\
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9l-6-6H5a2 2 0 0 0-2 2Z"/></svg>\
-        <span class="workspace-context-menu-label">${escapeHtml(state.folderPath)}</span>\
+        <span class="workspace-context-menu-label">${escapeHtml(state.displayPath)}</span>\
       </button>\
     </div>\
   `;
+}
+
+function showContextMenu(state: ContextMenuState) {
+  contextMenu = state;
+  render();
+
+  const menuEl = appRoot.querySelector<HTMLElement>("[data-context-menu]");
+  if (!menuEl || !contextMenu) {
+    return;
+  }
+  const rect = menuEl.getBoundingClientRect();
+  let newX = contextMenu.x;
+  let newY = contextMenu.y;
+
+  if (rect.right > window.innerWidth) {
+    newX = Math.max(0, window.innerWidth - rect.width - 4);
+  }
+  if (rect.bottom > window.innerHeight) {
+    newY = Math.max(0, window.innerHeight - rect.height - 4);
+  }
+
+  if (newX !== contextMenu.x || newY !== contextMenu.y) {
+    contextMenu = { ...contextMenu, x: newX, y: newY };
+    render();
+  }
 }
 
 function dismissContextMenu() {
@@ -2114,28 +2142,12 @@ function bindEvents() {
       if (!workspaceId || !folderPath) {
         return;
       }
-      contextMenu = { workspaceId, folderPath, x: event.clientX, y: event.clientY };
-      render();
-
-      // Clamp to viewport boundaries so the menu stays fully visible
-      const menuEl = appRoot.querySelector<HTMLElement>("[data-context-menu]");
-      if (menuEl && contextMenu) {
-        const rect = menuEl.getBoundingClientRect();
-        let newX = contextMenu.x;
-        let newY = contextMenu.y;
-
-        if (rect.right > window.innerWidth) {
-          newX = Math.max(0, window.innerWidth - rect.width - 4);
-        }
-        if (rect.bottom > window.innerHeight) {
-          newY = Math.max(0, window.innerHeight - rect.height - 4);
-        }
-
-        if (newX !== contextMenu.x || newY !== contextMenu.y) {
-          contextMenu = { ...contextMenu, x: newX, y: newY };
-          render();
-        }
-      }
+      showContextMenu({
+        workspaceId,
+        displayPath: folderPath,
+        x: event.clientX,
+        y: event.clientY,
+      });
     });
   });
 
@@ -2165,6 +2177,21 @@ function codeViewCallbacks() {
     render,
     pushToast,
     errorMessage,
+    showCodePathContextMenu(
+      workspaceId: string,
+      path: string,
+      label: string,
+      x: number,
+      y: number,
+    ) {
+      showContextMenu({
+        workspaceId,
+        workspacePath: path,
+        displayPath: label || path,
+        x,
+        y,
+      });
+    },
   };
 }
 
@@ -2455,9 +2482,14 @@ async function handleAction(event: Event) {
       if (!workspaceID) {
         return;
       }
+      const workspacePath = target.dataset.workspacePath ?? "";
       try {
-        await OpenWorkspaceExplorer(workspaceID);
-        pushToast("Opened folder in Explorer.", "success");
+        if (workspacePath) {
+          await OpenWorkspacePathExplorer(workspaceID, workspacePath);
+        } else {
+          await OpenWorkspaceExplorer(workspaceID);
+        }
+        pushToast("Opened in Explorer.", "success");
       } catch (error) {
         pushToast(errorMessage(error), "error");
       }

@@ -94,6 +94,10 @@ export function OpenWorkspaceExplorer(arg1) {
   return window['go']['services']['SystemService']['OpenWorkspaceExplorer'](arg1);
 }
 
+export function OpenWorkspacePathExplorer(arg1, arg2) {
+  return window['go']['services']['SystemService']['OpenWorkspacePathExplorer'](arg1, arg2);
+}
+
 export function ReadWorkspaceFile(arg1, arg2) {
   return window['go']['services']['SystemService']['ReadWorkspaceFile'](arg1, arg2);
 }

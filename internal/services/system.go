@@ -409,18 +409,9 @@ func (s *SystemService) OpenWorkspaceExplorer(id string) error {
 		return fmt.Errorf("workspace id is required")
 	}
 
-	s.mu.Lock()
-	var folderPath string
-	for _, workspace := range s.state.Workspaces {
-		if workspace.ID == id {
-			folderPath = workspace.FolderPath
-			break
-		}
-	}
-	s.mu.Unlock()
-
-	if folderPath == "" {
-		return fmt.Errorf("workspace was not found")
+	folderPath, err := s.workspaceFolderByID(id)
+	if err != nil {
+		return err
 	}
 
 	info, err := os.Stat(folderPath)
@@ -448,6 +439,66 @@ func (s *SystemService) OpenWorkspaceExplorer(id string) error {
 	// Don't Wait() — we don't want to block the caller waiting for the
 	// external process to finish. The OS handles cleanup.
 	return nil
+}
+
+func (s *SystemService) OpenWorkspacePathExplorer(id string, path string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("workspace id is required")
+	}
+
+	folderPath, err := s.workspaceFolderByID(id)
+	if err != nil {
+		return err
+	}
+	resolved, err := resolveWorkspaceServicePath(folderPath, path)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return fmt.Errorf("workspace path does not exist: %w", err)
+	}
+
+	target := resolved
+	selectFile := false
+	if !info.IsDir() {
+		target = filepath.Dir(resolved)
+		selectFile = true
+	}
+
+	var cmd *exec.Cmd
+	switch goruntime.GOOS {
+	case "windows":
+		if selectFile {
+			cmd = exec.Command("explorer.exe", "/select,"+resolved)
+		} else {
+			cmd = exec.Command("explorer.exe", target)
+		}
+	case "darwin":
+		if selectFile {
+			cmd = exec.Command("open", "-R", resolved)
+		} else {
+			cmd = exec.Command("open", target)
+		}
+	default:
+		cmd = exec.Command("xdg-open", target)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to open workspace path in explorer: %w", err)
+	}
+	return nil
+}
+
+func (s *SystemService) workspaceFolderByID(id string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, workspace := range s.state.Workspaces {
+		if workspace.ID == id {
+			return workspace.FolderPath, nil
+		}
+	}
+	return "", fmt.Errorf("workspace was not found")
 }
 
 func (s *SystemService) load() error {

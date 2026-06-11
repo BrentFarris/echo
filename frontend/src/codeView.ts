@@ -26,6 +26,13 @@ type CodeViewCallbacks = {
   render: () => void;
   pushToast: (message: string, tone?: ToastTone) => void;
   errorMessage: (error: unknown) => string;
+  showCodePathContextMenu: (
+    workspaceID: string,
+    path: string,
+    label: string,
+    x: number,
+    y: number,
+  ) => void;
 };
 
 type DirectoryState = {
@@ -369,6 +376,7 @@ export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallback
 
   bindCodeActionEvents(root, workspaceID, callbacks);
   bindCodeFileRowEvents(root, workspaceID, callbacks);
+  bindCodeBrowserRowContextMenus(root, workspaceID, callbacks);
 
   root.querySelectorAll<HTMLElement>("[data-code-tab-main]").forEach((element) => {
     element.addEventListener("mousedown", (event) => {
@@ -459,6 +467,30 @@ function bindCodeFileRowEvents(
       void openCodeFile(workspaceID, element.dataset.codePath ?? "", callbacks, {
         temporary: true,
       });
+    });
+  });
+}
+
+function bindCodeBrowserRowContextMenus(
+  root: ParentNode,
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  root.querySelectorAll<HTMLElement>("[data-code-browser-row]").forEach((element) => {
+    element.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const path = element.dataset.codePath ?? "";
+      if (!path) {
+        return;
+      }
+      callbacks.showCodePathContextMenu(
+        workspaceID,
+        path,
+        element.getAttribute("title") ?? path,
+        event.clientX,
+        event.clientY,
+      );
     });
   });
 }
@@ -1698,6 +1730,7 @@ function patchCodeTree(workspaceID: string, callbacks: CodeViewCallbacks) {
   restoreCodeTreeScroll(workspaceID);
   bindCodeActionEvents(tree, workspaceID, callbacks);
   bindCodeFileRowEvents(tree, workspaceID, callbacks);
+  bindCodeBrowserRowContextMenus(tree, workspaceID, callbacks);
 }
 
 function renderSearchResults(workspaceID: string): string {
@@ -1728,7 +1761,14 @@ function renderSearchEntry(
   const icon = entry.kind === "directory" ? codeIcons.folder : codeIcons.file;
   if (entry.kind !== "file") {
     return `
-      <div class="code-tree-row code-tree-search-row" role="treeitem" title="${escapeAttribute(entry.path)}" style="--tree-depth: 0">
+      <div
+        class="code-tree-row code-tree-search-row"
+        role="treeitem"
+        title="${escapeAttribute(entry.path)}"
+        style="--tree-depth: 0"
+        data-code-browser-row
+        data-code-path="${escapeAttribute(entry.path)}"
+      >
         <span class="code-tree-spacer"></span>
         <span class="code-tree-entry-icon">${icon}</span>
         <span class="code-tree-search-name">
@@ -1746,6 +1786,7 @@ function renderSearchEntry(
       role="treeitem"
       title="${escapeAttribute(entry.path)}"
       style="--tree-depth: 0"
+      data-code-browser-row
       data-code-file-row
       data-code-path="${escapeAttribute(entry.path)}"
     >
@@ -1803,8 +1844,10 @@ function renderFileEntry(
           type="button"
           role="treeitem"
           aria-expanded="${expanded}"
+          title="${escapeAttribute(entry.path)}"
           style="--tree-depth: ${depth}"
           data-code-action="toggle-directory"
+          data-code-browser-row
           data-code-path="${escapeAttribute(entry.path)}"
         >
           <span class="code-tree-chevron">${codeIcons.chevron}</span>
@@ -1832,6 +1875,7 @@ function renderFileEntry(
       role="treeitem"
       title="${escapeAttribute(entry.path)}"
       style="--tree-depth: ${depth}"
+      data-code-browser-row
       data-code-file-row
       data-code-path="${escapeAttribute(entry.path)}"
     >
