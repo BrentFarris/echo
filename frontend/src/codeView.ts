@@ -257,13 +257,7 @@ function tabIndentionExtensions(): Extension[] {
         {
           key: "Tab",
           run: (view) => {
-            view.dispatch({
-              changes: {
-                from: view.state.selection.main.from,
-                to: view.state.selection.main.to,
-                insert: "\t",
-              },
-            });
+            view.dispatch(view.state.replaceSelection("\t"));
             return true;
           },
         },
