@@ -25,6 +25,7 @@
   --code-editor-border: #d0d7de;
   --code-editor-caret: #24292f;
   --code-editor-active-line: #d0d7de;
+  --code-editor-active-line-bg: rgba(208, 215, 222, 0.24);
   --code-editor-active-gutter: #f6f8fa;
   --code-editor-selection: rgba(9, 105, 218, 0.25);
   --code-editor-selection-match: rgba(9, 105, 218, 0.14);
@@ -63,6 +64,7 @@
     --code-editor-border: #30363d;
     --code-editor-caret: #e6edf3;
     --code-editor-active-line: #30363d;
+    --code-editor-active-line-bg: rgba(48, 54, 61, 0.42);
     --code-editor-active-gutter: #161b22;
     --code-editor-selection: #264f78;
     --code-editor-selection-match: rgba(56, 139, 253, 0.14);

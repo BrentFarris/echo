@@ -182,7 +182,7 @@ const codeEditorTheme = EditorView.theme({
     borderRight: "1px solid var(--code-editor-border)",
   },
   ".cm-activeLine": {
-    backgroundColor: "transparent",
+    backgroundColor: "var(--code-editor-active-line-bg)",
     boxShadow: "inset 2px 0 0 var(--code-editor-active-line)",
   },
   ".cm-activeLineGutter": {
