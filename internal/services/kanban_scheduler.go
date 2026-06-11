@@ -219,6 +219,7 @@ func (s *SystemService) Shutdown() {
 	for _, cancel := range chatCancels {
 		cancel()
 	}
+	s.closeAllLSPClients()
 }
 
 func (s *SystemService) runKanbanScheduler(ctx context.Context, workspace Workspace, settings llm.Settings, concurrency int) {

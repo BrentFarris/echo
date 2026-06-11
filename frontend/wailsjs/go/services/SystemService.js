@@ -42,6 +42,10 @@ export function CloseKanbanCardDetail(arg1, arg2) {
   return window['go']['services']['SystemService']['CloseKanbanCardDetail'](arg1, arg2);
 }
 
+export function CompleteWorkspaceFile(arg1, arg2) {
+  return window['go']['services']['SystemService']['CompleteWorkspaceFile'](arg1, arg2);
+}
+
 export function CreateKanbanCardFromChatMessage(arg1, arg2) {
   return window['go']['services']['SystemService']['CreateKanbanCardFromChatMessage'](arg1, arg2);
 }

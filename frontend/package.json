@@ -13,6 +13,7 @@
     "vite": "^7.2.4"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.20.2",
     "@codemirror/language-data": "^6.5.2",
     "codemirror": "^6.0.2"
   }

@@ -668,6 +668,126 @@ export namespace services {
 	}
 	
 	
+	export class WorkspaceTextEdit {
+	    from: number;
+	    to: number;
+	    newText: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceTextEdit(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.from = source["from"];
+	        this.to = source["to"];
+	        this.newText = source["newText"];
+	    }
+	}
+	export class WorkspaceCompletionItem {
+	    label: string;
+	    kind?: number;
+	    detail?: string;
+	    documentation?: string;
+	    insertText: string;
+	    sortText?: string;
+	    filterText?: string;
+	    from: number;
+	    to: number;
+	    additionalTextEdits?: WorkspaceTextEdit[];
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceCompletionItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.label = source["label"];
+	        this.kind = source["kind"];
+	        this.detail = source["detail"];
+	        this.documentation = source["documentation"];
+	        this.insertText = source["insertText"];
+	        this.sortText = source["sortText"];
+	        this.filterText = source["filterText"];
+	        this.from = source["from"];
+	        this.to = source["to"];
+	        this.additionalTextEdits = this.convertValues(source["additionalTextEdits"], WorkspaceTextEdit);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class WorkspaceCompletionRequest {
+	    filePath: string;
+	    content: string;
+	    position: number;
+	    triggerKind?: number;
+	    triggerCharacter?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceCompletionRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.filePath = source["filePath"];
+	        this.content = source["content"];
+	        this.position = source["position"];
+	        this.triggerKind = source["triggerKind"];
+	        this.triggerCharacter = source["triggerCharacter"];
+	    }
+	}
+	export class WorkspaceCompletionResponse {
+	    workspaceId: string;
+	    filePath: string;
+	    isIncomplete: boolean;
+	    items: WorkspaceCompletionItem[];
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceCompletionResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.filePath = source["filePath"];
+	        this.isIncomplete = source["isIncomplete"];
+	        this.items = this.convertValues(source["items"], WorkspaceCompletionItem);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class WorkspaceFileEntry {
 	    name: string;
 	    path: string;
@@ -841,6 +961,7 @@ export namespace services {
 		    return a;
 		}
 	}
+	
 
 }
 

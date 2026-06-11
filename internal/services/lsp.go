@@ -1,0 +1,948 @@
+package services
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+)
+
+const (
+	lspCompletionTimeout = 15 * time.Second
+	lspInitializeTimeout = 20 * time.Second
+	lspMaxDocumentation  = 4096
+)
+
+type WorkspaceCompletionRequest struct {
+	FilePath         string `json:"filePath"`
+	Content          string `json:"content"`
+	Position         int    `json:"position"`
+	TriggerKind      int    `json:"triggerKind,omitempty"`
+	TriggerCharacter string `json:"triggerCharacter,omitempty"`
+}
+
+type WorkspaceCompletionResponse struct {
+	WorkspaceID  string                    `json:"workspaceId"`
+	FilePath     string                    `json:"filePath"`
+	IsIncomplete bool                      `json:"isIncomplete"`
+	Items        []WorkspaceCompletionItem `json:"items"`
+}
+
+type WorkspaceCompletionItem struct {
+	Label               string              `json:"label"`
+	Kind                int                 `json:"kind,omitempty"`
+	Detail              string              `json:"detail,omitempty"`
+	Documentation       string              `json:"documentation,omitempty"`
+	InsertText          string              `json:"insertText"`
+	SortText            string              `json:"sortText,omitempty"`
+	FilterText          string              `json:"filterText,omitempty"`
+	From                int                 `json:"from"`
+	To                  int                 `json:"to"`
+	AdditionalTextEdits []WorkspaceTextEdit `json:"additionalTextEdits,omitempty"`
+}
+
+type WorkspaceTextEdit struct {
+	From    int    `json:"from"`
+	To      int    `json:"to"`
+	NewText string `json:"newText"`
+}
+
+type lspServerCommand struct {
+	name string
+	args []string
+}
+
+var lspCommandForLanguage = defaultLSPCommandForLanguage
+
+func defaultLSPCommandForLanguage(languageID string) (lspServerCommand, bool) {
+	switch languageID {
+	case "go":
+		return lspServerCommand{name: "gopls"}, true
+	default:
+		return lspServerCommand{}, false
+	}
+}
+
+type lspClient struct {
+	languageID    string
+	workspaceName string
+	rootPath      string
+	rootURI       string
+	cmd           *exec.Cmd
+	stdin         io.WriteCloser
+	readerDone    chan struct{}
+
+	writeMu     sync.Mutex
+	operationMu sync.Mutex
+	pendingMu   sync.Mutex
+	pending     map[string]chan lspPendingResponse
+	nextID      uint64
+
+	docMu     sync.Mutex
+	documents map[string]lspDocumentState
+
+	closeOnce sync.Once
+}
+
+type lspDocumentState struct {
+	content string
+	version int
+}
+
+type lspPendingResponse struct {
+	result json.RawMessage
+	err    error
+}
+
+type lspWireMessage struct {
+	JSONRPC string            `json:"jsonrpc,omitempty"`
+	ID      *json.RawMessage  `json:"id,omitempty"`
+	Method  string            `json:"method,omitempty"`
+	Params  json.RawMessage   `json:"params,omitempty"`
+	Result  json.RawMessage   `json:"result,omitempty"`
+	Error   *lspResponseError `json:"error,omitempty"`
+}
+
+type lspResponseError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+type lspPosition struct {
+	Line      int `json:"line"`
+	Character int `json:"character"`
+}
+
+type lspRange struct {
+	Start lspPosition `json:"start"`
+	End   lspPosition `json:"end"`
+}
+
+type lspTextEdit struct {
+	Range   lspRange `json:"range"`
+	NewText string   `json:"newText"`
+}
+
+type lspInsertReplaceEdit struct {
+	NewText string   `json:"newText"`
+	Insert  lspRange `json:"insert"`
+	Replace lspRange `json:"replace"`
+}
+
+type lspCompletionList struct {
+	IsIncomplete bool `json:"isIncomplete"`
+	ItemDefaults struct {
+		EditRange json.RawMessage `json:"editRange"`
+	} `json:"itemDefaults"`
+	Items []lspCompletionItem `json:"items"`
+}
+
+type lspCompletionItem struct {
+	Label               string            `json:"label"`
+	Kind                int               `json:"kind"`
+	Detail              string            `json:"detail"`
+	Documentation       json.RawMessage   `json:"documentation"`
+	InsertText          string            `json:"insertText"`
+	SortText            string            `json:"sortText"`
+	FilterText          string            `json:"filterText"`
+	TextEdit            json.RawMessage   `json:"textEdit"`
+	AdditionalTextEdits []json.RawMessage `json:"additionalTextEdits"`
+}
+
+func (s *SystemService) CompleteWorkspaceFile(workspaceID string, request WorkspaceCompletionRequest) (WorkspaceCompletionResponse, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return WorkspaceCompletionResponse{}, err
+	}
+	if strings.TrimSpace(request.FilePath) == "" {
+		return WorkspaceCompletionResponse{}, fmt.Errorf("file path is required")
+	}
+	if len([]byte(request.Content)) > maxWorkspaceEditorFileBytes {
+		return WorkspaceCompletionResponse{}, fmt.Errorf("content is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
+	}
+	if request.Position < 0 || request.Position > utf16Length(request.Content) {
+		return WorkspaceCompletionResponse{}, fmt.Errorf("completion position is outside the file")
+	}
+
+	languageID, ok := lspLanguageIDForPath(request.FilePath)
+	if !ok {
+		return WorkspaceCompletionResponse{
+			WorkspaceID: workspace.ID,
+			FilePath:    request.FilePath,
+			Items:       []WorkspaceCompletionItem{},
+		}, nil
+	}
+
+	resolved, err := resolveWorkspaceServicePath(workspace.FolderPath, request.FilePath)
+	if err != nil {
+		return WorkspaceCompletionResponse{}, err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return WorkspaceCompletionResponse{}, fmt.Errorf("file was not found")
+	}
+	if !info.Mode().IsRegular() {
+		return WorkspaceCompletionResponse{}, fmt.Errorf("path is not a regular file")
+	}
+
+	client, err := s.workspaceLSPClient(workspace, languageID)
+	if err != nil {
+		return WorkspaceCompletionResponse{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), lspCompletionTimeout)
+	defer cancel()
+	response, err := client.complete(ctx, resolved, request)
+	if err != nil {
+		return WorkspaceCompletionResponse{}, err
+	}
+	response.WorkspaceID = workspace.ID
+	response.FilePath = workspaceRelativePath(workspace.FolderPath, resolved)
+	return response, nil
+}
+
+func (s *SystemService) workspaceLSPClient(workspace Workspace, languageID string) (*lspClient, error) {
+	key := workspaceLSPClientKey(workspace.ID, languageID)
+	s.lspMu.Lock()
+	existing := s.lspClients[key]
+	s.lspMu.Unlock()
+	if existing != nil {
+		return existing, nil
+	}
+
+	client, err := startWorkspaceLSPClient(workspace, languageID)
+	if err != nil {
+		return nil, err
+	}
+
+	s.lspMu.Lock()
+	defer s.lspMu.Unlock()
+	if existing = s.lspClients[key]; existing != nil {
+		client.close()
+		return existing, nil
+	}
+	s.lspClients[key] = client
+	return client, nil
+}
+
+func startWorkspaceLSPClient(workspace Workspace, languageID string) (*lspClient, error) {
+	command, ok := lspCommandForLanguage(languageID)
+	if !ok {
+		return nil, fmt.Errorf("language server is not configured for %s files", languageID)
+	}
+	if _, err := exec.LookPath(command.name); err != nil {
+		return nil, fmt.Errorf("%s language server unavailable: %s was not found on PATH", languageID, command.name)
+	}
+	rootPath, err := filepath.Abs(workspace.FolderPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve workspace path: %w", err)
+	}
+	rootURI := fileURI(rootPath)
+	cmd := exec.Command(command.name, command.args...)
+	cmd.Dir = rootPath
+	cmd.Env = os.Environ()
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("open language server stdin: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("open language server stdout: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("open language server stderr: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start %s language server: %w", languageID, err)
+	}
+
+	client := &lspClient{
+		languageID:    languageID,
+		workspaceName: workspace.DisplayName,
+		rootPath:      rootPath,
+		rootURI:       rootURI,
+		cmd:           cmd,
+		stdin:         stdin,
+		readerDone:    make(chan struct{}),
+		pending:       make(map[string]chan lspPendingResponse),
+		documents:     make(map[string]lspDocumentState),
+	}
+	go io.Copy(io.Discard, stderr)
+	go client.readLoop(stdout)
+	go func() {
+		err := cmd.Wait()
+		client.failPending(fmt.Errorf("%s language server stopped: %w", languageID, err))
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), lspInitializeTimeout)
+	defer cancel()
+	if err := client.initialize(ctx, workspace.DisplayName); err != nil {
+		client.close()
+		return nil, err
+	}
+	return client, nil
+}
+
+func (c *lspClient) initialize(ctx context.Context, workspaceName string) error {
+	params := map[string]any{
+		"processId": nil,
+		"rootPath":  c.rootPath,
+		"rootUri":   c.rootURI,
+		"workspaceFolders": []map[string]string{
+			{
+				"uri":  c.rootURI,
+				"name": workspaceName,
+			},
+		},
+		"capabilities": map[string]any{
+			"workspace": map[string]any{
+				"configuration":    true,
+				"workspaceFolders": true,
+			},
+			"textDocument": map[string]any{
+				"synchronization": map[string]any{
+					"didSave": true,
+				},
+				"completion": map[string]any{
+					"contextSupport": true,
+					"completionItem": map[string]any{
+						"documentationFormat":  []string{"markdown", "plaintext"},
+						"insertReplaceSupport": true,
+						"labelDetailsSupport":  true,
+						"preselectSupport":     true,
+						"snippetSupport":       false,
+					},
+					"completionList": map[string]any{
+						"itemDefaults": []string{"editRange", "insertTextFormat", "data"},
+					},
+				},
+			},
+		},
+	}
+	if _, err := c.request(ctx, "initialize", params); err != nil {
+		return err
+	}
+	return c.notify("initialized", map[string]any{})
+}
+
+func (c *lspClient) complete(ctx context.Context, absolutePath string, request WorkspaceCompletionRequest) (WorkspaceCompletionResponse, error) {
+	c.operationMu.Lock()
+	defer c.operationMu.Unlock()
+
+	uri := fileURI(absolutePath)
+	if err := c.syncDocument(uri, request.Content); err != nil {
+		return WorkspaceCompletionResponse{}, err
+	}
+	params := map[string]any{
+		"textDocument": map[string]string{"uri": uri},
+		"position":     lspPositionFromUTF16Offset(request.Content, request.Position),
+	}
+	if request.TriggerKind > 0 {
+		context := map[string]any{"triggerKind": request.TriggerKind}
+		if request.TriggerCharacter != "" {
+			context["triggerCharacter"] = request.TriggerCharacter
+		}
+		params["context"] = context
+	}
+	raw, err := c.completionRequestWithRetry(ctx, params)
+	if err != nil {
+		return WorkspaceCompletionResponse{}, err
+	}
+	return parseLSPCompletionResponse(raw, request.Content, request.Position)
+}
+
+func (c *lspClient) completionRequestWithRetry(ctx context.Context, params map[string]any) (json.RawMessage, error) {
+	var lastErr error
+	delays := []time.Duration{0, 150 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond}
+	for _, delay := range delays {
+		if delay > 0 {
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		raw, err := c.request(ctx, "textDocument/completion", params)
+		if err == nil {
+			return raw, nil
+		}
+		lastErr = err
+		if !isRetryableLSPCompletionError(err) {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+func isRetryableLSPCompletionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no views") || strings.Contains(message, "view not found")
+}
+
+func (c *lspClient) syncDocument(uri string, content string) error {
+	c.docMu.Lock()
+	state, opened := c.documents[uri]
+	if !opened {
+		state = lspDocumentState{content: content, version: 1}
+		c.documents[uri] = state
+		c.docMu.Unlock()
+		return c.notify("textDocument/didOpen", map[string]any{
+			"textDocument": map[string]any{
+				"uri":        uri,
+				"languageId": c.languageID,
+				"version":    state.version,
+				"text":       content,
+			},
+		})
+	}
+	if state.content == content {
+		c.docMu.Unlock()
+		return nil
+	}
+	state.content = content
+	state.version++
+	c.documents[uri] = state
+	c.docMu.Unlock()
+	return c.notify("textDocument/didChange", map[string]any{
+		"textDocument": map[string]any{
+			"uri":     uri,
+			"version": state.version,
+		},
+		"contentChanges": []map[string]string{
+			{"text": content},
+		},
+	})
+}
+
+func (c *lspClient) request(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	id := c.nextRequestID()
+	key := strconv.FormatUint(id, 10)
+	response := make(chan lspPendingResponse, 1)
+	c.pendingMu.Lock()
+	c.pending[key] = response
+	c.pendingMu.Unlock()
+
+	message := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"method":  method,
+		"params":  params,
+	}
+	if err := c.writeMessage(message); err != nil {
+		c.removePending(key)
+		return nil, err
+	}
+
+	select {
+	case result := <-response:
+		return result.result, result.err
+	case <-ctx.Done():
+		c.removePending(key)
+		_ = c.notify("$/cancelRequest", map[string]any{"id": id})
+		return nil, ctx.Err()
+	}
+}
+
+func (c *lspClient) notify(method string, params any) error {
+	return c.writeMessage(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  method,
+		"params":  params,
+	})
+}
+
+func (c *lspClient) writeMessage(message any) error {
+	payload, err := json.Marshal(message)
+	if err != nil {
+		return err
+	}
+	var framed bytes.Buffer
+	fmt.Fprintf(&framed, "Content-Length: %d\r\n\r\n", len(payload))
+	framed.Write(payload)
+
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if _, err := c.stdin.Write(framed.Bytes()); err != nil {
+		return fmt.Errorf("write language server message: %w", err)
+	}
+	return nil
+}
+
+func (c *lspClient) nextRequestID() uint64 {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	c.nextID++
+	return c.nextID
+}
+
+func (c *lspClient) readLoop(stdout io.Reader) {
+	defer close(c.readerDone)
+	reader := bufio.NewReader(stdout)
+	for {
+		payload, err := readLSPPayload(reader)
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				c.failPending(fmt.Errorf("read language server message: %w", err))
+			}
+			return
+		}
+		var message lspWireMessage
+		if err := json.Unmarshal(payload, &message); err != nil {
+			continue
+		}
+		if message.Method != "" {
+			c.handleServerMessage(message)
+			continue
+		}
+		if message.ID == nil {
+			continue
+		}
+		key := lspIDKey(*message.ID)
+		response := lspPendingResponse{result: message.Result}
+		if message.Error != nil {
+			response.err = fmt.Errorf("language server %d: %s", message.Error.Code, message.Error.Message)
+		}
+		c.pendingMu.Lock()
+		waiter := c.pending[key]
+		delete(c.pending, key)
+		c.pendingMu.Unlock()
+		if waiter != nil {
+			waiter <- response
+		}
+	}
+}
+
+func (c *lspClient) handleServerMessage(message lspWireMessage) {
+	if message.ID == nil {
+		return
+	}
+	result := any(nil)
+	switch message.Method {
+	case "workspace/configuration":
+		result = workspaceConfigurationResponse(message.Params)
+	case "workspace/workspaceFolders":
+		result = []map[string]string{
+			{
+				"uri":  c.rootURI,
+				"name": c.workspaceName,
+			},
+		}
+	}
+	response := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      *message.ID,
+		"result":  result,
+	}
+	_ = c.writeMessage(response)
+}
+
+func workspaceConfigurationResponse(raw json.RawMessage) any {
+	var params struct {
+		Items []any `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil || len(params.Items) == 0 {
+		return []any{}
+	}
+	values := make([]any, len(params.Items))
+	for i := range values {
+		values[i] = map[string]any{}
+	}
+	return values
+}
+
+func readLSPPayload(reader *bufio.Reader) ([]byte, error) {
+	contentLength := -1
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			break
+		}
+		name, value, ok := strings.Cut(line, ":")
+		if !ok || !strings.EqualFold(strings.TrimSpace(name), "Content-Length") {
+			continue
+		}
+		length, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return nil, fmt.Errorf("invalid content length")
+		}
+		contentLength = length
+	}
+	if contentLength < 0 {
+		return nil, fmt.Errorf("missing content length")
+	}
+	payload := make([]byte, contentLength)
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func (c *lspClient) removePending(key string) {
+	c.pendingMu.Lock()
+	delete(c.pending, key)
+	c.pendingMu.Unlock()
+}
+
+func (c *lspClient) failPending(err error) {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	for key, waiter := range c.pending {
+		delete(c.pending, key)
+		waiter <- lspPendingResponse{err: err}
+	}
+}
+
+func (c *lspClient) close() {
+	c.closeOnce.Do(func() {
+		_ = c.stdin.Close()
+		if c.cmd != nil && c.cmd.Process != nil {
+			_ = c.cmd.Process.Kill()
+		}
+		select {
+		case <-c.readerDone:
+		case <-time.After(2 * time.Second):
+		}
+	})
+}
+
+func (s *SystemService) closeWorkspaceLSPClients(workspaceID string) {
+	prefix := workspaceID + ":"
+	s.lspMu.Lock()
+	clients := make([]*lspClient, 0)
+	for key, client := range s.lspClients {
+		if strings.HasPrefix(key, prefix) {
+			clients = append(clients, client)
+			delete(s.lspClients, key)
+		}
+	}
+	s.lspMu.Unlock()
+	for _, client := range clients {
+		client.close()
+	}
+}
+
+func (s *SystemService) closeAllLSPClients() {
+	s.lspMu.Lock()
+	clients := make([]*lspClient, 0, len(s.lspClients))
+	for key, client := range s.lspClients {
+		clients = append(clients, client)
+		delete(s.lspClients, key)
+	}
+	s.lspMu.Unlock()
+	for _, client := range clients {
+		client.close()
+	}
+}
+
+func workspaceLSPClientKey(workspaceID string, languageID string) string {
+	return workspaceID + ":" + languageID
+}
+
+func lspLanguageIDForPath(path string) (string, bool) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".go":
+		return "go", true
+	default:
+		return "", false
+	}
+}
+
+func parseLSPCompletionResponse(raw json.RawMessage, content string, position int) (WorkspaceCompletionResponse, error) {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return WorkspaceCompletionResponse{Items: []WorkspaceCompletionItem{}}, nil
+	}
+	var list lspCompletionList
+	if err := json.Unmarshal(raw, &list); err == nil && list.Items != nil {
+		return completionListToResponse(list, content, position), nil
+	}
+	var items []lspCompletionItem
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return WorkspaceCompletionResponse{}, fmt.Errorf("parse completion response: %w", err)
+	}
+	return completionListToResponse(lspCompletionList{Items: items}, content, position), nil
+}
+
+func completionListToResponse(list lspCompletionList, content string, position int) WorkspaceCompletionResponse {
+	fallbackFrom, fallbackTo := completionFallbackRange(content, position)
+	defaultRange, hasDefaultRange := parseLSPCompletionEditRange(list.ItemDefaults.EditRange)
+	items := make([]WorkspaceCompletionItem, 0, len(list.Items))
+	for _, item := range list.Items {
+		if strings.TrimSpace(item.Label) == "" {
+			continue
+		}
+		editText, editRange, hasEditRange := parseLSPCompletionTextEdit(item.TextEdit)
+		if !hasEditRange && hasDefaultRange {
+			editRange = defaultRange
+			hasEditRange = true
+		}
+		if editText == "" {
+			editText = item.InsertText
+		}
+		if editText == "" {
+			editText = item.Label
+		}
+
+		from, to := fallbackFrom, fallbackTo
+		if hasEditRange {
+			from = utf16OffsetForPosition(content, editRange.Start)
+			to = utf16OffsetForPosition(content, editRange.End)
+			if from > to {
+				from, to = to, from
+			}
+		}
+
+		output := WorkspaceCompletionItem{
+			Label:         item.Label,
+			Kind:          item.Kind,
+			Detail:        item.Detail,
+			Documentation: lspDocumentationString(item.Documentation),
+			InsertText:    editText,
+			SortText:      item.SortText,
+			FilterText:    item.FilterText,
+			From:          from,
+			To:            to,
+		}
+		output.AdditionalTextEdits = lspAdditionalTextEdits(content, item.AdditionalTextEdits)
+		items = append(items, output)
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		left := items[i].SortText
+		if left == "" {
+			left = items[i].Label
+		}
+		right := items[j].SortText
+		if right == "" {
+			right = items[j].Label
+		}
+		return strings.ToLower(left) < strings.ToLower(right)
+	})
+	return WorkspaceCompletionResponse{
+		IsIncomplete: list.IsIncomplete,
+		Items:        items,
+	}
+}
+
+func parseLSPCompletionTextEdit(raw json.RawMessage) (string, lspRange, bool) {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return "", lspRange{}, false
+	}
+	var textEdit lspTextEdit
+	if err := json.Unmarshal(raw, &textEdit); err == nil && textEdit.Range != (lspRange{}) {
+		return textEdit.NewText, textEdit.Range, true
+	}
+	var insertReplace lspInsertReplaceEdit
+	if err := json.Unmarshal(raw, &insertReplace); err == nil && insertReplace.Replace != (lspRange{}) {
+		return insertReplace.NewText, insertReplace.Replace, true
+	}
+	return "", lspRange{}, false
+}
+
+func parseLSPCompletionEditRange(raw json.RawMessage) (lspRange, bool) {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return lspRange{}, false
+	}
+	var editRange lspRange
+	if err := json.Unmarshal(raw, &editRange); err == nil && editRange != (lspRange{}) {
+		return editRange, true
+	}
+	var insertReplace struct {
+		Insert  lspRange `json:"insert"`
+		Replace lspRange `json:"replace"`
+	}
+	if err := json.Unmarshal(raw, &insertReplace); err == nil && insertReplace.Replace != (lspRange{}) {
+		return insertReplace.Replace, true
+	}
+	return lspRange{}, false
+}
+
+func lspAdditionalTextEdits(content string, rawEdits []json.RawMessage) []WorkspaceTextEdit {
+	if len(rawEdits) == 0 {
+		return nil
+	}
+	edits := make([]WorkspaceTextEdit, 0, len(rawEdits))
+	for _, raw := range rawEdits {
+		var edit lspTextEdit
+		if err := json.Unmarshal(raw, &edit); err != nil {
+			continue
+		}
+		from := utf16OffsetForPosition(content, edit.Range.Start)
+		to := utf16OffsetForPosition(content, edit.Range.End)
+		if from > to {
+			from, to = to, from
+		}
+		edits = append(edits, WorkspaceTextEdit{
+			From:    from,
+			To:      to,
+			NewText: edit.NewText,
+		})
+	}
+	return edits
+}
+
+func lspDocumentationString(raw json.RawMessage) string {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return truncateLSPDocumentation(text)
+	}
+	var markup struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &markup); err == nil {
+		return truncateLSPDocumentation(markup.Value)
+	}
+	return ""
+}
+
+func truncateLSPDocumentation(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= lspMaxDocumentation {
+		return value
+	}
+	return value[:lspMaxDocumentation] + "..."
+}
+
+func lspPositionFromUTF16Offset(content string, target int) lspPosition {
+	if target < 0 {
+		target = 0
+	}
+	line, character, offset := 0, 0, 0
+	for _, char := range content {
+		if offset >= target {
+			break
+		}
+		units := utf16RuneLen(char)
+		if offset+units > target {
+			break
+		}
+		offset += units
+		if char == '\n' {
+			line++
+			character = 0
+		} else {
+			character += units
+		}
+	}
+	return lspPosition{Line: line, Character: character}
+}
+
+func utf16OffsetForPosition(content string, target lspPosition) int {
+	if target.Line < 0 || target.Character < 0 {
+		return 0
+	}
+	line, character, offset := 0, 0, 0
+	for _, char := range content {
+		if line == target.Line && character >= target.Character {
+			return offset
+		}
+		if char == '\n' && line == target.Line {
+			return offset
+		}
+		units := utf16RuneLen(char)
+		offset += units
+		if char == '\n' {
+			line++
+			character = 0
+		} else {
+			character += units
+		}
+	}
+	if line <= target.Line {
+		return offset
+	}
+	return offset
+}
+
+func completionFallbackRange(content string, position int) (int, int) {
+	start := position
+	entries := utf16RuneEntries(content)
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if entry.end > position {
+			continue
+		}
+		if !isCompletionWordRune(entry.char) {
+			break
+		}
+		start = entry.start
+	}
+	return start, position
+}
+
+type utf16RuneEntry struct {
+	char       rune
+	start, end int
+}
+
+func utf16RuneEntries(content string) []utf16RuneEntry {
+	entries := make([]utf16RuneEntry, 0, len(content))
+	offset := 0
+	for _, char := range content {
+		units := utf16RuneLen(char)
+		entries = append(entries, utf16RuneEntry{
+			char:  char,
+			start: offset,
+			end:   offset + units,
+		})
+		offset += units
+	}
+	return entries
+}
+
+func isCompletionWordRune(char rune) bool {
+	return char == '_' || unicode.IsLetter(char) || unicode.IsDigit(char)
+}
+
+func utf16Length(content string) int {
+	length := 0
+	for _, char := range content {
+		length += utf16RuneLen(char)
+	}
+	return length
+}
+
+func utf16RuneLen(char rune) int {
+	if char > 0xFFFF {
+		return 2
+	}
+	return 1
+}
+
+func fileURI(path string) string {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		absolute = path
+	}
+	slashed := filepath.ToSlash(absolute)
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+	return (&url.URL{Scheme: "file", Path: slashed}).String()
+}
+
+func lspIDKey(raw json.RawMessage) string {
+	return strings.Trim(string(raw), `"`)
+}

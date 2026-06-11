@@ -102,6 +102,8 @@ type SystemService struct {
 	fileChangeSeq        uint64
 	fileChanges          map[string][]trackedFileChange
 	workspaceToolLocks   map[string]*sync.Mutex
+	lspMu                sync.Mutex
+	lspClients           map[string]*lspClient
 	kanbanEventSink      func(KanbanEvent)
 	fileChangesEventSink func(FileChangesEvent)
 	inlineCodeEventSink  func(InlineCodePromptEvent)
@@ -131,6 +133,7 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 		kanbanDetailViews:  make(map[string]string),
 		fileChanges:        make(map[string][]trackedFileChange),
 		workspaceToolLocks: make(map[string]*sync.Mutex),
+		lspClients:         make(map[string]*lspClient),
 	}
 	_ = service.load()
 	return service
@@ -400,6 +403,7 @@ func (s *SystemService) DeleteWorkspace(id string) (AppState, error) {
 	delete(s.kanbanDetailViews, id)
 	s.chatMu.Unlock()
 	s.dropWorkspaceChangeReview(id)
+	s.closeWorkspaceLSPClients(id)
 	removeStoredWorkspaceIcon(deletedIconPath)
 	return cloneState(s.state), nil
 }
