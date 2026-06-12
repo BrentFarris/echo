@@ -23,6 +23,7 @@ var readOnlyToolNames = map[string]bool{
 	"filesystem_stat":             true,
 	"lsp_query":                   true,
 	"web_search":                  true,
+	"workspace_context":           true,
 }
 
 var mutatingToolNames = map[string]bool{

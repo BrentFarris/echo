@@ -129,28 +129,29 @@ type AppState struct {
 }
 
 type SystemService struct {
-	info                 AppInfo
-	ctx                  context.Context
-	storePath            string
-	mu                   sync.Mutex
-	state                AppState
-	chatMu               sync.Mutex
-	chatSessions         map[string]*chatSessionState
-	chatStreams          map[string]context.CancelFunc
-	chatSeq              uint64
-	kanbanRuns           map[string]context.CancelFunc
-	kanbanAgents         map[string]*kanbanAgentRun
-	kanbanAgentSeq       uint64
-	kanbanDetailViews    map[string]string
-	fileChangeMu         sync.Mutex
-	fileChangeSeq        uint64
-	fileChanges          map[string][]trackedFileChange
-	workspaceToolLocks   map[string]*sync.Mutex
-	lspMu                sync.Mutex
-	lspClients           map[string]*lspClient
-	kanbanEventSink      func(KanbanEvent)
-	fileChangesEventSink func(FileChangesEvent)
-	inlineCodeEventSink  func(InlineCodePromptEvent)
+	info                    AppInfo
+	ctx                     context.Context
+	storePath               string
+	mu                      sync.Mutex
+	state                   AppState
+	chatMu                  sync.Mutex
+	chatSessions            map[string]*chatSessionState
+	chatStreams             map[string]context.CancelFunc
+	chatSeq                 uint64
+	kanbanRuns              map[string]context.CancelFunc
+	kanbanAgents            map[string]*kanbanAgentRun
+	kanbanAgentSeq          uint64
+	kanbanDetailViews       map[string]string
+	fileChangeMu            sync.Mutex
+	fileChangeSeq           uint64
+	fileChanges             map[string][]trackedFileChange
+	workspaceToolLocks      map[string]*sync.Mutex
+	lspMu                   sync.Mutex
+	lspClients              map[string]*lspClient
+	workspaceContextBuilder workspaceContextBuildFunc
+	kanbanEventSink         func(KanbanEvent)
+	fileChangesEventSink    func(FileChangesEvent)
+	inlineCodeEventSink     func(InlineCodePromptEvent)
 }
 
 func NewSystemService() *SystemService {

@@ -144,12 +144,13 @@ func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Wo
 		unlock = lock.Unlock
 	}
 	result := tools.Execute(tools.ExecutionContext{
-		Context:        ctx,
-		WorkspaceRoots: workspaceToolRoots(workspace),
-		SearxngURL:     settings.SearxngURL,
-		CodeNavigator:  s.codeNavigator(workspace),
-		Emit:           emit,
-		FileChanges:    sink,
+		Context:          ctx,
+		WorkspaceRoots:   workspaceToolRoots(workspace),
+		SearxngURL:       settings.SearxngURL,
+		CodeNavigator:    s.codeNavigator(workspace),
+		WorkspaceContext: s.workspaceContextProvider(workspace),
+		Emit:             emit,
+		FileChanges:      sink,
 	}, call.Function.Name, json.RawMessage(call.Function.Arguments))
 
 	if len(captured) > 0 {

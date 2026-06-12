@@ -174,6 +174,7 @@ func TestSystemServiceChatPlanModeUsesReadOnlyPlanningRequest(t *testing.T) {
 		"planning changes only",
 		"do not make workspace changes",
 		"available read-only tools",
+		"workspace_context",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("expected plan-mode prompt to include %q, got %q", expected, prompt)
@@ -181,7 +182,7 @@ func TestSystemServiceChatPlanModeUsesReadOnlyPlanningRequest(t *testing.T) {
 	}
 
 	names := chatRequestToolNames(captured)
-	for _, expected := range []string{"filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_search_text", "filesystem_stat"} {
+	for _, expected := range []string{"filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_search_text", "filesystem_stat", "workspace_context"} {
 		if !names[expected] {
 			t.Fatalf("expected plan mode to include read-only tool %s, got %#v", expected, names)
 		}
@@ -216,7 +217,7 @@ func TestSystemServiceChatNonPlanModeUsesFullToolRequest(t *testing.T) {
 	waitForChatIdle(t, service, workspaceID)
 
 	names := chatRequestToolNames(captured)
-	for _, expected := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_search_text", "filesystem_stat", "shell_command"} {
+	for _, expected := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_search_text", "filesystem_stat", "shell_command", "workspace_context"} {
 		if !names[expected] {
 			t.Fatalf("expected non-plan mode to include %s, got %#v", expected, names)
 		}

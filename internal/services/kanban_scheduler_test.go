@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/brent/echo/internal/llm"
+	"github.com/brent/echo/internal/tools"
 )
 
 func TestKanbanSchedulerRespectsDependencies(t *testing.T) {
@@ -107,6 +109,78 @@ func TestKanbanSchedulerSuccessfulCardMovesToDone(t *testing.T) {
 	}
 	if !transcriptContains(done.ProgressTranscript, "Checking the card.") || !transcriptContains(done.ProgressTranscript, "Implemented and verified.") {
 		t.Fatalf("expected thinking and final message in transcript, got %#v", done.ProgressTranscript)
+	}
+}
+
+func TestKanbanSchedulerIncludesWorkspaceContextBrief(t *testing.T) {
+	root := t.TempDir()
+	writeWorkspaceContextFile(t, root, "internal/feature.go", "package internal\n\nfunc UpdateFeatureBehavior() {}\n")
+	restore := stubGoLSPCommand("definitely_missing_gopls_for_context_test")
+	defer restore()
+
+	var captured llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"Updated feature behavior."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Update feature behavior", Description: "Modify the feature implementation", AcceptanceCriteria: []string{"Feature behavior is updated"}, Lane: KanbanLaneReady},
+	})
+
+	if _, err := service.StartKanbanExecution(workspaceID, 1); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	board := waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
+		return len(board.Done) == 1
+	})
+
+	label := workspaceRootLabel(t, service, workspaceID)
+	if !requestContainsContent(captured, "Workspace context brief:") || !requestContainsContent(captured, label+"/internal/feature.go") {
+		t.Fatalf("expected first request to include context brief and relevant file, got %#v", captured.Messages)
+	}
+	if !transcriptContains(board.Done[0].ProgressTranscript, "Workspace Context Brief") || !transcriptContains(board.Done[0].ProgressTranscript, label+"/internal/feature.go") {
+		t.Fatalf("expected context brief progress entry, got %#v", board.Done[0].ProgressTranscript)
+	}
+}
+
+func TestKanbanSchedulerContinuesWhenWorkspaceContextFails(t *testing.T) {
+	root := t.TempDir()
+	var captured llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"Completed without context."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+	service.workspaceContextBuilder = func(ctx context.Context, workspace Workspace, request tools.WorkspaceContextRequest) (tools.WorkspaceContextResponse, error) {
+		return tools.WorkspaceContextResponse{}, fmt.Errorf("context builder failed")
+	}
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "No context", Description: "Still finish", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneReady},
+	})
+
+	if _, err := service.StartKanbanExecution(workspaceID, 1); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	board := waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
+		return len(board.Done) == 1
+	})
+
+	if !requestContainsContent(captured, "Context brief unavailable: context builder failed") {
+		t.Fatalf("expected fallback context warning in request, got %#v", captured.Messages)
+	}
+	if !transcriptContains(board.Done[0].ProgressTranscript, "Context brief unavailable: context builder failed") {
+		t.Fatalf("expected context warning in transcript, got %#v", board.Done[0].ProgressTranscript)
 	}
 }
 

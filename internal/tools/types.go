@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"sort"
+	"strings"
 )
 
 type Schema map[string]any
@@ -37,13 +40,14 @@ func (t ToolFunc) Execute(ctx ExecutionContext, arguments json.RawMessage) (any,
 }
 
 type ExecutionContext struct {
-	Context        context.Context
-	WorkspacePath  string
-	WorkspaceRoots []WorkspaceRoot
-	SearxngURL     string
-	CodeNavigator  CodeNavigator
-	Emit           EventEmitter
-	FileChanges    FileChangeSink
+	Context          context.Context
+	WorkspacePath    string
+	WorkspaceRoots   []WorkspaceRoot
+	SearxngURL       string
+	CodeNavigator    CodeNavigator
+	WorkspaceContext WorkspaceContextProvider
+	Emit             EventEmitter
+	FileChanges      FileChangeSink
 }
 
 type WorkspaceRoot struct {
@@ -54,6 +58,107 @@ type WorkspaceRoot struct {
 
 type CodeNavigator interface {
 	QueryCode(ctx context.Context, request CodeNavigationRequest) (CodeNavigationResponse, error)
+}
+
+type WorkspaceContextProvider interface {
+	QueryWorkspaceContext(ctx context.Context, request WorkspaceContextRequest) (WorkspaceContextResponse, error)
+}
+
+const (
+	DefaultWorkspaceContextMaxFiles = 12
+	MaxWorkspaceContextMaxFiles     = 30
+	WorkspaceContextBriefMaxBytes   = 32 * 1024
+)
+
+type WorkspaceContextRequest struct {
+	Task         string   `json:"task"`
+	Path         string   `json:"path,omitempty"`
+	ChangedPaths []string `json:"changedPaths,omitempty"`
+	MaxFiles     int      `json:"maxFiles,omitempty"`
+}
+
+type WorkspaceContextResponse struct {
+	Task                 string                        `json:"task"`
+	Path                 string                        `json:"path,omitempty"`
+	Brief                string                        `json:"brief"`
+	ProjectRoots         []WorkspaceContextProjectRoot `json:"projectRoots,omitempty"`
+	DetectedLanguages    []string                      `json:"detectedLanguages,omitempty"`
+	Manifests            []WorkspaceContextManifest    `json:"manifests,omitempty"`
+	LikelyCommands       []WorkspaceContextCommand     `json:"likelyCommands,omitempty"`
+	RelevantFiles        []WorkspaceContextFile        `json:"relevantFiles,omitempty"`
+	LikelyTestFiles      []WorkspaceContextFile        `json:"likelyTestFiles,omitempty"`
+	VerificationCommands []WorkspaceContextCommand     `json:"verificationCommands,omitempty"`
+	Warnings             []string                      `json:"warnings,omitempty"`
+	Truncated            bool                          `json:"truncated,omitempty"`
+}
+
+type WorkspaceContextProjectRoot struct {
+	Path      string   `json:"path"`
+	Kind      string   `json:"kind"`
+	Manifests []string `json:"manifests,omitempty"`
+}
+
+type WorkspaceContextManifest struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+}
+
+type WorkspaceContextCommand struct {
+	Kind             string `json:"kind"`
+	Command          string `json:"command"`
+	WorkingDirectory string `json:"workingDirectory"`
+}
+
+type WorkspaceContextFile struct {
+	Path    string                  `json:"path"`
+	Kind    string                  `json:"kind,omitempty"`
+	Reason  string                  `json:"reason,omitempty"`
+	Score   int                     `json:"score,omitempty"`
+	Matches []WorkspaceContextMatch `json:"matches,omitempty"`
+	Symbols []CodeSymbol            `json:"symbols,omitempty"`
+}
+
+type WorkspaceContextMatch struct {
+	Line int    `json:"line"`
+	Text string `json:"text"`
+}
+
+func NormalizeWorkspaceContextRequest(request WorkspaceContextRequest) WorkspaceContextRequest {
+	request.Task = strings.TrimSpace(request.Task)
+	request.Path = strings.TrimSpace(strings.ReplaceAll(request.Path, "\\", "/"))
+	if request.Path == "" {
+		request.Path = "."
+	}
+	request.MaxFiles = NormalizeWorkspaceContextMaxFiles(request.MaxFiles)
+
+	seen := map[string]bool{}
+	changed := make([]string, 0, len(request.ChangedPaths))
+	for _, path := range request.ChangedPaths {
+		path = strings.TrimSpace(strings.ReplaceAll(path, "\\", "/"))
+		path = strings.Trim(path, "/")
+		if path == "" || path == "." {
+			continue
+		}
+		path = filepath.ToSlash(filepath.Clean(path))
+		if seen[strings.ToLower(path)] {
+			continue
+		}
+		seen[strings.ToLower(path)] = true
+		changed = append(changed, path)
+	}
+	sort.Strings(changed)
+	request.ChangedPaths = changed
+	return request
+}
+
+func NormalizeWorkspaceContextMaxFiles(value int) int {
+	if value <= 0 {
+		return DefaultWorkspaceContextMaxFiles
+	}
+	if value > MaxWorkspaceContextMaxFiles {
+		return MaxWorkspaceContextMaxFiles
+	}
+	return value
 }
 
 type CodeNavigationRequest struct {

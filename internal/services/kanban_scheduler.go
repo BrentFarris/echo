@@ -338,6 +338,8 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 		return
 	}
 
+	contextBrief := s.kanbanWorkspaceContextBrief(ctx, workspace, card, dependencyOutputs, agentID)
+
 	client, err := llm.NewClient(settings)
 	if err != nil {
 		s.blockKanbanCard(workspace.ID, cardID, agentID, "Agent error", err.Error())
@@ -346,7 +348,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 
 	messages := []llm.Message{
 		kanbanAgentSystemMessage(workspace),
-		kanbanAgentUserMessage(card, dependencyOutputs),
+		kanbanAgentUserMessage(card, dependencyOutputs, contextBrief),
 	}
 	changedPaths := map[string]bool{}
 	verificationAttempts := 0
@@ -984,6 +986,8 @@ func kanbanAgentSystemMessage(workspace Workspace) llm.Message {
 		Role: llm.RoleSystem,
 		Content: workspaceSystemPrompt(
 			"You are Echo's autonomous Kanban agent. Complete the assigned card inside the active workspace. "+
+				"Treat the provided Workspace Context Brief as your starting map, but validate important facts with targeted tools before editing. "+
+				"Use workspace_context for broad repo context when the brief is missing or the target files remain unclear. "+
 				"Use available tools when you need workspace facts. When you need to find code but do not know the target file, prefer filesystem_search_workspace before shell commands. "+
 				"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. "+
 				"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. "+
@@ -994,7 +998,7 @@ func kanbanAgentSystemMessage(workspace Workspace) llm.Message {
 	}
 }
 
-func kanbanAgentUserMessage(card KanbanCard, dependencyOutputs []kanbanDependencyOutput) llm.Message {
+func kanbanAgentUserMessage(card KanbanCard, dependencyOutputs []kanbanDependencyOutput, contextBrief string) llm.Message {
 	criteria := "None recorded."
 	if len(card.AcceptanceCriteria) > 0 {
 		criteria = "- " + strings.Join(card.AcceptanceCriteria, "\n- ")
@@ -1023,9 +1027,63 @@ func kanbanAgentUserMessage(card KanbanCard, dependencyOutputs []kanbanDependenc
 	}
 	return llm.Message{
 		Role: llm.RoleUser,
-		Content: fmt.Sprintf("Complete this Kanban card.\n\nID: %s\nTitle: %s\nDescription: %s\nAcceptance criteria:\n%s\n\nCompleted dependency outputs:\n%s\n\nPrior card log:\n%s",
-			card.ID, card.Title, card.Description, criteria, dependencies, progress),
+		Content: fmt.Sprintf("Complete this Kanban card.\n\nID: %s\nTitle: %s\nDescription: %s\nAcceptance criteria:\n%s\n\nCompleted dependency outputs:\n%s\n\nPrior card log:\n%s\n\nWorkspace context brief:\n%s",
+			card.ID, card.Title, card.Description, criteria, dependencies, progress, strings.TrimSpace(contextBrief)),
 	}
+}
+
+func (s *SystemService) kanbanWorkspaceContextBrief(ctx context.Context, workspace Workspace, card KanbanCard, dependencyOutputs []kanbanDependencyOutput, agentID uint64) string {
+	task := kanbanWorkspaceContextTask(card, dependencyOutputs)
+	response, err := s.buildWorkspaceContext(ctx, workspace, tools.WorkspaceContextRequest{
+		Task:     task,
+		MaxFiles: tools.DefaultWorkspaceContextMaxFiles,
+	})
+	if err != nil {
+		content := "Context brief unavailable: " + err.Error()
+		s.appendKanbanAgentProgress(workspace.ID, card.ID, agentID, KanbanProgressEntry{
+			Type:    "context",
+			Title:   "Context brief warning",
+			Content: content,
+			Status:  KanbanLaneInProgress,
+		})
+		return content
+	}
+	brief := strings.TrimSpace(response.Brief)
+	if brief == "" {
+		brief = "No relevant workspace context was detected automatically."
+	}
+	s.appendKanbanAgentProgress(workspace.ID, card.ID, agentID, KanbanProgressEntry{
+		Type:    "context",
+		Title:   "Context brief",
+		Content: brief,
+		Status:  KanbanLaneInProgress,
+	})
+	return brief
+}
+
+func kanbanWorkspaceContextTask(card KanbanCard, dependencyOutputs []kanbanDependencyOutput) string {
+	var builder strings.Builder
+	builder.WriteString(card.Title)
+	if strings.TrimSpace(card.Description) != "" {
+		builder.WriteString("\n")
+		builder.WriteString(card.Description)
+	}
+	if len(card.AcceptanceCriteria) > 0 {
+		builder.WriteString("\nAcceptance criteria:\n- ")
+		builder.WriteString(strings.Join(card.AcceptanceCriteria, "\n- "))
+	}
+	for _, output := range dependencyOutputs {
+		if strings.TrimSpace(output.Content) == "" {
+			continue
+		}
+		builder.WriteString("\nDependency ")
+		builder.WriteString(output.ID)
+		builder.WriteString(" ")
+		builder.WriteString(output.Title)
+		builder.WriteString(":\n")
+		builder.WriteString(output.Content)
+	}
+	return builder.String()
 }
 
 func kanbanDependencyOutputsPrompt(card KanbanCard, outputs []kanbanDependencyOutput) string {
