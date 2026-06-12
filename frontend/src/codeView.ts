@@ -1,5 +1,5 @@
 import { HighlightStyle, indentUnit, syntaxHighlighting } from "@codemirror/language";
-import type { Completion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
+import { acceptCompletion, type Completion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
 import { languages as languageData } from "@codemirror/language-data";
 import { EditorSelection, EditorState, Prec, RangeSetBuilder, StateEffect, StateField, Transaction, type Extension, type Text } from "@codemirror/state";
 import {
@@ -257,6 +257,9 @@ function tabIndentionExtensions(): Extension[] {
         {
           key: "Tab",
           run: (view) => {
+            if (acceptCompletion(view)) {
+              return true;
+            }
             view.dispatch(view.state.replaceSelection("\t"));
             return true;
           },
