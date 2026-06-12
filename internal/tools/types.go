@@ -41,6 +41,7 @@ type ExecutionContext struct {
 	WorkspacePath  string
 	WorkspaceRoots []WorkspaceRoot
 	SearxngURL     string
+	CodeNavigator  CodeNavigator
 	Emit           EventEmitter
 	FileChanges    FileChangeSink
 }
@@ -49,6 +50,78 @@ type WorkspaceRoot struct {
 	ID    string
 	Label string
 	Path  string
+}
+
+type CodeNavigator interface {
+	QueryCode(ctx context.Context, request CodeNavigationRequest) (CodeNavigationResponse, error)
+}
+
+type CodeNavigationRequest struct {
+	Operation          string `json:"operation"`
+	Path               string `json:"path"`
+	Line               int    `json:"line,omitempty"`
+	Column             int    `json:"column,omitempty"`
+	Position           *int   `json:"position,omitempty"`
+	IncludeDeclaration *bool  `json:"includeDeclaration,omitempty"`
+	MaxResults         int    `json:"maxResults,omitempty"`
+	TriggerKind        int    `json:"triggerKind,omitempty"`
+	TriggerCharacter   string `json:"triggerCharacter,omitempty"`
+}
+
+type CodeNavigationResponse struct {
+	Operation               string               `json:"operation"`
+	Path                    string               `json:"path"`
+	LanguageID              string               `json:"languageId,omitempty"`
+	Position                *CodePosition        `json:"position,omitempty"`
+	Found                   bool                 `json:"found"`
+	Message                 string               `json:"message,omitempty"`
+	Locations               []CodeLocation       `json:"locations,omitempty"`
+	Items                   []CodeCompletionItem `json:"items,omitempty"`
+	Symbols                 []CodeSymbol         `json:"symbols,omitempty"`
+	Hover                   string               `json:"hover,omitempty"`
+	Range                   *CodeRange           `json:"range,omitempty"`
+	ResultCount             int                  `json:"resultCount,omitempty"`
+	ReturnedCount           int                  `json:"returnedCount,omitempty"`
+	Truncated               bool                 `json:"truncated,omitempty"`
+	SkippedOutsideWorkspace int                  `json:"skippedOutsideWorkspace,omitempty"`
+}
+
+type CodePosition struct {
+	Line   int `json:"line"`
+	Column int `json:"column"`
+	Offset int `json:"offset"`
+}
+
+type CodeRange struct {
+	Start CodePosition `json:"start"`
+	End   CodePosition `json:"end"`
+}
+
+type CodeLocation struct {
+	Path    string    `json:"path"`
+	Range   CodeRange `json:"range"`
+	Preview string    `json:"preview,omitempty"`
+}
+
+type CodeCompletionItem struct {
+	Label         string     `json:"label"`
+	Kind          int        `json:"kind,omitempty"`
+	KindName      string     `json:"kindName,omitempty"`
+	Detail        string     `json:"detail,omitempty"`
+	Documentation string     `json:"documentation,omitempty"`
+	InsertText    string     `json:"insertText,omitempty"`
+	ReplaceRange  *CodeRange `json:"replaceRange,omitempty"`
+}
+
+type CodeSymbol struct {
+	Name           string     `json:"name"`
+	Kind           int        `json:"kind,omitempty"`
+	KindName       string     `json:"kindName,omitempty"`
+	Detail         string     `json:"detail,omitempty"`
+	ContainerName  string     `json:"containerName,omitempty"`
+	Path           string     `json:"path"`
+	Range          CodeRange  `json:"range"`
+	SelectionRange *CodeRange `json:"selectionRange,omitempty"`
 }
 
 func (c ExecutionContext) context() context.Context {

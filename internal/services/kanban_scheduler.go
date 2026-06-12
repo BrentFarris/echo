@@ -930,6 +930,7 @@ func kanbanAgentSystemMessage(workspace Workspace) llm.Message {
 		Content: workspaceSystemPrompt(
 			"You are Echo's autonomous Kanban agent. Complete the assigned card inside the active workspace. "+
 				"Use available tools when you need workspace facts. When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. "+
+				"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. "+
 				"Write the final message as a concise handoff summary for dependent cards, including what was done, important files or decisions, and how it was verified.",
 			workspace,
 		),

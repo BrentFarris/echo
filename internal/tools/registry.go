@@ -20,6 +20,7 @@ var readOnlyToolNames = map[string]bool{
 	"filesystem_read_text":   true,
 	"filesystem_search_text": true,
 	"filesystem_stat":        true,
+	"lsp_query":              true,
 	"web_search":             true,
 }
 

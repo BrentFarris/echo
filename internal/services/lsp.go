@@ -460,6 +460,22 @@ func (c *lspClient) initialize(ctx context.Context, workspaceName string) error 
 						"itemDefaults": []string{"editRange", "insertTextFormat", "data"},
 					},
 				},
+				"definition": map[string]any{
+					"linkSupport": true,
+				},
+				"documentSymbol": map[string]any{
+					"hierarchicalDocumentSymbolSupport": true,
+				},
+				"hover": map[string]any{
+					"contentFormat": []string{"markdown", "plaintext"},
+				},
+				"implementation": map[string]any{
+					"linkSupport": true,
+				},
+				"references": map[string]any{},
+				"typeDefinition": map[string]any{
+					"linkSupport": true,
+				},
 			},
 		},
 	}
