@@ -1744,6 +1744,16 @@ h3 {
   background: var(--color-bg);
 }
 
+.transcript-entry.is-verification {
+  border-color: color-mix(in srgb, var(--color-accent) 34%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 7%, var(--color-bg));
+}
+
+.transcript-entry.is-verification header strong,
+.transcript-entry.is-verification span {
+  color: var(--color-accent-strong);
+}
+
 .dependency-row {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;

@@ -1710,8 +1710,9 @@ function renderLaneButton(card: services.KanbanCard, lane: string, blocked = fal
 }
 
 function renderProgressEntry(entry: services.KanbanProgressEntry): string {
+  const verificationClass = entry.type === "verification" ? " is-verification" : "";
   return `
-    <article class="transcript-entry">
+    <article class="transcript-entry${verificationClass}">
       <header>
         <strong>${escapeHtml(entry.title || entry.type || "Progress")}</strong>
         ${entry.status ? `<span>${escapeHtml(laneLabel(entry.status))}</span>` : ""}

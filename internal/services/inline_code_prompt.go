@@ -237,6 +237,7 @@ func inlineCodeSystemMessage(workspace Workspace) llm.Message {
 		Content: workspaceSystemPrompt(
 			"You are Echo's inline code assistant. Help with the user's prompt at the current editor cursor. "+
 				"Use available workspace tools when you need to inspect or edit files. "+
+				"When you need to find code but do not know the target file, prefer filesystem_search_workspace before shell commands. "+
 				"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. "+
 				"If you fully handled the request by editing files and have nothing useful to show inline, return an empty final message. "+
 				"Otherwise keep the inline response concise and directly relevant to the cursor context.",

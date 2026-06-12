@@ -110,6 +110,276 @@ func TestKanbanSchedulerSuccessfulCardMovesToDone(t *testing.T) {
 	}
 }
 
+func TestKanbanSchedulerRunsVerificationBeforeDone(t *testing.T) {
+	root := t.TempDir()
+	writeKanbanVerificationGoModule(t, root)
+	var createdPath string
+	var requestCount atomic.Int32
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_create", "filesystem_create_text", map[string]any{
+					"path":    createdPath,
+					"content": "package verify\n\nimport \"testing\"\n\nfunc TestGenerated(t *testing.T) {}\n",
+				}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 2:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Created a passing Go test."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+	createdPath = labeledTestPath(t, service, workspaceID, "generated_test.go")
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Create passing test", Description: "Write a passing Go test", AcceptanceCriteria: []string{"go test passes"}, Lane: KanbanLaneReady},
+	})
+
+	if _, err := service.StartKanbanExecution(workspaceID, 1); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	board := waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
+		return len(board.Done) == 1
+	})
+	if requestCount.Load() != 2 {
+		t.Fatalf("expected two model requests, got %d", requestCount.Load())
+	}
+	if !transcriptContains(board.Done[0].ProgressTranscript, "Verification passed.") || !transcriptContains(board.Done[0].ProgressTranscript, "go test ./...") {
+		t.Fatalf("expected verification report before Done, got %#v", board.Done[0].ProgressTranscript)
+	}
+}
+
+func TestKanbanSchedulerRepairsAfterVerificationFailure(t *testing.T) {
+	root := t.TempDir()
+	writeKanbanVerificationGoModule(t, root)
+	var testPath string
+	var requestCount atomic.Int32
+	var sawRepairPrompt atomic.Bool
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		var request llm.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_create", "filesystem_create_text", map[string]any{
+					"path":    testPath,
+					"content": "package verify\n\nimport \"testing\"\n\nfunc TestGenerated(t *testing.T) {\n\tt.Fatal(\"broken\")\n}\n",
+				}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 2:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Created the test."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		case 3:
+			if !requestContainsContent(request, "Automatic verification failed") || !requestContainsContent(request, "go test ./...") {
+				t.Fatalf("repair request did not include verification report: %#v", request.Messages)
+			}
+			sawRepairPrompt.Store(true)
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_edit", "filesystem_edit_text", map[string]any{
+					"path":    testPath,
+					"oldText": "\tt.Fatal(\"broken\")",
+					"newText": "\t// repaired by verification feedback",
+				}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 4:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Fixed the failing test."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+	testPath = labeledTestPath(t, service, workspaceID, "generated_test.go")
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Repair test", Description: "Create and repair a Go test", AcceptanceCriteria: []string{"go test passes"}, Lane: KanbanLaneReady},
+	})
+
+	if _, err := service.StartKanbanExecution(workspaceID, 1); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	board := waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
+		return len(board.Done) == 1
+	})
+	if !sawRepairPrompt.Load() {
+		t.Fatal("expected verification failure to feed a repair prompt to the model")
+	}
+	if !transcriptContains(board.Done[0].ProgressTranscript, "Verification failed.") || !transcriptContains(board.Done[0].ProgressTranscript, "Verification passed.") {
+		t.Fatalf("expected failed then passing verification transcript, got %#v", board.Done[0].ProgressTranscript)
+	}
+}
+
+func TestKanbanSchedulerBlocksAfterSecondVerificationFailure(t *testing.T) {
+	root := t.TempDir()
+	writeKanbanVerificationGoModule(t, root)
+	var testPath string
+	var requestCount atomic.Int32
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_create", "filesystem_create_text", map[string]any{
+					"path":    testPath,
+					"content": "package verify\n\nimport \"testing\"\n\nfunc TestGenerated(t *testing.T) {\n\tt.Fatal(\"broken\")\n}\n",
+				}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 2:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Created a failing test."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		case 3:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Could not repair it."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+	testPath = labeledTestPath(t, service, workspaceID, "generated_test.go")
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Fail twice", Description: "Leave tests failing", AcceptanceCriteria: []string{"Blocked after failed verification"}, Lane: KanbanLaneReady},
+	})
+
+	if _, err := service.StartKanbanExecution(workspaceID, 1); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	board := waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
+		return len(board.Blocked) == 1
+	})
+	blocked := board.Blocked[0]
+	if !transcriptContains(blocked.ProgressTranscript, "Verification failed.") || !transcriptContains(blocked.ProgressTranscript, "go test ./...") {
+		t.Fatalf("expected verification failure in blocked transcript, got %#v", blocked.ProgressTranscript)
+	}
+}
+
+func TestKanbanSchedulerSkipsVerificationWhenNoFilesChanged(t *testing.T) {
+	root := t.TempDir()
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"No code changes were needed."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Inspect only", Description: "Answer without edits", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneReady},
+	})
+
+	if _, err := service.StartKanbanExecution(workspaceID, 1); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	board := waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
+		return len(board.Done) == 1
+	})
+	if !transcriptContains(board.Done[0].ProgressTranscript, "Verification skipped: no file changes were recorded.") {
+		t.Fatalf("expected skipped verification transcript, got %#v", board.Done[0].ProgressTranscript)
+	}
+}
+
+func TestKanbanSchedulerWarnsWhenNoVerificationCommandDetected(t *testing.T) {
+	root := t.TempDir()
+	var notesPath string
+	var requestCount atomic.Int32
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_create", "filesystem_create_text", map[string]any{
+					"path":    notesPath,
+					"content": "implementation notes\n",
+				}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 2:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Created notes."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+	notesPath = labeledTestPath(t, service, workspaceID, "notes.txt")
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Write notes", Description: "Create a text file", AcceptanceCriteria: []string{"Notes exist"}, Lane: KanbanLaneReady},
+	})
+
+	if _, err := service.StartKanbanExecution(workspaceID, 1); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	board := waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
+		return len(board.Done) == 1
+	})
+	if !transcriptContains(board.Done[0].ProgressTranscript, "Unverified: no matching verification command was detected") {
+		t.Fatalf("expected unverified warning transcript, got %#v", board.Done[0].ProgressTranscript)
+	}
+}
+
+func TestKanbanSchedulerCancellationStopsVerification(t *testing.T) {
+	root := t.TempDir()
+	writeKanbanVerificationGoModule(t, root)
+	var testPath string
+	var requestCount atomic.Int32
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_create", "filesystem_create_text", map[string]any{
+					"path":    testPath,
+					"content": "package verify\n\nimport (\n\t\"testing\"\n\t\"time\"\n)\n\nfunc TestSlow(t *testing.T) {\n\ttime.Sleep(30 * time.Second)\n}\n",
+				}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 2:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Created a slow test."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+	testPath = labeledTestPath(t, service, workspaceID, "slow_test.go")
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Slow verification", Description: "Create a slow test", AcceptanceCriteria: []string{"Can be canceled"}, Lane: KanbanLaneReady},
+	})
+
+	if _, err := service.StartKanbanExecution(workspaceID, 1); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
+		return len(board.InProgress) == 1 && transcriptContains(board.InProgress[0].ProgressTranscript, "Checking changed files before marking the card Done.")
+	})
+	if _, err := service.StopKanbanCard(workspaceID, "card-1"); err != nil {
+		t.Fatalf("stop card: %v", err)
+	}
+	waitForKanbanAgentsIdle(t, service, workspaceID)
+	board := waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
+		return len(board.Blocked) == 1
+	})
+	if !transcriptContains(board.Blocked[0].ProgressTranscript, "User stopped") {
+		t.Fatalf("expected stop reason after verification cancellation, got %#v", board.Blocked[0].ProgressTranscript)
+	}
+}
+
 func TestKanbanSchedulerHandlesInlineReasoningToolCall(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hello"), 0o600); err != nil {
@@ -593,7 +863,7 @@ func cardTitleFromRequest(t *testing.T, request llm.ChatRequest) string {
 
 func waitForKanbanBoard(t *testing.T, service *SystemService, workspaceID string, done func(KanbanBoard) bool) KanbanBoard {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		board, err := service.LoadKanbanBoard(workspaceID)
 		if err != nil {
@@ -609,6 +879,18 @@ func waitForKanbanBoard(t *testing.T, service *SystemService, workspaceID string
 	return KanbanBoard{}
 }
 
+func waitForKanbanAgentsIdle(t *testing.T, service *SystemService, workspaceID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if service.activeKanbanAgentCount(workspaceID) == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for kanban agents to stop")
+}
+
 func transcriptContains(transcript []KanbanProgressEntry, content string) bool {
 	for _, entry := range transcript {
 		if strings.Contains(entry.Content, content) {
@@ -616,6 +898,31 @@ func transcriptContains(transcript []KanbanProgressEntry, content string) bool {
 		}
 	}
 	return false
+}
+
+func requestContainsContent(request llm.ChatRequest, content string) bool {
+	for _, message := range request.Messages {
+		if strings.Contains(message.Content, content) {
+			return true
+		}
+	}
+	return false
+}
+
+func writeKanbanVerificationGoModule(t *testing.T, root string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/verify\n\ngo 1.23\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func kanbanToolCallPayload(t *testing.T, id string, name string, arguments any) string {
+	t.Helper()
+	data, err := json.Marshal(arguments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":%q,"type":"function","function":{"name":%q,"arguments":%q}}]}}]}`, id, name, string(data))
 }
 
 type kanbanEventRecorder struct {

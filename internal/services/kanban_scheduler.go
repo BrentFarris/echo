@@ -43,6 +43,11 @@ type kanbanDependencyOutput struct {
 	Content string
 }
 
+type kanbanToolCallExecution struct {
+	Messages     []llm.Message
+	ChangedPaths []string
+}
+
 func (s *SystemService) StartKanbanExecution(workspaceID string, concurrency int) (KanbanBoard, error) {
 	workspace, settings, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {
@@ -343,6 +348,8 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 		kanbanAgentSystemMessage(workspace),
 		kanbanAgentUserMessage(card, dependencyOutputs),
 	}
+	changedPaths := map[string]bool{}
+	verificationAttempts := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			s.blockKanbanCard(workspace.ID, cardID, agentID, "Canceled", agentCancellationText)
@@ -377,6 +384,39 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 		assistantMessage := llm.Message{Role: llm.RoleAssistant, Content: content, ToolCalls: toolCalls}
 		messages = append(messages, assistantMessage)
 		if len(toolCalls) == 0 {
+			s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
+				Type:    "verification",
+				Title:   "Verification started",
+				Content: "Checking changed files before marking the card Done.",
+				Status:  KanbanLaneInProgress,
+			})
+			verificationAttempts++
+			report, err := s.runKanbanVerification(ctx, workspace, sortedKanbanChangedPaths(changedPaths))
+			if err != nil {
+				if ctx.Err() != nil {
+					s.blockKanbanCard(workspace.ID, cardID, agentID, "Canceled", agentCancellationText)
+					return
+				}
+				s.blockKanbanCard(workspace.ID, cardID, agentID, "Verification error", err.Error())
+				return
+			}
+			reportText := kanbanVerificationReportText(report)
+			s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
+				Type:    "verification",
+				Title:   kanbanVerificationProgressTitle(report, verificationAttempts),
+				Content: reportText,
+			})
+			if !kanbanVerificationReportSucceeded(report) {
+				if verificationAttempts < 2 {
+					messages = append(messages, llm.Message{
+						Role:    llm.RoleUser,
+						Content: kanbanVerificationRepairPrompt(report),
+					})
+					continue
+				}
+				s.blockKanbanCard(workspace.ID, cardID, agentID, "Verification failed", reportText)
+				return
+			}
 			s.finishKanbanCard(workspace.ID, cardID, agentID, content)
 			return
 		}
@@ -386,7 +426,11 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 				s.blockKanbanCard(workspace.ID, cardID, agentID, "Canceled", agentCancellationText)
 				return
 			}
-			messages = append(messages, s.executeKanbanToolCall(ctx, workspace, settings, cardID, agentID, call)...)
+			execution := s.executeKanbanToolCall(ctx, workspace, settings, cardID, agentID, call)
+			messages = append(messages, execution.Messages...)
+			for _, path := range execution.ChangedPaths {
+				changedPaths[path] = true
+			}
 		}
 	}
 }
@@ -525,7 +569,7 @@ func (s *SystemService) streamKanbanAgentResponseAttempt(ctx context.Context, cl
 	return kanbanStreamAttemptResult{content: content.String(), reasoning: reasoning.String(), toolCalls: orderedToolCalls(toolCalls), finished: finished, finishReason: finishReason}
 }
 
-func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, cardID string, agentID uint64, call llm.ToolCall) []llm.Message {
+func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, cardID string, agentID uint64, call llm.ToolCall) kanbanToolCallExecution {
 	if call.ID == "" {
 		call.ID = s.nextChatID("call")
 	}
@@ -570,7 +614,18 @@ func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Wor
 		Status:  status,
 	})
 
-	return toolResultMessages(call, result, data)
+	return kanbanToolCallExecution{
+		Messages:     toolResultMessages(call, result, data),
+		ChangedPaths: affectedPathsFromChanges(execution.Changes),
+	}
+}
+
+func sortedKanbanChangedPaths(paths map[string]bool) []string {
+	output := make([]string, 0, len(paths))
+	for path := range paths {
+		output = append(output, path)
+	}
+	return normalizedChangedPaths(output)
 }
 
 func (s *SystemService) eligibleReadyCards(workspaceID string, limit int) []KanbanCard {
@@ -929,8 +984,10 @@ func kanbanAgentSystemMessage(workspace Workspace) llm.Message {
 		Role: llm.RoleSystem,
 		Content: workspaceSystemPrompt(
 			"You are Echo's autonomous Kanban agent. Complete the assigned card inside the active workspace. "+
-				"Use available tools when you need workspace facts. When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. "+
+				"Use available tools when you need workspace facts. When you need to find code but do not know the target file, prefer filesystem_search_workspace before shell commands. "+
+				"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. "+
 				"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. "+
+				"Echo automatically runs detected verification commands before marking the card Done; if verification fails, repair the issue using the report. "+
 				"Write the final message as a concise handoff summary for dependent cards, including what was done, important files or decisions, and how it was verified.",
 			workspace,
 		),
