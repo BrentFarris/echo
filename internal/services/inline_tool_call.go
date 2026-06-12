@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/brent/echo/internal/llm"
 )
@@ -21,6 +22,8 @@ var inlineToolCallEndMarkers = []string{
 var (
 	inlineFunctionTagPattern       = regexp.MustCompile(`(?is)<function\s*=\s*["']?([A-Za-z0-9_-]+)["']?\s*>(.*?)</function\s*>`)
 	inlineParameterTagPattern      = regexp.MustCompile(`(?is)<parameter\s*=\s*["']?([A-Za-z0-9_-]+)["']?\s*>(.*?)</parameter\s*>`)
+	inlineToolCodeTagPattern       = regexp.MustCompile(`(?is)<tool_code\s*>(.*?)</tool_code\s*>`)
+	inlineSimpleTagPattern         = regexp.MustCompile(`(?is)<([A-Za-z0-9_-]+)\s*>(.*?)</([A-Za-z0-9_-]+)\s*>`)
 	inlineCallStylePattern         = regexp.MustCompile(`(?is)^call:([A-Za-z0-9_-]+)\s*(\{.*\})?\s*$`)
 	inlineCallStyleArgumentPattern = regexp.MustCompile(`(?is)^\s*,?\s*([A-Za-z0-9_-]+)\s*:\s*(?:<\|"\|>(.*?)<\|"\|>|"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([^,}]+))\s*`)
 )
@@ -67,7 +70,7 @@ func (p *inlineToolCallStreamParser) drain(flush bool) inlineToolCallParseResult
 			p.buffer = p.buffer[start:]
 		}
 
-		close, closeLength := indexInlineToolCallEnd(p.buffer)
+		close, closeLength := indexInlineToolCallEnd(p.buffer, flush)
 		if close < 0 {
 			if flush {
 				if call, ok := parseInlineToolCallBlock(p.buffer); ok {
@@ -94,6 +97,9 @@ func (p *inlineToolCallStreamParser) drain(flush bool) inlineToolCallParseResult
 
 func parseInlineToolCallBlock(block string) (llm.ToolCall, bool) {
 	if call, ok := parseTaggedInlineToolCall(block); ok {
+		return call, true
+	}
+	if call, ok := parseToolCodeInlineToolCall(block); ok {
 		return call, true
 	}
 	if call, ok := parseJSONInlineToolCall(block); ok {
@@ -124,6 +130,44 @@ func parseTaggedInlineToolCall(block string) (llm.ToolCall, bool) {
 		}
 		args[key] = inlineToolParameterValue(key, match[2])
 	}
+	name, args = normalizeInlineToolNameAndArguments(name, args)
+
+	arguments, err := json.Marshal(args)
+	if err != nil {
+		return llm.ToolCall{}, false
+	}
+	return llm.ToolCall{
+		Type: "function",
+		Function: llm.FunctionCall{
+			Name:      name,
+			Arguments: string(arguments),
+		},
+	}, true
+}
+
+func parseToolCodeInlineToolCall(block string) (llm.ToolCall, bool) {
+	toolMatch := inlineToolCodeTagPattern.FindStringSubmatchIndex(block)
+	if toolMatch == nil {
+		return llm.ToolCall{}, false
+	}
+
+	name := strings.TrimSpace(html.UnescapeString(block[toolMatch[2]:toolMatch[3]]))
+	if name == "" {
+		return llm.ToolCall{}, false
+	}
+
+	args := map[string]any{}
+	for _, match := range inlineSimpleTagPattern.FindAllStringSubmatch(block[toolMatch[1]:], -1) {
+		if len(match) != 4 {
+			continue
+		}
+		key := strings.TrimSpace(match[1])
+		if key == "" || strings.EqualFold(key, "tool_code") || !strings.EqualFold(key, strings.TrimSpace(match[3])) {
+			continue
+		}
+		args[key] = inlineToolParameterValue(key, match[2])
+	}
+	name, args = normalizeInlineToolNameAndArguments(name, args)
 
 	arguments, err := json.Marshal(args)
 	if err != nil {
@@ -169,6 +213,7 @@ func parseJSONInlineToolCall(block string) (llm.ToolCall, bool) {
 	}
 
 	arguments := normalizeInlineJSONArguments(args)
+	name, arguments = normalizeInlineToolNameAndRawArguments(name, arguments)
 	return llm.ToolCall{
 		Type: "function",
 		Function: llm.FunctionCall{
@@ -184,7 +229,7 @@ func stripInlineToolCallWrapper(block string) string {
 	if indexInlineToolCallStart(block) == 0 && startEnd >= 0 {
 		block = block[startEnd+1:]
 	}
-	if close, _ := indexInlineToolCallEnd(block); close >= 0 {
+	if close, _ := indexInlineToolCallEnd(block, true); close >= 0 {
 		block = block[:close]
 	}
 	return html.UnescapeString(strings.TrimSpace(block))
@@ -206,6 +251,7 @@ func parseCallStyleInlineToolCall(block string) (llm.ToolCall, bool) {
 	if !ok {
 		return llm.ToolCall{}, false
 	}
+	name, args = normalizeInlineToolNameAndArguments(name, args)
 
 	arguments, err := json.Marshal(args)
 	if err != nil {
@@ -268,11 +314,11 @@ func inlineCallStyleArgumentValue(text string, match []int) (string, bool) {
 func inlineToolParameterValue(name string, raw string) any {
 	value := strings.TrimSpace(html.UnescapeString(raw))
 	switch name {
-	case "includeHidden", "overwrite":
+	case "caseSensitive", "includeHidden", "includeIgnored", "multiline", "overwrite", "regex":
 		if parsed, err := strconv.ParseBool(value); err == nil {
 			return parsed
 		}
-	case "timeoutSeconds", "maxOutputBytes", "maxBytes":
+	case "column", "contextLines", "line", "maxBytes", "maxMatches", "maxOutputBytes", "timeoutSeconds":
 		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
 			return parsed
 		}
@@ -291,6 +337,53 @@ func inlineToolParameterValue(name string, raw string) any {
 		}
 	}
 	return value
+}
+
+func normalizeInlineToolNameAndArguments(name string, args map[string]any) (string, map[string]any) {
+	name = strings.TrimSpace(name)
+	args = normalizeInlineToolArgumentAliases(args)
+	name = normalizeInlineToolName(name, args)
+	return name, args
+}
+
+func normalizeInlineToolNameAndRawArguments(name string, arguments json.RawMessage) (string, json.RawMessage) {
+	var args map[string]any
+	if len(arguments) > 0 && json.Unmarshal(arguments, &args) == nil {
+		name, args = normalizeInlineToolNameAndArguments(name, args)
+		if data, err := json.Marshal(args); err == nil {
+			return name, data
+		}
+		return name, arguments
+	}
+	return normalizeInlineToolName(name, nil), arguments
+}
+
+func normalizeInlineToolArgumentAliases(args map[string]any) map[string]any {
+	if len(args) == 0 {
+		return args
+	}
+	if _, hasQuery := args["query"]; !hasQuery {
+		if pattern, hasPattern := args["pattern"]; hasPattern {
+			args["query"] = pattern
+			delete(args, "pattern")
+		}
+	}
+	return args
+}
+
+func normalizeInlineToolName(name string, args map[string]any) string {
+	switch strings.TrimSpace(name) {
+	case "filesystem_read":
+		return "filesystem_read_text"
+	case "filesystem_search":
+		path, _ := args["path"].(string)
+		if strings.TrimSpace(path) == "" || strings.TrimSpace(path) == "." {
+			return "filesystem_search_workspace"
+		}
+		return "filesystem_search_text"
+	default:
+		return strings.TrimSpace(name)
+	}
 }
 
 func normalizeInlineJSONArguments(raw json.RawMessage) json.RawMessage {
@@ -333,13 +426,15 @@ func indexInlineToolCallStart(text string) int {
 	lower := strings.ToLower(text)
 	tagged := indexTaggedInlineToolCallStart(text, lower)
 	sentinel := strings.Index(lower, "<|tool_call>")
-	if tagged < 0 {
-		return sentinel
+	function := indexBareFunctionInlineToolCallStart(text, lower)
+	toolCode := strings.Index(lower, "<tool_code")
+	best := -1
+	for _, index := range []int{tagged, sentinel, function, toolCode} {
+		if index >= 0 && (best < 0 || index < best) {
+			best = index
+		}
 	}
-	if sentinel < 0 || tagged < sentinel {
-		return tagged
-	}
-	return sentinel
+	return best
 }
 
 func indexTaggedInlineToolCallStart(text string, lower string) int {
@@ -362,9 +457,29 @@ func indexTaggedInlineToolCallStart(text string, lower string) int {
 	}
 }
 
+func indexBareFunctionInlineToolCallStart(text string, lower string) int {
+	offset := 0
+	for {
+		index := strings.Index(lower[offset:], "<function")
+		if index < 0 {
+			return -1
+		}
+		position := offset + index
+		after := position + len("<function")
+		if after >= len(text) {
+			return position
+		}
+		r, _ := utf8RuneAt(text, after)
+		if r == '=' || unicode.IsSpace(r) {
+			return position
+		}
+		offset = after
+	}
+}
+
 func splitPossibleInlineToolCallPrefix(text string) (string, string) {
 	lower := strings.ToLower(text)
-	markers := []string{"<tool_call", "<|tool_call>"}
+	markers := []string{"<tool_call", "<|tool_call>", "<function", "<tool_code"}
 	best := 0
 	for _, marker := range markers {
 		limit := len(marker)
@@ -384,8 +499,17 @@ func splitPossibleInlineToolCallPrefix(text string) (string, string) {
 	return text, ""
 }
 
-func indexInlineToolCallEnd(text string) (int, int) {
+func indexInlineToolCallEnd(text string, flush bool) (int, int) {
 	lower := strings.ToLower(text)
+	if strings.HasPrefix(lower, "<tool_code") {
+		return indexToolCodeInlineToolCallEnd(text, lower, flush)
+	}
+	if strings.HasPrefix(lower, "<function") {
+		if index := strings.Index(lower, "</function>"); index >= 0 {
+			return index, len("</function>")
+		}
+		return -1, 0
+	}
 	bestIndex := -1
 	bestLength := 0
 	for _, marker := range inlineToolCallEndMarkers {
@@ -396,6 +520,56 @@ func indexInlineToolCallEnd(text string) (int, int) {
 		}
 	}
 	return bestIndex, bestLength
+}
+
+func indexToolCodeInlineToolCallEnd(text string, lower string, flush bool) (int, int) {
+	closeIndex := strings.Index(lower, "</tool_code>")
+	if closeIndex < 0 {
+		return -1, 0
+	}
+	position := closeIndex + len("</tool_code>")
+	lastTagEnd := position
+	for {
+		for position < len(text) {
+			r, size := utf8.DecodeRuneInString(text[position:])
+			if !unicode.IsSpace(r) {
+				break
+			}
+			position += size
+		}
+		if position >= len(text) {
+			if flush {
+				return 0, lastTagEnd
+			}
+			return -1, 0
+		}
+		if text[position] != '<' {
+			return 0, lastTagEnd
+		}
+		tagEnd := indexSimpleInlineTagEnd(text[position:])
+		if tagEnd < 0 {
+			return -1, 0
+		}
+		position += tagEnd
+		lastTagEnd = position
+	}
+}
+
+func indexSimpleInlineTagEnd(text string) int {
+	openEnd := strings.Index(text, ">")
+	if openEnd < 0 {
+		return -1
+	}
+	tagName := strings.TrimSpace(text[1:openEnd])
+	if tagName == "" || strings.ContainsAny(tagName, " \t\r\n/=") {
+		return -1
+	}
+	closeTag := "</" + strings.ToLower(tagName) + ">"
+	closeIndex := strings.Index(strings.ToLower(text[openEnd+1:]), closeTag)
+	if closeIndex < 0 {
+		return -1
+	}
+	return openEnd + 1 + closeIndex + len(closeTag)
 }
 
 func utf8RuneAt(text string, byteIndex int) (rune, int) {
