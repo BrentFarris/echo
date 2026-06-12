@@ -47,7 +47,10 @@ func (s *SystemService) ListWorkspaceDirectory(workspaceID string, path string) 
 	if err != nil {
 		return WorkspaceDirectory{}, err
 	}
-	resolved, err := resolveWorkspaceServicePath(workspace.FolderPath, path)
+	if strings.TrimSpace(path) == "" || strings.TrimSpace(path) == "." {
+		return listWorkspaceVirtualRoot(workspace), nil
+	}
+	resolved, err := resolveWorkspaceServicePath(workspace, path)
 	if err != nil {
 		return WorkspaceDirectory{}, err
 	}
@@ -65,7 +68,7 @@ func (s *SystemService) ListWorkspaceDirectory(workspaceID string, path string) 
 	}
 	output := WorkspaceDirectory{
 		WorkspaceID: workspace.ID,
-		Path:        workspaceRelativePath(workspace.FolderPath, resolved),
+		Path:        workspaceRelativePath(workspace, resolved),
 		Entries:     make([]WorkspaceFileEntry, 0, len(entries)),
 	}
 	for _, entry := range entries {
@@ -75,7 +78,7 @@ func (s *SystemService) ListWorkspaceDirectory(workspaceID string, path string) 
 		}
 		output.Entries = append(output.Entries, WorkspaceFileEntry{
 			Name:       entry.Name(),
-			Path:       workspaceRelativePath(workspace.FolderPath, filepath.Join(resolved, entry.Name())),
+			Path:       workspaceRelativePath(workspace, filepath.Join(resolved, entry.Name())),
 			Kind:       workspaceFileKind(entryInfo),
 			Bytes:      entryInfo.Size(),
 			ModifiedAt: formatWorkspaceModifiedAt(entryInfo.ModTime()),
@@ -92,6 +95,30 @@ func (s *SystemService) ListWorkspaceDirectory(workspaceID string, path string) 
 	return output, nil
 }
 
+func listWorkspaceVirtualRoot(workspace Workspace) WorkspaceDirectory {
+	output := WorkspaceDirectory{
+		WorkspaceID: workspace.ID,
+		Path:        ".",
+		Entries:     make([]WorkspaceFileEntry, 0, len(workspace.Folders)),
+	}
+	for _, folder := range workspace.Folders {
+		entry := WorkspaceFileEntry{
+			Name: folder.Label,
+			Path: folder.Label,
+			Kind: "directory",
+		}
+		if info, err := os.Stat(folder.Path); err == nil {
+			entry.Bytes = info.Size()
+			entry.ModifiedAt = formatWorkspaceModifiedAt(info.ModTime())
+		}
+		output.Entries = append(output.Entries, entry)
+	}
+	sort.Slice(output.Entries, func(i, j int) bool {
+		return strings.ToLower(output.Entries[i].Name) < strings.ToLower(output.Entries[j].Name)
+	})
+	return output
+}
+
 func (s *SystemService) SearchWorkspaceFiles(workspaceID string, query string, includeIgnored bool) (WorkspaceFileSearchResult, error) {
 	workspace, _, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {
@@ -103,43 +130,51 @@ func (s *SystemService) SearchWorkspaceFiles(workspaceID string, query string, i
 		Query:       query,
 		Entries:     []WorkspaceFileEntry{},
 	}
-	root, err := resolveWorkspaceServicePath(workspace.FolderPath, ".")
-	if err != nil {
-		return WorkspaceFileSearchResult{}, err
-	}
-	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
+	for _, folder := range workspace.Folders {
+		if folder.Missing {
+			continue
 		}
-		if path == root {
-			return nil
-		}
-		info, err := entry.Info()
+		root, err := resolveWorkspaceServicePath(workspace, folder.Label)
 		if err != nil {
+			continue
+		}
+		err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return nil
+			}
+			if path == root {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return nil
+			}
+			relative := workspaceRelativePath(workspace, path)
+			if entry.IsDir() && !includeIgnored && isIgnoredWorkspaceDirectory(entry.Name()) {
+				return filepath.SkipDir
+			}
+			if !workspaceSearchMatches(query, entry.Name(), relative) {
+				return nil
+			}
+			if len(output.Entries) >= maxWorkspaceFileSearchResults {
+				output.Truncated = true
+				return filepath.SkipAll
+			}
+			output.Entries = append(output.Entries, WorkspaceFileEntry{
+				Name:       entry.Name(),
+				Path:       relative,
+				Kind:       workspaceFileKind(info),
+				Bytes:      info.Size(),
+				ModifiedAt: formatWorkspaceModifiedAt(info.ModTime()),
+			})
 			return nil
-		}
-		relative := workspaceRelativePath(workspace.FolderPath, path)
-		if entry.IsDir() && !includeIgnored && isIgnoredWorkspaceDirectory(entry.Name()) {
-			return filepath.SkipDir
-		}
-		if !workspaceSearchMatches(query, entry.Name(), relative) {
-			return nil
-		}
-		if len(output.Entries) >= maxWorkspaceFileSearchResults {
-			output.Truncated = true
-			return filepath.SkipAll
-		}
-		output.Entries = append(output.Entries, WorkspaceFileEntry{
-			Name:       entry.Name(),
-			Path:       relative,
-			Kind:       workspaceFileKind(info),
-			Bytes:      info.Size(),
-			ModifiedAt: formatWorkspaceModifiedAt(info.ModTime()),
 		})
-		return nil
-	})
-	if err != nil {
-		return WorkspaceFileSearchResult{}, fmt.Errorf("search workspace: %w", err)
+		if err != nil {
+			return WorkspaceFileSearchResult{}, fmt.Errorf("search workspace: %w", err)
+		}
+		if output.Truncated {
+			break
+		}
 	}
 	sort.Slice(output.Entries, func(i, j int) bool {
 		left := output.Entries[i]
@@ -160,7 +195,7 @@ func (s *SystemService) ReadWorkspaceFile(workspaceID string, path string) (Work
 	if strings.TrimSpace(path) == "" {
 		return WorkspaceFile{}, fmt.Errorf("path is required")
 	}
-	resolved, err := resolveWorkspaceServicePath(workspace.FolderPath, path)
+	resolved, err := resolveWorkspaceServicePath(workspace, path)
 	if err != nil {
 		return WorkspaceFile{}, err
 	}
@@ -177,13 +212,13 @@ func (s *SystemService) ResolveWorkspaceTextFilePath(workspaceID string, path st
 		return "", fmt.Errorf("path is required")
 	}
 	if filepath.IsAbs(path) {
-		relative, err := workspaceRelativeCandidate(workspace.FolderPath, path)
+		relative, err := workspaceRelativeCandidate(workspace, path)
 		if err != nil {
 			return "", err
 		}
 		path = relative
 	}
-	resolved, err := resolveWorkspaceServicePath(workspace.FolderPath, path)
+	resolved, err := resolveWorkspaceServicePath(workspace, path)
 	if err != nil {
 		return "", err
 	}
@@ -212,7 +247,7 @@ func (s *SystemService) SaveWorkspaceFile(workspaceID string, path string, conte
 		return WorkspaceFile{}, fmt.Errorf("file content must be valid UTF-8")
 	}
 
-	resolved, err := resolveWorkspaceServicePath(workspace.FolderPath, path)
+	resolved, err := resolveWorkspaceServicePath(workspace, path)
 	if err != nil {
 		return WorkspaceFile{}, err
 	}
@@ -287,14 +322,7 @@ func allDigits(value string) bool {
 	return true
 }
 
-func workspaceRelativeCandidate(workspacePath, candidate string) (string, error) {
-	workspaceAbs, err := filepath.Abs(workspacePath)
-	if err != nil {
-		return "", fmt.Errorf("resolve workspace path: %w", err)
-	}
-	if realWorkspace, err := filepath.EvalSymlinks(workspaceAbs); err == nil {
-		workspaceAbs = realWorkspace
-	}
+func workspaceRelativeCandidate(workspace Workspace, candidate string) (string, error) {
 	candidateAbs, err := filepath.Abs(candidate)
 	if err != nil {
 		return "", fmt.Errorf("resolve candidate path: %w", err)
@@ -302,14 +330,27 @@ func workspaceRelativeCandidate(workspacePath, candidate string) (string, error)
 	if realCandidate, err := filepath.EvalSymlinks(candidateAbs); err == nil {
 		candidateAbs = realCandidate
 	}
-	relative, err := filepath.Rel(workspaceAbs, candidateAbs)
-	if err != nil {
-		return "", fmt.Errorf("resolve relative path: %w", err)
+	for _, folder := range workspaceFoldersByPathDepth(workspace) {
+		if folder.Missing {
+			continue
+		}
+		workspaceAbs, err := workspaceFolderAbsolutePath(folder)
+		if err != nil {
+			continue
+		}
+		relative, err := filepath.Rel(workspaceAbs, candidateAbs)
+		if err != nil {
+			continue
+		}
+		if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if relative == "." {
+			return folder.Label, nil
+		}
+		return folder.Label + "/" + filepath.ToSlash(relative), nil
 	}
-	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path escapes the workspace")
-	}
-	return relative, nil
+	return "", fmt.Errorf("path escapes the workspace")
 }
 
 func readWorkspaceTextFile(workspace Workspace, resolved string) (WorkspaceFile, error) {
@@ -332,25 +373,14 @@ func readWorkspaceTextFile(workspace Workspace, resolved string) (WorkspaceFile,
 	}
 	return WorkspaceFile{
 		WorkspaceID: workspace.ID,
-		Path:        workspaceRelativePath(workspace.FolderPath, resolved),
+		Path:        workspaceRelativePath(workspace, resolved),
 		Content:     string(data),
 		Bytes:       int64(len(data)),
 		ModifiedAt:  formatWorkspaceModifiedAt(info.ModTime()),
 	}, nil
 }
 
-func resolveWorkspaceServicePath(workspacePath, requestedPath string) (string, error) {
-	workspacePath = strings.TrimSpace(workspacePath)
-	if workspacePath == "" {
-		return "", fmt.Errorf("workspace path is required")
-	}
-	workspaceAbs, err := filepath.Abs(workspacePath)
-	if err != nil {
-		return "", fmt.Errorf("resolve workspace path: %w", err)
-	}
-	if realWorkspace, err := filepath.EvalSymlinks(workspaceAbs); err == nil {
-		workspaceAbs = realWorkspace
-	}
+func resolveWorkspaceServicePath(workspace Workspace, requestedPath string) (string, error) {
 	requestedPath = strings.TrimSpace(requestedPath)
 	if requestedPath == "" {
 		requestedPath = "."
@@ -358,8 +388,25 @@ func resolveWorkspaceServicePath(workspacePath, requestedPath string) (string, e
 	if filepath.IsAbs(requestedPath) {
 		return "", fmt.Errorf("path must be relative to the workspace")
 	}
-
-	resolved := filepath.Clean(filepath.Join(workspaceAbs, requestedPath))
+	if requestedPath == "." {
+		return "", fmt.Errorf("path must start with a workspace folder label")
+	}
+	label, relativePath := splitWorkspaceLabeledPath(requestedPath)
+	if label == "" {
+		return "", fmt.Errorf("path must start with a workspace folder label")
+	}
+	folder, ok := workspaceFolderByLabel(workspace, label)
+	if !ok {
+		return "", fmt.Errorf("workspace folder %q was not found", label)
+	}
+	if folder.Missing {
+		return "", fmt.Errorf("workspace folder %q is unavailable", folder.Label)
+	}
+	workspaceAbs, err := workspaceFolderAbsolutePath(folder)
+	if err != nil {
+		return "", err
+	}
+	resolved := filepath.Clean(filepath.Join(workspaceAbs, relativePath))
 	relative, err := filepath.Rel(workspaceAbs, resolved)
 	if err != nil {
 		return "", fmt.Errorf("resolve relative path: %w", err)
@@ -380,23 +427,10 @@ func resolveWorkspaceServicePath(workspacePath, requestedPath string) (string, e
 	return resolved, nil
 }
 
-func workspaceRelativePath(workspacePath, absolutePath string) string {
-	workspacePath = strings.TrimSpace(workspacePath)
-	if workspacePath == "" {
-		return filepath.ToSlash(absolutePath)
-	}
+func workspaceRelativePath(workspace Workspace, absolutePath string) string {
 	absPath := strings.TrimSpace(absolutePath)
 	if absPath == "" {
 		return filepath.ToSlash(absolutePath)
-	}
-	// Normalize both paths to their real absolute forms so filepath.Rel
-	// produces correct results even when symlinks or mixed casing are involved.
-	workspaceAbs, err := filepath.Abs(workspacePath)
-	if err != nil {
-		return filepath.ToSlash(absPath)
-	}
-	if realWS, err := filepath.EvalSymlinks(workspaceAbs); err == nil {
-		workspaceAbs = realWS
 	}
 	absAbs, err := filepath.Abs(absPath)
 	if err != nil {
@@ -405,14 +439,82 @@ func workspaceRelativePath(workspacePath, absolutePath string) string {
 	if realAbs, err := filepath.EvalSymlinks(absAbs); err == nil {
 		absAbs = realAbs
 	}
-	relative, err := filepath.Rel(workspaceAbs, absAbs)
+	for _, folder := range workspaceFoldersByPathDepth(workspace) {
+		workspaceAbs, err := workspaceFolderAbsolutePath(folder)
+		if err != nil {
+			continue
+		}
+		relative, err := filepath.Rel(workspaceAbs, absAbs)
+		if err != nil {
+			continue
+		}
+		if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if relative == "." {
+			return folder.Label
+		}
+		return folder.Label + "/" + filepath.ToSlash(relative)
+	}
+	return filepath.ToSlash(absPath)
+}
+
+func splitWorkspaceLabeledPath(requestedPath string) (string, string) {
+	path := strings.TrimSpace(strings.ReplaceAll(requestedPath, "\\", "/"))
+	path = strings.TrimPrefix(path, "./")
+	path = strings.Trim(path, "/")
+	if path == "" || path == "." {
+		return "", "."
+	}
+	parts := strings.SplitN(path, "/", 2)
+	label := strings.TrimSpace(parts[0])
+	relativePath := "."
+	if len(parts) > 1 && strings.TrimSpace(parts[1]) != "" {
+		relativePath = filepath.FromSlash(parts[1])
+	}
+	return label, relativePath
+}
+
+func workspaceFolderByLabel(workspace Workspace, label string) (WorkspaceFolder, bool) {
+	label = strings.TrimSpace(label)
+	for _, folder := range workspace.Folders {
+		if strings.EqualFold(folder.Label, label) {
+			return folder, true
+		}
+	}
+	return WorkspaceFolder{}, false
+}
+
+func workspaceFolderForAbsolutePath(workspace Workspace, absolutePath string) (WorkspaceFolder, error) {
+	relative, err := workspaceRelativeCandidate(workspace, absolutePath)
 	if err != nil {
-		return filepath.ToSlash(absPath)
+		return WorkspaceFolder{}, err
 	}
-	if relative == "." {
-		return "."
+	label, _ := splitWorkspaceLabeledPath(relative)
+	folder, ok := workspaceFolderByLabel(workspace, label)
+	if !ok {
+		return WorkspaceFolder{}, fmt.Errorf("workspace folder %q was not found", label)
 	}
-	return filepath.ToSlash(relative)
+	return folder, nil
+}
+
+func workspaceFolderAbsolutePath(folder WorkspaceFolder) (string, error) {
+	workspaceAbs, err := filepath.Abs(folder.Path)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace folder path: %w", err)
+	}
+	if realWorkspace, err := filepath.EvalSymlinks(workspaceAbs); err == nil {
+		workspaceAbs = realWorkspace
+	}
+	return workspaceAbs, nil
+}
+
+func workspaceFoldersByPathDepth(workspace Workspace) []WorkspaceFolder {
+	folders := append([]WorkspaceFolder{}, workspace.Folders...)
+	sort.SliceStable(folders, func(i, j int) bool {
+		return len(filepath.Clean(folders[i].Path)) > len(filepath.Clean(folders[j].Path))
+	})
+	return folders
 }
 
 func workspaceFileKind(info os.FileInfo) string {

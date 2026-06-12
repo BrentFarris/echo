@@ -76,7 +76,7 @@ func editTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error) 
 		return nil, SafeError{Code: "invalid_arguments", Message: "oldText is required"}
 	}
 
-	path, err := resolveWorkspacePath(ctx.WorkspacePath, args.Path)
+	path, err := resolveWorkspacePath(ctx, args.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +103,7 @@ func editTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error) 
 	oldText := normalizeToolTextLineBreaksForFile(args.OldText, content)
 	newText := normalizeToolTextLineBreaksForFile(args.NewText, content)
 	before := &FileSnapshot{
-		Path:          relativeWorkspacePath(ctx.WorkspacePath, path),
+		Path:          relativeWorkspacePath(ctx, path),
 		Exists:        true,
 		Bytes:         int64(len(data)),
 		SHA256:        sumBefore,
@@ -139,13 +139,13 @@ func editTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error) 
 	if err := os.WriteFile(path, []byte(updated), info.Mode().Perm()); err != nil {
 		return nil, fmt.Errorf("write file: %w", err)
 	}
-	after, err := snapshotExistingFile(ctx.WorkspacePath, path)
+	after, err := snapshotExistingFile(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot file after edit: %w", err)
 	}
-	ctx.recordFileChanges(fileChangeForPath(ctx.WorkspacePath, path, before, after))
+	ctx.recordFileChanges(fileChangeForPath(ctx, path, before, after))
 	return editTextFileOutput{
-		Path:         relativeWorkspacePath(ctx.WorkspacePath, path),
+		Path:         relativeWorkspacePath(ctx, path),
 		Replacements: 1,
 		BytesWritten: int64(len(updated)),
 	}, nil

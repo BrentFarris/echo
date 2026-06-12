@@ -95,6 +95,53 @@ func TestShellCommandUsesRequestedWorkingDirectory(t *testing.T) {
 	}
 }
 
+func TestShellCommandUsesWorkspaceRootLabels(t *testing.T) {
+	base := t.TempDir()
+	appRoot := filepath.Join(base, "app")
+	docsRoot := filepath.Join(base, "docs")
+	for _, path := range []string{appRoot, docsRoot} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expectedApp, err := filepath.EvalSymlinks(appRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedDocs, err := filepath.EvalSymlinks(docsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := ExecutionContext{
+		Context: context.Background(),
+		WorkspaceRoots: []WorkspaceRoot{
+			{Label: "app", Path: appRoot},
+			{Label: "docs", Path: docsRoot},
+		},
+	}
+
+	defaultResult := Execute(ctx, "shell_command", mustJSON(t, map[string]any{"command": testPrintWorkingDirectoryCommand()}))
+	if !defaultResult.Success {
+		t.Fatalf("default shell command failed: %#v", defaultResult)
+	}
+	defaultOutput := defaultResult.Output.(shellCommandOutput)
+	if defaultOutput.WorkingDirectory != "app" || !strings.Contains(strings.TrimSpace(defaultOutput.Stdout), expectedApp) {
+		t.Fatalf("expected default working directory app, got %#v", defaultOutput)
+	}
+
+	docsResult := Execute(ctx, "shell_command", mustJSON(t, map[string]any{
+		"command":          testPrintWorkingDirectoryCommand(),
+		"workingDirectory": "docs",
+	}))
+	if !docsResult.Success {
+		t.Fatalf("labeled shell command failed: %#v", docsResult)
+	}
+	docsOutput := docsResult.Output.(shellCommandOutput)
+	if docsOutput.WorkingDirectory != "docs" || !strings.Contains(strings.TrimSpace(docsOutput.Stdout), expectedDocs) {
+		t.Fatalf("expected labeled working directory docs, got %#v", docsOutput)
+	}
+}
+
 func testEchoCommand(text string) string {
 	if runtime.GOOS == "windows" {
 		return "Write-Output '" + text + "'"

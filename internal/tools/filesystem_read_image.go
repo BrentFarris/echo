@@ -98,7 +98,7 @@ func readImageFile(ctx ExecutionContext, arguments json.RawMessage) (any, error)
 		return nil, SafeError{Code: "invalid_arguments", Message: "detail must be auto, low, or high"}
 	}
 
-	path, err := resolveWorkspacePath(ctx.WorkspacePath, args.Path)
+	path, err := resolveWorkspacePath(ctx, args.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +128,7 @@ func readImageFile(ctx ExecutionContext, arguments json.RawMessage) (any, error)
 		return nil, err
 	}
 
-	relative := relativeWorkspacePath(ctx.WorkspacePath, path)
+	relative := relativeWorkspacePath(ctx, path)
 	return readImageFileOutput{
 		Path:        relative,
 		Name:        filepath.Base(relative),

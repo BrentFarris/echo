@@ -93,7 +93,7 @@ func executeShellCommand(ctx ExecutionContext, arguments json.RawMessage) (any, 
 		return nil, SafeError{Code: "invalid_arguments", Message: "command is required"}
 	}
 
-	workingDirectory, err := resolveShellWorkingDirectory(ctx.WorkspacePath, args.WorkingDirectory)
+	workingDirectory, err := resolveShellWorkingDirectory(ctx, args.WorkingDirectory)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +131,7 @@ func executeShellCommand(ctx ExecutionContext, arguments json.RawMessage) (any, 
 	var before workspaceSnapshot
 	trackChanges := ctx.FileChanges != nil
 	if trackChanges {
-		if snapshot, err := snapshotWorkspaceChanges(ctx.context(), ctx.WorkspacePath); err == nil {
+		if snapshot, err := snapshotWorkspaceChanges(ctx.context(), ctx); err == nil {
 			before = snapshot
 		}
 	}
@@ -140,7 +140,7 @@ func executeShellCommand(ctx ExecutionContext, arguments json.RawMessage) (any, 
 	runErr := command.Run()
 	duration := time.Since(started)
 	if trackChanges && before != nil {
-		if after, err := snapshotWorkspaceChanges(ctx.context(), ctx.WorkspacePath); err == nil {
+		if after, err := snapshotWorkspaceChanges(ctx.context(), ctx); err == nil {
 			ctx.recordFileChanges(diffWorkspaceSnapshots(before, after)...)
 		}
 	}
@@ -158,7 +158,7 @@ func executeShellCommand(ctx ExecutionContext, arguments json.RawMessage) (any, 
 
 	return shellCommandOutput{
 		Command:              args.Command,
-		WorkingDirectory:     relativeWorkspacePath(ctx.WorkspacePath, workingDirectory),
+		WorkingDirectory:     relativeWorkspacePath(ctx, workingDirectory),
 		Shell:                shellName,
 		ExitCode:             exitCode,
 		Stdout:               stdout.String(),
@@ -170,11 +170,15 @@ func executeShellCommand(ctx ExecutionContext, arguments json.RawMessage) (any, 
 	}, nil
 }
 
-func resolveShellWorkingDirectory(workspacePath, requestedPath string) (string, error) {
+func resolveShellWorkingDirectory(ctx ExecutionContext, requestedPath string) (string, error) {
 	if strings.TrimSpace(requestedPath) == "" {
-		requestedPath = "."
+		roots := ctx.workspaceRoots()
+		if len(roots) == 0 {
+			return "", SafeError{Code: "missing_workspace", Message: "workspace path is required"}
+		}
+		requestedPath = roots[0].Label
 	}
-	path, err := resolveWorkspacePath(workspacePath, requestedPath)
+	path, err := resolveWorkspacePath(ctx, requestedPath)
 	if err != nil {
 		return "", err
 	}

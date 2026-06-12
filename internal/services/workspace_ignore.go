@@ -33,8 +33,9 @@ func cleanChangePath(path string) string {
 	return path
 }
 
-func ignoredWorkspaceChangePaths(workspacePath string, changes []tools.FileChange) map[string]bool {
-	paths := make([]string, 0, len(changes))
+func ignoredWorkspaceChangePaths(workspace Workspace, changes []tools.FileChange) map[string]bool {
+	pathsByLabel := map[string][]string{}
+	originalByLabelPath := map[string]string{}
 	seen := map[string]bool{}
 	for _, change := range changes {
 		path := cleanChangePath(change.Path)
@@ -42,15 +43,44 @@ func ignoredWorkspaceChangePaths(workspacePath string, changes []tools.FileChang
 			continue
 		}
 		seen[path] = true
-		paths = append(paths, path)
+		label, relative := splitWorkspaceLabeledPath(path)
+		if label == "" || relative == "." {
+			continue
+		}
+		relative = cleanChangePath(relative)
+		if relative == "" {
+			continue
+		}
+		key := strings.ToLower(label) + "\x00" + relative
+		originalByLabelPath[key] = path
+		pathsByLabel[label] = append(pathsByLabel[label], relative)
 	}
-	if len(paths) == 0 || strings.TrimSpace(workspacePath) == "" {
+	if len(pathsByLabel) == 0 {
 		return nil
 	}
-	if ignored, err := gitIgnoredWorkspacePaths(workspacePath, paths); err == nil {
-		return ignored
+	ignored := map[string]bool{}
+	for label, paths := range pathsByLabel {
+		folder, ok := workspaceFolderByLabel(workspace, label)
+		if !ok || folder.Missing || strings.TrimSpace(folder.Path) == "" {
+			continue
+		}
+		var folderIgnored map[string]bool
+		if result, err := gitIgnoredWorkspacePaths(folder.Path, paths); err == nil {
+			folderIgnored = result
+		} else {
+			folderIgnored = rootGitignoreIgnoredPaths(folder.Path, paths)
+		}
+		for relative, isIgnored := range folderIgnored {
+			if !isIgnored {
+				continue
+			}
+			key := strings.ToLower(label) + "\x00" + cleanChangePath(relative)
+			if original := originalByLabelPath[key]; original != "" {
+				ignored[original] = true
+			}
+		}
 	}
-	return rootGitignoreIgnoredPaths(workspacePath, paths)
+	return ignored
 }
 
 func gitIgnoredWorkspacePaths(workspacePath string, paths []string) (map[string]bool, error) {

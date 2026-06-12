@@ -65,11 +65,11 @@ func createTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error
 		return nil, SafeError{Code: "file_too_large", Message: fmt.Sprintf("content is larger than the %d byte creation limit", maxTextFileBytes)}
 	}
 
-	path, err := resolveWorkspaceChildPath(ctx.WorkspacePath, args.Path)
+	path, err := resolveWorkspaceChildPath(ctx, args.Path)
 	if err != nil {
 		return nil, err
 	}
-	before, err := snapshotExistingFile(ctx.WorkspacePath, path)
+	before, err := snapshotExistingFile(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot file before create: %w", err)
 	}
@@ -110,14 +110,14 @@ func createTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error
 	if err := file.Close(); err != nil {
 		return nil, fmt.Errorf("close file: %w", err)
 	}
-	after, err := snapshotExistingFile(ctx.WorkspacePath, path)
+	after, err := snapshotExistingFile(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot file after create: %w", err)
 	}
-	ctx.recordFileChanges(fileChangeForPath(ctx.WorkspacePath, path, before, after))
+	ctx.recordFileChanges(fileChangeForPath(ctx, path, before, after))
 
 	return createTextFileOutput{
-		Path:         relativeWorkspacePath(ctx.WorkspacePath, path),
+		Path:         relativeWorkspacePath(ctx, path),
 		BytesWritten: int64(written),
 		Overwritten:  overwritten,
 	}, nil

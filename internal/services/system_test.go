@@ -294,20 +294,21 @@ func TestSystemServiceChatSendsWorkspaceImageMentionAsContentPart(t *testing.T) 
 			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
 		)
 	}))
+	imagePath := labeledTestPath(t, service, workspaceID, "ui.png")
 
-	if _, err := service.SendChatMessageWithPlanMode(workspaceID, "Review @ui.png", true); err != nil {
+	if _, err := service.SendChatMessageWithPlanMode(workspaceID, "Review @"+imagePath, true); err != nil {
 		t.Fatalf("send chat: %v", err)
 	}
 	session := waitForChatIdle(t, service, workspaceID)
 
-	if len(session.Messages[0].Images) != 1 || session.Messages[0].Images[0].Path != "ui.png" {
+	if len(session.Messages[0].Images) != 1 || session.Messages[0].Images[0].Path != imagePath {
 		t.Fatalf("expected workspace image metadata, got %#v", session.Messages[0].Images)
 	}
 	user := captured.Messages[1]
 	if len(user.ContentParts) != 2 || user.ContentParts[1].ImageURL == nil {
 		t.Fatalf("expected workspace image content part, got %#v", user)
 	}
-	if !strings.Contains(user.ContentParts[0].Text, "ui.png") {
+	if !strings.Contains(user.ContentParts[0].Text, imagePath) {
 		t.Fatalf("expected text part to name workspace image, got %q", user.ContentParts[0].Text)
 	}
 }
@@ -320,12 +321,13 @@ func TestSystemServiceChatReadImageToolSendsImageContentPart(t *testing.T) {
 
 	var requestCount atomic.Int32
 	var secondRequest llm.ChatRequest
+	var imagePath string
 	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertChatStreamRequest(t, r)
 		switch requestCount.Add(1) {
 		case 1:
 			writeSSE(t, w,
-				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_image","type":"function","function":{"name":"filesystem_read_image","arguments":%q}}]}}]}`, `{"path":"ui.png","detail":"high"}`),
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_image","type":"function","function":{"name":"filesystem_read_image","arguments":%q}}]}}]}`, fmt.Sprintf(`{"path":%q,"detail":"high"}`, imagePath)),
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 			)
 		case 2:
@@ -340,6 +342,7 @@ func TestSystemServiceChatReadImageToolSendsImageContentPart(t *testing.T) {
 			t.Fatalf("unexpected extra request")
 		}
 	}))
+	imagePath = labeledTestPath(t, service, workspaceID, "ui.png")
 
 	if _, err := service.SendChatMessageWithPlanMode(workspaceID, "Inspect ui.png visually.", true); err != nil {
 		t.Fatalf("send chat: %v", err)
@@ -412,8 +415,9 @@ func TestSystemServiceChatRejectsOversizedWorkspaceImage(t *testing.T) {
 	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("chat request should not be sent for an oversized image")
 	}))
+	imagePath := labeledTestPath(t, service, workspaceID, "huge.png")
 
-	_, err := service.SendChatMessage(workspaceID, "Review @huge.png")
+	_, err := service.SendChatMessage(workspaceID, "Review @"+imagePath)
 	if err == nil || !strings.Contains(err.Error(), "larger than") {
 		t.Fatalf("expected oversized image error, got %v", err)
 	}
@@ -424,8 +428,9 @@ func TestSystemServiceChatRejectsWorkspaceImageTraversal(t *testing.T) {
 	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("chat request should not be sent for path traversal")
 	}))
+	traversalPath := workspaceRootLabel(t, service, workspaceID) + "/../outside.png"
 
-	_, err := service.SendChatMessage(workspaceID, "Review @../outside.png")
+	_, err := service.SendChatMessage(workspaceID, "Review @"+traversalPath)
 	if err == nil || !strings.Contains(err.Error(), "escapes the workspace") {
 		t.Fatalf("expected traversal error, got %v", err)
 	}
@@ -531,13 +536,15 @@ func TestSystemServiceChatShowsReasoningAndToolActivity(t *testing.T) {
 		t.Fatal(err)
 	}
 	var requestCount atomic.Int32
+	var listPath string
 	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertChatStreamRequest(t, r)
 		switch requestCount.Add(1) {
 		case 1:
+			args := fmt.Sprintf(`{"path":%q}`, listPath)
 			writeSSE(t, w,
 				`{"choices":[{"index":0,"delta":{"reasoning_content":"Checking files."}}]}`,
-				`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"filesystem_list","arguments":"{\"path\":\".\"}"}}]}}]}`,
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"filesystem_list","arguments":%q}}]}}]}`, args),
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 			)
 		case 2:
@@ -549,6 +556,7 @@ func TestSystemServiceChatShowsReasoningAndToolActivity(t *testing.T) {
 			t.Fatalf("unexpected extra request")
 		}
 	}))
+	listPath = workspaceRootLabel(t, service, workspaceID)
 
 	if _, err := service.SendChatMessage(workspaceID, "Inspect the workspace"); err != nil {
 		t.Fatalf("send chat: %v", err)
@@ -1294,6 +1302,27 @@ func tinyPNGDataURL() string {
 	return chatImageDataURL("image/png", tinyPNGBytes())
 }
 
+func workspaceRootLabel(t *testing.T, service *SystemService, workspaceID string) string {
+	t.Helper()
+	state := service.LoadState()
+	for _, workspace := range state.Workspaces {
+		if workspace.ID != workspaceID {
+			continue
+		}
+		if len(workspace.Folders) == 0 {
+			t.Fatalf("workspace %s has no folders", workspaceID)
+		}
+		return workspace.Folders[0].Label
+	}
+	t.Fatalf("workspace %s not found", workspaceID)
+	return ""
+}
+
+func labeledTestPath(t *testing.T, service *SystemService, workspaceID string, path string) string {
+	t.Helper()
+	return workspaceRootLabel(t, service, workspaceID) + "/" + strings.TrimLeft(strings.ReplaceAll(path, "\\", "/"), "/")
+}
+
 func assertSystemPromptOperatingContext(t *testing.T, content string, workspaceRoot string) {
 	t.Helper()
 
@@ -1303,7 +1332,9 @@ func assertSystemPromptOperatingContext(t *testing.T, content string, workspaceR
 		"- Default shell: ",
 		"- Shell command guidance: ",
 		"- OS user: ",
-		"- Workspace: " + workspaceRoot,
+		"- Workspace folders:",
+		workspaceRoot + " [available, AGENTS.md enabled]",
+		"- Path convention: workspace files use labeled root paths",
 		"- Current time: ",
 	} {
 		if !strings.Contains(content, expected) {
@@ -1363,8 +1394,17 @@ func TestSystemServiceAddWorkspaceCreatesAndSelectsFolder(t *testing.T) {
 	if workspace.DisplayName != "project" {
 		t.Fatalf("expected display name from folder, got %q", workspace.DisplayName)
 	}
-	if workspace.FolderPath != filepath.Clean(workspacePath) {
-		t.Fatalf("expected folder path %q, got %q", filepath.Clean(workspacePath), workspace.FolderPath)
+	if len(workspace.Folders) != 1 {
+		t.Fatalf("expected one workspace folder, got %d", len(workspace.Folders))
+	}
+	if workspace.Folders[0].Path != filepath.Clean(workspacePath) {
+		t.Fatalf("expected folder path %q, got %q", filepath.Clean(workspacePath), workspace.Folders[0].Path)
+	}
+	if workspace.Folders[0].Label != "project" {
+		t.Fatalf("expected folder label project, got %q", workspace.Folders[0].Label)
+	}
+	if !workspace.Folders[0].UseAgents {
+		t.Fatal("expected AGENTS.md usage to default on")
 	}
 	if state.ActiveWorkspaceID != workspace.ID {
 		t.Fatalf("expected active workspace id %q, got %q", workspace.ID, state.ActiveWorkspaceID)
@@ -1480,6 +1520,9 @@ func TestSystemServiceMissingWorkspaceShowsRecoverableState(t *testing.T) {
 	if missing.Workspaces[0].Error == "" {
 		t.Fatal("expected recoverable workspace error")
 	}
+	if len(missing.Workspaces[0].Folders) != 1 || !missing.Workspaces[0].Folders[0].Missing {
+		t.Fatalf("expected deleted folder to be marked missing, got %#v", missing.Workspaces[0].Folders)
+	}
 
 	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
 		t.Fatal(err)
@@ -1487,6 +1530,64 @@ func TestSystemServiceMissingWorkspaceShowsRecoverableState(t *testing.T) {
 	recovered := NewSystemServiceWithStorePath(storePath).LoadState()
 	if recovered.Workspaces[0].Missing {
 		t.Fatalf("expected restored folder to recover, got %q", recovered.Workspaces[0].Error)
+	}
+	if recovered.Workspaces[0].Folders[0].Missing {
+		t.Fatalf("expected restored folder status to recover, got %q", recovered.Workspaces[0].Folders[0].Error)
+	}
+}
+
+func TestSystemServiceWorkspaceFoldersCanBeRemovedAndAgentsToggled(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "project")
+	second := filepath.Join(root, "project-copy")
+	for _, path := range []string{first, second} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	service := NewSystemServiceWithStorePath(filepath.Join(root, "state.json"))
+	state, err := service.AddWorkspace(first)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	workspaceID := state.ActiveWorkspaceID
+	state, err = service.AddWorkspaceFolder(workspaceID, second)
+	if err != nil {
+		t.Fatalf("add workspace folder: %v", err)
+	}
+	workspace := state.Workspaces[0]
+	if len(workspace.Folders) != 2 {
+		t.Fatalf("expected two folders, got %#v", workspace.Folders)
+	}
+	if workspace.Folders[0].Label == workspace.Folders[1].Label {
+		t.Fatalf("expected unique labels, got %#v", workspace.Folders)
+	}
+
+	state, err = service.SetWorkspaceFolderUseAgents(workspaceID, workspace.Folders[0].ID, false)
+	if err != nil {
+		t.Fatalf("toggle agents: %v", err)
+	}
+	if state.Workspaces[0].Folders[0].UseAgents {
+		t.Fatal("expected AGENTS.md usage to be disabled")
+	}
+
+	state, err = service.RemoveWorkspaceFolder(workspaceID, workspace.Folders[0].ID)
+	if err != nil {
+		t.Fatalf("remove first folder: %v", err)
+	}
+	state, err = service.RemoveWorkspaceFolder(workspaceID, state.Workspaces[0].Folders[0].ID)
+	if err != nil {
+		t.Fatalf("remove last folder: %v", err)
+	}
+	if len(state.Workspaces[0].Folders) != 0 {
+		t.Fatalf("expected blank workspace, got %#v", state.Workspaces[0].Folders)
+	}
+	if state.Workspaces[0].Missing {
+		t.Fatalf("expected blank workspace to remain available, got %q", state.Workspaces[0].Error)
+	}
+	if _, _, err := service.workspaceAndSettings(workspaceID); err != nil {
+		t.Fatalf("expected blank workspace to be available: %v", err)
 	}
 }
 
@@ -1507,8 +1608,8 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	if state.Settings.PresencePenalty != 1.5 {
 		t.Fatalf("expected default presence penalty 1.5, got %v", state.Settings.PresencePenalty)
 	}
-	if state.Settings.RepetitionPenalty != 1 {
-		t.Fatalf("expected default repetition penalty 1, got %v", state.Settings.RepetitionPenalty)
+	if state.Settings.RepetitionPenalty != llm.DefaultSettings().RepetitionPenalty {
+		t.Fatalf("expected default repetition penalty %v, got %v", llm.DefaultSettings().RepetitionPenalty, state.Settings.RepetitionPenalty)
 	}
 	if state.Settings.SearxngURL != llm.DefaultSearxngURL {
 		t.Fatalf("expected default SearXNG URL, got %q", state.Settings.SearxngURL)

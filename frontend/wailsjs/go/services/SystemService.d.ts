@@ -8,9 +8,13 @@ export function AddKanbanCardMessage(arg1:string,arg2:string,arg3:string):Promis
 
 export function AddWorkspace(arg1:string):Promise<services.AppState>;
 
+export function AddWorkspaceFolder(arg1:string,arg2:string):Promise<services.AppState>;
+
 export function AppInfo():Promise<services.AppInfo>;
 
 export function ChooseWorkspaceFolder():Promise<services.AppState>;
+
+export function ChooseWorkspaceFolderForWorkspace(arg1:string):Promise<services.AppState>;
 
 export function ChooseWorkspaceIcon(arg1:string):Promise<services.AppState>;
 
@@ -58,6 +62,8 @@ export function OpenWorkspacePathExplorer(arg1:string,arg2:string):Promise<void>
 
 export function ReadWorkspaceFile(arg1:string,arg2:string):Promise<services.WorkspaceFile>;
 
+export function RemoveWorkspaceFolder(arg1:string,arg2:string):Promise<services.AppState>;
+
 export function ResetKanbanCard(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
 export function ResolveWorkspaceTextFilePath(arg1:string,arg2:string):Promise<string>;
@@ -77,6 +83,8 @@ export function SendChatMessageWithAttachments(arg1:string,arg2:services.ChatMes
 export function SendChatMessageWithPlanMode(arg1:string,arg2:string,arg3:boolean):Promise<services.ChatSession>;
 
 export function SetActiveWorkspace(arg1:string):Promise<services.AppState>;
+
+export function SetWorkspaceFolderUseAgents(arg1:string,arg2:string,arg3:boolean):Promise<services.AppState>;
 
 export function SetWorkspaceLetter(arg1:string,arg2:string):Promise<services.AppState>;
 

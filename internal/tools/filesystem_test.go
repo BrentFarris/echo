@@ -84,6 +84,81 @@ func TestFilesystemToolsInvestigateWorkspace(t *testing.T) {
 	}
 }
 
+func TestFilesystemToolsUseWorkspaceRootLabels(t *testing.T) {
+	base := t.TempDir()
+	appRoot := filepath.Join(base, "app")
+	docsRoot := filepath.Join(base, "docs")
+	for _, path := range []string{appRoot, docsRoot} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(appRoot, "notes.txt"), []byte("hello app"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(docsRoot, "guide.md"), []byte("hello docs"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := ExecutionContext{
+		Context: context.Background(),
+		WorkspaceRoots: []WorkspaceRoot{
+			{Label: "app", Path: appRoot},
+			{Label: "docs", Path: docsRoot},
+		},
+	}
+
+	listResult := Execute(ctx, "filesystem_list", mustJSON(t, map[string]any{"path": "."}))
+	if !listResult.Success {
+		t.Fatalf("list virtual root failed: %#v", listResult)
+	}
+	listOutput := listResult.Output.(listDirectoryOutput)
+	if len(listOutput.Entries) != 2 || listOutput.Entries[0].Path != "app" || listOutput.Entries[1].Path != "docs" {
+		t.Fatalf("expected labeled virtual roots, got %#v", listOutput)
+	}
+
+	readResult := Execute(ctx, "filesystem_read_text", mustJSON(t, map[string]any{"path": "docs/guide.md"}))
+	if !readResult.Success {
+		t.Fatalf("read labeled file failed: %#v", readResult)
+	}
+	readOutput := readResult.Output.(readTextFileOutput)
+	if readOutput.Path != "docs/guide.md" || readOutput.Content != "hello docs" {
+		t.Fatalf("unexpected read output: %#v", readOutput)
+	}
+
+	searchResult := Execute(ctx, "filesystem_search_text", mustJSON(t, map[string]any{"path": "app/notes.txt", "query": "hello"}))
+	if !searchResult.Success {
+		t.Fatalf("search labeled root failed: %#v", searchResult)
+	}
+	searchOutput := searchResult.Output.(searchTextFileOutput)
+	if searchOutput.Path != "app/notes.txt" || searchOutput.MatchCount != 1 {
+		t.Fatalf("expected labeled search paths, got %#v", searchOutput)
+	}
+}
+
+func TestFilesystemToolsRejectUnlabeledMultiRootPaths(t *testing.T) {
+	base := t.TempDir()
+	appRoot := filepath.Join(base, "app")
+	if err := os.MkdirAll(appRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := ExecutionContext{
+		Context:        context.Background(),
+		WorkspaceRoots: []WorkspaceRoot{{Label: "app", Path: appRoot}},
+	}
+
+	unlabeled := Execute(ctx, "filesystem_read_text", mustJSON(t, map[string]any{"path": "notes.txt"}))
+	if unlabeled.Success || unlabeled.Error == nil || unlabeled.Error.Code != "path_outside_workspace" {
+		t.Fatalf("expected unlabeled path rejection, got %#v", unlabeled)
+	}
+
+	traversal := Execute(ctx, "filesystem_read_text", mustJSON(t, map[string]any{"path": "app/../outside.txt"}))
+	if traversal.Success || traversal.Error == nil || traversal.Error.Code != "path_outside_workspace" {
+		t.Fatalf("expected traversal rejection, got %#v", traversal)
+	}
+}
+
 func TestFilesystemSearchTextReturnsContextAndMultilineRegex(t *testing.T) {
 	workspace := t.TempDir()
 	content := strings.Join([]string{

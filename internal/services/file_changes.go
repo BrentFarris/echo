@@ -89,6 +89,21 @@ type toolExecution struct {
 	Changes []tools.FileChange
 }
 
+func workspaceToolRoots(workspace Workspace) []tools.WorkspaceRoot {
+	roots := make([]tools.WorkspaceRoot, 0, len(workspace.Folders))
+	for _, folder := range workspace.Folders {
+		if folder.Missing {
+			continue
+		}
+		roots = append(roots, tools.WorkspaceRoot{
+			ID:    folder.ID,
+			Label: folder.Label,
+			Path:  folder.Path,
+		})
+	}
+	return roots
+}
+
 func (s *SystemService) LoadWorkspaceChangeReview(workspaceID string) (WorkspaceChangeReview, error) {
 	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
 		return WorkspaceChangeReview{}, err
@@ -129,11 +144,11 @@ func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Wo
 		unlock = lock.Unlock
 	}
 	result := tools.Execute(tools.ExecutionContext{
-		Context:       ctx,
-		WorkspacePath: workspace.FolderPath,
-		SearxngURL:    settings.SearxngURL,
-		Emit:          emit,
-		FileChanges:   sink,
+		Context:        ctx,
+		WorkspaceRoots: workspaceToolRoots(workspace),
+		SearxngURL:     settings.SearxngURL,
+		Emit:           emit,
+		FileChanges:    sink,
 	}, call.Function.Name, json.RawMessage(call.Function.Arguments))
 
 	if len(captured) > 0 {
@@ -158,7 +173,7 @@ func (s *SystemService) recordToolFileChanges(workspaceID string, source Workspa
 	if len(changes) == 0 {
 		return
 	}
-	ignoredPaths := ignoredWorkspaceChangePaths(s.workspaceFolderPath(workspaceID), changes)
+	ignoredPaths := ignoredWorkspaceChangePaths(s.workspaceSnapshot(workspaceID), changes)
 	s.fileChangeMu.Lock()
 	now := time.Now().UTC()
 	for _, change := range changes {
@@ -190,15 +205,15 @@ func (s *SystemService) recordToolFileChanges(workspaceID string, source Workspa
 	})
 }
 
-func (s *SystemService) workspaceFolderPath(workspaceID string) string {
+func (s *SystemService) workspaceSnapshot(workspaceID string) Workspace {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, workspace := range s.state.Workspaces {
 		if workspace.ID == workspaceID {
-			return workspace.FolderPath
+			return workspace
 		}
 	}
-	return ""
+	return Workspace{}
 }
 
 func (s *SystemService) workspaceChangeReview(workspaceID string) WorkspaceChangeReview {

@@ -4,22 +4,36 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
 const maxTextFileBytes = 256 * 1024
 
-func resolveWorkspacePath(workspacePath, requestedPath string) (string, error) {
-	workspacePath = strings.TrimSpace(workspacePath)
+func (ctx ExecutionContext) workspaceRoots() []WorkspaceRoot {
+	if len(ctx.WorkspaceRoots) > 0 {
+		roots := make([]WorkspaceRoot, 0, len(ctx.WorkspaceRoots))
+		for _, root := range ctx.WorkspaceRoots {
+			root.Label = strings.TrimSpace(root.Label)
+			root.Path = strings.TrimSpace(root.Path)
+			if root.Label == "" || root.Path == "" {
+				continue
+			}
+			roots = append(roots, root)
+		}
+		return roots
+	}
+	workspacePath := strings.TrimSpace(ctx.WorkspacePath)
 	if workspacePath == "" {
+		return nil
+	}
+	return []WorkspaceRoot{{Label: ".", Path: workspacePath}}
+}
+
+func resolveWorkspacePath(ctx ExecutionContext, requestedPath string) (string, error) {
+	roots := ctx.workspaceRoots()
+	if len(roots) == 0 {
 		return "", SafeError{Code: "missing_workspace", Message: "workspace path is required"}
-	}
-	workspaceAbs, err := filepath.Abs(workspacePath)
-	if err != nil {
-		return "", fmt.Errorf("resolve workspace path: %w", err)
-	}
-	if realWorkspace, err := filepath.EvalSymlinks(workspaceAbs); err == nil {
-		workspaceAbs = realWorkspace
 	}
 	requestedPath = strings.TrimSpace(requestedPath)
 	if requestedPath == "" {
@@ -28,8 +42,16 @@ func resolveWorkspacePath(workspacePath, requestedPath string) (string, error) {
 	if filepath.IsAbs(requestedPath) {
 		return "", SafeError{Code: "path_outside_workspace", Message: "path must be relative to the workspace"}
 	}
+	root, relativePath, err := resolveWorkspaceRoot(roots, requestedPath, true)
+	if err != nil {
+		return "", err
+	}
+	workspaceAbs, err := workspaceRootAbsolutePath(root)
+	if err != nil {
+		return "", err
+	}
 
-	resolved := filepath.Clean(filepath.Join(workspaceAbs, requestedPath))
+	resolved := filepath.Clean(filepath.Join(workspaceAbs, relativePath))
 	relative, err := filepath.Rel(workspaceAbs, resolved)
 	if err != nil {
 		return "", fmt.Errorf("resolve relative path: %w", err)
@@ -50,17 +72,10 @@ func resolveWorkspacePath(workspacePath, requestedPath string) (string, error) {
 	return resolved, nil
 }
 
-func resolveWorkspaceChildPath(workspacePath, requestedPath string) (string, error) {
-	workspacePath = strings.TrimSpace(workspacePath)
-	if workspacePath == "" {
+func resolveWorkspaceChildPath(ctx ExecutionContext, requestedPath string) (string, error) {
+	roots := ctx.workspaceRoots()
+	if len(roots) == 0 {
 		return "", SafeError{Code: "missing_workspace", Message: "workspace path is required"}
-	}
-	workspaceAbs, err := filepath.Abs(workspacePath)
-	if err != nil {
-		return "", fmt.Errorf("resolve workspace path: %w", err)
-	}
-	if realWorkspace, err := filepath.EvalSymlinks(workspaceAbs); err == nil {
-		workspaceAbs = realWorkspace
 	}
 	requestedPath = strings.TrimSpace(requestedPath)
 	if requestedPath == "" {
@@ -69,8 +84,16 @@ func resolveWorkspaceChildPath(workspacePath, requestedPath string) (string, err
 	if filepath.IsAbs(requestedPath) {
 		return "", SafeError{Code: "path_outside_workspace", Message: "path must be relative to the workspace"}
 	}
+	root, relativePath, err := resolveWorkspaceRoot(roots, requestedPath, false)
+	if err != nil {
+		return "", err
+	}
+	workspaceAbs, err := workspaceRootAbsolutePath(root)
+	if err != nil {
+		return "", err
+	}
 
-	resolved := filepath.Clean(filepath.Join(workspaceAbs, requestedPath))
+	resolved := filepath.Clean(filepath.Join(workspaceAbs, relativePath))
 	relative, err := filepath.Rel(workspaceAbs, resolved)
 	if err != nil {
 		return "", fmt.Errorf("resolve relative path: %w", err)
@@ -102,23 +125,10 @@ func resolveWorkspaceChildPath(workspacePath, requestedPath string) (string, err
 	return filepath.Join(realParent, filepath.Base(resolved)), nil
 }
 
-func relativeWorkspacePath(workspacePath, absolutePath string) string {
-	workspacePath = strings.TrimSpace(workspacePath)
-	if workspacePath == "" {
-		return filepath.ToSlash(absolutePath)
-	}
+func relativeWorkspacePath(ctx ExecutionContext, absolutePath string) string {
 	absPath := strings.TrimSpace(absolutePath)
 	if absPath == "" {
 		return filepath.ToSlash(absolutePath)
-	}
-	// Normalize both paths to their real absolute forms so filepath.Rel
-	// produces correct results even when symlinks or mixed casing are involved.
-	workspaceAbs, err := filepath.Abs(workspacePath)
-	if err != nil {
-		return filepath.ToSlash(absPath)
-	}
-	if realWS, err := filepath.EvalSymlinks(workspaceAbs); err == nil {
-		workspaceAbs = realWS
 	}
 	absAbs, err := filepath.Abs(absPath)
 	if err != nil {
@@ -127,14 +137,90 @@ func relativeWorkspacePath(workspacePath, absolutePath string) string {
 	if realAbs, err := filepath.EvalSymlinks(absAbs); err == nil {
 		absAbs = realAbs
 	}
-	relative, err := filepath.Rel(workspaceAbs, absAbs)
+	for _, root := range workspaceRootsByPathDepth(ctx.workspaceRoots()) {
+		workspaceAbs, err := workspaceRootAbsolutePath(root)
+		if err != nil {
+			continue
+		}
+		relative, err := filepath.Rel(workspaceAbs, absAbs)
+		if err != nil {
+			continue
+		}
+		if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if root.Label == "." {
+			if relative == "." {
+				return "."
+			}
+			return filepath.ToSlash(relative)
+		}
+		if relative == "." {
+			return root.Label
+		}
+		return root.Label + "/" + filepath.ToSlash(relative)
+	}
+	return filepath.ToSlash(absPath)
+}
+
+func resolveWorkspaceRoot(roots []WorkspaceRoot, requestedPath string, allowVirtualRoot bool) (WorkspaceRoot, string, error) {
+	if len(roots) == 1 && roots[0].Label == "." {
+		path := strings.TrimSpace(requestedPath)
+		if path == "" {
+			path = "."
+		}
+		return roots[0], path, nil
+	}
+	if requestedPath == "." {
+		if allowVirtualRoot {
+			return WorkspaceRoot{}, "", SafeError{Code: "virtual_workspace_root", Message: "path must include a workspace folder label"}
+		}
+		return WorkspaceRoot{}, "", SafeError{Code: "path_outside_workspace", Message: "path must include a workspace folder label"}
+	}
+	label, relativePath := splitWorkspaceLabeledPath(requestedPath)
+	if label == "" {
+		return WorkspaceRoot{}, "", SafeError{Code: "path_outside_workspace", Message: "path must include a workspace folder label"}
+	}
+	for _, root := range roots {
+		if strings.EqualFold(root.Label, label) {
+			return root, relativePath, nil
+		}
+	}
+	return WorkspaceRoot{}, "", SafeError{Code: "path_outside_workspace", Message: fmt.Sprintf("workspace folder %q was not found", label)}
+}
+
+func splitWorkspaceLabeledPath(requestedPath string) (string, string) {
+	path := strings.TrimSpace(strings.ReplaceAll(requestedPath, "\\", "/"))
+	path = strings.TrimPrefix(path, "./")
+	path = strings.Trim(path, "/")
+	if path == "" || path == "." {
+		return "", "."
+	}
+	parts := strings.SplitN(path, "/", 2)
+	relativePath := "."
+	if len(parts) > 1 && strings.TrimSpace(parts[1]) != "" {
+		relativePath = filepath.FromSlash(parts[1])
+	}
+	return parts[0], relativePath
+}
+
+func workspaceRootAbsolutePath(root WorkspaceRoot) (string, error) {
+	workspaceAbs, err := filepath.Abs(root.Path)
 	if err != nil {
-		return filepath.ToSlash(absPath)
+		return "", fmt.Errorf("resolve workspace path: %w", err)
 	}
-	if relative == "." {
-		return "."
+	if realWorkspace, err := filepath.EvalSymlinks(workspaceAbs); err == nil {
+		workspaceAbs = realWorkspace
 	}
-	return filepath.ToSlash(relative)
+	return workspaceAbs, nil
+}
+
+func workspaceRootsByPathDepth(roots []WorkspaceRoot) []WorkspaceRoot {
+	ordered := append([]WorkspaceRoot{}, roots...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return len(filepath.Clean(ordered[i].Path)) > len(filepath.Clean(ordered[j].Path))
+	})
+	return ordered
 }
 
 func isTextLike(data []byte) bool {

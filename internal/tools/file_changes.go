@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -67,48 +66,54 @@ func IsIgnoredChangePath(path string) bool {
 	return false
 }
 
-func snapshotWorkspaceChanges(ctx context.Context, workspacePath string) (workspaceSnapshot, error) {
+func snapshotWorkspaceChanges(ctx context.Context, execution ExecutionContext) (workspaceSnapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	root, err := workspaceRoot(workspacePath)
-	if err != nil {
-		return nil, err
+	roots := execution.workspaceRoots()
+	if len(roots) == 0 {
+		return nil, SafeError{Code: "missing_workspace", Message: "workspace path is required"}
 	}
 	snapshot := workspaceSnapshot{}
-	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
+	for _, workspaceRoot := range roots {
+		root, err := workspaceRootAbsolutePath(workspaceRoot)
+		if err != nil {
+			return nil, err
 		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if path == root {
-			return nil
-		}
-		relative := relativeWorkspacePath(root, path)
-		if IsIgnoredChangePath(relative) {
-			if entry.IsDir() {
-				return filepath.SkipDir
+		err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return nil
 			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if path == root {
+				return nil
+			}
+			relative := relativeWorkspacePath(execution, path)
+			if IsIgnoredChangePath(relative) {
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return nil
+			}
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+			fileSnapshot, err := readFileSnapshot(execution, path, info)
+			if err != nil {
+				return nil
+			}
+			snapshot[fileSnapshot.Path] = *fileSnapshot
 			return nil
-		}
-		info, err := entry.Info()
+		})
 		if err != nil {
-			return nil
+			return nil, err
 		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		fileSnapshot, err := readFileSnapshot(root, path, info)
-		if err != nil {
-			return nil
-		}
-		snapshot[fileSnapshot.Path] = *fileSnapshot
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
 	return snapshot, nil
 }
@@ -153,14 +158,14 @@ func diffWorkspaceSnapshots(before, after workspaceSnapshot) []FileChange {
 	return changes
 }
 
-func fileChangeForPath(workspacePath string, absolutePath string, before *FileSnapshot, after *FileSnapshot) FileChange {
+func fileChangeForPath(ctx ExecutionContext, absolutePath string, before *FileSnapshot, after *FileSnapshot) FileChange {
 	path := ""
 	if after != nil {
 		path = after.Path
 	} else if before != nil {
 		path = before.Path
 	} else {
-		path = relativeWorkspacePath(workspacePath, absolutePath)
+		path = relativeWorkspacePath(ctx, absolutePath)
 	}
 	operation := FileChangeEdited
 	switch {
@@ -177,7 +182,7 @@ func fileChangeForPath(workspacePath string, absolutePath string, before *FileSn
 	}
 }
 
-func snapshotExistingFile(workspacePath string, absolutePath string) (*FileSnapshot, error) {
+func snapshotExistingFile(ctx ExecutionContext, absolutePath string) (*FileSnapshot, error) {
 	info, err := os.Stat(absolutePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -188,11 +193,11 @@ func snapshotExistingFile(workspacePath string, absolutePath string) (*FileSnaps
 	if !info.Mode().IsRegular() {
 		return nil, nil
 	}
-	return readFileSnapshot(workspacePath, absolutePath, info)
+	return readFileSnapshot(ctx, absolutePath, info)
 }
 
-func readFileSnapshot(workspacePath string, absolutePath string, info os.FileInfo) (*FileSnapshot, error) {
-	path := relativeWorkspacePath(workspacePath, absolutePath)
+func readFileSnapshot(ctx ExecutionContext, absolutePath string, info os.FileInfo) (*FileSnapshot, error) {
+	path := relativeWorkspacePath(ctx, absolutePath)
 	snapshot := &FileSnapshot{
 		Path:   path,
 		Exists: true,
@@ -242,21 +247,6 @@ func hashFile(path string) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func workspaceRoot(workspacePath string) (string, error) {
-	workspacePath = strings.TrimSpace(workspacePath)
-	if workspacePath == "" {
-		return "", SafeError{Code: "missing_workspace", Message: "workspace path is required"}
-	}
-	root, err := filepath.Abs(workspacePath)
-	if err != nil {
-		return "", fmt.Errorf("resolve workspace path: %w", err)
-	}
-	if realRoot, err := filepath.EvalSymlinks(root); err == nil {
-		root = realRoot
-	}
-	return root, nil
-}
-
 func changeSnapshotsEqual(before *FileSnapshot, after *FileSnapshot) bool {
 	if before == nil && after == nil {
 		return true
@@ -267,10 +257,10 @@ func changeSnapshotsEqual(before *FileSnapshot, after *FileSnapshot) bool {
 	return before.Exists == after.Exists && before.SHA256 != "" && before.SHA256 == after.SHA256
 }
 
-func collectShellFileChanges(ctx context.Context, workspacePath string, run func() error) ([]FileChange, error) {
-	before, beforeErr := snapshotWorkspaceChanges(ctx, workspacePath)
+func collectShellFileChanges(ctx context.Context, execution ExecutionContext, run func() error) ([]FileChange, error) {
+	before, beforeErr := snapshotWorkspaceChanges(ctx, execution)
 	runErr := run()
-	after, afterErr := snapshotWorkspaceChanges(ctx, workspacePath)
+	after, afterErr := snapshotWorkspaceChanges(ctx, execution)
 	var changes []FileChange
 	if beforeErr == nil && afterErr == nil {
 		changes = diffWorkspaceSnapshots(before, after)

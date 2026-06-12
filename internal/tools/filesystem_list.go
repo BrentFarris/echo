@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 func init() {
@@ -60,7 +61,11 @@ func listDirectory(ctx ExecutionContext, arguments json.RawMessage) (any, error)
 		}
 	}
 
-	path, err := resolveWorkspacePath(ctx.WorkspacePath, args.Path)
+	requestedPath := strings.TrimSpace(args.Path)
+	if len(ctx.WorkspaceRoots) > 0 && (requestedPath == "" || requestedPath == ".") {
+		return listWorkspaceVirtualRoots(ctx, args.IncludeHidden), nil
+	}
+	path, err := resolveWorkspacePath(ctx, args.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +82,7 @@ func listDirectory(ctx ExecutionContext, arguments json.RawMessage) (any, error)
 		return nil, fmt.Errorf("read directory: %w", err)
 	}
 	output := listDirectoryOutput{
-		Path:    relativeWorkspacePath(ctx.WorkspacePath, path),
+		Path:    relativeWorkspacePath(ctx, path),
 		Entries: make([]directoryEntry, 0, len(entries)),
 	}
 	for _, entry := range entries {
@@ -93,7 +98,7 @@ func listDirectory(ctx ExecutionContext, arguments json.RawMessage) (any, error)
 		}
 		output.Entries = append(output.Entries, directoryEntry{
 			Name:  entry.Name(),
-			Path:  relativeWorkspacePath(ctx.WorkspacePath, filepath.Join(path, entry.Name())),
+			Path:  relativeWorkspacePath(ctx, filepath.Join(path, entry.Name())),
 			Kind:  fileKind(info),
 			Bytes: info.Size(),
 		})
@@ -107,4 +112,30 @@ func listDirectory(ctx ExecutionContext, arguments json.RawMessage) (any, error)
 		return left.Name < right.Name
 	})
 	return output, nil
+}
+
+func listWorkspaceVirtualRoots(ctx ExecutionContext, includeHidden bool) listDirectoryOutput {
+	roots := ctx.workspaceRoots()
+	output := listDirectoryOutput{
+		Path:    ".",
+		Entries: make([]directoryEntry, 0, len(roots)),
+	}
+	for _, root := range roots {
+		if !includeHidden && strings.HasPrefix(root.Label, ".") {
+			continue
+		}
+		entry := directoryEntry{
+			Name: root.Label,
+			Path: root.Label,
+			Kind: "directory",
+		}
+		if info, err := os.Stat(root.Path); err == nil {
+			entry.Bytes = info.Size()
+		}
+		output.Entries = append(output.Entries, entry)
+	}
+	sort.Slice(output.Entries, func(i, j int) bool {
+		return output.Entries[i].Name < output.Entries[j].Name
+	})
+	return output
 }

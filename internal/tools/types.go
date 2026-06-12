@@ -37,11 +37,18 @@ func (t ToolFunc) Execute(ctx ExecutionContext, arguments json.RawMessage) (any,
 }
 
 type ExecutionContext struct {
-	Context       context.Context
-	WorkspacePath string
-	SearxngURL    string
-	Emit          EventEmitter
-	FileChanges   FileChangeSink
+	Context        context.Context
+	WorkspacePath  string
+	WorkspaceRoots []WorkspaceRoot
+	SearxngURL     string
+	Emit           EventEmitter
+	FileChanges    FileChangeSink
+}
+
+type WorkspaceRoot struct {
+	ID    string
+	Label string
+	Path  string
 }
 
 func (c ExecutionContext) context() context.Context {

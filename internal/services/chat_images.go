@@ -129,7 +129,7 @@ func readWorkspaceChatImage(workspace Workspace, path string) (ChatImageAttachme
 	if path == "" {
 		return ChatImageAttachment{}, fmt.Errorf("image path is required")
 	}
-	resolved, err := resolveWorkspaceServicePath(workspace.FolderPath, path)
+	resolved, err := resolveWorkspaceServicePath(workspace, path)
 	if err != nil {
 		return ChatImageAttachment{}, fmt.Errorf("image path %q: %w", path, err)
 	}
@@ -151,7 +151,7 @@ func readWorkspaceChatImage(workspace Workspace, path string) (ChatImageAttachme
 	if err != nil {
 		return ChatImageAttachment{}, fmt.Errorf("image %q: %w", path, err)
 	}
-	relative := workspaceRelativePath(workspace.FolderPath, resolved)
+	relative := workspaceRelativePath(workspace, resolved)
 	return ChatImageAttachment{
 		Source:    "workspace",
 		Name:      fileName(relative),

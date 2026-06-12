@@ -217,7 +217,7 @@ func (s *SystemService) CompleteWorkspaceFile(workspaceID string, request Worksp
 		}, nil
 	}
 
-	resolved, err := resolveWorkspaceServicePath(workspace.FolderPath, request.FilePath)
+	resolved, err := resolveWorkspaceServicePath(workspace, request.FilePath)
 	if err != nil {
 		return WorkspaceCompletionResponse{}, err
 	}
@@ -229,7 +229,11 @@ func (s *SystemService) CompleteWorkspaceFile(workspaceID string, request Worksp
 		return WorkspaceCompletionResponse{}, fmt.Errorf("path is not a regular file")
 	}
 
-	client, err := s.workspaceLSPClient(workspace, languageID)
+	folder, err := workspaceFolderForAbsolutePath(workspace, resolved)
+	if err != nil {
+		return WorkspaceCompletionResponse{}, err
+	}
+	client, err := s.workspaceLSPClient(workspace, folder, languageID)
 	if err != nil {
 		return WorkspaceCompletionResponse{}, err
 	}
@@ -241,7 +245,7 @@ func (s *SystemService) CompleteWorkspaceFile(workspaceID string, request Worksp
 		return WorkspaceCompletionResponse{}, err
 	}
 	response.WorkspaceID = workspace.ID
-	response.FilePath = workspaceRelativePath(workspace.FolderPath, resolved)
+	response.FilePath = workspaceRelativePath(workspace, resolved)
 	return response, nil
 }
 
@@ -270,7 +274,7 @@ func (s *SystemService) FindWorkspaceFileDefinition(workspaceID string, request 
 		return response, nil
 	}
 
-	resolved, err := resolveWorkspaceServicePath(workspace.FolderPath, request.FilePath)
+	resolved, err := resolveWorkspaceServicePath(workspace, request.FilePath)
 	if err != nil {
 		return WorkspaceDefinitionResponse{}, err
 	}
@@ -281,9 +285,13 @@ func (s *SystemService) FindWorkspaceFileDefinition(workspaceID string, request 
 	if !info.Mode().IsRegular() {
 		return WorkspaceDefinitionResponse{}, fmt.Errorf("path is not a regular file")
 	}
-	response.SourcePath = workspaceRelativePath(workspace.FolderPath, resolved)
+	response.SourcePath = workspaceRelativePath(workspace, resolved)
 
-	client, err := s.workspaceLSPClient(workspace, languageID)
+	folder, err := workspaceFolderForAbsolutePath(workspace, resolved)
+	if err != nil {
+		return WorkspaceDefinitionResponse{}, err
+	}
+	client, err := s.workspaceLSPClient(workspace, folder, languageID)
 	if err != nil {
 		return WorkspaceDefinitionResponse{}, err
 	}
@@ -305,7 +313,7 @@ func (s *SystemService) FindWorkspaceFileDefinition(workspaceID string, request 
 		if err != nil {
 			continue
 		}
-		if _, err := workspaceRelativeCandidate(workspace.FolderPath, targetPath); err != nil {
+		if _, err := workspaceRelativeCandidate(workspace, targetPath); err != nil {
 			outsideWorkspace = true
 			continue
 		}
@@ -330,8 +338,8 @@ func (s *SystemService) FindWorkspaceFileDefinition(workspaceID string, request 
 	return response, nil
 }
 
-func (s *SystemService) workspaceLSPClient(workspace Workspace, languageID string) (*lspClient, error) {
-	key := workspaceLSPClientKey(workspace.ID, languageID)
+func (s *SystemService) workspaceLSPClient(workspace Workspace, folder WorkspaceFolder, languageID string) (*lspClient, error) {
+	key := workspaceLSPClientKey(workspace.ID, folder.ID, languageID)
 	s.lspMu.Lock()
 	existing := s.lspClients[key]
 	s.lspMu.Unlock()
@@ -339,7 +347,7 @@ func (s *SystemService) workspaceLSPClient(workspace Workspace, languageID strin
 		return existing, nil
 	}
 
-	client, err := startWorkspaceLSPClient(workspace, languageID)
+	client, err := startWorkspaceLSPClient(workspace, folder, languageID)
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +362,7 @@ func (s *SystemService) workspaceLSPClient(workspace Workspace, languageID strin
 	return client, nil
 }
 
-func startWorkspaceLSPClient(workspace Workspace, languageID string) (*lspClient, error) {
+func startWorkspaceLSPClient(workspace Workspace, folder WorkspaceFolder, languageID string) (*lspClient, error) {
 	command, ok := lspCommandForLanguage(languageID)
 	if !ok {
 		return nil, fmt.Errorf("language server is not configured for %s files", languageID)
@@ -362,7 +370,7 @@ func startWorkspaceLSPClient(workspace Workspace, languageID string) (*lspClient
 	if _, err := exec.LookPath(command.name); err != nil {
 		return nil, fmt.Errorf("%s language server unavailable: %s was not found on PATH", languageID, command.name)
 	}
-	rootPath, err := filepath.Abs(workspace.FolderPath)
+	rootPath, err := filepath.Abs(folder.Path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace path: %w", err)
 	}
@@ -386,7 +394,7 @@ func startWorkspaceLSPClient(workspace Workspace, languageID string) (*lspClient
 
 	client := &lspClient{
 		languageID:    languageID,
-		workspaceName: workspace.DisplayName,
+		workspaceName: workspace.DisplayName + "/" + folder.Label,
 		rootPath:      rootPath,
 		rootURI:       rootURI,
 		cmd:           cmd,
@@ -404,7 +412,7 @@ func startWorkspaceLSPClient(workspace Workspace, languageID string) (*lspClient
 
 	ctx, cancel := context.WithTimeout(context.Background(), lspInitializeTimeout)
 	defer cancel()
-	if err := client.initialize(ctx, workspace.DisplayName); err != nil {
+	if err := client.initialize(ctx, workspace.DisplayName+"/"+folder.Label); err != nil {
 		client.close()
 		return nil, err
 	}
@@ -801,8 +809,8 @@ func (s *SystemService) closeAllLSPClients() {
 	}
 }
 
-func workspaceLSPClientKey(workspaceID string, languageID string) string {
-	return workspaceID + ":" + languageID
+func workspaceLSPClientKey(workspaceID string, folderID string, languageID string) string {
+	return workspaceID + ":" + folderID + ":" + languageID
 }
 
 func registerLSPLanguage(definition lspLanguageDefinition) {

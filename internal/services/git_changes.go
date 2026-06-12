@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -54,37 +55,54 @@ func (s *SystemService) LoadWorkspaceGitChanges(workspaceID string) (WorkspaceGi
 	ctx, cancel := context.WithTimeout(context.Background(), workspaceGitCommandTimeout)
 	defer cancel()
 
-	status, err := runWorkspaceGitCommand(ctx, workspace.FolderPath, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-	if err != nil {
-		return WorkspaceGitChangeReview{}, err
-	}
-	entries, err := parseGitStatusPorcelain(status)
-	if err != nil {
-		return WorkspaceGitChangeReview{}, err
-	}
-
-	files := make([]WorkspaceGitChangedFile, 0, len(entries))
-	for _, entry := range entries {
-		file := WorkspaceGitChangedFile{
-			Path:           entry.path,
-			OldPath:        entry.oldPath,
-			Operation:      gitStatusOperation(entry.index, entry.worktree),
-			Status:         gitRawStatus(entry.index, entry.worktree),
-			IndexStatus:    gitStatusChar(entry.index),
-			WorktreeStatus: gitStatusChar(entry.worktree),
+	files := make([]WorkspaceGitChangedFile, 0)
+	var firstErr error
+	gitFolderCount := 0
+	for _, folder := range workspace.Folders {
+		if folder.Missing {
+			continue
+		}
+		status, err := runWorkspaceGitCommand(ctx, folder.Path, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		gitFolderCount++
+		entries, err := parseGitStatusPorcelain(status)
+		if err != nil {
+			return WorkspaceGitChangeReview{}, err
 		}
 
-		var diff string
-		if entry.index == '?' && entry.worktree == '?' {
-			diff, err = synthesizeUntrackedGitDiff(workspace.FolderPath, entry.path)
-		} else {
-			diff, err = loadGitDiffForPath(ctx, workspace.FolderPath, entry.path)
+		for _, entry := range entries {
+			file := WorkspaceGitChangedFile{
+				Path:           labeledWorkspacePath(folder.Label, entry.path),
+				OldPath:        labeledWorkspacePath(folder.Label, entry.oldPath),
+				Operation:      gitStatusOperation(entry.index, entry.worktree),
+				Status:         gitRawStatus(entry.index, entry.worktree),
+				IndexStatus:    gitStatusChar(entry.index),
+				WorktreeStatus: gitStatusChar(entry.worktree),
+			}
+
+			var diff string
+			if entry.index == '?' && entry.worktree == '?' {
+				diff, err = synthesizeUntrackedGitDiff(folder.Path, entry.path, file.Path)
+			} else {
+				diff, err = loadGitDiffForPath(ctx, folder.Path, entry.path)
+				if err == nil {
+					diff = prefixGitDiffPaths(diff, folder.Label)
+				}
+			}
+			if err == nil && strings.TrimSpace(diff) != "" {
+				file.Diff = diff
+				file.DiffAvailable = true
+			}
+			files = append(files, file)
 		}
-		if err == nil && strings.TrimSpace(diff) != "" {
-			file.Diff = diff
-			file.DiffAvailable = true
-		}
-		files = append(files, file)
+	}
+	if gitFolderCount == 0 && firstErr != nil {
+		return WorkspaceGitChangeReview{}, firstErr
 	}
 	sort.Slice(files, func(i, j int) bool {
 		return strings.ToLower(files[i].Path) < strings.ToLower(files[j].Path)
@@ -136,8 +154,8 @@ func loadGitDiffForPath(ctx context.Context, workspacePath string, path string) 
 	return normalizeGitDiff(output), nil
 }
 
-func synthesizeUntrackedGitDiff(workspacePath string, path string) (string, error) {
-	resolved, err := resolveWorkspaceServicePath(workspacePath, path)
+func synthesizeUntrackedGitDiff(workspacePath string, path string, labeledPath string) (string, error) {
+	resolved, err := resolveWorkspaceGitPath(workspacePath, path)
 	if err != nil {
 		return "", err
 	}
@@ -160,7 +178,7 @@ func synthesizeUntrackedGitDiff(workspacePath string, path string) (string, erro
 
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "--- /dev/null\n")
-	fmt.Fprintf(&builder, "+++ b/%s\n", path)
+	fmt.Fprintf(&builder, "+++ b/%s\n", labeledPath)
 	fmt.Fprintf(&builder, "@@ -0,0 +1,%d @@\n", len(lines))
 	for _, line := range lines {
 		builder.WriteString("+")
@@ -170,6 +188,54 @@ func synthesizeUntrackedGitDiff(workspacePath string, path string) (string, erro
 		}
 	}
 	return builder.String(), nil
+}
+
+func resolveWorkspaceGitPath(workspacePath string, requestedPath string) (string, error) {
+	if filepath.IsAbs(requestedPath) {
+		return "", fmt.Errorf("git path must be relative")
+	}
+	root, err := filepath.Abs(workspacePath)
+	if err != nil {
+		return "", err
+	}
+	if realRoot, err := filepath.EvalSymlinks(root); err == nil {
+		root = realRoot
+	}
+	resolved := filepath.Clean(filepath.Join(root, requestedPath))
+	relative, err := filepath.Rel(root, resolved)
+	if err != nil {
+		return "", err
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("git path escapes workspace folder")
+	}
+	return resolved, nil
+}
+
+func labeledWorkspacePath(label string, path string) string {
+	path = strings.Trim(strings.ReplaceAll(path, "\\", "/"), "/")
+	if path == "" {
+		return ""
+	}
+	return label + "/" + path
+}
+
+func prefixGitDiffPaths(diff string, label string) string {
+	if strings.TrimSpace(diff) == "" {
+		return diff
+	}
+	lines := strings.Split(strings.ReplaceAll(diff, "\r\n", "\n"), "\n")
+	for i, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "diff --git a/"):
+			lines[i] = strings.Replace(strings.Replace(line, " a/", " a/"+label+"/", 1), " b/", " b/"+label+"/", 1)
+		case strings.HasPrefix(line, "--- a/"):
+			lines[i] = "--- a/" + label + "/" + strings.TrimPrefix(line, "--- a/")
+		case strings.HasPrefix(line, "+++ b/"):
+			lines[i] = "+++ b/" + label + "/" + strings.TrimPrefix(line, "+++ b/")
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func splitGitDiffLines(text string) []string {

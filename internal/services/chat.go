@@ -740,9 +740,6 @@ func (s *SystemService) workspaceAndSettings(workspaceID string) (Workspace, llm
 	}
 	for _, workspace := range s.state.Workspaces {
 		if workspace.ID == workspaceID {
-			if workspace.Missing {
-				return Workspace{}, llm.Settings{}, fmt.Errorf("workspace folder is unavailable")
-			}
 			return workspace, s.state.Settings, nil
 		}
 	}
@@ -783,7 +780,7 @@ func (s *SystemService) emitChatEvent(event ChatStreamEvent) {
 func chatSystemMessage(workspace Workspace, planMode bool) llm.Message {
 	instructions := "You are Echo, a personal AI assistant helping plan work inside the active workspace. " +
 		"Use available tools when workspace facts are needed. " +
-		"When the user mentions @path, treat it as a workspace-relative file reference and read it before relying on its contents. " +
+		"When the user mentions @path, treat it as a labeled workspace file reference like <folder-label>/path and read it before relying on its contents. " +
 		"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. " +
 		"Keep plans concrete and concise."
 	if planMode {

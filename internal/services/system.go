@@ -28,38 +28,78 @@ type AppInfo struct {
 	AccentHex string `json:"accentHex"`
 }
 
+type WorkspaceFolder struct {
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Path      string `json:"path"`
+	UseAgents bool   `json:"useAgents"`
+	Missing   bool   `json:"missing"`
+	Error     string `json:"error,omitempty"`
+}
+
+func (f *WorkspaceFolder) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		ID        string `json:"id"`
+		Label     string `json:"label"`
+		Path      string `json:"path"`
+		UseAgents bool   `json:"useAgents"`
+		Missing   bool   `json:"missing"`
+		Error     string `json:"error"`
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*f = WorkspaceFolder{
+		ID:        raw.ID,
+		Label:     raw.Label,
+		Path:      raw.Path,
+		UseAgents: raw.UseAgents,
+		Missing:   raw.Missing,
+		Error:     raw.Error,
+	}
+	if _, ok := keys["useAgents"]; !ok {
+		f.UseAgents = true
+	}
+	return nil
+}
+
 type Workspace struct {
-	ID          string `json:"id"`
-	FolderPath  string `json:"folderPath"`
-	DisplayName string `json:"displayName"`
-	Letter      string `json:"letter,omitempty"`
-	IconPath    string `json:"iconPath,omitempty"`
-	IconURL     string `json:"iconUrl,omitempty"`
-	Active      bool   `json:"active"`
-	Missing     bool   `json:"missing"`
-	Error       string `json:"error,omitempty"`
+	ID          string            `json:"id"`
+	Folders     []WorkspaceFolder `json:"folders"`
+	DisplayName string            `json:"displayName"`
+	Letter      string            `json:"letter,omitempty"`
+	IconPath    string            `json:"iconPath,omitempty"`
+	IconURL     string            `json:"iconUrl,omitempty"`
+	Active      bool              `json:"active"`
+	Missing     bool              `json:"missing"`
+	Error       string            `json:"error,omitempty"`
 }
 
 func (w *Workspace) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		ID          string `json:"id"`
-		FolderPath  string `json:"folderPath"`
-		DisplayName string `json:"displayName"`
-		Letter      string `json:"letter"`
-		IconPath    string `json:"iconPath"`
-		IconURL     string `json:"iconUrl"`
-		LegacyPath  string `json:"path"`
-		LegacyName  string `json:"name"`
-		Active      bool   `json:"active"`
-		Missing     bool   `json:"missing"`
-		Error       string `json:"error"`
+		ID          string            `json:"id"`
+		Folders     []WorkspaceFolder `json:"folders"`
+		FolderPath  string            `json:"folderPath"`
+		DisplayName string            `json:"displayName"`
+		Letter      string            `json:"letter"`
+		IconPath    string            `json:"iconPath"`
+		IconURL     string            `json:"iconUrl"`
+		LegacyPath  string            `json:"path"`
+		LegacyName  string            `json:"name"`
+		Active      bool              `json:"active"`
+		Missing     bool              `json:"missing"`
+		Error       string            `json:"error"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	*w = Workspace{
 		ID:          raw.ID,
-		FolderPath:  raw.FolderPath,
+		Folders:     raw.Folders,
 		DisplayName: raw.DisplayName,
 		Letter:      normalizeWorkspaceLetter(raw.Letter),
 		IconPath:    raw.IconPath,
@@ -68,8 +108,12 @@ func (w *Workspace) UnmarshalJSON(data []byte) error {
 		Missing:     raw.Missing,
 		Error:       raw.Error,
 	}
-	if w.FolderPath == "" {
-		w.FolderPath = raw.LegacyPath
+	legacyPath := raw.FolderPath
+	if legacyPath == "" {
+		legacyPath = raw.LegacyPath
+	}
+	if len(w.Folders) == 0 && strings.TrimSpace(legacyPath) != "" {
+		w.Folders = []WorkspaceFolder{workspaceFolderFromPath(legacyPath, nil)}
 	}
 	if w.DisplayName == "" {
 		w.DisplayName = raw.LegacyName
@@ -194,7 +238,7 @@ func (s *SystemService) AddWorkspace(path string) (AppState, error) {
 	defer s.mu.Unlock()
 	workspace := workspaceFromPath(absolute)
 	for _, existing := range s.state.Workspaces {
-		if strings.EqualFold(existing.FolderPath, workspace.FolderPath) {
+		if workspaceContainsFolderPath(existing, absolute) {
 			s.state.ActiveWorkspaceID = existing.ID
 			s.refreshWorkspaceStatusesLocked()
 			if err := s.saveLocked(); err != nil {
@@ -226,6 +270,140 @@ func (s *SystemService) ChooseWorkspaceFolder() (AppState, error) {
 		return s.LoadState(), nil
 	}
 	return s.AddWorkspace(path)
+}
+
+func (s *SystemService) ChooseWorkspaceFolderForWorkspace(workspaceID string) (AppState, error) {
+	if s.ctx == nil {
+		return AppState{}, fmt.Errorf("application is not ready to open a folder picker")
+	}
+	path, err := runtime.OpenDirectoryDialog(s.ctx, runtime.OpenDialogOptions{
+		Title: "Add folder to workspace",
+	})
+	if err != nil {
+		return AppState{}, err
+	}
+	if path == "" {
+		return s.LoadState(), nil
+	}
+	return s.AddWorkspaceFolder(workspaceID, path)
+}
+
+func (s *SystemService) AddWorkspaceFolder(workspaceID string, path string) (AppState, error) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return AppState{}, fmt.Errorf("workspace id is required")
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return AppState{}, fmt.Errorf("workspace folder path is required")
+	}
+
+	absolute, err := normalizedWorkspacePath(path)
+	if err != nil {
+		return AppState{}, fmt.Errorf("resolve workspace folder path: %w", err)
+	}
+	info, err := os.Stat(absolute)
+	if err != nil {
+		return AppState{}, fmt.Errorf("workspace folder does not exist")
+	}
+	if !info.IsDir() {
+		return AppState{}, fmt.Errorf("workspace folder must be a folder")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.Workspaces {
+		if s.state.Workspaces[i].ID != workspaceID {
+			continue
+		}
+		if workspaceContainsFolderPath(s.state.Workspaces[i], absolute) {
+			s.refreshWorkspaceStatusesLocked()
+			if err := s.saveLocked(); err != nil {
+				return AppState{}, err
+			}
+			return cloneState(s.state), nil
+		}
+		used := workspaceFolderLabelSet(s.state.Workspaces[i].Folders)
+		s.state.Workspaces[i].Folders = append(s.state.Workspaces[i].Folders, workspaceFolderFromPath(absolute, used))
+		s.refreshWorkspaceStatusesLocked()
+		if err := s.saveLocked(); err != nil {
+			return AppState{}, err
+		}
+		return cloneState(s.state), nil
+	}
+	return AppState{}, fmt.Errorf("workspace was not found")
+}
+
+func (s *SystemService) RemoveWorkspaceFolder(workspaceID string, folderID string) (AppState, error) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	folderID = strings.TrimSpace(folderID)
+	if workspaceID == "" {
+		return AppState{}, fmt.Errorf("workspace id is required")
+	}
+	if folderID == "" {
+		return AppState{}, fmt.Errorf("workspace folder id is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.Workspaces {
+		if s.state.Workspaces[i].ID != workspaceID {
+			continue
+		}
+		next := s.state.Workspaces[i].Folders[:0]
+		removed := false
+		for _, folder := range s.state.Workspaces[i].Folders {
+			if folder.ID == folderID {
+				removed = true
+				continue
+			}
+			next = append(next, folder)
+		}
+		if !removed {
+			return AppState{}, fmt.Errorf("workspace folder was not found")
+		}
+		s.state.Workspaces[i].Folders = next
+		s.refreshWorkspaceStatusesLocked()
+		if err := s.saveLocked(); err != nil {
+			return AppState{}, err
+		}
+		s.dropWorkspaceChangeReview(workspaceID)
+		s.closeWorkspaceLSPClients(workspaceID)
+		return cloneState(s.state), nil
+	}
+	return AppState{}, fmt.Errorf("workspace was not found")
+}
+
+func (s *SystemService) SetWorkspaceFolderUseAgents(workspaceID string, folderID string, useAgents bool) (AppState, error) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	folderID = strings.TrimSpace(folderID)
+	if workspaceID == "" {
+		return AppState{}, fmt.Errorf("workspace id is required")
+	}
+	if folderID == "" {
+		return AppState{}, fmt.Errorf("workspace folder id is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.Workspaces {
+		if s.state.Workspaces[i].ID != workspaceID {
+			continue
+		}
+		for j := range s.state.Workspaces[i].Folders {
+			if s.state.Workspaces[i].Folders[j].ID != folderID {
+				continue
+			}
+			s.state.Workspaces[i].Folders[j].UseAgents = useAgents
+			s.refreshWorkspaceStatusesLocked()
+			if err := s.saveLocked(); err != nil {
+				return AppState{}, err
+			}
+			return cloneState(s.state), nil
+		}
+		return AppState{}, fmt.Errorf("workspace folder was not found")
+	}
+	return AppState{}, fmt.Errorf("workspace was not found")
 }
 
 func (s *SystemService) SetActiveWorkspace(id string) (AppState, error) {
@@ -413,9 +591,13 @@ func (s *SystemService) OpenWorkspaceExplorer(id string) error {
 		return fmt.Errorf("workspace id is required")
 	}
 
-	folderPath, err := s.workspaceFolderByID(id)
+	workspace, err := s.workspaceByID(id)
 	if err != nil {
 		return err
+	}
+	folderPath, ok := firstAvailableWorkspaceFolderPath(workspace)
+	if !ok {
+		return fmt.Errorf("workspace has no available folders")
 	}
 
 	info, err := os.Stat(folderPath)
@@ -450,11 +632,18 @@ func (s *SystemService) OpenWorkspacePathExplorer(id string, path string) error 
 		return fmt.Errorf("workspace id is required")
 	}
 
-	folderPath, err := s.workspaceFolderByID(id)
+	workspace, err := s.workspaceByID(id)
 	if err != nil {
 		return err
 	}
-	resolved, err := resolveWorkspaceServicePath(folderPath, path)
+	if strings.TrimSpace(path) == "" || strings.TrimSpace(path) == "." {
+		folderPath, ok := firstAvailableWorkspaceFolderPath(workspace)
+		if !ok {
+			return fmt.Errorf("workspace has no available folders")
+		}
+		path = workspaceFolderByPath(workspace, folderPath).Label
+	}
+	resolved, err := resolveWorkspaceServicePath(workspace, path)
 	if err != nil {
 		return err
 	}
@@ -494,15 +683,15 @@ func (s *SystemService) OpenWorkspacePathExplorer(id string, path string) error 
 	return nil
 }
 
-func (s *SystemService) workspaceFolderByID(id string) (string, error) {
+func (s *SystemService) workspaceByID(id string) (Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, workspace := range s.state.Workspaces {
 		if workspace.ID == id {
-			return workspace.FolderPath, nil
+			return workspace, nil
 		}
 	}
-	return "", fmt.Errorf("workspace was not found")
+	return Workspace{}, fmt.Errorf("workspace was not found")
 }
 
 func (s *SystemService) load() error {
@@ -630,9 +819,25 @@ func workspaceFromPath(path string) Workspace {
 	}
 	return Workspace{
 		ID:          hex.EncodeToString(hash[:8]),
-		FolderPath:  clean,
+		Folders:     []WorkspaceFolder{workspaceFolderFromPath(clean, nil)},
 		DisplayName: name,
 	}
+}
+
+func workspaceFolderFromPath(path string, usedLabels map[string]bool) WorkspaceFolder {
+	clean := filepath.Clean(path)
+	return WorkspaceFolder{
+		ID:        workspaceFolderID(clean),
+		Label:     uniqueWorkspaceFolderLabel(clean, usedLabels),
+		Path:      clean,
+		UseAgents: true,
+	}
+}
+
+func workspaceFolderID(path string) string {
+	clean := filepath.Clean(path)
+	hash := sha1.Sum([]byte(strings.ToLower(clean)))
+	return hex.EncodeToString(hash[:8])
 }
 
 func normalizedWorkspacePath(path string) (string, error) {
@@ -652,16 +857,21 @@ func normalizeLoadedWorkspaces(state *AppState) {
 	}
 	for i := range state.Workspaces {
 		workspace := &state.Workspaces[i]
-		if strings.TrimSpace(workspace.FolderPath) == "" {
-			continue
-		}
-		workspace.FolderPath = filepath.Clean(workspace.FolderPath)
 		if workspace.ID == "" {
-			workspace.ID = workspaceFromPath(workspace.FolderPath).ID
+			if len(workspace.Folders) > 0 {
+				workspace.ID = workspaceFromPath(workspace.Folders[0].Path).ID
+			} else {
+				workspace.ID = workspaceIDFromName(workspace.DisplayName)
+			}
 		}
 		if strings.TrimSpace(workspace.DisplayName) == "" {
-			workspace.DisplayName = workspaceFromPath(workspace.FolderPath).DisplayName
+			if len(workspace.Folders) > 0 {
+				workspace.DisplayName = workspaceFromPath(workspace.Folders[0].Path).DisplayName
+			} else {
+				workspace.DisplayName = "Blank workspace"
+			}
 		}
+		normalizeWorkspaceFolders(workspace)
 		workspace.Letter = normalizeWorkspaceLetter(workspace.Letter)
 		if workspace.IconPath != "" {
 			workspace.IconURL = workspaceIconURL(workspace.IconPath)
@@ -669,6 +879,118 @@ func normalizeLoadedWorkspaces(state *AppState) {
 			workspace.IconURL = ""
 		}
 	}
+}
+
+func workspaceIDFromName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "blank workspace"
+	}
+	hash := sha1.Sum([]byte(strings.ToLower(name)))
+	return hex.EncodeToString(hash[:8])
+}
+
+func normalizeWorkspaceFolders(workspace *Workspace) {
+	if workspace.Folders == nil {
+		workspace.Folders = []WorkspaceFolder{}
+	}
+	used := map[string]bool{}
+	next := workspace.Folders[:0]
+	for _, folder := range workspace.Folders {
+		folder.Path = strings.TrimSpace(folder.Path)
+		if folder.Path == "" {
+			continue
+		}
+		folder.Path = filepath.Clean(folder.Path)
+		if folder.ID == "" {
+			folder.ID = workspaceFolderID(folder.Path)
+		}
+		folder.Label = uniqueWorkspaceFolderLabelWithPreferred(folder.Path, folder.Label, used)
+		next = append(next, folder)
+	}
+	workspace.Folders = next
+}
+
+func workspaceFolderLabelSet(folders []WorkspaceFolder) map[string]bool {
+	used := map[string]bool{}
+	for _, folder := range folders {
+		label := strings.ToLower(strings.TrimSpace(folder.Label))
+		if label != "" {
+			used[label] = true
+		}
+	}
+	return used
+}
+
+func uniqueWorkspaceFolderLabel(path string, used map[string]bool) string {
+	return uniqueWorkspaceFolderLabelWithPreferred(path, "", used)
+}
+
+func uniqueWorkspaceFolderLabelWithPreferred(path string, preferred string, used map[string]bool) string {
+	if used == nil {
+		used = map[string]bool{}
+	}
+	base := normalizeWorkspaceFolderLabel(preferred)
+	if base == "" {
+		base = normalizeWorkspaceFolderLabel(filepath.Base(filepath.Clean(path)))
+	}
+	if base == "" {
+		base = "folder"
+	}
+	label := base
+	for suffix := 2; used[strings.ToLower(label)]; suffix++ {
+		label = fmt.Sprintf("%s-%d", base, suffix)
+	}
+	used[strings.ToLower(label)] = true
+	return label
+}
+
+func normalizeWorkspaceFolderLabel(label string) string {
+	label = strings.TrimSpace(strings.ToLower(label))
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range label {
+		valid := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-'
+		if valid {
+			builder.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(builder.String(), "-_.")
+}
+
+func workspaceContainsFolderPath(workspace Workspace, path string) bool {
+	clean := filepath.Clean(path)
+	for _, folder := range workspace.Folders {
+		if strings.EqualFold(filepath.Clean(folder.Path), clean) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstAvailableWorkspaceFolderPath(workspace Workspace) (string, bool) {
+	for _, folder := range workspace.Folders {
+		if !folder.Missing && strings.TrimSpace(folder.Path) != "" {
+			return folder.Path, true
+		}
+	}
+	return "", false
+}
+
+func workspaceFolderByPath(workspace Workspace, path string) WorkspaceFolder {
+	clean := filepath.Clean(path)
+	for _, folder := range workspace.Folders {
+		if strings.EqualFold(filepath.Clean(folder.Path), clean) {
+			return folder
+		}
+	}
+	return WorkspaceFolder{}
 }
 
 func normalizeWorkspaceLetter(letter string) string {
@@ -761,15 +1083,31 @@ func (s *SystemService) refreshWorkspaceStatusesLocked() bool {
 		missing := false
 		statusError := ""
 
-		if strings.TrimSpace(workspace.FolderPath) == "" {
-			missing = true
-			statusError = "Workspace folder path is missing."
-		} else if info, err := os.Stat(workspace.FolderPath); err != nil {
-			missing = true
-			statusError = "Workspace folder was moved or deleted."
-		} else if !info.IsDir() {
-			missing = true
-			statusError = "Workspace path is no longer a folder."
+		for j := range workspace.Folders {
+			folder := &workspace.Folders[j]
+			folderMissing := false
+			folderError := ""
+			if strings.TrimSpace(folder.Path) == "" {
+				folderMissing = true
+				folderError = "Workspace folder path is missing."
+			} else if info, err := os.Stat(folder.Path); err != nil {
+				folderMissing = true
+				folderError = "Workspace folder was moved or deleted."
+			} else if !info.IsDir() {
+				folderMissing = true
+				folderError = "Workspace path is no longer a folder."
+			}
+			if folder.Missing != folderMissing || folder.Error != folderError {
+				changed = true
+			}
+			folder.Missing = folderMissing
+			folder.Error = folderError
+			if folderMissing {
+				missing = true
+			}
+		}
+		if missing {
+			statusError = "One or more workspace folders are unavailable."
 		}
 
 		if workspace.Active != active || workspace.Missing != missing || workspace.Error != statusError {
@@ -796,6 +1134,9 @@ func workspaceExists(workspaces []Workspace, id string) bool {
 
 func cloneState(state AppState) AppState {
 	state.Workspaces = append([]Workspace{}, state.Workspaces...)
+	for i := range state.Workspaces {
+		state.Workspaces[i].Folders = append([]WorkspaceFolder{}, state.Workspaces[i].Folders...)
+	}
 	state.KanbanCards = cloneKanbanCards(state.KanbanCards)
 	return state
 }

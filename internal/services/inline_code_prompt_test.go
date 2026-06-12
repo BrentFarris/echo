@@ -42,10 +42,11 @@ func TestSystemServiceSubmitInlineCodePromptIncludesCursorContextAndTools(t *tes
 	service.inlineCodeEventSink = func(event InlineCodePromptEvent) {
 		events = append(events, event)
 	}
+	filePath := labeledTestPath(t, service, workspaceID, "src/main.go")
 
 	response, err := service.SubmitInlineCodePrompt(workspaceID, InlineCodePromptRequest{
 		RequestID:        "inline-test-1",
-		FilePath:         "src/main.go",
+		FilePath:         filePath,
 		Prompt:           "What should this do?",
 		CursorToken:      "main",
 		CursorLineText:   "func main() {}",
@@ -68,7 +69,7 @@ func TestSystemServiceSubmitInlineCodePromptIncludesCursorContextAndTools(t *tes
 	assertSystemPromptOperatingContext(t, captured.Messages[0].Content, root)
 	userPrompt := captured.Messages[1].Content
 	for _, expected := range []string{
-		"File: src/main.go",
+		"File: " + filePath,
 		"Cursor target.",
 		"Token: main",
 		"Source text:",
@@ -113,6 +114,7 @@ func TestSystemServiceSubmitInlineCodePromptExecutesEditToolAndReturnsAffectedPa
 
 	var requestCount atomic.Int32
 	var events []InlineCodePromptEvent
+	var notesPath string
 	service, workspaceID := newDecompositionTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertChatStreamRequest(t, r)
 		count := requestCount.Add(1)
@@ -122,10 +124,11 @@ func TestSystemServiceSubmitInlineCodePromptExecutesEditToolAndReturnsAffectedPa
 		}
 		switch count {
 		case 1:
+			args := fmt.Sprintf(`{"path":%q,"oldText":"before\n","newText":"after\n"}`, notesPath)
 			writeSSE(
 				t,
 				w,
-				`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"filesystem_edit_text","arguments":"{\"path\":\"notes.txt\",\"oldText\":\"before\\n\",\"newText\":\"after\\n\"}"}}]},"finish_reason":"tool_calls"}]}`,
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"filesystem_edit_text","arguments":%q}}]},"finish_reason":"tool_calls"}]}`, args),
 			)
 		case 2:
 			if len(captured.Messages) < 4 || captured.Messages[len(captured.Messages)-1].Role != llm.RoleTool {
@@ -139,9 +142,10 @@ func TestSystemServiceSubmitInlineCodePromptExecutesEditToolAndReturnsAffectedPa
 	service.inlineCodeEventSink = func(event InlineCodePromptEvent) {
 		events = append(events, event)
 	}
+	notesPath = labeledTestPath(t, service, workspaceID, "notes.txt")
 
 	response, err := service.SubmitInlineCodePrompt(workspaceID, InlineCodePromptRequest{
-		FilePath:         "notes.txt",
+		FilePath:         notesPath,
 		Prompt:           "Change before to after.",
 		CursorToken:      "before",
 		CursorLineText:   "before",
@@ -154,7 +158,7 @@ func TestSystemServiceSubmitInlineCodePromptExecutesEditToolAndReturnsAffectedPa
 	if response.Content != "" {
 		t.Fatalf("expected empty final content, got %#v", response)
 	}
-	if strings.Join(response.AffectedPaths, ",") != "notes.txt" {
+	if strings.Join(response.AffectedPaths, ",") != notesPath {
 		t.Fatalf("expected affected path, got %#v", response.AffectedPaths)
 	}
 	if len(response.ToolCalls) != 1 || response.ToolCalls[0].Name != "filesystem_edit_text" || response.ToolCalls[0].Status != "complete" {
@@ -202,9 +206,10 @@ func TestSystemServiceSubmitInlineCodePromptAllowsMoreThanEightToolIterations(t 
 		}
 		writeSSE(t, w, `{"choices":[{"index":0,"delta":{"content":"Done."},"finish_reason":"stop"}]}`)
 	}))
+	notesPath := labeledTestPath(t, service, workspaceID, "notes.txt")
 
 	response, err := service.SubmitInlineCodePrompt(workspaceID, InlineCodePromptRequest{
-		FilePath:         "notes.txt",
+		FilePath:         notesPath,
 		Prompt:           "Inspect until ready.",
 		CursorToken:      "hello",
 		CursorLineText:   "hello",
@@ -258,9 +263,10 @@ func TestSystemServiceSubmitInlineCodePromptStreamsInlineToolCallWithoutLeakingM
 	service.inlineCodeEventSink = func(event InlineCodePromptEvent) {
 		events = append(events, event)
 	}
+	notesPath := labeledTestPath(t, service, workspaceID, "notes.txt")
 
 	response, err := service.SubmitInlineCodePrompt(workspaceID, InlineCodePromptRequest{
-		FilePath:         "notes.txt",
+		FilePath:         notesPath,
 		Prompt:           "Inspect.",
 		CursorToken:      "hello",
 		CursorLineText:   "hello",
@@ -289,13 +295,15 @@ func TestSystemServiceSubmitInlineCodePromptValidationAndStreamErrors(t *testing
 		t.Fatal(err)
 	}
 
-	if _, err := service.SubmitInlineCodePrompt(workspaceID, InlineCodePromptRequest{FilePath: "main.go"}); err == nil || !strings.Contains(err.Error(), "prompt is required") {
+	mainPath := labeledTestPath(t, service, workspaceID, "main.go")
+	if _, err := service.SubmitInlineCodePrompt(workspaceID, InlineCodePromptRequest{FilePath: mainPath}); err == nil || !strings.Contains(err.Error(), "prompt is required") {
 		t.Fatalf("expected prompt validation error, got %v", err)
 	}
 	if _, err := service.SubmitInlineCodePrompt("missing", InlineCodePromptRequest{FilePath: "main.go", Prompt: "help"}); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("expected missing workspace error, got %v", err)
 	}
-	if _, err := service.SubmitInlineCodePrompt(workspaceID, InlineCodePromptRequest{FilePath: "../main.go", Prompt: "help"}); err == nil || !strings.Contains(err.Error(), "escapes") {
+	traversalPath := workspaceRootLabel(t, service, workspaceID) + "/../main.go"
+	if _, err := service.SubmitInlineCodePrompt(workspaceID, InlineCodePromptRequest{FilePath: traversalPath, Prompt: "help"}); err == nil || !strings.Contains(err.Error(), "escapes") {
 		t.Fatalf("expected traversal error, got %v", err)
 	}
 
@@ -303,7 +311,8 @@ func TestSystemServiceSubmitInlineCodePromptValidationAndStreamErrors(t *testing
 		assertChatStreamRequest(t, r)
 		writeSSE(t, w, `{"choices":[{"index":0,"delta":{"content":"partial"}}]}`)
 	}))
-	if _, err := noCompleteService.SubmitInlineCodePrompt(noCompleteWorkspaceID, InlineCodePromptRequest{FilePath: "main.go", Prompt: "help"}); err == nil || !strings.Contains(err.Error(), "ended before completion") {
+	noCompletePath := labeledTestPath(t, noCompleteService, noCompleteWorkspaceID, "main.go")
+	if _, err := noCompleteService.SubmitInlineCodePrompt(noCompleteWorkspaceID, InlineCodePromptRequest{FilePath: noCompletePath, Prompt: "help"}); err == nil || !strings.Contains(err.Error(), "ended before completion") {
 		t.Fatalf("expected incomplete stream error, got %v", err)
 	}
 }

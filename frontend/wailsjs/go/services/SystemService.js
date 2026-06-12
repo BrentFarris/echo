@@ -10,12 +10,20 @@ export function AddWorkspace(arg1) {
   return window['go']['services']['SystemService']['AddWorkspace'](arg1);
 }
 
+export function AddWorkspaceFolder(arg1, arg2) {
+  return window['go']['services']['SystemService']['AddWorkspaceFolder'](arg1, arg2);
+}
+
 export function AppInfo() {
   return window['go']['services']['SystemService']['AppInfo']();
 }
 
 export function ChooseWorkspaceFolder() {
   return window['go']['services']['SystemService']['ChooseWorkspaceFolder']();
+}
+
+export function ChooseWorkspaceFolderForWorkspace(arg1) {
+  return window['go']['services']['SystemService']['ChooseWorkspaceFolderForWorkspace'](arg1);
 }
 
 export function ChooseWorkspaceIcon(arg1) {
@@ -110,6 +118,10 @@ export function ReadWorkspaceFile(arg1, arg2) {
   return window['go']['services']['SystemService']['ReadWorkspaceFile'](arg1, arg2);
 }
 
+export function RemoveWorkspaceFolder(arg1, arg2) {
+  return window['go']['services']['SystemService']['RemoveWorkspaceFolder'](arg1, arg2);
+}
+
 export function ResetKanbanCard(arg1, arg2) {
   return window['go']['services']['SystemService']['ResetKanbanCard'](arg1, arg2);
 }
@@ -148,6 +160,10 @@ export function SendChatMessageWithPlanMode(arg1, arg2, arg3) {
 
 export function SetActiveWorkspace(arg1) {
   return window['go']['services']['SystemService']['SetActiveWorkspace'](arg1);
+}
+
+export function SetWorkspaceFolderUseAgents(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['SetWorkspaceFolderUseAgents'](arg1, arg2, arg3);
 }
 
 export function SetWorkspaceLetter(arg1, arg2) {

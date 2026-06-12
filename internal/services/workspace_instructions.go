@@ -22,16 +22,36 @@ func workspaceSystemPrompt(base string, workspace Workspace) string {
 	if instructions == "" {
 		return content
 	}
-	return content + "\n\nWorkspace instructions from AGENTS.md:\n\n" + instructions
+	return content + "\n\nWorkspace instructions:\n\n" + instructions
 }
 
 func workspaceOperatingContext(workspace Workspace) string {
-	return fmt.Sprintf("Operating context:\n- Operating system: %s\n- Default shell: %s\n- Shell command guidance: %s\n- OS user: %s\n- Workspace: %s\n- Current time: %s",
+	var folders strings.Builder
+	if len(workspace.Folders) == 0 {
+		folders.WriteString("\n- Workspace folders: none configured")
+	} else {
+		folders.WriteString("\n- Workspace folders:")
+		for _, folder := range workspace.Folders {
+			status := "available"
+			if folder.Missing {
+				status = "unavailable"
+				if folder.Error != "" {
+					status += " (" + folder.Error + ")"
+				}
+			}
+			agents := "disabled"
+			if folder.UseAgents {
+				agents = "enabled"
+			}
+			folders.WriteString(fmt.Sprintf("\n  - %s: %s [%s, AGENTS.md %s]", folder.Label, folder.Path, status, agents))
+		}
+	}
+	return fmt.Sprintf("Operating context:\n- Operating system: %s\n- Default shell: %s\n- Shell command guidance: %s\n- OS user: %s%s\n- Path convention: workspace files use labeled root paths like <folder-label>/path/to/file.\n- Current time: %s",
 		runtime.GOOS,
 		defaultShellDescription(),
 		shellCommandGuidance(),
 		currentOSUser(),
-		workspace.FolderPath,
+		folders.String(),
 		time.Now().Format(time.RFC3339),
 	)
 }
@@ -68,24 +88,31 @@ func currentOSUser() string {
 }
 
 func workspaceInstructions(workspace Workspace) string {
-	path := filepath.Join(workspace.FolderPath, workspaceInstructionsFile)
-	data, err := os.ReadFile(path)
-	if err != nil || !utf8.Valid(data) {
-		return ""
-	}
+	sections := make([]string, 0, len(workspace.Folders))
+	for _, folder := range workspace.Folders {
+		if !folder.UseAgents || folder.Missing {
+			continue
+		}
+		path := filepath.Join(folder.Path, workspaceInstructionsFile)
+		data, err := os.ReadFile(path)
+		if err != nil || !utf8.Valid(data) {
+			continue
+		}
 
-	truncated := false
-	if len(data) > maxWorkspaceInstructionsBytes {
-		data = data[:maxWorkspaceInstructionsBytes]
-		truncated = true
-	}
+		truncated := false
+		if len(data) > maxWorkspaceInstructionsBytes {
+			data = data[:maxWorkspaceInstructionsBytes]
+			truncated = true
+		}
 
-	content := strings.TrimSpace(string(data))
-	if content == "" {
-		return ""
+		content := strings.TrimSpace(string(data))
+		if content == "" {
+			continue
+		}
+		if truncated {
+			content += fmt.Sprintf("\n\n[AGENTS.md truncated after %d bytes.]", maxWorkspaceInstructionsBytes)
+		}
+		sections = append(sections, fmt.Sprintf("AGENTS.md from %s (%s):\n\n%s", folder.Label, path, content))
 	}
-	if truncated {
-		content += fmt.Sprintf("\n\n[AGENTS.md truncated after %d bytes.]", maxWorkspaceInstructionsBytes)
-	}
-	return content
+	return strings.Join(sections, "\n\n")
 }

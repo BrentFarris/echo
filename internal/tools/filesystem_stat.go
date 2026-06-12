@@ -47,7 +47,7 @@ func statPath(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
 			return nil, SafeError{Code: "invalid_arguments", Message: "arguments must be valid JSON"}
 		}
 	}
-	path, err := resolveWorkspacePath(ctx.WorkspacePath, args.Path)
+	path, err := resolveWorkspacePath(ctx, args.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +56,7 @@ func statPath(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
 		return nil, SafeError{Code: "path_not_found", Message: "path was not found"}
 	}
 	return statPathOutput{
-		Path:       relativeWorkspacePath(ctx.WorkspacePath, path),
+		Path:       relativeWorkspacePath(ctx, path),
 		Kind:       fileKind(info),
 		Bytes:      info.Size(),
 		Mode:       info.Mode().String(),

@@ -318,7 +318,7 @@ export function renderCodeView(workspace: services.Workspace): string {
     >
       <header class="code-view-heading">
         <div>
-          <strong id="code-title">${escapeHtml(workspace.displayName)}</strong><span class="heading-path">${escapeHtml(workspace.folderPath)}</span>
+          <strong id="code-title">${escapeHtml(workspace.displayName)}</strong><span class="heading-path">${escapeHtml(codeWorkspaceFolderSummary(workspace))}</span>
         </div>
         <div class="code-view-actions">
           <button class="secondary-button icon-text-button" type="button" data-action="close-code-view">
@@ -382,6 +382,16 @@ export function renderCodeView(workspace: services.Workspace): string {
       </div>
     </section>
   `;
+}
+
+function codeWorkspaceFolderSummary(workspace: services.Workspace): string {
+  const folders = workspace.folders ?? [];
+  if (!folders.length) {
+    return "No folders";
+  }
+  return folders
+    .map((folder) => `${folder.label}: ${folder.path}${folder.missing ? " (missing)" : ""}`)
+    .join(" | ");
 }
 
 export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallbacks) {

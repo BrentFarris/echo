@@ -21,6 +21,7 @@ import {
 } from "./markdown";
 import {
   ChooseWorkspaceFolder,
+  ChooseWorkspaceFolderForWorkspace,
   ChooseWorkspaceIcon,
   CloseKanbanCardDetail,
   ClearDoneKanbanCards,
@@ -41,11 +42,13 @@ import {
   OpenWorkspaceExplorer,
   OpenWorkspacePathExplorer,
   ResetKanbanCard,
+  RemoveWorkspaceFolder,
   ResolveWorkspaceTextFilePath,
   SaveSettings,
   SearchWorkspaceFiles,
   SendChatMessageWithAttachments,
   SetActiveWorkspace,
+  SetWorkspaceFolderUseAgents,
   SetWorkspaceLetter,
   StartKanbanExecution,
   StopKanbanCard,
@@ -217,6 +220,23 @@ function activeWorkspace(): services.Workspace | null {
       (workspace) => workspace.id === appState?.activeWorkspaceId,
     ) ?? null
   );
+}
+
+function workspaceFolderSummary(workspace: services.Workspace): string {
+  const folders = workspace.folders ?? [];
+  if (!folders.length) {
+    return "No folders";
+  }
+  return folders
+    .map((folder) => `${folder.label}: ${folder.path}${folder.missing ? " (missing)" : ""}`)
+    .join(" | ");
+}
+
+function workspaceFolderStatus(folder: services.WorkspaceFolder): string {
+  if (folder.missing) {
+    return folder.error?.trim() || "Folder unavailable";
+  }
+  return "Available";
 }
 
 function escapeHtml(value: string): string {
@@ -589,7 +609,7 @@ function chatFileLinkTargets(root: ParentNode): HTMLElement[] {
 
 async function linkifyAssistantFilePaths(root: ParentNode = appRoot) {
   const workspace = activeWorkspace();
-  if (!workspace || workspace.missing) {
+  if (!workspace) {
     return;
   }
   for (const target of chatFileLinkTargets(root)) {
@@ -683,7 +703,7 @@ async function handleChatFileLinkClick(event: MouseEvent) {
   const workspace = activeWorkspace();
   const workspaceID = link.dataset.workspaceId ?? "";
   const path = link.dataset.workspacePath ?? "";
-  if (!workspace || workspace.missing || workspace.id !== workspaceID || !path) {
+  if (!workspace || workspace.id !== workspaceID || !path) {
     return;
   }
   appMode = "code";
@@ -1074,10 +1094,10 @@ function render() {
   const hadDialog = Boolean(appRoot.querySelector('[role="dialog"]'));
   const workspace = activeWorkspace();
   const workspaces = appState?.workspaces ?? [];
-  const showingCode = appMode === "code" && Boolean(workspace) && !workspace?.missing;
+  const showingCode = appMode === "code" && Boolean(workspace);
   if (
     chatMention &&
-    (!workspace || workspace.missing || showingCode || settingsOpen || workspace.id !== chatMention.workspaceId)
+    (!workspace || showingCode || settingsOpen || workspace.id !== chatMention.workspaceId)
   ) {
     clearChatMention();
   }
@@ -1092,7 +1112,7 @@ function render() {
                 <button
                   class="gutter-button workspace-button ${item.active ? "is-active" : ""} ${item.missing ? "is-missing" : ""}"
                   type="button"
-                  title="${escapeHtml(item.folderPath)}"
+                  title="${escapeHtml(workspaceFolderSummary(item))}"
                   aria-label="${escapeHtml(item.displayName)}${item.missing ? " missing" : ""}"
                   data-action="activate-workspace"
                   data-workspace-id="${escapeHtml(item.id)}"
@@ -1117,9 +1137,9 @@ function render() {
               ? renderCodeView(workspace)
               : `
                 <div class="workspace-heading-row">
-                  <strong id="workspace-title">${workspace ? escapeHtml(workspace.displayName) : "Workspace"}</strong><span class="heading-path">${workspace ? escapeHtml(workspace.folderPath) : ""}</span>
+                  <strong id="workspace-title">${workspace ? escapeHtml(workspace.displayName) : "Workspace"}</strong><span class="heading-path">${workspace ? escapeHtml(workspaceFolderSummary(workspace)) : ""}</span>
                   ${
-                    workspace && !workspace.missing
+                    workspace
                       ? `<button class="secondary-button icon-text-button" type="button" data-action="open-code-view">
                           ${icons.code}
                           <span>Code</span>
@@ -1127,7 +1147,7 @@ function render() {
                       : ""
                   }
                 </div>
-                ${workspace?.missing ? renderMissingWorkspace(workspace) : renderWorkspacePanels(workspace, workspaces.length)}
+                ${workspace ? renderWorkspacePanels(workspace, workspaces.length) : ""}
               `
           }
         </section>
@@ -1984,8 +2004,10 @@ function renderMissingWorkspace(workspace: services.Workspace): string {
         <p class="eyebrow">Workspace unavailable</p>
         <h2 id="missing-title">Folder missing</h2>
       </div>
-      <p>${escapeHtml(workspace.error || "Echo cannot find this workspace folder.")}</p>
-      <code>${escapeHtml(workspace.folderPath)}</code>
+      <p>${escapeHtml(workspace.error || "Echo cannot find one or more workspace folders.")}</p>
+      ${(workspace.folders ?? [])
+        .map((folder) => `<code>${escapeHtml(folder.label)}: ${escapeHtml(folder.path)}</code>`)
+        .join("")}
       <div class="missing-actions">
         <button class="primary-button icon-text-button" type="button" data-action="refresh-workspaces">
           ${icons.refresh}
@@ -1994,6 +2016,48 @@ function renderMissingWorkspace(workspace: services.Workspace): string {
         <button class="secondary-button" type="button" data-action="delete-workspace" data-workspace-id="${escapeHtml(workspace.id)}">Remove</button>
       </div>
     </section>
+  `;
+}
+
+function renderWorkspaceFolderSettings(workspace: services.Workspace): string {
+  const folders = workspace.folders ?? [];
+  const folderRows = folders.length
+    ? folders
+        .map(
+          (folder) => `
+            <div class="workspace-folder-row ${folder.missing ? "is-missing" : ""}">
+              <div class="workspace-folder-main">
+                <strong>${escapeHtml(folder.label)}${folder.missing ? " - Missing" : ""}</strong>
+                <span>${escapeHtml(folder.path)}</span>
+                <small>${escapeHtml(workspaceFolderStatus(folder))}</small>
+              </div>
+              <label class="settings-toggle workspace-folder-agents">
+                <span>Use AGENTS.md</span>
+                <input
+                  type="checkbox"
+                  ${folder.useAgents ? "checked" : ""}
+                  data-workspace-folder-agents
+                  data-workspace-id="${escapeAttribute(workspace.id)}"
+                  data-folder-id="${escapeAttribute(folder.id)}"
+                />
+              </label>
+              <button class="icon-button danger-button" type="button" title="Remove folder" aria-label="Remove ${escapeAttribute(folder.label)}" data-action="remove-workspace-folder" data-workspace-id="${escapeAttribute(workspace.id)}" data-folder-id="${escapeAttribute(folder.id)}">
+                ${icons.trash}
+              </button>
+            </div>
+          `,
+        )
+        .join("")
+    : `<p class="empty-state compact">Blank workspace.</p>`;
+
+  return `
+    <div class="workspace-folder-list">
+      ${folderRows}
+      <button class="secondary-button icon-text-button" type="button" data-action="add-workspace-folder" data-workspace-id="${escapeAttribute(workspace.id)}">
+        ${icons.plus}
+        <span>Add folder</span>
+      </button>
+    </div>
   `;
 }
 
@@ -2096,8 +2160,9 @@ function renderSettingsOverlay(workspaces: services.Workspace[]): string {
                       (workspace) => `
                         <div class="workspace-row">
                           <div class="workspace-row-main">
-                            <strong>${escapeHtml(workspace.displayName)}${workspace.missing ? " - Missing" : ""}</strong>
-                            <span>${escapeHtml(workspace.folderPath)}</span>
+                            <strong>${escapeHtml(workspace.displayName)}${workspace.missing ? " - Folder missing" : ""}</strong>
+                            <span>${escapeHtml(workspaceFolderSummary(workspace))}</span>
+                            ${renderWorkspaceFolderSettings(workspace)}
                           </div>
                           <div class="workspace-icon-setting" aria-label="Workspace icon for ${escapeAttribute(workspace.displayName)}">
                             <span class="workspace-icon-preview" aria-hidden="true">${renderWorkspaceIcon(workspace)}</span>
@@ -2148,6 +2213,13 @@ function bindEvents() {
   form
     ?.querySelectorAll<HTMLInputElement>("input")
     .forEach((input) => input.addEventListener("input", handleSettingsInput));
+  form
+    ?.querySelectorAll<HTMLInputElement>("[data-workspace-folder-agents]")
+    .forEach((input) =>
+      input.addEventListener("change", () => {
+        void handleWorkspaceFolderAgentsChange(input);
+      }),
+    );
 
   bindChatEvents(appRoot);
   bindCardDescriptionEvents(appRoot);
@@ -2521,7 +2593,7 @@ async function handleAction(event: Event) {
     }
     if (action === "open-code-view") {
       const workspace = activeWorkspace();
-      if (!workspace || workspace.missing) {
+      if (!workspace) {
         return;
       }
       appMode = "code";
@@ -2545,7 +2617,7 @@ async function handleAction(event: Event) {
     }
     if (action === "open-git-changes") {
       const workspace = activeWorkspace();
-      if (!workspace || workspace.missing) {
+      if (!workspace) {
         return;
       }
       openGitChangeWorkspaces.add(workspace.id);
@@ -2633,6 +2705,31 @@ async function handleAction(event: Event) {
       pushToast("Workspace list updated.", "success");
       render();
     }
+    if (action === "add-workspace-folder") {
+      if (!workspaceID) {
+        return;
+      }
+      appState = await ChooseWorkspaceFolderForWorkspace(workspaceID);
+      await refreshWorkspaceChangeReview(workspaceID);
+      await refreshOpenCodeTabsFromDisk(workspaceID, codeViewCallbacks());
+      pushToast("Workspace folder added.", "success");
+      render();
+      return;
+    }
+    if (action === "remove-workspace-folder") {
+      const folderID = target.dataset.folderId ?? "";
+      if (!workspaceID || !folderID || !window.confirm("Remove this folder from the workspace?")) {
+        return;
+      }
+      appState = await RemoveWorkspaceFolder(workspaceID, folderID);
+      changeReviews.delete(workspaceID);
+      gitChangeReviews.delete(workspaceID);
+      loadingGitChangeWorkspaces.delete(workspaceID);
+      await refreshOpenCodeTabsFromDisk(workspaceID, codeViewCallbacks());
+      pushToast("Workspace folder removed.", "success");
+      render();
+      return;
+    }
     if (action === "refresh-workspaces") {
       appState = await LoadState();
       await loadActiveChatSession();
@@ -2641,8 +2738,8 @@ async function handleAction(event: Event) {
       await loadActiveCodeViewIfNeeded();
       pushToast(
         activeWorkspace()?.missing
-          ? "Workspace folder is still unavailable."
-          : "Workspace folder recovered.",
+          ? "One or more folders are still unavailable."
+          : "Workspace folders refreshed.",
         activeWorkspace()?.missing ? "error" : "success",
       );
       render();
@@ -2969,7 +3066,7 @@ async function handleAction(event: Event) {
       chatPlanModes.delete(workspaceID);
       chatImageDrafts.delete(workspaceID);
       forgetKanbanRun(workspaceID);
-      if (!activeWorkspace() || activeWorkspace()?.missing) {
+      if (!activeWorkspace()) {
         appMode = "chat-kanban";
       } else {
         await loadActiveCodeViewIfNeeded();
@@ -3071,6 +3168,9 @@ async function handleCardMessageSubmit(event: SubmitEvent) {
 
 function handleSettingsInput(event: Event) {
   const input = event.currentTarget as HTMLInputElement;
+  if (input.dataset.workspaceFolderAgents !== undefined) {
+    return;
+  }
   if (input.dataset.workspaceLetter !== undefined) {
     workspaceLetterDrafts.set(input.dataset.workspaceId ?? "", input.value);
     formError = "";
@@ -3106,6 +3206,22 @@ function handleSettingsInput(event: Event) {
     [input.name]: typeof value === "number" && Number.isNaN(value) ? 0 : value,
   });
   formError = "";
+}
+
+async function handleWorkspaceFolderAgentsChange(input: HTMLInputElement) {
+  const workspaceID = input.dataset.workspaceId ?? "";
+  const folderID = input.dataset.folderId ?? "";
+  if (!workspaceID || !folderID) {
+    return;
+  }
+  try {
+    appState = await SetWorkspaceFolderUseAgents(workspaceID, folderID, input.checked);
+    pushToast("Workspace folder updated.", "success");
+    render();
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+    render();
+  }
 }
 
 async function handleSettingsSubmit(event: SubmitEvent) {
@@ -3371,7 +3487,7 @@ function handleChatEditKeydown(event: KeyboardEvent) {
 
 async function loadActiveChatSession() {
   const workspace = activeWorkspace();
-  if (!workspace || workspace.missing) {
+  if (!workspace) {
     return;
   }
   chatSessions.set(workspace.id, await LoadChatSession(workspace.id));
@@ -3379,7 +3495,7 @@ async function loadActiveChatSession() {
 
 async function loadActiveKanbanBoard() {
   const workspace = activeWorkspace();
-  if (!workspace || workspace.missing) {
+  if (!workspace) {
     return;
   }
   kanbanBoards.set(workspace.id, await LoadKanbanBoard(workspace.id));
@@ -3387,7 +3503,7 @@ async function loadActiveKanbanBoard() {
 
 async function loadActiveChangeReview() {
   const workspace = activeWorkspace();
-  if (!workspace || workspace.missing) {
+  if (!workspace) {
     return;
   }
   changeReviews.set(workspace.id, await LoadWorkspaceChangeReview(workspace.id));
@@ -3398,7 +3514,7 @@ async function loadActiveCodeViewIfNeeded() {
     return;
   }
   const workspace = activeWorkspace();
-  if (!workspace || workspace.missing) {
+  if (!workspace) {
     appMode = "chat-kanban";
     return;
   }

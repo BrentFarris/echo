@@ -2,6 +2,7 @@ package services
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,12 +19,14 @@ func TestWorkspaceChangeReviewTracksChatToolChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	var requestCount atomic.Int32
+	var notesPath string
 	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertChatStreamRequest(t, r)
 		switch requestCount.Add(1) {
 		case 1:
+			args := fmt.Sprintf(`{"path":%q,"oldText":"before\n","newText":"after\n"}`, notesPath)
 			writeSSE(t, w,
-				`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"filesystem_edit_text","arguments":"{\"path\":\"notes.txt\",\"oldText\":\"before\\n\",\"newText\":\"after\\n\"}"}}]}}]}`,
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"filesystem_edit_text","arguments":%q}}]}}]}`, args),
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 			)
 		case 2:
@@ -35,6 +38,7 @@ func TestWorkspaceChangeReviewTracksChatToolChanges(t *testing.T) {
 			t.Fatalf("unexpected request %d", requestCount.Load())
 		}
 	}))
+	notesPath = labeledTestPath(t, service, workspaceID, "notes.txt")
 
 	if _, err := service.SendChatMessage(workspaceID, "Update notes"); err != nil {
 		t.Fatalf("send chat: %v", err)
@@ -49,7 +53,7 @@ func TestWorkspaceChangeReviewTracksChatToolChanges(t *testing.T) {
 		t.Fatalf("expected one reviewed change, got %#v", review)
 	}
 	file := review.Files[0]
-	if file.Path != "notes.txt" || file.Operation != tools.FileChangeEdited || !strings.Contains(file.Diff, "-before") || !strings.Contains(file.Diff, "+after") {
+	if file.Path != notesPath || file.Operation != tools.FileChangeEdited || !strings.Contains(file.Diff, "-before") || !strings.Contains(file.Diff, "+after") {
 		t.Fatalf("unexpected reviewed file: %#v", file)
 	}
 	if len(file.Sources) != 1 || file.Sources[0].Type != "chat" || file.Sources[0].ToolName != "filesystem_edit_text" {
@@ -98,12 +102,14 @@ func TestWorkspaceChangeReviewDoesNotTrackDeniedPlanModeTool(t *testing.T) {
 func TestWorkspaceChangeReviewTracksKanbanToolChanges(t *testing.T) {
 	root := t.TempDir()
 	var requestCount atomic.Int32
+	var featurePath string
 	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertChatStreamRequest(t, r)
 		switch requestCount.Add(1) {
 		case 1:
+			args := fmt.Sprintf(`{"path":%q,"content":"done\n"}`, featurePath)
 			writeSSE(t, w,
-				`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"filesystem_create_text","arguments":"{\"path\":\"feature.txt\",\"content\":\"done\\n\"}"}}]}}]}`,
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"filesystem_create_text","arguments":%q}}]}}]}`, args),
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 			)
 		case 2:
@@ -115,6 +121,7 @@ func TestWorkspaceChangeReviewTracksKanbanToolChanges(t *testing.T) {
 			t.Fatalf("unexpected request %d", requestCount.Load())
 		}
 	}))
+	featurePath = labeledTestPath(t, service, workspaceID, "feature.txt")
 	seedKanbanCards(t, service, []KanbanCard{
 		{ID: "card-1", WorkspaceID: workspaceID, Title: "Create feature file", Description: "Write a file", AcceptanceCriteria: []string{"feature.txt exists"}, Lane: KanbanLaneReady},
 	})
@@ -130,7 +137,7 @@ func TestWorkspaceChangeReviewTracksKanbanToolChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load review: %v", err)
 	}
-	if review.FileCount != 1 || review.Files[0].Path != "feature.txt" || review.Files[0].Operation != tools.FileChangeCreated {
+	if review.FileCount != 1 || review.Files[0].Path != featurePath || review.Files[0].Operation != tools.FileChangeCreated {
 		t.Fatalf("unexpected kanban review: %#v", review)
 	}
 	source := review.Files[0].Sources[0]
@@ -150,12 +157,14 @@ func TestWorkspaceChangeReviewSkipsWorkspaceGitignoredFiles(t *testing.T) {
 		t.Fatalf("add workspace: %v", err)
 	}
 	workspaceID := state.ActiveWorkspaceID
+	label := workspaceRootLabel(t, service, workspaceID)
+	prefix := func(path string) string { return label + "/" + path }
 
 	service.recordToolFileChanges(workspaceID, WorkspaceChangeSource{Type: "kanban", CardID: "card-1", ToolName: "filesystem_create_text"}, []tools.FileChange{
-		textCreateChange("visible.txt", "visible\n"),
-		textCreateChange("debug.log", "ignored log\n"),
-		textCreateChange("ignored/generated.txt", "ignored directory\n"),
-		textCreateChange("important.log", "negated\n"),
+		textCreateChange(prefix("visible.txt"), "visible\n"),
+		textCreateChange(prefix("debug.log"), "ignored log\n"),
+		textCreateChange(prefix("ignored/generated.txt"), "ignored directory\n"),
+		textCreateChange(prefix("important.log"), "negated\n"),
 	})
 
 	review, err := service.LoadWorkspaceChangeReview(workspaceID)
@@ -169,13 +178,13 @@ func TestWorkspaceChangeReviewSkipsWorkspaceGitignoredFiles(t *testing.T) {
 	for _, file := range review.Files {
 		files[file.Path] = file
 	}
-	if files["visible.txt"].Operation != tools.FileChangeCreated || files["important.log"].Operation != tools.FileChangeCreated {
+	if files[prefix("visible.txt")].Operation != tools.FileChangeCreated || files[prefix("important.log")].Operation != tools.FileChangeCreated {
 		t.Fatalf("expected visible and negated files in review, got %#v", review.Files)
 	}
-	if _, ok := files["debug.log"]; ok {
+	if _, ok := files[prefix("debug.log")]; ok {
 		t.Fatalf("expected ignored log file to be skipped, got %#v", review.Files)
 	}
-	if _, ok := files["ignored/generated.txt"]; ok {
+	if _, ok := files[prefix("ignored/generated.txt")]; ok {
 		t.Fatalf("expected ignored directory file to be skipped, got %#v", review.Files)
 	}
 }
@@ -186,12 +195,14 @@ func TestWorkspaceChangeReviewTracksInlineToolChangesAndAffectedPaths(t *testing
 		t.Fatal(err)
 	}
 	var requestCount atomic.Int32
+	var notesPath string
 	service, workspaceID := newDecompositionTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertChatStreamRequest(t, r)
 		switch requestCount.Add(1) {
 		case 1:
+			args := fmt.Sprintf(`{"path":%q,"oldText":"before\n","newText":"after\n"}`, notesPath)
 			writeSSE(t, w,
-				`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"filesystem_edit_text","arguments":"{\"path\":\"notes.txt\",\"oldText\":\"before\\n\",\"newText\":\"after\\n\"}"}}]}}]}`,
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"filesystem_edit_text","arguments":%q}}]}}]}`, args),
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 			)
 		case 2:
@@ -200,10 +211,11 @@ func TestWorkspaceChangeReviewTracksInlineToolChangesAndAffectedPaths(t *testing
 			t.Fatalf("unexpected request %d", requestCount.Load())
 		}
 	}))
+	notesPath = labeledTestPath(t, service, workspaceID, "notes.txt")
 
 	response, err := service.SubmitInlineCodePrompt(workspaceID, InlineCodePromptRequest{
 		RequestID:        "inline-1",
-		FilePath:         "notes.txt",
+		FilePath:         notesPath,
 		Prompt:           "Change before to after.",
 		CursorToken:      "before",
 		CursorLineText:   "before",
@@ -213,7 +225,7 @@ func TestWorkspaceChangeReviewTracksInlineToolChangesAndAffectedPaths(t *testing
 	if err != nil {
 		t.Fatalf("submit inline prompt: %v", err)
 	}
-	if strings.Join(response.AffectedPaths, ",") != "notes.txt" {
+	if strings.Join(response.AffectedPaths, ",") != notesPath {
 		t.Fatalf("expected affected path from tracker, got %#v", response.AffectedPaths)
 	}
 	review, err := service.LoadWorkspaceChangeReview(workspaceID)

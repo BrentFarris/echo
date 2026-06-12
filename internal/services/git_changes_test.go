@@ -28,16 +28,17 @@ func TestLoadWorkspaceGitChangesIncludesModifiedDeletedAndUntrackedFiles(t *test
 		t.Fatalf("expected three git changed files, got %#v", review)
 	}
 	files := gitReviewFilesByPath(review)
+	label := normalizeWorkspaceFolderLabel(filepath.Base(root))
 
-	keep := files["keep.txt"]
+	keep := files[label+"/keep.txt"]
 	if keep.Operation != tools.FileChangeEdited || keep.WorktreeStatus != "M" || !strings.Contains(keep.Diff, "-before") || !strings.Contains(keep.Diff, "+after") {
 		t.Fatalf("unexpected modified file review: %#v", keep)
 	}
-	gone := files["gone.txt"]
+	gone := files[label+"/gone.txt"]
 	if gone.Operation != tools.FileChangeDeleted || gone.WorktreeStatus != "D" || !strings.Contains(gone.Diff, "-remove me") {
 		t.Fatalf("unexpected deleted file review: %#v", gone)
 	}
-	fresh := files["fresh.txt"]
+	fresh := files[label+"/fresh.txt"]
 	if fresh.Operation != tools.FileChangeCreated || fresh.Status != "??" || !strings.Contains(fresh.Diff, "+fresh") {
 		t.Fatalf("unexpected untracked file review: %#v", fresh)
 	}
@@ -56,12 +57,13 @@ func TestLoadWorkspaceGitChangesIncludesStagedAndUnstagedFiles(t *testing.T) {
 
 	review := loadGitChangesForTestWorkspace(t, root)
 	files := gitReviewFilesByPath(review)
+	label := normalizeWorkspaceFolderLabel(filepath.Base(root))
 
-	staged := files["staged.txt"]
+	staged := files[label+"/staged.txt"]
 	if staged.Operation != tools.FileChangeEdited || staged.IndexStatus != "M" || staged.WorktreeStatus != "" || !strings.Contains(staged.Diff, "+after staged") {
 		t.Fatalf("unexpected staged file review: %#v", staged)
 	}
-	worktree := files["worktree.txt"]
+	worktree := files[label+"/worktree.txt"]
 	if worktree.Operation != tools.FileChangeEdited || worktree.IndexStatus != "" || worktree.WorktreeStatus != "M" || !strings.Contains(worktree.Diff, "+after worktree") {
 		t.Fatalf("unexpected worktree file review: %#v", worktree)
 	}

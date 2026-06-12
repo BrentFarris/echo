@@ -164,12 +164,13 @@ func TestKanbanSchedulerReadImageToolSendsImageContentPart(t *testing.T) {
 
 	var requestCount atomic.Int32
 	var secondRequest llm.ChatRequest
+	var imagePath string
 	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertChatStreamRequest(t, r)
 		switch requestCount.Add(1) {
 		case 1:
 			writeSSE(t, w,
-				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_image","type":"function","function":{"name":"filesystem_read_image","arguments":%q}}]}}]}`, `{"path":"ui.png"}`),
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_image","type":"function","function":{"name":"filesystem_read_image","arguments":%q}}]}}]}`, fmt.Sprintf(`{"path":%q}`, imagePath)),
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 			)
 		case 2:
@@ -184,6 +185,7 @@ func TestKanbanSchedulerReadImageToolSendsImageContentPart(t *testing.T) {
 			t.Fatalf("unexpected extra request")
 		}
 	}))
+	imagePath = labeledTestPath(t, service, workspaceID, "ui.png")
 	seedKanbanCards(t, service, []KanbanCard{
 		{ID: "card-1", WorkspaceID: workspaceID, Title: "Inspect screenshot", Description: "Look at ui.png", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneReady},
 	})

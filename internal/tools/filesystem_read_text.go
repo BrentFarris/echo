@@ -66,13 +66,13 @@ func readTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error) 
 		limit = maxTextFileBytes
 	}
 
-	path, err := resolveWorkspacePath(ctx.WorkspacePath, args.Path)
+	path, err := resolveWorkspacePath(ctx, args.Path)
 	if err != nil {
 		return nil, err
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, SafeError{Code: "path_not_found", Message: fmt.Sprintf("file %s was not found", relativeWorkspacePath(ctx.WorkspacePath, path))}
+		return nil, SafeError{Code: "path_not_found", Message: fmt.Sprintf("file %s was not found", relativeWorkspacePath(ctx, path))}
 	}
 	if !info.Mode().IsRegular() {
 		return nil, SafeError{Code: "not_file", Message: "path is not a regular file"}
@@ -101,7 +101,7 @@ func readTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error) 
 		return nil, err
 	}
 	return readTextFileOutput{
-		Path:      relativeWorkspacePath(ctx.WorkspacePath, path),
+		Path:      relativeWorkspacePath(ctx, path),
 		Content:   string(data),
 		BytesRead: int64(len(data)),
 		Truncated: truncated || info.Size() > int64(len(data)),

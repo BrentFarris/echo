@@ -50,7 +50,7 @@ func deleteFile(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
 		return nil, SafeError{Code: "invalid_arguments", Message: "path is required"}
 	}
 
-	path, err := resolveWorkspaceChildPath(ctx.WorkspacePath, args.Path)
+	path, err := resolveWorkspaceChildPath(ctx, args.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -61,12 +61,12 @@ func deleteFile(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
 	if !info.Mode().IsRegular() {
 		return nil, SafeError{Code: "not_file", Message: "path is not a regular file"}
 	}
-	before, err := readFileSnapshot(ctx.WorkspacePath, path, info)
+	before, err := readFileSnapshot(ctx, path, info)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot file before delete: %w", err)
 	}
 	output := deleteFileOutput{
-		Path:  relativeWorkspacePath(ctx.WorkspacePath, path),
+		Path:  relativeWorkspacePath(ctx, path),
 		Bytes: info.Size(),
 	}
 
@@ -76,6 +76,6 @@ func deleteFile(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
 	if err := os.Remove(path); err != nil {
 		return nil, fmt.Errorf("delete file: %w", err)
 	}
-	ctx.recordFileChanges(fileChangeForPath(ctx.WorkspacePath, path, before, nil))
+	ctx.recordFileChanges(fileChangeForPath(ctx, path, before, nil))
 	return output, nil
 }

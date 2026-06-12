@@ -75,7 +75,7 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 	if err != nil {
 		return fail(err)
 	}
-	resolved, err := resolveWorkspaceServicePath(workspace.FolderPath, request.FilePath)
+	resolved, err := resolveWorkspaceServicePath(workspace, request.FilePath)
 	if err != nil {
 		return fail(err)
 	}
