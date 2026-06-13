@@ -1,6 +1,6 @@
 
 import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk } from "../codeView";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearChat, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteWorkspace, ExecutePlan, LoadState, LoadWorkspaceChangeReview, LoadWorkspaceGitChanges, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../../wailsjs/go/services/SystemService";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearChat, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWorkspaceChangeReview, LoadWorkspaceGitChanges, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../../wailsjs/go/services/SystemService";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
@@ -408,6 +408,35 @@ export async function handleAction(event: Event) {
       state.selectedKanbanCards.set(workspace.id, cardID);
       pushToast("Card reset.", "success");
       getAppCallbacks().render();
+    }
+    if (action === "delete-card") {
+      const workspace = activeWorkspace();
+      const cardID = target.dataset.cardId ?? "";
+      if (!workspace || !cardID) {
+        return;
+      }
+      const currentBoard = kanbanBoardFor(workspace.id);
+      const card = kanbanCards(currentBoard).find((item) => item.id === cardID);
+      if (!card) {
+        return;
+      }
+      const confirmMessage = card.lane === "ready"
+        ? `Delete "${card.title || card.id}" and any cards that depend on it?`
+        : `Delete "${card.title || card.id}"?`;
+      if (!window.confirm(confirmMessage)) {
+        return;
+      }
+      const beforeCount = kanbanCards(currentBoard).length;
+      const board = await DeleteKanbanCard(workspace.id, cardID);
+      state.kanbanBoards.set(workspace.id, board);
+      const selectedID = state.selectedKanbanCards.get(workspace.id);
+      if (selectedID && !kanbanCards(board).some((item) => item.id === selectedID)) {
+        state.selectedKanbanCards.delete(workspace.id);
+      }
+      const deletedCount = beforeCount - kanbanCards(board).length;
+      pushToast(`${deletedCount} card${deletedCount === 1 ? "" : "s"} deleted.`, "success");
+      getAppCallbacks().render();
+      return;
     }
     if (action === "close-card") {
       const workspace = activeWorkspace();

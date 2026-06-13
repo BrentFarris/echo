@@ -192,39 +192,45 @@ export function renderKanbanCard(card: services.KanbanCard): string {
   const blockedBy = card.blockedBy ?? [];
   const unavailable = card.lane === "ready" && !card.eligible;
   return `
-    <button
-      class="kanban-card ${unavailable ? "is-unavailable" : ""}"
-      type="button"
-      data-action="open-card"
-      data-card-id="${escapeAttribute(card.id)}"
-      aria-label="Open ${escapeAttribute(card.title)} details"
-    >
-      <header>
-        <strong>${escapeHtml(card.title)}</strong>
-        <span>${escapeHtml(card.id)}</span>
-      </header>
-      <p>${escapeHtml(card.description)}</p>
-      ${
-        criteria.length
-          ? `<ul>${criteria.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
-          : ""
-      }
-      ${
-        dependencies.length
-          ? `<div class="card-dependencies">${blockedBy.length ? "Waiting on" : "After"} ${
-              dependencyStatuses.length
-                ? dependencyStatuses
-                    .map(
-                      (dependency) =>
-                        `${escapeHtml(dependency.title || dependency.id)} (${escapeHtml(laneLabel(dependency.status))})`,
-                    )
-                    .join(", ")
-                : dependencies.map(escapeHtml).join(", ")
-            }</div>`
-          : ""
-      }
-    </button>
+    <article class="kanban-card ${unavailable ? "is-unavailable" : ""}">
+      <button
+        class="kanban-card-open"
+        type="button"
+        data-action="open-card"
+        data-card-id="${escapeAttribute(card.id)}"
+        aria-label="Open ${escapeAttribute(card.title)} details"
+      >
+        <header>
+          <strong>${escapeHtml(card.title)}</strong>
+          <span>${escapeHtml(card.id)}</span>
+        </header>
+        <p>${escapeHtml(card.description)}</p>
+        ${
+          criteria.length
+            ? `<ul>${criteria.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+            : ""
+        }
+        ${
+          dependencies.length
+            ? `<div class="card-dependencies">${blockedBy.length ? "Waiting on" : "After"} ${
+                dependencyStatuses.length
+                  ? dependencyStatuses
+                      .map(
+                        (dependency) =>
+                          `${escapeHtml(dependency.title || dependency.id)} (${escapeHtml(laneLabel(dependency.status))})`,
+                      )
+                      .join(", ")
+                  : dependencies.map(escapeHtml).join(", ")
+              }</div>`
+            : ""
+        }
+      </button>
+    </article>
   `;
+}
+
+export function canDeleteKanbanCard(card: services.KanbanCard): boolean {
+  return card.lane === "ready" || card.lane === "done";
 }
 
 export function renderKanbanDetail(board: services.KanbanBoard): string {
@@ -239,6 +245,7 @@ export function renderKanbanDetail(board: services.KanbanBoard): string {
   const blocked = card.lane === "ready" && !card.eligible;
   const canReset = card.lane !== "ready" || transcript.length > 0;
   const canEditDescription = card.lane === "ready" && !state.runningKanbanWorkspaces.has(board.workspaceId);
+  const canDelete = canDeleteKanbanCard(card);
   const draftKey = `${board.workspaceId}:${card.id}`;
   const cardDraft = state.cardMessageDrafts.get(draftKey) ?? "";
   return `
@@ -272,6 +279,14 @@ export function renderKanbanDetail(board: services.KanbanBoard): string {
               ? `<button class="secondary-button icon-text-button stop-card-button" type="button" data-action="stop-card" data-card-id="${escapeAttribute(card.id)}">
                   ${icons.stop}
                   <span>Stop</span>
+                </button>`
+              : ""
+          }
+          ${
+            canDelete
+              ? `<button class="secondary-button icon-text-button danger-button" type="button" data-action="delete-card" data-card-id="${escapeAttribute(card.id)}">
+                  ${icons.trash}
+                  <span>Delete</span>
                 </button>`
               : ""
           }

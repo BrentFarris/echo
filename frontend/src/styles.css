@@ -191,6 +191,7 @@ textarea:disabled {
 .secondary-button:focus-visible,
 .status-button:focus-visible,
 .kanban-card:focus-visible,
+.kanban-card-open:focus-visible,
 input:focus-visible,
 textarea:focus-visible {
   border-color: var(--color-accent);
@@ -1337,15 +1338,15 @@ h3 {
 }
 
 .kanban-card {
+  position: relative;
   display: grid;
-  gap: 9px;
   width: 100%;
-  padding: 11px;
+  overflow: hidden;
+  padding: 0;
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: var(--color-surface);
   color: inherit;
-  cursor: pointer;
   text-align: left;
   transition:
     border-color 160ms ease,
@@ -1354,11 +1355,27 @@ h3 {
 }
 
 .kanban-card:hover,
-.kanban-card:focus-visible {
+.kanban-card:focus-within {
   border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border));
   background: color-mix(in srgb, var(--color-accent) 5%, var(--color-surface));
   outline: none;
   transform: translateY(-1px);
+}
+
+.kanban-card-open {
+  display: grid;
+  gap: 9px;
+  width: 100%;
+  padding: 11px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.kanban-card-open:focus-visible {
+  outline-offset: -3px;
 }
 
 .kanban-card.is-unavailable {

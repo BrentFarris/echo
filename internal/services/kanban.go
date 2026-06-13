@@ -93,14 +93,56 @@ func (s *SystemService) ClearDoneKanbanCards(workspaceID string) (KanbanBoard, e
 	s.mu.Unlock()
 
 	if len(deletedIDs) > 0 {
-		s.chatMu.Lock()
-		if activeCardID := s.kanbanDetailViews[workspaceID]; activeCardID != "" {
-			if _, deleted := deletedIDs[activeCardID]; deleted {
-				delete(s.kanbanDetailViews, workspaceID)
-			}
-		}
-		s.chatMu.Unlock()
+		s.clearKanbanDetailViewIfDeleted(workspaceID, deletedIDs)
 	}
+	return board, nil
+}
+
+func (s *SystemService) DeleteKanbanCard(workspaceID string, cardID string) (KanbanBoard, error) {
+	cardID = strings.TrimSpace(cardID)
+	if cardID == "" {
+		return KanbanBoard{}, fmt.Errorf("kanban card id is required")
+	}
+	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
+		return KanbanBoard{}, err
+	}
+
+	s.mu.Lock()
+	target, found := kanbanCardByIDForWorkspace(s.state.KanbanCards, workspaceID, cardID)
+	if !found {
+		s.mu.Unlock()
+		return KanbanBoard{}, fmt.Errorf("kanban card was not found")
+	}
+	lane := effectiveKanbanLane(target)
+	if lane != KanbanLaneReady && lane != KanbanLaneDone {
+		s.mu.Unlock()
+		return KanbanBoard{}, fmt.Errorf("only Ready or Done kanban cards can be deleted")
+	}
+
+	deletedIDs := map[string]struct{}{cardID: {}}
+	if lane == KanbanLaneReady {
+		collectDependentKanbanCardIDs(workspaceID, s.state.KanbanCards, deletedIDs)
+	}
+
+	next := s.state.KanbanCards[:0]
+	for _, card := range s.state.KanbanCards {
+		if card.WorkspaceID == workspaceID {
+			if _, deleted := deletedIDs[card.ID]; deleted {
+				continue
+			}
+			card.Dependencies = removeDeletedKanbanDependencies(card.Dependencies, deletedIDs)
+		}
+		next = append(next, card)
+	}
+	s.state.KanbanCards = next
+	if err := s.saveLocked(); err != nil {
+		s.mu.Unlock()
+		return KanbanBoard{}, err
+	}
+	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
+	s.mu.Unlock()
+
+	s.clearKanbanDetailViewIfDeleted(workspaceID, deletedIDs)
 	return board, nil
 }
 
@@ -508,6 +550,15 @@ func kanbanCardsByID(cards []KanbanCard) map[string]KanbanCard {
 	return byID
 }
 
+func kanbanCardByIDForWorkspace(cards []KanbanCard, workspaceID string, cardID string) (KanbanCard, bool) {
+	for _, card := range cards {
+		if card.WorkspaceID == workspaceID && card.ID == cardID {
+			return card, true
+		}
+	}
+	return KanbanCard{}, false
+}
+
 func effectiveKanbanLane(card KanbanCard) string {
 	lane := normalizeKanbanLane(card.Lane)
 	if lane == "" {
@@ -542,6 +593,51 @@ func doneKanbanCardsWithUnfinishedDependents(workspaceID string, cards []KanbanC
 		}
 	}
 	return keep
+}
+
+func collectDependentKanbanCardIDs(workspaceID string, cards []KanbanCard, deletedIDs map[string]struct{}) {
+	for {
+		changed := false
+		for _, card := range cards {
+			if card.WorkspaceID != workspaceID {
+				continue
+			}
+			if _, deleted := deletedIDs[card.ID]; deleted {
+				continue
+			}
+			for _, dependencyID := range card.Dependencies {
+				if _, deleted := deletedIDs[dependencyID]; deleted {
+					deletedIDs[card.ID] = struct{}{}
+					changed = true
+					break
+				}
+			}
+		}
+		if !changed {
+			return
+		}
+	}
+}
+
+func removeDeletedKanbanDependencies(dependencies []string, deletedIDs map[string]struct{}) []string {
+	next := dependencies[:0]
+	for _, dependencyID := range dependencies {
+		if _, deleted := deletedIDs[dependencyID]; deleted {
+			continue
+		}
+		next = append(next, dependencyID)
+	}
+	return next
+}
+
+func (s *SystemService) clearKanbanDetailViewIfDeleted(workspaceID string, deletedIDs map[string]struct{}) {
+	s.chatMu.Lock()
+	if activeCardID := s.kanbanDetailViews[workspaceID]; activeCardID != "" {
+		if _, deleted := deletedIDs[activeCardID]; deleted {
+			delete(s.kanbanDetailViews, workspaceID)
+		}
+	}
+	s.chatMu.Unlock()
 }
 
 func enrichKanbanCard(card KanbanCard, byID map[string]KanbanCard) KanbanCard {
