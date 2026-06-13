@@ -34,7 +34,7 @@ export function CreateKanbanCardFromChatMessage(arg1:string,arg2:string):Promise
 
 export function DeleteWorkspace(arg1:string):Promise<services.AppState>;
 
-export function EditChatMessage(arg1:string,arg2:string,arg3:string):Promise<services.ChatSession>;
+export function EditChatMessage(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<services.ChatSession>;
 
 export function ExecutePlan(arg1:string):Promise<services.KanbanBoard>;
 
@@ -68,7 +68,7 @@ export function ResetKanbanCard(arg1:string,arg2:string):Promise<services.Kanban
 
 export function ResolveWorkspaceTextFilePath(arg1:string,arg2:string):Promise<string>;
 
-export function RetryChatMessage(arg1:string,arg2:string):Promise<services.ChatSession>;
+export function RetryChatMessage(arg1:string,arg2:string,arg3:boolean):Promise<services.ChatSession>;
 
 export function SaveSettings(arg1:llm.Settings):Promise<services.AppState>;
 

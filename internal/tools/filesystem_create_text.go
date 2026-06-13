@@ -18,7 +18,7 @@ func init() {
 				"properties": map[string]any{
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Workspace-relative file path to create.",
+						"description": "Labeled workspace file path to create. " + labeledPathSchemaHint,
 					},
 					"content": map[string]any{
 						"type":        "string",

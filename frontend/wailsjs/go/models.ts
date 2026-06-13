@@ -15,6 +15,7 @@ export namespace llm {
 	    timeoutSeconds: number;
 	    searxngUrl: string;
 	    hideLeadingWhitespaceIndicators?: boolean;
+	    disableNotificationSounds?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -36,6 +37,7 @@ export namespace llm {
 	        this.timeoutSeconds = source["timeoutSeconds"];
 	        this.searxngUrl = source["searxngUrl"];
 	        this.hideLeadingWhitespaceIndicators = source["hideLeadingWhitespaceIndicators"];
+	        this.disableNotificationSounds = source["disableNotificationSounds"];
 	    }
 	}
 

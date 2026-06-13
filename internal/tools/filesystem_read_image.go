@@ -23,7 +23,7 @@ func init() {
 				"properties": map[string]any{
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Workspace-relative image file path to read.",
+						"description": "Labeled workspace image file path to read. " + labeledPathSchemaHint,
 					},
 					"detail": map[string]any{
 						"type":        "string",

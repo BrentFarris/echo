@@ -20,7 +20,7 @@ func init() {
 				"properties": map[string]any{
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Workspace-relative directory path. Defaults to the workspace root.",
+						"description": "Labeled workspace directory path. Defaults to . for the virtual workspace root. " + labeledPathSchemaHint,
 					},
 					"includeHidden": map[string]any{
 						"type":        "boolean",

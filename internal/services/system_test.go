@@ -169,32 +169,7 @@ func TestSystemServiceChatPlanModeUsesReadOnlyPlanningRequest(t *testing.T) {
 	if len(captured.Messages) == 0 || captured.Messages[0].Role != llm.RoleSystem {
 		t.Fatalf("expected system message first, got %#v", captured.Messages)
 	}
-	prompt := captured.Messages[0].Content
-	for _, expected := range []string{
-		"planning changes only",
-		"do not make workspace changes",
-		"available read-only tools",
-		"workspace_context",
-	} {
-		if !strings.Contains(prompt, expected) {
-			t.Fatalf("expected plan-mode prompt to include %q, got %q", expected, prompt)
-		}
-	}
-
-	names := chatRequestToolNames(captured)
-	for _, expected := range []string{"filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_search_text", "filesystem_stat", "workspace_context"} {
-		if !names[expected] {
-			t.Fatalf("expected plan mode to include read-only tool %s, got %#v", expected, names)
-		}
-	}
-	for _, denied := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "shell_command"} {
-		if names[denied] {
-			t.Fatalf("expected plan mode to exclude mutating tool %s, got %#v", denied, names)
-		}
-	}
-	if captured.ToolChoice != "auto" {
-		t.Fatalf("expected auto tool choice, got %#v", captured.ToolChoice)
-	}
+	assertPlanModeChatRequest(t, captured)
 }
 
 func TestSystemServiceChatNonPlanModeUsesFullToolRequest(t *testing.T) {
@@ -221,6 +196,105 @@ func TestSystemServiceChatNonPlanModeUsesFullToolRequest(t *testing.T) {
 		if !names[expected] {
 			t.Fatalf("expected non-plan mode to include %s, got %#v", expected, names)
 		}
+	}
+}
+
+func TestSystemServiceRetryChatMessageUsesPlanMode(t *testing.T) {
+	root := t.TempDir()
+	retryRequest := make(chan llm.ChatRequest, 1)
+	var requestCount atomic.Int32
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Initial response."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		case 2:
+			var captured llm.ChatRequest
+			if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode retry request: %v", err)
+			}
+			retryRequest <- captured
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Plan-mode retry."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+
+	if _, err := service.SendChatMessageWithPlanMode(workspaceID, "Inspect this", false); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+	if len(session.Messages) < 2 {
+		t.Fatalf("expected assistant message, got %#v", session.Messages)
+	}
+	if _, err := service.RetryChatMessage(workspaceID, session.Messages[1].ID, true); err != nil {
+		t.Fatalf("retry chat: %v", err)
+	}
+	waitForChatIdle(t, service, workspaceID)
+
+	var captured llm.ChatRequest
+	select {
+	case captured = <-retryRequest:
+	case <-time.After(time.Second):
+		t.Fatal("retry request was not captured")
+	}
+	assertPlanModeChatRequest(t, captured)
+}
+
+func TestSystemServiceEditChatMessageUsesPlanMode(t *testing.T) {
+	root := t.TempDir()
+	editRequest := make(chan llm.ChatRequest, 1)
+	var requestCount atomic.Int32
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Initial response."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		case 2:
+			var captured llm.ChatRequest
+			if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode edit request: %v", err)
+			}
+			editRequest <- captured
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Plan-mode edit."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+
+	if _, err := service.SendChatMessageWithPlanMode(workspaceID, "Inspect this", false); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+	if len(session.Messages) < 1 {
+		t.Fatalf("expected user message, got %#v", session.Messages)
+	}
+	if _, err := service.EditChatMessage(workspaceID, session.Messages[0].ID, "Inspect this carefully", true); err != nil {
+		t.Fatalf("edit chat: %v", err)
+	}
+	waitForChatIdle(t, service, workspaceID)
+
+	var captured llm.ChatRequest
+	select {
+	case captured = <-editRequest:
+	case <-time.After(time.Second):
+		t.Fatal("edit request was not captured")
+	}
+	assertPlanModeChatRequest(t, captured)
+	if len(captured.Messages) < 2 || captured.Messages[1].Content != "Inspect this carefully" {
+		t.Fatalf("expected edited user message in request, got %#v", captured.Messages)
 	}
 }
 
@@ -1295,6 +1369,39 @@ func chatRequestToolNames(request llm.ChatRequest) map[string]bool {
 	return names
 }
 
+func assertPlanModeChatRequest(t *testing.T, request llm.ChatRequest) {
+	t.Helper()
+	if len(request.Messages) == 0 || request.Messages[0].Role != llm.RoleSystem {
+		t.Fatalf("expected system message first, got %#v", request.Messages)
+	}
+	prompt := request.Messages[0].Content
+	for _, expected := range []string{
+		"planning changes only",
+		"do not make workspace changes",
+		"available read-only tools",
+		"workspace_context",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected plan-mode prompt to include %q, got %q", expected, prompt)
+		}
+	}
+
+	names := chatRequestToolNames(request)
+	for _, expected := range []string{"filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_search_text", "filesystem_stat", "workspace_context"} {
+		if !names[expected] {
+			t.Fatalf("expected plan mode to include read-only tool %s, got %#v", expected, names)
+		}
+	}
+	for _, denied := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "shell_command"} {
+		if names[denied] {
+			t.Fatalf("expected plan mode to exclude mutating tool %s, got %#v", denied, names)
+		}
+	}
+	if request.ToolChoice != "auto" {
+		t.Fatalf("expected auto tool choice, got %#v", request.ToolChoice)
+	}
+}
+
 func tinyPNGBytes() []byte {
 	return []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}
 }
@@ -1335,7 +1442,9 @@ func assertSystemPromptOperatingContext(t *testing.T, content string, workspaceR
 		"- OS user: ",
 		"- Workspace folders:",
 		workspaceRoot + " [available, AGENTS.md enabled]",
-		"- Path convention: workspace files use labeled root paths",
+		"- Path convention: tool paths must be labeled workspace paths",
+		"Start every concrete file or directory path with one of the listed workspace folder labels",
+		"Example: use " + normalizeWorkspaceFolderLabel(filepath.Base(workspaceRoot)) + "/frontend/src/main.ts, not frontend/src/main.ts",
 		"- Current time: ",
 	} {
 		if !strings.Contains(content, expected) {
@@ -1352,6 +1461,12 @@ func assertSystemPromptOperatingContext(t *testing.T, content string, workspaceR
 	}
 	if guidance := lineValue(content, "- Shell command guidance: "); guidance == "" {
 		t.Fatalf("expected system prompt to include shell command guidance, got %q", content)
+	} else if runtime.GOOS == "windows" {
+		for _, expected := range []string{"PowerShell-native commands", "not cmd.exe", "avoid CMD syntax", "$env:VAR"} {
+			if !strings.Contains(guidance, expected) {
+				t.Fatalf("expected Windows shell guidance to include %q, got %q", expected, guidance)
+			}
+		}
 	}
 
 	currentTime := lineValue(content, "- Current time: ")
@@ -1615,6 +1730,9 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	if state.Settings.SearxngURL != llm.DefaultSearxngURL {
 		t.Fatalf("expected default SearXNG URL, got %q", state.Settings.SearxngURL)
 	}
+	if state.Settings.DisableNotificationSounds {
+		t.Fatal("expected notification sounds to be enabled by default")
+	}
 
 	settings := state.Settings
 	settings.Endpoint = "https://example.test/v1"
@@ -1628,6 +1746,7 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	settings.MaxTokens = 1024
 	settings.PresencePenalty = 1.25
 	settings.RepetitionPenalty = 1.05
+	settings.DisableNotificationSounds = true
 
 	if _, err := service.SaveSettings(settings); err != nil {
 		t.Fatalf("save settings: %v", err)
@@ -1654,6 +1773,9 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	}
 	if reloaded.Settings.RepetitionPenalty != settings.RepetitionPenalty {
 		t.Fatalf("expected persisted repetition penalty, got %v", reloaded.Settings.RepetitionPenalty)
+	}
+	if !reloaded.Settings.DisableNotificationSounds {
+		t.Fatal("expected persisted disabled notification sounds setting")
 	}
 }
 

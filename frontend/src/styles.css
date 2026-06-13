@@ -467,8 +467,8 @@ h3 {
 
 .chat-message.from-user {
   margin-left: 26px;
-  border-color: color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
-  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-surface));
+  border-color: color-mix(in srgb, rgba(60,130,230) 36%, var(--color-border));
+  background: color-mix(in srgb, rgba(60,130,230) 10%, var(--color-surface));
 }
 
 .chat-message.from-assistant {

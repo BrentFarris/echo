@@ -32,7 +32,7 @@ func init() {
 				"properties": map[string]any{
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Workspace-relative file path to search.",
+						"description": "Labeled workspace file path to search. " + labeledPathSchemaHint,
 					},
 					"query": map[string]any{
 						"type":        "string",

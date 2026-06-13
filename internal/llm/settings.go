@@ -32,6 +32,7 @@ type Settings struct {
 	TimeoutSeconds                  int     `json:"timeoutSeconds"`
 	SearxngURL                      string  `json:"searxngUrl"`
 	HideLeadingWhitespaceIndicators bool    `json:"hideLeadingWhitespaceIndicators,omitempty"`
+	DisableNotificationSounds       bool    `json:"disableNotificationSounds,omitempty"`
 }
 
 func DefaultSettings() Settings {

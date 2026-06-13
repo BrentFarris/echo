@@ -18,7 +18,7 @@ func init() {
 				"properties": map[string]any{
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Workspace-relative file path to read.",
+						"description": "Labeled workspace file path to read. " + labeledPathSchemaHint,
 					},
 					"maxBytes": map[string]any{
 						"type":        "integer",

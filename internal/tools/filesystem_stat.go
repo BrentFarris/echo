@@ -16,7 +16,7 @@ func init() {
 				"properties": map[string]any{
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Workspace-relative path. Defaults to the workspace root.",
+						"description": "Labeled workspace path to inspect. Defaults to . for the virtual workspace root. " + labeledPathSchemaHint,
 					},
 				},
 			},

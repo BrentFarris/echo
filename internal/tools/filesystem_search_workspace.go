@@ -22,7 +22,7 @@ func init() {
 				"properties": map[string]any{
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Workspace-relative directory or file path to search. Defaults to all workspace folders.",
+						"description": "Optional labeled workspace directory or file path to search. Defaults to . for all workspace folders. " + labeledPathSchemaHint,
 					},
 					"query": map[string]any{
 						"type":        "string",

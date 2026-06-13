@@ -21,7 +21,7 @@ func init() {
 				"properties": map[string]any{
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Workspace-relative file path to edit.",
+						"description": "Labeled workspace file path to edit. " + labeledPathSchemaHint,
 					},
 					"oldText": map[string]any{
 						"type":        "string",

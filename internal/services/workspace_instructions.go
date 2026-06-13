@@ -46,19 +46,31 @@ func workspaceOperatingContext(workspace Workspace) string {
 			folders.WriteString(fmt.Sprintf("\n  - %s: %s [%s, AGENTS.md %s]", folder.Label, folder.Path, status, agents))
 		}
 	}
-	return fmt.Sprintf("Operating context:\n- Operating system: %s\n- Default shell: %s\n- Shell command guidance: %s\n- OS user: %s%s\n- Path convention: workspace files use labeled root paths like <folder-label>/path/to/file.\n- Current time: %s",
+	return fmt.Sprintf("Operating context:\n- Operating system: %s\n- Default shell: %s\n- Shell command guidance: %s\n- OS user: %s%s\n- Path convention: %s\n- Current time: %s",
 		runtime.GOOS,
 		defaultShellDescription(),
 		shellCommandGuidance(),
 		currentOSUser(),
 		folders.String(),
+		workspacePathConvention(workspace),
 		time.Now().Format(time.RFC3339),
 	)
 }
 
+func workspacePathConvention(workspace Workspace) string {
+	for _, folder := range workspace.Folders {
+		label := strings.TrimSpace(folder.Label)
+		if label == "" {
+			continue
+		}
+		return fmt.Sprintf("tool paths must be labeled workspace paths. Start every concrete file or directory path with one of the listed workspace folder labels. Example: use %s/frontend/src/main.ts, not frontend/src/main.ts. Use . only for the virtual workspace root or all workspace folders.", label)
+	}
+	return "tool paths must be labeled workspace paths like <folder-label>/path/to/file. Use . only for the virtual workspace root or all workspace folders."
+}
+
 func defaultShellDescription() string {
 	if runtime.GOOS == "windows" {
-		return "PowerShell (pwsh.exe when available, otherwise powershell.exe)"
+		return "PowerShell (pwsh.exe when available, otherwise powershell.exe); do not use cmd.exe or CMD syntax"
 	}
 	if shell := strings.TrimSpace(os.Getenv("SHELL")); shell != "" {
 		return shell
@@ -68,7 +80,7 @@ func defaultShellDescription() string {
 
 func shellCommandGuidance() string {
 	if runtime.GOOS == "windows" {
-		return "shell_command runs through PowerShell; use PowerShell-native commands such as Select-String instead of assuming Unix utilities like grep are installed."
+		return "shell_command runs through PowerShell, not cmd.exe. Always write PowerShell-native commands and avoid CMD syntax such as dir /s, copy, del, type, set VAR=VALUE, and %VAR%. Use PowerShell cmdlets and forms such as Get-ChildItem, Copy-Item, Remove-Item, Get-Content, Select-String, and $env:VAR."
 	}
 	return "shell_command runs through $SHELL when set, otherwise /bin/sh; use POSIX sh-compatible commands unless workspace tooling requires otherwise."
 }
