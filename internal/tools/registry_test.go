@@ -204,6 +204,27 @@ func TestLLMSchemaTeachesLabeledWorkspacePaths(t *testing.T) {
 	}
 }
 
+func TestShellCommandSchemaTeachesPowerShellOnWindows(t *testing.T) {
+	properties := toolSchemaProperties(t, LLMSchema(), "shell_command")
+	command, ok := properties["command"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected shell_command.command schema property, got %#v", properties["command"])
+	}
+	description, _ := command["description"].(string)
+	for _, expected := range []string{
+		"PowerShell",
+		"not cmd.exe",
+		"PowerShell-native syntax",
+		"avoid CMD syntax",
+		"Get-ChildItem",
+		"$env:VAR",
+	} {
+		if !strings.Contains(description, expected) {
+			t.Fatalf("expected shell_command.command description to contain %q, got %q", expected, description)
+		}
+	}
+}
+
 func TestReadOnlyLLMSchemaIncludesOnlyInspectionTools(t *testing.T) {
 	schema := ReadOnlyLLMSchema()
 	names := make(map[string]bool, len(schema))

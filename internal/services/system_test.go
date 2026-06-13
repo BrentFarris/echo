@@ -1354,6 +1354,12 @@ func assertSystemPromptOperatingContext(t *testing.T, content string, workspaceR
 	}
 	if guidance := lineValue(content, "- Shell command guidance: "); guidance == "" {
 		t.Fatalf("expected system prompt to include shell command guidance, got %q", content)
+	} else if runtime.GOOS == "windows" {
+		for _, expected := range []string{"PowerShell-native commands", "not cmd.exe", "avoid CMD syntax", "$env:VAR"} {
+			if !strings.Contains(guidance, expected) {
+				t.Fatalf("expected Windows shell guidance to include %q, got %q", expected, guidance)
+			}
+		}
 	}
 
 	currentTime := lineValue(content, "- Current time: ")

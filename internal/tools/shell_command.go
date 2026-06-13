@@ -33,7 +33,7 @@ func init() {
 				"properties": map[string]any{
 					"command": map[string]any{
 						"type":        "string",
-						"description": "Shell command to execute.",
+						"description": "Shell command to execute. On Windows this runs in PowerShell, not cmd.exe; write PowerShell-native syntax and avoid CMD syntax such as dir /s, copy, del, type, set VAR=VALUE, and %VAR%. Prefer commands such as Get-ChildItem, Copy-Item, Remove-Item, Get-Content, Select-String, and $env:VAR.",
 					},
 					"workingDirectory": map[string]any{
 						"type":        "string",
