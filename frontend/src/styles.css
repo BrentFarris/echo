@@ -1447,6 +1447,16 @@ h3 {
   gap: 16px;
 }
 
+.card-detail-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: -20px -20px 0;
+  padding: 20px 20px 14px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
 .change-review-header-actions {
   display: flex;
   flex: 0 0 auto;
