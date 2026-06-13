@@ -1730,6 +1730,9 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	if state.Settings.SearxngURL != llm.DefaultSearxngURL {
 		t.Fatalf("expected default SearXNG URL, got %q", state.Settings.SearxngURL)
 	}
+	if state.Settings.DisableNotificationSounds {
+		t.Fatal("expected notification sounds to be enabled by default")
+	}
 
 	settings := state.Settings
 	settings.Endpoint = "https://example.test/v1"
@@ -1743,6 +1746,7 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	settings.MaxTokens = 1024
 	settings.PresencePenalty = 1.25
 	settings.RepetitionPenalty = 1.05
+	settings.DisableNotificationSounds = true
 
 	if _, err := service.SaveSettings(settings); err != nil {
 		t.Fatalf("save settings: %v", err)
@@ -1769,6 +1773,9 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	}
 	if reloaded.Settings.RepetitionPenalty != settings.RepetitionPenalty {
 		t.Fatalf("expected persisted repetition penalty, got %v", reloaded.Settings.RepetitionPenalty)
+	}
+	if !reloaded.Settings.DisableNotificationSounds {
+		t.Fatal("expected persisted disabled notification sounds setting")
 	}
 }
 

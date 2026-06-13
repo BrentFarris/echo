@@ -291,6 +291,9 @@ function fileToDataURL(file: File): Promise<string> {
 }
 
 function playNotificationSound() {
+  if (!notificationSoundsEnabled(appState?.settings ?? settingsDraft)) {
+    return;
+  }
   const audio = notificationSound.cloneNode(true) as HTMLAudioElement;
   void audio.play().catch(() => {
     // Browsers can reject audio until the user has interacted with the app.
@@ -519,6 +522,11 @@ function fieldValue<K extends keyof llm.Settings>(key: K): string {
 function leadingWhitespaceIndicatorsEnabled(settings: llm.Settings | null | undefined): boolean {
   return (settings as { hideLeadingWhitespaceIndicators?: boolean } | null | undefined)
     ?.hideLeadingWhitespaceIndicators !== true;
+}
+
+function notificationSoundsEnabled(settings: llm.Settings | null | undefined): boolean {
+  return (settings as { disableNotificationSounds?: boolean } | null | undefined)
+    ?.disableNotificationSounds !== true;
 }
 
 function workspaceLetter(workspace: services.Workspace): string {
@@ -2178,6 +2186,19 @@ function renderSettingsOverlay(workspaces: services.Workspace[]): string {
               <input name="repetitionPenalty" type="number" min="0" step="0.01" value="${escapeHtml(fieldValue("repetitionPenalty"))}" />
             </label>
           </div>
+        </section>
+
+        <section class="settings-section" aria-labelledby="notification-settings-title">
+          <h3 id="notification-settings-title" class="settings-section-title">Notifications</h3>
+          <label class="settings-toggle">
+            <span>Notification sounds</span>
+            <input
+              name="disableNotificationSounds"
+              type="checkbox"
+              data-settings-inverted-boolean
+              ${notificationSoundsEnabled(settingsDraft) ? "checked" : ""}
+            />
+          </label>
         </section>
 
         <section class="settings-section" aria-labelledby="programming-settings-title">
