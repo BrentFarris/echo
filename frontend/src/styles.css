@@ -519,6 +519,15 @@ h3 {
   opacity: 1;
 }
 
+.chat-message:hover header .icon-button.chat-copy-trigger {
+  opacity: 0.5;
+}
+
+.chat-message header .icon-button.chat-copy-trigger:hover,
+.chat-message header .icon-button.chat-copy-trigger:focus-visible {
+  opacity: 1;
+}
+
 .chat-message.from-user header .icon-button:hover {
   background: var(--color-surface-muted);
   color: var(--color-accent-strong);

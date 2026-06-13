@@ -12,7 +12,7 @@ import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatSessionFor, k
 import { clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
 import { cloneSettings } from "./state";
 import { pushToast, dismissToast } from "./toasts";
-import { errorMessage, laneLabel } from "./utils";
+import { copyTextToClipboard, errorMessage, laneLabel } from "./utils";
 import { hydrateWorkspaceLetterDrafts } from "./workspace";
 
 export async function handleAction(event: Event) {
@@ -448,6 +448,22 @@ export async function handleAction(event: Event) {
       }
       pushToast("Message converted into a Ready card.", "success");
       getAppCallbacks().render();
+      return;
+    }
+    if (action === "copy-message") {
+      const workspace = activeWorkspace();
+      const messageID = target.dataset.messageId ?? "";
+      if (!workspace || !messageID) {
+        return;
+      }
+      const message = (chatSessionFor(workspace.id).messages ?? []).find((item) => item.id === messageID);
+      const content = message?.content ?? "";
+      if (!content) {
+        pushToast("Message has no text to copy.", "error");
+        return;
+      }
+      await copyTextToClipboard(content);
+      pushToast("Message copied.", "success");
       return;
     }
     if (action === "retry-message") {

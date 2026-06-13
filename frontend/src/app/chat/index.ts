@@ -629,7 +629,7 @@ export function renderChatMessage(message: services.ChatMessage): string {
       <header>
         <strong>${roleLabel}</strong>
         ${status}
-        ${isUser ? renderEditControls(message, isEditing) : renderAssistantControls(message)}
+        ${isUser ? renderUserControls(message, isEditing) : renderAssistantControls(message)}
       </header>
       ${renderChatMessageImages(message)}
       ${isEditing
@@ -647,6 +647,7 @@ export function renderAssistantControls(message: services.ChatMessage): string {
   const canCreateCard = canCreateKanbanCardFromMessage(message);
   return `
     <div class="chat-message-actions">
+      ${renderCopyMessageButton(message)}
       <button class="icon-button chat-retry-trigger" type="button" title="Regenerate response" aria-label="Regenerate response" data-action="retry-message" data-message-id="${escapeAttribute(message.id)}">
         ${isStreaming ? '<span class="spinner" aria-hidden="true"></span>' : icons.retry}
       </button>
@@ -665,15 +666,24 @@ export function canCreateKanbanCardFromMessage(message: services.ChatMessage): b
   return message.status === "complete" && (message.content ?? "").trim().length > 0;
 }
 
-export function renderEditControls(message: services.ChatMessage, isEditing: boolean): string {
-  if (isEditing) {
-    return "";
-  }
+export function renderCopyMessageButton(message: services.ChatMessage): string {
+  return `
+    <button class="icon-button chat-copy-trigger" type="button" title="Copy message" aria-label="Copy message" data-action="copy-message" data-message-id="${escapeAttribute(message.id)}">
+      ${icons.copy}
+    </button>
+  `;
+}
+
+export function renderUserControls(message: services.ChatMessage, isEditing: boolean): string {
   return `
     <div class="chat-message-actions">
-      <button class="icon-button chat-edit-trigger" type="button" title="Edit message" aria-label="Edit message" data-action="edit-message" data-message-id="${escapeAttribute(message.id)}">
-        ${icons.edit}
-      </button>
+      ${renderCopyMessageButton(message)}
+      ${isEditing
+        ? ""
+        : `<button class="icon-button chat-edit-trigger" type="button" title="Edit message" aria-label="Edit message" data-action="edit-message" data-message-id="${escapeAttribute(message.id)}">
+            ${icons.edit}
+          </button>`
+      }
     </div>
   `;
 }
