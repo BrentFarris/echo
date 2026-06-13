@@ -12,6 +12,11 @@ import (
 
 type Schema map[string]any
 
+const (
+	labeledPathSchemaHint         = "Start concrete paths with the workspace folder label, for example echo/frontend/src/main.ts; do not omit the label as in frontend/src/main.ts. Use . only for the virtual workspace root or all workspace folders when the tool allows it."
+	labeledChangedPathsSchemaHint = "Every path must start with the workspace folder label, for example echo/frontend/src/main.ts; do not omit the label as in frontend/src/main.ts."
+)
+
 type Metadata struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`

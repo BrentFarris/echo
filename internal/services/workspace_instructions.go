@@ -46,14 +46,26 @@ func workspaceOperatingContext(workspace Workspace) string {
 			folders.WriteString(fmt.Sprintf("\n  - %s: %s [%s, AGENTS.md %s]", folder.Label, folder.Path, status, agents))
 		}
 	}
-	return fmt.Sprintf("Operating context:\n- Operating system: %s\n- Default shell: %s\n- Shell command guidance: %s\n- OS user: %s%s\n- Path convention: workspace files use labeled root paths like <folder-label>/path/to/file.\n- Current time: %s",
+	return fmt.Sprintf("Operating context:\n- Operating system: %s\n- Default shell: %s\n- Shell command guidance: %s\n- OS user: %s%s\n- Path convention: %s\n- Current time: %s",
 		runtime.GOOS,
 		defaultShellDescription(),
 		shellCommandGuidance(),
 		currentOSUser(),
 		folders.String(),
+		workspacePathConvention(workspace),
 		time.Now().Format(time.RFC3339),
 	)
+}
+
+func workspacePathConvention(workspace Workspace) string {
+	for _, folder := range workspace.Folders {
+		label := strings.TrimSpace(folder.Label)
+		if label == "" {
+			continue
+		}
+		return fmt.Sprintf("tool paths must be labeled workspace paths. Start every concrete file or directory path with one of the listed workspace folder labels. Example: use %s/frontend/src/main.ts, not frontend/src/main.ts. Use . only for the virtual workspace root or all workspace folders.", label)
+	}
+	return "tool paths must be labeled workspace paths like <folder-label>/path/to/file. Use . only for the virtual workspace root or all workspace folders."
 }
 
 func defaultShellDescription() string {

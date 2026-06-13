@@ -21,11 +21,11 @@ func init() {
 					},
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Optional workspace-relative file or directory path to focus the brief. Defaults to all workspace folders.",
+						"description": "Optional labeled workspace file or directory path to focus the brief. Defaults to . for all workspace folders. " + labeledPathSchemaHint,
 					},
 					"changedPaths": map[string]any{
 						"type":        "array",
-						"description": "Optional workspace-relative paths already changed or known to be relevant.",
+						"description": "Optional labeled workspace paths already changed or known to be relevant. " + labeledChangedPathsSchemaHint,
 						"items":       map[string]any{"type": "string"},
 					},
 					"maxFiles": map[string]any{

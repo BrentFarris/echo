@@ -3,9 +3,12 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/brent/echo/internal/llm"
 )
 
 func TestDuplicateToolNamesFailFast(t *testing.T) {
@@ -163,6 +166,44 @@ func TestDefaultRegistryIncludesFilesystemTools(t *testing.T) {
 	}
 }
 
+func TestLLMSchemaTeachesLabeledWorkspacePaths(t *testing.T) {
+	schema := LLMSchema()
+	expectations := map[string][]string{
+		"filesystem_create_text":      {"path"},
+		"filesystem_delete_file":      {"path"},
+		"filesystem_edit_text":        {"path"},
+		"filesystem_list":             {"path"},
+		"filesystem_read_image":       {"path"},
+		"filesystem_read_text":        {"path"},
+		"filesystem_search_text":      {"path"},
+		"filesystem_search_workspace": {"path"},
+		"filesystem_stat":             {"path"},
+		"lsp_query":                   {"path"},
+		"shell_command":               {"workingDirectory"},
+		"workspace_context":           {"path", "changedPaths"},
+	}
+
+	for toolName, fields := range expectations {
+		properties := toolSchemaProperties(t, schema, toolName)
+		for _, field := range fields {
+			property, ok := properties[field].(map[string]any)
+			if !ok {
+				t.Fatalf("expected %s.%s schema property, got %#v", toolName, field, properties[field])
+			}
+			description, _ := property["description"].(string)
+			for _, expected := range []string{
+				"workspace folder label",
+				"echo/frontend/src/main.ts",
+				"frontend/src/main.ts",
+			} {
+				if !strings.Contains(description, expected) {
+					t.Fatalf("expected %s.%s description to contain %q, got %q", toolName, field, expected, description)
+				}
+			}
+		}
+	}
+}
+
 func TestReadOnlyLLMSchemaIncludesOnlyInspectionTools(t *testing.T) {
 	schema := ReadOnlyLLMSchema()
 	names := make(map[string]bool, len(schema))
@@ -183,6 +224,22 @@ func TestReadOnlyLLMSchemaIncludesOnlyInspectionTools(t *testing.T) {
 	if len(names) != 9 {
 		t.Fatalf("expected exactly nine read-only tools, got %#v", names)
 	}
+}
+
+func toolSchemaProperties(t *testing.T, schema []llm.Tool, name string) map[string]any {
+	t.Helper()
+	for _, tool := range schema {
+		if tool.Function.Name != name {
+			continue
+		}
+		properties, ok := tool.Function.Parameters["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected %s schema properties, got %#v", name, tool.Function.Parameters)
+		}
+		return properties
+	}
+	t.Fatalf("tool %s was not found", name)
+	return nil
 }
 
 func testTool(name string, run func(ctx ExecutionContext, arguments json.RawMessage) (any, error)) ToolFunc {

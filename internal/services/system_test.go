@@ -1335,7 +1335,9 @@ func assertSystemPromptOperatingContext(t *testing.T, content string, workspaceR
 		"- OS user: ",
 		"- Workspace folders:",
 		workspaceRoot + " [available, AGENTS.md enabled]",
-		"- Path convention: workspace files use labeled root paths",
+		"- Path convention: tool paths must be labeled workspace paths",
+		"Start every concrete file or directory path with one of the listed workspace folder labels",
+		"Example: use " + normalizeWorkspaceFolderLabel(filepath.Base(workspaceRoot)) + "/frontend/src/main.ts, not frontend/src/main.ts",
 		"- Current time: ",
 	} {
 		if !strings.Contains(content, expected) {

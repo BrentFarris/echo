@@ -37,7 +37,7 @@ func init() {
 					},
 					"workingDirectory": map[string]any{
 						"type":        "string",
-						"description": "Workspace-relative directory to run in. Defaults to the workspace root.",
+						"description": "Labeled workspace directory to run in. Defaults to the first workspace folder. " + labeledPathSchemaHint,
 					},
 					"timeoutSeconds": map[string]any{
 						"type":        "integer",

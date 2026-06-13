@@ -31,7 +31,7 @@ func init() {
 					},
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Workspace-relative source file path, including the workspace folder label.",
+						"description": "Labeled workspace source file path. " + labeledPathSchemaHint,
 					},
 					"line": map[string]any{
 						"type":        "integer",
