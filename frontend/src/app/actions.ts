@@ -1,0 +1,560 @@
+
+import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk } from "../codeView";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearChat, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteWorkspace, ExecutePlan, LoadState, LoadWorkspaceChangeReview, LoadWorkspaceGitChanges, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../../wailsjs/go/services/SystemService";
+import { getAppCallbacks } from "./callbacks";
+import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
+import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
+import { dismissContextMenu } from "./contextMenu";
+import { appRoot } from "./dom";
+import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification } from "./kanban";
+import { playNotificationSound } from "./notifications";
+import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatSessionFor, kanbanBoardFor, kanbanCards, state } from "./state";
+import { clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
+import { cloneSettings } from "./state";
+import { pushToast, dismissToast } from "./toasts";
+import { errorMessage, laneLabel } from "./utils";
+import { hydrateWorkspaceLetterDrafts } from "./workspace";
+
+export async function handleAction(event: Event) {
+  const target = event.currentTarget as HTMLElement;
+  const action = target.dataset.action;
+  const workspaceID = target.dataset.workspaceId ?? "";
+
+  try {
+    if (action === "dismiss-toast") {
+      dismissToast(target.dataset.toastId ?? "");
+      return;
+    }
+    if (action === "show-in-explorer") {
+      const workspaceID = target.dataset.workspaceId ?? "";
+      if (!workspaceID) {
+        return;
+      }
+      const workspacePath = target.dataset.workspacePath ?? "";
+      try {
+        if (workspacePath) {
+          await OpenWorkspacePathExplorer(workspaceID, workspacePath);
+        } else {
+          await OpenWorkspaceExplorer(workspaceID);
+        }
+        pushToast("Opened in Explorer.", "success");
+      } catch (error) {
+        pushToast(errorMessage(error), "error");
+      }
+      dismissContextMenu();
+      return;
+    }
+    if (action === "open-code-view") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      state.appMode = "code";
+      const loading = ensureCodeViewRootLoaded(workspace.id);
+      getAppCallbacks().render();
+      await loading;
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "close-code-view") {
+      const workspace = activeWorkspace();
+      if (workspace) {
+        clearCodeTabSwitcher(workspace.id);
+        state.openGitChangeWorkspaces.delete(workspace.id);
+        state.expandedGitChangeWorkspaces.delete(workspace.id);
+        state.loadingGitChangeWorkspaces.delete(workspace.id);
+      }
+      state.appMode = "chat-kanban";
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "open-git-changes") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      state.openGitChangeWorkspaces.add(workspace.id);
+      state.loadingGitChangeWorkspaces.add(workspace.id);
+      getAppCallbacks().render();
+      try {
+        state.gitChangeReviews.set(workspace.id, await LoadWorkspaceGitChanges(workspace.id));
+      } catch (error) {
+        state.openGitChangeWorkspaces.delete(workspace.id);
+        state.expandedGitChangeWorkspaces.delete(workspace.id);
+        throw error;
+      } finally {
+        state.loadingGitChangeWorkspaces.delete(workspace.id);
+      }
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "close-git-changes") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      state.openGitChangeWorkspaces.delete(workspace.id);
+      state.expandedGitChangeWorkspaces.delete(workspace.id);
+      state.loadingGitChangeWorkspaces.delete(workspace.id);
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "toggle-git-changes-size") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      if (state.expandedGitChangeWorkspaces.has(workspace.id)) {
+        state.expandedGitChangeWorkspaces.delete(workspace.id);
+      } else {
+        state.expandedGitChangeWorkspaces.add(workspace.id);
+      }
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "refresh-git-changes") {
+      const workspace = activeWorkspace();
+      if (!workspace || state.loadingGitChangeWorkspaces.has(workspace.id)) {
+        return;
+      }
+      state.loadingGitChangeWorkspaces.add(workspace.id);
+      getAppCallbacks().render();
+      try {
+        state.gitChangeReviews.set(workspace.id, await LoadWorkspaceGitChanges(workspace.id));
+      } finally {
+        state.loadingGitChangeWorkspaces.delete(workspace.id);
+      }
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "open-settings") {
+      const workspace = activeWorkspace();
+      if (workspace) {
+        clearCodeTabSwitcher(workspace.id);
+      }
+      state.settingsOpen = true;
+      state.formError = "";
+      state.settingsDraft ??= cloneSettings(state.appState!.settings);
+      hydrateWorkspaceLetterDrafts(state.appState?.workspaces ?? []);
+      getAppCallbacks().render();
+    }
+    if (action === "close-settings") {
+      state.settingsOpen = false;
+      state.formError = "";
+      getAppCallbacks().render();
+    }
+    if (action === "reset-settings") {
+      state.settingsDraft = cloneSettings(state.appState!.settings);
+      hydrateWorkspaceLetterDrafts(state.appState?.workspaces ?? []);
+      state.formError = "";
+      getAppCallbacks().render();
+    }
+    if (action === "add-workspace") {
+      state.appState = await ChooseWorkspaceFolder();
+      await loadActiveChatSession();
+      await loadActiveKanbanBoard();
+      await loadActiveChangeReview();
+      await loadActiveCodeViewIfNeeded();
+      pushToast("Workspace list updated.", "success");
+      getAppCallbacks().render();
+    }
+    if (action === "add-workspace-folder") {
+      if (!workspaceID) {
+        return;
+      }
+      state.appState = await ChooseWorkspaceFolderForWorkspace(workspaceID);
+      await refreshWorkspaceChangeReview(workspaceID);
+      await refreshOpenCodeTabsFromDisk(workspaceID, getAppCallbacks().codeViewCallbacks());
+      pushToast("Workspace folder added.", "success");
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "remove-workspace-folder") {
+      const folderID = target.dataset.folderId ?? "";
+      if (!workspaceID || !folderID || !window.confirm("Remove this folder from the workspace?")) {
+        return;
+      }
+      state.appState = await RemoveWorkspaceFolder(workspaceID, folderID);
+      state.changeReviews.delete(workspaceID);
+      state.gitChangeReviews.delete(workspaceID);
+      state.loadingGitChangeWorkspaces.delete(workspaceID);
+      await refreshOpenCodeTabsFromDisk(workspaceID, getAppCallbacks().codeViewCallbacks());
+      pushToast("Workspace folder removed.", "success");
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "refresh-workspaces") {
+      state.appState = await LoadState();
+      await loadActiveChatSession();
+      await loadActiveKanbanBoard();
+      await loadActiveChangeReview();
+      await loadActiveCodeViewIfNeeded();
+      pushToast(
+        activeWorkspace()?.missing
+          ? "One or more folders are still unavailable."
+          : "Workspace folders refreshed.",
+        activeWorkspace()?.missing ? "error" : "success",
+      );
+      getAppCallbacks().render();
+    }
+    if (action === "choose-workspace-icon") {
+      state.appState = await ChooseWorkspaceIcon(workspaceID);
+      pushToast("Workspace icon updated.", "success");
+      getAppCallbacks().render();
+    }
+    if (action === "clear-workspace-icon") {
+      state.appState = await ClearWorkspaceIcon(workspaceID);
+      pushToast("Workspace icon cleared.", "success");
+      getAppCallbacks().render();
+    }
+    if (action === "activate-workspace") {
+      const current = activeWorkspace();
+      if (current && current.id !== workspaceID) {
+        await closeSelectedCardDetail(current.id);
+        state.openChangeReviewWorkspaces.delete(current.id);
+        state.openGitChangeWorkspaces.delete(current.id);
+        state.expandedGitChangeWorkspaces.delete(current.id);
+        state.loadingGitChangeWorkspaces.delete(current.id);
+      }
+      state.appState = await SetActiveWorkspace(workspaceID);
+      await loadActiveChatSession();
+      await loadActiveKanbanBoard();
+      await loadActiveChangeReview();
+      await loadActiveCodeViewIfNeeded();
+      getAppCallbacks().render();
+    }
+    if (action === "execute-plan") {
+      const workspace = activeWorkspace();
+      if (!workspace || state.executingPlans.has(workspace.id)) {
+        return;
+      }
+      state.executingPlans.add(workspace.id);
+      getAppCallbacks().render();
+      try {
+        const board = await ExecutePlan(workspace.id);
+        state.kanbanBoards.set(workspace.id, board);
+        if ((board.ready ?? []).length > 0) {
+          playNotificationSound();
+        }
+        pushToast("Plan converted into Ready cards.", "success");
+      } finally {
+        state.executingPlans.delete(workspace.id);
+      }
+      getAppCallbacks().render();
+    }
+    if (action === "toggle-chat-size") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      if (state.expandedChatWorkspaces.has(workspace.id)) {
+        state.expandedChatWorkspaces.delete(workspace.id);
+      } else {
+        state.expandedChatWorkspaces.add(workspace.id);
+        state.expandedKanbanWorkspaces.delete(workspace.id);
+      }
+      getAppCallbacks().render();
+    }
+    if (action === "toggle-kanban-size") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      if (state.expandedKanbanWorkspaces.has(workspace.id)) {
+        state.expandedKanbanWorkspaces.delete(workspace.id);
+      } else {
+        state.expandedKanbanWorkspaces.add(workspace.id);
+        state.expandedChatWorkspaces.delete(workspace.id);
+      }
+      getAppCallbacks().render();
+    }
+    if (action === "open-change-review") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      await closeSelectedCardDetail(workspace.id);
+      state.changeReviews.set(workspace.id, await LoadWorkspaceChangeReview(workspace.id));
+      state.openChangeReviewWorkspaces.add(workspace.id);
+      getAppCallbacks().render();
+    }
+    if (action === "close-change-review") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      state.openChangeReviewWorkspaces.delete(workspace.id);
+      state.expandedChangeReviewWorkspaces.delete(workspace.id);
+      getAppCallbacks().render();
+    }
+    if (action === "toggle-change-review-size") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      if (state.expandedChangeReviewWorkspaces.has(workspace.id)) {
+        state.expandedChangeReviewWorkspaces.delete(workspace.id);
+      } else {
+        state.expandedChangeReviewWorkspaces.add(workspace.id);
+      }
+      getAppCallbacks().render();
+    }
+    if (action === "clear-change-review") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      state.changeReviews.set(workspace.id, await ClearWorkspaceChangeReview(workspace.id));
+      pushToast("AI change review cleared.");
+      getAppCallbacks().render();
+    }
+    if (action === "previous-change") {
+      scrollChangeReview(-1);
+    }
+    if (action === "next-change") {
+      scrollChangeReview(1);
+    }
+    if (action === "remove-chat-image") {
+      const workspace = activeWorkspace();
+      const imageID = target.dataset.imageId ?? "";
+      if (!workspace || !imageID) {
+        return;
+      }
+      state.chatImageDrafts.set(
+        workspace.id,
+        chatImageDraftsFor(workspace.id).filter((image) => image.id !== imageID),
+      );
+      patchChatPanel();
+      patchChatControls();
+    }
+    if (action === "start-agents") {
+      const workspace = activeWorkspace();
+      if (!workspace || state.runningKanbanWorkspaces.has(workspace.id)) {
+        return;
+      }
+      markKanbanRunStarted(workspace.id);
+      getAppCallbacks().render();
+      try {
+        state.kanbanBoards.set(workspace.id, await StartKanbanExecution(workspace.id, 2));
+      } catch (error) {
+        forgetKanbanRun(workspace.id);
+        throw error;
+      }
+      pushToast("Kanban agents started.", "success");
+      getAppCallbacks().render();
+    }
+    if (action === "stop-agents") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      state.kanbanBoards.set(workspace.id, await StopKanbanExecution(workspace.id));
+      finishKanbanRun(workspace.id);
+      pushToast("Kanban agents stopped.");
+      getAppCallbacks().render();
+    }
+    if (action === "clear-done-cards") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      const beforeDoneCount = kanbanBoardFor(workspace.id).done?.length ?? 0;
+      if (beforeDoneCount === 0) {
+        return;
+      }
+      const board = await ClearDoneKanbanCards(workspace.id);
+      state.kanbanBoards.set(workspace.id, board);
+      const selectedID = state.selectedKanbanCards.get(workspace.id);
+      if (selectedID && !kanbanCards(board).some((card) => card.id === selectedID)) {
+        state.selectedKanbanCards.delete(workspace.id);
+      }
+      const clearedCount = beforeDoneCount - (board.done?.length ?? 0);
+      pushToast(
+        clearedCount > 0
+          ? `${clearedCount} done card${clearedCount === 1 ? "" : "s"} cleared.`
+          : "Done cards are still needed by unfinished cards.",
+        clearedCount > 0 ? "success" : "info",
+      );
+      getAppCallbacks().render();
+    }
+    if (action === "open-card") {
+      const workspace = activeWorkspace();
+      const cardID = target.dataset.cardId ?? "";
+      if (!workspace || !cardID) {
+        return;
+      }
+      state.selectedKanbanCards.set(workspace.id, cardID);
+      state.kanbanBoards.set(workspace.id, await OpenKanbanCardDetail(workspace.id, cardID));
+      getAppCallbacks().render();
+    }
+    if (action === "stop-card") {
+      const workspace = activeWorkspace();
+      const cardID = target.dataset.cardId ?? "";
+      if (!workspace || !cardID) {
+        return;
+      }
+      state.kanbanBoards.set(workspace.id, await StopKanbanCard(workspace.id, cardID));
+      state.selectedKanbanCards.set(workspace.id, cardID);
+      pushToast("Card agent stopped.");
+      getAppCallbacks().render();
+    }
+    if (action === "reset-card") {
+      const workspace = activeWorkspace();
+      const cardID = target.dataset.cardId ?? "";
+      if (!workspace || !cardID || !window.confirm("Reset this card and clear its progress transcript?")) {
+        return;
+      }
+      state.kanbanBoards.set(workspace.id, await ResetKanbanCard(workspace.id, cardID));
+      state.selectedKanbanCards.set(workspace.id, cardID);
+      pushToast("Card reset.", "success");
+      getAppCallbacks().render();
+    }
+    if (action === "close-card") {
+      const workspace = activeWorkspace();
+      if (workspace) {
+        const cardID = state.selectedKanbanCards.get(workspace.id) ?? "";
+        if (cardID) {
+          state.kanbanBoards.set(workspace.id, await CloseKanbanCardDetail(workspace.id, cardID));
+        }
+        state.selectedKanbanCards.delete(workspace.id);
+      }
+      getAppCallbacks().render();
+    }
+    if (action === "move-card") {
+      const workspace = activeWorkspace();
+      const cardID = target.dataset.cardId ?? "";
+      const lane = target.dataset.lane ?? "";
+      if (!workspace || !cardID || !lane) {
+        return;
+      }
+      const previousBoard = kanbanBoardFor(workspace.id);
+      const board = await MoveKanbanCard(workspace.id, cardID, lane);
+      state.kanbanBoards.set(workspace.id, board);
+      state.selectedKanbanCards.set(workspace.id, cardID);
+      maybePlayKanbanBoardNotification(previousBoard, board);
+      pushToast(`Card moved to ${laneLabel(lane)}.`, "success");
+      getAppCallbacks().render();
+    }
+    if (action === "create-card-from-message") {
+      const workspace = activeWorkspace();
+      const messageID = target.dataset.messageId ?? "";
+      if (!workspace || !messageID) {
+        return;
+      }
+      const board = await CreateKanbanCardFromChatMessage(workspace.id, messageID);
+      state.kanbanBoards.set(workspace.id, board);
+      if ((board.ready ?? []).length > 0) {
+        playNotificationSound();
+      }
+      pushToast("Message converted into a Ready card.", "success");
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "retry-message") {
+      const workspace = activeWorkspace();
+      const messageID = target.dataset.messageId ?? "";
+      if (!workspace || !messageID) {
+        return;
+      }
+      state.editingMessageIds.delete(messageID);
+      try {
+        state.chatSessions.set(
+          workspace.id,
+          await RetryChatMessage(workspace.id, messageID, chatPlanModeFor(workspace.id)),
+        );
+        pushToast("Response regenerated.", "success");
+      } catch (error) {
+        pushToast(errorMessage(error), "error");
+      }
+      getAppCallbacks().render();
+      scrollChatToBottom();
+      return;
+    }
+    if (action === "stop-chat") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      state.chatSessions.set(workspace.id, await StopChatStream(workspace.id));
+      patchChatPanel();
+    }
+    if (action === "clear-chat") {
+      const workspace = activeWorkspace();
+      if (!workspace || !window.confirm("Clear the current chat?")) {
+        return;
+      }
+      state.chatSessions.set(workspace.id, await ClearChat(workspace.id));
+      state.chatDrafts.set(workspace.id, "");
+      state.chatImageDrafts.delete(workspace.id);
+      patchChatPanel();
+    }
+    if (action === "edit-message") {
+      const workspace = activeWorkspace();
+      const messageID = target.dataset.messageId ?? "";
+      if (!workspace || !messageID) {
+        return;
+      }
+      state.editingMessageIds.add(messageID);
+      getAppCallbacks().render();
+      const textarea = appRoot.querySelector<HTMLTextAreaElement>(`[data-chat-edit-input][data-message-id="${CSS.escape(messageID)}"]`);
+      textarea?.focus();
+      textarea?.setSelectionRange(textarea.value.length, textarea.value.length);
+      return;
+    }
+    if (action === "cancel-message-edit") {
+      const form = (event.currentTarget as HTMLElement).closest<HTMLFormElement>(
+        "[data-chat-edit-form]",
+      );
+      const messageID = form?.dataset.messageId ?? "";
+      if (messageID) {
+        state.editingMessageIds.delete(messageID);
+        getAppCallbacks().render();
+      }
+      return;
+    }
+    if (action === "delete-workspace") {
+      const workspace = state.appState?.workspaces.find((item) => item.id === workspaceID);
+      if (!workspace || !window.confirm(`Delete ${workspace.displayName} from Echo?`)) {
+        return;
+      }
+      await closeSelectedCardDetail(workspaceID);
+      state.appState = await DeleteWorkspace(workspaceID);
+      state.kanbanBoards.delete(workspaceID);
+      state.changeReviews.delete(workspaceID);
+      state.gitChangeReviews.delete(workspaceID);
+      state.selectedKanbanCards.delete(workspaceID);
+      state.openChangeReviewWorkspaces.delete(workspaceID);
+      state.openGitChangeWorkspaces.delete(workspaceID);
+      state.expandedChatWorkspaces.delete(workspaceID);
+      state.expandedKanbanWorkspaces.delete(workspaceID);
+      state.expandedChangeReviewWorkspaces.delete(workspaceID);
+      state.expandedGitChangeWorkspaces.delete(workspaceID);
+      state.loadingGitChangeWorkspaces.delete(workspaceID);
+      state.chatPlanModes.delete(workspaceID);
+      state.chatImageDrafts.delete(workspaceID);
+      forgetKanbanRun(workspaceID);
+      if (!activeWorkspace()) {
+        state.appMode = "chat-kanban";
+      } else {
+        await loadActiveCodeViewIfNeeded();
+      }
+      pushToast("Workspace removed.", "success");
+      getAppCallbacks().render();
+    }
+  } catch (error) {
+    const message = errorMessage(error);
+    if (state.settingsOpen) {
+      state.formError = message;
+    } else {
+      state.formError = "";
+      pushToast(message, "error");
+    }
+    getAppCallbacks().render();
+  }
+}
+
+export function bindActionEvents(root: ParentNode) {
+  root.querySelectorAll<HTMLElement>("[data-action]").forEach((element) => {
+    element.addEventListener("click", handleAction);
+  });
+}
