@@ -2995,7 +2995,10 @@ async function handleAction(event: Event) {
       }
       editingMessageIds.delete(messageID);
       try {
-        chatSessions.set(workspace.id, await RetryChatMessage(workspace.id, messageID));
+        chatSessions.set(
+          workspace.id,
+          await RetryChatMessage(workspace.id, messageID, chatPlanModeFor(workspace.id)),
+        );
         pushToast("Response regenerated.", "success");
       } catch (error) {
         pushToast(errorMessage(error), "error");
@@ -3457,7 +3460,10 @@ async function handleChatEditSubmit(event: SubmitEvent) {
   }
 
   try {
-    chatSessions.set(workspace.id, await EditChatMessage(workspace.id, messageID, trimmed));
+    chatSessions.set(
+      workspace.id,
+      await EditChatMessage(workspace.id, messageID, trimmed, chatPlanModeFor(workspace.id)),
+    );
     editingMessageIds.delete(messageID);
     render();
   } catch (error) {

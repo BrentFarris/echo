@@ -174,7 +174,7 @@ func (s *SystemService) ClearChat(workspaceID string) (ChatSession, error) {
 	return clone, nil
 }
 
-func (s *SystemService) RetryChatMessage(workspaceID string, messageID string) (ChatSession, error) {
+func (s *SystemService) RetryChatMessage(workspaceID string, messageID string, planMode bool) (ChatSession, error) {
 	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
 		return ChatSession{}, err
 	}
@@ -236,13 +236,13 @@ func (s *SystemService) RetryChatMessage(workspaceID string, messageID string) (
 			s.failChatMessage(workspaceID, streamID, assistantMessage.ID, err.Error())
 			return
 		}
-		s.runChatTurnWithHistory(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, history, false)
+		s.runChatTurnWithHistory(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, history, planMode)
 	}()
 
 	return clone, nil
 }
 
-func (s *SystemService) EditChatMessage(workspaceID string, messageID string, content string) (ChatSession, error) {
+func (s *SystemService) EditChatMessage(workspaceID string, messageID string, content string, planMode bool) (ChatSession, error) {
 	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
 		return ChatSession{}, err
 	}
@@ -319,7 +319,7 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 			s.failChatMessage(workspaceID, streamID, assistantMessage.ID, err.Error())
 			return
 		}
-		s.runChatTurnWithHistory(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, history, false)
+		s.runChatTurnWithHistory(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, history, planMode)
 	}()
 
 	return clone, nil
