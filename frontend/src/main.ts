@@ -1,4 +1,5 @@
 import "./styles.css";
+import notificationSoundUrl from "../notification-1.wav";
 import {
   applyInlineCodePromptEvent,
   bindCodeViewEvents,
@@ -68,6 +69,8 @@ if (!app) {
 }
 
 const appRoot = app;
+const notificationSound = new Audio(notificationSoundUrl);
+notificationSound.preload = "auto";
 
 const icons = {
   plus: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>`,
@@ -287,6 +290,13 @@ function fileToDataURL(file: File): Promise<string> {
   });
 }
 
+function playNotificationSound() {
+  const audio = notificationSound.cloneNode(true) as HTMLAudioElement;
+  void audio.play().catch(() => {
+    // Browsers can reject audio until the user has interacted with the app.
+  });
+}
+
 function chatSessionFor(workspaceID: string): services.ChatSession {
   return (
     chatSessions.get(workspaceID) ??
@@ -346,6 +356,38 @@ function kanbanCards(board: services.KanbanBoard): services.KanbanCard[] {
     ...(board.blocked ?? []),
     ...(board.done ?? []),
   ];
+}
+
+function isKanbanBoardAllDone(board?: services.KanbanBoard): boolean {
+  if (!board) {
+    return false;
+  }
+  return (
+    (board.done ?? []).length > 0 &&
+    (board.ready ?? []).length === 0 &&
+    (board.inProgress ?? []).length === 0 &&
+    (board.blocked ?? []).length === 0
+  );
+}
+
+function hasNewBlockedKanbanCards(
+  previousBoard: services.KanbanBoard | undefined,
+  nextBoard: services.KanbanBoard,
+): boolean {
+  const previousBlockedIDs = new Set((previousBoard?.blocked ?? []).map((card) => card.id));
+  return (nextBoard.blocked ?? []).some((card) => !previousBlockedIDs.has(card.id));
+}
+
+function maybePlayKanbanBoardNotification(
+  previousBoard: services.KanbanBoard | undefined,
+  nextBoard: services.KanbanBoard,
+) {
+  if (
+    hasNewBlockedKanbanCards(previousBoard, nextBoard) ||
+    (!isKanbanBoardAllDone(previousBoard) && isKanbanBoardAllDone(nextBoard))
+  ) {
+    playNotificationSound();
+  }
 }
 
 function selectedKanbanCard(board: services.KanbanBoard): services.KanbanCard | null {
@@ -2779,7 +2821,11 @@ async function handleAction(event: Event) {
       executingPlans.add(workspace.id);
       render();
       try {
-        kanbanBoards.set(workspace.id, await ExecutePlan(workspace.id));
+        const board = await ExecutePlan(workspace.id);
+        kanbanBoards.set(workspace.id, board);
+        if ((board.ready ?? []).length > 0) {
+          playNotificationSound();
+        }
         pushToast("Plan converted into Ready cards.", "success");
       } finally {
         executingPlans.delete(workspace.id);
@@ -2971,8 +3017,11 @@ async function handleAction(event: Event) {
       if (!workspace || !cardID || !lane) {
         return;
       }
-      kanbanBoards.set(workspace.id, await MoveKanbanCard(workspace.id, cardID, lane));
+      const previousBoard = kanbanBoardFor(workspace.id);
+      const board = await MoveKanbanCard(workspace.id, cardID, lane);
+      kanbanBoards.set(workspace.id, board);
       selectedKanbanCards.set(workspace.id, cardID);
+      maybePlayKanbanBoardNotification(previousBoard, board);
       pushToast(`Card moved to ${laneLabel(lane)}.`, "success");
       render();
     }
@@ -2982,7 +3031,11 @@ async function handleAction(event: Event) {
       if (!workspace || !messageID) {
         return;
       }
-      kanbanBoards.set(workspace.id, await CreateKanbanCardFromChatMessage(workspace.id, messageID));
+      const board = await CreateKanbanCardFromChatMessage(workspace.id, messageID);
+      kanbanBoards.set(workspace.id, board);
+      if ((board.ready ?? []).length > 0) {
+        playNotificationSound();
+      }
       pushToast("Message converted into a Ready card.", "success");
       render();
       return;
@@ -3574,6 +3627,9 @@ function applyChatStreamEvent(event: ChatStreamEvent) {
     session.streamId = "";
     message.status = event.type === "complete" ? "complete" : event.type;
     message.error = event.error ?? "";
+    if (event.type === "complete") {
+      playNotificationSound();
+    }
   }
   if (event.type === "retrying") {
     message.status = "retrying";
@@ -3594,7 +3650,10 @@ function applyChatStreamEvent(event: ChatStreamEvent) {
 }
 
 function applyKanbanEvent(event: KanbanEvent) {
-  kanbanBoards.set(event.workspaceId, services.KanbanBoard.createFrom(event.board));
+  const previousBoard = kanbanBoards.get(event.workspaceId);
+  const board = services.KanbanBoard.createFrom(event.board);
+  kanbanBoards.set(event.workspaceId, board);
+  maybePlayKanbanBoardNotification(previousBoard, board);
   if (event.type === "card_started") {
     markKanbanRunStarted(event.workspaceId);
   }
