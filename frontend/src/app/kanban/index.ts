@@ -252,45 +252,47 @@ export function renderKanbanDetail(board: services.KanbanBoard): string {
     <aside class="card-detail-backdrop" role="dialog" aria-modal="true" aria-labelledby="card-detail-title">
       <section class="card-detail" data-card-detail>
         <header class="card-detail-header">
-          <div>
-            <p class="eyebrow">${escapeHtml(card.id)} - ${escapeHtml(laneLabel(card.status || card.lane))}</p>
-            <h2 id="card-detail-title">${escapeHtml(card.title)}</h2>
+          <div class="card-detail-heading-row">
+            <div>
+              <p class="eyebrow">${escapeHtml(card.id)} - ${escapeHtml(laneLabel(card.status || card.lane))}</p>
+              <h2 id="card-detail-title">${escapeHtml(card.title)}</h2>
+            </div>
+            <button class="icon-button close-button" type="button" title="Close" aria-label="Close card details" data-action="close-card">
+              ${icons.x}
+            </button>
           </div>
-          <button class="icon-button close-button" type="button" title="Close" aria-label="Close card details" data-action="close-card">
-            ${icons.x}
-          </button>
+
+          <div class="status-controls" aria-label="Card status">
+            ${renderLaneButton(card, "ready")}
+            ${renderLaneButton(card, "inProgress", blocked)}
+            ${renderLaneButton(card, "blocked")}
+            ${renderLaneButton(card, "done")}
+          </div>
+
+          ${blocked ? `<p class="blocked-note">Unavailable until prerequisites are Done.</p>` : ""}
+          <div class="card-detail-actions">
+            <button class="secondary-button icon-text-button" type="button" data-action="reset-card" data-card-id="${escapeAttribute(card.id)}" ${canReset ? "" : "disabled"}>
+              ${icons.refresh}
+              <span>Reset</span>
+            </button>
+            ${
+              card.lane === "inProgress"
+                ? `<button class="secondary-button icon-text-button stop-card-button" type="button" data-action="stop-card" data-card-id="${escapeAttribute(card.id)}">
+                    ${icons.stop}
+                    <span>Stop</span>
+                  </button>`
+                : ""
+            }
+            ${
+              canDelete
+                ? `<button class="secondary-button icon-text-button danger-button" type="button" data-action="delete-card" data-card-id="${escapeAttribute(card.id)}">
+                    ${icons.trash}
+                    <span>Delete</span>
+                  </button>`
+                : ""
+            }
+          </div>
         </header>
-
-        <div class="status-controls" aria-label="Card status">
-          ${renderLaneButton(card, "ready")}
-          ${renderLaneButton(card, "inProgress", blocked)}
-          ${renderLaneButton(card, "blocked")}
-          ${renderLaneButton(card, "done")}
-        </div>
-
-        ${blocked ? `<p class="blocked-note">Unavailable until prerequisites are Done.</p>` : ""}
-        <div class="card-detail-actions">
-          <button class="secondary-button icon-text-button" type="button" data-action="reset-card" data-card-id="${escapeAttribute(card.id)}" ${canReset ? "" : "disabled"}>
-            ${icons.refresh}
-            <span>Reset</span>
-          </button>
-          ${
-            card.lane === "inProgress"
-              ? `<button class="secondary-button icon-text-button stop-card-button" type="button" data-action="stop-card" data-card-id="${escapeAttribute(card.id)}">
-                  ${icons.stop}
-                  <span>Stop</span>
-                </button>`
-              : ""
-          }
-          ${
-            canDelete
-              ? `<button class="secondary-button icon-text-button danger-button" type="button" data-action="delete-card" data-card-id="${escapeAttribute(card.id)}">
-                  ${icons.trash}
-                  <span>Delete</span>
-                </button>`
-              : ""
-          }
-        </div>
 
         <section class="detail-section">
           <h3>Description</h3>
