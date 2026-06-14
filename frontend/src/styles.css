@@ -1482,6 +1482,7 @@ h3 {
 }
 
 .card-detail-header {
+  isolation: isolate;
   position: sticky;
   top: 0;
   z-index: 2;
@@ -1500,6 +1501,7 @@ h3 {
   justify-content: space-between;
   gap: 16px;
   min-width: 0;
+  align-self: start;
 }
 
 .card-detail-heading-row > div {
