@@ -318,7 +318,7 @@ func inlineToolParameterValue(name string, raw string) any {
 		if parsed, err := strconv.ParseBool(value); err == nil {
 			return parsed
 		}
-	case "column", "contextLines", "line", "maxBytes", "maxMatches", "maxOutputBytes", "timeoutSeconds":
+	case "aroundLine", "column", "contextLines", "line", "lineCount", "maxBytes", "maxMatches", "maxOutputBytes", "startLine", "timeoutSeconds":
 		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
 			return parsed
 		}

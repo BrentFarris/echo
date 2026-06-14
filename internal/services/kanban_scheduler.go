@@ -1008,6 +1008,7 @@ func kanbanAgentSystemMessage(workspace Workspace) llm.Message {
 				"If you need to inspect or modify files, call the tool immediately instead of saying you will. "+
 				"When you need to find code but do not know the target file, prefer filesystem_search_workspace before shell commands. "+
 				"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. "+
+				"When a search result gives a useful line number, read nearby code with filesystem_read_text aroundLine; copy the result's line value and avoid reading whole source files unless the entire file is genuinely needed. "+
 				"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. "+
 				"Echo automatically runs detected verification commands before marking the card Done; if verification fails, repair the issue using the report. "+
 				"Write the final message as a concise handoff summary for dependent cards, including what was done, important files or decisions, and how it was verified.",

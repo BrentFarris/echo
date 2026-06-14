@@ -1380,6 +1380,7 @@ func assertPlanModeChatRequest(t *testing.T, request llm.ChatRequest) {
 		"do not make workspace changes",
 		"available read-only tools",
 		"workspace_context",
+		"aroundLine",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("expected plan-mode prompt to include %q, got %q", expected, prompt)

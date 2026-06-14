@@ -204,6 +204,20 @@ func TestLLMSchemaTeachesLabeledWorkspacePaths(t *testing.T) {
 	}
 }
 
+func TestFilesystemReadTextSchemaTeachesLineRanges(t *testing.T) {
+	properties := toolSchemaProperties(t, LLMSchema(), "filesystem_read_text")
+	for _, field := range []string{"aroundLine", "contextLines", "startLine", "lineCount"} {
+		property, ok := properties[field].(map[string]any)
+		if !ok {
+			t.Fatalf("expected filesystem_read_text.%s schema property, got %#v", field, properties[field])
+		}
+		description, _ := property["description"].(string)
+		if !strings.Contains(description, "line") {
+			t.Fatalf("expected filesystem_read_text.%s description to mention lines, got %q", field, description)
+		}
+	}
+}
+
 func TestShellCommandSchemaTeachesPowerShellOnWindows(t *testing.T) {
 	properties := toolSchemaProperties(t, LLMSchema(), "shell_command")
 	command, ok := properties["command"].(map[string]any)

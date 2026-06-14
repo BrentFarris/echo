@@ -784,6 +784,7 @@ func chatSystemMessage(workspace Workspace, planMode bool) llm.Message {
 		"Use workspace_context for broad implementation planning when target files are unknown. " +
 		"When you need to find code but do not know the target file, prefer filesystem_search_workspace before shell commands. " +
 		"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. " +
+		"When a search result gives a useful line number, read nearby code with filesystem_read_text aroundLine; copy the result's line value and avoid reading whole source files unless the entire file is genuinely needed. " +
 		"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. " +
 		"Keep plans concrete and concise."
 	if planMode {
@@ -793,6 +794,7 @@ func chatSystemMessage(workspace Workspace, planMode bool) llm.Message {
 			"Use workspace_context for broad implementation planning when target files are unknown. " +
 			"When you need to find code but do not know the target file, prefer filesystem_search_workspace. " +
 			"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. " +
+			"When a search result gives a useful line number, read nearby code with filesystem_read_text aroundLine; copy the result's line value and avoid reading whole source files unless the entire file is genuinely needed. " +
 			"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. " +
 			"Create a concrete, concise plan that follows the user's request and clearly describes the intended changes. " +
 			"Even if the user asks you to modify files, tell them you are unable to because you are in planning mode."

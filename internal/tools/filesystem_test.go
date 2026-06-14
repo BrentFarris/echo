@@ -84,6 +84,86 @@ func TestFilesystemToolsInvestigateWorkspace(t *testing.T) {
 	}
 }
 
+func TestFilesystemReadTextReturnsTargetedLineBlock(t *testing.T) {
+	workspace := t.TempDir()
+	content := strings.Join([]string{"one", "two", "three", "four", "five"}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(workspace, "notes.txt"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := Execute(
+		ExecutionContext{Context: context.Background(), WorkspacePath: workspace},
+		"filesystem_read_text",
+		mustJSON(t, map[string]any{"path": "notes.txt", "startLine": 3, "lineCount": 2}),
+	)
+	if !result.Success {
+		t.Fatalf("line block read failed: %#v", result)
+	}
+	output, ok := result.Output.(readTextFileOutput)
+	if !ok {
+		t.Fatalf("unexpected read output type: %#v", result.Output)
+	}
+	if output.Content != "three\nfour\n" || output.StartLine != 3 || output.EndLine != 4 {
+		t.Fatalf("unexpected line block output: %#v", output)
+	}
+	if output.BytesRead != int64(len("three\nfour\n")) || !output.Truncated {
+		t.Fatalf("expected byte count and truncation marker for partial file read, got %#v", output)
+	}
+}
+
+func TestFilesystemReadTextReturnsBlockAroundLine(t *testing.T) {
+	workspace := t.TempDir()
+	content := strings.Join([]string{"one", "two", "three", "four", "five"}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(workspace, "notes.txt"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := Execute(
+		ExecutionContext{Context: context.Background(), WorkspacePath: workspace},
+		"filesystem_read_text",
+		mustJSON(t, map[string]any{"path": "notes.txt", "aroundLine": 3, "contextLines": 1}),
+	)
+	if !result.Success {
+		t.Fatalf("aroundLine read failed: %#v", result)
+	}
+	output, ok := result.Output.(readTextFileOutput)
+	if !ok {
+		t.Fatalf("unexpected read output type: %#v", result.Output)
+	}
+	if output.Content != "two\nthree\nfour\n" || output.StartLine != 2 || output.EndLine != 4 {
+		t.Fatalf("unexpected aroundLine output: %#v", output)
+	}
+
+	singleLineResult := Execute(
+		ExecutionContext{Context: context.Background(), WorkspacePath: workspace},
+		"filesystem_read_text",
+		mustJSON(t, map[string]any{"path": "notes.txt", "aroundLine": 3, "contextLines": 0}),
+	)
+	if !singleLineResult.Success {
+		t.Fatalf("single-line aroundLine read failed: %#v", singleLineResult)
+	}
+	singleLineOutput := singleLineResult.Output.(readTextFileOutput)
+	if singleLineOutput.Content != "three\n" || singleLineOutput.StartLine != 3 || singleLineOutput.EndLine != 3 {
+		t.Fatalf("unexpected single-line aroundLine output: %#v", singleLineOutput)
+	}
+}
+
+func TestFilesystemReadTextRejectsInvalidLineRange(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "notes.txt"), []byte("hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := Execute(
+		ExecutionContext{Context: context.Background(), WorkspacePath: workspace},
+		"filesystem_read_text",
+		mustJSON(t, map[string]any{"path": "notes.txt", "startLine": -1}),
+	)
+	if result.Success || result.Error == nil || result.Error.Code != "invalid_arguments" {
+		t.Fatalf("expected invalid startLine error, got %#v", result)
+	}
+}
+
 func TestFilesystemToolsUseWorkspaceRootLabels(t *testing.T) {
 	base := t.TempDir()
 	appRoot := filepath.Join(base, "app")

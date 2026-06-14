@@ -101,7 +101,7 @@ func TestInlineToolCallParserExtractsBareFunctionTag(t *testing.T) {
 		t.Fatalf("expected visible prefix only, got %#v", first)
 	}
 
-	second := parser.Consume("tion=filesystem_read>\n<parameter=path>\necho/frontend/src/styles.css\n</parameter>\n</function>")
+	second := parser.Consume("tion=filesystem_read>\n<parameter=path>\necho/frontend/src/styles.css\n</parameter>\n<parameter=aroundLine>42</parameter>\n<parameter=contextLines>3</parameter>\n</function>")
 	if second.Text != "" || len(second.ToolCalls) != 1 {
 		t.Fatalf("expected bare function tag to be extracted, got %#v", second)
 	}
@@ -114,12 +114,14 @@ func TestInlineToolCallParserExtractsBareFunctionTag(t *testing.T) {
 		t.Fatalf("expected filesystem_read_text, got %#v", call)
 	}
 	var args struct {
-		Path string `json:"path"`
+		Path         string `json:"path"`
+		AroundLine   int    `json:"aroundLine"`
+		ContextLines int    `json:"contextLines"`
 	}
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
 		t.Fatalf("decode arguments: %v", err)
 	}
-	if args.Path != "echo/frontend/src/styles.css" {
+	if args.Path != "echo/frontend/src/styles.css" || args.AroundLine != 42 || args.ContextLines != 3 {
 		t.Fatalf("unexpected arguments: %#v", args)
 	}
 }

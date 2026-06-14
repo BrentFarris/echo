@@ -185,7 +185,7 @@ func TestKanbanSchedulerRequestsToolCallingChannel(t *testing.T) {
 	if len(captured.Messages) == 0 || captured.Messages[0].Role != llm.RoleSystem {
 		t.Fatalf("expected system message first, got %#v", captured.Messages)
 	}
-	for _, expected := range []string{"tool-call API", "do not print a function name or JSON arguments"} {
+	for _, expected := range []string{"tool-call API", "do not print a function name or JSON arguments", "aroundLine"} {
 		if !strings.Contains(captured.Messages[0].Content, expected) {
 			t.Fatalf("expected kanban system prompt to include %q, got %q", expected, captured.Messages[0].Content)
 		}
