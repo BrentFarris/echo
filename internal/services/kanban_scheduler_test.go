@@ -149,6 +149,175 @@ func TestKanbanSchedulerIncludesWorkspaceContextBrief(t *testing.T) {
 	}
 }
 
+func TestKanbanSchedulerRequestsToolCallingChannel(t *testing.T) {
+	root := t.TempDir()
+	var captured llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"No changes needed."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Inspect styling", Description: "Read the stylesheet and summarize required changes", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneReady},
+	})
+
+	if _, err := service.StartKanbanExecution(workspaceID, 1); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
+		return len(board.Done) == 1
+	})
+
+	if captured.ToolChoice != "auto" {
+		t.Fatalf("expected auto tool choice, got %#v", captured.ToolChoice)
+	}
+	names := chatRequestToolNames(captured)
+	for _, expected := range []string{"filesystem_read_text", "filesystem_edit_text", "filesystem_search_workspace", "workspace_context"} {
+		if !names[expected] {
+			t.Fatalf("expected kanban request to include tool %s, got %#v", expected, names)
+		}
+	}
+	if len(captured.Messages) == 0 || captured.Messages[0].Role != llm.RoleSystem {
+		t.Fatalf("expected system message first, got %#v", captured.Messages)
+	}
+	for _, expected := range []string{"tool-call API", "do not print a function name or JSON arguments"} {
+		if !strings.Contains(captured.Messages[0].Content, expected) {
+			t.Fatalf("expected kanban system prompt to include %q, got %q", expected, captured.Messages[0].Content)
+		}
+	}
+}
+
+func TestKanbanSchedulerContinuesAfterPreparatoryNoToolResponse(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "styles.css"), []byte("body { color: black; }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var requestCount atomic.Int32
+	var stylePath string
+	var followUpRequest llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"reasoning_content":"I need to inspect the stylesheet."}}]}`,
+				`{"choices":[{"index":0,"delta":{"content":"Let me read the current CSS file first."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		case 2:
+			if err := json.NewDecoder(r.Body).Decode(&followUpRequest); err != nil {
+				t.Fatalf("decode follow-up request: %v", err)
+			}
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_read", "filesystem_read_text", map[string]any{
+					"path": stylePath,
+				}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 3:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Reviewed the stylesheet and no changes were needed."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+	stylePath = labeledTestPath(t, service, workspaceID, "styles.css")
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Inspect stylesheet", Description: "Read styles.css before deciding whether changes are needed", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneReady},
+	})
+
+	if _, err := service.StartKanbanExecution(workspaceID, 1); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	board := waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
+		return len(board.Done) == 1
+	})
+
+	if requestCount.Load() != 3 {
+		t.Fatalf("expected preparatory response to trigger a follow-up and tool call, got %d requests", requestCount.Load())
+	}
+	if !requestContainsContent(followUpRequest, "did not call a tool or finish the card") {
+		t.Fatalf("expected corrective follow-up prompt, got %#v", followUpRequest.Messages)
+	}
+	transcript := board.Done[0].ProgressTranscript
+	if !transcriptContains(transcript, "described its next step") || !transcriptContains(transcript, `"tool":"filesystem_read_text"`) || !transcriptContains(transcript, "Reviewed the stylesheet") {
+		t.Fatalf("expected continuation, tool result, and final summary in transcript, got %#v", transcript)
+	}
+}
+
+func TestKanbanSchedulerContinuesAfterPreparatoryNoToolResponseFollowingToolCall(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "styles.css"), []byte("body { color: black; }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var requestCount atomic.Int32
+	var stylePath string
+	var followUpRequest llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_read", "filesystem_read_text", map[string]any{
+					"path": stylePath,
+				}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 2:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"I'll check the file metadata next."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		case 3:
+			if err := json.NewDecoder(r.Body).Decode(&followUpRequest); err != nil {
+				t.Fatalf("decode follow-up request: %v", err)
+			}
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_stat", "filesystem_stat", map[string]any{
+					"path": stylePath,
+				}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 4:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Reviewed the stylesheet content and metadata; no changes were needed."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+	stylePath = labeledTestPath(t, service, workspaceID, "styles.css")
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Inspect stylesheet metadata", Description: "Read styles.css, then inspect its metadata", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneReady},
+	})
+
+	if _, err := service.StartKanbanExecution(workspaceID, 1); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	board := waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
+		return len(board.Done) == 1
+	})
+
+	if requestCount.Load() != 4 {
+		t.Fatalf("expected preparatory post-tool response to trigger a follow-up and second tool call, got %d requests", requestCount.Load())
+	}
+	if !requestContainsContent(followUpRequest, "did not call a tool or finish the card") {
+		t.Fatalf("expected corrective follow-up prompt after post-tool preparatory response, got %#v", followUpRequest.Messages)
+	}
+	transcript := board.Done[0].ProgressTranscript
+	if !transcriptContains(transcript, `"tool":"filesystem_read_text"`) || !transcriptContains(transcript, "described its next step") || !transcriptContains(transcript, `"tool":"filesystem_stat"`) || !transcriptContains(transcript, "Reviewed the stylesheet content and metadata") {
+		t.Fatalf("expected first tool, continuation, second tool, and final summary in transcript, got %#v", transcript)
+	}
+}
+
 func TestKanbanSchedulerContinuesWhenWorkspaceContextFails(t *testing.T) {
 	root := t.TempDir()
 	var captured llm.ChatRequest

@@ -352,6 +352,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 	}
 	changedPaths := map[string]bool{}
 	verificationAttempts := 0
+	noToolContinuationAttempts := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			s.blockKanbanCard(workspace.ID, cardID, agentID, "Canceled", agentCancellationText)
@@ -386,6 +387,20 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 		assistantMessage := llm.Message{Role: llm.RoleAssistant, Content: content, ToolCalls: toolCalls}
 		messages = append(messages, assistantMessage)
 		if len(toolCalls) == 0 {
+			if shouldContinueKanbanNoToolTurn(content, noToolContinuationAttempts) {
+				noToolContinuationAttempts++
+				s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
+					Type:    "status",
+					Title:   "Agent continuing",
+					Content: "The agent described its next step without calling a tool, so Echo asked it to continue with a real tool call or a final completion summary.",
+					Status:  KanbanLaneInProgress,
+				})
+				messages = append(messages, llm.Message{
+					Role:    llm.RoleUser,
+					Content: kanbanNoToolContinuationPrompt(),
+				})
+				continue
+			}
 			s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
 				Type:    "verification",
 				Title:   "Verification started",
@@ -422,6 +437,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 			s.finishKanbanCard(workspace.ID, cardID, agentID, content)
 			return
 		}
+		noToolContinuationAttempts = 0
 
 		for _, call := range toolCalls {
 			if err := ctx.Err(); err != nil {
@@ -988,7 +1004,9 @@ func kanbanAgentSystemMessage(workspace Workspace) llm.Message {
 			"You are Echo's autonomous Kanban agent. Complete the assigned card inside the active workspace. "+
 				"Treat the provided Workspace Context Brief as your starting map, but validate important facts with targeted tools before editing. "+
 				"Use workspace_context for broad repo context when the brief is missing or the target files remain unclear. "+
-				"Use available tools when you need workspace facts. When you need to find code but do not know the target file, prefer filesystem_search_workspace before shell commands. "+
+				"Use available tools when you need workspace facts. Invoke tools through the tool-call API; do not print a function name or JSON arguments in the card transcript. "+
+				"If you need to inspect or modify files, call the tool immediately instead of saying you will. "+
+				"When you need to find code but do not know the target file, prefer filesystem_search_workspace before shell commands. "+
 				"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. "+
 				"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. "+
 				"Echo automatically runs detected verification commands before marking the card Done; if verification fails, repair the issue using the report. "+
@@ -1130,6 +1148,50 @@ func indentKanbanPromptBlock(content string) string {
 		lines[i] = "  " + strings.TrimRight(lines[i], " \t")
 	}
 	return strings.Join(lines, "\n")
+}
+
+func shouldContinueKanbanNoToolTurn(content string, attempts int) bool {
+	if attempts >= 2 {
+		return false
+	}
+	normalized := strings.ToLower(strings.TrimSpace(content))
+	if normalized == "" {
+		return true
+	}
+	preparatoryPrefixes := []string{
+		"let me ",
+		"i'll ",
+		"i’ll ",
+		"i will ",
+		"i'm going to ",
+		"i’m going to ",
+		"i am going to ",
+		"i need to ",
+		"first, ",
+		"first ",
+	}
+	for _, prefix := range preparatoryPrefixes {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	for _, phrase := range []string{
+		" start by ",
+		" start with ",
+		" going to inspect ",
+		" going to read ",
+		" need to inspect ",
+		" need to read ",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func kanbanNoToolContinuationPrompt() string {
+	return "Continue the card. Your previous response described the next step but did not call a tool or finish the card. If you need workspace facts or file changes, invoke the appropriate tool through the tool-call API now. Do not print tool names or JSON arguments as normal text. If the card is already complete without tool use, reply with a concise final handoff summary."
 }
 
 func normalizeAgentLimit(concurrency int) int {
