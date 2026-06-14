@@ -1,11 +1,13 @@
 
 import { llm, services } from "../../wailsjs/go/models";
+import type { ThemePaletteName } from "./theme";
 import type { AppMode, ChatImageDraft, ChatMentionState, ContextMenuState, Toast } from "./types";
 
 export const state = {
   appState: null as services.AppState | null,
   settingsDraft: null as llm.Settings | null,
   settingsOpen: false,
+  settingsThemePalette: "light" as ThemePaletteName,
   workspaceLetterDrafts: new Map<string, string>(),
   appMode: "chat-kanban" as AppMode,
   formError: "",

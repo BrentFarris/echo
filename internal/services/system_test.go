@@ -1733,6 +1733,9 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	if state.Settings.DisableNotificationSounds {
 		t.Fatal("expected notification sounds to be enabled by default")
 	}
+	if len(state.Settings.Theme.Light) != 0 || len(state.Settings.Theme.Dark) != 0 {
+		t.Fatal("expected theme overrides to be empty by default")
+	}
 
 	settings := state.Settings
 	settings.Endpoint = "https://example.test/v1"
@@ -1747,6 +1750,13 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	settings.PresencePenalty = 1.25
 	settings.RepetitionPenalty = 1.05
 	settings.DisableNotificationSounds = true
+	settings.Theme.Light = map[string]string{
+		"accent":      "#123ABC",
+		"futureToken": "#abc",
+	}
+	settings.Theme.Dark = map[string]string{
+		"surface": "#112233",
+	}
 
 	if _, err := service.SaveSettings(settings); err != nil {
 		t.Fatalf("save settings: %v", err)
@@ -1776,6 +1786,15 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	}
 	if !reloaded.Settings.DisableNotificationSounds {
 		t.Fatal("expected persisted disabled notification sounds setting")
+	}
+	if reloaded.Settings.Theme.Light["accent"] != "#123abc" {
+		t.Fatalf("expected normalized light accent override, got %q", reloaded.Settings.Theme.Light["accent"])
+	}
+	if reloaded.Settings.Theme.Light["futureToken"] != "#aabbcc" {
+		t.Fatalf("expected normalized future token override, got %q", reloaded.Settings.Theme.Light["futureToken"])
+	}
+	if reloaded.Settings.Theme.Dark["surface"] != "#112233" {
+		t.Fatalf("expected persisted dark surface override, got %q", reloaded.Settings.Theme.Dark["surface"])
 	}
 }
 
@@ -1815,6 +1834,17 @@ func TestSystemServiceRejectsInvalidSettings(t *testing.T) {
 	settings.RepetitionPenalty = -0.1
 	if _, err := service.SaveSettings(settings); err == nil {
 		t.Fatal("expected invalid repetition penalty to be rejected")
+	}
+
+	settings.RepetitionPenalty = llm.DefaultSettings().RepetitionPenalty
+	settings.Theme.Light = map[string]string{"accent": "red"}
+	if _, err := service.SaveSettings(settings); err == nil {
+		t.Fatal("expected invalid theme color to be rejected")
+	}
+
+	settings.Theme.Light = map[string]string{"": "#123456"}
+	if _, err := service.SaveSettings(settings); err == nil {
+		t.Fatal("expected invalid theme token to be rejected")
 	}
 }
 

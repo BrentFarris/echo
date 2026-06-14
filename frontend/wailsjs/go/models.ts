@@ -1,5 +1,19 @@
 export namespace llm {
 	
+	export class Theme {
+	    light?: Record<string, string>;
+	    dark?: Record<string, string>;
+	
+	    static createFrom(source: any = {}) {
+	        return new Theme(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.light = source["light"];
+	        this.dark = source["dark"];
+	    }
+	}
 	export class Settings {
 	    endpoint: string;
 	    model: string;
@@ -16,6 +30,7 @@ export namespace llm {
 	    searxngUrl: string;
 	    hideLeadingWhitespaceIndicators?: boolean;
 	    disableNotificationSounds?: boolean;
+	    theme?: Theme;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -38,7 +53,26 @@ export namespace llm {
 	        this.searxngUrl = source["searxngUrl"];
 	        this.hideLeadingWhitespaceIndicators = source["hideLeadingWhitespaceIndicators"];
 	        this.disableNotificationSounds = source["disableNotificationSounds"];
+	        this.theme = this.convertValues(source["theme"], Theme);
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }

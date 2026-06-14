@@ -11,6 +11,7 @@ import { playNotificationSound } from "./notifications";
 import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatSessionFor, kanbanBoardFor, kanbanCards, state } from "./state";
 import { clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
 import { cloneSettings } from "./state";
+import { applyTheme, settingsWithThemeDefaults, themePaletteNames } from "./theme";
 import { pushToast, dismissToast } from "./toasts";
 import { copyTextToClipboard, errorMessage, laneLabel } from "./utils";
 import { hydrateWorkspaceLetterDrafts } from "./workspace";
@@ -134,19 +135,38 @@ export async function handleAction(event: Event) {
       }
       state.settingsOpen = true;
       state.formError = "";
-      state.settingsDraft ??= cloneSettings(state.appState!.settings);
+      state.settingsDraft = cloneSettings(state.appState!.settings);
+      applyTheme(state.settingsDraft);
       hydrateWorkspaceLetterDrafts(state.appState?.workspaces ?? []);
       getAppCallbacks().render();
     }
     if (action === "close-settings") {
       state.settingsOpen = false;
       state.formError = "";
+      applyTheme(state.appState?.settings);
       getAppCallbacks().render();
     }
     if (action === "reset-settings") {
       state.settingsDraft = cloneSettings(state.appState!.settings);
+      applyTheme(state.settingsDraft);
       hydrateWorkspaceLetterDrafts(state.appState?.workspaces ?? []);
       state.formError = "";
+      getAppCallbacks().render();
+    }
+    if (action === "set-theme-palette") {
+      const palette = target.dataset.themePalette;
+      if (palette && (themePaletteNames as string[]).includes(palette)) {
+        state.settingsThemePalette = palette as typeof state.settingsThemePalette;
+        getAppCallbacks().render();
+      }
+    }
+    if (action === "restore-theme-defaults") {
+      if (!state.settingsDraft) {
+        return;
+      }
+      state.settingsDraft = settingsWithThemeDefaults(state.settingsDraft);
+      state.formError = "";
+      applyTheme(state.settingsDraft);
       getAppCallbacks().render();
     }
     if (action === "add-workspace") {

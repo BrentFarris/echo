@@ -4,6 +4,7 @@ import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
 import { cloneSettings, fieldValue, leadingWhitespaceIndicatorsEnabled, notificationSoundsEnabled, state } from "../state";
+import { applyTheme, normalizeHexColor, settingsWithCompactTheme, settingsWithThemeColor, themeColorValue, themeGroups, themeTokens, type ThemePaletteName } from "../theme";
 import { pushToast } from "../toasts";
 import { errorMessage, escapeAttribute, escapeHtml, workspaceFolderSummary } from "../utils";
 import { hydrateWorkspaceLetterDrafts, renderWorkspaceFolderSettings, renderWorkspaceIcon, workspaceLetterDraft } from "../workspace";
@@ -125,6 +126,8 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
           </label>
         </section>
 
+        ${renderThemeSettings()}
+
         <section class="settings-section workspace-settings" aria-labelledby="workspace-settings-title">
           <h3 id="workspace-settings-title" class="settings-section-title">Workspaces</h3>
           <div class="workspace-list">
@@ -180,9 +183,87 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
   `;
 }
 
+function renderThemeSettings(): string {
+  const palette = state.settingsThemePalette;
+  return `
+    <section class="settings-section theme-settings" aria-labelledby="theme-settings-title">
+      <div class="settings-section-heading">
+        <h3 id="theme-settings-title" class="settings-section-title">Theme Colors</h3>
+        <button class="secondary-button compact-button" type="button" data-action="restore-theme-defaults">Restore Theme Defaults</button>
+      </div>
+      <div class="theme-palette-toggle" role="tablist" aria-label="Theme palette">
+        ${(["light", "dark"] as ThemePaletteName[])
+          .map(
+            (name) => `
+              <button
+                class="theme-palette-button ${palette === name ? "is-active" : ""}"
+                type="button"
+                role="tab"
+                aria-selected="${palette === name}"
+                data-action="set-theme-palette"
+                data-theme-palette="${name}"
+              >${name === "light" ? "Light" : "Dark"}</button>
+            `,
+          )
+          .join("")}
+      </div>
+      <div class="theme-token-groups">
+        ${themeGroups.map((group) => renderThemeTokenGroup(group, palette)).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderThemeTokenGroup(group: string, palette: ThemePaletteName): string {
+  const tokens = themeTokens.filter((token) => token.group === group);
+  return `
+    <div class="theme-token-group">
+      <h4>${escapeHtml(group)}</h4>
+      <div class="theme-token-grid">
+        ${tokens.map((token) => renderThemeTokenField(token, palette)).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderThemeTokenField(
+  token: (typeof themeTokens)[number],
+  palette: ThemePaletteName,
+): string {
+  const value = themeColorValue(state.settingsDraft, palette, token);
+  return `
+    <label class="theme-color-field">
+      <span>${escapeHtml(token.label)}</span>
+      <span class="theme-color-control">
+        <input
+          class="theme-color-swatch"
+          type="color"
+          value="${escapeAttribute(value)}"
+          aria-label="${escapeAttribute(`${token.label} color`)}"
+          data-theme-token="${escapeAttribute(token.key)}"
+          data-theme-palette="${palette}"
+        />
+        <input
+          class="theme-color-hex"
+          type="text"
+          value="${escapeAttribute(value)}"
+          spellcheck="false"
+          inputmode="text"
+          aria-label="${escapeAttribute(`${token.label} hex color`)}"
+          data-theme-token="${escapeAttribute(token.key)}"
+          data-theme-palette="${palette}"
+        />
+      </span>
+    </label>
+  `;
+}
 
 export function handleSettingsInput(event: Event) {
   const input = event.currentTarget as HTMLInputElement;
+  if (input.dataset.themeToken !== undefined) {
+    handleThemeColorInput(input);
+    return;
+  }
   if (input.dataset.workspaceFolderAgents !== undefined) {
     return;
   }
@@ -223,6 +304,44 @@ export function handleSettingsInput(event: Event) {
   state.formError = "";
 }
 
+function handleThemeColorInput(input: HTMLInputElement) {
+  if (!state.settingsDraft) {
+    return;
+  }
+  const palette = input.dataset.themePalette as ThemePaletteName | undefined;
+  const tokenKey = input.dataset.themeToken ?? "";
+  if (palette !== "light" && palette !== "dark") {
+    return;
+  }
+  state.settingsDraft = settingsWithThemeColor(
+    state.settingsDraft,
+    palette,
+    tokenKey,
+    input.value,
+  );
+  const normalized = normalizeHexColor(input.value);
+  if (normalized) {
+    syncThemeColorInputs(input, normalized);
+  }
+  state.formError = "";
+  applyTheme(state.settingsDraft);
+}
+
+function syncThemeColorInputs(source: HTMLInputElement, value: string) {
+  source.form
+    ?.querySelectorAll<HTMLInputElement>("[data-theme-token][data-theme-palette]")
+    .forEach((input) => {
+      if (
+        input === source ||
+        input.dataset.themeToken !== source.dataset.themeToken ||
+        input.dataset.themePalette !== source.dataset.themePalette
+      ) {
+        return;
+      }
+      input.value = value;
+    });
+}
+
 export async function handleWorkspaceFolderAgentsChange(input: HTMLInputElement) {
   const workspaceID = input.dataset.workspaceId ?? "";
   const folderID = input.dataset.folderId ?? "";
@@ -256,7 +375,7 @@ export async function handleSettingsSubmit(event: SubmitEvent) {
   }
 
   try {
-    state.appState = await SaveSettings(state.settingsDraft);
+    state.appState = await SaveSettings(settingsWithCompactTheme(state.settingsDraft));
     for (const workspace of state.appState.workspaces ?? []) {
       const draft = state.workspaceLetterDrafts.get(workspace.id);
       if (draft !== undefined && draft !== (workspace.letter ?? "")) {
@@ -264,6 +383,7 @@ export async function handleSettingsSubmit(event: SubmitEvent) {
       }
     }
     state.settingsDraft = cloneSettings(state.appState.settings);
+    applyTheme(state.appState.settings);
     hydrateWorkspaceLetterDrafts(state.appState.workspaces ?? []);
     state.settingsOpen = false;
     state.formError = "";

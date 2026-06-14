@@ -12,6 +12,7 @@ import { handleGlobalKeydown, handleGlobalKeyup, handleGlobalPointerDown, handle
 import { applyKanbanEvent, loadActiveKanbanBoard } from "./kanban";
 import { render } from "./render";
 import { cloneSettings, leadingWhitespaceIndicatorsEnabled, state } from "./state";
+import { applyTheme } from "./theme";
 import { pushToast } from "./toasts";
 import type { ChatStreamEvent, FileChangesEvent, KanbanEvent } from "./types";
 import { errorMessage } from "./utils";
@@ -47,6 +48,7 @@ async function initialize() {
   try {
     state.appState = await LoadState();
     state.settingsDraft = cloneSettings(state.appState.settings);
+    applyTheme(state.appState.settings);
     await loadActiveChatSession();
     await loadActiveKanbanBoard();
     await loadActiveChangeReview();
@@ -57,6 +59,7 @@ async function initialize() {
       activeWorkspaceId: "",
     });
     state.settingsDraft = cloneSettings(state.appState.settings);
+    applyTheme(state.appState.settings);
     pushToast(errorMessage(error), "error");
   }
   render();

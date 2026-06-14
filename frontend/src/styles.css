@@ -17,7 +17,11 @@
   --color-text-muted: #6f6360;
   --color-accent: #8f1d2c;
   --color-accent-strong: #6f1320;
+  --color-on-accent: #ffffff;
   --color-danger: #b42332;
+  --color-success: #1a7f37;
+  --color-info: #3c82e6;
+  --color-warning: #9a6700;
   --code-editor-bg: #ffffff;
   --code-editor-text: #24292f;
   --code-editor-gutter-bg: #f6f8fa;
@@ -57,7 +61,11 @@
     --color-text-muted: #b7aaab;
     --color-accent: #b93648;
     --color-accent-strong: #d94b5f;
+    --color-on-accent: #ffffff;
     --color-danger: #ff6677;
+    --color-success: #3fb950;
+    --color-info: #58a6ff;
+    --color-warning: #d29922;
     --code-editor-bg: #0d1117;
     --code-editor-text: #e6edf3;
     --code-editor-gutter-bg: #0d1117;
@@ -407,7 +415,7 @@ h3 {
 }
 
 .chat-plan-toggle span {
-  color: #888;
+  color: var(--color-text-muted);
 }
 
 .chat-plan-toggle input {
@@ -468,8 +476,8 @@ h3 {
 
 .chat-message.from-user {
   margin-left: 26px;
-  border-color: color-mix(in srgb, rgba(60,130,230) 36%, var(--color-border));
-  background: color-mix(in srgb, rgba(60,130,230) 10%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-info) 36%, var(--color-border));
+  background: color-mix(in srgb, var(--color-info) 10%, var(--color-surface));
 }
 
 .chat-message.from-assistant {
@@ -1683,13 +1691,13 @@ h3 {
 }
 
 .change-diff-line.is-added {
-  background: color-mix(in srgb, #1a7f37 16%, transparent);
-  color: color-mix(in srgb, #1a7f37 76%, var(--code-editor-text));
+  background: color-mix(in srgb, var(--color-success) 16%, transparent);
+  color: color-mix(in srgb, var(--color-success) 76%, var(--code-editor-text));
 }
 
 .change-diff-line.is-removed {
-  background: color-mix(in srgb, #cf222e 16%, transparent);
-  color: color-mix(in srgb, #cf222e 78%, var(--code-editor-text));
+  background: color-mix(in srgb, var(--color-danger) 16%, transparent);
+  color: color-mix(in srgb, var(--color-danger) 78%, var(--code-editor-text));
 }
 
 .change-diff-line.is-meta {
@@ -1932,6 +1940,20 @@ h3 {
   line-height: 1.2;
 }
 
+.settings-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.compact-button {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 0.78rem;
+}
+
 .field {
   display: grid;
   gap: 7px;
@@ -1985,6 +2007,103 @@ h3 {
   height: 18px;
   margin: 0;
   accent-color: var(--color-accent);
+}
+
+.theme-settings {
+  gap: 14px;
+}
+
+.theme-palette-toggle {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  width: min(220px, 100%);
+  padding: 3px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+}
+
+.theme-palette-button {
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.theme-palette-button.is-active {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
+.theme-token-groups {
+  display: grid;
+  gap: 14px;
+}
+
+.theme-token-group {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.theme-token-group h4 {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.82rem;
+  line-height: 1.2;
+}
+
+.theme-token-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+
+.theme-color-field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.theme-color-field > span:first-child {
+  color: var(--color-text-muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.theme-color-control {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+
+.theme-color-swatch,
+.theme-color-hex {
+  width: 100%;
+  height: 42px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.theme-color-swatch {
+  padding: 2px;
+  cursor: pointer;
+}
+
+.theme-color-hex {
+  min-width: 0;
+  padding: 0 11px;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.86rem;
 }
 
 .workspace-settings {
@@ -2627,7 +2746,7 @@ h3 {
 .primary-button {
   border-color: var(--color-accent);
   background: var(--color-accent);
-  color: white;
+  color: var(--color-on-accent);
 }
 
 .secondary-button {
@@ -2646,7 +2765,7 @@ h3 {
 }
 
 .run-button {
-  color: white !important;
+  color: var(--color-on-accent) !important;
 }
 
 .toast-region {
@@ -2692,7 +2811,8 @@ h3 {
 
 @media (max-width: 920px) {
   .split-panels,
-  .settings-grid {
+  .settings-grid,
+  .theme-token-grid {
     grid-template-columns: 1fr;
   }
 
@@ -2757,6 +2877,11 @@ h3 {
 
   .settings-panel {
     max-height: calc(100vh - 24px);
+  }
+
+  .settings-section-heading {
+    align-items: start;
+    display: grid;
   }
 
   .kanban-board {

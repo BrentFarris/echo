@@ -9,6 +9,7 @@ import { appRoot } from "./dom";
 import { closeSelectedCardDetail, bindCardDescriptionEvents, bindCardMessageEvents } from "./kanban";
 import { bindSettingsEvents } from "./settings";
 import { activeWorkspace, state } from "./state";
+import { applyTheme } from "./theme";
 
 export function bindEvents() {
   bindActionEvents(appRoot);
@@ -132,6 +133,7 @@ export function handleGlobalKeydown(event: KeyboardEvent) {
     event.preventDefault();
     state.settingsOpen = false;
     state.formError = "";
+    applyTheme(state.appState?.settings);
     getAppCallbacks().render();
     return;
   }

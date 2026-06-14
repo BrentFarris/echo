@@ -33,6 +33,12 @@ type Settings struct {
 	SearxngURL                      string  `json:"searxngUrl"`
 	HideLeadingWhitespaceIndicators bool    `json:"hideLeadingWhitespaceIndicators,omitempty"`
 	DisableNotificationSounds       bool    `json:"disableNotificationSounds,omitempty"`
+	Theme                           Theme   `json:"theme,omitempty"`
+}
+
+type Theme struct {
+	Light map[string]string `json:"light,omitempty"`
+	Dark  map[string]string `json:"dark,omitempty"`
 }
 
 func DefaultSettings() Settings {
@@ -71,6 +77,7 @@ func (s Settings) Normalized() Settings {
 	if s.TimeoutSeconds == 0 {
 		s.TimeoutSeconds = defaultTimout
 	}
+	s.Theme = s.Theme.Normalized()
 	return s
 }
 
@@ -120,7 +127,97 @@ func (s Settings) Validate() error {
 	if s.TimeoutSeconds < 1 {
 		return fmt.Errorf("timeout must be at least 1 second")
 	}
+	if err := s.Theme.Validate(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (t Theme) Normalized() Theme {
+	return Theme{
+		Light: normalizeThemePalette(t.Light),
+		Dark:  normalizeThemePalette(t.Dark),
+	}
+}
+
+func (t Theme) Validate() error {
+	if err := validateThemePalette("light", t.Light); err != nil {
+		return err
+	}
+	return validateThemePalette("dark", t.Dark)
+}
+
+func normalizeThemePalette(palette map[string]string) map[string]string {
+	if len(palette) == 0 {
+		return nil
+	}
+	normalized := make(map[string]string, len(palette))
+	for key, value := range palette {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if color, ok := normalizeHexColor(value); ok {
+			value = color
+		}
+		normalized[key] = value
+	}
+	return normalized
+}
+
+func validateThemePalette(name string, palette map[string]string) error {
+	for key, value := range palette {
+		if !isValidThemeTokenKey(key) {
+			return fmt.Errorf("theme %s color token %q is invalid", name, key)
+		}
+		if _, ok := normalizeHexColor(value); !ok {
+			return fmt.Errorf("theme %s color %q must be a 3- or 6-digit hex color", name, key)
+		}
+	}
+	return nil
+}
+
+func isValidThemeTokenKey(value string) bool {
+	if value == "" {
+		return false
+	}
+	for index, char := range value {
+		if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' {
+			continue
+		}
+		if index > 0 && (char >= '0' && char <= '9' || char == '-' || char == '_') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func normalizeHexColor(value string) (string, bool) {
+	if len(value) != 4 && len(value) != 7 {
+		return "", false
+	}
+	if value[0] != '#' {
+		return "", false
+	}
+	var builder strings.Builder
+	builder.WriteByte('#')
+	for index := 1; index < len(value); index++ {
+		char := value[index]
+		var normalized byte
+		if char >= '0' && char <= '9' {
+			normalized = char
+		} else if char >= 'a' && char <= 'f' {
+			normalized = char
+		} else if char >= 'A' && char <= 'F' {
+			normalized = char + ('a' - 'A')
+		} else {
+			return "", false
+		}
+		builder.WriteByte(normalized)
+		if len(value) == 4 {
+			builder.WriteByte(normalized)
+		}
+	}
+	return builder.String(), true
 }
 
 func validateHTTPURL(value string, label string) error {
