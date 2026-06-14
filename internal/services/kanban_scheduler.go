@@ -1044,10 +1044,14 @@ func kanbanAgentUserMessage(card KanbanCard, dependencyOutputs []kanbanDependenc
 			progress = strings.Join(lines, "\n")
 		}
 	}
+	description := card.Description
+	if dir := strings.TrimSpace(card.Direction); dir != "" {
+		description += "\n\nAdditional direction:\n" + dir
+	}
 	return llm.Message{
 		Role: llm.RoleUser,
 		Content: fmt.Sprintf("Complete this Kanban card.\n\nID: %s\nTitle: %s\nDescription: %s\nAcceptance criteria:\n%s\n\nCompleted dependency outputs:\n%s\n\nPrior card log:\n%s\n\nWorkspace context brief:\n%s",
-			card.ID, card.Title, card.Description, criteria, dependencies, progress, strings.TrimSpace(contextBrief)),
+			card.ID, card.Title, description, criteria, dependencies, progress, strings.TrimSpace(contextBrief)),
 	}
 }
 

@@ -1482,6 +1482,7 @@ h3 {
 }
 
 .card-detail-header {
+  isolation: isolate;
   position: sticky;
   top: 0;
   z-index: 2;
@@ -1495,13 +1496,16 @@ h3 {
 
 .card-detail-heading-row {
   display: flex;
-  align-items: start;
+  flex-wrap: nowrap;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
   min-width: 0;
+  align-self: start;
 }
 
 .card-detail-heading-row > div {
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -1852,14 +1856,16 @@ h3 {
 }
 
 .card-description-form,
-.card-message-form {
+.card-message-form,
+.card-direction-form {
   display: grid;
   gap: 10px;
   padding-top: 4px;
 }
 
 .card-description-form textarea,
-.card-message-form textarea {
+.card-message-form textarea,
+.card-direction-form textarea {
   width: 100%;
   min-width: 0;
   resize: vertical;
@@ -1872,7 +1878,8 @@ h3 {
 }
 
 .card-description-form button,
-.card-message-form button {
+.card-message-form button,
+.card-direction-form button {
   justify-self: end;
 }
 
@@ -1911,6 +1918,7 @@ h3 {
 
 .close-button {
   flex: 0 0 auto;
+  align-self: flex-start;
 }
 
 .form-error {

@@ -976,6 +976,10 @@ export async function handleChatSubmit(event: SubmitEvent) {
     state.chatDrafts.set(workspace.id, "");
     state.chatImageDrafts.delete(workspace.id);
     clearChatMention();
+    const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
+    if (input) {
+      input.value = "";
+    }
     state.chatSessions.set(workspace.id, nextSession);
     getAppCallbacks().render();
     scrollChatToBottom();
@@ -1007,6 +1011,7 @@ export async function handleChatEditSubmit(event: SubmitEvent) {
       await EditChatMessage(workspace.id, messageID, trimmed, chatPlanModeFor(workspace.id)),
     );
     state.editingMessageIds.delete(messageID);
+    state.chatDrafts.delete(workspace.id);
     getAppCallbacks().render();
   } catch (error) {
     pushToast(errorMessage(error), "error");
@@ -1221,10 +1226,21 @@ export function patchChatPanel() {
     getAppCallbacks().render();
     return;
   }
+
+  // Preserve the current draft value before regenerating the panel.
+  const draft = state.chatDrafts.get(workspace.id) ?? "";
+
   const next = document.createElement("template");
   next.innerHTML = renderChatPanel(workspace, state.expandedChatWorkspaces.has(workspace.id)).trim();
   const replacement = next.content.firstElementChild as HTMLElement;
   panel.replaceWith(replacement);
+
+  // Restore the draft to the newly created textarea if it differs from the rendered value.
+  const input = replacement.querySelector<HTMLTextAreaElement>("[data-chat-input]");
+  if (input && input.value !== draft) {
+    input.value = draft;
+  }
+
   getAppCallbacks().bindActionEvents(replacement);
   getAppCallbacks().bindChatEvents(replacement);
   void linkifyAssistantFilePaths(replacement);

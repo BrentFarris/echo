@@ -1,6 +1,6 @@
 
 import { patchChildrenFromHtml, renderMarkdown } from "../../markdown";
-import { AddKanbanCardMessage, CloseKanbanCardDetail, LoadKanbanBoard, UpdateKanbanCardDescription } from "../../../wailsjs/go/services/SystemService";
+import { AddKanbanCardMessage, CloseKanbanCardDetail, LoadKanbanBoard, UpdateKanbanCardDescription, UpdateKanbanCardDirection } from "../../../wailsjs/go/services/SystemService";
 import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";
@@ -310,6 +310,21 @@ export function renderKanbanDetail(board: services.KanbanBoard): string {
         </section>
 
         <section class="detail-section">
+          <h3>Direction</h3>
+          ${
+            canEditDescription
+              ? `<form class="card-direction-form" data-card-direction-form data-card-id="${escapeAttribute(card.id)}">
+                  <textarea name="direction" rows="5" aria-label="Card direction" data-card-direction-input>${escapeHtml(card.direction ?? "")}</textarea>
+                  <button class="primary-button icon-text-button" type="submit" disabled>
+                    ${icons.check}
+                    <span>Save</span>
+                  </button>
+                </form>`
+              : `<p>${escapeHtml(card.direction || "")}</p>`
+          }
+        </section>
+
+        <section class="detail-section">
           <h3>Dependencies</h3>
           ${
             dependencies.length
@@ -484,6 +499,53 @@ export async function handleCardMessageSubmit(event: SubmitEvent) {
     state.cardMessageDrafts.delete(key);
     state.selectedKanbanCards.set(workspace.id, cardID);
     pushToast("Card returned to Ready.", "success");
+    getAppCallbacks().render();
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+    getAppCallbacks().render();
+  }
+}
+
+export function bindCardDirectionEvents(root: ParentNode) {
+  const form = root.querySelector<HTMLFormElement>("[data-card-direction-form]");
+  form?.addEventListener("submit", handleCardDirectionSubmit);
+  root
+    .querySelectorAll<HTMLTextAreaElement>("[data-card-direction-input]")
+    .forEach((input) => input.addEventListener("input", handleCardDirectionInput));
+}
+
+export function handleCardDirectionInput(event: Event) {
+  const workspace = activeWorkspace();
+  const card = workspace ? selectedKanbanCard(kanbanBoardFor(workspace.id)) : null;
+  if (!workspace || !card) {
+    return;
+  }
+  const input = event.currentTarget as HTMLTextAreaElement;
+  const button = input.form?.querySelector<HTMLButtonElement>('button[type="submit"]');
+  if (button) {
+    const nextDirection = input.value.trim();
+    button.disabled = nextDirection.length === 0 || nextDirection === (card.direction ?? "").trim();
+  }
+}
+
+export async function handleCardDirectionSubmit(event: SubmitEvent) {
+  event.preventDefault();
+  const workspace = activeWorkspace();
+  const form = event.currentTarget as HTMLFormElement;
+  const cardID = form.dataset.cardId ?? "";
+  const input = form.querySelector<HTMLTextAreaElement>("[data-card-direction-input]");
+  if (!workspace || !cardID || !input) {
+    return;
+  }
+  const direction = input.value.trim();
+  if (!direction) {
+    return;
+  }
+
+  try {
+    state.kanbanBoards.set(workspace.id, await UpdateKanbanCardDirection(workspace.id, cardID, direction));
+    state.selectedKanbanCards.set(workspace.id, cardID);
+    pushToast("Card direction updated.", "success");
     getAppCallbacks().render();
   } catch (error) {
     pushToast(errorMessage(error), "error");

@@ -18,6 +18,7 @@ type KanbanCard struct {
 	WorkspaceID        string                   `json:"workspaceId"`
 	Title              string                   `json:"title"`
 	Description        string                   `json:"description"`
+	Direction          string                   `json:"direction,omitempty"`
 	AcceptanceCriteria []string                 `json:"acceptanceCriteria"`
 	Dependencies       []string                 `json:"dependencies,omitempty"`
 	DependencyStatuses []KanbanDependencyStatus `json:"dependencyStatuses,omitempty"`
@@ -269,6 +270,55 @@ func (s *SystemService) UpdateKanbanCardDescription(workspaceID string, cardID s
 			Type:    "message",
 			Title:   "Description updated",
 			Content: "User edited the card description before execution.",
+			Status:  KanbanLaneReady,
+		})
+		if err := s.saveLocked(); err != nil {
+			s.mu.Unlock()
+			s.chatMu.Unlock()
+			return KanbanBoard{}, err
+		}
+		board := boardForWorkspace(workspaceID, s.state.KanbanCards)
+		s.mu.Unlock()
+		s.chatMu.Unlock()
+		s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_updated", Board: board})
+		return board, nil
+	}
+	s.mu.Unlock()
+	s.chatMu.Unlock()
+	return KanbanBoard{}, fmt.Errorf("kanban card was not found")
+}
+
+func (s *SystemService) UpdateKanbanCardDirection(workspaceID string, cardID string, direction string) (KanbanBoard, error) {
+	direction = strings.TrimSpace(direction)
+	if direction == "" {
+		return KanbanBoard{}, fmt.Errorf("direction is required")
+	}
+	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
+		return KanbanBoard{}, err
+	}
+
+	s.chatMu.Lock()
+	if _, running := s.kanbanRuns[workspaceID]; running {
+		s.chatMu.Unlock()
+		return KanbanBoard{}, fmt.Errorf("kanban directions cannot be edited while cards are running")
+	}
+
+	s.mu.Lock()
+	for index := range s.state.KanbanCards {
+		card := &s.state.KanbanCards[index]
+		if card.WorkspaceID != workspaceID || card.ID != cardID {
+			continue
+		}
+		if normalizeKanbanLane(card.Lane) != KanbanLaneReady {
+			s.mu.Unlock()
+			s.chatMu.Unlock()
+			return KanbanBoard{}, fmt.Errorf("only Ready card directions can be edited")
+		}
+		card.Direction = direction
+		card.ProgressTranscript = append(card.ProgressTranscript, KanbanProgressEntry{
+			Type:    "message",
+			Title:   "Direction updated",
+			Content: "User edited the card direction before execution.",
 			Status:  KanbanLaneReady,
 		})
 		if err := s.saveLocked(); err != nil {
