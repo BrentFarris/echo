@@ -479,6 +479,7 @@ export namespace services {
 	    workspaceId: string;
 	    title: string;
 	    description: string;
+	    direction?: string;
 	    acceptanceCriteria: string[];
 	    dependencies?: string[];
 	    dependencyStatuses?: KanbanDependencyStatus[];
@@ -498,6 +499,7 @@ export namespace services {
 	        this.workspaceId = source["workspaceId"];
 	        this.title = source["title"];
 	        this.description = source["description"];
+	        this.direction = source["direction"];
 	        this.acceptanceCriteria = source["acceptanceCriteria"];
 	        this.dependencies = source["dependencies"];
 	        this.dependencyStatuses = this.convertValues(source["dependencyStatuses"], KanbanDependencyStatus);

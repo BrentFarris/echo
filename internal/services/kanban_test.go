@@ -230,6 +230,85 @@ func TestUpdateKanbanCardDescriptionBeforeExecution(t *testing.T) {
 	}
 }
 
+func TestUpdateKanbanCardDirectionBeforeExecution(t *testing.T) {
+	service, workspaceID := newKanbanTestService(t)
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Ready work", Description: "Original", Direction: "", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneReady},
+	})
+
+	board, err := service.UpdateKanbanCardDirection(workspaceID, "card-1", "  New direction  ")
+	if err != nil {
+		t.Fatalf("update direction: %v", err)
+	}
+	if len(board.Ready) != 1 {
+		t.Fatalf("expected ready card, got %#v", board)
+	}
+	card := board.Ready[0]
+	if card.Direction != "New direction" {
+		t.Fatalf("expected trimmed direction, got %q", card.Direction)
+	}
+	if len(card.ProgressTranscript) != 1 || card.ProgressTranscript[0].Title != "Direction updated" {
+		t.Fatalf("expected direction update in transcript, got %#v", card.ProgressTranscript)
+	}
+}
+
+func TestUpdateKanbanCardDirectionRejectsEmptyInput(t *testing.T) {
+	service, workspaceID := newKanbanTestService(t)
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Ready work", Description: "Original", Direction: "", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneReady},
+	})
+
+	if _, err := service.UpdateKanbanCardDirection(workspaceID, "card-1", "   "); err == nil {
+		t.Fatal("expected empty direction to be rejected")
+	}
+}
+
+func TestUpdateKanbanCardDirectionRejectsStartedCard(t *testing.T) {
+	service, workspaceID := newKanbanTestService(t)
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Active work", Description: "Original", Direction: "", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneInProgress},
+	})
+
+	if _, err := service.UpdateKanbanCardDirection(workspaceID, "card-1", "New direction"); err == nil {
+		t.Fatal("expected started card direction edit to be rejected")
+	}
+
+	board, err := service.LoadKanbanBoard(workspaceID)
+	if err != nil {
+		t.Fatalf("load board: %v", err)
+	}
+	if len(board.InProgress) != 1 || board.InProgress[0].Direction != "" {
+		t.Fatalf("expected original direction to be preserved, got %#v", board)
+	}
+}
+
+func TestUpdateKanbanCardDirectionRejectsRunningWorkspace(t *testing.T) {
+	service, workspaceID := newKanbanTestService(t)
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Ready work", Description: "Original", Direction: "", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneReady},
+	})
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.chatMu.Lock()
+	service.kanbanRuns[workspaceID] = cancel
+	service.chatMu.Unlock()
+
+	if _, err := service.UpdateKanbanCardDirection(workspaceID, "card-1", "New direction"); err == nil {
+		t.Fatal("expected running workspace direction edit to be rejected")
+	}
+}
+
+func TestUpdateKanbanCardDirectionRejectsNotFoundCard(t *testing.T) {
+	service, workspaceID := newKanbanTestService(t)
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Ready work", Description: "Original", Direction: "", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneReady},
+	})
+
+	if _, err := service.UpdateKanbanCardDirection(workspaceID, "nonexistent", "New direction"); err == nil {
+		t.Fatal("expected nonexistent card to be rejected")
+	}
+}
+
 func TestUpdateKanbanCardDescriptionRejectsStartedCard(t *testing.T) {
 	service, workspaceID := newKanbanTestService(t)
 	seedKanbanCards(t, service, []KanbanCard{

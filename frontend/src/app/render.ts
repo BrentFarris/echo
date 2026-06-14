@@ -23,6 +23,11 @@ export function render() {
   const workspace = activeWorkspace();
   const workspaces = state.appState?.workspaces ?? [];
   const showingCode = state.appMode === "code" && Boolean(workspace);
+
+  // Preserve the live draft value from the existing textarea before DOM destruction.
+  const existingTextarea = appRoot.querySelector<HTMLTextAreaElement>("textarea[data-chat-input]");
+  const preservedDraft = existingTextarea?.value ?? "";
+
   if (
     state.chatMention &&
     (!workspace || showingCode || state.settingsOpen || workspace.id !== state.chatMention.workspaceId)
@@ -95,6 +100,12 @@ export function render() {
     focusInitialElement();
   }
   void linkifyAssistantFilePaths();
+
+  // Restore the preserved draft value to the newly created textarea if it differs from what was rendered.
+  const restoredTextarea = appRoot.querySelector<HTMLTextAreaElement>("textarea[data-chat-input]");
+  if (restoredTextarea && restoredTextarea.value !== preservedDraft) {
+    restoredTextarea.value = preservedDraft;
+  }
 }
 
 export function renderWorkspacePanels(workspace: services.Workspace | null, workspaceCount: number): string {

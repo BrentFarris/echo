@@ -202,6 +202,10 @@ export function UpdateKanbanCardDescription(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['UpdateKanbanCardDescription'](arg1, arg2, arg3);
 }
 
+export function UpdateKanbanCardDirection(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['UpdateKanbanCardDirection'](arg1, arg2, arg3);
+}
+
 export function WorkspaceIconHandler() {
   return window['go']['services']['SystemService']['WorkspaceIconHandler']();
 }
