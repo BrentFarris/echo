@@ -60,6 +60,8 @@ export function LoadWorkspaceGitChanges(arg1:string):Promise<services.WorkspaceG
 
 export function MoveKanbanCard(arg1:string,arg2:string,arg3:string):Promise<services.KanbanBoard>;
 
+export function MoveWorkspacePath(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFileEntry>;
+
 export function OpenKanbanCardDetail(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
 export function OpenWorkspaceExplorer(arg1:string):Promise<void>;

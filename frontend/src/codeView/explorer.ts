@@ -1,9 +1,10 @@
-import { CreateWorkspaceFile, CreateWorkspaceFolder, ListWorkspaceDirectory, SearchWorkspaceFiles } from "../../wailsjs/go/services/SystemService";
+import { CreateWorkspaceFile, CreateWorkspaceFolder, ListWorkspaceDirectory, MoveWorkspacePath, SearchWorkspaceFiles } from "../../wailsjs/go/services/SystemService";
 import { services } from "../../wailsjs/go/models";
 import { captureCodeTreeScroll, patchCodeTree, patchSearchResults } from "./dom";
 import { directoryStateFor, ensureCodeState } from "./state";
 import { openPinnedCodeFile } from "./tabs";
-import type { CodeCreateKind, CodeEntryKind, CodeViewCallbacks } from "./types";
+import { saveMountedEditorContent } from "./editor";
+import type { CodeCreateKind, CodeEntryKind, CodeViewCallbacks, CodeWorkspaceState } from "./types";
 
 export async function ensureCodeViewRootLoaded(workspaceID: string) {
   const root = directoryStateFor(ensureCodeState(workspaceID), ".");
@@ -113,6 +114,106 @@ export function collapseCodeTree(workspaceID: string, callbacks: CodeViewCallbac
   captureCodeTreeScroll(workspaceID);
   state.expandedPaths = new Set(["."]);
   state.pendingCreate = null;
+  patchCodeTree(workspaceID, callbacks);
+}
+
+export function startCodeDrag(workspaceID: string, path: string, kind: string): boolean {
+  const entryKind = normalizeCodeEntryKind(kind);
+  if (!path || (entryKind !== "file" && entryKind !== "directory") || !sourceParentPath(path)) {
+    return false;
+  }
+  const state = ensureCodeState(workspaceID);
+  state.pendingCreate = null;
+  state.drag = {
+    sourcePath: path,
+    sourceKind: entryKind,
+    targetPath: "",
+    targetParentPath: "",
+    moving: false,
+  };
+  selectCodeTreeEntry(workspaceID, path, entryKind);
+  return true;
+}
+
+export function updateCodeDropTarget(
+  workspaceID: string,
+  targetPath: string,
+  targetKind: string,
+  callbacks: CodeViewCallbacks,
+): boolean {
+  const state = ensureCodeState(workspaceID);
+  const drag = state.drag;
+  if (!drag || drag.moving) {
+    return false;
+  }
+  const targetParentPath = createParentPath(targetPath, normalizeCodeEntryKind(targetKind));
+  const valid = validMoveTarget(drag.sourcePath, drag.sourceKind, targetParentPath);
+  const nextTargetPath = valid ? targetPath : "";
+  const nextTargetParentPath = valid ? targetParentPath : "";
+  if (drag.targetPath !== nextTargetPath || drag.targetParentPath !== nextTargetParentPath) {
+    drag.targetPath = nextTargetPath;
+    drag.targetParentPath = nextTargetParentPath;
+    patchCodeTree(workspaceID, callbacks);
+  }
+  return valid;
+}
+
+export async function dropCodeDrag(
+  workspaceID: string,
+  targetPath: string,
+  targetKind: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const state = ensureCodeState(workspaceID);
+  const drag = state.drag;
+  if (!drag || drag.moving) {
+    return;
+  }
+  const targetParentPath = createParentPath(targetPath, normalizeCodeEntryKind(targetKind));
+  if (!validMoveTarget(drag.sourcePath, drag.sourceKind, targetParentPath)) {
+    clearCodeDrag(workspaceID, callbacks);
+    return;
+  }
+
+  const sourcePath = drag.sourcePath;
+  const sourceParent = sourceParentPath(sourcePath);
+  drag.targetPath = targetPath;
+  drag.targetParentPath = targetParentPath;
+  drag.moving = true;
+  saveMountedEditorContent();
+  patchCodeTree(workspaceID, callbacks);
+
+  try {
+    const moved = services.WorkspaceFileEntry.createFrom(
+      await MoveWorkspacePath(workspaceID, sourcePath, targetParentPath),
+    );
+    rewriteMovedCodePaths(state, sourcePath, moved.path);
+    clearWorkspaceSearchState(workspaceID);
+    pruneDirectoryCacheAfterMove(state, sourcePath, sourceParent, targetParentPath, moved.path);
+    state.selectedPath = moved.path;
+    state.selectedKind = normalizeCodeEntryKind(moved.kind);
+    state.drag = null;
+    directoryAncestors(targetParentPath).forEach((ancestor) => state.expandedPaths.add(ancestor));
+    state.expandedPaths.add(targetParentPath);
+    if (sourceParent) {
+      await loadDirectory(workspaceID, sourceParent);
+    }
+    await loadDirectory(workspaceID, targetParentPath);
+    callbacks.pushToast("Moved.", "success");
+  } catch (error) {
+    state.drag = null;
+    callbacks.pushToast(callbacks.errorMessage(error), "error");
+  } finally {
+    patchCodeTree(workspaceID, callbacks);
+  }
+}
+
+export function clearCodeDrag(workspaceID: string, callbacks: CodeViewCallbacks) {
+  const state = ensureCodeState(workspaceID);
+  if (!state.drag || state.drag.moving) {
+    return;
+  }
+  state.drag = null;
   patchCodeTree(workspaceID, callbacks);
 }
 
@@ -318,6 +419,27 @@ function createParentPath(path: string, kind: CodeEntryKind): string {
   return path.slice(0, slash);
 }
 
+function sourceParentPath(path: string): string {
+  const slash = path.lastIndexOf("/");
+  if (slash <= 0) {
+    return "";
+  }
+  return path.slice(0, slash);
+}
+
+function validMoveTarget(sourcePath: string, sourceKind: CodeEntryKind, targetParentPath: string): boolean {
+  if (!sourcePath || !targetParentPath) {
+    return false;
+  }
+  if (targetParentPath === sourceParentPath(sourcePath)) {
+    return false;
+  }
+  if (sourceKind === "directory" && (targetParentPath === sourcePath || targetParentPath.startsWith(`${sourcePath}/`))) {
+    return false;
+  }
+  return true;
+}
+
 function directoryAncestors(path: string): string[] {
   const cleanPath = path.trim().replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
   if (!cleanPath || cleanPath === ".") {
@@ -330,6 +452,78 @@ function directoryAncestors(path: string): string[] {
     ancestors.push(current);
   });
   return ancestors;
+}
+
+function rewriteMovedCodePaths(state: CodeWorkspaceState, sourcePath: string, destinationPath: string) {
+  state.tabs.forEach((tab) => {
+    tab.path = movedCodePath(tab.path, sourcePath, destinationPath);
+  });
+  state.activePath = movedCodePath(state.activePath, sourcePath, destinationPath);
+  state.openingPath = movedCodePath(state.openingPath, sourcePath, destinationPath);
+  state.selectedPath = movedCodePath(state.selectedPath, sourcePath, destinationPath);
+  if (state.inlineChat) {
+    state.inlineChat.path = movedCodePath(state.inlineChat.path, sourcePath, destinationPath);
+  }
+  state.tabMruPaths = uniqueMovedPaths(state.tabMruPaths, sourcePath, destinationPath);
+  if (state.tabSwitcher) {
+    state.tabSwitcher.paths = uniqueMovedPaths(state.tabSwitcher.paths, sourcePath, destinationPath);
+    state.tabSwitcher.selectedIndex = Math.min(
+      state.tabSwitcher.selectedIndex,
+      Math.max(0, state.tabSwitcher.paths.length - 1),
+    );
+  }
+}
+
+function uniqueMovedPaths(paths: string[], sourcePath: string, destinationPath: string): string[] {
+  const seen = new Set<string>();
+  const next: string[] = [];
+  paths.forEach((path) => {
+    const moved = movedCodePath(path, sourcePath, destinationPath);
+    if (!moved || seen.has(moved)) {
+      return;
+    }
+    seen.add(moved);
+    next.push(moved);
+  });
+  return next;
+}
+
+function movedCodePath(path: string, sourcePath: string, destinationPath: string): string {
+  if (!path) {
+    return path;
+  }
+  if (path === sourcePath) {
+    return destinationPath;
+  }
+  if (path.startsWith(`${sourcePath}/`)) {
+    return `${destinationPath}${path.slice(sourcePath.length)}`;
+  }
+  return path;
+}
+
+function pruneDirectoryCacheAfterMove(
+  state: CodeWorkspaceState,
+  sourcePath: string,
+  sourceParentPath: string,
+  targetParentPath: string,
+  destinationPath: string,
+) {
+  const deletePrefixes = [sourcePath, destinationPath].filter(Boolean);
+  Array.from(state.directories.keys()).forEach((path) => {
+    if (
+      path === sourceParentPath ||
+      path === targetParentPath ||
+      deletePrefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`))
+    ) {
+      state.directories.delete(path);
+    }
+  });
+  state.expandedPaths = new Set(
+    Array.from(state.expandedPaths).filter(
+      (path) => path !== sourcePath && !path.startsWith(`${sourcePath}/`),
+    ),
+  );
+  state.expandedPaths.add(".");
 }
 
 function clearWorkspaceSearchState(workspaceID: string) {

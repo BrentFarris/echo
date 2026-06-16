@@ -56,6 +56,14 @@ export type PendingCodeCreate = {
   error: string;
 };
 
+export type CodeDragState = {
+  sourcePath: string;
+  sourceKind: CodeEntryKind;
+  targetPath: string;
+  targetParentPath: string;
+  moving: boolean;
+};
+
 export type InlineCodeChatState = {
   path: string;
   anchorPosition: number;
@@ -90,6 +98,7 @@ export type CodeWorkspaceState = {
   tabMruPaths: string[];
   tabSwitcher: CodeTabSwitcherState | null;
   pendingCreate: PendingCodeCreate | null;
+  drag: CodeDragState | null;
   showIgnored: boolean;
   openingPath: string;
   explorerWidth: number;

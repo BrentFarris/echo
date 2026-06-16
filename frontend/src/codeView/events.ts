@@ -1,7 +1,7 @@
 import { setCodeTreeEventBinder, restoreCodeTreeScroll, startExplorerResize } from "./dom";
 import { ensureCodeState } from "./state";
 import type { CodeViewCallbacks } from "./types";
-import { cancelPendingCodeCreate, collapseCodeTree, handleSearchInput, refreshCodeTree, selectCodeTreeEntry, startSelectedCodeCreate, submitPendingCodeCreate, toggleDirectory, toggleIgnoredFilter, updatePendingCodeCreateName } from "./explorer";
+import { cancelPendingCodeCreate, clearCodeDrag, collapseCodeTree, dropCodeDrag, handleSearchInput, refreshCodeTree, selectCodeTreeEntry, startCodeDrag, startSelectedCodeCreate, submitPendingCodeCreate, toggleDirectory, toggleIgnoredFilter, updateCodeDropTarget, updatePendingCodeCreateName } from "./explorer";
 import { activateCodeTab, closeCodeTab, openCodeFile, openPinnedCodeFile, pinCodeTab, saveActiveCodeFile, startOpenTabFileWatch } from "./tabs";
 import { mountActiveCodeEditor } from "./editor";
 
@@ -70,6 +70,7 @@ function bindCodeTreeEvents(root: ParentNode, workspaceID: string, callbacks: Co
   bindCodeFileRowEvents(root, workspaceID, callbacks);
   bindCodeBrowserRowSelectionEvents(root, workspaceID);
   bindCodeBrowserRowContextMenus(root, workspaceID, callbacks);
+  bindCodeBrowserRowDragEvents(root, workspaceID, callbacks);
   bindCodeCreateInputEvents(root, workspaceID, callbacks);
 }
 
@@ -135,6 +136,75 @@ function bindCodeBrowserRowContextMenus(root: ParentNode, workspaceID: string, c
       );
     });
   });
+}
+
+function bindCodeBrowserRowDragEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
+  root.querySelectorAll<HTMLElement>("[data-code-browser-row]").forEach((element) => {
+    element.addEventListener("dragstart", (event) => {
+      const path = element.dataset.codePath ?? "";
+      const kind = element.dataset.codeKind ?? "";
+      if (!startCodeDrag(workspaceID, path, kind)) {
+        event.preventDefault();
+        return;
+      }
+      event.stopPropagation();
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", path);
+      }
+    });
+    element.addEventListener("dragenter", (event) => {
+      handleCodeDragTargetEvent(event, element, workspaceID, callbacks);
+    });
+    element.addEventListener("dragover", (event) => {
+      handleCodeDragTargetEvent(event, element, workspaceID, callbacks);
+    });
+    element.addEventListener("drop", (event) => {
+      if (!updateCodeDropTarget(
+        workspaceID,
+        element.dataset.codePath ?? "",
+        element.dataset.codeKind ?? "",
+        callbacks,
+      )) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      void dropCodeDrag(
+        workspaceID,
+        element.dataset.codePath ?? "",
+        element.dataset.codeKind ?? "",
+        callbacks,
+      );
+    });
+    element.addEventListener("dragend", () => {
+      clearCodeDrag(workspaceID, callbacks);
+    });
+  });
+}
+
+function handleCodeDragTargetEvent(
+  event: DragEvent,
+  element: HTMLElement,
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  if (!updateCodeDropTarget(
+    workspaceID,
+    element.dataset.codePath ?? "",
+    element.dataset.codeKind ?? "",
+    callbacks,
+  )) {
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = "none";
+    }
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "move";
+  }
 }
 
 function bindCodeCreateInputEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {

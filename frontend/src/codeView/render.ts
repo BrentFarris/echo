@@ -140,12 +140,15 @@ function renderSearchEntry(
 ): string {
   const active = state.activePath === entry.path;
   const selected = state.selectedPath === entry.path;
+  const dragging = state.drag?.sourcePath === entry.path;
+  const dropTarget = state.drag?.targetPath === entry.path;
   const icon = entry.kind === "directory" ? codeIcons.folder : codeIcons.file;
   if (entry.kind !== "file") {
     return `
       <div
-        class="code-tree-row code-tree-search-row ${selected ? "is-selected" : ""}"
+        class="code-tree-row code-tree-search-row ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
         role="treeitem"
+        draggable="${entry.kind === "directory"}"
         title="${escapeAttribute(entry.path)}"
         style="--tree-depth: 0"
         data-code-browser-row
@@ -164,9 +167,10 @@ function renderSearchEntry(
   }
   return `
     <button
-      class="code-tree-row code-tree-file code-tree-search-row ${active ? "is-active" : ""} ${selected ? "is-selected" : ""}"
+      class="code-tree-row code-tree-file code-tree-search-row ${active ? "is-active" : ""} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
       type="button"
       role="treeitem"
+      draggable="true"
       title="${escapeAttribute(entry.path)}"
       style="--tree-depth: 0"
       data-code-browser-row
@@ -254,16 +258,19 @@ function renderFileEntry(
 ): string {
   const active = state.activePath === entry.path;
   const selected = state.selectedPath === entry.path;
+  const dragging = state.drag?.sourcePath === entry.path;
+  const dropTarget = state.drag?.targetPath === entry.path;
   if (entry.kind === "directory") {
     const expanded = state.expandedPaths.has(entry.path);
     const childDirectory = directoryStateFor(state, entry.path);
     return `
       <div class="code-tree-item">
         <button
-          class="code-tree-row code-tree-directory ${expanded ? "is-expanded" : ""} ${selected ? "is-selected" : ""}"
+          class="code-tree-row code-tree-directory ${expanded ? "is-expanded" : ""} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
           type="button"
           role="treeitem"
           aria-expanded="${expanded}"
+          draggable="true"
           title="${escapeAttribute(entry.path)}"
           style="--tree-depth: ${depth}"
           data-code-action="toggle-directory"
@@ -291,9 +298,10 @@ function renderFileEntry(
   }
   return `
     <button
-      class="code-tree-row code-tree-file ${active ? "is-active" : ""} ${selected ? "is-selected" : ""}"
+      class="code-tree-row code-tree-file ${active ? "is-active" : ""} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
       type="button"
       role="treeitem"
+      draggable="${entry.kind === "file"}"
       title="${escapeAttribute(entry.path)}"
       style="--tree-depth: ${depth}"
       data-code-browser-row

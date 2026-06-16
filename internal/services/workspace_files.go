@@ -232,6 +232,25 @@ func (s *SystemService) CreateWorkspaceFolder(workspaceID string, parentPath str
 	return workspaceFileEntry(workspace, resolved, info), nil
 }
 
+func (s *SystemService) MoveWorkspacePath(workspaceID string, sourcePath string, targetParentPath string) (WorkspaceFileEntry, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return WorkspaceFileEntry{}, err
+	}
+	source, target, err := resolveWorkspaceMoveTarget(workspace, sourcePath, targetParentPath)
+	if err != nil {
+		return WorkspaceFileEntry{}, err
+	}
+	if err := os.Rename(source, target); err != nil {
+		return WorkspaceFileEntry{}, fmt.Errorf("move path: %w", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		return WorkspaceFileEntry{}, fmt.Errorf("stat moved path: %w", err)
+	}
+	return workspaceFileEntry(workspace, target, info), nil
+}
+
 func (s *SystemService) ReadWorkspaceFile(workspaceID string, path string) (WorkspaceFile, error) {
 	workspace, _, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {
@@ -396,6 +415,71 @@ func workspaceRelativeCandidate(workspace Workspace, candidate string) (string, 
 		return folder.Label + "/" + filepath.ToSlash(relative), nil
 	}
 	return "", fmt.Errorf("path escapes the workspace")
+}
+
+func resolveWorkspaceMoveTarget(workspace Workspace, sourcePath string, targetParentPath string) (string, string, error) {
+	if strings.TrimSpace(sourcePath) == "" {
+		return "", "", fmt.Errorf("source path is required")
+	}
+	if strings.TrimSpace(targetParentPath) == "" || strings.TrimSpace(targetParentPath) == "." {
+		return "", "", fmt.Errorf("target directory must start with a workspace folder label")
+	}
+	label, sourceRelative := splitWorkspaceLabeledPath(sourcePath)
+	if label == "" || sourceRelative == "." {
+		return "", "", fmt.Errorf("workspace folder roots cannot be moved")
+	}
+	source, err := resolveWorkspaceServicePath(workspace, sourcePath)
+	if err != nil {
+		return "", "", err
+	}
+	sourceInfo, err := os.Stat(source)
+	if err != nil {
+		return "", "", fmt.Errorf("source path was not found")
+	}
+	if !sourceInfo.IsDir() && !sourceInfo.Mode().IsRegular() {
+		return "", "", fmt.Errorf("source path is not a movable file or folder")
+	}
+	targetParent, err := resolveWorkspaceServicePath(workspace, targetParentPath)
+	if err != nil {
+		return "", "", err
+	}
+	targetParentInfo, err := os.Stat(targetParent)
+	if err != nil {
+		return "", "", fmt.Errorf("target directory was not found")
+	}
+	if !targetParentInfo.IsDir() {
+		return "", "", fmt.Errorf("target path is not a directory")
+	}
+	targetParent, err = filepath.EvalSymlinks(targetParent)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve target directory: %w", err)
+	}
+	if _, err := workspaceRelativeCandidate(workspace, targetParent); err != nil {
+		return "", "", err
+	}
+	if sourceInfo.IsDir() {
+		sourceReal, err := filepath.EvalSymlinks(source)
+		if err != nil {
+			return "", "", fmt.Errorf("resolve source directory: %w", err)
+		}
+		relative, err := filepath.Rel(sourceReal, targetParent)
+		if err != nil {
+			return "", "", fmt.Errorf("resolve target directory: %w", err)
+		}
+		if relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
+			return "", "", fmt.Errorf("folder cannot be moved into itself")
+		}
+	}
+	target := filepath.Join(targetParent, filepath.Base(source))
+	if _, err := os.Lstat(target); err == nil {
+		return "", "", fmt.Errorf("path already exists")
+	} else if !os.IsNotExist(err) {
+		return "", "", fmt.Errorf("check target path: %w", err)
+	}
+	if _, err := workspaceRelativeCandidate(workspace, target); err != nil {
+		return "", "", err
+	}
+	return source, target, nil
 }
 
 func resolveWorkspaceCreateTarget(workspace Workspace, parentPath string, name string) (string, error) {

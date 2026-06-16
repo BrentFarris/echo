@@ -236,6 +236,110 @@ func TestSystemServiceCreateWorkspaceFolderRejectsInvalidTargets(t *testing.T) {
 	}
 }
 
+func TestSystemServiceMoveWorkspacePathMovesFileIntoDirectory(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "src", "main.go")
+	if err := os.WriteFile(source, []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	moved, err := service.MoveWorkspacePath(workspaceID, "workspace/src/main.go", "workspace/docs")
+	if err != nil {
+		t.Fatalf("move file: %v", err)
+	}
+	if moved.Path != "workspace/docs/main.go" || moved.Name != "main.go" || moved.Kind != "file" {
+		t.Fatalf("unexpected moved file entry: %#v", moved)
+	}
+	if _, err := os.Stat(source); !os.IsNotExist(err) {
+		t.Fatalf("expected source file to be moved, stat error: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "docs", "main.go"))
+	if err != nil {
+		t.Fatalf("read moved file: %v", err)
+	}
+	if string(data) != "package main\n" {
+		t.Fatalf("expected moved file content to be preserved, got %q", string(data))
+	}
+}
+
+func TestSystemServiceMoveWorkspacePathMovesFolderSubtree(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.MkdirAll(filepath.Join(root, "src", "feature"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "feature", "readme.md"), []byte("feature"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	moved, err := service.MoveWorkspacePath(workspaceID, "workspace/src/feature", "workspace/docs")
+	if err != nil {
+		t.Fatalf("move folder: %v", err)
+	}
+	if moved.Path != "workspace/docs/feature" || moved.Name != "feature" || moved.Kind != "directory" {
+		t.Fatalf("unexpected moved folder entry: %#v", moved)
+	}
+	if _, err := os.Stat(filepath.Join(root, "src", "feature")); !os.IsNotExist(err) {
+		t.Fatalf("expected source folder to be moved, stat error: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "docs", "feature", "readme.md"))
+	if err != nil {
+		t.Fatalf("read moved nested file: %v", err)
+	}
+	if string(data) != "feature" {
+		t.Fatalf("expected moved nested file content to be preserved, got %q", string(data))
+	}
+}
+
+func TestSystemServiceMoveWorkspacePathRejectsInvalidTargets(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.MkdirAll(filepath.Join(root, "src", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "main.go"), []byte("duplicate\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "target.txt"), []byte("target\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name       string
+		sourcePath string
+		targetPath string
+	}{
+		{name: "empty source", sourcePath: "", targetPath: "workspace/docs"},
+		{name: "workspace root source", sourcePath: "workspace", targetPath: "workspace/docs"},
+		{name: "missing source", sourcePath: "workspace/missing.go", targetPath: "workspace/docs"},
+		{name: "target is file", sourcePath: "workspace/src/main.go", targetPath: "workspace/target.txt"},
+		{name: "duplicate target", sourcePath: "workspace/src/main.go", targetPath: "workspace/docs"},
+		{name: "folder into itself", sourcePath: "workspace/src", targetPath: "workspace/src/nested"},
+		{name: "traversal source", sourcePath: "workspace/../outside.txt", targetPath: "workspace/docs"},
+		{name: "traversal target", sourcePath: "workspace/src/main.go", targetPath: "workspace/../outside"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := service.MoveWorkspacePath(workspaceID, tc.sourcePath, tc.targetPath); err == nil {
+				t.Fatalf("expected error moving %q to %q", tc.sourcePath, tc.targetPath)
+			}
+		})
+	}
+}
+
 func TestSystemServiceWorkspaceFilesRejectBinaryAndLargeFiles(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.WriteFile(filepath.Join(root, "image.bin"), []byte{0x01, 0x00, 0x02}, 0o600); err != nil {

@@ -114,6 +114,10 @@ export function MoveKanbanCard(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['MoveKanbanCard'](arg1, arg2, arg3);
 }
 
+export function MoveWorkspacePath(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['MoveWorkspacePath'](arg1, arg2, arg3);
+}
+
 export function OpenKanbanCardDetail(arg1, arg2) {
   return window['go']['services']['SystemService']['OpenKanbanCardDetail'](arg1, arg2);
 }
