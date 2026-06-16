@@ -1,6 +1,6 @@
 
 import { services } from "../../wailsjs/go/models";
-import type { CodeViewCallbacks } from "../codeView/types";
+import type { CodeEntryKind, CodeViewCallbacks } from "../codeView/types";
 
 export type AppMode = "chat-kanban" | "code";
 
@@ -8,6 +8,8 @@ export type ContextMenuState = {
   workspaceId: string;
   displayPath: string;
   workspacePath?: string;
+  codePath?: string;
+  codeKind?: CodeEntryKind;
   x: number;
   y: number;
 };

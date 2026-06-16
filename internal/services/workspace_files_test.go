@@ -129,6 +129,113 @@ func TestSystemServiceSaveWorkspaceFileRejectsStaleModifiedAt(t *testing.T) {
 	}
 }
 
+func TestSystemServiceCreateWorkspaceFileCreatesEmptyTextFile(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	components := filepath.Join(root, "src", "components")
+	if err := os.MkdirAll(components, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := service.CreateWorkspaceFile(workspaceID, "workspace/src", "components/Button.ts")
+	if err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	if created.Path != "workspace/src/components/Button.ts" || created.Content != "" || created.Bytes != 0 {
+		t.Fatalf("unexpected created file: %#v", created)
+	}
+	if data, err := os.ReadFile(filepath.Join(components, "Button.ts")); err != nil {
+		t.Fatalf("read created file: %v", err)
+	} else if string(data) != "" {
+		t.Fatalf("expected empty file, got %q", string(data))
+	}
+}
+
+func TestSystemServiceCreateWorkspaceFolderCreatesDirectory(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.Mkdir(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := service.CreateWorkspaceFolder(workspaceID, "workspace/src", "components")
+	if err != nil {
+		t.Fatalf("create folder: %v", err)
+	}
+	if created.Path != "workspace/src/components" || created.Name != "components" || created.Kind != "directory" {
+		t.Fatalf("unexpected created folder entry: %#v", created)
+	}
+	directory, err := service.ListWorkspaceDirectory(workspaceID, "workspace/src")
+	if err != nil {
+		t.Fatalf("list directory: %v", err)
+	}
+	if strings.Join(entryNames(directory.Entries), ",") != "components" {
+		t.Fatalf("expected created folder in directory listing, got %#v", directory.Entries)
+	}
+}
+
+func TestSystemServiceCreateWorkspaceFileRejectsInvalidTargets(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.Mkdir(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("readme"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "existing.txt"), []byte("existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name       string
+		parentPath string
+		fileName   string
+	}{
+		{name: "empty name", parentPath: "workspace/src", fileName: ""},
+		{name: "absolute name", parentPath: "workspace/src", fileName: filepath.Join(root, "outside.txt")},
+		{name: "parent traversal", parentPath: "workspace/src", fileName: "../outside.txt"},
+		{name: "nested traversal", parentPath: "workspace/src", fileName: "components/../Button.ts"},
+		{name: "existing target", parentPath: "workspace/src", fileName: "existing.txt"},
+		{name: "missing parent", parentPath: "workspace/missing", fileName: "new.txt"},
+		{name: "missing nested parent", parentPath: "workspace/src", fileName: "missing/new.txt"},
+		{name: "file parent", parentPath: "workspace/README.md", fileName: "child.txt"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := service.CreateWorkspaceFile(workspaceID, tc.parentPath, tc.fileName); err == nil {
+				t.Fatalf("expected error creating %q under %q", tc.fileName, tc.parentPath)
+			}
+		})
+	}
+}
+
+func TestSystemServiceCreateWorkspaceFolderRejectsInvalidTargets(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.Mkdir(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "src", "existing"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name       string
+		parentPath string
+		fileName   string
+	}{
+		{name: "empty name", parentPath: "workspace/src", fileName: ""},
+		{name: "absolute name", parentPath: "workspace/src", fileName: filepath.Join(root, "outside")},
+		{name: "traversal", parentPath: "workspace/src", fileName: "../outside"},
+		{name: "existing target", parentPath: "workspace/src", fileName: "existing"},
+		{name: "missing nested parent", parentPath: "workspace/src", fileName: "missing/new"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := service.CreateWorkspaceFolder(workspaceID, tc.parentPath, tc.fileName); err == nil {
+				t.Fatalf("expected error creating folder %q under %q", tc.fileName, tc.parentPath)
+			}
+		})
+	}
+}
+
 func TestSystemServiceWorkspaceFilesRejectBinaryAndLargeFiles(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.WriteFile(filepath.Join(root, "image.bin"), []byte{0x01, 0x00, 0x02}, 0o600); err != nil {

@@ -58,6 +58,14 @@ export function CreateKanbanCardFromChatMessage(arg1, arg2) {
   return window['go']['services']['SystemService']['CreateKanbanCardFromChatMessage'](arg1, arg2);
 }
 
+export function CreateWorkspaceFile(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['CreateWorkspaceFile'](arg1, arg2, arg3);
+}
+
+export function CreateWorkspaceFolder(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['CreateWorkspaceFolder'](arg1, arg2, arg3);
+}
+
 export function DeleteKanbanCard(arg1, arg2) {
   return window['go']['services']['SystemService']['DeleteKanbanCard'](arg1, arg2);
 }

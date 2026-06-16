@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -187,6 +188,50 @@ func (s *SystemService) SearchWorkspaceFiles(workspaceID string, query string, i
 	return output, nil
 }
 
+func (s *SystemService) CreateWorkspaceFile(workspaceID string, parentPath string, name string) (WorkspaceFile, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	resolved, err := resolveWorkspaceCreateTarget(workspace, parentPath, name)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	file, err := os.OpenFile(resolved, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return WorkspaceFile{}, fmt.Errorf("path already exists")
+		}
+		return WorkspaceFile{}, fmt.Errorf("create file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return WorkspaceFile{}, fmt.Errorf("close file: %w", err)
+	}
+	return readWorkspaceTextFile(workspace, resolved)
+}
+
+func (s *SystemService) CreateWorkspaceFolder(workspaceID string, parentPath string, name string) (WorkspaceFileEntry, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return WorkspaceFileEntry{}, err
+	}
+	resolved, err := resolveWorkspaceCreateTarget(workspace, parentPath, name)
+	if err != nil {
+		return WorkspaceFileEntry{}, err
+	}
+	if err := os.Mkdir(resolved, 0o755); err != nil {
+		if os.IsExist(err) {
+			return WorkspaceFileEntry{}, fmt.Errorf("path already exists")
+		}
+		return WorkspaceFileEntry{}, fmt.Errorf("create folder: %w", err)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return WorkspaceFileEntry{}, fmt.Errorf("stat folder: %w", err)
+	}
+	return workspaceFileEntry(workspace, resolved, info), nil
+}
+
 func (s *SystemService) ReadWorkspaceFile(workspaceID string, path string) (WorkspaceFile, error) {
 	workspace, _, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {
@@ -351,6 +396,81 @@ func workspaceRelativeCandidate(workspace Workspace, candidate string) (string, 
 		return folder.Label + "/" + filepath.ToSlash(relative), nil
 	}
 	return "", fmt.Errorf("path escapes the workspace")
+}
+
+func resolveWorkspaceCreateTarget(workspace Workspace, parentPath string, name string) (string, error) {
+	parent, err := resolveWorkspaceServicePath(workspace, parentPath)
+	if err != nil {
+		return "", err
+	}
+	parentInfo, err := os.Stat(parent)
+	if err != nil {
+		return "", fmt.Errorf("parent directory was not found")
+	}
+	if !parentInfo.IsDir() {
+		return "", fmt.Errorf("parent path is not a directory")
+	}
+	cleanName, err := cleanWorkspaceCreateName(name)
+	if err != nil {
+		return "", err
+	}
+	target := filepath.Clean(filepath.Join(parent, filepath.FromSlash(cleanName)))
+	relative, err := filepath.Rel(parent, target)
+	if err != nil {
+		return "", fmt.Errorf("resolve target path: %w", err)
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes the parent directory")
+	}
+	targetParent := filepath.Dir(target)
+	targetParentInfo, err := os.Stat(targetParent)
+	if err != nil {
+		return "", fmt.Errorf("parent directory was not found")
+	}
+	if !targetParentInfo.IsDir() {
+		return "", fmt.Errorf("parent path is not a directory")
+	}
+	realTargetParent, err := filepath.EvalSymlinks(targetParent)
+	if err != nil {
+		return "", fmt.Errorf("resolve parent directory: %w", err)
+	}
+	if _, err := workspaceRelativeCandidate(workspace, realTargetParent); err != nil {
+		return "", err
+	}
+	target = filepath.Join(realTargetParent, filepath.Base(target))
+	if _, err := os.Lstat(target); err == nil {
+		return "", fmt.Errorf("path already exists")
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("check target path: %w", err)
+	}
+	return target, nil
+}
+
+func cleanWorkspaceCreateName(name string) (string, error) {
+	name = strings.TrimSpace(strings.ReplaceAll(name, "\\", "/"))
+	if name == "" {
+		return "", fmt.Errorf("name is required")
+	}
+	if filepath.IsAbs(name) || path.IsAbs(name) || filepath.VolumeName(name) != "" {
+		return "", fmt.Errorf("name must be relative")
+	}
+	segments := strings.Split(name, "/")
+	for _, segment := range segments {
+		if segment == "" || segment == "." || segment == ".." {
+			return "", fmt.Errorf("name must not contain empty, current, or parent directory segments")
+		}
+	}
+	return path.Clean(strings.Join(segments, "/")), nil
+}
+
+func workspaceFileEntry(workspace Workspace, absolutePath string, info os.FileInfo) WorkspaceFileEntry {
+	return WorkspaceFileEntry{
+		Name:       filepath.Base(absolutePath),
+		Path:       workspaceRelativePath(workspace, absolutePath),
+		Kind:       workspaceFileKind(info),
+		Bytes:      info.Size(),
+		ModifiedAt: formatWorkspaceModifiedAt(info.ModTime()),
+	}
 }
 
 func readWorkspaceTextFile(workspace Workspace, resolved string) (WorkspaceFile, error) {

@@ -44,9 +44,20 @@ export function renderCodeView(workspace: services.Workspace): string {
         <aside class="code-explorer" aria-label="Workspace files">
           <div class="code-explorer-meta">
             <span data-code-dirty-summary>${dirtyCount ? `${dirtyCount} unsaved` : "Files"}</span>
-            <button class="icon-button" type="button" title="Refresh files" aria-label="Refresh files" data-code-action="refresh-tree">
-              ${codeIcons.refresh}
-            </button>
+            <div class="code-explorer-toolbar" aria-label="File explorer actions">
+              <button class="icon-button" type="button" title="New file" aria-label="New file" data-code-action="create-selected-file">
+                ${codeIcons.newFile}
+              </button>
+              <button class="icon-button" type="button" title="New folder" aria-label="New folder" data-code-action="create-selected-folder">
+                ${codeIcons.newFolder}
+              </button>
+              <button class="icon-button" type="button" title="Refresh files" aria-label="Refresh files" data-code-action="refresh-tree">
+                ${codeIcons.refresh}
+              </button>
+              <button class="icon-button" type="button" title="Collapse all" aria-label="Collapse all folders" data-code-action="collapse-tree">
+                ${codeIcons.collapseAll}
+              </button>
+            </div>
           </div>
           <label class="code-search">
             <span>Search files</span>
@@ -128,16 +139,18 @@ function renderSearchEntry(
   entry: services.WorkspaceFileEntry,
 ): string {
   const active = state.activePath === entry.path;
+  const selected = state.selectedPath === entry.path;
   const icon = entry.kind === "directory" ? codeIcons.folder : codeIcons.file;
   if (entry.kind !== "file") {
     return `
       <div
-        class="code-tree-row code-tree-search-row"
+        class="code-tree-row code-tree-search-row ${selected ? "is-selected" : ""}"
         role="treeitem"
         title="${escapeAttribute(entry.path)}"
         style="--tree-depth: 0"
         data-code-browser-row
         data-code-path="${escapeAttribute(entry.path)}"
+        data-code-kind="${escapeAttribute(entry.kind)}"
       >
         <span class="code-tree-spacer"></span>
         <span class="code-tree-entry-icon">${icon}</span>
@@ -151,7 +164,7 @@ function renderSearchEntry(
   }
   return `
     <button
-      class="code-tree-row code-tree-file code-tree-search-row ${active ? "is-active" : ""}"
+      class="code-tree-row code-tree-file code-tree-search-row ${active ? "is-active" : ""} ${selected ? "is-selected" : ""}"
       type="button"
       role="treeitem"
       title="${escapeAttribute(entry.path)}"
@@ -159,6 +172,7 @@ function renderSearchEntry(
       data-code-browser-row
       data-code-file-row
       data-code-path="${escapeAttribute(entry.path)}"
+      data-code-kind="${escapeAttribute(entry.kind)}"
     >
       <span class="code-tree-spacer"></span>
       <span class="code-tree-entry-icon">${icon}</span>
@@ -189,12 +203,47 @@ function renderDirectoryEntries(
   }
 
   const entries = filteredEntries(state, directory.entries);
+  const pendingCreate = state.pendingCreate?.parentPath === path
+    ? renderPendingCreateRow(state, depth)
+    : "";
   if (!entries.length) {
-    return `<div class="code-tree-note">No files.</div>`;
+    return pendingCreate || `<div class="code-tree-note">No files.</div>`;
   }
-  return entries
+  return pendingCreate + entries
     .map((entry) => renderFileEntry(workspaceID, state, entry, depth))
     .join("");
+}
+
+function renderPendingCreateRow(state: CodeWorkspaceState, depth: number): string {
+  const pending = state.pendingCreate;
+  if (!pending) {
+    return "";
+  }
+  const icon = pending.kind === "folder" ? codeIcons.folder : codeIcons.file;
+  const label = pending.kind === "folder" ? "Folder name" : "File name";
+  return `
+    <div
+      class="code-tree-row code-tree-create-row is-selected"
+      role="treeitem"
+      style="--tree-depth: ${depth}"
+      data-code-create-row
+    >
+      <span class="code-tree-spacer"></span>
+      <span class="code-tree-entry-icon">${icon}</span>
+      <input
+        class="code-tree-create-input"
+        type="text"
+        value="${escapeAttribute(pending.name)}"
+        placeholder="${escapeAttribute(label)}"
+        aria-label="${escapeAttribute(label)}"
+        data-code-create-input
+        ${pending.submitting ? "disabled" : ""}
+      />
+      <span class="code-tree-create-state">
+        ${pending.submitting ? `<span class="spinner" aria-hidden="true"></span>` : ""}
+      </span>
+    </div>
+  `;
 }
 
 function renderFileEntry(
@@ -204,13 +253,14 @@ function renderFileEntry(
   depth: number,
 ): string {
   const active = state.activePath === entry.path;
+  const selected = state.selectedPath === entry.path;
   if (entry.kind === "directory") {
     const expanded = state.expandedPaths.has(entry.path);
     const childDirectory = directoryStateFor(state, entry.path);
     return `
       <div class="code-tree-item">
         <button
-          class="code-tree-row code-tree-directory ${expanded ? "is-expanded" : ""}"
+          class="code-tree-row code-tree-directory ${expanded ? "is-expanded" : ""} ${selected ? "is-selected" : ""}"
           type="button"
           role="treeitem"
           aria-expanded="${expanded}"
@@ -219,6 +269,7 @@ function renderFileEntry(
           data-code-action="toggle-directory"
           data-code-browser-row
           data-code-path="${escapeAttribute(entry.path)}"
+          data-code-kind="${escapeAttribute(entry.kind)}"
         >
           <span class="code-tree-chevron">${codeIcons.chevron}</span>
           <span class="code-tree-entry-icon">${codeIcons.folder}</span>
@@ -240,7 +291,7 @@ function renderFileEntry(
   }
   return `
     <button
-      class="code-tree-row code-tree-file ${active ? "is-active" : ""}"
+      class="code-tree-row code-tree-file ${active ? "is-active" : ""} ${selected ? "is-selected" : ""}"
       type="button"
       role="treeitem"
       title="${escapeAttribute(entry.path)}"
@@ -248,6 +299,7 @@ function renderFileEntry(
       data-code-browser-row
       data-code-file-row
       data-code-path="${escapeAttribute(entry.path)}"
+      data-code-kind="${escapeAttribute(entry.kind)}"
     >
       <span class="code-tree-spacer"></span>
       <span class="code-tree-entry-icon">${codeIcons.file}</span>

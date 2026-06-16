@@ -1,6 +1,8 @@
 import { services } from "../../wailsjs/go/models";
 
 export type ToastTone = "info" | "success" | "error";
+export type CodeEntryKind = "file" | "directory" | "other";
+export type CodeCreateKind = "file" | "folder";
 
 export type CodeViewCallbacks = {
   render: () => void;
@@ -10,6 +12,7 @@ export type CodeViewCallbacks = {
   showCodePathContextMenu: (
     workspaceID: string,
     path: string,
+    kind: CodeEntryKind,
     label: string,
     x: number,
     y: number,
@@ -45,6 +48,14 @@ export type CodeTabSwitcherState = {
   selectedIndex: number;
 };
 
+export type PendingCodeCreate = {
+  kind: CodeCreateKind;
+  parentPath: string;
+  name: string;
+  submitting: boolean;
+  error: string;
+};
+
 export type InlineCodeChatState = {
   path: string;
   anchorPosition: number;
@@ -74,8 +85,11 @@ export type CodeWorkspaceState = {
   expandedPaths: Set<string>;
   tabs: CodeFileTab[];
   activePath: string;
+  selectedPath: string;
+  selectedKind: CodeEntryKind;
   tabMruPaths: string[];
   tabSwitcher: CodeTabSwitcherState | null;
+  pendingCreate: PendingCodeCreate | null;
   showIgnored: boolean;
   openingPath: string;
   explorerWidth: number;

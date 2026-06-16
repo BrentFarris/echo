@@ -1,5 +1,5 @@
 
-import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk } from "../codeView";
+import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate } from "../codeView";
 import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearChat, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWorkspaceChangeReview, LoadWorkspaceGitChanges, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../../wailsjs/go/services/SystemService";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
@@ -43,6 +43,23 @@ export async function handleAction(event: Event) {
         pushToast(errorMessage(error), "error");
       }
       dismissContextMenu();
+      return;
+    }
+    if (action === "code-create-file" || action === "code-create-folder") {
+      const workspaceID = target.dataset.workspaceId ?? "";
+      const path = target.dataset.codePath ?? "";
+      const kind = target.dataset.codeKind ?? "";
+      if (!workspaceID || !path) {
+        return;
+      }
+      dismissContextMenu();
+      await startCodeCreate(
+        workspaceID,
+        path,
+        kind,
+        action === "code-create-file" ? "file" : "folder",
+        getAppCallbacks().codeViewCallbacks(),
+      );
       return;
     }
     if (action === "open-code-view") {

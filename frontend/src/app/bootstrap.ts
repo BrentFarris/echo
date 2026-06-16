@@ -18,6 +18,7 @@ import type { ChatStreamEvent, FileChangesEvent, KanbanEvent } from "./types";
 import { errorMessage } from "./utils";
 import { loadActiveChatSession } from "./chat";
 import { loadActiveChangeReview } from "./changes";
+import type { CodeEntryKind } from "../codeView/types";
 
 function codeViewCallbacks() {
   return {
@@ -29,6 +30,7 @@ function codeViewCallbacks() {
     showCodePathContextMenu(
       workspaceId: string,
       path: string,
+      kind: CodeEntryKind,
       label: string,
       x: number,
       y: number,
@@ -36,6 +38,8 @@ function codeViewCallbacks() {
       showContextMenu({
         workspaceId,
         workspacePath: path,
+        codePath: path,
+        codeKind: kind,
         displayPath: label || path,
         x,
         y,

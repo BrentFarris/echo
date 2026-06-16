@@ -2310,8 +2310,16 @@ h3 {
   font-weight: 800;
 }
 
+.code-explorer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .code-explorer-meta .icon-button {
-  width: 34px;
+  width: 30px;
+  min-width: 30px;
+  min-height: 30px;
 }
 
 .code-search {
@@ -2378,7 +2386,8 @@ h3 {
 
 .code-tree-row:hover,
 .code-tree-row:focus-visible,
-.code-tree-row.is-active {
+.code-tree-row.is-active,
+.code-tree-row.is-selected {
   border-color: color-mix(in srgb, var(--color-accent) 28%, transparent);
   background: color-mix(in srgb, var(--color-accent) 8%, transparent);
   outline: none;
@@ -2445,6 +2454,37 @@ h3 {
 .code-search-results {
   display: grid;
   gap: 2px;
+}
+
+.code-tree-create-row {
+  cursor: default;
+}
+
+.code-tree-create-input {
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 38%, var(--color-border));
+  border-radius: 5px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.code-tree-create-input:disabled {
+  opacity: 0.72;
+}
+
+.code-tree-create-state {
+  display: grid;
+  place-items: center;
+  min-width: 16px;
+}
+
+.code-tree-create-state .spinner {
+  width: 13px;
 }
 
 .code-tree-size {

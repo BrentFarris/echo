@@ -32,6 +32,10 @@ export function CompleteWorkspaceFile(arg1:string,arg2:services.WorkspaceComplet
 
 export function CreateKanbanCardFromChatMessage(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
+export function CreateWorkspaceFile(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFile>;
+
+export function CreateWorkspaceFolder(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFileEntry>;
+
 export function DeleteKanbanCard(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
 export function DeleteWorkspace(arg1:string):Promise<services.AppState>;
