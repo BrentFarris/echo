@@ -147,6 +147,38 @@ func TestSystemServiceChatIncludesWorkspaceInstructions(t *testing.T) {
 	assertSystemPromptOperatingContext(t, captured.Messages[0].Content, root)
 }
 
+func TestSystemServiceChatThinkingCorrectionStaysOutOfVisibleTranscript(t *testing.T) {
+	root := t.TempDir()
+	var captured llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"Done."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+	settings := service.LoadState().Settings
+	settings.ThinkingCorrection = true
+	if _, err := service.SaveSettings(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	if _, err := service.SendChatMessage(workspaceID, "Inspect this"); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+
+	if len(captured.Messages) < 2 || !strings.Contains(captured.Messages[1].Content, llm.ThinkingCorrectionText) {
+		t.Fatalf("expected thinking correction in LLM request, got %#v", captured.Messages)
+	}
+	if len(session.Messages) < 1 || strings.Contains(session.Messages[0].Content, llm.ThinkingCorrectionText) {
+		t.Fatalf("expected visible user message to omit thinking correction, got %#v", session.Messages)
+	}
+}
+
 func TestSystemServiceChatPlanModeUsesReadOnlyPlanningRequest(t *testing.T) {
 	root := t.TempDir()
 	var captured llm.ChatRequest
@@ -1734,6 +1766,12 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	if state.Settings.DisableNotificationSounds {
 		t.Fatal("expected notification sounds to be enabled by default")
 	}
+	if !state.Settings.EnableThinking {
+		t.Fatal("expected thinking to be enabled by default")
+	}
+	if state.Settings.ThinkingCorrection {
+		t.Fatal("expected thinking correction to be disabled by default")
+	}
 	if len(state.Settings.Theme.Light) != 0 || len(state.Settings.Theme.Dark) != 0 {
 		t.Fatal("expected theme overrides to be empty by default")
 	}
@@ -1750,6 +1788,8 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	settings.MaxTokens = 1024
 	settings.PresencePenalty = 1.25
 	settings.RepetitionPenalty = 1.05
+	settings.EnableThinking = false
+	settings.ThinkingCorrection = true
 	settings.DisableNotificationSounds = true
 	settings.Theme.Light = map[string]string{
 		"accent":      "#123ABC",
@@ -1787,6 +1827,12 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	}
 	if !reloaded.Settings.DisableNotificationSounds {
 		t.Fatal("expected persisted disabled notification sounds setting")
+	}
+	if reloaded.Settings.EnableThinking {
+		t.Fatal("expected persisted disabled thinking setting")
+	}
+	if !reloaded.Settings.ThinkingCorrection {
+		t.Fatal("expected persisted thinking correction setting")
 	}
 	if reloaded.Settings.Theme.Light["accent"] != "#123abc" {
 		t.Fatalf("expected normalized light accent override, got %q", reloaded.Settings.Theme.Light["accent"])

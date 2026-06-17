@@ -46,6 +46,106 @@ func TestNewChatRequestMapsSettings(t *testing.T) {
 	assertFloatPtr(t, "frequency_penalty", request.FrequencyPenalty, 0.25)
 	assertFloatPtr(t, "presence_penalty", request.PresencePenalty, 0.5)
 	assertFloatPtr(t, "repetition_penalty", request.RepetitionPenalty, 1.1)
+	if request.ChatTemplateKwargs != nil {
+		t.Fatalf("expected default thinking mode to omit chat template kwargs, got %#v", request.ChatTemplateKwargs)
+	}
+}
+
+func TestNewChatRequestAddsThinkingCorrectionToLatestUserMessage(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoint = "https://example.test/v1"
+	settings.ThinkingCorrection = true
+	messages := []Message{
+		{Role: RoleSystem, Content: "be helpful"},
+		{Role: RoleUser, Content: "first task"},
+		{Role: RoleAssistant, Content: "done"},
+		{Role: RoleUser, Content: "second task"},
+	}
+
+	request, err := NewChatRequest(settings, messages)
+	if err != nil {
+		t.Fatalf("new chat request: %v", err)
+	}
+
+	if request.Messages[1].Content != "first task" {
+		t.Fatalf("expected only latest user message to change, got %#v", request.Messages)
+	}
+	if !strings.HasPrefix(request.Messages[3].Content, "second task\n\n") ||
+		!strings.Contains(request.Messages[3].Content, ThinkingCorrectionText) {
+		t.Fatalf("expected thinking correction on latest user message, got %q", request.Messages[3].Content)
+	}
+	if messages[3].Content != "second task" {
+		t.Fatalf("expected source messages to remain unchanged, got %#v", messages)
+	}
+}
+
+func TestNewChatRequestAddsThinkingCorrectionAsFinalContentPart(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoint = "https://example.test/v1"
+	settings.ThinkingCorrection = true
+	imageURL := ImageURLContentPart("data:image/png;base64,abc123")
+	messages := []Message{{
+		Role:    RoleUser,
+		Content: "Review this image.",
+		ContentParts: []MessageContentPart{
+			TextContentPart("Review this image."),
+			imageURL,
+		},
+	}}
+
+	request, err := NewChatRequest(settings, messages)
+	if err != nil {
+		t.Fatalf("new chat request: %v", err)
+	}
+
+	parts := request.Messages[0].ContentParts
+	if len(parts) != 3 {
+		t.Fatalf("expected correction content part, got %#v", parts)
+	}
+	if parts[2].Type != "text" || parts[2].Text != ThinkingCorrectionText {
+		t.Fatalf("expected final correction text part, got %#v", parts[2])
+	}
+	if len(messages[0].ContentParts) != 2 {
+		t.Fatalf("expected source content parts to remain unchanged, got %#v", messages[0].ContentParts)
+	}
+	if request.Messages[0].ContentParts[1].ImageURL == messages[0].ContentParts[1].ImageURL {
+		t.Fatal("expected image URL content part to be deep-copied")
+	}
+}
+
+func TestNewChatRequestDisablesThinkingAndThinkingCorrection(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoint = "https://example.test/v1"
+	settings.EnableThinking = false
+	settings.ThinkingCorrection = true
+
+	request, err := NewChatRequest(settings, []Message{{Role: RoleUser, Content: "hello"}})
+	if err != nil {
+		t.Fatalf("new chat request: %v", err)
+	}
+
+	if request.ChatTemplateKwargs == nil || request.ChatTemplateKwargs.EnableThinking == nil {
+		t.Fatalf("expected chat template kwargs to disable thinking, got %#v", request.ChatTemplateKwargs)
+	}
+	if *request.ChatTemplateKwargs.EnableThinking {
+		t.Fatalf("expected enable_thinking false, got %#v", request.ChatTemplateKwargs)
+	}
+	if strings.Contains(request.Messages[0].Content, ThinkingCorrectionText) {
+		t.Fatalf("expected disabled thinking to skip correction text, got %q", request.Messages[0].Content)
+	}
+
+	data, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	kwargs, ok := decoded["chat_template_kwargs"].(map[string]any)
+	if !ok || kwargs["enable_thinking"] != false {
+		t.Fatalf("expected serialized enable_thinking false, got %#v", decoded["chat_template_kwargs"])
+	}
 }
 
 func TestChatRequestSerialization(t *testing.T) {

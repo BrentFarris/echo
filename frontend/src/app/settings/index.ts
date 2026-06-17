@@ -3,7 +3,7 @@ import { SaveSettings, SetWorkspaceFolderUseAgents, SetWorkspaceLetter } from ".
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
-import { cloneSettings, fieldValue, leadingWhitespaceIndicatorsEnabled, notificationSoundsEnabled, state } from "../state";
+import { cloneSettings, enableThinkingEnabled, fieldValue, leadingWhitespaceIndicatorsEnabled, notificationSoundsEnabled, state, thinkingCorrectionEnabled } from "../state";
 import { applyTheme, normalizeHexColor, settingsWithCompactTheme, settingsWithThemeColor, themeColorValue, themeGroups, themeTokens, type ThemePaletteName } from "../theme";
 import { pushToast } from "../toasts";
 import { errorMessage, escapeAttribute, escapeHtml, workspaceFolderSummary } from "../utils";
@@ -96,6 +96,23 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
             <label class="field">
               <span>Repetition Penalty</span>
               <input name="repetitionPenalty" type="number" min="0" step="0.01" value="${escapeHtml(fieldValue("repetitionPenalty"))}" />
+            </label>
+            <label class="settings-toggle field-wide">
+              <span>Enable thinking</span>
+              <input
+                name="enableThinking"
+                type="checkbox"
+                ${enableThinkingEnabled(state.settingsDraft) ? "checked" : ""}
+              />
+            </label>
+            <label class="settings-toggle field-wide">
+              <span>Thinking correction</span>
+              <input
+                name="thinkingCorrection"
+                type="checkbox"
+                ${thinkingCorrectionEnabled(state.settingsDraft) ? "checked" : ""}
+                ${enableThinkingEnabled(state.settingsDraft) ? "" : "disabled"}
+              />
             </label>
           </div>
         </section>
@@ -301,6 +318,14 @@ export function handleSettingsInput(event: Event) {
     ...state.settingsDraft,
     [input.name]: typeof value === "number" && Number.isNaN(value) ? 0 : value,
   });
+  if (input.name === "enableThinking") {
+    const correctionInput = input.form?.querySelector<HTMLInputElement>(
+      'input[name="thinkingCorrection"]',
+    );
+    if (correctionInput) {
+      correctionInput.disabled = !input.checked;
+    }
+  }
   state.formError = "";
 }
 

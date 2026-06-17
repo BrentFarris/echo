@@ -28,6 +28,8 @@ export namespace llm {
 	    repetitionPenalty: number;
 	    timeoutSeconds: number;
 	    searxngUrl: string;
+	    enableThinking: boolean;
+	    thinkingCorrection?: boolean;
 	    hideLeadingWhitespaceIndicators?: boolean;
 	    disableNotificationSounds?: boolean;
 	    theme?: Theme;
@@ -51,6 +53,8 @@ export namespace llm {
 	        this.repetitionPenalty = source["repetitionPenalty"];
 	        this.timeoutSeconds = source["timeoutSeconds"];
 	        this.searxngUrl = source["searxngUrl"];
+	        this.enableThinking = source["enableThinking"];
+	        this.thinkingCorrection = source["thinkingCorrection"];
 	        this.hideLeadingWhitespaceIndicators = source["hideLeadingWhitespaceIndicators"];
 	        this.disableNotificationSounds = source["disableNotificationSounds"];
 	        this.theme = this.convertValues(source["theme"], Theme);

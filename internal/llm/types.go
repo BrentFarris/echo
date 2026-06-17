@@ -12,6 +12,13 @@ const (
 	RoleTool      = "tool"
 )
 
+const ThinkingCorrectionText = `Do not produce analysis-only messages.
+Do not restart reasoning from the beginning.
+Do not say "wait" or reconsider repeatedly. If you notice an error, correct it once and proceed.
+After inspecting files, make the smallest viable change.
+Do not inspect the same file twice unless a tool result changed.
+Do not call the same tool with equivalent arguments more than once.`
+
 type Message struct {
 	Role         string               `json:"role"`
 	Content      string               `json:"content,omitempty"`
@@ -152,12 +159,17 @@ type ChatRequest struct {
 	TopP        *float64  `json:"top_p,omitempty"`
 	// Temporarily removing MinP as it's not supported with MTP on vLLM
 	// MinP              *float64 `json:"min_p,omitempty"`
-	MinP              *float64 `json:"-"`
-	ContextLength     *int     `json:"context_length,omitempty"`
-	MaxTokens         *int     `json:"max_tokens,omitempty"`
-	FrequencyPenalty  *float64 `json:"frequency_penalty,omitempty"`
-	PresencePenalty   *float64 `json:"presence_penalty,omitempty"`
-	RepetitionPenalty *float64 `json:"repetition_penalty,omitempty"`
+	MinP               *float64            `json:"-"`
+	ContextLength      *int                `json:"context_length,omitempty"`
+	MaxTokens          *int                `json:"max_tokens,omitempty"`
+	FrequencyPenalty   *float64            `json:"frequency_penalty,omitempty"`
+	PresencePenalty    *float64            `json:"presence_penalty,omitempty"`
+	RepetitionPenalty  *float64            `json:"repetition_penalty,omitempty"`
+	ChatTemplateKwargs *ChatTemplateKwargs `json:"chat_template_kwargs,omitempty"`
+}
+
+type ChatTemplateKwargs struct {
+	EnableThinking *bool `json:"enable_thinking,omitempty"`
 }
 
 type ChatResponse struct {
@@ -223,7 +235,7 @@ func NewChatRequest(settings Settings, messages []Message, options ...RequestOpt
 
 	request := ChatRequest{
 		Model:             settings.Model,
-		Messages:          append([]Message(nil), messages...),
+		Messages:          messagesForRequest(settings, messages),
 		Temperature:       float64Ptr(settings.Temperature),
 		TopP:              float64Ptr(settings.TopP),
 		MinP:              float64Ptr(settings.MinP),
@@ -236,10 +248,71 @@ func NewChatRequest(settings Settings, messages []Message, options ...RequestOpt
 	if settings.TopK > 0 {
 		request.TopK = intPtr(settings.TopK)
 	}
+	if !settings.EnableThinking {
+		request.ChatTemplateKwargs = &ChatTemplateKwargs{EnableThinking: boolPtr(false)}
+	}
 	for _, option := range options {
 		option(&request)
 	}
 	return request, nil
+}
+
+func messagesForRequest(settings Settings, messages []Message) []Message {
+	output := cloneMessages(messages)
+	if settings.EnableThinking && settings.ThinkingCorrection {
+		appendThinkingCorrectionToLatestUserMessage(output)
+	}
+	return output
+}
+
+func cloneMessages(messages []Message) []Message {
+	output := append([]Message(nil), messages...)
+	for i := range output {
+		output[i].ContentParts = append([]MessageContentPart(nil), output[i].ContentParts...)
+		for partIndex := range output[i].ContentParts {
+			if output[i].ContentParts[partIndex].ImageURL != nil {
+				imageURL := *output[i].ContentParts[partIndex].ImageURL
+				output[i].ContentParts[partIndex].ImageURL = &imageURL
+			}
+		}
+		output[i].ToolCalls = append([]ToolCall(nil), output[i].ToolCalls...)
+	}
+	return output
+}
+
+func appendThinkingCorrectionToLatestUserMessage(messages []Message) {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != RoleUser {
+			continue
+		}
+		appendThinkingCorrectionToUserMessage(&messages[i])
+		return
+	}
+}
+
+func appendThinkingCorrectionToUserMessage(message *Message) {
+	if len(message.ContentParts) > 0 {
+		for _, part := range message.ContentParts {
+			if part.Type == "text" && strings.Contains(part.Text, ThinkingCorrectionText) {
+				return
+			}
+		}
+		message.ContentParts = append(message.ContentParts, TextContentPart(ThinkingCorrectionText))
+		message.Content = appendPromptText(message.Content, ThinkingCorrectionText)
+		return
+	}
+	if strings.Contains(message.Content, ThinkingCorrectionText) {
+		return
+	}
+	message.Content = appendPromptText(message.Content, ThinkingCorrectionText)
+}
+
+func appendPromptText(content string, addition string) string {
+	content = strings.TrimRight(content, " \t\r\n")
+	if content == "" {
+		return addition
+	}
+	return content + "\n\n" + addition
 }
 
 func WithStream(stream bool) RequestOption {
@@ -265,5 +338,9 @@ func float64Ptr(value float64) *float64 {
 }
 
 func intPtr(value int) *int {
+	return &value
+}
+
+func boolPtr(value bool) *bool {
 	return &value
 }

@@ -31,6 +31,8 @@ type Settings struct {
 	RepetitionPenalty               float64 `json:"repetitionPenalty"`
 	TimeoutSeconds                  int     `json:"timeoutSeconds"`
 	SearxngURL                      string  `json:"searxngUrl"`
+	EnableThinking                  bool    `json:"enableThinking"`
+	ThinkingCorrection              bool    `json:"thinkingCorrection,omitempty"`
 	HideLeadingWhitespaceIndicators bool    `json:"hideLeadingWhitespaceIndicators,omitempty"`
 	DisableNotificationSounds       bool    `json:"disableNotificationSounds,omitempty"`
 	Theme                           Theme   `json:"theme,omitempty"`
@@ -55,6 +57,7 @@ func DefaultSettings() Settings {
 		RepetitionPenalty: 1.05,
 		TimeoutSeconds:    defaultTimout,
 		SearxngURL:        DefaultSearxngURL,
+		EnableThinking:    true,
 	}
 }
 
