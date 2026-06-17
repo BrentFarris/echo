@@ -232,6 +232,25 @@ func (s *SystemService) CreateWorkspaceFolder(workspaceID string, parentPath str
 	return workspaceFileEntry(workspace, resolved, info), nil
 }
 
+func (s *SystemService) RenameWorkspacePath(workspaceID string, sourcePath string, newName string) (WorkspaceFileEntry, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return WorkspaceFileEntry{}, err
+	}
+	source, target, err := resolveWorkspaceRenameTarget(workspace, sourcePath, newName)
+	if err != nil {
+		return WorkspaceFileEntry{}, err
+	}
+	if err := os.Rename(source, target); err != nil {
+		return WorkspaceFileEntry{}, fmt.Errorf("rename path: %w", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		return WorkspaceFileEntry{}, fmt.Errorf("stat renamed path: %w", err)
+	}
+	return workspaceFileEntry(workspace, target, info), nil
+}
+
 func (s *SystemService) MoveWorkspacePath(workspaceID string, sourcePath string, targetParentPath string) (WorkspaceFileEntry, error) {
 	workspace, _, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {
@@ -471,6 +490,46 @@ func resolveWorkspaceMoveTarget(workspace Workspace, sourcePath string, targetPa
 		}
 	}
 	target := filepath.Join(targetParent, filepath.Base(source))
+	if _, err := os.Lstat(target); err == nil {
+		return "", "", fmt.Errorf("path already exists")
+	} else if !os.IsNotExist(err) {
+		return "", "", fmt.Errorf("check target path: %w", err)
+	}
+	if _, err := workspaceRelativeCandidate(workspace, target); err != nil {
+		return "", "", err
+	}
+	return source, target, nil
+}
+
+func resolveWorkspaceRenameTarget(workspace Workspace, sourcePath string, newName string) (string, string, error) {
+	if strings.TrimSpace(sourcePath) == "" {
+		return "", "", fmt.Errorf("source path is required")
+	}
+	label, sourceRelative := splitWorkspaceLabeledPath(sourcePath)
+	if label == "" || sourceRelative == "." {
+		return "", "", fmt.Errorf("workspace folder roots cannot be renamed")
+	}
+	source, err := resolveWorkspaceServicePath(workspace, sourcePath)
+	if err != nil {
+		return "", "", err
+	}
+	sourceInfo, err := os.Stat(source)
+	if err != nil {
+		return "", "", fmt.Errorf("source path was not found")
+	}
+	if !sourceInfo.IsDir() && !sourceInfo.Mode().IsRegular() {
+		return "", "", fmt.Errorf("source path is not a renamable file or folder")
+	}
+	cleanName, err := cleanWorkspaceCreateName(newName)
+	if err != nil {
+		return "", "", err
+	}
+	sourceParent := filepath.Dir(source)
+	realParent, err := filepath.EvalSymlinks(sourceParent)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve parent directory: %w", err)
+	}
+	target := filepath.Join(realParent, filepath.Base(filepath.FromSlash(cleanName)))
 	if _, err := os.Lstat(target); err == nil {
 		return "", "", fmt.Errorf("path already exists")
 	} else if !os.IsNotExist(err) {

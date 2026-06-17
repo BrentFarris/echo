@@ -250,6 +250,37 @@ function renderPendingCreateRow(state: CodeWorkspaceState, depth: number): strin
   `;
 }
 
+function renderPendingRenameRow(state: CodeWorkspaceState, kind: string, depth: number): string {
+  const pending = state.pendingRename;
+  if (!pending) {
+    return "";
+  }
+  const icon = kind === "directory" ? codeIcons.folder : codeIcons.file;
+  return `
+    <div
+      class="code-tree-row code-tree-rename-row is-selected"
+      role="treeitem"
+      style="--tree-depth: ${depth}"
+      data-code-rename-row
+    >
+      <span class="code-tree-spacer"></span>
+      <span class="code-tree-entry-icon">${icon}</span>
+      <input
+        class="code-tree-rename-input"
+        type="text"
+        value="${escapeAttribute(pending.newName)}"
+        placeholder="Rename..."
+        aria-label="Rename"
+        data-code-rename-input
+        ${pending.submitting ? "disabled" : ""}
+      />
+      <span class="code-tree-rename-state">
+        ${pending.submitting ? `<span class="spinner" aria-hidden="true"></span>` : ""}
+      </span>
+    </div>
+  `;
+}
+
 function renderFileEntry(
   workspaceID: string,
   state: CodeWorkspaceState,
@@ -260,6 +291,12 @@ function renderFileEntry(
   const selected = state.selectedPath === entry.path;
   const dragging = state.drag?.sourcePath === entry.path;
   const dropTarget = state.drag?.targetPath === entry.path;
+  const renaming = state.pendingRename?.path === entry.path;
+
+  if (renaming) {
+    return renderPendingRenameRow(state, entry.kind, depth);
+  }
+
   if (entry.kind === "directory") {
     const expanded = state.expandedPaths.has(entry.path);
     const childDirectory = directoryStateFor(state, entry.path);

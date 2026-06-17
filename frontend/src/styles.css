@@ -1916,6 +1916,53 @@ h3 {
   gap: 16px;
 }
 
+.settings-tabs {
+  align-self: start;
+  display: inline-grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+  width: min(320px, 100%);
+  padding: 3px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+}
+
+.settings-tabs button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 800;
+  transition:
+    background 160ms ease,
+    color 160ms ease;
+}
+
+.settings-tabs button[aria-selected="true"] {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
+.settings-tabs button:hover:not([aria-selected="true"]) {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+.settings-tabs button:focus-visible {
+  border-color: var(--color-accent);
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 26%, transparent);
+  outline-offset: 2px;
+}
+
+.settings-tab-panel[hidden] {
+  display: none;
+}
+
 .close-button {
   flex: 0 0 auto;
   align-self: flex-start;
@@ -2471,6 +2518,10 @@ h3 {
 }
 
 .code-tree-create-row {
+  cursor: default;
+}
+
+.code-tree-rename-row {
   cursor: default;
 }
 

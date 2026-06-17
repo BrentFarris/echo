@@ -138,6 +138,10 @@ export function RemoveWorkspaceFolder(arg1, arg2) {
   return window['go']['services']['SystemService']['RemoveWorkspaceFolder'](arg1, arg2);
 }
 
+export function RenameWorkspacePath(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['RenameWorkspacePath'](arg1, arg2, arg3);
+}
+
 export function ResetKanbanCard(arg1, arg2) {
   return window['go']['services']['SystemService']['ResetKanbanCard'](arg1, arg2);
 }

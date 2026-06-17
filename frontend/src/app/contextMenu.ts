@@ -1,4 +1,3 @@
-
 import { getAppCallbacks } from "./callbacks";
 import { appRoot } from "./dom";
 import { icons } from "./icons";
@@ -29,6 +28,7 @@ export function renderContextMenu(menu: ContextMenuState): string {
 function renderCodeContextMenu(menu: ContextMenuState): string {
   const codePath = menu.codePath ?? "";
   const codeKind = menu.codeKind ?? "other";
+  const isNonRoot = codePath.includes("/");
   return `\
     <div class="workspace-context-menu" data-context-menu style="left:${menu.x}px;top:${menu.y}px">\
       <button\
@@ -53,7 +53,19 @@ function renderCodeContextMenu(menu: ContextMenuState): string {
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>\
         <span class="workspace-context-menu-label">Add folder</span>\
       </button>\
-      <hr class="workspace-context-menu-divider" />\
+      ${isNonRoot ? `<hr class="workspace-context-menu-divider" />\
+      <button\
+        class="workspace-context-menu-item"\
+        type="button"\
+        data-action="code-rename"\
+        data-workspace-id="${escapeAttribute(menu.workspaceId)}"\
+        data-code-path="${escapeAttribute(codePath)}"\
+        data-code-kind="${escapeAttribute(codeKind)}"\
+      >\
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10.5-10.5a1.5 1.5 0 0 0-2.12-2.12L4 17.88V20ZM13.5 5.5l3 3L16.5 9l-3-3Z"/></svg>\
+        <span class="workspace-context-menu-label">Rename</span>\
+      </button>\
+      <hr class="workspace-context-menu-divider" />` : ""}\
       <button\
         class="workspace-context-menu-item"\
         type="button"\

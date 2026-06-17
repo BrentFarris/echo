@@ -41,6 +41,7 @@ export function ensureCodeState(workspaceID: string): CodeWorkspaceState {
       tabMruPaths: [],
       tabSwitcher: null,
       pendingCreate: null,
+      pendingRename: null,
       drag: null,
       showIgnored: false,
       openingPath: "",

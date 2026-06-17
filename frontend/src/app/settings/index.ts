@@ -1,4 +1,3 @@
-
 import { SaveSettings, SetWorkspaceFolderUseAgents, SetWorkspaceLetter } from "../../../wailsjs/go/services/SystemService";
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
@@ -24,24 +23,8 @@ export function bindSettingsEvents(root: ParentNode) {
     );
 }
 
-export function renderSettingsOverlay(workspaces: services.Workspace[]): string {
-  const hasSettingsValues = Boolean(fieldValue("endpoint").trim() || fieldValue("model").trim());
+export function renderLLMSettings(): string {
   return `
-    <div class="overlay" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-      <form class="settings-panel" data-settings-form>
-        <header class="settings-header">
-          <div>
-            <p class="eyebrow">Settings</p>
-            <h2 id="settings-title">Settings</h2>
-          </div>
-          <button class="icon-button close-button" type="button" title="Close" aria-label="Close settings" data-action="close-settings">
-            ${icons.x}
-          </button>
-        </header>
-
-        ${state.formError ? `<p class="form-error" role="alert">${escapeHtml(state.formError)}</p>` : ""}
-        ${hasSettingsValues ? "" : `<p class="empty-state compact">No settings are loaded. Enter an OpenAI-compatible endpoint and model to recover.</p>`}
-
         <section class="settings-section" aria-labelledby="llm-settings-title">
           <h3 id="llm-settings-title" class="settings-section-title">LLM Configuration</h3>
           <div class="settings-grid">
@@ -125,9 +108,11 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
             />
           </label>
         </section>
+  `;
+}
 
-        ${renderThemeSettings()}
-
+export function renderWorkspaceSettings(workspaces: services.Workspace[]): string {
+  return `
         <section class="settings-section workspace-settings" aria-labelledby="workspace-settings-title">
           <h3 id="workspace-settings-title" class="settings-section-title">Workspaces</h3>
           <div class="workspace-list">
@@ -147,7 +132,7 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                             <button class="icon-button" type="button" title="Choose workspace icon" aria-label="Choose icon for ${escapeAttribute(workspace.displayName)}" data-action="choose-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}">
                               ${icons.image}
                             </button>
-                            <button class="icon-button" type="button" title="Clear workspace icon" aria-label="Clear icon for ${escapeAttribute(workspace.displayName)}" data-action="clear-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}" ${(workspace.iconUrl ?? "").trim() ? "" : "disabled"}>
+                            <button class="icon-button" type="button" title="Clear workspace icon" aria-label="Clear icon for ${escapeAttribute(workspace.displayName)}" data-action="clear-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}" ${(workspace.iconUrl ?? "").trim() ? "" : "disabled"}">
                               ${icons.x}
                             </button>
                           </div>
@@ -173,6 +158,48 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
             }
           </div>
         </section>
+  `;
+}
+
+export function renderAppearanceSettings(): string {
+  return renderThemeSettings();
+}
+
+export function renderSettingsOverlay(workspaces: services.Workspace[]): string {
+  const hasSettingsValues = Boolean(fieldValue("endpoint").trim() || fieldValue("model").trim());
+  return `
+    <div class="overlay" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <form class="settings-panel" data-settings-form>
+        <header class="settings-header">
+          <div>
+            <p class="eyebrow">Settings</p>
+            <h2 id="settings-title">Settings</h2>
+          </div>
+          <button class="icon-button close-button" type="button" title="Close" aria-label="Close settings" data-action="close-settings">
+            ${icons.x}
+          </button>
+        </header>
+
+        <nav class="settings-tabs" role="tablist" aria-label="Settings">
+          <button role="tab" aria-selected="${state.settingsActiveTab === "llm"}" type="button" data-action="set-settings-tab" data-settings-tab="llm">LLM</button>
+          <button role="tab" aria-selected="${state.settingsActiveTab === "workspaces"}" type="button" data-action="set-settings-tab" data-settings-tab="workspaces">Workspaces</button>
+          <button role="tab" aria-selected="${state.settingsActiveTab === "appearance"}" type="button" data-action="set-settings-tab" data-settings-tab="appearance">Appearance</button>
+        </nav>
+
+        ${state.formError ? `<p class="form-error" role="alert">${escapeHtml(state.formError)}</p>` : ""}
+        ${hasSettingsValues ? "" : `<p class="empty-state compact">No settings are loaded. Enter an OpenAI-compatible endpoint and model to recover.</p>`}
+
+        <div class="settings-tab-panel" role="tabpanel" id="settings-tab-llm" ${state.settingsActiveTab !== "llm" ? "hidden" : ""}>
+          ${renderLLMSettings()}
+        </div>
+
+        <div class="settings-tab-panel" role="tabpanel" id="settings-tab-workspaces" ${state.settingsActiveTab !== "workspaces" ? "hidden" : ""}>
+          ${renderWorkspaceSettings(workspaces)}
+        </div>
+
+        <div class="settings-tab-panel" role="tabpanel" id="settings-tab-appearance" ${state.settingsActiveTab !== "appearance" ? "hidden" : ""}>
+          ${renderAppearanceSettings()}
+        </div>
 
         <footer class="settings-footer">
           <button class="secondary-button" type="button" data-action="reset-settings">Reset</button>

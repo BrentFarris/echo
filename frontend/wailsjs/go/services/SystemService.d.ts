@@ -72,6 +72,8 @@ export function ReadWorkspaceFile(arg1:string,arg2:string):Promise<services.Work
 
 export function RemoveWorkspaceFolder(arg1:string,arg2:string):Promise<services.AppState>;
 
+export function RenameWorkspacePath(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFileEntry>;
+
 export function ResetKanbanCard(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
 export function ResolveWorkspaceTextFilePath(arg1:string,arg2:string):Promise<string>;

@@ -1,5 +1,5 @@
 
-import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate } from "../codeView";
+import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate, startCodeRename } from "../codeView";
 import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearChat, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWorkspaceChangeReview, LoadWorkspaceGitChanges, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../../wailsjs/go/services/SystemService";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
@@ -58,6 +58,22 @@ export async function handleAction(event: Event) {
         path,
         kind,
         action === "code-create-file" ? "file" : "folder",
+        getAppCallbacks().codeViewCallbacks(),
+      );
+      return;
+    }
+    if (action === "code-rename") {
+      const workspaceID = target.dataset.workspaceId ?? "";
+      const path = target.dataset.codePath ?? "";
+      const kind = target.dataset.codeKind ?? "";
+      if (!workspaceID || !path) {
+        return;
+      }
+      dismissContextMenu();
+      await startCodeRename(
+        workspaceID,
+        path,
+        kind,
         getAppCallbacks().codeViewCallbacks(),
       );
       return;
@@ -151,6 +167,7 @@ export async function handleAction(event: Event) {
         clearCodeTabSwitcher(workspace.id);
       }
       state.settingsOpen = true;
+      state.settingsActiveTab = "llm";
       state.formError = "";
       state.settingsDraft = cloneSettings(state.appState!.settings);
       applyTheme(state.settingsDraft);
@@ -169,6 +186,13 @@ export async function handleAction(event: Event) {
       hydrateWorkspaceLetterDrafts(state.appState?.workspaces ?? []);
       state.formError = "";
       getAppCallbacks().render();
+    }
+    if (action === "set-settings-tab") {
+      const tab = target.dataset.settingsTab;
+      if (tab && (["llm", "workspaces", "appearance"] as string[]).includes(tab)) {
+        state.settingsActiveTab = tab as typeof state.settingsActiveTab;
+        getAppCallbacks().render();
+      }
     }
     if (action === "set-theme-palette") {
       const palette = target.dataset.themePalette;

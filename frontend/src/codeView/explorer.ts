@@ -1,4 +1,4 @@
-import { CreateWorkspaceFile, CreateWorkspaceFolder, ListWorkspaceDirectory, MoveWorkspacePath, SearchWorkspaceFiles } from "../../wailsjs/go/services/SystemService";
+import { CreateWorkspaceFile, CreateWorkspaceFolder, ListWorkspaceDirectory, MoveWorkspacePath, RenameWorkspacePath, SearchWorkspaceFiles } from "../../wailsjs/go/services/SystemService";
 import { services } from "../../wailsjs/go/models";
 import { captureCodeTreeScroll, patchCodeTree, patchSearchResults } from "./dom";
 import { directoryStateFor, ensureCodeState } from "./state";
@@ -287,6 +287,106 @@ export async function submitPendingCodeCreate(
   }
 }
 
+export function isRootFolder(path: string): boolean {
+  return path !== "" && !path.includes("/");
+}
+
+export async function startCodeRename(
+  workspaceID: string,
+  path: string,
+  kind: string,
+  callbacks: CodeViewCallbacks,
+) {
+  if (!path || isRootFolder(path)) {
+    return;
+  }
+  const state = ensureCodeState(workspaceID);
+  captureCodeTreeScroll(workspaceID);
+  selectCodeTreeEntry(workspaceID, path, normalizeCodeEntryKind(kind));
+  clearWorkspaceSearchState(workspaceID);
+  state.pendingRename = {
+    path,
+    newName: path.split("/").pop() ?? "",
+    submitting: false,
+    error: "",
+  };
+
+  const parentPath = sourceParentPath(path);
+  if (parentPath) {
+    const ancestors = directoryAncestors(parentPath);
+    ancestors.forEach((ancestor) => state.expandedPaths.add(ancestor));
+    for (const ancestor of ancestors) {
+      await loadDirectory(workspaceID, ancestor);
+    }
+  }
+  callbacks.render();
+  focusPendingRenameInput();
+}
+
+export function updatePendingCodeRenameName(workspaceID: string, name: string) {
+  const pending = ensureCodeState(workspaceID).pendingRename;
+  if (!pending || pending.submitting) {
+    return;
+  }
+  pending.newName = name;
+}
+
+export function cancelPendingCodeRename(workspaceID: string, callbacks: CodeViewCallbacks) {
+  const state = ensureCodeState(workspaceID);
+  if (!state.pendingRename || state.pendingRename.submitting) {
+    return;
+  }
+  state.pendingRename = null;
+  patchCodeTree(workspaceID, callbacks);
+}
+
+export async function submitPendingCodeRename(
+  workspaceID: string,
+  name: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const state = ensureCodeState(workspaceID);
+  const pending = state.pendingRename;
+  if (!pending || pending.submitting) {
+    return;
+  }
+  pending.newName = name.trim();
+  if (!pending.newName) {
+    callbacks.pushToast("Name is required.", "error");
+    focusPendingRenameInput();
+    return;
+  }
+
+  pending.submitting = true;
+  pending.error = "";
+  patchCodeTree(workspaceID, callbacks);
+  saveMountedEditorContent();
+
+  try {
+    const renamed = services.WorkspaceFileEntry.createFrom(
+      await RenameWorkspacePath(workspaceID, pending.path, pending.newName),
+    );
+    const parentPath = sourceParentPath(pending.path);
+    rewriteMovedCodePaths(state, pending.path, renamed.path);
+    if (parentPath) {
+      state.directories.delete(parentPath);
+      await loadDirectory(workspaceID, parentPath);
+    }
+    clearWorkspaceSearchState(workspaceID);
+    state.pendingRename = null;
+    state.selectedPath = renamed.path;
+    state.selectedKind = normalizeCodeEntryKind(renamed.kind);
+    patchCodeTree(workspaceID, callbacks);
+    callbacks.pushToast("Renamed.", "success");
+  } catch (error) {
+    pending.submitting = false;
+    pending.error = callbacks.errorMessage(error);
+    callbacks.pushToast(pending.error, "error");
+    patchCodeTree(workspaceID, callbacks);
+    focusPendingRenameInput();
+  }
+}
+
 export function handleSearchInput(
   workspaceID: string,
   input: HTMLInputElement,
@@ -543,6 +643,17 @@ function clearWorkspaceSearchState(workspaceID: string) {
 function focusPendingCreateInput() {
   window.setTimeout(() => {
     const input = document.querySelector<HTMLInputElement>("[data-code-create-input]");
+    if (!input) {
+      return;
+    }
+    input.focus();
+    input.select();
+  }, 0);
+}
+
+function focusPendingRenameInput() {
+  window.setTimeout(() => {
+    const input = document.querySelector<HTMLInputElement>("[data-code-rename-input]");
     if (!input) {
       return;
     }

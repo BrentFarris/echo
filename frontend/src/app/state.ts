@@ -7,6 +7,7 @@ export const state = {
   appState: null as services.AppState | null,
   settingsDraft: null as llm.Settings | null,
   settingsOpen: false,
+  settingsActiveTab: "llm" as "llm" | "workspaces" | "appearance",
   settingsThemePalette: "light" as ThemePaletteName,
   workspaceLetterDrafts: new Map<string, string>(),
   appMode: "chat-kanban" as AppMode,
