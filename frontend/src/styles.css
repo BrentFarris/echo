@@ -2384,7 +2384,7 @@ h3 {
   border-radius: 7px;
   background: transparent;
   color: var(--color-text);
-  cursor: default;
+  cursor: pointer;
   text-align: left;
 }
 
@@ -2402,7 +2402,7 @@ h3 {
 }
 
 .code-tree-row[draggable="true"] {
-  cursor: grab;
+  cursor: default;
 }
 
 .code-tree-row.is-dragging {
