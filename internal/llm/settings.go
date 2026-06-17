@@ -31,7 +31,7 @@ type Settings struct {
 	RepetitionPenalty               float64 `json:"repetitionPenalty"`
 	TimeoutSeconds                  int     `json:"timeoutSeconds"`
 	SearxngURL                      string  `json:"searxngUrl"`
-	EnableThinking                  bool    `json:"enableThinking"`
+	ThinkingTokenBudget             int     `json:"thinkingTokenBudget"`
 	ThinkingCorrection              bool    `json:"thinkingCorrection,omitempty"`
 	HideLeadingWhitespaceIndicators bool    `json:"hideLeadingWhitespaceIndicators,omitempty"`
 	DisableNotificationSounds       bool    `json:"disableNotificationSounds,omitempty"`
@@ -45,19 +45,19 @@ type Theme struct {
 
 func DefaultSettings() Settings {
 	return Settings{
-		Endpoint:          DefaultEndpoint,
-		Model:             DefaultModel,
-		Temperature:       0.6,
-		TopK:              20,
-		TopP:              0.95,
-		MinP:              0,
-		ContextLength:     DefaultContextLength,
-		MaxTokens:         DefaultMaxTokens,
-		PresencePenalty:   1.5,
-		RepetitionPenalty: 1.05,
-		TimeoutSeconds:    defaultTimout,
-		SearxngURL:        DefaultSearxngURL,
-		EnableThinking:    true,
+		Endpoint:            DefaultEndpoint,
+		Model:               DefaultModel,
+		Temperature:         0.6,
+		TopK:                20,
+		TopP:                0.95,
+		MinP:                0,
+		ContextLength:       DefaultContextLength,
+		MaxTokens:           DefaultMaxTokens,
+		PresencePenalty:     1.5,
+		RepetitionPenalty:   1.05,
+		TimeoutSeconds:      defaultTimout,
+		SearxngURL:          DefaultSearxngURL,
+		ThinkingTokenBudget: -1,
 	}
 }
 
@@ -117,6 +117,9 @@ func (s Settings) Validate() error {
 	}
 	if s.MaxTokens < 1 {
 		return fmt.Errorf("max tokens must be at least 1")
+	}
+	if s.ThinkingTokenBudget < -1 {
+		return fmt.Errorf("thinking token budget must be -1 or greater")
 	}
 	if s.FrequencyPenalty < -2 || s.FrequencyPenalty > 2 {
 		return fmt.Errorf("frequency penalty must be between -2 and 2")

@@ -169,7 +169,8 @@ type ChatRequest struct {
 }
 
 type ChatTemplateKwargs struct {
-	EnableThinking *bool `json:"enable_thinking,omitempty"`
+	EnableThinking      *bool `json:"enable_thinking,omitempty"`
+	ThinkingTokenBudget *int  `json:"thinking_token_budget,omitempty"`
 }
 
 type ChatResponse struct {
@@ -248,18 +249,26 @@ func NewChatRequest(settings Settings, messages []Message, options ...RequestOpt
 	if settings.TopK > 0 {
 		request.TopK = intPtr(settings.TopK)
 	}
-	if !settings.EnableThinking {
-		request.ChatTemplateKwargs = &ChatTemplateKwargs{EnableThinking: boolPtr(false)}
-	}
+	request.ChatTemplateKwargs = chatTemplateKwargsForSettings(settings)
 	for _, option := range options {
 		option(&request)
 	}
 	return request, nil
 }
 
+func chatTemplateKwargsForSettings(settings Settings) *ChatTemplateKwargs {
+	kwargs := &ChatTemplateKwargs{
+		ThinkingTokenBudget: intPtr(settings.ThinkingTokenBudget),
+	}
+	if settings.ThinkingTokenBudget == 0 {
+		kwargs.EnableThinking = boolPtr(false)
+	}
+	return kwargs
+}
+
 func messagesForRequest(settings Settings, messages []Message) []Message {
 	output := cloneMessages(messages)
-	if settings.EnableThinking && settings.ThinkingCorrection {
+	if settings.ThinkingTokenBudget != 0 && settings.ThinkingCorrection {
 		appendThinkingCorrectionToLatestUserMessage(output)
 	}
 	return output

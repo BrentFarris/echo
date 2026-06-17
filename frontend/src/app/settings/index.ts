@@ -3,7 +3,7 @@ import { SaveSettings, SetWorkspaceFolderUseAgents, SetWorkspaceLetter } from ".
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
-import { cloneSettings, enableThinkingEnabled, fieldValue, leadingWhitespaceIndicatorsEnabled, notificationSoundsEnabled, state, thinkingCorrectionEnabled } from "../state";
+import { cloneSettings, fieldValue, leadingWhitespaceIndicatorsEnabled, notificationSoundsEnabled, state, thinkingCorrectionEnabled, thinkingTokenBudgetEnabled } from "../state";
 import { applyTheme, normalizeHexColor, settingsWithCompactTheme, settingsWithThemeColor, themeColorValue, themeGroups, themeTokens, type ThemePaletteName } from "../theme";
 import { pushToast } from "../toasts";
 import { errorMessage, escapeAttribute, escapeHtml, workspaceFolderSummary } from "../utils";
@@ -97,12 +97,15 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
               <span>Repetition Penalty</span>
               <input name="repetitionPenalty" type="number" min="0" step="0.01" value="${escapeHtml(fieldValue("repetitionPenalty"))}" />
             </label>
-            <label class="settings-toggle field-wide">
-              <span>Enable thinking</span>
+            <label class="field field-wide">
+              <span>Thinking Token Budget</span>
               <input
-                name="enableThinking"
-                type="checkbox"
-                ${enableThinkingEnabled(state.settingsDraft) ? "checked" : ""}
+                name="thinkingTokenBudget"
+                type="number"
+                min="-1"
+                step="1"
+                value="${escapeHtml(fieldValue("thinkingTokenBudget"))}"
+                title="-1 no limit, 0 off, positive values limit thinking tokens"
               />
             </label>
             <label class="settings-toggle field-wide">
@@ -111,7 +114,7 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                 name="thinkingCorrection"
                 type="checkbox"
                 ${thinkingCorrectionEnabled(state.settingsDraft) ? "checked" : ""}
-                ${enableThinkingEnabled(state.settingsDraft) ? "" : "disabled"}
+                ${thinkingTokenBudgetEnabled(state.settingsDraft) ? "" : "disabled"}
               />
             </label>
           </div>
@@ -304,6 +307,7 @@ export function handleSettingsInput(event: Event) {
     "presencePenalty",
     "repetitionPenalty",
     "timeoutSeconds",
+    "thinkingTokenBudget",
   ]);
   let value: number | string | boolean;
   if (input.type === "checkbox") {
@@ -318,12 +322,12 @@ export function handleSettingsInput(event: Event) {
     ...state.settingsDraft,
     [input.name]: typeof value === "number" && Number.isNaN(value) ? 0 : value,
   });
-  if (input.name === "enableThinking") {
+  if (input.name === "thinkingTokenBudget") {
     const correctionInput = input.form?.querySelector<HTMLInputElement>(
       'input[name="thinkingCorrection"]',
     );
     if (correctionInput) {
-      correctionInput.disabled = !input.checked;
+      correctionInput.disabled = Number(input.value) === 0;
     }
   }
   state.formError = "";

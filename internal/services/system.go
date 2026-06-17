@@ -712,7 +712,11 @@ func (s *SystemService) load() error {
 		return err
 	}
 	legacyKanbanCards := stateFileHasKey(data, "kanbanCards")
+	legacyThinkingDisabled := stateFileLegacyThinkingDisabled(data) && !stateFileHasSettingKey(data, "thinkingTokenBudget")
 	state.Settings = state.Settings.Normalized()
+	if legacyThinkingDisabled {
+		state.Settings.ThinkingTokenBudget = 0
+	}
 	if state.Settings.Endpoint == "" {
 		state.Settings.Endpoint = llm.DefaultEndpoint
 	}
@@ -734,7 +738,7 @@ func (s *SystemService) load() error {
 	}
 	s.state = state
 	changed := s.refreshWorkspaceStatusesLocked()
-	if changed || legacyKanbanCards {
+	if changed || legacyKanbanCards || legacyThinkingDisabled {
 		return s.saveLocked()
 	}
 	return nil
@@ -809,6 +813,29 @@ func stateFileHasKey(data []byte, key string) bool {
 	}
 	_, ok := raw[key]
 	return ok
+}
+
+func stateFileHasSettingKey(data []byte, key string) bool {
+	var raw struct {
+		Settings map[string]json.RawMessage `json:"settings"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	_, ok := raw.Settings[key]
+	return ok
+}
+
+func stateFileLegacyThinkingDisabled(data []byte) bool {
+	var raw struct {
+		Settings struct {
+			EnableThinking *bool `json:"enableThinking"`
+		} `json:"settings"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	return raw.Settings.EnableThinking != nil && !*raw.Settings.EnableThinking
 }
 
 func workspaceFromPath(path string) Workspace {

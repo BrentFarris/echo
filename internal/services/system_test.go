@@ -1766,11 +1766,11 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	if state.Settings.DisableNotificationSounds {
 		t.Fatal("expected notification sounds to be enabled by default")
 	}
-	if !state.Settings.EnableThinking {
-		t.Fatal("expected thinking to be enabled by default")
-	}
 	if state.Settings.ThinkingCorrection {
 		t.Fatal("expected thinking correction to be disabled by default")
+	}
+	if state.Settings.ThinkingTokenBudget != -1 {
+		t.Fatalf("expected default thinking token budget -1, got %d", state.Settings.ThinkingTokenBudget)
 	}
 	if len(state.Settings.Theme.Light) != 0 || len(state.Settings.Theme.Dark) != 0 {
 		t.Fatal("expected theme overrides to be empty by default")
@@ -1788,7 +1788,7 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	settings.MaxTokens = 1024
 	settings.PresencePenalty = 1.25
 	settings.RepetitionPenalty = 1.05
-	settings.EnableThinking = false
+	settings.ThinkingTokenBudget = 0
 	settings.ThinkingCorrection = true
 	settings.DisableNotificationSounds = true
 	settings.Theme.Light = map[string]string{
@@ -1828,11 +1828,11 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	if !reloaded.Settings.DisableNotificationSounds {
 		t.Fatal("expected persisted disabled notification sounds setting")
 	}
-	if reloaded.Settings.EnableThinking {
-		t.Fatal("expected persisted disabled thinking setting")
-	}
 	if !reloaded.Settings.ThinkingCorrection {
 		t.Fatal("expected persisted thinking correction setting")
+	}
+	if reloaded.Settings.ThinkingTokenBudget != settings.ThinkingTokenBudget {
+		t.Fatalf("expected persisted thinking token budget, got %d", reloaded.Settings.ThinkingTokenBudget)
 	}
 	if reloaded.Settings.Theme.Light["accent"] != "#123abc" {
 		t.Fatalf("expected normalized light accent override, got %q", reloaded.Settings.Theme.Light["accent"])
@@ -1842,6 +1842,29 @@ func TestSystemServiceDefaultsAndSettingsPersistence(t *testing.T) {
 	}
 	if reloaded.Settings.Theme.Dark["surface"] != "#112233" {
 		t.Fatalf("expected persisted dark surface override, got %q", reloaded.Settings.Theme.Dark["surface"])
+	}
+}
+
+func TestSystemServiceMigratesLegacyDisabledThinking(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(storePath, []byte(`{"settings":{"enableThinking":false}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	state := NewSystemServiceWithStorePath(storePath).LoadState()
+	if state.Settings.ThinkingTokenBudget != 0 {
+		t.Fatalf("expected legacy disabled thinking to migrate to budget 0, got %d", state.Settings.ThinkingTokenBudget)
+	}
+
+	data, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("read migrated state: %v", err)
+	}
+	if strings.Contains(string(data), "enableThinking") {
+		t.Fatalf("expected legacy enableThinking key to be removed after migration, got %s", data)
+	}
+	if !strings.Contains(string(data), `"thinkingTokenBudget": 0`) {
+		t.Fatalf("expected migrated state to persist thinking token budget 0, got %s", data)
 	}
 }
 
@@ -1884,6 +1907,12 @@ func TestSystemServiceRejectsInvalidSettings(t *testing.T) {
 	}
 
 	settings.RepetitionPenalty = llm.DefaultSettings().RepetitionPenalty
+	settings.ThinkingTokenBudget = -2
+	if _, err := service.SaveSettings(settings); err == nil {
+		t.Fatal("expected invalid thinking token budget to be rejected")
+	}
+
+	settings.ThinkingTokenBudget = -1
 	settings.Theme.Light = map[string]string{"accent": "red"}
 	if _, err := service.SaveSettings(settings); err == nil {
 		t.Fatal("expected invalid theme color to be rejected")

@@ -46,8 +46,12 @@ func TestNewChatRequestMapsSettings(t *testing.T) {
 	assertFloatPtr(t, "frequency_penalty", request.FrequencyPenalty, 0.25)
 	assertFloatPtr(t, "presence_penalty", request.PresencePenalty, 0.5)
 	assertFloatPtr(t, "repetition_penalty", request.RepetitionPenalty, 1.1)
-	if request.ChatTemplateKwargs != nil {
-		t.Fatalf("expected default thinking mode to omit chat template kwargs, got %#v", request.ChatTemplateKwargs)
+	if request.ChatTemplateKwargs == nil {
+		t.Fatal("expected default thinking mode to include chat template kwargs")
+	}
+	assertIntPtr(t, "thinking_token_budget", request.ChatTemplateKwargs.ThinkingTokenBudget, -1)
+	if request.ChatTemplateKwargs.EnableThinking != nil {
+		t.Fatalf("expected default enable_thinking to be omitted, got %#v", request.ChatTemplateKwargs)
 	}
 }
 
@@ -113,11 +117,11 @@ func TestNewChatRequestAddsThinkingCorrectionAsFinalContentPart(t *testing.T) {
 	}
 }
 
-func TestNewChatRequestDisablesThinkingAndThinkingCorrection(t *testing.T) {
+func TestNewChatRequestDisablesThinkingAndThinkingCorrectionForZeroBudget(t *testing.T) {
 	settings := DefaultSettings()
 	settings.Endpoint = "https://example.test/v1"
-	settings.EnableThinking = false
 	settings.ThinkingCorrection = true
+	settings.ThinkingTokenBudget = 0
 
 	request, err := NewChatRequest(settings, []Message{{Role: RoleUser, Content: "hello"}})
 	if err != nil {
@@ -130,6 +134,7 @@ func TestNewChatRequestDisablesThinkingAndThinkingCorrection(t *testing.T) {
 	if *request.ChatTemplateKwargs.EnableThinking {
 		t.Fatalf("expected enable_thinking false, got %#v", request.ChatTemplateKwargs)
 	}
+	assertIntPtr(t, "thinking_token_budget", request.ChatTemplateKwargs.ThinkingTokenBudget, 0)
 	if strings.Contains(request.Messages[0].Content, ThinkingCorrectionText) {
 		t.Fatalf("expected disabled thinking to skip correction text, got %q", request.Messages[0].Content)
 	}
@@ -145,6 +150,46 @@ func TestNewChatRequestDisablesThinkingAndThinkingCorrection(t *testing.T) {
 	kwargs, ok := decoded["chat_template_kwargs"].(map[string]any)
 	if !ok || kwargs["enable_thinking"] != false {
 		t.Fatalf("expected serialized enable_thinking false, got %#v", decoded["chat_template_kwargs"])
+	}
+	if kwargs["thinking_token_budget"] != float64(0) {
+		t.Fatalf("expected serialized thinking_token_budget 0, got %#v", kwargs)
+	}
+}
+
+func TestNewChatRequestAddsThinkingTokenBudget(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoint = "https://example.test/v1"
+	settings.ThinkingTokenBudget = 4096
+
+	request, err := NewChatRequest(settings, []Message{{Role: RoleUser, Content: "hello"}})
+	if err != nil {
+		t.Fatalf("new chat request: %v", err)
+	}
+
+	if request.ChatTemplateKwargs == nil || request.ChatTemplateKwargs.ThinkingTokenBudget == nil {
+		t.Fatalf("expected thinking token budget kwargs, got %#v", request.ChatTemplateKwargs)
+	}
+	if *request.ChatTemplateKwargs.ThinkingTokenBudget != 4096 {
+		t.Fatalf("expected thinking token budget 4096, got %#v", request.ChatTemplateKwargs)
+	}
+	if request.ChatTemplateKwargs.EnableThinking != nil {
+		t.Fatalf("expected default enable_thinking to be omitted, got %#v", request.ChatTemplateKwargs)
+	}
+
+	data, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	kwargs, ok := decoded["chat_template_kwargs"].(map[string]any)
+	if !ok || kwargs["thinking_token_budget"] != float64(4096) {
+		t.Fatalf("expected serialized thinking_token_budget 4096, got %#v", decoded["chat_template_kwargs"])
+	}
+	if _, ok := kwargs["enable_thinking"]; ok {
+		t.Fatalf("expected default enable_thinking to be omitted, got %#v", kwargs)
 	}
 }
 

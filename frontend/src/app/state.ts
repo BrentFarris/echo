@@ -152,12 +152,12 @@ export function notificationSoundsEnabled(settings: llm.Settings | null | undefi
     ?.disableNotificationSounds !== true;
 }
 
-export function enableThinkingEnabled(settings: llm.Settings | null | undefined): boolean {
-  return (settings as { enableThinking?: boolean } | null | undefined)
-    ?.enableThinking !== false;
-}
-
 export function thinkingCorrectionEnabled(settings: llm.Settings | null | undefined): boolean {
   return (settings as { thinkingCorrection?: boolean } | null | undefined)
     ?.thinkingCorrection === true;
+}
+
+export function thinkingTokenBudgetEnabled(settings: llm.Settings | null | undefined): boolean {
+  return (settings as { thinkingTokenBudget?: number } | null | undefined)
+    ?.thinkingTokenBudget !== 0;
 }

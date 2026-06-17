@@ -2384,7 +2384,7 @@ h3 {
   border-radius: 7px;
   background: transparent;
   color: var(--color-text);
-  cursor: pointer;
+  cursor: default;
   text-align: left;
 }
 
