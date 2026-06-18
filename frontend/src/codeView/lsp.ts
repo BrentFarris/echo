@@ -4,7 +4,13 @@ import { EditorView, keymap } from "@codemirror/view";
 import { CompleteWorkspaceFile, FindWorkspaceFileDefinition } from "../../wailsjs/go/services/SystemService";
 import { services } from "../../wailsjs/go/models";
 import type { CodeViewCallbacks } from "./types";
-import { clamp } from "./utils";
+import {
+  clamp,
+  editorPositionToFileContentOffset,
+  editorStateToFileContent,
+  fileContentOffsetToEditorPosition,
+  normalizeEditorLineBreaks,
+} from "./utils";
 
 type OpenCodeFileForDefinition = (
   workspaceID: string,
@@ -48,13 +54,15 @@ async function goToLspDefinition(
   openCodeFile: OpenCodeFileForDefinition,
 ) {
   try {
+    const content = editorStateToFileContent(view.state);
+    const editorPosition = lspDefinitionEditorPosition(view.state, view.state.selection.main.head);
     const response = services.WorkspaceDefinitionResponse.createFrom(
       await FindWorkspaceFileDefinition(
         workspaceID,
         services.WorkspaceDefinitionRequest.createFrom({
           filePath: path,
-          content: view.state.sliceDoc(0),
-          position: view.state.selection.main.head,
+          content,
+          position: editorPositionToFileContentOffset(view.state, editorPosition),
         }),
       ),
     );
@@ -97,14 +105,15 @@ function lspCompletionSource(
 
     const triggerCharacter = dot ? "." : "";
     const triggerKind = context.explicit ? 1 : triggerCharacter ? 2 : 1;
+    const content = editorStateToFileContent(context.state);
     try {
       const response = services.WorkspaceCompletionResponse.createFrom(
         await CompleteWorkspaceFile(
           workspaceID,
           services.WorkspaceCompletionRequest.createFrom({
             filePath: path,
-            content: context.state.sliceDoc(0),
-            position: context.pos,
+            content,
+            position: editorPositionToFileContentOffset(context.state, context.pos),
             triggerKind,
             triggerCharacter,
           }),
@@ -118,11 +127,12 @@ function lspCompletionSource(
       if (!items.length) {
         return null;
       }
+      const editorItems = items.map((item) => lspCompletionItemToEditorOffsets(item, content, context.state.lineBreak));
       const fallbackFrom = dot ? context.pos : word?.from ?? context.pos;
       return {
-        from: Math.min(fallbackFrom, ...items.map((item) => item.from)),
+        from: Math.min(fallbackFrom, ...editorItems.map((item) => item.from)),
         to: context.pos,
-        options: items.map((item) => lspCompletionOption(item)),
+        options: editorItems.map((item) => lspCompletionOption(item)),
         validFor: response.isIncomplete ? undefined : lspCompletionValidFor,
       };
     } catch (error) {
@@ -132,6 +142,57 @@ function lspCompletionSource(
       return null;
     }
   };
+}
+
+function lspDefinitionEditorPosition(state: EditorState, position: number) {
+  const cursor = clamp(position, 0, state.doc.length);
+  const line = state.doc.lineAt(cursor);
+  const offset = cursor - line.from;
+  const identifier = identifierBoundsAt(line.text, offset);
+  return identifier ? line.from + identifier.from : cursor;
+}
+
+function identifierBoundsAt(line: string, offset: number): { from: number; to: number } | null {
+  let probe = clamp(offset, 0, line.length);
+  if (probe < line.length && line.charAt(probe) === "." && isIdentifierCharacter(line.charAt(probe + 1))) {
+    probe++;
+  } else if (!isIdentifierCharacter(line.charAt(probe)) && probe > 0 && isIdentifierCharacter(line.charAt(probe - 1))) {
+    probe--;
+  }
+  if (!isIdentifierCharacter(line.charAt(probe))) {
+    return null;
+  }
+
+  let from = probe;
+  while (from > 0 && isIdentifierCharacter(line.charAt(from - 1))) {
+    from--;
+  }
+  let to = probe;
+  while (to < line.length && isIdentifierCharacter(line.charAt(to))) {
+    to++;
+  }
+  return { from, to };
+}
+
+function isIdentifierCharacter(character: string) {
+  return /^[\p{L}\p{N}_]$/u.test(character);
+}
+
+function lspCompletionItemToEditorOffsets(
+  item: services.WorkspaceCompletionItem,
+  content: string,
+  lineSeparator: string,
+): services.WorkspaceCompletionItem {
+  return services.WorkspaceCompletionItem.createFrom({
+    ...item,
+    from: fileContentOffsetToEditorPosition(content, lineSeparator, item.from),
+    to: fileContentOffsetToEditorPosition(content, lineSeparator, item.to),
+    additionalTextEdits: (item.additionalTextEdits ?? []).map((edit) => ({
+      ...edit,
+      from: fileContentOffsetToEditorPosition(content, lineSeparator, edit.from),
+      to: fileContentOffsetToEditorPosition(content, lineSeparator, edit.to),
+    })),
+  });
 }
 
 function lspCompletionOption(item: services.WorkspaceCompletionItem): Completion {
@@ -153,12 +214,13 @@ function applyLspCompletion(
   insertText: string,
 ) {
   const docLength = view.state.doc.length;
+  const primaryInsert = normalizeEditorLineBreaks(insertText, view.state.lineBreak);
   const primaryFrom = clamp(item.from, 0, docLength);
   const primaryTo = clamp(item.to, primaryFrom, docLength);
   const primaryChange = {
     from: primaryFrom,
     to: primaryTo,
-    insert: insertText,
+    insert: primaryInsert,
   };
   const changes = [
     primaryChange,
@@ -167,7 +229,7 @@ function applyLspCompletion(
       return {
         from,
         to: clamp(edit.to, from, docLength),
-        insert: edit.newText,
+        insert: normalizeEditorLineBreaks(edit.newText, view.state.lineBreak),
       };
     })),
   ]
@@ -184,7 +246,7 @@ function applyLspCompletion(
     .reduce((total, change) => total + change.insert.length - (change.to - change.from), 0);
   view.dispatch({
     changes,
-    selection: { anchor: primaryFrom + selectionDelta + insertText.length },
+    selection: { anchor: primaryFrom + selectionDelta + primaryInsert.length },
     userEvent: "input.complete",
   });
 }

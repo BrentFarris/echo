@@ -3,7 +3,7 @@ import { services } from "../../wailsjs/go/models";
 import { captureCodeTreeScroll, patchDirtyUI } from "./dom";
 import { applySavedFile, activeCodeTab, codeStates, ensureCodeState, findTab, promoteTabMruPath, pruneTabMruPaths, removeTabMruPath, tabSwitcherPaths, workspaceFileChanged, wrapIndex } from "./state";
 import type { CodeFileTab, CodeViewCallbacks } from "./types";
-import { clamp, editableWorkspaceFile, sleep } from "./utils";
+import { clamp, editableWorkspaceFile, fileContentOffsetToEditorPosition, sleep } from "./utils";
 import { replaceMountedEditorContent, saveMountedEditorContent } from "./editor";
 
 const openTabFileWatchIntervalMs = 1500;
@@ -293,7 +293,7 @@ function applyCodeTabSelection(tab: CodeFileTab, position: number | undefined) {
   if (position === undefined) {
     return;
   }
-  const target = clamp(position, 0, tab.content.length);
+  const target = fileContentOffsetToEditorPosition(tab.content, tab.lineSeparator, position);
   tab.selectionAnchor = target;
   tab.selectionHead = target;
   tab.pendingRevealPosition = target;

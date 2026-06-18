@@ -10,7 +10,7 @@ import { inlineCodeChatExtension } from "./inlineChat";
 import { lspCompletionExtension, lspDefinitionExtension } from "./lsp";
 import { activeCodeTab, findTab } from "./state";
 import type { CodeViewCallbacks } from "./types";
-import { clamp, editorStateToFileContent } from "./utils";
+import { clamp, editorDocumentLengthForFileContent, editorStateToFileContent } from "./utils";
 
 export type EditorFeatureHooks = {
   openCodeFile: (
@@ -194,7 +194,7 @@ export async function mountActiveCodeEditor(
     extensions.push(language);
   }
   extensions.push(lspCompletionExtension(workspaceID, tab.path, callbacks));
-  const docLength = tab.content.length;
+  const docLength = editorDocumentLengthForFileContent(tab.content, tab.lineSeparator);
   const selectionAnchor = clamp(tab.selectionAnchor, 0, docLength);
   const selectionHead = clamp(tab.selectionHead, 0, docLength);
   mountedEditor = new EditorView({
@@ -349,8 +349,9 @@ function updateTabContent(workspaceID: string, path: string, content: string) {
   if (tab.temporary && tab.dirty) {
     tab.temporary = false;
   }
-  tab.selectionAnchor = clamp(tab.selectionAnchor, 0, tab.content.length);
-  tab.selectionHead = clamp(tab.selectionHead, 0, tab.content.length);
+  const docLength = editorDocumentLengthForFileContent(tab.content, tab.lineSeparator);
+  tab.selectionAnchor = clamp(tab.selectionAnchor, 0, docLength);
+  tab.selectionHead = clamp(tab.selectionHead, 0, docLength);
   patchDirtyUI(workspaceID, tab);
 }
 
@@ -373,11 +374,12 @@ export function replaceMountedEditorContent(workspaceID: string, path: string, c
   const scrollTop = mountedEditor.scrollDOM.scrollTop;
   const scrollLeft = mountedEditor.scrollDOM.scrollLeft;
   const selection = mountedEditor.state.selection.main;
+  const nextDocLength = editorDocumentLengthForFileContent(content, mountedEditor.state.lineBreak);
   mountedEditor.dispatch({
     changes: { from: 0, to: mountedEditor.state.doc.length, insert: content },
     selection: {
-      anchor: clamp(selection.anchor, 0, content.length),
-      head: clamp(selection.head, 0, content.length),
+      anchor: clamp(selection.anchor, 0, nextDocLength),
+      head: clamp(selection.head, 0, nextDocLength),
     },
     annotations: Transaction.addToHistory.of(false),
   });
