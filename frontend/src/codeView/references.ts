@@ -21,6 +21,7 @@ type ReferenceGroup = {
 const setReferencePanelEffect = StateEffect.define<number>();
 const clearReferencePanelEffect = StateEffect.define<void>();
 let referencePanelRenderSeq = 0;
+let referenceFocusRequestSeq = 0;
 
 export function referencesPanelExtension(
   workspaceID: string,
@@ -95,6 +96,7 @@ export function openReferencesPanel(
     renderKey: nextReferencePanelRenderKey(),
   };
   view.dispatch({ effects: setReferencePanelEffect.of(anchorPosition) });
+  queueSelectedReferenceFocus(workspaceID, path);
 }
 
 function closeReferencesPanel(workspaceID: string, path: string, view: EditorView) {
@@ -153,9 +155,30 @@ class ReferencesPanelWidget extends WidgetType {
     const root = document.createElement("section");
     root.className = "lsp-references-panel";
     root.dataset.lspReferencesPanel = "";
+    root.dataset.lspWorkspaceId = this.workspaceID;
+    root.dataset.lspPath = this.path;
     if (!panel) {
       return root;
     }
+    root.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        closeReferencesPanel(this.workspaceID, this.path, view);
+        return;
+      }
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        event.stopPropagation();
+        this.selectRelativeReference(1, view);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopPropagation();
+        this.selectRelativeReference(-1, view);
+      }
+    });
 
     const header = document.createElement("header");
     header.className = "lsp-references-header";
@@ -240,6 +263,7 @@ class ReferencesPanelWidget extends WidgetType {
   private renderList(panel: CodeReferencePanelState, view: EditorView) {
     const sidebar = document.createElement("aside");
     sidebar.className = "lsp-references-sidebar";
+    sidebar.setAttribute("role", "listbox");
     sidebar.setAttribute("aria-label", "References");
 
     for (const group of referenceGroups(panel.locations)) {
@@ -303,6 +327,9 @@ class ReferencesPanelWidget extends WidgetType {
     item.className = `lsp-reference-item${index === panel.selectedIndex ? " is-active" : ""}`;
     item.type = "button";
     item.title = `${location.path}:${location.range.start.line}`;
+    item.tabIndex = index === panel.selectedIndex ? 0 : -1;
+    item.dataset.lspReferenceIndex = String(index);
+    item.setAttribute("role", "option");
     item.setAttribute("aria-selected", String(index === panel.selectedIndex));
     item.addEventListener("mousedown", (event) => {
       if (event.button !== 0) {
@@ -358,6 +385,15 @@ class ReferencesPanelWidget extends WidgetType {
     }
     panel.renderKey = nextReferencePanelRenderKey();
     view.dispatch({ effects: setReferencePanelEffect.of(panel.renderKey) });
+    queueSelectedReferenceFocus(this.workspaceID, this.path);
+  }
+
+  private selectRelativeReference(delta: number, view: EditorView) {
+    const panel = referencesPanelForPath(this.workspaceID, this.path);
+    if (!panel || panel.locations.length === 0) {
+      return;
+    }
+    this.selectReference(wrapReferenceIndex(panel.selectedIndex + delta, panel.locations.length), view);
   }
 
   private openReference(index: number, view: EditorView) {
@@ -384,6 +420,34 @@ function referencesPanelForPath(workspaceID: string, path: string) {
 
 function selectedReference(panel: CodeReferencePanelState) {
   return panel.locations[clamp(panel.selectedIndex, 0, panel.locations.length - 1)] ?? null;
+}
+
+function queueSelectedReferenceFocus(workspaceID: string, path: string) {
+  const requestID = ++referenceFocusRequestSeq;
+  window.requestAnimationFrame(() => {
+    if (requestID !== referenceFocusRequestSeq) {
+      return;
+    }
+    const panel = referencesPanelForPath(workspaceID, path);
+    if (!panel) {
+      return;
+    }
+    const root = Array.from(document.querySelectorAll<HTMLElement>("[data-lsp-references-panel]"))
+      .find((candidate) => candidate.dataset.lspWorkspaceId === workspaceID && candidate.dataset.lspPath === path);
+    const target = root?.querySelector<HTMLButtonElement>(`[data-lsp-reference-index="${panel.selectedIndex}"]`);
+    if (!target) {
+      return;
+    }
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ block: "nearest" });
+  });
+}
+
+function wrapReferenceIndex(index: number, count: number) {
+  if (count <= 0) {
+    return 0;
+  }
+  return ((index % count) + count) % count;
 }
 
 function referenceGroups(locations: services.WorkspaceReferenceLocation[]): ReferenceGroup[] {
