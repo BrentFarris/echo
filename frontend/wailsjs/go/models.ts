@@ -167,8 +167,27 @@ export namespace services {
 		    return a;
 		}
 	}
+	export class WebAccessSettings {
+	    enabled: boolean;
+	    bindHost: string;
+	    port: number;
+	    accessToken: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WebAccessSettings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.bindHost = source["bindHost"];
+	        this.port = source["port"];
+	        this.accessToken = source["accessToken"];
+	    }
+	}
 	export class AppState {
 	    settings: llm.Settings;
+	    webAccess: WebAccessSettings;
 	    workspaces: Workspace[];
 	    activeWorkspaceId: string;
 	
@@ -179,6 +198,7 @@ export namespace services {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.settings = this.convertValues(source["settings"], llm.Settings);
+	        this.webAccess = this.convertValues(source["webAccess"], WebAccessSettings);
 	        this.workspaces = this.convertValues(source["workspaces"], Workspace);
 	        this.activeWorkspaceId = source["activeWorkspaceId"];
 	    }
@@ -573,6 +593,45 @@ export namespace services {
 	
 	
 	
+	export class RuntimeStatus {
+	    activeKanbanWorkspaceIds: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new RuntimeStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.activeKanbanWorkspaceIds = source["activeKanbanWorkspaceIds"];
+	    }
+	}
+	
+	export class WebAccessStatus {
+	    enabled: boolean;
+	    running: boolean;
+	    bindHost: string;
+	    port: number;
+	    accessToken: string;
+	    primaryUrl: string;
+	    lanUrls: string[];
+	    lastError?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WebAccessStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.running = source["running"];
+	        this.bindHost = source["bindHost"];
+	        this.port = source["port"];
+	        this.accessToken = source["accessToken"];
+	        this.primaryUrl = source["primaryUrl"];
+	        this.lanUrls = source["lanUrls"];
+	        this.lastError = source["lastError"];
+	    }
+	}
 	
 	export class WorkspaceFileChange {
 	    id: string;
@@ -1087,6 +1146,24 @@ export namespace services {
 		}
 	}
 	
+	export class WorkspaceIconInput {
+	    name?: string;
+	    mediaType?: string;
+	    dataUrl: string;
+	    bytes?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceIconInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.mediaType = source["mediaType"];
+	        this.dataUrl = source["dataUrl"];
+	        this.bytes = source["bytes"];
+	    }
+	}
 	export class WorkspaceReferencePreviewLine {
 	    line: number;
 	    text: string;

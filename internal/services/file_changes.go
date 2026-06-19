@@ -394,6 +394,7 @@ func (s *SystemService) dropWorkspaceChangeReview(workspaceID string) {
 }
 
 func (s *SystemService) emitFileChangesEvent(event FileChangesEvent) {
+	s.emitRuntimeEvent(fileChangesEventName, event)
 	if s.fileChangesEventSink != nil {
 		s.fileChangesEventSink(event)
 	}

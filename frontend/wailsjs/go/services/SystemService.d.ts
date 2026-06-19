@@ -54,7 +54,11 @@ export function LoadChatSession(arg1:string):Promise<services.ChatSession>;
 
 export function LoadKanbanBoard(arg1:string):Promise<services.KanbanBoard>;
 
+export function LoadRuntimeStatus():Promise<services.RuntimeStatus>;
+
 export function LoadState():Promise<services.AppState>;
+
+export function LoadWebAccessStatus():Promise<services.WebAccessStatus>;
 
 export function LoadWorkspaceChangeReview(arg1:string):Promise<services.WorkspaceChangeReview>;
 
@@ -80,7 +84,11 @@ export function ResolveWorkspaceTextFilePath(arg1:string,arg2:string):Promise<st
 
 export function RetryChatMessage(arg1:string,arg2:string,arg3:boolean):Promise<services.ChatSession>;
 
+export function RotateWebAccessToken():Promise<services.AppState>;
+
 export function SaveSettings(arg1:llm.Settings):Promise<services.AppState>;
+
+export function SaveWebAccessSettings(arg1:services.WebAccessSettings):Promise<services.AppState>;
 
 export function SaveWorkspaceFile(arg1:string,arg2:string,arg3:string,arg4:string):Promise<services.WorkspaceFile>;
 
@@ -95,6 +103,10 @@ export function SendChatMessageWithPlanMode(arg1:string,arg2:string,arg3:boolean
 export function SetActiveWorkspace(arg1:string):Promise<services.AppState>;
 
 export function SetWorkspaceFolderUseAgents(arg1:string,arg2:string,arg3:boolean):Promise<services.AppState>;
+
+export function SetWorkspaceIconFromPath(arg1:string,arg2:string):Promise<services.AppState>;
+
+export function SetWorkspaceIconFromUpload(arg1:string,arg2:services.WorkspaceIconInput):Promise<services.AppState>;
 
 export function SetWorkspaceLetter(arg1:string,arg2:string):Promise<services.AppState>;
 

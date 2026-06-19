@@ -772,6 +772,7 @@ func (s *SystemService) nextChatIDLocked(prefix string) string {
 }
 
 func (s *SystemService) emitChatEvent(event ChatStreamEvent) {
+	s.emitRuntimeEvent(chatStreamEventName, event)
 	if s.ctx != nil {
 		runtime.EventsEmit(s.ctx, chatStreamEventName, event)
 	}

@@ -334,6 +334,7 @@ func (s *SystemService) emitInlineCodeToolCallEvent(eventBase InlineCodePromptEv
 }
 
 func (s *SystemService) emitInlineCodePromptEvent(event InlineCodePromptEvent) {
+	s.emitRuntimeEvent(inlineCodePromptEventName, event)
 	if s.inlineCodeEventSink != nil {
 		s.inlineCodeEventSink(event)
 	}

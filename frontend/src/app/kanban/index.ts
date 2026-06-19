@@ -1,6 +1,6 @@
 
 import { patchChildrenFromHtml, renderMarkdown } from "../../markdown";
-import { AddKanbanCardMessage, CloseKanbanCardDetail, LoadKanbanBoard, UpdateKanbanCardDescription, UpdateKanbanCardDirection } from "../../../wailsjs/go/services/SystemService";
+import { AddKanbanCardMessage, CloseKanbanCardDetail, LoadKanbanBoard, UpdateKanbanCardDescription, UpdateKanbanCardDirection } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";

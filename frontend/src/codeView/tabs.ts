@@ -1,4 +1,4 @@
-import { ReadWorkspaceFile, SaveWorkspaceFile } from "../../wailsjs/go/services/SystemService";
+import { ReadWorkspaceFile, SaveWorkspaceFile } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
 import { captureCodeTreeScroll, patchDirtyUI } from "./dom";
 import { applySavedFile, activeCodeTab, codeStates, ensureCodeState, findTab, promoteTabMruPath, pruneTabMruPaths, removeTabMruPath, tabSwitcherPaths, workspaceFileChanged, wrapIndex } from "./state";

@@ -1,7 +1,7 @@
 import { type Completion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
 import { EditorState, Prec, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import { CompleteWorkspaceFile, FindWorkspaceFileDefinition, FindWorkspaceFileReferences } from "../../wailsjs/go/services/SystemService";
+import { CompleteWorkspaceFile, FindWorkspaceFileDefinition, FindWorkspaceFileReferences } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
 import type { CodeViewCallbacks } from "./types";
 import { openReferencesPanel } from "./references";

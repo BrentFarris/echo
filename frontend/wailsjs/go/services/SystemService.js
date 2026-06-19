@@ -102,8 +102,16 @@ export function LoadKanbanBoard(arg1) {
   return window['go']['services']['SystemService']['LoadKanbanBoard'](arg1);
 }
 
+export function LoadRuntimeStatus() {
+  return window['go']['services']['SystemService']['LoadRuntimeStatus']();
+}
+
 export function LoadState() {
   return window['go']['services']['SystemService']['LoadState']();
+}
+
+export function LoadWebAccessStatus() {
+  return window['go']['services']['SystemService']['LoadWebAccessStatus']();
 }
 
 export function LoadWorkspaceChangeReview(arg1) {
@@ -154,8 +162,16 @@ export function RetryChatMessage(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['RetryChatMessage'](arg1, arg2, arg3);
 }
 
+export function RotateWebAccessToken() {
+  return window['go']['services']['SystemService']['RotateWebAccessToken']();
+}
+
 export function SaveSettings(arg1) {
   return window['go']['services']['SystemService']['SaveSettings'](arg1);
+}
+
+export function SaveWebAccessSettings(arg1) {
+  return window['go']['services']['SystemService']['SaveWebAccessSettings'](arg1);
 }
 
 export function SaveWorkspaceFile(arg1, arg2, arg3, arg4) {
@@ -184,6 +200,14 @@ export function SetActiveWorkspace(arg1) {
 
 export function SetWorkspaceFolderUseAgents(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['SetWorkspaceFolderUseAgents'](arg1, arg2, arg3);
+}
+
+export function SetWorkspaceIconFromPath(arg1, arg2) {
+  return window['go']['services']['SystemService']['SetWorkspaceIconFromPath'](arg1, arg2);
+}
+
+export function SetWorkspaceIconFromUpload(arg1, arg2) {
+  return window['go']['services']['SystemService']['SetWorkspaceIconFromUpload'](arg1, arg2);
 }
 
 export function SetWorkspaceLetter(arg1, arg2) {

@@ -1,4 +1,4 @@
-import { CreateWorkspaceFile, CreateWorkspaceFolder, ListWorkspaceDirectory, MoveWorkspacePath, SearchWorkspaceFiles } from "../../wailsjs/go/services/SystemService";
+import { CreateWorkspaceFile, CreateWorkspaceFolder, ListWorkspaceDirectory, MoveWorkspacePath, SearchWorkspaceFiles } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
 import { captureCodeTreeScroll, patchCodeTree, patchSearchResults } from "./dom";
 import { directoryStateFor, ensureCodeState } from "./state";

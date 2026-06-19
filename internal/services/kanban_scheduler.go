@@ -976,13 +976,22 @@ func (s *SystemService) emitKanbanSnapshot(workspaceID string, eventType string)
 }
 
 func (s *SystemService) emitKanbanProgressEvent(event KanbanEvent) {
-	if event.CardID == "" || !s.hasOpenKanbanCardDetail(event.WorkspaceID, event.CardID) {
+	if event.CardID == "" {
 		return
 	}
-	s.emitKanbanEvent(event)
+	s.emitRuntimeEvent(kanbanEventName, event)
+	if !s.hasOpenKanbanCardDetail(event.WorkspaceID, event.CardID) {
+		return
+	}
+	s.emitKanbanEventToWails(event)
 }
 
 func (s *SystemService) emitKanbanEvent(event KanbanEvent) {
+	s.emitRuntimeEvent(kanbanEventName, event)
+	s.emitKanbanEventToWails(event)
+}
+
+func (s *SystemService) emitKanbanEventToWails(event KanbanEvent) {
 	if s.kanbanEventSink != nil {
 		s.kanbanEventSink(event)
 	}

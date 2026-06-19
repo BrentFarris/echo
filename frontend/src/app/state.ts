@@ -6,6 +6,9 @@ import type { AppMode, ChatImageDraft, ChatMentionState, ContextMenuState, Toast
 export const state = {
   appState: null as services.AppState | null,
   settingsDraft: null as llm.Settings | null,
+  webAccessDraft: null as services.WebAccessSettings | null,
+  webAccessStatus: null as services.WebAccessStatus | null,
+  webAccessQRCodeURL: "",
   settingsOpen: false,
   settingsThemePalette: "light" as ThemePaletteName,
   workspaceLetterDrafts: new Map<string, string>(),
@@ -49,6 +52,10 @@ export const kanbanLaneLabels: Record<string, string> = {
 
 export function cloneSettings(settings: llm.Settings): llm.Settings {
   return llm.Settings.createFrom(JSON.parse(JSON.stringify(settings)));
+}
+
+export function cloneWebAccessSettings(settings: services.WebAccessSettings | null | undefined): services.WebAccessSettings {
+  return services.WebAccessSettings.createFrom(JSON.parse(JSON.stringify(settings ?? {})));
 }
 
 export function activeWorkspace(): services.Workspace | null {

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"embed"
 
+	"github.com/brent/echo/internal/services"
+	"github.com/brent/echo/internal/webserver"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -18,6 +21,8 @@ var appIcon []byte
 
 func main() {
 	app := NewApp()
+	webAccess := webserver.New(app.System, assets)
+	services.SetWebAccessController(app.System, webAccess)
 
 	err := wails.Run(&options.App{
 		Title:     "Echo",
@@ -32,8 +37,14 @@ func main() {
 		},
 		BackgroundColour:         &options.RGBA{R: 18, G: 18, B: 20, A: 1},
 		EnableDefaultContextMenu: true,
-		OnStartup:                app.startup,
-		OnShutdown:               app.shutdown,
+		OnStartup: func(ctx context.Context) {
+			app.startup(ctx)
+			_, _ = webAccess.ApplyWebAccessSettings(app.System.LoadState().WebAccess)
+		},
+		OnShutdown: func(ctx context.Context) {
+			_ = webAccess.Shutdown(ctx)
+			app.shutdown(ctx)
+		},
 		Linux: &linux.Options{
 			Icon: appIcon,
 		},
