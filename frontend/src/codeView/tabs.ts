@@ -211,7 +211,10 @@ export async function saveActiveCodeFile(workspaceID: string, callbacks: CodeVie
       tab.content,
       tab.modifiedAt,
     );
-    applySavedFile(workspaceID, services.WorkspaceFile.createFrom(saved));
+    const savedFile = services.WorkspaceFile.createFrom(saved);
+    applySavedFile(workspaceID, savedFile);
+    const savedTab = findTab(workspaceID, savedFile.path);
+    replaceMountedEditorContent(workspaceID, savedFile.path, savedTab?.content ?? savedFile.content);
     callbacks.pushToast("File saved.", "success");
   } catch (error) {
     callbacks.pushToast(callbacks.errorMessage(error), "error");

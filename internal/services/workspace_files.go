@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"go/format"
 	"os"
 	"path"
 	"path/filepath"
@@ -336,10 +337,28 @@ func (s *SystemService) SaveWorkspaceFile(workspaceID string, path string, conte
 	if !isWorkspaceTextLike(currentData) || !utf8.Valid(currentData) {
 		return WorkspaceFile{}, fmt.Errorf("file appears to be binary")
 	}
+	content, err = formatWorkspaceFileContentBeforeSave(resolved, content)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	if len([]byte(content)) > maxWorkspaceEditorFileBytes {
+		return WorkspaceFile{}, fmt.Errorf("formatted content is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
+	}
 	if err := os.WriteFile(resolved, []byte(content), info.Mode().Perm()); err != nil {
 		return WorkspaceFile{}, fmt.Errorf("write file: %w", err)
 	}
 	return readWorkspaceTextFile(workspace, resolved)
+}
+
+func formatWorkspaceFileContentBeforeSave(resolvedPath string, content string) (string, error) {
+	if !strings.EqualFold(filepath.Ext(resolvedPath), ".go") {
+		return content, nil
+	}
+	formatted, err := format.Source([]byte(content))
+	if err != nil {
+		return "", fmt.Errorf("gofmt failed: %w", err)
+	}
+	return string(formatted), nil
 }
 
 func cleanWorkspacePathCandidate(path string) string {
