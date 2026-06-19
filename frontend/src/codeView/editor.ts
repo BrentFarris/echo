@@ -213,6 +213,7 @@ export async function mountActiveCodeEditor(
     const position = clamp(tab.pendingRevealPosition, 0, mountedEditor.state.doc.length);
     tab.pendingRevealPosition = undefined;
     mountedEditor.dispatch({
+      selection: { anchor: position },
       effects: EditorView.scrollIntoView(position, { y: "center" }),
     });
   }

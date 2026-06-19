@@ -242,7 +242,7 @@ export async function openCodeFile(
   const existing = findTab(workspaceID, path);
   if (existing) {
     applyCodeTabSelection(existing, options.selectionPosition);
-    activateCodeTab(workspaceID, existing.path, callbacks);
+    activateCodeTab(workspaceID, existing.path, callbacks, { saveMountedEditor: false });
     return;
   }
 
@@ -387,12 +387,15 @@ export function activateCodeTab(
   workspaceID: string,
   path: string,
   callbacks: CodeViewCallbacks,
+  options: { saveMountedEditor?: boolean } = {},
 ) {
   const state = ensureCodeState(workspaceID);
   if (!path || !state.tabs.some((tab) => tab.path === path)) {
     return;
   }
-  saveMountedEditorContent();
+  if (options.saveMountedEditor !== false) {
+    saveMountedEditorContent();
+  }
   state.tabSwitcher = null;
   state.activePath = path;
   promoteTabMruPath(state, path);
