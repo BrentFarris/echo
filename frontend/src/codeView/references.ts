@@ -1,5 +1,5 @@
-import { EditorState, StateEffect, StateField, type Extension } from "@codemirror/state";
-import { Decoration, type DecorationSet, EditorView, WidgetType } from "@codemirror/view";
+import { EditorState, Prec, StateEffect, StateField, type Extension } from "@codemirror/state";
+import { Decoration, type DecorationSet, EditorView, WidgetType, keymap } from "@codemirror/view";
 import { services } from "../../wailsjs/go/models";
 import { codeIcons } from "./icons";
 import { ensureCodeState } from "./state";
@@ -56,7 +56,21 @@ export function referencesPanelExtension(
     },
     provide: (field) => EditorView.decorations.from(field),
   });
-  return [field];
+  return [
+    field,
+    Prec.highest(keymap.of([
+      {
+        key: "Escape",
+        run(view) {
+          if (!referencesPanelForPath(workspaceID, path)) {
+            return false;
+          }
+          closeReferencesPanel(workspaceID, path, view);
+          return true;
+        },
+      },
+    ])),
+  ];
 }
 
 export function openReferencesPanel(

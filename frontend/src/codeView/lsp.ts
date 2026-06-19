@@ -43,6 +43,13 @@ export function lspDefinitionExtension(
           return true;
         },
       },
+      {
+        key: "Shift-F12",
+        run: (view) => {
+          void showLspReferences(workspaceID, path, view, callbacks);
+          return true;
+        },
+      },
     ]),
   );
 }
@@ -73,24 +80,13 @@ async function goToLspDefinition(
       return;
     }
     if (isDefinitionAtRequest(response, path, requestPosition)) {
-      const references = services.WorkspaceReferenceResponse.createFrom(
-        await FindWorkspaceFileReferences(
-          workspaceID,
-          services.WorkspaceReferenceRequest.createFrom({
-            filePath: path,
-            content,
-            position: requestPosition,
-            includeDeclaration: true,
-            maxResults: 200,
-          }),
-        ),
+      openLspReferencesResponse(
+        workspaceID,
+        path,
+        view,
+        callbacks,
+        await findLspReferences(workspaceID, path, content, requestPosition),
       );
-      if (!references.found || !references.locations?.length) {
-        openReferencesPanel(workspaceID, path, view, []);
-        callbacks.pushToast(references.message || "No references found.", "info");
-        return;
-      }
-      openReferencesPanel(workspaceID, path, view, references.locations);
       return;
     }
     await openCodeFile(workspaceID, response.targetPath, callbacks, {
@@ -100,6 +96,63 @@ async function goToLspDefinition(
   } catch (error) {
     callbacks.pushToast(callbacks.errorMessage(error), "error");
   }
+}
+
+async function showLspReferences(
+  workspaceID: string,
+  path: string,
+  view: EditorView,
+  callbacks: CodeViewCallbacks,
+) {
+  try {
+    const content = editorStateToFileContent(view.state);
+    const editorPosition = lspDefinitionEditorPosition(view.state, view.state.selection.main.head);
+    const requestPosition = editorPositionToFileContentOffset(view.state, editorPosition);
+    openLspReferencesResponse(
+      workspaceID,
+      path,
+      view,
+      callbacks,
+      await findLspReferences(workspaceID, path, content, requestPosition),
+    );
+  } catch (error) {
+    callbacks.pushToast(callbacks.errorMessage(error), "error");
+  }
+}
+
+async function findLspReferences(
+  workspaceID: string,
+  path: string,
+  content: string,
+  position: number,
+) {
+  return services.WorkspaceReferenceResponse.createFrom(
+    await FindWorkspaceFileReferences(
+      workspaceID,
+      services.WorkspaceReferenceRequest.createFrom({
+        filePath: path,
+        content,
+        position,
+        includeDeclaration: true,
+        maxResults: 200,
+      }),
+    ),
+  );
+}
+
+function openLspReferencesResponse(
+  workspaceID: string,
+  path: string,
+  view: EditorView,
+  callbacks: CodeViewCallbacks,
+  references: services.WorkspaceReferenceResponse,
+) {
+  if (!references.found || !references.locations?.length) {
+    openReferencesPanel(workspaceID, path, view, []);
+    callbacks.pushToast(references.message || "No references found.", "info");
+    return;
+  }
+  openReferencesPanel(workspaceID, path, view, references.locations);
 }
 
 function isDefinitionAtRequest(
