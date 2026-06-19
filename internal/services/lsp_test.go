@@ -149,6 +149,77 @@ func TestParseLSPDefinitionResponse(t *testing.T) {
 	}
 }
 
+func TestWorkspaceReferenceLocationsUseActiveContentAndFilterWorkspace(t *testing.T) {
+	root := t.TempDir()
+	workspace := workspaceFromPath(root)
+	mainPath := filepath.Join(root, "main.go")
+	otherPath := filepath.Join(root, "other.go")
+	outsidePath := filepath.Join(t.TempDir(), "outside.go")
+
+	if err := os.WriteFile(mainPath, []byte("package main\n\nvar diskOnly = 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(otherPath, []byte("package main\n\nfunc use() {\n\tName()\n}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	activeContent := "package main\r\n\r\nfunc Name() {}\r\n\r\nfunc main() {\r\n\tName()\r\n}\r\n"
+	locations := []lspDefinitionLocation{
+		{
+			URI: fileURI(mainPath),
+			Range: lspRange{
+				Start: lspPosition{Line: 2, Character: 5},
+				End:   lspPosition{Line: 2, Character: 9},
+			},
+		},
+		{
+			URI: fileURI(mainPath),
+			Range: lspRange{
+				Start: lspPosition{Line: 5, Character: 1},
+				End:   lspPosition{Line: 5, Character: 5},
+			},
+		},
+		{
+			URI: fileURI(otherPath),
+			Range: lspRange{
+				Start: lspPosition{Line: 3, Character: 1},
+				End:   lspPosition{Line: 3, Character: 5},
+			},
+		},
+		{
+			URI: fileURI(outsidePath),
+			Range: lspRange{
+				Start: lspPosition{Line: 0, Character: 0},
+				End:   lspPosition{Line: 0, Character: 4},
+			},
+		},
+	}
+
+	references, skippedOutside := workspaceReferenceLocations(workspace, mainPath, activeContent, locations)
+	if skippedOutside != 1 {
+		t.Fatalf("expected one outside-workspace location to be skipped, got %d", skippedOutside)
+	}
+	if len(references) != 3 {
+		t.Fatalf("expected three workspace references, got %#v", references)
+	}
+	if references[0].Path != workspaceRelativePath(workspace, mainPath) {
+		t.Fatalf("expected source path %q, got %q", workspaceRelativePath(workspace, mainPath), references[0].Path)
+	}
+	if references[0].Preview != "func Name() {}" {
+		t.Fatalf("expected active editor content preview, got %q", references[0].Preview)
+	}
+	expectedCallOffset := utf16Length(activeContent[:strings.Index(activeContent, "\tName")+1])
+	if references[1].Range.Start.Offset != expectedCallOffset {
+		t.Fatalf("expected CRLF-aware call offset %d, got %d", expectedCallOffset, references[1].Range.Start.Offset)
+	}
+	if references[1].PreviewLines == nil || references[1].PreviewLines[4].HighlightStart != 1 || references[1].PreviewLines[4].HighlightEnd != 5 {
+		t.Fatalf("expected target line highlight 1-5, got %#v", references[1].PreviewLines)
+	}
+	if references[2].Path != workspaceRelativePath(workspace, otherPath) || references[2].Preview != "\tName()" {
+		t.Fatalf("expected disk-backed other-file preview, got %#v", references[2])
+	}
+}
+
 func TestSystemServiceCompleteWorkspaceFileWithGopls(t *testing.T) {
 	if os.Getenv("ECHO_RUN_GOPLS_INTEGRATION") != "1" {
 		t.Skip("set ECHO_RUN_GOPLS_INTEGRATION=1 to run the real gopls integration test")

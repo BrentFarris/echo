@@ -1,9 +1,10 @@
 import { type Completion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
 import { EditorState, Prec, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import { CompleteWorkspaceFile, FindWorkspaceFileDefinition } from "../../wailsjs/go/services/SystemService";
+import { CompleteWorkspaceFile, FindWorkspaceFileDefinition, FindWorkspaceFileReferences } from "../../wailsjs/go/services/SystemService";
 import { services } from "../../wailsjs/go/models";
 import type { CodeViewCallbacks } from "./types";
+import { openReferencesPanel } from "./references";
 import {
   clamp,
   editorPositionToFileContentOffset,
@@ -56,18 +57,40 @@ async function goToLspDefinition(
   try {
     const content = editorStateToFileContent(view.state);
     const editorPosition = lspDefinitionEditorPosition(view.state, view.state.selection.main.head);
+    const requestPosition = editorPositionToFileContentOffset(view.state, editorPosition);
     const response = services.WorkspaceDefinitionResponse.createFrom(
       await FindWorkspaceFileDefinition(
         workspaceID,
         services.WorkspaceDefinitionRequest.createFrom({
           filePath: path,
           content,
-          position: editorPositionToFileContentOffset(view.state, editorPosition),
+          position: requestPosition,
         }),
       ),
     );
     if (!response.found || !response.targetPath) {
       callbacks.pushToast(response.message || "No definition found.", "info");
+      return;
+    }
+    if (isDefinitionAtRequest(response, path, requestPosition)) {
+      const references = services.WorkspaceReferenceResponse.createFrom(
+        await FindWorkspaceFileReferences(
+          workspaceID,
+          services.WorkspaceReferenceRequest.createFrom({
+            filePath: path,
+            content,
+            position: requestPosition,
+            includeDeclaration: true,
+            maxResults: 200,
+          }),
+        ),
+      );
+      if (!references.found || !references.locations?.length) {
+        openReferencesPanel(workspaceID, path, view, []);
+        callbacks.pushToast(references.message || "No references found.", "info");
+        return;
+      }
+      openReferencesPanel(workspaceID, path, view, references.locations);
       return;
     }
     await openCodeFile(workspaceID, response.targetPath, callbacks, {
@@ -77,6 +100,21 @@ async function goToLspDefinition(
   } catch (error) {
     callbacks.pushToast(callbacks.errorMessage(error), "error");
   }
+}
+
+function isDefinitionAtRequest(
+  response: services.WorkspaceDefinitionResponse,
+  path: string,
+  requestPosition: number,
+) {
+  const targetPath = response.targetPath;
+  if (!targetPath) {
+    return false;
+  }
+  return (
+    sameWorkspacePath(targetPath, response.sourcePath || path) &&
+    response.position === requestPosition
+  );
 }
 
 export function lspCompletionExtension(
@@ -176,6 +214,10 @@ function identifierBoundsAt(line: string, offset: number): { from: number; to: n
 
 function isIdentifierCharacter(character: string) {
   return /^[\p{L}\p{N}_]$/u.test(character);
+}
+
+function sameWorkspacePath(left: string, right: string) {
+  return left.replaceAll("\\", "/").toLowerCase() === right.replaceAll("\\", "/").toLowerCase();
 }
 
 function lspCompletionItemToEditorOffsets(

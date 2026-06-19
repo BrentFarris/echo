@@ -55,6 +55,7 @@ export function ensureCodeState(workspaceID: string): CodeWorkspaceState {
       searchFocused: false,
       preservingSearchFocus: false,
       inlineChat: null,
+      referencesPanel: null,
     };
     codeStates.set(workspaceID, state);
   }

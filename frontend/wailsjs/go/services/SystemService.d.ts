@@ -46,6 +46,8 @@ export function ExecutePlan(arg1:string):Promise<services.KanbanBoard>;
 
 export function FindWorkspaceFileDefinition(arg1:string,arg2:services.WorkspaceDefinitionRequest):Promise<services.WorkspaceDefinitionResponse>;
 
+export function FindWorkspaceFileReferences(arg1:string,arg2:services.WorkspaceReferenceRequest):Promise<services.WorkspaceReferenceResponse>;
+
 export function ListWorkspaceDirectory(arg1:string,arg2:string):Promise<services.WorkspaceDirectory>;
 
 export function LoadChatSession(arg1:string):Promise<services.ChatSession>;

@@ -78,6 +78,52 @@ type WorkspaceDefinitionResponse struct {
 	Message     string `json:"message,omitempty"`
 }
 
+type WorkspaceReferenceRequest struct {
+	FilePath           string `json:"filePath"`
+	Content            string `json:"content"`
+	Position           int    `json:"position"`
+	IncludeDeclaration *bool  `json:"includeDeclaration,omitempty"`
+	MaxResults         int    `json:"maxResults,omitempty"`
+}
+
+type WorkspaceReferenceResponse struct {
+	WorkspaceID             string                       `json:"workspaceId"`
+	SourcePath              string                       `json:"sourcePath"`
+	Position                int                          `json:"position"`
+	Found                   bool                         `json:"found"`
+	Message                 string                       `json:"message,omitempty"`
+	Locations               []WorkspaceReferenceLocation `json:"locations,omitempty"`
+	ResultCount             int                          `json:"resultCount,omitempty"`
+	ReturnedCount           int                          `json:"returnedCount,omitempty"`
+	Truncated               bool                         `json:"truncated,omitempty"`
+	SkippedOutsideWorkspace int                          `json:"skippedOutsideWorkspace,omitempty"`
+}
+
+type WorkspaceReferenceLocation struct {
+	Path         string                          `json:"path"`
+	Range        WorkspaceReferenceRange         `json:"range"`
+	Preview      string                          `json:"preview,omitempty"`
+	PreviewLines []WorkspaceReferencePreviewLine `json:"previewLines,omitempty"`
+}
+
+type WorkspaceReferenceRange struct {
+	Start WorkspaceReferencePosition `json:"start"`
+	End   WorkspaceReferencePosition `json:"end"`
+}
+
+type WorkspaceReferencePosition struct {
+	Line   int `json:"line"`
+	Column int `json:"column"`
+	Offset int `json:"offset"`
+}
+
+type WorkspaceReferencePreviewLine struct {
+	Line           int    `json:"line"`
+	Text           string `json:"text"`
+	HighlightStart int    `json:"highlightStart"`
+	HighlightEnd   int    `json:"highlightEnd"`
+}
+
 type lspServerCommand struct {
 	name string
 	args []string
@@ -336,6 +382,200 @@ func (s *SystemService) FindWorkspaceFileDefinition(workspaceID string, request 
 		response.Message = "No workspace text file definition found."
 	}
 	return response, nil
+}
+
+func (s *SystemService) FindWorkspaceFileReferences(workspaceID string, request WorkspaceReferenceRequest) (WorkspaceReferenceResponse, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return WorkspaceReferenceResponse{}, err
+	}
+	if strings.TrimSpace(request.FilePath) == "" {
+		return WorkspaceReferenceResponse{}, fmt.Errorf("file path is required")
+	}
+	if len([]byte(request.Content)) > maxWorkspaceEditorFileBytes {
+		return WorkspaceReferenceResponse{}, fmt.Errorf("content is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
+	}
+	if request.Position < 0 || request.Position > utf16Length(request.Content) {
+		return WorkspaceReferenceResponse{}, fmt.Errorf("reference position is outside the file")
+	}
+
+	response := WorkspaceReferenceResponse{
+		WorkspaceID: workspace.ID,
+		SourcePath:  request.FilePath,
+		Position:    request.Position,
+	}
+	languageID, ok := lspLanguageIDForPath(request.FilePath)
+	if !ok {
+		response.Message = "Reference lookup is not available for this file type."
+		return response, nil
+	}
+
+	resolved, err := resolveWorkspaceServicePath(workspace, request.FilePath)
+	if err != nil {
+		return WorkspaceReferenceResponse{}, err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return WorkspaceReferenceResponse{}, fmt.Errorf("file was not found")
+	}
+	if !info.Mode().IsRegular() {
+		return WorkspaceReferenceResponse{}, fmt.Errorf("path is not a regular file")
+	}
+	response.SourcePath = workspaceRelativePath(workspace, resolved)
+
+	folder, err := workspaceFolderForAbsolutePath(workspace, resolved)
+	if err != nil {
+		return WorkspaceReferenceResponse{}, err
+	}
+	client, err := s.workspaceLSPClient(workspace, folder, languageID)
+	if err != nil {
+		return WorkspaceReferenceResponse{}, err
+	}
+
+	includeDeclaration := true
+	if request.IncludeDeclaration != nil {
+		includeDeclaration = *request.IncludeDeclaration
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), lspDefinitionTimeout)
+	defer cancel()
+	locations, err := client.locations(
+		ctx,
+		"textDocument/references",
+		resolved,
+		request.Content,
+		lspPositionFromUTF16Offset(request.Content, request.Position),
+		map[string]any{"context": map[string]any{"includeDeclaration": includeDeclaration}},
+	)
+	if err != nil {
+		return WorkspaceReferenceResponse{}, err
+	}
+
+	converted, skippedOutside := workspaceReferenceLocations(workspace, resolved, request.Content, locations)
+	response.ResultCount = len(converted)
+	response.SkippedOutsideWorkspace = skippedOutside
+	response.Locations, response.Truncated = limitWorkspaceReferenceLocations(converted, codeNavigationMaxResults(request.MaxResults))
+	response.ReturnedCount = len(response.Locations)
+	response.Found = len(response.Locations) > 0
+	if !response.Found {
+		if skippedOutside > 0 {
+			response.Message = "References are outside the active workspace."
+		} else {
+			response.Message = "No references found."
+		}
+	}
+	return response, nil
+}
+
+func workspaceReferenceLocations(workspace Workspace, sourceResolved string, sourceContent string, locations []lspDefinitionLocation) ([]WorkspaceReferenceLocation, int) {
+	output := make([]WorkspaceReferenceLocation, 0, len(locations))
+	skippedOutside := 0
+	contentByPath := map[string]WorkspaceFile{}
+	sourceFile := WorkspaceFile{
+		WorkspaceID: workspace.ID,
+		Path:        workspaceRelativePath(workspace, sourceResolved),
+		Content:     sourceContent,
+	}
+
+	for _, location := range locations {
+		targetPath, err := pathFromFileURI(location.URI)
+		if err != nil {
+			continue
+		}
+		if _, err := workspaceRelativeCandidate(workspace, targetPath); err != nil {
+			skippedOutside++
+			continue
+		}
+
+		file := sourceFile
+		if !samePath(targetPath, sourceResolved) {
+			cached, ok := contentByPath[targetPath]
+			if !ok {
+				cached, err = readWorkspaceTextFile(workspace, targetPath)
+				if err != nil {
+					continue
+				}
+				contentByPath[targetPath] = cached
+			}
+			file = cached
+		}
+		output = append(output, WorkspaceReferenceLocation{
+			Path:         file.Path,
+			Range:        workspaceReferenceRangeFromLSP(file.Content, location.Range),
+			Preview:      codeLinePreview(file.Content, location.Range.Start.Line+1),
+			PreviewLines: workspaceReferencePreviewLines(file.Content, location.Range, 4),
+		})
+	}
+	return output, skippedOutside
+}
+
+func workspaceReferenceRangeFromLSP(content string, target lspRange) WorkspaceReferenceRange {
+	start := codePositionFromLSP(content, target.Start)
+	end := codePositionFromLSP(content, target.End)
+	return WorkspaceReferenceRange{
+		Start: WorkspaceReferencePosition{
+			Line:   start.Line,
+			Column: start.Column,
+			Offset: start.Offset,
+		},
+		End: WorkspaceReferencePosition{
+			Line:   end.Line,
+			Column: end.Column,
+			Offset: end.Offset,
+		},
+	}
+}
+
+func workspaceReferencePreviewLines(content string, target lspRange, contextLines int) []WorkspaceReferencePreviewLine {
+	if target.Start.Line < 0 {
+		return nil
+	}
+	lines := strings.Split(content, "\n")
+	targetLine := target.Start.Line + 1
+	if targetLine <= 0 || targetLine > len(lines) {
+		return nil
+	}
+	firstLine := targetLine - contextLines
+	if firstLine < 1 {
+		firstLine = 1
+	}
+	lastLine := targetLine + contextLines
+	if lastLine > len(lines) {
+		lastLine = len(lines)
+	}
+
+	output := make([]WorkspaceReferencePreviewLine, 0, lastLine-firstLine+1)
+	for lineNumber := firstLine; lineNumber <= lastLine; lineNumber++ {
+		text := strings.TrimRight(lines[lineNumber-1], "\r")
+		runes := []rune(text)
+		if len(runes) > maxLSPPreviewRunes {
+			text = string(runes[:maxLSPPreviewRunes]) + "..."
+		}
+		previewLine := WorkspaceReferencePreviewLine{
+			Line:           lineNumber,
+			Text:           text,
+			HighlightStart: -1,
+			HighlightEnd:   -1,
+		}
+		if lineNumber == targetLine {
+			previewLine.HighlightStart = target.Start.Character
+			previewLine.HighlightEnd = target.Start.Character
+			if target.End.Line == target.Start.Line {
+				previewLine.HighlightEnd = target.End.Character
+			}
+			if previewLine.HighlightEnd < previewLine.HighlightStart {
+				previewLine.HighlightEnd = previewLine.HighlightStart
+			}
+		}
+		output = append(output, previewLine)
+	}
+	return output
+}
+
+func limitWorkspaceReferenceLocations(locations []WorkspaceReferenceLocation, maxResults int) ([]WorkspaceReferenceLocation, bool) {
+	if len(locations) <= maxResults {
+		return locations, false
+	}
+	return append([]WorkspaceReferenceLocation(nil), locations[:maxResults]...), true
 }
 
 func (s *SystemService) workspaceLSPClient(workspace Workspace, folder WorkspaceFolder, languageID string) (*lspClient, error) {

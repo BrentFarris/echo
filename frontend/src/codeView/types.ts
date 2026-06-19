@@ -88,6 +88,15 @@ export type InlineCodePromptEvent = {
   finishReason?: string;
 };
 
+export type CodeReferencePanelState = {
+  path: string;
+  anchorPosition: number;
+  locations: services.WorkspaceReferenceLocation[];
+  selectedIndex: number;
+  expandedPaths: string[];
+  renderKey: number;
+};
+
 export type CodeWorkspaceState = {
   directories: Map<string, DirectoryState>;
   expandedPaths: Set<string>;
@@ -112,4 +121,5 @@ export type CodeWorkspaceState = {
   searchFocused: boolean;
   preservingSearchFocus: boolean;
   inlineChat: InlineCodeChatState | null;
+  referencesPanel: CodeReferencePanelState | null;
 };

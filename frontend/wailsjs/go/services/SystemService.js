@@ -86,6 +86,10 @@ export function FindWorkspaceFileDefinition(arg1, arg2) {
   return window['go']['services']['SystemService']['FindWorkspaceFileDefinition'](arg1, arg2);
 }
 
+export function FindWorkspaceFileReferences(arg1, arg2) {
+  return window['go']['services']['SystemService']['FindWorkspaceFileReferences'](arg1, arg2);
+}
+
 export function ListWorkspaceDirectory(arg1, arg2) {
   return window['go']['services']['SystemService']['ListWorkspaceDirectory'](arg1, arg2);
 }

@@ -8,6 +8,7 @@ import { tags } from "@lezer/highlight";
 import { patchDirtyUI } from "./dom";
 import { inlineCodeChatExtension } from "./inlineChat";
 import { lspCompletionExtension, lspDefinitionExtension } from "./lsp";
+import { referencesPanelExtension } from "./references";
 import { activeCodeTab, findTab } from "./state";
 import type { CodeViewCallbacks } from "./types";
 import { clamp, editorDocumentLengthForFileContent, editorStateToFileContent } from "./utils";
@@ -168,6 +169,7 @@ export async function mountActiveCodeEditor(
     syntaxHighlighting(codeHighlightStyle),
     altClickCaretToggleExtension(),
     lspDefinitionExtension(workspaceID, tab.path, callbacks, hooks.openCodeFile),
+    referencesPanelExtension(workspaceID, tab.path, callbacks, hooks.openCodeFile),
     inlineCodeChatExtension(workspaceID, tab.path, callbacks, { saveActiveCodeFile: hooks.saveActiveCodeFile }),
     EditorView.updateListener.of((update) => {
       if (update.selectionSet || update.docChanged) {
