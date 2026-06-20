@@ -7,9 +7,10 @@ import (
 
 func init() {
 	registerLSPLanguage(lspLanguageDefinition{
-		ID:         "go",
-		Extensions: []string{".go"},
-		Command:    lspServerCommand{name: "gopls"},
+		ID:               "go",
+		Extensions:       []string{".go"},
+		WorkspaceMarkers: []string{"go.mod", "go.work"},
+		Command:          lspServerCommand{name: "gopls"},
 		CompletionFilter: func(items []WorkspaceCompletionItem) []WorkspaceCompletionItem {
 			return filterGoCompletionItems(items)
 		},

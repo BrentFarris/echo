@@ -149,6 +149,7 @@ type SystemService struct {
 	workspaceToolLocks      map[string]*sync.Mutex
 	lspMu                   sync.Mutex
 	lspClients              map[string]*lspClient
+	lspWarmups              map[string]struct{}
 	workspaceContextBuilder workspaceContextBuildFunc
 	webAccessController     WebAccessController
 	eventMu                 sync.Mutex
@@ -184,6 +185,7 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 		fileChanges:        make(map[string][]trackedFileChange),
 		workspaceToolLocks: make(map[string]*sync.Mutex),
 		lspClients:         make(map[string]*lspClient),
+		lspWarmups:         make(map[string]struct{}),
 		eventSubscribers:   make(map[uint64]chan RuntimeEvent),
 	}
 	_ = service.load()
@@ -204,7 +206,9 @@ func (s *SystemService) LoadState() AppState {
 	if s.refreshWorkspaceStatusesLocked() {
 		_ = s.saveLocked()
 	}
-	return cloneState(s.state)
+	state := cloneState(s.state)
+	s.warmActiveWorkspaceLSPClients(state)
+	return state
 }
 
 func (s *SystemService) SaveSettings(settings llm.Settings) (AppState, error) {
@@ -251,7 +255,9 @@ func (s *SystemService) AddWorkspace(path string) (AppState, error) {
 			if err := s.saveLocked(); err != nil {
 				return AppState{}, err
 			}
-			return cloneState(s.state), nil
+			state := cloneState(s.state)
+			s.warmActiveWorkspaceLSPClients(state)
+			return state, nil
 		}
 	}
 	s.state.Workspaces = append(s.state.Workspaces, workspace)
@@ -260,7 +266,9 @@ func (s *SystemService) AddWorkspace(path string) (AppState, error) {
 	if err := s.saveLocked(); err != nil {
 		return AppState{}, err
 	}
-	return cloneState(s.state), nil
+	state := cloneState(s.state)
+	s.warmActiveWorkspaceLSPClients(state)
+	return state, nil
 }
 
 func (s *SystemService) ChooseWorkspaceFolder() (AppState, error) {
@@ -328,7 +336,9 @@ func (s *SystemService) AddWorkspaceFolder(workspaceID string, path string) (App
 			if err := s.saveLocked(); err != nil {
 				return AppState{}, err
 			}
-			return cloneState(s.state), nil
+			state := cloneState(s.state)
+			s.warmActiveWorkspaceLSPClients(state)
+			return state, nil
 		}
 		used := workspaceFolderLabelSet(s.state.Workspaces[i].Folders)
 		s.state.Workspaces[i].Folders = append(s.state.Workspaces[i].Folders, workspaceFolderFromPath(absolute, used))
@@ -336,7 +346,9 @@ func (s *SystemService) AddWorkspaceFolder(workspaceID string, path string) (App
 		if err := s.saveLocked(); err != nil {
 			return AppState{}, err
 		}
-		return cloneState(s.state), nil
+		state := cloneState(s.state)
+		s.warmActiveWorkspaceLSPClients(state)
+		return state, nil
 	}
 	return AppState{}, fmt.Errorf("workspace was not found")
 }
@@ -376,7 +388,9 @@ func (s *SystemService) RemoveWorkspaceFolder(workspaceID string, folderID strin
 		}
 		s.dropWorkspaceChangeReview(workspaceID)
 		s.closeWorkspaceLSPClients(workspaceID)
-		return cloneState(s.state), nil
+		state := cloneState(s.state)
+		s.warmActiveWorkspaceLSPClients(state)
+		return state, nil
 	}
 	return AppState{}, fmt.Errorf("workspace was not found")
 }
@@ -422,7 +436,9 @@ func (s *SystemService) SetActiveWorkspace(id string) (AppState, error) {
 		if err := s.saveLocked(); err != nil {
 			return AppState{}, err
 		}
-		return cloneState(s.state), nil
+		state := cloneState(s.state)
+		s.warmActiveWorkspaceLSPClients(state)
+		return state, nil
 	}
 	for _, workspace := range s.state.Workspaces {
 		if workspace.ID == id {
@@ -431,7 +447,9 @@ func (s *SystemService) SetActiveWorkspace(id string) (AppState, error) {
 			if err := s.saveLocked(); err != nil {
 				return AppState{}, err
 			}
-			return cloneState(s.state), nil
+			state := cloneState(s.state)
+			s.warmActiveWorkspaceLSPClients(state)
+			return state, nil
 		}
 	}
 	return AppState{}, fmt.Errorf("workspace was not found")
@@ -643,7 +661,9 @@ func (s *SystemService) DeleteWorkspace(id string) (AppState, error) {
 	s.dropWorkspaceChangeReview(id)
 	s.closeWorkspaceLSPClients(id)
 	removeStoredWorkspaceIcon(deletedIconPath)
-	return cloneState(s.state), nil
+	state := cloneState(s.state)
+	s.warmActiveWorkspaceLSPClients(state)
+	return state, nil
 }
 
 func (s *SystemService) OpenWorkspaceExplorer(id string) error {

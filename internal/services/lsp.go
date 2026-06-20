@@ -132,6 +132,7 @@ type lspServerCommand struct {
 type lspLanguageDefinition struct {
 	ID               string
 	Extensions       []string
+	WorkspaceMarkers []string
 	Command          lspServerCommand
 	CompletionFilter func([]WorkspaceCompletionItem) []WorkspaceCompletionItem
 }
@@ -1098,8 +1099,18 @@ func registerLSPLanguage(definition lspLanguageDefinition) {
 		}
 		normalizedExtensions = append(normalizedExtensions, extension)
 	}
+	normalizedMarkers := make([]string, 0, len(definition.WorkspaceMarkers))
+	for _, marker := range definition.WorkspaceMarkers {
+		marker = strings.Trim(strings.TrimSpace(strings.ReplaceAll(marker, "\\", "/")), "/")
+		if marker == "" {
+			continue
+		}
+		normalizedMarkers = append(normalizedMarkers, marker)
+	}
+	sort.Strings(normalizedMarkers)
 
 	definition.Extensions = normalizedExtensions
+	definition.WorkspaceMarkers = normalizedMarkers
 	lspLanguagesByID[definition.ID] = definition
 	for _, extension := range normalizedExtensions {
 		lspLanguageIDsByExt[extension] = definition.ID

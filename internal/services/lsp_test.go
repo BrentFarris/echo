@@ -149,6 +149,47 @@ func TestParseLSPDefinitionResponse(t *testing.T) {
 	}
 }
 
+func TestDetectWorkspaceFolderLSPLanguagesFindsGoMarker(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/warmup\n\ngo 1.23\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !stringSliceContains(detectWorkspaceFolderLSPLanguages(root), "go") {
+		t.Fatalf("expected Go LSP warm-up from go.mod marker")
+	}
+}
+
+func TestDetectWorkspaceFolderLSPLanguagesSkipsIgnoredDirectories(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "node_modules", "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "node_modules", "pkg", "ignored.go"), []byte("package ignored\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if stringSliceContains(detectWorkspaceFolderLSPLanguages(root), "go") {
+		t.Fatalf("expected Go files under ignored directories not to trigger warm-up")
+	}
+	if err := os.MkdirAll(filepath.Join(root, "cmd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "cmd", "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !stringSliceContains(detectWorkspaceFolderLSPLanguages(root), "go") {
+		t.Fatalf("expected Go LSP warm-up from workspace Go file")
+	}
+}
+
+func stringSliceContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestWorkspaceReferenceLocationsUseActiveContentAndFilterWorkspace(t *testing.T) {
 	root := t.TempDir()
 	workspace := workspaceFromPath(root)
