@@ -23,6 +23,7 @@ export function render() {
   const workspace = activeWorkspace();
   const workspaces = state.appState?.workspaces ?? [];
   const showingCode = state.appMode === "code" && Boolean(workspace);
+  const showGitChanges = workspace && state.openGitChangeWorkspaces.has(workspace.id);
 
   // Preserve the live draft value from the existing textarea before DOM destruction.
   const existingTextarea = appRoot.querySelector<HTMLTextAreaElement>("textarea[data-chat-input]");
@@ -70,13 +71,21 @@ export function render() {
               ? renderCodeView(workspace)
               : `
                 <div class="workspace-heading-row">
-                  <strong id="workspace-title">${workspace ? escapeHtml(workspace.displayName) : "Workspace"}</strong><span class="heading-path">${workspace ? escapeHtml(workspaceFolderSummary(workspace)) : ""}</span>
+                  <div class="workspace-heading-main">
+                    <strong id="workspace-title">${workspace ? escapeHtml(workspace.displayName) : "Workspace"}</strong><span class="heading-path">${workspace ? escapeHtml(workspaceFolderSummary(workspace)) : ""}</span>
+                  </div>
                   ${
                     workspace
-                      ? `<button class="secondary-button icon-text-button" type="button" data-action="open-code-view">
-                          ${icons.code}
-                          <span>Code</span>
-                        </button>`
+                      ? `<div class="workspace-heading-actions">
+                          <button class="secondary-button icon-text-button" type="button" data-action="open-git-changes">
+                            ${icons.git}
+                            <span>Git</span>
+                          </button>
+                          <button class="secondary-button icon-text-button" type="button" data-action="open-code-view">
+                            ${icons.code}
+                            <span>Code</span>
+                          </button>
+                        </div>`
                       : ""
                   }
                 </div>
@@ -84,7 +93,7 @@ export function render() {
               `
           }
         </section>
-        ${showingCode && workspace && state.openGitChangeWorkspaces.has(workspace.id) ? renderGitChangesDrawer(workspace, gitChangeReviewFor(workspace.id)) : ""}
+        ${showGitChanges ? renderGitChangesDrawer(workspace, gitChangeReviewFor(workspace.id)) : ""}
       </main>
       ${state.settingsOpen ? renderSettingsOverlay(workspaces) : ""}
       ${renderToasts()}
