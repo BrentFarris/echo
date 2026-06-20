@@ -139,6 +139,34 @@ export function LoadWorkspaceGitChanges(...args: Parameters<typeof Wails.LoadWor
   return call("LoadWorkspaceGitChanges", Wails.LoadWorkspaceGitChanges, args);
 }
 
+export function LoadWorkspaceGitCommit(...args: Parameters<typeof Wails.LoadWorkspaceGitCommit>): ReturnType<typeof Wails.LoadWorkspaceGitCommit> {
+  return call("LoadWorkspaceGitCommit", Wails.LoadWorkspaceGitCommit, args);
+}
+
+export function LoadWorkspaceGitRepository(...args: Parameters<typeof Wails.LoadWorkspaceGitRepository>): ReturnType<typeof Wails.LoadWorkspaceGitRepository> {
+  return call("LoadWorkspaceGitRepository", Wails.LoadWorkspaceGitRepository, args);
+}
+
+export function CommitWorkspaceGitChanges(...args: Parameters<typeof Wails.CommitWorkspaceGitChanges>): ReturnType<typeof Wails.CommitWorkspaceGitChanges> {
+  return call("CommitWorkspaceGitChanges", Wails.CommitWorkspaceGitChanges, args);
+}
+
+export function CreateWorkspaceGitBranch(...args: Parameters<typeof Wails.CreateWorkspaceGitBranch>): ReturnType<typeof Wails.CreateWorkspaceGitBranch> {
+  return call("CreateWorkspaceGitBranch", Wails.CreateWorkspaceGitBranch, args);
+}
+
+export function SwitchWorkspaceGitBranch(...args: Parameters<typeof Wails.SwitchWorkspaceGitBranch>): ReturnType<typeof Wails.SwitchWorkspaceGitBranch> {
+  return call("SwitchWorkspaceGitBranch", Wails.SwitchWorkspaceGitBranch, args);
+}
+
+export function SyncWorkspaceGitBranch(...args: Parameters<typeof Wails.SyncWorkspaceGitBranch>): ReturnType<typeof Wails.SyncWorkspaceGitBranch> {
+  return call("SyncWorkspaceGitBranch", Wails.SyncWorkspaceGitBranch, args);
+}
+
+export function MergeWorkspaceGitBranch(...args: Parameters<typeof Wails.MergeWorkspaceGitBranch>): ReturnType<typeof Wails.MergeWorkspaceGitBranch> {
+  return call("MergeWorkspaceGitBranch", Wails.MergeWorkspaceGitBranch, args);
+}
+
 export function MoveKanbanCard(...args: Parameters<typeof Wails.MoveKanbanCard>): ReturnType<typeof Wails.MoveKanbanCard> {
   return call("MoveKanbanCard", Wails.MoveKanbanCard, args);
 }

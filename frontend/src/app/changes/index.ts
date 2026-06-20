@@ -3,7 +3,6 @@ import { refreshOpenCodeTabsFromDisk } from "../../codeView";
 import { LoadWorkspaceChangeReview } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
-import { renderSpinnerLabel } from "../components";
 import { appRoot } from "../dom";
 import { icons } from "../icons";
 import { activeWorkspace, changeReviewFor, state } from "../state";
@@ -59,60 +58,6 @@ export function renderChangeReviewDrawer(
           files.length
             ? `<div class="change-file-list">${files.map(renderChangedFile).join("")}</div>`
             : `<div class="empty-state compact">No AI file changes recorded.</div>`
-        }
-      </section>
-    </aside>
-  `;
-}
-
-export function renderGitChangesDrawer(
-  workspace: services.Workspace,
-  review: services.WorkspaceGitChangeReview,
-): string {
-  const files = review.files ?? [];
-  const expanded = state.expandedGitChangeWorkspaces.has(workspace.id);
-  const loading = state.loadingGitChangeWorkspaces.has(workspace.id);
-  const sizeLabel = expanded ? "Collapse Git changes" : "Expand Git changes";
-  return `
-    <aside class="change-review-backdrop ${expanded ? "is-expanded" : ""}" role="dialog" aria-modal="true" aria-labelledby="git-change-review-title">
-      <section class="change-review ${expanded ? "is-expanded" : ""}" data-change-review>
-        <header class="change-review-header">
-          <div>
-            <p class="eyebrow">${escapeHtml(workspace.displayName)}</p>
-            <h2 id="git-change-review-title">Git Changes</h2>
-          </div>
-          <div class="change-review-header-actions">
-            <button class="icon-button" type="button" title="${sizeLabel}" aria-label="${sizeLabel}" aria-pressed="${expanded}" data-action="toggle-git-changes-size">
-              ${expanded ? icons.collapse : icons.expand}
-            </button>
-            <button class="icon-button close-button" type="button" title="Close" aria-label="Close Git changes" data-action="close-git-changes">
-              ${icons.x}
-            </button>
-          </div>
-        </header>
-
-        <div class="change-review-summary" aria-label="Git change summary">
-          <span>${escapeHtml(String(review.fileCount ?? files.length))} files</span>
-          ${loading ? `<span><span class="spinner" aria-hidden="true"></span>Refreshing</span>` : ""}
-        </div>
-
-        <div class="change-review-actions">
-          <button class="icon-button" type="button" title="Previous change" aria-label="Previous change" data-action="previous-change" ${files.length ? "" : "disabled"}>
-            ${icons.arrowUp}
-          </button>
-          <button class="icon-button" type="button" title="Next change" aria-label="Next change" data-action="next-change" ${files.length ? "" : "disabled"}>
-            ${icons.arrowDown}
-          </button>
-          <button class="secondary-button icon-text-button" type="button" data-action="refresh-git-changes" ${loading ? "disabled" : ""}>
-            ${loading ? `<span class="spinner" aria-hidden="true"></span>` : icons.refresh}
-            <span>Refresh</span>
-          </button>
-        </div>
-
-        ${
-          files.length
-            ? `<div class="change-file-list">${files.map(renderGitChangedFile).join("")}</div>`
-            : `<div class="empty-state compact">${loading ? renderSpinnerLabel("Loading Git changes") : "No Git changes."}</div>`
         }
       </section>
     </aside>

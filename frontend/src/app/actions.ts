@@ -1,11 +1,12 @@
 
 import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate } from "../codeView";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearChat, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, LoadWorkspaceChangeReview, LoadWorkspaceGitChanges, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearChat, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
 import { dismissContextMenu } from "./contextMenu";
 import { appRoot } from "./dom";
+import { dropWorkspaceGitRepositoryState, openWorkspaceGitRepository, refreshWorkspaceGitRepository, selectGitCommit, syncWorkspaceGitRepository } from "./git";
 import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatSessionFor, kanbanBoardFor, kanbanCards, state } from "./state";
@@ -81,6 +82,7 @@ export async function handleAction(event: Event) {
         state.openGitChangeWorkspaces.delete(workspace.id);
         state.expandedGitChangeWorkspaces.delete(workspace.id);
         state.loadingGitChangeWorkspaces.delete(workspace.id);
+        state.loadingGitRepositoryWorkspaces.delete(workspace.id);
       }
       state.appMode = "chat-kanban";
       getAppCallbacks().render();
@@ -91,19 +93,7 @@ export async function handleAction(event: Event) {
       if (!workspace) {
         return;
       }
-      state.openGitChangeWorkspaces.add(workspace.id);
-      state.loadingGitChangeWorkspaces.add(workspace.id);
-      getAppCallbacks().render();
-      try {
-        state.gitChangeReviews.set(workspace.id, await LoadWorkspaceGitChanges(workspace.id));
-      } catch (error) {
-        state.openGitChangeWorkspaces.delete(workspace.id);
-        state.expandedGitChangeWorkspaces.delete(workspace.id);
-        throw error;
-      } finally {
-        state.loadingGitChangeWorkspaces.delete(workspace.id);
-      }
-      getAppCallbacks().render();
+      await openWorkspaceGitRepository(workspace.id);
       return;
     }
     if (action === "close-git-changes") {
@@ -114,6 +104,7 @@ export async function handleAction(event: Event) {
       state.openGitChangeWorkspaces.delete(workspace.id);
       state.expandedGitChangeWorkspaces.delete(workspace.id);
       state.loadingGitChangeWorkspaces.delete(workspace.id);
+      state.loadingGitRepositoryWorkspaces.delete(workspace.id);
       getAppCallbacks().render();
       return;
     }
@@ -132,17 +123,22 @@ export async function handleAction(event: Event) {
     }
     if (action === "refresh-git-changes") {
       const workspace = activeWorkspace();
-      if (!workspace || state.loadingGitChangeWorkspaces.has(workspace.id)) {
+      if (!workspace || state.loadingGitRepositoryWorkspaces.has(workspace.id)) {
         return;
       }
-      state.loadingGitChangeWorkspaces.add(workspace.id);
-      getAppCallbacks().render();
-      try {
-        state.gitChangeReviews.set(workspace.id, await LoadWorkspaceGitChanges(workspace.id));
-      } finally {
-        state.loadingGitChangeWorkspaces.delete(workspace.id);
+      await refreshWorkspaceGitRepository(workspace.id);
+      return;
+    }
+    if (action === "sync-git-branch") {
+      const workspace = activeWorkspace();
+      if (!workspace || state.loadingGitRepositoryWorkspaces.has(workspace.id)) {
+        return;
       }
-      getAppCallbacks().render();
+      await syncWorkspaceGitRepository(workspace.id);
+      return;
+    }
+    if (action === "select-git-commit") {
+      await selectGitCommit(target.dataset.commitHash ?? "");
       return;
     }
     if (action === "open-settings") {
@@ -237,6 +233,7 @@ export async function handleAction(event: Event) {
       state.appState = await RemoveWorkspaceFolder(workspaceID, folderID);
       state.changeReviews.delete(workspaceID);
       state.gitChangeReviews.delete(workspaceID);
+      dropWorkspaceGitRepositoryState(workspaceID);
       state.loadingGitChangeWorkspaces.delete(workspaceID);
       await refreshOpenCodeTabsFromDisk(workspaceID, getAppCallbacks().codeViewCallbacks());
       pushToast("Workspace folder removed.", "success");
@@ -275,6 +272,7 @@ export async function handleAction(event: Event) {
         state.openGitChangeWorkspaces.delete(current.id);
         state.expandedGitChangeWorkspaces.delete(current.id);
         state.loadingGitChangeWorkspaces.delete(current.id);
+        state.loadingGitRepositoryWorkspaces.delete(current.id);
       }
       state.appState = await SetActiveWorkspace(workspaceID);
       await loadActiveChatSession();
@@ -627,6 +625,7 @@ export async function handleAction(event: Event) {
       state.kanbanBoards.delete(workspaceID);
       state.changeReviews.delete(workspaceID);
       state.gitChangeReviews.delete(workspaceID);
+      dropWorkspaceGitRepositoryState(workspaceID);
       state.selectedKanbanCards.delete(workspaceID);
       state.openChangeReviewWorkspaces.delete(workspaceID);
       state.openGitChangeWorkspaces.delete(workspaceID);

@@ -1085,6 +1085,20 @@ export namespace services {
 	}
 	
 	
+	export class WorkspaceGitBranch {
+	    name: string;
+	    current: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceGitBranch(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.current = source["current"];
+	    }
+	}
 	export class WorkspaceGitChangedFile {
 	    path: string;
 	    oldPath?: string;
@@ -1146,6 +1160,196 @@ export namespace services {
 		}
 	}
 	
+	export class WorkspaceGitCommit {
+	    hash: string;
+	    shortHash: string;
+	    subject: string;
+	    authorName: string;
+	    authorEmail?: string;
+	    authoredAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceGitCommit(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hash = source["hash"];
+	        this.shortHash = source["shortHash"];
+	        this.subject = source["subject"];
+	        this.authorName = source["authorName"];
+	        this.authorEmail = source["authorEmail"];
+	        this.authoredAt = source["authoredAt"];
+	    }
+	}
+	export class WorkspaceGitCommitDetail {
+	    workspaceId: string;
+	    folderId: string;
+	    commit: WorkspaceGitCommit;
+	    fileCount: number;
+	    files: WorkspaceGitChangedFile[];
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceGitCommitDetail(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.folderId = source["folderId"];
+	        this.commit = this.convertValues(source["commit"], WorkspaceGitCommit);
+	        this.fileCount = source["fileCount"];
+	        this.files = this.convertValues(source["files"], WorkspaceGitChangedFile);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class WorkspaceGitRepositoryStatus {
+	    folderId: string;
+	    label: string;
+	    path: string;
+	    currentBranch?: string;
+	    upstream?: string;
+	    aheadCount: number;
+	    behindCount: number;
+	    head?: string;
+	    shortHead?: string;
+	    detached: boolean;
+	    dirty: boolean;
+	    branches: WorkspaceGitBranch[];
+	    fileCount: number;
+	    files: WorkspaceGitChangedFile[];
+	    commits: WorkspaceGitCommit[];
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceGitRepositoryStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.folderId = source["folderId"];
+	        this.label = source["label"];
+	        this.path = source["path"];
+	        this.currentBranch = source["currentBranch"];
+	        this.upstream = source["upstream"];
+	        this.aheadCount = source["aheadCount"];
+	        this.behindCount = source["behindCount"];
+	        this.head = source["head"];
+	        this.shortHead = source["shortHead"];
+	        this.detached = source["detached"];
+	        this.dirty = source["dirty"];
+	        this.branches = this.convertValues(source["branches"], WorkspaceGitBranch);
+	        this.fileCount = source["fileCount"];
+	        this.files = this.convertValues(source["files"], WorkspaceGitChangedFile);
+	        this.commits = this.convertValues(source["commits"], WorkspaceGitCommit);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class WorkspaceGitRepositorySummary {
+	    folderId: string;
+	    label: string;
+	    path: string;
+	    currentBranch?: string;
+	    upstream?: string;
+	    aheadCount: number;
+	    behindCount: number;
+	    head?: string;
+	    shortHead?: string;
+	    detached: boolean;
+	    dirty: boolean;
+	    available: boolean;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceGitRepositorySummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.folderId = source["folderId"];
+	        this.label = source["label"];
+	        this.path = source["path"];
+	        this.currentBranch = source["currentBranch"];
+	        this.upstream = source["upstream"];
+	        this.aheadCount = source["aheadCount"];
+	        this.behindCount = source["behindCount"];
+	        this.head = source["head"];
+	        this.shortHead = source["shortHead"];
+	        this.detached = source["detached"];
+	        this.dirty = source["dirty"];
+	        this.available = source["available"];
+	        this.error = source["error"];
+	    }
+	}
+	export class WorkspaceGitRepositoryView {
+	    workspaceId: string;
+	    selectedFolderId?: string;
+	    repositories: WorkspaceGitRepositorySummary[];
+	    repository?: WorkspaceGitRepositoryStatus;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceGitRepositoryView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.selectedFolderId = source["selectedFolderId"];
+	        this.repositories = this.convertValues(source["repositories"], WorkspaceGitRepositorySummary);
+	        this.repository = this.convertValues(source["repository"], WorkspaceGitRepositoryStatus);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class WorkspaceIconInput {
 	    name?: string;
 	    mediaType?: string;
