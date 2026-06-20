@@ -1,5 +1,5 @@
 
-import { bindCodeViewEvents, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, openTextSearch, saveActiveCodeFile } from "../codeView";
+import { bindCodeViewEvents, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, navigateCodeHistory, openTextSearch, saveActiveCodeFile } from "../codeView";
 import { bindActionEvents } from "./actions";
 import { getAppCallbacks } from "./callbacks";
 import { bindChatEvents, clearChatMention, patchChatMentionPicker } from "./chat";
@@ -84,6 +84,16 @@ export function handleGlobalKeydown(event: KeyboardEvent) {
   }
   if (state.appMode === "code" && !state.settingsOpen) {
     const workspace = activeWorkspace();
+    if (workspace && isCodeNavigationHistoryShortcut(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+      void navigateCodeHistory(
+        workspace.id,
+        getAppCallbacks().codeViewCallbacks(),
+        codeNavigationHistoryDirection(event),
+      );
+      return;
+    }
     if (
       workspace &&
       handleCodeTabSwitcherKeydown(workspace.id, getAppCallbacks().codeViewCallbacks(), event)
@@ -173,6 +183,34 @@ export function handleGlobalKeydown(event: KeyboardEvent) {
   }
   event.preventDefault();
   void closeSelectedCardDetail(workspace.id).finally(getAppCallbacks().render);
+}
+
+function isCodeNavigationHistoryShortcut(event: KeyboardEvent): boolean {
+  return (
+    event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.shiftKey &&
+    isCodeNavigationHistoryKey(event)
+  );
+}
+
+function codeNavigationHistoryDirection(event: KeyboardEvent): -1 | 1 {
+  return codeNavigationHistoryKeyName(event) === "left" ? -1 : 1;
+}
+
+function isCodeNavigationHistoryKey(event: KeyboardEvent): boolean {
+  return codeNavigationHistoryKeyName(event) !== "";
+}
+
+function codeNavigationHistoryKeyName(event: KeyboardEvent): "" | "left" | "right" {
+  if (event.key === "ArrowLeft" || event.key === "Left" || event.code === "ArrowLeft") {
+    return "left";
+  }
+  if (event.key === "ArrowRight" || event.key === "Right" || event.code === "ArrowRight") {
+    return "right";
+  }
+  return "";
 }
 
 function isFindInFilesShortcut(event: KeyboardEvent): boolean {

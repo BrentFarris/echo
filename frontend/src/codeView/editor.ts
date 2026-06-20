@@ -19,7 +19,12 @@ export type EditorFeatureHooks = {
     path: string,
     callbacks: CodeViewCallbacks,
     options: { temporary: boolean; selectionPosition?: number },
-  ) => Promise<void>;
+  ) => Promise<unknown>;
+  navigateCodeHistory: (
+    workspaceID: string,
+    callbacks: CodeViewCallbacks,
+    direction: -1 | 1,
+  ) => Promise<unknown>;
   saveActiveCodeFile: (workspaceID: string, callbacks: CodeViewCallbacks) => Promise<void>;
 };
 
@@ -167,6 +172,7 @@ export async function mountActiveCodeEditor(
     EditorView.lineWrapping,
     codeEditorTheme,
     syntaxHighlighting(codeHighlightStyle),
+    codeNavigationHistoryKeymap(workspaceID, callbacks, hooks),
     altClickCaretToggleExtension(),
     lspDefinitionExtension(workspaceID, tab.path, callbacks, hooks.openCodeFile),
     referencesPanelExtension(workspaceID, tab.path, callbacks, hooks.openCodeFile),
@@ -213,13 +219,54 @@ export async function mountActiveCodeEditor(
   mountedEditor.scrollDOM.scrollLeft = tab.scrollLeft;
   if (tab.pendingRevealPosition !== undefined) {
     const position = clamp(tab.pendingRevealPosition, 0, mountedEditor.state.doc.length);
+    const y = tab.pendingRevealScroll ?? "center";
     tab.pendingRevealPosition = undefined;
+    tab.pendingRevealScroll = undefined;
     mountedEditor.dispatch({
       selection: { anchor: position },
-      effects: EditorView.scrollIntoView(position, { y: "center" }),
+      effects: EditorView.scrollIntoView(position, { y }),
     });
   }
   mountedEditor.focus();
+}
+
+function codeNavigationHistoryKeymap(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+  hooks: EditorFeatureHooks,
+) {
+  return Prec.highest(
+    keymap.of([
+      {
+        key: "Alt-ArrowLeft",
+        run: () => {
+          void hooks.navigateCodeHistory(workspaceID, callbacks, -1);
+          return true;
+        },
+      },
+      {
+        key: "Alt-Left",
+        run: () => {
+          void hooks.navigateCodeHistory(workspaceID, callbacks, -1);
+          return true;
+        },
+      },
+      {
+        key: "Alt-ArrowRight",
+        run: () => {
+          void hooks.navigateCodeHistory(workspaceID, callbacks, 1);
+          return true;
+        },
+      },
+      {
+        key: "Alt-Right",
+        run: () => {
+          void hooks.navigateCodeHistory(workspaceID, callbacks, 1);
+          return true;
+        },
+      },
+    ]),
+  );
 }
 
 function altClickCaretToggleExtension() {

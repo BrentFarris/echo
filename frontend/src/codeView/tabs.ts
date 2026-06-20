@@ -2,7 +2,17 @@ import { ReadWorkspaceFile, SaveWorkspaceFile } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
 import { captureCodeTreeScroll, patchDirtyUI } from "./dom";
 import { applySavedFile, activeCodeTab, codeStates, ensureCodeState, findTab, promoteTabMruPath, pruneTabMruPaths, removeTabMruPath, tabSwitcherPaths, workspaceFileChanged, wrapIndex } from "./state";
-import type { CodeFileTab, CodeViewCallbacks } from "./types";
+import {
+  applyCodeNavigationLocationToTab,
+  captureActiveCodeNavigationLocation,
+  codeNavigationLocationFromTab,
+  commitCodeNavigationHistoryIndex,
+  peekCodeNavigationHistoryTarget,
+  recordCodeNavigationTransition,
+  removeCodeNavigationHistoryEntry,
+  syncCurrentCodeNavigationLocation,
+} from "./navigation";
+import type { CodeFileTab, CodeNavigationLocation, CodeViewCallbacks } from "./types";
 import { clamp, editableWorkspaceFile, fileContentOffsetToEditorPosition, sleep } from "./utils";
 import { replaceMountedEditorContent, saveMountedEditorContent } from "./editor";
 
@@ -11,6 +21,20 @@ let openTabFileWatchTimerID: number | null = null;
 let openTabFileWatchRunning = false;
 let openTabFileWatchCallbacks: CodeViewCallbacks | null = null;
 const openTabFileWatchErrors = new Map<string, string>();
+
+type OpenCodeFileOptions = {
+  temporary: boolean;
+  selectionPosition?: number;
+  restoredLocation?: CodeNavigationLocation;
+  recordNavigation?: boolean;
+  suppressErrorToast?: boolean;
+};
+
+type ActivateCodeTabOptions = {
+  saveMountedEditor?: boolean;
+  recordNavigation?: boolean;
+  sourceLocation?: CodeNavigationLocation | null;
+};
 
 export async function refreshOpenCodeTabsFromDisk(
   workspaceID: string,
@@ -158,10 +182,11 @@ export function handleCodeTabSwitcherKeydown(
 
   const direction = event.shiftKey ? -1 : 1;
   if (!state.tabSwitcher) {
+    const sourceLocation = captureActiveCodeNavigationLocation(workspaceID) ?? undefined;
     const paths = tabSwitcherPaths(state);
     const activeIndex = Math.max(0, paths.indexOf(state.activePath));
     const selectedIndex = wrapIndex(activeIndex + direction, paths.length);
-    state.tabSwitcher = { paths, selectedIndex };
+    state.tabSwitcher = { paths, selectedIndex, sourceLocation };
     state.activePath = paths[selectedIndex] ?? state.activePath;
     callbacks.render();
     return true;
@@ -185,9 +210,16 @@ export function finishCodeTabSwitcher(
   if (!state.tabSwitcher) {
     return false;
   }
+  saveMountedEditorContent();
   const activePath = state.activePath;
+  const sourceLocation = state.tabSwitcher.sourceLocation ?? null;
   state.tabSwitcher = null;
   promoteTabMruPath(state, activePath);
+  recordCodeNavigationTransition(
+    workspaceID,
+    sourceLocation,
+    captureActiveCodeNavigationLocation(workspaceID),
+  );
   callbacks.render();
   return true;
 }
@@ -231,22 +263,36 @@ export async function openCodeFile(
   workspaceID: string,
   path: string,
   callbacks: CodeViewCallbacks,
-  options: { temporary: boolean; selectionPosition?: number },
-) {
+  options: OpenCodeFileOptions,
+): Promise<boolean> {
   if (!path) {
-    return;
+    return false;
   }
   captureCodeTreeScroll(workspaceID);
   saveMountedEditorContent();
+  const sourceLocation =
+    options.recordNavigation === false
+      ? null
+      : captureActiveCodeNavigationLocation(workspaceID);
   const state = ensureCodeState(workspaceID);
   if (state.openingPath === path) {
-    return;
+    return false;
   }
   const existing = findTab(workspaceID, path);
   if (existing) {
-    applyCodeTabSelection(existing, options.selectionPosition);
-    activateCodeTab(workspaceID, existing.path, callbacks, { saveMountedEditor: false });
-    return;
+    applyCodeTabOpenLocation(existing, options);
+    if (options.recordNavigation !== false) {
+      recordCodeNavigationTransition(
+        workspaceID,
+        sourceLocation,
+        codeNavigationLocationFromTab(existing),
+      );
+    }
+    activateCodeTab(workspaceID, existing.path, callbacks, {
+      saveMountedEditor: false,
+      recordNavigation: false,
+    });
+    return true;
   }
 
   const temporaryIndex = state.tabs.findIndex((tab) => tab.temporary && !tab.dirty);
@@ -275,7 +321,7 @@ export async function openCodeFile(
       scrollTop: 0,
       scrollLeft: 0,
     };
-    applyCodeTabSelection(nextTab, options.selectionPosition);
+    applyCodeTabOpenLocation(nextTab, options);
     if (options.temporary && temporaryIndex >= 0) {
       state.tabs[temporaryIndex] = nextTab;
       removeTabMruPath(state, replacedTemporaryPath);
@@ -284,12 +330,31 @@ export async function openCodeFile(
     }
     state.activePath = opened.path;
     promoteTabMruPath(state, opened.path);
+    if (options.recordNavigation !== false) {
+      recordCodeNavigationTransition(
+        workspaceID,
+        sourceLocation,
+        codeNavigationLocationFromTab(nextTab),
+      );
+    }
+    return true;
   } catch (error) {
-    callbacks.pushToast(callbacks.errorMessage(error), "error");
+    if (!options.suppressErrorToast) {
+      callbacks.pushToast(callbacks.errorMessage(error), "error");
+    }
+    return false;
   } finally {
     state.openingPath = "";
     callbacks.render();
   }
+}
+
+function applyCodeTabOpenLocation(tab: CodeFileTab, options: OpenCodeFileOptions) {
+  if (options.restoredLocation) {
+    applyCodeNavigationLocationToTab(tab, options.restoredLocation);
+    return;
+  }
+  applyCodeTabSelection(tab, options.selectionPosition);
 }
 
 function applyCodeTabSelection(tab: CodeFileTab, position: number | undefined) {
@@ -300,6 +365,7 @@ function applyCodeTabSelection(tab: CodeFileTab, position: number | undefined) {
   tab.selectionAnchor = target;
   tab.selectionHead = target;
   tab.pendingRevealPosition = target;
+  tab.pendingRevealScroll = "center";
 }
 
 export async function openPinnedCodeFile(
@@ -308,7 +374,7 @@ export async function openPinnedCodeFile(
   callbacks: CodeViewCallbacks,
 ) {
   if (!path) {
-    return;
+    return false;
   }
   const state = ensureCodeState(workspaceID);
   if (state.openingPath === path) {
@@ -317,16 +383,17 @@ export async function openPinnedCodeFile(
     if (opened) {
       opened.temporary = false;
       activateCodeTab(workspaceID, opened.path, callbacks);
+      return true;
     }
-    return;
+    return false;
   }
   const existing = findTab(workspaceID, path);
   if (existing) {
     existing.temporary = false;
     activateCodeTab(workspaceID, existing.path, callbacks);
-    return;
+    return true;
   }
-  await openCodeFile(workspaceID, path, callbacks, { temporary: false });
+  return openCodeFile(workspaceID, path, callbacks, { temporary: false });
 }
 
 export async function openWorkspaceCodeFile(
@@ -335,6 +402,44 @@ export async function openWorkspaceCodeFile(
   callbacks: CodeViewCallbacks,
 ) {
   await openCodeFile(workspaceID, path, callbacks, { temporary: false });
+}
+
+export async function navigateCodeHistory(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+  direction: -1 | 1,
+) {
+  saveMountedEditorContent();
+  syncCurrentCodeNavigationLocation(
+    workspaceID,
+    captureActiveCodeNavigationLocation(workspaceID),
+  );
+
+  let skippedUnavailableTarget = false;
+  for (;;) {
+    const target = peekCodeNavigationHistoryTarget(workspaceID, direction);
+    if (!target) {
+      if (skippedUnavailableTarget) {
+        callbacks.pushToast("Navigation target is no longer available.", "info");
+      }
+      return false;
+    }
+
+    const opened = await openCodeFile(workspaceID, target.location.path, callbacks, {
+      temporary: false,
+      restoredLocation: target.location,
+      recordNavigation: false,
+      suppressErrorToast: true,
+    });
+    const active = activeCodeTab(workspaceID);
+    if (opened && active && sameWorkspacePath(active.path, target.location.path)) {
+      commitCodeNavigationHistoryIndex(workspaceID, target.index);
+      return true;
+    }
+
+    removeCodeNavigationHistoryEntry(workspaceID, target.index);
+    skippedUnavailableTarget = true;
+  }
 }
 
 export function closeCodeTab(
@@ -390,7 +495,7 @@ export function activateCodeTab(
   workspaceID: string,
   path: string,
   callbacks: CodeViewCallbacks,
-  options: { saveMountedEditor?: boolean } = {},
+  options: ActivateCodeTabOptions = {},
 ) {
   const state = ensureCodeState(workspaceID);
   if (!path || !state.tabs.some((tab) => tab.path === path)) {
@@ -399,8 +504,25 @@ export function activateCodeTab(
   if (options.saveMountedEditor !== false) {
     saveMountedEditorContent();
   }
+  const sourceLocation =
+    options.recordNavigation === false
+      ? null
+      : options.sourceLocation ?? captureActiveCodeNavigationLocation(workspaceID);
   state.tabSwitcher = null;
   state.activePath = path;
   promoteTabMruPath(state, path);
+  if (options.recordNavigation !== false) {
+    recordCodeNavigationTransition(
+      workspaceID,
+      sourceLocation,
+      activeCodeTab(workspaceID)
+        ? codeNavigationLocationFromTab(activeCodeTab(workspaceID)!)
+        : null,
+    );
+  }
   callbacks.render();
+}
+
+function sameWorkspacePath(left: string, right: string) {
+  return left.replaceAll("\\", "/").toLowerCase() === right.replaceAll("\\", "/").toLowerCase();
 }

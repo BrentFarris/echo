@@ -1,6 +1,7 @@
 import { CreateWorkspaceFile, CreateWorkspaceFolder, ListWorkspaceDirectory, MoveWorkspacePath, SearchWorkspaceFiles } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
 import { captureCodeTreeScroll, patchCodeTree, patchSearchResults } from "./dom";
+import { rewriteCodeNavigationHistoryPaths } from "./navigation";
 import { directoryStateFor, ensureCodeState } from "./state";
 import { openPinnedCodeFile } from "./tabs";
 import { saveMountedEditorContent } from "./editor";
@@ -188,6 +189,7 @@ export async function dropCodeDrag(
       await MoveWorkspacePath(workspaceID, sourcePath, targetParentPath),
     );
     rewriteMovedCodePaths(state, sourcePath, moved.path);
+    rewriteCodeNavigationHistoryPaths(workspaceID, sourcePath, moved.path);
     clearWorkspaceSearchState(workspaceID);
     pruneDirectoryCacheAfterMove(state, sourcePath, sourceParent, targetParentPath, moved.path);
     state.selectedPath = moved.path;

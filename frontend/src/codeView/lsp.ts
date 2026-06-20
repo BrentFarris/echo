@@ -18,7 +18,7 @@ type OpenCodeFileForDefinition = (
   path: string,
   callbacks: CodeViewCallbacks,
   options: { temporary: boolean; selectionPosition?: number },
-) => Promise<void>;
+) => Promise<unknown>;
 
 const lspCompletionValidFor = /^[A-Za-z0-9_]*$/;
 const lspCompletionTriggerWord = /[A-Za-z_][A-Za-z0-9_]*$/;

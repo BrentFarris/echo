@@ -41,11 +41,27 @@ export type CodeFileTab = {
   scrollTop: number;
   scrollLeft: number;
   pendingRevealPosition?: number;
+  pendingRevealScroll?: "center";
+};
+
+export type CodeNavigationLocation = {
+  path: string;
+  selectionAnchor: number;
+  selectionHead: number;
+  scrollTop: number;
+  scrollLeft: number;
+};
+
+export type CodeNavigationHistoryState = {
+  entries: CodeNavigationLocation[];
+  currentIndex: number;
+  maxSize: number;
 };
 
 export type CodeTabSwitcherState = {
   paths: string[];
   selectedIndex: number;
+  sourceLocation?: CodeNavigationLocation;
 };
 
 export type PendingCodeCreate = {
@@ -106,6 +122,7 @@ export type CodeWorkspaceState = {
   selectedPath: string;
   selectedKind: CodeEntryKind;
   tabMruPaths: string[];
+  navigationHistory: CodeNavigationHistoryState;
   tabSwitcher: CodeTabSwitcherState | null;
   pendingCreate: PendingCodeCreate | null;
   drag: CodeDragState | null;

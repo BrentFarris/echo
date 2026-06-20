@@ -11,7 +11,7 @@ type OpenCodeFileForReference = (
   path: string,
   callbacks: CodeViewCallbacks,
   options: { temporary: boolean; selectionPosition?: number },
-) => Promise<void>;
+) => Promise<unknown>;
 
 type ReferenceGroup = {
   path: string;

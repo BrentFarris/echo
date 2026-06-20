@@ -2,7 +2,7 @@ import { setCodeTextSearchEventBinder, setCodeTreeEventBinder, restoreCodeTreeSc
 import { ensureCodeState } from "./state";
 import type { CodeViewCallbacks } from "./types";
 import { cancelPendingCodeCreate, clearCodeDrag, collapseCodeTree, dropCodeDrag, handleSearchInput, refreshCodeTree, selectCodeTreeEntry, startCodeDrag, startSelectedCodeCreate, submitPendingCodeCreate, toggleDirectory, toggleIgnoredFilter, updateCodeDropTarget, updatePendingCodeCreateName } from "./explorer";
-import { activateCodeTab, closeCodeTab, openCodeFile, openPinnedCodeFile, pinCodeTab, saveActiveCodeFile, startOpenTabFileWatch } from "./tabs";
+import { activateCodeTab, closeCodeTab, navigateCodeHistory, openCodeFile, openPinnedCodeFile, pinCodeTab, saveActiveCodeFile, startOpenTabFileWatch } from "./tabs";
 import { mountActiveCodeEditor } from "./editor";
 import { closeTextSearch, handleTextSearchFieldInput, openTextSearch, openTextSearchMatch, runTextSearchNow, toggleTextSearchOption } from "./search";
 
@@ -64,7 +64,7 @@ export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallback
 
   restoreCodeTreeScroll(workspaceID);
   startOpenTabFileWatch(callbacks);
-  void mountActiveCodeEditor(workspaceID, callbacks, { openCodeFile, saveActiveCodeFile });
+  void mountActiveCodeEditor(workspaceID, callbacks, { openCodeFile, navigateCodeHistory, saveActiveCodeFile });
 }
 
 function bindCodeTreeEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {

@@ -39,6 +39,11 @@ export function ensureCodeState(workspaceID: string): CodeWorkspaceState {
       selectedPath: "",
       selectedKind: "other",
       tabMruPaths: [],
+      navigationHistory: {
+        entries: [],
+        currentIndex: -1,
+        maxSize: 100,
+      },
       tabSwitcher: null,
       pendingCreate: null,
       drag: null,
