@@ -103,6 +103,10 @@ export function FindWorkspaceFileDefinition(...args: Parameters<typeof Wails.Fin
   return call("FindWorkspaceFileDefinition", Wails.FindWorkspaceFileDefinition, args);
 }
 
+export function FindWorkspaceFileImplementations(...args: Parameters<typeof Wails.FindWorkspaceFileImplementations>): ReturnType<typeof Wails.FindWorkspaceFileImplementations> {
+  return call("FindWorkspaceFileImplementations", Wails.FindWorkspaceFileImplementations, args);
+}
+
 export function FindWorkspaceFileReferences(...args: Parameters<typeof Wails.FindWorkspaceFileReferences>): ReturnType<typeof Wails.FindWorkspaceFileReferences> {
   return call("FindWorkspaceFileReferences", Wails.FindWorkspaceFileReferences, args);
 }

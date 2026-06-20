@@ -79,6 +79,7 @@ export function openReferencesPanel(
   path: string,
   view: EditorView,
   locations: services.WorkspaceReferenceLocation[],
+  options: { title?: string } = {},
 ) {
   if (!locations.length) {
     closeReferencesPanel(workspaceID, path, view);
@@ -89,6 +90,7 @@ export function openReferencesPanel(
   const expandedPaths = initialExpandedReferencePaths(locations, path, selectedIndex);
   ensureCodeState(workspaceID).referencesPanel = {
     path,
+    title: options.title || "References",
     anchorPosition,
     locations,
     selectedIndex,
@@ -185,7 +187,7 @@ class ReferencesPanelWidget extends WidgetType {
 
     const title = document.createElement("div");
     title.className = "lsp-references-title";
-    title.textContent = `${fileName(this.path)} - References (${panel.locations.length})`;
+    title.textContent = `${fileName(this.path)} - ${panel.title} (${panel.locations.length})`;
 
     const close = document.createElement("button");
     close.className = "icon-button lsp-references-close";

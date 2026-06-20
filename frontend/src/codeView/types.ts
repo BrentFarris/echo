@@ -90,6 +90,7 @@ export type InlineCodePromptEvent = {
 
 export type CodeReferencePanelState = {
   path: string;
+  title: string;
   anchorPosition: number;
   locations: services.WorkspaceReferenceLocation[];
   selectedIndex: number;

@@ -124,6 +124,15 @@ type WorkspaceReferencePreviewLine struct {
 	HighlightEnd   int    `json:"highlightEnd"`
 }
 
+type workspaceLocationLookup struct {
+	Method                  string
+	PositionName            string
+	UnavailableMessage      string
+	NoLocationsMessage      string
+	OutsideWorkspaceMessage string
+	ExtraParams             func(WorkspaceReferenceRequest) map[string]any
+}
+
 type lspServerCommand struct {
 	name string
 	args []string
@@ -386,6 +395,33 @@ func (s *SystemService) FindWorkspaceFileDefinition(workspaceID string, request 
 }
 
 func (s *SystemService) FindWorkspaceFileReferences(workspaceID string, request WorkspaceReferenceRequest) (WorkspaceReferenceResponse, error) {
+	return s.findWorkspaceFileLocations(workspaceID, request, workspaceLocationLookup{
+		Method:                  "textDocument/references",
+		PositionName:            "reference",
+		UnavailableMessage:      "Reference lookup is not available for this file type.",
+		NoLocationsMessage:      "No references found.",
+		OutsideWorkspaceMessage: "References are outside the active workspace.",
+		ExtraParams: func(request WorkspaceReferenceRequest) map[string]any {
+			includeDeclaration := true
+			if request.IncludeDeclaration != nil {
+				includeDeclaration = *request.IncludeDeclaration
+			}
+			return map[string]any{"context": map[string]any{"includeDeclaration": includeDeclaration}}
+		},
+	})
+}
+
+func (s *SystemService) FindWorkspaceFileImplementations(workspaceID string, request WorkspaceReferenceRequest) (WorkspaceReferenceResponse, error) {
+	return s.findWorkspaceFileLocations(workspaceID, request, workspaceLocationLookup{
+		Method:                  "textDocument/implementation",
+		PositionName:            "implementation",
+		UnavailableMessage:      "Implementation lookup is not available for this file type.",
+		NoLocationsMessage:      "No implementations found.",
+		OutsideWorkspaceMessage: "Implementations are outside the active workspace.",
+	})
+}
+
+func (s *SystemService) findWorkspaceFileLocations(workspaceID string, request WorkspaceReferenceRequest, lookup workspaceLocationLookup) (WorkspaceReferenceResponse, error) {
 	workspace, _, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {
 		return WorkspaceReferenceResponse{}, err
@@ -397,7 +433,7 @@ func (s *SystemService) FindWorkspaceFileReferences(workspaceID string, request 
 		return WorkspaceReferenceResponse{}, fmt.Errorf("content is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
 	}
 	if request.Position < 0 || request.Position > utf16Length(request.Content) {
-		return WorkspaceReferenceResponse{}, fmt.Errorf("reference position is outside the file")
+		return WorkspaceReferenceResponse{}, fmt.Errorf("%s position is outside the file", lookup.PositionName)
 	}
 
 	response := WorkspaceReferenceResponse{
@@ -407,7 +443,7 @@ func (s *SystemService) FindWorkspaceFileReferences(workspaceID string, request 
 	}
 	languageID, ok := lspLanguageIDForPath(request.FilePath)
 	if !ok {
-		response.Message = "Reference lookup is not available for this file type."
+		response.Message = lookup.UnavailableMessage
 		return response, nil
 	}
 
@@ -433,19 +469,19 @@ func (s *SystemService) FindWorkspaceFileReferences(workspaceID string, request 
 		return WorkspaceReferenceResponse{}, err
 	}
 
-	includeDeclaration := true
-	if request.IncludeDeclaration != nil {
-		includeDeclaration = *request.IncludeDeclaration
+	extraParams := map[string]any{}
+	if lookup.ExtraParams != nil {
+		extraParams = lookup.ExtraParams(request)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), lspDefinitionTimeout)
 	defer cancel()
 	locations, err := client.locations(
 		ctx,
-		"textDocument/references",
+		lookup.Method,
 		resolved,
 		request.Content,
 		lspPositionFromUTF16Offset(request.Content, request.Position),
-		map[string]any{"context": map[string]any{"includeDeclaration": includeDeclaration}},
+		extraParams,
 	)
 	if err != nil {
 		return WorkspaceReferenceResponse{}, err
@@ -459,9 +495,9 @@ func (s *SystemService) FindWorkspaceFileReferences(workspaceID string, request 
 	response.Found = len(response.Locations) > 0
 	if !response.Found {
 		if skippedOutside > 0 {
-			response.Message = "References are outside the active workspace."
+			response.Message = lookup.OutsideWorkspaceMessage
 		} else {
-			response.Message = "No references found."
+			response.Message = lookup.NoLocationsMessage
 		}
 	}
 	return response, nil

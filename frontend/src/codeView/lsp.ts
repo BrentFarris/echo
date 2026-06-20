@@ -1,7 +1,7 @@
 import { type Completion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
 import { EditorState, Prec, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import { CompleteWorkspaceFile, FindWorkspaceFileDefinition, FindWorkspaceFileReferences } from "../backend/services";
+import { CompleteWorkspaceFile, FindWorkspaceFileDefinition, FindWorkspaceFileImplementations, FindWorkspaceFileReferences } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
 import type { CodeViewCallbacks } from "./types";
 import { openReferencesPanel } from "./references";
@@ -47,6 +47,13 @@ export function lspDefinitionExtension(
         key: "Shift-F12",
         run: (view) => {
           void showLspReferences(workspaceID, path, view, callbacks);
+          return true;
+        },
+      },
+      {
+        key: "Ctrl-F12",
+        run: (view) => {
+          void goToLspImplementation(workspaceID, path, view, callbacks, openCodeFile);
           return true;
         },
       },
@@ -120,6 +127,38 @@ async function showLspReferences(
   }
 }
 
+async function goToLspImplementation(
+  workspaceID: string,
+  path: string,
+  view: EditorView,
+  callbacks: CodeViewCallbacks,
+  openCodeFile: OpenCodeFileForDefinition,
+) {
+  try {
+    const content = editorStateToFileContent(view.state);
+    const editorPosition = lspDefinitionEditorPosition(view.state, view.state.selection.main.head);
+    const requestPosition = editorPositionToFileContentOffset(view.state, editorPosition);
+    const implementations = await findLspImplementations(workspaceID, path, content, requestPosition);
+    const locations = implementations.locations ?? [];
+    if (!implementations.found || !locations.length) {
+      openReferencesPanel(workspaceID, path, view, []);
+      callbacks.pushToast(implementations.message || "No implementations found.", "info");
+      return;
+    }
+    if (locations.length === 1) {
+      const location = locations[0];
+      await openCodeFile(workspaceID, location.path, callbacks, {
+        temporary: false,
+        selectionPosition: location.range.start.offset,
+      });
+      return;
+    }
+    openReferencesPanel(workspaceID, path, view, locations, { title: "Implementations" });
+  } catch (error) {
+    callbacks.pushToast(callbacks.errorMessage(error), "error");
+  }
+}
+
 async function findLspReferences(
   workspaceID: string,
   path: string,
@@ -134,6 +173,25 @@ async function findLspReferences(
         content,
         position,
         includeDeclaration: true,
+        maxResults: 200,
+      }),
+    ),
+  );
+}
+
+async function findLspImplementations(
+  workspaceID: string,
+  path: string,
+  content: string,
+  position: number,
+) {
+  return services.WorkspaceReferenceResponse.createFrom(
+    await FindWorkspaceFileImplementations(
+      workspaceID,
+      services.WorkspaceReferenceRequest.createFrom({
+        filePath: path,
+        content,
+        position,
         maxResults: 200,
       }),
     ),

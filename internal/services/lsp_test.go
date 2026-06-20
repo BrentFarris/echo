@@ -261,6 +261,27 @@ func TestWorkspaceReferenceLocationsUseActiveContentAndFilterWorkspace(t *testin
 	}
 }
 
+func TestSystemServiceFindWorkspaceFileImplementationsUnsupportedFile(t *testing.T) {
+	root := t.TempDir()
+	service := NewSystemServiceWithStorePath(filepath.Join(root, "state.json"))
+	state, err := service.AddWorkspace(root)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+
+	response, err := service.FindWorkspaceFileImplementations(state.ActiveWorkspaceID, WorkspaceReferenceRequest{
+		FilePath: "notes.txt",
+		Content:  "plain text",
+		Position: 0,
+	})
+	if err != nil {
+		t.Fatalf("find implementations: %v", err)
+	}
+	if response.Found || response.Message != "Implementation lookup is not available for this file type." {
+		t.Fatalf("expected unsupported implementation lookup response, got %#v", response)
+	}
+}
+
 func TestSystemServiceCompleteWorkspaceFileWithGopls(t *testing.T) {
 	if os.Getenv("ECHO_RUN_GOPLS_INTEGRATION") != "1" {
 		t.Skip("set ECHO_RUN_GOPLS_INTEGRATION=1 to run the real gopls integration test")

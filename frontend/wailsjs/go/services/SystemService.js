@@ -94,6 +94,10 @@ export function FindWorkspaceFileDefinition(arg1, arg2) {
   return window['go']['services']['SystemService']['FindWorkspaceFileDefinition'](arg1, arg2);
 }
 
+export function FindWorkspaceFileImplementations(arg1, arg2) {
+  return window['go']['services']['SystemService']['FindWorkspaceFileImplementations'](arg1, arg2);
+}
+
 export function FindWorkspaceFileReferences(arg1, arg2) {
   return window['go']['services']['SystemService']['FindWorkspaceFileReferences'](arg1, arg2);
 }
