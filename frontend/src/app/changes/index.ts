@@ -10,6 +10,11 @@ import { pushToast } from "../toasts";
 import type { FileChangesEvent } from "../types";
 import { changeOperationLabel, changeSourceLabel, errorMessage, escapeAttribute, escapeHtml, fileName, formatBytes } from "../utils";
 
+type GitDiffHunkTarget = {
+  lineIndex: number;
+  targetLine: number;
+};
+
 export function renderChangeReviewDrawer(
   workspace: services.Workspace,
   review: services.WorkspaceChangeReview,
@@ -83,6 +88,8 @@ export function renderChangedFile(file: services.WorkspaceChangedFile): string {
 export function renderGitChangedFile(file: services.WorkspaceGitChangedFile): string {
   const workspace = activeWorkspace();
   const busy = Boolean(workspace && state.gitRepositoryOperations.has(workspace.id));
+  const openable = isGitChangedFileOpenable(file);
+  const openLine = gitChangedFileOpenLine(file);
   return `
     <article class="change-file" data-change-file>
       <header>
@@ -92,15 +99,32 @@ export function renderGitChangedFile(file: services.WorkspaceGitChangedFile): st
         </div>
         <div class="change-file-actions">
           <span class="change-operation is-${escapeAttribute(file.operation)}">${escapeHtml(changeOperationLabel(file.operation))}</span>
+          ${openable
+            ? `<button class="secondary-button icon-text-button git-file-open-button" type="button" title="Open changed file" data-action="open-git-change-in-code" data-git-file-path="${escapeAttribute(file.path)}" data-git-target-line="${escapeAttribute(String(openLine))}">
+                ${icons.code}
+                <span>Open</span>
+              </button>`
+            : ""}
           <button class="icon-button danger-button git-file-revert-button" type="button" title="Revert file" aria-label="Revert ${escapeAttribute(file.path)}" data-action="revert-git-file" data-git-file-path="${escapeAttribute(file.path)}" ${busy ? "disabled" : ""}>
             ${icons.undo}
           </button>
         </div>
       </header>
       ${renderGitChangeStatus(file)}
-      ${file.diffAvailable && file.diff ? renderChangeDiff(file.diff) : renderGitChangeMetadata(file)}
+      ${file.diffAvailable && file.diff ? renderGitChangeDiff(file.diff, openable ? file.path : "") : renderGitChangeMetadata(file)}
     </article>
   `;
+}
+
+function isGitChangedFileOpenable(file: services.WorkspaceGitChangedFile): boolean {
+  return Boolean(file.path && file.operation !== "deleted");
+}
+
+function gitChangedFileOpenLine(file: services.WorkspaceGitChangedFile): number {
+  if (!file.diffAvailable || !file.diff) {
+    return 1;
+  }
+  return gitDiffHunkTargets(file.diff)[0]?.targetLine ?? 1;
 }
 
 export function renderGitChangeStatus(file: services.WorkspaceGitChangedFile): string {
@@ -196,6 +220,82 @@ export function renderChangeDiff(diff: string): string {
     })
     .join("");
   return `<pre class="change-diff"><code>${rendered}</code></pre>`;
+}
+
+export function renderGitChangeDiff(diff: string, path: string): string {
+  const targets = new Map(gitDiffHunkTargets(diff).map((target) => [target.lineIndex, target]));
+  const lines = diff.split("\n");
+  const rendered = lines
+    .map((line, index) => {
+      let kind = "context";
+      if (line.startsWith("+") && !line.startsWith("+++")) {
+        kind = "added";
+      } else if (line.startsWith("-") && !line.startsWith("---")) {
+        kind = "removed";
+      } else if (line.startsWith("@@") || line.startsWith("---") || line.startsWith("+++")) {
+        kind = "meta";
+      }
+      const marker = kind === "added" || kind === "removed" ? " data-change-line" : "";
+      const target = path ? targets.get(index) : undefined;
+      if (!target) {
+        return `<span class="change-diff-line is-${kind}"${marker}>${escapeHtml(line || " ")}</span>`;
+      }
+      return `<span class="change-diff-line is-${kind} is-hunk"${marker}><button class="secondary-button git-hunk-open-button" type="button" title="Open this hunk" data-action="open-git-change-in-code" data-git-file-path="${escapeAttribute(path)}" data-git-target-line="${escapeAttribute(String(target.targetLine))}">Open</button><span>${escapeHtml(line || " ")}</span></span>`;
+    })
+    .join("");
+  return `<pre class="change-diff"><code>${rendered}</code></pre>`;
+}
+
+function gitDiffHunkTargets(diff: string): GitDiffHunkTarget[] {
+  const lines = diff.split("\n");
+  const targets: GitDiffHunkTarget[] = [];
+  let current: {
+    lineIndex: number;
+    fallbackLine: number;
+    nextNewLine: number;
+    firstAddedLine: number | null;
+  } | null = null;
+
+  const finishCurrent = () => {
+    if (!current) {
+      return;
+    }
+    targets.push({
+      lineIndex: current.lineIndex,
+      targetLine: Math.max(1, current.firstAddedLine ?? current.fallbackLine),
+    });
+    current = null;
+  };
+
+  lines.forEach((line, index) => {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (hunk) {
+      finishCurrent();
+      const startLine = Number.parseInt(hunk[1], 10);
+      const fallbackLine = Number.isFinite(startLine) ? Math.max(1, startLine) : 1;
+      current = {
+        lineIndex: index,
+        fallbackLine,
+        nextNewLine: fallbackLine,
+        firstAddedLine: null,
+      };
+      return;
+    }
+    if (!current || line.startsWith("\\ No newline")) {
+      return;
+    }
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      current.firstAddedLine ??= Math.max(1, current.nextNewLine);
+      current.nextNewLine++;
+      return;
+    }
+    if (line.startsWith("-") && !line.startsWith("---")) {
+      return;
+    }
+    current.nextNewLine++;
+  });
+  finishCurrent();
+  return targets;
 }
 
 export function renderChangeMetadata(file: services.WorkspaceChangedFile): string {

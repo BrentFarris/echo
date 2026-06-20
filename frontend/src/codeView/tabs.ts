@@ -25,6 +25,7 @@ const openTabFileWatchErrors = new Map<string, string>();
 type OpenCodeFileOptions = {
   temporary: boolean;
   selectionPosition?: number;
+  selectionLine?: number;
   restoredLocation?: CodeNavigationLocation;
   recordNavigation?: boolean;
   suppressErrorToast?: boolean;
@@ -354,7 +355,11 @@ function applyCodeTabOpenLocation(tab: CodeFileTab, options: OpenCodeFileOptions
     applyCodeNavigationLocationToTab(tab, options.restoredLocation);
     return;
   }
-  applyCodeTabSelection(tab, options.selectionPosition);
+  if (options.selectionPosition !== undefined) {
+    applyCodeTabSelection(tab, options.selectionPosition);
+    return;
+  }
+  applyCodeTabLineSelection(tab, options.selectionLine);
 }
 
 function applyCodeTabSelection(tab: CodeFileTab, position: number | undefined) {
@@ -366,6 +371,32 @@ function applyCodeTabSelection(tab: CodeFileTab, position: number | undefined) {
   tab.selectionHead = target;
   tab.pendingRevealPosition = target;
   tab.pendingRevealScroll = "center";
+}
+
+function applyCodeTabLineSelection(tab: CodeFileTab, line: number | undefined) {
+  if (line === undefined) {
+    return;
+  }
+  const targetLine = Math.max(1, Math.floor(line));
+  const offset = fileContentOffsetForLine(tab.content, tab.lineSeparator, targetLine);
+  applyCodeTabSelection(tab, offset);
+}
+
+function fileContentOffsetForLine(content: string, lineSeparator: string, line: number) {
+  if (line <= 1 || content === "") {
+    return 0;
+  }
+  let currentLine = 1;
+  let offset = 0;
+  while (currentLine < line) {
+    const nextBreak = content.indexOf(lineSeparator, offset);
+    if (nextBreak < 0) {
+      return content.length;
+    }
+    offset = nextBreak + lineSeparator.length;
+    currentLine++;
+  }
+  return offset;
 }
 
 export async function openPinnedCodeFile(
@@ -402,6 +433,18 @@ export async function openWorkspaceCodeFile(
   callbacks: CodeViewCallbacks,
 ) {
   await openCodeFile(workspaceID, path, callbacks, { temporary: false });
+}
+
+export async function openWorkspaceCodeFileAtLine(
+  workspaceID: string,
+  path: string,
+  line: number,
+  callbacks: CodeViewCallbacks,
+) {
+  return openCodeFile(workspaceID, path, callbacks, {
+    temporary: false,
+    selectionLine: line,
+  });
 }
 
 export async function navigateCodeHistory(

@@ -1616,12 +1616,19 @@ h3 {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
+  justify-content: flex-end;
   min-width: 0;
 }
 
 .change-file-actions .icon-button {
   width: 30px;
+}
+
+.git-file-open-button {
+  min-height: 30px;
+  padding: 0 10px;
 }
 
 .change-operation {
@@ -1705,6 +1712,30 @@ h3 {
 .change-review.is-expanded .change-diff-line {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.change-diff-line.is-hunk {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: max-content;
+  padding: 2px 10px;
+  white-space: normal;
+}
+
+.change-diff-line.is-hunk > span {
+  white-space: pre;
+}
+
+.change-review.is-expanded .change-diff-line.is-hunk > span {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.git-hunk-open-button {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 0.72rem;
 }
 
 .change-diff-line.is-added {

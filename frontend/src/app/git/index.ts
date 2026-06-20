@@ -1,4 +1,4 @@
-import { refreshOpenCodeTabsFromDisk } from "../../codeView";
+import { ensureCodeViewRootLoaded, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk } from "../../codeView";
 import { CommitWorkspaceGitChanges, CreateWorkspaceGitBranch, DiscardWorkspaceGitChanges, DiscardWorkspaceGitFile, LoadWorkspaceGitCommit, LoadWorkspaceGitRepository, MergeWorkspaceGitBranch, SwitchWorkspaceGitBranch, SyncWorkspaceGitBranch } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
@@ -548,6 +548,31 @@ export async function syncWorkspaceGitRepository(workspaceID: string) {
     await refreshOpenCodeTabsFromDisk(workspace.id, getAppCallbacks().codeViewCallbacks());
     pushToast("Synced branch.", "success");
   }, true);
+}
+
+export async function openGitChangeInCode(path: string, line: number) {
+  path = path.trim();
+  const workspace = activeWorkspace();
+  if (!workspace || !path) {
+    return;
+  }
+  const targetLine = Number.isFinite(line) ? Math.max(1, Math.floor(line)) : 1;
+  state.appMode = "code";
+  const loading = ensureCodeViewRootLoaded(workspace.id);
+  getAppCallbacks().render();
+  await loading;
+  const opened = await openWorkspaceCodeFileAtLine(
+    workspace.id,
+    path,
+    targetLine,
+    getAppCallbacks().codeViewCallbacks(),
+  );
+  if (!opened) {
+    return;
+  }
+  state.openGitChangeWorkspaces.delete(workspace.id);
+  state.expandedGitChangeWorkspaces.delete(workspace.id);
+  getAppCallbacks().render();
 }
 
 export async function revertWorkspaceGitFile(path: string) {
