@@ -129,6 +129,7 @@ export type CodeWorkspaceState = {
   showIgnored: boolean;
   openingPath: string;
   explorerWidth: number;
+  explorerDrawerOpen: boolean;
   codeTreeScrollTop: number;
   searchQuery: string;
   searchResults: services.WorkspaceFileEntry[];

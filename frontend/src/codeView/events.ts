@@ -155,11 +155,13 @@ function bindCodeFileRowEvents(root: ParentNode, workspaceID: string, callbacks:
     element.addEventListener("click", (event) => {
       event.preventDefault();
       selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "file");
+      ensureCodeState(workspaceID).explorerDrawerOpen = false;
       void openCodeFile(workspaceID, element.dataset.codePath ?? "", callbacks, { temporary: true });
     });
     element.addEventListener("dblclick", (event) => {
       event.preventDefault();
       selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "file");
+      ensureCodeState(workspaceID).explorerDrawerOpen = false;
       void openPinnedCodeFile(workspaceID, element.dataset.codePath ?? "", callbacks);
     });
     element.addEventListener("keydown", (event) => {
@@ -168,6 +170,7 @@ function bindCodeFileRowEvents(root: ParentNode, workspaceID: string, callbacks:
       }
       event.preventDefault();
       selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "file");
+      ensureCodeState(workspaceID).explorerDrawerOpen = false;
       void openCodeFile(workspaceID, element.dataset.codePath ?? "", callbacks, { temporary: true });
     });
   });
@@ -305,6 +308,16 @@ async function handleCodeAction(target: HTMLElement, workspaceID: string, callba
     if (ensureCodeState(workspaceID).textSearchOpen) {
       runTextSearchNow(workspaceID, callbacks);
     }
+    return;
+  }
+  if (action === "open-explorer-drawer") {
+    ensureCodeState(workspaceID).explorerDrawerOpen = true;
+    callbacks.render();
+    return;
+  }
+  if (action === "close-explorer-drawer") {
+    ensureCodeState(workspaceID).explorerDrawerOpen = false;
+    callbacks.render();
     return;
   }
   if (action === "open-text-search") {

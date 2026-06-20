@@ -2724,9 +2724,17 @@ h3 {
   justify-content: flex-end;
 }
 
+.code-view-actions .code-explorer-toggle,
+.code-empty .code-empty-file-list-button,
+.code-explorer-meta .code-explorer-drawer-close,
+.code-explorer-backdrop {
+  display: none;
+}
+
 .code-workspace {
   display: grid;
   grid-template-columns: minmax(220px, var(--code-explorer-width, 300px)) 8px minmax(0, 1fr);
+  position: relative;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -3830,12 +3838,60 @@ h3 {
 
   .code-workspace {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(180px, 32vh) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .code-view-actions .code-explorer-toggle,
+  .code-empty .code-empty-file-list-button {
+    display: inline-flex;
   }
 
   .code-explorer {
-    border-right: 0;
-    border-bottom: 1px solid var(--color-border);
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 20;
+    width: min(360px, calc(100% - 34px));
+    transform: translateX(calc(-100% - 18px));
+    visibility: hidden;
+    border-bottom: 0;
+    border-right: 1px solid var(--color-border);
+    box-shadow: 18px 0 44px color-mix(in srgb, black 24%, transparent);
+    transition:
+      transform 180ms ease,
+      visibility 0s linear 180ms;
+  }
+
+  .code-workspace.is-explorer-open .code-explorer {
+    transform: translateX(0);
+    visibility: visible;
+    transition: transform 180ms ease;
+  }
+
+  .code-explorer-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 15;
+    display: block;
+    border: 0;
+    background: color-mix(in srgb, black 32%, transparent);
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    visibility: hidden;
+    transition:
+      opacity 180ms ease,
+      visibility 0s linear 180ms;
+  }
+
+  .code-workspace.is-explorer-open .code-explorer-backdrop {
+    opacity: 1;
+    pointer-events: auto;
+    visibility: visible;
+    transition: opacity 180ms ease;
+  }
+
+  .code-explorer-meta .code-explorer-drawer-close {
+    display: grid;
   }
 
   .code-resizer {
@@ -3890,6 +3946,11 @@ h3 {
   .workspace-panel {
     height: auto;
     min-height: 100%;
+  }
+
+  .workspace-panel.is-code-mode {
+    height: 100%;
+    min-height: 0;
   }
 
   h1 {

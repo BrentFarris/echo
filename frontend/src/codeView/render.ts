@@ -10,6 +10,7 @@ export function renderCodeView(workspace: services.Workspace): string {
   const dirtyCount = state.tabs.filter((tab) => tab.dirty).length;
   const saveDisabled = !activeTab || !activeTab.dirty || activeTab.saving;
   const filterLabel = state.showIgnored ? "Hide ignored" : "Show ignored";
+  const explorerID = `code-explorer-${workspace.id}`;
   return `
     <section
       class="code-view"
@@ -30,6 +31,16 @@ export function renderCodeView(workspace: services.Workspace): string {
             ${codeIcons.git}
             <span>Git</span>
           </button>
+          <button
+            class="secondary-button icon-text-button code-explorer-toggle"
+            type="button"
+            data-code-action="open-explorer-drawer"
+            aria-controls="${escapeAttribute(explorerID)}"
+            aria-expanded="${state.explorerDrawerOpen}"
+          >
+            ${codeIcons.folder}
+            <span>Files</span>
+          </button>
           <button class="secondary-button icon-text-button" type="button" data-code-action="toggle-filter" aria-pressed="${state.showIgnored}">
             ${codeIcons.code}
             <span>${escapeHtml(filterLabel)}</span>
@@ -40,8 +51,9 @@ export function renderCodeView(workspace: services.Workspace): string {
           </button>
         </div>
       </header>
-      <div class="code-workspace" style="--code-explorer-width: ${state.explorerWidth}px">
+      <div class="code-workspace ${state.explorerDrawerOpen ? "is-explorer-open" : ""}" style="--code-explorer-width: ${state.explorerWidth}px">
         ${state.textSearchOpen ? renderTextSearchSidebar(workspace.id) : renderCodeExplorerSidebar(workspace.id, dirtyCount)}
+        <button class="code-explorer-backdrop" type="button" aria-label="Close file list" data-code-action="close-explorer-drawer"></button>
         <div class="code-resizer" role="separator" aria-label="Resize file list" aria-orientation="vertical" tabindex="0" data-code-resizer></div>
         <section class="code-editor-pane" aria-label="Code editor">
           ${renderCodeTabs(workspace.id)}
@@ -53,6 +65,10 @@ export function renderCodeView(workspace: services.Workspace): string {
                 : `<div class="empty-state code-empty">
                     <strong>No file open</strong>
                     <span>Select a text file in the workspace tree.</span>
+                    <button class="secondary-button icon-text-button code-empty-file-list-button" type="button" data-code-action="open-explorer-drawer">
+                      ${codeIcons.folder}
+                      <span>Files</span>
+                    </button>
                   </div>`
             }
           </div>
@@ -222,7 +238,7 @@ function renderPendingCreateRow(state: CodeWorkspaceState, depth: number): strin
 function renderCodeExplorerSidebar(workspaceID: string, dirtyCount: number): string {
   const state = ensureCodeState(workspaceID);
   return `
-    <aside class="code-explorer" aria-label="Workspace files">
+    <aside class="code-explorer" id="code-explorer-${escapeAttribute(workspaceID)}" aria-label="Workspace files">
       <div class="code-explorer-meta">
         <span data-code-dirty-summary>${dirtyCount ? `${dirtyCount} unsaved` : "Files"}</span>
         <div class="code-explorer-toolbar" aria-label="File explorer actions">
@@ -240,6 +256,9 @@ function renderCodeExplorerSidebar(workspaceID: string, dirtyCount: number): str
           </button>
           <button class="icon-button" type="button" title="Collapse all" aria-label="Collapse all folders" data-code-action="collapse-tree">
             ${codeIcons.collapseAll}
+          </button>
+          <button class="icon-button code-explorer-drawer-close" type="button" title="Close file list" aria-label="Close file list" data-code-action="close-explorer-drawer">
+            ${codeIcons.close}
           </button>
         </div>
       </div>
@@ -262,12 +281,15 @@ function renderCodeExplorerSidebar(workspaceID: string, dirtyCount: number): str
 
 function renderTextSearchSidebar(workspaceID: string): string {
   return `
-    <aside class="code-explorer code-text-search-sidebar" aria-label="Find in files">
+    <aside class="code-explorer code-text-search-sidebar" id="code-explorer-${escapeAttribute(workspaceID)}" aria-label="Find in files">
       <div class="code-explorer-meta">
         <span>Find</span>
         <div class="code-explorer-toolbar" aria-label="Find in files actions">
           <button class="icon-button" type="button" title="Show files" aria-label="Show files" data-code-action="close-text-search">
             ${codeIcons.file}
+          </button>
+          <button class="icon-button code-explorer-drawer-close" type="button" title="Close file list" aria-label="Close file list" data-code-action="close-explorer-drawer">
+            ${codeIcons.close}
           </button>
         </div>
       </div>

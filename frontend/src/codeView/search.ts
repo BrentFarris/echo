@@ -10,6 +10,7 @@ const textSearchDelayMs = 220;
 export function openTextSearch(workspaceID: string, callbacks: CodeViewCallbacks) {
   const state = ensureCodeState(workspaceID);
   state.textSearchOpen = true;
+  state.explorerDrawerOpen = true;
   state.textSearchFocusedField = "query";
   callbacks.render();
 }
@@ -81,6 +82,7 @@ export async function openTextSearchMatch(
   if (!path || !Number.isFinite(offset)) {
     return;
   }
+  ensureCodeState(workspaceID).explorerDrawerOpen = false;
   await openCodeFile(workspaceID, path, callbacks, {
     temporary: true,
     selectionPosition: offset,

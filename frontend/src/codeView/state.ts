@@ -50,6 +50,7 @@ export function ensureCodeState(workspaceID: string): CodeWorkspaceState {
       showIgnored: false,
       openingPath: "",
       explorerWidth: storedExplorerWidth(),
+      explorerDrawerOpen: false,
       codeTreeScrollTop: 0,
       searchQuery: "",
       searchResults: [],

@@ -265,6 +265,7 @@ export async function submitPendingCodeCreate(
       await loadDirectory(workspaceID, pending.parentPath);
       state.selectedPath = created.path;
       state.selectedKind = "file";
+      state.explorerDrawerOpen = false;
       patchCodeTree(workspaceID, callbacks);
       await openPinnedCodeFile(workspaceID, created.path, callbacks);
       callbacks.pushToast("File created.", "success");
