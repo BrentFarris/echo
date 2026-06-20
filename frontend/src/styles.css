@@ -3390,7 +3390,8 @@ h3 {
 }
 
 .inline-code-chat {
-  margin: 8px 14px 10px 54px;
+  width: 100%;
+  margin: 8px 0 10px;
   padding: 10px;
   border: 1px solid var(--color-border);
   border-radius: 8px;
