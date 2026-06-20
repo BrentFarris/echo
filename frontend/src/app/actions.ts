@@ -6,7 +6,7 @@ import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeRevie
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
 import { dismissContextMenu } from "./contextMenu";
 import { appRoot } from "./dom";
-import { dropWorkspaceGitRepositoryState, openWorkspaceGitRepository, refreshWorkspaceGitRepository, selectGitCommit, syncWorkspaceGitRepository } from "./git";
+import { dropWorkspaceGitRepositoryState, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, selectGitCommit, syncWorkspaceGitRepository } from "./git";
 import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatSessionFor, kanbanBoardFor, kanbanCards, state } from "./state";
@@ -135,6 +135,14 @@ export async function handleAction(event: Event) {
         return;
       }
       await syncWorkspaceGitRepository(workspace.id);
+      return;
+    }
+    if (action === "revert-git-file") {
+      await revertWorkspaceGitFile(target.dataset.gitFilePath ?? "");
+      return;
+    }
+    if (action === "revert-git-changes") {
+      await revertWorkspaceGitChanges();
       return;
     }
     if (action === "select-git-commit") {

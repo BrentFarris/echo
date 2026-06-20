@@ -81,6 +81,8 @@ export function renderChangedFile(file: services.WorkspaceChangedFile): string {
 }
 
 export function renderGitChangedFile(file: services.WorkspaceGitChangedFile): string {
+  const workspace = activeWorkspace();
+  const busy = Boolean(workspace && state.gitRepositoryOperations.has(workspace.id));
   return `
     <article class="change-file" data-change-file>
       <header>
@@ -88,7 +90,12 @@ export function renderGitChangedFile(file: services.WorkspaceGitChangedFile): st
           ${icons.file}
           <strong title="${escapeAttribute(file.path)}">${escapeHtml(file.path)}</strong>
         </div>
-        <span class="change-operation is-${escapeAttribute(file.operation)}">${escapeHtml(changeOperationLabel(file.operation))}</span>
+        <div class="change-file-actions">
+          <span class="change-operation is-${escapeAttribute(file.operation)}">${escapeHtml(changeOperationLabel(file.operation))}</span>
+          <button class="icon-button danger-button git-file-revert-button" type="button" title="Revert file" aria-label="Revert ${escapeAttribute(file.path)}" data-action="revert-git-file" data-git-file-path="${escapeAttribute(file.path)}" ${busy ? "disabled" : ""}>
+            ${icons.undo}
+          </button>
+        </div>
       </header>
       ${renderGitChangeStatus(file)}
       ${file.diffAvailable && file.diff ? renderChangeDiff(file.diff) : renderGitChangeMetadata(file)}

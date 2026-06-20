@@ -44,6 +44,10 @@ export function DeleteKanbanCard(arg1:string,arg2:string):Promise<services.Kanba
 
 export function DeleteWorkspace(arg1:string):Promise<services.AppState>;
 
+export function DiscardWorkspaceGitChanges(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
+
+export function DiscardWorkspaceGitFile(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
+
 export function EditChatMessage(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<services.ChatSession>;
 
 export function ExecutePlan(arg1:string):Promise<services.KanbanBoard>;

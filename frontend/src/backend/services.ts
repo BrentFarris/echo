@@ -155,6 +155,14 @@ export function CommitWorkspaceGitChanges(...args: Parameters<typeof Wails.Commi
   return call("CommitWorkspaceGitChanges", Wails.CommitWorkspaceGitChanges, args);
 }
 
+export function DiscardWorkspaceGitChanges(...args: Parameters<typeof Wails.DiscardWorkspaceGitChanges>): ReturnType<typeof Wails.DiscardWorkspaceGitChanges> {
+  return call("DiscardWorkspaceGitChanges", Wails.DiscardWorkspaceGitChanges, args);
+}
+
+export function DiscardWorkspaceGitFile(...args: Parameters<typeof Wails.DiscardWorkspaceGitFile>): ReturnType<typeof Wails.DiscardWorkspaceGitFile> {
+  return call("DiscardWorkspaceGitFile", Wails.DiscardWorkspaceGitFile, args);
+}
+
 export function CreateWorkspaceGitBranch(...args: Parameters<typeof Wails.CreateWorkspaceGitBranch>): ReturnType<typeof Wails.CreateWorkspaceGitBranch> {
   return call("CreateWorkspaceGitBranch", Wails.CreateWorkspaceGitBranch, args);
 }

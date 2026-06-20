@@ -82,6 +82,14 @@ export function DeleteWorkspace(arg1) {
   return window['go']['services']['SystemService']['DeleteWorkspace'](arg1);
 }
 
+export function DiscardWorkspaceGitChanges(arg1, arg2) {
+  return window['go']['services']['SystemService']['DiscardWorkspaceGitChanges'](arg1, arg2);
+}
+
+export function DiscardWorkspaceGitFile(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['DiscardWorkspaceGitFile'](arg1, arg2, arg3);
+}
+
 export function EditChatMessage(arg1, arg2, arg3, arg4) {
   return window['go']['services']['SystemService']['EditChatMessage'](arg1, arg2, arg3, arg4);
 }

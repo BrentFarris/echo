@@ -156,6 +156,107 @@ func TestCommitWorkspaceGitChangesCommitsTrackedDeletedAndUntrackedFiles(t *test
 	}
 }
 
+func TestDiscardWorkspaceGitFileRevertsOneChangedFile(t *testing.T) {
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, "keep.txt", "before\n")
+	writeGitTestFile(t, root, "gone.txt", "remove\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial")
+
+	writeGitTestFile(t, root, "keep.txt", "after\n")
+	if err := os.Remove(filepath.Join(root, "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
+	writeGitTestFile(t, root, "fresh.txt", "fresh\n")
+
+	service, workspaceID, folderID := newGitRepositoryTestService(t, root)
+	label := normalizeWorkspaceFolderLabel(filepath.Base(root))
+	view, err := service.DiscardWorkspaceGitFile(workspaceID, folderID, label+"/keep.txt")
+	if err != nil {
+		t.Fatalf("discard modified file: %v", err)
+	}
+	if view.Repository == nil || view.Repository.FileCount != 2 {
+		t.Fatalf("expected two remaining changes, got %#v", view.Repository)
+	}
+	if content, err := os.ReadFile(filepath.Join(root, "keep.txt")); err != nil || string(content) != "before\n" {
+		t.Fatalf("expected modified file restored, got %q err=%v", content, err)
+	}
+	if status := runGitTestCommand(t, root, "status", "--porcelain=v1", "-z", "--untracked-files=all"); strings.Contains(status, "keep.txt") {
+		t.Fatalf("expected keep.txt to be clean, got %q", status)
+	}
+
+	view, err = service.DiscardWorkspaceGitFile(workspaceID, folderID, label+"/gone.txt")
+	if err != nil {
+		t.Fatalf("discard deleted file: %v", err)
+	}
+	if view.Repository == nil || view.Repository.FileCount != 1 {
+		t.Fatalf("expected one remaining change, got %#v", view.Repository)
+	}
+	if content, err := os.ReadFile(filepath.Join(root, "gone.txt")); err != nil || string(content) != "remove\n" {
+		t.Fatalf("expected deleted file restored, got %q err=%v", content, err)
+	}
+
+	view, err = service.DiscardWorkspaceGitFile(workspaceID, folderID, label+"/fresh.txt")
+	if err != nil {
+		t.Fatalf("discard untracked file: %v", err)
+	}
+	if view.Repository == nil || view.Repository.Dirty || view.Repository.FileCount != 0 {
+		t.Fatalf("expected clean repo after discarding all files, got %#v", view.Repository)
+	}
+	if _, err := os.Stat(filepath.Join(root, "fresh.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected untracked file removed, got %v", err)
+	}
+
+	writeGitTestFile(t, root, "staged-add.txt", "new\n")
+	runGitTestCommand(t, root, "add", "staged-add.txt")
+	view, err = service.DiscardWorkspaceGitFile(workspaceID, folderID, label+"/staged-add.txt")
+	if err != nil {
+		t.Fatalf("discard staged added file: %v", err)
+	}
+	if view.Repository == nil || view.Repository.Dirty || view.Repository.FileCount != 0 {
+		t.Fatalf("expected clean repo after discarding staged add, got %#v", view.Repository)
+	}
+	if _, err := os.Stat(filepath.Join(root, "staged-add.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected staged added file removed, got %v", err)
+	}
+}
+
+func TestDiscardWorkspaceGitChangesRevertsTrackedStagedAndUntrackedFiles(t *testing.T) {
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, "keep.txt", "before\n")
+	writeGitTestFile(t, root, "gone.txt", "remove\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial")
+
+	writeGitTestFile(t, root, "keep.txt", "after\n")
+	runGitTestCommand(t, root, "add", "keep.txt")
+	if err := os.Remove(filepath.Join(root, "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
+	writeGitTestFile(t, root, "fresh.txt", "fresh\n")
+
+	service, workspaceID, folderID := newGitRepositoryTestService(t, root)
+	view, err := service.DiscardWorkspaceGitChanges(workspaceID, folderID)
+	if err != nil {
+		t.Fatalf("discard all changes: %v", err)
+	}
+	if view.Repository == nil || view.Repository.Dirty || view.Repository.FileCount != 0 {
+		t.Fatalf("expected clean repo, got %#v", view.Repository)
+	}
+	if content, err := os.ReadFile(filepath.Join(root, "keep.txt")); err != nil || string(content) != "before\n" {
+		t.Fatalf("expected staged file restored, got %q err=%v", content, err)
+	}
+	if content, err := os.ReadFile(filepath.Join(root, "gone.txt")); err != nil || string(content) != "remove\n" {
+		t.Fatalf("expected deleted file restored, got %q err=%v", content, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "fresh.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected untracked file removed, got %v", err)
+	}
+	if status := runGitTestCommand(t, root, "status", "--porcelain=v1", "-z", "--untracked-files=all"); status != "" {
+		t.Fatalf("expected clean git status, got %q", status)
+	}
+}
+
 func TestCreateWorkspaceGitBranchChecksOutNewBranchAndPreservesDirtyFiles(t *testing.T) {
 	root := newGitTestRepo(t)
 	writeGitTestFile(t, root, "notes.txt", "before\n")

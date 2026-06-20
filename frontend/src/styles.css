@@ -1612,6 +1612,18 @@ h3 {
   white-space: nowrap;
 }
 
+.change-file-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.change-file-actions .icon-button {
+  width: 30px;
+}
+
 .change-operation {
   flex: 0 0 auto;
   padding: 4px 7px;

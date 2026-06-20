@@ -1,5 +1,5 @@
 import { refreshOpenCodeTabsFromDisk } from "../../codeView";
-import { CommitWorkspaceGitChanges, CreateWorkspaceGitBranch, LoadWorkspaceGitCommit, LoadWorkspaceGitRepository, MergeWorkspaceGitBranch, SwitchWorkspaceGitBranch, SyncWorkspaceGitBranch } from "../../backend/services";
+import { CommitWorkspaceGitChanges, CreateWorkspaceGitBranch, DiscardWorkspaceGitChanges, DiscardWorkspaceGitFile, LoadWorkspaceGitCommit, LoadWorkspaceGitRepository, MergeWorkspaceGitBranch, SwitchWorkspaceGitBranch, SyncWorkspaceGitBranch } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";
@@ -58,6 +58,10 @@ export function renderGitRepositoryDrawer(
             ${icons.arrowDown}
           </button>
           ${renderGitRefreshOrSyncButton(repository, loading, operation)}
+          <button class="secondary-button icon-text-button danger-button" type="button" data-action="revert-git-changes" ${repository?.fileCount && !loading && !operation ? "" : "disabled"}>
+            ${operation === "Reverting changes" ? `<span class="spinner" aria-hidden="true"></span>` : icons.undo}
+            <span>Revert All</span>
+          </button>
         </div>
 
         ${repository
@@ -543,6 +547,33 @@ export async function syncWorkspaceGitRepository(workspaceID: string) {
     storeGitRepositoryView(workspace.id, view);
     await refreshOpenCodeTabsFromDisk(workspace.id, getAppCallbacks().codeViewCallbacks());
     pushToast("Synced branch.", "success");
+  }, true);
+}
+
+export async function revertWorkspaceGitFile(path: string) {
+  path = path.trim();
+  if (!path || !window.confirm(`Revert changes to ${path}? This cannot be undone.`)) {
+    return;
+  }
+  await runGitOperation("Reverting file", async (workspace, repository) => {
+    const view = await DiscardWorkspaceGitFile(workspace.id, repository.folderId, path);
+    storeGitRepositoryView(workspace.id, view);
+    await refreshOpenCodeTabsFromDisk(workspace.id, getAppCallbacks().codeViewCallbacks());
+    pushToast("Reverted file changes.", "success");
+  }, true);
+}
+
+export async function revertWorkspaceGitChanges() {
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+  if (!workspace || !repository?.dirty || !window.confirm(`Revert all Git changes in ${repository.label}? This cannot be undone.`)) {
+    return;
+  }
+  await runGitOperation("Reverting changes", async (active, selectedRepository) => {
+    const view = await DiscardWorkspaceGitChanges(active.id, selectedRepository.folderId);
+    storeGitRepositoryView(active.id, view);
+    await refreshOpenCodeTabsFromDisk(active.id, getAppCallbacks().codeViewCallbacks());
+    pushToast("Reverted all Git changes.", "success");
   }, true);
 }
 
