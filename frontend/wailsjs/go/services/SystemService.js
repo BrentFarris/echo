@@ -262,6 +262,10 @@ export function SwitchWorkspaceGitBranch(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['SwitchWorkspaceGitBranch'](arg1, arg2, arg3);
 }
 
+export function SyncWorkspaceGitBranch(arg1, arg2) {
+  return window['go']['services']['SystemService']['SyncWorkspaceGitBranch'](arg1, arg2);
+}
+
 export function UpdateKanbanCardDescription(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['UpdateKanbanCardDescription'](arg1, arg2, arg3);
 }

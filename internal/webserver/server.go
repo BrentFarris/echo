@@ -530,6 +530,7 @@ var allowedRPCMethods = map[string]bool{
 	"StopKanbanCard":                  true,
 	"StopKanbanExecution":             true,
 	"SwitchWorkspaceGitBranch":        true,
+	"SyncWorkspaceGitBranch":          true,
 	"SubmitInlineCodePrompt":          true,
 	"UpdateKanbanCardDescription":     true,
 	"UpdateKanbanCardDirection":       true,

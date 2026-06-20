@@ -159,6 +159,10 @@ export function SwitchWorkspaceGitBranch(...args: Parameters<typeof Wails.Switch
   return call("SwitchWorkspaceGitBranch", Wails.SwitchWorkspaceGitBranch, args);
 }
 
+export function SyncWorkspaceGitBranch(...args: Parameters<typeof Wails.SyncWorkspaceGitBranch>): ReturnType<typeof Wails.SyncWorkspaceGitBranch> {
+  return call("SyncWorkspaceGitBranch", Wails.SyncWorkspaceGitBranch, args);
+}
+
 export function MergeWorkspaceGitBranch(...args: Parameters<typeof Wails.MergeWorkspaceGitBranch>): ReturnType<typeof Wails.MergeWorkspaceGitBranch> {
   return call("MergeWorkspaceGitBranch", Wails.MergeWorkspaceGitBranch, args);
 }

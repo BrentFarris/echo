@@ -1748,6 +1748,12 @@ h3 {
   align-content: end;
 }
 
+.git-sync-counts {
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
 .git-management-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

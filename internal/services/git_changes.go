@@ -326,7 +326,7 @@ func runWorkspaceGitCommandWithInput(ctx context.Context, workspacePath string, 
 		"-C", workspacePath,
 	}, args...)
 	cmd := exec.CommandContext(ctx, "git", commandArgs...)
-	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
+	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")
 	if input != nil {
 		cmd.Stdin = bytes.NewReader(input)
 	}

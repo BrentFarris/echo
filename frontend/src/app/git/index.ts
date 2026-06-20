@@ -1,5 +1,5 @@
 import { refreshOpenCodeTabsFromDisk } from "../../codeView";
-import { CommitWorkspaceGitChanges, CreateWorkspaceGitBranch, LoadWorkspaceGitCommit, LoadWorkspaceGitRepository, MergeWorkspaceGitBranch, SwitchWorkspaceGitBranch } from "../../backend/services";
+import { CommitWorkspaceGitChanges, CreateWorkspaceGitBranch, LoadWorkspaceGitCommit, LoadWorkspaceGitRepository, MergeWorkspaceGitBranch, SwitchWorkspaceGitBranch, SyncWorkspaceGitBranch } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";
@@ -57,10 +57,7 @@ export function renderGitRepositoryDrawer(
           <button class="icon-button" type="button" title="Next change" aria-label="Next change" data-action="next-change" ${repository?.fileCount ? "" : "disabled"}>
             ${icons.arrowDown}
           </button>
-          <button class="secondary-button icon-text-button" type="button" data-action="refresh-git-changes" ${loading || operation ? "disabled" : ""}>
-            ${loading ? `<span class="spinner" aria-hidden="true"></span>` : icons.refresh}
-            <span>Refresh</span>
-          </button>
+          ${renderGitRefreshOrSyncButton(repository, loading, operation)}
         </div>
 
         ${repository
@@ -92,6 +89,33 @@ export function renderGitRepositoryDrawer(
           : `<div class="empty-state compact">${loading ? renderSpinnerLabel("Loading Git") : "No manageable Git repository."}</div>`}
       </section>
     </aside>
+  `;
+}
+
+function renderGitRefreshOrSyncButton(
+  repository: services.WorkspaceGitRepositoryStatus | null,
+  loading: boolean,
+  operation: string,
+): string {
+  const ahead = Math.max(0, repository?.aheadCount ?? 0);
+  const behind = Math.max(0, repository?.behindCount ?? 0);
+  const pending = ahead > 0 || behind > 0;
+  const busy = loading || Boolean(operation);
+  if (!pending) {
+    return `
+      <button class="secondary-button icon-text-button" type="button" data-action="refresh-git-changes" ${busy ? "disabled" : ""}>
+        ${loading ? `<span class="spinner" aria-hidden="true"></span>` : icons.refresh}
+        <span>Refresh</span>
+      </button>
+    `;
+  }
+  const label = `Sync (${behind} down, ${ahead} up)`;
+  return `
+    <button class="secondary-button icon-text-button git-sync-button" type="button" title="${escapeAttribute(label)}" aria-label="${escapeAttribute(label)}" data-action="sync-git-branch" ${busy ? "disabled" : ""}>
+      ${operation === "Syncing branch" ? `<span class="spinner" aria-hidden="true"></span>` : icons.refresh}
+      <span>Sync</span>
+      <span class="git-sync-counts" aria-hidden="true">${escapeHtml(`${behind} down / ${ahead} up`)}</span>
+    </button>
   `;
 }
 
@@ -507,6 +531,18 @@ async function handleGitMergeBranchSubmit(event: SubmitEvent) {
     storeGitRepositoryView(workspace.id, view);
     await refreshOpenCodeTabsFromDisk(workspace.id, getAppCallbacks().codeViewCallbacks());
     pushToast("Merged branch.", "success");
+  }, true);
+}
+
+export async function syncWorkspaceGitRepository(workspaceID: string) {
+  if (!workspaceID) {
+    return;
+  }
+  await runGitOperation("Syncing branch", async (workspace, repository) => {
+    const view = await SyncWorkspaceGitBranch(workspace.id, repository.folderId);
+    storeGitRepositoryView(workspace.id, view);
+    await refreshOpenCodeTabsFromDisk(workspace.id, getAppCallbacks().codeViewCallbacks());
+    pushToast("Synced branch.", "success");
   }, true);
 }
 

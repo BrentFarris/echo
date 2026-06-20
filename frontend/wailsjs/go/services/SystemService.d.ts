@@ -134,6 +134,8 @@ export function SubmitInlineCodePrompt(arg1:string,arg2:services.InlineCodePromp
 
 export function SwitchWorkspaceGitBranch(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
 
+export function SyncWorkspaceGitBranch(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
+
 export function UpdateKanbanCardDescription(arg1:string,arg2:string,arg3:string):Promise<services.KanbanBoard>;
 
 export function UpdateKanbanCardDirection(arg1:string,arg2:string,arg3:string):Promise<services.KanbanBoard>;

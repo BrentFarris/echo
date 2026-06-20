@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/brent/echo/internal/tools"
 )
 
-const workspaceGitHistoryLimit = 100
+const (
+	workspaceGitHistoryLimit = 100
+	workspaceGitSyncTimeout  = 2 * time.Minute
+)
 
 type WorkspaceGitRepositoryView struct {
 	WorkspaceID      string                          `json:"workspaceId"`
@@ -24,6 +29,9 @@ type WorkspaceGitRepositorySummary struct {
 	Label         string `json:"label"`
 	Path          string `json:"path"`
 	CurrentBranch string `json:"currentBranch,omitempty"`
+	Upstream      string `json:"upstream,omitempty"`
+	AheadCount    int    `json:"aheadCount"`
+	BehindCount   int    `json:"behindCount"`
 	Head          string `json:"head,omitempty"`
 	ShortHead     string `json:"shortHead,omitempty"`
 	Detached      bool   `json:"detached"`
@@ -37,6 +45,9 @@ type WorkspaceGitRepositoryStatus struct {
 	Label         string                    `json:"label"`
 	Path          string                    `json:"path"`
 	CurrentBranch string                    `json:"currentBranch,omitempty"`
+	Upstream      string                    `json:"upstream,omitempty"`
+	AheadCount    int                       `json:"aheadCount"`
+	BehindCount   int                       `json:"behindCount"`
 	Head          string                    `json:"head,omitempty"`
 	ShortHead     string                    `json:"shortHead,omitempty"`
 	Detached      bool                      `json:"detached"`
@@ -247,6 +258,51 @@ func (s *SystemService) MergeWorkspaceGitBranch(workspaceID string, folderID str
 	return s.loadWorkspaceGitRepository(workspace, folder.ID)
 }
 
+func (s *SystemService) SyncWorkspaceGitBranch(workspaceID string, folderID string) (WorkspaceGitRepositoryView, error) {
+	workspace, folder, err := s.workspaceGitRepositoryFolder(workspaceID, folderID)
+	if err != nil {
+		return WorkspaceGitRepositoryView{}, err
+	}
+
+	lock := s.workspaceToolLock(workspace.ID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), workspaceGitSyncTimeout)
+	defer cancel()
+	if err := ensureWorkspaceGitRepositoryRoot(ctx, folder); err != nil {
+		return WorkspaceGitRepositoryView{}, err
+	}
+	currentBranch, detached := workspaceGitCurrentBranch(ctx, folder.Path)
+	if detached || currentBranch == "" {
+		return WorkspaceGitRepositoryView{}, fmt.Errorf("cannot sync a detached Git HEAD")
+	}
+	upstream, ahead, behind, err := workspaceGitRemoteStatus(ctx, folder.Path)
+	if err != nil {
+		return WorkspaceGitRepositoryView{}, err
+	}
+	if upstream == "" {
+		return WorkspaceGitRepositoryView{}, fmt.Errorf("current branch has no upstream configured")
+	}
+	if ahead == 0 && behind == 0 {
+		return s.loadWorkspaceGitRepository(workspace, folder.ID)
+	}
+	if behind > 0 {
+		if err := requireCleanWorkspaceGitRepository(ctx, folder.Path); err != nil {
+			return WorkspaceGitRepositoryView{}, fmt.Errorf("commit or discard Git changes before syncing incoming commits")
+		}
+		if _, err := runWorkspaceGitCommand(ctx, folder.Path, "-c", "pull.rebase=false", "-c", "core.editor=true", "pull", "--no-edit"); err != nil {
+			return WorkspaceGitRepositoryView{}, err
+		}
+	}
+	if ahead > 0 {
+		if _, err := runWorkspaceGitCommand(ctx, folder.Path, "push"); err != nil {
+			return WorkspaceGitRepositoryView{}, err
+		}
+	}
+	return s.loadWorkspaceGitRepository(workspace, folder.ID)
+}
+
 func (s *SystemService) loadWorkspaceGitRepository(workspace Workspace, folderID string) (WorkspaceGitRepositoryView, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), workspaceGitCommandTimeout)
 	defer cancel()
@@ -324,6 +380,7 @@ func workspaceGitRepositorySummary(ctx context.Context, folder WorkspaceFolder) 
 	}
 	summary.Available = true
 	summary.CurrentBranch, summary.Detached = workspaceGitCurrentBranch(ctx, folder.Path)
+	summary.Upstream, summary.AheadCount, summary.BehindCount, _ = workspaceGitRemoteStatus(ctx, folder.Path)
 	summary.Head, summary.ShortHead = workspaceGitHead(ctx, folder.Path)
 	summary.Dirty, _ = workspaceGitRepositoryDirty(ctx, folder.Path)
 	return summary
@@ -331,6 +388,7 @@ func workspaceGitRepositorySummary(ctx context.Context, folder WorkspaceFolder) 
 
 func loadWorkspaceGitRepositoryStatus(ctx context.Context, folder WorkspaceFolder) (WorkspaceGitRepositoryStatus, error) {
 	currentBranch, detached := workspaceGitCurrentBranch(ctx, folder.Path)
+	upstream, ahead, behind, _ := workspaceGitRemoteStatus(ctx, folder.Path)
 	head, shortHead := workspaceGitHead(ctx, folder.Path)
 	branches, err := loadWorkspaceGitBranches(ctx, folder.Path, currentBranch)
 	if err != nil {
@@ -352,6 +410,9 @@ func loadWorkspaceGitRepositoryStatus(ctx context.Context, folder WorkspaceFolde
 		Label:         folder.Label,
 		Path:          folder.Path,
 		CurrentBranch: currentBranch,
+		Upstream:      upstream,
+		AheadCount:    ahead,
+		BehindCount:   behind,
 		Head:          head,
 		ShortHead:     shortHead,
 		Detached:      detached,
@@ -419,6 +480,40 @@ func workspaceGitHead(ctx context.Context, workspacePath string) (string, string
 		return strings.TrimSpace(string(headOutput)), ""
 	}
 	return strings.TrimSpace(string(headOutput)), strings.TrimSpace(string(shortOutput))
+}
+
+func workspaceGitRemoteStatus(ctx context.Context, workspacePath string) (string, int, int, error) {
+	upstreamOutput, err := runWorkspaceGitCommand(ctx, workspacePath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+	if err != nil {
+		if workspaceGitHasNoUpstream(err) {
+			return "", 0, 0, nil
+		}
+		return "", 0, 0, err
+	}
+	upstream := strings.TrimSpace(string(upstreamOutput))
+	if upstream == "" {
+		return "", 0, 0, nil
+	}
+	countOutput, err := runWorkspaceGitCommand(ctx, workspacePath, "rev-list", "--left-right", "--count", "HEAD...@{upstream}")
+	if err != nil {
+		if workspaceGitHasNoUpstream(err) {
+			return "", 0, 0, nil
+		}
+		return "", 0, 0, err
+	}
+	fields := strings.Fields(string(countOutput))
+	if len(fields) != 2 {
+		return upstream, 0, 0, fmt.Errorf("parse Git upstream status: expected ahead and behind counts")
+	}
+	ahead, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return upstream, 0, 0, fmt.Errorf("parse Git ahead count: %w", err)
+	}
+	behind, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return upstream, 0, 0, fmt.Errorf("parse Git behind count: %w", err)
+	}
+	return upstream, ahead, behind, nil
 }
 
 func workspaceGitRepositoryDirty(ctx context.Context, workspacePath string) (bool, error) {
@@ -700,6 +795,17 @@ func gitRepositoryHasNoCommits(err error) bool {
 	return strings.Contains(message, "does not have any commits") ||
 		strings.Contains(message, "your current branch") ||
 		strings.Contains(message, "bad default revision")
+}
+
+func workspaceGitHasNoUpstream(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no upstream configured") ||
+		strings.Contains(message, "no upstream branch") ||
+		strings.Contains(message, "no such ref") ||
+		strings.Contains(message, "unknown revision") && strings.Contains(message, "@{upstream}")
 }
 
 func mustGitOutput(ctx context.Context, workspacePath string, args ...string) []byte {

@@ -240,6 +240,65 @@ func TestMergeWorkspaceGitBranchRequiresCleanRepositoryAndMerges(t *testing.T) {
 	}
 }
 
+func TestSyncWorkspaceGitBranchReportsCountsAndSyncsUpstream(t *testing.T) {
+	parent := t.TempDir()
+	bare := filepath.Join(parent, "origin.git")
+	runGitTestCommand(t, parent, "init", "--bare", bare)
+
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, "base.txt", "base\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial")
+	baseBranch := strings.TrimSpace(runGitTestCommand(t, root, "branch", "--show-current"))
+	runGitTestCommand(t, root, "remote", "add", "origin", bare)
+	runGitTestCommand(t, root, "push", "-u", "origin", baseBranch)
+	runGitTestCommand(t, bare, "symbolic-ref", "HEAD", "refs/heads/"+baseBranch)
+
+	other := filepath.Join(parent, "other")
+	runGitTestCommand(t, parent, "clone", bare, other)
+	runGitTestCommand(t, other, "config", "user.name", "Echo Test")
+	runGitTestCommand(t, other, "config", "user.email", "echo@example.test")
+	runGitTestCommand(t, other, "config", "core.autocrlf", "false")
+
+	writeGitTestFile(t, root, "outgoing.txt", "outgoing\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "outgoing")
+	writeGitTestFile(t, other, "incoming.txt", "incoming\n")
+	runGitTestCommand(t, other, "add", ".")
+	runGitTestCommand(t, other, "commit", "-m", "incoming")
+	runGitTestCommand(t, other, "push")
+	runGitTestCommand(t, root, "fetch", "origin")
+
+	service, workspaceID, folderID := newGitRepositoryTestService(t, root)
+	view, err := service.LoadWorkspaceGitRepository(workspaceID, folderID)
+	if err != nil {
+		t.Fatalf("load repository: %v", err)
+	}
+	if view.Repository == nil || view.Repository.Upstream != "origin/"+baseBranch || view.Repository.AheadCount != 1 || view.Repository.BehindCount != 1 {
+		t.Fatalf("expected one commit up and one down, got %#v", view.Repository)
+	}
+
+	writeGitTestFile(t, root, "dirty.txt", "dirty\n")
+	if _, err := service.SyncWorkspaceGitBranch(workspaceID, folderID); err == nil || !strings.Contains(err.Error(), "incoming commits") {
+		t.Fatalf("expected dirty incoming sync failure, got %v", err)
+	}
+	if err := os.Remove(filepath.Join(root, "dirty.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	view, err = service.SyncWorkspaceGitBranch(workspaceID, folderID)
+	if err != nil {
+		t.Fatalf("sync branch: %v", err)
+	}
+	if view.Repository == nil || view.Repository.AheadCount != 0 || view.Repository.BehindCount != 0 || view.Repository.Dirty {
+		t.Fatalf("expected synced clean repository, got %#v", view.Repository)
+	}
+	runGitTestCommand(t, other, "pull", "--ff-only")
+	if _, err := os.Stat(filepath.Join(other, "outgoing.txt")); err != nil {
+		t.Fatalf("expected outgoing commit pushed to remote: %v", err)
+	}
+}
+
 func TestLoadWorkspaceGitCommitReturnsCommitDiff(t *testing.T) {
 	root := newGitTestRepo(t)
 	writeGitTestFile(t, root, "notes.txt", "one\n")

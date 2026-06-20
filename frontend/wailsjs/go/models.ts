@@ -1225,6 +1225,9 @@ export namespace services {
 	    label: string;
 	    path: string;
 	    currentBranch?: string;
+	    upstream?: string;
+	    aheadCount: number;
+	    behindCount: number;
 	    head?: string;
 	    shortHead?: string;
 	    detached: boolean;
@@ -1244,6 +1247,9 @@ export namespace services {
 	        this.label = source["label"];
 	        this.path = source["path"];
 	        this.currentBranch = source["currentBranch"];
+	        this.upstream = source["upstream"];
+	        this.aheadCount = source["aheadCount"];
+	        this.behindCount = source["behindCount"];
 	        this.head = source["head"];
 	        this.shortHead = source["shortHead"];
 	        this.detached = source["detached"];
@@ -1277,6 +1283,9 @@ export namespace services {
 	    label: string;
 	    path: string;
 	    currentBranch?: string;
+	    upstream?: string;
+	    aheadCount: number;
+	    behindCount: number;
 	    head?: string;
 	    shortHead?: string;
 	    detached: boolean;
@@ -1294,6 +1303,9 @@ export namespace services {
 	        this.label = source["label"];
 	        this.path = source["path"];
 	        this.currentBranch = source["currentBranch"];
+	        this.upstream = source["upstream"];
+	        this.aheadCount = source["aheadCount"];
+	        this.behindCount = source["behindCount"];
 	        this.head = source["head"];
 	        this.shortHead = source["shortHead"];
 	        this.detached = source["detached"];
