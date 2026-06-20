@@ -50,6 +50,10 @@ export function CloseKanbanCardDetail(arg1, arg2) {
   return window['go']['services']['SystemService']['CloseKanbanCardDetail'](arg1, arg2);
 }
 
+export function CommitWorkspaceGitChanges(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['CommitWorkspaceGitChanges'](arg1, arg2, arg3);
+}
+
 export function CompleteWorkspaceFile(arg1, arg2) {
   return window['go']['services']['SystemService']['CompleteWorkspaceFile'](arg1, arg2);
 }
@@ -64,6 +68,10 @@ export function CreateWorkspaceFile(arg1, arg2, arg3) {
 
 export function CreateWorkspaceFolder(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['CreateWorkspaceFolder'](arg1, arg2, arg3);
+}
+
+export function CreateWorkspaceGitBranch(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['CreateWorkspaceGitBranch'](arg1, arg2, arg3);
 }
 
 export function DeleteKanbanCard(arg1, arg2) {
@@ -120,6 +128,18 @@ export function LoadWorkspaceChangeReview(arg1) {
 
 export function LoadWorkspaceGitChanges(arg1) {
   return window['go']['services']['SystemService']['LoadWorkspaceGitChanges'](arg1);
+}
+
+export function LoadWorkspaceGitCommit(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['LoadWorkspaceGitCommit'](arg1, arg2, arg3);
+}
+
+export function LoadWorkspaceGitRepository(arg1, arg2) {
+  return window['go']['services']['SystemService']['LoadWorkspaceGitRepository'](arg1, arg2);
+}
+
+export function MergeWorkspaceGitBranch(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['MergeWorkspaceGitBranch'](arg1, arg2, arg3);
 }
 
 export function MoveKanbanCard(arg1, arg2, arg3) {
@@ -236,6 +256,10 @@ export function StopKanbanExecution(arg1) {
 
 export function SubmitInlineCodePrompt(arg1, arg2) {
   return window['go']['services']['SystemService']['SubmitInlineCodePrompt'](arg1, arg2);
+}
+
+export function SwitchWorkspaceGitBranch(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['SwitchWorkspaceGitBranch'](arg1, arg2, arg3);
 }
 
 export function UpdateKanbanCardDescription(arg1, arg2, arg3) {

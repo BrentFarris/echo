@@ -6,6 +6,7 @@ import { bindChatEvents, clearChatMention, patchChatMentionPicker } from "./chat
 import { scrollChangeReview, scrollChangeReviewFile } from "./changes";
 import { dismissContextMenu, showContextMenu } from "./contextMenu";
 import { appRoot } from "./dom";
+import { bindGitEvents } from "./git";
 import { closeSelectedCardDetail, bindCardDescriptionEvents, bindCardMessageEvents, bindCardDirectionEvents } from "./kanban";
 import { bindSettingsEvents } from "./settings";
 import { activeWorkspace, state } from "./state";
@@ -18,6 +19,7 @@ export function bindEvents() {
   bindCardDescriptionEvents(appRoot);
   bindCardDirectionEvents(appRoot);
   bindCardMessageEvents(appRoot);
+  bindGitEvents(appRoot);
   bindCodeViewEvents(appRoot, getAppCallbacks().codeViewCallbacks());
 
   appRoot.querySelectorAll<HTMLElement>('[data-action="activate-workspace"]').forEach((button) => {
@@ -143,6 +145,7 @@ export function handleGlobalKeydown(event: KeyboardEvent) {
     state.openGitChangeWorkspaces.delete(workspace.id);
     state.expandedGitChangeWorkspaces.delete(workspace.id);
     state.loadingGitChangeWorkspaces.delete(workspace.id);
+    state.loadingGitRepositoryWorkspaces.delete(workspace.id);
     getAppCallbacks().render();
     return;
   }

@@ -62,7 +62,7 @@ func (s *SystemService) LoadWorkspaceGitChanges(workspaceID string) (WorkspaceGi
 		if folder.Missing {
 			continue
 		}
-		status, err := runWorkspaceGitCommand(ctx, folder.Path, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+		folderFiles, err := loadGitChangedFilesForFolder(ctx, folder)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -70,36 +70,7 @@ func (s *SystemService) LoadWorkspaceGitChanges(workspaceID string) (WorkspaceGi
 			continue
 		}
 		gitFolderCount++
-		entries, err := parseGitStatusPorcelain(status)
-		if err != nil {
-			return WorkspaceGitChangeReview{}, err
-		}
-
-		for _, entry := range entries {
-			file := WorkspaceGitChangedFile{
-				Path:           labeledWorkspacePath(folder.Label, entry.path),
-				OldPath:        labeledWorkspacePath(folder.Label, entry.oldPath),
-				Operation:      gitStatusOperation(entry.index, entry.worktree),
-				Status:         gitRawStatus(entry.index, entry.worktree),
-				IndexStatus:    gitStatusChar(entry.index),
-				WorktreeStatus: gitStatusChar(entry.worktree),
-			}
-
-			var diff string
-			if entry.index == '?' && entry.worktree == '?' {
-				diff, err = synthesizeUntrackedGitDiff(folder.Path, entry.path, file.Path)
-			} else {
-				diff, err = loadGitDiffForPath(ctx, folder.Path, entry.path)
-				if err == nil {
-					diff = prefixGitDiffPaths(diff, folder.Label)
-				}
-			}
-			if err == nil && strings.TrimSpace(diff) != "" {
-				file.Diff = diff
-				file.DiffAvailable = true
-			}
-			files = append(files, file)
-		}
+		files = append(files, folderFiles...)
 	}
 	if gitFolderCount == 0 && firstErr != nil {
 		return WorkspaceGitChangeReview{}, firstErr
@@ -113,6 +84,45 @@ func (s *SystemService) LoadWorkspaceGitChanges(workspaceID string) (WorkspaceGi
 		FileCount:   len(files),
 		Files:       files,
 	}, nil
+}
+
+func loadGitChangedFilesForFolder(ctx context.Context, folder WorkspaceFolder) ([]WorkspaceGitChangedFile, error) {
+	status, err := runWorkspaceGitCommand(ctx, folder.Path, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return nil, err
+	}
+	entries, err := parseGitStatusPorcelain(status)
+	if err != nil {
+		return nil, err
+	}
+
+	files := make([]WorkspaceGitChangedFile, 0, len(entries))
+	for _, entry := range entries {
+		file := WorkspaceGitChangedFile{
+			Path:           labeledWorkspacePath(folder.Label, entry.path),
+			OldPath:        labeledWorkspacePath(folder.Label, entry.oldPath),
+			Operation:      gitStatusOperation(entry.index, entry.worktree),
+			Status:         gitRawStatus(entry.index, entry.worktree),
+			IndexStatus:    gitStatusChar(entry.index),
+			WorktreeStatus: gitStatusChar(entry.worktree),
+		}
+
+		var diff string
+		if entry.index == '?' && entry.worktree == '?' {
+			diff, err = synthesizeUntrackedGitDiff(folder.Path, entry.path, file.Path)
+		} else {
+			diff, err = loadGitDiffForPath(ctx, folder.Path, entry.path)
+			if err == nil {
+				diff = prefixGitDiffPaths(diff, folder.Label)
+			}
+		}
+		if err == nil && strings.TrimSpace(diff) != "" {
+			file.Diff = diff
+			file.DiffAvailable = true
+		}
+		files = append(files, file)
+	}
+	return files, nil
 }
 
 func parseGitStatusPorcelain(output []byte) ([]gitStatusEntry, error) {
@@ -306,6 +316,10 @@ func gitStatusChar(value byte) string {
 }
 
 func runWorkspaceGitCommand(ctx context.Context, workspacePath string, args ...string) ([]byte, error) {
+	return runWorkspaceGitCommandWithInput(ctx, workspacePath, nil, args...)
+}
+
+func runWorkspaceGitCommandWithInput(ctx context.Context, workspacePath string, input []byte, args ...string) ([]byte, error) {
 	commandArgs := append([]string{
 		"-c", "safe.directory=*",
 		"-c", "core.quotepath=false",
@@ -313,6 +327,9 @@ func runWorkspaceGitCommand(ctx context.Context, workspacePath string, args ...s
 	}, args...)
 	cmd := exec.CommandContext(ctx, "git", commandArgs...)
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
+	if input != nil {
+		cmd.Stdin = bytes.NewReader(input)
+	}
 	configureWorkspaceCommandProcess(cmd)
 
 	output, err := cmd.CombinedOutput()

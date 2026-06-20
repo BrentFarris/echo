@@ -28,6 +28,8 @@ export function ClearWorkspaceIcon(arg1:string):Promise<services.AppState>;
 
 export function CloseKanbanCardDetail(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
+export function CommitWorkspaceGitChanges(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
+
 export function CompleteWorkspaceFile(arg1:string,arg2:services.WorkspaceCompletionRequest):Promise<services.WorkspaceCompletionResponse>;
 
 export function CreateKanbanCardFromChatMessage(arg1:string,arg2:string):Promise<services.KanbanBoard>;
@@ -35,6 +37,8 @@ export function CreateKanbanCardFromChatMessage(arg1:string,arg2:string):Promise
 export function CreateWorkspaceFile(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFile>;
 
 export function CreateWorkspaceFolder(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFileEntry>;
+
+export function CreateWorkspaceGitBranch(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
 
 export function DeleteKanbanCard(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
@@ -63,6 +67,12 @@ export function LoadWebAccessStatus():Promise<services.WebAccessStatus>;
 export function LoadWorkspaceChangeReview(arg1:string):Promise<services.WorkspaceChangeReview>;
 
 export function LoadWorkspaceGitChanges(arg1:string):Promise<services.WorkspaceGitChangeReview>;
+
+export function LoadWorkspaceGitCommit(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitCommitDetail>;
+
+export function LoadWorkspaceGitRepository(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
+
+export function MergeWorkspaceGitBranch(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
 
 export function MoveKanbanCard(arg1:string,arg2:string,arg3:string):Promise<services.KanbanBoard>;
 
@@ -121,6 +131,8 @@ export function StopKanbanCard(arg1:string,arg2:string):Promise<services.KanbanB
 export function StopKanbanExecution(arg1:string):Promise<services.KanbanBoard>;
 
 export function SubmitInlineCodePrompt(arg1:string,arg2:services.InlineCodePromptRequest):Promise<services.InlineCodePromptResponse>;
+
+export function SwitchWorkspaceGitBranch(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
 
 export function UpdateKanbanCardDescription(arg1:string,arg2:string,arg3:string):Promise<services.KanbanBoard>;
 

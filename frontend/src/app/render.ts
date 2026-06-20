@@ -1,12 +1,13 @@
 
 import { destroyCodeEditor, renderCodeView } from "../codeView";
 import { renderChatPanel, clearChatMention, linkifyAssistantFilePaths } from "./chat";
-import { renderChangeReviewDrawer, renderGitChangesDrawer } from "./changes";
+import { renderChangeReviewDrawer } from "./changes";
 import { renderContextMenu } from "./contextMenu";
 import { appRoot, captureScrollSnapshot, focusInitialElement, restoreScrollSnapshot } from "./dom";
 import { bindEvents } from "./events";
+import { renderGitRepositoryDrawer } from "./git";
 import { icons } from "./icons";
-import { kanbanBoardFor, changeReviewFor, gitChangeReviewFor, activeWorkspace, kanbanCards, state } from "./state";
+import { kanbanBoardFor, changeReviewFor, gitRepositoryViewFor, activeWorkspace, kanbanCards, state } from "./state";
 import { renderSettingsOverlay } from "./settings";
 import { renderToasts } from "./toasts";
 import { escapeHtml, workspaceFolderSummary } from "./utils";
@@ -93,7 +94,7 @@ export function render() {
               `
           }
         </section>
-        ${showGitChanges ? renderGitChangesDrawer(workspace, gitChangeReviewFor(workspace.id)) : ""}
+        ${showGitChanges ? renderGitRepositoryDrawer(workspace, gitRepositoryViewFor(workspace.id)) : ""}
       </main>
       ${state.settingsOpen ? renderSettingsOverlay(workspaces) : ""}
       ${renderToasts()}

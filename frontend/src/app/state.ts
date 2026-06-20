@@ -23,6 +23,17 @@ export const state = {
   kanbanBoards: new Map<string, services.KanbanBoard>(),
   changeReviews: new Map<string, services.WorkspaceChangeReview>(),
   gitChangeReviews: new Map<string, services.WorkspaceGitChangeReview>(),
+  gitRepositoryViews: new Map<string, services.WorkspaceGitRepositoryView>(),
+  gitCommitDetails: new Map<string, services.WorkspaceGitCommitDetail>(),
+  selectedGitRepositoryFolders: new Map<string, string>(),
+  selectedGitCommitHashes: new Map<string, string>(),
+  gitCommitMessageDrafts: new Map<string, string>(),
+  gitNewBranchDrafts: new Map<string, string>(),
+  gitSwitchBranchDrafts: new Map<string, string>(),
+  gitMergeBranchDrafts: new Map<string, string>(),
+  gitRepositoryOperations: new Map<string, string>(),
+  loadingGitRepositoryWorkspaces: new Set<string>(),
+  loadingGitCommitDetails: new Set<string>(),
   executingPlans: new Set<string>(),
   runningKanbanWorkspaces: new Set<string>(),
   kanbanRunStarts: new Map<string, number>(),
@@ -126,6 +137,18 @@ export function gitChangeReviewFor(workspaceID: string): services.WorkspaceGitCh
       workspaceId: workspaceID,
       fileCount: 0,
       files: [],
+    })
+  );
+}
+
+export function gitRepositoryViewFor(workspaceID: string): services.WorkspaceGitRepositoryView {
+  return (
+    state.gitRepositoryViews.get(workspaceID) ??
+    services.WorkspaceGitRepositoryView.createFrom({
+      workspaceId: workspaceID,
+      selectedFolderId: state.selectedGitRepositoryFolders.get(workspaceID) ?? "",
+      repositories: [],
+      repository: null,
     })
   );
 }
