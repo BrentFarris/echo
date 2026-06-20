@@ -1,9 +1,9 @@
-import { ReadWorkspaceFile, SaveWorkspaceFile } from "../../wailsjs/go/services/SystemService";
+import { ReadWorkspaceFile, SaveWorkspaceFile } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
 import { captureCodeTreeScroll, patchDirtyUI } from "./dom";
 import { applySavedFile, activeCodeTab, codeStates, ensureCodeState, findTab, promoteTabMruPath, pruneTabMruPaths, removeTabMruPath, tabSwitcherPaths, workspaceFileChanged, wrapIndex } from "./state";
 import type { CodeFileTab, CodeViewCallbacks } from "./types";
-import { clamp, editableWorkspaceFile, sleep } from "./utils";
+import { clamp, editableWorkspaceFile, fileContentOffsetToEditorPosition, sleep } from "./utils";
 import { replaceMountedEditorContent, saveMountedEditorContent } from "./editor";
 
 const openTabFileWatchIntervalMs = 1500;
@@ -211,7 +211,10 @@ export async function saveActiveCodeFile(workspaceID: string, callbacks: CodeVie
       tab.content,
       tab.modifiedAt,
     );
-    applySavedFile(workspaceID, services.WorkspaceFile.createFrom(saved));
+    const savedFile = services.WorkspaceFile.createFrom(saved);
+    applySavedFile(workspaceID, savedFile);
+    const savedTab = findTab(workspaceID, savedFile.path);
+    replaceMountedEditorContent(workspaceID, savedFile.path, savedTab?.content ?? savedFile.content);
     callbacks.pushToast("File saved.", "success");
   } catch (error) {
     callbacks.pushToast(callbacks.errorMessage(error), "error");
@@ -242,7 +245,7 @@ export async function openCodeFile(
   const existing = findTab(workspaceID, path);
   if (existing) {
     applyCodeTabSelection(existing, options.selectionPosition);
-    activateCodeTab(workspaceID, existing.path, callbacks);
+    activateCodeTab(workspaceID, existing.path, callbacks, { saveMountedEditor: false });
     return;
   }
 
@@ -293,7 +296,7 @@ function applyCodeTabSelection(tab: CodeFileTab, position: number | undefined) {
   if (position === undefined) {
     return;
   }
-  const target = clamp(position, 0, tab.content.length);
+  const target = fileContentOffsetToEditorPosition(tab.content, tab.lineSeparator, position);
   tab.selectionAnchor = target;
   tab.selectionHead = target;
   tab.pendingRevealPosition = target;
@@ -387,12 +390,15 @@ export function activateCodeTab(
   workspaceID: string,
   path: string,
   callbacks: CodeViewCallbacks,
+  options: { saveMountedEditor?: boolean } = {},
 ) {
   const state = ensureCodeState(workspaceID);
   if (!path || !state.tabs.some((tab) => tab.path === path)) {
     return;
   }
-  saveMountedEditorContent();
+  if (options.saveMountedEditor !== false) {
+    saveMountedEditorContent();
+  }
   state.tabSwitcher = null;
   state.activePath = path;
   promoteTabMruPath(state, path);

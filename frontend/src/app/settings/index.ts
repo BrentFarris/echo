@@ -1,9 +1,10 @@
 
-import { SaveSettings, SetWorkspaceFolderUseAgents, SetWorkspaceLetter } from "../../../wailsjs/go/services/SystemService";
+import { LoadWebAccessStatus, SaveSettings, SaveWebAccessSettings, SetWorkspaceFolderUseAgents, SetWorkspaceLetter } from "../../backend/services";
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
-import { cloneSettings, fieldValue, leadingWhitespaceIndicatorsEnabled, notificationSoundsEnabled, state, thinkingCorrectionEnabled, thinkingTokenBudgetEnabled } from "../state";
+import { renderQRCodeSVG } from "../qr";
+import { cloneSettings, cloneWebAccessSettings, fieldValue, leadingWhitespaceIndicatorsEnabled, notificationSoundsEnabled, state, thinkingCorrectionEnabled, thinkingTokenBudgetEnabled } from "../state";
 import { applyTheme, normalizeHexColor, settingsWithCompactTheme, settingsWithThemeColor, themeColorValue, themeGroups, themeTokens, type ThemePaletteName } from "../theme";
 import { pushToast } from "../toasts";
 import { errorMessage, escapeAttribute, escapeHtml, workspaceFolderSummary } from "../utils";
@@ -218,6 +219,8 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
           </label>
         </section>
 
+        ${renderWebAccessSettings()}
+
         ${renderThemeSettings()}
 
         <section class="settings-section workspace-settings" aria-labelledby="workspace-settings-title">
@@ -318,6 +321,101 @@ function llmPresetValueMatches(
   return Math.abs(Number(current ?? 0) - Number(expected)) < 0.000001;
 }
 
+function renderWebAccessSettings(): string {
+  const draft = state.webAccessDraft ?? services.WebAccessSettings.createFrom({
+    enabled: false,
+    bindHost: "0.0.0.0",
+    port: 3740,
+    accessToken: "",
+  });
+  const status = state.webAccessStatus;
+  const urls = status?.lanUrls ?? [];
+  const qrURL = urls.includes(state.webAccessQRCodeURL) ? state.webAccessQRCodeURL : "";
+  const statusText = draft.enabled
+    ? status?.running
+      ? "Running"
+      : status?.lastError
+        ? `Error: ${status.lastError}`
+        : "Stopped"
+    : "Disabled";
+  return `
+    <section class="settings-section web-access-settings" aria-labelledby="web-access-settings-title">
+      <div class="settings-section-heading">
+        <h3 id="web-access-settings-title" class="settings-section-title">Web Access</h3>
+        <span class="web-access-status ${status?.running ? "is-running" : ""}">${escapeHtml(statusText)}</span>
+      </div>
+      <label class="settings-toggle">
+        <span>Enable browser access</span>
+        <input
+          name="enabled"
+          type="checkbox"
+          data-web-access-field
+          ${draft.enabled ? "checked" : ""}
+        />
+      </label>
+      <div class="settings-grid">
+        <label class="field">
+          <span>Bind Host</span>
+          <input name="bindHost" type="text" value="${escapeAttribute(draft.bindHost || "0.0.0.0")}" autocomplete="off" data-web-access-field />
+        </label>
+        <label class="field">
+          <span>Port</span>
+          <input name="port" type="number" min="1" max="65535" step="1" value="${escapeAttribute(String(draft.port || 3740))}" data-web-access-field />
+        </label>
+        <label class="field field-wide">
+          <span>Access Token</span>
+          <input name="accessToken" type="text" value="${escapeAttribute(draft.accessToken ?? "")}" autocomplete="off" spellcheck="false" data-web-access-field />
+        </label>
+      </div>
+      <div class="web-access-actions">
+        <button class="secondary-button compact-button" type="button" data-action="rotate-web-access-token">Rotate Token</button>
+      </div>
+      ${
+        urls.length
+          ? `<div class="web-access-urls">
+              ${urls.map((item) => renderWebAccessURL(item, qrURL)).join("")}
+            </div>`
+          : ""
+      }
+      ${qrURL ? renderWebAccessQRCode(qrURL) : ""}
+    </section>
+  `;
+}
+
+function renderWebAccessURL(url: string, qrURL: string): string {
+  const active = url === qrURL;
+  return `
+    <div class="web-access-url-row ${active ? "is-active" : ""}">
+      <a href="${escapeAttribute(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>
+      <button
+        class="icon-button"
+        type="button"
+        title="Show QR code"
+        aria-label="Show QR code for ${escapeAttribute(url)}"
+        data-action="show-web-access-qr"
+        data-web-access-url="${escapeAttribute(url)}"
+      >
+        ${icons.qr}
+      </button>
+    </div>
+  `;
+}
+
+function renderWebAccessQRCode(url: string): string {
+  return `
+    <div class="web-access-qr-panel" aria-live="polite">
+      <div class="web-access-qr-header">
+        <strong>Scan Web Access</strong>
+        <button class="icon-button" type="button" title="Hide QR code" aria-label="Hide QR code" data-action="hide-web-access-qr">
+          ${icons.x}
+        </button>
+      </div>
+      <div class="web-access-qr-code">${renderQRCodeSVG(url)}</div>
+      <p>${escapeHtml(url)}</p>
+    </div>
+  `;
+}
+
 function renderThemeSettings(): string {
   const palette = state.settingsThemePalette;
   return `
@@ -402,6 +500,10 @@ export function handleSettingsInput(event: Event) {
   if (input.dataset.workspaceFolderAgents !== undefined) {
     return;
   }
+  if (input.dataset.webAccessField !== undefined) {
+    handleWebAccessInput(input);
+    return;
+  }
   if (input.dataset.workspaceLetter !== undefined) {
     state.workspaceLetterDrafts.set(input.dataset.workspaceId ?? "", input.value);
     state.formError = "";
@@ -468,6 +570,22 @@ function handleLLMPresetChange(select: HTMLSelectElement) {
   });
   state.formError = "";
   getAppCallbacks().render();
+}
+
+function handleWebAccessInput(input: HTMLInputElement) {
+  if (!state.webAccessDraft) {
+    state.webAccessDraft = cloneWebAccessSettings(state.appState?.webAccess);
+  }
+  const value = input.type === "checkbox"
+    ? input.checked
+    : input.name === "port"
+      ? Number(input.value)
+      : input.value;
+  state.webAccessDraft = services.WebAccessSettings.createFrom({
+    ...state.webAccessDraft,
+    [input.name]: typeof value === "number" && Number.isNaN(value) ? 3740 : value,
+  });
+  state.formError = "";
 }
 
 function handleThemeColorInput(input: HTMLInputElement) {
@@ -542,6 +660,10 @@ export async function handleSettingsSubmit(event: SubmitEvent) {
 
   try {
     state.appState = await SaveSettings(settingsWithCompactTheme(state.settingsDraft));
+    if (state.webAccessDraft) {
+      state.appState = await SaveWebAccessSettings(state.webAccessDraft);
+      state.webAccessStatus = await LoadWebAccessStatus();
+    }
     for (const workspace of state.appState.workspaces ?? []) {
       const draft = state.workspaceLetterDrafts.get(workspace.id);
       if (draft !== undefined && draft !== (workspace.letter ?? "")) {
@@ -549,6 +671,7 @@ export async function handleSettingsSubmit(event: SubmitEvent) {
       }
     }
     state.settingsDraft = cloneSettings(state.appState.settings);
+    state.webAccessDraft = cloneWebAccessSettings(state.appState.webAccess);
     applyTheme(state.appState.settings);
     hydrateWorkspaceLetterDrafts(state.appState.workspaces ?? []);
     state.settingsOpen = false;

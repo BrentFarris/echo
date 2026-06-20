@@ -98,6 +98,60 @@ func TestSystemServiceSaveWorkspaceFileWritesWhenUnchanged(t *testing.T) {
 	}
 }
 
+func TestSystemServiceSaveWorkspaceFileFormatsGoFilesBeforeWriting(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := service.ReadWorkspaceFile(workspaceID, "workspace/main.go")
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+
+	unformatted := "package main\n\nimport (\n\"fmt\"\n\"strings\"\n)\n\nfunc main(){fmt.Println(strings.TrimSpace(\" ok \"))}\n"
+	expected := "package main\n\nimport (\n\t\"fmt\"\n\t\"strings\"\n)\n\nfunc main() { fmt.Println(strings.TrimSpace(\" ok \")) }\n"
+	saved, err := service.SaveWorkspaceFile(workspaceID, "workspace/main.go", unformatted, opened.ModifiedAt)
+	if err != nil {
+		t.Fatalf("save file: %v", err)
+	}
+	if saved.Content != expected || saved.Bytes != int64(len(expected)) {
+		t.Fatalf("expected formatted Go content, got %#v", saved)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != expected {
+		t.Fatalf("expected formatted content on disk, got %q", string(data))
+	}
+}
+
+func TestSystemServiceSaveWorkspaceFileDoesNotWriteGoFileWhenFormattingFails(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	path := filepath.Join(root, "main.go")
+	original := "package main\n\nfunc main() {}\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := service.ReadWorkspaceFile(workspaceID, "workspace/main.go")
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+
+	_, err = service.SaveWorkspaceFile(workspaceID, "workspace/main.go", "package main\n\nfunc main( {\n", opened.ModifiedAt)
+	if err == nil || !strings.Contains(err.Error(), "gofmt failed") {
+		t.Fatalf("expected gofmt error, got %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != original {
+		t.Fatalf("expected failed format to leave file alone, got %q", string(data))
+	}
+}
+
 func TestSystemServiceSaveWorkspaceFileRejectsStaleModifiedAt(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	path := filepath.Join(root, "README.md")

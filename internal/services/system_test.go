@@ -1868,6 +1868,44 @@ func TestSystemServiceMigratesLegacyDisabledThinking(t *testing.T) {
 	}
 }
 
+func TestSystemServiceMigratesOnlyDisabledLegacyWebAccessDefaultPort(t *testing.T) {
+	tests := []struct {
+		name    string
+		enabled bool
+		want    int
+	}{
+		{name: "disabled default migrates", enabled: false, want: defaultWebAccessPort},
+		{name: "enabled explicit port is preserved", enabled: true, want: legacyWebAccessPort},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			storePath := filepath.Join(t.TempDir(), "state.json")
+			payload := fmt.Sprintf(`{"webAccess":{"enabled":%t,"bindHost":"0.0.0.0","port":%d,"accessToken":"token"}}`, test.enabled, legacyWebAccessPort)
+			if err := os.WriteFile(storePath, []byte(payload), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			state := NewSystemServiceWithStorePath(storePath).LoadState()
+			if state.WebAccess.Port != test.want {
+				t.Fatalf("expected web access port %d, got %d", test.want, state.WebAccess.Port)
+			}
+
+			data, err := os.ReadFile(storePath)
+			if err != nil {
+				t.Fatalf("read migrated state: %v", err)
+			}
+			var persisted AppState
+			if err := json.Unmarshal(data, &persisted); err != nil {
+				t.Fatalf("decode persisted state: %v", err)
+			}
+			if persisted.WebAccess.Port != test.want {
+				t.Fatalf("expected persisted web access port %d, got %d in %s", test.want, persisted.WebAccess.Port, data)
+			}
+		})
+	}
+}
+
 func TestSystemServiceRejectsInvalidSettings(t *testing.T) {
 	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
 	settings := service.LoadState().Settings

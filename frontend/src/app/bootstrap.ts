@@ -1,17 +1,18 @@
 
 import { applyInlineCodePromptEvent, finishCodeTabSwitcher, refreshOpenCodeTabsFromDisk, saveActiveCodeFile } from "../codeView";
-import { LoadState } from "../../wailsjs/go/services/SystemService";
+import { LoadRuntimeStatus, LoadState, LoadWebAccessStatus } from "../backend/services";
 import { llm, services } from "../../wailsjs/go/models";
-import { EventsOn } from "../../wailsjs/runtime/runtime";
+import { EventsOn } from "../backend/runtime";
+import { initializeWebAccessTokenFromURL } from "../backend/web";
 import { bindActionEvents } from "./actions";
 import { setAppCallbacks } from "./callbacks";
 import { bindChatEvents, applyChatStreamEvent } from "./chat";
 import { applyFileChangesEvent } from "./changes";
 import { showContextMenu } from "./contextMenu";
 import { handleGlobalKeydown, handleGlobalKeyup, handleGlobalPointerDown, handleGlobalWindowBlur } from "./events";
-import { applyKanbanEvent, loadActiveKanbanBoard } from "./kanban";
+import { applyKanbanEvent, loadActiveKanbanBoard, markKanbanRunStarted } from "./kanban";
 import { render } from "./render";
-import { cloneSettings, leadingWhitespaceIndicatorsEnabled, state } from "./state";
+import { cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state } from "./state";
 import { applyTheme } from "./theme";
 import { pushToast } from "./toasts";
 import type { ChatStreamEvent, FileChangesEvent, KanbanEvent } from "./types";
@@ -52,17 +53,25 @@ async function initialize() {
   try {
     state.appState = await LoadState();
     state.settingsDraft = cloneSettings(state.appState.settings);
+    state.webAccessDraft = cloneWebAccessSettings(state.appState.webAccess);
+    state.webAccessStatus = await LoadWebAccessStatus();
     applyTheme(state.appState.settings);
     await loadActiveChatSession();
     await loadActiveKanbanBoard();
     await loadActiveChangeReview();
+    const runtimeStatus = await LoadRuntimeStatus();
+    for (const workspaceID of runtimeStatus.activeKanbanWorkspaceIds ?? []) {
+      markKanbanRunStarted(workspaceID);
+    }
   } catch (error) {
     state.appState = services.AppState.createFrom({
       settings: llm.Settings.createFrom({ endpoint: "", model: "" }),
+      webAccess: services.WebAccessSettings.createFrom({ enabled: false, bindHost: "0.0.0.0", port: 3740, accessToken: "" }),
       workspaces: [],
       activeWorkspaceId: "",
     });
     state.settingsDraft = cloneSettings(state.appState.settings);
+    state.webAccessDraft = cloneWebAccessSettings(state.appState.webAccess);
     applyTheme(state.appState.settings);
     pushToast(errorMessage(error), "error");
   }
@@ -70,6 +79,8 @@ async function initialize() {
 }
 
 export function startApp() {
+  initializeWebAccessTokenFromURL();
+
   setAppCallbacks({
     render,
     pushToast,

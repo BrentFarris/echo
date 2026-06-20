@@ -122,10 +122,11 @@ func (w *Workspace) UnmarshalJSON(data []byte) error {
 }
 
 type AppState struct {
-	Settings          llm.Settings `json:"settings"`
-	Workspaces        []Workspace  `json:"workspaces"`
-	ActiveWorkspaceID string       `json:"activeWorkspaceId"`
-	KanbanCards       []KanbanCard `json:"-"`
+	Settings          llm.Settings      `json:"settings"`
+	WebAccess         WebAccessSettings `json:"webAccess"`
+	Workspaces        []Workspace       `json:"workspaces"`
+	ActiveWorkspaceID string            `json:"activeWorkspaceId"`
+	KanbanCards       []KanbanCard      `json:"-"`
 }
 
 type SystemService struct {
@@ -149,6 +150,10 @@ type SystemService struct {
 	lspMu                   sync.Mutex
 	lspClients              map[string]*lspClient
 	workspaceContextBuilder workspaceContextBuildFunc
+	webAccessController     WebAccessController
+	eventMu                 sync.Mutex
+	eventSeq                uint64
+	eventSubscribers        map[uint64]chan RuntimeEvent
 	kanbanEventSink         func(KanbanEvent)
 	fileChangesEventSink    func(FileChangesEvent)
 	inlineCodeEventSink     func(InlineCodePromptEvent)
@@ -179,6 +184,7 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 		fileChanges:        make(map[string][]trackedFileChange),
 		workspaceToolLocks: make(map[string]*sync.Mutex),
 		lspClients:         make(map[string]*lspClient),
+		eventSubscribers:   make(map[uint64]chan RuntimeEvent),
 	}
 	_ = service.load()
 	return service
@@ -474,6 +480,59 @@ func (s *SystemService) ChooseWorkspaceIcon(id string) (AppState, error) {
 	return s.setWorkspaceIconFromPath(id, path)
 }
 
+func (s *SystemService) SetWorkspaceIconFromPath(id string, path string) (AppState, error) {
+	return s.setWorkspaceIconFromPath(id, path)
+}
+
+func (s *SystemService) SetWorkspaceIconFromUpload(id string, input WorkspaceIconInput) (AppState, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return AppState{}, fmt.Errorf("workspace id is required")
+	}
+	mediaType, data, err := parseChatImageDataURL(input.DataURL)
+	if err != nil {
+		return AppState{}, err
+	}
+	if input.Bytes > 0 && input.Bytes != int64(len(data)) {
+		return AppState{}, fmt.Errorf("workspace icon size does not match its data")
+	}
+	if len(data) > maxChatImageBytes {
+		return AppState{}, fmt.Errorf("workspace icon is larger than the %d byte limit", maxChatImageBytes)
+	}
+	extension := chatImageExtension(mediaType)
+	if extension == "" {
+		return AppState{}, fmt.Errorf("workspace icon must be a PNG, JPG, GIF, or WebP image")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.Workspaces {
+		if s.state.Workspaces[i].ID != id {
+			continue
+		}
+		destination := filepath.Join(s.workspaceIconDir(), id+extension)
+		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+			return AppState{}, err
+		}
+		if err := os.WriteFile(destination, data, 0o600); err != nil {
+			return AppState{}, err
+		}
+		removeOtherWorkspaceIconExtensions(s.workspaceIconDir(), id, extension)
+		oldPath := s.state.Workspaces[i].IconPath
+		s.state.Workspaces[i].IconPath = destination
+		s.state.Workspaces[i].IconURL = workspaceIconURL(destination)
+		s.refreshWorkspaceStatusesLocked()
+		if err := s.saveLocked(); err != nil {
+			return AppState{}, err
+		}
+		if !strings.EqualFold(oldPath, destination) {
+			removeStoredWorkspaceIcon(oldPath)
+		}
+		return cloneState(s.state), nil
+	}
+	return AppState{}, fmt.Errorf("workspace was not found")
+}
+
 func (s *SystemService) ClearWorkspaceIcon(id string) (AppState, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -714,6 +773,10 @@ func (s *SystemService) load() error {
 	legacyKanbanCards := stateFileHasKey(data, "kanbanCards")
 	legacyThinkingDisabled := stateFileLegacyThinkingDisabled(data) && !stateFileHasSettingKey(data, "thinkingTokenBudget")
 	state.Settings = state.Settings.Normalized()
+	missingWebAccessToken := strings.TrimSpace(state.WebAccess.AccessToken) == ""
+	migratedWebAccessPort := false
+	state.WebAccess, migratedWebAccessPort = migrateWebAccessDefaultPort(state.WebAccess)
+	state.WebAccess = normalizeWebAccessSettings(state.WebAccess, "")
 	if legacyThinkingDisabled {
 		state.Settings.ThinkingTokenBudget = 0
 	}
@@ -738,7 +801,7 @@ func (s *SystemService) load() error {
 	}
 	s.state = state
 	changed := s.refreshWorkspaceStatusesLocked()
-	if changed || legacyKanbanCards || legacyThinkingDisabled {
+	if changed || legacyKanbanCards || legacyThinkingDisabled || missingWebAccessToken || migratedWebAccessPort {
 		return s.saveLocked()
 	}
 	return nil
@@ -793,6 +856,7 @@ func (s *SystemService) WorkspaceIconMiddleware(next http.Handler) http.Handler 
 func defaultAppState() AppState {
 	return AppState{
 		Settings:    llm.DefaultSettings(),
+		WebAccess:   defaultWebAccessSettings(),
 		Workspaces:  []Workspace{},
 		KanbanCards: []KanbanCard{},
 	}
@@ -1161,6 +1225,7 @@ func workspaceExists(workspaces []Workspace, id string) bool {
 }
 
 func cloneState(state AppState) AppState {
+	state.WebAccess = normalizeWebAccessSettings(state.WebAccess, "")
 	state.Workspaces = append([]Workspace{}, state.Workspaces...)
 	for i := range state.Workspaces {
 		state.Workspaces[i].Folders = append([]WorkspaceFolder{}, state.Workspaces[i].Folders...)

@@ -1,6 +1,6 @@
 import { services } from "../../wailsjs/go/models";
 import type { CodeFileTab, CodeWorkspaceState, DirectoryState } from "./types";
-import { clamp, editableWorkspaceFile } from "./utils";
+import { clamp, editableWorkspaceFile, editorDocumentLengthForFileContent } from "./utils";
 
 const ignoredDirectoryNames = new Set([
   ".git",
@@ -55,6 +55,7 @@ export function ensureCodeState(workspaceID: string): CodeWorkspaceState {
       searchFocused: false,
       preservingSearchFocus: false,
       inlineChat: null,
+      referencesPanel: null,
     };
     codeStates.set(workspaceID, state);
   }
@@ -77,8 +78,9 @@ export function applySavedFile(workspaceID: string, file: services.WorkspaceFile
   tab.bytes = editable.bytes;
   tab.modifiedAt = file.modifiedAt;
   tab.dirty = false;
-  tab.selectionAnchor = clamp(tab.selectionAnchor, 0, tab.content.length);
-  tab.selectionHead = clamp(tab.selectionHead, 0, tab.content.length);
+  const docLength = editorDocumentLengthForFileContent(tab.content, tab.lineSeparator);
+  tab.selectionAnchor = clamp(tab.selectionAnchor, 0, docLength);
+  tab.selectionHead = clamp(tab.selectionHead, 0, docLength);
 }
 
 export function activeCodeTab(workspaceID: string): CodeFileTab | null {

@@ -1,6 +1,6 @@
 import { EditorState, Prec, StateEffect, StateField, type Text } from "@codemirror/state";
 import { Decoration, type DecorationSet, EditorView, WidgetType, keymap } from "@codemirror/view";
-import { ReadWorkspaceFile, SubmitInlineCodePrompt } from "../../wailsjs/go/services/SystemService";
+import { ReadWorkspaceFile, SubmitInlineCodePrompt } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
 import { renderMarkdown } from "../markdown";
 import { patchInlineCodeChatResponse as patchInlineCodeChatResponseDom } from "./dom";

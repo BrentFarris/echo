@@ -1,6 +1,6 @@
 
 import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate } from "../codeView";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearChat, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWorkspaceChangeReview, LoadWorkspaceGitChanges, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../../wailsjs/go/services/SystemService";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearChat, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, LoadWorkspaceChangeReview, LoadWorkspaceGitChanges, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
@@ -10,7 +10,7 @@ import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKa
 import { playNotificationSound } from "./notifications";
 import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatSessionFor, kanbanBoardFor, kanbanCards, state } from "./state";
 import { clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
-import { cloneSettings } from "./state";
+import { cloneSettings, cloneWebAccessSettings } from "./state";
 import { applyTheme, settingsWithThemeDefaults, themePaletteNames } from "./theme";
 import { pushToast, dismissToast } from "./toasts";
 import { copyTextToClipboard, errorMessage, laneLabel } from "./utils";
@@ -153,6 +153,8 @@ export async function handleAction(event: Event) {
       state.settingsOpen = true;
       state.formError = "";
       state.settingsDraft = cloneSettings(state.appState!.settings);
+      state.webAccessDraft = cloneWebAccessSettings(state.appState!.webAccess);
+      state.webAccessStatus = await LoadWebAccessStatus();
       applyTheme(state.settingsDraft);
       hydrateWorkspaceLetterDrafts(state.appState?.workspaces ?? []);
       getAppCallbacks().render();
@@ -165,10 +167,31 @@ export async function handleAction(event: Event) {
     }
     if (action === "reset-settings") {
       state.settingsDraft = cloneSettings(state.appState!.settings);
+      state.webAccessDraft = cloneWebAccessSettings(state.appState!.webAccess);
+      state.webAccessStatus = await LoadWebAccessStatus();
       applyTheme(state.settingsDraft);
       hydrateWorkspaceLetterDrafts(state.appState?.workspaces ?? []);
       state.formError = "";
       getAppCallbacks().render();
+    }
+    if (action === "rotate-web-access-token") {
+      state.webAccessQRCodeURL = "";
+      state.appState = await RotateWebAccessToken();
+      state.webAccessDraft = cloneWebAccessSettings(state.appState.webAccess);
+      state.webAccessStatus = await LoadWebAccessStatus();
+      pushToast("Web access token rotated.", "success");
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "show-web-access-qr") {
+      state.webAccessQRCodeURL = target.dataset.webAccessUrl ?? "";
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "hide-web-access-qr") {
+      state.webAccessQRCodeURL = "";
+      getAppCallbacks().render();
+      return;
     }
     if (action === "set-theme-palette") {
       const palette = target.dataset.themePalette;

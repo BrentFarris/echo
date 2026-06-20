@@ -1,6 +1,6 @@
 
 import { refreshOpenCodeTabsFromDisk } from "../../codeView";
-import { LoadWorkspaceChangeReview } from "../../../wailsjs/go/services/SystemService";
+import { LoadWorkspaceChangeReview } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";

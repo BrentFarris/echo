@@ -1,7 +1,7 @@
 
 import { ensureCodeViewRootLoaded, openWorkspaceCodeFile } from "../../codeView";
 import { elementFromHtml, morphElement, patchChildrenFromHtml, patchMarkdownElement, renderMarkdown } from "../../markdown";
-import { EditChatMessage, LoadChatSession, ResolveWorkspaceTextFilePath, SearchWorkspaceFiles, SendChatMessageWithAttachments } from "../../../wailsjs/go/services/SystemService";
+import { EditChatMessage, LoadChatSession, ResolveWorkspaceTextFilePath, SearchWorkspaceFiles, SendChatMessageWithAttachments } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";

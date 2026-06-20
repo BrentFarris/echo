@@ -61,6 +61,44 @@ export function editorStateToFileContent(state: EditorState): string {
   return state.sliceDoc(0);
 }
 
+export function editorPositionToFileContentOffset(state: EditorState, position: number): number {
+  const editorPosition = clamp(position, 0, state.doc.length);
+  const line = state.doc.lineAt(editorPosition);
+  const lineBreakExtra = Math.max(0, state.lineBreak.length - 1);
+  return editorPosition + (line.number - 1) * lineBreakExtra;
+}
+
+export function fileContentOffsetToEditorPosition(
+  content: string,
+  lineSeparator: string,
+  position: number,
+): number {
+  const target = clamp(position, 0, content.length);
+  if (lineSeparator.length <= 1) {
+    return target;
+  }
+
+  let contentOffset = 0;
+  let editorPosition = 0;
+  while (contentOffset < target) {
+    if (content.startsWith(lineSeparator, contentOffset)) {
+      if (contentOffset + lineSeparator.length > target) {
+        return editorPosition;
+      }
+      contentOffset += lineSeparator.length;
+      editorPosition++;
+      continue;
+    }
+    contentOffset++;
+    editorPosition++;
+  }
+  return editorPosition;
+}
+
+export function editorDocumentLengthForFileContent(content: string, lineSeparator: string): number {
+  return fileContentOffsetToEditorPosition(content, lineSeparator, content.length);
+}
+
 export function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
