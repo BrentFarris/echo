@@ -34,8 +34,8 @@ const llmCodingPresets: {
   values: LLMPresetValues;
 }[] = [
   {
-    id: "qwen3_6_35b_a3b",
-    label: "Qwen3.6 35B A3B",
+    id: "qwen3_6",
+    label: "Qwen3.6",
     values: {
       temperature: 0.6,
       topK: 20,
@@ -52,8 +52,8 @@ const llmCodingPresets: {
     },
   },
   {
-    id: "gemma4_31b_qat",
-    label: "Gemma 4 31B QAT",
+    id: "gemma4",
+    label: "Gemma 4",
     values: {
       temperature: 0.2,
       topK: 64,
