@@ -202,18 +202,20 @@ function renderBranchOptions(
   branches: services.WorkspaceGitBranch[],
   selected: string,
   currentBranch: string,
-  excludeCurrent: boolean,
+  disableCurrent: boolean,
 ): string {
-  const available = branches.filter((branch) => !excludeCurrent || branch.name !== currentBranch);
-  if (!available.length) {
+  if (!branches.length) {
     return `<option value="">No branches</option>`;
   }
-  return available
-    .map((branch) => `
-      <option value="${escapeAttribute(branch.name)}" ${branch.name === selected ? "selected" : ""}>
-        ${escapeHtml(branch.name)}
+  return branches
+    .map((branch) => {
+      const current = branch.name === currentBranch;
+      return `
+      <option value="${escapeAttribute(branch.name)}" ${branch.name === selected ? "selected" : ""} ${disableCurrent && current ? "disabled" : ""}>
+        ${escapeHtml(`${branch.name}${current ? " (current)" : ""}`)}
       </option>
-    `)
+    `;
+    })
     .join("");
 }
 
@@ -474,13 +476,16 @@ async function handleGitCreateBranchSubmit(event: SubmitEvent) {
 
 async function handleGitSwitchBranchSubmit(event: SubmitEvent) {
   event.preventDefault();
+  const form = event.currentTarget instanceof HTMLFormElement ? event.currentTarget : null;
+  const selectedBranch = form?.querySelector<HTMLSelectElement>("[data-git-switch-branch-select]")?.value.trim() ?? "";
   await runGitOperation("Switching branch", async (workspace, repository) => {
     const key = gitRepositoryDraftKey(workspace.id, repository.folderId);
-    const name = state.gitSwitchBranchDrafts.get(key) ?? "";
+    const name = selectedBranch || state.gitSwitchBranchDrafts.get(key) || "";
     if (!name) {
       return;
     }
     const view = await SwitchWorkspaceGitBranch(workspace.id, repository.folderId, name);
+    state.gitSwitchBranchDrafts.delete(key);
     storeGitRepositoryView(workspace.id, view);
     await refreshOpenCodeTabsFromDisk(workspace.id, getAppCallbacks().codeViewCallbacks());
     pushToast("Switched branch.", "success");
@@ -489,13 +494,16 @@ async function handleGitSwitchBranchSubmit(event: SubmitEvent) {
 
 async function handleGitMergeBranchSubmit(event: SubmitEvent) {
   event.preventDefault();
+  const form = event.currentTarget instanceof HTMLFormElement ? event.currentTarget : null;
+  const selectedBranch = form?.querySelector<HTMLSelectElement>("[data-git-merge-branch-select]")?.value.trim() ?? "";
   await runGitOperation("Merging branch", async (workspace, repository) => {
     const key = gitRepositoryDraftKey(workspace.id, repository.folderId);
-    const name = state.gitMergeBranchDrafts.get(key) ?? "";
+    const name = selectedBranch || state.gitMergeBranchDrafts.get(key) || "";
     if (!name) {
       return;
     }
     const view = await MergeWorkspaceGitBranch(workspace.id, repository.folderId, name);
+    state.gitMergeBranchDrafts.delete(key);
     storeGitRepositoryView(workspace.id, view);
     await refreshOpenCodeTabsFromDisk(workspace.id, getAppCallbacks().codeViewCallbacks());
     pushToast("Merged branch.", "success");
