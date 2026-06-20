@@ -1,9 +1,10 @@
-import { setCodeTreeEventBinder, restoreCodeTreeScroll, startExplorerResize } from "./dom";
+import { setCodeTextSearchEventBinder, setCodeTreeEventBinder, restoreCodeTreeScroll, startExplorerResize } from "./dom";
 import { ensureCodeState } from "./state";
 import type { CodeViewCallbacks } from "./types";
 import { cancelPendingCodeCreate, clearCodeDrag, collapseCodeTree, dropCodeDrag, handleSearchInput, refreshCodeTree, selectCodeTreeEntry, startCodeDrag, startSelectedCodeCreate, submitPendingCodeCreate, toggleDirectory, toggleIgnoredFilter, updateCodeDropTarget, updatePendingCodeCreateName } from "./explorer";
 import { activateCodeTab, closeCodeTab, openCodeFile, openPinnedCodeFile, pinCodeTab, saveActiveCodeFile, startOpenTabFileWatch } from "./tabs";
 import { mountActiveCodeEditor } from "./editor";
+import { closeTextSearch, handleTextSearchFieldInput, openTextSearch, openTextSearchMatch, runTextSearchNow, toggleTextSearchOption } from "./search";
 
 export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallbacks) {
   const view = root.querySelector<HTMLElement>("[data-code-view]");
@@ -13,6 +14,7 @@ export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallback
   }
 
   bindCodeTreeEvents(root, workspaceID, callbacks);
+  bindCodeTextSearchEvents(root, workspaceID, callbacks);
 
   root.querySelectorAll<HTMLElement>("[data-code-tab-main]").forEach((element) => {
     element.addEventListener("mousedown", (event) => {
@@ -72,6 +74,70 @@ function bindCodeTreeEvents(root: ParentNode, workspaceID: string, callbacks: Co
   bindCodeBrowserRowContextMenus(root, workspaceID, callbacks);
   bindCodeBrowserRowDragEvents(root, workspaceID, callbacks);
   bindCodeCreateInputEvents(root, workspaceID, callbacks);
+}
+
+function bindCodeTextSearchEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
+  const state = ensureCodeState(workspaceID);
+  root.querySelectorAll<HTMLElement>('[data-code-action="toggle-text-search-option"]').forEach((element) => {
+    element.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleTextSearchOption(workspaceID, element.dataset.codeTextSearchOption ?? "", callbacks);
+    });
+  });
+
+  root.querySelectorAll<HTMLInputElement>("[data-code-text-search-field]").forEach((input) => {
+    input.addEventListener("input", () => {
+      handleTextSearchFieldInput(workspaceID, input, callbacks);
+    });
+    input.addEventListener("focus", () => {
+      const field = input.dataset.codeTextSearchField ?? "";
+      if (field === "query" || field === "include" || field === "exclude") {
+        ensureCodeState(workspaceID).textSearchFocusedField = field;
+      }
+    });
+    input.addEventListener("blur", () => {
+      const latest = ensureCodeState(workspaceID);
+      if (!latest.preservingTextSearchFocus) {
+        latest.textSearchFocusedField = "";
+      }
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        event.stopPropagation();
+        runTextSearchNow(workspaceID, callbacks);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        closeTextSearch(workspaceID, callbacks);
+      }
+    });
+  });
+
+  root.querySelectorAll<HTMLElement>("[data-code-text-search-match]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void openTextSearchMatch(workspaceID, element, callbacks);
+    });
+    element.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      void openTextSearchMatch(workspaceID, element, callbacks);
+    });
+  });
+
+  if (state.textSearchFocusedField) {
+    const input = root.querySelector<HTMLInputElement>(`[data-code-text-search-field="${state.textSearchFocusedField}"]`);
+    input?.focus();
+    input?.setSelectionRange(input.value.length, input.value.length);
+  }
 }
 
 function bindCodeActionEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
@@ -236,6 +302,17 @@ async function handleCodeAction(target: HTMLElement, workspaceID: string, callba
   const path = target.dataset.codePath ?? "";
   if (action === "toggle-filter") {
     toggleIgnoredFilter(workspaceID, callbacks);
+    if (ensureCodeState(workspaceID).textSearchOpen) {
+      runTextSearchNow(workspaceID, callbacks);
+    }
+    return;
+  }
+  if (action === "open-text-search") {
+    openTextSearch(workspaceID, callbacks);
+    return;
+  }
+  if (action === "close-text-search") {
+    closeTextSearch(workspaceID, callbacks);
     return;
   }
   if (action === "refresh-tree") {
@@ -273,3 +350,4 @@ async function handleCodeAction(target: HTMLElement, workspaceID: string, callba
 }
 
 setCodeTreeEventBinder(bindCodeTreeEvents);
+setCodeTextSearchEventBinder(bindCodeTextSearchEvents);

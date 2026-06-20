@@ -206,6 +206,10 @@ export function SearchWorkspaceFiles(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['SearchWorkspaceFiles'](arg1, arg2, arg3);
 }
 
+export function SearchWorkspaceText(arg1, arg2) {
+  return window['go']['services']['SystemService']['SearchWorkspaceText'](arg1, arg2);
+}
+
 export function SendChatMessage(arg1, arg2) {
   return window['go']['services']['SystemService']['SendChatMessage'](arg1, arg2);
 }

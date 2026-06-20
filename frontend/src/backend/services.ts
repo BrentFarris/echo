@@ -231,6 +231,10 @@ export function SearchWorkspaceFiles(...args: Parameters<typeof Wails.SearchWork
   return call("SearchWorkspaceFiles", Wails.SearchWorkspaceFiles, args);
 }
 
+export function SearchWorkspaceText(...args: Parameters<typeof Wails.SearchWorkspaceText>): ReturnType<typeof Wails.SearchWorkspaceText> {
+  return call("SearchWorkspaceText", Wails.SearchWorkspaceText, args);
+}
+
 export function SendChatMessage(...args: Parameters<typeof Wails.SendChatMessage>): ReturnType<typeof Wails.SendChatMessage> {
   return call("SendChatMessage", Wails.SendChatMessage, args);
 }

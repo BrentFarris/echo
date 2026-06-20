@@ -609,6 +609,126 @@ func TestSystemServiceSearchWorkspaceFilesCapsResults(t *testing.T) {
 	}
 }
 
+func TestSystemServiceSearchWorkspaceTextFindsLiteralMatches(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "Hello Needle\nneedle again\n"
+	if err := os.WriteFile(filepath.Join(root, "src", "main.go"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.SearchWorkspaceText(workspaceID, WorkspaceTextSearchRequest{Query: "needle"})
+	if err != nil {
+		t.Fatalf("search workspace text: %v", err)
+	}
+	if result.MatchCount != 2 || result.FileCount != 1 || len(result.Files[0].Matches) != 2 {
+		t.Fatalf("expected two matches in one file, got %#v", result)
+	}
+	first := result.Files[0].Matches[0]
+	if first.Line != 1 || first.Column != 7 || first.Offset != 6 || first.MatchText != "Needle" {
+		t.Fatalf("unexpected first match metadata: %#v", first)
+	}
+
+	caseSensitive, err := service.SearchWorkspaceText(workspaceID, WorkspaceTextSearchRequest{Query: "needle", CaseSensitive: true})
+	if err != nil {
+		t.Fatalf("case-sensitive search: %v", err)
+	}
+	if caseSensitive.MatchCount != 1 || caseSensitive.Files[0].Matches[0].Line != 2 {
+		t.Fatalf("expected only lower-case match, got %#v", caseSensitive)
+	}
+}
+
+func TestSystemServiceSearchWorkspaceTextRegexAndFileFilters(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	for _, dir := range []string{"src", filepath.Join("src", "generated"), "docs"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := map[string]string{
+		filepath.Join("src", "main.go"):             "func Alpha() {}\n",
+		filepath.Join("src", "generated", "gen.go"): "func AlphaGenerated() {}\n",
+		filepath.Join("docs", "readme.md"):          "Alpha docs\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := service.SearchWorkspaceText(workspaceID, WorkspaceTextSearchRequest{
+		Query:   `Alpha\w*`,
+		Regex:   true,
+		Include: "**/*.go",
+		Exclude: "src/generated/",
+	})
+	if err != nil {
+		t.Fatalf("search workspace text: %v", err)
+	}
+	if result.MatchCount != 1 || result.FileCount != 1 || result.Files[0].Path != "workspace/src/main.go" {
+		t.Fatalf("expected only filtered Go source match, got %#v", result)
+	}
+}
+
+func TestSystemServiceSearchWorkspaceTextSkipsIgnoredFoldersByDefault(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.MkdirAll(filepath.Join(root, "node_modules", "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "node_modules", "pkg", "needle.js"), []byte("needle"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "needle.txt"), []byte("needle"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	filtered, err := service.SearchWorkspaceText(workspaceID, WorkspaceTextSearchRequest{Query: "needle"})
+	if err != nil {
+		t.Fatalf("search filtered workspace text: %v", err)
+	}
+	if got := workspaceTextSearchFilePaths(filtered.Files); strings.Join(got, ",") != "workspace/needle.txt" {
+		t.Fatalf("expected ignored folder to be skipped, got %v", got)
+	}
+	included, err := service.SearchWorkspaceText(workspaceID, WorkspaceTextSearchRequest{Query: "needle", IncludeIgnored: true})
+	if err != nil {
+		t.Fatalf("search unfiltered workspace text: %v", err)
+	}
+	if got := strings.Join(workspaceTextSearchFilePaths(included.Files), ","); got != "workspace/needle.txt,workspace/node_modules/pkg/needle.js" {
+		t.Fatalf("expected ignored folder match when included, got %v", got)
+	}
+}
+
+func TestSystemServiceSearchWorkspaceTextRejectsInvalidRegex(t *testing.T) {
+	service, workspaceID, _ := newWorkspaceFilesTestService(t)
+	if _, err := service.SearchWorkspaceText(workspaceID, WorkspaceTextSearchRequest{Query: "[", Regex: true}); err == nil || !strings.Contains(err.Error(), "valid regular expression") {
+		t.Fatalf("expected invalid regex error, got %v", err)
+	}
+}
+
+func TestSystemServiceSearchWorkspaceTextCapsResults(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	var builder strings.Builder
+	for index := 0; index < maxWorkspaceTextSearchMatches+5; index++ {
+		builder.WriteString("needle\n")
+	}
+	if err := os.WriteFile(filepath.Join(root, "matches.txt"), []byte(builder.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.SearchWorkspaceText(workspaceID, WorkspaceTextSearchRequest{Query: "needle"})
+	if err != nil {
+		t.Fatalf("search workspace text: %v", err)
+	}
+	if result.MatchCount != maxWorkspaceTextSearchMatches {
+		t.Fatalf("expected capped matches, got %d", result.MatchCount)
+	}
+	if !result.Truncated {
+		t.Fatal("expected truncated result")
+	}
+}
+
 func newWorkspaceFilesTestService(t *testing.T) (*SystemService, string, string) {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "workspace")
@@ -635,6 +755,14 @@ func entryPaths(entries []WorkspaceFileEntry) []string {
 	paths := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		paths = append(paths, entry.Path)
+	}
+	return paths
+}
+
+func workspaceTextSearchFilePaths(files []WorkspaceTextSearchFileResult) []string {
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.Path)
 	}
 	return paths
 }

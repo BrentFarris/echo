@@ -1,15 +1,21 @@
 import { patchChildrenFromHtml } from "../markdown";
 import { codeIcons } from "./icons";
-import { renderFileList } from "./render";
+import { renderFileList, renderTextSearchPanelContent } from "./render";
 import { activeCodeTab, ensureCodeState, explorerWidthStorageKey, maxExplorerWidth, minExplorerWidth } from "./state";
 import type { CodeFileTab, CodeViewCallbacks } from "./types";
 import { clamp, formatBytes } from "./utils";
 
 type CodeTreeEventBinder = (root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) => void;
+type CodeTextSearchEventBinder = (root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) => void;
 let codeTreeEventBinder: CodeTreeEventBinder | null = null;
+let codeTextSearchEventBinder: CodeTextSearchEventBinder | null = null;
 
 export function setCodeTreeEventBinder(binder: CodeTreeEventBinder) {
   codeTreeEventBinder = binder;
+}
+
+export function setCodeTextSearchEventBinder(binder: CodeTextSearchEventBinder) {
+  codeTextSearchEventBinder = binder;
 }
 
 export function patchCodeTree(workspaceID: string, callbacks: CodeViewCallbacks) {
@@ -112,6 +118,22 @@ export function patchSearchResults(
   state.preservingSearchFocus = state.searchFocused;
   patchCodeTree(workspaceID, callbacks);
   state.preservingSearchFocus = false;
+}
+
+export function patchTextSearchPanel(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const panel = document.querySelector<HTMLElement>("[data-code-text-search-panel]");
+  if (!panel) {
+    callbacks.render();
+    return;
+  }
+  const state = ensureCodeState(workspaceID);
+  state.preservingTextSearchFocus = Boolean(state.textSearchFocusedField);
+  panel.innerHTML = renderTextSearchPanelContent(workspaceID);
+  codeTextSearchEventBinder?.(panel, workspaceID, callbacks);
+  state.preservingTextSearchFocus = false;
 }
 
 export function startExplorerResize(event: PointerEvent, workspaceID: string) {

@@ -41,38 +41,7 @@ export function renderCodeView(workspace: services.Workspace): string {
         </div>
       </header>
       <div class="code-workspace" style="--code-explorer-width: ${state.explorerWidth}px">
-        <aside class="code-explorer" aria-label="Workspace files">
-          <div class="code-explorer-meta">
-            <span data-code-dirty-summary>${dirtyCount ? `${dirtyCount} unsaved` : "Files"}</span>
-            <div class="code-explorer-toolbar" aria-label="File explorer actions">
-              <button class="icon-button" type="button" title="New file" aria-label="New file" data-code-action="create-selected-file">
-                ${codeIcons.newFile}
-              </button>
-              <button class="icon-button" type="button" title="New folder" aria-label="New folder" data-code-action="create-selected-folder">
-                ${codeIcons.newFolder}
-              </button>
-              <button class="icon-button" type="button" title="Refresh files" aria-label="Refresh files" data-code-action="refresh-tree">
-                ${codeIcons.refresh}
-              </button>
-              <button class="icon-button" type="button" title="Collapse all" aria-label="Collapse all folders" data-code-action="collapse-tree">
-                ${codeIcons.collapseAll}
-              </button>
-            </div>
-          </div>
-          <label class="code-search">
-            <span>Search files</span>
-            <input
-              type="search"
-              value="${escapeAttribute(state.searchQuery)}"
-              placeholder="Search files..."
-              aria-label="Search files"
-              data-code-search
-            />
-          </label>
-          <div class="code-tree" role="tree" data-code-tree>
-            ${renderFileList(workspace.id)}
-          </div>
-        </aside>
+        ${state.textSearchOpen ? renderTextSearchSidebar(workspace.id) : renderCodeExplorerSidebar(workspace.id, dirtyCount)}
         <div class="code-resizer" role="separator" aria-label="Resize file list" aria-orientation="vertical" tabindex="0" data-code-resizer></div>
         <section class="code-editor-pane" aria-label="Code editor">
           ${renderCodeTabs(workspace.id)}
@@ -248,6 +217,205 @@ function renderPendingCreateRow(state: CodeWorkspaceState, depth: number): strin
       </span>
     </div>
   `;
+}
+
+function renderCodeExplorerSidebar(workspaceID: string, dirtyCount: number): string {
+  const state = ensureCodeState(workspaceID);
+  return `
+    <aside class="code-explorer" aria-label="Workspace files">
+      <div class="code-explorer-meta">
+        <span data-code-dirty-summary>${dirtyCount ? `${dirtyCount} unsaved` : "Files"}</span>
+        <div class="code-explorer-toolbar" aria-label="File explorer actions">
+          <button class="icon-button" type="button" title="Find in files" aria-label="Find in files" data-code-action="open-text-search">
+            ${codeIcons.search}
+          </button>
+          <button class="icon-button" type="button" title="New file" aria-label="New file" data-code-action="create-selected-file">
+            ${codeIcons.newFile}
+          </button>
+          <button class="icon-button" type="button" title="New folder" aria-label="New folder" data-code-action="create-selected-folder">
+            ${codeIcons.newFolder}
+          </button>
+          <button class="icon-button" type="button" title="Refresh files" aria-label="Refresh files" data-code-action="refresh-tree">
+            ${codeIcons.refresh}
+          </button>
+          <button class="icon-button" type="button" title="Collapse all" aria-label="Collapse all folders" data-code-action="collapse-tree">
+            ${codeIcons.collapseAll}
+          </button>
+        </div>
+      </div>
+      <label class="code-search">
+        <span>Search files</span>
+        <input
+          type="search"
+          value="${escapeAttribute(state.searchQuery)}"
+          placeholder="Search files..."
+          aria-label="Search files"
+          data-code-search
+        />
+      </label>
+      <div class="code-tree" role="tree" data-code-tree>
+        ${renderFileList(workspaceID)}
+      </div>
+    </aside>
+  `;
+}
+
+function renderTextSearchSidebar(workspaceID: string): string {
+  return `
+    <aside class="code-explorer code-text-search-sidebar" aria-label="Find in files">
+      <div class="code-explorer-meta">
+        <span>Find</span>
+        <div class="code-explorer-toolbar" aria-label="Find in files actions">
+          <button class="icon-button" type="button" title="Show files" aria-label="Show files" data-code-action="close-text-search">
+            ${codeIcons.file}
+          </button>
+        </div>
+      </div>
+      <div class="code-text-search-panel" data-code-text-search-panel>
+        ${renderTextSearchPanelContent(workspaceID)}
+      </div>
+    </aside>
+  `;
+}
+
+export function renderTextSearchPanelContent(workspaceID: string): string {
+  const state = ensureCodeState(workspaceID);
+  return `
+    <div class="code-text-search-form">
+      <div class="code-text-search-query-row">
+        <input
+          class="code-text-search-input"
+          type="search"
+          value="${escapeAttribute(state.textSearchQuery)}"
+          placeholder="Search"
+          aria-label="Search text"
+          spellcheck="false"
+          data-code-text-search-field="query"
+        />
+        <div class="code-text-search-toggles" aria-label="Search options">
+          ${renderTextSearchToggle("case", "Match case", "Aa", state.textSearchCaseSensitive)}
+          ${renderTextSearchToggle("word", "Match whole word", "ab", state.textSearchWholeWord)}
+          ${renderTextSearchToggle("regex", "Use regular expression", ".*", state.textSearchRegex)}
+        </div>
+      </div>
+      <input
+        class="code-text-search-filter"
+        type="text"
+        value="${escapeAttribute(state.textSearchInclude)}"
+        placeholder="files to include"
+        aria-label="Files to include"
+        spellcheck="false"
+        data-code-text-search-field="include"
+      />
+      <input
+        class="code-text-search-filter"
+        type="text"
+        value="${escapeAttribute(state.textSearchExclude)}"
+        placeholder="files to exclude"
+        aria-label="Files to exclude"
+        spellcheck="false"
+        data-code-text-search-field="exclude"
+      />
+    </div>
+    <div class="code-text-search-results" data-code-text-search-results>
+      ${renderTextSearchResults(workspaceID)}
+    </div>
+  `;
+}
+
+function renderTextSearchToggle(
+  option: string,
+  label: string,
+  text: string,
+  active: boolean,
+): string {
+  return `
+    <button
+      class="code-text-search-toggle ${active ? "is-active" : ""}"
+      type="button"
+      title="${escapeAttribute(label)}"
+      aria-label="${escapeAttribute(label)}"
+      aria-pressed="${active}"
+      data-code-action="toggle-text-search-option"
+      data-code-text-search-option="${escapeAttribute(option)}"
+    >${escapeHtml(text)}</button>
+  `;
+}
+
+function renderTextSearchResults(workspaceID: string): string {
+  const state = ensureCodeState(workspaceID);
+  if (state.textSearchError) {
+    return `<div class="code-tree-error">${escapeHtml(state.textSearchError)}</div>`;
+  }
+  if (state.textSearchLoading) {
+    return `<div class="code-tree-note"><span class="spinner" aria-hidden="true"></span><span>Searching...</span></div>`;
+  }
+  if (!state.textSearchQuery) {
+    return `<div class="code-tree-note">No search text.</div>`;
+  }
+  const result = state.textSearchResult;
+  if (!result || !result.files?.length) {
+    return `<div class="code-tree-note">No matches.</div>`;
+  }
+  return `
+    <div class="code-text-search-summary">
+      ${escapeHtml(resultSummary(result))}
+      ${result.truncated ? `<span>Showing first 1000.</span>` : ""}
+    </div>
+    <div class="code-text-search-file-list">
+      ${result.files.map((file) => renderTextSearchFile(file)).join("")}
+    </div>
+  `;
+}
+
+function resultSummary(result: services.WorkspaceTextSearchResult): string {
+  const matchLabel = result.matchCount === 1 ? "result" : "results";
+  const fileLabel = result.fileCount === 1 ? "file" : "files";
+  return `${result.matchCount} ${matchLabel} in ${result.fileCount} ${fileLabel}`;
+}
+
+function renderTextSearchFile(file: services.WorkspaceTextSearchFileResult): string {
+  const count = file.matches?.length ?? 0;
+  return `
+    <details class="code-text-search-file" open>
+      <summary>
+        <span>${codeIcons.file}</span>
+        <strong>${escapeHtml(fileName(file.path))}</strong>
+        <small>${escapeHtml(file.path)}</small>
+        <em>${escapeHtml(String(count))}</em>
+      </summary>
+      <div class="code-text-search-match-list">
+        ${(file.matches ?? []).map((match) => renderTextSearchMatch(file.path, match)).join("")}
+      </div>
+    </details>
+  `;
+}
+
+function renderTextSearchMatch(path: string, match: services.WorkspaceTextSearchMatch): string {
+  return `
+    <button
+      class="code-text-search-match"
+      type="button"
+      title="${escapeAttribute(`${path}:${match.line}`)}"
+      data-code-text-search-match
+      data-code-text-search-path="${escapeAttribute(path)}"
+      data-code-text-search-offset="${escapeAttribute(String(match.offset))}"
+    >
+      <span class="code-text-search-line-number">${escapeHtml(String(match.line))}</span>
+      <code>${renderHighlightedSearchLine(match)}</code>
+    </button>
+  `;
+}
+
+function renderHighlightedSearchLine(match: services.WorkspaceTextSearchMatch): string {
+  const line = match.lineText ?? "";
+  const start = Math.max(0, Math.min(line.length, match.highlightStart ?? 0));
+  const end = Math.max(start, Math.min(line.length, match.highlightEnd ?? start));
+  return [
+    escapeHtml(line.slice(0, start)),
+    `<mark>${escapeHtml(line.slice(start, end))}</mark>`,
+    escapeHtml(line.slice(end)),
+  ].join("");
 }
 
 function renderFileEntry(

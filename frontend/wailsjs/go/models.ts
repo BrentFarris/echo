@@ -1541,6 +1541,152 @@ export namespace services {
 		    return a;
 		}
 	}
+	
+	export class WorkspaceTextSearchMatch {
+	    line: number;
+	    column: number;
+	    endLine: number;
+	    endColumn: number;
+	    offset: number;
+	    endOffset: number;
+	    lineText: string;
+	    matchText: string;
+	    highlightStart: number;
+	    highlightEnd: number;
+	    truncated?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceTextSearchMatch(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.line = source["line"];
+	        this.column = source["column"];
+	        this.endLine = source["endLine"];
+	        this.endColumn = source["endColumn"];
+	        this.offset = source["offset"];
+	        this.endOffset = source["endOffset"];
+	        this.lineText = source["lineText"];
+	        this.matchText = source["matchText"];
+	        this.highlightStart = source["highlightStart"];
+	        this.highlightEnd = source["highlightEnd"];
+	        this.truncated = source["truncated"];
+	    }
+	}
+	export class WorkspaceTextSearchFileResult {
+	    path: string;
+	    name: string;
+	    matches: WorkspaceTextSearchMatch[];
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceTextSearchFileResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.name = source["name"];
+	        this.matches = this.convertValues(source["matches"], WorkspaceTextSearchMatch);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class WorkspaceTextSearchRequest {
+	    query: string;
+	    regex: boolean;
+	    caseSensitive: boolean;
+	    wholeWord: boolean;
+	    include?: string;
+	    exclude?: string;
+	    includeIgnored: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceTextSearchRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.query = source["query"];
+	        this.regex = source["regex"];
+	        this.caseSensitive = source["caseSensitive"];
+	        this.wholeWord = source["wholeWord"];
+	        this.include = source["include"];
+	        this.exclude = source["exclude"];
+	        this.includeIgnored = source["includeIgnored"];
+	    }
+	}
+	export class WorkspaceTextSearchResult {
+	    workspaceId: string;
+	    query: string;
+	    regex: boolean;
+	    caseSensitive: boolean;
+	    wholeWord: boolean;
+	    include?: string;
+	    exclude?: string;
+	    matchCount: number;
+	    fileCount: number;
+	    filesSearched: number;
+	    filesSkipped: number;
+	    truncated: boolean;
+	    files: WorkspaceTextSearchFileResult[];
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceTextSearchResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.query = source["query"];
+	        this.regex = source["regex"];
+	        this.caseSensitive = source["caseSensitive"];
+	        this.wholeWord = source["wholeWord"];
+	        this.include = source["include"];
+	        this.exclude = source["exclude"];
+	        this.matchCount = source["matchCount"];
+	        this.fileCount = source["fileCount"];
+	        this.filesSearched = source["filesSearched"];
+	        this.filesSkipped = source["filesSkipped"];
+	        this.truncated = source["truncated"];
+	        this.files = this.convertValues(source["files"], WorkspaceTextSearchFileResult);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 
 }
 

@@ -106,6 +106,8 @@ export function SaveWorkspaceFile(arg1:string,arg2:string,arg3:string,arg4:strin
 
 export function SearchWorkspaceFiles(arg1:string,arg2:string,arg3:boolean):Promise<services.WorkspaceFileSearchResult>;
 
+export function SearchWorkspaceText(arg1:string,arg2:services.WorkspaceTextSearchRequest):Promise<services.WorkspaceTextSearchResult>;
+
 export function SendChatMessage(arg1:string,arg2:string):Promise<services.ChatSession>;
 
 export function SendChatMessageWithAttachments(arg1:string,arg2:services.ChatMessageRequest):Promise<services.ChatSession>;

@@ -4,3 +4,4 @@ export { clearCodeTabSwitcher, finishCodeTabSwitcher, handleCodeTabSwitcherKeydo
 export { destroyCodeEditor } from "./codeView/editor";
 export { ensureCodeViewRootLoaded, startCodeCreate } from "./codeView/explorer";
 export { renderCodeView } from "./codeView/render";
+export { openTextSearch } from "./codeView/search";

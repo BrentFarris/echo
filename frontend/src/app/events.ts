@@ -1,5 +1,5 @@
 
-import { bindCodeViewEvents, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, saveActiveCodeFile } from "../codeView";
+import { bindCodeViewEvents, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, openTextSearch, saveActiveCodeFile } from "../codeView";
 import { bindActionEvents } from "./actions";
 import { getAppCallbacks } from "./callbacks";
 import { bindChatEvents, clearChatMention, patchChatMentionPicker } from "./chat";
@@ -76,6 +76,12 @@ export function handleGlobalPointerDown(event: PointerEvent) {
 }
 
 export function handleGlobalKeydown(event: KeyboardEvent) {
+  if (isFindInFilesShortcut(event)) {
+    event.preventDefault();
+    event.stopPropagation();
+    void openActiveWorkspaceTextSearch();
+    return;
+  }
   if (state.appMode === "code" && !state.settingsOpen) {
     const workspace = activeWorkspace();
     if (
@@ -167,6 +173,29 @@ export function handleGlobalKeydown(event: KeyboardEvent) {
   }
   event.preventDefault();
   void closeSelectedCardDetail(workspace.id).finally(getAppCallbacks().render);
+}
+
+function isFindInFilesShortcut(event: KeyboardEvent): boolean {
+  const key = event.key.toLowerCase();
+  return (
+    !state.settingsOpen &&
+    !event.altKey &&
+    event.shiftKey &&
+    (event.ctrlKey || event.metaKey) &&
+    (key === "f" || event.code === "KeyF" || event.key === "F12")
+  );
+}
+
+async function openActiveWorkspaceTextSearch() {
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    return;
+  }
+  state.appMode = "code";
+  const loading = ensureCodeViewRootLoaded(workspace.id);
+  openTextSearch(workspace.id, getAppCallbacks().codeViewCallbacks());
+  await loading;
+  getAppCallbacks().render();
 }
 
 export function handleGlobalKeyup(event: KeyboardEvent) {
