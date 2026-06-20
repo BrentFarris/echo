@@ -9,12 +9,78 @@ import { pushToast } from "../toasts";
 import { errorMessage, escapeAttribute, escapeHtml, workspaceFolderSummary } from "../utils";
 import { hydrateWorkspaceLetterDrafts, renderWorkspaceFolderSettings, renderWorkspaceIcon, workspaceLetterDraft } from "../workspace";
 
+const llmPresetFields = [
+  "temperature",
+  "topK",
+  "topP",
+  "minP",
+  "contextLength",
+  "maxTokens",
+  "frequencyPenalty",
+  "presencePenalty",
+  "repetitionPenalty",
+  "timeoutSeconds",
+  "thinkingTokenBudget",
+  "thinkingCorrection",
+] as const;
+
+type LLMPresetField = (typeof llmPresetFields)[number];
+type LLMPresetValues = Pick<llm.Settings, LLMPresetField>;
+
+const llmCodingPresets: {
+  id: string;
+  label: string;
+  values: LLMPresetValues;
+}[] = [
+  {
+    id: "qwen3_6_35b_a3b",
+    label: "Qwen3.6 35B A3B",
+    values: {
+      temperature: 0.6,
+      topK: 20,
+      topP: 0.95,
+      minP: 0,
+      contextLength: 262144,
+      maxTokens: 32168,
+      frequencyPenalty: 0,
+      presencePenalty: 1.5,
+      repetitionPenalty: 1.05,
+      timeoutSeconds: 600,
+      thinkingTokenBudget: -1,
+      thinkingCorrection: false,
+    },
+  },
+  {
+    id: "gemma4_31b_qat",
+    label: "Gemma 4 31B QAT",
+    values: {
+      temperature: 0.2,
+      topK: 64,
+      topP: 0.95,
+      minP: 0,
+      contextLength: 262144,
+      maxTokens: 32168,
+      frequencyPenalty: 0,
+      presencePenalty: 0,
+      repetitionPenalty: 1,
+      timeoutSeconds: 600,
+      thinkingTokenBudget: 0,
+      thinkingCorrection: false,
+    },
+  },
+];
+
 export function bindSettingsEvents(root: ParentNode) {
   const form = root.querySelector<HTMLFormElement>("[data-settings-form]");
   form?.addEventListener("submit", handleSettingsSubmit);
   form
     ?.querySelectorAll<HTMLInputElement>("input")
     .forEach((input) => input.addEventListener("input", handleSettingsInput));
+  form
+    ?.querySelectorAll<HTMLSelectElement>("[data-llm-config-preset]")
+    .forEach((select) =>
+      select.addEventListener("change", () => handleLLMPresetChange(select)),
+    );
   form
     ?.querySelectorAll<HTMLInputElement>("[data-workspace-folder-agents]")
     .forEach((input) =>
@@ -45,6 +111,12 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
         <section class="settings-section" aria-labelledby="llm-settings-title">
           <h3 id="llm-settings-title" class="settings-section-title">LLM Configuration</h3>
           <div class="settings-grid">
+            <label class="field field-wide llm-preset-field">
+              <span>Coding preset</span>
+              <select name="llmPreset" data-llm-config-preset>
+                ${renderLLMPresetOptions()}
+              </select>
+            </label>
             <label class="field field-wide">
               <span>Endpoint</span>
               <input name="endpoint" required type="url" value="${escapeHtml(fieldValue("endpoint"))}" autocomplete="off" data-initial-focus />
@@ -203,6 +275,49 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
   `;
 }
 
+function renderLLMPresetOptions(): string {
+  const selectedID = selectedLLMPresetID(state.settingsDraft);
+  return `
+    <option value="" ${selectedID ? "" : "selected"} disabled>Custom configuration</option>
+    ${llmCodingPresets
+      .map(
+        (preset) => `
+          <option value="${escapeAttribute(preset.id)}" ${selectedID === preset.id ? "selected" : ""}>
+            ${escapeHtml(preset.label)}
+          </option>
+        `,
+      )
+      .join("")}
+  `;
+}
+
+function selectedLLMPresetID(settings: llm.Settings | null): string {
+  if (!settings) {
+    return "";
+  }
+  return llmCodingPresets.find((preset) => settingsMatchLLMPreset(settings, preset.values))
+    ?.id ?? "";
+}
+
+function settingsMatchLLMPreset(
+  settings: llm.Settings,
+  presetValues: LLMPresetValues,
+): boolean {
+  return llmPresetFields.every((field) =>
+    llmPresetValueMatches(settings[field], presetValues[field]),
+  );
+}
+
+function llmPresetValueMatches(
+  current: llm.Settings[LLMPresetField],
+  expected: llm.Settings[LLMPresetField],
+): boolean {
+  if (typeof expected === "boolean") {
+    return Boolean(current) === expected;
+  }
+  return Math.abs(Number(current ?? 0) - Number(expected)) < 0.000001;
+}
+
 function renderThemeSettings(): string {
   const palette = state.settingsThemePalette;
   return `
@@ -322,6 +437,12 @@ export function handleSettingsInput(event: Event) {
     ...state.settingsDraft,
     [input.name]: typeof value === "number" && Number.isNaN(value) ? 0 : value,
   });
+  const presetSelect = input.form?.querySelector<HTMLSelectElement>(
+    "[data-llm-config-preset]",
+  );
+  if (presetSelect) {
+    presetSelect.value = selectedLLMPresetID(state.settingsDraft);
+  }
   if (input.name === "thinkingTokenBudget") {
     const correctionInput = input.form?.querySelector<HTMLInputElement>(
       'input[name="thinkingCorrection"]',
@@ -331,6 +452,22 @@ export function handleSettingsInput(event: Event) {
     }
   }
   state.formError = "";
+}
+
+function handleLLMPresetChange(select: HTMLSelectElement) {
+  if (!state.settingsDraft) {
+    return;
+  }
+  const preset = llmCodingPresets.find((item) => item.id === select.value);
+  if (!preset) {
+    return;
+  }
+  state.settingsDraft = llm.Settings.createFrom({
+    ...state.settingsDraft,
+    ...preset.values,
+  });
+  state.formError = "";
+  getAppCallbacks().render();
 }
 
 function handleThemeColorInput(input: HTMLInputElement) {

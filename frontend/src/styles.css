@@ -1972,13 +1972,19 @@ h3 {
   grid-column: span 2;
 }
 
+.llm-preset-field {
+  grid-column: 1 / -1;
+  max-width: 440px;
+}
+
 .field span {
   color: var(--color-text-muted);
   font-size: 0.82rem;
   font-weight: 700;
 }
 
-.field input {
+.field input,
+.field select {
   width: 100%;
   min-width: 0;
   height: 42px;
@@ -1987,6 +1993,10 @@ h3 {
   border-radius: 8px;
   background: var(--color-bg);
   color: var(--color-text);
+}
+
+.field select {
+  cursor: pointer;
 }
 
 .settings-toggle {
