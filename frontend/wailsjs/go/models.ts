@@ -1,5 +1,63 @@
 export namespace llm {
 	
+	export class EndpointSelection {
+	    chat: string;
+	    kanban: string;
+	    inlineCode: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EndpointSelection(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.chat = source["chat"];
+	        this.kanban = source["kanban"];
+	        this.inlineCode = source["inlineCode"];
+	    }
+	}
+	export class LLMEndpoint {
+	    id: string;
+	    name: string;
+	    endpoint: string;
+	    model: string;
+	    temperature: number;
+	    topK: number;
+	    topP: number;
+	    minP: number;
+	    contextLength: number;
+	    maxTokens: number;
+	    frequencyPenalty: number;
+	    presencePenalty: number;
+	    repetitionPenalty: number;
+	    timeoutSeconds: number;
+	    thinkingTokenBudget: number;
+	    thinkingCorrection?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new LLMEndpoint(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.endpoint = source["endpoint"];
+	        this.model = source["model"];
+	        this.temperature = source["temperature"];
+	        this.topK = source["topK"];
+	        this.topP = source["topP"];
+	        this.minP = source["minP"];
+	        this.contextLength = source["contextLength"];
+	        this.maxTokens = source["maxTokens"];
+	        this.frequencyPenalty = source["frequencyPenalty"];
+	        this.presencePenalty = source["presencePenalty"];
+	        this.repetitionPenalty = source["repetitionPenalty"];
+	        this.timeoutSeconds = source["timeoutSeconds"];
+	        this.thinkingTokenBudget = source["thinkingTokenBudget"];
+	        this.thinkingCorrection = source["thinkingCorrection"];
+	    }
+	}
 	export class Theme {
 	    light?: Record<string, string>;
 	    dark?: Record<string, string>;
@@ -17,6 +75,8 @@ export namespace llm {
 	export class Settings {
 	    endpoint: string;
 	    model: string;
+	    endpoints?: LLMEndpoint[];
+	    endpointSelection?: EndpointSelection;
 	    temperature: number;
 	    topK: number;
 	    topP: number;
@@ -42,6 +102,8 @@ export namespace llm {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.endpoint = source["endpoint"];
 	        this.model = source["model"];
+	        this.endpoints = this.convertValues(source["endpoints"], LLMEndpoint);
+	        this.endpointSelection = this.convertValues(source["endpointSelection"], EndpointSelection);
 	        this.temperature = source["temperature"];
 	        this.topK = source["topK"];
 	        this.topP = source["topP"];

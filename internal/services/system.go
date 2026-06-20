@@ -792,7 +792,11 @@ func (s *SystemService) load() error {
 	}
 	legacyKanbanCards := stateFileHasKey(data, "kanbanCards")
 	legacyThinkingDisabled := stateFileLegacyThinkingDisabled(data) && !stateFileHasSettingKey(data, "thinkingTokenBudget")
+	legacyLLMEndpoints := !stateFileHasSettingKey(data, "endpoints")
+	legacyEndpointSelection := !stateFileHasSettingKey(data, "endpointSelection")
 	state.Settings = state.Settings.Normalized()
+	missingLLMEndpoint := state.Settings.Endpoint == ""
+	missingLLMModel := state.Settings.Model == ""
 	missingWebAccessToken := strings.TrimSpace(state.WebAccess.AccessToken) == ""
 	migratedWebAccessPort := false
 	state.WebAccess, migratedWebAccessPort = migrateWebAccessDefaultPort(state.WebAccess)
@@ -806,6 +810,7 @@ func (s *SystemService) load() error {
 	if state.Settings.Model == "" {
 		state.Settings.Model = llm.DefaultModel
 	}
+	state.Settings = state.Settings.Normalized()
 	normalizeLoadedWorkspaces(&state)
 	if !workspaceExists(state.Workspaces, state.ActiveWorkspaceID) {
 		state.ActiveWorkspaceID = ""
@@ -821,7 +826,7 @@ func (s *SystemService) load() error {
 	}
 	s.state = state
 	changed := s.refreshWorkspaceStatusesLocked()
-	if changed || legacyKanbanCards || legacyThinkingDisabled || missingWebAccessToken || migratedWebAccessPort {
+	if changed || legacyKanbanCards || legacyThinkingDisabled || legacyLLMEndpoints || legacyEndpointSelection || missingLLMEndpoint || missingLLMModel || missingWebAccessToken || migratedWebAccessPort {
 		return s.saveLocked()
 	}
 	return nil
@@ -1245,6 +1250,7 @@ func workspaceExists(workspaces []Workspace, id string) bool {
 }
 
 func cloneState(state AppState) AppState {
+	state.Settings = state.Settings.Clone()
 	state.WebAccess = normalizeWebAccessSettings(state.WebAccess, "")
 	state.Workspaces = append([]Workspace{}, state.Workspaces...)
 	for i := range state.Workspaces {

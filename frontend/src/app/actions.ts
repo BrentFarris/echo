@@ -9,6 +9,7 @@ import { appRoot } from "./dom";
 import { dropWorkspaceGitRepositoryState, openGitChangeInCode, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, selectGitCommit, syncWorkspaceGitRepository } from "./git";
 import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification } from "./kanban";
 import { playNotificationSound } from "./notifications";
+import { addLLMEndpoint, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint } from "./settings";
 import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatSessionFor, kanbanBoardFor, kanbanCards, state } from "./state";
 import { clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
 import { cloneSettings, cloneWebAccessSettings } from "./state";
@@ -163,6 +164,7 @@ export async function handleAction(event: Event) {
       }
       state.settingsOpen = true;
       state.formError = "";
+      state.settingsEndpointEditId = "";
       state.settingsDraft = cloneSettings(state.appState!.settings);
       state.webAccessDraft = cloneWebAccessSettings(state.appState!.webAccess);
       state.webAccessStatus = await LoadWebAccessStatus();
@@ -173,17 +175,42 @@ export async function handleAction(event: Event) {
     if (action === "close-settings") {
       state.settingsOpen = false;
       state.formError = "";
+      state.settingsEndpointEditId = "";
       applyTheme(state.appState?.settings);
       getAppCallbacks().render();
     }
     if (action === "reset-settings") {
       state.settingsDraft = cloneSettings(state.appState!.settings);
+      state.settingsEndpointEditId = "";
       state.webAccessDraft = cloneWebAccessSettings(state.appState!.webAccess);
       state.webAccessStatus = await LoadWebAccessStatus();
       applyTheme(state.settingsDraft);
       hydrateWorkspaceLetterDrafts(state.appState?.workspaces ?? []);
       state.formError = "";
       getAppCallbacks().render();
+    }
+    if (action === "add-llm-endpoint") {
+      addLLMEndpoint();
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "edit-llm-endpoint") {
+      editLLMEndpoint(target.dataset.endpointId ?? "");
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "finish-edit-llm-endpoint") {
+      finishEditingLLMEndpoint();
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "delete-llm-endpoint") {
+      if (!window.confirm("Delete this LLM endpoint?")) {
+        return;
+      }
+      deleteLLMEndpoint(target.dataset.endpointId ?? "");
+      getAppCallbacks().render();
+      return;
     }
     if (action === "rotate-web-access-token") {
       state.webAccessQRCodeURL = "";

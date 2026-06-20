@@ -71,7 +71,7 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 		return fail(fmt.Errorf("file path is required"))
 	}
 
-	workspace, settings, err := s.workspaceAndSettings(workspaceID)
+	workspace, settings, err := s.workspaceAndSettingsFor(workspaceID, llm.InteractionInlineCode)
 	if err != nil {
 		return fail(err)
 	}

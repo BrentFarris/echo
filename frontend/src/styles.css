@@ -2327,6 +2327,77 @@ h3 {
   max-width: 440px;
 }
 
+.llm-endpoint-routing {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.llm-endpoint-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.llm-endpoint-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+}
+
+.llm-endpoint-row.is-editing {
+  align-items: end;
+}
+
+.llm-endpoint-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.llm-endpoint-main strong {
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: 0.92rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.llm-endpoint-main span {
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.llm-endpoint-editor {
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  width: 100%;
+}
+
+.llm-endpoint-preset-field {
+  grid-column: 1 / -1;
+  max-width: 440px;
+}
+
+.llm-endpoint-editor .settings-toggle {
+  width: 100%;
+}
+
+.llm-endpoint-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.llm-endpoint-actions .icon-button {
+  width: 38px;
+}
+
 .field span {
   color: var(--color-text-muted);
   font-size: 0.82rem;
@@ -3662,6 +3733,17 @@ h3 {
   color: var(--color-text);
 }
 
+.primary-button svg,
+.secondary-button svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
 .icon-text-button svg {
   width: 16px;
   height: 16px;
@@ -3720,6 +3802,8 @@ h3 {
 @media (max-width: 920px) {
   .split-panels,
   .settings-grid,
+  .llm-endpoint-routing,
+  .llm-endpoint-editor,
   .theme-token-grid,
   .git-repository-topbar,
   .change-review.is-expanded .git-repository-layout {
@@ -3823,6 +3907,14 @@ h3 {
   .settings-section-heading {
     align-items: start;
     display: grid;
+  }
+
+  .llm-endpoint-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .llm-endpoint-actions {
+    justify-content: end;
   }
 
   .kanban-board {

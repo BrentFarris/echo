@@ -10,6 +10,7 @@ export const state = {
   webAccessStatus: null as services.WebAccessStatus | null,
   webAccessQRCodeURL: "",
   settingsOpen: false,
+  settingsEndpointEditId: "",
   settingsThemePalette: "light" as ThemePaletteName,
   workspaceLetterDrafts: new Map<string, string>(),
   appMode: "chat-kanban" as AppMode,

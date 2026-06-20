@@ -733,6 +733,10 @@ func (s *SystemService) appendChatHistory(workspaceID string, message llm.Messag
 }
 
 func (s *SystemService) workspaceAndSettings(workspaceID string) (Workspace, llm.Settings, error) {
+	return s.workspaceAndSettingsFor(workspaceID, llm.InteractionChat)
+}
+
+func (s *SystemService) workspaceAndSettingsFor(workspaceID string, interaction llm.Interaction) (Workspace, llm.Settings, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.refreshWorkspaceStatusesLocked() {
@@ -740,7 +744,7 @@ func (s *SystemService) workspaceAndSettings(workspaceID string) (Workspace, llm
 	}
 	for _, workspace := range s.state.Workspaces {
 		if workspace.ID == workspaceID {
-			return workspace, s.state.Settings, nil
+			return workspace, s.state.Settings.ForInteraction(interaction), nil
 		}
 	}
 	return Workspace{}, llm.Settings{}, fmt.Errorf("workspace was not found")

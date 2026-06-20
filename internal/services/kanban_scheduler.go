@@ -49,7 +49,7 @@ type kanbanToolCallExecution struct {
 }
 
 func (s *SystemService) StartKanbanExecution(workspaceID string, concurrency int) (KanbanBoard, error) {
-	workspace, settings, err := s.workspaceAndSettings(workspaceID)
+	workspace, settings, err := s.workspaceAndSettingsFor(workspaceID, llm.InteractionKanban)
 	if err != nil {
 		return KanbanBoard{}, err
 	}
