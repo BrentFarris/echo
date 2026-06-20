@@ -41,6 +41,17 @@ export function renderCodeView(workspace: services.Workspace): string {
             ${codeIcons.folder}
             <span>Files</span>
           </button>
+          <button
+            class="secondary-button icon-text-button code-inline-chat-toggle"
+            type="button"
+            title="Open inline chat at caret"
+            aria-label="Open inline chat at caret"
+            data-code-action="open-inline-chat"
+            ${activeTab ? "" : "disabled"}
+          >
+            ${codeIcons.message}
+            <span>Ask</span>
+          </button>
           <button class="primary-button icon-text-button" type="button" data-code-action="save-active-file" data-code-save ${saveDisabled ? "disabled" : ""}>
             ${activeTab?.saving ? `<span class="spinner" aria-hidden="true"></span>` : codeIcons.save}
             <span>Save</span>

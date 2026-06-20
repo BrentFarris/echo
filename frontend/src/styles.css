@@ -2725,6 +2725,7 @@ h3 {
 }
 
 .code-view-actions .code-explorer-toggle,
+.code-view-actions .code-inline-chat-toggle,
 .code-empty .code-empty-file-list-button,
 .code-explorer-meta .code-explorer-drawer-close,
 .code-explorer-backdrop {
@@ -3842,6 +3843,7 @@ h3 {
   }
 
   .code-view-actions .code-explorer-toggle,
+  .code-view-actions .code-inline-chat-toggle,
   .code-empty .code-empty-file-list-button {
     display: inline-flex;
   }

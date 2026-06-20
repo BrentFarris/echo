@@ -250,6 +250,19 @@ function openInlineCodeChat(
   focusInlineCodeChatInput();
 }
 
+export function openInlineCodeChatAtCursor(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const mounted = getMountedCodeEditor();
+  if (!mounted.view || mounted.workspaceID !== workspaceID || !mounted.path) {
+    callbacks.pushToast("Open a file before starting inline chat.", "error");
+    return false;
+  }
+  openInlineCodeChat(workspaceID, mounted.path, mounted.view);
+  return true;
+}
+
 function closeInlineCodeChat(workspaceID: string, path: string) {
   const state = ensureCodeState(workspaceID);
   if (state.inlineChat?.path !== path) {

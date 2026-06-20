@@ -4,6 +4,7 @@ import type { CodeViewCallbacks } from "./types";
 import { cancelPendingCodeCreate, clearCodeDrag, collapseCodeTree, dropCodeDrag, handleSearchInput, refreshCodeTree, selectCodeTreeEntry, startCodeDrag, startSelectedCodeCreate, submitPendingCodeCreate, toggleDirectory, toggleIgnoredFilter, updateCodeDropTarget, updatePendingCodeCreateName } from "./explorer";
 import { activateCodeTab, closeCodeTab, navigateCodeHistory, openCodeFile, openPinnedCodeFile, pinCodeTab, saveActiveCodeFile, startOpenTabFileWatch } from "./tabs";
 import { mountActiveCodeEditor } from "./editor";
+import { openInlineCodeChatAtCursor } from "./inlineChat";
 import { closeTextSearch, handleTextSearchFieldInput, openTextSearch, openTextSearchMatch, runTextSearchNow, toggleTextSearchOption } from "./search";
 
 export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallbacks) {
@@ -318,6 +319,10 @@ async function handleCodeAction(target: HTMLElement, workspaceID: string, callba
   if (action === "close-explorer-drawer") {
     ensureCodeState(workspaceID).explorerDrawerOpen = false;
     callbacks.render();
+    return;
+  }
+  if (action === "open-inline-chat") {
+    openInlineCodeChatAtCursor(workspaceID, callbacks);
     return;
   }
   if (action === "open-text-search") {

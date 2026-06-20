@@ -1,4 +1,4 @@
-export { applyInlineCodePromptEvent } from "./codeView/inlineChat";
+export { applyInlineCodePromptEvent, openInlineCodeChatAtCursor } from "./codeView/inlineChat";
 export { bindCodeViewEvents } from "./codeView/events";
 export { clearCodeTabSwitcher, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, navigateCodeHistory, openWorkspaceCodeFile, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk, saveActiveCodeFile } from "./codeView/tabs";
 export { destroyCodeEditor } from "./codeView/editor";
