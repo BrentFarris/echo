@@ -3993,6 +3993,18 @@ h3 {
 
   .code-view-actions {
     justify-content: start;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    padding-bottom: 2px;
+    scrollbar-width: thin;
+    flex-wrap: nowrap;
+  }
+
+  .code-view-actions .primary-button,
+  .code-view-actions .secondary-button {
+    flex: 0 0 auto;
   }
 
   .code-tab {
@@ -4000,8 +4012,7 @@ h3 {
   }
 
   .chat-actions,
-  .kanban-actions,
-  .code-view-actions {
+  .kanban-actions {
     flex-wrap: wrap;
   }
 

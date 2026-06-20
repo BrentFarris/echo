@@ -41,13 +41,13 @@ export function renderCodeView(workspace: services.Workspace): string {
             ${codeIcons.folder}
             <span>Files</span>
           </button>
-          <button class="secondary-button icon-text-button" type="button" data-code-action="toggle-filter" aria-pressed="${state.showIgnored}">
-            ${codeIcons.code}
-            <span>${escapeHtml(filterLabel)}</span>
-          </button>
           <button class="primary-button icon-text-button" type="button" data-code-action="save-active-file" data-code-save ${saveDisabled ? "disabled" : ""}>
             ${activeTab?.saving ? `<span class="spinner" aria-hidden="true"></span>` : codeIcons.save}
             <span>Save</span>
+          </button>
+          <button class="secondary-button icon-text-button" type="button" data-code-action="toggle-filter" aria-pressed="${state.showIgnored}">
+            ${codeIcons.code}
+            <span>${escapeHtml(filterLabel)}</span>
           </button>
         </div>
       </header>
