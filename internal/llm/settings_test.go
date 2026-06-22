@@ -18,6 +18,18 @@ func TestSettingsForInteractionUsesSelectedEndpoint(t *testing.T) {
 			ThinkingTokenBudget: 0,
 		},
 		{
+			ID:                  "decompose",
+			Name:                "Decompose",
+			Endpoint:            "https://decompose.example.test/v1",
+			Model:               "decompose-model",
+			Temperature:         0.3,
+			ContextLength:       12288,
+			MaxTokens:           3072,
+			RepetitionPenalty:   1.1,
+			TimeoutSeconds:      35,
+			ThinkingTokenBudget: 0,
+		},
+		{
 			ID:                  "kanban",
 			Name:                "Kanban",
 			Endpoint:            "https://kanban.example.test/v1",
@@ -43,12 +55,24 @@ func TestSettingsForInteractionUsesSelectedEndpoint(t *testing.T) {
 		},
 	}
 	settings.EndpointSelection = EndpointSelection{
-		Chat:       "chat",
-		Kanban:     "kanban",
-		InlineCode: "inline",
+		Chat:            "chat",
+		KanbanDecompose: "decompose",
+		Kanban:          "kanban",
+		InlineCode:      "inline",
 	}
 	settings.Endpoint = "https://chat.example.test/v1"
 	settings.Model = "chat-model"
+
+	decompose := settings.ForInteraction(InteractionKanbanDecompose)
+	if decompose.Endpoint != "https://decompose.example.test/v1" {
+		t.Fatalf("expected decomposition endpoint, got %q", decompose.Endpoint)
+	}
+	if decompose.Model != "decompose-model" {
+		t.Fatalf("expected decomposition model, got %q", decompose.Model)
+	}
+	if decompose.Temperature != 0.3 || decompose.ContextLength != 12288 || decompose.TimeoutSeconds != 35 {
+		t.Fatalf("expected decomposition generation settings, got %#v", decompose)
+	}
 
 	kanban := settings.ForInteraction(InteractionKanban)
 	if kanban.Endpoint != "https://kanban.example.test/v1" {
@@ -70,6 +94,23 @@ func TestSettingsForInteractionUsesSelectedEndpoint(t *testing.T) {
 	}
 	if inline.Temperature != 0.2 || inline.ContextLength != 16384 || inline.TimeoutSeconds != 10 {
 		t.Fatalf("expected inline generation settings, got %#v", inline)
+	}
+}
+
+func TestSettingsDefaultsMissingKanbanDecomposeSelectionToKanban(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoints = append(settings.Endpoints, LLMEndpoint{
+		ID:       "kanban",
+		Name:     "Kanban",
+		Endpoint: "https://kanban.example.test/v1",
+		Model:    "kanban-model",
+	})
+	settings.EndpointSelection.Kanban = "kanban"
+	settings.EndpointSelection.KanbanDecompose = ""
+
+	normalized := settings.Normalized()
+	if normalized.EndpointSelection.KanbanDecompose != "kanban" {
+		t.Fatalf("expected missing decomposition selection to inherit kanban, got %q", normalized.EndpointSelection.KanbanDecompose)
 	}
 }
 

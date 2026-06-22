@@ -29,6 +29,18 @@ func TestSystemServiceResolvesSettingsForInteraction(t *testing.T) {
 			ThinkingTokenBudget: 0,
 		},
 		{
+			ID:                  "decompose",
+			Name:                "Decompose",
+			Endpoint:            "https://decompose.example.test/v1",
+			Model:               "decompose-model",
+			Temperature:         0.3,
+			ContextLength:       12288,
+			MaxTokens:           3072,
+			RepetitionPenalty:   1.1,
+			TimeoutSeconds:      35,
+			ThinkingTokenBudget: 0,
+		},
+		{
 			ID:                  "kanban",
 			Name:                "Kanban",
 			Endpoint:            "https://kanban.example.test/v1",
@@ -54,14 +66,26 @@ func TestSystemServiceResolvesSettingsForInteraction(t *testing.T) {
 		},
 	}
 	settings.EndpointSelection = llm.EndpointSelection{
-		Chat:       "chat",
-		Kanban:     "kanban",
-		InlineCode: "inline",
+		Chat:            "chat",
+		KanbanDecompose: "decompose",
+		Kanban:          "kanban",
+		InlineCode:      "inline",
 	}
 	settings.Endpoint = "https://chat.example.test/v1"
 	settings.Model = "chat-model"
 	if _, err := service.SaveSettings(settings); err != nil {
 		t.Fatalf("save settings: %v", err)
+	}
+
+	_, decomposeSettings, err := service.workspaceAndSettingsFor(state.ActiveWorkspaceID, llm.InteractionKanbanDecompose)
+	if err != nil {
+		t.Fatalf("load decomposition settings: %v", err)
+	}
+	if decomposeSettings.Endpoint != "https://decompose.example.test/v1" || decomposeSettings.Model != "decompose-model" {
+		t.Fatalf("expected decomposition endpoint, got %q / %q", decomposeSettings.Endpoint, decomposeSettings.Model)
+	}
+	if decomposeSettings.Temperature != 0.3 || decomposeSettings.ContextLength != 12288 || decomposeSettings.TimeoutSeconds != 35 {
+		t.Fatalf("expected decomposition generation settings, got %#v", decomposeSettings)
 	}
 
 	_, kanbanSettings, err := service.workspaceAndSettingsFor(state.ActiveWorkspaceID, llm.InteractionKanban)

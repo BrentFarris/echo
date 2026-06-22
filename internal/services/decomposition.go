@@ -49,7 +49,7 @@ type decomposedCard struct {
 }
 
 func (s *SystemService) ExecutePlan(workspaceID string) (KanbanBoard, error) {
-	_, settings, err := s.workspaceAndSettingsFor(workspaceID, llm.InteractionKanban)
+	_, settings, err := s.workspaceAndSettingsFor(workspaceID, llm.InteractionKanbanDecompose)
 	if err != nil {
 		return KanbanBoard{}, err
 	}

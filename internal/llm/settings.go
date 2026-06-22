@@ -22,9 +22,10 @@ const (
 type Interaction string
 
 const (
-	InteractionChat       Interaction = "chat"
-	InteractionKanban     Interaction = "kanban"
-	InteractionInlineCode Interaction = "inlineCode"
+	InteractionChat            Interaction = "chat"
+	InteractionKanbanDecompose Interaction = "kanbanDecompose"
+	InteractionKanban          Interaction = "kanban"
+	InteractionInlineCode      Interaction = "inlineCode"
 )
 
 type LLMEndpoint struct {
@@ -47,9 +48,10 @@ type LLMEndpoint struct {
 }
 
 type EndpointSelection struct {
-	Chat       string `json:"chat"`
-	Kanban     string `json:"kanban"`
-	InlineCode string `json:"inlineCode"`
+	Chat            string `json:"chat"`
+	KanbanDecompose string `json:"kanbanDecompose"`
+	Kanban          string `json:"kanban"`
+	InlineCode      string `json:"inlineCode"`
 }
 
 type Settings struct {
@@ -151,6 +153,8 @@ func (s Settings) ForInteraction(interaction Interaction) Settings {
 	s = s.Normalized()
 	endpointID := s.EndpointSelection.Chat
 	switch interaction {
+	case InteractionKanbanDecompose:
+		endpointID = s.EndpointSelection.KanbanDecompose
 	case InteractionKanban:
 		endpointID = s.EndpointSelection.Kanban
 	case InteractionInlineCode:
@@ -261,9 +265,10 @@ func defaultLLMEndpoint() LLMEndpoint {
 
 func defaultEndpointSelection(endpointID string) EndpointSelection {
 	return EndpointSelection{
-		Chat:       endpointID,
-		Kanban:     endpointID,
-		InlineCode: endpointID,
+		Chat:            endpointID,
+		KanbanDecompose: endpointID,
+		Kanban:          endpointID,
+		InlineCode:      endpointID,
 	}
 }
 
@@ -432,6 +437,7 @@ func normalizeEndpointSelection(selection EndpointSelection, endpoints []LLMEndp
 	}
 	selection.Chat = normalizeSelectedEndpointID(selection.Chat, fallback, endpoints)
 	selection.Kanban = normalizeSelectedEndpointID(selection.Kanban, fallback, endpoints)
+	selection.KanbanDecompose = normalizeSelectedEndpointID(selection.KanbanDecompose, selection.Kanban, endpoints)
 	selection.InlineCode = normalizeSelectedEndpointID(selection.InlineCode, fallback, endpoints)
 	return selection
 }

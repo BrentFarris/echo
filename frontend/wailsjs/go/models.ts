@@ -2,6 +2,7 @@ export namespace llm {
 	
 	export class EndpointSelection {
 	    chat: string;
+	    kanbanDecompose: string;
 	    kanban: string;
 	    inlineCode: string;
 	
@@ -12,6 +13,7 @@ export namespace llm {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.chat = source["chat"];
+	        this.kanbanDecompose = source["kanbanDecompose"];
 	        this.kanban = source["kanban"];
 	        this.inlineCode = source["inlineCode"];
 	    }

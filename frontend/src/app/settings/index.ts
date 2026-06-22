@@ -73,6 +73,7 @@ const llmCodingPresets: {
 
 const endpointTopics = [
   { key: "chat", label: "Chat" },
+  { key: "kanbanDecompose", label: "Kanban Decompose" },
   { key: "kanban", label: "Kanban" },
   { key: "inlineCode", label: "Inline code" },
 ] as const;
@@ -567,9 +568,13 @@ function endpointSelection(
 ): Record<EndpointTopic, string> {
   const fallback = endpoints[0]?.id ?? "";
   const raw = settings?.endpointSelection;
+  const kanban = validEndpointID(raw?.kanban, endpoints) ? raw!.kanban : fallback;
   return {
     chat: validEndpointID(raw?.chat, endpoints) ? raw!.chat : fallback,
-    kanban: validEndpointID(raw?.kanban, endpoints) ? raw!.kanban : fallback,
+    kanbanDecompose: validEndpointID(raw?.kanbanDecompose, endpoints)
+      ? raw!.kanbanDecompose
+      : kanban,
+    kanban,
     inlineCode: validEndpointID(raw?.inlineCode, endpoints) ? raw!.inlineCode : fallback,
   };
 }
