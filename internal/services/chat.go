@@ -133,6 +133,11 @@ func (s *SystemService) sendChatMessage(workspaceID string, request ChatMessageR
 	s.chatStreams[workspaceID] = cancel
 	clone := cloneChatSession(session)
 	s.chatMu.Unlock()
+	if err := s.persistChatSession(workspaceID); err != nil {
+		cancel()
+		s.abortUnstartedChatStream(workspaceID, streamID, assistantMessage.ID, err)
+		return ChatSession{}, err
+	}
 
 	s.emitChatEvent(ChatStreamEvent{
 		WorkspaceID: workspaceID,
@@ -171,6 +176,9 @@ func (s *SystemService) ClearChat(workspaceID string) (ChatSession, error) {
 	s.chatSessions[workspaceID] = session
 	clone := cloneChatSession(session)
 	s.chatMu.Unlock()
+	if err := s.persistChatSession(workspaceID); err != nil {
+		return ChatSession{}, err
+	}
 	return clone, nil
 }
 
@@ -180,11 +188,11 @@ func (s *SystemService) RetryChatMessage(workspaceID string, messageID string, p
 	}
 
 	s.chatMu.Lock()
-	defer s.chatMu.Unlock()
 
 	session := s.ensureChatSessionLocked(workspaceID)
 
 	if session.Busy {
+		s.chatMu.Unlock()
 		return ChatSession{}, fmt.Errorf("chat is already busy")
 	}
 
@@ -196,10 +204,12 @@ func (s *SystemService) RetryChatMessage(workspaceID string, messageID string, p
 		}
 	}
 	if msgIndex < 0 {
+		s.chatMu.Unlock()
 		return ChatSession{}, fmt.Errorf("message was not found")
 	}
 
 	if session.Messages[msgIndex].Role != llm.RoleAssistant || session.Messages[msgIndex].Status != "complete" {
+		s.chatMu.Unlock()
 		return ChatSession{}, fmt.Errorf("can only retry complete assistant messages")
 	}
 
@@ -222,6 +232,12 @@ func (s *SystemService) RetryChatMessage(workspaceID string, messageID string, p
 	s.chatStreams[workspaceID] = cancel
 
 	clone := cloneChatSession(session)
+	s.chatMu.Unlock()
+	if err := s.persistChatSession(workspaceID); err != nil {
+		cancel()
+		s.abortUnstartedChatStream(workspaceID, streamID, assistantMessage.ID, err)
+		return ChatSession{}, err
+	}
 
 	s.emitChatEvent(ChatStreamEvent{
 		WorkspaceID: workspaceID,
@@ -305,6 +321,11 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 
 	clone := cloneChatSession(session)
 	s.chatMu.Unlock()
+	if err := s.persistChatSession(workspaceID); err != nil {
+		cancel()
+		s.abortUnstartedChatStream(workspaceID, streamID, assistantMessage.ID, err)
+		return ChatSession{}, err
+	}
 
 	s.emitChatEvent(ChatStreamEvent{
 		WorkspaceID: workspaceID,
@@ -690,6 +711,24 @@ func (s *SystemService) finishChatStream(workspaceID string, streamID string) {
 	if session := s.chatSessions[workspaceID]; session != nil && session.StreamID == streamID {
 		session.Busy = false
 		session.StreamID = ""
+	}
+	delete(s.chatStreams, workspaceID)
+	s.chatMu.Unlock()
+	_ = s.persistChatSession(workspaceID)
+}
+
+func (s *SystemService) abortUnstartedChatStream(workspaceID string, streamID string, messageID string, cause error) {
+	s.chatMu.Lock()
+	if session := s.chatSessions[workspaceID]; session != nil && session.StreamID == streamID {
+		session.Busy = false
+		session.StreamID = ""
+		for i := range session.Messages {
+			if session.Messages[i].ID == messageID {
+				session.Messages[i].Status = "error"
+				session.Messages[i].Error = cause.Error()
+				break
+			}
+		}
 	}
 	delete(s.chatStreams, workspaceID)
 	s.chatMu.Unlock()

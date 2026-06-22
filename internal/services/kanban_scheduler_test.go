@@ -1335,7 +1335,7 @@ func TestKanbanStopCardBlocksActiveAgent(t *testing.T) {
 	}
 }
 
-func TestKanbanSchedulerStateIsRuntimeOnlyAcrossRestart(t *testing.T) {
+func TestKanbanSchedulerStatePersistsAcrossRestart(t *testing.T) {
 	root := t.TempDir()
 	storePath := filepath.Join(root, "state.json")
 	service, workspaceID := newDecompositionTestServiceWithStore(t, root, storePath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1361,7 +1361,7 @@ func TestKanbanSchedulerStateIsRuntimeOnlyAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load reloaded board: %v", err)
 	}
-	if len(board.Ready) != 0 || len(board.InProgress) != 0 || len(board.Blocked) != 0 || len(board.Done) != 0 {
-		t.Fatalf("expected scheduler card state to be runtime-only after reload, got %#v", board)
+	if len(board.Ready) != 0 || len(board.InProgress) != 0 || len(board.Blocked) != 0 || len(board.Done) != 1 {
+		t.Fatalf("expected scheduler card state to persist after reload, got %#v", board)
 	}
 }

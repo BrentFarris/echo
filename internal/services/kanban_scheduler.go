@@ -213,6 +213,21 @@ func (s *SystemService) Shutdown() {
 	for _, cancel := range s.chatStreams {
 		chatCancels = append(chatCancels, cancel)
 	}
+	for _, session := range s.chatSessions {
+		if session == nil || !session.Busy {
+			continue
+		}
+		session.Busy = false
+		session.StreamID = ""
+		for i := range session.Messages {
+			if session.Messages[i].Status == "streaming" || session.Messages[i].Status == "retrying" {
+				session.Messages[i].Status = "canceled"
+				if session.Messages[i].Error == "" {
+					session.Messages[i].Error = "Interrupted when Echo closed."
+				}
+			}
+		}
+	}
 	s.chatMu.Unlock()
 
 	for _, cancel := range runCancels {
@@ -224,6 +239,7 @@ func (s *SystemService) Shutdown() {
 	for _, cancel := range chatCancels {
 		cancel()
 	}
+	_ = s.persistAllChatSessions()
 	s.closeAllLSPClients()
 }
 

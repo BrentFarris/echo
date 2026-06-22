@@ -135,6 +135,7 @@ type SystemService struct {
 	storePath               string
 	mu                      sync.Mutex
 	state                   AppState
+	persistedChatSessions   map[string]persistedChatSession
 	chatMu                  sync.Mutex
 	chatSessions            map[string]*chatSessionState
 	chatStreams             map[string]context.CancelFunc
@@ -175,18 +176,19 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 			Phase:     "release-readiness",
 			AccentHex: "#8f1d2c",
 		},
-		storePath:          storePath,
-		state:              defaultAppState(),
-		chatSessions:       make(map[string]*chatSessionState),
-		chatStreams:        make(map[string]context.CancelFunc),
-		kanbanRuns:         make(map[string]context.CancelFunc),
-		kanbanAgents:       make(map[string]*kanbanAgentRun),
-		kanbanDetailViews:  make(map[string]string),
-		fileChanges:        make(map[string][]trackedFileChange),
-		workspaceToolLocks: make(map[string]*sync.Mutex),
-		lspClients:         make(map[string]*lspClient),
-		lspWarmups:         make(map[string]struct{}),
-		eventSubscribers:   make(map[uint64]chan RuntimeEvent),
+		storePath:             storePath,
+		state:                 defaultAppState(),
+		persistedChatSessions: make(map[string]persistedChatSession),
+		chatSessions:          make(map[string]*chatSessionState),
+		chatStreams:           make(map[string]context.CancelFunc),
+		kanbanRuns:            make(map[string]context.CancelFunc),
+		kanbanAgents:          make(map[string]*kanbanAgentRun),
+		kanbanDetailViews:     make(map[string]string),
+		fileChanges:           make(map[string][]trackedFileChange),
+		workspaceToolLocks:    make(map[string]*sync.Mutex),
+		lspClients:            make(map[string]*lspClient),
+		lspWarmups:            make(map[string]struct{}),
+		eventSubscribers:      make(map[uint64]chan RuntimeEvent),
 	}
 	_ = service.load()
 	return service
@@ -626,7 +628,6 @@ func (s *SystemService) DeleteWorkspace(id string) (AppState, error) {
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	next := s.state.Workspaces[:0]
 	deleted := false
 	var deletedIconPath string
@@ -639,11 +640,13 @@ func (s *SystemService) DeleteWorkspace(id string) (AppState, error) {
 		next = append(next, workspace)
 	}
 	if !deleted {
+		s.mu.Unlock()
 		return AppState{}, fmt.Errorf("workspace was not found")
 	}
 
 	s.state.Workspaces = next
 	s.state.KanbanCards = cardsWithoutWorkspace(s.state.KanbanCards, id)
+	delete(s.persistedChatSessions, id)
 	if s.state.ActiveWorkspaceID == id {
 		s.state.ActiveWorkspaceID = ""
 		if len(s.state.Workspaces) > 0 {
@@ -652,8 +655,12 @@ func (s *SystemService) DeleteWorkspace(id string) (AppState, error) {
 	}
 	s.refreshWorkspaceStatusesLocked()
 	if err := s.saveLocked(); err != nil {
+		s.mu.Unlock()
 		return AppState{}, err
 	}
+	state := cloneState(s.state)
+	s.mu.Unlock()
+
 	s.dropChatSession(id)
 	s.chatMu.Lock()
 	delete(s.kanbanDetailViews, id)
@@ -661,7 +668,6 @@ func (s *SystemService) DeleteWorkspace(id string) (AppState, error) {
 	s.dropWorkspaceChangeReview(id)
 	s.closeWorkspaceLSPClients(id)
 	removeStoredWorkspaceIcon(deletedIconPath)
-	state := cloneState(s.state)
 	s.warmActiveWorkspaceLSPClients(state)
 	return state, nil
 }
@@ -786,11 +792,11 @@ func (s *SystemService) load() error {
 		return err
 	}
 
-	state := defaultAppState()
-	if err := json.Unmarshal(data, &state); err != nil {
+	stored := storedAppStateFrom(defaultAppState(), nil)
+	if err := json.Unmarshal(data, &stored); err != nil {
 		return err
 	}
-	legacyKanbanCards := stateFileHasKey(data, "kanbanCards")
+	state := stored.appState()
 	legacyThinkingDisabled := stateFileLegacyThinkingDisabled(data) && !stateFileHasSettingKey(data, "thinkingTokenBudget")
 	legacyLLMEndpoints := !stateFileHasSettingKey(data, "endpoints")
 	legacyEndpointSelection := !stateFileHasSettingKey(data, "endpointSelection")
@@ -812,6 +818,7 @@ func (s *SystemService) load() error {
 	}
 	state.Settings = state.Settings.Normalized()
 	normalizeLoadedWorkspaces(&state)
+	interruptedKanban := normalizeInterruptedKanbanCards(state.KanbanCards)
 	if !workspaceExists(state.Workspaces, state.ActiveWorkspaceID) {
 		state.ActiveWorkspaceID = ""
 		for _, workspace := range state.Workspaces {
@@ -825,8 +832,10 @@ func (s *SystemService) load() error {
 		}
 	}
 	s.state = state
+	s.persistedChatSessions = clonePersistedChatSessions(stored.ChatSessions)
+	interruptedChat := s.restoreChatSessionsLocked()
 	changed := s.refreshWorkspaceStatusesLocked()
-	if changed || legacyKanbanCards || legacyThinkingDisabled || legacyLLMEndpoints || legacyEndpointSelection || missingLLMEndpoint || missingLLMModel || missingWebAccessToken || migratedWebAccessPort {
+	if changed || interruptedKanban || interruptedChat || legacyThinkingDisabled || legacyLLMEndpoints || legacyEndpointSelection || missingLLMEndpoint || missingLLMModel || missingWebAccessToken || migratedWebAccessPort {
 		return s.saveLocked()
 	}
 	return nil
@@ -836,7 +845,7 @@ func (s *SystemService) saveLocked() error {
 	if err := os.MkdirAll(filepath.Dir(s.storePath), 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(s.state, "", "  ")
+	data, err := json.MarshalIndent(storedAppStateFrom(s.state, s.persistedChatSessions), "", "  ")
 	if err != nil {
 		return err
 	}

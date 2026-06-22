@@ -437,7 +437,7 @@ func TestResetKanbanCardStartsFresh(t *testing.T) {
 	}
 }
 
-func TestKanbanCardStateIsRuntimeOnlyAcrossRestart(t *testing.T) {
+func TestKanbanCardStatePersistsAcrossRestart(t *testing.T) {
 	root := t.TempDir()
 	storePath := filepath.Join(root, "state.json")
 	service, workspaceID := newKanbanTestServiceWithStore(t, root, storePath)
@@ -454,8 +454,29 @@ func TestKanbanCardStateIsRuntimeOnlyAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load reloaded board: %v", err)
 	}
-	if len(board.Ready) != 0 || len(board.InProgress) != 0 || len(board.Blocked) != 0 || len(board.Done) != 0 {
-		t.Fatalf("expected cards to be runtime-only after reload, got %#v", board)
+	if len(board.Ready) != 0 || len(board.InProgress) != 0 || len(board.Blocked) != 0 || len(board.Done) != 1 {
+		t.Fatalf("expected card state to persist after reload, got %#v", board)
+	}
+}
+
+func TestInProgressKanbanCardRestoresAsInterrupted(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "state.json")
+	service, workspaceID := newKanbanTestServiceWithStore(t, root, storePath)
+	seedKanbanCards(t, service, []KanbanCard{
+		{ID: "card-1", WorkspaceID: workspaceID, Title: "Running", Description: "Resume safely", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneInProgress, Status: KanbanLaneInProgress},
+	})
+
+	reloaded := NewSystemServiceWithStorePath(storePath)
+	board, err := reloaded.LoadKanbanBoard(workspaceID)
+	if err != nil {
+		t.Fatalf("load reloaded board: %v", err)
+	}
+	if len(board.Blocked) != 1 || board.Blocked[0].ID != "card-1" {
+		t.Fatalf("expected interrupted card to restore blocked, got %#v", board)
+	}
+	if !transcriptContains(board.Blocked[0].ProgressTranscript, "Echo closed") {
+		t.Fatalf("expected interruption transcript, got %#v", board.Blocked[0].ProgressTranscript)
 	}
 }
 

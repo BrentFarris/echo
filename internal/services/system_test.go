@@ -55,8 +55,8 @@ func TestSystemServiceReturnsEmptyCollectionsForUI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read normalized state: %v", err)
 	}
-	if strings.Contains(string(data), "kanbanCards") {
-		t.Fatalf("expected legacy kanban cards key to be removed, got %s", data)
+	if !strings.Contains(string(data), `"kanbanCards": []`) {
+		t.Fatalf("expected normalized kanban cards collection, got %s", data)
 	}
 
 	workspacePath := filepath.Join(root, "project")
@@ -1148,15 +1148,67 @@ func TestSystemServiceExecutePlanCreatesReadyCardsWithValidDependencies(t *testi
 	if err != nil {
 		t.Fatalf("load reloaded board: %v", err)
 	}
-	if len(reloadedBoard.Ready) != 0 {
-		t.Fatalf("expected cards to be runtime-only after reload, got %#v", reloadedBoard)
+	if len(reloadedBoard.Ready) != 2 {
+		t.Fatalf("expected ready cards to persist after reload, got %#v", reloadedBoard)
 	}
 	data, err := os.ReadFile(storePath)
 	if err != nil {
 		t.Fatalf("read state file: %v", err)
 	}
-	if strings.Contains(string(data), "kanbanCards") {
-		t.Fatalf("expected state file to omit kanban cards, got %s", data)
+	if !strings.Contains(string(data), "kanbanCards") {
+		t.Fatalf("expected state file to include kanban cards, got %s", data)
+	}
+}
+
+func TestSystemServiceRestoresLatestChatSessionAcrossRestart(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "state.json")
+	service := NewSystemServiceWithStorePath(storePath)
+	state, err := service.AddWorkspace(root)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	workspaceID := state.ActiveWorkspaceID
+
+	service.chatMu.Lock()
+	service.chatSessions[workspaceID] = &chatSessionState{
+		WorkspaceID: workspaceID,
+		Messages: []ChatMessage{
+			{ID: "msg-40", Role: llm.RoleUser, Content: "Keep this request", Status: "complete"},
+			{ID: "msg-41", Role: llm.RoleAssistant, Content: "Keep this answer", Status: "complete"},
+		},
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "Keep this request"},
+			{Role: llm.RoleAssistant, Content: "Keep this answer"},
+		},
+	}
+	service.chatMu.Unlock()
+	if err := service.persistChatSession(workspaceID); err != nil {
+		t.Fatalf("persist chat: %v", err)
+	}
+
+	reloaded := NewSystemServiceWithStorePath(storePath)
+	session, err := reloaded.LoadChatSession(workspaceID)
+	if err != nil {
+		t.Fatalf("load restored chat: %v", err)
+	}
+	if len(session.Messages) != 2 || session.Messages[1].Content != "Keep this answer" || session.Busy || session.StreamID != "" {
+		t.Fatalf("expected latest chat session to restore idle, got %#v", session)
+	}
+	if next := reloaded.nextChatID("msg"); next != "msg-42" {
+		t.Fatalf("expected restored IDs to remain unique, got %q", next)
+	}
+
+	if _, err := reloaded.ClearChat(workspaceID); err != nil {
+		t.Fatalf("clear restored chat: %v", err)
+	}
+	cleared := NewSystemServiceWithStorePath(storePath)
+	session, err = cleared.LoadChatSession(workspaceID)
+	if err != nil {
+		t.Fatalf("load cleared chat: %v", err)
+	}
+	if len(session.Messages) != 0 {
+		t.Fatalf("expected cleared chat snapshot to persist, got %#v", session.Messages)
 	}
 }
 

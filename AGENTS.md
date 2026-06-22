@@ -59,13 +59,15 @@ Important service files:
 - `decomposition.go`: visible-plan-to-Kanban-card conversion and JSON parsing/validation.
 - `kanban.go`: board/card model and lane operations.
 - `kanban_scheduler.go`: concurrent card agents, progress events, cancellation, `echo:kanban:event`.
+- `state_persistence.go`: persisted chat/Kanban snapshot format and startup restoration.
 - `workspace_instructions.go`: reads workspace `AGENTS.md` into prompts.
 - `stream_loop.go` and `inline_tool_call.go`: safeguards for looping streams and models that emit inline tool-call text.
 
 State details matter:
 
-- Settings and workspace list persist to the current user's config dir at `Echo/state.json`.
-- Chat sessions, live streams, agent traces, and Kanban cards are runtime-only. `AppState.KanbanCards` has `json:"-"`.
+- Settings, workspace list, current chat sessions, and Kanban cards persist to the current user's config dir at `Echo/state.json`.
+- Persistence stores only the latest snapshot, not historical revisions. Live stream/agent process state and detail-view tracking remain runtime-only.
+- Interrupted chat streams restore as canceled; interrupted in-progress Kanban cards restore as blocked.
 - `SystemService.mu` protects persisted app state and cards.
 - `SystemService.chatMu` protects chat sessions, stream cancels, active Kanban runs/agents, and detail-view tracking.
 - Prefer clone helpers already in the package when returning state to callers.
