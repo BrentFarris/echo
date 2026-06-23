@@ -20,6 +20,7 @@ export function render() {
   const chatScroll = captureScrollSnapshot("[data-chat-log]");
   const cardDetailScroll = captureScrollSnapshot("[data-card-detail]");
   const changeReviewScroll = captureScrollSnapshot("[data-change-review]");
+  const settingsScroll = captureScrollSnapshot("[data-settings-form]");
   const hadDialog = Boolean(appRoot.querySelector('[role="dialog"]'));
   const workspace = activeWorkspace();
   const workspaces = state.appState?.workspaces ?? [];
@@ -106,6 +107,7 @@ export function render() {
   restoreScrollSnapshot("[data-chat-log]", chatScroll);
   restoreScrollSnapshot("[data-card-detail]", cardDetailScroll);
   restoreScrollSnapshot("[data-change-review]", changeReviewScroll);
+  restoreScrollSnapshot("[data-settings-form]", settingsScroll);
   if (!hadDialog) {
     focusInitialElement();
   }
