@@ -3830,6 +3830,12 @@ h3 {
     overflow: visible;
   }
 
+  .chat-log {
+    overflow: visible;
+    overscroll-behavior: auto;
+    padding-right: 0;
+  }
+
   .field-wide {
     grid-column: auto;
   }
