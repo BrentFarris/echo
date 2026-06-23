@@ -943,7 +943,7 @@ export function handleSettingsInput(event: Event) {
     return;
   }
   if (input.dataset.webAccessField !== undefined) {
-    handleWebAccessInput(input as HTMLInputElement);
+    void handleWebAccessInput(input as HTMLInputElement);
     return;
   }
   if (input.dataset.workspaceLetter !== undefined) {
@@ -1006,7 +1006,7 @@ function handleLLMEndpointPresetChange(select: HTMLSelectElement) {
   getAppCallbacks().render();
 }
 
-function handleWebAccessInput(input: HTMLInputElement) {
+async function handleWebAccessInput(input: HTMLInputElement) {
   if (!state.webAccessDraft) {
     state.webAccessDraft = cloneWebAccessSettings(state.appState?.webAccess);
   }
@@ -1020,6 +1020,30 @@ function handleWebAccessInput(input: HTMLInputElement) {
     [input.name]: typeof value === "number" && Number.isNaN(value) ? 3740 : value,
   });
   state.formError = "";
+  if (input.name !== "enabled") {
+    return;
+  }
+  if (!state.webAccessDraft.enabled) {
+    state.webAccessQRCodeURL = "";
+  }
+  try {
+    state.appState = await SaveWebAccessSettings(state.webAccessDraft);
+    state.webAccessDraft = cloneWebAccessSettings(state.appState.webAccess);
+    state.webAccessStatus = await LoadWebAccessStatus();
+    if (!state.webAccessDraft.enabled || !state.webAccessStatus.running) {
+      state.webAccessQRCodeURL = "";
+    }
+    state.formError = "";
+  } catch (error) {
+    state.formError = errorMessage(error);
+    try {
+      state.webAccessStatus = await LoadWebAccessStatus();
+    } catch {
+      state.webAccessStatus = null;
+    }
+  } finally {
+    getAppCallbacks().render();
+  }
 }
 
 function handleThemeColorInput(input: HTMLInputElement) {
