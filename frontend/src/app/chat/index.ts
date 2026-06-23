@@ -19,6 +19,18 @@ const maxChatImageDrafts = 4;
 const maxChatImageBytes = 10 * 1024 * 1024;
 const maxChatImageMessageBytes = 20 * 1024 * 1024;
 const supportedChatImageTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+const chatStreamPatchDelay = 50;
+
+type PendingChatStreamPatch = {
+  workspaceID: string;
+  message: services.ChatMessage;
+  patchDebug: boolean;
+  patchControls: boolean;
+  linkify: boolean;
+  timeoutID: number;
+};
+
+const pendingChatStreamPatches = new Map<string, PendingChatStreamPatch>();
 
 export function isSupportedChatImageType(mediaType: string): boolean {
   return supportedChatImageTypes.has(mediaType.toLowerCase());
@@ -791,7 +803,41 @@ export function bindChatEvents(root: ParentNode) {
     .forEach((input) => input.addEventListener("change", handleChatPlanModeChange));
   bindChatMentionOptions(root);
   bindChatFileLinks(root);
+  bindChatDebugSections(root);
   bindChatEditForms(root);
+}
+
+export function bindChatDebugSections(root: ParentNode) {
+  const sections = Array.from(root.querySelectorAll<HTMLDetailsElement>("[data-debug-section]"));
+  if (root instanceof HTMLDetailsElement && root.matches("[data-debug-section]")) {
+    sections.unshift(root);
+  }
+  sections.forEach((section) => {
+    if (section.dataset.debugSectionBound) {
+      return;
+    }
+    section.dataset.debugSectionBound = "true";
+    section.addEventListener("toggle", handleChatDebugSectionToggle);
+  });
+}
+
+export function handleChatDebugSectionToggle(event: Event) {
+  const section = event.currentTarget as HTMLDetailsElement;
+  if (!section.open) {
+    return;
+  }
+  const article = section.closest<HTMLElement>("[data-message-id]");
+  const workspace = activeWorkspace();
+  const messageID = article?.dataset.messageId ?? "";
+  const message = workspace
+    ? (chatSessionFor(workspace.id).messages ?? []).find((item) => item.id === messageID)
+    : null;
+  const stack = article?.querySelector<HTMLElement>("[data-debug-stack]");
+  if (!message || !stack) {
+    return;
+  }
+  patchDebugSections(stack, message);
+  void linkifyAssistantFilePaths(section);
 }
 
 
@@ -1091,23 +1137,95 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
 
   state.chatSessions.set(event.workspaceId, session);
   if (activeWorkspace()?.id === event.workspaceId) {
-    const keepChatPinned = isElementScrolledNearBottom(
-      appRoot.querySelector<HTMLElement>("[data-chat-log]"),
+    const terminal = event.type === "complete" || event.type === "canceled" || event.type === "error";
+    queueChatStreamPatch(
+      event.workspaceId,
+      message,
+      event.type !== "token",
+      terminal || event.type === "retrying",
+      terminal,
+      terminal,
     );
-    patchChatMessage(message, event.type !== "token");
-    patchChatControls();
-    if (keepChatPinned) {
-      scrollChatToBottom();
-    }
   }
 }
 
-export function patchChatMessage(message: services.ChatMessage, patchDebug = true) {
+export function queueChatStreamPatch(
+  workspaceID: string,
+  message: services.ChatMessage,
+  patchDebug: boolean,
+  patchControls: boolean,
+  linkify: boolean,
+  flushImmediately = false,
+) {
+  const pending = pendingChatStreamPatches.get(workspaceID);
+  if (pending) {
+    pending.message = message;
+    pending.patchDebug ||= patchDebug;
+    pending.patchControls ||= patchControls;
+    pending.linkify ||= linkify;
+    if (!flushImmediately) {
+      return;
+    }
+    window.clearTimeout(pending.timeoutID);
+    pendingChatStreamPatches.delete(workspaceID);
+    applyPendingChatStreamPatch(pending);
+    return;
+  }
+
+  const next: PendingChatStreamPatch = {
+    workspaceID,
+    message,
+    patchDebug,
+    patchControls,
+    linkify,
+    timeoutID: 0,
+  };
+  if (flushImmediately) {
+    applyPendingChatStreamPatch(next);
+    return;
+  }
+  next.timeoutID = window.setTimeout(() => {
+    if (pendingChatStreamPatches.get(workspaceID) !== next) {
+      return;
+    }
+    pendingChatStreamPatches.delete(workspaceID);
+    applyPendingChatStreamPatch(next);
+  }, chatStreamPatchDelay);
+  pendingChatStreamPatches.set(workspaceID, next);
+}
+
+export function applyPendingChatStreamPatch(pending: PendingChatStreamPatch) {
+  if (activeWorkspace()?.id !== pending.workspaceID) {
+    return;
+  }
+  const panel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
+  if (!panel || panel.dataset.workspaceId !== pending.workspaceID) {
+    return;
+  }
+  const keepChatPinned = isElementScrolledNearBottom(
+    panel.querySelector<HTMLElement>("[data-chat-log]"),
+  );
+  patchChatMessage(pending.message, pending.patchDebug, pending.linkify);
+  if (pending.patchControls) {
+    patchChatControls();
+  }
+  if (keepChatPinned) {
+    scrollChatToBottom();
+  }
+}
+
+export function patchChatMessage(
+  message: services.ChatMessage,
+  patchDebug = true,
+  linkify = !isAssistantMessageStreaming(message),
+) {
   const element = appRoot.querySelector<HTMLElement>(
     `[data-message-id="${CSS.escape(message.id)}"]`,
   );
   if (!element) {
-    patchChatPanel();
+    if (appRoot.querySelector("[data-chat-panel]")) {
+      patchChatPanel();
+    }
     return;
   }
   const content = element.querySelector<HTMLElement>("[data-message-content]");
@@ -1125,7 +1243,7 @@ export function patchChatMessage(message: services.ChatMessage, patchDebug = tru
   if (patchDebug && debugStack) {
     patchDebugSections(debugStack, message);
   }
-  if (message.role === "assistant") {
+  if (message.role === "assistant" && linkify) {
     void linkifyAssistantFilePaths(element);
   }
 }
@@ -1177,42 +1295,48 @@ export function patchDebugSections(stack: HTMLElement, message: services.ChatMes
 
   const reasoning = message.reasoning ?? "";
   const toolCalls = message.toolCalls ?? [];
-  let reasoningSection = stack.querySelector<HTMLElement>(
+  let reasoningSection = stack.querySelector<HTMLDetailsElement>(
     '[data-debug-section="reasoning"]',
   );
   if (reasoning) {
     if (!reasoningSection) {
-      reasoningSection = elementFromHtml(renderReasoning(""));
+      reasoningSection = elementFromHtml(renderReasoning("")) as HTMLDetailsElement;
       const toolsSection = stack.querySelector<HTMLElement>(
         '[data-debug-section="tools"]',
       );
       stack.insertBefore(reasoningSection, toolsSection);
+      bindChatDebugSections(reasoningSection);
     }
     const reasoningContent = reasoningSection.querySelector<HTMLElement>(
       "[data-message-reasoning]",
     );
-    if (reasoningContent) {
+    if (reasoningContent && (reasoningSection.open || !isAssistantMessageStreaming(message))) {
       patchMarkdownElement(reasoningContent, reasoning);
     } else {
-      morphElement(reasoningSection, elementFromHtml(renderReasoning(reasoning)));
+      if (!reasoningContent) {
+        morphElement(reasoningSection, elementFromHtml(renderReasoning(reasoning)));
+      }
     }
   } else {
     reasoningSection?.remove();
   }
 
-  let toolsSection = stack.querySelector<HTMLElement>(
+  let toolsSection = stack.querySelector<HTMLDetailsElement>(
     '[data-debug-section="tools"]',
   );
   if (toolCalls.length) {
     if (!toolsSection) {
-      toolsSection = elementFromHtml(renderToolCalls([]));
+      toolsSection = elementFromHtml(renderToolCalls([])) as HTMLDetailsElement;
       stack.appendChild(toolsSection);
+      bindChatDebugSections(toolsSection);
     }
     const toolList = toolsSection.querySelector<HTMLElement>("[data-tool-list]");
-    if (toolList) {
+    if (toolList && (toolsSection.open || !isAssistantMessageStreaming(message))) {
       patchChildrenFromHtml(toolList, toolCalls.map(renderToolCall).join(""));
     } else {
-      morphElement(toolsSection, elementFromHtml(renderToolCalls(toolCalls)));
+      if (!toolList) {
+        morphElement(toolsSection, elementFromHtml(renderToolCalls(toolCalls)));
+      }
     }
   } else {
     toolsSection?.remove();
@@ -1223,7 +1347,6 @@ export function patchChatPanel() {
   const workspace = activeWorkspace();
   const panel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
   if (!workspace || !panel) {
-    getAppCallbacks().render();
     return;
   }
 
