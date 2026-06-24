@@ -457,6 +457,45 @@ func (s *SystemService) SetActiveWorkspace(id string) (AppState, error) {
 	return AppState{}, fmt.Errorf("workspace was not found")
 }
 
+func (s *SystemService) ReorderWorkspaces(ids []string) (AppState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(ids) != len(s.state.Workspaces) {
+		return AppState{}, fmt.Errorf("workspace order must include every workspace")
+	}
+	byID := make(map[string]Workspace, len(s.state.Workspaces))
+	for _, workspace := range s.state.Workspaces {
+		byID[workspace.ID] = workspace
+	}
+	seen := make(map[string]struct{}, len(ids))
+	ordered := make([]Workspace, 0, len(ids))
+	for _, rawID := range ids {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			return AppState{}, fmt.Errorf("workspace order contains an empty id")
+		}
+		if _, ok := seen[id]; ok {
+			return AppState{}, fmt.Errorf("workspace order contains a duplicate id")
+		}
+		workspace, ok := byID[id]
+		if !ok {
+			return AppState{}, fmt.Errorf("workspace was not found")
+		}
+		seen[id] = struct{}{}
+		ordered = append(ordered, workspace)
+	}
+
+	s.state.Workspaces = ordered
+	s.refreshWorkspaceStatusesLocked()
+	if err := s.saveLocked(); err != nil {
+		return AppState{}, err
+	}
+	state := cloneState(s.state)
+	s.warmActiveWorkspaceLSPClients(state)
+	return state, nil
+}
+
 func (s *SystemService) SetWorkspaceLetter(id string, letter string) (AppState, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {

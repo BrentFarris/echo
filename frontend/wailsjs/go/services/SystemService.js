@@ -182,6 +182,10 @@ export function RemoveWorkspaceFolder(arg1, arg2) {
   return window['go']['services']['SystemService']['RemoveWorkspaceFolder'](arg1, arg2);
 }
 
+export function ReorderWorkspaces(arg1) {
+  return window['go']['services']['SystemService']['ReorderWorkspaces'](arg1);
+}
+
 export function ResetKanbanCard(arg1, arg2) {
   return window['go']['services']['SystemService']['ResetKanbanCard'](arg1, arg2);
 }

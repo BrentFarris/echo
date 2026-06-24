@@ -41,16 +41,18 @@ export function render() {
   appRoot.innerHTML = `
     <div class="app-shell">
       <aside class="gutter" aria-label="Primary">
-        <nav class="workspace-rail" aria-label="Workspaces">
+        <nav class="workspace-rail" aria-label="Workspaces" data-workspace-rail>
           ${workspaces
             .map(
               (item) => `
                 <button
                   class="gutter-button workspace-button ${item.active ? "is-active" : ""} ${item.missing ? "is-missing" : ""}"
                   type="button"
+                  draggable="true"
                   title="${escapeHtml(workspaceFolderSummary(item))}"
                   aria-label="${escapeHtml(item.displayName)}${item.missing ? " missing" : ""}"
                   data-action="activate-workspace"
+                  data-workspace-drag-item
                   data-workspace-id="${escapeHtml(item.id)}"
                 >${renderWorkspaceIcon(item)}</button>
               `,

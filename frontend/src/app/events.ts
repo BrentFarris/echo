@@ -11,6 +11,7 @@ import { closeSelectedCardDetail, bindCardDescriptionEvents, bindCardMessageEven
 import { bindSettingsEvents } from "./settings";
 import { activeWorkspace, state } from "./state";
 import { applyTheme } from "./theme";
+import { bindWorkspaceDragEvents } from "./workspace";
 
 export function bindEvents() {
   bindActionEvents(appRoot);
@@ -21,6 +22,7 @@ export function bindEvents() {
   bindCardMessageEvents(appRoot);
   bindGitEvents(appRoot);
   bindCodeViewEvents(appRoot, getAppCallbacks().codeViewCallbacks());
+  bindWorkspaceDragEvents(appRoot);
 
   appRoot.querySelectorAll<HTMLElement>('[data-action="activate-workspace"]').forEach((button) => {
     button.addEventListener("contextmenu", (event: MouseEvent) => {

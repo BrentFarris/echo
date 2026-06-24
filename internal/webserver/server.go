@@ -512,6 +512,7 @@ var allowedRPCMethods = map[string]bool{
 	"RemoveWorkspaceFolder":            true,
 	"ResetKanbanCard":                  true,
 	"ResolveWorkspaceTextFilePath":     true,
+	"ReorderWorkspaces":                true,
 	"RetryChatMessage":                 true,
 	"RotateWebAccessToken":             true,
 	"SaveSettings":                     true,

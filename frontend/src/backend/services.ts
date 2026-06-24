@@ -215,6 +215,10 @@ export function ResolveWorkspaceTextFilePath(...args: Parameters<typeof Wails.Re
   return call("ResolveWorkspaceTextFilePath", Wails.ResolveWorkspaceTextFilePath, args);
 }
 
+export function ReorderWorkspaces(...args: Parameters<typeof Wails.ReorderWorkspaces>): ReturnType<typeof Wails.ReorderWorkspaces> {
+  return call("ReorderWorkspaces", Wails.ReorderWorkspaces, args);
+}
+
 export function RetryChatMessage(...args: Parameters<typeof Wails.RetryChatMessage>): ReturnType<typeof Wails.RetryChatMessage> {
   return call("RetryChatMessage", Wails.RetryChatMessage, args);
 }

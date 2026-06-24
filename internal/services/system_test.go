@@ -2105,6 +2105,55 @@ func TestSystemServiceDeleteWorkspaceUpdatesActiveState(t *testing.T) {
 	}
 }
 
+func TestSystemServiceReorderWorkspacesPersistsOrder(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "state.json")
+	service := NewSystemServiceWithStorePath(storePath)
+	first := filepath.Join(root, "first")
+	second := filepath.Join(root, "second")
+	third := filepath.Join(root, "third")
+	for _, path := range []string{first, second, third} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.AddWorkspace(path); err != nil {
+			t.Fatalf("add workspace: %v", err)
+		}
+	}
+
+	state := service.LoadState()
+	ids := []string{
+		state.Workspaces[2].ID,
+		state.Workspaces[0].ID,
+		state.Workspaces[1].ID,
+	}
+	state, err := service.ReorderWorkspaces(ids)
+	if err != nil {
+		t.Fatalf("reorder workspaces: %v", err)
+	}
+	for i, id := range ids {
+		if state.Workspaces[i].ID != id {
+			t.Fatalf("expected workspace %d to be %q, got %q", i, id, state.Workspaces[i].ID)
+		}
+	}
+	if state.ActiveWorkspaceID != ids[0] {
+		t.Fatalf("expected active workspace to remain %q, got %q", ids[0], state.ActiveWorkspaceID)
+	}
+
+	reloaded := NewSystemServiceWithStorePath(storePath).LoadState()
+	for i, id := range ids {
+		if reloaded.Workspaces[i].ID != id {
+			t.Fatalf("expected persisted workspace %d to be %q, got %q", i, id, reloaded.Workspaces[i].ID)
+		}
+	}
+	if _, err := service.ReorderWorkspaces([]string{ids[0], ids[0], ids[1]}); err == nil {
+		t.Fatal("expected duplicate workspace id to fail")
+	}
+	if _, err := service.ReorderWorkspaces([]string{ids[0], ids[1]}); err == nil {
+		t.Fatal("expected incomplete workspace order to fail")
+	}
+}
+
 func TestSystemServiceSetWorkspaceLetterPersists(t *testing.T) {
 	root := t.TempDir()
 	workspacePath := filepath.Join(root, "workspace")

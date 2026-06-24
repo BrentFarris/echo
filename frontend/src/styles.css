@@ -231,9 +231,25 @@ textarea:focus-visible {
 .workspace-button {
   position: relative;
   overflow: hidden;
+  cursor: grab;
   font-size: 0.82rem;
   font-weight: 800;
   line-height: 1;
+}
+
+.workspace-button.is-dragging {
+  cursor: grabbing;
+  opacity: 0.58;
+}
+
+.workspace-button.is-drop-before {
+  border-top-color: var(--color-accent);
+  box-shadow: inset 0 3px 0 var(--color-accent);
+}
+
+.workspace-button.is-drop-after {
+  border-bottom-color: var(--color-accent);
+  box-shadow: inset 0 -3px 0 var(--color-accent);
 }
 
 .workspace-icon-label {
@@ -3932,6 +3948,18 @@ h3 {
     overflow-y: hidden;
     overscroll-behavior-inline: contain;
     scrollbar-width: thin;
+  }
+
+  .workspace-button.is-drop-before {
+    border-top-color: transparent;
+    border-left-color: var(--color-accent);
+    box-shadow: inset 3px 0 0 var(--color-accent);
+  }
+
+  .workspace-button.is-drop-after {
+    border-right-color: var(--color-accent);
+    border-bottom-color: transparent;
+    box-shadow: inset -3px 0 0 var(--color-accent);
   }
 
   .gutter-actions {
