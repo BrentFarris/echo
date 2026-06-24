@@ -265,7 +265,7 @@ textarea:focus-visible {
 .main-content {
   min-width: 0;
   min-height: 0;
-  padding: var(--edge-padding);
+  padding-top: var(--edge-padding);
   overflow: auto;
 }
 
@@ -275,7 +275,7 @@ textarea:focus-visible {
   align-content: start;
   gap: 16px;
   width: 100%;
-  height: calc(100vh - (var(--edge-padding)*2));
+  height: calc(100vh - (var(--edge-padding)));
   min-height: 0;
 }
 
@@ -328,7 +328,6 @@ h3 {
 .split-panels {
   display: grid;
   grid-template-columns: minmax(300px, 0.65fr) minmax(560px, 1.55fr);
-  gap: 16px;
   height: 100%;
   min-height: 0;
 }
@@ -357,7 +356,6 @@ h3 {
   overflow: hidden;
   padding: 18px;
   border: 1px solid var(--color-border);
-  border-radius: 8px;
   background: var(--color-surface);
   box-shadow: var(--shadow-soft);
 }
@@ -2679,6 +2677,7 @@ h3 {
   justify-content: space-between;
   gap: 12px;
   min-width: 0;
+  padding: 0 var(--edge-padding);
 }
 
 .workspace-heading-main,
