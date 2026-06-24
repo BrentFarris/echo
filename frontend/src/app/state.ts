@@ -102,7 +102,12 @@ export function chatSessionFor(workspaceID: string): services.ChatSession {
 }
 
 export function chatPlanModeFor(workspaceID: string): boolean {
-  return state.chatPlanModes.get(workspaceID) ?? true;
+  const sessionOverride = state.chatPlanModes.get(workspaceID);
+  if (sessionOverride !== undefined) {
+    return sessionOverride;
+  }
+  const workspace = state.appState?.workspaces?.find((item) => item.id === workspaceID);
+  return workspace?.defaultPlanMode ?? true;
 }
 
 export function kanbanBoardFor(workspaceID: string): services.KanbanBoard {

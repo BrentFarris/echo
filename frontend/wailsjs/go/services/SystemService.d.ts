@@ -122,6 +122,8 @@ export function SendChatMessageWithPlanMode(arg1:string,arg2:string,arg3:boolean
 
 export function SetActiveWorkspace(arg1:string):Promise<services.AppState>;
 
+export function SetWorkspaceDefaultPlanMode(arg1:string,arg2:boolean):Promise<services.AppState>;
+
 export function SetWorkspaceFolderUseAgents(arg1:string,arg2:string,arg3:boolean):Promise<services.AppState>;
 
 export function SetWorkspaceIconFromPath(arg1:string,arg2:string):Promise<services.AppState>;

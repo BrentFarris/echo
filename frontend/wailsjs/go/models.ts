@@ -189,6 +189,7 @@ export namespace services {
 	    id: string;
 	    folders: WorkspaceFolder[];
 	    displayName: string;
+	    defaultPlanMode: boolean;
 	    letter?: string;
 	    iconPath?: string;
 	    iconUrl?: string;
@@ -205,6 +206,7 @@ export namespace services {
 	        this.id = source["id"];
 	        this.folders = this.convertValues(source["folders"], WorkspaceFolder);
 	        this.displayName = source["displayName"];
+	        this.defaultPlanMode = source["defaultPlanMode"];
 	        this.letter = source["letter"];
 	        this.iconPath = source["iconPath"];
 	        this.iconUrl = source["iconUrl"];

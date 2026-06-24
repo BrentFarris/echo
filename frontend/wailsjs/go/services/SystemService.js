@@ -238,6 +238,10 @@ export function SetActiveWorkspace(arg1) {
   return window['go']['services']['SystemService']['SetActiveWorkspace'](arg1);
 }
 
+export function SetWorkspaceDefaultPlanMode(arg1, arg2) {
+  return window['go']['services']['SystemService']['SetWorkspaceDefaultPlanMode'](arg1, arg2);
+}
+
 export function SetWorkspaceFolderUseAgents(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['SetWorkspaceFolderUseAgents'](arg1, arg2, arg3);
 }

@@ -1,5 +1,5 @@
 
-import { LoadWebAccessStatus, SaveSettings, SaveWebAccessSettings, SetWorkspaceFolderUseAgents, SetWorkspaceLetter } from "../../backend/services";
+import { LoadWebAccessStatus, SaveSettings, SaveWebAccessSettings, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter } from "../../backend/services";
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
@@ -102,6 +102,13 @@ export function bindSettingsEvents(root: ParentNode) {
         void handleWorkspaceFolderAgentsChange(input);
       }),
     );
+  form
+    ?.querySelectorAll<HTMLInputElement>("[data-workspace-default-plan-mode]")
+    .forEach((input) =>
+      input.addEventListener("change", () => {
+        void handleWorkspaceDefaultPlanModeChange(input);
+      }),
+    );
 }
 
 export function renderSettingsOverlay(workspaces: services.Workspace[]): string {
@@ -191,6 +198,15 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                             <span>${escapeHtml(workspaceFolderSummary(workspace))}</span>
                             ${renderWorkspaceFolderSettings(workspace)}
                           </div>
+                          <label class="settings-toggle workspace-default-plan-mode">
+                            <span>Plan by default</span>
+                            <input
+                              type="checkbox"
+                              ${workspace.defaultPlanMode ? "checked" : ""}
+                              data-workspace-default-plan-mode
+                              data-workspace-id="${escapeAttribute(workspace.id)}"
+                            />
+                          </label>
                           <div class="workspace-icon-setting" aria-label="Workspace icon for ${escapeAttribute(workspace.displayName)}">
                             <span class="workspace-icon-preview" aria-hidden="true">${renderWorkspaceIcon(workspace)}</span>
                             <button class="icon-button" type="button" title="Choose workspace icon" aria-label="Choose icon for ${escapeAttribute(workspace.displayName)}" data-action="choose-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}">
@@ -942,6 +958,9 @@ export function handleSettingsInput(event: Event) {
   if (input.dataset.workspaceFolderAgents !== undefined) {
     return;
   }
+  if (input.dataset.workspaceDefaultPlanMode !== undefined) {
+    return;
+  }
   if (input.dataset.webAccessField !== undefined) {
     void handleWebAccessInput(input as HTMLInputElement);
     return;
@@ -1093,6 +1112,20 @@ export async function handleWorkspaceFolderAgentsChange(input: HTMLInputElement)
   try {
     state.appState = await SetWorkspaceFolderUseAgents(workspaceID, folderID, input.checked);
     pushToast("Workspace folder updated.", "success");
+    getAppCallbacks().render();
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+    getAppCallbacks().render();
+  }
+}
+
+export async function handleWorkspaceDefaultPlanModeChange(input: HTMLInputElement) {
+  const workspaceID = input.dataset.workspaceId ?? "";
+  if (!workspaceID) {
+    return;
+  }
+  try {
+    state.appState = await SetWorkspaceDefaultPlanMode(workspaceID, input.checked);
     getAppCallbacks().render();
   } catch (error) {
     pushToast(errorMessage(error), "error");

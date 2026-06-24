@@ -2190,6 +2190,55 @@ func TestSystemServiceSetWorkspaceLetterPersists(t *testing.T) {
 	}
 }
 
+func TestSystemServiceWorkspaceDefaultPlanModePersists(t *testing.T) {
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	storePath := filepath.Join(root, "state.json")
+	service := NewSystemServiceWithStorePath(storePath)
+	state, err := service.AddWorkspace(workspacePath)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	workspaceID := state.ActiveWorkspaceID
+	if !state.Workspaces[0].DefaultPlanMode {
+		t.Fatal("expected new workspace to default plan mode on")
+	}
+
+	state, err = service.SetWorkspaceDefaultPlanMode(workspaceID, false)
+	if err != nil {
+		t.Fatalf("set default plan mode: %v", err)
+	}
+	if state.Workspaces[0].DefaultPlanMode {
+		t.Fatal("expected default plan mode to be disabled")
+	}
+
+	reloaded := NewSystemServiceWithStorePath(storePath).LoadState()
+	if reloaded.Workspaces[0].DefaultPlanMode {
+		t.Fatal("expected disabled default plan mode to persist")
+	}
+}
+
+func TestSystemServiceLegacyWorkspaceDefaultPlanModeDefaultsOn(t *testing.T) {
+	root := t.TempDir()
+	workspacePath := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	storePath := filepath.Join(root, "state.json")
+	payload := fmt.Sprintf(`{"activeWorkspaceId":"workspace-1","workspaces":[{"id":"workspace-1","folders":[{"id":"folder-1","label":"workspace","path":%q,"useAgents":true}],"displayName":"workspace"}]}`, workspacePath)
+	if err := os.WriteFile(storePath, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	state := NewSystemServiceWithStorePath(storePath).LoadState()
+	if !state.Workspaces[0].DefaultPlanMode {
+		t.Fatal("expected legacy workspace to default plan mode on")
+	}
+}
+
 func TestSystemServiceChatHistoryUpToLocked(t *testing.T) {
 	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
 	workspacePath := t.TempDir()

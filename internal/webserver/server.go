@@ -523,6 +523,7 @@ var allowedRPCMethods = map[string]bool{
 	"SendChatMessageWithAttachments":   true,
 	"SendChatMessageWithPlanMode":      true,
 	"SetActiveWorkspace":               true,
+	"SetWorkspaceDefaultPlanMode":      true,
 	"SetWorkspaceFolderUseAgents":      true,
 	"SetWorkspaceIconFromPath":         true,
 	"SetWorkspaceIconFromUpload":       true,

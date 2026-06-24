@@ -2578,7 +2578,7 @@ h3 {
 
 .workspace-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
   align-items: center;
   gap: 12px;
   min-height: 68px;
@@ -2630,6 +2630,10 @@ h3 {
 }
 
 .workspace-folder-agents {
+  white-space: nowrap;
+}
+
+.workspace-default-plan-mode {
   white-space: nowrap;
 }
 

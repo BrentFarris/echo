@@ -68,45 +68,55 @@ func (f *WorkspaceFolder) UnmarshalJSON(data []byte) error {
 }
 
 type Workspace struct {
-	ID          string            `json:"id"`
-	Folders     []WorkspaceFolder `json:"folders"`
-	DisplayName string            `json:"displayName"`
-	Letter      string            `json:"letter,omitempty"`
-	IconPath    string            `json:"iconPath,omitempty"`
-	IconURL     string            `json:"iconUrl,omitempty"`
-	Active      bool              `json:"active"`
-	Missing     bool              `json:"missing"`
-	Error       string            `json:"error,omitempty"`
+	ID              string            `json:"id"`
+	Folders         []WorkspaceFolder `json:"folders"`
+	DisplayName     string            `json:"displayName"`
+	DefaultPlanMode bool              `json:"defaultPlanMode"`
+	Letter          string            `json:"letter,omitempty"`
+	IconPath        string            `json:"iconPath,omitempty"`
+	IconURL         string            `json:"iconUrl,omitempty"`
+	Active          bool              `json:"active"`
+	Missing         bool              `json:"missing"`
+	Error           string            `json:"error,omitempty"`
 }
 
 func (w *Workspace) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		ID          string            `json:"id"`
-		Folders     []WorkspaceFolder `json:"folders"`
-		FolderPath  string            `json:"folderPath"`
-		DisplayName string            `json:"displayName"`
-		Letter      string            `json:"letter"`
-		IconPath    string            `json:"iconPath"`
-		IconURL     string            `json:"iconUrl"`
-		LegacyPath  string            `json:"path"`
-		LegacyName  string            `json:"name"`
-		Active      bool              `json:"active"`
-		Missing     bool              `json:"missing"`
-		Error       string            `json:"error"`
+		ID              string            `json:"id"`
+		Folders         []WorkspaceFolder `json:"folders"`
+		FolderPath      string            `json:"folderPath"`
+		DisplayName     string            `json:"displayName"`
+		DefaultPlanMode bool              `json:"defaultPlanMode"`
+		Letter          string            `json:"letter"`
+		IconPath        string            `json:"iconPath"`
+		IconURL         string            `json:"iconUrl"`
+		LegacyPath      string            `json:"path"`
+		LegacyName      string            `json:"name"`
+		Active          bool              `json:"active"`
+		Missing         bool              `json:"missing"`
+		Error           string            `json:"error"`
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	*w = Workspace{
-		ID:          raw.ID,
-		Folders:     raw.Folders,
-		DisplayName: raw.DisplayName,
-		Letter:      normalizeWorkspaceLetter(raw.Letter),
-		IconPath:    raw.IconPath,
-		IconURL:     raw.IconURL,
-		Active:      raw.Active,
-		Missing:     raw.Missing,
-		Error:       raw.Error,
+		ID:              raw.ID,
+		Folders:         raw.Folders,
+		DisplayName:     raw.DisplayName,
+		DefaultPlanMode: raw.DefaultPlanMode,
+		Letter:          normalizeWorkspaceLetter(raw.Letter),
+		IconPath:        raw.IconPath,
+		IconURL:         raw.IconURL,
+		Active:          raw.Active,
+		Missing:         raw.Missing,
+		Error:           raw.Error,
+	}
+	if _, ok := keys["defaultPlanMode"]; !ok {
+		w.DefaultPlanMode = true
 	}
 	legacyPath := raw.FolderPath
 	if legacyPath == "" {
@@ -425,6 +435,27 @@ func (s *SystemService) SetWorkspaceFolderUseAgents(workspaceID string, folderID
 			return cloneState(s.state), nil
 		}
 		return AppState{}, fmt.Errorf("workspace folder was not found")
+	}
+	return AppState{}, fmt.Errorf("workspace was not found")
+}
+
+func (s *SystemService) SetWorkspaceDefaultPlanMode(workspaceID string, enabled bool) (AppState, error) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return AppState{}, fmt.Errorf("workspace id is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.Workspaces {
+		if s.state.Workspaces[i].ID == workspaceID {
+			s.state.Workspaces[i].DefaultPlanMode = enabled
+			s.refreshWorkspaceStatusesLocked()
+			if err := s.saveLocked(); err != nil {
+				return AppState{}, err
+			}
+			return cloneState(s.state), nil
+		}
 	}
 	return AppState{}, fmt.Errorf("workspace was not found")
 }
@@ -983,9 +1014,10 @@ func workspaceFromPath(path string) Workspace {
 		name = clean
 	}
 	return Workspace{
-		ID:          hex.EncodeToString(hash[:8]),
-		Folders:     []WorkspaceFolder{workspaceFolderFromPath(clean, nil)},
-		DisplayName: name,
+		ID:              hex.EncodeToString(hash[:8]),
+		Folders:         []WorkspaceFolder{workspaceFolderFromPath(clean, nil)},
+		DisplayName:     name,
+		DefaultPlanMode: true,
 	}
 }
 
