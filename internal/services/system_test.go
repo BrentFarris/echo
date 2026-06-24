@@ -1062,6 +1062,49 @@ func TestSystemServiceExecutePlanExcludesHiddenChatState(t *testing.T) {
 	}
 }
 
+func TestSystemServiceExecutePlanUsesCodingCentricPrompt(t *testing.T) {
+	root := t.TempDir()
+	var captured llm.ChatRequest
+	service, workspaceID := newDecompositionTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertCompleteRequest(t, r)
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeChatResponse(t, w, `{"cards":[{"id":"phase-1","title":"Update branch switching","description":"Change the Git branch switching behavior.","acceptanceCriteria":["Branch switching handles dirty worktrees correctly"],"dependencies":[]}]}`)
+	}))
+	seedChatPlan(service, workspaceID, []ChatMessage{
+		{ID: "msg-1", Role: llm.RoleUser, Content: "Fix branch switching.", Status: "complete"},
+		{ID: "msg-2", Role: llm.RoleAssistant, Content: "Plan: inspect the Git service, update branch switching behavior, then verify it.", Status: "complete"},
+	}, nil)
+
+	if _, err := service.ExecutePlan(workspaceID); err != nil {
+		t.Fatalf("execute plan: %v", err)
+	}
+	if len(captured.Messages) != 2 {
+		t.Fatalf("expected system plus user prompt, got %#v", captured.Messages)
+	}
+	systemPrompt := captured.Messages[0].Content
+	for _, expected := range []string{
+		"approved coding plans",
+		"isolated programming work",
+		"Do not create cards for opening, navigating, reading, inspecting, or finding files",
+		"Do not create setup, planning, context-gathering, review, summary, build, test, or verify-only cards",
+		"Echo automatically runs detected verification after each card",
+		"Acceptance criteria should describe the desired code/product outcome, not process steps",
+	} {
+		if !strings.Contains(systemPrompt, expected) {
+			t.Fatalf("expected coding-centric decomposition prompt to include %q, got %q", expected, systemPrompt)
+		}
+	}
+	if strings.Contains(systemPrompt, "testable slices") {
+		t.Fatalf("expected prompt to avoid generic test-slice language, got %q", systemPrompt)
+	}
+	userPrompt := captured.Messages[1].Content
+	if !strings.Contains(userPrompt, "coding Kanban cards") || !strings.Contains(userPrompt, "Return only the requested JSON") {
+		t.Fatalf("expected concise coding user prompt, got %q", userPrompt)
+	}
+}
+
 func TestSystemServiceExecutePlanIncludesImageLabelsWithoutImageData(t *testing.T) {
 	root := t.TempDir()
 	var captured llm.ChatRequest
