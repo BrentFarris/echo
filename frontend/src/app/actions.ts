@@ -10,7 +10,7 @@ import { dropWorkspaceGitRepositoryState, openGitChangeInCode, openWorkspaceGitR
 import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint } from "./settings";
-import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatSessionFor, kanbanBoardFor, kanbanCards, state } from "./state";
+import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatSessionFor, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state } from "./state";
 import { clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
 import { cloneSettings, cloneWebAccessSettings } from "./state";
 import { applyTheme, settingsWithThemeDefaults, themePaletteNames } from "./theme";
@@ -435,7 +435,8 @@ export async function handleAction(event: Event) {
       markKanbanRunStarted(workspace.id);
       getAppCallbacks().render();
       try {
-        state.kanbanBoards.set(workspace.id, await StartKanbanExecution(workspace.id, 2));
+        const concurrency = limitKanbanConcurrencyEnabled(state.appState?.settings) ? 1 : 2;
+        state.kanbanBoards.set(workspace.id, await StartKanbanExecution(workspace.id, concurrency));
       } catch (error) {
         forgetKanbanRun(workspace.id);
         throw error;

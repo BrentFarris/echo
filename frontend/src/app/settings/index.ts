@@ -4,7 +4,7 @@ import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
 import { renderQRCodeSVG } from "../qr";
-import { cloneSettings, cloneWebAccessSettings, fieldValue, leadingWhitespaceIndicatorsEnabled, notificationSoundsEnabled, state } from "../state";
+import { cloneSettings, cloneWebAccessSettings, fieldValue, leadingWhitespaceIndicatorsEnabled, limitKanbanConcurrencyEnabled, notificationSoundsEnabled, state } from "../state";
 import { applyTheme, normalizeHexColor, settingsWithCompactTheme, settingsWithThemeColor, themeColorValue, themeGroups, themeTokens, type ThemePaletteName } from "../theme";
 import { pushToast } from "../toasts";
 import { errorMessage, escapeAttribute, escapeHtml, workspaceFolderSummary } from "../utils";
@@ -169,6 +169,14 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
 
         <section class="settings-section" aria-labelledby="programming-settings-title">
           <h3 id="programming-settings-title" class="settings-section-title">Programming</h3>
+          <label class="settings-toggle" title="Only allow 1 Kanban card to execute at a time; useful for memory constrained environments.">
+            <span>Limit Kanban concurrency</span>
+            <input
+              name="limitKanbanConcurrency"
+              type="checkbox"
+              ${limitKanbanConcurrencyEnabled(state.settingsDraft) ? "checked" : ""}
+            />
+          </label>
           <label class="settings-toggle">
             <span>Leading whitespace indicators</span>
             <input

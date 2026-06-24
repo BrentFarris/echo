@@ -94,6 +94,7 @@ export namespace llm {
 	    thinkingCorrection?: boolean;
 	    hideLeadingWhitespaceIndicators?: boolean;
 	    disableNotificationSounds?: boolean;
+	    limitKanbanConcurrency?: boolean;
 	    theme?: Theme;
 	
 	    static createFrom(source: any = {}) {
@@ -121,6 +122,7 @@ export namespace llm {
 	        this.thinkingCorrection = source["thinkingCorrection"];
 	        this.hideLeadingWhitespaceIndicators = source["hideLeadingWhitespaceIndicators"];
 	        this.disableNotificationSounds = source["disableNotificationSounds"];
+	        this.limitKanbanConcurrency = source["limitKanbanConcurrency"];
 	        this.theme = this.convertValues(source["theme"], Theme);
 	    }
 	

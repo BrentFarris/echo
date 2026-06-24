@@ -188,6 +188,11 @@ export function notificationSoundsEnabled(settings: llm.Settings | null | undefi
     ?.disableNotificationSounds !== true;
 }
 
+export function limitKanbanConcurrencyEnabled(settings: llm.Settings | null | undefined): boolean {
+  return (settings as { limitKanbanConcurrency?: boolean } | null | undefined)
+    ?.limitKanbanConcurrency === true;
+}
+
 export function thinkingCorrectionEnabled(settings: llm.Settings | null | undefined): boolean {
   return (settings as { thinkingCorrection?: boolean } | null | undefined)
     ?.thinkingCorrection === true;
