@@ -9,7 +9,7 @@ import { patchDirtyUI } from "./dom";
 import { inlineCodeChatExtension } from "./inlineChat";
 import { lspCompletionExtension, lspDefinitionExtension } from "./lsp";
 import { referencesPanelExtension } from "./references";
-import { activeCodeTab, findTab } from "./state";
+import { activeCodeTab, ensureCodeState, findTab } from "./state";
 import type { CodeViewCallbacks } from "./types";
 import { clamp, editorDocumentLengthForFileContent, editorStateToFileContent } from "./utils";
 
@@ -215,8 +215,9 @@ export async function mountActiveCodeEditor(
   });
   mountedEditorWorkspaceID = workspaceID;
   mountedEditorPath = tab.path;
-  mountedEditor.scrollDOM.scrollTop = tab.scrollTop;
-  mountedEditor.scrollDOM.scrollLeft = tab.scrollLeft;
+  const initialScrollTop = tab.scrollTop;
+  const initialScrollLeft = tab.scrollLeft;
+  restoreMountedEditorScroll(workspaceID, tab.path, initialScrollTop, initialScrollLeft);
   if (tab.pendingRevealPosition !== undefined) {
     const position = clamp(tab.pendingRevealPosition, 0, mountedEditor.state.doc.length);
     const y = tab.pendingRevealScroll ?? "center";
@@ -226,8 +227,19 @@ export async function mountActiveCodeEditor(
       selection: { anchor: position },
       effects: EditorView.scrollIntoView(position, { y }),
     });
+  } else {
+    window.requestAnimationFrame(() => {
+      restoreMountedEditorScroll(workspaceID, tab.path, initialScrollTop, initialScrollLeft);
+    });
   }
-  mountedEditor.focus();
+  if (shouldFocusMountedEditor(workspaceID)) {
+    mountedEditor.focus();
+  }
+}
+
+function shouldFocusMountedEditor(workspaceID: string) {
+  const state = ensureCodeState(workspaceID);
+  return !state.searchFocused && !state.textSearchOpen && !state.textSearchFocusedField && !state.quickOpen.open;
 }
 
 function codeNavigationHistoryKeymap(
