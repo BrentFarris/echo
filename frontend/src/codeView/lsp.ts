@@ -386,7 +386,7 @@ function applyLspCompletion(
   const docLength = view.state.doc.length;
   const primaryInsert = normalizeEditorLineBreaks(insertText, view.state.lineBreak);
   const primaryFrom = clamp(item.from, 0, docLength);
-  const primaryTo = clamp(item.to, primaryFrom, docLength);
+  const primaryTo = lspCompletionPrimaryTo(view.state, item, primaryFrom);
   const primaryChange = {
     from: primaryFrom,
     to: primaryTo,
@@ -419,6 +419,22 @@ function applyLspCompletion(
     selection: { anchor: primaryFrom + selectionDelta + primaryInsert.length },
     userEvent: "input.complete",
   });
+}
+
+function lspCompletionPrimaryTo(
+  state: EditorState,
+  item: services.WorkspaceCompletionItem,
+  primaryFrom: number,
+) {
+  const docLength = state.doc.length;
+  const selection = state.selection.main;
+  const selectionTo = selection.empty ? selection.head : selection.to;
+  const itemTo = clamp(item.to, primaryFrom, docLength);
+  const line = state.doc.lineAt(primaryFrom);
+  if (selectionTo >= primaryFrom && selectionTo <= line.to) {
+    return Math.max(itemTo, selectionTo);
+  }
+  return itemTo;
 }
 
 function rangesOverlap(leftFrom: number, leftTo: number, rightFrom: number, rightTo: number) {
