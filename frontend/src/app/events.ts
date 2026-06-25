@@ -1,5 +1,5 @@
 
-import { bindCodeViewEvents, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, navigateCodeHistory, openTextSearch, saveActiveCodeFile } from "../codeView";
+import { bindCodeViewEvents, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, navigateCodeHistory, openQuickOpen, openTextSearch, saveActiveCodeFile } from "../codeView";
 import { bindActionEvents } from "./actions";
 import { getAppCallbacks } from "./callbacks";
 import { bindChatEvents, clearChatMention, patchChatMentionPicker } from "./chat";
@@ -82,6 +82,12 @@ export function handleGlobalKeydown(event: KeyboardEvent) {
     event.preventDefault();
     event.stopPropagation();
     void openActiveWorkspaceTextSearch();
+    return;
+  }
+  if (isQuickOpenShortcut(event)) {
+    event.preventDefault();
+    event.stopPropagation();
+    openActiveWorkspaceQuickOpen();
     return;
   }
   if (state.appMode === "code" && !state.settingsOpen) {
@@ -224,6 +230,26 @@ function isFindInFilesShortcut(event: KeyboardEvent): boolean {
     (event.ctrlKey || event.metaKey) &&
     (key === "f" || event.code === "KeyF" || event.key === "F12")
   );
+}
+
+function isQuickOpenShortcut(event: KeyboardEvent): boolean {
+  const key = event.key.toLowerCase();
+  return (
+    state.appMode === "code" &&
+    !state.settingsOpen &&
+    !event.altKey &&
+    !event.shiftKey &&
+    (event.ctrlKey || event.metaKey) &&
+    (key === "p" || event.code === "KeyP")
+  );
+}
+
+function openActiveWorkspaceQuickOpen() {
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    return;
+  }
+  openQuickOpen(workspace.id, getAppCallbacks().codeViewCallbacks());
 }
 
 async function openActiveWorkspaceTextSearch() {

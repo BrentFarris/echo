@@ -3396,6 +3396,140 @@ h3 {
   grid-row: 1;
 }
 
+.code-quick-open {
+  position: absolute;
+  inset: 0;
+  z-index: 24;
+  display: grid;
+  align-items: start;
+  justify-items: center;
+  padding: 54px 16px 16px;
+  pointer-events: none;
+}
+
+.code-quick-open-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: auto;
+}
+
+.code-quick-open-panel {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(620px, 100%);
+  max-height: min(460px, calc(100% - 32px));
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  box-shadow: 0 18px 44px color-mix(in srgb, black 24%, transparent);
+  pointer-events: auto;
+}
+
+.code-quick-open-input {
+  width: 100%;
+  min-width: 0;
+  height: 46px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-bg) 44%, var(--color-surface));
+  color: var(--color-text);
+  font-size: 0.98rem;
+  font-weight: 800;
+}
+
+.code-quick-open-input:focus-visible {
+  outline: none;
+}
+
+.code-quick-open-results {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px;
+}
+
+.code-quick-open-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 6px 10px;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.code-quick-open-item.is-selected,
+.code-quick-open-item:hover,
+.code-quick-open-item:focus-visible {
+  background: var(--color-surface-muted);
+  outline: none;
+}
+
+.code-quick-open-item.is-selected {
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+.code-quick-open-icon {
+  grid-row: 1 / span 2;
+  color: var(--color-text-muted);
+}
+
+.code-quick-open-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.code-quick-open-name,
+.code-quick-open-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.code-quick-open-name {
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.code-quick-open-path {
+  grid-column: 2 / -1;
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+}
+
+.code-quick-open-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 10px;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.code-quick-open-note .spinner {
+  width: 13px;
+}
+
 .code-editor-frame {
   min-width: 0;
   min-height: 0;

@@ -69,6 +69,7 @@ export function renderCodeView(workspace: services.Workspace): string {
         <section class="code-editor-pane" aria-label="Code editor">
           ${renderCodeTabs(workspace.id)}
           ${renderCodeTabSwitcher(workspace.id)}
+          ${renderCodeQuickOpen(workspace.id)}
           <div class="code-editor-frame">
             ${
               activeTab
@@ -579,6 +580,70 @@ function renderCodeTabSwitcher(workspaceID: string): string {
         })
         .join("")}
     </div>
+  `;
+}
+
+export function renderCodeQuickOpen(workspaceID: string): string {
+  const state = ensureCodeState(workspaceID);
+  if (!state.quickOpen.open) {
+    return "";
+  }
+  return `
+    <div class="code-quick-open" role="dialog" aria-modal="true" aria-label="Open file" data-code-quick-open>
+      <button class="code-quick-open-backdrop" type="button" aria-label="Close file search" data-code-quick-open-close></button>
+      <div class="code-quick-open-panel">
+        <input
+          class="code-quick-open-input"
+          type="search"
+          value="${escapeAttribute(state.quickOpen.query)}"
+          placeholder="Search files..."
+          aria-label="Search files"
+          spellcheck="false"
+          data-code-quick-open-input
+        />
+        <div class="code-quick-open-results" role="listbox" aria-label="File results" data-code-quick-open-results>
+          ${renderCodeQuickOpenResults(workspaceID)}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+export function renderCodeQuickOpenResults(workspaceID: string): string {
+  const state = ensureCodeState(workspaceID);
+  const quickOpen = state.quickOpen;
+  if (quickOpen.loading) {
+    return `<div class="code-quick-open-note"><span class="spinner" aria-hidden="true"></span><span>Searching...</span></div>`;
+  }
+  if (!quickOpen.query.trim()) {
+    return `<div class="code-quick-open-note">Type a file name.</div>`;
+  }
+  if (!quickOpen.results.length) {
+    return `<div class="code-quick-open-note">No matching files.</div>`;
+  }
+  return `
+    ${quickOpen.truncated ? `<div class="code-quick-open-note">Showing first 200 matches.</div>` : ""}
+    ${quickOpen.results
+      .map((entry, index) => {
+        const selected = index === quickOpen.selectedIndex;
+        return `
+          <button
+            class="code-quick-open-item ${selected ? "is-selected" : ""}"
+            type="button"
+            role="option"
+            aria-selected="${selected}"
+            title="${escapeAttribute(entry.path)}"
+            data-code-quick-open-item
+            data-code-quick-open-index="${index}"
+            data-code-path="${escapeAttribute(entry.path)}"
+          >
+            <span class="code-quick-open-icon">${codeIcons.file}</span>
+            <span class="code-quick-open-name">${escapeHtml(fileName(entry.path))}</span>
+            <span class="code-quick-open-path">${escapeHtml(entry.path)}</span>
+          </button>
+        `;
+      })
+      .join("")}
   `;
 }
 

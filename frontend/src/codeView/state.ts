@@ -76,6 +76,16 @@ export function ensureCodeState(workspaceID: string): CodeWorkspaceState {
       preservingTextSearchFocus: false,
       inlineChat: null,
       referencesPanel: null,
+      quickOpen: {
+        open: false,
+        query: "",
+        results: [],
+        loading: false,
+        truncated: false,
+        selectedIndex: 0,
+        requestSeq: 0,
+        timerID: null,
+      },
     };
     codeStates.set(workspaceID, state);
   }

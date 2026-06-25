@@ -238,16 +238,31 @@ export async function saveActiveCodeFile(workspaceID: string, callbacks: CodeVie
   tab.saving = true;
   patchDirtyUI(workspaceID, tab);
   try {
+    const savedContentBeforeSave = tab.content;
+    const savedLineSeparatorBeforeSave = tab.lineSeparator;
     const saved = await SaveWorkspaceFile(
       workspaceID,
       tab.path,
       tab.content,
       tab.modifiedAt,
     );
+    const latestBeforeApply = findTab(workspaceID, tab.path);
+    const editorChangedDuringSave = Boolean(
+      latestBeforeApply &&
+        (latestBeforeApply.content !== savedContentBeforeSave ||
+          latestBeforeApply.lineSeparator !== savedLineSeparatorBeforeSave),
+    );
     const savedFile = services.WorkspaceFile.createFrom(saved);
     applySavedFile(workspaceID, savedFile);
     const savedTab = findTab(workspaceID, savedFile.path);
-    replaceMountedEditorContent(workspaceID, savedFile.path, savedTab?.content ?? savedFile.content);
+    if (
+      savedTab &&
+      (editorChangedDuringSave ||
+        savedTab.content !== savedContentBeforeSave ||
+        savedTab.lineSeparator !== savedLineSeparatorBeforeSave)
+    ) {
+      replaceMountedEditorContent(workspaceID, savedFile.path, savedTab.content);
+    }
     callbacks.pushToast("File saved.", "success");
   } catch (error) {
     callbacks.pushToast(callbacks.errorMessage(error), "error");

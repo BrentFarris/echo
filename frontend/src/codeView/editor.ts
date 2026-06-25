@@ -433,6 +433,21 @@ export function replaceMountedEditorContent(workspaceID: string, path: string, c
     },
     annotations: Transaction.addToHistory.of(false),
   });
+  restoreMountedEditorScroll(workspaceID, path, scrollTop, scrollLeft);
+  window.requestAnimationFrame(() => {
+    restoreMountedEditorScroll(workspaceID, path, scrollTop, scrollLeft);
+  });
+}
+
+function restoreMountedEditorScroll(
+  workspaceID: string,
+  path: string,
+  scrollTop: number,
+  scrollLeft: number,
+) {
+  if (!mountedEditor || mountedEditorWorkspaceID !== workspaceID || mountedEditorPath !== path) {
+    return;
+  }
   mountedEditor.scrollDOM.scrollTop = scrollTop;
   mountedEditor.scrollDOM.scrollLeft = scrollLeft;
   updateTabEditorState(workspaceID, path, mountedEditor);

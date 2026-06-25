@@ -1,10 +1,11 @@
-import { setCodeTextSearchEventBinder, setCodeTreeEventBinder, restoreCodeTreeScroll, startExplorerResize } from "./dom";
+import { setCodeQuickOpenEventBinder, setCodeTextSearchEventBinder, setCodeTreeEventBinder, restoreCodeTreeScroll, startExplorerResize } from "./dom";
 import { ensureCodeState } from "./state";
 import type { CodeViewCallbacks } from "./types";
 import { cancelPendingCodeCreate, clearCodeDrag, collapseCodeTree, dropCodeDrag, handleSearchInput, refreshCodeTree, selectCodeTreeEntry, startCodeDrag, startSelectedCodeCreate, submitPendingCodeCreate, toggleDirectory, toggleIgnoredFilter, updateCodeDropTarget, updatePendingCodeCreateName } from "./explorer";
 import { activateCodeTab, closeCodeTab, navigateCodeHistory, openCodeFile, openPinnedCodeFile, pinCodeTab, saveActiveCodeFile, startOpenTabFileWatch } from "./tabs";
 import { mountActiveCodeEditor } from "./editor";
 import { openInlineCodeChatAtCursor } from "./inlineChat";
+import { closeQuickOpen, handleQuickOpenInput, moveQuickOpenSelection, openQuickOpenSelection } from "./quickOpen";
 import { closeTextSearch, handleTextSearchFieldInput, openTextSearch, openTextSearchMatch, runTextSearchNow, toggleTextSearchOption } from "./search";
 
 export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallbacks) {
@@ -16,6 +17,7 @@ export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallback
 
   bindCodeTreeEvents(root, workspaceID, callbacks);
   bindCodeTextSearchEvents(root, workspaceID, callbacks);
+  bindCodeQuickOpenEvents(root, workspaceID, callbacks);
 
   root.querySelectorAll<HTMLElement>("[data-code-tab-main]").forEach((element) => {
     element.addEventListener("mousedown", (event) => {
@@ -139,6 +141,64 @@ function bindCodeTextSearchEvents(root: ParentNode, workspaceID: string, callbac
     input?.focus();
     input?.setSelectionRange(input.value.length, input.value.length);
   }
+}
+
+function bindCodeQuickOpenEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
+  const input = root.querySelector<HTMLInputElement>("[data-code-quick-open-input]");
+  input?.addEventListener("input", () => {
+    handleQuickOpenInput(workspaceID, input, callbacks);
+  });
+  input?.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      event.stopPropagation();
+      moveQuickOpenSelection(workspaceID, 1, callbacks);
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      event.stopPropagation();
+      moveQuickOpenSelection(workspaceID, -1, callbacks);
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      void openQuickOpenSelection(workspaceID, callbacks);
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeQuickOpen(workspaceID, callbacks);
+    }
+  });
+
+  root.querySelector<HTMLElement>("[data-code-quick-open-close]")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    closeQuickOpen(workspaceID, callbacks);
+  });
+
+  bindCodeQuickOpenResultEvents(root, workspaceID, callbacks);
+}
+
+function bindCodeQuickOpenResultEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
+  root.querySelectorAll<HTMLElement>("[data-code-quick-open-item]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void openQuickOpenSelection(workspaceID, callbacks, element.dataset.codePath ?? "");
+    });
+    element.addEventListener("mouseenter", () => {
+      const index = Number(element.dataset.codeQuickOpenIndex);
+      const state = ensureCodeState(workspaceID);
+      if (!Number.isInteger(index) || index < 0 || index >= state.quickOpen.results.length) {
+        return;
+      }
+      state.quickOpen.selectedIndex = index;
+    });
+  });
 }
 
 function bindCodeActionEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
@@ -369,3 +429,4 @@ async function handleCodeAction(target: HTMLElement, workspaceID: string, callba
 
 setCodeTreeEventBinder(bindCodeTreeEvents);
 setCodeTextSearchEventBinder(bindCodeTextSearchEvents);
+setCodeQuickOpenEventBinder(bindCodeQuickOpenResultEvents);

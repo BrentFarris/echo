@@ -114,6 +114,17 @@ export type CodeReferencePanelState = {
   renderKey: number;
 };
 
+export type CodeQuickOpenState = {
+  open: boolean;
+  query: string;
+  results: services.WorkspaceFileEntry[];
+  loading: boolean;
+  truncated: boolean;
+  selectedIndex: number;
+  requestSeq: number;
+  timerID: number | null;
+};
+
 export type CodeWorkspaceState = {
   directories: Map<string, DirectoryState>;
   expandedPaths: Set<string>;
@@ -155,4 +166,5 @@ export type CodeWorkspaceState = {
   preservingTextSearchFocus: boolean;
   inlineChat: InlineCodeChatState | null;
   referencesPanel: CodeReferencePanelState | null;
+  quickOpen: CodeQuickOpenState;
 };
