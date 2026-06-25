@@ -155,6 +155,11 @@ function bindCodeFileRowEvents(root: ParentNode, workspaceID: string, callbacks:
   root.querySelectorAll<HTMLElement>("[data-code-file-row]").forEach((element) => {
     element.addEventListener("click", (event) => {
       event.preventDefault();
+      // Suppress click action if a long press already fired on this element.
+      if ((element as any)._longPressFired) {
+        (element as any)._longPressFired = false;
+        return;
+      }
       const path = element.dataset.codePath ?? "";
       selectCodeTreeEntry(workspaceID, path, element.dataset.codeKind ?? "file");
       ensureCodeState(workspaceID).explorerDrawerOpen = false;
@@ -177,7 +182,86 @@ function bindCodeFileRowEvents(root: ParentNode, workspaceID: string, callbacks:
       ensureCodeState(workspaceID).explorerDrawerOpen = false;
       void openCodeFile(workspaceID, path, callbacks, { temporary: true });
     });
+
+    // Long-press gesture detection (500 ms hold triggers context menu).
+    element.addEventListener("pointerdown", (event) => {
+      // Only activate on primary pointer (left button / touch).
+      if (event.button !== 0 && event.pointerType === "mouse") {
+        return;
+      }
+      const path = element.dataset.codePath ?? "";
+      if (!path) {
+        return;
+      }
+      const kind = element.dataset.codeKind ?? "";
+
+      // Cancel any in-progress drag from a previous press.
+      clearPendingLongPress(element);
+
+      const timerId = setTimeout(() => {
+        (element as any)._longPressFired = true;
+        selectCodeTreeEntry(workspaceID, path, kind);
+        const rect = element.getBoundingClientRect();
+        callbacks.showCodePathContextMenu(
+          workspaceID,
+          path,
+          kind === "file" || kind === "directory" ? kind : "other",
+          element.getAttribute("title") ?? path,
+          rect.left + rect.width / 2,
+          rect.top + rect.height / 2,
+        );
+      }, 500);
+
+      (element as any)._longPressTimerId = timerId;
+
+      // Visual feedback: add held class and tooltip after a short delay.
+      const holdFeedbackTimer = setTimeout(() => {
+        element.classList.add("is-held");
+        element.setAttribute("title", "Add to chat");
+      }, 200);
+      (element as any)._longPressFeedbackId = holdFeedbackTimer;
+    });
+
+    element.addEventListener("pointerup", () => {
+      clearPendingLongPress(element);
+      element.classList.remove("is-held");
+      const originalTitle = element.dataset.codePath ?? "";
+      if (originalTitle) {
+        element.setAttribute("title", originalTitle);
+      } else {
+        element.removeAttribute("title");
+      }
+      const feedbackId = (element as any)._longPressFeedbackId;
+      if (feedbackId != null) {
+        clearTimeout(feedbackId);
+        (element as any)._longPressFeedbackId = undefined;
+      }
+    });
+
+    element.addEventListener("pointerleave", () => {
+      clearPendingLongPress(element);
+      element.classList.remove("is-held");
+      const originalTitle = element.dataset.codePath ?? "";
+      if (originalTitle) {
+        element.setAttribute("title", originalTitle);
+      } else {
+        element.removeAttribute("title");
+      }
+      const feedbackId = (element as any)._longPressFeedbackId;
+      if (feedbackId != null) {
+        clearTimeout(feedbackId);
+        (element as any)._longPressFeedbackId = undefined;
+      }
+    });
   });
+}
+
+function clearPendingLongPress(element: HTMLElement) {
+  const timerId = (element as any)._longPressTimerId;
+  if (timerId != null) {
+    clearTimeout(timerId);
+    (element as any)._longPressTimerId = undefined;
+  }
 }
 
 function bindCodeBrowserRowSelectionEvents(root: ParentNode, workspaceID: string) {

@@ -1,6 +1,6 @@
 
 import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate } from "../codeView";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearChat, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearChat, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, ReadWorkspaceMediaFile, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
@@ -11,12 +11,16 @@ import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKa
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint } from "./settings";
 import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatSessionFor, kanbanBoardFor, kanbanCards, state } from "./state";
-import { clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
+import { clearChatMention, formatChatMentionPath, insertChatMention, isSupportedChatImageType, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
 import { cloneSettings, cloneWebAccessSettings } from "./state";
 import { applyTheme, settingsWithThemeDefaults, themePaletteNames } from "./theme";
 import { pushToast, dismissToast } from "./toasts";
-import { copyTextToClipboard, errorMessage, laneLabel } from "./utils";
+import { copyTextToClipboard, errorMessage, formatBytes, laneLabel } from "./utils";
 import { hydrateWorkspaceLetterDrafts } from "./workspace";
+
+const maxChatImageDrafts = 4;
+const maxChatImageBytes = 10 * 1024 * 1024;
+const maxChatImageMessageBytes = 20 * 1024 * 1024;
 
 export async function handleAction(event: Event) {
   const target = event.currentTarget as HTMLElement;
@@ -45,6 +49,94 @@ export async function handleAction(event: Event) {
         pushToast(errorMessage(error), "error");
       }
       dismissContextMenu();
+      return;
+    }
+    if (action === "add-file-to-chat") {
+      const workspaceID = target.dataset.workspaceId ?? "";
+      const filePath = target.dataset.codePath ?? "";
+      if (!workspaceID || !filePath) {
+        return;
+      }
+      dismissContextMenu();
+
+      // Switch to chat mode if in code view
+      if (state.appMode === "code") {
+        state.appMode = "chat-kanban";
+        getAppCallbacks().render();
+      }
+
+      const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+      const imageExts = new Set(["png", "jpg", "jpeg", "webp", "gif"]);
+
+      if (imageExts.has(ext)) {
+        // Image file: read as media and add to chat drafts
+        try {
+          const result = await ReadWorkspaceMediaFile(workspaceID, filePath);
+          const mediaTypeMap: Record<string, string> = {
+            png: "image/png",
+            jpg: "image/jpeg",
+            jpeg: "image/jpeg",
+            webp: "image/webp",
+            gif: "image/gif",
+          };
+          const mediaType = mediaTypeMap[ext] ?? "application/octet-stream";
+
+          if (!isSupportedChatImageType(mediaType)) {
+            pushToast(`Unsupported image format: ${mediaType}`, "error");
+            return;
+          }
+
+          const current = chatImageDraftsFor(workspaceID);
+          const dataUrl = result.dataUrl ?? "";
+          const bytes = result.bytes ?? 0;
+
+          if (bytes > maxChatImageBytes) {
+            pushToast(`${filePath.split("/").pop()} is larger than ${formatBytes(maxChatImageBytes)}.`, "error");
+            return;
+          }
+
+          if (current.length >= maxChatImageDrafts) {
+            pushToast(`A message can include at most ${maxChatImageDrafts} images.`, "error");
+            return;
+          }
+
+          const totalBytes = current.reduce((sum, img) => sum + img.bytes, 0);
+          if (totalBytes + bytes > maxChatImageMessageBytes) {
+            pushToast(`Attached images are larger than ${formatBytes(maxChatImageMessageBytes)}.`, "error");
+            return;
+          }
+
+          const draft = {
+            id: `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            name: filePath.split("/").pop() ?? filePath,
+            mediaType,
+            dataUrl,
+            bytes,
+          };
+          state.chatImageDrafts.set(workspaceID, [...current, draft]);
+          patchChatPanel();
+          patchChatControls();
+          pushToast(`Added ${draft.name} to chat.`, "success");
+        } catch (error) {
+          pushToast(errorMessage(error), "error");
+        }
+      } else {
+        // Text file: insert @path mention into chat input
+        const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
+        if (!input) {
+          return;
+        }
+        const mention = formatChatMentionPath(filePath);
+        const before = input.value;
+        const trailingSpace = before.length === 0 || /\s$/.test(before) ? "" : " ";
+        const nextValue = before + trailingSpace + mention + " ";
+        input.value = nextValue;
+        state.chatDrafts.set(workspaceID, nextValue);
+        input.focus();
+        input.setSelectionRange(nextValue.length, nextValue.length);
+        patchChatControls();
+        pushToast(`Added @${filePath.split("/").pop()} to chat.`, "success");
+      }
       return;
     }
     if (action === "code-create-file" || action === "code-create-folder") {

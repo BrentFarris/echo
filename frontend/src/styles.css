@@ -2872,6 +2872,11 @@ h3 {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 34%, transparent);
 }
 
+.code-tree-file.is-held {
+  border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
 .code-tree-chevron,
 .code-tree-entry-icon,
 .code-tree-spacer {
