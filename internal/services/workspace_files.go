@@ -1,6 +1,7 @@
 package services
 
 import (
+	"encoding/base64"
 	"fmt"
 	"go/format"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 const maxWorkspaceEditorFileBytes = 1024 * 1024
 const maxWorkspaceFileSearchResults = 200
+const maxWorkspaceMediaFileBytes = 50 * 1024 * 1024
 
 type WorkspaceDirectory struct {
 	WorkspaceID string               `json:"workspaceId"`
@@ -42,6 +44,14 @@ type WorkspaceFileSearchResult struct {
 	Query       string               `json:"query"`
 	Entries     []WorkspaceFileEntry `json:"entries"`
 	Truncated   bool                 `json:"truncated"`
+}
+
+type WorkspaceMediaFile struct {
+	WorkspaceID string `json:"workspaceId"`
+	Path        string `json:"path"`
+	MimeType    string `json:"mimeType"`
+	DataURL     string `json:"dataUrl"`
+	Bytes       int64  `json:"bytes"`
 }
 
 func (s *SystemService) ListWorkspaceDirectory(workspaceID string, path string) (WorkspaceDirectory, error) {
@@ -265,6 +275,106 @@ func (s *SystemService) ReadWorkspaceFile(workspaceID string, path string) (Work
 		return WorkspaceFile{}, err
 	}
 	return readWorkspaceTextFile(workspace, resolved)
+}
+
+func (s *SystemService) ReadWorkspaceMediaFile(workspaceID string, path string) (WorkspaceMediaFile, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return WorkspaceMediaFile{}, err
+	}
+	if strings.TrimSpace(path) == "" {
+		return WorkspaceMediaFile{}, fmt.Errorf("path is required")
+	}
+	resolved, err := resolveWorkspaceServicePath(workspace, path)
+	if err != nil {
+		return WorkspaceMediaFile{}, err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return WorkspaceMediaFile{}, fmt.Errorf("file was not found")
+	}
+	if !info.Mode().IsRegular() {
+		return WorkspaceMediaFile{}, fmt.Errorf("path is not a regular file")
+	}
+	if info.Size() > maxWorkspaceMediaFileBytes {
+		return WorkspaceMediaFile{}, fmt.Errorf("file is larger than the %d byte media limit", maxWorkspaceMediaFileBytes)
+	}
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		return WorkspaceMediaFile{}, fmt.Errorf("read file: %w", err)
+	}
+	mimeType := detectMediaType(data, resolved)
+	if mimeType == "" || !strings.HasPrefix(mimeType, "image/") && !strings.HasPrefix(mimeType, "video/") {
+		return WorkspaceMediaFile{}, fmt.Errorf("file is not a supported media type")
+	}
+	dataURL := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)
+	return WorkspaceMediaFile{
+		WorkspaceID: workspace.ID,
+		Path:        workspaceRelativePath(workspace, resolved),
+		MimeType:    mimeType,
+		DataURL:     dataURL,
+		Bytes:       info.Size(),
+	}, nil
+}
+
+func detectMediaType(data []byte, path string) string {
+	if mime := detectMagicByteMIME(data); mime != "" {
+		return mime
+	}
+	return detectExtensionMIME(path)
+}
+
+func detectMagicByteMIME(data []byte) string {
+	// PNG: 89 50 4E 47
+	if len(data) >= 4 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 {
+		return "image/png"
+	}
+	// JPEG: FF D8 FF
+	if len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
+		return "image/jpeg"
+	}
+	// GIF: 47 49 46 38 ("GIF8")
+	if len(data) >= 4 && data[0] == 'G' && data[1] == 'I' && data[2] == 'F' && data[3] == '8' {
+		return "image/gif"
+	}
+	// WebP: RIFF....WEBP
+	if len(data) >= 12 && string(data[0:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
+		return "image/webp"
+	}
+	// MP4: ftyp at offset 4
+	if len(data) >= 8 && string(data[4:8]) == "ftyp" {
+		return "video/mp4"
+	}
+	// WebM: EBBR or "\x1A\x45\xDF\xA3" (EBML header)
+	if len(data) >= 4 && data[0] == 0x1A && data[1] == 0x45 && data[2] == 0xDF && data[3] == 0xA3 {
+		return "video/webm"
+	}
+	return ""
+}
+
+var extensionMIMETypes = map[string]string{
+	".png":  "image/png",
+	".jpeg": "image/jpeg",
+	".jpg":  "image/jpeg",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+	".svg":  "image/svg+xml",
+	".bmp":  "image/bmp",
+	".ico":  "image/x-icon",
+	".tiff": "image/tiff",
+	".tif":  "image/tiff",
+	".mp4":  "video/mp4",
+	".webm": "video/webm",
+	".avi":  "video/x-msvideo",
+	".mov":  "video/quicktime",
+}
+
+func detectExtensionMIME(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	if mime, ok := extensionMIMETypes[ext]; ok {
+		return mime
+	}
+	return ""
 }
 
 func (s *SystemService) ResolveWorkspaceTextFilePath(workspaceID string, path string) (string, error) {

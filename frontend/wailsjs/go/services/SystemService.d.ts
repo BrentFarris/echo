@@ -92,6 +92,8 @@ export function OpenWorkspacePathExplorer(arg1:string,arg2:string):Promise<void>
 
 export function ReadWorkspaceFile(arg1:string,arg2:string):Promise<services.WorkspaceFile>;
 
+export function ReadWorkspaceMediaFile(arg1:string,arg2:string):Promise<services.WorkspaceMediaFile>;
+
 export function RemoveWorkspaceFolder(arg1:string,arg2:string):Promise<services.AppState>;
 
 export function ResetKanbanCard(arg1:string,arg2:string):Promise<services.KanbanBoard>;

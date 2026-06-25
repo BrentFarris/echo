@@ -155,24 +155,27 @@ function bindCodeFileRowEvents(root: ParentNode, workspaceID: string, callbacks:
   root.querySelectorAll<HTMLElement>("[data-code-file-row]").forEach((element) => {
     element.addEventListener("click", (event) => {
       event.preventDefault();
-      selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "file");
+      const path = element.dataset.codePath ?? "";
+      selectCodeTreeEntry(workspaceID, path, element.dataset.codeKind ?? "file");
       ensureCodeState(workspaceID).explorerDrawerOpen = false;
-      void openCodeFile(workspaceID, element.dataset.codePath ?? "", callbacks, { temporary: true });
+      void openCodeFile(workspaceID, path, callbacks, { temporary: true });
     });
     element.addEventListener("dblclick", (event) => {
       event.preventDefault();
-      selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "file");
+      const path = element.dataset.codePath ?? "";
+      selectCodeTreeEntry(workspaceID, path, element.dataset.codeKind ?? "file");
       ensureCodeState(workspaceID).explorerDrawerOpen = false;
-      void openPinnedCodeFile(workspaceID, element.dataset.codePath ?? "", callbacks);
+      void openPinnedCodeFile(workspaceID, path, callbacks);
     });
     element.addEventListener("keydown", (event) => {
       if (event.key !== "Enter") {
         return;
       }
       event.preventDefault();
-      selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "file");
+      const path = element.dataset.codePath ?? "";
+      selectCodeTreeEntry(workspaceID, path, element.dataset.codeKind ?? "file");
       ensureCodeState(workspaceID).explorerDrawerOpen = false;
-      void openCodeFile(workspaceID, element.dataset.codePath ?? "", callbacks, { temporary: true });
+      void openCodeFile(workspaceID, path, callbacks, { temporary: true });
     });
   });
 }
@@ -364,7 +367,9 @@ async function handleCodeAction(target: HTMLElement, workspaceID: string, callba
   }
   if (action === "save-active-file") {
     await saveActiveCodeFile(workspaceID, callbacks);
+    return;
   }
+ 
 }
 
 setCodeTreeEventBinder(bindCodeTreeEvents);

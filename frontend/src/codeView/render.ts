@@ -2,7 +2,7 @@ import { services } from "../../wailsjs/go/models";
 import { codeIcons } from "./icons";
 import { activeCodeTab, directoryStateFor, ensureCodeState, filteredEntries } from "./state";
 import type { CodeFileTab, CodeWorkspaceState } from "./types";
-import { escapeAttribute, escapeHtml, fileName, formatBytes } from "./utils";
+import { escapeAttribute, escapeHtml, fileName, formatBytes, isImageFile, isVideoFile } from "./utils";
 
 export function renderCodeView(workspace: services.Workspace): string {
   const state = ensureCodeState(workspace.id);
@@ -71,16 +71,18 @@ export function renderCodeView(workspace: services.Workspace): string {
           ${renderCodeTabSwitcher(workspace.id)}
           <div class="code-editor-frame">
             ${
-              activeTab
-                ? `<div class="code-editor-mount" data-code-editor-mount></div>`
-                : `<div class="empty-state code-empty">
-                    <strong>No file open</strong>
-                    <span>Select a text file in the workspace tree.</span>
-                    <button class="secondary-button icon-text-button code-empty-file-list-button" type="button" data-code-action="open-explorer-drawer">
-                      ${codeIcons.folder}
-                      <span>Files</span>
-                    </button>
-                  </div>`
+              activeTab?.isMedia
+                ? renderMediaPreview(workspace.id, activeTab)
+                : activeTab
+                  ? `<div class="code-editor-mount" data-code-editor-mount></div>`
+                  : `<div class="empty-state code-empty">
+                      <strong>No file open</strong>
+                      <span>Select a text file in the workspace tree.</span>
+                      <button class="secondary-button icon-text-button code-empty-file-list-button" type="button" data-code-action="open-explorer-drawer">
+                        ${codeIcons.folder}
+                        <span>Files</span>
+                      </button>
+                    </div>`
             }
           </div>
           <footer class="code-status-line" data-code-status>
@@ -89,6 +91,44 @@ export function renderCodeView(workspace: services.Workspace): string {
         </section>
       </div>
     </section>
+  `;
+}
+
+export function renderMediaPreview(workspaceID: string, tab: CodeFileTab): string {
+  const path = tab.path;
+  if (tab.mediaLoading) {
+    return `
+      <div class="media-preview media-preview-loading">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Loading media...</span>
+      </div>
+    `;
+  }
+  if (tab.mediaError) {
+    return `
+      <div class="media-preview media-preview-error">
+        <p class="media-preview-error-message">Failed to load media: ${escapeHtml(tab.mediaError)}</p>
+      </div>
+    `;
+  }
+  if (tab.mediaDataUrl) {
+    const isImage = (tab.mediaMimeType ?? "").startsWith("image/");
+    return `
+      <div class="media-preview">
+        <div class="media-preview-content">
+          ${
+            isImage
+              ? `<img src="${escapeAttribute(tab.mediaDataUrl)}" alt="${escapeAttribute(path)}" />`
+              : `<video controls autoplay><source src="${escapeAttribute(tab.mediaDataUrl)}" type="${escapeAttribute(tab.mediaMimeType ?? "")}" /></video>`
+          }
+        </div>
+      </div>
+    `;
+  }
+  return `
+    <div class="media-preview media-preview-error">
+      <p>No preview available.</p>
+    </div>
   `;
 }
 
@@ -511,7 +551,7 @@ function renderFileEntry(
       data-code-kind="${escapeAttribute(entry.kind)}"
     >
       <span class="code-tree-spacer"></span>
-      <span class="code-tree-entry-icon">${codeIcons.file}</span>
+      <span class="code-tree-entry-icon">${isImageFile(entry.path) ? codeIcons.image : isVideoFile(entry.path) ? codeIcons.video : codeIcons.file}</span>
       <span class="code-tree-name">${escapeHtml(entry.name)}</span>
       <span class="code-tree-size">${escapeHtml(formatBytes(entry.bytes ?? 0))}</span>
     </button>
@@ -528,9 +568,13 @@ function renderCodeTabs(workspaceID: string): string {
       ${state.tabs
         .map((tab) => {
           const active = state.activePath === tab.path;
+          const icon = tab.isMedia
+            ? (isImageFile(tab.path) ? codeIcons.image : isVideoFile(tab.path) ? codeIcons.video : codeIcons.file)
+            : codeIcons.file;
           return `
-            <div class="code-tab ${active ? "is-active" : ""} ${tab.dirty ? "is-dirty" : ""} ${tab.temporary ? "is-temporary" : ""}" data-code-tab="${escapeAttribute(tab.path)}">
+            <div class="code-tab ${active ? "is-active" : ""} ${tab.dirty ? "is-dirty" : ""} ${tab.temporary ? "is-temporary" : ""} ${tab.isMedia ? "is-media" : ""}" data-code-tab="${escapeAttribute(tab.path)}">
               <button class="code-tab-main" type="button" role="tab" aria-selected="${active}" title="${escapeAttribute(tab.path)}" data-code-action="activate-tab" data-code-tab-main data-code-path="${escapeAttribute(tab.path)}">
+                ${icon}
                 <span>${escapeHtml(fileName(tab.path))}</span>
                 ${tab.dirty ? `<span class="dirty-dot" aria-label="Unsaved changes"></span>` : ""}
               </button>
@@ -585,6 +629,15 @@ function renderCodeTabSwitcher(workspaceID: string): string {
 export function renderCodeStatus(tab: CodeFileTab | null, openingPath: string): string {
   if (openingPath) {
     return `Opening ${escapeHtml(openingPath)}...`;
+  }
+  if (tab?.isMedia) {
+    if (tab.mediaLoading) {
+      return "Loading media...";
+    }
+    if (tab.mediaError) {
+      return `${escapeHtml(tab.path)} - Error loading media`;
+    }
+    return `${escapeHtml(tab.path)} - ${escapeHtml(tab.mediaMimeType ?? "")} - ${escapeHtml(formatBytes(tab.bytes))}`;
   }
   if (!tab) {
     return "No file selected.";

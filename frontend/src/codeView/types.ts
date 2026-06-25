@@ -42,6 +42,11 @@ export type CodeFileTab = {
   scrollLeft: number;
   pendingRevealPosition?: number;
   pendingRevealScroll?: "center";
+  isMedia?: boolean;
+  mediaMimeType?: string;
+  mediaDataUrl?: string;
+  mediaLoading?: boolean;
+  mediaError?: string;
 };
 
 export type CodeNavigationLocation = {

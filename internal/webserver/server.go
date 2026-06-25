@@ -509,6 +509,7 @@ var allowedRPCMethods = map[string]bool{
 	"OpenWorkspaceExplorer":            true,
 	"OpenWorkspacePathExplorer":        true,
 	"ReadWorkspaceFile":                true,
+	"ReadWorkspaceMediaFile":           true,
 	"RemoveWorkspaceFolder":            true,
 	"ResetKanbanCard":                  true,
 	"ResolveWorkspaceTextFilePath":     true,

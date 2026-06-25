@@ -203,6 +203,10 @@ export function ReadWorkspaceFile(...args: Parameters<typeof Wails.ReadWorkspace
   return call("ReadWorkspaceFile", Wails.ReadWorkspaceFile, args);
 }
 
+export function ReadWorkspaceMediaFile(...args: Parameters<typeof Wails.ReadWorkspaceMediaFile>): ReturnType<typeof Wails.ReadWorkspaceMediaFile> {
+  return call("ReadWorkspaceMediaFile", Wails.ReadWorkspaceMediaFile, args);
+}
+
 export function RemoveWorkspaceFolder(...args: Parameters<typeof Wails.RemoveWorkspaceFolder>): ReturnType<typeof Wails.RemoveWorkspaceFolder> {
   return call("RemoveWorkspaceFolder", Wails.RemoveWorkspaceFolder, args);
 }

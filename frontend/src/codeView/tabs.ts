@@ -1,4 +1,4 @@
-import { ReadWorkspaceFile, SaveWorkspaceFile } from "../backend/services";
+import { ReadWorkspaceFile, ReadWorkspaceMediaFile, SaveWorkspaceFile } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
 import { captureCodeTreeScroll, patchDirtyUI } from "./dom";
 import { applySavedFile, activeCodeTab, codeStates, ensureCodeState, findTab, promoteTabMruPath, pruneTabMruPaths, removeTabMruPath, tabSwitcherPaths, workspaceFileChanged, wrapIndex } from "./state";
@@ -13,7 +13,7 @@ import {
   syncCurrentCodeNavigationLocation,
 } from "./navigation";
 import type { CodeFileTab, CodeNavigationLocation, CodeViewCallbacks } from "./types";
-import { clamp, editableWorkspaceFile, fileContentOffsetToEditorPosition, sleep } from "./utils";
+import { clamp, editableWorkspaceFile, fileContentOffsetToEditorPosition, isMediaFile, sleep } from "./utils";
 import { replaceMountedEditorContent, saveMountedEditorContent } from "./editor";
 
 const openTabFileWatchIntervalMs = 1500;
@@ -270,12 +270,85 @@ export async function openCodeFile(
     return false;
   }
   captureCodeTreeScroll(workspaceID);
+
+  const state = ensureCodeState(workspaceID);
+
+  // Handle media files — store state on the tab itself using CodeFileTab media properties.
+  if (isMediaFile(path)) {
+    saveMountedEditorContent();
+
+    // If a media tab is already open for this path, just activate it.
+    const existingMedia = findTab(workspaceID, path);
+    if (existingMedia && existingMedia.isMedia && !existingMedia.mediaLoading) {
+      activateCodeTab(workspaceID, existingMedia.path, callbacks);
+      return true;
+    }
+
+    // Close any other open media tab.
+    const otherMediaIndex = state.tabs.findIndex((t) => t.isMedia && t.path !== path);
+    if (otherMediaIndex >= 0) {
+      const otherMedia = state.tabs[otherMediaIndex];
+      state.tabs.splice(otherMediaIndex, 1);
+      removeTabMruPath(state, otherMedia.path);
+    }
+
+    // Create a new media tab with loading state.
+    const nextTab: CodeFileTab = {
+      path,
+      content: "",
+      savedContent: "",
+      lineSeparator: "\n",
+      bytes: 0,
+      modifiedAt: "",
+      dirty: false,
+      saving: false,
+      temporary: false,
+      selectionAnchor: 0,
+      selectionHead: 0,
+      scrollTop: 0,
+      scrollLeft: 0,
+      isMedia: true,
+      mediaLoading: true,
+      mediaMimeType: "",
+      mediaDataUrl: "",
+      mediaError: "",
+    };
+    state.tabs.push(nextTab);
+    state.activePath = path;
+    promoteTabMruPath(state, path);
+    callbacks.render();
+
+    try {
+      const result = await ReadWorkspaceMediaFile(workspaceID, path);
+      const media = services.WorkspaceMediaFile.createFrom(result);
+      const latest = findTab(workspaceID, path);
+      if (!latest) {
+        return false;
+      }
+      latest.mediaMimeType = media.mimeType;
+      latest.mediaDataUrl = media.dataUrl;
+      latest.bytes = media.bytes;
+      latest.mediaLoading = false;
+      latest.mediaError = "";
+      return true;
+    } catch (error) {
+      const latest = findTab(workspaceID, path);
+      if (latest) {
+        latest.mediaLoading = false;
+        latest.mediaError = callbacks.errorMessage(error);
+      }
+      return false;
+    } finally {
+      callbacks.render();
+    }
+  }
+
+  // --- Code (text) file path ---
   saveMountedEditorContent();
   const sourceLocation =
     options.recordNavigation === false
       ? null
       : captureActiveCodeNavigationLocation(workspaceID);
-  const state = ensureCodeState(workspaceID);
   if (state.openingPath === path) {
     return false;
   }
@@ -492,6 +565,7 @@ export function closeCodeTab(
 ) {
   saveMountedEditorContent();
   const state = ensureCodeState(workspaceID);
+
   const index = state.tabs.findIndex((tab) => tab.path === path);
   if (index < 0) {
     return;
