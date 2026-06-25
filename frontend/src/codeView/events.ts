@@ -1,7 +1,7 @@
 import { setCodeQuickOpenEventBinder, setCodeTextSearchEventBinder, setCodeTreeEventBinder, restoreCodeTreeScroll, startExplorerResize } from "./dom";
 import { ensureCodeState } from "./state";
 import type { CodeViewCallbacks } from "./types";
-import { cancelPendingCodeCreate, clearCodeDrag, collapseCodeTree, dropCodeDrag, handleSearchInput, refreshCodeTree, selectCodeTreeEntry, startCodeDrag, startSelectedCodeCreate, submitPendingCodeCreate, toggleDirectory, toggleIgnoredFilter, updateCodeDropTarget, updatePendingCodeCreateName } from "./explorer";
+import { cancelPendingCodeCreate, cancelPendingCodeRename, clearCodeDrag, collapseCodeTree, dropCodeDrag, handleSearchInput, refreshCodeTree, selectCodeTreeEntry, startCodeDrag, startSelectedCodeCreate, startSelectedCodeRename, submitPendingCodeCreate, submitPendingCodeRename, toggleDirectory, toggleIgnoredFilter, updateCodeDropTarget, updatePendingCodeCreateName, updatePendingCodeRenameName } from "./explorer";
 import { activateCodeTab, closeCodeTab, navigateCodeHistory, openCodeFile, openPinnedCodeFile, pinCodeTab, saveActiveCodeFile, startOpenTabFileWatch } from "./tabs";
 import { mountActiveCodeEditor } from "./editor";
 import { openInlineCodeChatAtCursor } from "./inlineChat";
@@ -78,6 +78,7 @@ function bindCodeTreeEvents(root: ParentNode, workspaceID: string, callbacks: Co
   bindCodeBrowserRowContextMenus(root, workspaceID, callbacks);
   bindCodeBrowserRowDragEvents(root, workspaceID, callbacks);
   bindCodeCreateInputEvents(root, workspaceID, callbacks);
+  bindCodeRenameInputEvents(root, workspaceID, callbacks);
 }
 
 function bindCodeTextSearchEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
@@ -274,6 +275,13 @@ async function handleCodeBrowserRowKeydown(
     }
     return;
   }
+  if (event.key === "F2") {
+    event.preventDefault();
+    event.stopPropagation();
+    selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "");
+    await startSelectedCodeRename(workspaceID, callbacks);
+    return;
+  }
   if (event.key !== "Enter") {
     return;
   }
@@ -462,6 +470,30 @@ function bindCodeCreateInputEvents(root: ParentNode, workspaceID: string, callba
     });
     input.addEventListener("blur", () => {
       cancelPendingCodeCreate(workspaceID, callbacks);
+    });
+  });
+}
+
+function bindCodeRenameInputEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
+  root.querySelectorAll<HTMLInputElement>("[data-code-rename-input]").forEach((input) => {
+    input.addEventListener("input", () => {
+      updatePendingCodeRenameName(workspaceID, input.value);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        event.stopPropagation();
+        void submitPendingCodeRename(workspaceID, input.value, callbacks);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        cancelPendingCodeRename(workspaceID, callbacks);
+      }
+    });
+    input.addEventListener("blur", () => {
+      cancelPendingCodeRename(workspaceID, callbacks);
     });
   });
 }

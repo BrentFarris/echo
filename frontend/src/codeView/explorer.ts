@@ -1,4 +1,4 @@
-import { CreateWorkspaceFile, CreateWorkspaceFolder, ListWorkspaceDirectory, MoveWorkspacePath, SearchWorkspaceFiles } from "../backend/services";
+import { CreateWorkspaceFile, CreateWorkspaceFolder, ListWorkspaceDirectory, MoveWorkspacePath, RenameWorkspacePath, SearchWorkspaceFiles } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
 import { captureCodeTreeScroll, patchCodeTree, patchSearchResults } from "./dom";
 import { rewriteCodeNavigationHistoryPaths } from "./navigation";
@@ -28,6 +28,7 @@ export async function refreshCodeTree(workspaceID: string, callbacks: CodeViewCa
   state.directories.clear();
   state.expandedPaths = new Set(["."]);
   state.pendingCreate = null;
+  state.pendingRename = null;
   patchCodeTree(workspaceID, callbacks);
   await loadDirectory(workspaceID, ".");
   patchCodeTree(workspaceID, callbacks);
@@ -93,6 +94,7 @@ export async function startCodeCreate(
   captureCodeTreeScroll(workspaceID);
   selectCodeTreeEntry(workspaceID, path, entryKind);
   clearWorkspaceSearchState(workspaceID);
+  state.pendingRename = null;
   state.pendingCreate = {
     kind: createKind,
     parentPath,
@@ -110,11 +112,69 @@ export async function startCodeCreate(
   focusPendingCreateInput();
 }
 
+export async function startSelectedCodeRename(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const state = ensureCodeState(workspaceID);
+  if (!state.selectedPath) {
+    callbacks.pushToast("Select a file or folder first.", "error");
+    return;
+  }
+  await startCodeRename(
+    workspaceID,
+    state.selectedPath,
+    state.selectedKind,
+    callbacks,
+  );
+}
+
+export async function startCodeRename(
+  workspaceID: string,
+  path: string,
+  kind: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const state = ensureCodeState(workspaceID);
+  const entryKind = normalizeCodeEntryKind(kind);
+  if (!path || (entryKind !== "file" && entryKind !== "directory")) {
+    callbacks.pushToast("Select a file or folder first.", "error");
+    return;
+  }
+  if (!sourceParentPath(path)) {
+    callbacks.pushToast("Workspace folder roots cannot be renamed.", "error");
+    return;
+  }
+
+  captureCodeTreeScroll(workspaceID);
+  selectCodeTreeEntry(workspaceID, path, entryKind);
+  clearWorkspaceSearchState(workspaceID);
+  state.pendingCreate = null;
+  state.pendingRename = {
+    path,
+    kind: entryKind,
+    name: codePathBaseName(path),
+    originalName: codePathBaseName(path),
+    submitting: false,
+    error: "",
+  };
+
+  const parentPath = sourceParentPath(path);
+  const ancestors = directoryAncestors(parentPath);
+  ancestors.forEach((ancestor) => state.expandedPaths.add(ancestor));
+  for (const ancestor of ancestors) {
+    await loadDirectory(workspaceID, ancestor);
+  }
+  callbacks.render();
+  focusPendingRenameInput();
+}
+
 export function collapseCodeTree(workspaceID: string, callbacks: CodeViewCallbacks) {
   const state = ensureCodeState(workspaceID);
   captureCodeTreeScroll(workspaceID);
   state.expandedPaths = new Set(["."]);
   state.pendingCreate = null;
+  state.pendingRename = null;
   patchCodeTree(workspaceID, callbacks);
 }
 
@@ -125,6 +185,7 @@ export function startCodeDrag(workspaceID: string, path: string, kind: string): 
   }
   const state = ensureCodeState(workspaceID);
   state.pendingCreate = null;
+  state.pendingRename = null;
   state.drag = {
     sourcePath: path,
     sourceKind: entryKind,
@@ -234,6 +295,81 @@ export function cancelPendingCodeCreate(workspaceID: string, callbacks: CodeView
   }
   state.pendingCreate = null;
   patchCodeTree(workspaceID, callbacks);
+}
+
+export function updatePendingCodeRenameName(workspaceID: string, name: string) {
+  const pending = ensureCodeState(workspaceID).pendingRename;
+  if (!pending || pending.submitting) {
+    return;
+  }
+  pending.name = name;
+}
+
+export function cancelPendingCodeRename(workspaceID: string, callbacks: CodeViewCallbacks) {
+  const state = ensureCodeState(workspaceID);
+  if (!state.pendingRename || state.pendingRename.submitting) {
+    return;
+  }
+  state.pendingRename = null;
+  patchCodeTree(workspaceID, callbacks);
+}
+
+export async function submitPendingCodeRename(
+  workspaceID: string,
+  name: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const state = ensureCodeState(workspaceID);
+  const pending = state.pendingRename;
+  if (!pending || pending.submitting) {
+    return;
+  }
+  pending.name = name.trim();
+  if (!pending.name) {
+    callbacks.pushToast("Name is required.", "error");
+    focusPendingRenameInput();
+    return;
+  }
+  if (pending.name === pending.originalName) {
+    state.pendingRename = null;
+    patchCodeTree(workspaceID, callbacks);
+    focusSelectedCodeBrowserRow();
+    return;
+  }
+
+  const sourcePath = pending.path;
+  const sourceParent = sourceParentPath(sourcePath);
+  pending.submitting = true;
+  pending.error = "";
+  saveMountedEditorContent();
+  patchCodeTree(workspaceID, callbacks);
+  try {
+    const renamed = services.WorkspaceFileEntry.createFrom(
+      await RenameWorkspacePath(workspaceID, sourcePath, pending.name),
+    );
+    rewriteMovedCodePaths(state, sourcePath, renamed.path);
+    rewriteCodeNavigationHistoryPaths(workspaceID, sourcePath, renamed.path);
+    clearWorkspaceSearchState(workspaceID);
+    pruneDirectoryCacheAfterMove(state, sourcePath, sourceParent, sourceParent, renamed.path);
+    state.pendingRename = null;
+    state.selectedPath = renamed.path;
+    state.selectedKind = normalizeCodeEntryKind(renamed.kind);
+    if (sourceParent) {
+      await loadDirectory(workspaceID, sourceParent);
+    }
+    callbacks.pushToast("Renamed.", "success");
+  } catch (error) {
+    pending.submitting = false;
+    pending.error = callbacks.errorMessage(error);
+    callbacks.pushToast(pending.error, "error");
+  } finally {
+    patchCodeTree(workspaceID, callbacks);
+    if (!ensureCodeState(workspaceID).pendingRename) {
+      focusSelectedCodeBrowserRow();
+    } else {
+      focusPendingRenameInput();
+    }
+  }
 }
 
 export async function submitPendingCodeCreate(
@@ -543,6 +679,11 @@ function clearWorkspaceSearchState(workspaceID: string) {
   state.preservingSearchFocus = false;
 }
 
+function codePathBaseName(path: string): string {
+  const slash = path.lastIndexOf("/");
+  return slash >= 0 ? path.slice(slash + 1) : path;
+}
+
 function focusPendingCreateInput() {
   window.setTimeout(() => {
     const input = document.querySelector<HTMLInputElement>("[data-code-create-input]");
@@ -551,5 +692,24 @@ function focusPendingCreateInput() {
     }
     input.focus();
     input.select();
+  }, 0);
+}
+
+function focusPendingRenameInput() {
+  window.setTimeout(() => {
+    const input = document.querySelector<HTMLInputElement>("[data-code-rename-input]");
+    if (!input) {
+      return;
+    }
+    input.focus();
+    input.select();
+  }, 0);
+}
+
+function focusSelectedCodeBrowserRow() {
+  window.setTimeout(() => {
+    const selected = document.querySelector<HTMLElement>("[data-code-tree] .code-tree-row.is-selected");
+    selected?.focus({ preventScroll: true });
+    selected?.scrollIntoView({ block: "nearest" });
   }, 0);
 }

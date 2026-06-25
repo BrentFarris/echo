@@ -510,6 +510,7 @@ var allowedRPCMethods = map[string]bool{
 	"OpenWorkspacePathExplorer":        true,
 	"ReadWorkspaceFile":                true,
 	"RemoveWorkspaceFolder":            true,
+	"RenameWorkspacePath":              true,
 	"ResetKanbanCard":                  true,
 	"ResolveWorkspaceTextFilePath":     true,
 	"ReorderWorkspaces":                true,

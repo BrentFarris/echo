@@ -72,6 +72,15 @@ export type PendingCodeCreate = {
   error: string;
 };
 
+export type PendingCodeRename = {
+  path: string;
+  kind: CodeEntryKind;
+  name: string;
+  originalName: string;
+  submitting: boolean;
+  error: string;
+};
+
 export type CodeDragState = {
   sourcePath: string;
   sourceKind: CodeEntryKind;
@@ -136,6 +145,7 @@ export type CodeWorkspaceState = {
   navigationHistory: CodeNavigationHistoryState;
   tabSwitcher: CodeTabSwitcherState | null;
   pendingCreate: PendingCodeCreate | null;
+  pendingRename: PendingCodeRename | null;
   drag: CodeDragState | null;
   showIgnored: boolean;
   openingPath: string;

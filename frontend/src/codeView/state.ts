@@ -46,6 +46,7 @@ export function ensureCodeState(workspaceID: string): CodeWorkspaceState {
       },
       tabSwitcher: null,
       pendingCreate: null,
+      pendingRename: null,
       drag: null,
       showIgnored: false,
       openingPath: "",

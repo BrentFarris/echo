@@ -1,5 +1,5 @@
 
-import { bindCodeViewEvents, closeActiveCodeTab, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, navigateCodeHistory, openQuickOpen, openTextSearch, saveActiveCodeFile } from "../codeView";
+import { bindCodeViewEvents, closeActiveCodeTab, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, navigateCodeHistory, openQuickOpen, openTextSearch, saveActiveCodeFile, startSelectedCodeRename } from "../codeView";
 import { bindActionEvents } from "./actions";
 import { getAppCallbacks } from "./callbacks";
 import { bindChatEvents, clearChatMention, patchChatMentionPicker } from "./chat";
@@ -92,6 +92,12 @@ export function handleGlobalKeydown(event: KeyboardEvent) {
   }
   if (state.appMode === "code" && !state.settingsOpen) {
     const workspace = activeWorkspace();
+    if (workspace && isCodeRenameShortcut(event) && !isTextInputTarget(event.target)) {
+      event.preventDefault();
+      event.stopPropagation();
+      void startSelectedCodeRename(workspace.id, getAppCallbacks().codeViewCallbacks());
+      return;
+    }
     if (workspace && isCloseActiveCodeTabShortcut(event)) {
       event.preventDefault();
       event.stopPropagation();
@@ -197,6 +203,24 @@ export function handleGlobalKeydown(event: KeyboardEvent) {
   }
   event.preventDefault();
   void closeSelectedCardDetail(workspace.id).finally(getAppCallbacks().render);
+}
+
+function isCodeRenameShortcut(event: KeyboardEvent): boolean {
+  return (
+    event.key === "F2" &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.shiftKey
+  );
+}
+
+function isTextInputTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement
+  );
 }
 
 function isCodeNavigationHistoryShortcut(event: KeyboardEvent): boolean {

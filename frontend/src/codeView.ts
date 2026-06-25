@@ -2,7 +2,7 @@ export { applyInlineCodePromptEvent, openInlineCodeChatAtCursor } from "./codeVi
 export { bindCodeViewEvents } from "./codeView/events";
 export { clearCodeTabSwitcher, closeActiveCodeTab, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, navigateCodeHistory, openWorkspaceCodeFile, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk, saveActiveCodeFile } from "./codeView/tabs";
 export { destroyCodeEditor } from "./codeView/editor";
-export { ensureCodeViewRootLoaded, startCodeCreate } from "./codeView/explorer";
+export { ensureCodeViewRootLoaded, startCodeCreate, startCodeRename, startSelectedCodeRename } from "./codeView/explorer";
 export { renderCodeView } from "./codeView/render";
 export { openTextSearch } from "./codeView/search";
 export { closeQuickOpen, openQuickOpen } from "./codeView/quickOpen";

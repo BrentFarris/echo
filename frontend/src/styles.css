@@ -3217,7 +3217,8 @@ h3 {
   color: inherit;
 }
 
-.code-tree-create-row {
+.code-tree-create-row,
+.code-tree-rename-row {
   cursor: default;
 }
 

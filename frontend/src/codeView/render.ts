@@ -463,28 +463,33 @@ function renderFileEntry(
   const selected = state.selectedPath === entry.path;
   const dragging = state.drag?.sourcePath === entry.path;
   const dropTarget = state.drag?.targetPath === entry.path;
+  const renaming = state.pendingRename?.path === entry.path;
   if (entry.kind === "directory") {
     const expanded = state.expandedPaths.has(entry.path);
     const childDirectory = directoryStateFor(state, entry.path);
     return `
       <div class="code-tree-item">
-        <button
-          class="code-tree-row code-tree-directory ${expanded ? "is-expanded" : ""} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
-          type="button"
-          role="treeitem"
-          aria-expanded="${expanded}"
-          draggable="true"
-          title="${escapeAttribute(entry.path)}"
-          style="--tree-depth: ${depth}"
-          data-code-action="toggle-directory"
-          data-code-browser-row
-          data-code-path="${escapeAttribute(entry.path)}"
-          data-code-kind="${escapeAttribute(entry.kind)}"
-        >
-          <span class="code-tree-chevron">${codeIcons.chevron}</span>
-          <span class="code-tree-entry-icon">${codeIcons.folder}</span>
-          <span class="code-tree-name">${escapeHtml(entry.name)}</span>
-        </button>
+        ${
+          renaming
+            ? renderPendingRenameRow(state, entry, depth, codeIcons.folder, `<span class="code-tree-chevron">${codeIcons.chevron}</span>`)
+            : `<button
+                class="code-tree-row code-tree-directory ${expanded ? "is-expanded" : ""} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
+                type="button"
+                role="treeitem"
+                aria-expanded="${expanded}"
+                draggable="true"
+                title="${escapeAttribute(entry.path)}"
+                style="--tree-depth: ${depth}"
+                data-code-action="toggle-directory"
+                data-code-browser-row
+                data-code-path="${escapeAttribute(entry.path)}"
+                data-code-kind="${escapeAttribute(entry.kind)}"
+              >
+                <span class="code-tree-chevron">${codeIcons.chevron}</span>
+                <span class="code-tree-entry-icon">${codeIcons.folder}</span>
+                <span class="code-tree-name">${escapeHtml(entry.name)}</span>
+              </button>`
+        }
         ${
           expanded
             ? `<div role="group">
@@ -498,6 +503,9 @@ function renderFileEntry(
         }
       </div>
     `;
+  }
+  if (renaming) {
+    return renderPendingRenameRow(state, entry, depth, codeIcons.file, '<span class="code-tree-spacer"></span>');
   }
   return `
     <button
@@ -517,6 +525,45 @@ function renderFileEntry(
       <span class="code-tree-name">${escapeHtml(entry.name)}</span>
       <span class="code-tree-size">${escapeHtml(formatBytes(entry.bytes ?? 0))}</span>
     </button>
+  `;
+}
+
+function renderPendingRenameRow(
+  state: CodeWorkspaceState,
+  entry: services.WorkspaceFileEntry,
+  depth: number,
+  icon: string,
+  leading: string,
+): string {
+  const pending = state.pendingRename;
+  if (!pending) {
+    return "";
+  }
+  return `
+    <div
+      class="code-tree-row code-tree-rename-row is-selected"
+      role="treeitem"
+      title="${escapeAttribute(entry.path)}"
+      style="--tree-depth: ${depth}"
+      data-code-rename-row
+      data-code-path="${escapeAttribute(entry.path)}"
+      data-code-kind="${escapeAttribute(entry.kind)}"
+    >
+      ${leading}
+      <span class="code-tree-entry-icon">${icon}</span>
+      <input
+        class="code-tree-create-input"
+        type="text"
+        value="${escapeAttribute(pending.name)}"
+        aria-label="New name"
+        spellcheck="false"
+        data-code-rename-input
+        ${pending.submitting ? "disabled" : ""}
+      />
+      <span class="code-tree-create-state">
+        ${pending.submitting ? `<span class="spinner" aria-hidden="true"></span>` : ""}
+      </span>
+    </div>
   `;
 }
 

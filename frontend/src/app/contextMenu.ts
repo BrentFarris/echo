@@ -29,6 +29,7 @@ export function renderContextMenu(menu: ContextMenuState): string {
 function renderCodeContextMenu(menu: ContextMenuState): string {
   const codePath = menu.codePath ?? "";
   const codeKind = menu.codeKind ?? "other";
+  const canRenameCodePath = (codeKind === "file" || codeKind === "directory") && codePath.includes("/");
   return `\
     <div class="workspace-context-menu" data-context-menu style="left:${menu.x}px;top:${menu.y}px">\
       <button\
@@ -53,6 +54,17 @@ function renderCodeContextMenu(menu: ContextMenuState): string {
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>\
         <span class="workspace-context-menu-label">Add folder</span>\
       </button>\
+      ${canRenameCodePath ? `<button\
+        class="workspace-context-menu-item"\
+        type="button"\
+        data-action="code-rename-path"\
+        data-workspace-id="${escapeAttribute(menu.workspaceId)}"\
+        data-code-path="${escapeAttribute(codePath)}"\
+        data-code-kind="${escapeAttribute(codeKind)}"\
+      >\
+        ${icons.edit}\
+        <span class="workspace-context-menu-label">Rename</span>\
+      </button>` : ""}\
       <hr class="workspace-context-menu-divider" />\
       <button\
         class="workspace-context-menu-item"\

@@ -394,6 +394,92 @@ func TestSystemServiceMoveWorkspacePathRejectsInvalidTargets(t *testing.T) {
 	}
 }
 
+func TestSystemServiceRenameWorkspacePathRenamesFile(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	source := filepath.Join(root, "main.go")
+	if err := os.WriteFile(source, []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	renamed, err := service.RenameWorkspacePath(workspaceID, "workspace/main.go", "app.go")
+	if err != nil {
+		t.Fatalf("rename file: %v", err)
+	}
+	if renamed.Path != "workspace/app.go" || renamed.Name != "app.go" || renamed.Kind != "file" {
+		t.Fatalf("unexpected renamed file entry: %#v", renamed)
+	}
+	if _, err := os.Stat(source); !os.IsNotExist(err) {
+		t.Fatalf("expected source file to be renamed, stat error: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "app.go"))
+	if err != nil {
+		t.Fatalf("read renamed file: %v", err)
+	}
+	if string(data) != "package main\n" {
+		t.Fatalf("expected renamed file content to be preserved, got %q", string(data))
+	}
+}
+
+func TestSystemServiceRenameWorkspacePathRenamesFolderSubtree(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.MkdirAll(filepath.Join(root, "src", "feature"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "feature", "readme.md"), []byte("feature"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	renamed, err := service.RenameWorkspacePath(workspaceID, "workspace/src/feature", "renamed")
+	if err != nil {
+		t.Fatalf("rename folder: %v", err)
+	}
+	if renamed.Path != "workspace/src/renamed" || renamed.Name != "renamed" || renamed.Kind != "directory" {
+		t.Fatalf("unexpected renamed folder entry: %#v", renamed)
+	}
+	if _, err := os.Stat(filepath.Join(root, "src", "feature")); !os.IsNotExist(err) {
+		t.Fatalf("expected source folder to be renamed, stat error: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "src", "renamed", "readme.md"))
+	if err != nil {
+		t.Fatalf("read renamed nested file: %v", err)
+	}
+	if string(data) != "feature" {
+		t.Fatalf("expected renamed nested file content to be preserved, got %q", string(data))
+	}
+}
+
+func TestSystemServiceRenameWorkspacePathRejectsInvalidTargets(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "existing.go"), []byte("package existing\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name       string
+		sourcePath string
+		newName    string
+	}{
+		{name: "empty source", sourcePath: "", newName: "next.go"},
+		{name: "workspace root source", sourcePath: "workspace", newName: "next"},
+		{name: "missing source", sourcePath: "workspace/missing.go", newName: "next.go"},
+		{name: "empty name", sourcePath: "workspace/main.go", newName: ""},
+		{name: "nested name", sourcePath: "workspace/main.go", newName: "nested/next.go"},
+		{name: "parent segment", sourcePath: "workspace/main.go", newName: ".."},
+		{name: "duplicate target", sourcePath: "workspace/main.go", newName: "existing.go"},
+		{name: "traversal source", sourcePath: "workspace/../outside.txt", newName: "next.go"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := service.RenameWorkspacePath(workspaceID, tc.sourcePath, tc.newName); err == nil {
+				t.Fatalf("expected error renaming %q to %q", tc.sourcePath, tc.newName)
+			}
+		})
+	}
+}
+
 func TestSystemServiceWorkspaceFilesRejectBinaryAndLargeFiles(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.WriteFile(filepath.Join(root, "image.bin"), []byte{0x01, 0x00, 0x02}, 0o600); err != nil {

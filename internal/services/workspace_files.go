@@ -252,6 +252,27 @@ func (s *SystemService) MoveWorkspacePath(workspaceID string, sourcePath string,
 	return workspaceFileEntry(workspace, target, info), nil
 }
 
+func (s *SystemService) RenameWorkspacePath(workspaceID string, sourcePath string, name string) (WorkspaceFileEntry, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return WorkspaceFileEntry{}, err
+	}
+	source, target, err := resolveWorkspaceRenameTarget(workspace, sourcePath, name)
+	if err != nil {
+		return WorkspaceFileEntry{}, err
+	}
+	if source != target {
+		if err := os.Rename(source, target); err != nil {
+			return WorkspaceFileEntry{}, fmt.Errorf("rename path: %w", err)
+		}
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		return WorkspaceFileEntry{}, fmt.Errorf("stat renamed path: %w", err)
+	}
+	return workspaceFileEntry(workspace, target, info), nil
+}
+
 func (s *SystemService) ReadWorkspaceFile(workspaceID string, path string) (WorkspaceFile, error) {
 	workspace, _, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {
@@ -501,6 +522,54 @@ func resolveWorkspaceMoveTarget(workspace Workspace, sourcePath string, targetPa
 	return source, target, nil
 }
 
+func resolveWorkspaceRenameTarget(workspace Workspace, sourcePath string, name string) (string, string, error) {
+	if strings.TrimSpace(sourcePath) == "" {
+		return "", "", fmt.Errorf("source path is required")
+	}
+	label, sourceRelative := splitWorkspaceLabeledPath(sourcePath)
+	if label == "" || sourceRelative == "." {
+		return "", "", fmt.Errorf("workspace folder roots cannot be renamed")
+	}
+	source, err := resolveWorkspaceServicePath(workspace, sourcePath)
+	if err != nil {
+		return "", "", err
+	}
+	sourceInfo, err := os.Stat(source)
+	if err != nil {
+		return "", "", fmt.Errorf("source path was not found")
+	}
+	if !sourceInfo.IsDir() && !sourceInfo.Mode().IsRegular() {
+		return "", "", fmt.Errorf("source path is not a renamable file or folder")
+	}
+	cleanName, err := cleanWorkspaceRenameName(name)
+	if err != nil {
+		return "", "", err
+	}
+	if cleanName == filepath.Base(source) {
+		return source, source, nil
+	}
+	parent := filepath.Dir(source)
+	realParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve parent directory: %w", err)
+	}
+	if _, err := workspaceRelativeCandidate(workspace, realParent); err != nil {
+		return "", "", err
+	}
+	target := filepath.Join(realParent, cleanName)
+	if targetInfo, err := os.Lstat(target); err == nil {
+		if !os.SameFile(sourceInfo, targetInfo) {
+			return "", "", fmt.Errorf("path already exists")
+		}
+	} else if !os.IsNotExist(err) {
+		return "", "", fmt.Errorf("check target path: %w", err)
+	}
+	if _, err := workspaceRelativeCandidate(workspace, target); err != nil {
+		return "", "", err
+	}
+	return source, target, nil
+}
+
 func resolveWorkspaceCreateTarget(workspace Workspace, parentPath string, name string) (string, error) {
 	parent, err := resolveWorkspaceServicePath(workspace, parentPath)
 	if err != nil {
@@ -564,6 +633,23 @@ func cleanWorkspaceCreateName(name string) (string, error) {
 		}
 	}
 	return path.Clean(strings.Join(segments, "/")), nil
+}
+
+func cleanWorkspaceRenameName(name string) (string, error) {
+	name = strings.TrimSpace(strings.ReplaceAll(name, "\\", "/"))
+	if name == "" {
+		return "", fmt.Errorf("name is required")
+	}
+	if filepath.IsAbs(name) || path.IsAbs(name) || filepath.VolumeName(name) != "" {
+		return "", fmt.Errorf("name must be relative")
+	}
+	if strings.Contains(name, "/") {
+		return "", fmt.Errorf("name must not contain path separators")
+	}
+	if name == "." || name == ".." {
+		return "", fmt.Errorf("name must not be current or parent directory")
+	}
+	return name, nil
 }
 
 func workspaceFileEntry(workspace Workspace, absolutePath string, info os.FileInfo) WorkspaceFileEntry {

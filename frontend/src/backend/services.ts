@@ -207,6 +207,10 @@ export function RemoveWorkspaceFolder(...args: Parameters<typeof Wails.RemoveWor
   return call("RemoveWorkspaceFolder", Wails.RemoveWorkspaceFolder, args);
 }
 
+export function RenameWorkspacePath(...args: Parameters<typeof Wails.RenameWorkspacePath>): ReturnType<typeof Wails.RenameWorkspacePath> {
+  return call("RenameWorkspacePath", Wails.RenameWorkspacePath, args);
+}
+
 export function ResetKanbanCard(...args: Parameters<typeof Wails.ResetKanbanCard>): ReturnType<typeof Wails.ResetKanbanCard> {
   return call("ResetKanbanCard", Wails.ResetKanbanCard, args);
 }
