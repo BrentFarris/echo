@@ -58,7 +58,7 @@ func init() {
 					},
 					"includeIgnored": map[string]any{
 						"type":        "boolean",
-						"description": "Whether to include common ignored/noisy directories like .git, node_modules, dist, build, target, and coverage. Defaults to false.",
+						"description": "Whether to include common ignored/noisy directories like .echo, .git, node_modules, dist, build, target, and coverage. Defaults to false.",
 					},
 				},
 			},

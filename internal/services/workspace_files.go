@@ -844,7 +844,7 @@ func workspaceSearchMatches(query string, name string, relativePath string) bool
 
 func isIgnoredWorkspaceDirectory(name string) bool {
 	switch strings.ToLower(name) {
-	case ".git", ".next", ".vite", "bin", "build", "coverage", "dist", "node_modules", "obj", "target":
+	case ".echo", ".git", ".next", ".vite", "bin", "build", "coverage", "dist", "node_modules", "obj", "target":
 		return true
 	default:
 		return false

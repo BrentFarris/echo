@@ -21,6 +21,7 @@ const (
 
 var ignoredChangePathNames = map[string]bool{
 	".cache":       true,
+	".echo":        true,
 	".git":         true,
 	".next":        true,
 	".vite":        true,
