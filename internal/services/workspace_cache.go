@@ -11,7 +11,7 @@ import (
 const (
 	workspaceCacheDirName        = ".echo"
 	workspaceSkillCacheDirName   = "skills"
-	workspaceSearchCacheDirName  = "file-search"
+	workspaceFileDatabaseDirName = "file-database"
 	workspaceCacheDirectoryPerm  = 0o755
 	workspaceCacheFilePermission = 0o600
 )
@@ -22,7 +22,7 @@ type WorkspaceCacheFolder struct {
 	FolderLabel       string `json:"folderLabel"`
 	Path              string `json:"path"`
 	SkillsPath        string `json:"skillsPath"`
-	FileSearchPath    string `json:"fileSearchPath"`
+	FileDatabasePath  string `json:"fileDatabasePath"`
 	WorkspaceRootPath string `json:"workspaceRootPath"`
 }
 
@@ -62,8 +62,8 @@ func ensureWorkspaceFolderCache(workspaceID string, folder WorkspaceFolder) (Wor
 	if err := ensureWorkspaceCacheDirectory(skillsPath, cachePath); err != nil {
 		return WorkspaceCacheFolder{}, err
 	}
-	fileSearchPath := filepath.Join(cachePath, workspaceSearchCacheDirName)
-	if err := ensureWorkspaceCacheDirectory(fileSearchPath, cachePath); err != nil {
+	fileDatabasePath := filepath.Join(cachePath, workspaceFileDatabaseDirName)
+	if err := ensureWorkspaceCacheDirectory(fileDatabasePath, cachePath); err != nil {
 		return WorkspaceCacheFolder{}, err
 	}
 	return WorkspaceCacheFolder{
@@ -72,7 +72,7 @@ func ensureWorkspaceFolderCache(workspaceID string, folder WorkspaceFolder) (Wor
 		FolderLabel:       folder.Label,
 		Path:              cachePath,
 		SkillsPath:        skillsPath,
-		FileSearchPath:    fileSearchPath,
+		FileDatabasePath:  fileDatabasePath,
 		WorkspaceRootPath: root,
 	}, nil
 }
@@ -81,8 +81,8 @@ func workspaceSkillCachePath(folder WorkspaceFolder, relativePath string) (strin
 	return workspaceCacheFilePath(folder, workspaceSkillCacheDirName, relativePath)
 }
 
-func workspaceFileSearchCachePath(folder WorkspaceFolder, relativePath string) (string, error) {
-	return workspaceCacheFilePath(folder, workspaceSearchCacheDirName, relativePath)
+func workspaceFileDatabaseCachePath(folder WorkspaceFolder, relativePath string) (string, error) {
+	return workspaceCacheFilePath(folder, workspaceFileDatabaseDirName, relativePath)
 }
 
 func workspaceCacheFilePath(folder WorkspaceFolder, cacheName string, relativePath string) (string, error) {

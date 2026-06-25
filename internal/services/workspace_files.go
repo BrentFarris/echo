@@ -132,6 +132,16 @@ func (s *SystemService) SearchWorkspaceFiles(workspaceID string, query string, i
 		Query:       query,
 		Entries:     []WorkspaceFileEntry{},
 	}
+	entries, truncated, err := searchWorkspaceFilesWithDatabase(workspace, query, includeIgnored, maxWorkspaceFileSearchResults)
+	if err == nil {
+		output.Entries = entries
+		output.Truncated = truncated
+		return output, nil
+	}
+	return searchWorkspaceFilesByWalking(workspace, query, includeIgnored, output)
+}
+
+func searchWorkspaceFilesByWalking(workspace Workspace, query string, includeIgnored bool, output WorkspaceFileSearchResult) (WorkspaceFileSearchResult, error) {
 	for _, folder := range workspace.Folders {
 		if folder.Missing {
 			continue
@@ -189,6 +199,17 @@ func (s *SystemService) SearchWorkspaceFiles(workspaceID string, query string, i
 	return output, nil
 }
 
+func sortWorkspaceFileEntries(entries []WorkspaceFileEntry) {
+	sort.Slice(entries, func(i, j int) bool {
+		left := entries[i]
+		right := entries[j]
+		if left.Kind != right.Kind {
+			return left.Kind == "directory"
+		}
+		return strings.ToLower(left.Path) < strings.ToLower(right.Path)
+	})
+}
+
 func (s *SystemService) CreateWorkspaceFile(workspaceID string, parentPath string, name string) (WorkspaceFile, error) {
 	workspace, _, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {
@@ -208,6 +229,7 @@ func (s *SystemService) CreateWorkspaceFile(workspaceID string, parentPath strin
 	if err := file.Close(); err != nil {
 		return WorkspaceFile{}, fmt.Errorf("close file: %w", err)
 	}
+	s.removeWorkspaceFileDatabases(workspaceID)
 	return readWorkspaceTextFile(workspace, resolved)
 }
 
@@ -230,6 +252,7 @@ func (s *SystemService) CreateWorkspaceFolder(workspaceID string, parentPath str
 	if err != nil {
 		return WorkspaceFileEntry{}, fmt.Errorf("stat folder: %w", err)
 	}
+	s.removeWorkspaceFileDatabases(workspaceID)
 	return workspaceFileEntry(workspace, resolved, info), nil
 }
 
@@ -249,6 +272,7 @@ func (s *SystemService) MoveWorkspacePath(workspaceID string, sourcePath string,
 	if err != nil {
 		return WorkspaceFileEntry{}, fmt.Errorf("stat moved path: %w", err)
 	}
+	s.removeWorkspaceFileDatabases(workspaceID)
 	return workspaceFileEntry(workspace, target, info), nil
 }
 
@@ -270,6 +294,7 @@ func (s *SystemService) RenameWorkspacePath(workspaceID string, sourcePath strin
 	if err != nil {
 		return WorkspaceFileEntry{}, fmt.Errorf("stat renamed path: %w", err)
 	}
+	s.removeWorkspaceFileDatabases(workspaceID)
 	return workspaceFileEntry(workspace, target, info), nil
 }
 
@@ -368,6 +393,7 @@ func (s *SystemService) SaveWorkspaceFile(workspaceID string, path string, conte
 	if err := os.WriteFile(resolved, []byte(content), info.Mode().Perm()); err != nil {
 		return WorkspaceFile{}, fmt.Errorf("write file: %w", err)
 	}
+	s.removeWorkspaceFileDatabases(workspaceID)
 	return readWorkspaceTextFile(workspace, resolved)
 }
 

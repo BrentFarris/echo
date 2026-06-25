@@ -25,7 +25,7 @@ func TestSystemServiceEnsureWorkspaceCacheFoldersCreatesCacheLayout(t *testing.T
 	for _, path := range []string{
 		filepath.Join(root, ".echo"),
 		filepath.Join(root, ".echo", "skills"),
-		filepath.Join(root, ".echo", "file-search"),
+		filepath.Join(root, ".echo", "file-database"),
 	} {
 		info, err := os.Stat(path)
 		if err != nil {
@@ -37,7 +37,7 @@ func TestSystemServiceEnsureWorkspaceCacheFoldersCreatesCacheLayout(t *testing.T
 	}
 	if cache.Path != filepath.Join(root, ".echo") ||
 		cache.SkillsPath != filepath.Join(root, ".echo", "skills") ||
-		cache.FileSearchPath != filepath.Join(root, ".echo", "file-search") {
+		cache.FileDatabasePath != filepath.Join(root, ".echo", "file-database") {
 		t.Fatalf("unexpected cache paths: %#v", cache)
 	}
 }
@@ -62,13 +62,13 @@ func TestWorkspaceCacheFilePathCreatesNestedParents(t *testing.T) {
 		t.Fatalf("expected nested skill cache parent, info=%#v err=%v", info, err)
 	}
 
-	searchPath, err := workspaceFileSearchCachePath(folder, "index/main.db")
+	searchPath, err := workspaceFileDatabaseCachePath(folder, "index/main.db")
 	if err != nil {
-		t.Fatalf("resolve file search cache path: %v", err)
+		t.Fatalf("resolve file database cache path: %v", err)
 	}
-	expectedSearchPath := filepath.Join(root, ".echo", "file-search", "index", "main.db")
+	expectedSearchPath := filepath.Join(root, ".echo", "file-database", "index", "main.db")
 	if searchPath != expectedSearchPath {
-		t.Fatalf("expected file search cache path %q, got %q", expectedSearchPath, searchPath)
+		t.Fatalf("expected file database cache path %q, got %q", expectedSearchPath, searchPath)
 	}
 }
 
@@ -89,7 +89,7 @@ func TestWorkspaceCacheFilePathRejectsUnsafeRelativePaths(t *testing.T) {
 	}
 	for _, candidate := range cases {
 		t.Run(candidate, func(t *testing.T) {
-			if _, err := workspaceFileSearchCachePath(folder, candidate); err == nil {
+			if _, err := workspaceFileDatabaseCachePath(folder, candidate); err == nil {
 				t.Fatalf("expected unsafe cache path %q to be rejected", candidate)
 			}
 		})
@@ -117,7 +117,7 @@ func TestSystemServiceSearchWorkspaceFilesSkipsEchoCacheByDefault(t *testing.T) 
 	if _, err := service.ensureWorkspaceCacheFolders(workspaceID); err != nil {
 		t.Fatalf("ensure cache folders: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, ".echo", "file-search", "needle.db"), []byte("cache"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".echo", "file-database", "needle.db"), []byte("cache"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "needle.txt"), []byte("workspace"), 0o600); err != nil {
@@ -136,7 +136,7 @@ func TestSystemServiceSearchWorkspaceFilesSkipsEchoCacheByDefault(t *testing.T) 
 	if err != nil {
 		t.Fatalf("search unfiltered workspace: %v", err)
 	}
-	if got := strings.Join(entryPaths(included.Entries), ","); got != "workspace/.echo/file-search/needle.db,workspace/needle.txt" {
-		t.Fatalf("expected .echo cache when ignored files are included, got %v", got)
+	if got := strings.Join(entryPaths(included.Entries), ","); got != "workspace/needle.txt" {
+		t.Fatalf("expected .echo cache to stay hidden when ignored files are included, got %v", got)
 	}
 }
