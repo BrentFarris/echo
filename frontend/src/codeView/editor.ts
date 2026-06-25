@@ -1,8 +1,8 @@
 import { HighlightStyle, indentUnit, syntaxHighlighting } from "@codemirror/language";
 import { acceptCompletion } from "@codemirror/autocomplete";
 import { languages as languageData } from "@codemirror/language-data";
-import { EditorSelection, EditorState, Prec, RangeSetBuilder, Transaction, type Extension } from "@codemirror/state";
-import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, keymap } from "@codemirror/view";
+import { countColumn, EditorSelection, EditorState, findColumn, Prec, RangeSetBuilder, Transaction, type Extension, type SelectionRange } from "@codemirror/state";
+import { crosshairCursor, Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { tags } from "@lezer/highlight";
 import { patchDirtyUI } from "./dom";
@@ -29,6 +29,7 @@ export type EditorFeatureHooks = {
 };
 
 const tabSize = 4;
+const maxRectangularSelectionOffset = 2000;
 let mountedEditor: EditorView | null = null;
 let mountedEditorWorkspaceID = "";
 let mountedEditorPath = "";
@@ -169,11 +170,13 @@ export async function mountActiveCodeEditor(
     basicSetup,
     ...tabIndentionExtensions(),
     EditorState.lineSeparator.of(tab.lineSeparator),
+    EditorState.allowMultipleSelections.of(true),
     EditorView.lineWrapping,
     codeEditorTheme,
     syntaxHighlighting(codeHighlightStyle),
     codeNavigationHistoryKeymap(workspaceID, callbacks, hooks),
-    altClickCaretToggleExtension(),
+    rectangularAltSelectionExtension(),
+    crosshairCursor(),
     lspDefinitionExtension(workspaceID, tab.path, callbacks, hooks.openCodeFile),
     referencesPanelExtension(workspaceID, tab.path, callbacks, hooks.openCodeFile),
     inlineCodeChatExtension(workspaceID, tab.path, callbacks, { saveActiveCodeFile: hooks.saveActiveCodeFile }),
@@ -281,49 +284,131 @@ function codeNavigationHistoryKeymap(
   );
 }
 
-function altClickCaretToggleExtension() {
-  return Prec.highest(EditorView.domEventHandlers({
-    mousedown(event, view) {
-      if (!event.altKey || event.button !== 0) {
-        return false;
-      }
-      const pos = view.posAtCoords({
-        x: event.clientX,
-        y: event.clientY,
-      });
-      if (pos === null) {
-        return false;
-      }
-
-      event.preventDefault();
-      event.stopPropagation();
-      toggleCaretAtPosition(view, pos);
-      return true;
-    },
+function rectangularAltSelectionExtension() {
+  return Prec.highest(EditorView.mouseSelectionStyle.of((view, event) => {
+    if (!event.altKey || event.button !== 0) {
+      return null;
+    }
+    const start = event.shiftKey
+      ? rectangularSelectionPositionFromOffset(view, view.state.selection.main.head)
+      : rectangularSelectionPositionAtCoords(view, event);
+    if (!start) {
+      return null;
+    }
+    let startSelection = view.state.selection;
+    return {
+      update(update) {
+        if (!update.docChanged) {
+          return;
+        }
+        const lineStart = update.changes.mapPos(update.startState.doc.line(start.line).from);
+        const line = update.state.doc.lineAt(lineStart);
+        start.line = line.number;
+        start.off = Math.min(start.off, line.length);
+        startSelection = startSelection.map(update.changes);
+      },
+      get(event, _extend, multiple) {
+        const current = rectangularSelectionPositionAtCoords(view, event);
+        if (!current) {
+          return startSelection;
+        }
+        const ranges = rectangularSelectionRanges(view.state, start, current);
+        if (!ranges.length) {
+          return startSelection;
+        }
+        if (multiple) {
+          return EditorSelection.create(ranges.concat(startSelection.ranges), Math.max(0, ranges.length - 1));
+        }
+        return EditorSelection.create(ranges, ranges.length - 1);
+      },
+    };
   }));
 }
 
-function toggleCaretAtPosition(view: EditorView, pos: number) {
-  const selection = view.state.selection;
-  const existingIndex = selection.ranges.findIndex(
-    (range) => range.empty && range.from === pos,
-  );
-  if (existingIndex >= 0) {
-    const ranges = selection.ranges.filter((_, index) => index !== existingIndex);
-    view.dispatch({
-      selection: EditorSelection.create(
-        ranges.length ? ranges : [EditorSelection.cursor(pos)],
-        clamp(selection.mainIndex, 0, Math.max(0, ranges.length - 1)),
-      ),
-      userEvent: "select.pointer",
-    });
-    return;
+type RectangularSelectionPosition = {
+  line: number;
+  col: number;
+  off: number;
+};
+
+function rectangularSelectionPositionFromOffset(
+  view: EditorView,
+  offset: number,
+): RectangularSelectionPosition {
+  const line = view.state.doc.lineAt(clamp(offset, 0, view.state.doc.length));
+  const off = clamp(offset - line.from, 0, line.length);
+  return {
+    line: line.number,
+    col: off > maxRectangularSelectionOffset
+      ? -1
+      : countColumn(line.text, view.state.tabSize, off),
+    off,
+  };
+}
+
+function rectangularSelectionPositionAtCoords(
+  view: EditorView,
+  event: MouseEvent,
+): RectangularSelectionPosition | null {
+  const offset = view.posAtCoords({ x: event.clientX, y: event.clientY }, false);
+  const line = view.state.doc.lineAt(offset);
+  const off = offset - line.from;
+  return {
+    line: line.number,
+    col: off > maxRectangularSelectionOffset
+      ? -1
+      : off === line.length
+        ? rectangularSelectionAbsoluteColumn(view, event.clientX)
+        : countColumn(line.text, view.state.tabSize, off),
+    off,
+  };
+}
+
+function rectangularSelectionAbsoluteColumn(view: EditorView, x: number) {
+  const reference = view.coordsAtPos(view.viewport.from);
+  return reference ? Math.round(Math.abs((reference.left - x) / view.defaultCharacterWidth)) : -1;
+}
+
+function rectangularSelectionRanges(
+  state: EditorState,
+  anchor: RectangularSelectionPosition,
+  head: RectangularSelectionPosition,
+) {
+  const startLine = Math.min(anchor.line, head.line);
+  const endLine = Math.max(anchor.line, head.line);
+  const ranges: SelectionRange[] = [];
+  if (
+    anchor.off > maxRectangularSelectionOffset ||
+    head.off > maxRectangularSelectionOffset ||
+    anchor.col < 0 ||
+    head.col < 0
+  ) {
+    const startOff = Math.min(anchor.off, head.off);
+    const endOff = Math.max(anchor.off, head.off);
+    for (let lineNumber = startLine; lineNumber <= endLine; lineNumber++) {
+      const line = state.doc.line(lineNumber);
+      const start = Math.min(line.from + startOff, line.to);
+      const end = Math.min(line.from + endOff, line.to);
+      ranges.push(start === end ? EditorSelection.cursor(start) : EditorSelection.range(start, end));
+    }
+    return ranges;
   }
 
-  view.dispatch({
-    selection: selection.addRange(EditorSelection.cursor(pos), true),
-    userEvent: "select.pointer",
-  });
+  const startCol = Math.min(anchor.col, head.col);
+  const endCol = Math.max(anchor.col, head.col);
+  for (let lineNumber = startLine; lineNumber <= endLine; lineNumber++) {
+    const line = state.doc.line(lineNumber);
+    const start = findColumn(line.text, startCol, state.tabSize, true);
+    if (start < 0) {
+      ranges.push(EditorSelection.cursor(line.to));
+      continue;
+    }
+    const end = findColumn(line.text, endCol, state.tabSize);
+    ranges.push(start === end
+      ? EditorSelection.cursor(line.from + start)
+      : EditorSelection.range(line.from + start, line.from + end));
+  }
+  return ranges;
 }
 
 function leadingWhitespaceIndicatorExtension() {
