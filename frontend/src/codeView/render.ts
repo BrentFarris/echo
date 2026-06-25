@@ -145,6 +145,7 @@ function renderSearchEntry(
       <div
         class="code-tree-row code-tree-search-row ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
         role="treeitem"
+        tabindex="0"
         draggable="${entry.kind === "directory"}"
         title="${escapeAttribute(entry.path)}"
         style="--tree-depth: 0"

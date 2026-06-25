@@ -74,6 +74,7 @@ function bindCodeTreeEvents(root: ParentNode, workspaceID: string, callbacks: Co
   bindCodeActionEvents(root, workspaceID, callbacks);
   bindCodeFileRowEvents(root, workspaceID, callbacks);
   bindCodeBrowserRowSelectionEvents(root, workspaceID);
+  bindCodeBrowserRowKeyboardEvents(root, workspaceID, callbacks);
   bindCodeBrowserRowContextMenus(root, workspaceID, callbacks);
   bindCodeBrowserRowDragEvents(root, workspaceID, callbacks);
   bindCodeCreateInputEvents(root, workspaceID, callbacks);
@@ -225,15 +226,6 @@ function bindCodeFileRowEvents(root: ParentNode, workspaceID: string, callbacks:
       ensureCodeState(workspaceID).explorerDrawerOpen = false;
       void openPinnedCodeFile(workspaceID, element.dataset.codePath ?? "", callbacks);
     });
-    element.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter") {
-        return;
-      }
-      event.preventDefault();
-      selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "file");
-      ensureCodeState(workspaceID).explorerDrawerOpen = false;
-      void openCodeFile(workspaceID, element.dataset.codePath ?? "", callbacks, { temporary: true });
-    });
   });
 }
 
@@ -243,6 +235,119 @@ function bindCodeBrowserRowSelectionEvents(root: ParentNode, workspaceID: string
       selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "");
     });
   });
+}
+
+function bindCodeBrowserRowKeyboardEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
+  root.querySelectorAll<HTMLElement>("[data-code-browser-row]").forEach((element) => {
+    element.addEventListener("keydown", (event) => {
+      void handleCodeBrowserRowKeydown(root, element, workspaceID, callbacks, event);
+    });
+  });
+}
+
+async function handleCodeBrowserRowKeydown(
+  root: ParentNode,
+  element: HTMLElement,
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+  event: KeyboardEvent,
+) {
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    event.stopPropagation();
+    focusAdjacentCodeBrowserRow(root, workspaceID, element, event.key === "ArrowDown" ? 1 : -1);
+    return;
+  }
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    event.stopPropagation();
+    if (isCodeDirectoryRow(element) && element.getAttribute("aria-expanded") === "true") {
+      await toggleFocusedDirectory(workspaceID, element, callbacks);
+    }
+    return;
+  }
+  if (event.key === "ArrowRight") {
+    event.preventDefault();
+    event.stopPropagation();
+    if (isCodeDirectoryRow(element) && element.getAttribute("aria-expanded") !== "true") {
+      await toggleFocusedDirectory(workspaceID, element, callbacks);
+    }
+    return;
+  }
+  if (event.key !== "Enter") {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  await activateFocusedCodeBrowserRow(workspaceID, element, callbacks);
+}
+
+function focusAdjacentCodeBrowserRow(
+  root: ParentNode,
+  workspaceID: string,
+  current: HTMLElement,
+  direction: -1 | 1,
+) {
+  const rows = visibleCodeBrowserRows(root);
+  if (!rows.length) {
+    return;
+  }
+  const state = ensureCodeState(workspaceID);
+  const currentIndex = rows.indexOf(current);
+  const selectedIndex = rows.findIndex((row) => row.dataset.codePath === state.selectedPath);
+  const index = currentIndex >= 0 ? currentIndex : selectedIndex;
+  const nextIndex = Math.min(rows.length - 1, Math.max(0, (index >= 0 ? index : 0) + direction));
+  focusCodeBrowserRow(workspaceID, rows[nextIndex]);
+}
+
+function visibleCodeBrowserRows(root: ParentNode) {
+  return Array.from(root.querySelectorAll<HTMLElement>("[data-code-browser-row]")).filter((row) => row.offsetParent !== null);
+}
+
+function focusCodeBrowserRow(workspaceID: string, row: HTMLElement) {
+  selectCodeTreeEntry(workspaceID, row.dataset.codePath ?? "", row.dataset.codeKind ?? "");
+  row.focus({ preventScroll: true });
+  row.scrollIntoView({ block: "nearest" });
+}
+
+async function activateFocusedCodeBrowserRow(
+  workspaceID: string,
+  element: HTMLElement,
+  callbacks: CodeViewCallbacks,
+) {
+  const path = element.dataset.codePath ?? "";
+  const kind = element.dataset.codeKind ?? "";
+  selectCodeTreeEntry(workspaceID, path, kind);
+  if (kind === "directory") {
+    await toggleFocusedDirectory(workspaceID, element, callbacks);
+    return;
+  }
+  if (kind === "file") {
+    ensureCodeState(workspaceID).explorerDrawerOpen = false;
+    await openCodeFile(workspaceID, path, callbacks, { temporary: true });
+  }
+}
+
+async function toggleFocusedDirectory(
+  workspaceID: string,
+  element: HTMLElement,
+  callbacks: CodeViewCallbacks,
+) {
+  selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "directory");
+  await toggleDirectory(workspaceID, element.dataset.codePath ?? "", callbacks);
+  focusSelectedCodeBrowserRow();
+}
+
+function focusSelectedCodeBrowserRow() {
+  window.setTimeout(() => {
+    const selected = document.querySelector<HTMLElement>("[data-code-tree] .code-tree-row.is-selected");
+    selected?.focus({ preventScroll: true });
+    selected?.scrollIntoView({ block: "nearest" });
+  }, 0);
+}
+
+function isCodeDirectoryRow(element: HTMLElement) {
+  return element.dataset.codeKind === "directory";
 }
 
 function bindCodeBrowserRowContextMenus(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
