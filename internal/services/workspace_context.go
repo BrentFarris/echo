@@ -62,6 +62,11 @@ type workspaceContextFileCandidate struct {
 	isTest   bool
 }
 
+type workspaceContextSymbolTarget struct {
+	index      int
+	languageID string
+}
+
 func (s *SystemService) workspaceContextProvider(workspace Workspace) tools.WorkspaceContextProvider {
 	return workspaceContextProvider{service: s, workspace: workspace}
 }
@@ -376,6 +381,16 @@ func workspaceContextManifestKind(base string) string {
 		return "php package"
 	case "tsconfig.json":
 		return "typescript config"
+	case "cmakelists.txt":
+		return "cmake project"
+	case "compile_commands.json":
+		return "clang compile database"
+	case "compile_flags.txt":
+		return "clang compile flags"
+	case ".clangd":
+		return "clangd config"
+	case "meson.build":
+		return "meson project"
 	default:
 		return ""
 	}
@@ -395,6 +410,8 @@ func workspaceContextRootKind(manifestKind string) string {
 		return "java"
 	case "php package":
 		return "php"
+	case "cmake project", "clang compile database", "clang compile flags", "clangd config", "meson project":
+		return "cpp"
 	default:
 		return "project"
 	}
@@ -424,7 +441,7 @@ func workspaceContextKind(path string) string {
 		return "java"
 	case ".cs":
 		return "csharp"
-	case ".cpp", ".cc", ".cxx", ".c", ".h", ".hpp":
+	case ".cpp", ".cc", ".cxx", ".c++", ".c", ".h", ".hh", ".hpp", ".hxx", ".ipp", ".inl", ".ixx", ".cppm":
 		return "cpp"
 	case ".yml", ".yaml", ".toml", ".xml":
 		return "config"
@@ -633,41 +650,58 @@ func workspaceContextReason(reasons map[string]bool) string {
 }
 
 func (s *SystemService) enrichWorkspaceContextSymbols(ctx context.Context, workspace Workspace, files []tools.WorkspaceContextFile, warnings *[]string) []tools.WorkspaceContextFile {
-	goIndexes := make([]int, 0, workspaceContextMaxSymbolFiles)
+	targets := make([]workspaceContextSymbolTarget, 0, workspaceContextMaxSymbolFiles)
 	for i, file := range files {
-		if strings.EqualFold(filepath.Ext(file.Path), ".go") && !workspaceContextIsTestPath(file.Path) {
-			goIndexes = append(goIndexes, i)
-			if len(goIndexes) >= workspaceContextMaxSymbolFiles {
-				break
-			}
+		if workspaceContextIsTestPath(file.Path) {
+			continue
+		}
+		languageID, ok := lspLanguageIDForPath(file.Path)
+		if !ok {
+			continue
+		}
+		targets = append(targets, workspaceContextSymbolTarget{
+			index:      i,
+			languageID: languageID,
+		})
+		if len(targets) >= workspaceContextMaxSymbolFiles {
+			break
 		}
 	}
-	if len(goIndexes) == 0 {
+	if len(targets) == 0 {
 		return files
 	}
-	command, ok := lspCommandForLanguage("go")
-	if !ok {
-		*warnings = append(*warnings, "Go language server symbols unavailable: go LSP is not configured.")
-		return files
-	}
-	if _, err := exec.LookPath(command.name); err != nil {
-		*warnings = append(*warnings, fmt.Sprintf("Go language server symbols unavailable: %s was not found on PATH.", command.name))
-		return files
-	}
+
+	checkedLanguages := map[string]bool{}
+	unavailableLanguages := map[string]bool{}
 	navigator := s.codeNavigator(workspace)
-	for _, index := range goIndexes {
+	for _, target := range targets {
+		displayName := lspLanguageDisplayName(target.languageID)
+		if !checkedLanguages[target.languageID] {
+			checkedLanguages[target.languageID] = true
+			command, ok := lspCommandForLanguage(target.languageID)
+			if !ok {
+				*warnings = append(*warnings, fmt.Sprintf("%s language server symbols unavailable: %s LSP is not configured.", displayName, target.languageID))
+				unavailableLanguages[target.languageID] = true
+			} else if _, err := exec.LookPath(command.name); err != nil {
+				*warnings = append(*warnings, fmt.Sprintf("%s language server symbols unavailable: %s was not found on PATH.", displayName, command.name))
+				unavailableLanguages[target.languageID] = true
+			}
+		}
+		if unavailableLanguages[target.languageID] {
+			continue
+		}
 		symbolCtx, cancel := context.WithTimeout(ctx, workspaceContextSymbolTimeout)
 		response, err := navigator.QueryCode(symbolCtx, tools.CodeNavigationRequest{
 			Operation:  "document_symbols",
-			Path:       files[index].Path,
+			Path:       files[target.index].Path,
 			MaxResults: workspaceContextSymbolsPerFile,
 		})
 		cancel()
 		if err != nil {
-			*warnings = append(*warnings, fmt.Sprintf("Go symbols unavailable for %s: %s", files[index].Path, err.Error()))
+			*warnings = append(*warnings, fmt.Sprintf("%s symbols unavailable for %s: %s", displayName, files[target.index].Path, err.Error()))
 			continue
 		}
-		files[index].Symbols = response.Symbols
+		files[target.index].Symbols = response.Symbols
 	}
 	return files
 }

@@ -23,6 +23,23 @@ type OpenCodeFileForDefinition = (
 const lspCompletionValidFor = /^[A-Za-z0-9_]*$/;
 const lspCompletionTriggerWord = /[A-Za-z_][A-Za-z0-9_]*$/;
 const lspCompletionTriggerDot = /\.$/;
+const lspCompletionTriggerCppMember = /(?:\.|->|::)$/;
+const lspSourceExtensions = [
+  ".go",
+  ".c",
+  ".cc",
+  ".cpp",
+  ".cxx",
+  ".c++",
+  ".h",
+  ".hh",
+  ".hpp",
+  ".hxx",
+  ".ipp",
+  ".inl",
+  ".ixx",
+  ".cppm",
+];
 const lspCompletionErrors = new Map<string, string>();
 
 export function lspDefinitionExtension(
@@ -31,7 +48,7 @@ export function lspDefinitionExtension(
   callbacks: CodeViewCallbacks,
   openCodeFile: OpenCodeFileForDefinition,
 ): Extension {
-  if (!isGoSourcePath(path)) {
+  if (!isLspSourcePath(path)) {
     return [];
   }
   return Prec.highest(
@@ -233,7 +250,7 @@ export function lspCompletionExtension(
   path: string,
   callbacks: CodeViewCallbacks,
 ): Extension {
-  if (!isGoSourcePath(path)) {
+  if (!isLspSourcePath(path)) {
     return [];
   }
   const source = lspCompletionSource(workspaceID, path, callbacks);
@@ -247,12 +264,12 @@ function lspCompletionSource(
 ) {
   return async (context: CompletionContext): Promise<CompletionResult | null> => {
     const word = context.matchBefore(lspCompletionTriggerWord);
-    const dot = context.matchBefore(lspCompletionTriggerDot);
-    if (!context.explicit && !word && !dot) {
+    const member = context.matchBefore(lspCompletionMemberTriggerForPath(path));
+    if (!context.explicit && !word && !member) {
       return null;
     }
 
-    const triggerCharacter = dot ? "." : "";
+    const triggerCharacter = member ? member.text.slice(-1) : "";
     const triggerKind = context.explicit ? 1 : triggerCharacter ? 2 : 1;
     const content = editorStateToFileContent(context.state);
     try {
@@ -277,7 +294,7 @@ function lspCompletionSource(
         return null;
       }
       const editorItems = items.map((item) => lspCompletionItemToEditorOffsets(item, content, context.state.lineBreak));
-      const fallbackFrom = dot ? context.pos : word?.from ?? context.pos;
+      const fallbackFrom = member ? context.pos : word?.from ?? context.pos;
       return {
         from: Math.min(fallbackFrom, ...editorItems.map((item) => item.from)),
         to: context.pos,
@@ -466,6 +483,16 @@ function lspCompletionErrorKey(workspaceID: string, path: string) {
   return `${workspaceID}\u0000${path}`;
 }
 
-function isGoSourcePath(path: string) {
-  return path.toLowerCase().endsWith(".go");
+function lspCompletionMemberTriggerForPath(path: string) {
+  return isCppSourcePath(path) ? lspCompletionTriggerCppMember : lspCompletionTriggerDot;
+}
+
+function isLspSourcePath(path: string) {
+  const lower = path.toLowerCase();
+  return lspSourceExtensions.some((extension) => lower.endsWith(extension));
+}
+
+function isCppSourcePath(path: string) {
+  const lower = path.toLowerCase();
+  return lspSourceExtensions.slice(1).some((extension) => lower.endsWith(extension));
 }
