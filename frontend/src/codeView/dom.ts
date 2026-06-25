@@ -35,6 +35,11 @@ export function patchCodeTree(workspaceID: string, callbacks: CodeViewCallbacks)
   codeTreeEventBinder?.(tree, workspaceID, callbacks);
 }
 
+export function scrollSelectedCodeTreeEntryIntoView() {
+  const selected = document.querySelector<HTMLElement>("[data-code-tree] .code-tree-row.is-selected");
+  selected?.scrollIntoView({ block: "nearest" });
+}
+
 export function patchDirtyUI(workspaceID: string, tab: CodeFileTab) {
   document.querySelectorAll<HTMLElement>("[data-code-tab]").forEach((element) => {
     if (element.dataset.codeTab !== tab.path) {

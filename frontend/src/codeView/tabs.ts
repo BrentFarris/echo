@@ -15,6 +15,7 @@ import {
 import type { CodeFileTab, CodeNavigationLocation, CodeViewCallbacks } from "./types";
 import { clamp, editableWorkspaceFile, fileContentOffsetToEditorPosition, sleep } from "./utils";
 import { replaceMountedEditorContent, saveMountedEditorContent } from "./editor";
+import { revealCodeFileInTree } from "./treeReveal";
 
 const openTabFileWatchIntervalMs = 1500;
 let openTabFileWatchTimerID: number | null = null;
@@ -222,6 +223,7 @@ export function finishCodeTabSwitcher(
     captureActiveCodeNavigationLocation(workspaceID),
   );
   callbacks.render();
+  void revealCodeFileInTree(workspaceID, activePath, callbacks);
   return true;
 }
 
@@ -284,6 +286,7 @@ export async function openCodeFile(
   if (!path) {
     return false;
   }
+  let openedPath = "";
   captureCodeTreeScroll(workspaceID);
   saveMountedEditorContent();
   const sourceLocation =
@@ -345,6 +348,7 @@ export async function openCodeFile(
       state.tabs.push(nextTab);
     }
     state.activePath = opened.path;
+    openedPath = opened.path;
     promoteTabMruPath(state, opened.path);
     if (options.recordNavigation !== false) {
       recordCodeNavigationTransition(
@@ -362,6 +366,9 @@ export async function openCodeFile(
   } finally {
     state.openingPath = "";
     callbacks.render();
+    if (openedPath) {
+      void revealCodeFileInTree(workspaceID, openedPath, callbacks);
+    }
   }
 }
 
@@ -525,6 +532,9 @@ export function closeCodeTab(
   state.tabSwitcher = null;
   pruneTabMruPaths(state);
   callbacks.render();
+  if (state.activePath) {
+    void revealCodeFileInTree(workspaceID, state.activePath, callbacks);
+  }
 }
 
 export function pinCodeTab(
@@ -579,6 +589,7 @@ export function activateCodeTab(
     );
   }
   callbacks.render();
+  void revealCodeFileInTree(workspaceID, path, callbacks);
 }
 
 function sameWorkspacePath(left: string, right: string) {
