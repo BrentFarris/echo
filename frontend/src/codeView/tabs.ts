@@ -38,6 +38,11 @@ type ActivateCodeTabOptions = {
   sourceLocation?: CodeNavigationLocation | null;
 };
 
+type DirtyCodeTabCloseChoice = "save" | "cancel" | "discard";
+
+let dirtyCodeTabDialogOpen = false;
+let dirtyCodeTabDialogSeq = 0;
+
 export async function refreshOpenCodeTabsFromDisk(
   workspaceID: string,
   callbacks: CodeViewCallbacks,
@@ -234,8 +239,23 @@ export function clearCodeTabSwitcher(workspaceID: string) {
 export async function saveActiveCodeFile(workspaceID: string, callbacks: CodeViewCallbacks) {
   saveMountedEditorContent();
   const tab = activeCodeTab(workspaceID);
-  if (!tab || tab.saving || !tab.dirty) {
-    return;
+  if (!tab) {
+    return false;
+  }
+  return saveCodeTab(workspaceID, tab.path, callbacks);
+}
+
+async function saveCodeTab(
+  workspaceID: string,
+  path: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const tab = findTab(workspaceID, path);
+  if (!tab || tab.saving) {
+    return false;
+  }
+  if (!tab.dirty) {
+    return true;
   }
   tab.saving = true;
   patchDirtyUI(workspaceID, tab);
@@ -266,8 +286,10 @@ export async function saveActiveCodeFile(workspaceID: string, callbacks: CodeVie
       replaceMountedEditorContent(workspaceID, savedFile.path, savedTab.content);
     }
     callbacks.pushToast("File saved.", "success");
+    return true;
   } catch (error) {
     callbacks.pushToast(callbacks.errorMessage(error), "error");
+    return false;
   } finally {
     const latest = findTab(workspaceID, tab.path);
     if (latest) {
@@ -511,16 +533,47 @@ export function closeCodeTab(
   workspaceID: string,
   path: string,
   callbacks: CodeViewCallbacks,
+): Promise<boolean> {
+  return closeCodeTabAtPath(workspaceID, path, callbacks);
+}
+
+export function closeActiveCodeTab(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+): Promise<boolean> {
+  saveMountedEditorContent();
+  const tab = activeCodeTab(workspaceID);
+  if (!tab) {
+    return Promise.resolve(false);
+  }
+  return closeCodeTabAtPath(workspaceID, tab.path, callbacks);
+}
+
+async function closeCodeTabAtPath(
+  workspaceID: string,
+  path: string,
+  callbacks: CodeViewCallbacks,
 ) {
   saveMountedEditorContent();
   const state = ensureCodeState(workspaceID);
-  const index = state.tabs.findIndex((tab) => tab.path === path);
+  let index = state.tabs.findIndex((tab) => tab.path === path);
   if (index < 0) {
-    return;
+    return false;
   }
-  const tab = state.tabs[index];
-  if (tab.dirty && !window.confirm(`Close ${tab.path} with unsaved changes?`)) {
-    return;
+  let tab = state.tabs[index];
+  if (tab.dirty) {
+    const choice = await promptDirtyCodeTabClose(tab);
+    if (choice === "cancel") {
+      return false;
+    }
+    if (choice === "save" && !(await saveCodeTab(workspaceID, tab.path, callbacks))) {
+      return false;
+    }
+    index = state.tabs.findIndex((candidate) => candidate.path === path);
+    if (index < 0) {
+      return false;
+    }
+    tab = state.tabs[index];
   }
   state.tabs.splice(index, 1);
   removeTabMruPath(state, path);
@@ -535,6 +588,83 @@ export function closeCodeTab(
   if (state.activePath) {
     void revealCodeFileInTree(workspaceID, state.activePath, callbacks);
   }
+  return true;
+}
+
+function promptDirtyCodeTabClose(tab: CodeFileTab): Promise<DirtyCodeTabCloseChoice> {
+  if (dirtyCodeTabDialogOpen) {
+    return Promise.resolve("cancel");
+  }
+  dirtyCodeTabDialogOpen = true;
+  const titleID = `code-close-dirty-title-${++dirtyCodeTabDialogSeq}`;
+
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "code-close-dirty-overlay";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-labelledby", titleID);
+
+    const panel = document.createElement("div");
+    panel.className = "code-close-dirty-dialog";
+
+    const title = document.createElement("h2");
+    title.id = titleID;
+    title.textContent = "Unsaved changes";
+
+    const message = document.createElement("p");
+    message.textContent = `${tab.path} has unsaved changes.`;
+
+    const actions = document.createElement("div");
+    actions.className = "code-close-dirty-actions";
+
+    const save = document.createElement("button");
+    save.className = "primary-button";
+    save.type = "button";
+    save.textContent = "Save";
+
+    const cancel = document.createElement("button");
+    cancel.className = "secondary-button";
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    cancel.dataset.initialFocus = "";
+
+    const discard = document.createElement("button");
+    discard.className = "secondary-button danger-button";
+    discard.type = "button";
+    discard.textContent = "Close without saving";
+
+    const finish = (choice: DirtyCodeTabCloseChoice) => {
+      dirtyCodeTabDialogOpen = false;
+      document.removeEventListener("keydown", handleKeydown, true);
+      overlay.remove();
+      resolve(choice);
+    };
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      finish("cancel");
+    };
+
+    save.addEventListener("click", () => finish("save"));
+    cancel.addEventListener("click", () => finish("cancel"));
+    discard.addEventListener("click", () => finish("discard"));
+    overlay.addEventListener("pointerdown", (event) => {
+      if (event.target === overlay) {
+        finish("cancel");
+      }
+    });
+    document.addEventListener("keydown", handleKeydown, true);
+
+    actions.append(save, cancel, discard);
+    panel.append(title, message, actions);
+    overlay.append(panel);
+    document.body.append(overlay);
+    cancel.focus();
+  });
 }
 
 export function pinCodeTab(

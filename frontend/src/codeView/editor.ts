@@ -25,7 +25,7 @@ export type EditorFeatureHooks = {
     callbacks: CodeViewCallbacks,
     direction: -1 | 1,
   ) => Promise<unknown>;
-  saveActiveCodeFile: (workspaceID: string, callbacks: CodeViewCallbacks) => Promise<void>;
+  saveActiveCodeFile: (workspaceID: string, callbacks: CodeViewCallbacks) => Promise<boolean>;
 };
 
 const tabSize = 4;

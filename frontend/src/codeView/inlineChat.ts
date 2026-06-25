@@ -10,7 +10,7 @@ import type { CodeFileTab, CodeViewCallbacks, InlineCodeChatState, InlineCodePro
 import { clamp, editableWorkspaceFile, sleep } from "./utils";
 
 export type InlineCodeChatHooks = {
-  saveActiveCodeFile: (workspaceID: string, callbacks: CodeViewCallbacks) => Promise<void>;
+  saveActiveCodeFile: (workspaceID: string, callbacks: CodeViewCallbacks) => Promise<boolean>;
 };
 
 const inlineSnippetContextLines = 40;
@@ -323,7 +323,9 @@ async function submitInlineCodeChat(
     if (!confirmed) {
       return;
     }
-    await hooks.saveActiveCodeFile(workspaceID, callbacks);
+    if (!(await hooks.saveActiveCodeFile(workspaceID, callbacks))) {
+      return;
+    }
     const savedTab = findTab(workspaceID, path);
     if (savedTab?.dirty) {
       return;

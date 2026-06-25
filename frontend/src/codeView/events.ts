@@ -33,7 +33,7 @@ export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallback
       }
       event.preventDefault();
       event.stopPropagation();
-      closeCodeTab(workspaceID, element.dataset.codePath ?? "", callbacks);
+      void closeCodeTab(workspaceID, element.dataset.codePath ?? "", callbacks);
     });
     element.addEventListener("dblclick", (event) => {
       event.preventDefault();
@@ -524,7 +524,7 @@ async function handleCodeAction(target: HTMLElement, workspaceID: string, callba
     return;
   }
   if (action === "close-tab") {
-    closeCodeTab(workspaceID, path, callbacks);
+    await closeCodeTab(workspaceID, path, callbacks);
     return;
   }
   if (action === "save-active-file") {

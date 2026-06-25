@@ -1,5 +1,5 @@
 
-import { bindCodeViewEvents, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, navigateCodeHistory, openQuickOpen, openTextSearch, saveActiveCodeFile } from "../codeView";
+import { bindCodeViewEvents, closeActiveCodeTab, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, navigateCodeHistory, openQuickOpen, openTextSearch, saveActiveCodeFile } from "../codeView";
 import { bindActionEvents } from "./actions";
 import { getAppCallbacks } from "./callbacks";
 import { bindChatEvents, clearChatMention, patchChatMentionPicker } from "./chat";
@@ -92,6 +92,12 @@ export function handleGlobalKeydown(event: KeyboardEvent) {
   }
   if (state.appMode === "code" && !state.settingsOpen) {
     const workspace = activeWorkspace();
+    if (workspace && isCloseActiveCodeTabShortcut(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+      void closeActiveCodeTab(workspace.id, getAppCallbacks().codeViewCallbacks());
+      return;
+    }
     if (workspace && isCodeNavigationHistoryShortcut(event)) {
       event.preventDefault();
       event.stopPropagation();
@@ -241,6 +247,16 @@ function isQuickOpenShortcut(event: KeyboardEvent): boolean {
     !event.shiftKey &&
     (event.ctrlKey || event.metaKey) &&
     (key === "p" || event.code === "KeyP")
+  );
+}
+
+function isCloseActiveCodeTabShortcut(event: KeyboardEvent): boolean {
+  const key = event.key.toLowerCase();
+  return (
+    !event.altKey &&
+    !event.shiftKey &&
+    (event.ctrlKey || event.metaKey) &&
+    (key === "w" || event.code === "KeyW")
   );
 }
 
