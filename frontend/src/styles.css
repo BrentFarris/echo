@@ -2901,7 +2901,7 @@ h3 {
   align-items: center;
   gap: 7px;
   width: 100%;
-  min-height: 32px;
+  min-height: 1.4em;
   padding: 0 8px 0 calc(8px + (var(--tree-depth, 0) * 18px));
   border: 1px solid transparent;
   border-radius: 7px;
