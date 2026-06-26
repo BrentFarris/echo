@@ -949,6 +949,32 @@ function renderThemeTokenField(
   `;
 }
 
+export async function saveSettingsImmediately(): Promise<void> {
+  if (!state.settingsDraft) {
+    return;
+  }
+  const validationError = validateLLMEndpointDraft(state.settingsDraft);
+  if (validationError) {
+    state.formError = validationError;
+    getAppCallbacks().render();
+    return;
+  }
+
+  try {
+    state.settingsDraft = settingsWithEndpointSync(state.settingsDraft);
+    state.appState = await SaveSettings(settingsWithCompactTheme(state.settingsDraft));
+    state.settingsDraft = cloneSettings(state.appState.settings);
+    state.settingsEndpointEditId = "";
+    applyTheme(state.appState.settings);
+    state.formError = "";
+    pushToast("Settings saved.", "success");
+    getAppCallbacks().render();
+  } catch (error) {
+    state.formError = errorMessage(error);
+    getAppCallbacks().render();
+  }
+}
+
 export function handleSettingsInput(event: Event) {
   const input = event.currentTarget as HTMLInputElement | HTMLSelectElement;
   if (input.dataset.llmEndpointSelection !== undefined && input instanceof HTMLSelectElement) {
@@ -1009,6 +1035,11 @@ export function handleSettingsInput(event: Event) {
     [input.name]: typeof value === "number" && Number.isNaN(value) ? 0 : value,
   });
   state.formError = "";
+
+  // Immediately persist settings when a checkbox is toggled.
+  if (input.type === "checkbox") {
+    void saveSettingsImmediately();
+  }
 }
 
 function handleLLMEndpointPresetChange(select: HTMLSelectElement) {
