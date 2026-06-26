@@ -590,8 +590,23 @@ export function applyKanbanEvent(event: KanbanEvent) {
     if (event.type === "card_progress" && patchOpenCardProgress(event)) {
       return;
     }
-    getAppCallbacks().render();
+    renderKanbanEventPreservingScroll();
   }
+}
+
+function renderKanbanEventPreservingScroll() {
+  const mainContent = appRoot.querySelector<HTMLElement>(".main-content");
+  const scrollTop = mainContent?.scrollTop ?? 0;
+  const scrollLeft = mainContent?.scrollLeft ?? 0;
+
+  getAppCallbacks().render();
+
+  const renderedMainContent = appRoot.querySelector<HTMLElement>(".main-content");
+  if (!renderedMainContent) {
+    return;
+  }
+  renderedMainContent.scrollTop = scrollTop;
+  renderedMainContent.scrollLeft = scrollLeft;
 }
 
 export function patchOpenCardProgress(event: KanbanEvent): boolean {
