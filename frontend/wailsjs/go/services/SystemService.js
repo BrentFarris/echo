@@ -18,6 +18,10 @@ export function AppInfo() {
   return window['go']['services']['SystemService']['AppInfo']();
 }
 
+export function ChooseWorkspaceFileSavePath(arg1, arg2) {
+  return window['go']['services']['SystemService']['ChooseWorkspaceFileSavePath'](arg1, arg2);
+}
+
 export function ChooseWorkspaceFolder() {
   return window['go']['services']['SystemService']['ChooseWorkspaceFolder']();
 }
@@ -216,6 +220,10 @@ export function SaveWebAccessSettings(arg1) {
 
 export function SaveWorkspaceFile(arg1, arg2, arg3, arg4) {
   return window['go']['services']['SystemService']['SaveWorkspaceFile'](arg1, arg2, arg3, arg4);
+}
+
+export function SaveWorkspaceFileAs(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['SaveWorkspaceFileAs'](arg1, arg2, arg3);
 }
 
 export function SearchWorkspaceFiles(arg1, arg2, arg3) {

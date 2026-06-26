@@ -2,7 +2,7 @@ import { setCodeQuickOpenEventBinder, setCodeTextSearchEventBinder, setCodeTreeE
 import { ensureCodeState } from "./state";
 import type { CodeViewCallbacks } from "./types";
 import { cancelPendingCodeCreate, cancelPendingCodeRename, clearCodeDrag, collapseCodeTree, dropCodeDrag, handleSearchInput, refreshCodeTree, selectCodeTreeEntry, startCodeDrag, startSelectedCodeCreate, startSelectedCodeRename, submitPendingCodeCreate, submitPendingCodeRename, toggleDirectory, toggleIgnoredFilter, updateCodeDropTarget, updatePendingCodeCreateName, updatePendingCodeRenameName } from "./explorer";
-import { activateCodeTab, closeCodeTab, navigateCodeHistory, openCodeFile, openPinnedCodeFile, pinCodeTab, saveActiveCodeFile, startOpenTabFileWatch } from "./tabs";
+import { activateCodeTab, closeCodeTab, createUntitledCodeFile, navigateCodeHistory, openCodeFile, openPinnedCodeFile, pinCodeTab, saveActiveCodeFile, startOpenTabFileWatch, toggleTemporaryFiles } from "./tabs";
 import { mountActiveCodeEditor } from "./editor";
 import { openInlineCodeChatAtCursor } from "./inlineChat";
 import { closeQuickOpen, handleQuickOpenInput, moveQuickOpenSelection, openQuickOpenSelection } from "./quickOpen";
@@ -42,6 +42,8 @@ export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallback
     });
   });
 
+  bindUntitledFileCreationEvents(root, workspaceID, callbacks);
+
   const search = root.querySelector<HTMLInputElement>("[data-code-search]");
   search?.addEventListener("input", (event) => {
     handleSearchInput(workspaceID, event.currentTarget as HTMLInputElement, callbacks);
@@ -68,6 +70,28 @@ export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallback
   restoreCodeTreeScroll(workspaceID);
   startOpenTabFileWatch(callbacks);
   void mountActiveCodeEditor(workspaceID, callbacks, { openCodeFile, navigateCodeHistory, saveActiveCodeFile });
+}
+
+function bindUntitledFileCreationEvents(
+  root: ParentNode,
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const createFromBlankArea = (event: MouseEvent) => {
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+    event.preventDefault();
+    createUntitledCodeFile(workspaceID, callbacks);
+  };
+  root.querySelector<HTMLElement>("[data-code-tabs]")?.addEventListener(
+    "dblclick",
+    createFromBlankArea,
+  );
+  root.querySelector<HTMLElement>("[data-code-empty]")?.addEventListener(
+    "dblclick",
+    createFromBlankArea,
+  );
 }
 
 function bindCodeTreeEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
@@ -520,6 +544,14 @@ async function handleCodeAction(target: HTMLElement, workspaceID: string, callba
   }
   if (action === "open-inline-chat") {
     openInlineCodeChatAtCursor(workspaceID, callbacks);
+    return;
+  }
+  if (action === "create-temporary-file") {
+    createUntitledCodeFile(workspaceID, callbacks);
+    return;
+  }
+  if (action === "toggle-temporary-files") {
+    toggleTemporaryFiles(workspaceID, callbacks);
     return;
   }
   if (action === "open-text-search") {

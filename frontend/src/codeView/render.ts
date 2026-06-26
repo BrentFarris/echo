@@ -2,13 +2,13 @@ import { services } from "../../wailsjs/go/models";
 import { codeIcons } from "./icons";
 import { activeCodeTab, directoryStateFor, ensureCodeState, filteredEntries } from "./state";
 import type { CodeFileTab, CodeWorkspaceState } from "./types";
-import { escapeAttribute, escapeHtml, fileName, formatBytes } from "./utils";
+import { codeTabName, escapeAttribute, escapeHtml, fileName, formatBytes } from "./utils";
 
 export function renderCodeView(workspace: services.Workspace): string {
   const state = ensureCodeState(workspace.id);
   const activeTab = activeCodeTab(workspace.id);
   const dirtyCount = state.tabs.filter((tab) => tab.dirty).length;
-  const saveDisabled = !activeTab || !activeTab.dirty || activeTab.saving;
+  const saveDisabled = !activeTab || (!activeTab.untitled && !activeTab.dirty) || activeTab.saving;
   const filterLabel = state.showIgnored ? "Hide ignored" : "Show ignored";
   const explorerID = `code-explorer-${workspace.id}`;
   return `
@@ -47,7 +47,7 @@ export function renderCodeView(workspace: services.Workspace): string {
             title="Open inline chat at caret"
             aria-label="Open inline chat at caret"
             data-code-action="open-inline-chat"
-            ${activeTab ? "" : "disabled"}
+            ${activeTab && !activeTab.untitled ? "" : "disabled"}
           >
             ${codeIcons.message}
             <span>Ask</span>
@@ -74,9 +74,9 @@ export function renderCodeView(workspace: services.Workspace): string {
             ${
               activeTab
                 ? `<div class="code-editor-mount" data-code-editor-mount></div>`
-                : `<div class="empty-state code-empty">
+                : `<div class="empty-state code-empty" data-code-empty>
                     <strong>No file open</strong>
-                    <span>Select a text file in the workspace tree.</span>
+                    <span>Select a text file, or double-click here to create a temporary file.</span>
                     <button class="secondary-button icon-text-button code-empty-file-list-button" type="button" data-code-action="open-explorer-drawer">
                       ${codeIcons.folder}
                       <span>Files</span>
@@ -285,10 +285,64 @@ function renderCodeExplorerSidebar(workspaceID: string, dirtyCount: number): str
           data-code-search
         />
       </label>
+      ${renderTemporaryFilesSection(workspaceID)}
       <div class="code-tree" role="tree" data-code-tree>
         ${renderFileList(workspaceID)}
       </div>
     </aside>
+  `;
+}
+
+function renderTemporaryFilesSection(workspaceID: string): string {
+  const state = ensureCodeState(workspaceID);
+  const tabs = state.tabs.filter((tab) => tab.untitled);
+  const expanded = tabs.length > 0 && state.temporaryFilesExpanded;
+  return `
+    <section class="code-temporary-files ${expanded ? "is-expanded" : ""}" aria-label="Temporary files">
+      <div class="code-temporary-files-heading">
+        <button
+          class="code-temporary-files-toggle"
+          type="button"
+          aria-expanded="${expanded}"
+          data-code-action="toggle-temporary-files"
+          ${tabs.length ? "" : "disabled"}
+        >
+          <span class="code-temporary-files-chevron">${codeIcons.chevron}</span>
+          <span>Temporary Files</span>
+          <span class="code-temporary-files-count">${tabs.length}</span>
+        </button>
+        <button class="icon-button" type="button" title="New temporary file" aria-label="New temporary file" data-code-action="create-temporary-file">
+          ${codeIcons.newFile}
+        </button>
+      </div>
+      ${
+        expanded
+          ? `<div class="code-temporary-files-list">
+              ${tabs.map((tab) => renderTemporaryFileEntry(state, tab)).join("")}
+            </div>`
+          : ""
+      }
+    </section>
+  `;
+}
+
+function renderTemporaryFileEntry(
+  state: CodeWorkspaceState,
+  tab: CodeFileTab,
+): string {
+  const active = state.activePath === tab.path;
+  const label = codeTabName(tab);
+  return `
+    <div class="code-temporary-file ${active ? "is-active" : ""}" data-code-untitled="${escapeAttribute(tab.path)}">
+      <button class="code-temporary-file-main" type="button" title="${escapeAttribute(label)}" data-code-action="activate-tab" data-code-path="${escapeAttribute(tab.path)}">
+        <span class="code-tree-entry-icon">${codeIcons.file}</span>
+        <span>${escapeHtml(label)}</span>
+        ${tab.dirty ? `<span class="dirty-dot" aria-label="Unsaved changes"></span>` : ""}
+      </button>
+      <button class="code-temporary-file-close" type="button" title="Close ${escapeAttribute(label)}" aria-label="Close ${escapeAttribute(label)}" data-code-action="close-tab" data-code-path="${escapeAttribute(tab.path)}">
+        ${codeIcons.close}
+      </button>
+    </div>
   `;
 }
 
@@ -570,20 +624,20 @@ function renderPendingRenameRow(
 function renderCodeTabs(workspaceID: string): string {
   const state = ensureCodeState(workspaceID);
   if (!state.tabs.length) {
-    return `<div class="code-tabs is-empty"></div>`;
+    return `<div class="code-tabs is-empty" title="Double-click to create a temporary file" data-code-tabs></div>`;
   }
   return `
-    <div class="code-tabs" role="tablist" aria-label="Open files">
+    <div class="code-tabs" role="tablist" aria-label="Open files" title="Double-click empty space to create a temporary file" data-code-tabs>
       ${state.tabs
         .map((tab) => {
           const active = state.activePath === tab.path;
           return `
-            <div class="code-tab ${active ? "is-active" : ""} ${tab.dirty ? "is-dirty" : ""} ${tab.temporary ? "is-temporary" : ""}" data-code-tab="${escapeAttribute(tab.path)}">
-              <button class="code-tab-main" type="button" role="tab" aria-selected="${active}" title="${escapeAttribute(tab.path)}" data-code-action="activate-tab" data-code-tab-main data-code-path="${escapeAttribute(tab.path)}">
-                <span>${escapeHtml(fileName(tab.path))}</span>
+            <div class="code-tab ${active ? "is-active" : ""} ${tab.dirty ? "is-dirty" : ""} ${tab.temporary ? "is-temporary" : ""} ${tab.untitled ? "is-untitled" : ""}" data-code-tab="${escapeAttribute(tab.path)}">
+              <button class="code-tab-main" type="button" role="tab" aria-selected="${active}" title="${escapeAttribute(tab.untitled ? codeTabName(tab) : tab.path)}" data-code-action="activate-tab" data-code-tab-main data-code-path="${escapeAttribute(tab.path)}">
+                <span>${escapeHtml(codeTabName(tab))}</span>
                 ${tab.dirty ? `<span class="dirty-dot" aria-label="Unsaved changes"></span>` : ""}
               </button>
-              <button class="code-tab-close" type="button" title="Close ${escapeAttribute(fileName(tab.path))}" aria-label="Close ${escapeAttribute(fileName(tab.path))}" data-code-action="close-tab" data-code-path="${escapeAttribute(tab.path)}">
+              <button class="code-tab-close" type="button" title="Close ${escapeAttribute(codeTabName(tab))}" aria-label="Close ${escapeAttribute(codeTabName(tab))}" data-code-action="close-tab" data-code-path="${escapeAttribute(tab.path)}">
                 ${codeIcons.close}
               </button>
             </div>
@@ -620,8 +674,8 @@ function renderCodeTabSwitcher(workspaceID: string): string {
               data-code-action="activate-switcher-tab"
               data-code-path="${escapeAttribute(tab.path)}"
             >
-              <span class="code-tab-switcher-name">${escapeHtml(fileName(tab.path))}</span>
-              <span class="code-tab-switcher-path">${escapeHtml(tab.path)}</span>
+              <span class="code-tab-switcher-name">${escapeHtml(codeTabName(tab))}</span>
+              <span class="code-tab-switcher-path">${escapeHtml(tab.untitled ? "Temporary file" : tab.path)}</span>
               ${tab.dirty ? `<span class="dirty-dot" aria-label="Unsaved changes"></span>` : ""}
             </button>
           `;
@@ -701,6 +755,10 @@ export function renderCodeStatus(tab: CodeFileTab | null, openingPath: string): 
   }
   if (!tab) {
     return "No file selected.";
+  }
+  if (tab.untitled) {
+    const state = tab.saving ? "Saving" : tab.dirty ? "Unsaved changes" : "Temporary file";
+    return `${escapeHtml(codeTabName(tab))} - ${escapeHtml(formatBytes(tab.bytes))} - ${state}`;
   }
   const state = tab.saving ? "Saving" : tab.dirty ? "Unsaved changes" : "Saved";
   return `${escapeHtml(tab.path)} - ${escapeHtml(formatBytes(tab.bytes))} - ${state}`;

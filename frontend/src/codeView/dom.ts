@@ -3,7 +3,7 @@ import { codeIcons } from "./icons";
 import { renderCodeQuickOpenResults, renderFileList, renderTextSearchPanelContent } from "./render";
 import { activeCodeTab, ensureCodeState, explorerWidthStorageKey, maxExplorerWidth, minExplorerWidth } from "./state";
 import type { CodeFileTab, CodeViewCallbacks } from "./types";
-import { clamp, formatBytes } from "./utils";
+import { clamp, codeTabName, formatBytes } from "./utils";
 
 type CodeTreeEventBinder = (root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) => void;
 type CodeTextSearchEventBinder = (root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) => void;
@@ -58,12 +58,27 @@ export function patchDirtyUI(workspaceID: string, tab: CodeFileTab) {
       dot?.remove();
     }
   });
+  document.querySelectorAll<HTMLElement>("[data-code-untitled]").forEach((element) => {
+    if (element.dataset.codeUntitled !== tab.path) {
+      return;
+    }
+    let dot = element.querySelector<HTMLElement>(".dirty-dot");
+    if (tab.dirty && !dot) {
+      dot = document.createElement("span");
+      dot.className = "dirty-dot";
+      dot.setAttribute("aria-label", "Unsaved changes");
+      element.querySelector(".code-temporary-file-main")?.appendChild(dot);
+    }
+    if (!tab.dirty) {
+      dot?.remove();
+    }
+  });
   if (activeCodeTab(workspaceID)?.path !== tab.path) {
     return;
   }
   const save = document.querySelector<HTMLButtonElement>("[data-code-save]");
   if (save) {
-    save.disabled = !tab.dirty || tab.saving;
+    save.disabled = (!tab.untitled && !tab.dirty) || tab.saving;
     save.innerHTML = `${tab.saving ? `<span class="spinner" aria-hidden="true"></span>` : codeIcons.save}<span>Save</span>`;
   }
   const dirtySummary = document.querySelector<HTMLElement>("[data-code-dirty-summary]");
@@ -73,8 +88,14 @@ export function patchDirtyUI(workspaceID: string, tab: CodeFileTab) {
   }
   const status = document.querySelector<HTMLElement>("[data-code-status]");
   if (status) {
-    const state = tab.saving ? "Saving" : tab.dirty ? "Unsaved changes" : "Saved";
-    status.textContent = `${tab.path} - ${formatBytes(tab.bytes)} - ${state}`;
+    const state = tab.saving
+      ? "Saving"
+      : tab.dirty
+        ? "Unsaved changes"
+        : tab.untitled
+          ? "Temporary file"
+          : "Saved";
+    status.textContent = `${tab.untitled ? codeTabName(tab) : tab.path} - ${formatBytes(tab.bytes)} - ${state}`;
   }
 }
 

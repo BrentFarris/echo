@@ -1,5 +1,5 @@
 import * as Wails from "../../wailsjs/go/services/SystemService";
-import { chooseWorkspaceFolderForWorkspaceWeb, chooseWorkspaceFolderWeb, chooseWorkspaceIconWeb, isWailsRuntime, webRpc } from "./web";
+import { chooseWorkspaceFileSavePathWeb, chooseWorkspaceFolderForWorkspaceWeb, chooseWorkspaceFolderWeb, chooseWorkspaceIconWeb, isWailsRuntime, webRpc } from "./web";
 
 type WailsFunction = (...args: any[]) => Promise<any>;
 
@@ -101,6 +101,13 @@ export function ExecutePlan(...args: Parameters<typeof Wails.ExecutePlan>): Retu
 
 export function FindWorkspaceFileDefinition(...args: Parameters<typeof Wails.FindWorkspaceFileDefinition>): ReturnType<typeof Wails.FindWorkspaceFileDefinition> {
   return call("FindWorkspaceFileDefinition", Wails.FindWorkspaceFileDefinition, args);
+}
+
+export function ChooseWorkspaceFileSavePath(...args: Parameters<typeof Wails.ChooseWorkspaceFileSavePath>): ReturnType<typeof Wails.ChooseWorkspaceFileSavePath> {
+  if (isWailsRuntime()) {
+    return Wails.ChooseWorkspaceFileSavePath(...args);
+  }
+  return chooseWorkspaceFileSavePathWeb(args[0], args[1]) as ReturnType<typeof Wails.ChooseWorkspaceFileSavePath>;
 }
 
 export function FindWorkspaceFileImplementations(...args: Parameters<typeof Wails.FindWorkspaceFileImplementations>): ReturnType<typeof Wails.FindWorkspaceFileImplementations> {
@@ -241,6 +248,10 @@ export function SaveWebAccessSettings(...args: Parameters<typeof Wails.SaveWebAc
 
 export function SaveWorkspaceFile(...args: Parameters<typeof Wails.SaveWorkspaceFile>): ReturnType<typeof Wails.SaveWorkspaceFile> {
   return call("SaveWorkspaceFile", Wails.SaveWorkspaceFile, args);
+}
+
+export function SaveWorkspaceFileAs(...args: Parameters<typeof Wails.SaveWorkspaceFileAs>): ReturnType<typeof Wails.SaveWorkspaceFileAs> {
+  return call("SaveWorkspaceFileAs", Wails.SaveWorkspaceFileAs, args);
 }
 
 export function SearchWorkspaceFiles(...args: Parameters<typeof Wails.SearchWorkspaceFiles>): ReturnType<typeof Wails.SearchWorkspaceFiles> {

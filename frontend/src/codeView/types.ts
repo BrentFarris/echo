@@ -36,6 +36,7 @@ export type CodeFileTab = {
   dirty: boolean;
   saving: boolean;
   temporary: boolean;
+  untitled: boolean;
   selectionAnchor: number;
   selectionHead: number;
   scrollTop: number;
@@ -160,6 +161,8 @@ export type CodeWorkspaceState = {
   searchTimerID: number | null;
   searchFocused: boolean;
   preservingSearchFocus: boolean;
+  untitledSeq: number;
+  temporaryFilesExpanded: boolean;
   textSearchOpen: boolean;
   textSearchQuery: string;
   textSearchInclude: string;

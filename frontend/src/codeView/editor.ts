@@ -179,9 +179,6 @@ export async function mountActiveCodeEditor(
     codeNavigationHistoryKeymap(workspaceID, callbacks, hooks),
     rectangularAltSelectionExtension(),
     crosshairCursor(),
-    lspDefinitionExtension(workspaceID, tab.path, callbacks, hooks.openCodeFile),
-    referencesPanelExtension(workspaceID, tab.path, callbacks, hooks.openCodeFile),
-    inlineCodeChatExtension(workspaceID, tab.path, callbacks, { saveActiveCodeFile: hooks.saveActiveCodeFile }),
     EditorView.updateListener.of((update) => {
       if (update.selectionSet || update.docChanged) {
         updateTabEditorState(workspaceID, tab.path, update.view);
@@ -196,6 +193,13 @@ export async function mountActiveCodeEditor(
       );
     }),
   ];
+  if (!tab.untitled) {
+    extensions.push(
+      lspDefinitionExtension(workspaceID, tab.path, callbacks, hooks.openCodeFile),
+      referencesPanelExtension(workspaceID, tab.path, callbacks, hooks.openCodeFile),
+      inlineCodeChatExtension(workspaceID, tab.path, callbacks, { saveActiveCodeFile: hooks.saveActiveCodeFile }),
+    );
+  }
   if (callbacks.leadingWhitespaceIndicatorsEnabled()) {
     extensions.push(leadingWhitespaceIndicatorExtension());
   }
@@ -206,7 +210,9 @@ export async function mountActiveCodeEditor(
   if (language) {
     extensions.push(language);
   }
-  extensions.push(lspCompletionExtension(workspaceID, tab.path, callbacks));
+  if (!tab.untitled) {
+    extensions.push(lspCompletionExtension(workspaceID, tab.path, callbacks));
+  }
   const docLength = editorDocumentLengthForFileContent(tab.content, tab.lineSeparator);
   const selectionAnchor = clamp(tab.selectionAnchor, 0, docLength);
   const selectionHead = clamp(tab.selectionHead, 0, docLength);

@@ -12,6 +12,8 @@ export function AddWorkspaceFolder(arg1:string,arg2:string):Promise<services.App
 
 export function AppInfo():Promise<services.AppInfo>;
 
+export function ChooseWorkspaceFileSavePath(arg1:string,arg2:string):Promise<string>;
+
 export function ChooseWorkspaceFolder():Promise<services.AppState>;
 
 export function ChooseWorkspaceFolderForWorkspace(arg1:string):Promise<services.AppState>;
@@ -111,6 +113,8 @@ export function SaveSettings(arg1:llm.Settings):Promise<services.AppState>;
 export function SaveWebAccessSettings(arg1:services.WebAccessSettings):Promise<services.AppState>;
 
 export function SaveWorkspaceFile(arg1:string,arg2:string,arg3:string,arg4:string):Promise<services.WorkspaceFile>;
+
+export function SaveWorkspaceFileAs(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFile>;
 
 export function SearchWorkspaceFiles(arg1:string,arg2:string,arg3:boolean):Promise<services.WorkspaceFileSearchResult>;
 

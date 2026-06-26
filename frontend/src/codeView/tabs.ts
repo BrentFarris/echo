@@ -1,4 +1,4 @@
-import { ReadWorkspaceFile, SaveWorkspaceFile } from "../backend/services";
+import { ChooseWorkspaceFileSavePath, ReadWorkspaceFile, SaveWorkspaceFile, SaveWorkspaceFileAs } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
 import { captureCodeTreeScroll, patchDirtyUI } from "./dom";
 import { applySavedFile, activeCodeTab, codeStates, ensureCodeState, findTab, promoteTabMruPath, pruneTabMruPaths, removeTabMruPath, tabSwitcherPaths, workspaceFileChanged, wrapIndex } from "./state";
@@ -10,10 +10,11 @@ import {
   peekCodeNavigationHistoryTarget,
   recordCodeNavigationTransition,
   removeCodeNavigationHistoryEntry,
+  rewriteCodeNavigationHistoryPaths,
   syncCurrentCodeNavigationLocation,
 } from "./navigation";
 import type { CodeFileTab, CodeNavigationLocation, CodeViewCallbacks } from "./types";
-import { clamp, editableWorkspaceFile, fileContentOffsetToEditorPosition, sleep } from "./utils";
+import { clamp, codeTabName, editableWorkspaceFile, fileContentOffsetToEditorPosition, isUntitledCodePath, sleep, untitledCodeTabPrefix } from "./utils";
 import { replaceMountedEditorContent, saveMountedEditorContent } from "./editor";
 import { revealCodeFileInTree } from "./treeReveal";
 
@@ -56,7 +57,10 @@ export async function refreshOpenCodeTabsFromDisk(
 
 export function startOpenTabFileWatch(callbacks: CodeViewCallbacks) {
   openTabFileWatchCallbacks = callbacks;
-  if (openTabFileWatchTimerID !== null) {
+  if (
+    openTabFileWatchTimerID !== null ||
+    watchedOpenTabWorkspaceIDs().length === 0
+  ) {
     return;
   }
   openTabFileWatchTimerID = window.setInterval(() => {
@@ -79,7 +83,7 @@ function stopOpenTabFileWatch() {
 function watchedOpenTabWorkspaceIDs() {
   const workspaceIDs: string[] = [];
   codeStates.forEach((state, workspaceID) => {
-    if (state.tabs.length > 0) {
+    if (state.tabs.some((tab) => !tab.untitled)) {
       workspaceIDs.push(workspaceID);
     }
   });
@@ -125,7 +129,7 @@ async function reloadWorkspaceOpenCodeTabsFromDisk(
   const openPaths = state.tabs.map((tab) => tab.path);
   for (const path of openPaths) {
     const tab = findTab(workspaceID, path);
-    if (!tab || tab.dirty || tab.saving) {
+    if (!tab || tab.untitled || tab.dirty || tab.saving) {
       continue;
     }
 
@@ -228,7 +232,9 @@ export function finishCodeTabSwitcher(
     captureActiveCodeNavigationLocation(workspaceID),
   );
   callbacks.render();
-  void revealCodeFileInTree(workspaceID, activePath, callbacks);
+  if (!isUntitledCodePath(activePath)) {
+    void revealCodeFileInTree(workspaceID, activePath, callbacks);
+  }
   return true;
 }
 
@@ -253,6 +259,9 @@ async function saveCodeTab(
   const tab = findTab(workspaceID, path);
   if (!tab || tab.saving) {
     return false;
+  }
+  if (tab.untitled) {
+    return saveUntitledCodeTab(workspaceID, tab, callbacks);
   }
   if (!tab.dirty) {
     return true;
@@ -297,6 +306,149 @@ async function saveCodeTab(
       patchDirtyUI(workspaceID, latest);
     }
   }
+}
+
+async function saveUntitledCodeTab(
+  workspaceID: string,
+  tab: CodeFileTab,
+  callbacks: CodeViewCallbacks,
+) {
+  tab.saving = true;
+  patchDirtyUI(workspaceID, tab);
+  const originalPath = tab.path;
+  try {
+    const selectedPath = await ChooseWorkspaceFileSavePath(
+      workspaceID,
+      codeTabName(tab),
+    );
+    if (!selectedPath) {
+      return false;
+    }
+
+    const state = ensureCodeState(workspaceID);
+    const conflict = state.tabs.find(
+      (candidate) =>
+        candidate !== tab &&
+        !candidate.untitled &&
+        sameWorkspacePath(candidate.path, selectedPath),
+    );
+    if (conflict) {
+      callbacks.pushToast(`${selectedPath} is already open.`, "error");
+      return false;
+    }
+
+    const contentBeforeSave = tab.content;
+    const lineSeparatorBeforeSave = tab.lineSeparator;
+    const saved = services.WorkspaceFile.createFrom(
+      await SaveWorkspaceFileAs(workspaceID, selectedPath, contentBeforeSave),
+    );
+    const editorChangedDuringSave =
+      tab.content !== contentBeforeSave ||
+      tab.lineSeparator !== lineSeparatorBeforeSave;
+    rewriteCodeTabPath(workspaceID, tab, saved.path);
+    const latestContent = tab.content;
+    const latestLineSeparator = tab.lineSeparator;
+    applySavedFile(workspaceID, saved);
+    if (editorChangedDuringSave) {
+      tab.content = latestContent;
+      tab.lineSeparator = latestLineSeparator;
+      tab.bytes = new TextEncoder().encode(latestContent).length;
+      tab.dirty = tab.content !== tab.savedContent;
+    }
+    tab.temporary = false;
+    tab.untitled = false;
+    if (!state.tabs.some((candidate) => candidate.untitled)) {
+      state.temporaryFilesExpanded = false;
+    }
+    state.directories.clear();
+    tab.saving = false;
+    callbacks.pushToast("File saved.", "success");
+    callbacks.render();
+    void revealCodeFileInTree(workspaceID, saved.path, callbacks);
+    return true;
+  } catch (error) {
+    callbacks.pushToast(callbacks.errorMessage(error), "error");
+    return false;
+  } finally {
+    tab.saving = false;
+    if (tab.path === originalPath) {
+      patchDirtyUI(workspaceID, tab);
+    }
+  }
+}
+
+function rewriteCodeTabPath(
+  workspaceID: string,
+  tab: CodeFileTab,
+  nextPath: string,
+) {
+  const state = ensureCodeState(workspaceID);
+  const previousPath = tab.path;
+  tab.path = nextPath;
+  if (state.activePath === previousPath) {
+    state.activePath = nextPath;
+  }
+  state.tabMruPaths = state.tabMruPaths.map((path) =>
+    path === previousPath ? nextPath : path,
+  );
+  if (state.tabSwitcher) {
+    state.tabSwitcher.paths = state.tabSwitcher.paths.map((path) =>
+      path === previousPath ? nextPath : path,
+    );
+    if (state.tabSwitcher.sourceLocation?.path === previousPath) {
+      state.tabSwitcher.sourceLocation.path = nextPath;
+    }
+  }
+  rewriteCodeNavigationHistoryPaths(workspaceID, previousPath, nextPath);
+  promoteTabMruPath(state, nextPath);
+}
+
+export function createUntitledCodeFile(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  saveMountedEditorContent();
+  const state = ensureCodeState(workspaceID);
+  let path = "";
+  do {
+    path = `${untitledCodeTabPrefix}Untitled-${++state.untitledSeq}`;
+  } while (state.tabs.some((tab) => tab.path === path));
+
+  const tab: CodeFileTab = {
+    path,
+    content: "",
+    savedContent: "",
+    lineSeparator: "\n",
+    bytes: 0,
+    modifiedAt: "",
+    dirty: false,
+    saving: false,
+    temporary: false,
+    untitled: true,
+    selectionAnchor: 0,
+    selectionHead: 0,
+    scrollTop: 0,
+    scrollLeft: 0,
+  };
+  state.tabs.push(tab);
+  state.activePath = path;
+  state.temporaryFilesExpanded = true;
+  state.tabSwitcher = null;
+  promoteTabMruPath(state, path);
+  callbacks.render();
+}
+
+export function toggleTemporaryFiles(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const state = ensureCodeState(workspaceID);
+  if (!state.tabs.some((tab) => tab.untitled)) {
+    state.temporaryFilesExpanded = false;
+    return;
+  }
+  state.temporaryFilesExpanded = !state.temporaryFilesExpanded;
+  callbacks.render();
 }
 
 export async function openCodeFile(
@@ -357,6 +509,7 @@ export async function openCodeFile(
       dirty: false,
       saving: false,
       temporary: options.temporary,
+      untitled: false,
       selectionAnchor: 0,
       selectionHead: 0,
       scrollTop: 0,
@@ -569,7 +722,8 @@ async function closeCodeTabAtPath(
     if (choice === "save" && !(await saveCodeTab(workspaceID, tab.path, callbacks))) {
       return false;
     }
-    index = state.tabs.findIndex((candidate) => candidate.path === path);
+    path = tab.path;
+    index = state.tabs.indexOf(tab);
     if (index < 0) {
       return false;
     }
@@ -584,8 +738,11 @@ async function closeCodeTabAtPath(
   }
   state.tabSwitcher = null;
   pruneTabMruPaths(state);
+  if (!state.tabs.some((candidate) => candidate.untitled)) {
+    state.temporaryFilesExpanded = false;
+  }
   callbacks.render();
-  if (state.activePath) {
+  if (state.activePath && !isUntitledCodePath(state.activePath)) {
     void revealCodeFileInTree(workspaceID, state.activePath, callbacks);
   }
   return true;
@@ -613,7 +770,7 @@ function promptDirtyCodeTabClose(tab: CodeFileTab): Promise<DirtyCodeTabCloseCho
     title.textContent = "Unsaved changes";
 
     const message = document.createElement("p");
-    message.textContent = `${tab.path} has unsaved changes.`;
+    message.textContent = `${codeTabName(tab)} has unsaved changes.`;
 
     const actions = document.createElement("div");
     actions.className = "code-close-dirty-actions";
@@ -719,7 +876,9 @@ export function activateCodeTab(
     );
   }
   callbacks.render();
-  void revealCodeFileInTree(workspaceID, path, callbacks);
+  if (!isUntitledCodePath(path)) {
+    void revealCodeFileInTree(workspaceID, path, callbacks);
+  }
 }
 
 function sameWorkspacePath(left: string, right: string) {

@@ -740,6 +740,54 @@ func TestSystemServiceSearchWorkspaceFilesCapsResults(t *testing.T) {
 	}
 }
 
+func TestSystemServiceSaveWorkspaceFileAsCreatesAndOverwritesTextFile(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+
+	created, err := service.SaveWorkspaceFileAs(
+		workspaceID,
+		"ideas.txt",
+		"first idea\n",
+	)
+	if err != nil {
+		t.Fatalf("save new workspace file: %v", err)
+	}
+	if created.Path != "workspace/ideas.txt" || created.Content != "first idea\n" {
+		t.Fatalf("unexpected created file: %#v", created)
+	}
+
+	overwritten, err := service.SaveWorkspaceFileAs(
+		workspaceID,
+		"workspace/ideas.txt",
+		"second idea\n",
+	)
+	if err != nil {
+		t.Fatalf("overwrite workspace file: %v", err)
+	}
+	if overwritten.Content != "second idea\n" {
+		t.Fatalf("expected overwritten content, got %#v", overwritten)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "ideas.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "second idea\n" {
+		t.Fatalf("unexpected saved data: %q", data)
+	}
+}
+
+func TestSystemServiceSaveWorkspaceFileAsRejectsOutsideWorkspace(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	outside := filepath.Join(filepath.Dir(root), "outside-note.txt")
+
+	if _, err := service.SaveWorkspaceFileAs(workspaceID, outside, "nope"); err == nil ||
+		!strings.Contains(err.Error(), "inside a workspace folder") {
+		t.Fatalf("expected outside workspace error, got %v", err)
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("expected outside file not to be created, stat error: %v", err)
+	}
+}
+
 func TestSystemServiceSearchWorkspaceTextFindsLiteralMatches(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {

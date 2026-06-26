@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const maxWorkspaceEditorFileBytes = 1024 * 1024
@@ -374,6 +376,155 @@ func (s *SystemService) SaveWorkspaceFile(workspaceID string, path string, conte
 	}
 	s.removeWorkspaceFileDatabases(workspaceID)
 	return readWorkspaceTextFile(workspace, resolved)
+}
+
+func (s *SystemService) ChooseWorkspaceFileSavePath(workspaceID string, suggestedName string) (string, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return "", err
+	}
+	if s.ctx == nil {
+		return "", fmt.Errorf("application is not ready to open a save dialog")
+	}
+
+	defaultDirectory := ""
+	for _, folder := range workspace.Folders {
+		if folder.Missing {
+			continue
+		}
+		if resolved, err := workspaceFolderAbsolutePath(folder); err == nil {
+			defaultDirectory = resolved
+			break
+		}
+	}
+	suggestedName = strings.TrimSpace(filepath.Base(suggestedName))
+	if suggestedName == "." || suggestedName == string(filepath.Separator) {
+		suggestedName = ""
+	}
+	selected, err := runtime.SaveFileDialog(s.ctx, runtime.SaveDialogOptions{
+		Title:                "Save temporary file",
+		DefaultDirectory:     defaultDirectory,
+		DefaultFilename:      suggestedName,
+		CanCreateDirectories: true,
+		ShowHiddenFiles:      true,
+	})
+	if err != nil || strings.TrimSpace(selected) == "" {
+		return "", err
+	}
+	relative, _, err := resolveWorkspaceSaveAsTarget(workspace, selected)
+	if err != nil {
+		return "", err
+	}
+	return relative, nil
+}
+
+func (s *SystemService) SaveWorkspaceFileAs(workspaceID string, path string, content string) (WorkspaceFile, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	if len([]byte(content)) > maxWorkspaceEditorFileBytes {
+		return WorkspaceFile{}, fmt.Errorf("content is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
+	}
+	if !utf8.ValidString(content) {
+		return WorkspaceFile{}, fmt.Errorf("file content must be valid UTF-8")
+	}
+
+	_, resolved, err := resolveWorkspaceSaveAsTarget(workspace, path)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	mode := os.FileMode(0o600)
+	if info, statErr := os.Stat(resolved); statErr == nil {
+		if !info.Mode().IsRegular() {
+			return WorkspaceFile{}, fmt.Errorf("path is not a regular file")
+		}
+		if info.Size() > maxWorkspaceEditorFileBytes {
+			return WorkspaceFile{}, fmt.Errorf("file is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
+		}
+		currentData, readErr := os.ReadFile(resolved)
+		if readErr != nil {
+			return WorkspaceFile{}, fmt.Errorf("read file: %w", readErr)
+		}
+		if !isWorkspaceTextLike(currentData) || !utf8.Valid(currentData) {
+			return WorkspaceFile{}, fmt.Errorf("file appears to be binary")
+		}
+		mode = info.Mode().Perm()
+	} else if !os.IsNotExist(statErr) {
+		return WorkspaceFile{}, fmt.Errorf("check save path: %w", statErr)
+	}
+
+	content, err = formatWorkspaceFileContentBeforeSave(resolved, content)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	if len([]byte(content)) > maxWorkspaceEditorFileBytes {
+		return WorkspaceFile{}, fmt.Errorf("formatted content is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
+	}
+	if err := os.WriteFile(resolved, []byte(content), mode); err != nil {
+		return WorkspaceFile{}, fmt.Errorf("write file: %w", err)
+	}
+	s.removeWorkspaceFileDatabases(workspaceID)
+	return readWorkspaceTextFile(workspace, resolved)
+}
+
+func resolveWorkspaceSaveAsTarget(workspace Workspace, requestedPath string) (string, string, error) {
+	requestedPath = strings.TrimSpace(requestedPath)
+	if requestedPath == "" {
+		return "", "", fmt.Errorf("save path is required")
+	}
+
+	absolute := requestedPath
+	if !filepath.IsAbs(absolute) {
+		label, relativePath := splitWorkspaceLabeledPath(requestedPath)
+		folder, ok := workspaceFolderByLabel(workspace, label)
+		if !ok {
+			for _, candidate := range workspace.Folders {
+				if !candidate.Missing {
+					folder = candidate
+					ok = true
+					relativePath = filepath.FromSlash(strings.Trim(strings.ReplaceAll(requestedPath, "\\", "/"), "/"))
+					break
+				}
+			}
+		}
+		if !ok || relativePath == "." || strings.TrimSpace(relativePath) == "" {
+			return "", "", fmt.Errorf("save path must include a file inside a workspace folder")
+		}
+		root, err := workspaceFolderAbsolutePath(folder)
+		if err != nil {
+			return "", "", err
+		}
+		absolute = filepath.Join(root, relativePath)
+	}
+	absolute, err := filepath.Abs(absolute)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve save path: %w", err)
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(absolute))
+	if err != nil {
+		return "", "", fmt.Errorf("save directory was not found")
+	}
+	if info, err := os.Stat(parent); err != nil || !info.IsDir() {
+		return "", "", fmt.Errorf("save directory was not found")
+	}
+	resolved := filepath.Join(parent, filepath.Base(absolute))
+	relative, err := workspaceRelativeCandidate(workspace, resolved)
+	if err != nil {
+		return "", "", fmt.Errorf("save path must be inside a workspace folder")
+	}
+	if info, err := os.Lstat(resolved); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		realResolved, evalErr := filepath.EvalSymlinks(resolved)
+		if evalErr != nil {
+			return "", "", fmt.Errorf("resolve save path: %w", evalErr)
+		}
+		if _, err := workspaceRelativeCandidate(workspace, realResolved); err != nil {
+			return "", "", fmt.Errorf("save path must be inside a workspace folder")
+		}
+		resolved = realResolved
+		relative = workspaceRelativePath(workspace, resolved)
+	}
+	return relative, resolved, nil
 }
 
 func formatWorkspaceFileContentBeforeSave(resolvedPath string, content string) (string, error) {
