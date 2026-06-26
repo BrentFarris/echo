@@ -168,10 +168,6 @@ func searchWorkspaceFilesByWalking(workspace Workspace, query string, includeIgn
 			if !workspaceSearchMatches(query, entry.Name(), relative) {
 				return nil
 			}
-			if len(output.Entries) >= maxWorkspaceFileSearchResults {
-				output.Truncated = true
-				return filepath.SkipAll
-			}
 			output.Entries = append(output.Entries, WorkspaceFileEntry{
 				Name:       entry.Name(),
 				Path:       relative,
@@ -184,30 +180,13 @@ func searchWorkspaceFilesByWalking(workspace Workspace, query string, includeIgn
 		if err != nil {
 			return WorkspaceFileSearchResult{}, fmt.Errorf("search workspace: %w", err)
 		}
-		if output.Truncated {
-			break
-		}
 	}
-	sort.Slice(output.Entries, func(i, j int) bool {
-		left := output.Entries[i]
-		right := output.Entries[j]
-		if left.Kind != right.Kind {
-			return left.Kind == "directory"
-		}
-		return strings.ToLower(left.Path) < strings.ToLower(right.Path)
-	})
+	sortWorkspaceFileEntries(output.Entries, query)
+	if len(output.Entries) > maxWorkspaceFileSearchResults {
+		output.Entries = output.Entries[:maxWorkspaceFileSearchResults]
+		output.Truncated = true
+	}
 	return output, nil
-}
-
-func sortWorkspaceFileEntries(entries []WorkspaceFileEntry) {
-	sort.Slice(entries, func(i, j int) bool {
-		left := entries[i]
-		right := entries[j]
-		if left.Kind != right.Kind {
-			return left.Kind == "directory"
-		}
-		return strings.ToLower(left.Path) < strings.ToLower(right.Path)
-	})
 }
 
 func (s *SystemService) CreateWorkspaceFile(workspaceID string, parentPath string, name string) (WorkspaceFile, error) {
@@ -863,9 +842,8 @@ func workspaceFileKind(info os.FileInfo) string {
 }
 
 func workspaceSearchMatches(query string, name string, relativePath string) bool {
-	name = strings.ToLower(name)
-	relativePath = strings.ToLower(filepath.ToSlash(relativePath))
-	return strings.Contains(name, query) || strings.Contains(relativePath, query)
+	_, matched := workspaceSearchScore(query, name, relativePath)
+	return matched
 }
 
 func isIgnoredWorkspaceDirectory(name string) bool {

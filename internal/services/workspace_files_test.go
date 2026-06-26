@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -606,6 +607,48 @@ func TestSystemServiceSearchWorkspaceFilesFindsNestedMatches(t *testing.T) {
 	}
 }
 
+func TestSystemServiceSearchWorkspaceFilesFuzzyMatchesAndRanksPaths(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.MkdirAll(filepath.Join(root, "src", "host"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for path, content := range map[string]string{
+		"host_test.go":                    "package workspace\n",
+		"host_render_test.go":             "package workspace\n",
+		"host_entity_test.go":             "package workspace\n",
+		"src/host/render_test_helpers.go": "package host\n",
+		"src/host/unrelated_component.go": "package host\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(path)), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := service.SearchWorkspaceFiles(workspaceID, "host_test", false)
+	if err != nil {
+		t.Fatalf("fuzzy search workspace: %v", err)
+	}
+	paths := entryPaths(result.Entries)
+	if len(paths) != 4 {
+		t.Fatalf("expected four fuzzy matches, got %v", paths)
+	}
+	if paths[0] != "workspace/host_test.go" {
+		t.Fatalf("expected closest filename first, got %v", paths)
+	}
+	for _, expected := range []string{
+		"workspace/host_entity_test.go",
+		"workspace/host_render_test.go",
+		"workspace/src/host/render_test_helpers.go",
+	} {
+		if !slices.Contains(paths, expected) {
+			t.Fatalf("expected fuzzy result %q, got %v", expected, paths)
+		}
+	}
+	if slices.Contains(paths, "workspace/src/host/unrelated_component.go") {
+		t.Fatalf("expected out-of-order/nonmatching path to be excluded, got %v", paths)
+	}
+}
+
 func TestSystemServiceSearchWorkspaceFilesSkipsIgnoredFoldersByDefault(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.MkdirAll(filepath.Join(root, "node_modules", "pkg"), 0o755); err != nil {
@@ -629,7 +672,9 @@ func TestSystemServiceSearchWorkspaceFilesSkipsIgnoredFoldersByDefault(t *testin
 	if err != nil {
 		t.Fatalf("search unfiltered workspace: %v", err)
 	}
-	if got := strings.Join(entryPaths(included.Entries), ","); got != "workspace/needle.txt,workspace/node_modules/pkg/needle.js" {
+	includedPaths := entryPaths(included.Entries)
+	slices.Sort(includedPaths)
+	if got := strings.Join(includedPaths, ","); got != "workspace/needle.txt,workspace/node_modules/pkg/needle.js" {
 		t.Fatalf("expected ignored folder match when included, got %v", got)
 	}
 }

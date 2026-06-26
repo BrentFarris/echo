@@ -61,7 +61,7 @@ func searchWorkspaceFilesWithDatabase(workspace Workspace, query string, include
 			output = append(output, current)
 		}
 	}
-	sortWorkspaceFileEntries(output)
+	sortWorkspaceFileEntries(output, query)
 	if len(output) > limit {
 		output = output[:limit]
 		truncated = true

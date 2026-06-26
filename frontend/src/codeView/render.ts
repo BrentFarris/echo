@@ -124,7 +124,7 @@ function renderSearchResults(workspaceID: string): string {
     .join("");
   return `
     <div class="code-search-results">
-      ${state.searchTruncated ? `<div class="code-tree-note">Showing first 200 matches.</div>` : ""}
+      ${state.searchTruncated ? `<div class="code-tree-note">Showing top 200 matches.</div>` : ""}
       ${results}
     </div>
   `;
@@ -670,7 +670,7 @@ export function renderCodeQuickOpenResults(workspaceID: string): string {
     return `<div class="code-quick-open-note">No matching files.</div>`;
   }
   return `
-    ${quickOpen.truncated ? `<div class="code-quick-open-note">Showing first 200 matches.</div>` : ""}
+    ${quickOpen.truncated ? `<div class="code-quick-open-note">Showing top 200 matches.</div>` : ""}
     ${quickOpen.results
       .map((entry, index) => {
         const selected = index === quickOpen.selectedIndex;
