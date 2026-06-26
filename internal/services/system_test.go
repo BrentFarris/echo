@@ -688,6 +688,79 @@ func TestSystemServiceChatShowsReasoningAndToolActivity(t *testing.T) {
 	}
 }
 
+func TestSystemServiceChatRecoversWhenToolResultExceedsContext(t *testing.T) {
+	root := t.TempDir()
+	const resultMarker = "UNBOUNDED_RESULT_MARKER"
+	if err := os.WriteFile(filepath.Join(root, "large.txt"), []byte(resultMarker), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var requestCount atomic.Int32
+	var recoveredRequest llm.ChatRequest
+	var filePath string
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		var request llm.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_large", "filesystem_read_text", map[string]any{"path": filePath}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 2:
+			if !requestContainsContent(request, resultMarker) {
+				t.Fatalf("expected original tool result before context rejection, got %#v", request.Messages)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(w, `{"error":{"code":400,"message":"request (174435 tokens) exceeds the available context size (147456 tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":174435,"n_ctx":147456}}`)
+		case 3:
+			recoveredRequest = request
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Recovered with a narrower request."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+	filePath = labeledTestPath(t, service, workspaceID, "large.txt")
+
+	if _, err := service.SendChatMessage(workspaceID, "Inspect the large file"); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+
+	if requestCount.Load() != 3 {
+		t.Fatalf("expected context rejection to be retried, got %d requests", requestCount.Load())
+	}
+	if !requestContainsContent(recoveredRequest, toolResultContextErrorCode) ||
+		!requestContainsContent(recoveredRequest, "Narrow the request") {
+		t.Fatalf("expected bounded tool error in recovery request, got %#v", recoveredRequest.Messages)
+	}
+	if requestContainsContent(recoveredRequest, resultMarker) {
+		t.Fatalf("expected oversized result to be removed, got %#v", recoveredRequest.Messages)
+	}
+	assistant := session.Messages[1]
+	if assistant.Status != "complete" || assistant.Content != "Recovered with a narrower request." {
+		t.Fatalf("expected completed recovered response, got %#v", assistant)
+	}
+	if len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].Status != "error" ||
+		!strings.Contains(assistant.ToolCalls[0].Result, toolResultContextErrorCode) {
+		t.Fatalf("expected visible tool activity to show the context error, got %#v", assistant.ToolCalls)
+	}
+	historyData, err := json.Marshal(service.chatHistory(workspaceID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(historyData), resultMarker) || !strings.Contains(string(historyData), toolResultContextErrorCode) {
+		t.Fatalf("expected persisted runtime history to keep only the bounded result, got %s", historyData)
+	}
+}
+
 func TestSystemServiceChatRepairsMalformedToolArguments(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hello"), 0o600); err != nil {

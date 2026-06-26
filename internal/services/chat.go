@@ -365,6 +365,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 	if planMode {
 		toolSchema = tools.ReadOnlyLLMSchema()
 	}
+	recoverableToolCalls := make(map[string]bool)
 	for {
 		if err := ctx.Err(); err != nil {
 			s.cancelChatMessage(workspace.ID, streamID, messageID)
@@ -382,6 +383,15 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 			if ctx.Err() != nil {
 				s.cancelChatMessage(workspace.ID, streamID, messageID)
 				return
+			}
+			if llm.IsContextLengthExceeded(err) {
+				if recovery, ok := recoverToolResultContext(messages, recoverableToolCalls); ok {
+					messages = recovery.Messages
+					s.replaceChatHistory(workspace.ID, messages[1:])
+					s.updateToolActivity(workspace.ID, streamID, messageID, recovery.Call, "error", recovery.ResultMessage.Content, toolResultContextErrorText)
+					s.retryChatMessage(workspace.ID, streamID, messageID)
+					continue
+				}
 			}
 			s.failChatMessage(workspace.ID, streamID, messageID, userFacingLLMError(err))
 			return
@@ -410,6 +420,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 				return
 			}
 			resultMessages := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, planMode)
+			recoverableToolCalls[call.ID] = true
 			messages = append(messages, resultMessages...)
 			for _, resultMessage := range resultMessages {
 				s.appendChatHistory(workspace.ID, resultMessage)
@@ -768,6 +779,14 @@ func (s *SystemService) appendChatHistory(workspaceID string, message llm.Messag
 	defer s.chatMu.Unlock()
 	if session := s.chatSessions[workspaceID]; session != nil {
 		session.History = append(session.History, message)
+	}
+}
+
+func (s *SystemService) replaceChatHistory(workspaceID string, history []llm.Message) {
+	s.chatMu.Lock()
+	defer s.chatMu.Unlock()
+	if session := s.chatSessions[workspaceID]; session != nil {
+		session.History = cloneLLMMessages(history)
 	}
 }
 

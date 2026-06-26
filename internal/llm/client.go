@@ -238,6 +238,28 @@ func responseError(response *http.Response) error {
 	return fmt.Errorf("llm endpoint returned %s: %s", response.Status, detail)
 }
 
+// IsContextLengthExceeded reports whether an endpoint rejected a request because
+// its prompt was larger than the model's available context window.
+func IsContextLengthExceeded(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"exceed_context_size_error",
+		"context_length_exceeded",
+		"exceeds the available context size",
+		"maximum context length",
+		"context window is too small",
+		"too many tokens",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func chatCompletionsURL(endpoint string) string {
 	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
 	if strings.HasSuffix(endpoint, "/chat/completions") {

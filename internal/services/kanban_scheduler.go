@@ -367,6 +367,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 		kanbanAgentUserMessage(card, dependencyOutputs, contextBrief),
 	}
 	changedPaths := map[string]bool{}
+	recoverableToolCalls := make(map[string]bool)
 	verificationAttempts := 0
 	noToolContinuationAttempts := 0
 	for {
@@ -386,6 +387,17 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 			if ctx.Err() != nil {
 				s.blockKanbanCard(workspace.ID, cardID, agentID, "Canceled", agentCancellationText)
 				return
+			}
+			if llm.IsContextLengthExceeded(err) {
+				if recovery, ok := recoverToolResultContext(messages, recoverableToolCalls); ok {
+					messages = recovery.Messages
+					s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
+						Type:    "tool_result",
+						Title:   "Tool result too large: " + recovery.Call.Function.Name,
+						Content: recovery.ResultMessage.Content,
+					})
+					continue
+				}
 			}
 			s.blockKanbanCard(workspace.ID, cardID, agentID, "Agent error", userFacingLLMError(err))
 			return
@@ -461,6 +473,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 				return
 			}
 			execution := s.executeKanbanToolCall(ctx, workspace, settings, cardID, agentID, call)
+			recoverableToolCalls[call.ID] = true
 			messages = append(messages, execution.Messages...)
 			for _, path := range execution.ChangedPaths {
 				changedPaths[path] = true

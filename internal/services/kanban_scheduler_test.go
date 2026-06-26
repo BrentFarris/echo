@@ -252,6 +252,72 @@ func TestKanbanSchedulerContinuesAfterPreparatoryNoToolResponse(t *testing.T) {
 	}
 }
 
+func TestKanbanSchedulerRecoversWhenToolResultExceedsContext(t *testing.T) {
+	root := t.TempDir()
+	const resultMarker = "KANBAN_UNBOUNDED_RESULT_MARKER"
+	if err := os.WriteFile(filepath.Join(root, "large.txt"), []byte(resultMarker), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var requestCount atomic.Int32
+	var recoveredRequest llm.ChatRequest
+	var filePath string
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		var request llm.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_large", "filesystem_read_text", map[string]any{"path": filePath}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 2:
+			if !requestContainsContent(request, resultMarker) {
+				t.Fatalf("expected original tool result before context rejection, got %#v", request.Messages)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(w, `{"error":{"code":400,"message":"request exceeds the available context size","type":"exceed_context_size_error"}}`)
+		case 3:
+			recoveredRequest = request
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Completed after narrowing the read."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+	filePath = labeledTestPath(t, service, workspaceID, "large.txt")
+	seedKanbanCards(t, service, []KanbanCard{{
+		ID: "card-1", WorkspaceID: workspaceID, Title: "Inspect large file",
+		Description: "Read only what fits in context", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneReady,
+	}})
+
+	if _, err := service.StartKanbanExecution(workspaceID, 1); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	board := waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
+		return len(board.Done) == 1
+	})
+
+	if requestCount.Load() != 3 {
+		t.Fatalf("expected context rejection to be retried, got %d requests", requestCount.Load())
+	}
+	if !requestContainsContent(recoveredRequest, toolResultContextErrorCode) ||
+		requestContainsContent(recoveredRequest, resultMarker) {
+		t.Fatalf("expected bounded tool error in recovery request, got %#v", recoveredRequest.Messages)
+	}
+	transcript := board.Done[0].ProgressTranscript
+	if !transcriptContains(transcript, toolResultContextErrorCode) ||
+		!transcriptContains(transcript, "Completed after narrowing") {
+		t.Fatalf("expected recovery and completion in transcript, got %#v", transcript)
+	}
+}
+
 func TestKanbanSchedulerContinuesAfterPreparatoryNoToolResponseFollowingToolCall(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "styles.css"), []byte("body { color: black; }\n"), 0o600); err != nil {
