@@ -95,6 +95,8 @@ const codeEditorTheme = EditorView.theme({
   "&.cm-focused": {
     outline: "none",
   },
+}, {
+  dark: window.matchMedia("(prefers-color-scheme: dark)").matches,
 });
 
 const codeHighlightStyle = HighlightStyle.define([
