@@ -1,5 +1,5 @@
 
-import { getAppCallbacks } from "./callbacks";
+import { appRoot } from "./dom";
 import { icons } from "./icons";
 import { state } from "./state";
 import type { Toast } from "./types";
@@ -16,6 +16,7 @@ export function pushToast(message: string, tone: Toast["tone"] = "info") {
     message: cleanMessage,
   };
   state.toasts = [...state.toasts.slice(-3), toast];
+  patchToasts();
   window.setTimeout(() => {
     dismissToast(toast.id);
   }, tone === "error" ? 9000 : 5200);
@@ -27,7 +28,7 @@ export function dismissToast(id: string) {
     return;
   }
   state.toasts = next;
-  getAppCallbacks().render();
+  patchToasts();
 }
 
 export function renderToasts(): string {
@@ -35,7 +36,7 @@ export function renderToasts(): string {
     return "";
   }
   return `
-    <div class="toast-region" role="status" aria-live="polite" aria-atomic="true">
+    <div class="toast-region" role="status" aria-live="polite" aria-atomic="true" data-toast-region>
       ${state.toasts
         .map(
           (toast) => `
@@ -50,4 +51,29 @@ export function renderToasts(): string {
         .join("")}
     </div>
   `;
+}
+
+function patchToasts() {
+  const existing = appRoot.querySelector<HTMLElement>("[data-toast-region]");
+  if (!state.toasts.length) {
+    existing?.remove();
+    return;
+  }
+
+  const markup = renderToasts();
+  if (existing) {
+    existing.outerHTML = markup;
+    return;
+  }
+
+  const shell = appRoot.querySelector<HTMLElement>(".app-shell");
+  if (!shell) {
+    return;
+  }
+  const contextMenu = shell.querySelector<HTMLElement>("[data-context-menu]");
+  if (contextMenu) {
+    contextMenu.insertAdjacentHTML("beforebegin", markup);
+    return;
+  }
+  shell.insertAdjacentHTML("beforeend", markup);
 }
