@@ -94,6 +94,8 @@ export function OpenWorkspacePathExplorer(arg1:string,arg2:string):Promise<void>
 
 export function PruneChatMessage(arg1:string,arg2:string):Promise<services.ChatSession>;
 
+export function ReadExternalTextFile(arg1:string):Promise<services.WorkspaceFile>;
+
 export function ReadWorkspaceFile(arg1:string,arg2:string):Promise<services.WorkspaceFile>;
 
 export function RemoveWorkspaceFolder(arg1:string,arg2:string):Promise<services.AppState>;
@@ -109,6 +111,8 @@ export function ResolveWorkspaceTextFilePath(arg1:string,arg2:string):Promise<st
 export function RetryChatMessage(arg1:string,arg2:string,arg3:boolean):Promise<services.ChatSession>;
 
 export function RotateWebAccessToken():Promise<services.AppState>;
+
+export function SaveExternalTextFile(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFile>;
 
 export function SaveSettings(arg1:llm.Settings):Promise<services.AppState>;
 

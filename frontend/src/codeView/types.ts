@@ -37,6 +37,7 @@ export type CodeFileTab = {
   saving: boolean;
   temporary: boolean;
   untitled: boolean;
+  external: boolean;
   selectionAnchor: number;
   selectionHead: number;
   scrollTop: number;

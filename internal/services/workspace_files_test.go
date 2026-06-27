@@ -11,6 +11,72 @@ import (
 	"time"
 )
 
+func TestSystemServiceReadsAndSavesExternalTextFile(t *testing.T) {
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+	path := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(path, []byte("before\r\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	opened, err := service.ReadExternalTextFile(path)
+	if err != nil {
+		t.Fatalf("read external text file: %v", err)
+	}
+	if opened.WorkspaceID != "" || opened.Path != filepath.Clean(path) || opened.Content != "before\r\n" {
+		t.Fatalf("unexpected external file: %#v", opened)
+	}
+
+	saved, err := service.SaveExternalTextFile(path, "after\r\n", opened.ModifiedAt)
+	if err != nil {
+		t.Fatalf("save external text file: %v", err)
+	}
+	if saved.Path != filepath.Clean(path) || saved.Content != "after\r\n" {
+		t.Fatalf("unexpected saved external file: %#v", saved)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "after\r\n" {
+		t.Fatalf("expected external file to be updated, got %q", data)
+	}
+}
+
+func TestSystemServiceExternalTextFileValidation(t *testing.T) {
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+	if _, err := service.ReadExternalTextFile("relative.txt"); err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("expected relative external path rejection, got %v", err)
+	}
+
+	binaryPath := filepath.Join(t.TempDir(), "binary.dat")
+	if err := os.WriteFile(binaryPath, []byte{0, 1, 2, 3}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ReadExternalTextFile(binaryPath); err == nil || !strings.Contains(err.Error(), "binary") {
+		t.Fatalf("expected binary external file rejection, got %v", err)
+	}
+
+	textPath := filepath.Join(t.TempDir(), "stale.txt")
+	if err := os.WriteFile(textPath, []byte("initial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := service.ReadExternalTextFile(textPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextTime := time.Now().Add(2 * time.Second)
+	if err := os.WriteFile(textPath, []byte("changed elsewhere"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(textPath, nextTime, nextTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SaveExternalTextFile(textPath, "local edit", opened.ModifiedAt); err == nil ||
+		!strings.Contains(err.Error(), "changed on disk") {
+		t.Fatalf("expected stale external save rejection, got %v", err)
+	}
+}
+
 func TestSystemServiceListWorkspaceDirectorySortsDirectoriesFirst(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.Mkdir(filepath.Join(root, "z-dir"), 0o755); err != nil {

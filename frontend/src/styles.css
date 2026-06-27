@@ -3457,6 +3457,23 @@ h3 {
   font-style: italic;
 }
 
+.code-tab.is-external {
+  box-shadow: inset 0 2px 0 var(--color-info);
+}
+
+.code-tab-origin {
+  flex: 0 0 auto;
+  padding: 2px 4px;
+  border: 1px solid color-mix(in srgb, var(--color-info) 55%, var(--color-border));
+  border-radius: 4px;
+  color: var(--color-info);
+  font-size: 0.58rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
 .code-tab-main,
 .code-tab-close {
   min-width: 0;

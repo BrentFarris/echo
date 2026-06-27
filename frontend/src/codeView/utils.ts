@@ -23,7 +23,7 @@ export function formatBytes(bytes: number): string {
 }
 
 export function fileName(path: string): string {
-  return path.split("/").pop() || path;
+  return path.replaceAll("\\", "/").split("/").pop() || path;
 }
 
 export function codeTabName(tab: Pick<CodeFileTab, "path" | "untitled">): string {

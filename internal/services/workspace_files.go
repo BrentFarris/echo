@@ -39,6 +39,59 @@ type WorkspaceFile struct {
 	ModifiedAt  string `json:"modifiedAt"`
 }
 
+func (s *SystemService) ReadExternalTextFile(path string) (WorkspaceFile, error) {
+	resolved, err := resolveExternalTextFilePath(path)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	return readExternalTextFile(resolved)
+}
+
+func (s *SystemService) SaveExternalTextFile(path string, content string, expectedModifiedAt string) (WorkspaceFile, error) {
+	resolved, err := resolveExternalTextFilePath(path)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	if strings.TrimSpace(expectedModifiedAt) == "" {
+		return WorkspaceFile{}, fmt.Errorf("expected modified timestamp is required")
+	}
+	if len([]byte(content)) > maxWorkspaceEditorFileBytes {
+		return WorkspaceFile{}, fmt.Errorf("content is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
+	}
+	if !utf8.ValidString(content) {
+		return WorkspaceFile{}, fmt.Errorf("file content must be valid UTF-8")
+	}
+
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return WorkspaceFile{}, fmt.Errorf("file was not found")
+	}
+	if !info.Mode().IsRegular() {
+		return WorkspaceFile{}, fmt.Errorf("path is not a regular file")
+	}
+	if info.Size() > maxWorkspaceEditorFileBytes {
+		return WorkspaceFile{}, fmt.Errorf("file is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
+	}
+	if expectedModifiedAt != formatWorkspaceModifiedAt(info.ModTime()) {
+		return WorkspaceFile{}, fmt.Errorf("file changed on disk; reload it before saving")
+	}
+	currentData, err := os.ReadFile(resolved)
+	if err != nil {
+		return WorkspaceFile{}, fmt.Errorf("read file: %w", err)
+	}
+	if !isWorkspaceTextLike(currentData) || !utf8.Valid(currentData) {
+		return WorkspaceFile{}, fmt.Errorf("file appears to be binary")
+	}
+	content, err = formatWorkspaceFileContentBeforeSave(resolved, content)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	if err := os.WriteFile(resolved, []byte(content), info.Mode().Perm()); err != nil {
+		return WorkspaceFile{}, fmt.Errorf("write file: %w", err)
+	}
+	return readExternalTextFile(resolved)
+}
+
 type WorkspaceFileSearchResult struct {
 	WorkspaceID string               `json:"workspaceId"`
 	Query       string               `json:"query"`
@@ -842,6 +895,43 @@ func readWorkspaceTextFile(workspace Workspace, resolved string) (WorkspaceFile,
 		Content:     string(data),
 		Bytes:       int64(len(data)),
 		ModifiedAt:  formatWorkspaceModifiedAt(info.ModTime()),
+	}, nil
+}
+
+func resolveExternalTextFilePath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("external file path must be absolute")
+	}
+	return filepath.Clean(path), nil
+}
+
+func readExternalTextFile(resolved string) (WorkspaceFile, error) {
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return WorkspaceFile{}, fmt.Errorf("file was not found")
+	}
+	if !info.Mode().IsRegular() {
+		return WorkspaceFile{}, fmt.Errorf("path is not a regular file")
+	}
+	if info.Size() > maxWorkspaceEditorFileBytes {
+		return WorkspaceFile{}, fmt.Errorf("file is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
+	}
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		return WorkspaceFile{}, fmt.Errorf("read file: %w", err)
+	}
+	if !isWorkspaceTextLike(data) || !utf8.Valid(data) {
+		return WorkspaceFile{}, fmt.Errorf("file appears to be binary")
+	}
+	return WorkspaceFile{
+		Path:       resolved,
+		Content:    string(data),
+		Bytes:      int64(len(data)),
+		ModifiedAt: formatWorkspaceModifiedAt(info.ModTime()),
 	}, nil
 }
 

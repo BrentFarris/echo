@@ -67,6 +67,14 @@ func TestWebServerRejectsDisallowedRPCMethod(t *testing.T) {
 	if response.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected disallowed method to return 404, got %d", response.StatusCode)
 	}
+
+	for _, method := range []string{"ReadExternalTextFile", "SaveExternalTextFile"} {
+		response := postRPC(t, server.URL, token, method, `{"args":[]}`)
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected desktop-only %s to return 404, got %d", method, response.StatusCode)
+		}
+	}
 }
 
 func TestWebServerSSEReceivesServiceEventsAndTokenRotationClosesOldClient(t *testing.T) {

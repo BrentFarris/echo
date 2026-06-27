@@ -193,7 +193,7 @@ export async function mountActiveCodeEditor(
       );
     }),
   ];
-  if (!tab.untitled) {
+  if (!tab.untitled && !tab.external) {
     extensions.push(
       lspDefinitionExtension(workspaceID, tab.path, callbacks, hooks.openCodeFile),
       referencesPanelExtension(workspaceID, tab.path, callbacks, hooks.openCodeFile),
@@ -210,7 +210,7 @@ export async function mountActiveCodeEditor(
   if (language) {
     extensions.push(language);
   }
-  if (!tab.untitled) {
+  if (!tab.untitled && !tab.external) {
     extensions.push(lspCompletionExtension(workspaceID, tab.path, callbacks));
   }
   const docLength = editorDocumentLengthForFileContent(tab.content, tab.lineSeparator);

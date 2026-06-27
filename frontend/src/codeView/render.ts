@@ -47,7 +47,7 @@ export function renderCodeView(workspace: services.Workspace): string {
             title="Open inline chat at caret"
             aria-label="Open inline chat at caret"
             data-code-action="open-inline-chat"
-            ${activeTab && !activeTab.untitled ? "" : "disabled"}
+            ${activeTab && !activeTab.untitled && !activeTab.external ? "" : "disabled"}
           >
             ${codeIcons.message}
             <span>Ask</span>
@@ -632,9 +632,10 @@ function renderCodeTabs(workspaceID: string): string {
         .map((tab) => {
           const active = state.activePath === tab.path;
           return `
-            <div class="code-tab ${active ? "is-active" : ""} ${tab.dirty ? "is-dirty" : ""} ${tab.temporary ? "is-temporary" : ""} ${tab.untitled ? "is-untitled" : ""}" data-code-tab="${escapeAttribute(tab.path)}">
-              <button class="code-tab-main" type="button" role="tab" aria-selected="${active}" title="${escapeAttribute(tab.untitled ? codeTabName(tab) : tab.path)}" data-code-action="activate-tab" data-code-tab-main data-code-path="${escapeAttribute(tab.path)}">
+            <div class="code-tab ${active ? "is-active" : ""} ${tab.dirty ? "is-dirty" : ""} ${tab.temporary ? "is-temporary" : ""} ${tab.untitled ? "is-untitled" : ""} ${tab.external ? "is-external" : ""}" data-code-tab="${escapeAttribute(tab.path)}">
+              <button class="code-tab-main" type="button" role="tab" aria-selected="${active}" title="${escapeAttribute(tab.external ? `External file: ${tab.path}` : tab.untitled ? codeTabName(tab) : tab.path)}" data-code-action="activate-tab" data-code-tab-main data-code-path="${escapeAttribute(tab.path)}">
                 <span>${escapeHtml(codeTabName(tab))}</span>
+                ${tab.external ? `<span class="code-tab-origin">External</span>` : ""}
                 ${tab.dirty ? `<span class="dirty-dot" aria-label="Unsaved changes"></span>` : ""}
               </button>
               <button class="code-tab-close" type="button" title="Close ${escapeAttribute(codeTabName(tab))}" aria-label="Close ${escapeAttribute(codeTabName(tab))}" data-code-action="close-tab" data-code-path="${escapeAttribute(tab.path)}">
@@ -675,7 +676,7 @@ function renderCodeTabSwitcher(workspaceID: string): string {
               data-code-path="${escapeAttribute(tab.path)}"
             >
               <span class="code-tab-switcher-name">${escapeHtml(codeTabName(tab))}</span>
-              <span class="code-tab-switcher-path">${escapeHtml(tab.untitled ? "Temporary file" : tab.path)}</span>
+              <span class="code-tab-switcher-path">${escapeHtml(tab.external ? `External file · ${tab.path}` : tab.untitled ? "Temporary file" : tab.path)}</span>
               ${tab.dirty ? `<span class="dirty-dot" aria-label="Unsaved changes"></span>` : ""}
             </button>
           `;
@@ -761,5 +762,6 @@ export function renderCodeStatus(tab: CodeFileTab | null, openingPath: string): 
     return `${escapeHtml(codeTabName(tab))} - ${escapeHtml(formatBytes(tab.bytes))} - ${state}`;
   }
   const state = tab.saving ? "Saving" : tab.dirty ? "Unsaved changes" : "Saved";
-  return `${escapeHtml(tab.path)} - ${escapeHtml(formatBytes(tab.bytes))} - ${state}`;
+  const origin = tab.external ? "External file - " : "";
+  return `${origin}${escapeHtml(tab.path)} - ${escapeHtml(formatBytes(tab.bytes))} - ${state}`;
 }

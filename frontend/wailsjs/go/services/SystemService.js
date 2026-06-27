@@ -182,6 +182,10 @@ export function PruneChatMessage(arg1, arg2) {
   return window['go']['services']['SystemService']['PruneChatMessage'](arg1, arg2);
 }
 
+export function ReadExternalTextFile(arg1) {
+  return window['go']['services']['SystemService']['ReadExternalTextFile'](arg1);
+}
+
 export function ReadWorkspaceFile(arg1, arg2) {
   return window['go']['services']['SystemService']['ReadWorkspaceFile'](arg1, arg2);
 }
@@ -212,6 +216,10 @@ export function RetryChatMessage(arg1, arg2, arg3) {
 
 export function RotateWebAccessToken() {
   return window['go']['services']['SystemService']['RotateWebAccessToken']();
+}
+
+export function SaveExternalTextFile(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['SaveExternalTextFile'](arg1, arg2, arg3);
 }
 
 export function SaveSettings(arg1) {

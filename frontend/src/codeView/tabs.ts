@@ -1,4 +1,4 @@
-import { ChooseWorkspaceFileSavePath, ReadWorkspaceFile, SaveWorkspaceFile, SaveWorkspaceFileAs } from "../backend/services";
+import { ChooseWorkspaceFileSavePath, ReadExternalTextFile, ReadWorkspaceFile, ResolveWorkspaceTextFilePath, SaveExternalTextFile, SaveWorkspaceFile, SaveWorkspaceFileAs } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
 import { captureCodeTreeScroll, patchDirtyUI } from "./dom";
 import { applySavedFile, activeCodeTab, codeStates, ensureCodeState, findTab, promoteTabMruPath, pruneTabMruPaths, removeTabMruPath, tabSwitcherPaths, workspaceFileChanged, wrapIndex } from "./state";
@@ -135,7 +135,9 @@ async function reloadWorkspaceOpenCodeTabsFromDisk(
 
     try {
       const file = services.WorkspaceFile.createFrom(
-        await ReadWorkspaceFile(workspaceID, path),
+        tab.external
+          ? await ReadExternalTextFile(path)
+          : await ReadWorkspaceFile(workspaceID, path),
       );
       const latest = findTab(workspaceID, path);
       if (!latest || latest.dirty || latest.saving) {
@@ -271,12 +273,9 @@ async function saveCodeTab(
   try {
     const savedContentBeforeSave = tab.content;
     const savedLineSeparatorBeforeSave = tab.lineSeparator;
-    const saved = await SaveWorkspaceFile(
-      workspaceID,
-      tab.path,
-      tab.content,
-      tab.modifiedAt,
-    );
+    const saved = tab.external
+      ? await SaveExternalTextFile(tab.path, tab.content, tab.modifiedAt)
+      : await SaveWorkspaceFile(workspaceID, tab.path, tab.content, tab.modifiedAt);
     const latestBeforeApply = findTab(workspaceID, tab.path);
     const editorChangedDuringSave = Boolean(
       latestBeforeApply &&
@@ -425,6 +424,7 @@ export function createUntitledCodeFile(
     saving: false,
     temporary: false,
     untitled: true,
+    external: false,
     selectionAnchor: 0,
     selectionHead: 0,
     scrollTop: 0,
@@ -510,6 +510,7 @@ export async function openCodeFile(
       saving: false,
       temporary: options.temporary,
       untitled: false,
+      external: false,
       selectionAnchor: 0,
       selectionHead: 0,
       scrollTop: 0,
@@ -632,6 +633,76 @@ export async function openWorkspaceCodeFile(
   await openCodeFile(workspaceID, path, callbacks, { temporary: false });
 }
 
+export async function openDroppedCodeFile(
+  workspaceID: string,
+  path: string,
+  callbacks: CodeViewCallbacks,
+) {
+  if (!path) {
+    return false;
+  }
+  try {
+    const workspacePath = await ResolveWorkspaceTextFilePath(workspaceID, path);
+    return openPinnedCodeFile(workspaceID, workspacePath, callbacks);
+  } catch {
+    return openExternalCodeFile(workspaceID, path, callbacks);
+  }
+}
+
+async function openExternalCodeFile(
+  workspaceID: string,
+  path: string,
+  callbacks: CodeViewCallbacks,
+) {
+  captureCodeTreeScroll(workspaceID);
+  saveMountedEditorContent();
+  const state = ensureCodeState(workspaceID);
+  const existing = state.tabs.find(
+    (tab) => tab.external && sameWorkspacePath(tab.path, path),
+  );
+  if (existing) {
+    activateCodeTab(workspaceID, existing.path, callbacks);
+    return true;
+  }
+  if (state.openingPath === path) {
+    return false;
+  }
+
+  state.openingPath = path;
+  callbacks.render();
+  try {
+    const opened = services.WorkspaceFile.createFrom(await ReadExternalTextFile(path));
+    const editable = editableWorkspaceFile(opened);
+    const tab: CodeFileTab = {
+      path: opened.path,
+      content: editable.content,
+      savedContent: editable.content,
+      lineSeparator: editable.lineSeparator,
+      bytes: editable.bytes,
+      modifiedAt: opened.modifiedAt,
+      dirty: false,
+      saving: false,
+      temporary: false,
+      untitled: false,
+      external: true,
+      selectionAnchor: 0,
+      selectionHead: 0,
+      scrollTop: 0,
+      scrollLeft: 0,
+    };
+    state.tabs.push(tab);
+    state.activePath = tab.path;
+    promoteTabMruPath(state, tab.path);
+    return true;
+  } catch (error) {
+    callbacks.pushToast(callbacks.errorMessage(error), "error");
+    return false;
+  } finally {
+    state.openingPath = "";
+    callbacks.render();
+  }
+}
+
 export async function openWorkspaceCodeFileAtLine(
   workspaceID: string,
   path: string,
@@ -742,7 +813,7 @@ async function closeCodeTabAtPath(
     state.temporaryFilesExpanded = false;
   }
   callbacks.render();
-  if (state.activePath && !isUntitledCodePath(state.activePath)) {
+  if (state.activePath && !activeCodeTab(workspaceID)?.external && !isUntitledCodePath(state.activePath)) {
     void revealCodeFileInTree(workspaceID, state.activePath, callbacks);
   }
   return true;
@@ -876,7 +947,7 @@ export function activateCodeTab(
     );
   }
   callbacks.render();
-  if (!isUntitledCodePath(path)) {
+  if (!activeCodeTab(workspaceID)?.external && !isUntitledCodePath(path)) {
     void revealCodeFileInTree(workspaceID, path, callbacks);
   }
 }

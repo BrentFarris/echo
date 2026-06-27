@@ -95,7 +95,7 @@ export function patchDirtyUI(workspaceID: string, tab: CodeFileTab) {
         : tab.untitled
           ? "Temporary file"
           : "Saved";
-    status.textContent = `${tab.untitled ? codeTabName(tab) : tab.path} - ${formatBytes(tab.bytes)} - ${state}`;
+    status.textContent = `${tab.external ? "External file - " : ""}${tab.untitled ? codeTabName(tab) : tab.path} - ${formatBytes(tab.bytes)} - ${state}`;
   }
 }
 

@@ -226,6 +226,10 @@ export function ResetKanbanCard(...args: Parameters<typeof Wails.ResetKanbanCard
   return call("ResetKanbanCard", Wails.ResetKanbanCard, args);
 }
 
+export function ReadExternalTextFile(...args: Parameters<typeof Wails.ReadExternalTextFile>): ReturnType<typeof Wails.ReadExternalTextFile> {
+  return call("ReadExternalTextFile", Wails.ReadExternalTextFile, args);
+}
+
 export function ResolveWorkspaceTextFilePath(...args: Parameters<typeof Wails.ResolveWorkspaceTextFilePath>): ReturnType<typeof Wails.ResolveWorkspaceTextFilePath> {
   return call("ResolveWorkspaceTextFilePath", Wails.ResolveWorkspaceTextFilePath, args);
 }
@@ -244,6 +248,10 @@ export function RotateWebAccessToken(...args: Parameters<typeof Wails.RotateWebA
 
 export function SaveSettings(...args: Parameters<typeof Wails.SaveSettings>): ReturnType<typeof Wails.SaveSettings> {
   return call("SaveSettings", Wails.SaveSettings, args);
+}
+
+export function SaveExternalTextFile(...args: Parameters<typeof Wails.SaveExternalTextFile>): ReturnType<typeof Wails.SaveExternalTextFile> {
+  return call("SaveExternalTextFile", Wails.SaveExternalTextFile, args);
 }
 
 export function SaveWebAccessSettings(...args: Parameters<typeof Wails.SaveWebAccessSettings>): ReturnType<typeof Wails.SaveWebAccessSettings> {

@@ -37,6 +37,9 @@ func main() {
 		},
 		BackgroundColour:         &options.RGBA{R: 18, G: 18, B: 20, A: 1},
 		EnableDefaultContextMenu: true,
+		DragAndDrop: &options.DragAndDrop{
+			EnableFileDrop: true,
+		},
 		OnStartup: func(ctx context.Context) {
 			app.startup(ctx)
 			_, _ = webAccess.ApplyWebAccessSettings(app.System.LoadState().WebAccess)
