@@ -1,13 +1,14 @@
 import { EditorState, Prec, StateEffect, StateField, type Text } from "@codemirror/state";
 import { Decoration, type DecorationSet, EditorView, WidgetType, keymap } from "@codemirror/view";
-import { ReadWorkspaceFile, SubmitInlineCodePrompt } from "../backend/services";
+import { ReadWorkspaceFile, SearchWorkspaceFiles, SubmitInlineCodePrompt } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
 import { renderMarkdown } from "../markdown";
+import { icons } from "../app/icons";
 import { patchInlineCodeChatResponse as patchInlineCodeChatResponseDom } from "./dom";
 import { getMountedCodeEditor, mountedCodeEditorMatches, replaceMountedEditorContent, saveMountedEditorContent } from "./editor";
 import { applySavedFile, ensureCodeState, findTab, workspaceFileChanged } from "./state";
-import type { CodeFileTab, CodeViewCallbacks, InlineCodeChatState, InlineCodePromptEvent } from "./types";
-import { clamp, editableWorkspaceFile, sleep } from "./utils";
+import type { CodeFileTab, CodeViewCallbacks, InlineCodeChatState, InlineCodeMentionState, InlineCodePromptEvent } from "./types";
+import { clamp, editableWorkspaceFile, escapeAttribute, escapeHtml, fileName, formatBytes, sleep } from "./utils";
 
 export type InlineCodeChatHooks = {
   saveActiveCodeFile: (workspaceID: string, callbacks: CodeViewCallbacks) => Promise<boolean>;
@@ -17,6 +18,8 @@ const inlineSnippetContextLines = 40;
 const inlineSnippetMaxBytes = 24 * 1024;
 const inlineFocusSubstringMaxBytes = 4 * 1024;
 const inlineReloadRetryDelays = [75, 175, 350, 650];
+const inlineMentionSearchDelay = 160;
+const inlineMentionResultLimit = 8;
 let inlineChatRenderSeq = 0;
 let inlinePromptRequestSeq = 0;
 
@@ -145,6 +148,8 @@ class InlineCodeChatWidget extends WidgetType {
     textarea.value = chat.draft;
     textarea.disabled = chat.submitting;
     textarea.setAttribute("aria-label", "Inline code prompt");
+    textarea.setAttribute("aria-autocomplete", "list");
+    textarea.setAttribute("aria-expanded", String(Boolean(chat.mention)));
 
     const submit = document.createElement("button");
     submit.className = "primary-button inline-code-chat-submit";
@@ -166,9 +171,28 @@ class InlineCodeChatWidget extends WidgetType {
       if (latest) {
         latest.draft = textarea.value;
       }
+      syncInlineCodeMention(
+        this.workspaceID,
+        this.path,
+        textarea,
+        root,
+        this.callbacks,
+      );
       syncSubmitState();
     });
     textarea.addEventListener("keydown", (event) => {
+      if (
+        handleInlineCodeMentionKeydown(
+          event,
+          this.workspaceID,
+          this.path,
+          textarea,
+          root,
+          syncSubmitState,
+        )
+      ) {
+        return;
+      }
       if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
         return;
       }
@@ -191,7 +215,15 @@ class InlineCodeChatWidget extends WidgetType {
     });
 
     actions.append(submit, close);
-    form.append(textarea, actions);
+    form.append(textarea);
+    patchInlineCodeMentionPicker(
+      this.workspaceID,
+      this.path,
+      root,
+      textarea,
+      syncSubmitState,
+    );
+    form.append(actions);
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       void submitInlineCodeChat(this.workspaceID, this.path, this.callbacks, this.hooks);
@@ -227,6 +259,385 @@ function inlineChatForPath(workspaceID: string, path: string) {
   return chat;
 }
 
+type InlineCodeMentionMatch = {
+  triggerStart: number;
+  query: string;
+  caret: number;
+};
+
+function activeInlineCodeMentionMatch(input: HTMLTextAreaElement): InlineCodeMentionMatch | null {
+  if (input.selectionStart !== input.selectionEnd) {
+    return null;
+  }
+  const caret = input.selectionStart;
+  const beforeCaret = input.value.slice(0, caret);
+  const match = beforeCaret.match(/(^|\s)@([^\s@]*)$/);
+  if (!match) {
+    return null;
+  }
+  const query = match[2] ?? "";
+  return {
+    triggerStart: beforeCaret.length - query.length - 1,
+    query,
+    caret,
+  };
+}
+
+function clearInlineCodeMention(chat: InlineCodeChatState) {
+  if (chat.mention?.timerID !== null && chat.mention?.timerID !== undefined) {
+    window.clearTimeout(chat.mention.timerID);
+  }
+  chat.mention = null;
+}
+
+function syncInlineCodeMention(
+  workspaceID: string,
+  path: string,
+  input: HTMLTextAreaElement,
+  root: HTMLElement,
+  callbacks: CodeViewCallbacks,
+) {
+  const chat = inlineChatForPath(workspaceID, path);
+  if (!chat) {
+    return;
+  }
+  const match = activeInlineCodeMentionMatch(input);
+  if (!match) {
+    if (chat.mention) {
+      clearInlineCodeMention(chat);
+      patchInlineCodeMentionPicker(workspaceID, path, root, input);
+    }
+    return;
+  }
+
+  let mention = chat.mention;
+  const changed =
+    !mention ||
+    mention.query !== match.query ||
+    mention.triggerStart !== match.triggerStart;
+  if (!mention) {
+    mention = {
+      triggerStart: match.triggerStart,
+      query: match.query,
+      results: [],
+      loading: false,
+      error: "",
+      selectedIndex: 0,
+      requestSeq: 0,
+      timerID: null,
+    };
+    chat.mention = mention;
+  }
+  mention.triggerStart = match.triggerStart;
+  mention.query = match.query;
+
+  if (!changed) {
+    patchInlineCodeMentionPicker(workspaceID, path, root, input);
+    return;
+  }
+
+  mention.requestSeq++;
+  mention.loading = true;
+  mention.error = "";
+  mention.results = [];
+  mention.selectedIndex = 0;
+  if (mention.timerID !== null) {
+    window.clearTimeout(mention.timerID);
+  }
+  const sequence = mention.requestSeq;
+  mention.timerID = window.setTimeout(() => {
+    void runInlineCodeMentionSearch(
+      workspaceID,
+      path,
+      sequence,
+      root,
+      input,
+      callbacks,
+    );
+  }, inlineMentionSearchDelay);
+  patchInlineCodeMentionPicker(workspaceID, path, root, input);
+}
+
+async function runInlineCodeMentionSearch(
+  workspaceID: string,
+  path: string,
+  sequence: number,
+  root: HTMLElement,
+  input: HTMLTextAreaElement,
+  callbacks: CodeViewCallbacks,
+) {
+  const chat = inlineChatForPath(workspaceID, path);
+  const mention = chat?.mention;
+  if (!mention || sequence !== mention.requestSeq) {
+    return;
+  }
+  mention.timerID = null;
+  patchInlineCodeMentionPicker(workspaceID, path, root, input);
+  try {
+    const result = await SearchWorkspaceFiles(workspaceID, mention.query, false);
+    const model = services.WorkspaceFileSearchResult.createFrom(result);
+    const latest = inlineChatForPath(workspaceID, path)?.mention;
+    if (!latest || sequence !== latest.requestSeq) {
+      return;
+    }
+    latest.results = (model.entries ?? []).filter((entry) => entry.kind === "file");
+    latest.error = "";
+    clampInlineCodeMentionSelection(latest);
+  } catch (error) {
+    const latest = inlineChatForPath(workspaceID, path)?.mention;
+    if (latest && sequence === latest.requestSeq) {
+      latest.results = [];
+      latest.error = callbacks.errorMessage(error);
+      latest.selectedIndex = 0;
+    }
+  } finally {
+    const latest = inlineChatForPath(workspaceID, path)?.mention;
+    if (latest && sequence === latest.requestSeq) {
+      latest.loading = false;
+      latest.timerID = null;
+      patchInlineCodeMentionPicker(workspaceID, path, root, input);
+    }
+  }
+}
+
+function visibleInlineCodeMentionEntries(mention: InlineCodeMentionState) {
+  return mention.results.slice(0, inlineMentionResultLimit);
+}
+
+function clampInlineCodeMentionSelection(mention: InlineCodeMentionState) {
+  const count = visibleInlineCodeMentionEntries(mention).length;
+  mention.selectedIndex = count
+    ? Math.min(Math.max(mention.selectedIndex, 0), count - 1)
+    : 0;
+}
+
+function moveInlineCodeMentionSelection(
+  workspaceID: string,
+  path: string,
+  delta: number,
+  root: HTMLElement,
+  input: HTMLTextAreaElement,
+) {
+  const mention = inlineChatForPath(workspaceID, path)?.mention;
+  if (!mention) {
+    return;
+  }
+  const entries = visibleInlineCodeMentionEntries(mention);
+  if (!entries.length) {
+    return;
+  }
+  mention.selectedIndex =
+    (mention.selectedIndex + delta + entries.length) % entries.length;
+  patchInlineCodeMentionPicker(workspaceID, path, root, input);
+}
+
+function insertInlineCodeMention(
+  workspaceID: string,
+  path: string,
+  entry: services.WorkspaceFileEntry,
+  root: HTMLElement,
+  input: HTMLTextAreaElement,
+  syncSubmitState?: () => void,
+) {
+  const chat = inlineChatForPath(workspaceID, path);
+  const mention = chat?.mention;
+  if (!chat || !mention) {
+    return;
+  }
+  const match = activeInlineCodeMentionMatch(input);
+  const triggerStart = match?.triggerStart ?? mention.triggerStart;
+  const caret = match?.caret ?? input.selectionStart;
+  const suffix = input.value.slice(caret);
+  const trailingSpace = suffix.length === 0 || !/^\s/.test(suffix) ? " " : "";
+  const replacement = formatInlineCodeMentionPath(entry.path);
+  const nextValue =
+    input.value.slice(0, triggerStart) + replacement + trailingSpace + suffix;
+  const nextCaret = triggerStart + replacement.length + trailingSpace.length;
+
+  input.value = nextValue;
+  chat.draft = nextValue;
+  clearInlineCodeMention(chat);
+  input.focus();
+  input.setSelectionRange(nextCaret, nextCaret);
+  syncSubmitState?.();
+  patchInlineCodeMentionPicker(workspaceID, path, root, input);
+}
+
+function formatInlineCodeMentionPath(path: string) {
+  if (!/\s/.test(path)) {
+    return `@${path}`;
+  }
+  return `@"${path.replaceAll('"', '\\"')}"`;
+}
+
+function renderInlineCodeMentionPicker(mention: InlineCodeMentionState | null) {
+  if (!mention) {
+    return "";
+  }
+  const entries = visibleInlineCodeMentionEntries(mention);
+  let content = "";
+  if (mention.loading) {
+    content = `<div class="chat-mention-status"><span class="spinner" aria-hidden="true"></span><span>Searching files...</span></div>`;
+  } else if (mention.error) {
+    content = `<div class="chat-mention-status is-error">${escapeHtml(mention.error)}</div>`;
+  } else if (!entries.length) {
+    content = `<div class="chat-mention-status">No matching files.</div>`;
+  } else {
+    content = entries
+      .map(
+        (entry, index) => `
+          <button
+            class="chat-mention-option ${index === mention.selectedIndex ? "is-active" : ""}"
+            id="inline-code-mention-option-${index}"
+            type="button"
+            role="option"
+            aria-selected="${index === mention.selectedIndex}"
+            title="${escapeAttribute(entry.path)}"
+            data-inline-code-mention-option
+            data-mention-index="${index}"
+          >
+            <span class="chat-mention-icon">${icons.file}</span>
+            <span class="chat-mention-name">
+              <strong>${escapeHtml(fileName(entry.path))}</strong>
+              <span>${escapeHtml(entry.path)}</span>
+            </span>
+            <span class="chat-mention-size">${escapeHtml(formatBytes(entry.bytes ?? 0))}</span>
+          </button>
+        `,
+      )
+      .join("");
+  }
+  return `
+    <div class="chat-mention-picker inline-code-chat-mention-picker" id="inline-code-mention-list" role="listbox" aria-label="Workspace files" data-inline-code-mention-picker>
+      ${content}
+    </div>
+  `;
+}
+
+function patchInlineCodeMentionPicker(
+  workspaceID: string,
+  path: string,
+  root: HTMLElement,
+  input: HTMLTextAreaElement,
+  syncSubmitState?: () => void,
+) {
+  const existing = root.querySelector<HTMLElement>("[data-inline-code-mention-picker]");
+  const mention = inlineChatForPath(workspaceID, path)?.mention ?? null;
+  const nextHtml = renderInlineCodeMentionPicker(mention).trim();
+  if (!nextHtml) {
+    existing?.remove();
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-controls");
+    input.removeAttribute("aria-activedescendant");
+    return;
+  }
+
+  const template = document.createElement("template");
+  template.innerHTML = nextHtml;
+  const next = template.content.firstElementChild as HTMLElement | null;
+  if (!next) {
+    return;
+  }
+  if (existing) {
+    existing.replaceWith(next);
+  } else {
+    input.insertAdjacentElement("afterend", next);
+  }
+  next.querySelectorAll<HTMLElement>("[data-inline-code-mention-option]").forEach((option) => {
+    option.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+    });
+    option.addEventListener("click", (event) => {
+      event.preventDefault();
+      const latest = inlineChatForPath(workspaceID, path)?.mention;
+      if (!latest) {
+        return;
+      }
+      latest.selectedIndex = Number(option.dataset.mentionIndex ?? "0");
+      clampInlineCodeMentionSelection(latest);
+      const entry = visibleInlineCodeMentionEntries(latest)[latest.selectedIndex];
+      if (entry) {
+        insertInlineCodeMention(
+          workspaceID,
+          path,
+          entry,
+          root,
+          input,
+          syncSubmitState,
+        );
+      }
+    });
+  });
+  input.setAttribute("aria-expanded", "true");
+  input.setAttribute("aria-controls", "inline-code-mention-list");
+  if (mention && visibleInlineCodeMentionEntries(mention).length) {
+    input.setAttribute(
+      "aria-activedescendant",
+      `inline-code-mention-option-${mention.selectedIndex}`,
+    );
+  } else {
+    input.removeAttribute("aria-activedescendant");
+  }
+}
+
+function handleInlineCodeMentionKeydown(
+  event: KeyboardEvent,
+  workspaceID: string,
+  path: string,
+  input: HTMLTextAreaElement,
+  root: HTMLElement,
+  syncSubmitState: () => void,
+) {
+  const chat = inlineChatForPath(workspaceID, path);
+  const mention = chat?.mention;
+  if (!chat || !mention) {
+    return false;
+  }
+  const match = activeInlineCodeMentionMatch(input);
+  if (!match || match.triggerStart !== mention.triggerStart) {
+    clearInlineCodeMention(chat);
+    patchInlineCodeMentionPicker(workspaceID, path, root, input);
+    return false;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    clearInlineCodeMention(chat);
+    patchInlineCodeMentionPicker(workspaceID, path, root, input);
+    return true;
+  }
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    event.stopPropagation();
+    moveInlineCodeMentionSelection(workspaceID, path, 1, root, input);
+    return true;
+  }
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    event.stopPropagation();
+    moveInlineCodeMentionSelection(workspaceID, path, -1, root, input);
+    return true;
+  }
+  if (event.key !== "Enter" && event.key !== "Tab") {
+    return false;
+  }
+  const entries = visibleInlineCodeMentionEntries(mention);
+  if (!entries.length) {
+    return false;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  insertInlineCodeMention(
+    workspaceID,
+    path,
+    entries[mention.selectedIndex] ?? entries[0],
+    root,
+    input,
+    syncSubmitState,
+  );
+  return true;
+}
+
 function openInlineCodeChat(
   workspaceID: string,
   path: string,
@@ -240,6 +651,7 @@ function openInlineCodeChat(
     anchorPosition: selection.head,
     selectedText: selectedEditorText(view),
     draft: previous?.draft ?? "",
+    mention: null,
     submitting: false,
     response: "",
     error: "",
@@ -268,6 +680,7 @@ function closeInlineCodeChat(workspaceID: string, path: string) {
   if (state.inlineChat?.path !== path) {
     return;
   }
+  clearInlineCodeMention(state.inlineChat);
   state.inlineChat = null;
   const mounted = getMountedCodeEditor();
   if (mounted.view && mounted.workspaceID === workspaceID && mounted.path === path) {
@@ -333,6 +746,7 @@ async function submitInlineCodeChat(
   }
 
   chat.submitting = true;
+  clearInlineCodeMention(chat);
   chat.response = "";
   chat.error = "";
   chat.requestID = requestID;

@@ -96,11 +96,23 @@ export type InlineCodeChatState = {
   anchorPosition: number;
   selectedText: string;
   draft: string;
+  mention: InlineCodeMentionState | null;
   submitting: boolean;
   response: string;
   error: string;
   requestID: string;
   renderKey: number;
+};
+
+export type InlineCodeMentionState = {
+  triggerStart: number;
+  query: string;
+  results: services.WorkspaceFileEntry[];
+  loading: boolean;
+  error: string;
+  selectedIndex: number;
+  requestSeq: number;
+  timerID: number | null;
 };
 
 export type InlineCodePromptEvent = {

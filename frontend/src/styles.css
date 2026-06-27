@@ -1000,7 +1000,6 @@ h3 {
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 42px;
   padding: 7px 8px;
   border: 1px solid transparent;
   border-radius: 7px;
@@ -3797,6 +3796,12 @@ h3 {
 .inline-code-chat-form {
   display: grid;
   gap: 8px;
+}
+
+.inline-code-chat-mention-picker {
+  position: static;
+  max-height: min(240px, 36vh);
+  box-shadow: none;
 }
 
 .inline-code-chat-input {
