@@ -330,6 +330,105 @@ func TestSystemServiceEditChatMessageUsesPlanMode(t *testing.T) {
 	}
 }
 
+func TestSystemServiceEditAssistantMessageUpdatesVisiblePlanAndHistory(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "state.json")
+	var captured llm.ChatRequest
+	service, workspaceID := newDecompositionTestServiceWithStore(t, root, storePath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertCompleteRequest(t, r)
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode decomposition request: %v", err)
+		}
+		writeChatResponse(t, w, `{"cards":[{"id":"phase-1","title":"Build revised plan","description":"Implement the revised assistant plan.","acceptanceCriteria":["Revised behavior exists"],"dependencies":[]}]}`)
+	}))
+	seedChatPlan(service, workspaceID, []ChatMessage{
+		{ID: "msg-1", Role: llm.RoleUser, Content: "Plan the feature.", Status: "complete"},
+		{
+			ID:        "msg-2",
+			Role:      llm.RoleAssistant,
+			Content:   "Original plan text.",
+			Reasoning: "Original hidden reasoning.",
+			ToolCalls: []ChatToolActivity{{ID: "call-1", Name: "filesystem_list", Status: "complete"}},
+			Status:    "complete",
+		},
+		{ID: "msg-3", Role: llm.RoleUser, Content: "Keep the change focused.", Status: "complete"},
+		{ID: "msg-4", Role: llm.RoleAssistant, Content: "Follow-up plan detail.", Status: "complete"},
+	}, []llm.Message{
+		{Role: llm.RoleUser, Content: "Plan the feature."},
+		{Role: llm.RoleAssistant, Content: "Inspecting first.", ToolCalls: []llm.ToolCall{{ID: "call-1"}}},
+		{Role: llm.RoleTool, ToolCallID: "call-1", Content: "Original tool result."},
+		{Role: llm.RoleAssistant, Content: "Original plan text."},
+		{Role: llm.RoleUser, Content: "Keep the change focused."},
+		{Role: llm.RoleAssistant, Content: "Follow-up plan detail."},
+	})
+
+	const revisedPlan = "Revised plan: implement only the focused behavior."
+	session, err := service.EditChatMessage(workspaceID, "msg-2", revisedPlan, false)
+	if err != nil {
+		t.Fatalf("edit assistant message: %v", err)
+	}
+	if session.Busy || len(session.Messages) != 4 || session.Messages[1].ID != "msg-2" {
+		t.Fatalf("expected an in-place idle edit, got %#v", session)
+	}
+	if session.Messages[1].Content != revisedPlan {
+		t.Fatalf("expected revised visible content, got %q", session.Messages[1].Content)
+	}
+
+	service.chatMu.Lock()
+	history := cloneLLMMessages(service.chatSessions[workspaceID].History)
+	service.chatMu.Unlock()
+	if len(history) != 4 {
+		t.Fatalf("expected edited assistant turn to replace tool history, got %#v", history)
+	}
+	if history[1].Role != llm.RoleAssistant || history[1].Content != revisedPlan {
+		t.Fatalf("expected revised assistant history, got %#v", history)
+	}
+	if history[2].Role != llm.RoleUser || history[2].Content != "Keep the change focused." {
+		t.Fatalf("expected later history to be preserved, got %#v", history)
+	}
+
+	reloaded := NewSystemServiceWithStorePath(storePath)
+	persisted, err := reloaded.LoadChatSession(workspaceID)
+	if err != nil {
+		t.Fatalf("load persisted chat: %v", err)
+	}
+	if len(persisted.Messages) != 4 || persisted.Messages[1].Content != revisedPlan {
+		t.Fatalf("expected revised plan to persist, got %#v", persisted.Messages)
+	}
+
+	if _, err := service.ExecutePlan(workspaceID); err != nil {
+		t.Fatalf("execute revised plan: %v", err)
+	}
+	if len(captured.Messages) != 2 {
+		t.Fatalf("expected decomposition request, got %#v", captured.Messages)
+	}
+	visiblePrompt := captured.Messages[1].Content
+	if !strings.Contains(visiblePrompt, revisedPlan) {
+		t.Fatalf("expected decomposition to use revised plan, got %q", visiblePrompt)
+	}
+	for _, stale := range []string{"Original plan text.", "Original hidden reasoning.", "Original tool result."} {
+		if strings.Contains(visiblePrompt, stale) {
+			t.Fatalf("decomposition request included stale assistant state %q: %q", stale, visiblePrompt)
+		}
+	}
+}
+
+func TestSystemServiceEditAssistantMessageRequiresCompleteStatus(t *testing.T) {
+	root := t.TempDir()
+	service, workspaceID := newDecompositionTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("editing an assistant message should not call the model")
+	}))
+	seedChatPlan(service, workspaceID, []ChatMessage{
+		{ID: "msg-1", Role: llm.RoleUser, Content: "Plan the feature.", Status: "complete"},
+		{ID: "msg-2", Role: llm.RoleAssistant, Content: "Partial plan.", Status: "streaming"},
+	}, []llm.Message{{Role: llm.RoleUser, Content: "Plan the feature."}})
+
+	_, err := service.EditChatMessage(workspaceID, "msg-2", "Revised plan.", false)
+	if err == nil || !strings.Contains(err.Error(), "complete assistant") {
+		t.Fatalf("expected complete-assistant validation error, got %v", err)
+	}
+}
+
 func TestSystemServiceChatSendsPastedImageAsContentPart(t *testing.T) {
 	root := t.TempDir()
 	var captured llm.ChatRequest

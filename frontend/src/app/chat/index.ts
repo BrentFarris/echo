@@ -641,7 +641,7 @@ export function renderChatMessage(message: services.ChatMessage): string {
       <header>
         <strong>${roleLabel}</strong>
         ${status}
-        ${isUser ? renderUserControls(message, isEditing) : renderAssistantControls(message)}
+        ${isUser ? renderUserControls(message, isEditing) : renderAssistantControls(message, isEditing)}
       </header>
       ${renderChatMessageImages(message)}
       ${isEditing
@@ -654,12 +654,19 @@ export function renderChatMessage(message: services.ChatMessage): string {
   `;
 }
 
-export function renderAssistantControls(message: services.ChatMessage): string {
+export function renderAssistantControls(message: services.ChatMessage, isEditing: boolean): string {
   const isStreaming = isAssistantMessageStreaming(message);
   const canCreateCard = canCreateKanbanCardFromMessage(message);
+  const canEdit = message.status === "complete";
   return `
     <div class="chat-message-actions">
       ${renderCopyMessageButton(message)}
+      ${isEditing
+        ? ""
+        : `<button class="icon-button chat-edit-trigger" type="button" title="Edit response" aria-label="Edit assistant response" data-action="edit-message" data-message-id="${escapeAttribute(message.id)}" ${canEdit ? "" : "disabled"}>
+            ${icons.edit}
+          </button>`
+      }
       <button class="icon-button chat-retry-trigger" type="button" title="Regenerate response" aria-label="Regenerate response" data-action="retry-message" data-message-id="${escapeAttribute(message.id)}">
         ${isStreaming ? '<span class="spinner" aria-hidden="true"></span>' : icons.retry}
       </button>
@@ -1052,12 +1059,15 @@ export async function handleChatEditSubmit(event: SubmitEvent) {
   }
 
   try {
+    const editedMessage = (chatSessionFor(workspace.id).messages ?? []).find((message) => message.id === messageID);
     state.chatSessions.set(
       workspace.id,
       await EditChatMessage(workspace.id, messageID, trimmed, chatPlanModeFor(workspace.id)),
     );
     state.editingMessageIds.delete(messageID);
-    state.chatDrafts.delete(workspace.id);
+    if (editedMessage?.role === "user") {
+      state.chatDrafts.delete(workspace.id);
+    }
     getAppCallbacks().render();
   } catch (error) {
     pushToast(errorMessage(error), "error");
@@ -1285,6 +1295,10 @@ export function patchMessageActions(element: HTMLElement, message: services.Chat
   const kanban = element.querySelector<HTMLButtonElement>(".chat-kanban-trigger");
   if (kanban) {
     kanban.disabled = !canCreateKanbanCardFromMessage(message);
+  }
+  const edit = element.querySelector<HTMLButtonElement>(".chat-edit-trigger");
+  if (edit) {
+    edit.disabled = message.status !== "complete";
   }
 }
 

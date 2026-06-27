@@ -653,7 +653,10 @@ export async function handleAction(event: Event) {
       }
       state.editingMessageIds.add(messageID);
       getAppCallbacks().render();
-      const textarea = appRoot.querySelector<HTMLTextAreaElement>(`[data-chat-edit-input][data-message-id="${CSS.escape(messageID)}"]`);
+      const form = appRoot.querySelector<HTMLFormElement>(
+        `[data-chat-edit-form][data-message-id="${CSS.escape(messageID)}"]`,
+      );
+      const textarea = form?.querySelector<HTMLTextAreaElement>("[data-chat-edit-input]");
       textarea?.focus();
       textarea?.setSelectionRange(textarea.value.length, textarea.value.length);
       return;

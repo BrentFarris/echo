@@ -263,6 +263,11 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 		return ChatSession{}, err
 	}
 
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ChatSession{}, fmt.Errorf("message content is required")
+	}
+
 	s.chatMu.Lock()
 
 	session := s.ensureChatSessionLocked(workspaceID)
@@ -284,15 +289,25 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 		return ChatSession{}, fmt.Errorf("message was not found")
 	}
 
-	if session.Messages[msgIndex].Role != llm.RoleUser {
+	if session.Messages[msgIndex].Role == llm.RoleAssistant {
+		if session.Messages[msgIndex].Status != "complete" {
+			s.chatMu.Unlock()
+			return ChatSession{}, fmt.Errorf("can only edit complete assistant messages")
+		}
+
+		session.Messages[msgIndex].Content = content
+		replaceVisibleAssistantHistory(session, msgIndex, content)
+		clone := cloneChatSession(session)
 		s.chatMu.Unlock()
-		return ChatSession{}, fmt.Errorf("can only edit user messages")
+		if err := s.persistChatSession(workspaceID); err != nil {
+			return ChatSession{}, err
+		}
+		return clone, nil
 	}
 
-	content = strings.TrimSpace(content)
-	if content == "" {
+	if session.Messages[msgIndex].Role != llm.RoleUser {
 		s.chatMu.Unlock()
-		return ChatSession{}, fmt.Errorf("message content is required")
+		return ChatSession{}, fmt.Errorf("can only edit user or assistant messages")
 	}
 
 	// Update the message content.
@@ -344,6 +359,52 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 	}()
 
 	return clone, nil
+}
+
+// replaceVisibleAssistantHistory replaces the model/tool history for the
+// assistant turn represented by one visible chat message. A visible assistant
+// message can span several model responses and tool results, so collapsing the
+// turn avoids leaving the unedited response hidden in later chat context.
+func replaceVisibleAssistantHistory(session *chatSessionState, messageIndex int, content string) {
+	userOrdinal := 0
+	for i := 0; i < messageIndex; i++ {
+		if session.Messages[i].Role == llm.RoleUser {
+			userOrdinal++
+		}
+	}
+	if userOrdinal == 0 {
+		return
+	}
+
+	historyUserOrdinal := 0
+	userHistoryIndex := -1
+	for i := range session.History {
+		if session.History[i].Role != llm.RoleUser {
+			continue
+		}
+		historyUserOrdinal++
+		if historyUserOrdinal == userOrdinal {
+			userHistoryIndex = i
+			break
+		}
+	}
+	if userHistoryIndex < 0 {
+		return
+	}
+
+	nextUserHistoryIndex := len(session.History)
+	for i := userHistoryIndex + 1; i < len(session.History); i++ {
+		if session.History[i].Role == llm.RoleUser {
+			nextUserHistoryIndex = i
+			break
+		}
+	}
+
+	history := make([]llm.Message, 0, len(session.History)-(nextUserHistoryIndex-userHistoryIndex-1)+1)
+	history = append(history, session.History[:userHistoryIndex+1]...)
+	history = append(history, llm.Message{Role: llm.RoleAssistant, Content: content})
+	history = append(history, session.History[nextUserHistoryIndex:]...)
+	session.History = history
 }
 
 func (s *SystemService) runChatTurn(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, streamID string, messageID string, planMode bool) {
