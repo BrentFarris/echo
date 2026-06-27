@@ -182,6 +182,76 @@ func (s *SystemService) ClearChat(workspaceID string) (ChatSession, error) {
 	return clone, nil
 }
 
+func (s *SystemService) PruneChatMessage(workspaceID string, messageID string) (ChatSession, error) {
+	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
+		return ChatSession{}, err
+	}
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return ChatSession{}, fmt.Errorf("message id is required")
+	}
+
+	s.chatMu.Lock()
+	session := s.ensureChatSessionLocked(workspaceID)
+	if session.Busy {
+		s.chatMu.Unlock()
+		return ChatSession{}, fmt.Errorf("wait for the current chat response to finish before pruning messages")
+	}
+
+	messageIndex := -1
+	for i := range session.Messages {
+		if session.Messages[i].ID == messageID {
+			messageIndex = i
+			break
+		}
+	}
+	if messageIndex < 0 {
+		s.chatMu.Unlock()
+		return ChatSession{}, fmt.Errorf("message was not found")
+	}
+
+	messages := make([]ChatMessage, 0, len(session.Messages)-1)
+	messages = append(messages, session.Messages[:messageIndex]...)
+	messages = append(messages, session.Messages[messageIndex+1:]...)
+	session.Messages = messages
+	session.History = visibleChatHistory(messages)
+	clone := cloneChatSession(session)
+	s.chatMu.Unlock()
+
+	if err := s.persistChatSession(workspaceID); err != nil {
+		return ChatSession{}, err
+	}
+	return clone, nil
+}
+
+func visibleChatHistory(messages []ChatMessage) []llm.Message {
+	history := make([]llm.Message, 0, len(messages))
+	for _, message := range messages {
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		switch message.Role {
+		case llm.RoleUser:
+			entry := llm.Message{Role: llm.RoleUser, Content: content}
+			if len(message.Images) > 0 {
+				entry.ContentParts = []llm.MessageContentPart{llm.TextContentPart(content)}
+				for _, image := range message.Images {
+					if image.DataURL != "" {
+						entry.ContentParts = append(entry.ContentParts, llm.ImageURLContentPart(image.DataURL))
+					}
+				}
+			}
+			history = append(history, entry)
+		case llm.RoleAssistant:
+			if message.Status == "complete" {
+				history = append(history, llm.Message{Role: llm.RoleAssistant, Content: content})
+			}
+		}
+	}
+	return history
+}
+
 func (s *SystemService) RetryChatMessage(workspaceID string, messageID string, planMode bool) (ChatSession, error) {
 	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
 		return ChatSession{}, err

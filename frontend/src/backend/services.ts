@@ -206,6 +206,10 @@ export function OpenWorkspacePathExplorer(...args: Parameters<typeof Wails.OpenW
   return call("OpenWorkspacePathExplorer", Wails.OpenWorkspacePathExplorer, args);
 }
 
+export function PruneChatMessage(...args: Parameters<typeof Wails.PruneChatMessage>): ReturnType<typeof Wails.PruneChatMessage> {
+  return call("PruneChatMessage", Wails.PruneChatMessage, args);
+}
+
 export function ReadWorkspaceFile(...args: Parameters<typeof Wails.ReadWorkspaceFile>): ReturnType<typeof Wails.ReadWorkspaceFile> {
   return call("ReadWorkspaceFile", Wails.ReadWorkspaceFile, args);
 }

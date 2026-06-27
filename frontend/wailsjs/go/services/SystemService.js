@@ -178,6 +178,10 @@ export function OpenWorkspacePathExplorer(arg1, arg2) {
   return window['go']['services']['SystemService']['OpenWorkspacePathExplorer'](arg1, arg2);
 }
 
+export function PruneChatMessage(arg1, arg2) {
+  return window['go']['services']['SystemService']['PruneChatMessage'](arg1, arg2);
+}
+
 export function ReadWorkspaceFile(arg1, arg2) {
   return window['go']['services']['SystemService']['ReadWorkspaceFile'](arg1, arg2);
 }

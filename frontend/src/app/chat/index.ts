@@ -562,7 +562,7 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
       <div class="chat-log" data-chat-log>
         ${
           messages.length
-            ? messages.map(renderChatMessage).join("")
+            ? messages.map((message) => renderChatMessage(message, session.busy || executing)).join("")
             : `<div class="empty-state chat-empty">Ask Echo to inspect, plan, or break down work for this workspace.</div>`
         }
       </div>
@@ -629,7 +629,7 @@ export function renderChatImageDrafts(workspaceID: string, disabled: boolean): s
   `;
 }
 
-export function renderChatMessage(message: services.ChatMessage): string {
+export function renderChatMessage(message: services.ChatMessage, actionsDisabled = false): string {
   const roleLabel = message.role === "user" ? "You" : "Echo";
   const status = message.status && message.status !== "complete"
     ? `<span data-message-status>${escapeHtml(message.status)}</span>`
@@ -641,7 +641,10 @@ export function renderChatMessage(message: services.ChatMessage): string {
       <header>
         <strong>${roleLabel}</strong>
         ${status}
-        ${isUser ? renderUserControls(message, isEditing) : renderAssistantControls(message, isEditing)}
+        ${isUser
+          ? renderUserControls(message, isEditing, actionsDisabled)
+          : renderAssistantControls(message, isEditing, actionsDisabled)
+        }
       </header>
       ${renderChatMessageImages(message)}
       ${isEditing
@@ -654,7 +657,7 @@ export function renderChatMessage(message: services.ChatMessage): string {
   `;
 }
 
-export function renderAssistantControls(message: services.ChatMessage, isEditing: boolean): string {
+export function renderAssistantControls(message: services.ChatMessage, isEditing: boolean, actionsDisabled: boolean): string {
   const isStreaming = isAssistantMessageStreaming(message);
   const canCreateCard = canCreateKanbanCardFromMessage(message);
   const canEdit = message.status === "complete";
@@ -673,6 +676,7 @@ export function renderAssistantControls(message: services.ChatMessage, isEditing
       <button class="icon-button chat-kanban-trigger" type="button" title="Create Kanban card" aria-label="Create Kanban card from response" data-action="create-card-from-message" data-message-id="${escapeAttribute(message.id)}" ${canCreateCard ? "" : "disabled"}>
         ${icons.kanban}
       </button>
+      ${renderPruneMessageButton(message, actionsDisabled)}
     </div>
   `;
 }
@@ -693,7 +697,7 @@ export function renderCopyMessageButton(message: services.ChatMessage): string {
   `;
 }
 
-export function renderUserControls(message: services.ChatMessage, isEditing: boolean): string {
+export function renderUserControls(message: services.ChatMessage, isEditing: boolean, actionsDisabled: boolean): string {
   return `
     <div class="chat-message-actions">
       ${renderCopyMessageButton(message)}
@@ -703,7 +707,16 @@ export function renderUserControls(message: services.ChatMessage, isEditing: boo
             ${icons.edit}
           </button>`
       }
+      ${renderPruneMessageButton(message, actionsDisabled)}
     </div>
+  `;
+}
+
+export function renderPruneMessageButton(message: services.ChatMessage, disabled: boolean): string {
+  return `
+    <button class="icon-button danger-button chat-prune-trigger" type="button" title="Prune message" aria-label="Prune message" data-action="prune-chat-message" data-message-id="${escapeAttribute(message.id)}" ${disabled ? "disabled" : ""}>
+      ${icons.trash}
+    </button>
   `;
 }
 
@@ -1419,6 +1432,9 @@ export function patchChatControls() {
   if (clear) {
     clear.disabled = session.busy || executing || (session.messages ?? []).length === 0;
   }
+  appRoot.querySelectorAll<HTMLButtonElement>(".chat-prune-trigger").forEach((button) => {
+    button.disabled = session.busy || executing;
+  });
   if (planToggle) {
     planToggle.disabled = session.busy || executing;
     planToggle.checked = chatPlanModeFor(workspace.id);

@@ -508,6 +508,7 @@ var allowedRPCMethods = map[string]bool{
 	"OpenKanbanCardDetail":             true,
 	"OpenWorkspaceExplorer":            true,
 	"OpenWorkspacePathExplorer":        true,
+	"PruneChatMessage":                 true,
 	"ReadWorkspaceFile":                true,
 	"RemoveWorkspaceFolder":            true,
 	"RenameWorkspacePath":              true,

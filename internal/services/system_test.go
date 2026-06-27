@@ -429,6 +429,112 @@ func TestSystemServiceEditAssistantMessageRequiresCompleteStatus(t *testing.T) {
 	}
 }
 
+func TestSystemServicePruneChatMessagesFocusesPlanAndHistory(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "state.json")
+	var captured llm.ChatRequest
+	service, workspaceID := newDecompositionTestServiceWithStore(t, root, storePath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertCompleteRequest(t, r)
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode decomposition request: %v", err)
+		}
+		writeChatResponse(t, w, `{"cards":[{"id":"phase-1","title":"Implement focused work","description":"Use only the focused plan.","acceptanceCriteria":["Focused behavior exists"],"dependencies":[]}]}`)
+	}))
+	seedChatPlan(service, workspaceID, []ChatMessage{
+		{ID: "msg-1", Role: llm.RoleUser, Content: "Broad request that should be pruned.", Status: "complete"},
+		{
+			ID:        "msg-2",
+			Role:      llm.RoleAssistant,
+			Content:   "Noisy plan that should be pruned.",
+			ToolCalls: []ChatToolActivity{{ID: "call-1", Name: "filesystem_list", Status: "complete"}},
+			Status:    "complete",
+		},
+		{ID: "msg-3", Role: llm.RoleUser, Content: "Keep only the focused change.", Status: "complete"},
+		{ID: "msg-4", Role: llm.RoleAssistant, Content: "Focused approved plan.", Status: "complete"},
+	}, []llm.Message{
+		{Role: llm.RoleUser, Content: "Broad request that should be pruned."},
+		{Role: llm.RoleAssistant, Content: "Inspecting noisy context.", ToolCalls: []llm.ToolCall{{ID: "call-1"}}},
+		{Role: llm.RoleTool, ToolCallID: "call-1", Content: "Hidden noisy tool result."},
+		{Role: llm.RoleAssistant, Content: "Noisy plan that should be pruned."},
+		{Role: llm.RoleUser, Content: "Keep only the focused change."},
+		{Role: llm.RoleAssistant, Content: "Focused approved plan."},
+	})
+
+	if _, err := service.PruneChatMessage(workspaceID, "msg-2"); err != nil {
+		t.Fatalf("prune assistant message: %v", err)
+	}
+	session, err := service.PruneChatMessage(workspaceID, "msg-1")
+	if err != nil {
+		t.Fatalf("prune user message: %v", err)
+	}
+	if len(session.Messages) != 2 || session.Messages[0].ID != "msg-3" || session.Messages[1].ID != "msg-4" {
+		t.Fatalf("expected only focused messages to remain, got %#v", session.Messages)
+	}
+
+	service.chatMu.Lock()
+	history := cloneLLMMessages(service.chatSessions[workspaceID].History)
+	service.chatMu.Unlock()
+	if len(history) != 2 || history[0].Content != "Keep only the focused change." || history[1].Content != "Focused approved plan." {
+		t.Fatalf("expected retained history to match visible focused chat, got %#v", history)
+	}
+
+	reloaded := NewSystemServiceWithStorePath(storePath)
+	persisted, err := reloaded.LoadChatSession(workspaceID)
+	if err != nil {
+		t.Fatalf("load persisted pruned chat: %v", err)
+	}
+	if len(persisted.Messages) != 2 {
+		t.Fatalf("expected pruned chat to persist, got %#v", persisted.Messages)
+	}
+
+	if _, err := service.ExecutePlan(workspaceID); err != nil {
+		t.Fatalf("execute focused plan: %v", err)
+	}
+	if len(captured.Messages) != 2 {
+		t.Fatalf("expected decomposition request, got %#v", captured.Messages)
+	}
+	visiblePrompt := captured.Messages[1].Content
+	for _, expected := range []string{"Keep only the focused change.", "Focused approved plan."} {
+		if !strings.Contains(visiblePrompt, expected) {
+			t.Fatalf("expected focused prompt to include %q, got %q", expected, visiblePrompt)
+		}
+	}
+	for _, pruned := range []string{
+		"Broad request that should be pruned.",
+		"Noisy plan that should be pruned.",
+		"Inspecting noisy context.",
+		"Hidden noisy tool result.",
+	} {
+		if strings.Contains(visiblePrompt, pruned) {
+			t.Fatalf("decomposition prompt included pruned context %q: %q", pruned, visiblePrompt)
+		}
+	}
+}
+
+func TestVisibleChatHistoryPreservesRemainingImages(t *testing.T) {
+	const imageDataURL = "data:image/png;base64,aW1hZ2U="
+	history := visibleChatHistory([]ChatMessage{
+		{
+			Role:    llm.RoleUser,
+			Content: "Use this remaining screenshot.",
+			Images:  []ChatImageAttachment{{DataURL: imageDataURL}},
+			Status:  "complete",
+		},
+		{Role: llm.RoleAssistant, Content: "Incomplete response.", Status: "canceled"},
+		{Role: llm.RoleAssistant, Content: "Complete response.", Status: "complete"},
+	})
+
+	if len(history) != 2 {
+		t.Fatalf("expected user and complete assistant history, got %#v", history)
+	}
+	if len(history[0].ContentParts) != 2 || history[0].ContentParts[1].ImageURL == nil || history[0].ContentParts[1].ImageURL.URL != imageDataURL {
+		t.Fatalf("expected remaining image content to be preserved, got %#v", history[0].ContentParts)
+	}
+	if history[1].Content != "Complete response." {
+		t.Fatalf("expected only complete assistant content, got %#v", history)
+	}
+}
+
 func TestSystemServiceChatSendsPastedImageAsContentPart(t *testing.T) {
 	root := t.TempDir()
 	var captured llm.ChatRequest

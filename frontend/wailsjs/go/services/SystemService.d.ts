@@ -92,6 +92,8 @@ export function OpenWorkspaceExplorer(arg1:string):Promise<void>;
 
 export function OpenWorkspacePathExplorer(arg1:string,arg2:string):Promise<void>;
 
+export function PruneChatMessage(arg1:string,arg2:string):Promise<services.ChatSession>;
+
 export function ReadWorkspaceFile(arg1:string,arg2:string):Promise<services.WorkspaceFile>;
 
 export function RemoveWorkspaceFolder(arg1:string,arg2:string):Promise<services.AppState>;
