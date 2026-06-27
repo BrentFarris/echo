@@ -75,6 +75,10 @@ export function CreateKanbanCardFromChatMessage(...args: Parameters<typeof Wails
   return call("CreateKanbanCardFromChatMessage", Wails.CreateKanbanCardFromChatMessage, args);
 }
 
+export function CreateReadyKanbanCard(...args: Parameters<typeof Wails.CreateReadyKanbanCard>): ReturnType<typeof Wails.CreateReadyKanbanCard> {
+  return call("CreateReadyKanbanCard", Wails.CreateReadyKanbanCard, args);
+}
+
 export function CreateWorkspaceFile(...args: Parameters<typeof Wails.CreateWorkspaceFile>): ReturnType<typeof Wails.CreateWorkspaceFile> {
   return call("CreateWorkspaceFile", Wails.CreateWorkspaceFile, args);
 }

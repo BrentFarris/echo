@@ -66,6 +66,12 @@ export type ChatImageDraft = {
   bytes: number;
 };
 
+export type KanbanCardCreationDraft = {
+  title: string;
+  description: string;
+  acceptanceCriteria: string;
+};
+
 export type ScrollSnapshot = {
   scrollTop: number;
   atBottom: boolean;

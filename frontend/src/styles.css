@@ -1454,6 +1454,55 @@ h3 {
   backdrop-filter: blur(6px);
 }
 
+.kanban-card-create-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(18, 18, 20, 0.5);
+  backdrop-filter: blur(6px);
+}
+
+.kanban-card-create-dialog {
+  display: grid;
+  gap: 16px;
+  width: min(540px, 100%);
+  max-height: calc(100vh - 32px);
+  padding: 20px;
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-modal);
+}
+
+.kanban-card-create-dialog > header,
+.kanban-card-create-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.kanban-card-create-dialog label {
+  display: grid;
+  gap: 7px;
+  color: var(--color-text-muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.kanban-card-create-dialog input,
+.kanban-card-create-dialog textarea {
+  width: 100%;
+}
+
+.kanban-card-create-actions {
+  justify-content: flex-end;
+}
+
 .change-review-backdrop {
   position: fixed;
   inset: 0;

@@ -1,7 +1,7 @@
 
 import { llm, services } from "../../wailsjs/go/models";
 import type { ThemePaletteName } from "./theme";
-import type { AppMode, ChatImageDraft, ChatMentionState, ContextMenuState, Toast } from "./types";
+import type { AppMode, ChatImageDraft, ChatMentionState, ContextMenuState, KanbanCardCreationDraft, Toast } from "./types";
 
 export const state = {
   appState: null as services.AppState | null,
@@ -43,6 +43,8 @@ export const state = {
   openChangeReviewWorkspaces: new Set<string>(),
   openGitChangeWorkspaces: new Set<string>(),
   cardMessageDrafts: new Map<string, string>(),
+  creatingKanbanCardWorkspaces: new Set<string>(),
+  kanbanCardCreationDrafts: new Map<string, KanbanCardCreationDraft>(),
   expandedChatWorkspaces: new Set<string>(),
   expandedKanbanWorkspaces: new Set<string>(),
   editingMessageIds: new Set<string>(),

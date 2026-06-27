@@ -12,7 +12,7 @@ import { renderSettingsOverlay } from "./settings";
 import { renderToasts } from "./toasts";
 import { escapeHtml, workspaceFolderSummary } from "./utils";
 import { renderWorkspaceIcon, renderMissingWorkspace } from "./workspace";
-import { hasKanbanRuntime, renderDecompositionState, renderEmptyBoard, renderKanbanBoard, renderKanbanDetail, renderKanbanRuntime } from "./kanban";
+import { hasKanbanRuntime, renderCreateKanbanCardDialog, renderDecompositionState, renderEmptyBoard, renderKanbanBoard, renderKanbanDetail, renderKanbanRuntime } from "./kanban";
 import { services } from "../../wailsjs/go/models";
 
 export function render() {
@@ -154,6 +154,10 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
                   <button class="icon-button" type="button" title="${kanbanSizeLabel}" aria-label="${kanbanSizeLabel}" aria-pressed="${kanbanExpanded}" data-action="toggle-kanban-size">
                     ${kanbanExpanded ? icons.collapse : icons.expand}
                   </button>
+                  <button class="secondary-button icon-text-button" type="button" data-action="open-create-ready-card" ${running ? "disabled" : ""}>
+                    ${icons.plus}
+                    <span>New card</span>
+                  </button>
                   <button class="icon-text-button primary-button" type="button" data-action="start-agents" ${running || !hasCards ? "disabled" : ""}>
                     ${icons.execute}
                     <span class="run-button">Run</span>
@@ -180,6 +184,7 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
       </section>
     </div>
     ${board ? renderKanbanDetail(board) : ""}
+    ${workspace && state.creatingKanbanCardWorkspaces.has(workspace.id) && !running ? renderCreateKanbanCardDialog(workspace.id) : ""}
     ${workspace && state.openChangeReviewWorkspaces.has(workspace.id) ? renderChangeReviewDrawer(workspace, review ?? changeReviewFor(workspace.id)) : ""}
   `;
 }

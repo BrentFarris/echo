@@ -455,6 +455,32 @@ export async function handleAction(event: Event) {
       pushToast("Kanban agents started.", "success");
       getAppCallbacks().render();
     }
+    if (action === "open-create-ready-card") {
+      const workspace = activeWorkspace();
+      if (!workspace || state.runningKanbanWorkspaces.has(workspace.id)) {
+        return;
+      }
+      state.creatingKanbanCardWorkspaces.add(workspace.id);
+      if (!state.kanbanCardCreationDrafts.has(workspace.id)) {
+        state.kanbanCardCreationDrafts.set(workspace.id, {
+          title: "",
+          description: "",
+          acceptanceCriteria: "",
+        });
+      }
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "cancel-create-ready-card") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      state.creatingKanbanCardWorkspaces.delete(workspace.id);
+      state.kanbanCardCreationDrafts.delete(workspace.id);
+      getAppCallbacks().render();
+      return;
+    }
     if (action === "stop-agents") {
       const workspace = activeWorkspace();
       if (!workspace) {
@@ -700,6 +726,8 @@ export async function handleAction(event: Event) {
       state.gitChangeReviews.delete(workspaceID);
       dropWorkspaceGitRepositoryState(workspaceID);
       state.selectedKanbanCards.delete(workspaceID);
+      state.creatingKanbanCardWorkspaces.delete(workspaceID);
+      state.kanbanCardCreationDrafts.delete(workspaceID);
       state.openChangeReviewWorkspaces.delete(workspaceID);
       state.openGitChangeWorkspaces.delete(workspaceID);
       state.expandedChatWorkspaces.delete(workspaceID);

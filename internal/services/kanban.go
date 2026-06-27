@@ -193,6 +193,64 @@ func (s *SystemService) CreateKanbanCardFromChatMessage(workspaceID string, mess
 	return s.appendAssistantMessageReadyCard(workspaceID, content)
 }
 
+func (s *SystemService) CreateReadyKanbanCard(workspaceID string, title string, description string, acceptanceCriteria []string) (KanbanBoard, error) {
+	title = strings.TrimSpace(title)
+	description = strings.TrimSpace(description)
+	if title == "" {
+		return KanbanBoard{}, fmt.Errorf("title is required")
+	}
+	if description == "" {
+		return KanbanBoard{}, fmt.Errorf("description is required")
+	}
+	criteria := make([]string, 0, len(acceptanceCriteria))
+	for _, criterion := range acceptanceCriteria {
+		if criterion = strings.TrimSpace(criterion); criterion != "" {
+			criteria = append(criteria, criterion)
+		}
+	}
+	if len(criteria) == 0 {
+		return KanbanBoard{}, fmt.Errorf("at least one acceptance criterion is required")
+	}
+	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
+		return KanbanBoard{}, err
+	}
+
+	s.chatMu.Lock()
+	if _, running := s.kanbanRuns[workspaceID]; running {
+		s.chatMu.Unlock()
+		return KanbanBoard{}, fmt.Errorf("kanban cards cannot be created while agents are running")
+	}
+
+	s.mu.Lock()
+	card := KanbanCard{
+		ID:                 fmt.Sprintf("card-%d", s.nextKanbanCardNumberLocked()),
+		WorkspaceID:        workspaceID,
+		Title:              title,
+		Description:        description,
+		AcceptanceCriteria: criteria,
+		Lane:               KanbanLaneReady,
+		Status:             KanbanLaneReady,
+		ProgressTranscript: []KanbanProgressEntry{{
+			Type:    "message",
+			Title:   "Card created",
+			Content: "Created manually in the Ready lane.",
+			Status:  KanbanLaneReady,
+		}},
+	}
+	s.state.KanbanCards = append(s.state.KanbanCards, card)
+	if err := s.saveLocked(); err != nil {
+		s.mu.Unlock()
+		s.chatMu.Unlock()
+		return KanbanBoard{}, err
+	}
+	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
+	s.mu.Unlock()
+	s.chatMu.Unlock()
+
+	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: card.ID, Type: "card_created", Board: board})
+	return board, nil
+}
+
 func (s *SystemService) MoveKanbanCard(workspaceID string, cardID string, lane string) (KanbanBoard, error) {
 	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
 		return KanbanBoard{}, err

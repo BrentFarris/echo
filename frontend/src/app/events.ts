@@ -7,7 +7,7 @@ import { scrollChangeReview, scrollChangeReviewFile } from "./changes";
 import { dismissContextMenu, showContextMenu } from "./contextMenu";
 import { appRoot } from "./dom";
 import { bindGitEvents } from "./git";
-import { closeSelectedCardDetail, bindCardDescriptionEvents, bindCardMessageEvents, bindCardDirectionEvents } from "./kanban";
+import { closeSelectedCardDetail, bindCardDescriptionEvents, bindCardMessageEvents, bindCardDirectionEvents, bindKanbanCardCreationEvents } from "./kanban";
 import { bindSettingsEvents } from "./settings";
 import { activeWorkspace, state } from "./state";
 import { applyTheme } from "./theme";
@@ -20,6 +20,7 @@ export function bindEvents() {
   bindCardDescriptionEvents(appRoot);
   bindCardDirectionEvents(appRoot);
   bindCardMessageEvents(appRoot);
+  bindKanbanCardCreationEvents(appRoot);
   bindGitEvents(appRoot);
   bindCodeViewEvents(appRoot, getAppCallbacks().codeViewCallbacks());
   bindWorkspaceDragEvents(appRoot);
