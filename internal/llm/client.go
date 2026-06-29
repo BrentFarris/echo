@@ -106,6 +106,7 @@ func (c *Client) StreamChat(ctx context.Context, request ChatRequest) *Stream {
 	streamID := c.newStreamID()
 	streamContext, cancel := context.WithCancel(ctx)
 	events := make(chan StreamEvent, 32)
+	streamLogger := newStreamLogger(streamID, c.endpoint)
 
 	c.mu.Lock()
 	c.activeStreams[streamID] = cancel
@@ -124,13 +125,13 @@ func (c *Client) StreamChat(ctx context.Context, request ChatRequest) *Stream {
 		request.Stream = true
 		body, err := json.Marshal(request)
 		if err != nil {
-			emit(streamContext, events, StreamEvent{Type: EventError, Error: fmt.Sprintf("marshal chat request: %v", err)})
+			emitLogged(streamContext, events, StreamEvent{Type: EventError, Error: fmt.Sprintf("marshal chat request: %v", err)}, streamLogger)
 			return
 		}
 
 		httpRequest, err := http.NewRequestWithContext(streamContext, http.MethodPost, c.endpoint, bytes.NewReader(body))
 		if err != nil {
-			emit(streamContext, events, StreamEvent{Type: EventError, Error: fmt.Sprintf("create chat request: %v", err)})
+			emitLogged(streamContext, events, StreamEvent{Type: EventError, Error: fmt.Sprintf("create chat request: %v", err)}, streamLogger)
 			return
 		}
 		c.applyHeaders(httpRequest)
@@ -139,20 +140,20 @@ func (c *Client) StreamChat(ctx context.Context, request ChatRequest) *Stream {
 		response, err := c.httpClient.Do(httpRequest)
 		if err != nil {
 			if streamContext.Err() != nil {
-				emitCanceled(events)
+				emitCanceledLogged(events, streamLogger)
 				return
 			}
-			emit(streamContext, events, StreamEvent{Type: EventError, Error: fmt.Sprintf("send chat request: %v", err)})
+			emitLogged(streamContext, events, StreamEvent{Type: EventError, Error: fmt.Sprintf("send chat request: %v", err)}, streamLogger)
 			return
 		}
 		defer response.Body.Close()
 
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			emit(streamContext, events, StreamEvent{Type: EventError, Error: responseError(response).Error()})
+			emitLogged(streamContext, events, StreamEvent{Type: EventError, Error: responseError(response).Error()}, streamLogger)
 			return
 		}
 
-		parseStream(streamContext, response.Body, events)
+		parseStreamLogged(streamContext, response.Body, events, streamLogger)
 	}()
 
 	return stream

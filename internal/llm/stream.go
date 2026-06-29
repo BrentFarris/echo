@@ -29,6 +29,10 @@ type streamDelta struct {
 }
 
 func parseStream(ctx context.Context, reader io.Reader, events chan<- StreamEvent) {
+	parseStreamLogged(ctx, reader, events, nil)
+}
+
+func parseStreamLogged(ctx context.Context, reader io.Reader, events chan<- StreamEvent, logger *streamLogger) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
@@ -36,13 +40,13 @@ func parseStream(ctx context.Context, reader io.Reader, events chan<- StreamEven
 	completed := false
 	for scanner.Scan() {
 		if ctx.Err() != nil {
-			emitCanceled(events)
+			emitCanceledLogged(events, logger)
 			return
 		}
 
 		line := scanner.Text()
 		if line == "" {
-			if flushStreamData(ctx, events, dataLines, &completed) {
+			if flushStreamData(ctx, events, dataLines, &completed, logger) {
 				return
 			}
 			dataLines = nil
@@ -56,27 +60,30 @@ func parseStream(ctx context.Context, reader io.Reader, events chan<- StreamEven
 		}
 	}
 
-	if len(dataLines) > 0 && flushStreamData(ctx, events, dataLines, &completed) {
+	if len(dataLines) > 0 && flushStreamData(ctx, events, dataLines, &completed, logger) {
 		return
 	}
 	if ctx.Err() != nil {
-		emitCanceled(events)
+		emitCanceledLogged(events, logger)
 		return
 	}
 	if err := scanner.Err(); err != nil {
-		emit(ctx, events, StreamEvent{Type: EventError, Error: fmt.Sprintf("read stream: %v", err)})
+		emitLogged(ctx, events, StreamEvent{Type: EventError, Error: fmt.Sprintf("read stream: %v", err)}, logger)
 	}
 }
 
-func flushStreamData(ctx context.Context, events chan<- StreamEvent, dataLines []string, completed *bool) bool {
+func flushStreamData(ctx context.Context, events chan<- StreamEvent, dataLines []string, completed *bool, logger *streamLogger) bool {
 	if len(dataLines) == 0 {
 		return false
 	}
 
 	data := strings.Join(dataLines, "\n")
+	if logger != nil {
+		logger.raw(data)
+	}
 	if data == "[DONE]" {
 		if !*completed {
-			emit(ctx, events, StreamEvent{Type: EventComplete})
+			emitLogged(ctx, events, StreamEvent{Type: EventComplete}, logger)
 			*completed = true
 		}
 		return true
@@ -84,23 +91,23 @@ func flushStreamData(ctx context.Context, events chan<- StreamEvent, dataLines [
 
 	var chunk streamChunk
 	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-		emit(ctx, events, StreamEvent{Type: EventError, Error: fmt.Sprintf("decode stream chunk: %v", err)})
+		emitLogged(ctx, events, StreamEvent{Type: EventError, Error: fmt.Sprintf("decode stream chunk: %v", err)}, logger)
 		return true
 	}
 
 	for _, choice := range chunk.Choices {
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
-			emit(ctx, events, StreamEvent{Type: EventToken, Content: *choice.Delta.Content, Raw: json.RawMessage(data)})
+			emitLogged(ctx, events, StreamEvent{Type: EventToken, Content: *choice.Delta.Content, Raw: json.RawMessage(data)}, logger)
 		}
 		if reasoning := choice.Delta.reasoningText(); reasoning != "" {
-			emit(ctx, events, StreamEvent{Type: EventReasoning, Content: reasoning, Raw: json.RawMessage(data)})
+			emitLogged(ctx, events, StreamEvent{Type: EventReasoning, Content: reasoning, Raw: json.RawMessage(data)}, logger)
 		}
 		for _, toolCall := range choice.Delta.ToolCalls {
 			copy := toolCall
-			emit(ctx, events, StreamEvent{Type: EventToolCall, ToolCall: &copy, Raw: json.RawMessage(data)})
+			emitLogged(ctx, events, StreamEvent{Type: EventToolCall, ToolCall: &copy, Raw: json.RawMessage(data)}, logger)
 		}
 		if choice.FinishReason != nil && !*completed {
-			emit(ctx, events, StreamEvent{Type: EventComplete, FinishReason: *choice.FinishReason, Raw: json.RawMessage(data)})
+			emitLogged(ctx, events, StreamEvent{Type: EventComplete, FinishReason: *choice.FinishReason, Raw: json.RawMessage(data)}, logger)
 			*completed = true
 		}
 	}
@@ -116,18 +123,25 @@ func (d streamDelta) reasoningText() string {
 	return ""
 }
 
-func emit(ctx context.Context, events chan<- StreamEvent, event StreamEvent) bool {
+func emitLogged(ctx context.Context, events chan<- StreamEvent, event StreamEvent, logger *streamLogger) bool {
 	select {
 	case <-ctx.Done():
 		return false
 	case events <- event:
+		if logger != nil {
+			logger.event(event)
+		}
 		return true
 	}
 }
 
-func emitCanceled(events chan<- StreamEvent) {
+func emitCanceledLogged(events chan<- StreamEvent, logger *streamLogger) {
+	event := StreamEvent{Type: EventCanceled}
 	select {
-	case events <- StreamEvent{Type: EventCanceled}:
+	case events <- event:
+		if logger != nil {
+			logger.event(event)
+		}
 	default:
 	}
 }
