@@ -93,7 +93,7 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 	}
 
 	messages := []llm.Message{
-		inlineCodeSystemMessage(workspace),
+		inlineCodeSystemMessage(workspace, workspaceSkillCandidates(context.Background(), workspace, request.Prompt+"\n"+request.FilePath)),
 		{
 			Role:    llm.RoleUser,
 			Content: inlineCodeUserPrompt(request),
@@ -101,13 +101,16 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 	}
 	var output InlineCodePromptResponse
 	affected := map[string]bool{}
+	skillCheckpointPending := false
+	skillCheckpointReminders := 0
 
 	for {
 		chatRequest, err := llm.NewChatRequest(settings, messages, llm.WithTools(tools.LLMSchema()), llm.WithToolChoice("auto"))
 		if err != nil {
 			return fail(err)
 		}
-		result := s.streamInlineCodeResponse(context.Background(), client, chatRequest, eventBase)
+		publishResponse := !skillCheckpointPending
+		result := s.streamInlineCodeResponse(context.Background(), client, chatRequest, eventBase, publishResponse)
 		if result.err != nil {
 			return fail(errors.New(userFacingLLMError(result.err)))
 		}
@@ -121,7 +124,21 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 
 		messages = append(messages, llm.Message{Role: llm.RoleAssistant, Content: result.content, ToolCalls: toolCalls})
 		if len(toolCalls) == 0 {
+			if skillCheckpointPending && skillCheckpointReminders < workspaceSkillMaxReminders {
+				skillCheckpointReminders++
+				messages = append(messages, llm.Message{
+					Role:    llm.RoleUser,
+					Content: workspaceSkillCheckpointPrompt(false),
+				})
+				continue
+			}
 			output.Content = strings.TrimSpace(result.content)
+			if skillCheckpointPending {
+				if output.Content != "" {
+					output.Content += "\n\n"
+				}
+				output.Content += workspaceSkillCheckpointWarning()
+			}
 			output.AffectedPaths = sortedAffectedInlinePaths(affected)
 			s.emitInlineCodePromptEvent(InlineCodePromptEvent{
 				WorkspaceID:   eventBase.WorkspaceID,
@@ -140,19 +157,26 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 				call.ID = s.nextChatID("call")
 			}
 			s.emitInlineCodeToolCallEvent(eventBase, call, "running", "", "")
-			activity, resultMessage, changedPaths := s.executeInlineCodeToolCall(workspace, settings, eventBase, call)
+			execution := s.executeInlineCodeToolCall(workspace, settings, eventBase, call)
 			s.emitInlineCodePromptEvent(InlineCodePromptEvent{
 				WorkspaceID: eventBase.WorkspaceID,
 				RequestID:   eventBase.RequestID,
 				FilePath:    eventBase.FilePath,
 				Type:        "tool_call",
-				ToolCall:    &activity,
+				ToolCall:    &execution.Activity,
 			})
-			output.ToolCalls = append(output.ToolCalls, activity)
-			for _, changedPath := range changedPaths {
+			output.ToolCalls = append(output.ToolCalls, execution.Activity)
+			for _, changedPath := range execution.ChangedPaths {
 				affected[changedPath] = true
 			}
-			messages = append(messages, resultMessage)
+			messages = append(messages, execution.Message)
+			if len(execution.ChangedPaths) > 0 {
+				skillCheckpointPending = true
+				skillCheckpointReminders = 0
+			}
+			if execution.SkillCheckpoint {
+				skillCheckpointPending = false
+			}
 		}
 	}
 
@@ -166,7 +190,7 @@ type inlineCodeStreamResult struct {
 	err          error
 }
 
-func (s *SystemService) streamInlineCodeResponse(ctx context.Context, client *llm.Client, request llm.ChatRequest, eventBase InlineCodePromptEvent) inlineCodeStreamResult {
+func (s *SystemService) streamInlineCodeResponse(ctx context.Context, client *llm.Client, request llm.ChatRequest, eventBase InlineCodePromptEvent, publish bool) inlineCodeStreamResult {
 	stream := client.StreamChat(ctx, request)
 	content := strings.Builder{}
 	inlineParser := inlineToolCallStreamParser{}
@@ -188,6 +212,9 @@ func (s *SystemService) streamInlineCodeResponse(ctx context.Context, client *ll
 			return
 		}
 		content.WriteString(text)
+		if !publish {
+			return
+		}
 		s.emitInlineCodePromptEvent(InlineCodePromptEvent{
 			WorkspaceID: eventBase.WorkspaceID,
 			RequestID:   eventBase.RequestID,
@@ -231,11 +258,11 @@ func (s *SystemService) streamInlineCodeResponse(ctx context.Context, client *ll
 	return inlineCodeStreamResult{content: content.String(), toolCalls: orderedToolCalls(toolCalls), finished: finished, finishReason: finishReason}
 }
 
-func inlineCodeSystemMessage(workspace Workspace) llm.Message {
+func inlineCodeSystemMessage(workspace Workspace, skillCandidates []tools.WorkspaceSkillSummary) llm.Message {
 	return llm.Message{
 		Role: llm.RoleSystem,
 		Content: workspaceSystemPrompt(
-			"You are Echo's inline code assistant. Help with the user's prompt at the current editor cursor. "+
+			workspaceSkillsPrompt("You are Echo's inline code assistant. Help with the user's prompt at the current editor cursor. "+
 				"Use available workspace tools when you need to inspect or edit files. "+
 				"When the user mentions @path, treat it as a labeled workspace file reference like <folder-label>/path and read it before relying on its contents. "+
 				"When you need to find code but do not know the target file, prefer filesystem_search_workspace before shell commands. "+
@@ -244,6 +271,9 @@ func inlineCodeSystemMessage(workspace Workspace) llm.Message {
 				"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. "+
 				"If you fully handled the request by editing files and have nothing useful to show inline, return an empty final message. "+
 				"Otherwise keep the inline response concise and directly relevant to the cursor context.",
+				skillCandidates,
+				true,
+			),
 			workspace,
 		),
 	}
@@ -281,7 +311,14 @@ func inlineCodeAssistantContentAndToolCalls(message llm.Message) (string, []llm.
 	return content, toolCalls
 }
 
-func (s *SystemService) executeInlineCodeToolCall(workspace Workspace, settings llm.Settings, eventBase InlineCodePromptEvent, call llm.ToolCall) (ChatToolActivity, llm.Message, []string) {
+type inlineCodeToolCallExecution struct {
+	Activity        ChatToolActivity
+	Message         llm.Message
+	ChangedPaths    []string
+	SkillCheckpoint bool
+}
+
+func (s *SystemService) executeInlineCodeToolCall(workspace Workspace, settings llm.Settings, eventBase InlineCodePromptEvent, call llm.ToolCall) inlineCodeToolCallExecution {
 	execution := s.executeTrackedToolCall(context.Background(), workspace, settings, call, WorkspaceChangeSource{
 		Type:      "inline",
 		RequestID: eventBase.RequestID,
@@ -309,11 +346,16 @@ func (s *SystemService) executeInlineCodeToolCall(workspace Workspace, settings 
 		Error:     errorText,
 	}
 
-	return activity, llm.Message{
-		Role:       llm.RoleTool,
-		ToolCallID: call.ID,
-		Content:    string(data),
-	}, affectedPathsFromChanges(execution.Changes)
+	return inlineCodeToolCallExecution{
+		Activity: activity,
+		Message: llm.Message{
+			Role:       llm.RoleTool,
+			ToolCallID: call.ID,
+			Content:    string(data),
+		},
+		ChangedPaths:    affectedPathsFromChanges(execution.Changes),
+		SkillCheckpoint: workspaceSkillCheckpointCompleted(call, result),
+	}
 }
 
 func (s *SystemService) emitInlineCodeToolCallEvent(eventBase InlineCodePromptEvent, call llm.ToolCall, status string, result string, errorText string) {

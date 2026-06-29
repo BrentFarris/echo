@@ -440,6 +440,26 @@ func TestKanbanSchedulerRunsVerificationBeforeDone(t *testing.T) {
 				`{"choices":[{"index":0,"delta":{"content":"Created a passing Go test."}}]}`,
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
 			)
+		case 3:
+			var request llm.ChatRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode checkpoint request: %v", err)
+			}
+			if !requestContainsContent(request, "Verification passed") || !requestContainsContent(request, "workspace-skill learning checkpoint") {
+				t.Fatalf("checkpoint request did not follow verification: %#v", request.Messages)
+			}
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_skill", "workspace_skill_record", map[string]any{
+					"action": "skip",
+					"reason": "Routine generated test.",
+				}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 4:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Created a passing Go test."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
 		default:
 			t.Fatalf("unexpected extra request")
 		}
@@ -455,8 +475,8 @@ func TestKanbanSchedulerRunsVerificationBeforeDone(t *testing.T) {
 	board := waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
 		return len(board.Done) == 1
 	})
-	if requestCount.Load() != 2 {
-		t.Fatalf("expected two model requests, got %d", requestCount.Load())
+	if requestCount.Load() != 4 {
+		t.Fatalf("expected four model requests including the learning checkpoint, got %d", requestCount.Load())
 	}
 	if !transcriptContains(board.Done[0].ProgressTranscript, "Verification passed.") || !transcriptContains(board.Done[0].ProgressTranscript, "go test ./...") {
 		t.Fatalf("expected verification report before Done, got %#v", board.Done[0].ProgressTranscript)
@@ -503,6 +523,19 @@ func TestKanbanSchedulerRepairsAfterVerificationFailure(t *testing.T) {
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 			)
 		case 4:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Fixed the failing test."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		case 5:
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_skill", "workspace_skill_record", map[string]any{
+					"action": "skip",
+					"reason": "Repair behavior is already covered by the code.",
+				}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 6:
 			writeSSE(t, w,
 				`{"choices":[{"index":0,"delta":{"content":"Fixed the failing test."}}]}`,
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
@@ -617,6 +650,19 @@ func TestKanbanSchedulerWarnsWhenNoVerificationCommandDetected(t *testing.T) {
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 			)
 		case 2:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Created notes."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		case 3:
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_skill", "workspace_skill_record", map[string]any{
+					"action": "skip",
+					"reason": "Routine notes file.",
+				}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 4:
 			writeSSE(t, w,
 				`{"choices":[{"index":0,"delta":{"content":"Created notes."}}]}`,
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,

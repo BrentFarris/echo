@@ -149,6 +149,7 @@ func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Wo
 		SearxngURL:       settings.SearxngURL,
 		CodeNavigator:    s.codeNavigator(workspace),
 		WorkspaceContext: s.workspaceContextProvider(workspace),
+		WorkspaceSkills:  s.workspaceSkillsProvider(workspace),
 		Emit:             emit,
 		FileChanges:      sink,
 	}, call.Function.Name, json.RawMessage(call.Function.Arguments))

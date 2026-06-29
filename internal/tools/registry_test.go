@@ -159,7 +159,7 @@ func TestDefaultRegistryIncludesFilesystemTools(t *testing.T) {
 	for _, tool := range schema {
 		names[tool.Function.Name] = true
 	}
-	for _, name := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_search_text", "filesystem_search_workspace", "filesystem_stat", "lsp_query", "shell_command", "web_fetch", "web_search", "workspace_context"} {
+	for _, name := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_search_text", "filesystem_search_workspace", "filesystem_stat", "lsp_query", "shell_command", "web_fetch", "web_search", "workspace_context", "workspace_skill_read", "workspace_skill_record", "workspace_skill_search"} {
 		if !names[name] {
 			t.Fatalf("expected default registry to include %s, got %#v", name, names)
 		}
@@ -246,18 +246,18 @@ func TestReadOnlyLLMSchemaIncludesOnlyInspectionTools(t *testing.T) {
 		names[tool.Function.Name] = true
 	}
 
-	for _, name := range []string{"filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_search_text", "filesystem_search_workspace", "filesystem_stat", "lsp_query", "web_search", "workspace_context"} {
+	for _, name := range []string{"filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_search_text", "filesystem_search_workspace", "filesystem_stat", "lsp_query", "web_search", "workspace_context", "workspace_skill_read", "workspace_skill_search"} {
 		if !names[name] {
 			t.Fatalf("expected read-only schema to include %s, got %#v", name, names)
 		}
 	}
-	for _, name := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "shell_command", "web_fetch"} {
+	for _, name := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "shell_command", "web_fetch", "workspace_skill_record"} {
 		if names[name] {
 			t.Fatalf("expected read-only schema to exclude %s, got %#v", name, names)
 		}
 	}
-	if len(names) != 9 {
-		t.Fatalf("expected exactly nine read-only tools, got %#v", names)
+	if len(names) != 11 {
+		t.Fatalf("expected exactly eleven read-only tools, got %#v", names)
 	}
 }
 
