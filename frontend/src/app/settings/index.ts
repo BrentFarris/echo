@@ -78,11 +78,30 @@ const endpointTopics = [
   { key: "inlineCode", label: "Inline code" },
 ] as const;
 
+const settingsSections = [
+  { id: "llm-endpoints-title", label: "LLM Endpoints" },
+  { id: "search-settings-title", label: "Search" },
+  { id: "notification-settings-title", label: "Notifications" },
+  { id: "programming-settings-title", label: "Programming" },
+  { id: "web-access-settings-title", label: "Web Access" },
+  { id: "theme-settings-title", label: "Theme Colors" },
+  { id: "workspace-settings-title", label: "Workspaces" },
+] as const;
+
 type EndpointTopic = (typeof endpointTopics)[number]["key"];
 
 export function bindSettingsEvents(root: ParentNode) {
   const form = root.querySelector<HTMLFormElement>("[data-settings-form]");
   form?.addEventListener("submit", handleSettingsSubmit);
+  form
+    ?.querySelectorAll<HTMLButtonElement>("[data-settings-nav-target]")
+    .forEach((button) =>
+      button.addEventListener("click", () => {
+        const targetID = button.dataset.settingsNavTarget;
+        const target = targetID ? form.querySelector<HTMLElement>(`#${targetID}`) : null;
+        target?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }),
+    );
   form
     ?.querySelectorAll<HTMLInputElement>("input")
     .forEach((input) => input.addEventListener("input", handleSettingsInput));
@@ -129,123 +148,143 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
           </button>
         </header>
 
-        ${state.formError ? `<p class="form-error" role="alert">${escapeHtml(state.formError)}</p>` : ""}
-        ${hasSettingsValues ? "" : `<p class="empty-state compact">No settings are loaded. Add an OpenAI-compatible endpoint and model to recover.</p>`}
+        <div class="settings-layout">
+          <nav class="settings-nav" aria-label="Settings sections">
+            <ul>
+              ${settingsSections
+                .map(
+                  (section) => `
+                    <li>
+                      <button type="button" data-settings-nav-target="${section.id}">
+                        ${section.label}
+                      </button>
+                    </li>
+                  `,
+                )
+                .join("")}
+            </ul>
+          </nav>
 
-        <section class="settings-section" aria-labelledby="llm-endpoints-title">
-          <div class="settings-section-heading">
-            <h3 id="llm-endpoints-title" class="settings-section-title">LLM Endpoints</h3>
-            <button class="secondary-button compact-button" type="button" data-action="add-llm-endpoint">
-              ${icons.plus}
-              <span>Add</span>
-            </button>
+          <div class="settings-content">
+            ${state.formError ? `<p class="form-error" role="alert">${escapeHtml(state.formError)}</p>` : ""}
+            ${hasSettingsValues ? "" : `<p class="empty-state compact">No settings are loaded. Add an OpenAI-compatible endpoint and model to recover.</p>`}
+
+            <section class="settings-section" aria-labelledby="llm-endpoints-title">
+              <div class="settings-section-heading">
+                <h3 id="llm-endpoints-title" class="settings-section-title">LLM Endpoints</h3>
+                <button class="secondary-button compact-button" type="button" data-action="add-llm-endpoint">
+                  ${icons.plus}
+                  <span>Add</span>
+                </button>
+              </div>
+              ${renderLLMEndpointRouting(endpoints)}
+              ${renderLLMEndpointList(endpoints)}
+            </section>
+
+            <section class="settings-section" aria-labelledby="search-settings-title">
+              <h3 id="search-settings-title" class="settings-section-title">Search</h3>
+              <div class="settings-grid">
+                <label class="field field-wide">
+                  <span>SearXNG URL</span>
+                  <input name="searxngUrl" type="url" value="${escapeHtml(fieldValue("searxngUrl"))}" autocomplete="off" />
+                </label>
+              </div>
+            </section>
+
+            <section class="settings-section" aria-labelledby="notification-settings-title">
+              <h3 id="notification-settings-title" class="settings-section-title">Notifications</h3>
+              <label class="settings-toggle">
+                <span>Notification sounds</span>
+                <input
+                  name="disableNotificationSounds"
+                  type="checkbox"
+                  data-settings-inverted-boolean
+                  ${notificationSoundsEnabled(state.settingsDraft) ? "checked" : ""}
+                />
+              </label>
+            </section>
+
+            <section class="settings-section" aria-labelledby="programming-settings-title">
+              <h3 id="programming-settings-title" class="settings-section-title">Programming</h3>
+              <label class="settings-toggle" title="Only allow 1 Kanban card to execute at a time; useful for memory constrained environments.">
+                <span>Limit Kanban concurrency</span>
+                <input
+                  name="limitKanbanConcurrency"
+                  type="checkbox"
+                  ${limitKanbanConcurrencyEnabled(state.settingsDraft) ? "checked" : ""}
+                />
+              </label>
+              <label class="settings-toggle">
+                <span>Leading whitespace indicators</span>
+                <input
+                  name="hideLeadingWhitespaceIndicators"
+                  type="checkbox"
+                  data-settings-inverted-boolean
+                  ${leadingWhitespaceIndicatorsEnabled(state.settingsDraft) ? "checked" : ""}
+                />
+              </label>
+            </section>
+
+            ${renderWebAccessSettings()}
+
+            ${renderThemeSettings()}
+
+            <section class="settings-section workspace-settings" aria-labelledby="workspace-settings-title">
+              <h3 id="workspace-settings-title" class="settings-section-title">Workspaces</h3>
+              <div class="workspace-list">
+                ${
+                  workspaces.length
+                    ? workspaces
+                        .map(
+                          (workspace) => `
+                            <div class="workspace-row">
+                              <div class="workspace-row-main">
+                                <strong>${escapeHtml(workspace.displayName)}${workspace.missing ? " - Folder missing" : ""}</strong>
+                                <span>${escapeHtml(workspaceFolderSummary(workspace))}</span>
+                                ${renderWorkspaceFolderSettings(workspace)}
+                              </div>
+                              <label class="settings-toggle workspace-default-plan-mode">
+                                <span>Plan by default</span>
+                                <input
+                                  type="checkbox"
+                                  ${workspace.defaultPlanMode ? "checked" : ""}
+                                  data-workspace-default-plan-mode
+                                  data-workspace-id="${escapeAttribute(workspace.id)}"
+                                />
+                              </label>
+                              <div class="workspace-icon-setting" aria-label="Workspace icon for ${escapeAttribute(workspace.displayName)}">
+                                <span class="workspace-icon-preview" aria-hidden="true">${renderWorkspaceIcon(workspace)}</span>
+                                <button class="icon-button" type="button" title="Choose workspace icon" aria-label="Choose icon for ${escapeAttribute(workspace.displayName)}" data-action="choose-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}">
+                                  ${icons.image}
+                                </button>
+                                <button class="icon-button" type="button" title="Clear workspace icon" aria-label="Clear icon for ${escapeAttribute(workspace.displayName)}" data-action="clear-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}" ${(workspace.iconUrl ?? "").trim() ? "" : "disabled"}>
+                                  ${icons.x}
+                                </button>
+                              </div>
+                              <label class="workspace-letter-field">
+                                <span>Label</span>
+                                <input
+                                  name="workspaceLetter"
+                                  type="text"
+                                  value="${escapeHtml(workspaceLetterDraft(workspace))}"
+                                  aria-label="Workspace icon label for ${escapeHtml(workspace.displayName)}"
+                                  data-workspace-letter
+                                  data-workspace-id="${escapeHtml(workspace.id)}"
+                                />
+                              </label>
+                              <button class="icon-button danger-button" type="button" title="Delete workspace" aria-label="Delete ${escapeHtml(workspace.displayName)}" data-action="delete-workspace" data-workspace-id="${escapeHtml(workspace.id)}">
+                                ${icons.trash}
+                              </button>
+                            </div>
+                          `,
+                        )
+                        .join("")
+                    : `<p class="empty-state compact">No workspaces added.</p>`
+                }
+              </div>
+            </section>
           </div>
-          ${renderLLMEndpointRouting(endpoints)}
-          ${renderLLMEndpointList(endpoints)}
-        </section>
-
-        <section class="settings-section" aria-labelledby="search-settings-title">
-          <h3 id="search-settings-title" class="settings-section-title">Search</h3>
-          <div class="settings-grid">
-            <label class="field field-wide">
-              <span>SearXNG URL</span>
-              <input name="searxngUrl" type="url" value="${escapeHtml(fieldValue("searxngUrl"))}" autocomplete="off" />
-            </label>
-          </div>
-        </section>
-
-        <section class="settings-section" aria-labelledby="notification-settings-title">
-          <h3 id="notification-settings-title" class="settings-section-title">Notifications</h3>
-          <label class="settings-toggle">
-            <span>Notification sounds</span>
-            <input
-              name="disableNotificationSounds"
-              type="checkbox"
-              data-settings-inverted-boolean
-              ${notificationSoundsEnabled(state.settingsDraft) ? "checked" : ""}
-            />
-          </label>
-        </section>
-
-        <section class="settings-section" aria-labelledby="programming-settings-title">
-          <h3 id="programming-settings-title" class="settings-section-title">Programming</h3>
-          <label class="settings-toggle" title="Only allow 1 Kanban card to execute at a time; useful for memory constrained environments.">
-            <span>Limit Kanban concurrency</span>
-            <input
-              name="limitKanbanConcurrency"
-              type="checkbox"
-              ${limitKanbanConcurrencyEnabled(state.settingsDraft) ? "checked" : ""}
-            />
-          </label>
-          <label class="settings-toggle">
-            <span>Leading whitespace indicators</span>
-            <input
-              name="hideLeadingWhitespaceIndicators"
-              type="checkbox"
-              data-settings-inverted-boolean
-              ${leadingWhitespaceIndicatorsEnabled(state.settingsDraft) ? "checked" : ""}
-            />
-          </label>
-        </section>
-
-        ${renderWebAccessSettings()}
-
-        ${renderThemeSettings()}
-
-        <section class="settings-section workspace-settings" aria-labelledby="workspace-settings-title">
-          <h3 id="workspace-settings-title" class="settings-section-title">Workspaces</h3>
-          <div class="workspace-list">
-            ${
-              workspaces.length
-                ? workspaces
-                    .map(
-                      (workspace) => `
-                        <div class="workspace-row">
-                          <div class="workspace-row-main">
-                            <strong>${escapeHtml(workspace.displayName)}${workspace.missing ? " - Folder missing" : ""}</strong>
-                            <span>${escapeHtml(workspaceFolderSummary(workspace))}</span>
-                            ${renderWorkspaceFolderSettings(workspace)}
-                          </div>
-                          <label class="settings-toggle workspace-default-plan-mode">
-                            <span>Plan by default</span>
-                            <input
-                              type="checkbox"
-                              ${workspace.defaultPlanMode ? "checked" : ""}
-                              data-workspace-default-plan-mode
-                              data-workspace-id="${escapeAttribute(workspace.id)}"
-                            />
-                          </label>
-                          <div class="workspace-icon-setting" aria-label="Workspace icon for ${escapeAttribute(workspace.displayName)}">
-                            <span class="workspace-icon-preview" aria-hidden="true">${renderWorkspaceIcon(workspace)}</span>
-                            <button class="icon-button" type="button" title="Choose workspace icon" aria-label="Choose icon for ${escapeAttribute(workspace.displayName)}" data-action="choose-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}">
-                              ${icons.image}
-                            </button>
-                            <button class="icon-button" type="button" title="Clear workspace icon" aria-label="Clear icon for ${escapeAttribute(workspace.displayName)}" data-action="clear-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}" ${(workspace.iconUrl ?? "").trim() ? "" : "disabled"}>
-                              ${icons.x}
-                            </button>
-                          </div>
-                          <label class="workspace-letter-field">
-                            <span>Label</span>
-                            <input
-                              name="workspaceLetter"
-                              type="text"
-                              value="${escapeHtml(workspaceLetterDraft(workspace))}"
-                              aria-label="Workspace icon label for ${escapeHtml(workspace.displayName)}"
-                              data-workspace-letter
-                              data-workspace-id="${escapeHtml(workspace.id)}"
-                            />
-                          </label>
-                          <button class="icon-button danger-button" type="button" title="Delete workspace" aria-label="Delete ${escapeHtml(workspace.displayName)}" data-action="delete-workspace" data-workspace-id="${escapeHtml(workspace.id)}">
-                            ${icons.trash}
-                          </button>
-                        </div>
-                      `,
-                    )
-                    .join("")
-                : `<p class="empty-state compact">No workspaces added.</p>`
-            }
-          </div>
-        </section>
+        </div>
 
         <footer class="settings-footer">
           <button class="secondary-button" type="button" data-action="reset-settings">Reset</button>

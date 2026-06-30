@@ -1609,6 +1609,26 @@ export namespace services {
 		    return a;
 		}
 	}
+	export class WorkspaceSkillCreationResult {
+	    id: string;
+	    folder: string;
+	    name: string;
+	    description: string;
+	    path: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceSkillCreationResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.folder = source["folder"];
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.path = source["path"];
+	    }
+	}
 	
 	export class WorkspaceTextSearchMatch {
 	    line: number;

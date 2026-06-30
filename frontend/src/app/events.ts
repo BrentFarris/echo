@@ -45,11 +45,15 @@ export function bindEvents() {
   document.addEventListener(
     "pointerdown",
     (event: PointerEvent) => {
-      if (!state.contextMenu) {
-        return;
-      }
       const target = event.target;
       if (!(target instanceof Node)) {
+        return;
+      }
+      const chatOverflow = appRoot.querySelector<HTMLDetailsElement>("[data-chat-overflow]");
+      if (chatOverflow?.open && !chatOverflow.contains(target)) {
+        chatOverflow.open = false;
+      }
+      if (!state.contextMenu) {
         return;
       }
       const menuEl = appRoot.querySelector<HTMLElement>("[data-context-menu]");

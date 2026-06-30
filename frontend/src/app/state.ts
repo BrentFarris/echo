@@ -36,6 +36,7 @@ export const state = {
   loadingGitRepositoryWorkspaces: new Set<string>(),
   loadingGitCommitDetails: new Set<string>(),
   executingPlans: new Set<string>(),
+  creatingChatSkills: new Set<string>(),
   runningKanbanWorkspaces: new Set<string>(),
   kanbanRunStarts: new Map<string, number>(),
   kanbanRunElapsed: new Map<string, number>(),

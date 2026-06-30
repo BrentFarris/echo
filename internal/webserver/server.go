@@ -483,6 +483,7 @@ var allowedRPCMethods = map[string]bool{
 	"CompleteWorkspaceFile":            true,
 	"CreateKanbanCardFromChatMessage":  true,
 	"CreateReadyKanbanCard":            true,
+	"CreateSkillFromChat":              true,
 	"CreateWorkspaceGitBranch":         true,
 	"CreateWorkspaceFile":              true,
 	"CreateWorkspaceFolder":            true,
