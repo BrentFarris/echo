@@ -3892,6 +3892,30 @@ h3 {
   height: 100%;
 }
 
+.code-symbol-rename {
+  padding: 3px;
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  background: var(--color-bg);
+  box-shadow: 0 6px 18px color-mix(in srgb, black 20%, transparent);
+}
+
+.code-symbol-rename-input {
+  width: auto;
+  min-width: 180px;
+  max-width: min(60ch, 80vw);
+  min-height: 28px;
+  padding: 3px 7px;
+  border: 0;
+  border-radius: 2px;
+  outline: none;
+  background: var(--code-editor-bg);
+  color: var(--code-editor-text);
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
 .inline-code-chat {
   width: 100%;
   margin: 8px 0 10px;

@@ -96,6 +96,8 @@ export function OpenWorkspaceExplorer(arg1:string):Promise<void>;
 
 export function OpenWorkspacePathExplorer(arg1:string,arg2:string):Promise<void>;
 
+export function PrepareWorkspaceSymbolRename(arg1:string,arg2:services.WorkspaceDefinitionRequest):Promise<services.WorkspacePrepareRenameResponse>;
+
 export function PruneChatMessage(arg1:string,arg2:string):Promise<services.ChatSession>;
 
 export function ReadExternalTextFile(arg1:string):Promise<services.WorkspaceFile>;
@@ -105,6 +107,8 @@ export function ReadWorkspaceFile(arg1:string,arg2:string):Promise<services.Work
 export function RemoveWorkspaceFolder(arg1:string,arg2:string):Promise<services.AppState>;
 
 export function RenameWorkspacePath(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFileEntry>;
+
+export function RenameWorkspaceSymbol(arg1:string,arg2:services.WorkspaceRenameRequest):Promise<services.WorkspaceRenameResponse>;
 
 export function ReorderWorkspaces(arg1:Array<string>):Promise<services.AppState>;
 

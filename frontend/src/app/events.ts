@@ -97,7 +97,12 @@ export function handleGlobalKeydown(event: KeyboardEvent) {
   }
   if (state.appMode === "code" && !state.settingsOpen) {
     const workspace = activeWorkspace();
-    if (workspace && isCodeRenameShortcut(event) && !isTextInputTarget(event.target)) {
+    if (
+      workspace &&
+      isCodeRenameShortcut(event) &&
+      !isTextInputTarget(event.target) &&
+      !isCodeEditorTarget(event.target)
+    ) {
       event.preventDefault();
       event.stopPropagation();
       void startSelectedCodeRename(workspace.id, getAppCallbacks().codeViewCallbacks());
@@ -226,6 +231,10 @@ function isTextInputTarget(target: EventTarget | null): boolean {
     target instanceof HTMLTextAreaElement ||
     target instanceof HTMLSelectElement
   );
+}
+
+function isCodeEditorTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(target.closest(".cm-editor"));
 }
 
 function isCodeNavigationHistoryShortcut(event: KeyboardEvent): boolean {

@@ -721,6 +721,9 @@ func (c *lspClient) initialize(ctx context.Context, workspaceName string) error 
 			"workspace": map[string]any{
 				"configuration":    true,
 				"workspaceFolders": true,
+				"workspaceEdit": map[string]any{
+					"documentChanges": true,
+				},
 			},
 			"textDocument": map[string]any{
 				"synchronization": map[string]any{
@@ -752,6 +755,9 @@ func (c *lspClient) initialize(ctx context.Context, workspaceName string) error 
 					"linkSupport": true,
 				},
 				"references": map[string]any{},
+				"rename": map[string]any{
+					"prepareSupport": true,
+				},
 				"typeDefinition": map[string]any{
 					"linkSupport": true,
 				},

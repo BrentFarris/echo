@@ -186,6 +186,10 @@ export function OpenWorkspacePathExplorer(arg1, arg2) {
   return window['go']['services']['SystemService']['OpenWorkspacePathExplorer'](arg1, arg2);
 }
 
+export function PrepareWorkspaceSymbolRename(arg1, arg2) {
+  return window['go']['services']['SystemService']['PrepareWorkspaceSymbolRename'](arg1, arg2);
+}
+
 export function PruneChatMessage(arg1, arg2) {
   return window['go']['services']['SystemService']['PruneChatMessage'](arg1, arg2);
 }
@@ -204,6 +208,10 @@ export function RemoveWorkspaceFolder(arg1, arg2) {
 
 export function RenameWorkspacePath(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['RenameWorkspacePath'](arg1, arg2, arg3);
+}
+
+export function RenameWorkspaceSymbol(arg1, arg2) {
+  return window['go']['services']['SystemService']['RenameWorkspaceSymbol'](arg1, arg2);
 }
 
 export function ReorderWorkspaces(arg1) {

@@ -218,6 +218,10 @@ export function PruneChatMessage(...args: Parameters<typeof Wails.PruneChatMessa
   return call("PruneChatMessage", Wails.PruneChatMessage, args);
 }
 
+export function PrepareWorkspaceSymbolRename(...args: Parameters<typeof Wails.PrepareWorkspaceSymbolRename>): ReturnType<typeof Wails.PrepareWorkspaceSymbolRename> {
+  return call("PrepareWorkspaceSymbolRename", Wails.PrepareWorkspaceSymbolRename, args);
+}
+
 export function ReadWorkspaceFile(...args: Parameters<typeof Wails.ReadWorkspaceFile>): ReturnType<typeof Wails.ReadWorkspaceFile> {
   return call("ReadWorkspaceFile", Wails.ReadWorkspaceFile, args);
 }
@@ -228,6 +232,10 @@ export function RemoveWorkspaceFolder(...args: Parameters<typeof Wails.RemoveWor
 
 export function RenameWorkspacePath(...args: Parameters<typeof Wails.RenameWorkspacePath>): ReturnType<typeof Wails.RenameWorkspacePath> {
   return call("RenameWorkspacePath", Wails.RenameWorkspacePath, args);
+}
+
+export function RenameWorkspaceSymbol(...args: Parameters<typeof Wails.RenameWorkspaceSymbol>): ReturnType<typeof Wails.RenameWorkspaceSymbol> {
+  return call("RenameWorkspaceSymbol", Wails.RenameWorkspaceSymbol, args);
 }
 
 export function ResetKanbanCard(...args: Parameters<typeof Wails.ResetKanbanCard>): ReturnType<typeof Wails.ResetKanbanCard> {
