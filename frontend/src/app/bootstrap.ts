@@ -1,8 +1,8 @@
 
-import { applyInlineCodePromptEvent, finishCodeTabSwitcher, refreshOpenCodeTabsFromDisk, saveActiveCodeFile } from "../codeView";
+import { applyInlineCodePromptEvent, ensureCodeViewRootLoaded, finishCodeTabSwitcher, openDroppedCodeFile, refreshOpenCodeTabsFromDisk, saveActiveCodeFile } from "../codeView";
 import { LoadRuntimeStatus, LoadState, LoadWebAccessStatus } from "../backend/services";
 import { llm, services } from "../../wailsjs/go/models";
-import { EventsOn } from "../backend/runtime";
+import { EventsOn, OnFileDrop } from "../backend/runtime";
 import { initializeWebAccessTokenFromURL } from "../backend/web";
 import { bindActionEvents } from "./actions";
 import { setAppCallbacks } from "./callbacks";
@@ -12,7 +12,7 @@ import { showContextMenu } from "./contextMenu";
 import { handleGlobalKeydown, handleGlobalKeyup, handleGlobalPointerDown, handleGlobalWindowBlur } from "./events";
 import { applyKanbanEvent, loadActiveKanbanBoard, markKanbanRunStarted } from "./kanban";
 import { render } from "./render";
-import { cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state } from "./state";
+import { activeWorkspace, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state } from "./state";
 import { applyTheme } from "./theme";
 import { pushToast } from "./toasts";
 import type { ChatStreamEvent, FileChangesEvent, KanbanEvent } from "./types";
@@ -90,6 +90,10 @@ export function startApp() {
     bindChatEvents,
   });
 
+  OnFileDrop((_x, _y, paths) => {
+    void openDroppedTextFiles(paths);
+  });
+
   EventsOn("echo:chat:event", (event: ChatStreamEvent) => {
     applyChatStreamEvent(event);
   });
@@ -112,4 +116,24 @@ export function startApp() {
   window.addEventListener("blur", handleGlobalWindowBlur);
 
   void initialize();
+}
+
+async function openDroppedTextFiles(paths: string[]) {
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    pushToast("Select a workspace before dropping a text file.", "error");
+    return;
+  }
+  const uniquePaths = [...new Set(paths.map((path) => path.trim()).filter(Boolean))];
+  if (uniquePaths.length === 0) {
+    return;
+  }
+
+  state.appMode = "code";
+  const loading = ensureCodeViewRootLoaded(workspace.id);
+  render();
+  await loading;
+  for (const path of uniquePaths) {
+    await openDroppedCodeFile(workspace.id, path, codeViewCallbacks());
+  }
 }

@@ -74,7 +74,7 @@ func (n workspaceCodeNavigator) QueryCode(ctx context.Context, request tools.Cod
 		response.Message = "Language server navigation is not available for this file type."
 		return response, nil
 	}
-	response.LanguageID = languageID
+	response.LanguageID = lspDocumentLanguageIDForPath(languageID, file.Path)
 
 	folder, err := workspaceFolderForAbsolutePath(n.workspace, resolved)
 	if err != nil {
@@ -208,7 +208,7 @@ func (c *lspClient) locations(ctx context.Context, method string, absolutePath s
 	defer c.operationMu.Unlock()
 
 	uri := fileURI(absolutePath)
-	if err := c.syncDocument(uri, content); err != nil {
+	if err := c.syncDocument(absolutePath, uri, content); err != nil {
 		return nil, err
 	}
 	params := map[string]any{
@@ -230,7 +230,7 @@ func (c *lspClient) unfilteredCompletion(ctx context.Context, absolutePath strin
 	defer c.operationMu.Unlock()
 
 	uri := fileURI(absolutePath)
-	if err := c.syncDocument(uri, content); err != nil {
+	if err := c.syncDocument(absolutePath, uri, content); err != nil {
 		return WorkspaceCompletionResponse{}, err
 	}
 	params := map[string]any{
@@ -256,7 +256,7 @@ func (c *lspClient) hover(ctx context.Context, absolutePath string, content stri
 	defer c.operationMu.Unlock()
 
 	uri := fileURI(absolutePath)
-	if err := c.syncDocument(uri, content); err != nil {
+	if err := c.syncDocument(absolutePath, uri, content); err != nil {
 		return lspHoverResponse{}, false, err
 	}
 	raw, err := c.requestWithRetry(ctx, "textDocument/hover", map[string]any{
@@ -274,7 +274,7 @@ func (c *lspClient) documentSymbols(ctx context.Context, absolutePath string, co
 	defer c.operationMu.Unlock()
 
 	uri := fileURI(absolutePath)
-	if err := c.syncDocument(uri, content); err != nil {
+	if err := c.syncDocument(absolutePath, uri, content); err != nil {
 		return nil, err
 	}
 	return c.requestWithRetry(ctx, "textDocument/documentSymbol", map[string]any{

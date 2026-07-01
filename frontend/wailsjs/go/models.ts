@@ -94,6 +94,7 @@ export namespace llm {
 	    thinkingCorrection?: boolean;
 	    hideLeadingWhitespaceIndicators?: boolean;
 	    disableNotificationSounds?: boolean;
+	    limitKanbanConcurrency?: boolean;
 	    theme?: Theme;
 	
 	    static createFrom(source: any = {}) {
@@ -121,6 +122,7 @@ export namespace llm {
 	        this.thinkingCorrection = source["thinkingCorrection"];
 	        this.hideLeadingWhitespaceIndicators = source["hideLeadingWhitespaceIndicators"];
 	        this.disableNotificationSounds = source["disableNotificationSounds"];
+	        this.limitKanbanConcurrency = source["limitKanbanConcurrency"];
 	        this.theme = this.convertValues(source["theme"], Theme);
 	    }
 	
@@ -189,6 +191,7 @@ export namespace services {
 	    id: string;
 	    folders: WorkspaceFolder[];
 	    displayName: string;
+	    defaultPlanMode: boolean;
 	    letter?: string;
 	    iconPath?: string;
 	    iconUrl?: string;
@@ -205,6 +208,7 @@ export namespace services {
 	        this.id = source["id"];
 	        this.folders = this.convertValues(source["folders"], WorkspaceFolder);
 	        this.displayName = source["displayName"];
+	        this.defaultPlanMode = source["defaultPlanMode"];
 	        this.letter = source["letter"];
 	        this.iconPath = source["iconPath"];
 	        this.iconUrl = source["iconUrl"];
@@ -1432,24 +1436,28 @@ export namespace services {
 	        this.bytes = source["bytes"];
 	    }
 	}
-	export class WorkspaceMediaFile {
+	export class WorkspacePrepareRenameResponse {
 	    workspaceId: string;
-	    path: string;
-	    mimeType: string;
-	    dataUrl: string;
-	    bytes: number;
+	    filePath: string;
+	    available: boolean;
+	    from: number;
+	    to: number;
+	    placeholder?: string;
+	    message?: string;
 	
 	    static createFrom(source: any = {}) {
-	        return new WorkspaceMediaFile(source);
+	        return new WorkspacePrepareRenameResponse(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.workspaceId = source["workspaceId"];
-	        this.path = source["path"];
-	        this.mimeType = source["mimeType"];
-	        this.dataUrl = source["dataUrl"];
-	        this.bytes = source["bytes"];
+	        this.filePath = source["filePath"];
+	        this.available = source["available"];
+	        this.from = source["from"];
+	        this.to = source["to"];
+	        this.placeholder = source["placeholder"];
+	        this.message = source["message"];
 	    }
 	}
 	export class WorkspaceReferencePreviewLine {
@@ -1624,6 +1632,118 @@ export namespace services {
 		    }
 		    return a;
 		}
+	}
+	export class WorkspaceRenameFileContent {
+	    filePath: string;
+	    content: string;
+	    modifiedAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceRenameFileContent(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.filePath = source["filePath"];
+	        this.content = source["content"];
+	        this.modifiedAt = source["modifiedAt"];
+	    }
+	}
+	export class WorkspaceRenameRequest {
+	    filePath: string;
+	    content: string;
+	    position: number;
+	    newName: string;
+	    openFiles?: WorkspaceRenameFileContent[];
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceRenameRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.filePath = source["filePath"];
+	        this.content = source["content"];
+	        this.position = source["position"];
+	        this.newName = source["newName"];
+	        this.openFiles = this.convertValues(source["openFiles"], WorkspaceRenameFileContent);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class WorkspaceRenameResponse {
+	    workspaceId: string;
+	    sourcePath: string;
+	    applied: boolean;
+	    files?: WorkspaceFile[];
+	    message?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceRenameResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.sourcePath = source["sourcePath"];
+	        this.applied = source["applied"];
+	        this.files = this.convertValues(source["files"], WorkspaceFile);
+	        this.message = source["message"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class WorkspaceSkillCreationResult {
+	    id: string;
+	    folder: string;
+	    name: string;
+	    description: string;
+	    path: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceSkillCreationResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.folder = source["folder"];
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.path = source["path"];
+	    }
 	}
 	
 	export class WorkspaceTextSearchMatch {

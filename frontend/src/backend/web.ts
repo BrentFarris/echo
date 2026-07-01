@@ -110,6 +110,24 @@ export async function chooseWorkspaceIconWeb(workspaceID: string): Promise<servi
   ]);
 }
 
+export async function chooseWorkspaceFileSavePathWeb(
+  workspaceID: string,
+  suggestedName: string,
+): Promise<string> {
+  const state = await webRpc<services.AppState>("LoadState", []);
+  const workspace = (state.workspaces ?? []).find(
+    (candidate) => candidate.id === workspaceID,
+  );
+  const folder = (workspace?.folders ?? []).find((candidate) => !candidate.missing);
+  const defaultPath = folder?.label
+    ? `${folder.label}/${suggestedName}`
+    : suggestedName;
+  return window.prompt(
+    "Enter a workspace-relative save path (for example, workspace/notes.txt).",
+    defaultPath,
+  )?.trim() ?? "";
+}
+
 function webAccessToken(promptIfMissing: boolean): string {
   const existing = window.localStorage.getItem(tokenStorageKey)?.trim();
   if (existing) {

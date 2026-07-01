@@ -19,6 +19,18 @@ const maxChatImageDrafts = 4;
 const maxChatImageBytes = 10 * 1024 * 1024;
 const maxChatImageMessageBytes = 20 * 1024 * 1024;
 const supportedChatImageTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+const chatStreamPatchDelay = 50;
+
+type PendingChatStreamPatch = {
+  workspaceID: string;
+  message: services.ChatMessage;
+  patchDebug: boolean;
+  patchControls: boolean;
+  linkify: boolean;
+  timeoutID: number;
+};
+
+const pendingChatStreamPatches = new Map<string, PendingChatStreamPatch>();
 
 export function isSupportedChatImageType(mediaType: string): boolean {
   return supportedChatImageTypes.has(mediaType.toLowerCase());
@@ -524,6 +536,7 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
   const executeLabel = executing ? "Decomposing cards" : "Execute plan";
   const mentionOpen = Boolean(chatMentionFor(workspace.id));
   const planMode = chatPlanModeFor(workspace.id);
+  const creatingSkill = state.creatingChatSkills.has(workspace.id);
   return `
     <section class="work-panel chat-panel" aria-labelledby="chat-title" aria-busy="${session.busy || executing}" data-chat-panel data-workspace-id="${escapeAttribute(workspace.id)}">
       <div class="panel-heading chat-heading">
@@ -539,18 +552,28 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
           <button class="icon-button execute-button ${executing ? "is-busy" : ""}" type="button" title="${executeLabel}" aria-label="${executeLabel}" data-action="execute-plan" ${session.busy || executing || messages.length === 0 ? "disabled" : ""}>
             ${executing ? `<span class="spinner" aria-hidden="true"></span>` : icons.execute}
           </button>
-          <button class="icon-button" type="button" title="Clear chat" aria-label="Clear chat" data-action="clear-chat" ${session.busy || executing || messages.length === 0 ? "disabled" : ""}>
-            ${icons.trash}
-          </button>
           <button class="icon-button stop-button" type="button" title="Stop stream" aria-label="Stop stream" data-action="stop-chat" ${session.busy ? "" : "disabled"}>
             ${icons.stop}
           </button>
+          <details class="chat-overflow" data-chat-overflow>
+            <summary class="icon-button" title="Chat actions" aria-label="Chat actions">
+              ${icons.moreHorizontal}
+            </summary>
+            <div class="chat-overflow-menu" role="menu" aria-label="Chat actions">
+              <button class="chat-overflow-item" type="button" role="menuitem" data-action="create-chat-skill" ${session.busy || executing || creatingSkill || messages.length === 0 ? "disabled" : ""}>
+                ${creatingSkill ? "Creating skill..." : "Create skill from chat"}
+              </button>
+              <button class="chat-overflow-item" type="button" role="menuitem" data-action="clear-chat" ${session.busy || executing || creatingSkill || messages.length === 0 ? "disabled" : ""}>
+                Clear chat
+              </button>
+            </div>
+          </details>
         </div>
       </div>
       <div class="chat-log" data-chat-log>
         ${
           messages.length
-            ? messages.map(renderChatMessage).join("")
+            ? messages.map((message) => renderChatMessage(message, session.busy || executing)).join("")
             : `<div class="empty-state chat-empty">Ask Echo to inspect, plan, or break down work for this workspace.</div>`
         }
       </div>
@@ -617,7 +640,7 @@ export function renderChatImageDrafts(workspaceID: string, disabled: boolean): s
   `;
 }
 
-export function renderChatMessage(message: services.ChatMessage): string {
+export function renderChatMessage(message: services.ChatMessage, actionsDisabled = false): string {
   const roleLabel = message.role === "user" ? "You" : "Echo";
   const status = message.status && message.status !== "complete"
     ? `<span data-message-status>${escapeHtml(message.status)}</span>`
@@ -629,7 +652,10 @@ export function renderChatMessage(message: services.ChatMessage): string {
       <header>
         <strong>${roleLabel}</strong>
         ${status}
-        ${isUser ? renderUserControls(message, isEditing) : renderAssistantControls(message)}
+        ${isUser
+          ? renderUserControls(message, isEditing, actionsDisabled)
+          : renderAssistantControls(message, isEditing, actionsDisabled)
+        }
       </header>
       ${renderChatMessageImages(message)}
       ${isEditing
@@ -642,18 +668,26 @@ export function renderChatMessage(message: services.ChatMessage): string {
   `;
 }
 
-export function renderAssistantControls(message: services.ChatMessage): string {
+export function renderAssistantControls(message: services.ChatMessage, isEditing: boolean, actionsDisabled: boolean): string {
   const isStreaming = isAssistantMessageStreaming(message);
   const canCreateCard = canCreateKanbanCardFromMessage(message);
+  const canEdit = message.status === "complete";
   return `
     <div class="chat-message-actions">
       ${renderCopyMessageButton(message)}
+      ${isEditing
+        ? ""
+        : `<button class="icon-button chat-edit-trigger" type="button" title="Edit response" aria-label="Edit assistant response" data-action="edit-message" data-message-id="${escapeAttribute(message.id)}" ${canEdit ? "" : "disabled"}>
+            ${icons.edit}
+          </button>`
+      }
       <button class="icon-button chat-retry-trigger" type="button" title="Regenerate response" aria-label="Regenerate response" data-action="retry-message" data-message-id="${escapeAttribute(message.id)}">
         ${isStreaming ? '<span class="spinner" aria-hidden="true"></span>' : icons.retry}
       </button>
       <button class="icon-button chat-kanban-trigger" type="button" title="Create Kanban card" aria-label="Create Kanban card from response" data-action="create-card-from-message" data-message-id="${escapeAttribute(message.id)}" ${canCreateCard ? "" : "disabled"}>
         ${icons.kanban}
       </button>
+      ${renderPruneMessageButton(message, actionsDisabled)}
     </div>
   `;
 }
@@ -674,7 +708,7 @@ export function renderCopyMessageButton(message: services.ChatMessage): string {
   `;
 }
 
-export function renderUserControls(message: services.ChatMessage, isEditing: boolean): string {
+export function renderUserControls(message: services.ChatMessage, isEditing: boolean, actionsDisabled: boolean): string {
   return `
     <div class="chat-message-actions">
       ${renderCopyMessageButton(message)}
@@ -684,7 +718,16 @@ export function renderUserControls(message: services.ChatMessage, isEditing: boo
             ${icons.edit}
           </button>`
       }
+      ${renderPruneMessageButton(message, actionsDisabled)}
     </div>
+  `;
+}
+
+export function renderPruneMessageButton(message: services.ChatMessage, disabled: boolean): string {
+  return `
+    <button class="icon-button danger-button chat-prune-trigger" type="button" title="Prune message" aria-label="Prune message" data-action="prune-chat-message" data-message-id="${escapeAttribute(message.id)}" ${disabled ? "disabled" : ""}>
+      ${icons.trash}
+    </button>
   `;
 }
 
@@ -791,7 +834,41 @@ export function bindChatEvents(root: ParentNode) {
     .forEach((input) => input.addEventListener("change", handleChatPlanModeChange));
   bindChatMentionOptions(root);
   bindChatFileLinks(root);
+  bindChatDebugSections(root);
   bindChatEditForms(root);
+}
+
+export function bindChatDebugSections(root: ParentNode) {
+  const sections = Array.from(root.querySelectorAll<HTMLDetailsElement>("[data-debug-section]"));
+  if (root instanceof HTMLDetailsElement && root.matches("[data-debug-section]")) {
+    sections.unshift(root);
+  }
+  sections.forEach((section) => {
+    if (section.dataset.debugSectionBound) {
+      return;
+    }
+    section.dataset.debugSectionBound = "true";
+    section.addEventListener("toggle", handleChatDebugSectionToggle);
+  });
+}
+
+export function handleChatDebugSectionToggle(event: Event) {
+  const section = event.currentTarget as HTMLDetailsElement;
+  if (!section.open) {
+    return;
+  }
+  const article = section.closest<HTMLElement>("[data-message-id]");
+  const workspace = activeWorkspace();
+  const messageID = article?.dataset.messageId ?? "";
+  const message = workspace
+    ? (chatSessionFor(workspace.id).messages ?? []).find((item) => item.id === messageID)
+    : null;
+  const stack = article?.querySelector<HTMLElement>("[data-debug-stack]");
+  if (!message || !stack) {
+    return;
+  }
+  patchDebugSections(stack, message);
+  void linkifyAssistantFilePaths(section);
 }
 
 
@@ -1006,12 +1083,15 @@ export async function handleChatEditSubmit(event: SubmitEvent) {
   }
 
   try {
+    const editedMessage = (chatSessionFor(workspace.id).messages ?? []).find((message) => message.id === messageID);
     state.chatSessions.set(
       workspace.id,
       await EditChatMessage(workspace.id, messageID, trimmed, chatPlanModeFor(workspace.id)),
     );
     state.editingMessageIds.delete(messageID);
-    state.chatDrafts.delete(workspace.id);
+    if (editedMessage?.role === "user") {
+      state.chatDrafts.delete(workspace.id);
+    }
     getAppCallbacks().render();
   } catch (error) {
     pushToast(errorMessage(error), "error");
@@ -1091,23 +1171,95 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
 
   state.chatSessions.set(event.workspaceId, session);
   if (activeWorkspace()?.id === event.workspaceId) {
-    const keepChatPinned = isElementScrolledNearBottom(
-      appRoot.querySelector<HTMLElement>("[data-chat-log]"),
+    const terminal = event.type === "complete" || event.type === "canceled" || event.type === "error";
+    queueChatStreamPatch(
+      event.workspaceId,
+      message,
+      event.type !== "token",
+      terminal || event.type === "retrying",
+      terminal,
+      terminal,
     );
-    patchChatMessage(message, event.type !== "token");
-    patchChatControls();
-    if (keepChatPinned) {
-      scrollChatToBottom();
-    }
   }
 }
 
-export function patchChatMessage(message: services.ChatMessage, patchDebug = true) {
+export function queueChatStreamPatch(
+  workspaceID: string,
+  message: services.ChatMessage,
+  patchDebug: boolean,
+  patchControls: boolean,
+  linkify: boolean,
+  flushImmediately = false,
+) {
+  const pending = pendingChatStreamPatches.get(workspaceID);
+  if (pending) {
+    pending.message = message;
+    pending.patchDebug ||= patchDebug;
+    pending.patchControls ||= patchControls;
+    pending.linkify ||= linkify;
+    if (!flushImmediately) {
+      return;
+    }
+    window.clearTimeout(pending.timeoutID);
+    pendingChatStreamPatches.delete(workspaceID);
+    applyPendingChatStreamPatch(pending);
+    return;
+  }
+
+  const next: PendingChatStreamPatch = {
+    workspaceID,
+    message,
+    patchDebug,
+    patchControls,
+    linkify,
+    timeoutID: 0,
+  };
+  if (flushImmediately) {
+    applyPendingChatStreamPatch(next);
+    return;
+  }
+  next.timeoutID = window.setTimeout(() => {
+    if (pendingChatStreamPatches.get(workspaceID) !== next) {
+      return;
+    }
+    pendingChatStreamPatches.delete(workspaceID);
+    applyPendingChatStreamPatch(next);
+  }, chatStreamPatchDelay);
+  pendingChatStreamPatches.set(workspaceID, next);
+}
+
+export function applyPendingChatStreamPatch(pending: PendingChatStreamPatch) {
+  if (activeWorkspace()?.id !== pending.workspaceID) {
+    return;
+  }
+  const panel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
+  if (!panel || panel.dataset.workspaceId !== pending.workspaceID) {
+    return;
+  }
+  const keepChatPinned = isElementScrolledNearBottom(
+    panel.querySelector<HTMLElement>("[data-chat-log]"),
+  );
+  patchChatMessage(pending.message, pending.patchDebug, pending.linkify);
+  if (pending.patchControls) {
+    patchChatControls();
+  }
+  if (keepChatPinned) {
+    scrollChatToBottom();
+  }
+}
+
+export function patchChatMessage(
+  message: services.ChatMessage,
+  patchDebug = true,
+  linkify = !isAssistantMessageStreaming(message),
+) {
   const element = appRoot.querySelector<HTMLElement>(
     `[data-message-id="${CSS.escape(message.id)}"]`,
   );
   if (!element) {
-    patchChatPanel();
+    if (appRoot.querySelector("[data-chat-panel]")) {
+      patchChatPanel();
+    }
     return;
   }
   const content = element.querySelector<HTMLElement>("[data-message-content]");
@@ -1125,7 +1277,7 @@ export function patchChatMessage(message: services.ChatMessage, patchDebug = tru
   if (patchDebug && debugStack) {
     patchDebugSections(debugStack, message);
   }
-  if (message.role === "assistant") {
+  if (message.role === "assistant" && linkify) {
     void linkifyAssistantFilePaths(element);
   }
 }
@@ -1168,6 +1320,10 @@ export function patchMessageActions(element: HTMLElement, message: services.Chat
   if (kanban) {
     kanban.disabled = !canCreateKanbanCardFromMessage(message);
   }
+  const edit = element.querySelector<HTMLButtonElement>(".chat-edit-trigger");
+  if (edit) {
+    edit.disabled = message.status !== "complete";
+  }
 }
 
 export function patchDebugSections(stack: HTMLElement, message: services.ChatMessage) {
@@ -1177,42 +1333,48 @@ export function patchDebugSections(stack: HTMLElement, message: services.ChatMes
 
   const reasoning = message.reasoning ?? "";
   const toolCalls = message.toolCalls ?? [];
-  let reasoningSection = stack.querySelector<HTMLElement>(
+  let reasoningSection = stack.querySelector<HTMLDetailsElement>(
     '[data-debug-section="reasoning"]',
   );
   if (reasoning) {
     if (!reasoningSection) {
-      reasoningSection = elementFromHtml(renderReasoning(""));
+      reasoningSection = elementFromHtml(renderReasoning("")) as HTMLDetailsElement;
       const toolsSection = stack.querySelector<HTMLElement>(
         '[data-debug-section="tools"]',
       );
       stack.insertBefore(reasoningSection, toolsSection);
+      bindChatDebugSections(reasoningSection);
     }
     const reasoningContent = reasoningSection.querySelector<HTMLElement>(
       "[data-message-reasoning]",
     );
-    if (reasoningContent) {
+    if (reasoningContent && (reasoningSection.open || !isAssistantMessageStreaming(message))) {
       patchMarkdownElement(reasoningContent, reasoning);
     } else {
-      morphElement(reasoningSection, elementFromHtml(renderReasoning(reasoning)));
+      if (!reasoningContent) {
+        morphElement(reasoningSection, elementFromHtml(renderReasoning(reasoning)));
+      }
     }
   } else {
     reasoningSection?.remove();
   }
 
-  let toolsSection = stack.querySelector<HTMLElement>(
+  let toolsSection = stack.querySelector<HTMLDetailsElement>(
     '[data-debug-section="tools"]',
   );
   if (toolCalls.length) {
     if (!toolsSection) {
-      toolsSection = elementFromHtml(renderToolCalls([]));
+      toolsSection = elementFromHtml(renderToolCalls([])) as HTMLDetailsElement;
       stack.appendChild(toolsSection);
+      bindChatDebugSections(toolsSection);
     }
     const toolList = toolsSection.querySelector<HTMLElement>("[data-tool-list]");
-    if (toolList) {
+    if (toolList && (toolsSection.open || !isAssistantMessageStreaming(message))) {
       patchChildrenFromHtml(toolList, toolCalls.map(renderToolCall).join(""));
     } else {
-      morphElement(toolsSection, elementFromHtml(renderToolCalls(toolCalls)));
+      if (!toolList) {
+        morphElement(toolsSection, elementFromHtml(renderToolCalls(toolCalls)));
+      }
     }
   } else {
     toolsSection?.remove();
@@ -1223,7 +1385,6 @@ export function patchChatPanel() {
   const workspace = activeWorkspace();
   const panel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
   if (!workspace || !panel) {
-    getAppCallbacks().render();
     return;
   }
 
@@ -1259,10 +1420,12 @@ export function patchChatControls() {
   const stop = appRoot.querySelector<HTMLButtonElement>(".stop-button");
   const execute = appRoot.querySelector<HTMLButtonElement>(".execute-button");
   const clear = appRoot.querySelector<HTMLButtonElement>('[data-action="clear-chat"]');
+  const createSkill = appRoot.querySelector<HTMLButtonElement>('[data-action="create-chat-skill"]');
   const planToggle = appRoot.querySelector<HTMLInputElement>("[data-chat-plan-toggle]");
   const title = appRoot.querySelector<HTMLElement>("#chat-title");
   const panel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
   const executing = state.executingPlans.has(workspace.id);
+  const creatingSkill = state.creatingChatSkills.has(workspace.id);
   if (input) {
     input.disabled = session.busy || executing;
   }
@@ -1280,8 +1443,15 @@ export function patchChatControls() {
     execute.innerHTML = executing ? `<span class="spinner" aria-hidden="true"></span>` : icons.execute;
   }
   if (clear) {
-    clear.disabled = session.busy || executing || (session.messages ?? []).length === 0;
+    clear.disabled = session.busy || executing || creatingSkill || (session.messages ?? []).length === 0;
   }
+  if (createSkill) {
+    createSkill.disabled = session.busy || executing || creatingSkill || (session.messages ?? []).length === 0;
+    createSkill.textContent = creatingSkill ? "Creating skill..." : "Create skill from chat";
+  }
+  appRoot.querySelectorAll<HTMLButtonElement>(".chat-prune-trigger").forEach((button) => {
+    button.disabled = session.busy || executing;
+  });
   if (planToggle) {
     planToggle.disabled = session.busy || executing;
     planToggle.checked = chatPlanModeFor(workspace.id);

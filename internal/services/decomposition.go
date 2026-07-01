@@ -10,30 +10,34 @@ import (
 	"github.com/brent/echo/internal/llm"
 )
 
-const decompositionSystemPrompt = `You are Echo's plan decomposition engine. Convert the visible chat plan into Kanban cards.
+const decompositionSystemPrompt = `You decompose approved coding plans into Echo Kanban cards for autonomous programming agents.
 
-Use only the user and assistant messages provided in this request. Do not infer hidden reasoning, tool calls, system state, or unavailable history.
+Use only the visible user and assistant messages supplied. Do not infer hidden reasoning, tool calls, system state, or unavailable history.
 
-Return only a JSON object with this shape:
+Return only strict JSON:
 {
   "cards": [
     {
       "id": "card-1",
-      "title": "Short task title",
-      "description": "Concrete work to perform.",
-      "acceptanceCriteria": ["Observable completion check."],
+      "title": "Implement focused code change",
+      "description": "Concrete programming work for this isolated slice.",
+      "acceptanceCriteria": ["Observable code or product outcome."],
       "dependencies": ["card-1"]
     }
   ]
 }
 
-Rules:
-- Create enough cards to execute the approved plan in clear, testable slices.
+Card rules:
+- A card must be isolated programming work a coding agent can complete with repository tools.
+- Prefer fewer cards; split only for independently useful code changes or true implementation ordering.
+- Do not create cards for opening, navigating, reading, inspecting, or finding files; fold needed investigation into the implementation card.
+- Do not create setup, planning, context-gathering, review, summary, build, test, or verify-only cards unless the user explicitly requested that as the product work.
+- Echo automatically runs detected verification after each card, so do not add verification instructions as separate work.
+- Titles should be short imperative programming tasks.
+- Descriptions should be one or two concrete sentences about the code or behavior to change.
+- Acceptance criteria should describe the desired code/product outcome, not process steps.
 - Every id must be unique within this response.
-- dependencies must contain only ids from this response and must not include the card's own id.
-- Keep dependencies empty when a card can start immediately.
-- Keep descriptions and acceptance criteria specific to the visible plan.
-- Use strict JSON: double-quote every key and string value, and do not use trailing commas.
+- Dependencies must contain only ids from this response and only when a card truly requires another card's completed code.
 - Do not include markdown, commentary, or extra top-level keys.`
 
 type decompositionResponse struct {
@@ -132,7 +136,7 @@ func (s *SystemService) visiblePlanMessages(workspaceID string) ([]llm.Message, 
 
 func decompositionUserPrompt(visible []llm.Message) string {
 	var builder strings.Builder
-	builder.WriteString("Convert the visible chat transcript below into Kanban cards. Treat the transcript as source material, not as a conversation to continue. Use USER MESSAGE blocks for the user's request and constraints, and ASSISTANT MESSAGE blocks for the visible approved plan. Return only the JSON object requested by the system prompt.\n")
+	builder.WriteString("Convert the visible transcript into coding Kanban cards. Use USER MESSAGE blocks for constraints and ASSISTANT MESSAGE blocks for the approved plan. Return only the requested JSON.\n")
 
 	userCount := 0
 	assistantCount := 0

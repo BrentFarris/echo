@@ -159,6 +159,33 @@ func TestDetectWorkspaceFolderLSPLanguagesFindsGoMarker(t *testing.T) {
 	}
 }
 
+func TestDetectWorkspaceFolderLSPLanguagesFindsClangdMarkers(t *testing.T) {
+	for _, marker := range []string{"CMakeLists.txt", "compile_commands.json", "compile_flags.txt", ".clangd", "meson.build"} {
+		t.Run(marker, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, marker), []byte("\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if !stringSliceContains(detectWorkspaceFolderLSPLanguages(root), "cpp") {
+				t.Fatalf("expected C/C++ LSP warm-up from %s marker", marker)
+			}
+		})
+	}
+}
+
+func TestDetectWorkspaceFolderLSPLanguagesFindsClangdSourceFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "main.cpp"), []byte("int main() { return 0; }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !stringSliceContains(detectWorkspaceFolderLSPLanguages(root), "cpp") {
+		t.Fatalf("expected C/C++ LSP warm-up from workspace C++ file")
+	}
+}
+
 func TestDetectWorkspaceFolderLSPLanguagesSkipsIgnoredDirectories(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "node_modules", "pkg"), 0o755); err != nil {
@@ -340,10 +367,11 @@ func TestSystemServiceCompleteWorkspaceFileWithGopls(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	filePath := labeledTestPath(t, service, workspaceID, "main.go")
 	position := utf16Length(content[:strings.Index(content, "Pr")+len("Pr")])
 
 	response, err := service.CompleteWorkspaceFile(workspaceID, WorkspaceCompletionRequest{
-		FilePath:    "main.go",
+		FilePath:    filePath,
 		Content:     content,
 		Position:    position,
 		TriggerKind: 1,
@@ -357,14 +385,14 @@ func TestSystemServiceCompleteWorkspaceFileWithGopls(t *testing.T) {
 	for _, item := range response.Items {
 		if item.Label == "Println" {
 			definition, err := service.FindWorkspaceFileDefinition(workspaceID, WorkspaceDefinitionRequest{
-				FilePath: "main.go",
+				FilePath: filePath,
 				Content:  content,
 				Position: utf16Length(content[:strings.LastIndex(content, "helper()")+len("helper")]),
 			})
 			if err != nil {
 				t.Fatalf("find definition: %v", err)
 			}
-			if !definition.Found || definition.TargetPath != "main.go" {
+			if !definition.Found || definition.TargetPath != filePath {
 				t.Fatalf("expected main definition in main.go, got %#v", definition)
 			}
 			return

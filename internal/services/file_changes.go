@@ -149,6 +149,7 @@ func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Wo
 		SearxngURL:       settings.SearxngURL,
 		CodeNavigator:    s.codeNavigator(workspace),
 		WorkspaceContext: s.workspaceContextProvider(workspace),
+		WorkspaceSkills:  s.workspaceSkillsProvider(workspace),
 		Emit:             emit,
 		FileChanges:      sink,
 	}, call.Function.Name, json.RawMessage(call.Function.Arguments))
@@ -178,11 +179,13 @@ func (s *SystemService) recordToolFileChanges(workspaceID string, source Workspa
 	ignoredPaths := ignoredWorkspaceChangePaths(s.workspaceSnapshot(workspaceID), changes)
 	s.fileChangeMu.Lock()
 	now := time.Now().UTC()
+	accepted := false
 	for _, change := range changes {
 		path := cleanChangePath(change.Path)
 		if path == "" || tools.IsIgnoredChangePath(path) || ignoredPaths[path] {
 			continue
 		}
+		accepted = true
 		s.fileChangeSeq++
 		id := fmt.Sprintf("change-%d", s.fileChangeSeq)
 		s.fileChanges[workspaceID] = append(s.fileChanges[workspaceID], trackedFileChange{
@@ -198,6 +201,9 @@ func (s *SystemService) recordToolFileChanges(workspaceID string, source Workspa
 	}
 	review := s.workspaceChangeReviewLocked(workspaceID)
 	s.fileChangeMu.Unlock()
+	if accepted {
+		s.removeWorkspaceFileDatabases(workspaceID)
+	}
 
 	s.emitFileChangesEvent(FileChangesEvent{
 		WorkspaceID: workspaceID,

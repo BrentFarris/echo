@@ -31,6 +31,14 @@ func TestWorkspaceChangeReviewTracksChatToolChanges(t *testing.T) {
 			)
 		case 2:
 			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_skill", "workspace_skill_record", map[string]any{
+					"action": "skip",
+					"reason": "Routine fixture edit.",
+				}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 3:
+			writeSSE(t, w,
 				`{"choices":[{"index":0,"delta":{"content":"Updated notes."}}]}`,
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
 			)
@@ -113,6 +121,19 @@ func TestWorkspaceChangeReviewTracksKanbanToolChanges(t *testing.T) {
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 			)
 		case 2:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Implemented feature."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		case 3:
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_skill", "workspace_skill_record", map[string]any{
+					"action": "skip",
+					"reason": "Routine fixture creation.",
+				}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 4:
 			writeSSE(t, w,
 				`{"choices":[{"index":0,"delta":{"content":"Implemented feature."}}]}`,
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
@@ -206,6 +227,14 @@ func TestWorkspaceChangeReviewTracksInlineToolChangesAndAffectedPaths(t *testing
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 			)
 		case 2:
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_skill", "workspace_skill_record", map[string]any{
+					"action": "skip",
+					"reason": "Routine inline edit.",
+				}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 3:
 			writeSSE(t, w, `{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
 		default:
 			t.Fatalf("unexpected request %d", requestCount.Load())

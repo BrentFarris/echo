@@ -1,10 +1,11 @@
-import { setCodeTextSearchEventBinder, setCodeTreeEventBinder, restoreCodeTreeScroll, startExplorerResize } from "./dom";
+import { setCodeQuickOpenEventBinder, setCodeTextSearchEventBinder, setCodeTreeEventBinder, restoreCodeTreeScroll, startExplorerResize } from "./dom";
 import { ensureCodeState } from "./state";
 import type { CodeViewCallbacks } from "./types";
-import { cancelPendingCodeCreate, clearCodeDrag, collapseCodeTree, dropCodeDrag, handleSearchInput, refreshCodeTree, selectCodeTreeEntry, startCodeDrag, startSelectedCodeCreate, submitPendingCodeCreate, toggleDirectory, toggleIgnoredFilter, updateCodeDropTarget, updatePendingCodeCreateName } from "./explorer";
-import { activateCodeTab, closeCodeTab, navigateCodeHistory, openCodeFile, openPinnedCodeFile, pinCodeTab, saveActiveCodeFile, startOpenTabFileWatch } from "./tabs";
+import { cancelPendingCodeCreate, cancelPendingCodeRename, clearCodeDrag, collapseCodeTree, dropCodeDrag, handleSearchInput, refreshCodeTree, selectCodeTreeEntry, startCodeDrag, startSelectedCodeCreate, startSelectedCodeRename, submitPendingCodeCreate, submitPendingCodeRename, toggleDirectory, toggleIgnoredFilter, updateCodeDropTarget, updatePendingCodeCreateName, updatePendingCodeRenameName } from "./explorer";
+import { activateCodeTab, closeCodeTab, createUntitledCodeFile, navigateCodeHistory, openCodeFile, openPinnedCodeFile, pinCodeTab, saveActiveCodeFile, startOpenTabFileWatch, toggleTemporaryFiles } from "./tabs";
 import { mountActiveCodeEditor } from "./editor";
 import { openInlineCodeChatAtCursor } from "./inlineChat";
+import { closeQuickOpen, handleQuickOpenInput, moveQuickOpenSelection, openQuickOpenSelection } from "./quickOpen";
 import { closeTextSearch, handleTextSearchFieldInput, openTextSearch, openTextSearchMatch, runTextSearchNow, toggleTextSearchOption } from "./search";
 
 export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallbacks) {
@@ -16,6 +17,7 @@ export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallback
 
   bindCodeTreeEvents(root, workspaceID, callbacks);
   bindCodeTextSearchEvents(root, workspaceID, callbacks);
+  bindCodeQuickOpenEvents(root, workspaceID, callbacks);
 
   root.querySelectorAll<HTMLElement>("[data-code-tab-main]").forEach((element) => {
     element.addEventListener("mousedown", (event) => {
@@ -31,7 +33,7 @@ export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallback
       }
       event.preventDefault();
       event.stopPropagation();
-      closeCodeTab(workspaceID, element.dataset.codePath ?? "", callbacks);
+      void closeCodeTab(workspaceID, element.dataset.codePath ?? "", callbacks);
     });
     element.addEventListener("dblclick", (event) => {
       event.preventDefault();
@@ -39,6 +41,8 @@ export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallback
       pinCodeTab(workspaceID, element.dataset.codePath ?? "", callbacks);
     });
   });
+
+  bindUntitledFileCreationEvents(root, workspaceID, callbacks);
 
   const search = root.querySelector<HTMLInputElement>("[data-code-search]");
   search?.addEventListener("input", (event) => {
@@ -68,13 +72,37 @@ export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallback
   void mountActiveCodeEditor(workspaceID, callbacks, { openCodeFile, navigateCodeHistory, saveActiveCodeFile });
 }
 
+function bindUntitledFileCreationEvents(
+  root: ParentNode,
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const createFromBlankArea = (event: MouseEvent) => {
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+    event.preventDefault();
+    createUntitledCodeFile(workspaceID, callbacks);
+  };
+  root.querySelector<HTMLElement>("[data-code-tabs]")?.addEventListener(
+    "dblclick",
+    createFromBlankArea,
+  );
+  root.querySelector<HTMLElement>("[data-code-empty]")?.addEventListener(
+    "dblclick",
+    createFromBlankArea,
+  );
+}
+
 function bindCodeTreeEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
   bindCodeActionEvents(root, workspaceID, callbacks);
   bindCodeFileRowEvents(root, workspaceID, callbacks);
   bindCodeBrowserRowSelectionEvents(root, workspaceID);
+  bindCodeBrowserRowKeyboardEvents(root, workspaceID, callbacks);
   bindCodeBrowserRowContextMenus(root, workspaceID, callbacks);
   bindCodeBrowserRowDragEvents(root, workspaceID, callbacks);
   bindCodeCreateInputEvents(root, workspaceID, callbacks);
+  bindCodeRenameInputEvents(root, workspaceID, callbacks);
 }
 
 function bindCodeTextSearchEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
@@ -141,6 +169,64 @@ function bindCodeTextSearchEvents(root: ParentNode, workspaceID: string, callbac
   }
 }
 
+function bindCodeQuickOpenEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
+  const input = root.querySelector<HTMLInputElement>("[data-code-quick-open-input]");
+  input?.addEventListener("input", () => {
+    handleQuickOpenInput(workspaceID, input, callbacks);
+  });
+  input?.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      event.stopPropagation();
+      moveQuickOpenSelection(workspaceID, 1, callbacks);
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      event.stopPropagation();
+      moveQuickOpenSelection(workspaceID, -1, callbacks);
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      void openQuickOpenSelection(workspaceID, callbacks);
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeQuickOpen(workspaceID, callbacks);
+    }
+  });
+
+  root.querySelector<HTMLElement>("[data-code-quick-open-close]")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    closeQuickOpen(workspaceID, callbacks);
+  });
+
+  bindCodeQuickOpenResultEvents(root, workspaceID, callbacks);
+}
+
+function bindCodeQuickOpenResultEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
+  root.querySelectorAll<HTMLElement>("[data-code-quick-open-item]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void openQuickOpenSelection(workspaceID, callbacks, element.dataset.codePath ?? "");
+    });
+    element.addEventListener("mouseenter", () => {
+      const index = Number(element.dataset.codeQuickOpenIndex);
+      const state = ensureCodeState(workspaceID);
+      if (!Number.isInteger(index) || index < 0 || index >= state.quickOpen.results.length) {
+        return;
+      }
+      state.quickOpen.selectedIndex = index;
+    });
+  });
+}
+
 function bindCodeActionEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
   root.querySelectorAll<HTMLElement>("[data-code-action]").forEach((element) => {
     element.addEventListener("click", (event) => {
@@ -155,113 +241,17 @@ function bindCodeFileRowEvents(root: ParentNode, workspaceID: string, callbacks:
   root.querySelectorAll<HTMLElement>("[data-code-file-row]").forEach((element) => {
     element.addEventListener("click", (event) => {
       event.preventDefault();
-      // Suppress click action if a long press already fired on this element.
-      if ((element as any)._longPressFired) {
-        (element as any)._longPressFired = false;
-        return;
-      }
-      const path = element.dataset.codePath ?? "";
-      selectCodeTreeEntry(workspaceID, path, element.dataset.codeKind ?? "file");
+      selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "file");
       ensureCodeState(workspaceID).explorerDrawerOpen = false;
-      void openCodeFile(workspaceID, path, callbacks, { temporary: true });
+      void openCodeFile(workspaceID, element.dataset.codePath ?? "", callbacks, { temporary: true });
     });
     element.addEventListener("dblclick", (event) => {
       event.preventDefault();
-      const path = element.dataset.codePath ?? "";
-      selectCodeTreeEntry(workspaceID, path, element.dataset.codeKind ?? "file");
+      selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "file");
       ensureCodeState(workspaceID).explorerDrawerOpen = false;
-      void openPinnedCodeFile(workspaceID, path, callbacks);
-    });
-    element.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter") {
-        return;
-      }
-      event.preventDefault();
-      const path = element.dataset.codePath ?? "";
-      selectCodeTreeEntry(workspaceID, path, element.dataset.codeKind ?? "file");
-      ensureCodeState(workspaceID).explorerDrawerOpen = false;
-      void openCodeFile(workspaceID, path, callbacks, { temporary: true });
-    });
-
-    // Long-press gesture detection (500 ms hold triggers context menu).
-    element.addEventListener("pointerdown", (event) => {
-      // Only activate on primary pointer (left button / touch).
-      if (event.button !== 0 && event.pointerType === "mouse") {
-        return;
-      }
-      const path = element.dataset.codePath ?? "";
-      if (!path) {
-        return;
-      }
-      const kind = element.dataset.codeKind ?? "";
-
-      // Cancel any in-progress drag from a previous press.
-      clearPendingLongPress(element);
-
-      const timerId = setTimeout(() => {
-        (element as any)._longPressFired = true;
-        selectCodeTreeEntry(workspaceID, path, kind);
-        const rect = element.getBoundingClientRect();
-        callbacks.showCodePathContextMenu(
-          workspaceID,
-          path,
-          kind === "file" || kind === "directory" ? kind : "other",
-          element.getAttribute("title") ?? path,
-          rect.left + rect.width / 2,
-          rect.top + rect.height / 2,
-        );
-      }, 500);
-
-      (element as any)._longPressTimerId = timerId;
-
-      // Visual feedback: add held class and tooltip after a short delay.
-      const holdFeedbackTimer = setTimeout(() => {
-        element.classList.add("is-held");
-        element.setAttribute("title", "Add to chat");
-      }, 200);
-      (element as any)._longPressFeedbackId = holdFeedbackTimer;
-    });
-
-    element.addEventListener("pointerup", () => {
-      clearPendingLongPress(element);
-      element.classList.remove("is-held");
-      const originalTitle = element.dataset.codePath ?? "";
-      if (originalTitle) {
-        element.setAttribute("title", originalTitle);
-      } else {
-        element.removeAttribute("title");
-      }
-      const feedbackId = (element as any)._longPressFeedbackId;
-      if (feedbackId != null) {
-        clearTimeout(feedbackId);
-        (element as any)._longPressFeedbackId = undefined;
-      }
-    });
-
-    element.addEventListener("pointerleave", () => {
-      clearPendingLongPress(element);
-      element.classList.remove("is-held");
-      const originalTitle = element.dataset.codePath ?? "";
-      if (originalTitle) {
-        element.setAttribute("title", originalTitle);
-      } else {
-        element.removeAttribute("title");
-      }
-      const feedbackId = (element as any)._longPressFeedbackId;
-      if (feedbackId != null) {
-        clearTimeout(feedbackId);
-        (element as any)._longPressFeedbackId = undefined;
-      }
+      void openPinnedCodeFile(workspaceID, element.dataset.codePath ?? "", callbacks);
     });
   });
-}
-
-function clearPendingLongPress(element: HTMLElement) {
-  const timerId = (element as any)._longPressTimerId;
-  if (timerId != null) {
-    clearTimeout(timerId);
-    (element as any)._longPressTimerId = undefined;
-  }
 }
 
 function bindCodeBrowserRowSelectionEvents(root: ParentNode, workspaceID: string) {
@@ -270,6 +260,126 @@ function bindCodeBrowserRowSelectionEvents(root: ParentNode, workspaceID: string
       selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "");
     });
   });
+}
+
+function bindCodeBrowserRowKeyboardEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
+  root.querySelectorAll<HTMLElement>("[data-code-browser-row]").forEach((element) => {
+    element.addEventListener("keydown", (event) => {
+      void handleCodeBrowserRowKeydown(root, element, workspaceID, callbacks, event);
+    });
+  });
+}
+
+async function handleCodeBrowserRowKeydown(
+  root: ParentNode,
+  element: HTMLElement,
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+  event: KeyboardEvent,
+) {
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    event.stopPropagation();
+    focusAdjacentCodeBrowserRow(root, workspaceID, element, event.key === "ArrowDown" ? 1 : -1);
+    return;
+  }
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    event.stopPropagation();
+    if (isCodeDirectoryRow(element) && element.getAttribute("aria-expanded") === "true") {
+      await toggleFocusedDirectory(workspaceID, element, callbacks);
+    }
+    return;
+  }
+  if (event.key === "ArrowRight") {
+    event.preventDefault();
+    event.stopPropagation();
+    if (isCodeDirectoryRow(element) && element.getAttribute("aria-expanded") !== "true") {
+      await toggleFocusedDirectory(workspaceID, element, callbacks);
+    }
+    return;
+  }
+  if (event.key === "F2") {
+    event.preventDefault();
+    event.stopPropagation();
+    selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "");
+    await startSelectedCodeRename(workspaceID, callbacks);
+    return;
+  }
+  if (event.key !== "Enter") {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  await activateFocusedCodeBrowserRow(workspaceID, element, callbacks);
+}
+
+function focusAdjacentCodeBrowserRow(
+  root: ParentNode,
+  workspaceID: string,
+  current: HTMLElement,
+  direction: -1 | 1,
+) {
+  const rows = visibleCodeBrowserRows(root);
+  if (!rows.length) {
+    return;
+  }
+  const state = ensureCodeState(workspaceID);
+  const currentIndex = rows.indexOf(current);
+  const selectedIndex = rows.findIndex((row) => row.dataset.codePath === state.selectedPath);
+  const index = currentIndex >= 0 ? currentIndex : selectedIndex;
+  const nextIndex = Math.min(rows.length - 1, Math.max(0, (index >= 0 ? index : 0) + direction));
+  focusCodeBrowserRow(workspaceID, rows[nextIndex]);
+}
+
+function visibleCodeBrowserRows(root: ParentNode) {
+  return Array.from(root.querySelectorAll<HTMLElement>("[data-code-browser-row]")).filter((row) => row.offsetParent !== null);
+}
+
+function focusCodeBrowserRow(workspaceID: string, row: HTMLElement) {
+  selectCodeTreeEntry(workspaceID, row.dataset.codePath ?? "", row.dataset.codeKind ?? "");
+  row.focus({ preventScroll: true });
+  row.scrollIntoView({ block: "nearest" });
+}
+
+async function activateFocusedCodeBrowserRow(
+  workspaceID: string,
+  element: HTMLElement,
+  callbacks: CodeViewCallbacks,
+) {
+  const path = element.dataset.codePath ?? "";
+  const kind = element.dataset.codeKind ?? "";
+  selectCodeTreeEntry(workspaceID, path, kind);
+  if (kind === "directory") {
+    await toggleFocusedDirectory(workspaceID, element, callbacks);
+    return;
+  }
+  if (kind === "file") {
+    ensureCodeState(workspaceID).explorerDrawerOpen = false;
+    await openCodeFile(workspaceID, path, callbacks, { temporary: true });
+  }
+}
+
+async function toggleFocusedDirectory(
+  workspaceID: string,
+  element: HTMLElement,
+  callbacks: CodeViewCallbacks,
+) {
+  selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "directory");
+  await toggleDirectory(workspaceID, element.dataset.codePath ?? "", callbacks);
+  focusSelectedCodeBrowserRow();
+}
+
+function focusSelectedCodeBrowserRow() {
+  window.setTimeout(() => {
+    const selected = document.querySelector<HTMLElement>("[data-code-tree] .code-tree-row.is-selected");
+    selected?.focus({ preventScroll: true });
+    selected?.scrollIntoView({ block: "nearest" });
+  }, 0);
+}
+
+function isCodeDirectoryRow(element: HTMLElement) {
+  return element.dataset.codeKind === "directory";
 }
 
 function bindCodeBrowserRowContextMenus(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
@@ -388,6 +498,30 @@ function bindCodeCreateInputEvents(root: ParentNode, workspaceID: string, callba
   });
 }
 
+function bindCodeRenameInputEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
+  root.querySelectorAll<HTMLInputElement>("[data-code-rename-input]").forEach((input) => {
+    input.addEventListener("input", () => {
+      updatePendingCodeRenameName(workspaceID, input.value);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        event.stopPropagation();
+        void submitPendingCodeRename(workspaceID, input.value, callbacks);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        cancelPendingCodeRename(workspaceID, callbacks);
+      }
+    });
+    input.addEventListener("blur", () => {
+      cancelPendingCodeRename(workspaceID, callbacks);
+    });
+  });
+}
+
 async function handleCodeAction(target: HTMLElement, workspaceID: string, callbacks: CodeViewCallbacks) {
   const action = target.dataset.codeAction ?? "";
   const path = target.dataset.codePath ?? "";
@@ -410,6 +544,14 @@ async function handleCodeAction(target: HTMLElement, workspaceID: string, callba
   }
   if (action === "open-inline-chat") {
     openInlineCodeChatAtCursor(workspaceID, callbacks);
+    return;
+  }
+  if (action === "create-temporary-file") {
+    createUntitledCodeFile(workspaceID, callbacks);
+    return;
+  }
+  if (action === "toggle-temporary-files") {
+    toggleTemporaryFiles(workspaceID, callbacks);
     return;
   }
   if (action === "open-text-search") {
@@ -446,15 +588,14 @@ async function handleCodeAction(target: HTMLElement, workspaceID: string, callba
     return;
   }
   if (action === "close-tab") {
-    closeCodeTab(workspaceID, path, callbacks);
+    await closeCodeTab(workspaceID, path, callbacks);
     return;
   }
   if (action === "save-active-file") {
     await saveActiveCodeFile(workspaceID, callbacks);
-    return;
   }
- 
 }
 
 setCodeTreeEventBinder(bindCodeTreeEvents);
 setCodeTextSearchEventBinder(bindCodeTextSearchEvents);
+setCodeQuickOpenEventBinder(bindCodeQuickOpenResultEvents);

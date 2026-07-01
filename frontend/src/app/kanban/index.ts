@@ -1,6 +1,6 @@
 
 import { patchChildrenFromHtml, renderMarkdown } from "../../markdown";
-import { AddKanbanCardMessage, CloseKanbanCardDetail, LoadKanbanBoard, UpdateKanbanCardDescription, UpdateKanbanCardDirection } from "../../backend/services";
+import { AddKanbanCardMessage, CloseKanbanCardDetail, CreateReadyKanbanCard, LoadKanbanBoard, UpdateKanbanCardDescription, UpdateKanbanCardDirection } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";
@@ -75,6 +75,8 @@ export function markKanbanRunStarted(workspaceID: string) {
     state.kanbanRunStarts.set(workspaceID, Date.now());
     state.kanbanRunElapsed.set(workspaceID, 0);
   }
+  state.creatingKanbanCardWorkspaces.delete(workspaceID);
+  state.kanbanCardCreationDrafts.delete(workspaceID);
   state.runningKanbanWorkspaces.add(workspaceID);
   syncKanbanTimer();
 }
@@ -141,9 +143,59 @@ export function renderEmptyBoard(): string {
   return `
     <div class="empty-state board-empty">
       <strong>No cards yet</strong>
-      <span>Chat through a plan, then execute it to create Ready cards.</span>
+      <span>Create a Ready card directly, or execute a chat plan to generate cards.</span>
     </div>
   `;
+}
+
+export function renderCreateKanbanCardDialog(workspaceID: string): string {
+  const draft = state.kanbanCardCreationDrafts.get(workspaceID) ?? {
+    title: "",
+    description: "",
+    acceptanceCriteria: "",
+  };
+  return `
+    <aside class="kanban-card-create-backdrop" role="dialog" aria-modal="true" aria-labelledby="kanban-card-create-title">
+      <form class="kanban-card-create-dialog" data-kanban-card-create-form>
+        <header>
+          <div>
+            <p class="eyebrow">Ready lane</p>
+            <h2 id="kanban-card-create-title">Create card</h2>
+          </div>
+          <button class="icon-button close-button" type="button" title="Cancel" aria-label="Cancel card creation" data-action="cancel-create-ready-card">
+            ${icons.x}
+          </button>
+        </header>
+        <label>
+          <span>Title</span>
+          <input name="title" type="text" value="${escapeAttribute(draft.title)}" placeholder="Implement focused change" autocomplete="off" data-kanban-card-create-title data-initial-focus />
+        </label>
+        <label>
+          <span>Description</span>
+          <textarea name="description" rows="5" placeholder="Describe the implementation work for the agent." data-kanban-card-create-description>${escapeHtml(draft.description)}</textarea>
+        </label>
+        <label>
+          <span>Acceptance criteria</span>
+          <textarea name="acceptanceCriteria" rows="4" placeholder="One observable outcome per line" data-kanban-card-create-criteria>${escapeHtml(draft.acceptanceCriteria)}</textarea>
+        </label>
+        <div class="kanban-card-create-actions">
+          <button class="secondary-button" type="button" data-action="cancel-create-ready-card">Cancel</button>
+          <button class="primary-button icon-text-button" type="submit" ${kanbanCardCreationDraftValid(draft) ? "" : "disabled"}>
+            ${icons.plus}
+            <span>Create Ready card</span>
+          </button>
+        </div>
+      </form>
+    </aside>
+  `;
+}
+
+function kanbanCardCreationDraftValid(draft: { title: string; description: string; acceptanceCriteria: string }) {
+  return Boolean(
+    draft.title.trim() &&
+      draft.description.trim() &&
+      draft.acceptanceCriteria.split(/\r?\n/).some((criterion) => criterion.trim()),
+  );
 }
 
 export function renderDecompositionState(): string {
@@ -418,6 +470,64 @@ export function bindCardMessageEvents(root: ParentNode) {
     .forEach((input) => input.addEventListener("input", handleCardMessageInput));
 }
 
+export function bindKanbanCardCreationEvents(root: ParentNode) {
+  const form = root.querySelector<HTMLFormElement>("[data-kanban-card-create-form]");
+  form?.addEventListener("submit", handleKanbanCardCreationSubmit);
+  form
+    ?.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input, textarea")
+    .forEach((input) => input.addEventListener("input", handleKanbanCardCreationInput));
+}
+
+export function handleKanbanCardCreationInput(event: Event) {
+  const workspace = activeWorkspace();
+  const form = (event.currentTarget as HTMLElement).closest<HTMLFormElement>("[data-kanban-card-create-form]");
+  if (!workspace || !form) {
+    return;
+  }
+  const draft = {
+    title: form.querySelector<HTMLInputElement>("[data-kanban-card-create-title]")?.value ?? "",
+    description: form.querySelector<HTMLTextAreaElement>("[data-kanban-card-create-description]")?.value ?? "",
+    acceptanceCriteria: form.querySelector<HTMLTextAreaElement>("[data-kanban-card-create-criteria]")?.value ?? "",
+  };
+  state.kanbanCardCreationDrafts.set(workspace.id, draft);
+  const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]');
+  if (submit) {
+    submit.disabled = !kanbanCardCreationDraftValid(draft);
+  }
+}
+
+export async function handleKanbanCardCreationSubmit(event: SubmitEvent) {
+  event.preventDefault();
+  const workspace = activeWorkspace();
+  if (!workspace || state.runningKanbanWorkspaces.has(workspace.id)) {
+    return;
+  }
+  const draft = state.kanbanCardCreationDrafts.get(workspace.id);
+  if (!draft || !kanbanCardCreationDraftValid(draft)) {
+    return;
+  }
+  const criteria = draft.acceptanceCriteria
+    .split(/\r?\n/)
+    .map((criterion) => criterion.trim())
+    .filter(Boolean);
+
+  try {
+    const board = await CreateReadyKanbanCard(
+      workspace.id,
+      draft.title.trim(),
+      draft.description.trim(),
+      criteria,
+    );
+    state.kanbanBoards.set(workspace.id, board);
+    state.creatingKanbanCardWorkspaces.delete(workspace.id);
+    state.kanbanCardCreationDrafts.delete(workspace.id);
+    pushToast("Ready card created.", "success");
+    getAppCallbacks().render();
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+  }
+}
+
 export function bindCardDescriptionEvents(root: ParentNode) {
   const form = root.querySelector<HTMLFormElement>("[data-card-description-form]");
   form?.addEventListener("submit", handleCardDescriptionSubmit);
@@ -590,8 +700,23 @@ export function applyKanbanEvent(event: KanbanEvent) {
     if (event.type === "card_progress" && patchOpenCardProgress(event)) {
       return;
     }
-    getAppCallbacks().render();
+    renderKanbanEventPreservingScroll();
   }
+}
+
+function renderKanbanEventPreservingScroll() {
+  const mainContent = appRoot.querySelector<HTMLElement>(".main-content");
+  const scrollTop = mainContent?.scrollTop ?? 0;
+  const scrollLeft = mainContent?.scrollLeft ?? 0;
+
+  getAppCallbacks().render();
+
+  const renderedMainContent = appRoot.querySelector<HTMLElement>(".main-content");
+  if (!renderedMainContent) {
+    return;
+  }
+  renderedMainContent.scrollTop = scrollTop;
+  renderedMainContent.scrollLeft = scrollLeft;
 }
 
 export function patchOpenCardProgress(event: KanbanEvent): boolean {

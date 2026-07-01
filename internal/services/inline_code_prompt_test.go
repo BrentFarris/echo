@@ -69,6 +69,9 @@ func TestSystemServiceSubmitInlineCodePromptIncludesCursorContextAndTools(t *tes
 	if !strings.Contains(captured.Messages[0].Content, "aroundLine") {
 		t.Fatalf("expected inline system prompt to mention targeted line reads, got %q", captured.Messages[0].Content)
 	}
+	if !strings.Contains(captured.Messages[0].Content, "mentions @path") {
+		t.Fatalf("expected inline system prompt to explain file references, got %q", captured.Messages[0].Content)
+	}
 	assertSystemPromptOperatingContext(t, captured.Messages[0].Content, root)
 	userPrompt := captured.Messages[1].Content
 	for _, expected := range []string{
@@ -137,6 +140,14 @@ func TestSystemServiceSubmitInlineCodePromptExecutesEditToolAndReturnsAffectedPa
 			if len(captured.Messages) < 4 || captured.Messages[len(captured.Messages)-1].Role != llm.RoleTool {
 				t.Fatalf("expected tool result in follow-up request, got %#v", captured.Messages)
 			}
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_skill", "workspace_skill_record", map[string]any{
+					"action": "skip",
+					"reason": "Routine inline edit.",
+				}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 3:
 			writeSSE(t, w, `{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
 		default:
 			t.Fatalf("unexpected request %d", count)
@@ -164,7 +175,8 @@ func TestSystemServiceSubmitInlineCodePromptExecutesEditToolAndReturnsAffectedPa
 	if strings.Join(response.AffectedPaths, ",") != notesPath {
 		t.Fatalf("expected affected path, got %#v", response.AffectedPaths)
 	}
-	if len(response.ToolCalls) != 1 || response.ToolCalls[0].Name != "filesystem_edit_text" || response.ToolCalls[0].Status != "complete" {
+	if len(response.ToolCalls) != 2 || response.ToolCalls[0].Name != "filesystem_edit_text" || response.ToolCalls[0].Status != "complete" ||
+		response.ToolCalls[1].Name != "workspace_skill_record" || response.ToolCalls[1].Status != "complete" {
 		t.Fatalf("unexpected tool calls: %#v", response.ToolCalls)
 	}
 	if !hasInlineToolEvent(events, "filesystem_edit_text", "complete") {

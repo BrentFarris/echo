@@ -1,6 +1,6 @@
 
-import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate } from "../codeView";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearChat, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, ReadWorkspaceMediaFile, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
+import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate, startCodeRename } from "../codeView";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearChat, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, CreateSkillFromChat, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
@@ -10,17 +10,13 @@ import { dropWorkspaceGitRepositoryState, openGitChangeInCode, openWorkspaceGitR
 import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint } from "./settings";
-import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatSessionFor, kanbanBoardFor, kanbanCards, state } from "./state";
-import { clearChatMention, formatChatMentionPath, insertChatMention, isSupportedChatImageType, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
+import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatSessionFor, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state } from "./state";
+import { clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
 import { cloneSettings, cloneWebAccessSettings } from "./state";
 import { applyTheme, settingsWithThemeDefaults, themePaletteNames } from "./theme";
 import { pushToast, dismissToast } from "./toasts";
-import { copyTextToClipboard, errorMessage, formatBytes, laneLabel } from "./utils";
+import { copyTextToClipboard, errorMessage, laneLabel } from "./utils";
 import { hydrateWorkspaceLetterDrafts } from "./workspace";
-
-const maxChatImageDrafts = 4;
-const maxChatImageBytes = 10 * 1024 * 1024;
-const maxChatImageMessageBytes = 20 * 1024 * 1024;
 
 export async function handleAction(event: Event) {
   const target = event.currentTarget as HTMLElement;
@@ -51,94 +47,6 @@ export async function handleAction(event: Event) {
       dismissContextMenu();
       return;
     }
-    if (action === "add-file-to-chat") {
-      const workspaceID = target.dataset.workspaceId ?? "";
-      const filePath = target.dataset.codePath ?? "";
-      if (!workspaceID || !filePath) {
-        return;
-      }
-      dismissContextMenu();
-
-      // Switch to chat mode if in code view
-      if (state.appMode === "code") {
-        state.appMode = "chat-kanban";
-        getAppCallbacks().render();
-      }
-
-      const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
-      const imageExts = new Set(["png", "jpg", "jpeg", "webp", "gif"]);
-
-      if (imageExts.has(ext)) {
-        // Image file: read as media and add to chat drafts
-        try {
-          const result = await ReadWorkspaceMediaFile(workspaceID, filePath);
-          const mediaTypeMap: Record<string, string> = {
-            png: "image/png",
-            jpg: "image/jpeg",
-            jpeg: "image/jpeg",
-            webp: "image/webp",
-            gif: "image/gif",
-          };
-          const mediaType = mediaTypeMap[ext] ?? "application/octet-stream";
-
-          if (!isSupportedChatImageType(mediaType)) {
-            pushToast(`Unsupported image format: ${mediaType}`, "error");
-            return;
-          }
-
-          const current = chatImageDraftsFor(workspaceID);
-          const dataUrl = result.dataUrl ?? "";
-          const bytes = result.bytes ?? 0;
-
-          if (bytes > maxChatImageBytes) {
-            pushToast(`${filePath.split("/").pop()} is larger than ${formatBytes(maxChatImageBytes)}.`, "error");
-            return;
-          }
-
-          if (current.length >= maxChatImageDrafts) {
-            pushToast(`A message can include at most ${maxChatImageDrafts} images.`, "error");
-            return;
-          }
-
-          const totalBytes = current.reduce((sum, img) => sum + img.bytes, 0);
-          if (totalBytes + bytes > maxChatImageMessageBytes) {
-            pushToast(`Attached images are larger than ${formatBytes(maxChatImageMessageBytes)}.`, "error");
-            return;
-          }
-
-          const draft = {
-            id: `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-            name: filePath.split("/").pop() ?? filePath,
-            mediaType,
-            dataUrl,
-            bytes,
-          };
-          state.chatImageDrafts.set(workspaceID, [...current, draft]);
-          patchChatPanel();
-          patchChatControls();
-          pushToast(`Added ${draft.name} to chat.`, "success");
-        } catch (error) {
-          pushToast(errorMessage(error), "error");
-        }
-      } else {
-        // Text file: insert @path mention into chat input
-        const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
-        if (!input) {
-          return;
-        }
-        const mention = formatChatMentionPath(filePath);
-        const before = input.value;
-        const trailingSpace = before.length === 0 || /\s$/.test(before) ? "" : " ";
-        const nextValue = before + trailingSpace + mention + " ";
-        input.value = nextValue;
-        state.chatDrafts.set(workspaceID, nextValue);
-        input.focus();
-        input.setSelectionRange(nextValue.length, nextValue.length);
-        patchChatControls();
-        pushToast(`Added @${filePath.split("/").pop()} to chat.`, "success");
-      }
-      return;
-    }
     if (action === "code-create-file" || action === "code-create-folder") {
       const workspaceID = target.dataset.workspaceId ?? "";
       const path = target.dataset.codePath ?? "";
@@ -154,6 +62,17 @@ export async function handleAction(event: Event) {
         action === "code-create-file" ? "file" : "folder",
         getAppCallbacks().codeViewCallbacks(),
       );
+      return;
+    }
+    if (action === "code-rename-path") {
+      const workspaceID = target.dataset.workspaceId ?? "";
+      const path = target.dataset.codePath ?? "";
+      const kind = target.dataset.codeKind ?? "";
+      if (!workspaceID || !path) {
+        return;
+      }
+      dismissContextMenu();
+      await startCodeRename(workspaceID, path, kind, getAppCallbacks().codeViewCallbacks());
       return;
     }
     if (action === "open-code-view") {
@@ -527,13 +446,40 @@ export async function handleAction(event: Event) {
       markKanbanRunStarted(workspace.id);
       getAppCallbacks().render();
       try {
-        state.kanbanBoards.set(workspace.id, await StartKanbanExecution(workspace.id, 2));
+        const concurrency = limitKanbanConcurrencyEnabled(state.appState?.settings) ? 1 : 2;
+        state.kanbanBoards.set(workspace.id, await StartKanbanExecution(workspace.id, concurrency));
       } catch (error) {
         forgetKanbanRun(workspace.id);
         throw error;
       }
       pushToast("Kanban agents started.", "success");
       getAppCallbacks().render();
+    }
+    if (action === "open-create-ready-card") {
+      const workspace = activeWorkspace();
+      if (!workspace || state.runningKanbanWorkspaces.has(workspace.id)) {
+        return;
+      }
+      state.creatingKanbanCardWorkspaces.add(workspace.id);
+      if (!state.kanbanCardCreationDrafts.has(workspace.id)) {
+        state.kanbanCardCreationDrafts.set(workspace.id, {
+          title: "",
+          description: "",
+          acceptanceCriteria: "",
+        });
+      }
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "cancel-create-ready-card") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      state.creatingKanbanCardWorkspaces.delete(workspace.id);
+      state.kanbanCardCreationDrafts.delete(workspace.id);
+      getAppCallbacks().render();
+      return;
     }
     if (action === "stop-agents") {
       const workspace = activeWorkspace();
@@ -715,6 +661,22 @@ export async function handleAction(event: Event) {
       state.chatSessions.set(workspace.id, await StopChatStream(workspace.id));
       patchChatPanel();
     }
+    if (action === "create-chat-skill") {
+      const workspace = activeWorkspace();
+      if (!workspace || state.creatingChatSkills.has(workspace.id)) {
+        return;
+      }
+      state.creatingChatSkills.add(workspace.id);
+      patchChatPanel();
+      try {
+        const skill = await CreateSkillFromChat(workspace.id);
+        pushToast(`Created skill ${skill.id}.`, "success");
+      } finally {
+        state.creatingChatSkills.delete(workspace.id);
+        patchChatPanel();
+      }
+      return;
+    }
     if (action === "clear-chat") {
       const workspace = activeWorkspace();
       if (!workspace || !window.confirm("Clear the current chat?")) {
@@ -725,6 +687,22 @@ export async function handleAction(event: Event) {
       state.chatImageDrafts.delete(workspace.id);
       patchChatPanel();
     }
+    if (action === "prune-chat-message") {
+      const workspace = activeWorkspace();
+      const messageID = target.dataset.messageId ?? "";
+      if (
+        !workspace ||
+        !messageID ||
+        !window.confirm("Prune this message? It will be removed from chat, future AI context, and Kanban generation.")
+      ) {
+        return;
+      }
+      state.chatSessions.set(workspace.id, await PruneChatMessage(workspace.id, messageID));
+      state.editingMessageIds.delete(messageID);
+      pushToast("Message pruned.", "success");
+      patchChatPanel();
+      return;
+    }
     if (action === "edit-message") {
       const workspace = activeWorkspace();
       const messageID = target.dataset.messageId ?? "";
@@ -733,7 +711,10 @@ export async function handleAction(event: Event) {
       }
       state.editingMessageIds.add(messageID);
       getAppCallbacks().render();
-      const textarea = appRoot.querySelector<HTMLTextAreaElement>(`[data-chat-edit-input][data-message-id="${CSS.escape(messageID)}"]`);
+      const form = appRoot.querySelector<HTMLFormElement>(
+        `[data-chat-edit-form][data-message-id="${CSS.escape(messageID)}"]`,
+      );
+      const textarea = form?.querySelector<HTMLTextAreaElement>("[data-chat-edit-input]");
       textarea?.focus();
       textarea?.setSelectionRange(textarea.value.length, textarea.value.length);
       return;
@@ -761,6 +742,8 @@ export async function handleAction(event: Event) {
       state.gitChangeReviews.delete(workspaceID);
       dropWorkspaceGitRepositoryState(workspaceID);
       state.selectedKanbanCards.delete(workspaceID);
+      state.creatingKanbanCardWorkspaces.delete(workspaceID);
+      state.kanbanCardCreationDrafts.delete(workspaceID);
       state.openChangeReviewWorkspaces.delete(workspaceID);
       state.openGitChangeWorkspaces.delete(workspaceID);
       state.expandedChatWorkspaces.delete(workspaceID);

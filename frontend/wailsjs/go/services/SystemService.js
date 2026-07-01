@@ -18,6 +18,10 @@ export function AppInfo() {
   return window['go']['services']['SystemService']['AppInfo']();
 }
 
+export function ChooseWorkspaceFileSavePath(arg1, arg2) {
+  return window['go']['services']['SystemService']['ChooseWorkspaceFileSavePath'](arg1, arg2);
+}
+
 export function ChooseWorkspaceFolder() {
   return window['go']['services']['SystemService']['ChooseWorkspaceFolder']();
 }
@@ -60,6 +64,14 @@ export function CompleteWorkspaceFile(arg1, arg2) {
 
 export function CreateKanbanCardFromChatMessage(arg1, arg2) {
   return window['go']['services']['SystemService']['CreateKanbanCardFromChatMessage'](arg1, arg2);
+}
+
+export function CreateReadyKanbanCard(arg1, arg2, arg3, arg4) {
+  return window['go']['services']['SystemService']['CreateReadyKanbanCard'](arg1, arg2, arg3, arg4);
+}
+
+export function CreateSkillFromChat(arg1) {
+  return window['go']['services']['SystemService']['CreateSkillFromChat'](arg1);
 }
 
 export function CreateWorkspaceFile(arg1, arg2, arg3) {
@@ -174,6 +186,18 @@ export function OpenWorkspacePathExplorer(arg1, arg2) {
   return window['go']['services']['SystemService']['OpenWorkspacePathExplorer'](arg1, arg2);
 }
 
+export function PrepareWorkspaceSymbolRename(arg1, arg2) {
+  return window['go']['services']['SystemService']['PrepareWorkspaceSymbolRename'](arg1, arg2);
+}
+
+export function PruneChatMessage(arg1, arg2) {
+  return window['go']['services']['SystemService']['PruneChatMessage'](arg1, arg2);
+}
+
+export function ReadExternalTextFile(arg1) {
+  return window['go']['services']['SystemService']['ReadExternalTextFile'](arg1);
+}
+
 export function ReadWorkspaceFile(arg1, arg2) {
   return window['go']['services']['SystemService']['ReadWorkspaceFile'](arg1, arg2);
 }
@@ -184,6 +208,18 @@ export function ReadWorkspaceMediaFile(arg1, arg2) {
 
 export function RemoveWorkspaceFolder(arg1, arg2) {
   return window['go']['services']['SystemService']['RemoveWorkspaceFolder'](arg1, arg2);
+}
+
+export function RenameWorkspacePath(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['RenameWorkspacePath'](arg1, arg2, arg3);
+}
+
+export function RenameWorkspaceSymbol(arg1, arg2) {
+  return window['go']['services']['SystemService']['RenameWorkspaceSymbol'](arg1, arg2);
+}
+
+export function ReorderWorkspaces(arg1) {
+  return window['go']['services']['SystemService']['ReorderWorkspaces'](arg1);
 }
 
 export function ResetKanbanCard(arg1, arg2) {
@@ -202,6 +238,10 @@ export function RotateWebAccessToken() {
   return window['go']['services']['SystemService']['RotateWebAccessToken']();
 }
 
+export function SaveExternalTextFile(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['SaveExternalTextFile'](arg1, arg2, arg3);
+}
+
 export function SaveSettings(arg1) {
   return window['go']['services']['SystemService']['SaveSettings'](arg1);
 }
@@ -212,6 +252,10 @@ export function SaveWebAccessSettings(arg1) {
 
 export function SaveWorkspaceFile(arg1, arg2, arg3, arg4) {
   return window['go']['services']['SystemService']['SaveWorkspaceFile'](arg1, arg2, arg3, arg4);
+}
+
+export function SaveWorkspaceFileAs(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['SaveWorkspaceFileAs'](arg1, arg2, arg3);
 }
 
 export function SearchWorkspaceFiles(arg1, arg2, arg3) {
@@ -236,6 +280,10 @@ export function SendChatMessageWithPlanMode(arg1, arg2, arg3) {
 
 export function SetActiveWorkspace(arg1) {
   return window['go']['services']['SystemService']['SetActiveWorkspace'](arg1);
+}
+
+export function SetWorkspaceDefaultPlanMode(arg1, arg2) {
+  return window['go']['services']['SystemService']['SetWorkspaceDefaultPlanMode'](arg1, arg2);
 }
 
 export function SetWorkspaceFolderUseAgents(arg1, arg2, arg3) {

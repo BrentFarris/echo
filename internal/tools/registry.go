@@ -24,6 +24,8 @@ var readOnlyToolNames = map[string]bool{
 	"lsp_query":                   true,
 	"web_search":                  true,
 	"workspace_context":           true,
+	"workspace_skill_read":        true,
+	"workspace_skill_search":      true,
 }
 
 var mutatingToolNames = map[string]bool{
@@ -31,6 +33,7 @@ var mutatingToolNames = map[string]bool{
 	"filesystem_delete_file": true,
 	"filesystem_edit_text":   true,
 	"shell_command":          true,
+	"workspace_skill_record": true,
 }
 
 type Registry struct {

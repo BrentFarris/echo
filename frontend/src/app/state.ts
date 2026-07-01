@@ -1,7 +1,7 @@
 
 import { llm, services } from "../../wailsjs/go/models";
 import type { ThemePaletteName } from "./theme";
-import type { AppMode, ChatImageDraft, ChatMentionState, ContextMenuState, Toast } from "./types";
+import type { AppMode, ChatImageDraft, ChatMentionState, ContextMenuState, KanbanCardCreationDraft, Toast } from "./types";
 
 export const state = {
   appState: null as services.AppState | null,
@@ -36,6 +36,7 @@ export const state = {
   loadingGitRepositoryWorkspaces: new Set<string>(),
   loadingGitCommitDetails: new Set<string>(),
   executingPlans: new Set<string>(),
+  creatingChatSkills: new Set<string>(),
   runningKanbanWorkspaces: new Set<string>(),
   kanbanRunStarts: new Map<string, number>(),
   kanbanRunElapsed: new Map<string, number>(),
@@ -43,6 +44,8 @@ export const state = {
   openChangeReviewWorkspaces: new Set<string>(),
   openGitChangeWorkspaces: new Set<string>(),
   cardMessageDrafts: new Map<string, string>(),
+  creatingKanbanCardWorkspaces: new Set<string>(),
+  kanbanCardCreationDrafts: new Map<string, KanbanCardCreationDraft>(),
   expandedChatWorkspaces: new Set<string>(),
   expandedKanbanWorkspaces: new Set<string>(),
   editingMessageIds: new Set<string>(),
@@ -102,7 +105,12 @@ export function chatSessionFor(workspaceID: string): services.ChatSession {
 }
 
 export function chatPlanModeFor(workspaceID: string): boolean {
-  return state.chatPlanModes.get(workspaceID) ?? true;
+  const sessionOverride = state.chatPlanModes.get(workspaceID);
+  if (sessionOverride !== undefined) {
+    return sessionOverride;
+  }
+  const workspace = state.appState?.workspaces?.find((item) => item.id === workspaceID);
+  return workspace?.defaultPlanMode ?? true;
 }
 
 export function kanbanBoardFor(workspaceID: string): services.KanbanBoard {
@@ -181,6 +189,11 @@ export function leadingWhitespaceIndicatorsEnabled(settings: llm.Settings | null
 export function notificationSoundsEnabled(settings: llm.Settings | null | undefined): boolean {
   return (settings as { disableNotificationSounds?: boolean } | null | undefined)
     ?.disableNotificationSounds !== true;
+}
+
+export function limitKanbanConcurrencyEnabled(settings: llm.Settings | null | undefined): boolean {
+  return (settings as { limitKanbanConcurrency?: boolean } | null | undefined)
+    ?.limitKanbanConcurrency === true;
 }
 
 export function thinkingCorrectionEnabled(settings: llm.Settings | null | undefined): boolean {

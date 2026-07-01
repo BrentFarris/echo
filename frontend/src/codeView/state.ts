@@ -46,6 +46,7 @@ export function ensureCodeState(workspaceID: string): CodeWorkspaceState {
       },
       tabSwitcher: null,
       pendingCreate: null,
+      pendingRename: null,
       drag: null,
       showIgnored: false,
       openingPath: "",
@@ -60,6 +61,8 @@ export function ensureCodeState(workspaceID: string): CodeWorkspaceState {
       searchTimerID: null,
       searchFocused: false,
       preservingSearchFocus: false,
+      untitledSeq: 0,
+      temporaryFilesExpanded: false,
       textSearchOpen: false,
       textSearchQuery: "",
       textSearchInclude: "",
@@ -76,6 +79,16 @@ export function ensureCodeState(workspaceID: string): CodeWorkspaceState {
       preservingTextSearchFocus: false,
       inlineChat: null,
       referencesPanel: null,
+      quickOpen: {
+        open: false,
+        query: "",
+        results: [],
+        loading: false,
+        truncated: false,
+        selectedIndex: 0,
+        requestSeq: 0,
+        timerID: null,
+      },
     };
     codeStates.set(workspaceID, state);
   }
@@ -98,6 +111,7 @@ export function applySavedFile(workspaceID: string, file: services.WorkspaceFile
   tab.bytes = editable.bytes;
   tab.modifiedAt = file.modifiedAt;
   tab.dirty = false;
+  tab.untitled = false;
   const docLength = editorDocumentLengthForFileContent(tab.content, tab.lineSeparator);
   tab.selectionAnchor = clamp(tab.selectionAnchor, 0, docLength);
   tab.selectionHead = clamp(tab.selectionHead, 0, docLength);

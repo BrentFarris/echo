@@ -8,6 +8,7 @@ import (
 func init() {
 	registerLSPLanguage(lspLanguageDefinition{
 		ID:               "go",
+		DisplayName:      "Go",
 		Extensions:       []string{".go"},
 		WorkspaceMarkers: []string{"go.mod", "go.work"},
 		Command:          lspServerCommand{name: "gopls"},

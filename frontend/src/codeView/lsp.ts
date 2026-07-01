@@ -1,12 +1,15 @@
 import { type Completion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
-import { EditorState, Prec, type Extension } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
-import { CompleteWorkspaceFile, FindWorkspaceFileDefinition, FindWorkspaceFileImplementations, FindWorkspaceFileReferences } from "../backend/services";
+import { EditorState, Prec, StateEffect, StateField, Transaction, type Extension } from "@codemirror/state";
+import { EditorView, keymap, showTooltip, type Tooltip } from "@codemirror/view";
+import { CompleteWorkspaceFile, FindWorkspaceFileDefinition, FindWorkspaceFileImplementations, FindWorkspaceFileReferences, PrepareWorkspaceSymbolRename, RenameWorkspaceSymbol } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
+import { patchDirtyUI } from "./dom";
+import { applySavedFile, ensureCodeState, findTab } from "./state";
 import type { CodeViewCallbacks } from "./types";
 import { openReferencesPanel } from "./references";
 import {
   clamp,
+  editableWorkspaceFile,
   editorPositionToFileContentOffset,
   editorStateToFileContent,
   fileContentOffsetToEditorPosition,
@@ -23,7 +26,35 @@ type OpenCodeFileForDefinition = (
 const lspCompletionValidFor = /^[A-Za-z0-9_]*$/;
 const lspCompletionTriggerWord = /[A-Za-z_][A-Za-z0-9_]*$/;
 const lspCompletionTriggerDot = /\.$/;
+const lspCompletionTriggerCppMember = /(?:\.|->|::)$/;
+const lspSourceExtensions = [
+  ".go",
+  ".c",
+  ".cc",
+  ".cpp",
+  ".cxx",
+  ".c++",
+  ".h",
+  ".hh",
+  ".hpp",
+  ".hxx",
+  ".ipp",
+  ".inl",
+  ".ixx",
+  ".cppm",
+];
 const lspCompletionErrors = new Map<string, string>();
+const setRenameTooltipEffect = StateEffect.define<RenameTooltipState>();
+const clearRenameTooltipEffect = StateEffect.define<void>();
+
+type RenameTooltipState = {
+  from: number;
+  to: number;
+  originalName: string;
+  selectionAnchor: number;
+  selectionHead: number;
+  requestPosition: number;
+};
 
 export function lspDefinitionExtension(
   workspaceID: string,
@@ -31,7 +62,7 @@ export function lspDefinitionExtension(
   callbacks: CodeViewCallbacks,
   openCodeFile: OpenCodeFileForDefinition,
 ): Extension {
-  if (!isGoSourcePath(path)) {
+  if (!isLspSourcePath(path)) {
     return [];
   }
   return Prec.highest(
@@ -59,6 +90,253 @@ export function lspDefinitionExtension(
       },
     ]),
   );
+}
+
+export function lspRenameExtension(
+  workspaceID: string,
+  path: string,
+  callbacks: CodeViewCallbacks,
+): Extension {
+  if (!isLspSourcePath(path)) {
+    return [];
+  }
+  const field = StateField.define<RenameTooltipState | null>({
+    create() {
+      return null;
+    },
+    update(value, transaction) {
+      if (transaction.docChanged) {
+        value = null;
+      }
+      for (const effect of transaction.effects) {
+        if (effect.is(setRenameTooltipEffect)) {
+          value = effect.value;
+        } else if (effect.is(clearRenameTooltipEffect)) {
+          value = null;
+        }
+      }
+      return value;
+    },
+    provide: (renameField) => showTooltip.from(renameField, (value) => (
+      value ? renameTooltip(workspaceID, path, callbacks, value) : null
+    )),
+  });
+  return [
+    field,
+    Prec.highest(keymap.of([{
+      key: "F2",
+      run(view) {
+        void startLspRename(workspaceID, path, view, callbacks);
+        return true;
+      },
+    }])),
+  ];
+}
+
+async function startLspRename(
+  workspaceID: string,
+  path: string,
+  view: EditorView,
+  callbacks: CodeViewCallbacks,
+) {
+  const content = editorStateToFileContent(view.state);
+  const selection = view.state.selection.main;
+  const requestPosition = editorPositionToFileContentOffset(view.state, selection.head);
+  const lineSeparator = view.state.lineBreak;
+  try {
+    const response = services.WorkspacePrepareRenameResponse.createFrom(
+      await PrepareWorkspaceSymbolRename(
+        workspaceID,
+        services.WorkspaceDefinitionRequest.createFrom({
+          filePath: path,
+          content,
+          position: requestPosition,
+        }),
+      ),
+    );
+    if (!view.dom.isConnected || editorStateToFileContent(view.state) !== content) {
+      return;
+    }
+    if (!response.available) {
+      callbacks.pushToast(response.message || "The selected symbol cannot be renamed.", "info");
+      return;
+    }
+    const from = fileContentOffsetToEditorPosition(content, lineSeparator, response.from);
+    const to = fileContentOffsetToEditorPosition(content, lineSeparator, response.to);
+    if (to <= from || from < 0 || to > view.state.doc.length) {
+      callbacks.pushToast("The selected symbol cannot be renamed.", "info");
+      return;
+    }
+    view.dispatch({
+      effects: setRenameTooltipEffect.of({
+        from,
+        to,
+        originalName: view.state.sliceDoc(from, to) || response.placeholder || "",
+        selectionAnchor: selection.anchor,
+        selectionHead: selection.head,
+        requestPosition,
+      }),
+    });
+  } catch (error) {
+    callbacks.pushToast(callbacks.errorMessage(error), "error");
+  }
+}
+
+function renameTooltip(
+  workspaceID: string,
+  path: string,
+  callbacks: CodeViewCallbacks,
+  rename: RenameTooltipState,
+): Tooltip {
+  return {
+    pos: rename.from,
+    end: rename.to,
+    above: true,
+    strictSide: false,
+    create(view) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "code-symbol-rename";
+      const input = document.createElement("input");
+      input.className = "code-symbol-rename-input";
+      input.type = "text";
+      input.value = rename.originalName;
+      input.size = Math.max(18, Math.min(60, rename.originalName.length + 2));
+      input.setAttribute("aria-label", "New symbol name");
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      wrapper.append(input);
+
+      let submitting = false;
+      const close = (focusEditor: boolean) => {
+        if (!view.dom.isConnected) {
+          return;
+        }
+        view.dispatch({ effects: clearRenameTooltipEffect.of() });
+        if (focusEditor) {
+          view.focus();
+        }
+      };
+      const submit = async () => {
+        if (submitting) {
+          return;
+        }
+        const newName = input.value;
+        if (newName === rename.originalName) {
+          close(true);
+          return;
+        }
+        submitting = true;
+        input.disabled = true;
+        try {
+          const state = ensureCodeState(workspaceID);
+          const openFiles = state.tabs
+            .filter((tab) => !tab.untitled && !tab.external)
+            .map((tab) => services.WorkspaceRenameFileContent.createFrom({
+              filePath: tab.path,
+              content: sameWorkspacePath(tab.path, path)
+                ? editorStateToFileContent(view.state)
+                : tab.content,
+              modifiedAt: tab.modifiedAt,
+            }));
+          const response = services.WorkspaceRenameResponse.createFrom(
+            await RenameWorkspaceSymbol(
+              workspaceID,
+              services.WorkspaceRenameRequest.createFrom({
+                filePath: path,
+                content: editorStateToFileContent(view.state),
+                position: rename.requestPosition,
+                newName,
+                openFiles,
+              }),
+            ),
+          );
+          if (!response.applied) {
+            callbacks.pushToast(response.message || "The selected symbol cannot be renamed.", "info");
+            close(true);
+            return;
+          }
+          applyWorkspaceRenameResponse(workspaceID, path, view, rename, newName, response);
+        } catch (error) {
+          submitting = false;
+          input.disabled = false;
+          callbacks.pushToast(callbacks.errorMessage(error), "error");
+          window.requestAnimationFrame(() => input.focus());
+        }
+      };
+      input.addEventListener("keydown", (event) => {
+        event.stopPropagation();
+        if (event.key === "Escape") {
+          event.preventDefault();
+          close(true);
+        } else if (event.key === "Enter") {
+          event.preventDefault();
+          void submit();
+        }
+      });
+      input.addEventListener("blur", () => {
+        if (!submitting) {
+          close(false);
+        }
+      });
+      window.requestAnimationFrame(() => {
+        if (!input.isConnected) {
+          return;
+        }
+        input.focus();
+        selectRenameInputRange(input, rename);
+      });
+      return { dom: wrapper };
+    },
+  };
+}
+
+function selectRenameInputRange(input: HTMLInputElement, rename: RenameTooltipState) {
+  const selectionFrom = Math.max(rename.from, Math.min(rename.selectionAnchor, rename.selectionHead));
+  const selectionTo = Math.min(rename.to, Math.max(rename.selectionAnchor, rename.selectionHead));
+  if (selectionTo > selectionFrom) {
+    input.setSelectionRange(
+      selectionFrom - rename.from,
+      selectionTo - rename.from,
+      rename.selectionAnchor <= rename.selectionHead ? "forward" : "backward",
+    );
+    return;
+  }
+  const caret = clamp(rename.selectionHead - rename.from, 0, input.value.length);
+  input.setSelectionRange(caret, caret);
+}
+
+function applyWorkspaceRenameResponse(
+  workspaceID: string,
+  path: string,
+  view: EditorView,
+  rename: RenameTooltipState,
+  newName: string,
+  response: services.WorkspaceRenameResponse,
+) {
+  let activeContent = "";
+  for (const rawFile of response.files ?? []) {
+    const file = services.WorkspaceFile.createFrom(rawFile);
+    applySavedFile(workspaceID, file);
+    const tab = findTab(workspaceID, file.path);
+    if (tab) {
+      patchDirtyUI(workspaceID, tab);
+    }
+    if (sameWorkspacePath(file.path, path)) {
+      activeContent = editableWorkspaceFile(file).content;
+    }
+  }
+  if (!activeContent || !view.dom.isConnected) {
+    view.dispatch({ effects: clearRenameTooltipEffect.of() });
+    return;
+  }
+  const caret = clamp(rename.from + newName.length, 0, activeContent.length);
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: activeContent },
+    selection: { anchor: caret },
+    effects: clearRenameTooltipEffect.of(),
+    annotations: Transaction.addToHistory.of(false),
+    userEvent: "input.rename",
+  });
 }
 
 async function goToLspDefinition(
@@ -233,7 +511,7 @@ export function lspCompletionExtension(
   path: string,
   callbacks: CodeViewCallbacks,
 ): Extension {
-  if (!isGoSourcePath(path)) {
+  if (!isLspSourcePath(path)) {
     return [];
   }
   const source = lspCompletionSource(workspaceID, path, callbacks);
@@ -247,12 +525,12 @@ function lspCompletionSource(
 ) {
   return async (context: CompletionContext): Promise<CompletionResult | null> => {
     const word = context.matchBefore(lspCompletionTriggerWord);
-    const dot = context.matchBefore(lspCompletionTriggerDot);
-    if (!context.explicit && !word && !dot) {
+    const member = context.matchBefore(lspCompletionMemberTriggerForPath(path));
+    if (!context.explicit && !word && !member) {
       return null;
     }
 
-    const triggerCharacter = dot ? "." : "";
+    const triggerCharacter = member ? member.text.slice(-1) : "";
     const triggerKind = context.explicit ? 1 : triggerCharacter ? 2 : 1;
     const content = editorStateToFileContent(context.state);
     try {
@@ -277,7 +555,7 @@ function lspCompletionSource(
         return null;
       }
       const editorItems = items.map((item) => lspCompletionItemToEditorOffsets(item, content, context.state.lineBreak));
-      const fallbackFrom = dot ? context.pos : word?.from ?? context.pos;
+      const fallbackFrom = member ? context.pos : word?.from ?? context.pos;
       return {
         from: Math.min(fallbackFrom, ...editorItems.map((item) => item.from)),
         to: context.pos,
@@ -369,7 +647,7 @@ function applyLspCompletion(
   const docLength = view.state.doc.length;
   const primaryInsert = normalizeEditorLineBreaks(insertText, view.state.lineBreak);
   const primaryFrom = clamp(item.from, 0, docLength);
-  const primaryTo = clamp(item.to, primaryFrom, docLength);
+  const primaryTo = lspCompletionPrimaryTo(view.state, item, primaryFrom);
   const primaryChange = {
     from: primaryFrom,
     to: primaryTo,
@@ -402,6 +680,22 @@ function applyLspCompletion(
     selection: { anchor: primaryFrom + selectionDelta + primaryInsert.length },
     userEvent: "input.complete",
   });
+}
+
+function lspCompletionPrimaryTo(
+  state: EditorState,
+  item: services.WorkspaceCompletionItem,
+  primaryFrom: number,
+) {
+  const docLength = state.doc.length;
+  const selection = state.selection.main;
+  const selectionTo = selection.empty ? selection.head : selection.to;
+  const itemTo = clamp(item.to, primaryFrom, docLength);
+  const line = state.doc.lineAt(primaryFrom);
+  if (selectionTo >= primaryFrom && selectionTo <= line.to) {
+    return Math.max(itemTo, selectionTo);
+  }
+  return itemTo;
 }
 
 function rangesOverlap(leftFrom: number, leftTo: number, rightFrom: number, rightTo: number) {
@@ -466,6 +760,16 @@ function lspCompletionErrorKey(workspaceID: string, path: string) {
   return `${workspaceID}\u0000${path}`;
 }
 
-function isGoSourcePath(path: string) {
-  return path.toLowerCase().endsWith(".go");
+function lspCompletionMemberTriggerForPath(path: string) {
+  return isCppSourcePath(path) ? lspCompletionTriggerCppMember : lspCompletionTriggerDot;
+}
+
+function isLspSourcePath(path: string) {
+  const lower = path.toLowerCase();
+  return lspSourceExtensions.some((extension) => lower.endsWith(extension));
+}
+
+function isCppSourcePath(path: string) {
+  const lower = path.toLowerCase();
+  return lspSourceExtensions.slice(1).some((extension) => lower.endsWith(extension));
 }

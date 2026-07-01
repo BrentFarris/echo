@@ -65,6 +65,42 @@ func TestWorkspaceContextBuildsRankedBrief(t *testing.T) {
 	}
 }
 
+func TestWorkspaceContextDetectsCppAndMissingClangd(t *testing.T) {
+	root := t.TempDir()
+	writeWorkspaceContextFile(t, root, "CMakeLists.txt", "cmake_minimum_required(VERSION 3.20)\nproject(context)\n")
+	writeWorkspaceContextFile(t, root, "src/context_brief.cpp", "int BuildContextBrief() { return 1; }\n")
+
+	service, workspaceID := newKanbanTestServiceWithStore(t, root, filepath.Join(t.TempDir(), "state.json"))
+	workspace, _, err := service.workspaceAndSettings(workspaceID)
+	if err != nil {
+		t.Fatalf("workspace settings: %v", err)
+	}
+	restore := stubLSPCommand("cpp", "definitely_missing_clangd_for_context_test")
+	defer restore()
+
+	response, err := service.buildWorkspaceContext(context.Background(), workspace, tools.WorkspaceContextRequest{
+		Task:     "Implement the context brief builder",
+		MaxFiles: 5,
+	})
+	if err != nil {
+		t.Fatalf("build context: %v", err)
+	}
+
+	label := workspaceRootLabel(t, service, workspaceID)
+	if !workspaceContextHasManifest(response.Manifests, label+"/CMakeLists.txt", "cmake project") {
+		t.Fatalf("expected CMake manifest, got %#v", response.Manifests)
+	}
+	if !stringSliceContains(response.DetectedLanguages, "cpp") {
+		t.Fatalf("expected cpp detected language, got %#v", response.DetectedLanguages)
+	}
+	if !workspaceContextHasFile(response.RelevantFiles, label+"/src/context_brief.cpp") {
+		t.Fatalf("expected relevant C++ implementation file, got %#v", response.RelevantFiles)
+	}
+	if !workspaceContextHasWarning(response.Warnings, "C/C++ language server symbols unavailable") {
+		t.Fatalf("expected graceful clangd warning, got %#v", response.Warnings)
+	}
+}
+
 func TestWorkspaceContextBoostsChangedPathsAndVerification(t *testing.T) {
 	root := t.TempDir()
 	writeWorkspaceContextFile(t, root, "go.mod", "module example.com/context\n\ngo 1.23\n")
@@ -176,9 +212,13 @@ func workspaceContextHasWarning(warnings []string, value string) bool {
 }
 
 func stubGoLSPCommand(commandName string) func() {
+	return stubLSPCommand("go", commandName)
+}
+
+func stubLSPCommand(targetLanguageID string, commandName string) func() {
 	previous := lspCommandForLanguage
 	lspCommandForLanguage = func(languageID string) (lspServerCommand, bool) {
-		if languageID == "go" {
+		if languageID == targetLanguageID {
 			return lspServerCommand{name: commandName}, true
 		}
 		return previous(languageID)

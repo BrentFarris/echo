@@ -139,11 +139,13 @@ type lspServerCommand struct {
 }
 
 type lspLanguageDefinition struct {
-	ID               string
-	Extensions       []string
-	WorkspaceMarkers []string
-	Command          lspServerCommand
-	CompletionFilter func([]WorkspaceCompletionItem) []WorkspaceCompletionItem
+	ID                 string
+	DisplayName        string
+	Extensions         []string
+	WorkspaceMarkers   []string
+	Command            lspServerCommand
+	DocumentLanguageID func(path string) string
+	CompletionFilter   func([]WorkspaceCompletionItem) []WorkspaceCompletionItem
 }
 
 var (
@@ -719,6 +721,9 @@ func (c *lspClient) initialize(ctx context.Context, workspaceName string) error 
 			"workspace": map[string]any{
 				"configuration":    true,
 				"workspaceFolders": true,
+				"workspaceEdit": map[string]any{
+					"documentChanges": true,
+				},
 			},
 			"textDocument": map[string]any{
 				"synchronization": map[string]any{
@@ -750,6 +755,9 @@ func (c *lspClient) initialize(ctx context.Context, workspaceName string) error 
 					"linkSupport": true,
 				},
 				"references": map[string]any{},
+				"rename": map[string]any{
+					"prepareSupport": true,
+				},
 				"typeDefinition": map[string]any{
 					"linkSupport": true,
 				},
@@ -767,7 +775,7 @@ func (c *lspClient) complete(ctx context.Context, absolutePath string, request W
 	defer c.operationMu.Unlock()
 
 	uri := fileURI(absolutePath)
-	if err := c.syncDocument(uri, request.Content); err != nil {
+	if err := c.syncDocument(absolutePath, uri, request.Content); err != nil {
 		return WorkspaceCompletionResponse{}, err
 	}
 	params := map[string]any{
@@ -798,7 +806,7 @@ func (c *lspClient) definition(ctx context.Context, absolutePath string, request
 	defer c.operationMu.Unlock()
 
 	uri := fileURI(absolutePath)
-	if err := c.syncDocument(uri, request.Content); err != nil {
+	if err := c.syncDocument(absolutePath, uri, request.Content); err != nil {
 		return nil, err
 	}
 	params := map[string]any{
@@ -843,7 +851,7 @@ func isRetryableLSPRequestError(err error) bool {
 	return strings.Contains(message, "no views") || strings.Contains(message, "view not found")
 }
 
-func (c *lspClient) syncDocument(uri string, content string) error {
+func (c *lspClient) syncDocument(absolutePath string, uri string, content string) error {
 	c.docMu.Lock()
 	state, opened := c.documents[uri]
 	if !opened {
@@ -853,7 +861,7 @@ func (c *lspClient) syncDocument(uri string, content string) error {
 		return c.notify("textDocument/didOpen", map[string]any{
 			"textDocument": map[string]any{
 				"uri":        uri,
-				"languageId": c.languageID,
+				"languageId": lspDocumentLanguageIDForPath(c.languageID, absolutePath),
 				"version":    state.version,
 				"text":       content,
 			},
@@ -1120,6 +1128,10 @@ func registerLSPLanguage(definition lspLanguageDefinition) {
 	if _, exists := lspLanguagesByID[definition.ID]; exists {
 		panic(fmt.Sprintf("LSP language %s is already registered", definition.ID))
 	}
+	definition.DisplayName = strings.TrimSpace(definition.DisplayName)
+	if definition.DisplayName == "" {
+		definition.DisplayName = definition.ID
+	}
 
 	normalizedExtensions := make([]string, 0, len(definition.Extensions))
 	for _, extension := range definition.Extensions {
@@ -1164,6 +1176,26 @@ func registeredLSPCommandForLanguage(languageID string) (lspServerCommand, bool)
 func lspLanguageIDForPath(path string) (string, bool) {
 	languageID, ok := lspLanguageIDsByExt[strings.ToLower(filepath.Ext(path))]
 	return languageID, ok
+}
+
+func lspDocumentLanguageIDForPath(languageID string, path string) string {
+	definition, ok := lspLanguagesByID[languageID]
+	if !ok || definition.DocumentLanguageID == nil {
+		return languageID
+	}
+	documentLanguageID := strings.TrimSpace(definition.DocumentLanguageID(path))
+	if documentLanguageID == "" {
+		return languageID
+	}
+	return documentLanguageID
+}
+
+func lspLanguageDisplayName(languageID string) string {
+	definition, ok := lspLanguagesByID[languageID]
+	if !ok || strings.TrimSpace(definition.DisplayName) == "" {
+		return languageID
+	}
+	return definition.DisplayName
 }
 
 func filterLSPCompletionItems(languageID string, items []WorkspaceCompletionItem) []WorkspaceCompletionItem {

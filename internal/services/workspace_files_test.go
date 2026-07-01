@@ -5,10 +5,77 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestSystemServiceReadsAndSavesExternalTextFile(t *testing.T) {
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+	path := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(path, []byte("before\r\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	opened, err := service.ReadExternalTextFile(path)
+	if err != nil {
+		t.Fatalf("read external text file: %v", err)
+	}
+	if opened.WorkspaceID != "" || opened.Path != filepath.Clean(path) || opened.Content != "before\r\n" {
+		t.Fatalf("unexpected external file: %#v", opened)
+	}
+
+	saved, err := service.SaveExternalTextFile(path, "after\r\n", opened.ModifiedAt)
+	if err != nil {
+		t.Fatalf("save external text file: %v", err)
+	}
+	if saved.Path != filepath.Clean(path) || saved.Content != "after\r\n" {
+		t.Fatalf("unexpected saved external file: %#v", saved)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "after\r\n" {
+		t.Fatalf("expected external file to be updated, got %q", data)
+	}
+}
+
+func TestSystemServiceExternalTextFileValidation(t *testing.T) {
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+	if _, err := service.ReadExternalTextFile("relative.txt"); err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("expected relative external path rejection, got %v", err)
+	}
+
+	binaryPath := filepath.Join(t.TempDir(), "binary.dat")
+	if err := os.WriteFile(binaryPath, []byte{0, 1, 2, 3}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ReadExternalTextFile(binaryPath); err == nil || !strings.Contains(err.Error(), "binary") {
+		t.Fatalf("expected binary external file rejection, got %v", err)
+	}
+
+	textPath := filepath.Join(t.TempDir(), "stale.txt")
+	if err := os.WriteFile(textPath, []byte("initial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := service.ReadExternalTextFile(textPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextTime := time.Now().Add(2 * time.Second)
+	if err := os.WriteFile(textPath, []byte("changed elsewhere"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(textPath, nextTime, nextTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SaveExternalTextFile(textPath, "local edit", opened.ModifiedAt); err == nil ||
+		!strings.Contains(err.Error(), "changed on disk") {
+		t.Fatalf("expected stale external save rejection, got %v", err)
+	}
+}
 
 func TestSystemServiceListWorkspaceDirectorySortsDirectoriesFirst(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
@@ -394,6 +461,92 @@ func TestSystemServiceMoveWorkspacePathRejectsInvalidTargets(t *testing.T) {
 	}
 }
 
+func TestSystemServiceRenameWorkspacePathRenamesFile(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	source := filepath.Join(root, "main.go")
+	if err := os.WriteFile(source, []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	renamed, err := service.RenameWorkspacePath(workspaceID, "workspace/main.go", "app.go")
+	if err != nil {
+		t.Fatalf("rename file: %v", err)
+	}
+	if renamed.Path != "workspace/app.go" || renamed.Name != "app.go" || renamed.Kind != "file" {
+		t.Fatalf("unexpected renamed file entry: %#v", renamed)
+	}
+	if _, err := os.Stat(source); !os.IsNotExist(err) {
+		t.Fatalf("expected source file to be renamed, stat error: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "app.go"))
+	if err != nil {
+		t.Fatalf("read renamed file: %v", err)
+	}
+	if string(data) != "package main\n" {
+		t.Fatalf("expected renamed file content to be preserved, got %q", string(data))
+	}
+}
+
+func TestSystemServiceRenameWorkspacePathRenamesFolderSubtree(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.MkdirAll(filepath.Join(root, "src", "feature"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "feature", "readme.md"), []byte("feature"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	renamed, err := service.RenameWorkspacePath(workspaceID, "workspace/src/feature", "renamed")
+	if err != nil {
+		t.Fatalf("rename folder: %v", err)
+	}
+	if renamed.Path != "workspace/src/renamed" || renamed.Name != "renamed" || renamed.Kind != "directory" {
+		t.Fatalf("unexpected renamed folder entry: %#v", renamed)
+	}
+	if _, err := os.Stat(filepath.Join(root, "src", "feature")); !os.IsNotExist(err) {
+		t.Fatalf("expected source folder to be renamed, stat error: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "src", "renamed", "readme.md"))
+	if err != nil {
+		t.Fatalf("read renamed nested file: %v", err)
+	}
+	if string(data) != "feature" {
+		t.Fatalf("expected renamed nested file content to be preserved, got %q", string(data))
+	}
+}
+
+func TestSystemServiceRenameWorkspacePathRejectsInvalidTargets(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "existing.go"), []byte("package existing\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name       string
+		sourcePath string
+		newName    string
+	}{
+		{name: "empty source", sourcePath: "", newName: "next.go"},
+		{name: "workspace root source", sourcePath: "workspace", newName: "next"},
+		{name: "missing source", sourcePath: "workspace/missing.go", newName: "next.go"},
+		{name: "empty name", sourcePath: "workspace/main.go", newName: ""},
+		{name: "nested name", sourcePath: "workspace/main.go", newName: "nested/next.go"},
+		{name: "parent segment", sourcePath: "workspace/main.go", newName: ".."},
+		{name: "duplicate target", sourcePath: "workspace/main.go", newName: "existing.go"},
+		{name: "traversal source", sourcePath: "workspace/../outside.txt", newName: "next.go"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := service.RenameWorkspacePath(workspaceID, tc.sourcePath, tc.newName); err == nil {
+				t.Fatalf("expected error renaming %q to %q", tc.sourcePath, tc.newName)
+			}
+		})
+	}
+}
+
 func TestSystemServiceWorkspaceFilesRejectBinaryAndLargeFiles(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.WriteFile(filepath.Join(root, "image.bin"), []byte{0x01, 0x00, 0x02}, 0o600); err != nil {
@@ -520,6 +673,48 @@ func TestSystemServiceSearchWorkspaceFilesFindsNestedMatches(t *testing.T) {
 	}
 }
 
+func TestSystemServiceSearchWorkspaceFilesFuzzyMatchesAndRanksPaths(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.MkdirAll(filepath.Join(root, "src", "host"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for path, content := range map[string]string{
+		"host_test.go":                    "package workspace\n",
+		"host_render_test.go":             "package workspace\n",
+		"host_entity_test.go":             "package workspace\n",
+		"src/host/render_test_helpers.go": "package host\n",
+		"src/host/unrelated_component.go": "package host\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(path)), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := service.SearchWorkspaceFiles(workspaceID, "host_test", false)
+	if err != nil {
+		t.Fatalf("fuzzy search workspace: %v", err)
+	}
+	paths := entryPaths(result.Entries)
+	if len(paths) != 4 {
+		t.Fatalf("expected four fuzzy matches, got %v", paths)
+	}
+	if paths[0] != "workspace/host_test.go" {
+		t.Fatalf("expected closest filename first, got %v", paths)
+	}
+	for _, expected := range []string{
+		"workspace/host_entity_test.go",
+		"workspace/host_render_test.go",
+		"workspace/src/host/render_test_helpers.go",
+	} {
+		if !slices.Contains(paths, expected) {
+			t.Fatalf("expected fuzzy result %q, got %v", expected, paths)
+		}
+	}
+	if slices.Contains(paths, "workspace/src/host/unrelated_component.go") {
+		t.Fatalf("expected out-of-order/nonmatching path to be excluded, got %v", paths)
+	}
+}
+
 func TestSystemServiceSearchWorkspaceFilesSkipsIgnoredFoldersByDefault(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.MkdirAll(filepath.Join(root, "node_modules", "pkg"), 0o755); err != nil {
@@ -543,7 +738,9 @@ func TestSystemServiceSearchWorkspaceFilesSkipsIgnoredFoldersByDefault(t *testin
 	if err != nil {
 		t.Fatalf("search unfiltered workspace: %v", err)
 	}
-	if got := strings.Join(entryPaths(included.Entries), ","); got != "workspace/needle.txt,workspace/node_modules/pkg/needle.js" {
+	includedPaths := entryPaths(included.Entries)
+	slices.Sort(includedPaths)
+	if got := strings.Join(includedPaths, ","); got != "workspace/needle.txt,workspace/node_modules/pkg/needle.js" {
 		t.Fatalf("expected ignored folder match when included, got %v", got)
 	}
 }
@@ -606,6 +803,54 @@ func TestSystemServiceSearchWorkspaceFilesCapsResults(t *testing.T) {
 	}
 	if !result.Truncated {
 		t.Fatal("expected truncated result")
+	}
+}
+
+func TestSystemServiceSaveWorkspaceFileAsCreatesAndOverwritesTextFile(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+
+	created, err := service.SaveWorkspaceFileAs(
+		workspaceID,
+		"ideas.txt",
+		"first idea\n",
+	)
+	if err != nil {
+		t.Fatalf("save new workspace file: %v", err)
+	}
+	if created.Path != "workspace/ideas.txt" || created.Content != "first idea\n" {
+		t.Fatalf("unexpected created file: %#v", created)
+	}
+
+	overwritten, err := service.SaveWorkspaceFileAs(
+		workspaceID,
+		"workspace/ideas.txt",
+		"second idea\n",
+	)
+	if err != nil {
+		t.Fatalf("overwrite workspace file: %v", err)
+	}
+	if overwritten.Content != "second idea\n" {
+		t.Fatalf("expected overwritten content, got %#v", overwritten)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "ideas.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "second idea\n" {
+		t.Fatalf("unexpected saved data: %q", data)
+	}
+}
+
+func TestSystemServiceSaveWorkspaceFileAsRejectsOutsideWorkspace(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	outside := filepath.Join(filepath.Dir(root), "outside-note.txt")
+
+	if _, err := service.SaveWorkspaceFileAs(workspaceID, outside, "nope"); err == nil ||
+		!strings.Contains(err.Error(), "inside a workspace folder") {
+		t.Fatalf("expected outside workspace error, got %v", err)
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("expected outside file not to be created, stat error: %v", err)
 	}
 }
 

@@ -182,6 +182,76 @@ func (s *SystemService) ClearChat(workspaceID string) (ChatSession, error) {
 	return clone, nil
 }
 
+func (s *SystemService) PruneChatMessage(workspaceID string, messageID string) (ChatSession, error) {
+	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
+		return ChatSession{}, err
+	}
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return ChatSession{}, fmt.Errorf("message id is required")
+	}
+
+	s.chatMu.Lock()
+	session := s.ensureChatSessionLocked(workspaceID)
+	if session.Busy {
+		s.chatMu.Unlock()
+		return ChatSession{}, fmt.Errorf("wait for the current chat response to finish before pruning messages")
+	}
+
+	messageIndex := -1
+	for i := range session.Messages {
+		if session.Messages[i].ID == messageID {
+			messageIndex = i
+			break
+		}
+	}
+	if messageIndex < 0 {
+		s.chatMu.Unlock()
+		return ChatSession{}, fmt.Errorf("message was not found")
+	}
+
+	messages := make([]ChatMessage, 0, len(session.Messages)-1)
+	messages = append(messages, session.Messages[:messageIndex]...)
+	messages = append(messages, session.Messages[messageIndex+1:]...)
+	session.Messages = messages
+	session.History = visibleChatHistory(messages)
+	clone := cloneChatSession(session)
+	s.chatMu.Unlock()
+
+	if err := s.persistChatSession(workspaceID); err != nil {
+		return ChatSession{}, err
+	}
+	return clone, nil
+}
+
+func visibleChatHistory(messages []ChatMessage) []llm.Message {
+	history := make([]llm.Message, 0, len(messages))
+	for _, message := range messages {
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		switch message.Role {
+		case llm.RoleUser:
+			entry := llm.Message{Role: llm.RoleUser, Content: content}
+			if len(message.Images) > 0 {
+				entry.ContentParts = []llm.MessageContentPart{llm.TextContentPart(content)}
+				for _, image := range message.Images {
+					if image.DataURL != "" {
+						entry.ContentParts = append(entry.ContentParts, llm.ImageURLContentPart(image.DataURL))
+					}
+				}
+			}
+			history = append(history, entry)
+		case llm.RoleAssistant:
+			if message.Status == "complete" {
+				history = append(history, llm.Message{Role: llm.RoleAssistant, Content: content})
+			}
+		}
+	}
+	return history
+}
+
 func (s *SystemService) RetryChatMessage(workspaceID string, messageID string, planMode bool) (ChatSession, error) {
 	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
 		return ChatSession{}, err
@@ -263,6 +333,11 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 		return ChatSession{}, err
 	}
 
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ChatSession{}, fmt.Errorf("message content is required")
+	}
+
 	s.chatMu.Lock()
 
 	session := s.ensureChatSessionLocked(workspaceID)
@@ -284,15 +359,25 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 		return ChatSession{}, fmt.Errorf("message was not found")
 	}
 
-	if session.Messages[msgIndex].Role != llm.RoleUser {
+	if session.Messages[msgIndex].Role == llm.RoleAssistant {
+		if session.Messages[msgIndex].Status != "complete" {
+			s.chatMu.Unlock()
+			return ChatSession{}, fmt.Errorf("can only edit complete assistant messages")
+		}
+
+		session.Messages[msgIndex].Content = content
+		replaceVisibleAssistantHistory(session, msgIndex, content)
+		clone := cloneChatSession(session)
 		s.chatMu.Unlock()
-		return ChatSession{}, fmt.Errorf("can only edit user messages")
+		if err := s.persistChatSession(workspaceID); err != nil {
+			return ChatSession{}, err
+		}
+		return clone, nil
 	}
 
-	content = strings.TrimSpace(content)
-	if content == "" {
+	if session.Messages[msgIndex].Role != llm.RoleUser {
 		s.chatMu.Unlock()
-		return ChatSession{}, fmt.Errorf("message content is required")
+		return ChatSession{}, fmt.Errorf("can only edit user or assistant messages")
 	}
 
 	// Update the message content.
@@ -346,6 +431,52 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 	return clone, nil
 }
 
+// replaceVisibleAssistantHistory replaces the model/tool history for the
+// assistant turn represented by one visible chat message. A visible assistant
+// message can span several model responses and tool results, so collapsing the
+// turn avoids leaving the unedited response hidden in later chat context.
+func replaceVisibleAssistantHistory(session *chatSessionState, messageIndex int, content string) {
+	userOrdinal := 0
+	for i := 0; i < messageIndex; i++ {
+		if session.Messages[i].Role == llm.RoleUser {
+			userOrdinal++
+		}
+	}
+	if userOrdinal == 0 {
+		return
+	}
+
+	historyUserOrdinal := 0
+	userHistoryIndex := -1
+	for i := range session.History {
+		if session.History[i].Role != llm.RoleUser {
+			continue
+		}
+		historyUserOrdinal++
+		if historyUserOrdinal == userOrdinal {
+			userHistoryIndex = i
+			break
+		}
+	}
+	if userHistoryIndex < 0 {
+		return
+	}
+
+	nextUserHistoryIndex := len(session.History)
+	for i := userHistoryIndex + 1; i < len(session.History); i++ {
+		if session.History[i].Role == llm.RoleUser {
+			nextUserHistoryIndex = i
+			break
+		}
+	}
+
+	history := make([]llm.Message, 0, len(session.History)-(nextUserHistoryIndex-userHistoryIndex-1)+1)
+	history = append(history, session.History[:userHistoryIndex+1]...)
+	history = append(history, llm.Message{Role: llm.RoleAssistant, Content: content})
+	history = append(history, session.History[nextUserHistoryIndex:]...)
+	session.History = history
+}
+
 func (s *SystemService) runChatTurn(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, streamID string, messageID string, planMode bool) {
 	s.runChatTurnWithHistory(ctx, cancel, workspace, settings, streamID, messageID, s.chatHistory(workspace.ID), planMode)
 }
@@ -360,11 +491,15 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 		return
 	}
 
-	messages := append([]llm.Message{chatSystemMessage(workspace, planMode)}, history...)
+	candidates := workspaceSkillCandidates(ctx, workspace, latestWorkspaceSkillTask(history))
+	messages := append([]llm.Message{chatSystemMessage(workspace, planMode, candidates)}, history...)
 	toolSchema := tools.LLMSchema()
 	if planMode {
 		toolSchema = tools.ReadOnlyLLMSchema()
 	}
+	recoverableToolCalls := make(map[string]bool)
+	skillCheckpointPending := false
+	skillCheckpointReminders := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			s.cancelChatMessage(workspace.ID, streamID, messageID)
@@ -377,11 +512,21 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 			return
 		}
 
-		content, toolCalls, finished, finishReason, err := s.streamAssistantResponse(ctx, client, request, workspace.ID, streamID, messageID)
+		publishResponse := !skillCheckpointPending
+		content, toolCalls, finished, finishReason, err := s.streamAssistantResponse(ctx, client, request, workspace.ID, streamID, messageID, publishResponse)
 		if err != nil {
 			if ctx.Err() != nil {
 				s.cancelChatMessage(workspace.ID, streamID, messageID)
 				return
+			}
+			if llm.IsContextLengthExceeded(err) {
+				if recovery, ok := recoverToolResultContext(messages, recoverableToolCalls); ok {
+					messages = recovery.Messages
+					s.replaceChatHistory(workspace.ID, messages[1:])
+					s.updateToolActivity(workspace.ID, streamID, messageID, recovery.Call, "error", recovery.ResultMessage.Content, toolResultContextErrorText)
+					s.retryChatMessage(workspace.ID, streamID, messageID)
+					continue
+				}
 			}
 			s.failChatMessage(workspace.ID, streamID, messageID, userFacingLLMError(err))
 			return
@@ -398,8 +543,25 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 
 		assistantHistory := llm.Message{Role: llm.RoleAssistant, Content: content, ToolCalls: toolCalls}
 		messages = append(messages, assistantHistory)
-		s.appendChatHistory(workspace.ID, assistantHistory)
+		if publishResponse || len(toolCalls) > 0 {
+			s.appendChatHistory(workspace.ID, assistantHistory)
+		}
 		if len(toolCalls) == 0 {
+			if skillCheckpointPending {
+				if skillCheckpointReminders < workspaceSkillMaxReminders {
+					skillCheckpointReminders++
+					messages = append(messages, llm.Message{
+						Role:    llm.RoleUser,
+						Content: workspaceSkillCheckpointPrompt(false),
+					})
+					continue
+				}
+				if content != "" {
+					s.appendChatContent(workspace.ID, streamID, messageID, content)
+				}
+				s.appendChatContent(workspace.ID, streamID, messageID, "\n\n"+workspaceSkillCheckpointWarning())
+				s.appendChatHistory(workspace.ID, assistantHistory)
+			}
 			s.completeChatMessage(workspace.ID, streamID, messageID, finishReason)
 			return
 		}
@@ -409,22 +571,30 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 				s.cancelChatMessage(workspace.ID, streamID, messageID)
 				return
 			}
-			resultMessages := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, planMode)
-			messages = append(messages, resultMessages...)
-			for _, resultMessage := range resultMessages {
+			execution := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, planMode)
+			recoverableToolCalls[call.ID] = true
+			messages = append(messages, execution.Messages...)
+			for _, resultMessage := range execution.Messages {
 				s.appendChatHistory(workspace.ID, resultMessage)
+			}
+			if len(execution.Changes) > 0 {
+				skillCheckpointPending = true
+				skillCheckpointReminders = 0
+			}
+			if execution.SkillCheckpoint {
+				skillCheckpointPending = false
 			}
 		}
 	}
 }
 
-func (s *SystemService) streamAssistantResponse(ctx context.Context, client *llm.Client, request llm.ChatRequest, workspaceID string, streamID string, messageID string) (string, []llm.ToolCall, bool, string, error) {
+func (s *SystemService) streamAssistantResponse(ctx context.Context, client *llm.Client, request llm.ChatRequest, workspaceID string, streamID string, messageID string, publish bool) (string, []llm.ToolCall, bool, string, error) {
 	request.Messages = append([]llm.Message(nil), request.Messages...)
 	totalContent := strings.Builder{}
 	var lastLoop streamLoopDetection
 
 	for attempt := 0; ; attempt++ {
-		result := s.streamAssistantResponseAttempt(ctx, client, request, workspaceID, streamID, messageID)
+		result := s.streamAssistantResponseAttempt(ctx, client, request, workspaceID, streamID, messageID, publish)
 		totalContent.WriteString(result.content)
 		if result.loop != nil {
 			lastLoop = *result.loop
@@ -448,7 +618,7 @@ type chatStreamAttemptResult struct {
 	err          error
 }
 
-func (s *SystemService) streamAssistantResponseAttempt(ctx context.Context, client *llm.Client, request llm.ChatRequest, workspaceID string, streamID string, messageID string) chatStreamAttemptResult {
+func (s *SystemService) streamAssistantResponseAttempt(ctx context.Context, client *llm.Client, request llm.ChatRequest, workspaceID string, streamID string, messageID string, publish bool) chatStreamAttemptResult {
 	stream := client.StreamChat(ctx, request)
 	content := strings.Builder{}
 	contentInlineParser := inlineToolCallStreamParser{}
@@ -472,7 +642,9 @@ func (s *SystemService) streamAssistantResponseAttempt(ctx context.Context, clie
 			return nil
 		}
 		content.WriteString(text)
-		s.appendChatContent(workspaceID, streamID, messageID, text)
+		if publish {
+			s.appendChatContent(workspaceID, streamID, messageID, text)
+		}
 		if detection, ok := loopDetector.observe(streamLoopContent, text); ok {
 			return &detection
 		}
@@ -482,7 +654,9 @@ func (s *SystemService) streamAssistantResponseAttempt(ctx context.Context, clie
 		if text == "" {
 			return nil
 		}
-		s.appendChatReasoning(workspaceID, streamID, messageID, text)
+		if publish {
+			s.appendChatReasoning(workspaceID, streamID, messageID, text)
+		}
 		if detection, ok := loopDetector.observe(streamLoopReasoning, text); ok {
 			return &detection
 		}
@@ -537,18 +711,26 @@ func (s *SystemService) streamAssistantResponseAttempt(ctx context.Context, clie
 	return chatStreamAttemptResult{content: content.String(), toolCalls: orderedToolCalls(toolCalls), finished: finished, finishReason: finishReason}
 }
 
-func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, streamID string, messageID string, call llm.ToolCall, readOnlyOnly bool) []llm.Message {
+type chatToolCallExecution struct {
+	Messages        []llm.Message
+	Changes         []tools.FileChange
+	SkillCheckpoint bool
+}
+
+func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, streamID string, messageID string, call llm.ToolCall, readOnlyOnly bool) chatToolCallExecution {
 	if call.ID == "" {
 		call.ID = s.nextChatID("call")
 	}
 	if readOnlyOnly && !tools.IsReadOnlyToolName(call.Function.Name) {
 		data := fmt.Sprintf(`{"tool":%q,"success":false,"error":{"code":"tool_not_allowed","message":"tool is not available in plan mode"}}`, call.Function.Name)
 		s.updateToolActivity(workspace.ID, streamID, messageID, call, "error", data, "tool is not available in plan mode")
-		return []llm.Message{{
-			Role:       llm.RoleTool,
-			ToolCallID: call.ID,
-			Content:    data,
-		}}
+		return chatToolCallExecution{
+			Messages: []llm.Message{{
+				Role:       llm.RoleTool,
+				ToolCallID: call.ID,
+				Content:    data,
+			}},
+		}
 	}
 	s.updateToolActivity(workspace.ID, streamID, messageID, call, "running", "", "")
 
@@ -588,7 +770,11 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 	}
 	s.updateToolActivity(workspace.ID, streamID, messageID, call, status, string(data), errorText)
 
-	return toolResultMessages(call, result, data)
+	return chatToolCallExecution{
+		Messages:        toolResultMessages(call, result, data),
+		Changes:         execution.Changes,
+		SkillCheckpoint: workspaceSkillCheckpointCompleted(call, result),
+	}
 }
 
 func (s *SystemService) appendChatContent(workspaceID string, streamID string, messageID string, content string) {
@@ -771,6 +957,14 @@ func (s *SystemService) appendChatHistory(workspaceID string, message llm.Messag
 	}
 }
 
+func (s *SystemService) replaceChatHistory(workspaceID string, history []llm.Message) {
+	s.chatMu.Lock()
+	defer s.chatMu.Unlock()
+	if session := s.chatSessions[workspaceID]; session != nil {
+		session.History = cloneLLMMessages(history)
+	}
+}
+
 func (s *SystemService) workspaceAndSettings(workspaceID string) (Workspace, llm.Settings, error) {
 	return s.workspaceAndSettingsFor(workspaceID, llm.InteractionChat)
 }
@@ -821,7 +1015,7 @@ func (s *SystemService) emitChatEvent(event ChatStreamEvent) {
 	}
 }
 
-func chatSystemMessage(workspace Workspace, planMode bool) llm.Message {
+func chatSystemMessage(workspace Workspace, planMode bool, skillCandidates []tools.WorkspaceSkillSummary) llm.Message {
 	instructions := "You are Echo, a personal AI assistant helping plan work inside the active workspace. " +
 		"Use available tools when workspace facts are needed. " +
 		"When the user mentions @path, treat it as a labeled workspace file reference like <folder-label>/path and read it before relying on its contents. " +
@@ -845,7 +1039,7 @@ func chatSystemMessage(workspace Workspace, planMode bool) llm.Message {
 	}
 	return llm.Message{
 		Role:    llm.RoleSystem,
-		Content: workspaceSystemPrompt(instructions, workspace),
+		Content: workspaceSystemPrompt(workspaceSkillsPrompt(instructions, skillCandidates, !planMode), workspace),
 	}
 }
 

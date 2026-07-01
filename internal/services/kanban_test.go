@@ -28,6 +28,86 @@ func TestKanbanBoardGroupsCardsByLane(t *testing.T) {
 	}
 }
 
+func TestCreateReadyKanbanCardPersistsManualCard(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "state.json")
+	service, workspaceID := newKanbanTestServiceWithStore(t, root, storePath)
+	seedKanbanCards(t, service, []KanbanCard{{
+		ID:                 "card-4",
+		WorkspaceID:        workspaceID,
+		Title:              "Existing",
+		Description:        "Existing card",
+		AcceptanceCriteria: []string{"Already exists"},
+		Lane:               KanbanLaneDone,
+	}})
+
+	board, err := service.CreateReadyKanbanCard(
+		workspaceID,
+		"  Add manual card  ",
+		"  Implement the focused behavior.  ",
+		[]string{"  First outcome  ", "", "Second outcome"},
+	)
+	if err != nil {
+		t.Fatalf("create ready card: %v", err)
+	}
+	if len(board.Ready) != 1 {
+		t.Fatalf("expected one ready card, got %#v", board.Ready)
+	}
+	card := board.Ready[0]
+	if card.ID != "card-5" || card.Title != "Add manual card" || card.Description != "Implement the focused behavior." {
+		t.Fatalf("unexpected manual card: %#v", card)
+	}
+	if len(card.AcceptanceCriteria) != 2 ||
+		card.AcceptanceCriteria[0] != "First outcome" ||
+		card.AcceptanceCriteria[1] != "Second outcome" {
+		t.Fatalf("expected trimmed acceptance criteria, got %#v", card.AcceptanceCriteria)
+	}
+	if !card.Eligible || card.Lane != KanbanLaneReady || card.Status != KanbanLaneReady {
+		t.Fatalf("expected an eligible ready card, got %#v", card)
+	}
+	if len(card.ProgressTranscript) != 1 || card.ProgressTranscript[0].Content != "Created manually in the Ready lane." {
+		t.Fatalf("expected manual creation transcript, got %#v", card.ProgressTranscript)
+	}
+
+	reloaded := NewSystemServiceWithStorePath(storePath)
+	persisted, err := reloaded.LoadKanbanBoard(workspaceID)
+	if err != nil {
+		t.Fatalf("load persisted board: %v", err)
+	}
+	if len(persisted.Ready) != 1 || persisted.Ready[0].ID != "card-5" {
+		t.Fatalf("expected manual card to persist, got %#v", persisted)
+	}
+}
+
+func TestCreateReadyKanbanCardRejectsInvalidInputAndRunningWorkspace(t *testing.T) {
+	service, workspaceID := newKanbanTestService(t)
+	for name, input := range map[string]struct {
+		title       string
+		description string
+		criteria    []string
+	}{
+		"title":       {"", "Description", []string{"Done"}},
+		"description": {"Title", "", []string{"Done"}},
+		"criteria":    {"Title", "Description", []string{"", "  "}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := service.CreateReadyKanbanCard(workspaceID, input.title, input.description, input.criteria); err == nil {
+				t.Fatal("expected invalid manual card to be rejected")
+			}
+		})
+	}
+
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.chatMu.Lock()
+	service.kanbanRuns[workspaceID] = cancel
+	service.chatMu.Unlock()
+	if _, err := service.CreateReadyKanbanCard(workspaceID, "Title", "Description", []string{"Done"}); err == nil ||
+		!strings.Contains(err.Error(), "running") {
+		t.Fatalf("expected running workspace rejection, got %v", err)
+	}
+}
+
 func TestKanbanDependencyBlockedReadyCardIsNotEligible(t *testing.T) {
 	service, workspaceID := newKanbanTestService(t)
 	seedKanbanCards(t, service, []KanbanCard{

@@ -12,7 +12,7 @@ import { renderSettingsOverlay } from "./settings";
 import { renderToasts } from "./toasts";
 import { escapeHtml, workspaceFolderSummary } from "./utils";
 import { renderWorkspaceIcon, renderMissingWorkspace } from "./workspace";
-import { hasKanbanRuntime, renderDecompositionState, renderEmptyBoard, renderKanbanBoard, renderKanbanDetail, renderKanbanRuntime } from "./kanban";
+import { hasKanbanRuntime, renderCreateKanbanCardDialog, renderDecompositionState, renderEmptyBoard, renderKanbanBoard, renderKanbanDetail, renderKanbanRuntime } from "./kanban";
 import { services } from "../../wailsjs/go/models";
 
 export function render() {
@@ -20,6 +20,7 @@ export function render() {
   const chatScroll = captureScrollSnapshot("[data-chat-log]");
   const cardDetailScroll = captureScrollSnapshot("[data-card-detail]");
   const changeReviewScroll = captureScrollSnapshot("[data-change-review]");
+  const settingsScroll = captureScrollSnapshot("[data-settings-form]");
   const hadDialog = Boolean(appRoot.querySelector('[role="dialog"]'));
   const workspace = activeWorkspace();
   const workspaces = state.appState?.workspaces ?? [];
@@ -40,16 +41,18 @@ export function render() {
   appRoot.innerHTML = `
     <div class="app-shell">
       <aside class="gutter" aria-label="Primary">
-        <nav class="workspace-rail" aria-label="Workspaces">
+        <nav class="workspace-rail" aria-label="Workspaces" data-workspace-rail>
           ${workspaces
             .map(
               (item) => `
                 <button
                   class="gutter-button workspace-button ${item.active ? "is-active" : ""} ${item.missing ? "is-missing" : ""}"
                   type="button"
+                  draggable="true"
                   title="${escapeHtml(workspaceFolderSummary(item))}"
                   aria-label="${escapeHtml(item.displayName)}${item.missing ? " missing" : ""}"
                   data-action="activate-workspace"
+                  data-workspace-drag-item
                   data-workspace-id="${escapeHtml(item.id)}"
                 >${renderWorkspaceIcon(item)}</button>
               `,
@@ -106,6 +109,7 @@ export function render() {
   restoreScrollSnapshot("[data-chat-log]", chatScroll);
   restoreScrollSnapshot("[data-card-detail]", cardDetailScroll);
   restoreScrollSnapshot("[data-change-review]", changeReviewScroll);
+  restoreScrollSnapshot("[data-settings-form]", settingsScroll);
   if (!hadDialog) {
     focusInitialElement();
   }
@@ -150,6 +154,10 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
                   <button class="icon-button" type="button" title="${kanbanSizeLabel}" aria-label="${kanbanSizeLabel}" aria-pressed="${kanbanExpanded}" data-action="toggle-kanban-size">
                     ${kanbanExpanded ? icons.collapse : icons.expand}
                   </button>
+                  <button class="secondary-button icon-text-button" type="button" data-action="open-create-ready-card" ${running ? "disabled" : ""}>
+                    ${icons.plus}
+                    <span>New card</span>
+                  </button>
                   <button class="icon-text-button primary-button" type="button" data-action="start-agents" ${running || !hasCards ? "disabled" : ""}>
                     ${icons.execute}
                     <span class="run-button">Run</span>
@@ -176,6 +184,7 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
       </section>
     </div>
     ${board ? renderKanbanDetail(board) : ""}
+    ${workspace && state.creatingKanbanCardWorkspaces.has(workspace.id) && !running ? renderCreateKanbanCardDialog(workspace.id) : ""}
     ${workspace && state.openChangeReviewWorkspaces.has(workspace.id) ? renderChangeReviewDrawer(workspace, review ?? changeReviewFor(workspace.id)) : ""}
   `;
 }

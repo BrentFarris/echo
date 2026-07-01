@@ -1,5 +1,8 @@
 import type { EditorState } from "@codemirror/state";
 import { services } from "../../wailsjs/go/models";
+import type { CodeFileTab } from "./types";
+
+export const untitledCodeTabPrefix = "untitled://";
 
 export function sleep(delay: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, delay));
@@ -20,7 +23,18 @@ export function formatBytes(bytes: number): string {
 }
 
 export function fileName(path: string): string {
-  return path.split("/").pop() || path;
+  return path.replaceAll("\\", "/").split("/").pop() || path;
+}
+
+export function codeTabName(tab: Pick<CodeFileTab, "path" | "untitled">): string {
+  if (tab.untitled && tab.path.startsWith(untitledCodeTabPrefix)) {
+    return tab.path.slice(untitledCodeTabPrefix.length);
+  }
+  return fileName(tab.path);
+}
+
+export function isUntitledCodePath(path: string): boolean {
+  return path.startsWith(untitledCodeTabPrefix);
 }
 
 export function detectLineSeparator(content: string): string {

@@ -44,8 +44,9 @@ type kanbanDependencyOutput struct {
 }
 
 type kanbanToolCallExecution struct {
-	Messages     []llm.Message
-	ChangedPaths []string
+	Messages        []llm.Message
+	ChangedPaths    []string
+	SkillCheckpoint bool
 }
 
 func (s *SystemService) StartKanbanExecution(workspaceID string, concurrency int) (KanbanBoard, error) {
@@ -363,12 +364,17 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 	}
 
 	messages := []llm.Message{
-		kanbanAgentSystemMessage(workspace),
+		kanbanAgentSystemMessage(workspace, workspaceSkillCandidates(ctx, workspace, kanbanWorkspaceSkillTask(card))),
 		kanbanAgentUserMessage(card, dependencyOutputs, contextBrief),
 	}
 	changedPaths := map[string]bool{}
+	recoverableToolCalls := make(map[string]bool)
 	verificationAttempts := 0
 	noToolContinuationAttempts := 0
+	hasProjectChanges := false
+	verificationCurrent := false
+	skillCheckpointPending := false
+	skillCheckpointReminders := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			s.blockKanbanCard(workspace.ID, cardID, agentID, "Canceled", agentCancellationText)
@@ -386,6 +392,17 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 			if ctx.Err() != nil {
 				s.blockKanbanCard(workspace.ID, cardID, agentID, "Canceled", agentCancellationText)
 				return
+			}
+			if llm.IsContextLengthExceeded(err) {
+				if recovery, ok := recoverToolResultContext(messages, recoverableToolCalls); ok {
+					messages = recovery.Messages
+					s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
+						Type:    "tool_result",
+						Title:   "Tool result too large: " + recovery.Call.Function.Name,
+						Content: recovery.ResultMessage.Content,
+					})
+					continue
+				}
 			}
 			s.blockKanbanCard(workspace.ID, cardID, agentID, "Agent error", userFacingLLMError(err))
 			return
@@ -417,38 +434,66 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 				})
 				continue
 			}
-			s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
-				Type:    "verification",
-				Title:   "Verification started",
-				Content: "Checking changed files before marking the card Done.",
-				Status:  KanbanLaneInProgress,
-			})
-			verificationAttempts++
-			report, err := s.runKanbanVerification(ctx, workspace, sortedKanbanChangedPaths(changedPaths))
-			if err != nil {
-				if ctx.Err() != nil {
-					s.blockKanbanCard(workspace.ID, cardID, agentID, "Canceled", agentCancellationText)
+			if !verificationCurrent {
+				s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
+					Type:    "verification",
+					Title:   "Verification started",
+					Content: "Checking changed files before marking the card Done.",
+					Status:  KanbanLaneInProgress,
+				})
+				verificationAttempts++
+				report, err := s.runKanbanVerification(ctx, workspace, sortedKanbanChangedPaths(changedPaths))
+				if err != nil {
+					if ctx.Err() != nil {
+						s.blockKanbanCard(workspace.ID, cardID, agentID, "Canceled", agentCancellationText)
+						return
+					}
+					s.blockKanbanCard(workspace.ID, cardID, agentID, "Verification error", err.Error())
 					return
 				}
-				s.blockKanbanCard(workspace.ID, cardID, agentID, "Verification error", err.Error())
-				return
+				reportText := kanbanVerificationReportText(report)
+				s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
+					Type:    "verification",
+					Title:   kanbanVerificationProgressTitle(report, verificationAttempts),
+					Content: reportText,
+				})
+				if !kanbanVerificationReportSucceeded(report) {
+					if verificationAttempts < 2 {
+						messages = append(messages, llm.Message{
+							Role:    llm.RoleUser,
+							Content: kanbanVerificationRepairPrompt(report),
+						})
+						continue
+					}
+					s.blockKanbanCard(workspace.ID, cardID, agentID, "Verification failed", reportText)
+					return
+				}
+				verificationCurrent = true
+				if hasProjectChanges {
+					skillCheckpointPending = true
+				}
 			}
-			reportText := kanbanVerificationReportText(report)
-			s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
-				Type:    "verification",
-				Title:   kanbanVerificationProgressTitle(report, verificationAttempts),
-				Content: reportText,
-			})
-			if !kanbanVerificationReportSucceeded(report) {
-				if verificationAttempts < 2 {
+			if skillCheckpointPending {
+				if skillCheckpointReminders < workspaceSkillMaxReminders {
+					skillCheckpointReminders++
+					s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
+						Type:    "status",
+						Title:   "Skill learning checkpoint",
+						Content: "Verification passed. Waiting for the agent to save durable workspace knowledge or explicitly skip.",
+						Status:  KanbanLaneInProgress,
+					})
 					messages = append(messages, llm.Message{
 						Role:    llm.RoleUser,
-						Content: kanbanVerificationRepairPrompt(report),
+						Content: workspaceSkillCheckpointPrompt(true),
 					})
 					continue
 				}
-				s.blockKanbanCard(workspace.ID, cardID, agentID, "Verification failed", reportText)
-				return
+				s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
+					Type:    "status",
+					Title:   "Skill learning checkpoint skipped",
+					Content: workspaceSkillCheckpointWarning(),
+				})
+				skillCheckpointPending = false
 			}
 			s.finishKanbanCard(workspace.ID, cardID, agentID, content)
 			return
@@ -461,9 +506,19 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 				return
 			}
 			execution := s.executeKanbanToolCall(ctx, workspace, settings, cardID, agentID, call)
+			recoverableToolCalls[call.ID] = true
 			messages = append(messages, execution.Messages...)
 			for _, path := range execution.ChangedPaths {
 				changedPaths[path] = true
+			}
+			if len(execution.ChangedPaths) > 0 {
+				hasProjectChanges = true
+				verificationCurrent = false
+				skillCheckpointPending = true
+				skillCheckpointReminders = 0
+			}
+			if execution.SkillCheckpoint && verificationCurrent {
+				skillCheckpointPending = false
 			}
 		}
 	}
@@ -649,8 +704,9 @@ func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Wor
 	})
 
 	return kanbanToolCallExecution{
-		Messages:     toolResultMessages(call, result, data),
-		ChangedPaths: affectedPathsFromChanges(execution.Changes),
+		Messages:        toolResultMessages(call, result, data),
+		ChangedPaths:    affectedPathsFromChanges(execution.Changes),
+		SkillCheckpoint: workspaceSkillCheckpointCompleted(call, result),
 	}
 }
 
@@ -1022,11 +1078,11 @@ func (s *SystemService) hasOpenKanbanCardDetail(workspaceID string, cardID strin
 	return s.kanbanDetailViews[workspaceID] == cardID
 }
 
-func kanbanAgentSystemMessage(workspace Workspace) llm.Message {
+func kanbanAgentSystemMessage(workspace Workspace, skillCandidates []tools.WorkspaceSkillSummary) llm.Message {
 	return llm.Message{
 		Role: llm.RoleSystem,
 		Content: workspaceSystemPrompt(
-			"You are Echo's autonomous Kanban agent. Complete the assigned card inside the active workspace. "+
+			workspaceSkillsPrompt("You are Echo's autonomous Kanban agent. Complete the assigned card inside the active workspace. "+
 				"Treat the provided Workspace Context Brief as your starting map, but validate important facts with targeted tools before editing. "+
 				"Use workspace_context for broad repo context when the brief is missing or the target files remain unclear. "+
 				"Use available tools when you need workspace facts. Invoke tools through the tool-call API; do not print a function name or JSON arguments in the card transcript. "+
@@ -1036,10 +1092,20 @@ func kanbanAgentSystemMessage(workspace Workspace) llm.Message {
 				"When a search result gives a useful line number, read nearby code with filesystem_read_text aroundLine; copy the result's line value and avoid reading whole source files unless the entire file is genuinely needed. "+
 				"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. "+
 				"Echo automatically runs detected verification commands before marking the card Done; if verification fails, repair the issue using the report. "+
+				"When project files changed, first provide the completion summary to trigger verification; do not call workspace_skill_record until Echo reports that verification passed and requests the learning checkpoint. "+
 				"Write the final message as a concise handoff summary for dependent cards, including what was done, important files or decisions, and how it was verified.",
+				skillCandidates,
+				true,
+			),
 			workspace,
 		),
 	}
+}
+
+func kanbanWorkspaceSkillTask(card KanbanCard) string {
+	parts := []string{card.Title, card.Description}
+	parts = append(parts, card.AcceptanceCriteria...)
+	return strings.Join(parts, "\n")
 }
 
 func kanbanAgentUserMessage(card KanbanCard, dependencyOutputs []kanbanDependencyOutput, contextBrief string) llm.Message {

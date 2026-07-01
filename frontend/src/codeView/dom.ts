@@ -1,14 +1,16 @@
 import { patchChildrenFromHtml } from "../markdown";
 import { codeIcons } from "./icons";
-import { renderFileList, renderTextSearchPanelContent } from "./render";
+import { renderCodeQuickOpenResults, renderFileList, renderTextSearchPanelContent } from "./render";
 import { activeCodeTab, ensureCodeState, explorerWidthStorageKey, maxExplorerWidth, minExplorerWidth } from "./state";
 import type { CodeFileTab, CodeViewCallbacks } from "./types";
-import { clamp, formatBytes } from "./utils";
+import { clamp, codeTabName, formatBytes } from "./utils";
 
 type CodeTreeEventBinder = (root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) => void;
 type CodeTextSearchEventBinder = (root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) => void;
+type CodeQuickOpenEventBinder = (root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) => void;
 let codeTreeEventBinder: CodeTreeEventBinder | null = null;
 let codeTextSearchEventBinder: CodeTextSearchEventBinder | null = null;
+let codeQuickOpenEventBinder: CodeQuickOpenEventBinder | null = null;
 
 export function setCodeTreeEventBinder(binder: CodeTreeEventBinder) {
   codeTreeEventBinder = binder;
@@ -16,6 +18,10 @@ export function setCodeTreeEventBinder(binder: CodeTreeEventBinder) {
 
 export function setCodeTextSearchEventBinder(binder: CodeTextSearchEventBinder) {
   codeTextSearchEventBinder = binder;
+}
+
+export function setCodeQuickOpenEventBinder(binder: CodeQuickOpenEventBinder) {
+  codeQuickOpenEventBinder = binder;
 }
 
 export function patchCodeTree(workspaceID: string, callbacks: CodeViewCallbacks) {
@@ -27,6 +33,11 @@ export function patchCodeTree(workspaceID: string, callbacks: CodeViewCallbacks)
   tree.innerHTML = renderFileList(workspaceID);
   restoreCodeTreeScroll(workspaceID);
   codeTreeEventBinder?.(tree, workspaceID, callbacks);
+}
+
+export function scrollSelectedCodeTreeEntryIntoView() {
+  const selected = document.querySelector<HTMLElement>("[data-code-tree] .code-tree-row.is-selected");
+  selected?.scrollIntoView({ block: "nearest" });
 }
 
 export function patchDirtyUI(workspaceID: string, tab: CodeFileTab) {
@@ -47,12 +58,27 @@ export function patchDirtyUI(workspaceID: string, tab: CodeFileTab) {
       dot?.remove();
     }
   });
+  document.querySelectorAll<HTMLElement>("[data-code-untitled]").forEach((element) => {
+    if (element.dataset.codeUntitled !== tab.path) {
+      return;
+    }
+    let dot = element.querySelector<HTMLElement>(".dirty-dot");
+    if (tab.dirty && !dot) {
+      dot = document.createElement("span");
+      dot.className = "dirty-dot";
+      dot.setAttribute("aria-label", "Unsaved changes");
+      element.querySelector(".code-temporary-file-main")?.appendChild(dot);
+    }
+    if (!tab.dirty) {
+      dot?.remove();
+    }
+  });
   if (activeCodeTab(workspaceID)?.path !== tab.path) {
     return;
   }
   const save = document.querySelector<HTMLButtonElement>("[data-code-save]");
   if (save) {
-    save.disabled = !tab.dirty || tab.saving;
+    save.disabled = (!tab.untitled && !tab.dirty) || tab.saving;
     save.innerHTML = `${tab.saving ? `<span class="spinner" aria-hidden="true"></span>` : codeIcons.save}<span>Save</span>`;
   }
   const dirtySummary = document.querySelector<HTMLElement>("[data-code-dirty-summary]");
@@ -62,8 +88,14 @@ export function patchDirtyUI(workspaceID: string, tab: CodeFileTab) {
   }
   const status = document.querySelector<HTMLElement>("[data-code-status]");
   if (status) {
-    const state = tab.saving ? "Saving" : tab.dirty ? "Unsaved changes" : "Saved";
-    status.textContent = `${tab.path} - ${formatBytes(tab.bytes)} - ${state}`;
+    const state = tab.saving
+      ? "Saving"
+      : tab.dirty
+        ? "Unsaved changes"
+        : tab.untitled
+          ? "Temporary file"
+          : "Saved";
+    status.textContent = `${tab.external ? "External file - " : ""}${tab.untitled ? codeTabName(tab) : tab.path} - ${formatBytes(tab.bytes)} - ${state}`;
   }
 }
 
@@ -134,6 +166,27 @@ export function patchTextSearchPanel(
   panel.innerHTML = renderTextSearchPanelContent(workspaceID);
   codeTextSearchEventBinder?.(panel, workspaceID, callbacks);
   state.preservingTextSearchFocus = false;
+}
+
+export function patchQuickOpen(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const results = document.querySelector<HTMLElement>("[data-code-quick-open-results]");
+  if (!results) {
+    callbacks.render();
+    return;
+  }
+  results.innerHTML = renderCodeQuickOpenResults(workspaceID);
+  const input = document.querySelector<HTMLInputElement>("[data-code-quick-open-input]");
+  input?.focus();
+  codeQuickOpenEventBinder?.(results, workspaceID, callbacks);
+  scrollSelectedQuickOpenItemIntoView();
+}
+
+function scrollSelectedQuickOpenItemIntoView() {
+  const selected = document.querySelector<HTMLElement>(".code-quick-open-item.is-selected");
+  selected?.scrollIntoView({ block: "nearest" });
 }
 
 export function startExplorerResize(event: PointerEvent, workspaceID: string) {

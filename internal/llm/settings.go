@@ -74,6 +74,7 @@ type Settings struct {
 	ThinkingCorrection              bool              `json:"thinkingCorrection,omitempty"`
 	HideLeadingWhitespaceIndicators bool              `json:"hideLeadingWhitespaceIndicators,omitempty"`
 	DisableNotificationSounds       bool              `json:"disableNotificationSounds,omitempty"`
+	LimitKanbanConcurrency          bool              `json:"limitKanbanConcurrency,omitempty"`
 	Theme                           Theme             `json:"theme,omitempty"`
 }
 

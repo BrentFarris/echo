@@ -12,6 +12,8 @@ export function AddWorkspaceFolder(arg1:string,arg2:string):Promise<services.App
 
 export function AppInfo():Promise<services.AppInfo>;
 
+export function ChooseWorkspaceFileSavePath(arg1:string,arg2:string):Promise<string>;
+
 export function ChooseWorkspaceFolder():Promise<services.AppState>;
 
 export function ChooseWorkspaceFolderForWorkspace(arg1:string):Promise<services.AppState>;
@@ -33,6 +35,10 @@ export function CommitWorkspaceGitChanges(arg1:string,arg2:string,arg3:string):P
 export function CompleteWorkspaceFile(arg1:string,arg2:services.WorkspaceCompletionRequest):Promise<services.WorkspaceCompletionResponse>;
 
 export function CreateKanbanCardFromChatMessage(arg1:string,arg2:string):Promise<services.KanbanBoard>;
+
+export function CreateReadyKanbanCard(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<services.KanbanBoard>;
+
+export function CreateSkillFromChat(arg1:string):Promise<services.WorkspaceSkillCreationResult>;
 
 export function CreateWorkspaceFile(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFile>;
 
@@ -90,11 +96,23 @@ export function OpenWorkspaceExplorer(arg1:string):Promise<void>;
 
 export function OpenWorkspacePathExplorer(arg1:string,arg2:string):Promise<void>;
 
+export function PrepareWorkspaceSymbolRename(arg1:string,arg2:services.WorkspaceDefinitionRequest):Promise<services.WorkspacePrepareRenameResponse>;
+
+export function PruneChatMessage(arg1:string,arg2:string):Promise<services.ChatSession>;
+
+export function ReadExternalTextFile(arg1:string):Promise<services.WorkspaceFile>;
+
 export function ReadWorkspaceFile(arg1:string,arg2:string):Promise<services.WorkspaceFile>;
 
 export function ReadWorkspaceMediaFile(arg1:string,arg2:string):Promise<services.WorkspaceMediaFile>;
 
 export function RemoveWorkspaceFolder(arg1:string,arg2:string):Promise<services.AppState>;
+
+export function RenameWorkspacePath(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFileEntry>;
+
+export function RenameWorkspaceSymbol(arg1:string,arg2:services.WorkspaceRenameRequest):Promise<services.WorkspaceRenameResponse>;
+
+export function ReorderWorkspaces(arg1:Array<string>):Promise<services.AppState>;
 
 export function ResetKanbanCard(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
@@ -104,11 +122,15 @@ export function RetryChatMessage(arg1:string,arg2:string,arg3:boolean):Promise<s
 
 export function RotateWebAccessToken():Promise<services.AppState>;
 
+export function SaveExternalTextFile(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFile>;
+
 export function SaveSettings(arg1:llm.Settings):Promise<services.AppState>;
 
 export function SaveWebAccessSettings(arg1:services.WebAccessSettings):Promise<services.AppState>;
 
 export function SaveWorkspaceFile(arg1:string,arg2:string,arg3:string,arg4:string):Promise<services.WorkspaceFile>;
+
+export function SaveWorkspaceFileAs(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFile>;
 
 export function SearchWorkspaceFiles(arg1:string,arg2:string,arg3:boolean):Promise<services.WorkspaceFileSearchResult>;
 
@@ -121,6 +143,8 @@ export function SendChatMessageWithAttachments(arg1:string,arg2:services.ChatMes
 export function SendChatMessageWithPlanMode(arg1:string,arg2:string,arg3:boolean):Promise<services.ChatSession>;
 
 export function SetActiveWorkspace(arg1:string):Promise<services.AppState>;
+
+export function SetWorkspaceDefaultPlanMode(arg1:string,arg2:boolean):Promise<services.AppState>;
 
 export function SetWorkspaceFolderUseAgents(arg1:string,arg2:string,arg3:boolean):Promise<services.AppState>;
 

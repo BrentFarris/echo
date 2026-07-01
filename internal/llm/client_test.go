@@ -55,6 +55,22 @@ func TestNewChatRequestMapsSettings(t *testing.T) {
 	}
 }
 
+func TestIsContextLengthExceeded(t *testing.T) {
+	for _, message := range []string{
+		`llm endpoint returned 400 Bad Request: {"error":{"type":"exceed_context_size_error"}}`,
+		`context_length_exceeded: maximum context length is 128000 tokens`,
+		`request exceeds the available context size`,
+		`too many tokens in prompt`,
+	} {
+		if !IsContextLengthExceeded(fmt.Errorf("%s", message)) {
+			t.Fatalf("expected context error to be recognized: %s", message)
+		}
+	}
+	if IsContextLengthExceeded(fmt.Errorf("llm endpoint returned 500 Internal Server Error")) {
+		t.Fatal("expected unrelated endpoint error not to be recognized")
+	}
+}
+
 func TestNewChatRequestAddsThinkingCorrectionToLatestUserMessage(t *testing.T) {
 	settings := DefaultSettings()
 	settings.Endpoint = "https://example.test/v1"

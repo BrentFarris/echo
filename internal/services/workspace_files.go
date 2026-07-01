@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const maxWorkspaceEditorFileBytes = 1024 * 1024
@@ -37,6 +39,59 @@ type WorkspaceFile struct {
 	Content     string `json:"content"`
 	Bytes       int64  `json:"bytes"`
 	ModifiedAt  string `json:"modifiedAt"`
+}
+
+func (s *SystemService) ReadExternalTextFile(path string) (WorkspaceFile, error) {
+	resolved, err := resolveExternalTextFilePath(path)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	return readExternalTextFile(resolved)
+}
+
+func (s *SystemService) SaveExternalTextFile(path string, content string, expectedModifiedAt string) (WorkspaceFile, error) {
+	resolved, err := resolveExternalTextFilePath(path)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	if strings.TrimSpace(expectedModifiedAt) == "" {
+		return WorkspaceFile{}, fmt.Errorf("expected modified timestamp is required")
+	}
+	if len([]byte(content)) > maxWorkspaceEditorFileBytes {
+		return WorkspaceFile{}, fmt.Errorf("content is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
+	}
+	if !utf8.ValidString(content) {
+		return WorkspaceFile{}, fmt.Errorf("file content must be valid UTF-8")
+	}
+
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return WorkspaceFile{}, fmt.Errorf("file was not found")
+	}
+	if !info.Mode().IsRegular() {
+		return WorkspaceFile{}, fmt.Errorf("path is not a regular file")
+	}
+	if info.Size() > maxWorkspaceEditorFileBytes {
+		return WorkspaceFile{}, fmt.Errorf("file is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
+	}
+	if expectedModifiedAt != formatWorkspaceModifiedAt(info.ModTime()) {
+		return WorkspaceFile{}, fmt.Errorf("file changed on disk; reload it before saving")
+	}
+	currentData, err := os.ReadFile(resolved)
+	if err != nil {
+		return WorkspaceFile{}, fmt.Errorf("read file: %w", err)
+	}
+	if !isWorkspaceTextLike(currentData) || !utf8.Valid(currentData) {
+		return WorkspaceFile{}, fmt.Errorf("file appears to be binary")
+	}
+	content, err = formatWorkspaceFileContentBeforeSave(resolved, content)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	if err := os.WriteFile(resolved, []byte(content), info.Mode().Perm()); err != nil {
+		return WorkspaceFile{}, fmt.Errorf("write file: %w", err)
+	}
+	return readExternalTextFile(resolved)
 }
 
 type WorkspaceFileSearchResult struct {
@@ -142,6 +197,16 @@ func (s *SystemService) SearchWorkspaceFiles(workspaceID string, query string, i
 		Query:       query,
 		Entries:     []WorkspaceFileEntry{},
 	}
+	entries, truncated, err := searchWorkspaceFilesWithDatabase(workspace, query, includeIgnored, maxWorkspaceFileSearchResults)
+	if err == nil {
+		output.Entries = entries
+		output.Truncated = truncated
+		return output, nil
+	}
+	return searchWorkspaceFilesByWalking(workspace, query, includeIgnored, output)
+}
+
+func searchWorkspaceFilesByWalking(workspace Workspace, query string, includeIgnored bool, output WorkspaceFileSearchResult) (WorkspaceFileSearchResult, error) {
 	for _, folder := range workspace.Folders {
 		if folder.Missing {
 			continue
@@ -168,10 +233,6 @@ func (s *SystemService) SearchWorkspaceFiles(workspaceID string, query string, i
 			if !workspaceSearchMatches(query, entry.Name(), relative) {
 				return nil
 			}
-			if len(output.Entries) >= maxWorkspaceFileSearchResults {
-				output.Truncated = true
-				return filepath.SkipAll
-			}
 			output.Entries = append(output.Entries, WorkspaceFileEntry{
 				Name:       entry.Name(),
 				Path:       relative,
@@ -184,18 +245,12 @@ func (s *SystemService) SearchWorkspaceFiles(workspaceID string, query string, i
 		if err != nil {
 			return WorkspaceFileSearchResult{}, fmt.Errorf("search workspace: %w", err)
 		}
-		if output.Truncated {
-			break
-		}
 	}
-	sort.Slice(output.Entries, func(i, j int) bool {
-		left := output.Entries[i]
-		right := output.Entries[j]
-		if left.Kind != right.Kind {
-			return left.Kind == "directory"
-		}
-		return strings.ToLower(left.Path) < strings.ToLower(right.Path)
-	})
+	sortWorkspaceFileEntries(output.Entries, query)
+	if len(output.Entries) > maxWorkspaceFileSearchResults {
+		output.Entries = output.Entries[:maxWorkspaceFileSearchResults]
+		output.Truncated = true
+	}
 	return output, nil
 }
 
@@ -218,6 +273,7 @@ func (s *SystemService) CreateWorkspaceFile(workspaceID string, parentPath strin
 	if err := file.Close(); err != nil {
 		return WorkspaceFile{}, fmt.Errorf("close file: %w", err)
 	}
+	s.removeWorkspaceFileDatabases(workspaceID)
 	return readWorkspaceTextFile(workspace, resolved)
 }
 
@@ -240,6 +296,7 @@ func (s *SystemService) CreateWorkspaceFolder(workspaceID string, parentPath str
 	if err != nil {
 		return WorkspaceFileEntry{}, fmt.Errorf("stat folder: %w", err)
 	}
+	s.removeWorkspaceFileDatabases(workspaceID)
 	return workspaceFileEntry(workspace, resolved, info), nil
 }
 
@@ -259,6 +316,29 @@ func (s *SystemService) MoveWorkspacePath(workspaceID string, sourcePath string,
 	if err != nil {
 		return WorkspaceFileEntry{}, fmt.Errorf("stat moved path: %w", err)
 	}
+	s.removeWorkspaceFileDatabases(workspaceID)
+	return workspaceFileEntry(workspace, target, info), nil
+}
+
+func (s *SystemService) RenameWorkspacePath(workspaceID string, sourcePath string, name string) (WorkspaceFileEntry, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return WorkspaceFileEntry{}, err
+	}
+	source, target, err := resolveWorkspaceRenameTarget(workspace, sourcePath, name)
+	if err != nil {
+		return WorkspaceFileEntry{}, err
+	}
+	if source != target {
+		if err := os.Rename(source, target); err != nil {
+			return WorkspaceFileEntry{}, fmt.Errorf("rename path: %w", err)
+		}
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		return WorkspaceFileEntry{}, fmt.Errorf("stat renamed path: %w", err)
+	}
+	s.removeWorkspaceFileDatabases(workspaceID)
 	return workspaceFileEntry(workspace, target, info), nil
 }
 
@@ -457,7 +537,157 @@ func (s *SystemService) SaveWorkspaceFile(workspaceID string, path string, conte
 	if err := os.WriteFile(resolved, []byte(content), info.Mode().Perm()); err != nil {
 		return WorkspaceFile{}, fmt.Errorf("write file: %w", err)
 	}
+	s.removeWorkspaceFileDatabases(workspaceID)
 	return readWorkspaceTextFile(workspace, resolved)
+}
+
+func (s *SystemService) ChooseWorkspaceFileSavePath(workspaceID string, suggestedName string) (string, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return "", err
+	}
+	if s.ctx == nil {
+		return "", fmt.Errorf("application is not ready to open a save dialog")
+	}
+
+	defaultDirectory := ""
+	for _, folder := range workspace.Folders {
+		if folder.Missing {
+			continue
+		}
+		if resolved, err := workspaceFolderAbsolutePath(folder); err == nil {
+			defaultDirectory = resolved
+			break
+		}
+	}
+	suggestedName = strings.TrimSpace(filepath.Base(suggestedName))
+	if suggestedName == "." || suggestedName == string(filepath.Separator) {
+		suggestedName = ""
+	}
+	selected, err := runtime.SaveFileDialog(s.ctx, runtime.SaveDialogOptions{
+		Title:                "Save temporary file",
+		DefaultDirectory:     defaultDirectory,
+		DefaultFilename:      suggestedName,
+		CanCreateDirectories: true,
+		ShowHiddenFiles:      true,
+	})
+	if err != nil || strings.TrimSpace(selected) == "" {
+		return "", err
+	}
+	relative, _, err := resolveWorkspaceSaveAsTarget(workspace, selected)
+	if err != nil {
+		return "", err
+	}
+	return relative, nil
+}
+
+func (s *SystemService) SaveWorkspaceFileAs(workspaceID string, path string, content string) (WorkspaceFile, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	if len([]byte(content)) > maxWorkspaceEditorFileBytes {
+		return WorkspaceFile{}, fmt.Errorf("content is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
+	}
+	if !utf8.ValidString(content) {
+		return WorkspaceFile{}, fmt.Errorf("file content must be valid UTF-8")
+	}
+
+	_, resolved, err := resolveWorkspaceSaveAsTarget(workspace, path)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	mode := os.FileMode(0o600)
+	if info, statErr := os.Stat(resolved); statErr == nil {
+		if !info.Mode().IsRegular() {
+			return WorkspaceFile{}, fmt.Errorf("path is not a regular file")
+		}
+		if info.Size() > maxWorkspaceEditorFileBytes {
+			return WorkspaceFile{}, fmt.Errorf("file is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
+		}
+		currentData, readErr := os.ReadFile(resolved)
+		if readErr != nil {
+			return WorkspaceFile{}, fmt.Errorf("read file: %w", readErr)
+		}
+		if !isWorkspaceTextLike(currentData) || !utf8.Valid(currentData) {
+			return WorkspaceFile{}, fmt.Errorf("file appears to be binary")
+		}
+		mode = info.Mode().Perm()
+	} else if !os.IsNotExist(statErr) {
+		return WorkspaceFile{}, fmt.Errorf("check save path: %w", statErr)
+	}
+
+	content, err = formatWorkspaceFileContentBeforeSave(resolved, content)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	if len([]byte(content)) > maxWorkspaceEditorFileBytes {
+		return WorkspaceFile{}, fmt.Errorf("formatted content is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
+	}
+	if err := os.WriteFile(resolved, []byte(content), mode); err != nil {
+		return WorkspaceFile{}, fmt.Errorf("write file: %w", err)
+	}
+	s.removeWorkspaceFileDatabases(workspaceID)
+	return readWorkspaceTextFile(workspace, resolved)
+}
+
+func resolveWorkspaceSaveAsTarget(workspace Workspace, requestedPath string) (string, string, error) {
+	requestedPath = strings.TrimSpace(requestedPath)
+	if requestedPath == "" {
+		return "", "", fmt.Errorf("save path is required")
+	}
+
+	absolute := requestedPath
+	if !filepath.IsAbs(absolute) {
+		label, relativePath := splitWorkspaceLabeledPath(requestedPath)
+		folder, ok := workspaceFolderByLabel(workspace, label)
+		if !ok {
+			for _, candidate := range workspace.Folders {
+				if !candidate.Missing {
+					folder = candidate
+					ok = true
+					relativePath = filepath.FromSlash(strings.Trim(strings.ReplaceAll(requestedPath, "\\", "/"), "/"))
+					break
+				}
+			}
+		}
+		if !ok || relativePath == "." || strings.TrimSpace(relativePath) == "" {
+			return "", "", fmt.Errorf("save path must include a file inside a workspace folder")
+		}
+		root, err := workspaceFolderAbsolutePath(folder)
+		if err != nil {
+			return "", "", err
+		}
+		absolute = filepath.Join(root, relativePath)
+	}
+	absolute, err := filepath.Abs(absolute)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve save path: %w", err)
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(absolute))
+	if err != nil {
+		return "", "", fmt.Errorf("save directory was not found")
+	}
+	if info, err := os.Stat(parent); err != nil || !info.IsDir() {
+		return "", "", fmt.Errorf("save directory was not found")
+	}
+	resolved := filepath.Join(parent, filepath.Base(absolute))
+	relative, err := workspaceRelativeCandidate(workspace, resolved)
+	if err != nil {
+		return "", "", fmt.Errorf("save path must be inside a workspace folder")
+	}
+	if info, err := os.Lstat(resolved); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		realResolved, evalErr := filepath.EvalSymlinks(resolved)
+		if evalErr != nil {
+			return "", "", fmt.Errorf("resolve save path: %w", evalErr)
+		}
+		if _, err := workspaceRelativeCandidate(workspace, realResolved); err != nil {
+			return "", "", fmt.Errorf("save path must be inside a workspace folder")
+		}
+		resolved = realResolved
+		relative = workspaceRelativePath(workspace, resolved)
+	}
+	return relative, resolved, nil
 }
 
 func formatWorkspaceFileContentBeforeSave(resolvedPath string, content string) (string, error) {
@@ -611,6 +841,54 @@ func resolveWorkspaceMoveTarget(workspace Workspace, sourcePath string, targetPa
 	return source, target, nil
 }
 
+func resolveWorkspaceRenameTarget(workspace Workspace, sourcePath string, name string) (string, string, error) {
+	if strings.TrimSpace(sourcePath) == "" {
+		return "", "", fmt.Errorf("source path is required")
+	}
+	label, sourceRelative := splitWorkspaceLabeledPath(sourcePath)
+	if label == "" || sourceRelative == "." {
+		return "", "", fmt.Errorf("workspace folder roots cannot be renamed")
+	}
+	source, err := resolveWorkspaceServicePath(workspace, sourcePath)
+	if err != nil {
+		return "", "", err
+	}
+	sourceInfo, err := os.Stat(source)
+	if err != nil {
+		return "", "", fmt.Errorf("source path was not found")
+	}
+	if !sourceInfo.IsDir() && !sourceInfo.Mode().IsRegular() {
+		return "", "", fmt.Errorf("source path is not a renamable file or folder")
+	}
+	cleanName, err := cleanWorkspaceRenameName(name)
+	if err != nil {
+		return "", "", err
+	}
+	if cleanName == filepath.Base(source) {
+		return source, source, nil
+	}
+	parent := filepath.Dir(source)
+	realParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve parent directory: %w", err)
+	}
+	if _, err := workspaceRelativeCandidate(workspace, realParent); err != nil {
+		return "", "", err
+	}
+	target := filepath.Join(realParent, cleanName)
+	if targetInfo, err := os.Lstat(target); err == nil {
+		if !os.SameFile(sourceInfo, targetInfo) {
+			return "", "", fmt.Errorf("path already exists")
+		}
+	} else if !os.IsNotExist(err) {
+		return "", "", fmt.Errorf("check target path: %w", err)
+	}
+	if _, err := workspaceRelativeCandidate(workspace, target); err != nil {
+		return "", "", err
+	}
+	return source, target, nil
+}
+
 func resolveWorkspaceCreateTarget(workspace Workspace, parentPath string, name string) (string, error) {
 	parent, err := resolveWorkspaceServicePath(workspace, parentPath)
 	if err != nil {
@@ -676,6 +954,23 @@ func cleanWorkspaceCreateName(name string) (string, error) {
 	return path.Clean(strings.Join(segments, "/")), nil
 }
 
+func cleanWorkspaceRenameName(name string) (string, error) {
+	name = strings.TrimSpace(strings.ReplaceAll(name, "\\", "/"))
+	if name == "" {
+		return "", fmt.Errorf("name is required")
+	}
+	if filepath.IsAbs(name) || path.IsAbs(name) || filepath.VolumeName(name) != "" {
+		return "", fmt.Errorf("name must be relative")
+	}
+	if strings.Contains(name, "/") {
+		return "", fmt.Errorf("name must not contain path separators")
+	}
+	if name == "." || name == ".." {
+		return "", fmt.Errorf("name must not be current or parent directory")
+	}
+	return name, nil
+}
+
 func workspaceFileEntry(workspace Workspace, absolutePath string, info os.FileInfo) WorkspaceFileEntry {
 	return WorkspaceFileEntry{
 		Name:       filepath.Base(absolutePath),
@@ -710,6 +1005,43 @@ func readWorkspaceTextFile(workspace Workspace, resolved string) (WorkspaceFile,
 		Content:     string(data),
 		Bytes:       int64(len(data)),
 		ModifiedAt:  formatWorkspaceModifiedAt(info.ModTime()),
+	}, nil
+}
+
+func resolveExternalTextFilePath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("external file path must be absolute")
+	}
+	return filepath.Clean(path), nil
+}
+
+func readExternalTextFile(resolved string) (WorkspaceFile, error) {
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return WorkspaceFile{}, fmt.Errorf("file was not found")
+	}
+	if !info.Mode().IsRegular() {
+		return WorkspaceFile{}, fmt.Errorf("path is not a regular file")
+	}
+	if info.Size() > maxWorkspaceEditorFileBytes {
+		return WorkspaceFile{}, fmt.Errorf("file is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
+	}
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		return WorkspaceFile{}, fmt.Errorf("read file: %w", err)
+	}
+	if !isWorkspaceTextLike(data) || !utf8.Valid(data) {
+		return WorkspaceFile{}, fmt.Errorf("file appears to be binary")
+	}
+	return WorkspaceFile{
+		Path:       resolved,
+		Content:    string(data),
+		Bytes:      int64(len(data)),
+		ModifiedAt: formatWorkspaceModifiedAt(info.ModTime()),
 	}, nil
 }
 
@@ -861,14 +1193,13 @@ func workspaceFileKind(info os.FileInfo) string {
 }
 
 func workspaceSearchMatches(query string, name string, relativePath string) bool {
-	name = strings.ToLower(name)
-	relativePath = strings.ToLower(filepath.ToSlash(relativePath))
-	return strings.Contains(name, query) || strings.Contains(relativePath, query)
+	_, matched := workspaceSearchScore(query, name, relativePath)
+	return matched
 }
 
 func isIgnoredWorkspaceDirectory(name string) bool {
 	switch strings.ToLower(name) {
-	case ".git", ".next", ".vite", "bin", "build", "coverage", "dist", "node_modules", "obj", "target":
+	case ".echo", ".git", ".next", ".vite", "bin", "build", "coverage", "dist", "node_modules", "obj", "target":
 		return true
 	default:
 		return false

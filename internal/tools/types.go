@@ -51,6 +51,7 @@ type ExecutionContext struct {
 	SearxngURL       string
 	CodeNavigator    CodeNavigator
 	WorkspaceContext WorkspaceContextProvider
+	WorkspaceSkills  WorkspaceSkillsProvider
 	Emit             EventEmitter
 	FileChanges      FileChangeSink
 }
@@ -67,6 +68,77 @@ type CodeNavigator interface {
 
 type WorkspaceContextProvider interface {
 	QueryWorkspaceContext(ctx context.Context, request WorkspaceContextRequest) (WorkspaceContextResponse, error)
+}
+
+type WorkspaceSkillsProvider interface {
+	SearchWorkspaceSkills(ctx context.Context, request WorkspaceSkillSearchRequest) (WorkspaceSkillSearchResponse, error)
+	ReadWorkspaceSkill(ctx context.Context, request WorkspaceSkillReadRequest) (WorkspaceSkill, error)
+	RecordWorkspaceSkill(ctx context.Context, request WorkspaceSkillRecordRequest) (WorkspaceSkillRecordResponse, error)
+}
+
+const (
+	DefaultWorkspaceSkillSearchLimit = 5
+	MaxWorkspaceSkillSearchLimit     = 10
+)
+
+type WorkspaceSkillSearchRequest struct {
+	Query  string `json:"query"`
+	Folder string `json:"folder,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+}
+
+type WorkspaceSkillSearchResponse struct {
+	Query    string                  `json:"query"`
+	Skills   []WorkspaceSkillSummary `json:"skills"`
+	Warnings []string                `json:"warnings,omitempty"`
+}
+
+type WorkspaceSkillReadRequest struct {
+	ID string `json:"id"`
+}
+
+type WorkspaceSkillRecordRequest struct {
+	Action           string   `json:"action"`
+	Reason           string   `json:"reason,omitempty"`
+	Folder           string   `json:"folder,omitempty"`
+	Name             string   `json:"name,omitempty"`
+	Description      string   `json:"description,omitempty"`
+	Triggers         []string `json:"triggers,omitempty"`
+	Body             string   `json:"body,omitempty"`
+	ExpectedRevision string   `json:"expectedRevision,omitempty"`
+}
+
+type WorkspaceSkillSummary struct {
+	ID          string   `json:"id"`
+	Folder      string   `json:"folder"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Triggers    []string `json:"triggers,omitempty"`
+}
+
+type WorkspaceSkill struct {
+	WorkspaceSkillSummary
+	Body       string `json:"body"`
+	Revision   string `json:"revision"`
+	ModifiedAt string `json:"modifiedAt"`
+}
+
+type WorkspaceSkillRecordResponse struct {
+	Action    string          `json:"action"`
+	Reason    string          `json:"reason,omitempty"`
+	Skill     *WorkspaceSkill `json:"skill,omitempty"`
+	Created   bool            `json:"created,omitempty"`
+	Unchanged bool            `json:"unchanged,omitempty"`
+}
+
+func NormalizeWorkspaceSkillSearchLimit(value int) int {
+	if value <= 0 {
+		return DefaultWorkspaceSkillSearchLimit
+	}
+	if value > MaxWorkspaceSkillSearchLimit {
+		return MaxWorkspaceSkillSearchLimit
+	}
+	return value
 }
 
 const (

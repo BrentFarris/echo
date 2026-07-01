@@ -1,10 +1,10 @@
 
-import { LoadWebAccessStatus, SaveSettings, SaveWebAccessSettings, SetWorkspaceFolderUseAgents, SetWorkspaceLetter } from "../../backend/services";
+import { LoadWebAccessStatus, SaveSettings, SaveWebAccessSettings, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter } from "../../backend/services";
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
 import { renderQRCodeSVG } from "../qr";
-import { cloneSettings, cloneWebAccessSettings, fieldValue, leadingWhitespaceIndicatorsEnabled, notificationSoundsEnabled, state } from "../state";
+import { cloneSettings, cloneWebAccessSettings, fieldValue, leadingWhitespaceIndicatorsEnabled, limitKanbanConcurrencyEnabled, notificationSoundsEnabled, state } from "../state";
 import { applyTheme, normalizeHexColor, settingsWithCompactTheme, settingsWithThemeColor, themeColorValue, themeGroups, themeTokens, type ThemePaletteName } from "../theme";
 import { pushToast } from "../toasts";
 import { errorMessage, escapeAttribute, escapeHtml, workspaceFolderSummary } from "../utils";
@@ -78,11 +78,30 @@ const endpointTopics = [
   { key: "inlineCode", label: "Inline code" },
 ] as const;
 
+const settingsSections = [
+  { id: "llm-endpoints-title", label: "LLM Endpoints" },
+  { id: "search-settings-title", label: "Search" },
+  { id: "notification-settings-title", label: "Notifications" },
+  { id: "programming-settings-title", label: "Programming" },
+  { id: "web-access-settings-title", label: "Web Access" },
+  { id: "theme-settings-title", label: "Theme Colors" },
+  { id: "workspace-settings-title", label: "Workspaces" },
+] as const;
+
 type EndpointTopic = (typeof endpointTopics)[number]["key"];
 
 export function bindSettingsEvents(root: ParentNode) {
   const form = root.querySelector<HTMLFormElement>("[data-settings-form]");
   form?.addEventListener("submit", handleSettingsSubmit);
+  form
+    ?.querySelectorAll<HTMLButtonElement>("[data-settings-nav-target]")
+    .forEach((button) =>
+      button.addEventListener("click", () => {
+        const targetID = button.dataset.settingsNavTarget;
+        const target = targetID ? form.querySelector<HTMLElement>(`#${targetID}`) : null;
+        target?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }),
+    );
   form
     ?.querySelectorAll<HTMLInputElement>("input")
     .forEach((input) => input.addEventListener("input", handleSettingsInput));
@@ -100,6 +119,13 @@ export function bindSettingsEvents(root: ParentNode) {
     .forEach((input) =>
       input.addEventListener("change", () => {
         void handleWorkspaceFolderAgentsChange(input);
+      }),
+    );
+  form
+    ?.querySelectorAll<HTMLInputElement>("[data-workspace-default-plan-mode]")
+    .forEach((input) =>
+      input.addEventListener("change", () => {
+        void handleWorkspaceDefaultPlanModeChange(input);
       }),
     );
 }
@@ -122,106 +148,143 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
           </button>
         </header>
 
-        ${state.formError ? `<p class="form-error" role="alert">${escapeHtml(state.formError)}</p>` : ""}
-        ${hasSettingsValues ? "" : `<p class="empty-state compact">No settings are loaded. Add an OpenAI-compatible endpoint and model to recover.</p>`}
+        <div class="settings-layout">
+          <nav class="settings-nav" aria-label="Settings sections">
+            <ul>
+              ${settingsSections
+                .map(
+                  (section) => `
+                    <li>
+                      <button type="button" data-settings-nav-target="${section.id}">
+                        ${section.label}
+                      </button>
+                    </li>
+                  `,
+                )
+                .join("")}
+            </ul>
+          </nav>
 
-        <section class="settings-section" aria-labelledby="llm-endpoints-title">
-          <div class="settings-section-heading">
-            <h3 id="llm-endpoints-title" class="settings-section-title">LLM Endpoints</h3>
-            <button class="secondary-button compact-button" type="button" data-action="add-llm-endpoint">
-              ${icons.plus}
-              <span>Add</span>
-            </button>
+          <div class="settings-content">
+            ${state.formError ? `<p class="form-error" role="alert">${escapeHtml(state.formError)}</p>` : ""}
+            ${hasSettingsValues ? "" : `<p class="empty-state compact">No settings are loaded. Add an OpenAI-compatible endpoint and model to recover.</p>`}
+
+            <section class="settings-section" aria-labelledby="llm-endpoints-title">
+              <div class="settings-section-heading">
+                <h3 id="llm-endpoints-title" class="settings-section-title">LLM Endpoints</h3>
+                <button class="secondary-button compact-button" type="button" data-action="add-llm-endpoint">
+                  ${icons.plus}
+                  <span>Add</span>
+                </button>
+              </div>
+              ${renderLLMEndpointRouting(endpoints)}
+              ${renderLLMEndpointList(endpoints)}
+            </section>
+
+            <section class="settings-section" aria-labelledby="search-settings-title">
+              <h3 id="search-settings-title" class="settings-section-title">Search</h3>
+              <div class="settings-grid">
+                <label class="field field-wide">
+                  <span>SearXNG URL</span>
+                  <input name="searxngUrl" type="url" value="${escapeHtml(fieldValue("searxngUrl"))}" autocomplete="off" />
+                </label>
+              </div>
+            </section>
+
+            <section class="settings-section" aria-labelledby="notification-settings-title">
+              <h3 id="notification-settings-title" class="settings-section-title">Notifications</h3>
+              <label class="settings-toggle">
+                <span>Notification sounds</span>
+                <input
+                  name="disableNotificationSounds"
+                  type="checkbox"
+                  data-settings-inverted-boolean
+                  ${notificationSoundsEnabled(state.settingsDraft) ? "checked" : ""}
+                />
+              </label>
+            </section>
+
+            <section class="settings-section" aria-labelledby="programming-settings-title">
+              <h3 id="programming-settings-title" class="settings-section-title">Programming</h3>
+              <label class="settings-toggle" title="Only allow 1 Kanban card to execute at a time; useful for memory constrained environments.">
+                <span>Limit Kanban concurrency</span>
+                <input
+                  name="limitKanbanConcurrency"
+                  type="checkbox"
+                  ${limitKanbanConcurrencyEnabled(state.settingsDraft) ? "checked" : ""}
+                />
+              </label>
+              <label class="settings-toggle">
+                <span>Leading whitespace indicators</span>
+                <input
+                  name="hideLeadingWhitespaceIndicators"
+                  type="checkbox"
+                  data-settings-inverted-boolean
+                  ${leadingWhitespaceIndicatorsEnabled(state.settingsDraft) ? "checked" : ""}
+                />
+              </label>
+            </section>
+
+            ${renderWebAccessSettings()}
+
+            ${renderThemeSettings()}
+
+            <section class="settings-section workspace-settings" aria-labelledby="workspace-settings-title">
+              <h3 id="workspace-settings-title" class="settings-section-title">Workspaces</h3>
+              <div class="workspace-list">
+                ${
+                  workspaces.length
+                    ? workspaces
+                        .map(
+                          (workspace) => `
+                            <div class="workspace-row">
+                              <div class="workspace-row-main">
+                                <strong>${escapeHtml(workspace.displayName)}${workspace.missing ? " - Folder missing" : ""}</strong>
+                                <span>${escapeHtml(workspaceFolderSummary(workspace))}</span>
+                                ${renderWorkspaceFolderSettings(workspace)}
+                              </div>
+                              <label class="settings-toggle workspace-default-plan-mode">
+                                <span>Plan by default</span>
+                                <input
+                                  type="checkbox"
+                                  ${workspace.defaultPlanMode ? "checked" : ""}
+                                  data-workspace-default-plan-mode
+                                  data-workspace-id="${escapeAttribute(workspace.id)}"
+                                />
+                              </label>
+                              <div class="workspace-icon-setting" aria-label="Workspace icon for ${escapeAttribute(workspace.displayName)}">
+                                <span class="workspace-icon-preview" aria-hidden="true">${renderWorkspaceIcon(workspace)}</span>
+                                <button class="icon-button" type="button" title="Choose workspace icon" aria-label="Choose icon for ${escapeAttribute(workspace.displayName)}" data-action="choose-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}">
+                                  ${icons.image}
+                                </button>
+                                <button class="icon-button" type="button" title="Clear workspace icon" aria-label="Clear icon for ${escapeAttribute(workspace.displayName)}" data-action="clear-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}" ${(workspace.iconUrl ?? "").trim() ? "" : "disabled"}>
+                                  ${icons.x}
+                                </button>
+                              </div>
+                              <label class="workspace-letter-field">
+                                <span>Label</span>
+                                <input
+                                  name="workspaceLetter"
+                                  type="text"
+                                  value="${escapeHtml(workspaceLetterDraft(workspace))}"
+                                  aria-label="Workspace icon label for ${escapeHtml(workspace.displayName)}"
+                                  data-workspace-letter
+                                  data-workspace-id="${escapeHtml(workspace.id)}"
+                                />
+                              </label>
+                              <button class="icon-button danger-button" type="button" title="Delete workspace" aria-label="Delete ${escapeHtml(workspace.displayName)}" data-action="delete-workspace" data-workspace-id="${escapeHtml(workspace.id)}">
+                                ${icons.trash}
+                              </button>
+                            </div>
+                          `,
+                        )
+                        .join("")
+                    : `<p class="empty-state compact">No workspaces added.</p>`
+                }
+              </div>
+            </section>
           </div>
-          ${renderLLMEndpointRouting(endpoints)}
-          ${renderLLMEndpointList(endpoints)}
-        </section>
-
-        <section class="settings-section" aria-labelledby="search-settings-title">
-          <h3 id="search-settings-title" class="settings-section-title">Search</h3>
-          <div class="settings-grid">
-            <label class="field field-wide">
-              <span>SearXNG URL</span>
-              <input name="searxngUrl" type="url" value="${escapeHtml(fieldValue("searxngUrl"))}" autocomplete="off" />
-            </label>
-          </div>
-        </section>
-
-        <section class="settings-section" aria-labelledby="notification-settings-title">
-          <h3 id="notification-settings-title" class="settings-section-title">Notifications</h3>
-          <label class="settings-toggle">
-            <span>Notification sounds</span>
-            <input
-              name="disableNotificationSounds"
-              type="checkbox"
-              data-settings-inverted-boolean
-              ${notificationSoundsEnabled(state.settingsDraft) ? "checked" : ""}
-            />
-          </label>
-        </section>
-
-        <section class="settings-section" aria-labelledby="programming-settings-title">
-          <h3 id="programming-settings-title" class="settings-section-title">Programming</h3>
-          <label class="settings-toggle">
-            <span>Leading whitespace indicators</span>
-            <input
-              name="hideLeadingWhitespaceIndicators"
-              type="checkbox"
-              data-settings-inverted-boolean
-              ${leadingWhitespaceIndicatorsEnabled(state.settingsDraft) ? "checked" : ""}
-            />
-          </label>
-        </section>
-
-        ${renderWebAccessSettings()}
-
-        ${renderThemeSettings()}
-
-        <section class="settings-section workspace-settings" aria-labelledby="workspace-settings-title">
-          <h3 id="workspace-settings-title" class="settings-section-title">Workspaces</h3>
-          <div class="workspace-list">
-            ${
-              workspaces.length
-                ? workspaces
-                    .map(
-                      (workspace) => `
-                        <div class="workspace-row">
-                          <div class="workspace-row-main">
-                            <strong>${escapeHtml(workspace.displayName)}${workspace.missing ? " - Folder missing" : ""}</strong>
-                            <span>${escapeHtml(workspaceFolderSummary(workspace))}</span>
-                            ${renderWorkspaceFolderSettings(workspace)}
-                          </div>
-                          <div class="workspace-icon-setting" aria-label="Workspace icon for ${escapeAttribute(workspace.displayName)}">
-                            <span class="workspace-icon-preview" aria-hidden="true">${renderWorkspaceIcon(workspace)}</span>
-                            <button class="icon-button" type="button" title="Choose workspace icon" aria-label="Choose icon for ${escapeAttribute(workspace.displayName)}" data-action="choose-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}">
-                              ${icons.image}
-                            </button>
-                            <button class="icon-button" type="button" title="Clear workspace icon" aria-label="Clear icon for ${escapeAttribute(workspace.displayName)}" data-action="clear-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}" ${(workspace.iconUrl ?? "").trim() ? "" : "disabled"}>
-                              ${icons.x}
-                            </button>
-                          </div>
-                          <label class="workspace-letter-field">
-                            <span>Label</span>
-                            <input
-                              name="workspaceLetter"
-                              type="text"
-                              value="${escapeHtml(workspaceLetterDraft(workspace))}"
-                              aria-label="Workspace icon label for ${escapeHtml(workspace.displayName)}"
-                              data-workspace-letter
-                              data-workspace-id="${escapeHtml(workspace.id)}"
-                            />
-                          </label>
-                          <button class="icon-button danger-button" type="button" title="Delete workspace" aria-label="Delete ${escapeHtml(workspace.displayName)}" data-action="delete-workspace" data-workspace-id="${escapeHtml(workspace.id)}">
-                            ${icons.trash}
-                          </button>
-                        </div>
-                      `,
-                    )
-                    .join("")
-                : `<p class="empty-state compact">No workspaces added.</p>`
-            }
-          </div>
-        </section>
+        </div>
 
         <footer class="settings-footer">
           <button class="secondary-button" type="button" data-action="reset-settings">Reset</button>
@@ -925,6 +988,32 @@ function renderThemeTokenField(
   `;
 }
 
+export async function saveSettingsImmediately(): Promise<void> {
+  if (!state.settingsDraft) {
+    return;
+  }
+  const validationError = validateLLMEndpointDraft(state.settingsDraft);
+  if (validationError) {
+    state.formError = validationError;
+    getAppCallbacks().render();
+    return;
+  }
+
+  try {
+    state.settingsDraft = settingsWithEndpointSync(state.settingsDraft);
+    state.appState = await SaveSettings(settingsWithCompactTheme(state.settingsDraft));
+    state.settingsDraft = cloneSettings(state.appState.settings);
+    state.settingsEndpointEditId = "";
+    applyTheme(state.appState.settings);
+    state.formError = "";
+    pushToast("Settings saved.", "success");
+    getAppCallbacks().render();
+  } catch (error) {
+    state.formError = errorMessage(error);
+    getAppCallbacks().render();
+  }
+}
+
 export function handleSettingsInput(event: Event) {
   const input = event.currentTarget as HTMLInputElement | HTMLSelectElement;
   if (input.dataset.llmEndpointSelection !== undefined && input instanceof HTMLSelectElement) {
@@ -942,8 +1031,11 @@ export function handleSettingsInput(event: Event) {
   if (input.dataset.workspaceFolderAgents !== undefined) {
     return;
   }
+  if (input.dataset.workspaceDefaultPlanMode !== undefined) {
+    return;
+  }
   if (input.dataset.webAccessField !== undefined) {
-    handleWebAccessInput(input as HTMLInputElement);
+    void handleWebAccessInput(input as HTMLInputElement);
     return;
   }
   if (input.dataset.workspaceLetter !== undefined) {
@@ -982,6 +1074,11 @@ export function handleSettingsInput(event: Event) {
     [input.name]: typeof value === "number" && Number.isNaN(value) ? 0 : value,
   });
   state.formError = "";
+
+  // Immediately persist settings when a checkbox is toggled.
+  if (input.type === "checkbox") {
+    void saveSettingsImmediately();
+  }
 }
 
 function handleLLMEndpointPresetChange(select: HTMLSelectElement) {
@@ -1006,7 +1103,7 @@ function handleLLMEndpointPresetChange(select: HTMLSelectElement) {
   getAppCallbacks().render();
 }
 
-function handleWebAccessInput(input: HTMLInputElement) {
+async function handleWebAccessInput(input: HTMLInputElement) {
   if (!state.webAccessDraft) {
     state.webAccessDraft = cloneWebAccessSettings(state.appState?.webAccess);
   }
@@ -1020,6 +1117,30 @@ function handleWebAccessInput(input: HTMLInputElement) {
     [input.name]: typeof value === "number" && Number.isNaN(value) ? 3740 : value,
   });
   state.formError = "";
+  if (input.name !== "enabled") {
+    return;
+  }
+  if (!state.webAccessDraft.enabled) {
+    state.webAccessQRCodeURL = "";
+  }
+  try {
+    state.appState = await SaveWebAccessSettings(state.webAccessDraft);
+    state.webAccessDraft = cloneWebAccessSettings(state.appState.webAccess);
+    state.webAccessStatus = await LoadWebAccessStatus();
+    if (!state.webAccessDraft.enabled || !state.webAccessStatus.running) {
+      state.webAccessQRCodeURL = "";
+    }
+    state.formError = "";
+  } catch (error) {
+    state.formError = errorMessage(error);
+    try {
+      state.webAccessStatus = await LoadWebAccessStatus();
+    } catch {
+      state.webAccessStatus = null;
+    }
+  } finally {
+    getAppCallbacks().render();
+  }
 }
 
 function handleThemeColorInput(input: HTMLInputElement) {
@@ -1069,6 +1190,20 @@ export async function handleWorkspaceFolderAgentsChange(input: HTMLInputElement)
   try {
     state.appState = await SetWorkspaceFolderUseAgents(workspaceID, folderID, input.checked);
     pushToast("Workspace folder updated.", "success");
+    getAppCallbacks().render();
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+    getAppCallbacks().render();
+  }
+}
+
+export async function handleWorkspaceDefaultPlanModeChange(input: HTMLInputElement) {
+  const workspaceID = input.dataset.workspaceId ?? "";
+  if (!workspaceID) {
+    return;
+  }
+  try {
+    state.appState = await SetWorkspaceDefaultPlanMode(workspaceID, input.checked);
     getAppCallbacks().render();
   } catch (error) {
     pushToast(errorMessage(error), "error");

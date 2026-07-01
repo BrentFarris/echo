@@ -1,5 +1,5 @@
 import * as Wails from "../../wailsjs/go/services/SystemService";
-import { chooseWorkspaceFolderForWorkspaceWeb, chooseWorkspaceFolderWeb, chooseWorkspaceIconWeb, isWailsRuntime, webRpc } from "./web";
+import { chooseWorkspaceFileSavePathWeb, chooseWorkspaceFolderForWorkspaceWeb, chooseWorkspaceFolderWeb, chooseWorkspaceIconWeb, isWailsRuntime, webRpc } from "./web";
 
 type WailsFunction = (...args: any[]) => Promise<any>;
 
@@ -75,6 +75,14 @@ export function CreateKanbanCardFromChatMessage(...args: Parameters<typeof Wails
   return call("CreateKanbanCardFromChatMessage", Wails.CreateKanbanCardFromChatMessage, args);
 }
 
+export function CreateSkillFromChat(...args: Parameters<typeof Wails.CreateSkillFromChat>): ReturnType<typeof Wails.CreateSkillFromChat> {
+  return call("CreateSkillFromChat", Wails.CreateSkillFromChat, args);
+}
+
+export function CreateReadyKanbanCard(...args: Parameters<typeof Wails.CreateReadyKanbanCard>): ReturnType<typeof Wails.CreateReadyKanbanCard> {
+  return call("CreateReadyKanbanCard", Wails.CreateReadyKanbanCard, args);
+}
+
 export function CreateWorkspaceFile(...args: Parameters<typeof Wails.CreateWorkspaceFile>): ReturnType<typeof Wails.CreateWorkspaceFile> {
   return call("CreateWorkspaceFile", Wails.CreateWorkspaceFile, args);
 }
@@ -101,6 +109,13 @@ export function ExecutePlan(...args: Parameters<typeof Wails.ExecutePlan>): Retu
 
 export function FindWorkspaceFileDefinition(...args: Parameters<typeof Wails.FindWorkspaceFileDefinition>): ReturnType<typeof Wails.FindWorkspaceFileDefinition> {
   return call("FindWorkspaceFileDefinition", Wails.FindWorkspaceFileDefinition, args);
+}
+
+export function ChooseWorkspaceFileSavePath(...args: Parameters<typeof Wails.ChooseWorkspaceFileSavePath>): ReturnType<typeof Wails.ChooseWorkspaceFileSavePath> {
+  if (isWailsRuntime()) {
+    return Wails.ChooseWorkspaceFileSavePath(...args);
+  }
+  return chooseWorkspaceFileSavePathWeb(args[0], args[1]) as ReturnType<typeof Wails.ChooseWorkspaceFileSavePath>;
 }
 
 export function FindWorkspaceFileImplementations(...args: Parameters<typeof Wails.FindWorkspaceFileImplementations>): ReturnType<typeof Wails.FindWorkspaceFileImplementations> {
@@ -199,6 +214,14 @@ export function OpenWorkspacePathExplorer(...args: Parameters<typeof Wails.OpenW
   return call("OpenWorkspacePathExplorer", Wails.OpenWorkspacePathExplorer, args);
 }
 
+export function PruneChatMessage(...args: Parameters<typeof Wails.PruneChatMessage>): ReturnType<typeof Wails.PruneChatMessage> {
+  return call("PruneChatMessage", Wails.PruneChatMessage, args);
+}
+
+export function PrepareWorkspaceSymbolRename(...args: Parameters<typeof Wails.PrepareWorkspaceSymbolRename>): ReturnType<typeof Wails.PrepareWorkspaceSymbolRename> {
+  return call("PrepareWorkspaceSymbolRename", Wails.PrepareWorkspaceSymbolRename, args);
+}
+
 export function ReadWorkspaceFile(...args: Parameters<typeof Wails.ReadWorkspaceFile>): ReturnType<typeof Wails.ReadWorkspaceFile> {
   return call("ReadWorkspaceFile", Wails.ReadWorkspaceFile, args);
 }
@@ -211,12 +234,28 @@ export function RemoveWorkspaceFolder(...args: Parameters<typeof Wails.RemoveWor
   return call("RemoveWorkspaceFolder", Wails.RemoveWorkspaceFolder, args);
 }
 
+export function RenameWorkspacePath(...args: Parameters<typeof Wails.RenameWorkspacePath>): ReturnType<typeof Wails.RenameWorkspacePath> {
+  return call("RenameWorkspacePath", Wails.RenameWorkspacePath, args);
+}
+
+export function RenameWorkspaceSymbol(...args: Parameters<typeof Wails.RenameWorkspaceSymbol>): ReturnType<typeof Wails.RenameWorkspaceSymbol> {
+  return call("RenameWorkspaceSymbol", Wails.RenameWorkspaceSymbol, args);
+}
+
 export function ResetKanbanCard(...args: Parameters<typeof Wails.ResetKanbanCard>): ReturnType<typeof Wails.ResetKanbanCard> {
   return call("ResetKanbanCard", Wails.ResetKanbanCard, args);
 }
 
+export function ReadExternalTextFile(...args: Parameters<typeof Wails.ReadExternalTextFile>): ReturnType<typeof Wails.ReadExternalTextFile> {
+  return call("ReadExternalTextFile", Wails.ReadExternalTextFile, args);
+}
+
 export function ResolveWorkspaceTextFilePath(...args: Parameters<typeof Wails.ResolveWorkspaceTextFilePath>): ReturnType<typeof Wails.ResolveWorkspaceTextFilePath> {
   return call("ResolveWorkspaceTextFilePath", Wails.ResolveWorkspaceTextFilePath, args);
+}
+
+export function ReorderWorkspaces(...args: Parameters<typeof Wails.ReorderWorkspaces>): ReturnType<typeof Wails.ReorderWorkspaces> {
+  return call("ReorderWorkspaces", Wails.ReorderWorkspaces, args);
 }
 
 export function RetryChatMessage(...args: Parameters<typeof Wails.RetryChatMessage>): ReturnType<typeof Wails.RetryChatMessage> {
@@ -231,12 +270,20 @@ export function SaveSettings(...args: Parameters<typeof Wails.SaveSettings>): Re
   return call("SaveSettings", Wails.SaveSettings, args);
 }
 
+export function SaveExternalTextFile(...args: Parameters<typeof Wails.SaveExternalTextFile>): ReturnType<typeof Wails.SaveExternalTextFile> {
+  return call("SaveExternalTextFile", Wails.SaveExternalTextFile, args);
+}
+
 export function SaveWebAccessSettings(...args: Parameters<typeof Wails.SaveWebAccessSettings>): ReturnType<typeof Wails.SaveWebAccessSettings> {
   return call("SaveWebAccessSettings", Wails.SaveWebAccessSettings, args);
 }
 
 export function SaveWorkspaceFile(...args: Parameters<typeof Wails.SaveWorkspaceFile>): ReturnType<typeof Wails.SaveWorkspaceFile> {
   return call("SaveWorkspaceFile", Wails.SaveWorkspaceFile, args);
+}
+
+export function SaveWorkspaceFileAs(...args: Parameters<typeof Wails.SaveWorkspaceFileAs>): ReturnType<typeof Wails.SaveWorkspaceFileAs> {
+  return call("SaveWorkspaceFileAs", Wails.SaveWorkspaceFileAs, args);
 }
 
 export function SearchWorkspaceFiles(...args: Parameters<typeof Wails.SearchWorkspaceFiles>): ReturnType<typeof Wails.SearchWorkspaceFiles> {
@@ -261,6 +308,10 @@ export function SendChatMessageWithPlanMode(...args: Parameters<typeof Wails.Sen
 
 export function SetActiveWorkspace(...args: Parameters<typeof Wails.SetActiveWorkspace>): ReturnType<typeof Wails.SetActiveWorkspace> {
   return call("SetActiveWorkspace", Wails.SetActiveWorkspace, args);
+}
+
+export function SetWorkspaceDefaultPlanMode(...args: Parameters<typeof Wails.SetWorkspaceDefaultPlanMode>): ReturnType<typeof Wails.SetWorkspaceDefaultPlanMode> {
+  return call("SetWorkspaceDefaultPlanMode", Wails.SetWorkspaceDefaultPlanMode, args);
 }
 
 export function SetWorkspaceFolderUseAgents(...args: Parameters<typeof Wails.SetWorkspaceFolderUseAgents>): ReturnType<typeof Wails.SetWorkspaceFolderUseAgents> {

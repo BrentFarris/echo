@@ -36,6 +36,8 @@ export type CodeFileTab = {
   dirty: boolean;
   saving: boolean;
   temporary: boolean;
+  untitled: boolean;
+  external: boolean;
   selectionAnchor: number;
   selectionHead: number;
   scrollTop: number;
@@ -77,6 +79,15 @@ export type PendingCodeCreate = {
   error: string;
 };
 
+export type PendingCodeRename = {
+  path: string;
+  kind: CodeEntryKind;
+  name: string;
+  originalName: string;
+  submitting: boolean;
+  error: string;
+};
+
 export type CodeDragState = {
   sourcePath: string;
   sourceKind: CodeEntryKind;
@@ -90,11 +101,23 @@ export type InlineCodeChatState = {
   anchorPosition: number;
   selectedText: string;
   draft: string;
+  mention: InlineCodeMentionState | null;
   submitting: boolean;
   response: string;
   error: string;
   requestID: string;
   renderKey: number;
+};
+
+export type InlineCodeMentionState = {
+  triggerStart: number;
+  query: string;
+  results: services.WorkspaceFileEntry[];
+  loading: boolean;
+  error: string;
+  selectedIndex: number;
+  requestSeq: number;
+  timerID: number | null;
 };
 
 export type InlineCodePromptEvent = {
@@ -119,6 +142,17 @@ export type CodeReferencePanelState = {
   renderKey: number;
 };
 
+export type CodeQuickOpenState = {
+  open: boolean;
+  query: string;
+  results: services.WorkspaceFileEntry[];
+  loading: boolean;
+  truncated: boolean;
+  selectedIndex: number;
+  requestSeq: number;
+  timerID: number | null;
+};
+
 export type CodeWorkspaceState = {
   directories: Map<string, DirectoryState>;
   expandedPaths: Set<string>;
@@ -130,6 +164,7 @@ export type CodeWorkspaceState = {
   navigationHistory: CodeNavigationHistoryState;
   tabSwitcher: CodeTabSwitcherState | null;
   pendingCreate: PendingCodeCreate | null;
+  pendingRename: PendingCodeRename | null;
   drag: CodeDragState | null;
   showIgnored: boolean;
   openingPath: string;
@@ -144,6 +179,8 @@ export type CodeWorkspaceState = {
   searchTimerID: number | null;
   searchFocused: boolean;
   preservingSearchFocus: boolean;
+  untitledSeq: number;
+  temporaryFilesExpanded: boolean;
   textSearchOpen: boolean;
   textSearchQuery: string;
   textSearchInclude: string;
@@ -160,4 +197,5 @@ export type CodeWorkspaceState = {
   preservingTextSearchFocus: boolean;
   inlineChat: InlineCodeChatState | null;
   referencesPanel: CodeReferencePanelState | null;
+  quickOpen: CodeQuickOpenState;
 };
