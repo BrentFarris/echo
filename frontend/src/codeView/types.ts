@@ -49,6 +49,7 @@ export type CodeFileTab = {
   mediaDataUrl?: string;
   mediaLoading?: boolean;
   mediaError?: string;
+  zoomLevel?: number;
 };
 
 export type CodeNavigationLocation = {

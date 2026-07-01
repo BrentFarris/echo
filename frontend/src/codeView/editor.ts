@@ -6,12 +6,13 @@ import { crosshairCursor, Decoration, type DecorationSet, EditorView, ViewPlugin
 import { basicSetup } from "codemirror";
 import { tags } from "@lezer/highlight";
 import { patchDirtyUI } from "./dom";
+import type { CodeFileTab } from "./types";
 import { inlineCodeChatExtension } from "./inlineChat";
 import { lspCompletionExtension, lspDefinitionExtension, lspRenameExtension } from "./lsp";
 import { referencesPanelExtension } from "./references";
 import { activeCodeTab, ensureCodeState, findTab } from "./state";
 import type { CodeViewCallbacks } from "./types";
-import { clamp, editorDocumentLengthForFileContent, editorStateToFileContent } from "./utils";
+import { clamp, codeTabName, editorDocumentLengthForFileContent, editorStateToFileContent, escapeAttribute, escapeHtml, formatBytes } from "./utils";
 
 export type EditorFeatureHooks = {
   openCodeFile: (
@@ -164,6 +165,17 @@ export async function mountActiveCodeEditor(
   const tab = activeCodeTab(workspaceID);
   destroyCodeEditor();
   if (!mount || !tab) {
+    return;
+  }
+
+  // Render media tabs as dedicated viewers instead of CodeMirror
+  if (tab.isMedia && tab.mediaDataUrl) {
+    if (tab.mediaMimeType?.startsWith("video/")) {
+      mount.innerHTML = renderVideoViewer(tab);
+    } else {
+      mount.innerHTML = renderImageViewer(tab);
+      bindImageViewerEvents(mount, workspaceID, tab.path, callbacks);
+    }
     return;
   }
 
@@ -569,4 +581,148 @@ export function saveMountedEditorContent() {
     mountedEditorPath,
     editorStateToFileContent(mountedEditor.state),
   );
+}
+
+// ─── Image Viewer ──────────────────────────────────────────────
+
+const zoomInSVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/><path d="M8 11h6"/><path d="M11 8v6"/></svg>`;
+const zoomOutSVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/><path d="M8 11h6"/></svg>`;
+const zoomFitSVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>`;
+
+function renderImageViewer(tab: CodeFileTab): string {
+  const zoomPercent = Math.round((tab.zoomLevel ?? 1) * 100);
+  return `
+    <div class="code-image-viewer" data-code-image-viewer>
+      <div class="code-image-toolbar" data-code-image-toolbar>
+        <button class="icon-button code-image-zoom-out" type="button" title="Zoom out (Ctrl+-)" aria-label="Zoom out" data-code-action="image-zoom-out">
+          ${zoomOutSVG}
+        </button>
+        <span class="code-image-zoom-level">${escapeHtml(String(zoomPercent))}%</span>
+        <button class="icon-button code-image-zoom-in" type="button" title="Zoom in (Ctrl++)" aria-label="Zoom in" data-code-action="image-zoom-in">
+          ${zoomInSVG}
+        </button>
+        <button class="icon-button code-image-zoom-fit" type="button" title="Fit to view (0)" aria-label="Reset zoom" data-code-action="image-zoom-fit">
+          ${zoomFitSVG}
+        </button>
+      </div>
+      <div class="code-image-canvas" data-code-image-canvas>
+        ${tab.mediaError
+          ? `<div class="code-image-error">${escapeHtml(tab.mediaError)}</div>`
+          : `<img
+              src="${escapeAttribute(tab.mediaDataUrl ?? "")}"
+              alt="${escapeAttribute(codeTabName(tab))}"
+              title="${escapeAttribute(tab.path)}"
+              draggable="false"
+              data-code-image
+              style="transform: scale(${tab.zoomLevel ?? 1})"
+            />`
+        }
+      </div>
+    </div>
+  `;
+}
+
+function bindImageViewerEvents(
+  mount: HTMLElement,
+  workspaceID: string,
+  path: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const toolbar = mount.querySelector<HTMLElement>("[data-code-image-toolbar]");
+  if (!toolbar) return;
+
+  toolbar.querySelectorAll<HTMLElement>("[data-code-action]").forEach((el) => {
+    el.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const action = el.dataset.codeAction ?? "";
+      handleImageZoomAction(workspaceID, path, action, callbacks);
+    });
+  });
+
+  // Mouse wheel zoom on canvas (Ctrl/Cmd + scroll)
+  const canvas = mount.querySelector<HTMLElement>("[data-code-image-canvas]");
+  if (canvas) {
+    canvas.addEventListener("wheel", (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const delta = event.deltaY > 0 ? -0.1 : 0.1;
+      applyImageZoom(workspaceID, path, delta, callbacks);
+    }, { passive: false });
+  }
+}
+
+function handleImageZoomAction(
+  workspaceID: string,
+  path: string,
+  action: string,
+  callbacks: CodeViewCallbacks,
+) {
+  if (action === "image-zoom-in") {
+    applyImageZoom(workspaceID, path, 0.25, callbacks);
+  } else if (action === "image-zoom-out") {
+    applyImageZoom(workspaceID, path, -0.25, callbacks);
+  } else if (action === "image-zoom-fit") {
+    resetImageZoom(workspaceID, path, callbacks);
+  }
+}
+
+function applyImageZoom(
+  workspaceID: string,
+  path: string,
+  delta: number,
+  callbacks: CodeViewCallbacks,
+) {
+  const tab = findTab(workspaceID, path);
+  if (!tab || !tab.isMedia) return;
+  const current = tab.zoomLevel ?? 1;
+  tab.zoomLevel = clamp(current + delta, 0.1, 5);
+  patchImageZoomUI(tab);
+  callbacks.render();
+}
+
+function resetImageZoom(
+  workspaceID: string,
+  path: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const tab = findTab(workspaceID, path);
+  if (!tab || !tab.isMedia) return;
+  tab.zoomLevel = 1;
+  patchImageZoomUI(tab);
+  callbacks.render();
+}
+
+function patchImageZoomUI(tab: CodeFileTab) {
+  const zoomLevelEl = document.querySelector<HTMLElement>(".code-image-zoom-level");
+  if (zoomLevelEl) {
+    zoomLevelEl.textContent = `${Math.round((tab.zoomLevel ?? 1) * 100)}%`;
+  }
+  const img = document.querySelector<HTMLImageElement>("[data-code-image]");
+  if (img) {
+    img.style.transform = `scale(${tab.zoomLevel ?? 1})`;
+  }
+}
+
+// ─── Video Viewer ──────────────────────────────────────────────
+
+function renderVideoViewer(tab: CodeFileTab): string {
+  return `
+    <div class="code-video-viewer" data-code-video-viewer>
+      <div class="code-video-container" data-code-video-container>
+        ${tab.mediaError
+          ? `<div class="code-video-error">${escapeHtml(tab.mediaError)}</div>`
+          : `<video
+              src="${escapeAttribute(tab.mediaDataUrl ?? "")}"
+              controls
+              autoplay
+              playsinline
+              preload="metadata"
+              data-code-video
+            ></video>`
+        }
+      </div>
+    </div>
+  `;
 }

@@ -1,4 +1,4 @@
-import { ChooseWorkspaceFileSavePath, ReadExternalTextFile, ReadWorkspaceFile, ResolveWorkspaceTextFilePath, SaveExternalTextFile, SaveWorkspaceFile, SaveWorkspaceFileAs } from "../backend/services";
+import { ChooseWorkspaceFileSavePath, ReadExternalTextFile, ReadWorkspaceFile, ReadWorkspaceMediaFile, ResolveWorkspaceTextFilePath, SaveExternalTextFile, SaveWorkspaceFile, SaveWorkspaceFileAs } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
 import { captureCodeTreeScroll, patchDirtyUI } from "./dom";
 import { applySavedFile, activeCodeTab, codeStates, ensureCodeState, findTab, promoteTabMruPath, pruneTabMruPaths, removeTabMruPath, tabSwitcherPaths, workspaceFileChanged, wrapIndex } from "./state";
@@ -14,7 +14,7 @@ import {
   syncCurrentCodeNavigationLocation,
 } from "./navigation";
 import type { CodeFileTab, CodeNavigationLocation, CodeViewCallbacks } from "./types";
-import { clamp, codeTabName, editableWorkspaceFile, fileContentOffsetToEditorPosition, isUntitledCodePath, sleep, untitledCodeTabPrefix } from "./utils";
+import { clamp, codeTabName, editableWorkspaceFile, fileContentOffsetToEditorPosition, isMediaFile, isUntitledCodePath, sleep, untitledCodeTabPrefix } from "./utils";
 import { replaceMountedEditorContent, saveMountedEditorContent } from "./editor";
 import { revealCodeFileInTree } from "./treeReveal";
 
@@ -129,7 +129,7 @@ async function reloadWorkspaceOpenCodeTabsFromDisk(
   const openPaths = state.tabs.map((tab) => tab.path);
   for (const path of openPaths) {
     const tab = findTab(workspaceID, path);
-    if (!tab || tab.untitled || tab.dirty || tab.saving) {
+    if (!tab || tab.untitled || tab.dirty || tab.saving || tab.isMedia) {
       continue;
     }
 
@@ -496,6 +496,11 @@ export async function openCodeFile(
   state.openingPath = path;
   callbacks.render();
   try {
+    // Handle media files (images and videos) separately
+    if (isMediaFile(path)) {
+      return await openCodeMediaFile(workspaceID, path, callbacks, options, sourceLocation, temporaryIndex, replacedTemporaryPath);
+    }
+
     const file = await ReadWorkspaceFile(workspaceID, path);
     const opened = services.WorkspaceFile.createFrom(file);
     const editable = editableWorkspaceFile(opened);
@@ -526,6 +531,73 @@ export async function openCodeFile(
     state.activePath = opened.path;
     openedPath = opened.path;
     promoteTabMruPath(state, opened.path);
+    if (options.recordNavigation !== false) {
+      recordCodeNavigationTransition(
+        workspaceID,
+        sourceLocation,
+        codeNavigationLocationFromTab(nextTab),
+      );
+    }
+    return true;
+  } catch (error) {
+    if (!options.suppressErrorToast) {
+      callbacks.pushToast(callbacks.errorMessage(error), "error");
+    }
+    return false;
+  } finally {
+    state.openingPath = "";
+    callbacks.render();
+    if (openedPath) {
+      void revealCodeFileInTree(workspaceID, openedPath, callbacks);
+    }
+  }
+}
+
+async function openCodeMediaFile(
+  workspaceID: string,
+  path: string,
+  callbacks: CodeViewCallbacks,
+  options: OpenCodeFileOptions,
+  sourceLocation: CodeNavigationLocation | null,
+  temporaryIndex: number,
+  replacedTemporaryPath: string,
+): Promise<boolean> {
+  const state = ensureCodeState(workspaceID);
+  let openedPath = "";
+
+  try {
+    const media = await ReadWorkspaceMediaFile(workspaceID, path);
+    const created = services.WorkspaceMediaFile.createFrom(media);
+    const nextTab: CodeFileTab = {
+      path: created.path,
+      content: "",
+      savedContent: "",
+      lineSeparator: "\n",
+      bytes: created.bytes,
+      modifiedAt: "",
+      dirty: false,
+      saving: false,
+      temporary: options.temporary,
+      untitled: false,
+      external: false,
+      selectionAnchor: 0,
+      selectionHead: 0,
+      scrollTop: 0,
+      scrollLeft: 0,
+      isMedia: true,
+      mediaMimeType: created.mimeType,
+      mediaDataUrl: created.dataUrl,
+      mediaLoading: false,
+    };
+    if (options.temporary && temporaryIndex >= 0) {
+      state.tabs[temporaryIndex] = nextTab;
+      removeTabMruPath(state, replacedTemporaryPath);
+    } else {
+      state.tabs.push(nextTab);
+    }
+    state.activePath = created.path;
+    openedPath = created.path;
+    promoteTabMruPath(state, created.path);
     if (options.recordNavigation !== false) {
       recordCodeNavigationTransition(
         workspaceID,

@@ -27,9 +27,10 @@ export function render() {
   const showingCode = state.appMode === "code" && Boolean(workspace);
   const showGitChanges = workspace && state.openGitChangeWorkspaces.has(workspace.id);
 
-  // Preserve the live draft value from the existing textarea before DOM destruction.
+  // Preserve the live draft value and scroll position from the existing textarea before DOM destruction.
   const existingTextarea = appRoot.querySelector<HTMLTextAreaElement>("textarea[data-chat-input]");
   const preservedDraft = existingTextarea?.value ?? "";
+  const preservedInputScrollTop = existingTextarea?.scrollTop ?? 0;
 
   if (
     state.chatMention &&
@@ -115,10 +116,13 @@ export function render() {
   }
   void linkifyAssistantFilePaths();
 
-  // Restore the preserved draft value to the newly created textarea if it differs from what was rendered.
+  // Restore the preserved draft value and scroll position to the newly created textarea if it differs from what was rendered.
   const restoredTextarea = appRoot.querySelector<HTMLTextAreaElement>("textarea[data-chat-input]");
   if (restoredTextarea && restoredTextarea.value !== preservedDraft) {
     restoredTextarea.value = preservedDraft;
+  }
+  if (restoredTextarea) {
+    restoredTextarea.scrollTop = preservedInputScrollTop;
   }
 }
 

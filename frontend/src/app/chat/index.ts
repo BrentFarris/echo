@@ -577,6 +577,9 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
             : `<div class="empty-state chat-empty">Ask Echo to inspect, plan, or break down work for this workspace.</div>`
         }
       </div>
+      <div class="chat-mobile-controls" data-chat-mobile-controls>
+        ${renderMobileChatControls(session, executing, creatingSkill)}
+      </div>
       <form class="chat-composer" data-chat-form>
         <div class="chat-input-wrap" data-chat-input-wrap>
           <textarea
@@ -610,6 +613,25 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
         </div>
       </form>
     </section>
+  `;
+}
+
+export function renderMobileChatControls(
+  session: ReturnType<typeof chatSessionFor>,
+  executing: boolean,
+  creatingSkill: boolean,
+): string {
+  const messages = session.messages ?? [];
+  return `
+    <button class="icon-button stop-button" type="button" title="Stop stream" aria-label="Stop stream" data-action="stop-chat" ${session.busy ? "" : "disabled"}>
+      ${icons.stop}
+    </button>
+    <button class="icon-button execute-button ${executing ? "is-busy" : ""}" type="button" title="${executing ? "Decomposing cards" : "Execute plan"}" aria-label="${executing ? "Decomposing cards" : "Execute plan"}" data-action="execute-plan" ${session.busy || executing || messages.length === 0 ? "disabled" : ""}>
+      ${executing ? `<span class="spinner" aria-hidden="true"></span>` : icons.execute}
+    </button>
+    <button class="icon-button" type="button" title="Clear chat" aria-label="Clear chat" data-action="clear-chat" ${session.busy || executing || creatingSkill || messages.length === 0 ? "disabled" : ""}>
+      ${icons.trash}
+    </button>
   `;
 }
 
@@ -1388,8 +1410,10 @@ export function patchChatPanel() {
     return;
   }
 
-  // Preserve the current draft value before regenerating the panel.
+  // Preserve the current draft value and scroll position before regenerating the panel.
   const draft = state.chatDrafts.get(workspace.id) ?? "";
+  const existingInput = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
+  const inputScrollTop = existingInput?.scrollTop ?? 0;
 
   const next = document.createElement("template");
   next.innerHTML = renderChatPanel(workspace, state.expandedChatWorkspaces.has(workspace.id)).trim();
@@ -1400,6 +1424,9 @@ export function patchChatPanel() {
   const input = replacement.querySelector<HTMLTextAreaElement>("[data-chat-input]");
   if (input && input.value !== draft) {
     input.value = draft;
+  }
+  if (input) {
+    input.scrollTop = inputScrollTop;
   }
 
   getAppCallbacks().bindActionEvents(replacement);
@@ -1417,48 +1444,58 @@ export function patchChatControls() {
   const imageDrafts = chatImageDraftsFor(workspace.id);
   const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
   const send = appRoot.querySelector<HTMLButtonElement>(".send-button");
-  const stop = appRoot.querySelector<HTMLButtonElement>(".stop-button");
-  const execute = appRoot.querySelector<HTMLButtonElement>(".execute-button");
-  const clear = appRoot.querySelector<HTMLButtonElement>('[data-action="clear-chat"]');
-  const createSkill = appRoot.querySelector<HTMLButtonElement>('[data-action="create-chat-skill"]');
-  const planToggle = appRoot.querySelector<HTMLInputElement>("[data-chat-plan-toggle]");
-  const title = appRoot.querySelector<HTMLElement>("#chat-title");
-  const panel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
   const executing = state.executingPlans.has(workspace.id);
   const creatingSkill = state.creatingChatSkills.has(workspace.id);
+
   if (input) {
     input.disabled = session.busy || executing;
   }
   if (send) {
     send.disabled = session.busy || executing || (draft.trim().length === 0 && imageDrafts.length === 0);
   }
-  if (stop) {
-    stop.disabled = !session.busy;
+
+  // Update all stop buttons (desktop heading + mobile controls)
+  appRoot.querySelectorAll<HTMLButtonElement>(".stop-button").forEach((button) => {
+    button.disabled = !session.busy;
+  });
+
+  // Update all execute buttons (desktop heading + mobile controls)
+  appRoot.querySelectorAll<HTMLButtonElement>(".execute-button").forEach((button) => {
+    button.disabled = session.busy || executing || (session.messages ?? []).length === 0;
+    button.classList.toggle("is-busy", executing);
+    button.title = executing ? "Decomposing cards" : "Execute plan";
+    button.setAttribute("aria-label", button.title);
+    button.innerHTML = executing ? `<span class="spinner" aria-hidden="true"></span>` : icons.execute;
+  });
+
+  // Update all clear-chat buttons (overflow menu + mobile controls)
+  appRoot.querySelectorAll<HTMLButtonElement>('[data-action="clear-chat"]').forEach((button) => {
+    button.disabled = session.busy || executing || creatingSkill || (session.messages ?? []).length === 0;
+  });
+
+  // Update create-skill button in overflow menu
+  const createSkillBtn = appRoot.querySelector<HTMLButtonElement>('[data-action="create-chat-skill"]');
+  if (createSkillBtn) {
+    createSkillBtn.disabled = session.busy || executing || creatingSkill || (session.messages ?? []).length === 0;
+    createSkillBtn.textContent = creatingSkill ? "Creating skill..." : "Create skill from chat";
   }
-  if (execute) {
-    execute.disabled = session.busy || executing || (session.messages ?? []).length === 0;
-    execute.classList.toggle("is-busy", executing);
-    execute.title = executing ? "Decomposing cards" : "Execute plan";
-    execute.setAttribute("aria-label", execute.title);
-    execute.innerHTML = executing ? `<span class="spinner" aria-hidden="true"></span>` : icons.execute;
-  }
-  if (clear) {
-    clear.disabled = session.busy || executing || creatingSkill || (session.messages ?? []).length === 0;
-  }
-  if (createSkill) {
-    createSkill.disabled = session.busy || executing || creatingSkill || (session.messages ?? []).length === 0;
-    createSkill.textContent = creatingSkill ? "Creating skill..." : "Create skill from chat";
-  }
+
   appRoot.querySelectorAll<HTMLButtonElement>(".chat-prune-trigger").forEach((button) => {
     button.disabled = session.busy || executing;
   });
+
+  const planToggle = appRoot.querySelector<HTMLInputElement>("[data-chat-plan-toggle]");
   if (planToggle) {
     planToggle.disabled = session.busy || executing;
     planToggle.checked = chatPlanModeFor(workspace.id);
   }
+
+  const title = appRoot.querySelector<HTMLElement>("#chat-title");
   if (title) {
     title.innerHTML = executing ? renderSpinnerLabel("Triage") : session.busy ? "Working" : "Ready";
   }
+
+  const panel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
   if (panel) {
     panel.setAttribute("aria-busy", String(session.busy || executing));
   }

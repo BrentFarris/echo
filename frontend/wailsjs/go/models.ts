@@ -1436,6 +1436,26 @@ export namespace services {
 	        this.bytes = source["bytes"];
 	    }
 	}
+	export class WorkspaceMediaFile {
+	    workspaceId: string;
+	    path: string;
+	    mimeType: string;
+	    dataUrl: string;
+	    bytes: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceMediaFile(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.path = source["path"];
+	        this.mimeType = source["mimeType"];
+	        this.dataUrl = source["dataUrl"];
+	        this.bytes = source["bytes"];
+	    }
+	}
 	export class WorkspacePrepareRenameResponse {
 	    workspaceId: string;
 	    filePath: string;

@@ -954,6 +954,10 @@ h3 {
   align-items: end;
 }
 
+.chat-mobile-controls {
+  display: none;
+}
+
 .chat-input-wrap {
   position: relative;
   display: grid;
@@ -3897,6 +3901,137 @@ h3 {
   height: 100%;
 }
 
+/* ─── Image Viewer ────────────────────────────────────────────── */
+
+.code-image-viewer {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--code-editor-bg);
+}
+
+.code-image-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--code-editor-bg) 94%, var(--color-bg));
+}
+
+.code-image-zoom-level {
+  min-width: 48px;
+  text-align: center;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  user-select: none;
+}
+
+.code-image-canvas {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: 24px;
+  cursor: grab;
+}
+
+.code-image-canvas img {
+  max-width: none;
+  object-fit: contain;
+  transform-origin: center center;
+  transition: transform 0.1s ease;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.code-image-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  color: var(--color-danger);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+/* ─── Video Viewer ────────────────────────────────────────────── */
+
+.code-video-viewer {
+  display: grid;
+  grid-template-rows: 1fr;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+}
+
+.code-video-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.code-video-container video[data-code-video] {
+  max-width: 100%;
+  max-height: 100%;
+  outline: none;
+  background: #000;
+}
+
+.code-video-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 48px;
+  color: var(--color-danger);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+/* Video controls styling for dark theme */
+.code-video-container video::-webkit-media-controls-panel {
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
+}
+
+.code-video-container video::-webkit-media-controls-play-button,
+.code-video-container video::-webkit-media-controls-volume-slider,
+.code-video-container video::-webkit-media-controls-mute-button,
+.code-video-container video::-webkit-media-controls-timeline,
+.code-video-container video::-webkit-media-controls-current-time-display,
+.code-video-container video::-webkit-media-controls-time-remaining-display,
+.code-video-container video::-webkit-media-controls-fullscreen-button {
+  filter: invert(1);
+}
+
+/* Firefox video controls */
+@-moz-document url-prefix() {
+  .code-video-container video {
+    /* Firefox uses native controls; minimal override needed */
+  }
+}
+
+.code-tab-icon {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 4px;
+  width: 14px;
+  height: 14px;
+}
+
+.code-tab-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
 .code-symbol-rename {
   padding: 3px;
   border: 1px solid var(--color-accent);
@@ -4673,6 +4808,46 @@ h3 {
   .settings-toggle,
   .web-access-actions {
     width: 100%;
+  }
+
+  .chat-mobile-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 8px 0;
+    border-top: 1px solid var(--color-border);
+    background: var(--color-surface);
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+  }
+
+  .chat-mobile-controls .icon-button {
+    flex: 0 0 auto;
+    width: 36px;
+    height: 36px;
+  }
+
+  .chat-mobile-controls .icon-button svg,
+  .chat-mobile-controls .icon-button .spinner {
+    width: 18px;
+    height: 18px;
+  }
+
+  .chat-mobile-controls .execute-button.is-busy:disabled {
+    cursor: progress;
+    opacity: 1;
+  }
+
+  /* Hide the desktop heading controls on mobile to avoid duplication */
+  .stop-button,
+  .execute-button {
+    display: none;
+  }
+
+  .chat-overflow {
+    display: none;
   }
 }
 
