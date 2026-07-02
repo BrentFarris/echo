@@ -109,7 +109,7 @@ Tool behavior:
 - Filesystem and shell tools require workspace-relative paths and reject traversal outside the workspace.
 - Text file reads/edits are capped; see `maxTextFileBytes` in `internal/tools/filesystem_helpers.go`.
 - Shell commands default to PowerShell on Windows and `/bin/sh` elsewhere, with bounded timeout/output.
-- Filesystem tools are individually gated: `filesystem_list`, `filesystem_read_text`, `filesystem_read_image`, `filesystem_search_text`, `filesystem_search_workspace`, `filesystem_stat`, `filesystem_create_text`, `filesystem_edit_text`, `filesystem_delete_file`.
+- Filesystem tools are individually gated: `filesystem_list`, `filesystem_read_text`, `filesystem_read_image`, `filesystem_read_video`, `filesystem_search_text`, `filesystem_search_workspace`, `filesystem_stat`, `filesystem_create_text`, `filesystem_edit_text`, `filesystem_delete_file`.
 - `lsp_query` tool gives agents code navigation (definitions, references, implementations, hover, symbols, members).
 - `web_search` tool provides web search via a configurable SearXNG endpoint.
 - `workspace_context` tool builds compact programming context briefs for agents.

@@ -224,7 +224,7 @@ func TestSystemServiceChatNonPlanModeUsesFullToolRequest(t *testing.T) {
 	waitForChatIdle(t, service, workspaceID)
 
 	names := chatRequestToolNames(captured)
-	for _, expected := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_search_text", "filesystem_stat", "shell_command", "workspace_context"} {
+	for _, expected := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_read_video", "filesystem_search_text", "filesystem_stat", "shell_command", "workspace_context"} {
 		if !names[expected] {
 			t.Fatalf("expected non-plan mode to include %s, got %#v", expected, names)
 		}
@@ -576,8 +576,8 @@ func TestSystemServiceChatSendsPastedImageAsContentPart(t *testing.T) {
 	if len(user.ContentParts) != 2 {
 		t.Fatalf("expected text plus image content parts, got %#v", user)
 	}
-	if user.ContentParts[0].Type != "text" || !strings.Contains(user.ContentParts[0].Text, "Attached images:") {
-		t.Fatalf("expected attached image labels in text part, got %#v", user.ContentParts[0])
+	if user.ContentParts[0].Type != "text" || !strings.Contains(user.ContentParts[0].Text, "Attached media:") {
+		t.Fatalf("expected attached media labels in text part, got %#v", user.ContentParts[0])
 	}
 	if strings.Contains(user.ContentParts[0].Text, "data:image") {
 		t.Fatalf("expected text part to omit base64 image data, got %q", user.ContentParts[0].Text)
@@ -1394,7 +1394,7 @@ func TestSystemServiceExecutePlanIncludesImageLabelsWithoutImageData(t *testing.
 		writeChatResponse(t, w, `{"cards":[{"id":"phase-1","title":"Review screenshot","description":"Use the image-backed user request labels.","acceptanceCriteria":["Screenshot review is represented"],"dependencies":[]}]}`)
 	}))
 	imageDataURL := tinyPNGDataURL()
-	visibleContent := "Review the visual issue.\n\nAttached images:\n- Image 1: screenshot.png (screens/screenshot.png), image/png, 12 B"
+	visibleContent := "Review the visual issue.\n\nAttached media:\n- Image 1: screenshot.png (screens/screenshot.png), image/png, 12 B"
 	seedChatPlan(service, workspaceID, []ChatMessage{
 		{
 			ID:      "msg-1",
@@ -1430,8 +1430,8 @@ func TestSystemServiceExecutePlanIncludesImageLabelsWithoutImageData(t *testing.
 		t.Fatalf("expected system plus combined visible prompt, got %#v", captured.Messages)
 	}
 	visiblePrompt := captured.Messages[1].Content
-	if !strings.Contains(visiblePrompt, "Attached images:") || !strings.Contains(visiblePrompt, "screenshot.png") {
-		t.Fatalf("expected visible image labels in decomposition prompt, got %q", visiblePrompt)
+	if !strings.Contains(visiblePrompt, "Attached media:") || !strings.Contains(visiblePrompt, "screenshot.png") {
+		t.Fatalf("expected visible media labels in decomposition prompt, got %q", visiblePrompt)
 	}
 	if strings.Contains(visiblePrompt, "data:image") || strings.Contains(visiblePrompt, "base64") {
 		t.Fatalf("expected decomposition prompt to omit image data, got %q", visiblePrompt)
@@ -1793,7 +1793,7 @@ func assertPlanModeChatRequest(t *testing.T, request llm.ChatRequest) {
 	}
 
 	names := chatRequestToolNames(request)
-	for _, expected := range []string{"filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_search_text", "filesystem_stat", "workspace_context"} {
+	for _, expected := range []string{"filesystem_list", "filesystem_read_image", "filesystem_read_video", "filesystem_read_text", "filesystem_search_text", "filesystem_stat", "workspace_context"} {
 		if !names[expected] {
 			t.Fatalf("expected plan mode to include read-only tool %s, got %#v", expected, names)
 		}
@@ -2575,5 +2575,402 @@ func TestSystemServiceChatHistoryUpToLocked(t *testing.T) {
 	result := service.chatHistoryUpToLocked("nonexistent", 2)
 	if result != nil {
 		t.Fatalf("expected nil for nonexistent workspace, got %d messages", len(result))
+	}
+}
+
+func tinyMP4Bytes() []byte {
+	return []byte{0, 0, 0, 8, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}
+}
+
+func tinyWebMBytes() []byte {
+	return []byte{0x1a, 0x45, 0xdf, 0xa3, 0x00, 0x00, 0x00}
+}
+
+func tinyMOVBytes() []byte {
+	return []byte{0, 0, 0, 8, 'm', 'o', 'o', 'v'}
+}
+
+func tinyMP4DataURL() string {
+	return chatMediaDataURL("video/mp4", tinyMP4Bytes())
+}
+
+func tinyWebMDataURL() string {
+	return chatMediaDataURL("video/webm", tinyWebMBytes())
+}
+
+func TestDetectChatVideoMediaType(t *testing.T) {
+	tests := []struct {
+		name      string
+		data      []byte
+		wantType  string
+		wantError bool
+	}{
+		{"mp4 ftyp header", tinyMP4Bytes(), "video/mp4", false},
+		{"webm EBML header", tinyWebMBytes(), "video/webm", false},
+		{"mov moov header", tinyMOVBytes(), "video/quicktime", false},
+		{"empty data", []byte{}, "", true},
+		{"unsupported format", []byte{0x00, 0x01, 0x02}, "", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := detectChatVideoMediaType(tc.data)
+			if tc.wantError {
+				if err == nil {
+					t.Fatalf("expected error, got %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.wantType {
+				t.Fatalf("expected %q, got %q", tc.wantType, got)
+			}
+		})
+	}
+}
+
+func TestSupportedChatVideoMediaType(t *testing.T) {
+	tests := []struct {
+		name      string
+		mediaType string
+		want      bool
+	}{
+		{"mp4", "video/mp4", true},
+		{"webm", "video/webm", true},
+		{"quicktime", "video/quicktime", true},
+		{"MP4 uppercase", "VIDEO/MP4", true},
+		{"image/png", "image/png", false},
+		{"unknown", "video/avi", false},
+		{"empty", "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := supportedChatVideoMediaType(tc.mediaType)
+			if got != tc.want {
+				t.Fatalf("expected %v for %q, got %v", tc.want, tc.mediaType, got)
+			}
+		})
+	}
+}
+
+func TestChatVideoExtension(t *testing.T) {
+	tests := []struct {
+		mediaType string
+		want      string
+	}{
+		{"video/mp4", ".mp4"},
+		{"video/webm", ".webm"},
+		{"video/quicktime", ".mov"},
+		{"image/png", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.mediaType, func(t *testing.T) {
+			got := chatVideoExtension(tc.mediaType)
+			if got != tc.want {
+				t.Fatalf("expected %q for %s, got %q", tc.want, tc.mediaType, got)
+			}
+		})
+	}
+}
+
+func TestChatVideoPathKind(t *testing.T) {
+	tests := []struct {
+		path string
+		want string
+	}{
+		{"clip.mp4", "supported"},
+		{"video.webm", "supported"},
+		{"recording.mov", "supported"},
+		{"photo.png", ""},
+		{"readme.txt", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			got := chatVideoPathKind(tc.path)
+			if got != tc.want {
+				t.Fatalf("expected %q for %s, got %q", tc.want, tc.path, got)
+			}
+		})
+	}
+}
+
+func TestValidateChatVideos(t *testing.T) {
+	// Within limits
+	small := []ChatVideoAttachment{{ID: "v1", MediaType: "video/mp4", Bytes: 1024}}
+	if err := validateChatVideos(small); err != nil {
+		t.Fatalf("expected valid, got: %v", err)
+	}
+
+	// Too many videos
+	many := make([]ChatVideoAttachment, maxChatVideoAttachments+1)
+	for i := range many {
+		many[i] = ChatVideoAttachment{ID: fmt.Sprintf("v%d", i), MediaType: "video/mp4", Bytes: 1024}
+	}
+	if err := validateChatVideos(many); err == nil {
+		t.Fatal("expected too-many error")
+	}
+
+	// Video exceeds size limit
+	huge := []ChatVideoAttachment{{ID: "v1", Name: "huge.mp4", MediaType: "video/mp4", Bytes: maxChatVideoBytes + 1}}
+	if err := validateChatVideos(huge); err == nil {
+		t.Fatal("expected size error")
+	}
+
+	// Unsupported format
+	bad := []ChatVideoAttachment{{ID: "v1", MediaType: "video/avi"}}
+	if err := validateChatVideos(bad); err == nil {
+		t.Fatal("expected unsupported format error")
+	}
+}
+
+func TestParseChatVideoDataURL(t *testing.T) {
+	// Valid MP4 data URL
+	dataURL := tinyMP4DataURL()
+	mediaType, data, err := parseChatVideoDataURL(dataURL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mediaType != "video/mp4" {
+		t.Fatalf("expected video/mp4, got %q", mediaType)
+	}
+	if len(data) == 0 {
+		t.Fatal("expected non-empty data")
+	}
+
+	// Invalid: not a data URL
+	_, _, err = parseChatVideoDataURL("http://example.com/video.mp4")
+	if err == nil {
+		t.Fatal("expected error for non-data URL")
+	}
+
+	// Invalid: unsupported format
+	_, _, err = parseChatVideoDataURL(tinyPNGDataURL())
+	if err == nil {
+		t.Fatal("expected error for image data URL")
+	}
+}
+
+func TestSystemServiceChatSendsPastedVideoAsContentPart(t *testing.T) {
+	root := t.TempDir()
+	var captured llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"Video reviewed."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+
+	videoDataURL := tinyMP4DataURL()
+	if _, err := service.SendChatMessageWithAttachments(workspaceID, ChatMessageRequest{
+		Content: "Review this video.",
+		Videos:  []ChatVideoInput{{Name: "clip.mp4", DataURL: videoDataURL}},
+	}); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+
+	if len(session.Messages) < 1 || len(session.Messages[0].Videos) != 1 {
+		t.Fatalf("expected user message video metadata, got %#v", session.Messages)
+	}
+	if session.Messages[0].Videos[0].Name != "clip.mp4" || !strings.HasPrefix(session.Messages[0].Videos[0].DataURL, "data:video/mp4;base64,") {
+		t.Fatalf("unexpected user video metadata: %#v", session.Messages[0].Videos[0])
+	}
+	if len(captured.Messages) < 2 {
+		t.Fatalf("expected system and user messages, got %#v", captured.Messages)
+	}
+	user := captured.Messages[1]
+	// text + video_url = 2 parts (video sent as content part with data URL)
+	if len(user.ContentParts) != 2 {
+		t.Fatalf("expected 2 content parts (text, video_url), got %d: %#v", len(user.ContentParts), user.ContentParts)
+	}
+	if user.ContentParts[0].Type != "text" || !strings.Contains(user.ContentParts[0].Text, "Attached media:") {
+		t.Fatalf("expected attached media labels in text part, got %#v", user.ContentParts[0])
+	}
+	if user.ContentParts[1].Type != "video_url" {
+		t.Fatalf("expected second part to be video_url, got %q", user.ContentParts[1].Type)
+	}
+	if user.ContentParts[1].VideoURL == nil || !strings.HasPrefix(user.ContentParts[1].VideoURL.URL, "data:video/mp4;base64,") {
+		t.Fatalf("expected video data URL in video_url part, got %#v", user.ContentParts[1])
+	}
+}
+
+func TestSystemServiceChatSendsMixedImageAndVideoAttachments(t *testing.T) {
+	root := t.TempDir()
+	var captured llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"Both reviewed."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+
+	if _, err := service.SendChatMessageWithAttachments(workspaceID, ChatMessageRequest{
+		Content: "Review both.",
+		Images:  []ChatImageInput{{Name: "screen.png", DataURL: tinyPNGDataURL()}},
+		Videos:  []ChatVideoInput{{Name: "clip.mp4", DataURL: tinyMP4DataURL()}},
+	}); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+
+	if len(session.Messages[0].Images) != 1 || len(session.Messages[0].Videos) != 1 {
+		t.Fatalf("expected one image and one video, got images=%d videos=%d", len(session.Messages[0].Images), len(session.Messages[0].Videos))
+	}
+	user := captured.Messages[1]
+	// text + image_url + video_url = 3 parts
+	if len(user.ContentParts) != 3 {
+		t.Fatalf("expected 3 content parts (text, image, video), got %d: %#v", len(user.ContentParts), user.ContentParts)
+	}
+	if user.ContentParts[1].Type != "image_url" {
+		t.Fatalf("expected second part to be image_url, got %q", user.ContentParts[1].Type)
+	}
+	if user.ContentParts[2].Type != "video_url" {
+		t.Fatalf("expected third part to be video_url, got %q", user.ContentParts[2].Type)
+	}
+}
+
+func TestSystemServiceChatRejectsUnsupportedVideo(t *testing.T) {
+	root := t.TempDir()
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("chat request should not be sent for an unsupported video")
+	}))
+
+	_, err := service.SendChatMessageWithAttachments(workspaceID, ChatMessageRequest{
+		Content: "Review this.",
+		Videos:  []ChatVideoInput{{Name: "clip.avi", DataURL: "data:video/avi;base64,dGVzdA=="}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported video format") {
+		t.Fatalf("expected unsupported video error, got %v", err)
+	}
+}
+
+func TestSystemServiceChatRejectsOversizedWorkspaceVideo(t *testing.T) {
+	root := t.TempDir()
+	data := append(tinyMP4Bytes(), make([]byte, maxChatVideoBytes+1)...)
+	if err := os.WriteFile(filepath.Join(root, "huge.mp4"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("chat request should not be sent for an oversized video")
+	}))
+	videoPath := labeledTestPath(t, service, workspaceID, "huge.mp4")
+
+	_, err := service.SendChatMessage(workspaceID, "Review @"+videoPath)
+	if err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("expected oversized video error, got %v", err)
+	}
+}
+
+func TestChatMediaTextContent(t *testing.T) {
+	// Only images
+	text := chatMediaTextContent("hello", []ChatImageAttachment{{Name: "pic.png", MediaType: "image/png", Bytes: 100}}, nil)
+	if !strings.Contains(text, "Attached media:") || !strings.Contains(text, "pic.png") {
+		t.Fatalf("expected image in media text, got %q", text)
+	}
+
+	// Only videos
+	text = chatMediaTextContent("", nil, []ChatVideoAttachment{{Name: "clip.mp4", MediaType: "video/mp4", Bytes: 200}})
+	if !strings.Contains(text, "Please review the attached video(s)") {
+		t.Fatalf("expected video default prompt, got %q", text)
+	}
+
+	// Both
+	text = chatMediaTextContent("check these",
+		[]ChatImageAttachment{{Name: "pic.png", MediaType: "image/png", Bytes: 100}},
+		[]ChatVideoAttachment{{Name: "clip.mp4", MediaType: "video/mp4", Bytes: 200}})
+	if !strings.Contains(text, "pic.png") || !strings.Contains(text, "clip.mp4") {
+		t.Fatalf("expected both media in text, got %q", text)
+	}
+
+	// No media returns content as-is
+	text = chatMediaTextContent("hello", nil, nil)
+	if text != "hello" {
+		t.Fatalf("expected unchanged content, got %q", text)
+	}
+}
+
+func TestChatMediaContentParts(t *testing.T) {
+	images := []ChatImageAttachment{{Name: "pic.png", MediaType: "image/png", Bytes: 100, DataURL: tinyPNGDataURL()}}
+	videos := []ChatVideoAttachment{{Name: "clip.mp4", MediaType: "video/mp4", Bytes: 200, DataURL: tinyMP4DataURL()}}
+
+	// Only images
+	parts := chatMediaContentParts("hi", images, nil)
+	if len(parts) != 2 || parts[1].Type != "image_url" {
+		t.Fatalf("expected image part, got %#v", parts)
+	}
+
+	// Only videos — video_url part is sent as content part
+	parts = chatMediaContentParts("hi", nil, videos)
+	if len(parts) != 2 || parts[1].Type != "video_url" {
+		t.Fatalf("expected text + video_url parts, got %#v", parts)
+	}
+	if parts[1].VideoURL == nil || !strings.HasPrefix(parts[1].VideoURL.URL, "data:video/mp4;base64,") {
+		t.Fatalf("expected video data URL, got %#v", parts[1])
+	}
+
+	// Both — image_url and video_url as content parts
+	parts = chatMediaContentParts("hi", images, videos)
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 parts (text, image, video), got %d", len(parts))
+	}
+	if parts[1].Type != "image_url" {
+		t.Fatalf("expected second part to be image_url, got %q", parts[1].Type)
+	}
+	if parts[2].Type != "video_url" {
+		t.Fatalf("expected third part to be video_url, got %q", parts[2].Type)
+	}
+
+	// None
+	parts = chatMediaContentParts("hi", nil, nil)
+	if parts != nil {
+		t.Fatalf("expected nil, got %#v", parts)
+	}
+}
+
+func TestLLMVideoURLContentPart(t *testing.T) {
+	part := llm.VideoURLContentPart("data:video/mp4;base64,abc123")
+	if part.Type != "video_url" {
+		t.Fatalf("expected type video_url, got %q", part.Type)
+	}
+	if part.VideoURL == nil || part.VideoURL.URL != "data:video/mp4;base64,abc123" {
+		t.Fatalf("expected correct VideoURL, got %#v", part)
+	}
+	if part.ImageURL != nil {
+		t.Fatal("expected ImageURL to be nil")
+	}
+}
+
+func TestCloneMessagesPreservesVideoURL(t *testing.T) {
+	// Verify VideoURL is properly structured and serializable via NewChatRequest
+	// which internally calls cloneMessages.
+	messages := []llm.Message{
+		{
+			Role: llm.RoleUser,
+			ContentParts: []llm.MessageContentPart{
+				llm.TextContentPart("hello"),
+				llm.VideoURLContentPart("data:video/mp4;base64,test"),
+			},
+		},
+	}
+	settings := llm.Settings{Model: "test-model", Endpoint: "http://localhost"}
+	req, err := llm.NewChatRequest(settings, messages)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(req.Messages) != 1 || len(req.Messages[0].ContentParts) != 2 {
+		t.Fatalf("expected preserved structure, got %#v", req.Messages)
+	}
+	part := req.Messages[0].ContentParts[1]
+	if part.Type != "video_url" || part.VideoURL == nil || part.VideoURL.URL != "data:video/mp4;base64,test" {
+		t.Fatalf("expected preserved VideoURL, got %#v", part)
 	}
 }

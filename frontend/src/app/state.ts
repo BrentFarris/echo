@@ -1,7 +1,7 @@
 
 import { llm, services } from "../../wailsjs/go/models";
 import type { ThemePaletteName } from "./theme";
-import type { AppMode, ChatImageDraft, ChatMentionState, ContextMenuState, KanbanCardCreationDraft, Toast } from "./types";
+import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, KanbanCardCreationDraft, Toast } from "./types";
 
 export type ChatKanbanTab = "chat" | "kanban";
 
@@ -21,6 +21,7 @@ export const state = {
   chatSessions: new Map<string, services.ChatSession>(),
   chatDrafts: new Map<string, string>(),
   chatImageDrafts: new Map<string, ChatImageDraft[]>(),
+  chatVideoDrafts: new Map<string, ChatVideoDraft[]>(),
   chatPlanModes: new Map<string, boolean>(),
   chatFileLinkCache: new Map<string, Promise<string | null>>(),
   chatMention: null as ChatMentionState | null,
@@ -98,6 +99,14 @@ export function chatImageDraftsFor(workspaceID: string): ChatImageDraft[] {
 
 export function chatImageDraftTotalBytes(workspaceID: string): number {
   return chatImageDraftsFor(workspaceID).reduce((total, image) => total + image.bytes, 0);
+}
+
+export function chatVideoDraftsFor(workspaceID: string): ChatVideoDraft[] {
+  return state.chatVideoDrafts.get(workspaceID) ?? [];
+}
+
+export function chatVideoDraftTotalBytes(workspaceID: string): number {
+  return chatVideoDraftsFor(workspaceID).reduce((total, video) => total + video.bytes, 0);
 }
 
 export function chatSessionFor(workspaceID: string): services.ChatSession {

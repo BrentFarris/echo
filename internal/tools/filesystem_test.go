@@ -525,6 +525,59 @@ func TestFilesystemReadImageRejectsUnsupportedImage(t *testing.T) {
 	}
 }
 
+func TestFilesystemReadVideoReturnsLLMVideoContent(t *testing.T) {
+	workspace := t.TempDir()
+	mp4Bytes := []byte{0x00, 0x00, 0x00, 0x20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}
+	if err := os.WriteFile(filepath.Join(workspace, "clip.mp4"), mp4Bytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := Execute(
+		ExecutionContext{Context: context.Background(), WorkspacePath: workspace},
+		"filesystem_read_video",
+		mustJSON(t, map[string]any{"path": "clip.mp4"}),
+	)
+
+	if !result.Success {
+		t.Fatalf("expected success, got %#v", result)
+	}
+	output, ok := result.Output.(readVideoFileOutput)
+	if !ok {
+		t.Fatalf("unexpected output type: %#v", result.Output)
+	}
+	if output.Name != "clip.mp4" || output.MediaType != "video/mp4" {
+		t.Fatalf("unexpected video metadata: %#v", output)
+	}
+	if output.Bytes != int64(len(mp4Bytes)) {
+		t.Fatalf("unexpected byte count: %d", output.Bytes)
+	}
+	if !strings.HasPrefix(output.dataURL, "data:video/mp4;base64,") {
+		t.Fatalf("expected data URL prefix, got %q", output.dataURL)
+	}
+	provider := result.Output.(LLMVideoContentProvider)
+	video, ok := provider.LLMVideoContent()
+	if !ok || video.DataURL == "" {
+		t.Fatalf("expected LLMVideoContent to be available")
+	}
+}
+
+func TestFilesystemReadVideoRejectsUnsupportedFormat(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "clip.avi"), []byte("RIFF....AVI "), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := Execute(
+		ExecutionContext{Context: context.Background(), WorkspacePath: workspace},
+		"filesystem_read_video",
+		mustJSON(t, map[string]any{"path": "clip.avi"}),
+	)
+
+	if result.Success || result.Error == nil || result.Error.Code != "unsupported_video" {
+		t.Fatalf("expected unsupported video error, got %#v", result)
+	}
+}
+
 func TestFilesystemCreateAndDeleteFile(t *testing.T) {
 	workspace := t.TempDir()
 	if err := os.Mkdir(filepath.Join(workspace, "src"), 0o755); err != nil {

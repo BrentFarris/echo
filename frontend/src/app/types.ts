@@ -66,6 +66,14 @@ export type ChatImageDraft = {
   bytes: number;
 };
 
+export type ChatVideoDraft = {
+  id: string;
+  name: string;
+  mediaType: string;
+  dataUrl: string;
+  bytes: number;
+};
+
 export type KanbanCardCreationDraft = {
   title: string;
   description: string;

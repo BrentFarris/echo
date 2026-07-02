@@ -27,6 +27,7 @@ type ChatMessage struct {
 	Role      string                `json:"role"`
 	Content   string                `json:"content,omitempty"`
 	Images    []ChatImageAttachment `json:"images,omitempty"`
+	Videos    []ChatVideoAttachment `json:"videos,omitempty"`
 	Reasoning string                `json:"reasoning,omitempty"`
 	ToolCalls []ChatToolActivity    `json:"toolCalls,omitempty"`
 	Status    string                `json:"status"`
@@ -94,13 +95,17 @@ func (s *SystemService) sendChatMessage(workspaceID string, request ChatMessageR
 	if err != nil {
 		return ChatSession{}, err
 	}
-	content = chatImageTextContent(content, images)
+	videos, err := s.prepareChatVideos(workspace, content, request.Videos)
+	if err != nil {
+		return ChatSession{}, err
+	}
+	content = chatMediaTextContent(content, images, videos)
 	if content == "" {
 		return ChatSession{}, fmt.Errorf("message is required")
 	}
 	userHistory := llm.Message{Role: llm.RoleUser, Content: content}
-	if len(images) > 0 {
-		userHistory.ContentParts = chatImageContentParts(request.Content, images)
+	if len(images) > 0 || len(videos) > 0 {
+		userHistory.ContentParts = chatMediaContentParts(request.Content, images, videos)
 	}
 
 	runContext, cancel := context.WithCancel(context.Background())
@@ -118,6 +123,7 @@ func (s *SystemService) sendChatMessage(workspaceID string, request ChatMessageR
 		Role:    llm.RoleUser,
 		Content: content,
 		Images:  images,
+		Videos:  videos,
 		Status:  "complete",
 	}
 	assistantMessage := ChatMessage{
@@ -1114,6 +1120,7 @@ func cloneChatSession(session *chatSessionState) ChatSession {
 	for i := range clone.Messages {
 		clone.Messages[i].ToolCalls = append([]ChatToolActivity(nil), clone.Messages[i].ToolCalls...)
 		clone.Messages[i].Images = append([]ChatImageAttachment(nil), clone.Messages[i].Images...)
+		clone.Messages[i].Videos = append([]ChatVideoAttachment(nil), clone.Messages[i].Videos...)
 	}
 	return clone
 }

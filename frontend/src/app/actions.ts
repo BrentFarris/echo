@@ -10,7 +10,7 @@ import { dropWorkspaceGitRepositoryState, openGitChangeInCode, openWorkspaceGitR
 import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint } from "./settings";
-import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatSessionFor, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state } from "./state";
+import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatSessionFor, chatVideoDraftsFor, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state } from "./state";
 import { clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
 import { cloneSettings, cloneWebAccessSettings } from "./state";
 import { applyTheme, settingsWithThemeDefaults, themePaletteNames } from "./theme";
@@ -445,6 +445,19 @@ export async function handleAction(event: Event) {
       state.chatImageDrafts.set(
         workspace.id,
         chatImageDraftsFor(workspace.id).filter((image) => image.id !== imageID),
+      );
+      patchChatPanel();
+      patchChatControls();
+    }
+    if (action === "remove-chat-video") {
+      const workspace = activeWorkspace();
+      const videoID = target.dataset.videoId ?? "";
+      if (!workspace || !videoID) {
+        return;
+      }
+      state.chatVideoDrafts.set(
+        workspace.id,
+        chatVideoDraftsFor(workspace.id).filter((video) => video.id !== videoID),
       );
       patchChatPanel();
       patchChatControls();

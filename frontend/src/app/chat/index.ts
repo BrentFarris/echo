@@ -2,15 +2,16 @@
 import { ensureCodeViewRootLoaded, openWorkspaceCodeFile } from "../../codeView";
 import { elementFromHtml, morphElement, patchChildrenFromHtml, patchMarkdownElement, renderMarkdown } from "../../markdown";
 import { EditChatMessage, LoadChatSession, ResolveWorkspaceTextFilePath, SearchWorkspaceFiles, SendChatMessageWithAttachments } from "../../backend/services";
+import { isWailsRuntime } from "../../backend/web";
 import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";
 import { appRoot, isElementScrolledNearBottom } from "../dom";
 import { icons } from "../icons";
 import { playNotificationSound } from "../notifications";
-import { activeWorkspace, chatImageDraftsFor, chatImageDraftTotalBytes, chatPlanModeFor, chatSessionFor, state } from "../state";
+import { activeWorkspace, chatImageDraftsFor, chatImageDraftTotalBytes, chatVideoDraftsFor, chatVideoDraftTotalBytes, chatPlanModeFor, chatSessionFor, state } from "../state";
 import { pushToast } from "../toasts";
-import type { ChatImageDraft, ChatMentionState, ChatStreamEvent, ScrollSnapshot } from "../types";
+import type { ChatImageDraft, ChatMentionState, ChatStreamEvent, ChatVideoDraft, ScrollSnapshot } from "../types";
 import { errorMessage, escapeAttribute, escapeHtml, fileName, formatBytes } from "../utils";
 
 const chatMentionSearchDelay = 160;
@@ -19,6 +20,10 @@ const maxChatImageDrafts = 4;
 const maxChatImageBytes = 10 * 1024 * 1024;
 const maxChatImageMessageBytes = 20 * 1024 * 1024;
 const supportedChatImageTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+const maxChatVideoDrafts = 4;
+const maxChatVideoBytes = 50 * 1024 * 1024;
+const maxChatMediaDrafts = 8;
+const supportedChatVideoTypes = new Set(["video/mp4", "video/webm", "video/quicktime"]);
 const chatStreamPatchDelay = 50;
 
 type PendingChatStreamPatch = {
@@ -34,6 +39,10 @@ const pendingChatStreamPatches = new Map<string, PendingChatStreamPatch>();
 
 export function isSupportedChatImageType(mediaType: string): boolean {
   return supportedChatImageTypes.has(mediaType.toLowerCase());
+}
+
+export function isSupportedChatVideoType(mediaType: string): boolean {
+  return supportedChatVideoTypes.has(mediaType.toLowerCase());
 }
 
 export function fileToDataURL(file: File): Promise<string> {
@@ -530,8 +539,9 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
   const messages = session.messages ?? [];
   const draft = state.chatDrafts.get(workspace.id) ?? "";
   const imageDrafts = chatImageDraftsFor(workspace.id);
+  const videoDrafts = chatVideoDraftsFor(workspace.id);
   const executing = state.executingPlans.has(workspace.id);
-  const canSend = !session.busy && !executing && (draft.trim().length > 0 || imageDrafts.length > 0);
+  const canSend = !session.busy && !executing && (draft.trim().length > 0 || imageDrafts.length > 0 || videoDrafts.length > 0);
   const sizeLabel = expanded ? "Collapse chat" : "Expand chat";
   const executeLabel = executing ? "Decomposing cards" : "Execute plan";
   const mentionOpen = Boolean(chatMentionFor(workspace.id));
@@ -582,6 +592,7 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
       </div>
       <form class="chat-composer" data-chat-form>
         <div class="chat-input-wrap" data-chat-input-wrap>
+          ${!isWailsRuntime() ? `\n            <button class="icon-button chat-image-upload" type="button" title="Attach image" aria-label="Attach image" data-chat-image-upload\n              ${session.busy || executing ? "disabled" : ""}\n            >\n              ${icons.image}\n            </button>\n            <button class="icon-button chat-video-upload" type="button" title="Attach video" aria-label="Attach video" data-chat-video-upload\n              ${session.busy || executing ? "disabled" : ""}\n            >\n              ${icons.video}\n            </button>\n          ` : ""}
           <textarea
             name="message"
             rows="3"
@@ -595,6 +606,7 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
             ${session.busy || executing ? "disabled" : ""}
           >${escapeHtml(draft)}</textarea>
           ${renderChatImageDrafts(workspace.id, session.busy || executing)}
+          ${renderChatVideoDrafts(workspace.id, session.busy || executing)}
           ${renderChatMentionPicker(workspace.id)}
         </div>
         <div>
@@ -662,6 +674,33 @@ export function renderChatImageDrafts(workspaceID: string, disabled: boolean): s
   `;
 }
 
+export function renderChatVideoDrafts(workspaceID: string, disabled: boolean): string {
+  const drafts = chatVideoDraftsFor(workspaceID);
+  if (!drafts.length) {
+    return "";
+  }
+  return `
+    <div class="chat-video-drafts" data-chat-video-drafts>
+      ${drafts
+        .map(
+          (draft) => `
+            <div class="chat-video-chip">
+              <span class="chat-video-icon">${icons.video}</span>
+              <span>
+                <strong>${escapeHtml(draft.name)}</strong>
+                <small>${escapeHtml(formatBytes(draft.bytes))}</small>
+              </span>
+              <button class="icon-button" type="button" title="Remove video" aria-label="Remove ${escapeAttribute(draft.name)}" data-action="remove-chat-video" data-video-id="${escapeAttribute(draft.id)}" ${disabled ? "disabled" : ""}>
+                ${icons.x}
+              </button>
+            </div>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 export function renderChatMessage(message: services.ChatMessage, actionsDisabled = false): string {
   const roleLabel = message.role === "user" ? "You" : "Echo";
   const status = message.status && message.status !== "complete"
@@ -680,6 +719,7 @@ export function renderChatMessage(message: services.ChatMessage, actionsDisabled
         }
       </header>
       ${renderChatMessageImages(message)}
+      ${renderChatMessageVideos(message)}
       ${isEditing
         ? renderEditTextarea(message)
         : `<div class="markdown-body" data-message-content>${renderMarkdown(message.content ?? "")}</div>`
@@ -790,6 +830,30 @@ export function renderChatMessageImages(message: services.ChatMessage): string {
   `;
 }
 
+export function renderChatMessageVideos(message: services.ChatMessage): string {
+  const videos = message.videos ?? [];
+  if (!videos.length) {
+    return "";
+  }
+  return `
+    <div class="chat-message-videos">
+      ${videos
+        .map(
+          (video) => `
+            <figure class="chat-message-video">
+              ${video.dataUrl ? `<video src="${escapeAttribute(video.dataUrl)}" muted preload="metadata"></video>` : `<span>${icons.video}</span>`}
+              <figcaption>
+                <strong>${escapeHtml(video.name)}</strong>
+                <span>${escapeHtml(video.path || video.source)} - ${escapeHtml(formatBytes(video.bytes ?? 0))}</span>
+              </figcaption>
+            </figure>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 export function renderDebugSections(message: services.ChatMessage): string {
   if (message.role !== "assistant") {
     return "";
@@ -854,6 +918,12 @@ export function bindChatEvents(root: ParentNode) {
   root
     .querySelectorAll<HTMLInputElement>("[data-chat-plan-toggle]")
     .forEach((input) => input.addEventListener("change", handleChatPlanModeChange));
+  root
+    .querySelectorAll<HTMLButtonElement>("[data-chat-image-upload]")
+    .forEach((button) => button.addEventListener("click", handleChatImageUpload));
+  root
+    .querySelectorAll<HTMLButtonElement>("[data-chat-video-upload]")
+    .forEach((button) => button.addEventListener("click", handleChatVideoUpload));
   bindChatMentionOptions(root);
   bindChatFileLinks(root);
   bindChatDebugSections(root);
@@ -921,15 +991,62 @@ export function handleChatPaste(event: ClipboardEvent) {
   if (!workspace || chatSessionFor(workspace.id).busy || state.executingPlans.has(workspace.id)) {
     return;
   }
-  const files = Array.from(event.clipboardData?.items ?? [])
+  const items = Array.from(event.clipboardData?.items ?? [])
     .filter((item) => item.kind === "file")
     .map((item) => item.getAsFile())
-    .filter((file): file is File => file !== null && file.type.startsWith("image/"));
-  if (!files.length) {
+    .filter((file): file is File => file !== null);
+  if (!items.length) {
+    return;
+  }
+  const imageFiles = items.filter((f) => f.type.startsWith("image/"));
+  const videoFiles = items.filter((f) => f.type.startsWith("video/"));
+  if (!imageFiles.length && !videoFiles.length) {
     return;
   }
   event.preventDefault();
-  void addPastedChatImages(workspace.id, files);
+  if (imageFiles.length > 0) {
+    void addPastedChatImages(workspace.id, imageFiles);
+  }
+  if (videoFiles.length > 0) {
+    void addPastedChatVideos(workspace.id, videoFiles);
+  }
+}
+
+export function handleChatImageUpload(event: Event) {
+  const workspace = activeWorkspace();
+  if (!workspace || chatSessionFor(workspace.id).busy || state.executingPlans.has(workspace.id)) {
+    return;
+  }
+  const button = event.currentTarget as HTMLButtonElement;
+  if (button.disabled) {
+    return;
+  }
+  void selectChatImageFiles(workspace.id);
+}
+
+function selectChatImageFiles(workspaceID: string): Promise<void> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.accept = "image/png,image/jpeg,image/gif,image/webp";
+    input.style.position = "fixed";
+    input.style.left = "-9999px";
+    input.addEventListener("change", async () => {
+      const files = Array.from(input.files ?? []);
+      input.remove();
+      if (files.length > 0) {
+        await addPastedChatImages(workspaceID, files);
+      }
+      resolve();
+    }, { once: true });
+    input.addEventListener("cancel", () => {
+      input.remove();
+      resolve();
+    }, { once: true });
+    document.body.appendChild(input);
+    input.click();
+  });
 }
 
 export async function addPastedChatImages(workspaceID: string, files: File[]) {
@@ -971,6 +1088,87 @@ export async function addPastedChatImages(workspaceID: string, files: File[]) {
     return;
   }
   state.chatImageDrafts.set(workspaceID, [...current, ...accepted]);
+  patchChatPanel();
+  patchChatControls();
+  appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus();
+}
+
+export function handleChatVideoUpload(event: Event) {
+  const workspace = activeWorkspace();
+  if (!workspace || chatSessionFor(workspace.id).busy || state.executingPlans.has(workspace.id)) {
+    return;
+  }
+  const button = event.currentTarget as HTMLButtonElement;
+  if (button.disabled) {
+    return;
+  }
+  void selectChatVideoFiles(workspace.id);
+}
+
+function selectChatVideoFiles(workspaceID: string): Promise<void> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.accept = "video/mp4,video/webm,video/quicktime";
+    input.style.position = "fixed";
+    input.style.left = "-9999px";
+    input.addEventListener("change", async () => {
+      const files = Array.from(input.files ?? []);
+      input.remove();
+      if (files.length > 0) {
+        await addPastedChatVideos(workspaceID, files);
+      }
+      resolve();
+    }, { once: true });
+    input.addEventListener("cancel", () => {
+      input.remove();
+      resolve();
+    }, { once: true });
+    document.body.appendChild(input);
+    input.click();
+  });
+}
+
+export async function addPastedChatVideos(workspaceID: string, files: File[]) {
+  const current = chatVideoDraftsFor(workspaceID);
+  const accepted: ChatVideoDraft[] = [];
+  let totalBytes = chatVideoDraftTotalBytes(workspaceID);
+  for (const file of files) {
+    const mediaType = file.type.toLowerCase();
+    if (!isSupportedChatVideoType(mediaType)) {
+      pushToast(`Unsupported video format: ${file.type || file.name}`, "error");
+      continue;
+    }
+    if (file.size > maxChatVideoBytes) {
+      pushToast(`${file.name || "Pasted video"} is larger than ${formatBytes(maxChatVideoBytes)}.`, "error");
+      continue;
+    }
+    if (current.length + accepted.length >= maxChatVideoDrafts) {
+      pushToast(`A message can include at most ${maxChatVideoDrafts} videos.`, "error");
+      break;
+    }
+    if (totalBytes + file.size > maxChatImageMessageBytes) {
+      pushToast(`Attached videos are larger than ${formatBytes(maxChatImageMessageBytes)}.`, "error");
+      break;
+    }
+    try {
+      accepted.push({
+        id: `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        name: file.name || `pasted-video-${current.length + accepted.length + 1}`,
+        mediaType,
+        dataUrl: await fileToDataURL(file),
+        bytes: file.size,
+      });
+      totalBytes += file.size;
+    } catch (error) {
+      pushToast(errorMessage(error), "error");
+    }
+  }
+  if (!accepted.length) {
+    return;
+  }
+  state.chatVideoDrafts.set(workspaceID, [...current, ...accepted]);
   patchChatPanel();
   patchChatControls();
   appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus();
@@ -1050,8 +1248,9 @@ export async function handleChatSubmit(event: SubmitEvent) {
   }
   const message = (state.chatDrafts.get(workspace.id) ?? "").trim();
   const imageDrafts = chatImageDraftsFor(workspace.id);
+  const videoDrafts = chatVideoDraftsFor(workspace.id);
   const session = chatSessionFor(workspace.id);
-  if ((!message && imageDrafts.length === 0) || session.busy || state.executingPlans.has(workspace.id)) {
+  if ((!message && imageDrafts.length === 0 && videoDrafts.length === 0) || session.busy || state.executingPlans.has(workspace.id)) {
     return;
   }
 
@@ -1070,10 +1269,20 @@ export async function handleChatSubmit(event: SubmitEvent) {
             bytes: image.bytes,
           }),
         ),
+        videos: videoDrafts.map((video) =>
+          services.ChatVideoInput.createFrom({
+            id: video.id,
+            name: video.name,
+            mediaType: video.mediaType,
+            dataUrl: video.dataUrl,
+            bytes: video.bytes,
+          }),
+        ),
       }),
     );
     state.chatDrafts.set(workspace.id, "");
     state.chatImageDrafts.delete(workspace.id);
+    state.chatVideoDrafts.delete(workspace.id);
     clearChatMention();
     const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
     if (input) {
@@ -1442,6 +1651,7 @@ export function patchChatControls() {
   const session = chatSessionFor(workspace.id);
   const draft = state.chatDrafts.get(workspace.id) ?? "";
   const imageDrafts = chatImageDraftsFor(workspace.id);
+  const videoDrafts = chatVideoDraftsFor(workspace.id);
   const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
   const send = appRoot.querySelector<HTMLButtonElement>(".send-button");
   const executing = state.executingPlans.has(workspace.id);
@@ -1451,7 +1661,7 @@ export function patchChatControls() {
     input.disabled = session.busy || executing;
   }
   if (send) {
-    send.disabled = session.busy || executing || (draft.trim().length === 0 && imageDrafts.length === 0);
+    send.disabled = session.busy || executing || (draft.trim().length === 0 && imageDrafts.length === 0 && videoDrafts.length === 0);
   }
 
   // Update all stop buttons (desktop heading + mobile controls)
