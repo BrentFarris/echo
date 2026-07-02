@@ -155,7 +155,7 @@ class InlineCodeChatWidget extends WidgetType {
     submit.className = "primary-button inline-code-chat-submit";
     submit.type = "submit";
     submit.disabled = chat.submitting || !chat.draft.trim();
-    submit.textContent = chat.submitting ? "Sending" : "Send";
+    submit.textContent = chat.submitting ? (chat.status || "Working") : "Send";
 
     const canSubmitDraft = () => {
       const latest = inlineChatForPath(this.workspaceID, this.path);
@@ -653,6 +653,7 @@ function openInlineCodeChat(
     draft: previous?.draft ?? "",
     mention: null,
     submitting: false,
+    status: "",
     response: "",
     error: "",
     requestID: previous?.requestID ?? "",
@@ -697,11 +698,21 @@ export function applyInlineCodePromptEvent(event: InlineCodePromptEvent) {
   if (event.type === "token") {
     chat.response = `${chat.response ?? ""}${event.content ?? ""}`;
     chat.error = "";
+    chat.status = "Working";
     patchInlineCodeChatResponse(event.workspaceId, event.filePath, chat);
+    return;
+  }
+  if (event.type === "compacting" || event.type === "compacted") {
+    chat.status = event.type === "compacting"
+      ? "Compacting"
+      : (event.content?.includes("deterministic checkpoint") ? "Fallback checkpoint" : "Resuming");
+    chat.renderKey = nextInlineChatRenderKey();
+    refreshInlineCodeChatWidget(event.workspaceId, event.filePath);
     return;
   }
   if (event.type === "error") {
     chat.submitting = false;
+    chat.status = "";
     chat.error = event.error ?? "Inline code prompt failed.";
     refreshInlineCodeChatWidget(event.workspaceId, event.filePath);
   }
@@ -746,6 +757,7 @@ async function submitInlineCodeChat(
   }
 
   chat.submitting = true;
+  chat.status = "Working";
   clearInlineCodeMention(chat);
   chat.response = "";
   chat.error = "";
@@ -781,6 +793,7 @@ async function submitInlineCodeChat(
       return;
     }
     latest.submitting = false;
+    latest.status = "";
     latest.response = content;
     latest.error = "";
     latest.renderKey = nextInlineChatRenderKey();
@@ -795,6 +808,7 @@ async function submitInlineCodeChat(
       return;
     }
     latest.submitting = false;
+    latest.status = "";
     latest.error = callbacks.errorMessage(error);
     latest.renderKey = nextInlineChatRenderKey();
     refreshInlineCodeChatWidget(workspaceID, path);

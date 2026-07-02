@@ -429,6 +429,39 @@ func TestSystemServiceEditAssistantMessageRequiresCompleteStatus(t *testing.T) {
 	}
 }
 
+func TestSystemServiceEditAssistantRebuildsCompactedHiddenHistory(t *testing.T) {
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+	state, err := service.AddWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	workspaceID := state.ActiveWorkspaceID
+	messages := []ChatMessage{
+		{ID: "visible-user", Role: llm.RoleUser, Content: "Original request", Status: "complete"},
+		{ID: "visible-assistant", Role: llm.RoleAssistant, Content: "Original answer", Status: "complete"},
+	}
+	seedChatPlan(service, workspaceID, messages, []llm.Message{
+		{Role: llm.RoleUser, Content: "Original request"},
+		{Role: llm.RoleAssistant, Content: contextCheckpointStart + "\nstale hidden state\n" + contextCheckpointEnd},
+		{Role: llm.RoleAssistant, Content: "Original answer"},
+		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{
+			ID: "hidden-call", Type: "function", Function: llm.FunctionCall{Name: "filesystem_stat"},
+		}}},
+		{Role: llm.RoleTool, ToolCallID: "hidden-call", Content: `{"tool":"filesystem_stat","success":true}`},
+	})
+
+	if _, err := service.EditChatMessage(workspaceID, "visible-assistant", "Edited answer", false); err != nil {
+		t.Fatalf("edit assistant: %v", err)
+	}
+	history := service.chatHistory(workspaceID)
+	if len(history) != 2 || history[1].Content != "Edited answer" {
+		t.Fatalf("expected history rebuilt from visible transcript, got %#v", history)
+	}
+	if requestContainsContent(llm.ChatRequest{Messages: history}, contextCheckpointStart) {
+		t.Fatalf("expected stale checkpoint to be removed, got %#v", history)
+	}
+}
+
 func TestSystemServicePruneChatMessagesFocusesPlanAndHistory(t *testing.T) {
 	root := t.TempDir()
 	storePath := filepath.Join(root, "state.json")
@@ -963,6 +996,134 @@ func TestSystemServiceChatRecoversWhenToolResultExceedsContext(t *testing.T) {
 	}
 	if strings.Contains(string(historyData), resultMarker) || !strings.Contains(string(historyData), toolResultContextErrorCode) {
 		t.Fatalf("expected persisted runtime history to keep only the bounded result, got %s", historyData)
+	}
+}
+
+func TestSystemServiceChatProactivelyCompactsHiddenHistory(t *testing.T) {
+	root := t.TempDir()
+	var summaryRequests atomic.Int32
+	var streamRequests atomic.Int32
+	var captured llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request llm.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if !request.Stream {
+			assertCompleteRequest(t, r)
+			summaryRequests.Add(1)
+			writeChatResponse(t, w, "## Goal and Constraints\n- Preserve the request.\n## Current State\n- Earlier exploration is complete.\n## Completed Checklist\n- [x] Explored stale details.\n## Remaining Checklist\n- [ ] Answer the current request.\n## Decisions and Rejected Approaches\n- None.\n## Relevant Files and Commands\n- README.md\n## Findings, Errors, and Verification\n- None.\n## Immediate Next Action\n- Respond.")
+			return
+		}
+		assertChatStreamRequest(t, r)
+		streamRequests.Add(1)
+		captured = request
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"Completed after compaction."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+
+	state := service.LoadState()
+	settings := state.Settings
+	settings.ContextLength = 4096
+	settings.MaxTokens = 512
+	if _, err := service.SaveSettings(settings); err != nil {
+		t.Fatalf("save compact context settings: %v", err)
+	}
+
+	visible := []ChatMessage{
+		{ID: "seed-user-original", Role: llm.RoleUser, Content: "Original task", Status: "complete"},
+		{ID: "seed-assistant-stale", Role: llm.RoleAssistant, Content: strings.Repeat("stale exploration ", 1200), Status: "complete"},
+		{ID: "seed-user-follow-up", Role: llm.RoleUser, Content: "Previous follow-up", Status: "complete"},
+		{ID: "seed-assistant-recent", Role: llm.RoleAssistant, Content: "Recent answer", Status: "complete"},
+	}
+	history := visibleChatHistory(visible)
+	seedChatPlan(service, workspaceID, visible, history)
+
+	if _, err := service.SendChatMessage(workspaceID, "Current request"); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+	if summaryRequests.Load() == 0 {
+		t.Fatal("expected proactive checkpoint request")
+	}
+	if streamRequests.Load() != 1 {
+		t.Fatalf("expected one main stream request, got %d", streamRequests.Load())
+	}
+	if !requestContainsContent(captured, contextCheckpointStart) ||
+		!requestContainsContent(captured, "Original task") ||
+		!requestContainsContent(captured, "Current request") ||
+		!requestContainsContent(captured, "Recent answer") {
+		t.Fatalf("expected protected context and checkpoint, got %#v", captured.Messages)
+	}
+	if len(session.Messages) != 6 || session.Messages[1].Content != visible[1].Content {
+		t.Fatalf("expected full visible transcript to remain intact, got %#v", session.Messages)
+	}
+	persisted := service.chatHistory(workspaceID)
+	if !requestContainsContent(llm.ChatRequest{Messages: persisted}, contextCheckpointStart) {
+		t.Fatalf("expected compacted hidden history, got %#v", persisted)
+	}
+	reloaded := NewSystemServiceWithStorePath(service.storePath)
+	reloaded.LoadState()
+	restored := reloaded.chatHistory(workspaceID)
+	if !requestContainsContent(llm.ChatRequest{Messages: restored}, contextCheckpointStart) ||
+		requestContainsContent(llm.ChatRequest{Messages: restored}, strings.Repeat("stale exploration ", 20)) {
+		t.Fatalf("expected compacted history to survive restoration, got %#v", restored)
+	}
+}
+
+func TestSystemServiceChatReactivelyCompactsOutsideToolRecovery(t *testing.T) {
+	root := t.TempDir()
+	var streamRequests atomic.Int32
+	var summaryRequests atomic.Int32
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request llm.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if !request.Stream {
+			assertCompleteRequest(t, r)
+			summaryRequests.Add(1)
+			writeChatResponse(t, w, "## Goal and Constraints\n- Continue.\n## Current State\n- Context recovered.\n## Completed Checklist\n- [x] Condensed stale turns.\n## Remaining Checklist\n- [ ] Finish.\n## Decisions and Rejected Approaches\n- None.\n## Relevant Files and Commands\n- None.\n## Findings, Errors, and Verification\n- None.\n## Immediate Next Action\n- Finish.")
+			return
+		}
+		assertChatStreamRequest(t, r)
+		switch streamRequests.Add(1) {
+		case 1:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(w, `{"error":{"type":"context_length_exceeded","message":"maximum context length reached"}}`)
+		case 2:
+			if !requestContainsContent(request, contextCheckpointStart) {
+				t.Fatalf("expected checkpoint after reactive recovery, got %#v", request.Messages)
+			}
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Recovered reactively."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected stream request %d", streamRequests.Load())
+		}
+	}))
+
+	visible := []ChatMessage{
+		{ID: "seed-user-original", Role: llm.RoleUser, Content: "Original task", Status: "complete"},
+		{ID: "seed-assistant-stale", Role: llm.RoleAssistant, Content: strings.Repeat("older context ", 5000), Status: "complete"},
+		{ID: "seed-user-follow-up", Role: llm.RoleUser, Content: "Previous follow-up", Status: "complete"},
+		{ID: "seed-assistant-recent", Role: llm.RoleAssistant, Content: "Recent answer", Status: "complete"},
+	}
+	seedChatPlan(service, workspaceID, visible, visibleChatHistory(visible))
+	if _, err := service.SendChatMessage(workspaceID, "Current request"); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+	if session.Messages[len(session.Messages)-1].Status != "complete" ||
+		session.Messages[len(session.Messages)-1].Content != "Recovered reactively." {
+		t.Fatalf("expected completed reactive recovery, got %#v", session.Messages)
+	}
+	if streamRequests.Load() != 2 || summaryRequests.Load() == 0 {
+		t.Fatalf("expected rejection, summary, and retry; streams=%d summaries=%d", streamRequests.Load(), summaryRequests.Load())
 	}
 }
 

@@ -242,6 +242,155 @@ func TestSystemServiceSubmitInlineCodePromptAllowsMoreThanEightToolIterations(t 
 	}
 }
 
+func TestSystemServiceSubmitInlineCodePromptCompactsAcrossToolIterations(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "large.txt"), []byte(strings.Repeat("inline context ", 700)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var streamRequests atomic.Int32
+	var summaryRequests atomic.Int32
+	var events []InlineCodePromptEvent
+	var filePath string
+	service, workspaceID := newDecompositionTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request llm.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if !request.Stream {
+			assertCompleteRequest(t, r)
+			summaryRequests.Add(1)
+			writeChatResponse(t, w, "## Goal and Constraints\n- Complete the inline request.\n## Current State\n- File inspected.\n## Completed Checklist\n- [x] Read prior output.\n## Remaining Checklist\n- [ ] Answer.\n## Decisions and Rejected Approaches\n- None.\n## Relevant Files and Commands\n- large.txt\n## Findings, Errors, and Verification\n- None.\n## Immediate Next Action\n- Answer.")
+			return
+		}
+		assertChatStreamRequest(t, r)
+		switch streamRequests.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "inline_read_1", "filesystem_read_text", map[string]any{"path": filePath}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 2:
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "inline_read_2", "filesystem_read_text", map[string]any{"path": filePath}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 3:
+			if !requestContainsContent(request, contextCheckpointStart) {
+				t.Fatalf("expected compacted inline context, got %#v", request.Messages)
+			}
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Inline completed after compaction."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected stream request %d", streamRequests.Load())
+		}
+	}))
+	service.inlineCodeEventSink = func(event InlineCodePromptEvent) {
+		events = append(events, event)
+	}
+	filePath = labeledTestPath(t, service, workspaceID, "large.txt")
+	state := service.LoadState()
+	settings := state.Settings
+	settings.ContextLength = 4096
+	settings.MaxTokens = 512
+	if _, err := service.SaveSettings(settings); err != nil {
+		t.Fatalf("save compact context settings: %v", err)
+	}
+
+	response, err := service.SubmitInlineCodePrompt(workspaceID, InlineCodePromptRequest{
+		RequestID:        "inline-compact",
+		FilePath:         filePath,
+		Prompt:           "Inspect this file twice and answer.",
+		CursorToken:      "inline",
+		CursorLineText:   "inline context",
+		FocusSubstring:   "inline context",
+		ContextSubstring: "inline context",
+	})
+	if err != nil {
+		t.Fatalf("submit inline prompt: %v", err)
+	}
+	if response.Content != "Inline completed after compaction." {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	if streamRequests.Load() != 3 || summaryRequests.Load() == 0 {
+		t.Fatalf("expected tool iterations, compaction, and completion; streams=%d summaries=%d", streamRequests.Load(), summaryRequests.Load())
+	}
+	hasCompacting := false
+	hasCompacted := false
+	for _, event := range events {
+		hasCompacting = hasCompacting || event.Type == "compacting"
+		hasCompacted = hasCompacted || event.Type == "compacted"
+	}
+	if !hasCompacting || !hasCompacted {
+		t.Fatalf("expected inline compaction events, got %#v", events)
+	}
+}
+
+func TestSystemServiceSubmitInlineCodePromptRecoversOversizedToolResult(t *testing.T) {
+	root := t.TempDir()
+	const resultMarker = "INLINE_OVERSIZED_TOOL_RESULT"
+	if err := os.WriteFile(filepath.Join(root, "large.txt"), []byte(resultMarker), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var requestCount atomic.Int32
+	var recovered llm.ChatRequest
+	var filePath string
+	service, workspaceID := newDecompositionTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		var request llm.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "inline_large", "filesystem_read_text", map[string]any{"path": filePath}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 2:
+			if !requestContainsContent(request, resultMarker) {
+				t.Fatalf("expected original tool result, got %#v", request.Messages)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(w, `{"error":{"type":"context_length_exceeded","message":"maximum context length reached"}}`)
+		case 3:
+			recovered = request
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Retried with focused context."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected request %d", requestCount.Load())
+		}
+	}))
+	filePath = labeledTestPath(t, service, workspaceID, "large.txt")
+
+	response, err := service.SubmitInlineCodePrompt(workspaceID, InlineCodePromptRequest{
+		FilePath:         filePath,
+		Prompt:           "Inspect the file.",
+		FocusSubstring:   "placeholder",
+		ContextSubstring: "placeholder",
+	})
+	if err != nil {
+		t.Fatalf("submit inline prompt: %v", err)
+	}
+	if response.Content != "Retried with focused context." {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	if !requestContainsContent(recovered, toolResultContextErrorCode) ||
+		requestContainsContent(recovered, resultMarker) {
+		t.Fatalf("expected focused-query recovery request, got %#v", recovered.Messages)
+	}
+	if len(response.ToolCalls) != 1 || response.ToolCalls[0].Status != "error" ||
+		!strings.Contains(response.ToolCalls[0].Result, toolResultContextErrorCode) {
+		t.Fatalf("expected visible oversized-tool error, got %#v", response.ToolCalls)
+	}
+}
+
 func TestSystemServiceSubmitInlineCodePromptStreamsInlineToolCallWithoutLeakingMarkup(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("hello\n"), 0o600); err != nil {

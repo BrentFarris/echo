@@ -367,8 +367,11 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 		kanbanAgentSystemMessage(workspace, workspaceSkillCandidates(ctx, workspace, kanbanWorkspaceSkillTask(card))),
 		kanbanAgentUserMessage(card, dependencyOutputs, contextBrief),
 	}
+	currentUser := messages[1]
+	toolSchema := tools.LLMSchema()
 	changedPaths := map[string]bool{}
 	recoverableToolCalls := make(map[string]bool)
+	forcedCompactions := 0
 	verificationAttempts := 0
 	noToolContinuationAttempts := 0
 	hasProjectChanges := false
@@ -381,7 +384,34 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 			return
 		}
 
-		request, err := llm.NewChatRequest(settings, messages, llm.WithTools(tools.LLMSchema()), llm.WithToolChoice("auto"))
+		preflightPolicy := contextCompactionPolicy{CurrentUser: currentUser}
+		if contextNeedsCompaction(settings, messages, toolSchema) &&
+			contextHasCompressibleStale(settings, messages, preflightPolicy) {
+			s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
+				Type:    "status",
+				Title:   "Context compaction started",
+				Content: "The agent is condensing stale context while preserving the original card and recent work.",
+				Status:  KanbanLaneInProgress,
+			})
+			compaction, compactErr := compactContextIfNeeded(ctx, client, settings, messages, toolSchema, preflightPolicy)
+			if compactErr != nil {
+				if ctx.Err() != nil {
+					s.blockKanbanCard(workspace.ID, cardID, agentID, "Canceled", agentCancellationText)
+					return
+				}
+				s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
+					Type:    "status",
+					Title:   "Context compaction deferred",
+					Content: compactErr.Error(),
+					Status:  KanbanLaneInProgress,
+				})
+			} else if compaction.Compacted {
+				messages = compaction.Messages
+				s.appendKanbanCompactionResult(workspace.ID, cardID, agentID, compaction)
+			}
+		}
+
+		request, err := llm.NewChatRequest(settings, messages, llm.WithTools(toolSchema), llm.WithToolChoice("auto"))
 		if err != nil {
 			s.blockKanbanCard(workspace.ID, cardID, agentID, "Agent error", err.Error())
 			return
@@ -403,6 +433,40 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 					})
 					continue
 				}
+				if forcedCompactions >= 2 {
+					s.blockKanbanCard(workspace.ID, cardID, agentID, "Agent context exhausted", "Echo could not free enough context while preserving the system message, original card, and recent agent state.")
+					return
+				}
+				var compaction contextCompactionResult
+				var compactErr error
+				for forcedCompactions < 2 {
+					forcedCompactions++
+					s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
+						Type:    "status",
+						Title:   "Context compaction started",
+						Content: "The provider rejected the request for context length, so Echo is compacting stale agent history.",
+						Status:  KanbanLaneInProgress,
+					})
+					compaction, compactErr = compactContextIfNeeded(ctx, client, settings, messages, toolSchema, contextCompactionPolicy{
+						CurrentUser:    currentUser,
+						Force:          true,
+						Aggressiveness: forcedCompactions,
+					})
+					if compactErr == nil {
+						break
+					}
+					if ctx.Err() != nil {
+						s.blockKanbanCard(workspace.ID, cardID, agentID, "Canceled", agentCancellationText)
+						return
+					}
+				}
+				if compactErr != nil {
+					s.blockKanbanCard(workspace.ID, cardID, agentID, "Agent context exhausted", "Echo could not compact the context safely: "+compactErr.Error())
+					return
+				}
+				messages = compaction.Messages
+				s.appendKanbanCompactionResult(workspace.ID, cardID, agentID, compaction)
+				continue
 			}
 			s.blockKanbanCard(workspace.ID, cardID, agentID, "Agent error", userFacingLLMError(err))
 			return
@@ -416,6 +480,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 			s.blockKanbanCard(workspace.ID, cardID, agentID, "Agent stopped early", err.Error())
 			return
 		}
+		forcedCompactions = 0
 
 		assistantMessage := llm.Message{Role: llm.RoleAssistant, Content: content, ToolCalls: toolCalls}
 		messages = append(messages, assistantMessage)
@@ -872,6 +937,24 @@ func (s *SystemService) appendKanbanAgentProgress(workspaceID string, cardID str
 	s.chatMu.Unlock()
 }
 
+func (s *SystemService) appendKanbanCompactionResult(workspaceID string, cardID string, agentID uint64, result contextCompactionResult) {
+	content := fmt.Sprintf(
+		"Estimated context reduced from %d to %d tokens by replacing %d stale messages.",
+		result.BeforeTokens,
+		result.AfterTokens,
+		result.RemovedMessages,
+	)
+	if result.UsedFallback && result.Warning != "" {
+		content += " " + result.Warning
+	}
+	s.appendKanbanAgentProgress(workspaceID, cardID, agentID, KanbanProgressEntry{
+		Type:    "status",
+		Title:   "Context compressed",
+		Content: content,
+		Status:  KanbanLaneInProgress,
+	})
+}
+
 func (s *SystemService) finishKanbanCard(workspaceID string, cardID string, agentID uint64, finalResult string) {
 	content := strings.TrimSpace(finalResult)
 	if content == "" {
@@ -1083,6 +1166,7 @@ func kanbanAgentSystemMessage(workspace Workspace, skillCandidates []tools.Works
 		Role: llm.RoleSystem,
 		Content: workspaceSystemPrompt(
 			workspaceSkillsPrompt("You are Echo's autonomous Kanban agent. Complete the assigned card inside the active workspace. "+
+				contextCheckpointSystemGuidance+" "+
 				"Treat the provided Workspace Context Brief as your starting map, but validate important facts with targeted tools before editing. "+
 				"Use workspace_context for broad repo context when the brief is missing or the target files remain unclear. "+
 				"Use available tools when you need workspace facts. Invoke tools through the tool-call API; do not print a function name or JSON arguments in the card transcript. "+

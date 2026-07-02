@@ -318,6 +318,79 @@ func TestKanbanSchedulerRecoversWhenToolResultExceedsContext(t *testing.T) {
 	}
 }
 
+func TestKanbanSchedulerProactivelyCompactsAcrossToolIterations(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "large.txt"), []byte(strings.Repeat("context data ", 700)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var streamRequests atomic.Int32
+	var summaryRequests atomic.Int32
+	var filePath string
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request llm.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if !request.Stream {
+			assertCompleteRequest(t, r)
+			summaryRequests.Add(1)
+			writeChatResponse(t, w, "## Goal and Constraints\n- Complete the card.\n## Current State\n- The file was inspected.\n## Completed Checklist\n- [x] Read the file.\n## Remaining Checklist\n- [ ] Finish the card.\n## Decisions and Rejected Approaches\n- None.\n## Relevant Files and Commands\n- large.txt\n## Findings, Errors, and Verification\n- File contents were available.\n## Immediate Next Action\n- Finish.")
+			return
+		}
+		assertChatStreamRequest(t, r)
+		switch streamRequests.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_read_1", "filesystem_read_text", map[string]any{"path": filePath}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 2:
+			writeSSE(t, w,
+				kanbanToolCallPayload(t, "call_read_2", "filesystem_read_text", map[string]any{"path": filePath}),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 3:
+			if !requestContainsContent(request, contextCheckpointStart) {
+				t.Fatalf("expected compacted agent context, got %#v", request.Messages)
+			}
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Completed after context compaction."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected stream request %d", streamRequests.Load())
+		}
+	}))
+	filePath = labeledTestPath(t, service, workspaceID, "large.txt")
+	state := service.LoadState()
+	settings := state.Settings
+	settings.ContextLength = 4096
+	settings.MaxTokens = 512
+	if _, err := service.SaveSettings(settings); err != nil {
+		t.Fatalf("save compact context settings: %v", err)
+	}
+	seedKanbanCards(t, service, []KanbanCard{{
+		ID: "card-compact", WorkspaceID: workspaceID, Title: "Inspect repeated context",
+		Description: "Read the file twice and finish", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneReady,
+	}})
+
+	if _, err := service.StartKanbanExecution(workspaceID, 1); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	board := waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
+		return len(board.Done) == 1
+	})
+	if streamRequests.Load() != 3 || summaryRequests.Load() == 0 {
+		t.Fatalf("expected tool iterations, compaction, and completion; streams=%d summaries=%d", streamRequests.Load(), summaryRequests.Load())
+	}
+	transcript := board.Done[0].ProgressTranscript
+	if !transcriptContains(transcript, "Estimated context reduced") ||
+		!transcriptContains(transcript, "Completed after context compaction") {
+		t.Fatalf("expected compaction progress and final result, got %#v", transcript)
+	}
+}
+
 func TestKanbanSchedulerContinuesAfterPreparatoryNoToolResponseFollowingToolCall(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "styles.css"), []byte("body { color: black; }\n"), 0o600); err != nil {

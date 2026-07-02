@@ -98,6 +98,7 @@ export type InlineCodeChatState = {
   draft: string;
   mention: InlineCodeMentionState | null;
   submitting: boolean;
+  status: string;
   response: string;
   error: string;
   requestID: string;
