@@ -3,6 +3,8 @@ import { llm, services } from "../../wailsjs/go/models";
 import type { ThemePaletteName } from "./theme";
 import type { AppMode, ChatImageDraft, ChatMentionState, ContextMenuState, KanbanCardCreationDraft, Toast } from "./types";
 
+export type ChatKanbanTab = "chat" | "kanban";
+
 export const state = {
   appState: null as services.AppState | null,
   settingsDraft: null as llm.Settings | null,
@@ -13,7 +15,8 @@ export const state = {
   settingsEndpointEditId: "",
   settingsThemePalette: "light" as ThemePaletteName,
   workspaceLetterDrafts: new Map<string, string>(),
-  appMode: "chat-kanban" as AppMode,
+  appMode: "chat" as AppMode,
+  activeChatKanbanTab: new Map<string, ChatKanbanTab>(),
   formError: "",
   chatSessions: new Map<string, services.ChatSession>(),
   chatDrafts: new Map<string, string>(),
@@ -57,6 +60,10 @@ export const state = {
   kanbanTimerID: null as number | null,
   contextMenu: null as ContextMenuState | null,
 };
+
+export function getActiveChatKanbanTab(workspaceID: string): ChatKanbanTab {
+  return state.activeChatKanbanTab.get(workspaceID) ?? "chat";
+}
 
 export const kanbanLaneLabels: Record<string, string> = {
   ready: "Ready",

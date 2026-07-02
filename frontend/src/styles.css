@@ -15,8 +15,8 @@
   --color-border: #d8ccc8;
   --color-text: #241f1f;
   --color-text-muted: #6f6360;
-  --color-accent: #8f1d2c;
-  --color-accent-strong: #6f1320;
+  --color-accent: #2563eb;
+  --color-accent-strong: #1d4ed8;
   --color-on-accent: #ffffff;
   --color-danger: #b42332;
   --color-success: #1a7f37;
@@ -59,8 +59,8 @@
     --color-border: #343139;
     --color-text: #f3eeee;
     --color-text-muted: #b7aaab;
-    --color-accent: #b93648;
-    --color-accent-strong: #d94b5f;
+    --color-accent: #60a5fa;
+    --color-accent-strong: #93bbfd;
     --color-on-accent: #ffffff;
     --color-danger: #ff6677;
     --color-success: #3fb950;
@@ -4810,16 +4810,55 @@ h3 {
     width: 100%;
   }
 
+  /* Chat/Kanban tab bar — mobile only */
+  .chat-kanban-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 2px solid var(--color-border);
+    margin-bottom: 12px;
+  }
+
+  .tab-button {
+    padding: 8px 16px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    cursor: pointer;
+    transition: color 120ms ease, border-color 120ms ease;
+  }
+
+  .tab-button:hover {
+    color: var(--color-text);
+  }
+
+  .tab-button.is-active {
+    color: var(--color-accent);
+    border-bottom-color: var(--color-accent);
+  }
+
+  /* Conditionally hide panels on mobile based on active tab */
+  .split-panels[data-active-tab="chat"] .kanban-panel {
+    display: none;
+  }
+
+  .split-panels[data-active-tab="kanban"] .chat-panel {
+    display: none;
+  }
+
   .chat-mobile-controls {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 6px;
     padding: 8px 0;
-    border-top: 1px solid var(--color-border);
+    border-bottom: 1px solid var(--color-border);
     background: var(--color-surface);
     position: sticky;
-    bottom: 0;
+    top: 0;
     z-index: 5;
   }
 
@@ -4841,12 +4880,18 @@ h3 {
   }
 
   /* Hide the desktop heading controls on mobile to avoid duplication */
-  .stop-button,
-  .execute-button {
+  .chat-actions .stop-button,
+  .chat-actions .execute-button {
     display: none;
   }
 
   .chat-overflow {
+    display: none;
+  }
+
+  /* Hide expand/collapse buttons on mobile — panels stack vertically via tabs */
+  .chat-actions [data-action="toggle-chat-size"],
+  .kanban-actions [data-action="toggle-kanban-size"] {
     display: none;
   }
 }

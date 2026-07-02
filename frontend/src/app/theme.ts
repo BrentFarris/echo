@@ -71,14 +71,14 @@ export const themeTokens: ThemeToken[] = [
     label: "Accent",
     cssVariable: "--color-accent",
     group: "Action",
-    defaults: { light: "#8f1d2c", dark: "#b93648" },
+    defaults: { light: "#2563eb", dark: "#60a5fa" },
   },
   {
     key: "accentStrong",
     label: "Strong Accent",
     cssVariable: "--color-accent-strong",
     group: "Action",
-    defaults: { light: "#6f1320", dark: "#d94b5f" },
+    defaults: { light: "#1d4ed8", dark: "#93bbfd" },
   },
   {
     key: "onAccent",

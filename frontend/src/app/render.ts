@@ -7,7 +7,7 @@ import { appRoot, captureScrollSnapshot, focusInitialElement, restoreScrollSnaps
 import { bindEvents } from "./events";
 import { renderGitRepositoryDrawer } from "./git";
 import { icons } from "./icons";
-import { kanbanBoardFor, changeReviewFor, gitRepositoryViewFor, activeWorkspace, kanbanCards, state } from "./state";
+import { kanbanBoardFor, changeReviewFor, gitRepositoryViewFor, activeWorkspace, kanbanCards, state, getActiveChatKanbanTab } from "./state";
 import { renderSettingsOverlay } from "./settings";
 import { renderToasts } from "./toasts";
 import { escapeHtml, workspaceFolderSummary } from "./utils";
@@ -137,8 +137,10 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
   const kanbanExpanded = workspace && !chatExpanded ? state.expandedKanbanWorkspaces.has(workspace.id) : false;
   const kanbanSizeLabel = kanbanExpanded ? "Collapse Kanban" : "Expand Kanban";
   const reviewCount = review?.fileCount ?? 0;
+  const activeTab = workspace ? getActiveChatKanbanTab(workspace.id) : "chat";
   return `
-    <div class="split-panels ${chatExpanded ? "is-chat-expanded" : ""} ${kanbanExpanded ? "is-kanban-expanded" : ""}">
+    ${workspace ? renderChatKanbanTabs(workspace.id, activeTab) : ""}
+    <div class="split-panels ${chatExpanded ? "is-chat-expanded" : ""} ${kanbanExpanded ? "is-kanban-expanded" : ""}" data-active-tab="${escapeHtml(activeTab)}">
       ${renderChatPanel(workspace, chatExpanded)}
       <section class="work-panel kanban-panel" aria-labelledby="kanban-title">
         <div class="panel-heading">
@@ -190,5 +192,18 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
     ${board ? renderKanbanDetail(board) : ""}
     ${workspace && state.creatingKanbanCardWorkspaces.has(workspace.id) && !running ? renderCreateKanbanCardDialog(workspace.id) : ""}
     ${workspace && state.openChangeReviewWorkspaces.has(workspace.id) ? renderChangeReviewDrawer(workspace, review ?? changeReviewFor(workspace.id)) : ""}
+  `;
+}
+
+function renderChatKanbanTabs(workspaceID: string, activeTab: string): string {
+  return `
+    <div class="chat-kanban-tabs" role="tablist" aria-label="Chat and Kanban tabs">
+      <button class="tab-button ${activeTab === "chat" ? "is-active" : ""}" type="button" role="tab" aria-selected="${activeTab === "chat"}" data-action="set-chat-kanban-tab" data-tab="chat">
+        Chat
+      </button>
+      <button class="tab-button ${activeTab === "kanban" ? "is-active" : ""}" type="button" role="tab" aria-selected="${activeTab === "kanban"}" data-action="set-chat-kanban-tab" data-tab="kanban">
+        Kanban
+      </button>
+    </div>
   `;
 }

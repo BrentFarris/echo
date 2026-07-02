@@ -96,7 +96,7 @@ export async function handleAction(event: Event) {
         state.loadingGitChangeWorkspaces.delete(workspace.id);
         state.loadingGitRepositoryWorkspaces.delete(workspace.id);
       }
-      state.appMode = "chat-kanban";
+      state.appMode = "chat";
       getAppCallbacks().render();
       return;
     }
@@ -376,6 +376,17 @@ export async function handleAction(event: Event) {
       } else {
         state.expandedKanbanWorkspaces.add(workspace.id);
         state.expandedChatWorkspaces.delete(workspace.id);
+      }
+      getAppCallbacks().render();
+    }
+    if (action === "set-chat-kanban-tab") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      const tab = target.dataset.tab;
+      if (tab === "chat" || tab === "kanban") {
+        state.activeChatKanbanTab.set(workspace.id, tab);
       }
       getAppCallbacks().render();
     }
@@ -753,9 +764,10 @@ export async function handleAction(event: Event) {
       state.loadingGitChangeWorkspaces.delete(workspaceID);
       state.chatPlanModes.delete(workspaceID);
       state.chatImageDrafts.delete(workspaceID);
+      state.activeChatKanbanTab.delete(workspaceID);
       forgetKanbanRun(workspaceID);
       if (!activeWorkspace()) {
-        state.appMode = "chat-kanban";
+        state.appMode = "chat";
       } else {
         await loadActiveCodeViewIfNeeded();
       }
