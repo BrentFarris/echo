@@ -252,6 +252,7 @@ function renderCodeExplorerSidebar(workspaceID: string, dirtyCount: number): str
   const state = ensureCodeState(workspaceID);
   return `
     <aside class="code-explorer" id="code-explorer-${escapeAttribute(workspaceID)}" aria-label="Workspace files">
+      <div class="code-explorer-dismiss-handle" data-code-action="close-explorer-drawer"><span></span></div>
       <div class="code-explorer-meta">
         <span data-code-dirty-summary>${dirtyCount ? `${dirtyCount} unsaved` : "Files"}</span>
         <div class="code-explorer-toolbar" aria-label="File explorer actions">
@@ -349,6 +350,7 @@ function renderTemporaryFileEntry(
 function renderTextSearchSidebar(workspaceID: string): string {
   return `
     <aside class="code-explorer code-text-search-sidebar" id="code-explorer-${escapeAttribute(workspaceID)}" aria-label="Find in files">
+      <div class="code-explorer-dismiss-handle" data-code-action="close-explorer-drawer"><span></span></div>
       <div class="code-explorer-meta">
         <span>Find</span>
         <div class="code-explorer-toolbar" aria-label="Find in files actions">

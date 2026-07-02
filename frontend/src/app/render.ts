@@ -25,7 +25,7 @@ export function render() {
   const workspace = activeWorkspace();
   const workspaces = state.appState?.workspaces ?? [];
   const showingCode = state.appMode === "code" && Boolean(workspace);
-  const showGitChanges = workspace && state.openGitChangeWorkspaces.has(workspace.id);
+  const showGitChanges = workspace != null && state.openGitChangeWorkspaces.has(workspace.id);
 
   // Preserve the live draft value and scroll position from the existing textarea before DOM destruction.
   const existingTextarea = appRoot.querySelector<HTMLTextAreaElement>("textarea[data-chat-input]");
@@ -100,6 +100,7 @@ export function render() {
         </section>
         ${showGitChanges ? renderGitRepositoryDrawer(workspace, gitRepositoryViewFor(workspace.id)) : ""}
       </main>
+      ${renderMobileBottomNav(workspaces, workspace, showingCode, showGitChanges)}
       ${state.settingsOpen ? renderSettingsOverlay(workspaces) : ""}
       ${renderToasts()}
       ${state.contextMenu ? renderContextMenu(state.contextMenu) : ""}
@@ -192,6 +193,47 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
     ${board ? renderKanbanDetail(board) : ""}
     ${workspace && state.creatingKanbanCardWorkspaces.has(workspace.id) && !running ? renderCreateKanbanCardDialog(workspace.id) : ""}
     ${workspace && state.openChangeReviewWorkspaces.has(workspace.id) ? renderChangeReviewDrawer(workspace, review ?? changeReviewFor(workspace.id)) : ""}
+  `;
+}
+
+function renderMobileBottomNav(
+  workspaces: services.Workspace[],
+  workspace: services.Workspace | null,
+  showingCode: boolean,
+  showGitChanges: boolean,
+): string {
+  return `
+    <nav class="mobile-bottom-nav" aria-label="Navigation">
+      ${workspaces
+        .map(
+          (item) => `
+            <button
+              class="mobile-nav-item workspace-button ${item.active ? "is-active" : ""} ${item.missing ? "is-missing" : ""}"
+              type="button"
+              title="${escapeHtml(workspaceFolderSummary(item))}"
+              aria-label="${escapeHtml(item.displayName)}${item.missing ? " missing" : ""}"
+              data-action="activate-workspace"
+              data-workspace-id="${escapeHtml(item.id)}"
+            >${renderWorkspaceIcon(item)}</button>
+          `,
+        )
+        .join("")}
+      ${
+        workspace
+          ? `
+            <button class="mobile-nav-item icon-button ${showingCode ? "is-active" : ""}" type="button" title="Code view" aria-label="Code view" data-action="${showingCode ? "close-code-view" : "open-code-view"}">
+              ${icons.code}
+            </button>
+            <button class="mobile-nav-item icon-button ${showGitChanges ? "is-active" : ""}" type="button" title="Git changes" aria-label="Git changes" data-action="${showGitChanges ? "close-git-changes" : "open-git-changes"}">
+              ${icons.git}
+            </button>
+          `
+          : ""
+      }
+      <button class="mobile-nav-item icon-button" type="button" title="Settings" aria-label="Settings" data-action="open-settings">
+        ${icons.settings}
+      </button>
+    </nav>
   `;
 }
 

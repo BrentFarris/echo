@@ -268,6 +268,11 @@ textarea:focus-visible {
   object-fit: cover;
 }
 
+/* Mobile bottom nav is hidden on desktop — shown only inside the 720px media query */
+.mobile-bottom-nav {
+  display: none;
+}
+
 .icon-button svg {
   width: 20px;
   height: 20px;
@@ -2967,6 +2972,11 @@ h3 {
   display: none;
 }
 
+/* Bottom sheet dismiss handle — hidden on desktop, shown on mobile */
+.code-explorer-dismiss-handle {
+  display: none;
+}
+
 .code-workspace {
   display: grid;
   grid-template-columns: minmax(220px, var(--code-explorer-width, 300px)) 8px minmax(0, 1fr);
@@ -4576,7 +4586,7 @@ h3 {
   }
 
   .kanban-board {
-    grid-template-columns: repeat(2, minmax(210px, 1fr));
+    grid-template-columns: repeat(4, minmax(210px, auto));
   }
 
   .code-workspace {
@@ -4649,54 +4659,83 @@ h3 {
     grid-template-rows: auto minmax(0, 1fr);
   }
 
+  /* Hide the desktop gutter on mobile — replaced by bottom nav */
   .gutter {
-    flex-direction: row;
+    display: none;
+  }
+
+  /* Mobile fixed bottom navigation bar */
+  .mobile-bottom-nav {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: stretch;
+    justify-content: space-around;
+    gap: 0;
+    padding: 0 4px;
+    background: var(--color-surface);
+    border-top: 1px solid var(--color-border);
+    z-index: 10;
+  }
+
+  .mobile-nav-item {
+    display: flex;
     align-items: center;
-    gap: 10px;
-    min-width: 0;
-    padding: 8px;
-    border-right: 0;
-    border-bottom: 1px solid var(--color-border);
-  }
-
-  .workspace-rail {
-    display: flex;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+    width: auto;
     flex: 1 1 auto;
-    min-width: 0;
-    min-height: auto;
-    overflow-x: auto;
-    overflow-y: hidden;
-    overscroll-behavior-inline: contain;
-    scrollbar-width: thin;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    padding: 8px 4px;
+    transition:
+      background 160ms ease,
+      color 160ms ease;
   }
 
-  .workspace-button.is-drop-before {
-    border-top-color: transparent;
-    border-left-color: var(--color-accent);
-    box-shadow: inset 3px 0 0 var(--color-accent);
+  .mobile-nav-item svg {
+    width: 22px;
+    height: 22px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2;
   }
 
-  .workspace-button.is-drop-after {
-    border-right-color: var(--color-accent);
-    border-bottom-color: transparent;
-    box-shadow: inset -3px 0 0 var(--color-accent);
+  .mobile-nav-item:hover,
+  .mobile-nav-item:focus-visible {
+    background: var(--color-surface-muted);
+    color: var(--color-text);
+    outline: none;
   }
 
-  .gutter-actions {
-    display: flex;
-    flex: 0 0 auto;
-    margin-top: 0;
-    margin-left: auto;
+  .mobile-nav-item.is-active {
+    background: color-mix(in srgb, var(--color-accent) 44%, transparent);
+    color: var(--color-accent-strong);
   }
 
-  .gutter-button,
-  .icon-button {
-    flex: 0 0 auto;
-    width: 40px;
+  .mobile-nav-item.is-missing {
+    border-color: color-mix(in srgb, var(--color-danger) 48%, transparent);
+  }
+
+  /* Workspace buttons in bottom nav retain icon styling */
+  .mobile-nav-item.workspace-button {
+    font-size: 0.82rem;
+    font-weight: 800;
+    line-height: 1;
+    cursor: pointer;
   }
 
   .main-content {
     padding: 18px;
+    padding-bottom: 64px;
   }
 
   .workspace-panel {
@@ -4718,7 +4757,7 @@ h3 {
   }
 
   .settings-panel {
-    max-height: calc(100dvh - 24px);
+    max-height: calc(100dvh - 76px);
   }
 
   .settings-layout {
@@ -4763,7 +4802,7 @@ h3 {
   }
 
   .kanban-board {
-    grid-template-columns: 1fr;
+    /* Horizontal scroll inherited from 920px breakpoint */
   }
 
   .workspace-heading-row,
@@ -4793,6 +4832,82 @@ h3 {
 
   .code-tab {
     min-width: 132px;
+  }
+
+  /* Code view file explorer as bottom sheet on mobile */
+  .code-explorer {
+    position: absolute;
+    inset: auto 0 0 0;
+    z-index: 30;
+    width: 100%;
+    max-height: min(60vh, 480px);
+    transform: translateY(100%);
+    visibility: hidden;
+    border-right: 0;
+    border-top: 1px solid var(--color-border);
+    border-bottom: 0;
+    border-radius: 12px 12px 0 0;
+    box-shadow: 0 -8px 32px color-mix(in srgb, black 24%, transparent);
+    transition:
+      transform 200ms ease,
+      visibility 0s linear 200ms;
+  }
+
+  .code-workspace.is-explorer-open .code-explorer {
+    transform: translateY(0);
+    visibility: visible;
+    transition: transform 200ms ease;
+  }
+
+  /* Dismiss handle for bottom sheet */
+  .code-explorer-dismiss-handle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 0 2px;
+    cursor: pointer;
+  }
+
+  .code-explorer-dismiss-handle span {
+    width: 36px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--color-text-muted);
+    opacity: 0.5;
+  }
+
+  /* Backdrop covers the entire code workspace */
+  .code-explorer-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 25;
+    display: block;
+    border: 0;
+    background: color-mix(in srgb, black 32%, transparent);
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    visibility: hidden;
+    transition:
+      opacity 180ms ease,
+      visibility 0s linear 180ms;
+  }
+
+  .code-workspace.is-explorer-open .code-explorer-backdrop {
+    opacity: 1;
+    pointer-events: auto;
+    visibility: visible;
+    transition: opacity 180ms ease;
+  }
+
+  /* Show close button in the drawer toolbar */
+  .code-explorer-meta .code-explorer-drawer-close {
+    display: grid;
+  }
+
+  /* Hide resizer on mobile */
+  .code-resizer {
+    display: none;
   }
 
   .chat-actions,

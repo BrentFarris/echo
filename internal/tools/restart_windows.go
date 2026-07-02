@@ -3,11 +3,12 @@
 package tools
 
 import (
+	"fmt"
 	"os/exec"
 	"syscall"
 )
 
-const detachedProcess = 0x00000008 | 0x01000000 // DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB
+const detachedProcess = 0x00000008 // DETACHED_PROCESS only; CREATE_BREAKAWAY_FROM_JOB fails under job objects (e.g. Wails dev)
 
 func launchDetachedRestart(scriptPath string) error {
 	pwsh, err := exec.LookPath("pwsh.exe")
@@ -25,7 +26,7 @@ func launchDetachedRestart(scriptPath string) error {
 
 	// Start (not Run) so we detach immediately.
 	if err := cmd.Start(); err != nil {
-		return err
+		return fmt.Errorf("start PowerShell process: %w", err)
 	}
 
 	// Release resources without waiting for exit.
