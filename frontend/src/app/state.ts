@@ -3,6 +3,9 @@ import { llm, services } from "../../wailsjs/go/models";
 import type { ThemePaletteName } from "./theme";
 import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, KanbanCardCreationDraft, MobileNavView, Toast } from "./types";
 
+const endpointTopics = ["chat", "kanbanDecompose", "kanban", "inlineCode"] as const;
+type EndpointTopicKey = (typeof endpointTopics)[number];
+
 export type ChatKanbanTab = "chat" | "kanban";
 
 export const state = {
@@ -222,4 +225,15 @@ export function thinkingCorrectionEnabled(settings: llm.Settings | null | undefi
 export function thinkingTokenBudgetEnabled(settings: llm.Settings | null | undefined): boolean {
   return (settings as { thinkingTokenBudget?: number } | null | undefined)
     ?.thinkingTokenBudget !== 0;
+}
+
+export function getActiveChatModelLabel(): string {
+  const endpoints = state.settingsDraft?.endpoints ?? [];
+  if (!endpoints.length) {
+    return "";
+  }
+  const selection = state.settingsDraft?.endpointSelection;
+  const endpointID = selection?.chat || endpoints[0].id;
+  const endpoint = endpoints.find((ep) => ep.id === endpointID);
+  return endpoint?.model?.trim() || "";
 }

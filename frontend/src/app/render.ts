@@ -1,8 +1,14 @@
 import { destroyCodeEditor, renderCodeView } from "../codeView";
-import { renderChatPanel, clearChatMention, linkifyAssistantFilePaths } from "./chat";
+import {
+  patchChatPanel,
+  patchChatControls,
+  renderChatPanel,
+  clearChatMention,
+  linkifyAssistantFilePaths,
+} from "./chat";
 import { renderChangeReviewDrawer } from "./changes";
 import { renderContextMenu } from "./contextMenu";
-import { appRoot, captureScrollSnapshot, focusInitialElement, restoreScrollSnapshot } from "./dom";
+import { appRoot, focusInitialElement } from "./dom";
 import { bindEvents } from "./events";
 import { renderGitRepositoryDrawer } from "./git";
 import { icons } from "./icons";
@@ -14,22 +20,44 @@ import { renderWorkspaceIcon, renderMissingWorkspace } from "./workspace";
 import { hasKanbanRuntime, renderCreateKanbanCardDialog, renderDecompositionState, renderEmptyBoard, renderKanbanBoard, renderKanbanDetail, renderKanbanRuntime } from "./kanban";
 import { services } from "../../wailsjs/go/models";
 
-export function render() {
+/** Persistent app-shell wrapper.  Creating it once inside appRoot means
+ *  that subsequent renders only swap individual region fragments instead
+ *  of tearing down the entire DOM tree, eliminating jank during rapid
+ *  streaming updates. */
+function ensureShell(): HTMLElement {
+  let shell = appRoot.querySelector(".app-shell") as HTMLElement;
+  if (!shell) {
+    shell = document.createElement("div");
+    shell.className = "app-shell";
+    appRoot.appendChild(shell);
+  }
+  return shell;
+}
+
+/** Replace the innerHTML of a named region, creating the region element
+ *  lazily on first write. */
+function updateRegion(shell: HTMLElement, name: string, html: string): void {
+  let region = shell.querySelector(`[data-region="${name}"]`) as HTMLElement;
+  if (!region) {
+    region = document.createElement("div");
+    region.dataset.region = name;
+    shell.appendChild(region);
+  }
+  region.innerHTML = html;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Public                                                             */
+/* ------------------------------------------------------------------ */
+
+export function render(): void {
   destroyCodeEditor();
-  const chatScroll = captureScrollSnapshot("[data-chat-log]");
-  const cardDetailScroll = captureScrollSnapshot("[data-card-detail]");
-  const changeReviewScroll = captureScrollSnapshot("[data-change-review]");
-  const settingsScroll = captureScrollSnapshot("[data-settings-form]");
   const hadDialog = Boolean(appRoot.querySelector('[role="dialog"]'));
+
   const workspace = activeWorkspace();
   const workspaces = state.appState?.workspaces ?? [];
   const showingCode = state.appMode === "code" && Boolean(workspace);
   const showGitChanges = workspace != null && state.openGitChangeWorkspaces.has(workspace.id);
-
-  // Preserve the live draft value and scroll position from the existing textarea before DOM destruction.
-  const existingTextarea = appRoot.querySelector<HTMLTextAreaElement>("textarea[data-chat-input]");
-  const preservedDraft = existingTextarea?.value ?? "";
-  const preservedInputScrollTop = existingTextarea?.scrollTop ?? 0;
 
   if (
     state.chatMention &&
@@ -38,93 +66,121 @@ export function render() {
     clearChatMention();
   }
 
-  appRoot.innerHTML = `
-    <div class="app-shell">
-      <aside class="gutter" aria-label="Primary">
-        <nav class="workspace-rail" aria-label="Workspaces" data-workspace-rail>
-          ${workspaces
-            .map(
-              (item) => `
-                <button
-                  class="gutter-button workspace-button ${item.active ? "is-active" : ""} ${item.missing ? "is-missing" : ""}"
-                  type="button"
-                  draggable="true"
-                  title="${escapeHtml(workspaceFolderSummary(item))}"
-                  aria-label="${escapeHtml(item.displayName)}${item.missing ? " missing" : ""}"
-                  data-action="activate-workspace"
-                  data-workspace-drag-item
-                  data-workspace-id="${escapeHtml(item.id)}"
-                >${renderWorkspaceIcon(item)}</button>
-              `,
-            )
-            .join("")}
-        </nav>
-        <div class="gutter-actions">
-          <button class="gutter-button icon-button" type="button" title="Add workspace" aria-label="Add workspace" data-action="add-workspace">
-            ${icons.plus}
-          </button>
-          <button class="gutter-button icon-button" type="button" title="Settings" aria-label="Settings" data-action="open-settings">
-            ${icons.settings}
-          </button>
-        </div>
-      </aside>
-      <main class="main-content">
-        <section class="workspace-panel ${showingCode ? "is-code-mode" : ""}" aria-labelledby="${showingCode ? "code-title" : "workspace-title"}">
-          ${
-            showingCode && workspace
-              ? renderCodeView(workspace)
-              : `
-                <div class="workspace-heading-row">
-                  <div class="workspace-heading-main">
-                    <strong id="workspace-title">${workspace ? escapeHtml(workspace.displayName) : "Workspace"}</strong><span class="heading-path">${workspace ? escapeHtml(workspaceFolderSummary(workspace)) : ""}</span>
-                  </div>
-                  ${
-                    workspace
-                      ? `<div class="workspace-heading-actions">
-                          <button class="secondary-button icon-text-button" type="button" data-action="open-git-changes">
-                            ${icons.git}
-                            <span>Git</span>
-                          </button>
-                          <button class="secondary-button icon-text-button" type="button" data-action="open-code-view">
-                            ${icons.code}
-                            <span>Code</span>
-                          </button>
-                        </div>`
-                      : ""
-                  }
-                </div>
-                ${workspace ? renderWorkspacePanels(workspace, workspaces.length) : ""}
-              `
-          }
-        </section>
-        ${showGitChanges ? renderGitRepositoryDrawer(workspace, gitRepositoryViewFor(workspace.id)) : ""}
-      </main>
-      ${renderMobileBottomNav(workspaces, workspace, showingCode, showGitChanges)}
-      ${state.settingsOpen ? renderSettingsOverlay(workspaces) : ""}
-      ${renderToasts()}
-      ${state.contextMenu ? renderContextMenu(state.contextMenu) : ""}
-    </div>
-  `;
+  const shell = ensureShell();
+
+  updateRegion(shell, "gutter", buildGutter(workspaces));
+  updateRegion(shell, "main", buildMain(workspace, workspaces, showingCode, showGitChanges));
+  updateRegion(
+    shell,
+    "mobile-nav",
+    renderMobileBottomNav(workspaces, workspace, showingCode, showGitChanges),
+  );
+  updateRegion(shell, "overlays", buildOverlays());
 
   bindEvents();
-  restoreScrollSnapshot("[data-chat-log]", chatScroll);
-  restoreScrollSnapshot("[data-card-detail]", cardDetailScroll);
-  restoreScrollSnapshot("[data-change-review]", changeReviewScroll);
-  restoreScrollSnapshot("[data-settings-form]", settingsScroll);
   if (!hadDialog) {
     focusInitialElement();
   }
   void linkifyAssistantFilePaths();
-
-  // Restore the preserved draft value and scroll position to the newly created textarea if it differs from what was rendered.
-  const restoredTextarea = appRoot.querySelector<HTMLTextAreaElement>("textarea[data-chat-input]");
-  if (restoredTextarea && restoredTextarea.value !== preservedDraft) {
-    restoredTextarea.value = preservedDraft;
-  }
-  if (restoredTextarea) {
-    restoredTextarea.scrollTop = preservedInputScrollTop;
-  }
 }
+
+/* ------------------------------------------------------------------ */
+/*  Region builders                                                    */
+/* ------------------------------------------------------------------ */
+
+function buildGutter(workspaces: services.Workspace[]): string {
+  return `
+    <aside class="gutter" aria-label="Primary">
+      <nav class="workspace-rail" aria-label="Workspaces" data-workspace-rail>
+        ${workspaces
+          .map(
+            (item) => `
+              <button
+                class="gutter-button workspace-button ${item.active ? "is-active" : ""} ${item.missing ? "is-missing" : ""}"
+                type="button"
+                draggable="true"
+                title="${escapeHtml(workspaceFolderSummary(item))}"
+                aria-label="${escapeHtml(item.displayName)}${item.missing ? " missing" : ""}"
+                data-action="activate-workspace"
+                data-workspace-drag-item
+                data-workspace-id="${escapeHtml(item.id)}"
+              >${renderWorkspaceIcon(item)}</button>
+            `,
+          )
+          .join("")}
+      </nav>
+      <div class="gutter-actions">
+        <button class="gutter-button icon-button" type="button" title="Add workspace" aria-label="Add workspace" data-action="add-workspace">
+          ${icons.plus}
+        </button>
+        <button class="gutter-button icon-button" type="button" title="Settings" aria-label="Settings" data-action="open-settings">
+          ${icons.settings}
+        </button>
+      </div>
+    </aside>
+  `;
+}
+
+function buildMain(
+  workspace: services.Workspace | null,
+  workspaces: services.Workspace[],
+  showingCode: boolean,
+  showGitChanges: boolean,
+): string {
+  // Narrow for callers that require non-null Workspace;
+  // logically workspace is non-null whenever showGitChanges is true.
+  const ws = workspace;
+
+  return `
+    <main class="main-content">
+      <section class="workspace-panel ${showingCode ? "is-code-mode" : ""}" aria-labelledby="${showingCode ? "code-title" : "workspace-title"}">
+        ${
+          showingCode && workspace
+            ? renderCodeView(workspace)
+            : `
+              <div class="workspace-heading-row">
+                <div class="workspace-heading-main">
+                  <strong id="workspace-title">${workspace ? escapeHtml(workspace.displayName) : "Workspace"}</strong><span class="heading-path">${workspace ? escapeHtml(workspaceFolderSummary(workspace)) : ""}</span>
+                </div>
+                ${
+                  workspace
+                    ? `<div class="workspace-heading-actions">
+                        <button class="secondary-button icon-text-button" type="button" data-action="open-git-changes">
+                          ${icons.git}
+                          <span>Git</span>
+                        </button>
+                        <button class="secondary-button icon-text-button" type="button" data-action="open-code-view">
+                          ${icons.code}
+                          <span>Code</span>
+                        </button>
+                      </div>`
+                    : ""
+                }
+              </div>
+              ${workspace ? renderWorkspacePanels(workspace, workspaces.length) : ""}
+            `
+        }
+      </section>
+      ${showGitChanges ? renderGitRepositoryDrawer(ws!, gitRepositoryViewFor(ws!.id)) : ""}
+    </main>
+  `;
+}
+
+function buildOverlays(): string {
+  const parts: string[] = [];
+  if (state.settingsOpen) {
+    parts.push(renderSettingsOverlay(state.appState?.workspaces ?? []));
+  }
+  parts.push(renderToasts());
+  if (state.contextMenu) {
+    parts.push(renderContextMenu(state.contextMenu));
+  }
+  return parts.join("\n");
+}
+
+/* ------------------------------------------------------------------ */
+/*  Preserved helpers                                                  */
+/* ------------------------------------------------------------------ */
 
 export function renderWorkspacePanels(workspace: services.Workspace | null, workspaceCount: number): string {
   const board = workspace ? kanbanBoardFor(workspace.id) : null;
