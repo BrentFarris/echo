@@ -329,6 +329,8 @@ function applyWorkspaceRenameResponse(
     view.dispatch({ effects: clearRenameTooltipEffect.of() });
     return;
   }
+  const scrollTop = view.scrollDOM.scrollTop;
+  const scrollLeft = view.scrollDOM.scrollLeft;
   const caret = clamp(rename.from + newName.length, 0, activeContent.length);
   view.dispatch({
     changes: { from: 0, to: view.state.doc.length, insert: activeContent },
@@ -337,6 +339,29 @@ function applyWorkspaceRenameResponse(
     annotations: Transaction.addToHistory.of(false),
     userEvent: "input.rename",
   });
+  restoreEditorScrollAfterRename(workspaceID, path, view, scrollTop, scrollLeft);
+  window.requestAnimationFrame(() => {
+    restoreEditorScrollAfterRename(workspaceID, path, view, scrollTop, scrollLeft);
+  });
+}
+
+function restoreEditorScrollAfterRename(
+  workspaceID: string,
+  path: string,
+  view: EditorView,
+  scrollTop: number,
+  scrollLeft: number,
+) {
+  if (!view.dom.isConnected) {
+    return;
+  }
+  view.scrollDOM.scrollTop = scrollTop;
+  view.scrollDOM.scrollLeft = scrollLeft;
+  const tab = findTab(workspaceID, path);
+  if (tab) {
+    tab.scrollTop = view.scrollDOM.scrollTop;
+    tab.scrollLeft = view.scrollDOM.scrollLeft;
+  }
 }
 
 async function goToLspDefinition(
