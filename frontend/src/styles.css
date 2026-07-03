@@ -5251,6 +5251,200 @@ h3 {
   .kanban-actions [data-action="toggle-kanban-size"] {
     display: none;
   }
+
+  /* Hide the old chat/kanban tabs row on mobile — replaced by bottom nav */
+  .chat-kanban-tabs {
+    display: none !important;
+  }
+
+  /* Unified single-row bottom nav — five view tabs + workspace pill */
+  .mobile-bottom-nav {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: stretch;
+    justify-content: space-between;
+    gap: 0;
+    padding: 0;
+    background: var(--color-surface);
+    border-top: 1px solid var(--color-border);
+    z-index: 10;
+  }
+
+  .mobile-nav-brand {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 8px;
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .mobile-nav-pill {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    background: var(--color-surface-raised);
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 120px;
+    cursor: pointer;
+    transition: background 160ms ease, color 160ms ease;
+    font-family: inherit;
+  }
+
+  .mobile-nav-app-name {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--color-text);
+    white-space: nowrap;
+  }
+
+  /* Workspace pill hover/focus/open states */
+  .mobile-nav-pill:hover,
+  .mobile-nav-pill:focus-visible {
+    background: var(--color-surface-muted);
+    color: var(--color-text);
+    outline: none;
+  }
+
+  .mobile-nav-pill.is-open {
+    background: color-mix(in srgb, var(--color-accent) 32%, transparent);
+    color: var(--color-accent-strong);
+    border-color: var(--color-accent);
+  }
+
+  /* Workspace dropdown menu */
+  .mobile-nav-workspace-dropdown {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 8px;
+    right: 8px;
+    background: var(--color-surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+    z-index: 1000;
+    overflow-y: auto;
+    max-height: 240px;
+    display: flex;
+    flex-direction: column;
+    pointer-events: auto;
+  }
+
+  .mobile-nav-workspace-option {
+    display: block;
+    width: 100%;
+    padding: 10px 12px;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--color-border);
+    color: var(--color-text);
+    font-size: 0.85rem;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 120ms ease;
+  }
+
+  .mobile-nav-workspace-option:last-child {
+    border-bottom: none;
+  }
+
+  .mobile-nav-workspace-option:hover,
+  .mobile-nav-workspace-option:focus-visible {
+    background: var(--color-surface-muted);
+    outline: none;
+  }
+
+  .mobile-nav-workspace-option.is-active {
+    background: color-mix(in srgb, var(--color-accent) 32%, transparent);
+    color: var(--color-accent-strong);
+    font-weight: 600;
+  }
+
+  .mobile-nav-workspace-option .is-missing {
+    color: var(--color-error);
+    font-weight: normal;
+    font-size: 0.75rem;
+  }
+
+  .mobile-nav-tabs {
+    display: flex;
+    align-items: stretch;
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 0;
+  }
+
+  .mobile-nav-tab {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    min-width: 48px;
+    height: 56px;
+    width: auto;
+    flex: 1 1 auto;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    padding: 8px 4px 6px;
+    transition:
+      background 160ms ease,
+      color 160ms ease;
+    font-family: inherit;
+  }
+
+  .mobile-nav-tab svg {
+    width: 20px;
+    height: 20px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2;
+    flex-shrink: 0;
+  }
+
+  .mobile-nav-tab span {
+    font-size: 0.7rem;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .mobile-nav-tab:hover,
+  .mobile-nav-tab:focus-visible {
+    background: var(--color-surface-muted);
+    color: var(--color-text);
+    outline: none;
+  }
+
+  .mobile-nav-tab.is-active {
+    background: color-mix(in srgb, var(--color-accent) 32%, transparent);
+    color: var(--color-accent-strong);
+  }
+
+  /* View panel fade transition */
+  .workspace-panel {
+    animation: fadeIn 200ms ease;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
 }
 
 @media (hover: none), (pointer: coarse) {

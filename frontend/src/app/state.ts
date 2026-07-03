@@ -1,7 +1,7 @@
 
 import { llm, services } from "../../wailsjs/go/models";
 import type { ThemePaletteName } from "./theme";
-import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, KanbanCardCreationDraft, Toast } from "./types";
+import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, KanbanCardCreationDraft, MobileNavView, Toast } from "./types";
 
 export type ChatKanbanTab = "chat" | "kanban";
 
@@ -16,8 +16,10 @@ export const state = {
   settingsThemePalette: "light" as ThemePaletteName,
   workspaceLetterDrafts: new Map<string, string>(),
   appMode: "chat" as AppMode,
+  mobileNavView: "chat" as MobileNavView,
   activeChatKanbanTab: new Map<string, ChatKanbanTab>(),
   formError: "",
+  workspaceDropdownOpen: false,
   chatSessions: new Map<string, services.ChatSession>(),
   chatDrafts: new Map<string, string>(),
   chatImageDrafts: new Map<string, ChatImageDraft[]>(),
