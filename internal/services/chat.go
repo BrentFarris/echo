@@ -1067,6 +1067,7 @@ func chatSystemMessage(workspace Workspace, planMode bool, skillCandidates []too
 		"Use available tools when workspace facts are needed. " +
 		"When the user mentions @path, treat it as a labeled workspace file reference like <folder-label>/path and read it before relying on its contents. " +
 		"Use workspace_context for broad implementation planning when target files are unknown. " +
+		"Use git_inspect when commit history, regressions, legacy behavior, ownership, or prior rationale would materially clarify the request; avoid routine history searches when the current code is sufficient. " +
 		"When you need to find code but do not know the target file, prefer filesystem_search_workspace before shell commands. " +
 		"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. " +
 		"When a search result gives a useful line number, read nearby code with filesystem_read_text aroundLine; copy the result's line value and avoid reading whole source files unless the entire file is genuinely needed. " +
@@ -1078,6 +1079,7 @@ func chatSystemMessage(workspace Workspace, planMode bool, skillCandidates []too
 			"This chat is for planning changes only; do not make workspace changes, edit files, delete files, create files, run system modifying shell commands, or otherwise execute the plan. " +
 			"Use the available read-only tools to inspect files and gather the facts needed to answer the user. " +
 			"Use workspace_context for broad implementation planning when target files are unknown. " +
+			"Use git_inspect when commit history, regressions, legacy behavior, ownership, or prior rationale would materially clarify the request; avoid routine history searches when the current code is sufficient. " +
 			"When you need to find code but do not know the target file, prefer filesystem_search_workspace. " +
 			"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. " +
 			"When a search result gives a useful line number, read nearby code with filesystem_read_text aroundLine; copy the result's line value and avoid reading whole source files unless the entire file is genuinely needed. " +

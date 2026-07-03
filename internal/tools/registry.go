@@ -21,6 +21,7 @@ var readOnlyToolNames = map[string]bool{
 	"filesystem_search_text":      true,
 	"filesystem_search_workspace": true,
 	"filesystem_stat":             true,
+	"git_inspect":                 true,
 	"lsp_query":                   true,
 	"web_search":                  true,
 	"workspace_context":           true,
