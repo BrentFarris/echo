@@ -29,6 +29,7 @@ type InlineCodePromptRequest struct {
 
 type InlineCodePromptResponse struct {
 	Content       string             `json:"content,omitempty"`
+	Reasoning     string             `json:"reasoning,omitempty"`
 	ToolCalls     []ChatToolActivity `json:"toolCalls,omitempty"`
 	AffectedPaths []string           `json:"affectedPaths,omitempty"`
 }
@@ -39,6 +40,7 @@ type InlineCodePromptEvent struct {
 	FilePath      string            `json:"filePath"`
 	Type          string            `json:"type"`
 	Content       string            `json:"content,omitempty"`
+	Reasoning     string            `json:"reasoning,omitempty"`
 	ToolCall      *ChatToolActivity `json:"toolCall,omitempty"`
 	AffectedPaths []string          `json:"affectedPaths,omitempty"`
 	Error         string            `json:"error,omitempty"`
@@ -181,6 +183,9 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 		forcedCompactions = 0
 
 		messages = append(messages, llm.Message{Role: llm.RoleAssistant, Content: result.content, ToolCalls: toolCalls})
+		if publishResponse {
+			output.Reasoning += result.reasoning
+		}
 		if len(toolCalls) == 0 {
 			if skillCheckpointPending && skillCheckpointReminders < workspaceSkillMaxReminders {
 				skillCheckpointReminders++
@@ -243,6 +248,7 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 
 type inlineCodeStreamResult struct {
 	content      string
+	reasoning    string
 	toolCalls    []llm.ToolCall
 	finished     bool
 	finishReason string
@@ -252,7 +258,9 @@ type inlineCodeStreamResult struct {
 func (s *SystemService) streamInlineCodeResponse(ctx context.Context, client *llm.Client, request llm.ChatRequest, eventBase InlineCodePromptEvent, publish bool) inlineCodeStreamResult {
 	stream := client.StreamChat(ctx, request)
 	content := strings.Builder{}
-	inlineParser := inlineToolCallStreamParser{}
+	reasoning := strings.Builder{}
+	contentInlineParser := inlineToolCallStreamParser{}
+	reasoningInlineParser := inlineToolCallStreamParser{}
 	toolCalls := make(map[int]llm.ToolCall)
 	finished := false
 	finishReason := ""
@@ -282,18 +290,42 @@ func (s *SystemService) streamInlineCodeResponse(ctx context.Context, client *ll
 			Content:     text,
 		})
 	}
-	flushInlineParser := func() {
-		parsed := inlineParser.Flush()
-		recordInlineToolCalls(parsed.ToolCalls)
-		appendContent(parsed.Text)
+	appendReasoning := func(text string) {
+		if text == "" {
+			return
+		}
+		reasoning.WriteString(text)
+		if !publish {
+			return
+		}
+		s.emitInlineCodePromptEvent(InlineCodePromptEvent{
+			WorkspaceID: eventBase.WorkspaceID,
+			RequestID:   eventBase.RequestID,
+			FilePath:    eventBase.FilePath,
+			Type:        "reasoning",
+			Reasoning:   text,
+		})
+	}
+	flushInlineParsers := func() {
+		parsedContent := contentInlineParser.Flush()
+		recordInlineToolCalls(parsedContent.ToolCalls)
+		appendContent(parsedContent.Text)
+
+		parsedReasoning := reasoningInlineParser.Flush()
+		recordInlineToolCalls(parsedReasoning.ToolCalls)
+		appendReasoning(parsedReasoning.Text)
 	}
 
 	for event := range stream.Events {
 		switch event.Type {
 		case llm.EventToken:
-			parsed := inlineParser.Consume(event.Content)
+			parsed := contentInlineParser.Consume(event.Content)
 			recordInlineToolCalls(parsed.ToolCalls)
 			appendContent(parsed.Text)
+		case llm.EventReasoning:
+			parsed := reasoningInlineParser.Consume(event.Content)
+			recordInlineToolCalls(parsed.ToolCalls)
+			appendReasoning(parsed.Text)
 		case llm.EventToolCall:
 			if event.ToolCall != nil {
 				call := mergeToolDelta(toolCalls[event.ToolCall.Index], *event.ToolCall)
@@ -304,17 +336,17 @@ func (s *SystemService) streamInlineCodeResponse(ctx context.Context, client *ll
 			finished = true
 			finishReason = event.FinishReason
 		case llm.EventCanceled:
-			return inlineCodeStreamResult{content: content.String(), toolCalls: orderedToolCalls(toolCalls), finished: false, finishReason: finishReason}
+			return inlineCodeStreamResult{content: content.String(), reasoning: reasoning.String(), toolCalls: orderedToolCalls(toolCalls), finished: false, finishReason: finishReason}
 		case llm.EventError:
-			return inlineCodeStreamResult{content: content.String(), toolCalls: orderedToolCalls(toolCalls), finished: false, finishReason: finishReason, err: errors.New(event.Error)}
+			return inlineCodeStreamResult{content: content.String(), reasoning: reasoning.String(), toolCalls: orderedToolCalls(toolCalls), finished: false, finishReason: finishReason, err: errors.New(event.Error)}
 		}
 	}
 
 	if err := ctx.Err(); err != nil {
-		return inlineCodeStreamResult{content: content.String(), toolCalls: orderedToolCalls(toolCalls), finished: false, finishReason: finishReason}
+		return inlineCodeStreamResult{content: content.String(), reasoning: reasoning.String(), toolCalls: orderedToolCalls(toolCalls), finished: false, finishReason: finishReason}
 	}
-	flushInlineParser()
-	return inlineCodeStreamResult{content: content.String(), toolCalls: orderedToolCalls(toolCalls), finished: finished, finishReason: finishReason}
+	flushInlineParsers()
+	return inlineCodeStreamResult{content: content.String(), reasoning: reasoning.String(), toolCalls: orderedToolCalls(toolCalls), finished: finished, finishReason: finishReason}
 }
 
 func inlineCodeSystemMessage(workspace Workspace, skillCandidates []tools.WorkspaceSkillSummary) llm.Message {

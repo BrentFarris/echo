@@ -4,7 +4,7 @@ import { ReadWorkspaceFile, SearchWorkspaceFiles, SubmitInlineCodePrompt } from 
 import { services } from "../../wailsjs/go/models";
 import { renderMarkdown } from "../markdown";
 import { icons } from "../app/icons";
-import { patchInlineCodeChatResponse as patchInlineCodeChatResponseDom } from "./dom";
+import { patchInlineCodeChatOutput as patchInlineCodeChatOutputDom } from "./dom";
 import { getMountedCodeEditor, mountedCodeEditorMatches, replaceMountedEditorContent, saveMountedEditorContent } from "./editor";
 import { applySavedFile, ensureCodeState, findTab, workspaceFileChanged } from "./state";
 import type { CodeFileTab, CodeViewCallbacks, InlineCodeChatState, InlineCodeMentionState, InlineCodePromptEvent } from "./types";
@@ -236,12 +236,12 @@ class InlineCodeChatWidget extends WidgetType {
       error.textContent = chat.error;
       root.append(error);
     }
-    if (chat.response) {
-      const response = document.createElement("div");
-      response.className = "inline-code-chat-response markdown-body";
-      response.dataset.inlineCodeResponse = "";
-      response.innerHTML = renderMarkdown(chat.response);
-      root.append(response);
+    if (chat.response || chat.reasoning || chat.toolCalls.length > 0) {
+      const output = document.createElement("div");
+      output.className = "inline-code-chat-output";
+      output.dataset.inlineCodeOutput = "";
+      output.innerHTML = renderInlineCodeOutput(chat);
+      root.append(output);
     }
     return root;
   }
@@ -655,6 +655,8 @@ function openInlineCodeChat(
     submitting: false,
     status: "",
     response: "",
+    reasoning: "",
+    toolCalls: [],
     error: "",
     requestID: previous?.requestID ?? "",
     renderKey: nextInlineChatRenderKey(),
@@ -699,6 +701,20 @@ export function applyInlineCodePromptEvent(event: InlineCodePromptEvent) {
     chat.response = `${chat.response ?? ""}${event.content ?? ""}`;
     chat.error = "";
     chat.status = "Working";
+    patchInlineCodeChatResponse(event.workspaceId, event.filePath, chat);
+    return;
+  }
+  if (event.type === "reasoning") {
+    chat.reasoning = `${chat.reasoning ?? ""}${event.reasoning ?? ""}`;
+    chat.error = "";
+    chat.status = "Working";
+    patchInlineCodeChatResponse(event.workspaceId, event.filePath, chat);
+    return;
+  }
+  if (event.type === "tool_call" && event.toolCall) {
+    upsertInlineToolCall(chat.toolCalls, event.toolCall);
+    chat.error = "";
+    chat.status = event.toolCall.status === "running" ? "Running tool" : "Working";
     patchInlineCodeChatResponse(event.workspaceId, event.filePath, chat);
     return;
   }
@@ -760,6 +776,8 @@ async function submitInlineCodeChat(
   chat.status = "Working";
   clearInlineCodeMention(chat);
   chat.response = "";
+  chat.reasoning = "";
+  chat.toolCalls = [];
   chat.error = "";
   chat.requestID = requestID;
   refreshInlineCodeChatWidget(workspaceID, path);
@@ -783,7 +801,9 @@ async function submitInlineCodeChat(
       callbacks,
     );
     const content = (response.content ?? "").trim();
-    if (!content) {
+    const reasoning = response.reasoning ?? latest.reasoning;
+    const toolCalls = response.toolCalls ?? latest.toolCalls;
+    if (!content && !reasoning && toolCalls.length === 0) {
       state.inlineChat = null;
       if (reloaded) {
         callbacks.render();
@@ -795,6 +815,8 @@ async function submitInlineCodeChat(
     latest.submitting = false;
     latest.status = "";
     latest.response = content;
+    latest.reasoning = reasoning;
+    latest.toolCalls = toolCalls;
     latest.error = "";
     latest.renderKey = nextInlineChatRenderKey();
     if (reloaded) {
@@ -1022,13 +1044,79 @@ function patchInlineCodeChatResponse(
   path: string,
   chat: InlineCodeChatState,
 ) {
-  patchInlineCodeChatResponseDom(
+  patchInlineCodeChatOutputDom(
     workspaceID,
     path,
     chat.requestID,
-    renderMarkdown(chat.response),
+    renderInlineCodeOutput(chat),
     () => refreshInlineCodeChatWidget(workspaceID, path),
   );
+}
+
+function renderInlineCodeOutput(chat: InlineCodeChatState) {
+  const reasoning = chat.reasoning ?? "";
+  const toolCalls = chat.toolCalls ?? [];
+  const debug = reasoning || toolCalls.length > 0
+    ? `
+      <div class="debug-stack" data-debug-stack>
+        ${reasoning ? renderInlineReasoning(reasoning) : ""}
+        ${toolCalls.length > 0 ? renderInlineToolCalls(toolCalls) : ""}
+      </div>
+    `
+    : "";
+  const response = chat.response
+    ? `<div class="inline-code-chat-response markdown-body" data-inline-code-response>${renderMarkdown(chat.response)}</div>`
+    : "";
+  return `${debug}${response}`;
+}
+
+function renderInlineReasoning(reasoning: string) {
+  return `
+    <details class="debug-section" data-debug-section="reasoning">
+      <summary>Thinking</summary>
+      <div class="debug-content">${renderMarkdown(reasoning)}</div>
+    </details>
+  `;
+}
+
+function renderInlineToolCalls(toolCalls: services.ChatToolActivity[]) {
+  return `
+    <details class="debug-section" data-debug-section="tools">
+      <summary>Tools</summary>
+      <div class="tool-list">
+        ${toolCalls.map(renderInlineToolCall).join("")}
+      </div>
+    </details>
+  `;
+}
+
+function renderInlineToolCall(toolCall: services.ChatToolActivity) {
+  return `
+    <div class="tool-call">
+      <div>
+        <strong>${escapeHtml(toolCall.name || "tool")}</strong>
+        <span>${escapeHtml(toolCall.status)}</span>
+      </div>
+      ${toolCall.arguments ? `<code>${escapeHtml(toolCall.arguments)}</code>` : ""}
+      ${toolCall.error ? `<p>${escapeHtml(toolCall.error)}</p>` : ""}
+      ${toolCall.result ? `<pre>${escapeHtml(toolCall.result)}</pre>` : ""}
+    </div>
+  `;
+}
+
+function upsertInlineToolCall(
+  toolCalls: services.ChatToolActivity[],
+  activity: services.ChatToolActivity,
+) {
+  const index = toolCalls.findIndex((existing) =>
+    (existing.id && existing.id === activity.id) ||
+    (!existing.id && existing.name === activity.name),
+  );
+  if (index >= 0) {
+    toolCalls[index] = activity;
+    return;
+  }
+  toolCalls.push(activity);
 }
 
 function focusInlineCodeChatInput() {

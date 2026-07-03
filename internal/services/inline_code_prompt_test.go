@@ -35,6 +35,7 @@ func TestSystemServiceSubmitInlineCodePromptIncludesCursorContextAndTools(t *tes
 		writeSSE(
 			t,
 			w,
+			`{"choices":[{"index":0,"delta":{"reasoning_content":"Inspect the cursor context."}}]}`,
 			`{"choices":[{"index":0,"delta":{"content":"Use a small "}}]}`,
 			`{"choices":[{"index":0,"delta":{"content":"helper here."},"finish_reason":"stop"}]}`,
 		)
@@ -59,6 +60,9 @@ func TestSystemServiceSubmitInlineCodePromptIncludesCursorContextAndTools(t *tes
 	}
 	if response.Content != "Use a small helper here." {
 		t.Fatalf("unexpected response: %#v", response)
+	}
+	if response.Reasoning != "Inspect the cursor context." {
+		t.Fatalf("unexpected reasoning: %#v", response)
 	}
 	if len(captured.Messages) != 2 {
 		t.Fatalf("expected system and user messages, got %#v", captured.Messages)
@@ -104,7 +108,10 @@ func TestSystemServiceSubmitInlineCodePromptIncludesCursorContextAndTools(t *tes
 	if len(captured.Tools) == 0 || captured.ToolChoice != "auto" {
 		t.Fatalf("expected tools with auto choice, got %#v", captured)
 	}
-	if len(events) < 3 || events[0].Type != "token" || events[0].Content != "Use a small " || events[0].RequestID != "inline-test-1" {
+	if len(events) < 4 || events[0].Type != "reasoning" || events[0].Reasoning != "Inspect the cursor context." || events[0].RequestID != "inline-test-1" {
+		t.Fatalf("expected streamed reasoning event, got %#v", events)
+	}
+	if events[1].Type != "token" || events[1].Content != "Use a small " {
 		t.Fatalf("expected streamed token events, got %#v", events)
 	}
 	if events[len(events)-1].Type != "complete" || events[len(events)-1].Content != "Use a small helper here." {

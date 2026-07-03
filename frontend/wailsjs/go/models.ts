@@ -498,6 +498,7 @@ export namespace services {
 	}
 	export class InlineCodePromptResponse {
 	    content?: string;
+	    reasoning?: string;
 	    toolCalls?: ChatToolActivity[];
 	    affectedPaths?: string[];
 	
@@ -508,6 +509,7 @@ export namespace services {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.content = source["content"];
+	        this.reasoning = source["reasoning"];
 	        this.toolCalls = this.convertValues(source["toolCalls"], ChatToolActivity);
 	        this.affectedPaths = source["affectedPaths"];
 	    }
