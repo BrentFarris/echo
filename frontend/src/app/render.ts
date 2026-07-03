@@ -204,35 +204,39 @@ function renderMobileBottomNav(
 ): string {
   return `
     <nav class="mobile-bottom-nav" aria-label="Navigation">
-      ${workspaces
-        .map(
-          (item) => `
-            <button
-              class="mobile-nav-item workspace-button ${item.active ? "is-active" : ""} ${item.missing ? "is-missing" : ""}"
-              type="button"
-              title="${escapeHtml(workspaceFolderSummary(item))}"
-              aria-label="${escapeHtml(item.displayName)}${item.missing ? " missing" : ""}"
-              data-action="activate-workspace"
-              data-workspace-id="${escapeHtml(item.id)}"
-            >${renderWorkspaceIcon(item)}</button>
-          `,
-        )
-        .join("")}
-      ${
-        workspace
-          ? `
-            <button class="mobile-nav-item icon-button ${showingCode ? "is-active" : ""}" type="button" title="Code view" aria-label="Code view" data-action="${showingCode ? "close-code-view" : "open-code-view"}">
-              ${icons.code}
-            </button>
-            <button class="mobile-nav-item icon-button ${showGitChanges ? "is-active" : ""}" type="button" title="Git changes" aria-label="Git changes" data-action="${showGitChanges ? "close-git-changes" : "open-git-changes"}">
-              ${icons.git}
-            </button>
-          `
-          : ""
-      }
-      <button class="mobile-nav-item icon-button" type="button" title="Settings" aria-label="Settings" data-action="open-settings">
-        ${icons.settings}
-      </button>
+      <div class="mobile-nav-workspaces">
+        ${workspaces
+          .map(
+            (item) => `
+              <button
+                class="mobile-nav-item workspace-button ${item.active ? "is-active" : ""} ${item.missing ? "is-missing" : ""}"
+                type="button"
+                title="${escapeHtml(workspaceFolderSummary(item))}"
+                aria-label="${escapeHtml(item.displayName)}${item.missing ? " missing" : ""}"
+                data-action="activate-workspace"
+                data-workspace-id="${escapeHtml(item.id)}"
+              >${renderWorkspaceIcon(item)}</button>
+            `,
+          )
+          .join("")}
+      </div>
+      <div class="mobile-nav-utility">
+        ${
+          workspace
+            ? `
+              <button class="mobile-nav-item icon-button ${showingCode ? "is-active" : ""}" type="button" title="Code view" aria-label="Code view" data-action="${showingCode ? "close-code-view" : "open-code-view"}">
+                ${icons.code}
+              </button>
+              <button class="mobile-nav-item icon-button ${showGitChanges ? "is-active" : ""}" type="button" title="Git changes" aria-label="Git changes" data-action="${showGitChanges ? "close-git-changes" : "open-git-changes"}">
+                ${icons.git}
+              </button>
+            `
+            : ""
+        }
+        <button class="mobile-nav-item icon-button" type="button" title="Settings" aria-label="Settings" data-action="open-settings">
+          ${icons.settings}
+        </button>
+      </div>
     </nav>
   `;
 }

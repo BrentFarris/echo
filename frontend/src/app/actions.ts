@@ -1,6 +1,6 @@
 
 import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate, startCodeRename } from "../codeView";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearChat, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, CreateSkillFromChat, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearChat, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, CreateSkillFromChat, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
@@ -257,6 +257,27 @@ export async function handleAction(event: Event) {
       state.formError = "";
       applyTheme(state.settingsDraft);
       getAppCallbacks().render();
+    }
+    if (action === "rebuild-and-relaunch") {
+      const echoWorkspace = findEchoSourceWorkspaceForAction();
+      if (!echoWorkspace) {
+        pushToast("Add the Echo source workspace first.", "error");
+        return;
+      }
+      if (state.runningKanbanWorkspaces.has(echoWorkspace.id)) {
+        pushToast("Cannot rebuild while Kanban agents are running.", "error");
+        return;
+      }
+      if (!window.confirm("Rebuild and relaunch Echo?\n\nThis will shut down the current instance, rebuild the application, and launch the new build.\n\nAny unsaved work may be lost.")) {
+        return;
+      }
+      try {
+        await PrepareRebuildAndRelaunch(echoWorkspace.id);
+        pushToast("Rebuild started. Echo is shutting down...", "info");
+      } catch (error) {
+        pushToast(errorMessage(error), "error");
+      }
+      return;
     }
     if (action === "add-workspace") {
       state.appState = await ChooseWorkspaceFolder();
@@ -797,6 +818,19 @@ export async function handleAction(event: Event) {
     }
     getAppCallbacks().render();
   }
+}
+
+function findEchoSourceWorkspaceForAction() {
+  const workspaces = state.appState?.workspaces ?? [];
+  for (const workspace of workspaces) {
+    const folders = workspace.folders ?? [];
+    for (const folder of folders) {
+      if (!folder.missing && folder.path && /[/\\]echo$/i.test(folder.path)) {
+        return workspace;
+      }
+    }
+  }
+  return null;
 }
 
 export function bindActionEvents(root: ParentNode) {

@@ -96,6 +96,8 @@ export function OpenWorkspaceExplorer(arg1:string):Promise<void>;
 
 export function OpenWorkspacePathExplorer(arg1:string,arg2:string):Promise<void>;
 
+export function PrepareRebuildAndRelaunch(arg1:string):Promise<void>;
+
 export function PrepareWorkspaceSymbolRename(arg1:string,arg2:services.WorkspaceDefinitionRequest):Promise<services.WorkspacePrepareRenameResponse>;
 
 export function PruneChatMessage(arg1:string,arg2:string):Promise<services.ChatSession>;

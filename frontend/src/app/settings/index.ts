@@ -1,5 +1,5 @@
 
-import { LoadWebAccessStatus, SaveSettings, SaveWebAccessSettings, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter } from "../../backend/services";
+import { LoadWebAccessStatus, PrepareRebuildAndRelaunch, SaveSettings, SaveWebAccessSettings, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter } from "../../backend/services";
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
@@ -86,6 +86,7 @@ const settingsSections = [
   { id: "web-access-settings-title", label: "Web Access" },
   { id: "theme-settings-title", label: "Theme Colors" },
   { id: "workspace-settings-title", label: "Workspaces" },
+  { id: "development-settings-title", label: "Development" },
 ] as const;
 
 type EndpointTopic = (typeof endpointTopics)[number]["key"];
@@ -282,6 +283,12 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                     : `<p class="empty-state compact">No workspaces added.</p>`
                 }
               </div>
+            </section>
+
+            <section class="settings-section" aria-labelledby="development-settings-title">
+              <h3 id="development-settings-title" class="settings-section-title">Development</h3>
+              <p>Echo source workspace actions.</p>
+              ${renderRebuildRelaunchButton()}
             </section>
           </div>
         </div>
@@ -911,6 +918,36 @@ function renderWebAccessQRCode(url: string): string {
       <p>${escapeHtml(url)}</p>
     </div>
   `;
+}
+
+function renderRebuildRelaunchButton(): string {
+  const echoWorkspace = findEchoSourceWorkspace();
+  const disabled = echoWorkspace && state.runningKanbanWorkspaces.has(echoWorkspace.id);
+  return `
+    <div class="development-actions">
+      <p class="compact">Rebuilds the Echo application and relaunches it. Requires the Echo source workspace to be added.</p>
+      <button
+        class="secondary-button danger-button"
+        type="button"
+        data-action="rebuild-and-relaunch"
+        ${disabled ? "disabled" : ""}
+      >Rebuild & Relaunch</button>
+      ${disabled ? "<p class='form-error compact'>Cannot rebuild while Kanban agents are running in the Echo source workspace.</p>" : ""}
+    </div>
+  `;
+}
+
+function findEchoSourceWorkspace(): services.Workspace | null {
+  const workspaces = state.appState?.workspaces ?? [];
+  for (const workspace of workspaces) {
+    const folders = workspace.folders ?? [];
+    for (const folder of folders) {
+      if (!folder.missing && folder.path && /[/\\]echo$/i.test(folder.path)) {
+        return workspace;
+      }
+    }
+  }
+  return null;
 }
 
 function renderThemeSettings(): string {

@@ -218,6 +218,13 @@ export function PruneChatMessage(...args: Parameters<typeof Wails.PruneChatMessa
   return call("PruneChatMessage", Wails.PruneChatMessage, args);
 }
 
+export function PrepareRebuildAndRelaunch(workspaceID: string): Promise<void> {
+  if (isWailsRuntime()) {
+    return (window as any)["go"]["services"]["SystemService"]["PrepareRebuildAndRelaunch"](workspaceID);
+  }
+  return webRpc("PrepareRebuildAndRelaunch", [workspaceID]);
+}
+
 export function PrepareWorkspaceSymbolRename(...args: Parameters<typeof Wails.PrepareWorkspaceSymbolRename>): ReturnType<typeof Wails.PrepareWorkspaceSymbolRename> {
   return call("PrepareWorkspaceSymbolRename", Wails.PrepareWorkspaceSymbolRename, args);
 }

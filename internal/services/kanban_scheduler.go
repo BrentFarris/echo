@@ -417,6 +417,10 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 			return
 		}
 
+		if len(toolCalls) == 0 && strings.TrimSpace(content) == "" {
+			continue
+		}
+
 		assistantMessage := llm.Message{Role: llm.RoleAssistant, Content: content, ToolCalls: toolCalls}
 		messages = append(messages, assistantMessage)
 		if len(toolCalls) == 0 {

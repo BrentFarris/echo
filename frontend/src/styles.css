@@ -636,6 +636,38 @@ h3 {
   color: var(--color-danger);
 }
 
+/* Touch devices: always show message action buttons (no hover available). */
+@media (hover: none) {
+  .chat-message header .icon-button {
+    opacity: 1;
+  }
+
+  .chat-message header .icon-button.chat-copy-trigger {
+    opacity: 0.5;
+  }
+
+  .chat-message header .icon-button.chat-copy-trigger:hover,
+  .chat-message header .icon-button.chat-copy-trigger:focus-visible {
+    opacity: 1;
+  }
+
+  .chat-message.from-user header .icon-button:hover {
+    background: var(--color-surface-muted);
+    color: var(--color-accent-strong);
+  }
+
+  .chat-message.from-assistant header .icon-button.chat-retry-trigger:hover,
+  .chat-message.from-assistant header .icon-button.chat-edit-trigger:hover,
+  .chat-message.from-assistant header .icon-button.chat-kanban-trigger:hover {
+    background: var(--color-surface-muted);
+    color: var(--color-accent-strong);
+  }
+
+  .chat-message header .icon-button.chat-prune-trigger:hover {
+    color: var(--color-danger);
+  }
+}
+
 .chat-edit-form {
   display: grid;
   gap: 8px;
@@ -3099,6 +3131,7 @@ h3 {
 .workspace-panel.is-code-mode {
   grid-template-rows: minmax(0, 1fr);
   gap: 0;
+  align-content: stretch;
 }
 
 .code-view {
@@ -4817,7 +4850,7 @@ h3 {
     display: none;
   }
 
-  /* Mobile fixed bottom navigation bar */
+  /* Mobile fixed bottom navigation bar — two-zone layout */
   .mobile-bottom-nav {
     position: fixed;
     bottom: 0;
@@ -4825,12 +4858,35 @@ h3 {
     right: 0;
     display: flex;
     align-items: stretch;
-    justify-content: space-around;
+    justify-content: space-between;
     gap: 0;
-    padding: 0 4px;
+    padding: 0;
     background: var(--color-surface);
     border-top: 1px solid var(--color-border);
     z-index: 10;
+  }
+
+  /* Left zone: scrollable workspace icons */
+  .mobile-nav-workspaces {
+    display: flex;
+    align-items: stretch;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+    padding: 0 4px;
+  }
+
+  .mobile-nav-workspaces::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Right zone: fixed utility buttons */
+  .mobile-nav-utility {
+    display: flex;
+    align-items: stretch;
+    flex-shrink: 0;
   }
 
   .mobile-nav-item {
@@ -4840,7 +4896,7 @@ h3 {
     min-width: 44px;
     min-height: 44px;
     width: auto;
-    flex: 1 1 auto;
+    flex: 0 0 auto;
     border: none;
     border-radius: 0;
     background: transparent;
@@ -4886,8 +4942,13 @@ h3 {
     cursor: pointer;
   }
 
+  /* Push toast notifications above the fixed bottom nav bar */
+  .toast-region {
+    bottom: 82px;
+  }
+
   .main-content {
-    padding: 18px;
+    padding: 10px;
     padding-bottom: 64px;
   }
 
@@ -4964,7 +5025,35 @@ h3 {
   }
 
   .workspace-heading-actions {
-    justify-content: start;
+    display: none;
+  }
+
+  /* Tighten heading row spacing on mobile */
+  .workspace-heading-row,
+  .code-view-heading {
+    gap: 8px;
+  }
+
+  /* Reduce work-panel padding on mobile */
+  .work-panel {
+    padding: 10px;
+    gap: 14px;
+  }
+
+  /* Space below split panels so chat composer and kanban stay above the fixed bottom nav */
+  .split-panels {
+    padding-bottom: 80px;
+  }
+
+  /* Reduce empty-state size on mobile */
+  .empty-state {
+    min-height: 120px;
+    padding: 12px;
+  }
+
+  /* Tighten chat composer grid on mobile */
+  .chat-composer {
+    gap: 6px;
   }
 
   .code-view-actions {
@@ -5087,8 +5176,8 @@ h3 {
   }
 
   .tab-button {
-    padding: 8px 16px;
-    font-size: 0.9rem;
+    padding: 8px 12px;
+    font-size: 0.85rem;
     font-weight: 500;
     color: var(--color-text-muted);
     background: transparent;
