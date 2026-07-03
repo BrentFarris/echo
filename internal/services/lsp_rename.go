@@ -40,11 +40,32 @@ type WorkspaceRenameRequest struct {
 }
 
 type WorkspaceRenameResponse struct {
-	WorkspaceID string          `json:"workspaceId"`
-	SourcePath  string          `json:"sourcePath"`
-	Applied     bool            `json:"applied"`
-	Files       []WorkspaceFile `json:"files,omitempty"`
-	Message     string          `json:"message,omitempty"`
+	WorkspaceID string                       `json:"workspaceId"`
+	SourcePath  string                       `json:"sourcePath"`
+	Applied     bool                         `json:"applied"`
+	Files       []WorkspaceFile              `json:"files,omitempty"`
+	History     []WorkspaceRenameHistoryFile `json:"history,omitempty"`
+	Message     string                       `json:"message,omitempty"`
+}
+
+type WorkspaceRenameHistoryFile struct {
+	FilePath      string `json:"filePath"`
+	BeforeContent string `json:"beforeContent"`
+	AfterContent  string `json:"afterContent"`
+}
+
+type WorkspaceRenameReplayFile struct {
+	FilePath        string `json:"filePath"`
+	ExpectedContent string `json:"expectedContent"`
+	Content         string `json:"content"`
+}
+
+type WorkspaceRenameReplayRequest struct {
+	Files []WorkspaceRenameReplayFile `json:"files"`
+}
+
+type WorkspaceRenameReplayResponse struct {
+	Files []WorkspaceFile `json:"files"`
 }
 
 type lspPrepareRenameResult struct {
@@ -69,6 +90,7 @@ type workspaceRenameFile struct {
 	resolved string
 	path     string
 	original string
+	before   string
 	updated  string
 	mode     os.FileMode
 }
@@ -182,15 +204,52 @@ func (s *SystemService) RenameWorkspaceSymbol(workspaceID string, request Worksp
 	s.removeWorkspaceFileDatabases(workspaceID)
 
 	response.Files = make([]WorkspaceFile, 0, len(files))
+	response.History = make([]WorkspaceRenameHistoryFile, 0, len(files))
 	for _, file := range files {
 		renamed, readErr := readWorkspaceTextFile(workspace, file.resolved)
 		if readErr != nil {
 			return WorkspaceRenameResponse{}, readErr
 		}
 		response.Files = append(response.Files, renamed)
+		response.History = append(response.History, WorkspaceRenameHistoryFile{
+			FilePath:      file.path,
+			BeforeContent: file.before,
+			AfterContent:  file.updated,
+		})
 		_ = client.syncDocument(file.resolved, fileURI(file.resolved), file.updated)
 	}
 	response.Applied = true
+	return response, nil
+}
+
+func (s *SystemService) ReplayWorkspaceSymbolRename(workspaceID string, request WorkspaceRenameReplayRequest) (WorkspaceRenameReplayResponse, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return WorkspaceRenameReplayResponse{}, err
+	}
+	files, err := prepareWorkspaceRenameReplayFiles(workspace, request.Files)
+	if err != nil {
+		return WorkspaceRenameReplayResponse{}, err
+	}
+	if len(files) == 0 {
+		return WorkspaceRenameReplayResponse{}, fmt.Errorf("rename history does not contain any changes")
+	}
+	if err := writeWorkspaceRenameFiles(files); err != nil {
+		return WorkspaceRenameReplayResponse{}, err
+	}
+	s.removeWorkspaceFileDatabases(workspaceID)
+
+	response := WorkspaceRenameReplayResponse{
+		Files: make([]WorkspaceFile, 0, len(files)),
+	}
+	for _, file := range files {
+		updated, readErr := readWorkspaceTextFile(workspace, file.resolved)
+		if readErr != nil {
+			return WorkspaceRenameReplayResponse{}, readErr
+		}
+		response.Files = append(response.Files, updated)
+	}
+	s.syncExistingWorkspaceLSPDocuments(workspaceID, files)
 	return response, nil
 }
 
@@ -411,12 +470,96 @@ func prepareWorkspaceRenameFiles(
 			resolved: resolved,
 			path:     workspaceRelativePath(workspace, resolved),
 			original: original,
+			before:   content,
 			updated:  updated,
 			mode:     info.Mode().Perm(),
 		})
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
 	return files, nil
+}
+
+func prepareWorkspaceRenameReplayFiles(
+	workspace Workspace,
+	requests []WorkspaceRenameReplayFile,
+) ([]workspaceRenameFile, error) {
+	if len(requests) == 0 {
+		return nil, fmt.Errorf("rename history files are required")
+	}
+	files := make([]workspaceRenameFile, 0, len(requests))
+	for _, request := range requests {
+		if strings.TrimSpace(request.FilePath) == "" {
+			return nil, fmt.Errorf("rename history file path is required")
+		}
+		if len([]byte(request.ExpectedContent)) > maxWorkspaceEditorFileBytes ||
+			len([]byte(request.Content)) > maxWorkspaceEditorFileBytes {
+			return nil, fmt.Errorf("rename history content is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
+		}
+		if !utf8.ValidString(request.ExpectedContent) || !utf8.ValidString(request.Content) ||
+			!isWorkspaceTextLike([]byte(request.ExpectedContent)) ||
+			!isWorkspaceTextLike([]byte(request.Content)) {
+			return nil, fmt.Errorf("rename history file %q contains invalid editor content", request.FilePath)
+		}
+		resolved, err := resolveWorkspaceServicePath(workspace, request.FilePath)
+		if err != nil {
+			return nil, err
+		}
+		for _, existing := range files {
+			if samePath(existing.resolved, resolved) {
+				return nil, fmt.Errorf("rename history contains duplicate file %q", request.FilePath)
+			}
+		}
+		info, err := os.Stat(resolved)
+		if err != nil || !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("rename history target %q was not found", request.FilePath)
+		}
+		if info.Size() > maxWorkspaceEditorFileBytes {
+			return nil, fmt.Errorf("rename history target is larger than the %d byte editor limit", maxWorkspaceEditorFileBytes)
+		}
+		currentData, err := os.ReadFile(resolved)
+		if err != nil {
+			return nil, fmt.Errorf("read rename history target %q: %w", request.FilePath, err)
+		}
+		if !isWorkspaceTextLike(currentData) || !utf8.Valid(currentData) {
+			return nil, fmt.Errorf("rename history target %q appears to be binary", request.FilePath)
+		}
+		current := string(currentData)
+		if current != request.ExpectedContent {
+			return nil, fmt.Errorf("file %q changed on disk; rename history cannot be applied", request.FilePath)
+		}
+		files = append(files, workspaceRenameFile{
+			resolved: resolved,
+			path:     workspaceRelativePath(workspace, resolved),
+			original: current,
+			before:   current,
+			updated:  request.Content,
+			mode:     info.Mode().Perm(),
+		})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
+	return files, nil
+}
+
+func (s *SystemService) syncExistingWorkspaceLSPDocuments(workspaceID string, files []workspaceRenameFile) {
+	s.lspMu.Lock()
+	clients := make([]*lspClient, 0, len(s.lspClients))
+	for key, client := range s.lspClients {
+		if strings.HasPrefix(key, workspaceID+":") {
+			clients = append(clients, client)
+		}
+	}
+	s.lspMu.Unlock()
+	for _, file := range files {
+		languageID, ok := lspLanguageIDForPath(file.path)
+		if !ok {
+			continue
+		}
+		for _, client := range clients {
+			if client.languageID == languageID && pathWithinRoot(client.rootPath, file.resolved) {
+				_ = client.syncDocument(file.resolved, fileURI(file.resolved), file.updated)
+			}
+		}
+	}
 }
 
 func applyLSPTextEdits(content string, edits []lspTextEdit) (string, error) {
