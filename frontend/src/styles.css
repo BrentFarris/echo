@@ -353,12 +353,12 @@ textarea:focus-visible {
   min-width: 0;
   min-height: 0;
   padding-top: var(--edge-padding);
-  overflow: auto;
+  overflow: hidden;
 }
 
 .workspace-panel {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   align-content: start;
   gap: var(--space-2xl);
   width: 100%;
@@ -448,7 +448,7 @@ h3 {
 }
 
 .chat-panel {
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   align-content: stretch;
   min-width: 0;
 }
