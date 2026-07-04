@@ -56,24 +56,22 @@ export function render(): void {
 
   const workspace = activeWorkspace();
   const workspaces = state.appState?.workspaces ?? [];
-  const showingCode = state.appMode === "code" && Boolean(workspace);
-  const showGitChanges = workspace != null && state.openGitChangeWorkspaces.has(workspace.id);
 
   if (
     state.chatMention &&
-    (!workspace || showingCode || state.settingsOpen || workspace.id !== state.chatMention.workspaceId)
+    (!workspace || state.appMode === "code" || state.settingsOpen || workspace.id !== state.chatMention.workspaceId)
   ) {
     clearChatMention();
   }
 
   const shell = ensureShell();
 
-  updateRegion(shell, "gutter", buildGutter(workspaces));
-  updateRegion(shell, "main", buildMain(workspace, workspaces, showingCode, showGitChanges));
+  updateRegion(shell, "left-nav", buildLeftNav(workspaces, workspace));
+  updateRegion(shell, "main", buildMain(workspace, workspaces));
   updateRegion(
     shell,
     "mobile-nav",
-    renderMobileBottomNav(workspaces, workspace, showingCode, showGitChanges),
+    renderMobileBottomNav(workspaces, workspace),
   );
   updateRegion(shell, "overlays", buildOverlays());
 
@@ -88,34 +86,54 @@ export function render(): void {
 /*  Region builders                                                    */
 /* ------------------------------------------------------------------ */
 
-function buildGutter(workspaces: services.Workspace[]): string {
+function buildLeftNav(
+  workspaces: services.Workspace[],
+  workspace: services.Workspace | null,
+): string {
+  const mode = state.appMode;
+  const dropdownOpen = state.workspaceDropdownOpen;
+
   return `
-    <aside class="gutter" aria-label="Primary">
-      <nav class="workspace-rail" aria-label="Workspaces" data-workspace-rail>
-        ${workspaces
-          .map(
-            (item) => `
+    <aside class="left-nav" aria-label="Primary">
+      <div class="left-nav-workspace" data-workspace-dropdown-container>
+        <button
+          class="nav-icon-button workspace-dropdown-trigger${dropdownOpen ? " is-open" : ""}"
+          type="button"
+          title="${workspace ? escapeHtml(workspace.displayName) : "Select workspace"}"
+          aria-label="Workspace selector"
+          aria-expanded="${dropdownOpen}"
+          data-action="toggle-workspace-dropdown"
+        >${workspace ? renderWorkspaceIcon(workspace) : icons.plus}</button>
+        ${dropdownOpen ? `
+          <div class="workspace-dropdown" role="menu" aria-label="Workspace list" data-workspace-dropdown>
+            ${workspaces.map((ws) => `
               <button
-                class="gutter-button workspace-button ${item.active ? "is-active" : ""} ${item.missing ? "is-missing" : ""}"
+                class="workspace-dropdown-option${ws.id === workspace?.id ? " is-active" : ""} ${ws.missing ? "is-missing" : ""}"
                 type="button"
-                draggable="true"
-                title="${escapeHtml(workspaceFolderSummary(item))}"
-                aria-label="${escapeHtml(item.displayName)}${item.missing ? " missing" : ""}"
+                role="menuitem"
                 data-action="activate-workspace"
-                data-workspace-drag-item
-                data-workspace-id="${escapeHtml(item.id)}"
-              >${renderWorkspaceIcon(item)}</button>
-            `,
-          )
-          .join("")}
+                data-workspace-id="${escapeHtml(ws.id)}"
+                title="${escapeHtml(workspaceFolderSummary(ws))}"
+              >${escapeHtml(ws.displayName)}</button>
+            `).join("")}
+            <div class="workspace-dropdown-divider"></div>
+            <button
+              class="workspace-dropdown-option"
+              type="button"
+              role="menuitem"
+              data-action="add-workspace"
+            >Add workspace</button>
+          </div>
+        ` : ""}
+      </div>
+      <nav class="left-nav-buttons" aria-label="Views">
+        <button class="nav-icon-button${mode === "chat" ? " is-active" : ""}" type="button" title="Chat" aria-label="Chat" data-action="switch-view" data-view="chat">${icons.chat}</button>
+        <button class="nav-icon-button${mode === "kanban" ? " is-active" : ""}" type="button" title="Kanban" aria-label="Kanban" data-action="switch-view" data-view="kanban">${icons.kanban}</button>
       </nav>
-      <div class="gutter-actions">
-        <button class="gutter-button icon-button" type="button" title="Add workspace" aria-label="Add workspace" data-action="add-workspace">
-          ${icons.plus}
-        </button>
-        <button class="gutter-button icon-button" type="button" title="Settings" aria-label="Settings" data-action="open-settings">
-          ${icons.settings}
-        </button>
+      <div class="left-nav-actions">
+        <button class="nav-icon-button${mode === "code" ? " is-active" : ""}" type="button" title="Code" aria-label="Code view" data-action="${mode === "code" ? "close-code-view" : "open-code-view"}">${icons.code}</button>
+        <button class="nav-icon-button${mode === "git" ? " is-active" : ""}" type="button" title="Git Changes" aria-label="Git changes" data-action="${mode === "git" ? "close-git-changes" : "open-git-changes"}">${icons.git}</button>
+        <button class="nav-icon-button" type="button" title="Settings" aria-label="Settings" data-action="open-settings">${icons.settings}</button>
       </div>
     </aside>
   `;
@@ -124,46 +142,30 @@ function buildGutter(workspaces: services.Workspace[]): string {
 function buildMain(
   workspace: services.Workspace | null,
   workspaces: services.Workspace[],
-  showingCode: boolean,
-  showGitChanges: boolean,
 ): string {
-  // Narrow for callers that require non-null Workspace;
-  // logically workspace is non-null whenever showGitChanges is true.
-  const ws = workspace;
+  const mode = state.appMode;
 
   return `
     <main class="main-content">
-      <section class="workspace-panel ${showingCode ? "is-code-mode" : ""}" aria-labelledby="${showingCode ? "code-title" : "workspace-title"}">
-        ${
-          showingCode && workspace
-            ? renderCodeView(workspace)
-            : `
-              <div class="workspace-heading-row">
-                <div class="workspace-heading-main">
-                  <strong id="workspace-title">${workspace ? escapeHtml(workspace.displayName) : "Workspace"}</strong><span class="heading-path">${workspace ? escapeHtml(workspaceFolderSummary(workspace)) : ""}</span>
-                </div>
-                ${
-                  workspace
-                    ? `<div class="workspace-heading-actions">
-                        <button class="secondary-button icon-text-button" type="button" data-action="open-git-changes">
-                          ${icons.git}
-                          <span>Git</span>
-                        </button>
-                        <button class="secondary-button icon-text-button" type="button" data-action="open-code-view">
-                          ${icons.code}
-                          <span>Code</span>
-                        </button>
-                      </div>`
-                    : ""
-                }
-              </div>
-              ${workspace ? renderWorkspacePanels(workspace, workspaces.length) : ""}
-            `
-        }
+      <section class="workspace-panel" aria-labelledby="${getPanelTitleId(mode)}">
+        ${mode === "code" && workspace
+          ? renderCodeView(workspace)
+          : mode === "git" && workspace
+            ? renderGitRepositoryDrawer(workspace, gitRepositoryViewFor(workspace.id))
+            : workspace
+              ? renderWorkspacePanels(workspace, workspaces.length)
+              : ""}
       </section>
-      ${showGitChanges ? renderGitRepositoryDrawer(ws!, gitRepositoryViewFor(ws!.id)) : ""}
     </main>
   `;
+}
+
+function getPanelTitleId(mode: string): string {
+  switch (mode) {
+    case "code": return "code-title";
+    case "kanban": return "kanban-title";
+    default: return "chat-title";
+  }
 }
 
 function buildOverlays(): string {
@@ -183,20 +185,21 @@ function buildOverlays(): string {
 /* ------------------------------------------------------------------ */
 
 export function renderWorkspacePanels(workspace: services.Workspace | null, workspaceCount: number): string {
+  const mode = state.appMode;
   const board = workspace ? kanbanBoardFor(workspace.id) : null;
   const review = workspace ? changeReviewFor(workspace.id) : null;
   const running = workspace ? state.runningKanbanWorkspaces.has(workspace.id) : false;
   const decomposing = workspace ? state.executingPlans.has(workspace.id) : false;
   const hasCards = board ? kanbanCards(board).length > 0 : false;
   const hasDoneCards = board ? (board.done ?? []).length > 0 : false;
-  const chatExpanded = workspace ? state.expandedChatWorkspaces.has(workspace.id) : false;
-  const kanbanExpanded = workspace && !chatExpanded ? state.expandedKanbanWorkspaces.has(workspace.id) : false;
-  const kanbanSizeLabel = kanbanExpanded ? "Collapse Kanban" : "Expand Kanban";
   const reviewCount = review?.fileCount ?? 0;
-  const activeTab = workspace ? getActiveChatKanbanTab(workspace.id) : "chat";
-  return `
-    <div class="split-panels ${chatExpanded ? "is-chat-expanded" : ""} ${kanbanExpanded ? "is-kanban-expanded" : ""}" data-active-tab="${escapeHtml(activeTab)}">
-      ${renderChatPanel(workspace, chatExpanded)}
+
+  let mainPanel = "";
+
+  if (mode === "chat") {
+    mainPanel = renderChatPanel(workspace, true);
+  } else if (mode === "kanban") {
+    mainPanel = `
       <section class="work-panel kanban-panel" aria-labelledby="kanban-title">
         <div class="panel-heading">
           <div class="kanban-heading-main">
@@ -211,9 +214,6 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
                     ${icons.file}
                     <span>Changes</span>
                     <span class="change-count-badge">${escapeHtml(String(reviewCount))}</span>
-                  </button>
-                  <button class="icon-button" type="button" title="${kanbanSizeLabel}" aria-label="${kanbanSizeLabel}" aria-pressed="${kanbanExpanded}" data-action="toggle-kanban-size">
-                    ${kanbanExpanded ? icons.collapse : icons.expand}
                   </button>
                   <button class="secondary-button icon-text-button" type="button" data-action="open-create-ready-card" ${running ? "disabled" : ""}>
                     ${icons.plus}
@@ -243,7 +243,11 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
             : `<div class="empty-state">Add a workspace to create cards.</div>`
         }
       </section>
-    </div>
+    `;
+  }
+
+  return `
+    ${mainPanel}
     ${board ? renderKanbanDetail(board) : ""}
     ${workspace && state.creatingKanbanCardWorkspaces.has(workspace.id) && !running ? renderCreateKanbanCardDialog(workspace.id) : ""}
     ${workspace && state.openChangeReviewWorkspaces.has(workspace.id) ? renderChangeReviewDrawer(workspace, review ?? changeReviewFor(workspace.id)) : ""}
@@ -253,12 +257,9 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
 function renderMobileBottomNav(
   workspaces: services.Workspace[],
   workspace: services.Workspace | null,
-  showingCode: boolean,
-  showGitChanges: boolean,
 ): string {
   const appName = "Echo";
-  const mobileNavView = state.mobileNavView;
-  const activeMobileView = showGitChanges ? "git" : mobileNavView;
+  const activeMobileView = state.mobileNavView;
   return `
     <nav class="mobile-bottom-nav" role="navigation" aria-label="Main navigation">
       <div class="mobile-nav-brand">
@@ -292,4 +293,3 @@ function renderMobileBottomNav(
     </nav>
   `;
 }
-

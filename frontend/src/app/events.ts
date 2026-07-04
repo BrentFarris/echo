@@ -67,17 +67,21 @@ export function bindEvents() {
       if (chatOverflow?.open && !chatOverflow.contains(target)) {
         chatOverflow.open = false;
       }
-      // Close workspace dropdown when tapping outside.
+      // Close workspace dropdown when tapping outside (mobile + desktop).
       if (state.workspaceDropdownOpen) {
         const pillBtn = appRoot.querySelector<HTMLElement>(
           "button[data-action='toggle-workspace-dropdown']",
         );
-        const dropdown = appRoot.querySelector<HTMLElement>(
+        const mobileDropdown = appRoot.querySelector<HTMLElement>(
           ".mobile-nav-workspace-dropdown",
         );
+        const desktopDropdown = appRoot.querySelector<HTMLElement>(
+          "[data-workspace-dropdown]",
+        );
         const isInPill = pillBtn && pillBtn.contains(target);
-        const isInDropdown = dropdown && dropdown.contains(target);
-        if (!isInPill && !isInDropdown) {
+        const isInMobileDropdown = mobileDropdown && mobileDropdown.contains(target);
+        const isInDesktopDropdown = desktopDropdown && desktopDropdown.contains(target);
+        if (!isInPill && !isInMobileDropdown && !isInDesktopDropdown) {
           state.workspaceDropdownOpen = false;
           getAppCallbacks().render();
         }

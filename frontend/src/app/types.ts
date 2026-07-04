@@ -2,7 +2,7 @@
 import { services } from "../../wailsjs/go/models";
 import type { CodeEntryKind, CodeViewCallbacks } from "../codeView/types";
 
-export type AppMode = "chat" | "kanban" | "code" | "settings";
+export type AppMode = "chat" | "kanban" | "code" | "settings" | "git";
 
 export type MobileNavView = AppMode | "git";
 
