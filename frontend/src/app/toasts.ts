@@ -10,6 +10,9 @@ export function pushToast(message: string, tone: Toast["tone"] = "info") {
   if (!cleanMessage) {
     return;
   }
+  if (window.innerWidth <= 720) {
+    return;
+  }
   const toast = {
     id: `toast-${++state.toastSeq}`,
     tone,
