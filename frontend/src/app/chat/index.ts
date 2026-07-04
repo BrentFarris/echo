@@ -546,37 +546,7 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
   const mentionOpen = Boolean(chatMentionFor(workspace.id));
   const creatingSkill = state.creatingChatSkills.has(workspace.id);
   return `
-    <section class="work-panel chat-panel" aria-labelledby="chat-title" aria-busy="${session.busy || executing}" data-chat-panel data-workspace-id="${escapeAttribute(workspace.id)}">
-      <div class="panel-heading chat-heading">
-        <div class="chat-heading-main">
-          <span class="chat-eyebrow">Chat</span>
-          <strong id="chat-title">${executing ? renderSpinnerLabel("Triage") : session.busy ? "Working" : "Ready"}</strong>
-        </div>
-        <div class="chat-heading-actions">
-          <button class="icon-button execute-button ${executing ? "is-busy" : ""}" type="button" title="${executeLabel}" aria-label="${executeLabel}" data-action="execute-plan" ${session.busy || executing || messages.length === 0 ? "disabled" : ""}>
-            ${executing ? `<span class="spinner" aria-hidden="true"></span>` : icons.execute}
-          </button>
-          <button class="icon-button stop-button" type="button" title="Stop stream" aria-label="Stop stream" data-action="stop-chat" ${session.busy ? "" : "disabled"}>
-            ${icons.stop}
-          </button>
-          <details class="chat-overflow" data-chat-overflow>
-            <summary class="icon-button" title="Chat actions" aria-label="Chat actions">
-              ${icons.moreHorizontal}
-            </summary>
-            <div class="chat-overflow-menu" role="menu" aria-label="Chat actions">
-              <button class="chat-overflow-item" type="button" role="menuitem" data-action="create-chat-skill" ${session.busy || executing || creatingSkill || messages.length === 0 ? "disabled" : ""}>
-                ${creatingSkill ? "Creating skill..." : "Create skill from chat"}
-              </button>
-              <button class="chat-overflow-item" type="button" role="menuitem" data-action="clear-chat" ${session.busy || executing || creatingSkill || messages.length === 0 ? "disabled" : ""}>
-                Clear chat
-              </button>
-            </div>
-          </details>
-          <button class="icon-button" type="button" title="${sizeLabel}" aria-label="${sizeLabel}" aria-pressed="${expanded}" data-action="toggle-chat-size">
-            ${expanded ? icons.collapse : icons.expand}
-          </button>
-        </div>
-      </div>
+    <section class="work-panel chat-panel" aria-busy="${session.busy || executing}" data-chat-panel data-workspace-id="${escapeAttribute(workspace.id)}">
       <div class="chat-log" data-chat-log>
         ${
           messages.length
@@ -632,6 +602,10 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
             <span class="chat-toolbar-separator"></span>
             <button class="chat-toolbar-icon" type="button" title="Toggle approvals" aria-label="Toggle approvals" data-action="toggle-approvals">
               ${icons.check}
+            </button>
+            <span class="chat-toolbar-separator"></span>
+            <button class="chat-toolbar-icon execute-button ${executing ? "is-busy" : ""}" type="button" title="${executeLabel}" aria-label="${executeLabel}" data-action="execute-plan" ${session.busy || executing || messages.length === 0 ? "disabled" : ""}>
+              ${executing ? `<span class="spinner spinner-sm" aria-hidden="true"></span>` : icons.execute}
             </button>
           </div>
           <div class="chat-composer-toolbar-right">
