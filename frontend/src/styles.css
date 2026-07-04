@@ -5410,6 +5410,11 @@ h3 {
     display: none !important;
   }
 
+  /* Hide the chat attachment menu popup on mobile — use native picker instead */
+  .chat-attachment-menu {
+    display: none !important;
+  }
+
   /* Unified single-row bottom nav — five view tabs + workspace pill */
   .mobile-bottom-nav {
     position: fixed;
@@ -5729,12 +5734,7 @@ h3 {
     overflow: visible;
   }
 
-  /* Hide attachment toggle + menu on mobile */
-  .chat-attachment-toggle,
-  .chat-attachment-menu {
-    display: none !important;
-  }
-
+ 
   /* ── Model selector: compact inline button (VS Code style) ── */
   .model-selector {
     position: relative;

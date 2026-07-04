@@ -1129,6 +1129,11 @@ export function handleChatAttachmentToggle(event: Event) {
   if (button.disabled) {
     return;
   }
+  // On mobile viewports, bypass the menu and open the native file picker directly
+  if (window.innerWidth <= 720) {
+    void selectChatMediaFiles(workspace.id);
+    return;
+  }
   const menu = appRoot.querySelector<HTMLElement>("[data-chat-attachment-menu]");
   if (!menu) {
     return;
@@ -1248,6 +1253,38 @@ export function handleChatVideoUpload(event: Event) {
     return;
   }
   void selectChatVideoFiles(workspace.id);
+}
+
+function selectChatMediaFiles(workspaceID: string): Promise<void> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.accept = "image/png,image/jpeg,image/gif,image/webp,video/mp4,video/webm,video/quicktime";
+    input.style.position = "fixed";
+    input.style.left = "-9999px";
+    input.addEventListener("change", async () => {
+      const files = Array.from(input.files ?? []);
+      input.remove();
+      if (files.length > 0) {
+        const imageFiles = files.filter((f) => f.type.startsWith("image/"));
+        const videoFiles = files.filter((f) => f.type.startsWith("video/"));
+        if (imageFiles.length > 0) {
+          await addPastedChatImages(workspaceID, imageFiles);
+        }
+        if (videoFiles.length > 0) {
+          await addPastedChatVideos(workspaceID, videoFiles);
+        }
+      }
+      resolve();
+    }, { once: true });
+    input.addEventListener("cancel", () => {
+      input.remove();
+      resolve();
+    }, { once: true });
+    document.body.appendChild(input);
+    input.click();
+  });
 }
 
 function selectChatVideoFiles(workspaceID: string): Promise<void> {
