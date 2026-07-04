@@ -604,9 +604,19 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
         </div>
         <div class="chat-composer-toolbar">
           <div class="chat-composer-toolbar-left">
-            <button class="chat-toolbar-icon" type="button" title="Attach file" aria-label="Attach file" data-action="attach-file" ${session.busy || executing ? "disabled" : ""}>
+            <button class="chat-toolbar-icon" type="button" title="Attach file" aria-label="Attach file" data-chat-attachment-toggle ${session.busy || executing ? "disabled" : ""}>
               ${icons.plus}
             </button>
+            <div class="chat-attachment-menu" data-chat-attachment-menu hidden>
+              <button type="button" title="Attach image" aria-label="Attach image" data-attachment-type="image">
+                ${icons.image}
+                <span>Image</span>
+              </button>
+              <button type="button" title="Attach video" aria-label="Attach video" data-attachment-type="video">
+                ${icons.video}
+                <span>Video</span>
+              </button>
+            </div>
             <span class="chat-toolbar-separator"></span>
             <button class="chat-toolbar-icon" type="button" title="Agent mode" aria-label="Toggle agent mode" data-action="toggle-agent-mode">
               ${icons.code}
@@ -952,9 +962,8 @@ export function renderModelOptions(): string {
     .map((endpoint, index) => {
       const id = endpoint.id || `endpoint-${index + 1}`;
       const name = endpoint.name?.trim() || `Endpoint ${index + 1}`;
-      const model = endpoint.model?.trim() || "No model";
       const selected = id === currentID ? " aria-selected=\"true\"" : "";
-      return `<li class="model-dropdown-option${selected ? " is-active" : ""}" role="option" data-model-id="${escapeAttribute(id)}"${selected}>${escapeHtml(name)} — ${escapeHtml(model)}</li>`;
+      return `<li class="model-dropdown-option${selected ? " is-active" : ""}" role="option" data-model-id="${escapeAttribute(id)}"${selected}>${escapeHtml(name)}</li>`;
     })
     .join("");
 }

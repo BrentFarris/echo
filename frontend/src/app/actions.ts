@@ -828,6 +828,32 @@ export async function handleAction(event: Event) {
       }
       return;
     }
+    if (action === "attach-file") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      // Trigger the attachment toggle button to open the media picker menu.
+      const toggleBtn = appRoot.querySelector<HTMLButtonElement>("[data-chat-attachment-toggle]");
+      if (toggleBtn && !toggleBtn.disabled) {
+        toggleBtn.click();
+      }
+      return;
+    }
+    if (action === "toggle-agent-mode") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      const currentMode = chatPlanModeFor(workspace.id);
+      state.chatPlanModes.set(workspace.id, !currentMode);
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "toggle-approvals") {
+      pushToast("Approvals are not yet supported.", "info");
+      return;
+    }
     if (action === "delete-workspace") {
       const workspace = state.appState?.workspaces.find((item) => item.id === workspaceID);
       if (!workspace || !window.confirm(`Delete ${workspace.displayName} from Echo?`)) {
