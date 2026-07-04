@@ -1157,6 +1157,73 @@ h3 {
   opacity: 0.5;
 }
 
+/* ── Model dropdown: desktop overlay ── */
+.chat-composer-toolbar-left {
+  position: relative;
+}
+
+.model-dropdown[hidden] {
+  display: none;
+}
+
+.model-dropdown:not([hidden]) {
+  display: block;
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  min-width: 200px;
+  max-height: 40vh;
+  overflow-y: auto;
+  z-index: 100;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-modal);
+}
+
+/* Model dropdown list: reset defaults */
+.model-dropdown ul,
+.model-dropdown {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Model dropdown options: mirror workspace popup styling */
+.model-dropdown-option {
+  display: block;
+  width: 100%;
+  padding: var(--space-lg-md) var(--space-xl);
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text);
+  font-size: 0.85rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 120ms ease;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-dropdown-option:last-child {
+  border-bottom: none;
+}
+
+.model-dropdown-option:hover,
+.model-dropdown-option:focus-visible {
+  background: var(--color-surface-muted);
+  outline: none;
+}
+
+.model-dropdown-option.is-active {
+  background: color-mix(in srgb, var(--color-accent) 32%, transparent);
+  color: var(--color-accent-strong);
+  font-weight: 600;
+}
+
 .send-button {
   display: grid;
   place-items: center;
@@ -5758,73 +5825,16 @@ h3 {
     display: none;
   }
 
-  /* Establish positioning context for the model dropdown */
-  .chat-composer-toolbar-left {
-    position: relative;
-  }
-
-  /* Model dropdown on mobile: position above selector, constrain size */
+  /* Model dropdown on mobile: position above selector, constrain width */
   .model-dropdown[hidden] {
     display: none !important;
   }
 
   .model-dropdown:not([hidden]) {
-    position: absolute !important;
     bottom: calc(100% + 2px);
     top: auto !important;
-    left: 0;
     right: auto !important;
-    min-width: 200px;
     max-width: calc(100vw - 16px);
-    max-height: 40vh;
-    z-index: 100;
-    background: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: 8px;
-    box-shadow: var(--shadow-modal);
-  }
-
-  /* Model dropdown list: reset defaults */
-  .model-dropdown ul,
-  .model-dropdown {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
-
-  /* Model dropdown options: mirror workspace popup styling */
-  .model-dropdown-option {
-    display: block;
-    width: 100%;
-    padding: var(--space-lg-md) var(--space-xl);
-    text-align: left;
-    background: transparent;
-    border: none;
-    border-bottom: 1px solid var(--color-border);
-    color: var(--color-text);
-    font-size: 0.85rem;
-    font-family: inherit;
-    cursor: pointer;
-    transition: background 120ms ease;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .model-dropdown-option:last-child {
-    border-bottom: none;
-  }
-
-  .model-dropdown-option:hover,
-  .model-dropdown-option:focus-visible {
-    background: var(--color-surface-muted);
-    outline: none;
-  }
-
-  .model-dropdown-option.is-active {
-    background: color-mix(in srgb, var(--color-accent) 32%, transparent);
-    color: var(--color-accent-strong);
-    font-weight: 600;
   }
 
   /* ── Composer: VS Code-style compact single-row input ── */
