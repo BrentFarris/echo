@@ -5094,6 +5094,7 @@ h3 {
   }
 
   .main-content {
+    height: 100%;
     padding: var(--space-lg-md);
     padding-bottom: 6var(--space-sm);
     overflow: auto;
@@ -5102,7 +5103,7 @@ h3 {
   .workspace-panel {
     height: 100%;
     min-height: 100%;
-    overflow: hidden;
+    overflow: visible;
   }
 
   .workspace-panel.is-code-mode {
@@ -5685,6 +5686,15 @@ h3 {
   .tool-call pre {
     font-size: var(--text-md-lg);
   }
+
+  /* Let touch events pass through the backdrop so underlying content is scrollable */
+  .change-review-backdrop {
+    pointer-events: none;
+  }
+
+  .change-review {
+    pointer-events: auto;
+  }
 }
 
 @media (hover: none), (pointer: coarse) {
@@ -5715,19 +5725,8 @@ h3 {
     -webkit-overflow-scrolling: touch;
   }
 
-  /* Constrain split-panels so the chat panel grid rows actually distribute */
-  .split-panels {
-    height: 100%;
-    overflow: hidden;
-  }
-
   .work-panel {
-    overflow: hidden;
-  }
-
-  /* Force chat panel to fill available height */
-  .chat-panel {
-    height: 100%;
+    overflow: visible;
   }
 
   /* Hide attachment toggle + menu on mobile */
