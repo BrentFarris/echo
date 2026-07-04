@@ -12,12 +12,15 @@ const (
 	RoleTool      = "tool"
 )
 
-const ThinkingCorrectionText = `Do not produce analysis-only messages.
-Do not restart reasoning from the beginning.
-Do not say "wait" or reconsider repeatedly. If you notice an error, correct it once and proceed.
-After inspecting files, make the smallest viable change.
-Do not inspect the same file twice unless a tool result changed.
-Do not call the same tool with equivalent arguments more than once.`
+const ThinkingCorrectionText = `
+Additional rules for this task:
+- Do not produce analysis-only messages.
+- Do not restart reasoning from the beginning.
+- Do not say "wait" or reconsider repeatedly. If you notice an error, correct it once and proceed.
+- Skip unnecessary verification steps.
+- Do not inspect the same file twice unless a tool result changed.
+- Do not call the same tool with equivalent arguments more than once.
+`
 
 type Message struct {
 	Role         string               `json:"role"`
