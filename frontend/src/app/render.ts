@@ -195,7 +195,6 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
   const reviewCount = review?.fileCount ?? 0;
   const activeTab = workspace ? getActiveChatKanbanTab(workspace.id) : "chat";
   return `
-    ${workspace ? renderChatKanbanTabs(workspace.id, activeTab) : ""}
     <div class="split-panels ${chatExpanded ? "is-chat-expanded" : ""} ${kanbanExpanded ? "is-kanban-expanded" : ""}" data-active-tab="${escapeHtml(activeTab)}">
       ${renderChatPanel(workspace, chatExpanded)}
       <section class="work-panel kanban-panel" aria-labelledby="kanban-title">
@@ -294,15 +293,3 @@ function renderMobileBottomNav(
   `;
 }
 
-function renderChatKanbanTabs(workspaceID: string, activeTab: string): string {
-  return `
-    <div class="chat-kanban-tabs" role="tablist" aria-label="Chat and Kanban tabs">
-      <button class="tab-button ${activeTab === "chat" ? "is-active" : ""}" type="button" role="tab" aria-selected="${activeTab === "chat"}" data-action="set-chat-kanban-tab" data-tab="chat">
-        Chat
-      </button>
-      <button class="tab-button ${activeTab === "kanban" ? "is-active" : ""}" type="button" role="tab" aria-selected="${activeTab === "kanban"}" data-action="set-chat-kanban-tab" data-tab="kanban">
-        Kanban
-      </button>
-    </div>
-  `;
-}

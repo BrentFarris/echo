@@ -5392,35 +5392,6 @@ h3 {
     width: 100%;
   }
 
-  /* Chat/Kanban tab bar — mobile only */
-  .chat-kanban-tabs {
-    display: flex;
-    gap: 0;
-    border-bottom: 2px solid var(--color-border);
-    margin-bottom: var(--space-xl);
-  }
-
-  .tab-button {
-    padding: var(--space-lg) var(--space-xl);
-    font-size: 0.85rem;
-    font-weight: 500;
-    color: var(--color-text-muted);
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -var(--space-xxs);
-    cursor: pointer;
-    transition: color 120ms ease, border-color 120ms ease;
-  }
-
-  .tab-button:hover {
-    color: var(--color-text);
-  }
-
-  .tab-button.is-active {
-    color: var(--color-accent);
-    border-bottom-color: var(--color-accent);
-  }
 
   /* Conditionally hide panels on mobile based on active tab */
   .split-panels[data-active-tab="chat"] .kanban-panel {
@@ -5472,10 +5443,6 @@ h3 {
     display: none;
   }
 
-  /* Hide the old chat/kanban tabs row on mobile — replaced by bottom nav */
-  .chat-kanban-tabs {
-    display: none !important;
-  }
 
   /* Hide the chat attachment menu popup on mobile — use native picker instead */
   .chat-attachment-menu {
