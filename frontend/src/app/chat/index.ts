@@ -548,15 +548,11 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
   return `
     <section class="work-panel chat-panel" aria-labelledby="chat-title" aria-busy="${session.busy || executing}" data-chat-panel data-workspace-id="${escapeAttribute(workspace.id)}">
       <div class="panel-heading chat-heading">
-        <div class="chat-actions">
-        <div style="width: 5em;">
-          <span>Chat</span>
-          <br/>
+        <div class="chat-heading-main">
+          <span class="chat-eyebrow">Chat</span>
           <strong id="chat-title">${executing ? renderSpinnerLabel("Triage") : session.busy ? "Working" : "Ready"}</strong>
         </div>
-          <button class="icon-button" type="button" title="${sizeLabel}" aria-label="${sizeLabel}" aria-pressed="${expanded}" data-action="toggle-chat-size">
-            ${expanded ? icons.collapse : icons.expand}
-          </button>
+        <div class="chat-heading-actions">
           <button class="icon-button execute-button ${executing ? "is-busy" : ""}" type="button" title="${executeLabel}" aria-label="${executeLabel}" data-action="execute-plan" ${session.busy || executing || messages.length === 0 ? "disabled" : ""}>
             ${executing ? `<span class="spinner" aria-hidden="true"></span>` : icons.execute}
           </button>
@@ -576,6 +572,9 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
               </button>
             </div>
           </details>
+          <button class="icon-button" type="button" title="${sizeLabel}" aria-label="${sizeLabel}" aria-pressed="${expanded}" data-action="toggle-chat-size">
+            ${expanded ? icons.collapse : icons.expand}
+          </button>
         </div>
       </div>
       <div class="chat-log" data-chat-log>
@@ -587,14 +586,13 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
       </div>
       <form class="chat-composer" data-chat-form>
         <div class="chat-composer-main" data-chat-input-wrap>
-          ${!isWailsRuntime() ? `\n            <button class="icon-button chat-attachment-toggle" type="button" title="Attach media" aria-label="Attach media" aria-haspopup="true" aria-expanded="false"\n              data-chat-attachment-toggle\n              ${session.busy || executing ? "disabled" : ""}\n            >\n              ${icons.plus}\n            </button>\n            <div class="chat-attachment-menu" data-chat-attachment-menu hidden>\n              <button class="chat-attachment-option" type="button" data-attachment-type="image">\n                ${icons.image}<span>Image</span>\n              </button>\n              <button class="chat-attachment-option" type="button" data-attachment-type="video">\n                ${icons.video}<span>Video</span>\n              </button>\n            </div>\n          ` : ""}
-          <button class="model-selector" type="button" title="Select model" aria-haspopup="listbox" aria-expanded="false"\n            data-model-selector\n            ${session.busy || executing ? "disabled" : ""}\n          >\n            <span class="model-selector-label">${escapeHtml(getActiveChatModelLabel())}</span>\n            <span class="model-selector-chevron">${icons.arrowDown}</span>\n          </button>\n          <ul class="model-dropdown" data-model-dropdown hidden role="listbox" aria-label="Available models">
-            ${renderModelOptions()}
-          </ul>
+          ${renderChatImageDrafts(workspace.id, session.busy || executing)}
+          ${renderChatVideoDrafts(workspace.id, session.busy || executing)}
+          ${renderChatMentionPicker(workspace.id)}
           <textarea
             name="message"
-            rows="3"
-            placeholder="Ask for a plan..."
+            rows="1"
+            placeholder="Describe what to build"
             aria-label="Message Echo"
             aria-autocomplete="list"
             aria-expanded="${mentionOpen}"
@@ -603,21 +601,35 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
             data-chat-input
             ${session.busy || executing ? "disabled" : ""}
           >${escapeHtml(draft)}</textarea>
-          ${renderChatImageDrafts(workspace.id, session.busy || executing)}
-          ${renderChatVideoDrafts(workspace.id, session.busy || executing)}
-          ${renderChatMentionPicker(workspace.id)}
         </div>
-        <div class="chat-composer-actions">
-          <button class="icon-button execute-button ${executing ? "is-busy" : ""}" type="button" title="${executing ? "Decomposing cards" : "Execute plan"}" aria-label="${executing ? "Decomposing cards" : "Execute plan"}" data-action="execute-plan" ${session.busy || executing || messages.length === 0 ? "disabled" : ""}>
-            ${executing ? `<span class="spinner" aria-hidden="true"></span>` : icons.execute}
-          </button>
-          <button class="icon-button" type="button" title="Clear chat" aria-label="Clear chat" data-action="clear-chat" ${session.busy || executing || creatingSkill || messages.length === 0 ? "disabled" : ""}>
-            ${icons.trash}
-          </button>
+        <div class="chat-composer-toolbar">
+          <div class="chat-composer-toolbar-left">
+            <button class="chat-toolbar-icon" type="button" title="Attach file" aria-label="Attach file" data-action="attach-file" ${session.busy || executing ? "disabled" : ""}>
+              ${icons.plus}
+            </button>
+            <span class="chat-toolbar-separator"></span>
+            <button class="chat-toolbar-icon" type="button" title="Agent mode" aria-label="Toggle agent mode" data-action="toggle-agent-mode">
+              ${icons.code}
+            </button>
+            <span class="chat-toolbar-separator"></span>
+            <button class="model-selector chat-toolbar-model" type="button" title="Select model" aria-haspopup="listbox" aria-expanded="false" data-model-selector ${session.busy || executing ? "disabled" : ""}>
+              <span class="model-selector-label">${escapeHtml(getActiveChatModelLabel())}</span>
+              <span class="model-selector-chevron">${icons.arrowDown}</span>
+            </button>
+            <ul class="model-dropdown" data-model-dropdown hidden role="listbox" aria-label="Available models">
+              ${renderModelOptions()}
+            </ul>
+            <span class="chat-toolbar-separator"></span>
+            <button class="chat-toolbar-icon" type="button" title="Toggle approvals" aria-label="Toggle approvals" data-action="toggle-approvals">
+              ${icons.check}
+            </button>
+          </div>
+          <div class="chat-composer-toolbar-right">
+            <button class="send-button ${session.busy || executing ? 'is-busy' : ''}" type="button" title="${session.busy || executing ? 'Stop' : 'Send'}" aria-label="${session.busy || executing ? 'Stop stream' : 'Send message'}" data-action="send-stop" ${executing ? "disabled" : ""}>
+              ${(session.busy || executing) ? icons.stop : icons.send}
+            </button>
+          </div>
         </div>
-        <button class="primary-button icon-button send-button" type="button" title="${session.busy || executing ? 'Stop stream' : 'Send'}" aria-label="${session.busy || executing ? 'Stop stream' : 'Send message'}" data-action="send-stop" ${executing ? "disabled" : ""}>
-          ${(session.busy || executing) ? icons.stop : icons.send}
-        </button>
       </form>
     </section>
   `;
