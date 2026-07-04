@@ -99,11 +99,11 @@ export function patchDirtyUI(workspaceID: string, tab: CodeFileTab) {
   }
 }
 
-export function patchInlineCodeChatResponse(
+export function patchInlineCodeChatOutput(
   workspaceID: string,
   path: string,
   requestID: string,
-  responseHtml: string,
+  outputHtml: string,
   onMissing: () => void,
 ) {
   const root =
@@ -116,14 +116,22 @@ export function patchInlineCodeChatResponse(
     onMissing();
     return;
   }
-  let response = root.querySelector<HTMLElement>("[data-inline-code-response]");
-  if (!response) {
-    response = document.createElement("div");
-    response.className = "inline-code-chat-response markdown-body";
-    response.dataset.inlineCodeResponse = "";
-    root.append(response);
+  let output = root.querySelector<HTMLElement>("[data-inline-code-output]");
+  if (!output) {
+    output = document.createElement("div");
+    output.className = "inline-code-chat-output";
+    output.dataset.inlineCodeOutput = "";
+    root.append(output);
   }
-  patchChildrenFromHtml(response, responseHtml);
+  const openSections = new Set(
+    Array.from(output.querySelectorAll<HTMLDetailsElement>("details[data-debug-section]"))
+      .filter((section) => section.open)
+      .map((section) => section.dataset.debugSection ?? ""),
+  );
+  patchChildrenFromHtml(output, outputHtml);
+  output.querySelectorAll<HTMLDetailsElement>("details[data-debug-section]").forEach((section) => {
+    section.open = openSections.has(section.dataset.debugSection ?? "");
+  });
 }
 
 export function captureCodeTreeScroll(workspaceID: string) {

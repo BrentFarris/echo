@@ -226,6 +226,10 @@ export function ReorderWorkspaces(arg1) {
   return window['go']['services']['SystemService']['ReorderWorkspaces'](arg1);
 }
 
+export function ReplayWorkspaceSymbolRename(arg1, arg2) {
+  return window['go']['services']['SystemService']['ReplayWorkspaceSymbolRename'](arg1, arg2);
+}
+
 export function ResetKanbanCard(arg1, arg2) {
   return window['go']['services']['SystemService']['ResetKanbanCard'](arg1, arg2);
 }

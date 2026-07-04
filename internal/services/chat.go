@@ -289,10 +289,12 @@ func (s *SystemService) RetryChatMessage(workspaceID string, messageID string, p
 		return ChatSession{}, fmt.Errorf("can only retry complete assistant messages")
 	}
 
-	// Truncate messages and history up to (not including) the message being retried.
-	history := append([]llm.Message(nil), session.History[:msgIndex]...)
+	// A compacted model history no longer has a one-to-one index relationship
+	// with visible messages. Rebuild from the visible prefix when the user
+	// explicitly rewinds the transcript.
+	history := visibleChatHistory(session.Messages[:msgIndex])
 	session.Messages = session.Messages[:msgIndex]
-	session.History = session.History[:msgIndex]
+	session.History = cloneLLMMessages(history)
 
 	assistantMessage := ChatMessage{
 		ID:     s.nextChatIDLocked("msg"),
@@ -372,7 +374,7 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 		}
 
 		session.Messages[msgIndex].Content = content
-		replaceVisibleAssistantHistory(session, msgIndex, content)
+		session.History = visibleChatHistory(session.Messages)
 		clone := cloneChatSession(session)
 		s.chatMu.Unlock()
 		if err := s.persistChatSession(workspaceID); err != nil {
@@ -389,13 +391,12 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 	// Update the message content.
 	session.Messages[msgIndex].Content = content
 
-	// Rebuild the LLM history entry for this message.
-	session.History[msgIndex] = llm.Message{Role: llm.RoleUser, Content: content}
-
-	// Truncate messages and history at the target index.
-	history := append([]llm.Message(nil), session.History[:msgIndex+1]...)
+	// Rebuild the hidden context from the visible prefix. This intentionally
+	// discards compacted summaries and hidden tool state that may contradict
+	// the user's edited transcript.
+	history := visibleChatHistory(session.Messages[:msgIndex+1])
 	session.Messages = session.Messages[:msgIndex+1]
-	session.History = session.History[:msgIndex+1]
+	session.History = cloneLLMMessages(history)
 
 	assistantMessage := ChatMessage{
 		ID:     s.nextChatIDLocked("msg"),
@@ -437,52 +438,6 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 	return clone, nil
 }
 
-// replaceVisibleAssistantHistory replaces the model/tool history for the
-// assistant turn represented by one visible chat message. A visible assistant
-// message can span several model responses and tool results, so collapsing the
-// turn avoids leaving the unedited response hidden in later chat context.
-func replaceVisibleAssistantHistory(session *chatSessionState, messageIndex int, content string) {
-	userOrdinal := 0
-	for i := 0; i < messageIndex; i++ {
-		if session.Messages[i].Role == llm.RoleUser {
-			userOrdinal++
-		}
-	}
-	if userOrdinal == 0 {
-		return
-	}
-
-	historyUserOrdinal := 0
-	userHistoryIndex := -1
-	for i := range session.History {
-		if session.History[i].Role != llm.RoleUser {
-			continue
-		}
-		historyUserOrdinal++
-		if historyUserOrdinal == userOrdinal {
-			userHistoryIndex = i
-			break
-		}
-	}
-	if userHistoryIndex < 0 {
-		return
-	}
-
-	nextUserHistoryIndex := len(session.History)
-	for i := userHistoryIndex + 1; i < len(session.History); i++ {
-		if session.History[i].Role == llm.RoleUser {
-			nextUserHistoryIndex = i
-			break
-		}
-	}
-
-	history := make([]llm.Message, 0, len(session.History)-(nextUserHistoryIndex-userHistoryIndex-1)+1)
-	history = append(history, session.History[:userHistoryIndex+1]...)
-	history = append(history, llm.Message{Role: llm.RoleAssistant, Content: content})
-	history = append(history, session.History[nextUserHistoryIndex:]...)
-	session.History = history
-}
-
 func (s *SystemService) runChatTurn(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, streamID string, messageID string, planMode bool) {
 	s.runChatTurnWithHistory(ctx, cancel, workspace, settings, streamID, messageID, s.chatHistory(workspace.ID), planMode)
 }
@@ -498,18 +453,39 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 	}
 
 	candidates := workspaceSkillCandidates(ctx, workspace, latestWorkspaceSkillTask(history))
+	currentUser := latestContextUserMessage(history)
 	messages := append([]llm.Message{chatSystemMessage(workspace, planMode, candidates)}, history...)
 	toolSchema := tools.LLMSchema()
 	if planMode {
 		toolSchema = tools.ReadOnlyLLMSchema()
 	}
 	recoverableToolCalls := make(map[string]bool)
+	forcedCompactions := 0
 	skillCheckpointPending := false
 	skillCheckpointReminders := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			s.cancelChatMessage(workspace.ID, streamID, messageID)
 			return
+		}
+
+		preflightPolicy := contextCompactionPolicy{CurrentUser: currentUser}
+		if contextNeedsCompaction(settings, messages, toolSchema) &&
+			contextHasCompressibleStale(settings, messages, preflightPolicy) {
+			s.compactingChatMessage(workspace.ID, streamID, messageID)
+			compaction, compactErr := compactContextIfNeeded(ctx, client, settings, messages, toolSchema, preflightPolicy)
+			if compactErr != nil {
+				if ctx.Err() != nil {
+					s.cancelChatMessage(workspace.ID, streamID, messageID)
+					return
+				}
+				s.retryChatMessage(workspace.ID, streamID, messageID)
+			} else if compaction.Compacted {
+				messages = compaction.Messages
+				s.replaceChatHistory(workspace.ID, messages[1:])
+				s.emitChatCompactionResult(workspace.ID, streamID, messageID, compaction)
+				s.retryChatMessage(workspace.ID, streamID, messageID)
+			}
 		}
 
 		request, err := llm.NewChatRequest(settings, messages, llm.WithTools(toolSchema), llm.WithToolChoice("auto"))
@@ -533,6 +509,37 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 					s.retryChatMessage(workspace.ID, streamID, messageID)
 					continue
 				}
+				if forcedCompactions >= 2 {
+					s.failChatMessage(workspace.ID, streamID, messageID, "Echo could not free enough context while preserving the system message, original prompt, and recent agent state.")
+					return
+				}
+				var compaction contextCompactionResult
+				var compactErr error
+				for forcedCompactions < 2 {
+					forcedCompactions++
+					s.compactingChatMessage(workspace.ID, streamID, messageID)
+					compaction, compactErr = compactContextIfNeeded(ctx, client, settings, messages, toolSchema, contextCompactionPolicy{
+						CurrentUser:    currentUser,
+						Force:          true,
+						Aggressiveness: forcedCompactions,
+					})
+					if compactErr == nil {
+						break
+					}
+					if ctx.Err() != nil {
+						s.cancelChatMessage(workspace.ID, streamID, messageID)
+						return
+					}
+				}
+				if compactErr != nil {
+					s.failChatMessage(workspace.ID, streamID, messageID, "Echo could not compact the context safely: "+compactErr.Error())
+					return
+				}
+				messages = compaction.Messages
+				s.replaceChatHistory(workspace.ID, messages[1:])
+				s.emitChatCompactionResult(workspace.ID, streamID, messageID, compaction)
+				s.retryChatMessage(workspace.ID, streamID, messageID)
+				continue
 			}
 			s.failChatMessage(workspace.ID, streamID, messageID, userFacingLLMError(err))
 			return
@@ -546,6 +553,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 			s.failChatMessage(workspace.ID, streamID, messageID, err.Error())
 			return
 		}
+		forcedCompactions = 0
 
 		assistantHistory := llm.Message{Role: llm.RoleAssistant, Content: content, ToolCalls: toolCalls}
 		messages = append(messages, assistantHistory)
@@ -860,6 +868,44 @@ func (s *SystemService) retryChatMessage(workspaceID string, streamID string, me
 	})
 }
 
+func (s *SystemService) compactingChatMessage(workspaceID string, streamID string, messageID string) {
+	s.mutateChatMessage(workspaceID, messageID, func(message *ChatMessage) {
+		message.Status = "compacting"
+		message.Error = ""
+	}, ChatStreamEvent{
+		WorkspaceID: workspaceID,
+		StreamID:    streamID,
+		MessageID:   messageID,
+		Type:        "compacting",
+	})
+}
+
+func (s *SystemService) emitChatCompactionResult(workspaceID string, streamID string, messageID string, result contextCompactionResult) {
+	content := fmt.Sprintf(
+		"Context compacted from approximately %d to %d tokens; %d stale messages were replaced.",
+		result.BeforeTokens,
+		result.AfterTokens,
+		result.RemovedMessages,
+	)
+	if result.UsedFallback && result.Warning != "" {
+		content += " " + result.Warning
+		s.emitChatEvent(ChatStreamEvent{
+			WorkspaceID: workspaceID,
+			StreamID:    streamID,
+			MessageID:   messageID,
+			Type:        "compaction_warning",
+			Content:     result.Warning,
+		})
+	}
+	s.emitChatEvent(ChatStreamEvent{
+		WorkspaceID: workspaceID,
+		StreamID:    streamID,
+		MessageID:   messageID,
+		Type:        "compacted",
+		Content:     content,
+	})
+}
+
 func (s *SystemService) cancelChatMessage(workspaceID string, streamID string, messageID string) {
 	s.mutateChatMessage(workspaceID, messageID, func(message *ChatMessage) {
 		message.Status = "canceled"
@@ -1023,9 +1069,11 @@ func (s *SystemService) emitChatEvent(event ChatStreamEvent) {
 
 func chatSystemMessage(workspace Workspace, planMode bool, skillCandidates []tools.WorkspaceSkillSummary) llm.Message {
 	instructions := "You are Echo, a personal AI assistant helping plan work inside the active workspace. " +
+		contextCheckpointSystemGuidance + " " +
 		"Use available tools when workspace facts are needed. " +
 		"When the user mentions @path, treat it as a labeled workspace file reference like <folder-label>/path and read it before relying on its contents. " +
 		"Use workspace_context for broad implementation planning when target files are unknown. " +
+		"Use git_inspect when commit history, regressions, legacy behavior, ownership, or prior rationale would materially clarify the request; avoid routine history searches when the current code is sufficient. " +
 		"When you need to find code but do not know the target file, prefer filesystem_search_workspace before shell commands. " +
 		"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. " +
 		"When a search result gives a useful line number, read nearby code with filesystem_read_text aroundLine; copy the result's line value and avoid reading whole source files unless the entire file is genuinely needed. " +
@@ -1033,9 +1081,11 @@ func chatSystemMessage(workspace Workspace, planMode bool, skillCandidates []too
 		"Keep plans concrete and concise."
 	if planMode {
 		instructions = "You are Echo, a personal AI assistant helping research and plan work inside the active workspace. " +
+			contextCheckpointSystemGuidance + " " +
 			"This chat is for planning changes only; do not make workspace changes, edit files, delete files, create files, run system modifying shell commands, or otherwise execute the plan. " +
 			"Use the available read-only tools to inspect files and gather the facts needed to answer the user. " +
 			"Use workspace_context for broad implementation planning when target files are unknown. " +
+			"Use git_inspect when commit history, regressions, legacy behavior, ownership, or prior rationale would materially clarify the request; avoid routine history searches when the current code is sufficient. " +
 			"When you need to find code but do not know the target file, prefer filesystem_search_workspace. " +
 			"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. " +
 			"When a search result gives a useful line number, read nearby code with filesystem_read_text aroundLine; copy the result's line value and avoid reading whole source files unless the entire file is genuinely needed. " +

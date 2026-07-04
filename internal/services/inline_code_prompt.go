@@ -29,6 +29,7 @@ type InlineCodePromptRequest struct {
 
 type InlineCodePromptResponse struct {
 	Content       string             `json:"content,omitempty"`
+	Reasoning     string             `json:"reasoning,omitempty"`
 	ToolCalls     []ChatToolActivity `json:"toolCalls,omitempty"`
 	AffectedPaths []string           `json:"affectedPaths,omitempty"`
 }
@@ -39,6 +40,7 @@ type InlineCodePromptEvent struct {
 	FilePath      string            `json:"filePath"`
 	Type          string            `json:"type"`
 	Content       string            `json:"content,omitempty"`
+	Reasoning     string            `json:"reasoning,omitempty"`
 	ToolCall      *ChatToolActivity `json:"toolCall,omitempty"`
 	AffectedPaths []string          `json:"affectedPaths,omitempty"`
 	Error         string            `json:"error,omitempty"`
@@ -99,19 +101,76 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 			Content: inlineCodeUserPrompt(request),
 		},
 	}
+	currentUser := messages[1]
+	toolSchema := tools.LLMSchema()
 	var output InlineCodePromptResponse
 	affected := map[string]bool{}
+	recoverableToolCalls := make(map[string]bool)
+	forcedCompactions := 0
 	skillCheckpointPending := false
 	skillCheckpointReminders := 0
 
 	for {
-		chatRequest, err := llm.NewChatRequest(settings, messages, llm.WithTools(tools.LLMSchema()), llm.WithToolChoice("auto"))
+		preflightPolicy := contextCompactionPolicy{CurrentUser: currentUser}
+		if contextNeedsCompaction(settings, messages, toolSchema) &&
+			contextHasCompressibleStale(settings, messages, preflightPolicy) {
+			s.emitInlineCodePromptEvent(InlineCodePromptEvent{
+				WorkspaceID: eventBase.WorkspaceID,
+				RequestID:   eventBase.RequestID,
+				FilePath:    eventBase.FilePath,
+				Type:        "compacting",
+				Content:     "Compacting stale context while preserving the current inline request and recent work.",
+			})
+			compaction, compactErr := compactContextIfNeeded(context.Background(), client, settings, messages, toolSchema, preflightPolicy)
+			if compactErr == nil && compaction.Compacted {
+				messages = compaction.Messages
+				s.emitInlineCodeCompactionResult(eventBase, compaction)
+			}
+		}
+
+		chatRequest, err := llm.NewChatRequest(settings, messages, llm.WithTools(toolSchema), llm.WithToolChoice("auto"))
 		if err != nil {
 			return fail(err)
 		}
 		publishResponse := !skillCheckpointPending
 		result := s.streamInlineCodeResponse(context.Background(), client, chatRequest, eventBase, publishResponse)
 		if result.err != nil {
+			if llm.IsContextLengthExceeded(result.err) {
+				if recovery, ok := recoverToolResultContext(messages, recoverableToolCalls); ok {
+					messages = recovery.Messages
+					s.markInlineToolContextTooLarge(&output, eventBase, recovery)
+					continue
+				}
+				if forcedCompactions >= 2 {
+					return fail(fmt.Errorf("Echo could not free enough context while preserving the system message, original inline request, and recent agent state"))
+				}
+				var compaction contextCompactionResult
+				var compactErr error
+				for forcedCompactions < 2 {
+					forcedCompactions++
+					s.emitInlineCodePromptEvent(InlineCodePromptEvent{
+						WorkspaceID: eventBase.WorkspaceID,
+						RequestID:   eventBase.RequestID,
+						FilePath:    eventBase.FilePath,
+						Type:        "compacting",
+						Content:     "The provider rejected the request for context length, so Echo is compacting stale inline-agent history.",
+					})
+					compaction, compactErr = compactContextIfNeeded(context.Background(), client, settings, messages, toolSchema, contextCompactionPolicy{
+						CurrentUser:    currentUser,
+						Force:          true,
+						Aggressiveness: forcedCompactions,
+					})
+					if compactErr == nil {
+						break
+					}
+				}
+				if compactErr != nil {
+					return fail(fmt.Errorf("Echo could not compact the inline context safely: %w", compactErr))
+				}
+				messages = compaction.Messages
+				s.emitInlineCodeCompactionResult(eventBase, compaction)
+				continue
+			}
 			return fail(errors.New(userFacingLLMError(result.err)))
 		}
 		if !result.finished {
@@ -121,8 +180,12 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 		if err := finishReasonError(result.finishReason, len(toolCalls) > 0); err != nil {
 			return fail(err)
 		}
+		forcedCompactions = 0
 
 		messages = append(messages, llm.Message{Role: llm.RoleAssistant, Content: result.content, ToolCalls: toolCalls})
+		if publishResponse {
+			output.Reasoning += result.reasoning
+		}
 		if len(toolCalls) == 0 {
 			if skillCheckpointPending && skillCheckpointReminders < workspaceSkillMaxReminders {
 				skillCheckpointReminders++
@@ -158,6 +221,7 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 			}
 			s.emitInlineCodeToolCallEvent(eventBase, call, "running", "", "")
 			execution := s.executeInlineCodeToolCall(workspace, settings, eventBase, call)
+			recoverableToolCalls[call.ID] = true
 			s.emitInlineCodePromptEvent(InlineCodePromptEvent{
 				WorkspaceID: eventBase.WorkspaceID,
 				RequestID:   eventBase.RequestID,
@@ -184,6 +248,7 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 
 type inlineCodeStreamResult struct {
 	content      string
+	reasoning    string
 	toolCalls    []llm.ToolCall
 	finished     bool
 	finishReason string
@@ -193,7 +258,9 @@ type inlineCodeStreamResult struct {
 func (s *SystemService) streamInlineCodeResponse(ctx context.Context, client *llm.Client, request llm.ChatRequest, eventBase InlineCodePromptEvent, publish bool) inlineCodeStreamResult {
 	stream := client.StreamChat(ctx, request)
 	content := strings.Builder{}
-	inlineParser := inlineToolCallStreamParser{}
+	reasoning := strings.Builder{}
+	contentInlineParser := inlineToolCallStreamParser{}
+	reasoningInlineParser := inlineToolCallStreamParser{}
 	toolCalls := make(map[int]llm.ToolCall)
 	finished := false
 	finishReason := ""
@@ -223,18 +290,42 @@ func (s *SystemService) streamInlineCodeResponse(ctx context.Context, client *ll
 			Content:     text,
 		})
 	}
-	flushInlineParser := func() {
-		parsed := inlineParser.Flush()
-		recordInlineToolCalls(parsed.ToolCalls)
-		appendContent(parsed.Text)
+	appendReasoning := func(text string) {
+		if text == "" {
+			return
+		}
+		reasoning.WriteString(text)
+		if !publish {
+			return
+		}
+		s.emitInlineCodePromptEvent(InlineCodePromptEvent{
+			WorkspaceID: eventBase.WorkspaceID,
+			RequestID:   eventBase.RequestID,
+			FilePath:    eventBase.FilePath,
+			Type:        "reasoning",
+			Reasoning:   text,
+		})
+	}
+	flushInlineParsers := func() {
+		parsedContent := contentInlineParser.Flush()
+		recordInlineToolCalls(parsedContent.ToolCalls)
+		appendContent(parsedContent.Text)
+
+		parsedReasoning := reasoningInlineParser.Flush()
+		recordInlineToolCalls(parsedReasoning.ToolCalls)
+		appendReasoning(parsedReasoning.Text)
 	}
 
 	for event := range stream.Events {
 		switch event.Type {
 		case llm.EventToken:
-			parsed := inlineParser.Consume(event.Content)
+			parsed := contentInlineParser.Consume(event.Content)
 			recordInlineToolCalls(parsed.ToolCalls)
 			appendContent(parsed.Text)
+		case llm.EventReasoning:
+			parsed := reasoningInlineParser.Consume(event.Content)
+			recordInlineToolCalls(parsed.ToolCalls)
+			appendReasoning(parsed.Text)
 		case llm.EventToolCall:
 			if event.ToolCall != nil {
 				call := mergeToolDelta(toolCalls[event.ToolCall.Index], *event.ToolCall)
@@ -245,17 +336,17 @@ func (s *SystemService) streamInlineCodeResponse(ctx context.Context, client *ll
 			finished = true
 			finishReason = event.FinishReason
 		case llm.EventCanceled:
-			return inlineCodeStreamResult{content: content.String(), toolCalls: orderedToolCalls(toolCalls), finished: false, finishReason: finishReason}
+			return inlineCodeStreamResult{content: content.String(), reasoning: reasoning.String(), toolCalls: orderedToolCalls(toolCalls), finished: false, finishReason: finishReason}
 		case llm.EventError:
-			return inlineCodeStreamResult{content: content.String(), toolCalls: orderedToolCalls(toolCalls), finished: false, finishReason: finishReason, err: errors.New(event.Error)}
+			return inlineCodeStreamResult{content: content.String(), reasoning: reasoning.String(), toolCalls: orderedToolCalls(toolCalls), finished: false, finishReason: finishReason, err: errors.New(event.Error)}
 		}
 	}
 
 	if err := ctx.Err(); err != nil {
-		return inlineCodeStreamResult{content: content.String(), toolCalls: orderedToolCalls(toolCalls), finished: false, finishReason: finishReason}
+		return inlineCodeStreamResult{content: content.String(), reasoning: reasoning.String(), toolCalls: orderedToolCalls(toolCalls), finished: false, finishReason: finishReason}
 	}
-	flushInlineParser()
-	return inlineCodeStreamResult{content: content.String(), toolCalls: orderedToolCalls(toolCalls), finished: finished, finishReason: finishReason}
+	flushInlineParsers()
+	return inlineCodeStreamResult{content: content.String(), reasoning: reasoning.String(), toolCalls: orderedToolCalls(toolCalls), finished: finished, finishReason: finishReason}
 }
 
 func inlineCodeSystemMessage(workspace Workspace, skillCandidates []tools.WorkspaceSkillSummary) llm.Message {
@@ -263,6 +354,7 @@ func inlineCodeSystemMessage(workspace Workspace, skillCandidates []tools.Worksp
 		Role: llm.RoleSystem,
 		Content: workspaceSystemPrompt(
 			workspaceSkillsPrompt("You are Echo's inline code assistant. Help with the user's prompt at the current editor cursor. "+
+				contextCheckpointSystemGuidance+" "+
 				"Use available workspace tools when you need to inspect or edit files. "+
 				"When the user mentions @path, treat it as a labeled workspace file reference like <folder-label>/path and read it before relying on its contents. "+
 				"When you need to find code but do not know the target file, prefer filesystem_search_workspace before shell commands. "+
@@ -373,6 +465,57 @@ func (s *SystemService) emitInlineCodeToolCallEvent(eventBase InlineCodePromptEv
 		FilePath:    eventBase.FilePath,
 		Type:        "tool_call",
 		ToolCall:    &activity,
+	})
+}
+
+func (s *SystemService) markInlineToolContextTooLarge(output *InlineCodePromptResponse, eventBase InlineCodePromptEvent, recovery toolContextRecovery) {
+	activity := ChatToolActivity{
+		ID:        recovery.Call.ID,
+		Name:      recovery.Call.Function.Name,
+		Arguments: recovery.Call.Function.Arguments,
+		Status:    "error",
+		Result:    recovery.ResultMessage.Content,
+		Error:     toolResultContextErrorText,
+	}
+	for index := range output.ToolCalls {
+		if output.ToolCalls[index].ID == activity.ID {
+			output.ToolCalls[index] = activity
+			s.emitInlineCodePromptEvent(InlineCodePromptEvent{
+				WorkspaceID: eventBase.WorkspaceID,
+				RequestID:   eventBase.RequestID,
+				FilePath:    eventBase.FilePath,
+				Type:        "tool_call",
+				ToolCall:    &activity,
+			})
+			return
+		}
+	}
+	output.ToolCalls = append(output.ToolCalls, activity)
+	s.emitInlineCodePromptEvent(InlineCodePromptEvent{
+		WorkspaceID: eventBase.WorkspaceID,
+		RequestID:   eventBase.RequestID,
+		FilePath:    eventBase.FilePath,
+		Type:        "tool_call",
+		ToolCall:    &activity,
+	})
+}
+
+func (s *SystemService) emitInlineCodeCompactionResult(eventBase InlineCodePromptEvent, result contextCompactionResult) {
+	content := fmt.Sprintf(
+		"Context compacted from approximately %d to %d tokens; %d stale messages were replaced.",
+		result.BeforeTokens,
+		result.AfterTokens,
+		result.RemovedMessages,
+	)
+	if result.UsedFallback && result.Warning != "" {
+		content += " " + result.Warning
+	}
+	s.emitInlineCodePromptEvent(InlineCodePromptEvent{
+		WorkspaceID: eventBase.WorkspaceID,
+		RequestID:   eventBase.RequestID,
+		FilePath:    eventBase.FilePath,
+		Type:        "compacted",
+		Content:     content,
 	})
 }
 

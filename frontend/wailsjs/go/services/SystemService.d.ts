@@ -116,6 +116,8 @@ export function RenameWorkspaceSymbol(arg1:string,arg2:services.WorkspaceRenameR
 
 export function ReorderWorkspaces(arg1:Array<string>):Promise<services.AppState>;
 
+export function ReplayWorkspaceSymbolRename(arg1:string,arg2:services.WorkspaceRenameReplayRequest):Promise<services.WorkspaceRenameReplayResponse>;
+
 export function ResetKanbanCard(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
 export function ResolveWorkspaceTextFilePath(arg1:string,arg2:string):Promise<string>;

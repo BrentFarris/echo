@@ -4,6 +4,8 @@ Echo is a local-first programmer's AI harness. it's made for serious/actual prog
 
 Use local models like Qwen, Gemma, Deepseek, and others; and I only intend to use local models. VS Code sucks hard with local models, it errors and times out all the time. This software fixes that and adds special features that I use for development, like the LLM Kanban board.
 
+Be sure to [review the Wiki for instructions on how to use Echo](https://github.com/BrentFarris/echo/wiki).
+
 ## Features
 There are 2 primary features that make up Echo. A Kanban board for large tasks and features, and a code editor for fine tuning and working with individual functions and routines. See [the wiki](https://github.com/BrentFarris/echo/wiki) for some tips and the list of hotkeys.
 

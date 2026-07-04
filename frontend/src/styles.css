@@ -4570,6 +4570,18 @@ h3 {
   user-select: text;
 }
 
+.inline-code-chat-error,
+.inline-code-chat-output {
+  margin-top: 10px;
+}
+
+.inline-code-chat-output {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  user-select: text;
+}
+
 .inline-code-chat-error {
   border: 1px solid color-mix(in srgb, var(--color-danger) 34%, var(--color-border));
   background: color-mix(in srgb, var(--color-danger) 9%, transparent);

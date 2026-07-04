@@ -518,6 +518,7 @@ var allowedRPCMethods = map[string]bool{
 	"RemoveWorkspaceFolder":            true,
 	"RenameWorkspacePath":              true,
 	"RenameWorkspaceSymbol":            true,
+	"ReplayWorkspaceSymbolRename":      true,
 	"ResetKanbanCard":                  true,
 	"ResolveWorkspaceTextFilePath":     true,
 	"ReorderWorkspaces":                true,

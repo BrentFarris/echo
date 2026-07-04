@@ -727,7 +727,7 @@ export function renderAssistantControls(message: services.ChatMessage, isEditing
 }
 
 export function isAssistantMessageStreaming(message: services.ChatMessage): boolean {
-  return message.status === "streaming" || message.status === "retrying" || message.status === "in_progress";
+  return message.status === "streaming" || message.status === "retrying" || message.status === "compacting" || message.status === "in_progress";
 }
 
 export function canCreateKanbanCardFromMessage(message: services.ChatMessage): boolean {
@@ -1621,6 +1621,13 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
     message.status = "retrying";
     message.error = "";
   }
+  if (event.type === "compacting") {
+    message.status = "compacting";
+    message.error = "";
+  }
+  if (event.type === "compaction_warning" && event.content) {
+    pushToast(event.content, "info");
+  }
 
   state.chatSessions.set(event.workspaceId, session);
   if (activeWorkspace()?.id === event.workspaceId) {
@@ -1629,7 +1636,7 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
       event.workspaceId,
       message,
       event.type !== "token",
-      terminal || event.type === "retrying",
+      terminal || event.type === "retrying" || event.type === "compacting",
       terminal,
       terminal,
     );

@@ -104,7 +104,10 @@ export type InlineCodeChatState = {
   draft: string;
   mention: InlineCodeMentionState | null;
   submitting: boolean;
+  status: string;
   response: string;
+  reasoning: string;
+  toolCalls: services.ChatToolActivity[];
   error: string;
   requestID: string;
   renderKey: number;
@@ -127,6 +130,7 @@ export type InlineCodePromptEvent = {
   filePath: string;
   type: string;
   content?: string;
+  reasoning?: string;
   toolCall?: services.ChatToolActivity;
   affectedPaths?: string[];
   error?: string;

@@ -249,6 +249,10 @@ export function RenameWorkspaceSymbol(...args: Parameters<typeof Wails.RenameWor
   return call("RenameWorkspaceSymbol", Wails.RenameWorkspaceSymbol, args);
 }
 
+export function ReplayWorkspaceSymbolRename(...args: Parameters<typeof Wails.ReplayWorkspaceSymbolRename>): ReturnType<typeof Wails.ReplayWorkspaceSymbolRename> {
+  return call("ReplayWorkspaceSymbolRename", Wails.ReplayWorkspaceSymbolRename, args);
+}
+
 export function ResetKanbanCard(...args: Parameters<typeof Wails.ResetKanbanCard>): ReturnType<typeof Wails.ResetKanbanCard> {
   return call("ResetKanbanCard", Wails.ResetKanbanCard, args);
 }

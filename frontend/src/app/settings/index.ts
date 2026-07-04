@@ -69,6 +69,24 @@ const llmCodingPresets: {
       thinkingCorrection: false,
     },
   },
+  {
+    id: "DeepSeek",
+    label: "DeepSeek",
+    values: {
+      temperature: 1,
+      topK: 0,
+      topP: 1,
+      minP: 0,
+      contextLength: 1048576,
+      maxTokens: 16384,
+      frequencyPenalty: 0,
+      presencePenalty: 0,
+      repetitionPenalty: 1.05,
+      timeoutSeconds: 600,
+      thinkingTokenBudget: -1,
+      thinkingCorrection: false,
+    },
+  },
 ];
 
 const endpointTopics = [

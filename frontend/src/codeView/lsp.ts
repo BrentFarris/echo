@@ -1,7 +1,8 @@
 import { type Completion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
-import { EditorState, Prec, StateEffect, StateField, Transaction, type Extension } from "@codemirror/state";
-import { EditorView, keymap, showTooltip, type Tooltip } from "@codemirror/view";
-import { CompleteWorkspaceFile, FindWorkspaceFileDefinition, FindWorkspaceFileImplementations, FindWorkspaceFileReferences, PrepareWorkspaceSymbolRename, RenameWorkspaceSymbol } from "../backend/services";
+import { invertedEffects, isolateHistory, redo, undo } from "@codemirror/commands";
+import { EditorState, Prec, StateEffect, StateField, type Extension, type Transaction } from "@codemirror/state";
+import { EditorView, keymap, showTooltip, type Tooltip, type ViewUpdate } from "@codemirror/view";
+import { CompleteWorkspaceFile, FindWorkspaceFileDefinition, FindWorkspaceFileImplementations, FindWorkspaceFileReferences, PrepareWorkspaceSymbolRename, RenameWorkspaceSymbol, ReplayWorkspaceSymbolRename } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
 import { patchDirtyUI } from "./dom";
 import { applySavedFile, ensureCodeState, findTab } from "./state";
@@ -46,6 +47,12 @@ const lspSourceExtensions = [
 const lspCompletionErrors = new Map<string, string>();
 const setRenameTooltipEffect = StateEffect.define<RenameTooltipState>();
 const clearRenameTooltipEffect = StateEffect.define<void>();
+const setRenameReplayPendingEffect = StateEffect.define<boolean>();
+const renameHistoryEffect = StateEffect.define<RenameHistoryEffect>({
+  map(value) {
+    return value;
+  },
+});
 
 type RenameTooltipState = {
   from: number;
@@ -55,6 +62,43 @@ type RenameTooltipState = {
   selectionHead: number;
   requestPosition: number;
 };
+
+type RenameHistoryDirection = "before" | "after";
+
+type RenameHistoryFile = {
+  filePath: string;
+  beforeContent: string;
+  afterContent: string;
+};
+
+type RenameHistoryEffect = {
+  workspaceID: string;
+  direction: RenameHistoryDirection;
+  files: RenameHistoryFile[];
+};
+
+type RenameHistoryController = {
+  suppressNextReplay: boolean;
+};
+
+const renameReplayPendingField = StateField.define<boolean>({
+  create() {
+    return false;
+  },
+  update(value, transaction) {
+    for (const effect of transaction.effects) {
+      if (effect.is(setRenameReplayPendingEffect)) {
+        value = effect.value;
+      } else if (
+        effect.is(renameHistoryEffect) &&
+        (transaction.isUserEvent("undo") || transaction.isUserEvent("redo"))
+      ) {
+        value = true;
+      }
+    }
+    return value;
+  },
+});
 
 export function lspDefinitionExtension(
   workspaceID: string,
@@ -121,16 +165,175 @@ export function lspRenameExtension(
       value ? renameTooltip(workspaceID, path, callbacks, value) : null
     )),
   });
+  const historyController: RenameHistoryController = {
+    suppressNextReplay: false,
+  };
   return [
     field,
-    Prec.highest(keymap.of([{
-      key: "F2",
-      run(view) {
-        void startLspRename(workspaceID, path, view, callbacks);
-        return true;
+    renameReplayPendingField,
+    invertedEffects.of(invertRenameHistoryEffects),
+    EditorState.transactionFilter.of((transaction) => (
+      transaction.startState.field(renameReplayPendingField) && transaction.docChanged
+        ? []
+        : transaction
+    )),
+    EditorView.updateListener.of((update) => {
+      handleRenameHistoryUpdate(update, callbacks, historyController);
+    }),
+    Prec.highest(EditorView.domEventHandlers({
+      beforeinput(event, view) {
+        if (
+          view.state.field(renameReplayPendingField) &&
+          (event.inputType === "historyUndo" || event.inputType === "historyRedo")
+        ) {
+          event.preventDefault();
+          return true;
+        }
+        return false;
       },
-    }])),
+    })),
+    Prec.highest(keymap.of([
+      {
+        key: "Mod-z",
+        run: blockHistoryWhileRenameReplayPending,
+      },
+      {
+        key: "Mod-y",
+        mac: "Mod-Shift-z",
+        run: blockHistoryWhileRenameReplayPending,
+      },
+      {
+        linux: "Ctrl-Shift-z",
+        run: blockHistoryWhileRenameReplayPending,
+      },
+      {
+        key: "F2",
+        run(view) {
+          if (view.state.field(renameReplayPendingField)) {
+            return true;
+          }
+          void startLspRename(workspaceID, path, view, callbacks);
+          return true;
+        },
+      },
+    ])),
   ];
+}
+
+function blockHistoryWhileRenameReplayPending(view: EditorView) {
+  return view.state.field(renameReplayPendingField);
+}
+
+function invertRenameHistoryEffects(transaction: Transaction) {
+  const effects: StateEffect<RenameHistoryEffect>[] = [];
+  for (const effect of transaction.effects) {
+    if (!effect.is(renameHistoryEffect)) {
+      continue;
+    }
+    effects.push(renameHistoryEffect.of({
+      ...effect.value,
+      direction: effect.value.direction === "before" ? "after" : "before",
+    }));
+  }
+  return effects;
+}
+
+function handleRenameHistoryUpdate(
+  update: ViewUpdate,
+  callbacks: CodeViewCallbacks,
+  controller: RenameHistoryController,
+) {
+  for (const transaction of update.transactions) {
+    const action = transaction.isUserEvent("undo")
+      ? "undo"
+      : transaction.isUserEvent("redo")
+        ? "redo"
+        : null;
+    if (!action) {
+      continue;
+    }
+    const effect = transaction.effects.find((candidate) => candidate.is(renameHistoryEffect));
+    if (!effect?.is(renameHistoryEffect)) {
+      continue;
+    }
+    if (controller.suppressNextReplay) {
+      controller.suppressNextReplay = false;
+      window.queueMicrotask(() => {
+        if (update.view.dom.isConnected) {
+          update.view.dispatch({ effects: setRenameReplayPendingEffect.of(false) });
+        }
+      });
+      continue;
+    }
+    void replayRenameHistory(update.view, callbacks, controller, action, effect.value);
+    return;
+  }
+}
+
+async function replayRenameHistory(
+  view: EditorView,
+  callbacks: CodeViewCallbacks,
+  controller: RenameHistoryController,
+  action: "undo" | "redo",
+  history: RenameHistoryEffect,
+) {
+  try {
+    const response = services.WorkspaceRenameReplayResponse.createFrom(
+      await ReplayWorkspaceSymbolRename(
+        history.workspaceID,
+        services.WorkspaceRenameReplayRequest.createFrom({
+          files: history.files.map((file) => services.WorkspaceRenameReplayFile.createFrom({
+            filePath: file.filePath,
+            expectedContent: history.direction === "before" ? file.afterContent : file.beforeContent,
+            content: history.direction === "before" ? file.beforeContent : file.afterContent,
+          })),
+        }),
+      ),
+    );
+    for (const rawFile of response.files ?? []) {
+      const file = services.WorkspaceFile.createFrom(rawFile);
+      applySavedFile(history.workspaceID, file);
+      const tab = findTab(history.workspaceID, file.path);
+      if (tab) {
+        patchDirtyUI(history.workspaceID, tab);
+      }
+    }
+    if (view.dom.isConnected) {
+      view.dispatch({ effects: setRenameReplayPendingEffect.of(false) });
+    } else {
+      callbacks.render();
+    }
+  } catch (error) {
+    if (view.dom.isConnected) {
+      view.dispatch({ effects: setRenameReplayPendingEffect.of(false) });
+      controller.suppressNextReplay = true;
+      const restored = action === "undo" ? redo(view) : undo(view);
+      if (!restored) {
+        restoreOpenTabsAfterFailedRenameReplay(history);
+      }
+    } else {
+      restoreOpenTabsAfterFailedRenameReplay(history);
+      callbacks.render();
+    }
+    callbacks.pushToast(`Could not ${action} symbol rename: ${callbacks.errorMessage(error)}`, "error");
+  }
+}
+
+function restoreOpenTabsAfterFailedRenameReplay(history: RenameHistoryEffect) {
+  for (const file of history.files) {
+    const tab = findTab(history.workspaceID, file.filePath);
+    if (!tab) {
+      continue;
+    }
+    const content = history.direction === "before" ? file.afterContent : file.beforeContent;
+    tab.content = content;
+    tab.savedContent = content;
+    tab.bytes = new TextEncoder().encode(content).length;
+    tab.dirty = false;
+    tab.selectionAnchor = clamp(tab.selectionAnchor, 0, content.length);
+    tab.selectionHead = clamp(tab.selectionHead, 0, content.length);
+    patchDirtyUI(history.workspaceID, tab);
+  }
 }
 
 async function startLspRename(
@@ -329,14 +532,51 @@ function applyWorkspaceRenameResponse(
     view.dispatch({ effects: clearRenameTooltipEffect.of() });
     return;
   }
+  const scrollTop = view.scrollDOM.scrollTop;
+  const scrollLeft = view.scrollDOM.scrollLeft;
   const caret = clamp(rename.from + newName.length, 0, activeContent.length);
+  const historyFiles = (response.history ?? []).map((file) => ({
+    filePath: file.filePath,
+    beforeContent: file.beforeContent,
+    afterContent: file.afterContent,
+  }));
   view.dispatch({
     changes: { from: 0, to: view.state.doc.length, insert: activeContent },
     selection: { anchor: caret },
-    effects: clearRenameTooltipEffect.of(),
-    annotations: Transaction.addToHistory.of(false),
+    effects: [
+      clearRenameTooltipEffect.of(),
+      renameHistoryEffect.of({
+        workspaceID,
+        direction: "after",
+        files: historyFiles,
+      }),
+    ],
+    annotations: isolateHistory.of("full"),
     userEvent: "input.rename",
   });
+  restoreEditorScrollAfterRename(workspaceID, path, view, scrollTop, scrollLeft);
+  window.requestAnimationFrame(() => {
+    restoreEditorScrollAfterRename(workspaceID, path, view, scrollTop, scrollLeft);
+  });
+}
+
+function restoreEditorScrollAfterRename(
+  workspaceID: string,
+  path: string,
+  view: EditorView,
+  scrollTop: number,
+  scrollLeft: number,
+) {
+  if (!view.dom.isConnected) {
+    return;
+  }
+  view.scrollDOM.scrollTop = scrollTop;
+  view.scrollDOM.scrollLeft = scrollLeft;
+  const tab = findTab(workspaceID, path);
+  if (tab) {
+    tab.scrollTop = view.scrollDOM.scrollTop;
+    tab.scrollLeft = view.scrollDOM.scrollLeft;
+  }
 }
 
 async function goToLspDefinition(
