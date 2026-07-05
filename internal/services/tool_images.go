@@ -19,6 +19,10 @@ func toolResultMessages(call llm.ToolCall, result tools.ExecutionResult, data []
 	if ok {
 		messages = append(messages, imageMessage)
 	}
+	videoMessage, ok := toolResultVideoMessage(call.Function.Name, result)
+	if ok {
+		messages = append(messages, videoMessage)
+	}
 	return messages
 }
 
@@ -51,5 +55,37 @@ func toolResultImageMessage(toolName string, result tools.ExecutionResult) (llm.
 		Role:         llm.RoleUser,
 		Content:      text,
 		ContentParts: []llm.MessageContentPart{llm.TextContentPart(text), imagePart},
+	}, true
+}
+
+func toolResultVideoMessage(toolName string, result tools.ExecutionResult) (llm.Message, bool) {
+	if !result.Success || result.Output == nil {
+		return llm.Message{}, false
+	}
+	provider, ok := result.Output.(tools.LLMVideoContentProvider)
+	if !ok {
+		return llm.Message{}, false
+	}
+	video, ok := provider.LLMVideoContent()
+	if !ok || strings.TrimSpace(video.DataURL) == "" {
+		return llm.Message{}, false
+	}
+
+	label := strings.TrimSpace(video.Path)
+	if label == "" {
+		label = strings.TrimSpace(video.Name)
+	}
+	if label == "" {
+		label = "video"
+	}
+	text := fmt.Sprintf("Video returned by tool %s: %s (%s, %s).", toolName, label, video.MediaType, formatChatImageBytes(video.Bytes))
+	videoPart := llm.VideoURLContentPart(video.DataURL)
+	if video.Detail != "" && videoPart.VideoURL != nil {
+		videoPart.VideoURL.Detail = video.Detail
+	}
+	return llm.Message{
+		Role:         llm.RoleUser,
+		Content:      text,
+		ContentParts: []llm.MessageContentPart{llm.TextContentPart(text), videoPart},
 	}, true
 }

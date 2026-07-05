@@ -2,13 +2,13 @@ import { services } from "../../wailsjs/go/models";
 import { codeIcons } from "./icons";
 import { activeCodeTab, directoryStateFor, ensureCodeState, filteredEntries } from "./state";
 import type { CodeFileTab, CodeWorkspaceState } from "./types";
-import { codeTabName, escapeAttribute, escapeHtml, fileName, formatBytes } from "./utils";
+import { codeTabName, escapeAttribute, escapeHtml, fileName, formatBytes, isImageFile, isMediaFile, isVideoFile, mediaKind } from "./utils";
 
 export function renderCodeView(workspace: services.Workspace): string {
   const state = ensureCodeState(workspace.id);
   const activeTab = activeCodeTab(workspace.id);
   const dirtyCount = state.tabs.filter((tab) => tab.dirty).length;
-  const saveDisabled = !activeTab || (!activeTab.untitled && !activeTab.dirty) || activeTab.saving;
+  const saveDisabled = !activeTab || activeTab.isMedia || (!activeTab.untitled && !activeTab.dirty) || activeTab.saving;
   const filterLabel = state.showIgnored ? "Hide ignored" : "Show ignored";
   const explorerID = `code-explorer-${workspace.id}`;
   return `
@@ -47,7 +47,7 @@ export function renderCodeView(workspace: services.Workspace): string {
             title="Open inline chat at caret"
             aria-label="Open inline chat at caret"
             data-code-action="open-inline-chat"
-            ${activeTab && !activeTab.untitled && !activeTab.external ? "" : "disabled"}
+            ${activeTab && !activeTab.untitled && !activeTab.external && !activeTab.isMedia ? "" : "disabled"}
           >
             ${codeIcons.message}
             <span>Ask</span>
@@ -139,7 +139,7 @@ function renderSearchEntry(
   const selected = state.selectedPath === entry.path;
   const dragging = state.drag?.sourcePath === entry.path;
   const dropTarget = state.drag?.targetPath === entry.path;
-  const icon = entry.kind === "directory" ? codeIcons.folder : codeIcons.file;
+  const icon = entry.kind === "directory" ? codeIcons.folder : (isImageFile(entry.path) ? codeIcons.image : isVideoFile(entry.path) ? codeIcons.video : codeIcons.file);
   if (entry.kind !== "file") {
     return `
       <div
@@ -252,6 +252,7 @@ function renderCodeExplorerSidebar(workspaceID: string, dirtyCount: number): str
   const state = ensureCodeState(workspaceID);
   return `
     <aside class="code-explorer" id="code-explorer-${escapeAttribute(workspaceID)}" aria-label="Workspace files">
+      <div class="code-explorer-dismiss-handle" data-code-action="close-explorer-drawer"><span></span></div>
       <div class="code-explorer-meta">
         <span data-code-dirty-summary>${dirtyCount ? `${dirtyCount} unsaved` : "Files"}</span>
         <div class="code-explorer-toolbar" aria-label="File explorer actions">
@@ -349,6 +350,7 @@ function renderTemporaryFileEntry(
 function renderTextSearchSidebar(workspaceID: string): string {
   return `
     <aside class="code-explorer code-text-search-sidebar" id="code-explorer-${escapeAttribute(workspaceID)}" aria-label="Find in files">
+      <div class="code-explorer-dismiss-handle" data-code-action="close-explorer-drawer"><span></span></div>
       <div class="code-explorer-meta">
         <span>Find</span>
         <div class="code-explorer-toolbar" aria-label="Find in files actions">
@@ -559,8 +561,10 @@ function renderFileEntry(
     `;
   }
   if (renaming) {
-    return renderPendingRenameRow(state, entry, depth, codeIcons.file, '<span class="code-tree-spacer"></span>');
+    const renameIcon = isImageFile(entry.path) ? codeIcons.image : isVideoFile(entry.path) ? codeIcons.video : codeIcons.file;
+    return renderPendingRenameRow(state, entry, depth, renameIcon, '<span class="code-tree-spacer"></span>');
   }
+  const fileIcon = isImageFile(entry.path) ? codeIcons.image : isVideoFile(entry.path) ? codeIcons.video : codeIcons.file;
   return `
     <button
       class="code-tree-row code-tree-file ${active ? "is-active" : ""} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
@@ -575,7 +579,7 @@ function renderFileEntry(
       data-code-kind="${escapeAttribute(entry.kind)}"
     >
       <span class="code-tree-spacer"></span>
-      <span class="code-tree-entry-icon">${codeIcons.file}</span>
+      <span class="code-tree-entry-icon">${fileIcon}</span>
       <span class="code-tree-name">${escapeHtml(entry.name)}</span>
       <span class="code-tree-size">${escapeHtml(formatBytes(entry.bytes ?? 0))}</span>
     </button>
@@ -631,11 +635,16 @@ function renderCodeTabs(workspaceID: string): string {
       ${state.tabs
         .map((tab) => {
           const active = state.activePath === tab.path;
+          const isMedia = tab.isMedia ?? false;
+          const mediaKindLabel = isMedia ? (isVideoFile(tab.path) ? "Video" : "Image") : "";
+          const tabIcon = isMedia ? (isVideoFile(tab.path) ? codeIcons.video : codeIcons.image) : codeIcons.file;
           return `
-            <div class="code-tab ${active ? "is-active" : ""} ${tab.dirty ? "is-dirty" : ""} ${tab.temporary ? "is-temporary" : ""} ${tab.untitled ? "is-untitled" : ""} ${tab.external ? "is-external" : ""}" data-code-tab="${escapeAttribute(tab.path)}">
+            <div class="code-tab ${active ? "is-active" : ""} ${tab.dirty ? "is-dirty" : ""} ${tab.temporary ? "is-temporary" : ""} ${tab.untitled ? "is-untitled" : ""} ${tab.external ? "is-external" : ""} ${isMedia ? "is-media" : ""}" data-code-tab="${escapeAttribute(tab.path)}">
               <button class="code-tab-main" type="button" role="tab" aria-selected="${active}" title="${escapeAttribute(tab.external ? `External file: ${tab.path}` : tab.untitled ? codeTabName(tab) : tab.path)}" data-code-action="activate-tab" data-code-tab-main data-code-path="${escapeAttribute(tab.path)}">
+                <span class="code-tab-icon">${tabIcon}</span>
                 <span>${escapeHtml(codeTabName(tab))}</span>
                 ${tab.external ? `<span class="code-tab-origin">External</span>` : ""}
+                ${isMedia ? `<span class="code-tab-origin">${mediaKindLabel}</span>` : ""}
                 ${tab.dirty ? `<span class="dirty-dot" aria-label="Unsaved changes"></span>` : ""}
               </button>
               <button class="code-tab-close" type="button" title="Close ${escapeAttribute(codeTabName(tab))}" aria-label="Close ${escapeAttribute(codeTabName(tab))}" data-code-action="close-tab" data-code-path="${escapeAttribute(tab.path)}">
@@ -740,7 +749,7 @@ export function renderCodeQuickOpenResults(workspaceID: string): string {
             data-code-quick-open-index="${index}"
             data-code-path="${escapeAttribute(entry.path)}"
           >
-            <span class="code-quick-open-icon">${codeIcons.file}</span>
+            <span class="code-quick-open-icon">${isImageFile(entry.path) ? codeIcons.image : isVideoFile(entry.path) ? codeIcons.video : codeIcons.file}</span>
             <span class="code-quick-open-name">${escapeHtml(fileName(entry.path))}</span>
             <span class="code-quick-open-path">${escapeHtml(entry.path)}</span>
           </button>
@@ -756,6 +765,12 @@ export function renderCodeStatus(tab: CodeFileTab | null, openingPath: string): 
   }
   if (!tab) {
     return "No file selected.";
+  }
+  if (tab.isMedia) {
+    const kind = tab.mediaMimeType ?? "";
+    const label = kind ? ` · ${kind}` : "";
+    const mediaType = isVideoFile(tab.path) ? "Video" : "Image";
+    return `${escapeHtml(tab.path)} - ${escapeHtml(formatBytes(tab.bytes))}${label} - ${mediaType}`;
   }
   if (tab.untitled) {
     const state = tab.saving ? "Saving" : tab.dirty ? "Unsaved changes" : "Temporary file";

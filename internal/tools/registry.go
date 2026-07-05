@@ -17,6 +17,7 @@ var defaultRegistry = NewRegistry()
 var readOnlyToolNames = map[string]bool{
 	"filesystem_list":             true,
 	"filesystem_read_image":       true,
+	"filesystem_read_video":       true,
 	"filesystem_read_text":        true,
 	"filesystem_search_text":      true,
 	"filesystem_search_workspace": true,
@@ -33,6 +34,7 @@ var mutatingToolNames = map[string]bool{
 	"filesystem_create_text": true,
 	"filesystem_delete_file": true,
 	"filesystem_edit_text":   true,
+	"restart":                true,
 	"shell_command":          true,
 	"workspace_skill_record": true,
 }

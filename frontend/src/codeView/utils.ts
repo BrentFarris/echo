@@ -125,3 +125,51 @@ export function escapeHtml(value: string): string {
 export function escapeAttribute(value: string): string {
   return escapeHtml(value).replaceAll("`", "&#096;");
 }
+
+const IMAGE_EXTENSIONS = new Set([
+  "jpg",
+  "jpeg",
+  "png",
+  "gif",
+  "bmp",
+  "webp",
+  "svg",
+  "ico",
+  "tiff",
+  "tif",
+]);
+
+const VIDEO_EXTENSIONS = new Set([
+  "mp4",
+  "webm",
+  "ogv",
+  "mov",
+  "avi",
+  "mkv",
+  "flv",
+  "wmv",
+]);
+
+function fileExtension(path: string): string {
+  const name = fileName(path).toLowerCase();
+  const dotIndex = name.lastIndexOf(".");
+  return dotIndex === -1 ? "" : name.slice(dotIndex + 1);
+}
+
+export function isImageFile(path: string): boolean {
+  return IMAGE_EXTENSIONS.has(fileExtension(path));
+}
+
+export function isVideoFile(path: string): boolean {
+  return VIDEO_EXTENSIONS.has(fileExtension(path));
+}
+
+export function isMediaFile(path: string): boolean {
+  return isImageFile(path) || isVideoFile(path);
+}
+
+export function mediaKind(path: string): string {
+  if (isImageFile(path)) return "image";
+  if (isVideoFile(path)) return "video";
+  return "";
+}

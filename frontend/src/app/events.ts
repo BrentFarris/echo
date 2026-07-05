@@ -25,6 +25,20 @@ export function bindEvents() {
   bindCodeViewEvents(appRoot, getAppCallbacks().codeViewCallbacks());
   bindWorkspaceDragEvents(appRoot);
 
+  // Mobile nav keyboard navigation
+  const navEl = appRoot.querySelector(".mobile-bottom-nav");
+  if (navEl) {
+    navEl.addEventListener("keydown", handleMobileNavKeydown as EventListener);
+  }
+
+  // Close workspace dropdown on Escape
+  if (state.workspaceDropdownOpen) {
+    const pillBtn = appRoot.querySelector<HTMLButtonElement>("button#mobile-nav-pill");
+    if (pillBtn) {
+      pillBtn.focus();
+    }
+  }
+
   appRoot.querySelectorAll<HTMLElement>('[data-action="activate-workspace"]').forEach((button) => {
     button.addEventListener("contextmenu", (event: MouseEvent) => {
       event.preventDefault();
@@ -52,6 +66,25 @@ export function bindEvents() {
       const chatOverflow = appRoot.querySelector<HTMLDetailsElement>("[data-chat-overflow]");
       if (chatOverflow?.open && !chatOverflow.contains(target)) {
         chatOverflow.open = false;
+      }
+      // Close workspace dropdown when tapping outside (mobile + desktop).
+      if (state.workspaceDropdownOpen) {
+        const pillBtn = appRoot.querySelector<HTMLElement>(
+          "button[data-action='toggle-workspace-dropdown']",
+        );
+        const mobileDropdown = appRoot.querySelector<HTMLElement>(
+          ".mobile-nav-workspace-dropdown",
+        );
+        const desktopDropdown = appRoot.querySelector<HTMLElement>(
+          "[data-workspace-dropdown]",
+        );
+        const isInPill = pillBtn && pillBtn.contains(target);
+        const isInMobileDropdown = mobileDropdown && mobileDropdown.contains(target);
+        const isInDesktopDropdown = desktopDropdown && desktopDropdown.contains(target);
+        if (!isInPill && !isInMobileDropdown && !isInDesktopDropdown) {
+          state.workspaceDropdownOpen = false;
+          getAppCallbacks().render();
+        }
       }
       if (!state.contextMenu) {
         return;
@@ -151,6 +184,40 @@ export function handleGlobalKeydown(event: KeyboardEvent) {
     clearChatMention();
     patchChatMentionPicker();
     return;
+  }
+  // Close workspace dropdown on Escape
+  if (event.key === "Escape" && state.workspaceDropdownOpen) {
+    event.preventDefault();
+    state.workspaceDropdownOpen = false;
+    const pillBtn = appRoot.querySelector<HTMLButtonElement>("button#mobile-nav-pill");
+    if (pillBtn) {
+      pillBtn.focus();
+    }
+    getAppCallbacks().render();
+    return;
+  }
+  // Trap Tab / Shift+Tab inside the workspace dropdown
+  if (state.workspaceDropdownOpen && event.key === "Tab") {
+    const dropdown = appRoot.querySelector<HTMLElement>(".mobile-nav-workspace-dropdown");
+    if (dropdown) {
+      const focusable = Array.from(dropdown.querySelectorAll<HTMLElement>(
+        'button[type="button"], [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      ));
+      if (focusable.length > 0) {
+        const firstEl = focusable[0];
+        const lastEl = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === firstEl) {
+          event.preventDefault();
+          lastEl.focus();
+          return;
+        }
+        if (!event.shiftKey && document.activeElement === lastEl) {
+          event.preventDefault();
+          firstEl.focus();
+          return;
+        }
+      }
+    }
   }
   const workspace = activeWorkspace();
   if (
@@ -340,4 +407,40 @@ export function handleGlobalWindowBlur() {
     return;
   }
   finishCodeTabSwitcher(workspace.id, getAppCallbacks().codeViewCallbacks());
+}
+
+function handleMobileNavKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape" && state.workspaceDropdownOpen) {
+    // Escape is handled by the global keydown listener; just let it propagate.
+    return;
+  }
+  if (!["ArrowLeft", "ArrowRight"].includes(event.key)) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  const tabs = Array.from(
+    appRoot.querySelectorAll<HTMLButtonElement>('button[data-mobile-nav-tab-index]'),
+  );
+  if (tabs.length === 0) {
+    return;
+  }
+  const currentEl = document.activeElement;
+  let currentIndex = -1;
+  if (currentEl && currentEl.hasAttribute("data-mobile-nav-tab-index")) {
+    currentIndex = Number.parseInt(currentEl.getAttribute("data-mobile-nav-tab-index") ?? "-1", 10);
+  }
+  if (currentIndex < 0 || currentIndex >= tabs.length) {
+    currentIndex = 0;
+  }
+  let nextIndex = currentIndex;
+  if (event.key === "ArrowRight") {
+    nextIndex = (currentIndex + 1) % tabs.length;
+  } else {
+    nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+  }
+  const nextTab = tabs[nextIndex];
+  if (nextTab) {
+    nextTab.focus();
+  }
 }

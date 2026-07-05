@@ -186,6 +186,10 @@ export function OpenWorkspacePathExplorer(arg1, arg2) {
   return window['go']['services']['SystemService']['OpenWorkspacePathExplorer'](arg1, arg2);
 }
 
+export function PrepareRebuildAndRelaunch(arg1) {
+  return window['go']['services']['SystemService']['PrepareRebuildAndRelaunch'](arg1);
+}
+
 export function PrepareWorkspaceSymbolRename(arg1, arg2) {
   return window['go']['services']['SystemService']['PrepareWorkspaceSymbolRename'](arg1, arg2);
 }
@@ -200,6 +204,10 @@ export function ReadExternalTextFile(arg1) {
 
 export function ReadWorkspaceFile(arg1, arg2) {
   return window['go']['services']['SystemService']['ReadWorkspaceFile'](arg1, arg2);
+}
+
+export function ReadWorkspaceMediaFile(arg1, arg2) {
+  return window['go']['services']['SystemService']['ReadWorkspaceMediaFile'](arg1, arg2);
 }
 
 export function RemoveWorkspaceFolder(arg1, arg2) {

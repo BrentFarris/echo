@@ -2,7 +2,9 @@
 import { services } from "../../wailsjs/go/models";
 import type { CodeEntryKind, CodeViewCallbacks } from "../codeView/types";
 
-export type AppMode = "chat-kanban" | "code";
+export type AppMode = "chat" | "kanban" | "code" | "settings" | "git";
+
+export type MobileNavView = AppMode | "git";
 
 export type ContextMenuState = {
   workspaceId: string;
@@ -59,6 +61,14 @@ export type ChatMentionState = {
 };
 
 export type ChatImageDraft = {
+  id: string;
+  name: string;
+  mediaType: string;
+  dataUrl: string;
+  bytes: number;
+};
+
+export type ChatVideoDraft = {
   id: string;
   name: string;
   mediaType: string;

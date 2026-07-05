@@ -355,11 +355,36 @@ export namespace services {
 	        this.error = source["error"];
 	    }
 	}
+	export class ChatVideoAttachment {
+	    id: string;
+	    source: string;
+	    name: string;
+	    path?: string;
+	    mediaType: string;
+	    bytes: number;
+	    dataUrl?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatVideoAttachment(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.source = source["source"];
+	        this.name = source["name"];
+	        this.path = source["path"];
+	        this.mediaType = source["mediaType"];
+	        this.bytes = source["bytes"];
+	        this.dataUrl = source["dataUrl"];
+	    }
+	}
 	export class ChatMessage {
 	    id: string;
 	    role: string;
 	    content?: string;
 	    images?: ChatImageAttachment[];
+	    videos?: ChatVideoAttachment[];
 	    reasoning?: string;
 	    toolCalls?: ChatToolActivity[];
 	    status: string;
@@ -375,6 +400,7 @@ export namespace services {
 	        this.role = source["role"];
 	        this.content = source["content"];
 	        this.images = this.convertValues(source["images"], ChatImageAttachment);
+	        this.videos = this.convertValues(source["videos"], ChatVideoAttachment);
 	        this.reasoning = source["reasoning"];
 	        this.toolCalls = this.convertValues(source["toolCalls"], ChatToolActivity);
 	        this.status = source["status"];
@@ -399,10 +425,31 @@ export namespace services {
 		    return a;
 		}
 	}
+	export class ChatVideoInput {
+	    id?: string;
+	    name?: string;
+	    mediaType?: string;
+	    dataUrl: string;
+	    bytes?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatVideoInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.mediaType = source["mediaType"];
+	        this.dataUrl = source["dataUrl"];
+	        this.bytes = source["bytes"];
+	    }
+	}
 	export class ChatMessageRequest {
 	    content: string;
 	    planMode: boolean;
 	    images?: ChatImageInput[];
+	    videos?: ChatVideoInput[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatMessageRequest(source);
@@ -413,6 +460,7 @@ export namespace services {
 	        this.content = source["content"];
 	        this.planMode = source["planMode"];
 	        this.images = this.convertValues(source["images"], ChatImageInput);
+	        this.videos = this.convertValues(source["videos"], ChatVideoInput);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -469,6 +517,8 @@ export namespace services {
 		    return a;
 		}
 	}
+	
+	
 	
 	export class InlineCodePromptRequest {
 	    requestId?: string;
@@ -1434,6 +1484,26 @@ export namespace services {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
 	        this.mediaType = source["mediaType"];
+	        this.dataUrl = source["dataUrl"];
+	        this.bytes = source["bytes"];
+	    }
+	}
+	export class WorkspaceMediaFile {
+	    workspaceId: string;
+	    path: string;
+	    mimeType: string;
+	    dataUrl: string;
+	    bytes: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceMediaFile(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.path = source["path"];
+	        this.mimeType = source["mimeType"];
 	        this.dataUrl = source["dataUrl"];
 	        this.bytes = source["bytes"];
 	    }

@@ -8,6 +8,36 @@ import (
 	"testing"
 )
 
+// pathsEqualFold compares two filesystem paths after normalizing to absolute,
+// cleaned forms and doing a case-insensitive comparison. This handles Windows
+// short/long path differences (e.g. JOHN~1.JAC vs john.jackson).
+func pathsEqualFold(a, b string) bool {
+	aAbs := filepath.Clean(a)
+	bAbs := filepath.Clean(b)
+
+	if abs, err := filepath.Abs(aAbs); err == nil {
+		aAbs = abs
+	}
+	if abs, err := filepath.Abs(bAbs); err == nil {
+		bAbs = abs
+	}
+
+	// Resolve via EvalSymlinks to normalize short 8.3 names to long names on Windows.
+	// For non-existent files, resolve the parent directory instead.
+	if real, err := filepath.EvalSymlinks(aAbs); err == nil {
+		aAbs = real
+	} else if dirReal, err := filepath.EvalSymlinks(filepath.Dir(aAbs)); err == nil {
+		aAbs = filepath.Join(dirReal, filepath.Base(aAbs))
+	}
+	if real, err := filepath.EvalSymlinks(bAbs); err == nil {
+		bAbs = real
+	} else if dirReal, err := filepath.EvalSymlinks(filepath.Dir(bAbs)); err == nil {
+		bAbs = filepath.Join(dirReal, filepath.Base(bAbs))
+	}
+
+	return strings.EqualFold(aAbs, bAbs)
+}
+
 func TestSystemServiceEnsureWorkspaceCacheFoldersCreatesCacheLayout(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 
@@ -19,8 +49,12 @@ func TestSystemServiceEnsureWorkspaceCacheFoldersCreatesCacheLayout(t *testing.T
 		t.Fatalf("expected one cache folder, got %#v", caches)
 	}
 	cache := caches[0]
-	if cache.WorkspaceID != workspaceID || cache.FolderLabel != "workspace" || cache.WorkspaceRootPath != root {
+	if cache.WorkspaceID != workspaceID || cache.FolderLabel != "workspace" {
 		t.Fatalf("unexpected cache metadata: %#v", cache)
+	}
+	// WorkspaceRootPath may differ from root due to EvalSymlinks or short/long path resolution on Windows.
+	if !pathsEqualFold(cache.WorkspaceRootPath, root) {
+		t.Fatalf("expected workspace root %q, got %q", root, cache.WorkspaceRootPath)
 	}
 	for _, path := range []string{
 		filepath.Join(root, ".echo"),
@@ -35,10 +69,17 @@ func TestSystemServiceEnsureWorkspaceCacheFoldersCreatesCacheLayout(t *testing.T
 			t.Fatalf("expected %s to be a directory", path)
 		}
 	}
-	if cache.Path != filepath.Join(root, ".echo") ||
-		cache.SkillsPath != filepath.Join(root, ".echo", "skills") ||
-		cache.FileDatabasePath != filepath.Join(root, ".echo", "file-database") {
-		t.Fatalf("unexpected cache paths: %#v", cache)
+	expectedCache := filepath.Join(root, ".echo")
+	if !pathsEqualFold(cache.Path, expectedCache) {
+		t.Fatalf("expected cache path %q, got %q", expectedCache, cache.Path)
+	}
+	expectedSkills := filepath.Join(root, ".echo", "skills")
+	if !pathsEqualFold(cache.SkillsPath, expectedSkills) {
+		t.Fatalf("expected skills path %q, got %q", expectedSkills, cache.SkillsPath)
+	}
+	expectedDB := filepath.Join(root, ".echo", "file-database")
+	if !pathsEqualFold(cache.FileDatabasePath, expectedDB) {
+		t.Fatalf("expected file database path %q, got %q", expectedDB, cache.FileDatabasePath)
 	}
 }
 
@@ -55,7 +96,7 @@ func TestWorkspaceCacheFilePathCreatesNestedParents(t *testing.T) {
 		t.Fatalf("resolve skill cache path: %v", err)
 	}
 	expectedSkillPath := filepath.Join(root, ".echo", "skills", "openai", "chat", "completions.json")
-	if skillPath != expectedSkillPath {
+	if !pathsEqualFold(skillPath, expectedSkillPath) {
 		t.Fatalf("expected skill cache path %q, got %q", expectedSkillPath, skillPath)
 	}
 	if info, err := os.Stat(filepath.Dir(skillPath)); err != nil || !info.IsDir() {
@@ -67,7 +108,7 @@ func TestWorkspaceCacheFilePathCreatesNestedParents(t *testing.T) {
 		t.Fatalf("resolve file database cache path: %v", err)
 	}
 	expectedSearchPath := filepath.Join(root, ".echo", "file-database", "index", "main.db")
-	if searchPath != expectedSearchPath {
+	if !pathsEqualFold(searchPath, expectedSearchPath) {
 		t.Fatalf("expected file database cache path %q, got %q", expectedSearchPath, searchPath)
 	}
 }

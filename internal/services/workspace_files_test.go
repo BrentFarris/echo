@@ -1011,3 +1011,157 @@ func workspaceTextSearchFilePaths(files []WorkspaceTextSearchFileResult) []strin
 	}
 	return paths
 }
+
+// Minimal valid PNG (1x1 red pixel) - 67 bytes
+var smallPNGData = []byte{
+	0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
+	0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk length + type
+	0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // width=1, height=1
+	0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, // bit depth, color type, CRC start
+	0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, // IDAT chunk length + type
+	0x54, 0x78, 0x9C, 0x62, 0x60, 0x18, 0x00, 0x1F, // compressed data
+	0x38, 0x81, 0xFC, 0xFF, 0xFF, 0x00, 0x00, 0x00, // more compressed data
+	0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, // IEND chunk
+	0x82, // CRC
+}
+
+func TestSystemServiceReadWorkspaceMediaFileReturnsDataURLOrImage(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.WriteFile(filepath.Join(root, "icon.png"), smallPNGData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/icon.png")
+	if err != nil {
+		t.Fatalf("read media file: %v", err)
+	}
+	if result.WorkspaceID != workspaceID {
+		t.Fatalf("expected workspace ID %q, got %q", workspaceID, result.WorkspaceID)
+	}
+	if result.Path != "workspace/icon.png" {
+		t.Fatalf("expected path workspace/icon.png, got %q", result.Path)
+	}
+	if result.MimeType != "image/png" {
+		t.Fatalf("expected mime type image/png, got %q", result.MimeType)
+	}
+	if !strings.HasPrefix(result.DataURL, "data:image/png;base64,") {
+		t.Fatalf("expected data URL prefix, got %q", result.DataURL)
+	}
+	if result.Bytes != int64(len(smallPNGData)) {
+		t.Fatalf("expected bytes %d, got %d", len(smallPNGData), result.Bytes)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileDetectsJPEG(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	jpegData := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46}
+	if err := os.WriteFile(filepath.Join(root, "photo.jpg"), jpegData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/photo.jpg")
+	if err != nil {
+		t.Fatalf("read media file: %v", err)
+	}
+	if result.MimeType != "image/jpeg" {
+		t.Fatalf("expected mime type image/jpeg, got %q", result.MimeType)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileDetectsGIF(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	gifData := []byte{0x47, 0x49, 0x46, 0x38, 0x39, 0x61}
+	if err := os.WriteFile(filepath.Join(root, "anim.gif"), gifData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/anim.gif")
+	if err != nil {
+		t.Fatalf("read media file: %v", err)
+	}
+	if result.MimeType != "image/gif" {
+		t.Fatalf("expected mime type image/gif, got %q", result.MimeType)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileRejectsNonMediaFile(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/main.go")
+	if err == nil || !strings.Contains(err.Error(), "not a supported media type") {
+		t.Fatalf("expected non-media error, got %v", err)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileRejectsLargeFile(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	large := strings.Repeat("\x89PNG", maxWorkspaceMediaFileBytes/4+1)
+	if err := os.WriteFile(filepath.Join(root, "huge.png"), []byte(large), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/huge.png")
+	if err == nil || !strings.Contains(err.Error(), "larger") {
+		t.Fatalf("expected large file error, got %v", err)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileRejectsMissingFile(t *testing.T) {
+	service, workspaceID, _ := newWorkspaceFilesTestService(t)
+	_, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/missing.png")
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected not found error, got %v", err)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileRejectsDirectory(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.Mkdir(filepath.Join(root, "subdir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/subdir")
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("expected not a regular file error, got %v", err)
+	}
+}
+
+func TestDetectMediaTypeFallsBackToExtension(t *testing.T) {
+	mime := detectMediaType([]byte{0x01, 0x02, 0x03}, "image.unknown.png")
+	if mime != "image/png" {
+		t.Fatalf("expected image/png from extension fallback, got %q", mime)
+	}
+
+	mime = detectMediaType([]byte{0x01, 0x02, 0x03}, "main.go")
+	if mime != "" {
+		t.Fatalf("expected empty MIME for .go, got %q", mime)
+	}
+}
+
+func TestDetectMagicByteMIME(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{"png", []byte{0x89, 0x50, 0x4E, 0x47}, "image/png"},
+		{"jpeg", []byte{0xFF, 0xD8, 0xFF}, "image/jpeg"},
+		{"gif", []byte{'G', 'I', 'F', '8'}, "image/gif"},
+		{"webp", append([]byte("RIFF"), append([]byte{0, 0, 0, 0}, append([]byte("WEBP"), 0, 0)...)...), "image/webp"},
+		{"mp4", append([]byte("    "), []byte("ftyp")...), "video/mp4"},
+		{"webm", []byte{0x1A, 0x45, 0xDF, 0xA3}, "video/webm"},
+		{"unknown", []byte{0x01, 0x02, 0x03}, ""},
+		{"short", []byte{0x89}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := detectMagicByteMIME(tt.data)
+			if got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}

@@ -77,6 +77,17 @@ function renderCodeContextMenu(menu: ContextMenuState): string {
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9l-6-6H5a2 2 0 0 0-2 2Z"/></svg>\
         <span class="workspace-context-menu-label">Show in Explorer</span>\
       </button>\
+      <button\
+        class="workspace-context-menu-item"\
+        type="button"\
+        data-action="add-file-to-chat"\
+        data-workspace-id="${escapeAttribute(menu.workspaceId)}"\
+        data-code-path="${escapeAttribute(codePath)}"\
+        data-code-kind="${escapeAttribute(codeKind)}"\
+      >\
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>\
+        <span class="workspace-context-menu-label">Add to chat</span>\
+      </button>\
     </div>\
   `;
 }

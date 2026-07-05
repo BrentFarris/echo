@@ -8,7 +8,7 @@ export async function loadActiveCodeViewIfNeeded() {
   }
   const workspace = activeWorkspace();
   if (!workspace) {
-    state.appMode = "chat-kanban";
+    state.appMode = "chat";
     return;
   }
   await ensureCodeViewRootLoaded(workspace.id);

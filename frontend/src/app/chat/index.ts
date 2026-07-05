@@ -1,16 +1,17 @@
 
 import { ensureCodeViewRootLoaded, openWorkspaceCodeFile } from "../../codeView";
 import { elementFromHtml, morphElement, patchChildrenFromHtml, patchMarkdownElement, renderMarkdown } from "../../markdown";
-import { EditChatMessage, LoadChatSession, ResolveWorkspaceTextFilePath, SearchWorkspaceFiles, SendChatMessageWithAttachments } from "../../backend/services";
-import { services } from "../../../wailsjs/go/models";
+import { EditChatMessage, LoadChatSession, ResolveWorkspaceTextFilePath, SearchWorkspaceFiles, SendChatMessageWithAttachments, StopChatStream } from "../../backend/services";
+import { isWailsRuntime } from "../../backend/web";
+import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";
 import { appRoot, isElementScrolledNearBottom } from "../dom";
 import { icons } from "../icons";
 import { playNotificationSound } from "../notifications";
-import { activeWorkspace, chatImageDraftsFor, chatImageDraftTotalBytes, chatPlanModeFor, chatSessionFor, state } from "../state";
+import { activeWorkspace, chatImageDraftsFor, chatImageDraftTotalBytes, chatVideoDraftsFor, chatVideoDraftTotalBytes, chatPlanModeFor, chatSessionFor, getActiveChatModelLabel, state } from "../state";
 import { pushToast } from "../toasts";
-import type { ChatImageDraft, ChatMentionState, ChatStreamEvent, ScrollSnapshot } from "../types";
+import type { ChatImageDraft, ChatMentionState, ChatStreamEvent, ChatVideoDraft, ScrollSnapshot } from "../types";
 import { errorMessage, escapeAttribute, escapeHtml, fileName, formatBytes } from "../utils";
 
 const chatMentionSearchDelay = 160;
@@ -19,6 +20,10 @@ const maxChatImageDrafts = 4;
 const maxChatImageBytes = 10 * 1024 * 1024;
 const maxChatImageMessageBytes = 20 * 1024 * 1024;
 const supportedChatImageTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+const maxChatVideoDrafts = 4;
+const maxChatVideoBytes = 50 * 1024 * 1024;
+const maxChatMediaDrafts = 8;
+const supportedChatVideoTypes = new Set(["video/mp4", "video/webm", "video/quicktime"]);
 const chatStreamPatchDelay = 50;
 
 type PendingChatStreamPatch = {
@@ -34,6 +39,10 @@ const pendingChatStreamPatches = new Map<string, PendingChatStreamPatch>();
 
 export function isSupportedChatImageType(mediaType: string): boolean {
   return supportedChatImageTypes.has(mediaType.toLowerCase());
+}
+
+export function isSupportedChatVideoType(mediaType: string): boolean {
+  return supportedChatVideoTypes.has(mediaType.toLowerCase());
 }
 
 export function fileToDataURL(file: File): Promise<string> {
@@ -530,46 +539,14 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
   const messages = session.messages ?? [];
   const draft = state.chatDrafts.get(workspace.id) ?? "";
   const imageDrafts = chatImageDraftsFor(workspace.id);
+  const videoDrafts = chatVideoDraftsFor(workspace.id);
   const executing = state.executingPlans.has(workspace.id);
-  const canSend = !session.busy && !executing && (draft.trim().length > 0 || imageDrafts.length > 0);
   const sizeLabel = expanded ? "Collapse chat" : "Expand chat";
   const executeLabel = executing ? "Decomposing cards" : "Execute plan";
   const mentionOpen = Boolean(chatMentionFor(workspace.id));
-  const planMode = chatPlanModeFor(workspace.id);
   const creatingSkill = state.creatingChatSkills.has(workspace.id);
   return `
-    <section class="work-panel chat-panel" aria-labelledby="chat-title" aria-busy="${session.busy || executing}" data-chat-panel data-workspace-id="${escapeAttribute(workspace.id)}">
-      <div class="panel-heading chat-heading">
-        <div class="chat-actions">
-        <div style="width: 5em;">
-          <span>Chat</span>
-          <br/>
-          <strong id="chat-title">${executing ? renderSpinnerLabel("Triage") : session.busy ? "Working" : "Ready"}</strong>
-        </div>
-          <button class="icon-button" type="button" title="${sizeLabel}" aria-label="${sizeLabel}" aria-pressed="${expanded}" data-action="toggle-chat-size">
-            ${expanded ? icons.collapse : icons.expand}
-          </button>
-          <button class="icon-button execute-button ${executing ? "is-busy" : ""}" type="button" title="${executeLabel}" aria-label="${executeLabel}" data-action="execute-plan" ${session.busy || executing || messages.length === 0 ? "disabled" : ""}>
-            ${executing ? `<span class="spinner" aria-hidden="true"></span>` : icons.execute}
-          </button>
-          <button class="icon-button stop-button" type="button" title="Stop stream" aria-label="Stop stream" data-action="stop-chat" ${session.busy ? "" : "disabled"}>
-            ${icons.stop}
-          </button>
-          <details class="chat-overflow" data-chat-overflow>
-            <summary class="icon-button" title="Chat actions" aria-label="Chat actions">
-              ${icons.moreHorizontal}
-            </summary>
-            <div class="chat-overflow-menu" role="menu" aria-label="Chat actions">
-              <button class="chat-overflow-item" type="button" role="menuitem" data-action="create-chat-skill" ${session.busy || executing || creatingSkill || messages.length === 0 ? "disabled" : ""}>
-                ${creatingSkill ? "Creating skill..." : "Create skill from chat"}
-              </button>
-              <button class="chat-overflow-item" type="button" role="menuitem" data-action="clear-chat" ${session.busy || executing || creatingSkill || messages.length === 0 ? "disabled" : ""}>
-                Clear chat
-              </button>
-            </div>
-          </details>
-        </div>
-      </div>
+    <section class="work-panel chat-panel" aria-busy="${session.busy || executing}" data-chat-panel data-workspace-id="${escapeAttribute(workspace.id)}">
       <div class="chat-log" data-chat-log>
         ${
           messages.length
@@ -578,11 +555,14 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
         }
       </div>
       <form class="chat-composer" data-chat-form>
-        <div class="chat-input-wrap" data-chat-input-wrap>
+        <div class="chat-composer-main" data-chat-input-wrap>
+          ${renderChatImageDrafts(workspace.id, session.busy || executing)}
+          ${renderChatVideoDrafts(workspace.id, session.busy || executing)}
+          ${renderChatMentionPicker(workspace.id)}
           <textarea
             name="message"
-            rows="3"
-            placeholder="Ask for a plan..."
+            rows="1"
+            placeholder="Describe what to build"
             aria-label="Message Echo"
             aria-autocomplete="list"
             aria-expanded="${mentionOpen}"
@@ -591,22 +571,48 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
             data-chat-input
             ${session.busy || executing ? "disabled" : ""}
           >${escapeHtml(draft)}</textarea>
-          ${renderChatImageDrafts(workspace.id, session.busy || executing)}
-          ${renderChatMentionPicker(workspace.id)}
         </div>
-        <div>
-        <label class="chat-plan-toggle" title="Plan mode researches and plans without changing files">
-          <span>Plan</span><br/>
-            <input
-              type="checkbox"
-              data-chat-plan-toggle
-              ${planMode ? "checked" : ""}
-              ${session.busy || executing ? "disabled" : ""}
-            >
-          </label>
-          <button class="primary-button icon-button send-button" type="submit" title="Send" aria-label="Send message" ${canSend ? "" : "disabled"}>
-          ${icons.send}
-          </button>
+        <div class="chat-composer-toolbar">
+          <div class="chat-composer-toolbar-left">
+            <button class="chat-toolbar-icon" type="button" title="Attach file" aria-label="Attach file" data-chat-attachment-toggle ${session.busy || executing ? "disabled" : ""}>
+              ${icons.plus}
+            </button>
+            <div class="chat-attachment-menu" data-chat-attachment-menu hidden>
+              <button type="button" title="Attach image" aria-label="Attach image" data-attachment-type="image">
+                ${icons.image}
+                <span>Image</span>
+              </button>
+              <button type="button" title="Attach video" aria-label="Attach video" data-attachment-type="video">
+                ${icons.video}
+                <span>Video</span>
+              </button>
+            </div>
+            <span class="chat-toolbar-separator"></span>
+            <button class="chat-toolbar-icon" type="button" title="Agent mode" aria-label="Toggle agent mode" data-action="toggle-agent-mode">
+              ${icons.code}
+            </button>
+            <span class="chat-toolbar-separator"></span>
+            <button class="model-selector chat-toolbar-model" type="button" title="Select model" aria-haspopup="listbox" aria-expanded="false" data-model-selector ${session.busy || executing ? "disabled" : ""}>
+              <span class="model-selector-label">${escapeHtml(getActiveChatModelLabel())}</span>
+              <span class="model-selector-chevron">${icons.arrowDown}</span>
+            </button>
+            <ul class="model-dropdown" data-model-dropdown hidden role="listbox" aria-label="Available models">
+              ${renderModelOptions()}
+            </ul>
+            <span class="chat-toolbar-separator"></span>
+            <button class="chat-toolbar-icon" type="button" title="Toggle approvals" aria-label="Toggle approvals" data-action="toggle-approvals">
+              ${icons.check}
+            </button>
+            <span class="chat-toolbar-separator"></span>
+            <button class="chat-toolbar-icon execute-button ${executing ? "is-busy" : ""}" type="button" title="${executeLabel}" aria-label="${executeLabel}" data-action="execute-plan" ${session.busy || executing || messages.length === 0 ? "disabled" : ""}>
+              ${executing ? `<span class="spinner spinner-sm" aria-hidden="true"></span>` : icons.execute}
+            </button>
+          </div>
+          <div class="chat-composer-toolbar-right">
+            <button class="send-button ${session.busy || executing ? 'is-busy' : ''}" type="button" title="${session.busy || executing ? 'Stop' : 'Send'}" aria-label="${session.busy || executing ? 'Stop stream' : 'Send message'}" data-action="send-stop" ${executing ? "disabled" : ""}>
+              ${(session.busy || executing) ? icons.stop : icons.send}
+            </button>
+          </div>
         </div>
       </form>
     </section>
@@ -640,6 +646,33 @@ export function renderChatImageDrafts(workspaceID: string, disabled: boolean): s
   `;
 }
 
+export function renderChatVideoDrafts(workspaceID: string, disabled: boolean): string {
+  const drafts = chatVideoDraftsFor(workspaceID);
+  if (!drafts.length) {
+    return "";
+  }
+  return `
+    <div class="chat-video-drafts" data-chat-video-drafts>
+      ${drafts
+        .map(
+          (draft) => `
+            <div class="chat-video-chip">
+              <span class="chat-video-icon">${icons.video}</span>
+              <span>
+                <strong>${escapeHtml(draft.name)}</strong>
+                <small>${escapeHtml(formatBytes(draft.bytes))}</small>
+              </span>
+              <button class="icon-button" type="button" title="Remove video" aria-label="Remove ${escapeAttribute(draft.name)}" data-action="remove-chat-video" data-video-id="${escapeAttribute(draft.id)}" ${disabled ? "disabled" : ""}>
+                ${icons.x}
+              </button>
+            </div>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 export function renderChatMessage(message: services.ChatMessage, actionsDisabled = false): string {
   const roleLabel = message.role === "user" ? "You" : "Echo";
   const status = message.status && message.status !== "complete"
@@ -658,6 +691,7 @@ export function renderChatMessage(message: services.ChatMessage, actionsDisabled
         }
       </header>
       ${renderChatMessageImages(message)}
+      ${renderChatMessageVideos(message)}
       ${isEditing
         ? renderEditTextarea(message)
         : `<div class="markdown-body" data-message-content>${renderMarkdown(message.content ?? "")}</div>`
@@ -768,6 +802,30 @@ export function renderChatMessageImages(message: services.ChatMessage): string {
   `;
 }
 
+export function renderChatMessageVideos(message: services.ChatMessage): string {
+  const videos = message.videos ?? [];
+  if (!videos.length) {
+    return "";
+  }
+  return `
+    <div class="chat-message-videos">
+      ${videos
+        .map(
+          (video) => `
+            <figure class="chat-message-video">
+              ${video.dataUrl ? `<video src="${escapeAttribute(video.dataUrl)}" muted preload="metadata"></video>` : `<span>${icons.video}</span>`}
+              <figcaption>
+                <strong>${escapeHtml(video.name)}</strong>
+                <span>${escapeHtml(video.path || video.source)} - ${escapeHtml(formatBytes(video.bytes ?? 0))}</span>
+              </figcaption>
+            </figure>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 export function renderDebugSections(message: services.ChatMessage): string {
   if (message.role !== "assistant") {
     return "";
@@ -830,12 +888,126 @@ export function bindChatEvents(root: ParentNode) {
       input.addEventListener("paste", handleChatPaste);
     });
   root
-    .querySelectorAll<HTMLInputElement>("[data-chat-plan-toggle]")
-    .forEach((input) => input.addEventListener("change", handleChatPlanModeChange));
+    .querySelectorAll<HTMLButtonElement>("[data-action=\"send-stop\"]")
+    .forEach((button) => button.addEventListener("click", handleSendStopClick));
+  root
+    .querySelectorAll<HTMLButtonElement>("[data-chat-attachment-toggle]")
+    .forEach((button) => button.addEventListener("click", handleChatAttachmentToggle));
+  root
+    .querySelectorAll<HTMLButtonElement>("[data-attachment-type]")
+    .forEach((button) => button.addEventListener("click", handleChatAttachmentSelect));
   bindChatMentionOptions(root);
   bindChatFileLinks(root);
   bindChatDebugSections(root);
   bindChatEditForms(root);
+  bindChatAttachmentMenuDismissal();
+  bindModelSelector(root);
+  bindModelDropdownEvents(root);
+}
+
+function bindChatAttachmentMenuDismissal() {
+  document.addEventListener("click", (event) => {
+    if (chatAttachmentMenuOpen) {
+      const target = event.target as HTMLElement | null;
+      const container = target?.closest("[data-chat-attachment-menu]") ?? target?.closest("[data-chat-attachment-toggle]");
+      if (!container) {
+        dismissChatAttachmentMenu();
+      }
+    }
+    if (modelDropdownOpen) {
+      const target = event.target as HTMLElement | null;
+      const container = target?.closest("[data-model-dropdown]") ?? target?.closest("[data-model-selector]");
+      if (!container) {
+        dismissModelDropdown();
+      }
+    }
+  });
+}
+
+let modelDropdownOpen = false;
+
+export function renderModelOptions(): string {
+  const endpoints = state.settingsDraft?.endpoints ?? [];
+  if (!endpoints.length) {
+    return `<li class="model-dropdown-option" role="option">No endpoints configured</li>`;
+  }
+  const currentID = state.settingsDraft?.endpointSelection?.chat || endpoints[0].id;
+  return endpoints
+    .map((endpoint, index) => {
+      const id = endpoint.id || `endpoint-${index + 1}`;
+      const name = endpoint.name?.trim() || `Endpoint ${index + 1}`;
+      const selected = id === currentID ? " aria-selected=\"true\"" : "";
+      return `<li class="model-dropdown-option${selected ? " is-active" : ""}" role="option" data-model-id="${escapeAttribute(id)}"${selected}>${escapeHtml(name)}</li>`;
+    })
+    .join("");
+}
+
+export function bindModelSelector(root: ParentNode) {
+  root.querySelectorAll<HTMLButtonElement>("[data-model-selector]").forEach((button) => {
+    button.addEventListener("click", handleModelSelectorClick);
+  });
+}
+
+function handleModelSelectorClick(event: Event) {
+  const button = event.currentTarget as HTMLButtonElement;
+  if (button.disabled) {
+    return;
+  }
+  const dropdown = appRoot.querySelector<HTMLElement>("[data-model-dropdown]");
+  if (!dropdown) {
+    return;
+  }
+  modelDropdownOpen = !modelDropdownOpen;
+  button.setAttribute("aria-expanded", String(modelDropdownOpen));
+  if (modelDropdownOpen) {
+    dropdown.hidden = false;
+  } else {
+    dropdown.hidden = true;
+  }
+}
+
+function dismissModelDropdown() {
+  modelDropdownOpen = false;
+  const button = appRoot.querySelector<HTMLButtonElement>("[data-model-selector]");
+  const dropdown = appRoot.querySelector<HTMLElement>("[data-model-dropdown]");
+  if (button) {
+    button.setAttribute("aria-expanded", "false");
+  }
+  if (dropdown) {
+    dropdown.hidden = true;
+  }
+}
+
+export function bindModelDropdownEvents(root: ParentNode) {
+  root.querySelectorAll<HTMLLIElement>(".model-dropdown-option").forEach((option) => {
+    option.addEventListener("click", () => {
+      const modelID = option.dataset.modelId ?? "";
+      selectChatModel(modelID);
+      dismissModelDropdown();
+    });
+  });
+}
+
+function selectChatModel(endpointID: string) {
+  if (!state.settingsDraft) {
+    return;
+  }
+  const endpoints = state.settingsDraft.endpoints ?? [];
+  if (!endpoints.length) {
+    return;
+  }
+  const selection = state.settingsDraft.endpointSelection || {};
+  const newSelection = { ...selection, chat: endpointID };
+  state.settingsDraft = llm.Settings.createFrom({
+    ...state.settingsDraft,
+    endpointSelection: newSelection,
+    endpoints,
+  });
+  patchChatPanel();
+  getAppCallbacks().bindActionEvents(appRoot);
+  getAppCallbacks().bindChatEvents(appRoot);
+  const chosenName = endpoints.find((ep) => ep.id === endpointID)?.name || endpointID;
+  pushToast(`Model set to ${chosenName}.`, "success");
 }
 
 export function bindChatDebugSections(root: ParentNode) {
@@ -899,15 +1071,106 @@ export function handleChatPaste(event: ClipboardEvent) {
   if (!workspace || chatSessionFor(workspace.id).busy || state.executingPlans.has(workspace.id)) {
     return;
   }
-  const files = Array.from(event.clipboardData?.items ?? [])
+  const items = Array.from(event.clipboardData?.items ?? [])
     .filter((item) => item.kind === "file")
     .map((item) => item.getAsFile())
-    .filter((file): file is File => file !== null && file.type.startsWith("image/"));
-  if (!files.length) {
+    .filter((file): file is File => file !== null);
+  if (!items.length) {
+    return;
+  }
+  const imageFiles = items.filter((f) => f.type.startsWith("image/"));
+  const videoFiles = items.filter((f) => f.type.startsWith("video/"));
+  if (!imageFiles.length && !videoFiles.length) {
     return;
   }
   event.preventDefault();
-  void addPastedChatImages(workspace.id, files);
+  if (imageFiles.length > 0) {
+    void addPastedChatImages(workspace.id, imageFiles);
+  }
+  if (videoFiles.length > 0) {
+    void addPastedChatVideos(workspace.id, videoFiles);
+  }
+}
+
+let chatAttachmentMenuOpen = false;
+
+export function handleChatAttachmentToggle(event: Event) {
+  const workspace = activeWorkspace();
+  if (!workspace || chatSessionFor(workspace.id).busy || state.executingPlans.has(workspace.id)) {
+    return;
+  }
+  const button = event.currentTarget as HTMLButtonElement;
+  if (button.disabled) {
+    return;
+  }
+  // On mobile viewports, bypass the menu and open the native file picker directly
+  if (window.innerWidth <= 720) {
+    void selectChatMediaFiles(workspace.id);
+    return;
+  }
+  const menu = appRoot.querySelector<HTMLElement>("[data-chat-attachment-menu]");
+  if (!menu) {
+    return;
+  }
+  chatAttachmentMenuOpen = !chatAttachmentMenuOpen;
+  button.setAttribute("aria-expanded", String(chatAttachmentMenuOpen));
+  if (chatAttachmentMenuOpen) {
+    menu.hidden = false;
+  } else {
+    menu.hidden = true;
+  }
+}
+
+function dismissChatAttachmentMenu() {
+  chatAttachmentMenuOpen = false;
+  const toggle = appRoot.querySelector<HTMLButtonElement>("[data-chat-attachment-toggle]");
+  const menu = appRoot.querySelector<HTMLElement>("[data-chat-attachment-menu]");
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", "false");
+  }
+  if (menu) {
+    menu.hidden = true;
+  }
+}
+
+export function handleChatAttachmentSelect(event: Event) {
+  const workspace = activeWorkspace();
+  if (!workspace || chatSessionFor(workspace.id).busy || state.executingPlans.has(workspace.id)) {
+    return;
+  }
+  const button = event.currentTarget as HTMLButtonElement;
+  const type = button.dataset.attachmentType;
+  dismissChatAttachmentMenu();
+  if (type === "image") {
+    void selectChatImageFiles(workspace.id);
+  } else if (type === "video") {
+    void selectChatVideoFiles(workspace.id);
+  }
+}
+
+function selectChatImageFiles(workspaceID: string): Promise<void> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.accept = "image/png,image/jpeg,image/gif,image/webp";
+    input.style.position = "fixed";
+    input.style.left = "-9999px";
+    input.addEventListener("change", async () => {
+      const files = Array.from(input.files ?? []);
+      input.remove();
+      if (files.length > 0) {
+        await addPastedChatImages(workspaceID, files);
+      }
+      resolve();
+    }, { once: true });
+    input.addEventListener("cancel", () => {
+      input.remove();
+      resolve();
+    }, { once: true });
+    document.body.appendChild(input);
+    input.click();
+  });
 }
 
 export async function addPastedChatImages(workspaceID: string, files: File[]) {
@@ -949,6 +1212,119 @@ export async function addPastedChatImages(workspaceID: string, files: File[]) {
     return;
   }
   state.chatImageDrafts.set(workspaceID, [...current, ...accepted]);
+  patchChatPanel();
+  patchChatControls();
+  appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus();
+}
+
+export function handleChatVideoUpload(event: Event) {
+  const workspace = activeWorkspace();
+  if (!workspace || chatSessionFor(workspace.id).busy || state.executingPlans.has(workspace.id)) {
+    return;
+  }
+  const button = event.currentTarget as HTMLButtonElement;
+  if (button.disabled) {
+    return;
+  }
+  void selectChatVideoFiles(workspace.id);
+}
+
+function selectChatMediaFiles(workspaceID: string): Promise<void> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.accept = "image/png,image/jpeg,image/gif,image/webp,video/mp4,video/webm,video/quicktime";
+    input.style.position = "fixed";
+    input.style.left = "-9999px";
+    input.addEventListener("change", async () => {
+      const files = Array.from(input.files ?? []);
+      input.remove();
+      if (files.length > 0) {
+        const imageFiles = files.filter((f) => f.type.startsWith("image/"));
+        const videoFiles = files.filter((f) => f.type.startsWith("video/"));
+        if (imageFiles.length > 0) {
+          await addPastedChatImages(workspaceID, imageFiles);
+        }
+        if (videoFiles.length > 0) {
+          await addPastedChatVideos(workspaceID, videoFiles);
+        }
+      }
+      resolve();
+    }, { once: true });
+    input.addEventListener("cancel", () => {
+      input.remove();
+      resolve();
+    }, { once: true });
+    document.body.appendChild(input);
+    input.click();
+  });
+}
+
+function selectChatVideoFiles(workspaceID: string): Promise<void> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.accept = "video/mp4,video/webm,video/quicktime";
+    input.style.position = "fixed";
+    input.style.left = "-9999px";
+    input.addEventListener("change", async () => {
+      const files = Array.from(input.files ?? []);
+      input.remove();
+      if (files.length > 0) {
+        await addPastedChatVideos(workspaceID, files);
+      }
+      resolve();
+    }, { once: true });
+    input.addEventListener("cancel", () => {
+      input.remove();
+      resolve();
+    }, { once: true });
+    document.body.appendChild(input);
+    input.click();
+  });
+}
+
+export async function addPastedChatVideos(workspaceID: string, files: File[]) {
+  const current = chatVideoDraftsFor(workspaceID);
+  const accepted: ChatVideoDraft[] = [];
+  let totalBytes = chatVideoDraftTotalBytes(workspaceID);
+  for (const file of files) {
+    const mediaType = file.type.toLowerCase();
+    if (!isSupportedChatVideoType(mediaType)) {
+      pushToast(`Unsupported video format: ${file.type || file.name}`, "error");
+      continue;
+    }
+    if (file.size > maxChatVideoBytes) {
+      pushToast(`${file.name || "Pasted video"} is larger than ${formatBytes(maxChatVideoBytes)}.`, "error");
+      continue;
+    }
+    if (current.length + accepted.length >= maxChatVideoDrafts) {
+      pushToast(`A message can include at most ${maxChatVideoDrafts} videos.`, "error");
+      break;
+    }
+    if (totalBytes + file.size > maxChatImageMessageBytes) {
+      pushToast(`Attached videos are larger than ${formatBytes(maxChatImageMessageBytes)}.`, "error");
+      break;
+    }
+    try {
+      accepted.push({
+        id: `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        name: file.name || `pasted-video-${current.length + accepted.length + 1}`,
+        mediaType,
+        dataUrl: await fileToDataURL(file),
+        bytes: file.size,
+      });
+      totalBytes += file.size;
+    } catch (error) {
+      pushToast(errorMessage(error), "error");
+    }
+  }
+  if (!accepted.length) {
+    return;
+  }
+  state.chatVideoDrafts.set(workspaceID, [...current, ...accepted]);
   patchChatPanel();
   patchChatControls();
   appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus();
@@ -1020,6 +1396,72 @@ export function handleChatMentionKeydown(event: KeyboardEvent): boolean {
   return true;
 }
 
+export async function handleSendStopClick(event: Event) {
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    return;
+  }
+  const session = chatSessionFor(workspace.id);
+  const executing = state.executingPlans.has(workspace.id);
+  if (session.busy || executing) {
+    // Stop the stream
+    state.chatSessions.set(workspace.id, await StopChatStream(workspace.id));
+    patchChatPanel();
+    return;
+  }
+  // Send the message – reuse the same logic as the form submit
+  const draft = (state.chatDrafts.get(workspace.id) ?? "").trim();
+  const imageDrafts = chatImageDraftsFor(workspace.id);
+  const videoDrafts = chatVideoDraftsFor(workspace.id);
+  if ((!draft && imageDrafts.length === 0 && videoDrafts.length === 0)) {
+    return;
+  }
+  void (async () => {
+    try {
+      const nextSession = await SendChatMessageWithAttachments(
+        workspace.id,
+        services.ChatMessageRequest.createFrom({
+          content: draft,
+          planMode: chatPlanModeFor(workspace.id),
+          images: imageDrafts.map((image) =>
+            services.ChatImageInput.createFrom({
+              id: image.id,
+              name: image.name,
+              mediaType: image.mediaType,
+              dataUrl: image.dataUrl,
+              bytes: image.bytes,
+            }),
+          ),
+          videos: videoDrafts.map((video) =>
+            services.ChatVideoInput.createFrom({
+              id: video.id,
+              name: video.name,
+              mediaType: video.mediaType,
+              dataUrl: video.dataUrl,
+              bytes: video.bytes,
+            }),
+          ),
+        }),
+      );
+      state.chatDrafts.set(workspace.id, "");
+      state.chatImageDrafts.delete(workspace.id);
+      state.chatVideoDrafts.delete(workspace.id);
+      clearChatMention();
+      const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
+      if (input) {
+        input.value = "";
+      }
+      state.chatSessions.set(workspace.id, nextSession);
+      getAppCallbacks().render();
+      scrollChatToBottom();
+    } catch (error) {
+      pushToast(errorMessage(error), "error");
+      getAppCallbacks().render();
+    }
+  })();
+}
+
+
 export async function handleChatSubmit(event: SubmitEvent) {
   event.preventDefault();
   const workspace = activeWorkspace();
@@ -1028,8 +1470,9 @@ export async function handleChatSubmit(event: SubmitEvent) {
   }
   const message = (state.chatDrafts.get(workspace.id) ?? "").trim();
   const imageDrafts = chatImageDraftsFor(workspace.id);
+  const videoDrafts = chatVideoDraftsFor(workspace.id);
   const session = chatSessionFor(workspace.id);
-  if ((!message && imageDrafts.length === 0) || session.busy || state.executingPlans.has(workspace.id)) {
+  if ((!message && imageDrafts.length === 0 && videoDrafts.length === 0) || session.busy || state.executingPlans.has(workspace.id)) {
     return;
   }
 
@@ -1048,10 +1491,20 @@ export async function handleChatSubmit(event: SubmitEvent) {
             bytes: image.bytes,
           }),
         ),
+        videos: videoDrafts.map((video) =>
+          services.ChatVideoInput.createFrom({
+            id: video.id,
+            name: video.name,
+            mediaType: video.mediaType,
+            dataUrl: video.dataUrl,
+            bytes: video.bytes,
+          }),
+        ),
       }),
     );
     state.chatDrafts.set(workspace.id, "");
     state.chatImageDrafts.delete(workspace.id);
+    state.chatVideoDrafts.delete(workspace.id);
     clearChatMention();
     const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
     if (input) {
@@ -1395,8 +1848,10 @@ export function patchChatPanel() {
     return;
   }
 
-  // Preserve the current draft value before regenerating the panel.
+  // Preserve the current draft value and scroll position before regenerating the panel.
   const draft = state.chatDrafts.get(workspace.id) ?? "";
+  const existingInput = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
+  const inputScrollTop = existingInput?.scrollTop ?? 0;
 
   const next = document.createElement("template");
   next.innerHTML = renderChatPanel(workspace, state.expandedChatWorkspaces.has(workspace.id)).trim();
@@ -1407,6 +1862,9 @@ export function patchChatPanel() {
   const input = replacement.querySelector<HTMLTextAreaElement>("[data-chat-input]");
   if (input && input.value !== draft) {
     input.value = draft;
+  }
+  if (input) {
+    input.scrollTop = inputScrollTop;
   }
 
   getAppCallbacks().bindActionEvents(replacement);
@@ -1422,50 +1880,70 @@ export function patchChatControls() {
   const session = chatSessionFor(workspace.id);
   const draft = state.chatDrafts.get(workspace.id) ?? "";
   const imageDrafts = chatImageDraftsFor(workspace.id);
+  const videoDrafts = chatVideoDraftsFor(workspace.id);
   const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
-  const send = appRoot.querySelector<HTMLButtonElement>(".send-button");
-  const stop = appRoot.querySelector<HTMLButtonElement>(".stop-button");
-  const execute = appRoot.querySelector<HTMLButtonElement>(".execute-button");
-  const clear = appRoot.querySelector<HTMLButtonElement>('[data-action="clear-chat"]');
-  const createSkill = appRoot.querySelector<HTMLButtonElement>('[data-action="create-chat-skill"]');
-  const planToggle = appRoot.querySelector<HTMLInputElement>("[data-chat-plan-toggle]");
-  const title = appRoot.querySelector<HTMLElement>("#chat-title");
-  const panel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
   const executing = state.executingPlans.has(workspace.id);
   const creatingSkill = state.creatingChatSkills.has(workspace.id);
+
   if (input) {
     input.disabled = session.busy || executing;
   }
-  if (send) {
-    send.disabled = session.busy || executing || (draft.trim().length === 0 && imageDrafts.length === 0);
+
+  // Update the send/stop button
+  appRoot.querySelectorAll<HTMLButtonElement>("[data-action=\"send-stop\"]").forEach((button) => {
+    if (session.busy || executing) {
+      button.title = "Stop stream";
+      button.setAttribute("aria-label", "Stop stream");
+      button.innerHTML = icons.stop;
+      button.disabled = false;
+    } else {
+      const draft = (state.chatDrafts.get(workspace.id) ?? "").trim();
+      const imageDrafts = chatImageDraftsFor(workspace.id);
+      const videoDrafts = chatVideoDraftsFor(workspace.id);
+      const canSend = draft.length > 0 || imageDrafts.length > 0 || videoDrafts.length > 0;
+      button.title = "Send";
+      button.setAttribute("aria-label", "Send message");
+      button.innerHTML = icons.send;
+      button.disabled = !canSend;
+    }
+  });
+
+  // Update all stop buttons (desktop heading + mobile controls)
+  appRoot.querySelectorAll<HTMLButtonElement>(".stop-button").forEach((button) => {
+    button.disabled = !session.busy;
+  });
+
+  // Update all execute buttons (desktop heading + mobile controls)
+  appRoot.querySelectorAll<HTMLButtonElement>(".execute-button").forEach((button) => {
+    button.disabled = session.busy || executing || (session.messages ?? []).length === 0;
+    button.classList.toggle("is-busy", executing);
+    button.title = executing ? "Decomposing cards" : "Execute plan";
+    button.setAttribute("aria-label", button.title);
+    button.innerHTML = executing ? `<span class="spinner" aria-hidden="true"></span>` : icons.execute;
+  });
+
+  // Update all clear-chat buttons (overflow menu + mobile controls)
+  appRoot.querySelectorAll<HTMLButtonElement>('[data-action="clear-chat"]').forEach((button) => {
+    button.disabled = session.busy || executing || creatingSkill || (session.messages ?? []).length === 0;
+  });
+
+  // Update create-skill button in overflow menu
+  const createSkillBtn = appRoot.querySelector<HTMLButtonElement>('[data-action="create-chat-skill"]');
+  if (createSkillBtn) {
+    createSkillBtn.disabled = session.busy || executing || creatingSkill || (session.messages ?? []).length === 0;
+    createSkillBtn.textContent = creatingSkill ? "Creating skill..." : "Create skill from chat";
   }
-  if (stop) {
-    stop.disabled = !session.busy;
-  }
-  if (execute) {
-    execute.disabled = session.busy || executing || (session.messages ?? []).length === 0;
-    execute.classList.toggle("is-busy", executing);
-    execute.title = executing ? "Decomposing cards" : "Execute plan";
-    execute.setAttribute("aria-label", execute.title);
-    execute.innerHTML = executing ? `<span class="spinner" aria-hidden="true"></span>` : icons.execute;
-  }
-  if (clear) {
-    clear.disabled = session.busy || executing || creatingSkill || (session.messages ?? []).length === 0;
-  }
-  if (createSkill) {
-    createSkill.disabled = session.busy || executing || creatingSkill || (session.messages ?? []).length === 0;
-    createSkill.textContent = creatingSkill ? "Creating skill..." : "Create skill from chat";
-  }
+
   appRoot.querySelectorAll<HTMLButtonElement>(".chat-prune-trigger").forEach((button) => {
     button.disabled = session.busy || executing;
   });
-  if (planToggle) {
-    planToggle.disabled = session.busy || executing;
-    planToggle.checked = chatPlanModeFor(workspace.id);
-  }
+
+  const title = appRoot.querySelector<HTMLElement>("#chat-title");
   if (title) {
     title.innerHTML = executing ? renderSpinnerLabel("Triage") : session.busy ? "Working" : "Ready";
   }
+
+  const panel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
   if (panel) {
     panel.setAttribute("aria-busy", String(session.busy || executing));
   }

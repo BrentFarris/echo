@@ -1,18 +1,18 @@
 
 import { applyInlineCodePromptEvent, ensureCodeViewRootLoaded, finishCodeTabSwitcher, openDroppedCodeFile, refreshOpenCodeTabsFromDisk, saveActiveCodeFile } from "../codeView";
-import { LoadRuntimeStatus, LoadState, LoadWebAccessStatus } from "../backend/services";
+import { LoadRuntimeStatus, LoadState, LoadWebAccessStatus, ReadWorkspaceMediaFile } from "../backend/services";
 import { llm, services } from "../../wailsjs/go/models";
 import { EventsOn, OnFileDrop } from "../backend/runtime";
 import { initializeWebAccessTokenFromURL } from "../backend/web";
 import { bindActionEvents } from "./actions";
 import { setAppCallbacks } from "./callbacks";
-import { bindChatEvents, applyChatStreamEvent } from "./chat";
+import { bindChatEvents, applyChatStreamEvent, isSupportedChatImageType, isSupportedChatVideoType, patchChatControls, patchChatPanel } from "./chat";
 import { applyFileChangesEvent } from "./changes";
 import { showContextMenu } from "./contextMenu";
 import { handleGlobalKeydown, handleGlobalKeyup, handleGlobalPointerDown, handleGlobalWindowBlur } from "./events";
 import { applyKanbanEvent, loadActiveKanbanBoard, markKanbanRunStarted } from "./kanban";
 import { render } from "./render";
-import { activeWorkspace, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state } from "./state";
+import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state } from "./state";
 import { applyTheme } from "./theme";
 import { pushToast } from "./toasts";
 import type { ChatStreamEvent, FileChangesEvent, KanbanEvent } from "./types";
@@ -91,7 +91,7 @@ export function startApp() {
   });
 
   OnFileDrop((_x, _y, paths) => {
-    void openDroppedTextFiles(paths);
+    void openDroppedFiles(paths);
   });
 
   EventsOn("echo:chat:event", (event: ChatStreamEvent) => {
@@ -118,10 +118,10 @@ export function startApp() {
   void initialize();
 }
 
-async function openDroppedTextFiles(paths: string[]) {
+async function openDroppedFiles(paths: string[]) {
   const workspace = activeWorkspace();
   if (!workspace) {
-    pushToast("Select a workspace before dropping a text file.", "error");
+    pushToast("Select a workspace before dropping a file.", "error");
     return;
   }
   const uniquePaths = [...new Set(paths.map((path) => path.trim()).filter(Boolean))];
@@ -129,6 +129,83 @@ async function openDroppedTextFiles(paths: string[]) {
     return;
   }
 
+  // If in chat mode, try to attach media files to the composer instead of opening them.
+  if (state.appMode === "chat" && !chatSessionFor(workspace.id).busy && !state.executingPlans.has(workspace.id)) {
+    const imagePaths: string[] = [];
+    const videoPaths: string[] = [];
+    const otherPaths: string[] = [];
+
+    for (const path of uniquePaths) {
+      const ext = path.split(".").pop()?.toLowerCase() ?? "";
+      if (["png", "jpg", "jpeg", "gif", "webp"].includes(ext)) {
+        imagePaths.push(path);
+      } else if (["mp4", "webm", "mov", "m4v"].includes(ext)) {
+        videoPaths.push(path);
+      } else {
+        otherPaths.push(path);
+      }
+    }
+
+    // If all dropped files are media, attach them to chat.
+    if (otherPaths.length === 0 && (imagePaths.length > 0 || videoPaths.length > 0)) {
+      const session = chatSessionFor(workspace.id);
+      if (session.busy) return;
+
+      for (const path of imagePaths) {
+        try {
+          const result = await ReadWorkspaceMediaFile(workspace.id, path);
+          if (!result || !isSupportedChatImageType(result.mimeType || "")) {
+            pushToast(`Unsupported image format for ${path.split(/[\\/]/).pop()}`, "error");
+            continue;
+          }
+          const name = path.split(/[\\/]/).pop() ?? "image";
+          state.chatImageDrafts.set(workspace.id, [
+            ...chatImageDraftsFor(workspace.id),
+            {
+              id: `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              name,
+              mediaType: result.mimeType,
+              dataUrl: result.dataUrl,
+              bytes: result.bytes,
+            },
+          ]);
+          patchChatPanel();
+          patchChatControls();
+        } catch {
+          pushToast(`Could not read image: ${path.split(/[\\/]/).pop()}`, "error");
+        }
+      }
+
+      for (const path of videoPaths) {
+        try {
+          const result = await ReadWorkspaceMediaFile(workspace.id, path);
+          if (!result || !isSupportedChatVideoType(result.mimeType || "")) {
+            pushToast(`Unsupported video format for ${path.split(/[\\/]/).pop()}`, "error");
+            continue;
+          }
+          const name = path.split(/[\\/]/).pop() ?? "video";
+          state.chatVideoDrafts.set(workspace.id, [
+            ...chatVideoDraftsFor(workspace.id),
+            {
+              id: `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              name,
+              mediaType: result.mimeType,
+              dataUrl: result.dataUrl,
+              bytes: result.bytes,
+            },
+          ]);
+          patchChatPanel();
+          patchChatControls();
+        } catch {
+          pushToast(`Could not read video: ${path.split(/[\\/]/).pop()}`, "error");
+        }
+      }
+
+      return;
+    }
+  }
+
+  // Fall through to code view for non-media files or mixed drops.
   state.appMode = "code";
   const loading = ensureCodeViewRootLoaded(workspace.id);
   render();

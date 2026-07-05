@@ -218,12 +218,23 @@ export function PruneChatMessage(...args: Parameters<typeof Wails.PruneChatMessa
   return call("PruneChatMessage", Wails.PruneChatMessage, args);
 }
 
+export function PrepareRebuildAndRelaunch(workspaceID: string): Promise<void> {
+  if (isWailsRuntime()) {
+    return (window as any)["go"]["services"]["SystemService"]["PrepareRebuildAndRelaunch"](workspaceID);
+  }
+  return webRpc("PrepareRebuildAndRelaunch", [workspaceID]);
+}
+
 export function PrepareWorkspaceSymbolRename(...args: Parameters<typeof Wails.PrepareWorkspaceSymbolRename>): ReturnType<typeof Wails.PrepareWorkspaceSymbolRename> {
   return call("PrepareWorkspaceSymbolRename", Wails.PrepareWorkspaceSymbolRename, args);
 }
 
 export function ReadWorkspaceFile(...args: Parameters<typeof Wails.ReadWorkspaceFile>): ReturnType<typeof Wails.ReadWorkspaceFile> {
   return call("ReadWorkspaceFile", Wails.ReadWorkspaceFile, args);
+}
+
+export function ReadWorkspaceMediaFile(...args: Parameters<typeof Wails.ReadWorkspaceMediaFile>): ReturnType<typeof Wails.ReadWorkspaceMediaFile> {
+  return call("ReadWorkspaceMediaFile", Wails.ReadWorkspaceMediaFile, args);
 }
 
 export function RemoveWorkspaceFolder(...args: Parameters<typeof Wails.RemoveWorkspaceFolder>): ReturnType<typeof Wails.RemoveWorkspaceFolder> {

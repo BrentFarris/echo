@@ -1,18 +1,19 @@
 
 import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate, startCodeRename } from "../codeView";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearChat, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, CreateSkillFromChat, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearChat, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, CreateSkillFromChat, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
+import { appRoot } from "./dom";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
 import { dismissContextMenu } from "./contextMenu";
-import { appRoot } from "./dom";
 import { dropWorkspaceGitRepositoryState, openGitChangeInCode, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, selectGitCommit, syncWorkspaceGitRepository } from "./git";
 import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint } from "./settings";
-import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatSessionFor, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state } from "./state";
+import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatSessionFor, chatVideoDraftsFor, getActiveChatKanbanTab, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state } from "./state";
 import { clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
 import { cloneSettings, cloneWebAccessSettings } from "./state";
+import type { AppMode, MobileNavView } from "./types";
 import { applyTheme, settingsWithThemeDefaults, themePaletteNames } from "./theme";
 import { pushToast, dismissToast } from "./toasts";
 import { copyTextToClipboard, errorMessage, laneLabel } from "./utils";
@@ -81,6 +82,8 @@ export async function handleAction(event: Event) {
         return;
       }
       state.appMode = "code";
+      state.mobileNavView = "code";
+      state.openGitChangeWorkspaces.delete(workspace.id);
       const loading = ensureCodeViewRootLoaded(workspace.id);
       getAppCallbacks().render();
       await loading;
@@ -96,7 +99,9 @@ export async function handleAction(event: Event) {
         state.loadingGitChangeWorkspaces.delete(workspace.id);
         state.loadingGitRepositoryWorkspaces.delete(workspace.id);
       }
-      state.appMode = "chat-kanban";
+      const tab = workspace ? getActiveChatKanbanTab(workspace.id) : "chat";
+      state.appMode = tab;
+      state.mobileNavView = tab;
       getAppCallbacks().render();
       return;
     }
@@ -105,6 +110,8 @@ export async function handleAction(event: Event) {
       if (!workspace) {
         return;
       }
+      state.appMode = "git";
+      state.mobileNavView = "git";
       await openWorkspaceGitRepository(workspace.id);
       return;
     }
@@ -117,6 +124,9 @@ export async function handleAction(event: Event) {
       state.expandedGitChangeWorkspaces.delete(workspace.id);
       state.loadingGitChangeWorkspaces.delete(workspace.id);
       state.loadingGitRepositoryWorkspaces.delete(workspace.id);
+      const tab = getActiveChatKanbanTab(workspace.id);
+      state.appMode = tab;
+      state.mobileNavView = tab;
       getAppCallbacks().render();
       return;
     }
@@ -258,6 +268,27 @@ export async function handleAction(event: Event) {
       applyTheme(state.settingsDraft);
       getAppCallbacks().render();
     }
+    if (action === "rebuild-and-relaunch") {
+      const echoWorkspace = findEchoSourceWorkspaceForAction();
+      if (!echoWorkspace) {
+        pushToast("Add the Echo source workspace first.", "error");
+        return;
+      }
+      if (state.runningKanbanWorkspaces.has(echoWorkspace.id)) {
+        pushToast("Cannot rebuild while Kanban agents are running.", "error");
+        return;
+      }
+      if (!window.confirm("Rebuild and relaunch Echo?\n\nThis will shut down the current instance, rebuild the application, and launch the new build.\n\nAny unsaved work may be lost.")) {
+        return;
+      }
+      try {
+        await PrepareRebuildAndRelaunch(echoWorkspace.id);
+        pushToast("Rebuild started. Echo is shutting down...", "info");
+      } catch (error) {
+        pushToast(errorMessage(error), "error");
+      }
+      return;
+    }
     if (action === "add-workspace") {
       state.appState = await ChooseWorkspaceFolder();
       await loadActiveChatSession();
@@ -317,6 +348,54 @@ export async function handleAction(event: Event) {
       pushToast("Workspace icon cleared.", "success");
       getAppCallbacks().render();
     }
+    if (action === "switch-view") {
+      const view = target.dataset.view;
+      if (!view) {
+        return;
+      }
+      const workspace = activeWorkspace();
+      if (view === "chat" || view === "kanban") {
+        state.appMode = view as AppMode;
+        state.mobileNavView = view as MobileNavView;
+        if (workspace) {
+          state.activeChatKanbanTab.set(workspace.id, view);
+        }
+      } else if (view === "code") {
+        state.appMode = "code";
+        state.mobileNavView = "code";
+        if (workspace) {
+          state.openGitChangeWorkspaces.delete(workspace.id);
+        }
+      } else if (view === "git") {
+        state.appMode = "git";
+        state.mobileNavView = "git";
+      }
+      getAppCallbacks().bindActionEvents(appRoot);
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "toggle-workspace-dropdown") {
+      state.workspaceDropdownOpen = !state.workspaceDropdownOpen;
+      if (state.workspaceDropdownOpen) {
+        // Move focus to the first workspace option for accessibility.
+        const dropdown = appRoot.querySelector<HTMLDivElement>(
+          '.mobile-nav-workspace-dropdown',
+        );
+        if (dropdown) {
+          const firstOption = dropdown.querySelector<HTMLButtonElement>('button');
+          if (firstOption) {
+            firstOption.focus();
+          }
+        }
+      }
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "dismiss-workspace-dropdown") {
+      state.workspaceDropdownOpen = false;
+      getAppCallbacks().render();
+      return;
+    }
     if (action === "activate-workspace") {
       const current = activeWorkspace();
       if (current && current.id !== workspaceID) {
@@ -332,6 +411,7 @@ export async function handleAction(event: Event) {
       await loadActiveKanbanBoard();
       await loadActiveChangeReview();
       await loadActiveCodeViewIfNeeded();
+      state.workspaceDropdownOpen = false;
       getAppCallbacks().render();
     }
     if (action === "execute-plan") {
@@ -350,32 +430,6 @@ export async function handleAction(event: Event) {
         pushToast("Plan converted into Ready cards.", "success");
       } finally {
         state.executingPlans.delete(workspace.id);
-      }
-      getAppCallbacks().render();
-    }
-    if (action === "toggle-chat-size") {
-      const workspace = activeWorkspace();
-      if (!workspace) {
-        return;
-      }
-      if (state.expandedChatWorkspaces.has(workspace.id)) {
-        state.expandedChatWorkspaces.delete(workspace.id);
-      } else {
-        state.expandedChatWorkspaces.add(workspace.id);
-        state.expandedKanbanWorkspaces.delete(workspace.id);
-      }
-      getAppCallbacks().render();
-    }
-    if (action === "toggle-kanban-size") {
-      const workspace = activeWorkspace();
-      if (!workspace) {
-        return;
-      }
-      if (state.expandedKanbanWorkspaces.has(workspace.id)) {
-        state.expandedKanbanWorkspaces.delete(workspace.id);
-      } else {
-        state.expandedKanbanWorkspaces.add(workspace.id);
-        state.expandedChatWorkspaces.delete(workspace.id);
       }
       getAppCallbacks().render();
     }
@@ -434,6 +488,19 @@ export async function handleAction(event: Event) {
       state.chatImageDrafts.set(
         workspace.id,
         chatImageDraftsFor(workspace.id).filter((image) => image.id !== imageID),
+      );
+      patchChatPanel();
+      patchChatControls();
+    }
+    if (action === "remove-chat-video") {
+      const workspace = activeWorkspace();
+      const videoID = target.dataset.videoId ?? "";
+      if (!workspace || !videoID) {
+        return;
+      }
+      state.chatVideoDrafts.set(
+        workspace.id,
+        chatVideoDraftsFor(workspace.id).filter((video) => video.id !== videoID),
       );
       patchChatPanel();
       patchChatControls();
@@ -730,6 +797,32 @@ export async function handleAction(event: Event) {
       }
       return;
     }
+    if (action === "attach-file") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      // Trigger the attachment toggle button to open the media picker menu.
+      const toggleBtn = appRoot.querySelector<HTMLButtonElement>("[data-chat-attachment-toggle]");
+      if (toggleBtn && !toggleBtn.disabled) {
+        toggleBtn.click();
+      }
+      return;
+    }
+    if (action === "toggle-agent-mode") {
+      const workspace = activeWorkspace();
+      if (!workspace) {
+        return;
+      }
+      const currentMode = chatPlanModeFor(workspace.id);
+      state.chatPlanModes.set(workspace.id, !currentMode);
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "toggle-approvals") {
+      pushToast("Approvals are not yet supported.", "info");
+      return;
+    }
     if (action === "delete-workspace") {
       const workspace = state.appState?.workspaces.find((item) => item.id === workspaceID);
       if (!workspace || !window.confirm(`Delete ${workspace.displayName} from Echo?`)) {
@@ -753,9 +846,10 @@ export async function handleAction(event: Event) {
       state.loadingGitChangeWorkspaces.delete(workspaceID);
       state.chatPlanModes.delete(workspaceID);
       state.chatImageDrafts.delete(workspaceID);
+      state.activeChatKanbanTab.delete(workspaceID);
       forgetKanbanRun(workspaceID);
       if (!activeWorkspace()) {
-        state.appMode = "chat-kanban";
+        state.appMode = "chat";
       } else {
         await loadActiveCodeViewIfNeeded();
       }
@@ -772,6 +866,19 @@ export async function handleAction(event: Event) {
     }
     getAppCallbacks().render();
   }
+}
+
+function findEchoSourceWorkspaceForAction() {
+  const workspaces = state.appState?.workspaces ?? [];
+  for (const workspace of workspaces) {
+    const folders = workspace.folders ?? [];
+    for (const folder of folders) {
+      if (!folder.missing && folder.path && /[/\\]echo$/i.test(folder.path)) {
+        return workspace;
+      }
+    }
+  }
+  return null;
 }
 
 export function bindActionEvents(root: ParentNode) {

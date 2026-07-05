@@ -1,7 +1,12 @@
 
 import { llm, services } from "../../wailsjs/go/models";
 import type { ThemePaletteName } from "./theme";
-import type { AppMode, ChatImageDraft, ChatMentionState, ContextMenuState, KanbanCardCreationDraft, Toast } from "./types";
+import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, KanbanCardCreationDraft, MobileNavView, Toast } from "./types";
+
+const endpointTopics = ["chat", "kanbanDecompose", "kanban", "inlineCode"] as const;
+type EndpointTopicKey = (typeof endpointTopics)[number];
+
+export type ChatKanbanTab = "chat" | "kanban";
 
 export const state = {
   appState: null as services.AppState | null,
@@ -13,11 +18,15 @@ export const state = {
   settingsEndpointEditId: "",
   settingsThemePalette: "light" as ThemePaletteName,
   workspaceLetterDrafts: new Map<string, string>(),
-  appMode: "chat-kanban" as AppMode,
+  appMode: "chat" as AppMode,
+  mobileNavView: "chat" as MobileNavView,
+  activeChatKanbanTab: new Map<string, ChatKanbanTab>(),
   formError: "",
+  workspaceDropdownOpen: false,
   chatSessions: new Map<string, services.ChatSession>(),
   chatDrafts: new Map<string, string>(),
   chatImageDrafts: new Map<string, ChatImageDraft[]>(),
+  chatVideoDrafts: new Map<string, ChatVideoDraft[]>(),
   chatPlanModes: new Map<string, boolean>(),
   chatFileLinkCache: new Map<string, Promise<string | null>>(),
   chatMention: null as ChatMentionState | null,
@@ -58,6 +67,10 @@ export const state = {
   contextMenu: null as ContextMenuState | null,
 };
 
+export function getActiveChatKanbanTab(workspaceID: string): ChatKanbanTab {
+  return state.activeChatKanbanTab.get(workspaceID) ?? "chat";
+}
+
 export const kanbanLaneLabels: Record<string, string> = {
   ready: "Ready",
   inProgress: "In Progress",
@@ -91,6 +104,14 @@ export function chatImageDraftsFor(workspaceID: string): ChatImageDraft[] {
 
 export function chatImageDraftTotalBytes(workspaceID: string): number {
   return chatImageDraftsFor(workspaceID).reduce((total, image) => total + image.bytes, 0);
+}
+
+export function chatVideoDraftsFor(workspaceID: string): ChatVideoDraft[] {
+  return state.chatVideoDrafts.get(workspaceID) ?? [];
+}
+
+export function chatVideoDraftTotalBytes(workspaceID: string): number {
+  return chatVideoDraftsFor(workspaceID).reduce((total, video) => total + video.bytes, 0);
 }
 
 export function chatSessionFor(workspaceID: string): services.ChatSession {
@@ -204,4 +225,15 @@ export function thinkingCorrectionEnabled(settings: llm.Settings | null | undefi
 export function thinkingTokenBudgetEnabled(settings: llm.Settings | null | undefined): boolean {
   return (settings as { thinkingTokenBudget?: number } | null | undefined)
     ?.thinkingTokenBudget !== 0;
+}
+
+export function getActiveChatModelLabel(): string {
+  const endpoints = state.settingsDraft?.endpoints ?? [];
+  if (!endpoints.length) {
+    return "";
+  }
+  const selection = state.settingsDraft?.endpointSelection;
+  const endpointID = selection?.chat || endpoints[0].id;
+  const endpoint = endpoints.find((ep) => ep.id === endpointID);
+  return endpoint?.model?.trim() || "";
 }

@@ -35,9 +35,15 @@ type MessageContentPart struct {
 	Type     string           `json:"type"`
 	Text     string           `json:"text,omitempty"`
 	ImageURL *MessageImageURL `json:"image_url,omitempty"`
+	VideoURL *MessageVideoURL `json:"video_url,omitempty"`
 }
 
 type MessageImageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type MessageVideoURL struct {
 	URL    string `json:"url"`
 	Detail string `json:"detail,omitempty"`
 }
@@ -53,6 +59,15 @@ func ImageURLContentPart(url string) MessageContentPart {
 	return MessageContentPart{
 		Type: "image_url",
 		ImageURL: &MessageImageURL{
+			URL: url,
+		},
+	}
+}
+
+func VideoURLContentPart(url string) MessageContentPart {
+	return MessageContentPart{
+		Type: "video_url",
+		VideoURL: &MessageVideoURL{
 			URL: url,
 		},
 	}
@@ -285,6 +300,10 @@ func cloneMessages(messages []Message) []Message {
 			if output[i].ContentParts[partIndex].ImageURL != nil {
 				imageURL := *output[i].ContentParts[partIndex].ImageURL
 				output[i].ContentParts[partIndex].ImageURL = &imageURL
+			}
+			if output[i].ContentParts[partIndex].VideoURL != nil {
+				videoURL := *output[i].ContentParts[partIndex].VideoURL
+				output[i].ContentParts[partIndex].VideoURL = &videoURL
 			}
 		}
 		output[i].ToolCalls = append([]ToolCall(nil), output[i].ToolCalls...)
