@@ -1159,6 +1159,30 @@ h3 {
   stroke-width: 1.8;
 }
 
+.chat-mode-toggle {
+  display: inline-flex;
+  width: auto;
+  padding: 0 var(--space-md);
+  gap: var(--space-xs);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.chat-mode-toggle.is-agent-mode {
+  color: var(--color-accent-strong);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+
+.chat-toolbar-overflow > summary {
+  display: grid;
+}
+
+.chat-composer-toolbar .chat-overflow-menu {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
 .chat-toolbar-separator {
   width: 1px;
   height: 14px;
@@ -5497,10 +5521,6 @@ h3 {
   /* Hide the desktop heading controls on mobile to avoid duplication */
   .chat-actions .stop-button,
   .chat-actions .execute-button {
-    display: none;
-  }
-
-  .chat-overflow {
     display: none;
   }
 

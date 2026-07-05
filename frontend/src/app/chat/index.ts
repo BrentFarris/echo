@@ -544,6 +544,9 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
   const sizeLabel = expanded ? "Collapse chat" : "Expand chat";
   const executeLabel = executing ? "Decomposing cards" : "Execute plan";
   const mentionOpen = Boolean(chatMentionFor(workspace.id));
+  const planMode = chatPlanModeFor(workspace.id);
+  const chatModeLabel = planMode ? "Plan" : "Agent";
+  const chatModeTitle = planMode ? "Plan mode: switch to agent mode" : "Agent mode: switch to plan mode";
   const creatingSkill = state.creatingChatSkills.has(workspace.id);
   return `
     <section class="work-panel chat-panel" aria-busy="${session.busy || executing}" data-chat-panel data-workspace-id="${escapeAttribute(workspace.id)}">
@@ -588,8 +591,9 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
               </button>
             </div>
             <span class="chat-toolbar-separator"></span>
-            <button class="chat-toolbar-icon" type="button" title="Agent mode" aria-label="Toggle agent mode" data-action="toggle-agent-mode">
+            <button class="chat-toolbar-icon chat-mode-toggle ${planMode ? "is-plan-mode" : "is-agent-mode"}" type="button" title="${chatModeTitle}" aria-label="${chatModeTitle}" aria-pressed="${!planMode}" data-action="toggle-agent-mode" ${session.busy || executing ? "disabled" : ""}>
               ${icons.code}
+              <span>${chatModeLabel}</span>
             </button>
             <span class="chat-toolbar-separator"></span>
             <button class="model-selector chat-toolbar-model" type="button" title="Select model" aria-haspopup="listbox" aria-expanded="false" data-model-selector ${session.busy || executing ? "disabled" : ""}>
@@ -603,6 +607,20 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
             <button class="chat-toolbar-icon" type="button" title="Toggle approvals" aria-label="Toggle approvals" data-action="toggle-approvals">
               ${icons.check}
             </button>
+            <span class="chat-toolbar-separator"></span>
+            <details class="chat-overflow chat-toolbar-overflow" data-chat-overflow>
+              <summary class="chat-toolbar-icon" title="Chat actions" aria-label="Chat actions">
+                ${icons.moreHorizontal}
+              </summary>
+              <div class="chat-overflow-menu" role="menu" aria-label="Chat actions">
+                <button class="chat-overflow-item" type="button" role="menuitem" data-action="create-chat-skill" ${session.busy || executing || creatingSkill || messages.length === 0 ? "disabled" : ""}>
+                  ${creatingSkill ? "Creating skill..." : "Create skill from chat"}
+                </button>
+                <button class="chat-overflow-item" type="button" role="menuitem" data-action="clear-chat" ${session.busy || executing || creatingSkill || messages.length === 0 ? "disabled" : ""}>
+                  Clear chat
+                </button>
+              </div>
+            </details>
             <span class="chat-toolbar-separator"></span>
             <button class="chat-toolbar-icon execute-button ${executing ? "is-busy" : ""}" type="button" title="${executeLabel}" aria-label="${executeLabel}" data-action="execute-plan" ${session.busy || executing || messages.length === 0 ? "disabled" : ""}>
               ${executing ? `<span class="spinner spinner-sm" aria-hidden="true"></span>` : icons.execute}
@@ -1920,6 +1938,10 @@ export function patchChatControls() {
     button.title = executing ? "Decomposing cards" : "Execute plan";
     button.setAttribute("aria-label", button.title);
     button.innerHTML = executing ? `<span class="spinner" aria-hidden="true"></span>` : icons.execute;
+  });
+
+  appRoot.querySelectorAll<HTMLButtonElement>('[data-action="toggle-agent-mode"]').forEach((button) => {
+    button.disabled = session.busy || executing;
   });
 
   // Update all clear-chat buttons (overflow menu + mobile controls)

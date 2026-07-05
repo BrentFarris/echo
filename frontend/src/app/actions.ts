@@ -752,6 +752,7 @@ export async function handleAction(event: Event) {
       state.chatSessions.set(workspace.id, await ClearChat(workspace.id));
       state.chatDrafts.set(workspace.id, "");
       state.chatImageDrafts.delete(workspace.id);
+      state.chatVideoDrafts.delete(workspace.id);
       patchChatPanel();
     }
     if (action === "prune-chat-message") {
