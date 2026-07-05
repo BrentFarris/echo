@@ -744,6 +744,17 @@ export async function handleAction(event: Event) {
       }
       return;
     }
+    if (action === "clear-chat") {
+      const workspace = activeWorkspace();
+      if (!workspace || !window.confirm("Clear the current chat?")) {
+        return;
+      }
+      state.chatSessions.set(workspace.id, await ClearChat(workspace.id));
+      state.chatDrafts.set(workspace.id, "");
+      state.chatImageDrafts.delete(workspace.id);
+      state.chatVideoDrafts.delete(workspace.id);
+      patchChatPanel();
+    }
     if (action === "prune-chat-message") {
       const workspace = activeWorkspace();
       const messageID = target.dataset.messageId ?? "";

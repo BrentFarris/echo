@@ -3,6 +3,7 @@ import { services } from "../../wailsjs/go/models";
 const tokenStorageKey = "echo.webAccessToken";
 
 let eventSource: EventSource | null = null;
+let eventSourceWaitingForPageLoad = false;
 const eventCallbacks = new Map<string, Set<(event: unknown) => void>>();
 const eventHandlers = new Map<string, (event: MessageEvent) => void>();
 
@@ -150,6 +151,22 @@ function clearWebAccessToken() {
 
 function ensureWebEventSource() {
   if (eventSource || eventCallbacks.size === 0) {
+    return;
+  }
+  // Opening a long-lived SSE request while the module script is still
+  // evaluating can keep mobile browsers' initial navigation pending.
+  // The RPC-backed initial render does not depend on runtime events, so
+  // connect immediately after the document has completed loading instead.
+  if (document.readyState !== "complete") {
+    if (!eventSourceWaitingForPageLoad) {
+      eventSourceWaitingForPageLoad = true;
+      window.addEventListener("load", () => {
+        eventSourceWaitingForPageLoad = false;
+        // Start in a new task so the load event can fully settle before the
+        // browser sees the long-lived event-stream request.
+        window.setTimeout(ensureWebEventSource, 0);
+      }, { once: true });
+    }
     return;
   }
   let token = "";
