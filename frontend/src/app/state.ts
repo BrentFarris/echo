@@ -27,6 +27,7 @@ export const state = {
   chatDrafts: new Map<string, string>(),
   chatImageDrafts: new Map<string, ChatImageDraft[]>(),
   chatVideoDrafts: new Map<string, ChatVideoDraft[]>(),
+  chatComposerModes: new Map<string, "plan" | "edit">(),
   chatPlanModes: new Map<string, boolean>(),
   chatFileLinkCache: new Map<string, Promise<string | null>>(),
   chatMention: null as ChatMentionState | null,
@@ -69,6 +70,26 @@ export const state = {
 
 export function getActiveChatKanbanTab(workspaceID: string): ChatKanbanTab {
   return state.activeChatKanbanTab.get(workspaceID) ?? "chat";
+}
+
+export function chatComposerModeFor(workspaceID: string): "plan" | "edit" {
+  const mode = state.chatComposerModes.get(workspaceID);
+  if (mode !== undefined) {
+    return mode;
+  }
+  /* Derive chatPlanModes from the composer mode map. */
+  state.chatPlanModes.delete(workspaceID);
+  return "plan";
+}
+
+export function setChatComposerMode(workspaceID: string, mode: "plan" | "edit") {
+  if (mode === "plan") {
+    state.chatComposerModes.delete(workspaceID);
+    state.chatPlanModes.delete(workspaceID);
+  } else {
+    state.chatComposerModes.set(workspaceID, mode);
+    state.chatPlanModes.set(workspaceID, false);
+  }
 }
 
 export const kanbanLaneLabels: Record<string, string> = {
@@ -126,12 +147,8 @@ export function chatSessionFor(workspaceID: string): services.ChatSession {
 }
 
 export function chatPlanModeFor(workspaceID: string): boolean {
-  const sessionOverride = state.chatPlanModes.get(workspaceID);
-  if (sessionOverride !== undefined) {
-    return sessionOverride;
-  }
-  const workspace = state.appState?.workspaces?.find((item) => item.id === workspaceID);
-  return workspace?.defaultPlanMode ?? true;
+  const mode = chatComposerModeFor(workspaceID);
+  return mode === "plan";
 }
 
 export function kanbanBoardFor(workspaceID: string): services.KanbanBoard {

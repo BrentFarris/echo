@@ -1168,7 +1168,7 @@ h3 {
   opacity: 0.5;
 }
 
-.model-selector.chat-toolbar-model {
+.model-selector {
   display: flex;
   align-items: center;
   gap: var(--space-xs);
@@ -1185,12 +1185,12 @@ h3 {
   transition: background 100ms ease, color 100ms ease;
 }
 
-.model-selector.chat-toolbar-model:hover:not(:disabled) {
+.model-selector:hover:not(:disabled) {
   background: var(--color-surface-muted);
   color: var(--color-text);
 }
 
-.model-selector.chat-toolbar-model:disabled {
+.model-selector:disabled {
   cursor: default;
   opacity: 0.35;
 }
@@ -1227,7 +1227,6 @@ h3 {
   display: block;
   position: absolute;
   bottom: calc(100% + 4px);
-  left: 0;
   min-width: 200px;
   max-height: 40vh;
   overflow-y: auto;
@@ -1279,6 +1278,32 @@ h3 {
   background: color-mix(in srgb, var(--color-accent) 32%, transparent);
   color: var(--color-accent-strong);
   font-weight: 600;
+}
+
+/* Mode selector uses same dropdown structure as model selector */
+.mode-dropdown[hidden] {
+  display: none;
+}
+
+.mode-dropdown:not([hidden]) {
+  display: block;
+  position: absolute;
+  bottom: calc(100% + 4px);
+  min-width: 80px;
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: 100;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-modal);
+}
+
+.mode-dropdown ul,
+.mode-dropdown {
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
 
 .send-button {
@@ -5936,7 +5961,20 @@ h3 {
 
   /* Ensure dropdowns don't break layout */
   [data-chat-input-wrap] > [data-model-dropdown],
+  [data-chat-input-wrap] > [data-mode-dropdown],
   [data-chat-input-wrap] > [data-chat-mention-picker] {
     z-index: 100;
+  }
+
+  /* Mode dropdown on mobile */
+  .mode-dropdown[hidden] {
+    display: none !important;
+  }
+
+  .mode-dropdown:not([hidden]) {
+    bottom: calc(100% + 2px);
+    top: auto !important;
+    right: auto !important;
+    max-width: calc(100vw - 16px);
   }
 }

@@ -10,7 +10,7 @@ import { dropWorkspaceGitRepositoryState, openGitChangeInCode, openWorkspaceGitR
 import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint } from "./settings";
-import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatSessionFor, chatVideoDraftsFor, getActiveChatKanbanTab, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state } from "./state";
+import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatComposerModeFor, setChatComposerMode, chatSessionFor, chatVideoDraftsFor, getActiveChatKanbanTab, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state } from "./state";
 import { clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
 import { cloneSettings, cloneWebAccessSettings } from "./state";
 import type { AppMode, MobileNavView } from "./types";
@@ -814,13 +814,9 @@ export async function handleAction(event: Event) {
       if (!workspace) {
         return;
       }
-      const currentMode = chatPlanModeFor(workspace.id);
-      state.chatPlanModes.set(workspace.id, !currentMode);
+      const currentMode = chatComposerModeFor(workspace.id);
+      setChatComposerMode(workspace.id, currentMode === "plan" ? "edit" : "plan");
       getAppCallbacks().render();
-      return;
-    }
-    if (action === "toggle-approvals") {
-      pushToast("Approvals are not yet supported.", "info");
       return;
     }
     if (action === "delete-workspace") {
@@ -844,6 +840,7 @@ export async function handleAction(event: Event) {
       state.expandedChangeReviewWorkspaces.delete(workspaceID);
       state.expandedGitChangeWorkspaces.delete(workspaceID);
       state.loadingGitChangeWorkspaces.delete(workspaceID);
+      state.chatComposerModes.delete(workspaceID);
       state.chatPlanModes.delete(workspaceID);
       state.chatImageDrafts.delete(workspaceID);
       state.activeChatKanbanTab.delete(workspaceID);
