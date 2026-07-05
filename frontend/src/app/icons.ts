@@ -25,4 +25,5 @@ export const icons = {
   qr: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4Z"/><path d="M14 4h6v6h-6Z"/><path d="M4 14h6v6H4Z"/><path d="M14 14h2v2h-2Z"/><path d="M18 14h2v4h-2Z"/><path d="M14 18h4v2h-4Z"/></svg>`,
   edit: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 3a2.85 2.85 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>`,
   retry: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/></svg>`,
+  star: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2.9 6.1 6.5.9-4.7 4.6 1.1 6.4L12 17.8 6.2 21l1.1-6.4L2.6 10l6.5-.9z"/></svg>`,
 };

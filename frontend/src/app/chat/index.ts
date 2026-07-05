@@ -1,7 +1,7 @@
 
 import { ensureCodeViewRootLoaded, openWorkspaceCodeFile } from "../../codeView";
 import { elementFromHtml, morphElement, patchChildrenFromHtml, patchMarkdownElement, renderMarkdown } from "../../markdown";
-import { EditChatMessage, LoadChatSession, ResolveWorkspaceTextFilePath, SearchWorkspaceFiles, SendChatMessageWithAttachments, StopChatStream } from "../../backend/services";
+import { ClearChat, CreateSkillFromChat, EditChatMessage, LoadChatSession, ResolveWorkspaceTextFilePath, SaveSettings, SearchWorkspaceFiles, SendChatMessageWithAttachments, StopChatStream } from "../../backend/services";
 import { isWailsRuntime } from "../../backend/web";
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
@@ -9,7 +9,8 @@ import { renderSpinnerLabel } from "../components";
 import { appRoot, isElementScrolledNearBottom } from "../dom";
 import { icons } from "../icons";
 import { playNotificationSound } from "../notifications";
-import { activeWorkspace, chatImageDraftsFor, chatImageDraftTotalBytes, chatVideoDraftsFor, chatVideoDraftTotalBytes, chatPlanModeFor, chatComposerModeFor, setChatComposerMode, chatSessionFor, getActiveChatModelLabel, state } from "../state";
+import { activeWorkspace, chatImageDraftsFor, chatImageDraftTotalBytes, chatVideoDraftsFor, chatVideoDraftTotalBytes, chatPlanModeFor, chatComposerModeFor, setChatComposerMode, chatSessionFor, getActiveChatModelLabel, cloneSettings, state } from "../state";
+import { settingsWithCompactTheme } from "../theme";
 import { pushToast } from "../toasts";
 import type { ChatImageDraft, ChatMentionState, ChatStreamEvent, ChatVideoDraft, ScrollSnapshot } from "../types";
 import { errorMessage, escapeAttribute, escapeHtml, fileName, formatBytes } from "../utils";
@@ -607,10 +608,23 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
             <ul class="model-dropdown mode-dropdown" data-mode-dropdown hidden role="listbox" aria-label="Composer modes">
               ${renderModeOptions(workspace.id)}
             </ul>
-            <span class="chat-toolbar-separator"></span>
             <button class="chat-toolbar-icon execute-button ${executing ? "is-busy" : ""}" type="button" title="${executeLabel}" aria-label="${executeLabel}" data-action="execute-plan" ${session.busy || executing || messages.length === 0 ? "disabled" : ""}>
               ${executing ? `<span class="spinner spinner-sm" aria-hidden="true"></span>` : icons.execute}
             </button>
+            <span class="chat-toolbar-separator"></span>
+            <button class="chat-toolbar-icon" type="button" title="More options" aria-label="More options" data-chat-more-toggle ${session.busy || executing ? "disabled" : ""}>
+              ${icons.moreHorizontal}
+            </button>
+            <div class="chat-more-menu" data-chat-more-menu hidden>
+              <button type="button" title="New chat" aria-label="Start a new chat" data-clear-chat-button>
+                ${icons.refresh}
+                <span>New chat</span>
+              </button>
+              <button type="button" title="Create skill from this chat" aria-label="Create workspace skill from chat" data-create-skill-button ${session.busy || executing || creatingSkill ? "disabled" : ""}>
+                ${icons.star}
+                <span>Create skill</span>
+              </button>
+            </div>
           </div>
           <div class="chat-composer-toolbar-right">
             <button class="send-button ${session.busy || executing ? 'is-busy' : ''}" type="button" title="${session.busy || executing ? 'Stop' : 'Send'}" aria-label="${session.busy || executing ? 'Stop stream' : 'Send message'}" data-action="send-stop" ${executing ? "disabled" : ""}>
@@ -898,8 +912,13 @@ export function bindChatEvents(root: ParentNode) {
     .querySelectorAll<HTMLButtonElement>("[data-chat-attachment-toggle]")
     .forEach((button) => button.addEventListener("click", handleChatAttachmentToggle));
   root
+    .querySelectorAll<HTMLButtonElement>("[data-chat-more-toggle]")
+    .forEach((button) => button.addEventListener("click", handleChatMoreToggle));
+  root
     .querySelectorAll<HTMLButtonElement>("[data-attachment-type]")
     .forEach((button) => button.addEventListener("click", handleChatAttachmentSelect));
+  bindClearChatButton(root);
+  bindCreateSkillButton(root);
   bindChatMentionOptions(root);
   bindChatFileLinks(root);
   bindChatDebugSections(root);
@@ -912,12 +931,23 @@ export function bindChatEvents(root: ParentNode) {
 }
 
 function bindChatAttachmentMenuDismissal() {
+  if (chatDismissalListenerBound) {
+    return;
+  }
+  chatDismissalListenerBound = true;
   document.addEventListener("click", (event) => {
     if (chatAttachmentMenuOpen) {
       const target = event.target as HTMLElement | null;
       const container = target?.closest("[data-chat-attachment-menu]") ?? target?.closest("[data-chat-attachment-toggle]");
       if (!container) {
         dismissChatAttachmentMenu();
+      }
+    }
+    if (chatMoreMenuOpen) {
+      const target = event.target as HTMLElement | null;
+      const container = target?.closest("[data-chat-more-menu]") ?? target?.closest("[data-chat-more-toggle]");
+      if (!container) {
+        dismissChatMoreMenu();
       }
     }
     if (modelDropdownOpen) {
@@ -997,7 +1027,7 @@ function dismissModelDropdown() {
 }
 
 export function bindModelDropdownEvents(root: ParentNode) {
-  root.querySelectorAll<HTMLLIElement>(".model-dropdown-option").forEach((option) => {
+  root.querySelectorAll<HTMLLIElement>(".model-dropdown-option[data-model-id]").forEach((option) => {
     option.addEventListener("click", () => {
       const modelID = option.dataset.modelId ?? "";
       selectChatModel(modelID);
@@ -1006,7 +1036,7 @@ export function bindModelDropdownEvents(root: ParentNode) {
   });
 }
 
-function selectChatModel(endpointID: string) {
+async function selectChatModel(endpointID: string) {
   if (!state.settingsDraft) {
     return;
   }
@@ -1021,6 +1051,13 @@ function selectChatModel(endpointID: string) {
     endpointSelection: newSelection,
     endpoints,
   });
+  try {
+    state.appState = await SaveSettings(settingsWithCompactTheme(state.settingsDraft));
+    state.settingsDraft = cloneSettings(state.appState.settings);
+  } catch (err) {
+    pushToast(`Failed to save model selection: ${errorMessage(err)}`, "error");
+    return;
+  }
   patchChatPanel();
   getAppCallbacks().bindActionEvents(appRoot);
   getAppCallbacks().bindChatEvents(appRoot);
@@ -1087,6 +1124,55 @@ export function bindModeDropdownEvents(root: ParentNode) {
       setChatComposerMode(workspace.id, mode);
       dismissModeDropdown();
       patchChatPanel();
+    });
+  });
+}
+
+function bindClearChatButton(root: ParentNode) {
+  root.querySelectorAll<HTMLButtonElement>("[data-clear-chat-button]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      dismissChatMoreMenu();
+      const workspace = activeWorkspace();
+      if (!workspace || !window.confirm("Clear the current chat?")) {
+        return;
+      }
+      void ClearChat(workspace.id).then((result: services.ChatSession) => {
+        state.chatSessions.set(workspace.id, result);
+        state.chatDrafts.set(workspace.id, "");
+        state.chatImageDrafts.delete(workspace.id);
+        patchChatPanel();
+      });
+    });
+  });
+}
+
+function bindCreateSkillButton(root: ParentNode) {
+  root.querySelectorAll<HTMLButtonElement>("[data-create-skill-button]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      if (button.disabled) {
+        return;
+      }
+      event.stopPropagation();
+      dismissChatMoreMenu();
+      const workspace = activeWorkspace();
+      if (!workspace || state.creatingChatSkills.has(workspace.id)) {
+        return;
+      }
+      state.creatingChatSkills.add(workspace.id);
+      patchChatPanel();
+      CreateSkillFromChat(workspace.id)
+        .then((skill: services.WorkspaceSkillCreationResult) => {
+          pushToast(`Created skill "${skill.name}".`, "success");
+        })
+        .catch((error) => {
+          console.error("Failed to create workspace skill:", error);
+          pushToast(errorMessage(error), "error");
+        })
+        .finally(() => {
+          state.creatingChatSkills.delete(workspace.id);
+          patchChatPanel();
+        });
     });
   });
 }
@@ -1174,6 +1260,8 @@ export function handleChatPaste(event: ClipboardEvent) {
 }
 
 let chatAttachmentMenuOpen = false;
+let chatMoreMenuOpen = false;
+let chatDismissalListenerBound = false;
 
 export function handleChatAttachmentToggle(event: Event) {
   const workspace = activeWorkspace();
@@ -1206,6 +1294,47 @@ function dismissChatAttachmentMenu() {
   chatAttachmentMenuOpen = false;
   const toggle = appRoot.querySelector<HTMLButtonElement>("[data-chat-attachment-toggle]");
   const menu = appRoot.querySelector<HTMLElement>("[data-chat-attachment-menu]");
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", "false");
+  }
+  if (menu) {
+    menu.hidden = true;
+  }
+}
+
+function handleChatMoreToggle(event: Event) {
+  const button = event.currentTarget as HTMLButtonElement;
+  if (button.disabled) {
+    return;
+  }
+  const menu = appRoot.querySelector<HTMLElement>("[data-chat-more-menu]");
+  if (!menu) {
+    return;
+  }
+  chatMoreMenuOpen = !chatMoreMenuOpen;
+  button.setAttribute("aria-expanded", String(chatMoreMenuOpen));
+  if (chatMoreMenuOpen) {
+    /* Show temporarily with visibility:hidden so we can measure without flash */
+    menu.hidden = false;
+    menu.style.visibility = "hidden";
+    const menuHeight = menu.offsetHeight || 0;
+    const buttonRect = button.getBoundingClientRect();
+    const container = button.closest<HTMLElement>(".chat-composer-toolbar-left");
+    const containerRect = container?.getBoundingClientRect() ?? { left: 0, top: 0 };
+    /* Position relative to .chat-composer-toolbar-left (position: relative) */
+    menu.style.left = `${buttonRect.left - containerRect.left}px`;
+    menu.style.top = `${buttonRect.top - containerRect.top - menuHeight - 4}px`;
+    /* Now make it visible */
+    menu.style.visibility = "";
+  } else {
+    menu.hidden = true;
+  }
+}
+
+export function dismissChatMoreMenu() {
+  chatMoreMenuOpen = false;
+  const toggle = appRoot.querySelector<HTMLButtonElement>("[data-chat-more-toggle]");
+  const menu = appRoot.querySelector<HTMLElement>("[data-chat-more-menu]");
   if (toggle) {
     toggle.setAttribute("aria-expanded", "false");
   }
@@ -2004,7 +2133,7 @@ export function patchChatControls() {
   });
 
   // Update all clear-chat buttons (overflow menu + mobile controls)
-  appRoot.querySelectorAll<HTMLButtonElement>('[data-action="clear-chat"]').forEach((button) => {
+  appRoot.querySelectorAll<HTMLButtonElement>("[data-clear-chat-button]").forEach((button) => {
     button.disabled = session.busy || executing || creatingSkill || (session.messages ?? []).length === 0;
   });
 

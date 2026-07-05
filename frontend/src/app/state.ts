@@ -252,5 +252,5 @@ export function getActiveChatModelLabel(): string {
   const selection = state.settingsDraft?.endpointSelection;
   const endpointID = selection?.chat || endpoints[0].id;
   const endpoint = endpoints.find((ep) => ep.id === endpointID);
-  return endpoint?.model?.trim() || "";
+  return endpoint?.name?.trim() || endpoint?.model?.trim() || endpoint?.id?.trim() || "";
 }
