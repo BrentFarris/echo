@@ -63,10 +63,6 @@ export function bindEvents() {
       if (!(target instanceof Node)) {
         return;
       }
-      const chatOverflow = appRoot.querySelector<HTMLDetailsElement>("[data-chat-overflow]");
-      if (chatOverflow?.open && !chatOverflow.contains(target)) {
-        chatOverflow.open = false;
-      }
       // Close workspace dropdown when tapping outside (mobile + desktop).
       if (state.workspaceDropdownOpen) {
         const pillBtn = appRoot.querySelector<HTMLElement>(

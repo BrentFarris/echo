@@ -1,6 +1,6 @@
 
 import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate, startCodeRename } from "../codeView";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, CreateSkillFromChat, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
 import { appRoot } from "./dom";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
@@ -728,33 +728,6 @@ export async function handleAction(event: Event) {
       state.chatSessions.set(workspace.id, await StopChatStream(workspace.id));
       patchChatPanel();
     }
-    if (action === "create-chat-skill") {
-      const workspace = activeWorkspace();
-      if (!workspace || state.creatingChatSkills.has(workspace.id)) {
-        return;
-      }
-      state.creatingChatSkills.add(workspace.id);
-      patchChatPanel();
-      try {
-        const skill = await CreateSkillFromChat(workspace.id);
-        pushToast(`Created skill ${skill.id}.`, "success");
-      } finally {
-        state.creatingChatSkills.delete(workspace.id);
-        patchChatPanel();
-      }
-      return;
-    }
-    if (action === "clear-chat") {
-      const workspace = activeWorkspace();
-      if (!workspace || !window.confirm("Clear the current chat?")) {
-        return;
-      }
-      state.chatSessions.set(workspace.id, await ClearChat(workspace.id));
-      state.chatDrafts.set(workspace.id, "");
-      state.chatImageDrafts.delete(workspace.id);
-      state.chatVideoDrafts.delete(workspace.id);
-      patchChatPanel();
-    }
     if (action === "prune-chat-message") {
       const workspace = activeWorkspace();
       const messageID = target.dataset.messageId ?? "";
@@ -808,16 +781,6 @@ export async function handleAction(event: Event) {
       if (toggleBtn && !toggleBtn.disabled) {
         toggleBtn.click();
       }
-      return;
-    }
-    if (action === "toggle-agent-mode") {
-      const workspace = activeWorkspace();
-      if (!workspace) {
-        return;
-      }
-      const currentMode = chatComposerModeFor(workspace.id);
-      setChatComposerMode(workspace.id, currentMode === "plan" ? "edit" : "plan");
-      getAppCallbacks().render();
       return;
     }
     if (action === "delete-workspace") {
