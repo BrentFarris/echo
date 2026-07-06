@@ -123,10 +123,6 @@ func (s *SystemService) StopKanbanCard(workspaceID string, cardID string) (Kanba
 		s.mu.Unlock()
 		return KanbanBoard{}, err
 	}
-	if err := s.saveLocked(); err != nil {
-		s.mu.Unlock()
-		return KanbanBoard{}, err
-	}
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 	s.mu.Unlock()
 	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_updated", Board: board})
@@ -149,10 +145,6 @@ func (s *SystemService) AddKanbanCardMessage(workspaceID string, cardID string, 
 		Content: content,
 		Status:  KanbanLaneReady,
 	}); err != nil {
-		s.mu.Unlock()
-		return KanbanBoard{}, err
-	}
-	if err := s.saveLocked(); err != nil {
 		s.mu.Unlock()
 		return KanbanBoard{}, err
 	}
@@ -240,7 +232,7 @@ func (s *SystemService) Shutdown() {
 	for _, cancel := range chatCancels {
 		cancel()
 	}
-	_ = s.persistAllChatSessions()
+	_ = s.persistAllWorkspaceAutosaves()
 	s.closeAllLSPClients()
 }
 
@@ -318,13 +310,6 @@ func (s *SystemService) startKanbanAgent(parent context.Context, workspace Works
 		Content: "Card picked up by an AI agent.",
 		Status:  KanbanLaneInProgress,
 	}); err != nil {
-		s.mu.Unlock()
-		delete(s.kanbanAgents, key)
-		s.chatMu.Unlock()
-		cancel()
-		return false
-	}
-	if err := s.saveLocked(); err != nil {
 		s.mu.Unlock()
 		delete(s.kanbanAgents, key)
 		s.chatMu.Unlock()
@@ -858,7 +843,6 @@ func (s *SystemService) blockUnstartableReadyCards(workspaceID string) bool {
 		s.mu.Unlock()
 		return false
 	}
-	_ = s.saveLocked()
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 	s.mu.Unlock()
 	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, Type: "card_updated", Board: board})
@@ -913,7 +897,6 @@ func (s *SystemService) agentCardSnapshot(workspaceID string, cardID string) (Ka
 func (s *SystemService) appendKanbanProgress(workspaceID string, cardID string, entry KanbanProgressEntry) {
 	s.mu.Lock()
 	if s.appendKanbanProgressLocked(workspaceID, cardID, entry) {
-		_ = s.saveLocked()
 		board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 		s.mu.Unlock()
 		s.emitKanbanProgressEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_progress", Board: board, Entry: &entry})
@@ -930,7 +913,6 @@ func (s *SystemService) appendKanbanAgentProgress(workspaceID string, cardID str
 	}
 	s.mu.Lock()
 	if s.appendKanbanProgressLocked(workspaceID, cardID, entry) {
-		_ = s.saveLocked()
 		board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 		s.mu.Unlock()
 		s.chatMu.Unlock()
@@ -964,15 +946,18 @@ func (s *SystemService) finishKanbanCard(workspaceID string, cardID string, agen
 	if content == "" {
 		content = "Agent completed the card."
 	}
+	s.autosaveMu.Lock()
 	s.chatMu.Lock()
 	if !s.isActiveKanbanAgentLocked(workspaceID, cardID, agentID) {
 		s.chatMu.Unlock()
+		s.autosaveMu.Unlock()
 		return
 	}
 	s.mu.Lock()
 	if !s.kanbanCardInLaneLocked(workspaceID, cardID, KanbanLaneInProgress) {
 		s.mu.Unlock()
 		s.chatMu.Unlock()
+		s.autosaveMu.Unlock()
 		return
 	}
 	if err := s.moveKanbanCardLocked(workspaceID, cardID, KanbanLaneDone, KanbanProgressEntry{
@@ -983,12 +968,38 @@ func (s *SystemService) finishKanbanCard(workspaceID string, cardID string, agen
 	}); err != nil {
 		s.mu.Unlock()
 		s.chatMu.Unlock()
+		s.autosaveMu.Unlock()
 		return
 	}
-	_ = s.saveLocked()
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
+	if kanbanBoardComplete(board) {
+		var workspace Workspace
+		for _, candidate := range s.state.Workspaces {
+			if candidate.ID == workspaceID {
+				workspace = candidate
+				break
+			}
+		}
+		var chat *persistedChatSession
+		if session := s.chatSessions[workspaceID]; session != nil && (len(session.Messages) > 0 || len(session.History) > 0) {
+			snapshot := persistedChatSessionFrom(session)
+			chat = &snapshot
+		}
+		cards := make([]KanbanCard, 0, len(board.Done))
+		for _, card := range s.state.KanbanCards {
+			if card.WorkspaceID == workspaceID {
+				cards = append(cards, cloneKanbanCard(card))
+			}
+		}
+		_ = writeWorkspaceAutosave(workspace, workspaceAutosave{
+			Version:     workspaceAutosaveVersion,
+			ChatSession: chat,
+			KanbanCards: cards,
+		})
+	}
 	s.mu.Unlock()
 	s.chatMu.Unlock()
+	s.autosaveMu.Unlock()
 	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_done", Board: board})
 }
 
@@ -1018,7 +1029,6 @@ func (s *SystemService) blockKanbanCard(workspaceID string, cardID string, agent
 		s.chatMu.Unlock()
 		return
 	}
-	_ = s.saveLocked()
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 	s.mu.Unlock()
 	s.chatMu.Unlock()

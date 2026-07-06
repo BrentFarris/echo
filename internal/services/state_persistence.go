@@ -1,10 +1,19 @@
 package services
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/brent/echo/internal/llm"
+)
+
+const (
+	workspaceAutosaveFileName = "autosave.json"
+	workspaceAutosaveVersion  = 1
 )
 
 type storedAppState struct {
@@ -12,7 +21,7 @@ type storedAppState struct {
 	WebAccess         WebAccessSettings               `json:"webAccess"`
 	Workspaces        []Workspace                     `json:"workspaces"`
 	ActiveWorkspaceID string                          `json:"activeWorkspaceId"`
-	KanbanCards       []KanbanCard                    `json:"kanbanCards"`
+	KanbanCards       []KanbanCard                    `json:"kanbanCards,omitempty"`
 	ChatSessions      map[string]persistedChatSession `json:"chatSessions,omitempty"`
 }
 
@@ -27,20 +36,24 @@ type storedAppStateRaw struct {
 	ChatSessions      map[string]persistedChatSession `json:"chatSessions,omitempty"`
 }
 
+type workspaceAutosave struct {
+	Version     int                   `json:"version"`
+	ChatSession *persistedChatSession `json:"chatSession,omitempty"`
+	KanbanCards []KanbanCard          `json:"kanbanCards"`
+}
+
 type persistedChatSession struct {
 	WorkspaceID string        `json:"workspaceId"`
 	Messages    []ChatMessage `json:"messages"`
 	History     []llm.Message `json:"history"`
 }
 
-func storedAppStateFrom(state AppState, chats map[string]persistedChatSession) storedAppState {
+func storedAppStateFrom(state AppState) storedAppState {
 	return storedAppState{
 		Settings:          state.Settings,
 		WebAccess:         state.WebAccess,
 		Workspaces:        state.Workspaces,
 		ActiveWorkspaceID: state.ActiveWorkspaceID,
-		KanbanCards:       state.KanbanCards,
-		ChatSessions:      chats,
 	}
 }
 
@@ -50,44 +63,213 @@ func (state storedAppState) appState() AppState {
 		WebAccess:         state.WebAccess,
 		Workspaces:        state.Workspaces,
 		ActiveWorkspaceID: state.ActiveWorkspaceID,
-		KanbanCards:       state.KanbanCards,
 	}
 }
 
-func (s *SystemService) persistChatSession(workspaceID string) error {
+func (s *SystemService) persistWorkspaceAutosave(workspaceID string) error {
+	s.autosaveMu.Lock()
+	defer s.autosaveMu.Unlock()
+
 	s.chatMu.Lock()
 	session := s.chatSessions[workspaceID]
-	var snapshot persistedChatSession
-	if session != nil {
-		snapshot = persistedChatSessionFrom(session)
+	var persisted *persistedChatSession
+	if session != nil && (len(session.Messages) > 0 || len(session.History) > 0) {
+		snapshot := persistedChatSessionFrom(session)
+		persisted = &snapshot
 	}
 	s.chatMu.Unlock()
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if session == nil || (len(snapshot.Messages) == 0 && len(snapshot.History) == 0) {
-		delete(s.persistedChatSessions, workspaceID)
-	} else {
-		s.persistedChatSessions[workspaceID] = snapshot
+	var workspace Workspace
+	found := false
+	for _, candidate := range s.state.Workspaces {
+		if candidate.ID == workspaceID {
+			workspace = candidate
+			found = true
+			break
+		}
 	}
-	return s.saveLocked()
+	cards := make([]KanbanCard, 0)
+	for _, card := range s.state.KanbanCards {
+		if card.WorkspaceID == workspaceID {
+			cards = append(cards, cloneKanbanCard(card))
+		}
+	}
+	s.mu.Unlock()
+	if !found {
+		return fmt.Errorf("workspace was not found")
+	}
+
+	return writeWorkspaceAutosave(workspace, workspaceAutosave{
+		Version:     workspaceAutosaveVersion,
+		ChatSession: persisted,
+		KanbanCards: cards,
+	})
 }
 
-func (s *SystemService) persistAllChatSessions() error {
-	s.chatMu.Lock()
-	snapshots := make(map[string]persistedChatSession, len(s.chatSessions))
-	for workspaceID, session := range s.chatSessions {
-		if session == nil || (len(session.Messages) == 0 && len(session.History) == 0) {
+func (s *SystemService) persistAllWorkspaceAutosaves() error {
+	s.mu.Lock()
+	workspaceIDs := make([]string, 0, len(s.state.Workspaces))
+	for _, workspace := range s.state.Workspaces {
+		workspaceIDs = append(workspaceIDs, workspace.ID)
+	}
+	s.mu.Unlock()
+
+	var firstErr error
+	for _, workspaceID := range workspaceIDs {
+		if err := s.persistWorkspaceAutosave(workspaceID); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func writeWorkspaceAutosave(workspace Workspace, autosave workspaceAutosave) error {
+	path, err := workspaceAutosavePath(workspace, true)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(autosave, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode workspace autosave: %w", err)
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), ".autosave-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary workspace autosave: %w", err)
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(workspaceCacheFilePermission); err != nil {
+		temp.Close()
+		return fmt.Errorf("set workspace autosave permissions: %w", err)
+	}
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		return fmt.Errorf("write temporary workspace autosave: %w", err)
+	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return fmt.Errorf("sync temporary workspace autosave: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close temporary workspace autosave: %w", err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("replace workspace autosave: %w", err)
+	}
+	return nil
+}
+
+func readWorkspaceAutosave(workspace Workspace) (workspaceAutosave, bool, error) {
+	path, err := workspaceAutosavePath(workspace, false)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return workspaceAutosave{}, false, nil
+		}
+		return workspaceAutosave{}, false, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return workspaceAutosave{}, false, nil
+		}
+		return workspaceAutosave{}, false, fmt.Errorf("read workspace autosave: %w", err)
+	}
+	var autosave workspaceAutosave
+	if err := json.Unmarshal(data, &autosave); err != nil {
+		return workspaceAutosave{}, false, fmt.Errorf("decode workspace autosave: %w", err)
+	}
+	return autosave, true, nil
+}
+
+func workspaceAutosavePath(workspace Workspace, create bool) (string, error) {
+	var firstErr error
+	var newestPath string
+	var newestModified int64
+	for _, folder := range workspace.Folders {
+		root, err := workspaceFolderAbsolutePath(folder)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
-		snapshots[workspaceID] = persistedChatSessionFrom(session)
+		info, err := os.Stat(root)
+		if err != nil || !info.IsDir() {
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		cachePath := filepath.Join(root, workspaceCacheDirName)
+		if create {
+			if err := ensureWorkspaceCacheDirectory(cachePath, root); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+		} else {
+			if err := ensureWorkspaceCacheDirectoryExists(cachePath, root); err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+		}
+		target := filepath.Join(cachePath, workspaceAutosaveFileName)
+		if create {
+			return target, nil
+		}
+		info, err = os.Lstat(target)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("workspace autosave %s must be a regular file", target)
+			}
+			continue
+		}
+		modified := info.ModTime().UnixNano()
+		if newestPath == "" || modified > newestModified {
+			newestPath = target
+			newestModified = modified
+		}
 	}
-	s.chatMu.Unlock()
+	if newestPath != "" {
+		return newestPath, nil
+	}
+	if firstErr != nil {
+		return "", firstErr
+	}
+	return "", os.ErrNotExist
+}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.persistedChatSessions = snapshots
-	return s.saveLocked()
+func ensureWorkspaceCacheDirectoryExists(dir string, boundary string) error {
+	if err := ensureWorkspaceCachePathInside(boundary, dir); err != nil {
+		return err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("workspace cache directory %s must not be a symlink", dir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("workspace cache path %s is not a directory", dir)
+	}
+	return nil
 }
 
 func persistedChatSessionFrom(session *chatSessionState) persistedChatSession {

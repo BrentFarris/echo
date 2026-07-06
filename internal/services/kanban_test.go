@@ -69,6 +69,7 @@ func TestCreateReadyKanbanCardPersistsManualCard(t *testing.T) {
 		t.Fatalf("expected manual creation transcript, got %#v", card.ProgressTranscript)
 	}
 
+	service.Shutdown()
 	reloaded := NewSystemServiceWithStorePath(storePath)
 	persisted, err := reloaded.LoadKanbanBoard(workspaceID)
 	if err != nil {
@@ -529,6 +530,7 @@ func TestKanbanCardStatePersistsAcrossRestart(t *testing.T) {
 		t.Fatalf("move card done: %v", err)
 	}
 
+	service.Shutdown()
 	reloaded := NewSystemServiceWithStorePath(storePath)
 	board, err := reloaded.LoadKanbanBoard(workspaceID)
 	if err != nil {
@@ -547,6 +549,7 @@ func TestInProgressKanbanCardRestoresAsInterrupted(t *testing.T) {
 		{ID: "card-1", WorkspaceID: workspaceID, Title: "Running", Description: "Resume safely", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneInProgress, Status: KanbanLaneInProgress},
 	})
 
+	service.Shutdown()
 	reloaded := NewSystemServiceWithStorePath(storePath)
 	board, err := reloaded.LoadKanbanBoard(workspaceID)
 	if err != nil {

@@ -55,8 +55,8 @@ func TestSystemServiceReturnsEmptyCollectionsForUI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read normalized state: %v", err)
 	}
-	if !strings.Contains(string(data), `"kanbanCards": []`) {
-		t.Fatalf("expected normalized kanban cards collection, got %s", data)
+	if strings.Contains(string(data), `"kanbanCards"`) {
+		t.Fatalf("expected global state to omit workspace kanban cards, got %s", data)
 	}
 
 	workspacePath := filepath.Join(root, "project")
@@ -386,6 +386,9 @@ func TestSystemServiceEditAssistantMessageUpdatesVisiblePlanAndHistory(t *testin
 	if history[2].Role != llm.RoleUser || history[2].Content != "Keep the change focused." {
 		t.Fatalf("expected later history to be preserved, got %#v", history)
 	}
+	if err := service.persistWorkspaceAutosave(workspaceID); err != nil {
+		t.Fatalf("autosave edited chat: %v", err)
+	}
 
 	reloaded := NewSystemServiceWithStorePath(storePath)
 	persisted, err := reloaded.LoadChatSession(workspaceID)
@@ -509,6 +512,9 @@ func TestSystemServicePruneChatMessagesFocusesPlanAndHistory(t *testing.T) {
 	service.chatMu.Unlock()
 	if len(history) != 2 || history[0].Content != "Keep only the focused change." || history[1].Content != "Focused approved plan." {
 		t.Fatalf("expected retained history to match visible focused chat, got %#v", history)
+	}
+	if err := service.persistWorkspaceAutosave(workspaceID); err != nil {
+		t.Fatalf("autosave pruned chat: %v", err)
 	}
 
 	reloaded := NewSystemServiceWithStorePath(storePath)
@@ -1625,6 +1631,7 @@ func TestSystemServiceExecutePlanCreatesReadyCardsWithValidDependencies(t *testi
 		t.Fatalf("expected dependency to map to first card id, got %#v", got)
 	}
 
+	service.Shutdown()
 	reloaded := NewSystemServiceWithStorePath(storePath)
 	reloadedBoard, err := reloaded.LoadKanbanBoard(workspaceID)
 	if err != nil {
@@ -1637,8 +1644,15 @@ func TestSystemServiceExecutePlanCreatesReadyCardsWithValidDependencies(t *testi
 	if err != nil {
 		t.Fatalf("read state file: %v", err)
 	}
-	if !strings.Contains(string(data), "kanbanCards") {
-		t.Fatalf("expected state file to include kanban cards, got %s", data)
+	if strings.Contains(string(data), "kanbanCards") {
+		t.Fatalf("expected global state file to omit kanban cards, got %s", data)
+	}
+	autosaveData, err := os.ReadFile(filepath.Join(root, ".echo", workspaceAutosaveFileName))
+	if err != nil {
+		t.Fatalf("read workspace autosave: %v", err)
+	}
+	if !strings.Contains(string(autosaveData), "kanbanCards") {
+		t.Fatalf("expected workspace autosave to include kanban cards, got %s", autosaveData)
 	}
 }
 
@@ -1665,7 +1679,7 @@ func TestSystemServiceRestoresLatestChatSessionAcrossRestart(t *testing.T) {
 		},
 	}
 	service.chatMu.Unlock()
-	if err := service.persistChatSession(workspaceID); err != nil {
+	if err := service.persistWorkspaceAutosave(workspaceID); err != nil {
 		t.Fatalf("persist chat: %v", err)
 	}
 
@@ -1684,6 +1698,7 @@ func TestSystemServiceRestoresLatestChatSessionAcrossRestart(t *testing.T) {
 	if _, err := reloaded.ClearChat(workspaceID); err != nil {
 		t.Fatalf("clear restored chat: %v", err)
 	}
+	reloaded.Shutdown()
 	cleared := NewSystemServiceWithStorePath(storePath)
 	session, err = cleared.LoadChatSession(workspaceID)
 	if err != nil {

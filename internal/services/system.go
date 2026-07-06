@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
@@ -144,6 +145,7 @@ type SystemService struct {
 	ctx                     context.Context
 	storePath               string
 	mu                      sync.Mutex
+	autosaveMu              sync.Mutex
 	state                   AppState
 	persistedChatSessions   map[string]persistedChatSession
 	chatMu                  sync.Mutex
@@ -862,7 +864,7 @@ func (s *SystemService) load() error {
 		return err
 	}
 
-	stored := storedAppStateFrom(defaultAppState(), nil)
+	stored := storedAppStateFrom(defaultAppState())
 	if err := json.Unmarshal(data, &stored); err != nil {
 		return err
 	}
@@ -872,6 +874,9 @@ func (s *SystemService) load() error {
 	var storedRaw storedAppStateRaw
 	_ = json.Unmarshal(data, &storedRaw)
 
+	legacyKanbanCards := cloneKanbanCards(stored.KanbanCards)
+	legacyChatSessions := clonePersistedChatSessions(stored.ChatSessions)
+	hadLegacyWorkspaceState := len(legacyKanbanCards) > 0 || len(legacyChatSessions) > 0
 	legacyThinkingDisabled := stateFileLegacyThinkingDisabled(data) && !stateFileHasSettingKey(data, "thinkingTokenBudget")
 	legacyLLMEndpoints := !stateFileHasSettingKey(data, "endpoints")
 	legacyEndpointSelection := !stateFileHasSettingKey(data, "endpointSelection")
@@ -893,6 +898,37 @@ func (s *SystemService) load() error {
 	}
 	state.Settings = state.Settings.Normalized()
 	normalizeLoadedWorkspaces(&state)
+	state.KanbanCards = []KanbanCard{}
+	loadedChatSessions := make(map[string]persistedChatSession)
+	workspacesToMigrate := make(map[string]bool)
+	for _, workspace := range state.Workspaces {
+		autosave, found, autosaveErr := readWorkspaceAutosave(workspace)
+		if autosaveErr == nil && found {
+			for _, card := range autosave.KanbanCards {
+				card.WorkspaceID = workspace.ID
+				state.KanbanCards = append(state.KanbanCards, cloneKanbanCard(card))
+			}
+			if autosave.ChatSession != nil {
+				session := *autosave.ChatSession
+				session.WorkspaceID = workspace.ID
+				session.Messages = cloneChatMessages(session.Messages)
+				session.History = cloneLLMMessages(session.History)
+				loadedChatSessions[workspace.ID] = session
+			}
+			continue
+		}
+		for _, card := range legacyKanbanCards {
+			if card.WorkspaceID == workspace.ID {
+				state.KanbanCards = append(state.KanbanCards, cloneKanbanCard(card))
+				workspacesToMigrate[workspace.ID] = true
+			}
+		}
+		if session, ok := legacyChatSessions[workspace.ID]; ok {
+			session.WorkspaceID = workspace.ID
+			loadedChatSessions[workspace.ID] = session
+			workspacesToMigrate[workspace.ID] = true
+		}
+	}
 	interruptedKanban := normalizeInterruptedKanbanCards(state.KanbanCards)
 	if !workspaceExists(state.Workspaces, state.ActiveWorkspaceID) {
 		state.ActiveWorkspaceID = ""
@@ -911,10 +947,33 @@ func (s *SystemService) load() error {
 	if len(storedRaw.AgentModes) > 0 {
 		s.migrateGlobalAgentModesToDisk(storedRaw.AgentModes)
 	}
-	s.persistedChatSessions = clonePersistedChatSessions(stored.ChatSessions)
+	s.persistedChatSessions = loadedChatSessions
 	interruptedChat := s.restoreChatSessionsLocked()
 	changed := s.refreshWorkspaceStatusesLocked()
-	if changed || interruptedKanban || interruptedChat || legacyThinkingDisabled || legacyLLMEndpoints || legacyEndpointSelection || missingLLMEndpoint || missingLLMModel || missingWebAccessToken || migratedWebAccessPort {
+	for _, workspace := range s.state.Workspaces {
+		if !workspacesToMigrate[workspace.ID] {
+			continue
+		}
+		var chat *persistedChatSession
+		if persisted, ok := s.persistedChatSessions[workspace.ID]; ok {
+			snapshot := persisted
+			chat = &snapshot
+		}
+		cards := make([]KanbanCard, 0)
+		for _, card := range s.state.KanbanCards {
+			if card.WorkspaceID == workspace.ID {
+				cards = append(cards, cloneKanbanCard(card))
+			}
+		}
+		if err := writeWorkspaceAutosave(workspace, workspaceAutosave{
+			Version:     workspaceAutosaveVersion,
+			ChatSession: chat,
+			KanbanCards: cards,
+		}); err != nil {
+			return err
+		}
+	}
+	if changed || interruptedKanban || interruptedChat || hadLegacyWorkspaceState || legacyThinkingDisabled || legacyLLMEndpoints || legacyEndpointSelection || missingLLMEndpoint || missingLLMModel || missingWebAccessToken || migratedWebAccessPort {
 		return s.saveLocked()
 	}
 	return nil
@@ -924,9 +983,12 @@ func (s *SystemService) saveLocked() error {
 	if err := os.MkdirAll(filepath.Dir(s.storePath), 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(storedAppStateFrom(s.state, s.persistedChatSessions), "", "  ")
+	data, err := json.MarshalIndent(storedAppStateFrom(s.state), "", "  ")
 	if err != nil {
 		return err
+	}
+	if existing, err := os.ReadFile(s.storePath); err == nil && bytes.Equal(existing, data) {
+		return nil
 	}
 	return os.WriteFile(s.storePath, data, 0o600)
 }

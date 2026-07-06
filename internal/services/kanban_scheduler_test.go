@@ -1533,6 +1533,15 @@ func TestKanbanSchedulerStatePersistsAcrossRestart(t *testing.T) {
 	seedKanbanCards(t, service, []KanbanCard{
 		{ID: "card-1", WorkspaceID: workspaceID, Title: "Runtime result", Description: "Do not save", AcceptanceCriteria: []string{"Runtime"}, Lane: KanbanLaneReady},
 	})
+	schedulerComplete := make(chan struct{}, 1)
+	service.kanbanEventSink = func(event KanbanEvent) {
+		if event.Type == "scheduler_complete" {
+			select {
+			case schedulerComplete <- struct{}{}:
+			default:
+			}
+		}
+	}
 
 	if _, err := service.StartKanbanExecution(workspaceID, 1); err != nil {
 		t.Fatalf("start scheduler: %v", err)
@@ -1540,6 +1549,11 @@ func TestKanbanSchedulerStatePersistsAcrossRestart(t *testing.T) {
 	waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
 		return len(board.Done) == 1
 	})
+	select {
+	case <-schedulerComplete:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for scheduler completion")
+	}
 
 	reloaded := NewSystemServiceWithStorePath(storePath)
 	board, err := reloaded.LoadKanbanBoard(workspaceID)
