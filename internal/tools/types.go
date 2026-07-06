@@ -54,6 +54,57 @@ type ExecutionContext struct {
 	WorkspaceSkills  WorkspaceSkillsProvider
 	Emit             EventEmitter
 	FileChanges      FileChangeSink
+	// ToolScopes is the unified per-tool permission and path-scope checker.
+	// Use this instead of ToolPermissions and PathPermissions.
+	ToolScopes *ToolScopeChecker
+	// ToolPermissions is deprecated; use ToolScopes.
+	ToolPermissions *ToolPermissionChecker `json:"-"`
+	// PathPermissions is deprecated; use ToolScopes.
+	PathPermissions *PathMatcher `json:"-"`
+	AgentModes      AgentModeProvider
+}
+
+// AgentModeSummary describes an available agent mode without the full prompt.
+type AgentModeSummary struct {
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	ToolPermissions []string `json:"toolPermissions,omitempty"`
+	PathPermissions []string `json:"pathPermissions,omitempty"`
+	BuiltIn         bool     `json:"builtIn"`
+}
+
+// AgentModeCreationResult describes a newly created agent mode.
+type AgentModeCreationResult struct {
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Prompt          string   `json:"prompt"`
+	ToolPermissions []string `json:"toolPermissions,omitempty"`
+	PathPermissions []string `json:"pathPermissions,omitempty"`
+}
+
+// AgentModeCreationRequest carries the parameters for creating an agent mode.
+type AgentModeCreationRequest struct {
+	Name            string              `json:"name"`
+	Prompt          string              `json:"prompt,omitempty"`
+	ToolPermissions []string            `json:"toolPermissions,omitempty"`
+	PathPermissions []string            `json:"pathPermissions,omitempty"`
+	Permissions     map[string][]string `json:"permissions,omitempty"`
+}
+
+// AgentModeProvider supplies agent mode data to tools at execution time.
+type AgentModeProvider interface {
+	// ListModes returns the summaries of all available agent modes.
+	ListModes() []AgentModeSummary
+	// ResolveMode returns the summary for the given mode ID, or nil if not found.
+	ResolveMode(id string) *AgentModeSummary
+	// CreateMode creates a new user-defined agent mode with explicit parameters.
+	CreateMode(ctx context.Context, request AgentModeCreationRequest) (AgentModeCreationResult, error)
+	// CreateAgentModeFromChat analyzes the current chat transcript and creates
+	// a new agent mode from synthesized tool usage patterns.
+	CreateAgentModeFromChat(workspaceID string) (AgentModeCreationResult, error)
+	// CreateModePerTool creates a new user-defined agent mode with per-tool
+	// path permissions alongside name and prompt.
+	CreateModePerTool(ctx context.Context, name string, prompt string, permissions map[string][]string) (AgentModeCreationResult, error)
 }
 
 type WorkspaceRoot struct {

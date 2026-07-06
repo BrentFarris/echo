@@ -753,7 +753,7 @@ func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Wor
 				Content: event.Message,
 			})
 		}
-	})
+	}, nil)
 	result := execution.Result
 
 	data, err := json.Marshal(result)

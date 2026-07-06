@@ -265,7 +265,7 @@ func TestSystemServiceRetryChatMessageUsesPlanMode(t *testing.T) {
 	if len(session.Messages) < 2 {
 		t.Fatalf("expected assistant message, got %#v", session.Messages)
 	}
-	if _, err := service.RetryChatMessage(workspaceID, session.Messages[1].ID, true); err != nil {
+	if _, err := service.RetryChatMessage(workspaceID, session.Messages[1].ID, AgentModeIDPlan); err != nil {
 		t.Fatalf("retry chat: %v", err)
 	}
 	waitForChatIdle(t, service, workspaceID)
@@ -313,7 +313,7 @@ func TestSystemServiceEditChatMessageUsesPlanMode(t *testing.T) {
 	if len(session.Messages) < 1 {
 		t.Fatalf("expected user message, got %#v", session.Messages)
 	}
-	if _, err := service.EditChatMessage(workspaceID, session.Messages[0].ID, "Inspect this carefully", true); err != nil {
+	if _, err := service.EditChatMessage(workspaceID, session.Messages[0].ID, "Inspect this carefully", AgentModeIDPlan); err != nil {
 		t.Fatalf("edit chat: %v", err)
 	}
 	waitForChatIdle(t, service, workspaceID)
@@ -363,7 +363,7 @@ func TestSystemServiceEditAssistantMessageUpdatesVisiblePlanAndHistory(t *testin
 	})
 
 	const revisedPlan = "Revised plan: implement only the focused behavior."
-	session, err := service.EditChatMessage(workspaceID, "msg-2", revisedPlan, false)
+	session, err := service.EditChatMessage(workspaceID, "msg-2", revisedPlan, AgentModeIDGeneral)
 	if err != nil {
 		t.Fatalf("edit assistant message: %v", err)
 	}
@@ -423,7 +423,7 @@ func TestSystemServiceEditAssistantMessageRequiresCompleteStatus(t *testing.T) {
 		{ID: "msg-2", Role: llm.RoleAssistant, Content: "Partial plan.", Status: "streaming"},
 	}, []llm.Message{{Role: llm.RoleUser, Content: "Plan the feature."}})
 
-	_, err := service.EditChatMessage(workspaceID, "msg-2", "Revised plan.", false)
+	_, err := service.EditChatMessage(workspaceID, "msg-2", "Revised plan.", AgentModeIDGeneral)
 	if err == nil || !strings.Contains(err.Error(), "complete assistant") {
 		t.Fatalf("expected complete-assistant validation error, got %v", err)
 	}
@@ -450,7 +450,7 @@ func TestSystemServiceEditAssistantRebuildsCompactedHiddenHistory(t *testing.T) 
 		{Role: llm.RoleTool, ToolCallID: "hidden-call", Content: `{"tool":"filesystem_stat","success":true}`},
 	})
 
-	if _, err := service.EditChatMessage(workspaceID, "visible-assistant", "Edited answer", false); err != nil {
+	if _, err := service.EditChatMessage(workspaceID, "visible-assistant", "Edited answer", AgentModeIDGeneral); err != nil {
 		t.Fatalf("edit assistant: %v", err)
 	}
 	history := service.chatHistory(workspaceID)

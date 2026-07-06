@@ -288,3 +288,245 @@ func testTool(name string, run func(ctx ExecutionContext, arguments json.RawMess
 		Run: run,
 	}
 }
+
+func TestToolPermissionCheckerRejectsDisallowedTools(t *testing.T) {
+	registry := NewRegistry()
+	MustRegister(registry, testTool("read_file", func(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
+		return "content", nil
+	}))
+	MustRegister(registry, testTool("write_file", func(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
+		return "ok", nil
+	}))
+
+	// Restrict to read-only tools.
+	checker := NewToolPermissionChecker([]string{"read_file"})
+	ctx := ExecutionContext{
+		Context:         context.Background(),
+		ToolPermissions: checker,
+	}
+
+	// Allowed tool should succeed.
+	result := registry.Execute(ctx, "read_file", nil)
+	if !result.Success {
+		t.Fatalf("expected read_file to succeed, got %#v", result)
+	}
+
+	// Disallowed tool should be rejected before execution.
+	result = registry.Execute(ctx, "write_file", nil)
+	if result.Success {
+		t.Fatalf("expected write_file to be rejected, got %#v", result)
+	}
+	if result.Error == nil || result.Error.Code != "tool_not_allowed" {
+		t.Fatalf("expected tool_not_allowed error, got %#v", result.Error)
+	}
+}
+
+func TestToolPermissionCheckerEmptyAllowlistAllowsAll(t *testing.T) {
+	registry := NewRegistry()
+	MustRegister(registry, testTool("any_tool", func(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
+		return "ok", nil
+	}))
+
+	// Empty checker allows all.
+	checker := NewToolPermissionChecker(nil)
+	ctx := ExecutionContext{
+		Context:         context.Background(),
+		ToolPermissions: checker,
+	}
+
+	result := registry.Execute(ctx, "any_tool", nil)
+	if !result.Success {
+		t.Fatalf("expected any_tool to succeed with empty allowlist, got %#v", result)
+	}
+}
+
+func TestNilPermissionCheckersAllowAll(t *testing.T) {
+	registry := NewRegistry()
+	MustRegister(registry, testTool("any_tool", func(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
+		return "ok", nil
+	}))
+
+	// No permission checkers at all — should allow everything.
+	ctx := ExecutionContext{Context: context.Background()}
+	result := registry.Execute(ctx, "any_tool", nil)
+	if !result.Success {
+		t.Fatalf("expected any_tool to succeed with no permissions, got %#v", result)
+	}
+}
+
+func TestPathPermissionCheckerRejectsOutOfScopePaths(t *testing.T) {
+	registry := NewRegistry()
+	MustRegister(registry, testTool("read_file", func(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
+		return "content", nil
+	}))
+
+	// Only allow paths under src/.
+	matcher := NewPathMatcher([]string{"src/**"})
+	ctx := ExecutionContext{
+		Context:         context.Background(),
+		WorkspaceRoots:  []WorkspaceRoot{{Label: "app", Path: t.TempDir()}},
+		PathPermissions: matcher,
+	}
+
+	// Allowed path.
+	args := json.RawMessage(`{"path":"app/src/main.ts"}`)
+	result := registry.Execute(ctx, "read_file", args)
+	if !result.Success {
+		t.Fatalf("expected allowed path to succeed, got %#v", result)
+	}
+
+	// Disallowed path.
+	args = json.RawMessage(`{"path":"app/tests/test.ts"}`)
+	result = registry.Execute(ctx, "read_file", args)
+	if result.Success {
+		t.Fatalf("expected disallowed path to be rejected, got %#v", result)
+	}
+	if result.Error == nil || result.Error.Code != "path_not_allowed" {
+		t.Fatalf("expected path_not_allowed error, got %#v", result.Error)
+	}
+}
+
+func TestPathPermissionCheckerWithLabeledPaths(t *testing.T) {
+	registry := NewRegistry()
+	MustRegister(registry, testTool("read_file", func(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
+		return "content", nil
+	}))
+
+	matcher := NewPathMatcher([]string{"frontend/src/**"})
+	ctx := ExecutionContext{
+		Context:         context.Background(),
+		WorkspaceRoots:  []WorkspaceRoot{{Label: "echo", Path: t.TempDir()}},
+		PathPermissions: matcher,
+	}
+
+	// Labeled path that matches.
+	args := json.RawMessage(`{"path":"echo/frontend/src/app.ts"}`)
+	result := registry.Execute(ctx, "read_file", args)
+	if !result.Success {
+		t.Fatalf("expected labeled allowed path to succeed, got %#v", result)
+	}
+
+	// Labeled path that doesn't match.
+	args = json.RawMessage(`{"path":"echo/internal/service.go"}`)
+	result = registry.Execute(ctx, "read_file", args)
+	if result.Success {
+		t.Fatalf("expected labeled disallowed path to be rejected, got %#v", result)
+	}
+	if result.Error == nil || result.Error.Code != "path_not_allowed" {
+		t.Fatalf("expected path_not_allowed error, got %#v", result.Error)
+	}
+}
+
+func TestPathPermissionCheckerAllowsPlainRelativePaths(t *testing.T) {
+	registry := NewRegistry()
+	MustRegister(registry, testTool("read_file", func(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
+		return "content", nil
+	}))
+
+	matcher := NewPathMatcher([]string{"src/**"})
+	ctx := ExecutionContext{
+		Context:         context.Background(),
+		WorkspaceRoots:  []WorkspaceRoot{{Label: ".", Path: t.TempDir()}},
+		PathPermissions: matcher,
+	}
+
+	// Plain relative path matching.
+	args := json.RawMessage(`{"path":"src/main.go"}`)
+	result := registry.Execute(ctx, "read_file", args)
+	if !result.Success {
+		t.Fatalf("expected plain allowed path to succeed, got %#v", result)
+	}
+
+	// Plain relative path not matching.
+	args = json.RawMessage(`{"path":"docs/readme.md"}`)
+	result = registry.Execute(ctx, "read_file", args)
+	if result.Success {
+		t.Fatalf("expected plain disallowed path to be rejected, got %#v", result)
+	}
+}
+
+func TestToolAndPathPermissionsEnforcedTogether(t *testing.T) {
+	registry := NewRegistry()
+	MustRegister(registry, testTool("read_file", func(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
+		return "content", nil
+	}))
+	MustRegister(registry, testTool("write_file", func(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
+		return "ok", nil
+	}))
+
+	// Allow read_file only, and only paths under src/.
+	checker := NewToolPermissionChecker([]string{"read_file"})
+	matcher := NewPathMatcher([]string{"src/**"})
+	ctx := ExecutionContext{
+		Context:         context.Background(),
+		WorkspaceRoots:  []WorkspaceRoot{{Label: ".", Path: t.TempDir()}},
+		ToolPermissions: checker,
+		PathPermissions: matcher,
+	}
+
+	// Tool allowed + path allowed → success.
+	args := json.RawMessage(`{"path":"src/main.go"}`)
+	result := registry.Execute(ctx, "read_file", args)
+	if !result.Success {
+		t.Fatalf("expected both-allowed to succeed, got %#v", result)
+	}
+
+	// Tool disallowed → tool_not_allowed (checked first).
+	args = json.RawMessage(`{"path":"src/main.go"}`)
+	result = registry.Execute(ctx, "write_file", args)
+	if result.Error == nil || result.Error.Code != "tool_not_allowed" {
+		t.Fatalf("expected tool_not_allowed, got %#v", result.Error)
+	}
+
+	// Tool allowed + path disallowed → path_not_allowed.
+	args = json.RawMessage(`{"path":"docs/readme.md"}`)
+	result = registry.Execute(ctx, "read_file", args)
+	if result.Error == nil || result.Error.Code != "path_not_allowed" {
+		t.Fatalf("expected path_not_allowed, got %#v", result.Error)
+	}
+}
+
+func TestExtractWorkspacePathsWithMultiplePathArgs(t *testing.T) {
+	ctx := ExecutionContext{
+		WorkspaceRoots: []WorkspaceRoot{{Label: ".", Path: t.TempDir()}},
+	}
+	args := json.RawMessage(`{"path":"src/main.go","workingDirectory":"."}`)
+	paths := extractWorkspacePaths(ctx, args)
+
+	var foundMain, foundDot bool
+	for _, p := range paths {
+		if p == "src/main.go" {
+			foundMain = true
+		}
+		if p == "." {
+			foundDot = true
+		}
+	}
+	if !foundMain {
+		t.Fatalf("expected src/main.go in extracted paths, got %#v", paths)
+	}
+	if foundDot {
+		t.Fatalf("expected . to be excluded from extracted paths, got %#v", paths)
+	}
+}
+
+func TestExtractWorkspacePathsWithInvalidJSON(t *testing.T) {
+	ctx := ExecutionContext{WorkspaceRoots: []WorkspaceRoot{{Label: ".", Path: t.TempDir()}}}
+	paths := extractWorkspacePaths(ctx, json.RawMessage(`not json`))
+	if len(paths) != 0 {
+		t.Fatalf("expected no paths from invalid JSON, got %#v", paths)
+	}
+}
+
+func TestIsPathArgKey(t *testing.T) {
+	for _, key := range []string{"path", "workingDirectory", "repository", "base", "revision", "target"} {
+		if !isPathArgKey(key) {
+			t.Fatalf("expected %s to be a path arg key", key)
+		}
+	}
+	for _, key := range []string{"query", "operation", "content", "limit", "foo"} {
+		if isPathArgKey(key) {
+			t.Fatalf("expected %s to not be a path arg key", key)
+		}
+	}
+}

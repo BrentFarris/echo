@@ -108,6 +108,15 @@ func (s *SystemService) sendChatMessage(workspaceID string, request ChatMessageR
 		userHistory.ContentParts = chatMediaContentParts(request.Content, images, videos)
 	}
 
+	agentModeID := request.AgentModeID
+	// Backward compatibility: PlanMode true maps to plan mode ID.
+	if agentModeID == "" && request.PlanMode {
+		agentModeID = AgentModeIDPlan
+	}
+	if agentModeID == "" {
+		agentModeID = AgentModeIDGeneral
+	}
+
 	runContext, cancel := context.WithCancel(context.Background())
 
 	s.chatMu.Lock()
@@ -152,7 +161,7 @@ func (s *SystemService) sendChatMessage(workspaceID string, request ChatMessageR
 		Type:        "started",
 	})
 
-	go s.runChatTurn(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, request.PlanMode)
+	go s.runChatTurn(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, agentModeID)
 
 	return clone, nil
 }
@@ -258,7 +267,7 @@ func visibleChatHistory(messages []ChatMessage) []llm.Message {
 	return history
 }
 
-func (s *SystemService) RetryChatMessage(workspaceID string, messageID string, planMode bool) (ChatSession, error) {
+func (s *SystemService) RetryChatMessage(workspaceID string, messageID string, agentModeID string) (ChatSession, error) {
 	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
 		return ChatSession{}, err
 	}
@@ -296,6 +305,10 @@ func (s *SystemService) RetryChatMessage(workspaceID string, messageID string, p
 	session.Messages = session.Messages[:msgIndex]
 	session.History = cloneLLMMessages(history)
 
+	if agentModeID == "" {
+		agentModeID = AgentModeIDGeneral
+	}
+
 	assistantMessage := ChatMessage{
 		ID:     s.nextChatIDLocked("msg"),
 		Role:   llm.RoleAssistant,
@@ -330,13 +343,13 @@ func (s *SystemService) RetryChatMessage(workspaceID string, messageID string, p
 			s.failChatMessage(workspaceID, streamID, assistantMessage.ID, err.Error())
 			return
 		}
-		s.runChatTurnWithHistory(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, history, planMode)
+		s.runChatTurnWithHistory(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, history, agentModeID)
 	}()
 
 	return clone, nil
 }
 
-func (s *SystemService) EditChatMessage(workspaceID string, messageID string, content string, planMode bool) (ChatSession, error) {
+func (s *SystemService) EditChatMessage(workspaceID string, messageID string, content string, agentModeID string) (ChatSession, error) {
 	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
 		return ChatSession{}, err
 	}
@@ -398,6 +411,10 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 	session.Messages = session.Messages[:msgIndex+1]
 	session.History = cloneLLMMessages(history)
 
+	if agentModeID == "" {
+		agentModeID = AgentModeIDGeneral
+	}
+
 	assistantMessage := ChatMessage{
 		ID:     s.nextChatIDLocked("msg"),
 		Role:   llm.RoleAssistant,
@@ -432,17 +449,17 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 			s.failChatMessage(workspaceID, streamID, assistantMessage.ID, err.Error())
 			return
 		}
-		s.runChatTurnWithHistory(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, history, planMode)
+		s.runChatTurnWithHistory(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, history, agentModeID)
 	}()
 
 	return clone, nil
 }
 
-func (s *SystemService) runChatTurn(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, streamID string, messageID string, planMode bool) {
-	s.runChatTurnWithHistory(ctx, cancel, workspace, settings, streamID, messageID, s.chatHistory(workspace.ID), planMode)
+func (s *SystemService) runChatTurn(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, streamID string, messageID string, agentModeID string) {
+	s.runChatTurnWithHistory(ctx, cancel, workspace, settings, streamID, messageID, s.chatHistory(workspace.ID), agentModeID)
 }
 
-func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, streamID string, messageID string, history []llm.Message, planMode bool) {
+func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, streamID string, messageID string, history []llm.Message, agentModeID string) {
 	defer cancel()
 	defer s.finishChatStream(workspace.ID, streamID)
 
@@ -452,11 +469,15 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 		return
 	}
 
+	mode, resolvedModeID := s.resolveAgentMode(agentModeID)
+	isPlanMode := resolvedModeID == AgentModeIDPlan
+	toolScopes := buildToolScopes(mode.Permissions)
+
 	candidates := workspaceSkillCandidates(ctx, workspace, latestWorkspaceSkillTask(history))
 	currentUser := latestContextUserMessage(history)
-	messages := append([]llm.Message{chatSystemMessage(workspace, planMode, candidates)}, history...)
+	messages := append([]llm.Message{chatSystemMessage(workspace, mode, candidates)}, history...)
 	toolSchema := tools.LLMSchema()
-	if planMode {
+	if isPlanMode {
 		toolSchema = tools.ReadOnlyLLMSchema()
 	}
 	recoverableToolCalls := make(map[string]bool)
@@ -585,7 +606,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 				s.cancelChatMessage(workspace.ID, streamID, messageID)
 				return
 			}
-			execution := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, planMode)
+			execution := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, isPlanMode, toolScopes)
 			recoverableToolCalls[call.ID] = true
 			messages = append(messages, execution.Messages...)
 			for _, resultMessage := range execution.Messages {
@@ -731,7 +752,7 @@ type chatToolCallExecution struct {
 	SkillCheckpoint bool
 }
 
-func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, streamID string, messageID string, call llm.ToolCall, readOnlyOnly bool) chatToolCallExecution {
+func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, streamID string, messageID string, call llm.ToolCall, readOnlyOnly bool, toolScopes *tools.ToolScopeChecker) chatToolCallExecution {
 	if call.ID == "" {
 		call.ID = s.nextChatID("call")
 	}
@@ -767,7 +788,7 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 	execution := s.executeTrackedToolCall(ctx, workspace, settings, call, WorkspaceChangeSource{
 		Type:      "chat",
 		MessageID: messageID,
-	}, events)
+	}, events, toolScopes)
 	result := execution.Result
 
 	data, err := json.Marshal(result)
@@ -1067,7 +1088,8 @@ func (s *SystemService) emitChatEvent(event ChatStreamEvent) {
 	}
 }
 
-func chatSystemMessage(workspace Workspace, planMode bool, skillCandidates []tools.WorkspaceSkillSummary) llm.Message {
+func chatSystemMessage(workspace Workspace, mode AgentMode, skillCandidates []tools.WorkspaceSkillSummary) llm.Message {
+	isPlanMode := mode.ID == AgentModeIDPlan
 	instructions := "You are Echo, a personal AI assistant helping plan work inside the active workspace. " +
 		contextCheckpointSystemGuidance + " " +
 		"Use available tools when workspace facts are needed. " +
@@ -1079,7 +1101,7 @@ func chatSystemMessage(workspace Workspace, planMode bool, skillCandidates []too
 		"When a search result gives a useful line number, read nearby code with filesystem_read_text aroundLine; copy the result's line value and avoid reading whole source files unless the entire file is genuinely needed. " +
 		"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. " +
 		"Keep plans concrete and concise."
-	if planMode {
+	if isPlanMode {
 		instructions = "You are Echo, a personal AI assistant helping research and plan work inside the active workspace. " +
 			contextCheckpointSystemGuidance + " " +
 			"This chat is for planning changes only; do not make workspace changes, edit files, delete files, create files, run system modifying shell commands, or otherwise execute the plan. " +
@@ -1093,10 +1115,88 @@ func chatSystemMessage(workspace Workspace, planMode bool, skillCandidates []too
 			"Create a concrete, concise plan that follows the user's request and clearly describes the intended changes. " +
 			"Even if the user asks you to modify files, tell them you are unable to because you are in planning mode."
 	}
+
+	var prompt strings.Builder
+	prompt.WriteString(instructions)
+	if mode.Prompt != "" {
+		prompt.WriteString("\n\n")
+		prompt.WriteString(mode.Prompt)
+	}
+	learningEnabled := !isPlanMode
+
+	// Append permission summary so the model knows its boundaries.
+	permissionSummary := formatAgentModePermissionSummary(mode)
+	if permissionSummary != "" {
+		prompt.WriteString("\n\n")
+		prompt.WriteString(permissionSummary)
+	}
+
 	return llm.Message{
 		Role:    llm.RoleSystem,
-		Content: workspaceSystemPrompt(workspaceSkillsPrompt(instructions, skillCandidates, !planMode), workspace),
+		Content: workspaceSystemPrompt(workspaceSkillsPrompt(prompt.String(), skillCandidates, learningEnabled), workspace),
 	}
+}
+
+// formatAgentModePermissionSummary returns a human-readable permission summary
+// for the given mode. Returns empty string if no restrictions apply.
+func formatAgentModePermissionSummary(mode AgentMode) string {
+	permissions := mode.Permissions
+	if len(permissions) == 0 && len(mode.ToolPermissions) == 0 && len(mode.PathPermissions) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Agent mode permissions:")
+
+	// Derive tool list from Permissions map if available.
+	var toolNames []string
+	if len(permissions) > 0 {
+		toolNames = permissionsMapToolNames(permissions)
+	} else if len(mode.ToolPermissions) > 0 {
+		toolNames = mode.ToolPermissions
+	}
+
+	if len(toolNames) > 0 {
+		sb.WriteString("\n- Allowed tools: ")
+		sb.WriteString(strings.Join(toolNames, ", "))
+	} else {
+		sb.WriteString("\n- Allowed tools: all")
+	}
+
+	// Derive per-tool path restrictions from Permissions map.
+	if len(permissions) > 0 {
+		// Check if any tool has path constraints.
+		hasPathRestrictions := false
+		for _, perm := range permissions {
+			if len(perm.Paths) > 0 {
+				hasPathRestrictions = true
+				break
+			}
+		}
+		if hasPathRestrictions {
+			sb.WriteString("\n- Path restrictions per tool:")
+			for _, name := range toolNames {
+				perm, ok := permissions[name]
+				if !ok {
+					continue
+				}
+				if len(perm.Paths) > 0 {
+					sb.WriteString(fmt.Sprintf("\n  - %s: %s", name, strings.Join(perm.Paths, ", ")))
+				} else {
+					sb.WriteString(fmt.Sprintf("\n  - %s: all paths", name))
+				}
+			}
+		} else {
+			sb.WriteString("\n- Allowed paths: all")
+		}
+	} else if len(mode.PathPermissions) > 0 {
+		sb.WriteString("\n- Allowed paths: ")
+		sb.WriteString(strings.Join(mode.PathPermissions, ", "))
+	} else {
+		sb.WriteString("\n- Allowed paths: all")
+	}
+
+	return sb.String()
 }
 
 func mergeToolDelta(existing llm.ToolCall, delta llm.ToolCallDelta) llm.ToolCall {

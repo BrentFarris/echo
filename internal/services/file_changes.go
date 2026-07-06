@@ -128,7 +128,7 @@ func (s *SystemService) ClearWorkspaceChangeReview(workspaceID string) (Workspac
 	return review, nil
 }
 
-func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, call llm.ToolCall, source WorkspaceChangeSource, emit tools.EventEmitter) toolExecution {
+func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, call llm.ToolCall, source WorkspaceChangeSource, emit tools.EventEmitter, toolScopes *tools.ToolScopeChecker) toolExecution {
 	source.ToolCallID = call.ID
 	source.ToolName = call.Function.Name
 
@@ -152,6 +152,8 @@ func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Wo
 		WorkspaceSkills:  s.workspaceSkillsProvider(workspace),
 		Emit:             emit,
 		FileChanges:      sink,
+		ToolScopes:       toolScopes,
+		AgentModes:       s,
 	}, call.Function.Name, json.RawMessage(call.Function.Arguments))
 
 	if len(captured) > 0 {

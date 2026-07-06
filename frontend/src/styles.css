@@ -1195,8 +1195,97 @@ h3 {
 .mode-dropdown:not([hidden]) {
   bottom: calc(100% + 4px);
   min-width: 80px;
+  max-width: 220px;
   max-height: 200px;
   overflow-y: auto;
+}
+
+/* Mode option: layout with name, badges, and delete button */
+.mode-option {
+  gap: var(--space-sm);
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.mode-option-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Permission badges */
+.mode-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 600;
+}
+
+.mode-badge-tools {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+  color: var(--color-accent-strong);
+}
+
+.mode-badge-paths {
+  background: color-mix(in srgb, var(--color-text-muted) 15%, transparent);
+  color: var(--color-text-muted);
+}
+
+/* Delete button on mode option */
+.mode-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 120ms ease, background 120ms ease;
+}
+
+.mode-delete-btn svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.mode-option:hover .mode-delete-btn {
+  opacity: 1;
+}
+
+.mode-delete-btn:hover {
+  background: var(--color-danger);
+  color: var(--color-on-accent);
+  opacity: 1;
+}
+
+/* Create Mode option */
+.mode-create-option {
+  color: var(--color-accent-strong);
+  font-style: italic;
+}
+
+.mode-create-option:hover {
+  background: color-mix(in srgb, var(--color-accent) 15%, transparent);
 }
 
 /* Dropdown list reset */
@@ -3415,6 +3504,160 @@ h3 {
   font: inherit;
   text-align: center;
   text-transform: uppercase;
+}
+
+/* ── Agent Modes settings section ── */
+
+.agent-mode-list {
+  display: grid;
+  gap: var(--space-lg-md);
+}
+
+.agent-mode-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-xl);
+  min-width: 0;
+  padding: var(--space-lg-md) var(--space-xl);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+}
+
+.agent-mode-main {
+  display: grid;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.agent-mode-main strong {
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: var(--text-2xl-lg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-mode-main span {
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: var(--text-base-lg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-mode-actions {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.agent-mode-actions .icon-button {
+  width: 38px;
+}
+
+/* Agent mode inline form */
+
+.agent-mode-form {
+  display: grid;
+  gap: var(--space-xl);
+  padding: var(--space-xl);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+
+.agent-mode-form .field textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 60px;
+  max-height: 200px;
+  padding: var(--space-lg-md) var(--space-lg-lg);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--text-xl);
+  resize: vertical;
+}
+
+.agent-mode-form .field textarea:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.agent-mode-form-actions {
+  display: flex;
+  gap: var(--space-lg);
+}
+
+/* Per-tool permissions section */
+
+.agent-mode-permissions-section {
+  display: grid;
+  gap: var(--space-md);
+  padding: var(--space-lg) var(--space-xl);
+  background: var(--color-surface-2);
+  border-radius: var(--radius-md);
+}
+
+.agent-mode-permissions-heading {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.per-tool-permission-row {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.per-tool-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+}
+
+.per-tool-checkbox-label input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.per-tool-paths-container {
+  display: grid;
+  gap: var(--space-xs);
+  padding-left: calc(var(--space-md) + 16px);
+}
+
+.per-tool-paths-container.is-collapsed {
+  display: none;
+}
+
+.per-tool-paths-container textarea {
+  width: 100%;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-1);
+  color: var(--color-text);
+  resize: vertical;
+}
+
+.per-tool-paths-container textarea:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.per-tool-paths-container textarea:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .workspace-heading-row,

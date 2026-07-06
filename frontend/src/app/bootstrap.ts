@@ -1,6 +1,6 @@
 
 import { applyInlineCodePromptEvent, ensureCodeViewRootLoaded, finishCodeTabSwitcher, openDroppedCodeFile, refreshOpenCodeTabsFromDisk, saveActiveCodeFile } from "../codeView";
-import { LoadRuntimeStatus, LoadState, LoadWebAccessStatus, ReadWorkspaceMediaFile } from "../backend/services";
+import { LoadRuntimeStatus, LoadState, LoadWebAccessStatus, ListAgentModes, ReadWorkspaceMediaFile } from "../backend/services";
 import { llm, services } from "../../wailsjs/go/models";
 import { EventsOn, OnFileDrop } from "../backend/runtime";
 import { initializeWebAccessTokenFromURL } from "../backend/web";
@@ -55,6 +55,15 @@ async function initialize() {
     state.settingsDraft = cloneSettings(state.appState.settings);
     state.webAccessDraft = cloneWebAccessSettings(state.appState.webAccess);
     state.webAccessStatus = await LoadWebAccessStatus();
+    try {
+      const activeWS = state.appState?.activeWorkspaceId ?? "";
+      const modes = await ListAgentModes(activeWS);
+      if (activeWS) {
+        state.agentModes.set(activeWS, modes);
+      }
+    } catch {
+      /* Non-fatal: agent modes will load on first chat render. */
+    }
     applyTheme(state.appState.settings);
     await loadActiveChatSession();
     await loadActiveKanbanBoard();
@@ -108,6 +117,14 @@ export function startApp() {
 
   EventsOn("echo:file-changes:event", (event: FileChangesEvent) => {
     applyFileChangesEvent(event);
+  });
+
+  EventsOn("echo:agent-mode:event", (modes) => {
+    const wsID = state.appState?.activeWorkspaceId ?? "";
+    if (wsID && Array.isArray(modes)) {
+      state.agentModes.set(wsID, modes);
+    }
+    render();
   });
 
   document.addEventListener("keydown", handleGlobalKeydown, true);

@@ -20,10 +20,11 @@ const maxChatMediaAttachments = 8
 const maxChatImageMessageBytes = 20 * 1024 * 1024
 
 type ChatMessageRequest struct {
-	Content  string           `json:"content"`
-	PlanMode bool             `json:"planMode"`
-	Images   []ChatImageInput `json:"images,omitempty"`
-	Videos   []ChatVideoInput `json:"videos,omitempty"`
+	Content     string           `json:"content"`
+	PlanMode    bool             `json:"planMode"`
+	AgentModeID string           `json:"agentModeId"`
+	Images      []ChatImageInput `json:"images,omitempty"`
+	Videos      []ChatVideoInput `json:"videos,omitempty"`
 }
 
 type ChatImageInput struct {

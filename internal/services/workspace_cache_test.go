@@ -181,3 +181,115 @@ func TestSystemServiceSearchWorkspaceFilesSkipsEchoCacheByDefault(t *testing.T) 
 		t.Fatalf("expected .echo cache to stay hidden when ignored files are included, got %v", got)
 	}
 }
+
+func TestMigrateLegacyModesToWorkspaceScopedMovesDirectory(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+
+	// Create the legacy .echo/modes/ directory with a mode.
+	legacyPath := filepath.Join(root, ".echo", "modes")
+	modeDir := filepath.Join(legacyPath, "a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6")
+	if err := os.MkdirAll(modeDir, 0o755); err != nil {
+		t.Fatalf("create legacy modes dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modeDir, "mode.json"), []byte(`{"id":"a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6","name":"Legacy Mode"}`), 0o600); err != nil {
+		t.Fatalf("write legacy mode: %v", err)
+	}
+
+	// Ensure cache folders; migration should run.
+	caches, err := service.ensureWorkspaceCacheFolders(workspaceID)
+	if err != nil {
+		t.Fatalf("ensure workspace cache folders: %v", err)
+	}
+	if len(caches) != 1 {
+		t.Fatalf("expected one cache folder, got %d", len(caches))
+	}
+
+	// Verify legacy directory was moved to scoped path.
+	scopedPath := filepath.Join(root, ".echo", "modes-"+workspaceID)
+	children, err := os.ReadDir(scopedPath)
+	if err != nil {
+		t.Fatalf("read scoped modes directory: %v", err)
+	}
+	if len(children) != 1 {
+		t.Fatalf("expected 1 mode in scoped dir, got %d", len(children))
+	}
+	if children[0].Name() != "a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6" {
+		t.Fatalf("expected mode dir name, got %q", children[0].Name())
+	}
+
+	// Verify legacy directory no longer exists.
+	if _, err := os.Lstat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy modes directory should be gone after migration")
+	}
+
+	// Verify the mode file content is intact.
+	modeJSON, err := os.ReadFile(filepath.Join(scopedPath, "a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6", "mode.json"))
+	if err != nil {
+		t.Fatalf("read migrated mode file: %v", err)
+	}
+	if !strings.Contains(string(modeJSON), "Legacy Mode") {
+		t.Fatalf("migrated mode content lost: %s", modeJSON)
+	}
+}
+
+func TestMigrateLegacyModesSkipsWhenScopedExistsWithContent(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+
+	// Create both legacy and scoped directories.
+	legacyPath := filepath.Join(root, ".echo", "modes")
+	legacyModeDir := filepath.Join(legacyPath, "11111111-1111-1111-1111-111111111111")
+	if err := os.MkdirAll(legacyModeDir, 0o755); err != nil {
+		t.Fatalf("create legacy modes dir: %v", err)
+	}
+
+	scopedPath := filepath.Join(root, ".echo", "modes-"+workspaceID)
+	scopedModeDir := filepath.Join(scopedPath, "22222222-2222-2222-2222-222222222222")
+	if err := os.MkdirAll(scopedModeDir, 0o755); err != nil {
+		t.Fatalf("create scoped modes dir: %v", err)
+	}
+
+	// Ensure cache folders; migration should skip because scoped has content.
+	if _, err := service.ensureWorkspaceCacheFolders(workspaceID); err != nil {
+		t.Fatalf("ensure workspace cache folders: %v", err)
+	}
+
+	// Legacy directory should still exist (not moved).
+	children, err := os.ReadDir(legacyPath)
+	if err != nil {
+		t.Fatalf("read legacy modes directory: %v", err)
+	}
+	if len(children) != 1 {
+		t.Fatalf("expected legacy dir preserved with 1 mode, got %d", len(children))
+	}
+
+	// Scoped directory should still have only its original content.
+	scopedChildren, err := os.ReadDir(scopedPath)
+	if err != nil {
+		t.Fatalf("read scoped modes directory: %v", err)
+	}
+	if len(scopedChildren) != 1 || scopedChildren[0].Name() != "22222222-2222-2222-2222-222222222222" {
+		t.Fatalf("scoped dir should be unchanged, got %d children", len(scopedChildren))
+	}
+}
+
+func TestMigrateLegacyModesNoOpWhenNoLegacyDirectory(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+
+	// No legacy directory exists; migration should be a no-op.
+	if _, err := service.ensureWorkspaceCacheFolders(workspaceID); err != nil {
+		t.Fatalf("ensure workspace cache folders: %v", err)
+	}
+
+	// Scoped directory should exist (created by ensureWorkspaceFolderCache).
+	scopedPath := filepath.Join(root, ".echo", "modes-"+workspaceID)
+	info, err := os.Lstat(scopedPath)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("scoped modes dir should exist after cache init: %v", err)
+	}
+
+	// Legacy directory should not exist.
+	legacyPath := filepath.Join(root, ".echo", "modes")
+	if _, err := os.Lstat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy dir should not exist")
+	}
+}

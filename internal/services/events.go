@@ -1,10 +1,11 @@
 package services
 
 const (
-	ChatRuntimeEventName        = chatStreamEventName
-	KanbanRuntimeEventName      = kanbanEventName
-	FileChangesRuntimeEventName = fileChangesEventName
-	InlineCodeRuntimeEventName  = inlineCodePromptEventName
+	ChatRuntimeEventName         = chatStreamEventName
+	KanbanRuntimeEventName       = kanbanEventName
+	FileChangesRuntimeEventName  = fileChangesEventName
+	InlineCodeRuntimeEventName   = inlineCodePromptEventName
+	AgentModeRuntimeEventName    = agentModeEventName
 )
 
 type RuntimeEvent struct {
