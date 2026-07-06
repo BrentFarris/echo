@@ -2184,6 +2184,70 @@ h3 {
   color: var(--color-text);
 }
 
+/* Task search bar and filter buttons */
+.task-search-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.task-search-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 var(--space-lg);
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--text-md-lg);
+  outline: none;
+}
+
+.task-search-input:focus-visible {
+  border-color: var(--color-accent);
+}
+
+.task-search-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.task-filter-buttons {
+  display: flex;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+
+.task-filter-btn {
+  min-height: 32px;
+  padding: 0 var(--space-lg);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.task-filter-btn:hover,
+.task-filter-btn:focus-visible {
+  border-color: var(--color-accent);
+  color: var(--color-accent-strong);
+  outline: none;
+}
+
+.task-filter-btn.is-active {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface));
+  color: var(--color-accent-strong);
+}
+
 .task-card-actions {
   justify-content: flex-end;
   padding-top: var(--space-sm);

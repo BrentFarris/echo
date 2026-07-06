@@ -42,6 +42,8 @@ export const state = {
   taskBoards: new Map<string, services.TaskBoard>(),
   taskEditorDrafts: new Map<string, TaskEditorDraft>(),
   showCompletedTaskWorkspaces: new Set<string>(),
+  taskSearchQuery: new Map<string, string>(),
+  taskFilterMode: new Map<string, "all" | "open" | "completed">(),
   changeReviews: new Map<string, services.WorkspaceChangeReview>(),
   gitChangeReviews: new Map<string, services.WorkspaceGitChangeReview>(),
   gitRepositoryViews: new Map<string, services.WorkspaceGitRepositoryView>(),

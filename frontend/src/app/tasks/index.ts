@@ -41,10 +41,30 @@ export function applyTaskEvent(event: TaskEvent) {
 
 export function renderTaskPanel(workspace: services.Workspace): string {
   const board = taskBoardFor(workspace.id);
-  const showCompleted = state.showCompletedTaskWorkspaces.has(workspace.id);
-  const visible = (board.tasks ?? []).filter((task) => showCompleted || !task.completed);
+  const searchQuery = state.taskSearchQuery.get(workspace.id) ?? "";
+  const filterMode = state.taskFilterMode.get(workspace.id) ?? "open";
+  const tasks = board.tasks ?? [];
+
+  // Apply filter mode
+  const filteredByMode = filterMode === "all"
+    ? tasks
+    : filterMode === "completed"
+      ? tasks.filter((t) => t.completed)
+      : tasks.filter((t) => !t.completed);
+
+  // Apply search query (case-insensitive on title, details, acceptance criteria)
+  const query = searchQuery.toLowerCase().trim();
+  const visible = query
+    ? filteredByMode.filter((task) => {
+        if (task.title.toLowerCase().includes(query)) return true;
+        if (task.details?.toLowerCase().includes(query)) return true;
+        if ((task.acceptanceCriteria ?? []).some((c) => c.toLowerCase().includes(query))) return true;
+        return false;
+      })
+    : filteredByMode;
+
   return `
-    <section class="work-panel task-panel" aria-labelledby="tasks-title">
+    <section class="work-panel task-panel" aria-labelledby="tasks-title" data-task-panel>
       <div class="panel-heading">
         <div class="kanban-heading-main">
           <span>Tasks</span>
@@ -54,12 +74,20 @@ export function renderTaskPanel(workspace: services.Workspace): string {
         </div>
         <div class="task-heading-actions">
           <label class="task-completed-toggle">
-            <input type="checkbox" data-task-action="toggle-completed" ${showCompleted ? "checked" : ""}>
+            <input type="checkbox" data-task-action="toggle-completed" ${filterMode === "all" || filterMode === "completed" ? "checked" : ""}>
             <span>Show completed</span>
           </label>
           <button class="secondary-button icon-text-button" type="button" data-task-action="refresh">
             ${icons.refresh}<span>Refresh</span>
           </button>
+        </div>
+      </div>
+      <div class="task-search-bar">
+        <input type="search" class="task-search-input" placeholder="Search tasks…" value="${escapeAttribute(searchQuery)}" data-task-search>
+        <div class="task-filter-buttons" role="group" aria-label="Task filter mode">
+          <button class="task-filter-btn${filterMode === "all" ? " is-active" : ""}" type="button" data-task-filter="all">All</button>
+          <button class="task-filter-btn${filterMode === "open" ? " is-active" : ""}" type="button" data-task-filter="open">Open</button>
+          <button class="task-filter-btn${filterMode === "completed" ? " is-active" : ""}" type="button" data-task-filter="completed">Completed</button>
         </div>
       </div>
       ${board.gitIgnored || board.doneGitIgnored ? `
@@ -162,6 +190,43 @@ export function bindTaskEvents(root: ParentNode) {
     lane.addEventListener("dragleave", handleTaskDragLeave);
     lane.addEventListener("drop", handleTaskDrop);
   });
+  root.querySelector<HTMLInputElement>("[data-task-search]")?.addEventListener("input", handleTaskSearch);
+  root.querySelectorAll<HTMLButtonElement>("[data-task-filter]").forEach((btn) => {
+    btn.addEventListener("click", handleTaskFilter);
+  });
+}
+
+export function patchTaskPanel() {
+  const workspace = activeWorkspace();
+  const panel = appRoot.querySelector<HTMLElement>("[data-task-panel]");
+  if (!workspace || !panel) return;
+
+  // Preserve the search input value and selection/cursor position before re-rendering
+  const existingSearch = appRoot.querySelector<HTMLInputElement>("[data-task-search]");
+  const searchValue = existingSearch?.value ?? "";
+  const selectionStart = existingSearch?.selectionStart ?? null;
+  const selectionEnd = existingSearch?.selectionEnd ?? null;
+  const searchFocused = document.activeElement === existingSearch;
+
+  const next = document.createElement("template");
+  next.innerHTML = renderTaskPanel(workspace).trim();
+  const replacement = next.content.firstElementChild as HTMLElement;
+  panel.replaceWith(replacement);
+
+  // Restore the search input value and focus
+  const input = replacement.querySelector<HTMLInputElement>("[data-task-search]");
+  if (input) {
+    input.value = searchValue;
+    if (searchFocused) {
+      input.focus();
+      if (selectionStart !== null && selectionEnd !== null) {
+        input.setSelectionRange(selectionStart, selectionEnd);
+      }
+    }
+  }
+
+  // Re-bind events on the new panel
+  bindTaskEvents(replacement);
 }
 
 async function handleTaskAction(event: Event) {
@@ -174,7 +239,12 @@ async function handleTaskAction(event: Event) {
   try {
     if (action === "toggle-completed") {
       const checked = (target as HTMLInputElement).checked;
-      checked ? state.showCompletedTaskWorkspaces.add(workspace.id) : state.showCompletedTaskWorkspaces.delete(workspace.id);
+      state.taskFilterMode.set(workspace.id, checked ? "all" : "open");
+      if (checked) {
+        state.showCompletedTaskWorkspaces.add(workspace.id);
+      } else {
+        state.showCompletedTaskWorkspaces.delete(workspace.id);
+      }
       getAppCallbacks().render();
       return;
     }
@@ -289,6 +359,28 @@ async function handlePrioritySelect(event: Event) {
     await loadActiveTaskBoard();
     getAppCallbacks().render();
   }
+}
+
+function handleTaskSearch(event: Event) {
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+  const input = event.currentTarget as HTMLInputElement;
+  state.taskSearchQuery.set(workspace.id, input.value);
+  patchTaskPanel();
+}
+
+function handleTaskFilter(event: Event) {
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+  const btn = event.currentTarget as HTMLButtonElement;
+  const mode = btn.dataset.taskFilter as "all" | "open" | "completed";
+  state.taskFilterMode.set(workspace.id, mode);
+  if (mode === "all" || mode === "completed") {
+    state.showCompletedTaskWorkspaces.add(workspace.id);
+  } else {
+    state.showCompletedTaskWorkspaces.delete(workspace.id);
+  }
+  patchTaskPanel();
 }
 
 function handleTaskDragStart(event: DragEvent) {
