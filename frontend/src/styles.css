@@ -2404,6 +2404,10 @@ h3 {
   width: 100%;
 }
 
+[data-task-editor-form] textarea {
+  font-weight: 400;
+}
+
 .kanban-card-create-actions {
   justify-content: flex-end;
 }
