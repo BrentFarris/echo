@@ -3,8 +3,10 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/brent/echo/internal/llm"
@@ -31,6 +33,7 @@ var readOnlyToolNames = map[string]bool{
 }
 
 var mutatingToolNames = map[string]bool{
+	"create_agent_mode":      true,
 	"filesystem_create_text": true,
 	"filesystem_delete_file": true,
 	"filesystem_edit_text":   true,
@@ -149,6 +152,13 @@ func Execute(ctx ExecutionContext, name string, arguments json.RawMessage) Execu
 
 func (r *Registry) Execute(ctx ExecutionContext, name string, arguments json.RawMessage) (result ExecutionResult) {
 	result = ExecutionResult{Tool: name}
+
+	/* Permission checks: validate tool allowlist and path scope before execution. */
+	if err := r.checkPermissions(ctx, name, arguments); err != nil {
+		result.Error = err
+		return result
+	}
+
 	tool, ok := r.lookup(name)
 	if !ok {
 		result.Error = &ExecutionError{Code: "tool_not_found", Message: fmt.Sprintf("tool %q is not registered", name)}
@@ -190,6 +200,96 @@ func (r *Registry) Execute(ctx ExecutionContext, name string, arguments json.Raw
 	result.Output = output
 	ctx.emit(Event{Type: "completed", Tool: name})
 	return result
+}
+
+// checkPermissions validates tool and path permissions from ExecutionContext.
+// Returns nil if the call is permitted, or a structured ExecutionError otherwise.
+func (r *Registry) checkPermissions(ctx ExecutionContext, name string, arguments json.RawMessage) *ExecutionError {
+	// Prefer unified ToolScopes checker when available.
+	if ctx.ToolScopes != nil {
+		// Check tool allowlist via ToolScopes.
+		if !ctx.ToolScopes.HasTool(name) {
+			return &ExecutionError{Code: "tool_not_allowed", Message: fmt.Sprintf("tool %q is not allowed by the current agent mode", name)}
+		}
+
+		// Extract workspace-relative paths from arguments and check each against ToolScopes.
+		for _, relPath := range extractWorkspacePaths(ctx, arguments) {
+			if !ctx.ToolScopes.Allowed(name, relPath) {
+				return &ExecutionError{Code: "path_not_allowed", Message: fmt.Sprintf("path %q is not allowed by the current agent mode", relPath)}
+			}
+		}
+		return nil
+	}
+
+	// Legacy fallback: check tool allowlist.
+	if ctx.ToolPermissions != nil && !ctx.ToolPermissions.Allowed(name) {
+		return &ExecutionError{Code: "tool_not_allowed", Message: fmt.Sprintf("tool %q is not allowed by the current agent mode", name)}
+	}
+
+	// If no path restrictions, skip path extraction.
+	if ctx.PathPermissions == nil {
+		return nil
+	}
+
+	// Extract workspace-relative paths from arguments and check each against PathPermissions.
+	for _, relPath := range extractWorkspacePaths(ctx, arguments) {
+		if !ctx.PathPermissions.Matches(relPath) {
+			return &ExecutionError{Code: "path_not_allowed", Message: fmt.Sprintf("path %q is not allowed by the current agent mode", relPath)}
+		}
+	}
+	return nil
+}
+
+// extractWorkspacePaths extracts workspace-relative paths from tool arguments.
+// It handles labeled paths (e.g., "echo/src/main.go") and returns the relative portion.
+func extractWorkspacePaths(ctx ExecutionContext, arguments json.RawMessage) []string {
+	var args map[string]any
+	if err := DecodeToolArguments(arguments, &args); err != nil {
+		return nil
+	}
+
+	var paths []string
+	for key, value := range args {
+		str, ok := value.(string)
+		if !ok || str == "" {
+			continue
+		}
+		// Only check fields that look like path arguments.
+		if !isPathArgKey(key) {
+			continue
+		}
+
+		// Handle labeled workspace paths by extracting the relative portion.
+		matched := false
+		for _, root := range ctx.workspaceRoots() {
+			label, rel := splitWorkspaceLabeledPath(str)
+			if label != "" && strings.EqualFold(root.Label, label) {
+				paths = append(paths, filepath.ToSlash(rel))
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+
+		// No labeled root matched; treat as plain workspace-relative path.
+		str = strings.TrimPrefix(str, "./")
+		if str != "." && str != "" {
+			paths = append(paths, filepath.ToSlash(filepath.Clean(str)))
+		}
+	}
+	return paths
+}
+
+// isPathArgKey reports whether a JSON key name represents a filesystem path argument.
+func isPathArgKey(key string) bool {
+	switch key {
+	case "path", "workingDirectory", "repository", "base", "revision", "target":
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *Registry) lookup(name string) (Tool, bool) {

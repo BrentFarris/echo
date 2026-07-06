@@ -149,6 +149,48 @@ export namespace llm {
 
 export namespace services {
 	
+	export class AgentMode {
+	    id: string;
+	    name: string;
+	    prompt: string;
+	    permissions?: Record<string, tools.ToolPermission>;
+	    builtIn: boolean;
+	    toolPermissions?: string[];
+	    pathPermissions?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new AgentMode(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.prompt = source["prompt"];
+	        this.permissions = this.convertValues(source["permissions"], tools.ToolPermission, true);
+	        this.builtIn = source["builtIn"];
+	        this.toolPermissions = source["toolPermissions"];
+	        this.pathPermissions = source["pathPermissions"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class AppInfo {
 	    name: string;
 	    phase: string;
@@ -448,6 +490,7 @@ export namespace services {
 	export class ChatMessageRequest {
 	    content: string;
 	    planMode: boolean;
+	    agentModeId: string;
 	    images?: ChatImageInput[];
 	    videos?: ChatVideoInput[];
 	
@@ -459,6 +502,7 @@ export namespace services {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.content = source["content"];
 	        this.planMode = source["planMode"];
+	        this.agentModeId = source["agentModeId"];
 	        this.images = this.convertValues(source["images"], ChatImageInput);
 	        this.videos = this.convertValues(source["videos"], ChatVideoInput);
 	    }
@@ -2056,6 +2100,85 @@ export namespace services {
 		    }
 		    return a;
 		}
+	}
+
+}
+
+export namespace tools {
+	
+	export class AgentModeCreationRequest {
+	    name: string;
+	    prompt?: string;
+	    toolPermissions?: string[];
+	    pathPermissions?: string[];
+	    permissions?: Record<string, Array<string>>;
+	
+	    static createFrom(source: any = {}) {
+	        return new AgentModeCreationRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.prompt = source["prompt"];
+	        this.toolPermissions = source["toolPermissions"];
+	        this.pathPermissions = source["pathPermissions"];
+	        this.permissions = source["permissions"];
+	    }
+	}
+	export class AgentModeCreationResult {
+	    id: string;
+	    name: string;
+	    prompt: string;
+	    toolPermissions?: string[];
+	    pathPermissions?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new AgentModeCreationResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.prompt = source["prompt"];
+	        this.toolPermissions = source["toolPermissions"];
+	        this.pathPermissions = source["pathPermissions"];
+	    }
+	}
+	export class AgentModeSummary {
+	    id: string;
+	    name: string;
+	    toolPermissions?: string[];
+	    pathPermissions?: string[];
+	    builtIn: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new AgentModeSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.toolPermissions = source["toolPermissions"];
+	        this.pathPermissions = source["pathPermissions"];
+	        this.builtIn = source["builtIn"];
+	    }
+	}
+	export class ToolPermission {
+	    name: string;
+	    paths?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ToolPermission(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.paths = source["paths"];
+	    }
 	}
 
 }

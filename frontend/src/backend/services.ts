@@ -47,6 +47,18 @@ export function ChooseWorkspaceIcon(...args: Parameters<typeof Wails.ChooseWorks
   return chooseWorkspaceIconWeb(args[0]) as ReturnType<typeof Wails.ChooseWorkspaceIcon>;
 }
 
+export function CreateAgentMode(...args: Parameters<typeof Wails.CreateAgentMode>): ReturnType<typeof Wails.CreateAgentMode> {
+  return call("CreateAgentMode", Wails.CreateAgentMode, args);
+}
+
+export function CreateAgentModePerTool(...args: Parameters<typeof Wails.CreateAgentModePerTool>): ReturnType<typeof Wails.CreateAgentModePerTool> {
+  return call("CreateAgentModePerTool", Wails.CreateAgentModePerTool, args);
+}
+
+export function CreateAgentModeFromChat(...args: Parameters<typeof Wails.CreateAgentModeFromChat>): ReturnType<typeof Wails.CreateAgentModeFromChat> {
+  return call("CreateAgentModeFromChat", Wails.CreateAgentModeFromChat, args);
+}
+
 export function ClearChat(...args: Parameters<typeof Wails.ClearChat>): ReturnType<typeof Wails.ClearChat> {
   return call("ClearChat", Wails.ClearChat, args);
 }
@@ -91,6 +103,10 @@ export function CreateWorkspaceFolder(...args: Parameters<typeof Wails.CreateWor
   return call("CreateWorkspaceFolder", Wails.CreateWorkspaceFolder, args);
 }
 
+export function DeleteAgentMode(...args: Parameters<typeof Wails.DeleteAgentMode>): ReturnType<typeof Wails.DeleteAgentMode> {
+  return call("DeleteAgentMode", Wails.DeleteAgentMode, args);
+}
+
 export function DeleteKanbanCard(...args: Parameters<typeof Wails.DeleteKanbanCard>): ReturnType<typeof Wails.DeleteKanbanCard> {
   return call("DeleteKanbanCard", Wails.DeleteKanbanCard, args);
 }
@@ -124,6 +140,18 @@ export function FindWorkspaceFileImplementations(...args: Parameters<typeof Wail
 
 export function FindWorkspaceFileReferences(...args: Parameters<typeof Wails.FindWorkspaceFileReferences>): ReturnType<typeof Wails.FindWorkspaceFileReferences> {
   return call("FindWorkspaceFileReferences", Wails.FindWorkspaceFileReferences, args);
+}
+
+export function UpdateAgentMode(...args: Parameters<typeof Wails.UpdateAgentMode>): ReturnType<typeof Wails.UpdateAgentMode> {
+  return call("UpdateAgentMode", Wails.UpdateAgentMode, args);
+}
+
+export function UpdateAgentModePerTool(...args: Parameters<typeof Wails.UpdateAgentModePerTool>): ReturnType<typeof Wails.UpdateAgentModePerTool> {
+  return call("UpdateAgentModePerTool", Wails.UpdateAgentModePerTool, args);
+}
+
+export function ListAgentModes(...args: Parameters<typeof Wails.ListAgentModes>): ReturnType<typeof Wails.ListAgentModes> {
+  return call("ListAgentModes", Wails.ListAgentModes, args);
 }
 
 export function ListWorkspaceDirectory(...args: Parameters<typeof Wails.ListWorkspaceDirectory>): ReturnType<typeof Wails.ListWorkspaceDirectory> {

@@ -45,6 +45,7 @@ func workspaceSkillsPrompt(base string, candidates []tools.WorkspaceSkillSummary
 	if learningEnabled {
 		guidance.WriteString("After changing project files, you must complete the learning checkpoint before finishing: call workspace_skill_record with upsert for concise durable project knowledge, or skip with a reason for routine, temporary, speculative, sensitive, or already-documented information. Read an existing skill before updating it. ")
 	}
+	guidance.WriteString("If repeated tool usage in this chat suggests a reusable workflow, call create_agent_mode to synthesize a new agent mode from the transcript. Pass the workspace ID that owns the chat; the tool analyzes completed tool calls and creates a named mode with matching permissions. Use list_agent_modes to see available modes before creating a duplicate. ")
 	return strings.TrimSpace(guidance.String())
 }
 

@@ -1,7 +1,7 @@
 
 import { ensureCodeViewRootLoaded, openWorkspaceCodeFile } from "../../codeView";
 import { elementFromHtml, morphElement, patchChildrenFromHtml, patchMarkdownElement, renderMarkdown } from "../../markdown";
-import { EditChatMessage, LoadChatSession, ResolveWorkspaceTextFilePath, SearchWorkspaceFiles, SendChatMessageWithAttachments, StopChatStream } from "../../backend/services";
+import { ClearChat, CreateAgentModeFromChat, CreateSkillFromChat, DeleteAgentMode, EditChatMessage, ListAgentModes, LoadChatSession, ResolveWorkspaceTextFilePath, SaveSettings, SearchWorkspaceFiles, SendChatMessageWithAttachments, StopChatStream } from "../../backend/services";
 import { isWailsRuntime } from "../../backend/web";
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
@@ -9,7 +9,8 @@ import { renderSpinnerLabel } from "../components";
 import { appRoot, isElementScrolledNearBottom } from "../dom";
 import { icons } from "../icons";
 import { playNotificationSound } from "../notifications";
-import { activeWorkspace, chatImageDraftsFor, chatImageDraftTotalBytes, chatVideoDraftsFor, chatVideoDraftTotalBytes, chatPlanModeFor, chatSessionFor, getActiveChatModelLabel, state } from "../state";
+import { activeWorkspace, agentModesForWorkspace, chatImageDraftsFor, chatImageDraftTotalBytes, chatVideoDraftsFor, chatVideoDraftTotalBytes, chatPlanModeFor, chatAgentModeIDFor, chatAgentModeNameFor, setChatAgentMode, chatComposerModeFor, setChatComposerMode, chatSessionFor, getActiveChatModelLabel, cloneSettings, state } from "../state";
+import { settingsWithCompactTheme } from "../theme";
 import { pushToast } from "../toasts";
 import type { ChatImageDraft, ChatMentionState, ChatStreamEvent, ChatVideoDraft, ScrollSnapshot } from "../types";
 import { errorMessage, escapeAttribute, escapeHtml, fileName, formatBytes } from "../utils";
@@ -546,9 +547,6 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
   const sizeLabel = expanded ? "Collapse chat" : "Expand chat";
   const executeLabel = executing ? "Decomposing cards" : "Execute plan";
   const mentionOpen = Boolean(chatMentionFor(workspace.id));
-  const planMode = chatPlanModeFor(workspace.id);
-  const chatModeLabel = planMode ? "Plan" : "Agent";
-  const chatModeTitle = planMode ? "Plan mode: switch to agent mode" : "Agent mode: switch to plan mode";
   const creatingSkill = state.creatingChatSkills.has(workspace.id);
   return `
     <section class="work-panel chat-panel" aria-busy="${session.busy || executing}" data-chat-panel data-workspace-id="${escapeAttribute(workspace.id)}">
@@ -592,12 +590,6 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
                 <span>Video</span>
               </button>
             </div>
-            <span class="chat-toolbar-separator"></span>
-            <button class="chat-toolbar-icon chat-mode-toggle ${planMode ? "is-plan-mode" : "is-agent-mode"}" type="button" title="${chatModeTitle}" aria-label="${chatModeTitle}" aria-pressed="${!planMode}" data-action="toggle-agent-mode" ${session.busy || executing ? "disabled" : ""}>
-              ${icons.code}
-              <span>${chatModeLabel}</span>
-            </button>
-            <span class="chat-toolbar-separator"></span>
             <button class="model-selector chat-toolbar-model" type="button" title="Select model" aria-haspopup="listbox" aria-expanded="false" data-model-selector ${session.busy || executing ? "disabled" : ""}>
               <span class="model-selector-label">${escapeHtml(getActiveChatModelLabel())}</span>
               <span class="model-selector-chevron">${icons.arrowDown}</span>
@@ -606,27 +598,30 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
               ${renderModelOptions()}
             </ul>
             <span class="chat-toolbar-separator"></span>
-            <button class="chat-toolbar-icon" type="button" title="Toggle approvals" aria-label="Toggle approvals" data-action="toggle-approvals">
-              ${icons.check}
+            <button class="model-selector mode-selector chat-toolbar-mode" type="button" title="Agent mode" aria-haspopup="listbox" aria-expanded="false" data-mode-selector ${session.busy || executing ? "disabled" : ""}>
+              <span class="model-selector-label">${escapeHtml(chatAgentModeNameFor(workspace.id))}</span>
+              <span class="model-selector-chevron">${icons.arrowDown}</span>
             </button>
-            <span class="chat-toolbar-separator"></span>
-            <details class="chat-overflow chat-toolbar-overflow" data-chat-overflow>
-              <summary class="chat-toolbar-icon" title="Chat actions" aria-label="Chat actions">
-                ${icons.moreHorizontal}
-              </summary>
-              <div class="chat-overflow-menu" role="menu" aria-label="Chat actions">
-                <button class="chat-overflow-item" type="button" role="menuitem" data-action="create-chat-skill" ${session.busy || executing || creatingSkill || messages.length === 0 ? "disabled" : ""}>
-                  ${creatingSkill ? "Creating skill..." : "Create skill from chat"}
-                </button>
-                <button class="chat-overflow-item" type="button" role="menuitem" data-action="clear-chat" ${session.busy || executing || creatingSkill || messages.length === 0 ? "disabled" : ""}>
-                  Clear chat
-                </button>
-              </div>
-            </details>
-            <span class="chat-toolbar-separator"></span>
+            <ul class="model-dropdown mode-dropdown" data-mode-dropdown hidden role="listbox" aria-label="Composer modes">
+              ${renderModeOptions(workspace.id)}
+            </ul>
             <button class="chat-toolbar-icon execute-button ${executing ? "is-busy" : ""}" type="button" title="${executeLabel}" aria-label="${executeLabel}" data-action="execute-plan" ${session.busy || executing || messages.length === 0 ? "disabled" : ""}>
               ${executing ? `<span class="spinner spinner-sm" aria-hidden="true"></span>` : icons.execute}
             </button>
+            <span class="chat-toolbar-separator"></span>
+            <button class="chat-toolbar-icon" type="button" title="More options" aria-label="More options" data-chat-more-toggle ${session.busy || executing ? "disabled" : ""}>
+              ${icons.moreHorizontal}
+            </button>
+            <div class="chat-more-menu" data-chat-more-menu hidden>
+              <button type="button" title="New chat" aria-label="Start a new chat" data-clear-chat-button>
+                ${icons.refresh}
+                <span>New chat</span>
+              </button>
+              <button type="button" title="Create skill from this chat" aria-label="Create workspace skill from chat" data-create-skill-button ${session.busy || executing || creatingSkill ? "disabled" : ""}>
+                ${icons.star}
+                <span>Create skill</span>
+              </button>
+            </div>
           </div>
           <div class="chat-composer-toolbar-right">
             <button class="send-button ${session.busy || executing ? 'is-busy' : ''}" type="button" title="${session.busy || executing ? 'Stop' : 'Send'}" aria-label="${session.busy || executing ? 'Stop stream' : 'Send message'}" data-action="send-stop" ${executing ? "disabled" : ""}>
@@ -923,8 +918,13 @@ export function bindChatEvents(root: ParentNode) {
     .querySelectorAll<HTMLButtonElement>("[data-chat-attachment-toggle]")
     .forEach((button) => button.addEventListener("click", handleChatAttachmentToggle));
   root
+    .querySelectorAll<HTMLButtonElement>("[data-chat-more-toggle]")
+    .forEach((button) => button.addEventListener("click", handleChatMoreToggle));
+  root
     .querySelectorAll<HTMLButtonElement>("[data-attachment-type]")
     .forEach((button) => button.addEventListener("click", handleChatAttachmentSelect));
+  bindClearChatButton(root);
+  bindCreateSkillButton(root);
   bindChatMentionOptions(root);
   bindChatFileLinks(root);
   bindChatDebugSections(root);
@@ -932,15 +932,28 @@ export function bindChatEvents(root: ParentNode) {
   bindChatAttachmentMenuDismissal();
   bindModelSelector(root);
   bindModelDropdownEvents(root);
+  bindModeSelector(root);
+  bindModeDropdownEvents(root);
 }
 
 function bindChatAttachmentMenuDismissal() {
+  if (chatDismissalListenerBound) {
+    return;
+  }
+  chatDismissalListenerBound = true;
   document.addEventListener("click", (event) => {
     if (chatAttachmentMenuOpen) {
       const target = event.target as HTMLElement | null;
       const container = target?.closest("[data-chat-attachment-menu]") ?? target?.closest("[data-chat-attachment-toggle]");
       if (!container) {
         dismissChatAttachmentMenu();
+      }
+    }
+    if (chatMoreMenuOpen) {
+      const target = event.target as HTMLElement | null;
+      const container = target?.closest("[data-chat-more-menu]") ?? target?.closest("[data-chat-more-toggle]");
+      if (!container) {
+        dismissChatMoreMenu();
       }
     }
     if (modelDropdownOpen) {
@@ -950,10 +963,18 @@ function bindChatAttachmentMenuDismissal() {
         dismissModelDropdown();
       }
     }
+    if (modeDropdownOpen) {
+      const target = event.target as HTMLElement | null;
+      const container = target?.closest("[data-mode-dropdown]") ?? target?.closest("[data-mode-selector]");
+      if (!container) {
+        dismissModeDropdown();
+      }
+    }
   });
 }
 
 let modelDropdownOpen = false;
+let modeDropdownOpen = false;
 
 export function renderModelOptions(): string {
   const endpoints = state.settingsDraft?.endpoints ?? [];
@@ -989,9 +1010,15 @@ function handleModelSelectorClick(event: Event) {
   modelDropdownOpen = !modelDropdownOpen;
   button.setAttribute("aria-expanded", String(modelDropdownOpen));
   if (modelDropdownOpen) {
+    dismissModeDropdown();
+    dismissChatMoreMenu();
     dropdown.hidden = false;
+    const btnRect = button.getBoundingClientRect();
+    const dropRect = dropdown.getBoundingClientRect();
+    dropdown.style.left = `${btnRect.left - dropRect.left}px`;
   } else {
     dropdown.hidden = true;
+    dropdown.style.left = "";
   }
 }
 
@@ -1008,7 +1035,7 @@ function dismissModelDropdown() {
 }
 
 export function bindModelDropdownEvents(root: ParentNode) {
-  root.querySelectorAll<HTMLLIElement>(".model-dropdown-option").forEach((option) => {
+  root.querySelectorAll<HTMLLIElement>(".model-dropdown-option[data-model-id]").forEach((option) => {
     option.addEventListener("click", () => {
       const modelID = option.dataset.modelId ?? "";
       selectChatModel(modelID);
@@ -1017,7 +1044,7 @@ export function bindModelDropdownEvents(root: ParentNode) {
   });
 }
 
-function selectChatModel(endpointID: string) {
+async function selectChatModel(endpointID: string) {
   if (!state.settingsDraft) {
     return;
   }
@@ -1032,11 +1059,225 @@ function selectChatModel(endpointID: string) {
     endpointSelection: newSelection,
     endpoints,
   });
+  try {
+    state.appState = await SaveSettings(settingsWithCompactTheme(state.settingsDraft));
+    state.settingsDraft = cloneSettings(state.appState.settings);
+  } catch (err) {
+    pushToast(`Failed to save model selection: ${errorMessage(err)}`, "error");
+    return;
+  }
   patchChatPanel();
   getAppCallbacks().bindActionEvents(appRoot);
   getAppCallbacks().bindChatEvents(appRoot);
   const chosenName = endpoints.find((ep) => ep.id === endpointID)?.name || endpointID;
   pushToast(`Model set to ${chosenName}.`, "success");
+}
+
+export function renderModeOptions(workspaceID: string): string {
+  const currentID = chatAgentModeIDFor(workspaceID);
+  const modes = agentModesForWorkspace(workspaceID);
+  if (!modes.length) {
+    return `<li class="model-dropdown-option" role="option">Loading modes...</li>`;
+  }
+  let html = modes
+    .map((mode) => {
+      const selected = mode.id === currentID ? " is-active" : "";
+      const badges = renderModePermissionBadges(mode);
+      const deleteBtn = mode.builtIn
+        ? ""
+        : `<button type="button" class="mode-delete-btn" title="Delete ${escapeAttribute(mode.name)}" aria-label="Delete mode ${escapeAttribute(mode.name)}" data-mode-delete-id="${escapeAttribute(mode.id)}">${icons.x}</button>`;
+      return `<li class="model-dropdown-option mode-option${selected}" role="option" data-mode-id="${escapeAttribute(mode.id)}"><span class="mode-option-name">${escapeHtml(mode.name)}</span>${badges}${deleteBtn}</li>`;
+    })
+    .join("");
+  html += `\n      <li class="model-dropdown-option mode-create-option" role="option" data-mode-create><span class="mode-option-name">+ Create Mode</span></li>`;
+  return html;
+}
+
+function renderModePermissionBadges(mode: services.AgentMode): string {
+  const toolCount = (mode.toolPermissions ?? []).length;
+  const pathCount = (mode.pathPermissions ?? []).length;
+  if (toolCount === 0 && pathCount === 0) {
+    return "";
+  }
+  let badges = "";
+  if (toolCount > 0) {
+    badges += `<span class="mode-badge mode-badge-tools" title="${toolCount} tool permission${toolCount > 1 ? "s" : ""}">${toolCount}</span>`;
+  }
+  if (pathCount > 0) {
+    badges += `<span class="mode-badge mode-badge-paths" title="${pathCount} path permission${pathCount > 1 ? "s" : ""}">${pathCount}</span>`;
+  }
+  return badges;
+}
+
+export function bindModeSelector(root: ParentNode) {
+  root.querySelectorAll<HTMLButtonElement>("[data-mode-selector]").forEach((button) => {
+    button.addEventListener("click", handleModeSelectorClick);
+  });
+}
+
+function handleModeSelectorClick(event: Event) {
+  const button = event.currentTarget as HTMLButtonElement;
+  if (button.disabled) {
+    return;
+  }
+  const dropdown = appRoot.querySelector<HTMLElement>("[data-mode-dropdown]");
+  if (!dropdown) {
+    return;
+  }
+  modeDropdownOpen = !modeDropdownOpen;
+  button.setAttribute("aria-expanded", String(modeDropdownOpen));
+  if (modeDropdownOpen) {
+    dismissModelDropdown();
+    dismissChatMoreMenu();
+    dropdown.hidden = false;
+    const btnRect = button.getBoundingClientRect();
+    const dropRect = dropdown.getBoundingClientRect();
+    dropdown.style.left = `${btnRect.left - dropRect.left}px`;
+  } else {
+    dropdown.hidden = true;
+    dropdown.style.left = "";
+  }
+}
+
+function dismissModeDropdown() {
+  modeDropdownOpen = false;
+  const button = appRoot.querySelector<HTMLButtonElement>("[data-mode-selector]");
+  const dropdown = appRoot.querySelector<HTMLElement>("[data-mode-dropdown]");
+  if (button) {
+    button.setAttribute("aria-expanded", "false");
+  }
+  if (dropdown) {
+    dropdown.hidden = true;
+  }
+}
+
+export function bindModeDropdownEvents(root: ParentNode) {
+  root.querySelectorAll<HTMLLIElement>("[data-mode-id]").forEach((option) => {
+    option.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const modeID = option.dataset.modeId ?? "";
+      if (!modeID) return;
+      selectAgentMode(modeID);
+    });
+  });
+  root.querySelectorAll<HTMLLIElement>("[data-mode-create]").forEach((option) => {
+    option.addEventListener("click", (event) => {
+      event.stopPropagation();
+      createAgentModeFromChat();
+    });
+  });
+  root.querySelectorAll<HTMLButtonElement>("[data-mode-delete-id]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const modeID = button.dataset.modeDeleteId ?? "";
+      if (!modeID) return;
+      deleteAgentMode(modeID);
+    });
+  });
+}
+
+async function selectAgentMode(modeID: string) {
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    return;
+  }
+  setChatAgentMode(workspace.id, modeID);
+  dismissModeDropdown();
+  patchChatPanel();
+}
+
+async function deleteAgentMode(modeID: string) {
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+  const modes = agentModesForWorkspace(workspace.id);
+  const mode = modes.find((m) => m.id === modeID);
+  const name = mode?.name ?? modeID;
+  if (!window.confirm(`Delete agent mode "${name}"?`)) {
+    return;
+  }
+  try {
+    const updated = await DeleteAgentMode(modeID);
+    state.agentModes.set(workspace.id, Array.isArray(updated) ? updated : []);
+    /* Clear selection if deleted mode was active. */
+    if (chatAgentModeIDFor(workspace.id) === modeID) {
+      setChatAgentMode(workspace.id, "");
+    }
+    dismissModeDropdown();
+    patchChatPanel();
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+  }
+}
+
+async function createAgentModeFromChat() {
+  const workspace = activeWorkspace();
+  if (!workspace || state.creatingAgentModes.has(workspace.id)) {
+    return;
+  }
+  dismissModeDropdown();
+  state.creatingAgentModes.add(workspace.id);
+  patchChatPanel();
+  try {
+    const result = await CreateAgentModeFromChat(workspace.id);
+    const modes = await ListAgentModes(workspace.id);
+    state.agentModes.set(workspace.id, modes);
+    setChatAgentMode(workspace.id, result.id);
+    pushToast(`Created agent mode "${result.name}".`, "success");
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+  } finally {
+    state.creatingAgentModes.delete(workspace.id);
+    patchChatPanel();
+  }
+}
+
+function bindClearChatButton(root: ParentNode) {
+  root.querySelectorAll<HTMLButtonElement>("[data-clear-chat-button]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      dismissChatMoreMenu();
+      const workspace = activeWorkspace();
+      if (!workspace || !window.confirm("Clear the current chat?")) {
+        return;
+      }
+      void ClearChat(workspace.id).then((result: services.ChatSession) => {
+        state.chatSessions.set(workspace.id, result);
+        state.chatDrafts.set(workspace.id, "");
+        state.chatImageDrafts.delete(workspace.id);
+        patchChatPanel();
+      });
+    });
+  });
+}
+
+function bindCreateSkillButton(root: ParentNode) {
+  root.querySelectorAll<HTMLButtonElement>("[data-create-skill-button]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      if (button.disabled) {
+        return;
+      }
+      event.stopPropagation();
+      dismissChatMoreMenu();
+      const workspace = activeWorkspace();
+      if (!workspace || state.creatingChatSkills.has(workspace.id)) {
+        return;
+      }
+      state.creatingChatSkills.add(workspace.id);
+      patchChatPanel();
+      CreateSkillFromChat(workspace.id)
+        .then((skill: services.WorkspaceSkillCreationResult) => {
+          pushToast(`Created skill "${skill.name}".`, "success");
+        })
+        .catch((error) => {
+          console.error("Failed to create workspace skill:", error);
+          pushToast(errorMessage(error), "error");
+        })
+        .finally(() => {
+          state.creatingChatSkills.delete(workspace.id);
+          patchChatPanel();
+        });
+    });
+  });
 }
 
 export function bindChatDebugSections(root: ParentNode) {
@@ -1128,6 +1369,8 @@ export function handleChatPaste(event: ClipboardEvent) {
 }
 
 let chatAttachmentMenuOpen = false;
+let chatMoreMenuOpen = false;
+let chatDismissalListenerBound = false;
 
 export function handleChatAttachmentToggle(event: Event) {
   const workspace = activeWorkspace();
@@ -1150,6 +1393,9 @@ export function handleChatAttachmentToggle(event: Event) {
   chatAttachmentMenuOpen = !chatAttachmentMenuOpen;
   button.setAttribute("aria-expanded", String(chatAttachmentMenuOpen));
   if (chatAttachmentMenuOpen) {
+    dismissModelDropdown();
+    dismissModeDropdown();
+    dismissChatMoreMenu();
     menu.hidden = false;
   } else {
     menu.hidden = true;
@@ -1160,6 +1406,49 @@ function dismissChatAttachmentMenu() {
   chatAttachmentMenuOpen = false;
   const toggle = appRoot.querySelector<HTMLButtonElement>("[data-chat-attachment-toggle]");
   const menu = appRoot.querySelector<HTMLElement>("[data-chat-attachment-menu]");
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", "false");
+  }
+  if (menu) {
+    menu.hidden = true;
+  }
+}
+
+function handleChatMoreToggle(event: Event) {
+  const button = event.currentTarget as HTMLButtonElement;
+  if (button.disabled) {
+    return;
+  }
+  const menu = appRoot.querySelector<HTMLElement>("[data-chat-more-menu]");
+  if (!menu) {
+    return;
+  }
+  chatMoreMenuOpen = !chatMoreMenuOpen;
+  button.setAttribute("aria-expanded", String(chatMoreMenuOpen));
+  if (chatMoreMenuOpen) {
+    dismissModelDropdown();
+    dismissModeDropdown();
+    /* Show temporarily with visibility:hidden so we can measure without flash */
+    menu.hidden = false;
+    menu.style.visibility = "hidden";
+    const menuHeight = menu.offsetHeight || 0;
+    const buttonRect = button.getBoundingClientRect();
+    const container = button.closest<HTMLElement>(".chat-composer-toolbar-left");
+    const containerRect = container?.getBoundingClientRect() ?? { left: 0, top: 0 };
+    /* Position relative to .chat-composer-toolbar-left (position: relative) */
+    menu.style.left = `${buttonRect.left - containerRect.left}px`;
+    menu.style.top = `${buttonRect.top - containerRect.top - menuHeight - 4}px`;
+    /* Now make it visible */
+    menu.style.visibility = "";
+  } else {
+    menu.hidden = true;
+  }
+}
+
+export function dismissChatMoreMenu() {
+  chatMoreMenuOpen = false;
+  const toggle = appRoot.querySelector<HTMLButtonElement>("[data-chat-more-toggle]");
+  const menu = appRoot.querySelector<HTMLElement>("[data-chat-more-menu]");
   if (toggle) {
     toggle.setAttribute("aria-expanded", "false");
   }
@@ -1370,8 +1659,8 @@ export function handleChatPlanModeChange(event: Event) {
   if (!workspace) {
     return;
   }
-  const input = event.currentTarget as HTMLInputElement;
-  state.chatPlanModes.set(workspace.id, input.checked);
+  const currentMode = chatComposerModeFor(workspace.id);
+  setChatComposerMode(workspace.id, currentMode === "plan" ? "edit" : "plan");
 }
 
 export function handleChatKeydown(event: KeyboardEvent) {
@@ -1457,7 +1746,7 @@ export async function handleSendStopClick(event: Event) {
         workspace.id,
         services.ChatMessageRequest.createFrom({
           content: draft,
-          planMode: chatPlanModeFor(workspace.id),
+          agentModeId: chatAgentModeIDFor(workspace.id),
           images: imageDrafts.map((image) =>
             services.ChatImageInput.createFrom({
               id: image.id,
@@ -1516,7 +1805,7 @@ export async function handleChatSubmit(event: SubmitEvent) {
       workspace.id,
       services.ChatMessageRequest.createFrom({
         content: message,
-        planMode: chatPlanModeFor(workspace.id),
+        agentModeId: chatAgentModeIDFor(workspace.id),
         images: imageDrafts.map((image) =>
           services.ChatImageInput.createFrom({
             id: image.id,
@@ -1574,7 +1863,7 @@ export async function handleChatEditSubmit(event: SubmitEvent) {
     const editedMessage = (chatSessionFor(workspace.id).messages ?? []).find((message) => message.id === messageID);
     state.chatSessions.set(
       workspace.id,
-      await EditChatMessage(workspace.id, messageID, trimmed, chatPlanModeFor(workspace.id)),
+      await EditChatMessage(workspace.id, messageID, trimmed, chatAgentModeIDFor(workspace.id)),
     );
     state.editingMessageIds.delete(messageID);
     if (editedMessage?.role === "user") {
@@ -1957,21 +2246,10 @@ export function patchChatControls() {
     button.innerHTML = executing ? `<span class="spinner" aria-hidden="true"></span>` : icons.execute;
   });
 
-  appRoot.querySelectorAll<HTMLButtonElement>('[data-action="toggle-agent-mode"]').forEach((button) => {
-    button.disabled = session.busy || executing;
-  });
-
   // Update all clear-chat buttons (overflow menu + mobile controls)
-  appRoot.querySelectorAll<HTMLButtonElement>('[data-action="clear-chat"]').forEach((button) => {
+  appRoot.querySelectorAll<HTMLButtonElement>("[data-clear-chat-button]").forEach((button) => {
     button.disabled = session.busy || executing || creatingSkill || (session.messages ?? []).length === 0;
   });
-
-  // Update create-skill button in overflow menu
-  const createSkillBtn = appRoot.querySelector<HTMLButtonElement>('[data-action="create-chat-skill"]');
-  if (createSkillBtn) {
-    createSkillBtn.disabled = session.busy || executing || creatingSkill || (session.messages ?? []).length === 0;
-    createSkillBtn.textContent = creatingSkill ? "Creating skill..." : "Create skill from chat";
-  }
 
   appRoot.querySelectorAll<HTMLButtonElement>(".chat-prune-trigger").forEach((button) => {
     button.disabled = session.busy || executing;

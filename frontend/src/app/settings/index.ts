@@ -1,10 +1,10 @@
 
-import { LoadWebAccessStatus, PrepareRebuildAndRelaunch, SaveSettings, SaveWebAccessSettings, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter } from "../../backend/services";
+import { CreateAgentMode, CreateAgentModePerTool, DeleteAgentMode, LoadWebAccessStatus, ListAgentModes, PrepareRebuildAndRelaunch, SaveSettings, SaveWebAccessSettings, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter, UpdateAgentMode, UpdateAgentModePerTool } from "../../backend/services";
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
 import { renderQRCodeSVG } from "../qr";
-import { cloneSettings, cloneWebAccessSettings, fieldValue, leadingWhitespaceIndicatorsEnabled, limitKanbanConcurrencyEnabled, notificationSoundsEnabled, state } from "../state";
+import { cloneSettings, cloneWebAccessSettings, fieldValue, leadingWhitespaceIndicatorsEnabled, limitKanbanConcurrencyEnabled, notificationSoundsEnabled, state, activeWorkspace, agentModesForWorkspace } from "../state";
 import { applyTheme, normalizeHexColor, settingsWithCompactTheme, settingsWithThemeColor, themeColorValue, themeGroups, themeTokens, type ThemePaletteName } from "../theme";
 import { pushToast } from "../toasts";
 import { errorMessage, escapeAttribute, escapeHtml, workspaceFolderSummary } from "../utils";
@@ -104,7 +104,33 @@ const settingsSections = [
   { id: "web-access-settings-title", label: "Web Access" },
   { id: "theme-settings-title", label: "Theme Colors" },
   { id: "workspace-settings-title", label: "Workspaces" },
+  { id: "agent-modes-settings-title", label: "Agent Modes" },
   { id: "development-settings-title", label: "Development" },
+] as const;
+
+// Registered tool names for the per-tool permission selector.
+const availableToolNames = [
+  "create_agent_mode",
+  "filesystem_create_text",
+  "filesystem_delete_file",
+  "filesystem_edit_text",
+  "filesystem_list",
+  "filesystem_read_image",
+  "filesystem_read_text",
+  "filesystem_read_video",
+  "filesystem_search_text",
+  "filesystem_search_workspace",
+  "filesystem_stat",
+  "git_inspect",
+  "lsp_query",
+  "restart",
+  "shell_command",
+  "web_fetch",
+  "web_search",
+  "workspace_context",
+  "workspace_skill_read",
+  "workspace_skill_record",
+  "workspace_skill_search",
 ] as const;
 
 type EndpointTopic = (typeof endpointTopics)[number]["key"];
@@ -147,6 +173,9 @@ export function bindSettingsEvents(root: ParentNode) {
         void handleWorkspaceDefaultPlanModeChange(input);
       }),
     );
+  form
+    ?.querySelectorAll<HTMLTextAreaElement>("textarea")
+    .forEach((textarea) => textarea.addEventListener("input", handleSettingsInput));
 }
 
 export function renderSettingsOverlay(workspaces: services.Workspace[]): string {
@@ -303,6 +332,8 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
               </div>
             </section>
 
+            ${renderAgentModesSection()}
+
             <section class="settings-section" aria-labelledby="development-settings-title">
               <h3 id="development-settings-title" class="settings-section-title">Development</h3>
               <p>Echo source workspace actions.</p>
@@ -318,6 +349,400 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
       </form>
     </div>
   `;
+}
+
+/* ── Agent Modes settings section ── */
+
+function renderAgentModesSection(): string {
+  const ws = activeWorkspace();
+  const workspaceID = ws?.id ?? "";
+  const modes = agentModesForWorkspace(workspaceID);
+  const editingId = state.agentModeEditingId ?? "";
+  const isCreating = state.agentModeCreating === true;
+
+  return `
+    <section class="settings-section" aria-labelledby="agent-modes-settings-title">
+      <div class="settings-section-heading">
+        <h3 id="agent-modes-settings-title" class="settings-section-title">Agent Modes</h3>
+        ${!isCreating ? `
+          <button class="secondary-button compact-button" type="button" data-action="create-agent-mode">
+            ${icons.plus}
+            <span>Add Mode</span>
+          </button>
+        ` : ""}
+      </div>
+      ${workspaceID ? `` : `<p class="empty-state compact">No workspace selected.</p>`}
+
+      ${isCreating ? renderAgentModeForm(null) : ""}
+
+      <div class="agent-mode-list">
+        ${workspaceID && modes.length === 0 && !isCreating
+          ? `<p class="empty-state compact">No custom agent modes. Add one to define custom system prompts and tool permissions.</p>`
+          : workspaceID ? modes.map((mode) => renderAgentModeRow(mode, editingId)).join("") : ""
+        }
+      </div>
+    </section>
+  `;
+}
+
+function renderAgentModeRow(mode: services.AgentMode, editingId: string): string {
+  const isEditing = mode.id === editingId;
+  const toolCount = mode.toolPermissions?.length ?? 0;
+  const pathCount = mode.pathPermissions?.length ?? 0;
+  const hasPermissions = toolCount > 0 || pathCount > 0;
+
+  if (isEditing) {
+    return renderAgentModeForm(mode);
+  }
+
+  return `
+    <div class="agent-mode-row" data-agent-mode-id="${escapeAttribute(mode.id)}">
+      <div class="agent-mode-main">
+        <strong>${escapeHtml(mode.name)}</strong>
+        <span>${mode.builtIn ? "Built-in" : (mode.prompt?.trim() || "No custom prompt")}${hasPermissions ? " · " + renderAgentModePermissionSummary(mode) : ""}</span>
+      </div>
+      <div class="agent-mode-actions">
+        ${!mode.builtIn ? `
+          <button class="icon-button" type="button" title="Edit mode" aria-label="Edit ${escapeAttribute(mode.name)}" data-action="edit-agent-mode" data-agent-mode-id="${escapeAttribute(mode.id)}">
+            ${icons.edit}
+          </button>
+          <button class="icon-button danger-button" type="button" title="Delete mode" aria-label="Delete ${escapeAttribute(mode.name)}" data-action="delete-agent-mode-settings" data-agent-mode-id="${escapeAttribute(mode.id)}">
+            ${icons.trash}
+          </button>
+        ` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function renderAgentModePermissionSummary(mode: services.AgentMode): string {
+  const perms = mode.permissions;
+  if (perms && Object.keys(perms).length > 0) {
+    return `${Object.keys(perms).length} tool${Object.keys(perms).length > 1 ? "s" : ""}`;
+  }
+  // Fall back to legacy fields.
+  const parts: string[] = [];
+  if (mode.toolPermissions?.length) {
+    parts.push(`${mode.toolPermissions.length} tool${mode.toolPermissions.length > 1 ? "s" : ""}`);
+  }
+  if (mode.pathPermissions?.length) {
+    parts.push(`${mode.pathPermissions.length} path${mode.pathPermissions.length > 1 ? "s" : ""}`);
+  }
+  return parts.join(", ");
+}
+
+function extractPermissionsMap(mode: services.AgentMode): Record<string, string[]> | null {
+  // Prefer new Permissions map.
+  if (mode.permissions && Object.keys(mode.permissions).length > 0) {
+    const result: Record<string, string[]> = {};
+    for (const [toolName, perm] of Object.entries(mode.permissions)) {
+      if (perm && perm.paths?.length) {
+        result[toolName] = [...perm.paths];
+      }
+    }
+    return result;
+  }
+  // Fall back to legacy flat lists.
+  const toolNames = mode.toolPermissions ?? [];
+  const paths = mode.pathPermissions ?? [];
+  if (toolNames.length === 0) return null;
+  const result: Record<string, string[]> = {};
+  for (const name of toolNames) {
+    result[name] = paths.length > 0 ? [...paths] : [];
+  }
+  return result;
+}
+
+function renderAgentModeForm(mode: services.AgentMode | null): string {
+  const isNew = mode === null;
+  const name = mode?.name ?? state.agentModeDraftName ?? "";
+  const prompt = mode?.prompt ?? state.agentModeDraftPrompt ?? "";
+
+  // Build per-tool permissions from draft or existing mode.
+  let permissions: Record<string, string[]> | null = null;
+  if (isNew) {
+    permissions = state.agentModeDraftPermissions && Object.keys(state.agentModeDraftPermissions).length > 0
+      ? { ...state.agentModeDraftPermissions }
+      : null;
+  } else {
+    permissions = extractPermissionsMap(mode);
+  }
+
+  const selectedTools = new Set<string>(permissions ? Object.keys(permissions) : []);
+
+  return `
+    <div class="agent-mode-form" data-agent-mode-form>
+      <div class="settings-grid">
+        <label class="field">
+          <span>Name</span>
+          <input name="agentModeName" type="text" value="${escapeAttribute(name)}" autocomplete="off" required data-agent-mode-field data-agent-mode-field-name="name" data-initial-focus />
+        </label>
+      </div>
+      <label class="field field-wide">
+        <span>System Prompt</span>
+        <textarea name="agentModePrompt" rows="4" data-agent-mode-field data-agent-mode-field-name="prompt">${escapeHtml(prompt)}</textarea>
+      </label>
+      <div class="agent-mode-permissions-section">
+        <h4 class="agent-mode-permissions-heading">Tool Permissions</h4>
+        <p class="compact muted">Select tools and configure allowed paths per tool.</p>
+        ${renderPerToolPermissionRows(permissions ?? {}, selectedTools)}
+      </div>
+      <div class="agent-mode-form-actions">
+        <button class="primary-button compact-button" type="button" data-action="${isNew ? "save-new-agent-mode" : "save-agent-mode"}" ${mode ? `data-agent-mode-id="${escapeAttribute(mode.id)}"` : ""}>Save</button>
+        <button class="secondary-button compact-button" type="button" data-action="cancel-agent-mode">Cancel</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderPerToolPermissionRows(permissions: Record<string, string[]>, selectedTools: Set<string>): string {
+  return availableToolNames.map((toolName) => {
+    const isChecked = selectedTools.has(toolName);
+    const paths = permissions[toolName] ?? [];
+    const pathsText = paths.join("\n");
+    return `
+      <div class="per-tool-permission-row" data-per-tool-tool="${escapeAttribute(toolName)}">
+        <label class="per-tool-checkbox-label">
+          <input
+            type="checkbox"
+            ${isChecked ? "checked" : ""}
+            data-per-tool-checkbox
+            data-per-tool-name="${escapeAttribute(toolName)}"
+          />
+          <span>${escapeHtml(toolName)}</span>
+        </label>
+        <div class="per-tool-paths-container ${!isChecked ? "is-collapsed" : ""}">
+          <textarea
+            rows="2"
+            placeholder="One glob per line; leave empty for all paths&#10;e.g. **/*.go"
+            ${!isChecked ? "disabled" : ""}
+            data-per-tool-paths
+            data-per-tool-name="${escapeAttribute(toolName)}"
+          >${escapeHtml(pathsText)}</textarea>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+/* ── Agent Mode state helpers (exported for actions.ts) ── */
+
+export function startCreateAgentMode() {
+  state.agentModeCreating = true;
+  state.agentModeEditingId = "";
+  state.agentModeDraftName = "";
+  state.agentModeDraftPrompt = "";
+  state.agentModeDraftToolPermissions = [];
+  state.agentModeDraftPathPermissions = [];
+  state.agentModeDraftPermissions = {};
+  state.formError = "";
+}
+
+export function startEditAgentMode(modeID: string) {
+  const ws = activeWorkspace();
+  if (!ws) return;
+  const modes = agentModesForWorkspace(ws.id);
+  const mode = modes.find((m) => m.id === modeID);
+  if (!mode || mode.builtIn) {
+    return;
+  }
+  state.agentModeEditingId = modeID;
+  state.agentModeCreating = false;
+  state.agentModeDraftName = mode.name ?? "";
+  state.agentModeDraftPrompt = mode.prompt ?? "";
+  // Keep legacy fields populated for backward compat.
+  state.agentModeDraftToolPermissions = [...(mode.toolPermissions ?? [])];
+  state.agentModeDraftPathPermissions = [...(mode.pathPermissions ?? [])];
+  // Populate new per-tool permissions map.
+  const permsMap = extractPermissionsMap(mode);
+  state.agentModeDraftPermissions = permsMap ? { ...permsMap } : {};
+  state.formError = "";
+}
+
+export function cancelAgentMode() {
+  state.agentModeCreating = false;
+  state.agentModeEditingId = "";
+  state.agentModeDraftName = "";
+  state.agentModeDraftPrompt = "";
+  state.agentModeDraftToolPermissions = [];
+  state.agentModeDraftPathPermissions = [];
+  state.agentModeDraftPermissions = {};
+  state.formError = "";
+}
+
+export async function saveNewAgentMode() {
+  const ws = activeWorkspace();
+  if (!ws) return;
+  const name = (state.agentModeDraftName ?? "").trim();
+  if (!name) {
+    state.formError = "Mode name is required.";
+    getAppCallbacks().render();
+    return;
+  }
+  const prompt = state.agentModeDraftPrompt ?? "";
+  const permissions = collectPermissionsFromForm();
+
+  try {
+    const modes = await CreateAgentModePerTool(name, prompt, permissions);
+    state.agentModes.set(ws.id, modes);
+    cancelAgentMode();
+    pushToast(`Agent mode "${name}" created.`, "success");
+    getAppCallbacks().render();
+  } catch (error) {
+    state.formError = errorMessage(error);
+    getAppCallbacks().render();
+  }
+}
+
+export async function saveAgentMode(modeID: string) {
+  const ws = activeWorkspace();
+  if (!ws) return;
+  const name = (state.agentModeDraftName ?? "").trim();
+  if (!name) {
+    state.formError = "Mode name is required.";
+    getAppCallbacks().render();
+    return;
+  }
+  const prompt = state.agentModeDraftPrompt ?? "";
+  const permissions = collectPermissionsFromForm();
+
+  try {
+    const modes = await UpdateAgentModePerTool(modeID, name, prompt, permissions);
+    state.agentModes.set(ws.id, modes);
+    cancelAgentMode();
+    pushToast(`Agent mode "${name}" saved.`, "success");
+    getAppCallbacks().render();
+  } catch (error) {
+    state.formError = errorMessage(error);
+    getAppCallbacks().render();
+  }
+}
+
+// collectPermissionsFromForm reads the current DOM per-tool permission inputs
+// and builds a Record<toolName, string[]> map. If no tools are selected, returns {}.
+function collectPermissionsFromForm(): Record<string, string[]> {
+  const form = document.querySelector<HTMLFormElement>("[data-settings-form]");
+  if (!form) return {};
+
+  const result: Record<string, string[]> = {};
+  for (const checkbox of form.querySelectorAll<HTMLInputElement>("input[data-per-tool-checkbox]:checked")) {
+    const toolName = checkbox.dataset.perToolName ?? "";
+    if (!toolName) continue;
+    const textarea = form.querySelector<HTMLTextAreaElement>(`textarea[data-per-tool-name="${CSS.escape(toolName)}"]`);
+    const pathsText = textarea?.value ?? "";
+    const paths = parsePermissionLines(pathsText);
+    result[toolName] = paths;
+  }
+  return result;
+}
+
+export async function deleteAgentModeSettings(modeID: string) {
+  const ws = activeWorkspace();
+  if (!ws) return;
+  const modes = agentModesForWorkspace(ws.id);
+  const mode = modes.find((m) => m.id === modeID);
+  if (!mode || mode.builtIn) {
+    return;
+  }
+  if (!window.confirm(`Delete agent mode "${mode.name}"?`)) {
+    return;
+  }
+  try {
+    const updated = await DeleteAgentMode(modeID);
+    state.agentModes.set(ws.id, Array.isArray(updated) ? updated : []);
+    if (state.agentModeEditingId === modeID) {
+      cancelAgentMode();
+    }
+    pushToast(`Agent mode "${mode.name}" deleted.`, "success");
+    getAppCallbacks().render();
+  } catch (error) {
+    state.formError = errorMessage(error);
+    getAppCallbacks().render();
+  }
+}
+
+function parsePermissionLines(text: string): string[] {
+  const result: string[] = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed) {
+      result.push(trimmed);
+    }
+  }
+  return result;
+}
+
+function handleAgentModeFieldInput(input: HTMLInputElement | HTMLTextAreaElement) {
+  const fieldName = input.dataset.agentModeFieldName;
+  if (!fieldName) return;
+
+  switch (fieldName) {
+    case "name":
+      state.agentModeDraftName = (input as HTMLInputElement).value;
+      break;
+    case "prompt":
+      state.agentModeDraftPrompt = (input as HTMLTextAreaElement).value;
+      break;
+    case "toolPermissions":
+      state.agentModeDraftToolPermissions = parsePermissionLines((input as HTMLTextAreaElement).value);
+      break;
+    case "pathPermissions":
+      state.agentModeDraftPathPermissions = parsePermissionLines((input as HTMLTextAreaElement).value);
+      break;
+  }
+  state.formError = "";
+}
+
+function handlePerToolCheckbox(checkbox: HTMLInputElement) {
+  const toolName = checkbox.dataset.perToolName ?? "";
+  if (!toolName) return;
+
+  // Update draft permissions map.
+  if (!state.agentModeDraftPermissions) {
+    state.agentModeDraftPermissions = {};
+  }
+
+  if (checkbox.checked) {
+    if (!state.agentModeDraftPermissions[toolName]) {
+      state.agentModeDraftPermissions[toolName] = [];
+    }
+    // Expand the paths container.
+    const row = checkbox.closest<HTMLElement>("[data-per-tool-tool]");
+    const container = row?.querySelector<HTMLElement>(".per-tool-paths-container");
+    if (container) {
+      container.classList.remove("is-collapsed");
+      const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+      if (textarea) textarea.disabled = false;
+    }
+  } else {
+    delete state.agentModeDraftPermissions[toolName];
+    // Collapse the paths container.
+    const row = checkbox.closest<HTMLElement>("[data-per-tool-tool]");
+    const container = row?.querySelector<HTMLElement>(".per-tool-paths-container");
+    if (container) {
+      container.classList.add("is-collapsed");
+      const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+      if (textarea) {
+        textarea.disabled = true;
+        textarea.value = "";
+      }
+    }
+  }
+}
+
+function handlePerToolPathsInput(textarea: HTMLTextAreaElement) {
+  const toolName = textarea.dataset.perToolName ?? "";
+  if (!toolName) return;
+  const paths = parsePermissionLines(textarea.value);
+  if (!state.agentModeDraftPermissions) {
+    state.agentModeDraftPermissions = {};
+  }
+  // Ensure the tool is in the map (checkbox may not be checked but paths edited).
+  const checkbox = document.querySelector<HTMLInputElement>(`input[data-per-tool-name="${CSS.escape(toolName)}"]`);
+  if (checkbox && !checkbox.checked) {
+    checkbox.checked = true;
+  }
+  state.agentModeDraftPermissions[toolName] = paths;
 }
 
 function renderLLMEndpointRouting(endpoints: llm.LLMEndpoint[]): string {
@@ -1070,7 +1495,19 @@ export async function saveSettingsImmediately(): Promise<void> {
 }
 
 export function handleSettingsInput(event: Event) {
-  const input = event.currentTarget as HTMLInputElement | HTMLSelectElement;
+  const input = event.currentTarget as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+  if (input.dataset.agentModeField !== undefined) {
+    handleAgentModeFieldInput(input as HTMLInputElement | HTMLTextAreaElement);
+    return;
+  }
+  if (input.dataset.perToolCheckbox !== undefined) {
+    handlePerToolCheckbox(input as HTMLInputElement);
+    return;
+  }
+  if (input.dataset.perToolPaths !== undefined) {
+    handlePerToolPathsInput(input as HTMLTextAreaElement);
+    return;
+  }
   if (input.dataset.llmEndpointSelection !== undefined && input instanceof HTMLSelectElement) {
     handleLLMEndpointSelectionInput(input);
     return;
@@ -1099,6 +1536,11 @@ export function handleSettingsInput(event: Event) {
     return;
   }
   if (!state.settingsDraft) {
+    return;
+  }
+
+  /* Textareas handled above; remaining inputs are HTMLInputElement | HTMLSelectElement */
+  if (!(input instanceof HTMLInputElement || input instanceof HTMLSelectElement)) {
     return;
   }
 

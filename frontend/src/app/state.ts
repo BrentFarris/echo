@@ -16,6 +16,13 @@ export const state = {
   webAccessQRCodeURL: "",
   settingsOpen: false,
   settingsEndpointEditId: "",
+  agentModeEditingId: "",
+  agentModeCreating: false,
+  agentModeDraftName: "",
+  agentModeDraftPrompt: "",
+  agentModeDraftToolPermissions: [] as string[], // deprecated: kept for backward compat
+  agentModeDraftPathPermissions: [] as string[], // deprecated: kept for backward compat
+  agentModeDraftPermissions: {} as Record<string, string[]>, // tool name -> glob paths[]
   settingsThemePalette: "light" as ThemePaletteName,
   workspaceLetterDrafts: new Map<string, string>(),
   appMode: "chat" as AppMode,
@@ -27,6 +34,7 @@ export const state = {
   chatDrafts: new Map<string, string>(),
   chatImageDrafts: new Map<string, ChatImageDraft[]>(),
   chatVideoDrafts: new Map<string, ChatVideoDraft[]>(),
+  chatComposerModes: new Map<string, "plan" | "edit">(),
   chatPlanModes: new Map<string, boolean>(),
   chatFileLinkCache: new Map<string, Promise<string | null>>(),
   chatMention: null as ChatMentionState | null,
@@ -65,10 +73,40 @@ export const state = {
   toasts: [] as Toast[],
   kanbanTimerID: null as number | null,
   contextMenu: null as ContextMenuState | null,
+  agentModes: new Map<string, services.AgentMode[]>(),
+  selectedAgentModeIds: new Map<string, string>(),
+  creatingAgentModes: new Set<string>(),
+};
+
+export type AgentModeDraft = {
+  name: string;
+  prompt: string;
+  toolPermissionsText: string;
+  pathPermissionsText: string;
 };
 
 export function getActiveChatKanbanTab(workspaceID: string): ChatKanbanTab {
   return state.activeChatKanbanTab.get(workspaceID) ?? "chat";
+}
+
+export function chatComposerModeFor(workspaceID: string): "plan" | "edit" {
+  const mode = state.chatComposerModes.get(workspaceID);
+  if (mode !== undefined) {
+    return mode;
+  }
+  /* Derive chatPlanModes from the composer mode map. */
+  state.chatPlanModes.delete(workspaceID);
+  return "plan";
+}
+
+export function setChatComposerMode(workspaceID: string, mode: "plan" | "edit") {
+  if (mode === "plan") {
+    state.chatComposerModes.delete(workspaceID);
+    state.chatPlanModes.delete(workspaceID);
+  } else {
+    state.chatComposerModes.set(workspaceID, mode);
+    state.chatPlanModes.set(workspaceID, false);
+  }
 }
 
 export const kanbanLaneLabels: Record<string, string> = {
@@ -126,12 +164,40 @@ export function chatSessionFor(workspaceID: string): services.ChatSession {
 }
 
 export function chatPlanModeFor(workspaceID: string): boolean {
-  const sessionOverride = state.chatPlanModes.get(workspaceID);
-  if (sessionOverride !== undefined) {
-    return sessionOverride;
+  const mode = chatComposerModeFor(workspaceID);
+  return mode === "plan";
+}
+
+export function chatAgentModeIDFor(workspaceID: string): string {
+  const selected = state.selectedAgentModeIds.get(workspaceID);
+  if (selected !== undefined && selected !== "") {
+    return selected;
   }
-  const workspace = state.appState?.workspaces?.find((item) => item.id === workspaceID);
-  return workspace?.defaultPlanMode ?? true;
+  /* Fallback to built-in plan/general IDs for backward compatibility. */
+  const mode = chatComposerModeFor(workspaceID);
+  if (mode === "plan") {
+    return "plan";
+  }
+  return "general";
+}
+
+export function agentModesForWorkspace(workspaceID: string): services.AgentMode[] {
+  return state.agentModes.get(workspaceID) ?? [];
+}
+
+export function chatAgentModeNameFor(workspaceID: string): string {
+  const id = chatAgentModeIDFor(workspaceID);
+  const modes = agentModesForWorkspace(workspaceID);
+  const mode = modes.find((m) => m.id === id);
+  return mode?.name ?? id;
+}
+
+export function setChatAgentMode(workspaceID: string, modeID: string) {
+  if (modeID) {
+    state.selectedAgentModeIds.set(workspaceID, modeID);
+  } else {
+    state.selectedAgentModeIds.delete(workspaceID);
+  }
 }
 
 export function kanbanBoardFor(workspaceID: string): services.KanbanBoard {
@@ -235,5 +301,5 @@ export function getActiveChatModelLabel(): string {
   const selection = state.settingsDraft?.endpointSelection;
   const endpointID = selection?.chat || endpoints[0].id;
   const endpoint = endpoints.find((ep) => ep.id === endpointID);
-  return endpoint?.model?.trim() || "";
+  return endpoint?.name?.trim() || endpoint?.model?.trim() || endpoint?.id?.trim() || "";
 }

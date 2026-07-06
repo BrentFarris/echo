@@ -25,6 +25,17 @@ type storedAppState struct {
 	ChatSessions      map[string]persistedChatSession `json:"chatSessions,omitempty"`
 }
 
+// storedAppStateRaw is used to read old state files that may contain agentModes.
+type storedAppStateRaw struct {
+	Settings          llm.Settings                    `json:"settings"`
+	WebAccess         WebAccessSettings               `json:"webAccess"`
+	Workspaces        []Workspace                     `json:"workspaces"`
+	ActiveWorkspaceID string                          `json:"activeWorkspaceId"`
+	AgentModes        []AgentMode                     `json:"agentModes,omitempty"` // deprecated: read for migration only
+	KanbanCards       []KanbanCard                    `json:"kanbanCards"`
+	ChatSessions      map[string]persistedChatSession `json:"chatSessions,omitempty"`
+}
+
 type workspaceAutosave struct {
 	Version     int                   `json:"version"`
 	ChatSession *persistedChatSession `json:"chatSession,omitempty"`

@@ -869,6 +869,11 @@ func (s *SystemService) load() error {
 		return err
 	}
 	state := stored.appState()
+
+	// Read legacy agentModes from state file for migration to disk storage.
+	var storedRaw storedAppStateRaw
+	_ = json.Unmarshal(data, &storedRaw)
+
 	legacyKanbanCards := cloneKanbanCards(stored.KanbanCards)
 	legacyChatSessions := clonePersistedChatSessions(stored.ChatSessions)
 	hadLegacyWorkspaceState := len(legacyKanbanCards) > 0 || len(legacyChatSessions) > 0
@@ -938,6 +943,10 @@ func (s *SystemService) load() error {
 		}
 	}
 	s.state = state
+	// Migrate legacy global agent modes to workspace disk storage.
+	if len(storedRaw.AgentModes) > 0 {
+		s.migrateGlobalAgentModesToDisk(storedRaw.AgentModes)
+	}
 	s.persistedChatSessions = loadedChatSessions
 	interruptedChat := s.restoreChatSessionsLocked()
 	changed := s.refreshWorkspaceStatusesLocked()

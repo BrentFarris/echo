@@ -11,10 +11,55 @@ import (
 const (
 	workspaceCacheDirName        = ".echo"
 	workspaceSkillCacheDirName   = "skills"
+	workspaceModeCacheDirName    = "modes"
 	workspaceFileDatabaseDirName = "file-database"
 	workspaceCacheDirectoryPerm  = 0o755
 	workspaceCacheFilePermission = 0o600
 )
+
+// workspaceModeDirName returns the workspace-scoped modes directory name.
+func workspaceModeDirName(workspaceID string) string {
+	return fmt.Sprintf("%s-%s", workspaceModeCacheDirName, workspaceID)
+}
+
+// migrateLegacyModesToWorkspaceScoped moves mode files from the legacy
+// .echo/modes/ directory to the new workspace-scoped .echo/modes-{workspaceID}/ path.
+// It is a no-op if the legacy directory does not exist or if the scoped target
+// already contains modes.
+func migrateLegacyModesToWorkspaceScoped(workspaceID string, folder WorkspaceFolder) error {
+	root, err := workspaceFolderAbsolutePath(folder)
+	if err != nil {
+		return err
+	}
+	cacheRoot := filepath.Join(root, workspaceCacheDirName)
+	legacyPath := filepath.Join(cacheRoot, workspaceModeCacheDirName) // .echo/modes/
+	scopedDirName := workspaceModeDirName(workspaceID)               // modes-{workspaceID}
+	scopedPath := filepath.Join(cacheRoot, scopedDirName)
+
+	// Check if legacy directory exists.
+	info, err := os.Lstat(legacyPath)
+	if err != nil {
+		return nil // no legacy directory to migrate
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil
+	}
+
+	// Check if scoped target already exists with content; skip to avoid data loss.
+	scopedInfo, scopedErr := os.Lstat(scopedPath)
+	if scopedErr == nil && scopedInfo.IsDir() {
+		children, err := os.ReadDir(scopedPath)
+		if err == nil && len(children) > 0 {
+			return nil // target has modes; skip migration
+		}
+	}
+
+	// Move legacy directory to the workspace-scoped path.
+	if err := os.Rename(legacyPath, scopedPath); err != nil {
+		return fmt.Errorf("migrate legacy modes to %s: %w", scopedDirName, err)
+	}
+	return nil
+}
 
 type WorkspaceCacheFolder struct {
 	WorkspaceID       string `json:"workspaceId"`
@@ -22,6 +67,7 @@ type WorkspaceCacheFolder struct {
 	FolderLabel       string `json:"folderLabel"`
 	Path              string `json:"path"`
 	SkillsPath        string `json:"skillsPath"`
+	ModesPath         string `json:"modesPath"`
 	FileDatabasePath  string `json:"fileDatabasePath"`
 	WorkspaceRootPath string `json:"workspaceRootPath"`
 }
@@ -58,8 +104,19 @@ func ensureWorkspaceFolderCache(workspaceID string, folder WorkspaceFolder) (Wor
 	if err := ensureWorkspaceCacheDirectory(cachePath, root); err != nil {
 		return WorkspaceCacheFolder{}, err
 	}
+
+	// Migrate legacy .echo/modes/ to .echo/modes-{workspaceID}/ before creating directories.
+	if err := migrateLegacyModesToWorkspaceScoped(workspaceID, folder); err != nil {
+		return WorkspaceCacheFolder{}, err
+	}
+
 	skillsPath := filepath.Join(cachePath, workspaceSkillCacheDirName)
 	if err := ensureWorkspaceCacheDirectory(skillsPath, cachePath); err != nil {
+		return WorkspaceCacheFolder{}, err
+	}
+	modesDirName := workspaceModeDirName(workspaceID)
+	modesPath := filepath.Join(cachePath, modesDirName)
+	if err := ensureWorkspaceCacheDirectory(modesPath, cachePath); err != nil {
 		return WorkspaceCacheFolder{}, err
 	}
 	fileDatabasePath := filepath.Join(cachePath, workspaceFileDatabaseDirName)
@@ -72,6 +129,7 @@ func ensureWorkspaceFolderCache(workspaceID string, folder WorkspaceFolder) (Wor
 		FolderLabel:       folder.Label,
 		Path:              cachePath,
 		SkillsPath:        skillsPath,
+		ModesPath:         modesPath,
 		FileDatabasePath:  fileDatabasePath,
 		WorkspaceRootPath: root,
 	}, nil
@@ -79,6 +137,11 @@ func ensureWorkspaceFolderCache(workspaceID string, folder WorkspaceFolder) (Wor
 
 func workspaceSkillCachePath(folder WorkspaceFolder, relativePath string) (string, error) {
 	return workspaceCacheFilePath(folder, workspaceSkillCacheDirName, relativePath)
+}
+
+func workspaceModeCachePath(workspaceID string, folder WorkspaceFolder, relativePath string) (string, error) {
+	modesDirName := workspaceModeDirName(workspaceID)
+	return workspaceCacheFilePath(folder, modesDirName, relativePath)
 }
 
 func workspaceFileDatabaseCachePath(folder WorkspaceFolder, relativePath string) (string, error) {

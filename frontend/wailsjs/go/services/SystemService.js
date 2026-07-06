@@ -62,8 +62,32 @@ export function CompleteWorkspaceFile(arg1, arg2) {
   return window['go']['services']['SystemService']['CompleteWorkspaceFile'](arg1, arg2);
 }
 
+export function CreateAgentMode(arg1, arg2, arg3, arg4) {
+  return window['go']['services']['SystemService']['CreateAgentMode'](arg1, arg2, arg3, arg4);
+}
+
+export function CreateAgentModeFromChat(arg1) {
+  return window['go']['services']['SystemService']['CreateAgentModeFromChat'](arg1);
+}
+
+export function CreateAgentModeFromChatProvider(arg1) {
+  return window['go']['services']['SystemService']['CreateAgentModeFromChatProvider'](arg1);
+}
+
+export function CreateAgentModePerTool(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['CreateAgentModePerTool'](arg1, arg2, arg3);
+}
+
 export function CreateKanbanCardFromChatMessage(arg1, arg2) {
   return window['go']['services']['SystemService']['CreateKanbanCardFromChatMessage'](arg1, arg2);
+}
+
+export function CreateMode(arg1, arg2) {
+  return window['go']['services']['SystemService']['CreateMode'](arg1, arg2);
+}
+
+export function CreateModePerTool(arg1, arg2, arg3, arg4) {
+  return window['go']['services']['SystemService']['CreateModePerTool'](arg1, arg2, arg3, arg4);
 }
 
 export function CreateReadyKanbanCard(arg1, arg2, arg3, arg4) {
@@ -84,6 +108,10 @@ export function CreateWorkspaceFolder(arg1, arg2, arg3) {
 
 export function CreateWorkspaceGitBranch(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['CreateWorkspaceGitBranch'](arg1, arg2, arg3);
+}
+
+export function DeleteAgentMode(arg1) {
+  return window['go']['services']['SystemService']['DeleteAgentMode'](arg1);
 }
 
 export function DeleteKanbanCard(arg1, arg2) {
@@ -120,6 +148,18 @@ export function FindWorkspaceFileImplementations(arg1, arg2) {
 
 export function FindWorkspaceFileReferences(arg1, arg2) {
   return window['go']['services']['SystemService']['FindWorkspaceFileReferences'](arg1, arg2);
+}
+
+export function ListAgentModes(arg1) {
+  return window['go']['services']['SystemService']['ListAgentModes'](arg1);
+}
+
+export function ListAgentModesProvider() {
+  return window['go']['services']['SystemService']['ListAgentModesProvider']();
+}
+
+export function ListModes() {
+  return window['go']['services']['SystemService']['ListModes']();
 }
 
 export function ListWorkspaceDirectory(arg1, arg2) {
@@ -234,6 +274,14 @@ export function ResetKanbanCard(arg1, arg2) {
   return window['go']['services']['SystemService']['ResetKanbanCard'](arg1, arg2);
 }
 
+export function ResolveMode(arg1) {
+  return window['go']['services']['SystemService']['ResolveMode'](arg1);
+}
+
+export function ResolveModeProvider(arg1) {
+  return window['go']['services']['SystemService']['ResolveModeProvider'](arg1);
+}
+
 export function ResolveWorkspaceTextFilePath(arg1, arg2) {
   return window['go']['services']['SystemService']['ResolveWorkspaceTextFilePath'](arg1, arg2);
 }
@@ -340,6 +388,14 @@ export function SwitchWorkspaceGitBranch(arg1, arg2, arg3) {
 
 export function SyncWorkspaceGitBranch(arg1, arg2) {
   return window['go']['services']['SystemService']['SyncWorkspaceGitBranch'](arg1, arg2);
+}
+
+export function UpdateAgentMode(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['services']['SystemService']['UpdateAgentMode'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function UpdateAgentModePerTool(arg1, arg2, arg3, arg4) {
+  return window['go']['services']['SystemService']['UpdateAgentModePerTool'](arg1, arg2, arg3, arg4);
 }
 
 export function UpdateKanbanCardDescription(arg1, arg2, arg3) {
