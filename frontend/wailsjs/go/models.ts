@@ -800,7 +800,9 @@ export namespace services {
 	export class TaskBoard {
 	    workspaceId: string;
 	    storagePath: string;
+	    doneStoragePath: string;
 	    gitIgnored: boolean;
+	    doneGitIgnored: boolean;
 	    tasks: WorkspaceTask[];
 	
 	    static createFrom(source: any = {}) {
@@ -811,7 +813,9 @@ export namespace services {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.workspaceId = source["workspaceId"];
 	        this.storagePath = source["storagePath"];
+	        this.doneStoragePath = source["doneStoragePath"];
 	        this.gitIgnored = source["gitIgnored"];
+	        this.doneGitIgnored = source["doneGitIgnored"];
 	        this.tasks = this.convertValues(source["tasks"], WorkspaceTask);
 	    }
 	

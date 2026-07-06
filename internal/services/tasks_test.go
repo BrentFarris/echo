@@ -82,6 +82,17 @@ func TestWorkspaceTaskCRUDAndStableFile(t *testing.T) {
 	if !task.Completed || task.CompletedAt == "" {
 		t.Fatalf("expected completed task, got %#v", task)
 	}
+	activeData, err := os.ReadFile(filepath.Join(workspacePath, ".echo", workspaceTaskFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doneData, err := os.ReadFile(filepath.Join(workspacePath, ".echo", workspaceTaskDoneFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(activeData), task.ID) || !strings.Contains(string(doneData), task.ID) {
+		t.Fatalf("expected completed task only in %s", workspaceTaskDoneFile)
+	}
 	board, err = service.SetWorkspaceTaskCompleted(workspaceID, task.ID, false, task.UpdatedAt)
 	if err != nil {
 		t.Fatalf("reopen task: %v", err)
@@ -89,6 +100,11 @@ func TestWorkspaceTaskCRUDAndStableFile(t *testing.T) {
 	task = board.Tasks[0]
 	if task.Completed || task.CompletedAt != "" {
 		t.Fatalf("expected reopened task, got %#v", task)
+	}
+	activeData, _ = os.ReadFile(filepath.Join(workspacePath, ".echo", workspaceTaskFile))
+	doneData, _ = os.ReadFile(filepath.Join(workspacePath, ".echo", workspaceTaskDoneFile))
+	if !strings.Contains(string(activeData), task.ID) || strings.Contains(string(doneData), task.ID) {
+		t.Fatalf("expected reopened task only in %s", workspaceTaskFile)
 	}
 
 	data, err := os.ReadFile(filepath.Join(workspacePath, ".echo", workspaceTaskFile))
@@ -180,6 +196,9 @@ func TestWorkspaceTaskGitIgnoredAndConversion(t *testing.T) {
 	if !board.GitIgnored {
 		t.Fatal("expected ignored task file warning")
 	}
+	if !board.DoneGitIgnored {
+		t.Fatal("expected ignored completed task file warning")
+	}
 	task := board.Tasks[0]
 	conversion, err := service.CreateKanbanCardFromTask(workspaceID, task.ID, task.Title, task.Details, task.AcceptanceCriteria, task.UpdatedAt)
 	if err != nil {
@@ -187,6 +206,11 @@ func TestWorkspaceTaskGitIgnoredAndConversion(t *testing.T) {
 	}
 	if len(conversion.Kanban.Ready) != 1 || len(conversion.Tasks.Tasks) != 1 || !conversion.Tasks.Tasks[0].Completed {
 		t.Fatalf("unexpected conversion: %#v", conversion)
+	}
+	activeData, _ := os.ReadFile(filepath.Join(workspacePath, ".echo", workspaceTaskFile))
+	doneData, _ := os.ReadFile(filepath.Join(workspacePath, ".echo", workspaceTaskDoneFile))
+	if strings.Contains(string(activeData), task.ID) || !strings.Contains(string(doneData), task.ID) {
+		t.Fatal("converted task was not moved to the completed task file")
 	}
 }
 
@@ -267,5 +291,52 @@ func TestWorkspaceTasksRejectSymlinkedEchoDirectory(t *testing.T) {
 	}
 	if _, err := service.CreateWorkspaceTask(workspaceID, TaskInput{Title: "Unsafe", Priority: "P1"}); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+}
+
+func TestWorkspaceTasksMigrateLegacyCompletedRecords(t *testing.T) {
+	service, workspaceID, workspacePath := newTaskTestService(t)
+	cache := filepath.Join(workspacePath, ".echo")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(timeRFC3339Nano)
+	legacy := workspaceTaskFileData{
+		Version: workspaceTaskSchema,
+		Tasks: map[string]storedWorkspaceTask{
+			"active": {
+				Title:     "Active",
+				Priority:  "P1",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+			"done": {
+				Title:       "Done",
+				Priority:    "P2",
+				Completed:   true,
+				CreatedAt:   now,
+				UpdatedAt:   now,
+				CompletedAt: now,
+			},
+		},
+	}
+	data, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cache, workspaceTaskFile), append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	board, err := service.LoadTaskBoard(workspaceID)
+	if err != nil {
+		t.Fatalf("load and migrate tasks: %v", err)
+	}
+	if len(board.Tasks) != 2 {
+		t.Fatalf("expected both migrated tasks, got %#v", board.Tasks)
+	}
+	activeData, _ := os.ReadFile(filepath.Join(cache, workspaceTaskFile))
+	doneData, _ := os.ReadFile(filepath.Join(cache, workspaceTaskDoneFile))
+	if strings.Contains(string(activeData), `"done"`) || !strings.Contains(string(doneData), `"done"`) {
+		t.Fatalf("completed legacy task was not split correctly\nactive=%s\ndone=%s", activeData, doneData)
 	}
 }

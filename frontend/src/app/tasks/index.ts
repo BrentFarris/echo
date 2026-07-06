@@ -49,7 +49,8 @@ export function renderTaskPanel(workspace: services.Workspace): string {
         <div class="kanban-heading-main">
           <span>Tasks</span>
           <strong id="tasks-title">Backlog</strong>
-          <small class="task-storage-path">${escapeHtml(board.storagePath || ".echo/tasks.json")}</small>
+          <small class="task-storage-path">Active: ${escapeHtml(board.storagePath || ".echo/tasks.json")}</small>
+          <small class="task-storage-path">Completed: ${escapeHtml(board.doneStoragePath || ".echo/tasks_done.json")}</small>
         </div>
         <div class="task-heading-actions">
           <label class="task-completed-toggle">
@@ -61,9 +62,12 @@ export function renderTaskPanel(workspace: services.Workspace): string {
           </button>
         </div>
       </div>
-      ${board.gitIgnored ? `
+      ${board.gitIgnored || board.doneGitIgnored ? `
         <div class="task-git-warning" role="status">
-          ${escapeHtml(board.storagePath || ".echo/tasks.json")} is ignored by Git. Echo will not change your ignore rules.
+          ${escapeHtml([
+            board.gitIgnored ? board.storagePath || ".echo/tasks.json" : "",
+            board.doneGitIgnored ? board.doneStoragePath || ".echo/tasks_done.json" : "",
+          ].filter(Boolean).join(" and "))} ${board.gitIgnored && board.doneGitIgnored ? "are" : "is"} ignored by Git. Echo will not change your ignore rules.
         </div>
       ` : ""}
       <div class="task-board" aria-label="Backlog priority columns">

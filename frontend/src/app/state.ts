@@ -222,7 +222,9 @@ export function taskBoardFor(workspaceID: string): services.TaskBoard {
     services.TaskBoard.createFrom({
       workspaceId: workspaceID,
       storagePath: "",
+      doneStoragePath: "",
       gitIgnored: false,
+      doneGitIgnored: false,
       tasks: [],
     })
   );

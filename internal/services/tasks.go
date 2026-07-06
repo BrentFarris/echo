@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -19,9 +20,10 @@ import (
 )
 
 const (
-	taskEventName       = "echo:tasks:event"
-	workspaceTaskFile   = "tasks.json"
-	workspaceTaskSchema = 1
+	taskEventName         = "echo:tasks:event"
+	workspaceTaskFile     = "tasks.json"
+	workspaceTaskDoneFile = "tasks_done.json"
+	workspaceTaskSchema   = 1
 )
 
 type WorkspaceTask struct {
@@ -44,10 +46,12 @@ type TaskInput struct {
 }
 
 type TaskBoard struct {
-	WorkspaceID string          `json:"workspaceId"`
-	StoragePath string          `json:"storagePath"`
-	GitIgnored  bool            `json:"gitIgnored"`
-	Tasks       []WorkspaceTask `json:"tasks"`
+	WorkspaceID     string          `json:"workspaceId"`
+	StoragePath     string          `json:"storagePath"`
+	DoneStoragePath string          `json:"doneStoragePath"`
+	GitIgnored      bool            `json:"gitIgnored"`
+	DoneGitIgnored  bool            `json:"doneGitIgnored"`
+	Tasks           []WorkspaceTask `json:"tasks"`
 }
 
 type TaskEvent struct {
@@ -79,9 +83,11 @@ type workspaceTaskFileData struct {
 }
 
 type workspaceTaskLocation struct {
-	root        string
-	path        string
-	displayPath string
+	root            string
+	activePath      string
+	donePath        string
+	displayPath     string
+	doneDisplayPath string
 }
 
 type workspaceTasksProvider struct {
@@ -233,19 +239,23 @@ func (s *SystemService) DeleteWorkspaceTask(workspaceID string, taskID string, e
 		return TaskBoard{}, fmt.Errorf("task id is required")
 	}
 	s.taskMu.Lock()
-	location, data, err := readWorkspaceTaskFile(workspace)
+	location, active, done, err := readWorkspaceTaskFiles(workspace)
 	if err == nil {
-		task, found := data.Tasks[taskID]
+		task, found := active.Tasks[taskID]
+		if !found {
+			task, found = done.Tasks[taskID]
+		}
 		if !found {
 			err = fmt.Errorf("task was not found")
 		} else if err = requireTaskRevision(task, expectedUpdatedAt); err == nil {
-			delete(data.Tasks, taskID)
-			err = writeWorkspaceTaskFile(location, data)
+			delete(active.Tasks, taskID)
+			delete(done.Tasks, taskID)
+			err = writeWorkspaceTaskFiles(location, active, done, task.Completed)
 		}
 	}
 	var board TaskBoard
 	if err == nil {
-		board, err = taskBoardFromData(workspace.ID, location, data)
+		board, err = taskBoardFromData(workspace.ID, location, active, done)
 	}
 	s.taskMu.Unlock()
 	if err != nil {
@@ -274,14 +284,17 @@ func (s *SystemService) CreateKanbanCardFromTask(workspaceID string, taskID stri
 	}
 
 	s.taskMu.Lock()
-	location, data, err := readWorkspaceTaskFile(workspace)
+	location, active, done, err := readWorkspaceTaskFiles(workspace)
 	if err != nil {
 		s.taskMu.Unlock()
 		return TaskKanbanConversion{}, err
 	}
-	task, found := data.Tasks[taskID]
+	task, found := active.Tasks[taskID]
 	if !found {
 		s.taskMu.Unlock()
+		if _, completed := done.Tasks[taskID]; completed {
+			return TaskKanbanConversion{}, fmt.Errorf("completed tasks cannot be converted to kanban cards")
+		}
 		return TaskKanbanConversion{}, fmt.Errorf("task was not found")
 	}
 	if err := requireTaskRevision(task, expectedUpdatedAt); err != nil {
@@ -317,8 +330,9 @@ func (s *SystemService) CreateKanbanCardFromTask(workspaceID string, taskID stri
 	task.Completed = true
 	task.CompletedAt = now
 	task.UpdatedAt = now
-	data.Tasks[taskID] = task
-	if err := writeWorkspaceTaskFile(location, data); err != nil {
+	delete(active.Tasks, taskID)
+	done.Tasks[taskID] = task
+	if err := writeWorkspaceTaskFiles(location, active, done, false); err != nil {
 		s.state.KanbanCards = s.state.KanbanCards[:previousCount]
 		s.mu.Unlock()
 		s.chatMu.Unlock()
@@ -328,7 +342,7 @@ func (s *SystemService) CreateKanbanCardFromTask(workspaceID string, taskID stri
 	kanban := boardForWorkspace(workspaceID, s.state.KanbanCards)
 	s.mu.Unlock()
 	s.chatMu.Unlock()
-	board, err := taskBoardFromData(workspaceID, location, data)
+	board, err := taskBoardFromData(workspaceID, location, active, done)
 	if err != nil {
 		s.taskMu.Unlock()
 		return TaskKanbanConversion{}, err
@@ -349,22 +363,31 @@ func (s *SystemService) mutateWorkspaceTask(workspaceID string, taskID string, e
 		return TaskBoard{}, fmt.Errorf("task id is required")
 	}
 	s.taskMu.Lock()
-	location, data, err := readWorkspaceTaskFile(workspace)
+	location, active, done, err := readWorkspaceTaskFiles(workspace)
 	if err == nil {
-		task, found := data.Tasks[taskID]
+		task, found := active.Tasks[taskID]
+		if !found {
+			task, found = done.Tasks[taskID]
+		}
 		if !found {
 			err = fmt.Errorf("task was not found")
 		} else if err = requireTaskRevision(task, expectedUpdatedAt); err == nil {
 			err = mutate(&task, time.Now().UTC().Format(timeRFC3339Nano))
 			if err == nil {
-				data.Tasks[taskID] = task
-				err = writeWorkspaceTaskFile(location, data)
+				delete(active.Tasks, taskID)
+				delete(done.Tasks, taskID)
+				if task.Completed {
+					done.Tasks[taskID] = task
+				} else {
+					active.Tasks[taskID] = task
+				}
+				err = writeWorkspaceTaskFiles(location, active, done, !task.Completed)
 			}
 		}
 	}
 	var board TaskBoard
 	if err == nil {
-		board, err = taskBoardFromData(workspaceID, location, data)
+		board, err = taskBoardFromData(workspaceID, location, active, done)
 	}
 	s.taskMu.Unlock()
 	if err != nil {
@@ -379,7 +402,7 @@ func (s *SystemService) createWorkspaceTask(workspace Workspace, input TaskInput
 	if err != nil {
 		return TaskBoard{}, WorkspaceTask{}, err
 	}
-	location, data, err := readWorkspaceTaskFile(workspace)
+	location, active, done, err := readWorkspaceTaskFiles(workspace)
 	if err != nil {
 		return TaskBoard{}, WorkspaceTask{}, err
 	}
@@ -388,7 +411,7 @@ func (s *SystemService) createWorkspaceTask(workspace Workspace, input TaskInput
 		return TaskBoard{}, WorkspaceTask{}, err
 	}
 	now := time.Now().UTC().Format(timeRFC3339Nano)
-	data.Tasks[id] = storedWorkspaceTask{
+	active.Tasks[id] = storedWorkspaceTask{
 		Title:              input.Title,
 		Details:            input.Details,
 		AcceptanceCriteria: input.AcceptanceCriteria,
@@ -396,10 +419,10 @@ func (s *SystemService) createWorkspaceTask(workspace Workspace, input TaskInput
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	}
-	if err := writeWorkspaceTaskFile(location, data); err != nil {
+	if err := writeWorkspaceTaskFiles(location, active, done, true); err != nil {
 		return TaskBoard{}, WorkspaceTask{}, err
 	}
-	board, err := taskBoardFromData(workspace.ID, location, data)
+	board, err := taskBoardFromData(workspace.ID, location, active, done)
 	if err != nil {
 		return TaskBoard{}, WorkspaceTask{}, err
 	}
@@ -412,11 +435,11 @@ func (s *SystemService) createWorkspaceTask(workspace Workspace, input TaskInput
 }
 
 func (s *SystemService) loadTaskBoardForWorkspace(workspace Workspace) (TaskBoard, error) {
-	location, data, err := readWorkspaceTaskFile(workspace)
+	location, active, done, err := readWorkspaceTaskFiles(workspace)
 	if err != nil {
 		return TaskBoard{}, err
 	}
-	return taskBoardFromData(workspace.ID, location, data)
+	return taskBoardFromData(workspace.ID, location, active, done)
 }
 
 func normalizeTaskInput(input TaskInput) (TaskInput, error) {
@@ -467,46 +490,97 @@ func requireTaskRevision(task storedWorkspaceTask, expected string) error {
 	return nil
 }
 
-func readWorkspaceTaskFile(workspace Workspace) (workspaceTaskLocation, workspaceTaskFileData, error) {
+func readWorkspaceTaskFiles(workspace Workspace) (workspaceTaskLocation, workspaceTaskFileData, workspaceTaskFileData, error) {
 	location, err := resolveWorkspaceTaskLocation(workspace)
 	if err != nil {
-		return workspaceTaskLocation{}, workspaceTaskFileData{}, err
+		return workspaceTaskLocation{}, workspaceTaskFileData{}, workspaceTaskFileData{}, err
 	}
+	active, err := readWorkspaceTaskFileAt(location.activePath)
+	if err != nil {
+		return location, workspaceTaskFileData{}, workspaceTaskFileData{}, err
+	}
+	done, err := readWorkspaceTaskFileAt(location.donePath)
+	if err != nil {
+		return location, workspaceTaskFileData{}, workspaceTaskFileData{}, err
+	}
+	normalizedActive, normalizedDone := splitWorkspaceTaskData(active, done)
+	if !reflect.DeepEqual(active, normalizedActive) || !reflect.DeepEqual(done, normalizedDone) {
+		activeFirst := taskFileHasNewIDs(normalizedActive, active)
+		if err := writeWorkspaceTaskFiles(location, normalizedActive, normalizedDone, activeFirst); err != nil {
+			return location, workspaceTaskFileData{}, workspaceTaskFileData{}, fmt.Errorf("migrate workspace task files: %w", err)
+		}
+	}
+	return location, normalizedActive, normalizedDone, nil
+}
+
+func readWorkspaceTaskFileAt(path string) (workspaceTaskFileData, error) {
 	data := workspaceTaskFileData{Version: workspaceTaskSchema, Tasks: map[string]storedWorkspaceTask{}}
-	info, err := os.Lstat(location.path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return location, data, nil
+			return data, nil
 		}
-		return location, data, fmt.Errorf("stat workspace task file: %w", err)
+		return data, fmt.Errorf("stat workspace task file: %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return location, data, fmt.Errorf("workspace task file must be a regular file")
+		return data, fmt.Errorf("workspace task file must be a regular file")
 	}
-	file, err := os.Open(location.path)
+	file, err := os.Open(path)
 	if err != nil {
-		return location, data, fmt.Errorf("open workspace task file: %w", err)
+		return data, fmt.Errorf("open workspace task file: %w", err)
 	}
 	defer file.Close()
 	decoder := json.NewDecoder(io.LimitReader(file, 4*1024*1024))
 	if err := decoder.Decode(&data); err != nil {
-		return location, data, fmt.Errorf("decode workspace task file: %w", err)
+		return data, fmt.Errorf("decode workspace task file: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return location, data, fmt.Errorf("decode workspace task file: trailing data")
+		return data, fmt.Errorf("decode workspace task file: trailing data")
 	}
 	if data.Version != workspaceTaskSchema {
-		return location, data, fmt.Errorf("unsupported workspace task file version %d", data.Version)
+		return data, fmt.Errorf("unsupported workspace task file version %d", data.Version)
 	}
 	if data.Tasks == nil {
 		data.Tasks = map[string]storedWorkspaceTask{}
 	}
 	for id, task := range data.Tasks {
 		if err := validateStoredWorkspaceTask(id, task); err != nil {
-			return location, data, err
+			return data, err
 		}
 	}
-	return location, data, nil
+	return data, nil
+}
+
+func splitWorkspaceTaskData(active workspaceTaskFileData, done workspaceTaskFileData) (workspaceTaskFileData, workspaceTaskFileData) {
+	all := make(map[string]storedWorkspaceTask, len(active.Tasks)+len(done.Tasks))
+	for id, task := range active.Tasks {
+		all[id] = task
+	}
+	for id, task := range done.Tasks {
+		existing, found := all[id]
+		if !found || task.UpdatedAt >= existing.UpdatedAt {
+			all[id] = task
+		}
+	}
+	active = workspaceTaskFileData{Version: workspaceTaskSchema, Tasks: map[string]storedWorkspaceTask{}}
+	done = workspaceTaskFileData{Version: workspaceTaskSchema, Tasks: map[string]storedWorkspaceTask{}}
+	for id, task := range all {
+		if task.Completed {
+			done.Tasks[id] = task
+		} else {
+			active.Tasks[id] = task
+		}
+	}
+	return active, done
+}
+
+func taskFileHasNewIDs(next workspaceTaskFileData, previous workspaceTaskFileData) bool {
+	for id := range next.Tasks {
+		if _, existed := previous.Tasks[id]; !existed {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveWorkspaceTaskLocation(workspace Workspace) (workspaceTaskLocation, error) {
@@ -531,24 +605,56 @@ func resolveWorkspaceTaskLocation(workspace Workspace) (workspaceTaskLocation, e
 			return workspaceTaskLocation{}, err
 		}
 		return workspaceTaskLocation{
-			root:        root,
-			path:        filepath.Join(cacheRoot, workspaceTaskFile),
-			displayPath: folder.Label + "/.echo/" + workspaceTaskFile,
+			root:            root,
+			activePath:      filepath.Join(cacheRoot, workspaceTaskFile),
+			donePath:        filepath.Join(cacheRoot, workspaceTaskDoneFile),
+			displayPath:     folder.Label + "/.echo/" + workspaceTaskFile,
+			doneDisplayPath: folder.Label + "/.echo/" + workspaceTaskDoneFile,
 		}, nil
 	}
 	return workspaceTaskLocation{}, fmt.Errorf("workspace has no available folder for backlog tasks")
 }
 
-func writeWorkspaceTaskFile(location workspaceTaskLocation, data workspaceTaskFileData) error {
-	if err := ensureWorkspaceCacheDirectory(filepath.Dir(location.path), location.root); err != nil {
+func writeWorkspaceTaskFiles(location workspaceTaskLocation, active workspaceTaskFileData, done workspaceTaskFileData, activeFirst bool) error {
+	firstPath, secondPath := location.donePath, location.activePath
+	firstData, secondData := done, active
+	if activeFirst {
+		firstPath, secondPath = location.activePath, location.donePath
+		firstData, secondData = active, done
+	}
+	previousFirst, readErr := os.ReadFile(firstPath)
+	firstExisted := readErr == nil
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return fmt.Errorf("read existing workspace task file: %w", readErr)
+	}
+	if err := writeWorkspaceTaskFileAt(location.root, firstPath, firstData); err != nil {
 		return err
 	}
+	if err := writeWorkspaceTaskFileAt(location.root, secondPath, secondData); err != nil {
+		if firstExisted {
+			_ = writeWorkspaceTaskBytes(location.root, firstPath, previousFirst)
+		} else {
+			_ = os.Remove(firstPath)
+		}
+		return err
+	}
+	return nil
+}
+
+func writeWorkspaceTaskFileAt(root string, path string, data workspaceTaskFileData) error {
 	encoded, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode workspace task file: %w", err)
 	}
 	encoded = append(encoded, '\n')
-	temp, err := os.CreateTemp(filepath.Dir(location.path), ".tasks-*.tmp")
+	return writeWorkspaceTaskBytes(root, path, encoded)
+}
+
+func writeWorkspaceTaskBytes(root string, path string, encoded []byte) error {
+	if err := ensureWorkspaceCacheDirectory(filepath.Dir(path), root); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), ".tasks-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temporary workspace task file: %w", err)
 	}
@@ -569,7 +675,7 @@ func writeWorkspaceTaskFile(location workspaceTaskLocation, data workspaceTaskFi
 	if err := temp.Close(); err != nil {
 		return fmt.Errorf("close temporary workspace task file: %w", err)
 	}
-	if err := os.Rename(tempPath, location.path); err != nil {
+	if err := os.Rename(tempPath, path); err != nil {
 		return fmt.Errorf("replace workspace task file: %w", err)
 	}
 	return nil
@@ -602,9 +708,16 @@ func validateStoredWorkspaceTask(id string, task storedWorkspaceTask) error {
 	return nil
 }
 
-func taskBoardFromData(workspaceID string, location workspaceTaskLocation, data workspaceTaskFileData) (TaskBoard, error) {
-	tasks := make([]WorkspaceTask, 0, len(data.Tasks))
-	for id, stored := range data.Tasks {
+func taskBoardFromData(workspaceID string, location workspaceTaskLocation, active workspaceTaskFileData, done workspaceTaskFileData) (TaskBoard, error) {
+	tasks := make([]WorkspaceTask, 0, len(active.Tasks)+len(done.Tasks))
+	all := make(map[string]storedWorkspaceTask, len(active.Tasks)+len(done.Tasks))
+	for id, task := range active.Tasks {
+		all[id] = task
+	}
+	for id, task := range done.Tasks {
+		all[id] = task
+	}
+	for id, stored := range all {
 		tasks = append(tasks, WorkspaceTask{
 			ID:                 id,
 			Title:              stored.Title,
@@ -623,18 +736,21 @@ func taskBoardFromData(workspaceID string, location workspaceTaskLocation, data 
 		}
 		return tasks[i].ID < tasks[j].ID
 	})
-	ignored := false
-	path := ".echo/" + workspaceTaskFile
-	if result, err := gitIgnoredWorkspacePaths(location.root, []string{path}); err == nil {
-		ignored = result[path]
+	activeRelative := ".echo/" + workspaceTaskFile
+	doneRelative := ".echo/" + workspaceTaskDoneFile
+	ignored := map[string]bool{}
+	if result, err := gitIgnoredWorkspacePaths(location.root, []string{activeRelative, doneRelative}); err == nil {
+		ignored = result
 	} else {
-		ignored = rootGitignoreIgnoredPaths(location.root, []string{path})[path]
+		ignored = rootGitignoreIgnoredPaths(location.root, []string{activeRelative, doneRelative})
 	}
 	return TaskBoard{
-		WorkspaceID: workspaceID,
-		StoragePath: location.displayPath,
-		GitIgnored:  ignored,
-		Tasks:       tasks,
+		WorkspaceID:     workspaceID,
+		StoragePath:     location.displayPath,
+		DoneStoragePath: location.doneDisplayPath,
+		GitIgnored:      ignored[activeRelative],
+		DoneGitIgnored:  ignored[doneRelative],
+		Tasks:           tasks,
 	}, nil
 }
 
