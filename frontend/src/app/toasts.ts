@@ -1,5 +1,6 @@
 
 import { appRoot } from "./dom";
+import { getAppCallbacks } from "./callbacks";
 import { icons } from "./icons";
 import { state } from "./state";
 import type { Toast } from "./types";
@@ -66,6 +67,7 @@ function patchToasts() {
   const markup = renderToasts();
   if (existing) {
     existing.outerHTML = markup;
+    bindToastActions();
     return;
   }
 
@@ -76,7 +78,16 @@ function patchToasts() {
   const contextMenu = shell.querySelector<HTMLElement>("[data-context-menu]");
   if (contextMenu) {
     contextMenu.insertAdjacentHTML("beforebegin", markup);
+    bindToastActions();
     return;
   }
   shell.insertAdjacentHTML("beforeend", markup);
+  bindToastActions();
+}
+
+function bindToastActions() {
+  const region = appRoot.querySelector<HTMLElement>("[data-toast-region]");
+  if (region) {
+    getAppCallbacks().bindActionEvents(region);
+  }
 }
