@@ -25,6 +25,7 @@ const maxChatVideoBytes = 50 * 1024 * 1024;
 const maxChatMediaDrafts = 8;
 const supportedChatVideoTypes = new Set(["video/mp4", "video/webm", "video/quicktime"]);
 const chatStreamPatchDelay = 50;
+let chatInputWindowResizeBound = false;
 
 type PendingChatStreamPatch = {
   workspaceID: string;
@@ -409,6 +410,7 @@ export function insertChatMention(entry: services.WorkspaceFileEntry) {
     input.value.slice(0, triggerStart) + replacement + trailingSpace + suffix;
   const nextCaret = triggerStart + replacement.length + trailingSpace.length;
   input.value = nextValue;
+  resizeChatInput(input);
   state.chatDrafts.set(workspace.id, nextValue);
   clearChatMention();
   input.focus();
@@ -901,10 +903,19 @@ export function bindChatEvents(root: ParentNode) {
   root
     .querySelectorAll<HTMLTextAreaElement>("[data-chat-input]")
     .forEach((input) => {
+      resizeChatInput(input);
       input.addEventListener("input", handleChatInput);
       input.addEventListener("keydown", handleChatKeydown);
       input.addEventListener("paste", handleChatPaste);
     });
+  if (!chatInputWindowResizeBound) {
+    window.addEventListener("resize", () => {
+      appRoot
+        .querySelectorAll<HTMLTextAreaElement>("[data-chat-input]")
+        .forEach(resizeChatInput);
+    });
+    chatInputWindowResizeBound = true;
+  }
   root
     .querySelectorAll<HTMLButtonElement>("[data-action=\"send-stop\"]")
     .forEach((button) => button.addEventListener("click", handleSendStopClick));
@@ -1079,9 +1090,15 @@ export function handleChatInput(event: Event) {
     return;
   }
   const input = event.currentTarget as HTMLTextAreaElement;
+  resizeChatInput(input);
   state.chatDrafts.set(workspace.id, input.value);
   syncChatMentionForInput(workspace.id, input);
   patchChatControls();
+}
+
+export function resizeChatInput(input: HTMLTextAreaElement) {
+  input.style.height = "auto";
+  input.style.height = `${input.scrollHeight}px`;
 }
 
 export function handleChatPaste(event: ClipboardEvent) {

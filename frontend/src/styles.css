@@ -1082,7 +1082,9 @@ h3 {
   min-width: 0;
   flex: 1 1 auto;
   min-height: 36px;
-  max-height: 150px;
+  max-height: 50vh;
+  max-height: 50dvh;
+  overflow-y: auto;
   resize: none;
   padding: var(--space-lg) var(--space-xl);
   border: none;
@@ -5908,7 +5910,6 @@ h3 {
   .chat-composer textarea {
     flex: 1 1 auto;
     min-height: 36px;
-    max-height: 120px;
     padding: var(--space-md) var(--space-lg);
     font-size: var(--text-base-md);
     line-height: 1.35;
