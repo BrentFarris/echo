@@ -86,10 +86,6 @@ func (s *SystemService) ClearDoneKanbanCards(workspaceID string) (KanbanBoard, e
 		deletedIDs[card.ID] = struct{}{}
 	}
 	s.state.KanbanCards = next
-	if err := s.saveLocked(); err != nil {
-		s.mu.Unlock()
-		return KanbanBoard{}, err
-	}
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 	s.mu.Unlock()
 
@@ -136,10 +132,6 @@ func (s *SystemService) DeleteKanbanCard(workspaceID string, cardID string) (Kan
 		next = append(next, card)
 	}
 	s.state.KanbanCards = next
-	if err := s.saveLocked(); err != nil {
-		s.mu.Unlock()
-		return KanbanBoard{}, err
-	}
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 	s.mu.Unlock()
 
@@ -238,11 +230,6 @@ func (s *SystemService) CreateReadyKanbanCard(workspaceID string, title string, 
 		}},
 	}
 	s.state.KanbanCards = append(s.state.KanbanCards, card)
-	if err := s.saveLocked(); err != nil {
-		s.mu.Unlock()
-		s.chatMu.Unlock()
-		return KanbanBoard{}, err
-	}
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 	s.mu.Unlock()
 	s.chatMu.Unlock()
@@ -261,7 +248,6 @@ func (s *SystemService) MoveKanbanCard(workspaceID string, cardID string, lane s
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	cardIndex := -1
 	for index := range s.state.KanbanCards {
@@ -271,12 +257,14 @@ func (s *SystemService) MoveKanbanCard(workspaceID string, cardID string, lane s
 		}
 	}
 	if cardIndex < 0 {
+		s.mu.Unlock()
 		return KanbanBoard{}, fmt.Errorf("kanban card was not found")
 	}
 
 	if lane == KanbanLaneInProgress {
 		blockedBy := blockedDependenciesForCard(s.state.KanbanCards[cardIndex], s.state.KanbanCards)
 		if len(blockedBy) > 0 {
+			s.mu.Unlock()
 			return KanbanBoard{}, fmt.Errorf("kanban card is blocked by dependencies: %s", strings.Join(blockedBy, ", "))
 		}
 	}
@@ -291,10 +279,20 @@ func (s *SystemService) MoveKanbanCard(workspaceID string, cardID string, lane s
 		Status:  lane,
 	})
 
-	if err := s.saveLocked(); err != nil {
-		return KanbanBoard{}, err
+	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
+	complete := kanbanBoardComplete(board)
+	s.mu.Unlock()
+	if complete {
+		_ = s.persistWorkspaceAutosave(workspaceID)
 	}
-	return boardForWorkspace(workspaceID, s.state.KanbanCards), nil
+	return board, nil
+}
+
+func kanbanBoardComplete(board KanbanBoard) bool {
+	return len(board.Done) > 0 &&
+		len(board.Ready) == 0 &&
+		len(board.InProgress) == 0 &&
+		len(board.Blocked) == 0
 }
 
 func (s *SystemService) UpdateKanbanCardDescription(workspaceID string, cardID string, description string) (KanbanBoard, error) {
@@ -330,11 +328,6 @@ func (s *SystemService) UpdateKanbanCardDescription(workspaceID string, cardID s
 			Content: "User edited the card description before execution.",
 			Status:  KanbanLaneReady,
 		})
-		if err := s.saveLocked(); err != nil {
-			s.mu.Unlock()
-			s.chatMu.Unlock()
-			return KanbanBoard{}, err
-		}
 		board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 		s.mu.Unlock()
 		s.chatMu.Unlock()
@@ -379,11 +372,6 @@ func (s *SystemService) UpdateKanbanCardDirection(workspaceID string, cardID str
 			Content: "User edited the card direction before execution.",
 			Status:  KanbanLaneReady,
 		})
-		if err := s.saveLocked(); err != nil {
-			s.mu.Unlock()
-			s.chatMu.Unlock()
-			return KanbanBoard{}, err
-		}
 		board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 		s.mu.Unlock()
 		s.chatMu.Unlock()
@@ -426,11 +414,6 @@ func (s *SystemService) ResetKanbanCard(workspaceID string, cardID string) (Kanb
 		s.mu.Unlock()
 		s.chatMu.Unlock()
 		return KanbanBoard{}, fmt.Errorf("kanban card was not found")
-	}
-	if err := s.saveLocked(); err != nil {
-		s.mu.Unlock()
-		s.chatMu.Unlock()
-		return KanbanBoard{}, err
 	}
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 	s.mu.Unlock()
@@ -511,9 +494,6 @@ func (s *SystemService) appendReadyCards(workspaceID string, cards []decomposedC
 		s.state.KanbanCards = append(s.state.KanbanCards, runtimeCard)
 	}
 
-	if err := s.saveLocked(); err != nil {
-		return KanbanBoard{}, err
-	}
 	return boardForWorkspace(workspaceID, s.state.KanbanCards), nil
 }
 
@@ -550,9 +530,6 @@ func (s *SystemService) appendAssistantMessageReadyCard(workspaceID string, cont
 	}
 	s.state.KanbanCards = append(s.state.KanbanCards, card)
 
-	if err := s.saveLocked(); err != nil {
-		return KanbanBoard{}, err
-	}
 	return boardForWorkspace(workspaceID, s.state.KanbanCards), nil
 }
 
