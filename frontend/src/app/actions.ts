@@ -16,6 +16,7 @@ import { cloneSettings, cloneWebAccessSettings } from "./state";
 import type { AppMode, MobileNavView } from "./types";
 import { applyTheme, settingsWithThemeDefaults, themePaletteNames } from "./theme";
 import { pushToast, dismissToast } from "./toasts";
+import { loadActiveTaskBoard } from "./tasks";
 import { copyTextToClipboard, errorMessage, laneLabel } from "./utils";
 import { hydrateWorkspaceLetterDrafts } from "./workspace";
 
@@ -363,6 +364,7 @@ export async function handleAction(event: Event) {
       state.appState = await LoadState();
       await loadActiveChatSession();
       await loadActiveKanbanBoard();
+      await loadActiveTaskBoard();
       await loadActiveChangeReview();
       await loadActiveCodeViewIfNeeded();
       pushToast(
@@ -389,11 +391,14 @@ export async function handleAction(event: Event) {
         return;
       }
       const workspace = activeWorkspace();
-      if (view === "chat" || view === "kanban") {
+      if (view === "chat" || view === "tasks" || view === "kanban") {
         state.appMode = view as AppMode;
         state.mobileNavView = view as MobileNavView;
         if (workspace) {
           state.activeChatKanbanTab.set(workspace.id, view);
+          if (view === "tasks") {
+            await loadActiveTaskBoard();
+          }
         }
       } else if (view === "code") {
         state.appMode = "code";
@@ -444,6 +449,7 @@ export async function handleAction(event: Event) {
       state.appState = await SetActiveWorkspace(workspaceID);
       await loadActiveChatSession();
       await loadActiveKanbanBoard();
+      await loadActiveTaskBoard();
       await loadActiveChangeReview();
       await loadActiveCodeViewIfNeeded();
       /* Reload agent modes for the new workspace. */
@@ -833,6 +839,9 @@ export async function handleAction(event: Event) {
       await closeSelectedCardDetail(workspaceID);
       state.appState = await DeleteWorkspace(workspaceID);
       state.kanbanBoards.delete(workspaceID);
+      state.taskBoards.delete(workspaceID);
+      state.taskEditorDrafts.delete(workspaceID);
+      state.showCompletedTaskWorkspaces.delete(workspaceID);
       state.changeReviews.delete(workspaceID);
       state.gitChangeReviews.delete(workspaceID);
       dropWorkspaceGitRepositoryState(workspaceID);

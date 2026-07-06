@@ -1960,6 +1960,7 @@ func assertPlanModeChatRequest(t *testing.T, request llm.ChatRequest) {
 		"planning changes only",
 		"do not make workspace changes",
 		"available read-only tools",
+		"workspace_task_create",
 		"workspace_context",
 		"aroundLine",
 	} {
@@ -1969,7 +1970,7 @@ func assertPlanModeChatRequest(t *testing.T, request llm.ChatRequest) {
 	}
 
 	names := chatRequestToolNames(request)
-	for _, expected := range []string{"filesystem_list", "filesystem_read_image", "filesystem_read_video", "filesystem_read_text", "filesystem_search_text", "filesystem_stat", "workspace_context"} {
+	for _, expected := range []string{"filesystem_list", "filesystem_read_image", "filesystem_read_video", "filesystem_read_text", "filesystem_search_text", "filesystem_stat", "workspace_context", "workspace_task_list", "workspace_task_create"} {
 		if !names[expected] {
 			t.Fatalf("expected plan mode to include read-only tool %s, got %#v", expected, names)
 		}

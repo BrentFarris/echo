@@ -46,6 +46,8 @@ export function CreateAgentModePerTool(arg1:string,arg2:string,arg3:Record<strin
 
 export function CreateKanbanCardFromChatMessage(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
+export function CreateKanbanCardFromTask(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>,arg6:string):Promise<services.TaskKanbanConversion>;
+
 export function CreateMode(arg1:context.Context,arg2:tools.AgentModeCreationRequest):Promise<tools.AgentModeCreationResult>;
 
 export function CreateModePerTool(arg1:context.Context,arg2:string,arg3:string,arg4:Record<string, Array<string>>):Promise<tools.AgentModeCreationResult>;
@@ -60,11 +62,15 @@ export function CreateWorkspaceFolder(arg1:string,arg2:string,arg3:string):Promi
 
 export function CreateWorkspaceGitBranch(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
 
+export function CreateWorkspaceTask(arg1:string,arg2:services.TaskInput):Promise<services.TaskBoard>;
+
 export function DeleteAgentMode(arg1:string):Promise<Array<services.AgentMode>>;
 
 export function DeleteKanbanCard(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
 export function DeleteWorkspace(arg1:string):Promise<services.AppState>;
+
+export function DeleteWorkspaceTask(arg1:string,arg2:string,arg3:string):Promise<services.TaskBoard>;
 
 export function DiscardWorkspaceGitChanges(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
 
@@ -96,6 +102,8 @@ export function LoadRuntimeStatus():Promise<services.RuntimeStatus>;
 
 export function LoadState():Promise<services.AppState>;
 
+export function LoadTaskBoard(arg1:string):Promise<services.TaskBoard>;
+
 export function LoadWebAccessStatus():Promise<services.WebAccessStatus>;
 
 export function LoadWorkspaceChangeReview(arg1:string):Promise<services.WorkspaceChangeReview>;
@@ -111,6 +119,8 @@ export function MergeWorkspaceGitBranch(arg1:string,arg2:string,arg3:string):Pro
 export function MoveKanbanCard(arg1:string,arg2:string,arg3:string):Promise<services.KanbanBoard>;
 
 export function MoveWorkspacePath(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFileEntry>;
+
+export function MoveWorkspaceTask(arg1:string,arg2:string,arg3:string,arg4:string):Promise<services.TaskBoard>;
 
 export function OpenKanbanCardDetail(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
@@ -184,6 +194,8 @@ export function SetWorkspaceIconFromUpload(arg1:string,arg2:services.WorkspaceIc
 
 export function SetWorkspaceLetter(arg1:string,arg2:string):Promise<services.AppState>;
 
+export function SetWorkspaceTaskCompleted(arg1:string,arg2:string,arg3:boolean,arg4:string):Promise<services.TaskBoard>;
+
 export function Shutdown():Promise<void>;
 
 export function StartKanbanExecution(arg1:string,arg2:number):Promise<services.KanbanBoard>;
@@ -207,6 +219,8 @@ export function UpdateAgentModePerTool(arg1:string,arg2:string,arg3:string,arg4:
 export function UpdateKanbanCardDescription(arg1:string,arg2:string,arg3:string):Promise<services.KanbanBoard>;
 
 export function UpdateKanbanCardDirection(arg1:string,arg2:string,arg3:string):Promise<services.KanbanBoard>;
+
+export function UpdateWorkspaceTask(arg1:string,arg2:string,arg3:services.TaskInput,arg4:string):Promise<services.TaskBoard>;
 
 export function WorkspaceIconHandler():Promise<http.Handler>;
 

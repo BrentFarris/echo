@@ -9,6 +9,7 @@ import { appRoot } from "./dom";
 import { bindGitEvents } from "./git";
 import { closeSelectedCardDetail, bindCardDescriptionEvents, bindCardMessageEvents, bindCardDirectionEvents, bindKanbanCardCreationEvents } from "./kanban";
 import { bindSettingsEvents } from "./settings";
+import { bindTaskEvents } from "./tasks";
 import { activeWorkspace, state } from "./state";
 import { applyTheme } from "./theme";
 import { bindWorkspaceDragEvents } from "./workspace";
@@ -24,6 +25,7 @@ export function bindEvents() {
   bindGitEvents(appRoot);
   bindCodeViewEvents(appRoot, getAppCallbacks().codeViewCallbacks());
   bindWorkspaceDragEvents(appRoot);
+  bindTaskEvents(appRoot);
 
   // Mobile nav keyboard navigation
   const navEl = appRoot.querySelector(".mobile-bottom-nav");

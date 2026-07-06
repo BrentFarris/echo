@@ -769,6 +769,120 @@ export namespace services {
 	        this.activeKanbanWorkspaceIds = source["activeKanbanWorkspaceIds"];
 	    }
 	}
+	export class WorkspaceTask {
+	    id: string;
+	    title: string;
+	    details?: string;
+	    acceptanceCriteria?: string[];
+	    priority: string;
+	    completed: boolean;
+	    createdAt: string;
+	    updatedAt: string;
+	    completedAt?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceTask(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.details = source["details"];
+	        this.acceptanceCriteria = source["acceptanceCriteria"];
+	        this.priority = source["priority"];
+	        this.completed = source["completed"];
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
+	        this.completedAt = source["completedAt"];
+	    }
+	}
+	export class TaskBoard {
+	    workspaceId: string;
+	    storagePath: string;
+	    gitIgnored: boolean;
+	    tasks: WorkspaceTask[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TaskBoard(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.storagePath = source["storagePath"];
+	        this.gitIgnored = source["gitIgnored"];
+	        this.tasks = this.convertValues(source["tasks"], WorkspaceTask);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class TaskInput {
+	    title: string;
+	    details?: string;
+	    acceptanceCriteria?: string[];
+	    priority: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TaskInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.title = source["title"];
+	        this.details = source["details"];
+	        this.acceptanceCriteria = source["acceptanceCriteria"];
+	        this.priority = source["priority"];
+	    }
+	}
+	export class TaskKanbanConversion {
+	    tasks: TaskBoard;
+	    kanban: KanbanBoard;
+	
+	    static createFrom(source: any = {}) {
+	        return new TaskKanbanConversion(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tasks = this.convertValues(source["tasks"], TaskBoard);
+	        this.kanban = this.convertValues(source["kanban"], KanbanBoard);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	
 	export class WebAccessStatus {
 	    enabled: boolean;
@@ -1955,6 +2069,7 @@ export namespace services {
 	        this.path = source["path"];
 	    }
 	}
+	
 	
 	export class WorkspaceTextSearchMatch {
 	    line: number;

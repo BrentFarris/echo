@@ -454,7 +454,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 	messages := append([]llm.Message{chatSystemMessage(workspace, mode, candidates)}, history...)
 	toolSchema := tools.LLMSchema()
 	if isPlanMode {
-		toolSchema = tools.ReadOnlyLLMSchema()
+		toolSchema = tools.PlanModeLLMSchema()
 	}
 	recoverableToolCalls := make(map[string]bool)
 	forcedCompactions := 0
@@ -732,7 +732,7 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 	if call.ID == "" {
 		call.ID = s.nextChatID("call")
 	}
-	if readOnlyOnly && !tools.IsReadOnlyToolName(call.Function.Name) {
+	if readOnlyOnly && !tools.IsPlanModeToolName(call.Function.Name) {
 		data := fmt.Sprintf(`{"tool":%q,"success":false,"error":{"code":"tool_not_allowed","message":"tool is not available in plan mode"}}`, call.Function.Name)
 		s.updateToolActivity(workspace.ID, streamID, messageID, call, "error", data, "tool is not available in plan mode")
 		return chatToolCallExecution{
@@ -1071,8 +1071,8 @@ func chatSystemMessage(workspace Workspace, mode AgentMode, skillCandidates []to
 	if isPlanMode {
 		instructions = "You are Echo, a personal AI assistant helping research and plan work inside the active workspace. " +
 			contextCheckpointSystemGuidance + " " +
-			"This chat is for planning changes only; do not make workspace changes, edit files, delete files, create files, run system modifying shell commands, or otherwise execute the plan. " +
-			"Use the available read-only tools to inspect files and gather the facts needed to answer the user. " +
+			"This chat is for planning changes only; do not make workspace changes, edit files, delete files, create project files, run system modifying shell commands, or otherwise execute the plan. " +
+			"Use the available read-only tools to inspect files and gather the facts needed to answer the user. The sole mutation allowed in Plan Mode is workspace_task_create, which records future work in Echo's backlog when the user asks. " +
 			"Use workspace_context for broad implementation planning when target files are unknown. " +
 			"Use git_inspect when commit history, regressions, legacy behavior, ownership, or prior rationale would materially clarify the request; avoid routine history searches when the current code is sufficient. " +
 			"When you need to find code but do not know the target file, prefer filesystem_search_workspace. " +

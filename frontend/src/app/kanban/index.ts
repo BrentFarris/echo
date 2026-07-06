@@ -1,6 +1,6 @@
 
 import { patchChildrenFromHtml, renderMarkdown } from "../../markdown";
-import { AddKanbanCardMessage, CloseKanbanCardDetail, CreateReadyKanbanCard, LoadKanbanBoard, UpdateKanbanCardDescription, UpdateKanbanCardDirection } from "../../backend/services";
+import { AddKanbanCardMessage, CloseKanbanCardDetail, CreateKanbanCardFromTask, CreateReadyKanbanCard, LoadKanbanBoard, UpdateKanbanCardDescription, UpdateKanbanCardDirection } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";
@@ -488,6 +488,8 @@ export function handleKanbanCardCreationInput(event: Event) {
     title: form.querySelector<HTMLInputElement>("[data-kanban-card-create-title]")?.value ?? "",
     description: form.querySelector<HTMLTextAreaElement>("[data-kanban-card-create-description]")?.value ?? "",
     acceptanceCriteria: form.querySelector<HTMLTextAreaElement>("[data-kanban-card-create-criteria]")?.value ?? "",
+    sourceTaskId: state.kanbanCardCreationDrafts.get(workspace.id)?.sourceTaskId,
+    sourceTaskUpdatedAt: state.kanbanCardCreationDrafts.get(workspace.id)?.sourceTaskUpdatedAt,
   };
   state.kanbanCardCreationDrafts.set(workspace.id, draft);
   const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]');
@@ -512,16 +514,29 @@ export async function handleKanbanCardCreationSubmit(event: SubmitEvent) {
     .filter(Boolean);
 
   try {
-    const board = await CreateReadyKanbanCard(
-      workspace.id,
-      draft.title.trim(),
-      draft.description.trim(),
-      criteria,
-    );
-    state.kanbanBoards.set(workspace.id, board);
+    if (draft.sourceTaskId) {
+      const conversion = await CreateKanbanCardFromTask(
+        workspace.id,
+        draft.sourceTaskId,
+        draft.title.trim(),
+        draft.description.trim(),
+        criteria,
+        draft.sourceTaskUpdatedAt ?? "",
+      );
+      state.kanbanBoards.set(workspace.id, conversion.kanban);
+      state.taskBoards.set(workspace.id, conversion.tasks);
+    } else {
+      const board = await CreateReadyKanbanCard(
+        workspace.id,
+        draft.title.trim(),
+        draft.description.trim(),
+        criteria,
+      );
+      state.kanbanBoards.set(workspace.id, board);
+    }
     state.creatingKanbanCardWorkspaces.delete(workspace.id);
     state.kanbanCardCreationDrafts.delete(workspace.id);
-    pushToast("Ready card created.", "success");
+    pushToast(draft.sourceTaskId ? "Task converted to a Ready card." : "Ready card created.", "success");
     getAppCallbacks().render();
   } catch (error) {
     pushToast(errorMessage(error), "error");

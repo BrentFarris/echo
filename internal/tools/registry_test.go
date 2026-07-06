@@ -247,7 +247,7 @@ func TestReadOnlyLLMSchemaIncludesOnlyInspectionTools(t *testing.T) {
 		names[tool.Function.Name] = true
 	}
 
-	for _, name := range []string{"filesystem_list", "filesystem_read_image", "filesystem_read_video", "filesystem_read_text", "filesystem_search_text", "filesystem_search_workspace", "filesystem_stat", "git_inspect", "lsp_query", "web_search", "workspace_context", "workspace_skill_read", "workspace_skill_search"} {
+	for _, name := range []string{"filesystem_list", "filesystem_read_image", "filesystem_read_video", "filesystem_read_text", "filesystem_search_text", "filesystem_search_workspace", "filesystem_stat", "git_inspect", "lsp_query", "web_search", "workspace_context", "workspace_skill_read", "workspace_skill_search", "workspace_task_list"} {
 		if !names[name] {
 			t.Fatalf("expected read-only schema to include %s, got %#v", name, names)
 		}
@@ -257,8 +257,8 @@ func TestReadOnlyLLMSchemaIncludesOnlyInspectionTools(t *testing.T) {
 			t.Fatalf("expected read-only schema to exclude %s, got %#v", name, names)
 		}
 	}
-	if len(names) != 13 {
-		t.Fatalf("expected exactly thirteen read-only tools, got %#v", names)
+	if len(names) != 14 {
+		t.Fatalf("expected exactly fourteen read-only tools, got %#v", names)
 	}
 }
 

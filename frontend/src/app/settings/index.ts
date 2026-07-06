@@ -131,6 +131,8 @@ const availableToolNames = [
   "workspace_skill_read",
   "workspace_skill_record",
   "workspace_skill_search",
+  "workspace_task_create",
+  "workspace_task_list",
 ] as const;
 
 type EndpointTopic = (typeof endpointTopics)[number]["key"];

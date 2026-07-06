@@ -87,6 +87,10 @@ export function CreateKanbanCardFromChatMessage(...args: Parameters<typeof Wails
   return call("CreateKanbanCardFromChatMessage", Wails.CreateKanbanCardFromChatMessage, args);
 }
 
+export function CreateKanbanCardFromTask(...args: Parameters<typeof Wails.CreateKanbanCardFromTask>): ReturnType<typeof Wails.CreateKanbanCardFromTask> {
+  return call("CreateKanbanCardFromTask", Wails.CreateKanbanCardFromTask, args);
+}
+
 export function CreateSkillFromChat(...args: Parameters<typeof Wails.CreateSkillFromChat>): ReturnType<typeof Wails.CreateSkillFromChat> {
   return call("CreateSkillFromChat", Wails.CreateSkillFromChat, args);
 }
@@ -103,12 +107,20 @@ export function CreateWorkspaceFolder(...args: Parameters<typeof Wails.CreateWor
   return call("CreateWorkspaceFolder", Wails.CreateWorkspaceFolder, args);
 }
 
+export function CreateWorkspaceTask(...args: Parameters<typeof Wails.CreateWorkspaceTask>): ReturnType<typeof Wails.CreateWorkspaceTask> {
+  return call("CreateWorkspaceTask", Wails.CreateWorkspaceTask, args);
+}
+
 export function DeleteAgentMode(...args: Parameters<typeof Wails.DeleteAgentMode>): ReturnType<typeof Wails.DeleteAgentMode> {
   return call("DeleteAgentMode", Wails.DeleteAgentMode, args);
 }
 
 export function DeleteKanbanCard(...args: Parameters<typeof Wails.DeleteKanbanCard>): ReturnType<typeof Wails.DeleteKanbanCard> {
   return call("DeleteKanbanCard", Wails.DeleteKanbanCard, args);
+}
+
+export function DeleteWorkspaceTask(...args: Parameters<typeof Wails.DeleteWorkspaceTask>): ReturnType<typeof Wails.DeleteWorkspaceTask> {
+  return call("DeleteWorkspaceTask", Wails.DeleteWorkspaceTask, args);
 }
 
 export function DeleteWorkspace(...args: Parameters<typeof Wails.DeleteWorkspace>): ReturnType<typeof Wails.DeleteWorkspace> {
@@ -164,6 +176,10 @@ export function LoadChatSession(...args: Parameters<typeof Wails.LoadChatSession
 
 export function LoadKanbanBoard(...args: Parameters<typeof Wails.LoadKanbanBoard>): ReturnType<typeof Wails.LoadKanbanBoard> {
   return call("LoadKanbanBoard", Wails.LoadKanbanBoard, args);
+}
+
+export function LoadTaskBoard(...args: Parameters<typeof Wails.LoadTaskBoard>): ReturnType<typeof Wails.LoadTaskBoard> {
+  return call("LoadTaskBoard", Wails.LoadTaskBoard, args);
 }
 
 export function LoadRuntimeStatus(...args: Parameters<typeof Wails.LoadRuntimeStatus>): ReturnType<typeof Wails.LoadRuntimeStatus> {
@@ -224,6 +240,10 @@ export function MergeWorkspaceGitBranch(...args: Parameters<typeof Wails.MergeWo
 
 export function MoveKanbanCard(...args: Parameters<typeof Wails.MoveKanbanCard>): ReturnType<typeof Wails.MoveKanbanCard> {
   return call("MoveKanbanCard", Wails.MoveKanbanCard, args);
+}
+
+export function MoveWorkspaceTask(...args: Parameters<typeof Wails.MoveWorkspaceTask>): ReturnType<typeof Wails.MoveWorkspaceTask> {
+  return call("MoveWorkspaceTask", Wails.MoveWorkspaceTask, args);
 }
 
 export function MoveWorkspacePath(...args: Parameters<typeof Wails.MoveWorkspacePath>): ReturnType<typeof Wails.MoveWorkspacePath> {
@@ -369,6 +389,10 @@ export function SetWorkspaceLetter(...args: Parameters<typeof Wails.SetWorkspace
   return call("SetWorkspaceLetter", Wails.SetWorkspaceLetter, args);
 }
 
+export function SetWorkspaceTaskCompleted(...args: Parameters<typeof Wails.SetWorkspaceTaskCompleted>): ReturnType<typeof Wails.SetWorkspaceTaskCompleted> {
+  return call("SetWorkspaceTaskCompleted", Wails.SetWorkspaceTaskCompleted, args);
+}
+
 export function StartKanbanExecution(...args: Parameters<typeof Wails.StartKanbanExecution>): ReturnType<typeof Wails.StartKanbanExecution> {
   return call("StartKanbanExecution", Wails.StartKanbanExecution, args);
 }
@@ -395,4 +419,8 @@ export function UpdateKanbanCardDescription(...args: Parameters<typeof Wails.Upd
 
 export function UpdateKanbanCardDirection(...args: Parameters<typeof Wails.UpdateKanbanCardDirection>): ReturnType<typeof Wails.UpdateKanbanCardDirection> {
   return call("UpdateKanbanCardDirection", Wails.UpdateKanbanCardDirection, args);
+}
+
+export function UpdateWorkspaceTask(...args: Parameters<typeof Wails.UpdateWorkspaceTask>): ReturnType<typeof Wails.UpdateWorkspaceTask> {
+  return call("UpdateWorkspaceTask", Wails.UpdateWorkspaceTask, args);
 }

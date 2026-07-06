@@ -14,8 +14,9 @@ import { applyKanbanEvent, loadActiveKanbanBoard, markKanbanRunStarted } from ".
 import { render } from "./render";
 import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state } from "./state";
 import { applyTheme } from "./theme";
+import { applyTaskEvent, loadActiveTaskBoard } from "./tasks";
 import { pushToast } from "./toasts";
-import type { ChatStreamEvent, FileChangesEvent, KanbanEvent } from "./types";
+import type { ChatStreamEvent, FileChangesEvent, KanbanEvent, TaskEvent } from "./types";
 import { errorMessage } from "./utils";
 import { loadActiveChatSession } from "./chat";
 import { loadActiveChangeReview } from "./changes";
@@ -67,6 +68,7 @@ async function initialize() {
     applyTheme(state.appState.settings);
     await loadActiveChatSession();
     await loadActiveKanbanBoard();
+    await loadActiveTaskBoard();
     await loadActiveChangeReview();
     const runtimeStatus = await LoadRuntimeStatus();
     for (const workspaceID of runtimeStatus.activeKanbanWorkspaceIds ?? []) {
@@ -117,6 +119,10 @@ export function startApp() {
 
   EventsOn("echo:file-changes:event", (event: FileChangesEvent) => {
     applyFileChangesEvent(event);
+  });
+
+  EventsOn("echo:tasks:event", (event: TaskEvent) => {
+    applyTaskEvent(event);
   });
 
   EventsOn("echo:agent-mode:event", (modes) => {

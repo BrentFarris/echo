@@ -15,6 +15,7 @@ import { icons } from "./icons";
 import { kanbanBoardFor, changeReviewFor, gitRepositoryViewFor, activeWorkspace, kanbanCards, state, getActiveChatKanbanTab } from "./state";
 import { renderSettingsOverlay } from "./settings";
 import { renderToasts } from "./toasts";
+import { renderTaskPanel } from "./tasks";
 import { escapeHtml, workspaceFolderSummary } from "./utils";
 import { renderWorkspaceIcon, renderMissingWorkspace } from "./workspace";
 import { hasKanbanRuntime, renderCreateKanbanCardDialog, renderDecompositionState, renderEmptyBoard, renderKanbanBoard, renderKanbanDetail, renderKanbanRuntime } from "./kanban";
@@ -128,6 +129,7 @@ function buildLeftNav(
       </div>
       <nav class="left-nav-buttons" aria-label="Views">
         <button class="nav-icon-button${mode === "chat" ? " is-active" : ""}" type="button" title="Chat" aria-label="Chat" data-action="switch-view" data-view="chat">${icons.chat}</button>
+        <button class="nav-icon-button${mode === "tasks" ? " is-active" : ""}" type="button" title="Tasks" aria-label="Tasks" data-action="switch-view" data-view="tasks">${icons.tasks}</button>
         <button class="nav-icon-button${mode === "kanban" ? " is-active" : ""}" type="button" title="Kanban" aria-label="Kanban" data-action="switch-view" data-view="kanban">${icons.kanban}</button>
       </nav>
       <div class="left-nav-actions">
@@ -164,6 +166,7 @@ function getPanelTitleId(mode: string): string {
   switch (mode) {
     case "code": return "code-title";
     case "kanban": return "kanban-title";
+    case "tasks": return "tasks-title";
     default: return "chat-title";
   }
 }
@@ -198,6 +201,8 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
 
   if (mode === "chat") {
     mainPanel = renderChatPanel(workspace, true);
+  } else if (mode === "tasks") {
+    mainPanel = workspace ? renderTaskPanel(workspace) : `<div class="empty-state">Add a workspace to create tasks.</div>`;
   } else if (mode === "kanban") {
     mainPanel = `
       <section class="work-panel kanban-panel" aria-labelledby="kanban-title">
@@ -248,7 +253,7 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
 
   return `
     ${mainPanel}
-    ${board ? renderKanbanDetail(board) : ""}
+    ${mode === "kanban" && board ? renderKanbanDetail(board) : ""}
     ${workspace && state.creatingKanbanCardWorkspaces.has(workspace.id) && !running ? renderCreateKanbanCardDialog(workspace.id) : ""}
     ${workspace && state.openChangeReviewWorkspaces.has(workspace.id) ? renderChangeReviewDrawer(workspace, review ?? changeReviewFor(workspace.id)) : ""}
   `;
@@ -277,16 +282,19 @@ function renderMobileBottomNav(
         <button class="mobile-nav-tab${activeMobileView === "chat" ? " is-active" : ""}" type="button" title="Chat" aria-label="Chat" aria-pressed="${activeMobileView === "chat"}" role="tab" aria-selected="${activeMobileView === "chat"}" tabindex="${activeMobileView === "chat" ? "0" : "-1"}" data-mobile-nav-tab-index="0" data-action="switch-view" data-view="chat">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         </button>
-        <button class="mobile-nav-tab${activeMobileView === "kanban" ? " is-active" : ""}" type="button" title="Kanban" aria-label="Kanban" aria-pressed="${activeMobileView === "kanban"}" role="tab" aria-selected="${activeMobileView === "kanban"}" tabindex="${activeMobileView === "kanban" ? "0" : "-1"}" data-mobile-nav-tab-index="1" data-action="switch-view" data-view="kanban">
+        <button class="mobile-nav-tab${activeMobileView === "tasks" ? " is-active" : ""}" type="button" title="Tasks" aria-label="Tasks" aria-pressed="${activeMobileView === "tasks"}" role="tab" aria-selected="${activeMobileView === "tasks"}" tabindex="${activeMobileView === "tasks" ? "0" : "-1"}" data-mobile-nav-tab-index="1" data-action="switch-view" data-view="tasks">
+          ${icons.tasks}
+        </button>
+        <button class="mobile-nav-tab${activeMobileView === "kanban" ? " is-active" : ""}" type="button" title="Kanban" aria-label="Kanban" aria-pressed="${activeMobileView === "kanban"}" role="tab" aria-selected="${activeMobileView === "kanban"}" tabindex="${activeMobileView === "kanban" ? "0" : "-1"}" data-mobile-nav-tab-index="2" data-action="switch-view" data-view="kanban">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="4" height="11" rx="1"/><rect x="16" y="4" width="5" height="14" rx="1"/></svg>
         </button>
-        <button class="mobile-nav-tab${activeMobileView === "code" ? " is-active" : ""}" type="button" title="Code" aria-label="Code view" aria-pressed="${activeMobileView === "code"}" role="tab" aria-selected="${activeMobileView === "code"}" tabindex="${activeMobileView === "code" ? "0" : "-1"}" data-mobile-nav-tab-index="2" data-action="${activeMobileView === "code" ? "close-code-view" : "open-code-view"}">
+        <button class="mobile-nav-tab${activeMobileView === "code" ? " is-active" : ""}" type="button" title="Code" aria-label="Code view" aria-pressed="${activeMobileView === "code"}" role="tab" aria-selected="${activeMobileView === "code"}" tabindex="${activeMobileView === "code" ? "0" : "-1"}" data-mobile-nav-tab-index="3" data-action="${activeMobileView === "code" ? "close-code-view" : "open-code-view"}">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></svg>
         </button>
-        <button class="mobile-nav-tab${activeMobileView === "git" ? " is-active" : ""}" type="button" title="Git Changes" aria-label="Git changes" aria-pressed="${activeMobileView === "git"}" role="tab" aria-selected="${activeMobileView === "git"}" tabindex="${activeMobileView === "git" ? "0" : "-1"}" data-mobile-nav-tab-index="3" data-action="${activeMobileView === "git" ? "close-git-changes" : "open-git-changes"}">
+        <button class="mobile-nav-tab${activeMobileView === "git" ? " is-active" : ""}" type="button" title="Git Changes" aria-label="Git changes" aria-pressed="${activeMobileView === "git"}" role="tab" aria-selected="${activeMobileView === "git"}" tabindex="${activeMobileView === "git" ? "0" : "-1"}" data-mobile-nav-tab-index="4" data-action="${activeMobileView === "git" ? "close-git-changes" : "open-git-changes"}">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v12"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
         </button>
-        <button class="mobile-nav-tab${activeMobileView === "settings" ? " is-active" : ""}" type="button" title="Settings" aria-label="Settings" aria-pressed="${activeMobileView === "settings"}" role="tab" aria-selected="${activeMobileView === "settings"}" tabindex="${activeMobileView === "settings" ? "0" : "-1"}" data-mobile-nav-tab-index="4" data-action="open-settings">
+        <button class="mobile-nav-tab${activeMobileView === "settings" ? " is-active" : ""}" type="button" title="Settings" aria-label="Settings" aria-pressed="${activeMobileView === "settings"}" role="tab" aria-selected="${activeMobileView === "settings"}" tabindex="${activeMobileView === "settings" ? "0" : "-1"}" data-mobile-nav-tab-index="5" data-action="open-settings">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.3a2 0 0 1-4 0V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 0 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H2.7a2 2 0 0 1 0-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7A2 2 0 0 1 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.7a2 0 0 1 4 0V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 0 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.3a2 2 0 0 1 0 4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>
         </button>
       </div>
