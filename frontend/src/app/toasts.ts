@@ -58,11 +58,23 @@ export function renderToasts(): string {
 }
 
 function patchToasts() {
-  const existing = appRoot.querySelector<HTMLElement>("[data-toast-region]");
+  const overlayRegion = appRoot.querySelector<HTMLElement>('[data-region="overlays"]');
+  const toastRegions = Array.from(
+    appRoot.querySelectorAll<HTMLElement>("[data-toast-region]"),
+  );
   if (!state.toasts.length) {
-    existing?.remove();
+    toastRegions.forEach((region) => region.remove());
     return;
   }
+
+  if (!overlayRegion) {
+    return;
+  }
+
+  const existing = overlayRegion.querySelector<HTMLElement>("[data-toast-region]");
+  toastRegions
+    .filter((region) => region !== existing)
+    .forEach((region) => region.remove());
 
   const markup = renderToasts();
   if (existing) {
@@ -71,17 +83,13 @@ function patchToasts() {
     return;
   }
 
-  const shell = appRoot.querySelector<HTMLElement>(".app-shell");
-  if (!shell) {
-    return;
-  }
-  const contextMenu = shell.querySelector<HTMLElement>("[data-context-menu]");
+  const contextMenu = overlayRegion.querySelector<HTMLElement>("[data-context-menu]");
   if (contextMenu) {
     contextMenu.insertAdjacentHTML("beforebegin", markup);
     bindToastActions();
     return;
   }
-  shell.insertAdjacentHTML("beforeend", markup);
+  overlayRegion.insertAdjacentHTML("beforeend", markup);
   bindToastActions();
 }
 
