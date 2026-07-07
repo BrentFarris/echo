@@ -13,6 +13,7 @@ func launchDetachedRebuild(scriptPath string, workspaceDir string) error {
 	baseName := strings.TrimSuffix(scriptPath, ".ps1")
 	logFile := baseName + ".log"
 	batPath := baseName + ".bat"
+	vbsPath := baseName + ".vbs"
 
 	const batTemplate = `@echo off
 chcp 65001 >nul 2>&1
@@ -51,6 +52,17 @@ del "%~f0"
 		return fmt.Errorf("write bat: %w", err)
 	}
 
-	cmd := exec.Command("cmd.exe", "/c", "start", "", batPath)
-	return cmd.Run()
+	vbsContent := fmt.Sprintf(
+		"Set WshShell = CreateObject(\"WScript.Shell\")\r\n"+
+			"WshShell.Run \"%s\", 0, False\r\n"+
+			"Set fso = CreateObject(\"Scripting.FileSystemObject\")\r\n"+
+			"fso.DeleteFile(WScript.ScriptFullName)\r\n",
+		batPath)
+
+	if err := os.WriteFile(vbsPath, []byte(vbsContent), 0644); err != nil {
+		return fmt.Errorf("write vbs: %w", err)
+	}
+
+	cmd := exec.Command("wscript.exe", vbsPath)
+	return cmd.Start()
 }
