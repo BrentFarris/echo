@@ -9,90 +9,78 @@ import { pushToast } from "../toasts";
 import { changeOperationLabel, errorMessage, escapeAttribute, escapeHtml } from "../utils";
 import { renderChangeDiff, renderGitChangedFile } from "../changes";
 
-export function renderGitRepositoryDrawer(
+export function renderGitRepositoryPage(
   workspace: services.Workspace,
   view: services.WorkspaceGitRepositoryView,
 ): string {
   const repository = view.repository ?? null;
   const repositories = view.repositories ?? [];
-  const expanded = state.expandedGitChangeWorkspaces.has(workspace.id);
   const loading = state.loadingGitRepositoryWorkspaces.has(workspace.id);
   const operation = state.gitRepositoryOperations.get(workspace.id) ?? "";
   const selectedFolderID = selectedGitRepositoryFolderID(workspace.id, view);
-  const sizeLabel = expanded ? "Collapse Git" : "Expand Git";
   return `
-    <aside class="change-review-backdrop ${expanded ? "is-expanded" : ""}" role="dialog" aria-modal="true" aria-labelledby="git-repository-title">
-      <section class="change-review git-repository ${expanded ? "is-expanded" : ""}" data-change-review data-git-repository>
-        <header class="change-review-header">
-          <div>
-            <p class="eyebrow">${escapeHtml(workspace.displayName)}</p>
-            <h2 id="git-repository-title">Git</h2>
-          </div>
-          <div class="change-review-header-actions">
-            <button class="icon-button" type="button" title="${sizeLabel}" aria-label="${sizeLabel}" aria-pressed="${expanded}" data-action="toggle-git-changes-size">
-              ${expanded ? icons.collapse : icons.expand}
-            </button>
-            <button class="icon-button close-button" type="button" title="Close" aria-label="Close Git" data-action="close-git-changes">
-              ${icons.x}
-            </button>
-          </div>
-        </header>
-
-        <div class="git-repository-topbar">
-          <label class="field git-repository-picker">
-            <span>Repository</span>
-            <select data-git-repository-select ${loading || operation ? "disabled" : ""}>
-              ${repositories.length
-                ? repositories.map((item) => renderGitRepositoryOption(item, selectedFolderID)).join("")
-                : `<option value="">No repositories</option>`}
-            </select>
-          </label>
-          ${renderGitRepositorySummary(repository, loading, operation)}
+    <section class="work-panel git-repository" aria-labelledby="git-repository-title" data-change-review data-git-repository>
+      <header class="panel-heading git-repository-header">
+        <div>
+          <p class="eyebrow">${escapeHtml(workspace.displayName)}</p>
+          <h2 id="git-repository-title">Git</h2>
         </div>
+      </header>
 
-        <div class="change-review-actions">
-          <button class="icon-button" type="button" title="Previous change" aria-label="Previous change" data-action="previous-change" ${repository?.fileCount ? "" : "disabled"}>
-            ${icons.arrowUp}
-          </button>
-          <button class="icon-button" type="button" title="Next change" aria-label="Next change" data-action="next-change" ${repository?.fileCount ? "" : "disabled"}>
-            ${icons.arrowDown}
-          </button>
-          ${renderGitRefreshOrSyncButton(repository, loading, operation)}
-          <button class="secondary-button icon-text-button danger-button" type="button" data-action="revert-git-changes" ${repository?.fileCount && !loading && !operation ? "" : "disabled"}>
-            ${operation === "Reverting changes" ? `<span class="spinner" aria-hidden="true"></span>` : icons.undo}
-            <span>Revert All</span>
-          </button>
-        </div>
+      <div class="git-repository-topbar">
+        <label class="field git-repository-picker">
+          <span>Repository</span>
+          <select data-git-repository-select ${loading || operation ? "disabled" : ""}>
+            ${repositories.length
+              ? repositories.map((item) => renderGitRepositoryOption(item, selectedFolderID)).join("")
+              : `<option value="">No repositories</option>`}
+          </select>
+        </label>
+        ${renderGitRepositorySummary(repository, loading, operation)}
+      </div>
 
-        ${repository
-          ? `
-            <div class="git-management-grid">
-              ${renderGitCommitForm(workspace.id, repository, operation)}
-              ${renderGitBranchControls(workspace.id, repository, operation)}
-            </div>
-            <div class="git-repository-layout">
-              <section class="git-panel git-working-tree" aria-labelledby="git-working-title">
-                <header>
-                  <h3 id="git-working-title">Working Changes</h3>
-                  <span>${escapeHtml(String(repository.fileCount ?? 0))} files</span>
-                </header>
-                ${(repository.files ?? []).length
-                  ? `<div class="change-file-list">${(repository.files ?? []).map(renderGitChangedFile).join("")}</div>`
-                  : `<div class="empty-state compact">No Git changes.</div>`}
-              </section>
-              <section class="git-panel git-history" aria-labelledby="git-history-title">
-                <header>
-                  <h3 id="git-history-title">History</h3>
-                  <span>${escapeHtml(String((repository.commits ?? []).length))} commits</span>
-                </header>
-                ${renderGitCommitHistory(workspace.id, repository)}
-                ${renderGitSelectedCommit(workspace.id, repository)}
-              </section>
-            </div>
-          `
-          : `<div class="empty-state compact">${loading ? renderSpinnerLabel("Loading Git") : "No manageable Git repository."}</div>`}
-      </section>
-    </aside>
+      <div class="change-review-actions">
+        <button class="icon-button" type="button" title="Previous change" aria-label="Previous change" data-action="previous-change" ${repository?.fileCount ? "" : "disabled"}>
+          ${icons.arrowUp}
+        </button>
+        <button class="icon-button" type="button" title="Next change" aria-label="Next change" data-action="next-change" ${repository?.fileCount ? "" : "disabled"}>
+          ${icons.arrowDown}
+        </button>
+        ${renderGitRefreshOrSyncButton(repository, loading, operation)}
+        <button class="secondary-button icon-text-button danger-button" type="button" data-action="revert-git-changes" ${repository?.fileCount && !loading && !operation ? "" : "disabled"}>
+          ${operation === "Reverting changes" ? `<span class="spinner" aria-hidden="true"></span>` : icons.undo}
+          <span>Revert All</span>
+        </button>
+      </div>
+
+      ${repository
+        ? `
+          <div class="git-management-grid">
+            ${renderGitCommitForm(workspace.id, repository, operation)}
+            ${renderGitBranchControls(workspace.id, repository, operation)}
+          </div>
+          <div class="git-repository-layout">
+            <section class="git-panel git-working-tree" aria-labelledby="git-working-title">
+              <header>
+                <h3 id="git-working-title">Working Changes</h3>
+                <span>${escapeHtml(String(repository.fileCount ?? 0))} files</span>
+              </header>
+              ${(repository.files ?? []).length
+                ? `<div class="change-file-list">${(repository.files ?? []).map(renderGitChangedFile).join("")}</div>`
+                : `<div class="empty-state compact">No Git changes.</div>`}
+            </section>
+            <section class="git-panel git-history" aria-labelledby="git-history-title">
+              <header>
+                <h3 id="git-history-title">History</h3>
+                <span>${escapeHtml(String((repository.commits ?? []).length))} commits</span>
+              </header>
+              ${renderGitCommitHistory(workspace.id, repository)}
+              ${renderGitSelectedCommit(workspace.id, repository)}
+            </section>
+          </div>
+        `
+        : `<div class="empty-state compact">${loading ? renderSpinnerLabel("Loading Git") : "No manageable Git repository."}</div>`}
+    </section>
   `;
 }
 

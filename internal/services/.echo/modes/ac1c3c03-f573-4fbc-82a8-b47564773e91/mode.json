@@ -1,0 +1,13 @@
+{
+  "id": "ac1c3c03-f573-4fbc-82a8-b47564773e91",
+  "name": "Updated",
+  "prompt": "New prompt",
+  "permissions": {
+    "filesystem_list": {
+      "name": "filesystem_list",
+      "paths": [
+        "docs/**"
+      ]
+    }
+  }
+}

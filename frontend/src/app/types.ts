@@ -2,7 +2,7 @@
 import { services } from "../../wailsjs/go/models";
 import type { CodeEntryKind, CodeViewCallbacks } from "../codeView/types";
 
-export type AppMode = "chat" | "kanban" | "code" | "settings" | "git";
+export type AppMode = "chat" | "tasks" | "kanban" | "code" | "settings" | "git";
 
 export type MobileNavView = AppMode | "git";
 
@@ -33,6 +33,13 @@ export type KanbanEvent = {
   cardId?: string;
   type: string;
   board: services.KanbanBoard;
+};
+
+export type TaskEvent = {
+  workspaceId: string;
+  taskId?: string;
+  type: string;
+  board: services.TaskBoard;
 };
 
 export type FileChangesEvent = {
@@ -100,6 +107,17 @@ export type KanbanCardCreationDraft = {
   title: string;
   description: string;
   acceptanceCriteria: string;
+  sourceTaskId?: string;
+  sourceTaskUpdatedAt?: string;
+};
+
+export type TaskEditorDraft = {
+  taskId?: string;
+  title: string;
+  details: string;
+  acceptanceCriteria: string;
+  priority: string;
+  expectedUpdatedAt?: string;
 };
 
 export type ScrollSnapshot = {

@@ -150,6 +150,7 @@ func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Wo
 		CodeNavigator:    s.codeNavigator(workspace),
 		WorkspaceContext: s.workspaceContextProvider(workspace),
 		WorkspaceSkills:  s.workspaceSkillsProvider(workspace),
+		WorkspaceTasks:   s.workspaceTasksProvider(workspace),
 		Emit:             emit,
 		FileChanges:      sink,
 		ToolScopes:       toolScopes,

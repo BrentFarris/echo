@@ -149,6 +149,7 @@ type SystemService struct {
 	storePath               string
 	mu                      sync.Mutex
 	autosaveMu              sync.Mutex
+	taskMu                  sync.Mutex
 	state                   AppState
 	persistedChatSessions   map[string]persistedChatSession
 	chatMu                  sync.Mutex

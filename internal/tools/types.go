@@ -52,6 +52,7 @@ type ExecutionContext struct {
 	CodeNavigator    CodeNavigator
 	WorkspaceContext WorkspaceContextProvider
 	WorkspaceSkills  WorkspaceSkillsProvider
+	WorkspaceTasks   WorkspaceTasksProvider
 	Emit             EventEmitter
 	FileChanges      FileChangeSink
 	// ToolScopes is the unified per-tool permission and path-scope checker.
@@ -125,6 +126,45 @@ type WorkspaceSkillsProvider interface {
 	SearchWorkspaceSkills(ctx context.Context, request WorkspaceSkillSearchRequest) (WorkspaceSkillSearchResponse, error)
 	ReadWorkspaceSkill(ctx context.Context, request WorkspaceSkillReadRequest) (WorkspaceSkill, error)
 	RecordWorkspaceSkill(ctx context.Context, request WorkspaceSkillRecordRequest) (WorkspaceSkillRecordResponse, error)
+}
+
+type WorkspaceTasksProvider interface {
+	ListWorkspaceTasks(ctx context.Context, request WorkspaceTaskListRequest) (WorkspaceTaskListResponse, error)
+	CreateWorkspaceTask(ctx context.Context, request WorkspaceTaskCreateRequest) (WorkspaceTaskMutationResponse, error)
+}
+
+type WorkspaceTaskListRequest struct {
+	Priority         string `json:"priority,omitempty"`
+	IncludeCompleted bool   `json:"includeCompleted,omitempty"`
+}
+
+type WorkspaceTaskCreateRequest struct {
+	Title              string   `json:"title"`
+	Details            string   `json:"details,omitempty"`
+	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
+	Priority           string   `json:"priority,omitempty"`
+}
+
+type WorkspaceTask struct {
+	ID                 string   `json:"id"`
+	Title              string   `json:"title"`
+	Details            string   `json:"details,omitempty"`
+	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
+	Priority           string   `json:"priority"`
+	Completed          bool     `json:"completed"`
+	CreatedAt          string   `json:"createdAt"`
+	UpdatedAt          string   `json:"updatedAt"`
+	CompletedAt        string   `json:"completedAt,omitempty"`
+}
+
+type WorkspaceTaskListResponse struct {
+	StoragePath string          `json:"storagePath"`
+	Tasks       []WorkspaceTask `json:"tasks"`
+}
+
+type WorkspaceTaskMutationResponse struct {
+	Created WorkspaceTask   `json:"created"`
+	Tasks   []WorkspaceTask `json:"tasks"`
 }
 
 const (

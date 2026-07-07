@@ -14,8 +14,9 @@ import { applyKanbanEvent, applyHeartbeatEvent, applyLivenessEvent, applyWatchdo
 import { render } from "./render";
 import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state } from "./state";
 import { applyTheme } from "./theme";
+import { applyTaskEvent, loadActiveTaskBoard } from "./tasks";
 import { pushToast } from "./toasts";
-import type { ChatStreamEvent, FileChangesEvent, HeartbeatEvent, KanbanEvent, LivenessEvent, WatchdogEvent } from "./types";
+import type { ChatStreamEvent, FileChangesEvent, HeartbeatEvent, KanbanEvent, LivenessEvent, TaskEvent, WatchdogEvent } from "./types";
 import { errorMessage } from "./utils";
 import { loadActiveChatSession } from "./chat";
 import { loadActiveChangeReview } from "./changes";
@@ -69,6 +70,7 @@ async function initialize() {
     applyTheme(state.appState.settings);
     await loadActiveChatSession();
     await loadActiveKanbanBoard();
+    await loadActiveTaskBoard();
     await loadActiveChangeReview();
     const activeWS = state.appState?.activeWorkspaceId ?? "";
     if (activeWS) {
@@ -152,6 +154,11 @@ export function startApp() {
 
   EventsOn("echo:watchdog:event", (event: WatchdogEvent) => {
     applyWatchdogEvent(event);
+  });
+
+  EventsOn("echo:tasks:event", (event: TaskEvent) => {
+    applyTaskEvent(event);
+  });
   });
 
   EventsOn("echo:agent-mode:event", (modes) => {

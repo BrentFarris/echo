@@ -6,6 +6,7 @@ const (
 	FileChangesRuntimeEventName  = fileChangesEventName
 	InlineCodeRuntimeEventName   = inlineCodePromptEventName
 	AgentModeRuntimeEventName    = agentModeEventName
+	TaskRuntimeEventName         = taskEventName
 	HeartbeatRuntimeEventName    = heartbeatEventName
 	LivenessRuntimeEventName     = livenessEventName
 	WatchdogRuntimeEventName     = watchdogEventName

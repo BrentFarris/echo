@@ -90,6 +90,10 @@ export function CreateKanbanCardFromChatMessage(arg1, arg2) {
   return window['go']['services']['SystemService']['CreateKanbanCardFromChatMessage'](arg1, arg2);
 }
 
+export function CreateKanbanCardFromTask(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['services']['SystemService']['CreateKanbanCardFromTask'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
 export function CreateMode(arg1, arg2) {
   return window['go']['services']['SystemService']['CreateMode'](arg1, arg2);
 }
@@ -118,6 +122,10 @@ export function CreateWorkspaceGitBranch(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['CreateWorkspaceGitBranch'](arg1, arg2, arg3);
 }
 
+export function CreateWorkspaceTask(arg1, arg2) {
+  return window['go']['services']['SystemService']['CreateWorkspaceTask'](arg1, arg2);
+}
+
 export function DeleteAgentMode(arg1) {
   return window['go']['services']['SystemService']['DeleteAgentMode'](arg1);
 }
@@ -128,6 +136,10 @@ export function DeleteKanbanCard(arg1, arg2) {
 
 export function DeleteWorkspace(arg1) {
   return window['go']['services']['SystemService']['DeleteWorkspace'](arg1);
+}
+
+export function DeleteWorkspaceTask(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['DeleteWorkspaceTask'](arg1, arg2, arg3);
 }
 
 export function DiscardWorkspaceGitChanges(arg1, arg2) {
@@ -210,6 +222,10 @@ export function LoadState() {
   return window['go']['services']['SystemService']['LoadState']();
 }
 
+export function LoadTaskBoard(arg1) {
+  return window['go']['services']['SystemService']['LoadTaskBoard'](arg1);
+}
+
 export function LoadWebAccessStatus() {
   return window['go']['services']['SystemService']['LoadWebAccessStatus']();
 }
@@ -240,6 +256,10 @@ export function MoveKanbanCard(arg1, arg2, arg3) {
 
 export function MoveWorkspacePath(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['MoveWorkspacePath'](arg1, arg2, arg3);
+}
+
+export function MoveWorkspaceTask(arg1, arg2, arg3, arg4) {
+  return window['go']['services']['SystemService']['MoveWorkspaceTask'](arg1, arg2, arg3, arg4);
 }
 
 export function OpenKanbanCardDetail(arg1, arg2) {
@@ -402,6 +422,10 @@ export function SetWorkspaceLetter(arg1, arg2) {
   return window['go']['services']['SystemService']['SetWorkspaceLetter'](arg1, arg2);
 }
 
+export function SetWorkspaceTaskCompleted(arg1, arg2, arg3, arg4) {
+  return window['go']['services']['SystemService']['SetWorkspaceTaskCompleted'](arg1, arg2, arg3, arg4);
+}
+
 export function Shutdown() {
   return window['go']['services']['SystemService']['Shutdown']();
 }
@@ -464,6 +488,10 @@ export function UpdateKanbanCardDescription(arg1, arg2, arg3) {
 
 export function UpdateKanbanCardDirection(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['UpdateKanbanCardDirection'](arg1, arg2, arg3);
+}
+
+export function UpdateWorkspaceTask(arg1, arg2, arg3, arg4) {
+  return window['go']['services']['SystemService']['UpdateWorkspaceTask'](arg1, arg2, arg3, arg4);
 }
 
 export function WorkspaceIconHandler() {

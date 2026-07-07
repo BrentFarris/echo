@@ -30,6 +30,7 @@ var readOnlyToolNames = map[string]bool{
 	"workspace_context":           true,
 	"workspace_skill_read":        true,
 	"workspace_skill_search":      true,
+	"workspace_task_list":         true,
 }
 
 var mutatingToolNames = map[string]bool{
@@ -40,7 +41,17 @@ var mutatingToolNames = map[string]bool{
 	"restart":                true,
 	"shell_command":          true,
 	"workspace_skill_record": true,
+	"workspace_task_create":  true,
 }
+
+var planModeToolNames = func() map[string]bool {
+	result := make(map[string]bool, len(readOnlyToolNames)+1)
+	for name, allowed := range readOnlyToolNames {
+		result[name] = allowed
+	}
+	result["workspace_task_create"] = true
+	return result
+}()
 
 type Registry struct {
 	mu    sync.RWMutex
@@ -111,8 +122,16 @@ func ReadOnlyLLMSchema() []llm.Tool {
 	return defaultRegistry.ReadOnlyLLMSchema()
 }
 
+func PlanModeLLMSchema() []llm.Tool {
+	return schemaForTools(defaultRegistry.Registered(), planModeToolNames)
+}
+
 func IsReadOnlyToolName(name string) bool {
 	return readOnlyToolNames[name]
+}
+
+func IsPlanModeToolName(name string) bool {
+	return planModeToolNames[name]
 }
 
 func IsMutatingToolName(name string) bool {

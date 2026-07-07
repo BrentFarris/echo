@@ -1,12 +1,12 @@
 
 import { llm, services } from "../../wailsjs/go/models";
 import type { ThemePaletteName } from "./theme";
-import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, KanbanCardCreationDraft, MobileNavView, Toast } from "./types";
+import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, KanbanCardCreationDraft, MobileNavView, TaskEditorDraft, Toast } from "./types";
 
 const endpointTopics = ["chat", "kanbanDecompose", "kanban", "inlineCode"] as const;
 type EndpointTopicKey = (typeof endpointTopics)[number];
 
-export type ChatKanbanTab = "chat" | "kanban";
+export type ChatKanbanTab = "chat" | "tasks" | "kanban";
 
 export const state = {
   appState: null as services.AppState | null,
@@ -39,6 +39,11 @@ export const state = {
   chatFileLinkCache: new Map<string, Promise<string | null>>(),
   chatMention: null as ChatMentionState | null,
   kanbanBoards: new Map<string, services.KanbanBoard>(),
+  taskBoards: new Map<string, services.TaskBoard>(),
+  taskEditorDrafts: new Map<string, TaskEditorDraft>(),
+  showCompletedTaskWorkspaces: new Set<string>(),
+  taskSearchQuery: new Map<string, string>(),
+  taskFilterMode: new Map<string, "all" | "open" | "completed">(),
   changeReviews: new Map<string, services.WorkspaceChangeReview>(),
   gitChangeReviews: new Map<string, services.WorkspaceGitChangeReview>(),
   gitRepositoryViews: new Map<string, services.WorkspaceGitRepositoryView>(),
@@ -211,6 +216,20 @@ export function kanbanBoardFor(workspaceID: string): services.KanbanBoard {
       inProgress: [],
       blocked: [],
       done: [],
+    })
+  );
+}
+
+export function taskBoardFor(workspaceID: string): services.TaskBoard {
+  return (
+    state.taskBoards.get(workspaceID) ??
+    services.TaskBoard.createFrom({
+      workspaceId: workspaceID,
+      storagePath: "",
+      doneStoragePath: "",
+      gitIgnored: false,
+      doneGitIgnored: false,
+      tasks: [],
     })
   );
 }

@@ -24,7 +24,11 @@ go.work.sum
 
 # env file
 .env
-.echo/
+.echo/*
+!.echo/skills/
+!.echo/skills/**
+!.echo/tasks.json
+!.echo/tasks_done.json
 
 .tmp/
 build/bin

@@ -11,11 +11,12 @@ import { renderChangeReviewDrawer } from "./changes";
 import { renderContextMenu } from "./contextMenu";
 import { appRoot, focusInitialElement } from "./dom";
 import { bindEvents } from "./events";
-import { renderGitRepositoryDrawer } from "./git";
+import { renderGitRepositoryPage } from "./git";
 import { icons } from "./icons";
 import { kanbanBoardFor, changeReviewFor, gitRepositoryViewFor, activeWorkspace, kanbanCards, state, getActiveChatKanbanTab } from "./state";
 import { renderSettingsOverlay } from "./settings";
 import { renderToasts } from "./toasts";
+import { renderTaskPanel } from "./tasks";
 import { escapeHtml, escapeAttribute, workspaceFolderSummary } from "./utils";
 import { renderWorkspaceIcon, renderMissingWorkspace } from "./workspace";
 import { hasKanbanRuntime, getHeartbeatInterval, heartbeatIntervalLabel, getWatchdogInterval, watchdogIntervalLabel, renderCreateKanbanCardDialog, renderDecompositionState, renderEmptyBoard, renderKanbanBoard, renderKanbanDetail, renderKanbanRuntime } from "./kanban";
@@ -47,6 +48,111 @@ function updateRegion(shell: HTMLElement, name: string, html: string): void {
   region.innerHTML = html;
 }
 
+type RenderScrollSnapshot = {
+  top: number;
+  left: number;
+};
+
+function captureRenderScrollSnapshots(): Map<string, RenderScrollSnapshot> {
+  const snapshots = new Map<string, RenderScrollSnapshot>();
+  const documentScroller = document.scrollingElement;
+  if (documentScroller && (documentScroller.scrollTop || documentScroller.scrollLeft)) {
+    snapshots.set("__document__", {
+      top: documentScroller.scrollTop,
+      left: documentScroller.scrollLeft,
+    });
+  }
+  appRoot.querySelectorAll<HTMLElement>("*").forEach((element) => {
+    if (!isScrollableForRenderSnapshot(element)) {
+      return;
+    }
+    const key = renderScrollKey(element);
+    if (!key) {
+      return;
+    }
+    snapshots.set(key, {
+      top: element.scrollTop,
+      left: element.scrollLeft,
+    });
+  });
+  return snapshots;
+}
+
+function restoreRenderScrollSnapshots(snapshots: Map<string, RenderScrollSnapshot>): void {
+  const documentSnapshot = snapshots.get("__document__");
+  if (documentSnapshot) {
+    window.scrollTo(documentSnapshot.left, documentSnapshot.top);
+  }
+  appRoot.querySelectorAll<HTMLElement>("*").forEach((element) => {
+    const snapshot = snapshots.get(renderScrollKey(element));
+    if (!snapshot) {
+      return;
+    }
+    const maxTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    const maxLeft = Math.max(0, element.scrollWidth - element.clientWidth);
+    element.scrollTop = Math.min(snapshot.top, maxTop);
+    element.scrollLeft = Math.min(snapshot.left, maxLeft);
+  });
+}
+
+function isScrollableForRenderSnapshot(element: HTMLElement): boolean {
+  return (
+    element.scrollTop > 0 ||
+    element.scrollLeft > 0 ||
+    element.scrollHeight > element.clientHeight + 1 ||
+    element.scrollWidth > element.clientWidth + 1
+  );
+}
+
+function renderScrollKey(element: HTMLElement): string {
+  const parts: string[] = [];
+  let current: HTMLElement | null = element;
+  while (current && current !== appRoot) {
+    parts.push(renderScrollSegment(current));
+    current = current.parentElement;
+  }
+  return parts.reverse().join(">");
+}
+
+function renderScrollSegment(element: HTMLElement): string {
+  const data = stableRenderScrollData(element);
+  const id = element.id ? `#${element.id}` : "";
+  const classes = Array.from(element.classList)
+    .filter((className) => !className.startsWith("is-"))
+    .sort()
+    .join(".");
+  const classPart = classes ? `.${classes}` : "";
+  return `${element.tagName.toLowerCase()}${id}${data}${classPart}:nth-of-type(${elementIndex(element)})`;
+}
+
+function stableRenderScrollData(element: HTMLElement): string {
+  const ignored = new Set(["action", "initialFocus", "messageId", "toastId"]);
+  return Object.keys(element.dataset)
+    .filter((key) => !ignored.has(key))
+    .sort()
+    .map((key) => {
+      const value = element.dataset[key];
+      return value === "" || value === undefined ? `[data-${kebabCase(key)}]` : `[data-${kebabCase(key)}="${value}"]`;
+    })
+    .join("");
+}
+
+function kebabCase(value: string): string {
+  return value.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`);
+}
+
+function elementIndex(element: HTMLElement): number {
+  let index = 1;
+  let sibling = element.previousElementSibling;
+  while (sibling) {
+    if (sibling.tagName === element.tagName) {
+      index++;
+    }
+    sibling = sibling.previousElementSibling;
+  }
+  return index;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Public                                                             */
 /* ------------------------------------------------------------------ */
@@ -54,6 +160,7 @@ function updateRegion(shell: HTMLElement, name: string, html: string): void {
 export function render(): void {
   destroyCodeEditor();
   const hadDialog = Boolean(appRoot.querySelector('[role="dialog"]'));
+  const scrollSnapshots = captureRenderScrollSnapshots();
 
   const workspace = activeWorkspace();
   const workspaces = state.appState?.workspaces ?? [];
@@ -77,6 +184,8 @@ export function render(): void {
   updateRegion(shell, "overlays", buildOverlays());
 
   bindEvents();
+  restoreRenderScrollSnapshots(scrollSnapshots);
+  window.requestAnimationFrame(() => restoreRenderScrollSnapshots(scrollSnapshots));
   if (!hadDialog) {
     focusInitialElement();
   }
@@ -133,7 +242,8 @@ function buildLeftNav(
       </nav>
       <div class="left-nav-actions">
         <button class="nav-icon-button${mode === "code" ? " is-active" : ""}" type="button" title="Code" aria-label="Code view" data-action="${mode === "code" ? "close-code-view" : "open-code-view"}">${icons.code}</button>
-        <button class="nav-icon-button${mode === "git" ? " is-active" : ""}" type="button" title="Git Changes" aria-label="Git changes" data-action="${mode === "git" ? "close-git-changes" : "open-git-changes"}">${icons.git}</button>
+        <button class="nav-icon-button${mode === "tasks" ? " is-active" : ""}" type="button" title="Tasks" aria-label="Tasks" data-action="switch-view" data-view="tasks">${icons.tasks}</button>
+        <button class="nav-icon-button${mode === "git" ? " is-active" : ""}" type="button" title="Git" aria-label="Git" data-action="switch-view" data-view="git">${icons.git}</button>
         <button class="nav-icon-button" type="button" title="Settings" aria-label="Settings" data-action="open-settings">${icons.settings}</button>
       </div>
     </aside>
@@ -148,11 +258,11 @@ function buildMain(
 
   return `
     <main class="main-content">
-      <section class="workspace-panel" aria-labelledby="${getPanelTitleId(mode)}">
+      <section class="workspace-panel${mode === "code" ? " is-code-mode" : ""}${mode === "git" ? " is-git-mode" : ""}" aria-labelledby="${getPanelTitleId(mode)}">
         ${mode === "code" && workspace
           ? renderCodeView(workspace)
           : mode === "git" && workspace
-            ? renderGitRepositoryDrawer(workspace, gitRepositoryViewFor(workspace.id))
+            ? renderGitRepositoryPage(workspace, gitRepositoryViewFor(workspace.id))
             : workspace
               ? renderWorkspacePanels(workspace, workspaces.length)
               : ""}
@@ -164,7 +274,9 @@ function buildMain(
 function getPanelTitleId(mode: string): string {
   switch (mode) {
     case "code": return "code-title";
+    case "git": return "git-repository-title";
     case "kanban": return "kanban-title";
+    case "tasks": return "tasks-title";
     default: return "chat-title";
   }
 }
@@ -202,6 +314,8 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
       ${workspace ? renderBudgetBar(workspace.id) : ""}
       ${renderChatPanel(workspace, true)}
     `;
+  } else if (mode === "tasks") {
+    mainPanel = workspace ? renderTaskPanel(workspace) : `<div class="empty-state">Add a workspace to create tasks.</div>`;
   } else if (mode === "kanban") {
     mainPanel = `
       <section class="work-panel kanban-panel" aria-labelledby="kanban-title">
@@ -261,7 +375,7 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
 
   return `
     ${mainPanel}
-    ${board ? renderKanbanDetail(board) : ""}
+    ${mode === "kanban" && board ? renderKanbanDetail(board) : ""}
     ${workspace && state.creatingKanbanCardWorkspaces.has(workspace.id) && !running ? renderCreateKanbanCardDialog(workspace.id) : ""}
     ${workspace && state.openChangeReviewWorkspaces.has(workspace.id) ? renderChangeReviewDrawer(workspace, review ?? changeReviewFor(workspace.id)) : ""}
   `;
@@ -296,10 +410,13 @@ function renderMobileBottomNav(
         <button class="mobile-nav-tab${activeMobileView === "code" ? " is-active" : ""}" type="button" title="Code" aria-label="Code view" aria-pressed="${activeMobileView === "code"}" role="tab" aria-selected="${activeMobileView === "code"}" tabindex="${activeMobileView === "code" ? "0" : "-1"}" data-mobile-nav-tab-index="2" data-action="${activeMobileView === "code" ? "close-code-view" : "open-code-view"}">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></svg>
         </button>
-        <button class="mobile-nav-tab${activeMobileView === "git" ? " is-active" : ""}" type="button" title="Git Changes" aria-label="Git changes" aria-pressed="${activeMobileView === "git"}" role="tab" aria-selected="${activeMobileView === "git"}" tabindex="${activeMobileView === "git" ? "0" : "-1"}" data-mobile-nav-tab-index="3" data-action="${activeMobileView === "git" ? "close-git-changes" : "open-git-changes"}">
+        <button class="mobile-nav-tab${activeMobileView === "tasks" ? " is-active" : ""}" type="button" title="Tasks" aria-label="Tasks" aria-pressed="${activeMobileView === "tasks"}" role="tab" aria-selected="${activeMobileView === "tasks"}" tabindex="${activeMobileView === "tasks" ? "0" : "-1"}" data-mobile-nav-tab-index="3" data-action="switch-view" data-view="tasks">
+          ${icons.tasks}
+        </button>
+        <button class="mobile-nav-tab${activeMobileView === "git" ? " is-active" : ""}" type="button" title="Git" aria-label="Git" aria-pressed="${activeMobileView === "git"}" role="tab" aria-selected="${activeMobileView === "git"}" tabindex="${activeMobileView === "git" ? "0" : "-1"}" data-mobile-nav-tab-index="4" data-action="switch-view" data-view="git">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v12"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
         </button>
-        <button class="mobile-nav-tab${activeMobileView === "settings" ? " is-active" : ""}" type="button" title="Settings" aria-label="Settings" aria-pressed="${activeMobileView === "settings"}" role="tab" aria-selected="${activeMobileView === "settings"}" tabindex="${activeMobileView === "settings" ? "0" : "-1"}" data-mobile-nav-tab-index="4" data-action="open-settings">
+        <button class="mobile-nav-tab${activeMobileView === "settings" ? " is-active" : ""}" type="button" title="Settings" aria-label="Settings" aria-pressed="${activeMobileView === "settings"}" role="tab" aria-selected="${activeMobileView === "settings"}" tabindex="${activeMobileView === "settings" ? "0" : "-1"}" data-mobile-nav-tab-index="5" data-action="open-settings">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.3a2 0 0 1-4 0V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 0 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H2.7a2 2 0 0 1 0-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7A2 2 0 0 1 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.7a2 0 0 1 4 0V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 0 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.3a2 2 0 0 1 0 4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>
         </button>
       </div>
