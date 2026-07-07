@@ -853,73 +853,56 @@ export namespace services {
 	        this.activeKanbanWorkspaceIds = source["activeKanbanWorkspaceIds"];
 	    }
 	}
-	export class TokenBudget {
-		limit: number;
-		used: number;
-		paused: boolean;
-
-		static createFrom(source: any = {}) {
-			return new TokenBudget(source);
-		}
-
-		constructor(source: any = {}) {
-			if ('string' === typeof source) source = JSON.parse(source);
-			this.limit = source["limit"];
-			this.used = source["used"];
-			this.paused = source["paused"];
-		}
-	}
-
 	export class WorkspaceTask {
-		id: string;
-		title: string;
-		details?: string;
-		acceptanceCriteria?: string[];
-		priority: string;
-		completed: boolean;
-		createdAt: string;
-		updatedAt: string;
-		completedAt?: string;
-
-		static createFrom(source: any = {}) {
-			return new WorkspaceTask(source);
-		}
-
-		constructor(source: any = {}) {
-			if ('string' === typeof source) source = JSON.parse(source);
-			this.id = source["id"];
-			this.title = source["title"];
-			this.details = source["details"];
-			this.acceptanceCriteria = source["acceptanceCriteria"];
-			this.priority = source["priority"];
-			this.completed = source["completed"];
-			this.createdAt = source["createdAt"];
-			this.updatedAt = source["updatedAt"];
-			this.completedAt = source["completedAt"];
-		}
+	    id: string;
+	    title: string;
+	    details?: string;
+	    acceptanceCriteria?: string[];
+	    priority: string;
+	    completed: boolean;
+	    createdAt: string;
+	    updatedAt: string;
+	    completedAt?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceTask(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.details = source["details"];
+	        this.acceptanceCriteria = source["acceptanceCriteria"];
+	        this.priority = source["priority"];
+	        this.completed = source["completed"];
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
+	        this.completedAt = source["completedAt"];
+	    }
 	}
 	export class TaskBoard {
-		workspaceId: string;
-		storagePath: string;
-		doneStoragePath: string;
-		gitIgnored: boolean;
-		doneGitIgnored: boolean;
-		tasks: WorkspaceTask[];
-
-		static createFrom(source: any = {}) {
-			return new TaskBoard(source);
-		}
-
-		constructor(source: any = {}) {
-			if ('string' === typeof source) source = JSON.parse(source);
-			this.workspaceId = source["workspaceId"];
-			this.storagePath = source["storagePath"];
-			this.doneStoragePath = source["doneStoragePath"];
-			this.gitIgnored = source["gitIgnored"];
-			this.doneGitIgnored = source["doneGitIgnored"];
-			this.tasks = this.convertValues(source["tasks"], WorkspaceTask);
-		}
-
+	    workspaceId: string;
+	    storagePath: string;
+	    doneStoragePath: string;
+	    gitIgnored: boolean;
+	    doneGitIgnored: boolean;
+	    tasks: WorkspaceTask[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TaskBoard(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.storagePath = source["storagePath"];
+	        this.doneStoragePath = source["doneStoragePath"];
+	        this.gitIgnored = source["gitIgnored"];
+	        this.doneGitIgnored = source["doneGitIgnored"];
+	        this.tasks = this.convertValues(source["tasks"], WorkspaceTask);
+	    }
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -939,37 +922,37 @@ export namespace services {
 		}
 	}
 	export class TaskInput {
-		title: string;
-		details?: string;
-		acceptanceCriteria?: string[];
-		priority: string;
-
-		static createFrom(source: any = {}) {
-			return new TaskInput(source);
-		}
-
-		constructor(source: any = {}) {
-			if ('string' === typeof source) source = JSON.parse(source);
-			this.title = source["title"];
-			this.details = source["details"];
-			this.acceptanceCriteria = source["acceptanceCriteria"];
-			this.priority = source["priority"];
-		}
+	    title: string;
+	    details?: string;
+	    acceptanceCriteria?: string[];
+	    priority: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TaskInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.title = source["title"];
+	        this.details = source["details"];
+	        this.acceptanceCriteria = source["acceptanceCriteria"];
+	        this.priority = source["priority"];
+	    }
 	}
 	export class TaskKanbanConversion {
-		tasks: TaskBoard;
-		kanban: KanbanBoard;
-
-		static createFrom(source: any = {}) {
-			return new TaskKanbanConversion(source);
-		}
-
-		constructor(source: any = {}) {
-			if ('string' === typeof source) source = JSON.parse(source);
-			this.tasks = this.convertValues(source["tasks"], TaskBoard);
-			this.kanban = this.convertValues(source["kanban"], KanbanBoard);
-		}
-
+	    tasks: TaskBoard;
+	    kanban: KanbanBoard;
+	
+	    static createFrom(source: any = {}) {
+	        return new TaskKanbanConversion(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tasks = this.convertValues(source["tasks"], TaskBoard);
+	        this.kanban = this.convertValues(source["kanban"], KanbanBoard);
+	    }
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -988,6 +971,23 @@ export namespace services {
 		    return a;
 		}
 	}
+	export class TokenBudget {
+	    limit: number;
+	    used: number;
+	    paused: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new TokenBudget(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.limit = source["limit"];
+	        this.used = source["used"];
+	        this.paused = source["paused"];
+	    }
+	}
+	
 	
 	export class WebAccessStatus {
 	    enabled: boolean;

@@ -1,15 +1,15 @@
 ---
 name: prepare-rebuild-and-relaunch
-description: 'PrepareRebuildAndRelaunch: service method that writes a rebuild-and-relaunch script and calls runtime.Quit() for graceful shutdown, with Windows Job Object handling'
+description: 'PowerShell rebuild-and-relaunch script: path quoting, logging, launch verification, and error handling requirements'
 triggers:
     - rebuild and relaunch
-    - prepare rebuild
-    - graceful shutdown
-    - wails.json validation
-    - relaunch script
-    - runtime quit
-    - job object
-    - CREATE_BREAKAWAY_FROM_JOB
+    - PowerShell script
+    - wails build
+    - Start-Process
+    - relaunch log
+    - binary verification
+    - CREATE_NO_WINDOW
+    - syscall constant
 ---
 
 ## PrepareRebuildAndRelaunch Service Method
@@ -21,7 +21,7 @@ triggers:
 | File | Purpose |
 |------|---------|
 | `internal/services/rebuild_relaunch.go` | Shared logic: validation, script generation, `runtime.Quit()` call |
-| `internal/services/rebuild_relaunch_windows.go` | Windows detached process launch (DETACHED_PROCESS \| CREATE_BREAKAWAY_FROM_JOB) |
+| `internal/services/rebuild_relaunch_windows.go` | Windows detached process launch |
 | `internal/services/rebuild_relaunch_default.go` | Unix detached process launch (Setpgid) |
 | `internal/services/rebuild_relaunch_test.go` | Unit tests for all validation scenarios |
 
@@ -30,21 +30,50 @@ triggers:
 1. Validate `workspaceID` is non-empty
 2. Look up workspace via `workspaceByID()`
 3. Iterate workspace folders to find one containing `wails.json`
-4. Generate platform-specific relaunch script to temp/cache directory (`%LOCALAPPDATA%\Echo\rebuild-relaunch.ps1` on Windows, `~/.echo/rebuild-relaunch.sh` on Unix)
-5. Script waits up to 10 seconds for graceful shutdown, then force-kills remaining processes, runs `wails build`, then launches the rebuilt binary
+4. Generate platform-specific relaunch script to `%LOCALAPPDATA%\Echo\rebuild-relaunch.ps1` (Windows) or `~/.echo/rebuild-relaunch.sh` (Unix)
+5. Script waits up to 10 seconds for graceful shutdown, force-kills remaining processes, runs `wails build`, then launches the rebuilt binary
 6. Launch script as detached background process
 7. Call `runtime.Quit(ctx)` to trigger graceful Wails shutdown
 
-### Key Differences from `restart` Tool
+### Windows Launch (`launchDetachedRebuild`)
 
-- This is a **service method** on `SystemService`, not a registered tool — called directly from the frontend via Wails bindings
-- Requires a **workspaceID** parameter and validates the workspace contains `wails.json`
-- Uses `runtime.Quit()` for graceful shutdown rather than relying solely on the script to kill the process
-- Script file persists after launch (same invariant as restart tool — never defer cleanup)
+**Launch pwsh directly with DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB:**
+
+```go
+func launchDetachedRebuild(scriptPath string) error {
+    pwsh, err := exec.LookPath("pwsh.exe")
+    if err != nil {
+        pwsh, err = exec.LookPath("powershell.exe")
+        if err != nil {
+            return fmt.Errorf("PowerShell not found: %w", err)
+        }
+    }
+
+    cmd := exec.Command(pwsh, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
+    cmd.SysProcAttr = &syscall.SysProcAttr{
+        CreationFlags: 0x00000008 | 0x01000000, // DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB
+    }
+    if err := cmd.Start(); err != nil {
+        return fmt.Errorf("start rebuild process: %w", err)
+    }
+    _ = cmd.Process.Release()
+    return nil
+}
+```
+
+**DO NOT use `cmd /c start`** — it mangles argument binding and causes `"Cannot validate argument on parameter 'ArgumentList'"` errors.
+
+### PowerShell Script Requirements (`buildRebuildPowerShellScript`)
+
+- **Log file in `%LOCALAPPDATA%\Echo\rebuild-relaunch.log`**
+- **Use single quotes for workspace paths** — double quotes cause backslash escape interpretation
+- **Launch binary via `Start-Process -FilePath $binaryPath`** — `-FilePath` is required
+- **`$ErrorActionPreference = 'Continue'`** — "Stop" kills script silently on non-terminating errors
+- **Wrap build/launch in try-catch** with logging
+- **Ensure log directory exists and clear previous log at startup**
 
 ### Known Pitfalls
 
-- **Windows Job Object**: The child process must break away from the parent's job object using both `DETACHED_PROCESS` (0x00000008) and `CREATE_BREAKAWAY_FROM_JOB` (0x01000000). Without `CREATE_BREAKAWAY_FROM_JOB`, the newly-launched instance is killed by job termination when Echo shuts down. Note: in dev mode, `CREATE_BREAKAWAY_FROM_JOB` can cause silent failure — but production builds require it.
 - Never clean up the script file after launch — deferred removal deletes it before the detached process starts
 - The `ctx` may be nil in test environments; `runtimeQuit()` handles nil context gracefully
 
@@ -53,5 +82,3 @@ triggers:
 ```powershell
 go test ./internal/services/ -run TestPrepareRebuildAndRelaunch -v
 ```
-
-Covers: valid workspace with wails.json, missing wails.json, empty workspaceID, whitespace-only workspaceID, nonexistent workspaceID.

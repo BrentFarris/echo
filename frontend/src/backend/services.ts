@@ -436,7 +436,6 @@ export function ResetTokenBudget(...args: Parameters<typeof Wails.ResetTokenBudg
 export function SetWorkspaceTaskCompleted(...args: Parameters<typeof Wails.SetWorkspaceTaskCompleted>): ReturnType<typeof Wails.SetWorkspaceTaskCompleted> {
   return call("SetWorkspaceTaskCompleted", Wails.SetWorkspaceTaskCompleted, args);
 }
-}
 
 export function StartKanbanExecution(...args: Parameters<typeof Wails.StartKanbanExecution>): ReturnType<typeof Wails.StartKanbanExecution> {
   return call("StartKanbanExecution", Wails.StartKanbanExecution, args);
@@ -475,5 +474,4 @@ export function ClearKanbanCardRecovery(workspaceID: string, cardID: string): Pr
 
 export function UpdateWorkspaceTask(...args: Parameters<typeof Wails.UpdateWorkspaceTask>): ReturnType<typeof Wails.UpdateWorkspaceTask> {
   return call("UpdateWorkspaceTask", Wails.UpdateWorkspaceTask, args);
-}
 }

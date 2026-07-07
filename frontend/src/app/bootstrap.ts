@@ -159,7 +159,6 @@ export function startApp() {
   EventsOn("echo:tasks:event", (event: TaskEvent) => {
     applyTaskEvent(event);
   });
-  });
 
   EventsOn("echo:agent-mode:event", (modes) => {
     const wsID = state.appState?.activeWorkspaceId ?? "";

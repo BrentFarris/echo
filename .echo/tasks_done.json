@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "tasks": {
+    "538916a1-c373-4024-bf7b-5fbeeec640ee": {
+      "title": "Fix rebuild-relaunch.bat to capture PowerShell errors",
+      "details": "## Problem\nThe `.bat` launcher runs and self-deletes, but PowerShell errors flash in a hidden window and are lost. The user sees \"The batch file cannot be found\" (which just means it deleted itself) but never sees what actually failed.\n\n## Fix\nIn `internal/services/rebuild_relaunch_windows.go`, change the bat content to redirect PowerShell stderr/stdout to a debug log:\n\n**Current:**\n```go\nbatContent := fmt.Sprintf(\"@powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \\\\\\\"%s\\\\\\\"\\\\r\\\\ndel \\\\\\\"%s\\\\\\\"\\\\r\\\\n\", scriptPath, batPath)\n```\n\n**Fix:**\n```go\ndebugLog := filepath.Join(filepath.Dir(scriptPath), \"rebuild-relaunch-debug.log\")\nbatContent := fmt.Sprintf(\"@powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \\\\\\\"%s\\\\\\\" 2\u003e\u00261 \u003e\u003e \\\\\\\"%s\\\\\\\"\\\\r\\\\ndel \\\\\\\"%s\\\\\\\"\\\\r\\\\n\", scriptPath, debugLog, batPath)\n```\n\nThis redirects all PowerShell output (including errors) to `%LOCALAPPDATA%\\Echo\\rebuild-relaunch-debug.log` so the actual failure is visible.",
+      "acceptanceCriteria": [
+        "1. rebuild-relaunch.bat redirects PowerShell stderr/stdout to %LOCALAPPDATA%\\Echo\\rebuild-relaunch-debug.log via 2\u003e\u00261 \u003e\u003e \"debugLog\" 2. Running Rebuild \u0026 Relaunch produces a populated debug log file with the actual PowerShell error (not just \"batch file cannot be found\") 3. go build ./... succeeds 4. go test ./internal/services/ -run TestPrepareRebuildAndRelaunch -v passes"
+      ],
+      "priority": "P0",
+      "completed": true,
+      "createdAt": "2026-07-07T16:17:23.6287611Z",
+      "updatedAt": "2026-07-07T17:21:33.086452Z",
+      "completedAt": "2026-07-07T17:21:33.086452Z"
+    }
+  }
+}
