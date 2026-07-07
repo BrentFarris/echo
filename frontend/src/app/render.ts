@@ -47,6 +47,111 @@ function updateRegion(shell: HTMLElement, name: string, html: string): void {
   region.innerHTML = html;
 }
 
+type RenderScrollSnapshot = {
+  top: number;
+  left: number;
+};
+
+function captureRenderScrollSnapshots(): Map<string, RenderScrollSnapshot> {
+  const snapshots = new Map<string, RenderScrollSnapshot>();
+  const documentScroller = document.scrollingElement;
+  if (documentScroller && (documentScroller.scrollTop || documentScroller.scrollLeft)) {
+    snapshots.set("__document__", {
+      top: documentScroller.scrollTop,
+      left: documentScroller.scrollLeft,
+    });
+  }
+  appRoot.querySelectorAll<HTMLElement>("*").forEach((element) => {
+    if (!isScrollableForRenderSnapshot(element)) {
+      return;
+    }
+    const key = renderScrollKey(element);
+    if (!key) {
+      return;
+    }
+    snapshots.set(key, {
+      top: element.scrollTop,
+      left: element.scrollLeft,
+    });
+  });
+  return snapshots;
+}
+
+function restoreRenderScrollSnapshots(snapshots: Map<string, RenderScrollSnapshot>): void {
+  const documentSnapshot = snapshots.get("__document__");
+  if (documentSnapshot) {
+    window.scrollTo(documentSnapshot.left, documentSnapshot.top);
+  }
+  appRoot.querySelectorAll<HTMLElement>("*").forEach((element) => {
+    const snapshot = snapshots.get(renderScrollKey(element));
+    if (!snapshot) {
+      return;
+    }
+    const maxTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    const maxLeft = Math.max(0, element.scrollWidth - element.clientWidth);
+    element.scrollTop = Math.min(snapshot.top, maxTop);
+    element.scrollLeft = Math.min(snapshot.left, maxLeft);
+  });
+}
+
+function isScrollableForRenderSnapshot(element: HTMLElement): boolean {
+  return (
+    element.scrollTop > 0 ||
+    element.scrollLeft > 0 ||
+    element.scrollHeight > element.clientHeight + 1 ||
+    element.scrollWidth > element.clientWidth + 1
+  );
+}
+
+function renderScrollKey(element: HTMLElement): string {
+  const parts: string[] = [];
+  let current: HTMLElement | null = element;
+  while (current && current !== appRoot) {
+    parts.push(renderScrollSegment(current));
+    current = current.parentElement;
+  }
+  return parts.reverse().join(">");
+}
+
+function renderScrollSegment(element: HTMLElement): string {
+  const data = stableRenderScrollData(element);
+  const id = element.id ? `#${element.id}` : "";
+  const classes = Array.from(element.classList)
+    .filter((className) => !className.startsWith("is-"))
+    .sort()
+    .join(".");
+  const classPart = classes ? `.${classes}` : "";
+  return `${element.tagName.toLowerCase()}${id}${data}${classPart}:nth-of-type(${elementIndex(element)})`;
+}
+
+function stableRenderScrollData(element: HTMLElement): string {
+  const ignored = new Set(["action", "initialFocus", "messageId", "toastId"]);
+  return Object.keys(element.dataset)
+    .filter((key) => !ignored.has(key))
+    .sort()
+    .map((key) => {
+      const value = element.dataset[key];
+      return value === "" || value === undefined ? `[data-${kebabCase(key)}]` : `[data-${kebabCase(key)}="${value}"]`;
+    })
+    .join("");
+}
+
+function kebabCase(value: string): string {
+  return value.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`);
+}
+
+function elementIndex(element: HTMLElement): number {
+  let index = 1;
+  let sibling = element.previousElementSibling;
+  while (sibling) {
+    if (sibling.tagName === element.tagName) {
+      index++;
+    }
+    sibling = sibling.previousElementSibling;
+  }
+  return index;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Public                                                             */
 /* ------------------------------------------------------------------ */
@@ -54,6 +159,7 @@ function updateRegion(shell: HTMLElement, name: string, html: string): void {
 export function render(): void {
   destroyCodeEditor();
   const hadDialog = Boolean(appRoot.querySelector('[role="dialog"]'));
+  const scrollSnapshots = captureRenderScrollSnapshots();
 
   const workspace = activeWorkspace();
   const workspaces = state.appState?.workspaces ?? [];
@@ -77,6 +183,8 @@ export function render(): void {
   updateRegion(shell, "overlays", buildOverlays());
 
   bindEvents();
+  restoreRenderScrollSnapshots(scrollSnapshots);
+  window.requestAnimationFrame(() => restoreRenderScrollSnapshots(scrollSnapshots));
   if (!hadDialog) {
     focusInitialElement();
   }
