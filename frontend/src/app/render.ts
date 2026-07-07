@@ -129,11 +129,11 @@ function buildLeftNav(
       </div>
       <nav class="left-nav-buttons" aria-label="Views">
         <button class="nav-icon-button${mode === "chat" ? " is-active" : ""}" type="button" title="Chat" aria-label="Chat" data-action="switch-view" data-view="chat">${icons.chat}</button>
-        <button class="nav-icon-button${mode === "tasks" ? " is-active" : ""}" type="button" title="Tasks" aria-label="Tasks" data-action="switch-view" data-view="tasks">${icons.tasks}</button>
         <button class="nav-icon-button${mode === "kanban" ? " is-active" : ""}" type="button" title="Kanban" aria-label="Kanban" data-action="switch-view" data-view="kanban">${icons.kanban}</button>
       </nav>
       <div class="left-nav-actions">
         <button class="nav-icon-button${mode === "code" ? " is-active" : ""}" type="button" title="Code" aria-label="Code view" data-action="${mode === "code" ? "close-code-view" : "open-code-view"}">${icons.code}</button>
+        <button class="nav-icon-button${mode === "tasks" ? " is-active" : ""}" type="button" title="Tasks" aria-label="Tasks" data-action="switch-view" data-view="tasks">${icons.tasks}</button>
         <button class="nav-icon-button${mode === "git" ? " is-active" : ""}" type="button" title="Git Changes" aria-label="Git changes" data-action="${mode === "git" ? "close-git-changes" : "open-git-changes"}">${icons.git}</button>
         <button class="nav-icon-button" type="button" title="Settings" aria-label="Settings" data-action="open-settings">${icons.settings}</button>
       </div>
@@ -282,14 +282,14 @@ function renderMobileBottomNav(
         <button class="mobile-nav-tab${activeMobileView === "chat" ? " is-active" : ""}" type="button" title="Chat" aria-label="Chat" aria-pressed="${activeMobileView === "chat"}" role="tab" aria-selected="${activeMobileView === "chat"}" tabindex="${activeMobileView === "chat" ? "0" : "-1"}" data-mobile-nav-tab-index="0" data-action="switch-view" data-view="chat">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         </button>
-        <button class="mobile-nav-tab${activeMobileView === "tasks" ? " is-active" : ""}" type="button" title="Tasks" aria-label="Tasks" aria-pressed="${activeMobileView === "tasks"}" role="tab" aria-selected="${activeMobileView === "tasks"}" tabindex="${activeMobileView === "tasks" ? "0" : "-1"}" data-mobile-nav-tab-index="1" data-action="switch-view" data-view="tasks">
-          ${icons.tasks}
-        </button>
-        <button class="mobile-nav-tab${activeMobileView === "kanban" ? " is-active" : ""}" type="button" title="Kanban" aria-label="Kanban" aria-pressed="${activeMobileView === "kanban"}" role="tab" aria-selected="${activeMobileView === "kanban"}" tabindex="${activeMobileView === "kanban" ? "0" : "-1"}" data-mobile-nav-tab-index="2" data-action="switch-view" data-view="kanban">
+        <button class="mobile-nav-tab${activeMobileView === "kanban" ? " is-active" : ""}" type="button" title="Kanban" aria-label="Kanban" aria-pressed="${activeMobileView === "kanban"}" role="tab" aria-selected="${activeMobileView === "kanban"}" tabindex="${activeMobileView === "kanban" ? "0" : "-1"}" data-mobile-nav-tab-index="1" data-action="switch-view" data-view="kanban">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="4" height="11" rx="1"/><rect x="16" y="4" width="5" height="14" rx="1"/></svg>
         </button>
-        <button class="mobile-nav-tab${activeMobileView === "code" ? " is-active" : ""}" type="button" title="Code" aria-label="Code view" aria-pressed="${activeMobileView === "code"}" role="tab" aria-selected="${activeMobileView === "code"}" tabindex="${activeMobileView === "code" ? "0" : "-1"}" data-mobile-nav-tab-index="3" data-action="${activeMobileView === "code" ? "close-code-view" : "open-code-view"}">
+        <button class="mobile-nav-tab${activeMobileView === "code" ? " is-active" : ""}" type="button" title="Code" aria-label="Code view" aria-pressed="${activeMobileView === "code"}" role="tab" aria-selected="${activeMobileView === "code"}" tabindex="${activeMobileView === "code" ? "0" : "-1"}" data-mobile-nav-tab-index="2" data-action="${activeMobileView === "code" ? "close-code-view" : "open-code-view"}">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></svg>
+        </button>
+        <button class="mobile-nav-tab${activeMobileView === "tasks" ? " is-active" : ""}" type="button" title="Tasks" aria-label="Tasks" aria-pressed="${activeMobileView === "tasks"}" role="tab" aria-selected="${activeMobileView === "tasks"}" tabindex="${activeMobileView === "tasks" ? "0" : "-1"}" data-mobile-nav-tab-index="3" data-action="switch-view" data-view="tasks">
+          ${icons.tasks}
         </button>
         <button class="mobile-nav-tab${activeMobileView === "git" ? " is-active" : ""}" type="button" title="Git Changes" aria-label="Git changes" aria-pressed="${activeMobileView === "git"}" role="tab" aria-selected="${activeMobileView === "git"}" tabindex="${activeMobileView === "git" ? "0" : "-1"}" data-mobile-nav-tab-index="4" data-action="${activeMobileView === "git" ? "close-git-changes" : "open-git-changes"}">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v12"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
