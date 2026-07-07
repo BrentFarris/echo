@@ -2815,7 +2815,14 @@ h3 {
 }
 
 .git-repository {
+  height: 100%;
   grid-template-rows: auto auto auto auto minmax(0, auto);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.git-repository-header {
+  align-items: start;
 }
 
 .git-repository-topbar {
@@ -2916,9 +2923,18 @@ h3 {
   min-width: 0;
 }
 
+.git-repository .git-repository-layout,
 .change-review.is-expanded .git-repository-layout {
   grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
   align-items: start;
+}
+
+.git-repository .change-file-list {
+  gap: var(--space-2xl);
+}
+
+.git-repository .change-diff {
+  max-height: min(520px, 48vh);
 }
 
 .git-panel {
@@ -2964,6 +2980,7 @@ h3 {
   padding-right: var(--space-xxs);
 }
 
+.git-repository .git-commit-list,
 .change-review.is-expanded .git-commit-list {
   max-height: 36vh;
 }
@@ -4004,6 +4021,12 @@ h3 {
 }
 
 .workspace-panel.is-code-mode {
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+  align-content: stretch;
+}
+
+.workspace-panel.is-git-mode {
   grid-template-rows: minmax(0, 1fr);
   gap: 0;
   align-content: stretch;
@@ -5639,6 +5662,7 @@ h3 {
   .llm-endpoint-editor,
   .theme-token-grid,
   .git-repository-topbar,
+  .git-repository .git-repository-layout,
   .change-review.is-expanded .git-repository-layout {
     grid-template-columns: 1fr;
   }

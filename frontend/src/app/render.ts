@@ -10,7 +10,7 @@ import { renderChangeReviewDrawer } from "./changes";
 import { renderContextMenu } from "./contextMenu";
 import { appRoot, focusInitialElement } from "./dom";
 import { bindEvents } from "./events";
-import { renderGitRepositoryDrawer } from "./git";
+import { renderGitRepositoryPage } from "./git";
 import { icons } from "./icons";
 import { kanbanBoardFor, changeReviewFor, gitRepositoryViewFor, activeWorkspace, kanbanCards, state, getActiveChatKanbanTab } from "./state";
 import { renderSettingsOverlay } from "./settings";
@@ -134,7 +134,7 @@ function buildLeftNav(
       <div class="left-nav-actions">
         <button class="nav-icon-button${mode === "code" ? " is-active" : ""}" type="button" title="Code" aria-label="Code view" data-action="${mode === "code" ? "close-code-view" : "open-code-view"}">${icons.code}</button>
         <button class="nav-icon-button${mode === "tasks" ? " is-active" : ""}" type="button" title="Tasks" aria-label="Tasks" data-action="switch-view" data-view="tasks">${icons.tasks}</button>
-        <button class="nav-icon-button${mode === "git" ? " is-active" : ""}" type="button" title="Git Changes" aria-label="Git changes" data-action="${mode === "git" ? "close-git-changes" : "open-git-changes"}">${icons.git}</button>
+        <button class="nav-icon-button${mode === "git" ? " is-active" : ""}" type="button" title="Git" aria-label="Git" data-action="switch-view" data-view="git">${icons.git}</button>
         <button class="nav-icon-button" type="button" title="Settings" aria-label="Settings" data-action="open-settings">${icons.settings}</button>
       </div>
     </aside>
@@ -149,11 +149,11 @@ function buildMain(
 
   return `
     <main class="main-content">
-      <section class="workspace-panel" aria-labelledby="${getPanelTitleId(mode)}">
+      <section class="workspace-panel${mode === "code" ? " is-code-mode" : ""}${mode === "git" ? " is-git-mode" : ""}" aria-labelledby="${getPanelTitleId(mode)}">
         ${mode === "code" && workspace
           ? renderCodeView(workspace)
           : mode === "git" && workspace
-            ? renderGitRepositoryDrawer(workspace, gitRepositoryViewFor(workspace.id))
+            ? renderGitRepositoryPage(workspace, gitRepositoryViewFor(workspace.id))
             : workspace
               ? renderWorkspacePanels(workspace, workspaces.length)
               : ""}
@@ -165,6 +165,7 @@ function buildMain(
 function getPanelTitleId(mode: string): string {
   switch (mode) {
     case "code": return "code-title";
+    case "git": return "git-repository-title";
     case "kanban": return "kanban-title";
     case "tasks": return "tasks-title";
     default: return "chat-title";
@@ -291,7 +292,7 @@ function renderMobileBottomNav(
         <button class="mobile-nav-tab${activeMobileView === "tasks" ? " is-active" : ""}" type="button" title="Tasks" aria-label="Tasks" aria-pressed="${activeMobileView === "tasks"}" role="tab" aria-selected="${activeMobileView === "tasks"}" tabindex="${activeMobileView === "tasks" ? "0" : "-1"}" data-mobile-nav-tab-index="3" data-action="switch-view" data-view="tasks">
           ${icons.tasks}
         </button>
-        <button class="mobile-nav-tab${activeMobileView === "git" ? " is-active" : ""}" type="button" title="Git Changes" aria-label="Git changes" aria-pressed="${activeMobileView === "git"}" role="tab" aria-selected="${activeMobileView === "git"}" tabindex="${activeMobileView === "git" ? "0" : "-1"}" data-mobile-nav-tab-index="4" data-action="${activeMobileView === "git" ? "close-git-changes" : "open-git-changes"}">
+        <button class="mobile-nav-tab${activeMobileView === "git" ? " is-active" : ""}" type="button" title="Git" aria-label="Git" aria-pressed="${activeMobileView === "git"}" role="tab" aria-selected="${activeMobileView === "git"}" tabindex="${activeMobileView === "git" ? "0" : "-1"}" data-mobile-nav-tab-index="4" data-action="switch-view" data-view="git">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v12"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
         </button>
         <button class="mobile-nav-tab${activeMobileView === "settings" ? " is-active" : ""}" type="button" title="Settings" aria-label="Settings" aria-pressed="${activeMobileView === "settings"}" role="tab" aria-selected="${activeMobileView === "settings"}" tabindex="${activeMobileView === "settings" ? "0" : "-1"}" data-mobile-nav-tab-index="5" data-action="open-settings">

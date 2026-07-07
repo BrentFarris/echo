@@ -220,7 +220,7 @@ export function handleGlobalKeydown(event: KeyboardEvent) {
   const workspace = activeWorkspace();
   if (
     workspace &&
-    (state.openChangeReviewWorkspaces.has(workspace.id) || state.openGitChangeWorkspaces.has(workspace.id)) &&
+    (state.openChangeReviewWorkspaces.has(workspace.id) || state.appMode === "git") &&
     (event.key === "ArrowDown" || event.key === "ArrowUp")
   ) {
     const target = event.target;
@@ -251,16 +251,10 @@ export function handleGlobalKeydown(event: KeyboardEvent) {
     getAppCallbacks().render();
     return;
   }
-  if (workspace && state.openGitChangeWorkspaces.has(workspace.id)) {
-    event.preventDefault();
-    state.openGitChangeWorkspaces.delete(workspace.id);
-    state.expandedGitChangeWorkspaces.delete(workspace.id);
-    state.loadingGitChangeWorkspaces.delete(workspace.id);
-    state.loadingGitRepositoryWorkspaces.delete(workspace.id);
-    getAppCallbacks().render();
+  if (state.appMode === "code") {
     return;
   }
-  if (state.appMode === "code") {
+  if (state.appMode === "git") {
     return;
   }
   if (!workspace) {

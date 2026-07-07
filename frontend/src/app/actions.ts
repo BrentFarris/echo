@@ -407,8 +407,13 @@ export async function handleAction(event: Event) {
           state.openGitChangeWorkspaces.delete(workspace.id);
         }
       } else if (view === "git") {
+        if (!workspace) {
+          return;
+        }
         state.appMode = "git";
         state.mobileNavView = "git";
+        await openWorkspaceGitRepository(workspace.id);
+        return;
       }
       getAppCallbacks().bindActionEvents(appRoot);
       getAppCallbacks().render();
