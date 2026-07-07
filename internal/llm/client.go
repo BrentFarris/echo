@@ -30,6 +30,7 @@ type ClientOption func(*Client)
 type Stream struct {
 	ID     string
 	Events <-chan StreamEvent
+	Usage  *Usage
 
 	cancel context.CancelFunc
 }
@@ -153,7 +154,7 @@ func (c *Client) StreamChat(ctx context.Context, request ChatRequest) *Stream {
 			return
 		}
 
-		parseStreamLogged(streamContext, response.Body, events, streamLogger)
+		parseStreamLogged(streamContext, response.Body, events, streamLogger, &stream.Usage)
 	}()
 
 	return stream

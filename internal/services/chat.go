@@ -327,7 +327,9 @@ func (s *SystemService) RetryChatMessage(workspaceID string, messageID string, a
 			s.failChatMessage(workspaceID, streamID, assistantMessage.ID, err.Error())
 			return
 		}
-		s.runChatTurnWithHistory(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, history, agentModeID)
+		s.runChatTurnWithHistory(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, history, agentModeID, func(wid string, u llm.Usage) {
+			_, _ = s.RecordTokenUsage(wid, int64(u.TotalTokens))
+		})
 	}()
 
 	return clone, nil
@@ -425,17 +427,21 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 			s.failChatMessage(workspaceID, streamID, assistantMessage.ID, err.Error())
 			return
 		}
-		s.runChatTurnWithHistory(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, history, agentModeID)
+		s.runChatTurnWithHistory(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, history, agentModeID, func(wid string, u llm.Usage) {
+				_, _ = s.RecordTokenUsage(wid, int64(u.TotalTokens))
+			})
 	}()
 
 	return clone, nil
 }
 
 func (s *SystemService) runChatTurn(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, streamID string, messageID string, agentModeID string) {
-	s.runChatTurnWithHistory(ctx, cancel, workspace, settings, streamID, messageID, s.chatHistory(workspace.ID), agentModeID)
+	s.runChatTurnWithHistory(ctx, cancel, workspace, settings, streamID, messageID, s.chatHistory(workspace.ID), agentModeID, func(wid string, u llm.Usage) {
+		_, _ = s.RecordTokenUsage(wid, int64(u.TotalTokens))
+	})
 }
 
-func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, streamID string, messageID string, history []llm.Message, agentModeID string) {
+func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, streamID string, messageID string, history []llm.Message, agentModeID string, onUsage func(workspaceID string, usage llm.Usage)) {
 	defer cancel()
 	defer s.finishChatStream(workspace.ID, streamID)
 
@@ -492,7 +498,10 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 		}
 
 		publishResponse := !skillCheckpointPending
-		content, toolCalls, finished, finishReason, err := s.streamAssistantResponse(ctx, client, request, workspace.ID, streamID, messageID, publishResponse)
+		content, toolCalls, finished, finishReason, usage, err := s.streamAssistantResponse(ctx, client, request, workspace.ID, streamID, messageID, publishResponse)
+		if usage != nil && onUsage != nil {
+			onUsage(workspace.ID, *usage)
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				s.cancelChatMessage(workspace.ID, streamID, messageID)
@@ -599,7 +608,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 	}
 }
 
-func (s *SystemService) streamAssistantResponse(ctx context.Context, client *llm.Client, request llm.ChatRequest, workspaceID string, streamID string, messageID string, publish bool) (string, []llm.ToolCall, bool, string, error) {
+func (s *SystemService) streamAssistantResponse(ctx context.Context, client *llm.Client, request llm.ChatRequest, workspaceID string, streamID string, messageID string, publish bool) (string, []llm.ToolCall, bool, string, *llm.Usage, error) {
 	request.Messages = append([]llm.Message(nil), request.Messages...)
 	totalContent := strings.Builder{}
 	var lastLoop streamLoopDetection
@@ -610,13 +619,13 @@ func (s *SystemService) streamAssistantResponse(ctx context.Context, client *llm
 		if result.loop != nil {
 			lastLoop = *result.loop
 			if attempt >= maxStreamLoopRetries {
-				return totalContent.String(), result.toolCalls, false, result.finishReason, streamLoopExceededError(lastLoop)
+				return totalContent.String(), result.toolCalls, false, result.finishReason, result.usage, streamLoopExceededError(lastLoop)
 			}
 			s.retryChatMessage(workspaceID, streamID, messageID)
 			request.Messages = appendStreamLoopRetryMessages(request.Messages, result.content, lastLoop)
 			continue
 		}
-		return totalContent.String(), result.toolCalls, result.finished, result.finishReason, result.err
+		return totalContent.String(), result.toolCalls, result.finished, result.finishReason, result.usage, result.err
 	}
 }
 
@@ -626,6 +635,7 @@ type chatStreamAttemptResult struct {
 	finished     bool
 	finishReason string
 	loop         *streamLoopDetection
+	usage        *llm.Usage
 	err          error
 }
 
@@ -719,7 +729,7 @@ func (s *SystemService) streamAssistantResponseAttempt(ctx context.Context, clie
 		return chatStreamAttemptResult{content: content.String(), toolCalls: orderedToolCalls(toolCalls), finished: false, finishReason: finishReason}
 	}
 	flushInlineParsers()
-	return chatStreamAttemptResult{content: content.String(), toolCalls: orderedToolCalls(toolCalls), finished: finished, finishReason: finishReason}
+	return chatStreamAttemptResult{content: content.String(), toolCalls: orderedToolCalls(toolCalls), finished: finished, finishReason: finishReason, usage: stream.Usage}
 }
 
 type chatToolCallExecution struct {

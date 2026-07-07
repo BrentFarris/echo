@@ -96,6 +96,61 @@ func TestParseStreamEmitsCanceledWhenContextIsCanceled(t *testing.T) {
 	}
 }
 
+func TestParseStreamEmitsUsage(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"choices":[{"index":0,"delta":{"content":"Hello"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`,
+		``,
+	}, "\n")
+
+	events := make(chan StreamEvent, 4)
+	parseStream(context.Background(), strings.NewReader(input), events)
+	close(events)
+
+	got := drainEvents(events)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 events, got %d: %#v", len(got), got)
+	}
+	if got[0].Type != EventToken || got[0].Content != "Hello" {
+		t.Fatalf("expected token event, got %#v", got[0])
+	}
+	if got[1].Type != EventUsage {
+		t.Fatalf("expected usage event, got %#v", got[1])
+	}
+	if got[1].Usage == nil {
+		t.Fatalf("expected usage data, got nil")
+	}
+	if got[1].Usage.PromptTokens != 10 {
+		t.Fatalf("expected 10 prompt tokens, got %d", got[1].Usage.PromptTokens)
+	}
+	if got[1].Usage.CompletionTokens != 5 {
+		t.Fatalf("expected 5 completion tokens, got %d", got[1].Usage.CompletionTokens)
+	}
+	if got[1].Usage.TotalTokens != 15 {
+		t.Fatalf("expected 15 total tokens, got %d", got[1].Usage.TotalTokens)
+	}
+}
+
+func TestParseStreamIgnoresEmptyUsage(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"choices":[{"index":0,"delta":{"content":"Hello"}}]}`,
+		``,
+	}, "\n")
+
+	events := make(chan StreamEvent, 4)
+	parseStream(context.Background(), strings.NewReader(input), events)
+	close(events)
+
+	got := drainEvents(events)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 event, got %d: %#v", len(got), got)
+	}
+	for i, e := range got {
+		if e.Type == EventUsage {
+			t.Fatalf("unexpected usage event at index %d", i)
+		}
+	}
+}
+
 func drainEvents(events <-chan StreamEvent) []StreamEvent {
 	var drained []StreamEvent
 	for {

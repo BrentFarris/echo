@@ -42,6 +42,26 @@ export type FileChangesEvent = {
   changeCount: number;
 };
 
+export type HeartbeatEvent = {
+  workspaceId: string;
+  type: string; // "started", "stopped", "tick_no_eligible"
+  message?: string;
+};
+
+export type LivenessEvent = {
+  workspaceId: string;
+  type: string; // "stalled_reset", "stalled_escalated", "check_no_stalls", "stalled_reset_board", "stalled_escalated_board"
+  cardId?: string;
+  message?: string;
+};
+
+export type WatchdogEvent = {
+  workspaceId: string;
+  type: string; // "started", "stopped", "check_complete", "repair_created"
+  cardId?: string;
+  message?: string;
+};
+
 export type Toast = {
   id: string;
   tone: "info" | "success" | "error";

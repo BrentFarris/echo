@@ -14,6 +14,8 @@ export function AddWorkspaceFolder(arg1:string,arg2:string):Promise<services.App
 
 export function AppInfo():Promise<services.AppInfo>;
 
+export function CheckTokenBudget(arg1:string):Promise<boolean>;
+
 export function ChooseWorkspaceFileSavePath(arg1:string,arg2:string):Promise<string>;
 
 export function ChooseWorkspaceFolder():Promise<services.AppState>;
@@ -25,6 +27,8 @@ export function ChooseWorkspaceIcon(arg1:string):Promise<services.AppState>;
 export function ClearChat(arg1:string):Promise<services.ChatSession>;
 
 export function ClearDoneKanbanCards(arg1:string):Promise<services.KanbanBoard>;
+
+export function ClearKanbanCardRecovery(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
 export function ClearWorkspaceChangeReview(arg1:string):Promise<services.WorkspaceChangeReview>;
 
@@ -72,6 +76,8 @@ export function DiscardWorkspaceGitFile(arg1:string,arg2:string,arg3:string):Pro
 
 export function EditChatMessage(arg1:string,arg2:string,arg3:string,arg4:string):Promise<services.ChatSession>;
 
+export function EnforceLiveness(arg1:string,arg2:services.LivenessConfig):Promise<void>;
+
 export function ExecutePlan(arg1:string):Promise<services.KanbanBoard>;
 
 export function FindWorkspaceFileDefinition(arg1:string,arg2:services.WorkspaceDefinitionRequest):Promise<services.WorkspaceDefinitionResponse>;
@@ -79,6 +85,14 @@ export function FindWorkspaceFileDefinition(arg1:string,arg2:services.WorkspaceD
 export function FindWorkspaceFileImplementations(arg1:string,arg2:services.WorkspaceReferenceRequest):Promise<services.WorkspaceReferenceResponse>;
 
 export function FindWorkspaceFileReferences(arg1:string,arg2:services.WorkspaceReferenceRequest):Promise<services.WorkspaceReferenceResponse>;
+
+export function GetHeartbeatConfig(arg1:string):Promise<services.HeartbeatConfig>;
+
+export function GetLivenessConfig(arg1:string):Promise<services.LivenessConfig>;
+
+export function GetTokenBudget(arg1:string):Promise<services.TokenBudget>;
+
+export function GetWatchdogConfig(arg1:string):Promise<services.WatchdogConfig>;
 
 export function ListAgentModes(arg1:string):Promise<Array<services.AgentMode>>;
 
@@ -130,6 +144,8 @@ export function ReadWorkspaceFile(arg1:string,arg2:string):Promise<services.Work
 
 export function ReadWorkspaceMediaFile(arg1:string,arg2:string):Promise<services.WorkspaceMediaFile>;
 
+export function RecordTokenUsage(arg1:string,arg2:number):Promise<number>;
+
 export function RemoveWorkspaceFolder(arg1:string,arg2:string):Promise<services.AppState>;
 
 export function RenameWorkspacePath(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFileEntry>;
@@ -141,6 +157,8 @@ export function ReorderWorkspaces(arg1:Array<string>):Promise<services.AppState>
 export function ReplayWorkspaceSymbolRename(arg1:string,arg2:services.WorkspaceRenameReplayRequest):Promise<services.WorkspaceRenameReplayResponse>;
 
 export function ResetKanbanCard(arg1:string,arg2:string):Promise<services.KanbanBoard>;
+
+export function ResetTokenBudget(arg1:string):Promise<void>;
 
 export function ResolveMode(arg1:string):Promise<tools.AgentModeSummary>;
 
@@ -174,6 +192,10 @@ export function SendChatMessageWithPlanMode(arg1:string,arg2:string,arg3:boolean
 
 export function SetActiveWorkspace(arg1:string):Promise<services.AppState>;
 
+export function SetLivenessConfig(arg1:string,arg2:services.LivenessConfig):Promise<void>;
+
+export function SetTokenBudget(arg1:string,arg2:number):Promise<void>;
+
 export function SetWorkspaceDefaultPlanMode(arg1:string,arg2:boolean):Promise<services.AppState>;
 
 export function SetWorkspaceFolderUseAgents(arg1:string,arg2:string,arg3:boolean):Promise<services.AppState>;
@@ -186,13 +208,21 @@ export function SetWorkspaceLetter(arg1:string,arg2:string):Promise<services.App
 
 export function Shutdown():Promise<void>;
 
+export function StartHeartbeat(arg1:string,arg2:services.HeartbeatConfig):Promise<void>;
+
 export function StartKanbanExecution(arg1:string,arg2:number):Promise<services.KanbanBoard>;
 
+export function StartWatchdog(arg1:string,arg2:services.WatchdogConfig):Promise<void>;
+
 export function StopChatStream(arg1:string):Promise<services.ChatSession>;
+
+export function StopHeartbeat(arg1:string):Promise<void>;
 
 export function StopKanbanCard(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
 export function StopKanbanExecution(arg1:string):Promise<services.KanbanBoard>;
+
+export function StopWatchdog(arg1:string):Promise<void>;
 
 export function SubmitInlineCodePrompt(arg1:string,arg2:services.InlineCodePromptRequest):Promise<services.InlineCodePromptResponse>;
 

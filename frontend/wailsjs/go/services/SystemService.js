@@ -18,6 +18,10 @@ export function AppInfo() {
   return window['go']['services']['SystemService']['AppInfo']();
 }
 
+export function CheckTokenBudget(arg1) {
+  return window['go']['services']['SystemService']['CheckTokenBudget'](arg1);
+}
+
 export function ChooseWorkspaceFileSavePath(arg1, arg2) {
   return window['go']['services']['SystemService']['ChooseWorkspaceFileSavePath'](arg1, arg2);
 }
@@ -40,6 +44,10 @@ export function ClearChat(arg1) {
 
 export function ClearDoneKanbanCards(arg1) {
   return window['go']['services']['SystemService']['ClearDoneKanbanCards'](arg1);
+}
+
+export function ClearKanbanCardRecovery(arg1, arg2) {
+  return window['go']['services']['SystemService']['ClearKanbanCardRecovery'](arg1, arg2);
 }
 
 export function ClearWorkspaceChangeReview(arg1) {
@@ -134,6 +142,10 @@ export function EditChatMessage(arg1, arg2, arg3, arg4) {
   return window['go']['services']['SystemService']['EditChatMessage'](arg1, arg2, arg3, arg4);
 }
 
+export function EnforceLiveness(arg1, arg2) {
+  return window['go']['services']['SystemService']['EnforceLiveness'](arg1, arg2);
+}
+
 export function ExecutePlan(arg1) {
   return window['go']['services']['SystemService']['ExecutePlan'](arg1);
 }
@@ -148,6 +160,22 @@ export function FindWorkspaceFileImplementations(arg1, arg2) {
 
 export function FindWorkspaceFileReferences(arg1, arg2) {
   return window['go']['services']['SystemService']['FindWorkspaceFileReferences'](arg1, arg2);
+}
+
+export function GetHeartbeatConfig(arg1) {
+  return window['go']['services']['SystemService']['GetHeartbeatConfig'](arg1);
+}
+
+export function GetLivenessConfig(arg1) {
+  return window['go']['services']['SystemService']['GetLivenessConfig'](arg1);
+}
+
+export function GetTokenBudget(arg1) {
+  return window['go']['services']['SystemService']['GetTokenBudget'](arg1);
+}
+
+export function GetWatchdogConfig(arg1) {
+  return window['go']['services']['SystemService']['GetWatchdogConfig'](arg1);
 }
 
 export function ListAgentModes(arg1) {
@@ -250,6 +278,10 @@ export function ReadWorkspaceMediaFile(arg1, arg2) {
   return window['go']['services']['SystemService']['ReadWorkspaceMediaFile'](arg1, arg2);
 }
 
+export function RecordTokenUsage(arg1, arg2) {
+  return window['go']['services']['SystemService']['RecordTokenUsage'](arg1, arg2);
+}
+
 export function RemoveWorkspaceFolder(arg1, arg2) {
   return window['go']['services']['SystemService']['RemoveWorkspaceFolder'](arg1, arg2);
 }
@@ -272,6 +304,10 @@ export function ReplayWorkspaceSymbolRename(arg1, arg2) {
 
 export function ResetKanbanCard(arg1, arg2) {
   return window['go']['services']['SystemService']['ResetKanbanCard'](arg1, arg2);
+}
+
+export function ResetTokenBudget(arg1) {
+  return window['go']['services']['SystemService']['ResetTokenBudget'](arg1);
 }
 
 export function ResolveMode(arg1) {
@@ -338,6 +374,14 @@ export function SetActiveWorkspace(arg1) {
   return window['go']['services']['SystemService']['SetActiveWorkspace'](arg1);
 }
 
+export function SetLivenessConfig(arg1, arg2) {
+  return window['go']['services']['SystemService']['SetLivenessConfig'](arg1, arg2);
+}
+
+export function SetTokenBudget(arg1, arg2) {
+  return window['go']['services']['SystemService']['SetTokenBudget'](arg1, arg2);
+}
+
 export function SetWorkspaceDefaultPlanMode(arg1, arg2) {
   return window['go']['services']['SystemService']['SetWorkspaceDefaultPlanMode'](arg1, arg2);
 }
@@ -362,12 +406,24 @@ export function Shutdown() {
   return window['go']['services']['SystemService']['Shutdown']();
 }
 
+export function StartHeartbeat(arg1, arg2) {
+  return window['go']['services']['SystemService']['StartHeartbeat'](arg1, arg2);
+}
+
 export function StartKanbanExecution(arg1, arg2) {
   return window['go']['services']['SystemService']['StartKanbanExecution'](arg1, arg2);
 }
 
+export function StartWatchdog(arg1, arg2) {
+  return window['go']['services']['SystemService']['StartWatchdog'](arg1, arg2);
+}
+
 export function StopChatStream(arg1) {
   return window['go']['services']['SystemService']['StopChatStream'](arg1);
+}
+
+export function StopHeartbeat(arg1) {
+  return window['go']['services']['SystemService']['StopHeartbeat'](arg1);
 }
 
 export function StopKanbanCard(arg1, arg2) {
@@ -376,6 +432,10 @@ export function StopKanbanCard(arg1, arg2) {
 
 export function StopKanbanExecution(arg1) {
   return window['go']['services']['SystemService']['StopKanbanExecution'](arg1);
+}
+
+export function StopWatchdog(arg1) {
+  return window['go']['services']['SystemService']['StopWatchdog'](arg1);
 }
 
 export function SubmitInlineCodePrompt(arg1, arg2) {

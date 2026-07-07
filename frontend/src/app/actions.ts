@@ -1,13 +1,13 @@
 
 import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate, startCodeRename } from "../codeView";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, GetHeartbeatConfig, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
 import { appRoot } from "./dom";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
 import { dismissContextMenu } from "./contextMenu";
 import { dropWorkspaceGitRepositoryState, openGitChangeInCode, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, selectGitCommit, syncWorkspaceGitRepository } from "./git";
-import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification } from "./kanban";
+import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification, toggleHeartbeatInterval, toggleWatchdogInterval } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, cancelAgentMode, deleteAgentModeSettings, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint, saveAgentMode, saveNewAgentMode, startCreateAgentMode, startEditAgentMode } from "./settings";
 import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatAgentModeIDFor, chatComposerModeFor, setChatComposerMode, chatSessionFor, chatVideoDraftsFor, getActiveChatKanbanTab, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state } from "./state";
@@ -18,6 +18,8 @@ import { applyTheme, settingsWithThemeDefaults, themePaletteNames } from "./them
 import { pushToast, dismissToast } from "./toasts";
 import { copyTextToClipboard, errorMessage, laneLabel } from "./utils";
 import { hydrateWorkspaceLetterDrafts } from "./workspace";
+import { resetTokenBudget, loadTokenBudget } from "./budget";
+import { loadLivenessConfig } from "./liveness";
 
 export async function handleAction(event: Event) {
   const target = event.currentTarget as HTMLElement;
@@ -27,6 +29,12 @@ export async function handleAction(event: Event) {
   try {
     if (action === "dismiss-toast") {
       dismissToast(target.dataset.toastId ?? "");
+      return;
+    }
+    if (action === "reset-budget") {
+      const wsID = target.dataset.workspaceId ?? "";
+      if (!wsID) return;
+      void resetTokenBudget(wsID);
       return;
     }
     if (action === "show-in-explorer") {
@@ -453,6 +461,20 @@ export async function handleAction(event: Event) {
       } catch {
         /* Non-fatal: will load on first chat render. */
       }
+      /* Restore heartbeat interval from backend. */
+      try {
+        const hbConfig = await GetHeartbeatConfig(workspaceID);
+        if (hbConfig.enabled && hbConfig.interval > 0) {
+          state.heartbeatIntervals.set(workspaceID, hbConfig.interval);
+        } else {
+          state.heartbeatIntervals.delete(workspaceID);
+        }
+      } catch {
+        /* Non-fatal. */
+      }
+      /* Load token budget for the new workspace. */
+      void loadTokenBudget(workspaceID);
+      void loadLivenessConfig(workspaceID);
       state.workspaceDropdownOpen = false;
       getAppCallbacks().render();
     }
@@ -546,6 +568,18 @@ export async function handleAction(event: Event) {
       );
       patchChatPanel();
       patchChatControls();
+    }
+    if (action === "toggle-heartbeat") {
+      const workspaceID = target.dataset.workspaceId ?? "";
+      if (!workspaceID) return;
+      void toggleHeartbeatInterval(workspaceID).then(() => getAppCallbacks().render());
+      return;
+    }
+    if (action === "toggle-watchdog") {
+      const workspaceID = target.dataset.workspaceId ?? "";
+      if (!workspaceID) return;
+      void toggleWatchdogInterval(workspaceID);
+      return;
     }
     if (action === "start-agents") {
       const workspace = activeWorkspace();
@@ -709,6 +743,17 @@ export async function handleAction(event: Event) {
       state.selectedKanbanCards.set(workspace.id, cardID);
       maybePlayKanbanBoardNotification(previousBoard, board);
       pushToast(`Card moved to ${laneLabel(lane)}.`, "success");
+      getAppCallbacks().render();
+    }
+    if (action === "clear-card-recovery") {
+      const workspace = activeWorkspace();
+      const cardID = target.dataset.cardId ?? "";
+      if (!workspace || !cardID) {
+        return;
+      }
+      state.kanbanBoards.set(workspace.id, await ClearKanbanCardRecovery(workspace.id, cardID));
+      state.selectedKanbanCards.set(workspace.id, cardID);
+      pushToast("Recovery state cleared.", "success");
       getAppCallbacks().render();
     }
     if (action === "create-card-from-message") {

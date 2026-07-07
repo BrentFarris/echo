@@ -137,6 +137,9 @@ type AppState struct {
 	WebAccess         WebAccessSettings `json:"webAccess"`
 	Workspaces        []Workspace       `json:"workspaces"`
 	ActiveWorkspaceID string            `json:"activeWorkspaceId"`
+	HeartbeatConfigs  map[string]HeartbeatConfig `json:"heartbeatConfigs,omitempty"`
+	LivenessConfigs   map[string]LivenessConfig  `json:"livenessConfigs,omitempty"`
+	WatchdogConfigs   map[string]WatchdogConfig   `json:"watchdogConfigs,omitempty"`
 	KanbanCards       []KanbanCard      `json:"-"`
 }
 
@@ -156,6 +159,8 @@ type SystemService struct {
 	kanbanAgents            map[string]*kanbanAgentRun
 	kanbanAgentSeq          uint64
 	kanbanDetailViews       map[string]string
+	heartbeats              map[string]*heartbeatHandle // workspaceID -> running heartbeat
+	watchdogs               map[string]*watchdogHandle  // workspaceID -> running watchdog
 	fileChangeMu            sync.Mutex
 	fileChangeSeq           uint64
 	fileChanges             map[string][]trackedFileChange
@@ -171,6 +176,7 @@ type SystemService struct {
 	kanbanEventSink         func(KanbanEvent)
 	fileChangesEventSink    func(FileChangesEvent)
 	inlineCodeEventSink     func(InlineCodePromptEvent)
+	tokenBudget             *TokenBudgetService
 }
 
 func NewSystemService() *SystemService {
@@ -196,11 +202,14 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 		kanbanRuns:            make(map[string]context.CancelFunc),
 		kanbanAgents:          make(map[string]*kanbanAgentRun),
 		kanbanDetailViews:     make(map[string]string),
+		heartbeats:            make(map[string]*heartbeatHandle),
+		watchdogs:             make(map[string]*watchdogHandle),
 		fileChanges:           make(map[string][]trackedFileChange),
 		workspaceToolLocks:    make(map[string]*sync.Mutex),
 		lspClients:            make(map[string]*lspClient),
 		lspWarmups:            make(map[string]struct{}),
 		eventSubscribers:      make(map[uint64]chan RuntimeEvent),
+		tokenBudget:           newTokenBudgetService(),
 	}
 	_ = service.load()
 	return service
@@ -719,6 +728,7 @@ func (s *SystemService) DeleteWorkspace(id string) (AppState, error) {
 	s.state.Workspaces = next
 	s.state.KanbanCards = cardsWithoutWorkspace(s.state.KanbanCards, id)
 	delete(s.persistedChatSessions, id)
+	delete(s.tokenBudget.budgets, id)
 	if s.state.ActiveWorkspaceID == id {
 		s.state.ActiveWorkspaceID = ""
 		if len(s.state.Workspaces) > 0 {
@@ -943,6 +953,12 @@ func (s *SystemService) load() error {
 		}
 	}
 	s.state = state
+	// Restore token budgets from persisted state.
+	if stored.TokenBudgets != nil {
+		for wid, b := range stored.TokenBudgets {
+			s.tokenBudget.budgets[wid] = b
+		}
+	}
 	// Migrate legacy global agent modes to workspace disk storage.
 	if len(storedRaw.AgentModes) > 0 {
 		s.migrateGlobalAgentModesToDisk(storedRaw.AgentModes)
@@ -983,7 +999,9 @@ func (s *SystemService) saveLocked() error {
 	if err := os.MkdirAll(filepath.Dir(s.storePath), 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(storedAppStateFrom(s.state), "", "  ")
+	stored := storedAppStateFrom(s.state)
+	stored.TokenBudgets = s.tokenBudget.budgets
+	data, err := json.MarshalIndent(stored, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -1030,10 +1048,12 @@ func (s *SystemService) WorkspaceIconMiddleware(next http.Handler) http.Handler 
 
 func defaultAppState() AppState {
 	return AppState{
-		Settings:    llm.DefaultSettings(),
-		WebAccess:   defaultWebAccessSettings(),
-		Workspaces:  []Workspace{},
-		KanbanCards: []KanbanCard{},
+		Settings:         llm.DefaultSettings(),
+		WebAccess:        defaultWebAccessSettings(),
+		Workspaces:       []Workspace{},
+		HeartbeatConfigs: make(map[string]HeartbeatConfig),
+		WatchdogConfigs:  make(map[string]WatchdogConfig),
+		KanbanCards:      []KanbanCard{},
 	}
 }
 
@@ -1407,6 +1427,39 @@ func cloneState(state AppState) AppState {
 	for i := range state.Workspaces {
 		state.Workspaces[i].Folders = append([]WorkspaceFolder{}, state.Workspaces[i].Folders...)
 	}
+	if state.HeartbeatConfigs != nil {
+		state.HeartbeatConfigs = cloneHeartbeatConfigs(state.HeartbeatConfigs)
+	}
+	if state.WatchdogConfigs != nil {
+		state.WatchdogConfigs = cloneWatchdogConfigs(state.WatchdogConfigs)
+	}
+	if state.LivenessConfigs != nil {
+		state.LivenessConfigs = cloneLivenessConfigs(state.LivenessConfigs)
+	}
 	state.KanbanCards = cloneKanbanCards(state.KanbanCards)
 	return state
+}
+
+func cloneHeartbeatConfigs(src map[string]HeartbeatConfig) map[string]HeartbeatConfig {
+	dst := make(map[string]HeartbeatConfig, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func cloneWatchdogConfigs(src map[string]WatchdogConfig) map[string]WatchdogConfig {
+	dst := make(map[string]WatchdogConfig, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func cloneLivenessConfigs(src map[string]LivenessConfig) map[string]LivenessConfig {
+	dst := make(map[string]LivenessConfig, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }

@@ -10,16 +10,18 @@ import { bindChatEvents, applyChatStreamEvent, isSupportedChatImageType, isSuppo
 import { applyFileChangesEvent } from "./changes";
 import { showContextMenu } from "./contextMenu";
 import { handleGlobalKeydown, handleGlobalKeyup, handleGlobalPointerDown, handleGlobalWindowBlur } from "./events";
-import { applyKanbanEvent, loadActiveKanbanBoard, markKanbanRunStarted } from "./kanban";
+import { applyKanbanEvent, applyHeartbeatEvent, applyLivenessEvent, applyWatchdogEvent, loadActiveKanbanBoard, markKanbanRunStarted } from "./kanban";
 import { render } from "./render";
 import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state } from "./state";
 import { applyTheme } from "./theme";
 import { pushToast } from "./toasts";
-import type { ChatStreamEvent, FileChangesEvent, KanbanEvent } from "./types";
+import type { ChatStreamEvent, FileChangesEvent, HeartbeatEvent, KanbanEvent, LivenessEvent, WatchdogEvent } from "./types";
 import { errorMessage } from "./utils";
 import { loadActiveChatSession } from "./chat";
 import { loadActiveChangeReview } from "./changes";
 import type { CodeEntryKind } from "../codeView/types";
+import { loadTokenBudget } from "./budget";
+import { loadLivenessConfig } from "./liveness";
 
 function codeViewCallbacks() {
   return {
@@ -68,9 +70,30 @@ async function initialize() {
     await loadActiveChatSession();
     await loadActiveKanbanBoard();
     await loadActiveChangeReview();
+    const activeWS = state.appState?.activeWorkspaceId ?? "";
+    if (activeWS) {
+      void loadTokenBudget(activeWS);
+      void loadLivenessConfig(activeWS);
+    }
     const runtimeStatus = await LoadRuntimeStatus();
     for (const workspaceID of runtimeStatus.activeKanbanWorkspaceIds ?? []) {
       markKanbanRunStarted(workspaceID);
+    }
+    // Restore heartbeat intervals from backend for all workspaces
+    if (state.appState?.heartbeatConfigs) {
+      for (const [wsID, cfg] of Object.entries(state.appState.heartbeatConfigs)) {
+        if (cfg.enabled && cfg.interval > 0) {
+          state.heartbeatIntervals.set(wsID, cfg.interval);
+        }
+      }
+    }
+    // Restore watchdog intervals from backend for all workspaces
+    if (state.appState?.watchdogConfigs) {
+      for (const [wsID, cfg] of Object.entries(state.appState.watchdogConfigs)) {
+        if (cfg.enabled && cfg.interval > 0) {
+          state.watchdogIntervals.set(wsID, cfg.interval);
+        }
+      }
     }
   } catch (error) {
     state.appState = services.AppState.createFrom({
@@ -117,6 +140,18 @@ export function startApp() {
 
   EventsOn("echo:file-changes:event", (event: FileChangesEvent) => {
     applyFileChangesEvent(event);
+  });
+
+  EventsOn("echo:heartbeat:event", (event: HeartbeatEvent) => {
+    applyHeartbeatEvent(event);
+  });
+
+  EventsOn("echo:liveness:event", (event: LivenessEvent) => {
+    applyLivenessEvent(event);
+  });
+
+  EventsOn("echo:watchdog:event", (event: WatchdogEvent) => {
+    applyWatchdogEvent(event);
   });
 
   EventsOn("echo:agent-mode:event", (modes) => {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/brent/echo/internal/llm"
 	"github.com/brent/echo/internal/tools"
@@ -202,6 +203,18 @@ func (s *SystemService) Shutdown() {
 	for _, agent := range s.kanbanAgents {
 		agentCancels = append(agentCancels, agent.cancel)
 	}
+	heartbeatCancels := make([]context.CancelFunc, 0, len(s.heartbeats))
+	heartbeatTickers := make([]*time.Ticker, 0, len(s.heartbeats))
+	for _, h := range s.heartbeats {
+		heartbeatCancels = append(heartbeatCancels, h.cancel)
+		heartbeatTickers = append(heartbeatTickers, h.ticker)
+	}
+	watchdogCancels := make([]context.CancelFunc, 0, len(s.watchdogs))
+	watchdogTickers := make([]*time.Ticker, 0, len(s.watchdogs))
+	for _, w := range s.watchdogs {
+		watchdogCancels = append(watchdogCancels, w.cancel)
+		watchdogTickers = append(watchdogTickers, w.ticker)
+	}
 	chatCancels := make([]context.CancelFunc, 0, len(s.chatStreams))
 	for _, cancel := range s.chatStreams {
 		chatCancels = append(chatCancels, cancel)
@@ -228,6 +241,18 @@ func (s *SystemService) Shutdown() {
 	}
 	for _, cancel := range agentCancels {
 		cancel()
+	}
+	for _, cancel := range heartbeatCancels {
+		cancel()
+	}
+	for _, ticker := range heartbeatTickers {
+		ticker.Stop()
+	}
+	for _, cancel := range watchdogCancels {
+		cancel()
+	}
+	for _, ticker := range watchdogTickers {
+		ticker.Stop()
 	}
 	for _, cancel := range chatCancels {
 		cancel()
@@ -363,6 +388,12 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 	verificationCurrent := false
 	skillCheckpointPending := false
 	skillCheckpointReminders := 0
+	var totalUsage llm.Usage
+	defer func() {
+		if totalUsage.TotalTokens > 0 {
+			_, _ = s.RecordTokenUsage(workspace.ID, int64(totalUsage.TotalTokens))
+		}
+	}()
 	for {
 		if err := ctx.Err(); err != nil {
 			s.blockKanbanCard(workspace.ID, cardID, agentID, "Canceled", agentCancellationText)
@@ -402,7 +433,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 			return
 		}
 
-		content, _, toolCalls, finished, finishReason, err := s.streamKanbanAgentResponse(ctx, client, request, workspace.ID, cardID, agentID)
+		content, _, toolCalls, finished, finishReason, usage, err := s.streamKanbanAgentResponse(ctx, client, request, workspace.ID, cardID, agentID)
 		if err != nil {
 			if ctx.Err() != nil {
 				s.blockKanbanCard(workspace.ID, cardID, agentID, "Canceled", agentCancellationText)
@@ -455,6 +486,11 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 			}
 			s.blockKanbanCard(workspace.ID, cardID, agentID, "Agent error", userFacingLLMError(err))
 			return
+		}
+		if usage != nil {
+			totalUsage.PromptTokens += usage.PromptTokens
+			totalUsage.CompletionTokens += usage.CompletionTokens
+			totalUsage.TotalTokens += usage.TotalTokens
 		}
 		toolCalls = s.normalizeToolCalls(toolCalls)
 		if !finished {
@@ -578,20 +614,26 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 	}
 }
 
-func (s *SystemService) streamKanbanAgentResponse(ctx context.Context, client *llm.Client, request llm.ChatRequest, workspaceID string, cardID string, agentID uint64) (string, string, []llm.ToolCall, bool, string, error) {
+func (s *SystemService) streamKanbanAgentResponse(ctx context.Context, client *llm.Client, request llm.ChatRequest, workspaceID string, cardID string, agentID uint64) (string, string, []llm.ToolCall, bool, string, *llm.Usage, error) {
 	request.Messages = append([]llm.Message(nil), request.Messages...)
 	totalContent := strings.Builder{}
 	totalReasoning := strings.Builder{}
+	var totalUsage llm.Usage
 	var lastLoop streamLoopDetection
 
 	for attempt := 0; ; attempt++ {
 		result := s.streamKanbanAgentResponseAttempt(ctx, client, request, workspaceID, cardID, agentID)
 		totalContent.WriteString(result.content)
 		totalReasoning.WriteString(result.reasoning)
+		if result.usage != nil {
+			totalUsage.PromptTokens += result.usage.PromptTokens
+			totalUsage.CompletionTokens += result.usage.CompletionTokens
+			totalUsage.TotalTokens += result.usage.TotalTokens
+		}
 		if result.loop != nil {
 			lastLoop = *result.loop
 			if attempt >= maxStreamLoopRetries {
-				return totalContent.String(), totalReasoning.String(), result.toolCalls, false, result.finishReason, streamLoopExceededError(lastLoop)
+				return totalContent.String(), totalReasoning.String(), result.toolCalls, false, result.finishReason, &totalUsage, streamLoopExceededError(lastLoop)
 			}
 			s.appendKanbanAgentProgress(workspaceID, cardID, agentID, KanbanProgressEntry{
 				Type:    "status",
@@ -601,7 +643,7 @@ func (s *SystemService) streamKanbanAgentResponse(ctx context.Context, client *l
 			request.Messages = appendStreamLoopRetryMessages(request.Messages, result.content, lastLoop)
 			continue
 		}
-		return totalContent.String(), totalReasoning.String(), result.toolCalls, result.finished, result.finishReason, result.err
+		return totalContent.String(), totalReasoning.String(), result.toolCalls, result.finished, result.finishReason, &totalUsage, result.err
 	}
 }
 
@@ -611,6 +653,7 @@ type kanbanStreamAttemptResult struct {
 	toolCalls    []llm.ToolCall
 	finished     bool
 	finishReason string
+	usage        *llm.Usage
 	loop         *streamLoopDetection
 	err          error
 }
@@ -709,7 +752,7 @@ func (s *SystemService) streamKanbanAgentResponseAttempt(ctx context.Context, cl
 		return kanbanStreamAttemptResult{content: content.String(), reasoning: reasoning.String(), toolCalls: orderedToolCalls(toolCalls), finished: false, finishReason: finishReason}
 	}
 	flushInlineParsers()
-	return kanbanStreamAttemptResult{content: content.String(), reasoning: reasoning.String(), toolCalls: orderedToolCalls(toolCalls), finished: finished, finishReason: finishReason}
+	return kanbanStreamAttemptResult{content: content.String(), reasoning: reasoning.String(), toolCalls: orderedToolCalls(toolCalls), finished: finished, finishReason: finishReason, usage: stream.Usage}
 }
 
 func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, cardID string, agentID uint64, call llm.ToolCall) kanbanToolCallExecution {
@@ -774,21 +817,9 @@ func sortedKanbanChangedPaths(paths map[string]bool) []string {
 
 func (s *SystemService) eligibleReadyCards(workspaceID string, limit int) []KanbanCard {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	cards := make([]KanbanCard, 0, limit)
-	for _, card := range s.state.KanbanCards {
-		if card.WorkspaceID != workspaceID || normalizeKanbanLane(card.Lane) != KanbanLaneReady {
-			continue
-		}
-		if len(blockedDependenciesForCard(card, s.state.KanbanCards)) == 0 {
-			cards = append(cards, cloneKanbanCard(card))
-			if len(cards) == limit {
-				break
-			}
-		}
-	}
-	return cards
+	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
+	s.mu.Unlock()
+	return FindEligibleCards(board, limit)
 }
 
 func (s *SystemService) activeKanbanAgentCount(workspaceID string) int {
@@ -1057,6 +1088,7 @@ func (s *SystemService) moveKanbanCardLocked(workspaceID string, cardID string, 
 			if entry.Status == "" {
 				entry.Status = lane
 			}
+			entry.Timestamp = time.Now()
 			card.ProgressTranscript = append(card.ProgressTranscript, entry)
 		}
 		return nil
@@ -1088,6 +1120,7 @@ func (s *SystemService) appendKanbanProgressLocked(workspaceID string, cardID st
 				card.ProgressTranscript[len(card.ProgressTranscript)-1].Content += entry.Content
 				return true
 			}
+			entry.Timestamp = time.Now()
 			card.ProgressTranscript = append(card.ProgressTranscript, entry)
 			return true
 		}

@@ -76,6 +76,8 @@ export const state = {
   agentModes: new Map<string, services.AgentMode[]>(),
   selectedAgentModeIds: new Map<string, string>(),
   creatingAgentModes: new Set<string>(),
+  heartbeatIntervals: new Map<string, number>(), // workspaceID -> interval in milliseconds
+  watchdogIntervals: new Map<string, number>(), // workspaceID -> interval in milliseconds
 };
 
 export type AgentModeDraft = {

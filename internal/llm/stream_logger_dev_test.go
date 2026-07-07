@@ -42,6 +42,7 @@ func TestDevStreamLoggerPrintsRawMessagesAndEventsInOrder(t *testing.T) {
 		strings.NewReader(input),
 		events,
 		newStreamLogger("stream-1", "http://localhost/chat/completions"),
+		nil,
 	)
 
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")

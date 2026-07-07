@@ -6,7 +6,25 @@ const (
 	FileChangesRuntimeEventName  = fileChangesEventName
 	InlineCodeRuntimeEventName   = inlineCodePromptEventName
 	AgentModeRuntimeEventName    = agentModeEventName
+	HeartbeatRuntimeEventName    = heartbeatEventName
+	LivenessRuntimeEventName     = livenessEventName
+	WatchdogRuntimeEventName     = watchdogEventName
 )
+
+const watchdogEventName = "echo:watchdog:event"
+
+type HeartbeatEvent struct {
+	WorkspaceID string `json:"workspaceId"`
+	Type        string `json:"type"` // "started", "stopped", "tick_no_eligible", "tick_no_budget", "budget_exceeded"
+	Message     string `json:"message,omitempty"`
+}
+
+type WatchdogEvent struct {
+	WorkspaceID string `json:"workspaceId"`
+	CardID      string `json:"cardId,omitempty"`
+	Type        string `json:"type"` // "started", "stopped", "check_complete", "repair_created"
+	Message     string `json:"message,omitempty"`
+}
 
 type RuntimeEvent struct {
 	Name string

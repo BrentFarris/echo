@@ -150,6 +150,30 @@ export function UpdateAgentModePerTool(...args: Parameters<typeof Wails.UpdateAg
   return call("UpdateAgentModePerTool", Wails.UpdateAgentModePerTool, args);
 }
 
+export function GetHeartbeatConfig(...args: Parameters<typeof Wails.GetHeartbeatConfig>): ReturnType<typeof Wails.GetHeartbeatConfig> {
+  return call("GetHeartbeatConfig", Wails.GetHeartbeatConfig, args);
+}
+
+export function StartHeartbeat(...args: Parameters<typeof Wails.StartHeartbeat>): ReturnType<typeof Wails.StartHeartbeat> {
+  return call("StartHeartbeat", Wails.StartHeartbeat, args);
+}
+
+export function StopHeartbeat(...args: Parameters<typeof Wails.StopHeartbeat>): ReturnType<typeof Wails.StopHeartbeat> {
+  return call("StopHeartbeat", Wails.StopHeartbeat, args);
+}
+
+export function GetWatchdogConfig(...args: Parameters<typeof Wails.GetWatchdogConfig>): ReturnType<typeof Wails.GetWatchdogConfig> {
+  return call("GetWatchdogConfig", Wails.GetWatchdogConfig, args);
+}
+
+export function StartWatchdog(...args: Parameters<typeof Wails.StartWatchdog>): ReturnType<typeof Wails.StartWatchdog> {
+  return call("StartWatchdog", Wails.StartWatchdog, args);
+}
+
+export function StopWatchdog(...args: Parameters<typeof Wails.StopWatchdog>): ReturnType<typeof Wails.StopWatchdog> {
+  return call("StopWatchdog", Wails.StopWatchdog, args);
+}
+
 export function ListAgentModes(...args: Parameters<typeof Wails.ListAgentModes>): ReturnType<typeof Wails.ListAgentModes> {
   return call("ListAgentModes", Wails.ListAgentModes, args);
 }
@@ -369,6 +393,26 @@ export function SetWorkspaceLetter(...args: Parameters<typeof Wails.SetWorkspace
   return call("SetWorkspaceLetter", Wails.SetWorkspaceLetter, args);
 }
 
+export function GetLivenessConfig(...args: Parameters<typeof Wails.GetLivenessConfig>): ReturnType<typeof Wails.GetLivenessConfig> {
+  return call("GetLivenessConfig", Wails.GetLivenessConfig, args);
+}
+
+export function SetLivenessConfig(...args: Parameters<typeof Wails.SetLivenessConfig>): ReturnType<typeof Wails.SetLivenessConfig> {
+  return call("SetLivenessConfig", Wails.SetLivenessConfig, args);
+}
+
+export function GetTokenBudget(...args: Parameters<typeof Wails.GetTokenBudget>): ReturnType<typeof Wails.GetTokenBudget> {
+  return call("GetTokenBudget", Wails.GetTokenBudget, args);
+}
+
+export function SetTokenBudget(...args: Parameters<typeof Wails.SetTokenBudget>): ReturnType<typeof Wails.SetTokenBudget> {
+  return call("SetTokenBudget", Wails.SetTokenBudget, args);
+}
+
+export function ResetTokenBudget(...args: Parameters<typeof Wails.ResetTokenBudget>): ReturnType<typeof Wails.ResetTokenBudget> {
+  return call("ResetTokenBudget", Wails.ResetTokenBudget, args);
+}
+
 export function StartKanbanExecution(...args: Parameters<typeof Wails.StartKanbanExecution>): ReturnType<typeof Wails.StartKanbanExecution> {
   return call("StartKanbanExecution", Wails.StartKanbanExecution, args);
 }
@@ -395,4 +439,11 @@ export function UpdateKanbanCardDescription(...args: Parameters<typeof Wails.Upd
 
 export function UpdateKanbanCardDirection(...args: Parameters<typeof Wails.UpdateKanbanCardDirection>): ReturnType<typeof Wails.UpdateKanbanCardDirection> {
   return call("UpdateKanbanCardDirection", Wails.UpdateKanbanCardDirection, args);
+}
+
+export function ClearKanbanCardRecovery(workspaceID: string, cardID: string): Promise<any> {
+  if (isWailsRuntime()) {
+    return (window as any)["go"]["services"]["SystemService"]["ClearKanbanCardRecovery"](workspaceID, cardID);
+  }
+  return webRpc("ClearKanbanCardRecovery", [workspaceID, cardID]);
 }

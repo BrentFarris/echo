@@ -9,6 +9,8 @@ import { applyTheme, normalizeHexColor, settingsWithCompactTheme, settingsWithTh
 import { pushToast } from "../toasts";
 import { errorMessage, escapeAttribute, escapeHtml, workspaceFolderSummary } from "../utils";
 import { hydrateWorkspaceLetterDrafts, renderWorkspaceFolderSettings, renderWorkspaceIcon, workspaceLetterDraft } from "../workspace";
+import { renderBudgetSettingsSection, handleBudgetLimitInput } from "../budget";
+import { renderLivenessSettingsSection, handleLivenessInput, loadLivenessConfig } from "../liveness";
 
 const llmPresetFields = [
   "temperature",
@@ -101,6 +103,8 @@ const settingsSections = [
   { id: "search-settings-title", label: "Search" },
   { id: "notification-settings-title", label: "Notifications" },
   { id: "programming-settings-title", label: "Programming" },
+  { id: "budget-settings-title", label: "Token Budget" },
+  { id: "liveness-settings-title", label: "Liveness Enforcement" },
   { id: "web-access-settings-title", label: "Web Access" },
   { id: "theme-settings-title", label: "Theme Colors" },
   { id: "workspace-settings-title", label: "Workspaces" },
@@ -274,6 +278,10 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
             </section>
 
             ${renderWebAccessSettings()}
+
+            ${renderBudgetSettingsSection()}
+
+            ${renderLivenessSettingsSection()}
 
             ${renderThemeSettings()}
 
@@ -1518,6 +1526,14 @@ export function handleSettingsInput(event: Event) {
   }
   if (input.dataset.themeToken !== undefined) {
     handleThemeColorInput(input as HTMLInputElement);
+    return;
+  }
+  if (input.dataset.budgetLimitInput !== undefined) {
+    void handleBudgetLimitInput(input as HTMLInputElement);
+    return;
+  }
+  if (input.dataset.livenessField !== undefined) {
+    void handleLivenessInput(input as HTMLInputElement);
     return;
   }
   if (input.dataset.workspaceFolderAgents !== undefined) {

@@ -1,6 +1,6 @@
 
 import { patchChildrenFromHtml, renderMarkdown } from "../../markdown";
-import { AddKanbanCardMessage, CloseKanbanCardDetail, CreateReadyKanbanCard, LoadKanbanBoard, UpdateKanbanCardDescription, UpdateKanbanCardDirection } from "../../backend/services";
+import { AddKanbanCardMessage, ClearKanbanCardRecovery, CloseKanbanCardDetail, CreateReadyKanbanCard, GetHeartbeatConfig, GetWatchdogConfig, LoadKanbanBoard, StartHeartbeat, StartWatchdog, StopHeartbeat, StopWatchdog, UpdateKanbanCardDescription, UpdateKanbanCardDirection } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";
@@ -9,9 +9,27 @@ import { icons } from "../icons";
 import { playNotificationSound } from "../notifications";
 import { activeWorkspace, kanbanBoardFor, kanbanCards, selectedKanbanCard, state } from "../state";
 import { pushToast } from "../toasts";
-import type { KanbanEvent } from "../types";
+import type { HeartbeatEvent, KanbanEvent, LivenessEvent, WatchdogEvent } from "../types";
 import { errorMessage, escapeAttribute, escapeHtml, laneLabel } from "../utils";
 import { refreshWorkspaceChangeReview } from "../changes";
+import { render } from "../render";
+import type { Toast } from "../types";
+
+const HeartbeatIntervals = [0, 60_000, 180_000, 360_000, 900_000] as const; // off, 1m, 3m, 6m, 15m
+type HeartbeatInterval = (typeof HeartbeatIntervals)[number];
+
+export function heartbeatIntervalLabel(intervalMs: number): string {
+  if (intervalMs === 0) return "Off";
+  const minutes = intervalMs / 60_000;
+  if (minutes < 60) return `${minutes}m`;
+  return `${minutes / 60}h`;
+}
+
+export function nextHeartbeatInterval(currentMs: number): HeartbeatInterval {
+  const idx = HeartbeatIntervals.indexOf(currentMs as HeartbeatInterval);
+  const nextIdx = (idx + 1) % HeartbeatIntervals.length;
+  return HeartbeatIntervals[nextIdx];
+}
 
 export function isKanbanBoardAllDone(board?: services.KanbanBoard): boolean {
   if (!board) {
@@ -243,8 +261,10 @@ export function renderKanbanCard(card: services.KanbanCard): string {
   const dependencyStatuses = card.dependencyStatuses ?? [];
   const blockedBy = card.blockedBy ?? [];
   const unavailable = card.lane === "ready" && !card.eligible;
+  const recoveryBadge = renderRecoveryBadge(card);
+  const repairBadge = isRepairCard(card) ? renderRepairBadge() : "";
   return `
-    <article class="kanban-card ${unavailable ? "is-unavailable" : ""}">
+    <article class="kanban-card ${unavailable ? "is-unavailable" : ""} ${card.recoveryType ? "has-recovery-badge" : ""} ${isRepairCard(card) ? "is-repair" : ""}">
       <button
         class="kanban-card-open"
         type="button"
@@ -277,7 +297,23 @@ export function renderKanbanCard(card: services.KanbanCard): string {
             : ""
         }
       </button>
+      ${recoveryBadge}
+      ${repairBadge}
     </article>
+  `;
+}
+
+export function renderRecoveryBadge(card: services.KanbanCard): string {
+  if (!card.recoveryType) {
+    return "";
+  }
+  const isEscalated = card.recoveryType === "escalated";
+  const label = isEscalated ? "Escalated" : `Reset ${card.autoRetriesUsed ?? 0}`;
+  return `
+    <span class="recovery-badge ${isEscalated ? "is-escalated" : "is-reset"}" role="status" aria-label="${escapeAttribute(label)}">
+      ${isEscalated ? icons.x : icons.retry}
+      <span>${escapeHtml(label)}</span>
+    </span>
   `;
 }
 
@@ -407,6 +443,8 @@ export function renderKanbanDetail(board: services.KanbanBoard): string {
           ${renderProgressSectionContent(transcript)}
         </section>
 
+        ${renderLivenessSection(card, board.workspaceId)}
+
         ${
           card.lane === "blocked"
             ? `<form class="card-message-form" data-card-message-form data-card-id="${escapeAttribute(card.id)}">
@@ -420,6 +458,32 @@ export function renderKanbanDetail(board: services.KanbanBoard): string {
         }
       </section>
     </aside>
+  `;
+}
+
+export function renderLivenessSection(card: services.KanbanCard, workspaceID: string): string {
+  const hasRecovery = card.recoveryType || (card.autoRetriesUsed ?? 0) > 0;
+  if (!hasRecovery) {
+    return "";
+  }
+  const isEscalated = card.recoveryType === "escalated";
+  const retriesLabel = `Retries: ${card.autoRetriesUsed ?? 0}`;
+  const statusLabel = isEscalated ? "Escalated" : "Auto-reset";
+  return `
+    <section class="detail-section liveness-section" aria-label="Liveness">
+      <h3>Liveness</h3>
+      <div class="liveness-status ${isEscalated ? "is-escalated" : "is-reset"}" role="status">
+        <span class="liveness-status-icon">${isEscalated ? icons.x : icons.retry}</span>
+        <div class="liveness-status-text">
+          <strong>${escapeHtml(statusLabel)}</strong>
+          <span>${escapeHtml(retriesLabel)}${card.stalledAt ? ` · Stalled at ${escapeHtml(card.stalledAt)}` : ""}</span>
+        </div>
+      </div>
+      <button class="secondary-button icon-text-button clear-recovery-button" type="button" data-action="clear-card-recovery" data-card-id="${escapeAttribute(card.id)}">
+        ${icons.refresh}
+        <span>Clear recovery state</span>
+      </button>
+    </section>
   `;
 }
 
@@ -738,4 +802,147 @@ export function patchOpenCardProgress(event: KanbanEvent): boolean {
     detail.scrollTop = detail.scrollHeight;
   }
   return true;
+}
+
+export function applyHeartbeatEvent(event: HeartbeatEvent) {
+  if (event.type === "started") {
+    // Parse interval from message like "Heartbeat started with interval 1m0s"
+    const match = event.message?.match(/interval\s+(\d+)([smh])/);
+    if (match) {
+      const value = parseInt(match[1], 10);
+      const unit = match[2];
+      let ms = 0;
+      if (unit === "s") ms = value * 1000;
+      else if (unit === "m") ms = value * 60_000;
+      else if (unit === "h") ms = value * 3_600_000;
+      state.heartbeatIntervals.set(event.workspaceId, ms);
+    }
+    pushToast(`Heartbeat started for ${event.workspaceId}.`, "info");
+  } else if (event.type === "stopped") {
+    state.heartbeatIntervals.delete(event.workspaceId);
+    pushToast("Heartbeat stopped.", "info");
+  } else if (event.type === "tick_no_eligible") {
+    // Silent: heartbeat ticked but no eligible cards found.
+    return;
+  }
+  render();
+}
+
+export function applyLivenessEvent(event: LivenessEvent) {
+  if (event.type === "check_no_stalls") {
+    // Silent: liveness check passed with no stalls.
+    return;
+  }
+  if (event.type === "stalled_reset") {
+    pushToast(`Card ${event.cardId} was stalled and auto-reset to Ready.`, "info");
+  } else if (event.type === "stalled_escalated") {
+    pushToast(`Card ${event.cardId} was escalated to Blocked after repeated stalls.`, "error");
+  } else if (event.type === "stalled_reset_board" || event.type === "stalled_escalated_board") {
+    // Board update from liveness — reload the board for this workspace.
+    void loadActiveKanbanBoard();
+    return;
+  }
+  render();
+}
+
+export async function toggleHeartbeatInterval(workspaceID: string) {
+  const current = state.heartbeatIntervals.get(workspaceID) ?? 0;
+  const next = nextHeartbeatInterval(current);
+
+  try {
+    if (next === 0) {
+      await StopHeartbeat(workspaceID);
+      state.heartbeatIntervals.delete(workspaceID);
+    } else {
+      const cfg = services.HeartbeatConfig.createFrom({ enabled: true, interval: next });
+      await StartHeartbeat(workspaceID, cfg);
+      state.heartbeatIntervals.set(workspaceID, next);
+    }
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+  }
+  getAppCallbacks().render();
+}
+
+export function getHeartbeatInterval(workspaceID: string): number {
+  return state.heartbeatIntervals.get(workspaceID) ?? 0;
+}
+
+/* ── Watchdog intervals ── */
+
+const WatchdogIntervals = [0, 300_000, 900_000, 1_800_000, 3_600_000] as const; // off, 5m, 15m, 30m, 1h
+type WatchdogInterval = (typeof WatchdogIntervals)[number];
+
+export function watchdogIntervalLabel(intervalMs: number): string {
+  if (intervalMs === 0) return "Off";
+  const minutes = intervalMs / 60_000;
+  if (minutes < 60) return `${minutes}m`;
+  return `${minutes / 60}h`;
+}
+
+export function nextWatchdogInterval(currentMs: number): WatchdogInterval {
+  const idx = WatchdogIntervals.indexOf(currentMs as WatchdogInterval);
+  const nextIdx = (idx + 1) % WatchdogIntervals.length;
+  return WatchdogIntervals[nextIdx];
+}
+
+export function getWatchdogInterval(workspaceID: string): number {
+  return state.watchdogIntervals.get(workspaceID) ?? 0;
+}
+
+export async function toggleWatchdogInterval(workspaceID: string) {
+  const current = state.watchdogIntervals.get(workspaceID) ?? 0;
+  const next = nextWatchdogInterval(current);
+
+  try {
+    if (next === 0) {
+      await StopWatchdog(workspaceID);
+      state.watchdogIntervals.delete(workspaceID);
+    } else {
+      const cfg = services.WatchdogConfig.createFrom({ enabled: true, interval: next });
+      await StartWatchdog(workspaceID, cfg);
+      state.watchdogIntervals.set(workspaceID, next);
+    }
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+  }
+  getAppCallbacks().render();
+}
+
+export function applyWatchdogEvent(event: WatchdogEvent) {
+  if (event.type === "started") {
+    // Parse interval from message like "Watchdog started with interval 5m0s"
+    const match = event.message?.match(/interval\s+(\d+)([smh])/);
+    if (match) {
+      const value = parseInt(match[1], 10);
+      const unit = match[2];
+      let ms = 0;
+      if (unit === "s") ms = value * 1000;
+      else if (unit === "m") ms = value * 60_000;
+      else if (unit === "h") ms = value * 3_600_000;
+      state.watchdogIntervals.set(event.workspaceId, ms);
+    }
+    pushToast(`Watchdog started for ${event.workspaceId}.`, "info");
+  } else if (event.type === "stopped") {
+    state.watchdogIntervals.delete(event.workspaceId);
+    pushToast("Watchdog stopped.", "info");
+  } else if (event.type === "check_complete") {
+    pushToast(`Watchdog check: ${event.message ?? "complete"}`, event.message?.includes("failed") ? "error" : "success");
+  } else if (event.type === "repair_created") {
+    pushToast(`Repair card created: ${event.cardId}`, "warning" as Toast["tone"]);
+  }
+  render();
+}
+
+export function isRepairCard(card: services.KanbanCard): boolean {
+  return card.title?.startsWith("Repair: ") ?? false;
+}
+
+export function renderRepairBadge(): string {
+  return `
+    <span class="repair-badge" role="status" aria-label="Verification repair">
+      ${icons.search}
+      <span>Repair</span>
+    </span>
+  `;
 }

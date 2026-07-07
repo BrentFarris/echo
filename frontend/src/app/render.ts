@@ -6,6 +6,7 @@ import {
   clearChatMention,
   linkifyAssistantFilePaths,
 } from "./chat";
+import { loadTokenBudget, renderBudgetBar } from "./budget";
 import { renderChangeReviewDrawer } from "./changes";
 import { renderContextMenu } from "./contextMenu";
 import { appRoot, focusInitialElement } from "./dom";
@@ -15,9 +16,9 @@ import { icons } from "./icons";
 import { kanbanBoardFor, changeReviewFor, gitRepositoryViewFor, activeWorkspace, kanbanCards, state, getActiveChatKanbanTab } from "./state";
 import { renderSettingsOverlay } from "./settings";
 import { renderToasts } from "./toasts";
-import { escapeHtml, workspaceFolderSummary } from "./utils";
+import { escapeHtml, escapeAttribute, workspaceFolderSummary } from "./utils";
 import { renderWorkspaceIcon, renderMissingWorkspace } from "./workspace";
-import { hasKanbanRuntime, renderCreateKanbanCardDialog, renderDecompositionState, renderEmptyBoard, renderKanbanBoard, renderKanbanDetail, renderKanbanRuntime } from "./kanban";
+import { hasKanbanRuntime, getHeartbeatInterval, heartbeatIntervalLabel, getWatchdogInterval, watchdogIntervalLabel, renderCreateKanbanCardDialog, renderDecompositionState, renderEmptyBoard, renderKanbanBoard, renderKanbanDetail, renderKanbanRuntime } from "./kanban";
 import { services } from "../../wailsjs/go/models";
 
 /** Persistent app-shell wrapper.  Creating it once inside appRoot means
@@ -197,10 +198,14 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
   let mainPanel = "";
 
   if (mode === "chat") {
-    mainPanel = renderChatPanel(workspace, true);
+    mainPanel = `
+      ${workspace ? renderBudgetBar(workspace.id) : ""}
+      ${renderChatPanel(workspace, true)}
+    `;
   } else if (mode === "kanban") {
     mainPanel = `
       <section class="work-panel kanban-panel" aria-labelledby="kanban-title">
+        ${workspace ? renderBudgetBar(workspace.id) : ""}
         <div class="panel-heading">
           <div class="kanban-heading-main">
             <span>Kanban</span>
@@ -228,6 +233,14 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
                   </button>
                   <button class="icon-button stop-button" type="button" title="Stop agents" aria-label="Stop agents" data-action="stop-agents" ${running ? "" : "disabled"}>
                     ${icons.stop}
+                  </button>
+                  <button class="secondary-button icon-text-button heartbeat-toggle-button" type="button" title="Auto-run Kanban at interval (click to cycle)" aria-label="Heartbeat toggle" data-action="toggle-heartbeat" data-workspace-id="${escapeAttribute(workspace.id)}">
+                    ${icons.refresh}
+                    <span>Auto: ${escapeHtml(heartbeatIntervalLabel(getHeartbeatInterval(workspace.id)))}</span>
+                  </button>
+                  <button class="secondary-button icon-text-button watchdog-toggle-button" type="button" title="Watchdog verification interval (click to cycle)" aria-label="Watchdog toggle" data-action="toggle-watchdog" data-workspace-id="${escapeAttribute(workspace.id)}">
+                    ${icons.search}
+                    <span>Watchdog: ${escapeHtml(watchdogIntervalLabel(getWatchdogInterval(workspace.id)))}</span>
                   </button>
                 </div>`
               : ""

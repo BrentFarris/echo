@@ -589,6 +589,198 @@ func seedKanbanCards(t *testing.T, service *SystemService, cards []KanbanCard) {
 	}
 }
 
+func TestFindEligibleCardsReturnsIndependentReadyCard(t *testing.T) {
+	board := KanbanBoard{
+		WorkspaceID: "ws",
+		Ready: []KanbanCard{
+			{ID: "card-1", Title: "Independent", Lane: KanbanLaneReady},
+		},
+	}
+
+	got := FindEligibleCards(board, 5)
+	if len(got) != 1 || got[0].ID != "card-1" {
+		t.Fatalf("expected independent card to be eligible, got %#v", got)
+	}
+}
+
+func TestFindEligibleCardsBlocksCardWithUndoneDependency(t *testing.T) {
+	board := KanbanBoard{
+		WorkspaceID: "ws",
+		Ready: []KanbanCard{
+			{ID: "card-1", Title: "Prerequisite", Lane: KanbanLaneReady},
+			{ID: "card-2", Title: "Dependent", Dependencies: []string{"card-1"}, Lane: KanbanLaneReady},
+		},
+	}
+
+	got := FindEligibleCards(board, 5)
+	if len(got) != 1 || got[0].ID != "card-1" {
+		t.Fatalf("expected only prerequisite to be eligible, got %#v", got)
+	}
+}
+
+func TestFindEligibleCardsUnblocksCardWhenDependencyIsDone(t *testing.T) {
+	board := KanbanBoard{
+		WorkspaceID: "ws",
+		Ready: []KanbanCard{
+			{ID: "card-2", Title: "Dependent", Dependencies: []string{"card-1"}, Lane: KanbanLaneReady},
+		},
+		Done: []KanbanCard{
+			{ID: "card-1", Title: "Prerequisite", Lane: KanbanLaneDone},
+		},
+	}
+
+	got := FindEligibleCards(board, 5)
+	if len(got) != 1 || got[0].ID != "card-2" {
+		t.Fatalf("expected dependent to be eligible after prerequisite done, got %#v", got)
+	}
+}
+
+func TestFindEligibleCardsResolvesDependencyChain(t *testing.T) {
+	board := KanbanBoard{
+		WorkspaceID: "ws",
+		Ready: []KanbanCard{
+			{ID: "card-1", Title: "Base", Lane: KanbanLaneReady},
+			{ID: "card-2", Title: "Middle", Dependencies: []string{"card-1"}, Lane: KanbanLaneReady},
+			{ID: "card-3", Title: "Final", Dependencies: []string{"card-2"}, Lane: KanbanLaneReady},
+		},
+	}
+
+	got := FindEligibleCards(board, 5)
+	if len(got) != 1 || got[0].ID != "card-1" {
+		t.Fatalf("expected only base of chain to be eligible, got %#v", got)
+	}
+
+	// Move card-1 to Done; card-2 should become eligible
+	board.Ready = []KanbanCard{
+		{ID: "card-2", Title: "Middle", Dependencies: []string{"card-1"}, Lane: KanbanLaneReady},
+		{ID: "card-3", Title: "Final", Dependencies: []string{"card-2"}, Lane: KanbanLaneReady},
+	}
+	board.Done = append(board.Done, KanbanCard{ID: "card-1", Title: "Base", Lane: KanbanLaneDone})
+
+	got = FindEligibleCards(board, 5)
+	if len(got) != 1 || got[0].ID != "card-2" {
+		t.Fatalf("expected middle card to be eligible after base done, got %#v", got)
+	}
+
+	// Move card-2 to Done; card-3 should become eligible
+	board.Ready = []KanbanCard{
+		{ID: "card-3", Title: "Final", Dependencies: []string{"card-2"}, Lane: KanbanLaneReady},
+	}
+	board.Done = append(board.Done, KanbanCard{ID: "card-2", Title: "Middle", Lane: KanbanLaneDone})
+
+	got = FindEligibleCards(board, 5)
+	if len(got) != 1 || got[0].ID != "card-3" {
+		t.Fatalf("expected final card to be eligible after chain done, got %#v", got)
+	}
+}
+
+func TestFindEligibleCardsRespectsLimit(t *testing.T) {
+	board := KanbanBoard{
+		WorkspaceID: "ws",
+		Ready: []KanbanCard{
+			{ID: "card-1", Title: "A", Lane: KanbanLaneReady},
+			{ID: "card-2", Title: "B", Lane: KanbanLaneReady},
+			{ID: "card-3", Title: "C", Lane: KanbanLaneReady},
+		},
+	}
+
+	got := FindEligibleCards(board, 2)
+	if len(got) != 2 {
+		t.Fatalf("expected limit of 2, got %d cards: %#v", len(got), got)
+	}
+}
+
+func TestFindEligibleCardsReturnsNilForZeroLimit(t *testing.T) {
+	board := KanbanBoard{
+		WorkspaceID: "ws",
+		Ready: []KanbanCard{
+			{ID: "card-1", Title: "A", Lane: KanbanLaneReady},
+		},
+	}
+
+	got := FindEligibleCards(board, 0)
+	if got != nil {
+		t.Fatalf("expected nil for zero limit, got %#v", got)
+	}
+}
+
+func TestFindEligibleCardsTreatsGhostDependencyAsUnblocked(t *testing.T) {
+	board := KanbanBoard{
+		WorkspaceID: "ws",
+		Ready: []KanbanCard{
+			{ID: "card-1", Title: "Has ghost dep", Dependencies: []string{"nonexistent"}, Lane: KanbanLaneReady},
+		},
+	}
+
+	got := FindEligibleCards(board, 5)
+	if len(got) != 1 || got[0].ID != "card-1" {
+		t.Fatalf("expected card with ghost dependency to be eligible, got %#v", got)
+	}
+}
+
+func TestFindEligibleCardsBlocksWhenDependencyIsInProgress(t *testing.T) {
+	board := KanbanBoard{
+		WorkspaceID: "ws",
+		Ready: []KanbanCard{
+			{ID: "card-2", Title: "Dependent", Dependencies: []string{"card-1"}, Lane: KanbanLaneReady},
+		},
+		InProgress: []KanbanCard{
+			{ID: "card-1", Title: "Prerequisite", Lane: KanbanLaneInProgress},
+		},
+	}
+
+	got := FindEligibleCards(board, 5)
+	if len(got) != 0 {
+		t.Fatalf("expected no eligible cards when dependency is in progress, got %#v", got)
+	}
+}
+
+func TestFindEligibleCardsEmptyBoard(t *testing.T) {
+	board := KanbanBoard{WorkspaceID: "ws"}
+	got := FindEligibleCards(board, 5)
+	if len(got) != 0 {
+		t.Fatalf("expected empty result for empty board, got %#v", got)
+	}
+}
+
+func TestFindEligibleCardsMultipleDependentDone(t *testing.T) {
+	board := KanbanBoard{
+		WorkspaceID: "ws",
+		Ready: []KanbanCard{
+			{ID: "card-3", Title: "Final", Dependencies: []string{"card-1", "card-2"}, Lane: KanbanLaneReady},
+		},
+		Done: []KanbanCard{
+			{ID: "card-1", Title: "Prereq A", Lane: KanbanLaneDone},
+			{ID: "card-2", Title: "Prereq B", Lane: KanbanLaneDone},
+		},
+	}
+
+	got := FindEligibleCards(board, 5)
+	if len(got) != 1 || got[0].ID != "card-3" {
+		t.Fatalf("expected card to be eligible when all deps done, got %#v", got)
+	}
+}
+
+func TestFindEligibleCardsBlocksWhenOneOfMultipleDepsNotDone(t *testing.T) {
+	board := KanbanBoard{
+		WorkspaceID: "ws",
+		Ready: []KanbanCard{
+			{ID: "card-3", Title: "Final", Dependencies: []string{"card-1", "card-2"}, Lane: KanbanLaneReady},
+		},
+		Done: []KanbanCard{
+			{ID: "card-1", Title: "Prereq A", Lane: KanbanLaneDone},
+		},
+		InProgress: []KanbanCard{
+			{ID: "card-2", Title: "Prereq B", Lane: KanbanLaneInProgress},
+		},
+	}
+
+	got := FindEligibleCards(board, 5)
+	if len(got) != 0 {
+		t.Fatalf("expected no eligible cards when one dep is not done, got %#v", got)
+	}
+}
+
 func kanbanCardsForTest(board KanbanBoard) []KanbanCard {
 	return append(append(append(append([]KanbanCard{}, board.Ready...), board.InProgress...), board.Blocked...), board.Done...)
 }
