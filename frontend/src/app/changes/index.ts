@@ -5,7 +5,7 @@ import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { appRoot } from "../dom";
 import { icons } from "../icons";
-import { activeWorkspace, changeReviewFor, state } from "../state";
+import { activeWorkspace, changeReviewFor, gitSplitDiffViewEnabled, state } from "../state";
 import { pushToast } from "../toasts";
 import type { FileChangesEvent } from "../types";
 import { changeOperationLabel, changeSourceLabel, errorMessage, escapeAttribute, escapeHtml, fileName, formatBytes } from "../utils";
@@ -13,6 +13,15 @@ import { changeOperationLabel, changeSourceLabel, errorMessage, escapeAttribute,
 type GitDiffHunkTarget = {
   lineIndex: number;
   targetLine: number;
+};
+
+type GitSplitDiffRow = {
+  kind: "meta" | "context" | "changed";
+  left?: string;
+  leftKind?: "context" | "removed";
+  right?: string;
+  rightKind?: "context" | "added";
+  targetLine?: number;
 };
 
 export function renderChangeReviewDrawer(
@@ -111,7 +120,7 @@ export function renderGitChangedFile(file: services.WorkspaceGitChangedFile): st
         </div>
       </header>
       ${renderGitChangeStatus(file)}
-      ${file.diffAvailable && file.diff ? renderGitChangeDiff(file.diff, openable ? file.path : "") : renderGitChangeMetadata(file)}
+      ${file.diffAvailable && file.diff ? renderGitDiff(file.diff, openable ? file.path : "") : renderGitChangeMetadata(file)}
     </article>
   `;
 }
@@ -246,6 +255,124 @@ export function renderGitChangeDiff(diff: string, path: string): string {
   return `<pre class="change-diff"><code>${rendered}</code></pre>`;
 }
 
+export function renderGitDiff(diff: string, path: string): string {
+  const unified = renderGitChangeDiff(diff, path);
+  if (!gitSplitDiffViewEnabled(state.appState?.settings)) {
+    return unified;
+  }
+  return `
+    <div class="git-diff-views">
+      <div class="git-diff-unified">${unified}</div>
+      ${renderGitSplitDiff(diff, path)}
+    </div>
+  `;
+}
+
+function renderGitSplitDiff(diff: string, path: string): string {
+  const rows = gitSplitDiffRows(diff);
+  const rendered = rows.map((row) => {
+    if (row.kind === "meta") {
+      return `
+        <tr class="git-split-diff-row is-meta">
+          <td class="git-split-diff-cell" colspan="2" title="${escapeAttribute(row.left ?? "")}"><span>${escapeHtml(row.left || " ")}</span></td>
+        </tr>
+      `;
+    }
+    const marker = row.kind === "changed" ? " data-change-line" : "";
+    const openButton = path && row.targetLine
+      ? `<button class="secondary-button git-hunk-open-button" type="button" title="Open this hunk" data-action="open-git-change-in-code" data-git-file-path="${escapeAttribute(path)}" data-git-target-line="${escapeAttribute(String(row.targetLine))}">Open</button>`
+      : "";
+    return `
+      <tr class="git-split-diff-row is-${row.kind}"${marker}>
+        <td class="git-split-diff-cell is-${row.leftKind ?? "blank"}"><span>${escapeHtml(row.left || " ")}</span></td>
+        <td class="git-split-diff-cell is-${row.rightKind ?? "blank"}">
+          ${openButton}
+          <span>${escapeHtml(row.right || " ")}</span>
+        </td>
+      </tr>
+    `;
+  }).join("");
+  return `
+    <div class="git-split-diff" aria-label="Side-by-side Git diff">
+      <table class="git-split-diff-table">
+        <thead class="git-split-diff-header" aria-hidden="true">
+          <tr>
+            <th scope="col">Before</th>
+            <th scope="col">After</th>
+          </tr>
+        </thead>
+        <tbody class="git-split-diff-body">${rendered}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function gitSplitDiffRows(diff: string): GitSplitDiffRow[] {
+  const rows: GitSplitDiffRow[] = [];
+  const targets = new Map(gitDiffHunkTargets(diff).map((target) => [target.lineIndex, target]));
+  const removed: string[] = [];
+  let nextTargetLine = 1;
+
+  const flushRemoved = () => {
+    while (removed.length) {
+      rows.push({
+        kind: "changed",
+        left: removed.shift(),
+        leftKind: "removed",
+        right: "",
+        targetLine: nextTargetLine,
+      });
+    }
+  };
+
+  diff.split("\n").forEach((line, index) => {
+    const hunkTarget = targets.get(index);
+    if (line.startsWith("@@")) {
+      flushRemoved();
+      nextTargetLine = hunkTarget?.targetLine ?? nextTargetLine;
+      rows.push({ kind: "meta", left: line, right: line });
+      return;
+    }
+    if (line.startsWith("---") || line.startsWith("+++") || line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("new file") || line.startsWith("deleted file") || line.startsWith("similarity ") || line.startsWith("rename ")) {
+      flushRemoved();
+      rows.push({ kind: "meta", left: line, right: line });
+      return;
+    }
+    if (line.startsWith("\\ No newline")) {
+      rows.push({ kind: "meta", left: line, right: line });
+      return;
+    }
+    if (line.startsWith("-")) {
+      removed.push(line);
+      return;
+    }
+    if (line.startsWith("+")) {
+      const left = removed.shift() ?? "";
+      rows.push({
+        kind: "changed",
+        left,
+        leftKind: left ? "removed" : undefined,
+        right: line,
+        rightKind: "added",
+        targetLine: nextTargetLine,
+      });
+      nextTargetLine++;
+      return;
+    }
+    flushRemoved();
+    rows.push({
+      kind: "context",
+      left: line,
+      leftKind: "context",
+      right: line,
+      rightKind: "context",
+    });
+    nextTargetLine++;
+  });
+  flushRemoved();
+  return rows;
+}
+
 function gitDiffHunkTargets(diff: string): GitDiffHunkTarget[] {
   const lines = diff.split("\n");
   const targets: GitDiffHunkTarget[] = [];
@@ -319,7 +446,7 @@ export function scrollChangeReview(direction: 1 | -1) {
   if (!review) {
     return;
   }
-  const changes = Array.from(review.querySelectorAll<HTMLElement>("[data-change-line]"));
+  const changes = Array.from(review.querySelectorAll<HTMLElement>("[data-change-line]")).filter(isVisibleChangeTarget);
   if (!changes.length) {
     return;
   }
@@ -356,10 +483,14 @@ export function scrollChangeReviewFile(direction: 1 | -1) {
     targetIndex = currentIndex <= 0 ? files.length - 1 : currentIndex - 1;
   }
   const targetFile = files[targetIndex];
-  const fileChanges = Array.from(targetFile.querySelectorAll<HTMLElement>("[data-change-line]"));
+  const fileChanges = Array.from(targetFile.querySelectorAll<HTMLElement>("[data-change-line]")).filter(isVisibleChangeTarget);
   const targetLine = direction > 0 ? fileChanges[0] : fileChanges[fileChanges.length - 1];
   markCurrentChangeTarget(review, targetLine ?? targetFile);
   targetFile.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function isVisibleChangeTarget(target: HTMLElement): boolean {
+  return Boolean(target.offsetParent);
 }
 
 export function currentChangeFileIndex(files: HTMLElement[]): number {

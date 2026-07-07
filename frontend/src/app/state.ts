@@ -302,6 +302,11 @@ export function limitKanbanConcurrencyEnabled(settings: llm.Settings | null | un
     ?.limitKanbanConcurrency === true;
 }
 
+export function gitSplitDiffViewEnabled(settings: llm.Settings | null | undefined): boolean {
+  return (settings as { disableGitSplitDiffView?: boolean } | null | undefined)
+    ?.disableGitSplitDiffView !== true;
+}
+
 export function thinkingCorrectionEnabled(settings: llm.Settings | null | undefined): boolean {
   return (settings as { thinkingCorrection?: boolean } | null | undefined)
     ?.thinkingCorrection === true;

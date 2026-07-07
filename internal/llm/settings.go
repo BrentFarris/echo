@@ -75,6 +75,7 @@ type Settings struct {
 	HideLeadingWhitespaceIndicators bool              `json:"hideLeadingWhitespaceIndicators,omitempty"`
 	DisableNotificationSounds       bool              `json:"disableNotificationSounds,omitempty"`
 	LimitKanbanConcurrency          bool              `json:"limitKanbanConcurrency,omitempty"`
+	DisableGitSplitDiffView         bool              `json:"disableGitSplitDiffView,omitempty"`
 	Theme                           Theme             `json:"theme,omitempty"`
 }
 

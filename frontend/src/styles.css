@@ -2800,6 +2800,95 @@ h3 {
   outline-offset: -2px;
 }
 
+.git-diff-views {
+  display: grid;
+  min-width: 0;
+}
+
+.git-split-diff {
+  display: none;
+  max-height: 520px;
+  min-width: 0;
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--code-editor-bg);
+  color: var(--code-editor-text);
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: var(--text-base-lg);
+  line-height: 1.45;
+}
+
+.git-split-diff-table {
+  min-width: 100%;
+  width: max-content;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+.git-split-diff-header {
+  background: color-mix(in srgb, var(--code-editor-bg) 84%, var(--color-surface));
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.git-split-diff-header th,
+.git-split-diff-cell {
+  min-width: 320px;
+  padding: 0 var(--space-lg-md);
+  border-right: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+  white-space: pre;
+}
+
+.git-split-diff-header th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--code-editor-bg) 84%, var(--color-surface));
+  text-align: left;
+}
+
+.git-split-diff-header th:last-child,
+.git-split-diff-cell:last-child {
+  border-right: 0;
+}
+
+.git-split-diff-cell {
+  min-height: 1.45em;
+  vertical-align: middle;
+}
+
+.git-split-diff-cell > span {
+  white-space: pre;
+}
+
+.git-split-diff-cell .git-hunk-open-button {
+  margin-right: var(--space-lg);
+}
+
+.git-split-diff-cell.is-added {
+  background: color-mix(in srgb, var(--color-success) 16%, transparent);
+  color: color-mix(in srgb, var(--color-success) 76%, var(--code-editor-text));
+}
+
+.git-split-diff-cell.is-removed {
+  background: color-mix(in srgb, var(--color-danger) 16%, transparent);
+  color: color-mix(in srgb, var(--color-danger) 78%, var(--code-editor-text));
+}
+
+.git-split-diff-row.is-meta .git-split-diff-cell {
+  color: var(--code-token-meta);
+}
+
+.git-split-diff-row.is-current {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 70%, transparent);
+  outline-offset: -2px;
+}
+
 .change-metadata {
   display: grid;
   gap: var(--space-md);
@@ -2934,6 +3023,17 @@ h3 {
 
 .git-repository .change-diff {
   max-height: min(520px, 48vh);
+}
+
+@media (min-width: 1120px) {
+  .git-repository .git-diff-views .git-diff-unified {
+    display: none;
+  }
+
+  .git-repository .git-diff-views .git-split-diff {
+    display: block;
+    max-height: min(620px, 58vh);
+  }
 }
 
 .git-panel {

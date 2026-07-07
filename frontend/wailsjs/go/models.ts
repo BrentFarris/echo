@@ -95,6 +95,7 @@ export namespace llm {
 	    hideLeadingWhitespaceIndicators?: boolean;
 	    disableNotificationSounds?: boolean;
 	    limitKanbanConcurrency?: boolean;
+	    disableGitSplitDiffView?: boolean;
 	    theme?: Theme;
 	
 	    static createFrom(source: any = {}) {
@@ -123,6 +124,7 @@ export namespace llm {
 	        this.hideLeadingWhitespaceIndicators = source["hideLeadingWhitespaceIndicators"];
 	        this.disableNotificationSounds = source["disableNotificationSounds"];
 	        this.limitKanbanConcurrency = source["limitKanbanConcurrency"];
+	        this.disableGitSplitDiffView = source["disableGitSplitDiffView"];
 	        this.theme = this.convertValues(source["theme"], Theme);
 	    }
 	

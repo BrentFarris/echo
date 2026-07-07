@@ -7,7 +7,7 @@ import { icons } from "../icons";
 import { activeWorkspace, gitRepositoryViewFor, state } from "../state";
 import { pushToast } from "../toasts";
 import { changeOperationLabel, errorMessage, escapeAttribute, escapeHtml } from "../utils";
-import { renderChangeDiff, renderGitChangedFile } from "../changes";
+import { renderGitChangedFile, renderGitDiff } from "../changes";
 
 export function renderGitRepositoryPage(
   workspace: services.Workspace,
@@ -301,7 +301,7 @@ function renderGitCommitChangedFile(file: services.WorkspaceGitChangedFile): str
         </div>
         <span class="change-operation is-${escapeAttribute(file.operation)}">${escapeHtml(changeOperationLabel(file.operation))}</span>
       </header>
-      ${file.diffAvailable && file.diff ? renderChangeDiff(file.diff) : `<div class="change-metadata"><span>Diff is unavailable.</span></div>`}
+      ${file.diffAvailable && file.diff ? renderGitDiff(file.diff, "") : `<div class="change-metadata"><span>Diff is unavailable.</span></div>`}
     </article>
   `;
 }
