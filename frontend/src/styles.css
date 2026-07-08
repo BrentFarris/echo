@@ -3019,6 +3019,8 @@ h3 {
 }
 
 .change-diff {
+  box-sizing: border-box;
+  width: 100%;
   max-width: 100%;
   min-width: 0;
   max-height: 360px;
@@ -3147,7 +3149,14 @@ h3 {
 
 .git-diff-views {
   display: grid;
+  max-width: 100%;
   min-width: 0;
+}
+
+.git-diff-unified {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
 }
 
 .git-split-diff {
@@ -3526,11 +3535,29 @@ h3 {
 }
 
 .git-change-file-list {
+  max-width: 100%;
   min-width: 0;
+  overflow-x: hidden;
 }
 
 .git-repository .change-diff {
+  width: 100%;
+  max-width: 100%;
   max-height: min(520px, 48vh);
+  overflow-x: auto;
+}
+
+.git-repository .change-diff code {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+}
+
+.git-repository .change-diff-line,
+.git-repository .change-diff-line.is-hunk,
+.git-repository .change-diff-line.is-hunk > span {
+  overflow-wrap: normal;
+  white-space: pre;
 }
 
 @media (min-width: 980px) {
