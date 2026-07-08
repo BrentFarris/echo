@@ -454,6 +454,21 @@
       "updatedAt": "2026-07-07T23:40:12.956236Z",
       "completedAt": "2026-07-07T23:40:12.956236Z"
     },
+    "e0a2d6c9-133e-4da6-9e7b-88b8e8431125": {
+      "title": "Fix mobile bottom nav buttons getting cut off on narrow screens",
+      "details": "## Problem\nOn mobile (≤720px), the bottom nav bar overflows horizontally. The brand section (workspace pill + \"Echo\" label) is `flex-shrink: 0` and there are 7 icon-only tabs each with `min-width: 48px`, exceeding viewport width on narrow phones (~360px).\n\n## Fix — `frontend/src/styles.css` inside `@media (max-width: 720px)`\n\n1. **`.mobile-nav-brand`** — reduce padding from `0 var(--space-lg)` to `0 var(--space-md)`, reduce gap to `var(--space-md-lg)`\n2. **`.mobile-nav-pill`** — shrink max-width from 120px → 90px, padding from `var(--space-sm) var(--space-lg)` → `var(--space-xs) var(--space-md)`, font-size to 0.7rem\n3. **`.mobile-nav-app-name`** — reduce font-size from 0.75rem → 0.65rem\n4. **`.mobile-nav-tab`** — reduce min-width from 48px → 36px, SVG icons from 20px → 18px, horizontal padding to `var(--space-xs)`\n5. **Add `@media (max-width: 380px)`** sub-breakpoint that hides `.mobile-nav-app-name` (redundant \"Echo\" label)\n\n## Verification\n- Open on a device/emulator at 360px–412px width\n- All 7 tabs + workspace pill should be fully visible without overflow or scroll",
+      "acceptanceCriteria": [
+        "All 7 bottom nav tabs and the workspace pill fit within viewport at 360px width",
+        "No horizontal overflow or clipping of any nav element",
+        "Touch targets remain ≥36px min-width",
+        "\"Echo\" label hidden at ≤380px but visible above that"
+      ],
+      "priority": "P1",
+      "completed": true,
+      "createdAt": "2026-07-08T21:14:46.7151794Z",
+      "updatedAt": "2026-07-08T21:21:55.1708617Z",
+      "completedAt": "2026-07-08T21:21:55.1708617Z"
+    },
     "f5c28cde-e9e8-4767-b61c-7e9afd96cf85": {
       "title": "Create widget registry with live data renderers",
       "details": "**New file:** `frontend/src/app/dashboard/widgets.ts`\n\nImplement the widget registry — a map of WidgetId to renderer functions that read from live `state.*` and return HTML strings. Each widget must:\n- Accept `(workspace: services.Workspace | null)` and return HTML string\n- Use CSS custom properties (no hardcoded colors)\n- Handle empty/null data gracefully\n\n**Widgets to implement:**\n- `chat-recent` — Last 3 messages from active chat session\n- `chat-busy-status` — Busy/idle indicator + current model label\n- `chat-token-budget` — Token budget bar (reuse existing budget logic)\n- `kanban-summary` — Lane counts as compact badges\n- `kanban-progress` — Active card progress bars for inProgress lane\n- `kanban-done-count` — Done cards count with trend indicator\n- `tasks-overview` — Open/completed counts + top P0 items\n- `tasks-priority-strip` — Horizontal priority badges row\n- `git-branch` — Current branch name + commit info\n- `git-recent-commits` — Last 5 commits as compact list\n- `git-change-count` — Uncommitted changes badge\n- `system-heartbeat` — Heartbeat/watchdog interval status\n- `system-workspaces` — Active workspace list with status dots\n\nExport `widgetRegistry: Record\u003cWidgetId, { renderer, defaultSize, title }\u003e` and `availableWidgetsForView(view: AppMode): WidgetId[]`.",

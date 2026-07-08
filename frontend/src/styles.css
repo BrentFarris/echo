@@ -6668,31 +6668,31 @@ h3 {
   .mobile-nav-brand {
     display: flex;
     align-items: center;
-    gap: var(--space-md);
-    padding: 0 var(--space-lg);
+    gap: var(--space-md-lg);
+    padding: 0 var(--space-md);
     position: relative;
     flex-shrink: 0;
   }
 
   .mobile-nav-pill {
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     font-weight: 600;
     color: var(--color-text-muted);
     background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: 4px;
-    padding: var(--space-sm) var(--space-lg);
+    padding: var(--space-xs) var(--space-md);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 120px;
+    max-width: 90px;
     cursor: pointer;
     transition: background 160ms ease, color 160ms ease;
     font-family: inherit;
   }
 
   .mobile-nav-app-name {
-    font-size: 0.75rem;
+    font-size: 0.65rem;
     font-weight: 700;
     color: var(--color-text);
     white-space: nowrap;
@@ -6782,7 +6782,7 @@ h3 {
     align-items: center;
     justify-content: center;
     gap: var(--space-sm);
-    min-width: 48px;
+    min-width: 36px;
     height: 56px;
     width: auto;
     flex: 1 1 auto;
@@ -6791,7 +6791,7 @@ h3 {
     background: transparent;
     color: var(--color-text-muted);
     cursor: pointer;
-    padding: var(--space-lg) var(--space-sm) var(--space-md);
+    padding: var(--space-lg) var(--space-xs) var(--space-md);
     transition:
       background 160ms ease,
       color 160ms ease;
@@ -6799,8 +6799,8 @@ h3 {
   }
 
   .mobile-nav-tab svg {
-    width: 20px;
-    height: 20px;
+    width: 18px;
+    height: 18px;
     fill: none;
     stroke: currentColor;
     stroke-linecap: round;
@@ -6947,6 +6947,13 @@ h3 {
   /* Prevent copy button from dimming on tap-hold hover */
   .chat-message:hover header .icon-button.chat-copy-trigger {
     opacity: 1;
+  }
+}
+
+/* Ultra-narrow screens: hide redundant "Echo" label */
+@media (max-width: 380px) {
+  .mobile-nav-app-name {
+    display: none;
   }
 }
 
