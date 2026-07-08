@@ -613,10 +613,6 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
               ${icons.moreHorizontal}
             </button>
             <div class="chat-more-menu" data-chat-more-menu hidden>
-              <button type="button" title="Review AI file changes" aria-label="Review AI file changes" data-action="open-change-review">
-                ${icons.file}
-                <span>AI changes</span>
-              </button>
               <button type="button" title="New chat" aria-label="Start a new chat" data-clear-chat-button>
                 ${icons.refresh}
                 <span>New chat</span>

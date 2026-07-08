@@ -2517,6 +2517,13 @@ h3 {
   border-radius: 0;
 }
 
+.change-review-page {
+  width: 100%;
+  max-height: none;
+  min-height: 100%;
+  box-shadow: none;
+}
+
 .card-detail-header,
 .change-review-header {
   display: flex;
@@ -2557,24 +2564,6 @@ h3 {
   display: flex;
   flex: 0 0 auto;
   gap: var(--space-lg);
-}
-
-.change-review-button {
-  min-height: 36px;
-  padding-inline: var(--space-lg-md);
-}
-
-.change-count-badge {
-  display: grid;
-  place-items: center;
-  min-width: 22px;
-  height: 22px;
-  padding: 0 var(--space-md);
-  border-radius: 999px;
-  background: var(--color-surface-muted);
-  color: var(--color-text-muted);
-  font-size: var(--text-base-sm);
-  font-weight: 900;
 }
 
 .change-review-summary,

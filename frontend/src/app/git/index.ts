@@ -1,13 +1,13 @@
 import { ensureCodeViewRootLoaded, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk } from "../../codeView";
-import { CommitWorkspaceGitChanges, CreateWorkspaceGitBranch, DiscardWorkspaceGitChanges, DiscardWorkspaceGitFile, LoadWorkspaceGitCommit, LoadWorkspaceGitRepository, MergeWorkspaceGitBranch, SwitchWorkspaceGitBranch, SyncWorkspaceGitBranch } from "../../backend/services";
+import { CommitWorkspaceGitChanges, CreateWorkspaceGitBranch, DiscardWorkspaceGitChanges, DiscardWorkspaceGitFile, LoadWorkspaceChangeReview, LoadWorkspaceGitCommit, LoadWorkspaceGitRepository, MergeWorkspaceGitBranch, SwitchWorkspaceGitBranch, SyncWorkspaceGitBranch } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";
 import { icons } from "../icons";
-import { activeWorkspace, gitRepositoryViewFor, state } from "../state";
+import { activeWorkspace, changeReviewFor, gitRepositoryViewFor, state } from "../state";
 import { pushToast } from "../toasts";
 import { changeOperationLabel, errorMessage, escapeAttribute, escapeHtml } from "../utils";
-import { renderGitChangedFile, renderGitDiff } from "../changes";
+import { renderChangeReviewPage, renderGitChangedFile, renderGitDiff } from "../changes";
 
 export function renderGitRepositoryPage(
   workspace: services.Workspace,
@@ -18,6 +18,9 @@ export function renderGitRepositoryPage(
   const loading = state.loadingGitRepositoryWorkspaces.has(workspace.id);
   const operation = state.gitRepositoryOperations.get(workspace.id) ?? "";
   const selectedFolderID = selectedGitRepositoryFolderID(workspace.id, view);
+  if (!repository && !loading && !repositories.some((item) => item.available)) {
+    return renderChangeReviewPage(workspace, changeReviewFor(workspace.id));
+  }
   return `
     <section class="work-panel git-repository" aria-labelledby="git-repository-title" data-change-review data-git-repository>
       <header class="panel-heading git-repository-header">
@@ -332,10 +335,14 @@ export function bindGitEvents(root: ParentNode) {
 
 export async function openWorkspaceGitRepository(workspaceID: string) {
   state.openGitChangeWorkspaces.add(workspaceID);
-  await refreshWorkspaceGitRepository(workspaceID);
+  await refreshWorkspaceGitRepository(workspaceID, selectedGitRepositoryFolderID(workspaceID, gitRepositoryViewFor(workspaceID)), true);
 }
 
-export async function refreshWorkspaceGitRepository(workspaceID: string, folderID = selectedGitRepositoryFolderID(workspaceID, gitRepositoryViewFor(workspaceID))) {
+export async function refreshWorkspaceGitRepository(
+  workspaceID: string,
+  folderID = selectedGitRepositoryFolderID(workspaceID, gitRepositoryViewFor(workspaceID)),
+  fallbackToChanges = false,
+) {
   if (state.loadingGitRepositoryWorkspaces.has(workspaceID)) {
     return;
   }
@@ -345,11 +352,32 @@ export async function refreshWorkspaceGitRepository(workspaceID: string, folderI
     const view = await LoadWorkspaceGitRepository(workspaceID, folderID);
     storeGitRepositoryView(workspaceID, view);
   } catch (error) {
-    pushToast(errorMessage(error), "error");
+    if (fallbackToChanges && isNoManageableGitRepositoryError(error)) {
+      state.gitRepositoryViews.set(
+        workspaceID,
+        services.WorkspaceGitRepositoryView.createFrom({
+          workspaceId: workspaceID,
+          selectedFolderId: "",
+          repositories: [],
+          repository: null,
+        }),
+      );
+      try {
+        state.changeReviews.set(workspaceID, await LoadWorkspaceChangeReview(workspaceID));
+      } catch (changeError) {
+        pushToast(errorMessage(changeError), "error");
+      }
+    } else {
+      pushToast(errorMessage(error), "error");
+    }
   } finally {
     state.loadingGitRepositoryWorkspaces.delete(workspaceID);
     getAppCallbacks().render();
   }
+}
+
+function isNoManageableGitRepositoryError(error: unknown): boolean {
+  return errorMessage(error).toLowerCase().includes("no manageable git repositories");
 }
 
 export async function selectGitCommit(hash: string) {

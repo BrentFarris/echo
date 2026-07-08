@@ -1,6 +1,6 @@
 
 import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate, startCodeRename } from "../codeView";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, ListAgentModes, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
 import { appRoot } from "./dom";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
@@ -331,6 +331,7 @@ export async function handleAction(event: Event) {
       await loadActiveKanbanBoard();
       await loadActiveChangeReview();
       await loadActiveCodeViewIfNeeded();
+      await loadActiveChangesViewIfNeeded();
       pushToast("Workspace list updated.", "success");
       getAppCallbacks().render();
     }
@@ -341,6 +342,7 @@ export async function handleAction(event: Event) {
       state.appState = await ChooseWorkspaceFolderForWorkspace(workspaceID);
       await refreshWorkspaceChangeReview(workspaceID);
       await refreshOpenCodeTabsFromDisk(workspaceID, getAppCallbacks().codeViewCallbacks());
+      await loadActiveChangesViewIfNeeded();
       pushToast("Workspace folder added.", "success");
       getAppCallbacks().render();
       return;
@@ -356,6 +358,7 @@ export async function handleAction(event: Event) {
       dropWorkspaceGitRepositoryState(workspaceID);
       state.loadingGitChangeWorkspaces.delete(workspaceID);
       await refreshOpenCodeTabsFromDisk(workspaceID, getAppCallbacks().codeViewCallbacks());
+      await loadActiveChangesViewIfNeeded();
       pushToast("Workspace folder removed.", "success");
       getAppCallbacks().render();
       return;
@@ -367,6 +370,7 @@ export async function handleAction(event: Event) {
       await loadActiveTaskBoard();
       await loadActiveChangeReview();
       await loadActiveCodeViewIfNeeded();
+      await loadActiveChangesViewIfNeeded();
       pushToast(
         activeWorkspace()?.missing
           ? "One or more folders are still unavailable."
@@ -465,6 +469,7 @@ export async function handleAction(event: Event) {
         /* Non-fatal: will load on first chat render. */
       }
       state.workspaceDropdownOpen = false;
+      await loadActiveChangesViewIfNeeded();
       getAppCallbacks().render();
     }
     if (action === "execute-plan") {
@@ -492,9 +497,9 @@ export async function handleAction(event: Event) {
         return;
       }
       await closeSelectedCardDetail(workspace.id);
-      state.changeReviews.set(workspace.id, await LoadWorkspaceChangeReview(workspace.id));
-      state.openChangeReviewWorkspaces.add(workspace.id);
-      getAppCallbacks().render();
+      state.appMode = "git";
+      state.mobileNavView = "git";
+      await openWorkspaceGitRepository(workspace.id);
     }
     if (action === "close-change-review") {
       const workspace = activeWorkspace();
@@ -897,6 +902,17 @@ function findEchoSourceWorkspaceForAction() {
     }
   }
   return null;
+}
+
+async function loadActiveChangesViewIfNeeded() {
+  if (state.appMode !== "git") {
+    return;
+  }
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    return;
+  }
+  await openWorkspaceGitRepository(workspace.id);
 }
 
 export function bindActionEvents(root: ParentNode) {

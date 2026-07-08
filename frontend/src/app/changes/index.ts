@@ -5,7 +5,7 @@ import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { appRoot } from "../dom";
 import { icons } from "../icons";
-import { activeWorkspace, changeReviewFor, gitSplitDiffViewEnabled, state } from "../state";
+import { activeWorkspace, changeReviewFor, gitRepositoryViewFor, gitSplitDiffViewEnabled, state } from "../state";
 import { pushToast } from "../toasts";
 import type { FileChangesEvent } from "../types";
 import { changeOperationLabel, changeSourceLabel, errorMessage, escapeAttribute, escapeHtml, fileName, formatBytes } from "../utils";
@@ -75,6 +75,48 @@ export function renderChangeReviewDrawer(
         }
       </section>
     </aside>
+  `;
+}
+
+export function renderChangeReviewPage(
+  workspace: services.Workspace,
+  review: services.WorkspaceChangeReview,
+): string {
+  const files = review.files ?? [];
+  const hasChanges = (review.changeCount ?? 0) > 0;
+  return `
+    <section class="work-panel change-review change-review-page" aria-labelledby="git-repository-title" data-change-review>
+      <header class="change-review-header">
+        <div>
+          <p class="eyebrow">${escapeHtml(workspace.displayName)}</p>
+          <h2 id="git-repository-title">Changes</h2>
+        </div>
+      </header>
+
+      <div class="change-review-summary" aria-label="Change summary">
+        <span>${escapeHtml(String(review.fileCount ?? files.length))} files</span>
+        <span>${escapeHtml(String(review.changeCount ?? 0))} tool changes</span>
+      </div>
+
+      <div class="change-review-actions">
+        <button class="icon-button" type="button" title="Previous change" aria-label="Previous change" data-action="previous-change" ${files.length ? "" : "disabled"}>
+          ${icons.arrowUp}
+        </button>
+        <button class="icon-button" type="button" title="Next change" aria-label="Next change" data-action="next-change" ${files.length ? "" : "disabled"}>
+          ${icons.arrowDown}
+        </button>
+        <button class="secondary-button icon-text-button" type="button" data-action="clear-change-review" ${hasChanges ? "" : "disabled"}>
+          ${icons.trash}
+          <span>Clear</span>
+        </button>
+      </div>
+
+      ${
+        files.length
+          ? `<div class="change-file-list">${files.map(renderChangedFile).join("")}</div>`
+          : `<div class="empty-state compact">No file changes recorded.</div>`
+      }
+    </section>
   `;
 }
 
@@ -541,7 +583,10 @@ export function applyFileChangesEvent(event: FileChangesEvent) {
       changeCount: event.changeCount,
     }),
   );
-  if (state.openChangeReviewWorkspaces.has(event.workspaceId)) {
+  if (
+    state.openChangeReviewWorkspaces.has(event.workspaceId) ||
+    (activeWorkspace()?.id === event.workspaceId && state.appMode === "git" && !gitRepositoryViewFor(event.workspaceId).repository)
+  ) {
     void refreshWorkspaceChangeReview(event.workspaceId);
     return;
   }
