@@ -291,10 +291,14 @@ export function renderGitChangeDiff(diff: string, path: string): string {
       if (!target) {
         return `<span class="change-diff-line is-${kind}"${marker}>${escapeHtml(line || " ")}</span>`;
       }
-      return `<span class="change-diff-line is-${kind} is-hunk"${marker}><button class="secondary-button git-hunk-open-button" type="button" title="Open this hunk" data-action="open-git-change-in-code" data-git-file-path="${escapeAttribute(path)}" data-git-target-line="${escapeAttribute(String(target.targetLine))}">Open</button><span>${escapeHtml(line || " ")}</span></span>`;
+      return `<span class="change-diff-line is-${kind} is-hunk"${marker}>${renderGitLineOpenButton(path, target.targetLine)}<span>${escapeHtml(line || " ")}</span></span>`;
     })
     .join("");
   return `<pre class="change-diff"><code>${rendered}</code></pre>`;
+}
+
+function renderGitLineOpenButton(path: string, line: number): string {
+  return `<button class="git-line-open-button" type="button" title="Open in code" aria-label="Open this line in code" data-action="open-git-change-in-code" data-git-file-path="${escapeAttribute(path)}" data-git-target-line="${escapeAttribute(String(line))}">${icons.arrowRight}</button>`;
 }
 
 export function renderGitDiff(diff: string, path: string): string {
@@ -312,41 +316,41 @@ export function renderGitDiff(diff: string, path: string): string {
 
 function renderGitSplitDiff(diff: string, path: string): string {
   const rows = gitSplitDiffRows(diff);
-  const rendered = rows.map((row) => {
-    if (row.kind === "meta") {
-      return `
-        <tr class="git-split-diff-row is-meta">
-          <td class="git-split-diff-cell" colspan="2" title="${escapeAttribute(row.left ?? "")}"><span>${escapeHtml(row.left || " ")}</span></td>
-        </tr>
-      `;
-    }
-    const marker = row.kind === "changed" ? " data-change-line" : "";
-    const openButton = path && row.targetLine
-      ? `<button class="secondary-button git-hunk-open-button" type="button" title="Open this hunk" data-action="open-git-change-in-code" data-git-file-path="${escapeAttribute(path)}" data-git-target-line="${escapeAttribute(String(row.targetLine))}">Open</button>`
-      : "";
-    return `
-      <tr class="git-split-diff-row is-${row.kind}"${marker}>
-        <td class="git-split-diff-cell is-${row.leftKind ?? "blank"}"><span>${escapeHtml(row.left || " ")}</span></td>
-        <td class="git-split-diff-cell is-${row.rightKind ?? "blank"}">
-          ${openButton}
-          <span>${escapeHtml(row.right || " ")}</span>
-        </td>
-      </tr>
-    `;
-  }).join("");
+  const beforeRows = rows.map((row) => renderGitSplitDiffPaneRow(row, "left", "")).join("");
+  const afterRows = rows.map((row) => renderGitSplitDiffPaneRow(row, "right", path)).join("");
   return `
-    <div class="git-split-diff" aria-label="Side-by-side Git diff">
-      <table class="git-split-diff-table">
-        <thead class="git-split-diff-header" aria-hidden="true">
-          <tr>
-            <th scope="col">Before</th>
-            <th scope="col">After</th>
-          </tr>
-        </thead>
-        <tbody class="git-split-diff-body">${rendered}</tbody>
-      </table>
+    <div class="git-split-diff" aria-label="Side-by-side Git diff" data-git-split-diff>
+      <section class="git-split-diff-pane" aria-label="Before">
+        <div class="git-split-diff-header" aria-hidden="true">Before</div>
+        <div class="git-split-diff-pane-scroll" data-git-split-scroll="left">
+          <div class="git-split-diff-pane-rows">${beforeRows}</div>
+        </div>
+      </section>
+      <section class="git-split-diff-pane" aria-label="After">
+        <div class="git-split-diff-header" aria-hidden="true">After</div>
+        <div class="git-split-diff-pane-scroll" data-git-split-scroll="right">
+          <div class="git-split-diff-pane-rows">${afterRows}</div>
+        </div>
+      </section>
+      <div class="git-split-diff-shared-scroll" aria-hidden="true" data-git-split-shared-scroll>
+        <div class="git-split-diff-shared-spacer" data-git-split-shared-spacer></div>
+      </div>
     </div>
   `;
+}
+
+function renderGitSplitDiffPaneRow(row: GitSplitDiffRow, side: "left" | "right", path: string): string {
+  if (row.kind === "meta") {
+    const text = side === "left" ? row.left : row.right;
+    return `<div class="git-split-diff-row is-meta" title="${escapeAttribute(text ?? "")}"><span>${escapeHtml(text || " ")}</span></div>`;
+  }
+  const kind = side === "left" ? row.leftKind : row.rightKind;
+  const text = side === "left" ? row.left : row.right;
+  const marker = side === "right" && row.kind === "changed" ? " data-change-line" : "";
+  const openButton = side === "right" && path && row.targetLine
+    ? renderGitLineOpenButton(path, row.targetLine)
+    : "";
+  return `<div class="git-split-diff-row is-${row.kind} is-${kind ?? "blank"}"${marker}><span>${escapeHtml(text || " ")}</span>${openButton}</div>`;
 }
 
 function gitSplitDiffRows(diff: string): GitSplitDiffRow[] {

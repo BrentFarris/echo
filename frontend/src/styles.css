@@ -3054,12 +3054,11 @@ h3 {
 }
 
 .change-diff-line.is-hunk {
-  display: flex;
-  align-items: center;
-  gap: var(--space-lg);
+  position: relative;
+  display: block;
   min-width: max-content;
-  padding: var(--space-xxs) var(--space-lg-md);
-  white-space: normal;
+  padding-right: calc(var(--space-lg-md) + 28px);
+  white-space: pre;
 }
 
 .change-diff-line.is-hunk > span {
@@ -3071,10 +3070,54 @@ h3 {
   white-space: pre-wrap;
 }
 
-.git-hunk-open-button {
-  min-height: 28px;
-  padding: 0 var(--space-lg);
-  font-size: var(--text-sm);
+.git-line-open-button {
+  position: absolute;
+  top: 50%;
+  right: var(--space-md);
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--color-border) 68%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--code-editor-bg) 82%, var(--color-surface));
+  color: color-mix(in srgb, var(--color-text-muted) 82%, var(--color-accent-strong));
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    opacity 120ms ease;
+}
+
+.git-line-open-button svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.4;
+}
+
+.change-diff-line.is-hunk:hover .git-line-open-button,
+.change-diff-line.is-hunk:focus-within .git-line-open-button,
+.git-split-diff-row:hover .git-line-open-button,
+.git-split-diff-row:focus-within .git-line-open-button {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.git-line-open-button:hover,
+.git-line-open-button:focus-visible {
+  border-color: color-mix(in srgb, var(--color-accent) 44%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 14%, var(--code-editor-bg));
+  color: var(--color-accent-strong);
+  outline: none;
 }
 
 .change-diff-line.is-added {
@@ -3105,7 +3148,10 @@ h3 {
   display: none;
   max-height: 520px;
   min-width: 0;
-  overflow: auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: var(--code-editor-bg);
@@ -3115,74 +3161,98 @@ h3 {
   line-height: 1.45;
 }
 
-.git-split-diff-table {
-  min-width: 100%;
-  width: max-content;
-  border-collapse: collapse;
-  table-layout: auto;
+.git-split-diff-pane {
+  min-width: 0;
+  border-right: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+}
+
+.git-split-diff-pane:last-child {
+  border-right: 0;
 }
 
 .git-split-diff-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 0 var(--space-lg-md);
+  border-bottom: 1px solid var(--color-border);
   background: color-mix(in srgb, var(--code-editor-bg) 84%, var(--color-surface));
   color: var(--color-text-muted);
   font-family: var(--font-sans);
   font-size: var(--text-sm);
   font-weight: 900;
+  line-height: 1.45;
+  text-align: left;
   text-transform: uppercase;
 }
 
-.git-split-diff-header th,
-.git-split-diff-cell {
-  min-width: 320px;
-  padding: 0 var(--space-lg-md);
-  border-right: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
-  white-space: pre;
+.git-split-diff-pane-scroll {
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: visible;
 }
 
-.git-split-diff-header th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  border-bottom: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--code-editor-bg) 84%, var(--color-surface));
-  text-align: left;
+.git-split-diff-pane-rows {
+  display: grid;
+  min-width: 100%;
+  width: max-content;
 }
 
-.git-split-diff-header th:last-child,
-.git-split-diff-cell:last-child {
-  border-right: 0;
-}
-
-.git-split-diff-cell {
+.git-split-diff-row {
+  position: relative;
+  min-width: 100%;
   min-height: 1.45em;
-  vertical-align: middle;
-}
-
-.git-split-diff-cell > span {
+  padding: 0 calc(var(--space-lg-md) + 28px) 0 var(--space-lg-md);
   white-space: pre;
 }
 
-.git-split-diff-cell .git-hunk-open-button {
-  margin-right: var(--space-lg);
+.git-split-diff-row > span {
+  white-space: pre;
 }
 
-.git-split-diff-cell.is-added {
+.git-split-diff-row .git-line-open-button {
+  position: sticky;
+  top: auto;
+  right: var(--space-md);
+  float: right;
+  margin-left: var(--space-md);
+  transform: none;
+}
+
+.git-split-diff-row.is-added {
   background: color-mix(in srgb, var(--color-success) 16%, transparent);
   color: color-mix(in srgb, var(--color-success) 76%, var(--code-editor-text));
 }
 
-.git-split-diff-cell.is-removed {
+.git-split-diff-row.is-removed {
   background: color-mix(in srgb, var(--color-danger) 16%, transparent);
   color: color-mix(in srgb, var(--color-danger) 78%, var(--code-editor-text));
 }
 
-.git-split-diff-row.is-meta .git-split-diff-cell {
+.git-split-diff-row.is-meta {
   color: var(--code-token-meta);
 }
 
 .git-split-diff-row.is-current {
   outline: 2px solid color-mix(in srgb, var(--color-accent) 70%, transparent);
   outline-offset: -2px;
+}
+
+.git-split-diff-shared-scroll {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  grid-column: 1 / -1;
+  height: 16px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+  background: color-mix(in srgb, var(--code-editor-bg) 94%, var(--color-surface));
+}
+
+.git-split-diff-shared-spacer {
+  height: 1px;
+  min-width: 100%;
 }
 
 .change-metadata {
@@ -3327,7 +3397,7 @@ h3 {
   }
 
   .git-repository .git-diff-views .git-split-diff {
-    display: block;
+    display: grid;
     max-height: min(620px, 58vh);
   }
 }

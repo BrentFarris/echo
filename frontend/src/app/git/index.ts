@@ -310,6 +310,7 @@ function renderGitCommitChangedFile(file: services.WorkspaceGitChangedFile): str
 }
 
 export function bindGitEvents(root: ParentNode) {
+  bindGitSplitDiffScroll(root);
   root
     .querySelectorAll<HTMLSelectElement>("[data-git-repository-select]")
     .forEach((select) => select.addEventListener("change", () => handleGitRepositorySelect(select)));
@@ -331,6 +332,45 @@ export function bindGitEvents(root: ParentNode) {
   root
     .querySelectorAll<HTMLSelectElement>("[data-git-switch-branch-select], [data-git-merge-branch-select]")
     .forEach((select) => select.addEventListener("change", handleGitBranchSelectChange));
+}
+
+function bindGitSplitDiffScroll(root: ParentNode) {
+  root.querySelectorAll<HTMLElement>("[data-git-split-diff]").forEach((diff) => {
+    const panes = Array.from(diff.querySelectorAll<HTMLElement>("[data-git-split-scroll]"));
+    const shared = diff.querySelector<HTMLElement>("[data-git-split-shared-scroll]");
+    const spacer = diff.querySelector<HTMLElement>("[data-git-split-shared-spacer]");
+    if (!shared || !spacer || shared.dataset.gitSplitScrollBound) {
+      return;
+    }
+    const update = () => {
+      updateGitSplitDiffSharedScroll(shared, spacer, panes);
+      syncGitSplitDiffFromShared(shared, panes);
+    };
+    shared.dataset.gitSplitScrollBound = "true";
+    shared.addEventListener("scroll", () => {
+      updateGitSplitDiffSharedScroll(shared, spacer, panes);
+      syncGitSplitDiffFromShared(shared, panes);
+    });
+    shared.addEventListener("pointerenter", update);
+    shared.addEventListener("focus", update);
+    window.requestAnimationFrame(update);
+  });
+}
+
+function updateGitSplitDiffSharedScroll(shared: HTMLElement, spacer: HTMLElement, panes: HTMLElement[]) {
+  const maxScroll = Math.max(0, ...panes.map((pane) => pane.scrollWidth - pane.clientWidth));
+  spacer.style.width = `${shared.clientWidth + maxScroll}px`;
+  if (shared.scrollLeft > maxScroll) {
+    shared.scrollLeft = maxScroll;
+  }
+}
+
+function syncGitSplitDiffFromShared(shared: HTMLElement, panes: HTMLElement[]) {
+  const offset = shared.scrollLeft;
+  panes.forEach((pane) => {
+    const maxScroll = Math.max(0, pane.scrollWidth - pane.clientWidth);
+    pane.scrollLeft = Math.min(offset, maxScroll);
+  });
 }
 
 export async function openWorkspaceGitRepository(workspaceID: string) {
