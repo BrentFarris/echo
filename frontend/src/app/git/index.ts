@@ -330,6 +330,9 @@ export function bindGitEvents(root: ParentNode) {
     .querySelectorAll<HTMLTextAreaElement | HTMLInputElement>("[data-git-commit-message], [data-git-new-branch-name]")
     .forEach((input) => input.addEventListener("input", handleGitDraftInput));
   root
+    .querySelectorAll<HTMLTextAreaElement>("[data-git-commit-message]")
+    .forEach((textarea) => textarea.addEventListener("keydown", handleGitCommitMessageKeydown));
+  root
     .querySelectorAll<HTMLSelectElement>("[data-git-switch-branch-select], [data-git-merge-branch-select]")
     .forEach((select) => select.addEventListener("change", handleGitBranchSelectChange));
 }
@@ -546,6 +549,25 @@ function handleGitDraftInput(event: Event) {
     state.gitNewBranchDrafts.set(key, target.value);
   }
   updateGitFormButtons(target.form);
+}
+
+function handleGitCommitMessageKeydown(event: KeyboardEvent) {
+  if (event.key !== "Enter" || !event.ctrlKey) {
+    return;
+  }
+  event.preventDefault();
+  const textarea = event.currentTarget as HTMLTextAreaElement;
+  const form = textarea.form;
+  if (!form) {
+    return;
+  }
+  handleGitDraftInput(event);
+  updateGitFormButtons(form);
+  const button = form.querySelector<HTMLButtonElement>('button[type="submit"]');
+  if (!button || button.disabled) {
+    return;
+  }
+  form.requestSubmit(button);
 }
 
 function handleGitBranchSelectChange(event: Event) {

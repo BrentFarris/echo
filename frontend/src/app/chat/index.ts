@@ -2208,14 +2208,16 @@ export function patchChatControls() {
   const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
   const executing = state.executingPlans.has(workspace.id);
   const creatingSkill = state.creatingChatSkills.has(workspace.id);
+  const locked = session.busy || executing;
 
   if (input) {
-    input.disabled = session.busy || executing;
+    input.disabled = locked;
   }
 
   // Update the send/stop button
   appRoot.querySelectorAll<HTMLButtonElement>("[data-action=\"send-stop\"]").forEach((button) => {
-    if (session.busy || executing) {
+    button.classList.toggle("is-busy", locked);
+    if (locked) {
       button.title = "Stop stream";
       button.setAttribute("aria-label", "Stop stream");
       button.innerHTML = icons.stop;
@@ -2232,6 +2234,27 @@ export function patchChatControls() {
     }
   });
 
+  appRoot.querySelectorAll<HTMLButtonElement>("[data-chat-attachment-toggle]").forEach((button) => {
+    button.disabled = locked;
+  });
+  appRoot.querySelectorAll<HTMLButtonElement>("[data-model-selector]").forEach((button) => {
+    button.disabled = locked;
+  });
+  appRoot.querySelectorAll<HTMLButtonElement>("[data-mode-selector]").forEach((button) => {
+    button.disabled = locked;
+  });
+  appRoot.querySelectorAll<HTMLButtonElement>("[data-chat-more-toggle]").forEach((button) => {
+    button.disabled = locked;
+  });
+  appRoot.querySelectorAll<HTMLButtonElement>("[data-create-skill-button]").forEach((button) => {
+    button.disabled = locked || creatingSkill;
+  });
+  appRoot
+    .querySelectorAll<HTMLButtonElement>("[data-action=\"remove-chat-image\"], [data-action=\"remove-chat-video\"]")
+    .forEach((button) => {
+      button.disabled = locked;
+    });
+
   // Update all stop buttons (desktop heading + mobile controls)
   appRoot.querySelectorAll<HTMLButtonElement>(".stop-button").forEach((button) => {
     button.disabled = !session.busy;
@@ -2239,7 +2262,7 @@ export function patchChatControls() {
 
   // Update all execute buttons (desktop heading + mobile controls)
   appRoot.querySelectorAll<HTMLButtonElement>(".execute-button").forEach((button) => {
-    button.disabled = session.busy || executing || (session.messages ?? []).length === 0;
+    button.disabled = locked || (session.messages ?? []).length === 0;
     button.classList.toggle("is-busy", executing);
     button.title = executing ? "Decomposing cards" : "Execute plan";
     button.setAttribute("aria-label", button.title);
@@ -2248,11 +2271,11 @@ export function patchChatControls() {
 
   // Update all clear-chat buttons (overflow menu + mobile controls)
   appRoot.querySelectorAll<HTMLButtonElement>("[data-clear-chat-button]").forEach((button) => {
-    button.disabled = session.busy || executing || creatingSkill || (session.messages ?? []).length === 0;
+    button.disabled = locked || creatingSkill || (session.messages ?? []).length === 0;
   });
 
   appRoot.querySelectorAll<HTMLButtonElement>(".chat-prune-trigger").forEach((button) => {
-    button.disabled = session.busy || executing;
+    button.disabled = locked;
   });
 
   const title = appRoot.querySelector<HTMLElement>("#chat-title");
@@ -2262,7 +2285,7 @@ export function patchChatControls() {
 
   const panel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
   if (panel) {
-    panel.setAttribute("aria-busy", String(session.busy || executing));
+    panel.setAttribute("aria-busy", String(locked));
   }
 }
 
