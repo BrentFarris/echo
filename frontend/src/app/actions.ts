@@ -6,7 +6,7 @@ import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
 import { dismissContextMenu } from "./contextMenu";
-import { dropWorkspaceGitRepositoryState, openGitChangeInCode, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, selectGitCommit, syncWorkspaceGitRepository } from "./git";
+import { dropWorkspaceGitRepositoryState, loadWorkspaceChangesSummary, openGitChangeInCode, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, selectGitCommit, syncWorkspaceGitRepository } from "./git";
 import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, cancelAgentMode, deleteAgentModeSettings, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint, saveAgentMode, saveNewAgentMode, startCreateAgentMode, startEditAgentMode } from "./settings";
@@ -905,11 +905,12 @@ function findEchoSourceWorkspaceForAction() {
 }
 
 async function loadActiveChangesViewIfNeeded() {
-  if (state.appMode !== "git") {
-    return;
-  }
   const workspace = activeWorkspace();
   if (!workspace) {
+    return;
+  }
+  if (state.appMode !== "git") {
+    await loadWorkspaceChangesSummary(workspace.id);
     return;
   }
   await openWorkspaceGitRepository(workspace.id);

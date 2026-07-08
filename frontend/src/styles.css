@@ -240,6 +240,7 @@ textarea:disabled {
 }
 
 .nav-icon-button {
+  position: relative;
   display: grid;
   place-items: center;
   width: 44px;
@@ -280,6 +281,38 @@ textarea:focus-visible {
 .nav-icon-button.is-active {
   background: color-mix(in srgb, var(--color-accent) 44%, transparent);
   color: var(--color-accent-strong);
+}
+
+.nav-change-badge {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  display: grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-surface) 90%, var(--color-accent));
+  color: color-mix(in srgb, var(--color-text-muted) 82%, var(--color-accent-strong));
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.nav-icon-button.is-active .nav-change-badge,
+.mobile-nav-tab.is-active .nav-change-badge {
+  border-color: color-mix(in srgb, var(--color-accent) 34%, transparent);
+  background: color-mix(in srgb, var(--color-surface) 82%, var(--color-accent));
+  color: var(--color-accent-strong);
+}
+
+.mobile-nav-tab .nav-change-badge {
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
 }
 
 /* Workspace dropdown */
@@ -6365,6 +6398,7 @@ h3 {
   }
 
   .mobile-nav-tab {
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: center;

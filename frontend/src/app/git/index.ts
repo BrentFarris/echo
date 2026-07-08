@@ -338,6 +338,42 @@ export async function openWorkspaceGitRepository(workspaceID: string) {
   await refreshWorkspaceGitRepository(workspaceID, selectedGitRepositoryFolderID(workspaceID, gitRepositoryViewFor(workspaceID)), true);
 }
 
+export async function loadWorkspaceChangesSummary(workspaceID: string) {
+  if (!workspaceID || state.loadingGitRepositoryWorkspaces.has(workspaceID)) {
+    return;
+  }
+  state.loadingGitRepositoryWorkspaces.add(workspaceID);
+  try {
+    const view = await LoadWorkspaceGitRepository(
+      workspaceID,
+      selectedGitRepositoryFolderID(workspaceID, gitRepositoryViewFor(workspaceID)),
+    );
+    storeGitRepositoryView(workspaceID, view);
+  } catch (error) {
+    if (!isNoManageableGitRepositoryError(error)) {
+      return;
+    }
+    state.gitRepositoryViews.set(
+      workspaceID,
+      services.WorkspaceGitRepositoryView.createFrom({
+        workspaceId: workspaceID,
+        selectedFolderId: "",
+        repositories: [],
+        repository: null,
+      }),
+    );
+    try {
+      state.changeReviews.set(workspaceID, await LoadWorkspaceChangeReview(workspaceID));
+    } catch {
+    }
+  } finally {
+    state.loadingGitRepositoryWorkspaces.delete(workspaceID);
+    if (activeWorkspace()?.id === workspaceID) {
+      getAppCallbacks().render();
+    }
+  }
+}
+
 export async function refreshWorkspaceGitRepository(
   workspaceID: string,
   folderID = selectedGitRepositoryFolderID(workspaceID, gitRepositoryViewFor(workspaceID)),

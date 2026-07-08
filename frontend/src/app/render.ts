@@ -11,7 +11,7 @@ import { appRoot, focusInitialElement } from "./dom";
 import { bindEvents } from "./events";
 import { renderGitRepositoryPage } from "./git";
 import { icons } from "./icons";
-import { kanbanBoardFor, gitRepositoryViewFor, activeWorkspace, kanbanCards, state, getActiveChatKanbanTab } from "./state";
+import { kanbanBoardFor, gitRepositoryViewFor, activeWorkspace, kanbanCards, state, getActiveChatKanbanTab, changeReviewFor } from "./state";
 import { renderSettingsOverlay } from "./settings";
 import { renderToasts } from "./toasts";
 import { renderTaskPanel } from "./tasks";
@@ -200,6 +200,7 @@ function buildLeftNav(
 ): string {
   const mode = state.appMode;
   const dropdownOpen = state.workspaceDropdownOpen;
+  const changesBadge = renderChangesNavBadge(workspace);
 
   return `
     <aside class="left-nav" aria-label="Primary">
@@ -241,7 +242,7 @@ function buildLeftNav(
       <div class="left-nav-actions">
         <button class="nav-icon-button${mode === "code" ? " is-active" : ""}" type="button" title="Code" aria-label="Code view" data-action="${mode === "code" ? "close-code-view" : "open-code-view"}">${icons.code}</button>
         <button class="nav-icon-button${mode === "tasks" ? " is-active" : ""}" type="button" title="Tasks" aria-label="Tasks" data-action="switch-view" data-view="tasks">${icons.tasks}</button>
-        <button class="nav-icon-button${mode === "git" ? " is-active" : ""}" type="button" title="Changes" aria-label="Changes" data-action="switch-view" data-view="git">${icons.git}</button>
+        <button class="nav-icon-button${mode === "git" ? " is-active" : ""}" type="button" title="Changes" aria-label="Changes" data-action="switch-view" data-view="git">${icons.git}${changesBadge}</button>
         <button class="nav-icon-button" type="button" title="Settings" aria-label="Settings" data-action="open-settings">${icons.settings}</button>
       </div>
     </aside>
@@ -365,6 +366,7 @@ function renderMobileBottomNav(
 ): string {
   const appName = "Echo";
   const activeMobileView = state.mobileNavView;
+  const changesBadge = renderChangesNavBadge(workspace);
   return `
     <nav class="mobile-bottom-nav" role="navigation" aria-label="Main navigation">
       <div class="mobile-nav-brand">
@@ -392,7 +394,7 @@ function renderMobileBottomNav(
           ${icons.tasks}
         </button>
         <button class="mobile-nav-tab${activeMobileView === "git" ? " is-active" : ""}" type="button" title="Changes" aria-label="Changes" aria-pressed="${activeMobileView === "git"}" role="tab" aria-selected="${activeMobileView === "git"}" tabindex="${activeMobileView === "git" ? "0" : "-1"}" data-mobile-nav-tab-index="4" data-action="switch-view" data-view="git">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v12"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v12"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>${changesBadge}
         </button>
         <button class="mobile-nav-tab${activeMobileView === "settings" ? " is-active" : ""}" type="button" title="Settings" aria-label="Settings" aria-pressed="${activeMobileView === "settings"}" role="tab" aria-selected="${activeMobileView === "settings"}" tabindex="${activeMobileView === "settings" ? "0" : "-1"}" data-mobile-nav-tab-index="5" data-action="open-settings">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.3a2 0 0 1-4 0V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 0 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H2.7a2 2 0 0 1 0-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7A2 2 0 0 1 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.7a2 0 0 1 4 0V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 0 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.3a2 2 0 0 1 0 4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>
@@ -400,4 +402,24 @@ function renderMobileBottomNav(
       </div>
     </nav>
   `;
+}
+
+function renderChangesNavBadge(workspace: services.Workspace | null): string {
+  if (!workspace) {
+    return "";
+  }
+  const count = pendingChangesCount(workspace.id);
+  if (count <= 0) {
+    return "";
+  }
+  const label = `${count} pending change${count === 1 ? "" : "s"}`;
+  return `<span class="nav-change-badge" aria-label="${escapeHtml(label)}">${escapeHtml(count > 99 ? "99+" : String(count))}</span>`;
+}
+
+function pendingChangesCount(workspaceID: string): number {
+  const repository = gitRepositoryViewFor(workspaceID).repository;
+  if (repository) {
+    return Math.max(0, repository.fileCount ?? 0);
+  }
+  return Math.max(0, changeReviewFor(workspaceID).fileCount ?? 0);
 }

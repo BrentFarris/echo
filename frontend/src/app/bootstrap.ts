@@ -10,6 +10,7 @@ import { bindChatEvents, applyChatStreamEvent, isSupportedChatImageType, isSuppo
 import { applyFileChangesEvent } from "./changes";
 import { showContextMenu } from "./contextMenu";
 import { handleGlobalKeydown, handleGlobalKeyup, handleGlobalPointerDown, handleGlobalWindowBlur } from "./events";
+import { loadWorkspaceChangesSummary } from "./git";
 import { applyKanbanEvent, loadActiveKanbanBoard, markKanbanRunStarted } from "./kanban";
 import { render } from "./render";
 import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state } from "./state";
@@ -70,6 +71,9 @@ async function initialize() {
     await loadActiveKanbanBoard();
     await loadActiveTaskBoard();
     await loadActiveChangeReview();
+    if (state.appState.activeWorkspaceId) {
+      await loadWorkspaceChangesSummary(state.appState.activeWorkspaceId);
+    }
     const runtimeStatus = await LoadRuntimeStatus();
     for (const workspaceID of runtimeStatus.activeKanbanWorkspaceIds ?? []) {
       markKanbanRunStarted(workspaceID);
@@ -119,6 +123,7 @@ export function startApp() {
 
   EventsOn("echo:file-changes:event", (event: FileChangesEvent) => {
     applyFileChangesEvent(event);
+    void loadWorkspaceChangesSummary(event.workspaceId);
   });
 
   EventsOn("echo:tasks:event", (event: TaskEvent) => {
