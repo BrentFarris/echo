@@ -1,5 +1,5 @@
 
-import { applyInlineCodePromptEvent, ensureCodeViewRootLoaded, finishCodeTabSwitcher, openDroppedCodeFile, refreshOpenCodeTabsFromDisk, saveActiveCodeFile } from "../codeView";
+import { applyInlineCodePromptEvent, ensureCodeViewRootLoaded, finishCodeTabSwitcher, openDroppedCodeFile, refreshOpenCodeTabsFromDisk, saveActiveCodeFile, setCodeGitChangeProvider } from "../codeView";
 import { LoadRuntimeStatus, LoadState, LoadWebAccessStatus, ListAgentModes, ReadWorkspaceMediaFile } from "../backend/services";
 import { llm, services } from "../../wailsjs/go/models";
 import { EventsOn, OnFileDrop } from "../backend/runtime";
@@ -10,7 +10,7 @@ import { bindChatEvents, applyChatStreamEvent, isSupportedChatImageType, isSuppo
 import { applyFileChangesEvent } from "./changes";
 import { showContextMenu } from "./contextMenu";
 import { handleGlobalKeydown, handleGlobalKeyup, handleGlobalPointerDown, handleGlobalWindowBlur } from "./events";
-import { gitChangedLineNumbersForFile, loadWorkspaceChangesSummary } from "./git";
+import { gitChangedLineNumbersForFile, gitChangeStateForPath, loadWorkspaceChangesSummary } from "./git";
 import { applyKanbanEvent, loadActiveKanbanBoard, markKanbanRunStarted } from "./kanban";
 import { render } from "./render";
 import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state } from "./state";
@@ -31,6 +31,7 @@ function codeViewCallbacks() {
     leadingWhitespaceIndicatorsEnabled: () =>
       leadingWhitespaceIndicatorsEnabled(state.appState?.settings ?? state.settingsDraft),
     gitChangedLineNumbers: gitChangedLineNumbersForFile,
+    gitChangeStateForPath,
     refreshGitChanges: loadWorkspaceChangesSummary,
     showCodePathContextMenu(
       workspaceId: string,
@@ -106,6 +107,7 @@ export function startApp() {
     bindActionEvents,
     bindChatEvents,
   });
+  setCodeGitChangeProvider(gitChangeStateForPath);
 
   OnFileDrop((_x, _y, paths) => {
     void openDroppedFiles(paths);

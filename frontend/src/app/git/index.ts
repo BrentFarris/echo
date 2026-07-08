@@ -1,6 +1,7 @@
 import { ensureCodeViewRootLoaded, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk } from "../../codeView";
 import { CommitWorkspaceGitChanges, CreateWorkspaceGitBranch, DiscardWorkspaceGitChanges, DiscardWorkspaceGitFile, LoadWorkspaceChangeReview, LoadWorkspaceGitCommit, LoadWorkspaceGitRepository, MergeWorkspaceGitBranch, SwitchWorkspaceGitBranch, SyncWorkspaceGitBranch } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
+import type { CodeEntryKind, CodeGitChangeState } from "../../codeView/types";
 import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";
 import { icons } from "../icons";
@@ -460,18 +461,54 @@ export function gitChangedLineNumbersForFile(workspaceID: string, path: string):
   if (!workspaceID || !normalizedPath) {
     return [];
   }
-  const files = [
-    ...(gitRepositoryViewFor(workspaceID).repository?.files ?? []),
-    ...(gitChangeReviewFor(workspaceID).files ?? []),
-  ];
   const seen = new Set<number>();
-  for (const file of files) {
+  for (const file of gitChangedFilesForWorkspace(workspaceID)) {
     if (normalizeGitChangePath(file.path) !== normalizedPath || !file.diffAvailable || !file.diff) {
       continue;
     }
     gitChangedLineNumbersFromDiff(file.diff).forEach((line) => seen.add(line));
   }
   return [...seen].sort((left, right) => left - right);
+}
+
+export function gitChangeStateForPath(
+  workspaceID: string,
+  path: string,
+  kind: CodeEntryKind,
+): CodeGitChangeState {
+  const normalizedPath = normalizeGitChangePath(path);
+  if (!workspaceID || !normalizedPath) {
+    return "";
+  }
+  const files = gitChangedFilesForWorkspace(workspaceID);
+  if (kind === "directory") {
+    const prefix = normalizedPath.endsWith("/") ? normalizedPath : `${normalizedPath}/`;
+    let hasModified = false;
+    for (const file of files) {
+      const changedPath = normalizeGitChangePath(file.path);
+      if (!changedPath.startsWith(prefix)) {
+        continue;
+      }
+      if (gitFileTreeChangeState(file) === "created") {
+        return "created";
+      }
+      hasModified = true;
+    }
+    return hasModified ? "modified" : "";
+  }
+  const file = files.find((candidate) => normalizeGitChangePath(candidate.path) === normalizedPath);
+  return file ? gitFileTreeChangeState(file) : "";
+}
+
+function gitChangedFilesForWorkspace(workspaceID: string): services.WorkspaceGitChangedFile[] {
+  return [
+    ...(gitRepositoryViewFor(workspaceID).repository?.files ?? []),
+    ...(gitChangeReviewFor(workspaceID).files ?? []),
+  ];
+}
+
+function gitFileTreeChangeState(file: services.WorkspaceGitChangedFile): CodeGitChangeState {
+  return file.operation === "created" ? "created" : "modified";
 }
 
 function gitChangedLineNumbersFromDiff(diff: string): number[] {

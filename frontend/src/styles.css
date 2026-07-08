@@ -36,6 +36,8 @@
   --code-editor-invalid: #cf222e;
   --code-editor-change-indicator: #1a7f37;
   --code-editor-whitespace-indicator: rgba(110, 119, 129, 0.38);
+  --code-tree-change-created: #1a7f37;
+  --code-tree-change-modified: #9a6700;
   --code-token-comment: #6e7781;
   --code-token-keyword: #cf222e;
   --code-token-atom: #0550ae;
@@ -114,6 +116,8 @@
     --code-editor-invalid: #ff7b72;
     --code-editor-change-indicator: #3fb950;
     --code-editor-whitespace-indicator: rgba(125, 133, 144, 0.46);
+    --code-tree-change-created: #3fb950;
+    --code-tree-change-modified: #d29922;
     --code-token-comment: #8b949e;
     --code-token-keyword: #ff7b72;
     --code-token-atom: #79c0ff;
@@ -4786,6 +4790,32 @@ h3 {
 .code-tree-file.is-held {
   border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border));
   background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.code-tree-row.has-git-created {
+  color: var(--code-tree-change-created);
+}
+
+.code-tree-row.has-git-modified {
+  color: var(--code-tree-change-modified);
+}
+
+.code-tree-row.has-git-created .code-tree-chevron,
+.code-tree-row.has-git-created .code-tree-entry-icon,
+.code-tree-row.has-git-created .code-tree-name,
+.code-tree-row.has-git-created .code-tree-size,
+.code-tree-row.has-git-created .code-tree-search-name strong,
+.code-tree-row.has-git-created .code-tree-search-name span {
+  color: var(--code-tree-change-created);
+}
+
+.code-tree-row.has-git-modified .code-tree-chevron,
+.code-tree-row.has-git-modified .code-tree-entry-icon,
+.code-tree-row.has-git-modified .code-tree-name,
+.code-tree-row.has-git-modified .code-tree-size,
+.code-tree-row.has-git-modified .code-tree-search-name strong,
+.code-tree-row.has-git-modified .code-tree-search-name span {
+  color: var(--code-tree-change-modified);
 }
 
 .code-tree-chevron,

@@ -3,6 +3,7 @@ import { services } from "../../wailsjs/go/models";
 export type ToastTone = "info" | "success" | "error";
 export type CodeEntryKind = "file" | "directory" | "other";
 export type CodeCreateKind = "file" | "folder";
+export type CodeGitChangeState = "" | "created" | "modified";
 
 export type CodeViewCallbacks = {
   render: () => void;
@@ -10,6 +11,7 @@ export type CodeViewCallbacks = {
   errorMessage: (error: unknown) => string;
   leadingWhitespaceIndicatorsEnabled: () => boolean;
   gitChangedLineNumbers: (workspaceID: string, path: string) => number[];
+  gitChangeStateForPath: (workspaceID: string, path: string, kind: CodeEntryKind) => CodeGitChangeState;
   refreshGitChanges: (workspaceID: string) => Promise<void>;
   showCodePathContextMenu: (
     workspaceID: string,
