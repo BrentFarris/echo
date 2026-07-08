@@ -141,8 +141,9 @@ export function renderGitChangedFile(file: services.WorkspaceGitChangedFile): st
   const busy = Boolean(workspace && state.gitRepositoryOperations.has(workspace.id));
   const openable = isGitChangedFileOpenable(file);
   const openLine = gitChangedFileOpenLine(file);
+  const normalizedPath = normalizeGitChangePath(file.path);
   return `
-    <article class="change-file" data-change-file>
+    <article class="change-file" data-change-file data-git-change-file-path="${escapeAttribute(normalizedPath)}">
       <header>
         <div class="change-file-title">
           ${icons.file}
@@ -295,6 +296,10 @@ export function renderGitChangeDiff(diff: string, path: string): string {
     })
     .join("");
   return `<pre class="change-diff"><code>${rendered}</code></pre>`;
+}
+
+function normalizeGitChangePath(path: string): string {
+  return path.trim().replaceAll("\\", "/").replace(/^\/+/, "").toLowerCase();
 }
 
 function renderGitLineOpenButton(path: string, line: number): string {

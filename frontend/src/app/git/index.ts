@@ -1,4 +1,5 @@
 import { ensureCodeViewRootLoaded, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk } from "../../codeView";
+import { codeIcons } from "../../codeView/icons";
 import { CommitWorkspaceGitChanges, CreateWorkspaceGitBranch, DiscardWorkspaceGitChanges, DiscardWorkspaceGitFile, LoadWorkspaceChangeReview, LoadWorkspaceGitCommit, LoadWorkspaceGitRepository, MergeWorkspaceGitBranch, SwitchWorkspaceGitBranch, SyncWorkspaceGitBranch } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
 import type { CodeEntryKind, CodeGitChangeState } from "../../codeView/types";
@@ -8,7 +9,25 @@ import { icons } from "../icons";
 import { activeWorkspace, changeReviewFor, gitChangeReviewFor, gitRepositoryViewFor, state } from "../state";
 import { pushToast } from "../toasts";
 import { changeOperationLabel, errorMessage, escapeAttribute, escapeHtml } from "../utils";
-import { renderChangeReviewPage, renderGitChangedFile, renderGitDiff } from "../changes";
+import { markCurrentChangeTarget, renderChangeReviewPage, renderGitChangedFile, renderGitDiff } from "../changes";
+
+type GitChangeTreeFolder = {
+  kind: "folder";
+  name: string;
+  path: string;
+  count: number;
+  children: Map<string, GitChangeTreeNode>;
+};
+
+type GitChangeTreeFile = {
+  kind: "file";
+  name: string;
+  path: string;
+  displayPath: string;
+  file: services.WorkspaceGitChangedFile;
+};
+
+type GitChangeTreeNode = GitChangeTreeFolder | GitChangeTreeFile;
 
 export function renderGitRepositoryPage(
   workspace: services.Workspace,
@@ -69,9 +88,7 @@ export function renderGitRepositoryPage(
                 <h3 id="git-working-title">Working Changes</h3>
                 <span>${escapeHtml(String(repository.fileCount ?? 0))} files</span>
               </header>
-              ${(repository.files ?? []).length
-                ? `<div class="change-file-list">${(repository.files ?? []).map(renderGitChangedFile).join("")}</div>`
-                : `<div class="empty-state compact">No Git changes.</div>`}
+              ${renderGitWorkingChanges(workspace.id, repository)}
             </section>
             <section class="git-panel git-history" aria-labelledby="git-history-title">
               <header>
@@ -86,6 +103,145 @@ export function renderGitRepositoryPage(
         : `<div class="empty-state compact">${loading ? renderSpinnerLabel("Loading Git") : "No manageable Git repository."}</div>`}
     </section>
   `;
+}
+
+function renderGitWorkingChanges(workspaceID: string, repository: services.WorkspaceGitRepositoryStatus): string {
+  const files = repository.files ?? [];
+  if (!files.length) {
+    return `<div class="empty-state compact">No Git changes.</div>`;
+  }
+  return `
+    <div class="git-working-changes-layout">
+      <aside class="git-change-tree-panel" aria-label="Changed files">
+        ${renderGitChangeFileTree(workspaceID, repository)}
+      </aside>
+      <div class="change-file-list git-change-file-list" data-git-change-file-list>
+        ${files.map(renderGitChangedFile).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderGitChangeFileTree(workspaceID: string, repository: services.WorkspaceGitRepositoryStatus): string {
+  const root = buildGitChangeTree(repository.files ?? []);
+  const collapsed = gitCollapsedChangeFolders(workspaceID, repository.folderId);
+  const children = sortedGitChangeTreeChildren(root);
+  return `
+    <nav class="git-change-tree" role="tree" data-git-change-tree>
+      <header>
+        <strong>Files</strong>
+        <span>${escapeHtml(String(repository.fileCount ?? children.length))}</span>
+      </header>
+      <div class="git-change-tree-list">
+        ${children.map((child) => renderGitChangeTreeNode(child, collapsed, 0)).join("")}
+      </div>
+    </nav>
+  `;
+}
+
+function buildGitChangeTree(files: services.WorkspaceGitChangedFile[]): GitChangeTreeFolder {
+  const root: GitChangeTreeFolder = {
+    kind: "folder",
+    name: "",
+    path: "",
+    count: 0,
+    children: new Map<string, GitChangeTreeNode>(),
+  };
+  files.forEach((file) => {
+    const displayPath = displayGitChangePath(file.path);
+    if (!displayPath) {
+      return;
+    }
+    const segments = displayPath.split("/").filter(Boolean);
+    if (!segments.length) {
+      return;
+    }
+    let folder = root;
+    folder.count++;
+    segments.slice(0, -1).forEach((segment) => {
+      const nextPath = folder.path ? `${folder.path}/${normalizeGitChangePath(segment)}` : normalizeGitChangePath(segment);
+      const key = normalizeGitChangePath(segment);
+      let child = folder.children.get(key);
+      if (!child || child.kind !== "folder") {
+        child = {
+          kind: "folder",
+          name: segment,
+          path: nextPath,
+          count: 0,
+          children: new Map<string, GitChangeTreeNode>(),
+        };
+        folder.children.set(key, child);
+      }
+      child.count++;
+      folder = child;
+    });
+    const name = segments[segments.length - 1] ?? displayPath;
+    folder.children.set(normalizeGitChangePath(name), {
+      kind: "file",
+      name,
+      path: normalizeGitChangePath(displayPath),
+      displayPath,
+      file,
+    });
+  });
+  return root;
+}
+
+function renderGitChangeTreeNode(node: GitChangeTreeNode, collapsed: Set<string>, depth: number): string {
+  if (node.kind === "file") {
+    const statusLabel = changeOperationLabel(node.file.operation);
+    return `
+      <button
+        class="git-change-tree-row is-file is-${escapeAttribute(node.file.operation)}"
+        type="button"
+        role="treeitem"
+        title="${escapeAttribute(node.displayPath)}"
+        style="--tree-depth: ${depth}"
+        data-git-change-file="${escapeAttribute(node.path)}"
+      >
+        <span class="git-change-tree-spacer"></span>
+        <span class="git-change-tree-icon">${codeIcons.file}</span>
+        <span class="git-change-tree-name">${escapeHtml(node.name)}</span>
+        <span class="git-change-tree-status">${escapeHtml(statusLabel)}</span>
+      </button>
+    `;
+  }
+
+  const isCollapsed = collapsed.has(node.path);
+  return `
+    <div class="git-change-tree-folder ${isCollapsed ? "is-collapsed" : "is-expanded"}">
+      <button
+        class="git-change-tree-row is-folder ${isCollapsed ? "" : "is-expanded"}"
+        type="button"
+        role="treeitem"
+        aria-expanded="${!isCollapsed}"
+        title="${escapeAttribute(node.name)}"
+        style="--tree-depth: ${depth}"
+        data-git-change-folder="${escapeAttribute(node.path)}"
+      >
+        <span class="git-change-tree-chevron">${codeIcons.chevron}</span>
+        <span class="git-change-tree-icon">${codeIcons.folder}</span>
+        <span class="git-change-tree-name">${escapeHtml(node.name)}</span>
+        <span class="git-change-tree-count">${escapeHtml(String(node.count))}</span>
+      </button>
+      ${isCollapsed
+        ? ""
+        : `<div class="git-change-tree-children">${sortedGitChangeTreeChildren(node).map((child) => renderGitChangeTreeNode(child, collapsed, depth + 1)).join("")}</div>`}
+    </div>
+  `;
+}
+
+function sortedGitChangeTreeChildren(folder: GitChangeTreeFolder): GitChangeTreeNode[] {
+  return [...folder.children.values()].sort((left, right) => {
+    if (left.kind !== right.kind) {
+      return left.kind === "folder" ? -1 : 1;
+    }
+    return left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
+  });
+}
+
+function displayGitChangePath(path: string): string {
+  return path.trim().replaceAll("\\", "/").replace(/^\/+/, "");
 }
 
 function renderGitRefreshOrSyncButton(
@@ -312,6 +468,7 @@ function renderGitCommitChangedFile(file: services.WorkspaceGitChangedFile): str
 
 export function bindGitEvents(root: ParentNode) {
   bindGitSplitDiffScroll(root);
+  bindGitChangeTree(root);
   root
     .querySelectorAll<HTMLSelectElement>("[data-git-repository-select]")
     .forEach((select) => select.addEventListener("change", () => handleGitRepositorySelect(select)));
@@ -336,6 +493,56 @@ export function bindGitEvents(root: ParentNode) {
   root
     .querySelectorAll<HTMLSelectElement>("[data-git-switch-branch-select], [data-git-merge-branch-select]")
     .forEach((select) => select.addEventListener("change", handleGitBranchSelectChange));
+}
+
+function bindGitChangeTree(root: ParentNode) {
+  root
+    .querySelectorAll<HTMLButtonElement>("[data-git-change-folder]")
+    .forEach((button) => button.addEventListener("click", handleGitChangeFolderToggle));
+  root
+    .querySelectorAll<HTMLButtonElement>("[data-git-change-file]")
+    .forEach((button) => button.addEventListener("click", handleGitChangeFileSelect));
+}
+
+function handleGitChangeFolderToggle(event: MouseEvent) {
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+  const button = event.currentTarget as HTMLButtonElement;
+  const folderPath = button.dataset.gitChangeFolder ?? "";
+  if (!workspace || !repository || !folderPath) {
+    return;
+  }
+  const collapsed = gitCollapsedChangeFolders(workspace.id, repository.folderId);
+  if (collapsed.has(folderPath)) {
+    collapsed.delete(folderPath);
+  } else {
+    collapsed.add(folderPath);
+  }
+  getAppCallbacks().render();
+}
+
+function handleGitChangeFileSelect(event: MouseEvent) {
+  const button = event.currentTarget as HTMLButtonElement;
+  const targetPath = button.dataset.gitChangeFile ?? "";
+  if (!targetPath) {
+    return;
+  }
+  const repositoryRoot = button.closest<HTMLElement>("[data-git-repository]");
+  const target = Array.from(repositoryRoot?.querySelectorAll<HTMLElement>("[data-git-change-file-path]") ?? [])
+    .find((element) => element.dataset.gitChangeFilePath === targetPath);
+  if (!target) {
+    return;
+  }
+  button
+    .closest<HTMLElement>("[data-git-change-tree]")
+    ?.querySelectorAll<HTMLElement>(".git-change-tree-row.is-selected")
+    .forEach((row) => row.classList.remove("is-selected"));
+  button.classList.add("is-selected");
+  const review = target.closest<HTMLElement>("[data-change-review]");
+  if (review) {
+    markCurrentChangeTarget(review, target);
+  }
+  target.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function bindGitSplitDiffScroll(root: ParentNode) {
@@ -587,6 +794,11 @@ export function dropWorkspaceGitRepositoryState(workspaceID: string) {
   state.selectedGitCommitHashes.delete(workspaceID);
   state.loadingGitRepositoryWorkspaces.delete(workspaceID);
   state.gitRepositoryOperations.delete(workspaceID);
+  for (const key of Array.from(state.collapsedGitChangeFolders.keys())) {
+    if (key.startsWith(`${workspaceID}:`)) {
+      state.collapsedGitChangeFolders.delete(key);
+    }
+  }
   for (const key of Array.from(state.gitCommitDetails.keys())) {
     if (key.startsWith(`${workspaceID}:`)) {
       state.gitCommitDetails.delete(key);
@@ -867,6 +1079,20 @@ function selectedGitRepositoryFolderID(workspaceID: string, view: services.Works
 
 function gitRepositoryDraftKey(workspaceID: string, folderID: string): string {
   return `${workspaceID}:${folderID}`;
+}
+
+function gitChangeTreeStateKey(workspaceID: string, folderID: string): string {
+  return `${workspaceID}:${folderID}`;
+}
+
+function gitCollapsedChangeFolders(workspaceID: string, folderID: string): Set<string> {
+  const key = gitChangeTreeStateKey(workspaceID, folderID);
+  let collapsed = state.collapsedGitChangeFolders.get(key);
+  if (!collapsed) {
+    collapsed = new Set<string>();
+    state.collapsedGitChangeFolders.set(key, collapsed);
+  }
+  return collapsed;
 }
 
 function gitCommitDetailKey(workspaceID: string, folderID: string, hash: string): string {
