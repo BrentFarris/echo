@@ -110,10 +110,11 @@ function renderGitWorkingChanges(workspaceID: string, repository: services.Works
   if (!files.length) {
     return `<div class="empty-state compact">No Git changes.</div>`;
   }
+  const treeCollapsed = isGitChangeTreeCollapsed(workspaceID, repository.folderId);
   return `
-    <div class="git-working-changes-layout">
+    <div class="git-working-changes-layout ${treeCollapsed ? "is-tree-collapsed" : ""}">
       <aside class="git-change-tree-panel" aria-label="Changed files">
-        ${renderGitChangeFileTree(workspaceID, repository)}
+        ${treeCollapsed ? renderGitChangeTreeCollapsedRail(repository) : renderGitChangeFileTree(workspaceID, repository)}
       </aside>
       <div class="change-file-list git-change-file-list" data-git-change-file-list>
         ${files.map(renderGitChangedFile).join("")}
@@ -130,12 +131,28 @@ function renderGitChangeFileTree(workspaceID: string, repository: services.Works
     <nav class="git-change-tree" role="tree" data-git-change-tree>
       <header>
         <strong>Files</strong>
-        <span>${escapeHtml(String(repository.fileCount ?? children.length))}</span>
+        <div class="git-change-tree-header-actions">
+          <span>${escapeHtml(String(repository.fileCount ?? children.length))}</span>
+          <button class="icon-button git-change-tree-toggle" type="button" title="Collapse changed files" aria-label="Collapse changed files" data-git-change-tree-toggle>
+            ${icons.collapse}
+          </button>
+        </div>
       </header>
       <div class="git-change-tree-list">
         ${children.map((child) => renderGitChangeTreeNode(child, collapsed, 0)).join("")}
       </div>
     </nav>
+  `;
+}
+
+function renderGitChangeTreeCollapsedRail(repository: services.WorkspaceGitRepositoryStatus): string {
+  return `
+    <div class="git-change-tree-collapsed" aria-label="Changed files collapsed">
+      <button class="icon-button git-change-tree-toggle" type="button" title="Expand changed files" aria-label="Expand changed files" data-git-change-tree-toggle>
+        ${icons.expand}
+      </button>
+      <span>${escapeHtml(String(repository.fileCount ?? 0))}</span>
+    </div>
   `;
 }
 
@@ -497,11 +514,29 @@ export function bindGitEvents(root: ParentNode) {
 
 function bindGitChangeTree(root: ParentNode) {
   root
+    .querySelectorAll<HTMLButtonElement>("[data-git-change-tree-toggle]")
+    .forEach((button) => button.addEventListener("click", handleGitChangeTreeToggle));
+  root
     .querySelectorAll<HTMLButtonElement>("[data-git-change-folder]")
     .forEach((button) => button.addEventListener("click", handleGitChangeFolderToggle));
   root
     .querySelectorAll<HTMLButtonElement>("[data-git-change-file]")
     .forEach((button) => button.addEventListener("click", handleGitChangeFileSelect));
+}
+
+function handleGitChangeTreeToggle() {
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+  if (!workspace || !repository) {
+    return;
+  }
+  const key = gitChangeTreeStateKey(workspace.id, repository.folderId);
+  if (state.collapsedGitChangeTrees.has(key)) {
+    state.collapsedGitChangeTrees.delete(key);
+  } else {
+    state.collapsedGitChangeTrees.add(key);
+  }
+  getAppCallbacks().render();
 }
 
 function handleGitChangeFolderToggle(event: MouseEvent) {
@@ -799,6 +834,11 @@ export function dropWorkspaceGitRepositoryState(workspaceID: string) {
       state.collapsedGitChangeFolders.delete(key);
     }
   }
+  for (const key of Array.from(state.collapsedGitChangeTrees)) {
+    if (key.startsWith(`${workspaceID}:`)) {
+      state.collapsedGitChangeTrees.delete(key);
+    }
+  }
   for (const key of Array.from(state.gitCommitDetails.keys())) {
     if (key.startsWith(`${workspaceID}:`)) {
       state.gitCommitDetails.delete(key);
@@ -1083,6 +1123,10 @@ function gitRepositoryDraftKey(workspaceID: string, folderID: string): string {
 
 function gitChangeTreeStateKey(workspaceID: string, folderID: string): string {
   return `${workspaceID}:${folderID}`;
+}
+
+function isGitChangeTreeCollapsed(workspaceID: string, folderID: string): boolean {
+  return state.collapsedGitChangeTrees.has(gitChangeTreeStateKey(workspaceID, folderID));
 }
 
 function gitCollapsedChangeFolders(workspaceID: string, folderID: string): Set<string> {

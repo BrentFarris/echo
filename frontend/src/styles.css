@@ -3433,11 +3433,50 @@ h3 {
   font-weight: 900;
 }
 
+.git-change-tree-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex: 0 0 auto;
+}
+
+.git-change-tree-toggle {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  color: var(--color-text-muted);
+}
+
+.git-change-tree-toggle svg {
+  width: 15px;
+  height: 15px;
+}
+
 .git-change-tree header strong {
   overflow: hidden;
   color: var(--color-text);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.git-change-tree-collapsed {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-md);
+  width: fit-content;
+  max-width: 100%;
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-bg) 92%, var(--color-surface));
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: 900;
+}
+
+.git-change-tree-collapsed span {
+  min-width: 1.4em;
+  text-align: center;
 }
 
 .git-change-tree-list,
@@ -3566,11 +3605,25 @@ h3 {
     align-items: start;
   }
 
+  .git-working-changes-layout.is-tree-collapsed {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+
   .git-change-tree-panel {
     position: sticky;
     top: var(--space-xl);
     max-height: min(580px, calc(100vh - 180px));
     overflow: auto;
+  }
+
+  .git-working-changes-layout.is-tree-collapsed .git-change-tree-panel {
+    overflow: visible;
+  }
+
+  .git-working-changes-layout.is-tree-collapsed .git-change-tree-collapsed {
+    display: grid;
+    justify-items: center;
+    width: 44px;
   }
 }
 
