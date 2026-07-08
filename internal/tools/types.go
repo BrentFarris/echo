@@ -142,6 +142,7 @@ type WorkspaceTaskCreateRequest struct {
 	Title              string   `json:"title"`
 	Details            string   `json:"details,omitempty"`
 	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
+	Tags               []string `json:"tags,omitempty"`
 	Priority           string   `json:"priority,omitempty"`
 }
 
@@ -150,6 +151,7 @@ type WorkspaceTask struct {
 	Title              string   `json:"title"`
 	Details            string   `json:"details,omitempty"`
 	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
+	Tags               []string `json:"tags,omitempty"`
 	Priority           string   `json:"priority"`
 	Completed          bool     `json:"completed"`
 	CreatedAt          string   `json:"createdAt"`

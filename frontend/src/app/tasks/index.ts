@@ -64,6 +64,7 @@ export function renderTaskPanel(workspace: services.Workspace): string {
         if (task.title.toLowerCase().includes(query)) return true;
         if (task.details?.toLowerCase().includes(query)) return true;
         if ((task.acceptanceCriteria ?? []).some((c) => c.toLowerCase().includes(query))) return true;
+        if ((task.tags ?? []).some((tag) => tag.toLowerCase().includes(query))) return true;
         return false;
       })
     : filteredByMode;
@@ -76,6 +77,7 @@ export function renderTaskPanel(workspace: services.Workspace): string {
           <strong id="tasks-title">Backlog</strong>
           <small class="task-storage-path">Active: ${escapeHtml(board.storagePath || ".echo/tasks.json")}</small>
           <small class="task-storage-path">Completed: ${escapeHtml(board.doneStoragePath || ".echo/tasks_done.json")}</small>
+          <small class="task-storage-path">Workspace: ${escapeHtml(board.workspaceStatePath || ".echo/workspace.json")}</small>
         </div>
         <div class="task-heading-actions">
           <label class="task-completed-toggle">
@@ -95,12 +97,13 @@ export function renderTaskPanel(workspace: services.Workspace): string {
           <button class="task-filter-btn${filterMode === "completed" ? " is-active" : ""}" type="button" data-task-filter="completed">Completed</button>
         </div>
       </div>
-      ${board.gitIgnored || board.doneGitIgnored ? `
+      ${board.gitIgnored || board.doneGitIgnored || board.workspaceStateGitIgnored ? `
         <div class="task-git-warning" role="status">
           ${escapeHtml([
             board.gitIgnored ? board.storagePath || ".echo/tasks.json" : "",
             board.doneGitIgnored ? board.doneStoragePath || ".echo/tasks_done.json" : "",
-          ].filter(Boolean).join(" and "))} ${board.gitIgnored && board.doneGitIgnored ? "are" : "is"} ignored by Git. Echo will not change your ignore rules.
+            board.workspaceStateGitIgnored ? board.workspaceStatePath || ".echo/workspace.json" : "",
+          ].filter(Boolean).join(" and "))} ${[board.gitIgnored, board.doneGitIgnored, board.workspaceStateGitIgnored].filter(Boolean).length > 1 ? "are" : "is"} ignored by Git. Echo will not change your ignore rules.
         </div>
       ` : ""}
       <div class="task-board" aria-label="Backlog priority columns">
@@ -136,6 +139,7 @@ function renderTaskCard(task: services.WorkspaceTask): string {
         <strong>${escapeHtml(task.title)}</strong>
         ${task.completed ? `<span class="task-complete-badge">${icons.check}</span>` : ""}
       </header>
+      ${renderTaskTagList(task.tags ?? [])}
       <div class="task-card-actions">
         <button class="icon-button" type="button" title="Open task" aria-label="Open ${escapeAttribute(task.title)}" data-task-action="open" data-task-id="${escapeAttribute(task.id)}">${icons.edit}</button>
         <button class="icon-button" type="button" title="Use as chat prompt" aria-label="Use ${escapeAttribute(task.title)} as a chat prompt" data-task-action="chat" data-task-id="${escapeAttribute(task.id)}">${icons.chat}</button>
@@ -169,6 +173,14 @@ function renderTaskDetail(workspaceID: string): string {
             ${editing === "title"
               ? `<input id="task-detail-title" class="task-inline-title-input" type="text" value="${escapeAttribute(task.title)}" data-task-inline-input data-task-inline-kind="title" data-task-id="${escapeAttribute(task.id)}" data-updated-at="${escapeAttribute(task.updatedAt)}">`
               : `<h1 id="task-detail-title">${escapeHtml(task.title)}</h1>`}
+          </div>
+          <div class="task-detail-editable task-detail-tags-field" data-task-inline-field="tags" data-task-id="${escapeAttribute(task.id)}" data-updated-at="${escapeAttribute(task.updatedAt)}" role="button" tabindex="0" aria-label="Edit tags">
+            ${editing === "tags"
+              ? `<div class="task-tag-input-wrap">
+                  <input class="task-inline-tags-input" type="text" value="${escapeAttribute(taskTagText(task.tags ?? []))}" autocomplete="off" spellcheck="false" placeholder="bug, polish, docs" data-task-tags-input data-task-inline-input data-task-inline-kind="tags" data-task-id="${escapeAttribute(task.id)}" data-updated-at="${escapeAttribute(task.updatedAt)}">
+                  <div class="task-tag-suggestions" data-task-tag-suggestions></div>
+                </div>`
+              : renderTaskTagList(task.tags ?? [], "Click to add tags")}
           </div>
           <div class="task-detail-meta">
             <div class="task-priority-pill" data-task-inline-field="priority" data-task-id="${escapeAttribute(task.id)}" data-updated-at="${escapeAttribute(task.updatedAt)}" role="button" tabindex="0" aria-label="Edit priority">
@@ -233,6 +245,7 @@ function renderTaskEditor(workspaceID: string): string {
           <button class="icon-button close-button" type="button" data-task-action="cancel-editor" aria-label="Cancel">${icons.x}</button>
         </header>
         <label><span>Title</span><input type="text" name="title" required value="${escapeAttribute(draft.title)}" data-task-title data-initial-focus></label>
+        <label><span>Tags</span><div class="task-tag-input-wrap"><input type="text" name="tags" value="${escapeAttribute(draft.tags)}" autocomplete="off" spellcheck="false" placeholder="bug, polish, docs" data-task-tags data-task-tags-input><div class="task-tag-suggestions" data-task-tag-suggestions></div></div></label>
         <label><span>Details</span><textarea name="details" rows="6" placeholder="Optional Markdown details" data-task-details>${escapeHtml(draft.details)}</textarea></label>
         <label><span>Acceptance criteria</span><textarea name="acceptanceCriteria" rows="4" placeholder="Optional; one criterion per line" data-task-criteria>${escapeHtml(draft.acceptanceCriteria)}</textarea></label>
         <label><span>Priority</span><select name="priority" data-task-priority>${priorities.map((priority) => `<option value="${priority}" ${draft.priority === priority ? "selected" : ""}>${priority}</option>`).join("")}</select></label>
@@ -276,6 +289,16 @@ export function bindTaskEvents(root: ParentNode) {
   root.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("[data-task-inline-input]").forEach((input) => {
     input.addEventListener("blur", handleTaskInlineInputBlur);
     input.addEventListener("keydown", (event) => handleTaskInlineInputKeydown(event as KeyboardEvent));
+  });
+  root.querySelectorAll<HTMLInputElement>("[data-task-tags-input]").forEach((input) => {
+    input.addEventListener("input", handleTaskTagInput);
+    input.addEventListener("focus", handleTaskTagInput);
+    input.addEventListener("blur", handleTaskTagBlur);
+    input.addEventListener("keydown", handleTaskTagKeydown);
+  });
+  root.querySelectorAll<HTMLElement>("[data-task-tag-suggestions]").forEach((menu) => {
+    menu.addEventListener("mousedown", handleTaskTagSuggestionMouseDown);
+    menu.addEventListener("click", handleTaskTagSuggestionClick);
   });
 }
 
@@ -339,7 +362,7 @@ async function handleTaskAction(event: Event) {
       return;
     }
     if (action === "new") {
-      state.taskEditorDrafts.set(workspace.id, { title: "", details: "", acceptanceCriteria: "", priority: target.dataset.priority || "P1" });
+      state.taskEditorDrafts.set(workspace.id, { title: "", details: "", acceptanceCriteria: "", tags: "", priority: target.dataset.priority || "P1" });
       getAppCallbacks().render();
       return;
     }
@@ -367,6 +390,7 @@ async function handleTaskAction(event: Event) {
         title: task.title,
         details: task.details || "",
         acceptanceCriteria: (task.acceptanceCriteria ?? []).join("\n"),
+        tags: taskTagText(task.tags ?? []),
         priority: task.priority,
         expectedUpdatedAt: task.updatedAt,
       });
@@ -430,6 +454,7 @@ async function handleTaskEditorSubmit(event: SubmitEvent) {
     title,
     details: form.querySelector<HTMLTextAreaElement>("[data-task-details]")?.value.trim() ?? "",
     acceptanceCriteria: (form.querySelector<HTMLTextAreaElement>("[data-task-criteria]")?.value ?? "").split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
+    tags: parseTaskTags(form.querySelector<HTMLInputElement>("[data-task-tags]")?.value ?? ""),
     priority: form.querySelector<HTMLSelectElement>("[data-task-priority]")?.value ?? "P1",
   });
   try {
@@ -476,6 +501,7 @@ function handleTaskInlineFieldOpen(event: MouseEvent) {
 }
 
 function handleTaskInlineFieldKeydown(event: KeyboardEvent) {
+  if ((event.target as HTMLElement | null)?.closest("input, textarea, select, button")) return;
   if (event.key !== "Enter" && event.key !== " ") return;
   event.preventDefault();
   openTaskInlineField(event.currentTarget as HTMLElement);
@@ -484,7 +510,7 @@ function handleTaskInlineFieldKeydown(event: KeyboardEvent) {
 function openTaskInlineField(element: HTMLElement) {
   const workspace = activeWorkspace();
   const taskID = element.dataset.taskId || "";
-  const field = element.dataset.taskInlineField as "title" | "details" | "acceptanceCriteria" | "priority" | undefined;
+  const field = element.dataset.taskInlineField as "title" | "tags" | "details" | "acceptanceCriteria" | "priority" | undefined;
   if (!workspace || !taskID || !field) return;
   state.selectedTaskIds.set(workspace.id, taskID);
   state.taskInlineEdits.set(workspace.id, { taskId: taskID, field });
@@ -505,6 +531,7 @@ async function handleTaskInlineInputBlur(event: Event) {
 }
 
 function handleTaskInlineInputKeydown(event: KeyboardEvent) {
+  event.stopPropagation();
   const input = event.currentTarget as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
   if (event.key === "Escape") {
     event.preventDefault();
@@ -513,6 +540,9 @@ function handleTaskInlineInputKeydown(event: KeyboardEvent) {
       state.taskInlineEdits.delete(workspace.id);
       getAppCallbacks().render();
     }
+    return;
+  }
+  if (input instanceof HTMLInputElement && input.dataset.taskInlineKind === "tags" && event.key === "Enter" && firstVisibleTagSuggestion(input)) {
     return;
   }
   if (event.key === "Enter" && input instanceof HTMLInputElement) {
@@ -525,9 +555,116 @@ function handleTaskInlineInputKeydown(event: KeyboardEvent) {
   }
 }
 
+function handleTaskTagInput(event: Event) {
+  updateTaskTagSuggestions(event.currentTarget as HTMLInputElement);
+}
+
+function handleTaskTagBlur(event: FocusEvent) {
+  const input = event.currentTarget as HTMLInputElement;
+  window.setTimeout(() => hideTaskTagSuggestions(input), 80);
+}
+
+function handleTaskTagKeydown(event: KeyboardEvent) {
+  const input = event.currentTarget as HTMLInputElement;
+  if (event.key === "Escape") {
+    hideTaskTagSuggestions(input);
+    return;
+  }
+  if (event.key !== "Enter" && event.key !== "Tab") {
+    return;
+  }
+  const suggestion = firstVisibleTagSuggestion(input);
+  if (!suggestion) {
+    return;
+  }
+  event.preventDefault();
+  insertTaskTagSuggestion(input, suggestion);
+}
+
+function handleTaskTagSuggestionMouseDown(event: MouseEvent) {
+  event.preventDefault();
+}
+
+function handleTaskTagSuggestionClick(event: MouseEvent) {
+  const button = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>("[data-task-tag-suggestion]");
+  if (!button) return;
+  const menu = button.closest<HTMLElement>("[data-task-tag-suggestions]");
+  const input = menu?.parentElement?.querySelector<HTMLInputElement>("[data-task-tags-input]");
+  if (!input) return;
+  insertTaskTagSuggestion(input, button.dataset.taskTagSuggestion || "");
+}
+
+function updateTaskTagSuggestions(input: HTMLInputElement) {
+  const menu = taskTagSuggestionMenu(input);
+  const workspace = activeWorkspace();
+  if (!menu || !workspace) return;
+  const board = taskBoardFor(workspace.id);
+  const segment = taskTagSegment(input);
+  const query = segment.query.toLowerCase();
+  const selected = new Set(parseTaskTags(input.value).map((tag) => tag.toLowerCase()));
+  const matches = (board.tags ?? [])
+    .filter((tag) => tag.toLowerCase().includes(query))
+    .filter((tag) => !selected.has(tag.toLowerCase()))
+    .slice(0, 8);
+  if (!matches.length) {
+    hideTaskTagSuggestions(input);
+    return;
+  }
+  menu.innerHTML = matches.map((tag) => `<button type="button" data-task-tag-suggestion="${escapeAttribute(tag)}">${escapeHtml(tag)}</button>`).join("");
+  menu.classList.add("is-open");
+}
+
+function hideTaskTagSuggestions(input: HTMLInputElement) {
+  const menu = taskTagSuggestionMenu(input);
+  if (!menu) return;
+  menu.classList.remove("is-open");
+  menu.innerHTML = "";
+}
+
+function firstVisibleTagSuggestion(input: HTMLInputElement): string {
+  const menu = taskTagSuggestionMenu(input);
+  if (!menu?.classList.contains("is-open")) return "";
+  return menu.querySelector<HTMLButtonElement>("[data-task-tag-suggestion]")?.dataset.taskTagSuggestion || "";
+}
+
+function insertTaskTagSuggestion(input: HTMLInputElement, tag: string) {
+  tag = tag.trim();
+  if (!tag) return;
+  const segment = taskTagSegment(input);
+  let prefix = input.value.slice(0, segment.start).replace(/\s*$/, "");
+  const remaining = input.value.slice(segment.end).replace(/^,\s*/, "").trimStart();
+  if (prefix) {
+    prefix = prefix.endsWith(",") ? `${prefix} ` : `${prefix}, `;
+  }
+  const suffix = remaining ? `, ${remaining}` : "";
+  input.value = `${prefix}${tag}${suffix}`;
+  const cursor = `${prefix}${tag}`.length;
+  input.setSelectionRange(cursor, cursor);
+  input.focus();
+  hideTaskTagSuggestions(input);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function taskTagSuggestionMenu(input: HTMLInputElement): HTMLElement | null {
+  return input.parentElement?.querySelector<HTMLElement>("[data-task-tag-suggestions]") ?? null;
+}
+
+function taskTagSegment(input: HTMLInputElement): { start: number; end: number; query: string } {
+  const cursor = input.selectionStart ?? input.value.length;
+  const before = input.value.slice(0, cursor);
+  const start = before.lastIndexOf(",") + 1;
+  const nextComma = input.value.indexOf(",", cursor);
+  const end = nextComma >= 0 ? nextComma : input.value.length;
+  return {
+    start,
+    end,
+    query: input.value.slice(start, cursor).trim(),
+  };
+}
+
 async function commitTaskInlineInput(input: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement) {
   const workspace = activeWorkspace();
-  const field = input.dataset.taskInlineKind as "title" | "details" | "acceptanceCriteria" | "priority" | undefined;
+  const field = input.dataset.taskInlineKind as "title" | "tags" | "details" | "acceptanceCriteria" | "priority" | undefined;
   const taskID = input.dataset.taskId || "";
   if (!workspace || !field || !taskID) return;
   const task = (taskBoardFor(workspace.id).tasks ?? []).find((candidate) => candidate.id === taskID);
@@ -543,12 +680,14 @@ async function commitTaskInlineInput(input: HTMLInputElement | HTMLTextAreaEleme
   const nextCriteria = field === "acceptanceCriteria"
     ? input.value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
     : task.acceptanceCriteria ?? [];
+  const nextTags = field === "tags" ? parseTaskTags(input.value) : task.tags ?? [];
   const nextPriority = field === "priority" ? input.value : task.priority;
 
   const unchanged = nextTitle === task.title &&
     nextDetails === (task.details || "") &&
     nextPriority === task.priority &&
-    JSON.stringify(nextCriteria) === JSON.stringify(task.acceptanceCriteria ?? []);
+    JSON.stringify(nextCriteria) === JSON.stringify(task.acceptanceCriteria ?? []) &&
+    JSON.stringify(nextTags) === JSON.stringify(task.tags ?? []);
   if (unchanged) {
     state.taskInlineEdits.delete(workspace.id);
     getAppCallbacks().render();
@@ -560,6 +699,7 @@ async function commitTaskInlineInput(input: HTMLInputElement | HTMLTextAreaEleme
       title: nextTitle,
       details: nextDetails,
       acceptanceCriteria: nextCriteria,
+      tags: nextTags,
       priority: nextPriority,
     }), input.dataset.updatedAt || task.updatedAt);
     state.taskBoards.set(workspace.id, updated);
@@ -660,9 +800,36 @@ function handleTaskDragEnd(event: DragEvent) {
 
 function taskChatPrompt(task: services.WorkspaceTask): string {
   const parts = [`Task: ${task.title}`];
+  if ((task.tags ?? []).length) parts.push(`Tags: ${(task.tags ?? []).join(", ")}`);
   if (task.details?.trim()) parts.push(`Details:\n${task.details.trim()}`);
   if ((task.acceptanceCriteria ?? []).length) parts.push(`Acceptance criteria:\n${(task.acceptanceCriteria ?? []).map((criterion) => `- ${criterion}`).join("\n")}`);
   return parts.join("\n\n");
+}
+
+function renderTaskTagList(tags: string[], emptyLabel = ""): string {
+  const normalized = parseTaskTags(taskTagText(tags));
+  if (!normalized.length) {
+    return emptyLabel ? `<div class="task-tags is-empty"><span>${escapeHtml(emptyLabel)}</span></div>` : "";
+  }
+  return `<div class="task-tags">${normalized.map((tag) => `<span class="task-tag">${escapeHtml(tag)}</span>`).join("")}</div>`;
+}
+
+function taskTagText(tags: string[]): string {
+  return (tags ?? []).join(", ");
+}
+
+function parseTaskTags(value: string): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of value.split(",")) {
+    const tag = raw.trim();
+    const key = tag.toLowerCase();
+    if (tag && !seen.has(key)) {
+      seen.add(key);
+      result.push(tag);
+    }
+  }
+  return result;
 }
 
 function formatTaskDate(value: string): string {

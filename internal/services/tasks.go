@@ -23,6 +23,7 @@ const (
 	taskEventName         = "echo:tasks:event"
 	workspaceTaskFile     = "tasks.json"
 	workspaceTaskDoneFile = "tasks_done.json"
+	workspaceStateFile    = "workspace.json"
 	workspaceTaskSchema   = 1
 )
 
@@ -31,6 +32,7 @@ type WorkspaceTask struct {
 	Title              string   `json:"title"`
 	Details            string   `json:"details,omitempty"`
 	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
+	Tags               []string `json:"tags,omitempty"`
 	Priority           string   `json:"priority"`
 	Completed          bool     `json:"completed"`
 	CreatedAt          string   `json:"createdAt"`
@@ -42,16 +44,20 @@ type TaskInput struct {
 	Title              string   `json:"title"`
 	Details            string   `json:"details,omitempty"`
 	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
+	Tags               []string `json:"tags,omitempty"`
 	Priority           string   `json:"priority"`
 }
 
 type TaskBoard struct {
-	WorkspaceID     string          `json:"workspaceId"`
-	StoragePath     string          `json:"storagePath"`
-	DoneStoragePath string          `json:"doneStoragePath"`
-	GitIgnored      bool            `json:"gitIgnored"`
-	DoneGitIgnored  bool            `json:"doneGitIgnored"`
-	Tasks           []WorkspaceTask `json:"tasks"`
+	WorkspaceID              string          `json:"workspaceId"`
+	StoragePath              string          `json:"storagePath"`
+	DoneStoragePath          string          `json:"doneStoragePath"`
+	WorkspaceStatePath       string          `json:"workspaceStatePath"`
+	GitIgnored               bool            `json:"gitIgnored"`
+	DoneGitIgnored           bool            `json:"doneGitIgnored"`
+	WorkspaceStateGitIgnored bool            `json:"workspaceStateGitIgnored"`
+	Tags                     []string        `json:"tags"`
+	Tasks                    []WorkspaceTask `json:"tasks"`
 }
 
 type TaskEvent struct {
@@ -70,6 +76,7 @@ type storedWorkspaceTask struct {
 	Title              string   `json:"title"`
 	Details            string   `json:"details,omitempty"`
 	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
+	Tags               []string `json:"tags,omitempty"`
 	Priority           string   `json:"priority"`
 	Completed          bool     `json:"completed"`
 	CreatedAt          string   `json:"createdAt"`
@@ -82,12 +89,55 @@ type workspaceTaskFileData struct {
 	Tasks   map[string]storedWorkspaceTask `json:"tasks"`
 }
 
+type workspaceStateFileData struct {
+	Version int                        `json:"version"`
+	Tags    []string                   `json:"tags,omitempty"`
+	Extra   map[string]json.RawMessage `json:"-"`
+}
+
 type workspaceTaskLocation struct {
-	root            string
-	activePath      string
-	donePath        string
-	displayPath     string
-	doneDisplayPath string
+	root             string
+	activePath       string
+	donePath         string
+	statePath        string
+	displayPath      string
+	doneDisplayPath  string
+	stateDisplayPath string
+}
+
+func (d *workspaceStateFileData) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	d.Extra = map[string]json.RawMessage{}
+	for key, value := range raw {
+		switch key {
+		case "version":
+			if err := json.Unmarshal(value, &d.Version); err != nil {
+				return err
+			}
+		case "tags":
+			if err := json.Unmarshal(value, &d.Tags); err != nil {
+				return err
+			}
+		default:
+			d.Extra[key] = append([]byte(nil), value...)
+		}
+	}
+	return nil
+}
+
+func (d workspaceStateFileData) MarshalJSON() ([]byte, error) {
+	raw := map[string]any{}
+	for key, value := range d.Extra {
+		if key != "version" && key != "tags" {
+			raw[key] = value
+		}
+	}
+	raw["version"] = d.Version
+	raw["tags"] = d.Tags
+	return json.Marshal(raw)
 }
 
 type workspaceTasksProvider struct {
@@ -130,6 +180,7 @@ func (p workspaceTasksProvider) CreateWorkspaceTask(ctx context.Context, request
 		Title:              request.Title,
 		Details:            request.Details,
 		AcceptanceCriteria: request.AcceptanceCriteria,
+		Tags:               request.Tags,
 		Priority:           request.Priority,
 	}
 	p.service.taskMu.Lock()
@@ -152,6 +203,7 @@ func toolWorkspaceTask(task WorkspaceTask) tools.WorkspaceTask {
 		Title:              task.Title,
 		Details:            task.Details,
 		AcceptanceCriteria: append([]string(nil), task.AcceptanceCriteria...),
+		Tags:               append([]string(nil), task.Tags...),
 		Priority:           task.Priority,
 		Completed:          task.Completed,
 		CreatedAt:          task.CreatedAt,
@@ -194,6 +246,7 @@ func (s *SystemService) UpdateWorkspaceTask(workspaceID string, taskID string, i
 		task.Title = normalized.Title
 		task.Details = normalized.Details
 		task.AcceptanceCriteria = normalized.AcceptanceCriteria
+		task.Tags = normalized.Tags
 		task.Priority = normalized.Priority
 		task.UpdatedAt = now
 		return nil
@@ -250,7 +303,9 @@ func (s *SystemService) DeleteWorkspaceTask(workspaceID string, taskID string, e
 		} else if err = requireTaskRevision(task, expectedUpdatedAt); err == nil {
 			delete(active.Tasks, taskID)
 			delete(done.Tasks, taskID)
-			err = writeWorkspaceTaskFiles(location, active, done, task.Completed)
+			if err = syncWorkspaceStateTags(location, active, done); err == nil {
+				err = writeWorkspaceTaskFiles(location, active, done, task.Completed)
+			}
 		}
 	}
 	var board TaskBoard
@@ -381,7 +436,9 @@ func (s *SystemService) mutateWorkspaceTask(workspaceID string, taskID string, e
 				} else {
 					active.Tasks[taskID] = task
 				}
-				err = writeWorkspaceTaskFiles(location, active, done, !task.Completed)
+				if err = syncWorkspaceStateTags(location, active, done); err == nil {
+					err = writeWorkspaceTaskFiles(location, active, done, !task.Completed)
+				}
 			}
 		}
 	}
@@ -415,9 +472,13 @@ func (s *SystemService) createWorkspaceTask(workspace Workspace, input TaskInput
 		Title:              input.Title,
 		Details:            input.Details,
 		AcceptanceCriteria: input.AcceptanceCriteria,
+		Tags:               input.Tags,
 		Priority:           input.Priority,
 		CreatedAt:          now,
 		UpdatedAt:          now,
+	}
+	if err := syncWorkspaceStateTags(location, active, done); err != nil {
+		return TaskBoard{}, WorkspaceTask{}, err
 	}
 	if err := writeWorkspaceTaskFiles(location, active, done, true); err != nil {
 		return TaskBoard{}, WorkspaceTask{}, err
@@ -447,6 +508,7 @@ func normalizeTaskInput(input TaskInput) (TaskInput, error) {
 	input.Details = strings.TrimSpace(input.Details)
 	input.Priority = normalizeTaskPriority(input.Priority)
 	input.AcceptanceCriteria = normalizeTaskCriteria(input.AcceptanceCriteria)
+	input.Tags = normalizeTaskTags(input.Tags)
 	if input.Title == "" {
 		return TaskInput{}, fmt.Errorf("title is required")
 	}
@@ -461,6 +523,20 @@ func normalizeTaskCriteria(criteria []string) []string {
 	for _, criterion := range criteria {
 		if criterion = strings.TrimSpace(criterion); criterion != "" {
 			result = append(result, criterion)
+		}
+	}
+	return result
+}
+
+func normalizeTaskTags(tags []string) []string {
+	result := make([]string, 0, len(tags))
+	seen := map[string]bool{}
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		key := strings.ToLower(tag)
+		if tag != "" && !seen[key] {
+			seen[key] = true
+			result = append(result, tag)
 		}
 	}
 	return result
@@ -547,6 +623,8 @@ func readWorkspaceTaskFileAt(path string) (workspaceTaskFileData, error) {
 		if err := validateStoredWorkspaceTask(id, task); err != nil {
 			return data, err
 		}
+		task.Tags = normalizeTaskTags(task.Tags)
+		data.Tasks[id] = task
 	}
 	return data, nil
 }
@@ -605,11 +683,13 @@ func resolveWorkspaceTaskLocation(workspace Workspace) (workspaceTaskLocation, e
 			return workspaceTaskLocation{}, err
 		}
 		return workspaceTaskLocation{
-			root:            root,
-			activePath:      filepath.Join(cacheRoot, workspaceTaskFile),
-			donePath:        filepath.Join(cacheRoot, workspaceTaskDoneFile),
-			displayPath:     folder.Label + "/.echo/" + workspaceTaskFile,
-			doneDisplayPath: folder.Label + "/.echo/" + workspaceTaskDoneFile,
+			root:             root,
+			activePath:       filepath.Join(cacheRoot, workspaceTaskFile),
+			donePath:         filepath.Join(cacheRoot, workspaceTaskDoneFile),
+			statePath:        filepath.Join(cacheRoot, workspaceStateFile),
+			displayPath:      folder.Label + "/.echo/" + workspaceTaskFile,
+			doneDisplayPath:  folder.Label + "/.echo/" + workspaceTaskDoneFile,
+			stateDisplayPath: folder.Label + "/.echo/" + workspaceStateFile,
 		}, nil
 	}
 	return workspaceTaskLocation{}, fmt.Errorf("workspace has no available folder for backlog tasks")
@@ -681,6 +761,101 @@ func writeWorkspaceTaskBytes(root string, path string, encoded []byte) error {
 	return nil
 }
 
+func readWorkspaceStateFileAt(path string) (workspaceStateFileData, error) {
+	data := workspaceStateFileData{Version: workspaceTaskSchema, Tags: []string{}}
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return data, nil
+		}
+		return data, fmt.Errorf("stat workspace state file: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return data, fmt.Errorf("workspace state file must be a regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return data, fmt.Errorf("open workspace state file: %w", err)
+	}
+	defer file.Close()
+	decoder := json.NewDecoder(io.LimitReader(file, 1024*1024))
+	if err := decoder.Decode(&data); err != nil {
+		return data, fmt.Errorf("decode workspace state file: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return data, fmt.Errorf("decode workspace state file: trailing data")
+	}
+	if data.Version != workspaceTaskSchema {
+		return data, fmt.Errorf("unsupported workspace state file version %d", data.Version)
+	}
+	data.Tags = normalizeTaskTags(data.Tags)
+	sortTags(data.Tags)
+	return data, nil
+}
+
+func syncWorkspaceStateTags(location workspaceTaskLocation, active workspaceTaskFileData, done workspaceTaskFileData) error {
+	state, err := readWorkspaceStateFileAt(location.statePath)
+	if err != nil {
+		return err
+	}
+	merged := workspaceTagsFromTasks(active, done)
+	if reflect.DeepEqual(state.Tags, merged) {
+		return nil
+	}
+	state.Tags = merged
+	return writeWorkspaceStateFileAt(location.root, location.statePath, state)
+}
+
+func workspaceTagsFromTasks(active workspaceTaskFileData, done workspaceTaskFileData) []string {
+	tags := []string{}
+	for _, task := range active.Tasks {
+		tags = mergeWorkspaceTags(tags, task.Tags)
+	}
+	for _, task := range done.Tasks {
+		tags = mergeWorkspaceTags(tags, task.Tags)
+	}
+	return tags
+}
+
+func writeWorkspaceStateFileAt(root string, path string, data workspaceStateFileData) error {
+	data.Tags = normalizeTaskTags(data.Tags)
+	sortTags(data.Tags)
+	encoded, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode workspace state file: %w", err)
+	}
+	encoded = append(encoded, '\n')
+	return writeWorkspaceTaskBytes(root, path, encoded)
+}
+
+func mergeWorkspaceTags(existing []string, next []string) []string {
+	result := normalizeTaskTags(existing)
+	seen := map[string]bool{}
+	for _, tag := range result {
+		seen[strings.ToLower(tag)] = true
+	}
+	for _, tag := range normalizeTaskTags(next) {
+		key := strings.ToLower(tag)
+		if !seen[key] {
+			seen[key] = true
+			result = append(result, tag)
+		}
+	}
+	sortTags(result)
+	return result
+}
+
+func sortTags(tags []string) {
+	sort.Slice(tags, func(i, j int) bool {
+		left := strings.ToLower(tags[i])
+		right := strings.ToLower(tags[j])
+		if left != right {
+			return left < right
+		}
+		return tags[i] < tags[j]
+	})
+}
+
 func validateStoredWorkspaceTask(id string, task storedWorkspaceTask) error {
 	if strings.TrimSpace(id) == "" || strings.ContainsAny(id, `/\`) {
 		return fmt.Errorf("workspace task file contains an invalid task id")
@@ -710,6 +885,7 @@ func validateStoredWorkspaceTask(id string, task storedWorkspaceTask) error {
 
 func taskBoardFromData(workspaceID string, location workspaceTaskLocation, active workspaceTaskFileData, done workspaceTaskFileData) (TaskBoard, error) {
 	tasks := make([]WorkspaceTask, 0, len(active.Tasks)+len(done.Tasks))
+	tags := []string{}
 	all := make(map[string]storedWorkspaceTask, len(active.Tasks)+len(done.Tasks))
 	for id, task := range active.Tasks {
 		all[id] = task
@@ -723,12 +899,14 @@ func taskBoardFromData(workspaceID string, location workspaceTaskLocation, activ
 			Title:              stored.Title,
 			Details:            stored.Details,
 			AcceptanceCriteria: append([]string(nil), stored.AcceptanceCriteria...),
+			Tags:               append([]string(nil), stored.Tags...),
 			Priority:           stored.Priority,
 			Completed:          stored.Completed,
 			CreatedAt:          stored.CreatedAt,
 			UpdatedAt:          stored.UpdatedAt,
 			CompletedAt:        stored.CompletedAt,
 		})
+		tags = mergeWorkspaceTags(tags, stored.Tags)
 	}
 	sort.Slice(tasks, func(i, j int) bool {
 		if tasks[i].CreatedAt != tasks[j].CreatedAt {
@@ -738,19 +916,28 @@ func taskBoardFromData(workspaceID string, location workspaceTaskLocation, activ
 	})
 	activeRelative := ".echo/" + workspaceTaskFile
 	doneRelative := ".echo/" + workspaceTaskDoneFile
+	stateRelative := ".echo/" + workspaceStateFile
 	ignored := map[string]bool{}
-	if result, err := gitIgnoredWorkspacePaths(location.root, []string{activeRelative, doneRelative}); err == nil {
+	if result, err := gitIgnoredWorkspacePaths(location.root, []string{activeRelative, doneRelative, stateRelative}); err == nil {
 		ignored = result
 	} else {
-		ignored = rootGitignoreIgnoredPaths(location.root, []string{activeRelative, doneRelative})
+		ignored = rootGitignoreIgnoredPaths(location.root, []string{activeRelative, doneRelative, stateRelative})
 	}
+	workspaceState, err := readWorkspaceStateFileAt(location.statePath)
+	if err != nil {
+		return TaskBoard{}, err
+	}
+	tags = mergeWorkspaceTags(workspaceState.Tags, tags)
 	return TaskBoard{
-		WorkspaceID:     workspaceID,
-		StoragePath:     location.displayPath,
-		DoneStoragePath: location.doneDisplayPath,
-		GitIgnored:      ignored[activeRelative],
-		DoneGitIgnored:  ignored[doneRelative],
-		Tasks:           tasks,
+		WorkspaceID:              workspaceID,
+		StoragePath:              location.displayPath,
+		DoneStoragePath:          location.doneDisplayPath,
+		WorkspaceStatePath:       location.stateDisplayPath,
+		GitIgnored:               ignored[activeRelative],
+		DoneGitIgnored:           ignored[doneRelative],
+		WorkspaceStateGitIgnored: ignored[stateRelative],
+		Tags:                     tags,
+		Tasks:                    tasks,
 	}, nil
 }
 

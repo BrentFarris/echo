@@ -2184,6 +2184,78 @@ h3 {
   gap: var(--space-lg);
 }
 
+.task-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.task-tags.is-empty {
+  color: var(--color-text-muted);
+  font-size: var(--text-md-lg);
+  font-style: italic;
+}
+
+.task-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 var(--space-md);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 36%, var(--color-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
+  color: var(--color-accent-strong);
+  font-size: var(--text-sm);
+  font-weight: 800;
+}
+
+.task-tag-input-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.task-tag-suggestions {
+  position: absolute;
+  z-index: 85;
+  top: calc(100% + var(--space-xs));
+  left: 0;
+  right: 0;
+  display: none;
+  max-height: 180px;
+  overflow: auto;
+  padding: var(--space-xs);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-medium);
+}
+
+.task-tag-suggestions.is-open {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.task-tag-suggestions button {
+  min-height: 30px;
+  padding: 0 var(--space-md);
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-md-lg);
+  text-align: left;
+}
+
+.task-tag-suggestions button:hover,
+.task-tag-suggestions button:focus-visible {
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface));
+  color: var(--color-accent-strong);
+  outline: none;
+}
+
 .task-card p,
 .task-card ul {
   margin: 0;
@@ -2397,6 +2469,11 @@ h3 {
   margin-bottom: var(--space-md);
 }
 
+.task-detail-tags-field {
+  margin-bottom: var(--space-lg);
+  padding-block: var(--space-sm);
+}
+
 .task-detail-title-field h1 {
   margin: 0;
   color: var(--color-text);
@@ -2437,6 +2514,7 @@ h3 {
 }
 
 .task-inline-title-input,
+.task-inline-tags-input,
 .task-inline-textarea {
   width: 100%;
   border: 1px solid var(--color-accent);
@@ -2453,6 +2531,12 @@ h3 {
   font-weight: 800;
   line-height: 1.08;
   letter-spacing: -0.04em;
+}
+
+.task-inline-tags-input {
+  min-height: 42px;
+  padding: 0 var(--space-lg);
+  font-size: var(--text-lg);
 }
 
 .task-inline-textarea {

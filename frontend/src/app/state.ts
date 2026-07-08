@@ -227,8 +227,11 @@ export function taskBoardFor(workspaceID: string): services.TaskBoard {
       workspaceId: workspaceID,
       storagePath: "",
       doneStoragePath: "",
+      workspaceStatePath: "",
       gitIgnored: false,
       doneGitIgnored: false,
+      workspaceStateGitIgnored: false,
+      tags: [],
       tasks: [],
     })
   );

@@ -96,11 +96,12 @@ export type TaskEditorDraft = {
   title: string;
   details: string;
   acceptanceCriteria: string;
+  tags: string;
   priority: string;
   expectedUpdatedAt?: string;
 };
 
-export type TaskInlineEditField = "title" | "details" | "acceptanceCriteria" | "priority";
+export type TaskInlineEditField = "title" | "tags" | "details" | "acceptanceCriteria" | "priority";
 
 export type TaskInlineEditState = {
   taskId: string;
