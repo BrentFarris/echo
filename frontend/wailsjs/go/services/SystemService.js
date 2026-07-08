@@ -174,6 +174,10 @@ export function FindWorkspaceFileReferences(arg1, arg2) {
   return window['go']['services']['SystemService']['FindWorkspaceFileReferences'](arg1, arg2);
 }
 
+export function GetDashboardLayouts() {
+  return window['go']['services']['SystemService']['GetDashboardLayouts']();
+}
+
 export function GetHeartbeatConfig(arg1) {
   return window['go']['services']['SystemService']['GetHeartbeatConfig'](arg1);
 }
@@ -348,6 +352,10 @@ export function RetryChatMessage(arg1, arg2, arg3) {
 
 export function RotateWebAccessToken() {
   return window['go']['services']['SystemService']['RotateWebAccessToken']();
+}
+
+export function SaveDashboardLayout(arg1, arg2) {
+  return window['go']['services']['SystemService']['SaveDashboardLayout'](arg1, arg2);
 }
 
 export function SaveExternalTextFile(arg1, arg2, arg3) {

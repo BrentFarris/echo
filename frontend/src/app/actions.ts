@@ -10,10 +10,10 @@ import { dropWorkspaceGitRepositoryState, openGitChangeInCode, openWorkspaceGitR
 import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification, toggleHeartbeatInterval, toggleWatchdogInterval } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, cancelAgentMode, deleteAgentModeSettings, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint, saveAgentMode, saveNewAgentMode, startCreateAgentMode, startEditAgentMode } from "./settings";
-import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatAgentModeIDFor, chatComposerModeFor, setChatComposerMode, chatSessionFor, chatVideoDraftsFor, getActiveChatKanbanTab, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state } from "./state";
+import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatAgentModeIDFor, chatComposerModeFor, setChatComposerMode, chatSessionFor, chatVideoDraftsFor, getActiveChatKanbanTab, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state, getDashboardWidgets, setDashboardWidgets, defaultDashboardLayouts } from "./state";
 import { clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
 import { cloneSettings, cloneWebAccessSettings } from "./state";
-import type { AppMode, MobileNavView } from "./types";
+import type { AppMode, MobileNavView, WidgetId, WidgetSize } from "./types";
 import { applyTheme, settingsWithThemeDefaults, themePaletteNames } from "./theme";
 import { pushToast, dismissToast } from "./toasts";
 import { loadActiveTaskBoard } from "./tasks";
@@ -21,6 +21,7 @@ import { copyTextToClipboard, errorMessage, laneLabel } from "./utils";
 import { hydrateWorkspaceLetterDrafts } from "./workspace";
 import { resetTokenBudget, loadTokenBudget } from "./budget";
 import { loadLivenessConfig } from "./liveness";
+import { availableWidgets } from "./dashboard/grid";
 
 export async function handleAction(event: Event) {
   const target = event.currentTarget as HTMLElement;
@@ -111,6 +112,141 @@ export async function handleAction(event: Event) {
       const tab = workspace ? getActiveChatKanbanTab(workspace.id) : "chat";
       state.appMode = tab;
       state.mobileNavView = tab;
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "open-dashboard") {
+      state.dashboardPreviousMode = state.appMode;
+      state.appMode = "dashboard";
+      state.mobileNavView = "dashboard" as MobileNavView;
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "close-dashboard") {
+      const prev = state.dashboardPreviousMode ?? "chat";
+      state.appMode = prev;
+      state.mobileNavView = prev as MobileNavView;
+      getAppCallbacks().render();
+      return;
+    }
+    // Dashboard widget grid edit actions
+    if (action === "dashboard-edit-toggle") {
+      state.dashboardEditMode = !state.dashboardEditMode;
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "widget-remove") {
+      const widgetId = target.dataset.widgetId ?? "";
+      const view = state.dashboardViewMode ?? "dashboard";
+      const widgets = getDashboardWidgets(view);
+      const filtered = widgets.filter((w) => w.id !== widgetId);
+      setDashboardWidgets(view, filtered);
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "widget-add") {
+      const widgetId = target.dataset.widgetId as WidgetId;
+      const widgetSize = target.dataset.widgetSize as WidgetSize;
+      const view = state.dashboardViewMode ?? "dashboard";
+      const widgets = getDashboardWidgets(view);
+      // Look up title from availableWidgets map
+      const allAvail = availableWidgets[view] ?? [];
+      const def = allAvail.find((a) => a.id === widgetId);
+      if (!def) return;
+      const newOrder = widgets.length;
+      widgets.push({ id: widgetId, view, title: def.title, size: widgetSize, order: newOrder });
+      setDashboardWidgets(view, widgets);
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "widget-move-up") {
+      const widgetId = target.dataset.widgetId ?? "";
+      const view = state.dashboardViewMode ?? "dashboard";
+      const widgets = getDashboardWidgets(view);
+      const idx = widgets.findIndex((w) => w.id === widgetId);
+      if (idx > 0) {
+        [widgets[idx - 1], widgets[idx]] = [widgets[idx], widgets[idx - 1]];
+        setDashboardWidgets(view, widgets);
+        getAppCallbacks().render();
+      }
+      return;
+    }
+    if (action === "widget-move-down") {
+      const widgetId = target.dataset.widgetId ?? "";
+      const view = state.dashboardViewMode ?? "dashboard";
+      const widgets = getDashboardWidgets(view);
+      const idx = widgets.findIndex((w) => w.id === widgetId);
+      if (idx >= 0 && idx < widgets.length - 1) {
+        [widgets[idx], widgets[idx + 1]] = [widgets[idx + 1], widgets[idx]];
+        setDashboardWidgets(view, widgets);
+        getAppCallbacks().render();
+      }
+      return;
+    }
+    if (action === "reset-dashboard-layout") {
+      const view = state.dashboardViewMode ?? "dashboard";
+      const defaults = defaultDashboardLayouts();
+      const defaultWidgets = defaults[view] ?? [];
+      setDashboardWidgets(view, [...defaultWidgets]);
+      getAppCallbacks().render();
+      return;
+    }
+    // Aliases for add-widget / remove-widget / move-widget-up / move-widget-down
+    // (grid.ts uses widget-add / widget-remove / widget-move-up / widget-move-down)
+    if (action === "add-widget") {
+      const widgetId = target.dataset.widgetId as WidgetId;
+      const widgetSize = target.dataset.widgetSize as WidgetSize;
+      const view = state.dashboardViewMode ?? "dashboard";
+      const widgets = getDashboardWidgets(view);
+      const allAvail = availableWidgets[view] ?? [];
+      const def = allAvail.find((a) => a.id === widgetId);
+      if (!def) return;
+      const newOrder = widgets.length;
+      widgets.push({ id: widgetId, view, title: def.title, size: widgetSize, order: newOrder });
+      setDashboardWidgets(view, widgets);
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "remove-widget") {
+      const widgetId = target.dataset.widgetId ?? "";
+      const view = state.dashboardViewMode ?? "dashboard";
+      const widgets = getDashboardWidgets(view);
+      const filtered = widgets.filter((w) => w.id !== widgetId);
+      setDashboardWidgets(view, filtered);
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "move-widget-up") {
+      const widgetId = target.dataset.widgetId ?? "";
+      const view = state.dashboardViewMode ?? "dashboard";
+      const widgets = getDashboardWidgets(view);
+      const idx = widgets.findIndex((w) => w.id === widgetId);
+      if (idx > 0) {
+        [widgets[idx - 1], widgets[idx]] = [widgets[idx], widgets[idx - 1]];
+        setDashboardWidgets(view, widgets);
+        getAppCallbacks().render();
+      }
+      return;
+    }
+    if (action === "move-widget-down") {
+      const widgetId = target.dataset.widgetId ?? "";
+      const view = state.dashboardViewMode ?? "dashboard";
+      const widgets = getDashboardWidgets(view);
+      const idx = widgets.findIndex((w) => w.id === widgetId);
+      if (idx >= 0 && idx < widgets.length - 1) {
+        [widgets[idx], widgets[idx + 1]] = [widgets[idx + 1], widgets[idx]];
+        setDashboardWidgets(view, widgets);
+        getAppCallbacks().render();
+      }
+      return;
+    }
+    if (action === "open-view-dashboard") {
+      const view = target.dataset.view as AppMode;
+      if (!view) return;
+      state.dashboardViewMode = view;
+      state.dashboardPreviousMode = state.appMode;
+      state.appMode = "dashboard";
+      state.mobileNavView = "dashboard" as MobileNavView;
       getAppCallbacks().render();
       return;
     }

@@ -131,6 +131,7 @@ type WorkspaceSkillsProvider interface {
 type WorkspaceTasksProvider interface {
 	ListWorkspaceTasks(ctx context.Context, request WorkspaceTaskListRequest) (WorkspaceTaskListResponse, error)
 	CreateWorkspaceTask(ctx context.Context, request WorkspaceTaskCreateRequest) (WorkspaceTaskMutationResponse, error)
+	ConvertTaskToKanbanCard(ctx context.Context, request WorkspaceTaskConvertRequest) (WorkspaceTaskConversionResponse, error)
 }
 
 type WorkspaceTaskListRequest struct {
@@ -165,6 +166,21 @@ type WorkspaceTaskListResponse struct {
 type WorkspaceTaskMutationResponse struct {
 	Created WorkspaceTask   `json:"created"`
 	Tasks   []WorkspaceTask `json:"tasks"`
+}
+
+type WorkspaceTaskConvertRequest struct {
+	TaskID                 string   `json:"taskID"`
+	Title                  string   `json:"title,omitempty"`
+	Description            string   `json:"description,omitempty"`
+	AcceptanceCriteria     []string `json:"acceptanceCriteria,omitempty"`
+	ExpectedUpdatedAt      string   `json:"expectedUpdatedAt"`
+}
+
+type WorkspaceTaskConversionResponse struct {
+	TaskID    string          `json:"taskID"`
+	Task      *WorkspaceTask  `json:"task"`
+	KanbanCardID string       `json:"kanbanCardID"`
+	Tasks     []WorkspaceTask `json:"tasks"`
 }
 
 const (

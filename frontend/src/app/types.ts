@@ -2,9 +2,38 @@
 import { services } from "../../wailsjs/go/models";
 import type { CodeEntryKind, CodeViewCallbacks } from "../codeView/types";
 
-export type AppMode = "chat" | "tasks" | "kanban" | "code" | "settings" | "git";
+export type AppMode = "chat" | "tasks" | "kanban" | "code" | "settings" | "git" | "dashboard";
 
-export type MobileNavView = AppMode | "git";
+export type MobileNavView = AppMode;
+
+export type WidgetSize = "small" | "medium" | "large" | "wide";
+
+export type WidgetId =
+  | "chat-recent"
+  | "chat-busy-status"
+  | "chat-token-budget"
+  | "kanban-summary"
+  | "kanban-progress"
+  | "kanban-done-count"
+  | "tasks-overview"
+  | "tasks-priority-strip"
+  | "git-branch"
+  | "git-recent-commits"
+  | "git-change-count"
+  | "system-heartbeat"
+  | "system-workspaces"
+  | "code-open-tabs"
+  | "code-workspace-status";
+
+export interface DashboardWidget {
+  id: WidgetId;
+  view: AppMode;
+  title: string;
+  size: WidgetSize;
+  order: number;
+}
+
+export type DashboardLayouts = Record<AppMode, DashboardWidget[]>;
 
 export type ContextMenuState = {
   workspaceId: string;

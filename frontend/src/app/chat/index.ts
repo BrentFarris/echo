@@ -550,6 +550,13 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
   const creatingSkill = state.creatingChatSkills.has(workspace.id);
   return `
     <section class="work-panel chat-panel" aria-busy="${session.busy || executing}" data-chat-panel data-workspace-id="${escapeAttribute(workspace.id)}">
+      <div class="panel-heading">
+        <div class="kanban-heading-main">
+          <span>Chat</span>
+          <strong id="chat-title">${escapeHtml(workspace.displayName)}</strong>
+        </div>
+        <button type="button" class="icon-button view-dashboard-button" title="View Chat dashboard" aria-label="Chat dashboard" data-action="open-view-dashboard" data-view="chat">${icons.dashboard}</button>
+      </div>
       <div class="chat-log" data-chat-log>
         ${
           messages.length

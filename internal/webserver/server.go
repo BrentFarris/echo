@@ -573,4 +573,6 @@ var allowedRPCMethods = map[string]bool{
 	"UpdateKanbanCardDescription":      true,
 	"UpdateKanbanCardDirection":        true,
 	"UpdateWorkspaceTask":              true,
+	"GetDashboardLayouts":              true,
+	"SaveDashboardLayout":              true,
 }

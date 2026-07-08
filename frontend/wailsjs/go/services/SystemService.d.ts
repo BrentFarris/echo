@@ -92,6 +92,8 @@ export function FindWorkspaceFileImplementations(arg1:string,arg2:services.Works
 
 export function FindWorkspaceFileReferences(arg1:string,arg2:services.WorkspaceReferenceRequest):Promise<services.WorkspaceReferenceResponse>;
 
+export function GetDashboardLayouts():Promise<Record<string, Array<services.DashboardWidgetJSON>>>;
+
 export function GetHeartbeatConfig(arg1:string):Promise<services.HeartbeatConfig>;
 
 export function GetLivenessConfig(arg1:string):Promise<services.LivenessConfig>;
@@ -179,6 +181,8 @@ export function ResolveWorkspaceTextFilePath(arg1:string,arg2:string):Promise<st
 export function RetryChatMessage(arg1:string,arg2:string,arg3:string):Promise<services.ChatSession>;
 
 export function RotateWebAccessToken():Promise<services.AppState>;
+
+export function SaveDashboardLayout(arg1:string,arg2:Array<services.DashboardWidgetJSON>):Promise<void>;
 
 export function SaveExternalTextFile(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFile>;
 

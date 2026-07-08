@@ -1,7 +1,7 @@
 
 import { llm, services } from "../../wailsjs/go/models";
 import type { ThemePaletteName } from "./theme";
-import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, KanbanCardCreationDraft, MobileNavView, TaskEditorDraft, Toast } from "./types";
+import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, DashboardWidget, KanbanCardCreationDraft, MobileNavView, TaskEditorDraft, Toast } from "./types";
 
 const endpointTopics = ["chat", "kanbanDecompose", "kanban", "inlineCode"] as const;
 type EndpointTopicKey = (typeof endpointTopics)[number];
@@ -26,6 +26,10 @@ export const state = {
   settingsThemePalette: "light" as ThemePaletteName,
   workspaceLetterDrafts: new Map<string, string>(),
   appMode: "chat" as AppMode,
+  dashboardPreviousMode: null as AppMode | null, // remembers mode before dashboard
+  dashboardLayouts: defaultDashboardLayouts(), // per-view widget layouts (initialized with defaults)
+  dashboardEditMode: false, // whether user is currently rearranging widgets
+  dashboardViewMode: null as AppMode | null, // which view's dashboard is active
   mobileNavView: "chat" as MobileNavView,
   activeChatKanbanTab: new Map<string, ChatKanbanTab>(),
   formError: "",
@@ -63,6 +67,7 @@ export const state = {
   kanbanRunStarts: new Map<string, number>(),
   kanbanRunElapsed: new Map<string, number>(),
   selectedKanbanCards: new Map<string, string>(),
+  selectedTaskCards: new Map<string, string>(),
   openChangeReviewWorkspaces: new Set<string>(),
   openGitChangeWorkspaces: new Set<string>(),
   cardMessageDrafts: new Map<string, string>(),
@@ -323,4 +328,111 @@ export function getActiveChatModelLabel(): string {
   const endpointID = selection?.chat || endpoints[0].id;
   const endpoint = endpoints.find((ep) => ep.id === endpointID);
   return endpoint?.name?.trim() || endpoint?.model?.trim() || endpoint?.id?.trim() || "";
+}
+
+/* ------------------------------------------------------------------ */
+/*  Dashboard layout helpers                                           */
+/* ------------------------------------------------------------------ */
+
+const dashboardModes: AppMode[] = ["chat", "tasks", "kanban", "code", "git", "dashboard"];
+
+export function defaultDashboardLayouts(): Record<AppMode, DashboardWidget[]> {
+  const layouts: Record<AppMode, DashboardWidget[]> = {
+    chat: [
+      { id: "chat-busy-status", view: "chat", title: "Chat Status", size: "small", order: 0 },
+      { id: "chat-token-budget", view: "chat", title: "Token Budget", size: "wide", order: 1 },
+      { id: "chat-recent", view: "chat", title: "Recent Chat", size: "large", order: 2 },
+      { id: "system-heartbeat", view: "chat", title: "Heartbeat", size: "small", order: 3 },
+    ],
+    tasks: [
+      { id: "tasks-overview", view: "tasks", title: "Tasks Overview", size: "large", order: 0 },
+      { id: "tasks-priority-strip", view: "tasks", title: "Priority Strip", size: "wide", order: 1 },
+      { id: "system-heartbeat", view: "tasks", title: "Heartbeat", size: "small", order: 2 },
+    ],
+    kanban: [
+      { id: "kanban-summary", view: "kanban", title: "Kanban Summary", size: "wide", order: 0 },
+      { id: "kanban-progress", view: "kanban", title: "Card Progress", size: "medium", order: 1 },
+      { id: "kanban-done-count", view: "kanban", title: "Cards Done", size: "small", order: 2 },
+      { id: "system-workspaces", view: "kanban", title: "Workspaces", size: "small", order: 3 },
+    ],
+    code: [
+      { id: "code-open-tabs", view: "code", title: "Open Tabs", size: "medium", order: 0 },
+      { id: "code-workspace-status", view: "code", title: "Workspace Status", size: "small", order: 1 },
+      { id: "system-heartbeat", view: "code", title: "Heartbeat", size: "small", order: 2 },
+    ],
+    git: [
+      { id: "git-branch", view: "git", title: "Current Branch", size: "small", order: 0 },
+      { id: "git-change-count", view: "git", title: "Changes", size: "small", order: 1 },
+      { id: "git-recent-commits", view: "git", title: "Recent Commits", size: "large", order: 2 },
+    ],
+    dashboard: [
+      { id: "chat-busy-status", view: "dashboard", title: "Chat Status", size: "small", order: 0 },
+      { id: "kanban-summary", view: "dashboard", title: "Kanban Summary", size: "wide", order: 1 },
+      { id: "system-workspaces", view: "dashboard", title: "Workspaces", size: "medium", order: 2 },
+    ],
+    settings: [],
+  };
+  return layouts;
+}
+
+export function getDashboardWidgets(view: AppMode): DashboardWidget[] {
+  const layouts = state.dashboardLayouts;
+  if (layouts[view] !== undefined) {
+    return layouts[view];
+  }
+  // Initialize with defaults on first access
+  const defaults = defaultDashboardLayouts();
+  state.dashboardLayouts = defaults;
+  return defaults[view] ?? [];
+}
+
+export function setDashboardWidgets(view: AppMode, widgets: DashboardWidget[]) {
+  state.dashboardLayouts[view] = widgets;
+  scheduleDashboardSave();
+}
+
+// Debounced dashboard layout persistence
+let dashboardSaveTimer: number | null = null;
+function scheduleDashboardSave() {
+  if (dashboardSaveTimer !== null) {
+    clearTimeout(dashboardSaveTimer);
+  }
+  dashboardSaveTimer = window.setTimeout(async () => {
+    dashboardSaveTimer = null;
+    try {
+      await saveDashboardLayoutsToBackend();
+    } catch {
+      /* Non-fatal: layout will persist on next change or restart. */
+    }
+  }, 500);
+}
+
+export async function loadDashboardLayoutsFromBackend(): Promise<void> {
+  try {
+    const { GetDashboardLayouts } = await import("../backend/services");
+    const layouts = await GetDashboardLayouts();
+    if (layouts && Object.keys(layouts).length > 0) {
+      // Convert backend layout format to frontend DashboardWidget[] per view
+      const converted: Record<AppMode, DashboardWidget[]> = {} as Record<AppMode, DashboardWidget[]>;
+      for (const [view, widgets] of Object.entries(layouts)) {
+        converted[view as AppMode] = widgets.map((w) => ({
+          id: w.id as DashboardWidget["id"],
+          view: w.view as AppMode,
+          title: w.title,
+          size: w.size as DashboardWidget["size"],
+          order: w.order,
+        }));
+      }
+      state.dashboardLayouts = converted;
+    }
+  } catch {
+    /* Non-fatal: use defaults. */
+  }
+}
+
+async function saveDashboardLayoutsToBackend(): Promise<void> {
+  const { SaveDashboardLayout } = await import("../backend/services");
+  for (const [view, widgets] of Object.entries(state.dashboardLayouts)) {
+    await SaveDashboardLayout(view as string, widgets);
+  }
 }

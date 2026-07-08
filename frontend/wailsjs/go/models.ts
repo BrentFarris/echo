@@ -349,6 +349,7 @@ export namespace services {
 	    heartbeatConfigs?: Record<string, HeartbeatConfig>;
 	    livenessConfigs?: Record<string, LivenessConfig>;
 	    watchdogConfigs?: Record<string, WatchdogConfig>;
+	    dashboardLayouts?: Record<string, Array<DashboardWidgetJSON>>;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppState(source);
@@ -363,6 +364,7 @@ export namespace services {
 	        this.heartbeatConfigs = this.convertValues(source["heartbeatConfigs"], HeartbeatConfig, true);
 	        this.livenessConfigs = this.convertValues(source["livenessConfigs"], LivenessConfig, true);
 	        this.watchdogConfigs = this.convertValues(source["watchdogConfigs"], WatchdogConfig, true);
+	        this.dashboardLayouts = this.convertValues(source["dashboardLayouts"], Array<DashboardWidgetJSON>, true);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -616,6 +618,26 @@ export namespace services {
 	
 	
 	
+	export class DashboardWidgetJSON {
+	    id: string;
+	    view: string;
+	    title: string;
+	    size: string;
+	    order: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DashboardWidgetJSON(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.view = source["view"];
+	        this.title = source["title"];
+	        this.size = source["size"];
+	        this.order = source["order"];
+	    }
+	}
 	
 	export class InlineCodePromptRequest {
 	    requestId?: string;

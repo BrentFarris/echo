@@ -1,4 +1,5 @@
 import {
+  CreateKanbanCardFromTask,
   CreateWorkspaceTask,
   DeleteWorkspaceTask,
   LoadTaskBoard,
@@ -73,6 +74,7 @@ export function renderTaskPanel(workspace: services.Workspace): string {
           <small class="task-storage-path">Completed: ${escapeHtml(board.doneStoragePath || ".echo/tasks_done.json")}</small>
         </div>
         <div class="task-heading-actions">
+          <button type="button" class="icon-button view-dashboard-button" title="View Tasks dashboard" aria-label="Tasks dashboard" data-action="open-view-dashboard" data-view="tasks">${icons.dashboard}</button>
           <label class="task-completed-toggle">
             <input type="checkbox" data-task-action="toggle-completed" ${filterMode === "all" || filterMode === "completed" ? "checked" : ""}>
             <span>Show completed</span>
@@ -124,29 +126,114 @@ function renderTaskLane(priority: string, tasks: services.WorkspaceTask[]): stri
 }
 
 function renderTaskCard(task: services.WorkspaceTask): string {
-  const criteria = task.acceptanceCriteria ?? [];
+  const priorityClass = `priority-${task.priority.toLowerCase()}`;
+  const isCompleted = task.completed;
+  let statusBadge = "";
+  if (isCompleted) {
+    statusBadge = '<span class="task-status-badge task-status-converted">→ card ✓</span>';
+  } else {
+    statusBadge = '<span class="task-status-badge task-status-backlog">backlog</span>';
+  }
   return `
-    <article class="task-card${task.completed ? " is-completed" : ""}" draggable="true" data-task-drag-item data-task-id="${escapeAttribute(task.id)}">
-      <header>
-        <strong>${escapeHtml(task.title)}</strong>
-        ${task.completed ? `<span class="task-complete-badge">${icons.check}</span>` : ""}
-      </header>
-      ${task.details ? `<div class="task-card-details markdown-body">${renderMarkdown(task.details)}</div>` : ""}
-      ${criteria.length ? `<ul>${criteria.map((criterion) => `<li>${escapeHtml(criterion)}</li>`).join("")}</ul>` : ""}
-      <label class="task-priority-control">
-        <span>Priority</span>
-        <select data-task-priority-select data-task-id="${escapeAttribute(task.id)}" data-updated-at="${escapeAttribute(task.updatedAt)}">
-          ${priorities.map((priority) => `<option value="${priority}" ${task.priority === priority ? "selected" : ""}>${priority}</option>`).join("")}
-        </select>
-      </label>
-      <div class="task-card-actions">
-        <button class="icon-button" type="button" title="Edit task" aria-label="Edit ${escapeAttribute(task.title)}" data-task-action="edit" data-task-id="${escapeAttribute(task.id)}">${icons.edit}</button>
-        <button class="icon-button" type="button" title="Use as chat prompt" aria-label="Use ${escapeAttribute(task.title)} as a chat prompt" data-task-action="chat" data-task-id="${escapeAttribute(task.id)}">${icons.chat}</button>
-        ${task.completed ? "" : `<button class="icon-button" type="button" title="Convert to Kanban card" aria-label="Convert ${escapeAttribute(task.title)} to a Kanban card" data-task-action="kanban" data-task-id="${escapeAttribute(task.id)}">${icons.kanban}</button>`}
-        <button class="icon-button" type="button" title="${task.completed ? "Reopen" : "Complete"} task" aria-label="${task.completed ? "Reopen" : "Complete"} ${escapeAttribute(task.title)}" data-task-action="complete" data-task-id="${escapeAttribute(task.id)}">${task.completed ? icons.undo : icons.check}</button>
-        <button class="icon-button danger-button" type="button" title="Delete task" aria-label="Delete ${escapeAttribute(task.title)}" data-task-action="delete" data-task-id="${escapeAttribute(task.id)}">${icons.trash}</button>
-      </div>
+    <article class="task-card${isCompleted ? " is-completed" : ""}" draggable="true" data-task-drag-item data-task-id="${escapeAttribute(task.id)}">
+      <button
+        class="task-card-open"
+        type="button"
+        data-task-action="open-task"
+        data-task-id="${escapeAttribute(task.id)}"
+        aria-label="Open ${escapeAttribute(task.title)} details"
+      >
+        <span class="task-card-header">
+          <span class="priority-badge ${priorityClass}" aria-label="${task.priority} priority">${task.priority}</span>
+          <strong>${escapeHtml(task.title)}</strong>
+          ${statusBadge}
+        </span>
+      </button>
     </article>
+  `;
+}
+
+export function renderTaskDetail(workspace: services.Workspace): string {
+  const selectedID = state.selectedTaskCards.get(workspace.id);
+  if (!selectedID) return "";
+  const board = taskBoardFor(workspace.id);
+  const task = (board.tasks ?? []).find((t) => t.id === selectedID);
+  if (!task) return "";
+
+  const criteria = task.acceptanceCriteria ?? [];
+  const priorityClass = `priority-${task.priority.toLowerCase()}`;
+  const createdDate = task.createdAt
+    ? new Date(task.createdAt).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
+    : "";
+
+  return `
+    <aside class="card-detail-backdrop" data-task-detail-backdrop role="dialog" aria-modal="true" aria-labelledby="task-detail-title">
+      <section class="card-detail" data-task-detail>
+        <header class="card-detail-header">
+          <div class="card-detail-heading-row">
+            <div>
+              <p class="eyebrow">${escapeHtml(task.id)} - ${task.completed ? "Completed" : "Backlog"}</p>
+              <h2 id="task-detail-title">${escapeHtml(task.title)}</h2>
+            </div>
+            <button class="icon-button close-button" type="button" title="Close" aria-label="Close task details" data-task-action="close-task">
+              ${icons.x}
+            </button>
+          </div>
+
+          <div class="task-detail-meta">
+            <span class="priority-badge ${priorityClass}" aria-label="${task.priority} priority">${task.priority}</span>
+            ${createdDate ? `<span class="task-detail-created">Created ${escapeHtml(createdDate)}</span>` : ""}
+            ${task.completed ? `<span class="task-detail-status completed">Completed ✓</span>` : `<span class="task-detail-status backlog">Backlog</span>`}
+          </div>
+
+          <div class="card-detail-actions">
+            <button class="secondary-button icon-text-button" type="button" data-task-action="edit" data-task-id="${escapeAttribute(task.id)}">
+              ${icons.edit}
+              <span>Edit</span>
+            </button>
+            ${!task.completed ? `
+              <button class="secondary-button icon-text-button" type="button" data-task-action="kanban" data-task-id="${escapeAttribute(task.id)}">
+                ${icons.kanban}
+                <span>Convert to Kanban</span>
+              </button>
+            ` : ""}
+            <button class="secondary-button icon-text-button" type="button" data-task-action="cycle-priority" data-task-id="${escapeAttribute(task.id)}">
+              ${icons.refresh}
+              <span>Change Priority</span>
+            </button>
+            <button class="secondary-button icon-text-button danger-button" type="button" data-task-action="delete" data-task-id="${escapeAttribute(task.id)}">
+              ${icons.trash}
+              <span>Delete</span>
+            </button>
+          </div>
+        </header>
+
+        ${task.details ? `
+          <section class="detail-section">
+            <h3>Description</h3>
+            <div class="markdown-body">${renderMarkdown(task.details)}</div>
+          </section>
+        ` : ""}
+
+        <section class="detail-section">
+          <h3>Acceptance Criteria</h3>
+          ${criteria.length
+            ? `<ul>${criteria.map((criterion) => `<li>${escapeHtml(criterion)}</li>`).join("")}</ul>`
+            : `<p>No acceptance criteria recorded.</p>`}
+        </section>
+
+        <div class="task-detail-footer-actions">
+          <button class="secondary-button icon-text-button" type="button" data-task-action="complete" data-task-id="${escapeAttribute(task.id)}">
+            ${task.completed ? icons.undo : icons.check}
+            <span>${task.completed ? "Reopen" : "Complete"}</span>
+          </button>
+          <button class="secondary-button icon-text-button" type="button" data-task-action="chat" data-task-id="${escapeAttribute(task.id)}">
+            ${icons.chat}
+            <span>Use as Chat Prompt</span>
+          </button>
+        </div>
+      </section>
+    </aside>
   `;
 }
 
@@ -176,11 +263,18 @@ function renderTaskEditor(workspaceID: string): string {
 
 export function bindTaskEvents(root: ParentNode) {
   root.querySelectorAll<HTMLElement>("[data-task-action]").forEach((element) => {
-    const eventName = element instanceof HTMLInputElement && element.type === "checkbox" ? "change" : "click";
-    element.addEventListener(eventName, handleTaskAction);
+    element.addEventListener("click", handleTaskAction);
   });
   root.querySelector<HTMLFormElement>("[data-task-editor-form]")?.addEventListener("submit", handleTaskEditorSubmit);
-  root.querySelectorAll<HTMLSelectElement>("[data-task-priority-select]").forEach((select) => select.addEventListener("change", handlePrioritySelect));
+  // Backdrop click to close task detail
+  const backdrop = root.querySelector<HTMLElement>("aside.card-detail-backdrop[data-task-detail-backdrop]");
+  if (backdrop) {
+    backdrop.addEventListener("click", (event) => {
+      if (event.target === backdrop) {
+        handleTaskDetailBackdropClick(backdrop);
+      }
+    });
+  }
   root.querySelectorAll<HTMLElement>("[data-task-drag-item]").forEach((card) => {
     card.addEventListener("dragstart", handleTaskDragStart);
     card.addEventListener("dragend", handleTaskDragEnd);
@@ -196,37 +290,11 @@ export function bindTaskEvents(root: ParentNode) {
   });
 }
 
-export function patchTaskPanel() {
+function handleTaskDetailBackdropClick(backdrop: HTMLElement) {
   const workspace = activeWorkspace();
-  const panel = appRoot.querySelector<HTMLElement>("[data-task-panel]");
-  if (!workspace || !panel) return;
-
-  // Preserve the search input value and selection/cursor position before re-rendering
-  const existingSearch = appRoot.querySelector<HTMLInputElement>("[data-task-search]");
-  const searchValue = existingSearch?.value ?? "";
-  const selectionStart = existingSearch?.selectionStart ?? null;
-  const selectionEnd = existingSearch?.selectionEnd ?? null;
-  const searchFocused = document.activeElement === existingSearch;
-
-  const next = document.createElement("template");
-  next.innerHTML = renderTaskPanel(workspace).trim();
-  const replacement = next.content.firstElementChild as HTMLElement;
-  panel.replaceWith(replacement);
-
-  // Restore the search input value and focus
-  const input = replacement.querySelector<HTMLInputElement>("[data-task-search]");
-  if (input) {
-    input.value = searchValue;
-    if (searchFocused) {
-      input.focus();
-      if (selectionStart !== null && selectionEnd !== null) {
-        input.setSelectionRange(selectionStart, selectionEnd);
-      }
-    }
-  }
-
-  // Re-bind events on the new panel
-  bindTaskEvents(replacement);
+  if (!workspace) return;
+  state.selectedTaskCards.delete(workspace.id);
+  getAppCallbacks().render();
 }
 
 async function handleTaskAction(event: Event) {
@@ -236,18 +304,21 @@ async function handleTaskAction(event: Event) {
   if (!workspace || !action) return;
   const board = taskBoardFor(workspace.id);
   const task = (board.tasks ?? []).find((candidate) => candidate.id === target.dataset.taskId);
-  try {
-    if (action === "toggle-completed") {
-      const checked = (target as HTMLInputElement).checked;
-      state.taskFilterMode.set(workspace.id, checked ? "all" : "open");
-      if (checked) {
-        state.showCompletedTaskWorkspaces.add(workspace.id);
-      } else {
-        state.showCompletedTaskWorkspaces.delete(workspace.id);
-      }
-      getAppCallbacks().render();
-      return;
+
+  // Handle toggle-completed checkbox separately (it was previously handled via change event)
+  if (action === "toggle-completed") {
+    const checked = (target as HTMLInputElement).checked;
+    state.taskFilterMode.set(workspace.id, checked ? "all" : "open");
+    if (checked) {
+      state.showCompletedTaskWorkspaces.add(workspace.id);
+    } else {
+      state.showCompletedTaskWorkspaces.delete(workspace.id);
     }
+    getAppCallbacks().render();
+    return;
+  }
+
+  try {
     if (action === "refresh") {
       if (await loadActiveTaskBoard()) {
         pushToast("Backlog refreshed.", "success");
@@ -262,6 +333,19 @@ async function handleTaskAction(event: Event) {
     }
     if (action === "cancel-editor") {
       state.taskEditorDrafts.delete(workspace.id);
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "open-task") {
+      const taskID = target.dataset.taskId ?? "";
+      if (taskID) {
+        state.selectedTaskCards.set(workspace.id, taskID);
+      }
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "close-task") {
+      state.selectedTaskCards.delete(workspace.id);
       getAppCallbacks().render();
       return;
     }
@@ -281,12 +365,14 @@ async function handleTaskAction(event: Event) {
     if (action === "complete") {
       state.taskBoards.set(workspace.id, await SetWorkspaceTaskCompleted(workspace.id, task.id, !task.completed, task.updatedAt));
       pushToast(task.completed ? "Task reopened." : "Task completed.", "success");
+      // If completed and was selected, keep selection if still exists
       getAppCallbacks().render();
       return;
     }
     if (action === "delete") {
       if (!window.confirm(`Delete "${task.title}"?`)) return;
       state.taskBoards.set(workspace.id, await DeleteWorkspaceTask(workspace.id, task.id, task.updatedAt));
+      state.selectedTaskCards.delete(workspace.id);
       pushToast("Task deleted.", "success");
       getAppCallbacks().render();
       return;
@@ -299,6 +385,7 @@ async function handleTaskAction(event: Event) {
       state.appMode = "chat";
       state.mobileNavView = "chat";
       state.activeChatKanbanTab.set(workspace.id, "chat");
+      state.selectedTaskCards.delete(workspace.id);
       getAppCallbacks().render();
       window.requestAnimationFrame(() => appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus());
       return;
@@ -312,7 +399,18 @@ async function handleTaskAction(event: Event) {
         sourceTaskUpdatedAt: task.updatedAt,
       });
       state.creatingKanbanCardWorkspaces.add(workspace.id);
+      state.selectedTaskCards.delete(workspace.id);
       getAppCallbacks().render();
+      return;
+    }
+    if (action === "cycle-priority") {
+      const currentIdx = priorities.indexOf(task.priority as (typeof priorities)[number]);
+      const nextIdx = (currentIdx + 1) % priorities.length;
+      const nextPriority = priorities[nextIdx];
+      state.taskBoards.set(workspace.id, await MoveWorkspaceTask(workspace.id, task.id, nextPriority, task.updatedAt));
+      pushToast(`Priority changed to ${nextPriority}.`, "success");
+      getAppCallbacks().render();
+      return;
     }
   } catch (error) {
     pushToast(errorMessage(error), "error");
@@ -347,20 +445,6 @@ async function handleTaskEditorSubmit(event: SubmitEvent) {
   }
 }
 
-async function handlePrioritySelect(event: Event) {
-  const workspace = activeWorkspace();
-  const select = event.currentTarget as HTMLSelectElement;
-  if (!workspace) return;
-  try {
-    state.taskBoards.set(workspace.id, await MoveWorkspaceTask(workspace.id, select.dataset.taskId || "", select.value, select.dataset.updatedAt || ""));
-    getAppCallbacks().render();
-  } catch (error) {
-    pushToast(errorMessage(error), "error");
-    await loadActiveTaskBoard();
-    getAppCallbacks().render();
-  }
-}
-
 function handleTaskSearch(event: Event) {
   const workspace = activeWorkspace();
   if (!workspace) return;
@@ -381,6 +465,47 @@ function handleTaskFilter(event: Event) {
     state.showCompletedTaskWorkspaces.delete(workspace.id);
   }
   patchTaskPanel();
+}
+
+function patchTaskPanel() {
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+  const panel = appRoot.querySelector<HTMLElement>("[data-task-panel]");
+  if (!panel) return;
+  const board = taskBoardFor(workspace.id);
+  const searchQuery = state.taskSearchQuery.get(workspace.id) ?? "";
+  const filterMode = state.taskFilterMode.get(workspace.id) ?? "open";
+  const tasks = board.tasks ?? [];
+
+  // Apply filter mode
+  const filteredByMode = filterMode === "all"
+    ? tasks
+    : filterMode === "completed"
+      ? tasks.filter((t) => t.completed)
+      : tasks.filter((t) => !t.completed);
+
+  // Apply search query
+  const query = searchQuery.toLowerCase().trim();
+  const visible = query
+    ? filteredByMode.filter((task) => {
+        if (task.title.toLowerCase().includes(query)) return true;
+        if (task.details?.toLowerCase().includes(query)) return true;
+        if ((task.acceptanceCriteria ?? []).some((c) => c.toLowerCase().includes(query))) return true;
+        return false;
+      })
+    : filteredByMode;
+
+  // Patch task-board lanes in-place
+  const taskBoard = panel.querySelector<HTMLElement>(".task-board");
+  if (taskBoard) {
+    const html = priorities.map((priority) => renderTaskLane(priority, visible.filter((task) => task.priority === priority))).join("");
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    taskBoard.replaceChildren(...Array.from(template.content.children));
+  }
+
+  // Re-bind events on the patched panel
+  bindTaskEvents(panel);
 }
 
 function handleTaskDragStart(event: DragEvent) {

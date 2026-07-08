@@ -67,11 +67,23 @@ func TestWorkspaceAutosaveWritesOnlyAtCompletionAndShutdown(t *testing.T) {
 		completedChat.ChatSession.Messages[1].Status != "complete" {
 		t.Fatalf("expected completed chat in autosave, got %#v", completedChat.ChatSession)
 	}
-	if len(completedChat.KanbanCards) != 1 || completedChat.KanbanCards[0].Lane != KanbanLaneReady {
+	if len(completedChat.KanbanCards) != 1 {
 		t.Fatalf("expected current kanban state in autosave, got %#v", completedChat.KanbanCards)
 	}
 
-	if _, err := service.UpdateKanbanCardDescription(workspaceID, completedChat.KanbanCards[0].ID, "Updated description"); err != nil {
+	// The card may have been moved to inProgress by the auto-scheduler triggered on creation.
+	// Stop any active run so we can manipulate the card for the rest of the test.
+	if _, err := service.StopKanbanExecution(workspaceID); err != nil {
+		// "not running" is fine — scheduler may have already finished.
+	}
+
+	// Move the card back to Ready so we can test description edits and completion flow.
+	cardID := completedChat.KanbanCards[0].ID
+	if _, err := service.MoveKanbanCard(workspaceID, cardID, KanbanLaneReady); err != nil {
+		t.Fatalf("move card back to ready: %v", err)
+	}
+
+	if _, err := service.UpdateKanbanCardDescription(workspaceID, cardID, "Updated description"); err != nil {
 		t.Fatalf("update card: %v", err)
 	}
 	afterEditData, err := os.ReadFile(autosavePath)
@@ -82,7 +94,7 @@ func TestWorkspaceAutosaveWritesOnlyAtCompletionAndShutdown(t *testing.T) {
 		t.Fatal("expected ordinary card edits not to rewrite the autosave")
 	}
 
-	if _, err := service.MoveKanbanCard(workspaceID, completedChat.KanbanCards[0].ID, KanbanLaneDone); err != nil {
+	if _, err := service.MoveKanbanCard(workspaceID, cardID, KanbanLaneDone); err != nil {
 		t.Fatalf("complete kanban board: %v", err)
 	}
 	kanbanCompleteData, err := os.ReadFile(autosavePath)

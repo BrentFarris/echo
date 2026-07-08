@@ -7,7 +7,7 @@ import { renderSpinnerLabel } from "../components";
 import { appRoot, isElementScrolledNearBottom } from "../dom";
 import { icons } from "../icons";
 import { playNotificationSound } from "../notifications";
-import { activeWorkspace, kanbanBoardFor, kanbanCards, selectedKanbanCard, state } from "../state";
+import { activeWorkspace, kanbanBoardFor, kanbanCards, selectedKanbanCard, state, changeReviewFor } from "../state";
 import { pushToast } from "../toasts";
 import type { HeartbeatEvent, KanbanEvent, LivenessEvent, WatchdogEvent } from "../types";
 import { errorMessage, escapeAttribute, escapeHtml, laneLabel } from "../utils";
@@ -256,15 +256,14 @@ export function renderKanbanLane(title: string, cards: services.KanbanCard[]): s
 }
 
 export function renderKanbanCard(card: services.KanbanCard): string {
-  const criteria = card.acceptanceCriteria ?? [];
-  const dependencies = card.dependencies ?? [];
-  const dependencyStatuses = card.dependencyStatuses ?? [];
-  const blockedBy = card.blockedBy ?? [];
   const unavailable = card.lane === "ready" && !card.eligible;
   const recoveryBadge = renderRecoveryBadge(card);
   const repairBadge = isRepairCard(card) ? renderRepairBadge() : "";
+  const progressPct = kanbanCardProgressPercent(card);
+  const statusMessage = renderKanbanCardStatus(card);
+  const progressBar = card.lane === "inProgress" ? renderInProgressProgressBar(progressPct, card.progressTranscript) : "";
   return `
-    <article class="kanban-card ${unavailable ? "is-unavailable" : ""} ${card.recoveryType ? "has-recovery-badge" : ""} ${isRepairCard(card) ? "is-repair" : ""}">
+    <article class="kanban-card ${unavailable ? "is-unavailable" : ""} ${card.recoveryType ? "has-recovery-badge" : ""} ${isRepairCard(card) ? "is-repair" : ""}" data-lane="${escapeAttribute(card.lane)}">
       <button
         class="kanban-card-open"
         type="button"
@@ -272,35 +271,213 @@ export function renderKanbanCard(card: services.KanbanCard): string {
         data-card-id="${escapeAttribute(card.id)}"
         aria-label="Open ${escapeAttribute(card.title)} details"
       >
-        <header>
+        <div class="kanban-card-title-row">
+          <span class="kanban-card-status-dot ${laneDotClass(card.lane)}" aria-hidden="true"></span>
           <strong>${escapeHtml(card.title)}</strong>
-          <span>${escapeHtml(card.id)}</span>
-        </header>
-        <p>${escapeHtml(card.description)}</p>
-        ${
-          criteria.length
-            ? `<ul>${criteria.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
-            : ""
-        }
-        ${
-          dependencies.length
-            ? `<div class="card-dependencies">${blockedBy.length ? "Waiting on" : "After"} ${
-                dependencyStatuses.length
-                  ? dependencyStatuses
-                      .map(
-                        (dependency) =>
-                          `${escapeHtml(dependency.title || dependency.id)} (${escapeHtml(laneLabel(dependency.status))})`,
-                      )
-                      .join(", ")
-                  : dependencies.map(escapeHtml).join(", ")
-              }</div>`
-            : ""
-        }
+          <span class="kanban-card-id">${escapeHtml(card.id)}</span>
+        </div>
+        ${statusMessage}
+        ${progressBar}
       </button>
       ${recoveryBadge}
       ${repairBadge}
     </article>
   `;
+}
+
+export function renderKanbanCardStatus(card: services.KanbanCard): string {
+  switch (card.lane) {
+    case "done": return renderDoneStatus(card);
+    case "inProgress": return renderInProgressStatus(card);
+    case "ready": return renderReadyStatus(card);
+    case "blocked": return renderBlockedStatus(card);
+    default: return "";
+  }
+}
+
+function kanbanCardProgressPercent(card: services.KanbanCard): number {
+  const lane = card.lane ?? "";
+  if (lane === "done") return 100;
+  if (lane === "ready" || lane === "blocked") return 0;
+  // in progress: estimate from tool_call entries vs acceptance criteria.
+  // Only tool_call entries count as real work because they represent actual
+  // implementation steps (file reads, edits, shell commands, etc.).
+  // Status/thinking/message/verification entries are overhead and should not
+  // inflate the percentage.
+  const transcript = card.progressTranscript ?? [];
+  const toolCallCount = transcript.filter(e => e.type === "tool_call").length;
+  const criteriaLen = (card.acceptanceCriteria ?? []).length;
+  if (criteriaLen > 0) {
+    // Each tool call counts as ~1/criteriaLen of the work, scaled to fill 0-95%.
+    // Reserve 5% for post-execution verification and cleanup.
+    const pct = Math.round((toolCallCount / criteriaLen) * 95);
+    return Math.min(pct, 97);
+  }
+  // No criteria: estimate ~10 tool calls as a rough full-card baseline,
+  // capped at 80% to leave room for verification.
+  return Math.min(Math.round((toolCallCount / 10) * 100), 80);
+}
+
+function getLastVerificationEntry(transcript: services.KanbanProgressEntry[] | undefined): services.KanbanProgressEntry | undefined {
+  if (!transcript) return undefined;
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    const entry = transcript[i];
+    if (entry.type === "verification") return entry;
+  }
+  return undefined;
+}
+
+function countChangedPaths(card: services.KanbanCard): number {
+  const entry = getLastVerificationEntry(card.progressTranscript);
+  if (!entry) return 0;
+  // Parse changed paths from verification content like "Changed paths:\n- path1\n- path2"
+  const lines = entry.content.split("\n");
+  let count = 0;
+  for (const line of lines) {
+    if (line.trim().startsWith("- ")) count++;
+  }
+  return count;
+}
+
+function renderDoneStatus(card: services.KanbanCard): string {
+  const entry = getLastVerificationEntry(card.progressTranscript);
+  if (!entry) {
+    return `<p class="kanban-card-status-text status-success">${icons.check} verification passed</p>`;
+  }
+  // Check if verification passed by looking at the title
+  const passed = entry.title?.includes("passed") ?? false;
+  const failed = entry.title?.includes("failed") ?? false;
+  const skipped = entry.title?.includes("skipped") ?? false;
+  const fileCount = countChangedPaths(card);
+
+  let statusClass = "status-success";
+  let icon = icons.check;
+  let text: string;
+
+  if (passed) {
+    text = `verification passed`;
+    if (fileCount > 0) {
+      text += `, ${fileCount} file${fileCount > 1 ? "s" : ""} changed`;
+    }
+  } else if (failed) {
+    statusClass = "status-error";
+    icon = icons.x;
+    text = `verification failed`;
+  } else if (skipped) {
+    statusClass = "status-warning";
+    icon = "\u23F3"; // hourglass emoji
+    text = `verification skipped`;
+  } else {
+    text = entry.title ?? "verification complete";
+  }
+
+  return `<p class="kanban-card-status-text ${statusClass}">${icon} ${escapeHtml(text)}</p>`;
+}
+
+function getLastToolCallName(transcript: services.KanbanProgressEntry[] | undefined): string {
+  if (!transcript) return "";
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    const entry = transcript[i];
+    if (entry.type === "tool_call" && entry.title) {
+      // Title is like "Tool call: filesystem_read_text"
+      const parts = entry.title.split(": ");
+      if (parts.length > 1) return parts[1];
+    }
+  }
+  return "";
+}
+
+function renderInProgressStatus(card: services.KanbanCard): string {
+  const pct = kanbanCardProgressPercent(card);
+  return `<p class="kanban-card-status-text status-inprogress">${pct}%</p>`;
+}
+
+function renderInProgressProgressBar(pct: number, transcript: services.KanbanProgressEntry[] | undefined): string {
+  const toolName = getLastToolCallName(transcript);
+  const toolLabel = toolName ? ` <span class="kanban-card-tool-label">${escapeHtml(toolName)}</span>` : "";
+  return `
+    <div class="kanban-card-progress-bar">
+      <div class="kanban-card-progress-track">
+        <div class="kanban-card-progress-fill" style="width: ${pct}%"></div>
+      </div>
+      <span class="kanban-card-progress-label">${pct}% complete${toolLabel}</span>
+    </div>`;
+}
+
+function renderReadyStatus(card: services.KanbanCard): string {
+  const deps = card.dependencyStatuses ?? [];
+  if (deps.length === 0) {
+    // No dependencies — card is ready to go
+    return `<p class="kanban-card-status-text status-success">${icons.check} ready</p>`;
+  }
+
+  // Check if all dependencies are satisfied
+  const unsatisfied = deps.filter(d => !d.done);
+  if (unsatisfied.length === 0) {
+    // All deps done
+    return `<p class="kanban-card-status-text status-success">${icons.check} all dependencies met</p>`;
+  }
+
+  // Show specific unmet dependency — pick the first unsatisfied one
+  const blocking = unsatisfied[0];
+  const depTitle = blocking.title || blocking.id;
+  const depStatus = laneLabel(blocking.status ?? "ready");
+  return `<p class="kanban-card-status-text status-warning">\u23F3 depends on ${escapeHtml(depTitle)} (${escapeHtml(depStatus)})</p>`;
+}
+
+function renderBlockedStatus(card: services.KanbanCard): string {
+  // Look for block reason in progress transcript or recovery state
+  const transcript = card.progressTranscript ?? [];
+  
+  // Check for escalated recovery type first
+  if (card.recoveryType === "escalated") {
+    return `<p class="kanban-card-status-text status-error">${icons.x} escalated after repeated stalls</p>`;
+  }
+
+  // Look for the last status/message entry that might explain the block
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    const entry = transcript[i];
+    if (entry.type === "status" || entry.type === "message") {
+      const content = (entry.content ?? "").trim();
+      const title = (entry.title ?? "").trim();
+      // Skip generic status change entries
+      if (content.toLowerCase().includes("moved to blocked") || 
+          content.toLowerCase().includes("agent stopped")) {
+        return `<p class="kanban-card-status-text status-error">${icons.x} ${escapeHtml(content)}</p>`;
+      }
+      if (title && !content.startsWith("Moved to")) {
+        return `<p class="kanban-card-status-text status-error">${icons.x} ${escapeHtml(title)}</p>`;
+      }
+    }
+  }
+
+  // Fallback — check blockedBy references
+  const blockedBy = card.blockedBy ?? [];
+  if (blockedBy.length > 0) {
+    return `<p class="kanban-card-status-text status-error">${icons.x} blocked by dependencies</p>`;
+  }
+
+  return `<p class="kanban-card-status-text status-error">${icons.x} agent stopped early</p>`;
+}
+
+function laneDotClass(lane: string): string {
+  switch (lane) {
+    case "done": return "status-done";
+    case "inProgress": return "status-inprogress";
+    case "blocked": return "status-blocked";
+    default: return "status-ready";
+  }
+}
+
+function renderKanbanCardProgress(pct: number): string {
+  if (pct <= 0) return "";
+  return `
+    <div class="kanban-card-progress">
+      <div class="kanban-card-progress-track">
+        <div class="kanban-card-progress-fill" style="width: ${pct}%"></div>
+      </div>
+      <span class="kanban-card-progress-label">${pct}%</span>
+    </div>`;
 }
 
 export function renderRecoveryBadge(card: services.KanbanCard): string {
@@ -776,8 +953,11 @@ export function applyKanbanEvent(event: KanbanEvent) {
     void refreshWorkspaceChangeReview(event.workspaceId);
   }
   if (activeWorkspace()?.id === event.workspaceId) {
-    if (event.type === "card_progress" && patchOpenCardProgress(event)) {
-      return;
+    if (event.type === "card_progress") {
+      if (patchOpenCardProgress(event)) return;
+      const card = kanbanCards(board).find((c) => c.id === event.cardId);
+      if (card && patchCardProgress(card)) return;
+      if (patchKanbanBoard(event.workspaceId)) return;
     }
     renderKanbanEventPreservingScroll();
   }
@@ -816,6 +996,138 @@ export function patchOpenCardProgress(event: KanbanEvent): boolean {
   if (keepPinned) {
     detail.scrollTop = detail.scrollHeight;
   }
+  return true;
+}
+
+/** Patch a single kanban card's progress bar and status text without
+ *  rebuilding the board or calling bindEvents. Returns true when the
+ *  card element was found and patched. */
+export function patchCardProgress(card: services.KanbanCard): boolean {
+  // Locate the card article — first try with lane filter, then fall back without
+  let container = appRoot.querySelector<HTMLElement>(`article.kanban-card[data-lane="${escapeAttribute(card.lane)}"] button.kanban-card-open[data-card-id="${escapeAttribute(card.id)}"]`)
+    ?.closest("article.kanban-card");
+  if (!container) {
+    container = appRoot.querySelector<HTMLElement>(`button.kanban-card-open[data-card-id="${escapeAttribute(card.id)}"]`)
+      ?.closest("article.kanban-card");
+  }
+  if (!container) return false;
+
+  // Update status text (percentage for inProgress cards)
+  const statusText = container.querySelector<HTMLElement>(".kanban-card-status-text");
+  if (statusText) {
+    const newStatusHtml = renderKanbanCardStatus(card);
+    const template = document.createElement("template");
+    template.innerHTML = newStatusHtml;
+    const newStatus = template.content.firstElementChild;
+    if (newStatus) {
+      statusText.replaceWith(newStatus);
+    }
+  }
+
+  // Update progress bar for inProgress cards
+  if (card.lane === "inProgress") {
+    const pct = kanbanCardProgressPercent(card);
+    const progressBar = container.querySelector<HTMLElement>(".kanban-card-progress-bar");
+    if (progressBar) {
+      // Update fill width
+      const fill = progressBar.querySelector<HTMLElement>(".kanban-card-progress-fill");
+      if (fill) {
+        fill.style.width = `${pct}%`;
+      }
+      // Update label text (percentage + tool label)
+      const label = progressBar.querySelector<HTMLElement>(".kanban-card-progress-label");
+      if (label) {
+        const toolName = getLastToolCallName(card.progressTranscript);
+        const toolLabel = toolName ? ` <span class="kanban-card-tool-label">${escapeHtml(toolName)}</span>` : "";
+        label.innerHTML = `${pct}% complete${toolLabel}`;
+      }
+    } else {
+      // Progress bar didn't exist — card may have just started, inject it
+      const openButton = container.querySelector<HTMLElement>("button.kanban-card-open");
+      if (openButton) {
+        const newBarHtml = renderInProgressProgressBar(pct, card.progressTranscript);
+        const template = document.createElement("template");
+        template.innerHTML = newBarHtml;
+        const newBar = template.content.firstElementChild;
+        if (newBar) {
+          openButton.appendChild(newBar);
+        }
+      }
+    }
+  }
+
+  return true;
+}
+
+/** Patch only the kanban board region inside the main panel, avoiding a
+ *  full app-shell re-render. Uses the existing patchChildrenFromHtml /
+ *  morphChildren infrastructure. Returns true when elements were found
+ *  and patched. */
+export function patchKanbanBoard(workspaceID: string): boolean {
+  const kanbanPanel = appRoot.querySelector<HTMLElement>(".kanban-panel");
+  if (!kanbanPanel) return false;
+
+  const board = kanbanBoardFor(workspaceID);
+  const workspace = activeWorkspace();
+  const review = workspace ? changeReviewFor(workspace.id) : null;
+  const hasCards = workspace ? (kanbanCards(board ?? {}).length > 0) : false;
+  const running = state.runningKanbanWorkspaces.has(workspaceID);
+  const decomposing = workspace ? state.creatingKanbanCardWorkspaces.has(workspaceID) : false;
+
+  // Patch the kanban-board element (lanes, cards, empty state)
+  const boardContainer = kanbanPanel.querySelector<HTMLElement>(".kanban-board");
+  if (boardContainer && board) {
+    const newBoardHtml = decomposing && !hasCards
+      ? renderDecompositionState()
+      : hasCards
+        ? renderKanbanBoard(board)
+        : renderEmptyBoard();
+    patchChildrenFromHtml(boardContainer, newBoardHtml);
+  }
+
+  // Patch panel-heading (runtime label, button states) via targeted innerHTML
+  const heading = kanbanPanel.querySelector<HTMLElement>(".panel-heading");
+  if (heading && workspace) {
+    const reviewCount = review?.fileCount ?? 0;
+    heading.innerHTML = `
+      <div class="kanban-heading-main">
+        <span>Kanban</span>
+        <strong id="kanban-title">${escapeHtml(workspace.displayName)}</strong>
+        ${hasKanbanRuntime(workspace.id) ? renderKanbanRuntime(workspace.id, running) : ""}
+      </div>
+      <button type="button" class="icon-button view-dashboard-button" title="View Kanban dashboard" aria-label="Kanban dashboard" data-action="open-view-dashboard" data-view="kanban">${icons.dashboard}</button>
+      <div class="kanban-actions">
+        <button class="secondary-button icon-text-button change-review-button" type="button" title="Review AI file changes" data-action="open-change-review">
+          ${icons.file}
+          <span>Changes</span>
+          <span class="change-count-badge">${escapeHtml(String(reviewCount))}</span>
+        </button>
+        <button class="secondary-button icon-text-button" type="button" data-action="open-create-ready-card" ${running ? "disabled" : ""}>
+          ${icons.plus}
+          <span>New card</span>
+        </button>
+        <button class="icon-text-button primary-button" type="button" data-action="start-agents" ${running || !hasCards ? "disabled" : ""}>
+          ${icons.execute}
+          <span class="run-button">Run</span>
+        </button>
+        <button class="icon-button danger-button" type="button" title="Clear done cards" aria-label="Clear done Kanban cards" data-action="clear-done-cards" ${(board?.done ?? []).length > 0 ? "" : "disabled"}>
+          ${icons.trash}
+        </button>
+        <button class="icon-button stop-button" type="button" title="Stop agents" aria-label="Stop agents" data-action="stop-agents" ${running ? "" : "disabled"}>
+          ${icons.stop}
+        </button>
+        <button class="secondary-button icon-text-button heartbeat-toggle-button" type="button" title="Auto-run Kanban at interval (click to cycle)" aria-label="Heartbeat toggle" data-action="toggle-heartbeat" data-workspace-id="${escapeAttribute(workspace.id)}">
+          ${icons.refresh}
+          <span>Auto: ${escapeHtml(heartbeatIntervalLabel(getHeartbeatInterval(workspace.id)))}</span>
+        </button>
+        <button class="secondary-button icon-text-button watchdog-toggle-button" type="button" title="Watchdog verification interval (click to cycle)" aria-label="Watchdog toggle" data-action="toggle-watchdog" data-workspace-id="${escapeAttribute(workspace.id)}">
+          ${icons.search}
+          <span>Watchdog: ${escapeHtml(watchdogIntervalLabel(getWatchdogInterval(workspace.id)))}</span>
+        </button>
+      </div>
+    `;
+  }
+
   return true;
 }
 

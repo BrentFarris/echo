@@ -188,7 +188,20 @@ func (s *SystemService) CreateKanbanCardFromChatMessage(workspaceID string, mess
 		return KanbanBoard{}, fmt.Errorf("message content is required")
 	}
 
-	return s.appendAssistantMessageReadyCard(workspaceID, content)
+	board, err := s.appendAssistantMessageReadyCard(workspaceID, content)
+	if err != nil {
+		return KanbanBoard{}, err
+	}
+
+	// Auto-schedule if no run is active so newly created cards are picked up immediately.
+	s.chatMu.Lock()
+	_, running := s.kanbanRuns[workspaceID]
+	s.chatMu.Unlock()
+	if !running {
+		_, _ = s.StartKanbanExecution(workspaceID, defaultAgentLimit)
+	}
+
+	return board, nil
 }
 
 func (s *SystemService) CreateReadyKanbanCard(workspaceID string, title string, description string, acceptanceCriteria []string) (KanbanBoard, error) {
@@ -213,12 +226,6 @@ func (s *SystemService) CreateReadyKanbanCard(workspaceID string, title string, 
 		return KanbanBoard{}, err
 	}
 
-	s.chatMu.Lock()
-	if _, running := s.kanbanRuns[workspaceID]; running {
-		s.chatMu.Unlock()
-		return KanbanBoard{}, fmt.Errorf("kanban cards cannot be created while agents are running")
-	}
-
 	s.mu.Lock()
 	card := KanbanCard{
 		ID:                 fmt.Sprintf("card-%d", s.nextKanbanCardNumberLocked()),
@@ -235,13 +242,21 @@ func (s *SystemService) CreateReadyKanbanCard(workspaceID string, title string, 
 				Status:    KanbanLaneReady,
 				Timestamp: time.Now(),
 			}},
-		}
+	}
 	s.state.KanbanCards = append(s.state.KanbanCards, card)
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 	s.mu.Unlock()
-	s.chatMu.Unlock()
 
 	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: card.ID, Type: "card_created", Board: board})
+
+	// Auto-schedule if no run is active so newly created cards are picked up immediately.
+	s.chatMu.Lock()
+	_, running := s.kanbanRuns[workspaceID]
+	s.chatMu.Unlock()
+	if !running {
+		_, _ = s.StartKanbanExecution(workspaceID, defaultAgentLimit)
+	}
+
 	return board, nil
 }
 

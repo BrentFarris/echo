@@ -166,6 +166,14 @@ export function GetHeartbeatConfig(...args: Parameters<typeof Wails.GetHeartbeat
   return call("GetHeartbeatConfig", Wails.GetHeartbeatConfig, args);
 }
 
+export function GetDashboardLayouts(...args: Parameters<typeof Wails.GetDashboardLayouts>): ReturnType<typeof Wails.GetDashboardLayouts> {
+  return call("GetDashboardLayouts", Wails.GetDashboardLayouts, args);
+}
+
+export function SaveDashboardLayout(...args: Parameters<typeof Wails.SaveDashboardLayout>): ReturnType<typeof Wails.SaveDashboardLayout> {
+  return call("SaveDashboardLayout", Wails.SaveDashboardLayout, args);
+}
+
 export function StartHeartbeat(...args: Parameters<typeof Wails.StartHeartbeat>): ReturnType<typeof Wails.StartHeartbeat> {
   return call("StartHeartbeat", Wails.StartHeartbeat, args);
 }

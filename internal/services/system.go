@@ -132,15 +132,24 @@ func (w *Workspace) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+type DashboardWidgetJSON struct {
+	ID    string `json:"id"`
+	View  string `json:"view"`
+	Title string `json:"title"`
+	Size  string `json:"size"`
+	Order int    `json:"order"`
+}
+
 type AppState struct {
-	Settings          llm.Settings      `json:"settings"`
-	WebAccess         WebAccessSettings `json:"webAccess"`
-	Workspaces        []Workspace       `json:"workspaces"`
-	ActiveWorkspaceID string            `json:"activeWorkspaceId"`
-	HeartbeatConfigs  map[string]HeartbeatConfig `json:"heartbeatConfigs,omitempty"`
-	LivenessConfigs   map[string]LivenessConfig  `json:"livenessConfigs,omitempty"`
-	WatchdogConfigs   map[string]WatchdogConfig   `json:"watchdogConfigs,omitempty"`
-	KanbanCards       []KanbanCard      `json:"-"`
+	Settings          llm.Settings                 `json:"settings"`
+	WebAccess         WebAccessSettings            `json:"webAccess"`
+	Workspaces        []Workspace                  `json:"workspaces"`
+	ActiveWorkspaceID string                       `json:"activeWorkspaceId"`
+	HeartbeatConfigs  map[string]HeartbeatConfig   `json:"heartbeatConfigs,omitempty"`
+	LivenessConfigs   map[string]LivenessConfig    `json:"livenessConfigs,omitempty"`
+	WatchdogConfigs   map[string]WatchdogConfig    `json:"watchdogConfigs,omitempty"`
+	DashboardLayouts  map[string][]DashboardWidgetJSON `json:"dashboardLayouts,omitempty"`
+	KanbanCards       []KanbanCard                 `json:"-"`
 }
 
 type SystemService struct {
@@ -233,6 +242,30 @@ func (s *SystemService) LoadState() AppState {
 	state := cloneState(s.state)
 	s.warmActiveWorkspaceLSPClients(state)
 	return state
+}
+
+func (s *SystemService) GetDashboardLayouts() map[string][]DashboardWidgetJSON {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make(map[string][]DashboardWidgetJSON, len(s.state.DashboardLayouts))
+	for k, v := range s.state.DashboardLayouts {
+		result[k] = append([]DashboardWidgetJSON{}, v...)
+	}
+	return result
+}
+
+func (s *SystemService) SaveDashboardLayout(view string, widgets []DashboardWidgetJSON) error {
+	view = strings.TrimSpace(view)
+	if view == "" {
+		return fmt.Errorf("dashboard view is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state.DashboardLayouts == nil {
+		s.state.DashboardLayouts = make(map[string][]DashboardWidgetJSON)
+	}
+	s.state.DashboardLayouts[view] = append([]DashboardWidgetJSON{}, widgets...)
+	return s.saveLocked()
 }
 
 func (s *SystemService) SaveSettings(settings llm.Settings) (AppState, error) {
@@ -1437,6 +1470,9 @@ func cloneState(state AppState) AppState {
 	if state.LivenessConfigs != nil {
 		state.LivenessConfigs = cloneLivenessConfigs(state.LivenessConfigs)
 	}
+	if state.DashboardLayouts != nil {
+		state.DashboardLayouts = cloneDashboardLayouts(state.DashboardLayouts)
+	}
 	state.KanbanCards = cloneKanbanCards(state.KanbanCards)
 	return state
 }
@@ -1461,6 +1497,14 @@ func cloneLivenessConfigs(src map[string]LivenessConfig) map[string]LivenessConf
 	dst := make(map[string]LivenessConfig, len(src))
 	for k, v := range src {
 		dst[k] = v
+	}
+	return dst
+}
+
+func cloneDashboardLayouts(src map[string][]DashboardWidgetJSON) map[string][]DashboardWidgetJSON {
+	dst := make(map[string][]DashboardWidgetJSON, len(src))
+	for k, v := range src {
+		dst[k] = append([]DashboardWidgetJSON{}, v...)
 	}
 	return dst
 }

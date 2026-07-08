@@ -9,6 +9,7 @@ import (
 type fakeWorkspaceTasksProvider struct {
 	listRequest   WorkspaceTaskListRequest
 	createRequest WorkspaceTaskCreateRequest
+	convertRequest WorkspaceTaskConvertRequest
 }
 
 func (p *fakeWorkspaceTasksProvider) ListWorkspaceTasks(_ context.Context, request WorkspaceTaskListRequest) (WorkspaceTaskListResponse, error) {
@@ -19,6 +20,16 @@ func (p *fakeWorkspaceTasksProvider) ListWorkspaceTasks(_ context.Context, reque
 func (p *fakeWorkspaceTasksProvider) CreateWorkspaceTask(_ context.Context, request WorkspaceTaskCreateRequest) (WorkspaceTaskMutationResponse, error) {
 	p.createRequest = request
 	return WorkspaceTaskMutationResponse{Created: WorkspaceTask{ID: "two", Title: request.Title, Priority: request.Priority}}, nil
+}
+
+func (p *fakeWorkspaceTasksProvider) ConvertTaskToKanbanCard(_ context.Context, request WorkspaceTaskConvertRequest) (WorkspaceTaskConversionResponse, error) {
+	p.convertRequest = request
+	return WorkspaceTaskConversionResponse{
+		TaskID:       request.TaskID,
+		KanbanCardID: "card-1",
+		Task:         &WorkspaceTask{ID: request.TaskID, Title: "Test", Completed: true},
+		Tasks:        []WorkspaceTask{{ID: request.TaskID, Title: "Test", Completed: true}},
+	}, nil
 }
 
 func TestWorkspaceTaskToolsListAndCreate(t *testing.T) {

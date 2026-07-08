@@ -146,6 +146,70 @@ func (p workspaceTasksProvider) CreateWorkspaceTask(ctx context.Context, request
 	return tools.WorkspaceTaskMutationResponse{Created: toolWorkspaceTask(created), Tasks: tasks}, nil
 }
 
+func (p workspaceTasksProvider) ConvertTaskToKanbanCard(ctx context.Context, request tools.WorkspaceTaskConvertRequest) (tools.WorkspaceTaskConversionResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return tools.WorkspaceTaskConversionResponse{}, err
+	}
+	title := request.Title
+	description := request.Description
+	criteria := request.AcceptanceCriteria
+
+	p.service.taskMu.Lock()
+	_, active, done, err := readWorkspaceTaskFiles(p.workspace)
+	if err != nil {
+		p.service.taskMu.Unlock()
+		return tools.WorkspaceTaskConversionResponse{}, err
+	}
+	task, found := active.Tasks[request.TaskID]
+	if !found {
+		p.service.taskMu.Unlock()
+		if _, completed := done.Tasks[request.TaskID]; completed {
+			return tools.WorkspaceTaskConversionResponse{}, fmt.Errorf("completed tasks cannot be converted to kanban cards")
+		}
+		return tools.WorkspaceTaskConversionResponse{}, fmt.Errorf("task was not found")
+	}
+	if err := requireTaskRevision(task, request.ExpectedUpdatedAt); err != nil {
+		p.service.taskMu.Unlock()
+		return tools.WorkspaceTaskConversionResponse{}, err
+	}
+	if title == "" {
+		title = task.Title
+	}
+	if description == "" {
+		description = task.Details
+	}
+	if len(criteria) == 0 {
+		criteria = append([]string(nil), task.AcceptanceCriteria...)
+	}
+	p.service.taskMu.Unlock()
+
+	conversion, err := p.service.CreateKanbanCardFromTask(p.workspace.ID, request.TaskID, title, description, criteria, request.ExpectedUpdatedAt)
+	if err != nil {
+		return tools.WorkspaceTaskConversionResponse{}, err
+	}
+
+	var toolTask *tools.WorkspaceTask
+	for i := range conversion.Tasks.Tasks {
+		if conversion.Tasks.Tasks[i].ID == request.TaskID {
+			t := toolWorkspaceTask(conversion.Tasks.Tasks[i])
+			toolTask = &t
+			break
+		}
+	}
+
+	tasks := make([]tools.WorkspaceTask, 0, len(conversion.Tasks.Tasks))
+	for _, t := range conversion.Tasks.Tasks {
+		tasks = append(tasks, toolWorkspaceTask(t))
+	}
+
+	return tools.WorkspaceTaskConversionResponse{
+		TaskID:       request.TaskID,
+		Task:         toolTask,
+		KanbanCardID: conversion.Kanban.Ready[0].ID,
+		Tasks:        tasks,
+	}, nil
+}
+
 func toolWorkspaceTask(task WorkspaceTask) tools.WorkspaceTask {
 	return tools.WorkspaceTask{
 		ID:                 task.ID,

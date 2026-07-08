@@ -1,22 +1,4 @@
 {
   "version": 1,
-  "tasks": {
-    "595b7c77-d8e9-45a4-b718-64e19aa6716a": {
-      "title": "Add task CRUD tooling to Echo",
-      "details": "Add full task CRUD (Create, Read, Update, Delete) capabilities to Echo so users can manage the backlog from within the app.\n\n## Backend\n- `CreateTask(title, priority, details?, acceptanceCriteria?)` → returns created task with ID\n- `ListTasks(includeCompleted?)` → returns all tasks\n- `UpdateTask(id, completed?, title?, priority?, details?, acceptanceCriteria?)` → partial update\n- `DeleteTask(id)` → removes task\n\n## Frontend\n- Task management panel (Settings or standalone view)\n- Create form: title, priority dropdown (P0/P1/P2), optional details/acceptance criteria\n- List view: sortable by priority/completion, shows all fields\n- Edit/delete actions per task\n- Completion toggle\n\n## Persistence\n- Tasks stored in existing state.json alongside other Echo state\n- Protected by SystemService.mu like other persisted state",
-      "acceptanceCriteria": [
-        "Backend: Add exported methods on SystemService for CreateTask, ListTasks, UpdateTask (mark complete, edit fields), DeleteTask",
-        "Backend: Methods persist tasks to state.json alongside existing Echo state",
-        "Frontend: Add a task management UI section (e.g., in Settings or as a new panel) with create form, list view, and edit/delete actions",
-        "Frontend: Task list shows title, priority (P0/P1/P2), completed status, acceptance criteria, and details",
-        "Wails bindings regenerated after backend method additions",
-        "go build ./... succeeds",
-        "go test ./internal/services/ passes"
-      ],
-      "priority": "P1",
-      "completed": false,
-      "createdAt": "2026-07-07T17:10:26.0809778Z",
-      "updatedAt": "2026-07-07T17:10:26.0809778Z"
-    }
-  }
+  "tasks": {}
 }

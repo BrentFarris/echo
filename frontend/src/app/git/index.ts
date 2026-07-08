@@ -25,6 +25,7 @@ export function renderGitRepositoryPage(
           <p class="eyebrow">${escapeHtml(workspace.displayName)}</p>
           <h2 id="git-repository-title">Git</h2>
         </div>
+        <button type="button" class="icon-button view-dashboard-button" title="View Git dashboard" aria-label="Git dashboard" data-action="open-view-dashboard" data-view="git">${icons.dashboard}</button>
       </header>
 
       <div class="git-repository-topbar">

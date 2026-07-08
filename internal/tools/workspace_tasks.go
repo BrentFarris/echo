@@ -60,6 +60,41 @@ func init() {
 		},
 		Run: createWorkspaceTask,
 	})
+	Register(ToolFunc{
+		Meta: Metadata{
+			Name:        "workspace_task_convert_to_kanban",
+			Description: "Convert a backlog task into a Ready Kanban card for agent execution. The task is marked completed and moved to done; a new card appears in the Ready lane.",
+			Parameters: Schema{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []any{"taskID", "expectedUpdatedAt"},
+				"properties": map[string]any{
+					"taskID": map[string]any{
+						"type":        "string",
+						"description": "The ID of the task to convert.",
+					},
+					"title": map[string]any{
+						"type":        "string",
+						"description": "Override card title; defaults to task title.",
+					},
+					"description": map[string]any{
+						"type":        "string",
+						"description": "Override card description; defaults to task details.",
+					},
+					"acceptanceCriteria": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "Override acceptance criteria; defaults to task criteria.",
+					},
+					"expectedUpdatedAt": map[string]any{
+						"type":        "string",
+						"description": "The updatedAt timestamp from the task, for optimistic concurrency.",
+					},
+				},
+			},
+		},
+		Run: convertTaskToKanbanCard,
+	})
 }
 
 func listWorkspaceTasks(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
@@ -111,4 +146,35 @@ func createWorkspaceTask(ctx ExecutionContext, arguments json.RawMessage) (any, 
 		return nil, SafeError{Code: "workspace_tasks_unavailable", Message: "workspace tasks are not available in this context"}
 	}
 	return ctx.WorkspaceTasks.CreateWorkspaceTask(ctx.context(), request)
+}
+
+func convertTaskToKanbanCard(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
+	if err := ctx.context().Err(); err != nil {
+		return nil, err
+	}
+	var request WorkspaceTaskConvertRequest
+	if err := DecodeToolArguments(arguments, &request); err != nil {
+		return nil, SafeError{Code: "invalid_arguments", Message: "arguments must be valid JSON"}
+	}
+	request.TaskID = strings.TrimSpace(request.TaskID)
+	request.Title = strings.TrimSpace(request.Title)
+	request.Description = strings.TrimSpace(request.Description)
+	request.ExpectedUpdatedAt = strings.TrimSpace(request.ExpectedUpdatedAt)
+	if request.TaskID == "" {
+		return nil, SafeError{Code: "invalid_arguments", Message: "taskID is required"}
+	}
+	if request.ExpectedUpdatedAt == "" {
+		return nil, SafeError{Code: "invalid_arguments", Message: "expectedUpdatedAt is required"}
+	}
+	criteria := request.AcceptanceCriteria[:0]
+	for _, criterion := range request.AcceptanceCriteria {
+		if criterion = strings.TrimSpace(criterion); criterion != "" {
+			criteria = append(criteria, criterion)
+		}
+	}
+	request.AcceptanceCriteria = criteria
+	if ctx.WorkspaceTasks == nil {
+		return nil, SafeError{Code: "workspace_tasks_unavailable", Message: "workspace tasks are not available in this context"}
+	}
+	return ctx.WorkspaceTasks.ConvertTaskToKanbanCard(ctx.context(), request)
 }
