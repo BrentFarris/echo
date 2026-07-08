@@ -137,57 +137,52 @@ export async function handleAction(event: Event) {
     }
     if (action === "widget-remove") {
       const widgetId = target.dataset.widgetId ?? "";
-      const view = state.dashboardViewMode ?? "dashboard";
-      const widgets = getDashboardWidgets(view);
+      const widgets = getDashboardWidgets("dashboard");
       const filtered = widgets.filter((w) => w.id !== widgetId);
-      setDashboardWidgets(view, filtered);
+      setDashboardWidgets("dashboard", filtered);
       getAppCallbacks().render();
       return;
     }
     if (action === "widget-add") {
       const widgetId = target.dataset.widgetId as WidgetId;
       const widgetSize = target.dataset.widgetSize as WidgetSize;
-      const view = state.dashboardViewMode ?? "dashboard";
-      const widgets = getDashboardWidgets(view);
+      const widgets = getDashboardWidgets("dashboard");
       // Look up title from availableWidgets map
-      const allAvail = availableWidgets[view] ?? [];
+      const allAvail = availableWidgets["dashboard"] ?? [];
       const def = allAvail.find((a) => a.id === widgetId);
       if (!def) return;
       const newOrder = widgets.length;
-      widgets.push({ id: widgetId, view, title: def.title, size: widgetSize, order: newOrder });
-      setDashboardWidgets(view, widgets);
+      widgets.push({ id: widgetId, view: "dashboard", title: def.title, size: widgetSize, order: newOrder });
+      setDashboardWidgets("dashboard", widgets);
       getAppCallbacks().render();
       return;
     }
     if (action === "widget-move-up") {
       const widgetId = target.dataset.widgetId ?? "";
-      const view = state.dashboardViewMode ?? "dashboard";
-      const widgets = getDashboardWidgets(view);
+      const widgets = getDashboardWidgets("dashboard");
       const idx = widgets.findIndex((w) => w.id === widgetId);
       if (idx > 0) {
         [widgets[idx - 1], widgets[idx]] = [widgets[idx], widgets[idx - 1]];
-        setDashboardWidgets(view, widgets);
+        setDashboardWidgets("dashboard", widgets);
         getAppCallbacks().render();
       }
       return;
     }
     if (action === "widget-move-down") {
       const widgetId = target.dataset.widgetId ?? "";
-      const view = state.dashboardViewMode ?? "dashboard";
-      const widgets = getDashboardWidgets(view);
+      const widgets = getDashboardWidgets("dashboard");
       const idx = widgets.findIndex((w) => w.id === widgetId);
       if (idx >= 0 && idx < widgets.length - 1) {
         [widgets[idx], widgets[idx + 1]] = [widgets[idx + 1], widgets[idx]];
-        setDashboardWidgets(view, widgets);
+        setDashboardWidgets("dashboard", widgets);
         getAppCallbacks().render();
       }
       return;
     }
     if (action === "reset-dashboard-layout") {
-      const view = state.dashboardViewMode ?? "dashboard";
       const defaults = defaultDashboardLayouts();
-      const defaultWidgets = defaults[view] ?? [];
-      setDashboardWidgets(view, [...defaultWidgets]);
+      const defaultWidgets = defaults["dashboard"] ?? [];
+      setDashboardWidgets("dashboard", [...defaultWidgets]);
       getAppCallbacks().render();
       return;
     }
@@ -196,58 +191,44 @@ export async function handleAction(event: Event) {
     if (action === "add-widget") {
       const widgetId = target.dataset.widgetId as WidgetId;
       const widgetSize = target.dataset.widgetSize as WidgetSize;
-      const view = state.dashboardViewMode ?? "dashboard";
-      const widgets = getDashboardWidgets(view);
-      const allAvail = availableWidgets[view] ?? [];
+      const widgets = getDashboardWidgets("dashboard");
+      const allAvail = availableWidgets["dashboard"] ?? [];
       const def = allAvail.find((a) => a.id === widgetId);
       if (!def) return;
       const newOrder = widgets.length;
-      widgets.push({ id: widgetId, view, title: def.title, size: widgetSize, order: newOrder });
-      setDashboardWidgets(view, widgets);
+      widgets.push({ id: widgetId, view: "dashboard", title: def.title, size: widgetSize, order: newOrder });
+      setDashboardWidgets("dashboard", widgets);
       getAppCallbacks().render();
       return;
     }
     if (action === "remove-widget") {
       const widgetId = target.dataset.widgetId ?? "";
-      const view = state.dashboardViewMode ?? "dashboard";
-      const widgets = getDashboardWidgets(view);
+      const widgets = getDashboardWidgets("dashboard");
       const filtered = widgets.filter((w) => w.id !== widgetId);
-      setDashboardWidgets(view, filtered);
+      setDashboardWidgets("dashboard", filtered);
       getAppCallbacks().render();
       return;
     }
     if (action === "move-widget-up") {
       const widgetId = target.dataset.widgetId ?? "";
-      const view = state.dashboardViewMode ?? "dashboard";
-      const widgets = getDashboardWidgets(view);
+      const widgets = getDashboardWidgets("dashboard");
       const idx = widgets.findIndex((w) => w.id === widgetId);
       if (idx > 0) {
         [widgets[idx - 1], widgets[idx]] = [widgets[idx], widgets[idx - 1]];
-        setDashboardWidgets(view, widgets);
+        setDashboardWidgets("dashboard", widgets);
         getAppCallbacks().render();
       }
       return;
     }
     if (action === "move-widget-down") {
       const widgetId = target.dataset.widgetId ?? "";
-      const view = state.dashboardViewMode ?? "dashboard";
-      const widgets = getDashboardWidgets(view);
+      const widgets = getDashboardWidgets("dashboard");
       const idx = widgets.findIndex((w) => w.id === widgetId);
       if (idx >= 0 && idx < widgets.length - 1) {
         [widgets[idx], widgets[idx + 1]] = [widgets[idx + 1], widgets[idx]];
-        setDashboardWidgets(view, widgets);
+        setDashboardWidgets("dashboard", widgets);
         getAppCallbacks().render();
       }
-      return;
-    }
-    if (action === "open-view-dashboard") {
-      const view = target.dataset.view as AppMode;
-      if (!view) return;
-      state.dashboardViewMode = view;
-      state.dashboardPreviousMode = state.appMode;
-      state.appMode = "dashboard";
-      state.mobileNavView = "dashboard" as MobileNavView;
-      getAppCallbacks().render();
       return;
     }
     if (action === "open-git-changes") {

@@ -534,33 +534,20 @@ export const widgetRegistry: Record<WidgetId, WidgetEntry> = {
 };
 
 /* ------------------------------------------------------------------ */
-/*  Available widgets per view                                         */
+/*  All widget IDs                                                     */
 /* ------------------------------------------------------------------ */
 
-export function availableWidgetsForView(view: AppMode): WidgetId[] {
-	switch (view) {
-		case "chat":
-			return ["chat-recent", "chat-busy-status", "chat-token-budget", "system-heartbeat"];
-		case "tasks":
-			return ["tasks-overview", "tasks-priority-strip", "kanban-summary", "system-heartbeat"];
-		case "kanban":
-			return ["kanban-summary", "kanban-progress", "kanban-done-count", "system-workspaces"];
-		case "code":
-			return ["code-open-tabs", "code-workspace-status", "git-change-count", "git-branch", "system-heartbeat"];
-		case "git":
-			return ["git-branch", "git-recent-commits", "git-change-count"];
-		case "dashboard":
-			return [
-				"chat-busy-status", "chat-token-budget",
-				"kanban-summary", "kanban-progress", "kanban-done-count",
-				"tasks-overview", "tasks-priority-strip",
-				"git-branch", "git-recent-commits", "git-change-count",
-				"system-heartbeat", "system-workspaces",
-				"code-open-tabs", "code-workspace-status",
-			];
-		case "settings":
-			return ["system-heartbeat", "system-workspaces"];
-		default:
-			return [];
-	}
+/** All widget IDs available on the unified dashboard. */
+export const allWidgetIds: WidgetId[] = [
+	"chat-busy-status", "chat-token-budget", "chat-recent",
+	"kanban-summary", "kanban-progress", "kanban-done-count",
+	"tasks-overview", "tasks-priority-strip",
+	"git-branch", "git-recent-commits", "git-change-count",
+	"system-heartbeat", "system-workspaces",
+	"code-open-tabs", "code-workspace-status",
+];
+
+/** Returns all widget IDs — the unified dashboard makes them all available. */
+export function availableWidgetsForView(): WidgetId[] {
+	return allWidgetIds;
 }

@@ -29,7 +29,6 @@ export const state = {
   dashboardPreviousMode: null as AppMode | null, // remembers mode before dashboard
   dashboardLayouts: defaultDashboardLayouts(), // per-view widget layouts (initialized with defaults)
   dashboardEditMode: false, // whether user is currently rearranging widgets
-  dashboardViewMode: null as AppMode | null, // which view's dashboard is active
   mobileNavView: "chat" as MobileNavView,
   activeChatKanbanTab: new Map<string, ChatKanbanTab>(),
   formError: "",
@@ -337,57 +336,43 @@ export function getActiveChatModelLabel(): string {
 const dashboardModes: AppMode[] = ["chat", "tasks", "kanban", "code", "git", "dashboard"];
 
 export function defaultDashboardLayouts(): Record<AppMode, DashboardWidget[]> {
-  const layouts: Record<AppMode, DashboardWidget[]> = {
-    chat: [
-      { id: "chat-busy-status", view: "chat", title: "Chat Status", size: "small", order: 0 },
-      { id: "chat-token-budget", view: "chat", title: "Token Budget", size: "wide", order: 1 },
-      { id: "chat-recent", view: "chat", title: "Recent Chat", size: "large", order: 2 },
-      { id: "system-heartbeat", view: "chat", title: "Heartbeat", size: "small", order: 3 },
-    ],
-    tasks: [
-      { id: "tasks-overview", view: "tasks", title: "Tasks Overview", size: "large", order: 0 },
-      { id: "tasks-priority-strip", view: "tasks", title: "Priority Strip", size: "wide", order: 1 },
-      { id: "system-heartbeat", view: "tasks", title: "Heartbeat", size: "small", order: 2 },
-    ],
-    kanban: [
-      { id: "kanban-summary", view: "kanban", title: "Kanban Summary", size: "wide", order: 0 },
-      { id: "kanban-progress", view: "kanban", title: "Card Progress", size: "medium", order: 1 },
-      { id: "kanban-done-count", view: "kanban", title: "Cards Done", size: "small", order: 2 },
-      { id: "system-workspaces", view: "kanban", title: "Workspaces", size: "small", order: 3 },
-    ],
-    code: [
-      { id: "code-open-tabs", view: "code", title: "Open Tabs", size: "medium", order: 0 },
-      { id: "code-workspace-status", view: "code", title: "Workspace Status", size: "small", order: 1 },
-      { id: "system-heartbeat", view: "code", title: "Heartbeat", size: "small", order: 2 },
-    ],
-    git: [
-      { id: "git-branch", view: "git", title: "Current Branch", size: "small", order: 0 },
-      { id: "git-change-count", view: "git", title: "Changes", size: "small", order: 1 },
-      { id: "git-recent-commits", view: "git", title: "Recent Commits", size: "large", order: 2 },
-    ],
+  return {
+    chat: [],
+    tasks: [],
+    kanban: [],
+    code: [],
+    git: [],
     dashboard: [
       { id: "chat-busy-status", view: "dashboard", title: "Chat Status", size: "small", order: 0 },
       { id: "kanban-summary", view: "dashboard", title: "Kanban Summary", size: "wide", order: 1 },
       { id: "system-workspaces", view: "dashboard", title: "Workspaces", size: "medium", order: 2 },
+      { id: "chat-token-budget", view: "dashboard", title: "Token Budget", size: "small", order: 3 },
+      { id: "tasks-overview", view: "dashboard", title: "Tasks Overview", size: "medium", order: 4 },
+      { id: "kanban-progress", view: "dashboard", title: "Card Progress", size: "medium", order: 5 },
+      { id: "git-branch", view: "dashboard", title: "Current Branch", size: "small", order: 6 },
+      { id: "chat-recent", view: "dashboard", title: "Recent Chat", size: "large", order: 7 },
+      { id: "git-recent-commits", view: "dashboard", title: "Recent Commits", size: "medium", order: 8 },
+      { id: "system-heartbeat", view: "dashboard", title: "Heartbeat", size: "small", order: 9 },
     ],
     settings: [],
   };
-  return layouts;
 }
 
 export function getDashboardWidgets(view: AppMode): DashboardWidget[] {
-  const layouts = state.dashboardLayouts;
-  if (layouts[view] !== undefined) {
-    return layouts[view];
+  // Always use "dashboard" as the key for the unified dashboard
+  const widgets = state.dashboardLayouts["dashboard"];
+  if (widgets !== undefined) {
+    return widgets;
   }
   // Initialize with defaults on first access
   const defaults = defaultDashboardLayouts();
   state.dashboardLayouts = defaults;
-  return defaults[view] ?? [];
+  return defaults["dashboard"] ?? [];
 }
 
-export function setDashboardWidgets(view: AppMode, widgets: DashboardWidget[]) {
-  state.dashboardLayouts[view] = widgets;
+export function setDashboardWidgets(_view: AppMode, widgets: DashboardWidget[]) {
+  // Always store under "dashboard" key for the unified dashboard
+  state.dashboardLayouts["dashboard"] = widgets;
   scheduleDashboardSave();
 }
 

@@ -381,7 +381,7 @@ textarea:focus-visible {
   object-fit: cover;
 }
 
-/* Mobile bottom nav is hidden on desktop — shown only inside the 720px media query */
+/* Mobile bottom nav is hidden on desktop â€” shown only inside the 720px media query */
 .mobile-bottom-nav {
   display: none;
 }
@@ -1160,12 +1160,12 @@ h3 {
   opacity: 0.5;
 }
 
-/* ── Model dropdown: desktop overlay ── */
+/* â”€â”€ Model dropdown: desktop overlay â”€â”€ */
 .chat-composer-toolbar-left {
   position: relative;
 }
 
-/* ── Chat composer dropdown containers (shared) ── */
+/* â”€â”€ Chat composer dropdown containers (shared) â”€â”€ */
 
 .model-dropdown[hidden],
 .mode-dropdown[hidden] {
@@ -1300,7 +1300,7 @@ h3 {
   padding: 0;
 }
 
-/* ── Chat composer dropdown items (shared) ── */
+/* â”€â”€ Chat composer dropdown items (shared) â”€â”€ */
 
 .model-dropdown-option,
 .chat-more-menu button {
@@ -2144,7 +2144,7 @@ h3 {
   text-decoration: line-through;
 }
 
-/* ── Task card open button (click to open detail view) ── */
+/* â”€â”€ Task card open button (click to open detail view) â”€â”€ */
 
 .task-card-open {
   display: block;
@@ -2161,7 +2161,7 @@ h3 {
   outline-offset: -3px;
 }
 
-/* ── Task card header row: priority badge + title + status ── */
+/* â”€â”€ Task card header row: priority badge + title + status â”€â”€ */
 
 .task-card-header {
   display: flex;
@@ -2179,7 +2179,7 @@ h3 {
   line-height: 1.35;
 }
 
-/* ── Task status badge (compact inline) ── */
+/* â”€â”€ Task status badge (compact inline) â”€â”€ */
 
 .task-status-badge {
   display: inline-flex;
@@ -2217,7 +2217,7 @@ h3 {
   color: var(--color-text-muted);
 }
 
-/* ── Expandable body ── */
+/* â”€â”€ Expandable body â”€â”€ */
 
 .task-card-body {
   max-height: 0;
@@ -2372,7 +2372,7 @@ h3 {
   height: 15px;
 }
 
-/* ── Task detail view meta row ── */
+/* â”€â”€ Task detail view meta row â”€â”€ */
 
 .task-detail-meta {
   display: flex;
@@ -2407,7 +2407,7 @@ h3 {
   background: color-mix(in srgb, var(--color-text-muted) 12%, transparent);
 }
 
-/* ── Task detail footer actions ── */
+/* â”€â”€ Task detail footer actions â”€â”€ */
 
 .task-detail-footer-actions {
   display: flex;
@@ -2417,7 +2417,7 @@ h3 {
   border-top: 1px solid var(--color-border);
 }
 
-/* ── Priority badges ── */
+/* â”€â”€ Priority badges â”€â”€ */
 
 .priority-badge {
   display: inline-flex;
@@ -2598,7 +2598,7 @@ h3 {
   background: color-mix(in srgb, var(--color-accent) 20%, transparent);
 }
 
-/* Repair badge on kanban cards — shows on watchdog repair cards */
+/* Repair badge on kanban cards â€” shows on watchdog repair cards */
 .repair-badge {
   position: absolute;
   top: 6px;
@@ -2706,7 +2706,7 @@ h3 {
   padding-left: calc(1 * var(--space-md-lg));
 }
 
-/* ── Minimal kanban card elements ── */
+/* â”€â”€ Minimal kanban card elements â”€â”€ */
 
 .kanban-card-title-row {
   display: flex;
@@ -2769,7 +2769,7 @@ h3 {
   min-width: 0;
 }
 
-/* Progress bar container — column layout matching dashboard */
+/* Progress bar container â€” column layout matching dashboard */
 .kanban-card-progress-bar {
   display: flex;
   flex-direction: column;
@@ -2803,7 +2803,7 @@ h3 {
   gap: var(--space-sm);
 }
 
-/* Tool call name — monospace like dashboard */
+/* Tool call name â€” monospace like dashboard */
 .kanban-card-tool-label {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: var(--text-xs);
@@ -2811,7 +2811,7 @@ h3 {
   opacity: 0.7;
 }
 
-/* ── Kanban card compact layout ── */
+/* â”€â”€ Kanban card compact layout â”€â”€ */
 
 .kanban-card-open {
   gap: var(--space-md);
@@ -2827,7 +2827,7 @@ h3 {
   line-height: 1.3;
 }
 
-/* Status text below card title — color-coded by lane state */
+/* Status text below card title â€” color-coded by lane state */
 .kanban-card-status-text {
   margin: 0;
   padding: 0;
@@ -2852,22 +2852,22 @@ h3 {
   height: 14px;
 }
 
-/* Green — success / done */
+/* Green â€” success / done */
 .kanban-card-status-text.status-success {
   color: var(--color-success);
 }
 
-/* Orange/amber — waiting / pending */
+/* Orange/amber â€” waiting / pending */
 .kanban-card-status-text.status-warning {
   color: var(--color-warning);
 }
 
-/* Red — error / blocked */
+/* Red â€” error / blocked */
 .kanban-card-status-text.status-error {
   color: var(--color-danger);
 }
 
-/* Accent — in progress */
+/* Accent â€” in progress */
 .kanban-card-status-text.status-inprogress {
   color: var(--color-accent-strong);
 }
@@ -4338,7 +4338,7 @@ h3 {
   text-transform: uppercase;
 }
 
-/* ── Agent Modes settings section ── */
+/* â”€â”€ Agent Modes settings section â”€â”€ */
 
 .agent-mode-list {
   display: grid;
@@ -4557,7 +4557,7 @@ h3 {
   display: none;
 }
 
-/* Bottom sheet dismiss handle — hidden on desktop, shown on mobile */
+/* Bottom sheet dismiss handle â€” hidden on desktop, shown on mobile */
 .code-explorer-dismiss-handle {
   display: none;
 }
@@ -5496,7 +5496,7 @@ h3 {
   height: 100%;
 }
 
-/* ─── Image Viewer ────────────────────────────────────────────── */
+/* â”€â”€â”€ Image Viewer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .code-image-viewer {
   display: grid;
@@ -5553,7 +5553,7 @@ h3 {
   text-align: center;
 }
 
-/* ─── Video Viewer ────────────────────────────────────────────── */
+/* â”€â”€â”€ Video Viewer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .code-video-viewer {
   display: grid;
@@ -6262,12 +6262,12 @@ h3 {
     padding-bottom: 56px;
   }
 
-  /* Hide the desktop left nav on mobile — replaced by bottom nav */
+  /* Hide the desktop left nav on mobile â€” replaced by bottom nav */
   .left-nav {
     display: none;
   }
 
-  /* Mobile fixed bottom navigation bar — two-zone layout */
+  /* Mobile fixed bottom navigation bar â€” two-zone layout */
   .mobile-bottom-nav {
     position: fixed;
     bottom: 0;
@@ -6637,19 +6637,19 @@ h3 {
     display: none;
   }
 
-  /* Hide expand/collapse buttons on mobile — panels stack vertically via tabs */
+  /* Hide expand/collapse buttons on mobile â€” panels stack vertically via tabs */
   .chat-actions [data-action="toggle-chat-size"],
   .kanban-actions [data-action="toggle-kanban-size"] {
     display: none;
   }
 
 
-  /* Hide the chat attachment menu popup on mobile — use native picker instead */
+  /* Hide the chat attachment menu popup on mobile â€” use native picker instead */
   .chat-attachment-menu {
     display: none !important;
   }
 
-  /* Unified single-row bottom nav — five view tabs + workspace pill */
+  /* Unified single-row bottom nav â€” five view tabs + workspace pill */
   .mobile-bottom-nav {
     position: fixed;
     bottom: 0;
@@ -6850,7 +6850,7 @@ h3 {
     touch-action: manipulation;
   }
 
-  /* ── Chat message bubbles on mobile ───────────────── */
+  /* â”€â”€ Chat message bubbles on mobile â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   .chat-message {
     max-width: calc(100% - 32px);
     border: 0;
@@ -6956,7 +6956,7 @@ h3 {
   }
 }
 
-/* Mobile layout — compact VS Code-style input bar */
+/* Mobile layout â€” compact VS Code-style input bar */
 @media (max-width: 720px) {
   .chat-log {
     overflow-y: auto;
@@ -6969,7 +6969,7 @@ h3 {
   }
 
  
-  /* ── Model selector: compact inline button (VS Code style) ── */
+  /* â”€â”€ Model selector: compact inline button (VS Code style) â”€â”€ */
   .model-selector {
     position: relative;
     display: flex !important;
@@ -7004,7 +7004,7 @@ h3 {
     max-width: calc(100vw - 16px);
   }
 
-  /* ── Composer: VS Code-style compact single-row input ── */
+  /* â”€â”€ Composer: VS Code-style compact single-row input â”€â”€ */
   .chat-composer {
     flex-direction: column;
     gap: 0;
@@ -7061,7 +7061,7 @@ h3 {
     align-self: flex-end;
   }
 
-  /* Chat mention picker — prevent overflow */
+  /* Chat mention picker â€” prevent overflow */
   .chat-mention-picker {
     max-height: 200px;
   }
@@ -7809,7 +7809,7 @@ h3 {
   gap: var(--space-lg);
 }
 
-/* -- Widget card shell -- */
+/* -- Widget card shell â€” light chrome redesign -- */
 .dashboard-widget-card,
 .widget-card {
   background: var(--color-surface);
@@ -7818,14 +7818,13 @@ h3 {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: var(--space-lg);
-  gap: var(--space-md);
-  transition: box-shadow 120ms ease;
+  transition: box-shadow 120ms ease, border-color 120ms ease;
 }
 
 .dashboard-widget-card:hover,
 .widget-card:hover {
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-text) 6%, transparent);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--color-text) 8%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent) 20%, var(--color-border));
 }
 
 /* Edit mode: dashed border on widget cards */
@@ -7835,38 +7834,330 @@ h3 {
   border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
 }
 
-/* -- Widget card header -- */
+/* Light header â€” thin separator instead of heavy dark bar */
 .widget-card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-md) var(--space-lg);
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface-muted);
+  padding: var(--space-md-lg) var(--space-xl);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  background: transparent;
 }
 
 .widget-card-title {
-  font-size: var(--text-sm);
-  font-weight: 600;
-  color: var(--color-text);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  color: var(--color-text-muted);
   margin: 0;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.06em;
 }
 
-/* -- Widget card body -- */
+/* Body â€” handles its own padding */
 .widget-card-body {
-  padding: var(--space-lg);
+  padding: var(--space-xl) var(--space-xl) var(--space-lg);
   flex: 1 1 auto;
-  font-size: var(--text-base-md);
+  font-size: var(--text-sm);
   color: var(--color-text);
   line-height: 1.55;
 }
 
+/* Widget body SVG icons â€” constrain sizes to prevent giant triangles */
+.widget-card-body svg {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  vertical-align: middle;
+}
+
+/* Spinner animation for busy status */
+.widget-status-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.widget-status-busy .widget-status-icon svg {
+  animation: echo-spin 800ms linear infinite;
+}
+
+/* Status dots (used by heartbeat, workspaces) */
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-active { background: var(--color-success); }
+.status-inactive { background: var(--color-text-muted); opacity: 0.5; }
+.status-running { background: var(--color-accent); animation: echo-pulse-dot 1.6s ease-in-out infinite; }
+
+/* Widget placeholder â€” shared empty state */
+.widget-placeholder,
 .dashboard-widget-placeholder {
-  color: var(--color-text-muted);
-  font-style: italic;
   margin: 0;
+  padding: var(--space-lg) 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+/* -- Chat Recent Widget -- */
+.widget-chat-recent { display: flex; flex-direction: column; gap: var(--space-md); }
+
+.widget-chat-msg {
+  padding: var(--space-md) var(--space-lg);
+  border-radius: var(--space-md);
+  background: var(--color-surface-muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.widget-chat-msg.from-user {
+  background: color-mix(in srgb, var(--color-info) 8%, var(--color-surface-muted));
+  border-left: 2px solid var(--color-info);
+}
+
+.widget-chat-msg.from-assistant { border-left: 2px solid var(--color-text-muted); }
+
+.widget-chat-role {
+  display: block;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: var(--space-xxs);
+}
+
+.widget-chat-content { display: block; color: var(--color-text); overflow-wrap: break-word; }
+
+/* -- Chat Busy Status Widget -- */
+.widget-busy-indicator { display: flex; align-items: center; gap: var(--space-md); padding: var(--space-sm) 0; }
+
+.widget-status-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--color-success);
+}
+
+.widget-status-busy .widget-status-icon { color: var(--color-accent); }
+.widget-status-text { font-size: var(--text-sm); font-weight: 600; color: var(--color-text); }
+.widget-subtitle { margin: var(--space-xs) 0 0; font-size: var(--text-xs); color: var(--color-text-muted); }
+
+/* -- Token Budget Widget -- */
+.widget-budget-bar { display: flex; flex-direction: column; gap: var(--space-md); }
+
+.widget-budget-info {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-sm);
+}
+
+.widget-budget-label {
+  font-size: var(--text-xs); font-weight: 700; color: var(--color-text-muted);
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
+
+.widget-budget-values { font-size: var(--text-sm); color: var(--color-text); font-variant-numeric: tabular-nums; }
+
+.widget-budget-percentage {
+  font-size: var(--text-xs); font-weight: 700; padding: 1px var(--space-sm);
+  border-radius: 999px; background: color-mix(in srgb, var(--color-text-muted) 10%, transparent);
+  color: var(--color-text-muted);
+}
+
+.widget-budget-percentage.budget-ok { background: color-mix(in srgb, var(--color-success) 15%, transparent); color: var(--color-success); }
+.widget-budget-percentage.budget-warning { background: color-mix(in srgb, var(--color-warning) 15%, transparent); color: var(--color-warning); }
+.widget-budget-percentage.budget-critical { background: color-mix(in srgb, var(--color-danger) 15%, transparent); color: var(--color-danger); }
+
+.widget-budget-track {
+  width: 100%; height: 6px; border-radius: 3px;
+  background: color-mix(in srgb, var(--color-text-muted) 10%, transparent); overflow: hidden;
+}
+
+.widget-budget-fill { height: 100%; border-radius: 3px; background: var(--color-success); transition: width 300ms ease; }
+.widget-budget-fill.budget-ok { background: var(--color-success); }
+.widget-budget-fill.budget-warning { background: var(--color-warning); }
+.widget-budget-fill.budget-critical { background: var(--color-danger); }
+
+/* -- Kanban Summary Widget â€” fixes "Ready 0In Progress 0Blocked 0Done 2" concatenation -- */
+.widget-kanban-summary { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
+
+.widget-lane-badge {
+  display: inline-flex; align-items: center; gap: var(--space-xs);
+  padding: var(--space-xxs) var(--space-sm); border-radius: 999px;
+  font-size: var(--text-xs); font-weight: 600;
+  background: color-mix(in srgb, var(--badge-color, var(--color-text-muted)) 12%, transparent);
+  color: var(--badge-color, var(--color-text-muted));
+}
+
+.widget-lane-badge strong { font-weight: 800; }
+
+/* -- Kanban Progress Widget -- */
+.widget-kanban-progress { display: flex; flex-direction: column; gap: var(--space-md); }
+
+.widget-progress-item { display: flex; flex-direction: column; gap: var(--space-xs); }
+.widget-progress-title { font-size: var(--text-sm); color: var(--color-text); font-weight: 500; }
+
+.widget-progress-track {
+  width: 100%; height: 4px; border-radius: 2px;
+  background: color-mix(in srgb, var(--color-text-muted) 10%, transparent); overflow: hidden;
+}
+
+.widget-progress-fill { height: 100%; border-radius: 2px; background: var(--color-accent); transition: width 300ms ease; }
+.widget-progress-fill.budget-ok { background: var(--color-success); }
+.widget-progress-fill.budget-warning { background: var(--color-warning); }
+.widget-progress-fill.budget-critical { background: var(--color-danger); }
+
+.widget-progress-pct { font-size: var(--text-xs); color: var(--color-text-muted); font-variant-numeric: tabular-nums; text-align: right; }
+
+/* -- Cards Done Widget â€” fixes giant SVG triangle -- */
+.widget-done-count {
+  display: flex; flex-direction: column; align-items: center;
+  gap: var(--space-xs); padding: var(--space-lg) 0;
+}
+
+.widget-done-number { font-size: var(--text-5xl); font-weight: 800; color: var(--color-success); line-height: 1; }
+.widget-done-label { font-size: var(--text-sm); color: var(--color-text-muted); font-weight: 600; }
+
+.widget-trend {
+  display: inline-flex; align-items: center; gap: var(--space-xs);
+  font-size: var(--text-xs); color: var(--color-success); font-weight: 600;
+}
+
+.widget-trend-up svg { width: 12px; height: 12px; }
+
+/* -- Tasks Overview Widget -- */
+.widget-tasks-summary { display: flex; gap: var(--space-lg); margin-bottom: var(--space-md); }
+.widget-task-stat { font-size: var(--text-sm); color: var(--color-text); font-weight: 600; }
+.widget-task-completed { color: var(--color-success); }
+
+.widget-p0-list { display: flex; flex-direction: column; gap: var(--space-sm); }
+.widget-p0-item { display: flex; align-items: center; gap: var(--space-sm); font-size: var(--text-sm); }
+.widget-p0-title { color: var(--color-text); overflow-wrap: break-word; }
+
+/* -- Priority Strip Widget -- */
+.widget-priority-strip { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
+
+.widget-priority-badge {
+  display: inline-flex; align-items: center; padding: var(--space-xxs) var(--space-sm);
+  border-radius: 999px; font-size: var(--text-xs); font-weight: 700;
+}
+
+.widget-priority-badge.p0 { background: color-mix(in srgb, var(--color-danger) 15%, transparent); color: var(--color-danger); }
+.widget-priority-badge.p1 { background: color-mix(in srgb, var(--color-accent) 15%, transparent); color: var(--color-accent-strong); }
+.widget-priority-badge.p2 { background: color-mix(in srgb, var(--color-text-muted) 10%, transparent); color: var(--color-text-muted); }
+
+/* -- Git Branch Widget -- */
+.widget-git-branch { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm); font-size: var(--text-sm); }
+
+.widget-git-branch-name { font-weight: 700; color: var(--color-text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.widget-git-dirty-badge {
+  font-size: var(--text-xs); padding: 1px var(--space-sm); border-radius: 999px;
+  background: color-mix(in srgb, var(--color-warning) 15%, transparent); color: var(--color-warning); font-weight: 600;
+}
+
+.widget-git-upstream { font-size: var(--text-xs); color: var(--color-text-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.widget-git-hash { font-size: var(--text-xs); color: var(--color-text-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; opacity: 0.7; }
+
+/* -- Git Recent Commits Widget -- */
+.widget-git-commits { display: flex; flex-direction: column; gap: var(--space-sm); }
+
+.widget-git-commit {
+  display: grid; grid-template-columns: auto 1fr auto; align-items: baseline;
+  gap: var(--space-sm); font-size: var(--text-sm);
+}
+
+.widget-git-commit-hash { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-xs); color: var(--color-text-muted); opacity: 0.7; }
+.widget-git-commit-subject { color: var(--color-text); overflow-wrap: break-word; }
+.widget-git-commit-date { font-size: var(--text-xs); color: var(--color-text-muted); white-space: nowrap; }
+
+/* -- Git Change Count Widget -- */
+.widget-git-change-count { display: flex; align-items: center; gap: var(--space-md); padding: var(--space-sm) 0; }
+.widget-git-clean { color: var(--color-success); font-size: var(--text-sm); font-weight: 600; }
+.widget-git-dirty { color: var(--color-warning); }
+.widget-git-change-number { font-size: var(--text-3xl); font-weight: 800; }
+.widget-git-change-label { font-size: var(--text-sm); font-weight: 500; }
+
+/* -- Heartbeat Widget -- */
+.widget-heartbeat { display: flex; flex-direction: column; gap: var(--space-md-sm); }
+
+.widget-heartbeat-row { display: flex; align-items: center; gap: var(--space-sm); font-size: var(--text-sm); }
+.widget-heartbeat-label { color: var(--color-text-muted); font-weight: 600; min-width: 70px; }
+.widget-heartbeat-value { color: var(--color-text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-xs); }
+
+/* -- Workspaces Widget â€” fixes "Workspaceecho" concatenation -- */
+.widget-workspaces { display: flex; flex-direction: column; gap: var(--space-sm); }
+
+.widget-workspace-item {
+  display: flex; align-items: center; gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm); border-radius: var(--space-sm);
+  font-size: var(--text-sm); transition: background 120ms ease;
+}
+
+.widget-workspace-item:hover { background: var(--color-surface-muted); }
+.widget-workspace-active { background: color-mix(in srgb, var(--color-accent) 8%, transparent); }
+
+.widget-workspace-label {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--color-text);
+}
+
+.widget-running-badge {
+  font-size: var(--text-xs); padding: 1px var(--space-sm); border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 15%, transparent); color: var(--color-accent-strong); font-weight: 600;
+}
+
+/* -- Open Tabs Widget -- */
+.widget-open-tabs { display: flex; flex-direction: column; gap: var(--space-xs); }
+
+.widget-tab-item {
+  display: flex; align-items: center; gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm); border-radius: var(--space-sm);
+  font-size: var(--text-sm); transition: background 120ms ease;
+}
+
+.widget-tab-item:hover { background: var(--color-surface-muted); }
+.widget-tab-active { background: color-mix(in srgb, var(--color-accent) 8%, transparent); }
+
+.widget-tab-label {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--color-text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-xs);
+}
+
+.widget-dirty-dot { display: inline-flex; align-items: center; color: var(--color-warning); }
+
+/* -- Code Workspace Status Widget -- */
+.widget-code-workspace-status { display: flex; flex-direction: column; gap: var(--space-sm); }
+
+.widget-cws-row { display: flex; align-items: baseline; gap: var(--space-sm); }
+.widget-cws-label { font-size: var(--text-xs); font-weight: 700; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.widget-cws-value { font-size: var(--text-sm); color: var(--color-text); font-weight: 600; }
+.widget-cws-folders { font-size: var(--text-xs); color: var(--color-text-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.widget-cws-missing {
+  display: inline-block; font-size: var(--text-xs); padding: 1px var(--space-sm); border-radius: 999px;
+  background: color-mix(in srgb, var(--color-danger) 15%, transparent); color: var(--color-danger); font-weight: 600;
+}
+
+/* -- Dashboard Toolbar (header area) -- */
+.dashboard-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space-lg); margin-bottom: var(--space-xl);
+}
+
+.dashboard-toolbar h2 { font-size: var(--text-3xl); font-weight: 700; color: var(--color-text); margin: 0; }
+
+.secondary-button.dashboard-edit-btn svg,
+.secondary-button.dashboard-done-btn svg {
+  width: 14px; height: 14px; stroke: currentColor; fill: none;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+
+/* -- Dashboard View Container -- */
+.dashboard-view {
+  display: flex; flex-direction: column; gap: var(--space-2xl);
+  padding: var(--space-xl) var(--space-2xl); min-height: 0; overflow-y: auto;
 }
 
 /* -- Widget card edit controls (visible in edit mode) -- */
@@ -7921,7 +8212,7 @@ h3 {
 
 .dashboard-widget-large,
 .widget-size-large {
-  /* 2 columns × 2 rows */
+  /* 2 columns Ã— 2 rows */
 }
 
 .dashboard-widget-wide,
@@ -8318,7 +8609,7 @@ h3 {
   overflow-y: auto;
 }
 
-/* Kanban cards inside dashboard lanes — compact sizing */
+/* Kanban cards inside dashboard lanes â€” compact sizing */
 .dashboard-lane-cards .kanban-card {
   /* Inherits from existing .kanban-card styles */
 }

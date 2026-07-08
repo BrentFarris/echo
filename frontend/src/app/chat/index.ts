@@ -555,7 +555,6 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
           <span>Chat</span>
           <strong id="chat-title">${escapeHtml(workspace.displayName)}</strong>
         </div>
-        <button type="button" class="icon-button view-dashboard-button" title="View Chat dashboard" aria-label="Chat dashboard" data-action="open-view-dashboard" data-view="chat">${icons.dashboard}</button>
       </div>
       <div class="chat-log" data-chat-log>
         ${

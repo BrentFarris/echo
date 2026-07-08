@@ -74,7 +74,6 @@ export function renderTaskPanel(workspace: services.Workspace): string {
           <small class="task-storage-path">Completed: ${escapeHtml(board.doneStoragePath || ".echo/tasks_done.json")}</small>
         </div>
         <div class="task-heading-actions">
-          <button type="button" class="icon-button view-dashboard-button" title="View Tasks dashboard" aria-label="Tasks dashboard" data-action="open-view-dashboard" data-view="tasks">${icons.dashboard}</button>
           <label class="task-completed-toggle">
             <input type="checkbox" data-task-action="toggle-completed" ${filterMode === "all" || filterMode === "completed" ? "checked" : ""}>
             <span>Show completed</span>

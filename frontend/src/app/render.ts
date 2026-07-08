@@ -245,7 +245,7 @@ function buildLeftNav(
         <button class="nav-icon-button${mode === "code" ? " is-active" : ""}" type="button" title="Code" aria-label="Code view" data-action="${mode === "code" ? "close-code-view" : "open-code-view"}">${icons.code}</button>
         <button class="nav-icon-button${mode === "tasks" ? " is-active" : ""}" type="button" title="Tasks" aria-label="Tasks" data-action="switch-view" data-view="tasks">${icons.tasks}</button>
         <button class="nav-icon-button${mode === "git" ? " is-active" : ""}" type="button" title="Git" aria-label="Git" data-action="switch-view" data-view="git">${icons.git}</button>
-        <button class="nav-icon-button${mode === "dashboard" ? " is-active" : ""}" type="button" title="Dashboard (${mode === "dashboard" ? (state.dashboardViewMode ?? "chat") : mode})" aria-label="Dashboard" data-action="${mode === "dashboard" ? "close-dashboard" : "open-view-dashboard"}" data-view="${mode}">${icons.dashboard}</button>
+        <button class="nav-icon-button${mode === "dashboard" ? " is-active" : ""}" type="button" title="Dashboard" aria-label="Dashboard" data-action="${mode === "dashboard" ? "close-dashboard" : "open-dashboard"}">${icons.dashboard}</button>
         <button class="nav-icon-button" type="button" title="Settings" aria-label="Settings" data-action="open-settings">${icons.settings}</button>
       </div>
     </aside>
@@ -259,11 +259,10 @@ function buildMain(
   const mode = state.appMode;
 
   if (mode === "dashboard") {
-    const view = state.dashboardViewMode ?? "chat";
     return `
       <main class="main-content">
         <section class="workspace-panel" aria-labelledby="dashboard-title">
-          ${renderDashboard(view)}
+          ${renderDashboard()}
         </section>
       </main>
     `;
@@ -340,7 +339,6 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
             <strong id="kanban-title">${workspace ? escapeHtml(workspace.displayName) : `${workspaceCount} workspace${workspaceCount === 1 ? "" : "s"}`}</strong>
             ${workspace && hasKanbanRuntime(workspace.id) ? renderKanbanRuntime(workspace.id, running) : ""}
           </div>
-          <button type="button" class="icon-button view-dashboard-button" title="View Kanban dashboard" aria-label="Kanban dashboard" data-action="open-view-dashboard" data-view="kanban">${icons.dashboard}</button>
           ${
             workspace
               ? `<div class="kanban-actions">

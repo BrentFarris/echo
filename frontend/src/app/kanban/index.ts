@@ -1095,7 +1095,6 @@ export function patchKanbanBoard(workspaceID: string): boolean {
         <strong id="kanban-title">${escapeHtml(workspace.displayName)}</strong>
         ${hasKanbanRuntime(workspace.id) ? renderKanbanRuntime(workspace.id, running) : ""}
       </div>
-      <button type="button" class="icon-button view-dashboard-button" title="View Kanban dashboard" aria-label="Kanban dashboard" data-action="open-view-dashboard" data-view="kanban">${icons.dashboard}</button>
       <div class="kanban-actions">
         <button class="secondary-button icon-text-button change-review-button" type="button" title="Review AI file changes" data-action="open-change-review">
           ${icons.file}
