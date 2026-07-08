@@ -486,6 +486,9 @@ export async function handleAction(event: Event) {
           playNotificationSound();
         }
         pushToast("Plan converted into Ready cards.", "success");
+        state.appMode = "kanban";
+        state.mobileNavView = "kanban";
+        state.activeChatKanbanTab.set(workspace.id, "kanban");
       } finally {
         state.executingPlans.delete(workspace.id);
       }
