@@ -5460,6 +5460,22 @@ h3 {
   height: 100%;
 }
 
+/* ─── Minimap ─────────────────────────────────────────────── */
+
+.cm-minimap {
+  background-color: var(--code-editor-gutter-bg);
+  border-left: 1px solid var(--code-editor-border);
+  color: var(--code-editor-gutter-text);
+}
+
+.cm-minimap-line {
+  color: var(--code-editor-gutter-text);
+}
+
+.cm-minimap-selected {
+  background-color: color-mix(in srgb, var(--code-editor-active-line) 40%, transparent);
+}
+
 /* ─── Image Viewer ────────────────────────────────────────────── */
 
 .code-image-viewer {

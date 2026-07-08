@@ -3,6 +3,7 @@ import { acceptCompletion } from "@codemirror/autocomplete";
 import { languages as languageData } from "@codemirror/language-data";
 import { countColumn, EditorSelection, EditorState, findColumn, Prec, RangeSetBuilder, Transaction, type Extension, type SelectionRange } from "@codemirror/state";
 import { crosshairCursor, Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, keymap } from "@codemirror/view";
+import { showMinimap } from "@replit/codemirror-minimap";
 import { basicSetup } from "codemirror";
 import { tags } from "@lezer/highlight";
 import { patchDirtyUI } from "./dom";
@@ -191,6 +192,9 @@ export async function mountActiveCodeEditor(
     codeNavigationHistoryKeymap(workspaceID, callbacks, hooks),
     rectangularAltSelectionExtension(),
     crosshairCursor(),
+    showMinimap.of({
+      create: () => ({ dom: document.createElement("div") }),
+    }),
     EditorView.updateListener.of((update) => {
       if (update.selectionSet || update.docChanged) {
         updateTabEditorState(workspaceID, tab.path, update.view);
