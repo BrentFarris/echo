@@ -1,7 +1,7 @@
 
 import { llm, services } from "../../wailsjs/go/models";
 import type { ThemePaletteName } from "./theme";
-import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, KanbanCardCreationDraft, MobileNavView, TaskEditorDraft, Toast } from "./types";
+import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, KanbanCardCreationDraft, MobileNavView, TaskEditorDraft, TaskInlineEditState, Toast } from "./types";
 
 const endpointTopics = ["chat", "kanbanDecompose", "kanban", "inlineCode"] as const;
 type EndpointTopicKey = (typeof endpointTopics)[number];
@@ -41,6 +41,8 @@ export const state = {
   kanbanBoards: new Map<string, services.KanbanBoard>(),
   taskBoards: new Map<string, services.TaskBoard>(),
   taskEditorDrafts: new Map<string, TaskEditorDraft>(),
+  selectedTaskIds: new Map<string, string>(),
+  taskInlineEdits: new Map<string, TaskInlineEditState>(),
   showCompletedTaskWorkspaces: new Set<string>(),
   taskSearchQuery: new Map<string, string>(),
   taskFilterMode: new Map<string, "all" | "open" | "completed">(),

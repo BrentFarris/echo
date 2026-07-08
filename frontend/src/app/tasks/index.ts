@@ -34,6 +34,11 @@ export async function loadActiveTaskBoard() {
 export function applyTaskEvent(event: TaskEvent) {
   if (!event.workspaceId || !event.board) return;
   state.taskBoards.set(event.workspaceId, services.TaskBoard.createFrom(event.board));
+  const selectedID = state.selectedTaskIds.get(event.workspaceId);
+  if (selectedID && !(event.board.tasks ?? []).some((task) => task.id === selectedID)) {
+    state.selectedTaskIds.delete(event.workspaceId);
+    state.taskInlineEdits.delete(event.workspaceId);
+  }
   if (activeWorkspace()?.id === event.workspaceId && state.appMode === "tasks") {
     getAppCallbacks().render();
   }
@@ -102,6 +107,7 @@ export function renderTaskPanel(workspace: services.Workspace): string {
         ${priorities.map((priority) => renderTaskLane(priority, visible.filter((task) => task.priority === priority))).join("")}
       </div>
     </section>
+    ${renderTaskDetail(workspace.id)}
     ${renderTaskEditor(workspace.id)}
   `;
 }
@@ -124,29 +130,94 @@ function renderTaskLane(priority: string, tasks: services.WorkspaceTask[]): stri
 }
 
 function renderTaskCard(task: services.WorkspaceTask): string {
-  const criteria = task.acceptanceCriteria ?? [];
   return `
-    <article class="task-card${task.completed ? " is-completed" : ""}" draggable="true" data-task-drag-item data-task-id="${escapeAttribute(task.id)}">
+    <article class="task-card${task.completed ? " is-completed" : ""}" draggable="true" data-task-drag-item data-task-open-card data-task-id="${escapeAttribute(task.id)}" tabindex="0" aria-label="Open task ${escapeAttribute(task.title)}">
       <header>
         <strong>${escapeHtml(task.title)}</strong>
         ${task.completed ? `<span class="task-complete-badge">${icons.check}</span>` : ""}
       </header>
-      ${task.details ? `<div class="task-card-details markdown-body">${renderMarkdown(task.details)}</div>` : ""}
-      ${criteria.length ? `<ul>${criteria.map((criterion) => `<li>${escapeHtml(criterion)}</li>`).join("")}</ul>` : ""}
-      <label class="task-priority-control">
-        <span>Priority</span>
-        <select data-task-priority-select data-task-id="${escapeAttribute(task.id)}" data-updated-at="${escapeAttribute(task.updatedAt)}">
-          ${priorities.map((priority) => `<option value="${priority}" ${task.priority === priority ? "selected" : ""}>${priority}</option>`).join("")}
-        </select>
-      </label>
       <div class="task-card-actions">
-        <button class="icon-button" type="button" title="Edit task" aria-label="Edit ${escapeAttribute(task.title)}" data-task-action="edit" data-task-id="${escapeAttribute(task.id)}">${icons.edit}</button>
+        <button class="icon-button" type="button" title="Open task" aria-label="Open ${escapeAttribute(task.title)}" data-task-action="open" data-task-id="${escapeAttribute(task.id)}">${icons.edit}</button>
         <button class="icon-button" type="button" title="Use as chat prompt" aria-label="Use ${escapeAttribute(task.title)} as a chat prompt" data-task-action="chat" data-task-id="${escapeAttribute(task.id)}">${icons.chat}</button>
         ${task.completed ? "" : `<button class="icon-button" type="button" title="Convert to Kanban card" aria-label="Convert ${escapeAttribute(task.title)} to a Kanban card" data-task-action="kanban" data-task-id="${escapeAttribute(task.id)}">${icons.kanban}</button>`}
         <button class="icon-button" type="button" title="${task.completed ? "Reopen" : "Complete"} task" aria-label="${task.completed ? "Reopen" : "Complete"} ${escapeAttribute(task.title)}" data-task-action="complete" data-task-id="${escapeAttribute(task.id)}">${task.completed ? icons.undo : icons.check}</button>
         <button class="icon-button danger-button" type="button" title="Delete task" aria-label="Delete ${escapeAttribute(task.title)}" data-task-action="delete" data-task-id="${escapeAttribute(task.id)}">${icons.trash}</button>
       </div>
     </article>
+  `;
+}
+
+function renderTaskDetail(workspaceID: string): string {
+  const taskID = state.selectedTaskIds.get(workspaceID);
+  const task = taskID ? (taskBoardFor(workspaceID).tasks ?? []).find((candidate) => candidate.id === taskID) : null;
+  if (!task) return "";
+  const edit = state.taskInlineEdits.get(workspaceID);
+  const editing = edit?.taskId === task.id ? edit.field : "";
+  const criteriaText = (task.acceptanceCriteria ?? []).join("\n");
+  return `
+    <aside class="task-detail-backdrop" role="dialog" aria-modal="true" aria-labelledby="task-detail-title" data-task-detail>
+      <article class="task-detail-dialog">
+        <header class="task-detail-header">
+          <div class="task-detail-kicker">
+            <span>${escapeHtml(task.priority)}</span>
+            <span>${task.completed ? "Completed" : "Open"}</span>
+          </div>
+          <button class="icon-button close-button" type="button" data-task-action="close-detail" aria-label="Close task">${icons.x}</button>
+        </header>
+        <section class="task-detail-content">
+          <div class="task-detail-editable task-detail-title-field" data-task-inline-field="title" data-task-id="${escapeAttribute(task.id)}" data-updated-at="${escapeAttribute(task.updatedAt)}" role="button" tabindex="0" aria-label="Edit title">
+            ${editing === "title"
+              ? `<input id="task-detail-title" class="task-inline-title-input" type="text" value="${escapeAttribute(task.title)}" data-task-inline-input data-task-inline-kind="title" data-task-id="${escapeAttribute(task.id)}" data-updated-at="${escapeAttribute(task.updatedAt)}">`
+              : `<h1 id="task-detail-title">${escapeHtml(task.title)}</h1>`}
+          </div>
+          <div class="task-detail-meta">
+            <div class="task-priority-pill" data-task-inline-field="priority" data-task-id="${escapeAttribute(task.id)}" data-updated-at="${escapeAttribute(task.updatedAt)}" role="button" tabindex="0" aria-label="Edit priority">
+              ${editing === "priority"
+                ? `<select data-task-inline-input data-task-inline-kind="priority" data-task-id="${escapeAttribute(task.id)}" data-updated-at="${escapeAttribute(task.updatedAt)}">
+                    ${priorities.map((priority) => `<option value="${priority}" ${task.priority === priority ? "selected" : ""}>${priority}</option>`).join("")}
+                  </select>`
+                : `<span>${escapeHtml(task.priority)}</span>`}
+            </div>
+            <span>Updated ${escapeHtml(formatTaskDate(task.updatedAt))}</span>
+            ${task.completedAt ? `<span>Completed ${escapeHtml(formatTaskDate(task.completedAt))}</span>` : ""}
+          </div>
+          ${renderTaskDetailField("details", "Details", task.details || "", editing, task.id, task.updatedAt)}
+          ${renderTaskDetailField("acceptanceCriteria", "Acceptance criteria", criteriaText, editing, task.id, task.updatedAt)}
+        </section>
+        <footer class="task-detail-actions">
+          <button class="secondary-button icon-text-button" type="button" data-task-action="chat" data-task-id="${escapeAttribute(task.id)}">${icons.chat}<span>Use as prompt</span></button>
+          ${task.completed ? "" : `<button class="secondary-button icon-text-button" type="button" data-task-action="kanban" data-task-id="${escapeAttribute(task.id)}">${icons.kanban}<span>Make Kanban card</span></button>`}
+          <button class="secondary-button icon-text-button" type="button" data-task-action="complete" data-task-id="${escapeAttribute(task.id)}">${task.completed ? icons.undo : icons.check}<span>${task.completed ? "Reopen" : "Complete"}</span></button>
+          <button class="secondary-button danger-button icon-text-button" type="button" data-task-action="delete" data-task-id="${escapeAttribute(task.id)}">${icons.trash}<span>Delete</span></button>
+        </footer>
+      </article>
+    </aside>
+  `;
+}
+
+function renderTaskDetailField(
+  field: "details" | "acceptanceCriteria",
+  label: string,
+  value: string,
+  editing: string,
+  taskID: string,
+  updatedAt: string,
+): string {
+  const placeholder = field === "details" ? "No details yet. Click to add Markdown details." : "No acceptance criteria yet. Click to add one criterion per line.";
+  const body = field === "acceptanceCriteria" && value.trim()
+    ? `<ul>${value.split(/\r?\n/).map((criterion) => criterion.trim()).filter(Boolean).map((criterion) => `<li>${escapeHtml(criterion)}</li>`).join("")}</ul>`
+    : value.trim()
+      ? renderMarkdown(value)
+      : `<p class="task-detail-placeholder">${escapeHtml(placeholder)}</p>`;
+  return `
+    <section class="task-detail-section">
+      <h2>${escapeHtml(label)}</h2>
+      <div class="task-detail-editable markdown-body" data-task-inline-field="${field}" data-task-id="${escapeAttribute(taskID)}" data-updated-at="${escapeAttribute(updatedAt)}" role="button" tabindex="0" aria-label="Edit ${escapeAttribute(label)}">
+        ${editing === field
+          ? `<textarea class="task-inline-textarea" rows="${field === "details" ? "10" : "6"}" data-task-inline-input data-task-inline-kind="${field}" data-task-id="${escapeAttribute(taskID)}" data-updated-at="${escapeAttribute(updatedAt)}">${escapeHtml(value)}</textarea>`
+          : body}
+      </div>
+    </section>
   `;
 }
 
@@ -193,6 +264,18 @@ export function bindTaskEvents(root: ParentNode) {
   root.querySelector<HTMLInputElement>("[data-task-search]")?.addEventListener("input", handleTaskSearch);
   root.querySelectorAll<HTMLButtonElement>("[data-task-filter]").forEach((btn) => {
     btn.addEventListener("click", handleTaskFilter);
+  });
+  root.querySelectorAll<HTMLElement>("[data-task-open-card]").forEach((card) => {
+    card.addEventListener("click", handleTaskCardOpen);
+    card.addEventListener("keydown", handleTaskCardKeydown);
+  });
+  root.querySelectorAll<HTMLElement>("[data-task-inline-field]").forEach((field) => {
+    field.addEventListener("click", handleTaskInlineFieldOpen);
+    field.addEventListener("keydown", handleTaskInlineFieldKeydown);
+  });
+  root.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("[data-task-inline-input]").forEach((input) => {
+    input.addEventListener("blur", handleTaskInlineInputBlur);
+    input.addEventListener("keydown", (event) => handleTaskInlineInputKeydown(event as KeyboardEvent));
   });
 }
 
@@ -265,7 +348,19 @@ async function handleTaskAction(event: Event) {
       getAppCallbacks().render();
       return;
     }
+    if (action === "close-detail") {
+      state.selectedTaskIds.delete(workspace.id);
+      state.taskInlineEdits.delete(workspace.id);
+      getAppCallbacks().render();
+      return;
+    }
     if (!task) return;
+    if (action === "open") {
+      state.selectedTaskIds.set(workspace.id, task.id);
+      state.taskInlineEdits.delete(workspace.id);
+      getAppCallbacks().render();
+      return;
+    }
     if (action === "edit") {
       state.taskEditorDrafts.set(workspace.id, {
         taskId: task.id,
@@ -280,6 +375,7 @@ async function handleTaskAction(event: Event) {
     }
     if (action === "complete") {
       state.taskBoards.set(workspace.id, await SetWorkspaceTaskCompleted(workspace.id, task.id, !task.completed, task.updatedAt));
+      state.taskInlineEdits.delete(workspace.id);
       pushToast(task.completed ? "Task reopened." : "Task completed.", "success");
       getAppCallbacks().render();
       return;
@@ -287,6 +383,8 @@ async function handleTaskAction(event: Event) {
     if (action === "delete") {
       if (!window.confirm(`Delete "${task.title}"?`)) return;
       state.taskBoards.set(workspace.id, await DeleteWorkspaceTask(workspace.id, task.id, task.updatedAt));
+      state.selectedTaskIds.delete(workspace.id);
+      state.taskInlineEdits.delete(workspace.id);
       pushToast("Task deleted.", "success");
       getAppCallbacks().render();
       return;
@@ -344,6 +442,136 @@ async function handleTaskEditorSubmit(event: SubmitEvent) {
     getAppCallbacks().render();
   } catch (error) {
     pushToast(errorMessage(error), "error");
+  }
+}
+
+function handleTaskCardOpen(event: MouseEvent) {
+  const target = event.target as HTMLElement | null;
+  if (target?.closest("button, input, textarea, select, label, a")) return;
+  const workspace = activeWorkspace();
+  const card = event.currentTarget as HTMLElement;
+  const taskID = card.dataset.taskId || "";
+  if (!workspace || !taskID) return;
+  state.selectedTaskIds.set(workspace.id, taskID);
+  state.taskInlineEdits.delete(workspace.id);
+  getAppCallbacks().render();
+}
+
+function handleTaskCardKeydown(event: KeyboardEvent) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  const workspace = activeWorkspace();
+  const card = event.currentTarget as HTMLElement;
+  const taskID = card.dataset.taskId || "";
+  if (!workspace || !taskID) return;
+  state.selectedTaskIds.set(workspace.id, taskID);
+  state.taskInlineEdits.delete(workspace.id);
+  getAppCallbacks().render();
+}
+
+function handleTaskInlineFieldOpen(event: MouseEvent) {
+  const target = event.target as HTMLElement | null;
+  if (target?.closest("input, textarea, select, button")) return;
+  openTaskInlineField(event.currentTarget as HTMLElement);
+}
+
+function handleTaskInlineFieldKeydown(event: KeyboardEvent) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  openTaskInlineField(event.currentTarget as HTMLElement);
+}
+
+function openTaskInlineField(element: HTMLElement) {
+  const workspace = activeWorkspace();
+  const taskID = element.dataset.taskId || "";
+  const field = element.dataset.taskInlineField as "title" | "details" | "acceptanceCriteria" | "priority" | undefined;
+  if (!workspace || !taskID || !field) return;
+  state.selectedTaskIds.set(workspace.id, taskID);
+  state.taskInlineEdits.set(workspace.id, { taskId: taskID, field });
+  getAppCallbacks().render();
+  window.requestAnimationFrame(() => {
+    const input = appRoot.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("[data-task-inline-input]");
+    input?.focus();
+    if (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) {
+      input.selectionStart = input.value.length;
+      input.selectionEnd = input.value.length;
+    }
+  });
+}
+
+async function handleTaskInlineInputBlur(event: Event) {
+  const input = event.currentTarget as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+  await commitTaskInlineInput(input);
+}
+
+function handleTaskInlineInputKeydown(event: KeyboardEvent) {
+  const input = event.currentTarget as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    const workspace = activeWorkspace();
+    if (workspace) {
+      state.taskInlineEdits.delete(workspace.id);
+      getAppCallbacks().render();
+    }
+    return;
+  }
+  if (event.key === "Enter" && input instanceof HTMLInputElement) {
+    event.preventDefault();
+    input.blur();
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && input instanceof HTMLTextAreaElement) {
+    event.preventDefault();
+    input.blur();
+  }
+}
+
+async function commitTaskInlineInput(input: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement) {
+  const workspace = activeWorkspace();
+  const field = input.dataset.taskInlineKind as "title" | "details" | "acceptanceCriteria" | "priority" | undefined;
+  const taskID = input.dataset.taskId || "";
+  if (!workspace || !field || !taskID) return;
+  const task = (taskBoardFor(workspace.id).tasks ?? []).find((candidate) => candidate.id === taskID);
+  if (!task) return;
+
+  const nextTitle = field === "title" ? input.value.trim() : task.title;
+  if (!nextTitle) {
+    pushToast("Task title is required.", "error");
+    getAppCallbacks().render();
+    return;
+  }
+  const nextDetails = field === "details" ? input.value.trim() : task.details || "";
+  const nextCriteria = field === "acceptanceCriteria"
+    ? input.value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
+    : task.acceptanceCriteria ?? [];
+  const nextPriority = field === "priority" ? input.value : task.priority;
+
+  const unchanged = nextTitle === task.title &&
+    nextDetails === (task.details || "") &&
+    nextPriority === task.priority &&
+    JSON.stringify(nextCriteria) === JSON.stringify(task.acceptanceCriteria ?? []);
+  if (unchanged) {
+    state.taskInlineEdits.delete(workspace.id);
+    getAppCallbacks().render();
+    return;
+  }
+
+  try {
+    const updated = await UpdateWorkspaceTask(workspace.id, task.id, services.TaskInput.createFrom({
+      title: nextTitle,
+      details: nextDetails,
+      acceptanceCriteria: nextCriteria,
+      priority: nextPriority,
+    }), input.dataset.updatedAt || task.updatedAt);
+    state.taskBoards.set(workspace.id, updated);
+    state.selectedTaskIds.set(workspace.id, task.id);
+    state.taskInlineEdits.delete(workspace.id);
+    pushToast("Task updated.", "success");
+    getAppCallbacks().render();
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+    await loadActiveTaskBoard();
+    state.taskInlineEdits.delete(workspace.id);
+    getAppCallbacks().render();
   }
 }
 
@@ -435,4 +663,16 @@ function taskChatPrompt(task: services.WorkspaceTask): string {
   if (task.details?.trim()) parts.push(`Details:\n${task.details.trim()}`);
   if ((task.acceptanceCriteria ?? []).length) parts.push(`Acceptance criteria:\n${(task.acceptanceCriteria ?? []).map((criterion) => `- ${criterion}`).join("\n")}`);
   return parts.join("\n\n");
+}
+
+function formatTaskDate(value: string): string {
+  if (!value) return "unknown";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }

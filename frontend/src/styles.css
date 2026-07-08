@@ -2152,11 +2152,21 @@ h3 {
   border-radius: 8px;
   background: var(--color-surface);
   box-shadow: var(--shadow-soft);
-  cursor: grab;
+  cursor: pointer;
+  transition: border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+
+.task-card:hover,
+.task-card:focus-visible {
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-medium);
+  outline: none;
+  transform: translateY(-1px);
 }
 
 .task-card.is-dragging {
   opacity: 0.45;
+  cursor: grabbing;
 }
 
 .task-card.is-completed {
@@ -2297,6 +2307,169 @@ h3 {
   height: 15px;
 }
 
+.task-detail-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: var(--space-2xl);
+  background: color-mix(in srgb, var(--color-bg) 72%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.task-detail-dialog {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: var(--space-xl);
+  width: min(860px, 100%);
+  max-height: min(86vh, 900px);
+  padding: var(--space-2xl);
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-strong);
+  overflow: hidden;
+}
+
+.task-detail-header,
+.task-detail-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-lg);
+}
+
+.task-detail-kicker,
+.task-detail-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+
+.task-detail-kicker span,
+.task-priority-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 var(--space-lg);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg) 72%, var(--color-surface));
+  color: var(--color-text-muted);
+}
+
+.task-priority-pill {
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+}
+
+.task-priority-pill:hover,
+.task-priority-pill:focus-visible,
+.task-detail-editable:hover,
+.task-detail-editable:focus-visible {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+.task-priority-pill select {
+  min-height: 30px;
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-weight: 800;
+  outline: none;
+}
+
+.task-detail-content {
+  min-height: 0;
+  overflow: auto;
+  padding-right: var(--space-md);
+}
+
+.task-detail-title-field {
+  margin-bottom: var(--space-md);
+}
+
+.task-detail-title-field h1 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: clamp(2rem, 4vw, 3.4rem);
+  line-height: 1.05;
+  letter-spacing: -0.04em;
+}
+
+.task-detail-section {
+  display: grid;
+  gap: var(--space-md);
+  margin-top: var(--space-2xl);
+}
+
+.task-detail-section h2 {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-md-lg);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.task-detail-editable {
+  min-height: 44px;
+  padding: var(--space-lg);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  cursor: text;
+}
+
+.task-detail-title-field.task-detail-editable {
+  padding: var(--space-md);
+}
+
+.task-detail-placeholder {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.task-inline-title-input,
+.task-inline-textarea {
+  width: 100%;
+  border: 1px solid var(--color-accent);
+  border-radius: 10px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  outline: none;
+}
+
+.task-inline-title-input {
+  padding: var(--space-lg);
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  font-weight: 800;
+  line-height: 1.08;
+  letter-spacing: -0.04em;
+}
+
+.task-inline-textarea {
+  min-height: 160px;
+  padding: var(--space-lg);
+  resize: vertical;
+  font-size: var(--text-lg);
+  line-height: 1.55;
+}
+
+.task-detail-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  padding-top: var(--space-lg);
+  border-top: 1px solid var(--color-border);
+}
+
 @media (max-width: 920px) {
   .task-board {
     grid-template-columns: repeat(3, minmax(240px, auto));
@@ -2310,6 +2483,23 @@ h3 {
 
   .task-panel .panel-heading {
     display: grid;
+  }
+
+  .task-detail-backdrop {
+    padding: var(--space-lg);
+  }
+
+  .task-detail-dialog {
+    max-height: 92vh;
+    padding: var(--space-xl);
+  }
+
+  .task-detail-actions {
+    justify-content: stretch;
+  }
+
+  .task-detail-actions button {
+    flex: 1 1 180px;
   }
 }
 

@@ -100,6 +100,13 @@ export type TaskEditorDraft = {
   expectedUpdatedAt?: string;
 };
 
+export type TaskInlineEditField = "title" | "details" | "acceptanceCriteria" | "priority";
+
+export type TaskInlineEditState = {
+  taskId: string;
+  field: TaskInlineEditField;
+};
+
 export type ScrollSnapshot = {
   scrollTop: number;
   atBottom: boolean;
