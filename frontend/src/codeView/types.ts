@@ -9,6 +9,8 @@ export type CodeViewCallbacks = {
   pushToast: (message: string, tone?: ToastTone) => void;
   errorMessage: (error: unknown) => string;
   leadingWhitespaceIndicatorsEnabled: () => boolean;
+  gitChangedLineNumbers: (workspaceID: string, path: string) => number[];
+  refreshGitChanges: (workspaceID: string) => Promise<void>;
   showCodePathContextMenu: (
     workspaceID: string,
     path: string,

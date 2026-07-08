@@ -4,7 +4,7 @@ import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";
 import { icons } from "../icons";
-import { activeWorkspace, changeReviewFor, gitRepositoryViewFor, state } from "../state";
+import { activeWorkspace, changeReviewFor, gitChangeReviewFor, gitRepositoryViewFor, state } from "../state";
 import { pushToast } from "../toasts";
 import { changeOperationLabel, errorMessage, escapeAttribute, escapeHtml } from "../utils";
 import { renderChangeReviewPage, renderGitChangedFile, renderGitDiff } from "../changes";
@@ -453,6 +453,63 @@ export async function refreshWorkspaceGitRepository(
     state.loadingGitRepositoryWorkspaces.delete(workspaceID);
     getAppCallbacks().render();
   }
+}
+
+export function gitChangedLineNumbersForFile(workspaceID: string, path: string): number[] {
+  const normalizedPath = normalizeGitChangePath(path);
+  if (!workspaceID || !normalizedPath) {
+    return [];
+  }
+  const files = [
+    ...(gitRepositoryViewFor(workspaceID).repository?.files ?? []),
+    ...(gitChangeReviewFor(workspaceID).files ?? []),
+  ];
+  const seen = new Set<number>();
+  for (const file of files) {
+    if (normalizeGitChangePath(file.path) !== normalizedPath || !file.diffAvailable || !file.diff) {
+      continue;
+    }
+    gitChangedLineNumbersFromDiff(file.diff).forEach((line) => seen.add(line));
+  }
+  return [...seen].sort((left, right) => left - right);
+}
+
+function gitChangedLineNumbersFromDiff(diff: string): number[] {
+  const lines = diff.replaceAll("\r\n", "\n").split("\n");
+  if (lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  const changed = new Set<number>();
+  let nextNewLine = 0;
+  let inHunk = false;
+
+  for (const line of lines) {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (hunk) {
+      const start = Number.parseInt(hunk[1], 10);
+      nextNewLine = Number.isFinite(start) ? Math.max(1, start) : 1;
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk || line.startsWith("\\ No newline")) {
+      continue;
+    }
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      changed.add(Math.max(1, nextNewLine));
+      nextNewLine++;
+      continue;
+    }
+    if (line.startsWith("-") && !line.startsWith("---")) {
+      continue;
+    }
+    nextNewLine++;
+  }
+
+  return [...changed];
+}
+
+function normalizeGitChangePath(path: string): string {
+  return path.trim().replaceAll("\\", "/").replace(/^\/+/, "").toLowerCase();
 }
 
 function isNoManageableGitRepositoryError(error: unknown): boolean {

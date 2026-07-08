@@ -10,7 +10,7 @@ import { bindChatEvents, applyChatStreamEvent, isSupportedChatImageType, isSuppo
 import { applyFileChangesEvent } from "./changes";
 import { showContextMenu } from "./contextMenu";
 import { handleGlobalKeydown, handleGlobalKeyup, handleGlobalPointerDown, handleGlobalWindowBlur } from "./events";
-import { loadWorkspaceChangesSummary } from "./git";
+import { gitChangedLineNumbersForFile, loadWorkspaceChangesSummary } from "./git";
 import { applyKanbanEvent, loadActiveKanbanBoard, markKanbanRunStarted } from "./kanban";
 import { render } from "./render";
 import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state } from "./state";
@@ -30,6 +30,8 @@ function codeViewCallbacks() {
     errorMessage,
     leadingWhitespaceIndicatorsEnabled: () =>
       leadingWhitespaceIndicatorsEnabled(state.appState?.settings ?? state.settingsDraft),
+    gitChangedLineNumbers: gitChangedLineNumbersForFile,
+    refreshGitChanges: loadWorkspaceChangesSummary,
     showCodePathContextMenu(
       workspaceId: string,
       path: string,

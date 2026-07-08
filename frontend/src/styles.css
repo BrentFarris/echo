@@ -34,6 +34,7 @@
   --code-editor-selection: rgba(9, 105, 218, 0.25);
   --code-editor-selection-match: rgba(9, 105, 218, 0.14);
   --code-editor-invalid: #cf222e;
+  --code-editor-change-indicator: #1a7f37;
   --code-editor-whitespace-indicator: rgba(110, 119, 129, 0.38);
   --code-token-comment: #6e7781;
   --code-token-keyword: #cf222e;
@@ -111,6 +112,7 @@
     --code-editor-selection: #264f78;
     --code-editor-selection-match: rgba(56, 139, 253, 0.14);
     --code-editor-invalid: #ff7b72;
+    --code-editor-change-indicator: #3fb950;
     --code-editor-whitespace-indicator: rgba(125, 133, 144, 0.46);
     --code-token-comment: #8b949e;
     --code-token-keyword: #ff7b72;
@@ -5461,6 +5463,27 @@ h3 {
 }
 
 /* ─── Image Viewer ────────────────────────────────────────────── */
+
+.code-editor-mount .cm-git-change-gutter {
+  width: 7px;
+  min-width: 7px;
+}
+
+.code-editor-mount .cm-git-change-gutter .cm-gutterElement {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  width: 7px;
+  min-width: 7px;
+  padding: 0;
+}
+
+.code-editor-mount .cm-git-change-marker {
+  width: 3px;
+  min-height: 1.55em;
+  border-radius: 2px;
+  background: var(--code-editor-change-indicator);
+}
 
 .code-image-viewer {
   display: grid;
