@@ -159,7 +159,7 @@ function renderTaskDetail(workspaceID: string): string {
   const editing = edit?.taskId === task.id ? edit.field : "";
   const criteriaText = (task.acceptanceCriteria ?? []).join("\n");
   return `
-    <aside class="task-detail-backdrop" role="dialog" aria-modal="true" aria-labelledby="task-detail-title" data-task-detail>
+    <aside class="task-detail-backdrop" role="dialog" aria-modal="true" aria-labelledby="task-detail-title" tabindex="-1" data-task-detail>
       <article class="task-detail-dialog">
         <header class="task-detail-header">
           <div class="task-detail-kicker">
@@ -300,6 +300,7 @@ export function bindTaskEvents(root: ParentNode) {
     menu.addEventListener("mousedown", handleTaskTagSuggestionMouseDown);
     menu.addEventListener("click", handleTaskTagSuggestionClick);
   });
+  root.querySelector<HTMLElement>("[data-task-detail]")?.addEventListener("keydown", handleTaskDetailKeydown);
 }
 
 export function patchTaskPanel() {
@@ -379,9 +380,7 @@ async function handleTaskAction(event: Event) {
     }
     if (!task) return;
     if (action === "open") {
-      state.selectedTaskIds.set(workspace.id, task.id);
-      state.taskInlineEdits.delete(workspace.id);
-      getAppCallbacks().render();
+      openTaskDetail(workspace.id, task.id);
       return;
     }
     if (action === "edit") {
@@ -477,9 +476,7 @@ function handleTaskCardOpen(event: MouseEvent) {
   const card = event.currentTarget as HTMLElement;
   const taskID = card.dataset.taskId || "";
   if (!workspace || !taskID) return;
-  state.selectedTaskIds.set(workspace.id, taskID);
-  state.taskInlineEdits.delete(workspace.id);
-  getAppCallbacks().render();
+  openTaskDetail(workspace.id, taskID);
 }
 
 function handleTaskCardKeydown(event: KeyboardEvent) {
@@ -489,8 +486,26 @@ function handleTaskCardKeydown(event: KeyboardEvent) {
   const card = event.currentTarget as HTMLElement;
   const taskID = card.dataset.taskId || "";
   if (!workspace || !taskID) return;
-  state.selectedTaskIds.set(workspace.id, taskID);
-  state.taskInlineEdits.delete(workspace.id);
+  openTaskDetail(workspace.id, taskID);
+}
+
+function openTaskDetail(workspaceID: string, taskID: string) {
+  state.selectedTaskIds.set(workspaceID, taskID);
+  state.taskInlineEdits.delete(workspaceID);
+  getAppCallbacks().render();
+  window.requestAnimationFrame(() => appRoot.querySelector<HTMLElement>("[data-task-detail]")?.focus());
+}
+
+function handleTaskDetailKeydown(event: KeyboardEvent) {
+  if (event.key !== "Escape") return;
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+  event.preventDefault();
+  if (state.taskInlineEdits.has(workspace.id)) {
+    state.taskInlineEdits.delete(workspace.id);
+  } else {
+    state.selectedTaskIds.delete(workspace.id);
+  }
   getAppCallbacks().render();
 }
 
