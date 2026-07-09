@@ -12,6 +12,7 @@
         "No regressions in desktop viewport rendering"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T14:50:15.0036033Z",
       "updatedAt": "2026-07-08T15:55:58.2249904Z",
@@ -27,6 +28,7 @@
         "Edit mode UI elements are styled (buttons, picker panel)"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T14:01:23.8788583Z",
       "updatedAt": "2026-07-08T14:10:08.6449008Z",
@@ -46,6 +48,7 @@
         "cd frontend \u0026\u0026 npm run build succeeds"
       ],
       "priority": "P0",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T20:22:08.0202066Z",
       "updatedAt": "2026-07-08T20:29:54.8578748Z",
@@ -59,10 +62,26 @@
         "State variables are properly typed and initialized"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T22:06:25.1701678Z",
       "updatedAt": "2026-07-08T22:13:18.5879791Z",
       "completedAt": "2026-07-08T22:13:18.5879791Z"
+    },
+    "21433900-c3eb-4954-8e92-a762e154fb48": {
+      "title": "Add missing kanban and task tools to agent mode permission selector",
+      "details": "Two registered tools are missing from the frontend's `availableToolNames` array in `echo/frontend/src/app/settings/index.ts` (line 116), so custom agents cannot be granted permission to use them:\n\n- **`kanban_start_execution`** — starts async Kanban board execution for Ready cards\n- **`workspace_task_convert_to_kanban`** — converts a backlog task into a Ready Kanban card\n\n### Change\n\nIn `echo/frontend/src/app/settings/index.ts`, insert the missing tool names into `availableToolNames` (alphabetical order):\n\n```diff\n const availableToolNames = [\n   \"create_agent_mode\",\n   \"filesystem_create_text\",\n   \"filesystem_delete_file\",\n   \"filesystem_edit_text\",\n   \"filesystem_list\",\n   \"filesystem_read_image\",\n   \"filesystem_read_text\",\n   \"filesystem_read_video\",\n   \"filesystem_search_text\",\n   \"filesystem_search_workspace\",\n   \"filesystem_stat\",\n   \"git_inspect\",\n+  \"kanban_start_execution\",\n   \"lsp_query\",\n   \"restart\",\n   \"shell_command\",\n   \"web_fetch\",\n   \"web_search\",\n   \"workspace_context\",\n   \"workspace_skill_read\",\n   \"workspace_skill_record\",\n   \"workspace_skill_search\",\n   \"workspace_task_create\",\n   \"workspace_task_list\",\n+  \"workspace_task_convert_to_kanban\",\n ] as const;\n```\n\nNo other files need changes — the tools are already registered in Go and the permission infrastructure handles any tool name dynamically. The only gap was this hardcoded frontend list.",
+      "acceptanceCriteria": [
+        "Both missing tool names appear in availableToolNames in alphabetical order",
+        "Frontend builds successfully (cd frontend; npm run build)",
+        "No TypeScript errors from the as const array"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-09T04:04:07.7641752Z",
+      "updatedAt": "2026-07-09T04:32:54.5148372Z",
+      "completedAt": "2026-07-09T04:32:54.5148372Z"
     },
     "2723673f-1be9-4dda-ae4a-c4d8113383e3": {
       "title": "Task cards are too bulky and lack the visual style and flair of the dashboard mockup",
@@ -78,6 +97,7 @@
         "cd frontend \u0026\u0026 npm run build succeeds with no TypeScript errors"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T07:50:05.2323431Z",
       "updatedAt": "2026-07-08T07:51:05.6592317Z",
@@ -101,6 +121,7 @@
         "- Dashboard can be toggled away to return to normal Echo view without page reload"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-07T19:32:27.7778457Z",
       "updatedAt": "2026-07-07T19:37:49.8906738Z",
@@ -109,6 +130,7 @@
     "287c0c84-4965-43c1-a040-a19f3652c450": {
       "title": "Task cards click opens detail view with action options (like kanban)",
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T07:37:25.3193823Z",
       "updatedAt": "2026-07-08T07:37:59.6595143Z",
@@ -125,6 +147,7 @@
         "onend removes .is-listening class"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T22:06:25.2366686Z",
       "updatedAt": "2026-07-08T22:13:15.7464633Z",
@@ -141,10 +164,31 @@
         "Frontend board state updates correctly after card creation in all scenarios"
       ],
       "priority": "P0",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T13:02:06.0265123Z",
       "updatedAt": "2026-07-08T13:13:01.8527505Z",
       "completedAt": "2026-07-08T13:13:01.8527505Z"
+    },
+    "39523006-830c-4b9a-9701-61ca180d3914": {
+      "title": "Add optional epic/group field to backlog tasks for collapsible sub-sections within priority lanes",
+      "details": "## Overview\n\nAdd an optional `epic: string` field to `WorkspaceTask`. Tasks sharing the same epic render as collapsible sub-sections within each priority lane, grouping related work items under a common header.\n\n## Changes\n\n### Backend — `internal/services/tasks.go`\n- Add `Epic string \\`json:\"epic,omitempty\"\\`` to `WorkspaceTask`, `TaskInput`, and `storedWorkspaceTask` structs\n- Wire through `createWorkspaceTask`, `UpdateWorkspaceTask`, `normalizeTaskInput` (trim whitespace)\n- Pass through `toolWorkspaceTask` conversion\n\n### Backend — `internal/tools/types.go`\n- Add `Epic string \\`json:\"epic,omitempty\"\\`` to `tools.WorkspaceTask` and create/update request types\n\n### Backend — `internal/tools/workspace_tasks.go`\n- Add `epic` to `workspace_task_create` and `workspace_task_update` tool schemas\n- Pass epic through in handlers\n\n### Frontend — `frontend/src/app/tasks/index.ts`\n- Add optional \"Epic\" text input to task editor form\n- Modify `renderTaskLane` to group tasks by epic value; tasks with no epic render in an \"Ungrouped\" section\n- Each epic group renders as a collapsible `\u003cdetails\u003e` header with task count, followed by the cards\n- Add epic filter dropdown or pill bar alongside tag filters\n- Store active epic filter in `state` per workspace\n\n### Frontend — CSS (`frontend/src/styles.css`)\n- Style epic group headers (subtle background, collapsible chevron)\n- Ensure collapse/expand works within existing lane scroll behavior\n\n## Data Migration\n- Existing tasks have no epic; empty string renders as \"Ungrouped\"\n- No schema version bump needed (optional field)\n\n## Verification\n- Create task with epic → groups under epic header in lane\n- Multiple tasks share epic → appear in same group\n- Epic header collapses/expands\n- Tasks without epic render in \"Ungrouped\" section\n- Filter by epic works alongside tag filters\n- `go test ./...` and `cd frontend; npm run build` pass",
+      "acceptanceCriteria": [
+        "WorkspaceTask struct has optional Epic string field persisted to tasks.json",
+        "Task create/edit forms include optional Epic text input",
+        "Tasks with matching epic render grouped under a collapsible header within priority lanes",
+        "Tasks without an epic render in an 'Ungrouped' section within the lane",
+        "Epic group headers show task count and collapse/expand on click",
+        "Epic filter option available alongside tag filters",
+        "go test ./... passes",
+        "cd frontend \u0026\u0026 npm run build passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-09T06:59:50.6787515Z",
+      "updatedAt": "2026-07-09T11:49:48.3561419Z",
+      "completedAt": "2026-07-09T11:49:48.3561419Z"
     },
     "3c3dbc49-b08f-4edf-badd-c5d0bf9c944b": {
       "title": "Fix speech recognition stale inputEl closure bug",
@@ -155,10 +199,29 @@
         "npm run build passes"
       ],
       "priority": "P0",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T22:52:41.7563331Z",
       "updatedAt": "2026-07-08T23:22:54.5365469Z",
       "completedAt": "2026-07-08T23:22:54.5365469Z"
+    },
+    "3d7711ac-d2eb-4c85-8e9b-449b0dea2fb8": {
+      "title": "Sticky header + bounded scroll for chat thinking/tool call collapsible sections",
+      "details": "## Problem\n\nThinking (`data-debug-section=\"reasoning\"`) and Tools (`data-debug-section=\"tools\"`) `\u003cdetails\u003e` sections grow unbounded when expanded. Large reasoning blocks or tool call results push the `\u003csummary\u003e` toggle far above the viewport, requiring painful scrolling just to collapse them.\n\n## Solution\n\nCSS-only fix — sticky summary header + max-height with internal scroll on content areas. No JS changes needed.\n\n### File: `frontend/src/styles.css`\n\n**1. Make `.debug-section summary` sticky:**\n```css\n.debug-section summary {\n  position: sticky;\n  top: 0;\n  z-index: 2;\n  background: var(--color-surface);\n  /* existing cursor, padding, color, font-size, font-weight */\n}\n```\n\n**2. Add bounded scroll to content areas:**\n```css\n.debug-content {\n  max-height: 35vh;\n  overflow-y: auto;\n  /* existing min-width, padding */\n}\n\n.tool-list {\n  max-height: 50vh;\n  overflow-y: auto;\n  /* existing display, gap */\n}\n```\n\n**3. Style the internal scrollbar to match theme:**\n```css\n.debug-content::-webkit-scrollbar,\n.tool-list::-webkit-scrollbar {\n  width: 8px;\n}\n.debug-content::-webkit-scrollbar-track,\n.tool-list::-webkit-scrollbar-track {\n  background: transparent;\n}\n.debug-content::-webkit-scrollbar-thumb,\n.tool-list::-webkit-scrollbar-thumb {\n  background: var(--color-border);\n  border-radius: 4px;\n}\n```\n\n**4. Mobile adjustment (inside existing `@media (max-width: 720px)` block):**\n```css\n.debug-content { max-height: 30vh; }\n.tool-list { max-height: 40vh; }\n```\n\n### Verification\n\n- Open a chat with long reasoning or tool call output\n- Expand the Thinking/Tools section — summary stays pinned at top, content scrolls internally\n- Collapse works without scrolling up through content\n- `cd frontend; npm run build` passes",
+      "acceptanceCriteria": [
+        "Expanded thinking/tools sections have a sticky summary header that never scrolls out of view",
+        "Content areas scroll internally within a bounded max-height (35vh reasoning, 50vh tools)",
+        "Internal scrollbar is styled to match the app theme",
+        "Mobile viewport has reduced max-height values",
+        "No JavaScript or backend changes required",
+        "npm run build passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-09T06:50:37.0881662Z",
+      "updatedAt": "2026-07-09T11:49:48.5036439Z",
+      "completedAt": "2026-07-09T11:49:48.5036439Z"
     },
     "420d3f10-93d7-488d-94c0-750dd5392d86": {
       "title": "Add widget and dashboard layout types to types.ts",
@@ -169,6 +232,7 @@
         "DashboardWidget interface matches the grid renderer contract"
       ],
       "priority": "P0",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T14:01:23.6188597Z",
       "updatedAt": "2026-07-08T14:09:08.9755668Z",
@@ -183,10 +247,32 @@
         "Animation stops when recognition ends"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T22:06:25.3686691Z",
       "updatedAt": "2026-07-08T22:13:07.4309186Z",
       "completedAt": "2026-07-08T22:13:07.4309186Z"
+    },
+    "4679ec5b-c31b-4b93-a875-e627160fc52e": {
+      "title": "Add missing task and kanban management agent tools",
+      "details": "## Problem\n\nBackend methods for editing tasks and managing kanban cards exist in `internal/services/`, but they're only callable through the UI. Agents have no way to use them because there are no corresponding registered tools.\n\n## Gap Analysis\n\n### Task Tools (4 missing)\n\n| Tool | Backend Method | Provider Interface Status |\n|------|---------------|--------------------------|\n| `workspace_task_update` | `UpdateWorkspaceTask(workspaceID, taskID, input, expectedUpdatedAt)` | Not on `WorkspaceTasksProvider` |\n| `workspace_task_delete` | `DeleteWorkspaceTask(workspaceID, taskID, expectedUpdatedAt)` | Not on `WorkspaceTasksProvider` |\n| `workspace_task_set_completed` | `SetWorkspaceTaskCompleted(workspaceID, taskID, completed, expectedUpdatedAt)` | Not on `WorkspaceTasksProvider` |\n| `workspace_task_move` | `MoveWorkspaceTask(workspaceID, taskID, priority, expectedUpdatedAt)` | Not on `WorkspaceTasksProvider` |\n\n### Kanban Tools (5 missing)\n\n| Tool | Backend Method | Provider Interface Status |\n|------|---------------|--------------------------|\n| `kanban_move_card` | `MoveKanbanCard(workspaceID, cardID, lane)` | No kanban management interface exists |\n| `kanban_delete_card` | `DeleteKanbanCard(workspaceID, cardID)` | No kanban management interface exists |\n| `kanban_reset_card` | `ResetKanbanCard(workspaceID, cardID)` | No kanban management interface exists |\n| `kanban_update_card_description` | `UpdateKanbanCardDescription(workspaceID, cardID, description)` | No kanban management interface exists |\n| `kanban_stop_card` | `StopKanbanCard(workspaceID, cardID)` | No kanban management interface exists |\n\nNote: `WorkspaceTasksProvider` currently only has `ListWorkspaceTasks` and `CreateWorkspaceTask`. There is no equivalent kanban management interface — only `KanbanExecutor` which handles `StartKanbanExecution`.\n\n## Changes Required\n\n### 1. Task Provider Interface (`internal/tools/types.go`)\n\nAdd to `WorkspaceTasksProvider`:\n```go\nUpdateWorkspaceTask(ctx context.Context, request WorkspaceTaskUpdateRequest) (WorkspaceTaskMutationResponse, error)\nDeleteWorkspaceTask(ctx context.Context, request WorkspaceTaskDeleteRequest) error\nSetWorkspaceTaskCompleted(ctx context.Context, request WorkspaceTaskCompleteRequest) (WorkspaceTaskMutationResponse, error)\nMoveWorkspaceTask(ctx context.Context, request WorkspaceTaskMoveRequest) (WorkspaceTaskMutationResponse, error)\n```\n\nAdd corresponding request types. Mutations use optimistic concurrency via `expectedUpdatedAt`.\n\n### 2. Task Provider Implementation (`internal/services/tasks.go`)\n\nImplement the 4 new methods on `workspaceTasksProvider{}` delegating to existing `SystemService` methods.\n\n### 3. Task Tool Registration (`internal/tools/workspace_tasks.go`)\n\nRegister 4 new `ToolFunc`s following existing pattern:\n- `workspace_task_update` — required: taskID, expectedUpdatedAt; optional: title, details, acceptanceCriteria\n- `workspace_task_delete` — required: taskID, expectedUpdatedAt\n- `workspace_task_set_completed` — required: taskID, completed, expectedUpdatedAt\n- `workspace_task_move` — required: taskID, priority (P0/P1/P2), expectedUpdatedAt\n\n### 4. Kanban Management Interface (`internal/tools/types.go`)\n\nAdd new interface:\n```go\ntype KanbanManager interface {\n    MoveKanbanCard(ctx context.Context, workspaceID string, cardID string, lane string) (KanbanBoard, error)\n    DeleteKanbanCard(ctx context.Context, workspaceID string, cardID string) (KanbanBoard, error)\n    ResetKanbanCard(ctx context.Context, workspaceID string, cardID string) (KanbanBoard, error)\n    UpdateKanbanCardDescription(ctx context.Context, workspaceID string, cardID string, description string) (KanbanBoard, error)\n    StopKanbanCard(ctx context.Context, workspaceID string, cardID string) error\n}\n```\n\nAdd `KanbanManager` field to `ExecutionContext`.\n\n### 5. Kanban Manager Implementation\n\nImplement adapter methods on `SystemService` (or existing kanban service) wrapping the Wails-bound methods for the interface.\n\n### 6. Kanban Tool Registration (`internal/tools/kanban_manage.go` — new file)\n\nRegister 5 new `ToolFunc`s:\n- `kanban_move_card` — required: cardID, lane (ready/inProgress/blocked/done)\n- `kanban_delete_card` — required: cardID\n- `kanban_reset_card` — required: cardID\n- `kanban_update_card_description` — required: cardID, description\n- `kanban_stop_card` — required: cardID\n\n### 7. Wire KanbanManager (`internal/services/file_changes.go`)\n\nAdd `KanbanManager: s,` to the `tools.ExecutionContext{}` construction in `executeTrackedToolCall`.\n\n### 8. Registry (`internal/tools/registry.go`)\n\nAdd all 9 new tool names to `mutatingToolNames`:\n```go\n\"workspace_task_update\":              true,\n\"workspace_task_delete\":              true,\n\"workspace_task_set_completed\":       true,\n\"workspace_task_move\":                true,\n\"kanban_move_card\":                   true,\n\"kanban_delete_card\":                 true,\n\"kanban_reset_card\":                  true,\n\"kanban_update_card_description\":     true,\n\"kanban_stop_card\":                   true,\n```\n\n### 9. Frontend (`frontend/src/app/settings/index.ts`)\n\nAdd all 9 new tool names to `availableToolNames` (alphabetical order):\n- `\"kanban_delete_card\"` — between `filesystem_delete_file` and `filesystem_edit_text`\n- `\"kanban_move_card\"` — after `kanban_reset_card`\n- `\"kanban_reset_card\"` — after `kanban_start_execution`\n- `\"kanban_stop_card\"` — after `kanban_update_card_description`\n- `\"kanban_update_card_description\"` — after `lsp_query`\n- `\"workspace_task_delete\"` — after `workspace_task_convert_to_kanban`\n- `\"workspace_task_move\"` — after `workspace_task_set_completed`\n- `\"workspace_task_set_completed\"` — after `workspace_task_update`\n- `\"workspace_task_update\"` — after `workspace_task_list`\n\n## Acceptance Criteria\n\n- [ ] All 4 task tools registered and appear in `LLMSchema()`\n- [ ] All 5 kanban tools registered and appear in `LLMSchema()`\n- [ ] `WorkspaceTasksProvider` interface has all 4 new methods\n- [ ] New `KanbanManager` interface has all 5 methods\n- [ ] `ExecutionContext` has `KanbanManager` field wired at call site\n- [ ] All 9 new tool names in `mutatingToolNames` in registry.go\n- [ ] All 9 new tool names in `availableToolNames` in settings/index.ts\n- [ ] Tool handlers follow existing patterns (SafeError, DecodeToolArguments, nil-provider checks)\n- [ ] Optimistic concurrency used for task mutations (expectedUpdatedAt)\n- [ ] `go test ./...` passes\n- [ ] `cd frontend; npm run build` passes",
+      "acceptanceCriteria": [
+        "All 4 new task tools registered and appear in LLMSchema()",
+        "All 5 new kanban tools registered and appear in LLMSchema()",
+        "WorkspaceTasksProvider interface has all 4 new methods",
+        "New KanbanManager interface has all 5 methods wired to ExecutionContext",
+        "All 9 new tool names added to mutatingToolNames in registry.go",
+        "All 9 new tool names added to availableToolNames in settings/index.ts",
+        "Optimistic concurrency used for task mutations (expectedUpdatedAt)",
+        "go test ./... passes",
+        "cd frontend; npm run build passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-09T04:26:03.605526Z",
+      "updatedAt": "2026-07-09T04:32:54.3698364Z",
+      "completedAt": "2026-07-09T04:32:54.3698364Z"
     },
     "4686322f-52f4-471f-ad40-044601fe5f34": {
       "title": "Add mic button to chat composer toolbar HTML",
@@ -198,6 +284,7 @@
         "data-chat-speech-recognition attribute enables selector targeting"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T22:06:25.3021686Z",
       "updatedAt": "2026-07-08T22:13:10.6744361Z",
@@ -210,6 +297,7 @@
         "1. rebuild-relaunch.bat redirects PowerShell stderr/stdout to %LOCALAPPDATA%\\Echo\\rebuild-relaunch-debug.log via 2\u003e\u00261 \u003e\u003e \"debugLog\" 2. Running Rebuild \u0026 Relaunch produces a populated debug log file with the actual PowerShell error (not just \"batch file cannot be found\") 3. go build ./... succeeds 4. go test ./internal/services/ -run TestPrepareRebuildAndRelaunch -v passes"
       ],
       "priority": "P0",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-07T16:17:23.6287611Z",
       "updatedAt": "2026-07-07T17:21:33.086452Z",
@@ -224,10 +312,27 @@
         "getDashboardWidgets returns empty array for views with no saved layout"
       ],
       "priority": "P0",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T14:01:23.6858575Z",
       "updatedAt": "2026-07-08T14:09:09.0450676Z",
       "completedAt": "2026-07-08T14:09:09.0450676Z"
+    },
+    "58e49078-14fd-4b4e-9a8c-635288e5d469": {
+      "title": "Fix agent mode edit granting full permissions regardless of unchecked boxes",
+      "details": "## Bug\n\nWhen editing a custom agent mode's per-tool permissions in the settings menu, the agent is granted **full permissions** even when some tool checkboxes are unchecked. Only checked tools should be included in the saved permissions map.\n\n## Likely cause\n\nThe flow goes through `saveAgentMode()` → `collectPermissionsFromForm()` → `UpdateAgentModePerTool()`. One of these steps probably doesn't correctly reflect unchecked boxes:\n\n- **`collectPermissionsFromForm()`** (`frontend/src/app/settings/index.ts`) reads from DOM `[data-per-tool-checkbox]:checked` — this should be correct by construction, but verify the rendered form actually has the right `checked` state when editing an existing mode.\n- **`startEditAgentMode()`** populates `state.agentModeDraftPermissions` from `extractPermissionsMap(mode)`, but the form rendering may not reflect this map correctly when re-rendering checkboxes (i.e., all boxes render checked regardless of the draft).\n- **Backend `UpdateAgentModePerTool`** (`internal/services/agent_modes.go`) receives a `map[string][]string` and calls `buildPermissionsMapFromPerTool` — verify it doesn't merge with existing permissions or fall back to the legacy flat-list path.\n\n## Files involved\n\n- `frontend/src/app/settings/index.ts` — `startEditAgentMode`, `saveAgentMode`, `collectPermissionsFromForm`, rendering of per-tool checkboxes\n- `frontend/src/app/settings/` (rendering) — how agent mode permission checkboxes are rendered with `checked` state\n- `internal/services/agent_modes.go` — `UpdateAgentModePerTool`, `buildPermissionsMapFromPerTool`\n- `internal/services/workspace_agent_modes.go` — `workspaceModeUpdate`, `writeWorkspaceModeFile`\n\n## Steps to reproduce\n\n1. Create a custom agent mode with only some tools enabled (e.g., only `filesystem_read_text`).\n2. Open the settings menu and click Edit on that mode.\n3. Verify checkboxes match the saved permissions.\n4. Uncheck one or more tools (or leave as-is if they already show wrong).\n5. Click Save.\n6. Run a chat using this mode — the agent has full permissions instead of only the checked tools.\n\n## Fix direction\n\nEnsure that when saving an edited mode, the permissions map sent to `UpdateAgentModePerTool` contains **only** the tools whose checkboxes are checked in the DOM at save time, and that the backend replaces (not merges) the stored permissions with the submitted map.",
+      "acceptanceCriteria": [
+        "Editing a custom agent mode with some tools unchecked preserves only the checked tools after save",
+        "Unchecked tool boxes remain unchecked when re-opening the edit form for the same mode",
+        "Backend UpdateAgentModePerTool replaces (not merges) permissions with the submitted map",
+        "No regression: creating a new mode and the legacy UpdateAgentMode path still work correctly"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-09T05:59:34.5049484Z",
+      "updatedAt": "2026-07-09T11:49:48.7236452Z",
+      "completedAt": "2026-07-09T11:49:48.7236452Z"
     },
     "595b7c77-d8e9-45a4-b718-64e19aa6716a": {
       "title": "Add task CRUD tooling to Echo",
@@ -242,6 +347,7 @@
         "go test ./internal/services/ passes"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-07T17:10:26.0809778Z",
       "updatedAt": "2026-07-08T07:51:41.7104802Z",
@@ -257,6 +363,7 @@
         "Non-edit mode hides all controls and renders clean cards"
       ],
       "priority": "P0",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T14:01:23.8143577Z",
       "updatedAt": "2026-07-08T14:09:09.181069Z",
@@ -270,6 +377,7 @@
         "Follows existing icon pattern (inline SVG, no external classes)"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T22:06:25.1021676Z",
       "updatedAt": "2026-07-08T22:13:21.6134953Z",
@@ -286,10 +394,50 @@
         "Tool returns error when no workspace or execution already running"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-09T01:48:30.192935Z",
       "updatedAt": "2026-07-09T01:49:25.3323214Z",
       "completedAt": "2026-07-09T01:49:25.3323214Z"
+    },
+    "6dd38f20-eb59-4afa-940d-5923a222f03f": {
+      "title": "Add free-form tags to backlog tasks",
+      "details": "## Overview\n\nAdd a `tags: string[]` field to `WorkspaceTask` so users can self-organize tasks with free-form labels like `frontend`, `bug`, `performance`, `refactor`.\n\n## Changes\n\n### Backend — `internal/services/tasks.go`\n- Add `Tags []string \\`json:\"tags,omitempty\"\\`` to `WorkspaceTask`, `TaskInput`, and `storedWorkspaceTask` structs\n- Wire through `createWorkspaceTask`, `UpdateWorkspaceTask`, `normalizeTaskInput` (trim/filter empty tags)\n- Pass through `toolWorkspaceTask` conversion\n\n### Backend — `internal/tools/types.go`\n- Add `Tags []string \\`json:\"tags,omitempty\"\\`` to `tools.WorkspaceTask` and the create/update request types\n\n### Backend — `internal/tools/workspace_tasks.go`\n- Add `tags` to `workspace_task_create` and `workspace_task_update` tool schemas\n- Pass tags through in `createWorkspaceTask` and `updateWorkspaceTask` handlers\n\n### Frontend — `frontend/src/app/tasks/index.ts`\n- Add tag input to the task editor form (comma-separated text input or one-per-line textarea)\n- Render tag chips on each task card (small colored pills below title)\n- Add a tag filter pill bar above the priority lanes; clicking a pill filters visible tasks to matching tags\n- Store active tag filter in `state` per workspace\n- Wire tag updates through edit flow\n\n### Frontend — CSS (`frontend/src/styles.css`)\n- Style tag chips (small rounded pills, subtle background color)\n- Style tag filter bar (scrollable pill row with active/inactive states)\n\n## Data Migration\n- Existing tasks have no tags; empty/nil is fine (omitempty handles it)\n- No schema version bump needed since new field is optional\n\n## Verification\n- Create task with tags → persists and displays chips\n- Edit task to add/remove tags → updates correctly\n- Filter by tag → only matching tasks show\n- `go test ./...` and `cd frontend; npm run build` pass",
+      "acceptanceCriteria": [
+        "WorkspaceTask struct has optional Tags []string field persisted to tasks.json",
+        "Task create/edit forms accept tags input (comma-separated or one-per-line)",
+        "Tags render as visual chips on each task card in the backlog view",
+        "Tag filter pill bar above priority lanes filters visible tasks by selected tag(s)",
+        "Multiple tag selection shows tasks matching any selected tag (OR logic)",
+        "Empty/nil tags work for existing and new tasks without errors",
+        "Tags trim whitespace and filter empty values on save",
+        "go test ./... passes",
+        "cd frontend \u0026\u0026 npm run build passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-09T06:59:50.609254Z",
+      "updatedAt": "2026-07-09T11:49:48.4271443Z",
+      "completedAt": "2026-07-09T11:49:48.4271443Z"
+    },
+    "71731921-028f-458f-8b5d-647169e80a9a": {
+      "title": "Add browser push notifications for chat and kanban completion events",
+      "details": "## Overview\n\nImplement Web Notification API (push notifications) so users get OS-level alerts on mobile/desktop when Echo completes work while they're not actively using the app. This is separate from existing audio notification sounds and in-app toasts.\n\n## Scope\n\n### 1. Backend — Settings model (`internal/llm/settings.go`)\nAdd per-event notification toggles to `llm.Settings`:\n- `EnableChatCompletionNotifications bool` (default: true)\n- `EnableKanbanCompleteNotifications bool` (default: true)\n\nThese persist to state.json alongside existing settings like `DisableNotificationSounds`.\n\n### 2. Backend — Event payload enrichment (`internal/services/chat.go`, `kanban_scheduler.go`)\nInclude workspace display name in completion events so the frontend can construct meaningful notification titles:\n- `ChatStreamEvent` type `\"complete\"` already has `WorkspaceID`; ensure workspace name is accessible (it's in the session).\n- `KanbanEvent` type `\"scheduler_complete\"` already has `WorkspaceID`.\n\nNo new backend methods needed — existing SSE events carry enough data. The frontend will check settings + event type to decide whether to show a push notification.\n\n### 3. Frontend — Push notification module (`frontend/src/app/notifications.ts`)\nExtend the existing notifications module:\n\n- **Permission request**: On first app load (or when notification settings are first enabled), call `Notification.requestPermission()`. Store granted/denied state so we don't spam the prompt.\n- **`sendPushNotification(title, body)`**: New function that checks:\n  - `Notification.permission === 'granted'`\n  - App is not in focus (optional — can always notify)\n  - Calls `new Notification(title, { body, icon: ... })` with the Echo app icon.\n\n### 4. Frontend — Event handlers\nWire push notifications to completion events:\n\n- **Chat complete**: In the existing `echo:chat:event` handler (likely in `frontend/src/app/chat/` or event binding), when event type is `\"complete\"` and `EnableChatCompletionNotifications` is true, call `sendPushNotification(\"Echo\", \"Chat response ready for {workspace name}\")`.\n- **Kanban complete**: In the existing `echo:kanban:event` handler, when event type is `\"scheduler_complete\"` and `EnableKanbanCompleteNotifications` is true, call `sendPushNotification(\"Echo\", \"All Kanban cards completed for {workspace name}\")`.\n\n### 5. Frontend — Settings UI (`frontend/src/app/settings/index.ts`)\nAdd toggles to the existing Notifications section:\n\n```\nNotifications\n  [x] Notification sounds          (existing)\n  [x] Chat completion notifications  (new)\n  [x] Kanban complete notifications  (new)\n```\n\n- If `Notification.permission === 'denied'`, show a helper link \"Enable browser notifications\" that re-prompts via `Notification.requestPermission()`.\n- Follow existing `settings-toggle` pattern with inverted boolean if desired (or use direct boolean).\n\n### 6. Frontend — Settings state wiring\n- Add `enableChatCompletionNotifications` and `enableKanbanCompleteNotifications` to the settings draft/save flow in `frontend/src/app/state.ts` or wherever settings fields are mapped.\n- Default both to `true` so notifications work out of the box.\n\n## Key Files to Modify\n- `internal/llm/settings.go` — add settings fields\n- `frontend/src/app/notifications.ts` — add push notification logic\n- `frontend/src/app/state.ts` — add helper functions for new settings fields\n- `frontend/src/app/settings/index.ts` — add UI toggles\n- `frontend/src/app/chat/` or event binding file — wire chat completion trigger\n- Kanban event handler file — wire kanban complete trigger\n\n## Acceptance Criteria\n- User sees OS-level push notifications when chat completes and when all Kanban cards finish.\n- Each notification type has an independent on/off toggle in Settings \u003e Notifications.\n- Toggles persist across app restarts.\n- Notification permission is requested gracefully (not on every load).\n- Works in both Wails desktop mode and web access browser mode.\n- Existing audio notification sounds are unaffected.\n\n## Hazards\n- Web Notification API requires a secure context (HTTPS or localhost). Wails uses `wails://` which may need testing; web access already runs on HTTPS if configured.\n- Some browsers suppress notifications when the tab is not visible — test on mobile Safari/Chrome.\n- Notification icons: use the Echo app icon or a generic bell icon as fallback.\n- Don't break existing `playNotificationSound()` flow.",
+      "acceptanceCriteria": [
+        "Settings model has EnableChatCompletionNotifications and EnableKanbanCompleteNotifications boolean fields with defaults of true",
+        "Frontend notifications module sends Web Notifications on chat complete (type 'complete') and kanban scheduler complete (type 'scheduler_complete') events",
+        "Settings UI shows three toggles in the Notifications section: sounds, chat completion, kanban complete",
+        "Notification permission is requested once and respected; denied state shows a re-prompt link",
+        "Push notifications work in both Wails desktop and web access browser modes",
+        "Existing audio notification sound behavior is unchanged"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-09T06:07:06.9657004Z",
+      "updatedAt": "2026-07-09T11:49:48.6501476Z",
+      "completedAt": "2026-07-09T11:49:48.6501476Z"
     },
     "721f2923-94d6-49bc-9d60-679cc931881c": {
       "title": "Fix: Add speechinput=\"true\" to chat textarea so keyboard mic button works",
@@ -300,6 +448,7 @@
         "No 'app doesn't support voice input' toast from Chrome keyboard"
       ],
       "priority": "P0",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T22:33:17.9652497Z",
       "updatedAt": "2026-07-08T23:28:48.1457404Z",
@@ -315,6 +464,7 @@
         "Frontend loads saved layouts on init and saves on change"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T14:01:24.0048594Z",
       "updatedAt": "2026-07-08T16:37:53.3986739Z",
@@ -329,6 +479,7 @@
         "Final 1-2% is reserved for post-execution cleanup/verification steps"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T07:41:18.5439019Z",
       "updatedAt": "2026-07-08T07:51:36.3734453Z",
@@ -354,6 +505,7 @@
         "Responsive layout maintained at 375px / 720px / 1440px breakpoints"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T00:14:31.3236937Z",
       "updatedAt": "2026-07-08T00:15:35.1375448Z",
@@ -374,6 +526,7 @@
         "Other dashboard sub-views (chat, tasks, kanban views) still work if they use widget system"
       ],
       "priority": "P0",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T18:36:51.0002949Z",
       "updatedAt": "2026-07-08T18:37:50.601034Z",
@@ -391,6 +544,7 @@
         "No layout overflow or clipping within Kanban cards on desktop viewport"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T13:28:08.1582188Z",
       "updatedAt": "2026-07-08T13:39:57.8991915Z",
@@ -400,6 +554,7 @@
       "title": "Add comprehensive CSS for all dashboard widget content classes",
       "details": "The dashboard has shell styles (card, header, body, grid) but zero content-specific CSS. Every widget class is unstyled and SVG icons render as giant black triangles.\n\n## File: `frontend/src/styles.css` — Append after line 8458 (end of file)\n\n### Widget Content Section Header\nAdd section comment: `/* ================================================================== */ /*  Dashboard Widget Content Styles                                   */ /* ================================================================== */`\n\n### SVG Icon Sizing (critical fix)\nAll inline SVGs in widget bodies need size constraints. The renderers output raw `\u003csvg viewBox=\"0 0 24 24\"\u003e` with no dimensions → browser renders at default 100% width = giant black triangles.\n\n```css\n/* Widget body SVG icons — constrain sizes */\n.widget-card-body svg {\n  display: inline-block;\n  width: 16px;\n  height: 16px;\n  vertical-align: middle;\n}\n\n/* Spinner animation for busy status */\n.widget-status-icon svg {\n  width: 18px;\n  height: 18px;\n}\n\n.widget-status-busy .widget-status-icon svg {\n  animation: echo-spin 800ms linear infinite;\n}\n```\n\n### Status Dots (used by heartbeat, workspaces)\n```css\n.status-dot {\n  display: inline-block;\n  width: 8px;\n  height: 8px;\n  border-radius: 50%;\n  flex-shrink: 0;\n}\n\n.status-active { background: var(--color-success); }\n.status-inactive { background: var(--color-text-muted); opacity: 0.5; }\n.status-running { background: var(--color-accent); animation: echo-pulse-dot 1.6s ease-in-out infinite; }\n```\n\n### Widget Placeholder (shared empty state)\n```css\n.widget-placeholder {\n  margin: 0;\n  padding: var(--space-lg) 0;\n  color: var(--color-text-muted);\n  font-size: var(--text-sm);\n  text-align: center;\n}\n```\n\n### Chat Recent Widget\n```css\n.widget-chat-recent {\n  display: flex;\n  flex-direction: column;\n  gap: var(--space-md);\n}\n\n.widget-chat-msg {\n  padding: var(--space-md) var(--space-lg);\n  border-radius: var(--space-md);\n  background: var(--color-surface-muted);\n  font-size: var(--text-sm);\n  line-height: 1.45;\n}\n\n.widget-chat-msg.from-user {\n  background: color-mix(in srgb, var(--color-info) 8%, var(--color-surface-muted));\n  border-left: 2px solid var(--color-info);\n}\n\n.widget-chat-msg.from-assistant {\n  border-left: 2px solid var(--color-text-muted);\n}\n\n.widget-chat-role {\n  display: block;\n  font-size: var(--text-xs);\n  font-weight: 700;\n  color: var(--color-text-muted);\n  text-transform: uppercase;\n  letter-spacing: 0.03em;\n  margin-bottom: var(--space-xxs);\n}\n\n.widget-chat-content {\n  display: block;\n  color: var(--color-text);\n  overflow-wrap: break-word;\n}\n```\n\n### Chat Busy Status Widget\n```css\n.widget-busy-indicator {\n  display: flex;\n  align-items: center;\n  gap: var(--space-md);\n  padding: var(--space-sm) 0;\n}\n\n.widget-status-icon {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  color: var(--color-success);\n}\n\n.widget-status-busy .widget-status-icon { color: var(--color-accent); }\n\n.widget-status-text {\n  font-size: var(--text-sm);\n  font-weight: 600;\n  color: var(--color-text);\n}\n\n.widget-subtitle {\n  margin: var(--space-xs) 0 0;\n  font-size: var(--text-xs);\n  color: var(--color-text-muted);\n}\n```\n\n### Token Budget Widget\n```css\n.widget-budget-bar {\n  display: flex;\n  flex-direction: column;\n  gap: var(--space-md);\n}\n\n.widget-budget-info {\n  display: flex;\n  align-items: baseline;\n  justify-content: space-between;\n  gap: var(--space-sm);\n}\n\n.widget-budget-label {\n  font-size: var(--text-xs);\n  font-weight: 700;\n  color: var(--color-text-muted);\n  text-transform: uppercase;\n  letter-spacing: 0.03em;\n}\n\n.widget-budget-values {\n  font-size: var(--text-sm);\n  color: var(--color-text);\n  font-variant-numeric: tabular-nums;\n}\n\n.widget-budget-percentage {\n  font-size: var(--text-xs);\n  font-weight: 700;\n  padding: 1px var(--space-sm);\n  border-radius: 999px;\n  background: color-mix(in srgb, var(--color-text-muted) 10%, transparent);\n  color: var(--color-text-muted);\n}\n\n.widget-budget-percentage.budget-ok { background: color-mix(in srgb, var(--color-success) 15%, transparent); color: var(--color-success); }\n.widget-budget-percentage.budget-warning { background: color-mix(in srgb, var(--color-warning) 15%, transparent); color: var(--color-warning); }\n.widget-budget-percentage.budget-critical { background: color-mix(in srgb, var(--color-danger) 15%, transparent); color: var(--color-danger); }\n\n.widget-budget-track {\n  width: 100%;\n  height: 6px;\n  border-radius: 3px;\n  background: color-mix(in srgb, var(--color-text-muted) 10%, transparent);\n  overflow: hidden;\n}\n\n.widget-budget-fill {\n  height: 100%;\n  border-radius: 3px;\n  background: var(--color-success);\n  transition: width 300ms ease;\n}\n\n.widget-budget-fill.budget-ok { background: var(--color-success); }\n.widget-budget-fill.budget-warning { background: var(--color-warning); }\n.widget-budget-fill.budget-critical { background: var(--color-danger); }\n```\n\n### Kanban Summary Widget\n```css\n.widget-kanban-summary {\n  display: flex;\n  flex-wrap: wrap;\n  gap: var(--space-sm);\n}\n\n.widget-lane-badge {\n  display: inline-flex;\n  align-items: center;\n  gap: var(--space-xs);\n  padding: var(--space-xxs) var(--space-sm);\n  border-radius: 999px;\n  font-size: var(--text-xs);\n  font-weight: 600;\n  background: color-mix(in srgb, var(--badge-color, var(--color-text-muted)) 12%, transparent);\n  color: var(--badge-color, var(--color-text-muted));\n}\n\n.widget-lane-badge strong {\n  font-weight: 800;\n}\n```\n\n### Kanban Progress Widget\n```css\n.widget-kanban-progress {\n  display: flex;\n  flex-direction: column;\n  gap: var(--space-md);\n}\n\n.widget-progress-item {\n  display: flex;\n  flex-direction: column;\n  gap: var(--space-xs);\n}\n\n.widget-progress-title {\n  font-size: var(--text-sm);\n  color: var(--color-text);\n  font-weight: 500;\n}\n\n.widget-progress-track {\n  width: 100%;\n  height: 4px;\n  border-radius: 2px;\n  background: color-mix(in srgb, var(--color-text-muted) 10%, transparent);\n  overflow: hidden;\n}\n\n.widget-progress-fill {\n  height: 100%;\n  border-radius: 2px;\n  background: var(--color-accent);\n  transition: width 300ms ease;\n}\n\n.widget-progress-fill.budget-ok { background: var(--color-success); }\n.widget-progress-fill.budget-warning { background: var(--color-warning); }\n.widget-progress-fill.budget-critical { background: var(--color-danger); }\n\n.widget-progress-pct {\n  font-size: var(--text-xs);\n  color: var(--color-text-muted);\n  font-variant-numeric: tabular-nums;\n  text-align: right;\n}\n```\n\n### Cards Done Widget\n```css\n.widget-done-count {\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: var(--space-xs);\n  padding: var(--space-lg) 0;\n}\n\n.widget-done-number {\n  font-size: var(--text-5xl);\n  font-weight: 800;\n  color: var(--color-success);\n  line-height: 1;\n}\n\n.widget-done-label {\n  font-size: var(--text-sm);\n  color: var(--color-text-muted);\n  font-weight: 600;\n}\n\n.widget-trend {\n  display: inline-flex;\n  align-items: center;\n  gap: var(--space-xs);\n  font-size: var(--text-xs);\n  color: var(--color-success);\n  font-weight: 600;\n}\n\n.widget-trend-up svg {\n  width: 12px;\n  height: 12px;\n}\n```\n\n### Tasks Overview Widget\n```css\n.widget-tasks-summary {\n  display: flex;\n  gap: var(--space-lg);\n  margin-bottom: var(--space-md);\n}\n\n.widget-task-stat {\n  font-size: var(--text-sm);\n  color: var(--color-text);\n  font-weight: 600;\n}\n\n.widget-task-completed {\n  color: var(--color-success);\n}\n\n.widget-p0-list {\n  display: flex;\n  flex-direction: column;\n  gap: var(--space-sm);\n}\n\n.widget-p0-item {\n  display: flex;\n  align-items: center;\n  gap: var(--space-sm);\n  font-size: var(--text-sm);\n}\n\n.widget-p0-title {\n  color: var(--color-text);\n  overflow-wrap: break-word;\n}\n```\n\n### Priority Strip Widget\n```css\n.widget-priority-strip {\n  display: flex;\n  flex-wrap: wrap;\n  gap: var(--space-sm);\n}\n\n.widget-priority-badge {\n  display: inline-flex;\n  align-items: center;\n  padding: var(--space-xxs) var(--space-sm);\n  border-radius: 999px;\n  font-size: var(--text-xs);\n  font-weight: 700;\n}\n\n.widget-priority-badge.p0 { background: color-mix(in srgb, var(--color-danger) 15%, transparent); color: var(--color-danger); }\n.widget-priority-badge.p1 { background: color-mix(in srgb, var(--color-accent) 15%, transparent); color: var(--color-accent-strong); }\n.widget-priority-badge.p2 { background: color-mix(in srgb, var(--color-text-muted) 10%, transparent); color: var(--color-text-muted); }\n```\n\n### Git Branch Widget\n```css\n.widget-git-branch {\n  display: flex;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: var(--space-sm);\n  font-size: var(--text-sm);\n}\n\n.widget-git-branch-name {\n  font-weight: 700;\n  color: var(--color-text);\n  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;\n}\n\n.widget-git-dirty-badge {\n  font-size: var(--text-xs);\n  padding: 1px var(--space-sm);\n  border-radius: 999px;\n  background: color-mix(in srgb, var(--color-warning) 15%, transparent);\n  color: var(--color-warning);\n  font-weight: 600;\n}\n\n.widget-git-upstream {\n  font-size: var(--text-xs);\n  color: var(--color-text-muted);\n  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;\n}\n\n.widget-git-hash {\n  font-size: var(--text-xs);\n  color: var(--color-text-muted);\n  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;\n  opacity: 0.7;\n}\n```\n\n### Git Recent Commits Widget\n```css\n.widget-git-commits {\n  display: flex;\n  flex-direction: column;\n  gap: var(--space-sm);\n}\n\n.widget-git-commit {\n  display: grid;\n  grid-template-columns: auto 1fr auto;\n  align-items: baseline;\n  gap: var(--space-sm);\n  font-size: var(--text-sm);\n}\n\n.widget-git-commit-hash {\n  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;\n  font-size: var(--text-xs);\n  color: var(--color-text-muted);\n  opacity: 0.7;\n}\n\n.widget-git-commit-subject {\n  color: var(--color-text);\n  overflow-wrap: break-word;\n}\n\n.widget-git-commit-date {\n  font-size: var(--text-xs);\n  color: var(--color-text-muted);\n  white-space: nowrap;\n}\n```\n\n### Git Change Count Widget\n```css\n.widget-git-change-count {\n  display: flex;\n  align-items: center;\n  gap: var(--space-md);\n  padding: var(--space-sm) 0;\n}\n\n.widget-git-clean {\n  color: var(--color-success);\n  font-size: var(--text-sm);\n  font-weight: 600;\n}\n\n.widget-git-dirty {\n  color: var(--color-warning);\n}\n\n.widget-git-change-number {\n  font-size: var(--text-3xl);\n  font-weight: 800;\n}\n\n.widget-git-change-label {\n  font-size: var(--text-sm);\n  font-weight: 500;\n}\n```\n\n### Heartbeat Widget\n```css\n.widget-heartbeat {\n  display: flex;\n  flex-direction: column;\n  gap: var(--space-md-sm);\n}\n\n.widget-heartbeat-row {\n  display: flex;\n  align-items: center;\n  gap: var(--space-sm);\n  font-size: var(--text-sm);\n}\n\n.widget-heartbeat-label {\n  color: var(--color-text-muted);\n  font-weight: 600;\n  min-width: 70px;\n}\n\n.widget-heartbeat-value {\n  color: var(--color-text);\n  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;\n  font-size: var(--text-xs);\n}\n```\n\n### Workspaces Widget\n```css\n.widget-workspaces {\n  display: flex;\n  flex-direction: column;\n  gap: var(--space-sm);\n}\n\n.widget-workspace-item {\n  display: flex;\n  align-items: center;\n  gap: var(--space-sm);\n  padding: var(--space-xs) var(--space-sm);\n  border-radius: var(--space-sm);\n  font-size: var(--text-sm);\n  transition: background 120ms ease;\n}\n\n.widget-workspace-item:hover {\n  background: var(--color-surface-muted);\n}\n\n.widget-workspace-active {\n  background: color-mix(in srgb, var(--color-accent) 8%, transparent);\n}\n\n.widget-workspace-label {\n  flex: 1 1 auto;\n  min-width: 0;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n  color: var(--color-text);\n}\n\n.widget-running-badge {\n  font-size: var(--text-xs);\n  padding: 1px var(--space-sm);\n  border-radius: 999px;\n  background: color-mix(in srgb, var(--color-accent) 15%, transparent);\n  color: var(--color-accent-strong);\n  font-weight: 600;\n}\n```\n\n### Open Tabs Widget\n```css\n.widget-open-tabs {\n  display: flex;\n  flex-direction: column;\n  gap: var(--space-xs);\n}\n\n.widget-tab-item {\n  display: flex;\n  align-items: center;\n  gap: var(--space-sm);\n  padding: var(--space-xs) var(--space-sm);\n  border-radius: var(--space-sm);\n  font-size: var(--text-sm);\n  transition: background 120ms ease;\n}\n\n.widget-tab-item:hover {\n  background: var(--color-surface-muted);\n}\n\n.widget-tab-active {\n  background: color-mix(in srgb, var(--color-accent) 8%, transparent);\n}\n\n.widget-tab-label {\n  flex: 1 1 auto;\n  min-width: 0;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n  color: var(--color-text);\n  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;\n  font-size: var(--text-xs);\n}\n\n.widget-dirty-dot {\n  display: inline-flex;\n  align-items: center;\n  color: var(--color-warning);\n}\n```\n\n### Code Workspace Status Widget\n```css\n.widget-code-workspace-status {\n  display: flex;\n  flex-direction: column;\n  gap: var(--space-sm);\n}\n\n.widget-cws-row {\n  display: flex;\n  align-items: baseline;\n  gap: var(--space-sm);\n}\n\n.widget-cws-label {\n  font-size: var(--text-xs);\n  font-weight: 700;\n  color: var(--color-text-muted);\n  text-transform: uppercase;\n  letter-spacing: 0.03em;\n}\n\n.widget-cws-value {\n  font-size: var(--text-sm);\n  color: var(--color-text);\n  font-weight: 600;\n}\n\n.widget-cws-folders {\n  font-size: var(--text-xs);\n  color: var(--color-text-muted);\n  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;\n}\n\n.widget-cws-missing {\n  display: inline-block;\n  font-size: var(--text-xs);\n  padding: 1px var(--space-sm);\n  border-radius: 999px;\n  background: color-mix(in srgb, var(--color-danger) 15%, transparent);\n  color: var(--color-danger);\n  font-weight: 600;\n}\n```\n\n### Dashboard Toolbar (header area)\n```css\n.dashboard-toolbar {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: var(--space-lg);\n  margin-bottom: var(--space-xl);\n}\n\n.dashboard-toolbar h2 {\n  font-size: var(--text-3xl);\n  font-weight: 700;\n  color: var(--color-text);\n  margin: 0;\n}\n```\n\n### Secondary/Done buttons in dashboard toolbar\n```css\n.secondary-button.dashboard-edit-btn svg,\n.secondary-button.dashboard-done-btn svg {\n  width: 14px;\n  height: 14px;\n  stroke: currentColor;\n  fill: none;\n  stroke-width: 2;\n  stroke-linecap: round;\n  stroke-linejoin: round;\n}\n```\n\n## Verification\n- `cd frontend \u0026\u0026 npm run build` must pass with no TypeScript errors.\n- All SVG icons in widget bodies should render at ~16px, not as giant triangles.\n- Widget content should be properly spaced, color-coded, and readable.",
       "priority": "P0",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T20:17:35.8998432Z",
       "updatedAt": "2026-07-08T20:49:52.7390594Z",
@@ -413,6 +568,7 @@
         "Follows existing icon pattern (viewBox, aria-hidden, stroke-based)"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T22:00:39.248072Z",
       "updatedAt": "2026-07-08T22:13:24.595011Z",
@@ -434,6 +590,7 @@
         "No TypeScript compilation errors — npm run build succeeds"
       ],
       "priority": "P0",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T19:21:31.0676602Z",
       "updatedAt": "2026-07-08T19:23:39.3002887Z",
@@ -455,10 +612,32 @@
         "npm run build succeeds with no TypeScript errors"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T01:00:18.8806153Z",
       "updatedAt": "2026-07-08T01:03:47.0223726Z",
       "completedAt": "2026-07-08T01:03:47.0223726Z"
+    },
+    "9d119a6f-84b3-4208-b181-ada963e9f7cf": {
+      "title": "Add missing task and kanban management agent tools",
+      "details": "## Problem\n\nThe agent tool registry is missing several task editing and kanban card management tools. Backend methods exist in `internal/services/tasks.go` and `internal/services/kanban.go`, but they are only callable via the UI, not by agents.\n\n## Missing Task Tools (4)\n\n| Tool Name | Description | Backend Method |\n|---|---|---|\n| `workspace_task_update` | Edit an existing task's title, description, acceptance criteria | `UpdateWorkspaceTask(workspaceID, taskID, input, expectedUpdatedAt)` |\n| `workspace_task_delete` | Remove a backlog task | `DeleteWorkspaceTask(workspaceID, taskID, expectedUpdatedAt)` |\n| `workspace_task_set_completed` | Toggle a task between done/undone | `SetWorkspaceTaskCompleted(workspaceID, taskID, completed, expectedUpdatedAt)` |\n| `workspace_task_move` | Change task priority (P0/P1/P2) | `MoveWorkspaceTask(workspaceID, taskID, priority, expectedUpdatedAt)` |\n\n### Task Changes Required\n\n1. **`internal/tools/types.go`** — Add methods to `WorkspaceTasksProvider` interface:\n   ```go\n   UpdateWorkspaceTask(ctx context.Context, request WorkspaceTaskUpdateRequest) (WorkspaceTaskMutationResponse, error)\n   DeleteWorkspaceTask(ctx context.Context, request WorkspaceTaskDeleteRequest) (error)\n   SetWorkspaceTaskCompleted(ctx context.Context, request WorkspaceTaskCompleteRequest) (WorkspaceTaskMutationResponse, error)\n   MoveWorkspaceTask(ctx context.Context, request WorkspaceTaskMoveRequest) (WorkspaceTaskMutationResponse, error)\n   ```\n\n2. **`internal/tools/types.go`** — Add corresponding request/response types with proper JSON schema fields (taskID, expectedUpdatedAt for optimistic concurrency, etc.)\n\n3. **`internal/services/tasks.go`** — Implement new methods on `workspaceTasksProvider{}` that delegate to existing `SystemService` methods\n\n4. **`internal/tools/workspace_tasks.go`** — Register 4 new `ToolFunc`s with proper Metadata schemas and handlers following the existing pattern in `listWorkspaceTasks`, `createWorkspaceTask`, etc.\n\n5. **`internal/tools/registry.go`** — Add new tool names to `mutatingToolNames`:\n   - `\"workspace_task_update\": true`\n   - `\"workspace_task_delete\": true`\n   - `\"workspace_task_set_completed\": true`\n   - `\"workspace_task_move\": true`\n\n6. **`frontend/src/app/settings/index.ts`** — Add new tool names to `availableToolNames` array (alphabetical order)\n\n## Missing Kanban Tools (5)\n\n| Tool Name | Description | Backend Method |\n|---|---|---|\n| `kanban_move_card` | Move a card to another lane (ready/inProgress/blocked/done) | `MoveKanbanCard(workspaceID, cardID, lane)` |\n| `kanban_delete_card` | Remove a kanban card | `DeleteKanbanCard(workspaceID, cardID)` |\n| `kanban_reset_card` | Reset a card back to ready lane | `ResetKanbanCard(workspaceID, cardID)` |\n| `kanban_update_card_description` | Edit a card's description | `UpdateKanbanCardDescription(workspaceID, cardID, description)` |\n| `kanban_stop_card` | Stop execution of a running card | `StopKanbanCard(workspaceID, cardID)` |\n\n### Kanban Changes Required\n\n1. **`internal/tools/types.go`** — Add new interface:\n   ```go\n   type KanbanManager interface {\n       MoveKanbanCard(ctx context.Context, workspaceID string, cardID string, lane string) (KanbanBoard, error)\n       DeleteKanbanCard(ctx context.Context, workspaceID string, cardID string) (KanbanBoard, error)\n       ResetKanbanCard(ctx context.Context, workspaceID string, cardID string) (KanbanBoard, error)\n       UpdateKanbanCardDescription(ctx context.Context, workspaceID string, cardID string, description string) (KanbanBoard, error)\n       StopKanbanCard(ctx context.Context, workspaceID string, cardID string) error\n   }\n   ```\n\n2. **`internal/tools/types.go`** — Add `KanbanManager KanbanManager` field to `ExecutionContext` struct\n\n3. **`internal/services/kanban.go`** (or similar) — Implement adapter methods that wrap existing `SystemService` kanban methods for the interface\n\n4. **New file `internal/tools/kanban_manage.go`** — Register 5 new `ToolFunc`s following the pattern of `kanban_execute.go`:\n   - `kanban_move_card` with cardID + lane parameters\n   - `kanban_delete_card` with cardID parameter\n   - `kanban_reset_card` with cardID parameter\n   - `kanban_update_card_description` with cardID + description parameters\n   - `kanban_stop_card` with cardID parameter\n\n5. **`internal/tools/registry.go`** — Add to `mutatingToolNames`:\n   - `\"kanban_move_card\": true`\n   - `\"kanban_delete_card\": true`\n   - `\"kanban_reset_card\": true`\n   - `\"kanban_update_card_description\": true`\n   - `\"kanban_stop_card\": true`\n\n6. **`internal/services/file_changes.go`** (~line 150) — Wire `KanbanManager: s,` to the `tools.ExecutionContext{}` construction in `executeTrackedToolCall` (or wherever kanban tools get their context)\n\n7. **`frontend/src/app/settings/index.ts`** — Add new tool names to `availableToolNames` array (alphabetical order):\n   - `\"kanban_delete_card\"` (between `filesystem_delete_file` and `filesystem_edit_text`)\n   - `\"kanban_move_card\"` (after `kanban_reset_card`)\n   - `\"kanban_reset_card\"` (after `kanban_start_execution`)\n   - `\"kanban_stop_card\"` (after `kanban_update_card_description`)\n   - `\"kanban_update_card_description\"` (after `lsp_query`)\n\n## Acceptance Criteria\n\n- [ ] All 4 new task tools registered and appear in `LLMSchema()`\n- [ ] All 5 new kanban tools registered and appear in `LLMSchema()`\n- [ ] `WorkspaceTasksProvider` interface has all 4 new methods\n- [ ] New `KanbanManager` interface has all 5 methods\n- [ ] `ExecutionContext` has `KanbanManager` field wired at call site\n- [ ] All 9 new tool names added to `mutatingToolNames` in registry.go\n- [ ] All 9 new tool names added to `availableToolNames` in settings/index.ts\n- [ ] Tool handlers follow existing patterns (SafeError for errors, DecodeToolArguments for parsing, nil-provider checks)\n- [ ] Optimistic concurrency used for task mutations (expectedUpdatedAt parameter)\n- [ ] `go test ./...` passes\n- [ ] `cd frontend; npm run build` passes",
+      "acceptanceCriteria": [
+        "All 4 new task tools (workspace_task_update, workspace_task_delete, workspace_task_set_completed, workspace_task_move) registered and appear in LLMSchema()",
+        "All 5 new kanban tools (kanban_move_card, kanban_delete_card, kanban_reset_card, kanban_update_card_description, kanban_stop_card) registered and appear in LLMSchema()",
+        "WorkspaceTasksProvider interface has all 4 new methods",
+        "New KanbanManager interface has all 5 methods wired to ExecutionContext",
+        "All 9 new tool names added to mutatingToolNames in registry.go",
+        "All 9 new tool names added to availableToolNames in settings/index.ts",
+        "Optimistic concurrency used for task mutations (expectedUpdatedAt parameter)",
+        "go test ./... passes",
+        "cd frontend; npm run build passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-09T04:22:37.9135623Z",
+      "updatedAt": "2026-07-09T04:32:54.4443355Z",
+      "completedAt": "2026-07-09T04:32:54.4443355Z"
     },
     "a14338ba-37de-4b71-851c-0c660e8d64fe": {
       "title": "Set default layouts, polish empty states, and migrate away from mock-up",
@@ -471,6 +650,7 @@
         "go test ./... passes"
       ],
       "priority": "P2",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T14:01:24.066358Z",
       "updatedAt": "2026-07-08T17:59:25.8433099Z",
@@ -491,6 +671,7 @@
         "npm run build succeeds in frontend"
       ],
       "priority": "P0",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T19:20:42.0569181Z",
       "updatedAt": "2026-07-08T19:23:42.9313063Z",
@@ -506,10 +687,34 @@
         "Reset restores default layout for the active view"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T14:01:23.9398583Z",
       "updatedAt": "2026-07-08T16:37:55.2701813Z",
       "completedAt": "2026-07-08T16:37:55.2701813Z"
+    },
+    "acbe5130-7954-4c5d-a5d4-29cd3a006ca5": {
+      "title": "Add manual within-lane ordering to backlog tasks via drag-and-drop and sort order field",
+      "details": "## Overview\n\nCurrently tasks within a priority lane sort by creation time (newest first). Add a `sortOrder` integer field so users can manually reorder cards within a lane via drag-and-drop. Cross-lane drag (priority change) already works; this extends reordering to within the same lane.\n\n## Changes\n\n### Backend — `internal/services/tasks.go`\n- Add `SortOrder int \\`json:\"sortOrder\"\\`` to `WorkspaceTask`, `storedWorkspaceTask` structs (not in TaskInput — it's managed by reorder, not create/edit)\n- Add new `ReorderWorkspaceTasks(workspaceID string, taskIDs []string, targetPriority string) (TaskBoard, error)` method that accepts an ordered list of task IDs for a priority lane and assigns sequential sort orders\n- Update `taskBoardFromData` sort: primary by `SortOrder`, secondary by `CreatedAt` descending for tasks with the same order\n- New event type `\"reordered\"` emitted after reorder\n\n### Backend — `internal/tools/types.go`\n- Add `SortOrder int \\`json:\"sortOrder\"\\`` to `tools.WorkspaceTask`\n- Add `WorkspaceTaskReorderRequest { TaskIDs []string, Priority string }` and response types\n- New provider method `ReorderWorkspaceTasks(ctx, request) (WorkspaceTaskMutationResponse, error)`\n\n### Backend — `internal/tools/workspace_tasks.go`\n- Register `workspace_task_reorder` tool with schema for task IDs + target priority\n- Handler calls `SystemService.ReorderWorkspaceTasks`\n\n### Frontend — `frontend/src/app/tasks/index.ts`\n- Enable drag-and-drop within a lane (currently only works between lanes via `handleTaskDrop`)\n- Add drop indicators (insertion line) between cards within the same lane\n- On within-lane drop, compute new ordered list of task IDs for that lane and call reorder API\n- Debounce rapid reorders; optimistic UI update with rollback on failure\n- Add state tracking for in-progress reorder per workspace\n\n### Frontend — CSS (`frontend/src/styles.css`)\n- Style drag insertion indicator (colored horizontal line between cards)\n- Visual feedback for valid drop target within lane\n\n## API Design\n```typescript\n// Backend call (Wails bound)\nReorderWorkspaceTasks(workspaceID: string, taskIDs: string[], priority: string): TaskBoard\n\n// Tool call\nworkspace_task_reorder({ taskIds: [\"uuid1\", \"uuid2\"], priority: \"P1\" })\n```\n\n## Data Migration\n- Existing tasks get sortOrder 0; sort falls back to creation time (preserves current behavior)\n- On first within-lane reorder, all tasks in that lane get explicit sequential orders\n\n## Verification\n- Drag task within same lane → reorders visually and persists\n- Refresh page → manual order is preserved\n- Mixed: some tasks with sortOrder, some without → correct combined sort\n- Cross-lane drag still works (priority change)\n- `go test ./...` and `cd frontend; npm run build` pass",
+      "acceptanceCriteria": [
+        "WorkspaceTask struct has SortOrder int field persisted to tasks.json",
+        "New ReorderWorkspaceTasks backend method accepts ordered task IDs for a priority lane and assigns sequential sort orders",
+        "taskBoardFromData sorts by SortOrder ascending, then CreatedAt descending as tiebreaker",
+        "Within-lane drag-and-drop reorders cards and persists the new order",
+        "Drag insertion indicator shows between cards during within-lane drag",
+        "Manual order persists across page refresh and app restart",
+        "Existing tasks without sortOrder sort by creation time (backward compatible)",
+        "Cross-lane drag (priority change) continues to work correctly",
+        "workspace_task_reorder tool available for agent use",
+        "go test ./... passes",
+        "cd frontend \u0026\u0026 npm run build passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-09T06:59:50.7437527Z",
+      "updatedAt": "2026-07-09T11:49:48.2811439Z",
+      "completedAt": "2026-07-09T11:49:48.2811439Z"
     },
     "afc60737-2864-4f5f-be52-071d77579ded": {
       "title": "Kanban card should show progress bar as well as active tool call, like the dashboard mockup has",
@@ -522,6 +727,7 @@
         "cd frontend \u0026\u0026 npm run build succeeds with no TypeScript errors"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T07:43:25.0748656Z",
       "updatedAt": "2026-07-08T07:51:34.0534273Z",
@@ -536,10 +742,31 @@
         "No 'app doesn't support voice input' toast from Chrome keyboard"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T22:57:41.1643506Z",
       "updatedAt": "2026-07-08T23:25:16.0057396Z",
       "completedAt": "2026-07-08T23:25:16.0057396Z"
+    },
+    "b7a21515-f907-4ef2-8927-0cfe664c0706": {
+      "title": "Debounce kanban card_progress DOM updates to prevent mobile flicker during agent streaming",
+      "details": "## Problem\nDuring agent streaming, the backend emits `card_progress` events for every token chunk (content + reasoning). Each event triggers the full patch cascade in `applyKanbanEvent()`. Even though targeted patches exist (`patchOpenCardProgress`, `patchCardProgress`, `patchKanbanBoard`), firing 10-20 DOM updates per second during text streaming overwhelms mobile browsers, causing:\n- Visible flicker on the kanban board\n- Touch input unresponsiveness (JS thread busy with DOM work)\n- Layout recalculations competing with paint cycles\n\n## Root Cause\nNo debouncing on `card_progress` event rendering. State updates happen immediately but the DOM patch runs synchronously for every single SSE event.\n\n## Solution\nAdd per-workspace debounce to `card_progress` DOM rendering. State mutation remains immediate; only the visual update is batched into ~150ms windows. Non-progress events (`card_started`, `scheduler_complete`, etc.) render immediately.\n\n### File: `frontend/src/app/state.ts`\n- Add `kanbanRenderDebounceTimers: new Map\u003cstring, number\u003e()` to the state object (around line 83, near `kanbanTimerID`)\n\n### File: `frontend/src/app/kanban/index.ts`\n\n**1. Add debounce helper function:**\n```typescript\nconst KANBAN_PROGRESS_DEBOUNCE_MS = 150;\n\nfunction scheduleKanbanProgressPatch(workspaceId: string) {\n  const existing = state.kanbanRenderDebounceTimers.get(workspaceId);\n  if (existing !== undefined) {\n    window.clearTimeout(existing);\n  }\n  const timer = window.setTimeout(() =\u003e {\n    state.kanbanRenderDebounceTimers.delete(workspaceId);\n    // Re-run patch cascade with latest state\n    const board = kanbanBoardFor(workspaceId);\n    if (!board) return;\n    \n    // Try open card detail patch first (when user has a card selected)\n    const card = selectedKanbanCard(board);\n    if (card) {\n      const fakeEvent: KanbanEvent = {\n        workspaceId,\n        cardId: card.id,\n        type: \"card_progress\",\n        board,\n      };\n      if (patchOpenCardProgress(fakeEvent)) return;\n    }\n    \n    // Patch the active in-progress cards on the board\n    const inProgressCards = kanbanCards(board).filter(c =\u003e c.lane === \"inProgress\");\n    let patched = false;\n    for (const c of inProgressCards) {\n      if (patchCardProgress(c)) {\n        patched = true;\n      }\n    }\n    if (patched) return;\n    \n    // Fallback: patch the whole board\n    patchKanbanBoard(workspaceId);\n  }, KANBAN_PROGRESS_DEBOUNCE_MS);\n  state.kanbanRenderDebounceTimers.set(workspaceId, timer);\n}\n```\n\n**2. Modify `applyKanbanEvent` (line ~943):**\nReplace the card_progress handling block:\n```typescript\nif (activeWorkspace()?.id === event.workspaceId) {\n  if (event.type === \"card_progress\") {\n    scheduleKanbanProgressPatch(event.workspaceId);\n    return; // Don't fall through to renderKanbanEventPreservingScroll\n  }\n  renderKanbanEventPreservingScroll();\n}\n```\n\nThis removes the inline patch cascade from `applyKanbanEvent` for card_progress and replaces it with the debounced scheduler. All other event types (`card_started`, `scheduler_complete`, etc.) continue to call `renderKanbanEventPreservingScroll()` immediately.\n\n**3. Cleanup consideration:**\nWhen `finishKanbanRun` or `forgetKanbanRun` is called, clear any pending debounce timer for that workspace to avoid stale patches after run completion:\n```typescript\nexport function finishKanbanRun(workspaceID: string) {\n  const timer = state.kanbanRenderDebounceTimers.get(workspaceID);\n  if (timer !== undefined) {\n    window.clearTimeout(timer);\n    state.kanbanRenderDebounceTimers.delete(workspaceID);\n  }\n  // ... existing code\n}\n```\n\n## Why this works\n- **150ms debounce**: Fast enough that progress bar updates appear smooth (~6fps), slow enough to batch rapid streaming events (which may fire at 10-50 events/sec during text generation)\n- **Per-workspace**: Multiple workspaces running kanban simultaneously don't interfere with each other\n- **State-first**: State is always updated immediately on event arrival; only the visual update is delayed\n- **Non-progress events immediate**: Structural changes (card started, scheduler complete, status changed) render immediately for proper UX feedback\n- **No new dependencies**: Uses standard `setTimeout`/`clearTimeout`, no external libraries needed\n\n## Testing\n- Verify progress bar updates smoothly during agent streaming on mobile viewport (≤720px)\n- Verify touch input remains responsive during active card execution\n- Verify non-progress events (card_started, scheduler_complete) still render immediately\n- Verify `cd frontend; npm run build` passes",
+      "acceptanceCriteria": [
+        "No visible flicker on kanban board during agent streaming on mobile viewports (≤720px)",
+        "Touch input remains responsive during active card execution",
+        "Progress bar updates appear smooth (~6fps) during streaming",
+        "Non-progress kanban events (card_started, scheduler_complete) render immediately without delay",
+        "State is updated immediately on every event; only DOM rendering is debounced",
+        "Per-workspace debounce avoids interference between multiple running workspaces",
+        "Pending debounce timers are cleared when a kanban run finishes",
+        "Frontend build passes: cd frontend \u0026\u0026 npm run build"
+      ],
+      "priority": "P0",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-09T06:43:10.4774774Z",
+      "updatedAt": "2026-07-09T11:49:48.5756446Z",
+      "completedAt": "2026-07-09T11:49:48.5756446Z"
     },
     "b7fbe425-f1b9-4725-a018-c08bca046a64": {
       "title": "Kanban cards are too bulky and lack the colorful, at-a-glance status flair of the dashboard mockup",
@@ -555,6 +782,7 @@
         "cd frontend \u0026\u0026 npm run build succeeds with no TypeScript errors"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T07:46:52.3054144Z",
       "updatedAt": "2026-07-08T07:51:09.7542614Z",
@@ -569,6 +797,7 @@
         "npm run build passes"
       ],
       "priority": "P0",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T22:48:59.841761Z",
       "updatedAt": "2026-07-08T23:27:15.3563141Z",
@@ -588,6 +817,7 @@
         "cd frontend \u0026\u0026 npm run build succeeds with no TypeScript errors"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T16:04:53.5023425Z",
       "updatedAt": "2026-07-08T16:37:51.0306639Z",
@@ -602,6 +832,7 @@
         "No TypeScript changes required"
       ],
       "priority": "P2",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-09T01:35:49.0158774Z",
       "updatedAt": "2026-07-09T01:41:34.7974286Z",
@@ -619,6 +850,7 @@
         "cd frontend \u0026\u0026 npm run build succeeds"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-07T23:36:16.9357916Z",
       "updatedAt": "2026-07-07T23:40:12.956236Z",
@@ -634,10 +866,32 @@
         "\"Echo\" label hidden at ≤380px but visible above that"
       ],
       "priority": "P1",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T21:14:46.7151794Z",
       "updatedAt": "2026-07-08T21:21:55.1708617Z",
       "completedAt": "2026-07-08T21:21:55.1708617Z"
+    },
+    "e1bb11bf-6bf3-4fa1-9d54-f30cfd36661f": {
+      "title": "Fix browser notifications \"blocked\" false positive after user enables in browser settings",
+      "details": "## Problem\n\n`requestPushNotificationPermission()` in `frontend/src/app/notifications.ts` uses a one-time module-level flag `pushNotificationPermissionRequested` that never resets. Once the first permission prompt fires, any subsequent call returns `\"denied\"` immediately — even if the user has since enabled notifications in their browser settings and `Notification.permission === \"granted\"`.\n\nThis means the Settings UI always shows \"Browser notifications are blocked\" after the initial prompt is dismissed, regardless of the actual browser permission state.\n\n## Fix\n\nIn `frontend/src/app/notifications.ts`:\n\n1. Remove the `pushNotificationPermissionRequested` variable declaration.\n2. Remove the `pushNotificationPermissionRequested` check from the guard condition on line 30 (`if (Notification.permission === \"denied\" || pushNotificationPermissionRequested)`).\n3. Remove the `pushNotificationPermissionRequested = true` assignment on line 34.\n\nThe existing guards are sufficient:\n- Line 27 already returns `\"granted\"` if permission is granted.\n- Line 30 (after fix) only blocks if explicitly `\"denied\"`.\n- Calling `Notification.requestPermission()` when permission is `\"default\"` is safe and idempotent.\n\n## Files\n\n- `frontend/src/app/notifications.ts` — lines 21–37",
+      "tags": [
+        "frontend",
+        "notifications",
+        "bug"
+      ],
+      "acceptanceCriteria": [
+        "pushNotificationPermissionRequested variable and all references removed from notifications.ts",
+        "requestPushNotificationPermission() correctly returns 'granted' when user has enabled notifications in browser settings after previously dismissing the prompt",
+        "Calling requestPushNotificationPermission() multiple times does not incorrectly return 'denied'",
+        "Frontend builds successfully: cd frontend; npm run build"
+      ],
+      "priority": "P2",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-09T13:27:36.4230348Z",
+      "updatedAt": "2026-07-09T13:29:22.2569909Z",
+      "completedAt": "2026-07-09T13:29:22.2569909Z"
     },
     "f5c28cde-e9e8-4767-b61c-7e9afd96cf85": {
       "title": "Create widget registry with live data renderers",
@@ -649,6 +903,7 @@
         "widgetRegistry exports match all WidgetId values"
       ],
       "priority": "P0",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T14:01:23.7508564Z",
       "updatedAt": "2026-07-08T14:09:09.11309Z",
@@ -667,6 +922,7 @@
         "cd frontend; npm run build passes"
       ],
       "priority": "P0",
+      "sortOrder": 0,
       "completed": true,
       "createdAt": "2026-07-08T22:56:29.8103839Z",
       "updatedAt": "2026-07-08T23:22:30.5614295Z",

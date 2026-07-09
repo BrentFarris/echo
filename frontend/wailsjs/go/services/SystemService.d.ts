@@ -164,6 +164,8 @@ export function RenameWorkspacePath(arg1:string,arg2:string,arg3:string):Promise
 
 export function RenameWorkspaceSymbol(arg1:string,arg2:services.WorkspaceRenameRequest):Promise<services.WorkspaceRenameResponse>;
 
+export function ReorderWorkspaceTasks(arg1:string,arg2:Array<string>,arg3:string):Promise<services.TaskBoard>;
+
 export function ReorderWorkspaces(arg1:Array<string>):Promise<services.AppState>;
 
 export function ReplayWorkspaceSymbolRename(arg1:string,arg2:services.WorkspaceRenameReplayRequest):Promise<services.WorkspaceRenameReplayResponse>;

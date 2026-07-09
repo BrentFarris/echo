@@ -4,7 +4,7 @@ import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
 import { renderQRCodeSVG } from "../qr";
-import { cloneSettings, cloneWebAccessSettings, fieldValue, leadingWhitespaceIndicatorsEnabled, limitKanbanConcurrencyEnabled, notificationSoundsEnabled, state, activeWorkspace, agentModesForWorkspace } from "../state";
+import { cloneSettings, cloneWebAccessSettings, fieldValue, leadingWhitespaceIndicatorsEnabled, limitKanbanConcurrencyEnabled, notificationSoundsEnabled, chatCompletionNotificationsEnabled, kanbanCompleteNotificationsEnabled, state, activeWorkspace, agentModesForWorkspace } from "../state";
 import { applyTheme, normalizeHexColor, settingsWithCompactTheme, settingsWithThemeColor, themeColorValue, themeGroups, themeTokens, type ThemePaletteName } from "../theme";
 import { pushToast } from "../toasts";
 import { errorMessage, escapeAttribute, escapeHtml, workspaceFolderSummary } from "../utils";
@@ -126,6 +126,12 @@ const availableToolNames = [
   "filesystem_search_workspace",
   "filesystem_stat",
   "git_inspect",
+  "kanban_delete_card",
+  "kanban_move_card",
+  "kanban_reset_card",
+  "kanban_start_execution",
+  "kanban_stop_card",
+  "kanban_update_card_description",
   "lsp_query",
   "restart",
   "shell_command",
@@ -136,7 +142,12 @@ const availableToolNames = [
   "workspace_skill_record",
   "workspace_skill_search",
   "workspace_task_create",
+  "workspace_task_convert_to_kanban",
+  "workspace_task_delete",
   "workspace_task_list",
+  "workspace_task_move",
+  "workspace_task_set_completed",
+  "workspace_task_update",
 ] as const;
 
 type EndpointTopic = (typeof endpointTopics)[number]["key"];
@@ -256,6 +267,23 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                   ${notificationSoundsEnabled(state.settingsDraft) ? "checked" : ""}
                 />
               </label>
+              <label class="settings-toggle">
+                <span>Chat completion notifications</span>
+                <input
+                  name="enableChatCompletionNotifications"
+                  type="checkbox"
+                  ${chatCompletionNotificationsEnabled(state.settingsDraft) ? "checked" : ""}
+                />
+              </label>
+              <label class="settings-toggle">
+                <span>Kanban complete notifications</span>
+                <input
+                  name="enableKanbanCompleteNotifications"
+                  type="checkbox"
+                  ${kanbanCompleteNotificationsEnabled(state.settingsDraft) ? "checked" : ""}
+                />
+              </label>
+              ${renderPushNotificationPermissionStatus()}
             </section>
 
             <section class="settings-section" aria-labelledby="programming-settings-title">
@@ -446,8 +474,8 @@ function extractPermissionsMap(mode: services.AgentMode): Record<string, string[
   if (mode.permissions && Object.keys(mode.permissions).length > 0) {
     const result: Record<string, string[]> = {};
     for (const [toolName, perm] of Object.entries(mode.permissions)) {
-      if (perm && perm.paths?.length) {
-        result[toolName] = [...perm.paths];
+      if (perm) {
+        result[toolName] = perm.paths ? [...perm.paths] : [];
       }
     }
     return result;
@@ -1397,6 +1425,41 @@ function renderRebuildRelaunchButton(): string {
       ${disabled ? "<p class='form-error compact'>Cannot rebuild while Kanban agents are running in the Echo source workspace.</p>" : ""}
     </div>
   `;
+}
+
+function renderPushNotificationPermissionStatus(): string {
+  if (typeof Notification === "undefined") {
+    return "";
+  }
+  const permission = Notification.permission;
+  if (permission === "granted") {
+    return "";
+  }
+  if (permission === "denied") {
+    return `
+      <p class="compact muted">
+        Browser notifications are blocked.
+        <button type="button" class="inline-link" data-action="request-push-notification-permission">Enable browser notifications</button>
+      </p>
+    `;
+  }
+  // permission === "default" — prompt not yet shown
+  return `
+    <p class="compact muted">
+      <button type="button" class="inline-link" data-action="request-push-notification-permission">Enable browser notifications</button>
+    </p>
+  `;
+}
+
+export async function handleRequestPushNotificationPermission(): Promise<void> {
+  const { requestPushNotificationPermission } = await import("../notifications");
+  const result = await requestPushNotificationPermission();
+  if (result === "granted") {
+    pushToast("Browser notifications enabled.", "success");
+  } else if (result === "denied") {
+    pushToast("Browser notifications blocked. You can enable them in your browser settings.", "error");
+  }
+  getAppCallbacks().render();
 }
 
 function findEchoSourceWorkspace(): services.Workspace | null {

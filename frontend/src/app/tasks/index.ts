@@ -4,6 +4,7 @@ import {
   DeleteWorkspaceTask,
   LoadTaskBoard,
   MoveWorkspaceTask,
+  ReorderWorkspaceTasks,
   SetWorkspaceTaskCompleted,
   UpdateWorkspaceTask,
 } from "../../backend/services";
@@ -44,6 +45,8 @@ export function renderTaskPanel(workspace: services.Workspace): string {
   const board = taskBoardFor(workspace.id);
   const searchQuery = state.taskSearchQuery.get(workspace.id) ?? "";
   const filterMode = state.taskFilterMode.get(workspace.id) ?? "open";
+  const epicFilter = state.taskEpicFilter.get(workspace.id) ?? "";
+  const activeTagFilters = state.taskTagFilters.get(workspace.id) ?? new Set<string>();
   const tasks = board.tasks ?? [];
 
   // Apply filter mode
@@ -55,7 +58,7 @@ export function renderTaskPanel(workspace: services.Workspace): string {
 
   // Apply search query (case-insensitive on title, details, acceptance criteria)
   const query = searchQuery.toLowerCase().trim();
-  const visible = query
+  let visible = query
     ? filteredByMode.filter((task) => {
         if (task.title.toLowerCase().includes(query)) return true;
         if (task.details?.toLowerCase().includes(query)) return true;
@@ -63,6 +66,34 @@ export function renderTaskPanel(workspace: services.Workspace): string {
         return false;
       })
     : filteredByMode;
+
+  // Apply epic filter
+  if (epicFilter) {
+    visible = visible.filter((t) => t.epic === epicFilter);
+  }
+
+  // Apply tag filter (OR logic — show tasks matching any selected tag)
+  if (activeTagFilters.size > 0) {
+    visible = visible.filter((t) =>
+      (t.tags ?? []).some((tag) => activeTagFilters.has(tag))
+    );
+  }
+
+  // Collect all epics for the filter dropdown
+  const allEpics = new Set<string>();
+  for (const task of filteredByMode) {
+    if (task.epic) allEpics.add(task.epic);
+  }
+  const epicList = Array.from(allEpics).sort();
+
+  // Collect all tags across visible tasks for the tag filter bar
+  const allTags = new Set<string>();
+  for (const task of filteredByMode) {
+    for (const tag of task.tags ?? []) {
+      allTags.add(tag);
+    }
+  }
+  const tagList = Array.from(allTags).sort();
 
   return `
     <section class="work-panel task-panel" aria-labelledby="tasks-title" data-task-panel>
@@ -91,6 +122,19 @@ export function renderTaskPanel(workspace: services.Workspace): string {
           <button class="task-filter-btn${filterMode === "completed" ? " is-active" : ""}" type="button" data-task-filter="completed">Completed</button>
         </div>
       </div>
+      ${epicList.length > 0 ? `
+        <div class="task-epic-bar" role="group" aria-label="Epic filter">
+          <span class="task-epic-bar-label">Epic:</span>
+          <button class="task-epic-btn${!epicFilter ? " is-active" : ""}" type="button" data-task-epic-filter="">All</button>
+          ${epicList.map((epic) => `<button class="task-epic-btn${epicFilter === epic ? " is-active" : ""}" type="button" data-task-epic-filter="${escapeAttribute(epic)}">${escapeHtml(epic)}</button>`).join("")}
+        </div>
+      ` : ""}
+      ${tagList.length > 0 ? `
+        <div class="task-tag-bar" role="group" aria-label="Tag filter">
+          <span class="task-tag-bar-label">Tags:</span>
+          ${tagList.map((tag) => `<button class="task-tag-btn${activeTagFilters.has(tag) ? " is-active" : ""}" type="button" data-task-tag-filter="${escapeAttribute(tag)}">${escapeHtml(tag)}</button>`).join("")}
+        </div>
+      ` : ""}
       ${board.gitIgnored || board.doneGitIgnored ? `
         <div class="task-git-warning" role="status">
           ${escapeHtml([
@@ -108,6 +152,48 @@ export function renderTaskPanel(workspace: services.Workspace): string {
 }
 
 function renderTaskLane(priority: string, tasks: services.WorkspaceTask[]): string {
+  // Group tasks by epic
+  const groups = new Map<string, services.WorkspaceTask[]>();
+  for (const task of tasks) {
+    const key = task.epic || "__ungrouped__";
+    const group = groups.get(key);
+    if (group) {
+      group.push(task);
+    } else {
+      groups.set(key, [task]);
+    }
+  }
+
+  let cardsHtml = "";
+  if (tasks.length === 0) {
+    cardsHtml = `<p class="lane-empty">No tasks</p>`;
+  } else {
+    const hasMultipleGroups = groups.size > 1;
+    for (const [key, groupTasks] of groups) {
+      const isUngrouped = key === "__ungrouped__";
+      const label = isUngrouped ? "Ungrouped" : key;
+      if (hasMultipleGroups) {
+        cardsHtml += `
+          <details class="task-epic-group">
+            <summary class="task-epic-group-header"><span class="task-epic-group-label">${escapeHtml(label)}</span><span class="task-epic-group-count">${groupTasks.length}</span></summary>
+            <div class="task-cards">
+              ${groupTasks.map(renderTaskCard).join("")}
+            </div>
+          </details>`;
+      } else {
+        // Single group — render cards directly without wrapper details element
+        if (!isUngrouped) {
+          // Has epic but it's the only group — still show header inline for clarity
+          cardsHtml += `
+            <div class="task-epic-group-inline">
+              <span class="task-epic-group-label">${escapeHtml(label)}</span>
+            </div>`;
+        }
+        cardsHtml += `<div class="task-cards">${groupTasks.map(renderTaskCard).join("")}</div>`;
+      }
+    }
+  }
+
   return `
     <section class="task-lane" data-task-lane="${priority}" aria-label="${priority} tasks">
       <header>
@@ -117,9 +203,7 @@ function renderTaskLane(priority: string, tasks: services.WorkspaceTask[]): stri
       <button class="task-lane-add" type="button" data-task-action="new" data-priority="${priority}">
         ${icons.plus}<span>Add task</span>
       </button>
-      <div class="task-cards">
-        ${tasks.length ? tasks.map(renderTaskCard).join("") : `<p class="lane-empty">No tasks</p>`}
-      </div>
+      ${cardsHtml}
     </section>
   `;
 }
@@ -133,22 +217,29 @@ function renderTaskCard(task: services.WorkspaceTask): string {
   } else {
     statusBadge = '<span class="task-status-badge task-status-backlog">backlog</span>';
   }
+  const tagsHtml = (task.tags ?? []).length > 0
+    ? `<div class="task-card-tags">${(task.tags ?? []).map((tag) => `<span class="task-tag-chip">${escapeHtml(tag)}</span>`).join("")}</div>`
+    : "";
   return `
-    <article class="task-card${isCompleted ? " is-completed" : ""}" draggable="true" data-task-drag-item data-task-id="${escapeAttribute(task.id)}">
-      <button
-        class="task-card-open"
-        type="button"
-        data-task-action="open-task"
-        data-task-id="${escapeAttribute(task.id)}"
-        aria-label="Open ${escapeAttribute(task.title)} details"
-      >
-        <span class="task-card-header">
-          <span class="priority-badge ${priorityClass}" aria-label="${task.priority} priority">${task.priority}</span>
-          <strong>${escapeHtml(task.title)}</strong>
-          ${statusBadge}
-        </span>
-      </button>
-    </article>
+    <div class="task-card-drop-zone" data-task-drop-zone data-task-id="${escapeAttribute(task.id)}">
+      <div class="task-drop-indicator"></div>
+      <article class="task-card${isCompleted ? " is-completed" : ""}" draggable="true" data-task-drag-item data-task-id="${escapeAttribute(task.id)}">
+        <button
+          class="task-card-open"
+          type="button"
+          data-task-action="open-task"
+          data-task-id="${escapeAttribute(task.id)}"
+          aria-label="Open ${escapeAttribute(task.title)} details"
+        >
+          <span class="task-card-header">
+            <span class="priority-badge ${priorityClass}" aria-label="${task.priority} priority">${task.priority}</span>
+            <strong>${escapeHtml(task.title)}</strong>
+            ${statusBadge}
+          </span>
+          ${tagsHtml}
+        </button>
+      </article>
+    </div>
   `;
 }
 
@@ -184,6 +275,11 @@ export function renderTaskDetail(workspace: services.Workspace): string {
             ${createdDate ? `<span class="task-detail-created">Created ${escapeHtml(createdDate)}</span>` : ""}
             ${task.completed ? `<span class="task-detail-status completed">Completed ✓</span>` : `<span class="task-detail-status backlog">Backlog</span>`}
           </div>
+          ${(task.tags ?? []).length > 0 ? `
+            <div class="task-detail-tags">
+              ${(task.tags ?? []).map((tag) => `<span class="task-tag-chip">${escapeHtml(tag)}</span>`).join("")}
+            </div>
+          ` : ""}
 
           <div class="card-detail-actions">
             <button class="secondary-button icon-text-button" type="button" data-task-action="edit" data-task-id="${escapeAttribute(task.id)}">
@@ -248,6 +344,8 @@ function renderTaskEditor(workspaceID: string): string {
           <button class="icon-button close-button" type="button" data-task-action="cancel-editor" aria-label="Cancel">${icons.x}</button>
         </header>
         <label><span>Title</span><input type="text" name="title" required value="${escapeAttribute(draft.title)}" data-task-title data-initial-focus></label>
+        <label><span>Epic</span><input type="text" name="epic" placeholder="Optional group name" value="${escapeAttribute(draft.epic || "")}" data-task-epic></label>
+        <label><span>Tags</span><input type="text" name="tags" placeholder="Comma-separated tags (e.g. frontend, bug)" value="${escapeAttribute(draft.tags || "")}" data-task-tags></label>
         <label><span>Details</span><textarea name="details" rows="6" placeholder="Optional Markdown details" data-task-details>${escapeHtml(draft.details)}</textarea></label>
         <label><span>Acceptance criteria</span><textarea name="acceptanceCriteria" rows="4" placeholder="Optional; one criterion per line" data-task-criteria>${escapeHtml(draft.acceptanceCriteria)}</textarea></label>
         <label><span>Priority</span><select name="priority" data-task-priority>${priorities.map((priority) => `<option value="${priority}" ${draft.priority === priority ? "selected" : ""}>${priority}</option>`).join("")}</select></label>
@@ -278,6 +376,11 @@ export function bindTaskEvents(root: ParentNode) {
     card.addEventListener("dragstart", handleTaskDragStart);
     card.addEventListener("dragend", handleTaskDragEnd);
   });
+  root.querySelectorAll<HTMLElement>("[data-task-drop-zone]").forEach((zone) => {
+    zone.addEventListener("dragover", handleTaskDropZoneDragOver);
+    zone.addEventListener("dragleave", handleTaskDropZoneDragLeave);
+    zone.addEventListener("drop", handleTaskDropZoneDrop);
+  });
   root.querySelectorAll<HTMLElement>("[data-task-lane]").forEach((lane) => {
     lane.addEventListener("dragover", handleTaskDragOver);
     lane.addEventListener("dragleave", handleTaskDragLeave);
@@ -286,6 +389,12 @@ export function bindTaskEvents(root: ParentNode) {
   root.querySelector<HTMLInputElement>("[data-task-search]")?.addEventListener("input", handleTaskSearch);
   root.querySelectorAll<HTMLButtonElement>("[data-task-filter]").forEach((btn) => {
     btn.addEventListener("click", handleTaskFilter);
+  });
+  root.querySelectorAll<HTMLButtonElement>("[data-task-epic-filter]").forEach((btn) => {
+    btn.addEventListener("click", handleTaskEpicFilter);
+  });
+  root.querySelectorAll<HTMLButtonElement>("[data-task-tag-filter]").forEach((btn) => {
+    btn.addEventListener("click", handleTaskTagFilter);
   });
 }
 
@@ -326,7 +435,7 @@ async function handleTaskAction(event: Event) {
       return;
     }
     if (action === "new") {
-      state.taskEditorDrafts.set(workspace.id, { title: "", details: "", acceptanceCriteria: "", priority: target.dataset.priority || "P1" });
+      state.taskEditorDrafts.set(workspace.id, { title: "", details: "", epic: "", tags: "", acceptanceCriteria: "", priority: target.dataset.priority || "P1" });
       getAppCallbacks().render();
       return;
     }
@@ -354,6 +463,8 @@ async function handleTaskAction(event: Event) {
         taskId: task.id,
         title: task.title,
         details: task.details || "",
+        epic: task.epic || "",
+        tags: (task.tags ?? []).join(", "),
         acceptanceCriteria: (task.acceptanceCriteria ?? []).join("\n"),
         priority: task.priority,
         expectedUpdatedAt: task.updatedAt,
@@ -428,6 +539,8 @@ async function handleTaskEditorSubmit(event: SubmitEvent) {
   const input = services.TaskInput.createFrom({
     title,
     details: form.querySelector<HTMLTextAreaElement>("[data-task-details]")?.value.trim() ?? "",
+    epic: form.querySelector<HTMLInputElement>("[data-task-epic]")?.value.trim() ?? "",
+    tags: (form.querySelector<HTMLInputElement>("[data-task-tags]")?.value ?? "").split(",").map((value) => value.trim()).filter(Boolean),
     acceptanceCriteria: (form.querySelector<HTMLTextAreaElement>("[data-task-criteria]")?.value ?? "").split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
     priority: form.querySelector<HTMLSelectElement>("[data-task-priority]")?.value ?? "P1",
   });
@@ -466,6 +579,32 @@ function handleTaskFilter(event: Event) {
   patchTaskPanel();
 }
 
+function handleTaskEpicFilter(event: Event) {
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+  const btn = event.currentTarget as HTMLButtonElement;
+  state.taskEpicFilter.set(workspace.id, btn.dataset.taskEpicFilter ?? "");
+  patchTaskPanel();
+}
+
+function handleTaskTagFilter(event: Event) {
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+  const btn = event.currentTarget as HTMLButtonElement;
+  const tag = btn.dataset.taskTagFilter ?? "";
+  let currentFilters = state.taskTagFilters.get(workspace.id);
+  if (!currentFilters) {
+    currentFilters = new Set<string>();
+    state.taskTagFilters.set(workspace.id, currentFilters);
+  }
+  if (currentFilters.has(tag)) {
+    currentFilters.delete(tag);
+  } else {
+    currentFilters.add(tag);
+  }
+  patchTaskPanel();
+}
+
 function patchTaskPanel() {
   const workspace = activeWorkspace();
   if (!workspace) return;
@@ -474,6 +613,8 @@ function patchTaskPanel() {
   const board = taskBoardFor(workspace.id);
   const searchQuery = state.taskSearchQuery.get(workspace.id) ?? "";
   const filterMode = state.taskFilterMode.get(workspace.id) ?? "open";
+  const epicFilter = state.taskEpicFilter.get(workspace.id) ?? "";
+  const activeTagFilters = state.taskTagFilters.get(workspace.id) ?? new Set<string>();
   const tasks = board.tasks ?? [];
 
   // Apply filter mode
@@ -485,7 +626,7 @@ function patchTaskPanel() {
 
   // Apply search query
   const query = searchQuery.toLowerCase().trim();
-  const visible = query
+  let visible = query
     ? filteredByMode.filter((task) => {
         if (task.title.toLowerCase().includes(query)) return true;
         if (task.details?.toLowerCase().includes(query)) return true;
@@ -493,6 +634,40 @@ function patchTaskPanel() {
         return false;
       })
     : filteredByMode;
+
+  // Apply epic filter
+  if (epicFilter) {
+    visible = visible.filter((t) => t.epic === epicFilter);
+  }
+
+  // Apply tag filter (OR logic)
+  if (activeTagFilters.size > 0) {
+    visible = visible.filter((t) =>
+      (t.tags ?? []).some((tag) => activeTagFilters.has(tag))
+    );
+  }
+
+  // Collect all tags for the tag filter bar
+  const allTags = new Set<string>();
+  for (const task of filteredByMode) {
+    for (const tag of task.tags ?? []) {
+      allTags.add(tag);
+    }
+  }
+  const tagList = Array.from(allTags).sort();
+
+  // Patch task-tag-bar in-place
+  const existingTagBar = panel.querySelector<HTMLElement>(".task-tag-bar");
+  if (tagList.length > 0) {
+    if (existingTagBar) {
+      const html = `<span class="task-tag-bar-label">Tags:</span>${tagList.map((tag) => `<button class="task-tag-btn${activeTagFilters.has(tag) ? " is-active" : ""}" type="button" data-task-tag-filter="${escapeAttribute(tag)}">${escapeHtml(tag)}</button>`).join("")}`;
+      const template = document.createElement("template");
+      template.innerHTML = html;
+      existingTagBar.replaceChildren(...Array.from(template.content.children));
+    }
+  } else {
+    existingTagBar?.remove();
+  }
 
   // Patch task-board lanes in-place
   const taskBoard = panel.querySelector<HTMLElement>(".task-board");
@@ -519,7 +694,14 @@ function handleTaskDragStart(event: DragEvent) {
 function handleTaskDragOver(event: DragEvent) {
   if (!draggingTaskID) return;
   event.preventDefault();
-  (event.currentTarget as HTMLElement).classList.add("is-drop-target");
+  const lane = event.currentTarget as HTMLElement;
+  // Only apply lane-level drop styling for cross-lane drops
+  const ws = activeWorkspace();
+  const task = ws ? (taskBoardFor(ws.id).tasks ?? []).find((t) => t.id === draggingTaskID) : undefined;
+  const targetPriority = lane.dataset.taskLane || "";
+  if (task && task.priority !== targetPriority) {
+    lane.classList.add("is-drop-target");
+  }
   if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
 }
 
@@ -531,12 +713,15 @@ function handleTaskDragLeave(event: DragEvent) {
 
 async function handleTaskDrop(event: DragEvent) {
   event.preventDefault();
+  event.stopPropagation();
   const workspace = activeWorkspace();
   const lane = event.currentTarget as HTMLElement;
   lane.classList.remove("is-drop-target");
   const task = workspace ? (taskBoardFor(workspace.id).tasks ?? []).find((candidate) => candidate.id === draggingTaskID) : undefined;
   const priority = lane.dataset.taskLane || "";
   draggingTaskID = "";
+  clearAllDropIndicators();
+  // Only handle cross-lane drops at the lane level
   if (!workspace || !task || task.priority === priority) return;
   try {
     state.taskBoards.set(workspace.id, await MoveWorkspaceTask(workspace.id, task.id, priority, task.updatedAt));
@@ -546,6 +731,110 @@ async function handleTaskDrop(event: DragEvent) {
     await loadActiveTaskBoard();
     getAppCallbacks().render();
   }
+}
+
+// Drop zone handlers for within-lane reordering
+let reorderDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+function handleTaskDropZoneDragOver(event: DragEvent) {
+  if (!draggingTaskID) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const zone = event.currentTarget as HTMLElement;
+  const indicator = zone.querySelector<HTMLElement>(".task-drop-indicator");
+  if (indicator) {
+    indicator.classList.add("is-visible");
+  }
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+}
+
+function handleTaskDropZoneDragLeave(event: DragEvent) {
+  const zone = event.currentTarget as HTMLElement;
+  // Only clear if actually leaving the zone
+  if (event.relatedTarget instanceof Node && zone.contains(event.relatedTarget)) return;
+  const indicator = zone.querySelector<HTMLElement>(".task-drop-indicator");
+  if (indicator) {
+    indicator.classList.remove("is-visible");
+  }
+}
+
+async function handleTaskDropZoneDrop(event: DragEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  clearAllDropIndicators();
+  const workspace = activeWorkspace();
+  const zone = event.currentTarget as HTMLElement;
+  const targetTaskID = zone.dataset.taskId || "";
+  if (!workspace || !draggingTaskID || draggingTaskID === targetTaskID) {
+    draggingTaskID = "";
+    return;
+  }
+
+  const board = taskBoardFor(workspace.id);
+  const tasks = board.tasks ?? [];
+  const draggedTask = tasks.find((t) => t.id === draggingTaskID);
+  const targetTask = tasks.find((t) => t.id === targetTaskID);
+  if (!draggedTask || !targetTask) {
+    draggingTaskID = "";
+    return;
+  }
+
+  const targetPriority = draggedTask.priority;
+  // Only allow within-lane reorder (same priority)
+  if (draggedTask.priority !== targetTask.priority) {
+    draggingTaskID = "";
+    return;
+  }
+
+  // Build new ordered list for this priority lane
+  const laneTasks = tasks.filter((t) => t.priority === targetPriority && !t.completed);
+  const draggedIdx = laneTasks.findIndex((t) => t.id === draggingTaskID);
+  const targetIdx = laneTasks.findIndex((t) => t.id === targetTaskID);
+  if (draggedIdx === -1 || targetIdx === -1) {
+    draggingTaskID = "";
+    return;
+  }
+
+  // Create new order: remove dragged task, insert before target
+  const newLaneTasks = laneTasks.filter((t) => t.id !== draggingTaskID);
+  const insertIdx = newLaneTasks.findIndex((t) => t.id === targetTaskID);
+  newLaneTasks.splice(insertIdx, 0, draggedTask);
+
+  const newOrderIds = newLaneTasks.map((t) => t.id);
+  draggingTaskID = "";
+
+  // Check if order actually changed
+  const currentOrderIds = laneTasks.map((t) => t.id);
+  if (arraysEqual(newOrderIds, currentOrderIds)) {
+    return;
+  }
+
+  // Optimistic UI update
+  const previousBoard = board;
+  try {
+    // Debounce: cancel any pending reorder
+    if (reorderDebounceTimer) {
+      clearTimeout(reorderDebounceTimer);
+    }
+
+    // Call backend to persist the new order
+    const updatedBoard = await ReorderWorkspaceTasks(workspace.id, newOrderIds, targetPriority);
+    state.taskBoards.set(workspace.id, updatedBoard);
+    reorderDebounceTimer = null;
+    getAppCallbacks().render();
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+    // Rollback optimistic update
+    state.taskBoards.set(workspace.id, previousBoard);
+    await loadActiveTaskBoard();
+    getAppCallbacks().render();
+  }
+}
+
+function clearAllDropIndicators() {
+  appRoot.querySelectorAll(".task-drop-indicator.is-visible").forEach((el) => {
+    el.classList.remove("is-visible");
+  });
 }
 
 function handleTaskDragEnd(event: DragEvent) {
@@ -559,4 +848,9 @@ function taskChatPrompt(task: services.WorkspaceTask): string {
   if (task.details?.trim()) parts.push(`Details:\n${task.details.trim()}`);
   if ((task.acceptanceCriteria ?? []).length) parts.push(`Acceptance criteria:\n${(task.acceptanceCriteria ?? []).map((criterion) => `- ${criterion}`).join("\n")}`);
   return parts.join("\n\n");
+}
+
+function arraysEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((v, i) => v === b[i]);
 }

@@ -8,7 +8,7 @@ import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";
 import { appRoot, isElementScrolledNearBottom } from "../dom";
 import { icons } from "../icons";
-import { playNotificationSound } from "../notifications";
+import { playNotificationSound, maybeSendChatCompletionNotification } from "../notifications";
 import { activeWorkspace, agentModesForWorkspace, chatImageDraftsFor, chatImageDraftTotalBytes, chatVideoDraftsFor, chatVideoDraftTotalBytes, chatPlanModeFor, chatAgentModeIDFor, chatAgentModeNameFor, setChatAgentMode, chatComposerModeFor, setChatComposerMode, chatSessionFor, getActiveChatModelLabel, cloneSettings, state } from "../state";
 import { settingsWithCompactTheme } from "../theme";
 import { pushToast } from "../toasts";
@@ -2165,6 +2165,7 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
     message.error = event.error ?? "";
     if (event.type === "complete") {
       playNotificationSound();
+      maybeSendChatCompletionNotification(event.workspaceId);
     }
   }
   if (event.type === "retrying") {

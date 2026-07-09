@@ -6,7 +6,7 @@ import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";
 import { appRoot, isElementScrolledNearBottom } from "../dom";
 import { icons } from "../icons";
-import { playNotificationSound } from "../notifications";
+import { playNotificationSound, maybeSendKanbanCompleteNotification } from "../notifications";
 import { activeWorkspace, kanbanBoardFor, kanbanCards, selectedKanbanCard, state, changeReviewFor } from "../state";
 import { pushToast } from "../toasts";
 import type { HeartbeatEvent, KanbanEvent, LivenessEvent, WatchdogEvent } from "../types";
@@ -17,6 +17,47 @@ import type { Toast } from "../types";
 
 const HeartbeatIntervals = [0, 60_000, 180_000, 360_000, 900_000] as const; // off, 1m, 3m, 6m, 15m
 type HeartbeatInterval = (typeof HeartbeatIntervals)[number];
+
+const KANBAN_PROGRESS_DEBOUNCE_MS = 150;
+
+function scheduleKanbanProgressPatch(workspaceId: string) {
+  const existing = state.kanbanRenderDebounceTimers.get(workspaceId);
+  if (existing !== undefined) {
+    window.clearTimeout(existing);
+  }
+  const timer = window.setTimeout(() => {
+    state.kanbanRenderDebounceTimers.delete(workspaceId);
+    // Re-run patch cascade with latest state
+    const board = kanbanBoardFor(workspaceId);
+    if (!board) return;
+
+    // Try open card detail patch first (when user has a card selected)
+    const card = selectedKanbanCard(board);
+    if (card) {
+      const fakeEvent: KanbanEvent = {
+        workspaceId,
+        cardId: card.id,
+        type: "card_progress",
+        board,
+      };
+      if (patchOpenCardProgress(fakeEvent)) return;
+    }
+
+    // Patch the active in-progress cards on the board
+    const inProgressCards = kanbanCards(board).filter(c => c.lane === "inProgress");
+    let patched = false;
+    for (const c of inProgressCards) {
+      if (patchCardProgress(c)) {
+        patched = true;
+      }
+    }
+    if (patched) return;
+
+    // Fallback: patch the whole board
+    patchKanbanBoard(workspaceId);
+  }, KANBAN_PROGRESS_DEBOUNCE_MS);
+  state.kanbanRenderDebounceTimers.set(workspaceId, timer);
+}
 
 export function heartbeatIntervalLabel(intervalMs: number): string {
   if (intervalMs === 0) return "Off";
@@ -100,6 +141,11 @@ export function markKanbanRunStarted(workspaceID: string) {
 }
 
 export function finishKanbanRun(workspaceID: string) {
+  const timer = state.kanbanRenderDebounceTimers.get(workspaceID);
+  if (timer !== undefined) {
+    window.clearTimeout(timer);
+    state.kanbanRenderDebounceTimers.delete(workspaceID);
+  }
   const startedAt = state.kanbanRunStarts.get(workspaceID);
   if (startedAt) {
     state.kanbanRunElapsed.set(workspaceID, Math.max(0, Date.now() - startedAt));
@@ -110,6 +156,11 @@ export function finishKanbanRun(workspaceID: string) {
 }
 
 export function forgetKanbanRun(workspaceID: string) {
+  const timer = state.kanbanRenderDebounceTimers.get(workspaceID);
+  if (timer !== undefined) {
+    window.clearTimeout(timer);
+    state.kanbanRenderDebounceTimers.delete(workspaceID);
+  }
   state.runningKanbanWorkspaces.delete(workspaceID);
   state.kanbanRunStarts.delete(workspaceID);
   state.kanbanRunElapsed.delete(workspaceID);
@@ -951,13 +1002,12 @@ export function applyKanbanEvent(event: KanbanEvent) {
   if (event.type === "scheduler_complete") {
     finishKanbanRun(event.workspaceId);
     void refreshWorkspaceChangeReview(event.workspaceId);
+    maybeSendKanbanCompleteNotification(event.workspaceId);
   }
   if (activeWorkspace()?.id === event.workspaceId) {
     if (event.type === "card_progress") {
-      if (patchOpenCardProgress(event)) return;
-      const card = kanbanCards(board).find((c) => c.id === event.cardId);
-      if (card && patchCardProgress(card)) return;
-      if (patchKanbanBoard(event.workspaceId)) return;
+      scheduleKanbanProgressPatch(event.workspaceId);
+      return;
     }
     renderKanbanEventPreservingScroll();
   }

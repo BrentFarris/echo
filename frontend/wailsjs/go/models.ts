@@ -94,6 +94,8 @@ export namespace llm {
 	    thinkingCorrection?: boolean;
 	    hideLeadingWhitespaceIndicators?: boolean;
 	    disableNotificationSounds?: boolean;
+	    enableChatCompletionNotifications?: boolean;
+	    enableKanbanCompleteNotifications?: boolean;
 	    limitKanbanConcurrency?: boolean;
 	    theme?: Theme;
 	
@@ -122,6 +124,8 @@ export namespace llm {
 	        this.thinkingCorrection = source["thinkingCorrection"];
 	        this.hideLeadingWhitespaceIndicators = source["hideLeadingWhitespaceIndicators"];
 	        this.disableNotificationSounds = source["disableNotificationSounds"];
+	        this.enableChatCompletionNotifications = source["enableChatCompletionNotifications"];
+	        this.enableKanbanCompleteNotifications = source["enableKanbanCompleteNotifications"];
 	        this.limitKanbanConcurrency = source["limitKanbanConcurrency"];
 	        this.theme = this.convertValues(source["theme"], Theme);
 	    }
@@ -881,8 +885,11 @@ export namespace services {
 	    id: string;
 	    title: string;
 	    details?: string;
+	    epic?: string;
+	    tags?: string[];
 	    acceptanceCriteria?: string[];
 	    priority: string;
+	    sortOrder: number;
 	    completed: boolean;
 	    createdAt: string;
 	    updatedAt: string;
@@ -897,8 +904,11 @@ export namespace services {
 	        this.id = source["id"];
 	        this.title = source["title"];
 	        this.details = source["details"];
+	        this.epic = source["epic"];
+	        this.tags = source["tags"];
 	        this.acceptanceCriteria = source["acceptanceCriteria"];
 	        this.priority = source["priority"];
+	        this.sortOrder = source["sortOrder"];
 	        this.completed = source["completed"];
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
@@ -948,6 +958,8 @@ export namespace services {
 	export class TaskInput {
 	    title: string;
 	    details?: string;
+	    epic?: string;
+	    tags?: string[];
 	    acceptanceCriteria?: string[];
 	    priority: string;
 	
@@ -959,6 +971,8 @@ export namespace services {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.title = source["title"];
 	        this.details = source["details"];
+	        this.epic = source["epic"];
+	        this.tags = source["tags"];
 	        this.acceptanceCriteria = source["acceptanceCriteria"];
 	        this.priority = source["priority"];
 	    }

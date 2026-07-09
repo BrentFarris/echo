@@ -55,6 +55,15 @@ func init() {
 						"enum":        []any{"P0", "P1", "P2"},
 						"description": "Task priority. Defaults to P1.",
 					},
+					"epic": map[string]any{
+						"type":        "string",
+						"description": "Optional epic/group name for grouping related tasks.",
+					},
+					"tags": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "Optional free-form tags (e.g. frontend, bug, performance).",
+					},
 				},
 			},
 		},
@@ -94,6 +103,154 @@ func init() {
 			},
 		},
 		Run: convertTaskToKanbanCard,
+	})
+	Register(ToolFunc{
+		Meta: Metadata{
+			Name:        "workspace_task_update",
+			Description: "Edit an existing task's title, description, acceptance criteria.",
+			Parameters: Schema{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []any{"taskID", "expectedUpdatedAt"},
+				"properties": map[string]any{
+					"taskID": map[string]any{
+						"type":        "string",
+						"description": "The ID of the task to update.",
+					},
+					"title": map[string]any{
+						"type":        "string",
+						"description": "New concise task title.",
+					},
+					"details": map[string]any{
+						"type":        "string",
+						"description": "Optional Markdown details.",
+					},
+					"acceptanceCriteria": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "Optional acceptance criteria.",
+					},
+					"priority": map[string]any{
+						"type":        "string",
+						"enum":        []any{"P0", "P1", "P2"},
+						"description": "Task priority.",
+					},
+					"epic": map[string]any{
+						"type":        "string",
+						"description": "Optional epic/group name for grouping related tasks.",
+					},
+					"tags": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "Optional free-form tags (e.g. frontend, bug, performance).",
+					},
+					"expectedUpdatedAt": map[string]any{
+						"type":        "string",
+						"description": "The updatedAt timestamp from the task, for optimistic concurrency.",
+					},
+				},
+			},
+		},
+		Run: updateWorkspaceTask,
+	})
+	Register(ToolFunc{
+		Meta: Metadata{
+			Name:        "workspace_task_delete",
+			Description: "Remove a backlog task.",
+			Parameters: Schema{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []any{"taskID", "expectedUpdatedAt"},
+				"properties": map[string]any{
+					"taskID": map[string]any{
+						"type":        "string",
+						"description": "The ID of the task to delete.",
+					},
+					"expectedUpdatedAt": map[string]any{
+						"type":        "string",
+						"description": "The updatedAt timestamp from the task, for optimistic concurrency.",
+					},
+				},
+			},
+		},
+		Run: deleteWorkspaceTask,
+	})
+	Register(ToolFunc{
+		Meta: Metadata{
+			Name:        "workspace_task_set_completed",
+			Description: "Toggle a task between done/undone.",
+			Parameters: Schema{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []any{"taskID", "completed", "expectedUpdatedAt"},
+				"properties": map[string]any{
+					"taskID": map[string]any{
+						"type":        "string",
+						"description": "The ID of the task.",
+					},
+					"completed": map[string]any{
+						"type":        "boolean",
+						"description": "Whether the task is completed.",
+					},
+					"expectedUpdatedAt": map[string]any{
+						"type":        "string",
+						"description": "The updatedAt timestamp from the task, for optimistic concurrency.",
+					},
+				},
+			},
+		},
+		Run: setWorkspaceTaskCompleted,
+	})
+	Register(ToolFunc{
+		Meta: Metadata{
+			Name:        "workspace_task_move",
+			Description: "Change task priority (P0/P1/P2).",
+			Parameters: Schema{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []any{"taskID", "priority", "expectedUpdatedAt"},
+				"properties": map[string]any{
+					"taskID": map[string]any{
+						"type":        "string",
+						"description": "The ID of the task.",
+					},
+					"priority": map[string]any{
+						"type":        "string",
+						"enum":        []any{"P0", "P1", "P2"},
+						"description": "New task priority.",
+					},
+					"expectedUpdatedAt": map[string]any{
+						"type":        "string",
+						"description": "The updatedAt timestamp from the task, for optimistic concurrency.",
+					},
+				},
+			},
+		},
+		Run: moveWorkspaceTask,
+	})
+	Register(ToolFunc{
+		Meta: Metadata{
+			Name:        "workspace_task_reorder",
+			Description: "Reorder backlog tasks within a priority lane. Accepts an ordered list of task IDs and assigns sequential sort orders.",
+			Parameters: Schema{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []any{"taskIDs", "priority"},
+				"properties": map[string]any{
+					"taskIDs": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "Ordered list of task IDs for the target priority lane.",
+					},
+					"priority": map[string]any{
+						"type":        "string",
+						"enum":        []any{"P0", "P1", "P2"},
+						"description": "Target priority lane (P0, P1, or P2).",
+					},
+				},
+			},
+		},
+		Run: reorderWorkspaceTasks,
 	})
 }
 
@@ -142,6 +299,15 @@ func createWorkspaceTask(ctx ExecutionContext, arguments json.RawMessage) (any, 
 		}
 	}
 	request.AcceptanceCriteria = criteria
+
+	tags := request.Tags[:0]
+	for _, tag := range request.Tags {
+		if tag = strings.TrimSpace(tag); tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+	request.Tags = tags
+
 	if ctx.WorkspaceTasks == nil {
 		return nil, SafeError{Code: "workspace_tasks_unavailable", Message: "workspace tasks are not available in this context"}
 	}
@@ -177,4 +343,139 @@ func convertTaskToKanbanCard(ctx ExecutionContext, arguments json.RawMessage) (a
 		return nil, SafeError{Code: "workspace_tasks_unavailable", Message: "workspace tasks are not available in this context"}
 	}
 	return ctx.WorkspaceTasks.ConvertTaskToKanbanCard(ctx.context(), request)
+}
+
+func updateWorkspaceTask(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
+	if err := ctx.context().Err(); err != nil {
+		return nil, err
+	}
+	var request WorkspaceTaskUpdateRequest
+	if err := DecodeToolArguments(arguments, &request); err != nil {
+		return nil, SafeError{Code: "invalid_arguments", Message: "arguments must be valid JSON"}
+	}
+	request.TaskID = strings.TrimSpace(request.TaskID)
+	request.Title = strings.TrimSpace(request.Title)
+	request.Details = strings.TrimSpace(request.Details)
+	request.Priority = strings.ToUpper(strings.TrimSpace(request.Priority))
+	request.ExpectedUpdatedAt = strings.TrimSpace(request.ExpectedUpdatedAt)
+	if request.TaskID == "" {
+		return nil, SafeError{Code: "invalid_arguments", Message: "taskID is required"}
+	}
+	if request.ExpectedUpdatedAt == "" {
+		return nil, SafeError{Code: "invalid_arguments", Message: "expectedUpdatedAt is required"}
+	}
+	criteria := request.AcceptanceCriteria[:0]
+	for _, criterion := range request.AcceptanceCriteria {
+		if criterion = strings.TrimSpace(criterion); criterion != "" {
+			criteria = append(criteria, criterion)
+		}
+	}
+	request.AcceptanceCriteria = criteria
+
+	tags := request.Tags[:0]
+	for _, tag := range request.Tags {
+		if tag = strings.TrimSpace(tag); tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+	request.Tags = tags
+
+	if ctx.WorkspaceTasks == nil {
+		return nil, SafeError{Code: "workspace_tasks_unavailable", Message: "workspace tasks are not available in this context"}
+	}
+	return ctx.WorkspaceTasks.UpdateWorkspaceTask(ctx.context(), request)
+}
+
+func deleteWorkspaceTask(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
+	if err := ctx.context().Err(); err != nil {
+		return nil, err
+	}
+	var request WorkspaceTaskDeleteRequest
+	if err := DecodeToolArguments(arguments, &request); err != nil {
+		return nil, SafeError{Code: "invalid_arguments", Message: "arguments must be valid JSON"}
+	}
+	request.TaskID = strings.TrimSpace(request.TaskID)
+	request.ExpectedUpdatedAt = strings.TrimSpace(request.ExpectedUpdatedAt)
+	if request.TaskID == "" {
+		return nil, SafeError{Code: "invalid_arguments", Message: "taskID is required"}
+	}
+	if request.ExpectedUpdatedAt == "" {
+		return nil, SafeError{Code: "invalid_arguments", Message: "expectedUpdatedAt is required"}
+	}
+	if ctx.WorkspaceTasks == nil {
+		return nil, SafeError{Code: "workspace_tasks_unavailable", Message: "workspace tasks are not available in this context"}
+	}
+	if err := ctx.WorkspaceTasks.DeleteWorkspaceTask(ctx.context(), request); err != nil {
+		return nil, SafeError{Code: "task_delete_failed", Message: err.Error()}
+	}
+	return map[string]any{"success": true, "taskID": request.TaskID}, nil
+}
+
+func setWorkspaceTaskCompleted(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
+	if err := ctx.context().Err(); err != nil {
+		return nil, err
+	}
+	var request WorkspaceTaskCompleteRequest
+	if err := DecodeToolArguments(arguments, &request); err != nil {
+		return nil, SafeError{Code: "invalid_arguments", Message: "arguments must be valid JSON"}
+	}
+	request.TaskID = strings.TrimSpace(request.TaskID)
+	request.ExpectedUpdatedAt = strings.TrimSpace(request.ExpectedUpdatedAt)
+	if request.TaskID == "" {
+		return nil, SafeError{Code: "invalid_arguments", Message: "taskID is required"}
+	}
+	if request.ExpectedUpdatedAt == "" {
+		return nil, SafeError{Code: "invalid_arguments", Message: "expectedUpdatedAt is required"}
+	}
+	if ctx.WorkspaceTasks == nil {
+		return nil, SafeError{Code: "workspace_tasks_unavailable", Message: "workspace tasks are not available in this context"}
+	}
+	return ctx.WorkspaceTasks.SetWorkspaceTaskCompleted(ctx.context(), request)
+}
+
+func moveWorkspaceTask(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
+	if err := ctx.context().Err(); err != nil {
+		return nil, err
+	}
+	var request WorkspaceTaskMoveRequest
+	if err := DecodeToolArguments(arguments, &request); err != nil {
+		return nil, SafeError{Code: "invalid_arguments", Message: "arguments must be valid JSON"}
+	}
+	request.TaskID = strings.TrimSpace(request.TaskID)
+	request.Priority = strings.ToUpper(strings.TrimSpace(request.Priority))
+	request.ExpectedUpdatedAt = strings.TrimSpace(request.ExpectedUpdatedAt)
+	if request.TaskID == "" {
+		return nil, SafeError{Code: "invalid_arguments", Message: "taskID is required"}
+	}
+	if request.Priority != "P0" && request.Priority != "P1" && request.Priority != "P2" {
+		return nil, SafeError{Code: "invalid_arguments", Message: "priority must be P0, P1, or P2"}
+	}
+	if request.ExpectedUpdatedAt == "" {
+		return nil, SafeError{Code: "invalid_arguments", Message: "expectedUpdatedAt is required"}
+	}
+	if ctx.WorkspaceTasks == nil {
+		return nil, SafeError{Code: "workspace_tasks_unavailable", Message: "workspace tasks are not available in this context"}
+	}
+	return ctx.WorkspaceTasks.MoveWorkspaceTask(ctx.context(), request)
+}
+
+func reorderWorkspaceTasks(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
+	if err := ctx.context().Err(); err != nil {
+		return nil, err
+	}
+	var request WorkspaceTaskReorderRequest
+	if err := DecodeToolArguments(arguments, &request); err != nil {
+		return nil, SafeError{Code: "invalid_arguments", Message: "arguments must be valid JSON"}
+	}
+	request.Priority = strings.ToUpper(strings.TrimSpace(request.Priority))
+	if request.Priority != "P0" && request.Priority != "P1" && request.Priority != "P2" {
+		return nil, SafeError{Code: "invalid_arguments", Message: "priority must be P0, P1, or P2"}
+	}
+	if len(request.TaskIDs) == 0 {
+		return nil, SafeError{Code: "invalid_arguments", Message: "taskIDs are required"}
+	}
+	if ctx.WorkspaceTasks == nil {
+		return nil, SafeError{Code: "workspace_tasks_unavailable", Message: "workspace tasks are not available in this context"}
+	}
+	return ctx.WorkspaceTasks.ReorderWorkspaceTasks(ctx.context(), request)
 }

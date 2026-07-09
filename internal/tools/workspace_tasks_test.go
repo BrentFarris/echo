@@ -10,6 +10,10 @@ type fakeWorkspaceTasksProvider struct {
 	listRequest   WorkspaceTaskListRequest
 	createRequest WorkspaceTaskCreateRequest
 	convertRequest WorkspaceTaskConvertRequest
+	updateRequest WorkspaceTaskUpdateRequest
+	deleteRequest WorkspaceTaskDeleteRequest
+	completeRequest WorkspaceTaskCompleteRequest
+	moveRequest   WorkspaceTaskMoveRequest
 }
 
 func (p *fakeWorkspaceTasksProvider) ListWorkspaceTasks(_ context.Context, request WorkspaceTaskListRequest) (WorkspaceTaskListResponse, error) {
@@ -30,6 +34,34 @@ func (p *fakeWorkspaceTasksProvider) ConvertTaskToKanbanCard(_ context.Context, 
 		Task:         &WorkspaceTask{ID: request.TaskID, Title: "Test", Completed: true},
 		Tasks:        []WorkspaceTask{{ID: request.TaskID, Title: "Test", Completed: true}},
 	}, nil
+}
+
+func (p *fakeWorkspaceTasksProvider) UpdateWorkspaceTask(_ context.Context, request WorkspaceTaskUpdateRequest) (WorkspaceTaskMutationResponse, error) {
+	p.updateRequest = request
+	return WorkspaceTaskMutationResponse{Tasks: []WorkspaceTask{{ID: request.TaskID, Title: request.Title}}}, nil
+}
+
+func (p *fakeWorkspaceTasksProvider) DeleteWorkspaceTask(_ context.Context, request WorkspaceTaskDeleteRequest) error {
+	p.deleteRequest = request
+	return nil
+}
+
+func (p *fakeWorkspaceTasksProvider) SetWorkspaceTaskCompleted(_ context.Context, request WorkspaceTaskCompleteRequest) (WorkspaceTaskMutationResponse, error) {
+	p.completeRequest = request
+	return WorkspaceTaskMutationResponse{Tasks: []WorkspaceTask{{ID: request.TaskID, Completed: request.Completed}}}, nil
+}
+
+func (p *fakeWorkspaceTasksProvider) MoveWorkspaceTask(_ context.Context, request WorkspaceTaskMoveRequest) (WorkspaceTaskMutationResponse, error) {
+	p.moveRequest = request
+	return WorkspaceTaskMutationResponse{Tasks: []WorkspaceTask{{ID: request.TaskID, Priority: request.Priority}}}, nil
+}
+
+func (p *fakeWorkspaceTasksProvider) ReorderWorkspaceTasks(_ context.Context, request WorkspaceTaskReorderRequest) (WorkspaceTaskMutationResponse, error) {
+	tasks := make([]WorkspaceTask, len(request.TaskIDs))
+	for i, id := range request.TaskIDs {
+		tasks[i] = WorkspaceTask{ID: id, Priority: request.Priority}
+	}
+	return WorkspaceTaskMutationResponse{Tasks: tasks}, nil
 }
 
 func TestWorkspaceTaskToolsListAndCreate(t *testing.T) {

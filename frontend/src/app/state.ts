@@ -47,6 +47,8 @@ export const state = {
   showCompletedTaskWorkspaces: new Set<string>(),
   taskSearchQuery: new Map<string, string>(),
   taskFilterMode: new Map<string, "all" | "open" | "completed">(),
+  taskEpicFilter: new Map<string, string>(),
+  taskTagFilters: new Map<string, Set<string>>(),
   changeReviews: new Map<string, services.WorkspaceChangeReview>(),
   gitChangeReviews: new Map<string, services.WorkspaceGitChangeReview>(),
   gitRepositoryViews: new Map<string, services.WorkspaceGitRepositoryView>(),
@@ -81,6 +83,7 @@ export const state = {
   toastSeq: 0,
   toasts: [] as Toast[],
   kanbanTimerID: null as number | null,
+  kanbanRenderDebounceTimers: new Map<string, number>(), // workspaceID -> setTimeout handle for debounced card_progress patches
   contextMenu: null as ContextMenuState | null,
   agentModes: new Map<string, services.AgentMode[]>(),
   selectedAgentModeIds: new Map<string, string>(),
@@ -301,6 +304,18 @@ export function leadingWhitespaceIndicatorsEnabled(settings: llm.Settings | null
 export function notificationSoundsEnabled(settings: llm.Settings | null | undefined): boolean {
   return (settings as { disableNotificationSounds?: boolean } | null | undefined)
     ?.disableNotificationSounds !== true;
+}
+
+export function chatCompletionNotificationsEnabled(settings: llm.Settings | null | undefined): boolean {
+  // Default to true (enabled) when the field is absent/undefined.
+  return (settings as { enableChatCompletionNotifications?: boolean } | null | undefined)
+    ?.enableChatCompletionNotifications !== false;
+}
+
+export function kanbanCompleteNotificationsEnabled(settings: llm.Settings | null | undefined): boolean {
+  // Default to true (enabled) when the field is absent/undefined.
+  return (settings as { enableKanbanCompleteNotifications?: boolean } | null | undefined)
+    ?.enableKanbanCompleteNotifications !== false;
 }
 
 export function limitKanbanConcurrencyEnabled(settings: llm.Settings | null | undefined): boolean {

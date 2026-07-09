@@ -450,6 +450,11 @@ export async function handleAction(event: Event) {
       }
       return;
     }
+    if (action === "request-push-notification-permission") {
+      const { handleRequestPushNotificationPermission } = await import("../app/settings");
+      void handleRequestPushNotificationPermission();
+      return;
+    }
     if (action === "add-workspace") {
       state.appState = await ChooseWorkspaceFolder();
       await loadActiveChatSession();

@@ -144,6 +144,8 @@ export type TaskEditorDraft = {
   taskId?: string;
   title: string;
   details: string;
+  epic: string;
+  tags: string;
   acceptanceCriteria: string;
   priority: string;
   expectedUpdatedAt?: string;

@@ -333,6 +333,10 @@ export function ReplayWorkspaceSymbolRename(...args: Parameters<typeof Wails.Rep
   return call("ReplayWorkspaceSymbolRename", Wails.ReplayWorkspaceSymbolRename, args);
 }
 
+export function ReorderWorkspaceTasks(...args: Parameters<typeof Wails.ReorderWorkspaceTasks>): ReturnType<typeof Wails.ReorderWorkspaceTasks> {
+  return call("ReorderWorkspaceTasks", Wails.ReorderWorkspaceTasks, args);
+}
+
 export function ResetKanbanCard(...args: Parameters<typeof Wails.ResetKanbanCard>): ReturnType<typeof Wails.ResetKanbanCard> {
   return call("ResetKanbanCard", Wails.ResetKanbanCard, args);
 }
