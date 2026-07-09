@@ -34,7 +34,10 @@
   --code-editor-selection: rgba(9, 105, 218, 0.25);
   --code-editor-selection-match: rgba(9, 105, 218, 0.14);
   --code-editor-invalid: #cf222e;
+  --code-editor-change-indicator: #1a7f37;
   --code-editor-whitespace-indicator: rgba(110, 119, 129, 0.38);
+  --code-tree-change-created: #1a7f37;
+  --code-tree-change-modified: #9a6700;
   --code-token-comment: #6e7781;
   --code-token-keyword: #cf222e;
   --code-token-atom: #0550ae;
@@ -111,7 +114,10 @@
     --code-editor-selection: #264f78;
     --code-editor-selection-match: rgba(56, 139, 253, 0.14);
     --code-editor-invalid: #ff7b72;
+    --code-editor-change-indicator: #3fb950;
     --code-editor-whitespace-indicator: rgba(125, 133, 144, 0.46);
+    --code-tree-change-created: #3fb950;
+    --code-tree-change-modified: #d29922;
     --code-token-comment: #8b949e;
     --code-token-keyword: #ff7b72;
     --code-token-atom: #79c0ff;
@@ -3026,6 +3032,8 @@ h3 {
 }
 
 .change-diff {
+  box-sizing: border-box;
+  width: 100%;
   max-width: 100%;
   min-width: 0;
   max-height: 360px;
@@ -3154,7 +3162,14 @@ h3 {
 
 .git-diff-views {
   display: grid;
+  max-width: 100%;
   min-width: 0;
+}
+
+.git-diff-unified {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
 }
 
 .git-split-diff {
@@ -3400,8 +3415,229 @@ h3 {
   gap: var(--space-2xl);
 }
 
+.git-working-changes-layout {
+  display: grid;
+  gap: var(--space-xl);
+  min-width: 0;
+}
+
+.git-change-tree-panel {
+  min-width: 0;
+}
+
+.git-change-tree {
+  display: grid;
+  gap: var(--space-md);
+  min-width: 0;
+  padding: var(--space-lg-md);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-bg) 92%, var(--color-surface));
+}
+
+.git-change-tree header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-base-sm);
+  font-weight: 900;
+}
+
+.git-change-tree-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex: 0 0 auto;
+}
+
+.git-change-tree-toggle {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  color: var(--color-text-muted);
+}
+
+.git-change-tree-toggle svg {
+  width: 15px;
+  height: 15px;
+}
+
+.git-change-tree header strong {
+  overflow: hidden;
+  color: var(--color-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-change-tree-collapsed {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-md);
+  width: fit-content;
+  max-width: 100%;
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-bg) 92%, var(--color-surface));
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: 900;
+}
+
+.git-change-tree-collapsed span {
+  min-width: 1.4em;
+  text-align: center;
+}
+
+.git-change-tree-list,
+.git-change-tree-children {
+  display: grid;
+  min-width: 0;
+}
+
+.git-change-tree-row {
+  display: grid;
+  grid-template-columns: 18px 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-md);
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  padding: 0 var(--space-md) 0 calc(var(--space-md) + (var(--tree-depth, 0) * var(--space-2xl)));
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.git-change-tree-row:hover,
+.git-change-tree-row:focus-visible,
+.git-change-tree-row.is-selected {
+  border-color: color-mix(in srgb, var(--color-accent) 28%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  outline: none;
+}
+
+.git-change-tree-chevron,
+.git-change-tree-icon,
+.git-change-tree-spacer {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  color: var(--color-text-muted);
+}
+
+.git-change-tree-row.is-expanded .git-change-tree-chevron {
+  transform: rotate(90deg);
+}
+
+.git-change-tree-row svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.git-change-tree-name {
+  overflow: hidden;
+  min-width: 0;
+  font-size: var(--text-base-sm);
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-change-tree-count,
+.git-change-tree-status {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: 900;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.git-change-tree-row.is-created .git-change-tree-icon,
+.git-change-tree-row.is-created .git-change-tree-name {
+  color: color-mix(in srgb, var(--color-success) 78%, var(--color-text));
+}
+
+.git-change-tree-row.is-deleted .git-change-tree-icon,
+.git-change-tree-row.is-deleted .git-change-tree-name {
+  color: color-mix(in srgb, var(--color-danger) 78%, var(--color-text));
+}
+
+.git-change-tree-row.is-renamed .git-change-tree-icon,
+.git-change-tree-row.is-renamed .git-change-tree-name,
+.git-change-tree-row.is-edited .git-change-tree-icon,
+.git-change-tree-row.is-edited .git-change-tree-name,
+.git-change-tree-row.is-copied .git-change-tree-icon,
+.git-change-tree-row.is-copied .git-change-tree-name,
+.git-change-tree-row.is-conflicted .git-change-tree-icon,
+.git-change-tree-row.is-conflicted .git-change-tree-name {
+  color: color-mix(in srgb, var(--color-warning) 72%, var(--color-text));
+}
+
+.git-change-file-list {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+}
+
 .git-repository .change-diff {
+  width: 100%;
+  max-width: 100%;
   max-height: min(520px, 48vh);
+  overflow-x: auto;
+}
+
+.git-repository .change-diff code {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+}
+
+.git-repository .change-diff-line,
+.git-repository .change-diff-line.is-hunk,
+.git-repository .change-diff-line.is-hunk > span {
+  overflow-wrap: normal;
+  white-space: pre;
+}
+
+@media (min-width: 980px) {
+  .git-working-changes-layout {
+    grid-template-columns: minmax(210px, 0.32fr) minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .git-working-changes-layout.is-tree-collapsed {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+
+  .git-change-tree-panel {
+    position: sticky;
+    top: var(--space-xl);
+    max-height: min(580px, calc(100vh - 180px));
+    overflow: auto;
+  }
+
+  .git-working-changes-layout.is-tree-collapsed .git-change-tree-panel {
+    overflow: visible;
+  }
+
+  .git-working-changes-layout.is-tree-collapsed .git-change-tree-collapsed {
+    display: grid;
+    justify-items: center;
+    width: 44px;
+  }
 }
 
 @media (min-width: 1120px) {
@@ -4799,6 +5035,32 @@ h3 {
   background: color-mix(in srgb, var(--color-accent) 10%, transparent);
 }
 
+.code-tree-row.has-git-created {
+  color: var(--code-tree-change-created);
+}
+
+.code-tree-row.has-git-modified {
+  color: var(--code-tree-change-modified);
+}
+
+.code-tree-row.has-git-created .code-tree-chevron,
+.code-tree-row.has-git-created .code-tree-entry-icon,
+.code-tree-row.has-git-created .code-tree-name,
+.code-tree-row.has-git-created .code-tree-size,
+.code-tree-row.has-git-created .code-tree-search-name strong,
+.code-tree-row.has-git-created .code-tree-search-name span {
+  color: var(--code-tree-change-created);
+}
+
+.code-tree-row.has-git-modified .code-tree-chevron,
+.code-tree-row.has-git-modified .code-tree-entry-icon,
+.code-tree-row.has-git-modified .code-tree-name,
+.code-tree-row.has-git-modified .code-tree-size,
+.code-tree-row.has-git-modified .code-tree-search-name strong,
+.code-tree-row.has-git-modified .code-tree-search-name span {
+  color: var(--code-tree-change-modified);
+}
+
 .code-tree-chevron,
 .code-tree-entry-icon,
 .code-tree-spacer {
@@ -5497,6 +5759,27 @@ h3 {
 }
 
 /* ─── Image Viewer ────────────────────────────────────────────── */
+
+.code-editor-mount .cm-git-change-gutter {
+  width: 7px;
+  min-width: 7px;
+}
+
+.code-editor-mount .cm-git-change-gutter .cm-gutterElement {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  width: 7px;
+  min-width: 7px;
+  padding: 0;
+}
+
+.code-editor-mount .cm-git-change-marker {
+  width: 3px;
+  min-height: 1.55em;
+  border-radius: 2px;
+  background: var(--code-editor-change-indicator);
+}
 
 .code-image-viewer {
   display: grid;

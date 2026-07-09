@@ -34,17 +34,6 @@
       "createdAt": "2026-07-08T16:30:24.1672007Z",
       "updatedAt": "2026-07-08T16:30:24.1672007Z"
     },
-    "abfb7c9f-9291-4ad9-97f3-c5a6d29f5db9": {
-      "title": "Add colors to folders in code view",
-      "details": "The icons used in the code file/folder view should be easier to identify. We should use something like a yellow closed folder for folders that are collapsed, and a yellow open folder for folders that are expanded.",
-      "tags": [
-        "code"
-      ],
-      "priority": "P2",
-      "completed": false,
-      "createdAt": "2026-07-08T16:23:20.2716816Z",
-      "updatedAt": "2026-07-08T16:24:25.3895377Z"
-    },
     "d8ae9680-11a3-4c5f-bdf2-b7827c10da35": {
       "title": "Workspace setting to search parent directories for git repository",
       "details": "Sometimes workspaces are created in a sub-folder of a git repository. Currently, this means that the git feature will not work. We should add a per-workspace setting to recursively check for a git repository on a parent directory until one is found. If one is found, it should be stored into the `.echo/workspace.json` file so it doesn't need to do the recursive check every time git is invoked.",

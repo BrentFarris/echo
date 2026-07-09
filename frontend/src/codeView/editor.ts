@@ -2,7 +2,7 @@ import { HighlightStyle, indentUnit, syntaxHighlighting } from "@codemirror/lang
 import { acceptCompletion } from "@codemirror/autocomplete";
 import { languages as languageData } from "@codemirror/language-data";
 import { countColumn, EditorSelection, EditorState, findColumn, Prec, RangeSetBuilder, Transaction, type Extension, type SelectionRange } from "@codemirror/state";
-import { crosshairCursor, Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, keymap } from "@codemirror/view";
+import { crosshairCursor, Decoration, type DecorationSet, EditorView, GutterMarker, ViewPlugin, type ViewUpdate, gutter, keymap } from "@codemirror/view";
 import { showMinimap } from "@replit/codemirror-minimap";
 import { basicSetup } from "codemirror";
 import { tags } from "@lezer/highlight";
@@ -37,6 +37,18 @@ let mountedEditor: EditorView | null = null;
 let mountedEditorWorkspaceID = "";
 let mountedEditorPath = "";
 let editorMountToken = 0;
+
+class GitChangedLineMarker extends GutterMarker {
+  toDOM() {
+    const marker = document.createElement("div");
+    marker.className = "cm-git-change-marker";
+    marker.title = "Changed in Git";
+    marker.setAttribute("aria-label", "Changed in Git");
+    return marker;
+  }
+}
+
+const gitChangedLineMarker = new GitChangedLineMarker();
 
 const codeEditorTheme = EditorView.theme({
   "&": {
@@ -182,7 +194,9 @@ export async function mountActiveCodeEditor(
   }
 
   const token = ++editorMountToken;
+  const gitChangedLineGutter = gitChangedLineGutterExtension(workspaceID, tab.path, callbacks);
   const extensions = [
+    ...(gitChangedLineGutter ? [gitChangedLineGutter] : []),
     basicSetup,
     ...tabIndentionExtensions(),
     EditorState.lineSeparator.of(tab.lineSeparator),
@@ -266,6 +280,27 @@ export async function mountActiveCodeEditor(
   if (shouldFocusMountedEditor(workspaceID)) {
     mountedEditor.focus();
   }
+}
+
+function gitChangedLineGutterExtension(
+  workspaceID: string,
+  path: string,
+  callbacks: CodeViewCallbacks,
+): Extension | null {
+  const changedLines = new Set(
+    callbacks.gitChangedLineNumbers(workspaceID, path).filter((line) => Number.isInteger(line) && line > 0),
+  );
+  if (!changedLines.size) {
+    return null;
+  }
+  return gutter({
+    class: "cm-git-change-gutter",
+    initialSpacer: () => gitChangedLineMarker,
+    lineMarker: (view, line) => {
+      const lineNumber = view.state.doc.lineAt(line.from).number;
+      return changedLines.has(lineNumber) ? gitChangedLineMarker : null;
+    },
+  });
 }
 
 function shouldFocusMountedEditor(workspaceID: string) {

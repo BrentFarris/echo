@@ -1,8 +1,20 @@
 import { services } from "../../wailsjs/go/models";
 import { codeIcons } from "./icons";
 import { activeCodeTab, directoryStateFor, ensureCodeState, filteredEntries } from "./state";
-import type { CodeFileTab, CodeWorkspaceState } from "./types";
+import type { CodeEntryKind, CodeFileTab, CodeGitChangeState, CodeWorkspaceState } from "./types";
 import { codeTabName, escapeAttribute, escapeHtml, fileName, formatBytes, isImageFile, isMediaFile, isVideoFile, mediaKind } from "./utils";
+
+type CodeGitChangeProvider = (
+  workspaceID: string,
+  path: string,
+  kind: CodeEntryKind,
+) => CodeGitChangeState;
+
+let codeGitChangeProvider: CodeGitChangeProvider | null = null;
+
+export function setCodeGitChangeProvider(provider: CodeGitChangeProvider) {
+  codeGitChangeProvider = provider;
+}
 
 export function renderCodeView(workspace: services.Workspace): string {
   const state = ensureCodeState(workspace.id);
@@ -140,10 +152,11 @@ function renderSearchEntry(
   const dragging = state.drag?.sourcePath === entry.path;
   const dropTarget = state.drag?.targetPath === entry.path;
   const icon = entry.kind === "directory" ? codeIcons.folder : (isImageFile(entry.path) ? codeIcons.image : isVideoFile(entry.path) ? codeIcons.video : codeIcons.file);
+  const changeClass = codeTreeChangeClass(workspaceID, entry.path, codeEntryKind(entry.kind));
   if (entry.kind !== "file") {
     return `
       <div
-        class="code-tree-row code-tree-search-row ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
+        class="code-tree-row code-tree-search-row${changeClass} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
         role="treeitem"
         tabindex="0"
         draggable="${entry.kind === "directory"}"
@@ -165,7 +178,7 @@ function renderSearchEntry(
   }
   return `
     <button
-      class="code-tree-row code-tree-file code-tree-search-row ${active ? "is-active" : ""} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
+      class="code-tree-row code-tree-file code-tree-search-row${changeClass} ${active ? "is-active" : ""} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
       type="button"
       role="treeitem"
       draggable="true"
@@ -520,6 +533,7 @@ function renderFileEntry(
   const dragging = state.drag?.sourcePath === entry.path;
   const dropTarget = state.drag?.targetPath === entry.path;
   const renaming = state.pendingRename?.path === entry.path;
+  const changeClass = codeTreeChangeClass(workspaceID, entry.path, codeEntryKind(entry.kind));
   if (entry.kind === "directory") {
     const expanded = state.expandedPaths.has(entry.path);
     const childDirectory = directoryStateFor(state, entry.path);
@@ -529,7 +543,7 @@ function renderFileEntry(
           renaming
             ? renderPendingRenameRow(state, entry, depth, codeIcons.folder, `<span class="code-tree-chevron">${codeIcons.chevron}</span>`)
             : `<button
-                class="code-tree-row code-tree-directory ${expanded ? "is-expanded" : ""} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
+                class="code-tree-row code-tree-directory${changeClass} ${expanded ? "is-expanded" : ""} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
                 type="button"
                 role="treeitem"
                 aria-expanded="${expanded}"
@@ -567,7 +581,7 @@ function renderFileEntry(
   const fileIcon = isImageFile(entry.path) ? codeIcons.image : isVideoFile(entry.path) ? codeIcons.video : codeIcons.file;
   return `
     <button
-      class="code-tree-row code-tree-file ${active ? "is-active" : ""} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
+      class="code-tree-row code-tree-file${changeClass} ${active ? "is-active" : ""} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
       type="button"
       role="treeitem"
       draggable="${entry.kind === "file"}"
@@ -584,6 +598,25 @@ function renderFileEntry(
       <span class="code-tree-size">${escapeHtml(formatBytes(entry.bytes ?? 0))}</span>
     </button>
   `;
+}
+
+function codeTreeChangeClass(
+  workspaceID: string,
+  path: string,
+  kind: CodeEntryKind,
+): string {
+  const state = codeGitChangeProvider?.(workspaceID, path, kind) ?? "";
+  if (state === "created") {
+    return " has-git-created";
+  }
+  if (state === "modified") {
+    return " has-git-modified";
+  }
+  return "";
+}
+
+function codeEntryKind(kind: string): CodeEntryKind {
+  return kind === "file" || kind === "directory" ? kind : "other";
 }
 
 function renderPendingRenameRow(
