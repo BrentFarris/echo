@@ -1105,6 +1105,16 @@ h3 {
   stroke-width: 1.8;
 }
 
+.chat-speech-recognition.is-listening svg {
+  animation: pulse-mic 1s ease-in-out infinite;
+  color: var(--color-danger);
+}
+
+@keyframes pulse-mic {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+}
+
 .chat-toolbar-separator {
   width: 1px;
   height: 14px;
@@ -7090,6 +7100,11 @@ h3 {
     top: auto !important;
     right: auto !important;
     max-width: calc(100vw - 16px);
+  }
+
+  /* Hide mic button on mobile */
+  .chat-speech-recognition {
+    display: none;
   }
 }
 

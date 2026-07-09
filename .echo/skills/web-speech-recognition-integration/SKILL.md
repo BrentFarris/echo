@@ -1,6 +1,6 @@
 ---
 name: web-speech-recognition-integration
-description: Web Speech Recognition integration in the Echo chat composer for mobile web UI, providing tap-and-hold voice-to-text input with graceful degradation and permission error handling.
+description: 'Speech recognition lifecycle management in the chat composer: Web Speech API TypeScript interfaces, init, pointer-based hold-to-speak, start/stop instance management, cursor-preserving text insertion, and error handling.'
 triggers:
     - speech recognition
     - voice input
@@ -11,59 +11,45 @@ triggers:
     - mobile web UI
     - chat composer
     - webkitSpeechRecognition
+    - SpeechRecognitionInstance
 ---
 
-## Web Speech Recognition Integration
+## Speech Recognition Lifecycle Architecture
 
-### Overview
-The chat composer includes a microphone button (`chat-speech-recognition`) that uses the browser Web Speech API (`SpeechRecognition`/`webkitSpeechRecognition`) for voice-to-text input on mobile web UI. Only visible when accessed via browser (not Wails desktop runtime).
+### Location
+`frontend/src/app/chat/index.ts` — interfaces near top, functions before `bindChatEvents`.
 
-### Key Implementation Details
+### Web Speech API TypeScript Interfaces
+TypeScript's `lib.dom.d.ts` does not include `SpeechRecognition` types. Duck-typed interfaces are defined at the top of `frontend/src/app/chat/index.ts`:
 
-**File**: `echo/frontend/src/app/chat/index.ts`
+- **`SpeechRecognitionInstance`** (exported) — main interface extending `EventTarget`; covers `continuous`, `interimResults`, `lang`, `maxAlternatives`, `start()`, `stop()`, `abort()`, `setProperty()`, and event handlers (`onresult`, `onerror`, `onend`, `onstart`).
+- Supporting: `SpeechRecognitionEvent`, `SpeechRecognitionErrorEvent`, `SpeechRecognitionResultList`, `SpeechRecognitionResult`, `SpeechRecognitionAlternative`, `SpeechGrammar`, `SpeechGrammarList`.
 
-- **Detection**: Checks for `window.SpeechRecognition` or `window.webkitSpeechRecognition`. Gracefully degrades — no JS errors if unavailable.
-- **Type-safe wrapper**: Uses `SpeechCtor` interface and `SpeechRecInstance` interface to type the duck-typed Web Speech API constructors.
-- **Tap-and-hold gesture**: Uses pointer events (`pointerdown`, `pointerup`, `pointercancel`) with a 200ms hold threshold. Hold starts listening, release stops it.
-- **Cursor preservation**: Inserts transcribed text at the current cursor position using `selectionStart`/`setSelectionRange`, preserving unsaved content.
-- **Interim results**: Shows real-time transcription updates while speaking, then finalizes on recognition end.
-- **Permission handling**: Detects `not-allowed` / `permission-denied` errors and shows a toast instructing users to enable microphone access in browser settings.
-- **State management**: Global `_activeRecognition` variable tracks the active recognition instance; `stopSpeechRecognition()` safely aborts any ongoing session.
-- **UI feedback**: Button gets `.is-listening` class with animated pulse and red color during recording. Title changes between "Hold to speak" and "Listening... Tap to stop".
+At runtime the constructor is accessed via `(window as any).SpeechRecognition || (window as any).webkitSpeechRecognition`.
 
-### CSS Styling
+### Module-level state
+- `_activeRecognition: SpeechRecognitionInstance | null = null` — tracks the current instance (typed, not `any`).
+- `speechRecognitionBound: boolean = false` — prevents re-init across render cycles.
 
-**File**: `echo/frontend/src/styles.css`
+Both are declared near `initSpeechRecognition`, not in the constants section.
 
-```css
-.chat-speech-recognition.is-listening svg {
-  animation: pulse-mic 1s ease-in-out infinite;
-  color: var(--color-danger);
-}
+### Function flow
 
-@keyframes pulse-mic {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.15); }
-}
-```
+1. **`initSpeechRecognition(root)`** — Guards: web-only (`!isWailsRuntime()`), one-time via `speechRecognitionBound`, API availability, button existence. Delegates to `patchSpeechMicButton`.
 
-### Icon Definition
+2. **`patchSpeechMicButton(button)`** — Pointer events with 200ms hold threshold. Sets `button.dataset.speechRecogBound = 'true'` before binding to prevent duplicate handlers on re-renders.
 
-**File**: `echo/frontend/src/app/icons.ts`
+3. **`startSpeechRecognition(inputEl)`** — Calls `stopSpeechRecognition()` first. Creates new instance with `continuous: true`, `interimResults: true`. `onresult` inserts transcript at `inputEl.selectionStart`, preserves text after cursor, fires synthetic `input` event. Button gets `.is-listening` class.
 
-Added `mic` icon: a microphone SVG with base, grille arc, stand line, and foot bar.
+4. **`stopSpeechRecognition()`** — Aborts `_activeRecognition`, nulls it, removes `.is-listening`. Safe to call when no active recognition.
 
-### Initialization Flow
+### Error handling
+- `onerror`: toast for `permission-denied`/`not-allowed`; console.warn for others.
+- `onend`: always cleans up button state and nulls `_activeRecognition`.
+- `start()` catch: same cleanup as onend.
 
-1. `bindChatEvents()` calls `initSpeechRecognition()` after other bindings.
-2. `initSpeechRecognition()` only runs in non-Wails environments (`!isWailsRuntime()`).
-3. Finds the button by `[data-chat-speech-recognition]` attribute.
-4. Calls `patchSpeechMicButton()` which binds pointer event listeners (one-shot per button).
-5. Button gets marked with `dataset.speechRecogBound = 'true'` to prevent rebinding on re-renders.
+### CSS
+`.chat-speech-recognition.is-listening svg` applies pulse animation and danger color in `styles.css`.
 
-### Acceptance Criteria Met
-- ✅ Mic button appears only in web UI (guarded by `isWailsRuntime()` check)
-- ✅ Tap-and-hold starts/stops listening
-- ✅ Unsupported browsers silently omit functionality (no JS errors)
-- ✅ Permission denied shows clear toast
-- ✅ Text inserted at cursor position without losing unsaved content
+### Button rendering
+Rendered conditionally with `${!isWailsRuntime()}` check in chat toolbar HTML. Has `data-chat-speech-recognition` attribute, disabled when session is busy/executing.

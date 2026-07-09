@@ -38,6 +38,7 @@ var mutatingToolNames = map[string]bool{
 	"filesystem_create_text":         true,
 	"filesystem_delete_file":         true,
 	"filesystem_edit_text":           true,
+	"kanban_start_execution":         true,
 	"restart":                        true,
 	"shell_command":                  true,
 	"workspace_skill_record":         true,

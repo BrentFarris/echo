@@ -74,6 +74,13 @@ func (s *SystemService) StartKanbanExecution(workspaceID string, concurrency int
 	return board, nil
 }
 
+// StartKanbanExecutionWithContext starts kanban execution and discards the returned board.
+// It implements tools.KanbanExecutor for tool calls that do not need the board snapshot.
+func (s *SystemService) StartKanbanExecutionWithContext(ctx context.Context, workspaceID string, concurrency int) error {
+	_, err := s.StartKanbanExecution(workspaceID, concurrency)
+	return err
+}
+
 func (s *SystemService) StopKanbanExecution(workspaceID string) (KanbanBoard, error) {
 	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
 		return KanbanBoard{}, err

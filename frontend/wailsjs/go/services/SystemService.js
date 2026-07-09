@@ -446,6 +446,10 @@ export function StartKanbanExecution(arg1, arg2) {
   return window['go']['services']['SystemService']['StartKanbanExecution'](arg1, arg2);
 }
 
+export function StartKanbanExecutionWithContext(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['StartKanbanExecutionWithContext'](arg1, arg2, arg3);
+}
+
 export function StartWatchdog(arg1, arg2) {
   return window['go']['services']['SystemService']['StartWatchdog'](arg1, arg2);
 }

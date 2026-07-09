@@ -63,6 +63,7 @@ type ExecutionContext struct {
 	// PathPermissions is deprecated; use ToolScopes.
 	PathPermissions *PathMatcher `json:"-"`
 	AgentModes      AgentModeProvider
+	KanbanExecutor  KanbanExecutor
 }
 
 // AgentModeSummary describes an available agent mode without the full prompt.
@@ -132,6 +133,11 @@ type WorkspaceTasksProvider interface {
 	ListWorkspaceTasks(ctx context.Context, request WorkspaceTaskListRequest) (WorkspaceTaskListResponse, error)
 	CreateWorkspaceTask(ctx context.Context, request WorkspaceTaskCreateRequest) (WorkspaceTaskMutationResponse, error)
 	ConvertTaskToKanbanCard(ctx context.Context, request WorkspaceTaskConvertRequest) (WorkspaceTaskConversionResponse, error)
+}
+
+// KanbanExecutor starts kanban execution for a workspace.
+type KanbanExecutor interface {
+	StartKanbanExecutionWithContext(ctx context.Context, workspaceID string, concurrency int) error
 }
 
 type WorkspaceTaskListRequest struct {

@@ -328,6 +328,7 @@ export namespace services {
 	    bindHost: string;
 	    port: number;
 	    accessToken: string;
+	    enableTLS: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new WebAccessSettings(source);
@@ -339,6 +340,7 @@ export namespace services {
 	        this.bindHost = source["bindHost"];
 	        this.port = source["port"];
 	        this.accessToken = source["accessToken"];
+	        this.enableTLS = source["enableTLS"];
 	    }
 	}
 	export class AppState {
@@ -1019,6 +1021,7 @@ export namespace services {
 	    accessToken: string;
 	    primaryUrl: string;
 	    lanUrls: string[];
+	    enableTLS: boolean;
 	    lastError?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -1034,6 +1037,7 @@ export namespace services {
 	        this.accessToken = source["accessToken"];
 	        this.primaryUrl = source["primaryUrl"];
 	        this.lanUrls = source["lanUrls"];
+	        this.enableTLS = source["enableTLS"];
 	        this.lastError = source["lastError"];
 	    }
 	}

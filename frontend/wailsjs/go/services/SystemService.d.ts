@@ -228,6 +228,8 @@ export function StartHeartbeat(arg1:string,arg2:services.HeartbeatConfig):Promis
 
 export function StartKanbanExecution(arg1:string,arg2:number):Promise<services.KanbanBoard>;
 
+export function StartKanbanExecutionWithContext(arg1:context.Context,arg2:string,arg3:number):Promise<void>;
+
 export function StartWatchdog(arg1:string,arg2:services.WatchdogConfig):Promise<void>;
 
 export function StopChatStream(arg1:string):Promise<services.ChatSession>;

@@ -51,6 +51,19 @@
       "updatedAt": "2026-07-08T20:29:54.8578748Z",
       "completedAt": "2026-07-08T20:29:54.8578748Z"
     },
+    "1c51a758-3a05-4fd6-b984-682286f2c9a1": {
+      "title": "Add Web Speech API types and state variables to chat/index.ts",
+      "details": "In `frontend/src/app/chat/index.ts`, add duck-typed interfaces for the Web Speech API (SpeechRecognition, SpeechRecognitionResultList, etc.) since TS doesn't ship these by default. Also add module-level state:\n\n- `_activeRecognition: SpeechRecInstance | null = null` — tracks the running recognition instance\n- `speechRecognitionBound = false` — prevents double-binding on re-render\n\nThese go near the existing constants section (after `MAX_MESSAGE_LENGTH`, before `bindChatEvents`).",
+      "acceptanceCriteria": [
+        "Interfaces compile without errors under `npm run build`",
+        "State variables are properly typed and initialized"
+      ],
+      "priority": "P1",
+      "completed": true,
+      "createdAt": "2026-07-08T22:06:25.1701678Z",
+      "updatedAt": "2026-07-08T22:13:18.5879791Z",
+      "completedAt": "2026-07-08T22:13:18.5879791Z"
+    },
     "2723673f-1be9-4dda-ae4a-c4d8113383e3": {
       "title": "Task cards are too bulky and lack the visual style and flair of the dashboard mockup",
       "details": "## Problem\nTask cards (in the backlog/workspace task board) are too bulky and don't match the compact, colorful, at-a-glance aesthetic demonstrated in the dashboard mockup. They need the same visual treatment as Kanban cards just received.\n\n## Goal\nMake task cards compact, visually expressive, and consistent with the dashboard mockup's design language so users can scan backlog status quickly without opening detail views.\n\n## Dashboard Reference (`frontend/src/app/dashboard/index.ts`)\nThe dashboard shows task rows with:\n- Priority badge (compact inline style)\n- Title only (no description visible by default)\n- Conversion status: \"→ card ✓\" for converted tasks, plain text for unconverted\n- Clean spacing and minimal chrome\n\n## Changes Needed\n\n### Frontend (`frontend/src/app/workspace/tasks/index.ts`)\n- `renderTask()`: Apply compact card layout matching dashboard task rows\n- Show only priority badge, title, and conversion status by default\n- Add color-coded status indicators:\n  - Green \"→ card ✓\" for tasks converted to Kanban cards\n  - Orange/yellow \"ready\" indicator for tasks eligible for sprint selection\n  - Neutral \"backlog\" text for unconverted tasks\n- Reduce padding/whitespace to decrease overall bulk\n\n### CSS (`frontend/src/styles.css`)\n- `.task-card`: Match dashboard task row styling (compact, tight spacing)\n- Priority badges: Compact inline style with `--color-surface-overlay` background, small caps, tighter padding\n- Status text color coding matching dashboard: green=converted, orange=ready, neutral=backlog\n- Hover state: accent border tint, accent background tint, `translateY(-1px)` lift, `120ms ease`\n- Reduce overall card padding to decrease bulk\n\n## Acceptance Criteria\n1. Task cards are visually compact (reduced padding/whitespace vs current)\n2. Priority badges use dashboard-style compact inline format\n3. Conversion status shown with color coding: green \"→ card ✓\", orange \"ready\", neutral \"backlog\"\n4. Hover state has accent border tint, background tint, translateY(-1px) lift at 120ms ease\n5. Visual style is consistent with dashboard mockup and Kanban cards\n6. Dark/light theme compatible via existing CSS custom properties\n7. Drag-and-drop behavior preserved (cursor: grab, .is-dragging opacity)\n8. `cd frontend \u0026\u0026 npm run build` succeeds with no TypeScript errors",
@@ -101,6 +114,22 @@
       "updatedAt": "2026-07-08T07:37:59.6595143Z",
       "completedAt": "2026-07-08T07:37:59.6595143Z"
     },
+    "35da0a68-884e-4194-bea8-5d5a9bc2c3a4": {
+      "title": "Implement speech recognition lifecycle functions in chat/index.ts",
+      "details": "Add four functions before `bindChatEvents`:\n\n**`initSpeechRecognition()`**: Only runs when `!isWailsRuntime()`. Detects `window.SpeechRecognition || window.webkitSpeechRecognition`. Finds `[data-chat-speech-recognition]` button. If API is unavailable or button doesn't exist, silently returns. Calls `patchSpeechMicButton(button)`. Guards against re-init via `speechRecognitionBound` flag.\n\n**`patchSpeechMicButton(button)`**: Binds pointerdown/pointerup/pointercancel on the button. On pointerdown with 200ms hold threshold → starts recognition. On release → stops. Sets `button.dataset.speechRecogBound = 'true'` to prevent re-binding on re-renders (check this flag before binding).\n\n**`startSpeechRecognition(inputEl)`**: Creates new SpeechRecognition instance. Sets `continuous: true`, `interimResults: true`. `onresult` inserts transcript at `inputEl.selectionStart`, preserves text after cursor, updates selection. Adds `.is-listening` class to button and sets title \"Listening... Tap to stop\". Calls `stopSpeechRecognition()` first to abort any prior session.\n\n**`stopSpeechRecognition()`**: Aborts `_activeRecognition`, resets to null. Removes `.is-listening` from button, restores title \"Hold to speak\".",
+      "acceptanceCriteria": [
+        "start/stop properly manages the recognition instance lifecycle",
+        "Text inserts at cursor position preserving surrounding content",
+        "Interim results update in real-time during speech",
+        "onerror shows toast for permission-denied/not-allowed errors",
+        "onend removes .is-listening class"
+      ],
+      "priority": "P1",
+      "completed": true,
+      "createdAt": "2026-07-08T22:06:25.2366686Z",
+      "updatedAt": "2026-07-08T22:13:15.7464633Z",
+      "completedAt": "2026-07-08T22:13:15.7464633Z"
+    },
     "36146cb3-3e65-48c8-b76d-c790915945b4": {
       "title": "Fix auto/heartbeat not picking up newly created Ready cards",
       "details": "## Problem\nWhen Auto (heartbeat) is ON, newly created Ready cards are never picked up automatically. The user must manually click \"Run\" to trigger execution. Two root causes:\n\n1. **Card creation blocked during active runs**: `CreateReadyKanbanCard` and `CreateKanbanCardFromChatMessage` reject cards when `kanbanRuns[workspaceID]` exists.\n2. **No immediate scheduling on card creation**: After a scheduler run finishes (`forgetKanbanRun`), new Ready cards sit idle until the next heartbeat tick (could be 5-15 minutes).\n\n## Changes\n\n### Backend: `internal/services/kanban.go`\n\n**`CreateReadyKanbanCard`** (line ~194):\n- Remove the `chatMu.Lock()` block that checks for active `kanbanRuns[workspaceID]` and returns error. Cards should be creatable at any time.\n- After creating the card, before returning: check if a kanban run is active. If NOT active, call `s.StartKanbanExecution(workspaceID, defaultAgentLimit)` to immediately start processing eligible cards. Ignore errors from this call (scheduler will just skip if something goes wrong).\n\n**`CreateKanbanCardFromChatMessage`** (line ~148):\n- Same pattern: remove the running-guard check, and auto-schedule after card creation if no run is active.\n\n### Frontend: `frontend/src/app/kanban/index.ts`\n\n**`handleCardCreationSubmit`** (around line 750):\n- The call to `CreateReadyKanbanCard` may now succeed even during a run. Update board state from the returned value as before. If the backend returns an error about running, show it as a toast but don't crash.\n\n### Frontend: `frontend/src/app/actions.ts`\n\n**Chat-to-card handler** (around line 790):\n- Same treatment — handle success during active runs gracefully.\n\n### Testing\n- Add/update tests in `internal/services/kanban_test.go`:\n  - `TestCreateReadyKanbanCardDuringActiveRun` — verify card is created and scheduler picks it up\n  - `TestCreateReadyKanbanCardAutoSchedulesWhenNoRun` — verify new run starts immediately\n- Run `go test ./...` to validate.",
@@ -117,6 +146,20 @@
       "updatedAt": "2026-07-08T13:13:01.8527505Z",
       "completedAt": "2026-07-08T13:13:01.8527505Z"
     },
+    "3c3dbc49-b08f-4edf-badd-c5d0bf9c944b": {
+      "title": "Fix speech recognition stale inputEl closure bug",
+      "details": "## Problem\n\nIn `frontend/src/app/chat/index.ts`, line 1079, `patchSpeechMicButton` captures the textarea once at bind time:\n\n```ts\nconst inputEl = button.closest(\"form\")?.querySelector\u003cHTMLTextAreaElement\u003e(\"[data-chat-input]\");\n```\n\nThis app does full DOM re-renders via innerHTML replacement. After any render, `inputEl` is a **detached element** — all transcript writes go to a ghost node that isn't in the visible DOM.\n\n## Fix\n\nRemove the closure-captured `inputEl` from `patchSpeechMicButton`. Resolve it fresh inside `startSpeechRecognition()` at call time:\n\n```ts\nfunction startSpeechRecognition() {\n  stopSpeechRecognition();\n\n  const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;\n  if (!SpeechRecognitionAPI) return;\n\n  // Fresh DOM lookup — the old inputEl is stale after re-renders\n  const inputEl = appRoot.querySelector\u003cHTMLTextAreaElement\u003e(\"[data-chat-input]\");\n  if (!inputEl) return;\n\n  // ... rest stays same, uses live inputEl from closure scope\n}\n```\n\nAlso remove `inputEl` parameter and update the pointerdown handler:\n\n```ts\nholdTimer = setTimeout(() =\u003e {\n  holdTimer = null;\n  startSpeechRecognition();  // no argument needed anymore\n}, 200);\n```\n\n## Acceptance Criteria\n\n- [ ] `inputEl` resolved via `appRoot.querySelector(\"[data-chat-input]\")` inside `startSpeechRecognition()`, not captured at bind time\n- [ ] `patchSpeechMicButton` no longer captures or passes `inputEl` through closure\n- [ ] Transcribed text appears in the visible textarea after speaking\n- [ ] `cd frontend; npm run build` passes",
+      "acceptanceCriteria": [
+        "inputEl resolved live inside startSpeechRecognition via appRoot.querySelector, not closure-captured",
+        "Transcribed text appears in visible textarea after speaking",
+        "npm run build passes"
+      ],
+      "priority": "P0",
+      "completed": true,
+      "createdAt": "2026-07-08T22:52:41.7563331Z",
+      "updatedAt": "2026-07-08T23:22:54.5365469Z",
+      "completedAt": "2026-07-08T23:22:54.5365469Z"
+    },
     "420d3f10-93d7-488d-94c0-750dd5392d86": {
       "title": "Add widget and dashboard layout types to types.ts",
       "details": "**File:** `frontend/src/app/types.ts`\n\nAdd:\n- `WidgetSize = \"small\" | \"medium\" | \"large\" | \"wide\"`\n- `WidgetId` string type (union of all widget IDs)\n- `DashboardWidget` interface with `id`, `view` (AppMode), `title`, `size`, `order`\n- `DashboardLayouts` type: `Record\u003cAppMode, DashboardWidget[]\u003e`\n\nAlso update `MobileNavView` if needed to account for per-view dashboard navigation.",
@@ -130,6 +173,35 @@
       "createdAt": "2026-07-08T14:01:23.6188597Z",
       "updatedAt": "2026-07-08T14:09:08.9755668Z",
       "completedAt": "2026-07-08T14:09:08.9755668Z"
+    },
+    "436458f3-b70e-4193-9094-d9cd5873f0fa": {
+      "title": "Add speech recognition listening animation CSS",
+      "details": "In `frontend/src/styles.css`, add near the existing `.chat-toolbar-icon` styles:\n\n```css\n.chat-speech-recognition.is-listening svg {\n  animation: pulse-mic 1s ease-in-out infinite;\n  color: var(--color-danger);\n}\n\n@keyframes pulse-mic {\n  0%, 100% { transform: scale(1); }\n  50% { transform: scale(1.15); }\n}\n```\n\nThis gives visual feedback when the mic is actively listening — pulsing red animation on the icon.",
+      "acceptanceCriteria": [
+        "Pulse animation runs smoothly during active recognition",
+        "Uses existing CSS variable --color-danger for consistency",
+        "Animation stops when recognition ends"
+      ],
+      "priority": "P1",
+      "completed": true,
+      "createdAt": "2026-07-08T22:06:25.3686691Z",
+      "updatedAt": "2026-07-08T22:13:07.4309186Z",
+      "completedAt": "2026-07-08T22:13:07.4309186Z"
+    },
+    "4686322f-52f4-471f-ad40-044601fe5f34": {
+      "title": "Add mic button to chat composer toolbar HTML",
+      "details": "In `renderChatWorkspace` (around line 295 in `frontend/src/app/chat/index.ts`), insert the mic button into `.chat-composer-toolbar-left`, after the attachment toggle and before the model selector:\n\n```ts\n${!isWailsRuntime() ? `\n  \u003cbutton class=\"chat-toolbar-icon chat-speech-recognition\" type=\"button\" title=\"Hold to speak\" aria-label=\"Voice input\" data-chat-speech-recognition ${session.busy || executing ? \"disabled\" : \"\"}\u003e\n    ${icons.mic}\n  \u003c/button\u003e\n` : ''}\n```\n\nAlso wire `initSpeechRecognition()` at the end of `bindChatEvents()`.",
+      "acceptanceCriteria": [
+        "Button only renders in web mode (not Wails desktop)",
+        "Button is disabled when session.busy or executing",
+        "initSpeechRecognition() is called from bindChatEvents",
+        "data-chat-speech-recognition attribute enables selector targeting"
+      ],
+      "priority": "P1",
+      "completed": true,
+      "createdAt": "2026-07-08T22:06:25.3021686Z",
+      "updatedAt": "2026-07-08T22:13:10.6744361Z",
+      "completedAt": "2026-07-08T22:13:10.6744361Z"
     },
     "538916a1-c373-4024-bf7b-5fbeeec640ee": {
       "title": "Fix rebuild-relaunch.bat to capture PowerShell errors",
@@ -189,6 +261,49 @@
       "createdAt": "2026-07-08T14:01:23.8143577Z",
       "updatedAt": "2026-07-08T14:09:09.181069Z",
       "completedAt": "2026-07-08T14:09:09.181069Z"
+    },
+    "5e9bd4f5-80fc-4e8e-9a99-323ce25675c6": {
+      "title": "Add mic SVG icon to icons.ts",
+      "details": "Add a `mic` entry to the `icons` object in `frontend/src/app/icons.ts`. Use an inline `\u003csvg\u003e` matching existing style (viewBox=\"0 0 24 24\", aria-hidden, no fill/stroke overrides). The standard microphone outline path is:\n\n```\n\u003cpath d=\"M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z\"/\u003e\n\u003cpath d=\"M19 10v2a7 7 0 0 1-14 0v-2\"/\u003e\n\u003cline x1=\"12\" y1=\"19\" x2=\"12\" y2=\"23\"/\u003e\n\u003cline x1=\"8\" y1=\"23\" x2=\"16\" y2=\"23\"/\u003e\n```",
+      "acceptanceCriteria": [
+        "Icon renders correctly in the toolbar at 1.25em size",
+        "Follows existing icon pattern (inline SVG, no external classes)"
+      ],
+      "priority": "P1",
+      "completed": true,
+      "createdAt": "2026-07-08T22:06:25.1021676Z",
+      "updatedAt": "2026-07-08T22:13:21.6134953Z",
+      "completedAt": "2026-07-08T22:13:21.6134953Z"
+    },
+    "6d86ef52-232e-4051-ad1e-2c6e3678a5cd": {
+      "title": "Expose StartKanbanExecution as a kanban_start_execution tool",
+      "details": "## Problem\n\n`StartKanbanExecution()` is only callable through the Wails UI or heartbeat scheduler. Echo's planning AI cannot trigger kanban execution from within a chat session, forcing manual \"Run\" clicks after creating Ready cards.\n\n## Architecture\n\nTools follow a consistent pattern:\n1. **Tool file** (`internal/tools/xxx.go`) — `init()` registers via `Register(ToolFunc{...})` with Metadata schema + Run handler\n2. **Provider interface** on `ExecutionContext` in `types.go` — decouples tool from SystemService\n3. **Wired at call site** in `file_changes.go` line ~150 where `tools.ExecutionContext{}` is constructed\n4. **Mutating tool** added to `mutatingToolNames` map in `registry.go`\n\n## Changes Required\n\n### 1. `internal/tools/types.go` — Add provider interface + field\n\n```go\ntype KanbanExecutor interface {\n    StartKanbanExecution(ctx context.Context, workspaceID string, concurrency int) error\n}\n```\n\nAdd `KanbanExecutor KanbanExecutor` to `ExecutionContext` struct.\n\n### 2. `internal/tools/kanban_execute.go` — New tool file\n\n```go\npackage tools\n\nimport (\n    \"encoding/json\"\n    \"strings\"\n)\n\nfunc init() {\n    Register(ToolFunc{\n        Meta: Metadata{\n            Name:        \"kanban_start_execution\",\n            Description: \"Start kanban execution for the active workspace, picking up Ready cards. Returns immediately; execution runs asynchronously.\",\n            Parameters: Schema{...},\n        },\n        Run: startKanbanExecution,\n    })\n}\n\nfunc startKanbanExecution(ctx ExecutionContext, arguments json.RawMessage) (any, error) {\n    if ctx.KanbanExecutor == nil {\n        return nil, SafeError{Code: \"kanban_unavailable\", Message: \"kanban execution is not available in this context\"}\n    }\n    // Parse optional concurrency param, default to whatever the backend uses\n    // Call ctx.KanbanExecutor.StartKanbanExecution(...)\n}\n```\n\n### 3. `internal/tools/registry.go` — Add to mutatingToolNames\n\nAdd `\"kanban_start_execution\": true` to `mutatingToolNames` map.\n\n### 4. `internal/services/file_changes.go` ~line 150 — Wire provider\n\nAdd `KanbanExecutor: s,` to the `tools.ExecutionContext{}` construction in `executeTrackedToolCall`.\n\n### 5. `internal/services/kanban_scheduler.go` — Add adapter method\n\n`StartKanbanExecution(workspaceID string, concurrency int) (KanbanBoard, error)` exists but returns a board. The provider interface needs `(ctx, workspaceID, concurrency) error` — add a thin wrapper or adapt the call site.\n\n### 6. `go test ./...` + verify tool appears in LLM schema",
+      "acceptanceCriteria": [
+        "kanban_start_execution tool is registered and appears in LLMSchema()",
+        "Tool calls SystemService.StartKanbanExecution via KanbanExecutor provider interface",
+        "mutatingToolNames includes kanban_start_execution",
+        "go test ./... passes",
+        "Tool returns error when no workspace or execution already running"
+      ],
+      "priority": "P1",
+      "completed": true,
+      "createdAt": "2026-07-09T01:48:30.192935Z",
+      "updatedAt": "2026-07-09T01:49:25.3323214Z",
+      "completedAt": "2026-07-09T01:49:25.3323214Z"
+    },
+    "721f2923-94d6-49bc-9d60-679cc931881c": {
+      "title": "Fix: Add speechinput=\"true\" to chat textarea so keyboard mic button works",
+      "details": "## Problem\nThe toast \"This app doesn't support voice input\" in the screenshot comes from **DuckDuckGo's keyboard**, not our app. The textarea is missing the `speechinput=\"true\"` HTML attribute, which tells mobile browsers to enable the keyboard's built-in microphone button for inline dictation.\n\n## Fix\nIn `echo/frontend/src/app/chat/index.ts`, find where the `\u003ctextarea data-chat-input\u003e` is rendered in the template literal (around line 640-670). Add `speechinput=\"true\"` to the textarea attributes:\n\n```html\n\u003ctextarea\n  class=\"chat-input\"\n  data-chat-input\n  speechinput=\"true\"\n  ...existing-attrs...\n\u003e\u003c/textarea\u003e\n```\n\nThis is a single-line addition that enables browser-native voice input on mobile keyboards (Chrome, Firefox, Samsung Internet all support it). DuckDuckGo may still show the toast if they block it at the browser level, but standard Android Chrome will work.\n\n## Verification\n- Open app in Chrome on Android\n- Tap the chat input to bring up keyboard\n- Keyboard mic button should no longer say \"This app doesn't support voice input\"\n- Tapping keyboard mic should insert speech directly into textarea",
+      "acceptanceCriteria": [
+        "textarea has speechinput=\"true\" attribute in rendered HTML",
+        "Chrome on Android enables keyboard mic button for chat input",
+        "No 'app doesn't support voice input' toast from Chrome keyboard"
+      ],
+      "priority": "P0",
+      "completed": true,
+      "createdAt": "2026-07-08T22:33:17.9652497Z",
+      "updatedAt": "2026-07-08T23:28:48.1457404Z",
+      "completedAt": "2026-07-08T23:28:48.1457404Z"
     },
     "77c517ec-9b26-476e-81a4-d3c0fb5e33c0": {
       "title": "Add backend persistence for dashboard layouts",
@@ -289,6 +404,19 @@
       "createdAt": "2026-07-08T20:17:35.8998432Z",
       "updatedAt": "2026-07-08T20:49:52.7390594Z",
       "completedAt": "2026-07-08T20:49:52.7390594Z"
+    },
+    "8b3e9201-df0a-48a1-b6bd-36a43785d4b2": {
+      "title": "Add mic icon to icons.ts",
+      "details": "**File:** `echo/frontend/src/app/icons.ts`\n\nAdd a `mic` entry to the `icons` object — standard Lucide-style microphone SVG:\n- Capsule body, U-shaped grille arc above, vertical stand line, horizontal foot bar\n- Same pattern as existing icons (viewBox 0 0 24 24, fill:none, stroke-based paths)\n\n```ts\nmic: `\u003csvg viewBox=\"0 0 24 24\" aria-hidden=\"true\"\u003e\u003cpath d=\"M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z\"/\u003e\u003cpath d=\"M19 10v2a7 7 0 0 1-14 0v-2\"/\u003e\u003cline x1=\"12\" y1=\"19\" x2=\"12\" y2=\"23\"/\u003e\u003cline x1=\"8\" y1=\"23\" x2=\"16\" y2=\"23\"/\u003e\u003c/svg\u003e`\n```",
+      "acceptanceCriteria": [
+        "icons.mic renders a microphone SVG in the chat toolbar",
+        "Follows existing icon pattern (viewBox, aria-hidden, stroke-based)"
+      ],
+      "priority": "P1",
+      "completed": true,
+      "createdAt": "2026-07-08T22:00:39.248072Z",
+      "updatedAt": "2026-07-08T22:13:24.595011Z",
+      "completedAt": "2026-07-08T22:13:24.595011Z"
     },
     "8ec98955-c733-4f34-a633-27f60c476225": {
       "title": "Unify dashboard: ONE widget grid with ALL 15 widgets, remove per-view silos",
@@ -399,6 +527,20 @@
       "updatedAt": "2026-07-08T07:51:34.0534273Z",
       "completedAt": "2026-07-08T07:51:34.0534273Z"
     },
+    "b77e6351-6a6c-4f66-8a9a-07414e91dc5d": {
+      "title": "Add speechinput=\"true\" to chat textarea for native keyboard mic button",
+      "details": "## Problem\n\nThe chat textarea lacks `speechinput=\"true\"`, which tells mobile browsers to enable the keyboard's built-in microphone button for inline dictation. Without it, browsers like DuckDuckGo show \"This app doesn't support voice input\" when the user taps the keyboard mic icon.\n\n## Fix\n\nIn `frontend/src/app/chat/index.ts`, around line 644 where the textarea is rendered:\n\n**Current:**\n```ts\ndata-chat-input\n${session.busy || executing ? \"disabled\" : \"\"}\n\u003e${escapeHtml(draft)}\u003c/textarea\u003e\n```\n\n**Add:**\n```ts\ndata-chat-input\nspeechinput=\"true\"\n${session.busy || executing ? \"disabled\" : \"\"}\n\u003e${escapeHtml(draft)}\u003c/textarea\u003e\n```\n\nThis is a single-line addition that enables browser-native voice input on mobile keyboards (Chrome, Firefox, Samsung Internet all support it).\n\n## Why this matters\n\nThe hold-to-speak mic button uses the Web Speech API (requires HTTPS). The `speechinput=\"true\"` attribute provides a complementary path: native keyboard dictation works over plain HTTP and gives users an alternative way to input speech.",
+      "acceptanceCriteria": [
+        "textarea has speechinput=\"true\" attribute in rendered HTML",
+        "Chrome on Android enables keyboard mic button for chat input",
+        "No 'app doesn't support voice input' toast from Chrome keyboard"
+      ],
+      "priority": "P1",
+      "completed": true,
+      "createdAt": "2026-07-08T22:57:41.1643506Z",
+      "updatedAt": "2026-07-08T23:25:16.0057396Z",
+      "completedAt": "2026-07-08T23:25:16.0057396Z"
+    },
     "b7fbe425-f1b9-4725-a018-c08bca046a64": {
       "title": "Kanban cards are too bulky and lack the colorful, at-a-glance status flair of the dashboard mockup",
       "details": "## Problem\nKanban cards are too bulky and don't convey important status information at a glance. The dashboard mockup demonstrates a much more polished, color-rich approach with contextual status messages that should be ported to the actual Kanban view.\n\n## Goal\nMake Kanban cards compact and visually expressive so users can understand card state without opening the detail view. Every lane's cards should have meaningful color-coded status text.\n\n## Dashboard Reference (`frontend/src/app/dashboard/index.ts`)\n\n### Done Lane Cards\n- Green check mark (✓) with green text: \"verification passed, 3 files changed\"\n- Shows file change count as a concrete success signal\n\n### InProgress Lane Cards\n- Yellow/amber indicator dot\n- Progress bar showing percentage (e.g., 78%)\n- Last tool name label (e.g., `filesystem_create_text`)\n\n### Ready Lane Cards\n- Blue indicator dot\n- Green check with green text: \"depends on movement (Done) ✓\" when dependencies are met\n- Orange hourglass (⏳) with orange text: \"depends on inventory (backlog)\" when dependencies are unmet — names the specific blocking dependency\n\n### Blocked Lane Cards\n- Red indicator dot\n- Red text explaining why it was blocked (e.g., \"Agent stopped early\", error message excerpt)\n\n## Changes Needed\n\n### Frontend (`frontend/src/app/kanban/index.ts`)\n- `renderKanbanCard()`: Add contextual status messages below the card title for each lane:\n  - **Done**: Green check + \"verification passed, N files changed\" (pull from card verification result and file change count)\n  - **InProgress**: Active tool call name + progress percentage (already discussed in separate task, but should integrate here)\n  - **Ready**: Dependency status — green text with check if all deps met, orange text naming specific unmet dependency if not\n  - **Blocked**: Red text showing the block reason/recovery message\n- Compact overall card layout to reduce bulk\n\n### CSS (`frontend/src/styles.css`)\n- Color-coded status text classes matching dashboard:\n  - Green for success/completed states\n  - Orange/amber for waiting/pending states\n  - Red for blocked/error states\n  - Blue for ready states\n- Smaller, tighter card padding and typography to reduce bulk\n- Status message font size smaller than title, with appropriate color variables\n\n### Data Availability Check\nVerify that the following data is available on the `KanbanCard` struct or accessible from the frontend state:\n- Verification result (passed/failed) and file change count for Done cards\n- Current tool call name and progress percentage for InProgress cards\n- Dependency list and their current lane status for Ready cards\n- Block reason/recovery message for Blocked cards\n\n## Acceptance Criteria\n1. Done cards show green check + \"verification passed, N files changed\" text\n2. InProgress cards show active tool call name and progress percentage\n3. Ready cards show dependency status: green text with ✓ if met, orange text naming specific unmet dependency\n4. Blocked cards show red text explaining the block reason\n5. Cards are visually compact compared to current rendering (reduced padding/whitespace)\n6. Color coding is consistent: green=success, orange=waiting, red=error, blue=ready\n7. Dark/light theme compatible via existing CSS custom properties\n8. `cd frontend \u0026\u0026 npm run build` succeeds with no TypeScript errors",
@@ -418,6 +560,20 @@
       "updatedAt": "2026-07-08T07:51:09.7542614Z",
       "completedAt": "2026-07-08T07:51:09.7542614Z"
     },
+    "c3b0ab9b-a5ef-4fa0-8678-26907207e04d": {
+      "title": "Fix speech recognition stale inputEl closure bug",
+      "details": "## Problem\n\nIn `frontend/src/app/chat/index.ts`, line 1079, `patchSpeechMicButton` captures the textarea once at bind time:\n\n```ts\nconst inputEl = button.closest(\"form\")?.querySelector\u003cHTMLTextAreaElement\u003e(\"[data-chat-input]\");\n```\n\nThis app does full DOM re-renders via innerHTML replacement. After any render, `inputEl` is a **detached element** — all transcript writes go to a ghost node that isn't in the visible DOM.\n\n## Fix\n\nRemove the closure-captured `inputEl` from `patchSpeechMicButton`. Resolve it fresh inside `startSpeechRecognition()` at call time:\n\n```ts\nfunction startSpeechRecognition() {\n  stopSpeechRecognition();\n\n  const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;\n  if (!SpeechRecognitionAPI) return;\n\n  // Fresh DOM lookup — the old inputEl is stale after re-renders\n  const inputEl = appRoot.querySelector\u003cHTMLTextAreaElement\u003e(\"[data-chat-input]\");\n  if (!inputEl) return;\n\n  // ... rest stays same, uses live inputEl from closure scope\n}\n```\n\nAlso remove `inputEl` parameter and update the pointerdown handler:\n\n```ts\nholdTimer = setTimeout(() =\u003e {\n  holdTimer = null;\n  startSpeechRecognition();  // no argument needed anymore\n}, 200);\n```\n\n## Why this matters\n\nEvery time the app re-renders (which happens frequently — on chat messages, kanban events, settings changes), the textarea is replaced. The old element reference becomes detached and invisible.\n\n## Acceptance Criteria\n\n- [ ] `inputEl` resolved via `appRoot.querySelector(\"[data-chat-input]\")` inside `startSpeechRecognition()`, not captured at bind time\n- [ ] `patchSpeechMicButton` no longer captures or passes `inputEl` through closure\n- [ ] Transcribed text appears in the visible textarea after speaking\n- [ ] `cd frontend; npm run build` passes",
+      "acceptanceCriteria": [
+        "inputEl resolved live inside startSpeechRecognition via appRoot.querySelector, not closure-captured",
+        "Transcribed text appears in visible textarea after speaking",
+        "npm run build passes"
+      ],
+      "priority": "P0",
+      "completed": true,
+      "createdAt": "2026-07-08T22:48:59.841761Z",
+      "updatedAt": "2026-07-08T23:27:15.3563141Z",
+      "completedAt": "2026-07-08T23:27:15.3563141Z"
+    },
     "c655e011-d78a-44be-ad54-299c69ece8b1": {
       "title": "Redesign dashboard from widget grid to Dev Studio command center layout",
       "details": "## Problem\n\nThe current dashboard renders individual widget cards in a CSS grid (Heartbeat, Tasks Overview, Priority Strip, Kanban Summary as separate boxes). The target is a unified \"Dev Studio\" command center with integrated backlog, kanban lanes, and chat sections.\n\n## Current State (Image 1)\n\n- `.dashboard-view` → `.dashboard-widget-grid` of individual `\u003carticle.widget-card\u003e` elements\n- Each widget card has a header title + body content\n- Widgets: Heartbeat (small), Tasks Overview (large), Priority Strip (wide), Kanban Summary (small)\n- No visual connection between backlog tasks and kanban cards\n\n## Target State (Image 2)\n\nSingle-page command center with these sections:\n\n### Top Status Bar\n- Workspace name + path\n- Heartbeat interval indicator (green dot + \"5m interval\")\n- Watchdog interval indicator (green dot + \"15m interval\")\n- Token budget (\"Budget: 14k / 50k tokens\")\n- Last build status (\"Last build: ✓ passed\")\n\n### Two-Column Main Area\n\n**Left: Backlog Panel**\n- Title \"Backlog\"\n- List of tasks with priority badges (P0, P1, P2)\n- Conversion status on right side: \"→ card ✓\" (green), \"ready\" (blue), \"backlog\" (gray)\n- Tasks sourced from `taskBoardFor(workspace.id).tasks`\n\n**Right: Kanban Panel**\n- Title \"Kanban\"\n- Lane headers with counts: DONE (3), IN PROGRESS (1), READY (2), BLOCKED (0)\n- Cards in each lane showing title + status text (reuse existing kanban card rendering)\n- Done cards: \"verification passed · N files changed\"\n- In Progress cards: progress bar + tool name\n- Ready cards: dependency status with check/hourglass icons\n\n### Full-Width Chat Section\n- Title \"Chat\"\n- Last few messages from active chat session\n- User messages on right (dark blue bubbles), Echo messages on left (gray bubbles)\n\n## Implementation Plan\n\n### File: `frontend/src/app/dashboard/index.ts`\n\nReplace current widget grid rendering with the new unified layout:\n\n1. **Remove** delegation to `renderDashboardWidgets()` for the main dashboard view\n2. **Add** `renderCommandCenter(workspace: Workspace): string` that builds:\n   - Status bar section\n   - Two-column backlog + kanban section\n   - Chat history section\n3. **Keep** existing widget grid as fallback/editable layout option\n\n### File: `frontend/src/styles.css`\n\nAdd new CSS classes for the command center layout:\n\n```css\n.dashboard-command-center { /* main container */ }\n.dashboard-status-bar { /* top bar with indicators */ }\n.dashboard-status-indicator { /* individual indicator items */ }\n.dashboard-main-grid { /* two-column layout */ }\n.dashboard-backlog-panel { /* left panel */ }\n.dashboard-kanban-panel { /* right panel */ }\n.dashboard-chat-section { /* bottom full-width section */ }\n.backlog-task-row { /* individual task row with priority badge + status */ }\n.backlog-priority-badge { /* P0/P1/P2 badges */ }\n.backlog-status-badge { /* card ✓, ready, backlog badges */ }\n```\n\n### Data Sources (already available in state)\n\n- `taskBoardFor(workspace.id)` → tasks for backlog panel\n- `kanbanBoardFor(workspace.id)` → lanes/cards for kanban panel  \n- `chatSessionFor(workspace.id)` → messages for chat section\n- `state.heartbeatIntervals`, `state.watchdogIntervals` → status bar\n- `tokenBudgets.get(workspace.id)` → budget display\n- Reuse `renderKanbanCard()` and related functions from `./kanban/index.ts`\n\n### Reuse Existing Functions\n\n- `renderKanbanCard()` — kanban card HTML\n- `renderKanbanCardStatus()` — status text per lane\n- `kanbanCardProgressPercent()` — progress percentage\n- `priorityBadgeHTML()` from widgets.ts — priority badges\n- `statusDotHTML()` from widgets.ts — heartbeat/watchdog dots\n\n## Acceptance Criteria\n\n1. Dashboard shows unified command center layout (not widget grid)\n2. Top status bar displays workspace, heartbeat, watchdog, budget indicators\n3. Backlog panel lists tasks with priority badges and conversion status\n4. Kanban panel shows lanes with cards matching existing kanban view style\n5. Chat section shows recent conversation messages\n6. Responsive layout stacks vertically on mobile (≤720px)\n7. Dark/light theme compatible via CSS custom properties\n8. `cd frontend \u0026\u0026 npm run build` succeeds with no TypeScript errors",
@@ -436,6 +592,20 @@
       "createdAt": "2026-07-08T16:04:53.5023425Z",
       "updatedAt": "2026-07-08T16:37:51.0306639Z",
       "completedAt": "2026-07-08T16:37:51.0306639Z"
+    },
+    "cc5768ad-c52f-4bbf-9f5c-c36e32279324": {
+      "title": "Remove microphone icon from chat composer on mobile",
+      "details": "Add `display: none` for `.chat-speech-recognition` inside the existing `@media (max-width: 720px)` block in `frontend/src/styles.css`. The mic button renders in the composer toolbar (line ~665 of `frontend/src/app/chat/index.ts`) and only appears in web mode. Hiding it via CSS on mobile avoids touching TS logic. Insertion point: anywhere inside the mobile media query block starting at line 6977, near other composer rules.",
+      "acceptanceCriteria": [
+        "Microphone icon not visible in chat composer when viewport width is 720px or less",
+        "Microphone icon still visible on desktop and in Wails runtime",
+        "No TypeScript changes required"
+      ],
+      "priority": "P2",
+      "completed": true,
+      "createdAt": "2026-07-09T01:35:49.0158774Z",
+      "updatedAt": "2026-07-09T01:41:34.7974286Z",
+      "completedAt": "2026-07-09T01:41:34.7974286Z"
     },
     "ccc8b71b-2cc5-4ac5-97ec-bdfa46f1d1cc": {
       "title": "Port dashboard card styling to Kanban and Task views",
@@ -483,6 +653,24 @@
       "createdAt": "2026-07-08T14:01:23.7508564Z",
       "updatedAt": "2026-07-08T14:09:09.11309Z",
       "completedAt": "2026-07-08T14:09:09.11309Z"
+    },
+    "f77fe75e-2b28-4652-8dee-57c237bf3b8c": {
+      "title": "Add self-signed TLS support to web server for mobile Web Speech API compatibility",
+      "details": "## Problem\n\nMobile Chromium blocks the Web Speech API on non-secure contexts (not localhost, not HTTPS). Tailscale provides plain HTTP URLs like `http://100.x.x.x:37`, so speech recognition fails silently. The Go web server uses plain `server.Serve(listener)` with no TLS capability.\n\n## Changes Required\n\n### 1. `echo/internal/services/web_access.go` — Add TLS fields to settings and status\n\n```go\ntype WebAccessSettings struct {\n    Enabled     bool   `json:\"enabled\"`\n    BindHost    string `json:\"bindHost\"`\n    Port        int    `json:\"port\"`\n    AccessToken string `json:\"accessToken\"`\n    EnableTLS   bool   `json:\"enableTLS\"`  // NEW\n}\n\ntype WebAccessStatus struct {\n    Enabled     bool     `json:\"enabled\"`\n    Running     bool     `json:\"running\"`\n    BindHost    string   `json:\"bindHost\"`\n    Port        int      `json:\"port\"`\n    AccessToken string   `json:\"accessToken\"`\n    PrimaryURL  string   `json:\"primaryUrl\"`\n    LANURLs     []string `json:\"lanUrls\"`\n    EnableTLS   bool     `json:\"enableTLS\"`  // NEW\n    LastError   string   `json:\"lastError,omitempty\"`\n}\n```\n\n### 2. `echo/internal/services/web_access.go` — Add cert generation helper\n\nAdd a function that generates self-signed certs on first use and persists them to the user config dir:\n\n```go\nimport (\n    \"crypto/ecdsa\"\n    \"crypto/elliptic\"\n    \"crypto/rand\"\n    \"crypto/x509\"\n    \"crypto/x509/pkix\"\n    \"encoding/pem\"\n    \"math/big\"\n    \"os\"\n    \"path/filepath\"\n    \"time\"\n)\n\nfunc generateSelfSignedCert(certPath, keyPath string) error {\n    priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)\n    if err != nil { return err }\n    \n    template := x509.Certificate{\n        SerialNumber: big.NewInt(time.Now().UnixNano()),\n        Subject: pkix.Name{\n            Organization: []string{\"Echo\"},\n            CommonName:   \"localhost\",\n        },\n        NotBefore:             time.Now(),\n        NotAfter:              time.Now().Add(365 * 24 * time.Hour),\n        KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,\n        ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},\n        BasicConstraintsValid: true,\n        DNSNames:              []string{\"localhost\"},\n        IPAddresses:           nil, // Covers all IPs via InsecureSkipVerify on client side\n    }\n    \n    certDER, err := x509.CreateCertificate(rand.Reader, \u0026template, \u0026template, \u0026priv.PublicKey, priv)\n    if err != nil { return err }\n    \n    certOut, _ := os.Create(certPath)\n    pem.Encode(certOut, \u0026pem.Block{Type: \"CERTIFICATE\", Bytes: certDER})\n    certOut.Close()\n    \n    keyOut, _ := os.Create(keyPath)\n    keyBytes, _ := x509.MarshalECPrivateKey(priv)\n    pem.Encode(keyOut, \u0026pem.Block{Type: \"EC PRIVATE KEY\", Bytes: keyBytes})\n    keyOut.Close()\n    \n    return nil\n}\n```\n\n### 3. `echo/internal/webserver/server.go` — Conditionally use TLS\n\nIn `ApplyWebAccessSettings`, check `settings.EnableTLS` and serve accordingly:\n\n```go\nfunc (s *Server) ApplyWebAccessSettings(settings services.WebAccessSettings) (services.WebAccessStatus, error) {\n    // ... existing logic up to listener creation ...\n    \n    server := \u0026http.Server{\n        Handler:           s.routes(),\n        ReadHeaderTimeout: 10 * time.Second,\n    }\n    \n    s.mu.Lock()\n    // ... existing lock logic ...\n    s.mu.Unlock()\n    \n    go func() {\n        var err error\n        if settings.EnableTLS {\n            certPath := filepath.Join(configDir(), \"echo-cert.pem\")\n            keyPath := filepath.Join(configDir(), \"echo-key.pem\")\n            \n            if _, errStat := os.Stat(certPath); os.IsNotExist(errStat) {\n                if genErr := services.GenerateSelfSignedCert(certPath, keyPath); genErr != nil {\n                    s.setLastError(\"TLS cert generation: \" + genErr.Error())\n                    return\n                }\n            }\n            \n            err = server.ServeTLS(listener, certPath, keyPath)\n        } else {\n            err = server.Serve(listener)\n        }\n        \n        if err != nil \u0026\u0026 !errors.Is(err, http.ErrServerClosed) {\n            s.setLastError(err.Error())\n        }\n    }()\n    \n    // ... rest of existing logic ...\n}\n```\n\nAlso update `publicURLs` to use `https://` when TLS is enabled:\n\n```go\nfunc publicURLs(settings services.WebAccessSettings) []string {\n    hosts := publicHosts(settings.BindHost)\n    output := make([]string, 0, len(hosts))\n    token := url.QueryEscape(settings.AccessToken)\n    scheme := \"http\"\n    if settings.EnableTLS {\n        scheme = \"https\"\n    }\n    for _, host := range hosts {\n        hostPort := net.JoinHostPort(host, strconv.Itoa(settings.Port))\n        output = append(output, scheme+\"://\"+hostPort+\"/#token=\"+token)\n    }\n    return output\n}\n```\n\n### 4. Frontend: Update web.ts to handle self-signed cert\n\nThe frontend connects via `fetch` and `EventSource`. For self-signed certs on mobile, users will need to accept the certificate warning in their browser once. No code change needed — browsers handle this natively.\n\nHowever, update `frontend/src/backend/web.ts` to construct HTTPS URLs when `webStatus.enableTLS` is true:\n\n```ts\nfunction rpcURL(method: string): string {\n    const scheme = webStatus.enableTLS ? \"https\" : \"http\";\n    return `${scheme}://${webStatus.bindHost || location.hostname}:${webStatus.port}/api/rpc/SystemService/${method}`;\n}\n```\n\n### 5. Frontend: Add TLS toggle to web access settings UI\n\nIn the settings view where web access is configured, add a checkbox for \"Enable HTTPS (required for mobile voice input)\". This should be near the port setting.\n\n## Verification\n\n1. Enable TLS in settings → server starts with self-signed cert\n2. Access `https://100.x.x.x:port` on mobile Chrome\n3. Accept certificate warning once\n4. Web Speech API mic button works without silent failure\n5. `go test ./...` passes\n6. `cd frontend; npm run build` passes",
+      "acceptanceCriteria": [
+        "WebAccessSettings has EnableTLS bool field persisted to state.json",
+        "Self-signed cert generated on first TLS enable and reused on subsequent starts",
+        "server.ServeTLS used when EnableTLS is true, server.Serve otherwise",
+        "publicURLs returns https:// URLs when TLS enabled",
+        "Frontend web.ts constructs correct scheme based on enableTLS",
+        "go test ./... passes",
+        "cd frontend; npm run build passes"
+      ],
+      "priority": "P0",
+      "completed": true,
+      "createdAt": "2026-07-08T22:56:29.8103839Z",
+      "updatedAt": "2026-07-08T23:22:30.5614295Z",
+      "completedAt": "2026-07-08T23:22:30.5614295Z"
     }
   }
 }

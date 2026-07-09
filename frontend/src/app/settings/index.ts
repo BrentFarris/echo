@@ -1324,6 +1324,15 @@ function renderWebAccessSettings(): string {
           <input name="accessToken" type="text" value="${escapeAttribute(draft.accessToken ?? "")}" autocomplete="off" spellcheck="false" data-web-access-field />
         </label>
       </div>
+      <label class="settings-toggle">
+        <span>Enable HTTPS (required for mobile voice input)</span>
+        <input
+          name="enableTLS"
+          type="checkbox"
+          data-web-access-field
+          ${draft.enableTLS ? "checked" : ""}
+        />
+      </label>
       <div class="web-access-actions">
         <button class="secondary-button compact-button" type="button" data-action="rotate-web-access-token">Rotate Token</button>
       </div>
@@ -1632,7 +1641,7 @@ async function handleWebAccessInput(input: HTMLInputElement) {
     [input.name]: typeof value === "number" && Number.isNaN(value) ? 3740 : value,
   });
   state.formError = "";
-  if (input.name !== "enabled") {
+  if (input.name !== "enabled" && input.name !== "enableTLS") {
     return;
   }
   if (!state.webAccessDraft.enabled) {

@@ -155,6 +155,7 @@ func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Wo
 		FileChanges:      sink,
 		ToolScopes:       toolScopes,
 		AgentModes:       s,
+		KanbanExecutor:   s,
 	}, call.Function.Name, json.RawMessage(call.Function.Arguments))
 
 	if len(captured) > 0 {
