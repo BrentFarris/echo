@@ -3723,11 +3723,19 @@ h3 {
 }
 
 .git-source-sidebar-rail {
-  display: grid;
+  display: none;
   align-content: start;
   justify-items: center;
   gap: var(--space-lg);
   padding: var(--space-lg-sm) var(--space-sm);
+}
+
+.git-source-layout.is-sidebar-collapsed .git-source-sidebar {
+  display: none;
+}
+
+.git-source-layout.is-sidebar-collapsed .git-source-sidebar-rail {
+  display: grid;
 }
 
 .git-source-sidebar-rail span {

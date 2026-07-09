@@ -47,10 +47,9 @@ export function renderGitRepositoryPage(
     <section class="work-panel git-repository" aria-label="Git" data-change-review data-git-repository>
       ${repository
         ? `
-          <div class="git-source-layout ${sidebarCollapsed ? "is-sidebar-collapsed" : ""}">
-            ${sidebarCollapsed
-              ? renderGitSourceSidebarRail(repository)
-              : renderGitSourceSidebar(workspace.id, repository, repositories, selectedFolderID, loading, operation)}
+          <div class="git-source-layout ${sidebarCollapsed ? "is-sidebar-collapsed" : ""}" data-git-source-layout>
+            ${renderGitSourceSidebarRail(repository)}
+            ${renderGitSourceSidebar(workspace.id, repository, repositories, selectedFolderID, loading, operation)}
             <section class="git-source-diff-panel" aria-labelledby="git-diff-title">
               <header class="git-source-diff-header">
                 <div>
@@ -1299,7 +1298,9 @@ export function toggleGitSourceSidebar() {
   } else {
     state.collapsedGitChangeTrees.add(key);
   }
-  getAppCallbacks().render();
+  if (!patchGitSourceSidebarCollapsedState(state.collapsedGitChangeTrees.has(key))) {
+    getAppCallbacks().render();
+  }
 }
 
 export function toggleGitDiffViewMode() {
@@ -1478,6 +1479,21 @@ function gitCollapsedChangeFolders(workspaceID: string, folderID: string): Set<s
 
 function gitCommitDetailKey(workspaceID: string, folderID: string, hash: string): string {
   return `${workspaceID}:${folderID}:${hash}`;
+}
+
+function patchGitSourceSidebarCollapsedState(collapsed: boolean): boolean {
+  const layout = appRoot.querySelector<HTMLElement>("[data-git-source-layout]");
+  if (!layout) {
+    return false;
+  }
+  layout.classList.toggle("is-sidebar-collapsed", collapsed);
+  layout
+    .querySelectorAll<HTMLButtonElement>("[data-action='toggle-git-sidebar']")
+    .forEach((button) => {
+      button.title = collapsed ? "Expand source control" : "Collapse source control";
+      button.setAttribute("aria-label", button.title);
+    });
+  return true;
 }
 
 function scheduleScrollToGitCommitReview(hash: string) {
