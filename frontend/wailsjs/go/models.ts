@@ -97,6 +97,7 @@ export namespace llm {
 	    enableChatCompletionNotifications?: boolean;
 	    enableKanbanCompleteNotifications?: boolean;
 	    limitKanbanConcurrency?: boolean;
+	    disableGitSplitDiffView?: boolean;
 	    theme?: Theme;
 	
 	    static createFrom(source: any = {}) {
@@ -127,6 +128,7 @@ export namespace llm {
 	        this.enableChatCompletionNotifications = source["enableChatCompletionNotifications"];
 	        this.enableKanbanCompleteNotifications = source["enableKanbanCompleteNotifications"];
 	        this.limitKanbanConcurrency = source["limitKanbanConcurrency"];
+	        this.disableGitSplitDiffView = source["disableGitSplitDiffView"];
 	        this.theme = this.convertValues(source["theme"], Theme);
 	    }
 	
@@ -888,6 +890,7 @@ export namespace services {
 	    epic?: string;
 	    tags?: string[];
 	    acceptanceCriteria?: string[];
+	    tags?: string[];
 	    priority: string;
 	    sortOrder: number;
 	    completed: boolean;
@@ -907,6 +910,7 @@ export namespace services {
 	        this.epic = source["epic"];
 	        this.tags = source["tags"];
 	        this.acceptanceCriteria = source["acceptanceCriteria"];
+	        this.tags = source["tags"];
 	        this.priority = source["priority"];
 	        this.sortOrder = source["sortOrder"];
 	        this.completed = source["completed"];
@@ -919,8 +923,11 @@ export namespace services {
 	    workspaceId: string;
 	    storagePath: string;
 	    doneStoragePath: string;
+	    workspaceStatePath: string;
 	    gitIgnored: boolean;
 	    doneGitIgnored: boolean;
+	    workspaceStateGitIgnored: boolean;
+	    tags: string[];
 	    tasks: WorkspaceTask[];
 	
 	    static createFrom(source: any = {}) {
@@ -932,8 +939,11 @@ export namespace services {
 	        this.workspaceId = source["workspaceId"];
 	        this.storagePath = source["storagePath"];
 	        this.doneStoragePath = source["doneStoragePath"];
+	        this.workspaceStatePath = source["workspaceStatePath"];
 	        this.gitIgnored = source["gitIgnored"];
 	        this.doneGitIgnored = source["doneGitIgnored"];
+	        this.workspaceStateGitIgnored = source["workspaceStateGitIgnored"];
+	        this.tags = source["tags"];
 	        this.tasks = this.convertValues(source["tasks"], WorkspaceTask);
 	    }
 	
@@ -961,6 +971,7 @@ export namespace services {
 	    epic?: string;
 	    tags?: string[];
 	    acceptanceCriteria?: string[];
+	    tags?: string[];
 	    priority: string;
 	
 	    static createFrom(source: any = {}) {
@@ -974,6 +985,7 @@ export namespace services {
 	        this.epic = source["epic"];
 	        this.tags = source["tags"];
 	        this.acceptanceCriteria = source["acceptanceCriteria"];
+	        this.tags = source["tags"];
 	        this.priority = source["priority"];
 	    }
 	}

@@ -29,6 +29,7 @@ go.work.sum
 !.echo/skills/**
 !.echo/tasks.json
 !.echo/tasks_done.json
+!.echo/workspace.json
 
 .tmp/
 build/bin

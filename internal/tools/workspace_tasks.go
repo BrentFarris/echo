@@ -50,6 +50,11 @@ func init() {
 						"items":       map[string]any{"type": "string"},
 						"description": "Optional acceptance criteria.",
 					},
+					"tags": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "Optional arbitrary backlog tags.",
+					},
 					"priority": map[string]any{
 						"type":        "string",
 						"enum":        []any{"P0", "P1", "P2"},
@@ -301,8 +306,12 @@ func createWorkspaceTask(ctx ExecutionContext, arguments json.RawMessage) (any, 
 	request.AcceptanceCriteria = criteria
 
 	tags := request.Tags[:0]
+	seenTags := map[string]bool{}
 	for _, tag := range request.Tags {
-		if tag = strings.TrimSpace(tag); tag != "" {
+		tag = strings.TrimSpace(tag)
+		key := strings.ToLower(tag)
+		if tag != "" && !seenTags[key] {
+			seenTags[key] = true
 			tags = append(tags, tag)
 		}
 	}

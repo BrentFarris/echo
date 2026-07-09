@@ -13,7 +13,7 @@ import { appRoot, focusInitialElement } from "./dom";
 import { bindEvents } from "./events";
 import { renderGitRepositoryPage } from "./git";
 import { icons } from "./icons";
-import { kanbanBoardFor, changeReviewFor, gitRepositoryViewFor, activeWorkspace, kanbanCards, state, getActiveChatKanbanTab } from "./state";
+import { kanbanBoardFor, gitRepositoryViewFor, activeWorkspace, kanbanCards, state, getActiveChatKanbanTab, changeReviewFor } from "./state";
 import { renderSettingsOverlay } from "./settings";
 import { renderToasts } from "./toasts";
 import { renderTaskPanel, renderTaskDetail } from "./tasks";
@@ -203,6 +203,7 @@ function buildLeftNav(
 ): string {
   const mode = state.appMode;
   const dropdownOpen = state.workspaceDropdownOpen;
+  const changesBadge = renderChangesNavBadge(workspace);
 
   return `
     <aside class="left-nav" aria-label="Primary">
@@ -244,7 +245,7 @@ function buildLeftNav(
       <div class="left-nav-actions">
         <button class="nav-icon-button${mode === "code" ? " is-active" : ""}" type="button" title="Code" aria-label="Code view" data-action="${mode === "code" ? "close-code-view" : "open-code-view"}">${icons.code}</button>
         <button class="nav-icon-button${mode === "tasks" ? " is-active" : ""}" type="button" title="Tasks" aria-label="Tasks" data-action="switch-view" data-view="tasks">${icons.tasks}</button>
-        <button class="nav-icon-button${mode === "git" ? " is-active" : ""}" type="button" title="Git" aria-label="Git" data-action="switch-view" data-view="git">${icons.git}</button>
+        <button class="nav-icon-button${mode === "git" ? " is-active" : ""}" type="button" title="Git" aria-label="Git" data-action="switch-view" data-view="git">${icons.git}${changesBadge}</button>
         <button class="nav-icon-button${mode === "dashboard" ? " is-active" : ""}" type="button" title="Dashboard" aria-label="Dashboard" data-action="${mode === "dashboard" ? "close-dashboard" : "open-dashboard"}">${icons.dashboard}</button>
         <button class="nav-icon-button" type="button" title="Settings" aria-label="Settings" data-action="open-settings">${icons.settings}</button>
       </div>
@@ -313,12 +314,10 @@ function buildOverlays(): string {
 export function renderWorkspacePanels(workspace: services.Workspace | null, workspaceCount: number): string {
   const mode = state.appMode;
   const board = workspace ? kanbanBoardFor(workspace.id) : null;
-  const review = workspace ? changeReviewFor(workspace.id) : null;
   const running = workspace ? state.runningKanbanWorkspaces.has(workspace.id) : false;
   const decomposing = workspace ? state.executingPlans.has(workspace.id) : false;
   const hasCards = board ? kanbanCards(board).length > 0 : false;
   const hasDoneCards = board ? (board.done ?? []).length > 0 : false;
-  const reviewCount = review?.fileCount ?? 0;
 
   let mainPanel = "";
 
@@ -342,11 +341,6 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
           ${
             workspace
               ? `<div class="kanban-actions">
-                  <button class="secondary-button icon-text-button change-review-button" type="button" title="Review AI file changes" data-action="open-change-review">
-                    ${icons.file}
-                    <span>Changes</span>
-                    <span class="change-count-badge">${escapeHtml(String(reviewCount))}</span>
-                  </button>
                   <button class="secondary-button icon-text-button" type="button" data-action="open-create-ready-card" ${running ? "disabled" : ""}>
                     ${icons.plus}
                     <span>New card</span>
@@ -391,7 +385,6 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
     ${mode === "kanban" && board ? renderKanbanDetail(board) : ""}
     ${mode === "tasks" && workspace ? renderTaskDetail(workspace) : ""}
     ${workspace && state.creatingKanbanCardWorkspaces.has(workspace.id) && !running ? renderCreateKanbanCardDialog(workspace.id) : ""}
-    ${workspace && state.openChangeReviewWorkspaces.has(workspace.id) ? renderChangeReviewDrawer(workspace, review ?? changeReviewFor(workspace.id)) : ""}
   `;
 }
 
@@ -401,6 +394,7 @@ function renderMobileBottomNav(
 ): string {
   const appName = "Echo";
   const activeMobileView = state.mobileNavView;
+  const changesBadge = renderChangesNavBadge(workspace);
   return `
     <nav class="mobile-bottom-nav" role="navigation" aria-label="Main navigation">
       <div class="mobile-nav-brand">
@@ -427,8 +421,8 @@ function renderMobileBottomNav(
         <button class="mobile-nav-tab${activeMobileView === "tasks" ? " is-active" : ""}" type="button" title="Tasks" aria-label="Tasks" aria-pressed="${activeMobileView === "tasks"}" role="tab" aria-selected="${activeMobileView === "tasks"}" tabindex="${activeMobileView === "tasks" ? "0" : "-1"}" data-mobile-nav-tab-index="3" data-action="switch-view" data-view="tasks">
           ${icons.tasks}
         </button>
-        <button class="mobile-nav-tab${activeMobileView === "git" ? " is-active" : ""}" type="button" title="Git" aria-label="Git" aria-pressed="${activeMobileView === "git"}" role="tab" aria-selected="${activeMobileView === "git"}" tabindex="${activeMobileView === "git" ? "0" : "-1"}" data-mobile-nav-tab-index="4" data-action="switch-view" data-view="git">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v12"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+        <button class="mobile-nav-tab${activeMobileView === "git" ? " is-active" : ""}" type="button" title="Changes" aria-label="Changes" aria-pressed="${activeMobileView === "git"}" role="tab" aria-selected="${activeMobileView === "git"}" tabindex="${activeMobileView === "git" ? "0" : "-1"}" data-mobile-nav-tab-index="4" data-action="switch-view" data-view="git">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v12"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>${changesBadge}
         </button>
         <button class="mobile-nav-tab${activeMobileView === "dashboard" ? " is-active" : ""}" type="button" title="Dashboard" aria-label="Dashboard" aria-pressed="${activeMobileView === "dashboard"}" role="tab" aria-selected="${activeMobileView === "dashboard"}" tabindex="${activeMobileView === "dashboard" ? "0" : "-1"}" data-mobile-nav-tab-index="5" data-action="${activeMobileView === "dashboard" ? "close-dashboard" : "open-dashboard"}">
           ${icons.dashboard}
@@ -439,4 +433,24 @@ function renderMobileBottomNav(
       </div>
     </nav>
   `;
+}
+
+function renderChangesNavBadge(workspace: services.Workspace | null): string {
+  if (!workspace) {
+    return "";
+  }
+  const count = pendingChangesCount(workspace.id);
+  if (count <= 0) {
+    return "";
+  }
+  const label = `${count} pending change${count === 1 ? "" : "s"}`;
+  return `<span class="nav-change-badge" aria-label="${escapeHtml(label)}">${escapeHtml(count > 99 ? "99+" : String(count))}</span>`;
+}
+
+function pendingChangesCount(workspaceID: string): number {
+  const repository = gitRepositoryViewFor(workspaceID).repository;
+  if (repository) {
+    return Math.max(0, repository.fileCount ?? 0);
+  }
+  return Math.max(0, changeReviewFor(workspaceID).fileCount ?? 0);
 }

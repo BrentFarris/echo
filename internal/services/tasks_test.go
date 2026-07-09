@@ -39,6 +39,7 @@ func TestWorkspaceTaskCRUDAndStableFile(t *testing.T) {
 		Title:              "  Ship backlog  ",
 		Details:            "  Keep it mergeable.  ",
 		AcceptanceCriteria: []string{"  Stored on disk  ", ""},
+		Tags:               []string{"  ui  ", "backend", "UI"},
 		Priority:           "p0",
 	})
 	if err != nil {
@@ -51,11 +52,29 @@ func TestWorkspaceTaskCRUDAndStableFile(t *testing.T) {
 	if task.Title != "Ship backlog" || task.Priority != "P0" || task.Details != "Keep it mergeable." {
 		t.Fatalf("unexpected task: %#v", task)
 	}
+	if strings.Join(task.Tags, ",") != "ui,backend" || strings.Join(board.Tags, ",") != "backend,ui" {
+		t.Fatalf("unexpected task tags: task=%#v board=%#v", task.Tags, board.Tags)
+	}
+	statePath := filepath.Join(workspacePath, ".echo", workspaceStateFile)
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read workspace state file: %v", err)
+	}
+	var workspaceState map[string]any
+	if err := json.Unmarshal(stateData, &workspaceState); err != nil {
+		t.Fatalf("decode workspace state file: %v", err)
+	}
+	workspaceState["futureSetting"] = "preserve me"
+	stateData, _ = json.MarshalIndent(workspaceState, "", "  ")
+	if err := os.WriteFile(statePath, append(stateData, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	board, err = service.UpdateWorkspaceTask(workspaceID, task.ID, TaskInput{
 		Title:              "Ship task board",
 		Details:            "Updated",
 		AcceptanceCriteria: []string{"Works"},
+		Tags:               []string{"docs"},
 		Priority:           "P1",
 	}, task.UpdatedAt)
 	if err != nil {
@@ -64,6 +83,19 @@ func TestWorkspaceTaskCRUDAndStableFile(t *testing.T) {
 	task = board.Tasks[0]
 	if task.Title != "Ship task board" || task.Priority != "P1" {
 		t.Fatalf("unexpected updated task: %#v", task)
+	}
+	if strings.Join(task.Tags, ",") != "docs" || strings.Join(board.Tags, ",") != "docs" {
+		t.Fatalf("unexpected updated task tags: task=%#v board=%#v", task.Tags, board.Tags)
+	}
+	stateData, err = os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stateData), "futureSetting") || !strings.Contains(string(stateData), "docs") {
+		t.Fatalf("workspace state file did not preserve future fields and tags: %s", stateData)
+	}
+	if strings.Contains(string(stateData), "backend") || strings.Contains(string(stateData), "ui") {
+		t.Fatalf("workspace state file retained unused tags: %s", stateData)
 	}
 	if _, err := service.MoveWorkspaceTask(workspaceID, task.ID, "P2", "stale"); err == nil || !strings.Contains(err.Error(), "changed") {
 		t.Fatalf("expected stale update rejection, got %v", err)
@@ -128,6 +160,16 @@ func TestWorkspaceTaskCRUDAndStableFile(t *testing.T) {
 	}
 	if len(board.Tasks) != 0 {
 		t.Fatalf("expected empty board after delete, got %#v", board.Tasks)
+	}
+	stateData, err = os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(stateData), "docs") {
+		t.Fatalf("workspace state file retained deleted task tag: %s", stateData)
+	}
+	if !strings.Contains(string(stateData), "futureSetting") {
+		t.Fatalf("workspace state file did not preserve future field after delete: %s", stateData)
 	}
 }
 

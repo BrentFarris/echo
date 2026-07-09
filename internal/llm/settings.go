@@ -77,6 +77,7 @@ type Settings struct {
 	EnableChatCompletionNotifications bool            `json:"enableChatCompletionNotifications,omitempty"`
 	EnableKanbanCompleteNotifications   bool            `json:"enableKanbanCompleteNotifications,omitempty"`
 	LimitKanbanConcurrency          bool              `json:"limitKanbanConcurrency,omitempty"`
+	DisableGitSplitDiffView         bool              `json:"disableGitSplitDiffView,omitempty"`
 	Theme                           Theme             `json:"theme,omitempty"`
 }
 

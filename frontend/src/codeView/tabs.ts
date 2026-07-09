@@ -294,6 +294,7 @@ async function saveCodeTab(
       replaceMountedEditorContent(workspaceID, savedFile.path, savedTab.content);
     }
     callbacks.pushToast("File saved.", "success");
+    void callbacks.refreshGitChanges(workspaceID);
     return true;
   } catch (error) {
     callbacks.pushToast(callbacks.errorMessage(error), "error");
@@ -362,6 +363,7 @@ async function saveUntitledCodeTab(
     state.directories.clear();
     tab.saving = false;
     callbacks.pushToast("File saved.", "success");
+    void callbacks.refreshGitChanges(workspaceID);
     callbacks.render();
     void revealCodeFileInTree(workspaceID, saved.path, callbacks);
     return true;

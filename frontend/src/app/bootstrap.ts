@@ -1,5 +1,5 @@
 
-import { applyInlineCodePromptEvent, ensureCodeViewRootLoaded, finishCodeTabSwitcher, openDroppedCodeFile, refreshOpenCodeTabsFromDisk, saveActiveCodeFile } from "../codeView";
+import { applyInlineCodePromptEvent, ensureCodeViewRootLoaded, finishCodeTabSwitcher, openDroppedCodeFile, refreshOpenCodeTabsFromDisk, saveActiveCodeFile, setCodeGitChangeProvider } from "../codeView";
 import { LoadRuntimeStatus, LoadState, LoadWebAccessStatus, ListAgentModes, ReadWorkspaceMediaFile } from "../backend/services";
 import { llm, services } from "../../wailsjs/go/models";
 import { EventsOn, OnFileDrop } from "../backend/runtime";
@@ -31,6 +31,9 @@ function codeViewCallbacks() {
     errorMessage,
     leadingWhitespaceIndicatorsEnabled: () =>
       leadingWhitespaceIndicatorsEnabled(state.appState?.settings ?? state.settingsDraft),
+    gitChangedLineNumbers: gitChangedLineNumbersForFile,
+    gitChangeStateForPath,
+    refreshGitChanges: loadWorkspaceChangesSummary,
     showCodePathContextMenu(
       workspaceId: string,
       path: string,
@@ -78,6 +81,7 @@ async function initialize() {
     if (activeWS) {
       void loadTokenBudget(activeWS);
       void loadLivenessConfig(activeWS);
+      await loadWorkspaceChangesSummary(activeWS);
     }
     const runtimeStatus = await LoadRuntimeStatus();
     for (const workspaceID of runtimeStatus.activeKanbanWorkspaceIds ?? []) {
@@ -125,6 +129,7 @@ export function startApp() {
     bindActionEvents,
     bindChatEvents,
   });
+  setCodeGitChangeProvider(gitChangeStateForPath);
 
   OnFileDrop((_x, _y, paths) => {
     void openDroppedFiles(paths);
@@ -144,6 +149,7 @@ export function startApp() {
 
   EventsOn("echo:file-changes:event", (event: FileChangesEvent) => {
     applyFileChangesEvent(event);
+    void loadWorkspaceChangesSummary(event.workspaceId);
   });
 
   EventsOn("echo:heartbeat:event", (event: HeartbeatEvent) => {

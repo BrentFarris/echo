@@ -5,7 +5,7 @@ import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { appRoot } from "../dom";
 import { icons } from "../icons";
-import { activeWorkspace, changeReviewFor, state } from "../state";
+import { activeWorkspace, changeReviewFor, gitRepositoryViewFor, gitSplitDiffViewEnabled, state } from "../state";
 import { pushToast } from "../toasts";
 import type { FileChangesEvent } from "../types";
 import { changeOperationLabel, changeSourceLabel, errorMessage, escapeAttribute, escapeHtml, fileName, formatBytes } from "../utils";
@@ -13,6 +13,15 @@ import { changeOperationLabel, changeSourceLabel, errorMessage, escapeAttribute,
 type GitDiffHunkTarget = {
   lineIndex: number;
   targetLine: number;
+};
+
+type GitSplitDiffRow = {
+  kind: "meta" | "context" | "changed";
+  left?: string;
+  leftKind?: "context" | "removed";
+  right?: string;
+  rightKind?: "context" | "added";
+  targetLine?: number;
 };
 
 export function renderChangeReviewDrawer(
@@ -69,6 +78,48 @@ export function renderChangeReviewDrawer(
   `;
 }
 
+export function renderChangeReviewPage(
+  workspace: services.Workspace,
+  review: services.WorkspaceChangeReview,
+): string {
+  const files = review.files ?? [];
+  const hasChanges = (review.changeCount ?? 0) > 0;
+  return `
+    <section class="work-panel change-review change-review-page" aria-labelledby="git-repository-title" data-change-review>
+      <header class="change-review-header">
+        <div>
+          <p class="eyebrow">${escapeHtml(workspace.displayName)}</p>
+          <h2 id="git-repository-title">Changes</h2>
+        </div>
+      </header>
+
+      <div class="change-review-summary" aria-label="Change summary">
+        <span>${escapeHtml(String(review.fileCount ?? files.length))} files</span>
+        <span>${escapeHtml(String(review.changeCount ?? 0))} tool changes</span>
+      </div>
+
+      <div class="change-review-actions">
+        <button class="icon-button" type="button" title="Previous change" aria-label="Previous change" data-action="previous-change" ${files.length ? "" : "disabled"}>
+          ${icons.arrowUp}
+        </button>
+        <button class="icon-button" type="button" title="Next change" aria-label="Next change" data-action="next-change" ${files.length ? "" : "disabled"}>
+          ${icons.arrowDown}
+        </button>
+        <button class="secondary-button icon-text-button" type="button" data-action="clear-change-review" ${hasChanges ? "" : "disabled"}>
+          ${icons.trash}
+          <span>Clear</span>
+        </button>
+      </div>
+
+      ${
+        files.length
+          ? `<div class="change-file-list">${files.map(renderChangedFile).join("")}</div>`
+          : `<div class="empty-state compact">No file changes recorded.</div>`
+      }
+    </section>
+  `;
+}
+
 export function renderChangedFile(file: services.WorkspaceChangedFile): string {
   return `
     <article class="change-file" data-change-file>
@@ -90,8 +141,9 @@ export function renderGitChangedFile(file: services.WorkspaceGitChangedFile): st
   const busy = Boolean(workspace && state.gitRepositoryOperations.has(workspace.id));
   const openable = isGitChangedFileOpenable(file);
   const openLine = gitChangedFileOpenLine(file);
+  const normalizedPath = normalizeGitChangePath(file.path);
   return `
-    <article class="change-file" data-change-file>
+    <article class="change-file" data-change-file data-git-change-file-path="${escapeAttribute(normalizedPath)}">
       <header>
         <div class="change-file-title">
           ${icons.file}
@@ -111,7 +163,7 @@ export function renderGitChangedFile(file: services.WorkspaceGitChangedFile): st
         </div>
       </header>
       ${renderGitChangeStatus(file)}
-      ${file.diffAvailable && file.diff ? renderGitChangeDiff(file.diff, openable ? file.path : "") : renderGitChangeMetadata(file)}
+      ${file.diffAvailable && file.diff ? renderGitDiff(file.diff, openable ? file.path : "") : renderGitChangeMetadata(file)}
     </article>
   `;
 }
@@ -240,10 +292,136 @@ export function renderGitChangeDiff(diff: string, path: string): string {
       if (!target) {
         return `<span class="change-diff-line is-${kind}"${marker}>${escapeHtml(line || " ")}</span>`;
       }
-      return `<span class="change-diff-line is-${kind} is-hunk"${marker}><button class="secondary-button git-hunk-open-button" type="button" title="Open this hunk" data-action="open-git-change-in-code" data-git-file-path="${escapeAttribute(path)}" data-git-target-line="${escapeAttribute(String(target.targetLine))}">Open</button><span>${escapeHtml(line || " ")}</span></span>`;
+      return `<span class="change-diff-line is-${kind} is-hunk"${marker}>${renderGitLineOpenButton(path, target.targetLine)}<span>${escapeHtml(line || " ")}</span></span>`;
     })
     .join("");
   return `<pre class="change-diff"><code>${rendered}</code></pre>`;
+}
+
+function normalizeGitChangePath(path: string): string {
+  return path.trim().replaceAll("\\", "/").replace(/^\/+/, "").toLowerCase();
+}
+
+function renderGitLineOpenButton(path: string, line: number): string {
+  return `<button class="git-line-open-button" type="button" title="Open in code" aria-label="Open this line in code" data-action="open-git-change-in-code" data-git-file-path="${escapeAttribute(path)}" data-git-target-line="${escapeAttribute(String(line))}">${icons.arrowRight}</button>`;
+}
+
+export function renderGitDiff(diff: string, path: string): string {
+  const unified = renderGitChangeDiff(diff, path);
+  if (!gitSplitDiffViewEnabled(state.appState?.settings)) {
+    return unified;
+  }
+  return `
+    <div class="git-diff-views">
+      <div class="git-diff-unified">${unified}</div>
+      ${renderGitSplitDiff(diff, path)}
+    </div>
+  `;
+}
+
+function renderGitSplitDiff(diff: string, path: string): string {
+  const rows = gitSplitDiffRows(diff);
+  const beforeRows = rows.map((row) => renderGitSplitDiffPaneRow(row, "left", "")).join("");
+  const afterRows = rows.map((row) => renderGitSplitDiffPaneRow(row, "right", path)).join("");
+  return `
+    <div class="git-split-diff" aria-label="Side-by-side Git diff" data-git-split-diff>
+      <section class="git-split-diff-pane" aria-label="Before">
+        <div class="git-split-diff-header" aria-hidden="true">Before</div>
+        <div class="git-split-diff-pane-scroll" data-git-split-scroll="left">
+          <div class="git-split-diff-pane-rows">${beforeRows}</div>
+        </div>
+      </section>
+      <section class="git-split-diff-pane" aria-label="After">
+        <div class="git-split-diff-header" aria-hidden="true">After</div>
+        <div class="git-split-diff-pane-scroll" data-git-split-scroll="right">
+          <div class="git-split-diff-pane-rows">${afterRows}</div>
+        </div>
+      </section>
+      <div class="git-split-diff-shared-scroll" aria-hidden="true" data-git-split-shared-scroll>
+        <div class="git-split-diff-shared-spacer" data-git-split-shared-spacer></div>
+      </div>
+    </div>
+  `;
+}
+
+function renderGitSplitDiffPaneRow(row: GitSplitDiffRow, side: "left" | "right", path: string): string {
+  if (row.kind === "meta") {
+    const text = side === "left" ? row.left : row.right;
+    return `<div class="git-split-diff-row is-meta" title="${escapeAttribute(text ?? "")}"><span>${escapeHtml(text || " ")}</span></div>`;
+  }
+  const kind = side === "left" ? row.leftKind : row.rightKind;
+  const text = side === "left" ? row.left : row.right;
+  const marker = side === "right" && row.kind === "changed" ? " data-change-line" : "";
+  const openButton = side === "right" && path && row.targetLine
+    ? renderGitLineOpenButton(path, row.targetLine)
+    : "";
+  return `<div class="git-split-diff-row is-${row.kind} is-${kind ?? "blank"}"${marker}><span>${escapeHtml(text || " ")}</span>${openButton}</div>`;
+}
+
+function gitSplitDiffRows(diff: string): GitSplitDiffRow[] {
+  const rows: GitSplitDiffRow[] = [];
+  const targets = new Map(gitDiffHunkTargets(diff).map((target) => [target.lineIndex, target]));
+  const removed: string[] = [];
+  let nextTargetLine = 1;
+
+  const flushRemoved = () => {
+    while (removed.length) {
+      rows.push({
+        kind: "changed",
+        left: removed.shift(),
+        leftKind: "removed",
+        right: "",
+        targetLine: nextTargetLine,
+      });
+    }
+  };
+
+  diff.split("\n").forEach((line, index) => {
+    const hunkTarget = targets.get(index);
+    if (line.startsWith("@@")) {
+      flushRemoved();
+      nextTargetLine = hunkTarget?.targetLine ?? nextTargetLine;
+      rows.push({ kind: "meta", left: line, right: line });
+      return;
+    }
+    if (line.startsWith("---") || line.startsWith("+++") || line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("new file") || line.startsWith("deleted file") || line.startsWith("similarity ") || line.startsWith("rename ")) {
+      flushRemoved();
+      rows.push({ kind: "meta", left: line, right: line });
+      return;
+    }
+    if (line.startsWith("\\ No newline")) {
+      rows.push({ kind: "meta", left: line, right: line });
+      return;
+    }
+    if (line.startsWith("-")) {
+      removed.push(line);
+      return;
+    }
+    if (line.startsWith("+")) {
+      const left = removed.shift() ?? "";
+      rows.push({
+        kind: "changed",
+        left,
+        leftKind: left ? "removed" : undefined,
+        right: line,
+        rightKind: "added",
+        targetLine: nextTargetLine,
+      });
+      nextTargetLine++;
+      return;
+    }
+    flushRemoved();
+    rows.push({
+      kind: "context",
+      left: line,
+      leftKind: "context",
+      right: line,
+      rightKind: "context",
+    });
+    nextTargetLine++;
+  });
+  flushRemoved();
+  return rows;
 }
 
 function gitDiffHunkTargets(diff: string): GitDiffHunkTarget[] {
@@ -319,7 +497,7 @@ export function scrollChangeReview(direction: 1 | -1) {
   if (!review) {
     return;
   }
-  const changes = Array.from(review.querySelectorAll<HTMLElement>("[data-change-line]"));
+  const changes = Array.from(review.querySelectorAll<HTMLElement>("[data-change-line]")).filter(isVisibleChangeTarget);
   if (!changes.length) {
     return;
   }
@@ -356,10 +534,14 @@ export function scrollChangeReviewFile(direction: 1 | -1) {
     targetIndex = currentIndex <= 0 ? files.length - 1 : currentIndex - 1;
   }
   const targetFile = files[targetIndex];
-  const fileChanges = Array.from(targetFile.querySelectorAll<HTMLElement>("[data-change-line]"));
+  const fileChanges = Array.from(targetFile.querySelectorAll<HTMLElement>("[data-change-line]")).filter(isVisibleChangeTarget);
   const targetLine = direction > 0 ? fileChanges[0] : fileChanges[fileChanges.length - 1];
   markCurrentChangeTarget(review, targetLine ?? targetFile);
   targetFile.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function isVisibleChangeTarget(target: HTMLElement): boolean {
+  return Boolean(target.offsetParent);
 }
 
 export function currentChangeFileIndex(files: HTMLElement[]): number {
@@ -410,7 +592,10 @@ export function applyFileChangesEvent(event: FileChangesEvent) {
       changeCount: event.changeCount,
     }),
   );
-  if (state.openChangeReviewWorkspaces.has(event.workspaceId)) {
+  if (
+    state.openChangeReviewWorkspaces.has(event.workspaceId) ||
+    (activeWorkspace()?.id === event.workspaceId && state.appMode === "git" && !gitRepositoryViewFor(event.workspaceId).repository)
+  ) {
     void refreshWorkspaceChangeReview(event.workspaceId);
     return;
   }

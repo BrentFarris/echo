@@ -1,7 +1,7 @@
 
 import { llm, services } from "../../wailsjs/go/models";
 import type { ThemePaletteName } from "./theme";
-import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, DashboardWidget, KanbanCardCreationDraft, MobileNavView, TaskEditorDraft, Toast } from "./types";
+import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, DashboardWidget, KanbanCardCreationDraft, MobileNavView, TaskEditorDraft, TaskInlineEditState, Toast } from "./types";
 
 const endpointTopics = ["chat", "kanbanDecompose", "kanban", "inlineCode"] as const;
 type EndpointTopicKey = (typeof endpointTopics)[number];
@@ -44,6 +44,8 @@ export const state = {
   kanbanBoards: new Map<string, services.KanbanBoard>(),
   taskBoards: new Map<string, services.TaskBoard>(),
   taskEditorDrafts: new Map<string, TaskEditorDraft>(),
+  selectedTaskIds: new Map<string, string>(),
+  taskInlineEdits: new Map<string, TaskInlineEditState>(),
   showCompletedTaskWorkspaces: new Set<string>(),
   taskSearchQuery: new Map<string, string>(),
   taskFilterMode: new Map<string, "all" | "open" | "completed">(),
@@ -55,6 +57,8 @@ export const state = {
   gitCommitDetails: new Map<string, services.WorkspaceGitCommitDetail>(),
   selectedGitRepositoryFolders: new Map<string, string>(),
   selectedGitCommitHashes: new Map<string, string>(),
+  collapsedGitChangeFolders: new Map<string, Set<string>>(),
+  collapsedGitChangeTrees: new Set<string>(),
   gitCommitMessageDrafts: new Map<string, string>(),
   gitNewBranchDrafts: new Map<string, string>(),
   gitSwitchBranchDrafts: new Map<string, string>(),
@@ -234,8 +238,11 @@ export function taskBoardFor(workspaceID: string): services.TaskBoard {
       workspaceId: workspaceID,
       storagePath: "",
       doneStoragePath: "",
+      workspaceStatePath: "",
       gitIgnored: false,
       doneGitIgnored: false,
+      workspaceStateGitIgnored: false,
+      tags: [],
       tasks: [],
     })
   );
@@ -321,6 +328,11 @@ export function kanbanCompleteNotificationsEnabled(settings: llm.Settings | null
 export function limitKanbanConcurrencyEnabled(settings: llm.Settings | null | undefined): boolean {
   return (settings as { limitKanbanConcurrency?: boolean } | null | undefined)
     ?.limitKanbanConcurrency === true;
+}
+
+export function gitSplitDiffViewEnabled(settings: llm.Settings | null | undefined): boolean {
+  return (settings as { disableGitSplitDiffView?: boolean } | null | undefined)
+    ?.disableGitSplitDiffView !== true;
 }
 
 export function thinkingCorrectionEnabled(settings: llm.Settings | null | undefined): boolean {
