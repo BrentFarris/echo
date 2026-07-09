@@ -1,5 +1,6 @@
 
-import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate, startCodeRename } from "../codeView";
+import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, goToLspDefinitionFromContext, refreshOpenCodeTabsFromDisk, startCodeCreate, startCodeRename } from "../codeView";
+import { codeStates } from "../codeView/state";
 import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, ListAgentModes, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
 import { appRoot } from "./dom";
 import { getAppCallbacks } from "./callbacks";
@@ -75,6 +76,28 @@ export async function handleAction(event: Event) {
       }
       dismissContextMenu();
       await startCodeRename(workspaceID, path, kind, getAppCallbacks().codeViewCallbacks());
+      return;
+    }
+    if (action === "editor-go-to-definition") {
+      const workspaceID = target.dataset.workspaceId ?? "";
+      const editorPath = target.dataset.editorPath ?? "";
+      const posStr = target.dataset.editorPosition ?? "-1";
+      const requestPosition = Number.parseInt(posStr, 10);
+      if (!workspaceID || !editorPath || requestPosition < 0) {
+        dismissContextMenu();
+        return;
+      }
+      dismissContextMenu();
+      const callbacks = getAppCallbacks().codeViewCallbacks();
+      // Get file content from the active tab or read from disk.
+      const codeState = codeStates.get(workspaceID);
+      const tab = codeState?.tabs.find((t) => t.path === editorPath);
+      const content = tab?.content ?? "";
+      if (!content) {
+        pushToast("File content not available in editor.", "error");
+        return;
+      }
+      await goToLspDefinitionFromContext(workspaceID, editorPath, content, requestPosition, callbacks);
       return;
     }
     if (action === "open-code-view") {

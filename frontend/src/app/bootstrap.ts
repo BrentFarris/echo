@@ -48,6 +48,22 @@ function codeViewCallbacks() {
         y,
       });
     },
+    showEditorSymbolContextMenu(
+      workspaceId: string,
+      path: string,
+      position: number | null,
+      x: number,
+      y: number,
+    ) {
+      showContextMenu({
+        workspaceId,
+        displayPath: path.split("/").pop() ?? path.split("\\").pop() ?? path,
+        editorPath: path,
+        editorPosition: position,
+        x,
+        y,
+      });
+    },
   };
 }
 

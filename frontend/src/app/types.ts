@@ -12,6 +12,8 @@ export type ContextMenuState = {
   workspacePath?: string;
   codePath?: string;
   codeKind?: CodeEntryKind;
+  editorPath?: string;
+  editorPosition?: number | null;
   x: number;
   y: number;
 };

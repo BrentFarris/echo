@@ -17,6 +17,13 @@ export type CodeViewCallbacks = {
     x: number,
     y: number,
   ) => void;
+  showEditorSymbolContextMenu: (
+    workspaceID: string,
+    path: string,
+    position: number | null,
+    x: number,
+    y: number,
+  ) => void;
 };
 
 export type DirectoryState = {

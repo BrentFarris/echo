@@ -1821,6 +1821,12 @@ h3 {
   outline: none;
 }
 
+.workspace-context-menu-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .workspace-context-menu-item.is-danger {
   color: var(--color-danger);
 }

@@ -7,6 +7,9 @@ import type { ContextMenuState } from "./types";
 import { escapeAttribute, escapeHtml } from "./utils";
 
 export function renderContextMenu(menu: ContextMenuState): string {
+  if (menu.editorPath !== undefined) {
+    return renderEditorContextMenu(menu);
+  }
   if (menu.codePath) {
     return renderCodeContextMenu(menu);
   }
@@ -21,6 +24,25 @@ export function renderContextMenu(menu: ContextMenuState): string {
       >\
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9l-6-6H5a2 2 0 0 0-2 2Z"/></svg>\
         <span class="workspace-context-menu-label">${escapeHtml(menu.displayPath)}</span>\
+      </button>\
+    </div>\
+  `;
+}
+
+function renderEditorContextMenu(menu: ContextMenuState): string {
+  const hasSymbol = menu.editorPosition != null;
+  return `\<div class="workspace-context-menu" data-context-menu style="left:${menu.x}px;top:${menu.y}px">\
+      \<button\
+        class="workspace-context-menu-item"\
+        type="button"\
+        data-action="editor-go-to-definition"\
+        data-workspace-id="${escapeAttribute(menu.workspaceId)}"\
+        data-editor-path="${escapeAttribute(menu.editorPath ?? "")}"\
+        data-editor-position="${hasSymbol ? String(menu.editorPosition) : "-1"}"\
+        ${!hasSymbol ? 'disabled' : ''}\
+      >\
+        \<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>\
+        \<span class="workspace-context-menu-label">Go to Definition</span>\
       </button>\
     </div>\
   `;

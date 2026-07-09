@@ -8,6 +8,7 @@ import { patchDirtyUI } from "./dom";
 import { applySavedFile, ensureCodeState, findTab } from "./state";
 import type { CodeViewCallbacks } from "./types";
 import { openReferencesPanel } from "./references";
+import { openCodeFile } from "./tabs";
 import {
   clamp,
   editableWorkspaceFile,
@@ -16,6 +17,11 @@ import {
   fileContentOffsetToEditorPosition,
   normalizeEditorLineBreaks,
 } from "./utils";
+
+export type LspSymbolPosition = {
+  position: number;
+  identifier: string;
+};
 
 type OpenCodeFileForDefinition = (
   workspaceID: string,
@@ -109,7 +115,7 @@ export function lspDefinitionExtension(
   if (!isLspSourcePath(path)) {
     return [];
   }
-  return Prec.highest(
+  return Prec.highest([
     keymap.of([
       {
         key: "F12",
@@ -133,7 +139,31 @@ export function lspDefinitionExtension(
         },
       },
     ]),
-  );
+    EditorView.domEventHandlers({
+      contextmenu(event, view) {
+        const coords = view.posAtCoords({ x: event.clientX, y: event.clientY });
+        if (coords !== null && hasIdentifierAtPosition(view.state, coords)) {
+          const requestPos = goToLspDefinitionAtPosition(view.state, coords);
+          callbacks.showEditorSymbolContextMenu(
+            workspaceID,
+            path,
+            requestPos,
+            event.clientX,
+            event.clientY,
+          );
+        } else {
+          callbacks.showEditorSymbolContextMenu(
+            workspaceID,
+            path,
+            null,
+            event.clientX,
+            event.clientY,
+          );
+        }
+        return true;
+      },
+    }),
+  ]);
 }
 
 export function lspRenameExtension(
@@ -809,6 +839,68 @@ function lspCompletionSource(
       return null;
     }
   };
+}
+
+export function hasIdentifierAtPosition(state: EditorState, position: number | null): string | null {
+  if (position === null) {
+    return null;
+  }
+  const cursor = clamp(position, 0, state.doc.length);
+  const line = state.doc.lineAt(cursor);
+  const offset = cursor - line.from;
+  const identifier = identifierBoundsAt(line.text, offset);
+  if (!identifier) {
+    return null;
+  }
+  return line.text.slice(identifier.from, identifier.to);
+}
+
+export function goToLspDefinitionAtPosition(
+  state: EditorState,
+  position: number | null,
+): number | null {
+  if (position === null) {
+    return null;
+  }
+  const editorPosition = lspDefinitionEditorPosition(state, position);
+  return editorPositionToFileContentOffset(state, editorPosition);
+}
+
+export async function goToLspDefinitionFromContext(
+  workspaceID: string,
+  path: string,
+  content: string,
+  requestPosition: number,
+  callbacks: CodeViewCallbacks,
+): Promise<void> {
+  try {
+    const response = services.WorkspaceDefinitionResponse.createFrom(
+      await FindWorkspaceFileDefinition(
+        workspaceID,
+        services.WorkspaceDefinitionRequest.createFrom({
+          filePath: path,
+          content,
+          position: requestPosition,
+        }),
+      ),
+    );
+    if (!response.found || !response.targetPath) {
+      callbacks.pushToast(response.message || "No definition found.", "info");
+      return;
+    }
+    if (isDefinitionAtRequest(response, path, requestPosition)) {
+      const references = await findLspReferences(workspaceID, path, content, requestPosition);
+      // Without EditorView we cannot open the references panel; just toast.
+      callbacks.pushToast(references.message || "Symbol is defined at this location.", "info");
+      return;
+    }
+    void openCodeFile(workspaceID, response.targetPath, callbacks, {
+      temporary: false,
+      selectionPosition: response.position,
+    });
+  } catch (error) {
+    callbacks.pushToast(callbacks.errorMessage(error), "error");
+  }
 }
 
 function lspDefinitionEditorPosition(state: EditorState, position: number) {
