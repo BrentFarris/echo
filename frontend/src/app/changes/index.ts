@@ -85,14 +85,7 @@ export function renderChangeReviewPage(
   const files = review.files ?? [];
   const hasChanges = (review.changeCount ?? 0) > 0;
   return `
-    <section class="work-panel change-review change-review-page" aria-labelledby="git-repository-title" data-change-review>
-      <header class="change-review-header">
-        <div>
-          <p class="eyebrow">${escapeHtml(workspace.displayName)}</p>
-          <h2 id="git-repository-title">Changes</h2>
-        </div>
-      </header>
-
+    <section class="work-panel change-review change-review-page" aria-label="Changes" data-change-review>
       <div class="change-review-summary" aria-label="Change summary">
         <span>${escapeHtml(String(review.fileCount ?? files.length))} files</span>
         <span>${escapeHtml(String(review.changeCount ?? 0))} tool changes</span>

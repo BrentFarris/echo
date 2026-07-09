@@ -43,14 +43,7 @@ export function renderGitRepositoryPage(
   }
   const sidebarCollapsed = repository ? isGitChangeTreeCollapsed(workspace.id, repository.folderId) : false;
   return `
-    <section class="work-panel git-repository" aria-labelledby="git-repository-title" data-change-review data-git-repository>
-      <header class="panel-heading git-repository-header">
-        <div>
-          <p class="eyebrow">${escapeHtml(workspace.displayName)}</p>
-          <h2 id="git-repository-title">Git</h2>
-        </div>
-      </header>
-
+    <section class="work-panel git-repository" aria-label="Git" data-change-review data-git-repository>
       ${repository
         ? `
           <div class="git-source-layout ${sidebarCollapsed ? "is-sidebar-collapsed" : ""}">

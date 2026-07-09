@@ -96,11 +96,9 @@ export function renderTaskPanel(workspace: services.Workspace): string {
   const tagList = Array.from(allTags).sort();
 
   return `
-    <section class="work-panel task-panel" aria-labelledby="tasks-title" data-task-panel>
+    <section class="work-panel task-panel" aria-label="Backlog" data-task-panel>
       <div class="panel-heading">
-        <div class="kanban-heading-main">
-          <span>Tasks</span>
-          <strong id="tasks-title">Backlog</strong>
+        <div class="kanban-heading-main task-storage-summary">
           <small class="task-storage-path">Active: ${escapeHtml(board.storagePath || ".echo/tasks.json")}</small>
           <small class="task-storage-path">Completed: ${escapeHtml(board.doneStoragePath || ".echo/tasks_done.json")}</small>
         </div>

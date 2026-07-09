@@ -148,9 +148,6 @@ export function renderDashboardWidgets(_view: AppMode): string {
 	if (!workspace) {
 		return `
   <div class="dashboard-view">
-    <header class="dashboard-toolbar">
-      <h2 id="dashboard-title">Dashboard</h2>
-    </header>
     <div class="dashboard-empty-state dashboard-no-workspace">
       <p>No workspace selected. Select a workspace to view your dashboard widgets.</p>
     </div>
@@ -179,8 +176,7 @@ export function renderDashboardWidgets(_view: AppMode): string {
 
 	return `
   <div class="dashboard-view">
-    <header class="dashboard-toolbar">
-      <h2 id="dashboard-title">Dashboard</h2>
+    <header class="dashboard-toolbar dashboard-toolbar-compact">
       ${editToggleBtn}
     </header>
     <div class="dashboard-widget-grid">

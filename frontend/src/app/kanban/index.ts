@@ -1140,11 +1140,7 @@ export function patchKanbanBoard(workspaceID: string): boolean {
   if (heading && workspace) {
     const reviewCount = review?.fileCount ?? 0;
     heading.innerHTML = `
-      <div class="kanban-heading-main">
-        <span>Kanban</span>
-        <strong id="kanban-title">${escapeHtml(workspace.displayName)}</strong>
-        ${hasKanbanRuntime(workspace.id) ? renderKanbanRuntime(workspace.id, running) : ""}
-      </div>
+      ${hasKanbanRuntime(workspace.id) ? `<div class="kanban-heading-main">${renderKanbanRuntime(workspace.id, running)}</div>` : `<div></div>`}
       <div class="kanban-actions">
         <button class="secondary-button icon-text-button change-review-button" type="button" title="Review AI file changes" data-action="open-change-review">
           ${icons.file}

@@ -262,7 +262,7 @@ function buildMain(
   if (mode === "dashboard") {
     return `
       <main class="main-content">
-        <section class="workspace-panel" aria-labelledby="dashboard-title">
+        <section class="workspace-panel" aria-label="Dashboard">
           ${renderDashboard()}
         </section>
       </main>
@@ -271,27 +271,27 @@ function buildMain(
 
   return `
     <main class="main-content">
-      <section class="workspace-panel${mode === "code" ? " is-code-mode" : ""}${mode === "git" ? " is-git-mode" : ""}" aria-labelledby="${getPanelTitleId(mode)}">
+      <section class="workspace-panel${mode === "code" ? " is-code-mode" : ""}${mode === "git" ? " is-git-mode" : ""}" aria-label="${escapeAttribute(getPanelLabel(mode))}">
         ${mode === "code" && workspace
           ? renderCodeView(workspace)
           : mode === "git" && workspace
             ? renderGitRepositoryPage(workspace, gitRepositoryViewFor(workspace.id))
             : workspace
-              ? renderWorkspacePanels(workspace, workspaces.length)
+              ? renderWorkspacePanels(workspace)
               : ""}
       </section>
     </main>
   `;
 }
 
-function getPanelTitleId(mode: string): string {
+function getPanelLabel(mode: string): string {
   switch (mode) {
-    case "code": return "code-title";
-    case "git": return "git-repository-title";
-    case "kanban": return "kanban-title";
-    case "tasks": return "tasks-title";
-    case "dashboard": return "dashboard-title";
-    default: return "chat-title";
+    case "code": return "Code";
+    case "git": return "Git";
+    case "kanban": return "Kanban";
+    case "tasks": return "Backlog";
+    case "dashboard": return "Dashboard";
+    default: return "Chat";
   }
 }
 
@@ -311,7 +311,7 @@ function buildOverlays(): string {
 /*  Preserved helpers                                                  */
 /* ------------------------------------------------------------------ */
 
-export function renderWorkspacePanels(workspace: services.Workspace | null, workspaceCount: number): string {
+export function renderWorkspacePanels(workspace: services.Workspace | null): string {
   const mode = state.appMode;
   const board = workspace ? kanbanBoardFor(workspace.id) : null;
   const running = workspace ? state.runningKanbanWorkspaces.has(workspace.id) : false;
@@ -330,14 +330,10 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
     mainPanel = workspace ? renderTaskPanel(workspace) : `<div class="empty-state">Add a workspace to create tasks.</div>`;
   } else if (mode === "kanban") {
     mainPanel = `
-      <section class="work-panel kanban-panel" aria-labelledby="kanban-title">
+      <section class="work-panel kanban-panel" aria-label="Kanban">
         ${workspace ? renderBudgetBar(workspace.id) : ""}
-        <div class="panel-heading">
-          <div class="kanban-heading-main">
-            <span>Kanban</span>
-            <strong id="kanban-title">${workspace ? escapeHtml(workspace.displayName) : `${workspaceCount} workspace${workspaceCount === 1 ? "" : "s"}`}</strong>
-            ${workspace && hasKanbanRuntime(workspace.id) ? renderKanbanRuntime(workspace.id, running) : ""}
-          </div>
+        <div class="panel-heading kanban-toolbar">
+          ${workspace && hasKanbanRuntime(workspace.id) ? `<div class="kanban-heading-main">${renderKanbanRuntime(workspace.id, running)}</div>` : `<div></div>`}
           ${
             workspace
               ? `<div class="kanban-actions">

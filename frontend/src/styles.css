@@ -510,24 +510,6 @@ h3 {
   min-width: 0;
 }
 
-.panel-heading.chat-heading {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-items: start;
-  gap: var(--space-md);
-}
-
-.chat-heading > div:first-child {
-  display: flex;
-  gap: var(--space-sm);
-  min-width: 0;
-}
-
-.chat-heading #chat-title {
-  font-size: var(--text-3xl);
-  line-height: 1.15;
-}
-
 .chat-actions {
   display: flex;
   align-items: center;
@@ -541,6 +523,10 @@ h3 {
   display: flex;
   align-items: center;
   gap: var(--space-lg);
+}
+
+.kanban-toolbar {
+  align-items: center;
 }
 
 .chat-log {
@@ -2025,6 +2011,10 @@ h3 {
   color: var(--color-text-muted);
   font-size: var(--text-sm);
   overflow-wrap: anywhere;
+}
+
+.task-storage-summary {
+  gap: var(--space-xxs);
 }
 
 .task-completed-toggle {
@@ -3595,7 +3585,8 @@ h3 {
 
 .git-split-diff-pane-scroll {
   min-width: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .git-split-diff-pane-rows {
@@ -3678,13 +3669,9 @@ h3 {
 
 .git-repository {
   height: 100%;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   overflow-x: hidden;
   overflow-y: hidden;
-}
-
-.git-repository-header {
-  align-items: start;
 }
 
 .git-repository-topbar {
@@ -8609,6 +8596,12 @@ h3 {
   margin: 0;
 }
 
+.dashboard-toolbar-compact {
+  justify-content: flex-end;
+  padding: 0;
+  margin-bottom: 0;
+}
+
 .dashboard-edit-btn,
 .dashboard-done-btn {
   display: inline-flex;
@@ -8973,6 +8966,11 @@ h3 {
 }
 
 .dashboard-toolbar h2 { font-size: var(--text-3xl); font-weight: 700; color: var(--color-text); margin: 0; }
+
+.dashboard-toolbar.dashboard-toolbar-compact {
+  justify-content: flex-end;
+  margin-bottom: 0;
+}
 
 .secondary-button.dashboard-edit-btn svg,
 .secondary-button.dashboard-done-btn svg {
