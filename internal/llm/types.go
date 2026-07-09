@@ -221,6 +221,7 @@ const (
 	EventError     EventType = "error"
 	EventComplete  EventType = "complete"
 	EventCanceled  EventType = "canceled"
+	EventUsage     EventType = "usage"
 )
 
 type StreamEvent struct {
@@ -229,6 +230,7 @@ type StreamEvent struct {
 	ToolCall     *ToolCallDelta  `json:"toolCall,omitempty"`
 	Error        string          `json:"error,omitempty"`
 	FinishReason string          `json:"finishReason,omitempty"`
+	Usage        *Usage          `json:"usage,omitempty"`
 	Raw          json.RawMessage `json:"raw,omitempty"`
 }
 

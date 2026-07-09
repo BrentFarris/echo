@@ -34,14 +34,25 @@ var readOnlyToolNames = map[string]bool{
 }
 
 var mutatingToolNames = map[string]bool{
-	"create_agent_mode":      true,
-	"filesystem_create_text": true,
-	"filesystem_delete_file": true,
-	"filesystem_edit_text":   true,
-	"restart":                true,
-	"shell_command":          true,
-	"workspace_skill_record": true,
-	"workspace_task_create":  true,
+	"create_agent_mode":              true,
+	"filesystem_create_text":         true,
+	"filesystem_delete_file":         true,
+	"filesystem_edit_text":           true,
+	"kanban_delete_card":             true,
+	"kanban_move_card":               true,
+	"kanban_reset_card":              true,
+	"kanban_start_execution":         true,
+	"kanban_stop_card":               true,
+	"kanban_update_card_description": true,
+	"restart":                        true,
+	"shell_command":                  true,
+	"workspace_skill_record":         true,
+	"workspace_task_create":          true,
+	"workspace_task_convert_to_kanban": true,
+	"workspace_task_delete":          true,
+	"workspace_task_move":            true,
+	"workspace_task_set_completed":   true,
+	"workspace_task_update":          true,
 }
 
 var planModeToolNames = func() map[string]bool {

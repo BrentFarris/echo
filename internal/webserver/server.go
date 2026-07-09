@@ -12,7 +12,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strconv"
@@ -98,7 +100,28 @@ func (s *Server) ApplyWebAccessSettings(settings services.WebAccessSettings) (se
 	s.mu.Unlock()
 
 	go func() {
-		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		var err error
+		if settings.EnableTLS {
+			configDir, dirErr := services.WebAccessConfigDir()
+			if dirErr != nil {
+				s.setLastError("TLS config dir: " + dirErr.Error())
+				return
+			}
+			certPath := filepath.Join(configDir, "echo-cert.pem")
+			keyPath := filepath.Join(configDir, "echo-key.pem")
+
+			if _, statErr := os.Stat(certPath); os.IsNotExist(statErr) {
+				if genErr := services.GenerateSelfSignedCert(certPath, keyPath); genErr != nil {
+					s.setLastError("TLS cert generation: " + genErr.Error())
+					return
+				}
+			}
+
+			err = server.ServeTLS(listener, certPath, keyPath)
+		} else {
+			err = server.Serve(listener)
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			s.setLastError(err.Error())
 		}
 	}()
@@ -404,6 +427,7 @@ func statusFromSettings(settings services.WebAccessSettings, running bool, lastE
 		AccessToken: settings.AccessToken,
 		PrimaryURL:  primary,
 		LANURLs:     urls,
+		EnableTLS:   settings.EnableTLS,
 		LastError:   lastError,
 	}
 }
@@ -412,9 +436,13 @@ func publicURLs(settings services.WebAccessSettings) []string {
 	hosts := publicHosts(settings.BindHost)
 	output := make([]string, 0, len(hosts))
 	token := url.QueryEscape(settings.AccessToken)
+	scheme := "http"
+	if settings.EnableTLS {
+		scheme = "https"
+	}
 	for _, host := range hosts {
 		hostPort := net.JoinHostPort(host, strconv.Itoa(settings.Port))
-		output = append(output, "http://"+hostPort+"/#token="+token)
+		output = append(output, scheme+"://"+hostPort+"/#token="+token)
 	}
 	return output
 }
@@ -553,6 +581,18 @@ var allowedRPCMethods = map[string]bool{
 	"StopChatStream":                   true,
 	"StopKanbanCard":                   true,
 	"StopKanbanExecution":              true,
+	"GetHeartbeatConfig":           true,
+	"StartHeartbeat":               true,
+	"StopHeartbeat":                true,
+	"GetTokenBudget":               true,
+	"SetTokenBudget":               true,
+	"ResetTokenBudget":             true,
+	"GetWatchdogConfig":            true,
+	"StartWatchdog":                true,
+	"StopWatchdog":                 true,
+	"GetLivenessConfig":            true,
+	"SetLivenessConfig":            true,
+	"ClearKanbanCardRecovery":      true,
 	"SwitchWorkspaceGitBranch":         true,
 	"SyncWorkspaceGitBranch":           true,
 	"SyncLSPDocument":                  true,
@@ -562,4 +602,6 @@ var allowedRPCMethods = map[string]bool{
 	"UpdateKanbanCardDescription":      true,
 	"UpdateKanbanCardDirection":        true,
 	"UpdateWorkspaceTask":              true,
+	"GetDashboardLayouts":              true,
+	"SaveDashboardLayout":              true,
 }

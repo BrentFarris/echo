@@ -8,7 +8,7 @@ import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";
 import { appRoot, isElementScrolledNearBottom } from "../dom";
 import { icons } from "../icons";
-import { playNotificationSound } from "../notifications";
+import { playNotificationSound, maybeSendChatCompletionNotification } from "../notifications";
 import { activeWorkspace, agentModesForWorkspace, chatImageDraftsFor, chatImageDraftTotalBytes, chatVideoDraftsFor, chatVideoDraftTotalBytes, chatPlanModeFor, chatAgentModeIDFor, chatAgentModeNameFor, setChatAgentMode, chatComposerModeFor, setChatComposerMode, chatSessionFor, getActiveChatModelLabel, cloneSettings, state } from "../state";
 import { settingsWithCompactTheme } from "../theme";
 import { pushToast } from "../toasts";
@@ -27,6 +27,70 @@ const maxChatMediaDrafts = 8;
 const supportedChatVideoTypes = new Set(["video/mp4", "video/webm", "video/quicktime"]);
 const chatStreamPatchDelay = 50;
 let chatInputWindowResizeBound = false;
+
+// ---------------------------------------------------------------------------
+// Web Speech API duck-typed interfaces (TS does not ship these by default)
+// ---------------------------------------------------------------------------
+
+interface SpeechRecognitionEvent extends Event {
+  readonly resultIndex: number;
+  readonly results: SpeechRecognitionResultList;
+}
+
+interface SpeechRecognitionErrorEvent extends Event {
+  readonly error: string;
+  readonly message: string;
+}
+
+interface SpeechRecognitionResultList {
+  readonly length: number;
+  item(index: number): SpeechRecognitionResult;
+  [index: number]: SpeechRecognitionResult;
+}
+
+interface SpeechRecognitionResult {
+  readonly isFinal: boolean;
+  readonly length: number;
+  item(index: number): SpeechRecognitionAlternative;
+  [index: number]: SpeechRecognitionAlternative;
+}
+
+interface SpeechRecognitionAlternative {
+  readonly transcript: string;
+  readonly confidence: number;
+}
+
+interface SpeechGrammar {
+  src: string;
+  weight: number;
+}
+
+interface SpeechGrammarList {
+  readonly length: number;
+  item(index: number): SpeechGrammar;
+  addFromString(string: string, weight?: number): void;
+  addFromURI(uri: string, weight?: number): void;
+}
+
+export interface SpeechRecognitionInstance extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  grammar: SpeechGrammarList | null;
+  maxAlternatives: number;
+  setProperty(name: string, value: string): void;
+  start(): void;
+  stop(): void;
+  abort(): void;
+  onresult: ((this: SpeechRecognitionInstance, event: SpeechRecognitionEvent) => any) | null;
+  onerror: ((this: SpeechRecognitionInstance, event: SpeechRecognitionErrorEvent) => any) | null;
+  onend: ((this: SpeechRecognitionInstance, event: Event) => any) | null;
+  onstart: ((this: SpeechRecognitionInstance, event: Event) => any) | null;
+}
+
+// ---------------------------------------------------------------------------
+// Speech-recognition module-level state (declared near initSpeechRecognition)
+// ---------------------------------------------------------------------------
 
 type PendingChatStreamPatch = {
   workspaceID: string;
@@ -550,6 +614,12 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
   const creatingSkill = state.creatingChatSkills.has(workspace.id);
   return `
     <section class="work-panel chat-panel" aria-busy="${session.busy || executing}" data-chat-panel data-workspace-id="${escapeAttribute(workspace.id)}">
+      <div class="panel-heading">
+        <div class="kanban-heading-main">
+          <span>Chat</span>
+          <strong id="chat-title">${escapeHtml(workspace.displayName)}</strong>
+        </div>
+      </div>
       <div class="chat-log" data-chat-log>
         ${
           messages.length
@@ -572,6 +642,7 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
             ${mentionOpen ? `aria-controls="chat-mention-list"` : ""}
             spellcheck="true"
             data-chat-input
+            speechinput="true"
             ${session.busy || executing ? "disabled" : ""}
           >${escapeHtml(draft)}</textarea>
         </div>
@@ -590,6 +661,11 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
                 <span>Video</span>
               </button>
             </div>
+            ${!isWailsRuntime() ? `
+            <button class="chat-toolbar-icon chat-speech-recognition" type="button" title="Hold to speak" aria-label="Voice input" data-chat-speech-recognition ${session.busy || executing ? "disabled" : ""}>
+              ${icons.mic}
+            </button>
+            ` : ''}
             <button class="model-selector chat-toolbar-model" type="button" title="Select model" aria-haspopup="listbox" aria-expanded="false" data-model-selector ${session.busy || executing ? "disabled" : ""}>
               <span class="model-selector-label">${escapeHtml(getActiveChatModelLabel())}</span>
               <span class="model-selector-chevron">${icons.arrowDown}</span>
@@ -934,6 +1010,7 @@ export function bindChatEvents(root: ParentNode) {
   bindModelDropdownEvents(root);
   bindModeSelector(root);
   bindModeDropdownEvents(root);
+  initSpeechRecognition(root);
 }
 
 function bindChatAttachmentMenuDismissal() {
@@ -971,6 +1048,151 @@ function bindChatAttachmentMenuDismissal() {
       }
     }
   });
+}
+
+let _activeRecognition: SpeechRecognitionInstance | null = null;
+let speechRecognitionBound = false;
+
+export function initSpeechRecognition(root: ParentNode) {
+  if (isWailsRuntime()) return;
+  if (speechRecognitionBound) return;
+
+  const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+  if (!SpeechRecognitionAPI) return;
+
+  const button = root.querySelector<HTMLButtonElement>("[data-chat-speech-recognition]");
+  if (!button) return;
+
+  speechRecognitionBound = true;
+  patchSpeechMicButton(button);
+}
+
+function patchSpeechMicButton(button: HTMLButtonElement) {
+  if (button.dataset.speechRecogBound === "true") return;
+  button.dataset.speechRecogBound = "true";
+
+  let holdTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const onPointerDown = (e: PointerEvent) => {
+    e.preventDefault();
+    if (button.disabled) return;
+    holdTimer = setTimeout(() => {
+      holdTimer = null;
+      startSpeechRecognition();
+    }, 200);
+  };
+
+  const onPointerUp = (e: PointerEvent) => {
+    e.preventDefault();
+    if (holdTimer) {
+      clearTimeout(holdTimer);
+      holdTimer = null;
+    } else {
+      stopSpeechRecognition();
+    }
+  };
+
+  const onPointerCancel = (e: PointerEvent) => {
+    e.preventDefault();
+    if (holdTimer) {
+      clearTimeout(holdTimer);
+      holdTimer = null;
+    } else {
+      stopSpeechRecognition();
+    }
+  };
+
+  button.addEventListener("pointerdown", onPointerDown);
+  button.addEventListener("pointerup", onPointerUp);
+  button.addEventListener("pointercancel", onPointerCancel);
+}
+
+function startSpeechRecognition() {
+  // Abort any prior session
+  stopSpeechRecognition();
+
+  const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+  if (!SpeechRecognitionAPI) return;
+
+  const recognition = new SpeechRecognitionAPI();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = "en-US";
+
+  _activeRecognition = recognition;
+
+  const button = appRoot.querySelector<HTMLButtonElement>("[data-chat-speech-recognition]");
+  if (button) {
+    button.classList.add("is-listening");
+    button.title = "Listening... Tap to stop";
+  }
+
+  recognition.onresult = (event: any) => {
+    // Fresh DOM lookup — textarea may have been replaced by a re-render during recognition
+    const inputEl = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
+    if (!inputEl) return;
+
+    let finalTranscript = "";
+    let interimTranscript = "";
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const t = event.results[i][0].transcript;
+      if (event.results[i].isFinal) {
+        finalTranscript += t;
+      } else {
+        interimTranscript += t;
+      }
+    }
+
+    const start = inputEl.selectionStart;
+    const end = inputEl.selectionEnd;
+    const before = inputEl.value.substring(0, start);
+    const after = inputEl.value.substring(end);
+    const transcript = finalTranscript || interimTranscript;
+    inputEl.value = before + transcript + after;
+    const newPos = start + transcript.length;
+    inputEl.setSelectionRange(newPos, newPos);
+    inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+
+  recognition.onerror = (event: any) => {
+    if (event.error === "permission-denied" || event.error === "not-allowed") {
+      pushToast("Microphone permission denied. Please allow microphone access.", "error");
+    } else {
+      console.warn("Speech recognition error:", event.error);
+    }
+  };
+
+  recognition.onend = () => {
+    if (button) {
+      button.classList.remove("is-listening");
+      button.title = "Hold to speak";
+    }
+    _activeRecognition = null;
+  };
+
+  try {
+    recognition.start();
+  } catch {
+    if (button) {
+      button.classList.remove("is-listening");
+      button.title = "Hold to speak";
+    }
+    _activeRecognition = null;
+  }
+}
+
+function stopSpeechRecognition() {
+  if (_activeRecognition) {
+    try {
+      _activeRecognition.abort();
+    } catch { /* ignore */ }
+    _activeRecognition = null;
+  }
+  const button = appRoot.querySelector<HTMLButtonElement>("[data-chat-speech-recognition]");
+  if (button) {
+    button.classList.remove("is-listening");
+    button.title = "Hold to speak";
+  }
 }
 
 let modelDropdownOpen = false;
@@ -1939,6 +2161,7 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
     message.error = event.error ?? "";
     if (event.type === "complete") {
       playNotificationSound();
+      maybeSendChatCompletionNotification(event.workspaceId);
     }
   }
   if (event.type === "retrying") {

@@ -11,10 +11,11 @@ import { closeTextSearch, handleTextSearchFieldInput, openTextSearch, openTextSe
 export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallbacks) {
   const view = root.querySelector<HTMLElement>("[data-code-view]");
   const workspaceID = view?.dataset.codeViewWorkspaceId ?? "";
-  if (!workspaceID) {
+  if (!view || !workspaceID) {
     return;
   }
 
+  bindCodeHistoryMouseButtonEvents(view, workspaceID, callbacks);
   bindCodeTreeEvents(root, workspaceID, callbacks);
   bindCodeTextSearchEvents(root, workspaceID, callbacks);
   bindCodeQuickOpenEvents(root, workspaceID, callbacks);
@@ -70,6 +71,39 @@ export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallback
   restoreCodeTreeScroll(workspaceID);
   startOpenTabFileWatch(callbacks);
   void mountActiveCodeEditor(workspaceID, callbacks, { openCodeFile, navigateCodeHistory, saveActiveCodeFile });
+}
+
+function bindCodeHistoryMouseButtonEvents(
+  view: HTMLElement,
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const preventSideButtonDefault = (event: MouseEvent) => {
+    const direction = codeHistoryMouseButtonDirection(event);
+    if (!direction) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    if (event.type === "mousedown") {
+      void navigateCodeHistory(workspaceID, callbacks, direction);
+    }
+  };
+
+  view.addEventListener("mousedown", preventSideButtonDefault, { capture: true });
+  view.addEventListener("mouseup", preventSideButtonDefault, { capture: true });
+  view.addEventListener("auxclick", preventSideButtonDefault, { capture: true });
+}
+
+function codeHistoryMouseButtonDirection(event: MouseEvent): -1 | 1 | null {
+  if (event.button === 3) {
+    return -1;
+  }
+  if (event.button === 4) {
+    return 1;
+  }
+  return null;
 }
 
 function bindUntitledFileCreationEvents(

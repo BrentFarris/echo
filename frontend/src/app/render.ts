@@ -6,6 +6,8 @@ import {
   clearChatMention,
   linkifyAssistantFilePaths,
 } from "./chat";
+import { loadTokenBudget, renderBudgetBar } from "./budget";
+import { renderChangeReviewDrawer } from "./changes";
 import { renderContextMenu } from "./contextMenu";
 import { appRoot, focusInitialElement } from "./dom";
 import { bindEvents } from "./events";
@@ -14,11 +16,12 @@ import { icons } from "./icons";
 import { kanbanBoardFor, gitRepositoryViewFor, activeWorkspace, kanbanCards, state, getActiveChatKanbanTab, changeReviewFor } from "./state";
 import { renderSettingsOverlay } from "./settings";
 import { renderToasts } from "./toasts";
-import { renderTaskPanel } from "./tasks";
-import { escapeHtml, workspaceFolderSummary } from "./utils";
+import { renderTaskPanel, renderTaskDetail } from "./tasks";
+import { escapeHtml, escapeAttribute, workspaceFolderSummary } from "./utils";
 import { renderWorkspaceIcon, renderMissingWorkspace } from "./workspace";
-import { hasKanbanRuntime, renderCreateKanbanCardDialog, renderDecompositionState, renderEmptyBoard, renderKanbanBoard, renderKanbanDetail, renderKanbanRuntime } from "./kanban";
+import { hasKanbanRuntime, getHeartbeatInterval, heartbeatIntervalLabel, getWatchdogInterval, watchdogIntervalLabel, renderCreateKanbanCardDialog, renderDecompositionState, renderEmptyBoard, renderKanbanBoard, renderKanbanDetail, renderKanbanRuntime } from "./kanban";
 import { services } from "../../wailsjs/go/models";
+import { renderDashboard } from "./dashboard";
 
 /** Persistent app-shell wrapper.  Creating it once inside appRoot means
  *  that subsequent renders only swap individual region fragments instead
@@ -242,7 +245,8 @@ function buildLeftNav(
       <div class="left-nav-actions">
         <button class="nav-icon-button${mode === "code" ? " is-active" : ""}" type="button" title="Code" aria-label="Code view" data-action="${mode === "code" ? "close-code-view" : "open-code-view"}">${icons.code}</button>
         <button class="nav-icon-button${mode === "tasks" ? " is-active" : ""}" type="button" title="Tasks" aria-label="Tasks" data-action="switch-view" data-view="tasks">${icons.tasks}</button>
-        <button class="nav-icon-button${mode === "git" ? " is-active" : ""}" type="button" title="Changes" aria-label="Changes" data-action="switch-view" data-view="git">${icons.git}${changesBadge}</button>
+        <button class="nav-icon-button${mode === "git" ? " is-active" : ""}" type="button" title="Git" aria-label="Git" data-action="switch-view" data-view="git">${icons.git}${changesBadge}</button>
+        <button class="nav-icon-button${mode === "dashboard" ? " is-active" : ""}" type="button" title="Dashboard" aria-label="Dashboard" data-action="${mode === "dashboard" ? "close-dashboard" : "open-dashboard"}">${icons.dashboard}</button>
         <button class="nav-icon-button" type="button" title="Settings" aria-label="Settings" data-action="open-settings">${icons.settings}</button>
       </div>
     </aside>
@@ -254,6 +258,16 @@ function buildMain(
   workspaces: services.Workspace[],
 ): string {
   const mode = state.appMode;
+
+  if (mode === "dashboard") {
+    return `
+      <main class="main-content">
+        <section class="workspace-panel" aria-labelledby="dashboard-title">
+          ${renderDashboard()}
+        </section>
+      </main>
+    `;
+  }
 
   return `
     <main class="main-content">
@@ -276,6 +290,7 @@ function getPanelTitleId(mode: string): string {
     case "git": return "git-repository-title";
     case "kanban": return "kanban-title";
     case "tasks": return "tasks-title";
+    case "dashboard": return "dashboard-title";
     default: return "chat-title";
   }
 }
@@ -307,12 +322,16 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
   let mainPanel = "";
 
   if (mode === "chat") {
-    mainPanel = renderChatPanel(workspace, true);
+    mainPanel = `
+      ${workspace ? renderBudgetBar(workspace.id) : ""}
+      ${renderChatPanel(workspace, true)}
+    `;
   } else if (mode === "tasks") {
     mainPanel = workspace ? renderTaskPanel(workspace) : `<div class="empty-state">Add a workspace to create tasks.</div>`;
   } else if (mode === "kanban") {
     mainPanel = `
       <section class="work-panel kanban-panel" aria-labelledby="kanban-title">
+        ${workspace ? renderBudgetBar(workspace.id) : ""}
         <div class="panel-heading">
           <div class="kanban-heading-main">
             <span>Kanban</span>
@@ -336,6 +355,14 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
                   <button class="icon-button stop-button" type="button" title="Stop agents" aria-label="Stop agents" data-action="stop-agents" ${running ? "" : "disabled"}>
                     ${icons.stop}
                   </button>
+                  <button class="secondary-button icon-text-button heartbeat-toggle-button" type="button" title="Auto-run Kanban at interval (click to cycle)" aria-label="Heartbeat toggle" data-action="toggle-heartbeat" data-workspace-id="${escapeAttribute(workspace.id)}">
+                    ${icons.refresh}
+                    <span>Auto: ${escapeHtml(heartbeatIntervalLabel(getHeartbeatInterval(workspace.id)))}</span>
+                  </button>
+                  <button class="secondary-button icon-text-button watchdog-toggle-button" type="button" title="Watchdog verification interval (click to cycle)" aria-label="Watchdog toggle" data-action="toggle-watchdog" data-workspace-id="${escapeAttribute(workspace.id)}">
+                    ${icons.search}
+                    <span>Watchdog: ${escapeHtml(watchdogIntervalLabel(getWatchdogInterval(workspace.id)))}</span>
+                  </button>
                 </div>`
               : ""
           }
@@ -356,6 +383,7 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
   return `
     ${mainPanel}
     ${mode === "kanban" && board ? renderKanbanDetail(board) : ""}
+    ${mode === "tasks" && workspace ? renderTaskDetail(workspace) : ""}
     ${workspace && state.creatingKanbanCardWorkspaces.has(workspace.id) && !running ? renderCreateKanbanCardDialog(workspace.id) : ""}
   `;
 }
@@ -396,7 +424,10 @@ function renderMobileBottomNav(
         <button class="mobile-nav-tab${activeMobileView === "git" ? " is-active" : ""}" type="button" title="Changes" aria-label="Changes" aria-pressed="${activeMobileView === "git"}" role="tab" aria-selected="${activeMobileView === "git"}" tabindex="${activeMobileView === "git" ? "0" : "-1"}" data-mobile-nav-tab-index="4" data-action="switch-view" data-view="git">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v12"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>${changesBadge}
         </button>
-        <button class="mobile-nav-tab${activeMobileView === "settings" ? " is-active" : ""}" type="button" title="Settings" aria-label="Settings" aria-pressed="${activeMobileView === "settings"}" role="tab" aria-selected="${activeMobileView === "settings"}" tabindex="${activeMobileView === "settings" ? "0" : "-1"}" data-mobile-nav-tab-index="5" data-action="open-settings">
+        <button class="mobile-nav-tab${activeMobileView === "dashboard" ? " is-active" : ""}" type="button" title="Dashboard" aria-label="Dashboard" aria-pressed="${activeMobileView === "dashboard"}" role="tab" aria-selected="${activeMobileView === "dashboard"}" tabindex="${activeMobileView === "dashboard" ? "0" : "-1"}" data-mobile-nav-tab-index="5" data-action="${activeMobileView === "dashboard" ? "close-dashboard" : "open-dashboard"}">
+          ${icons.dashboard}
+        </button>
+        <button class="mobile-nav-tab${activeMobileView === "settings" ? " is-active" : ""}" type="button" title="Settings" aria-label="Settings" aria-pressed="${activeMobileView === "settings"}" role="tab" aria-selected="${activeMobileView === "settings"}" tabindex="${activeMobileView === "settings" ? "0" : "-1"}" data-mobile-nav-tab-index="6" data-action="open-settings">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.3a2 0 0 1-4 0V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 0 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H2.7a2 2 0 0 1 0-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7A2 2 0 0 1 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.7a2 0 0 1 4 0V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 0 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.3a2 2 0 0 1 0 4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>
         </button>
       </div>

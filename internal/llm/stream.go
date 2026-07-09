@@ -11,6 +11,7 @@ import (
 
 type streamChunk struct {
 	Choices []streamChoice `json:"choices"`
+	Usage   *Usage         `json:"usage"`
 }
 
 type streamChoice struct {
@@ -29,10 +30,10 @@ type streamDelta struct {
 }
 
 func parseStream(ctx context.Context, reader io.Reader, events chan<- StreamEvent) {
-	parseStreamLogged(ctx, reader, events, nil)
+	parseStreamLogged(ctx, reader, events, nil, nil)
 }
 
-func parseStreamLogged(ctx context.Context, reader io.Reader, events chan<- StreamEvent, logger *streamLogger) {
+func parseStreamLogged(ctx context.Context, reader io.Reader, events chan<- StreamEvent, logger *streamLogger, usageOut **Usage) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
@@ -46,7 +47,7 @@ func parseStreamLogged(ctx context.Context, reader io.Reader, events chan<- Stre
 
 		line := scanner.Text()
 		if line == "" {
-			if flushStreamData(ctx, events, dataLines, &completed, logger) {
+			if flushStreamData(ctx, events, dataLines, &completed, logger, usageOut) {
 				return
 			}
 			dataLines = nil
@@ -60,7 +61,7 @@ func parseStreamLogged(ctx context.Context, reader io.Reader, events chan<- Stre
 		}
 	}
 
-	if len(dataLines) > 0 && flushStreamData(ctx, events, dataLines, &completed, logger) {
+	if len(dataLines) > 0 && flushStreamData(ctx, events, dataLines, &completed, logger, usageOut) {
 		return
 	}
 	if ctx.Err() != nil {
@@ -72,7 +73,7 @@ func parseStreamLogged(ctx context.Context, reader io.Reader, events chan<- Stre
 	}
 }
 
-func flushStreamData(ctx context.Context, events chan<- StreamEvent, dataLines []string, completed *bool, logger *streamLogger) bool {
+func flushStreamData(ctx context.Context, events chan<- StreamEvent, dataLines []string, completed *bool, logger *streamLogger, usageOut **Usage) bool {
 	if len(dataLines) == 0 {
 		return false
 	}
@@ -109,6 +110,13 @@ func flushStreamData(ctx context.Context, events chan<- StreamEvent, dataLines [
 		if choice.FinishReason != nil && !*completed {
 			emitLogged(ctx, events, StreamEvent{Type: EventComplete, FinishReason: *choice.FinishReason, Raw: json.RawMessage(data)}, logger)
 			*completed = true
+		}
+	}
+	if chunk.Usage != nil {
+		usage := *chunk.Usage
+		emitLogged(ctx, events, StreamEvent{Type: EventUsage, Usage: &usage, Raw: json.RawMessage(data)}, logger)
+		if usageOut != nil {
+			*usageOut = &usage
 		}
 	}
 	return false

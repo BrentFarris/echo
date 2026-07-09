@@ -7,10 +7,27 @@ const (
 	InlineCodeRuntimeEventName  = inlineCodePromptEventName
 	AgentModeRuntimeEventName   = agentModeEventName
 	TaskRuntimeEventName        = taskEventName
+	HeartbeatRuntimeEventName   = heartbeatEventName
+	LivenessRuntimeEventName    = livenessEventName
+	WatchdogRuntimeEventName    = watchdogEventName
 	LSPDiagnosticsEventName     = lspDiagnosticsEventName
 )
 
+const watchdogEventName = "echo:watchdog:event"
 const lspDiagnosticsEventName = "echo:lsp:diagnostics"
+
+type HeartbeatEvent struct {
+	WorkspaceID string `json:"workspaceId"`
+	Type        string `json:"type"` // "started", "stopped", "tick_no_eligible", "tick_no_budget", "budget_exceeded"
+	Message     string `json:"message,omitempty"`
+}
+
+type WatchdogEvent struct {
+	WorkspaceID string `json:"workspaceId"`
+	CardID      string `json:"cardId,omitempty"`
+	Type        string `json:"type"` // "started", "stopped", "check_complete", "repair_created"
+	Message     string `json:"message,omitempty"`
+}
 
 type RuntimeEvent struct {
 	Name string

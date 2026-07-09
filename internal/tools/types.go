@@ -63,6 +63,8 @@ type ExecutionContext struct {
 	// PathPermissions is deprecated; use ToolScopes.
 	PathPermissions *PathMatcher `json:"-"`
 	AgentModes      AgentModeProvider
+	KanbanExecutor  KanbanExecutor
+	KanbanManager   KanbanManager
 }
 
 // AgentModeSummary describes an available agent mode without the full prompt.
@@ -131,6 +133,46 @@ type WorkspaceSkillsProvider interface {
 type WorkspaceTasksProvider interface {
 	ListWorkspaceTasks(ctx context.Context, request WorkspaceTaskListRequest) (WorkspaceTaskListResponse, error)
 	CreateWorkspaceTask(ctx context.Context, request WorkspaceTaskCreateRequest) (WorkspaceTaskMutationResponse, error)
+	ConvertTaskToKanbanCard(ctx context.Context, request WorkspaceTaskConvertRequest) (WorkspaceTaskConversionResponse, error)
+	UpdateWorkspaceTask(ctx context.Context, request WorkspaceTaskUpdateRequest) (WorkspaceTaskMutationResponse, error)
+	DeleteWorkspaceTask(ctx context.Context, request WorkspaceTaskDeleteRequest) error
+	SetWorkspaceTaskCompleted(ctx context.Context, request WorkspaceTaskCompleteRequest) (WorkspaceTaskMutationResponse, error)
+	MoveWorkspaceTask(ctx context.Context, request WorkspaceTaskMoveRequest) (WorkspaceTaskMutationResponse, error)
+	ReorderWorkspaceTasks(ctx context.Context, request WorkspaceTaskReorderRequest) (WorkspaceTaskMutationResponse, error)
+}
+
+// KanbanManager manages kanban card operations.
+type KanbanManager interface {
+	MoveKanbanCard(ctx context.Context, workspaceID string, cardID string, lane string) (KanbanBoard, error)
+	DeleteKanbanCard(ctx context.Context, workspaceID string, cardID string) (KanbanBoard, error)
+	ResetKanbanCard(ctx context.Context, workspaceID string, cardID string) (KanbanBoard, error)
+	UpdateKanbanCardDescription(ctx context.Context, workspaceID string, cardID string, description string) (KanbanBoard, error)
+	StopKanbanCard(ctx context.Context, workspaceID string, cardID string) error
+}
+
+// KanbanBoard groups kanban cards by lane.
+type KanbanBoard struct {
+	WorkspaceID string        `json:"workspaceId"`
+	Ready       []KanbanCard  `json:"ready"`
+	InProgress  []KanbanCard  `json:"inProgress"`
+	Blocked     []KanbanCard  `json:"blocked"`
+	Done        []KanbanCard  `json:"done"`
+}
+
+// KanbanCard represents a kanban execution card.
+type KanbanCard struct {
+	ID                 string           `json:"id"`
+	WorkspaceID        string           `json:"workspaceId"`
+	Title              string           `json:"title"`
+	Description        string           `json:"description"`
+	AcceptanceCriteria []string         `json:"acceptanceCriteria"`
+	Lane               string           `json:"lane"`
+	Status             string           `json:"status"`
+}
+
+// KanbanExecutor starts kanban execution for a workspace.
+type KanbanExecutor interface {
+	StartKanbanExecutionWithContext(ctx context.Context, workspaceID string, concurrency int) error
 }
 
 type WorkspaceTaskListRequest struct {
@@ -141,8 +183,9 @@ type WorkspaceTaskListRequest struct {
 type WorkspaceTaskCreateRequest struct {
 	Title              string   `json:"title"`
 	Details            string   `json:"details,omitempty"`
-	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
+	Epic               string   `json:"epic,omitempty"`
 	Tags               []string `json:"tags,omitempty"`
+	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
 	Priority           string   `json:"priority,omitempty"`
 }
 
@@ -150,9 +193,11 @@ type WorkspaceTask struct {
 	ID                 string   `json:"id"`
 	Title              string   `json:"title"`
 	Details            string   `json:"details,omitempty"`
-	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
+	Epic               string   `json:"epic,omitempty"`
 	Tags               []string `json:"tags,omitempty"`
+	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
 	Priority           string   `json:"priority"`
+	SortOrder          int      `json:"sortOrder"`
 	Completed          bool     `json:"completed"`
 	CreatedAt          string   `json:"createdAt"`
 	UpdatedAt          string   `json:"updatedAt"`
@@ -167,6 +212,54 @@ type WorkspaceTaskListResponse struct {
 type WorkspaceTaskMutationResponse struct {
 	Created WorkspaceTask   `json:"created"`
 	Tasks   []WorkspaceTask `json:"tasks"`
+}
+
+type WorkspaceTaskConvertRequest struct {
+	TaskID                 string   `json:"taskID"`
+	Title                  string   `json:"title,omitempty"`
+	Description            string   `json:"description,omitempty"`
+	AcceptanceCriteria     []string `json:"acceptanceCriteria,omitempty"`
+	ExpectedUpdatedAt      string   `json:"expectedUpdatedAt"`
+}
+
+type WorkspaceTaskConversionResponse struct {
+	TaskID       string          `json:"taskID"`
+	Task         *WorkspaceTask  `json:"task"`
+	KanbanCardID string         `json:"kanbanCardID"`
+	Tasks        []WorkspaceTask `json:"tasks"`
+}
+
+type WorkspaceTaskUpdateRequest struct {
+	Title              string   `json:"title,omitempty"`
+	Details            string   `json:"details,omitempty"`
+	Epic               string   `json:"epic,omitempty"`
+	Tags               []string `json:"tags,omitempty"`
+	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
+	Priority           string   `json:"priority,omitempty"`
+	TaskID             string   `json:"taskID"`
+	ExpectedUpdatedAt  string   `json:"expectedUpdatedAt"`
+}
+
+type WorkspaceTaskDeleteRequest struct {
+	TaskID            string `json:"taskID"`
+	ExpectedUpdatedAt string `json:"expectedUpdatedAt"`
+}
+
+type WorkspaceTaskCompleteRequest struct {
+	Completed         bool   `json:"completed"`
+	TaskID            string `json:"taskID"`
+	ExpectedUpdatedAt string `json:"expectedUpdatedAt"`
+}
+
+type WorkspaceTaskMoveRequest struct {
+	Priority          string `json:"priority"`
+	TaskID            string `json:"taskID"`
+	ExpectedUpdatedAt string `json:"expectedUpdatedAt"`
+}
+
+type WorkspaceTaskReorderRequest struct {
+	TaskIDs  []string `json:"taskIDs"`
+	Priority string   `json:"priority"`
 }
 
 const (
