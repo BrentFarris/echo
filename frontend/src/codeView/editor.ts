@@ -6,16 +6,17 @@ import { crosshairCursor, Decoration, type DecorationSet, EditorView, GutterMark
 import { showMinimap } from "@replit/codemirror-minimap";
 import { basicSetup } from "codemirror";
 import { tags } from "@lezer/highlight";
+import { SyncLSPDocument } from "../backend/services";
 import { patchDirtyUI } from "./dom";
 import type { CodeFileTab } from "./types";
 import { inlineCodeChatExtension } from "./inlineChat";
-import { lspCompletionExtension, lspDefinitionExtension, lspRenameExtension } from "./lsp";
+import { lspCompletionExtension, lspDefinitionExtension, lspRenameExtension, isLspSourcePath } from "./lsp";
 import { lspDiagnosticsExtension } from "./diagnostics";
 import { referencesPanelExtension } from "./references";
 import { activeCodeTab, ensureCodeState, findTab } from "./state";
 import { spellCheckExtension } from "./spellCheck";
 import type { CodeViewCallbacks } from "./types";
-import { clamp, codeTabName, editorDocumentLengthForFileContent, editorStateToFileContent, escapeAttribute, escapeHtml, formatBytes } from "./utils";
+import { clamp, codeTabName, debounce, editorDocumentLengthForFileContent, editorStateToFileContent, escapeAttribute, escapeHtml, formatBytes } from "./utils";
 
 export type EditorFeatureHooks = {
   openCodeFile: (
@@ -223,6 +224,10 @@ export async function mountActiveCodeEditor(
         tab.path,
         editorStateToFileContent(update.state),
       );
+      // Debounced LSP document sync for diagnostics
+      if (!tab.untitled && !tab.external && isLspSourcePath(tab.path)) {
+        debouncedSyncLSPDocument(workspaceID, tab.path, update.view);
+      }
     }),
   ];
   if (!tab.untitled && !tab.external) {
@@ -311,6 +316,25 @@ function gitChangedLineGutterExtension(
 function shouldFocusMountedEditor(workspaceID: string) {
   const state = ensureCodeState(workspaceID);
   return !state.searchFocused && !state.textSearchOpen && !state.textSearchFocusedField && !state.quickOpen.open;
+}
+
+/** Debounced LSP document sync to trigger diagnostic updates. */
+const lspSyncDebounceMs = 500;
+let lspSyncTimer: number | null = null;
+
+function debouncedSyncLSPDocument(workspaceID: string, path: string, view: EditorView) {
+  if (lspSyncTimer !== null) {
+    window.clearTimeout(lspSyncTimer);
+  }
+  lspSyncTimer = window.setTimeout(() => {
+    lspSyncTimer = null;
+    // Only sync if the editor is still mounted and showing the same file
+    if (!mountedEditor || mountedEditorWorkspaceID !== workspaceID || mountedEditorPath !== path) {
+      return;
+    }
+    const content = editorStateToFileContent(view.state);
+    SyncLSPDocument(workspaceID, { filePath: path, content, position: 0 });
+  }, lspSyncDebounceMs);
 }
 
 function codeNavigationHistoryKeymap(

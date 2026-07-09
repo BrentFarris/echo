@@ -413,6 +413,10 @@ export function SubmitInlineCodePrompt(...args: Parameters<typeof Wails.SubmitIn
   return call("SubmitInlineCodePrompt", Wails.SubmitInlineCodePrompt, args);
 }
 
+export function SyncLSPDocument(...args: Parameters<typeof Wails.SyncLSPDocument>): ReturnType<typeof Wails.SyncLSPDocument> {
+  return call("SyncLSPDocument", Wails.SyncLSPDocument, args);
+}
+
 export function UpdateKanbanCardDescription(...args: Parameters<typeof Wails.UpdateKanbanCardDescription>): ReturnType<typeof Wails.UpdateKanbanCardDescription> {
   return call("UpdateKanbanCardDescription", Wails.UpdateKanbanCardDescription, args);
 }

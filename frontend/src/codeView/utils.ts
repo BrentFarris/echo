@@ -12,6 +12,21 @@ export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+/** Create a debounced function that delays invocation until `delay` ms have elapsed since the last call. */
+export function debounce<T extends (...args: unknown[]) => void>(fn: T, delay: number): T {
+  let timer: number | null = null;
+  const wrapped = ((...args: unknown[]) => {
+    if (timer !== null) {
+      window.clearTimeout(timer);
+    }
+    timer = window.setTimeout(() => {
+      timer = null;
+      fn(...args);
+    }, delay);
+  }) as T;
+  return wrapped;
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) {
     return `${bytes} B`;

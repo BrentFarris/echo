@@ -1110,7 +1110,7 @@ function lspCompletionMemberTriggerForPath(path: string) {
   return isCppSourcePath(path) ? lspCompletionTriggerCppMember : lspCompletionTriggerDot;
 }
 
-function isLspSourcePath(path: string) {
+export function isLspSourcePath(path: string) {
   const lower = path.toLowerCase();
   return lspSourceExtensions.some((extension) => lower.endsWith(extension));
 }

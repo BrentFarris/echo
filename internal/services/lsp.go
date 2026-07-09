@@ -317,6 +317,70 @@ type LSPDiagnosticsPayload struct {
 	Diagnostics []WorkspaceDiagnostic `json:"diagnostics"`
 }
 
+func (s *SystemService) SyncLSPDocument(workspaceID string, request WorkspaceDefinitionRequest) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return
+	}
+	if strings.TrimSpace(request.FilePath) == "" {
+		return
+	}
+	languageID, ok := lspLanguageIDForPath(request.FilePath)
+	if !ok {
+		return
+	}
+	resolved, err := resolveWorkspaceServicePath(workspace, request.FilePath)
+	if err != nil {
+		return
+	}
+	folder, err := workspaceFolderForAbsolutePath(workspace, resolved)
+	if err != nil {
+		return
+	}
+	client, err := s.workspaceLSPClient(workspace, folder, languageID)
+	if err != nil {
+		return
+	}
+	uri := fileURI(resolved)
+	_ = client.syncDocumentNoLock(resolved, uri, request.Content)
+}
+
+func (c *lspClient) syncDocumentNoLock(absolutePath string, uri string, content string) error {
+	c.docMu.Lock()
+	state, opened := c.documents[uri]
+	if !opened {
+		state = lspDocumentState{content: content, version: 1}
+		c.documents[uri] = state
+		c.docMu.Unlock()
+		return c.notify("textDocument/didOpen", map[string]any{
+			"textDocument": map[string]any{
+				"uri":        uri,
+				"languageId": lspDocumentLanguageIDForPath(c.languageID, absolutePath),
+				"version":    state.version,
+				"text":       content,
+			},
+		})
+	}
+	if state.content == content {
+		c.docMu.Unlock()
+		return nil
+	}
+	state.content = content
+	state.version++
+	c.documents[uri] = state
+	c.docMu.Unlock()
+
+	return c.notify("textDocument/didChange", map[string]any{
+		"textDocument": map[string]any{
+			"uri":     uri,
+			"version": state.version,
+		},
+		"contentChanges": []map[string]string{
+			{"text": content},
+		},
+	})
+}
+
 func (s *SystemService) CompleteWorkspaceFile(workspaceID string, request WorkspaceCompletionRequest) (WorkspaceCompletionResponse, error) {
 	workspace, _, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {

@@ -555,6 +555,7 @@ var allowedRPCMethods = map[string]bool{
 	"StopKanbanExecution":              true,
 	"SwitchWorkspaceGitBranch":         true,
 	"SyncWorkspaceGitBranch":           true,
+	"SyncLSPDocument":                  true,
 	"SubmitInlineCodePrompt":           true,
 	"UpdateAgentMode":                  true,
 	"UpdateAgentModePerTool":           true,

@@ -410,6 +410,10 @@ export function SwitchWorkspaceGitBranch(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['SwitchWorkspaceGitBranch'](arg1, arg2, arg3);
 }
 
+export function SyncLSPDocument(arg1, arg2) {
+  return window['go']['services']['SystemService']['SyncLSPDocument'](arg1, arg2);
+}
+
 export function SyncWorkspaceGitBranch(arg1, arg2) {
   return window['go']['services']['SystemService']['SyncWorkspaceGitBranch'](arg1, arg2);
 }

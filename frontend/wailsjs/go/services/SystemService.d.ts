@@ -210,6 +210,8 @@ export function SubmitInlineCodePrompt(arg1:string,arg2:services.InlineCodePromp
 
 export function SwitchWorkspaceGitBranch(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
 
+export function SyncLSPDocument(arg1:string,arg2:services.WorkspaceDefinitionRequest):Promise<void>;
+
 export function SyncWorkspaceGitBranch(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
 
 export function UpdateAgentMode(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:Array<string>):Promise<Array<services.AgentMode>>;
