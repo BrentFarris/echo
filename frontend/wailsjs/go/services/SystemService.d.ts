@@ -222,9 +222,15 @@ export function SetWorkspaceIconFromUpload(arg1:string,arg2:services.WorkspaceIc
 
 export function SetWorkspaceLetter(arg1:string,arg2:string):Promise<services.AppState>;
 
+export function SetWorkspaceSearchParentGitRepositories(arg1:string,arg2:boolean):Promise<services.AppState>;
+
 export function SetWorkspaceTaskCompleted(arg1:string,arg2:string,arg3:boolean,arg4:string):Promise<services.TaskBoard>;
 
 export function Shutdown():Promise<void>;
+
+export function StageWorkspaceGitChanges(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
+
+export function StageWorkspaceGitFile(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
 
 export function StartHeartbeat(arg1:string,arg2:services.HeartbeatConfig):Promise<void>;
 
@@ -251,6 +257,10 @@ export function SwitchWorkspaceGitBranch(arg1:string,arg2:string,arg3:string):Pr
 export function SyncLSPDocument(arg1:string,arg2:services.WorkspaceDefinitionRequest):Promise<void>;
 
 export function SyncWorkspaceGitBranch(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
+
+export function UnstageWorkspaceGitChanges(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
+
+export function UnstageWorkspaceGitFile(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
 
 export function UpdateAgentMode(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:Array<string>):Promise<Array<services.AgentMode>>;
 

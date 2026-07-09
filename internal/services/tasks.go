@@ -97,7 +97,18 @@ type workspaceTaskFileData struct {
 type workspaceStateFileData struct {
 	Version int                        `json:"version"`
 	Tags    []string                   `json:"tags,omitempty"`
+	Git     workspaceStateGitData      `json:"git,omitempty"`
 	Extra   map[string]json.RawMessage `json:"-"`
+}
+
+type workspaceStateGitData struct {
+	ParentRepositories []workspaceStateGitParentRepository `json:"parentRepositories,omitempty"`
+}
+
+type workspaceStateGitParentRepository struct {
+	FolderID       string `json:"folderId"`
+	FolderPath     string `json:"folderPath"`
+	RepositoryRoot string `json:"repositoryRoot"`
 }
 
 type workspaceTaskLocation struct {
@@ -126,6 +137,10 @@ func (d *workspaceStateFileData) UnmarshalJSON(data []byte) error {
 			if err := json.Unmarshal(value, &d.Tags); err != nil {
 				return err
 			}
+		case "git":
+			if err := json.Unmarshal(value, &d.Git); err != nil {
+				return err
+			}
 		default:
 			d.Extra[key] = append([]byte(nil), value...)
 		}
@@ -142,6 +157,9 @@ func (d workspaceStateFileData) MarshalJSON() ([]byte, error) {
 	}
 	raw["version"] = d.Version
 	raw["tags"] = d.Tags
+	if len(d.Git.ParentRepositories) > 0 {
+		raw["git"] = d.Git
+	}
 	return json.Marshal(raw)
 }
 

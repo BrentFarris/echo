@@ -592,11 +592,7 @@ export function bindChatMentionOptions(root: ParentNode) {
 export function renderChatPanel(workspace: services.Workspace | null, expanded = false): string {
   if (!workspace) {
     return `
-      <section class="work-panel chat-panel" aria-labelledby="chat-title">
-        <div class="panel-heading">
-          <span>Chat</span>
-          <strong id="chat-title">No workspace</strong>
-        </div>
+      <section class="work-panel chat-panel" aria-label="Chat">
         <div class="empty-state">Add a workspace to start planning.</div>
       </section>
     `;
@@ -613,13 +609,7 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
   const mentionOpen = Boolean(chatMentionFor(workspace.id));
   const creatingSkill = state.creatingChatSkills.has(workspace.id);
   return `
-    <section class="work-panel chat-panel" aria-busy="${session.busy || executing}" data-chat-panel data-workspace-id="${escapeAttribute(workspace.id)}">
-      <div class="panel-heading">
-        <div class="kanban-heading-main">
-          <span>Chat</span>
-          <strong id="chat-title">${escapeHtml(workspace.displayName)}</strong>
-        </div>
-      </div>
+    <section class="work-panel chat-panel" aria-label="Chat" aria-busy="${session.busy || executing}" data-chat-panel data-workspace-id="${escapeAttribute(workspace.id)}">
       <div class="chat-log" data-chat-log>
         ${
           messages.length

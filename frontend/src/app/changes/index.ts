@@ -5,7 +5,7 @@ import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { appRoot } from "../dom";
 import { icons } from "../icons";
-import { activeWorkspace, changeReviewFor, gitRepositoryViewFor, gitSplitDiffViewEnabled, state } from "../state";
+import { activeWorkspace, changeReviewFor, gitRepositoryViewFor, state } from "../state";
 import { pushToast } from "../toasts";
 import type { FileChangesEvent } from "../types";
 import { changeOperationLabel, changeSourceLabel, errorMessage, escapeAttribute, escapeHtml, fileName, formatBytes } from "../utils";
@@ -85,14 +85,7 @@ export function renderChangeReviewPage(
   const files = review.files ?? [];
   const hasChanges = (review.changeCount ?? 0) > 0;
   return `
-    <section class="work-panel change-review change-review-page" aria-labelledby="git-repository-title" data-change-review>
-      <header class="change-review-header">
-        <div>
-          <p class="eyebrow">${escapeHtml(workspace.displayName)}</p>
-          <h2 id="git-repository-title">Changes</h2>
-        </div>
-      </header>
-
+    <section class="work-panel change-review change-review-page" aria-label="Changes" data-change-review>
       <div class="change-review-summary" aria-label="Change summary">
         <span>${escapeHtml(String(review.fileCount ?? files.length))} files</span>
         <span>${escapeHtml(String(review.changeCount ?? 0))} tool changes</span>
@@ -308,15 +301,10 @@ function renderGitLineOpenButton(path: string, line: number): string {
 
 export function renderGitDiff(diff: string, path: string): string {
   const unified = renderGitChangeDiff(diff, path);
-  if (!gitSplitDiffViewEnabled(state.appState?.settings)) {
+  if (state.gitDiffViewMode !== "split") {
     return unified;
   }
-  return `
-    <div class="git-diff-views">
-      <div class="git-diff-unified">${unified}</div>
-      ${renderGitSplitDiff(diff, path)}
-    </div>
-  `;
+  return renderGitSplitDiff(diff, path);
 }
 
 function renderGitSplitDiff(diff: string, path: string): string {

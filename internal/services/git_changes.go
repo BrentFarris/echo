@@ -29,6 +29,8 @@ type WorkspaceGitChangedFile struct {
 	Status         string `json:"status"`
 	IndexStatus    string `json:"indexStatus,omitempty"`
 	WorktreeStatus string `json:"worktreeStatus,omitempty"`
+	Staged         bool   `json:"staged"`
+	Unstaged       bool   `json:"unstaged"`
 	Diff           string `json:"diff,omitempty"`
 	DiffAvailable  bool   `json:"diffAvailable"`
 }
@@ -62,7 +64,14 @@ func (s *SystemService) LoadWorkspaceGitChanges(workspaceID string) (WorkspaceGi
 		if folder.Missing {
 			continue
 		}
-		folderFiles, err := loadGitChangedFilesForFolder(ctx, folder)
+		repository, err := s.workspaceGitRepositoryContext(ctx, workspace, folder)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		folderFiles, err := loadGitChangedFilesForRepository(ctx, repository)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -86,34 +95,23 @@ func (s *SystemService) LoadWorkspaceGitChanges(workspaceID string) (WorkspaceGi
 	}, nil
 }
 
-func loadGitChangedFilesForFolder(ctx context.Context, folder WorkspaceFolder) ([]WorkspaceGitChangedFile, error) {
-	status, err := runWorkspaceGitCommand(ctx, folder.Path, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-	if err != nil {
-		return nil, err
-	}
-	entries, err := parseGitStatusPorcelain(status)
+func loadGitChangedFilesForRepository(ctx context.Context, repository workspaceGitRepositoryContext) ([]WorkspaceGitChangedFile, error) {
+	entries, err := workspaceGitStatusEntriesForRepository(ctx, repository)
 	if err != nil {
 		return nil, err
 	}
 
 	files := make([]WorkspaceGitChangedFile, 0, len(entries))
 	for _, entry := range entries {
-		file := WorkspaceGitChangedFile{
-			Path:           labeledWorkspacePath(folder.Label, entry.path),
-			OldPath:        labeledWorkspacePath(folder.Label, entry.oldPath),
-			Operation:      gitStatusOperation(entry.index, entry.worktree),
-			Status:         gitRawStatus(entry.index, entry.worktree),
-			IndexStatus:    gitStatusChar(entry.index),
-			WorktreeStatus: gitStatusChar(entry.worktree),
-		}
+		file := workspaceGitChangedFileForEntry(repository, entry)
 
 		var diff string
 		if entry.index == '?' && entry.worktree == '?' {
-			diff, err = synthesizeUntrackedGitDiff(folder.Path, entry.path, file.Path)
+			diff, err = synthesizeUntrackedGitDiff(repository.WorktreePath, entry.path, file.Path)
 		} else {
-			diff, err = loadGitDiffForPath(ctx, folder.Path, entry.path)
+			diff, err = loadGitDiffForPath(ctx, repository.WorktreePath, entry.path)
 			if err == nil {
-				diff = prefixGitDiffPaths(diff, folder.Label)
+				diff = prefixGitDiffPathsForRepository(diff, repository)
 			}
 		}
 		if err == nil && strings.TrimSpace(diff) != "" {
@@ -123,6 +121,66 @@ func loadGitChangedFilesForFolder(ctx context.Context, folder WorkspaceFolder) (
 		files = append(files, file)
 	}
 	return files, nil
+}
+
+func workspaceGitStatusEntriesForRepository(ctx context.Context, repository workspaceGitRepositoryContext) ([]gitStatusEntry, error) {
+	status, err := runWorkspaceGitCommand(ctx, repository.WorktreePath, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return nil, err
+	}
+	entries, err := parseGitStatusPorcelain(status)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]gitStatusEntry, 0, len(entries))
+	for _, entry := range entries {
+		if !workspaceGitStatusEntryInRepository(repository, entry) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered, nil
+}
+
+func workspaceGitStatusEntryInRepository(repository workspaceGitRepositoryContext, entry gitStatusEntry) bool {
+	if entry.path == "" {
+		return false
+	}
+	relative, ok := repository.gitPathInFolder(entry.path)
+	if !ok {
+		return false
+	}
+	if isWorkspaceGitIgnoredMetadataPath(relative) {
+		return false
+	}
+	for _, path := range workspaceGitDiscardPaths(entry) {
+		relative, ok := repository.gitPathInFolder(path)
+		if !ok {
+			return false
+		}
+		if isWorkspaceGitIgnoredMetadataPath(relative) {
+			return false
+		}
+	}
+	return true
+}
+
+func isWorkspaceGitIgnoredMetadataPath(path string) bool {
+	clean := cleanWorkspaceGitRelativePath(path)
+	return clean == workspaceCacheDirName || strings.HasPrefix(clean, workspaceCacheDirName+"/")
+}
+
+func workspaceGitChangedFileForEntry(repository workspaceGitRepositoryContext, entry gitStatusEntry) WorkspaceGitChangedFile {
+	return WorkspaceGitChangedFile{
+		Path:           repository.labeledGitPath(entry.path),
+		OldPath:        repository.labeledGitPath(entry.oldPath),
+		Operation:      gitStatusOperation(entry.index, entry.worktree),
+		Status:         gitRawStatus(entry.index, entry.worktree),
+		IndexStatus:    gitStatusChar(entry.index),
+		WorktreeStatus: gitStatusChar(entry.worktree),
+		Staged:         gitStatusEntryHasStagedChanges(entry),
+		Unstaged:       gitStatusEntryHasUnstagedChanges(entry),
+	}
 }
 
 func parseGitStatusPorcelain(output []byte) ([]gitStatusEntry, error) {
@@ -248,6 +306,38 @@ func prefixGitDiffPaths(diff string, label string) string {
 	return strings.Join(lines, "\n")
 }
 
+func prefixGitDiffPathsForRepository(diff string, repository workspaceGitRepositoryContext) string {
+	if strings.TrimSpace(diff) == "" {
+		return diff
+	}
+	lines := strings.Split(strings.ReplaceAll(diff, "\r\n", "\n"), "\n")
+	for i, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "diff --git a/"):
+			parts := strings.SplitN(strings.TrimPrefix(line, "diff --git a/"), " b/", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			left := repository.labeledGitPath(parts[0])
+			right := repository.labeledGitPath(parts[1])
+			if left != "" && right != "" {
+				lines[i] = "diff --git a/" + left + " b/" + right
+			}
+		case strings.HasPrefix(line, "--- a/"):
+			path := repository.labeledGitPath(strings.TrimPrefix(line, "--- a/"))
+			if path != "" {
+				lines[i] = "--- a/" + path
+			}
+		case strings.HasPrefix(line, "+++ b/"):
+			path := repository.labeledGitPath(strings.TrimPrefix(line, "+++ b/"))
+			if path != "" {
+				lines[i] = "+++ b/" + path
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 func splitGitDiffLines(text string) []string {
 	if text == "" {
 		return nil
@@ -315,6 +405,14 @@ func gitStatusChar(value byte) string {
 	return string(value)
 }
 
+func gitStatusEntryHasStagedChanges(entry gitStatusEntry) bool {
+	return entry.index != 0 && entry.index != ' ' && entry.index != '?'
+}
+
+func gitStatusEntryHasUnstagedChanges(entry gitStatusEntry) bool {
+	return entry.worktree != 0 && entry.worktree != ' ' || entry.index == '?'
+}
+
 func runWorkspaceGitCommand(ctx context.Context, workspacePath string, args ...string) ([]byte, error) {
 	return runWorkspaceGitCommandWithInput(ctx, workspacePath, nil, args...)
 }
@@ -332,14 +430,19 @@ func runWorkspaceGitCommandWithInput(ctx context.Context, workspacePath string, 
 	}
 	configureWorkspaceCommandProcess(cmd)
 
-	output, err := cmd.CombinedOutput()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
 	if ctx.Err() != nil {
-		return output, fmt.Errorf("git command timed out")
+		return stdout.Bytes(), fmt.Errorf("git command timed out")
 	}
 	if err != nil {
+		output := append(stdout.Bytes(), stderr.Bytes()...)
 		return output, gitCommandError(args, output, err)
 	}
-	return output, nil
+	return stdout.Bytes(), nil
 }
 
 func gitCommandError(args []string, output []byte, err error) error {

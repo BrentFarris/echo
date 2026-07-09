@@ -286,6 +286,7 @@ export namespace services {
 	    folders: WorkspaceFolder[];
 	    displayName: string;
 	    defaultPlanMode: boolean;
+	    searchParentGitRepositories: boolean;
 	    letter?: string;
 	    iconPath?: string;
 	    iconUrl?: string;
@@ -303,6 +304,7 @@ export namespace services {
 	        this.folders = this.convertValues(source["folders"], WorkspaceFolder);
 	        this.displayName = source["displayName"];
 	        this.defaultPlanMode = source["defaultPlanMode"];
+	        this.searchParentGitRepositories = source["searchParentGitRepositories"];
 	        this.letter = source["letter"];
 	        this.iconPath = source["iconPath"];
 	        this.iconUrl = source["iconUrl"];
@@ -1537,6 +1539,8 @@ export namespace services {
 	    status: string;
 	    indexStatus?: string;
 	    worktreeStatus?: string;
+	    staged: boolean;
+	    unstaged: boolean;
 	    diff?: string;
 	    diffAvailable: boolean;
 	
@@ -1552,6 +1556,8 @@ export namespace services {
 	        this.status = source["status"];
 	        this.indexStatus = source["indexStatus"];
 	        this.worktreeStatus = source["worktreeStatus"];
+	        this.staged = source["staged"];
+	        this.unstaged = source["unstaged"];
 	        this.diff = source["diff"];
 	        this.diffAvailable = source["diffAvailable"];
 	    }
@@ -1665,6 +1671,8 @@ export namespace services {
 	    dirty: boolean;
 	    branches: WorkspaceGitBranch[];
 	    fileCount: number;
+	    stagedFileCount: number;
+	    unstagedFileCount: number;
 	    files: WorkspaceGitChangedFile[];
 	    commits: WorkspaceGitCommit[];
 	
@@ -1687,6 +1695,8 @@ export namespace services {
 	        this.dirty = source["dirty"];
 	        this.branches = this.convertValues(source["branches"], WorkspaceGitBranch);
 	        this.fileCount = source["fileCount"];
+	        this.stagedFileCount = source["stagedFileCount"];
+	        this.unstagedFileCount = source["unstagedFileCount"];
 	        this.files = this.convertValues(source["files"], WorkspaceGitChangedFile);
 	        this.commits = this.convertValues(source["commits"], WorkspaceGitCommit);
 	    }

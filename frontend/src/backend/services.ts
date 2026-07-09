@@ -270,6 +270,22 @@ export function MergeWorkspaceGitBranch(...args: Parameters<typeof Wails.MergeWo
   return call("MergeWorkspaceGitBranch", Wails.MergeWorkspaceGitBranch, args);
 }
 
+export function StageWorkspaceGitChanges(...args: Parameters<typeof Wails.StageWorkspaceGitChanges>): ReturnType<typeof Wails.StageWorkspaceGitChanges> {
+  return call("StageWorkspaceGitChanges", Wails.StageWorkspaceGitChanges, args);
+}
+
+export function StageWorkspaceGitFile(...args: Parameters<typeof Wails.StageWorkspaceGitFile>): ReturnType<typeof Wails.StageWorkspaceGitFile> {
+  return call("StageWorkspaceGitFile", Wails.StageWorkspaceGitFile, args);
+}
+
+export function UnstageWorkspaceGitChanges(...args: Parameters<typeof Wails.UnstageWorkspaceGitChanges>): ReturnType<typeof Wails.UnstageWorkspaceGitChanges> {
+  return call("UnstageWorkspaceGitChanges", Wails.UnstageWorkspaceGitChanges, args);
+}
+
+export function UnstageWorkspaceGitFile(...args: Parameters<typeof Wails.UnstageWorkspaceGitFile>): ReturnType<typeof Wails.UnstageWorkspaceGitFile> {
+  return call("UnstageWorkspaceGitFile", Wails.UnstageWorkspaceGitFile, args);
+}
+
 export function MoveKanbanCard(...args: Parameters<typeof Wails.MoveKanbanCard>): ReturnType<typeof Wails.MoveKanbanCard> {
   return call("MoveKanbanCard", Wails.MoveKanbanCard, args);
 }
@@ -423,6 +439,10 @@ export function SetWorkspaceIconFromUpload(...args: Parameters<typeof Wails.SetW
 
 export function SetWorkspaceLetter(...args: Parameters<typeof Wails.SetWorkspaceLetter>): ReturnType<typeof Wails.SetWorkspaceLetter> {
   return call("SetWorkspaceLetter", Wails.SetWorkspaceLetter, args);
+}
+
+export function SetWorkspaceSearchParentGitRepositories(...args: Parameters<typeof Wails.SetWorkspaceSearchParentGitRepositories>): ReturnType<typeof Wails.SetWorkspaceSearchParentGitRepositories> {
+  return call("SetWorkspaceSearchParentGitRepositories", Wails.SetWorkspaceSearchParentGitRepositories, args);
 }
 
 export function GetLivenessConfig(...args: Parameters<typeof Wails.GetLivenessConfig>): ReturnType<typeof Wails.GetLivenessConfig> {

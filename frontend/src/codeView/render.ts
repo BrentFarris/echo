@@ -26,13 +26,13 @@ export function renderCodeView(workspace: services.Workspace): string {
   return `
     <section
       class="code-view"
-      aria-labelledby="code-title"
+      aria-label="Code"
       data-code-view
       data-code-view-workspace-id="${escapeAttribute(workspace.id)}"
     >
       <header class="code-view-heading">
         <div>
-          <strong id="code-title">${escapeHtml(workspace.displayName)}</strong><span class="heading-path">${escapeHtml(codeWorkspaceFolderSummary(workspace))}</span>
+          <span class="heading-path">${escapeHtml(codeWorkspaceFolderSummary(workspace))}</span>
         </div>
         <div class="code-view-actions">
           <button class="secondary-button icon-text-button" type="button" data-action="close-code-view">

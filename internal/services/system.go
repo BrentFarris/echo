@@ -69,33 +69,35 @@ func (f *WorkspaceFolder) UnmarshalJSON(data []byte) error {
 }
 
 type Workspace struct {
-	ID              string            `json:"id"`
-	Folders         []WorkspaceFolder `json:"folders"`
-	DisplayName     string            `json:"displayName"`
-	DefaultPlanMode bool              `json:"defaultPlanMode"`
-	Letter          string            `json:"letter,omitempty"`
-	IconPath        string            `json:"iconPath,omitempty"`
-	IconURL         string            `json:"iconUrl,omitempty"`
-	Active          bool              `json:"active"`
-	Missing         bool              `json:"missing"`
-	Error           string            `json:"error,omitempty"`
+	ID                          string            `json:"id"`
+	Folders                     []WorkspaceFolder `json:"folders"`
+	DisplayName                 string            `json:"displayName"`
+	DefaultPlanMode             bool              `json:"defaultPlanMode"`
+	SearchParentGitRepositories bool              `json:"searchParentGitRepositories"`
+	Letter                      string            `json:"letter,omitempty"`
+	IconPath                    string            `json:"iconPath,omitempty"`
+	IconURL                     string            `json:"iconUrl,omitempty"`
+	Active                      bool              `json:"active"`
+	Missing                     bool              `json:"missing"`
+	Error                       string            `json:"error,omitempty"`
 }
 
 func (w *Workspace) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		ID              string            `json:"id"`
-		Folders         []WorkspaceFolder `json:"folders"`
-		FolderPath      string            `json:"folderPath"`
-		DisplayName     string            `json:"displayName"`
-		DefaultPlanMode bool              `json:"defaultPlanMode"`
-		Letter          string            `json:"letter"`
-		IconPath        string            `json:"iconPath"`
-		IconURL         string            `json:"iconUrl"`
-		LegacyPath      string            `json:"path"`
-		LegacyName      string            `json:"name"`
-		Active          bool              `json:"active"`
-		Missing         bool              `json:"missing"`
-		Error           string            `json:"error"`
+		ID                          string            `json:"id"`
+		Folders                     []WorkspaceFolder `json:"folders"`
+		FolderPath                  string            `json:"folderPath"`
+		DisplayName                 string            `json:"displayName"`
+		DefaultPlanMode             bool              `json:"defaultPlanMode"`
+		SearchParentGitRepositories bool              `json:"searchParentGitRepositories"`
+		Letter                      string            `json:"letter"`
+		IconPath                    string            `json:"iconPath"`
+		IconURL                     string            `json:"iconUrl"`
+		LegacyPath                  string            `json:"path"`
+		LegacyName                  string            `json:"name"`
+		Active                      bool              `json:"active"`
+		Missing                     bool              `json:"missing"`
+		Error                       string            `json:"error"`
 	}
 	var keys map[string]json.RawMessage
 	if err := json.Unmarshal(data, &keys); err != nil {
@@ -105,16 +107,17 @@ func (w *Workspace) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*w = Workspace{
-		ID:              raw.ID,
-		Folders:         raw.Folders,
-		DisplayName:     raw.DisplayName,
-		DefaultPlanMode: raw.DefaultPlanMode,
-		Letter:          normalizeWorkspaceLetter(raw.Letter),
-		IconPath:        raw.IconPath,
-		IconURL:         raw.IconURL,
-		Active:          raw.Active,
-		Missing:         raw.Missing,
-		Error:           raw.Error,
+		ID:                          raw.ID,
+		Folders:                     raw.Folders,
+		DisplayName:                 raw.DisplayName,
+		DefaultPlanMode:             raw.DefaultPlanMode,
+		SearchParentGitRepositories: raw.SearchParentGitRepositories,
+		Letter:                      normalizeWorkspaceLetter(raw.Letter),
+		IconPath:                    raw.IconPath,
+		IconURL:                     raw.IconURL,
+		Active:                      raw.Active,
+		Missing:                     raw.Missing,
+		Error:                       raw.Error,
 	}
 	if _, ok := keys["defaultPlanMode"]; !ok {
 		w.DefaultPlanMode = true
@@ -141,15 +144,15 @@ type DashboardWidgetJSON struct {
 }
 
 type AppState struct {
-	Settings          llm.Settings                 `json:"settings"`
-	WebAccess         WebAccessSettings            `json:"webAccess"`
-	Workspaces        []Workspace                  `json:"workspaces"`
-	ActiveWorkspaceID string                       `json:"activeWorkspaceId"`
-	HeartbeatConfigs  map[string]HeartbeatConfig   `json:"heartbeatConfigs,omitempty"`
-	LivenessConfigs   map[string]LivenessConfig    `json:"livenessConfigs,omitempty"`
-	WatchdogConfigs   map[string]WatchdogConfig    `json:"watchdogConfigs,omitempty"`
+	Settings          llm.Settings                     `json:"settings"`
+	WebAccess         WebAccessSettings                `json:"webAccess"`
+	Workspaces        []Workspace                      `json:"workspaces"`
+	ActiveWorkspaceID string                           `json:"activeWorkspaceId"`
+	HeartbeatConfigs  map[string]HeartbeatConfig       `json:"heartbeatConfigs,omitempty"`
+	LivenessConfigs   map[string]LivenessConfig        `json:"livenessConfigs,omitempty"`
+	WatchdogConfigs   map[string]WatchdogConfig        `json:"watchdogConfigs,omitempty"`
 	DashboardLayouts  map[string][]DashboardWidgetJSON `json:"dashboardLayouts,omitempty"`
-	KanbanCards       []KanbanCard                 `json:"-"`
+	KanbanCards       []KanbanCard                     `json:"-"`
 }
 
 type SystemService struct {
@@ -495,6 +498,27 @@ func (s *SystemService) SetWorkspaceDefaultPlanMode(workspaceID string, enabled 
 	for i := range s.state.Workspaces {
 		if s.state.Workspaces[i].ID == workspaceID {
 			s.state.Workspaces[i].DefaultPlanMode = enabled
+			s.refreshWorkspaceStatusesLocked()
+			if err := s.saveLocked(); err != nil {
+				return AppState{}, err
+			}
+			return cloneState(s.state), nil
+		}
+	}
+	return AppState{}, fmt.Errorf("workspace was not found")
+}
+
+func (s *SystemService) SetWorkspaceSearchParentGitRepositories(workspaceID string, enabled bool) (AppState, error) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return AppState{}, fmt.Errorf("workspace id is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.Workspaces {
+		if s.state.Workspaces[i].ID == workspaceID {
+			s.state.Workspaces[i].SearchParentGitRepositories = enabled
 			s.refreshWorkspaceStatusesLocked()
 			if err := s.saveLocked(); err != nil {
 				return AppState{}, err

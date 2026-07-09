@@ -434,12 +434,24 @@ export function SetWorkspaceLetter(arg1, arg2) {
   return window['go']['services']['SystemService']['SetWorkspaceLetter'](arg1, arg2);
 }
 
+export function SetWorkspaceSearchParentGitRepositories(arg1, arg2) {
+  return window['go']['services']['SystemService']['SetWorkspaceSearchParentGitRepositories'](arg1, arg2);
+}
+
 export function SetWorkspaceTaskCompleted(arg1, arg2, arg3, arg4) {
   return window['go']['services']['SystemService']['SetWorkspaceTaskCompleted'](arg1, arg2, arg3, arg4);
 }
 
 export function Shutdown() {
   return window['go']['services']['SystemService']['Shutdown']();
+}
+
+export function StageWorkspaceGitChanges(arg1, arg2) {
+  return window['go']['services']['SystemService']['StageWorkspaceGitChanges'](arg1, arg2);
+}
+
+export function StageWorkspaceGitFile(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['StageWorkspaceGitFile'](arg1, arg2, arg3);
 }
 
 export function StartHeartbeat(arg1, arg2) {
@@ -492,6 +504,14 @@ export function SyncLSPDocument(arg1, arg2) {
 
 export function SyncWorkspaceGitBranch(arg1, arg2) {
   return window['go']['services']['SystemService']['SyncWorkspaceGitBranch'](arg1, arg2);
+}
+
+export function UnstageWorkspaceGitChanges(arg1, arg2) {
+  return window['go']['services']['SystemService']['UnstageWorkspaceGitChanges'](arg1, arg2);
+}
+
+export function UnstageWorkspaceGitFile(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['UnstageWorkspaceGitFile'](arg1, arg2, arg3);
 }
 
 export function UpdateAgentMode(arg1, arg2, arg3, arg4, arg5) {
