@@ -421,6 +421,10 @@ export function SetActiveWorkspace(...args: Parameters<typeof Wails.SetActiveWor
   return call("SetActiveWorkspace", Wails.SetActiveWorkspace, args);
 }
 
+export function SetWorkspaceBuildCommand(...args: Parameters<typeof Wails.SetWorkspaceBuildCommand>): ReturnType<typeof Wails.SetWorkspaceBuildCommand> {
+  return call("SetWorkspaceBuildCommand", Wails.SetWorkspaceBuildCommand, args);
+}
+
 export function SetWorkspaceDefaultPlanMode(...args: Parameters<typeof Wails.SetWorkspaceDefaultPlanMode>): ReturnType<typeof Wails.SetWorkspaceDefaultPlanMode> {
   return call("SetWorkspaceDefaultPlanMode", Wails.SetWorkspaceDefaultPlanMode, args);
 }

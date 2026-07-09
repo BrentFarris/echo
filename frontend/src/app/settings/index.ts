@@ -1,5 +1,5 @@
 
-import { CreateAgentMode, CreateAgentModePerTool, DeleteAgentMode, LoadWebAccessStatus, ListAgentModes, PrepareRebuildAndRelaunch, SaveSettings, SaveWebAccessSettings, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter, SetWorkspaceSearchParentGitRepositories, UpdateAgentMode, UpdateAgentModePerTool } from "../../backend/services";
+import { CreateAgentMode, CreateAgentModePerTool, DeleteAgentMode, LoadWebAccessStatus, ListAgentModes, PrepareRebuildAndRelaunch, SaveSettings, SaveWebAccessSettings, SetWorkspaceBuildCommand, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter, SetWorkspaceSearchParentGitRepositories, UpdateAgentMode, UpdateAgentModePerTool } from "../../backend/services";
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
@@ -8,7 +8,7 @@ import { cloneSettings, cloneWebAccessSettings, fieldValue, gitSplitDiffViewEnab
 import { applyTheme, normalizeHexColor, settingsWithCompactTheme, settingsWithThemeColor, themeColorValue, themeGroups, themeTokens, type ThemePaletteName } from "../theme";
 import { pushToast } from "../toasts";
 import { errorMessage, escapeAttribute, escapeHtml, workspaceFolderSummary } from "../utils";
-import { hydrateWorkspaceLetterDrafts, renderWorkspaceFolderSettings, renderWorkspaceIcon, workspaceLetterDraft } from "../workspace";
+import { hydrateWorkspaceLetterDrafts, renderWorkspaceFolderSettings, renderWorkspaceIcon, workspaceBuildCommandDraft, workspaceLetterDraft } from "../workspace";
 import { renderBudgetSettingsSection, handleBudgetLimitInput } from "../budget";
 import { renderLivenessSettingsSection, handleLivenessInput, loadLivenessConfig } from "../liveness";
 
@@ -343,6 +343,16 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                               <div class="workspace-row-main">
                                 <strong>${escapeHtml(workspace.displayName)}${workspace.missing ? " - Folder missing" : ""}</strong>
                                 <span>${escapeHtml(workspaceFolderSummary(workspace))}</span>
+                                <label class="field field-wide workspace-build-command-field">
+                                  <span>Build command</span>
+                                  <textarea
+                                    name="workspaceBuildCommand"
+                                    rows="2"
+                                    placeholder="go test -tags=&quot;debug editor&quot; ./..."
+                                    data-workspace-build-command
+                                    data-workspace-id="${escapeAttribute(workspace.id)}"
+                                  >${escapeHtml(workspaceBuildCommandDraft(workspace))}</textarea>
+                                </label>
                                 ${renderWorkspaceFolderSettings(workspace)}
                               </div>
                               <label class="settings-toggle workspace-default-plan-mode">
@@ -1653,6 +1663,11 @@ export function handleSettingsInput(event: Event) {
     state.formError = "";
     return;
   }
+  if (input.dataset.workspaceBuildCommand !== undefined) {
+    state.workspaceBuildCommandDrafts.set(input.dataset.workspaceId ?? "", input.value);
+    state.formError = "";
+    return;
+  }
   if (!state.settingsDraft) {
     return;
   }
@@ -1863,6 +1878,10 @@ export async function handleSettingsSubmit(event: SubmitEvent) {
       const draft = state.workspaceLetterDrafts.get(workspace.id);
       if (draft !== undefined && draft !== (workspace.letter ?? "")) {
         state.appState = await SetWorkspaceLetter(workspace.id, draft);
+      }
+      const buildCommandDraft = state.workspaceBuildCommandDrafts.get(workspace.id);
+      if (buildCommandDraft !== undefined && buildCommandDraft !== (workspace.buildCommand ?? "")) {
+        state.appState = await SetWorkspaceBuildCommand(workspace.id, buildCommandDraft);
       }
     }
     state.settingsDraft = cloneSettings(state.appState.settings);

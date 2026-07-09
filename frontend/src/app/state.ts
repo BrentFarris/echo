@@ -25,6 +25,7 @@ export const state = {
   agentModeDraftPermissions: {} as Record<string, string[]>, // tool name -> glob paths[]
   settingsThemePalette: "light" as ThemePaletteName,
   workspaceLetterDrafts: new Map<string, string>(),
+  workspaceBuildCommandDrafts: new Map<string, string>(),
   appMode: "chat" as AppMode,
   dashboardPreviousMode: null as AppMode | null, // remembers mode before dashboard
   dashboardLayouts: defaultDashboardLayouts(), // per-view widget layouts (initialized with defaults)

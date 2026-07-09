@@ -212,6 +212,8 @@ export function SetLivenessConfig(arg1:string,arg2:services.LivenessConfig):Prom
 
 export function SetTokenBudget(arg1:string,arg2:number):Promise<void>;
 
+export function SetWorkspaceBuildCommand(arg1:string,arg2:string):Promise<services.AppState>;
+
 export function SetWorkspaceDefaultPlanMode(arg1:string,arg2:boolean):Promise<services.AppState>;
 
 export function SetWorkspaceFolderUseAgents(arg1:string,arg2:string,arg3:boolean):Promise<services.AppState>;

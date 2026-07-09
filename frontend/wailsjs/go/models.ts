@@ -287,6 +287,7 @@ export namespace services {
 	    displayName: string;
 	    defaultPlanMode: boolean;
 	    searchParentGitRepositories: boolean;
+	    buildCommand?: string;
 	    letter?: string;
 	    iconPath?: string;
 	    iconUrl?: string;
@@ -305,6 +306,7 @@ export namespace services {
 	        this.displayName = source["displayName"];
 	        this.defaultPlanMode = source["defaultPlanMode"];
 	        this.searchParentGitRepositories = source["searchParentGitRepositories"];
+	        this.buildCommand = source["buildCommand"];
 	        this.letter = source["letter"];
 	        this.iconPath = source["iconPath"];
 	        this.iconUrl = source["iconUrl"];
