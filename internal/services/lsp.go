@@ -490,6 +490,13 @@ func (s *SystemService) FindWorkspaceFileDefinition(workspaceID string, request 
 	if err != nil {
 		return WorkspaceDefinitionResponse{}, err
 	}
+	// If no definition found, fall back to type definition (e.g., for Go types like options.App).
+	if len(locations) == 0 {
+		locations, err = client.typeDefinition(ctx, resolved, request)
+		if err != nil {
+			return WorkspaceDefinitionResponse{}, err
+		}
+	}
 	if len(locations) == 0 {
 		response.Message = "No definition found."
 		return response, nil
@@ -953,6 +960,25 @@ func (c *lspClient) definition(ctx context.Context, absolutePath string, request
 		"position":     lspPositionFromUTF16Offset(request.Content, request.Position),
 	}
 	raw, err := c.requestWithRetry(ctx, "textDocument/definition", params)
+	if err != nil {
+		return nil, err
+	}
+	return parseLSPDefinitionResponse(raw)
+}
+
+func (c *lspClient) typeDefinition(ctx context.Context, absolutePath string, request WorkspaceDefinitionRequest) ([]lspDefinitionLocation, error) {
+	c.operationMu.Lock()
+	defer c.operationMu.Unlock()
+
+	uri := fileURI(absolutePath)
+	if err := c.syncDocument(absolutePath, uri, request.Content); err != nil {
+		return nil, err
+	}
+	params := map[string]any{
+		"textDocument": map[string]string{"uri": uri},
+		"position":     lspPositionFromUTF16Offset(request.Content, request.Position),
+	}
+	raw, err := c.requestWithRetry(ctx, "textDocument/typeDefinition", params)
 	if err != nil {
 		return nil, err
 	}

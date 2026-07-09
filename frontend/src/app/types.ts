@@ -14,6 +14,8 @@ export type ContextMenuState = {
   codeKind?: CodeEntryKind;
   editorPath?: string;
   editorPosition?: number | null;
+  editorPositionValid?: boolean;
+  editorPositionValidating?: boolean;
   spellCheckWord?: string;
   spellCheckSuggestions?: string[];
   spellCheckFrom?: number;

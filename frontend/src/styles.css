@@ -1830,7 +1830,36 @@ h3 {
 .workspace-context-menu-item:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+  pointer-events: auto; /* allow hover for tooltip */
+}
+
+/* Custom tooltip on disabled context menu items (native `title` doesn't fire on :disabled) */
+.workspace-context-menu-item[data-tooltip]:disabled::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: var(--space-md);
+  padding: var(--space-xs) var(--space-md);
+  border-radius: 6px;
+  background: var(--color-surface-overlay);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  white-space: nowrap;
   pointer-events: none;
+  box-shadow: var(--shadow-soft);
+  z-index: 10000;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.workspace-context-menu-item[data-tooltip]:disabled:hover::after {
+  opacity: 1;
+}
+
+.workspace-context-menu-item[data-tooltip]:disabled {
+  position: relative; /* establish tooltip positioning context */
 }
 
 .workspace-context-menu-item.is-danger {
