@@ -890,7 +890,6 @@ export namespace services {
 	    epic?: string;
 	    tags?: string[];
 	    acceptanceCriteria?: string[];
-	    tags?: string[];
 	    priority: string;
 	    sortOrder: number;
 	    completed: boolean;
@@ -910,7 +909,6 @@ export namespace services {
 	        this.epic = source["epic"];
 	        this.tags = source["tags"];
 	        this.acceptanceCriteria = source["acceptanceCriteria"];
-	        this.tags = source["tags"];
 	        this.priority = source["priority"];
 	        this.sortOrder = source["sortOrder"];
 	        this.completed = source["completed"];
@@ -971,7 +969,6 @@ export namespace services {
 	    epic?: string;
 	    tags?: string[];
 	    acceptanceCriteria?: string[];
-	    tags?: string[];
 	    priority: string;
 	
 	    static createFrom(source: any = {}) {
@@ -985,7 +982,6 @@ export namespace services {
 	        this.epic = source["epic"];
 	        this.tags = source["tags"];
 	        this.acceptanceCriteria = source["acceptanceCriteria"];
-	        this.tags = source["tags"];
 	        this.priority = source["priority"];
 	    }
 	}

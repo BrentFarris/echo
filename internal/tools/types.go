@@ -186,7 +186,6 @@ type WorkspaceTaskCreateRequest struct {
 	Epic               string   `json:"epic,omitempty"`
 	Tags               []string `json:"tags,omitempty"`
 	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
-	Tags               []string `json:"tags,omitempty"`
 	Priority           string   `json:"priority,omitempty"`
 }
 
@@ -197,7 +196,6 @@ type WorkspaceTask struct {
 	Epic               string   `json:"epic,omitempty"`
 	Tags               []string `json:"tags,omitempty"`
 	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
-	Tags               []string `json:"tags,omitempty"`
 	Priority           string   `json:"priority"`
 	SortOrder          int      `json:"sortOrder"`
 	Completed          bool     `json:"completed"`

@@ -147,7 +147,6 @@ export type TaskEditorDraft = {
   epic: string;
   tags: string;
   acceptanceCriteria: string;
-  tags: string;
   priority: string;
   expectedUpdatedAt?: string;
 };

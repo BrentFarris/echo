@@ -1080,7 +1080,7 @@ async function loadActiveChangesViewIfNeeded() {
     return;
   }
   if (state.appMode !== "git") {
-    await loadWorkspaceChangesSummary(workspace.id);
+    await refreshWorkspaceChangeReview(workspace.id);
     return;
   }
   await openWorkspaceGitRepository(workspace.id);

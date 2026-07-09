@@ -34,7 +34,6 @@ type WorkspaceTask struct {
 	Epic               string   `json:"epic,omitempty"`
 	Tags               []string `json:"tags,omitempty"`
 	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
-	Tags               []string `json:"tags,omitempty"`
 	Priority           string   `json:"priority"`
 	SortOrder          int      `json:"sortOrder"`
 	Completed          bool     `json:"completed"`
@@ -49,7 +48,6 @@ type TaskInput struct {
 	Epic               string   `json:"epic,omitempty"`
 	Tags               []string `json:"tags,omitempty"`
 	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
-	Tags               []string `json:"tags,omitempty"`
 	Priority           string   `json:"priority"`
 }
 
@@ -83,7 +81,6 @@ type storedWorkspaceTask struct {
 	Epic               string   `json:"epic,omitempty"`
 	Tags               []string `json:"tags,omitempty"`
 	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
-	Tags               []string `json:"tags,omitempty"`
 	Priority           string   `json:"priority"`
 	SortOrder          int      `json:"sortOrder"`
 	Completed          bool     `json:"completed"`
@@ -190,7 +187,6 @@ func (p workspaceTasksProvider) CreateWorkspaceTask(ctx context.Context, request
 		Epic:               request.Epic,
 		Tags:               request.Tags,
 		AcceptanceCriteria: request.AcceptanceCriteria,
-		Tags:               request.Tags,
 		Priority:           request.Priority,
 	}
 	p.service.taskMu.Lock()
@@ -355,7 +351,6 @@ func toolWorkspaceTask(task WorkspaceTask) tools.WorkspaceTask {
 		Epic:               task.Epic,
 		Tags:               append([]string(nil), task.Tags...),
 		AcceptanceCriteria: append([]string(nil), task.AcceptanceCriteria...),
-		Tags:               append([]string(nil), task.Tags...),
 		Priority:           task.Priority,
 		SortOrder:          task.SortOrder,
 		Completed:          task.Completed,
@@ -629,7 +624,6 @@ func (s *SystemService) createWorkspaceTask(workspace Workspace, input TaskInput
 		Epic:               input.Epic,
 		Tags:               input.Tags,
 		AcceptanceCriteria: input.AcceptanceCriteria,
-		Tags:               input.Tags,
 		Priority:           input.Priority,
 		CreatedAt:          now,
 		UpdatedAt:          now,
@@ -1060,7 +1054,6 @@ func taskBoardFromData(workspaceID string, location workspaceTaskLocation, activ
 			Epic:               stored.Epic,
 			Tags:               append([]string(nil), stored.Tags...),
 			AcceptanceCriteria: append([]string(nil), stored.AcceptanceCriteria...),
-			Tags:               append([]string(nil), stored.Tags...),
 			Priority:           stored.Priority,
 			SortOrder:          stored.SortOrder,
 			Completed:          stored.Completed,

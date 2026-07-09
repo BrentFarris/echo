@@ -7,10 +7,11 @@ import { initializeWebAccessTokenFromURL } from "../backend/web";
 import { bindActionEvents } from "./actions";
 import { setAppCallbacks } from "./callbacks";
 import { bindChatEvents, applyChatStreamEvent, isSupportedChatImageType, isSupportedChatVideoType, patchChatControls, patchChatPanel } from "./chat";
-import { applyFileChangesEvent } from "./changes";
+import { applyFileChangesEvent, loadActiveChangeReview, refreshWorkspaceChangeReview } from "./changes";
 import { showContextMenu } from "./contextMenu";
 import { handleGlobalKeydown, handleGlobalKeyup, handleGlobalPointerDown, handleGlobalWindowBlur } from "./events";
 import { applyKanbanEvent, applyHeartbeatEvent, applyLivenessEvent, applyWatchdogEvent, loadActiveKanbanBoard, markKanbanRunStarted } from "./kanban";
+import { gitChangedLineNumbersForFile, gitChangeStateForPath } from "./git";
 import { render } from "./render";
 import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state, loadDashboardLayoutsFromBackend } from "./state";
 import { applyTheme } from "./theme";
@@ -19,7 +20,6 @@ import { pushToast } from "./toasts";
 import type { ChatStreamEvent, FileChangesEvent, HeartbeatEvent, KanbanEvent, LivenessEvent, TaskEvent, WatchdogEvent } from "./types";
 import { errorMessage } from "./utils";
 import { loadActiveChatSession } from "./chat";
-import { loadActiveChangeReview } from "./changes";
 import type { CodeEntryKind } from "../codeView/types";
 import { loadTokenBudget } from "./budget";
 import { loadLivenessConfig } from "./liveness";
@@ -33,7 +33,7 @@ function codeViewCallbacks() {
       leadingWhitespaceIndicatorsEnabled(state.appState?.settings ?? state.settingsDraft),
     gitChangedLineNumbers: gitChangedLineNumbersForFile,
     gitChangeStateForPath,
-    refreshGitChanges: loadWorkspaceChangesSummary,
+    refreshGitChanges: refreshWorkspaceChangeReview,
     showCodePathContextMenu(
       workspaceId: string,
       path: string,
@@ -81,7 +81,7 @@ async function initialize() {
     if (activeWS) {
       void loadTokenBudget(activeWS);
       void loadLivenessConfig(activeWS);
-      await loadWorkspaceChangesSummary(activeWS);
+      await refreshWorkspaceChangeReview(activeWS);
     }
     const runtimeStatus = await LoadRuntimeStatus();
     for (const workspaceID of runtimeStatus.activeKanbanWorkspaceIds ?? []) {
@@ -149,7 +149,7 @@ export function startApp() {
 
   EventsOn("echo:file-changes:event", (event: FileChangesEvent) => {
     applyFileChangesEvent(event);
-    void loadWorkspaceChangesSummary(event.workspaceId);
+    void refreshWorkspaceChangeReview(event.workspaceId);
   });
 
   EventsOn("echo:heartbeat:event", (event: HeartbeatEvent) => {

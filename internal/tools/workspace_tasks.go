@@ -60,16 +60,11 @@ func init() {
 						"enum":        []any{"P0", "P1", "P2"},
 						"description": "Task priority. Defaults to P1.",
 					},
-					"epic": map[string]any{
-						"type":        "string",
-						"description": "Optional epic/group name for grouping related tasks.",
-					},
-					"tags": map[string]any{
-						"type":        "array",
-						"items":       map[string]any{"type": "string"},
-						"description": "Optional free-form tags (e.g. frontend, bug, performance).",
-					},
+				"epic": map[string]any{
+					"type":        "string",
+					"description": "Optional epic/group name for grouping related tasks.",
 				},
+			},
 			},
 		},
 		Run: createWorkspaceTask,
