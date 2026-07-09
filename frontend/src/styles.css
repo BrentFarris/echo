@@ -4267,10 +4267,85 @@ h3 {
   grid-template-columns: 18px minmax(0, 1fr);
   align-items: center;
   gap: var(--space-sm);
+  width: 100%;
   min-width: 0;
   min-height: 26px;
+  padding: 0 var(--space-sm);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--color-text-muted);
+  cursor: pointer;
+  font: inherit;
   font-size: var(--text-sm);
+  text-align: left;
+}
+
+.git-commit-file-row:hover,
+.git-commit-file-row:focus-visible,
+.git-commit-file-row.is-selected {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  outline: none;
+}
+
+.git-commit-review {
+  display: grid;
+  gap: var(--space-xl);
+  min-width: 0;
+  padding-top: var(--space-2xl);
+  border-top: 1px solid var(--color-border);
+}
+
+.git-commit-review-header {
+  display: grid;
+  min-width: 0;
+  padding: var(--space-xl) 0 0;
+}
+
+.git-commit-review-header > div {
+  display: grid;
+  gap: var(--space-xxs);
+  min-width: 0;
+}
+
+.git-commit-review-header h3 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: var(--text-xl);
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-commit-review-copy {
+  justify-self: start;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 800;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-commit-review-copy:hover,
+.git-commit-review-copy:focus-visible {
+  color: var(--color-accent-strong);
+  outline: none;
+}
+
+.git-commit-review-files {
+  display: grid;
+  gap: var(--space-2xl);
+  min-width: 0;
 }
 
 .status-controls {

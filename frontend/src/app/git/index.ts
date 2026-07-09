@@ -5,11 +5,12 @@ import { services } from "../../../wailsjs/go/models";
 import type { CodeEntryKind, CodeGitChangeState } from "../../codeView/types";
 import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";
+import { appRoot } from "../dom";
 import { icons } from "../icons";
 import { activeWorkspace, changeReviewFor, gitChangeReviewFor, gitRepositoryViewFor, state } from "../state";
 import { pushToast } from "../toasts";
 import { changeOperationLabel, errorMessage, escapeAttribute, escapeHtml } from "../utils";
-import { markCurrentChangeTarget, renderChangeReviewPage, renderGitChangedFile, renderGitDiff } from "../changes";
+import { markCurrentChangeTarget, renderChangeReviewPage, renderGitChangedFile, renderGitChangeMetadata, renderGitChangeStatus, renderGitDiff } from "../changes";
 
 type GitChangeTreeFolder = {
   kind: "folder";
@@ -69,7 +70,7 @@ export function renderGitRepositoryPage(
                   </button>
                 </div>
               </header>
-              ${renderGitWorkingChanges(repository)}
+              ${renderGitWorkingChanges(workspace.id, repository)}
             </section>
           </div>
         `
@@ -266,15 +267,65 @@ function gitSourceStatusLetter(file: services.WorkspaceGitChangedFile): string {
   }
 }
 
-function renderGitWorkingChanges(repository: services.WorkspaceGitRepositoryStatus): string {
+function renderGitWorkingChanges(workspaceID: string, repository: services.WorkspaceGitRepositoryStatus): string {
   const files = repository.files ?? [];
-  if (!files.length) {
+  const selectedCommitReview = renderSelectedGitCommitReview(workspaceID, repository);
+  if (!files.length && !selectedCommitReview) {
     return `<div class="empty-state compact">No Git changes.</div>`;
   }
   return `
     <div class="change-file-list git-change-file-list" data-git-change-file-list>
-      ${files.map(renderGitChangedFile).join("")}
+      ${files.length ? files.map(renderGitChangedFile).join("") : `<div class="empty-state compact">No working tree changes.</div>`}
+      ${selectedCommitReview}
     </div>
+  `;
+}
+
+function renderSelectedGitCommitReview(workspaceID: string, repository: services.WorkspaceGitRepositoryStatus): string {
+  const selectedHash = state.selectedGitCommitHashes.get(workspaceID) ?? "";
+  if (!selectedHash) {
+    return "";
+  }
+  const key = gitCommitDetailKey(workspaceID, repository.folderId, selectedHash);
+  const detail = state.gitCommitDetails.get(key);
+  const commit = detail?.commit ?? (repository.commits ?? []).find((item) => item.hash === selectedHash);
+  if (!commit) {
+    return "";
+  }
+  const files = detail?.files ?? [];
+  return `
+    <section class="git-commit-review" aria-labelledby="git-commit-review-${escapeAttribute(commit.hash)}">
+      <header class="git-commit-review-header" data-git-commit-review-header data-commit-hash="${escapeAttribute(commit.hash)}">
+        <div>
+          <h3 id="git-commit-review-${escapeAttribute(commit.hash)}">${escapeHtml(commit.subject || commit.shortHash)}</h3>
+          <button class="git-commit-review-copy" type="button" title="Copy commit hash" data-action="copy-git-commit-hash" data-commit-hash="${escapeAttribute(commit.hash)}">
+            ${escapeHtml(`${commit.shortHash} - ${commit.authorName || "Unknown"} - ${formatGitDate(commit.authoredAt)}`)}
+          </button>
+        </div>
+      </header>
+      ${state.loadingGitCommitDetails.has(key)
+        ? `<div class="empty-state compact">${renderSpinnerLabel("Loading commit")}</div>`
+        : files.length
+          ? `<div class="git-commit-review-files">${files.map((file) => renderGitCommitReviewFile(commit.hash, file)).join("")}</div>`
+          : `<div class="empty-state compact">No changed files in this commit.</div>`}
+    </section>
+  `;
+}
+
+function renderGitCommitReviewFile(hash: string, file: services.WorkspaceGitChangedFile): string {
+  const normalizedPath = normalizeGitChangePath(file.path);
+  return `
+    <article class="change-file git-commit-review-file" data-change-file data-git-commit-hash="${escapeAttribute(hash)}" data-git-commit-file-path="${escapeAttribute(normalizedPath)}">
+      <header>
+        <div class="change-file-title">
+          ${icons.file}
+          <strong title="${escapeAttribute(file.path)}">${escapeHtml(file.path)}</strong>
+        </div>
+        <span class="change-operation is-${escapeAttribute(file.operation)}">${escapeHtml(changeOperationLabel(file.operation))}</span>
+      </header>
+      ${renderGitChangeStatus(file)}
+      ${file.diffAvailable && file.diff ? renderGitDiff(file.diff, "") : renderGitChangeMetadata(file)}
+    </article>
   `;
 }
 
@@ -600,12 +651,12 @@ function renderGitCommitItem(
           <span>${escapeHtml(commit.shortHash)} - ${escapeHtml(commit.authorName || "Unknown")} - ${escapeHtml(formatGitDate(commit.authoredAt))}</span>
         </span>
       </button>
-      ${selected ? renderGitCommitExpandedFiles(key) : ""}
+      ${selected ? renderGitCommitExpandedFiles(key, commit.hash) : ""}
     </article>
   `;
 }
 
-function renderGitCommitExpandedFiles(key: string): string {
+function renderGitCommitExpandedFiles(key: string, hash: string): string {
   if (state.loadingGitCommitDetails.has(key)) {
     return `<div class="git-commit-files">${renderSpinnerLabel("Loading commit")}</div>`;
   }
@@ -617,16 +668,17 @@ function renderGitCommitExpandedFiles(key: string): string {
   if (!files.length) {
     return `<div class="git-commit-files"><span>No changed files.</span></div>`;
   }
-  return `<div class="git-commit-files">${files.map(renderGitCommitChangedFile).join("")}</div>`;
+  return `<div class="git-commit-files">${files.map((file) => renderGitCommitChangedFile(hash, file)).join("")}</div>`;
 }
 
-function renderGitCommitChangedFile(file: services.WorkspaceGitChangedFile): string {
+function renderGitCommitChangedFile(hash: string, file: services.WorkspaceGitChangedFile): string {
   const displayPath = displayGitChangePath(file.path);
+  const normalizedPath = normalizeGitChangePath(file.path);
   return `
-    <div class="git-commit-file-row" title="${escapeAttribute(displayPath)}">
+    <button class="git-commit-file-row" type="button" title="${escapeAttribute(displayPath)}" data-git-commit-file data-commit-hash="${escapeAttribute(hash)}" data-git-commit-file-path="${escapeAttribute(normalizedPath)}">
       <span class="git-source-file-status is-${escapeAttribute(file.operation)}">${escapeHtml(gitSourceStatusLetter(file))}</span>
       <span>${escapeHtml(displayPath)}</span>
-    </div>
+    </button>
   `;
 }
 
@@ -669,6 +721,9 @@ function bindGitChangeTree(root: ParentNode) {
   root
     .querySelectorAll<HTMLButtonElement>("[data-git-change-file]")
     .forEach((button) => button.addEventListener("click", handleGitChangeFileSelect));
+  root
+    .querySelectorAll<HTMLButtonElement>("[data-git-commit-file]")
+    .forEach((button) => button.addEventListener("click", handleGitCommitFileSelect));
 }
 
 function handleGitChangeTreeToggle() {
@@ -718,6 +773,35 @@ function handleGitChangeFileSelect(event: MouseEvent) {
   button
     .closest<HTMLElement>("[data-git-change-tree]")
     ?.querySelectorAll<HTMLElement>(".git-change-tree-row.is-selected")
+    .forEach((row) => row.classList.remove("is-selected"));
+  button.classList.add("is-selected");
+  const review = target.closest<HTMLElement>("[data-change-review]");
+  if (review) {
+    markCurrentChangeTarget(review, target);
+  }
+  target.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function handleGitCommitFileSelect(event: MouseEvent) {
+  const button = event.currentTarget as HTMLButtonElement;
+  const hash = button.dataset.commitHash ?? "";
+  const targetPath = button.dataset.gitCommitFilePath ?? "";
+  if (!hash || !targetPath) {
+    return;
+  }
+  const repositoryRoot = button.closest<HTMLElement>("[data-git-repository]");
+  const target = Array.from(repositoryRoot?.querySelectorAll<HTMLElement>("[data-git-commit-file-path]") ?? [])
+    .find((element) =>
+      element.dataset.gitCommitHash === hash &&
+      element.dataset.gitCommitFilePath === targetPath &&
+      element.matches("[data-change-file]")
+    );
+  if (!target) {
+    return;
+  }
+  button
+    .closest<HTMLElement>(".git-commit-files")
+    ?.querySelectorAll<HTMLElement>(".git-commit-file-row.is-selected")
     .forEach((row) => row.classList.remove("is-selected"));
   button.classList.add("is-selected");
   const review = target.closest<HTMLElement>("[data-change-review]");
@@ -999,10 +1083,12 @@ export async function selectGitCommit(hash: string) {
   const key = gitCommitDetailKey(workspace.id, folderID, hash);
   if (state.gitCommitDetails.has(key)) {
     getAppCallbacks().render();
+    scheduleScrollToGitCommitReview(hash);
     return;
   }
   state.loadingGitCommitDetails.add(key);
   getAppCallbacks().render();
+  scheduleScrollToGitCommitReview(hash);
   try {
     state.gitCommitDetails.set(key, await LoadWorkspaceGitCommit(workspace.id, folderID, hash));
   } catch (error) {
@@ -1010,6 +1096,7 @@ export async function selectGitCommit(hash: string) {
   } finally {
     state.loadingGitCommitDetails.delete(key);
     getAppCallbacks().render();
+    scheduleScrollToGitCommitReview(hash);
   }
 }
 
@@ -1391,6 +1478,16 @@ function gitCollapsedChangeFolders(workspaceID: string, folderID: string): Set<s
 
 function gitCommitDetailKey(workspaceID: string, folderID: string, hash: string): string {
   return `${workspaceID}:${folderID}:${hash}`;
+}
+
+function scheduleScrollToGitCommitReview(hash: string) {
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      const target = Array.from(appRoot.querySelectorAll<HTMLElement>("[data-git-commit-review-header]"))
+        .find((element) => element.dataset.commitHash === hash);
+      target?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
 }
 
 function updateGitFormButtons(form: HTMLFormElement | null) {

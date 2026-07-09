@@ -328,6 +328,16 @@ export async function handleAction(event: Event) {
       await selectGitCommit(target.dataset.commitHash ?? "");
       return;
     }
+    if (action === "copy-git-commit-hash") {
+      const hash = target.dataset.commitHash ?? "";
+      if (!hash) {
+        pushToast("Commit hash is unavailable.", "error");
+        return;
+      }
+      await copyTextToClipboard(hash);
+      pushToast("Commit hash copied.", "success");
+      return;
+    }
     if (action === "open-settings") {
       const workspace = activeWorkspace();
       if (workspace) {
