@@ -1,0 +1,46 @@
+﻿2026-07-07 08:13:12 === Echo rebuild started ===
+2026-07-07 08:13:12 Workspace: D:\Development\echo
+2026-07-07 08:13:12 Binary path: D:\Development\echo\build\bin\echo.exe
+2026-07-07 08:13:12 Waiting for graceful shutdown...
+2026-07-07 08:13:12 Echo shut down gracefully.
+2026-07-07 08:13:12 Running wails build...
+2026-07-07 08:13:22 [0;92mWails CLI[0m [0;31mv2.11.0[0m
+2026-07-07 08:13:22 
+2026-07-07 08:13:22 
+2026-07-07 08:13:22 # [1;33m[1;33mBuild Options[0m
+2026-07-07 08:13:22 [1;33m[0m[0m
+2026-07-07 08:13:22 Platform(s)       [90m[90m | [0m[0mwindows/amd64                 
+2026-07-07 08:13:22 Compiler          [90m[90m | [0m[0mC:\Program Files\Go\bin\go.exe
+2026-07-07 08:13:22 Skip Bindings     [90m[90m | [0m[0mfalse                         
+2026-07-07 08:13:22 Build Mode        [90m[90m | [0m[0mproduction                    
+2026-07-07 08:13:22 Devtools          [90m[90m | [0m[0mfalse                         
+2026-07-07 08:13:22 Frontend Directory[90m[90m | [0m[0mD:\Development\echo\frontend  
+2026-07-07 08:13:22 Obfuscated        [90m[90m | [0m[0mfalse                         
+2026-07-07 08:13:22 Skip Frontend     [90m[90m | [0m[0mfalse                         
+2026-07-07 08:13:22 Compress          [90m[90m | [0m[0mfalse                         
+2026-07-07 08:13:22 Package           [90m[90m | [0m[0mtrue                          
+2026-07-07 08:13:22 Clean Bin Dir     [90m[90m | [0m[0mfalse                         
+2026-07-07 08:13:22 LDFlags           [90m[90m | [0m[0m                              
+2026-07-07 08:13:22 Tags              [90m[90m | [0m[0m[]                            
+2026-07-07 08:13:22 Race Detector     [90m[90m | [0m[0mfalse                         
+2026-07-07 08:13:22 
+2026-07-07 08:13:22 
+2026-07-07 08:13:22 # [1;33m[1;33mBuilding target: windows/amd64[0m
+2026-07-07 08:13:22 [1;33m[0m[0m
+2026-07-07 08:13:22 2026/07/07 08:13:17 [0;33mKnownStructs: llm.EndpointSelection	llm.LLMEndpoint	llm.Settings	llm.Theme	services.AgentMode	services.AppInfo	services.AppState	services.ChatImageAttachment	services.ChatImageInput	services.ChatMessage	services.ChatMessageRequest	services.ChatSession	services.ChatToolActivity	services.ChatVideoAttachment	services.ChatVideoInput	services.HeartbeatConfig	services.InlineCodePromptRequest	services.InlineCodePromptResponse	services.KanbanBoard	services.KanbanCard	services.KanbanDependencyStatus	services.KanbanProgressEntry	services.LivenessConfig	services.RuntimeStatus	services.TaskBoard	services.TaskInput	services.TaskKanbanConversion	services.TokenBudget	services.WatchdogConfig	services.WebAccessSettings	services.WebAccessStatus	services.Workspace	services.WorkspaceChangeReview	services.WorkspaceChangeSource	services.WorkspaceChangedFile	services.WorkspaceCompletionItem	services.WorkspaceCompletionRequest	services.WorkspaceCompletionResponse	services.WorkspaceDefinitionRequest	services.WorkspaceDefinitionResponse	services.WorkspaceDirectory	services.WorkspaceFile	services.WorkspaceFileChange	services.WorkspaceFileEntry	services.WorkspaceFileSearchResult	services.WorkspaceFileSnapshot	services.WorkspaceFolder	services.WorkspaceGitBranch	services.WorkspaceGitChangeReview	services.WorkspaceGitChangedFile	services.WorkspaceGitCommit	services.WorkspaceGitCommitDetail	services.WorkspaceGitRepositoryStatus	services.WorkspaceGitRepositorySummary	services.WorkspaceGitRepositoryView	services.WorkspaceIconInput	services.WorkspaceMediaFile	services.WorkspacePrepareRenameResponse	services.WorkspaceReferenceLocation	services.WorkspaceReferencePosition	services.WorkspaceReferencePreviewLine	services.WorkspaceReferenceRange	services.WorkspaceReferenceRequest	services.WorkspaceReferenceResponse	services.WorkspaceRenameFileContent	services.WorkspaceRenameHistoryFile	services.WorkspaceRenameReplayFile	services.WorkspaceRenameReplayRequest	services.WorkspaceRenameReplayResponse	services.WorkspaceRenameRequest	services.WorkspaceRenameResponse	services.WorkspaceSkillCreationResult	services.WorkspaceTask	services.WorkspaceTextEdit	services.WorkspaceTextSearchFileResult	services.WorkspaceTextSearchMatch	services.WorkspaceTextSearchRequest	services.WorkspaceTextSearchResult	tools.AgentModeCreationRequest	tools.AgentModeCreationResult	tools.AgentModeSummary	tools.ToolPermission
+2026-07-07 08:13:22 Not found: time.Time
+2026-07-07 08:13:22 KnownStructs: llm.EndpointSelection	llm.LLMEndpoint	llm.Settings	llm.Theme	services.AgentMode	services.AppInfo	services.AppState	services.ChatImageAttachment	services.ChatImageInput	services.ChatMessage	services.ChatMessageRequest	services.ChatSession	services.ChatToolActivity	services.ChatVideoAttachment	services.ChatVideoInput	services.HeartbeatConfig	services.InlineCodePromptRequest	services.InlineCodePromptResponse	services.KanbanBoard	services.KanbanCard	services.KanbanDependencyStatus	services.KanbanProgressEntry	services.LivenessConfig	services.RuntimeStatus	services.TaskBoard	services.TaskInput	services.TaskKanbanConversion	services.TokenBudget	services.WatchdogConfig	services.WebAccessSettings	services.WebAccessStatus	services.Workspace	services.WorkspaceChangeReview	services.WorkspaceChangeSource	services.WorkspaceChangedFile	services.WorkspaceCompletionItem	services.WorkspaceCompletionRequest	services.WorkspaceCompletionResponse	services.WorkspaceDefinitionRequest	services.WorkspaceDefinitionResponse	services.WorkspaceDirectory	services.WorkspaceFile	services.WorkspaceFileChange	services.WorkspaceFileEntry	services.WorkspaceFileSearchResult	services.WorkspaceFileSnapshot	services.WorkspaceFolder	services.WorkspaceGitBranch	services.WorkspaceGitChangeReview	services.WorkspaceGitChangedFile	services.WorkspaceGitCommit	services.WorkspaceGitCommitDetail	services.WorkspaceGitRepositoryStatus	services.WorkspaceGitRepositorySummary	services.WorkspaceGitRepositoryView	services.WorkspaceIconInput	services.WorkspaceMediaFile	services.WorkspacePrepareRenameResponse	services.WorkspaceReferenceLocation	services.WorkspaceReferencePosition	services.WorkspaceReferencePreviewLine	services.WorkspaceReferenceRange	services.WorkspaceReferenceRequest	services.WorkspaceReferenceResponse	services.WorkspaceRenameFileContent	services.WorkspaceRenameHistoryFile	services.WorkspaceRenameReplayFile	services.WorkspaceRenameReplayRequest	services.WorkspaceRenameReplayResponse	services.WorkspaceRenameRequest	services.WorkspaceRenameResponse	services.WorkspaceSkillCreationResult	services.WorkspaceTask	services.WorkspaceTextEdit	services.WorkspaceTextSearchFileResult	services.WorkspaceTextSearchMatch	services.WorkspaceTextSearchRequest	services.WorkspaceTextSearchResult	tools.AgentModeCreationRequest	tools.AgentModeCreationResult	tools.AgentModeSummary	tools.ToolPermission
+2026-07-07 08:13:22 Not found: time.Time
+2026-07-07 08:13:22 [0m
+2026-07-07 08:13:22   [90m[90mΓÇó[0m[0m [39m[39mGenerating bindings: [0m[0mDone.
+2026-07-07 08:13:22   [90m[90mΓÇó[0m[0m [39m[39mInstalling frontend dependencies: [0m[0mDone.
+2026-07-07 08:13:22   [90m[90mΓÇó[0m[0m [39m[39mCompiling frontend: [0m[0mDone.
+2026-07-07 08:13:22   [90m[90mΓÇó[0m[0m [39m[39mGenerating application assets: [0m[0mDone.
+2026-07-07 08:13:22   [90m[90mΓÇó[0m[0m [39m[39mCompiling application: [0m[0mDone.
+2026-07-07 08:13:22 [30;46m[30;46m INFO [0m[0m [96m[96mWails is now using the new Go WebView2Loader. If you encounter any issues with it, please report them to https://github.com/wailsapp/wails/issues/2004. You could also use the old legacy loader with `-tags native_webview2loader`, but keep in mind this will be deprecated in the near future.[0m[0m
+2026-07-07 08:13:22 Built 'D:\Development\echo\build\bin\echo.exe' in 10.036s.
+2026-07-07 08:13:22 
+2026-07-07 08:13:22 [31;107m[31;107m ΓÖÑ  [0m[0m [92m[92mIf Wails is useful to you or your company, please consider sponsoring the project:[0m[0m
+2026-07-07 08:13:22 https://github.com/sponsors/leaanthony
+2026-07-07 08:13:22 Build succeeded. Launching Echo from: D:\Development\echo\build\bin\echo.exe
+2026-07-07 08:13:22 ERROR: Cannot validate argument on parameter 'ArgumentList'. The argument is null or empty. Provide an argument that is not null or empty, and then try the command again.

@@ -17,12 +17,17 @@ const (
 )
 
 type storedAppState struct {
-	Settings          llm.Settings                    `json:"settings"`
-	WebAccess         WebAccessSettings               `json:"webAccess"`
-	Workspaces        []Workspace                     `json:"workspaces"`
-	ActiveWorkspaceID string                          `json:"activeWorkspaceId"`
-	KanbanCards       []KanbanCard                    `json:"kanbanCards,omitempty"`
-	ChatSessions      map[string]persistedChatSession `json:"chatSessions,omitempty"`
+	Settings          llm.Settings                       `json:"settings"`
+	WebAccess         WebAccessSettings                  `json:"webAccess"`
+	Workspaces        []Workspace                        `json:"workspaces"`
+	ActiveWorkspaceID string                             `json:"activeWorkspaceId"`
+	HeartbeatConfigs  map[string]HeartbeatConfig         `json:"heartbeatConfigs,omitempty"`
+	LivenessConfigs   map[string]LivenessConfig          `json:"livenessConfigs,omitempty"`
+	WatchdogConfigs   map[string]WatchdogConfig          `json:"watchdogConfigs,omitempty"`
+	TokenBudgets      map[string]TokenBudget             `json:"tokenBudgets,omitempty"`
+	DashboardLayouts  map[string][]DashboardWidgetJSON   `json:"dashboardLayouts,omitempty"`
+	KanbanCards       []KanbanCard                       `json:"kanbanCards,omitempty"`
+	ChatSessions      map[string]persistedChatSession    `json:"chatSessions,omitempty"`
 }
 
 // storedAppStateRaw is used to read old state files that may contain agentModes.
@@ -54,6 +59,10 @@ func storedAppStateFrom(state AppState) storedAppState {
 		WebAccess:         state.WebAccess,
 		Workspaces:        state.Workspaces,
 		ActiveWorkspaceID: state.ActiveWorkspaceID,
+		HeartbeatConfigs:  state.HeartbeatConfigs,
+		LivenessConfigs:   state.LivenessConfigs,
+		WatchdogConfigs:   state.WatchdogConfigs,
+		DashboardLayouts:  state.DashboardLayouts,
 	}
 }
 
@@ -63,6 +72,10 @@ func (state storedAppState) appState() AppState {
 		WebAccess:         state.WebAccess,
 		Workspaces:        state.Workspaces,
 		ActiveWorkspaceID: state.ActiveWorkspaceID,
+		HeartbeatConfigs:  state.HeartbeatConfigs,
+		LivenessConfigs:   state.LivenessConfigs,
+		WatchdogConfigs:   state.WatchdogConfigs,
+		DashboardLayouts:  state.DashboardLayouts,
 	}
 }
 

@@ -1,0 +1,70 @@
+# Echo rebuild-and-relaunch script
+$ErrorActionPreference = 'Continue'
+$workspaceDir = '{{WORKSPACE_DIR}}'
+$binaryName = 'echo.exe'
+$binaryPath = Join-Path (Join-Path $workspaceDir 'build\bin') $binaryName
+$logFile = Join-Path (Join-Path $env:LOCALAPPDATA 'Echo') 'rebuild-relaunch.log'
+
+# Ensure log directory exists and clear previous log.
+$logDir = Split-Path -Parent $logFile
+if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+$null | Out-File -FilePath $logFile -Encoding utf8
+
+function Write-Log {
+    param([string]$Message)
+    "$((Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) $Message" | Out-File -FilePath $logFile -Append -Encoding utf8
+}
+
+try {
+    Write-Log '=== Echo rebuild started ==='
+    Write-Log "Workspace: $workspaceDir"
+    Write-Log "Binary path: $binaryPath"
+    Write-Log 'Waiting for graceful shutdown...'
+
+    # Wait up to 10 seconds for Echo to shut down gracefully.
+    $shutdownTimeout = 10
+    while ($shutdownTimeout -gt 0) {
+        $echoProcesses = Get-Process -Name 'echo' -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$workspaceDir\*" -or $_.Path -like "$workspaceDir/*" }
+        if (-not $echoProcesses) {
+            Write-Log 'Echo shut down gracefully.'
+            break
+        }
+        Start-Sleep -Seconds 1
+        $shutdownTimeout--
+    }
+
+    # Force-kill any remaining processes.
+    $remaining = Get-Process -Name 'echo' -ErrorAction SilentlyContinue | Where-Object { $_ .Path -like "$workspaceDir\*" -or $_ .Path -like "$workspaceDir/*" }
+    if ($remaining) {
+        Write-Log "Force-killing $($remaining.Count) echo.exe process(es)"
+        $remaining | Stop-Process -Force
+        Start-Sleep -Seconds 2
+    }
+
+    # Rebuild.
+    Set-Location $workspaceDir
+    Write-Log 'Running wails build...'
+    $buildResult = & wails build 2>&1
+    $buildExitCode = $LASTEXITCODE
+    foreach ($line in $buildResult) {
+        Write-Log $line
+    }
+
+    if ($buildExitCode -ne 0) {
+        Write-Log "BUILD FAILED with exit code $buildExitCode. Check $logFile for details."
+        exit $buildExitCode
+    }
+
+    Write-Log "Build succeeded. Launching Echo from: $binaryPath"
+    if (-not (Test-Path $binaryPath)) {
+        Write-Log "ERROR: Binary not found at $binaryPath"
+        exit 1
+    }
+    Start-Process -FilePath $binaryPath
+    Write-Log 'Echo launched successfully.'
+} catch {
+    Write-Log "FATAL ERROR: $($_ .Exception.Message)"
+    Write-Log "Script location: $($_ .InvocationInfo.ScriptName)"
+    Write-Log "Line number: $($_ .InvocationInfo.ScriptLineNumber)"
+    exit 1
+}

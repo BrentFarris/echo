@@ -3,6 +3,7 @@ package services
 import (
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 )
@@ -50,11 +51,21 @@ func TestPrepareRebuildAndRelaunchValidWorkspace(t *testing.T) {
 	if !strings.Contains(content, "wails build") {
 		t.Fatalf("script should contain wails build command, got %s", content)
 	}
-	if !strings.Contains(content, "Start-Process") {
-		t.Fatalf("script should contain Start-Process for relaunch, got %s", content)
-	}
-	if !strings.Contains(content, "Stop-Process") {
-		t.Fatalf("script should contain Stop-Process for force-kill, got %s", content)
+
+	// On Windows, also verify the .bat launcher was created with correct content
+	if goruntime.GOOS == "windows" {
+		expectedBat := filepath.Join(scriptDir, "rebuild-relaunch.bat")
+		batData, err := os.ReadFile(expectedBat)
+		if err != nil {
+			t.Fatalf("expected bat launcher to exist at %s, got %v", expectedBat, err)
+		}
+		batContent := string(batData)
+		if !strings.Contains(batContent, workspaceDir) {
+			t.Fatalf("bat should contain workspace path, got %s", batContent)
+		}
+		if !strings.Contains(batContent, "wails build") {
+			t.Fatalf("bat should contain wails build command, got %s", batContent)
+		}
 	}
 }
 

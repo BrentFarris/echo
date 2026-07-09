@@ -31,9 +31,11 @@ type WorkspaceTask struct {
 	ID                 string   `json:"id"`
 	Title              string   `json:"title"`
 	Details            string   `json:"details,omitempty"`
-	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
+	Epic               string   `json:"epic,omitempty"`
 	Tags               []string `json:"tags,omitempty"`
+	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
 	Priority           string   `json:"priority"`
+	SortOrder          int      `json:"sortOrder"`
 	Completed          bool     `json:"completed"`
 	CreatedAt          string   `json:"createdAt"`
 	UpdatedAt          string   `json:"updatedAt"`
@@ -43,8 +45,9 @@ type WorkspaceTask struct {
 type TaskInput struct {
 	Title              string   `json:"title"`
 	Details            string   `json:"details,omitempty"`
-	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
+	Epic               string   `json:"epic,omitempty"`
 	Tags               []string `json:"tags,omitempty"`
+	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
 	Priority           string   `json:"priority"`
 }
 
@@ -75,9 +78,11 @@ type TaskKanbanConversion struct {
 type storedWorkspaceTask struct {
 	Title              string   `json:"title"`
 	Details            string   `json:"details,omitempty"`
-	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
+	Epic               string   `json:"epic,omitempty"`
 	Tags               []string `json:"tags,omitempty"`
+	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
 	Priority           string   `json:"priority"`
+	SortOrder          int      `json:"sortOrder"`
 	Completed          bool     `json:"completed"`
 	CreatedAt          string   `json:"createdAt"`
 	UpdatedAt          string   `json:"updatedAt"`
@@ -179,8 +184,9 @@ func (p workspaceTasksProvider) CreateWorkspaceTask(ctx context.Context, request
 	input := TaskInput{
 		Title:              request.Title,
 		Details:            request.Details,
-		AcceptanceCriteria: request.AcceptanceCriteria,
+		Epic:               request.Epic,
 		Tags:               request.Tags,
+		AcceptanceCriteria: request.AcceptanceCriteria,
 		Priority:           request.Priority,
 	}
 	p.service.taskMu.Lock()
@@ -197,14 +203,156 @@ func (p workspaceTasksProvider) CreateWorkspaceTask(ctx context.Context, request
 	return tools.WorkspaceTaskMutationResponse{Created: toolWorkspaceTask(created), Tasks: tasks}, nil
 }
 
+func (p workspaceTasksProvider) ConvertTaskToKanbanCard(ctx context.Context, request tools.WorkspaceTaskConvertRequest) (tools.WorkspaceTaskConversionResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return tools.WorkspaceTaskConversionResponse{}, err
+	}
+	title := request.Title
+	description := request.Description
+	criteria := request.AcceptanceCriteria
+
+	p.service.taskMu.Lock()
+	_, active, done, err := readWorkspaceTaskFiles(p.workspace)
+	if err != nil {
+		p.service.taskMu.Unlock()
+		return tools.WorkspaceTaskConversionResponse{}, err
+	}
+	task, found := active.Tasks[request.TaskID]
+	if !found {
+		p.service.taskMu.Unlock()
+		if _, completed := done.Tasks[request.TaskID]; completed {
+			return tools.WorkspaceTaskConversionResponse{}, fmt.Errorf("completed tasks cannot be converted to kanban cards")
+		}
+		return tools.WorkspaceTaskConversionResponse{}, fmt.Errorf("task was not found")
+	}
+	if err := requireTaskRevision(task, request.ExpectedUpdatedAt); err != nil {
+		p.service.taskMu.Unlock()
+		return tools.WorkspaceTaskConversionResponse{}, err
+	}
+	if title == "" {
+		title = task.Title
+	}
+	if description == "" {
+		description = task.Details
+	}
+	if len(criteria) == 0 {
+		criteria = append([]string(nil), task.AcceptanceCriteria...)
+	}
+	p.service.taskMu.Unlock()
+
+	conversion, err := p.service.CreateKanbanCardFromTask(p.workspace.ID, request.TaskID, title, description, criteria, request.ExpectedUpdatedAt)
+	if err != nil {
+		return tools.WorkspaceTaskConversionResponse{}, err
+	}
+
+	var toolTask *tools.WorkspaceTask
+	for i := range conversion.Tasks.Tasks {
+		if conversion.Tasks.Tasks[i].ID == request.TaskID {
+			t := toolWorkspaceTask(conversion.Tasks.Tasks[i])
+			toolTask = &t
+			break
+		}
+	}
+
+	tasks := make([]tools.WorkspaceTask, 0, len(conversion.Tasks.Tasks))
+	for _, t := range conversion.Tasks.Tasks {
+		tasks = append(tasks, toolWorkspaceTask(t))
+	}
+
+	return tools.WorkspaceTaskConversionResponse{
+		TaskID:       request.TaskID,
+		Task:         toolTask,
+		KanbanCardID: conversion.Kanban.Ready[0].ID,
+		Tasks:        tasks,
+	}, nil
+}
+
+func (p workspaceTasksProvider) UpdateWorkspaceTask(ctx context.Context, request tools.WorkspaceTaskUpdateRequest) (tools.WorkspaceTaskMutationResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return tools.WorkspaceTaskMutationResponse{}, err
+	}
+	input := TaskInput{
+		Title:              request.Title,
+		Details:            request.Details,
+		Epic:               request.Epic,
+		Tags:               request.Tags,
+		AcceptanceCriteria: request.AcceptanceCriteria,
+		Priority:           request.Priority,
+	}
+	board, err := p.service.UpdateWorkspaceTask(p.workspace.ID, request.TaskID, input, request.ExpectedUpdatedAt)
+	if err != nil {
+		return tools.WorkspaceTaskMutationResponse{}, err
+	}
+	tasks := make([]tools.WorkspaceTask, 0, len(board.Tasks))
+	for _, task := range board.Tasks {
+		tasks = append(tasks, toolWorkspaceTask(task))
+	}
+	return tools.WorkspaceTaskMutationResponse{Tasks: tasks}, nil
+}
+
+func (p workspaceTasksProvider) DeleteWorkspaceTask(ctx context.Context, request tools.WorkspaceTaskDeleteRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := p.service.DeleteWorkspaceTask(p.workspace.ID, request.TaskID, request.ExpectedUpdatedAt)
+	return err
+}
+
+func (p workspaceTasksProvider) SetWorkspaceTaskCompleted(ctx context.Context, request tools.WorkspaceTaskCompleteRequest) (tools.WorkspaceTaskMutationResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return tools.WorkspaceTaskMutationResponse{}, err
+	}
+	board, err := p.service.SetWorkspaceTaskCompleted(p.workspace.ID, request.TaskID, request.Completed, request.ExpectedUpdatedAt)
+	if err != nil {
+		return tools.WorkspaceTaskMutationResponse{}, err
+	}
+	tasks := make([]tools.WorkspaceTask, 0, len(board.Tasks))
+	for _, task := range board.Tasks {
+		tasks = append(tasks, toolWorkspaceTask(task))
+	}
+	return tools.WorkspaceTaskMutationResponse{Tasks: tasks}, nil
+}
+
+func (p workspaceTasksProvider) MoveWorkspaceTask(ctx context.Context, request tools.WorkspaceTaskMoveRequest) (tools.WorkspaceTaskMutationResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return tools.WorkspaceTaskMutationResponse{}, err
+	}
+	board, err := p.service.MoveWorkspaceTask(p.workspace.ID, request.TaskID, request.Priority, request.ExpectedUpdatedAt)
+	if err != nil {
+		return tools.WorkspaceTaskMutationResponse{}, err
+	}
+	tasks := make([]tools.WorkspaceTask, 0, len(board.Tasks))
+	for _, task := range board.Tasks {
+		tasks = append(tasks, toolWorkspaceTask(task))
+	}
+	return tools.WorkspaceTaskMutationResponse{Tasks: tasks}, nil
+}
+
+func (p workspaceTasksProvider) ReorderWorkspaceTasks(ctx context.Context, request tools.WorkspaceTaskReorderRequest) (tools.WorkspaceTaskMutationResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return tools.WorkspaceTaskMutationResponse{}, err
+	}
+	board, err := p.service.ReorderWorkspaceTasks(p.workspace.ID, request.TaskIDs, request.Priority)
+	if err != nil {
+		return tools.WorkspaceTaskMutationResponse{}, err
+	}
+	tasks := make([]tools.WorkspaceTask, 0, len(board.Tasks))
+	for _, task := range board.Tasks {
+		tasks = append(tasks, toolWorkspaceTask(task))
+	}
+	return tools.WorkspaceTaskMutationResponse{Tasks: tasks}, nil
+}
+
 func toolWorkspaceTask(task WorkspaceTask) tools.WorkspaceTask {
 	return tools.WorkspaceTask{
 		ID:                 task.ID,
 		Title:              task.Title,
 		Details:            task.Details,
-		AcceptanceCriteria: append([]string(nil), task.AcceptanceCriteria...),
+		Epic:               task.Epic,
 		Tags:               append([]string(nil), task.Tags...),
+		AcceptanceCriteria: append([]string(nil), task.AcceptanceCriteria...),
 		Priority:           task.Priority,
+		SortOrder:          task.SortOrder,
 		Completed:          task.Completed,
 		CreatedAt:          task.CreatedAt,
 		UpdatedAt:          task.UpdatedAt,
@@ -245,6 +393,8 @@ func (s *SystemService) UpdateWorkspaceTask(workspaceID string, taskID string, i
 		}
 		task.Title = normalized.Title
 		task.Details = normalized.Details
+		task.Epic = normalized.Epic
+		task.Tags = normalized.Tags
 		task.AcceptanceCriteria = normalized.AcceptanceCriteria
 		task.Tags = normalized.Tags
 		task.Priority = normalized.Priority
@@ -471,8 +621,9 @@ func (s *SystemService) createWorkspaceTask(workspace Workspace, input TaskInput
 	active.Tasks[id] = storedWorkspaceTask{
 		Title:              input.Title,
 		Details:            input.Details,
-		AcceptanceCriteria: input.AcceptanceCriteria,
+		Epic:               input.Epic,
 		Tags:               input.Tags,
+		AcceptanceCriteria: input.AcceptanceCriteria,
 		Priority:           input.Priority,
 		CreatedAt:          now,
 		UpdatedAt:          now,
@@ -506,6 +657,8 @@ func (s *SystemService) loadTaskBoardForWorkspace(workspace Workspace) (TaskBoar
 func normalizeTaskInput(input TaskInput) (TaskInput, error) {
 	input.Title = strings.TrimSpace(input.Title)
 	input.Details = strings.TrimSpace(input.Details)
+	input.Epic = strings.TrimSpace(input.Epic)
+	input.Tags = normalizeTaskTags(input.Tags)
 	input.Priority = normalizeTaskPriority(input.Priority)
 	input.AcceptanceCriteria = normalizeTaskCriteria(input.AcceptanceCriteria)
 	input.Tags = normalizeTaskTags(input.Tags)
@@ -898,9 +1051,11 @@ func taskBoardFromData(workspaceID string, location workspaceTaskLocation, activ
 			ID:                 id,
 			Title:              stored.Title,
 			Details:            stored.Details,
-			AcceptanceCriteria: append([]string(nil), stored.AcceptanceCriteria...),
+			Epic:               stored.Epic,
 			Tags:               append([]string(nil), stored.Tags...),
+			AcceptanceCriteria: append([]string(nil), stored.AcceptanceCriteria...),
 			Priority:           stored.Priority,
+			SortOrder:          stored.SortOrder,
 			Completed:          stored.Completed,
 			CreatedAt:          stored.CreatedAt,
 			UpdatedAt:          stored.UpdatedAt,
@@ -909,6 +1064,9 @@ func taskBoardFromData(workspaceID string, location workspaceTaskLocation, activ
 		tags = mergeWorkspaceTags(tags, stored.Tags)
 	}
 	sort.Slice(tasks, func(i, j int) bool {
+		if tasks[i].SortOrder != tasks[j].SortOrder {
+			return tasks[i].SortOrder < tasks[j].SortOrder
+		}
 		if tasks[i].CreatedAt != tasks[j].CreatedAt {
 			return tasks[i].CreatedAt > tasks[j].CreatedAt
 		}
@@ -950,6 +1108,83 @@ func newWorkspaceTaskID() (string, error) {
 	value[8] = (value[8] & 0x3f) | 0x80
 	encoded := hex.EncodeToString(value[:])
 	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:32], nil
+}
+
+func (s *SystemService) ReorderWorkspaceTasks(workspaceID string, taskIDs []string, targetPriority string) (TaskBoard, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return TaskBoard{}, err
+	}
+	targetPriority = normalizeTaskPriority(targetPriority)
+	if targetPriority == "" {
+		return TaskBoard{}, fmt.Errorf("priority must be P0, P1, or P2")
+	}
+	if len(taskIDs) == 0 {
+		return TaskBoard{}, fmt.Errorf("task ids are required")
+	}
+	s.taskMu.Lock()
+	location, active, done, err := readWorkspaceTaskFiles(workspace)
+	if err != nil {
+		s.taskMu.Unlock()
+		return TaskBoard{}, err
+	}
+	// Build set of task IDs for dedup validation
+	seen := map[string]bool{}
+	for _, id := range taskIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			s.taskMu.Unlock()
+			return TaskBoard{}, fmt.Errorf("task id cannot be empty")
+		}
+		if seen[id] {
+			s.taskMu.Unlock()
+			return TaskBoard{}, fmt.Errorf("duplicate task id: %s", id)
+		}
+		seen[id] = true
+	}
+	now := time.Now().UTC().Format(timeRFC3339Nano)
+	modified := false
+	// Assign sequential sort orders to tasks in the given priority
+	for i, id := range taskIDs {
+		task, foundInActive := active.Tasks[id]
+		_, foundInDone := done.Tasks[id]
+		if !foundInActive && !foundInDone {
+			s.taskMu.Unlock()
+			return TaskBoard{}, fmt.Errorf("task %s was not found", id)
+		}
+		if foundInDone {
+			// Skip completed tasks in reorder — they stay in done file
+			continue
+		}
+		if task.Priority == targetPriority && task.SortOrder == i {
+			continue
+		}
+		task.Priority = targetPriority
+		task.SortOrder = i
+		task.UpdatedAt = now
+		delete(active.Tasks, id)
+		active.Tasks[id] = task
+		modified = true
+	}
+	if !modified {
+		board, err := taskBoardFromData(workspace.ID, location, active, done)
+		s.taskMu.Unlock()
+		if err != nil {
+			return TaskBoard{}, err
+		}
+		return board, nil
+	}
+	if err := writeWorkspaceTaskFiles(location, active, done, true); err != nil {
+		s.taskMu.Unlock()
+		return TaskBoard{}, err
+	}
+	board, err := taskBoardFromData(workspace.ID, location, active, done)
+	s.taskMu.Unlock()
+	if err != nil {
+		return TaskBoard{}, err
+	}
+	s.emitTaskEvent(TaskEvent{WorkspaceID: workspaceID, Type: "reordered", Board: board})
+	return board, nil
 }
 
 func (s *SystemService) emitTaskEvent(event TaskEvent) {

@@ -1,24 +1,27 @@
 
 import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate, startCodeRename } from "../codeView";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, ListAgentModes, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, GetHeartbeatConfig, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
 import { appRoot } from "./dom";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
 import { dismissContextMenu } from "./contextMenu";
-import { dropWorkspaceGitRepositoryState, loadWorkspaceChangesSummary, openGitChangeInCode, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, selectGitCommit, syncWorkspaceGitRepository } from "./git";
-import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification } from "./kanban";
+import { dropWorkspaceGitRepositoryState, openGitChangeInCode, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, selectGitCommit, syncWorkspaceGitRepository } from "./git";
+import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification, toggleHeartbeatInterval, toggleWatchdogInterval } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, cancelAgentMode, deleteAgentModeSettings, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint, saveAgentMode, saveNewAgentMode, startCreateAgentMode, startEditAgentMode } from "./settings";
-import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatAgentModeIDFor, chatComposerModeFor, setChatComposerMode, chatSessionFor, chatVideoDraftsFor, getActiveChatKanbanTab, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state } from "./state";
+import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatAgentModeIDFor, chatComposerModeFor, setChatComposerMode, chatSessionFor, chatVideoDraftsFor, getActiveChatKanbanTab, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state, getDashboardWidgets, setDashboardWidgets, defaultDashboardLayouts } from "./state";
 import { clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
 import { cloneSettings, cloneWebAccessSettings } from "./state";
-import type { AppMode, MobileNavView } from "./types";
+import type { AppMode, MobileNavView, WidgetId, WidgetSize } from "./types";
 import { applyTheme, settingsWithThemeDefaults, themePaletteNames } from "./theme";
 import { pushToast, dismissToast } from "./toasts";
 import { loadActiveTaskBoard } from "./tasks";
 import { copyTextToClipboard, errorMessage, laneLabel } from "./utils";
 import { hydrateWorkspaceLetterDrafts } from "./workspace";
+import { resetTokenBudget, loadTokenBudget } from "./budget";
+import { loadLivenessConfig } from "./liveness";
+import { availableWidgets } from "./dashboard/grid";
 
 export async function handleAction(event: Event) {
   const target = event.currentTarget as HTMLElement;
@@ -28,6 +31,12 @@ export async function handleAction(event: Event) {
   try {
     if (action === "dismiss-toast") {
       dismissToast(target.dataset.toastId ?? "");
+      return;
+    }
+    if (action === "reset-budget") {
+      const wsID = target.dataset.workspaceId ?? "";
+      if (!wsID) return;
+      void resetTokenBudget(wsID);
       return;
     }
     if (action === "show-in-explorer") {
@@ -104,6 +113,122 @@ export async function handleAction(event: Event) {
       state.appMode = tab;
       state.mobileNavView = tab;
       getAppCallbacks().render();
+      return;
+    }
+    if (action === "open-dashboard") {
+      state.dashboardPreviousMode = state.appMode;
+      state.appMode = "dashboard";
+      state.mobileNavView = "dashboard" as MobileNavView;
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "close-dashboard") {
+      const prev = state.dashboardPreviousMode ?? "chat";
+      state.appMode = prev;
+      state.mobileNavView = prev as MobileNavView;
+      getAppCallbacks().render();
+      return;
+    }
+    // Dashboard widget grid edit actions
+    if (action === "dashboard-edit-toggle") {
+      state.dashboardEditMode = !state.dashboardEditMode;
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "widget-remove") {
+      const widgetId = target.dataset.widgetId ?? "";
+      const widgets = getDashboardWidgets("dashboard");
+      const filtered = widgets.filter((w) => w.id !== widgetId);
+      setDashboardWidgets("dashboard", filtered);
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "widget-add") {
+      const widgetId = target.dataset.widgetId as WidgetId;
+      const widgetSize = target.dataset.widgetSize as WidgetSize;
+      const widgets = getDashboardWidgets("dashboard");
+      // Look up title from availableWidgets map
+      const allAvail = availableWidgets["dashboard"] ?? [];
+      const def = allAvail.find((a) => a.id === widgetId);
+      if (!def) return;
+      const newOrder = widgets.length;
+      widgets.push({ id: widgetId, view: "dashboard", title: def.title, size: widgetSize, order: newOrder });
+      setDashboardWidgets("dashboard", widgets);
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "widget-move-up") {
+      const widgetId = target.dataset.widgetId ?? "";
+      const widgets = getDashboardWidgets("dashboard");
+      const idx = widgets.findIndex((w) => w.id === widgetId);
+      if (idx > 0) {
+        [widgets[idx - 1], widgets[idx]] = [widgets[idx], widgets[idx - 1]];
+        setDashboardWidgets("dashboard", widgets);
+        getAppCallbacks().render();
+      }
+      return;
+    }
+    if (action === "widget-move-down") {
+      const widgetId = target.dataset.widgetId ?? "";
+      const widgets = getDashboardWidgets("dashboard");
+      const idx = widgets.findIndex((w) => w.id === widgetId);
+      if (idx >= 0 && idx < widgets.length - 1) {
+        [widgets[idx], widgets[idx + 1]] = [widgets[idx + 1], widgets[idx]];
+        setDashboardWidgets("dashboard", widgets);
+        getAppCallbacks().render();
+      }
+      return;
+    }
+    if (action === "reset-dashboard-layout") {
+      const defaults = defaultDashboardLayouts();
+      const defaultWidgets = defaults["dashboard"] ?? [];
+      setDashboardWidgets("dashboard", [...defaultWidgets]);
+      getAppCallbacks().render();
+      return;
+    }
+    // Aliases for add-widget / remove-widget / move-widget-up / move-widget-down
+    // (grid.ts uses widget-add / widget-remove / widget-move-up / widget-move-down)
+    if (action === "add-widget") {
+      const widgetId = target.dataset.widgetId as WidgetId;
+      const widgetSize = target.dataset.widgetSize as WidgetSize;
+      const widgets = getDashboardWidgets("dashboard");
+      const allAvail = availableWidgets["dashboard"] ?? [];
+      const def = allAvail.find((a) => a.id === widgetId);
+      if (!def) return;
+      const newOrder = widgets.length;
+      widgets.push({ id: widgetId, view: "dashboard", title: def.title, size: widgetSize, order: newOrder });
+      setDashboardWidgets("dashboard", widgets);
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "remove-widget") {
+      const widgetId = target.dataset.widgetId ?? "";
+      const widgets = getDashboardWidgets("dashboard");
+      const filtered = widgets.filter((w) => w.id !== widgetId);
+      setDashboardWidgets("dashboard", filtered);
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "move-widget-up") {
+      const widgetId = target.dataset.widgetId ?? "";
+      const widgets = getDashboardWidgets("dashboard");
+      const idx = widgets.findIndex((w) => w.id === widgetId);
+      if (idx > 0) {
+        [widgets[idx - 1], widgets[idx]] = [widgets[idx], widgets[idx - 1]];
+        setDashboardWidgets("dashboard", widgets);
+        getAppCallbacks().render();
+      }
+      return;
+    }
+    if (action === "move-widget-down") {
+      const widgetId = target.dataset.widgetId ?? "";
+      const widgets = getDashboardWidgets("dashboard");
+      const idx = widgets.findIndex((w) => w.id === widgetId);
+      if (idx >= 0 && idx < widgets.length - 1) {
+        [widgets[idx], widgets[idx + 1]] = [widgets[idx + 1], widgets[idx]];
+        setDashboardWidgets("dashboard", widgets);
+        getAppCallbacks().render();
+      }
       return;
     }
     if (action === "open-git-changes") {
@@ -325,6 +450,11 @@ export async function handleAction(event: Event) {
       }
       return;
     }
+    if (action === "request-push-notification-permission") {
+      const { handleRequestPushNotificationPermission } = await import("../app/settings");
+      void handleRequestPushNotificationPermission();
+      return;
+    }
     if (action === "add-workspace") {
       state.appState = await ChooseWorkspaceFolder();
       await loadActiveChatSession();
@@ -468,6 +598,20 @@ export async function handleAction(event: Event) {
       } catch {
         /* Non-fatal: will load on first chat render. */
       }
+      /* Restore heartbeat interval from backend. */
+      try {
+        const hbConfig = await GetHeartbeatConfig(workspaceID);
+        if (hbConfig.enabled && hbConfig.interval > 0) {
+          state.heartbeatIntervals.set(workspaceID, hbConfig.interval);
+        } else {
+          state.heartbeatIntervals.delete(workspaceID);
+        }
+      } catch {
+        /* Non-fatal. */
+      }
+      /* Load token budget for the new workspace. */
+      void loadTokenBudget(workspaceID);
+      void loadLivenessConfig(workspaceID);
       state.workspaceDropdownOpen = false;
       await loadActiveChangesViewIfNeeded();
       getAppCallbacks().render();
@@ -565,6 +709,18 @@ export async function handleAction(event: Event) {
       );
       patchChatPanel();
       patchChatControls();
+    }
+    if (action === "toggle-heartbeat") {
+      const workspaceID = target.dataset.workspaceId ?? "";
+      if (!workspaceID) return;
+      void toggleHeartbeatInterval(workspaceID).then(() => getAppCallbacks().render());
+      return;
+    }
+    if (action === "toggle-watchdog") {
+      const workspaceID = target.dataset.workspaceId ?? "";
+      if (!workspaceID) return;
+      void toggleWatchdogInterval(workspaceID);
+      return;
     }
     if (action === "start-agents") {
       const workspace = activeWorkspace();
@@ -728,6 +884,17 @@ export async function handleAction(event: Event) {
       state.selectedKanbanCards.set(workspace.id, cardID);
       maybePlayKanbanBoardNotification(previousBoard, board);
       pushToast(`Card moved to ${laneLabel(lane)}.`, "success");
+      getAppCallbacks().render();
+    }
+    if (action === "clear-card-recovery") {
+      const workspace = activeWorkspace();
+      const cardID = target.dataset.cardId ?? "";
+      if (!workspace || !cardID) {
+        return;
+      }
+      state.kanbanBoards.set(workspace.id, await ClearKanbanCardRecovery(workspace.id, cardID));
+      state.selectedKanbanCards.set(workspace.id, cardID);
+      pushToast("Recovery state cleared.", "success");
       getAppCallbacks().render();
     }
     if (action === "create-card-from-message") {
@@ -913,7 +1080,7 @@ async function loadActiveChangesViewIfNeeded() {
     return;
   }
   if (state.appMode !== "git") {
-    await loadWorkspaceChangesSummary(workspace.id);
+    await refreshWorkspaceChangeReview(workspace.id);
     return;
   }
   await openWorkspaceGitRepository(workspace.id);

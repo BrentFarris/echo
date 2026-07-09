@@ -159,7 +159,7 @@ func TestDefaultRegistryIncludesFilesystemTools(t *testing.T) {
 	for _, tool := range schema {
 		names[tool.Function.Name] = true
 	}
-	for _, name := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_read_video", "filesystem_search_text", "filesystem_search_workspace", "filesystem_stat", "lsp_query", "shell_command", "web_fetch", "web_search", "workspace_context", "workspace_skill_read", "workspace_skill_record", "workspace_skill_search"} {
+	for _, name := range []string{"filesystem_create_text", "filesystem_delete_file", "filesystem_edit_text", "filesystem_list", "filesystem_read_image", "filesystem_read_text", "filesystem_read_video", "filesystem_search_text", "filesystem_search_workspace", "filesystem_stat", "kanban_start_execution", "lsp_query", "shell_command", "web_fetch", "web_search", "workspace_context", "workspace_skill_read", "workspace_skill_record", "workspace_skill_search"} {
 		if !names[name] {
 			t.Fatalf("expected default registry to include %s, got %#v", name, names)
 		}

@@ -7,7 +7,7 @@ import (
 	"syscall"
 )
 
-func launchDetachedRebuild(scriptPath string) error {
+func launchDetachedRebuild(scriptPath string, _ string) error {
 	cmd := exec.Command("sh", "-c", scriptPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true, // Detach from parent process group

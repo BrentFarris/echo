@@ -1,11 +1,20 @@
 package services
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
@@ -19,6 +28,7 @@ type WebAccessSettings struct {
 	BindHost    string `json:"bindHost"`
 	Port        int    `json:"port"`
 	AccessToken string `json:"accessToken"`
+	EnableTLS   bool   `json:"enableTLS"`
 }
 
 type WebAccessStatus struct {
@@ -29,6 +39,7 @@ type WebAccessStatus struct {
 	AccessToken string   `json:"accessToken"`
 	PrimaryURL  string   `json:"primaryUrl"`
 	LANURLs     []string `json:"lanUrls"`
+	EnableTLS   bool     `json:"enableTLS"`
 	LastError   string   `json:"lastError,omitempty"`
 }
 
@@ -196,6 +207,69 @@ func webAccessStatusFromSettings(settings WebAccessSettings) WebAccessStatus {
 		BindHost:    settings.BindHost,
 		Port:        settings.Port,
 		AccessToken: settings.AccessToken,
+		EnableTLS:   settings.EnableTLS,
 		LANURLs:     []string{},
 	}
+}
+
+// GenerateSelfSignedCert creates a self-signed ECDSA P-256 certificate and key
+// at the given paths. The cert is valid for 1 year and covers localhost DNS.
+func GenerateSelfSignedCert(certPath, keyPath string) error {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate ECDSA key: %w", err)
+	}
+
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject: pkix.Name{
+			Organization: []string{"Echo"},
+			CommonName:   "localhost",
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{"localhost"},
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		return fmt.Errorf("create certificate: %w", err)
+	}
+
+	certOut, err := os.Create(certPath)
+	if err != nil {
+		return fmt.Errorf("create cert file: %w", err)
+	}
+	defer certOut.Close()
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: certDER}); err != nil {
+		return fmt.Errorf("encode cert PEM: %w", err)
+	}
+
+	keyOut, err := os.Create(keyPath)
+	if err != nil {
+		return fmt.Errorf("create key file: %w", err)
+	}
+	defer keyOut.Close()
+	keyBytes, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		return fmt.Errorf("marshal EC private key: %w", err)
+	}
+	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes}); err != nil {
+		return fmt.Errorf("encode key PEM: %w", err)
+	}
+
+	return nil
+}
+
+// WebAccessConfigDir returns the user config directory where Echo stores
+// persistent data (state.json, TLS certs, etc.).
+func WebAccessConfigDir() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("get user config dir: %w", err)
+	}
+	return filepath.Join(configDir, "Echo"), nil
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -27,6 +28,10 @@ type KanbanCard struct {
 	Lane               string                   `json:"lane"`
 	Status             string                   `json:"status"`
 	ProgressTranscript []KanbanProgressEntry    `json:"progressTranscript,omitempty"`
+	AutoRetriesUsed    int                      `json:"autoRetriesUsed,omitempty"`
+	RecoveryType       string                   `json:"recoveryType,omitempty"`
+	StalledAt          *time.Time               `json:"stalledAt,omitempty"`
+	WatchdogChecked    bool                     `json:"watchdogChecked,omitempty"`
 }
 
 type KanbanDependencyStatus struct {
@@ -37,10 +42,11 @@ type KanbanDependencyStatus struct {
 }
 
 type KanbanProgressEntry struct {
-	Type    string `json:"type"`
-	Title   string `json:"title,omitempty"`
-	Content string `json:"content"`
-	Status  string `json:"status,omitempty"`
+	Type      string    `json:"type"`
+	Title     string    `json:"title,omitempty"`
+	Content   string    `json:"content"`
+	Status    string    `json:"status,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 type KanbanBoard struct {
@@ -182,7 +188,20 @@ func (s *SystemService) CreateKanbanCardFromChatMessage(workspaceID string, mess
 		return KanbanBoard{}, fmt.Errorf("message content is required")
 	}
 
-	return s.appendAssistantMessageReadyCard(workspaceID, content)
+	board, err := s.appendAssistantMessageReadyCard(workspaceID, content)
+	if err != nil {
+		return KanbanBoard{}, err
+	}
+
+	// Auto-schedule if no run is active so newly created cards are picked up immediately.
+	s.chatMu.Lock()
+	_, running := s.kanbanRuns[workspaceID]
+	s.chatMu.Unlock()
+	if !running {
+		_, _ = s.StartKanbanExecution(workspaceID, defaultAgentLimit)
+	}
+
+	return board, nil
 }
 
 func (s *SystemService) CreateReadyKanbanCard(workspaceID string, title string, description string, acceptanceCriteria []string) (KanbanBoard, error) {
@@ -207,12 +226,6 @@ func (s *SystemService) CreateReadyKanbanCard(workspaceID string, title string, 
 		return KanbanBoard{}, err
 	}
 
-	s.chatMu.Lock()
-	if _, running := s.kanbanRuns[workspaceID]; running {
-		s.chatMu.Unlock()
-		return KanbanBoard{}, fmt.Errorf("kanban cards cannot be created while agents are running")
-	}
-
 	s.mu.Lock()
 	card := KanbanCard{
 		ID:                 fmt.Sprintf("card-%d", s.nextKanbanCardNumberLocked()),
@@ -223,18 +236,27 @@ func (s *SystemService) CreateReadyKanbanCard(workspaceID string, title string, 
 		Lane:               KanbanLaneReady,
 		Status:             KanbanLaneReady,
 		ProgressTranscript: []KanbanProgressEntry{{
-			Type:    "message",
-			Title:   "Card created",
-			Content: "Created manually in the Ready lane.",
-			Status:  KanbanLaneReady,
-		}},
+				Type:      "message",
+				Title:     "Card created",
+				Content:   "Created manually in the Ready lane.",
+				Status:    KanbanLaneReady,
+				Timestamp: time.Now(),
+			}},
 	}
 	s.state.KanbanCards = append(s.state.KanbanCards, card)
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 	s.mu.Unlock()
-	s.chatMu.Unlock()
 
 	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: card.ID, Type: "card_created", Board: board})
+
+	// Auto-schedule if no run is active so newly created cards are picked up immediately.
+	s.chatMu.Lock()
+	_, running := s.kanbanRuns[workspaceID]
+	s.chatMu.Unlock()
+	if !running {
+		_, _ = s.StartKanbanExecution(workspaceID, defaultAgentLimit)
+	}
+
 	return board, nil
 }
 
@@ -273,10 +295,11 @@ func (s *SystemService) MoveKanbanCard(workspaceID string, cardID string, lane s
 	card.Lane = lane
 	card.Status = lane
 	card.ProgressTranscript = append(card.ProgressTranscript, KanbanProgressEntry{
-		Type:    "status",
-		Title:   "Status changed",
-		Content: fmt.Sprintf("Moved to %s.", kanbanLaneLabel(lane)),
-		Status:  lane,
+		Type:      "status",
+		Title:     "Status changed",
+		Content:   fmt.Sprintf("Moved to %s.", kanbanLaneLabel(lane)),
+		Status:    lane,
+		Timestamp: time.Now(),
 	})
 
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
@@ -323,10 +346,11 @@ func (s *SystemService) UpdateKanbanCardDescription(workspaceID string, cardID s
 		}
 		card.Description = description
 		card.ProgressTranscript = append(card.ProgressTranscript, KanbanProgressEntry{
-			Type:    "message",
-			Title:   "Description updated",
-			Content: "User edited the card description before execution.",
-			Status:  KanbanLaneReady,
+			Type:      "message",
+			Title:     "Description updated",
+			Content:   "User edited the card description before execution.",
+			Status:    KanbanLaneReady,
+			Timestamp: time.Now(),
 		})
 		board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 		s.mu.Unlock()
@@ -367,10 +391,11 @@ func (s *SystemService) UpdateKanbanCardDirection(workspaceID string, cardID str
 		}
 		card.Direction = direction
 		card.ProgressTranscript = append(card.ProgressTranscript, KanbanProgressEntry{
-			Type:    "message",
-			Title:   "Direction updated",
-			Content: "User edited the card direction before execution.",
-			Status:  KanbanLaneReady,
+			Type:      "message",
+			Title:     "Direction updated",
+			Content:   "User edited the card direction before execution.",
+			Status:    KanbanLaneReady,
+			Timestamp: time.Now(),
 		})
 		board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 		s.mu.Unlock()
@@ -482,13 +507,14 @@ func (s *SystemService) appendReadyCards(workspaceID string, cards []decomposedC
 			Lane:               KanbanLaneReady,
 			Status:             KanbanLaneReady,
 			ProgressTranscript: []KanbanProgressEntry{{
-				Type:    "message",
-				Title:   "Card created",
-				Content: "Created from the approved chat plan.",
-				Status:  KanbanLaneReady,
-			}},
-		}
-		for _, dependency := range card.Dependencies {
+					Type:      "message",
+					Title:     "Card created",
+					Content:   "Created from the approved chat plan.",
+					Status:    KanbanLaneReady,
+					Timestamp: time.Now(),
+				}},
+			}
+			for _, dependency := range card.Dependencies {
 			runtimeCard.Dependencies = append(runtimeCard.Dependencies, idMap[dependency])
 		}
 		s.state.KanbanCards = append(s.state.KanbanCards, runtimeCard)
@@ -522,10 +548,11 @@ func (s *SystemService) appendAssistantMessageReadyCard(workspaceID string, cont
 		Lane:               KanbanLaneReady,
 		Status:             KanbanLaneReady,
 		ProgressTranscript: []KanbanProgressEntry{{
-			Type:    "message",
-			Title:   "Card created",
-			Content: "Created directly from an Echo chat message.",
-			Status:  KanbanLaneReady,
+			Type:      "message",
+			Title:     "Card created",
+			Content:   "Created directly from an Echo chat message.",
+			Status:    KanbanLaneReady,
+			Timestamp: time.Now(),
 		}},
 	}
 	s.state.KanbanCards = append(s.state.KanbanCards, card)
@@ -596,6 +623,10 @@ func cloneKanbanCard(card KanbanCard) KanbanCard {
 	card.DependencyStatuses = append([]KanbanDependencyStatus(nil), card.DependencyStatuses...)
 	card.BlockedBy = append([]string(nil), card.BlockedBy...)
 	card.ProgressTranscript = append([]KanbanProgressEntry(nil), card.ProgressTranscript...)
+	if card.StalledAt != nil {
+		t := *card.StalledAt
+		card.StalledAt = &t
+	}
 	return card
 }
 
@@ -758,6 +789,49 @@ func enrichKanbanCard(card KanbanCard, byID map[string]KanbanCard) KanbanCard {
 	}
 	card.Eligible = card.Lane == KanbanLaneReady && len(card.BlockedBy) == 0
 	return card
+}
+
+func FindEligibleCards(board KanbanBoard, limit int) []KanbanCard {
+	if limit <= 0 {
+		return nil
+	}
+	allByID := kanbanBoardCardsByID(board)
+	doneIDs := make(map[string]struct{}, len(board.Done))
+	for _, card := range board.Done {
+		doneIDs[card.ID] = struct{}{}
+	}
+
+	result := make([]KanbanCard, 0, limit)
+	for _, card := range board.Ready {
+		blocked := false
+		for _, depID := range card.Dependencies {
+			if _, done := doneIDs[depID]; !done {
+				// dependency exists but is not Done; check if it's a ghost dep (not in board at all)
+				if _, exists := allByID[depID]; !exists {
+					// unknown dependency, treat as unblocked
+					continue
+				}
+				blocked = true
+				break
+			}
+		}
+		if !blocked {
+			result = append(result, card)
+			if len(result) == limit {
+				return result
+			}
+		}
+	}
+	return result
+}
+
+func kanbanBoardCardsByID(board KanbanBoard) map[string]KanbanCard {
+	all := make([]KanbanCard, 0, len(board.Ready)+len(board.InProgress)+len(board.Blocked)+len(board.Done))
+	all = append(all, board.Ready...)
+	all = append(all, board.InProgress...)
+	all = append(all, board.Blocked...)
+	all = append(all, board.Done...)
+	return kanbanCardsByID(all)
 }
 
 func blockedDependenciesForCard(card KanbanCard, cards []KanbanCard) []string {

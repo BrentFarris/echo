@@ -94,6 +94,8 @@ export namespace llm {
 	    thinkingCorrection?: boolean;
 	    hideLeadingWhitespaceIndicators?: boolean;
 	    disableNotificationSounds?: boolean;
+	    enableChatCompletionNotifications?: boolean;
+	    enableKanbanCompleteNotifications?: boolean;
 	    limitKanbanConcurrency?: boolean;
 	    disableGitSplitDiffView?: boolean;
 	    theme?: Theme;
@@ -123,6 +125,8 @@ export namespace llm {
 	        this.thinkingCorrection = source["thinkingCorrection"];
 	        this.hideLeadingWhitespaceIndicators = source["hideLeadingWhitespaceIndicators"];
 	        this.disableNotificationSounds = source["disableNotificationSounds"];
+	        this.enableChatCompletionNotifications = source["enableChatCompletionNotifications"];
+	        this.enableKanbanCompleteNotifications = source["enableKanbanCompleteNotifications"];
 	        this.limitKanbanConcurrency = source["limitKanbanConcurrency"];
 	        this.disableGitSplitDiffView = source["disableGitSplitDiffView"];
 	        this.theme = this.convertValues(source["theme"], Theme);
@@ -209,6 +213,52 @@ export namespace services {
 	        this.accentHex = source["accentHex"];
 	    }
 	}
+	export class WatchdogConfig {
+	    enabled: boolean;
+	    interval: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new WatchdogConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.interval = source["interval"];
+	    }
+	}
+	export class LivenessConfig {
+	    enabled: boolean;
+	    stallTimeout: number;
+	    maxAutoRetries: number;
+	    checkInterval: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LivenessConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.stallTimeout = source["stallTimeout"];
+	        this.maxAutoRetries = source["maxAutoRetries"];
+	        this.checkInterval = source["checkInterval"];
+	    }
+	}
+	export class HeartbeatConfig {
+	    enabled: boolean;
+	    interval: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HeartbeatConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.interval = source["interval"];
+	    }
+	}
 	export class WorkspaceFolder {
 	    id: string;
 	    label: string;
@@ -284,6 +334,7 @@ export namespace services {
 	    bindHost: string;
 	    port: number;
 	    accessToken: string;
+	    enableTLS: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new WebAccessSettings(source);
@@ -295,6 +346,7 @@ export namespace services {
 	        this.bindHost = source["bindHost"];
 	        this.port = source["port"];
 	        this.accessToken = source["accessToken"];
+	        this.enableTLS = source["enableTLS"];
 	    }
 	}
 	export class AppState {
@@ -302,6 +354,10 @@ export namespace services {
 	    webAccess: WebAccessSettings;
 	    workspaces: Workspace[];
 	    activeWorkspaceId: string;
+	    heartbeatConfigs?: Record<string, HeartbeatConfig>;
+	    livenessConfigs?: Record<string, LivenessConfig>;
+	    watchdogConfigs?: Record<string, WatchdogConfig>;
+	    dashboardLayouts?: Record<string, Array<DashboardWidgetJSON>>;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppState(source);
@@ -313,6 +369,10 @@ export namespace services {
 	        this.webAccess = this.convertValues(source["webAccess"], WebAccessSettings);
 	        this.workspaces = this.convertValues(source["workspaces"], Workspace);
 	        this.activeWorkspaceId = source["activeWorkspaceId"];
+	        this.heartbeatConfigs = this.convertValues(source["heartbeatConfigs"], HeartbeatConfig, true);
+	        this.livenessConfigs = this.convertValues(source["livenessConfigs"], LivenessConfig, true);
+	        this.watchdogConfigs = this.convertValues(source["watchdogConfigs"], WatchdogConfig, true);
+	        this.dashboardLayouts = this.convertValues(source["dashboardLayouts"], Array<DashboardWidgetJSON>, true);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -566,6 +626,27 @@ export namespace services {
 	
 	
 	
+	export class DashboardWidgetJSON {
+	    id: string;
+	    view: string;
+	    title: string;
+	    size: string;
+	    order: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DashboardWidgetJSON(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.view = source["view"];
+	        this.title = source["title"];
+	        this.size = source["size"];
+	        this.order = source["order"];
+	    }
+	}
+	
 	export class InlineCodePromptRequest {
 	    requestId?: string;
 	    filePath: string;
@@ -633,6 +714,8 @@ export namespace services {
 	    title?: string;
 	    content: string;
 	    status?: string;
+	    // Go type: time
+	    timestamp: any;
 	
 	    static createFrom(source: any = {}) {
 	        return new KanbanProgressEntry(source);
@@ -644,7 +727,26 @@ export namespace services {
 	        this.title = source["title"];
 	        this.content = source["content"];
 	        this.status = source["status"];
+	        this.timestamp = this.convertValues(source["timestamp"], null);
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class KanbanDependencyStatus {
 	    id: string;
@@ -678,6 +780,11 @@ export namespace services {
 	    lane: string;
 	    status: string;
 	    progressTranscript?: KanbanProgressEntry[];
+	    autoRetriesUsed?: number;
+	    recoveryType?: string;
+	    // Go type: time
+	    stalledAt?: any;
+	    watchdogChecked?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new KanbanCard(source);
@@ -698,6 +805,10 @@ export namespace services {
 	        this.lane = source["lane"];
 	        this.status = source["status"];
 	        this.progressTranscript = this.convertValues(source["progressTranscript"], KanbanProgressEntry);
+	        this.autoRetriesUsed = source["autoRetriesUsed"];
+	        this.recoveryType = source["recoveryType"];
+	        this.stalledAt = this.convertValues(source["stalledAt"], null);
+	        this.watchdogChecked = source["watchdogChecked"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -759,6 +870,7 @@ export namespace services {
 	
 	
 	
+	
 	export class RuntimeStatus {
 	    activeKanbanWorkspaceIds: string[];
 	
@@ -775,9 +887,11 @@ export namespace services {
 	    id: string;
 	    title: string;
 	    details?: string;
-	    acceptanceCriteria?: string[];
+	    epic?: string;
 	    tags?: string[];
+	    acceptanceCriteria?: string[];
 	    priority: string;
+	    sortOrder: number;
 	    completed: boolean;
 	    createdAt: string;
 	    updatedAt: string;
@@ -792,9 +906,11 @@ export namespace services {
 	        this.id = source["id"];
 	        this.title = source["title"];
 	        this.details = source["details"];
-	        this.acceptanceCriteria = source["acceptanceCriteria"];
+	        this.epic = source["epic"];
 	        this.tags = source["tags"];
+	        this.acceptanceCriteria = source["acceptanceCriteria"];
 	        this.priority = source["priority"];
+	        this.sortOrder = source["sortOrder"];
 	        this.completed = source["completed"];
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
@@ -850,8 +966,9 @@ export namespace services {
 	export class TaskInput {
 	    title: string;
 	    details?: string;
-	    acceptanceCriteria?: string[];
+	    epic?: string;
 	    tags?: string[];
+	    acceptanceCriteria?: string[];
 	    priority: string;
 	
 	    static createFrom(source: any = {}) {
@@ -862,8 +979,9 @@ export namespace services {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.title = source["title"];
 	        this.details = source["details"];
-	        this.acceptanceCriteria = source["acceptanceCriteria"];
+	        this.epic = source["epic"];
 	        this.tags = source["tags"];
+	        this.acceptanceCriteria = source["acceptanceCriteria"];
 	        this.priority = source["priority"];
 	    }
 	}
@@ -899,6 +1017,23 @@ export namespace services {
 		    return a;
 		}
 	}
+	export class TokenBudget {
+	    limit: number;
+	    used: number;
+	    paused: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new TokenBudget(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.limit = source["limit"];
+	        this.used = source["used"];
+	        this.paused = source["paused"];
+	    }
+	}
+	
 	
 	export class WebAccessStatus {
 	    enabled: boolean;
@@ -908,6 +1043,7 @@ export namespace services {
 	    accessToken: string;
 	    primaryUrl: string;
 	    lanUrls: string[];
+	    enableTLS: boolean;
 	    lastError?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -923,6 +1059,7 @@ export namespace services {
 	        this.accessToken = source["accessToken"];
 	        this.primaryUrl = source["primaryUrl"];
 	        this.lanUrls = source["lanUrls"];
+	        this.enableTLS = source["enableTLS"];
 	        this.lastError = source["lastError"];
 	    }
 	}
