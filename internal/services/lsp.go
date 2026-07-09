@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const (
@@ -156,6 +158,7 @@ var (
 
 type lspClient struct {
 	languageID    string
+	workspaceID   string
 	workspaceName string
 	rootPath      string
 	rootURI       string
@@ -172,7 +175,9 @@ type lspClient struct {
 	docMu     sync.Mutex
 	documents map[string]lspDocumentState
 
-	closeOnce sync.Once
+	closeOnce      sync.Once
+	resolveFilePath func(absolutePath string) string
+	onDiagnostics  func(workspaceID string, filePath string, diagnostics []WorkspaceDiagnostic)
 }
 
 type lspDocumentState struct {
@@ -249,6 +254,67 @@ type lspDefinitionLocationLink struct {
 	TargetURI            string   `json:"targetUri"`
 	TargetRange          lspRange `json:"targetRange"`
 	TargetSelectionRange lspRange `json:"targetSelectionRange"`
+}
+
+// LSP diagnostic types for textDocument/publishDiagnostics
+
+type lspDiagnosticRelatedInformation struct {
+	Location lspDefinitionLocation `json:"location"`
+	Message  string                `json:"message"`
+}
+
+type lspDiagnostic struct {
+	Range                       lspRange                          `json:"range"`
+	Severity                    int                               `json:"severity"`
+	Code                      json.RawMessage                     `json:"code,omitempty"`
+	CodeDescription           lspCodeDescription                  `json:"codeDescription,omitempty"`
+	Source                    string                              `json:"source,omitempty"`
+	Message                   string                              `json:"message"`
+	RelatedInformation        []lspDiagnosticRelatedInformation   `json:"relatedInformation,omitempty"`
+	Tags                      []int                               `json:"tags,omitempty"`
+}
+
+type lspCodeDescription struct {
+	Href string `json:"href"`
+}
+
+// WorkspaceDiagnostic is the diagnostic payload emitted in the echo:lsp:diagnostics event.
+type WorkspaceDiagnostic struct {
+	Range            WorkspaceDiagnosticRange     `json:"range"`
+	Severity         int                          `json:"severity"`
+	Code             any                          `json:"code,omitempty"`
+	CodeDescription  string                       `json:"codeDescription,omitempty"`
+	Source           string                       `json:"source,omitempty"`
+	Message          string                       `json:"message"`
+	RelatedInformation []WorkspaceDiagnosticRelatedInfo `json:"relatedInformation,omitempty"`
+	Tags             []int                        `json:"tags,omitempty"`
+}
+
+type WorkspaceDiagnosticRange struct {
+	Start WorkspaceDiagnosticPosition `json:"start"`
+	End   WorkspaceDiagnosticPosition `json:"end"`
+}
+
+type WorkspaceDiagnosticPosition struct {
+	Line      int `json:"line"`
+	Character int `json:"character"`
+}
+
+type WorkspaceDiagnosticRelatedInfo struct {
+	Location WorkspaceDiagnosticLocation `json:"location"`
+	Message  string                      `json:"message"`
+}
+
+type WorkspaceDiagnosticLocation struct {
+	Path  string                       `json:"path"`
+	Range WorkspaceDiagnosticRange     `json:"range"`
+}
+
+// LSPDiagnosticsPayload is the data emitted in the echo:lsp:diagnostics event.
+type LSPDiagnosticsPayload struct {
+	WorkspaceID string                `json:"workspaceId"`
+	FilePath    string                `json:"filePath"`
+	Diagnostics []WorkspaceDiagnostic `json:"diagnostics"`
 }
 
 func (s *SystemService) CompleteWorkspaceFile(workspaceID string, request WorkspaceCompletionRequest) (WorkspaceCompletionResponse, error) {
@@ -626,7 +692,13 @@ func (s *SystemService) workspaceLSPClient(workspace Workspace, folder Workspace
 		return existing, nil
 	}
 
-	client, err := startWorkspaceLSPClient(workspace, folder, languageID)
+	onDiagnostics := func(workspaceID string, filePath string, diagnostics []WorkspaceDiagnostic) {
+		s.emitLSPDiagnosticsEvent(workspaceID, filePath, diagnostics)
+	}
+	resolvePath := func(absolutePath string) string {
+		return workspaceRelativePath(workspace, absolutePath)
+	}
+	client, err := startWorkspaceLSPClient(workspace, folder, languageID, onDiagnostics, resolvePath)
 	if err != nil {
 		return nil, err
 	}
@@ -641,7 +713,7 @@ func (s *SystemService) workspaceLSPClient(workspace Workspace, folder Workspace
 	return client, nil
 }
 
-func startWorkspaceLSPClient(workspace Workspace, folder WorkspaceFolder, languageID string) (*lspClient, error) {
+func startWorkspaceLSPClient(workspace Workspace, folder WorkspaceFolder, languageID string, onDiagnostics func(WorkspaceID string, filePath string, diagnostics []WorkspaceDiagnostic), resolveFilePath func(string) string) (*lspClient, error) {
 	command, ok := lspCommandForLanguage(languageID)
 	if !ok {
 		return nil, fmt.Errorf("language server is not configured for %s files", languageID)
@@ -673,6 +745,7 @@ func startWorkspaceLSPClient(workspace Workspace, folder WorkspaceFolder, langua
 
 	client := &lspClient{
 		languageID:    languageID,
+		workspaceID:   workspace.ID,
 		workspaceName: workspace.DisplayName + "/" + folder.Label,
 		rootPath:      rootPath,
 		rootURI:       rootURI,
@@ -681,6 +754,8 @@ func startWorkspaceLSPClient(workspace Workspace, folder WorkspaceFolder, langua
 		readerDone:    make(chan struct{}),
 		pending:       make(map[string]chan lspPendingResponse),
 		documents:     make(map[string]lspDocumentState),
+		resolveFilePath: resolveFilePath,
+		onDiagnostics: onDiagnostics,
 	}
 	go io.Copy(io.Discard, stderr)
 	go client.readLoop(stdout)
@@ -985,9 +1060,19 @@ func (c *lspClient) readLoop(stdout io.Reader) {
 }
 
 func (c *lspClient) handleServerMessage(message lspWireMessage) {
-	if message.ID == nil {
+	if message.Method == "" {
 		return
 	}
+
+	// Push notifications (server-initiated, no ID)
+	if message.ID == nil {
+		switch message.Method {
+		case "textDocument/publishDiagnostics":
+			c.handlePublishDiagnostics(message.Params)
+		}
+		return
+	}
+
 	result := any(nil)
 	switch message.Method {
 	case "workspace/configuration":
@@ -1006,6 +1091,89 @@ func (c *lspClient) handleServerMessage(message lspWireMessage) {
 		"result":  result,
 	}
 	_ = c.writeMessage(response)
+}
+
+func (c *lspClient) handlePublishDiagnostics(raw json.RawMessage) {
+	var params lspDiagnosticParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return
+	}
+	if params.URI == "" {
+		return
+	}
+	targetPath, err := pathFromFileURI(params.URI)
+	if err != nil {
+		return
+	}
+
+	diagnostics := make([]WorkspaceDiagnostic, 0, len(params.Diagnostics))
+	for _, d := range params.Diagnostics {
+		diagnostics = append(diagnostics, workspaceDiagnosticFromLSP(d))
+	}
+
+	filePath := targetPath
+	if c.resolveFilePath != nil {
+		filePath = c.resolveFilePath(targetPath)
+	}
+
+	if c.onDiagnostics != nil {
+		c.onDiagnostics(c.workspaceID, filePath, diagnostics)
+	}
+}
+
+type lspDiagnosticParams struct {
+	URI         string              `json:"uri"`
+	Diagnostics []lspDiagnostic     `json:"diagnostics"`
+}
+
+func workspaceDiagnosticFromLSP(d lspDiagnostic) WorkspaceDiagnostic {
+	w := WorkspaceDiagnostic{
+		Range:    workspaceDiagnosticRangeFromLSP(d.Range),
+		Severity: d.Severity,
+		Code:     lspCodeValue(d.Code),
+		Source:   d.Source,
+		Message:  d.Message,
+		Tags:     d.Tags,
+	}
+	if d.CodeDescription.Href != "" {
+		w.CodeDescription = d.CodeDescription.Href
+	}
+	if len(d.RelatedInformation) > 0 {
+		w.RelatedInformation = make([]WorkspaceDiagnosticRelatedInfo, 0, len(d.RelatedInformation))
+		for _, ri := range d.RelatedInformation {
+			locPath, _ := pathFromFileURI(ri.Location.URI)
+			w.RelatedInformation = append(w.RelatedInformation, WorkspaceDiagnosticRelatedInfo{
+				Location: WorkspaceDiagnosticLocation{
+					Path:  locPath,
+					Range: workspaceDiagnosticRangeFromLSP(ri.Location.Range),
+				},
+				Message: ri.Message,
+			})
+		}
+	}
+	return w
+}
+
+func lspCodeValue(raw json.RawMessage) any {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil
+	}
+	var num int
+	if err := json.Unmarshal(raw, &num); err == nil {
+		return num
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return nil
+}
+
+func workspaceDiagnosticRangeFromLSP(r lspRange) WorkspaceDiagnosticRange {
+	return WorkspaceDiagnosticRange{
+		Start: WorkspaceDiagnosticPosition{Line: r.Start.Line, Character: r.Start.Character},
+		End:   WorkspaceDiagnosticPosition{Line: r.End.Line, Character: r.End.Character},
+	}
 }
 
 func workspaceConfigurationResponse(raw json.RawMessage) any {
@@ -1551,4 +1719,16 @@ func pathFromFileURI(value string) (string, error) {
 
 func lspIDKey(raw json.RawMessage) string {
 	return strings.Trim(string(raw), `"`)
+}
+
+func (s *SystemService) emitLSPDiagnosticsEvent(workspaceID string, filePath string, diagnostics []WorkspaceDiagnostic) {
+	payload := LSPDiagnosticsPayload{
+		WorkspaceID: workspaceID,
+		FilePath:    filePath,
+		Diagnostics: diagnostics,
+	}
+	s.emitRuntimeEvent(lspDiagnosticsEventName, payload)
+	if s.ctx != nil {
+		runtime.EventsEmit(s.ctx, lspDiagnosticsEventName, payload)
+	}
 }

@@ -7,7 +7,10 @@ const (
 	InlineCodeRuntimeEventName  = inlineCodePromptEventName
 	AgentModeRuntimeEventName   = agentModeEventName
 	TaskRuntimeEventName        = taskEventName
+	LSPDiagnosticsEventName     = lspDiagnosticsEventName
 )
+
+const lspDiagnosticsEventName = "echo:lsp:diagnostics"
 
 type RuntimeEvent struct {
 	Name string
