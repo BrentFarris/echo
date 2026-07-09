@@ -31,8 +31,50 @@ export function renderContextMenu(menu: ContextMenuState): string {
 
 function renderEditorContextMenu(menu: ContextMenuState): string {
   const hasSymbol = menu.editorPosition != null;
-  return `\<div class="workspace-context-menu" data-context-menu style="left:${menu.x}px;top:${menu.y}px">\
-      \<button\
+  const hasSpellCheck = menu.spellCheckWord != null;
+  const hasSuggestions = menu.spellCheckSuggestions != null && menu.spellCheckSuggestions.length > 0;
+
+  let suggestionsHTML = "";
+  if (hasSpellCheck) {
+    const addLabel = `Add "${escapeHtml(menu.spellCheckWord ?? "")}" to dictionary`;
+    suggestionsHTML = `\
+      <hr class="workspace-context-menu-divider" />
+      <button
+        class="workspace-context-menu-item"
+        type="button"
+        data-action="editor-spell-add-dictionary"
+        data-workspace-id="${escapeAttribute(menu.workspaceId)}"
+        data-editor-path="${escapeAttribute(menu.editorPath ?? "")}"
+        data-spell-word="${escapeAttribute(menu.spellCheckWord ?? "")}"
+      >
+        <span class="workspace-context-menu-label">${escapeHtml(addLabel)}</span>
+      </button>
+    `;
+    if (hasSuggestions) {
+      const wordLabel = `Did you mean "${escapeHtml(menu.spellCheckWord ?? "")}"?`;
+      suggestionsHTML += `\
+        <hr class="workspace-context-menu-divider" />
+        <div class="workspace-context-menu-section-label">${escapeHtml(wordLabel)}</div>
+        ${menu.spellCheckSuggestions!.map((suggestion) => `
+          <button
+            class="workspace-context-menu-item"
+            type="button"
+            data-action="editor-spell-suggest"
+            data-workspace-id="${escapeAttribute(menu.workspaceId)}"
+            data-editor-path="${escapeAttribute(menu.editorPath ?? "")}"
+            data-suggestion="${escapeAttribute(suggestion)}"
+            data-spell-from="${menu.spellCheckFrom ?? ""}"
+            data-spell-to="${menu.spellCheckTo ?? ""}"
+          >
+            <span class="workspace-context-menu-label">${escapeHtml(suggestion)}</span>
+          </button>
+        `).join("")}
+      `;
+    }
+  }
+
+  return `<div class="workspace-context-menu" data-context-menu style="left:${menu.x}px;top:${menu.y}px">\
+      <button\
         class="workspace-context-menu-item"\
         type="button"\
         data-action="editor-go-to-definition"\
@@ -41,9 +83,10 @@ function renderEditorContextMenu(menu: ContextMenuState): string {
         data-editor-position="${hasSymbol ? String(menu.editorPosition) : "-1"}"\
         ${!hasSymbol ? 'disabled' : ''}\
       >\
-        \<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>\
-        \<span class="workspace-context-menu-label">Go to Definition</span>\
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>\
+        <span class="workspace-context-menu-label">Go to Definition</span>\
       </button>\
+      ${suggestionsHTML}\
     </div>\
   `;
 }

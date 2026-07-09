@@ -19,6 +19,44 @@ export const explorerWidthStorageKey = "echo:code-explorer-width";
 const defaultExplorerWidth = 300;
 export const minExplorerWidth = 220;
 export const maxExplorerWidth = 640;
+export const spellCheckIgnoreListKey = "echo:spell-check-ignore-list";
+
+function loadSpellCheckIgnoreList(): Set<string> {
+  try {
+    const raw = localStorage.getItem(spellCheckIgnoreListKey);
+    if (raw) {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) {
+        return new Set(parsed.filter((item: unknown) => typeof item === "string"));
+      }
+    }
+  } catch {
+    // ignore parse errors and start fresh
+  }
+  return new Set<string>();
+}
+
+export function saveSpellCheckIgnoreList(list: Set<string>): void {
+  try {
+    localStorage.setItem(spellCheckIgnoreListKey, JSON.stringify([...list]));
+  } catch {
+    // storage full or unavailable — silently ignore
+  }
+}
+
+/**
+ * Add a word to the spell-check ignore list and persist.
+ * Returns true if the word was newly added, false if it was already ignored.
+ */
+export function addToSpellCheckDictionary(workspaceID: string, word: string): boolean {
+  const lower = word.toLowerCase().trim();
+  if (!lower || lower.length <= 1) return false;
+  const state = ensureCodeState(workspaceID);
+  const wasNew = !state.spellCheckIgnoreList.has(lower);
+  state.spellCheckIgnoreList.add(lower);
+  saveSpellCheckIgnoreList(state.spellCheckIgnoreList);
+  return wasNew;
+}
 
 function storedExplorerWidth(): number {
   const raw = Number(localStorage.getItem(explorerWidthStorageKey));
@@ -89,6 +127,7 @@ export function ensureCodeState(workspaceID: string): CodeWorkspaceState {
         requestSeq: 0,
         timerID: null,
       },
+      spellCheckIgnoreList: loadSpellCheckIgnoreList(),
     };
     codeStates.set(workspaceID, state);
   }

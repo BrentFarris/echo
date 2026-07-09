@@ -1,6 +1,7 @@
 
 import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, goToLspDefinitionFromContext, refreshOpenCodeTabsFromDisk, startCodeCreate, startCodeRename } from "../codeView";
-import { codeStates } from "../codeView/state";
+import { getMountedCodeEditor } from "../codeView/editor";
+import { addToSpellCheckDictionary, codeStates } from "../codeView/state";
 import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, ListAgentModes, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
 import { appRoot } from "./dom";
 import { getAppCallbacks } from "./callbacks";
@@ -98,6 +99,34 @@ export async function handleAction(event: Event) {
         return;
       }
       await goToLspDefinitionFromContext(workspaceID, editorPath, content, requestPosition, callbacks);
+      return;
+    }
+    if (action === "editor-spell-add-dictionary") {
+      const workspaceID = target.dataset.workspaceId ?? "";
+      const word = target.dataset.spellWord ?? "";
+      if (!workspaceID || !word) {
+        dismissContextMenu();
+        return;
+      }
+      dismissContextMenu();
+      const wasNew = addToSpellCheckDictionary(workspaceID, word);
+      pushToast(
+        wasNew ? `"${word}" added to dictionary.` : `"${word}" already in dictionary.`,
+        wasNew ? "success" : "info",
+      );
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "editor-spell-suggest") {
+      const workspaceID = target.dataset.workspaceId ?? "";
+      const editorPath = target.dataset.editorPath ?? "";
+      const suggestion = target.dataset.suggestion ?? "";
+      if (!workspaceID || !editorPath || !suggestion) {
+        dismissContextMenu();
+        return;
+      }
+      dismissContextMenu();
+      await applySpellSuggestion(workspaceID, editorPath, suggestion);
       return;
     }
     if (action === "open-code-view") {
@@ -915,6 +944,32 @@ export async function handleAction(event: Event) {
     }
     getAppCallbacks().render();
   }
+}
+
+async function applySpellSuggestion(
+  workspaceID: string,
+  editorPath: string,
+  suggestion: string,
+): Promise<void> {
+  const mounted = getMountedCodeEditor();
+  if (!mounted.view || mounted.workspaceID !== workspaceID || mounted.path !== editorPath) {
+    pushToast("Editor not available for this file.", "error");
+    return;
+  }
+  const view = mounted.view;
+  // Use spell check positions stored in context menu state.
+  const menu = state.contextMenu;
+  if (menu?.spellCheckFrom == null || menu?.spellCheckTo == null) {
+    pushToast("Spell check position not available.", "error");
+    return;
+  }
+  view.dispatch({
+    changes: {
+      from: menu.spellCheckFrom,
+      to: menu.spellCheckTo,
+      insert: suggestion,
+    },
+  });
 }
 
 function findEchoSourceWorkspaceForAction() {

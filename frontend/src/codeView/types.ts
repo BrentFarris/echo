@@ -23,6 +23,10 @@ export type CodeViewCallbacks = {
     position: number | null,
     x: number,
     y: number,
+    spellCheckWord?: string,
+    spellCheckSuggestions?: string[],
+    spellCheckFrom?: number,
+    spellCheckTo?: number,
   ) => void;
 };
 
@@ -210,4 +214,5 @@ export type CodeWorkspaceState = {
   inlineChat: InlineCodeChatState | null;
   referencesPanel: CodeReferencePanelState | null;
   quickOpen: CodeQuickOpenState;
+  spellCheckIgnoreList: Set<string>;
 };

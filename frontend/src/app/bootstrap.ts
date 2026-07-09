@@ -54,12 +54,20 @@ function codeViewCallbacks() {
       position: number | null,
       x: number,
       y: number,
+      spellCheckWord?: string,
+      spellCheckSuggestions?: string[],
+      spellCheckFrom?: number,
+      spellCheckTo?: number,
     ) {
       showContextMenu({
         workspaceId,
         displayPath: path.split("/").pop() ?? path.split("\\").pop() ?? path,
         editorPath: path,
         editorPosition: position,
+        spellCheckWord,
+        spellCheckSuggestions,
+        spellCheckFrom,
+        spellCheckTo,
         x,
         y,
       });

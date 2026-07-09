@@ -9,6 +9,8 @@ import { applySavedFile, ensureCodeState, findTab } from "./state";
 import type { CodeViewCallbacks } from "./types";
 import { openReferencesPanel } from "./references";
 import { openCodeFile } from "./tabs";
+import { getMisspellingAtPosition } from "./spellCheck";
+import { getSuggestions } from "./dictionary";
 import {
   clamp,
   editableWorkspaceFile,
@@ -142,24 +144,36 @@ export function lspDefinitionExtension(
     EditorView.domEventHandlers({
       contextmenu(event, view) {
         const coords = view.posAtCoords({ x: event.clientX, y: event.clientY });
+        let requestPos: number | null = null;
         if (coords !== null && hasIdentifierAtPosition(view.state, coords)) {
-          const requestPos = goToLspDefinitionAtPosition(view.state, coords);
-          callbacks.showEditorSymbolContextMenu(
-            workspaceID,
-            path,
-            requestPos,
-            event.clientX,
-            event.clientY,
-          );
-        } else {
-          callbacks.showEditorSymbolContextMenu(
-            workspaceID,
-            path,
-            null,
-            event.clientX,
-            event.clientY,
-          );
+          requestPos = goToLspDefinitionAtPosition(view.state, coords);
         }
+        // Check for misspelling at click position
+        const misspelling = getMisspellingAtPosition(view, coords ?? -1);
+        let spellWord: string | undefined;
+        let spellSuggestions: string[] | undefined;
+        let spellFrom: number | undefined;
+        let spellTo: number | undefined;
+        if (misspelling) {
+          spellWord = misspelling.word;
+          spellFrom = misspelling.from;
+          spellTo = misspelling.to;
+          const suggestions = getSuggestions(misspelling.word, 5);
+          if (suggestions.length > 0) {
+            spellSuggestions = suggestions;
+          }
+        }
+        callbacks.showEditorSymbolContextMenu(
+          workspaceID,
+          path,
+          requestPos,
+          event.clientX,
+          event.clientY,
+          spellWord,
+          spellSuggestions,
+          spellFrom,
+          spellTo,
+        );
         return true;
       },
     }),

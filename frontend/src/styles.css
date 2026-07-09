@@ -1859,6 +1859,13 @@ h3 {
   text-overflow: ellipsis;
 }
 
+.workspace-context-menu-section-label {
+  padding: var(--space-xs) var(--space-lg);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-style: italic;
+}
+
 .send-button {
   /* Defined above in chat-composer section */
 }
@@ -5480,6 +5487,13 @@ h3 {
 
 .cm-minimap-selected {
   background-color: color-mix(in srgb, var(--code-editor-active-line) 40%, transparent);
+}
+
+/* ─── Spell Check ─────────────────────────────────────────────── */
+
+.cm-spell-error {
+  border-bottom: 2px wavy var(--color-danger);
+  cursor: default;
 }
 
 /* ─── Image Viewer ────────────────────────────────────────────── */

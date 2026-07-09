@@ -12,6 +12,7 @@ import { inlineCodeChatExtension } from "./inlineChat";
 import { lspCompletionExtension, lspDefinitionExtension, lspRenameExtension } from "./lsp";
 import { referencesPanelExtension } from "./references";
 import { activeCodeTab, ensureCodeState, findTab } from "./state";
+import { spellCheckExtension } from "./spellCheck";
 import type { CodeViewCallbacks } from "./types";
 import { clamp, codeTabName, editorDocumentLengthForFileContent, editorStateToFileContent, escapeAttribute, escapeHtml, formatBytes } from "./utils";
 
@@ -220,6 +221,8 @@ export async function mountActiveCodeEditor(
   if (callbacks.leadingWhitespaceIndicatorsEnabled()) {
     extensions.push(leadingWhitespaceIndicatorExtension());
   }
+  // Spell-check: always active for all files
+  extensions.push(...spellCheckExtension(workspaceID));
   const language = await languageExtensionForPath(tab.path);
   if (token !== editorMountToken) {
     return;
