@@ -19,6 +19,7 @@ import type { TaskEvent } from "../types";
 import { errorMessage, escapeAttribute, escapeHtml } from "../utils";
 
 const priorities = ["P0", "P1", "P2"] as const;
+const taskTagSuggestionLimit = 8;
 let draggingTaskID = "";
 
 export async function loadActiveTaskBoard() {
@@ -343,7 +344,22 @@ function renderTaskEditor(workspaceID: string): string {
         </header>
         <label><span>Title</span><input type="text" name="title" required value="${escapeAttribute(draft.title)}" data-task-title data-initial-focus></label>
         <label><span>Epic</span><input type="text" name="epic" placeholder="Optional group name" value="${escapeAttribute(draft.epic || "")}" data-task-epic></label>
-        <label><span>Tags</span><input type="text" name="tags" placeholder="Comma-separated tags (e.g. frontend, bug)" value="${escapeAttribute(draft.tags || "")}" data-task-tags></label>
+        <label class="task-tags-field">
+          <span>Tags</span>
+          <input
+            type="text"
+            name="tags"
+            placeholder="Comma-separated tags (e.g. frontend, bug)"
+            value="${escapeAttribute(draft.tags || "")}"
+            autocomplete="off"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded="false"
+            aria-controls="task-tag-suggestion-list"
+            data-task-tags
+          >
+          <div class="task-tag-suggestions" id="task-tag-suggestion-list" role="listbox" aria-label="Matching tags" data-task-tag-suggestions hidden></div>
+        </label>
         <label><span>Details</span><textarea name="details" rows="6" placeholder="Optional Markdown details" data-task-details>${escapeHtml(draft.details)}</textarea></label>
         <label><span>Acceptance criteria</span><textarea name="acceptanceCriteria" rows="4" placeholder="Optional; one criterion per line" data-task-criteria>${escapeHtml(draft.acceptanceCriteria)}</textarea></label>
         <label><span>Priority</span><select name="priority" data-task-priority>${priorities.map((priority) => `<option value="${priority}" ${draft.priority === priority ? "selected" : ""}>${priority}</option>`).join("")}</select></label>
@@ -385,6 +401,15 @@ export function bindTaskEvents(root: ParentNode) {
     lane.addEventListener("drop", handleTaskDrop);
   });
   root.querySelector<HTMLInputElement>("[data-task-search]")?.addEventListener("input", handleTaskSearch);
+  const tagInput = root.querySelector<HTMLInputElement>("[data-task-tags]");
+  if (tagInput) {
+    tagInput.addEventListener("input", () => syncTaskTagSuggestions(tagInput));
+    tagInput.addEventListener("focus", () => syncTaskTagSuggestions(tagInput));
+    tagInput.addEventListener("keydown", handleTaskTagSuggestionsKeydown);
+    tagInput.addEventListener("blur", () => {
+      window.setTimeout(() => hideTaskTagSuggestions(tagInput), 120);
+    });
+  }
   root.querySelectorAll<HTMLButtonElement>("[data-task-filter]").forEach((btn) => {
     btn.addEventListener("click", handleTaskFilter);
   });
@@ -394,6 +419,174 @@ export function bindTaskEvents(root: ParentNode) {
   root.querySelectorAll<HTMLButtonElement>("[data-task-tag-filter]").forEach((btn) => {
     btn.addEventListener("click", handleTaskTagFilter);
   });
+}
+
+type TaskTagSegment = {
+  start: number;
+  end: number;
+  query: string;
+};
+
+function currentTaskTagSegment(input: HTMLInputElement): TaskTagSegment {
+  const value = input.value;
+  const cursor = input.selectionStart ?? value.length;
+  const previousComma = cursor > 0 ? value.lastIndexOf(",", cursor - 1) : -1;
+  const nextComma = value.indexOf(",", cursor);
+  const start = previousComma === -1 ? 0 : previousComma + 1;
+  const end = nextComma === -1 ? value.length : nextComma;
+  let queryStart = start;
+  while (queryStart < cursor && /\s/.test(value.charAt(queryStart))) {
+    queryStart++;
+  }
+  return {
+    start,
+    end,
+    query: value.slice(queryStart, cursor).trim().toLowerCase(),
+  };
+}
+
+function availableTaskTags(workspaceID: string): string[] {
+  const board = taskBoardFor(workspaceID);
+  const tags = new Map<string, string>();
+  for (const tag of board.tags ?? []) {
+    const trimmed = tag.trim();
+    if (trimmed) {
+      tags.set(trimmed.toLowerCase(), trimmed);
+    }
+  }
+  for (const task of board.tasks ?? []) {
+    for (const tag of task.tags ?? []) {
+      const trimmed = tag.trim();
+      if (trimmed) {
+        tags.set(trimmed.toLowerCase(), trimmed);
+      }
+    }
+  }
+  return Array.from(tags.values()).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+}
+
+function splitTaskTagInput(value: string): Set<string> {
+  return new Set(
+    value
+      .split(",")
+      .map((tag) => tag.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+function matchingTaskTagSuggestions(input: HTMLInputElement): string[] {
+  const workspace = activeWorkspace();
+  if (!workspace) return [];
+  const segment = currentTaskTagSegment(input);
+  const selectedTags = splitTaskTagInput(input.value);
+  return availableTaskTags(workspace.id)
+    .filter((tag) => {
+      const key = tag.toLowerCase();
+      return !selectedTags.has(key) && (!segment.query || key.includes(segment.query));
+    })
+    .slice(0, taskTagSuggestionLimit);
+}
+
+function taskTagSuggestionsElement(input: HTMLInputElement): HTMLElement | null {
+  return input.closest(".task-tags-field")?.querySelector<HTMLElement>("[data-task-tag-suggestions]") ?? null;
+}
+
+function syncTaskTagSuggestions(input: HTMLInputElement) {
+  const menu = taskTagSuggestionsElement(input);
+  if (!menu) return;
+  const suggestions = matchingTaskTagSuggestions(input);
+  const selectedIndex = Number(input.dataset.taskTagSuggestionIndex ?? "0");
+  const clampedIndex = suggestions.length ? Math.min(Math.max(selectedIndex, 0), suggestions.length - 1) : 0;
+  input.dataset.taskTagSuggestionIndex = String(clampedIndex);
+  input.setAttribute("aria-expanded", suggestions.length ? "true" : "false");
+  input.toggleAttribute("aria-activedescendant", suggestions.length > 0);
+  if (suggestions.length) {
+    input.setAttribute("aria-activedescendant", `task-tag-suggestion-${clampedIndex}`);
+  }
+
+  if (!suggestions.length) {
+    menu.hidden = true;
+    menu.replaceChildren();
+    return;
+  }
+
+  menu.hidden = false;
+  const html = suggestions
+    .map((tag, index) => `
+      <button
+        class="task-tag-suggestion${index === clampedIndex ? " is-active" : ""}"
+        id="task-tag-suggestion-${index}"
+        type="button"
+        role="option"
+        aria-selected="${index === clampedIndex}"
+        data-task-tag-suggestion="${escapeAttribute(tag)}"
+      >${escapeHtml(tag)}</button>
+    `)
+    .join("");
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  menu.replaceChildren(...Array.from(template.content.children));
+  menu.querySelectorAll<HTMLButtonElement>("[data-task-tag-suggestion]").forEach((button) => {
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", () => insertTaskTagSuggestion(input, button.dataset.taskTagSuggestion ?? ""));
+  });
+}
+
+function hideTaskTagSuggestions(input: HTMLInputElement) {
+  const menu = taskTagSuggestionsElement(input);
+  if (!menu) return;
+  menu.hidden = true;
+  input.setAttribute("aria-expanded", "false");
+  input.removeAttribute("aria-activedescendant");
+}
+
+function moveTaskTagSuggestionSelection(input: HTMLInputElement, delta: number) {
+  const suggestions = matchingTaskTagSuggestions(input);
+  if (!suggestions.length) return;
+  const current = Number(input.dataset.taskTagSuggestionIndex ?? "0");
+  input.dataset.taskTagSuggestionIndex = String((current + delta + suggestions.length) % suggestions.length);
+  syncTaskTagSuggestions(input);
+}
+
+function insertTaskTagSuggestion(input: HTMLInputElement, tag: string) {
+  if (!tag) return;
+  const segment = currentTaskTagSegment(input);
+  const before = input.value.slice(0, segment.start);
+  const after = input.value.slice(segment.end);
+  const spacer = before.endsWith(",") ? " " : "";
+  input.value = `${before}${spacer}${tag}${after}`;
+  const cursor = before.length + spacer.length + tag.length;
+  input.setSelectionRange(cursor, cursor);
+  hideTaskTagSuggestions(input);
+  input.focus();
+}
+
+function handleTaskTagSuggestionsKeydown(event: KeyboardEvent) {
+  const input = event.currentTarget as HTMLInputElement;
+  const suggestions = matchingTaskTagSuggestions(input);
+  if (event.key === "Escape") {
+    hideTaskTagSuggestions(input);
+    return;
+  }
+  if (!suggestions.length) return;
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    moveTaskTagSuggestionSelection(input, 1);
+    return;
+  }
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    moveTaskTagSuggestionSelection(input, -1);
+    return;
+  }
+  if (event.key === "Enter" || event.key === "Tab") {
+    const index = Number(input.dataset.taskTagSuggestionIndex ?? "0");
+    const tag = suggestions[Math.min(Math.max(index, 0), suggestions.length - 1)];
+    if (tag) {
+      event.preventDefault();
+      insertTaskTagSuggestion(input, tag);
+    }
+  }
 }
 
 function handleTaskDetailBackdropClick(backdrop: HTMLElement) {

@@ -527,7 +527,7 @@ func (s *SystemService) SaveWorkspaceFile(workspaceID string, path string, conte
 	if !isWorkspaceTextLike(currentData) || !utf8.Valid(currentData) {
 		return WorkspaceFile{}, fmt.Errorf("file appears to be binary")
 	}
-	content, err = formatWorkspaceFileContentBeforeSave(resolved, content)
+	content, err = s.prepareWorkspaceFileContentBeforeSave(workspace, resolved, content)
 	if err != nil {
 		return WorkspaceFile{}, err
 	}
@@ -617,7 +617,7 @@ func (s *SystemService) SaveWorkspaceFileAs(workspaceID string, path string, con
 		return WorkspaceFile{}, fmt.Errorf("check save path: %w", statErr)
 	}
 
-	content, err = formatWorkspaceFileContentBeforeSave(resolved, content)
+	content, err = s.prepareWorkspaceFileContentBeforeSave(workspace, resolved, content)
 	if err != nil {
 		return WorkspaceFile{}, err
 	}

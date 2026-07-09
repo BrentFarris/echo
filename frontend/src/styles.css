@@ -3197,6 +3197,55 @@ h3 {
   font-weight: 400;
 }
 
+.task-tags-field {
+  position: relative;
+}
+
+.task-tag-suggestions[hidden] {
+  display: none;
+}
+
+.task-tag-suggestions {
+  position: absolute;
+  z-index: 3;
+  top: calc(100% + var(--space-xs));
+  left: 0;
+  right: 0;
+  display: grid;
+  gap: var(--space-xxs);
+  max-height: 210px;
+  padding: var(--space-sm);
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-popover);
+}
+
+.task-tag-suggestion {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 var(--space-md);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  text-align: left;
+}
+
+.task-tag-suggestion:hover,
+.task-tag-suggestion:focus-visible,
+.task-tag-suggestion.is-active {
+  outline: none;
+  background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface));
+  color: var(--color-accent-strong);
+}
+
 .kanban-card-create-actions {
   justify-content: flex-end;
 }

@@ -166,6 +166,9 @@ func TestSystemServiceSaveWorkspaceFileWritesWhenUnchanged(t *testing.T) {
 }
 
 func TestSystemServiceSaveWorkspaceFileFormatsGoFilesBeforeWriting(t *testing.T) {
+	withWorkspaceGoImportOrganizer(t, func(_ *SystemService, _ Workspace, _ string, content string) (string, error) {
+		return content, nil
+	})
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	path := filepath.Join(root, "main.go")
 	if err := os.WriteFile(path, []byte("package main\n"), 0o640); err != nil {
@@ -195,6 +198,9 @@ func TestSystemServiceSaveWorkspaceFileFormatsGoFilesBeforeWriting(t *testing.T)
 }
 
 func TestSystemServiceSaveWorkspaceFileDoesNotWriteGoFileWhenFormattingFails(t *testing.T) {
+	withWorkspaceGoImportOrganizer(t, func(_ *SystemService, _ Workspace, _ string, content string) (string, error) {
+		return content, nil
+	})
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	path := filepath.Join(root, "main.go")
 	original := "package main\n\nfunc main() {}\n"
@@ -216,6 +222,88 @@ func TestSystemServiceSaveWorkspaceFileDoesNotWriteGoFileWhenFormattingFails(t *
 	}
 	if string(data) != original {
 		t.Fatalf("expected failed format to leave file alone, got %q", string(data))
+	}
+}
+
+func TestSystemServiceSaveWorkspaceFileOrganizesGoImportsBeforeWriting(t *testing.T) {
+	withWorkspaceGoImportOrganizer(t, func(_ *SystemService, _ Workspace, _ string, content string) (string, error) {
+		return strings.Replace(content, "package main\n\n", "package main\n\nimport \"fmt\"\n\n", 1), nil
+	})
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := service.ReadWorkspaceFile(workspaceID, "workspace/main.go")
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+
+	saved, err := service.SaveWorkspaceFile(workspaceID, "workspace/main.go", "package main\n\nfunc main(){fmt.Println(\"ok\")}\n", opened.ModifiedAt)
+	if err != nil {
+		t.Fatalf("save file: %v", err)
+	}
+	expected := "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(\"ok\") }\n"
+	if saved.Content != expected {
+		t.Fatalf("expected imports organized and formatted, got %q", saved.Content)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != expected {
+		t.Fatalf("expected saved file content %q, got %q", expected, string(data))
+	}
+}
+
+func TestSystemServiceSaveWorkspaceFileDoesNotWriteWhenGoImportOrganizationFails(t *testing.T) {
+	withWorkspaceGoImportOrganizer(t, func(_ *SystemService, _ Workspace, _ string, _ string) (string, error) {
+		return "", fmt.Errorf("organizer unavailable")
+	})
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	path := filepath.Join(root, "main.go")
+	original := "package main\n\nfunc main() {}\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := service.ReadWorkspaceFile(workspaceID, "workspace/main.go")
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+
+	_, err = service.SaveWorkspaceFile(workspaceID, "workspace/main.go", "package main\n\nfunc main() {}\n", opened.ModifiedAt)
+	if err == nil || !strings.Contains(err.Error(), "organizer unavailable") {
+		t.Fatalf("expected organizer error, got %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != original {
+		t.Fatalf("expected failed organization to leave file alone, got %q", string(data))
+	}
+}
+
+func TestSystemServiceSaveWorkspaceFileBypassesGoImportOrganizationForNonGoFiles(t *testing.T) {
+	withWorkspaceGoImportOrganizer(t, func(_ *SystemService, _ Workspace, _ string, _ string) (string, error) {
+		return "", fmt.Errorf("organizer should not run")
+	})
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	path := filepath.Join(root, "README.md")
+	if err := os.WriteFile(path, []byte("before\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := service.ReadWorkspaceFile(workspaceID, "workspace/README.md")
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+
+	saved, err := service.SaveWorkspaceFile(workspaceID, "workspace/README.md", "after\n", opened.ModifiedAt)
+	if err != nil {
+		t.Fatalf("save file: %v", err)
+	}
+	if saved.Content != "after\n" {
+		t.Fatalf("expected non-Go save to bypass organizer, got %#v", saved)
 	}
 }
 
@@ -986,6 +1074,15 @@ func newWorkspaceFilesTestService(t *testing.T) (*SystemService, string, string)
 		t.Fatalf("add workspace: %v", err)
 	}
 	return service, state.ActiveWorkspaceID, root
+}
+
+func withWorkspaceGoImportOrganizer(t *testing.T, organize func(*SystemService, Workspace, string, string) (string, error)) {
+	t.Helper()
+	previous := organizeWorkspaceGoImportsBeforeSave
+	organizeWorkspaceGoImportsBeforeSave = organize
+	t.Cleanup(func() {
+		organizeWorkspaceGoImportsBeforeSave = previous
+	})
 }
 
 func entryNames(entries []WorkspaceFileEntry) []string {
