@@ -9,6 +9,7 @@ import { patchDirtyUI } from "./dom";
 import type { CodeFileTab } from "./types";
 import { inlineCodeChatExtension } from "./inlineChat";
 import { lspCompletionExtension, lspDefinitionExtension, lspRenameExtension } from "./lsp";
+import { lspDiagnosticsExtension } from "./diagnostics";
 import { referencesPanelExtension } from "./references";
 import { activeCodeTab, ensureCodeState, findTab } from "./state";
 import type { CodeViewCallbacks } from "./types";
@@ -220,12 +221,16 @@ export async function mountActiveCodeEditor(
     }),
   ];
   if (!tab.untitled && !tab.external) {
+    const diagExt = lspDiagnosticsExtension(workspaceID, tab.path);
     extensions.push(
       lspDefinitionExtension(workspaceID, tab.path, callbacks, hooks.openCodeFile),
       lspRenameExtension(workspaceID, tab.path, callbacks),
       referencesPanelExtension(workspaceID, tab.path, callbacks, hooks.openCodeFile),
       inlineCodeChatExtension(workspaceID, tab.path, callbacks, { saveActiveCodeFile: hooks.saveActiveCodeFile }),
     );
+    if (diagExt) {
+      extensions.push(diagExt);
+    }
   }
   if (callbacks.leadingWhitespaceIndicatorsEnabled()) {
     extensions.push(leadingWhitespaceIndicatorExtension());

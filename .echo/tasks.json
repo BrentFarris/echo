@@ -45,6 +45,14 @@
       "createdAt": "2026-07-08T16:32:38.7143363Z",
       "updatedAt": "2026-07-08T16:32:38.7143363Z"
     },
+    "ed685fa4-2dc8-4a8b-ad22-3280d4e3f6b7": {
+      "title": "Fix LSP diagnostics not clearing after code changes",
+      "details": "## Problem\nRed squiggles (LSP diagnostics) do not disappear when the user removes or fixes the code that caused the error. The LSP server never receives document change notifications during normal editing, so it keeps publishing stale diagnostics for content that no longer exists.\n\n## Root Cause\n1. `syncDocument` (which sends `textDocument/didChange`) is only called during completion and definition requests, not on regular edits\n2. Frontend has no mechanism to notify the LSP of document changes\n3. The editor's `updateListener` updates local tab state but does not sync with the LSP\n\n## Fix Plan\n\n### Step 1: Add debounced document sync in frontend (editor.ts)\n- Add a debounced call that sends the current document content to the backend on every edit\n- Trigger from the existing `updateListener` when `update.docChanged` is true\n- Debounce at ~500ms to avoid overwhelming the LSP\n\n### Step 2: Add SyncLSPDocument backend method (lsp.go)\n- New Wails-bound method on SystemService that accepts workspaceID, filePath, and content\n- Calls `syncDocument` on the appropriate LSP client to send `textDocument/didChange`\n- The LSP will then re-analyze and publish fresh diagnostics\n\n### Step 3: Regenerate Wails bindings\n- Run `wails generate` after adding the new backend method\n\n## Files to Modify\n- `echo/internal/services/lsp.go` - Add SyncLSPDocument method\n- `echo/frontend/src/codeView/editor.ts` - Add debounced sync on edit\n- `echo/frontend/src/backend/services.ts` (or generated bindings) - Import new method",
+      "priority": "P0",
+      "completed": false,
+      "createdAt": "2026-07-09T02:49:42.7690733Z",
+      "updatedAt": "2026-07-09T02:49:42.7690733Z"
+    },
     "ee2e86ac-182c-40d0-8ff8-33b483a7f629": {
       "title": "Make file path red in Git/changes view if it is deleted",
       "tags": [
