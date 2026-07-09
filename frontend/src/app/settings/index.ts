@@ -1,5 +1,5 @@
 
-import { CreateAgentMode, CreateAgentModePerTool, DeleteAgentMode, LoadWebAccessStatus, ListAgentModes, PrepareRebuildAndRelaunch, SaveSettings, SaveWebAccessSettings, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter, UpdateAgentMode, UpdateAgentModePerTool } from "../../backend/services";
+import { CreateAgentMode, CreateAgentModePerTool, DeleteAgentMode, LoadWebAccessStatus, ListAgentModes, PrepareRebuildAndRelaunch, SaveSettings, SaveWebAccessSettings, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter, SetWorkspaceSearchParentGitRepositories, UpdateAgentMode, UpdateAgentModePerTool } from "../../backend/services";
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
@@ -191,6 +191,13 @@ export function bindSettingsEvents(root: ParentNode) {
       }),
     );
   form
+    ?.querySelectorAll<HTMLInputElement>("[data-workspace-parent-git-repositories]")
+    .forEach((input) =>
+      input.addEventListener("change", () => {
+        void handleWorkspaceParentGitRepositoriesChange(input);
+      }),
+    );
+  form
     ?.querySelectorAll<HTMLTextAreaElement>("textarea")
     .forEach((textarea) => textarea.addEventListener("input", handleSettingsInput));
 }
@@ -344,6 +351,15 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                                   type="checkbox"
                                   ${workspace.defaultPlanMode ? "checked" : ""}
                                   data-workspace-default-plan-mode
+                                  data-workspace-id="${escapeAttribute(workspace.id)}"
+                                />
+                              </label>
+                              <label class="settings-toggle workspace-parent-git-repositories" title="Allow Git tools to use a repository found above the workspace folder.">
+                                <span>Search parent folders for Git</span>
+                                <input
+                                  type="checkbox"
+                                  ${workspace.searchParentGitRepositories ? "checked" : ""}
+                                  data-workspace-parent-git-repositories
                                   data-workspace-id="${escapeAttribute(workspace.id)}"
                                 />
                               </label>
@@ -1625,6 +1641,9 @@ export function handleSettingsInput(event: Event) {
   if (input.dataset.workspaceDefaultPlanMode !== undefined) {
     return;
   }
+  if (input.dataset.workspaceParentGitRepositories !== undefined) {
+    return;
+  }
   if (input.dataset.webAccessField !== undefined) {
     void handleWebAccessInput(input as HTMLInputElement);
     return;
@@ -1800,6 +1819,20 @@ export async function handleWorkspaceDefaultPlanModeChange(input: HTMLInputEleme
   }
   try {
     state.appState = await SetWorkspaceDefaultPlanMode(workspaceID, input.checked);
+    getAppCallbacks().render();
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+    getAppCallbacks().render();
+  }
+}
+
+export async function handleWorkspaceParentGitRepositoriesChange(input: HTMLInputElement) {
+  const workspaceID = input.dataset.workspaceId ?? "";
+  if (!workspaceID) {
+    return;
+  }
+  try {
+    state.appState = await SetWorkspaceSearchParentGitRepositories(workspaceID, input.checked);
     getAppCallbacks().render();
   } catch (error) {
     pushToast(errorMessage(error), "error");

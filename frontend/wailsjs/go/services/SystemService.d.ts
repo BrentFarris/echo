@@ -222,6 +222,8 @@ export function SetWorkspaceIconFromUpload(arg1:string,arg2:services.WorkspaceIc
 
 export function SetWorkspaceLetter(arg1:string,arg2:string):Promise<services.AppState>;
 
+export function SetWorkspaceSearchParentGitRepositories(arg1:string,arg2:boolean):Promise<services.AppState>;
+
 export function SetWorkspaceTaskCompleted(arg1:string,arg2:string,arg3:boolean,arg4:string):Promise<services.TaskBoard>;
 
 export function Shutdown():Promise<void>;

@@ -434,6 +434,10 @@ export function SetWorkspaceLetter(arg1, arg2) {
   return window['go']['services']['SystemService']['SetWorkspaceLetter'](arg1, arg2);
 }
 
+export function SetWorkspaceSearchParentGitRepositories(arg1, arg2) {
+  return window['go']['services']['SystemService']['SetWorkspaceSearchParentGitRepositories'](arg1, arg2);
+}
+
 export function SetWorkspaceTaskCompleted(arg1, arg2, arg3, arg4) {
   return window['go']['services']['SystemService']['SetWorkspaceTaskCompleted'](arg1, arg2, arg3, arg4);
 }

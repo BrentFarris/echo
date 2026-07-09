@@ -441,6 +441,10 @@ export function SetWorkspaceLetter(...args: Parameters<typeof Wails.SetWorkspace
   return call("SetWorkspaceLetter", Wails.SetWorkspaceLetter, args);
 }
 
+export function SetWorkspaceSearchParentGitRepositories(...args: Parameters<typeof Wails.SetWorkspaceSearchParentGitRepositories>): ReturnType<typeof Wails.SetWorkspaceSearchParentGitRepositories> {
+  return call("SetWorkspaceSearchParentGitRepositories", Wails.SetWorkspaceSearchParentGitRepositories, args);
+}
+
 export function GetLivenessConfig(...args: Parameters<typeof Wails.GetLivenessConfig>): ReturnType<typeof Wails.GetLivenessConfig> {
   return call("GetLivenessConfig", Wails.GetLivenessConfig, args);
 }

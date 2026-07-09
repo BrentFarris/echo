@@ -22,14 +22,15 @@ func (s *SystemService) StageWorkspaceGitFile(workspaceID string, folderID strin
 
 	ctx, cancel := context.WithTimeout(context.Background(), workspaceGitCommandTimeout)
 	defer cancel()
-	if err := ensureWorkspaceGitRepositoryRoot(ctx, folder); err != nil {
-		return WorkspaceGitRepositoryView{}, err
-	}
-	entry, err := workspaceGitStatusEntryForPath(ctx, folder, path)
+	repository, err := s.workspaceGitRepositoryContext(ctx, workspace, folder)
 	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	if err := stageWorkspaceGitStatusEntry(ctx, folder.Path, entry); err != nil {
+	entry, err := workspaceGitStatusEntryForPath(ctx, repository, path)
+	if err != nil {
+		return WorkspaceGitRepositoryView{}, err
+	}
+	if err := stageWorkspaceGitStatusEntry(ctx, repository, entry); err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
 	return s.loadWorkspaceGitRepository(workspace, folder.ID)
@@ -51,14 +52,15 @@ func (s *SystemService) UnstageWorkspaceGitFile(workspaceID string, folderID str
 
 	ctx, cancel := context.WithTimeout(context.Background(), workspaceGitCommandTimeout)
 	defer cancel()
-	if err := ensureWorkspaceGitRepositoryRoot(ctx, folder); err != nil {
-		return WorkspaceGitRepositoryView{}, err
-	}
-	entry, err := workspaceGitStatusEntryForPath(ctx, folder, path)
+	repository, err := s.workspaceGitRepositoryContext(ctx, workspace, folder)
 	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	if err := unstageWorkspaceGitStatusEntry(ctx, folder.Path, entry); err != nil {
+	entry, err := workspaceGitStatusEntryForPath(ctx, repository, path)
+	if err != nil {
+		return WorkspaceGitRepositoryView{}, err
+	}
+	if err := unstageWorkspaceGitStatusEntry(ctx, repository, entry); err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
 	return s.loadWorkspaceGitRepository(workspace, folder.ID)
@@ -76,11 +78,18 @@ func (s *SystemService) StageWorkspaceGitChanges(workspaceID string, folderID st
 
 	ctx, cancel := context.WithTimeout(context.Background(), workspaceGitCommandTimeout)
 	defer cancel()
-	if err := ensureWorkspaceGitRepositoryRoot(ctx, folder); err != nil {
+	repository, err := s.workspaceGitRepositoryContext(ctx, workspace, folder)
+	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	if _, err := runWorkspaceGitCommand(ctx, folder.Path, "add", "-A"); err != nil {
+	entries, err := workspaceGitStatusEntriesForRepository(ctx, repository)
+	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
+	}
+	for _, entry := range entries {
+		if err := stageWorkspaceGitStatusEntry(ctx, repository, entry); err != nil {
+			return WorkspaceGitRepositoryView{}, err
+		}
 	}
 	return s.loadWorkspaceGitRepository(workspace, folder.ID)
 }
@@ -97,41 +106,51 @@ func (s *SystemService) UnstageWorkspaceGitChanges(workspaceID string, folderID 
 
 	ctx, cancel := context.WithTimeout(context.Background(), workspaceGitCommandTimeout)
 	defer cancel()
-	if err := ensureWorkspaceGitRepositoryRoot(ctx, folder); err != nil {
+	repository, err := s.workspaceGitRepositoryContext(ctx, workspace, folder)
+	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	if err := unstageWorkspaceGitPaths(ctx, folder.Path, []string{"."}); err != nil {
+	entries, err := workspaceGitStatusEntriesForRepository(ctx, repository)
+	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
+	}
+	for _, entry := range entries {
+		if !gitStatusEntryHasStagedChanges(entry) {
+			continue
+		}
+		if err := unstageWorkspaceGitStatusEntry(ctx, repository, entry); err != nil {
+			return WorkspaceGitRepositoryView{}, err
+		}
 	}
 	return s.loadWorkspaceGitRepository(workspace, folder.ID)
 }
 
-func stageWorkspaceGitStatusEntry(ctx context.Context, workspacePath string, entry gitStatusEntry) error {
+func stageWorkspaceGitStatusEntry(ctx context.Context, repository workspaceGitRepositoryContext, entry gitStatusEntry) error {
 	paths := workspaceGitDiscardPaths(entry)
 	if len(paths) == 0 {
 		return fmt.Errorf("git file path is required")
 	}
 	for _, path := range paths {
-		if _, err := resolveWorkspaceGitPath(workspacePath, path); err != nil {
+		if err := repository.requireGitPathInFolder(path); err != nil {
 			return err
 		}
 	}
 	args := append([]string{"add", "-A", "--"}, paths...)
-	_, err := runWorkspaceGitCommand(ctx, workspacePath, args...)
+	_, err := runWorkspaceGitCommand(ctx, repository.WorktreePath, args...)
 	return err
 }
 
-func unstageWorkspaceGitStatusEntry(ctx context.Context, workspacePath string, entry gitStatusEntry) error {
+func unstageWorkspaceGitStatusEntry(ctx context.Context, repository workspaceGitRepositoryContext, entry gitStatusEntry) error {
 	paths := workspaceGitDiscardPaths(entry)
 	if len(paths) == 0 {
 		return fmt.Errorf("git file path is required")
 	}
 	for _, path := range paths {
-		if _, err := resolveWorkspaceGitPath(workspacePath, path); err != nil {
+		if err := repository.requireGitPathInFolder(path); err != nil {
 			return err
 		}
 	}
-	return unstageWorkspaceGitPaths(ctx, workspacePath, paths)
+	return unstageWorkspaceGitPaths(ctx, repository.WorktreePath, paths)
 }
 
 func unstageWorkspaceGitPaths(ctx context.Context, workspacePath string, paths []string) error {

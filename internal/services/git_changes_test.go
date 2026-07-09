@@ -529,6 +529,117 @@ func TestLoadWorkspaceGitRepositorySelectsRepositoryByFolderID(t *testing.T) {
 	}
 }
 
+func TestWorkspaceGitParentRepositoryModeCachesRootAndScopesChanges(t *testing.T) {
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, "app/main.txt", "app before\n")
+	writeGitTestFile(t, root, "docs/readme.txt", "docs before\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial")
+
+	writeGitTestFile(t, root, "app/main.txt", "app after\n")
+	writeGitTestFile(t, root, "docs/readme.txt", "docs after\n")
+
+	appRoot := filepath.Join(root, "app")
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+	state, err := service.AddWorkspace(appRoot)
+	if err != nil {
+		t.Fatalf("add child workspace: %v", err)
+	}
+	workspaceID := state.ActiveWorkspaceID
+	folderID := state.Workspaces[0].Folders[0].ID
+
+	if _, err := service.LoadWorkspaceGitRepository(workspaceID, folderID); err == nil || !strings.Contains(err.Error(), "workspace folder must be the Git repository root") {
+		t.Fatalf("expected parent repository to be disabled by default, got %v", err)
+	}
+
+	state, err = service.SetWorkspaceSearchParentGitRepositories(workspaceID, true)
+	if err != nil {
+		t.Fatalf("enable parent repository search: %v", err)
+	}
+	view, err := service.LoadWorkspaceGitRepository(workspaceID, folderID)
+	if err != nil {
+		t.Fatalf("load parent repository: %v", err)
+	}
+	if view.Repository == nil || view.Repository.FileCount != 1 {
+		t.Fatalf("expected one child-folder change, got %#v", view.Repository)
+	}
+	label := normalizeWorkspaceFolderLabel(filepath.Base(appRoot))
+	if got := view.Repository.Files[0].Path; got != label+"/main.txt" {
+		t.Fatalf("expected child-relative file path, got %q", got)
+	}
+	if strings.Contains(view.Repository.Files[0].Diff, "docs/readme.txt") {
+		t.Fatalf("expected diff to exclude sibling folder changes, got %q", view.Repository.Files[0].Diff)
+	}
+
+	workspaceState, err := readWorkspaceStateFileAt(filepath.Join(appRoot, ".echo", workspaceStateFile))
+	if err != nil {
+		t.Fatalf("read workspace state: %v", err)
+	}
+	if len(workspaceState.Git.ParentRepositories) != 1 || !sameCleanPath(workspaceState.Git.ParentRepositories[0].RepositoryRoot, root) {
+		t.Fatalf("expected cached parent repository root, got %#v", workspaceState.Git.ParentRepositories)
+	}
+
+	if _, err := service.StageWorkspaceGitChanges(workspaceID, folderID); err != nil {
+		t.Fatalf("stage child changes: %v", err)
+	}
+	status := runGitTestCommand(t, root, "status", "--porcelain=v1", "--untracked-files=all")
+	if !strings.Contains(status, "M  app/main.txt") || !strings.Contains(status, " M docs/readme.txt") {
+		t.Fatalf("expected only child change staged, got %q", status)
+	}
+
+	if _, err := service.DiscardWorkspaceGitChanges(workspaceID, folderID); err != nil {
+		t.Fatalf("discard child changes: %v", err)
+	}
+	if content, err := os.ReadFile(filepath.Join(root, "app", "main.txt")); err != nil || string(content) != "app before\n" {
+		t.Fatalf("expected child change restored, got %q err=%v", content, err)
+	}
+	if content, err := os.ReadFile(filepath.Join(root, "docs", "readme.txt")); err != nil || string(content) != "docs after\n" {
+		t.Fatalf("expected sibling change preserved, got %q err=%v", content, err)
+	}
+}
+
+func TestWorkspaceGitParentRepositoryModeSupportsMultipleFoldersSharingRepo(t *testing.T) {
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, "app/main.txt", "app before\n")
+	writeGitTestFile(t, root, "docs/readme.txt", "docs before\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial")
+
+	writeGitTestFile(t, root, "app/main.txt", "app after\n")
+	writeGitTestFile(t, root, "docs/readme.txt", "docs after\n")
+
+	appRoot := filepath.Join(root, "app")
+	docsRoot := filepath.Join(root, "docs")
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+	state, err := service.AddWorkspace(appRoot)
+	if err != nil {
+		t.Fatalf("add app workspace: %v", err)
+	}
+	workspaceID := state.ActiveWorkspaceID
+	state, err = service.AddWorkspaceFolder(workspaceID, docsRoot)
+	if err != nil {
+		t.Fatalf("add docs folder: %v", err)
+	}
+	if _, err := service.SetWorkspaceSearchParentGitRepositories(workspaceID, true); err != nil {
+		t.Fatalf("enable parent repository search: %v", err)
+	}
+
+	review, err := service.LoadWorkspaceGitChanges(workspaceID)
+	if err != nil {
+		t.Fatalf("load shared parent repository changes: %v", err)
+	}
+	files := gitReviewFilesByPath(review)
+	if len(files) != 2 {
+		t.Fatalf("expected one change per workspace folder, got %#v", review.Files)
+	}
+	if _, ok := files["app/main.txt"]; !ok {
+		t.Fatalf("expected app change, got %#v", files)
+	}
+	if _, ok := files["docs/readme.txt"]; !ok {
+		t.Fatalf("expected docs change, got %#v", files)
+	}
+}
+
 func TestParseGitStatusPorcelainHandlesRenamesCopiesAndConflicts(t *testing.T) {
 	entries, err := parseGitStatusPorcelain([]byte("R  new.txt\x00old.txt\x00C  copy.txt\x00base.txt\x00UU conflict.txt\x00"))
 	if err != nil {

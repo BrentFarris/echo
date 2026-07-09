@@ -286,6 +286,7 @@ export namespace services {
 	    folders: WorkspaceFolder[];
 	    displayName: string;
 	    defaultPlanMode: boolean;
+	    searchParentGitRepositories: boolean;
 	    letter?: string;
 	    iconPath?: string;
 	    iconUrl?: string;
@@ -303,6 +304,7 @@ export namespace services {
 	        this.folders = this.convertValues(source["folders"], WorkspaceFolder);
 	        this.displayName = source["displayName"];
 	        this.defaultPlanMode = source["defaultPlanMode"];
+	        this.searchParentGitRepositories = source["searchParentGitRepositories"];
 	        this.letter = source["letter"];
 	        this.iconPath = source["iconPath"];
 	        this.iconUrl = source["iconUrl"];
