@@ -116,7 +116,7 @@ func TestLoadWorkspaceGitRepositoryListsStatusBranchesChangesAndHistory(t *testi
 	if view.Repository.CurrentBranch != baseBranch || view.Repository.Detached {
 		t.Fatalf("unexpected current branch: %#v", view.Repository)
 	}
-	if !view.Repository.Dirty || view.Repository.FileCount != 2 {
+	if !view.Repository.Dirty || view.Repository.FileCount != 2 || view.Repository.UnstagedFileCount != 2 || view.Repository.StagedFileCount != 0 {
 		t.Fatalf("expected dirty repo with two files, got %#v", view.Repository)
 	}
 	if !gitBranchesContain(view.Repository.Branches, baseBranch, true) || !gitBranchesContain(view.Repository.Branches, "feature/view", false) {
@@ -141,6 +141,12 @@ func TestCommitWorkspaceGitChangesCommitsTrackedDeletedAndUntrackedFiles(t *test
 	writeGitTestFile(t, root, "fresh.txt", "fresh\n")
 
 	service, workspaceID, folderID := newGitRepositoryTestService(t, root)
+	if _, err := service.CommitWorkspaceGitChanges(workspaceID, folderID, "commit without staged changes"); err == nil || !strings.Contains(err.Error(), "stage Git changes") {
+		t.Fatalf("expected commit without staged changes to fail, got %v", err)
+	}
+	if _, err := service.StageWorkspaceGitChanges(workspaceID, folderID); err != nil {
+		t.Fatalf("stage all changes: %v", err)
+	}
 	view, err := service.CommitWorkspaceGitChanges(workspaceID, folderID, "commit all changes")
 	if err != nil {
 		t.Fatalf("commit changes: %v", err)
@@ -153,6 +159,63 @@ func TestCommitWorkspaceGitChangesCommitsTrackedDeletedAndUntrackedFiles(t *test
 	}
 	if status := runGitTestCommand(t, root, "status", "--porcelain=v1", "-z", "--untracked-files=all"); status != "" {
 		t.Fatalf("expected clean git status, got %q", status)
+	}
+}
+
+func TestStageAndUnstageWorkspaceGitFiles(t *testing.T) {
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, "one.txt", "one\n")
+	writeGitTestFile(t, root, "two.txt", "two\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial")
+
+	writeGitTestFile(t, root, "one.txt", "one staged\n")
+	writeGitTestFile(t, root, "two.txt", "two unstaged\n")
+
+	service, workspaceID, folderID := newGitRepositoryTestService(t, root)
+	label := normalizeWorkspaceFolderLabel(filepath.Base(root))
+	view, err := service.StageWorkspaceGitFile(workspaceID, folderID, label+"/one.txt")
+	if err != nil {
+		t.Fatalf("stage file: %v", err)
+	}
+	if view.Repository == nil || view.Repository.StagedFileCount != 1 || view.Repository.UnstagedFileCount != 1 {
+		t.Fatalf("expected one staged and one unstaged file, got %#v", view.Repository)
+	}
+
+	view, err = service.UnstageWorkspaceGitFile(workspaceID, folderID, label+"/one.txt")
+	if err != nil {
+		t.Fatalf("unstage file: %v", err)
+	}
+	if view.Repository == nil || view.Repository.StagedFileCount != 0 || view.Repository.UnstagedFileCount != 2 {
+		t.Fatalf("expected two unstaged files, got %#v", view.Repository)
+	}
+
+	view, err = service.StageWorkspaceGitChanges(workspaceID, folderID)
+	if err != nil {
+		t.Fatalf("stage all changes: %v", err)
+	}
+	if view.Repository == nil || view.Repository.StagedFileCount != 2 || view.Repository.UnstagedFileCount != 0 {
+		t.Fatalf("expected both files staged, got %#v", view.Repository)
+	}
+
+	writeGitTestFile(t, root, "two.txt", "two unstaged after staging\n")
+	view, err = service.CommitWorkspaceGitChanges(workspaceID, folderID, "commit staged files")
+	if err != nil {
+		t.Fatalf("commit staged files: %v", err)
+	}
+	if view.Repository == nil || view.Repository.StagedFileCount != 0 || view.Repository.UnstagedFileCount != 1 || view.Repository.FileCount != 1 {
+		t.Fatalf("expected one unstaged file after commit, got %#v", view.Repository)
+	}
+	if status := runGitTestCommand(t, root, "status", "--porcelain=v1", "--untracked-files=all"); !strings.Contains(status, " M two.txt") {
+		t.Fatalf("expected only two.txt to remain unstaged, got %q", status)
+	}
+
+	view, err = service.UnstageWorkspaceGitChanges(workspaceID, folderID)
+	if err != nil {
+		t.Fatalf("unstage all changes: %v", err)
+	}
+	if view.Repository == nil || view.Repository.StagedFileCount != 0 || view.Repository.UnstagedFileCount != 1 {
+		t.Fatalf("expected unstage all to leave worktree change unstaged, got %#v", view.Repository)
 	}
 }
 

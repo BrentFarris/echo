@@ -442,6 +442,14 @@ export function Shutdown() {
   return window['go']['services']['SystemService']['Shutdown']();
 }
 
+export function StageWorkspaceGitChanges(arg1, arg2) {
+  return window['go']['services']['SystemService']['StageWorkspaceGitChanges'](arg1, arg2);
+}
+
+export function StageWorkspaceGitFile(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['StageWorkspaceGitFile'](arg1, arg2, arg3);
+}
+
 export function StartHeartbeat(arg1, arg2) {
   return window['go']['services']['SystemService']['StartHeartbeat'](arg1, arg2);
 }
@@ -488,6 +496,14 @@ export function SwitchWorkspaceGitBranch(arg1, arg2, arg3) {
 
 export function SyncWorkspaceGitBranch(arg1, arg2) {
   return window['go']['services']['SystemService']['SyncWorkspaceGitBranch'](arg1, arg2);
+}
+
+export function UnstageWorkspaceGitChanges(arg1, arg2) {
+  return window['go']['services']['SystemService']['UnstageWorkspaceGitChanges'](arg1, arg2);
+}
+
+export function UnstageWorkspaceGitFile(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['UnstageWorkspaceGitFile'](arg1, arg2, arg3);
 }
 
 export function UpdateAgentMode(arg1, arg2, arg3, arg4, arg5) {

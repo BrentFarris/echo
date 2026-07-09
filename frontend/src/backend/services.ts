@@ -270,6 +270,22 @@ export function MergeWorkspaceGitBranch(...args: Parameters<typeof Wails.MergeWo
   return call("MergeWorkspaceGitBranch", Wails.MergeWorkspaceGitBranch, args);
 }
 
+export function StageWorkspaceGitChanges(...args: Parameters<typeof Wails.StageWorkspaceGitChanges>): ReturnType<typeof Wails.StageWorkspaceGitChanges> {
+  return call("StageWorkspaceGitChanges", Wails.StageWorkspaceGitChanges, args);
+}
+
+export function StageWorkspaceGitFile(...args: Parameters<typeof Wails.StageWorkspaceGitFile>): ReturnType<typeof Wails.StageWorkspaceGitFile> {
+  return call("StageWorkspaceGitFile", Wails.StageWorkspaceGitFile, args);
+}
+
+export function UnstageWorkspaceGitChanges(...args: Parameters<typeof Wails.UnstageWorkspaceGitChanges>): ReturnType<typeof Wails.UnstageWorkspaceGitChanges> {
+  return call("UnstageWorkspaceGitChanges", Wails.UnstageWorkspaceGitChanges, args);
+}
+
+export function UnstageWorkspaceGitFile(...args: Parameters<typeof Wails.UnstageWorkspaceGitFile>): ReturnType<typeof Wails.UnstageWorkspaceGitFile> {
+  return call("UnstageWorkspaceGitFile", Wails.UnstageWorkspaceGitFile, args);
+}
+
 export function MoveKanbanCard(...args: Parameters<typeof Wails.MoveKanbanCard>): ReturnType<typeof Wails.MoveKanbanCard> {
   return call("MoveKanbanCard", Wails.MoveKanbanCard, args);
 }

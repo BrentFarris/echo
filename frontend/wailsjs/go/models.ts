@@ -1537,6 +1537,8 @@ export namespace services {
 	    status: string;
 	    indexStatus?: string;
 	    worktreeStatus?: string;
+	    staged: boolean;
+	    unstaged: boolean;
 	    diff?: string;
 	    diffAvailable: boolean;
 	
@@ -1552,6 +1554,8 @@ export namespace services {
 	        this.status = source["status"];
 	        this.indexStatus = source["indexStatus"];
 	        this.worktreeStatus = source["worktreeStatus"];
+	        this.staged = source["staged"];
+	        this.unstaged = source["unstaged"];
 	        this.diff = source["diff"];
 	        this.diffAvailable = source["diffAvailable"];
 	    }
@@ -1665,6 +1669,8 @@ export namespace services {
 	    dirty: boolean;
 	    branches: WorkspaceGitBranch[];
 	    fileCount: number;
+	    stagedFileCount: number;
+	    unstagedFileCount: number;
 	    files: WorkspaceGitChangedFile[];
 	    commits: WorkspaceGitCommit[];
 	
@@ -1687,6 +1693,8 @@ export namespace services {
 	        this.dirty = source["dirty"];
 	        this.branches = this.convertValues(source["branches"], WorkspaceGitBranch);
 	        this.fileCount = source["fileCount"];
+	        this.stagedFileCount = source["stagedFileCount"];
+	        this.unstagedFileCount = source["unstagedFileCount"];
 	        this.files = this.convertValues(source["files"], WorkspaceGitChangedFile);
 	        this.commits = this.convertValues(source["commits"], WorkspaceGitCommit);
 	    }

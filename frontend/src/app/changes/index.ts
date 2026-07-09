@@ -5,7 +5,7 @@ import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { appRoot } from "../dom";
 import { icons } from "../icons";
-import { activeWorkspace, changeReviewFor, gitRepositoryViewFor, gitSplitDiffViewEnabled, state } from "../state";
+import { activeWorkspace, changeReviewFor, gitRepositoryViewFor, state } from "../state";
 import { pushToast } from "../toasts";
 import type { FileChangesEvent } from "../types";
 import { changeOperationLabel, changeSourceLabel, errorMessage, escapeAttribute, escapeHtml, fileName, formatBytes } from "../utils";
@@ -308,15 +308,10 @@ function renderGitLineOpenButton(path: string, line: number): string {
 
 export function renderGitDiff(diff: string, path: string): string {
   const unified = renderGitChangeDiff(diff, path);
-  if (!gitSplitDiffViewEnabled(state.appState?.settings)) {
+  if (state.gitDiffViewMode !== "split") {
     return unified;
   }
-  return `
-    <div class="git-diff-views">
-      <div class="git-diff-unified">${unified}</div>
-      ${renderGitSplitDiff(diff, path)}
-    </div>
-  `;
+  return renderGitSplitDiff(diff, path);
 }
 
 function renderGitSplitDiff(diff: string, path: string): string {

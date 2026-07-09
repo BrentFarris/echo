@@ -8,6 +8,8 @@ export type MobileNavView = AppMode;
 
 export type WidgetSize = "small" | "medium" | "large" | "wide";
 
+export type GitDiffViewMode = "inline" | "split";
+
 export type WidgetId =
   | "chat-recent"
   | "chat-busy-status"

@@ -6,7 +6,7 @@ import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
 import { dismissContextMenu } from "./contextMenu";
-import { dropWorkspaceGitRepositoryState, openGitChangeInCode, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, selectGitCommit, syncWorkspaceGitRepository } from "./git";
+import { dropWorkspaceGitRepositoryState, openGitChangeInCode, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, selectGitCommit, stageWorkspaceGitChanges, stageWorkspaceGitFile, syncWorkspaceGitRepository, toggleGitDiffViewMode, toggleGitSourceSidebar, unstageWorkspaceGitChanges, unstageWorkspaceGitFile } from "./git";
 import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification, toggleHeartbeatInterval, toggleWatchdogInterval } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, cancelAgentMode, deleteAgentModeSettings, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint, saveAgentMode, saveNewAgentMode, startCreateAgentMode, startEditAgentMode } from "./settings";
@@ -283,6 +283,30 @@ export async function handleAction(event: Event) {
         return;
       }
       await syncWorkspaceGitRepository(workspace.id);
+      return;
+    }
+    if (action === "toggle-git-sidebar") {
+      toggleGitSourceSidebar();
+      return;
+    }
+    if (action === "toggle-git-diff-view") {
+      toggleGitDiffViewMode();
+      return;
+    }
+    if (action === "stage-git-file") {
+      await stageWorkspaceGitFile(target.dataset.gitFilePath ?? "");
+      return;
+    }
+    if (action === "unstage-git-file") {
+      await unstageWorkspaceGitFile(target.dataset.gitFilePath ?? "");
+      return;
+    }
+    if (action === "stage-git-changes") {
+      await stageWorkspaceGitChanges();
+      return;
+    }
+    if (action === "unstage-git-changes") {
+      await unstageWorkspaceGitChanges();
       return;
     }
     if (action === "revert-git-file") {

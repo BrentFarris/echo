@@ -1,7 +1,7 @@
 
 import { llm, services } from "../../wailsjs/go/models";
 import type { ThemePaletteName } from "./theme";
-import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, DashboardWidget, KanbanCardCreationDraft, MobileNavView, TaskEditorDraft, TaskInlineEditState, Toast } from "./types";
+import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, DashboardWidget, GitDiffViewMode, KanbanCardCreationDraft, MobileNavView, TaskEditorDraft, TaskInlineEditState, Toast } from "./types";
 
 const endpointTopics = ["chat", "kanbanDecompose", "kanban", "inlineCode"] as const;
 type EndpointTopicKey = (typeof endpointTopics)[number];
@@ -64,6 +64,7 @@ export const state = {
   gitSwitchBranchDrafts: new Map<string, string>(),
   gitMergeBranchDrafts: new Map<string, string>(),
   gitRepositoryOperations: new Map<string, string>(),
+  gitDiffViewMode: "inline" as GitDiffViewMode,
   loadingGitRepositoryWorkspaces: new Set<string>(),
   loadingGitCommitDetails: new Set<string>(),
   executingPlans: new Set<string>(),

@@ -29,6 +29,8 @@ type WorkspaceGitChangedFile struct {
 	Status         string `json:"status"`
 	IndexStatus    string `json:"indexStatus,omitempty"`
 	WorktreeStatus string `json:"worktreeStatus,omitempty"`
+	Staged         bool   `json:"staged"`
+	Unstaged       bool   `json:"unstaged"`
 	Diff           string `json:"diff,omitempty"`
 	DiffAvailable  bool   `json:"diffAvailable"`
 }
@@ -105,6 +107,8 @@ func loadGitChangedFilesForFolder(ctx context.Context, folder WorkspaceFolder) (
 			Status:         gitRawStatus(entry.index, entry.worktree),
 			IndexStatus:    gitStatusChar(entry.index),
 			WorktreeStatus: gitStatusChar(entry.worktree),
+			Staged:         gitStatusEntryHasStagedChanges(entry),
+			Unstaged:       gitStatusEntryHasUnstagedChanges(entry),
 		}
 
 		var diff string
@@ -315,6 +319,14 @@ func gitStatusChar(value byte) string {
 	return string(value)
 }
 
+func gitStatusEntryHasStagedChanges(entry gitStatusEntry) bool {
+	return entry.index != 0 && entry.index != ' ' && entry.index != '?'
+}
+
+func gitStatusEntryHasUnstagedChanges(entry gitStatusEntry) bool {
+	return entry.worktree != 0 && entry.worktree != ' ' || entry.index == '?'
+}
+
 func runWorkspaceGitCommand(ctx context.Context, workspacePath string, args ...string) ([]byte, error) {
 	return runWorkspaceGitCommandWithInput(ctx, workspacePath, nil, args...)
 }
@@ -332,14 +344,19 @@ func runWorkspaceGitCommandWithInput(ctx context.Context, workspacePath string, 
 	}
 	configureWorkspaceCommandProcess(cmd)
 
-	output, err := cmd.CombinedOutput()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
 	if ctx.Err() != nil {
-		return output, fmt.Errorf("git command timed out")
+		return stdout.Bytes(), fmt.Errorf("git command timed out")
 	}
 	if err != nil {
+		output := append(stdout.Bytes(), stderr.Bytes()...)
 		return output, gitCommandError(args, output, err)
 	}
-	return output, nil
+	return stdout.Bytes(), nil
 }
 
 func gitCommandError(args []string, output []byte, err error) error {

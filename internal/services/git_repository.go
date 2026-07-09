@@ -41,21 +41,23 @@ type WorkspaceGitRepositorySummary struct {
 }
 
 type WorkspaceGitRepositoryStatus struct {
-	FolderID      string                    `json:"folderId"`
-	Label         string                    `json:"label"`
-	Path          string                    `json:"path"`
-	CurrentBranch string                    `json:"currentBranch,omitempty"`
-	Upstream      string                    `json:"upstream,omitempty"`
-	AheadCount    int                       `json:"aheadCount"`
-	BehindCount   int                       `json:"behindCount"`
-	Head          string                    `json:"head,omitempty"`
-	ShortHead     string                    `json:"shortHead,omitempty"`
-	Detached      bool                      `json:"detached"`
-	Dirty         bool                      `json:"dirty"`
-	Branches      []WorkspaceGitBranch      `json:"branches"`
-	FileCount     int                       `json:"fileCount"`
-	Files         []WorkspaceGitChangedFile `json:"files"`
-	Commits       []WorkspaceGitCommit      `json:"commits"`
+	FolderID          string                    `json:"folderId"`
+	Label             string                    `json:"label"`
+	Path              string                    `json:"path"`
+	CurrentBranch     string                    `json:"currentBranch,omitempty"`
+	Upstream          string                    `json:"upstream,omitempty"`
+	AheadCount        int                       `json:"aheadCount"`
+	BehindCount       int                       `json:"behindCount"`
+	Head              string                    `json:"head,omitempty"`
+	ShortHead         string                    `json:"shortHead,omitempty"`
+	Detached          bool                      `json:"detached"`
+	Dirty             bool                      `json:"dirty"`
+	Branches          []WorkspaceGitBranch      `json:"branches"`
+	FileCount         int                       `json:"fileCount"`
+	StagedFileCount   int                       `json:"stagedFileCount"`
+	UnstagedFileCount int                       `json:"unstagedFileCount"`
+	Files             []WorkspaceGitChangedFile `json:"files"`
+	Commits           []WorkspaceGitCommit      `json:"commits"`
 }
 
 type WorkspaceGitBranch struct {
@@ -156,15 +158,12 @@ func (s *SystemService) CommitWorkspaceGitChanges(workspaceID string, folderID s
 	if err := ensureWorkspaceGitRepositoryRoot(ctx, folder); err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	if dirty, err := workspaceGitRepositoryDirty(ctx, folder.Path); err != nil {
+	if staged, err := workspaceGitRepositoryHasStagedChanges(ctx, folder.Path); err != nil {
 		return WorkspaceGitRepositoryView{}, err
-	} else if !dirty {
-		return WorkspaceGitRepositoryView{}, fmt.Errorf("there are no Git changes to commit")
+	} else if !staged {
+		return WorkspaceGitRepositoryView{}, fmt.Errorf("stage Git changes before committing")
 	}
 	if err := requireWorkspaceGitCommitIdentity(ctx, folder.Path); err != nil {
-		return WorkspaceGitRepositoryView{}, err
-	}
-	if _, err := runWorkspaceGitCommand(ctx, folder.Path, "add", "-A"); err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
 	if _, err := runWorkspaceGitCommandWithInput(ctx, folder.Path, []byte(message), "commit", "-F", "-"); err != nil {
@@ -401,27 +400,44 @@ func loadWorkspaceGitRepositoryStatus(ctx context.Context, folder WorkspaceFolde
 	sort.Slice(files, func(i, j int) bool {
 		return strings.ToLower(files[i].Path) < strings.ToLower(files[j].Path)
 	})
+	stagedFileCount, unstagedFileCount := workspaceGitChangeStageCounts(files)
 	commits, err := loadWorkspaceGitCommitHistory(ctx, folder.Path, workspaceGitHistoryLimit)
 	if err != nil {
 		return WorkspaceGitRepositoryStatus{}, err
 	}
 	return WorkspaceGitRepositoryStatus{
-		FolderID:      folder.ID,
-		Label:         folder.Label,
-		Path:          folder.Path,
-		CurrentBranch: currentBranch,
-		Upstream:      upstream,
-		AheadCount:    ahead,
-		BehindCount:   behind,
-		Head:          head,
-		ShortHead:     shortHead,
-		Detached:      detached,
-		Dirty:         len(files) > 0,
-		Branches:      branches,
-		FileCount:     len(files),
-		Files:         files,
-		Commits:       commits,
+		FolderID:          folder.ID,
+		Label:             folder.Label,
+		Path:              folder.Path,
+		CurrentBranch:     currentBranch,
+		Upstream:          upstream,
+		AheadCount:        ahead,
+		BehindCount:       behind,
+		Head:              head,
+		ShortHead:         shortHead,
+		Detached:          detached,
+		Dirty:             len(files) > 0,
+		Branches:          branches,
+		FileCount:         len(files),
+		StagedFileCount:   stagedFileCount,
+		UnstagedFileCount: unstagedFileCount,
+		Files:             files,
+		Commits:           commits,
 	}, nil
+}
+
+func workspaceGitChangeStageCounts(files []WorkspaceGitChangedFile) (int, int) {
+	staged := 0
+	unstaged := 0
+	for _, file := range files {
+		if file.Staged {
+			staged++
+		}
+		if file.Unstaged {
+			unstaged++
+		}
+	}
+	return staged, unstaged
 }
 
 func ensureWorkspaceGitRepositoryRoot(ctx context.Context, folder WorkspaceFolder) error {
@@ -522,6 +538,23 @@ func workspaceGitRepositoryDirty(ctx context.Context, workspacePath string) (boo
 		return false, err
 	}
 	return len(status) > 0, nil
+}
+
+func workspaceGitRepositoryHasStagedChanges(ctx context.Context, workspacePath string) (bool, error) {
+	status, err := runWorkspaceGitCommand(ctx, workspacePath, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return false, err
+	}
+	entries, err := parseGitStatusPorcelain(status)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if gitStatusEntryHasStagedChanges(entry) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func requireCleanWorkspaceGitRepository(ctx context.Context, workspacePath string) error {

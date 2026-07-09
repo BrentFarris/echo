@@ -226,6 +226,10 @@ export function SetWorkspaceTaskCompleted(arg1:string,arg2:string,arg3:boolean,a
 
 export function Shutdown():Promise<void>;
 
+export function StageWorkspaceGitChanges(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
+
+export function StageWorkspaceGitFile(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
+
 export function StartHeartbeat(arg1:string,arg2:services.HeartbeatConfig):Promise<void>;
 
 export function StartKanbanExecution(arg1:string,arg2:number):Promise<services.KanbanBoard>;
@@ -249,6 +253,10 @@ export function SubmitInlineCodePrompt(arg1:string,arg2:services.InlineCodePromp
 export function SwitchWorkspaceGitBranch(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
 
 export function SyncWorkspaceGitBranch(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
+
+export function UnstageWorkspaceGitChanges(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
+
+export function UnstageWorkspaceGitFile(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
 
 export function UpdateAgentMode(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:Array<string>):Promise<Array<services.AgentMode>>;
 
