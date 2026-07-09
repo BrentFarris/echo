@@ -597,10 +597,48 @@ function bindGitSplitDiffScroll(root: ParentNode) {
       updateGitSplitDiffSharedScroll(shared, spacer, panes);
       syncGitSplitDiffFromShared(shared, panes);
     });
+    panes.forEach((pane) => {
+      pane.addEventListener("wheel", (event) => {
+        handleGitSplitDiffPaneWheel(event, shared, spacer, panes);
+      }, { passive: false });
+    });
     shared.addEventListener("pointerenter", update);
     shared.addEventListener("focus", update);
     window.requestAnimationFrame(update);
   });
+}
+
+function handleGitSplitDiffPaneWheel(event: WheelEvent, shared: HTMLElement, spacer: HTMLElement, panes: HTMLElement[]) {
+  const deltaX = normalizedGitSplitWheelDeltaX(event, shared);
+  if (!deltaX || Math.abs(deltaX) < Math.abs(event.deltaY)) {
+    return;
+  }
+  updateGitSplitDiffSharedScroll(shared, spacer, panes);
+  const maxScroll = Math.max(0, shared.scrollWidth - shared.clientWidth);
+  if (!maxScroll) {
+    return;
+  }
+  const nextScrollLeft = Math.max(0, Math.min(maxScroll, shared.scrollLeft + deltaX));
+  if (nextScrollLeft === shared.scrollLeft) {
+    return;
+  }
+  event.preventDefault();
+  shared.scrollLeft = nextScrollLeft;
+  syncGitSplitDiffFromShared(shared, panes);
+}
+
+function normalizedGitSplitWheelDeltaX(event: WheelEvent, shared: HTMLElement): number {
+  const rawDelta = event.deltaX || (event.shiftKey ? event.deltaY : 0);
+  if (!rawDelta) {
+    return 0;
+  }
+  if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+    return rawDelta * 16;
+  }
+  if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+    return rawDelta * shared.clientWidth;
+  }
+  return rawDelta;
 }
 
 function updateGitSplitDiffSharedScroll(shared: HTMLElement, spacer: HTMLElement, panes: HTMLElement[]) {
