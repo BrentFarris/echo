@@ -493,6 +493,25 @@ function renderGitRefreshOrSyncButton(
   `;
 }
 
+function renderGitSummarySyncButton(
+  repository: services.WorkspaceGitRepositoryStatus,
+  loading: boolean,
+  operation: string,
+): string {
+  const ahead = Math.max(0, repository.aheadCount ?? 0);
+  const behind = Math.max(0, repository.behindCount ?? 0);
+  const pending = ahead > 0 || behind > 0;
+  const label = pending ? `Sync (${behind} down, ${ahead} up)` : "Sync";
+  const busy = loading || Boolean(operation);
+  return `
+    <button class="secondary-button icon-text-button git-sync-button git-summary-sync-button" type="button" title="${escapeAttribute(label)}" aria-label="${escapeAttribute(label)}" data-action="sync-git-branch" ${busy ? "disabled" : ""}>
+      ${operation === "Syncing branch" ? `<span class="spinner" aria-hidden="true"></span>` : icons.refresh}
+      <span>Sync</span>
+      ${pending ? `<span class="git-sync-counts" aria-hidden="true">${escapeHtml(`${behind} down / ${ahead} up`)}</span>` : ""}
+    </button>
+  `;
+}
+
 function renderGitRepositoryOption(repository: services.WorkspaceGitRepositorySummary, selectedFolderID: string): string {
   const label = `${repository.label}${repository.available ? "" : " unavailable"}`;
   return `
@@ -523,6 +542,7 @@ function renderGitRepositorySummary(
     <div class="git-repository-summary" aria-label="Git summary">
       <span>${escapeHtml(branch)}</span>
       <span>${escapeHtml(String(repository.fileCount ?? 0))} files</span>
+      ${renderGitSummarySyncButton(repository, loading, operation)}
       ${operation ? `<span><span class="spinner" aria-hidden="true"></span>${escapeHtml(operation)}</span>` : ""}
       ${loading && !operation ? `<span><span class="spinner" aria-hidden="true"></span>Refreshing</span>` : ""}
     </div>
