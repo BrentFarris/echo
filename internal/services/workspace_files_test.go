@@ -227,7 +227,9 @@ func TestSystemServiceSaveWorkspaceFileDoesNotWriteGoFileWhenFormattingFails(t *
 
 func TestSystemServiceSaveWorkspaceFileOrganizesGoImportsBeforeWriting(t *testing.T) {
 	withWorkspaceGoImportOrganizer(t, func(_ *SystemService, _ Workspace, _ string, content string) (string, error) {
-		return strings.Replace(content, "package main\n\n", "package main\n\nimport \"fmt\"\n\n", 1), nil
+		organized := strings.Replace(content, "package main\n\n", "package main\n\nimport \"fmt\"\n\n", 1)
+		organized = strings.Replace(organized, "import (\n\t\"strings\"\n)\n\n", "", 1)
+		return organized, nil
 	})
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	path := filepath.Join(root, "main.go")
@@ -239,7 +241,8 @@ func TestSystemServiceSaveWorkspaceFileOrganizesGoImportsBeforeWriting(t *testin
 		t.Fatalf("read file: %v", err)
 	}
 
-	saved, err := service.SaveWorkspaceFile(workspaceID, "workspace/main.go", "package main\n\nfunc main(){fmt.Println(\"ok\")}\n", opened.ModifiedAt)
+	input := "package main\n\nimport (\n\t\"strings\"\n)\n\nfunc main(){fmt.Println(\"ok\")}\n"
+	saved, err := service.SaveWorkspaceFile(workspaceID, "workspace/main.go", input, opened.ModifiedAt)
 	if err != nil {
 		t.Fatalf("save file: %v", err)
 	}
