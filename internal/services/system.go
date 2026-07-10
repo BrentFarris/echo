@@ -74,6 +74,7 @@ type Workspace struct {
 	DisplayName                 string            `json:"displayName"`
 	DefaultPlanMode             bool              `json:"defaultPlanMode"`
 	SearchParentGitRepositories bool              `json:"searchParentGitRepositories"`
+	BuildCommand                string            `json:"buildCommand,omitempty"`
 	Letter                      string            `json:"letter,omitempty"`
 	IconPath                    string            `json:"iconPath,omitempty"`
 	IconURL                     string            `json:"iconUrl,omitempty"`
@@ -90,6 +91,7 @@ func (w *Workspace) UnmarshalJSON(data []byte) error {
 		DisplayName                 string            `json:"displayName"`
 		DefaultPlanMode             bool              `json:"defaultPlanMode"`
 		SearchParentGitRepositories bool              `json:"searchParentGitRepositories"`
+		BuildCommand                string            `json:"buildCommand"`
 		Letter                      string            `json:"letter"`
 		IconPath                    string            `json:"iconPath"`
 		IconURL                     string            `json:"iconUrl"`
@@ -112,6 +114,7 @@ func (w *Workspace) UnmarshalJSON(data []byte) error {
 		DisplayName:                 raw.DisplayName,
 		DefaultPlanMode:             raw.DefaultPlanMode,
 		SearchParentGitRepositories: raw.SearchParentGitRepositories,
+		BuildCommand:                normalizeWorkspaceBuildCommand(raw.BuildCommand),
 		Letter:                      normalizeWorkspaceLetter(raw.Letter),
 		IconPath:                    raw.IconPath,
 		IconURL:                     raw.IconURL,
@@ -519,6 +522,31 @@ func (s *SystemService) SetWorkspaceSearchParentGitRepositories(workspaceID stri
 	for i := range s.state.Workspaces {
 		if s.state.Workspaces[i].ID == workspaceID {
 			s.state.Workspaces[i].SearchParentGitRepositories = enabled
+			s.refreshWorkspaceStatusesLocked()
+			if err := s.saveLocked(); err != nil {
+				return AppState{}, err
+			}
+			return cloneState(s.state), nil
+		}
+	}
+	return AppState{}, fmt.Errorf("workspace was not found")
+}
+
+func (s *SystemService) SetWorkspaceBuildCommand(workspaceID string, command string) (AppState, error) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return AppState{}, fmt.Errorf("workspace id is required")
+	}
+	command = normalizeWorkspaceBuildCommand(command)
+	if len(command) > 2000 {
+		return AppState{}, fmt.Errorf("workspace build command must be 2000 characters or fewer")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.Workspaces {
+		if s.state.Workspaces[i].ID == workspaceID {
+			s.state.Workspaces[i].BuildCommand = command
 			s.refreshWorkspaceStatusesLocked()
 			if err := s.saveLocked(); err != nil {
 				return AppState{}, err
@@ -1218,6 +1246,7 @@ func normalizeLoadedWorkspaces(state *AppState) {
 			}
 		}
 		normalizeWorkspaceFolders(workspace)
+		workspace.BuildCommand = normalizeWorkspaceBuildCommand(workspace.BuildCommand)
 		workspace.Letter = normalizeWorkspaceLetter(workspace.Letter)
 		if workspace.IconPath != "" {
 			workspace.IconURL = workspaceIconURL(workspace.IconPath)
@@ -1345,6 +1374,12 @@ func normalizeWorkspaceLetter(letter string) string {
 		return ""
 	}
 	return strings.ToUpper(letter)
+}
+
+func normalizeWorkspaceBuildCommand(command string) string {
+	command = strings.ReplaceAll(command, "\r\n", "\n")
+	command = strings.ReplaceAll(command, "\r", "\n")
+	return strings.TrimSpace(command)
 }
 
 func validateWorkspaceIconFile(path string) (string, error) {

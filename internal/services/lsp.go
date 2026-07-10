@@ -888,6 +888,14 @@ func (c *lspClient) initialize(ctx context.Context, workspaceName string) error 
 						"itemDefaults": []string{"editRange", "insertTextFormat", "data"},
 					},
 				},
+				"codeAction": map[string]any{
+					"codeActionLiteralSupport": map[string]any{
+						"codeActionKind": map[string]any{
+							"valueSet": []string{"source.organizeImports"},
+						},
+					},
+					"isPreferredSupport": true,
+				},
 				"definition": map[string]any{
 					"linkSupport": true,
 				},

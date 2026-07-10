@@ -26,10 +26,16 @@ export function workspaceLetterDraft(workspace: services.Workspace): string {
   return state.workspaceLetterDrafts.get(workspace.id) ?? (workspace.letter ?? "");
 }
 
+export function workspaceBuildCommandDraft(workspace: services.Workspace): string {
+  return state.workspaceBuildCommandDrafts.get(workspace.id) ?? (workspace.buildCommand ?? "");
+}
+
 export function hydrateWorkspaceLetterDrafts(workspaces: services.Workspace[]) {
   state.workspaceLetterDrafts.clear();
+  state.workspaceBuildCommandDrafts.clear();
   workspaces.forEach((workspace) => {
     state.workspaceLetterDrafts.set(workspace.id, workspace.letter ?? "");
+    state.workspaceBuildCommandDrafts.set(workspace.id, workspace.buildCommand ?? "");
   });
 }
 

@@ -1,4 +1,4 @@
-﻿package webserver
+package webserver
 
 import (
 	"bytes"
@@ -579,6 +579,7 @@ var allowedRPCMethods = map[string]bool{
 	"SetActiveWorkspace":                      true,
 	"SetLivenessConfig":                       true,
 	"SetTokenBudget":                          true,
+	"SetWorkspaceBuildCommand":                true,
 	"SetWorkspaceDefaultPlanMode":             true,
 	"SetWorkspaceFolderUseAgents":             true,
 	"SetWorkspaceIconFromPath":                true,
@@ -607,4 +608,3 @@ var allowedRPCMethods = map[string]bool{
 	"UpdateKanbanCardDirection":               true,
 	"UpdateWorkspaceTask":                     true,
 }
-

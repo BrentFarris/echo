@@ -3239,6 +3239,55 @@ h3 {
   font-weight: 400;
 }
 
+.task-tags-field {
+  position: relative;
+}
+
+.task-tag-suggestions[hidden] {
+  display: none;
+}
+
+.task-tag-suggestions {
+  position: absolute;
+  z-index: 3;
+  top: calc(100% + var(--space-xs));
+  left: 0;
+  right: 0;
+  display: grid;
+  gap: var(--space-xxs);
+  max-height: 210px;
+  padding: var(--space-sm);
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-popover);
+}
+
+.task-tag-suggestion {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 var(--space-md);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  text-align: left;
+}
+
+.task-tag-suggestion:hover,
+.task-tag-suggestion:focus-visible,
+.task-tag-suggestion.is-active {
+  outline: none;
+  background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface));
+  color: var(--color-accent-strong);
+}
+
 .kanban-card-create-actions {
   justify-content: flex-end;
 }
@@ -3847,6 +3896,18 @@ h3 {
 
 .git-repository-summary > span:first-child {
   color: var(--color-text);
+}
+
+.git-summary-sync-button {
+  min-height: 30px;
+  padding: 0 var(--space-lg);
+  border-radius: 999px;
+  font-size: var(--text-base-lg);
+}
+
+.git-summary-sync-button svg {
+  width: 14px;
+  height: 14px;
 }
 
 .git-source-repository-picker {
@@ -7426,6 +7487,86 @@ h3 {
   .work-panel {
     padding: var(--space-lg-md);
     gap: var(--space-xl-lg);
+  }
+
+  .workspace-panel.is-git-mode {
+    height: auto;
+    min-height: 0;
+  }
+
+  .workspace-panel.is-git-mode .git-repository {
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .workspace-panel.is-git-mode .git-source-layout,
+  .workspace-panel.is-git-mode .git-source-layout.is-sidebar-collapsed {
+    display: grid;
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .workspace-panel.is-git-mode .git-source-sidebar,
+  .workspace-panel.is-git-mode .git-source-layout.is-sidebar-collapsed .git-source-sidebar {
+    display: grid;
+    grid-template-rows: auto auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .workspace-panel.is-git-mode .git-source-sidebar-rail,
+  .workspace-panel.is-git-mode .git-source-title-actions .git-change-tree-toggle {
+    display: none;
+  }
+
+  .workspace-panel.is-git-mode .git-source-sidebar-top,
+  .workspace-panel.is-git-mode .git-source-change-sections,
+  .workspace-panel.is-git-mode .git-source-file-section,
+  .workspace-panel.is-git-mode .git-source-history,
+  .workspace-panel.is-git-mode .git-source-diff-panel,
+  .workspace-panel.is-git-mode .git-split-diff-pane {
+    display: grid;
+    grid-template-rows: auto;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .workspace-panel.is-git-mode .git-source-change-sections.has-staged,
+  .workspace-panel.is-git-mode .git-source-change-sections.has-unstaged-only {
+    grid-template-rows: auto;
+  }
+
+  .workspace-panel.is-git-mode .git-source-file-list,
+  .workspace-panel.is-git-mode .git-repository .change-file-list,
+  .workspace-panel.is-git-mode .git-split-diff-pane-scroll {
+    overflow: visible;
+    max-height: none;
+  }
+
+  .workspace-panel.is-git-mode .git-source-history {
+    grid-template-rows: auto minmax(0, 1fr);
+    max-height: min(360px, 42vh);
+    overflow: hidden;
+  }
+
+  .workspace-panel.is-git-mode .git-commit-list {
+    max-height: min(300px, 34vh);
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .workspace-panel.is-git-mode .git-source-file-row {
+    grid-template-columns: minmax(0, 1fr) 44px;
+  }
+
+  .workspace-panel.is-git-mode .git-source-file-action {
+    width: 40px;
+    height: 40px;
+    opacity: 1;
   }
 
   /* Space below split panels so chat composer and kanban stay above the fixed bottom nav */
