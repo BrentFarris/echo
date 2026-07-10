@@ -717,6 +717,7 @@ h3 {
 
 .markdown-body p,
 .markdown-body ul,
+.markdown-body ol,
 .message-error,
 .tool-call p {
   margin: 0;
@@ -766,7 +767,8 @@ h3 {
   border-bottom: 0;
 }
 
-.markdown-body ul {
+.markdown-body ul,
+.markdown-body ol {
   padding-left: var(--space-3xl);
 }
 

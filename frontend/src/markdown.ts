@@ -15,7 +15,7 @@ export function renderMarkdown(markdown = ""): string {
   const lines = markdown.replaceAll("\r\n", "\n").split("\n");
   const blocks: string[] = [];
   let paragraph: string[] = [];
-  let list: string[] = [];
+  let list: { items: string[]; ordered: boolean; start: number } | null = null;
   let code: string[] | null = null;
 
   const flushParagraph = () => {
@@ -25,9 +25,11 @@ export function renderMarkdown(markdown = ""): string {
     }
   };
   const flushList = () => {
-    if (list.length) {
-      blocks.push(`<ul>${list.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
-      list = [];
+    if (list) {
+      const tag = list.ordered ? "ol" : "ul";
+      const start = list.ordered && list.start !== 1 ? ` start="${list.start}"` : "";
+      blocks.push(`<${tag}${start}>${list.items.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</${tag}>`);
+      list = null;
     }
   };
 
@@ -69,10 +71,20 @@ export function renderMarkdown(markdown = ""): string {
       blocks.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
       continue;
     }
-    const item = line.match(/^\s*[-*]\s+(.+)$/);
-    if (item) {
+    const unorderedItem = line.match(/^\s*[-*]\s+(.+)$/);
+    const orderedItem = line.match(/^\s*(\d+)\.\s+(.+)$/);
+    if (unorderedItem || orderedItem) {
       flushParagraph();
-      list.push(item[1]);
+      const ordered = Boolean(orderedItem);
+      if (!list || list.ordered !== ordered) {
+        flushList();
+        list = {
+          items: [],
+          ordered,
+          start: orderedItem ? Number.parseInt(orderedItem[1], 10) : 1,
+        };
+      }
+      list.items.push((orderedItem ?? unorderedItem)![orderedItem ? 2 : 1]);
       continue;
     }
     flushList();
