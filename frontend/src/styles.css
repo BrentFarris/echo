@@ -6207,17 +6207,23 @@ h3 {
 .debug-empty { padding: 10px; color: var(--color-text-muted); font-size: var(--text-sm); }
 .debug-empty.is-error { color: var(--color-danger); }
 .debug-stack-list { display: flex; flex-direction: column; }
-.debug-stack-frame { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 10px; border: 0; background: transparent; color: var(--color-text); text-align: left; }
+.debug-stack-frame { display: grid; grid-template-columns: minmax(0, 1fr) minmax(56px, 42%); align-items: center; gap: 8px; min-height: 22px; padding: 2px 8px; border: 0; background: transparent; color: var(--color-text); font-size: var(--text-sm); text-align: left; }
 .debug-stack-frame:hover, .debug-stack-frame.is-selected { background: var(--color-hover); }
-.debug-stack-frame span { max-width: 100%; overflow: hidden; color: var(--color-text-muted); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
+.debug-stack-frame strong,
+.debug-stack-frame span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.debug-stack-frame strong { font-weight: 700; }
+.debug-stack-frame span { color: var(--color-text-muted); font-size: var(--text-xs); }
 .debug-scope summary { padding: 5px 10px; cursor: pointer; font-weight: 700; }
-.debug-variable-row { display: grid; grid-template-columns: 14px minmax(70px, auto) minmax(80px, 1fr) auto; align-items: baseline; gap: 6px; width: 100%; padding: 3px 8px 3px calc(8px + var(--debug-variable-depth) * 14px); border: 0; background: transparent; color: var(--color-text); text-align: left; }
+.debug-variable-row { display: grid; grid-template-columns: 14px minmax(64px, 0.9fr) minmax(88px, 1.35fr) minmax(44px, 0.75fr); align-items: baseline; gap: 6px; width: 100%; padding: 3px 8px 3px calc(8px + var(--debug-variable-depth) * 14px); border: 0; background: transparent; color: var(--color-text); text-align: left; }
 .debug-variable-row:not(:disabled):hover { background: var(--color-hover); }
 .debug-variable-row:disabled { opacity: 1; }
-.debug-variable-value { overflow: hidden; color: var(--code-token-string); text-overflow: ellipsis; white-space: nowrap; }
+.debug-variable-name,
+.debug-variable-value,
+.debug-variable-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.debug-variable-value { color: var(--code-token-string); }
 .debug-variable-type { color: var(--color-text-muted); font-size: var(--text-xs); }
 .debug-load-more { margin: 4px 10px; border: 0; background: transparent; color: var(--color-accent); }
-.debug-output-pane pre { height: calc(100% - 30px); margin: 0; padding: 8px 10px; overflow: auto; color: var(--color-text-muted); font: var(--text-xs)/1.45 "Cascadia Mono", Consolas, monospace; white-space: pre-wrap; }
+.debug-output-pane pre { height: calc(100% - 30px); margin: 0; padding: 8px 10px; overflow: auto; color: var(--color-text-muted); font: var(--text-xs)/1.45 "Cascadia Mono", Consolas, monospace; white-space: pre; }
 
 .cm-debug-gutter .cm-gutterElement { min-width: 17px; box-sizing: border-box; cursor: pointer; }
 .cm-debug-breakpoint-spacer { display: block; width: 17px; height: 1px; }
