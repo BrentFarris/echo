@@ -9,7 +9,7 @@ import { renderSpinnerLabel } from "../components";
 import { appRoot, isElementScrolledNearBottom } from "../dom";
 import { icons } from "../icons";
 import { playNotificationSound, maybeSendChatCompletionNotification } from "../notifications";
-import { activeWorkspace, agentModesForWorkspace, chatImageDraftsFor, chatImageDraftTotalBytes, chatVideoDraftsFor, chatVideoDraftTotalBytes, chatPlanModeFor, chatAgentModeIDFor, chatAgentModeNameFor, setChatAgentMode, chatComposerModeFor, setChatComposerMode, chatSessionFor, getActiveChatModelLabel, cloneSettings, state } from "../state";
+import { activeWorkspace, agentModesForWorkspace, chatImageDraftsFor, chatImageDraftTotalBytes, chatVideoDraftsFor, chatVideoDraftTotalBytes, chatPlanModeFor, chatAgentModeIDFor, chatAgentModeNameFor, setChatAgentMode, chatComposerModeFor, setChatComposerMode, chatSessionFor, getActiveChatModelLabel, cloneSettings, state, taskBoardFor } from "../state";
 import { settingsWithCompactTheme } from "../theme";
 import { pushToast } from "../toasts";
 import type { ChatImageDraft, ChatMentionState, ChatStreamEvent, ChatVideoDraft, ScrollSnapshot } from "../types";
@@ -181,6 +181,7 @@ export function chatFileLinkTargets(root: ParentNode): HTMLElement[] {
     ".chat-message.from-assistant [data-message-reasoning]",
     ".chat-message.from-assistant .tool-call code",
     ".chat-message.from-assistant .tool-call pre",
+    ".chat-message.from-assistant .tool-call .console-output",
   ].join(", ");
   const targets = Array.from(root.querySelectorAll<HTMLElement>(selector));
   if (root instanceof HTMLElement && root.matches(selector)) {
@@ -293,6 +294,48 @@ export async function handleChatFileLinkClick(event: MouseEvent) {
   getAppCallbacks().render();
   await loading;
   await openWorkspaceCodeFile(workspace.id, path, getAppCallbacks().codeViewCallbacks());
+}
+
+// ---------------------------------------------------------------------------
+// Task reference resolution and click handling
+// ---------------------------------------------------------------------------
+
+export function resolveChatTaskRefs(root: ParentNode = appRoot) {
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+
+  const board = taskBoardFor(workspace.id);
+  const tasks = board.tasks ?? [];
+
+  root.querySelectorAll<HTMLElement>("[data-task-ref]").forEach((el) => {
+    if (el.dataset.taskRefBound) return;
+    el.dataset.taskRefBound = "true";
+
+    const taskID = el.dataset.taskId ?? "";
+    const task = tasks.find((t) => t.id === taskID);
+    if (task && task.title) {
+      el.textContent = `@${escapeHtml(task.title)}`;
+      el.title = `${task.title} (${taskID})`;
+    } else {
+      el.title = `Task ${taskID}`;
+    }
+
+    el.addEventListener("click", handleChatTaskRefClick);
+  });
+}
+
+export function handleChatTaskRefClick(event: MouseEvent) {
+  event.preventDefault();
+  const el = event.currentTarget as HTMLElement;
+  const taskID = el.dataset.taskId ?? "";
+  if (!taskID) return;
+
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+
+  state.selectedTaskCards.set(workspace.id, taskID);
+  state.appMode = "tasks";
+  getAppCallbacks().render();
 }
 
 export type ChatMentionMatch = {
@@ -962,6 +1005,9 @@ export function renderToolCall(toolCall: services.ChatToolActivity): string {
         <span>${escapeHtml(toolCall.status)}</span>
       </div>
       ${toolCall.arguments ? `<code>${escapeHtml(toolCall.arguments)}</code>` : ""}
+      ${toolCall.consoleOutput 
+        ? `<pre class="console-output" data-console-output>${escapeHtml(toolCall.consoleOutput)}</pre>` 
+        : ""}
       ${toolCall.error ? `<p>${escapeHtml(toolCall.error)}</p>` : ""}
       ${toolCall.result ? `<pre>${escapeHtml(toolCall.result)}</pre>` : ""}
     </div>
@@ -1533,6 +1579,7 @@ export function handleChatDebugSectionToggle(event: Event) {
   }
   patchDebugSections(stack, message);
   void linkifyAssistantFilePaths(section);
+  resolveChatTaskRefs(section);
 }
 
 
@@ -2287,6 +2334,7 @@ export function patchChatMessage(
   if (message.role === "assistant" && linkify) {
     void linkifyAssistantFilePaths(element);
   }
+  resolveChatTaskRefs(element);
 }
 
 export function patchMessageStatus(element: HTMLElement, message: services.ChatMessage) {
@@ -2417,6 +2465,7 @@ export function patchChatPanel() {
   getAppCallbacks().bindActionEvents(replacement);
   getAppCallbacks().bindChatEvents(replacement);
   void linkifyAssistantFilePaths(replacement);
+  resolveChatTaskRefs(replacement);
 }
 
 export function patchChatControls() {

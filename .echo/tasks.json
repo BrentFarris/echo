@@ -1,15 +1,66 @@
 {
   "version": 1,
   "tasks": {
+    "01fc6a79-5ed0-49e3-896c-f8b1ee3d5d6e": {
+      "title": "Add add-card-to-chat and fix add-file-to-chat action handlers",
+      "details": "## Changes to `echo/frontend/src/app/actions.ts`\n\n### 1. Add `add-card-to-chat` handler (new)\nFind the card in kanban state, switch to chat view, append reference text to textarea:\n\n```typescript\nif (action === \"add-card-to-chat\") {\n  const workspaceID = target.dataset.workspaceId ?? \"\";\n  const cardID = target.dataset.cardId ?? \"\";\n  if (!workspaceID || !cardID) return;\n  dismissContextMenu();\n  \n  // Switch to chat view\n  const workspace = activeWorkspace();\n  if (workspace) {\n    state.appMode = \"chat\";\n    state.mobileNavView = \"chat\";\n    state.activeChatKanbanTab.set(workspace.id, \"chat\");\n  }\n  \n  // Look up card for title\n  const board = kanbanBoardFor(workspaceID);\n  const card = kanbanCards(board ?? {}).find((c) =\u003e c.id === cardID);\n  const label = card ? card.title : cardID;\n  \n  // Append reference to chat input\n  const textarea = appRoot.querySelector\u003cHTMLTextAreaElement\u003e(\"[data-chat-input]\");\n  if (textarea) {\n    const ref = `[${cardID}] ${label}\\n`;\n    textarea.value += ref;\n    textarea.focus();\n    textarea.setSelectionRange(textarea.value.length, textarea.value.length);\n  }\n  \n  getAppCallbacks().render();\n  return;\n}\n```\n\n### 2. Add `add-file-to-chat` handler (fixes dead code view button)\n```typescript\nif (action === \"add-file-to-chat\") {\n  const workspaceID = target.dataset.workspaceId ?? \"\";\n  const path = target.dataset.codePath ?? \"\";\n  if (!workspaceID || !path) return;\n  dismissContextMenu();\n  \n  const workspace = activeWorkspace();\n  if (workspace) {\n    state.appMode = \"chat\";\n    state.mobileNavView = \"chat\";\n    state.activeChatKanbanTab.set(workspace.id, \"chat\");\n  }\n  \n  const textarea = appRoot.querySelector\u003cHTMLTextAreaElement\u003e(\"[data-chat-input]\");\n  if (textarea) {\n    const ref = `@${path}\\n`;\n    textarea.value += ref;\n    textarea.focus();\n    textarea.setSelectionRange(textarea.value.length, textarea.value.length);\n  }\n  \n  getAppCallbacks().render();\n  return;\n}\n```\n\nPlace both handlers near the top of `handleAction` after the toast/budget dismissals but before other actions.\n\n## Verification\n- `npm run build` passes\n- Right-click kanban card → \"Add to chat\" → switches to chat with card reference in input\n- Right-click code file → \"Add to chat\" → switches to chat with @file mention in input (previously dead)",
+      "epic": "Kanban card context menu",
+      "acceptanceCriteria": [
+        "add-card-to-chat handler appends [cardId] title text to chat textarea and focuses it",
+        "add-file-to-chat handler appends @path to chat textarea and focuses it (fixes previously dead button)",
+        "Both handlers switch to chat view if not already there",
+        "Both handlers dismiss the context menu after activation",
+        "npm run build passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 2,
+      "completed": false,
+      "createdAt": "2026-07-11T10:30:31.8063851Z",
+      "updatedAt": "2026-07-11T10:30:57.8754996Z"
+    },
     "14ec4aea-050b-4228-bb66-bd3a2bb01e4d": {
       "title": "Make file path green in Git view if it is a new file",
       "tags": [
         "git"
       ],
       "priority": "P2",
+      "sortOrder": 0,
       "completed": false,
       "createdAt": "2026-07-08T16:33:29.389819Z",
       "updatedAt": "2026-07-08T16:33:29.389819Z"
+    },
+    "1d47e3dd-28d6-4ee7-9b00-c6feff4ec789": {
+      "title": "Bind desktop contextmenu event on kanban cards",
+      "details": "## Changes to `echo/frontend/src/app/events.ts`\n\nAdd `contextmenu` listener binding in `bindEvents()` for kanban cards. Place after the workspace dropdown contextmenu binding (~line 58).\n\n```typescript\n// Kanban card right-click context menu\nappRoot.querySelectorAll\u003cHTMLElement\u003e(\"article.kanban-card\").forEach((card) =\u003e {\n  card.addEventListener(\"contextmenu\", (event: MouseEvent) =\u003e {\n    event.preventDefault();\n    event.stopPropagation();\n    \n    const openBtn = card.querySelector\u003cHTMLButtonElement\u003e(\"button.kanban-card-open\");\n    if (!openBtn) return;\n    \n    const workspace = activeWorkspace();\n    if (!workspace) return;\n    \n    const cardId = openBtn.dataset.cardId ?? \"\";\n    const titleEl = card.querySelector(\"strong\");\n    const cardTitle = titleEl?.textContent ?? cardId;\n    \n    showContextMenu({\n      workspaceId: workspace.id,\n      displayPath: \"\",\n      cardId,\n      cardTitle,\n      x: event.clientX,\n      y: event.clientY,\n    });\n  });\n});\n```\n\n## Verification\n- Right-click a kanban card → shows \"Add to chat\" context menu at cursor position\n- Browser default context menu is suppressed\n- Menu closes on outside click (existing behavior)",
+      "epic": "Kanban card context menu",
+      "acceptanceCriteria": [
+        "contextmenu listener added in bindEvents for article.kanban-card elements",
+        "Event prevented and propagated stopped so browser menu doesn't appear",
+        "showContextMenu called with workspaceId, cardId, cardTitle, x, y",
+        "npm run build passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 3,
+      "completed": false,
+      "createdAt": "2026-07-11T10:31:31.7411418Z",
+      "updatedAt": "2026-07-11T10:32:49.7734688Z"
+    },
+    "238faa75-f97b-4ba9-a3ad-40a64dd23b53": {
+      "title": "Bind mobile long-press on kanban cards for context menu",
+      "details": "## Changes to `echo/frontend/src/app/kanban/index.ts`\n\nExport a new function `bindKanbanCardLongPressEvents(root: ParentNode)` that adds pointer event listeners to `article.kanban-card` elements for mobile long-press support.\n\n```typescript\nexport function bindKanbanCardLongPressEvents(root: ParentNode) {\n  root.querySelectorAll\u003cHTMLElement\u003e(\"article.kanban-card\").forEach((card) =\u003e {\n    let timer: number | null = null;\n    let cancelled = false;\n\n    const startTimer = (event: PointerEvent) =\u003e {\n      cancelled = false;\n      timer = window.setTimeout(() =\u003e {\n        if (!cancelled) {\n          triggerContextMenu(card, event);\n        }\n      }, 500);\n    };\n\n    const cancelTimer = () =\u003e {\n      cancelled = true;\n      if (timer !== null) {\n        window.clearTimeout(timer);\n        timer = null;\n      }\n    };\n\n    card.addEventListener(\"pointerdown\", startTimer as EventListener);\n    card.addEventListener(\"pointerup\", cancelTimer);\n    card.addEventListener(\"pointercancel\", cancelTimer);\n    card.addEventListener(\"pointermove\", (event: PointerEvent) =\u003e {\n      // Cancel if finger moved more than 10px (prevents menu on scroll)\n      cancelTimer();\n    });\n  });\n}\n\nfunction triggerContextMenu(card: HTMLElement, event: PointerEvent) {\n  const openBtn = card.querySelector\u003cHTMLButtonElement\u003e(\"button.kanban-card-open\");\n  if (!openBtn) return;\n\n  const workspace = activeWorkspace();\n  if (!workspace) return;\n\n  const cardId = openBtn.dataset.cardId ?? \"\";\n  const titleEl = card.querySelector(\"strong\");\n  const cardTitle = titleEl?.textContent ?? cardId;\n\n  // Use pointer position or element center as fallback\n  const rect = card.getBoundingClientRect();\n  showContextMenu({\n    workspaceId: workspace.id,\n    displayPath: \"\",\n    cardId,\n    cardTitle,\n    x: event.clientX || (rect.left + rect.width / 2),\n    y: event.clientY || (rect.top + rect.height / 2),\n  });\n}\n```\n\n## Changes to `echo/frontend/src/app/events.ts`\n\nImport and call `bindKanbanCardLongPressEvents(appRoot)` in `bindEvents()`.\n\n## Verification\n- Long-press a kanban card on mobile → shows \"Add to chat\" context menu near touch point\n- Quick tap still opens card detail (no interference)\n- Scroll doesn't trigger the menu",
+      "epic": "Kanban card context menu",
+      "acceptanceCriteria": [
+        "bindKanbanCardLongPressEvents exported from kanban/index.ts",
+        "500ms long-press triggers showContextMenu with cardId and cardTitle",
+        "Quick tap still opens card detail without showing menu",
+        "pointermove cancels timer to prevent false triggers during scroll",
+        "Called from bindEvents in events.ts"
+      ],
+      "priority": "P1",
+      "sortOrder": 4,
+      "completed": false,
+      "createdAt": "2026-07-11T10:32:14.8173222Z",
+      "updatedAt": "2026-07-11T10:32:49.7734688Z"
     },
     "5400801a-638c-498d-b6c4-db2811cb5445": {
       "title": "Add a folder/file view on the left of the git view",
@@ -18,9 +69,41 @@
         "git"
       ],
       "priority": "P1",
+      "sortOrder": 5,
       "completed": false,
       "createdAt": "2026-07-08T16:34:52.8375128Z",
-      "updatedAt": "2026-07-08T16:34:52.8375128Z"
+      "updatedAt": "2026-07-11T10:32:49.7734688Z"
+    },
+    "68dd874f-debb-47aa-8ced-1ec45ce8b732": {
+      "title": "Update ContextMenuState with cardType discriminator for task vs kanban cards",
+      "details": "## Changes to `echo/frontend/src/app/types.ts`\n\nReplace the existing \"Extend ContextMenuState\" (task b060987c) by adding:\n\n```typescript\nexport type ContextMenuState = {\n  // ... existing fields ...\n  cardId?: string;\n  cardTitle?: string;\n  cardType?: \"kanban\" | \"task\";  // NEW: distinguishes kanban cards from backlog task cards\n};\n```\n\nThis replaces the previous plan that only added `cardId` and `cardTitle`. The `cardType` field lets the context menu renderer and action handler know which card type is being referenced.\n\n## Verification\n- TypeScript compiles without errors (`npm run build`)",
+      "epic": "Kanban card context menu",
+      "acceptanceCriteria": [
+        "ContextMenuState has cardId, cardTitle, and cardType fields",
+        "cardType is union of \"kanban\" | \"task\"",
+        "TypeScript compiles without errors (npm run build)"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-11T10:42:47.5553447Z",
+      "updatedAt": "2026-07-11T10:42:47.5553447Z"
+    },
+    "96d218dc-5379-4c66-8406-81211c649d0d": {
+      "title": "Bind desktop contextmenu and mobile long-press on task cards",
+      "details": "## Two changes needed:\n\n### 1. `events.ts` — Desktop right-click on task cards\n\nAdd alongside the kanban card contextmenu binding:\n\n```typescript\nappRoot.querySelectorAll\u003cHTMLElement\u003e(\"article.task-card\").forEach((card) =\u003e {\n  card.addEventListener(\"contextmenu\", (event: MouseEvent) =\u003e {\n    event.preventDefault();\n    event.stopPropagation();\n    const openBtn = card.querySelector\u003cHTMLButtonElement\u003e(\"button.task-card-open\");\n    if (!openBtn) return;\n    const workspace = activeWorkspace();\n    if (!workspace) return;\n    showContextMenu({\n      workspaceId: workspace.id, displayPath: \"\",\n      cardId: openBtn.dataset.taskId ?? \"\",\n      cardTitle: card.querySelector(\"strong\")?.textContent ?? \"\",\n      cardType: \"task\",\n      x: event.clientX, y: event.clientY,\n    });\n  });\n});\n```\n\n### 2. `tasks/index.ts` — Mobile long-press on task cards\n\nExport `bindTaskCardLongPressEvents(root: ParentNode)` with the same 500ms pointer pattern as kanban, calling `showContextMenu` with `cardType: \"task\"`. Wire into `bindEvents()` in `events.ts`.\n\n## Verification\n- Right-click/long-press task card → shows \"Add to chat\" menu\n- Quick tap still opens task detail",
+      "epic": "Kanban card context menu",
+      "acceptanceCriteria": [
+        "Desktop right-click on article.task-card shows context menu",
+        "Mobile long-press on article.task-card shows context menu",
+        "cardType set to \"task\" in showContextMenu call",
+        "Quick tap still opens task detail without interference"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-11T10:44:00.6868939Z",
+      "updatedAt": "2026-07-11T10:44:00.6868939Z"
     },
     "9d95d6ab-c72e-46ed-8079-91eabd6f2fbc": {
       "title": "Add manual \"compress context\" button in Kanban \u0026 Chat",
@@ -30,9 +113,24 @@
         "chat"
       ],
       "priority": "P1",
+      "sortOrder": 6,
       "completed": false,
       "createdAt": "2026-07-08T16:30:24.1672007Z",
-      "updatedAt": "2026-07-08T16:30:24.1672007Z"
+      "updatedAt": "2026-07-11T10:32:49.7734688Z"
+    },
+    "b060987c-90f6-4938-b941-50d353be9722": {
+      "title": "Extend ContextMenuState with kanban card fields",
+      "details": "Add optional `cardId?: string` and `cardTitle?: string` to `ContextMenuState` in `frontend/src/app/types.ts`. No other files change.",
+      "epic": "Kanban card context menu",
+      "acceptanceCriteria": [
+        "ContextMenuState has cardId and cardTitle optional fields",
+        "TypeScript compiles without errors (npm run build)"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-11T10:27:29.7310654Z",
+      "updatedAt": "2026-07-11T10:27:29.7310654Z"
     },
     "d8ae9680-11a3-4c5f-bdf2-b7827c10da35": {
       "title": "Workspace setting to search parent directories for git repository",
@@ -41,9 +139,26 @@
         "workspace"
       ],
       "priority": "P2",
+      "sortOrder": 0,
       "completed": false,
       "createdAt": "2026-07-08T16:32:38.7143363Z",
       "updatedAt": "2026-07-08T16:32:38.7143363Z"
+    },
+    "e4e85fd0-5733-4fd0-b49b-f9f7847dba7a": {
+      "title": "Add kanban card context menu rendering variant",
+      "details": "## Changes to `echo/frontend/src/app/contextMenu.ts`\n\nAdd a third branch in `renderContextMenu()` for when `menu.cardId` is set. Renders a single-item menu:\n\n```typescript\nif (menu.cardId) {\n  return renderKanbanCardContextMenu(menu);\n}\n```\n\nNew function:\n```typescript\nfunction renderKanbanCardContextMenu(menu: ContextMenuState): string {\n  const cardLabel = menu.cardTitle ?? menu.cardId;\n  return `\n    \u003cdiv class=\"workspace-context-menu\" data-context-menu style=\"left:${menu.x}px;top:${menu.y}px\"\u003e\n      \u003cbutton\n        class=\"workspace-context-menu-item\"\n        type=\"button\"\n        data-action=\"add-card-to-chat\"\n        data-workspace-id=\"${escapeAttribute(menu.workspaceId)}\"\n        data-card-id=\"${escapeAttribute(menu.cardId)}\"\n      \u003e\n        \u003csvg viewBox=\"0 0 24 24\" aria-hidden=\"true\"\u003e\u003cpath d=\"M7.9 20A9 9 0 1 0 4 16.1L2 22Z\"/\u003e\u003c/svg\u003e\n        \u003cspan class=\"workspace-context-menu-label\"\u003eAdd \"${escapeHtml(cardLabel)}\" to chat\u003c/span\u003e\n      \u003c/button\u003e\n    \u003c/div\u003e\n  `;\n}\n```\n\n## Verification\n- TypeScript compiles (`npm run build`)\n- Context menu with cardId renders without errors (requires handler in next task)",
+      "epic": "Kanban card context menu",
+      "acceptanceCriteria": [
+        "renderContextMenu returns kanban card menu when menu.cardId is set",
+        "Menu has single 'Add to chat' item with data-action=\"add-card-to-chat\", data-workspace-id, and data-card-id",
+        "Card title displayed in menu label via escapeHtml",
+        "npm run build passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 1,
+      "completed": false,
+      "createdAt": "2026-07-11T10:28:55.5684515Z",
+      "updatedAt": "2026-07-11T10:30:57.8754996Z"
     },
     "ee2e86ac-182c-40d0-8ff8-33b483a7f629": {
       "title": "Make file path red in Git/changes view if it is deleted",
@@ -51,9 +166,26 @@
         "git"
       ],
       "priority": "P2",
+      "sortOrder": 0,
       "completed": false,
       "createdAt": "2026-07-08T16:33:46.9709465Z",
       "updatedAt": "2026-07-08T16:33:46.9709465Z"
+    },
+    "f12a2eb2-8460-47ec-a96f-168572f20a1f": {
+      "title": "Bind desktop contextmenu event on task cards",
+      "details": "## Changes to `echo/frontend/src/app/events.ts`\n\nAdd `contextmenu` listener binding in `bindEvents()` for task cards alongside the kanban card binding. Uses the same pattern but targets `article.task-card` and passes `cardType: \"task\"`.\n\n```typescript\n// Task card right-click context menu\nappRoot.querySelectorAll\u003cHTMLElement\u003e(\"article.task-card\").forEach((card) =\u003e {\n  card.addEventListener(\"contextmenu\", (event: MouseEvent) =\u003e {\n    event.preventDefault();\n    event.stopPropagation();\n    \n    const openBtn = card.querySelector\u003cHTMLButtonElement\u003e(\"button.task-card-open\");\n    if (!openBtn) return;\n    \n    const workspace = activeWorkspace();\n    if (!workspace) return;\n    \n    const taskId = openBtn.dataset.taskId ?? \"\";\n    const titleEl = card.querySelector(\"strong\");\n    const taskTitle = titleEl?.textContent ?? taskId;\n    \n    showContextMenu({\n      workspaceId: workspace.id,\n      displayPath: \"\",\n      cardId: taskId,\n      cardTitle: taskTitle,\n      cardType: \"task\",\n      x: event.clientX,\n      y: event.clientY,\n    });\n  });\n});\n```\n\n## Verification\n- Right-click a task card in backlog → shows \"Add to chat\" context menu at cursor position\n- Browser default context menu is suppressed\n- Menu closes on outside click (existing behavior)",
+      "epic": "Kanban card context menu",
+      "acceptanceCriteria": [
+        "contextmenu listener added in bindEvents for article.task-card elements",
+        "cardType set to \"task\" when calling showContextMenu",
+        "Event prevented and propagated stopped so browser menu doesn't appear",
+        "npm run build passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-11T10:43:37.6602205Z",
+      "updatedAt": "2026-07-11T10:43:37.6602205Z"
     }
   }
 }

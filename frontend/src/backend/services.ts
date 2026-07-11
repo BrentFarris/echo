@@ -437,6 +437,10 @@ export function GetTokenBudget(...args: Parameters<typeof Wails.GetTokenBudget>)
   return call("GetTokenBudget", Wails.GetTokenBudget, args);
 }
 
+export function GetWorkspaceActivitySummaries(...args: Parameters<typeof Wails.GetWorkspaceActivitySummaries>): ReturnType<typeof Wails.GetWorkspaceActivitySummaries> {
+  return call("GetWorkspaceActivitySummaries", Wails.GetWorkspaceActivitySummaries, args);
+}
+
 export function SetTokenBudget(...args: Parameters<typeof Wails.SetTokenBudget>): ReturnType<typeof Wails.SetTokenBudget> {
   return call("SetTokenBudget", Wails.SetTokenBudget, args);
 }

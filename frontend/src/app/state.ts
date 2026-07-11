@@ -94,6 +94,8 @@ export const state = {
   creatingAgentModes: new Set<string>(),
   heartbeatIntervals: new Map<string, number>(), // workspaceID -> interval in milliseconds
   watchdogIntervals: new Map<string, number>(), // workspaceID -> interval in milliseconds
+  workspaceActivitySummaries: new Map<string, services.WorkspaceActivitySummary>(),
+  activityRefreshTimerID: null as number | null,
 };
 
 export type AgentModeDraft = {
@@ -446,5 +448,36 @@ async function saveDashboardLayoutsToBackend(): Promise<void> {
   const { SaveDashboardLayout } = await import("../backend/services");
   for (const [view, widgets] of Object.entries(state.dashboardLayouts)) {
     await SaveDashboardLayout(view as string, widgets);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Workspace activity summaries refresh                               */
+/* ------------------------------------------------------------------ */
+
+async function refreshActivitySummaries() {
+  try {
+    const { GetWorkspaceActivitySummaries } = await import("../backend/services");
+    const summaries = await GetWorkspaceActivitySummaries();
+    const map = new Map<string, services.WorkspaceActivitySummary>();
+    for (const s of summaries) {
+      map.set(s.workspaceId, s);
+    }
+    state.workspaceActivitySummaries = map;
+  } catch {
+    // Silently ignore — next poll will retry
+  }
+}
+
+export function startActivityRefreshTimer() {
+  if (state.activityRefreshTimerID !== null) return;
+  refreshActivitySummaries(); // immediate first call
+  state.activityRefreshTimerID = window.setInterval(refreshActivitySummaries, 5000);
+}
+
+export function stopActivityRefreshTimer() {
+  if (state.activityRefreshTimerID !== null) {
+    window.clearInterval(state.activityRefreshTimerID);
+    state.activityRefreshTimerID = null;
   }
 }

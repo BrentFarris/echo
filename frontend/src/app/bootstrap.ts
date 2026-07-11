@@ -13,7 +13,7 @@ import { handleGlobalKeydown, handleGlobalKeyup, handleGlobalPointerDown, handle
 import { applyKanbanEvent, applyHeartbeatEvent, applyLivenessEvent, applyWatchdogEvent, loadActiveKanbanBoard, markKanbanRunStarted } from "./kanban";
 import { gitChangedLineNumbersForFile, gitChangeStateForPath } from "./git";
 import { render } from "./render";
-import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state, loadDashboardLayoutsFromBackend } from "./state";
+import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state, loadDashboardLayoutsFromBackend, startActivityRefreshTimer } from "./state";
 import { applyTheme } from "./theme";
 import { applyTaskEvent, loadActiveTaskBoard } from "./tasks";
 import { pushToast } from "./toasts";
@@ -103,6 +103,7 @@ async function initialize() {
         }
       }
     }
+    startActivityRefreshTimer();
   } catch (error) {
     state.appState = services.AppState.createFrom({
       settings: llm.Settings.createFrom({ endpoint: "", model: "" }),

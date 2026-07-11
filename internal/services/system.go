@@ -140,6 +140,14 @@ type DashboardWidgetJSON struct {
 	Order int    `json:"order"`
 }
 
+type WorkspaceActivitySummary struct {
+	WorkspaceID        string `json:"workspaceId"`
+	IsChatBusy         bool   `json:"isChatBusy"`
+	IsKanbanRunning    bool   `json:"isKanbanRunning"`
+	ActiveAgentCount   int    `json:"activeAgentCount"`
+	LastMessageSnippet string `json:"lastMessageSnippet,omitempty"`
+}
+
 type AppState struct {
 	Settings          llm.Settings                 `json:"settings"`
 	WebAccess         WebAccessSettings            `json:"webAccess"`
@@ -242,6 +250,54 @@ func (s *SystemService) LoadState() AppState {
 	state := cloneState(s.state)
 	s.warmActiveWorkspaceLSPClients(state)
 	return state
+}
+
+// GetWorkspaceActivitySummaries returns activity status for all workspaces.
+func (s *SystemService) GetWorkspaceActivitySummaries() []WorkspaceActivitySummary {
+	s.mu.Lock()
+	workspaceIDs := make([]string, 0, len(s.state.Workspaces))
+	for _, w := range s.state.Workspaces {
+		workspaceIDs = append(workspaceIDs, w.ID)
+	}
+	s.mu.Unlock()
+
+	summaries := make([]WorkspaceActivitySummary, 0, len(workspaceIDs))
+
+	for _, wsID := range workspaceIDs {
+		var summary WorkspaceActivitySummary
+		summary.WorkspaceID = wsID
+
+		// Chat busy check
+		s.chatMu.Lock()
+		_, summary.IsChatBusy = s.chatStreams[wsID]
+		_, summary.IsKanbanRunning = s.kanbanRuns[wsID]
+		summary.ActiveAgentCount = 0
+		for agentKey := range s.kanbanAgents {
+			if strings.HasPrefix(agentKey, wsID+":") {
+				summary.ActiveAgentCount++
+			}
+		}
+
+		// Last message snippet from chat session
+		if session, ok := s.chatSessions[wsID]; ok {
+			for i := len(session.Messages) - 1; i >= 0; i-- {
+				msg := session.Messages[i]
+				if msg.Role == "assistant" && msg.Content != "" {
+					snippet := msg.Content
+					if len(snippet) > 60 {
+						snippet = snippet[:60] + "…"
+					}
+					summary.LastMessageSnippet = strings.TrimSpace(strings.ReplaceAll(snippet, "\n", " "))
+					break
+				}
+			}
+		}
+		s.chatMu.Unlock()
+
+		summaries = append(summaries, summary)
+	}
+
+	return summaries
 }
 
 func (s *SystemService) GetDashboardLayouts() map[string][]DashboardWidgetJSON {

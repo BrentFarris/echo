@@ -194,6 +194,10 @@ export function GetWatchdogConfig(arg1) {
   return window['go']['services']['SystemService']['GetWatchdogConfig'](arg1);
 }
 
+export function GetWorkspaceActivitySummaries() {
+  return window['go']['services']['SystemService']['GetWorkspaceActivitySummaries']();
+}
+
 export function ListAgentModes(arg1) {
   return window['go']['services']['SystemService']['ListAgentModes'](arg1);
 }

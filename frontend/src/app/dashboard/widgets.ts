@@ -36,6 +36,19 @@ const iconDot = `<svg viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
+/** Extract tool name from the most recent tool_call entry in a transcript. */
+function getLastToolCallName(transcript: services.KanbanProgressEntry[] | undefined): string {
+	if (!transcript) return "";
+	for (let i = transcript.length - 1; i >= 0; i--) {
+		const entry = transcript[i];
+		if (entry.type === "tool_call" && entry.title) {
+			const parts = entry.title.split(": ");
+			if (parts.length > 1) return parts[1];
+		}
+	}
+	return "";
+}
+
 /** Truncate text to a max length, adding ellipsis if needed. */
 function truncate(text: string, maxLen = 120): string {
 	if (text.length <= maxLen) return text;
@@ -215,6 +228,8 @@ function renderKanbanProgress(ws: services.Workspace | null): string {
 	const rows = cards.map((card: any) => {
 		const pct = cardProgressPercent(card);
 		const colorClass = pct >= 90 ? "budget-critical" : pct >= 70 ? "budget-warning" : "budget-ok";
+		const toolName = getLastToolCallName(card.progressTranscript);
+		const toolLabel = toolName ? `<span class="widget-tool-label">${escapeHtml(toolName)}</span>` : '';
 		return `
       <div class="widget-progress-item">
         <span class="widget-progress-title">${escapeHtml(truncate(card.title ?? "", 60))}</span>
@@ -222,6 +237,7 @@ function renderKanbanProgress(ws: services.Workspace | null): string {
           <div class="widget-progress-fill ${colorClass}" style="width: ${pct}%"></div>
         </div>
         <span class="widget-progress-pct">${pct}%</span>
+        ${toolLabel}
       </div>`;
 	}).join("");
 	return `<div class="widget-kanban-progress">${rows}</div>`;

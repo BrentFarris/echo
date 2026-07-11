@@ -444,6 +444,7 @@ export namespace services {
 	    status: string;
 	    result?: string;
 	    error?: string;
+	    consoleOutput?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatToolActivity(source);
@@ -457,6 +458,7 @@ export namespace services {
 	        this.status = source["status"];
 	        this.result = source["result"];
 	        this.error = source["error"];
+	        this.consoleOutput = source["consoleOutput"];
 	    }
 	}
 	export class ChatVideoAttachment {
@@ -1064,6 +1066,26 @@ export namespace services {
 	    }
 	}
 	
+	export class WorkspaceActivitySummary {
+	    workspaceId: string;
+	    isChatBusy: boolean;
+	    isKanbanRunning: boolean;
+	    activeAgentCount: number;
+	    lastMessageSnippet?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceActivitySummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.isChatBusy = source["isChatBusy"];
+	        this.isKanbanRunning = source["isKanbanRunning"];
+	        this.activeAgentCount = source["activeAgentCount"];
+	        this.lastMessageSnippet = source["lastMessageSnippet"];
+	    }
+	}
 	export class WorkspaceFileChange {
 	    id: string;
 	    workspaceId: string;

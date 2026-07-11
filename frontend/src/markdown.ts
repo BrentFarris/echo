@@ -274,6 +274,11 @@ function renderMarkdownTable(rows: string[][], alignments: string[]): string {
 
 function renderInlineMarkdown(value: string): string {
   let html = escapeHtml(value);
+  // Render @task:<id> references as styled chips (before other inline replacements)
+  html = html.replace(/@task:([A-Za-z0-9_-]+)/g, (_match, taskID) => {
+    const escapedId = escapeAttribute(taskID);
+    return `<span class="chat-task-ref" data-task-ref="${escapedId}" data-task-id="${escapedId}">@task:${taskID}</span>`;
+  });
   html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
   html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");

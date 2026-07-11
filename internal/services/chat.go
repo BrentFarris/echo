@@ -35,12 +35,13 @@ type ChatMessage struct {
 }
 
 type ChatToolActivity struct {
-	ID        string `json:"id"`
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
-	Status    string `json:"status"`
-	Result    string `json:"result,omitempty"`
-	Error     string `json:"error,omitempty"`
+	ID           string `json:"id"`
+	Name         string `json:"name,omitempty"`
+	Arguments    string `json:"arguments,omitempty"`
+	Status       string `json:"status"`
+	Result       string `json:"result,omitempty"`
+	Error        string `json:"error,omitempty"`
+	ConsoleOutput string `json:"consoleOutput,omitempty"`
 }
 
 type ChatStreamEvent struct {
@@ -511,7 +512,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 				if recovery, ok := recoverToolResultContext(messages, recoverableToolCalls); ok {
 					messages = recovery.Messages
 					s.replaceChatHistory(workspace.ID, messages[1:])
-					s.updateToolActivity(workspace.ID, streamID, messageID, recovery.Call, "error", recovery.ResultMessage.Content, toolResultContextErrorText)
+					s.updateToolActivity(workspace.ID, streamID, messageID, recovery.Call, "error", recovery.ResultMessage.Content, toolResultContextErrorText, "")
 					s.retryChatMessage(workspace.ID, streamID, messageID)
 					continue
 				}
@@ -655,8 +656,8 @@ func (s *SystemService) streamAssistantResponseAttempt(ctx context.Context, clie
 			call = s.normalizeToolCall(call)
 			toolCalls[nextInlineToolIndex] = call
 			nextInlineToolIndex++
-			s.updateToolActivity(workspaceID, streamID, messageID, call, "streaming", "", "")
-		}
+		s.updateToolActivity(workspaceID, streamID, messageID, call, "streaming", "", "", "")
+	}
 	}
 	appendContent := func(text string) *streamLoopDetection {
 		if text == "" {
@@ -713,7 +714,7 @@ func (s *SystemService) streamAssistantResponseAttempt(ctx context.Context, clie
 			if event.ToolCall != nil {
 				call := mergeToolDelta(toolCalls[event.ToolCall.Index], *event.ToolCall)
 				toolCalls[event.ToolCall.Index] = call
-				s.updateToolActivity(workspaceID, streamID, messageID, call, "streaming", "", "")
+				s.updateToolActivity(workspaceID, streamID, messageID, call, "streaming", "", "", "")
 			}
 		case llm.EventComplete:
 			finished = true
@@ -744,7 +745,7 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 	}
 	if readOnlyOnly && !tools.IsPlanModeToolName(call.Function.Name) {
 		data := fmt.Sprintf(`{"tool":%q,"success":false,"error":{"code":"tool_not_allowed","message":"tool is not available in plan mode"}}`, call.Function.Name)
-		s.updateToolActivity(workspace.ID, streamID, messageID, call, "error", data, "tool is not available in plan mode")
+		s.updateToolActivity(workspace.ID, streamID, messageID, call, "error", data, "tool is not available in plan mode", "")
 		return chatToolCallExecution{
 			Messages: []llm.Message{{
 				Role:       llm.RoleTool,
@@ -753,7 +754,26 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 			}},
 		}
 	}
-	s.updateToolActivity(workspace.ID, streamID, messageID, call, "running", "", "")
+	s.updateToolActivity(workspace.ID, streamID, messageID, call, "running", "", "", "")
+
+	if call.Function.Name == "shell_command" {
+		var args map[string]any
+		_ = json.Unmarshal([]byte(call.Function.Arguments), &args)
+		if cmd, ok := args["command"].(string); ok && cmd != "" {
+			s.emitChatEvent(ChatStreamEvent{
+				WorkspaceID: workspace.ID,
+				StreamID:    streamID,
+				MessageID:   messageID,
+				Type:        "tool_event",
+				ToolCall: &ChatToolActivity{
+					ID:            call.ID,
+					Name:          call.Function.Name,
+					Status:        "running",
+					ConsoleOutput: "⏳ Running: " + cmd,
+				},
+			})
+		}
+	}
 
 	events := func(event tools.Event) {
 		if event.Message != "" {
@@ -789,7 +809,11 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 			errorText = result.Error.Message
 		}
 	}
-	s.updateToolActivity(workspace.ID, streamID, messageID, call, status, string(data), errorText)
+	consoleOutput := ""
+	if call.Function.Name == "shell_command" {
+		consoleOutput = extractShellConsoleOutput(call, result)
+	}
+	s.updateToolActivity(workspace.ID, streamID, messageID, call, status, string(data), errorText, consoleOutput)
 
 	return chatToolCallExecution{
 		Messages:        toolResultMessages(call, result, data),
@@ -822,14 +846,15 @@ func (s *SystemService) appendChatReasoning(workspaceID string, streamID string,
 	})
 }
 
-func (s *SystemService) updateToolActivity(workspaceID string, streamID string, messageID string, call llm.ToolCall, status string, result string, errorText string) {
+func (s *SystemService) updateToolActivity(workspaceID string, streamID string, messageID string, call llm.ToolCall, status string, result string, errorText string, consoleOutput string) {
 	activity := ChatToolActivity{
-		ID:        call.ID,
-		Name:      call.Function.Name,
-		Arguments: call.Function.Arguments,
-		Status:    status,
-		Result:    result,
-		Error:     errorText,
+		ID:            call.ID,
+		Name:          call.Function.Name,
+		Arguments:     call.Function.Arguments,
+		Status:        status,
+		Result:        result,
+		Error:         errorText,
+		ConsoleOutput: consoleOutput,
 	}
 	s.mutateChatMessage(workspaceID, messageID, func(message *ChatMessage) {
 		for i := range message.ToolCalls {
@@ -850,6 +875,63 @@ func (s *SystemService) updateToolActivity(workspaceID string, streamID string, 
 		Type:        "tool_call",
 		ToolCall:    &activity,
 	})
+}
+
+// extractShellConsoleOutput extracts shell_command output fields from an ExecutionResult
+// and formats them as a readable console string. Returns empty string if not applicable.
+func extractShellConsoleOutput(call llm.ToolCall, result tools.ExecutionResult) string {
+	if call.Function.Name != "shell_command" {
+		return ""
+	}
+	output, ok := result.Output.(map[string]any)
+	if !ok {
+		return ""
+	}
+
+	cmd := ""
+	if v, ok := output["command"].(string); ok {
+		cmd = v
+	}
+	stdout := ""
+	if v, ok := output["stdout"].(string); ok {
+		stdout = v
+	}
+	stderr := ""
+	if v, ok := output["stderr"].(string); ok {
+		stderr = v
+	}
+	exitCode := 0
+	if v, ok := output["exitCode"].(float64); ok {
+		exitCode = int(v)
+	}
+	durationMs := int64(0)
+	if v, ok := output["durationMilliseconds"].(float64); ok {
+		durationMs = int64(v)
+	}
+
+	return formatShellConsoleOutput(cmd, stdout, stderr, exitCode, durationMs)
+}
+
+// formatShellConsoleOutput builds a readable console-style string from shell command output.
+func formatShellConsoleOutput(cmd, stdout, stderr string, exitCode int, durationMs int64) string {
+	var b strings.Builder
+	b.WriteString("> ")
+	b.WriteString(cmd)
+	b.WriteString("\n")
+	if stdout != "" {
+		b.WriteString(stdout)
+		if !strings.HasSuffix(stdout, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	if stderr != "" {
+		b.WriteString(stderr)
+		if !strings.HasSuffix(stderr, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString(fmt.Sprintf("\nexit code: %d  duration: %dms\n", exitCode, durationMs))
+	return b.String()
 }
 
 func (s *SystemService) completeChatMessage(workspaceID string, streamID string, messageID string, finishReason string) {

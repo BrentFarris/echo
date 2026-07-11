@@ -313,8 +313,20 @@ textarea:focus-visible {
   font-weight: 700;
   text-align: left;
   overflow: hidden;
+}
+
+/* Workspace dropdown option main layout */
+.workspace-dropdown-option-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  overflow: hidden;
+}
+
+.workspace-dropdown-option-main > :first-child {
   text-overflow: ellipsis;
   white-space: nowrap;
+  overflow: hidden;
 }
 
 .workspace-dropdown-option:hover,
@@ -337,6 +349,45 @@ textarea:focus-visible {
   margin: var(--space-xs) var(--space-lg);
   background: var(--color-border);
   border: 0;
+}
+
+/* Activity dot indicator */
+.workspace-activity-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.workspace-activity-dot.is-idle {
+  background-color: var(--color-text-muted, #6b7280);
+  opacity: 0.4;
+}
+
+.workspace-activity-dot.is-chat-busy {
+  background-color: var(--color-blue, #3b82f6);
+  animation: activity-pulse 1.5s ease-in-out infinite;
+}
+
+.workspace-activity-dot.is-kanban-running {
+  background-color: var(--color-green, #22c55e);
+  animation: activity-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes activity-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.2); }
+}
+
+/* Activity text label */
+.workspace-activity-text {
+  font-size: var(--text-xs, 0.75rem);
+  color: var(--color-text-muted, #6b7280);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Legacy gutter button styles preserved for icon-button class */
@@ -805,6 +856,27 @@ h3 {
   background: var(--color-surface-muted);
 }
 
+/* Task reference chips in chat messages */
+.chat-task-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  padding: var(--space-xxs) var(--space-md-sm);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--color-info) 18%, var(--color-surface));
+  color: var(--color-info);
+  font-size: 0.9em;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+  white-space: nowrap;
+}
+
+.chat-task-ref:hover,
+.chat-task-ref:focus-visible {
+  background: color-mix(in srgb, var(--color-info) 30%, var(--color-surface));
+  color: var(--color-text);
+}
+
 .tool-call code {
   display: block;
   max-width: 100%;
@@ -826,6 +898,21 @@ h3 {
   color: var(--color-text);
   font-size: var(--text-md-lg);
   line-height: 1.4;
+}
+
+.tool-call .console-output {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.85em;
+  background: var(--color-surface-1, #1e1e2e);
+  color: var(--color-text, #cdd6f4);
+  padding: 10px 12px;
+  border-radius: 6px;
+  margin: 8px 0;
+  overflow-x: auto;
+  max-height: 300px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-left: 3px solid var(--color-blue, #89b4fa);
 }
 
 .markdown-body a {
@@ -6966,7 +7053,10 @@ h3 {
   }
 
   .mobile-nav-workspace-option {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    flex-wrap: wrap;
     width: 100%;
     padding: var(--space-lg-md) var(--space-xl);
     text-align: left;
@@ -7157,6 +7247,80 @@ h3 {
   .tool-call code,
   .tool-call pre {
     font-size: var(--text-md-lg);
+  }
+
+  /* Task board — single column on mobile */
+  .task-board {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-md);
+  }
+
+  /* Epic filter bar — horizontal scroll with no wrap */
+  .task-epic-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+  }
+
+  .task-epic-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Epic filter label — prevent shrinking */
+  .task-epic-bar-label {
+    flex-shrink: 0;
+    margin-right: var(--space-xs);
+  }
+
+  /* Epic filter buttons — prevent shrinking, ensure touch target */
+  .task-epic-btn {
+    flex-shrink: 0;
+    min-height: 32px;
+    white-space: nowrap;
+  }
+
+  /* Tag filter bar — horizontal scroll with no wrap */
+  .task-tag-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+  }
+
+  .task-tag-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Tag filter label — prevent shrinking */
+  .task-tag-bar-label {
+    flex-shrink: 0;
+    margin-right: var(--space-xs);
+  }
+
+  /* Tag filter buttons — prevent shrinking, ensure touch target */
+  .task-tag-btn {
+    flex-shrink: 0;
+    min-height: 32px;
+    white-space: nowrap;
+  }
+
+  /* Task lane adjustments for mobile */
+  .task-lane {
+    min-height: auto;
+    padding: var(--space-md);
+  }
+
+  .task-lane > header strong {
+    font-size: var(--text-xl);
   }
 
   /* Let touch events pass through the backdrop so underlying content is scrollable */
@@ -8258,6 +8422,12 @@ h3 {
 .widget-progress-fill.budget-critical { background: var(--color-danger); }
 
 .widget-progress-pct { font-size: var(--text-xs); color: var(--color-text-muted); font-variant-numeric: tabular-nums; text-align: right; }
+
+.widget-tool-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
 
 /* -- Cards Done Widget â€” fixes giant SVG triangle -- */
 .widget-done-count {

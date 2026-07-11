@@ -23,6 +23,53 @@ import { hasKanbanRuntime, getHeartbeatInterval, heartbeatIntervalLabel, getWatc
 import { services } from "../../wailsjs/go/models";
 import { renderDashboard } from "./dashboard";
 
+/* ------------------------------------------------------------------ */
+/*  Workspace activity helpers                                         */
+/* ------------------------------------------------------------------ */
+
+function getWorkspaceActivityStatus(workspaceID: string): {
+  isChatBusy: boolean;
+  isKanbanRunning: boolean;
+  activeAgentCount: number;
+  lastMessageSnippet: string;
+} {
+  const summary = state.workspaceActivitySummaries.get(workspaceID);
+  if (!summary) {
+    return { isChatBusy: false, isKanbanRunning: false, activeAgentCount: 0, lastMessageSnippet: "" };
+  }
+  return {
+    isChatBusy: summary.isChatBusy,
+    isKanbanRunning: summary.isKanbanRunning,
+    activeAgentCount: summary.activeAgentCount,
+    lastMessageSnippet: summary.lastMessageSnippet ?? "",
+  };
+}
+
+function renderWorkspaceActivityStatus(workspaceID: string): string {
+  const status = getWorkspaceActivityStatus(workspaceID);
+  let dotClass = "workspace-activity-dot is-idle";
+  let activityText = "";
+
+  if (status.isChatBusy) {
+    dotClass = "workspace-activity-dot is-chat-busy";
+    activityText = "Streaming…";
+  } else if (status.isKanbanRunning) {
+    dotClass = "workspace-activity-dot is-kanban-running";
+    activityText = status.activeAgentCount > 0
+      ? `${status.activeAgentCount} agent${status.activeAgentCount > 1 ? "s" : ""} running`
+      : "Kanban running";
+  }
+
+  if (!activityText && status.lastMessageSnippet) {
+    activityText = status.lastMessageSnippet;
+  }
+
+  return `
+    <span class="${dotClass}" aria-hidden="true"></span>
+    ${activityText ? `<span class="workspace-activity-text" title="${escapeAttribute(activityText)}">${escapeHtml(activityText)}</span>` : ""}
+  `;
+}
+
 /** Persistent app-shell wrapper.  Creating it once inside appRoot means
  *  that subsequent renders only swap individual region fragments instead
  *  of tearing down the entire DOM tree, eliminating jank during rapid
@@ -226,7 +273,12 @@ function buildLeftNav(
                 data-action="activate-workspace"
                 data-workspace-id="${escapeHtml(ws.id)}"
                 title="${escapeHtml(workspaceFolderSummary(ws))}"
-              >${escapeHtml(ws.displayName)}</button>
+              >
+                <span class="workspace-dropdown-option-main">
+                  ${escapeHtml(ws.displayName)}
+                  ${renderWorkspaceActivityStatus(ws.id)}
+                </span>
+              </button>
             `).join("")}
             <div class="workspace-dropdown-divider"></div>
             <button
@@ -404,7 +456,7 @@ function renderMobileBottomNav(
       ${state.workspaceDropdownOpen ? `
         <div class="mobile-nav-workspace-dropdown" role="menu" aria-label="Workspace list" data-mobile-workspace-dropdown>
           ${workspaces.map((ws) => `
-            <button class="mobile-nav-workspace-option${ws.id === workspace?.id ? " is-active" : ""}" type="button" role="menuitem" data-action="activate-workspace" data-workspace-id="${escapeHtml(ws.id)}"${ws.id === workspace?.id ? ' aria-current="page"' : ''}>${escapeHtml(ws.displayName)}${ws.missing ? ' <span class="is-missing">(missing)</span>' : ''}</button>
+            <button class="mobile-nav-workspace-option${ws.id === workspace?.id ? " is-active" : ""}" type="button" role="menuitem" data-action="activate-workspace" data-workspace-id="${escapeHtml(ws.id)}"${ws.id === workspace?.id ? ' aria-current="page"' : ''}>${escapeHtml(ws.displayName)}${ws.missing ? ' <span class="is-missing">(missing)</span>' : ''}${renderWorkspaceActivityStatus(ws.id)}</button>
           `).join("")}
         </div>
       ` : ""}

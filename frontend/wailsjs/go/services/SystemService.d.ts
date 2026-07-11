@@ -102,6 +102,8 @@ export function GetTokenBudget(arg1:string):Promise<services.TokenBudget>;
 
 export function GetWatchdogConfig(arg1:string):Promise<services.WatchdogConfig>;
 
+export function GetWorkspaceActivitySummaries():Promise<Array<services.WorkspaceActivitySummary>>;
+
 export function ListAgentModes(arg1:string):Promise<Array<services.AgentMode>>;
 
 export function ListAgentModesProvider():Promise<Array<tools.AgentModeSummary>>;
