@@ -1,5 +1,5 @@
 
-import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate, startCodeRename } from "../codeView";
+import { clearCodeTabSwitcher, deleteSelectedCodePaths, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate, startCodeRename } from "../codeView";
 import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, GetHeartbeatConfig, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
 import { appRoot } from "./dom";
 import { getAppCallbacks } from "./callbacks";
@@ -84,6 +84,15 @@ export async function handleAction(event: Event) {
       }
       dismissContextMenu();
       await startCodeRename(workspaceID, path, kind, getAppCallbacks().codeViewCallbacks());
+      return;
+    }
+    if (action === "code-delete-path") {
+      const workspaceID = target.dataset.workspaceId ?? "";
+      if (!workspaceID) {
+        return;
+      }
+      dismissContextMenu();
+      await deleteSelectedCodePaths(workspaceID, getAppCallbacks().codeViewCallbacks());
       return;
     }
     if (action === "open-code-view") {

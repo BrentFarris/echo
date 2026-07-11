@@ -41,6 +41,11 @@ type WorkspaceFile struct {
 	ModifiedAt  string `json:"modifiedAt"`
 }
 
+type WorkspaceDeletedPath struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+}
+
 func (s *SystemService) ReadExternalTextFile(path string) (WorkspaceFile, error) {
 	resolved, err := resolveExternalTextFilePath(path)
 	if err != nil {
@@ -340,6 +345,35 @@ func (s *SystemService) RenameWorkspacePath(workspaceID string, sourcePath strin
 	}
 	s.removeWorkspaceFileDatabases(workspaceID)
 	return workspaceFileEntry(workspace, target, info), nil
+}
+
+func (s *SystemService) DeleteWorkspacePaths(workspaceID string, paths []string) ([]WorkspaceDeletedPath, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	targets, err := resolveWorkspaceDeleteTargets(workspace, paths)
+	if err != nil {
+		return nil, err
+	}
+	deleted := make([]WorkspaceDeletedPath, 0, len(targets))
+	for _, target := range targets {
+		if target.info.IsDir() {
+			if err := os.RemoveAll(target.absolute); err != nil {
+				return nil, fmt.Errorf("delete folder: %w", err)
+			}
+		} else {
+			if err := os.Remove(target.absolute); err != nil {
+				return nil, fmt.Errorf("delete file: %w", err)
+			}
+		}
+		deleted = append(deleted, WorkspaceDeletedPath{
+			Path: target.relative,
+			Kind: workspaceFileKind(target.info),
+		})
+	}
+	s.removeWorkspaceFileDatabases(workspaceID)
+	return deleted, nil
 }
 
 func (s *SystemService) ReadWorkspaceFile(workspaceID string, path string) (WorkspaceFile, error) {
@@ -887,6 +921,105 @@ func resolveWorkspaceRenameTarget(workspace Workspace, sourcePath string, name s
 		return "", "", err
 	}
 	return source, target, nil
+}
+
+type workspaceDeleteTarget struct {
+	relative string
+	absolute string
+	info     os.FileInfo
+}
+
+func resolveWorkspaceDeleteTargets(workspace Workspace, paths []string) ([]workspaceDeleteTarget, error) {
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("select a file or folder to delete")
+	}
+	targetsByRelative := map[string]workspaceDeleteTarget{}
+	for _, path := range paths {
+		target, err := resolveWorkspaceDeleteTarget(workspace, path)
+		if err != nil {
+			return nil, err
+		}
+		targetsByRelative[target.relative] = target
+	}
+	targets := make([]workspaceDeleteTarget, 0, len(targetsByRelative))
+	for _, target := range targetsByRelative {
+		targets = append(targets, target)
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		return strings.Count(targets[i].relative, "/") < strings.Count(targets[j].relative, "/")
+	})
+	pruned := make([]workspaceDeleteTarget, 0, len(targets))
+	for _, target := range targets {
+		if hasSelectedDeleteAncestor(pruned, target.relative) {
+			continue
+		}
+		pruned = append(pruned, target)
+	}
+	return pruned, nil
+}
+
+func resolveWorkspaceDeleteTarget(workspace Workspace, requestedPath string) (workspaceDeleteTarget, error) {
+	if strings.TrimSpace(requestedPath) == "" {
+		return workspaceDeleteTarget{}, fmt.Errorf("path is required")
+	}
+	label, relativePath := splitWorkspaceLabeledPath(requestedPath)
+	if label == "" || relativePath == "." {
+		return workspaceDeleteTarget{}, fmt.Errorf("workspace folder roots cannot be deleted")
+	}
+	folder, ok := workspaceFolderByLabel(workspace, label)
+	if !ok {
+		return workspaceDeleteTarget{}, fmt.Errorf("workspace folder %q was not found", label)
+	}
+	if folder.Missing {
+		return workspaceDeleteTarget{}, fmt.Errorf("workspace folder %q is unavailable", folder.Label)
+	}
+	workspaceAbs, err := workspaceFolderAbsolutePath(folder)
+	if err != nil {
+		return workspaceDeleteTarget{}, err
+	}
+	requested := filepath.Clean(filepath.Join(workspaceAbs, relativePath))
+	relative, err := filepath.Rel(workspaceAbs, requested)
+	if err != nil {
+		return workspaceDeleteTarget{}, fmt.Errorf("resolve relative path: %w", err)
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return workspaceDeleteTarget{}, fmt.Errorf("path escapes the workspace")
+	}
+	realParent, err := filepath.EvalSymlinks(filepath.Dir(requested))
+	if err != nil {
+		return workspaceDeleteTarget{}, fmt.Errorf("parent directory was not found")
+	}
+	if _, err := workspaceRelativeCandidate(workspace, realParent); err != nil {
+		return workspaceDeleteTarget{}, err
+	}
+	resolved := filepath.Join(realParent, filepath.Base(requested))
+	info, err := os.Lstat(resolved)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return workspaceDeleteTarget{}, fmt.Errorf("path was not found")
+		}
+		return workspaceDeleteTarget{}, fmt.Errorf("stat path: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return workspaceDeleteTarget{}, fmt.Errorf("symbolic links cannot be deleted from Echo")
+	}
+	if !info.IsDir() && !info.Mode().IsRegular() {
+		return workspaceDeleteTarget{}, fmt.Errorf("path is not a deletable file or folder")
+	}
+	return workspaceDeleteTarget{
+		relative: workspaceRelativePath(workspace, resolved),
+		absolute: resolved,
+		info:     info,
+	}, nil
+}
+
+func hasSelectedDeleteAncestor(targets []workspaceDeleteTarget, relative string) bool {
+	for _, target := range targets {
+		if target.info.IsDir() && strings.HasPrefix(relative, target.relative+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveWorkspaceCreateTarget(workspace Workspace, parentPath string, name string) (string, error) {

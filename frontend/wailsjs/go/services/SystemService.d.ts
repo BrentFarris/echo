@@ -76,6 +76,8 @@ export function DeleteKanbanCard(arg1:string,arg2:string):Promise<services.Kanba
 
 export function DeleteWorkspace(arg1:string):Promise<services.AppState>;
 
+export function DeleteWorkspacePaths(arg1:string,arg2:Array<string>):Promise<Array<services.WorkspaceDeletedPath>>;
+
 export function DeleteWorkspaceTask(arg1:string,arg2:string,arg3:string):Promise<services.TaskBoard>;
 
 export function DiscardWorkspaceGitChanges(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;

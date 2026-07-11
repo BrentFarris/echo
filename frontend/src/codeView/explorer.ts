@@ -1,8 +1,8 @@
-import { CreateWorkspaceFile, CreateWorkspaceFolder, ListWorkspaceDirectory, MoveWorkspacePath, RenameWorkspacePath, SearchWorkspaceFiles } from "../backend/services";
+import { CreateWorkspaceFile, CreateWorkspaceFolder, DeleteWorkspacePaths, ListWorkspaceDirectory, MoveWorkspacePath, RenameWorkspacePath, SearchWorkspaceFiles } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
 import { captureCodeTreeScroll, patchCodeTree, patchSearchResults } from "./dom";
-import { rewriteCodeNavigationHistoryPaths } from "./navigation";
-import { directoryStateFor, ensureCodeState, normalizeCodeEntryKind, rewriteCodeTreeSelectionPaths, selectCodeTreeEntryInState, setSingleCodeTreeSelection, type CodeTreeSelectionOptions } from "./state";
+import { removeCodeNavigationHistoryPaths, rewriteCodeNavigationHistoryPaths } from "./navigation";
+import { directoryStateFor, ensureCodeState, normalizeCodeEntryKind, removeCodeTreeSelectionPaths, removeTabMruPath, rewriteCodeTreeSelectionPaths, selectCodeTreeEntryInState, selectedCodeTreeEntries, setSingleCodeTreeSelection, type CodeTreeSelectionOptions } from "./state";
 import { openPinnedCodeFile } from "./tabs";
 import { saveMountedEditorContent } from "./editor";
 import type { CodeCreateKind, CodeEntryKind, CodeViewCallbacks, CodeWorkspaceState } from "./types";
@@ -176,6 +176,55 @@ export function collapseCodeTree(workspaceID: string, callbacks: CodeViewCallbac
   state.pendingCreate = null;
   state.pendingRename = null;
   patchCodeTree(workspaceID, callbacks);
+}
+
+export async function deleteSelectedCodePaths(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const state = ensureCodeState(workspaceID);
+  const paths = selectedCodeTreeEntries(state)
+    .filter((entry) => entry.kind === "file" || entry.kind === "directory")
+    .map((entry) => entry.path);
+  await deleteCodePaths(workspaceID, paths, callbacks);
+}
+
+export async function deleteCodePaths(
+  workspaceID: string,
+  paths: string[],
+  callbacks: CodeViewCallbacks,
+) {
+  const uniquePaths = [...new Set(paths.filter(Boolean))];
+  if (!uniquePaths.length) {
+    callbacks.pushToast("Select a file or folder first.", "error");
+    return;
+  }
+  if (!window.confirm(deleteCodePathsConfirmation(uniquePaths))) {
+    return;
+  }
+
+  const state = ensureCodeState(workspaceID);
+  captureCodeTreeScroll(workspaceID);
+  saveMountedEditorContent();
+  try {
+    const deleted = await DeleteWorkspacePaths(workspaceID, uniquePaths);
+    const deletedPaths = deleted.map((entry) => entry.path).filter(Boolean);
+    removeDeletedCodeTabs(workspaceID, deletedPaths);
+    removeCodeTreeSelectionPaths(state, deletedPaths);
+    pruneDirectoryCacheAfterDelete(state, deletedPaths);
+    pruneWorkspaceSearchAfterDelete(state, deletedPaths);
+    state.pendingCreate = null;
+    state.pendingRename = null;
+    callbacks.pushToast(
+      `${deletedPaths.length} item${deletedPaths.length === 1 ? "" : "s"} deleted.`,
+      "success",
+    );
+    void callbacks.refreshGitChanges(workspaceID);
+    callbacks.render();
+  } catch (error) {
+    callbacks.pushToast(callbacks.errorMessage(error), "error");
+    patchCodeTree(workspaceID, callbacks);
+  }
 }
 
 export function startCodeDrag(workspaceID: string, path: string, kind: string): boolean {
@@ -652,6 +701,82 @@ function pruneDirectoryCacheAfterMove(
     ),
   );
   state.expandedPaths.add(".");
+}
+
+function pruneDirectoryCacheAfterDelete(
+  state: CodeWorkspaceState,
+  deletedPaths: string[],
+) {
+  if (!deletedPaths.length) {
+    return;
+  }
+  state.directories.forEach((directory, path) => {
+    if (deletedPaths.some((deleted) => path === deleted || path.startsWith(`${deleted}/`))) {
+      state.directories.delete(path);
+      return;
+    }
+    directory.entries = directory.entries.filter(
+      (entry) => !deletedPaths.some((deleted) => entry.path === deleted || entry.path.startsWith(`${deleted}/`)),
+    );
+  });
+  state.expandedPaths = new Set(
+    Array.from(state.expandedPaths).filter(
+      (path) => !deletedPaths.some((deleted) => path === deleted || path.startsWith(`${deleted}/`)),
+    ),
+  );
+  state.expandedPaths.add(".");
+}
+
+function pruneWorkspaceSearchAfterDelete(
+  state: CodeWorkspaceState,
+  deletedPaths: string[],
+) {
+  if (!deletedPaths.length) {
+    return;
+  }
+  state.searchResults = state.searchResults.filter(
+    (entry) => !deletedPaths.some((deleted) => entry.path === deleted || entry.path.startsWith(`${deleted}/`)),
+  );
+}
+
+function removeDeletedCodeTabs(workspaceID: string, deletedPaths: string[]) {
+  if (!deletedPaths.length) {
+    return;
+  }
+  const state = ensureCodeState(workspaceID);
+  const removedActive = deletedPaths.some(
+    (path) => state.activePath === path || state.activePath.startsWith(`${path}/`),
+  );
+  state.tabs = state.tabs.filter(
+    (tab) => !deletedPaths.some((path) => !tab.external && (tab.path === path || tab.path.startsWith(`${path}/`))),
+  );
+  deletedPaths.forEach((path) => removeTabMruPath(state, path));
+  state.tabMruPaths = state.tabMruPaths.filter(
+    (path) => !deletedPaths.some((deleted) => path === deleted || path.startsWith(`${deleted}/`)),
+  );
+  if (state.tabSwitcher) {
+    state.tabSwitcher.paths = state.tabSwitcher.paths.filter(
+      (path) => !deletedPaths.some((deleted) => path === deleted || path.startsWith(`${deleted}/`)),
+    );
+    state.tabSwitcher.selectedIndex = Math.min(
+      state.tabSwitcher.selectedIndex,
+      Math.max(0, state.tabSwitcher.paths.length - 1),
+    );
+  }
+  if (removedActive) {
+    state.activePath = state.tabMruPaths[0] ?? state.tabs[0]?.path ?? "";
+  }
+  if (state.inlineChat && deletedPaths.some((path) => state.inlineChat?.path === path || state.inlineChat?.path.startsWith(`${path}/`))) {
+    state.inlineChat = null;
+  }
+  removeCodeNavigationHistoryPaths(workspaceID, deletedPaths);
+}
+
+function deleteCodePathsConfirmation(paths: string[]): string {
+  if (paths.length === 1) {
+    return `Delete "${paths[0]}"?\n\nThis cannot be undone.`;
+  }
+  return `Delete ${paths.length} selected items?\n\nThis cannot be undone.`;
 }
 
 function clearWorkspaceSearchState(workspaceID: string) {

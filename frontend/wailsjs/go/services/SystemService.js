@@ -142,6 +142,10 @@ export function DeleteWorkspace(arg1) {
   return window['go']['services']['SystemService']['DeleteWorkspace'](arg1);
 }
 
+export function DeleteWorkspacePaths(arg1, arg2) {
+  return window['go']['services']['SystemService']['DeleteWorkspacePaths'](arg1, arg2);
+}
+
 export function DeleteWorkspaceTask(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['DeleteWorkspaceTask'](arg1, arg2, arg3);
 }

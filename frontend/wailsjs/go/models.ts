@@ -2026,6 +2026,20 @@ export namespace services {
 	        this.message = source["message"];
 	    }
 	}
+	export class WorkspaceDeletedPath {
+	    path: string;
+	    kind: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceDeletedPath(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.kind = source["kind"];
+	    }
+	}
 	export class WorkspaceFileEntry {
 	    name: string;
 	    path: string;

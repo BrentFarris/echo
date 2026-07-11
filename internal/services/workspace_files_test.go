@@ -638,6 +638,66 @@ func TestSystemServiceRenameWorkspacePathRejectsInvalidTargets(t *testing.T) {
 	}
 }
 
+func TestSystemServiceDeleteWorkspacePathsDeletesFilesAndFolders(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.MkdirAll(filepath.Join(root, "src", "feature"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "feature", "readme.md"), []byte("feature"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := service.DeleteWorkspacePaths(workspaceID, []string{
+		"workspace/main.go",
+		"workspace/src",
+		"workspace/src/feature/readme.md",
+	})
+	if err != nil {
+		t.Fatalf("delete paths: %v", err)
+	}
+	if len(deleted) != 2 {
+		t.Fatalf("expected parent folder delete to cover nested child, got %#v", deleted)
+	}
+	if _, err := os.Stat(filepath.Join(root, "main.go")); !os.IsNotExist(err) {
+		t.Fatalf("expected file to be deleted, stat error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "src")); !os.IsNotExist(err) {
+		t.Fatalf("expected folder subtree to be deleted, stat error: %v", err)
+	}
+}
+
+func TestSystemServiceDeleteWorkspacePathsRejectsInvalidTargets(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name  string
+		paths []string
+	}{
+		{name: "empty selection", paths: nil},
+		{name: "workspace root", paths: []string{"workspace"}},
+		{name: "missing path", paths: []string{"workspace/missing.go"}},
+		{name: "traversal", paths: []string{"workspace/../outside.txt"}},
+		{name: "absolute path", paths: []string{outside}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := service.DeleteWorkspacePaths(workspaceID, tc.paths); err == nil {
+				t.Fatalf("expected error deleting %#v", tc.paths)
+			}
+		})
+	}
+}
+
 func TestSystemServiceWorkspaceFilesRejectBinaryAndLargeFiles(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.WriteFile(filepath.Join(root, "image.bin"), []byte{0x01, 0x00, 0x02}, 0o600); err != nil {

@@ -278,6 +278,46 @@ export function setSingleCodeTreeSelection(
   state.selectionAnchorKind = kind;
 }
 
+export function selectedCodeTreeEntries(
+  state: CodeWorkspaceState,
+): CodeTreeSelectionEntry[] {
+  ensureCodeTreeSelectionState(state);
+  return Array.from(state.selectedEntries.entries()).map(([path, kind]) => ({
+    path,
+    kind,
+  }));
+}
+
+export function clearCodeTreeSelection(state: CodeWorkspaceState) {
+  state.selectedPath = "";
+  state.selectedKind = "other";
+  state.selectedEntries = new Map();
+  state.selectionAnchorPath = "";
+  state.selectionAnchorKind = "other";
+}
+
+export function removeCodeTreeSelectionPaths(
+  state: CodeWorkspaceState,
+  paths: string[],
+) {
+  ensureCodeTreeSelectionState(state);
+  const deletedPaths = paths.filter(Boolean);
+  state.selectedEntries = new Map(
+    Array.from(state.selectedEntries.entries()).filter(
+      ([path]) => !deletedPaths.some((deleted) => path === deleted || path.startsWith(`${deleted}/`)),
+    ),
+  );
+  if (deletedPaths.some((path) => state.selectedPath === path || state.selectedPath.startsWith(`${path}/`))) {
+    const last = Array.from(state.selectedEntries.entries()).at(-1);
+    state.selectedPath = last?.[0] ?? "";
+    state.selectedKind = last?.[1] ?? "other";
+  }
+  if (deletedPaths.some((path) => state.selectionAnchorPath === path || state.selectionAnchorPath.startsWith(`${path}/`))) {
+    state.selectionAnchorPath = state.selectedPath;
+    state.selectionAnchorKind = state.selectedKind;
+  }
+}
+
 export function rewriteCodeTreeSelectionPaths(
   state: CodeWorkspaceState,
   rewrite: (path: string) => string,

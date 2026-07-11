@@ -1,7 +1,7 @@
 import { setCodeQuickOpenEventBinder, setCodeTextSearchEventBinder, setCodeTreeEventBinder, restoreCodeTreeScroll, startExplorerResize } from "./dom";
 import { ensureCodeState, isCodeTreeEntrySelected, type CodeTreeSelectionEntry } from "./state";
 import type { CodeViewCallbacks } from "./types";
-import { cancelPendingCodeCreate, cancelPendingCodeRename, clearCodeDrag, collapseCodeTree, dropCodeDrag, handleSearchInput, refreshCodeTree, selectCodeTreeEntry, startCodeDrag, startSelectedCodeCreate, startSelectedCodeRename, submitPendingCodeCreate, submitPendingCodeRename, toggleDirectory, toggleIgnoredFilter, updateCodeDropTarget, updatePendingCodeCreateName, updatePendingCodeRenameName } from "./explorer";
+import { cancelPendingCodeCreate, cancelPendingCodeRename, clearCodeDrag, collapseCodeTree, deleteSelectedCodePaths, dropCodeDrag, handleSearchInput, refreshCodeTree, selectCodeTreeEntry, startCodeDrag, startSelectedCodeCreate, startSelectedCodeRename, submitPendingCodeCreate, submitPendingCodeRename, toggleDirectory, toggleIgnoredFilter, updateCodeDropTarget, updatePendingCodeCreateName, updatePendingCodeRenameName } from "./explorer";
 import { activateCodeTab, closeCodeTab, createUntitledCodeFile, navigateCodeHistory, openCodeFile, openPinnedCodeFile, pinCodeTab, saveActiveCodeFile, startOpenTabFileWatch, toggleTemporaryFiles } from "./tabs";
 import { mountActiveCodeEditor } from "./editor";
 import { openInlineCodeChatAtCursor } from "./inlineChat";
@@ -352,6 +352,12 @@ async function handleCodeBrowserRowKeydown(
     event.stopPropagation();
     selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "");
     await startSelectedCodeRename(workspaceID, callbacks);
+    return;
+  }
+  if (event.key === "Delete") {
+    event.preventDefault();
+    event.stopPropagation();
+    await deleteSelectedCodePaths(workspaceID, callbacks);
     return;
   }
   if (event.key !== "Enter") {

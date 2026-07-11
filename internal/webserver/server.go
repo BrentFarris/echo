@@ -522,6 +522,7 @@ var allowedRPCMethods = map[string]bool{
 	"CreateWorkspaceTask":                     true,
 	"DeleteAgentMode":                         true,
 	"DeleteKanbanCard":                        true,
+	"DeleteWorkspacePaths":                    true,
 	"DeleteWorkspaceTask":                     true,
 	"DeleteWorkspace":                         true,
 	"EditChatMessage":                         true,

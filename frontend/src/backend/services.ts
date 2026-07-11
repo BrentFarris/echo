@@ -136,6 +136,10 @@ export function DeleteWorkspace(...args: Parameters<typeof Wails.DeleteWorkspace
   return call("DeleteWorkspace", Wails.DeleteWorkspace, args);
 }
 
+export function DeleteWorkspacePaths(...args: Parameters<typeof Wails.DeleteWorkspacePaths>): ReturnType<typeof Wails.DeleteWorkspacePaths> {
+  return call("DeleteWorkspacePaths", Wails.DeleteWorkspacePaths, args);
+}
+
 export function EditChatMessage(...args: Parameters<typeof Wails.EditChatMessage>): ReturnType<typeof Wails.EditChatMessage> {
   return call("EditChatMessage", Wails.EditChatMessage, args);
 }
