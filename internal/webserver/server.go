@@ -540,6 +540,7 @@ var allowedRPCMethods = map[string]bool{
 	"LoadWorkspaceChangeReview":               true,
 	"LoadWorkspaceGitChanges":                 true,
 	"LoadWorkspaceGitCommit":                  true,
+	"LoadWorkspaceGitFileDiff":                true,
 	"LoadWorkspaceGitRepository":              true,
 	"MergeWorkspaceGitBranch":                 true,
 	"MoveKanbanCard":                          true,

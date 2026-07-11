@@ -144,6 +144,8 @@ export function LoadWorkspaceGitChanges(arg1:string):Promise<services.WorkspaceG
 
 export function LoadWorkspaceGitCommit(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitCommitDetail>;
 
+export function LoadWorkspaceGitFileDiff(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitChangedFile>;
+
 export function LoadWorkspaceGitRepository(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
 
 export function MergeWorkspaceGitBranch(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;

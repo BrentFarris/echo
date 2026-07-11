@@ -103,24 +103,73 @@ func loadGitChangedFilesForRepository(ctx context.Context, repository workspaceG
 
 	files := make([]WorkspaceGitChangedFile, 0, len(entries))
 	for _, entry := range entries {
-		file := workspaceGitChangedFileForEntry(repository, entry)
-
-		var diff string
-		if entry.index == '?' && entry.worktree == '?' {
-			diff, err = synthesizeUntrackedGitDiff(repository.WorktreePath, entry.path, file.Path)
-		} else {
-			diff, err = loadGitDiffForPath(ctx, repository.WorktreePath, entry.path)
-			if err == nil {
-				diff = prefixGitDiffPathsForRepository(diff, repository)
-			}
-		}
-		if err == nil && strings.TrimSpace(diff) != "" {
-			file.Diff = diff
-			file.DiffAvailable = true
-		}
+		file := hydrateWorkspaceGitChangedFile(ctx, repository, entry)
 		files = append(files, file)
 	}
 	return files, nil
+}
+
+func loadGitStatusFilesForRepository(ctx context.Context, repository workspaceGitRepositoryContext) ([]WorkspaceGitChangedFile, error) {
+	entries, err := workspaceGitStatusEntriesForRepository(ctx, repository)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]WorkspaceGitChangedFile, 0, len(entries))
+	for _, entry := range entries {
+		files = append(files, workspaceGitChangedFileForEntry(repository, entry))
+	}
+	return files, nil
+}
+
+func hydrateWorkspaceGitChangedFile(ctx context.Context, repository workspaceGitRepositoryContext, entry gitStatusEntry) WorkspaceGitChangedFile {
+	file := workspaceGitChangedFileForEntry(repository, entry)
+	var diff string
+	var err error
+	if entry.index == '?' && entry.worktree == '?' {
+		diff, err = synthesizeUntrackedGitDiff(repository.WorktreePath, entry.path, file.Path)
+	} else {
+		diff, err = loadGitDiffForPath(ctx, repository.WorktreePath, entry.path)
+		if err == nil {
+			diff = prefixGitDiffPathsForRepository(diff, repository)
+		}
+	}
+	if err == nil && strings.TrimSpace(diff) != "" && !workspaceGitDiffIsBinary(diff) {
+		file.Diff = diff
+		file.DiffAvailable = true
+	}
+	return file
+}
+
+func workspaceGitDiffIsBinary(diff string) bool {
+	for _, line := range strings.Split(diff, "\n") {
+		if strings.HasPrefix(line, "Binary files ") && strings.HasSuffix(strings.TrimSpace(line), " differ") {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *SystemService) LoadWorkspaceGitFileDiff(workspaceID string, folderID string, path string) (WorkspaceGitChangedFile, error) {
+	workspace, folder, err := s.workspaceGitRepositoryFolder(workspaceID, folderID)
+	if err != nil {
+		return WorkspaceGitChangedFile{}, err
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return WorkspaceGitChangedFile{}, fmt.Errorf("git file path is required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), workspaceGitCommandTimeout)
+	defer cancel()
+	repository, err := s.workspaceGitRepositoryContext(ctx, workspace, folder)
+	if err != nil {
+		return WorkspaceGitChangedFile{}, err
+	}
+	entry, err := workspaceGitStatusEntryForPath(ctx, repository, path)
+	if err != nil {
+		return WorkspaceGitChangedFile{}, err
+	}
+	return hydrateWorkspaceGitChangedFile(ctx, repository, entry), nil
 }
 
 func workspaceGitStatusEntriesForRepository(ctx context.Context, repository workspaceGitRepositoryContext) ([]gitStatusEntry, error) {

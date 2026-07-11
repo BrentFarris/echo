@@ -88,6 +88,12 @@ type gitNameStatusEntry struct {
 	oldPath string
 }
 
+type workspaceGitRepositorySnapshot struct {
+	context workspaceGitRepositoryContext
+	summary WorkspaceGitRepositorySummary
+	files   []WorkspaceGitChangedFile
+}
+
 func (s *SystemService) LoadWorkspaceGitRepository(workspaceID string, folderID string) (WorkspaceGitRepositoryView, error) {
 	workspace, _, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {
@@ -317,17 +323,27 @@ func (s *SystemService) loadWorkspaceGitRepository(workspace Workspace, folderID
 		Repositories: make([]WorkspaceGitRepositorySummary, 0, len(workspace.Folders)),
 	}
 	var selectedFolder WorkspaceFolder
+	var selectedSnapshot workspaceGitRepositorySnapshot
+	var selectedErr error
 	var selectedFound bool
 
 	for _, folder := range workspace.Folders {
-		summary := s.workspaceGitRepositorySummary(ctx, workspace, folder)
+		snapshot, err := s.workspaceGitRepositorySnapshot(ctx, workspace, folder)
+		summary := snapshot.summary
+		if err != nil {
+			summary = WorkspaceGitRepositorySummary{FolderID: folder.ID, Label: folder.Label, Path: folder.Path, Error: err.Error()}
+		}
 		view.Repositories = append(view.Repositories, summary)
 		if folder.ID == folderID {
 			selectedFolder = folder
+			selectedSnapshot = snapshot
+			selectedErr = err
 			selectedFound = true
 		}
 		if strings.TrimSpace(folderID) == "" && !selectedFound && summary.Available {
 			selectedFolder = folder
+			selectedSnapshot = snapshot
+			selectedErr = err
 			selectedFound = true
 		}
 	}
@@ -337,17 +353,90 @@ func (s *SystemService) loadWorkspaceGitRepository(workspace Workspace, folderID
 	if !selectedFound {
 		return view, fmt.Errorf("workspace has no manageable Git repositories")
 	}
-	repositoryContext, err := s.workspaceGitRepositoryContext(ctx, workspace, selectedFolder)
-	if err != nil {
-		return view, err
+	if selectedErr != nil {
+		return view, selectedErr
 	}
-	repository, err := loadWorkspaceGitRepositoryStatus(ctx, repositoryContext)
+	if !selectedSnapshot.summary.Available {
+		return view, fmt.Errorf("workspace folder has no manageable Git repository")
+	}
+	repository, err := loadWorkspaceGitRepositoryStatus(ctx, selectedSnapshot)
 	if err != nil {
 		return view, err
 	}
 	view.SelectedFolderID = selectedFolder.ID
 	view.Repository = &repository
+	s.storeWorkspaceGitRepositoryView(view)
 	return view, nil
+}
+
+func (s *SystemService) refreshCachedWorkspaceGitRepositoryStatus(workspace Workspace, folder WorkspaceFolder) (WorkspaceGitRepositoryView, error) {
+	cached, ok := s.cachedWorkspaceGitRepositoryView(workspace.ID, folder.ID)
+	if !ok || cached.Repository == nil {
+		return s.loadWorkspaceGitRepository(workspace, folder.ID)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), workspaceGitCommandTimeout)
+	defer cancel()
+	repository, err := s.workspaceGitRepositoryContext(ctx, workspace, folder)
+	if err != nil {
+		return WorkspaceGitRepositoryView{}, err
+	}
+	files, err := loadGitStatusFilesForRepository(ctx, repository)
+	if err != nil {
+		return WorkspaceGitRepositoryView{}, err
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return strings.ToLower(files[i].Path) < strings.ToLower(files[j].Path)
+	})
+	staged, unstaged := workspaceGitChangeStageCounts(files)
+	cached.Repository.Dirty = len(files) > 0
+	cached.Repository.FileCount = len(files)
+	cached.Repository.StagedFileCount = staged
+	cached.Repository.UnstagedFileCount = unstaged
+	cached.Repository.Files = files
+	for i := range cached.Repositories {
+		if cached.Repositories[i].FolderID == folder.ID {
+			cached.Repositories[i].Dirty = len(files) > 0
+		}
+	}
+	s.storeWorkspaceGitRepositoryView(cached)
+	return cloneWorkspaceGitRepositoryView(cached), nil
+}
+
+func workspaceGitRepositoryViewCacheKey(workspaceID string, folderID string) string {
+	return workspaceID + "\x00" + folderID
+}
+
+func (s *SystemService) cachedWorkspaceGitRepositoryView(workspaceID string, folderID string) (WorkspaceGitRepositoryView, bool) {
+	s.gitViewMu.Lock()
+	defer s.gitViewMu.Unlock()
+	view, ok := s.gitRepositoryViews[workspaceGitRepositoryViewCacheKey(workspaceID, folderID)]
+	if !ok {
+		return WorkspaceGitRepositoryView{}, false
+	}
+	return cloneWorkspaceGitRepositoryView(view), true
+}
+
+func (s *SystemService) storeWorkspaceGitRepositoryView(view WorkspaceGitRepositoryView) {
+	if view.WorkspaceID == "" || view.SelectedFolderID == "" || view.Repository == nil {
+		return
+	}
+	s.gitViewMu.Lock()
+	s.gitRepositoryViews[workspaceGitRepositoryViewCacheKey(view.WorkspaceID, view.SelectedFolderID)] = cloneWorkspaceGitRepositoryView(view)
+	s.gitViewMu.Unlock()
+}
+
+func cloneWorkspaceGitRepositoryView(view WorkspaceGitRepositoryView) WorkspaceGitRepositoryView {
+	clone := view
+	clone.Repositories = append([]WorkspaceGitRepositorySummary(nil), view.Repositories...)
+	if view.Repository != nil {
+		repository := *view.Repository
+		repository.Branches = append([]WorkspaceGitBranch(nil), view.Repository.Branches...)
+		repository.Files = append([]WorkspaceGitChangedFile(nil), view.Repository.Files...)
+		repository.Commits = append([]WorkspaceGitCommit(nil), view.Repository.Commits...)
+		clone.Repository = &repository
+	}
+	return clone
 }
 
 func (s *SystemService) workspaceGitRepositoryFolder(workspaceID string, folderID string) (Workspace, WorkspaceFolder, error) {
@@ -370,43 +459,39 @@ func (s *SystemService) workspaceGitRepositoryFolder(workspaceID string, folderI
 	return Workspace{}, WorkspaceFolder{}, fmt.Errorf("workspace folder was not found")
 }
 
-func (s *SystemService) workspaceGitRepositorySummary(ctx context.Context, workspace Workspace, folder WorkspaceFolder) WorkspaceGitRepositorySummary {
+func (s *SystemService) workspaceGitRepositorySnapshot(ctx context.Context, workspace Workspace, folder WorkspaceFolder) (workspaceGitRepositorySnapshot, error) {
 	summary := WorkspaceGitRepositorySummary{
 		FolderID: folder.ID,
 		Label:    folder.Label,
 		Path:     folder.Path,
 	}
 	if folder.Missing {
-		summary.Error = "workspace folder is unavailable"
-		return summary
+		return workspaceGitRepositorySnapshot{summary: summary}, fmt.Errorf("workspace folder is unavailable")
 	}
 	repository, err := s.workspaceGitRepositoryContext(ctx, workspace, folder)
 	if err != nil {
-		summary.Error = err.Error()
-		return summary
+		return workspaceGitRepositorySnapshot{summary: summary}, err
 	}
 	summary.Available = true
 	summary.CurrentBranch, summary.Detached = workspaceGitCurrentBranch(ctx, repository.WorktreePath)
 	summary.Upstream, summary.AheadCount, summary.BehindCount, _ = workspaceGitRemoteStatus(ctx, repository.WorktreePath)
 	summary.Head, summary.ShortHead = workspaceGitHead(ctx, repository.WorktreePath)
-	if files, err := loadGitChangedFilesForRepository(ctx, repository); err == nil {
-		summary.Dirty = len(files) > 0
+	files, err := loadGitStatusFilesForRepository(ctx, repository)
+	if err != nil {
+		return workspaceGitRepositorySnapshot{context: repository, summary: summary}, err
 	}
-	return summary
+	summary.Dirty = len(files) > 0
+	return workspaceGitRepositorySnapshot{context: repository, summary: summary, files: files}, nil
 }
 
-func loadWorkspaceGitRepositoryStatus(ctx context.Context, repository workspaceGitRepositoryContext) (WorkspaceGitRepositoryStatus, error) {
-	currentBranch, detached := workspaceGitCurrentBranch(ctx, repository.WorktreePath)
-	upstream, ahead, behind, _ := workspaceGitRemoteStatus(ctx, repository.WorktreePath)
-	head, shortHead := workspaceGitHead(ctx, repository.WorktreePath)
-	branches, err := loadWorkspaceGitBranches(ctx, repository.WorktreePath, currentBranch)
+func loadWorkspaceGitRepositoryStatus(ctx context.Context, snapshot workspaceGitRepositorySnapshot) (WorkspaceGitRepositoryStatus, error) {
+	repository := snapshot.context
+	summary := snapshot.summary
+	branches, err := loadWorkspaceGitBranches(ctx, repository.WorktreePath, summary.CurrentBranch)
 	if err != nil {
 		return WorkspaceGitRepositoryStatus{}, err
 	}
-	files, err := loadGitChangedFilesForRepository(ctx, repository)
-	if err != nil {
-		return WorkspaceGitRepositoryStatus{}, err
-	}
+	files := snapshot.files
 	sort.Slice(files, func(i, j int) bool {
 		return strings.ToLower(files[i].Path) < strings.ToLower(files[j].Path)
 	})
@@ -419,13 +504,13 @@ func loadWorkspaceGitRepositoryStatus(ctx context.Context, repository workspaceG
 		FolderID:          repository.Folder.ID,
 		Label:             repository.Folder.Label,
 		Path:              repository.Folder.Path,
-		CurrentBranch:     currentBranch,
-		Upstream:          upstream,
-		AheadCount:        ahead,
-		BehindCount:       behind,
-		Head:              head,
-		ShortHead:         shortHead,
-		Detached:          detached,
+		CurrentBranch:     summary.CurrentBranch,
+		Upstream:          summary.Upstream,
+		AheadCount:        summary.AheadCount,
+		BehindCount:       summary.BehindCount,
+		Head:              summary.Head,
+		ShortHead:         summary.ShortHead,
+		Detached:          summary.Detached,
 		Dirty:             len(files) > 0,
 		Branches:          branches,
 		FileCount:         len(files),
@@ -478,11 +563,12 @@ func workspaceGitHead(ctx context.Context, workspacePath string) (string, string
 	if err != nil {
 		return "", ""
 	}
-	shortOutput, err := runWorkspaceGitCommand(ctx, workspacePath, "rev-parse", "--short", "HEAD")
-	if err != nil {
-		return strings.TrimSpace(string(headOutput)), ""
+	head := strings.TrimSpace(string(headOutput))
+	shortHead := head
+	if len(shortHead) > 7 {
+		shortHead = shortHead[:7]
 	}
-	return strings.TrimSpace(string(headOutput)), strings.TrimSpace(string(shortOutput))
+	return head, shortHead
 }
 
 func workspaceGitRemoteStatus(ctx context.Context, workspacePath string) (string, int, int, error) {

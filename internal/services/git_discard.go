@@ -33,7 +33,7 @@ func (s *SystemService) DiscardWorkspaceGitFile(workspaceID string, folderID str
 	if err := discardWorkspaceGitStatusEntry(ctx, repository, entry); err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	return s.loadWorkspaceGitRepository(workspace, folder.ID)
+	return s.refreshCachedWorkspaceGitRepositoryStatus(workspace, folder)
 }
 
 func (s *SystemService) DiscardWorkspaceGitChanges(workspaceID string, folderID string) (WorkspaceGitRepositoryView, error) {
@@ -57,14 +57,14 @@ func (s *SystemService) DiscardWorkspaceGitChanges(workspaceID string, folderID 
 		return WorkspaceGitRepositoryView{}, err
 	}
 	if len(entries) == 0 {
-		return s.loadWorkspaceGitRepository(workspace, folder.ID)
+		return s.refreshCachedWorkspaceGitRepositoryStatus(workspace, folder)
 	}
 	for _, entry := range entries {
 		if err := discardWorkspaceGitStatusEntry(ctx, repository, entry); err != nil {
 			return WorkspaceGitRepositoryView{}, err
 		}
 	}
-	return s.loadWorkspaceGitRepository(workspace, folder.ID)
+	return s.refreshCachedWorkspaceGitRepositoryStatus(workspace, folder)
 }
 
 func workspaceGitStatusEntryForPath(ctx context.Context, repository workspaceGitRepositoryContext, requestedPath string) (gitStatusEntry, error) {

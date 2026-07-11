@@ -1,6 +1,6 @@
 import { ensureCodeViewRootLoaded, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk } from "../../codeView";
 import { codeIcons } from "../../codeView/icons";
-import { CommitWorkspaceGitChanges, CreateWorkspaceGitBranch, DiscardWorkspaceGitChanges, DiscardWorkspaceGitFile, LoadWorkspaceChangeReview, LoadWorkspaceGitCommit, LoadWorkspaceGitRepository, MergeWorkspaceGitBranch, StageWorkspaceGitChanges, StageWorkspaceGitFile, SwitchWorkspaceGitBranch, SyncWorkspaceGitBranch, UnstageWorkspaceGitChanges, UnstageWorkspaceGitFile } from "../../backend/services";
+import { CommitWorkspaceGitChanges, CreateWorkspaceGitBranch, DiscardWorkspaceGitChanges, DiscardWorkspaceGitFile, LoadWorkspaceChangeReview, LoadWorkspaceGitCommit, LoadWorkspaceGitFileDiff, LoadWorkspaceGitRepository, MergeWorkspaceGitBranch, StageWorkspaceGitChanges, StageWorkspaceGitFile, SwitchWorkspaceGitBranch, SyncWorkspaceGitBranch, UnstageWorkspaceGitChanges, UnstageWorkspaceGitFile } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
 import type { CodeEntryKind, CodeGitChangeState } from "../../codeView/types";
 import { getAppCallbacks } from "../callbacks";
@@ -29,6 +29,8 @@ type GitChangeTreeFile = {
 };
 
 type GitChangeTreeNode = GitChangeTreeFolder | GitChangeTreeFile;
+
+let gitWorkingDiffObserver: IntersectionObserver | null = null;
 
 export function renderGitRepositoryPage(
   workspace: services.Workspace,
@@ -274,10 +276,17 @@ function renderGitWorkingChanges(workspaceID: string, repository: services.Works
   }
   return `
     <div class="change-file-list git-change-file-list" data-git-change-file-list>
-      ${files.length ? files.map(renderGitChangedFile).join("") : `<div class="empty-state compact">No working tree changes.</div>`}
+      ${files.length ? files.map((file) => renderGitWorkingChangedFile(workspaceID, repository.folderId, file)).join("") : `<div class="empty-state compact">No working tree changes.</div>`}
       ${selectedCommitReview}
     </div>
   `;
+}
+
+function renderGitWorkingChangedFile(workspaceID: string, folderID: string, file: services.WorkspaceGitChangedFile): string {
+  const key = gitWorkingDiffKey(workspaceID, folderID, file.path);
+  const hydrated = state.gitWorkingDiffs.get(key);
+  const loaded = Boolean(hydrated) || state.gitWorkingDiffFailures.has(key);
+  return renderGitChangedFile(hydrated ?? file, !loaded);
 }
 
 function renderSelectedGitCommitReview(workspaceID: string, repository: services.WorkspaceGitRepositoryStatus): string {
@@ -704,6 +713,7 @@ function renderGitCommitChangedFile(hash: string, file: services.WorkspaceGitCha
 export function bindGitEvents(root: ParentNode) {
   bindGitSplitDiffScroll(root);
   bindGitChangeTree(root);
+  bindGitWorkingDiffs(root);
   root
     .querySelectorAll<HTMLSelectElement>("[data-git-repository-select]")
     .forEach((select) => select.addEventListener("change", () => handleGitRepositorySelect(select)));
@@ -783,6 +793,12 @@ function handleGitChangeFileSelect(event: MouseEvent) {
   if (!targetPath) {
     return;
   }
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+  const file = repository?.files?.find((candidate) => normalizeGitChangePath(candidate.path) === targetPath);
+  if (workspace && repository && file) {
+    void loadGitWorkingDiff(workspace.id, repository.folderId, file);
+  }
   const repositoryRoot = button.closest<HTMLElement>("[data-git-repository]");
   const target = Array.from(repositoryRoot?.querySelectorAll<HTMLElement>("[data-git-change-file-path]") ?? [])
     .find((element) => element.dataset.gitChangeFilePath === targetPath);
@@ -799,6 +815,70 @@ function handleGitChangeFileSelect(event: MouseEvent) {
     markCurrentChangeTarget(review, target);
   }
   target.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function bindGitWorkingDiffs(root: ParentNode) {
+  gitWorkingDiffObserver?.disconnect();
+  gitWorkingDiffObserver = null;
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+  const list = root.querySelector<HTMLElement>("[data-git-change-file-list]");
+  if (!workspace || !repository || !list) {
+    return;
+  }
+  const pending = Array.from(list.querySelectorAll<HTMLElement>("[data-git-diff-pending]"));
+  if (!pending.length) {
+    return;
+  }
+  if (!("IntersectionObserver" in window)) {
+    const file = repository.files?.find((candidate) => normalizeGitChangePath(candidate.path) === pending[0]?.dataset.gitChangeFilePath);
+    if (file) {
+      void loadGitWorkingDiff(workspace.id, repository.folderId, file);
+    }
+    return;
+  }
+  gitWorkingDiffObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) {
+        continue;
+      }
+      const element = entry.target as HTMLElement;
+      gitWorkingDiffObserver?.unobserve(element);
+      const path = element.dataset.gitChangeFilePath ?? "";
+      const file = repository.files?.find((candidate) => normalizeGitChangePath(candidate.path) === path);
+      if (file) {
+        void loadGitWorkingDiff(workspace.id, repository.folderId, file);
+      }
+    }
+  }, { root: list, rootMargin: "320px 0px" });
+  pending.forEach((element) => gitWorkingDiffObserver?.observe(element));
+}
+
+async function loadGitWorkingDiff(workspaceID: string, folderID: string, file: services.WorkspaceGitChangedFile) {
+  const key = gitWorkingDiffKey(workspaceID, folderID, file.path);
+  if (state.gitWorkingDiffs.has(key) || state.gitWorkingDiffFailures.has(key) || state.loadingGitWorkingDiffs.has(key)) {
+    return;
+  }
+  const generationKey = gitWorkingDiffGenerationKey(workspaceID, folderID);
+  const generation = state.gitWorkingDiffGenerations.get(generationKey) ?? 0;
+  state.loadingGitWorkingDiffs.add(key);
+  try {
+    const hydrated = await LoadWorkspaceGitFileDiff(workspaceID, folderID, file.path);
+    if ((state.gitWorkingDiffGenerations.get(generationKey) ?? 0) !== generation) {
+      return;
+    }
+    state.gitWorkingDiffs.set(key, hydrated);
+    getAppCallbacks().render();
+  } catch (error) {
+    if ((state.gitWorkingDiffGenerations.get(generationKey) ?? 0) !== generation) {
+      return;
+    }
+    state.gitWorkingDiffFailures.add(key);
+    pushToast(errorMessage(error), "error");
+    getAppCallbacks().render();
+  } finally {
+    state.loadingGitWorkingDiffs.delete(key);
+  }
 }
 
 function handleGitCommitFileSelect(event: MouseEvent) {
@@ -1458,11 +1538,41 @@ function storeGitRepositoryView(workspaceID: string, view: services.WorkspaceGit
   const folderID = view.selectedFolderId || view.repository?.folderId || "";
   if (folderID) {
     state.selectedGitRepositoryFolders.set(workspaceID, folderID);
+    invalidateGitWorkingDiffs(workspaceID, folderID);
   }
   const selectedHash = state.selectedGitCommitHashes.get(workspaceID);
   if (selectedHash && !(view.repository?.commits ?? []).some((commit) => commit.hash === selectedHash)) {
     state.selectedGitCommitHashes.delete(workspaceID);
   }
+}
+
+function invalidateGitWorkingDiffs(workspaceID: string, folderID: string) {
+  const generationKey = gitWorkingDiffGenerationKey(workspaceID, folderID);
+  state.gitWorkingDiffGenerations.set(generationKey, (state.gitWorkingDiffGenerations.get(generationKey) ?? 0) + 1);
+  const prefix = `${generationKey}\u0000`;
+  for (const key of state.gitWorkingDiffs.keys()) {
+    if (key.startsWith(prefix)) {
+      state.gitWorkingDiffs.delete(key);
+    }
+  }
+  for (const key of state.gitWorkingDiffFailures) {
+    if (key.startsWith(prefix)) {
+      state.gitWorkingDiffFailures.delete(key);
+    }
+  }
+  for (const key of state.loadingGitWorkingDiffs) {
+    if (key.startsWith(prefix)) {
+      state.loadingGitWorkingDiffs.delete(key);
+    }
+  }
+}
+
+function gitWorkingDiffGenerationKey(workspaceID: string, folderID: string): string {
+  return `${workspaceID}\u0000${folderID}`;
+}
+
+function gitWorkingDiffKey(workspaceID: string, folderID: string, path: string): string {
+  return `${gitWorkingDiffGenerationKey(workspaceID, folderID)}\u0000${normalizeGitChangePath(path)}`;
 }
 
 function selectedGitRepositoryFolderID(workspaceID: string, view: services.WorkspaceGitRepositoryView): string {

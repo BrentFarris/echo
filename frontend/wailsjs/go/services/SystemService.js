@@ -278,6 +278,10 @@ export function LoadWorkspaceGitCommit(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['LoadWorkspaceGitCommit'](arg1, arg2, arg3);
 }
 
+export function LoadWorkspaceGitFileDiff(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['LoadWorkspaceGitFileDiff'](arg1, arg2, arg3);
+}
+
 export function LoadWorkspaceGitRepository(arg1, arg2) {
   return window['go']['services']['SystemService']['LoadWorkspaceGitRepository'](arg1, arg2);
 }

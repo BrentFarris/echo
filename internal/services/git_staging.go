@@ -33,7 +33,7 @@ func (s *SystemService) StageWorkspaceGitFile(workspaceID string, folderID strin
 	if err := stageWorkspaceGitStatusEntry(ctx, repository, entry); err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	return s.loadWorkspaceGitRepository(workspace, folder.ID)
+	return s.refreshCachedWorkspaceGitRepositoryStatus(workspace, folder)
 }
 
 func (s *SystemService) UnstageWorkspaceGitFile(workspaceID string, folderID string, path string) (WorkspaceGitRepositoryView, error) {
@@ -63,7 +63,7 @@ func (s *SystemService) UnstageWorkspaceGitFile(workspaceID string, folderID str
 	if err := unstageWorkspaceGitStatusEntry(ctx, repository, entry); err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	return s.loadWorkspaceGitRepository(workspace, folder.ID)
+	return s.refreshCachedWorkspaceGitRepositoryStatus(workspace, folder)
 }
 
 func (s *SystemService) StageWorkspaceGitChanges(workspaceID string, folderID string) (WorkspaceGitRepositoryView, error) {
@@ -82,16 +82,10 @@ func (s *SystemService) StageWorkspaceGitChanges(workspaceID string, folderID st
 	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	entries, err := workspaceGitStatusEntriesForRepository(ctx, repository)
-	if err != nil {
+	if _, err := runWorkspaceGitCommand(ctx, repository.WorktreePath, "add", "-A", "--", workspaceGitFolderPathspec(repository)); err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	for _, entry := range entries {
-		if err := stageWorkspaceGitStatusEntry(ctx, repository, entry); err != nil {
-			return WorkspaceGitRepositoryView{}, err
-		}
-	}
-	return s.loadWorkspaceGitRepository(workspace, folder.ID)
+	return s.refreshCachedWorkspaceGitRepositoryStatus(workspace, folder)
 }
 
 func (s *SystemService) UnstageWorkspaceGitChanges(workspaceID string, folderID string) (WorkspaceGitRepositoryView, error) {
@@ -110,19 +104,22 @@ func (s *SystemService) UnstageWorkspaceGitChanges(workspaceID string, folderID 
 	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	entries, err := workspaceGitStatusEntriesForRepository(ctx, repository)
-	if err != nil {
-		return WorkspaceGitRepositoryView{}, err
-	}
-	for _, entry := range entries {
-		if !gitStatusEntryHasStagedChanges(entry) {
-			continue
-		}
-		if err := unstageWorkspaceGitStatusEntry(ctx, repository, entry); err != nil {
+	pathspec := workspaceGitFolderPathspec(repository)
+	if workspaceGitHasHead(ctx, repository.WorktreePath) {
+		if _, err := runWorkspaceGitCommand(ctx, repository.WorktreePath, "restore", "--staged", "--", pathspec); err != nil {
 			return WorkspaceGitRepositoryView{}, err
 		}
+	} else if _, err := runWorkspaceGitCommand(ctx, repository.WorktreePath, "rm", "-r", "--cached", "--ignore-unmatch", "--", pathspec); err != nil {
+		return WorkspaceGitRepositoryView{}, err
 	}
-	return s.loadWorkspaceGitRepository(workspace, folder.ID)
+	return s.refreshCachedWorkspaceGitRepositoryStatus(workspace, folder)
+}
+
+func workspaceGitFolderPathspec(repository workspaceGitRepositoryContext) string {
+	if repository.FolderGitPath == "" {
+		return "."
+	}
+	return repository.FolderGitPath
 }
 
 func stageWorkspaceGitStatusEntry(ctx context.Context, repository workspaceGitRepositoryContext, entry gitStatusEntry) error {

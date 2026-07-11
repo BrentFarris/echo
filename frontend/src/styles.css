@@ -3593,6 +3593,16 @@ h3 {
   text-overflow: ellipsis;
 }
 
+.git-diff-loading {
+  min-height: 48px;
+  align-content: center;
+}
+
+.git-diff-loading .busy-status {
+  color: var(--color-text-muted);
+  font-size: var(--text-base-sm);
+}
+
 .git-diff-view-toggle {
   min-height: 32px;
   padding: 0 var(--space-lg);

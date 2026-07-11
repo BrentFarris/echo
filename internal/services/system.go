@@ -184,6 +184,8 @@ type SystemService struct {
 	fileChangeSeq           uint64
 	fileChanges             map[string][]trackedFileChange
 	workspaceToolLocks      map[string]*sync.Mutex
+	gitViewMu               sync.Mutex
+	gitRepositoryViews      map[string]WorkspaceGitRepositoryView
 	lspMu                   sync.Mutex
 	lspClients              map[string]*lspClient
 	lspWarmups              map[string]struct{}
@@ -226,6 +228,7 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 		watchdogs:             make(map[string]*watchdogHandle),
 		fileChanges:           make(map[string][]trackedFileChange),
 		workspaceToolLocks:    make(map[string]*sync.Mutex),
+		gitRepositoryViews:    make(map[string]WorkspaceGitRepositoryView),
 		lspClients:            make(map[string]*lspClient),
 		lspWarmups:            make(map[string]struct{}),
 		eventSubscribers:      make(map[uint64]chan RuntimeEvent),
