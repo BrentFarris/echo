@@ -3381,6 +3381,7 @@ h3 {
 
 .change-file-list {
   display: grid;
+  align-content: start;
   gap: var(--space-xl);
   min-width: 0;
 }
