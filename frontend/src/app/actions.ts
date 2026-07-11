@@ -6,7 +6,7 @@ import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
 import { dismissContextMenu } from "./contextMenu";
-import { dropWorkspaceGitRepositoryState, openGitChangeInCode, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, selectGitCommit, stageWorkspaceGitChanges, stageWorkspaceGitFile, syncWorkspaceGitRepository, toggleGitDiffViewMode, toggleGitSourceSidebar, unstageWorkspaceGitChanges, unstageWorkspaceGitFile } from "./git";
+import { closeGitMenu, closeGitStashReview, dropWorkspaceGitRepositoryState, openGitChangeInCode, openGitMenuPage, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, runGitMenuCommand, selectGitCommit, stageWorkspaceGitChanges, stageWorkspaceGitFile, syncWorkspaceGitRepository, toggleGitDiffViewMode, toggleGitSourceSidebar, unstageWorkspaceGitChanges, unstageWorkspaceGitFile } from "./git";
 import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification, toggleHeartbeatInterval, toggleWatchdogInterval } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, cancelAgentMode, deleteAgentModeSettings, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint, saveAgentMode, saveNewAgentMode, startCreateAgentMode, startEditAgentMode } from "./settings";
@@ -292,6 +292,22 @@ export async function handleAction(event: Event) {
         return;
       }
       await syncWorkspaceGitRepository(workspace.id);
+      return;
+    }
+    if (action === "open-git-menu-page") {
+      openGitMenuPage(target.dataset.gitMenuPage ?? "root");
+      return;
+    }
+    if (action === "close-git-menu") {
+      closeGitMenu();
+      return;
+    }
+    if (action === "run-git-menu-command") {
+      await runGitMenuCommand(target.dataset.gitCommand ?? "");
+      return;
+    }
+    if (action === "close-git-stash-review") {
+      closeGitStashReview();
       return;
     }
     if (action === "toggle-git-sidebar") {

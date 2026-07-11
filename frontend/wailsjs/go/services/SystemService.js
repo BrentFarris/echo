@@ -34,6 +34,10 @@ export function ChooseWorkspaceFolderForWorkspace(arg1) {
   return window['go']['services']['SystemService']['ChooseWorkspaceFolderForWorkspace'](arg1);
 }
 
+export function ChooseWorkspaceGitCloneParent() {
+  return window['go']['services']['SystemService']['ChooseWorkspaceGitCloneParent']();
+}
+
 export function ChooseWorkspaceIcon(arg1) {
   return window['go']['services']['SystemService']['ChooseWorkspaceIcon'](arg1);
 }
@@ -56,6 +60,10 @@ export function ClearWorkspaceChangeReview(arg1) {
 
 export function ClearWorkspaceIcon(arg1) {
   return window['go']['services']['SystemService']['ClearWorkspaceIcon'](arg1);
+}
+
+export function CloneWorkspaceGitRepository(arg1, arg2, arg3, arg4) {
+  return window['go']['services']['SystemService']['CloneWorkspaceGitRepository'](arg1, arg2, arg3, arg4);
 }
 
 export function CloseKanbanCardDetail(arg1, arg2) {
@@ -290,6 +298,10 @@ export function LoadWorkspaceGitRepository(arg1, arg2) {
   return window['go']['services']['SystemService']['LoadWorkspaceGitRepository'](arg1, arg2);
 }
 
+export function LoadWorkspaceGitStash(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['LoadWorkspaceGitStash'](arg1, arg2, arg3);
+}
+
 export function MergeWorkspaceGitBranch(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['MergeWorkspaceGitBranch'](arg1, arg2, arg3);
 }
@@ -400,6 +412,10 @@ export function RetryChatMessage(arg1, arg2, arg3) {
 
 export function RotateWebAccessToken() {
   return window['go']['services']['SystemService']['RotateWebAccessToken']();
+}
+
+export function RunWorkspaceGitAction(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['RunWorkspaceGitAction'](arg1, arg2, arg3);
 }
 
 export function SaveDashboardLayout(arg1, arg2) {

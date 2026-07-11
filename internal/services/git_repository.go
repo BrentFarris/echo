@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -41,28 +42,67 @@ type WorkspaceGitRepositorySummary struct {
 }
 
 type WorkspaceGitRepositoryStatus struct {
-	FolderID          string                    `json:"folderId"`
-	Label             string                    `json:"label"`
-	Path              string                    `json:"path"`
-	CurrentBranch     string                    `json:"currentBranch,omitempty"`
-	Upstream          string                    `json:"upstream,omitempty"`
-	AheadCount        int                       `json:"aheadCount"`
-	BehindCount       int                       `json:"behindCount"`
-	Head              string                    `json:"head,omitempty"`
-	ShortHead         string                    `json:"shortHead,omitempty"`
-	Detached          bool                      `json:"detached"`
-	Dirty             bool                      `json:"dirty"`
-	Branches          []WorkspaceGitBranch      `json:"branches"`
-	FileCount         int                       `json:"fileCount"`
-	StagedFileCount   int                       `json:"stagedFileCount"`
-	UnstagedFileCount int                       `json:"unstagedFileCount"`
-	Files             []WorkspaceGitChangedFile `json:"files"`
-	Commits           []WorkspaceGitCommit      `json:"commits"`
+	FolderID            string                     `json:"folderId"`
+	Label               string                     `json:"label"`
+	Path                string                     `json:"path"`
+	CurrentBranch       string                     `json:"currentBranch,omitempty"`
+	Upstream            string                     `json:"upstream,omitempty"`
+	AheadCount          int                        `json:"aheadCount"`
+	BehindCount         int                        `json:"behindCount"`
+	Head                string                     `json:"head,omitempty"`
+	ShortHead           string                     `json:"shortHead,omitempty"`
+	Detached            bool                       `json:"detached"`
+	Dirty               bool                       `json:"dirty"`
+	Branches            []WorkspaceGitBranch       `json:"branches"`
+	RemoteBranches      []WorkspaceGitRemoteBranch `json:"remoteBranches"`
+	Remotes             []WorkspaceGitRemote       `json:"remotes"`
+	Tags                []WorkspaceGitTag          `json:"tags"`
+	Stashes             []WorkspaceGitStash        `json:"stashes"`
+	RebaseInProgress    bool                       `json:"rebaseInProgress"`
+	SupportsStashStaged bool                       `json:"supportsStashStaged"`
+	FileCount           int                        `json:"fileCount"`
+	StagedFileCount     int                        `json:"stagedFileCount"`
+	UnstagedFileCount   int                        `json:"unstagedFileCount"`
+	Files               []WorkspaceGitChangedFile  `json:"files"`
+	Commits             []WorkspaceGitCommit       `json:"commits"`
 }
 
 type WorkspaceGitBranch struct {
 	Name    string `json:"name"`
 	Current bool   `json:"current"`
+}
+
+type WorkspaceGitRemoteBranch struct {
+	Name   string `json:"name"`
+	Remote string `json:"remote"`
+	Branch string `json:"branch"`
+}
+
+type WorkspaceGitRemote struct {
+	Name     string `json:"name"`
+	FetchURL string `json:"fetchUrl,omitempty"`
+	PushURL  string `json:"pushUrl,omitempty"`
+}
+
+type WorkspaceGitTag struct {
+	Name    string `json:"name"`
+	Target  string `json:"target,omitempty"`
+	Subject string `json:"subject,omitempty"`
+}
+
+type WorkspaceGitStash struct {
+	Ref     string `json:"ref"`
+	Index   int    `json:"index"`
+	Branch  string `json:"branch,omitempty"`
+	Message string `json:"message"`
+}
+
+type WorkspaceGitStashDetail struct {
+	WorkspaceID string                    `json:"workspaceId"`
+	FolderID    string                    `json:"folderId"`
+	Stash       WorkspaceGitStash         `json:"stash"`
+	FileCount   int                       `json:"fileCount"`
+	Files       []WorkspaceGitChangedFile `json:"files"`
 }
 
 type WorkspaceGitCommit struct {
@@ -226,9 +266,6 @@ func (s *SystemService) SwitchWorkspaceGitBranch(workspaceID string, folderID st
 	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	if err := requireCleanWorkspaceGitRepository(ctx, repository.WorktreePath); err != nil {
-		return WorkspaceGitRepositoryView{}, err
-	}
 	if _, err := runWorkspaceGitCommand(ctx, repository.WorktreePath, "checkout", branch); err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
@@ -253,9 +290,6 @@ func (s *SystemService) MergeWorkspaceGitBranch(workspaceID string, folderID str
 	}
 	branch, err := validateExistingWorkspaceGitBranch(ctx, repository.WorktreePath, name)
 	if err != nil {
-		return WorkspaceGitRepositoryView{}, err
-	}
-	if err := requireCleanWorkspaceGitRepository(ctx, repository.WorktreePath); err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
 	current := strings.TrimSpace(string(mustGitOutput(ctx, repository.WorktreePath, "branch", "--show-current")))
@@ -284,32 +318,8 @@ func (s *SystemService) SyncWorkspaceGitBranch(workspaceID string, folderID stri
 	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	currentBranch, detached := workspaceGitCurrentBranch(ctx, repository.WorktreePath)
-	if detached || currentBranch == "" {
-		return WorkspaceGitRepositoryView{}, fmt.Errorf("cannot sync a detached Git HEAD")
-	}
-	upstream, ahead, behind, err := workspaceGitRemoteStatus(ctx, repository.WorktreePath)
-	if err != nil {
+	if err := syncWorkspaceGitAction(ctx, repository.WorktreePath); err != nil {
 		return WorkspaceGitRepositoryView{}, err
-	}
-	if upstream == "" {
-		return WorkspaceGitRepositoryView{}, fmt.Errorf("current branch has no upstream configured")
-	}
-	if ahead == 0 && behind == 0 {
-		return s.loadWorkspaceGitRepository(workspace, folder.ID)
-	}
-	if behind > 0 {
-		if err := requireCleanWorkspaceGitRepository(ctx, repository.WorktreePath); err != nil {
-			return WorkspaceGitRepositoryView{}, fmt.Errorf("commit or discard Git changes before syncing incoming commits")
-		}
-		if _, err := runWorkspaceGitCommand(ctx, repository.WorktreePath, "-c", "pull.rebase=false", "-c", "core.editor=true", "pull", "--no-edit"); err != nil {
-			return WorkspaceGitRepositoryView{}, err
-		}
-	}
-	if ahead > 0 {
-		if _, err := runWorkspaceGitCommand(ctx, repository.WorktreePath, "push"); err != nil {
-			return WorkspaceGitRepositoryView{}, err
-		}
 	}
 	return s.loadWorkspaceGitRepository(workspace, folder.ID)
 }
@@ -432,6 +442,10 @@ func cloneWorkspaceGitRepositoryView(view WorkspaceGitRepositoryView) WorkspaceG
 	if view.Repository != nil {
 		repository := *view.Repository
 		repository.Branches = append([]WorkspaceGitBranch(nil), view.Repository.Branches...)
+		repository.RemoteBranches = append([]WorkspaceGitRemoteBranch(nil), view.Repository.RemoteBranches...)
+		repository.Remotes = append([]WorkspaceGitRemote(nil), view.Repository.Remotes...)
+		repository.Tags = append([]WorkspaceGitTag(nil), view.Repository.Tags...)
+		repository.Stashes = append([]WorkspaceGitStash(nil), view.Repository.Stashes...)
 		repository.Files = append([]WorkspaceGitChangedFile(nil), view.Repository.Files...)
 		repository.Commits = append([]WorkspaceGitCommit(nil), view.Repository.Commits...)
 		clone.Repository = &repository
@@ -491,6 +505,22 @@ func loadWorkspaceGitRepositoryStatus(ctx context.Context, snapshot workspaceGit
 	if err != nil {
 		return WorkspaceGitRepositoryStatus{}, err
 	}
+	remoteBranches, err := loadWorkspaceGitRemoteBranches(ctx, repository.WorktreePath)
+	if err != nil {
+		return WorkspaceGitRepositoryStatus{}, err
+	}
+	remotes, err := loadWorkspaceGitRemotes(ctx, repository.WorktreePath)
+	if err != nil {
+		return WorkspaceGitRepositoryStatus{}, err
+	}
+	tags, err := loadWorkspaceGitTags(ctx, repository.WorktreePath)
+	if err != nil {
+		return WorkspaceGitRepositoryStatus{}, err
+	}
+	stashes, err := loadWorkspaceGitStashes(ctx, repository.WorktreePath)
+	if err != nil {
+		return WorkspaceGitRepositoryStatus{}, err
+	}
 	files := snapshot.files
 	sort.Slice(files, func(i, j int) bool {
 		return strings.ToLower(files[i].Path) < strings.ToLower(files[j].Path)
@@ -501,23 +531,29 @@ func loadWorkspaceGitRepositoryStatus(ctx context.Context, snapshot workspaceGit
 		return WorkspaceGitRepositoryStatus{}, err
 	}
 	return WorkspaceGitRepositoryStatus{
-		FolderID:          repository.Folder.ID,
-		Label:             repository.Folder.Label,
-		Path:              repository.Folder.Path,
-		CurrentBranch:     summary.CurrentBranch,
-		Upstream:          summary.Upstream,
-		AheadCount:        summary.AheadCount,
-		BehindCount:       summary.BehindCount,
-		Head:              summary.Head,
-		ShortHead:         summary.ShortHead,
-		Detached:          summary.Detached,
-		Dirty:             len(files) > 0,
-		Branches:          branches,
-		FileCount:         len(files),
-		StagedFileCount:   stagedFileCount,
-		UnstagedFileCount: unstagedFileCount,
-		Files:             files,
-		Commits:           commits,
+		FolderID:            repository.Folder.ID,
+		Label:               repository.Folder.Label,
+		Path:                repository.Folder.Path,
+		CurrentBranch:       summary.CurrentBranch,
+		Upstream:            summary.Upstream,
+		AheadCount:          summary.AheadCount,
+		BehindCount:         summary.BehindCount,
+		Head:                summary.Head,
+		ShortHead:           summary.ShortHead,
+		Detached:            summary.Detached,
+		Dirty:               len(files) > 0,
+		Branches:            branches,
+		RemoteBranches:      remoteBranches,
+		Remotes:             remotes,
+		Tags:                tags,
+		Stashes:             stashes,
+		RebaseInProgress:    workspaceGitRebaseInProgress(ctx, repository.WorktreePath),
+		SupportsStashStaged: workspaceGitSupportsStashStaged(ctx, repository.WorktreePath),
+		FileCount:           len(files),
+		StagedFileCount:     stagedFileCount,
+		UnstagedFileCount:   unstagedFileCount,
+		Files:               files,
+		Commits:             commits,
 	}, nil
 }
 
@@ -670,6 +706,125 @@ func loadWorkspaceGitBranches(ctx context.Context, workspacePath string, current
 		return strings.ToLower(branches[i].Name) < strings.ToLower(branches[j].Name)
 	})
 	return branches, nil
+}
+
+func loadWorkspaceGitRemoteBranches(ctx context.Context, workspacePath string) ([]WorkspaceGitRemoteBranch, error) {
+	output, err := runWorkspaceGitCommand(ctx, workspacePath, "for-each-ref", "--format=%(refname:short)%00", "refs/remotes")
+	if err != nil {
+		return nil, err
+	}
+	items := make([]WorkspaceGitRemoteBranch, 0)
+	for _, raw := range strings.Split(string(output), "\x00") {
+		name := strings.TrimSpace(raw)
+		if name == "" || strings.HasSuffix(name, "/HEAD") {
+			continue
+		}
+		remote, branch, ok := strings.Cut(name, "/")
+		if !ok || remote == "" || branch == "" {
+			continue
+		}
+		items = append(items, WorkspaceGitRemoteBranch{Name: name, Remote: remote, Branch: branch})
+	}
+	sort.Slice(items, func(i, j int) bool { return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name) })
+	return items, nil
+}
+
+func loadWorkspaceGitRemotes(ctx context.Context, workspacePath string) ([]WorkspaceGitRemote, error) {
+	output, err := runWorkspaceGitCommand(ctx, workspacePath, "remote")
+	if err != nil {
+		return nil, err
+	}
+	items := make([]WorkspaceGitRemote, 0)
+	for _, line := range strings.Split(strings.ReplaceAll(string(output), "\r\n", "\n"), "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" {
+			continue
+		}
+		fetch, _ := runWorkspaceGitCommand(ctx, workspacePath, "remote", "get-url", name)
+		push, _ := runWorkspaceGitCommand(ctx, workspacePath, "remote", "get-url", "--push", name)
+		items = append(items, WorkspaceGitRemote{Name: name, FetchURL: strings.TrimSpace(string(fetch)), PushURL: strings.TrimSpace(string(push))})
+	}
+	sort.Slice(items, func(i, j int) bool { return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name) })
+	return items, nil
+}
+
+func loadWorkspaceGitTags(ctx context.Context, workspacePath string) ([]WorkspaceGitTag, error) {
+	output, err := runWorkspaceGitCommand(ctx, workspacePath, "for-each-ref", "--format=%(refname:short)%00%(objectname)%00%(subject)%1e", "refs/tags")
+	if err != nil {
+		return nil, err
+	}
+	items := make([]WorkspaceGitTag, 0)
+	for _, record := range strings.Split(string(output), "\x1e") {
+		fields := strings.Split(strings.TrimSpace(record), "\x00")
+		if len(fields) < 3 || strings.TrimSpace(fields[0]) == "" {
+			continue
+		}
+		items = append(items, WorkspaceGitTag{Name: strings.TrimSpace(fields[0]), Target: strings.TrimSpace(fields[1]), Subject: strings.TrimSpace(fields[2])})
+	}
+	sort.Slice(items, func(i, j int) bool { return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name) })
+	return items, nil
+}
+
+func loadWorkspaceGitStashes(ctx context.Context, workspacePath string) ([]WorkspaceGitStash, error) {
+	output, err := runWorkspaceGitCommand(ctx, workspacePath, "stash", "list", "--format=%gd%x00%gs%x1e")
+	if err != nil {
+		return nil, err
+	}
+	items := make([]WorkspaceGitStash, 0)
+	for _, record := range strings.Split(string(output), "\x1e") {
+		fields := strings.Split(strings.TrimSpace(record), "\x00")
+		if len(fields) < 2 || strings.TrimSpace(fields[0]) == "" {
+			continue
+		}
+		ref := strings.TrimSpace(fields[0])
+		index := len(items)
+		if start := strings.IndexByte(ref, '{'); start >= 0 {
+			if end := strings.IndexByte(ref[start+1:], '}'); end >= 0 {
+				if parsed, parseErr := strconv.Atoi(ref[start+1 : start+1+end]); parseErr == nil {
+					index = parsed
+				}
+			}
+		}
+		message := strings.TrimSpace(fields[1])
+		branch := ""
+		if before, after, ok := strings.Cut(message, ": "); ok {
+			if _, candidate, found := strings.Cut(before, " on "); found {
+				branch = strings.TrimSpace(candidate)
+			}
+			message = strings.TrimSpace(after)
+		}
+		items = append(items, WorkspaceGitStash{Ref: ref, Index: index, Branch: branch, Message: message})
+	}
+	return items, nil
+}
+
+func workspaceGitRebaseInProgress(ctx context.Context, workspacePath string) bool {
+	for _, name := range []string{"rebase-merge", "rebase-apply"} {
+		output, err := runWorkspaceGitCommand(ctx, workspacePath, "rev-parse", "--git-path", name)
+		if err != nil {
+			continue
+		}
+		path := strings.TrimSpace(string(output))
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(workspacePath, path)
+		}
+		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+func workspaceGitSupportsStashStaged(ctx context.Context, workspacePath string) bool {
+	output, err := runWorkspaceGitCommand(ctx, workspacePath, "version")
+	if err != nil {
+		return false
+	}
+	var major, minor int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(output)), "git version %d.%d", &major, &minor); err != nil {
+		return false
+	}
+	return major > 2 || major == 2 && minor >= 35
 }
 
 func loadWorkspaceGitCommitHistory(ctx context.Context, workspacePath string, limit int) ([]WorkspaceGitCommit, error) {

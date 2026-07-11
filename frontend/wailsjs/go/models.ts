@@ -2154,6 +2154,30 @@ export namespace services {
 	}
 	
 	
+	export class WorkspaceGitActionRequest {
+	    action: string;
+	    message?: string;
+	    name?: string;
+	    ref?: string;
+	    remote?: string;
+	    branch?: string;
+	    url?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceGitActionRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.action = source["action"];
+	        this.message = source["message"];
+	        this.name = source["name"];
+	        this.ref = source["ref"];
+	        this.remote = source["remote"];
+	        this.branch = source["branch"];
+	        this.url = source["url"];
+	    }
+	}
 	export class WorkspaceGitBranch {
 	    name: string;
 	    current: boolean;
@@ -2293,6 +2317,72 @@ export namespace services {
 		    return a;
 		}
 	}
+	export class WorkspaceGitRemote {
+	    name: string;
+	    fetchUrl?: string;
+	    pushUrl?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceGitRemote(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.fetchUrl = source["fetchUrl"];
+	        this.pushUrl = source["pushUrl"];
+	    }
+	}
+	export class WorkspaceGitRemoteBranch {
+	    name: string;
+	    remote: string;
+	    branch: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceGitRemoteBranch(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.remote = source["remote"];
+	        this.branch = source["branch"];
+	    }
+	}
+	export class WorkspaceGitStash {
+	    ref: string;
+	    index: number;
+	    branch?: string;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceGitStash(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ref = source["ref"];
+	        this.index = source["index"];
+	        this.branch = source["branch"];
+	        this.message = source["message"];
+	    }
+	}
+	export class WorkspaceGitTag {
+	    name: string;
+	    target?: string;
+	    subject?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceGitTag(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.target = source["target"];
+	        this.subject = source["subject"];
+	    }
+	}
 	export class WorkspaceGitRepositoryStatus {
 	    folderId: string;
 	    label: string;
@@ -2306,6 +2396,12 @@ export namespace services {
 	    detached: boolean;
 	    dirty: boolean;
 	    branches: WorkspaceGitBranch[];
+	    remoteBranches: WorkspaceGitRemoteBranch[];
+	    remotes: WorkspaceGitRemote[];
+	    tags: WorkspaceGitTag[];
+	    stashes: WorkspaceGitStash[];
+	    rebaseInProgress: boolean;
+	    supportsStashStaged: boolean;
 	    fileCount: number;
 	    stagedFileCount: number;
 	    unstagedFileCount: number;
@@ -2330,6 +2426,12 @@ export namespace services {
 	        this.detached = source["detached"];
 	        this.dirty = source["dirty"];
 	        this.branches = this.convertValues(source["branches"], WorkspaceGitBranch);
+	        this.remoteBranches = this.convertValues(source["remoteBranches"], WorkspaceGitRemoteBranch);
+	        this.remotes = this.convertValues(source["remotes"], WorkspaceGitRemote);
+	        this.tags = this.convertValues(source["tags"], WorkspaceGitTag);
+	        this.stashes = this.convertValues(source["stashes"], WorkspaceGitStash);
+	        this.rebaseInProgress = source["rebaseInProgress"];
+	        this.supportsStashStaged = source["supportsStashStaged"];
 	        this.fileCount = source["fileCount"];
 	        this.stagedFileCount = source["stagedFileCount"];
 	        this.unstagedFileCount = source["unstagedFileCount"];
@@ -2427,6 +2529,46 @@ export namespace services {
 		    return a;
 		}
 	}
+	
+	export class WorkspaceGitStashDetail {
+	    workspaceId: string;
+	    folderId: string;
+	    stash: WorkspaceGitStash;
+	    fileCount: number;
+	    files: WorkspaceGitChangedFile[];
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceGitStashDetail(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.folderId = source["folderId"];
+	        this.stash = this.convertValues(source["stash"], WorkspaceGitStash);
+	        this.fileCount = source["fileCount"];
+	        this.files = this.convertValues(source["files"], WorkspaceGitChangedFile);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class WorkspaceIconInput {
 	    name?: string;
 	    mediaType?: string;

@@ -22,6 +22,8 @@ export function ChooseWorkspaceFolder():Promise<services.AppState>;
 
 export function ChooseWorkspaceFolderForWorkspace(arg1:string):Promise<services.AppState>;
 
+export function ChooseWorkspaceGitCloneParent():Promise<string>;
+
 export function ChooseWorkspaceIcon(arg1:string):Promise<services.AppState>;
 
 export function ClearChat(arg1:string):Promise<services.ChatSession>;
@@ -33,6 +35,8 @@ export function ClearKanbanCardRecovery(arg1:string,arg2:string):Promise<service
 export function ClearWorkspaceChangeReview(arg1:string):Promise<services.WorkspaceChangeReview>;
 
 export function ClearWorkspaceIcon(arg1:string):Promise<services.AppState>;
+
+export function CloneWorkspaceGitRepository(arg1:string,arg2:string,arg3:string,arg4:string):Promise<services.AppState>;
 
 export function CloseKanbanCardDetail(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
@@ -150,6 +154,8 @@ export function LoadWorkspaceGitFileDiff(arg1:string,arg2:string,arg3:string):Pr
 
 export function LoadWorkspaceGitRepository(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
 
+export function LoadWorkspaceGitStash(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitStashDetail>;
+
 export function MergeWorkspaceGitBranch(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
 
 export function MoveKanbanCard(arg1:string,arg2:string,arg3:string):Promise<services.KanbanBoard>;
@@ -205,6 +211,8 @@ export function ResolveWorkspaceTextFilePath(arg1:string,arg2:string):Promise<st
 export function RetryChatMessage(arg1:string,arg2:string,arg3:string):Promise<services.ChatSession>;
 
 export function RotateWebAccessToken():Promise<services.AppState>;
+
+export function RunWorkspaceGitAction(arg1:string,arg2:string,arg3:services.WorkspaceGitActionRequest):Promise<services.WorkspaceGitRepositoryView>;
 
 export function SaveDashboardLayout(arg1:string,arg2:Array<services.DashboardWidgetJSON>):Promise<void>;
 

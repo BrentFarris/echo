@@ -10,6 +10,8 @@ export type WidgetSize = "small" | "medium" | "large" | "wide";
 
 export type GitDiffViewMode = "inline" | "split";
 
+export type GitMenuPage = "root" | "commit" | "changes" | "pull-push" | "branch" | "remote" | "stash" | "tags";
+
 export type WidgetId =
   | "chat-recent"
   | "chat-busy-status"

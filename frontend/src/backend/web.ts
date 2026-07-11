@@ -83,6 +83,10 @@ export async function chooseWorkspaceFolderForWorkspaceWeb(workspaceID: string):
   return webRpc<services.AppState>("AddWorkspaceFolder", [workspaceID, path.trim()]);
 }
 
+export async function chooseWorkspaceGitCloneParentWeb(): Promise<string> {
+  return window.prompt("Enter the destination parent folder path on the Echo host.")?.trim() ?? "";
+}
+
 export async function chooseWorkspaceIconWeb(workspaceID: string): Promise<services.AppState> {
   const choice = window.prompt(
     "Enter a desktop image path, or type upload to choose an image from this browser.",

@@ -1,5 +1,5 @@
 import * as Wails from "../../wailsjs/go/services/SystemService";
-import { chooseWorkspaceFileSavePathWeb, chooseWorkspaceFolderForWorkspaceWeb, chooseWorkspaceFolderWeb, chooseWorkspaceIconWeb, isWailsRuntime, webRpc } from "./web";
+import { chooseWorkspaceFileSavePathWeb, chooseWorkspaceFolderForWorkspaceWeb, chooseWorkspaceFolderWeb, chooseWorkspaceGitCloneParentWeb, chooseWorkspaceIconWeb, isWailsRuntime, webRpc } from "./web";
 import type {
   DebugEvaluateResponse,
   DebugScopesResponse,
@@ -257,6 +257,25 @@ export function LoadWorkspaceGitFileDiff(...args: Parameters<typeof Wails.LoadWo
 
 export function LoadWorkspaceGitRepository(...args: Parameters<typeof Wails.LoadWorkspaceGitRepository>): ReturnType<typeof Wails.LoadWorkspaceGitRepository> {
   return call("LoadWorkspaceGitRepository", Wails.LoadWorkspaceGitRepository, args);
+}
+
+export function LoadWorkspaceGitStash(...args: Parameters<typeof Wails.LoadWorkspaceGitStash>): ReturnType<typeof Wails.LoadWorkspaceGitStash> {
+  return call("LoadWorkspaceGitStash", Wails.LoadWorkspaceGitStash, args);
+}
+
+export function RunWorkspaceGitAction(...args: Parameters<typeof Wails.RunWorkspaceGitAction>): ReturnType<typeof Wails.RunWorkspaceGitAction> {
+  return call("RunWorkspaceGitAction", Wails.RunWorkspaceGitAction, args);
+}
+
+export function ChooseWorkspaceGitCloneParent(): ReturnType<typeof Wails.ChooseWorkspaceGitCloneParent> {
+  if (isWailsRuntime()) {
+    return Wails.ChooseWorkspaceGitCloneParent();
+  }
+  return chooseWorkspaceGitCloneParentWeb() as ReturnType<typeof Wails.ChooseWorkspaceGitCloneParent>;
+}
+
+export function CloneWorkspaceGitRepository(...args: Parameters<typeof Wails.CloneWorkspaceGitRepository>): ReturnType<typeof Wails.CloneWorkspaceGitRepository> {
+  return call("CloneWorkspaceGitRepository", Wails.CloneWorkspaceGitRepository, args);
 }
 
 export function CommitWorkspaceGitChanges(...args: Parameters<typeof Wails.CommitWorkspaceGitChanges>): ReturnType<typeof Wails.CommitWorkspaceGitChanges> {

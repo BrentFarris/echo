@@ -514,7 +514,7 @@ func TestCreateWorkspaceGitBranchChecksOutNewBranchAndPreservesDirtyFiles(t *tes
 	}
 }
 
-func TestSwitchWorkspaceGitBranchRequiresCleanRepository(t *testing.T) {
+func TestSwitchWorkspaceGitBranchLetsGitPreserveSafeDirtyFiles(t *testing.T) {
 	root := newGitTestRepo(t)
 	writeGitTestFile(t, root, "notes.txt", "base\n")
 	runGitTestCommand(t, root, "add", ".")
@@ -528,12 +528,6 @@ func TestSwitchWorkspaceGitBranchRequiresCleanRepository(t *testing.T) {
 	writeGitTestFile(t, root, "dirty.txt", "dirty\n")
 
 	service, workspaceID, folderID := newGitRepositoryTestService(t, root)
-	if _, err := service.SwitchWorkspaceGitBranch(workspaceID, folderID, "feature/switch"); err == nil || !strings.Contains(err.Error(), "commit or discard") {
-		t.Fatalf("expected dirty switch failure, got %v", err)
-	}
-
-	runGitTestCommand(t, root, "add", ".")
-	runGitTestCommand(t, root, "commit", "-m", "clean before switch")
 	view, err := service.SwitchWorkspaceGitBranch(workspaceID, folderID, "feature/switch")
 	if err != nil {
 		t.Fatalf("switch branch: %v", err)
@@ -541,9 +535,12 @@ func TestSwitchWorkspaceGitBranchRequiresCleanRepository(t *testing.T) {
 	if view.Repository == nil || view.Repository.CurrentBranch != "feature/switch" {
 		t.Fatalf("expected switched branch, got %#v", view.Repository)
 	}
+	if content, err := os.ReadFile(filepath.Join(root, "dirty.txt")); err != nil || string(content) != "dirty\n" {
+		t.Fatalf("expected dirty file to survive switch, got %q err=%v", content, err)
+	}
 }
 
-func TestMergeWorkspaceGitBranchRequiresCleanRepositoryAndMerges(t *testing.T) {
+func TestMergeWorkspaceGitBranchLetsGitPreserveSafeDirtyFiles(t *testing.T) {
 	root := newGitTestRepo(t)
 	writeGitTestFile(t, root, "base.txt", "base\n")
 	runGitTestCommand(t, root, "add", ".")
@@ -557,21 +554,18 @@ func TestMergeWorkspaceGitBranchRequiresCleanRepositoryAndMerges(t *testing.T) {
 	writeGitTestFile(t, root, "dirty.txt", "dirty\n")
 
 	service, workspaceID, folderID := newGitRepositoryTestService(t, root)
-	if _, err := service.MergeWorkspaceGitBranch(workspaceID, folderID, "feature/merge"); err == nil || !strings.Contains(err.Error(), "commit or discard") {
-		t.Fatalf("expected dirty merge failure, got %v", err)
-	}
-
-	runGitTestCommand(t, root, "add", ".")
-	runGitTestCommand(t, root, "commit", "-m", "clean before merge")
 	view, err := service.MergeWorkspaceGitBranch(workspaceID, folderID, "feature/merge")
 	if err != nil {
 		t.Fatalf("merge branch: %v", err)
 	}
-	if view.Repository == nil || view.Repository.CurrentBranch != baseBranch || view.Repository.Dirty {
-		t.Fatalf("expected clean merged base branch, got %#v", view.Repository)
+	if view.Repository == nil || view.Repository.CurrentBranch != baseBranch || !view.Repository.Dirty {
+		t.Fatalf("expected dirty merged base branch, got %#v", view.Repository)
 	}
 	if _, err := os.Stat(filepath.Join(root, "feature.txt")); err != nil {
 		t.Fatalf("expected merged feature file: %v", err)
+	}
+	if content, err := os.ReadFile(filepath.Join(root, "dirty.txt")); err != nil || string(content) != "dirty\n" {
+		t.Fatalf("expected dirty file to survive merge, got %q err=%v", content, err)
 	}
 }
 
@@ -614,16 +608,19 @@ func TestSyncWorkspaceGitBranchReportsCountsAndSyncsUpstream(t *testing.T) {
 	}
 
 	writeGitTestFile(t, root, "dirty.txt", "dirty\n")
-	if _, err := service.SyncWorkspaceGitBranch(workspaceID, folderID); err == nil || !strings.Contains(err.Error(), "incoming commits") {
-		t.Fatalf("expected dirty incoming sync failure, got %v", err)
+	view, err = service.SyncWorkspaceGitBranch(workspaceID, folderID)
+	if err != nil {
+		t.Fatalf("sync branch with safe dirty file: %v", err)
+	}
+	if view.Repository == nil || view.Repository.AheadCount != 0 || view.Repository.BehindCount != 0 || !view.Repository.Dirty {
+		t.Fatalf("expected synced repository with preserved dirty file, got %#v", view.Repository)
 	}
 	if err := os.Remove(filepath.Join(root, "dirty.txt")); err != nil {
 		t.Fatal(err)
 	}
-
-	view, err = service.SyncWorkspaceGitBranch(workspaceID, folderID)
+	view, err = service.LoadWorkspaceGitRepository(workspaceID, folderID)
 	if err != nil {
-		t.Fatalf("sync branch: %v", err)
+		t.Fatalf("reload synced branch: %v", err)
 	}
 	if view.Repository == nil || view.Repository.AheadCount != 0 || view.Repository.BehindCount != 0 || view.Repository.Dirty {
 		t.Fatalf("expected synced clean repository, got %#v", view.Repository)
