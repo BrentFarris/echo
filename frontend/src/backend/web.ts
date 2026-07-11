@@ -6,6 +6,7 @@ let eventSource: EventSource | null = null;
 let eventSourceWaitingForPageLoad = false;
 const eventCallbacks = new Map<string, Set<(event: unknown) => void>>();
 const eventHandlers = new Map<string, (event: MessageEvent) => void>();
+const connectionCallbacks = new Set<() => void>();
 
 export function isWailsRuntime(): boolean {
   return Boolean((window as unknown as { go?: unknown }).go);
@@ -65,6 +66,11 @@ export function webEventsOn(eventName: string, callback: (event: unknown) => voi
       eventCallbacks.delete(eventName);
     }
   };
+}
+
+export function webConnectionOn(callback: () => void) {
+  connectionCallbacks.add(callback);
+  return () => connectionCallbacks.delete(callback);
 }
 
 export async function chooseWorkspaceFolderWeb(): Promise<services.AppState> {
@@ -180,6 +186,9 @@ function ensureWebEventSource() {
     return;
   }
   eventSource = new EventSource(`/api/events?access_token=${encodeURIComponent(token)}`);
+  eventSource.onopen = () => {
+    connectionCallbacks.forEach((callback) => callback());
+  };
   eventSource.onerror = () => {
     if (eventSource?.readyState === EventSource.CLOSED) {
       eventSource = null;

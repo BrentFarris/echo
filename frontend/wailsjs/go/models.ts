@@ -598,6 +598,7 @@ export namespace services {
 	    messages: ChatMessage[];
 	    busy: boolean;
 	    streamId?: string;
+	    revision: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatSession(source);
@@ -609,6 +610,7 @@ export namespace services {
 	        this.messages = this.convertValues(source["messages"], ChatMessage);
 	        this.busy = source["busy"];
 	        this.streamId = source["streamId"];
+	        this.revision = source["revision"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

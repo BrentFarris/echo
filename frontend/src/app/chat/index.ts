@@ -27,6 +27,7 @@ const maxChatMediaDrafts = 8;
 const supportedChatVideoTypes = new Set(["video/mp4", "video/webm", "video/quicktime"]);
 const chatStreamPatchDelay = 50;
 let chatInputWindowResizeBound = false;
+const chatSessionReloads = new Map<string, Promise<void>>();
 
 // ---------------------------------------------------------------------------
 // Web Speech API duck-typed interfaces (TS does not ship these by default)
@@ -1453,7 +1454,7 @@ function bindClearChatButton(root: ParentNode) {
         return;
       }
       void ClearChat(workspace.id).then((result: services.ChatSession) => {
-        state.chatSessions.set(workspace.id, result);
+        applyChatSessionSnapshot(result);
         state.chatDrafts.set(workspace.id, "");
         state.chatImageDrafts.delete(workspace.id);
         patchChatPanel();
@@ -1941,7 +1942,7 @@ export async function handleSendStopClick(event: Event) {
   const executing = state.executingPlans.has(workspace.id);
   if (session.busy || executing) {
     // Stop the stream
-    state.chatSessions.set(workspace.id, await StopChatStream(workspace.id));
+    applyChatSessionSnapshot(await StopChatStream(workspace.id));
     patchChatPanel();
     return;
   }
@@ -1987,7 +1988,7 @@ export async function handleSendStopClick(event: Event) {
       if (input) {
         input.value = "";
       }
-      state.chatSessions.set(workspace.id, nextSession);
+      applyChatSessionSnapshot(nextSession);
       getAppCallbacks().render();
       scrollChatToBottom();
     } catch (error) {
@@ -2046,7 +2047,7 @@ export async function handleChatSubmit(event: SubmitEvent) {
     if (input) {
       input.value = "";
     }
-    state.chatSessions.set(workspace.id, nextSession);
+    applyChatSessionSnapshot(nextSession);
     getAppCallbacks().render();
     scrollChatToBottom();
   } catch (error) {
@@ -2073,8 +2074,7 @@ export async function handleChatEditSubmit(event: SubmitEvent) {
 
   try {
     const editedMessage = (chatSessionFor(workspace.id).messages ?? []).find((message) => message.id === messageID);
-    state.chatSessions.set(
-      workspace.id,
+    applyChatSessionSnapshot(
       await EditChatMessage(workspace.id, messageID, trimmed, chatAgentModeIDFor(workspace.id)),
     );
     state.editingMessageIds.delete(messageID);
@@ -2113,14 +2113,76 @@ export async function loadActiveChatSession() {
   if (!workspace) {
     return;
   }
-  state.chatSessions.set(workspace.id, await LoadChatSession(workspace.id));
+  await reloadChatSession(workspace.id);
+}
+
+export function applyChatSessionSnapshot(nextSession: services.ChatSession): boolean {
+  const current = state.chatSessions.get(nextSession.workspaceId);
+  if (current && (nextSession.revision ?? 0) < (current.revision ?? 0)) {
+    return false;
+  }
+  state.chatSessions.set(nextSession.workspaceId, nextSession);
+  return true;
+}
+
+export function reloadChatSession(workspaceID: string): Promise<void> {
+  const existing = chatSessionReloads.get(workspaceID);
+  if (existing) {
+    return existing;
+  }
+  const reload = LoadChatSession(workspaceID)
+    .then((session) => {
+      if (applyChatSessionSnapshot(session) && activeWorkspace()?.id === workspaceID) {
+        patchChatPanel();
+      }
+    })
+    .finally(() => {
+      chatSessionReloads.delete(workspaceID);
+    });
+  chatSessionReloads.set(workspaceID, reload);
+  return reload;
 }
 
 export function applyChatStreamEvent(event: ChatStreamEvent) {
+  if (event.type === "compaction_warning" && event.content) {
+    pushToast(event.content, "info");
+  }
+
+  if (event.session) {
+    const snapshot = services.ChatSession.createFrom(event.session);
+    if (!applyChatSessionSnapshot(snapshot)) {
+      return;
+    }
+    if (activeWorkspace()?.id === event.workspaceId) {
+      patchChatPanel();
+      if (event.type === "started") {
+        scrollChatToBottom();
+      }
+    }
+    return;
+  }
+
   const session = chatSessionFor(event.workspaceId);
+  const currentRevision = session.revision ?? 0;
+  const eventRevision = event.revision ?? 0;
+  const stateful = event.type === "token" || event.type === "reasoning" || event.type === "tool_call" ||
+    event.type === "complete" || event.type === "canceled" || event.type === "error" ||
+    event.type === "retrying" || event.type === "compacting";
+  if (stateful && eventRevision > 0) {
+    if (eventRevision <= currentRevision) {
+      return;
+    }
+    if (eventRevision !== currentRevision + 1) {
+      void reloadChatSession(event.workspaceId).catch(() => {});
+      return;
+    }
+  }
   const messages = session.messages ?? [];
   const message = messages.find((item) => item.id === event.messageId);
   if (!message) {
+    if (stateful) {
+      void reloadChatSession(event.workspaceId).catch(() => {});
+    }
     return;
   }
 
@@ -2162,8 +2224,8 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
     message.status = "compacting";
     message.error = "";
   }
-  if (event.type === "compaction_warning" && event.content) {
-    pushToast(event.content, "info");
+  if (stateful && eventRevision > 0) {
+    session.revision = eventRevision;
   }
 
   state.chatSessions.set(event.workspaceId, session);

@@ -59,6 +59,8 @@ export type ChatStreamEvent = {
   toolCall?: services.ChatToolActivity;
   error?: string;
   finishReason?: string;
+  revision: number;
+  session?: services.ChatSession;
 };
 
 export type KanbanEvent = {

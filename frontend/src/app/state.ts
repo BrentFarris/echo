@@ -185,6 +185,7 @@ export function chatSessionFor(workspaceID: string): services.ChatSession {
       workspaceId: workspaceID,
       messages: [],
       busy: false,
+      revision: 0,
     })
   );
 }

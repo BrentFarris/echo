@@ -3,7 +3,7 @@ import { applyDebugEvent, applyInlineCodePromptEvent, ensureCodeViewRootLoaded, 
 import { LoadRuntimeStatus, LoadState, LoadWebAccessStatus, ListAgentModes, ReadWorkspaceMediaFile } from "../backend/services";
 import { llm, services } from "../../wailsjs/go/models";
 import { EventsOn, OnFileDrop } from "../backend/runtime";
-import { initializeWebAccessTokenFromURL } from "../backend/web";
+import { initializeWebAccessTokenFromURL, isWailsRuntime, webConnectionOn } from "../backend/web";
 import { bindActionEvents } from "./actions";
 import { setAppCallbacks } from "./callbacks";
 import { bindChatEvents, applyChatStreamEvent, isSupportedChatImageType, isSupportedChatVideoType, patchChatControls, patchChatPanel } from "./chat";
@@ -24,6 +24,24 @@ import type { CodeEntryKind } from "../codeView/types";
 import type { DebugEvent } from "../codeView/debugTypes";
 import { loadTokenBudget } from "./budget";
 import { loadLivenessConfig } from "./liveness";
+
+let realtimeResyncTimer = 0;
+
+function scheduleWebRealtimeResync() {
+  if (isWailsRuntime()) {
+    return;
+  }
+  window.clearTimeout(realtimeResyncTimer);
+  realtimeResyncTimer = window.setTimeout(() => {
+    if (!activeWorkspace()) {
+      return;
+    }
+    void Promise.allSettled([
+      loadActiveChatSession(),
+      loadActiveKanbanBoard(),
+    ]);
+  }, 100);
+}
 
 function codeViewCallbacks() {
   return {
@@ -132,6 +150,17 @@ async function initialize() {
 
 export function startApp() {
   initializeWebAccessTokenFromURL();
+
+  if (!isWailsRuntime()) {
+    webConnectionOn(scheduleWebRealtimeResync);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        scheduleWebRealtimeResync();
+      }
+    });
+    window.addEventListener("pageshow", scheduleWebRealtimeResync);
+    window.addEventListener("online", scheduleWebRealtimeResync);
+  }
 
   setAppCallbacks({
     render,

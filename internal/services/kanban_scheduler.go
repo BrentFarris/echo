@@ -1191,11 +1191,7 @@ func (s *SystemService) emitKanbanProgressEvent(event KanbanEvent) {
 	if event.CardID == "" {
 		return
 	}
-	s.emitRuntimeEvent(kanbanEventName, event)
-	if !s.hasOpenKanbanCardDetail(event.WorkspaceID, event.CardID) {
-		return
-	}
-	s.emitKanbanEventToWails(event)
+	s.emitKanbanEvent(event)
 }
 
 func (s *SystemService) emitKanbanEvent(event KanbanEvent) {

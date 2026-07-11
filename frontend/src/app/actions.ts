@@ -11,7 +11,7 @@ import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKa
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, cancelAgentMode, deleteAgentModeSettings, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint, saveAgentMode, saveNewAgentMode, startCreateAgentMode, startEditAgentMode } from "./settings";
 import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatAgentModeIDFor, chatComposerModeFor, setChatComposerMode, chatSessionFor, chatVideoDraftsFor, getActiveChatKanbanTab, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state, getDashboardWidgets, setDashboardWidgets, defaultDashboardLayouts } from "./state";
-import { clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
+import { applyChatSessionSnapshot, clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
 import { cloneSettings, cloneWebAccessSettings } from "./state";
 import type { AppMode, MobileNavView, WidgetId, WidgetSize } from "./types";
 import { applyTheme, settingsWithThemeDefaults, themePaletteNames } from "./theme";
@@ -995,8 +995,7 @@ export async function handleAction(event: Event) {
       }
       state.editingMessageIds.delete(messageID);
       try {
-        state.chatSessions.set(
-          workspace.id,
+        applyChatSessionSnapshot(
           await RetryChatMessage(workspace.id, messageID, chatAgentModeIDFor(workspace.id)),
         );
         pushToast("Response regenerated.", "success");
@@ -1012,7 +1011,7 @@ export async function handleAction(event: Event) {
       if (!workspace) {
         return;
       }
-      state.chatSessions.set(workspace.id, await StopChatStream(workspace.id));
+      applyChatSessionSnapshot(await StopChatStream(workspace.id));
       patchChatPanel();
     }
     if (action === "prune-chat-message") {
@@ -1025,7 +1024,7 @@ export async function handleAction(event: Event) {
       ) {
         return;
       }
-      state.chatSessions.set(workspace.id, await PruneChatMessage(workspace.id, messageID));
+      applyChatSessionSnapshot(await PruneChatMessage(workspace.id, messageID));
       state.editingMessageIds.delete(messageID);
       pushToast("Message pruned.", "success");
       patchChatPanel();
