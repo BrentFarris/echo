@@ -2,7 +2,7 @@ import { CreateWorkspaceFile, CreateWorkspaceFolder, ListWorkspaceDirectory, Mov
 import { services } from "../../wailsjs/go/models";
 import { captureCodeTreeScroll, patchCodeTree, patchSearchResults } from "./dom";
 import { rewriteCodeNavigationHistoryPaths } from "./navigation";
-import { directoryStateFor, ensureCodeState } from "./state";
+import { directoryStateFor, ensureCodeState, normalizeCodeEntryKind, rewriteCodeTreeSelectionPaths, selectCodeTreeEntryInState, setSingleCodeTreeSelection, type CodeTreeSelectionOptions } from "./state";
 import { openPinnedCodeFile } from "./tabs";
 import { saveMountedEditorContent } from "./editor";
 import type { CodeCreateKind, CodeEntryKind, CodeViewCallbacks, CodeWorkspaceState } from "./types";
@@ -48,13 +48,13 @@ export async function toggleDirectory(workspaceID: string, path: string, callbac
   patchCodeTree(workspaceID, callbacks);
 }
 
-export function selectCodeTreeEntry(workspaceID: string, path: string, kind: string) {
-  if (!path) {
-    return;
-  }
-  const state = ensureCodeState(workspaceID);
-  state.selectedPath = path;
-  state.selectedKind = normalizeCodeEntryKind(kind);
+export function selectCodeTreeEntry(
+  workspaceID: string,
+  path: string,
+  kind: string,
+  options?: CodeTreeSelectionOptions,
+) {
+  selectCodeTreeEntryInState(ensureCodeState(workspaceID), path, kind, options);
 }
 
 export async function startSelectedCodeCreate(
@@ -253,8 +253,7 @@ export async function dropCodeDrag(
     rewriteCodeNavigationHistoryPaths(workspaceID, sourcePath, moved.path);
     clearWorkspaceSearchState(workspaceID);
     pruneDirectoryCacheAfterMove(state, sourcePath, sourceParent, targetParentPath, moved.path);
-    state.selectedPath = moved.path;
-    state.selectedKind = normalizeCodeEntryKind(moved.kind);
+    setSingleCodeTreeSelection(state, moved.path, normalizeCodeEntryKind(moved.kind));
     state.drag = null;
     directoryAncestors(targetParentPath).forEach((ancestor) => state.expandedPaths.add(ancestor));
     state.expandedPaths.add(targetParentPath);
@@ -352,8 +351,7 @@ export async function submitPendingCodeRename(
     clearWorkspaceSearchState(workspaceID);
     pruneDirectoryCacheAfterMove(state, sourcePath, sourceParent, sourceParent, renamed.path);
     state.pendingRename = null;
-    state.selectedPath = renamed.path;
-    state.selectedKind = normalizeCodeEntryKind(renamed.kind);
+    setSingleCodeTreeSelection(state, renamed.path, normalizeCodeEntryKind(renamed.kind));
     if (sourceParent) {
       await loadDirectory(workspaceID, sourceParent);
     }
@@ -399,8 +397,7 @@ export async function submitPendingCodeCreate(
       );
       state.pendingCreate = null;
       await loadDirectory(workspaceID, pending.parentPath);
-      state.selectedPath = created.path;
-      state.selectedKind = "file";
+      setSingleCodeTreeSelection(state, created.path, "file");
       state.explorerDrawerOpen = false;
       patchCodeTree(workspaceID, callbacks);
       await openPinnedCodeFile(workspaceID, created.path, callbacks);
@@ -413,8 +410,7 @@ export async function submitPendingCodeCreate(
     );
     state.pendingCreate = null;
     await loadDirectory(workspaceID, pending.parentPath);
-    state.selectedPath = created.path;
-    state.selectedKind = normalizeCodeEntryKind(created.kind);
+    setSingleCodeTreeSelection(state, created.path, normalizeCodeEntryKind(created.kind));
     patchCodeTree(workspaceID, callbacks);
     callbacks.pushToast("Folder created.", "success");
   } catch (error) {
@@ -537,13 +533,6 @@ export async function loadDirectory(workspaceID: string, path: string) {
   }
 }
 
-function normalizeCodeEntryKind(kind: string): CodeEntryKind {
-  if (kind === "file" || kind === "directory") {
-    return kind;
-  }
-  return "other";
-}
-
 function createParentPath(path: string, kind: CodeEntryKind): string {
   if (!path) {
     return "";
@@ -599,7 +588,7 @@ function rewriteMovedCodePaths(state: CodeWorkspaceState, sourcePath: string, de
   });
   state.activePath = movedCodePath(state.activePath, sourcePath, destinationPath);
   state.openingPath = movedCodePath(state.openingPath, sourcePath, destinationPath);
-  state.selectedPath = movedCodePath(state.selectedPath, sourcePath, destinationPath);
+  rewriteCodeTreeSelectionPaths(state, (path) => movedCodePath(path, sourcePath, destinationPath));
   if (state.inlineChat) {
     state.inlineChat.path = movedCodePath(state.inlineChat.path, sourcePath, destinationPath);
   }

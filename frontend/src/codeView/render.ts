@@ -1,7 +1,7 @@
 import { services } from "../../wailsjs/go/models";
 import { codeIcons } from "./icons";
 import { isWorkspaceDebugActive, renderDebugDock, renderDebugToolbar } from "./debug";
-import { activeCodeTab, directoryStateFor, ensureCodeState, filteredEntries } from "./state";
+import { activeCodeTab, directoryStateFor, ensureCodeState, filteredEntries, isCodeTreeEntrySelected } from "./state";
 import type { CodeEntryKind, CodeFileTab, CodeGitChangeState, CodeWorkspaceState } from "./types";
 import { codeTabName, escapeAttribute, escapeHtml, fileName, formatBytes, isImageFile, isMediaFile, isVideoFile, mediaKind } from "./utils";
 
@@ -151,7 +151,7 @@ function renderSearchEntry(
   entry: services.WorkspaceFileEntry,
 ): string {
   const active = state.activePath === entry.path;
-  const selected = state.selectedPath === entry.path;
+  const selected = isCodeTreeEntrySelected(state, entry.path);
   const dragging = state.drag?.sourcePath === entry.path;
   const dropTarget = state.drag?.targetPath === entry.path;
   const icon = entry.kind === "directory" ? codeIcons.folder : (isImageFile(entry.path) ? codeIcons.image : isVideoFile(entry.path) ? codeIcons.video : codeIcons.file);
@@ -161,6 +161,7 @@ function renderSearchEntry(
       <div
         class="code-tree-row code-tree-search-row${changeClass} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
         role="treeitem"
+        aria-selected="${selected}"
         tabindex="0"
         draggable="${entry.kind === "directory"}"
         title="${escapeAttribute(entry.path)}"
@@ -184,6 +185,7 @@ function renderSearchEntry(
       class="code-tree-row code-tree-file code-tree-search-row${changeClass} ${active ? "is-active" : ""} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
       type="button"
       role="treeitem"
+      aria-selected="${selected}"
       draggable="true"
       title="${escapeAttribute(entry.path)}"
       style="--tree-depth: 0"
@@ -303,7 +305,7 @@ function renderCodeExplorerSidebar(workspaceID: string, dirtyCount: number): str
         />
       </label>
       ${renderTemporaryFilesSection(workspaceID)}
-      <div class="code-tree" role="tree" data-code-tree>
+      <div class="code-tree" role="tree" aria-multiselectable="true" data-code-tree>
         ${renderFileList(workspaceID)}
       </div>
     </aside>
@@ -532,7 +534,7 @@ function renderFileEntry(
   depth: number,
 ): string {
   const active = state.activePath === entry.path;
-  const selected = state.selectedPath === entry.path;
+  const selected = isCodeTreeEntrySelected(state, entry.path);
   const dragging = state.drag?.sourcePath === entry.path;
   const dropTarget = state.drag?.targetPath === entry.path;
   const renaming = state.pendingRename?.path === entry.path;
@@ -550,6 +552,7 @@ function renderFileEntry(
                 type="button"
                 role="treeitem"
                 aria-expanded="${expanded}"
+                aria-selected="${selected}"
                 draggable="true"
                 title="${escapeAttribute(entry.path)}"
                 style="--tree-depth: ${depth}"
@@ -587,6 +590,7 @@ function renderFileEntry(
       class="code-tree-row code-tree-file${changeClass} ${active ? "is-active" : ""} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
       type="button"
       role="treeitem"
+      aria-selected="${selected}"
       draggable="${entry.kind === "file"}"
       title="${escapeAttribute(entry.path)}"
       style="--tree-depth: ${depth}"

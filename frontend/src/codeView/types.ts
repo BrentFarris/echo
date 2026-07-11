@@ -176,6 +176,9 @@ export type CodeWorkspaceState = {
   activePath: string;
   selectedPath: string;
   selectedKind: CodeEntryKind;
+  selectedEntries: Map<string, CodeEntryKind>;
+  selectionAnchorPath: string;
+  selectionAnchorKind: CodeEntryKind;
   tabMruPaths: string[];
   navigationHistory: CodeNavigationHistoryState;
   tabSwitcher: CodeTabSwitcherState | null;
