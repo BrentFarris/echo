@@ -87,7 +87,7 @@ function ensureDebugWorkspaceUI(workspaceID: string): DebugWorkspaceUI {
       settingsLoading: false,
       settingsError: "",
       operation: "",
-      dockOpen: true,
+      dockOpen: false,
       collapsedPanes: new Set(),
       threads: [],
       frames: [],
@@ -108,6 +108,10 @@ function ensureDebugWorkspaceUI(workspaceID: string): DebugWorkspaceUI {
 
 export function getDebugState(): DebugState {
   return runtimeState;
+}
+
+export function isWorkspaceDebugActive(workspaceID: string): boolean {
+  return isDebugSessionActive(runtimeStateForWorkspace(workspaceID));
 }
 
 export function getSelectedDebugFrameID(workspaceID: string): number {
@@ -507,6 +511,7 @@ export async function startOrContinueDebug(
     return;
   }
   ui.operation = "starting";
+  ui.dockOpen = true;
   clearDebugInspection(ui);
   patchDebugChrome(workspaceID);
   try {
@@ -672,15 +677,22 @@ function acceptDebugState(next: DebugState) {
   if (!next) {
     return;
   }
-  runtimeState = {
+  const previousWorkspaceID = runtimeState.workspaceId ?? "";
+  const wasActive = isDebugSessionActive(runtimeState);
+  const nextState = {
     ...defaultDebugState,
     ...next,
     revision: Number(next.revision || 0),
     status: next.status || "idle",
     breakpoints: next.breakpoints ?? [],
   };
-  if (next.workspaceId) {
-    ensureDebugWorkspaceUI(next.workspaceId).breakpoints = next.breakpoints ?? [];
+  runtimeState = nextState;
+  if (nextState.workspaceId) {
+    const ui = ensureDebugWorkspaceUI(nextState.workspaceId);
+    ui.breakpoints = nextState.breakpoints ?? [];
+    if (isDebugSessionActive(nextState) && (!wasActive || previousWorkspaceID !== nextState.workspaceId)) {
+      ui.dockOpen = true;
+    }
   }
   if (typeof next.output === "string") {
     runtimeOutput = next.output;
@@ -742,6 +754,8 @@ function patchAllDebugChrome() {
 }
 
 export function patchDebugChrome(workspaceID: string) {
+  const codeView = findCodeViewElement(workspaceID);
+  codeView?.classList.toggle("is-debug-running", isWorkspaceDebugActive(workspaceID));
   const toolbar = findDebugElement("[data-debug-toolbar]", workspaceID);
   if (toolbar) {
     toolbar.innerHTML = renderDebugToolbarContents(workspaceID);
@@ -762,6 +776,12 @@ export function patchDebugChrome(workspaceID: string) {
 function findDebugElement(selector: string, workspaceID: string) {
   return Array.from(document.querySelectorAll<HTMLElement>(selector)).find(
     (element) => element.dataset.debugWorkspaceId === workspaceID,
+  ) ?? null;
+}
+
+function findCodeViewElement(workspaceID: string) {
+  return Array.from(document.querySelectorAll<HTMLElement>("[data-code-view]")).find(
+    (element) => element.dataset.codeViewWorkspaceId === workspaceID,
   ) ?? null;
 }
 

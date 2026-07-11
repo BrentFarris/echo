@@ -22,6 +22,7 @@
   --color-success: #1a7f37;
   --color-info: #3c82e6;
   --color-warning: #9a6700;
+  --color-debug-running: #f97316;
   --code-editor-bg: #ffffff;
   --code-editor-text: #24292f;
   --code-editor-gutter-bg: #f6f8fa;
@@ -99,6 +100,7 @@
     --color-success: #3fb950;
     --color-info: #58a6ff;
     --color-warning: #d29922;
+    --color-debug-running: #fb923c;
     --code-editor-bg: #0d1117;
     --code-editor-text: #e6edf3;
     --code-editor-gutter-bg: #0d1117;
@@ -6143,6 +6145,11 @@ h3 {
   background: color-mix(in srgb, var(--color-surface) 95%, var(--color-bg));
 }
 
+.code-view.is-debug-running .debug-dock {
+  border-top-color: color-mix(in srgb, var(--color-debug-running) 72%, var(--color-border));
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--color-debug-running) 78%, transparent);
+}
+
 .debug-dock-heading {
   display: flex;
   align-items: center;
@@ -6540,6 +6547,10 @@ h3 {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+
+.code-view.is-debug-running .code-editor-frame {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--color-debug-running) 78%, transparent);
 }
 
 .code-editor-mount,

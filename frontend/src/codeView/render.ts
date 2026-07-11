@@ -1,6 +1,6 @@
 import { services } from "../../wailsjs/go/models";
 import { codeIcons } from "./icons";
-import { renderDebugDock, renderDebugToolbar } from "./debug";
+import { isWorkspaceDebugActive, renderDebugDock, renderDebugToolbar } from "./debug";
 import { activeCodeTab, directoryStateFor, ensureCodeState, filteredEntries } from "./state";
 import type { CodeEntryKind, CodeFileTab, CodeGitChangeState, CodeWorkspaceState } from "./types";
 import { codeTabName, escapeAttribute, escapeHtml, fileName, formatBytes, isImageFile, isMediaFile, isVideoFile, mediaKind } from "./utils";
@@ -26,7 +26,7 @@ export function renderCodeView(workspace: services.Workspace): string {
   const explorerID = `code-explorer-${workspace.id}`;
   return `
     <section
-      class="code-view"
+      class="code-view ${isWorkspaceDebugActive(workspace.id) ? "is-debug-running" : ""}"
       aria-label="Code"
       data-code-view
       data-code-view-workspace-id="${escapeAttribute(workspace.id)}"
