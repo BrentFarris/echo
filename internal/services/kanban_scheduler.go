@@ -201,6 +201,9 @@ func (s *SystemService) CloseKanbanCardDetail(workspaceID string, cardID string)
 }
 
 func (s *SystemService) Shutdown() {
+	if s.debugger != nil {
+		s.debugger.shutdown()
+	}
 	s.chatMu.Lock()
 	runCancels := make([]context.CancelFunc, 0, len(s.kanbanRuns))
 	for _, cancel := range s.kanbanRuns {

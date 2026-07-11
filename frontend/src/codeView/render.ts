@@ -1,5 +1,6 @@
 import { services } from "../../wailsjs/go/models";
 import { codeIcons } from "./icons";
+import { renderDebugDock, renderDebugToolbar } from "./debug";
 import { activeCodeTab, directoryStateFor, ensureCodeState, filteredEntries } from "./state";
 import type { CodeEntryKind, CodeFileTab, CodeGitChangeState, CodeWorkspaceState } from "./types";
 import { codeTabName, escapeAttribute, escapeHtml, fileName, formatBytes, isImageFile, isMediaFile, isVideoFile, mediaKind } from "./utils";
@@ -79,6 +80,7 @@ export function renderCodeView(workspace: services.Workspace): string {
         <button class="code-explorer-backdrop" type="button" aria-label="Close file list" data-code-action="close-explorer-drawer"></button>
         <div class="code-resizer" role="separator" aria-label="Resize file list" aria-orientation="vertical" tabindex="0" data-code-resizer></div>
         <section class="code-editor-pane" aria-label="Code editor">
+          ${renderDebugToolbar(workspace.id)}
           ${renderCodeTabs(workspace.id)}
           ${renderCodeTabSwitcher(workspace.id)}
           ${renderCodeQuickOpen(workspace.id)}
@@ -96,6 +98,7 @@ export function renderCodeView(workspace: services.Workspace): string {
                   </div>`
             }
           </div>
+          ${renderDebugDock(workspace.id)}
           <footer class="code-status-line" data-code-status>
             ${renderCodeStatus(activeTab, state.openingPath)}
           </footer>

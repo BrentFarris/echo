@@ -1,5 +1,5 @@
 
-import { CreateAgentMode, CreateAgentModePerTool, DeleteAgentMode, LoadWebAccessStatus, ListAgentModes, PrepareRebuildAndRelaunch, SaveSettings, SaveWebAccessSettings, SetWorkspaceBuildCommand, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter, SetWorkspaceSearchParentGitRepositories, UpdateAgentMode, UpdateAgentModePerTool } from "../../backend/services";
+import { CreateAgentMode, CreateAgentModePerTool, DeleteAgentMode, LoadWebAccessStatus, ListAgentModes, PrepareRebuildAndRelaunch, SaveSettings, SaveWebAccessSettings, SaveWorkspaceDebugSettings, SetWorkspaceBuildCommand, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter, SetWorkspaceSearchParentGitRepositories, UpdateAgentMode, UpdateAgentModePerTool } from "../../backend/services";
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
@@ -11,6 +11,7 @@ import { errorMessage, escapeAttribute, escapeHtml, workspaceFolderSummary } fro
 import { hydrateWorkspaceLetterDrafts, renderWorkspaceFolderSettings, renderWorkspaceIcon, workspaceBuildCommandDraft, workspaceLetterDraft } from "../workspace";
 import { renderBudgetSettingsSection, handleBudgetLimitInput } from "../budget";
 import { renderLivenessSettingsSection, handleLivenessInput, loadLivenessConfig } from "../liveness";
+import { applyWorkspaceDebugSettings, getWorkspaceDebugSettings, loadWorkspaceDebugSettings } from "../../codeView/debug";
 
 const llmPresetFields = [
   "temperature",
@@ -103,6 +104,7 @@ const settingsSections = [
   { id: "search-settings-title", label: "Search" },
   { id: "notification-settings-title", label: "Notifications" },
   { id: "programming-settings-title", label: "Programming" },
+  { id: "debug-settings-title", label: "Debug" },
   { id: "budget-settings-title", label: "Token Budget" },
   { id: "liveness-settings-title", label: "Liveness Enforcement" },
   { id: "web-access-settings-title", label: "Web Access" },
@@ -200,6 +202,21 @@ export function bindSettingsEvents(root: ParentNode) {
   form
     ?.querySelectorAll<HTMLTextAreaElement>("textarea")
     .forEach((textarea) => textarea.addEventListener("input", handleSettingsInput));
+  form?.querySelector<HTMLButtonElement>("[data-debug-template]")?.addEventListener("click", () => {
+    const textarea = form.querySelector<HTMLTextAreaElement>("[data-debug-settings-json]");
+    if (!textarea) return;
+    textarea.value = goDebugConfigurationTemplate();
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    textarea.focus();
+  });
+  const workspaceID = activeWorkspace()?.id ?? "";
+  if (workspaceID && !getWorkspaceDebugSettings(workspaceID)) {
+    void loadWorkspaceDebugSettings(workspaceID, { patch: false }).then(() => {
+      if (state.settingsOpen && activeWorkspace()?.id === workspaceID) {
+        getAppCallbacks().render();
+      }
+    });
+  }
 }
 
 export function renderSettingsOverlay(workspaces: services.Workspace[]): string {
@@ -323,6 +340,8 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
               </label>
             </section>
 
+            ${renderDebugSettingsSection()}
+
             ${renderWebAccessSettings()}
 
             ${renderBudgetSettingsSection()}
@@ -425,6 +444,91 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
 }
 
 /* ── Agent Modes settings section ── */
+
+function renderDebugSettingsSection(): string {
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    return `
+      <section class="settings-section" aria-labelledby="debug-settings-title">
+        <h3 id="debug-settings-title" class="settings-section-title">Debug</h3>
+        <p class="empty-state compact">Select a workspace to configure debugging.</p>
+      </section>`;
+  }
+  const settings = getWorkspaceDebugSettings(workspace.id);
+  if (!settings) {
+    return `
+      <section class="settings-section" aria-labelledby="debug-settings-title">
+        <h3 id="debug-settings-title" class="settings-section-title">Debug</h3>
+        <p class="empty-state compact"><span class="spinner" aria-hidden="true"></span> Loading workspace debug settings&hellip;</p>
+      </section>`;
+  }
+  return `
+    <section class="settings-section debug-settings-section" aria-labelledby="debug-settings-title">
+      <div class="settings-section-heading">
+        <div>
+          <h3 id="debug-settings-title" class="settings-section-title">Debug</h3>
+          <p>Launch configurations for <strong>${escapeHtml(workspace.displayName)}</strong>.</p>
+        </div>
+        <button class="secondary-button compact-button" type="button" data-debug-template>Use Go/Delve template</button>
+      </div>
+      <label class="field field-wide">
+        <span>Workspace debug JSON</span>
+        <textarea
+          class="debug-settings-json"
+          rows="18"
+          spellcheck="false"
+          autocomplete="off"
+          data-debug-settings-json
+          data-debug-workspace-id="${escapeAttribute(workspace.id)}"
+          data-debug-revision="${escapeAttribute(settings.revision)}"
+          data-debug-original="${escapeAttribute(settings.json)}"
+        >${escapeHtml(settings.json)}</textarea>
+      </label>
+      <p class="field-help">Stored at <code>${escapeHtml(settings.storagePath)}</code>. This editor accepts strict JSON only (no comments or trailing commas). Configuration names must be unique and non-empty.</p>
+      <p class="field-help warning">Environment values are stored literally and may commit secrets. Prefer <code>\${env:NAME}</code> when possible.</p>
+    </section>`;
+}
+
+function goDebugConfigurationTemplate() {
+  return JSON.stringify({
+    version: "0.2.0",
+    configurations: [{
+      name: "Launch Go Package",
+      type: "go",
+      request: "launch",
+      mode: "debug",
+      program: "${workspaceFolder}",
+      cwd: "${workspaceFolder}",
+      args: [],
+      env: {},
+    }],
+  }, null, 2);
+}
+
+async function saveWorkspaceDebugSettingsFromForm(form: HTMLFormElement) {
+  const textarea = form.querySelector<HTMLTextAreaElement>("[data-debug-settings-json]");
+  if (!textarea || textarea.value === textarea.dataset.debugOriginal) {
+    return;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(textarea.value);
+  } catch (error) {
+    throw new Error(`Debug configuration is not valid strict JSON: ${errorMessage(error)}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Debug configuration must be a JSON object.");
+  }
+  const workspaceID = textarea.dataset.debugWorkspaceId ?? "";
+  if (!workspaceID) {
+    throw new Error("The debug settings workspace is unavailable.");
+  }
+  const saved = await SaveWorkspaceDebugSettings(workspaceID, {
+    json: textarea.value,
+    expectedRevision: textarea.dataset.debugRevision ?? "",
+  });
+  applyWorkspaceDebugSettings(saved);
+}
 
 function renderAgentModesSection(): string {
   const ws = activeWorkspace();
@@ -1868,6 +1972,7 @@ export async function handleSettingsSubmit(event: SubmitEvent) {
   }
 
   try {
+    await saveWorkspaceDebugSettingsFromForm(event.currentTarget as HTMLFormElement);
     state.settingsDraft = settingsWithEndpointSync(state.settingsDraft);
     state.appState = await SaveSettings(settingsWithCompactTheme(state.settingsDraft));
     if (state.webAccessDraft) {

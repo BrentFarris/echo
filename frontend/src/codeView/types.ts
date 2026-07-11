@@ -13,6 +13,13 @@ export type CodeViewCallbacks = {
   gitChangedLineNumbers: (workspaceID: string, path: string) => number[];
   gitChangeStateForPath: (workspaceID: string, path: string, kind: CodeEntryKind) => CodeGitChangeState;
   refreshGitChanges: (workspaceID: string) => Promise<void>;
+  saveDirtyWorkspaceFiles: (workspaceID: string) => Promise<boolean>;
+  openWorkspaceFileAtLine: (
+    workspaceID: string,
+    path: string,
+    line: number,
+  ) => Promise<unknown>;
+  openDebugSettings: (workspaceID: string) => void;
   showCodePathContextMenu: (
     workspaceID: string,
     path: string,

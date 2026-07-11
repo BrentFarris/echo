@@ -13,6 +13,7 @@ import { referencesPanelExtension } from "./references";
 import { activeCodeTab, ensureCodeState, findTab } from "./state";
 import type { CodeViewCallbacks } from "./types";
 import { clamp, codeTabName, editorDocumentLengthForFileContent, editorStateToFileContent, escapeAttribute, escapeHtml, formatBytes } from "./utils";
+import { debugEditorExtension, releaseDebugEditor } from "./debug";
 
 export type EditorFeatureHooks = {
   openCodeFile: (
@@ -152,6 +153,7 @@ function tabIndentionExtensions(): Extension[] {
 export function destroyCodeEditor() {
   saveMountedEditorContent();
   if (mountedEditor) {
+    releaseDebugEditor(mountedEditor);
     mountedEditor.destroy();
   }
   mountedEditor = null;
@@ -221,6 +223,7 @@ export async function mountActiveCodeEditor(
   ];
   if (!tab.untitled && !tab.external) {
     extensions.push(
+      debugEditorExtension(workspaceID, tab.path),
       lspDefinitionExtension(workspaceID, tab.path, callbacks, hooks.openCodeFile),
       lspRenameExtension(workspaceID, tab.path, callbacks),
       referencesPanelExtension(workspaceID, tab.path, callbacks, hooks.openCodeFile),

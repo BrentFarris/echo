@@ -70,6 +70,10 @@ export function CompleteWorkspaceFile(arg1, arg2) {
   return window['go']['services']['SystemService']['CompleteWorkspaceFile'](arg1, arg2);
 }
 
+export function ContinueDebugSession(arg1, arg2) {
+  return window['go']['services']['SystemService']['ContinueDebugSession'](arg1, arg2);
+}
+
 export function CreateAgentMode(arg1, arg2, arg3, arg4) {
   return window['go']['services']['SystemService']['CreateAgentMode'](arg1, arg2, arg3, arg4);
 }
@@ -158,6 +162,10 @@ export function EnforceLiveness(arg1, arg2) {
   return window['go']['services']['SystemService']['EnforceLiveness'](arg1, arg2);
 }
 
+export function EvaluateDebugExpression(arg1, arg2) {
+  return window['go']['services']['SystemService']['EvaluateDebugExpression'](arg1, arg2);
+}
+
 export function ExecutePlan(arg1) {
   return window['go']['services']['SystemService']['ExecutePlan'](arg1);
 }
@@ -214,6 +222,26 @@ export function LoadChatSession(arg1) {
   return window['go']['services']['SystemService']['LoadChatSession'](arg1);
 }
 
+export function LoadDebugScopes(arg1, arg2) {
+  return window['go']['services']['SystemService']['LoadDebugScopes'](arg1, arg2);
+}
+
+export function LoadDebugStackTrace(arg1, arg2) {
+  return window['go']['services']['SystemService']['LoadDebugStackTrace'](arg1, arg2);
+}
+
+export function LoadDebugState(arg1) {
+  return window['go']['services']['SystemService']['LoadDebugState'](arg1);
+}
+
+export function LoadDebugThreads(arg1, arg2) {
+  return window['go']['services']['SystemService']['LoadDebugThreads'](arg1, arg2);
+}
+
+export function LoadDebugVariables(arg1, arg2) {
+  return window['go']['services']['SystemService']['LoadDebugVariables'](arg1, arg2);
+}
+
 export function LoadKanbanBoard(arg1) {
   return window['go']['services']['SystemService']['LoadKanbanBoard'](arg1);
 }
@@ -236,6 +264,10 @@ export function LoadWebAccessStatus() {
 
 export function LoadWorkspaceChangeReview(arg1) {
   return window['go']['services']['SystemService']['LoadWorkspaceChangeReview'](arg1);
+}
+
+export function LoadWorkspaceDebugSettings(arg1) {
+  return window['go']['services']['SystemService']['LoadWorkspaceDebugSettings'](arg1);
 }
 
 export function LoadWorkspaceGitChanges(arg1) {
@@ -276,6 +308,10 @@ export function OpenWorkspaceExplorer(arg1) {
 
 export function OpenWorkspacePathExplorer(arg1, arg2) {
   return window['go']['services']['SystemService']['OpenWorkspacePathExplorer'](arg1, arg2);
+}
+
+export function PauseDebugSession(arg1, arg2) {
+  return window['go']['services']['SystemService']['PauseDebugSession'](arg1, arg2);
 }
 
 export function PrepareRebuildAndRelaunch(arg1) {
@@ -374,6 +410,10 @@ export function SaveWebAccessSettings(arg1) {
   return window['go']['services']['SystemService']['SaveWebAccessSettings'](arg1);
 }
 
+export function SaveWorkspaceDebugSettings(arg1, arg2) {
+  return window['go']['services']['SystemService']['SaveWorkspaceDebugSettings'](arg1, arg2);
+}
+
 export function SaveWorkspaceFile(arg1, arg2, arg3, arg4) {
   return window['go']['services']['SystemService']['SaveWorkspaceFile'](arg1, arg2, arg3, arg4);
 }
@@ -404,6 +444,10 @@ export function SendChatMessageWithPlanMode(arg1, arg2, arg3) {
 
 export function SetActiveWorkspace(arg1) {
   return window['go']['services']['SystemService']['SetActiveWorkspace'](arg1);
+}
+
+export function SetDebugBreakpoints(arg1, arg2) {
+  return window['go']['services']['SystemService']['SetDebugBreakpoints'](arg1, arg2);
 }
 
 export function SetLivenessConfig(arg1, arg2) {
@@ -442,6 +486,10 @@ export function SetWorkspaceSearchParentGitRepositories(arg1, arg2) {
   return window['go']['services']['SystemService']['SetWorkspaceSearchParentGitRepositories'](arg1, arg2);
 }
 
+export function SetWorkspaceSelectedDebugConfiguration(arg1, arg2) {
+  return window['go']['services']['SystemService']['SetWorkspaceSelectedDebugConfiguration'](arg1, arg2);
+}
+
 export function SetWorkspaceTaskCompleted(arg1, arg2, arg3, arg4) {
   return window['go']['services']['SystemService']['SetWorkspaceTaskCompleted'](arg1, arg2, arg3, arg4);
 }
@@ -456,6 +504,10 @@ export function StageWorkspaceGitChanges(arg1, arg2) {
 
 export function StageWorkspaceGitFile(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['StageWorkspaceGitFile'](arg1, arg2, arg3);
+}
+
+export function StartDebugSession(arg1, arg2) {
+  return window['go']['services']['SystemService']['StartDebugSession'](arg1, arg2);
 }
 
 export function StartHeartbeat(arg1, arg2) {
@@ -474,8 +526,24 @@ export function StartWatchdog(arg1, arg2) {
   return window['go']['services']['SystemService']['StartWatchdog'](arg1, arg2);
 }
 
+export function StepIntoDebugSession(arg1, arg2) {
+  return window['go']['services']['SystemService']['StepIntoDebugSession'](arg1, arg2);
+}
+
+export function StepOutDebugSession(arg1, arg2) {
+  return window['go']['services']['SystemService']['StepOutDebugSession'](arg1, arg2);
+}
+
+export function StepOverDebugSession(arg1, arg2) {
+  return window['go']['services']['SystemService']['StepOverDebugSession'](arg1, arg2);
+}
+
 export function StopChatStream(arg1) {
   return window['go']['services']['SystemService']['StopChatStream'](arg1);
+}
+
+export function StopDebugSession(arg1, arg2) {
+  return window['go']['services']['SystemService']['StopDebugSession'](arg1, arg2);
 }
 
 export function StopHeartbeat(arg1) {

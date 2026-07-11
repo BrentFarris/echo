@@ -285,6 +285,7 @@ export namespace services {
 	    id: string;
 	    folders: WorkspaceFolder[];
 	    displayName: string;
+	    selectedDebugConfiguration?: string;
 	    defaultPlanMode: boolean;
 	    searchParentGitRepositories: boolean;
 	    buildCommand?: string;
@@ -304,6 +305,7 @@ export namespace services {
 	        this.id = source["id"];
 	        this.folders = this.convertValues(source["folders"], WorkspaceFolder);
 	        this.displayName = source["displayName"];
+	        this.selectedDebugConfiguration = source["selectedDebugConfiguration"];
 	        this.defaultPlanMode = source["defaultPlanMode"];
 	        this.searchParentGitRepositories = source["searchParentGitRepositories"];
 	        this.buildCommand = source["buildCommand"];
@@ -649,6 +651,568 @@ export namespace services {
 	        this.size = source["size"];
 	        this.order = source["order"];
 	    }
+	}
+	export class DebugBreakpoint {
+	    id?: number;
+	    path: string;
+	    line: number;
+	    column?: number;
+	    verified: boolean;
+	    message?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugBreakpoint(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.path = source["path"];
+	        this.line = source["line"];
+	        this.column = source["column"];
+	        this.verified = source["verified"];
+	        this.message = source["message"];
+	    }
+	}
+	export class DebugConfigurationSummary {
+	    name: string;
+	    type: string;
+	    request: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugConfigurationSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.request = source["request"];
+	    }
+	}
+	export class DebugEvaluateRequest {
+	    sessionId: string;
+	    expression: string;
+	    frameId?: number;
+	    context?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugEvaluateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	        this.expression = source["expression"];
+	        this.frameId = source["frameId"];
+	        this.context = source["context"];
+	    }
+	}
+	export class DebugEvaluateResponse {
+	    workspaceId: string;
+	    sessionId: string;
+	    revision: number;
+	    result: string;
+	    type?: string;
+	    variablesReference?: number;
+	    namedVariables?: number;
+	    indexedVariables?: number;
+	    memoryReference?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugEvaluateResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.sessionId = source["sessionId"];
+	        this.revision = source["revision"];
+	        this.result = source["result"];
+	        this.type = source["type"];
+	        this.variablesReference = source["variablesReference"];
+	        this.namedVariables = source["namedVariables"];
+	        this.indexedVariables = source["indexedVariables"];
+	        this.memoryReference = source["memoryReference"];
+	    }
+	}
+	export class DebugSourceLocation {
+	    path?: string;
+	    name?: string;
+	    line?: number;
+	    column?: number;
+	    external?: boolean;
+	    sourceReference?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugSourceLocation(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.name = source["name"];
+	        this.line = source["line"];
+	        this.column = source["column"];
+	        this.external = source["external"];
+	        this.sourceReference = source["sourceReference"];
+	    }
+	}
+	export class DebugScope {
+	    name: string;
+	    presentationHint?: string;
+	    variablesReference: number;
+	    namedVariables?: number;
+	    indexedVariables?: number;
+	    expensive: boolean;
+	    location?: DebugSourceLocation;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugScope(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.presentationHint = source["presentationHint"];
+	        this.variablesReference = source["variablesReference"];
+	        this.namedVariables = source["namedVariables"];
+	        this.indexedVariables = source["indexedVariables"];
+	        this.expensive = source["expensive"];
+	        this.location = this.convertValues(source["location"], DebugSourceLocation);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DebugScopesRequest {
+	    sessionId: string;
+	    frameId: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugScopesRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	        this.frameId = source["frameId"];
+	    }
+	}
+	export class DebugScopesResponse {
+	    workspaceId: string;
+	    sessionId: string;
+	    revision: number;
+	    scopes: DebugScope[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugScopesResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.sessionId = source["sessionId"];
+	        this.revision = source["revision"];
+	        this.scopes = this.convertValues(source["scopes"], DebugScope);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DebugSessionRequest {
+	    sessionId: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugSessionRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	    }
+	}
+	export class DebugSourceBreakpoint {
+	    line: number;
+	    column?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugSourceBreakpoint(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.line = source["line"];
+	        this.column = source["column"];
+	    }
+	}
+	export class DebugSetBreakpointsRequest {
+	    sessionId?: string;
+	    sourcePath: string;
+	    breakpoints: DebugSourceBreakpoint[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugSetBreakpointsRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	        this.sourcePath = source["sourcePath"];
+	        this.breakpoints = this.convertValues(source["breakpoints"], DebugSourceBreakpoint);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	export class DebugStackFrame {
+	    id: number;
+	    name: string;
+	    location: DebugSourceLocation;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugStackFrame(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.location = this.convertValues(source["location"], DebugSourceLocation);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DebugStackTraceRequest {
+	    sessionId: string;
+	    threadId: number;
+	    startFrame?: number;
+	    levels?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugStackTraceRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	        this.threadId = source["threadId"];
+	        this.startFrame = source["startFrame"];
+	        this.levels = source["levels"];
+	    }
+	}
+	export class DebugStackTraceResponse {
+	    workspaceId: string;
+	    sessionId: string;
+	    revision: number;
+	    stackFrames: DebugStackFrame[];
+	    totalFrames?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugStackTraceResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.sessionId = source["sessionId"];
+	        this.revision = source["revision"];
+	        this.stackFrames = this.convertValues(source["stackFrames"], DebugStackFrame);
+	        this.totalFrames = source["totalFrames"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DebugStartRequest {
+	    configurationName?: string;
+	    currentFile?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugStartRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.configurationName = source["configurationName"];
+	        this.currentFile = source["currentFile"];
+	    }
+	}
+	export class DebugState {
+	    workspaceId?: string;
+	    sessionId?: string;
+	    revision: number;
+	    status: string;
+	    configuration?: string;
+	    adapterType?: string;
+	    threadId?: number;
+	    frameId?: number;
+	    currentLocation?: DebugSourceLocation;
+	    breakpoints?: DebugBreakpoint[];
+	    output?: string;
+	    error?: string;
+	    capabilities?: number[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.sessionId = source["sessionId"];
+	        this.revision = source["revision"];
+	        this.status = source["status"];
+	        this.configuration = source["configuration"];
+	        this.adapterType = source["adapterType"];
+	        this.threadId = source["threadId"];
+	        this.frameId = source["frameId"];
+	        this.currentLocation = this.convertValues(source["currentLocation"], DebugSourceLocation);
+	        this.breakpoints = this.convertValues(source["breakpoints"], DebugBreakpoint);
+	        this.output = source["output"];
+	        this.error = source["error"];
+	        this.capabilities = source["capabilities"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DebugThread {
+	    id: number;
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugThread(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	    }
+	}
+	export class DebugThreadsRequest {
+	    sessionId: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugThreadsRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	    }
+	}
+	export class DebugThreadsResponse {
+	    workspaceId: string;
+	    sessionId: string;
+	    revision: number;
+	    threads: DebugThread[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugThreadsResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.sessionId = source["sessionId"];
+	        this.revision = source["revision"];
+	        this.threads = this.convertValues(source["threads"], DebugThread);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DebugVariable {
+	    name: string;
+	    value: string;
+	    type?: string;
+	    evaluateName?: string;
+	    variablesReference: number;
+	    namedVariables?: number;
+	    indexedVariables?: number;
+	    memoryReference?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugVariable(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.value = source["value"];
+	        this.type = source["type"];
+	        this.evaluateName = source["evaluateName"];
+	        this.variablesReference = source["variablesReference"];
+	        this.namedVariables = source["namedVariables"];
+	        this.indexedVariables = source["indexedVariables"];
+	        this.memoryReference = source["memoryReference"];
+	    }
+	}
+	export class DebugVariablesRequest {
+	    sessionId: string;
+	    variablesReference: number;
+	    filter?: string;
+	    start?: number;
+	    count?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugVariablesRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	        this.variablesReference = source["variablesReference"];
+	        this.filter = source["filter"];
+	        this.start = source["start"];
+	        this.count = source["count"];
+	    }
+	}
+	export class DebugVariablesResponse {
+	    workspaceId: string;
+	    sessionId: string;
+	    revision: number;
+	    variables: DebugVariable[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugVariablesResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.sessionId = source["sessionId"];
+	        this.revision = source["revision"];
+	        this.variables = this.convertValues(source["variables"], DebugVariable);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	
 	export class InlineCodePromptRequest {
@@ -1363,6 +1927,62 @@ export namespace services {
 		    }
 		    return a;
 		}
+	}
+	export class WorkspaceDebugSettings {
+	    workspaceId: string;
+	    storagePath: string;
+	    revision: string;
+	    selectedConfiguration: string;
+	    configurations: DebugConfigurationSummary[];
+	    json: string;
+	    implicit: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceDebugSettings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.storagePath = source["storagePath"];
+	        this.revision = source["revision"];
+	        this.selectedConfiguration = source["selectedConfiguration"];
+	        this.configurations = this.convertValues(source["configurations"], DebugConfigurationSummary);
+	        this.json = source["json"];
+	        this.implicit = source["implicit"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class WorkspaceDebugSettingsInput {
+	    json: string;
+	    expectedRevision: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceDebugSettingsInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.json = source["json"];
+	        this.expectedRevision = source["expectedRevision"];
+	    }
 	}
 	export class WorkspaceDefinitionRequest {
 	    filePath: string;

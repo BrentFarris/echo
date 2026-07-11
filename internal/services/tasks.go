@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -98,6 +99,7 @@ type workspaceStateFileData struct {
 	Version int                        `json:"version"`
 	Tags    []string                   `json:"tags,omitempty"`
 	Git     workspaceStateGitData      `json:"git,omitempty"`
+	Debug   json.RawMessage            `json:"debug,omitempty"`
 	Extra   map[string]json.RawMessage `json:"-"`
 }
 
@@ -141,6 +143,8 @@ func (d *workspaceStateFileData) UnmarshalJSON(data []byte) error {
 			if err := json.Unmarshal(value, &d.Git); err != nil {
 				return err
 			}
+		case "debug":
+			d.Debug = append([]byte(nil), value...)
 		default:
 			d.Extra[key] = append([]byte(nil), value...)
 		}
@@ -151,7 +155,7 @@ func (d *workspaceStateFileData) UnmarshalJSON(data []byte) error {
 func (d workspaceStateFileData) MarshalJSON() ([]byte, error) {
 	raw := map[string]any{}
 	for key, value := range d.Extra {
-		if key != "version" && key != "tags" {
+		if key != "version" && key != "tags" && key != "git" && key != "debug" {
 			raw[key] = value
 		}
 	}
@@ -159,6 +163,9 @@ func (d workspaceStateFileData) MarshalJSON() ([]byte, error) {
 	raw["tags"] = d.Tags
 	if len(d.Git.ParentRepositories) > 0 {
 		raw["git"] = d.Git
+	}
+	if len(bytes.TrimSpace(d.Debug)) > 0 {
+		raw["debug"] = json.RawMessage(d.Debug)
 	}
 	return json.Marshal(raw)
 }
@@ -943,6 +950,9 @@ func readWorkspaceStateFileAt(path string) (workspaceStateFileData, error) {
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return data, fmt.Errorf("workspace state file must be a regular file")
+	}
+	if info.Size() > 1024*1024 {
+		return data, fmt.Errorf("workspace state file is larger than the 1 MiB limit")
 	}
 	file, err := os.Open(path)
 	if err != nil {

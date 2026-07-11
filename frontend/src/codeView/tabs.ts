@@ -253,6 +253,22 @@ export async function saveActiveCodeFile(workspaceID: string, callbacks: CodeVie
   return saveCodeTab(workspaceID, tab.path, callbacks);
 }
 
+export async function saveDirtyWorkspaceCodeTabs(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  saveMountedEditorContent();
+  const paths = ensureCodeState(workspaceID).tabs
+    .filter((tab) => tab.dirty && !tab.untitled && !tab.external && !tab.isMedia)
+    .map((tab) => tab.path);
+  for (const path of paths) {
+    if (!(await saveCodeTab(workspaceID, path, callbacks))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 async function saveCodeTab(
   workspaceID: string,
   path: string,

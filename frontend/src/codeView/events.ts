@@ -7,6 +7,7 @@ import { mountActiveCodeEditor } from "./editor";
 import { openInlineCodeChatAtCursor } from "./inlineChat";
 import { closeQuickOpen, handleQuickOpenInput, moveQuickOpenSelection, openQuickOpenSelection } from "./quickOpen";
 import { closeTextSearch, handleTextSearchFieldInput, openTextSearch, openTextSearchMatch, runTextSearchNow, toggleTextSearchOption } from "./search";
+import { bindDebugViewEvents } from "./debug";
 
 export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallbacks) {
   const view = root.querySelector<HTMLElement>("[data-code-view]");
@@ -19,6 +20,7 @@ export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallback
   bindCodeTreeEvents(root, workspaceID, callbacks);
   bindCodeTextSearchEvents(root, workspaceID, callbacks);
   bindCodeQuickOpenEvents(root, workspaceID, callbacks);
+  bindDebugViewEvents(root, workspaceID, callbacks);
 
   root.querySelectorAll<HTMLElement>("[data-code-tab-main]").forEach((element) => {
     element.addEventListener("mousedown", (event) => {
