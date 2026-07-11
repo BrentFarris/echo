@@ -5,7 +5,7 @@ import { services } from "../../wailsjs/go/models";
 import { renderMarkdown } from "../markdown";
 import { icons } from "../app/icons";
 import { patchInlineCodeChatOutput as patchInlineCodeChatOutputDom } from "./dom";
-import { getMountedCodeEditor, mountedCodeEditorMatches, replaceMountedEditorContent, saveMountedEditorContent } from "./editor";
+import { getMountedCodeEditor, mountedCodeEditorMatches, resetMountedEditorDocument, saveMountedEditorContent } from "./editor";
 import { applySavedFile, ensureCodeState, findTab, workspaceFileChanged } from "./state";
 import type { CodeFileTab, CodeViewCallbacks, InlineCodeChatState, InlineCodeMentionState, InlineCodePromptEvent } from "./types";
 import { clamp, editableWorkspaceFile, escapeAttribute, escapeHtml, fileName, formatBytes, sleep } from "./utils";
@@ -983,7 +983,13 @@ async function reloadInlineCodePromptTabs(
       }
       applySavedFile(workspaceID, file);
       const reloadedTab = findTab(workspaceID, path);
-      replaceMountedEditorContent(workspaceID, path, reloadedTab?.content ?? editableWorkspaceFile(file).content);
+      const editable = editableWorkspaceFile(file);
+      resetMountedEditorDocument(
+        workspaceID,
+        path,
+        reloadedTab?.content ?? editable.content,
+        reloadedTab?.lineSeparator ?? editable.lineSeparator,
+      );
       reloaded = true;
     } catch (error) {
       callbacks.pushToast(callbacks.errorMessage(error), "error");

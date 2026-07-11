@@ -1,7 +1,8 @@
 import { HighlightStyle, indentUnit, syntaxHighlighting } from "@codemirror/language";
 import { acceptCompletion } from "@codemirror/autocomplete";
+import { isolateHistory } from "@codemirror/commands";
 import { languages as languageData } from "@codemirror/language-data";
-import { countColumn, EditorSelection, EditorState, findColumn, Prec, RangeSetBuilder, Transaction, type Extension, type SelectionRange } from "@codemirror/state";
+import { countColumn, EditorSelection, EditorState, findColumn, Prec, RangeSetBuilder, type Extension, type SelectionRange } from "@codemirror/state";
 import { crosshairCursor, Decoration, type DecorationSet, EditorView, GutterMarker, ViewPlugin, type ViewUpdate, gutter, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { tags } from "@lezer/highlight";
@@ -35,6 +36,10 @@ const maxRectangularSelectionOffset = 2000;
 let mountedEditor: EditorView | null = null;
 let mountedEditorWorkspaceID = "";
 let mountedEditorPath = "";
+let mountedEditorLineSeparator = "\n";
+let mountedEditorWhitespaceIndicators = false;
+let mountedEditorCallbacks: CodeViewCallbacks | null = null;
+let mountedEditorHooks: EditorFeatureHooks | null = null;
 let editorMountToken = 0;
 
 class GitChangedLineMarker extends GutterMarker {
@@ -151,7 +156,13 @@ function tabIndentionExtensions(): Extension[] {
 }
 
 export function destroyCodeEditor() {
-  saveMountedEditorContent();
+  teardownMountedEditor(true);
+}
+
+function teardownMountedEditor(saveContent: boolean) {
+  if (saveContent) {
+    saveMountedEditorContent();
+  }
   if (mountedEditor) {
     releaseDebugEditor(mountedEditor);
     mountedEditor.destroy();
@@ -159,6 +170,10 @@ export function destroyCodeEditor() {
   mountedEditor = null;
   mountedEditorWorkspaceID = "";
   mountedEditorPath = "";
+  mountedEditorLineSeparator = "\n";
+  mountedEditorWhitespaceIndicators = false;
+  mountedEditorCallbacks = null;
+  mountedEditorHooks = null;
   editorMountToken++;
 }
 
@@ -170,20 +185,31 @@ export function mountedCodeEditorMatches(workspaceID: string, path: string) {
   return Boolean(mountedEditor && mountedEditorWorkspaceID === workspaceID && mountedEditorPath === path);
 }
 
+export function focusMountedCodeEditor(workspaceID: string, path: string) {
+  if (!mountedCodeEditorMatches(workspaceID, path) || !mountedEditor) {
+    return false;
+  }
+  mountedEditor.focus();
+  return true;
+}
+
 export async function mountActiveCodeEditor(
   workspaceID: string,
   callbacks: CodeViewCallbacks,
   hooks: EditorFeatureHooks,
 ) {
+  mountedEditorCallbacks = callbacks;
+  mountedEditorHooks = hooks;
   const mount = document.querySelector<HTMLElement>("[data-code-editor-mount]");
   const tab = activeCodeTab(workspaceID);
-  destroyCodeEditor();
   if (!mount || !tab) {
+    destroyCodeEditor();
     return;
   }
 
   // Render media tabs as dedicated viewers instead of CodeMirror
   if (tab.isMedia && tab.mediaDataUrl) {
+    destroyCodeEditor();
     if (tab.mediaMimeType?.startsWith("video/")) {
       mount.innerHTML = renderVideoViewer(tab);
     } else {
@@ -193,6 +219,24 @@ export async function mountActiveCodeEditor(
     return;
   }
 
+  const whitespaceIndicators = callbacks.leadingWhitespaceIndicatorsEnabled();
+  if (
+    mountedCodeEditorMatches(workspaceID, tab.path) &&
+    mountedEditor &&
+    mountedEditorLineSeparator === tab.lineSeparator &&
+    mountedEditorWhitespaceIndicators === whitespaceIndicators
+  ) {
+    if (mountedEditor.dom.parentElement !== mount) {
+      mount.innerHTML = "";
+      mount.appendChild(mountedEditor.dom);
+    }
+    updateTabEditorState(workspaceID, tab.path, mountedEditor);
+    return;
+  }
+
+  destroyCodeEditor();
+  mountedEditorCallbacks = callbacks;
+  mountedEditorHooks = hooks;
   const token = ++editorMountToken;
   const gitChangedLineGutter = gitChangedLineGutterExtension(workspaceID, tab.path, callbacks);
   const extensions = [
@@ -230,7 +274,7 @@ export async function mountActiveCodeEditor(
       inlineCodeChatExtension(workspaceID, tab.path, callbacks, { saveActiveCodeFile: hooks.saveActiveCodeFile }),
     );
   }
-  if (callbacks.leadingWhitespaceIndicatorsEnabled()) {
+  if (whitespaceIndicators) {
     extensions.push(leadingWhitespaceIndicatorExtension());
   }
   const language = await languageExtensionForPath(tab.path);
@@ -256,6 +300,8 @@ export async function mountActiveCodeEditor(
   });
   mountedEditorWorkspaceID = workspaceID;
   mountedEditorPath = tab.path;
+  mountedEditorLineSeparator = tab.lineSeparator;
+  mountedEditorWhitespaceIndicators = whitespaceIndicators;
   const initialScrollTop = tab.scrollTop;
   const initialScrollLeft = tab.scrollLeft;
   restoreMountedEditorScroll(workspaceID, tab.path, initialScrollTop, initialScrollLeft);
@@ -573,26 +619,80 @@ function updateTabEditorState(workspaceID: string, path: string, view: EditorVie
   tab.scrollLeft = view.scrollDOM.scrollLeft;
 }
 
-export function replaceMountedEditorContent(workspaceID: string, path: string, content: string) {
+type MountedEditorContentChangeOptions = {
+  userEvent?: string;
+};
+
+export function applyMountedEditorUserContentChange(
+  workspaceID: string,
+  path: string,
+  content: string,
+  options: MountedEditorContentChangeOptions = {},
+) {
   if (!mountedEditor || mountedEditorWorkspaceID !== workspaceID || mountedEditorPath !== path) {
-    return;
+    return false;
+  }
+  const current = mountedEditor.state.sliceDoc(0);
+  const change = minimalContentChange(current, content);
+  if (!change) {
+    return true;
   }
   const scrollTop = mountedEditor.scrollDOM.scrollTop;
   const scrollLeft = mountedEditor.scrollDOM.scrollLeft;
-  const selection = mountedEditor.state.selection.main;
-  const nextDocLength = editorDocumentLengthForFileContent(content, mountedEditor.state.lineBreak);
   mountedEditor.dispatch({
-    changes: { from: 0, to: mountedEditor.state.doc.length, insert: content },
-    selection: {
-      anchor: clamp(selection.anchor, 0, nextDocLength),
-      head: clamp(selection.head, 0, nextDocLength),
-    },
-    annotations: Transaction.addToHistory.of(false),
+    changes: change,
+    annotations: isolateHistory.of("full"),
+    userEvent: options.userEvent ?? "input",
   });
   restoreMountedEditorScroll(workspaceID, path, scrollTop, scrollLeft);
   window.requestAnimationFrame(() => {
     restoreMountedEditorScroll(workspaceID, path, scrollTop, scrollLeft);
   });
+  return true;
+}
+
+export function resetMountedEditorDocument(
+  workspaceID: string,
+  path: string,
+  _content: string,
+  _lineSeparator: string,
+) {
+  if (!mountedEditor || mountedEditorWorkspaceID !== workspaceID || mountedEditorPath !== path) {
+    return false;
+  }
+  const callbacks = mountedEditorCallbacks;
+  const hooks = mountedEditorHooks;
+  const mount = mountedEditor.dom.parentElement;
+  teardownMountedEditor(false);
+  if (!callbacks || !hooks || !mount?.isConnected) {
+    return true;
+  }
+  void mountActiveCodeEditor(workspaceID, callbacks, hooks);
+  return true;
+}
+
+function minimalContentChange(current: string, next: string) {
+  if (current === next) {
+    return null;
+  }
+  let prefix = 0;
+  const maxPrefix = Math.min(current.length, next.length);
+  while (prefix < maxPrefix && current.charCodeAt(prefix) === next.charCodeAt(prefix)) {
+    prefix++;
+  }
+  let suffix = 0;
+  const maxSuffix = Math.min(current.length - prefix, next.length - prefix);
+  while (
+    suffix < maxSuffix &&
+    current.charCodeAt(current.length - 1 - suffix) === next.charCodeAt(next.length - 1 - suffix)
+  ) {
+    suffix++;
+  }
+  return {
+    from: prefix,
+    to: current.length - suffix,
+    insert: next.slice(prefix, next.length - suffix),
+  };
 }
 
 function restoreMountedEditorScroll(

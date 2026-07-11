@@ -146,28 +146,15 @@ func workspaceGitStatusEntryInRepository(repository workspaceGitRepositoryContex
 	if entry.path == "" {
 		return false
 	}
-	relative, ok := repository.gitPathInFolder(entry.path)
-	if !ok {
-		return false
-	}
-	if isWorkspaceGitIgnoredMetadataPath(relative) {
+	if _, ok := repository.gitPathInFolder(entry.path); !ok {
 		return false
 	}
 	for _, path := range workspaceGitDiscardPaths(entry) {
-		relative, ok := repository.gitPathInFolder(path)
-		if !ok {
-			return false
-		}
-		if isWorkspaceGitIgnoredMetadataPath(relative) {
+		if _, ok := repository.gitPathInFolder(path); !ok {
 			return false
 		}
 	}
 	return true
-}
-
-func isWorkspaceGitIgnoredMetadataPath(path string) bool {
-	clean := cleanWorkspaceGitRelativePath(path)
-	return clean == workspaceCacheDirName || strings.HasPrefix(clean, workspaceCacheDirName+"/")
 }
 
 func workspaceGitChangedFileForEntry(repository workspaceGitRepositoryContext, entry gitStatusEntry) WorkspaceGitChangedFile {

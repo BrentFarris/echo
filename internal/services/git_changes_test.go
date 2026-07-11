@@ -44,6 +44,44 @@ func TestLoadWorkspaceGitChangesIncludesModifiedDeletedAndUntrackedFiles(t *test
 	}
 }
 
+func TestLoadWorkspaceGitChangesIncludesUnignoredEchoSkillFiles(t *testing.T) {
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, "README.md", "hello\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial")
+
+	writeGitTestFile(t, root, ".echo/skills/planner/SKILL.md", "Use the local planning conventions.\n")
+
+	review := loadGitChangesForTestWorkspace(t, root)
+	files := gitReviewFilesByPath(review)
+	label := normalizeWorkspaceFolderLabel(filepath.Base(root))
+
+	skill := files[label+"/.echo/skills/planner/SKILL.md"]
+	if skill.Operation != tools.FileChangeCreated || skill.Status != "??" || !strings.Contains(skill.Diff, "+Use the local planning conventions.") {
+		t.Fatalf("expected unignored .echo skill file in git changes, got %#v", review.Files)
+	}
+}
+
+func TestLoadWorkspaceGitChangesExcludesGitignoredEchoFiles(t *testing.T) {
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, ".gitignore", ".echo/\n")
+	writeGitTestFile(t, root, "README.md", "hello\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial")
+
+	writeGitTestFile(t, root, ".echo/skills/ignored/SKILL.md", "Ignore this skill.\n")
+
+	review := loadGitChangesForTestWorkspace(t, root)
+	files := gitReviewFilesByPath(review)
+	label := normalizeWorkspaceFolderLabel(filepath.Base(root))
+	if _, ok := files[label+"/.echo/skills/ignored/SKILL.md"]; ok {
+		t.Fatalf("expected gitignored .echo skill file to be hidden, got %#v", review.Files)
+	}
+	if review.FileCount != 0 {
+		t.Fatalf("expected no visible git changes, got %#v", review)
+	}
+}
+
 func TestLoadWorkspaceGitChangesIncludesStagedAndUnstagedFiles(t *testing.T) {
 	root := newGitTestRepo(t)
 	writeGitTestFile(t, root, "staged.txt", "before staged\n")
@@ -531,6 +569,7 @@ func TestLoadWorkspaceGitRepositorySelectsRepositoryByFolderID(t *testing.T) {
 
 func TestWorkspaceGitParentRepositoryModeCachesRootAndScopesChanges(t *testing.T) {
 	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, ".gitignore", ".echo/\n")
 	writeGitTestFile(t, root, "app/main.txt", "app before\n")
 	writeGitTestFile(t, root, "docs/readme.txt", "docs before\n")
 	runGitTestCommand(t, root, "add", ".")
@@ -600,6 +639,7 @@ func TestWorkspaceGitParentRepositoryModeCachesRootAndScopesChanges(t *testing.T
 
 func TestWorkspaceGitParentRepositoryModeSupportsMultipleFoldersSharingRepo(t *testing.T) {
 	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, ".gitignore", ".echo/\n")
 	writeGitTestFile(t, root, "app/main.txt", "app before\n")
 	writeGitTestFile(t, root, "docs/readme.txt", "docs before\n")
 	runGitTestCommand(t, root, "add", ".")
