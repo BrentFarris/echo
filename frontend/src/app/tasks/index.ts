@@ -413,7 +413,12 @@ export function bindTaskEvents(root: ParentNode) {
   root.querySelectorAll<HTMLElement>("[data-task-action]").forEach((element) => {
     element.addEventListener("click", handleTaskAction);
   });
-  root.querySelector<HTMLFormElement>("[data-task-editor-form]")?.addEventListener("submit", handleTaskEditorSubmit);
+  const editorForm = root.querySelector<HTMLFormElement>("[data-task-editor-form]");
+  if (editorForm) {
+    editorForm.addEventListener("submit", handleTaskEditorSubmit);
+    editorForm.addEventListener("input", () => syncTaskEditorDraftFromForm(editorForm));
+    editorForm.addEventListener("change", () => syncTaskEditorDraftFromForm(editorForm));
+  }
   // Backdrop click to close task detail
   const backdrop = root.querySelector<HTMLElement>("aside.card-detail-backdrop[data-task-detail-backdrop]");
   if (backdrop) {
@@ -476,6 +481,27 @@ export function bindTaskEvents(root: ParentNode) {
   root.querySelectorAll<HTMLButtonElement>("[data-task-tag-filter]").forEach((btn) => {
     btn.addEventListener("click", handleTaskTagFilter);
   });
+}
+
+function syncTaskEditorDraftFromForm(form: HTMLFormElement) {
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+  const draft = state.taskEditorDrafts.get(workspace.id);
+  if (!draft) return;
+  state.taskEditorDrafts.set(workspace.id, {
+    ...draft,
+    title: form.querySelector<HTMLInputElement>("[data-task-title]")?.value ?? draft.title,
+    details: form.querySelector<HTMLTextAreaElement>("[data-task-details]")?.value ?? draft.details,
+    epic: form.querySelector<HTMLInputElement>("[data-task-epic]")?.value ?? draft.epic,
+    tags: form.querySelector<HTMLInputElement>("[data-task-tags]")?.value ?? draft.tags,
+    acceptanceCriteria: form.querySelector<HTMLTextAreaElement>("[data-task-criteria]")?.value ?? draft.acceptanceCriteria,
+    priority: form.querySelector<HTMLSelectElement>("[data-task-priority]")?.value ?? draft.priority,
+  });
+}
+
+function syncTaskEditorDraftFromElement(element: Element) {
+  const form = element.closest<HTMLFormElement>("[data-task-editor-form]");
+  if (form) syncTaskEditorDraftFromForm(form);
 }
 
 function activeTaskFileMentionMatch(input: HTMLTextAreaElement): TaskFileMentionMatch | null {
@@ -689,6 +715,7 @@ function insertTaskFileMention(input: HTMLTextAreaElement, entry: services.Works
   const trailingSpace = suffix.length === 0 || !/^\s/.test(suffix) ? " " : "";
   const replacement = formatTaskFileMentionPath(entry.path);
   input.value = input.value.slice(0, triggerStart) + replacement + trailingSpace + suffix;
+  syncTaskEditorDraftFromElement(input);
   const nextCaret = triggerStart + replacement.length + trailingSpace.length;
   clearTaskFileMention();
   input.focus();
@@ -865,6 +892,7 @@ function insertTaskTagSuggestion(input: HTMLInputElement, tag: string) {
   const after = input.value.slice(segment.end);
   const spacer = before.endsWith(",") ? " " : "";
   input.value = `${before}${spacer}${tag}${after}`;
+  syncTaskEditorDraftFromElement(input);
   const cursor = before.length + spacer.length + tag.length;
   input.setSelectionRange(cursor, cursor);
   hideTaskTagSuggestions(input);
