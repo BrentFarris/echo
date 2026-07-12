@@ -13,7 +13,7 @@ import { lspCompletionExtension, lspDefinitionExtension, lspRenameExtension } fr
 import { referencesPanelExtension } from "./references";
 import { activeCodeTab, ensureCodeState, findTab } from "./state";
 import type { CodeViewCallbacks } from "./types";
-import { clamp, codeTabName, editorDocumentLengthForFileContent, editorStateToFileContent, escapeAttribute, escapeHtml, formatBytes } from "./utils";
+import { clamp, codeTabName, editorDocumentLengthForFileContent, editorStateToFileContent, escapeAttribute, escapeHtml, formatBytes, isAudioFile } from "./utils";
 import { debugEditorExtension, releaseDebugEditor } from "./debug";
 
 export type EditorFeatureHooks = {
@@ -212,6 +212,8 @@ export async function mountActiveCodeEditor(
     destroyCodeEditor();
     if (tab.mediaMimeType?.startsWith("video/")) {
       mount.innerHTML = renderVideoViewer(tab);
+    } else if (tab.mediaMimeType?.startsWith("audio/")) {
+      mount.innerHTML = renderAudioViewer(tab);
     } else {
       mount.innerHTML = renderImageViewer(tab);
       bindImageViewerEvents(mount, workspaceID, tab.path, callbacks);
@@ -843,7 +845,26 @@ function patchImageZoomUI(tab: CodeFileTab) {
   }
 }
 
-// ─── Video Viewer ──────────────────────────────────────────────
+// ─── Audio Viewer ──────────────────────────────────────────────
+
+function renderAudioViewer(tab: CodeFileTab): string {
+  return `
+    <div class="code-audio-viewer" data-code-audio-viewer>
+      <div class="code-audio-container" data-code-audio-container>
+        ${tab.mediaError
+          ? `<div class="code-audio-error">${escapeHtml(tab.mediaError)}</div>`
+          : `<audio
+              src="${escapeAttribute(tab.mediaDataUrl ?? "")}"
+              controls
+              autoplay
+              preload="metadata"
+              data-code-audio
+            ></audio>`
+        }
+      </div>
+    </div>
+  `;
+}
 
 function renderVideoViewer(tab: CodeFileTab): string {
   return `

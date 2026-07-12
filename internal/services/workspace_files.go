@@ -418,7 +418,7 @@ func (s *SystemService) ReadWorkspaceMediaFile(workspaceID string, path string) 
 		return WorkspaceMediaFile{}, fmt.Errorf("read file: %w", err)
 	}
 	mimeType := detectMediaType(data, resolved)
-	if mimeType == "" || !strings.HasPrefix(mimeType, "image/") && !strings.HasPrefix(mimeType, "video/") {
+	if mimeType == "" || !strings.HasPrefix(mimeType, "image/") && !strings.HasPrefix(mimeType, "video/") && !strings.HasPrefix(mimeType, "audio/") {
 		return WorkspaceMediaFile{}, fmt.Errorf("file is not a supported media type")
 	}
 	dataURL := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)
@@ -455,13 +455,45 @@ func detectMagicByteMIME(data []byte) string {
 	if len(data) >= 12 && string(data[0:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
 		return "image/webp"
 	}
-	// MP4: ftyp at offset 4
-	if len(data) >= 8 && string(data[4:8]) == "ftyp" {
+	// MP4/M4A: ftyp at offset 4
+	if len(data) >= 12 && string(data[4:8]) == "ftyp" {
+		brand := string(data[8:12])
+		if brand == "M4A " || brand == "M4B " {
+			return "audio/mp4"
+		}
 		return "video/mp4"
 	}
 	// WebM: EBBR or "\x1A\x45\xDF\xA3" (EBML header)
 	if len(data) >= 4 && data[0] == 0x1A && data[1] == 0x45 && data[2] == 0xDF && data[3] == 0xA3 {
 		return "video/webm"
+	}
+	// MP3: ID3 tag or sync-safe frame sync
+	if len(data) >= 3 && data[0] == 0x49 && data[1] == 0x44 && data[2] == 0x33 {
+		return "audio/mpeg"
+	}
+	if len(data) >= 2 && data[0] == 0xFF && (data[1]&0xFE) == 0xFA {
+		return "audio/mpeg"
+	}
+	// WAV: RIFF....WAVE
+	if len(data) >= 12 && string(data[0:4]) == "RIFF" && string(data[8:12]) == "WAVE" {
+		return "audio/wav"
+	}
+	// Ogg: OggS
+	if len(data) >= 4 && data[0] == 0x4F && data[1] == 0x67 && data[2] == 0x67 && data[3] == 0x53 {
+		return "audio/ogg"
+	}
+	// FLAC: fLaC
+	if len(data) >= 4 && data[0] == 0x66 && data[1] == 0x4C && data[2] == 0x61 && data[3] == 0x43 {
+		return "audio/flac"
+	}
+	// AAC: ADTS frame sync (0xFFF1, 0xFFF9, etc.)
+	if len(data) >= 2 && data[0] == 0xFF && (data[1]&0xF6) == 0xF0 {
+		return "audio/aac"
+	}
+	// Opus: OpusHead inside Ogg is handled by Ogg detection above.
+	// Additional Opus-in-CA container check: "OpusHead" at offset 8
+	if len(data) >= 8 && string(data[0:8]) == "OpusHead" {
+		return "audio/opus"
 	}
 	return ""
 }
@@ -481,6 +513,14 @@ var extensionMIMETypes = map[string]string{
 	".webm": "video/webm",
 	".avi":  "video/x-msvideo",
 	".mov":  "video/quicktime",
+	".mp3":  "audio/mpeg",
+	".wav":  "audio/wav",
+	".ogg":  "audio/ogg",
+	".flac": "audio/flac",
+	".aac":  "audio/aac",
+	".m4a":  "audio/mp4",
+	".opus": "audio/opus",
+	".wma":  "audio/x-ms-wma",
 }
 
 func detectExtensionMIME(path string) string {
