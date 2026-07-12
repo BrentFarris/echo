@@ -5,7 +5,7 @@ import { ensureCodeState } from "./state";
 import { openCodeFile } from "./tabs";
 import type { CodeViewCallbacks } from "./types";
 
-const textSearchDelayMs = 220;
+const textSearchDelayMs = 120;
 
 export function openTextSearch(workspaceID: string, callbacks: CodeViewCallbacks) {
   const state = ensureCodeState(workspaceID);
