@@ -7,13 +7,23 @@ import type { CodeViewCallbacks } from "./types";
 
 const textSearchDelayMs = 120;
 
-export function openTextSearch(workspaceID: string, callbacks: CodeViewCallbacks) {
+export function openTextSearch(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+  initialQuery = "",
+) {
   const state = ensureCodeState(workspaceID);
   state.textSearchOpen = true;
   state.explorerDrawerOpen = true;
   state.textSearchFocusedField = "query";
+  if (initialQuery) {
+    state.textSearchQuery = initialQuery;
+  }
   callbacks.render();
   focusTextSearchQuery();
+  if (initialQuery) {
+    runTextSearchNow(workspaceID, callbacks);
+  }
 }
 
 export function closeTextSearch(workspaceID: string, callbacks: CodeViewCallbacks) {
