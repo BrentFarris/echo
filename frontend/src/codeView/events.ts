@@ -252,14 +252,6 @@ function bindCodeQuickOpenResultEvents(root: ParentNode, workspaceID: string, ca
       event.stopPropagation();
       void openQuickOpenSelection(workspaceID, callbacks, element.dataset.codePath ?? "");
     });
-    element.addEventListener("mouseenter", () => {
-      const index = Number(element.dataset.codeQuickOpenIndex);
-      const state = ensureCodeState(workspaceID);
-      if (!Number.isInteger(index) || index < 0 || index >= state.quickOpen.results.length) {
-        return;
-      }
-      state.quickOpen.selectedIndex = index;
-    });
   });
 }
 
