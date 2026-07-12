@@ -159,6 +159,8 @@ const AUDIO_EXTENSIONS = new Set([
   "aac",
   "flac",
   "opus",
+  "wma",
+  "weba",
 ]);
 
 function fileExtension(path: string): string {
