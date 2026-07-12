@@ -696,7 +696,7 @@ function renderCodeTabs(workspaceID: string): string {
             <div class="code-tab ${active ? "is-active" : ""} ${tab.dirty ? "is-dirty" : ""} ${tab.temporary ? "is-temporary" : ""} ${tab.untitled ? "is-untitled" : ""} ${tab.external ? "is-external" : ""} ${isMedia ? "is-media" : ""}" data-code-tab="${escapeAttribute(tab.path)}">
               <button class="code-tab-main" type="button" role="tab" aria-selected="${active}" title="${escapeAttribute(tab.external ? `External file: ${tab.path}` : tab.untitled ? codeTabName(tab) : tab.path)}" data-code-action="activate-tab" data-code-tab-main data-code-path="${escapeAttribute(tab.path)}">
                 <span class="code-tab-icon">${tabIcon}</span>
-                <span>${escapeHtml(codeTabName(tab))}</span>
+                <span class="code-tab-title">${escapeHtml(codeTabName(tab))}</span>
                 ${tab.external ? `<span class="code-tab-origin">External</span>` : ""}
                 ${isMedia ? `<span class="code-tab-origin">${mediaKindLabel}</span>` : ""}
                 ${tab.dirty ? `<span class="dirty-dot" aria-label="Unsaved changes"></span>` : ""}

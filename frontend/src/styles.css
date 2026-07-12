@@ -6436,12 +6436,12 @@ h3 {
   background: var(--color-surface);
 }
 
-.code-tab.is-temporary .code-tab-main span:first-child {
+.code-tab.is-temporary .code-tab-title {
   font-style: italic;
   font-weight: 700;
 }
 
-.code-tab.is-untitled .code-tab-main span:first-child {
+.code-tab.is-untitled .code-tab-title {
   font-style: italic;
 }
 
@@ -6475,12 +6475,14 @@ h3 {
   display: flex;
   align-items: center;
   gap: var(--space-lg);
+  overflow: hidden;
   padding: 0 var(--space-lg-md);
   font-size: var(--text-md-lg);
   font-weight: 800;
 }
 
-.code-tab-main span:first-child {
+.code-tab-title {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6961,6 +6963,7 @@ h3 {
 
 .code-tab-icon {
   display: inline-flex;
+  flex: 0 0 14px;
   align-items: center;
   margin-right: var(--space-sm);
   width: 14px;
