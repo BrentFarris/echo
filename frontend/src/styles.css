@@ -7861,6 +7861,7 @@ h3 {
     position: absolute;
     inset: auto 0 0 0;
     z-index: 30;
+    grid-template-rows: auto auto auto auto minmax(0, 1fr);
     width: 100%;
     max-height: min(60vh, 480px);
     transform: translateY(100%);
@@ -7873,6 +7874,10 @@ h3 {
     transition:
       transform 200ms ease,
       visibility 0s linear 200ms;
+  }
+
+  .code-text-search-sidebar {
+    grid-template-rows: auto auto minmax(0, 1fr);
   }
 
   .code-workspace.is-explorer-open .code-explorer {
