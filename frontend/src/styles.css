@@ -7653,7 +7653,17 @@ h3 {
   .app-shell {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
-    padding-bottom: 56px;
+    padding-bottom: calc(56px + env(safe-area-inset-bottom));
+  }
+
+  /* Keep scrollable detail sheets above the fixed mobile navigation. */
+  .card-detail-backdrop {
+    bottom: calc(56px + env(safe-area-inset-bottom));
+    padding: var(--space-lg-md);
+  }
+
+  .card-detail {
+    max-height: 100%;
   }
 
   /* Hide the desktop left nav on mobile â€” replaced by bottom nav */
@@ -7671,7 +7681,7 @@ h3 {
     align-items: stretch;
     justify-content: space-between;
     gap: 0;
-    padding: 0;
+    padding: 0 0 env(safe-area-inset-bottom);
     background: var(--color-surface);
     border-top: 1px solid var(--color-border);
     z-index: 10;
@@ -8169,7 +8179,7 @@ h3 {
     align-items: stretch;
     justify-content: space-between;
     gap: 0;
-    padding: 0;
+    padding: 0 0 env(safe-area-inset-bottom);
     background: var(--color-surface);
     border-top: 1px solid var(--color-border);
     z-index: 10;
