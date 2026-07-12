@@ -1880,7 +1880,7 @@ export function handleChatKeydown(event: KeyboardEvent) {
   if (handleChatMentionKeydown(event)) {
     return;
   }
-  if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing || window.innerWidth <= 720) {
     return;
   }
   event.preventDefault();
@@ -2100,7 +2100,7 @@ export function handleChatEditKeydown(event: KeyboardEvent) {
     }
     return;
   }
-  if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing || window.innerWidth <= 720) {
     return;
   }
   event.preventDefault();
