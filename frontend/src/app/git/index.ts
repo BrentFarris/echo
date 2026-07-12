@@ -965,14 +965,14 @@ async function loadGitWorkingDiff(workspaceID: string, folderID: string, file: s
       return;
     }
     state.gitWorkingDiffs.set(key, hydrated);
-    getAppCallbacks().render();
+    patchGitWorkingDiffCard(hydrated);
   } catch (error) {
     if ((state.gitWorkingDiffGenerations.get(generationKey) ?? 0) !== generation) {
       return;
     }
     state.gitWorkingDiffFailures.add(key);
     pushToast(errorMessage(error), "error");
-    getAppCallbacks().render();
+    patchGitWorkingDiffCard(file);
   } finally {
     state.loadingGitWorkingDiffs.delete(key);
   }
@@ -1348,6 +1348,24 @@ export function dropWorkspaceGitRepositoryState(workspaceID: string) {
   for (const key of Array.from(state.gitStashDetails.keys())) {
     if (key.startsWith(`${workspaceID}:`)) state.gitStashDetails.delete(key);
   }
+}
+
+function patchGitWorkingDiffCard(file: services.WorkspaceGitChangedFile) {
+  const path = normalizeGitChangePath(file.path);
+  const list = appRoot.querySelector<HTMLElement>("[data-git-change-file-list]");
+  const current = Array.from(list?.querySelectorAll<HTMLElement>("[data-git-change-file-path]") ?? [])
+    .find((element) => element.dataset.gitChangeFilePath === path && !element.dataset.gitCommitHash);
+  if (!current) {
+    return;
+  }
+  const template = document.createElement("template");
+  template.innerHTML = renderGitChangedFile(file, false).trim();
+  const replacement = template.content.firstElementChild;
+  if (!(replacement instanceof HTMLElement)) {
+    return;
+  }
+  current.replaceWith(replacement);
+  bindGitSplitDiffScroll(replacement);
 }
 
 function handleGitRepositorySelect(select: HTMLSelectElement) {
