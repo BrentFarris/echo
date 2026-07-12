@@ -64,6 +64,7 @@ export const state = {
   selectedGitCommitHashes: new Map<string, string>(),
   collapsedGitChangeFolders: new Map<string, Set<string>>(),
   collapsedGitChangeTrees: new Set<string>(),
+  expandedGitHistories: new Set<string>(),
   gitCommitMessageDrafts: new Map<string, string>(),
   gitNewBranchDrafts: new Map<string, string>(),
   gitSwitchBranchDrafts: new Map<string, string>(),

@@ -91,8 +91,9 @@ function renderGitSourceSidebar(
   loading: boolean,
   operation: string,
 ): string {
+  const historyExpanded = state.expandedGitHistories.has(gitRepositoryDraftKey(workspaceID, repository.folderId));
   return `
-    <aside class="git-source-sidebar" aria-label="Source Control">
+    <aside class="git-source-sidebar ${historyExpanded ? "is-history-expanded" : "is-history-collapsed"}" aria-label="Source Control">
       <div class="git-source-sidebar-top">
         <div class="git-source-title-row">
           ${renderGitRepositorySummary(repository, loading, operation)}
@@ -107,12 +108,17 @@ function renderGitSourceSidebar(
         ${renderGitCommitForm(workspaceID, repository, operation)}
         ${renderGitSourceChangeSections(workspaceID, repository, operation)}
       </div>
-      <section class="git-source-history" aria-labelledby="git-history-title">
+      <section class="git-source-history ${historyExpanded ? "is-expanded" : "is-collapsed"}" aria-labelledby="git-history-title">
         <header>
           <h3 id="git-history-title">History</h3>
-          <span>${escapeHtml(String((repository.commits ?? []).length))}</span>
+          <div class="git-source-history-actions">
+            <span>${escapeHtml(String((repository.commits ?? []).length))}</span>
+            <button class="icon-button git-source-history-toggle" type="button" title="${historyExpanded ? "Collapse history" : "Expand history"}" aria-label="${historyExpanded ? "Collapse history" : "Expand history"}" aria-expanded="${historyExpanded}" data-action="toggle-git-history">
+              ${historyExpanded ? icons.arrowDown : icons.arrowUp}
+            </button>
+          </div>
         </header>
-        ${renderGitCommitHistory(workspaceID, repository)}
+        ${historyExpanded ? renderGitCommitHistory(workspaceID, repository) : ""}
       </section>
     </aside>
   `;
@@ -1349,6 +1355,11 @@ export function dropWorkspaceGitRepositoryState(workspaceID: string) {
       state.collapsedGitChangeTrees.delete(key);
     }
   }
+  for (const key of Array.from(state.expandedGitHistories)) {
+    if (key.startsWith(`${workspaceID}:`)) {
+      state.expandedGitHistories.delete(key);
+    }
+  }
   for (const key of Array.from(state.gitCommitDetails.keys())) {
     if (key.startsWith(`${workspaceID}:`)) {
       state.gitCommitDetails.delete(key);
@@ -1841,6 +1852,21 @@ export function toggleGitSourceSidebar() {
   if (!patchGitSourceSidebarCollapsedState(state.collapsedGitChangeTrees.has(key))) {
     getAppCallbacks().render();
   }
+}
+
+export function toggleGitHistory() {
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+  if (!workspace || !repository) {
+    return;
+  }
+  const key = gitRepositoryDraftKey(workspace.id, repository.folderId);
+  if (state.expandedGitHistories.has(key)) {
+    state.expandedGitHistories.delete(key);
+  } else {
+    state.expandedGitHistories.add(key);
+  }
+  getAppCallbacks().render();
 }
 
 export function toggleGitDiffViewMode() {

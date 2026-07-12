@@ -3790,8 +3790,12 @@ h3 {
 
 .git-source-sidebar {
   display: grid;
-  grid-template-rows: minmax(0, 2fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
   overflow: hidden;
+}
+
+.git-source-sidebar.is-history-expanded {
+  grid-template-rows: minmax(0, 2fr) minmax(0, 1fr);
 }
 
 .git-source-sidebar-rail {
@@ -3847,9 +3851,15 @@ h3 {
 }
 
 .git-source-title-actions,
+.git-source-history-actions,
 .git-source-diff-actions {
   flex: 0 0 auto;
   gap: var(--space-sm);
+}
+
+.git-source-history-actions {
+  display: flex;
+  align-items: center;
 }
 
 .git-repository-summary {
@@ -4414,6 +4424,16 @@ h3 {
   padding: var(--space-lg-md);
   overflow: hidden;
   border-top: 1px solid var(--color-border);
+}
+
+.git-source-history.is-collapsed {
+  display: block;
+  padding-block: var(--space-md);
+}
+
+.git-source-history-toggle {
+  width: 28px;
+  height: 28px;
 }
 
 .git-source-history h3,
