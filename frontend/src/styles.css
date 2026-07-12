@@ -6777,6 +6777,82 @@ h3 {
 
 /* â”€â”€â”€ Video Viewer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
+.code-audio-viewer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: var(--space-2xl);
+  overflow: auto;
+  background: var(--code-editor-bg);
+}
+
+.code-audio-player {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-lg);
+  width: min(100%, 640px);
+  min-height: 64px;
+  padding: var(--space-lg);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-soft);
+}
+
+.code-audio-player audio[data-code-audio] {
+  display: none;
+}
+
+.code-audio-play {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  cursor: pointer;
+  font-size: var(--text-xl);
+}
+
+.code-audio-play:hover,
+.code-audio-play:focus-visible {
+  background: var(--color-accent-strong);
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 35%, transparent);
+  outline-offset: 2px;
+}
+
+.code-audio-play > span {
+  transform: translateX(1px);
+  line-height: 1;
+}
+
+.code-audio-play.is-playing > span {
+  transform: none;
+  font-size: var(--text-md);
+}
+
+.code-audio-seek {
+  width: 100%;
+  min-width: 0;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+.code-audio-time {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-base-md);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .code-video-viewer {
   display: grid;
   grid-template-rows: 1fr;
@@ -7858,6 +7934,7 @@ h3 {
 
   /* Code view file explorer as bottom sheet on mobile */
   .code-explorer {
+    display: none;
     position: absolute;
     inset: auto 0 0 0;
     z-index: 30;
@@ -7881,6 +7958,7 @@ h3 {
   }
 
   .code-workspace.is-explorer-open .code-explorer {
+    display: grid;
     transform: translateY(0);
     visibility: visible;
     transition: transform 200ms ease;

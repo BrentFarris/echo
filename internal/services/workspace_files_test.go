@@ -1244,6 +1244,25 @@ func TestSystemServiceReadWorkspaceMediaFileDetectsGIF(t *testing.T) {
 	}
 }
 
+func TestSystemServiceReadWorkspaceMediaFileSupportsAudio(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	mp3Data := []byte{'I', 'D', '3', 0x04, 0x00, 0x00}
+	if err := os.WriteFile(filepath.Join(root, "sample.mp3"), mp3Data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/sample.mp3")
+	if err != nil {
+		t.Fatalf("read audio file: %v", err)
+	}
+	if result.MimeType != "audio/mpeg" {
+		t.Fatalf("expected mime type audio/mpeg, got %q", result.MimeType)
+	}
+	if !strings.HasPrefix(result.DataURL, "data:audio/mpeg;base64,") {
+		t.Fatalf("expected audio data URL prefix, got %q", result.DataURL)
+	}
+}
+
 func TestSystemServiceReadWorkspaceMediaFileRejectsNonMediaFile(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {

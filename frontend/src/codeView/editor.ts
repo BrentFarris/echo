@@ -210,7 +210,10 @@ export async function mountActiveCodeEditor(
   // Render media tabs as dedicated viewers instead of CodeMirror
   if (tab.isMedia && tab.mediaDataUrl) {
     destroyCodeEditor();
-    if (tab.mediaMimeType?.startsWith("video/")) {
+    if (tab.mediaMimeType?.startsWith("audio/")) {
+      mount.innerHTML = renderAudioViewer(tab);
+      bindAudioViewerEvents(mount);
+    } else if (tab.mediaMimeType?.startsWith("video/")) {
       mount.innerHTML = renderVideoViewer(tab);
     } else {
       mount.innerHTML = renderImageViewer(tab);
@@ -844,6 +847,88 @@ function patchImageZoomUI(tab: CodeFileTab) {
 }
 
 // ─── Video Viewer ──────────────────────────────────────────────
+
+function renderAudioViewer(tab: CodeFileTab): string {
+  return `
+    <div class="code-audio-viewer" data-code-audio-viewer>
+      <div class="code-audio-player">
+        <audio src="${escapeAttribute(tab.mediaDataUrl ?? "")}" preload="metadata" data-code-audio></audio>
+        <button class="code-audio-play" type="button" aria-label="Play audio" data-code-audio-play>
+          <span data-code-audio-play-icon>▶</span>
+        </button>
+        <input
+          class="code-audio-seek"
+          type="range"
+          min="0"
+          max="1000"
+          value="0"
+          step="1"
+          aria-label="Audio position"
+          data-code-audio-seek
+        />
+        <span class="code-audio-time" data-code-audio-time>0:00 / 0:00</span>
+      </div>
+    </div>
+  `;
+}
+
+function bindAudioViewerEvents(mount: HTMLElement) {
+  const audio = mount.querySelector<HTMLAudioElement>("[data-code-audio]");
+  const play = mount.querySelector<HTMLButtonElement>("[data-code-audio-play]");
+  const playIcon = mount.querySelector<HTMLElement>("[data-code-audio-play-icon]");
+  const seek = mount.querySelector<HTMLInputElement>("[data-code-audio-seek]");
+  const time = mount.querySelector<HTMLElement>("[data-code-audio-time]");
+  if (!audio || !play || !playIcon || !seek || !time) {
+    return;
+  }
+
+  const update = () => {
+    const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+    const current = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+    seek.value = duration > 0 ? String(Math.round((current / duration) * 1000)) : "0";
+    time.textContent = `${formatAudioTime(current)} / ${formatAudioTime(duration)}`;
+  };
+  const updatePlaybackState = () => {
+    const paused = audio.paused;
+    playIcon.textContent = paused ? "▶" : "❚❚";
+    play.setAttribute("aria-label", paused ? "Play audio" : "Pause audio");
+    play.classList.toggle("is-playing", !paused);
+  };
+
+  play.addEventListener("click", () => {
+    if (audio.paused) {
+      void audio.play().catch(() => {
+        time.textContent = "Unable to play audio";
+      });
+    } else {
+      audio.pause();
+    }
+  });
+  seek.addEventListener("input", () => {
+    if (Number.isFinite(audio.duration) && audio.duration > 0) {
+      audio.currentTime = (Number(seek.value) / 1000) * audio.duration;
+      update();
+    }
+  });
+  audio.addEventListener("loadedmetadata", update);
+  audio.addEventListener("durationchange", update);
+  audio.addEventListener("timeupdate", update);
+  audio.addEventListener("play", updatePlaybackState);
+  audio.addEventListener("pause", updatePlaybackState);
+  audio.addEventListener("ended", updatePlaybackState);
+  update();
+  updatePlaybackState();
+}
+
+function formatAudioTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return "0:00";
+  }
+  const wholeSeconds = Math.floor(seconds);
+  const minutes = Math.floor(wholeSeconds / 60);
+  const remainder = String(wholeSeconds % 60).padStart(2, "0");
+  return `${minutes}:${remainder}`;
+}
 
 function renderVideoViewer(tab: CodeFileTab): string {
   return `

@@ -418,7 +418,7 @@ func (s *SystemService) ReadWorkspaceMediaFile(workspaceID string, path string) 
 		return WorkspaceMediaFile{}, fmt.Errorf("read file: %w", err)
 	}
 	mimeType := detectMediaType(data, resolved)
-	if mimeType == "" || !strings.HasPrefix(mimeType, "image/") && !strings.HasPrefix(mimeType, "video/") {
+	if mimeType == "" || !strings.HasPrefix(mimeType, "image/") && !strings.HasPrefix(mimeType, "video/") && !strings.HasPrefix(mimeType, "audio/") {
 		return WorkspaceMediaFile{}, fmt.Errorf("file is not a supported media type")
 	}
 	dataURL := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)
@@ -432,6 +432,11 @@ func (s *SystemService) ReadWorkspaceMediaFile(workspaceID string, path string) 
 }
 
 func detectMediaType(data []byte, path string) string {
+	// Audio containers can share signatures with video containers (for example,
+	// M4A/MP4 and Ogg), so retain the more specific type supplied by the suffix.
+	if mime := detectExtensionMIME(path); strings.HasPrefix(mime, "audio/") {
+		return mime
+	}
 	if mime := detectMagicByteMIME(data); mime != "" {
 		return mime
 	}
@@ -481,6 +486,14 @@ var extensionMIMETypes = map[string]string{
 	".webm": "video/webm",
 	".avi":  "video/x-msvideo",
 	".mov":  "video/quicktime",
+	".mp3":  "audio/mpeg",
+	".wav":  "audio/wav",
+	".ogg":  "audio/ogg",
+	".oga":  "audio/ogg",
+	".m4a":  "audio/mp4",
+	".aac":  "audio/aac",
+	".flac": "audio/flac",
+	".opus": "audio/ogg",
 }
 
 func detectExtensionMIME(path string) string {
