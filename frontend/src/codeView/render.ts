@@ -465,12 +465,12 @@ function renderTextSearchToggle(
   `;
 }
 
-function renderTextSearchResults(workspaceID: string): string {
+export function renderTextSearchResults(workspaceID: string): string {
   const state = ensureCodeState(workspaceID);
   if (state.textSearchError) {
     return `<div class="code-tree-error">${escapeHtml(state.textSearchError)}</div>`;
   }
-  if (state.textSearchLoading) {
+  if (state.textSearchLoading && !state.textSearchResult?.files?.length) {
     return `<div class="code-tree-note"><span class="spinner" aria-hidden="true"></span><span>Searching...</span></div>`;
   }
   if (!state.textSearchQuery) {
@@ -483,6 +483,7 @@ function renderTextSearchResults(workspaceID: string): string {
   return `
     <div class="code-text-search-summary">
       ${escapeHtml(resultSummary(result))}
+      ${state.textSearchLoading ? `<span class="code-text-search-progress"><span class="spinner" aria-hidden="true"></span><span>Searching...</span></span>` : ""}
       ${result.truncated ? `<span>Showing first 1000.</span>` : ""}
     </div>
     <div class="code-text-search-file-list">

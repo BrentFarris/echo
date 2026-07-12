@@ -1174,6 +1174,51 @@ func TestWorkspaceTextSearchStartingNewRunCancelsPrevious(t *testing.T) {
 	}
 }
 
+func TestSystemServiceSearchWorkspaceTextStreamsMatches(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.WriteFile(filepath.Join(root, "match.txt"), []byte("needle"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	events, unsubscribe := SubscribeEvents(service, 16)
+	defer unsubscribe()
+
+	result, err := service.SearchWorkspaceText(workspaceID, WorkspaceTextSearchRequest{SearchID: "search-1", Query: "needle"})
+	if err != nil {
+		t.Fatalf("search workspace text: %v", err)
+	}
+	if result.MatchCount != 1 {
+		t.Fatalf("expected one final match, got %#v", result)
+	}
+
+	seenStarted := false
+	seenMatches := false
+	for {
+		select {
+		case runtimeEvent := <-events:
+			if runtimeEvent.Name != WorkspaceTextSearchRuntimeEventName {
+				continue
+			}
+			event, ok := runtimeEvent.Data.(WorkspaceTextSearchEvent)
+			if !ok || event.SearchID != "search-1" || event.WorkspaceID != workspaceID {
+				t.Fatalf("unexpected streamed search event: %#v", runtimeEvent.Data)
+			}
+			switch event.Type {
+			case "started":
+				seenStarted = true
+			case "matches":
+				seenMatches = len(event.Files) == 1 && event.MatchCount == 1
+			case "complete":
+				if !seenStarted || !seenMatches || event.Result == nil || event.Result.MatchCount != 1 {
+					t.Fatalf("incomplete streamed event sequence: started=%v matches=%v complete=%#v", seenStarted, seenMatches, event)
+				}
+				return
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for streamed search events")
+		}
+	}
+}
+
 func newWorkspaceFilesTestService(t *testing.T) (*SystemService, string, string) {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "workspace")

@@ -6033,6 +6033,17 @@ h3 {
   color: var(--color-warning);
 }
 
+.code-text-search-summary .code-text-search-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  color: var(--color-text-muted);
+}
+
+.code-text-search-progress .spinner {
+  width: 12px;
+}
+
 .code-text-search-file-list {
   display: grid;
   gap: var(--space-sm);

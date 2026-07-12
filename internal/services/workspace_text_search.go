@@ -6,19 +6,26 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
+	goruntime "runtime"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const (
-	maxWorkspaceTextSearchMatches   = 1000
-	maxWorkspaceTextSearchLineRunes = 360
+	workspaceTextSearchEventName      = "echo:text-search:event"
+	maxWorkspaceTextSearchMatches     = 1000
+	maxWorkspaceTextSearchLineRunes   = 360
+	workspaceTextSearchEventBatchSize = 25
+	workspaceTextSearchEventInterval  = 50 * time.Millisecond
 )
 
 type WorkspaceTextSearchRequest struct {
+	SearchID       string `json:"searchId,omitempty"`
 	Query          string `json:"query"`
 	Regex          bool   `json:"regex"`
 	CaseSensitive  bool   `json:"caseSensitive"`
@@ -26,6 +33,19 @@ type WorkspaceTextSearchRequest struct {
 	Include        string `json:"include,omitempty"`
 	Exclude        string `json:"exclude,omitempty"`
 	IncludeIgnored bool   `json:"includeIgnored"`
+}
+
+type WorkspaceTextSearchEvent struct {
+	WorkspaceID   string                          `json:"workspaceId"`
+	SearchID      string                          `json:"searchId"`
+	Type          string                          `json:"type"`
+	Files         []WorkspaceTextSearchFileResult `json:"files,omitempty"`
+	MatchCount    int                             `json:"matchCount,omitempty"`
+	FileCount     int                             `json:"fileCount,omitempty"`
+	FilesSearched int                             `json:"filesSearched,omitempty"`
+	FilesSkipped  int                             `json:"filesSkipped,omitempty"`
+	Truncated     bool                            `json:"truncated,omitempty"`
+	Result        *WorkspaceTextSearchResult      `json:"result,omitempty"`
 }
 
 type WorkspaceTextSearchResult struct {
@@ -120,13 +140,24 @@ func (s *SystemService) SearchWorkspaceText(workspaceID string, request Workspac
 
 	ctx, runID := s.startWorkspaceTextSearch(workspace.ID)
 	defer s.finishWorkspaceTextSearch(workspace.ID, runID)
+	searchID := strings.TrimSpace(request.SearchID)
+	if searchID == "" {
+		searchID = fmt.Sprintf("%d", runID)
+	}
+	startedResult := output
+	s.emitWorkspaceTextSearchEvent(WorkspaceTextSearchEvent{
+		WorkspaceID: workspace.ID,
+		SearchID:    searchID,
+		Type:        "started",
+		Result:      &startedResult,
+	})
 
 	jobs := make(chan workspaceTextSearchCandidate, 128)
 	outcomes := make(chan workspaceTextSearchFileOutcome, 128)
 	walkErrors := make(chan error, 1)
 	go walkWorkspaceTextSearchCandidates(ctx, workspace, request, includeFilters, excludeFilters, jobs, outcomes, walkErrors)
 
-	workerCount := runtime.GOMAXPROCS(0) * 2
+	workerCount := goruntime.GOMAXPROCS(0) * 2
 	if workerCount < 4 {
 		workerCount = 4
 	}
@@ -153,6 +184,26 @@ func (s *SystemService) SearchWorkspaceText(workspaceID string, request Workspac
 		close(outcomes)
 	}()
 
+	pendingFiles := make([]WorkspaceTextSearchFileResult, 0, workspaceTextSearchEventBatchSize)
+	lastEventAt := time.Now()
+	emitPendingFiles := func() {
+		if len(pendingFiles) == 0 {
+			return
+		}
+		s.emitWorkspaceTextSearchEvent(WorkspaceTextSearchEvent{
+			WorkspaceID:   workspace.ID,
+			SearchID:      searchID,
+			Type:          "matches",
+			Files:         pendingFiles,
+			MatchCount:    output.MatchCount,
+			FileCount:     len(output.Files),
+			FilesSearched: output.FilesSearched,
+			FilesSkipped:  output.FilesSkipped,
+			Truncated:     output.Truncated,
+		})
+		pendingFiles = make([]WorkspaceTextSearchFileResult, 0, workspaceTextSearchEventBatchSize)
+		lastEventAt = time.Now()
+	}
 	for outcome := range outcomes {
 		if outcome.searched {
 			output.FilesSearched++
@@ -161,6 +212,9 @@ func (s *SystemService) SearchWorkspaceText(workspaceID string, request Workspac
 			output.FilesSkipped++
 		}
 		if len(outcome.file.Matches) == 0 {
+			if len(pendingFiles) > 0 && time.Since(lastEventAt) >= workspaceTextSearchEventInterval {
+				emitPendingFiles()
+			}
 			continue
 		}
 		remaining := maxWorkspaceTextSearchMatches - output.MatchCount
@@ -174,10 +228,15 @@ func (s *SystemService) SearchWorkspaceText(workspaceID string, request Workspac
 		}
 		output.MatchCount += len(outcome.file.Matches)
 		output.Files = append(output.Files, outcome.file)
+		pendingFiles = append(pendingFiles, outcome.file)
 		if outcome.truncated {
 			output.Truncated = true
 		}
+		if len(pendingFiles) >= workspaceTextSearchEventBatchSize || time.Since(lastEventAt) >= workspaceTextSearchEventInterval {
+			emitPendingFiles()
+		}
 	}
+	emitPendingFiles()
 	if walkErr := <-walkErrors; walkErr != nil && ctx.Err() == nil {
 		return WorkspaceTextSearchResult{}, fmt.Errorf("search workspace text: %w", walkErr)
 	}
@@ -186,7 +245,20 @@ func (s *SystemService) SearchWorkspaceText(workspaceID string, request Workspac
 		return strings.ToLower(output.Files[i].Path) < strings.ToLower(output.Files[j].Path)
 	})
 	output.FileCount = len(output.Files)
+	s.emitWorkspaceTextSearchEvent(WorkspaceTextSearchEvent{
+		WorkspaceID: workspace.ID,
+		SearchID:    searchID,
+		Type:        "complete",
+		Result:      &output,
+	})
 	return output, nil
+}
+
+func (s *SystemService) emitWorkspaceTextSearchEvent(event WorkspaceTextSearchEvent) {
+	s.emitRuntimeEvent(workspaceTextSearchEventName, event)
+	if s.ctx != nil {
+		runtime.EventsEmit(s.ctx, workspaceTextSearchEventName, event)
+	}
 }
 
 func (s *SystemService) startWorkspaceTextSearch(workspaceID string) (context.Context, uint64) {

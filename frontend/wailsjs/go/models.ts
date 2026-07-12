@@ -3082,6 +3082,7 @@ export namespace services {
 	}
 	
 	export class WorkspaceTextSearchRequest {
+	    searchId?: string;
 	    query: string;
 	    regex: boolean;
 	    caseSensitive: boolean;
@@ -3096,6 +3097,7 @@ export namespace services {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.searchId = source["searchId"];
 	        this.query = source["query"];
 	        this.regex = source["regex"];
 	        this.caseSensitive = source["caseSensitive"];
