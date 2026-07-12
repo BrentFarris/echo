@@ -17,6 +17,14 @@ import (
 	"github.com/brent/echo/internal/tools"
 )
 
+func TestKanbanAgentSystemMessageExplainsFileMentions(t *testing.T) {
+	message := kanbanAgentSystemMessage(Workspace{}, nil)
+	if !strings.Contains(message.Content, "When the card mentions @path") ||
+		!strings.Contains(message.Content, "labeled workspace file reference") {
+		t.Fatalf("expected Kanban system prompt to explain backlog file references, got %q", message.Content)
+	}
+}
+
 func TestKanbanSchedulerRespectsDependencies(t *testing.T) {
 	root := t.TempDir()
 	var service *SystemService

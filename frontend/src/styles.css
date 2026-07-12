@@ -3205,6 +3205,14 @@ h3 {
   position: relative;
 }
 
+.task-details-input-wrap {
+  position: relative;
+}
+
+.task-file-mention-picker {
+  bottom: calc(100% + var(--space-sm));
+}
+
 .task-tag-suggestions[hidden] {
   display: none;
 }
