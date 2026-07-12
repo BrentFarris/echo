@@ -105,7 +105,7 @@ function renderGitSourceSidebar(
         </div>
         ${renderGitRepositoryPicker(repositories, selectedFolderID, loading, operation)}
         ${renderGitCommitForm(workspaceID, repository, operation)}
-        ${renderGitSourceChangeSections(repository, operation)}
+        ${renderGitSourceChangeSections(workspaceID, repository, operation)}
       </div>
       <section class="git-source-history" aria-labelledby="git-history-title">
         <header>
@@ -235,19 +235,21 @@ function gitSyncMenuLabel(repository: services.WorkspaceGitRepositoryStatus): st
   return ahead > 0 || behind > 0 ? `Sync (${behind} down / ${ahead} up)` : "Sync";
 }
 
-function renderGitSourceChangeSections(repository: services.WorkspaceGitRepositoryStatus, operation: string): string {
+function renderGitSourceChangeSections(workspaceID: string, repository: services.WorkspaceGitRepositoryStatus, operation: string): string {
   const files = repository.files ?? [];
   const staged = files.filter((file) => file.staged);
   const unstaged = files.filter((file) => file.unstaged);
   return `
     <div class="git-source-change-sections ${staged.length ? "has-staged" : "has-unstaged-only"}">
-      ${staged.length ? renderGitSourceFileSection("Staged Changes", staged, "unstage", operation) : ""}
-      ${renderGitSourceFileSection("Changes", unstaged, "stage", operation)}
+      ${staged.length ? renderGitSourceFileSection(workspaceID, repository.folderId, "Staged Changes", staged, "unstage", operation) : ""}
+      ${renderGitSourceFileSection(workspaceID, repository.folderId, "Changes", unstaged, "stage", operation)}
     </div>
   `;
 }
 
 function renderGitSourceFileSection(
+  workspaceID: string,
+  folderID: string,
   title: string,
   files: services.WorkspaceGitChangedFile[],
   mode: "stage" | "unstage",
@@ -272,28 +274,63 @@ function renderGitSourceFileSection(
         </button>
       </header>
       ${files.length
-        ? `<div class="git-source-file-list">${files.map((file) => renderGitSourceFileRow(file, action, icon, fileActionLabel, busy)).join("")}</div>`
+        ? renderGitSourceFileTree(workspaceID, folderID, files, mode, action, icon, fileActionLabel, busy)
         : `<div class="git-source-empty">No files.</div>`}
     </section>
   `;
 }
 
-function renderGitSourceFileRow(
-  file: services.WorkspaceGitChangedFile,
+function renderGitSourceFileTree(
+  workspaceID: string,
+  folderID: string,
+  files: services.WorkspaceGitChangedFile[],
+  mode: "stage" | "unstage",
   action: string,
   icon: string,
   actionLabel: string,
   busy: boolean,
 ): string {
-  const displayPath = displayGitChangePath(file.path);
-  const name = displayPath.split("/").pop() || displayPath;
-  const normalizedPath = normalizeGitChangePath(file.path);
+  const root = buildGitChangeTree(files);
+  const collapsed = gitCollapsedChangeFolders(workspaceID, folderID);
+  return `<div class="git-source-file-list" role="tree">
+    ${sortedGitChangeTreeChildren(root).map((node) => renderGitSourceFileTreeNode(node, collapsed, mode, action, icon, actionLabel, busy, 0)).join("")}
+  </div>`;
+}
+
+function renderGitSourceFileTreeNode(
+  node: GitChangeTreeNode,
+  collapsed: Set<string>,
+  mode: "stage" | "unstage",
+  action: string,
+  icon: string,
+  actionLabel: string,
+  busy: boolean,
+  depth: number,
+): string {
+  if (node.kind === "folder") {
+    const collapseKey = `${mode}:${node.path}`;
+    const isCollapsed = collapsed.has(collapseKey);
+    return `
+      <div class="git-source-folder ${isCollapsed ? "is-collapsed" : "is-expanded"}" role="none">
+        <button class="git-source-folder-row" type="button" role="treeitem" aria-expanded="${!isCollapsed}" title="${escapeAttribute(node.path)}" style="--tree-depth: ${depth}" data-git-change-folder="${escapeAttribute(collapseKey)}">
+          <span class="git-source-folder-chevron">${codeIcons.chevron}</span>
+          <span class="git-source-folder-icon">${codeIcons.folder}</span>
+          <span class="git-source-folder-name">${escapeHtml(node.name)}</span>
+          <span class="git-source-folder-count">${escapeHtml(String(node.count))}</span>
+        </button>
+        ${isCollapsed ? "" : `<div class="git-source-folder-children" role="group">${sortedGitChangeTreeChildren(node).map((child) => renderGitSourceFileTreeNode(child, collapsed, mode, action, icon, actionLabel, busy, depth + 1)).join("")}</div>`}
+      </div>
+    `;
+  }
+
+  const file = node.file;
+  const displayPath = node.displayPath;
   return `
-    <div class="git-source-file-row" title="${escapeAttribute(displayPath)}">
-      <button class="git-source-file-main" type="button" data-git-change-file="${escapeAttribute(normalizedPath)}">
+    <div class="git-source-file-row" role="none" title="${escapeAttribute(displayPath)}" style="--tree-depth: ${depth}">
+      <button class="git-source-file-main" type="button" role="treeitem" data-git-change-file="${escapeAttribute(node.path)}">
         <span class="git-source-file-status is-${escapeAttribute(file.operation)}">${escapeHtml(gitSourceStatusLetter(file))}</span>
-        <span class="git-source-file-name">${escapeHtml(name)}</span>
-        <span class="git-source-file-path">${escapeHtml(displayPath === name ? "" : displayPath.slice(0, Math.max(0, displayPath.length - name.length - 1)))}</span>
+        <span class="git-source-file-icon">${codeIcons.file}</span>
+        <span class="git-source-file-name">${escapeHtml(node.name)}</span>
       </button>
       <button class="icon-button git-source-file-action" type="button" title="${escapeAttribute(actionLabel)}" aria-label="${escapeAttribute(`${actionLabel}: ${displayPath}`)}" data-action="${escapeAttribute(action)}" data-git-file-path="${escapeAttribute(file.path)}" ${busy ? "disabled" : ""}>
         ${icon}

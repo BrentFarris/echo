@@ -4256,6 +4256,79 @@ h3 {
   padding-right: var(--space-xxs);
 }
 
+.git-source-folder,
+.git-source-folder-children {
+  display: grid;
+  min-width: 0;
+}
+
+.git-source-folder-row {
+  display: grid;
+  grid-template-columns: 14px 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 var(--space-sm) 0 calc(var(--space-sm) + var(--tree-depth, 0) * 16px);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.git-source-folder-row:hover,
+.git-source-folder-row:focus-visible {
+  background: var(--color-surface-muted);
+  outline: none;
+}
+
+.git-source-folder-chevron,
+.git-source-folder-icon,
+.git-source-file-icon {
+  display: grid;
+  place-items: center;
+  color: var(--color-text-muted);
+}
+
+.git-source-folder-chevron svg,
+.git-source-folder-icon svg,
+.git-source-file-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.git-source-folder-chevron svg {
+  transition: transform 120ms ease;
+  transform: rotate(90deg);
+}
+
+.git-source-folder.is-collapsed > .git-source-folder-row .git-source-folder-chevron svg {
+  transform: rotate(0deg);
+}
+
+.git-source-folder-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-md-lg);
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-source-folder-count {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-weight: 800;
+  text-align: center;
+}
+
 .git-source-file-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 28px;
@@ -4267,12 +4340,12 @@ h3 {
 
 .git-source-file-main {
   display: grid;
-  grid-template-columns: 18px minmax(64px, max-content) minmax(0, 1fr);
-  align-items: baseline;
+  grid-template-columns: 18px 16px minmax(0, 1fr);
+  align-items: center;
   gap: var(--space-sm);
   min-width: 0;
   min-height: 32px;
-  padding: 0 var(--space-sm);
+  padding: 0 var(--space-sm) 0 calc(var(--space-sm) + var(--tree-depth, 0) * 16px);
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -4300,7 +4373,6 @@ h3 {
 }
 
 .git-source-file-name,
-.git-source-file-path,
 .git-commit-file-row span:last-child {
   min-width: 0;
   overflow: hidden;
@@ -4313,7 +4385,6 @@ h3 {
   font-weight: 700;
 }
 
-.git-source-file-path,
 .git-source-empty {
   color: var(--color-text-muted);
   font-size: var(--text-sm);
