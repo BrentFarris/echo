@@ -504,6 +504,9 @@ export async function openCodeFile(
   if (!path) {
     return false;
   }
+  if (isAbsoluteCodeFilePath(path)) {
+    return openExternalCodeFile(workspaceID, path, callbacks, options);
+  }
   let openedPath = "";
   captureCodeTreeScroll(workspaceID);
   saveMountedEditorContent();
@@ -769,15 +772,31 @@ async function openExternalCodeFile(
   workspaceID: string,
   path: string,
   callbacks: CodeViewCallbacks,
+  options: OpenCodeFileOptions = { temporary: false },
 ) {
   captureCodeTreeScroll(workspaceID);
   saveMountedEditorContent();
+  const sourceLocation =
+    options.recordNavigation === false
+      ? null
+      : captureActiveCodeNavigationLocation(workspaceID);
   const state = ensureCodeState(workspaceID);
   const existing = state.tabs.find(
     (tab) => tab.external && sameWorkspacePath(tab.path, path),
   );
   if (existing) {
-    activateCodeTab(workspaceID, existing.path, callbacks);
+    applyCodeTabOpenLocation(existing, options);
+    if (options.recordNavigation !== false) {
+      recordCodeNavigationTransition(
+        workspaceID,
+        sourceLocation,
+        codeNavigationLocationFromTab(existing),
+      );
+    }
+    activateCodeTab(workspaceID, existing.path, callbacks, {
+      saveMountedEditor: false,
+      recordNavigation: false,
+    });
     return true;
   }
   if (state.openingPath === path) {
@@ -806,9 +825,17 @@ async function openExternalCodeFile(
       scrollTop: 0,
       scrollLeft: 0,
     };
+    applyCodeTabOpenLocation(tab, options);
     state.tabs.push(tab);
     state.activePath = tab.path;
     promoteTabMruPath(state, tab.path);
+    if (options.recordNavigation !== false) {
+      recordCodeNavigationTransition(
+        workspaceID,
+        sourceLocation,
+        codeNavigationLocationFromTab(tab),
+      );
+    }
     return true;
   } catch (error) {
     callbacks.pushToast(callbacks.errorMessage(error), "error");
@@ -817,6 +844,10 @@ async function openExternalCodeFile(
     state.openingPath = "";
     callbacks.render();
   }
+}
+
+function isAbsoluteCodeFilePath(path: string) {
+  return path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || /^\\\\/.test(path);
 }
 
 export async function openWorkspaceCodeFileAtLine(

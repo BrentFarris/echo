@@ -911,7 +911,7 @@ async function handleDebugStopped(workspaceID: string) {
     return;
   }
   lastHandledStopKey = stopKey;
-  if (location?.path && location.line && !location.external && ui.callbacks) {
+  if (location?.path && location.line && ui.callbacks) {
     await ui.callbacks.openWorkspaceFileAtLine(workspaceID, location.path, location.line);
   }
   await refreshDebugInspection(workspaceID);
@@ -955,7 +955,7 @@ async function selectDebugFrame(workspaceID: string, frameID: number) {
   ui.inspectionLoading = true;
   ui.inspectionError = "";
   patchDebugChrome(workspaceID);
-  if (frame.location?.path && frame.location.line && !frame.location.external && ui.callbacks) {
+  if (frame.location?.path && frame.location.line && ui.callbacks) {
     await ui.callbacks.openWorkspaceFileAtLine(workspaceID, frame.location.path, frame.location.line);
   }
   try {
