@@ -1,5 +1,14 @@
 import * as Wails from "../../wailsjs/go/services/SystemService";
-import { chooseWorkspaceFileSavePathWeb, chooseWorkspaceFolderForWorkspaceWeb, chooseWorkspaceFolderWeb, chooseWorkspaceIconWeb, isWailsRuntime, webRpc } from "./web";
+import { chooseWorkspaceFileSavePathWeb, chooseWorkspaceFolderForWorkspaceWeb, chooseWorkspaceFolderWeb, chooseWorkspaceGitCloneParentWeb, chooseWorkspaceIconWeb, isWailsRuntime, webRpc } from "./web";
+import type {
+  DebugEvaluateResponse,
+  DebugScopesResponse,
+  DebugStackTraceResponse,
+  DebugState,
+  DebugThreadsResponse,
+  DebugVariablesResponse,
+  WorkspaceDebugSettings,
+} from "../codeView/debugTypes";
 
 type WailsFunction = (...args: any[]) => Promise<any>;
 
@@ -127,6 +136,10 @@ export function DeleteWorkspace(...args: Parameters<typeof Wails.DeleteWorkspace
   return call("DeleteWorkspace", Wails.DeleteWorkspace, args);
 }
 
+export function DeleteWorkspacePaths(...args: Parameters<typeof Wails.DeleteWorkspacePaths>): ReturnType<typeof Wails.DeleteWorkspacePaths> {
+  return call("DeleteWorkspacePaths", Wails.DeleteWorkspacePaths, args);
+}
+
 export function EditChatMessage(...args: Parameters<typeof Wails.EditChatMessage>): ReturnType<typeof Wails.EditChatMessage> {
   return call("EditChatMessage", Wails.EditChatMessage, args);
 }
@@ -238,8 +251,31 @@ export function LoadWorkspaceGitCommit(...args: Parameters<typeof Wails.LoadWork
   return call("LoadWorkspaceGitCommit", Wails.LoadWorkspaceGitCommit, args);
 }
 
+export function LoadWorkspaceGitFileDiff(...args: Parameters<typeof Wails.LoadWorkspaceGitFileDiff>): ReturnType<typeof Wails.LoadWorkspaceGitFileDiff> {
+  return call("LoadWorkspaceGitFileDiff", Wails.LoadWorkspaceGitFileDiff, args);
+}
+
 export function LoadWorkspaceGitRepository(...args: Parameters<typeof Wails.LoadWorkspaceGitRepository>): ReturnType<typeof Wails.LoadWorkspaceGitRepository> {
   return call("LoadWorkspaceGitRepository", Wails.LoadWorkspaceGitRepository, args);
+}
+
+export function LoadWorkspaceGitStash(...args: Parameters<typeof Wails.LoadWorkspaceGitStash>): ReturnType<typeof Wails.LoadWorkspaceGitStash> {
+  return call("LoadWorkspaceGitStash", Wails.LoadWorkspaceGitStash, args);
+}
+
+export function RunWorkspaceGitAction(...args: Parameters<typeof Wails.RunWorkspaceGitAction>): ReturnType<typeof Wails.RunWorkspaceGitAction> {
+  return call("RunWorkspaceGitAction", Wails.RunWorkspaceGitAction, args);
+}
+
+export function ChooseWorkspaceGitCloneParent(): ReturnType<typeof Wails.ChooseWorkspaceGitCloneParent> {
+  if (isWailsRuntime()) {
+    return Wails.ChooseWorkspaceGitCloneParent();
+  }
+  return chooseWorkspaceGitCloneParentWeb() as ReturnType<typeof Wails.ChooseWorkspaceGitCloneParent>;
+}
+
+export function CloneWorkspaceGitRepository(...args: Parameters<typeof Wails.CloneWorkspaceGitRepository>): ReturnType<typeof Wails.CloneWorkspaceGitRepository> {
+  return call("CloneWorkspaceGitRepository", Wails.CloneWorkspaceGitRepository, args);
 }
 
 export function CommitWorkspaceGitChanges(...args: Parameters<typeof Wails.CommitWorkspaceGitChanges>): ReturnType<typeof Wails.CommitWorkspaceGitChanges> {
@@ -268,6 +304,133 @@ export function SyncWorkspaceGitBranch(...args: Parameters<typeof Wails.SyncWork
 
 export function MergeWorkspaceGitBranch(...args: Parameters<typeof Wails.MergeWorkspaceGitBranch>): ReturnType<typeof Wails.MergeWorkspaceGitBranch> {
   return call("MergeWorkspaceGitBranch", Wails.MergeWorkspaceGitBranch, args);
+}
+
+// Keep debug calls on the same small Wails/web RPC boundary. The generated
+// bindings still describe all request and response models for consumers.
+function callSystemService<T>(method: string, args: unknown[]): Promise<T> {
+  if (isWailsRuntime()) {
+    const service = (window as any)?.go?.services?.SystemService;
+    const methodFn = service?.[method];
+    if (typeof methodFn !== "function") {
+      return Promise.reject(new Error(`Backend method ${method} is unavailable.`));
+    }
+    return methodFn(...args) as Promise<T>;
+  }
+  return webRpc<T>(method, args);
+}
+
+export function LoadWorkspaceDebugSettings(workspaceID: string): Promise<WorkspaceDebugSettings> {
+  return callSystemService("LoadWorkspaceDebugSettings", [workspaceID]);
+}
+
+export function SaveWorkspaceDebugSettings(
+  workspaceID: string,
+  input: { json: string; expectedRevision: string },
+): Promise<WorkspaceDebugSettings> {
+  return callSystemService("SaveWorkspaceDebugSettings", [workspaceID, input]);
+}
+
+export function SetWorkspaceSelectedDebugConfiguration(
+  workspaceID: string,
+  name: string,
+): Promise<WorkspaceDebugSettings> {
+  return callSystemService("SetWorkspaceSelectedDebugConfiguration", [workspaceID, name]);
+}
+
+export function LoadDebugState(workspaceID: string): Promise<DebugState> {
+  return callSystemService("LoadDebugState", [workspaceID]);
+}
+
+export function StartDebugSession(
+  workspaceID: string,
+  request: { configurationName?: string; currentFile?: string },
+): Promise<DebugState> {
+  return callSystemService("StartDebugSession", [workspaceID, request]);
+}
+
+export function ContinueDebugSession(
+  workspaceID: string,
+  request: { sessionId: string },
+): Promise<DebugState> {
+  return callSystemService("ContinueDebugSession", [workspaceID, request]);
+}
+
+export function PauseDebugSession(
+  workspaceID: string,
+  request: { sessionId: string },
+): Promise<DebugState> {
+  return callSystemService("PauseDebugSession", [workspaceID, request]);
+}
+
+export function StepOverDebugSession(
+  workspaceID: string,
+  request: { sessionId: string },
+): Promise<DebugState> {
+  return callSystemService("StepOverDebugSession", [workspaceID, request]);
+}
+
+export function StepIntoDebugSession(
+  workspaceID: string,
+  request: { sessionId: string },
+): Promise<DebugState> {
+  return callSystemService("StepIntoDebugSession", [workspaceID, request]);
+}
+
+export function StepOutDebugSession(
+  workspaceID: string,
+  request: { sessionId: string },
+): Promise<DebugState> {
+  return callSystemService("StepOutDebugSession", [workspaceID, request]);
+}
+
+export function StopDebugSession(
+  workspaceID: string,
+  request: { sessionId: string },
+): Promise<DebugState> {
+  return callSystemService("StopDebugSession", [workspaceID, request]);
+}
+
+export function SetDebugBreakpoints(
+  workspaceID: string,
+  request: { sessionId?: string; sourcePath: string; breakpoints: { line: number; column?: number }[] },
+): Promise<DebugState> {
+  return callSystemService("SetDebugBreakpoints", [workspaceID, request]);
+}
+
+export function LoadDebugThreads(
+  workspaceID: string,
+  request: { sessionId: string },
+): Promise<DebugThreadsResponse> {
+  return callSystemService("LoadDebugThreads", [workspaceID, request]);
+}
+
+export function LoadDebugStackTrace(
+  workspaceID: string,
+  request: { sessionId: string; threadId: number; startFrame?: number; levels?: number },
+): Promise<DebugStackTraceResponse> {
+  return callSystemService("LoadDebugStackTrace", [workspaceID, request]);
+}
+
+export function LoadDebugScopes(
+  workspaceID: string,
+  request: { sessionId: string; frameId: number },
+): Promise<DebugScopesResponse> {
+  return callSystemService("LoadDebugScopes", [workspaceID, request]);
+}
+
+export function LoadDebugVariables(
+  workspaceID: string,
+  request: { sessionId: string; variablesReference: number; filter?: string; start?: number; count?: number },
+): Promise<DebugVariablesResponse> {
+  return callSystemService("LoadDebugVariables", [workspaceID, request]);
+}
+
+export function EvaluateDebugExpression(
+  workspaceID: string,
+  request: { sessionId: string; expression: string; frameId?: number; context?: string },
+): Promise<DebugEvaluateResponse> {
+  return callSystemService("EvaluateDebugExpression", [workspaceID, request]);
 }
 
 export function StageWorkspaceGitChanges(...args: Parameters<typeof Wails.StageWorkspaceGitChanges>): ReturnType<typeof Wails.StageWorkspaceGitChanges> {

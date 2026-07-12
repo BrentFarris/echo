@@ -638,6 +638,66 @@ func TestSystemServiceRenameWorkspacePathRejectsInvalidTargets(t *testing.T) {
 	}
 }
 
+func TestSystemServiceDeleteWorkspacePathsDeletesFilesAndFolders(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.MkdirAll(filepath.Join(root, "src", "feature"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "feature", "readme.md"), []byte("feature"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := service.DeleteWorkspacePaths(workspaceID, []string{
+		"workspace/main.go",
+		"workspace/src",
+		"workspace/src/feature/readme.md",
+	})
+	if err != nil {
+		t.Fatalf("delete paths: %v", err)
+	}
+	if len(deleted) != 2 {
+		t.Fatalf("expected parent folder delete to cover nested child, got %#v", deleted)
+	}
+	if _, err := os.Stat(filepath.Join(root, "main.go")); !os.IsNotExist(err) {
+		t.Fatalf("expected file to be deleted, stat error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "src")); !os.IsNotExist(err) {
+		t.Fatalf("expected folder subtree to be deleted, stat error: %v", err)
+	}
+}
+
+func TestSystemServiceDeleteWorkspacePathsRejectsInvalidTargets(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name  string
+		paths []string
+	}{
+		{name: "empty selection", paths: nil},
+		{name: "workspace root", paths: []string{"workspace"}},
+		{name: "missing path", paths: []string{"workspace/missing.go"}},
+		{name: "traversal", paths: []string{"workspace/../outside.txt"}},
+		{name: "absolute path", paths: []string{outside}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := service.DeleteWorkspacePaths(workspaceID, tc.paths); err == nil {
+				t.Fatalf("expected error deleting %#v", tc.paths)
+			}
+		})
+	}
+}
+
 func TestSystemServiceWorkspaceFilesRejectBinaryAndLargeFiles(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.WriteFile(filepath.Join(root, "image.bin"), []byte{0x01, 0x00, 0x02}, 0o600); err != nil {
@@ -1184,6 +1244,170 @@ func TestSystemServiceReadWorkspaceMediaFileDetectsGIF(t *testing.T) {
 	}
 }
 
+func TestSystemServiceReadWorkspaceMediaFileDetectsAudioMP3(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	mp3Data := []byte{0x49, 0x44, 0x33, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	if err := os.WriteFile(filepath.Join(root, "track.mp3"), mp3Data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/track.mp3")
+	if err != nil {
+		t.Fatalf("read audio file: %v", err)
+	}
+	if result.MimeType != "audio/mpeg" {
+		t.Fatalf("expected mime type audio/mpeg, got %q", result.MimeType)
+	}
+	if !strings.HasPrefix(result.DataURL, "data:audio/mpeg;base64,") {
+		t.Fatalf("expected data URL prefix, got %q", result.DataURL)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileDetectsAudioWAV(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	wavHeader := append([]byte("RIFF"), []byte{0, 0, 0, 0}...)
+	wavData := append(wavHeader, []byte("WAVE")...)
+	if err := os.WriteFile(filepath.Join(root, "sample.wav"), wavData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/sample.wav")
+	if err != nil {
+		t.Fatalf("read audio file: %v", err)
+	}
+	if result.MimeType != "audio/wav" {
+		t.Fatalf("expected mime type audio/wav, got %q", result.MimeType)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileDetectsAudioOGG(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	oggData := []byte{0x4F, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00}
+	if err := os.WriteFile(filepath.Join(root, "music.ogg"), oggData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/music.ogg")
+	if err != nil {
+		t.Fatalf("read audio file: %v", err)
+	}
+	if result.MimeType != "audio/ogg" {
+		t.Fatalf("expected mime type audio/ogg, got %q", result.MimeType)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileDetectsAudioFLAC(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	flacData := []byte{0x66, 0x4C, 0x61, 0x43, 0x00, 0x00, 0x00, 0x22}
+	if err := os.WriteFile(filepath.Join(root, "lossless.flac"), flacData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/lossless.flac")
+	if err != nil {
+		t.Fatalf("read audio file: %v", err)
+	}
+	if result.MimeType != "audio/flac" {
+		t.Fatalf("expected mime type audio/flac, got %q", result.MimeType)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileDetectsAudioAAC(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	aacData := []byte{0xFF, 0xF1, 0x50, 0x80}
+	if err := os.WriteFile(filepath.Join(root, "audio.aac"), aacData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/audio.aac")
+	if err != nil {
+		t.Fatalf("read audio file: %v", err)
+	}
+	if result.MimeType != "audio/aac" {
+		t.Fatalf("expected mime type audio/aac, got %q", result.MimeType)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileDetectsAudioM4A(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	m4aData := append([]byte("    "), []byte("ftypM4A ")...)
+	if err := os.WriteFile(filepath.Join(root, "song.m4a"), m4aData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/song.m4a")
+	if err != nil {
+		t.Fatalf("read audio file: %v", err)
+	}
+	if result.MimeType != "audio/mp4" {
+		t.Fatalf("expected mime type audio/mp4, got %q", result.MimeType)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileDetectsAudioOpus(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	opusData := []byte("OpusHead")
+	if err := os.WriteFile(filepath.Join(root, "voice.opus"), opusData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/voice.opus")
+	if err != nil {
+		t.Fatalf("read audio file: %v", err)
+	}
+	if result.MimeType != "audio/opus" {
+		t.Fatalf("expected mime type audio/opus, got %q", result.MimeType)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileDetectsAudioByExtensionFallback(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	// Unknown magic bytes but .wma extension should resolve via extension map
+	wmaData := []byte{0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11}
+	if err := os.WriteFile(filepath.Join(root, "track.wma"), wmaData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/track.wma")
+	if err != nil {
+		t.Fatalf("read audio file: %v", err)
+	}
+	if result.MimeType != "audio/x-ms-wma" {
+		t.Fatalf("expected mime type audio/x-ms-wma, got %q", result.MimeType)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileExistingImageStillWorks(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.WriteFile(filepath.Join(root, "icon.png"), smallPNGData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/icon.png")
+	if err != nil {
+		t.Fatalf("read media file: %v", err)
+	}
+	if result.MimeType != "image/png" {
+		t.Fatalf("expected mime type image/png, got %q", result.MimeType)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileExistingVideoStillWorks(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	mp4Data := append([]byte("    "), []byte("ftypmp42")...)
+	if err := os.WriteFile(filepath.Join(root, "video.mp4"), mp4Data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/video.mp4")
+	if err != nil {
+		t.Fatalf("read media file: %v", err)
+	}
+	if result.MimeType != "video/mp4" {
+		t.Fatalf("expected mime type video/mp4, got %q", result.MimeType)
+	}
+}
+
 func TestSystemServiceReadWorkspaceMediaFileRejectsNonMediaFile(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
@@ -1251,8 +1475,17 @@ func TestDetectMagicByteMIME(t *testing.T) {
 		{"jpeg", []byte{0xFF, 0xD8, 0xFF}, "image/jpeg"},
 		{"gif", []byte{'G', 'I', 'F', '8'}, "image/gif"},
 		{"webp", append([]byte("RIFF"), append([]byte{0, 0, 0, 0}, append([]byte("WEBP"), 0, 0)...)...), "image/webp"},
-		{"mp4", append([]byte("    "), []byte("ftyp")...), "video/mp4"},
+		{"mp4", append([]byte("    "), []byte("ftypmp42")...), "video/mp4"},
+		{"m4a", append([]byte("    "), []byte("ftypM4A ")...), "audio/mp4"},
+		{"m4b", append([]byte("    "), []byte("ftypM4B ")...), "audio/mp4"},
 		{"webm", []byte{0x1A, 0x45, 0xDF, 0xA3}, "video/webm"},
+		{"mp3_id3", []byte{0x49, 0x44, 0x33, 0x04, 0x00, 0x00}, "audio/mpeg"},
+		{"mp3_sync", []byte{0xFF, 0xFB, 0x90, 0x00}, "audio/mpeg"},
+		{"wav", append([]byte("RIFF"), append([]byte{0, 0, 0, 0}, []byte("WAVE")...)...), "audio/wav"},
+		{"ogg", []byte{0x4F, 0x67, 0x67, 0x53, 0x00, 0x02}, "audio/ogg"},
+		{"flac", []byte{0x66, 0x4C, 0x61, 0x43, 0x00, 0x00, 0x00, 0x22}, "audio/flac"},
+		{"aac", []byte{0xFF, 0xF1, 0x50, 0x80}, "audio/aac"},
+		{"opus", []byte("OpusHead"), "audio/opus"},
 		{"unknown", []byte{0x01, 0x02, 0x03}, ""},
 		{"short", []byte{0x89}, ""},
 	}

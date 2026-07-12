@@ -38,7 +38,7 @@ func (s *SystemService) workspaceGitRepositoryContext(ctx context.Context, works
 		if err != nil {
 			return workspaceGitRepositoryContext{}, err
 		}
-		repository, err := workspaceGitRepositoryContextFromRoot(ctx, folder, folderRoot, root)
+		repository, err := workspaceGitRepositoryContextFromValidatedRoot(folder, folderRoot, root)
 		if err != nil {
 			return workspaceGitRepositoryContext{}, err
 		}
@@ -52,7 +52,7 @@ func (s *SystemService) workspaceGitRepositoryContext(ctx context.Context, works
 	if err != nil {
 		return workspaceGitRepositoryContext{}, err
 	}
-	repository, err := workspaceGitRepositoryContextFromRoot(ctx, folder, folderRoot, root)
+	repository, err := workspaceGitRepositoryContextFromValidatedRoot(folder, folderRoot, root)
 	if err != nil {
 		return workspaceGitRepositoryContext{}, err
 	}
@@ -90,6 +90,10 @@ func workspaceGitRepositoryContextFromRoot(ctx context.Context, folder Workspace
 	if !samePath(root, actualRoot) {
 		return workspaceGitRepositoryContext{}, fmt.Errorf("cached Git repository root is stale")
 	}
+	return workspaceGitRepositoryContextFromValidatedRoot(folder, folderRoot, actualRoot)
+}
+
+func workspaceGitRepositoryContextFromValidatedRoot(folder WorkspaceFolder, folderRoot string, root string) (workspaceGitRepositoryContext, error) {
 	relative, err := filepath.Rel(root, folderRoot)
 	if err != nil {
 		return workspaceGitRepositoryContext{}, fmt.Errorf("resolve workspace folder inside Git repository: %w", err)

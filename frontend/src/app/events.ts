@@ -1,5 +1,5 @@
 
-import { bindCodeViewEvents, closeActiveCodeTab, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, navigateCodeHistory, openQuickOpen, openTextSearch, saveActiveCodeFile, startSelectedCodeRename } from "../codeView";
+import { bindCodeViewEvents, closeActiveCodeTab, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, handleGlobalDebugShortcut, navigateCodeHistory, openQuickOpen, openTextSearch, saveActiveCodeFile, startSelectedCodeRename } from "../codeView";
 import { bindActionEvents } from "./actions";
 import { getAppCallbacks } from "./callbacks";
 import { bindChatEvents, clearChatMention, patchChatMentionPicker } from "./chat";
@@ -114,6 +114,10 @@ export function handleGlobalPointerDown(event: PointerEvent) {
 }
 
 export function handleGlobalKeydown(event: KeyboardEvent) {
+  const debugWorkspace = activeWorkspace();
+  if (handleGlobalDebugShortcut(event, debugWorkspace?.id ?? "", getAppCallbacks().codeViewCallbacks())) {
+    return;
+  }
   if (isFindInFilesShortcut(event)) {
     event.preventDefault();
     event.stopPropagation();

@@ -1,4 +1,42 @@
 {
   "version": 1,
-  "tasks": {}
+  "tasks": {
+    "5effd567-5f00-4de2-ac45-50ac20fc23a5": {
+      "title": "Add mor git options, like in VS Code",
+      "tags": [
+        "git"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-11T06:27:09.2312922Z",
+      "updatedAt": "2026-07-11T17:28:12.8627161Z",
+      "completedAt": "2026-07-11T17:28:12.8627161Z"
+    },
+    "8347eeaa-14cb-4d0d-b184-4ec65d77e089": {
+      "title": "Add multi-select in file/folder view",
+      "details": "I should be able to hold ctrl and select to toggle selection on files/folders. I should also be able to hold shift and do a range selection.",
+      "tags": [
+        "code"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-11T01:40:40.2146525Z",
+      "updatedAt": "2026-07-11T06:26:10.6098723Z",
+      "completedAt": "2026-07-11T06:26:10.6098723Z"
+    },
+    "f126b263-166c-42ea-aa00-57a6f8de8620": {
+      "title": "Add delete button to delete selected files/folders",
+      "tags": [
+        "code"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-11T01:40:55.0283643Z",
+      "updatedAt": "2026-07-11T06:26:17.7853298Z",
+      "completedAt": "2026-07-11T06:26:17.7853298Z"
+    }
+  }
 }

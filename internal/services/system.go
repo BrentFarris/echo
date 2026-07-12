@@ -72,6 +72,7 @@ type Workspace struct {
 	ID                          string            `json:"id"`
 	Folders                     []WorkspaceFolder `json:"folders"`
 	DisplayName                 string            `json:"displayName"`
+	SelectedDebugConfiguration  string            `json:"selectedDebugConfiguration,omitempty"`
 	DefaultPlanMode             bool              `json:"defaultPlanMode"`
 	SearchParentGitRepositories bool              `json:"searchParentGitRepositories"`
 	BuildCommand                string            `json:"buildCommand,omitempty"`
@@ -89,6 +90,7 @@ func (w *Workspace) UnmarshalJSON(data []byte) error {
 		Folders                     []WorkspaceFolder `json:"folders"`
 		FolderPath                  string            `json:"folderPath"`
 		DisplayName                 string            `json:"displayName"`
+		SelectedDebugConfiguration  string            `json:"selectedDebugConfiguration"`
 		DefaultPlanMode             bool              `json:"defaultPlanMode"`
 		SearchParentGitRepositories bool              `json:"searchParentGitRepositories"`
 		BuildCommand                string            `json:"buildCommand"`
@@ -112,6 +114,7 @@ func (w *Workspace) UnmarshalJSON(data []byte) error {
 		ID:                          raw.ID,
 		Folders:                     raw.Folders,
 		DisplayName:                 raw.DisplayName,
+		SelectedDebugConfiguration:  strings.TrimSpace(raw.SelectedDebugConfiguration),
 		DefaultPlanMode:             raw.DefaultPlanMode,
 		SearchParentGitRepositories: raw.SearchParentGitRepositories,
 		BuildCommand:                normalizeWorkspaceBuildCommand(raw.BuildCommand),
@@ -181,9 +184,12 @@ type SystemService struct {
 	fileChangeSeq           uint64
 	fileChanges             map[string][]trackedFileChange
 	workspaceToolLocks      map[string]*sync.Mutex
+	gitViewMu               sync.Mutex
+	gitRepositoryViews      map[string]WorkspaceGitRepositoryView
 	lspMu                   sync.Mutex
 	lspClients              map[string]*lspClient
 	lspWarmups              map[string]struct{}
+	debugger                *debugManager
 	workspaceContextBuilder workspaceContextBuildFunc
 	webAccessController     WebAccessController
 	eventMu                 sync.Mutex
@@ -222,12 +228,14 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 		watchdogs:             make(map[string]*watchdogHandle),
 		fileChanges:           make(map[string][]trackedFileChange),
 		workspaceToolLocks:    make(map[string]*sync.Mutex),
+		gitRepositoryViews:    make(map[string]WorkspaceGitRepositoryView),
 		lspClients:            make(map[string]*lspClient),
 		lspWarmups:            make(map[string]struct{}),
 		eventSubscribers:      make(map[uint64]chan RuntimeEvent),
 		tokenBudget:           newTokenBudgetService(),
 	}
 	_ = service.load()
+	service.debugger = newDebugManager(service)
 	return service
 }
 
@@ -835,6 +843,9 @@ func (s *SystemService) DeleteWorkspace(id string) (AppState, error) {
 	s.chatMu.Unlock()
 	s.dropWorkspaceChangeReview(id)
 	s.closeWorkspaceLSPClients(id)
+	if s.debugger != nil {
+		_ = s.debugger.dropWorkspace(id)
+	}
 	removeStoredWorkspaceIcon(deletedIconPath)
 	s.warmActiveWorkspaceLSPClients(state)
 	return state, nil

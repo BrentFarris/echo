@@ -3,6 +3,7 @@ import { refreshOpenCodeTabsFromDisk } from "../../codeView";
 import { LoadWorkspaceChangeReview } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
+import { renderSpinnerLabel } from "../components";
 import { appRoot } from "../dom";
 import { icons } from "../icons";
 import { activeWorkspace, changeReviewFor, gitRepositoryViewFor, state } from "../state";
@@ -129,14 +130,14 @@ export function renderChangedFile(file: services.WorkspaceChangedFile): string {
   `;
 }
 
-export function renderGitChangedFile(file: services.WorkspaceGitChangedFile): string {
+export function renderGitChangedFile(file: services.WorkspaceGitChangedFile, diffPending = false): string {
   const workspace = activeWorkspace();
   const busy = Boolean(workspace && state.gitRepositoryOperations.has(workspace.id));
   const openable = isGitChangedFileOpenable(file);
   const openLine = gitChangedFileOpenLine(file);
   const normalizedPath = normalizeGitChangePath(file.path);
   return `
-    <article class="change-file" data-change-file data-git-change-file-path="${escapeAttribute(normalizedPath)}">
+    <article class="change-file" data-change-file data-git-change-file-path="${escapeAttribute(normalizedPath)}" ${diffPending ? "data-git-diff-pending=\"true\"" : ""}>
       <header>
         <div class="change-file-title">
           ${icons.file}
@@ -156,7 +157,9 @@ export function renderGitChangedFile(file: services.WorkspaceGitChangedFile): st
         </div>
       </header>
       ${renderGitChangeStatus(file)}
-      ${file.diffAvailable && file.diff ? renderGitDiff(file.diff, openable ? file.path : "") : renderGitChangeMetadata(file)}
+      ${diffPending
+        ? `<div class="change-metadata git-diff-loading">${renderSpinnerLabel("Loading diff")}</div>`
+        : file.diffAvailable && file.diff ? renderGitDiff(file.diff, openable ? file.path : "") : renderGitChangeMetadata(file)}
     </article>
   `;
 }

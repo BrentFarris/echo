@@ -1,18 +1,18 @@
-import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, goToLspDefinitionFromContext, refreshOpenCodeTabsFromDisk, startCodeCreate, startCodeRename } from "../codeView";
+import { clearCodeTabSwitcher, deleteSelectedCodePaths, ensureCodeViewRootLoaded, goToLspDefinitionFromContext, refreshOpenCodeTabsFromDisk, startCodeCreate, startCodeRename } from "../codeView";
 import { getMountedCodeEditor } from "../codeView/editor";
 import { addToSpellCheckDictionary, codeStates } from "../codeView/state";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, LoadState, LoadWebAccessStatus, ListAgentModes, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution, ClearKanbanCardRecovery, GetHeartbeatConfig, LoadWorkspaceChangeReview, } from "../backend/services";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, GetHeartbeatConfig, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
 import { appRoot } from "./dom";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
 import { dismissContextMenu } from "./contextMenu";
-import { dropWorkspaceGitRepositoryState, openGitChangeInCode, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, selectGitCommit, stageWorkspaceGitChanges, stageWorkspaceGitFile, syncWorkspaceGitRepository, toggleGitDiffViewMode, toggleGitSourceSidebar, unstageWorkspaceGitChanges, unstageWorkspaceGitFile } from "./git";
+import { closeGitMenu, closeGitStashReview, dropWorkspaceGitRepositoryState, openGitChangeInCode, openGitMenuPage, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, runGitMenuCommand, selectGitCommit, stageWorkspaceGitChanges, stageWorkspaceGitFile, syncWorkspaceGitRepository, toggleGitDiffViewMode, toggleGitSourceSidebar, unstageWorkspaceGitChanges, unstageWorkspaceGitFile } from "./git";
 import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification, toggleHeartbeatInterval, toggleWatchdogInterval } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, cancelAgentMode, deleteAgentModeSettings, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint, saveAgentMode, saveNewAgentMode, startCreateAgentMode, startEditAgentMode } from "./settings";
 import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatAgentModeIDFor, chatComposerModeFor, setChatComposerMode, chatSessionFor, chatVideoDraftsFor, getActiveChatKanbanTab, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state, getDashboardWidgets, setDashboardWidgets, defaultDashboardLayouts } from "./state";
-import { clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
+import { applyChatSessionSnapshot, clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
 import { cloneSettings, cloneWebAccessSettings } from "./state";
 import type { AppMode, MobileNavView, WidgetId, WidgetSize } from "./types";
 import { applyTheme, settingsWithThemeDefaults, themePaletteNames } from "./theme";
@@ -135,6 +135,15 @@ export async function handleAction(event: Event) {
       }
       dismissContextMenu();
       await applySpellSuggestion(workspaceID, editorPath, suggestion);
+      return;
+    }
+    if (action === "code-delete-path") {
+      const workspaceID = target.dataset.workspaceId ?? "";
+      if (!workspaceID) {
+        return;
+      }
+      dismissContextMenu();
+      await deleteSelectedCodePaths(workspaceID, getAppCallbacks().codeViewCallbacks());
       return;
     }
     if (action === "open-code-view") {
@@ -334,6 +343,22 @@ export async function handleAction(event: Event) {
         return;
       }
       await syncWorkspaceGitRepository(workspace.id);
+      return;
+    }
+    if (action === "open-git-menu-page") {
+      openGitMenuPage(target.dataset.gitMenuPage ?? "root");
+      return;
+    }
+    if (action === "close-git-menu") {
+      closeGitMenu();
+      return;
+    }
+    if (action === "run-git-menu-command") {
+      await runGitMenuCommand(target.dataset.gitCommand ?? "");
+      return;
+    }
+    if (action === "close-git-stash-review") {
+      closeGitStashReview();
       return;
     }
     if (action === "toggle-git-sidebar") {
@@ -1021,8 +1046,7 @@ export async function handleAction(event: Event) {
       }
       state.editingMessageIds.delete(messageID);
       try {
-        state.chatSessions.set(
-          workspace.id,
+        applyChatSessionSnapshot(
           await RetryChatMessage(workspace.id, messageID, chatAgentModeIDFor(workspace.id)),
         );
         pushToast("Response regenerated.", "success");
@@ -1038,7 +1062,7 @@ export async function handleAction(event: Event) {
       if (!workspace) {
         return;
       }
-      state.chatSessions.set(workspace.id, await StopChatStream(workspace.id));
+      applyChatSessionSnapshot(await StopChatStream(workspace.id));
       patchChatPanel();
     }
     if (action === "prune-chat-message") {
@@ -1051,7 +1075,7 @@ export async function handleAction(event: Event) {
       ) {
         return;
       }
-      state.chatSessions.set(workspace.id, await PruneChatMessage(workspace.id, messageID));
+      applyChatSessionSnapshot(await PruneChatMessage(workspace.id, messageID));
       state.editingMessageIds.delete(messageID);
       pushToast("Message pruned.", "success");
       patchChatPanel();

@@ -1,8 +1,9 @@
 import { services } from "../../wailsjs/go/models";
 import { codeIcons } from "./icons";
-import { activeCodeTab, directoryStateFor, ensureCodeState, filteredEntries } from "./state";
+import { isWorkspaceDebugActive, renderDebugDock, renderDebugToolbar } from "./debug";
+import { activeCodeTab, directoryStateFor, ensureCodeState, filteredEntries, isCodeTreeEntrySelected } from "./state";
 import type { CodeEntryKind, CodeFileTab, CodeGitChangeState, CodeWorkspaceState } from "./types";
-import { codeTabName, escapeAttribute, escapeHtml, fileName, formatBytes, isImageFile, isMediaFile, isVideoFile, mediaKind } from "./utils";
+import { codeTabName, escapeAttribute, escapeHtml, fileName, formatBytes, isMediaFile, mediaKind } from "./utils";
 
 type CodeGitChangeProvider = (
   workspaceID: string,
@@ -11,6 +12,20 @@ type CodeGitChangeProvider = (
 ) => CodeGitChangeState;
 
 let codeGitChangeProvider: CodeGitChangeProvider | null = null;
+
+function mediaIconForPath(path: string): string {
+  switch (mediaKind(path)) {
+    case "image": return codeIcons.image;
+    case "video": return codeIcons.video;
+    case "audio": return codeIcons.audio;
+    default: return codeIcons.file;
+  }
+}
+
+function mediaLabelForPath(path: string): string {
+  const kind = mediaKind(path);
+  return kind ? kind.charAt(0).toUpperCase() + kind.slice(1) : "File";
+}
 
 export function setCodeGitChangeProvider(provider: CodeGitChangeProvider) {
   codeGitChangeProvider = provider;
@@ -25,7 +40,7 @@ export function renderCodeView(workspace: services.Workspace): string {
   const explorerID = `code-explorer-${workspace.id}`;
   return `
     <section
-      class="code-view"
+      class="code-view ${isWorkspaceDebugActive(workspace.id) ? "is-debug-running" : ""}"
       aria-label="Code"
       data-code-view
       data-code-view-workspace-id="${escapeAttribute(workspace.id)}"
@@ -79,6 +94,7 @@ export function renderCodeView(workspace: services.Workspace): string {
         <button class="code-explorer-backdrop" type="button" aria-label="Close file list" data-code-action="close-explorer-drawer"></button>
         <div class="code-resizer" role="separator" aria-label="Resize file list" aria-orientation="vertical" tabindex="0" data-code-resizer></div>
         <section class="code-editor-pane" aria-label="Code editor">
+          ${renderDebugToolbar(workspace.id)}
           ${renderCodeTabs(workspace.id)}
           ${renderCodeTabSwitcher(workspace.id)}
           ${renderCodeQuickOpen(workspace.id)}
@@ -96,6 +112,7 @@ export function renderCodeView(workspace: services.Workspace): string {
                   </div>`
             }
           </div>
+          ${renderDebugDock(workspace.id)}
           <footer class="code-status-line" data-code-status>
             ${renderCodeStatus(activeTab, state.openingPath)}
           </footer>
@@ -148,16 +165,17 @@ function renderSearchEntry(
   entry: services.WorkspaceFileEntry,
 ): string {
   const active = state.activePath === entry.path;
-  const selected = state.selectedPath === entry.path;
+  const selected = isCodeTreeEntrySelected(state, entry.path);
   const dragging = state.drag?.sourcePath === entry.path;
   const dropTarget = state.drag?.targetPath === entry.path;
-  const icon = entry.kind === "directory" ? codeIcons.folder : (isImageFile(entry.path) ? codeIcons.image : isVideoFile(entry.path) ? codeIcons.video : codeIcons.file);
+  const icon = entry.kind === "directory" ? codeIcons.folder : mediaIconForPath(entry.path);
   const changeClass = codeTreeChangeClass(workspaceID, entry.path, codeEntryKind(entry.kind));
   if (entry.kind !== "file") {
     return `
       <div
         class="code-tree-row code-tree-search-row${changeClass} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
         role="treeitem"
+        aria-selected="${selected}"
         tabindex="0"
         draggable="${entry.kind === "directory"}"
         title="${escapeAttribute(entry.path)}"
@@ -181,6 +199,7 @@ function renderSearchEntry(
       class="code-tree-row code-tree-file code-tree-search-row${changeClass} ${active ? "is-active" : ""} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
       type="button"
       role="treeitem"
+      aria-selected="${selected}"
       draggable="true"
       title="${escapeAttribute(entry.path)}"
       style="--tree-depth: 0"
@@ -300,7 +319,7 @@ function renderCodeExplorerSidebar(workspaceID: string, dirtyCount: number): str
         />
       </label>
       ${renderTemporaryFilesSection(workspaceID)}
-      <div class="code-tree" role="tree" data-code-tree>
+      <div class="code-tree" role="tree" aria-multiselectable="true" data-code-tree>
         ${renderFileList(workspaceID)}
       </div>
     </aside>
@@ -529,7 +548,7 @@ function renderFileEntry(
   depth: number,
 ): string {
   const active = state.activePath === entry.path;
-  const selected = state.selectedPath === entry.path;
+  const selected = isCodeTreeEntrySelected(state, entry.path);
   const dragging = state.drag?.sourcePath === entry.path;
   const dropTarget = state.drag?.targetPath === entry.path;
   const renaming = state.pendingRename?.path === entry.path;
@@ -547,6 +566,7 @@ function renderFileEntry(
                 type="button"
                 role="treeitem"
                 aria-expanded="${expanded}"
+                aria-selected="${selected}"
                 draggable="true"
                 title="${escapeAttribute(entry.path)}"
                 style="--tree-depth: ${depth}"
@@ -575,15 +595,16 @@ function renderFileEntry(
     `;
   }
   if (renaming) {
-    const renameIcon = isImageFile(entry.path) ? codeIcons.image : isVideoFile(entry.path) ? codeIcons.video : codeIcons.file;
+    const renameIcon = mediaIconForPath(entry.path);
     return renderPendingRenameRow(state, entry, depth, renameIcon, '<span class="code-tree-spacer"></span>');
   }
-  const fileIcon = isImageFile(entry.path) ? codeIcons.image : isVideoFile(entry.path) ? codeIcons.video : codeIcons.file;
+  const fileIcon = mediaIconForPath(entry.path);
   return `
     <button
       class="code-tree-row code-tree-file${changeClass} ${active ? "is-active" : ""} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
       type="button"
       role="treeitem"
+      aria-selected="${selected}"
       draggable="${entry.kind === "file"}"
       title="${escapeAttribute(entry.path)}"
       style="--tree-depth: ${depth}"
@@ -669,8 +690,8 @@ function renderCodeTabs(workspaceID: string): string {
         .map((tab) => {
           const active = state.activePath === tab.path;
           const isMedia = tab.isMedia ?? false;
-          const mediaKindLabel = isMedia ? (isVideoFile(tab.path) ? "Video" : "Image") : "";
-          const tabIcon = isMedia ? (isVideoFile(tab.path) ? codeIcons.video : codeIcons.image) : codeIcons.file;
+          const mediaKindLabel = isMedia ? mediaLabelForPath(tab.path) : "";
+          const tabIcon = isMedia ? mediaIconForPath(tab.path) : codeIcons.file;
           return `
             <div class="code-tab ${active ? "is-active" : ""} ${tab.dirty ? "is-dirty" : ""} ${tab.temporary ? "is-temporary" : ""} ${tab.untitled ? "is-untitled" : ""} ${tab.external ? "is-external" : ""} ${isMedia ? "is-media" : ""}" data-code-tab="${escapeAttribute(tab.path)}">
               <button class="code-tab-main" type="button" role="tab" aria-selected="${active}" title="${escapeAttribute(tab.external ? `External file: ${tab.path}` : tab.untitled ? codeTabName(tab) : tab.path)}" data-code-action="activate-tab" data-code-tab-main data-code-path="${escapeAttribute(tab.path)}">
@@ -782,7 +803,7 @@ export function renderCodeQuickOpenResults(workspaceID: string): string {
             data-code-quick-open-index="${index}"
             data-code-path="${escapeAttribute(entry.path)}"
           >
-            <span class="code-quick-open-icon">${isImageFile(entry.path) ? codeIcons.image : isVideoFile(entry.path) ? codeIcons.video : codeIcons.file}</span>
+            <span class="code-quick-open-icon">${mediaIconForPath(entry.path)}</span>
             <span class="code-quick-open-name">${escapeHtml(fileName(entry.path))}</span>
             <span class="code-quick-open-path">${escapeHtml(entry.path)}</span>
           </button>
@@ -802,7 +823,7 @@ export function renderCodeStatus(tab: CodeFileTab | null, openingPath: string): 
   if (tab.isMedia) {
     const kind = tab.mediaMimeType ?? "";
     const label = kind ? ` · ${kind}` : "";
-    const mediaType = isVideoFile(tab.path) ? "Video" : "Image";
+    const mediaType = mediaLabelForPath(tab.path);
     return `${escapeHtml(tab.path)} - ${escapeHtml(formatBytes(tab.bytes))}${label} - ${mediaType}`;
   }
   if (tab.untitled) {

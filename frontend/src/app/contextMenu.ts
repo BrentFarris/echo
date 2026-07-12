@@ -143,6 +143,17 @@ function renderCodeContextMenu(menu: ContextMenuState): string {
         ${icons.edit}\
         <span class="workspace-context-menu-label">Rename</span>\
       </button>` : ""}\
+      ${canRenameCodePath ? `<button\
+        class="workspace-context-menu-item danger-button"\
+        type="button"\
+        data-action="code-delete-path"\
+        data-workspace-id="${escapeAttribute(menu.workspaceId)}"\
+        data-code-path="${escapeAttribute(codePath)}"\
+        data-code-kind="${escapeAttribute(codeKind)}"\
+      >\
+        ${icons.trash}\
+        <span class="workspace-context-menu-label">Delete</span>\
+      </button>` : ""}\
       <hr class="workspace-context-menu-divider" />\
       <button\
         class="workspace-context-menu-item"\

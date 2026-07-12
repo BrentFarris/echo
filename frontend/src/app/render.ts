@@ -159,11 +159,13 @@ function elementIndex(element: HTMLElement): number {
 /* ------------------------------------------------------------------ */
 
 export function render(): void {
-  destroyCodeEditor();
+  const workspace = activeWorkspace();
+  if (state.appMode !== "code" || !workspace) {
+    destroyCodeEditor();
+  }
   const hadDialog = Boolean(appRoot.querySelector('[role="dialog"]'));
   const scrollSnapshots = captureRenderScrollSnapshots();
 
-  const workspace = activeWorkspace();
   const workspaces = state.appState?.workspaces ?? [];
 
   if (

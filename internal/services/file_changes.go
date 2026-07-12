@@ -402,6 +402,15 @@ func (s *SystemService) dropWorkspaceChangeReview(workspaceID string) {
 	delete(s.fileChanges, workspaceID)
 	delete(s.workspaceToolLocks, workspaceID)
 	s.fileChangeMu.Unlock()
+
+	s.gitViewMu.Lock()
+	prefix := workspaceID + "\x00"
+	for key := range s.gitRepositoryViews {
+		if strings.HasPrefix(key, prefix) {
+			delete(s.gitRepositoryViews, key)
+		}
+	}
+	s.gitViewMu.Unlock()
 }
 
 func (s *SystemService) emitFileChangesEvent(event FileChangesEvent) {

@@ -1,9 +1,9 @@
 
-import { applyInlineCodePromptEvent, ensureCodeViewRootLoaded, finishCodeTabSwitcher, openDroppedCodeFile, refreshOpenCodeTabsFromDisk, saveActiveCodeFile, setCodeGitChangeProvider } from "../codeView";
+import { applyDebugEvent, applyInlineCodePromptEvent, ensureCodeViewRootLoaded, finishCodeTabSwitcher, openDroppedCodeFile, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk, saveActiveCodeFile, saveDirtyWorkspaceCodeTabs, setCodeGitChangeProvider } from "../codeView";
 import { LoadRuntimeStatus, LoadState, LoadWebAccessStatus, ListAgentModes, ReadWorkspaceMediaFile } from "../backend/services";
 import { llm, services } from "../../wailsjs/go/models";
 import { EventsOn, OnFileDrop } from "../backend/runtime";
-import { initializeWebAccessTokenFromURL } from "../backend/web";
+import { initializeWebAccessTokenFromURL, isWailsRuntime, webConnectionOn } from "../backend/web";
 import { bindActionEvents } from "./actions";
 import { setAppCallbacks } from "./callbacks";
 import { bindChatEvents, applyChatStreamEvent, isSupportedChatImageType, isSupportedChatVideoType, patchChatControls, patchChatPanel } from "./chat";
@@ -21,8 +21,27 @@ import type { ChatStreamEvent, FileChangesEvent, HeartbeatEvent, KanbanEvent, Li
 import { errorMessage } from "./utils";
 import { loadActiveChatSession } from "./chat";
 import type { CodeEntryKind } from "../codeView/types";
+import type { DebugEvent } from "../codeView/debugTypes";
 import { loadTokenBudget } from "./budget";
 import { loadLivenessConfig } from "./liveness";
+
+let realtimeResyncTimer = 0;
+
+function scheduleWebRealtimeResync() {
+  if (isWailsRuntime()) {
+    return;
+  }
+  window.clearTimeout(realtimeResyncTimer);
+  realtimeResyncTimer = window.setTimeout(() => {
+    if (!activeWorkspace()) {
+      return;
+    }
+    void Promise.allSettled([
+      loadActiveChatSession(),
+      loadActiveKanbanBoard(),
+    ]);
+  }, 100);
+}
 
 function codeViewCallbacks() {
   return {
@@ -34,6 +53,17 @@ function codeViewCallbacks() {
     gitChangedLineNumbers: gitChangedLineNumbersForFile,
     gitChangeStateForPath,
     refreshGitChanges: refreshWorkspaceChangeReview,
+    saveDirtyWorkspaceFiles: (workspaceID: string) =>
+      saveDirtyWorkspaceCodeTabs(workspaceID, codeViewCallbacks()),
+    openWorkspaceFileAtLine: (workspaceID: string, path: string, line: number) =>
+      openWorkspaceCodeFileAtLine(workspaceID, path, line, codeViewCallbacks()),
+    openDebugSettings() {
+      const button = document.querySelector<HTMLButtonElement>('[data-action="open-settings"]');
+      button?.click();
+      window.setTimeout(() => {
+        document.querySelector<HTMLElement>("#debug-settings-title")?.scrollIntoView({ block: "start" });
+      }, 150);
+    },
     showCodePathContextMenu(
       workspaceId: string,
       path: string,
@@ -145,6 +175,17 @@ async function initialize() {
 export function startApp() {
   initializeWebAccessTokenFromURL();
 
+  if (!isWailsRuntime()) {
+    webConnectionOn(scheduleWebRealtimeResync);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        scheduleWebRealtimeResync();
+      }
+    });
+    window.addEventListener("pageshow", scheduleWebRealtimeResync);
+    window.addEventListener("online", scheduleWebRealtimeResync);
+  }
+
   setAppCallbacks({
     render,
     pushToast,
@@ -165,6 +206,10 @@ export function startApp() {
 
   EventsOn("echo:inline-code:event", (event) => {
     applyInlineCodePromptEvent(event);
+  });
+
+  EventsOn("echo:debug:event", (event: DebugEvent) => {
+    applyDebugEvent(event);
   });
 
   EventsOn("echo:kanban:event", (event: KanbanEvent) => {

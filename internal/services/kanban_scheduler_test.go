@@ -1046,7 +1046,7 @@ func TestKanbanAgentIncludesWorkspaceInstructions(t *testing.T) {
 	assertSystemPromptOperatingContext(t, captured.Messages[0].Content, root)
 }
 
-func TestKanbanCardProgressStreamsOnlyWhileDetailIsOpen(t *testing.T) {
+func TestKanbanCardProgressStreamsRegardlessOfOpenDetail(t *testing.T) {
 	service, workspaceID := newKanbanTestService(t)
 	seedKanbanCards(t, service, []KanbanCard{
 		{ID: "card-1", WorkspaceID: workspaceID, Title: "Inspectable", Description: "Watch it", AcceptanceCriteria: []string{"Progress"}, Lane: KanbanLaneReady},
@@ -1058,8 +1058,8 @@ func TestKanbanCardProgressStreamsOnlyWhileDetailIsOpen(t *testing.T) {
 		Title:   "Buffered",
 		Content: "Buffered while closed.",
 	})
-	if got := events.countType("card_progress"); got != 0 {
-		t.Fatalf("expected no progress event before detail opens, got %d", got)
+	if got := events.countType("card_progress"); got != 1 {
+		t.Fatalf("expected progress event before detail opens, got %d", got)
 	}
 
 	board, err := service.OpenKanbanCardDetail(workspaceID, "card-1")
@@ -1089,12 +1089,12 @@ func TestKanbanCardProgressStreamsOnlyWhileDetailIsOpen(t *testing.T) {
 		Title:   "Buffered",
 		Content: "Buffered after close.",
 	})
-	if got := events.countType("card_progress"); got != 1 {
-		t.Fatalf("expected progress stream to stop after close, got %d events: %#v", got, events.snapshot())
+	if got := events.countType("card_progress"); got != 3 {
+		t.Fatalf("expected progress stream to continue after close, got %d events: %#v", got, events.snapshot())
 	}
 }
 
-func TestClosingCardDetailStopsProgressEventsButAgentContinues(t *testing.T) {
+func TestClosingCardDetailKeepsProgressEventsAndAgentContinues(t *testing.T) {
 	root := t.TempDir()
 	requestSeen := make(chan struct{})
 	writeFirst := make(chan struct{})
@@ -1147,10 +1147,10 @@ func TestClosingCardDetailStopsProgressEventsButAgentContinues(t *testing.T) {
 	if !transcriptContains(board.Done[0].ProgressTranscript, " finished") {
 		t.Fatalf("expected closed card to keep buffering progress, got %#v", board.Done[0].ProgressTranscript)
 	}
-	if events.any(func(event KanbanEvent) bool {
+	if !events.any(func(event KanbanEvent) bool {
 		return event.Type == "card_progress" && event.Entry != nil && strings.Contains(event.Entry.Content, "finished")
 	}) {
-		t.Fatalf("expected no final progress event after closing detail, got %#v", events.snapshot())
+		t.Fatalf("expected final progress event after closing detail, got %#v", events.snapshot())
 	}
 
 	reopened, err := service.OpenKanbanCardDetail(workspaceID, "card-1")

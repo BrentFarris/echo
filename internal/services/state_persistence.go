@@ -17,17 +17,17 @@ const (
 )
 
 type storedAppState struct {
-	Settings          llm.Settings                       `json:"settings"`
-	WebAccess         WebAccessSettings                  `json:"webAccess"`
-	Workspaces        []Workspace                        `json:"workspaces"`
-	ActiveWorkspaceID string                             `json:"activeWorkspaceId"`
-	HeartbeatConfigs  map[string]HeartbeatConfig         `json:"heartbeatConfigs,omitempty"`
-	LivenessConfigs   map[string]LivenessConfig          `json:"livenessConfigs,omitempty"`
-	WatchdogConfigs   map[string]WatchdogConfig          `json:"watchdogConfigs,omitempty"`
-	TokenBudgets      map[string]TokenBudget             `json:"tokenBudgets,omitempty"`
-	DashboardLayouts  map[string][]DashboardWidgetJSON   `json:"dashboardLayouts,omitempty"`
-	KanbanCards       []KanbanCard                       `json:"kanbanCards,omitempty"`
-	ChatSessions      map[string]persistedChatSession    `json:"chatSessions,omitempty"`
+	Settings          llm.Settings                     `json:"settings"`
+	WebAccess         WebAccessSettings                `json:"webAccess"`
+	Workspaces        []Workspace                      `json:"workspaces"`
+	ActiveWorkspaceID string                           `json:"activeWorkspaceId"`
+	HeartbeatConfigs  map[string]HeartbeatConfig       `json:"heartbeatConfigs,omitempty"`
+	LivenessConfigs   map[string]LivenessConfig        `json:"livenessConfigs,omitempty"`
+	WatchdogConfigs   map[string]WatchdogConfig        `json:"watchdogConfigs,omitempty"`
+	TokenBudgets      map[string]TokenBudget           `json:"tokenBudgets,omitempty"`
+	DashboardLayouts  map[string][]DashboardWidgetJSON `json:"dashboardLayouts,omitempty"`
+	KanbanCards       []KanbanCard                     `json:"kanbanCards,omitempty"`
+	ChatSessions      map[string]persistedChatSession  `json:"chatSessions,omitempty"`
 }
 
 // storedAppStateRaw is used to read old state files that may contain agentModes.
@@ -51,6 +51,7 @@ type persistedChatSession struct {
 	WorkspaceID string        `json:"workspaceId"`
 	Messages    []ChatMessage `json:"messages"`
 	History     []llm.Message `json:"history"`
+	Revision    uint64        `json:"revision"`
 }
 
 func storedAppStateFrom(state AppState) storedAppState {
@@ -86,7 +87,7 @@ func (s *SystemService) persistWorkspaceAutosave(workspaceID string) error {
 	s.chatMu.Lock()
 	session := s.chatSessions[workspaceID]
 	var persisted *persistedChatSession
-	if session != nil && (len(session.Messages) > 0 || len(session.History) > 0) {
+	if session != nil && (session.Revision > 0 || len(session.Messages) > 0 || len(session.History) > 0) {
 		snapshot := persistedChatSessionFrom(session)
 		persisted = &snapshot
 	}
@@ -290,6 +291,7 @@ func persistedChatSessionFrom(session *chatSessionState) persistedChatSession {
 		WorkspaceID: session.WorkspaceID,
 		Messages:    cloneChatMessages(session.Messages),
 		History:     cloneLLMMessages(session.History),
+		Revision:    session.Revision,
 	}
 }
 
@@ -339,7 +341,9 @@ func (s *SystemService) restoreChatSessionsLocked() bool {
 			WorkspaceID: workspaceID,
 			Messages:    cloneChatMessages(persisted.Messages),
 			History:     cloneLLMMessages(persisted.History),
+			Revision:    persisted.Revision,
 		}
+		interrupted := false
 		for i := range session.Messages {
 			message := &session.Messages[i]
 			if message.Status == "streaming" || message.Status == "retrying" {
@@ -348,11 +352,15 @@ func (s *SystemService) restoreChatSessionsLocked() bool {
 					message.Error = "Interrupted when Echo closed."
 				}
 				changed = true
+				interrupted = true
 			}
 			s.observeChatID(message.ID)
 			for _, activity := range message.ToolCalls {
 				s.observeChatID(activity.ID)
 			}
+		}
+		if interrupted {
+			session.Revision++
 		}
 		for _, message := range session.History {
 			for _, call := range message.ToolCalls {

@@ -22,6 +22,8 @@ export function ChooseWorkspaceFolder():Promise<services.AppState>;
 
 export function ChooseWorkspaceFolderForWorkspace(arg1:string):Promise<services.AppState>;
 
+export function ChooseWorkspaceGitCloneParent():Promise<string>;
+
 export function ChooseWorkspaceIcon(arg1:string):Promise<services.AppState>;
 
 export function ClearChat(arg1:string):Promise<services.ChatSession>;
@@ -34,11 +36,15 @@ export function ClearWorkspaceChangeReview(arg1:string):Promise<services.Workspa
 
 export function ClearWorkspaceIcon(arg1:string):Promise<services.AppState>;
 
+export function CloneWorkspaceGitRepository(arg1:string,arg2:string,arg3:string,arg4:string):Promise<services.AppState>;
+
 export function CloseKanbanCardDetail(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
 export function CommitWorkspaceGitChanges(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
 
 export function CompleteWorkspaceFile(arg1:string,arg2:services.WorkspaceCompletionRequest):Promise<services.WorkspaceCompletionResponse>;
+
+export function ContinueDebugSession(arg1:string,arg2:services.DebugSessionRequest):Promise<services.DebugState>;
 
 export function CreateAgentMode(arg1:string,arg2:string,arg3:Array<string>,arg4:Array<string>):Promise<Array<services.AgentMode>>;
 
@@ -74,6 +80,8 @@ export function DeleteKanbanCard(arg1:string,arg2:string):Promise<services.Kanba
 
 export function DeleteWorkspace(arg1:string):Promise<services.AppState>;
 
+export function DeleteWorkspacePaths(arg1:string,arg2:Array<string>):Promise<Array<services.WorkspaceDeletedPath>>;
+
 export function DeleteWorkspaceTask(arg1:string,arg2:string,arg3:string):Promise<services.TaskBoard>;
 
 export function DiscardWorkspaceGitChanges(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
@@ -83,6 +91,8 @@ export function DiscardWorkspaceGitFile(arg1:string,arg2:string,arg3:string):Pro
 export function EditChatMessage(arg1:string,arg2:string,arg3:string,arg4:string):Promise<services.ChatSession>;
 
 export function EnforceLiveness(arg1:string,arg2:services.LivenessConfig):Promise<void>;
+
+export function EvaluateDebugExpression(arg1:string,arg2:services.DebugEvaluateRequest):Promise<services.DebugEvaluateResponse>;
 
 export function ExecutePlan(arg1:string):Promise<services.KanbanBoard>;
 
@@ -112,6 +122,16 @@ export function ListWorkspaceDirectory(arg1:string,arg2:string):Promise<services
 
 export function LoadChatSession(arg1:string):Promise<services.ChatSession>;
 
+export function LoadDebugScopes(arg1:string,arg2:services.DebugScopesRequest):Promise<services.DebugScopesResponse>;
+
+export function LoadDebugStackTrace(arg1:string,arg2:services.DebugStackTraceRequest):Promise<services.DebugStackTraceResponse>;
+
+export function LoadDebugState(arg1:string):Promise<services.DebugState>;
+
+export function LoadDebugThreads(arg1:string,arg2:services.DebugThreadsRequest):Promise<services.DebugThreadsResponse>;
+
+export function LoadDebugVariables(arg1:string,arg2:services.DebugVariablesRequest):Promise<services.DebugVariablesResponse>;
+
 export function LoadKanbanBoard(arg1:string):Promise<services.KanbanBoard>;
 
 export function LoadRuntimeStatus():Promise<services.RuntimeStatus>;
@@ -124,11 +144,17 @@ export function LoadWebAccessStatus():Promise<services.WebAccessStatus>;
 
 export function LoadWorkspaceChangeReview(arg1:string):Promise<services.WorkspaceChangeReview>;
 
+export function LoadWorkspaceDebugSettings(arg1:string):Promise<services.WorkspaceDebugSettings>;
+
 export function LoadWorkspaceGitChanges(arg1:string):Promise<services.WorkspaceGitChangeReview>;
 
 export function LoadWorkspaceGitCommit(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitCommitDetail>;
 
+export function LoadWorkspaceGitFileDiff(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitChangedFile>;
+
 export function LoadWorkspaceGitRepository(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
+
+export function LoadWorkspaceGitStash(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitStashDetail>;
 
 export function MergeWorkspaceGitBranch(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
 
@@ -143,6 +169,8 @@ export function OpenKanbanCardDetail(arg1:string,arg2:string):Promise<services.K
 export function OpenWorkspaceExplorer(arg1:string):Promise<void>;
 
 export function OpenWorkspacePathExplorer(arg1:string,arg2:string):Promise<void>;
+
+export function PauseDebugSession(arg1:string,arg2:services.DebugSessionRequest):Promise<services.DebugState>;
 
 export function PrepareRebuildAndRelaunch(arg1:string):Promise<void>;
 
@@ -184,6 +212,8 @@ export function RetryChatMessage(arg1:string,arg2:string,arg3:string):Promise<se
 
 export function RotateWebAccessToken():Promise<services.AppState>;
 
+export function RunWorkspaceGitAction(arg1:string,arg2:string,arg3:services.WorkspaceGitActionRequest):Promise<services.WorkspaceGitRepositoryView>;
+
 export function SaveDashboardLayout(arg1:string,arg2:Array<services.DashboardWidgetJSON>):Promise<void>;
 
 export function SaveExternalTextFile(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFile>;
@@ -191,6 +221,8 @@ export function SaveExternalTextFile(arg1:string,arg2:string,arg3:string):Promis
 export function SaveSettings(arg1:llm.Settings):Promise<services.AppState>;
 
 export function SaveWebAccessSettings(arg1:services.WebAccessSettings):Promise<services.AppState>;
+
+export function SaveWorkspaceDebugSettings(arg1:string,arg2:services.WorkspaceDebugSettingsInput):Promise<services.WorkspaceDebugSettings>;
 
 export function SaveWorkspaceFile(arg1:string,arg2:string,arg3:string,arg4:string):Promise<services.WorkspaceFile>;
 
@@ -207,6 +239,8 @@ export function SendChatMessageWithAttachments(arg1:string,arg2:services.ChatMes
 export function SendChatMessageWithPlanMode(arg1:string,arg2:string,arg3:boolean):Promise<services.ChatSession>;
 
 export function SetActiveWorkspace(arg1:string):Promise<services.AppState>;
+
+export function SetDebugBreakpoints(arg1:string,arg2:services.DebugSetBreakpointsRequest):Promise<services.DebugState>;
 
 export function SetLivenessConfig(arg1:string,arg2:services.LivenessConfig):Promise<void>;
 
@@ -226,6 +260,8 @@ export function SetWorkspaceLetter(arg1:string,arg2:string):Promise<services.App
 
 export function SetWorkspaceSearchParentGitRepositories(arg1:string,arg2:boolean):Promise<services.AppState>;
 
+export function SetWorkspaceSelectedDebugConfiguration(arg1:string,arg2:string):Promise<services.WorkspaceDebugSettings>;
+
 export function SetWorkspaceTaskCompleted(arg1:string,arg2:string,arg3:boolean,arg4:string):Promise<services.TaskBoard>;
 
 export function Shutdown():Promise<void>;
@@ -233,6 +269,8 @@ export function Shutdown():Promise<void>;
 export function StageWorkspaceGitChanges(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
 
 export function StageWorkspaceGitFile(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
+
+export function StartDebugSession(arg1:string,arg2:services.DebugStartRequest):Promise<services.DebugState>;
 
 export function StartHeartbeat(arg1:string,arg2:services.HeartbeatConfig):Promise<void>;
 
@@ -242,7 +280,15 @@ export function StartKanbanExecutionWithContext(arg1:context.Context,arg2:string
 
 export function StartWatchdog(arg1:string,arg2:services.WatchdogConfig):Promise<void>;
 
+export function StepIntoDebugSession(arg1:string,arg2:services.DebugSessionRequest):Promise<services.DebugState>;
+
+export function StepOutDebugSession(arg1:string,arg2:services.DebugSessionRequest):Promise<services.DebugState>;
+
+export function StepOverDebugSession(arg1:string,arg2:services.DebugSessionRequest):Promise<services.DebugState>;
+
 export function StopChatStream(arg1:string):Promise<services.ChatSession>;
+
+export function StopDebugSession(arg1:string,arg2:services.DebugSessionRequest):Promise<services.DebugState>;
 
 export function StopHeartbeat(arg1:string):Promise<void>;
 

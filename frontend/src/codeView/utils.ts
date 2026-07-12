@@ -165,6 +165,19 @@ const VIDEO_EXTENSIONS = new Set([
   "wmv",
 ]);
 
+const AUDIO_EXTENSIONS = new Set([
+  "mp3",
+  "wav",
+  "ogg",
+  "oga",
+  "m4a",
+  "aac",
+  "flac",
+  "opus",
+  "wma",
+  "weba",
+]);
+
 function fileExtension(path: string): string {
   const name = fileName(path).toLowerCase();
   const dotIndex = name.lastIndexOf(".");
@@ -179,12 +192,17 @@ export function isVideoFile(path: string): boolean {
   return VIDEO_EXTENSIONS.has(fileExtension(path));
 }
 
+export function isAudioFile(path: string): boolean {
+  return AUDIO_EXTENSIONS.has(fileExtension(path));
+}
+
 export function isMediaFile(path: string): boolean {
-  return isImageFile(path) || isVideoFile(path);
+  return isImageFile(path) || isVideoFile(path) || isAudioFile(path);
 }
 
 export function mediaKind(path: string): string {
   if (isImageFile(path)) return "image";
   if (isVideoFile(path)) return "video";
+  if (isAudioFile(path)) return "audio";
   return "";
 }

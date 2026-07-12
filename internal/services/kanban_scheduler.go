@@ -201,6 +201,9 @@ func (s *SystemService) CloseKanbanCardDetail(workspaceID string, cardID string)
 }
 
 func (s *SystemService) Shutdown() {
+	if s.debugger != nil {
+		s.debugger.shutdown()
+	}
 	s.chatMu.Lock()
 	runCancels := make([]context.CancelFunc, 0, len(s.kanbanRuns))
 	for _, cancel := range s.kanbanRuns {
@@ -1188,11 +1191,7 @@ func (s *SystemService) emitKanbanProgressEvent(event KanbanEvent) {
 	if event.CardID == "" {
 		return
 	}
-	s.emitRuntimeEvent(kanbanEventName, event)
-	if !s.hasOpenKanbanCardDetail(event.WorkspaceID, event.CardID) {
-		return
-	}
-	s.emitKanbanEventToWails(event)
+	s.emitKanbanEvent(event)
 }
 
 func (s *SystemService) emitKanbanEvent(event KanbanEvent) {

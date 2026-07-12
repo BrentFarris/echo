@@ -1,6 +1,7 @@
 package services
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,6 +42,44 @@ func TestLoadWorkspaceGitChangesIncludesModifiedDeletedAndUntrackedFiles(t *test
 	fresh := files[label+"/fresh.txt"]
 	if fresh.Operation != tools.FileChangeCreated || fresh.Status != "??" || !strings.Contains(fresh.Diff, "+fresh") {
 		t.Fatalf("unexpected untracked file review: %#v", fresh)
+	}
+}
+
+func TestLoadWorkspaceGitChangesIncludesUnignoredEchoSkillFiles(t *testing.T) {
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, "README.md", "hello\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial")
+
+	writeGitTestFile(t, root, ".echo/skills/planner/SKILL.md", "Use the local planning conventions.\n")
+
+	review := loadGitChangesForTestWorkspace(t, root)
+	files := gitReviewFilesByPath(review)
+	label := normalizeWorkspaceFolderLabel(filepath.Base(root))
+
+	skill := files[label+"/.echo/skills/planner/SKILL.md"]
+	if skill.Operation != tools.FileChangeCreated || skill.Status != "??" || !strings.Contains(skill.Diff, "+Use the local planning conventions.") {
+		t.Fatalf("expected unignored .echo skill file in git changes, got %#v", review.Files)
+	}
+}
+
+func TestLoadWorkspaceGitChangesExcludesGitignoredEchoFiles(t *testing.T) {
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, ".gitignore", ".echo/\n")
+	writeGitTestFile(t, root, "README.md", "hello\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial")
+
+	writeGitTestFile(t, root, ".echo/skills/ignored/SKILL.md", "Ignore this skill.\n")
+
+	review := loadGitChangesForTestWorkspace(t, root)
+	files := gitReviewFilesByPath(review)
+	label := normalizeWorkspaceFolderLabel(filepath.Base(root))
+	if _, ok := files[label+"/.echo/skills/ignored/SKILL.md"]; ok {
+		t.Fatalf("expected gitignored .echo skill file to be hidden, got %#v", review.Files)
+	}
+	if review.FileCount != 0 {
+		t.Fatalf("expected no visible git changes, got %#v", review)
 	}
 }
 
@@ -124,6 +163,138 @@ func TestLoadWorkspaceGitRepositoryListsStatusBranchesChangesAndHistory(t *testi
 	}
 	if len(view.Repository.Commits) < 2 || view.Repository.Commits[0].Subject != "base work" {
 		t.Fatalf("unexpected history: %#v", view.Repository.Commits)
+	}
+}
+
+func TestLoadWorkspaceGitRepositoryDefersWorkingDiffs(t *testing.T) {
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, ".gitignore", "ignored.txt\n")
+	writeGitTestFile(t, root, "modified.txt", "before\n")
+	writeGitTestFile(t, root, "deleted.txt", "deleted\n")
+	writeGitTestFile(t, root, "renamed-old.txt", "rename me\n")
+	if err := os.WriteFile(filepath.Join(root, "binary.bin"), []byte{0, 1, 2}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial")
+
+	writeGitTestFile(t, root, "modified.txt", "after\n")
+	if err := os.Remove(filepath.Join(root, "deleted.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(root, "renamed-old.txt"), filepath.Join(root, "renamed-new.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "binary.bin"), []byte{0, 3, 4}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitTestCommand(t, root, "add", "-A")
+	writeGitTestFile(t, root, "untracked.txt", "new text\n")
+	writeGitTestFile(t, root, "ignored.txt", "ignored\n")
+	writeGitTestFile(t, root, "large.txt", strings.Repeat("x", maxWorkspaceGitSyntheticDiffSize+1))
+
+	service, workspaceID, folderID := newGitRepositoryTestService(t, root)
+	view, err := service.LoadWorkspaceGitRepository(workspaceID, folderID)
+	if err != nil {
+		t.Fatalf("load repository: %v", err)
+	}
+	if view.Repository == nil || view.Repository.FileCount != 6 {
+		t.Fatalf("expected six visible changes, got %#v", view.Repository)
+	}
+	for _, file := range view.Repository.Files {
+		if file.Diff != "" || file.DiffAvailable {
+			t.Fatalf("expected deferred diff for %q, got %#v", file.Path, file)
+		}
+	}
+
+	label := normalizeWorkspaceFolderLabel(filepath.Base(root))
+	for _, test := range []struct {
+		path     string
+		contains string
+	}{
+		{label + "/modified.txt", "+after"},
+		{label + "/deleted.txt", "-deleted"},
+		{label + "/renamed-new.txt", "rename"},
+		{label + "/untracked.txt", "+new text"},
+	} {
+		file, err := service.LoadWorkspaceGitFileDiff(workspaceID, folderID, test.path)
+		if err != nil {
+			t.Fatalf("load diff for %s: %v", test.path, err)
+		}
+		if !file.DiffAvailable || !strings.Contains(file.Diff, test.contains) {
+			t.Fatalf("unexpected diff for %s: %#v", test.path, file)
+		}
+	}
+	for _, path := range []string{label + "/binary.bin", label + "/large.txt"} {
+		file, err := service.LoadWorkspaceGitFileDiff(workspaceID, folderID, path)
+		if err != nil {
+			t.Fatalf("load unavailable diff for %s: %v", path, err)
+		}
+		if file.DiffAvailable || file.Diff != "" {
+			t.Fatalf("expected unavailable diff for %s, got %#v", path, file)
+		}
+	}
+	if _, err := service.LoadWorkspaceGitFileDiff(workspaceID, folderID, label+"/ignored.txt"); err == nil {
+		t.Fatal("expected ignored file diff to be rejected")
+	}
+	if _, err := service.LoadWorkspaceGitFileDiff(workspaceID, folderID, "../outside.txt"); err == nil {
+		t.Fatal("expected out-of-scope diff path to be rejected")
+	}
+}
+
+func TestWorkspaceGitStatusRefreshPreservesCachedHistory(t *testing.T) {
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, "notes.txt", "before\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial history")
+	writeGitTestFile(t, root, "notes.txt", "after\n")
+
+	service, workspaceID, folderID := newGitRepositoryTestService(t, root)
+	initial, err := service.LoadWorkspaceGitRepository(workspaceID, folderID)
+	if err != nil {
+		t.Fatalf("load repository: %v", err)
+	}
+	if initial.Repository == nil || len(initial.Repository.Commits) == 0 {
+		t.Fatalf("expected initial history, got %#v", initial.Repository)
+	}
+	label := normalizeWorkspaceFolderLabel(filepath.Base(root))
+	staged, err := service.StageWorkspaceGitFile(workspaceID, folderID, label+"/notes.txt")
+	if err != nil {
+		t.Fatalf("stage file: %v", err)
+	}
+	if staged.Repository == nil || len(staged.Repository.Commits) == 0 || staged.Repository.Commits[0].Subject != "initial history" {
+		t.Fatalf("expected cached history after staging, got %#v", staged.Repository)
+	}
+	unstaged, err := service.UnstageWorkspaceGitFile(workspaceID, folderID, label+"/notes.txt")
+	if err != nil {
+		t.Fatalf("unstage file: %v", err)
+	}
+	if unstaged.Repository == nil || len(unstaged.Repository.Commits) == 0 || unstaged.Repository.Commits[0].Subject != "initial history" {
+		t.Fatalf("expected cached history after unstaging, got %#v", unstaged.Repository)
+	}
+}
+
+func TestLoadWorkspaceGitRepositoryManyFilesRemainStatusOnly(t *testing.T) {
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, "README.md", "initial\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial")
+	for i := 0; i < 100; i++ {
+		writeGitTestFile(t, root, fmt.Sprintf("changes/file-%03d.txt", i), "changed\n")
+	}
+
+	service, workspaceID, folderID := newGitRepositoryTestService(t, root)
+	view, err := service.LoadWorkspaceGitRepository(workspaceID, folderID)
+	if err != nil {
+		t.Fatalf("load repository: %v", err)
+	}
+	if view.Repository == nil || view.Repository.FileCount != 100 {
+		t.Fatalf("expected 100 status entries, got %#v", view.Repository)
+	}
+	for _, file := range view.Repository.Files {
+		if file.DiffAvailable || file.Diff != "" {
+			t.Fatalf("expected status-only file, got %#v", file)
+		}
 	}
 }
 
@@ -343,7 +514,7 @@ func TestCreateWorkspaceGitBranchChecksOutNewBranchAndPreservesDirtyFiles(t *tes
 	}
 }
 
-func TestSwitchWorkspaceGitBranchRequiresCleanRepository(t *testing.T) {
+func TestSwitchWorkspaceGitBranchLetsGitPreserveSafeDirtyFiles(t *testing.T) {
 	root := newGitTestRepo(t)
 	writeGitTestFile(t, root, "notes.txt", "base\n")
 	runGitTestCommand(t, root, "add", ".")
@@ -357,12 +528,6 @@ func TestSwitchWorkspaceGitBranchRequiresCleanRepository(t *testing.T) {
 	writeGitTestFile(t, root, "dirty.txt", "dirty\n")
 
 	service, workspaceID, folderID := newGitRepositoryTestService(t, root)
-	if _, err := service.SwitchWorkspaceGitBranch(workspaceID, folderID, "feature/switch"); err == nil || !strings.Contains(err.Error(), "commit or discard") {
-		t.Fatalf("expected dirty switch failure, got %v", err)
-	}
-
-	runGitTestCommand(t, root, "add", ".")
-	runGitTestCommand(t, root, "commit", "-m", "clean before switch")
 	view, err := service.SwitchWorkspaceGitBranch(workspaceID, folderID, "feature/switch")
 	if err != nil {
 		t.Fatalf("switch branch: %v", err)
@@ -370,9 +535,12 @@ func TestSwitchWorkspaceGitBranchRequiresCleanRepository(t *testing.T) {
 	if view.Repository == nil || view.Repository.CurrentBranch != "feature/switch" {
 		t.Fatalf("expected switched branch, got %#v", view.Repository)
 	}
+	if content, err := os.ReadFile(filepath.Join(root, "dirty.txt")); err != nil || string(content) != "dirty\n" {
+		t.Fatalf("expected dirty file to survive switch, got %q err=%v", content, err)
+	}
 }
 
-func TestMergeWorkspaceGitBranchRequiresCleanRepositoryAndMerges(t *testing.T) {
+func TestMergeWorkspaceGitBranchLetsGitPreserveSafeDirtyFiles(t *testing.T) {
 	root := newGitTestRepo(t)
 	writeGitTestFile(t, root, "base.txt", "base\n")
 	runGitTestCommand(t, root, "add", ".")
@@ -386,21 +554,18 @@ func TestMergeWorkspaceGitBranchRequiresCleanRepositoryAndMerges(t *testing.T) {
 	writeGitTestFile(t, root, "dirty.txt", "dirty\n")
 
 	service, workspaceID, folderID := newGitRepositoryTestService(t, root)
-	if _, err := service.MergeWorkspaceGitBranch(workspaceID, folderID, "feature/merge"); err == nil || !strings.Contains(err.Error(), "commit or discard") {
-		t.Fatalf("expected dirty merge failure, got %v", err)
-	}
-
-	runGitTestCommand(t, root, "add", ".")
-	runGitTestCommand(t, root, "commit", "-m", "clean before merge")
 	view, err := service.MergeWorkspaceGitBranch(workspaceID, folderID, "feature/merge")
 	if err != nil {
 		t.Fatalf("merge branch: %v", err)
 	}
-	if view.Repository == nil || view.Repository.CurrentBranch != baseBranch || view.Repository.Dirty {
-		t.Fatalf("expected clean merged base branch, got %#v", view.Repository)
+	if view.Repository == nil || view.Repository.CurrentBranch != baseBranch || !view.Repository.Dirty {
+		t.Fatalf("expected dirty merged base branch, got %#v", view.Repository)
 	}
 	if _, err := os.Stat(filepath.Join(root, "feature.txt")); err != nil {
 		t.Fatalf("expected merged feature file: %v", err)
+	}
+	if content, err := os.ReadFile(filepath.Join(root, "dirty.txt")); err != nil || string(content) != "dirty\n" {
+		t.Fatalf("expected dirty file to survive merge, got %q err=%v", content, err)
 	}
 }
 
@@ -443,16 +608,19 @@ func TestSyncWorkspaceGitBranchReportsCountsAndSyncsUpstream(t *testing.T) {
 	}
 
 	writeGitTestFile(t, root, "dirty.txt", "dirty\n")
-	if _, err := service.SyncWorkspaceGitBranch(workspaceID, folderID); err == nil || !strings.Contains(err.Error(), "incoming commits") {
-		t.Fatalf("expected dirty incoming sync failure, got %v", err)
+	view, err = service.SyncWorkspaceGitBranch(workspaceID, folderID)
+	if err != nil {
+		t.Fatalf("sync branch with safe dirty file: %v", err)
+	}
+	if view.Repository == nil || view.Repository.AheadCount != 0 || view.Repository.BehindCount != 0 || !view.Repository.Dirty {
+		t.Fatalf("expected synced repository with preserved dirty file, got %#v", view.Repository)
 	}
 	if err := os.Remove(filepath.Join(root, "dirty.txt")); err != nil {
 		t.Fatal(err)
 	}
-
-	view, err = service.SyncWorkspaceGitBranch(workspaceID, folderID)
+	view, err = service.LoadWorkspaceGitRepository(workspaceID, folderID)
 	if err != nil {
-		t.Fatalf("sync branch: %v", err)
+		t.Fatalf("reload synced branch: %v", err)
 	}
 	if view.Repository == nil || view.Repository.AheadCount != 0 || view.Repository.BehindCount != 0 || view.Repository.Dirty {
 		t.Fatalf("expected synced clean repository, got %#v", view.Repository)
@@ -531,6 +699,7 @@ func TestLoadWorkspaceGitRepositorySelectsRepositoryByFolderID(t *testing.T) {
 
 func TestWorkspaceGitParentRepositoryModeCachesRootAndScopesChanges(t *testing.T) {
 	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, ".gitignore", ".echo/\n")
 	writeGitTestFile(t, root, "app/main.txt", "app before\n")
 	writeGitTestFile(t, root, "docs/readme.txt", "docs before\n")
 	runGitTestCommand(t, root, "add", ".")
@@ -586,6 +755,16 @@ func TestWorkspaceGitParentRepositoryModeCachesRootAndScopesChanges(t *testing.T
 	if !strings.Contains(status, "M  app/main.txt") || !strings.Contains(status, " M docs/readme.txt") {
 		t.Fatalf("expected only child change staged, got %q", status)
 	}
+	if _, err := service.UnstageWorkspaceGitChanges(workspaceID, folderID); err != nil {
+		t.Fatalf("unstage child changes: %v", err)
+	}
+	status = runGitTestCommand(t, root, "status", "--porcelain=v1", "--untracked-files=all")
+	if !strings.Contains(status, " M app/main.txt") || !strings.Contains(status, " M docs/readme.txt") {
+		t.Fatalf("expected child and sibling changes unstaged, got %q", status)
+	}
+	if _, err := service.StageWorkspaceGitChanges(workspaceID, folderID); err != nil {
+		t.Fatalf("restage child changes: %v", err)
+	}
 
 	if _, err := service.DiscardWorkspaceGitChanges(workspaceID, folderID); err != nil {
 		t.Fatalf("discard child changes: %v", err)
@@ -600,6 +779,7 @@ func TestWorkspaceGitParentRepositoryModeCachesRootAndScopesChanges(t *testing.T
 
 func TestWorkspaceGitParentRepositoryModeSupportsMultipleFoldersSharingRepo(t *testing.T) {
 	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, ".gitignore", ".echo/\n")
 	writeGitTestFile(t, root, "app/main.txt", "app before\n")
 	writeGitTestFile(t, root, "docs/readme.txt", "docs before\n")
 	runGitTestCommand(t, root, "add", ".")
