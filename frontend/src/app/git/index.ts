@@ -228,12 +228,77 @@ function renderGitMenuSection(repository: services.WorkspaceGitRepositoryStatus,
   }
 }
 
-function gitMenuButton(command: string, label: string, disabled: boolean, danger = false, icon = icons.git): string {
-  return `<button class="${danger ? "is-danger" : ""}" type="button" role="menuitem" data-action="run-git-menu-command" data-git-command="${escapeAttribute(command)}" ${disabled ? "disabled" : ""}>${icon}<span>${escapeHtml(label)}</span></button>`;
+function gitMenuButton(command: string, label: string, disabled: boolean, danger = false, icon?: string): string {
+  return `<button class="${danger ? "is-danger" : ""}" type="button" role="menuitem" data-action="run-git-menu-command" data-git-command="${escapeAttribute(command)}" ${disabled ? "disabled" : ""}>${icon ?? gitMenuCommandIcon(command)}<span>${escapeHtml(label)}</span></button>`;
 }
 
 function gitMenuCategory(page: Exclude<GitMenuPage, "root">, label: string): string {
-  return `<button type="button" role="menuitem" data-action="open-git-menu-page" data-git-menu-page="${escapeAttribute(page)}"><span class="git-menu-category-icon">${icons.git}</span><span>${escapeHtml(label)}</span><span class="git-menu-chevron">${icons.arrowRight}</span></button>`;
+  return `<button type="button" role="menuitem" data-action="open-git-menu-page" data-git-menu-page="${escapeAttribute(page)}"><span class="git-menu-category-icon">${gitMenuCategoryIcon(page)}</span><span>${escapeHtml(label)}</span><span class="git-menu-chevron">${icons.arrowRight}</span></button>`;
+}
+
+function gitMenuCommandIcon(command: string): string {
+  if (["pull", "pull_rebase", "pull_from", "fetch", "fetch_prune", "fetch_all", "apply_latest_stash", "apply_stash", "pop_latest_stash", "pop_stash"].includes(command)) {
+    return icons.download;
+  }
+  if (["push", "push_to", "publish_branch", "push_tags"].includes(command)) {
+    return icons.upload;
+  }
+  if (["commit", "commit_staged", "commit_all", "commit_staged_amend", "commit_all_amend", "commit_staged_signoff", "commit_all_signoff"].includes(command)) {
+    return icons.gitCommit;
+  }
+  if (["create_branch", "create_branch_from", "checkout"].includes(command)) {
+    return icons.gitBranch;
+  }
+  if (["delete_branch", "delete_remote_branch", "remove_remote", "drop_stash", "drop_all_stashes", "delete_tag", "delete_remote_tag", "discard_all"].includes(command)) {
+    return icons.trash;
+  }
+  if (["stash", "stash_untracked", "stash_staged"].includes(command)) {
+    return icons.archive;
+  }
+  switch (command) {
+    case "refresh":
+    case "sync":
+      return icons.refresh;
+    case "clone":
+      return icons.copy;
+    case "stage_all":
+    case "add_remote":
+      return icons.plus;
+    case "unstage_all":
+    case "abort_rebase":
+      return icons.undo;
+    case "merge":
+      return icons.gitMerge;
+    case "rebase":
+      return icons.gitRebase;
+    case "rename_branch":
+      return icons.edit;
+    case "view_stash":
+      return icons.eye;
+    case "create_tag":
+      return icons.tag;
+    default:
+      return icons.git;
+  }
+}
+
+function gitMenuCategoryIcon(page: Exclude<GitMenuPage, "root">): string {
+  switch (page) {
+    case "commit":
+      return icons.gitCommit;
+    case "changes":
+      return icons.layers;
+    case "pull-push":
+      return icons.refresh;
+    case "branch":
+      return icons.gitBranch;
+    case "remote":
+      return icons.cloud;
+    case "stash":
+      return icons.archive;
+    case "tags":
+      return icons.tag;
+  }
 }
 
 function gitSyncMenuLabel(repository: services.WorkspaceGitRepositoryStatus): string {
@@ -711,7 +776,7 @@ function renderGitCommitForm(workspaceID: string, repository: services.Workspace
         <textarea rows="3" spellcheck="true" data-git-commit-message ${busy ? "disabled" : ""}>${escapeHtml(draft)}</textarea>
       </label>
       <button class="primary-button icon-text-button git-commit-button" type="submit" ${(repository.stagedFileCount ?? 0) && draft.trim() && !busy ? "" : "disabled"}>
-        ${busy && operation === "Committing" ? `<span class="spinner" aria-hidden="true"></span>` : icons.check}
+        ${busy && operation === "Committing" ? `<span class="spinner" aria-hidden="true"></span>` : icons.gitCommit}
         <span>Commit</span>
       </button>
     </form>
@@ -746,7 +811,7 @@ function renderGitBranchControls(workspaceID: string, repository: services.Works
           </select>
         </label>
         <button class="secondary-button icon-text-button" type="submit" ${switchDraft && switchDraft !== currentBranch && !repository.dirty && !busy ? "" : "disabled"}>
-          ${busy && operation === "Switching branch" ? `<span class="spinner" aria-hidden="true"></span>` : icons.git}
+          ${busy && operation === "Switching branch" ? `<span class="spinner" aria-hidden="true"></span>` : icons.gitBranch}
           <span>Switch</span>
         </button>
       </form>
@@ -758,7 +823,7 @@ function renderGitBranchControls(workspaceID: string, repository: services.Works
           </select>
         </label>
         <button class="secondary-button icon-text-button" type="submit" ${mergeDraft && mergeDraft !== currentBranch && !repository.dirty && !busy ? "" : "disabled"}>
-          ${busy && operation === "Merging branch" ? `<span class="spinner" aria-hidden="true"></span>` : icons.git}
+          ${busy && operation === "Merging branch" ? `<span class="spinner" aria-hidden="true"></span>` : icons.gitMerge}
           <span>Merge</span>
         </button>
       </form>
