@@ -1,5 +1,5 @@
 
-import { bindCodeViewEvents, closeActiveCodeTab, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, handleGlobalDebugShortcut, navigateCodeHistory, openQuickOpen, openTextSearch, saveActiveCodeFile, selectedMountedCodeEditorText, startSelectedCodeRename } from "../codeView";
+import { bindCodeViewEvents, closeActiveCodeTab, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, handleGlobalCodeTreeNavigation, handleGlobalDebugShortcut, navigateCodeHistory, openQuickOpen, openTextSearch, saveActiveCodeFile, selectedMountedCodeEditorText, startSelectedCodeRename } from "../codeView";
 import { bindActionEvents } from "./actions";
 import { getAppCallbacks } from "./callbacks";
 import { bindChatEvents, clearChatMention, patchChatMentionPicker } from "./chat";
@@ -130,6 +130,15 @@ export function handleGlobalKeydown(event: KeyboardEvent) {
     event.preventDefault();
     event.stopPropagation();
     openActiveWorkspaceQuickOpen();
+    return;
+  }
+  const navigationWorkspace = activeWorkspace();
+  if (
+    state.appMode === "code" &&
+    !state.settingsOpen &&
+    navigationWorkspace &&
+    handleGlobalCodeTreeNavigation(navigationWorkspace.id, event)
+  ) {
     return;
   }
   if (state.appMode === "code" && !state.settingsOpen) {

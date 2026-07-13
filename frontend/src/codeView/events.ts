@@ -255,6 +255,55 @@ function bindCodeQuickOpenResultEvents(root: ParentNode, workspaceID: string, ca
   });
 }
 
+export function handleGlobalCodeTreeNavigation(
+  workspaceID: string,
+  event: KeyboardEvent,
+): boolean {
+  if (
+    (event.key !== "ArrowDown" && event.key !== "ArrowUp") ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.shiftKey
+  ) {
+    return false;
+  }
+  const state = ensureCodeState(workspaceID);
+  if (state.textSearchOpen || state.quickOpen.open || state.pendingCreate || state.pendingRename) {
+    return false;
+  }
+  const explorer = document.querySelector<HTMLElement>(".code-explorer:not(.code-text-search-sidebar)");
+  const tree = explorer?.querySelector<HTMLElement>("[data-code-tree]");
+  const target = event.target instanceof Element ? event.target : null;
+  const activeElement = document.activeElement;
+  const treeContextActive = Boolean(
+    (activeElement && explorer?.contains(activeElement)) ||
+    target?.closest(".code-explorer") ||
+    activeElement === document.body,
+  );
+  if (
+    !explorer ||
+    !tree ||
+    !state.selectedPath ||
+    !treeContextActive ||
+    Boolean(target?.closest("input, textarea, select, .cm-editor"))
+  ) {
+    return false;
+  }
+  const rows = visibleCodeBrowserRows(tree);
+  const targetRow = target?.closest<HTMLElement>("[data-code-browser-row]") ?? null;
+  const current = targetRow && rows.includes(targetRow)
+    ? targetRow
+    : rows.find((row) => row.dataset.codePath === state.selectedPath);
+  if (!current) {
+    return false;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  focusAdjacentCodeBrowserRow(tree, workspaceID, current, event.key === "ArrowDown" ? 1 : -1);
+  return true;
+}
+
 function bindCodeActionEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
   root.querySelectorAll<HTMLElement>("[data-code-action]").forEach((element) => {
     element.addEventListener("click", (event) => {

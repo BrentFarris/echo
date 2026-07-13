@@ -5935,7 +5935,7 @@ h3 {
   gap: var(--space-md-lg);
   width: 100%;
   min-height: 1.4em;
-  padding: 0 var(--space-lg) 0 calc(8px + (var(--tree-depth, 0) * var(--space-3xl)));
+  padding: 0 var(--space-lg) 0 calc(8px + (var(--tree-depth, 0) * var(--space-lg-sm)));
   border: 1px solid transparent;
   border-radius: 7px;
   background: transparent;
@@ -5946,6 +5946,14 @@ h3 {
 
 .code-tree-search-row {
   min-height: 42px;
+}
+
+.code-tree-directory {
+  grid-template-columns: 18px minmax(0, 1fr);
+}
+
+.code-tree-file:not(.code-tree-search-row) {
+  grid-template-columns: 18px minmax(0, 1fr) auto;
 }
 
 .code-tree-row:hover,
@@ -6314,7 +6322,7 @@ h3 {
 }
 
 .code-tree-note.nested {
-  padding-left: calc(var(--space-lg) + (var(--tree-depth, 0) * var(--space-3xl)));
+  padding-left: calc(var(--space-lg) + (var(--tree-depth, 0) * var(--space-lg-sm)));
 }
 
 .code-tree-note .spinner {

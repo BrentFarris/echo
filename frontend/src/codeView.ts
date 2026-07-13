@@ -1,5 +1,5 @@
 export { applyInlineCodePromptEvent, openInlineCodeChatAtCursor } from "./codeView/inlineChat";
-export { bindCodeViewEvents } from "./codeView/events";
+export { bindCodeViewEvents, handleGlobalCodeTreeNavigation } from "./codeView/events";
 export { clearCodeTabSwitcher, closeActiveCodeTab, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, navigateCodeHistory, openDroppedCodeFile, openWorkspaceCodeFile, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk, saveActiveCodeFile, saveDirtyWorkspaceCodeTabs } from "./codeView/tabs";
 export { destroyCodeEditor, selectedMountedCodeEditorText } from "./codeView/editor";
 export { deleteSelectedCodePaths, ensureCodeViewRootLoaded, startCodeCreate, startCodeRename, startSelectedCodeRename } from "./codeView/explorer";

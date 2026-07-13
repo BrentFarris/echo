@@ -561,7 +561,7 @@ function renderFileEntry(
       <div class="code-tree-item">
         ${
           renaming
-            ? renderPendingRenameRow(state, entry, depth, codeIcons.folder, `<span class="code-tree-chevron">${codeIcons.chevron}</span>`)
+            ? renderPendingRenameRow(state, entry, depth, "", `<span class="code-tree-chevron">${codeIcons.chevron}</span>`)
             : `<button
                 class="code-tree-row code-tree-directory${changeClass} ${expanded ? "is-expanded" : ""} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
                 type="button"
@@ -577,7 +577,6 @@ function renderFileEntry(
                 data-code-kind="${escapeAttribute(entry.kind)}"
               >
                 <span class="code-tree-chevron">${codeIcons.chevron}</span>
-                <span class="code-tree-entry-icon">${codeIcons.folder}</span>
                 <span class="code-tree-name">${escapeHtml(entry.name)}</span>
               </button>`
         }
@@ -614,7 +613,6 @@ function renderFileEntry(
       data-code-path="${escapeAttribute(entry.path)}"
       data-code-kind="${escapeAttribute(entry.kind)}"
     >
-      <span class="code-tree-spacer"></span>
       <span class="code-tree-entry-icon">${fileIcon}</span>
       <span class="code-tree-name">${escapeHtml(entry.name)}</span>
       <span class="code-tree-size">${escapeHtml(formatBytes(entry.bytes ?? 0))}</span>
