@@ -12,18 +12,6 @@
       "createdAt": "2026-07-08T16:33:29.389819Z",
       "updatedAt": "2026-07-08T16:33:29.389819Z"
     },
-    "5400801a-638c-498d-b6c4-db2811cb5445": {
-      "title": "Add a folder/file view on the left of the git view",
-      "details": "This should work like Gitea/GitHub when viewing a commit/changes. It will need to be collapsed, and expandible, on mobile",
-      "tags": [
-        "git"
-      ],
-      "priority": "P1",
-      "sortOrder": 0,
-      "completed": false,
-      "createdAt": "2026-07-08T16:34:52.8375128Z",
-      "updatedAt": "2026-07-08T16:34:52.8375128Z"
-    },
     "9d95d6ab-c72e-46ed-8079-91eabd6f2fbc": {
       "title": "Add manual \"compress context\" button in Kanban \u0026 Chat",
       "details": "We have automatic compression in, but there are some cases when it's failing or there are scenarios when we want to manually compress the context before following up. It would be nice to add a \"Compress Context\" option in the 3-dot menu of the chat, as well as a \"Compress Context\" button on Kanban cards that could be clicked when the card is in a blocked state.",

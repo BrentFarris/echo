@@ -1,6 +1,19 @@
 {
   "version": 1,
   "tasks": {
+    "5400801a-638c-498d-b6c4-db2811cb5445": {
+      "title": "Add a folder/file view on the left of the git view",
+      "details": "This should work like Gitea/GitHub when viewing a commit/changes. It will need to be collapsed, and expandible, on mobile",
+      "tags": [
+        "git"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-08T16:34:52.8375128Z",
+      "updatedAt": "2026-07-12T21:50:53.44892Z",
+      "completedAt": "2026-07-12T21:50:53.44892Z"
+    },
     "5effd567-5f00-4de2-ac45-50ac20fc23a5": {
       "title": "Add mor git options, like in VS Code",
       "tags": [

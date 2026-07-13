@@ -181,6 +181,17 @@ export function getMountedCodeEditor() {
   return { view: mountedEditor, workspaceID: mountedEditorWorkspaceID, path: mountedEditorPath };
 }
 
+export function selectedMountedCodeEditorText(workspaceID: string): string {
+  if (!mountedEditor || mountedEditorWorkspaceID !== workspaceID || !mountedEditor.hasFocus) {
+    return "";
+  }
+  const selection = mountedEditor.state.selection.main;
+  if (selection.empty) {
+    return "";
+  }
+  return mountedEditor.state.sliceDoc(selection.from, selection.to);
+}
+
 export function mountedCodeEditorMatches(workspaceID: string, path: string) {
   return Boolean(mountedEditor && mountedEditorWorkspaceID === workspaceID && mountedEditorPath === path);
 }

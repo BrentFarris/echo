@@ -572,6 +572,7 @@ var allowedRPCMethods = map[string]bool{
 	"SaveWorkspaceFile":                       true,
 	"SaveWorkspaceFileAs":                     true,
 	"SearchWorkspaceFiles":                    true,
+	"SearchWorkspaceText":                     true,
 	"SendChatMessage":                         true,
 	"SendChatMessageWithAttachments":          true,
 	"SendChatMessageWithPlanMode":             true,

@@ -1,6 +1,6 @@
 import { patchChildrenFromHtml } from "../markdown";
 import { codeIcons } from "./icons";
-import { renderCodeQuickOpenResults, renderFileList, renderTextSearchPanelContent } from "./render";
+import { renderCodeQuickOpenResults, renderFileList, renderTextSearchPanelContent, renderTextSearchResults } from "./render";
 import { activeCodeTab, ensureCodeState, explorerWidthStorageKey, maxExplorerWidth, minExplorerWidth } from "./state";
 import type { CodeFileTab, CodeViewCallbacks } from "./types";
 import { clamp, codeTabName, formatBytes } from "./utils";
@@ -174,6 +174,19 @@ export function patchTextSearchPanel(
   panel.innerHTML = renderTextSearchPanelContent(workspaceID);
   codeTextSearchEventBinder?.(panel, workspaceID, callbacks);
   state.preservingTextSearchFocus = false;
+}
+
+export function patchTextSearchResults(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const results = document.querySelector<HTMLElement>("[data-code-text-search-results]");
+  if (!results) {
+    patchTextSearchPanel(workspaceID, callbacks);
+    return;
+  }
+  results.innerHTML = renderTextSearchResults(workspaceID);
+  codeTextSearchEventBinder?.(results, workspaceID, callbacks);
 }
 
 export function patchQuickOpen(

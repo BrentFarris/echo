@@ -1,5 +1,6 @@
 
-import { applyDebugEvent, applyInlineCodePromptEvent, ensureCodeViewRootLoaded, finishCodeTabSwitcher, openDroppedCodeFile, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk, saveActiveCodeFile, saveDirtyWorkspaceCodeTabs, setCodeGitChangeProvider } from "../codeView";
+import { applyDebugEvent, applyInlineCodePromptEvent, applyWorkspaceTextSearchEvent, ensureCodeViewRootLoaded, finishCodeTabSwitcher, openDroppedCodeFile, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk, saveActiveCodeFile, saveDirtyWorkspaceCodeTabs, setCodeGitChangeProvider } from "../codeView";
+import type { WorkspaceTextSearchEvent } from "../codeView";
 import { LoadRuntimeStatus, LoadState, LoadWebAccessStatus, ListAgentModes, ReadWorkspaceMediaFile } from "../backend/services";
 import { llm, services } from "../../wailsjs/go/models";
 import { EventsOn, OnFileDrop } from "../backend/runtime";
@@ -182,6 +183,10 @@ export function startApp() {
 
   EventsOn("echo:inline-code:event", (event) => {
     applyInlineCodePromptEvent(event);
+  });
+
+  EventsOn("echo:text-search:event", (event: WorkspaceTextSearchEvent) => {
+    applyWorkspaceTextSearchEvent(event, codeViewCallbacks());
   });
 
   EventsOn("echo:debug:event", (event: DebugEvent) => {
