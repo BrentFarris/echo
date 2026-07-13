@@ -543,6 +543,7 @@ var allowedRPCMethods = map[string]bool{
 	"LoadWorkspaceGitChanges":                 true,
 	"LoadWorkspaceGitCommit":                  true,
 	"LoadWorkspaceGitFileDiff":                true,
+	"LoadWorkspaceGitFileDiffForScope":        true,
 	"LoadWorkspaceGitRepository":              true,
 	"LoadWorkspaceGitStash":                   true,
 	"MergeWorkspaceGitBranch":                 true,

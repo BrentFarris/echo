@@ -242,6 +242,41 @@ func TestLoadWorkspaceGitRepositoryDefersWorkingDiffs(t *testing.T) {
 	}
 }
 
+func TestLoadWorkspaceGitFileDiffForScopeSeparatesStagedAndUnstagedChanges(t *testing.T) {
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, "both.txt", "original\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial")
+
+	writeGitTestFile(t, root, "both.txt", "staged\n")
+	runGitTestCommand(t, root, "add", "both.txt")
+	writeGitTestFile(t, root, "both.txt", "unstaged\n")
+
+	service, workspaceID, folderID := newGitRepositoryTestService(t, root)
+	path := normalizeWorkspaceFolderLabel(filepath.Base(root)) + "/both.txt"
+	staged, err := service.LoadWorkspaceGitFileDiffForScope(workspaceID, folderID, path, "staged")
+	if err != nil {
+		t.Fatalf("load staged diff: %v", err)
+	}
+	if !staged.DiffAvailable || !strings.Contains(staged.Diff, "+staged") || strings.Contains(staged.Diff, "+unstaged") {
+		t.Fatalf("unexpected staged diff: %#v", staged)
+	}
+	if !staged.Staged || staged.Unstaged || staged.WorktreeStatus != "" {
+		t.Fatalf("unexpected staged scope status: %#v", staged)
+	}
+
+	unstaged, err := service.LoadWorkspaceGitFileDiffForScope(workspaceID, folderID, path, "unstaged")
+	if err != nil {
+		t.Fatalf("load unstaged diff: %v", err)
+	}
+	if !unstaged.DiffAvailable || !strings.Contains(unstaged.Diff, "-staged") || !strings.Contains(unstaged.Diff, "+unstaged") || strings.Contains(unstaged.Diff, "-original") {
+		t.Fatalf("unexpected unstaged diff: %#v", unstaged)
+	}
+	if unstaged.Staged || !unstaged.Unstaged || unstaged.IndexStatus != "" {
+		t.Fatalf("unexpected unstaged scope status: %#v", unstaged)
+	}
+}
+
 func TestWorkspaceGitStatusRefreshPreservesCachedHistory(t *testing.T) {
 	root := newGitTestRepo(t)
 	writeGitTestFile(t, root, "notes.txt", "before\n")

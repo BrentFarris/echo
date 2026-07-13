@@ -130,14 +130,14 @@ export function renderChangedFile(file: services.WorkspaceChangedFile): string {
   `;
 }
 
-export function renderGitChangedFile(file: services.WorkspaceGitChangedFile, diffPending = false): string {
+export function renderGitChangedFile(file: services.WorkspaceGitChangedFile, diffPending = false, diffScope = ""): string {
   const workspace = activeWorkspace();
   const busy = Boolean(workspace && state.gitRepositoryOperations.has(workspace.id));
   const openable = isGitChangedFileOpenable(file);
   const openLine = gitChangedFileOpenLine(file);
   const normalizedPath = normalizeGitChangePath(file.path);
   return `
-    <article class="change-file" data-change-file data-git-change-file-path="${escapeAttribute(normalizedPath)}" ${diffPending ? "data-git-diff-pending=\"true\"" : ""}>
+    <article class="change-file" data-change-file data-git-change-file-path="${escapeAttribute(normalizedPath)}" ${diffScope ? `data-git-diff-scope="${escapeAttribute(diffScope)}"` : ""} ${diffPending ? "data-git-diff-pending=\"true\"" : ""}>
       <header>
         <div class="change-file-title">
           ${icons.file}
