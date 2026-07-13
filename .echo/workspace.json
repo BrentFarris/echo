@@ -1,8 +1,11 @@
 {
   "tags": [
+    "backend",
+    "bottom-nav",
     "chat",
     "css",
     "dashboard",
+    "dropdown",
     "frontend",
     "git",
     "kanban",
@@ -10,8 +13,12 @@
     "progress-widget",
     "rendering",
     "responsive",
+    "shell",
+    "streaming",
     "task-view",
     "tasks",
+    "terminal",
+    "ui",
     "workspace"
   ],
   "version": 1

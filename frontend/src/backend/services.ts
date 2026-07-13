@@ -491,3 +491,17 @@ export function ClearKanbanCardRecovery(workspaceID: string, cardID: string): Pr
 export function UpdateWorkspaceTask(...args: Parameters<typeof Wails.UpdateWorkspaceTask>): ReturnType<typeof Wails.UpdateWorkspaceTask> {
   return call("UpdateWorkspaceTask", Wails.UpdateWorkspaceTask, args);
 }
+
+export async function RunShellCommand(workspaceID: string, command: string, workingDirectory: string, timeoutSeconds: number, maxOutputBytes: number): Promise<string> {
+  if (isWailsRuntime()) {
+    return (window as any)["go"]["services"]["SystemService"]["RunShellCommand"](workspaceID, command, workingDirectory, timeoutSeconds, maxOutputBytes);
+  }
+  return webRpc("RunShellCommand", [workspaceID, command, workingDirectory, timeoutSeconds, maxOutputBytes]);
+}
+
+export async function StopShellCommand(workspaceID: string, runID: string): Promise<void> {
+  if (isWailsRuntime()) {
+    return (window as any)["go"]["services"]["SystemService"]["StopShellCommand"](workspaceID, runID);
+  }
+  return webRpc("StopShellCommand", [workspaceID, runID]);
+}

@@ -5,10 +5,12 @@ import { llm, services } from "../../wailsjs/go/models";
 import { EventsOn, OnFileDrop } from "../backend/runtime";
 import { initializeWebAccessTokenFromURL } from "../backend/web";
 import { bindActionEvents } from "./actions";
-import { setAppCallbacks } from "./callbacks";
+import { icons } from "./icons";
+import { setAppCallbacks, getAppCallbacks } from "./callbacks";
 import { bindChatEvents, applyChatStreamEvent, isSupportedChatImageType, isSupportedChatVideoType, patchChatControls, patchChatPanel } from "./chat";
 import { applyFileChangesEvent, loadActiveChangeReview, refreshWorkspaceChangeReview } from "./changes";
 import { showContextMenu } from "./contextMenu";
+import { appRoot } from "./dom";
 import { handleGlobalKeydown, handleGlobalKeyup, handleGlobalPointerDown, handleGlobalWindowBlur } from "./events";
 import { applyKanbanEvent, applyHeartbeatEvent, applyLivenessEvent, applyWatchdogEvent, loadActiveKanbanBoard, markKanbanRunStarted } from "./kanban";
 import { gitChangedLineNumbersForFile, gitChangeStateForPath } from "./git";
@@ -17,8 +19,8 @@ import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatVideoDraftsFor
 import { applyTheme } from "./theme";
 import { applyTaskEvent, loadActiveTaskBoard } from "./tasks";
 import { pushToast } from "./toasts";
-import type { ChatStreamEvent, FileChangesEvent, HeartbeatEvent, KanbanEvent, LivenessEvent, TaskEvent, WatchdogEvent } from "./types";
-import { errorMessage } from "./utils";
+import type { ChatStreamEvent, FileChangesEvent, HeartbeatEvent, KanbanEvent, LivenessEvent, ShellCommandEvent, ShellCommandRun, TaskEvent, WatchdogEvent } from "./types";
+import { errorMessage, escapeHtml, escapeAttribute } from "./utils";
 import { loadActiveChatSession } from "./chat";
 import type { CodeEntryKind } from "../codeView/types";
 import { loadTokenBudget } from "./budget";
@@ -177,12 +179,114 @@ export function startApp() {
     render();
   });
 
+  EventsOn("echo:shell:event", (event: ShellCommandEvent) => {
+    applyShellCommandEvent(event);
+  });
+
+  // Bind terminal input Enter key handler globally
+  document.addEventListener("keydown", (event: KeyboardEvent) => {
+    const target = event.target as HTMLElement;
+    if (target.dataset?.terminalInput && event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      const wsID = target.dataset.workspaceId ?? "";
+      if (!wsID) return;
+      // Trigger the run button click programmatically
+      const runBtn = appRoot.querySelector<HTMLButtonElement>(`[data-action="run-shell-command"][data-workspace-id="${CSS.escape(wsID)}"]`);
+      runBtn?.click();
+    }
+  }, true);
+
   document.addEventListener("keydown", handleGlobalKeydown, true);
   document.addEventListener("keyup", handleGlobalKeyup, true);
   document.addEventListener("pointerdown", handleGlobalPointerDown);
   window.addEventListener("blur", handleGlobalWindowBlur);
 
   void initialize();
+}
+
+function applyShellCommandEvent(event: ShellCommandEvent) {
+  const runs = state.terminalRuns.get(event.workspaceId) ?? [];
+  let run = runs.find((r) => r.id === event.id);
+
+  if (event.type === "started") {
+    run = {
+      id: event.id,
+      command: "",
+      lines: [],
+      status: "running",
+      startedAt: Date.now(),
+    };
+    runs.push(run);
+    state.terminalRuns.set(event.workspaceId, runs);
+  } else if (event.type === "stdout" || event.type === "stderr") {
+    if (!run) return;
+    const text = typeof event.data === "string" ? event.data : "";
+    run.lines.push({ type: event.type, text });
+    // Auto-open terminal when output arrives
+    state.terminalOpen.add(event.workspaceId);
+  } else if (event.type === "completed") {
+    if (!run) return;
+    const data = event.data as { exitCode: number; timedOut: boolean; durationMilliseconds: number } | undefined;
+    if (data) {
+      run.status = data.timedOut ? "timed-out" : "completed";
+      run.exitCode = data.exitCode;
+      run.durationMs = data.durationMilliseconds;
+    }
+  }
+
+  // Re-render terminal panel if open for this workspace
+  if (state.terminalOpen.has(event.workspaceId)) {
+    patchTerminalPanel();
+  }
+}
+
+export function patchTerminalPanel() {
+  const workspaceId = state.appState?.activeWorkspaceId ?? "";
+  if (!workspaceId) return;
+  const container = appRoot.querySelector(`[data-terminal-panel][data-workspace-id="${CSS.escape(workspaceId)}"]`);
+  if (!container) {
+    getAppCallbacks().render();
+    return;
+  }
+  // Patch the runs section and input row
+  const runsContainer = container.querySelector("[data-terminal-runs]");
+  if (runsContainer) {
+    const runs = state.terminalRuns.get(workspaceId) ?? [];
+    runsContainer.innerHTML = runs.map((run) => renderTerminalRunHtml(run)).join("");
+  }
+  // Auto-scroll to bottom of output
+  const lastOutput = container.querySelector<HTMLElement>("[data-terminal-output-for]");
+  if (lastOutput) {
+    lastOutput.scrollTop = lastOutput.scrollHeight;
+  }
+}
+
+function renderTerminalRunHtml(run: ShellCommandRun): string {
+  const isRunning = run.status === "running";
+  let statusHtml = "";
+
+  if (isRunning) {
+    const wsId = run.id.split(":")[0];
+    statusHtml = `<span class="spinner terminal-run-spinner"></span><button class="icon-button danger-button terminal-stop-button" type="button" title="Stop command" data-action="stop-shell-command" data-workspace-id="${escapeAttribute(wsId)}" data-run-id="${escapeAttribute(run.id)}">${icons.stop}</button>`;
+  } else if (run.status === "completed" || run.status === "timed-out") {
+    const exitClass = run.exitCode === 0 ? "terminal-exit-success" : "terminal-exit-error";
+    const durationSec = run.durationMs !== undefined ? (run.durationMs / 1000).toFixed(1) + "s" : "";
+    statusHtml = `<span class="terminal-exit-badge ${exitClass}">Exit ${run.exitCode ?? "?"}</span>${durationSec ? `<time class="terminal-duration">${escapeHtml(durationSec)}</time>` : ""}`;
+  }
+
+  return `
+    <div class="terminal-run" data-terminal-run data-run-id="${escapeAttribute(run.id)}">
+      <div class="terminal-run-header">
+        <code class="terminal-command">${escapeHtml(run.command || "(command)")}</code>
+        <div class="terminal-run-status">${statusHtml}</div>
+      </div>
+      ${run.lines.length > 0 ? `
+        <div class="terminal-output" data-terminal-output-for="${escapeAttribute(run.id)}">
+          ${run.lines.map((line) => `<div class="terminal-line terminal-${line.type}"><span>${escapeHtml(line.text)}</span></div>`).join("")}
+        </div>
+      ` : ""}
+    </div>
+  `;
 }
 
 async function openDroppedFiles(paths: string[]) {

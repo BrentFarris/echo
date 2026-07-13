@@ -377,6 +377,7 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
     mainPanel = `
       ${workspace ? renderBudgetBar(workspace.id) : ""}
       ${renderChatPanel(workspace, true)}
+      ${workspace ? renderTerminalPanel(workspace) : ""}
     `;
   } else if (mode === "tasks") {
     mainPanel = workspace ? renderTaskPanel(workspace) : `<div class="empty-state">Add a workspace to create tasks.</div>`;
@@ -450,7 +451,7 @@ function renderMobileBottomNav(
   return `
     <nav class="mobile-bottom-nav" role="navigation" aria-label="Main navigation">
       <div class="mobile-nav-brand">
-        ${workspaces.length > 0 && workspace ? `<button class="mobile-nav-pill${state.workspaceDropdownOpen ? " is-open" : ""}" type="button" aria-label="Workspace selector" aria-expanded="${state.workspaceDropdownOpen}" data-action="toggle-workspace-dropdown" id="mobile-nav-pill">${escapeHtml(workspace.displayName)}</button>` : ""}
+        ${workspaces.length > 0 && workspace ? `<button class="mobile-nav-pill${state.workspaceDropdownOpen ? " is-open" : ""}" type="button" aria-label="Workspace selector" aria-expanded="${state.workspaceDropdownOpen}" data-action="toggle-workspace-dropdown" id="mobile-nav-pill">${escapeHtml(workspace.displayName)}</button>` : `<button class="mobile-nav-pill mobile-nav-add-workspace" type="button" aria-label="Add workspace" data-action="add-workspace">${icons.plus}<span>Add</span></button>`}
         <span class="mobile-nav-app-name">${appName}</span>
       </div>
       ${state.workspaceDropdownOpen ? `
@@ -458,6 +459,10 @@ function renderMobileBottomNav(
           ${workspaces.map((ws) => `
             <button class="mobile-nav-workspace-option${ws.id === workspace?.id ? " is-active" : ""}" type="button" role="menuitem" data-action="activate-workspace" data-workspace-id="${escapeHtml(ws.id)}"${ws.id === workspace?.id ? ' aria-current="page"' : ''}>${escapeHtml(ws.displayName)}${ws.missing ? ' <span class="is-missing">(missing)</span>' : ''}${renderWorkspaceActivityStatus(ws.id)}</button>
           `).join("")}
+          ${workspaces.length > 0 ? `
+            <div class="workspace-dropdown-divider"></div>
+            <button class="mobile-nav-workspace-option" type="button" role="menuitem" data-action="add-workspace">Add workspace</button>
+          ` : ""}
         </div>
       ` : ""}
       <div class="mobile-nav-tabs" role="tablist" aria-label="View tabs">
@@ -505,4 +510,74 @@ function pendingChangesCount(workspaceID: string): number {
     return Math.max(0, repository.fileCount ?? 0);
   }
   return Math.max(0, changeReviewFor(workspaceID).fileCount ?? 0);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Terminal panel                                                     */
+/* ------------------------------------------------------------------ */
+
+import type { ShellCommandRun } from "./types";
+
+export function renderTerminalPanel(workspace: services.Workspace): string {
+  const isOpen = state.terminalOpen.has(workspace.id);
+  const runs = state.terminalRuns.get(workspace.id) ?? [];
+  const draft = state.terminalDrafts.get(workspace.id) ?? "";
+  const hasRunning = runs.some((r) => r.status === "running");
+
+  return `
+    <details class="terminal-panel" data-terminal-panel data-workspace-id="${escapeAttribute(workspace.id)}" ${isOpen ? "open" : ""}>
+      <summary data-action="toggle-terminal" data-workspace-id="${escapeAttribute(workspace.id)}">
+        ${icons.terminal}
+        <span>Terminal</span>
+        ${hasRunning ? `<span class="spinner terminal-spinner"></span>` : ""}
+      </summary>
+      <div class="terminal-content">
+        <div class="terminal-runs" data-terminal-runs>
+          ${runs.map((run) => renderTerminalRun(run)).join("")}
+        </div>
+        <div class="terminal-input-row">
+          <span class="terminal-prompt">$</span>
+          <input
+            class="terminal-input"
+            type="text"
+            placeholder="Enter command..."
+            value="${escapeAttribute(draft)}"
+            data-terminal-input
+            data-workspace-id="${escapeAttribute(workspace.id)}"
+            aria-label="Terminal command input"
+          />
+          <button class="icon-button terminal-run-button" type="button" title="Run command" data-action="run-shell-command" data-workspace-id="${escapeAttribute(workspace.id)}">
+            ${icons.execute}
+          </button>
+        </div>
+      </div>
+    </details>
+  `;
+}
+
+function renderTerminalRun(run: ShellCommandRun): string {
+  const isRunning = run.status === "running";
+  let statusHtml = "";
+
+  if (isRunning) {
+    statusHtml = `<span class="spinner terminal-run-spinner"></span><button class="icon-button danger-button terminal-stop-button" type="button" title="Stop command" data-action="stop-shell-command" data-workspace-id="${escapeAttribute(run.id.split(':')[0])}" data-run-id="${escapeAttribute(run.id)}">${icons.stop}</button>`;
+  } else if (run.status === "completed" || run.status === "timed-out") {
+    const exitClass = run.exitCode === 0 ? "terminal-exit-success" : "terminal-exit-error";
+    const durationSec = run.durationMs !== undefined ? (run.durationMs / 1000).toFixed(1) + "s" : "";
+    statusHtml = `<span class="terminal-exit-badge ${exitClass}">Exit ${run.exitCode ?? "?"}</span>${durationSec ? `<time class="terminal-duration">${escapeHtml(durationSec)}</time>` : ""}`;
+  }
+
+  return `
+    <div class="terminal-run" data-terminal-run data-run-id="${escapeAttribute(run.id)}">
+      <div class="terminal-run-header">
+        <code class="terminal-command">${escapeHtml(run.command || "(command)")}</code>
+        <div class="terminal-run-status">${statusHtml}</div>
+      </div>
+      ${run.lines.length > 0 ? `
+        <div class="terminal-output" data-terminal-output-for="${escapeAttribute(run.id)}">
+          ${run.lines.map((line) => `<div class="terminal-line terminal-${line.type}"><span>${escapeHtml(line.text)}</span></div>`).join("")}
+        </div>
+      ` : ""}
+    </div>
+  `;
 }

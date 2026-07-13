@@ -603,4 +603,6 @@ var allowedRPCMethods = map[string]bool{
 	"UpdateWorkspaceTask":              true,
 	"GetDashboardLayouts":              true,
 	"SaveDashboardLayout":              true,
+	"RunShellCommand":                  true,
+	"StopShellCommand":                 true,
 }

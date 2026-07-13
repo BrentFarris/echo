@@ -1,6 +1,27 @@
 {
   "version": 1,
   "tasks": {
+    "0ada881b-2f54-445f-8a95-69a79c91b8bd": {
+      "title": "Backend: Add RunShellCommand/StopShellCommand to SystemService with event streaming",
+      "details": "## Files\n- **New** `internal/services/shell_command.go`\n- **Modify** `internal/services/events.go`\n- **Modify** `internal/webserver/server.go`\n\n## Work\n- Define `ShellCommandEvent` struct: `{ WorkspaceID, ID, Type (\"started\"|\"stdout\"|\"stderr\"|\"completed\"), Data any }`\n- Add `shellCommandRuns map[string]context.CancelFunc` to `SystemService` (protected by `chatMu`, keyed by run ID)\n- **`RunShellCommand(workspaceID, command, workingDirectory string, timeoutSeconds, maxOutputBytes int) (string, error)`**\n  - Validate workspace and working directory (reuse tool logic from `internal/tools`)\n  - Generate unique run ID (`workspaceID:seq`)\n  - Store cancel func in `shellCommandRuns`\n  - Emit `\"started\"` event\n  - Goroutine runs `exec.CommandContext` via `shellCommandInvocation`, pipes stdout/stderr through `bufio.Scanner`, emits per-line `\"stdout\"`/`\"stderr\"` events\n  - On completion, emit `\"completed\"` with exitCode, timedOut, durationMilliseconds; clean up map entry\n- **`StopShellCommand(workspaceID, runID string) error`** — cancels and removes from map\n- Export `ShellRuntimeEventName = \"echo:shell:event\"` constant in `events.go`\n- Add `\"RunShellCommand\": true` and `\"StopShellCommand\": true` to `allowedRPCMethods`\n- Run `wails generate`",
+      "epic": "Manual shell command execution",
+      "tags": [
+        "backend",
+        "shell",
+        "streaming"
+      ],
+      "acceptanceCriteria": [
+        "go test ./... passes",
+        "RunShellCommand returns run ID immediately and streams per-line stdout/stderr events via echo:shell:event",
+        "StopShellCommand cancels a running command and removes it from the map"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-13T15:54:40.0776022Z",
+      "updatedAt": "2026-07-13T15:56:09.8277296Z",
+      "completedAt": "2026-07-13T15:56:09.8277296Z"
+    },
     "1954996a-cff3-48c5-8af7-93490eb110e7": {
       "title": "Render task references in chat messages",
       "details": "When a user sends a message containing `@task:\u003cid\u003e`, render it as a clickable/styled reference in the chat log so it's visually distinct from plain text (similar to how `@path` file mentions are rendered).\n\n**Scope:**\n- Parse `@task:\u003cid\u003e` patterns in user and assistant message content during rendering\n- Render as a styled chip or link element (e.g., `\u003cspan class=\"chat-task-ref\"\u003e`) showing the task title if resolvable, falling back to the ID\n- Clicking the reference could navigate to the task view with that task selected\n\n**Files to change:**\n- `echo/frontend/src/app/chat/index.ts` — message rendering logic\n- `echo/frontend/src/styles.css` — styling for the task reference element",
@@ -136,6 +157,31 @@
       "updatedAt": "2026-07-11T11:44:00.3611923Z",
       "completedAt": "2026-07-11T11:44:00.3611923Z"
     },
+    "ac43ea4f-829a-4106-b9ac-f18a59d99ffd": {
+      "title": "Add \"Add workspace\" button to mobile workspace dropdown",
+      "details": "## Problem\n\nOn mobile (≤720px), there is no way to add a new workspace. The desktop sidebar dropdown includes an \"Add workspace\" menu item, but the mobile bottom nav workspace dropdown does not. Additionally, when zero workspaces exist, the mobile nav pill is hidden entirely, leaving no entry point.\n\n## Root cause\n\n`renderMobileBottomNav()` in `frontend/src/app/render.ts` (~line 459) renders only existing workspace options inside `.mobile-nav-workspace-dropdown`. It omits the \"Add workspace\" button that the desktop dropdown includes. When `workspaces.length === 0`, the pill is not rendered at all (`workspaces.length \u003e 0 \u0026\u0026 workspace` guard).\n\n## Changes\n\n### 1. `frontend/src/app/render.ts` — Mobile dropdown \"Add workspace\" entry\n\nInside `.mobile-nav-workspace-dropdown`, after the workspace options loop, add a divider and an \"Add workspace\" button matching the desktop pattern:\n\n```html\n\u003cdiv class=\"workspace-dropdown-divider\"\u003e\u003c/div\u003e\n\u003cbutton class=\"mobile-nav-workspace-option\" type=\"button\" role=\"menuitem\" data-action=\"add-workspace\"\u003eAdd workspace\u003c/button\u003e\n```\n\n### 2. `frontend/src/app/render.ts` — Zero-workspace pill\n\nWhen `workspaces.length === 0`, render a pill that triggers `data-action=\"add-workspace\"` instead of hiding the pill entirely:\n\n```typescript\n${workspaces.length \u003e 0 \u0026\u0026 workspace \n  ? `\u003cbutton class=\"mobile-nav-pill\"...\u003e...\u003c/button\u003e`\n  : `\u003cbutton class=\"mobile-nav-pill mobile-nav-add-workspace\" type=\"button\" aria-label=\"Add workspace\" data-action=\"add-workspace\"\u003e${icons.plus}\u003cspan\u003eAdd\u003c/span\u003e\u003c/button\u003e`\n}\n```\n\n### 3. `frontend/src/styles.css` — Mobile add-workspace pill styling\n\nInside the `@media (max-width: 720px)` block, add styles for `.mobile-nav-add-workspace` to make it visually distinct (e.g., dashed border or accent color) so users recognize it as an action button rather than a workspace name.\n\n## Key files\n- `frontend/src/app/render.ts` — `renderMobileBottomNav()` function (~line 443–508)\n- `frontend/src/styles.css` — mobile responsive block\n- `frontend/src/app/actions.ts` — `add-workspace` handler already exists (line 458), no backend changes needed\n\n## Verification\n- Open app on mobile viewport (≤720px) with zero workspaces → pill shows \"Add\" button, tapping opens folder picker\n- Open app with one+ workspaces → tap workspace pill → dropdown includes \"Add workspace\" at bottom with divider\n- `npm run build` passes in `frontend/`",
+      "epic": "Mobile UX",
+      "tags": [
+        "mobile",
+        "workspace",
+        "dropdown",
+        "ui",
+        "bottom-nav"
+      ],
+      "acceptanceCriteria": [
+        "Mobile workspace dropdown (≤720px) includes an 'Add workspace' menu item at the bottom, separated by a divider, with data-action='add-workspace'",
+        "When zero workspaces exist on mobile, the nav brand section renders an 'Add' pill button that triggers the folder picker via data-action='add-workspace'",
+        "The add-workspace pill is visually distinct from a normal workspace pill (e.g., dashed border or accent styling)",
+        "Tapping 'Add workspace' on mobile opens the OS folder picker and adds the selected folder as a new workspace",
+        "Frontend builds without errors: cd frontend; npm run build"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-11T12:42:30.4063347Z",
+      "updatedAt": "2026-07-11T12:45:10.3222804Z",
+      "completedAt": "2026-07-11T12:45:10.3222804Z"
+    },
     "b48a11ea-0710-4128-bd76-c361f1df5449": {
       "title": "Add WorkspaceActivitySummary struct and GetWorkspaceActivitySummaries backend method",
       "details": "## Changes to `echo/internal/services/system.go`\n\n### 1. Add struct\n\n```go\ntype WorkspaceActivitySummary struct {\n\tWorkspaceID           string `json:\"workspaceId\"`\n\tIsChatBusy            bool   `json:\"isChatBusy\"`\n\tIsKanbanRunning       bool   `json:\"isKanbanRunning\"`\n\tActiveAgentCount      int    `json:\"activeAgentCount\"`\n\tLastMessageSnippet    string `json:\"lastMessageSnippet,omitempty\"`\n}\n```\n\n### 2. Add exported method\n\n```go\n// GetWorkspaceActivitySummaries returns activity status for all workspaces.\nfunc (s *SystemService) GetWorkspaceActivitySummaries() []WorkspaceActivitySummary {\n\ts.mu.Lock()\n\tworkspaceIDs := make([]string, 0, len(s.state.Workspaces))\n\tfor _, w := range s.state.Workspaces {\n\t\tworkspaceIDs = append(workspaceIDs, w.ID)\n\t}\n\ts.mu.Unlock()\n\n\tsummaries := make([]WorkspaceActivitySummary, 0, len(workspaceIDs))\n\n\tfor _, wsID := range workspaceIDs {\n\t\tvar summary WorkspaceActivitySummary\n\t\tsummary.WorkspaceID = wsID\n\n\t\t// Chat busy check\n\t\ts.chatMu.Lock()\n\t\t_, summary.IsChatBusy = s.chatStreams[wsID]\n\t\t_, summary.IsKanbanRunning = s.kanbanRuns[wsID]\n\t\tsummary.ActiveAgentCount = 0\n\t\tfor agentKey := range s.kanbanAgents {\n\t\t\tif strings.HasPrefix(agentKey, wsID+\":\") {\n\t\t\t\tsummary.ActiveAgentCount++\n\t\t\t}\n\t\t}\n\n\t\t// Last message snippet from chat session\n\t\tif session, ok := s.chatSessions[wsID]; ok {\n\t\t\tfor i := len(session.Messages) - 1; i \u003e= 0; i-- {\n\t\t\t\tmsg := session.Messages[i]\n\t\t\t\tif msg.Role == \"assistant\" \u0026\u0026 msg.Content != \"\" {\n\t\t\t\t\tsnippet := msg.Content\n\t\t\t\t\tif len(snippet) \u003e 60 {\n\t\t\t\t\t\tsnippet = snippet[:60] + \"…\"\n\t\t\t\t\t}\n\t\t\t\t\tsummary.LastMessageSnippet = strings.TrimSpace(strings.ReplaceAll(snippet, \"\\n\", \" \"))\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\ts.chatMu.Unlock()\n\n\t\tsummaries = append(summaries, summary)\n\t}\n\n\treturn summaries\n}\n```\n\n### Notes\n- `agentKey` format is `\"workspaceID:agentSeq\"` — confirmed from kanban_scheduler.go registration pattern. Use `strings.HasPrefix(agentKey, wsID+\":\")`.\n- The method acquires `s.mu` briefly to read workspace IDs, then `s.chatMu` for all activity data. This follows the existing locking pattern (e.g., `Shutdown()` does similar).\n- Last message snippet: walk backwards through chat session messages, find first assistant message with content, trim to 60 chars + ellipsis, collapse newlines.\n\n### Verification\n- `go test ./...` passes",
@@ -196,6 +242,29 @@
       "createdAt": "2026-07-11T10:55:51.0518582Z",
       "updatedAt": "2026-07-11T10:59:25.1036183Z",
       "completedAt": "2026-07-11T10:59:25.1036183Z"
+    },
+    "fc32a1ba-d84f-47ff-91d1-76200e240161": {
+      "title": "Frontend: Add terminal panel with live streaming output to chat view",
+      "details": "## Files\n- **Modify** `frontend/src/app/types.ts`\n- **Modify** `frontend/src/app/state.ts`\n- **Modify** `frontend/src/backend/services.ts`\n- **Modify** `frontend/src/app/bootstrap.ts`\n- **Modify** `frontend/src/app/actions.ts`\n- **Modify** `frontend/src/app/render.ts`\n- **Modify** `frontend/src/app/icons.ts`\n- **Modify** `frontend/src/styles.css`\n\n## Work\n- **types.ts**: Add `ShellCommandEvent` and `ShellCommandRun` types\n- **state.ts**: Add per-workspace `terminalRuns`, `terminalDrafts`, `terminalOpen` state\n- **services.ts**: Add `RunShellCommand` and `StopShellCommand` wrappers\n- **bootstrap.ts**: Register `\"echo:shell:event\"` listener that appends lines and updates run status in real time\n- **actions.ts**: Handle `run-shell-command`, `stop-shell-command`, `toggle-terminal` actions\n- **render.ts**: Add `renderTerminalPanel(workspace)` — collapsible section in chat view showing command history with live-scrolling color-coded stdout/stderr lines, exit code badge, duration, spinner + stop button for running commands, and input row at bottom. Integrate into `renderWorkspacePanels` for mode `\"chat\"`\n- **icons.ts**: Add terminal/console icon SVG\n- **styles.css**: Add `.terminal-panel`, `.terminal-run`, `.terminal-line`, `.terminal-stdout`, `.terminal-stderr`, `.terminal-input-row`, `.terminal-exit-badge` styles (monospace font, scrollable, theme-consistent)",
+      "epic": "Manual shell command execution",
+      "tags": [
+        "frontend",
+        "terminal",
+        "streaming"
+      ],
+      "acceptanceCriteria": [
+        "cd frontend; npm run build passes",
+        "Terminal panel appears in chat view with collapsible command history",
+        "Live line-by-line stdout/stderr output streams as command runs",
+        "Stop button cancels running command",
+        "Completed commands show exit code and duration"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-13T15:55:12.9172398Z",
+      "updatedAt": "2026-07-13T15:56:09.9051295Z",
+      "completedAt": "2026-07-13T15:56:09.9051295Z"
     },
     "ffff2ce9-b790-43bd-bdbd-7b1c29dac4f7": {
       "title": "Add GetWorkspaceActivitySummaries frontend service wrapper",

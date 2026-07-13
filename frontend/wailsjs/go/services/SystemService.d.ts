@@ -186,6 +186,8 @@ export function RetryChatMessage(arg1:string,arg2:string,arg3:string):Promise<se
 
 export function RotateWebAccessToken():Promise<services.AppState>;
 
+export function RunShellCommand(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number):Promise<string>;
+
 export function SaveDashboardLayout(arg1:string,arg2:Array<services.DashboardWidgetJSON>):Promise<void>;
 
 export function SaveExternalTextFile(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFile>;
@@ -243,6 +245,8 @@ export function StopHeartbeat(arg1:string):Promise<void>;
 export function StopKanbanCard(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
 export function StopKanbanExecution(arg1:string):Promise<services.KanbanBoard>;
+
+export function StopShellCommand(arg1:string,arg2:string):Promise<void>;
 
 export function StopWatchdog(arg1:string):Promise<void>;
 

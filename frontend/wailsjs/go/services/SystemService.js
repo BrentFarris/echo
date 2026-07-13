@@ -362,6 +362,10 @@ export function RotateWebAccessToken() {
   return window['go']['services']['SystemService']['RotateWebAccessToken']();
 }
 
+export function RunShellCommand(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['services']['SystemService']['RunShellCommand'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function SaveDashboardLayout(arg1, arg2) {
   return window['go']['services']['SystemService']['SaveDashboardLayout'](arg1, arg2);
 }
@@ -476,6 +480,10 @@ export function StopKanbanCard(arg1, arg2) {
 
 export function StopKanbanExecution(arg1) {
   return window['go']['services']['SystemService']['StopKanbanExecution'](arg1);
+}
+
+export function StopShellCommand(arg1, arg2) {
+  return window['go']['services']['SystemService']['StopShellCommand'](arg1, arg2);
 }
 
 export function StopWatchdog(arg1) {

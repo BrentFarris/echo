@@ -177,7 +177,9 @@ type SystemService struct {
 	kanbanAgents            map[string]*kanbanAgentRun
 	kanbanAgentSeq          uint64
 	kanbanDetailViews       map[string]string
-	heartbeats              map[string]*heartbeatHandle // workspaceID -> running heartbeat
+	shellCommandRuns        map[string]context.CancelFunc // runID -> cancel func
+	shellCommandSeq         uint64
+	heartbeats              map[string]*heartbeatHandle // workspaceID -\u003e running heartbeat
 	watchdogs               map[string]*watchdogHandle  // workspaceID -> running watchdog
 	fileChangeMu            sync.Mutex
 	fileChangeSeq           uint64
@@ -220,6 +222,7 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 		kanbanRuns:            make(map[string]context.CancelFunc),
 		kanbanAgents:          make(map[string]*kanbanAgentRun),
 		kanbanDetailViews:     make(map[string]string),
+		shellCommandRuns:      make(map[string]context.CancelFunc),
 		heartbeats:            make(map[string]*heartbeatHandle),
 		watchdogs:             make(map[string]*watchdogHandle),
 		fileChanges:           make(map[string][]trackedFileChange),

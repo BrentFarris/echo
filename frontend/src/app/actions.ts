@@ -1,6 +1,6 @@
 
 import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate, startCodeRename } from "../codeView";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, GetHeartbeatConfig, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, GetHeartbeatConfig, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, RunShellCommand, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution, StopShellCommand } from "../backend/services";
 import { appRoot } from "./dom";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
@@ -1048,6 +1048,47 @@ export async function handleAction(event: Event) {
       }
       pushToast("Workspace removed.", "success");
       getAppCallbacks().render();
+    }
+    if (action === "run-shell-command") {
+      const commandInput = appRoot.querySelector<HTMLInputElement>(`[data-terminal-input][data-workspace-id="${CSS.escape(workspaceID)}"]`);
+      const command = commandInput?.value.trim() ?? "";
+      if (!workspaceID || !command) return;
+      state.terminalDrafts.set(workspaceID, "");
+      try {
+        const runID = await RunShellCommand(workspaceID, command, "", 300, 256 * 1024);
+        // Update the run's command text in existing runs
+        const runs = state.terminalRuns.get(workspaceID) ?? [];
+        const run = runs.find((r) => r.id === runID);
+        if (run) {
+          run.command = command;
+        }
+        state.terminalOpen.add(workspaceID);
+        getAppCallbacks().render();
+      } catch (error) {
+        pushToast(errorMessage(error), "error");
+      }
+      return;
+    }
+    if (action === "stop-shell-command") {
+      const runID = target.dataset.runId ?? "";
+      if (!workspaceID || !runID) return;
+      try {
+        await StopShellCommand(workspaceID, runID);
+      } catch (error) {
+        pushToast(errorMessage(error), "error");
+      }
+      return;
+    }
+    if (action === "toggle-terminal") {
+      const wsID = target.dataset.workspaceId ?? "";
+      if (!wsID) return;
+      if (state.terminalOpen.has(wsID)) {
+        state.terminalOpen.delete(wsID);
+      } else {
+        state.terminalOpen.add(wsID);
+      }
+      getAppCallbacks().render();
+      return;
     }
   } catch (error) {
     const message = errorMessage(error);
