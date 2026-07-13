@@ -33,7 +33,7 @@
   --code-editor-active-line-bg: rgba(208, 215, 222, 0.24);
   --code-editor-active-gutter: #f6f8fa;
   --code-editor-selection: rgba(9, 105, 218, 0.25);
-  --code-editor-selection-match: rgba(9, 105, 218, 0.14);
+  --code-editor-selection-match: rgba(9, 105, 218, 0.2);
   --code-editor-invalid: #cf222e;
   --code-editor-whitespace-indicator: rgba(110, 119, 129, 0.38);
   --code-token-comment: #6e7781;
@@ -111,7 +111,7 @@
     --code-editor-active-line-bg: rgba(48, 54, 61, 0.42);
     --code-editor-active-gutter: #161b22;
     --code-editor-selection: #264f78;
-    --code-editor-selection-match: rgba(56, 139, 253, 0.14);
+    --code-editor-selection-match: rgba(56, 139, 253, 0.22);
     --code-editor-invalid: #ff7b72;
     --code-editor-whitespace-indicator: rgba(125, 133, 144, 0.46);
     --code-token-comment: #8b949e;

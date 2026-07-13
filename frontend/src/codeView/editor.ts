@@ -2,6 +2,7 @@ import { HighlightStyle, indentUnit, syntaxHighlighting } from "@codemirror/lang
 import { acceptCompletion } from "@codemirror/autocomplete";
 import { isolateHistory } from "@codemirror/commands";
 import { languages as languageData } from "@codemirror/language-data";
+import { highlightSelectionMatches } from "@codemirror/search";
 import { countColumn, EditorSelection, EditorState, findColumn, Prec, RangeSetBuilder, type Extension, type SelectionRange } from "@codemirror/state";
 import { crosshairCursor, Decoration, type DecorationSet, EditorView, GutterMarker, ViewPlugin, type ViewUpdate, gutter, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
@@ -258,6 +259,11 @@ export async function mountActiveCodeEditor(
   const extensions = [
     ...(gitChangedLineGutter ? [gitChangedLineGutter] : []),
     basicSetup,
+    highlightSelectionMatches({
+      minSelectionLength: 1,
+      maxMatches: 2000,
+      wholeWords: false,
+    }),
     ...tabIndentionExtensions(),
     EditorState.lineSeparator.of(tab.lineSeparator),
     EditorState.allowMultipleSelections.of(true),
