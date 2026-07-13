@@ -76,10 +76,14 @@ export function bindEvents() {
         const desktopDropdown = appRoot.querySelector<HTMLElement>(
           "[data-workspace-dropdown]",
         );
+        const contextMenu = appRoot.querySelector<HTMLElement>(
+          "[data-context-menu]",
+        );
         const isInPill = pillBtn && pillBtn.contains(target);
         const isInMobileDropdown = mobileDropdown && mobileDropdown.contains(target);
         const isInDesktopDropdown = desktopDropdown && desktopDropdown.contains(target);
-        if (!isInPill && !isInMobileDropdown && !isInDesktopDropdown) {
+        const isInContextMenu = contextMenu && contextMenu.contains(target);
+        if (!isInPill && !isInMobileDropdown && !isInDesktopDropdown && !isInContextMenu) {
           state.workspaceDropdownOpen = false;
           getAppCallbacks().render();
         }
