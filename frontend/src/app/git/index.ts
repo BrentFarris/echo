@@ -1,6 +1,6 @@
 import { ensureCodeViewRootLoaded, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk } from "../../codeView";
 import { codeIcons } from "../../codeView/icons";
-import { ChooseWorkspaceGitCloneParent, CloneWorkspaceGitRepository, CommitWorkspaceGitChanges, CreateWorkspaceGitBranch, DiscardWorkspaceGitChanges, DiscardWorkspaceGitFile, LoadWorkspaceChangeReview, LoadWorkspaceGitCommit, LoadWorkspaceGitFileDiff, LoadWorkspaceGitRepository, LoadWorkspaceGitStash, MergeWorkspaceGitBranch, RunWorkspaceGitAction, StageWorkspaceGitChanges, StageWorkspaceGitFile, SwitchWorkspaceGitBranch, SyncWorkspaceGitBranch, UnstageWorkspaceGitChanges, UnstageWorkspaceGitFile } from "../../backend/services";
+import { ChooseWorkspaceGitCloneParent, CloneWorkspaceGitRepository, CommitWorkspaceGitChanges, CreateWorkspaceGitBranch, DiscardWorkspaceGitChanges, DiscardWorkspaceGitFile, LoadWorkspaceChangeReview, LoadWorkspaceGitCommit, LoadWorkspaceGitFileDiffForScope, LoadWorkspaceGitRepository, LoadWorkspaceGitStash, MergeWorkspaceGitBranch, RunWorkspaceGitAction, StageWorkspaceGitChanges, StageWorkspaceGitFile, SwitchWorkspaceGitBranch, SyncWorkspaceGitBranch, UnstageWorkspaceGitChanges, UnstageWorkspaceGitFile } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
 import type { CodeEntryKind, CodeGitChangeState } from "../../codeView/types";
 import { getAppCallbacks } from "../callbacks";
@@ -32,6 +32,7 @@ type GitChangeTreeFile = {
 };
 
 type GitChangeTreeNode = GitChangeTreeFolder | GitChangeTreeFile;
+type GitWorkingDiffScope = "staged" | "unstaged";
 
 let gitWorkingDiffObserver: IntersectionObserver | null = null;
 
@@ -91,8 +92,9 @@ function renderGitSourceSidebar(
   loading: boolean,
   operation: string,
 ): string {
+  const historyExpanded = state.expandedGitHistories.has(gitRepositoryDraftKey(workspaceID, repository.folderId));
   return `
-    <aside class="git-source-sidebar" aria-label="Source Control">
+    <aside class="git-source-sidebar ${historyExpanded ? "is-history-expanded" : "is-history-collapsed"}" aria-label="Source Control">
       <div class="git-source-sidebar-top">
         <div class="git-source-title-row">
           ${renderGitRepositorySummary(repository, loading, operation)}
@@ -105,14 +107,19 @@ function renderGitSourceSidebar(
         </div>
         ${renderGitRepositoryPicker(repositories, selectedFolderID, loading, operation)}
         ${renderGitCommitForm(workspaceID, repository, operation)}
-        ${renderGitSourceChangeSections(repository, operation)}
+        ${renderGitSourceChangeSections(workspaceID, repository, operation)}
       </div>
-      <section class="git-source-history" aria-labelledby="git-history-title">
+      <section class="git-source-history ${historyExpanded ? "is-expanded" : "is-collapsed"}" aria-labelledby="git-history-title">
         <header>
           <h3 id="git-history-title">History</h3>
-          <span>${escapeHtml(String((repository.commits ?? []).length))}</span>
+          <div class="git-source-history-actions">
+            <span>${escapeHtml(String((repository.commits ?? []).length))}</span>
+            <button class="icon-button git-source-history-toggle" type="button" title="${historyExpanded ? "Collapse history" : "Expand history"}" aria-label="${historyExpanded ? "Collapse history" : "Expand history"}" aria-expanded="${historyExpanded}" data-action="toggle-git-history">
+              ${historyExpanded ? icons.arrowDown : icons.arrowUp}
+            </button>
+          </div>
         </header>
-        ${renderGitCommitHistory(workspaceID, repository)}
+        ${historyExpanded ? renderGitCommitHistory(workspaceID, repository) : ""}
       </section>
     </aside>
   `;
@@ -235,19 +242,21 @@ function gitSyncMenuLabel(repository: services.WorkspaceGitRepositoryStatus): st
   return ahead > 0 || behind > 0 ? `Sync (${behind} down / ${ahead} up)` : "Sync";
 }
 
-function renderGitSourceChangeSections(repository: services.WorkspaceGitRepositoryStatus, operation: string): string {
+function renderGitSourceChangeSections(workspaceID: string, repository: services.WorkspaceGitRepositoryStatus, operation: string): string {
   const files = repository.files ?? [];
   const staged = files.filter((file) => file.staged);
   const unstaged = files.filter((file) => file.unstaged);
   return `
     <div class="git-source-change-sections ${staged.length ? "has-staged" : "has-unstaged-only"}">
-      ${staged.length ? renderGitSourceFileSection("Staged Changes", staged, "unstage", operation) : ""}
-      ${renderGitSourceFileSection("Changes", unstaged, "stage", operation)}
+      ${staged.length ? renderGitSourceFileSection(workspaceID, repository.folderId, "Staged Changes", staged, "unstage", operation) : ""}
+      ${renderGitSourceFileSection(workspaceID, repository.folderId, "Changes", unstaged, "stage", operation)}
     </div>
   `;
 }
 
 function renderGitSourceFileSection(
+  workspaceID: string,
+  folderID: string,
   title: string,
   files: services.WorkspaceGitChangedFile[],
   mode: "stage" | "unstage",
@@ -272,28 +281,63 @@ function renderGitSourceFileSection(
         </button>
       </header>
       ${files.length
-        ? `<div class="git-source-file-list">${files.map((file) => renderGitSourceFileRow(file, action, icon, fileActionLabel, busy)).join("")}</div>`
+        ? renderGitSourceFileTree(workspaceID, folderID, files, mode, action, icon, fileActionLabel, busy)
         : `<div class="git-source-empty">No files.</div>`}
     </section>
   `;
 }
 
-function renderGitSourceFileRow(
-  file: services.WorkspaceGitChangedFile,
+function renderGitSourceFileTree(
+  workspaceID: string,
+  folderID: string,
+  files: services.WorkspaceGitChangedFile[],
+  mode: "stage" | "unstage",
   action: string,
   icon: string,
   actionLabel: string,
   busy: boolean,
 ): string {
-  const displayPath = displayGitChangePath(file.path);
-  const name = displayPath.split("/").pop() || displayPath;
-  const normalizedPath = normalizeGitChangePath(file.path);
+  const root = buildGitChangeTree(files);
+  const collapsed = gitCollapsedChangeFolders(workspaceID, folderID);
+  return `<div class="git-source-file-list" role="tree">
+    ${sortedGitChangeTreeChildren(root).map((node) => renderGitSourceFileTreeNode(node, collapsed, mode, action, icon, actionLabel, busy, 0)).join("")}
+  </div>`;
+}
+
+function renderGitSourceFileTreeNode(
+  node: GitChangeTreeNode,
+  collapsed: Set<string>,
+  mode: "stage" | "unstage",
+  action: string,
+  icon: string,
+  actionLabel: string,
+  busy: boolean,
+  depth: number,
+): string {
+  if (node.kind === "folder") {
+    const collapseKey = `${mode}:${node.path}`;
+    const isCollapsed = collapsed.has(collapseKey);
+    return `
+      <div class="git-source-folder ${isCollapsed ? "is-collapsed" : "is-expanded"}" role="none">
+        <button class="git-source-folder-row" type="button" role="treeitem" aria-expanded="${!isCollapsed}" title="${escapeAttribute(node.path)}" style="--tree-depth: ${depth}" data-git-change-folder="${escapeAttribute(collapseKey)}">
+          <span class="git-source-folder-chevron">${codeIcons.chevron}</span>
+          <span class="git-source-folder-icon">${codeIcons.folder}</span>
+          <span class="git-source-folder-name">${escapeHtml(node.name)}</span>
+          <span class="git-source-folder-count">${escapeHtml(String(node.count))}</span>
+        </button>
+        ${isCollapsed ? "" : `<div class="git-source-folder-children" role="group">${sortedGitChangeTreeChildren(node).map((child) => renderGitSourceFileTreeNode(child, collapsed, mode, action, icon, actionLabel, busy, depth + 1)).join("")}</div>`}
+      </div>
+    `;
+  }
+
+  const file = node.file;
+  const displayPath = node.displayPath;
   return `
-    <div class="git-source-file-row" title="${escapeAttribute(displayPath)}">
-      <button class="git-source-file-main" type="button" data-git-change-file="${escapeAttribute(normalizedPath)}">
+    <div class="git-source-file-row" role="none" title="${escapeAttribute(displayPath)}" style="--tree-depth: ${depth}">
+      <button class="git-source-file-main" type="button" role="treeitem" data-git-change-file="${escapeAttribute(node.path)}" data-git-diff-scope="${mode === "stage" ? "unstaged" : "staged"}">
         <span class="git-source-file-status is-${escapeAttribute(file.operation)}">${escapeHtml(gitSourceStatusLetter(file))}</span>
-        <span class="git-source-file-name">${escapeHtml(name)}</span>
-        <span class="git-source-file-path">${escapeHtml(displayPath === name ? "" : displayPath.slice(0, Math.max(0, displayPath.length - name.length - 1)))}</span>
+        <span class="git-source-file-icon">${codeIcons.file}</span>
+        <span class="git-source-file-name">${escapeHtml(node.name)}</span>
       </button>
       <button class="icon-button git-source-file-action" type="button" title="${escapeAttribute(actionLabel)}" aria-label="${escapeAttribute(`${actionLabel}: ${displayPath}`)}" data-action="${escapeAttribute(action)}" data-git-file-path="${escapeAttribute(file.path)}" ${busy ? "disabled" : ""}>
         ${icon}
@@ -331,7 +375,10 @@ function renderGitWorkingChanges(workspaceID: string, repository: services.Works
   }
   return `
     <div class="change-file-list git-change-file-list" data-git-change-file-list>
-      ${files.length ? files.map((file) => renderGitWorkingChangedFile(workspaceID, repository.folderId, file)).join("") : `<div class="empty-state compact">No working tree changes.</div>`}
+      ${files.length
+        ? files.filter((file) => file.staged).map((file) => renderGitWorkingChangedFile(workspaceID, repository.folderId, file, "staged")).join("")
+          + files.filter((file) => file.unstaged).map((file) => renderGitWorkingChangedFile(workspaceID, repository.folderId, file, "unstaged")).join("")
+        : `<div class="empty-state compact">No working tree changes.</div>`}
       ${selectedCommitReview}
     </div>
   `;
@@ -350,11 +397,38 @@ function renderSelectedGitStashReview(detail: services.WorkspaceGitStashDetail):
   `;
 }
 
-function renderGitWorkingChangedFile(workspaceID: string, folderID: string, file: services.WorkspaceGitChangedFile): string {
-  const key = gitWorkingDiffKey(workspaceID, folderID, file.path);
+function renderGitWorkingChangedFile(workspaceID: string, folderID: string, file: services.WorkspaceGitChangedFile, scope: GitWorkingDiffScope): string {
+  const key = gitWorkingDiffKey(workspaceID, folderID, file.path, scope);
   const hydrated = state.gitWorkingDiffs.get(key);
   const loaded = Boolean(hydrated) || state.gitWorkingDiffFailures.has(key);
-  return renderGitChangedFile(hydrated ?? file, !loaded);
+  return renderGitChangedFile(hydrated ?? gitChangedFileForScope(file, scope), !loaded, scope);
+}
+
+function gitChangedFileForScope(file: services.WorkspaceGitChangedFile, scope: GitWorkingDiffScope): services.WorkspaceGitChangedFile {
+  const status = scope === "staged" ? file.indexStatus ?? "" : file.worktreeStatus ?? "";
+  const untracked = scope === "unstaged" && file.indexStatus === "?" && file.worktreeStatus === "?";
+  return {
+    ...file,
+    operation: untracked ? file.operation : gitOperationForScopedStatus(status, file.operation),
+    status: untracked ? file.status : scope === "staged" ? `${status} ` : ` ${status}`,
+    indexStatus: scope === "staged" ? file.indexStatus : undefined,
+    worktreeStatus: scope === "unstaged" ? file.worktreeStatus : undefined,
+    staged: scope === "staged",
+    unstaged: scope === "unstaged",
+  };
+}
+
+function gitOperationForScopedStatus(status: string, fallback: string): string {
+  switch (status) {
+    case "A": return "created";
+    case "D": return "deleted";
+    case "R": return "renamed";
+    case "C": return "copied";
+    case "U": return "conflicted";
+    case "M":
+    case "?": return "edited";
+    default: return fallback;
+  }
 }
 
 function renderSelectedGitCommitReview(workspaceID: string, repository: services.WorkspaceGitRepositoryStatus): string {
@@ -887,24 +961,25 @@ function handleGitChangeFolderToggle(event: MouseEvent) {
 function handleGitChangeFileSelect(event: MouseEvent) {
   const button = event.currentTarget as HTMLButtonElement;
   const targetPath = button.dataset.gitChangeFile ?? "";
-  if (!targetPath) {
+  const scope = gitWorkingDiffScope(button.dataset.gitDiffScope);
+  if (!targetPath || !scope) {
     return;
   }
   const workspace = activeWorkspace();
   const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
   const file = repository?.files?.find((candidate) => normalizeGitChangePath(candidate.path) === targetPath);
   if (workspace && repository && file) {
-    void loadGitWorkingDiff(workspace.id, repository.folderId, file);
+    void loadGitWorkingDiff(workspace.id, repository.folderId, file, scope);
   }
   const repositoryRoot = button.closest<HTMLElement>("[data-git-repository]");
   const target = Array.from(repositoryRoot?.querySelectorAll<HTMLElement>("[data-git-change-file-path]") ?? [])
-    .find((element) => element.dataset.gitChangeFilePath === targetPath);
+    .find((element) => element.dataset.gitChangeFilePath === targetPath && element.dataset.gitDiffScope === scope);
   if (!target) {
     return;
   }
   button
-    .closest<HTMLElement>("[data-git-change-tree]")
-    ?.querySelectorAll<HTMLElement>(".git-change-tree-row.is-selected")
+    .closest<HTMLElement>(".git-source-change-sections")
+    ?.querySelectorAll<HTMLElement>("[data-git-change-file].is-selected")
     .forEach((row) => row.classList.remove("is-selected"));
   button.classList.add("is-selected");
   const review = target.closest<HTMLElement>("[data-change-review]");
@@ -928,9 +1003,11 @@ function bindGitWorkingDiffs(root: ParentNode) {
     return;
   }
   if (!("IntersectionObserver" in window)) {
-    const file = repository.files?.find((candidate) => normalizeGitChangePath(candidate.path) === pending[0]?.dataset.gitChangeFilePath);
-    if (file) {
-      void loadGitWorkingDiff(workspace.id, repository.folderId, file);
+    const element = pending[0];
+    const file = repository.files?.find((candidate) => normalizeGitChangePath(candidate.path) === element?.dataset.gitChangeFilePath);
+    const scope = gitWorkingDiffScope(element?.dataset.gitDiffScope);
+    if (file && scope) {
+      void loadGitWorkingDiff(workspace.id, repository.folderId, file, scope);
     }
     return;
   }
@@ -943,16 +1020,17 @@ function bindGitWorkingDiffs(root: ParentNode) {
       gitWorkingDiffObserver?.unobserve(element);
       const path = element.dataset.gitChangeFilePath ?? "";
       const file = repository.files?.find((candidate) => normalizeGitChangePath(candidate.path) === path);
-      if (file) {
-        void loadGitWorkingDiff(workspace.id, repository.folderId, file);
+      const scope = gitWorkingDiffScope(element.dataset.gitDiffScope);
+      if (file && scope) {
+        void loadGitWorkingDiff(workspace.id, repository.folderId, file, scope);
       }
     }
   }, { root: list, rootMargin: "320px 0px" });
   pending.forEach((element) => gitWorkingDiffObserver?.observe(element));
 }
 
-async function loadGitWorkingDiff(workspaceID: string, folderID: string, file: services.WorkspaceGitChangedFile) {
-  const key = gitWorkingDiffKey(workspaceID, folderID, file.path);
+async function loadGitWorkingDiff(workspaceID: string, folderID: string, file: services.WorkspaceGitChangedFile, scope: GitWorkingDiffScope) {
+  const key = gitWorkingDiffKey(workspaceID, folderID, file.path, scope);
   if (state.gitWorkingDiffs.has(key) || state.gitWorkingDiffFailures.has(key) || state.loadingGitWorkingDiffs.has(key)) {
     return;
   }
@@ -960,19 +1038,19 @@ async function loadGitWorkingDiff(workspaceID: string, folderID: string, file: s
   const generation = state.gitWorkingDiffGenerations.get(generationKey) ?? 0;
   state.loadingGitWorkingDiffs.add(key);
   try {
-    const hydrated = await LoadWorkspaceGitFileDiff(workspaceID, folderID, file.path);
+    const hydrated = await LoadWorkspaceGitFileDiffForScope(workspaceID, folderID, file.path, scope);
     if ((state.gitWorkingDiffGenerations.get(generationKey) ?? 0) !== generation) {
       return;
     }
     state.gitWorkingDiffs.set(key, hydrated);
-    patchGitWorkingDiffCard(hydrated);
+    patchGitWorkingDiffCard(hydrated, scope);
   } catch (error) {
     if ((state.gitWorkingDiffGenerations.get(generationKey) ?? 0) !== generation) {
       return;
     }
     state.gitWorkingDiffFailures.add(key);
     pushToast(errorMessage(error), "error");
-    patchGitWorkingDiffCard(file);
+    patchGitWorkingDiffCard(file, scope);
   } finally {
     state.loadingGitWorkingDiffs.delete(key);
   }
@@ -1312,6 +1390,11 @@ export function dropWorkspaceGitRepositoryState(workspaceID: string) {
       state.collapsedGitChangeTrees.delete(key);
     }
   }
+  for (const key of Array.from(state.expandedGitHistories)) {
+    if (key.startsWith(`${workspaceID}:`)) {
+      state.expandedGitHistories.delete(key);
+    }
+  }
   for (const key of Array.from(state.gitCommitDetails.keys())) {
     if (key.startsWith(`${workspaceID}:`)) {
       state.gitCommitDetails.delete(key);
@@ -1350,21 +1433,22 @@ export function dropWorkspaceGitRepositoryState(workspaceID: string) {
   }
 }
 
-function patchGitWorkingDiffCard(file: services.WorkspaceGitChangedFile) {
+function patchGitWorkingDiffCard(file: services.WorkspaceGitChangedFile, scope: GitWorkingDiffScope) {
   const path = normalizeGitChangePath(file.path);
   const list = appRoot.querySelector<HTMLElement>("[data-git-change-file-list]");
   const current = Array.from(list?.querySelectorAll<HTMLElement>("[data-git-change-file-path]") ?? [])
-    .find((element) => element.dataset.gitChangeFilePath === path && !element.dataset.gitCommitHash);
+    .find((element) => element.dataset.gitChangeFilePath === path && element.dataset.gitDiffScope === scope && !element.dataset.gitCommitHash);
   if (!current) {
     return;
   }
   const template = document.createElement("template");
-  template.innerHTML = renderGitChangedFile(file, false).trim();
+  template.innerHTML = renderGitChangedFile(file, false, scope).trim();
   const replacement = template.content.firstElementChild;
   if (!(replacement instanceof HTMLElement)) {
     return;
   }
   current.replaceWith(replacement);
+  getAppCallbacks().bindActionEvents(replacement);
   bindGitSplitDiffScroll(replacement);
 }
 
@@ -1806,6 +1890,21 @@ export function toggleGitSourceSidebar() {
   }
 }
 
+export function toggleGitHistory() {
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+  if (!workspace || !repository) {
+    return;
+  }
+  const key = gitRepositoryDraftKey(workspace.id, repository.folderId);
+  if (state.expandedGitHistories.has(key)) {
+    state.expandedGitHistories.delete(key);
+  } else {
+    state.expandedGitHistories.add(key);
+  }
+  getAppCallbacks().render();
+}
+
 export function toggleGitDiffViewMode() {
   state.gitDiffViewMode = state.gitDiffViewMode === "split" ? "inline" : "split";
   getAppCallbacks().render();
@@ -1974,8 +2073,12 @@ function gitWorkingDiffGenerationKey(workspaceID: string, folderID: string): str
   return `${workspaceID}\u0000${folderID}`;
 }
 
-function gitWorkingDiffKey(workspaceID: string, folderID: string, path: string): string {
-  return `${gitWorkingDiffGenerationKey(workspaceID, folderID)}\u0000${normalizeGitChangePath(path)}`;
+function gitWorkingDiffKey(workspaceID: string, folderID: string, path: string, scope: GitWorkingDiffScope): string {
+  return `${gitWorkingDiffGenerationKey(workspaceID, folderID)}\u0000${scope}\u0000${normalizeGitChangePath(path)}`;
+}
+
+function gitWorkingDiffScope(value: string | undefined): GitWorkingDiffScope | null {
+  return value === "staged" || value === "unstaged" ? value : null;
 }
 
 function selectedGitRepositoryFolderID(workspaceID: string, view: services.WorkspaceGitRepositoryView): string {

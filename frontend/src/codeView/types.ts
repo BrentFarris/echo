@@ -222,6 +222,7 @@ export type CodeWorkspaceState = {
   textSearchLoading: boolean;
   textSearchError: string;
   textSearchRequestSeq: number;
+  textSearchStreamID: string;
   textSearchTimerID: number | null;
   textSearchFocusedField: "" | "query" | "include" | "exclude";
   preservingTextSearchFocus: boolean;

@@ -1068,6 +1068,24 @@ func TestSystemServiceSearchWorkspaceTextRegexAndFileFilters(t *testing.T) {
 	}
 }
 
+func TestSystemServiceSearchWorkspaceTextReportsUTF16OffsetsAcrossLines(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.WriteFile(filepath.Join(root, "unicode.txt"), []byte("😀 x\r\nneedle"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.SearchWorkspaceText(workspaceID, WorkspaceTextSearchRequest{Query: "needle"})
+	if err != nil {
+		t.Fatalf("search workspace text: %v", err)
+	}
+	if result.MatchCount != 1 {
+		t.Fatalf("expected one match, got %#v", result)
+	}
+	match := result.Files[0].Matches[0]
+	if match.Line != 2 || match.Column != 1 || match.Offset != 6 || match.EndOffset != 12 {
+		t.Fatalf("unexpected UTF-16 match metadata: %#v", match)
+	}
+}
+
 func TestSystemServiceSearchWorkspaceTextSkipsIgnoredFoldersByDefault(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.MkdirAll(filepath.Join(root, "node_modules", "pkg"), 0o755); err != nil {
@@ -1122,6 +1140,82 @@ func TestSystemServiceSearchWorkspaceTextCapsResults(t *testing.T) {
 	}
 	if !result.Truncated {
 		t.Fatal("expected truncated result")
+	}
+}
+
+func TestWorkspaceTextSearchStartingNewRunCancelsPrevious(t *testing.T) {
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+	first, firstID := service.startWorkspaceTextSearch("workspace")
+	second, secondID := service.startWorkspaceTextSearch("workspace")
+	if firstID == secondID {
+		t.Fatal("expected distinct search run IDs")
+	}
+	select {
+	case <-first.Done():
+	default:
+		t.Fatal("expected the superseded search to be canceled")
+	}
+	select {
+	case <-second.Done():
+		t.Fatal("expected the current search to remain active")
+	default:
+	}
+	service.finishWorkspaceTextSearch("workspace", firstID)
+	select {
+	case <-second.Done():
+		t.Fatal("expected finishing an old search not to cancel the current search")
+	default:
+	}
+	service.finishWorkspaceTextSearch("workspace", secondID)
+	select {
+	case <-second.Done():
+	default:
+		t.Fatal("expected the finished search to be canceled")
+	}
+}
+
+func TestSystemServiceSearchWorkspaceTextStreamsMatches(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.WriteFile(filepath.Join(root, "match.txt"), []byte("needle"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	events, unsubscribe := SubscribeEvents(service, 16)
+	defer unsubscribe()
+
+	result, err := service.SearchWorkspaceText(workspaceID, WorkspaceTextSearchRequest{SearchID: "search-1", Query: "needle"})
+	if err != nil {
+		t.Fatalf("search workspace text: %v", err)
+	}
+	if result.MatchCount != 1 {
+		t.Fatalf("expected one final match, got %#v", result)
+	}
+
+	seenStarted := false
+	seenMatches := false
+	for {
+		select {
+		case runtimeEvent := <-events:
+			if runtimeEvent.Name != WorkspaceTextSearchRuntimeEventName {
+				continue
+			}
+			event, ok := runtimeEvent.Data.(WorkspaceTextSearchEvent)
+			if !ok || event.SearchID != "search-1" || event.WorkspaceID != workspaceID {
+				t.Fatalf("unexpected streamed search event: %#v", runtimeEvent.Data)
+			}
+			switch event.Type {
+			case "started":
+				seenStarted = true
+			case "matches":
+				seenMatches = len(event.Files) == 1 && event.MatchCount == 1
+			case "complete":
+				if !seenStarted || !seenMatches || event.Result == nil || event.Result.MatchCount != 1 {
+					t.Fatalf("incomplete streamed event sequence: started=%v matches=%v complete=%#v", seenStarted, seenMatches, event)
+				}
+				return
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for streamed search events")
+		}
 	}
 }
 

@@ -1009,6 +1009,11 @@ export function applyKanbanEvent(event: KanbanEvent) {
       scheduleKanbanProgressPatch(event.workspaceId);
       return;
     }
+    // The task editor is a live form. Keep background Kanban transitions from
+    // replacing its DOM (and the user's focus/caret) while a draft is open.
+    if (state.taskEditorDrafts.has(event.workspaceId)) {
+      return;
+    }
     renderKanbanEventPreservingScroll();
   }
 }

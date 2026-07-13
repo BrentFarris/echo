@@ -152,6 +152,8 @@ export function LoadWorkspaceGitCommit(arg1:string,arg2:string,arg3:string):Prom
 
 export function LoadWorkspaceGitFileDiff(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitChangedFile>;
 
+export function LoadWorkspaceGitFileDiffForScope(arg1:string,arg2:string,arg3:string,arg4:string):Promise<services.WorkspaceGitChangedFile>;
+
 export function LoadWorkspaceGitRepository(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
 
 export function LoadWorkspaceGitStash(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitStashDetail>;

@@ -255,6 +255,10 @@ export function LoadWorkspaceGitFileDiff(...args: Parameters<typeof Wails.LoadWo
   return call("LoadWorkspaceGitFileDiff", Wails.LoadWorkspaceGitFileDiff, args);
 }
 
+export function LoadWorkspaceGitFileDiffForScope(...args: Parameters<typeof Wails.LoadWorkspaceGitFileDiffForScope>): ReturnType<typeof Wails.LoadWorkspaceGitFileDiffForScope> {
+  return call("LoadWorkspaceGitFileDiffForScope", Wails.LoadWorkspaceGitFileDiffForScope, args);
+}
+
 export function LoadWorkspaceGitRepository(...args: Parameters<typeof Wails.LoadWorkspaceGitRepository>): ReturnType<typeof Wails.LoadWorkspaceGitRepository> {
   return call("LoadWorkspaceGitRepository", Wails.LoadWorkspaceGitRepository, args);
 }

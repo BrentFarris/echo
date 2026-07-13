@@ -3247,6 +3247,14 @@ h3 {
   position: relative;
 }
 
+.task-details-input-wrap {
+  position: relative;
+}
+
+.task-file-mention-picker {
+  bottom: calc(100% + var(--space-sm));
+}
+
 .task-tag-suggestions[hidden] {
   display: none;
 }
@@ -3578,20 +3586,20 @@ h3 {
   white-space: pre-wrap;
 }
 
-.change-diff-line.is-hunk {
-  display: flex;
+.change-diff-line.has-open-target {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-lg);
   min-width: max-content;
-  padding: var(--space-xxs) var(--space-lg-md);
   white-space: normal;
 }
 
-.change-diff-line.is-hunk > span {
+.change-diff-line.has-open-target > span {
   white-space: pre;
 }
 
-.change-review.is-expanded .change-diff-line.is-hunk > span {
+.change-review.is-expanded .change-diff-line.has-open-target > span {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -3750,6 +3758,8 @@ h3 {
 }
 
 .git-line-open-button {
+  position: sticky;
+  right: var(--space-sm);
   display: inline-grid;
   place-items: center;
   width: 22px;
@@ -3760,10 +3770,15 @@ h3 {
   background: transparent;
   color: inherit;
   cursor: pointer;
+  opacity: 0;
+  transition: opacity 100ms ease, background-color 100ms ease;
 }
 
+.change-diff-line:hover .git-line-open-button,
+.git-split-diff-row:hover .git-line-open-button,
 .git-line-open-button:hover,
 .git-line-open-button:focus-visible {
+  opacity: 1;
   background: color-mix(in srgb, var(--color-accent) 18%, transparent);
   outline: none;
 }
@@ -3824,8 +3839,12 @@ h3 {
 
 .git-source-sidebar {
   display: grid;
-  grid-template-rows: minmax(0, 2fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
   overflow: hidden;
+}
+
+.git-source-sidebar.is-history-expanded {
+  grid-template-rows: minmax(0, 2fr) minmax(0, 1fr);
 }
 
 .git-source-sidebar-rail {
@@ -3881,9 +3900,15 @@ h3 {
 }
 
 .git-source-title-actions,
+.git-source-history-actions,
 .git-source-diff-actions {
   flex: 0 0 auto;
   gap: var(--space-sm);
+}
+
+.git-source-history-actions {
+  display: flex;
+  align-items: center;
 }
 
 .git-repository-summary {
@@ -4290,6 +4315,84 @@ h3 {
   padding-right: var(--space-xxs);
 }
 
+.git-source-folder,
+.git-source-folder-children {
+  display: grid;
+  min-width: 0;
+}
+
+.git-source-folder-row {
+  display: grid;
+  grid-template-columns: 14px 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 var(--space-sm) 0 calc(var(--space-sm) + var(--tree-depth, 0) * 16px);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.git-source-folder-row:hover,
+.git-source-folder-row:focus-visible {
+  background: var(--color-surface-muted);
+  outline: none;
+}
+
+.git-source-folder-chevron,
+.git-source-folder-icon,
+.git-source-file-icon {
+  display: grid;
+  place-items: center;
+  color: var(--color-text-muted);
+}
+
+.git-source-folder-chevron svg,
+.git-source-folder-icon svg,
+.git-source-file-icon svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.git-source-folder-chevron svg {
+  transition: transform 120ms ease;
+  transform: rotate(90deg);
+}
+
+.git-source-folder.is-collapsed > .git-source-folder-row .git-source-folder-chevron svg {
+  transform: rotate(0deg);
+}
+
+.git-source-folder-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-md-lg);
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-source-folder-count {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-weight: 800;
+  text-align: center;
+}
+
 .git-source-file-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 28px;
@@ -4301,12 +4404,12 @@ h3 {
 
 .git-source-file-main {
   display: grid;
-  grid-template-columns: 18px minmax(64px, max-content) minmax(0, 1fr);
-  align-items: baseline;
+  grid-template-columns: 18px 16px minmax(0, 1fr);
+  align-items: center;
   gap: var(--space-sm);
   min-width: 0;
   min-height: 32px;
-  padding: 0 var(--space-sm);
+  padding: 0 var(--space-sm) 0 calc(var(--space-sm) + var(--tree-depth, 0) * 16px);
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -4334,7 +4437,6 @@ h3 {
 }
 
 .git-source-file-name,
-.git-source-file-path,
 .git-commit-file-row span:last-child {
   min-width: 0;
   overflow: hidden;
@@ -4347,7 +4449,6 @@ h3 {
   font-weight: 700;
 }
 
-.git-source-file-path,
 .git-source-empty {
   color: var(--color-text-muted);
   font-size: var(--text-sm);
@@ -4377,6 +4478,16 @@ h3 {
   padding: var(--space-lg-md);
   overflow: hidden;
   border-top: 1px solid var(--color-border);
+}
+
+.git-source-history.is-collapsed {
+  display: block;
+  padding-block: var(--space-md);
+}
+
+.git-source-history-toggle {
+  width: 28px;
+  height: 28px;
 }
 
 .git-source-history h3,
@@ -4832,11 +4943,12 @@ h3 {
 
 .settings-panel {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: var(--space-4xl);
   width: min(1080px, 100%);
   max-height: min(860px, calc(100vh - 48px));
   padding: var(--space-5xl);
-  overflow: auto;
+  overflow: hidden;
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: var(--color-surface);
@@ -4862,7 +4974,9 @@ h3 {
   grid-template-columns: 150px minmax(0, 1fr);
   align-items: start;
   gap: var(--space-6xl);
+  min-height: 0;
   min-width: 0;
+  overflow: auto;
 }
 
 .settings-content {
@@ -6067,6 +6181,17 @@ h3 {
   color: var(--color-warning);
 }
 
+.code-text-search-summary .code-text-search-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  color: var(--color-text-muted);
+}
+
+.code-text-search-progress .spinner {
+  width: 12px;
+}
+
 .code-text-search-file-list {
   display: grid;
   gap: var(--space-sm);
@@ -6470,12 +6595,12 @@ h3 {
   background: var(--color-surface);
 }
 
-.code-tab.is-temporary .code-tab-main span:first-child {
+.code-tab.is-temporary .code-tab-title {
   font-style: italic;
   font-weight: 700;
 }
 
-.code-tab.is-untitled .code-tab-main span:first-child {
+.code-tab.is-untitled .code-tab-title {
   font-style: italic;
 }
 
@@ -6509,12 +6634,14 @@ h3 {
   display: flex;
   align-items: center;
   gap: var(--space-lg);
+  overflow: hidden;
   padding: 0 var(--space-lg-md);
   font-size: var(--text-md-lg);
   font-weight: 800;
 }
 
-.code-tab-main span:first-child {
+.code-tab-title {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7041,6 +7168,7 @@ h3 {
 
 .code-tab-icon {
   display: inline-flex;
+  flex: 0 0 14px;
   align-items: center;
   margin-right: var(--space-sm);
   width: 14px;
@@ -7733,7 +7861,17 @@ h3 {
   .app-shell {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
-    padding-bottom: 56px;
+    padding-bottom: calc(56px + env(safe-area-inset-bottom));
+  }
+
+  /* Keep scrollable detail sheets above the fixed mobile navigation. */
+  .card-detail-backdrop {
+    bottom: calc(56px + env(safe-area-inset-bottom));
+    padding: var(--space-lg-md);
+  }
+
+  .card-detail {
+    max-height: 100%;
   }
 
   /* Hide the desktop left nav on mobile â€” replaced by bottom nav */
@@ -7751,7 +7889,7 @@ h3 {
     align-items: stretch;
     justify-content: space-between;
     gap: 0;
-    padding: 0;
+    padding: 0 0 env(safe-area-inset-bottom);
     background: var(--color-surface);
     border-top: 1px solid var(--color-border);
     z-index: 10;
@@ -7866,7 +8004,7 @@ h3 {
 
   .settings-panel {
     max-height: calc(100dvh - 76px);
-    overflow-x: hidden;
+    overflow: hidden;
   }
 
   .settings-grid {
@@ -8249,7 +8387,7 @@ h3 {
     align-items: stretch;
     justify-content: space-between;
     gap: 0;
-    padding: 0;
+    padding: 0 0 env(safe-area-inset-bottom);
     background: var(--color-surface);
     border-top: 1px solid var(--color-border);
     z-index: 10;

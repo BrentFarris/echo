@@ -505,6 +505,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 	}
 	recoverableToolCalls := make(map[string]bool)
 	forcedCompactions := 0
+	mediaPayloadsDisabled := false
 	skillCheckpointPending := false
 	skillCheckpointReminders := 0
 	for {
@@ -532,6 +533,15 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 			}
 		}
 
+		if mediaPayloadsDisabled {
+			var changed bool
+			messages, changed = chatMessagesWithoutMediaPayloads(messages)
+			if changed {
+				s.replaceChatHistory(workspace.ID, messages[1:])
+				currentUser = latestContextUserMessage(messages)
+			}
+		}
+
 		request, err := llm.NewChatRequest(settings, messages, llm.WithTools(toolSchema), llm.WithToolChoice("auto"))
 		if err != nil {
 			s.failChatMessage(workspace.ID, streamID, messageID, err.Error())
@@ -547,6 +557,16 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 			if ctx.Err() != nil {
 				s.cancelChatMessage(workspace.ID, streamID, messageID)
 				return
+			}
+			if content == "" && len(toolCalls) == 0 && isUnsupportedChatMediaError(err) {
+				var changed bool
+				messages, changed = chatMessagesWithoutMediaPayloads(messages)
+				if changed {
+					mediaPayloadsDisabled = true
+					s.replaceChatHistory(workspace.ID, messages[1:])
+					currentUser = latestContextUserMessage(messages)
+					continue
+				}
 			}
 			if llm.IsContextLengthExceeded(err) {
 				if recovery, ok := recoverToolResultContext(messages, recoverableToolCalls); ok {

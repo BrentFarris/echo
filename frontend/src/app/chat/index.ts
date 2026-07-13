@@ -634,7 +634,7 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
             spellcheck="true"
             data-chat-input
             speechinput="true"
-            ${session.busy || executing ? "disabled" : ""}
+            ${executing ? "disabled" : ""}
           >${escapeHtml(draft)}</textarea>
         </div>
         <div class="chat-composer-toolbar">
@@ -1877,10 +1877,16 @@ export function handleChatPlanModeChange(event: Event) {
 }
 
 export function handleChatKeydown(event: KeyboardEvent) {
+  const workspace = activeWorkspace();
+  const chatBusy = workspace ? chatSessionFor(workspace.id).busy : false;
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && chatBusy) {
+    event.preventDefault();
+    return;
+  }
   if (handleChatMentionKeydown(event)) {
     return;
   }
-  if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing || window.innerWidth <= 720) {
     return;
   }
   event.preventDefault();
@@ -2100,7 +2106,7 @@ export function handleChatEditKeydown(event: KeyboardEvent) {
     }
     return;
   }
-  if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing || window.innerWidth <= 720) {
     return;
   }
   event.preventDefault();
@@ -2451,6 +2457,10 @@ export function patchChatPanel() {
   const draft = state.chatDrafts.get(workspace.id) ?? "";
   const existingInput = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
   const inputScrollTop = existingInput?.scrollTop ?? 0;
+  const restoreInputFocus = document.activeElement === existingInput;
+  const selectionStart = existingInput?.selectionStart ?? draft.length;
+  const selectionEnd = existingInput?.selectionEnd ?? selectionStart;
+  const selectionDirection = existingInput?.selectionDirection ?? "none";
 
   const next = document.createElement("template");
   next.innerHTML = renderChatPanel(workspace, state.expandedChatWorkspaces.has(workspace.id)).trim();
@@ -2464,6 +2474,10 @@ export function patchChatPanel() {
   }
   if (input) {
     input.scrollTop = inputScrollTop;
+    if (restoreInputFocus) {
+      input.focus();
+      input.setSelectionRange(selectionStart, selectionEnd, selectionDirection);
+    }
   }
 
   getAppCallbacks().bindActionEvents(replacement);
@@ -2486,7 +2500,9 @@ export function patchChatControls() {
   const locked = session.busy || executing;
 
   if (input) {
-    input.disabled = locked;
+    // Keep the next prompt editable while a chat response is streaming. Plan
+    // execution still locks the composer because it operates on chat state.
+    input.disabled = executing;
   }
 
   // Update the send/stop button

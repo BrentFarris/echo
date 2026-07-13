@@ -204,6 +204,7 @@ func (s *SystemService) Shutdown() {
 	if s.debugger != nil {
 		s.debugger.shutdown()
 	}
+	s.cancelWorkspaceTextSearches()
 	s.chatMu.Lock()
 	runCancels := make([]context.CancelFunc, 0, len(s.kanbanRuns))
 	for _, cancel := range s.kanbanRuns {
@@ -1224,6 +1225,7 @@ func kanbanAgentSystemMessage(workspace Workspace, skillCandidates []tools.Works
 				"Use workspace_context for broad repo context when the brief is missing or the target files remain unclear. "+
 				"Use git_inspect when commit history, regressions, legacy behavior, ownership, or prior rationale would materially clarify the card; avoid routine history searches when the current code is sufficient. "+
 				"Use available tools when you need workspace facts. Invoke tools through the tool-call API; do not print a function name or JSON arguments in the card transcript. "+
+				"When the card mentions @path, treat it as a labeled workspace file reference like <folder-label>/path and inspect it before relying on its contents. "+
 				"If you need to inspect or modify files, call the tool immediately instead of saying you will. "+
 				"When you need to find code but do not know the target file, prefer filesystem_search_workspace before shell commands. "+
 				"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. "+

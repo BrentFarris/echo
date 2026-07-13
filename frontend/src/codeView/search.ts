@@ -1,24 +1,38 @@
 import { services } from "../../wailsjs/go/models";
 import { SearchWorkspaceText } from "../backend/services";
-import { patchTextSearchPanel } from "./dom";
+import { patchTextSearchPanel, patchTextSearchResults } from "./dom";
 import { ensureCodeState } from "./state";
 import { openCodeFile } from "./tabs";
 import type { CodeViewCallbacks } from "./types";
 
-const textSearchDelayMs = 220;
+const textSearchDelayMs = 120;
 
-export function openTextSearch(workspaceID: string, callbacks: CodeViewCallbacks) {
+export function openTextSearch(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+  initialQuery = "",
+) {
   const state = ensureCodeState(workspaceID);
   state.textSearchOpen = true;
   state.explorerDrawerOpen = true;
   state.textSearchFocusedField = "query";
+  if (initialQuery) {
+    state.textSearchQuery = initialQuery;
+  }
   callbacks.render();
+  focusTextSearchQuery();
+  if (initialQuery) {
+    runTextSearchNow(workspaceID, callbacks);
+  }
 }
 
 export function closeTextSearch(workspaceID: string, callbacks: CodeViewCallbacks) {
   const state = ensureCodeState(workspaceID);
   state.textSearchOpen = false;
   state.textSearchFocusedField = "";
+  state.textSearchRequestSeq++;
+  state.textSearchStreamID = "";
+  state.textSearchLoading = false;
   callbacks.render();
 }
 
@@ -65,6 +79,7 @@ export function toggleTextSearchOption(
 export function runTextSearchNow(workspaceID: string, callbacks: CodeViewCallbacks) {
   const state = ensureCodeState(workspaceID);
   state.textSearchRequestSeq++;
+  state.textSearchStreamID = "";
   if (state.textSearchTimerID !== null) {
     window.clearTimeout(state.textSearchTimerID);
     state.textSearchTimerID = null;
@@ -96,6 +111,7 @@ function scheduleTextSearch(
 ) {
   const state = ensureCodeState(workspaceID);
   state.textSearchRequestSeq++;
+  state.textSearchStreamID = "";
   if (state.textSearchTimerID !== null) {
     window.clearTimeout(state.textSearchTimerID);
     state.textSearchTimerID = null;
@@ -133,9 +149,12 @@ async function runTextSearch(
   state.textSearchError = "";
   patchTextSearchPanel(workspaceID, callbacks);
   try {
+    const searchID = `${Date.now()}-${sequence}`;
+    state.textSearchStreamID = searchID;
     const result = await SearchWorkspaceText(
       workspaceID,
       services.WorkspaceTextSearchRequest.createFrom({
+        searchId: searchID,
         query: state.textSearchQuery,
         regex: state.textSearchRegex,
         caseSensitive: state.textSearchCaseSensitive,
@@ -161,6 +180,70 @@ async function runTextSearch(
       patchTextSearchPanel(workspaceID, callbacks);
     }
   }
+}
+
+export type WorkspaceTextSearchEvent = {
+  workspaceId: string;
+  searchId: string;
+  type: "started" | "matches" | "complete";
+  files?: services.WorkspaceTextSearchFileResult[];
+  matchCount?: number;
+  fileCount?: number;
+  filesSearched?: number;
+  filesSkipped?: number;
+  truncated?: boolean;
+  result?: services.WorkspaceTextSearchResult;
+};
+
+export function applyWorkspaceTextSearchEvent(
+  event: WorkspaceTextSearchEvent,
+  callbacks: CodeViewCallbacks,
+) {
+  const state = ensureCodeState(event.workspaceId);
+  if (!event.searchId || event.searchId !== state.textSearchStreamID) {
+    return;
+  }
+  if (event.type === "started" && event.result) {
+    state.textSearchResult = services.WorkspaceTextSearchResult.createFrom(event.result);
+    state.textSearchLoading = true;
+    patchTextSearchResults(event.workspaceId, callbacks);
+    return;
+  }
+  if (event.type === "matches") {
+    const result = state.textSearchResult;
+    if (!result) {
+      return;
+    }
+    result.files = [
+      ...(result.files ?? []),
+      ...(event.files ?? []).map((file) =>
+        services.WorkspaceTextSearchFileResult.createFrom(file),
+      ),
+    ];
+    result.matchCount = event.matchCount ?? result.matchCount;
+    result.fileCount = event.fileCount ?? result.files.length;
+    result.filesSearched = event.filesSearched ?? result.filesSearched;
+    result.filesSkipped = event.filesSkipped ?? result.filesSkipped;
+    result.truncated = event.truncated ?? result.truncated;
+    state.textSearchLoading = true;
+    patchTextSearchResults(event.workspaceId, callbacks);
+    return;
+  }
+  if (event.type === "complete" && event.result) {
+    state.textSearchResult = services.WorkspaceTextSearchResult.createFrom(event.result);
+    state.textSearchLoading = false;
+    patchTextSearchResults(event.workspaceId, callbacks);
+  }
+}
+
+function focusTextSearchQuery() {
+  window.requestAnimationFrame(() => {
+    const input = document.querySelector<HTMLInputElement>(
+      '[data-code-text-search-field="query"]',
+    );
+    input?.focus({ preventScroll: true });
+    input?.setSelectionRange(input.value.length, input.value.length);
+  });
 }
 
 function textSearchField(value: string): "" | "query" | "include" | "exclude" {

@@ -502,17 +502,12 @@ func (s *SystemService) FindWorkspaceFileDefinition(workspaceID string, request 
 		return response, nil
 	}
 
-	outsideWorkspace := false
 	for _, location := range locations {
 		targetPath, err := pathFromFileURI(location.URI)
 		if err != nil {
 			continue
 		}
-		if _, err := workspaceRelativeCandidate(workspace, targetPath); err != nil {
-			outsideWorkspace = true
-			continue
-		}
-		file, err := readWorkspaceTextFile(workspace, targetPath)
+		file, err := readDefinitionTargetFile(workspace, targetPath)
 		if err != nil {
 			continue
 		}
@@ -525,12 +520,22 @@ func (s *SystemService) FindWorkspaceFileDefinition(workspaceID string, request 
 		return response, nil
 	}
 
-	if outsideWorkspace {
-		response.Message = "Definition is outside the active workspace."
-	} else {
-		response.Message = "No workspace text file definition found."
-	}
+	response.Message = "No text file definition found."
 	return response, nil
+}
+
+// readDefinitionTargetFile preserves workspace-relative paths for project files,
+// while allowing language servers to point at readable source in module caches,
+// SDKs, and standard libraries.
+func readDefinitionTargetFile(workspace Workspace, targetPath string) (WorkspaceFile, error) {
+	if _, err := workspaceRelativeCandidate(workspace, targetPath); err == nil {
+		return readWorkspaceTextFile(workspace, targetPath)
+	}
+	resolved, err := resolveExternalTextFilePath(targetPath)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	return readExternalTextFile(resolved)
 }
 
 func (s *SystemService) FindWorkspaceFileReferences(workspaceID string, request WorkspaceReferenceRequest) (WorkspaceReferenceResponse, error) {

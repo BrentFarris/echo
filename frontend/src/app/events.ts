@@ -1,5 +1,5 @@
 
-import { bindCodeViewEvents, closeActiveCodeTab, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, handleGlobalDebugShortcut, navigateCodeHistory, openQuickOpen, openTextSearch, saveActiveCodeFile, startSelectedCodeRename } from "../codeView";
+import { bindCodeViewEvents, closeActiveCodeTab, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, handleGlobalDebugShortcut, navigateCodeHistory, openQuickOpen, openTextSearch, saveActiveCodeFile, selectedMountedCodeEditorText, startSelectedCodeRename } from "../codeView";
 import { bindActionEvents } from "./actions";
 import { getAppCallbacks } from "./callbacks";
 import { bindChatEvents, clearChatMention, patchChatMentionPicker } from "./chat";
@@ -119,9 +119,11 @@ export function handleGlobalKeydown(event: KeyboardEvent) {
     return;
   }
   if (isFindInFilesShortcut(event)) {
+    const workspace = activeWorkspace();
+    const selectedText = workspace ? selectedMountedCodeEditorText(workspace.id) : "";
     event.preventDefault();
     event.stopPropagation();
-    void openActiveWorkspaceTextSearch();
+    void openActiveWorkspaceTextSearch(selectedText);
     return;
   }
   if (isQuickOpenShortcut(event)) {
@@ -369,14 +371,14 @@ function openActiveWorkspaceQuickOpen() {
   openQuickOpen(workspace.id, getAppCallbacks().codeViewCallbacks());
 }
 
-async function openActiveWorkspaceTextSearch() {
+async function openActiveWorkspaceTextSearch(initialQuery = "") {
   const workspace = activeWorkspace();
   if (!workspace) {
     return;
   }
   state.appMode = "code";
   const loading = ensureCodeViewRootLoaded(workspace.id);
-  openTextSearch(workspace.id, getAppCallbacks().codeViewCallbacks());
+  openTextSearch(workspace.id, getAppCallbacks().codeViewCallbacks(), initialQuery);
   await loading;
   getAppCallbacks().render();
 }

@@ -2,13 +2,16 @@ package services
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -661,6 +664,72 @@ func TestSystemServiceChatSendsWorkspaceImageMentionAsContentPart(t *testing.T) 
 	}
 	if !strings.Contains(user.ContentParts[0].Text, imagePath) {
 		t.Fatalf("expected text part to name workspace image, got %q", user.ContentParts[0].Text)
+	}
+}
+
+func TestSystemServiceChatRetriesWorkspaceMediaAsTextWhenModelIsNotMultimodal(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "ui.png"), tinyPNGBytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var requestCount atomic.Int32
+	requests := make([]llm.ChatRequest, 0, 2)
+	var requestsMu sync.Mutex
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		var request llm.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		requestsMu.Lock()
+		requests = append(requests, request)
+		requestsMu.Unlock()
+
+		if requestCount.Add(1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"message":"deepseek-ai/DeepSeek-V4-Flash is not a multimodal model","type":"BadRequestError","code":400}}`)
+			return
+		}
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"I will inspect the referenced path."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+	imagePath := labeledTestPath(t, service, workspaceID, "ui.png")
+
+	if _, err := service.SendChatMessage(workspaceID, "Review @"+imagePath); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+
+	if requestCount.Load() != 2 {
+		t.Fatalf("expected one multimodal request and one transparent text retry, got %d requests", requestCount.Load())
+	}
+	requestsMu.Lock()
+	captured := append([]llm.ChatRequest(nil), requests...)
+	requestsMu.Unlock()
+	if len(captured) != 2 || len(captured[0].Messages) < 2 || len(captured[1].Messages) < 2 {
+		t.Fatalf("expected two complete captured requests, got %#v", captured)
+	}
+	firstUser := captured[0].Messages[1]
+	if len(firstUser.ContentParts) != 2 || firstUser.ContentParts[1].ImageURL == nil {
+		t.Fatalf("expected first request to contain the image payload, got %#v", firstUser)
+	}
+	secondUser := captured[1].Messages[1]
+	if len(secondUser.ContentParts) != 0 || !strings.Contains(secondUser.Content, imagePath) {
+		t.Fatalf("expected retry to contain only path-bearing text, got %#v", secondUser)
+	}
+	if len(session.Messages) != 2 || session.Messages[1].Status != "complete" || session.Messages[1].Error != "" {
+		t.Fatalf("expected transparent successful completion, got %#v", session.Messages)
+	}
+	if len(session.Messages[0].Images) != 1 {
+		t.Fatalf("expected the visible user message to retain its image, got %#v", session.Messages[0])
+	}
+	history := service.chatHistory(workspaceID)
+	if len(history) == 0 || len(history[0].ContentParts) != 0 || !strings.Contains(history[0].Content, imagePath) {
+		t.Fatalf("expected persisted model history to use path-bearing text, got %#v", history)
 	}
 }
 
@@ -3110,6 +3179,53 @@ func TestChatMediaContentParts(t *testing.T) {
 	parts = chatMediaContentParts("hi", nil, nil)
 	if parts != nil {
 		t.Fatalf("expected nil, got %#v", parts)
+	}
+}
+
+func TestUnsupportedChatMediaError(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		want    bool
+	}{
+		{"multimodal model", `llm endpoint returned 400 Bad Request: {"error":{"message":"model is not a multimodal model"}}`, true},
+		{"image input", "This model does not support image input.", true},
+		{"video content", "Video content is not supported by this provider.", true},
+		{"vision text only", "The selected vision model is text only.", true},
+		{"unrelated unsupported feature", "parallel tool calls are not supported", false},
+		{"unrelated image failure", "image data is too large", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isUnsupportedChatMediaError(errors.New(test.message)); got != test.want {
+				t.Fatalf("isUnsupportedChatMediaError() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestChatMessagesWithoutMediaPayloads(t *testing.T) {
+	messages := []llm.Message{
+		{
+			Role:    llm.RoleUser,
+			Content: "Review @workspace/ui.png and @workspace/demo.mp4",
+			ContentParts: []llm.MessageContentPart{
+				llm.TextContentPart("Review @workspace/ui.png and @workspace/demo.mp4"),
+				llm.ImageURLContentPart("data:image/png;base64,test"),
+				llm.VideoURLContentPart("data:video/mp4;base64,test"),
+			},
+		},
+	}
+
+	stripped, changed := chatMessagesWithoutMediaPayloads(messages)
+	if !changed || len(stripped[0].ContentParts) != 0 {
+		t.Fatalf("expected image and video payloads to be removed, got %#v", stripped)
+	}
+	if stripped[0].Content != messages[0].Content {
+		t.Fatalf("expected tagged paths to remain in text, got %q", stripped[0].Content)
+	}
+	if len(messages[0].ContentParts) != 3 {
+		t.Fatalf("expected input messages to remain unchanged, got %#v", messages)
 	}
 }
 

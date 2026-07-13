@@ -115,6 +115,7 @@ export function ensureCodeState(workspaceID: string): CodeWorkspaceState {
       textSearchLoading: false,
       textSearchError: "",
       textSearchRequestSeq: 0,
+      textSearchStreamID: "",
       textSearchTimerID: null,
       textSearchFocusedField: "",
       preservingTextSearchFocus: false,

@@ -7,7 +7,7 @@ import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
 import { dismissContextMenu } from "./contextMenu";
-import { closeGitMenu, closeGitStashReview, dropWorkspaceGitRepositoryState, openGitChangeInCode, openGitMenuPage, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, runGitMenuCommand, selectGitCommit, stageWorkspaceGitChanges, stageWorkspaceGitFile, syncWorkspaceGitRepository, toggleGitDiffViewMode, toggleGitSourceSidebar, unstageWorkspaceGitChanges, unstageWorkspaceGitFile } from "./git";
+import { closeGitMenu, closeGitStashReview, dropWorkspaceGitRepositoryState, openGitChangeInCode, openGitMenuPage, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, runGitMenuCommand, selectGitCommit, stageWorkspaceGitChanges, stageWorkspaceGitFile, syncWorkspaceGitRepository, toggleGitDiffViewMode, toggleGitHistory, toggleGitSourceSidebar, unstageWorkspaceGitChanges, unstageWorkspaceGitFile } from "./git";
 import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification, toggleHeartbeatInterval, toggleWatchdogInterval } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, cancelAgentMode, deleteAgentModeSettings, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint, saveAgentMode, saveNewAgentMode, startCreateAgentMode, startEditAgentMode } from "./settings";
@@ -363,6 +363,10 @@ export async function handleAction(event: Event) {
     }
     if (action === "toggle-git-sidebar") {
       toggleGitSourceSidebar();
+      return;
+    }
+    if (action === "toggle-git-history") {
+      toggleGitHistory();
       return;
     }
     if (action === "toggle-git-diff-view") {

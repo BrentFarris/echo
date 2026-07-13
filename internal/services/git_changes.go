@@ -122,13 +122,33 @@ func loadGitStatusFilesForRepository(ctx context.Context, repository workspaceGi
 }
 
 func hydrateWorkspaceGitChangedFile(ctx context.Context, repository workspaceGitRepositoryContext, entry gitStatusEntry) WorkspaceGitChangedFile {
+	return hydrateWorkspaceGitChangedFileForScope(ctx, repository, entry, "")
+}
+
+func hydrateWorkspaceGitChangedFileForScope(ctx context.Context, repository workspaceGitRepositoryContext, entry gitStatusEntry, scope string) WorkspaceGitChangedFile {
 	file := workspaceGitChangedFileForEntry(repository, entry)
+	switch scope {
+	case "staged":
+		file.Operation = gitStatusOperation(entry.index, ' ')
+		file.Status = gitRawStatus(entry.index, ' ')
+		file.WorktreeStatus = ""
+		file.Staged = true
+		file.Unstaged = false
+	case "unstaged":
+		if entry.index != '?' || entry.worktree != '?' {
+			file.Operation = gitStatusOperation(' ', entry.worktree)
+			file.Status = gitRawStatus(' ', entry.worktree)
+		}
+		file.IndexStatus = ""
+		file.Staged = false
+		file.Unstaged = true
+	}
 	var diff string
 	var err error
 	if entry.index == '?' && entry.worktree == '?' {
 		diff, err = synthesizeUntrackedGitDiff(repository.WorktreePath, entry.path, file.Path)
 	} else {
-		diff, err = loadGitDiffForPath(ctx, repository.WorktreePath, entry.path)
+		diff, err = loadGitDiffForPathScope(ctx, repository.WorktreePath, entry.path, scope)
 		if err == nil {
 			diff = prefixGitDiffPathsForRepository(diff, repository)
 		}
@@ -150,6 +170,18 @@ func workspaceGitDiffIsBinary(diff string) bool {
 }
 
 func (s *SystemService) LoadWorkspaceGitFileDiff(workspaceID string, folderID string, path string) (WorkspaceGitChangedFile, error) {
+	return s.loadWorkspaceGitFileDiffForScope(workspaceID, folderID, path, "")
+}
+
+func (s *SystemService) LoadWorkspaceGitFileDiffForScope(workspaceID string, folderID string, path string, scope string) (WorkspaceGitChangedFile, error) {
+	scope = strings.ToLower(strings.TrimSpace(scope))
+	if scope != "staged" && scope != "unstaged" {
+		return WorkspaceGitChangedFile{}, fmt.Errorf("git diff scope must be staged or unstaged")
+	}
+	return s.loadWorkspaceGitFileDiffForScope(workspaceID, folderID, path, scope)
+}
+
+func (s *SystemService) loadWorkspaceGitFileDiffForScope(workspaceID string, folderID string, path string, scope string) (WorkspaceGitChangedFile, error) {
 	workspace, folder, err := s.workspaceGitRepositoryFolder(workspaceID, folderID)
 	if err != nil {
 		return WorkspaceGitChangedFile{}, err
@@ -169,7 +201,13 @@ func (s *SystemService) LoadWorkspaceGitFileDiff(workspaceID string, folderID st
 	if err != nil {
 		return WorkspaceGitChangedFile{}, err
 	}
-	return hydrateWorkspaceGitChangedFile(ctx, repository, entry), nil
+	if scope == "staged" && !gitStatusEntryHasStagedChanges(entry) {
+		return WorkspaceGitChangedFile{}, fmt.Errorf("file has no staged Git changes")
+	}
+	if scope == "unstaged" && !gitStatusEntryHasUnstagedChanges(entry) {
+		return WorkspaceGitChangedFile{}, fmt.Errorf("file has no unstaged Git changes")
+	}
+	return hydrateWorkspaceGitChangedFileForScope(ctx, repository, entry, scope), nil
 }
 
 func workspaceGitStatusEntriesForRepository(ctx context.Context, repository workspaceGitRepositoryContext) ([]gitStatusEntry, error) {
@@ -251,7 +289,20 @@ func parseGitStatusPorcelain(output []byte) ([]gitStatusEntry, error) {
 }
 
 func loadGitDiffForPath(ctx context.Context, workspacePath string, path string) (string, error) {
-	output, err := runWorkspaceGitCommand(ctx, workspacePath, "diff", "--no-ext-diff", "--no-color", "--find-renames", "HEAD", "--", path)
+	return loadGitDiffForPathScope(ctx, workspacePath, path, "")
+}
+
+func loadGitDiffForPathScope(ctx context.Context, workspacePath string, path string, scope string) (string, error) {
+	args := []string{"diff", "--no-ext-diff", "--no-color", "--find-renames"}
+	switch scope {
+	case "staged":
+		args = append(args, "--cached")
+	case "unstaged":
+	default:
+		args = append(args, "HEAD")
+	}
+	args = append(args, "--", path)
+	output, err := runWorkspaceGitCommand(ctx, workspacePath, args...)
 	if err != nil {
 		return "", err
 	}

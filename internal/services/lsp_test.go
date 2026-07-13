@@ -149,6 +149,35 @@ func TestParseLSPDefinitionResponse(t *testing.T) {
 	}
 }
 
+func TestReadDefinitionTargetFileSupportsWorkspaceAndExternalSource(t *testing.T) {
+	root := t.TempDir()
+	workspace := workspaceFromPath(root)
+	workspacePath := filepath.Join(root, "main.go")
+	externalPath := filepath.Join(t.TempDir(), "dependency.go")
+	if err := os.WriteFile(workspacePath, []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(externalPath, []byte("package dependency\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	workspaceFile, err := readDefinitionTargetFile(workspace, workspacePath)
+	if err != nil {
+		t.Fatalf("read workspace definition target: %v", err)
+	}
+	if workspaceFile.WorkspaceID != workspace.ID || workspaceFile.Path != workspaceRelativePath(workspace, workspacePath) {
+		t.Fatalf("expected workspace-relative definition target, got %#v", workspaceFile)
+	}
+
+	externalFile, err := readDefinitionTargetFile(workspace, externalPath)
+	if err != nil {
+		t.Fatalf("read external definition target: %v", err)
+	}
+	if externalFile.WorkspaceID != "" || externalFile.Path != filepath.Clean(externalPath) || externalFile.Content != "package dependency\n" {
+		t.Fatalf("expected absolute external definition target, got %#v", externalFile)
+	}
+}
+
 func TestDetectWorkspaceFolderLSPLanguagesFindsGoMarker(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/warmup\n\ngo 1.23\n"), 0o600); err != nil {

@@ -1,16 +1,17 @@
 package services
 
 const (
-	ChatRuntimeEventName        = chatStreamEventName
-	KanbanRuntimeEventName      = kanbanEventName
-	FileChangesRuntimeEventName = fileChangesEventName
-	InlineCodeRuntimeEventName  = inlineCodePromptEventName
-	AgentModeRuntimeEventName   = agentModeEventName
-	TaskRuntimeEventName        = taskEventName
-	HeartbeatRuntimeEventName   = heartbeatEventName
-	LivenessRuntimeEventName    = livenessEventName
-	WatchdogRuntimeEventName    = watchdogEventName
-	LSPDiagnosticsEventName     = lspDiagnosticsEventName
+	ChatRuntimeEventName                = chatStreamEventName
+	KanbanRuntimeEventName              = kanbanEventName
+	FileChangesRuntimeEventName         = fileChangesEventName
+	InlineCodeRuntimeEventName          = inlineCodePromptEventName
+	AgentModeRuntimeEventName           = agentModeEventName
+	TaskRuntimeEventName                = taskEventName
+	HeartbeatRuntimeEventName           = heartbeatEventName
+	LivenessRuntimeEventName            = livenessEventName
+	WatchdogRuntimeEventName            = watchdogEventName
+	WorkspaceTextSearchRuntimeEventName = workspaceTextSearchEventName
+	LSPDiagnosticsEventName             = lspDiagnosticsEventName
 )
 
 const watchdogEventName = "echo:watchdog:event"
