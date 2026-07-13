@@ -4896,11 +4896,12 @@ h3 {
 
 .settings-panel {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: var(--space-4xl);
   width: min(1080px, 100%);
   max-height: min(860px, calc(100vh - 48px));
   padding: var(--space-5xl);
-  overflow: auto;
+  overflow: hidden;
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: var(--color-surface);
@@ -4926,7 +4927,9 @@ h3 {
   grid-template-columns: 150px minmax(0, 1fr);
   align-items: start;
   gap: var(--space-6xl);
+  min-height: 0;
   min-width: 0;
+  overflow: auto;
 }
 
 .settings-content {
@@ -7908,7 +7911,7 @@ h3 {
 
   .settings-panel {
     max-height: calc(100dvh - 76px);
-    overflow-x: hidden;
+    overflow: hidden;
   }
 
   .settings-grid {
