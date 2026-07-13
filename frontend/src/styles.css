@@ -3544,20 +3544,20 @@ h3 {
   white-space: pre-wrap;
 }
 
-.change-diff-line.is-hunk {
-  display: flex;
+.change-diff-line.has-open-target {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-lg);
   min-width: max-content;
-  padding: var(--space-xxs) var(--space-lg-md);
   white-space: normal;
 }
 
-.change-diff-line.is-hunk > span {
+.change-diff-line.has-open-target > span {
   white-space: pre;
 }
 
-.change-review.is-expanded .change-diff-line.is-hunk > span {
+.change-review.is-expanded .change-diff-line.has-open-target > span {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -3716,6 +3716,8 @@ h3 {
 }
 
 .git-line-open-button {
+  position: sticky;
+  right: var(--space-sm);
   display: inline-grid;
   place-items: center;
   width: 22px;
@@ -3726,10 +3728,15 @@ h3 {
   background: transparent;
   color: inherit;
   cursor: pointer;
+  opacity: 0;
+  transition: opacity 100ms ease, background-color 100ms ease;
 }
 
+.change-diff-line:hover .git-line-open-button,
+.git-split-diff-row:hover .git-line-open-button,
 .git-line-open-button:hover,
 .git-line-open-button:focus-visible {
+  opacity: 1;
   background: color-mix(in srgb, var(--color-accent) 18%, transparent);
   outline: none;
 }

@@ -1365,6 +1365,7 @@ function patchGitWorkingDiffCard(file: services.WorkspaceGitChangedFile) {
     return;
   }
   current.replaceWith(replacement);
+  getAppCallbacks().bindActionEvents(replacement);
   bindGitSplitDiffScroll(replacement);
 }
 
