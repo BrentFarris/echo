@@ -15,12 +15,13 @@ export function renderContextMenu(menu: ContextMenuState): string {
       <button\
         class="workspace-context-menu-item"\
         type="button"\
+        title="${escapeAttribute(menu.displayPath)}"\
         data-action="show-in-explorer"\
         data-workspace-id="${escapeAttribute(menu.workspaceId)}"\
         data-workspace-path="${escapeAttribute(menu.workspacePath ?? "")}"\
       >\
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9l-6-6H5a2 2 0 0 0-2 2Z"/></svg>\
-        <span class="workspace-context-menu-label">${escapeHtml(menu.displayPath)}</span>\
+        <span class="workspace-context-menu-label">Show in Explorer</span>\
       </button>\
     </div>\
   `;

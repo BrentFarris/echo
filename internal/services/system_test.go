@@ -34,6 +34,36 @@ func TestSystemServiceAppInfo(t *testing.T) {
 	}
 }
 
+func TestResolveWorkspaceExplorerTarget(t *testing.T) {
+	root := t.TempDir()
+	sourceDir := filepath.Join(root, "src")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("create source directory: %v", err)
+	}
+	filePath := filepath.Join(sourceDir, "main.go")
+	if err := os.WriteFile(filePath, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	folder := workspaceFolderFromPath(root, nil)
+	workspace := Workspace{Folders: []WorkspaceFolder{folder}}
+
+	target, selectFile, err := resolveWorkspaceExplorerTarget(workspace, folder.Label+"/src/main.go")
+	if err != nil {
+		t.Fatalf("resolve existing file: %v", err)
+	}
+	if !samePath(target, filePath) || !selectFile {
+		t.Fatalf("expected existing file selection, got target %q selectFile %v", target, selectFile)
+	}
+
+	target, selectFile, err = resolveWorkspaceExplorerTarget(workspace, folder.Label+"/src/deleted.go")
+	if err != nil {
+		t.Fatalf("resolve deleted file parent: %v", err)
+	}
+	if !samePath(target, sourceDir) || selectFile {
+		t.Fatalf("expected deleted file parent folder, got target %q selectFile %v", target, selectFile)
+	}
+}
+
 func TestSystemServiceReturnsEmptyCollectionsForUI(t *testing.T) {
 	root := t.TempDir()
 	storePath := filepath.Join(root, "state.json")

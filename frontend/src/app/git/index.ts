@@ -5,6 +5,7 @@ import { services } from "../../../wailsjs/go/models";
 import type { CodeEntryKind, CodeGitChangeState } from "../../codeView/types";
 import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";
+import { showContextMenu } from "../contextMenu";
 import { appRoot } from "../dom";
 import { icons } from "../icons";
 import { activeWorkspace, changeReviewFor, gitChangeReviewFor, gitRepositoryViewFor, state } from "../state";
@@ -386,7 +387,7 @@ function renderGitSourceFileTreeNode(
     const folderActionLabel = mode === "stage" ? "Stage folder" : "Unstage folder";
     return `
       <div class="git-source-folder ${isCollapsed ? "is-collapsed" : "is-expanded"}" role="none">
-        <div class="git-source-folder-row" role="none" title="${escapeAttribute(node.displayPath)}" style="--tree-depth: ${depth}">
+        <div class="git-source-folder-row" role="none" title="${escapeAttribute(node.displayPath)}" style="--tree-depth: ${depth}" data-git-browser-path="${escapeAttribute(node.displayPath)}">
           <button class="git-source-folder-main" type="button" role="treeitem" aria-expanded="${!isCollapsed}" data-git-change-folder="${escapeAttribute(collapseKey)}">
             <span class="git-source-folder-chevron">${codeIcons.chevron}</span>
             <span class="git-source-folder-icon">${codeIcons.folder}</span>
@@ -405,7 +406,7 @@ function renderGitSourceFileTreeNode(
   const file = node.file;
   const displayPath = node.displayPath;
   return `
-    <div class="git-source-file-row" role="none" title="${escapeAttribute(displayPath)}" style="--tree-depth: ${depth}">
+    <div class="git-source-file-row" role="none" title="${escapeAttribute(displayPath)}" style="--tree-depth: ${depth}" data-git-browser-path="${escapeAttribute(displayPath)}">
       <button class="git-source-file-main" type="button" role="treeitem" data-git-change-file="${escapeAttribute(node.path)}" data-git-diff-scope="${mode === "stage" ? "unstaged" : "staged"}">
         <span class="git-source-file-status is-${escapeAttribute(file.operation)}">${escapeHtml(gitSourceStatusLetter(file))}</span>
         <span class="git-source-file-icon">${codeIcons.file}</span>
@@ -959,6 +960,7 @@ export function bindGitEvents(root: ParentNode) {
   });
   bindGitSplitDiffScroll(root);
   bindGitChangeTree(root);
+  bindGitChangeContextMenus(root);
   bindGitWorkingDiffs(root);
   root
     .querySelectorAll<HTMLSelectElement>("[data-git-repository-select]")
@@ -999,6 +1001,27 @@ function bindGitChangeTree(root: ParentNode) {
   root
     .querySelectorAll<HTMLButtonElement>("[data-git-commit-file]")
     .forEach((button) => button.addEventListener("click", handleGitCommitFileSelect));
+}
+
+function bindGitChangeContextMenus(root: ParentNode) {
+  root.querySelectorAll<HTMLElement>("[data-git-browser-path]").forEach((row) => {
+    row.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const workspace = activeWorkspace();
+      const path = row.dataset.gitBrowserPath ?? "";
+      if (!workspace || !path) {
+        return;
+      }
+      showContextMenu({
+        workspaceId: workspace.id,
+        workspacePath: path,
+        displayPath: path,
+        x: event.clientX,
+        y: event.clientY,
+      });
+    });
+  });
 }
 
 function handleGitChangeTreeToggle() {
