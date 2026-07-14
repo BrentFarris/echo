@@ -113,6 +113,63 @@ func TestRunWorkspaceGitActionStagesAndUnstagesFolder(t *testing.T) {
 	}
 }
 
+func TestRunWorkspaceGitNetworkActionsReturnUpdatedHistory(t *testing.T) {
+	parent := t.TempDir()
+	bare := filepath.Join(parent, "origin.git")
+	runGitTestCommand(t, parent, "init", "--bare", bare)
+
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, "base.txt", "base\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial")
+	baseBranch := strings.TrimSpace(runGitTestCommand(t, root, "branch", "--show-current"))
+	runGitTestCommand(t, root, "remote", "add", "origin", bare)
+	runGitTestCommand(t, root, "push", "-u", "origin", baseBranch)
+	runGitTestCommand(t, bare, "symbolic-ref", "HEAD", "refs/heads/"+baseBranch)
+
+	other := filepath.Join(parent, "other")
+	runGitTestCommand(t, parent, "clone", bare, other)
+	runGitTestCommand(t, other, "config", "user.name", "Echo Test")
+	runGitTestCommand(t, other, "config", "user.email", "echo@example.test")
+	runGitTestCommand(t, other, "config", "core.autocrlf", "false")
+
+	service, workspaceID, folderID := newGitRepositoryTestService(t, root)
+	writeGitTestFile(t, other, "fetched.txt", "fetched\n")
+	runGitTestCommand(t, other, "add", ".")
+	runGitTestCommand(t, other, "commit", "-m", "fetched commit")
+	runGitTestCommand(t, other, "push")
+
+	view, err := service.RunWorkspaceGitAction(workspaceID, folderID, WorkspaceGitActionRequest{Action: "fetch"})
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if view.Repository == nil || !workspaceGitHistoryContainsSubject(view.Repository.Commits, "fetched commit") {
+		t.Fatalf("expected fetched commit in returned history, got %#v", view.Repository)
+	}
+
+	writeGitTestFile(t, other, "pulled.txt", "pulled\n")
+	runGitTestCommand(t, other, "add", ".")
+	runGitTestCommand(t, other, "commit", "-m", "pulled commit")
+	runGitTestCommand(t, other, "push")
+
+	view, err = service.RunWorkspaceGitAction(workspaceID, folderID, WorkspaceGitActionRequest{Action: "pull"})
+	if err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	if view.Repository == nil || view.Repository.Head == "" || !workspaceGitHistoryContainsSubject(view.Repository.Commits, "pulled commit") {
+		t.Fatalf("expected pulled commit in returned history, got %#v", view.Repository)
+	}
+}
+
+func workspaceGitHistoryContainsSubject(commits []WorkspaceGitCommit, subject string) bool {
+	for _, commit := range commits {
+		if commit.Subject == subject {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCloneWorkspaceGitRepositoryAddsFolderToCurrentWorkspace(t *testing.T) {
 	source := newGitTestRepo(t)
 	writeGitTestFile(t, source, "README.md", "hello\n")

@@ -650,6 +650,9 @@ func TestSyncWorkspaceGitBranchReportsCountsAndSyncsUpstream(t *testing.T) {
 	if view.Repository == nil || view.Repository.AheadCount != 0 || view.Repository.BehindCount != 0 || !view.Repository.Dirty {
 		t.Fatalf("expected synced repository with preserved dirty file, got %#v", view.Repository)
 	}
+	if !workspaceGitHistoryContainsSubject(view.Repository.Commits, "incoming") || !workspaceGitHistoryContainsSubject(view.Repository.Commits, "outgoing") {
+		t.Fatalf("expected synced commits in returned history, got %#v", view.Repository.Commits)
+	}
 	if err := os.Remove(filepath.Join(root, "dirty.txt")); err != nil {
 		t.Fatal(err)
 	}
