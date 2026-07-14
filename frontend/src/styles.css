@@ -4286,6 +4286,15 @@ h3 {
 
 .git-source-folder-row {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  min-height: 32px;
+}
+
+.git-source-folder-main {
+  display: grid;
   grid-template-columns: 14px 16px minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-sm);
@@ -4301,8 +4310,8 @@ h3 {
   text-align: left;
 }
 
-.git-source-folder-row:hover,
-.git-source-folder-row:focus-visible {
+.git-source-folder-main:hover,
+.git-source-folder-main:focus-visible {
   background: var(--color-surface-muted);
   outline: none;
 }
@@ -4417,13 +4426,16 @@ h3 {
   font-size: var(--text-sm);
 }
 
+.git-source-folder-action,
 .git-source-file-action {
   width: 28px;
   height: 28px;
   opacity: 0;
 }
 
+.git-source-folder-row:hover .git-source-folder-action,
 .git-source-file-row:hover .git-source-file-action,
+.git-source-folder-action:focus-visible,
 .git-source-file-action:focus-visible {
   opacity: 1;
 }

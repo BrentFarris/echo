@@ -67,6 +67,50 @@ func TestRunWorkspaceGitActionRejectsUnknownActionsAndUnsafeRefs(t *testing.T) {
 	if _, err := service.RunWorkspaceGitAction(workspaceID, folderID, WorkspaceGitActionRequest{Action: "checkout", Ref: "--help"}); err == nil {
 		t.Fatal("expected option-shaped ref to fail")
 	}
+	if _, err := service.RunWorkspaceGitAction(workspaceID, folderID, WorkspaceGitActionRequest{Action: "stage_folder", Ref: "../outside"}); err == nil {
+		t.Fatal("expected an escaping folder path to fail")
+	}
+}
+
+func TestRunWorkspaceGitActionStagesAndUnstagesFolder(t *testing.T) {
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, "src/one.txt", "one\n")
+	writeGitTestFile(t, root, "src/nested/two.txt", "two\n")
+	writeGitTestFile(t, root, "docs/readme.txt", "docs\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial")
+
+	writeGitTestFile(t, root, "src/one.txt", "one changed\n")
+	writeGitTestFile(t, root, "src/nested/two.txt", "two changed\n")
+	writeGitTestFile(t, root, "docs/readme.txt", "docs changed\n")
+	service, workspaceID, folderID := newGitRepositoryTestService(t, root)
+	label := normalizeWorkspaceFolderLabel(filepath.Base(root))
+
+	view, err := service.RunWorkspaceGitAction(workspaceID, folderID, WorkspaceGitActionRequest{
+		Action: "stage_folder",
+		Ref:    label + "/src",
+	})
+	if err != nil {
+		t.Fatalf("stage folder: %v", err)
+	}
+	if view.Repository == nil || view.Repository.StagedFileCount != 2 || view.Repository.UnstagedFileCount != 1 {
+		t.Fatalf("expected only source files staged, got %#v", view.Repository)
+	}
+	status := runGitTestCommand(t, root, "status", "--porcelain=v1", "--untracked-files=all")
+	if !strings.Contains(status, "M  src/one.txt") || !strings.Contains(status, "M  src/nested/two.txt") || !strings.Contains(status, " M docs/readme.txt") {
+		t.Fatalf("unexpected status after staging folder: %q", status)
+	}
+
+	view, err = service.RunWorkspaceGitAction(workspaceID, folderID, WorkspaceGitActionRequest{
+		Action: "unstage_folder",
+		Ref:    label + "/src",
+	})
+	if err != nil {
+		t.Fatalf("unstage folder: %v", err)
+	}
+	if view.Repository == nil || view.Repository.StagedFileCount != 0 || view.Repository.UnstagedFileCount != 3 {
+		t.Fatalf("expected all files unstaged, got %#v", view.Repository)
+	}
 }
 
 func TestCloneWorkspaceGitRepositoryAddsFolderToCurrentWorkspace(t *testing.T) {

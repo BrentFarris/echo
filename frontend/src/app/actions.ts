@@ -6,7 +6,7 @@ import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
 import { dismissContextMenu } from "./contextMenu";
-import { closeGitMenu, closeGitStashReview, dropWorkspaceGitRepositoryState, openGitChangeInCode, openGitMenuPage, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, runGitMenuCommand, selectGitCommit, stageWorkspaceGitChanges, stageWorkspaceGitFile, syncWorkspaceGitRepository, toggleGitDiffViewMode, toggleGitHistory, toggleGitSourceSidebar, unstageWorkspaceGitChanges, unstageWorkspaceGitFile } from "./git";
+import { closeGitMenu, closeGitStashReview, dropWorkspaceGitRepositoryState, openGitChangeInCode, openGitMenuPage, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, runGitMenuCommand, selectGitCommit, stageWorkspaceGitChanges, stageWorkspaceGitFile, stageWorkspaceGitFolder, syncWorkspaceGitRepository, toggleGitDiffViewMode, toggleGitHistory, toggleGitSourceSidebar, unstageWorkspaceGitChanges, unstageWorkspaceGitFile, unstageWorkspaceGitFolder } from "./git";
 import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification, toggleHeartbeatInterval, toggleWatchdogInterval } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, cancelAgentMode, deleteAgentModeSettings, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint, saveAgentMode, saveNewAgentMode, startCreateAgentMode, startEditAgentMode } from "./settings";
@@ -328,6 +328,14 @@ export async function handleAction(event: Event) {
     }
     if (action === "unstage-git-file") {
       await unstageWorkspaceGitFile(target.dataset.gitFilePath ?? "");
+      return;
+    }
+    if (action === "stage-git-folder") {
+      await stageWorkspaceGitFolder(target.dataset.gitFolderPath ?? "");
+      return;
+    }
+    if (action === "unstage-git-folder") {
+      await unstageWorkspaceGitFolder(target.dataset.gitFolderPath ?? "");
       return;
     }
     if (action === "stage-git-changes") {

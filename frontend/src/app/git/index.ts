@@ -17,6 +17,7 @@ type GitChangeTreeFolder = {
   kind: "folder";
   name: string;
   path: string;
+  displayPath: string;
   count: number;
   children: Map<string, GitChangeTreeNode>;
 };
@@ -382,14 +383,20 @@ function renderGitSourceFileTreeNode(
   if (node.kind === "folder") {
     const collapseKey = `${mode}:${node.path}`;
     const isCollapsed = collapsed.has(collapseKey);
+    const folderActionLabel = mode === "stage" ? "Stage folder" : "Unstage folder";
     return `
       <div class="git-source-folder ${isCollapsed ? "is-collapsed" : "is-expanded"}" role="none">
-        <button class="git-source-folder-row" type="button" role="treeitem" aria-expanded="${!isCollapsed}" title="${escapeAttribute(node.path)}" style="--tree-depth: ${depth}" data-git-change-folder="${escapeAttribute(collapseKey)}">
-          <span class="git-source-folder-chevron">${codeIcons.chevron}</span>
-          <span class="git-source-folder-icon">${codeIcons.folder}</span>
-          <span class="git-source-folder-name">${escapeHtml(node.name)}</span>
-          <span class="git-source-folder-count">${escapeHtml(String(node.count))}</span>
-        </button>
+        <div class="git-source-folder-row" role="none" title="${escapeAttribute(node.displayPath)}" style="--tree-depth: ${depth}">
+          <button class="git-source-folder-main" type="button" role="treeitem" aria-expanded="${!isCollapsed}" data-git-change-folder="${escapeAttribute(collapseKey)}">
+            <span class="git-source-folder-chevron">${codeIcons.chevron}</span>
+            <span class="git-source-folder-icon">${codeIcons.folder}</span>
+            <span class="git-source-folder-name">${escapeHtml(node.name)}</span>
+            <span class="git-source-folder-count">${escapeHtml(String(node.count))}</span>
+          </button>
+          <button class="icon-button git-source-folder-action" type="button" title="${folderActionLabel}" aria-label="${escapeAttribute(`${folderActionLabel}: ${node.displayPath}`)}" data-action="${mode === "stage" ? "stage-git-folder" : "unstage-git-folder"}" data-git-folder-path="${escapeAttribute(node.displayPath)}" ${busy ? "disabled" : ""}>
+            ${icon}
+          </button>
+        </div>
         ${isCollapsed ? "" : `<div class="git-source-folder-children" role="group">${sortedGitChangeTreeChildren(node).map((child) => renderGitSourceFileTreeNode(child, collapsed, mode, action, icon, actionLabel, busy, depth + 1)).join("")}</div>`}
       </div>
     `;
@@ -582,6 +589,7 @@ function buildGitChangeTree(files: services.WorkspaceGitChangedFile[]): GitChang
     kind: "folder",
     name: "",
     path: "",
+    displayPath: "",
     count: 0,
     children: new Map<string, GitChangeTreeNode>(),
   };
@@ -598,6 +606,7 @@ function buildGitChangeTree(files: services.WorkspaceGitChangedFile[]): GitChang
     folder.count++;
     segments.slice(0, -1).forEach((segment) => {
       const nextPath = folder.path ? `${folder.path}/${normalizeGitChangePath(segment)}` : normalizeGitChangePath(segment);
+      const nextDisplayPath = folder.displayPath ? `${folder.displayPath}/${segment}` : segment;
       const key = normalizeGitChangePath(segment);
       let child = folder.children.get(key);
       if (!child || child.kind !== "folder") {
@@ -605,6 +614,7 @@ function buildGitChangeTree(files: services.WorkspaceGitChangedFile[]): GitChang
           kind: "folder",
           name: segment,
           path: nextPath,
+          displayPath: nextDisplayPath,
           count: 0,
           children: new Map<string, GitChangeTreeNode>(),
         };
@@ -1987,6 +1997,10 @@ export async function stageWorkspaceGitFile(path: string) {
   }, true);
 }
 
+export async function stageWorkspaceGitFolder(path: string) {
+  await runWorkspaceGitFolderOperation("Staging folder", "stage_folder", path, "Staged folder.");
+}
+
 export async function unstageWorkspaceGitFile(path: string) {
   path = path.trim();
   if (!path) {
@@ -1996,6 +2010,28 @@ export async function unstageWorkspaceGitFile(path: string) {
     const view = await UnstageWorkspaceGitFile(workspace.id, repository.folderId, path);
     storeGitRepositoryView(workspace.id, view);
     pushToast("Unstaged file.", "success");
+  }, true);
+}
+
+export async function unstageWorkspaceGitFolder(path: string) {
+  await runWorkspaceGitFolderOperation("Unstaging folder", "unstage_folder", path, "Unstaged folder.");
+}
+
+async function runWorkspaceGitFolderOperation(
+  operation: string,
+  action: "stage_folder" | "unstage_folder",
+  path: string,
+  successMessage: string,
+) {
+  path = path.trim();
+  if (!path) {
+    return;
+  }
+  await runGitOperation(operation, async (workspace, repository) => {
+    const request = services.WorkspaceGitActionRequest.createFrom({ action, ref: path });
+    const view = await RunWorkspaceGitAction(workspace.id, repository.folderId, request);
+    storeGitRepositoryView(workspace.id, view);
+    pushToast(successMessage, "success");
   }, true);
 }
 
