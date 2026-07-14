@@ -98,6 +98,11 @@ function restoreRenderScrollSnapshots(snapshots: Map<string, RenderScrollSnapsho
 }
 
 function isScrollableForRenderSnapshot(element: HTMLElement): boolean {
+  // CodeMirror persists its own scroll state. Restoring a generic render
+  // snapshot here can overwrite an explicit same-file navigation reveal.
+  if (element.classList.contains("cm-scroller")) {
+    return false;
+  }
   return (
     element.scrollTop > 0 ||
     element.scrollLeft > 0 ||

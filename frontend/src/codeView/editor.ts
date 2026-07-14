@@ -255,6 +255,7 @@ export async function mountActiveCodeEditor(
       mount.appendChild(mountedEditor.dom);
     }
     updateTabEditorState(workspaceID, tab.path, mountedEditor);
+    applyPendingEditorReveal(tab, mountedEditor);
     return;
   }
 
@@ -334,16 +335,7 @@ export async function mountActiveCodeEditor(
   const initialScrollTop = tab.scrollTop;
   const initialScrollLeft = tab.scrollLeft;
   restoreMountedEditorScroll(workspaceID, tab.path, initialScrollTop, initialScrollLeft);
-  if (tab.pendingRevealPosition !== undefined) {
-    const position = clamp(tab.pendingRevealPosition, 0, mountedEditor.state.doc.length);
-    const y = tab.pendingRevealScroll ?? "center";
-    tab.pendingRevealPosition = undefined;
-    tab.pendingRevealScroll = undefined;
-    mountedEditor.dispatch({
-      selection: { anchor: position },
-      effects: EditorView.scrollIntoView(position, { y }),
-    });
-  } else {
+  if (!applyPendingEditorReveal(tab, mountedEditor)) {
     window.requestAnimationFrame(() => {
       restoreMountedEditorScroll(workspaceID, tab.path, initialScrollTop, initialScrollLeft);
     });
@@ -351,6 +343,21 @@ export async function mountActiveCodeEditor(
   if (shouldFocusMountedEditor(workspaceID)) {
     mountedEditor.focus();
   }
+}
+
+function applyPendingEditorReveal(tab: CodeFileTab, view: EditorView): boolean {
+  if (tab.pendingRevealPosition === undefined) {
+    return false;
+  }
+  const position = clamp(tab.pendingRevealPosition, 0, view.state.doc.length);
+  const y = tab.pendingRevealScroll ?? "center";
+  tab.pendingRevealPosition = undefined;
+  tab.pendingRevealScroll = undefined;
+  view.dispatch({
+    selection: { anchor: position },
+    effects: EditorView.scrollIntoView(position, { y }),
+  });
+  return true;
 }
 
 function gitChangedLineGutterExtension(
