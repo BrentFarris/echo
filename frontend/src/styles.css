@@ -5448,6 +5448,16 @@ h3 {
   white-space: nowrap;
 }
 
+.workspace-folder-path {
+  grid-column: 1 / -1;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
 .workspace-folder-agents {
   white-space: nowrap;
 }
