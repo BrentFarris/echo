@@ -1,5 +1,5 @@
 
-import { bindCodeViewEvents, closeActiveCodeTab, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, handleGlobalCodeTreeNavigation, handleGlobalDebugShortcut, navigateCodeHistory, openQuickOpen, openTextSearch, saveActiveCodeFile, selectedMountedCodeEditorText, startSelectedCodeRename } from "../codeView";
+import { bindCodeQuickOpenEvents, bindCodeViewEvents, closeActiveCodeTab, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, handleGlobalCodeTreeNavigation, handleGlobalDebugShortcut, navigateCodeHistory, openQuickOpen, openTextSearch, saveActiveCodeFile, selectedMountedCodeEditorText, startSelectedCodeRename } from "../codeView";
 import { bindActionEvents } from "./actions";
 import { getAppCallbacks } from "./callbacks";
 import { bindChatEvents, clearChatMention, patchChatMentionPicker } from "./chat";
@@ -24,6 +24,10 @@ export function bindEvents() {
   bindKanbanCardCreationEvents(appRoot);
   bindGitEvents(appRoot);
   bindCodeViewEvents(appRoot, getAppCallbacks().codeViewCallbacks());
+  const workspace = activeWorkspace();
+  if (workspace && state.appMode !== "code") {
+    bindCodeQuickOpenEvents(appRoot, workspace.id, getAppCallbacks().codeViewCallbacks());
+  }
   bindWorkspaceDragEvents(appRoot);
   bindTaskEvents(appRoot);
 
@@ -357,8 +361,6 @@ function isFindInFilesShortcut(event: KeyboardEvent): boolean {
 function isQuickOpenShortcut(event: KeyboardEvent): boolean {
   const key = event.key.toLowerCase();
   return (
-    state.appMode === "code" &&
-    !state.settingsOpen &&
     !event.altKey &&
     !event.shiftKey &&
     (event.ctrlKey || event.metaKey) &&

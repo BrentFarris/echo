@@ -47,6 +47,13 @@ function scheduleWebRealtimeResync() {
 function codeViewCallbacks() {
   return {
     render,
+    activateCodeView(workspaceID: string) {
+      state.appMode = "code";
+      state.mobileNavView = "code";
+      state.settingsOpen = false;
+      state.openGitChangeWorkspaces.delete(workspaceID);
+      void ensureCodeViewRootLoaded(workspaceID).finally(render);
+    },
     pushToast,
     errorMessage,
     leadingWhitespaceIndicatorsEnabled: () =>

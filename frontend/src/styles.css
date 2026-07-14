@@ -6719,6 +6719,11 @@ h3 {
   pointer-events: none;
 }
 
+.code-quick-open.is-global {
+  position: fixed;
+  z-index: 110;
+}
+
 .code-quick-open-backdrop {
   position: absolute;
   inset: 0;

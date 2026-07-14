@@ -1,4 +1,4 @@
-import { destroyCodeEditor, renderCodeView } from "../codeView";
+import { destroyCodeEditor, renderCodeQuickOpen, renderCodeView } from "../codeView";
 import {
   patchChatPanel,
   patchChatControls,
@@ -305,6 +305,10 @@ function buildOverlays(): string {
   parts.push(renderToasts());
   if (state.contextMenu) {
     parts.push(renderContextMenu(state.contextMenu));
+  }
+  const workspace = activeWorkspace();
+  if (workspace && state.appMode !== "code") {
+    parts.push(renderCodeQuickOpen(workspace.id, true));
   }
   return parts.join("\n");
 }

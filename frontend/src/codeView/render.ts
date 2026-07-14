@@ -748,13 +748,13 @@ function renderCodeTabSwitcher(workspaceID: string): string {
   `;
 }
 
-export function renderCodeQuickOpen(workspaceID: string): string {
+export function renderCodeQuickOpen(workspaceID: string, global = false): string {
   const state = ensureCodeState(workspaceID);
   if (!state.quickOpen.open) {
     return "";
   }
   return `
-    <div class="code-quick-open" role="dialog" aria-modal="true" aria-label="Open file" data-code-quick-open>
+    <div class="code-quick-open${global ? " is-global" : ""}" role="dialog" aria-modal="true" aria-label="Open file" data-code-quick-open>
       <button class="code-quick-open-backdrop" type="button" aria-label="Close file search" data-code-quick-open-close></button>
       <div class="code-quick-open-panel">
         <input

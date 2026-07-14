@@ -205,7 +205,7 @@ function bindCodeTextSearchEvents(root: ParentNode, workspaceID: string, callbac
   }
 }
 
-function bindCodeQuickOpenEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
+export function bindCodeQuickOpenEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
   const input = root.querySelector<HTMLInputElement>("[data-code-quick-open-input]");
   input?.addEventListener("input", () => {
     handleQuickOpenInput(workspaceID, input, callbacks);
