@@ -149,6 +149,92 @@ func TestSystemServiceChatSendStreamsAssistantMessage(t *testing.T) {
 	}
 }
 
+func TestSystemServiceChatRetriesReasoningOnlyResponseWithoutPoisoningHistory(t *testing.T) {
+	root := t.TempDir()
+	var requestCount atomic.Int32
+	var retryRequest llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"reasoning_content":"I should answer now."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		case 2:
+			if err := json.NewDecoder(r.Body).Decode(&retryRequest); err != nil {
+				t.Fatalf("decode retry request: %v", err)
+			}
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Recovered answer."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+
+	if _, err := service.SendChatMessage(workspaceID, "Answer this"); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+	if requestCount.Load() != 2 {
+		t.Fatalf("expected one recovery request, got %d", requestCount.Load())
+	}
+	assistant := session.Messages[1]
+	if assistant.Status != "complete" || assistant.Content != "Recovered answer." {
+		t.Fatalf("expected recovered assistant response, got %#v", assistant)
+	}
+	for _, message := range retryRequest.Messages {
+		if message.Role == llm.RoleAssistant && strings.TrimSpace(message.Content) == "" && len(message.ToolCalls) == 0 {
+			t.Fatalf("retry request contained malformed assistant history: %#v", retryRequest.Messages)
+		}
+	}
+	last := retryRequest.Messages[len(retryRequest.Messages)-1]
+	if last.Role != llm.RoleUser || !strings.Contains(last.Content, "reasoning-only") {
+		t.Fatalf("expected recovery guidance, got %#v", retryRequest.Messages)
+	}
+	service.chatMu.Lock()
+	history := append([]llm.Message(nil), service.chatSessions[workspaceID].History...)
+	service.chatMu.Unlock()
+	for _, message := range history {
+		if message.Role == llm.RoleAssistant && strings.TrimSpace(message.Content) == "" && len(message.ToolCalls) == 0 {
+			t.Fatalf("runtime history was poisoned by empty assistant response: %#v", history)
+		}
+	}
+}
+
+func TestSystemServiceChatBoundsReasoningOnlyRetries(t *testing.T) {
+	root := t.TempDir()
+	var requestCount atomic.Int32
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		requestCount.Add(1)
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"reasoning_content":"Still thinking."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+
+	if _, err := service.SendChatMessage(workspaceID, "Answer this"); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+	if requestCount.Load() != int32(maxEmptyAssistantRetries+1) {
+		t.Fatalf("expected bounded attempts, got %d", requestCount.Load())
+	}
+	assistant := session.Messages[1]
+	if assistant.Status != "error" || !strings.Contains(assistant.Error, "without producing visible content") {
+		t.Fatalf("expected useful empty-response error, got %#v", assistant)
+	}
+	service.chatMu.Lock()
+	history := append([]llm.Message(nil), service.chatSessions[workspaceID].History...)
+	service.chatMu.Unlock()
+	if len(history) != 1 || history[0].Role != llm.RoleUser {
+		t.Fatalf("expected empty assistant attempts to stay out of history, got %#v", history)
+	}
+}
+
 func TestSystemServiceChatIncludesWorkspaceInstructions(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("Always run the Echo workspace checks."), 0o600); err != nil {

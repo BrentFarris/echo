@@ -4213,17 +4213,23 @@ h3 {
   display: grid;
   flex: 1 1 auto;
   gap: var(--space-lg-md);
+  grid-template-rows: repeat(2, minmax(0, 1fr));
   min-height: 0;
   min-width: 0;
   overflow: hidden;
 }
 
-.git-source-change-sections.has-staged {
-  grid-template-rows: repeat(2, minmax(0, 1fr));
+.git-source-change-sections.is-staged-collapsed:not(.is-unstaged-collapsed) {
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
-.git-source-change-sections.has-unstaged-only {
-  grid-template-rows: minmax(0, 1fr);
+.git-source-change-sections.is-unstaged-collapsed:not(.is-staged-collapsed) {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.git-source-change-sections.is-staged-collapsed.is-unstaged-collapsed {
+  align-content: start;
+  grid-template-rows: auto auto;
 }
 
 .git-source-file-section {
@@ -4233,6 +4239,11 @@ h3 {
   min-height: 0;
   min-width: 0;
   overflow: hidden;
+}
+
+.git-source-file-section.is-collapsed {
+  grid-template-rows: auto;
+  gap: 0;
 }
 
 .git-source-section-heading {
@@ -4246,11 +4257,15 @@ h3 {
   border: 0;
   background: transparent;
   color: var(--color-text);
-  cursor: default;
+  cursor: pointer;
   font: inherit;
   font-size: var(--text-md-lg);
   font-weight: 900;
   text-align: left;
+}
+
+.git-source-file-section.is-empty .git-source-section-heading {
+  cursor: default;
 }
 
 .git-source-section-heading svg {
@@ -6504,15 +6519,16 @@ h3 {
   overflow: hidden;
 }
 
-.debug-pane { min-width: 0; overflow: auto; border-right: 1px solid var(--color-border); }
+.debug-pane { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; border-right: 1px solid var(--color-border); }
 .debug-pane:last-child { border-right: 0; }
-.debug-pane > header { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0; background: var(--color-surface); border-bottom: 1px solid var(--color-border); font-size: var(--text-sm); }
+.debug-pane > header { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 30px; padding: 0; background: var(--color-surface); border-bottom: 1px solid var(--color-border); font-size: var(--text-sm); }
+.debug-pane-content { min-width: 0; min-height: 0; overflow: auto; }
 .debug-pane-heading { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 30px; padding: 4px 10px; border: 0; background: transparent; color: var(--color-text); text-align: left; }
 .debug-pane-heading:hover { background: var(--color-hover); }
 .debug-pane-chevron { display: inline-flex; flex: none; }
 .debug-pane-chevron svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; transition: transform 120ms ease; }
 .debug-pane-heading[aria-expanded="true"] .debug-pane-chevron svg { transform: rotate(90deg); }
-.debug-pane.is-collapsed { overflow: hidden; }
+.debug-pane.is-collapsed { grid-template-rows: minmax(0, 1fr); overflow: hidden; }
 .debug-pane.is-collapsed > header { height: 100%; border-bottom: 0; }
 .debug-pane.is-collapsed .debug-pane-heading { flex-direction: row; width: 100%; height: 100%; padding: 8px 0; writing-mode: vertical-rl; }
 .debug-pane.is-collapsed .debug-pane-chevron svg { transform: rotate(90deg); }
@@ -6536,7 +6552,7 @@ h3 {
 .debug-variable-value { color: var(--code-token-string); }
 .debug-variable-type { color: var(--color-text-muted); font-size: var(--text-xs); }
 .debug-load-more { margin: 4px 10px; border: 0; background: transparent; color: var(--color-accent); }
-.debug-output-pane pre { height: calc(100% - 30px); margin: 0; padding: 8px 10px; overflow: auto; color: var(--color-text-muted); font: var(--text-xs)/1.45 "Cascadia Mono", Consolas, monospace; white-space: pre; }
+.debug-output-pane pre { margin: 0; padding: 8px 10px; color: var(--color-text-muted); font: var(--text-xs)/1.45 "Cascadia Mono", Consolas, monospace; white-space: pre; }
 
 .cm-debug-gutter .cm-gutterElement { min-width: 17px; box-sizing: border-box; cursor: pointer; }
 .cm-debug-breakpoint-spacer { display: block; width: 17px; height: 1px; }
@@ -8083,11 +8099,6 @@ h3 {
     height: auto;
     min-height: 0;
     overflow: visible;
-  }
-
-  .workspace-panel.is-git-mode .git-source-change-sections.has-staged,
-  .workspace-panel.is-git-mode .git-source-change-sections.has-unstaged-only {
-    grid-template-rows: auto;
   }
 
   .workspace-panel.is-git-mode .git-source-file-list,

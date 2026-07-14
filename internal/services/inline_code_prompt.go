@@ -109,6 +109,7 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 	forcedCompactions := 0
 	skillCheckpointPending := false
 	skillCheckpointReminders := 0
+	emptyAssistantRetries := 0
 
 	for {
 		preflightPolicy := contextCompactionPolicy{CurrentUser: currentUser}
@@ -181,11 +182,20 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 			return fail(err)
 		}
 		forcedCompactions = 0
-
-		messages = append(messages, llm.Message{Role: llm.RoleAssistant, Content: result.content, ToolCalls: toolCalls})
 		if publishResponse {
 			output.Reasoning += result.reasoning
 		}
+		if isEmptyAssistantResponse(result.content, toolCalls) {
+			if emptyAssistantRetries >= maxEmptyAssistantRetries {
+				return fail(emptyAssistantResponseError())
+			}
+			emptyAssistantRetries++
+			messages = append(messages, emptyAssistantRetryMessage())
+			continue
+		}
+		emptyAssistantRetries = 0
+
+		messages = append(messages, llm.Message{Role: llm.RoleAssistant, Content: result.content, ToolCalls: toolCalls})
 		if len(toolCalls) == 0 {
 			if skillCheckpointPending && skillCheckpointReminders < workspaceSkillMaxReminders {
 				skillCheckpointReminders++

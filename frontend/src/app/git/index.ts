@@ -313,10 +313,12 @@ function renderGitSourceChangeSections(workspaceID: string, repository: services
   const files = repository.files ?? [];
   const staged = files.filter((file) => file.staged);
   const unstaged = files.filter((file) => file.unstaged);
+  const stagedCollapsed = isGitSourceFileSectionCollapsed(workspaceID, repository.folderId, "unstage", staged.length);
+  const unstagedCollapsed = isGitSourceFileSectionCollapsed(workspaceID, repository.folderId, "stage", unstaged.length);
   return `
-    <div class="git-source-change-sections ${staged.length ? "has-staged" : "has-unstaged-only"}">
-      ${staged.length ? renderGitSourceFileSection(workspaceID, repository.folderId, "Staged Changes", staged, "unstage", operation) : ""}
-      ${renderGitSourceFileSection(workspaceID, repository.folderId, "Changes", unstaged, "stage", operation)}
+    <div class="git-source-change-sections ${stagedCollapsed ? "is-staged-collapsed" : ""} ${unstagedCollapsed ? "is-unstaged-collapsed" : ""}">
+      ${renderGitSourceFileSection(workspaceID, repository.folderId, "Staged Changes", staged, "unstage", operation, stagedCollapsed)}
+      ${renderGitSourceFileSection(workspaceID, repository.folderId, "Changes", unstaged, "stage", operation, unstagedCollapsed)}
     </div>
   `;
 }
@@ -328,6 +330,7 @@ function renderGitSourceFileSection(
   files: services.WorkspaceGitChangedFile[],
   mode: "stage" | "unstage",
   operation: string,
+  collapsed: boolean,
 ): string {
   const busy = Boolean(operation);
   const action = mode === "stage" ? "stage-git-file" : "unstage-git-file";
@@ -335,11 +338,12 @@ function renderGitSourceFileSection(
   const icon = mode === "stage" ? icons.plus : icons.undo;
   const fileActionLabel = mode === "stage" ? "Stage file" : "Unstage file";
   const allActionLabel = mode === "stage" ? "Stage all changes" : "Unstage all changes";
+  const sectionActionLabel = `${collapsed ? "Expand" : "Collapse"} ${title}`;
   return `
-    <section class="git-source-file-section">
+    <section class="git-source-file-section ${collapsed ? "is-collapsed" : "is-expanded"} ${files.length ? "" : "is-empty"}">
       <header>
-        <button class="git-source-section-heading" type="button" aria-label="${escapeAttribute(title)}">
-          ${icons.arrowDown}
+        <button class="git-source-section-heading" type="button" title="${escapeAttribute(files.length ? sectionActionLabel : `${title} has no files`)}" aria-label="${escapeAttribute(sectionActionLabel)}" aria-expanded="${!collapsed}" aria-disabled="${files.length === 0}" data-action="toggle-git-change-section" data-git-change-section="${mode}">
+          ${collapsed ? icons.arrowRight : icons.arrowDown}
           <span>${escapeHtml(title)}</span>
           <em>${escapeHtml(String(files.length))}</em>
         </button>
@@ -347,9 +351,11 @@ function renderGitSourceFileSection(
           ${icon}
         </button>
       </header>
-      ${files.length
-        ? renderGitSourceFileTree(workspaceID, folderID, files, mode, action, icon, fileActionLabel, busy)
-        : `<div class="git-source-empty">No files.</div>`}
+      ${collapsed
+        ? ""
+        : files.length
+          ? renderGitSourceFileTree(workspaceID, folderID, files, mode, action, icon, fileActionLabel, busy)
+          : `<div class="git-source-empty">No files.</div>`}
     </section>
   `;
 }
@@ -1483,6 +1489,11 @@ export function dropWorkspaceGitRepositoryState(workspaceID: string) {
       state.collapsedGitChangeFolders.delete(key);
     }
   }
+  for (const key of Array.from(state.collapsedGitChangeSections)) {
+    if (key.startsWith(`${workspaceID}:`)) {
+      state.collapsedGitChangeSections.delete(key);
+    }
+  }
   for (const key of Array.from(state.collapsedGitChangeTrees)) {
     if (key.startsWith(`${workspaceID}:`)) {
       state.collapsedGitChangeTrees.delete(key);
@@ -2003,6 +2014,28 @@ export function toggleGitHistory() {
   getAppCallbacks().render();
 }
 
+export function toggleGitChangeSection(section: string) {
+  if (section !== "stage" && section !== "unstage") {
+    return;
+  }
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+  if (!workspace || !repository) {
+    return;
+  }
+  const hasFiles = (repository.files ?? []).some((file) => section === "stage" ? file.unstaged : file.staged);
+  if (!hasFiles) {
+    return;
+  }
+  const key = gitChangeSectionStateKey(workspace.id, repository.folderId, section);
+  if (state.collapsedGitChangeSections.has(key)) {
+    state.collapsedGitChangeSections.delete(key);
+  } else {
+    state.collapsedGitChangeSections.add(key);
+  }
+  getAppCallbacks().render();
+}
+
 export function toggleGitDiffViewMode() {
   state.gitDiffViewMode = state.gitDiffViewMode === "split" ? "inline" : "split";
   getAppCallbacks().render();
@@ -2221,6 +2254,14 @@ function gitRepositoryDraftKey(workspaceID: string, folderID: string): string {
 
 function gitChangeTreeStateKey(workspaceID: string, folderID: string): string {
   return `${workspaceID}:${folderID}`;
+}
+
+function gitChangeSectionStateKey(workspaceID: string, folderID: string, section: "stage" | "unstage"): string {
+  return `${workspaceID}:${folderID}:${section}`;
+}
+
+function isGitSourceFileSectionCollapsed(workspaceID: string, folderID: string, section: "stage" | "unstage", fileCount: number): boolean {
+  return fileCount === 0 || state.collapsedGitChangeSections.has(gitChangeSectionStateKey(workspaceID, folderID, section));
 }
 
 function isGitChangeTreeCollapsed(workspaceID: string, folderID: string): boolean {
