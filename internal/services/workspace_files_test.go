@@ -1068,6 +1068,115 @@ func TestSystemServiceSearchWorkspaceTextRegexAndFileFilters(t *testing.T) {
 	}
 }
 
+func TestWorkspaceTextSearchPathFiltersSupportVSCodeGlobExpressions(t *testing.T) {
+	tests := []struct {
+		name         string
+		expression   string
+		relative     string
+		rootRelative string
+		fileName     string
+		want         bool
+	}{
+		{
+			name:         "brace extension group",
+			expression:   "*.{ts,tsx}",
+			relative:     "workspace/src/main.tsx",
+			rootRelative: "src/main.tsx",
+			fileName:     "main.tsx",
+			want:         true,
+		},
+		{
+			name:         "brace extension group rejects other extension",
+			expression:   "*.{ts,tsx}",
+			relative:     "workspace/src/main.js",
+			rootRelative: "src/main.js",
+			fileName:     "main.js",
+			want:         false,
+		},
+		{
+			name:         "grouped folders and character range",
+			expression:   "{src,test}/**/*.[jt]s",
+			relative:     "workspace/packages/app/src/lib/main.ts",
+			rootRelative: "packages/app/src/lib/main.ts",
+			fileName:     "main.ts",
+			want:         true,
+		},
+		{
+			name:         "implicit recursive prefix",
+			expression:   "src/*.ts",
+			relative:     "workspace/packages/app/src/main.ts",
+			rootRelative: "packages/app/src/main.ts",
+			fileName:     "main.ts",
+			want:         true,
+		},
+		{
+			name:         "dot slash anchors the expression",
+			expression:   "./src/*.ts",
+			relative:     "workspace/packages/app/src/main.ts",
+			rootRelative: "packages/app/src/main.ts",
+			fileName:     "main.ts",
+			want:         false,
+		},
+		{
+			name:         "dot slash matches from a root",
+			expression:   "./src/*.ts",
+			relative:     "workspace/src/main.ts",
+			rootRelative: "src/main.ts",
+			fileName:     "main.ts",
+			want:         true,
+		},
+		{
+			name:         "negated character range",
+			expression:   "example.[!0-9]",
+			relative:     "workspace/example.a",
+			rootRelative: "example.a",
+			fileName:     "example.a",
+			want:         true,
+		},
+		{
+			name:         "negated character range rejects digit",
+			expression:   "example.[!0-9]",
+			relative:     "workspace/example.4",
+			rootRelative: "example.4",
+			fileName:     "example.4",
+			want:         false,
+		},
+		{
+			name:         "literal brackets",
+			expression:   "src/routes/post/[[]id[]]/**",
+			relative:     "workspace/src/routes/post/[id]/handler.ts",
+			rootRelative: "src/routes/post/[id]/handler.ts",
+			fileName:     "handler.ts",
+			want:         true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			filters, err := compileWorkspaceTextPathFilters(test.expression)
+			if err != nil {
+				t.Fatalf("compile filter: %v", err)
+			}
+			if got := workspaceTextPathFilterMatches(filters, test.relative, test.rootRelative, test.fileName); got != test.want {
+				t.Fatalf("match %q = %v, want %v", test.expression, got, test.want)
+			}
+		})
+	}
+}
+
+func TestWorkspaceTextSearchPathFiltersKeepBraceCommasInOneExpression(t *testing.T) {
+	filters, err := compileWorkspaceTextPathFilters("*.{ts, tsx}, README.md")
+	if err != nil {
+		t.Fatalf("compile filters: %v", err)
+	}
+	if len(filters) != 3 {
+		t.Fatalf("expected three expanded filters, got %d", len(filters))
+	}
+	if _, err := compileWorkspaceTextPathFilters("*.{ts,tsx"); err == nil || !strings.Contains(err.Error(), "unmatched opening brace") {
+		t.Fatalf("expected an unmatched-brace error, got %v", err)
+	}
+}
+
 func TestSystemServiceSearchWorkspaceTextReportsUTF16OffsetsAcrossLines(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.WriteFile(filepath.Join(root, "unicode.txt"), []byte("😀 x\r\nneedle"), 0o600); err != nil {

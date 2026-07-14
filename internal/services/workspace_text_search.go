@@ -85,7 +85,8 @@ type WorkspaceTextSearchMatch struct {
 }
 
 type workspaceTextPathFilter struct {
-	matcher *regexp.Regexp
+	matcher  *regexp.Regexp
+	anchored bool
 }
 
 type workspaceTextSearchRun struct {
@@ -508,35 +509,146 @@ func workspaceTextRootRelativePath(folder WorkspaceFolder, relative string) stri
 }
 
 func compileWorkspaceTextPathFilters(value string) ([]workspaceTextPathFilter, error) {
-	parts := strings.FieldsFunc(value, func(char rune) bool {
-		return char == ',' || char == ';' || char == '\n' || char == '\r'
-	})
+	parts := splitWorkspaceTextPathFilters(value)
 	filters := make([]workspaceTextPathFilter, 0, len(parts))
 	for _, part := range parts {
-		pattern := normalizeWorkspaceTextPathFilter(part)
+		pattern, anchored := normalizeWorkspaceTextPathFilter(part)
 		if pattern == "" {
 			continue
 		}
-		expression := workspaceTextGlobExpression(pattern)
-		matcher, err := regexp.Compile(expression)
+		expanded, err := expandWorkspaceTextBracePatterns(pattern)
 		if err != nil {
 			return nil, fmt.Errorf("file filter %q is invalid: %w", pattern, err)
 		}
-		filters = append(filters, workspaceTextPathFilter{matcher: matcher})
+		for _, expandedPattern := range expanded {
+			expression := workspaceTextGlobExpression(expandedPattern, anchored)
+			matcher, err := regexp.Compile(expression)
+			if err != nil {
+				return nil, fmt.Errorf("file filter %q is invalid: %w", expandedPattern, err)
+			}
+			filters = append(filters, workspaceTextPathFilter{matcher: matcher, anchored: anchored})
+		}
 	}
 	return filters, nil
 }
 
-func normalizeWorkspaceTextPathFilter(pattern string) string {
+func splitWorkspaceTextPathFilters(value string) []string {
+	parts := []string{}
+	start := 0
+	braceDepth := 0
+	bracketDepth := 0
+	for index, char := range value {
+		switch char {
+		case '{':
+			if bracketDepth == 0 {
+				braceDepth++
+			}
+		case '}':
+			if bracketDepth == 0 && braceDepth > 0 {
+				braceDepth--
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		case ',', ';', '\n', '\r':
+			if braceDepth == 0 && bracketDepth == 0 {
+				parts = append(parts, value[start:index])
+				start = index + len(string(char))
+			}
+		}
+	}
+	parts = append(parts, value[start:])
+	return parts
+}
+
+func normalizeWorkspaceTextPathFilter(pattern string) (string, bool) {
 	pattern = strings.TrimSpace(strings.ReplaceAll(pattern, "\\", "/"))
 	pattern = strings.Trim(pattern, "\"'`")
-	pattern = strings.TrimPrefix(pattern, "./")
+	anchored := strings.HasPrefix(pattern, "./")
+	if anchored {
+		pattern = strings.TrimPrefix(pattern, "./")
+	}
 	trailingSlash := strings.HasSuffix(pattern, "/")
 	pattern = strings.Trim(pattern, "/")
 	if trailingSlash && pattern != "" {
 		pattern += "/**"
 	}
-	return pattern
+	return pattern, anchored
+}
+
+func expandWorkspaceTextBracePatterns(pattern string) ([]string, error) {
+	open := strings.IndexByte(pattern, '{')
+	if open < 0 {
+		if strings.Contains(pattern, "}") {
+			return nil, fmt.Errorf("unmatched closing brace")
+		}
+		return []string{pattern}, nil
+	}
+	depth := 0
+	closeIndex := -1
+	for index := open; index < len(pattern); index++ {
+		switch pattern[index] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				closeIndex = index
+				index = len(pattern)
+			}
+		}
+	}
+	if closeIndex < 0 {
+		return nil, fmt.Errorf("unmatched opening brace")
+	}
+	alternatives := splitWorkspaceTextBraceAlternatives(pattern[open+1 : closeIndex])
+	if len(alternatives) < 2 {
+		return nil, fmt.Errorf("brace group must contain comma-separated alternatives")
+	}
+	prefix := pattern[:open]
+	suffix := pattern[closeIndex+1:]
+	expanded := []string{}
+	for _, alternative := range alternatives {
+		alternative = strings.TrimSpace(alternative)
+		if alternative == "" {
+			return nil, fmt.Errorf("brace group contains an empty alternative")
+		}
+		values, err := expandWorkspaceTextBracePatterns(prefix + alternative + suffix)
+		if err != nil {
+			return nil, err
+		}
+		expanded = append(expanded, values...)
+		if len(expanded) > 256 {
+			return nil, fmt.Errorf("brace expansion produces too many patterns")
+		}
+	}
+	return expanded, nil
+}
+
+func splitWorkspaceTextBraceAlternatives(value string) []string {
+	parts := []string{}
+	start := 0
+	depth := 0
+	for index := 0; index < len(value); index++ {
+		switch value[index] {
+		case '{':
+			depth++
+		case '}':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				parts = append(parts, value[start:index])
+				start = index + 1
+			}
+		}
+	}
+	parts = append(parts, value[start:])
+	return parts
 }
 
 func workspaceTextPathFilterMatches(filters []workspaceTextPathFilter, relative string, rootRelative string, name string) bool {
@@ -547,29 +659,36 @@ func workspaceTextPathFilterMatches(filters []workspaceTextPathFilter, relative 
 	rootRelative = filepath.ToSlash(rootRelative)
 	name = filepath.ToSlash(name)
 	for _, filter := range filters {
-		if filter.matcher.MatchString(relative) || filter.matcher.MatchString(rootRelative) || filter.matcher.MatchString(name) {
+		if filter.matcher.MatchString(relative) || filter.matcher.MatchString(rootRelative) || (!filter.anchored && filter.matcher.MatchString(name)) {
 			return true
 		}
 	}
 	return false
 }
 
-func workspaceTextGlobExpression(pattern string) string {
+func workspaceTextGlobExpression(pattern string, anchored bool) string {
 	hasSlash := strings.Contains(pattern, "/")
 	hasGlob := strings.ContainsAny(pattern, "*?[")
+	casePrefix := ""
+	if goruntime.GOOS == "windows" || goruntime.GOOS == "darwin" {
+		casePrefix = "(?i)"
+	}
 	if !hasGlob {
 		quoted := regexp.QuoteMeta(pattern)
-		if hasSlash {
-			return `(?i)(?:^|/)` + quoted + `(?:$|/)`
+		if anchored {
+			return casePrefix + `^` + quoted + `(?:$|/)`
 		}
-		return `(?i)(?:^|/)` + quoted + `(?:$|/)`
+		return casePrefix + `(?:^|/)` + quoted + `(?:$|/)`
 	}
 
 	glob := workspaceTextGlobToRegexp(pattern)
-	if hasSlash {
-		return `(?i)^` + glob + `$`
+	if anchored {
+		return casePrefix + `^` + glob + `$`
 	}
-	return `(?i)(?:^|/)` + glob + `(?:$|/)`
+	if hasSlash {
+		return casePrefix + `(?:^|.*/)` + glob + `$`
+	}
+	return casePrefix + `(?:^|/)` + glob + `(?:$|/)`
 }
 
 func workspaceTextGlobToRegexp(pattern string) string {
@@ -590,11 +709,21 @@ func workspaceTextGlobToRegexp(pattern string) string {
 		case '?':
 			builder.WriteString(`[^/]`)
 		case '[':
+			if strings.HasPrefix(pattern[index:], "[[]") {
+				builder.WriteString(`\[`)
+				index += 2
+				continue
+			}
+			if strings.HasPrefix(pattern[index:], "[]]") {
+				builder.WriteString(`\]`)
+				index += 2
+				continue
+			}
 			end := strings.IndexByte(pattern[index+1:], ']')
 			if end >= 0 {
 				class := pattern[index+1 : index+1+end]
 				if strings.HasPrefix(class, "!") {
-					class = "^" + regexp.QuoteMeta(class[1:])
+					class = "^" + class[1:]
 				}
 				builder.WriteString("[")
 				builder.WriteString(class)

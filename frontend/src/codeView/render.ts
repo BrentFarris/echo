@@ -425,8 +425,9 @@ export function renderTextSearchPanelContent(workspaceID: string): string {
         class="code-text-search-filter"
         type="text"
         value="${escapeAttribute(state.textSearchInclude)}"
-        placeholder="files to include"
+        placeholder="e.g. *.ts, src/**/include"
         aria-label="Files to include"
+        title="Glob expressions: *, **, ?, {a,b}, [a-z]. Separate patterns with commas."
         spellcheck="false"
         data-code-text-search-field="include"
       />
@@ -434,8 +435,9 @@ export function renderTextSearchPanelContent(workspaceID: string): string {
         class="code-text-search-filter"
         type="text"
         value="${escapeAttribute(state.textSearchExclude)}"
-        placeholder="files to exclude"
+        placeholder="e.g. **/generated, *.{test,spec}.ts"
         aria-label="Files to exclude"
+        title="Glob expressions: *, **, ?, {a,b}, [a-z]. Separate patterns with commas."
         spellcheck="false"
         data-code-text-search-field="exclude"
       />
