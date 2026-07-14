@@ -1,5 +1,5 @@
 
-import { bindCodeQuickOpenEvents, bindCodeViewEvents, closeActiveCodeTab, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, handleGlobalCodeTreeNavigation, handleGlobalDebugShortcut, navigateCodeHistory, openQuickOpen, openTextSearch, saveActiveCodeFile, selectedMountedCodeEditorText, startSelectedCodeRename } from "../codeView";
+import { bindCodeQuickOpenEvents, bindCodeViewEvents, closeActiveCodeTab, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, handleGlobalCodeTreeNavigation, handleGlobalDebugShortcut, navigateCodeHistory, openMountedCodeEditorGoToLine, openQuickOpen, openTextSearch, saveActiveCodeFile, selectedMountedCodeEditorText, startSelectedCodeRename } from "../codeView";
 import { bindActionEvents } from "./actions";
 import { getAppCallbacks } from "./callbacks";
 import { bindChatEvents, clearChatMention, patchChatMentionPicker } from "./chat";
@@ -151,6 +151,15 @@ export function handleGlobalKeydown(event: KeyboardEvent) {
   }
   if (state.appMode === "code" && !state.settingsOpen) {
     const workspace = activeWorkspace();
+    if (
+      workspace &&
+      isGoToLineShortcut(event) &&
+      openMountedCodeEditorGoToLine(workspace.id)
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (
       workspace &&
       isCodeRenameShortcut(event) &&
@@ -365,6 +374,16 @@ function isQuickOpenShortcut(event: KeyboardEvent): boolean {
     !event.shiftKey &&
     (event.ctrlKey || event.metaKey) &&
     (key === "p" || event.code === "KeyP")
+  );
+}
+
+function isGoToLineShortcut(event: KeyboardEvent): boolean {
+  const key = event.key.toLowerCase();
+  return (
+    !event.altKey &&
+    !event.shiftKey &&
+    (event.ctrlKey || event.metaKey) &&
+    (key === "g" || event.code === "KeyG")
   );
 }
 

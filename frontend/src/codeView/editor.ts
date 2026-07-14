@@ -2,7 +2,7 @@ import { HighlightStyle, indentUnit, syntaxHighlighting } from "@codemirror/lang
 import { acceptCompletion } from "@codemirror/autocomplete";
 import { isolateHistory } from "@codemirror/commands";
 import { languages as languageData } from "@codemirror/language-data";
-import { highlightSelectionMatches } from "@codemirror/search";
+import { gotoLine, highlightSelectionMatches } from "@codemirror/search";
 import { countColumn, EditorSelection, EditorState, findColumn, Prec, RangeSetBuilder, type Extension, type SelectionRange } from "@codemirror/state";
 import { crosshairCursor, Decoration, type DecorationSet, EditorView, GutterMarker, ViewPlugin, type ViewUpdate, gutter, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
@@ -191,6 +191,13 @@ export function selectedMountedCodeEditorText(workspaceID: string): string {
     return "";
   }
   return mountedEditor.state.sliceDoc(selection.from, selection.to);
+}
+
+export function openMountedCodeEditorGoToLine(workspaceID: string): boolean {
+  if (!mountedEditor || mountedEditorWorkspaceID !== workspaceID) {
+    return false;
+  }
+  return gotoLine(mountedEditor);
 }
 
 export function mountedCodeEditorMatches(workspaceID: string, path: string) {
