@@ -395,7 +395,13 @@ class ReferencesPanelWidget extends WidgetType {
     if (!panel || panel.locations.length === 0) {
       return;
     }
-    this.selectReference(wrapReferenceIndex(panel.selectedIndex + delta, panel.locations.length), view);
+    const navigationIndices = referenceNavigationIndices(panel.locations);
+    const currentPosition = navigationIndices.indexOf(panel.selectedIndex);
+    const nextPosition = wrapReferenceIndex(
+      (currentPosition >= 0 ? currentPosition : 0) + delta,
+      navigationIndices.length,
+    );
+    this.selectReference(navigationIndices[nextPosition], view);
   }
 
   private openReference(index: number, view: EditorView) {
@@ -466,6 +472,10 @@ function referenceGroups(locations: services.WorkspaceReferenceLocation[]): Refe
     groups[groupIndex].entries.push({ index, location });
   });
   return groups;
+}
+
+function referenceNavigationIndices(locations: services.WorkspaceReferenceLocation[]): number[] {
+  return referenceGroups(locations).flatMap((group) => group.entries.map((entry) => entry.index));
 }
 
 function initialReferenceIndex(
