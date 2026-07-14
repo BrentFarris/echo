@@ -22,6 +22,7 @@ import { renderWorkspaceIcon, renderMissingWorkspace } from "./workspace";
 import { hasKanbanRuntime, getHeartbeatInterval, heartbeatIntervalLabel, getWatchdogInterval, watchdogIntervalLabel, renderCreateKanbanCardDialog, renderDecompositionState, renderEmptyBoard, renderKanbanBoard, renderKanbanDetail, renderKanbanRuntime } from "./kanban";
 import { services } from "../../wailsjs/go/models";
 import { renderDashboard } from "./dashboard";
+import { updateWindowTitle } from "./title";
 
 /** Persistent app-shell wrapper.  Creating it once inside appRoot means
  *  that subsequent renders only swap individual region fragments instead
@@ -160,6 +161,7 @@ function elementIndex(element: HTMLElement): number {
 
 export function render(): void {
   const workspace = activeWorkspace();
+  updateWindowTitle();
   if (state.appMode !== "code" || !workspace) {
     destroyCodeEditor();
   }

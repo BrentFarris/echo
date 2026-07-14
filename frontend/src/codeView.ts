@@ -7,5 +7,5 @@ export { renderCodeQuickOpen, renderCodeView, setCodeGitChangeProvider } from ".
 export { applyWorkspaceTextSearchEvent, openTextSearch } from "./codeView/search";
 export type { WorkspaceTextSearchEvent } from "./codeView/search";
 export { closeQuickOpen, openQuickOpen } from "./codeView/quickOpen";
-export { applyDebugEvent, getDebugState, handleGlobalDebugShortcut, loadWorkspaceDebugSettings, patchDebugChrome, startOrContinueDebug, stopActiveDebug } from "./codeView/debug";
+export { applyDebugEvent, getDebugState, handleGlobalDebugShortcut, loadWorkspaceDebugSettings, patchDebugChrome, setDebugStateChangeListener, startOrContinueDebug, stopActiveDebug } from "./codeView/debug";
 export type { DebugEvent, DebugState, WorkspaceDebugSettings } from "./codeView/debugTypes";

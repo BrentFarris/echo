@@ -67,6 +67,7 @@ let runtimeState: DebugState = { ...defaultDebugState };
 let runtimeOutput = "";
 let inspectionRequestSequence = 0;
 let lastHandledStopKey = "";
+let debugStateChangeListener: (() => void) | null = null;
 
 const debugIcons = {
   play: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7Z"/></svg>`,
@@ -112,6 +113,10 @@ export function getDebugState(): DebugState {
 
 export function isWorkspaceDebugActive(workspaceID: string): boolean {
   return isDebugSessionActive(runtimeStateForWorkspace(workspaceID));
+}
+
+export function setDebugStateChangeListener(listener: (() => void) | null): void {
+  debugStateChangeListener = listener;
 }
 
 export function getSelectedDebugFrameID(workspaceID: string): number {
@@ -697,6 +702,7 @@ function acceptDebugState(next: DebugState) {
   if (typeof next.output === "string") {
     runtimeOutput = next.output;
   }
+  debugStateChangeListener?.();
 }
 
 function appendDebugOutput(output: string) {

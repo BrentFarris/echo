@@ -1,5 +1,5 @@
 
-import { applyDebugEvent, applyInlineCodePromptEvent, applyWorkspaceTextSearchEvent, ensureCodeViewRootLoaded, finishCodeTabSwitcher, openDroppedCodeFile, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk, saveActiveCodeFile, saveDirtyWorkspaceCodeTabs, setCodeGitChangeProvider } from "../codeView";
+import { applyDebugEvent, applyInlineCodePromptEvent, applyWorkspaceTextSearchEvent, ensureCodeViewRootLoaded, finishCodeTabSwitcher, openDroppedCodeFile, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk, saveActiveCodeFile, saveDirtyWorkspaceCodeTabs, setCodeGitChangeProvider, setDebugStateChangeListener } from "../codeView";
 import type { WorkspaceTextSearchEvent } from "../codeView";
 import { LoadRuntimeStatus, LoadState, LoadWebAccessStatus, ListAgentModes, ReadWorkspaceMediaFile } from "../backend/services";
 import { llm, services } from "../../wailsjs/go/models";
@@ -25,6 +25,7 @@ import type { CodeEntryKind } from "../codeView/types";
 import type { DebugEvent } from "../codeView/debugTypes";
 import { loadTokenBudget } from "./budget";
 import { loadLivenessConfig } from "./liveness";
+import { updateWindowTitle } from "./title";
 
 let realtimeResyncTimer = 0;
 
@@ -179,6 +180,7 @@ export function startApp() {
     bindChatEvents,
   });
   setCodeGitChangeProvider(gitChangeStateForPath);
+  setDebugStateChangeListener(updateWindowTitle);
 
   OnFileDrop((_x, _y, paths) => {
     void openDroppedFiles(paths);

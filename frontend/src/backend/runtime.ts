@@ -13,3 +13,10 @@ export function OnFileDrop(callback: (x: number, y: number, paths: string[]) => 
     WailsRuntime.OnFileDrop(callback, false);
   }
 }
+
+export function SetWindowTitle(title: string) {
+  document.title = title;
+  if (isWailsRuntime()) {
+    WailsRuntime.WindowSetTitle(title);
+  }
+}
