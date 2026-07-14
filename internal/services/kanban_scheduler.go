@@ -395,6 +395,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 	forcedCompactions := 0
 	verificationAttempts := 0
 	noToolContinuationAttempts := 0
+	emptyAssistantRetries := 0
 	hasProjectChanges := false
 	verificationCurrent := false
 	skillCheckpointPending := false
@@ -514,9 +515,22 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 		}
 		forcedCompactions = 0
 
-		if len(toolCalls) == 0 && strings.TrimSpace(content) == "" {
+		if isEmptyAssistantResponse(content, toolCalls) {
+			if emptyAssistantRetries >= maxEmptyAssistantRetries {
+				s.blockKanbanCard(workspace.ID, cardID, agentID, "Agent returned no answer", emptyAssistantResponseError().Error())
+				return
+			}
+			emptyAssistantRetries++
+			s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
+				Type:    "status",
+				Title:   "Agent retrying",
+				Content: "The model completed without a visible answer or tool call, so Echo asked it to continue from its reasoning.",
+				Status:  KanbanLaneInProgress,
+			})
+			messages = append(messages, emptyAssistantRetryMessage())
 			continue
 		}
+		emptyAssistantRetries = 0
 
 		assistantMessage := llm.Message{Role: llm.RoleAssistant, Content: content, ToolCalls: toolCalls}
 		messages = append(messages, assistantMessage)

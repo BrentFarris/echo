@@ -235,7 +235,10 @@ func TestWorkspaceChangeReviewTracksInlineToolChangesAndAffectedPaths(t *testing
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 			)
 		case 3:
-			writeSSE(t, w, `{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Updated notes."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
 		default:
 			t.Fatalf("unexpected request %d", requestCount.Load())
 		}

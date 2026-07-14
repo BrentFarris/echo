@@ -269,7 +269,7 @@ function renderDebugInspection(workspaceID: string): string {
           </select>
         ` : ""}
       </header>
-      ${callStackCollapsed ? "" : state.status === "paused"
+      ${callStackCollapsed ? "" : `<div class="debug-pane-content">${state.status === "paused"
         ? ui.inspectionLoading
           ? `<div class="debug-empty"><span class="spinner" aria-hidden="true"></span> Loading stack…</div>`
           : ui.inspectionError
@@ -277,19 +277,19 @@ function renderDebugInspection(workspaceID: string): string {
             : ui.frames.length
               ? `<div class="debug-stack-list" role="listbox" aria-label="Stack frames">${ui.frames.map((frame) => renderDebugStackFrame(frame, ui.selectedFrameId)).join("")}</div>`
               : `<div class="debug-empty">No stack frames were returned.</div>`
-        : `<div class="debug-empty">${escapeHtml(debugStatusLabel(state, ui.operation))}</div>`}
+        : `<div class="debug-empty">${escapeHtml(debugStatusLabel(state, ui.operation))}</div>`}</div>`}
     </section>
     <section class="debug-pane debug-variables-pane ${variablesCollapsed ? "is-collapsed" : ""}" aria-label="Variables">
       <header>${renderDebugPaneHeading("variables", "Variables", variablesCollapsed)}</header>
-      ${variablesCollapsed ? "" : state.status !== "paused"
+      ${variablesCollapsed ? "" : `<div class="debug-pane-content">${state.status !== "paused"
         ? `<div class="debug-empty">Variables are available while paused.</div>`
         : ui.scopes.length
           ? `<div class="debug-scopes">${ui.scopes.map((scope) => renderDebugScope(ui, scope)).join("")}</div>`
-          : `<div class="debug-empty">${ui.inspectionLoading ? "Loading variables…" : "No variables are available for this frame."}</div>`}
+          : `<div class="debug-empty">${ui.inspectionLoading ? "Loading variables…" : "No variables are available for this frame."}</div>`}</div>`}
     </section>
     <section class="debug-pane debug-output-pane ${outputCollapsed ? "is-collapsed" : ""}" aria-label="Debug output">
       <header>${renderDebugPaneHeading("output", "Output", outputCollapsed)}</header>
-      ${outputCollapsed ? "" : `<pre data-debug-output>${escapeHtml(runtimeOutput || state.output || "Debug output will appear here.")}</pre>`}
+      ${outputCollapsed ? "" : `<pre class="debug-pane-content" data-debug-output>${escapeHtml(runtimeOutput || state.output || "Debug output will appear here.")}</pre>`}
     </section>
   `;
 }
