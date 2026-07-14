@@ -72,6 +72,8 @@ export function DeleteAgentMode(arg1:string):Promise<Array<services.AgentMode>>;
 
 export function DeleteKanbanCard(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
+export function DeleteSavedCommand(arg1:string,arg2:string):Promise<void>;
+
 export function DeleteWorkspace(arg1:string):Promise<services.AppState>;
 
 export function DeleteWorkspaceTask(arg1:string,arg2:string,arg3:string):Promise<services.TaskBoard>;
@@ -97,6 +99,8 @@ export function GetDashboardLayouts():Promise<Record<string, Array<services.Dash
 export function GetHeartbeatConfig(arg1:string):Promise<services.HeartbeatConfig>;
 
 export function GetLivenessConfig(arg1:string):Promise<services.LivenessConfig>;
+
+export function GetSavedCommands(arg1:string):Promise<Array<services.SavedCommand>>;
 
 export function GetTokenBudget(arg1:string):Promise<services.TokenBudget>;
 
@@ -265,6 +269,8 @@ export function UpdateKanbanCardDescription(arg1:string,arg2:string,arg3:string)
 export function UpdateKanbanCardDirection(arg1:string,arg2:string,arg3:string):Promise<services.KanbanBoard>;
 
 export function UpdateWorkspaceTask(arg1:string,arg2:string,arg3:services.TaskInput,arg4:string):Promise<services.TaskBoard>;
+
+export function UpsertSavedCommand(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<void>;
 
 export function WorkspaceIconHandler():Promise<http.Handler>;
 

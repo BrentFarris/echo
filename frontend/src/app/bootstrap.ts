@@ -1,6 +1,6 @@
 
 import { applyInlineCodePromptEvent, ensureCodeViewRootLoaded, finishCodeTabSwitcher, openDroppedCodeFile, refreshOpenCodeTabsFromDisk, saveActiveCodeFile, setCodeGitChangeProvider } from "../codeView";
-import { LoadRuntimeStatus, LoadState, LoadWebAccessStatus, ListAgentModes, ReadWorkspaceMediaFile } from "../backend/services";
+import { GetSavedCommands, LoadRuntimeStatus, LoadState, LoadWebAccessStatus, ListAgentModes, ReadWorkspaceMediaFile } from "../backend/services";
 import { llm, services } from "../../wailsjs/go/models";
 import { EventsOn, OnFileDrop } from "../backend/runtime";
 import { initializeWebAccessTokenFromURL } from "../backend/web";
@@ -60,6 +60,13 @@ function codeViewCallbacks() {
 async function initialize() {
   try {
     state.appState = await LoadState();
+    // Load saved commands for each workspace
+    for (const ws of (state.appState?.workspaces ?? [])) {
+      try {
+        const cmds = await GetSavedCommands(ws.id);
+        if (cmds.length > 0) state.savedCommands.set(ws.id, cmds);
+      } catch { /* Non-fatal */ }
+    }
     state.settingsDraft = cloneSettings(state.appState.settings);
     state.webAccessDraft = cloneWebAccessSettings(state.appState.webAccess);
     state.webAccessStatus = await LoadWebAccessStatus();
@@ -195,6 +202,27 @@ export function startApp() {
       runBtn?.click();
     }
   }, true);
+
+  // Close saved command dialog on Escape key
+  document.addEventListener("keydown", (event: KeyboardEvent) => {
+    if (event.key === "Escape" && state.savedCommandEditingId) {
+      state.savedCommandEditingId = "";
+      state.savedCommandDraftName = "";
+      state.savedCommandDraftCommand = "";
+      getAppCallbacks().render();
+    }
+  }, true);
+
+  // Close saved command dialog on backdrop click
+  document.addEventListener("click", (event: Event) => {
+    const target = event.target as HTMLElement;
+    if (target?.dataset?.savedCommandOverlay && !target.closest("[data-saved-command-dialog]")) {
+      state.savedCommandEditingId = "";
+      state.savedCommandDraftName = "";
+      state.savedCommandDraftCommand = "";
+      getAppCallbacks().render();
+    }
+  });
 
   document.addEventListener("keydown", handleGlobalKeydown, true);
   document.addEventListener("keyup", handleGlobalKeyup, true);

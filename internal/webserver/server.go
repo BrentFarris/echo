@@ -605,4 +605,7 @@ var allowedRPCMethods = map[string]bool{
 	"SaveDashboardLayout":              true,
 	"RunShellCommand":                  true,
 	"StopShellCommand":                 true,
+	"GetSavedCommands":                 true,
+	"UpsertSavedCommand":               true,
+	"DeleteSavedCommand":               true,
 }

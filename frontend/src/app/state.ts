@@ -99,6 +99,11 @@ export const state = {
   terminalRuns: new Map<string, ShellCommandRun[]>(),
   terminalDrafts: new Map<string, string>(),
   terminalOpen: new Set<string>(),
+  savedCommands: new Map<string, services.SavedCommand[]>(),
+  savedCommandEditingId: "",
+  savedCommandDraftName: "",
+  savedCommandDraftCommand: "",
+  savedCommandOpenSections: new Set<string>(),
 };
 
 export type AgentModeDraft = {

@@ -9192,7 +9192,7 @@ h3 {
 .terminal-panel {
   display: grid;
   grid-template-rows: auto;
-  max-height: 60vh;
+  max-height: calc(80vh - 200px);
   overflow: hidden;
   margin-top: var(--space-2xl);
   border: 1px solid var(--color-border);
@@ -9421,4 +9421,195 @@ h3 {
 .terminal-run-button svg {
   width: 14px;
   height: 14px;
+}
+
+/* ── Saved Commands section in terminal panel ── */
+
+.terminal-saved-commands {
+  border-top: 1px solid var(--color-border);
+  margin-top: var(--space-lg);
+  padding-top: var(--space-md);
+}
+
+.terminal-saved-header {
+  cursor: pointer;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  padding: var(--space-sm) 0;
+  list-style: none;
+}
+
+.terminal-saved-header::-webkit-details-marker {
+  display: none;
+}
+
+.terminal-saved-header::before {
+  content: "▸";
+  display: inline-block;
+  transition: transform 150ms ease;
+  margin-right: var(--space-sm);
+  font-size: var(--text-xs);
+}
+
+.terminal-saved-commands[open] > .terminal-saved-header::before {
+  transform: rotate(90deg);
+}
+
+.terminal-saved-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding-top: var(--space-sm);
+}
+
+.terminal-saved-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  margin-bottom: var(--space-xs);
+  cursor: pointer;
+  transition: background 100ms ease;
+}
+
+.terminal-saved-item:hover,
+.terminal-saved-item:focus-within {
+  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-surface));
+}
+
+.terminal-saved-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.terminal-saved-name {
+  font-weight: 600;
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.terminal-saved-cmd {
+  color: var(--color-text-muted);
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.terminal-saved-actions {
+  display: flex;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+
+/* Small subtle action buttons */
+.terminal-saved-actions .icon-button {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  opacity: 0.6;
+  transition: opacity 100ms ease;
+}
+
+.terminal-saved-actions .icon-button:hover {
+  opacity: 1;
+}
+
+/* Run button - more prominent */
+.terminal-run-saved-button {
+  color: var(--color-accent);
+  opacity: 1;
+}
+
+.terminal-save-current-button {
+  min-height: 36px;
+  padding: var(--space-sm) var(--space-md);
+  font-size: var(--text-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.terminal-save-current-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.terminal-saved-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: var(--space-sm);
+}
+
+/* Overlay dialog for add/edit saved command */
+.saved-command-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6xl);
+  background: rgba(18, 18, 20, 0.52);
+  backdrop-filter: blur(10px);
+}
+
+.saved-command-dialog {
+  display: grid;
+  gap: var(--space-sm);
+  width: min(400px, 100%);
+  padding: var(--space-4xl);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+
+.saved-command-dialog h3 {
+  margin: 0 0 var(--space-sm) 0;
+  font-size: var(--text-base);
+}
+
+.saved-command-dialog input {
+  width: 100%;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  box-sizing: border-box;
+}
+
+.saved-command-dialog input:focus {
+  border-color: var(--color-accent);
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 26%, transparent);
+  outline-offset: 1px;
+}
+
+.saved-command-dialog .dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+}
+
+/* Mobile responsive for saved commands */
+@media (max-width: 720px) {
+  .saved-command-dialog-overlay {
+    padding: var(--space-xl);
+  }
+
+  .saved-command-dialog {
+    width: 100%;
+    max-width: 400px;
+  }
 }

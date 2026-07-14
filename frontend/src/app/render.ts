@@ -352,6 +352,9 @@ function buildOverlays(): string {
   if (state.settingsOpen) {
     parts.push(renderSettingsOverlay(state.appState?.workspaces ?? []));
   }
+  if (state.savedCommandEditingId) {
+    parts.push(renderSavedCommandDialog());
+  }
   parts.push(renderToasts());
   if (state.contextMenu) {
     parts.push(renderContextMenu(state.contextMenu));
@@ -523,6 +526,8 @@ export function renderTerminalPanel(workspace: services.Workspace): string {
   const runs = state.terminalRuns.get(workspace.id) ?? [];
   const draft = state.terminalDrafts.get(workspace.id) ?? "";
   const hasRunning = runs.some((r) => r.status === "running");
+  const savedCmds = state.savedCommands.get(workspace.id) ?? [];
+  const isSavedOpen = state.savedCommandOpenSections.has(workspace.id);
 
   return `
     <details class="terminal-panel" data-terminal-panel data-workspace-id="${escapeAttribute(workspace.id)}" ${isOpen ? "open" : ""}>
@@ -535,6 +540,7 @@ export function renderTerminalPanel(workspace: services.Workspace): string {
         <div class="terminal-runs" data-terminal-runs>
           ${runs.map((run) => renderTerminalRun(run)).join("")}
         </div>
+        ${renderSavedCommandsSection(workspace)}
         <div class="terminal-input-row">
           <span class="terminal-prompt">$</span>
           <input
@@ -552,6 +558,99 @@ export function renderTerminalPanel(workspace: services.Workspace): string {
         </div>
       </div>
     </details>
+  `;
+}
+
+function renderSavedCommandsSection(workspace: services.Workspace): string {
+  const savedCmds = state.savedCommands.get(workspace.id) ?? [];
+  const isSavedOpen = state.savedCommandOpenSections.has(workspace.id);
+  const wsIdAttr = escapeAttribute(workspace.id);
+
+  if (savedCmds.length === 0) {
+    // Show minimal section with just the "Save current" button when no commands exist
+    return `
+      <div class="terminal-saved-commands">
+        <div class="terminal-saved-bar">
+          <button type="button" class="icon-button terminal-save-current-button" title="Save current command" data-action="add-saved-command" data-workspace-id="${wsIdAttr}">
+            ${icons.plus} Save current
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <details class="terminal-saved-commands" ${isSavedOpen ? "open" : ""}>
+      <summary class="terminal-saved-header" data-action="toggle-saved-commands" data-workspace-id="${wsIdAttr}">
+        Saved Commands (${savedCmds.length})
+      </summary>
+      <div class="terminal-saved-list">
+        ${savedCmds.map((sc) => renderSavedCommandItem(sc, workspace.id)).join("")}
+        <div class="terminal-saved-bar">
+          <button type="button" class="icon-button terminal-save-current-button" title="Save current command" data-action="add-saved-command" data-workspace-id="${wsIdAttr}">
+            ${icons.plus} Save current
+          </button>
+        </div>
+      </div>
+    </details>
+  `;
+}
+
+function renderSavedCommandDialog(): string {
+  const editingId = state.savedCommandEditingId;
+  if (!editingId) return "";
+  const isEdit = !editingId.startsWith("new-");
+  const title = isEdit ? "Edit Command" : "New Command";
+  const ws = activeWorkspace();
+  const wsIdAttr = ws ? escapeAttribute(ws.id) : "";
+
+  return `
+    <div class="saved-command-dialog-overlay" data-saved-command-overlay role="dialog" aria-modal="true">
+      <div class="saved-command-dialog" data-saved-command-dialog>
+        <h3>${escapeHtml(title)}</h3>
+        <input
+          type="text"
+          placeholder="Name"
+          value="${escapeAttribute(state.savedCommandDraftName)}"
+          data-saved-edit-name
+          aria-label="Command name"
+          autofocus
+        />
+        <input
+          type="text"
+          placeholder="Command"
+          value="${escapeAttribute(state.savedCommandDraftCommand)}"
+          data-saved-edit-command
+          aria-label="Command text"
+          style="font-family: 'Cascadia Mono', monospace;"
+        />
+        <div class="dialog-actions">
+          <button type="button" class="secondary-button" data-action="cancel-edit-command" data-workspace-id="${wsIdAttr}">Cancel</button>
+          <button type="button" class="primary-button" data-action="save-edited-command" data-workspace-id="${wsIdAttr}" data-saved-edit-id="${escapeAttribute(editingId)}">Save</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSavedCommandItem(sc: services.SavedCommand, workspaceId: string): string {
+  const wsIdAttr = escapeAttribute(workspaceId);
+
+  return `
+    <div class="terminal-saved-item" data-action="run-saved-command" data-workspace-id="${wsIdAttr}" data-saved-id="${escapeAttribute(sc.id)}">
+      <div class="terminal-saved-info">
+        <span class="terminal-saved-name" title="${escapeAttribute(sc.name)}">${escapeHtml(sc.name)}</span>
+        <span class="terminal-saved-cmd" title="${escapeAttribute(sc.command)}">${escapeHtml(sc.command)}</span>
+      </div>
+      <div class="terminal-saved-actions">
+        <button type="button" class="icon-button terminal-edit-saved-button" title="Edit ${escapeAttribute(sc.name)}" data-action="edit-saved-command" data-workspace-id="${wsIdAttr}" data-saved-id="${escapeAttribute(sc.id)}">
+          ${icons.edit}
+        </button>
+        <button type="button" class="icon-button danger-button terminal-delete-saved-button" title="Delete ${escapeAttribute(sc.name)}" data-action="delete-saved-command" data-workspace-id="${wsIdAttr}" data-saved-id="${escapeAttribute(sc.id)}">
+          ${icons.trash}
+        </button>
+      </div>
+    </div>
   `;
 }
 

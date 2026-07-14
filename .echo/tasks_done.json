@@ -22,6 +22,28 @@
       "updatedAt": "2026-07-13T15:56:09.8277296Z",
       "completedAt": "2026-07-13T15:56:09.8277296Z"
     },
+    "0df9e13c-a96a-4263-b0cc-f52aaa649f27": {
+      "title": "Replace crypto.randomUUID with fallback UUID generator for non-secure contexts",
+      "details": "## Problem\n\nOn mobile (via LAN web access over HTTP), `crypto.randomUUID()` throws because the Web Crypto API requires a secure context. This breaks saving terminal commands to favorites.\n\n**Error:** `crypto.randomUUID is not a function`\n**Location:** `frontend/src/app/actions.ts` line 1179\n\n## Fix\n\n### Option A: Polyfill in utils.ts (preferred)\n\nAdd a fallback UUID generator to `frontend/src/app/utils.ts`:\n\n```typescript\nexport function generateUUID(): string {\n  if (typeof crypto?.randomUUID === 'function') {\n    return crypto.randomUUID();\n  }\n  // Fallback for non-secure contexts (HTTP web access)\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) =\u003e {\n    const r = (crypto.getRandomValues(new Uint8Array(1))[0] % 16);\n    const v = c === 'x' ? r : (r \u0026 0x3) | 0x8;\n    return v.toString(16);\n  });\n}\n```\n\n### Option B: Use Date.now based ID (simpler but less unique)\n\n```typescript\nconst id = `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;\n```\n\n## Changes\n\n1. **`frontend/src/app/utils.ts`** — Add `generateUUID()` function with secure context fallback\n2. **`frontend/src/app/actions.ts`** line 1179 — Replace `crypto.randomUUID()` with `generateUUID()` and add import\n\n## Verification\n\n- Save terminal command to favorites on mobile web access (HTTP) → works without error\n- Save terminal command to favorites in Wails desktop app → still works\n- `cd frontend; npm run build` passes",
+      "tags": [
+        "mobile",
+        "web-access",
+        "saved-commands",
+        "crypto"
+      ],
+      "acceptanceCriteria": [
+        "crypto.randomUUID replaced with generateUUID fallback that works over HTTP",
+        "Saving a new terminal command to favorites works on mobile web access",
+        "No regression in Wails desktop app",
+        "cd frontend; npm run build passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-14T07:24:20.1221026Z",
+      "updatedAt": "2026-07-14T07:24:57.7977522Z",
+      "completedAt": "2026-07-14T07:24:57.7977522Z"
+    },
     "1954996a-cff3-48c5-8af7-93490eb110e7": {
       "title": "Render task references in chat messages",
       "details": "When a user sends a message containing `@task:\u003cid\u003e`, render it as a clickable/styled reference in the chat log so it's visually distinct from plain text (similar to how `@path` file mentions are rendered).\n\n**Scope:**\n- Parse `@task:\u003cid\u003e` patterns in user and assistant message content during rendering\n- Render as a styled chip or link element (e.g., `\u003cspan class=\"chat-task-ref\"\u003e`) showing the task title if resolvable, falling back to the ID\n- Clicking the reference could navigate to the task view with that task selected\n\n**Files to change:**\n- `echo/frontend/src/app/chat/index.ts` — message rendering logic\n- `echo/frontend/src/styles.css` — styling for the task reference element",
@@ -59,6 +81,53 @@
       "createdAt": "2026-07-10T20:13:54.8960092Z",
       "updatedAt": "2026-07-10T20:16:10.7712352Z",
       "completedAt": "2026-07-10T20:16:10.7712352Z"
+    },
+    "2594572f-7ae7-456c-87d0-4aad4cf01b1b": {
+      "title": "Fix desktop terminal panel getting cut off at bottom of screen",
+      "details": "## Problem\nOn desktop, the terminal panel gets cut off at the bottom of the viewport. The `max-height: 60vh` on `.terminal-panel` doesn't account for the space already consumed by the chat input area and other panels above it, so when scrolled to the bottom the terminal's input row is hidden behind the browser/app edge.\n\n## Root Cause\n`.terminal-panel` at line 9192 uses `max-height: 60vh` which can extend beyond the available viewport space when combined with the chat composer, left nav, and other UI chrome above it.\n\n## Fix — `frontend/src/styles.css`\n\nChange `.terminal-panel` (line 9192):\n- Replace `max-height: 60vh` with `max-height: calc(80vh - 200px)` to account for the chat composer and header space above, or use a fixed pixel cap like `max-height: 500px` that fits within typical desktop viewports.\n- Ensure `.terminal-content` has `overflow-y: auto` so internal scrolling works when content exceeds the panel height.\n\n## Verification\n- Open terminal on desktop with multiple command runs visible\n- Scroll to bottom — input row should be fully visible without being cut off by viewport edge",
+      "epic": "Terminal UX fixes",
+      "tags": [
+        "terminal",
+        "desktop",
+        "css",
+        "viewport"
+      ],
+      "acceptanceCriteria": [
+        "Terminal panel input row is fully visible at bottom of screen on desktop",
+        "Terminal content scrolls internally when it exceeds available space",
+        "No regression on mobile terminal layout"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-13T19:08:11.3850355Z",
+      "updatedAt": "2026-07-13T19:36:33.9203848Z",
+      "completedAt": "2026-07-13T19:36:33.9203848Z"
+    },
+    "5dd2f461-225e-498b-ad59-56913965f0cf": {
+      "title": "Backend: Add SavedCommand type and CRUD methods to SystemService",
+      "details": "## Files\n- **Modify** `internal/services/system.go`\n- **Modify** `internal/services/state_persistence.go`\n- **Modify** `internal/webserver/server.go`\n\n## Work\n\n### `system.go` — New type and AppState field\n\nAdd type:\n```go\ntype SavedCommand struct {\n\tID      string `json:\"id\"`\n\tName    string `json:\"name\"`\n\tCommand string `json:\"command\"`\n\tOrder   int    `json:\"order\"`\n}\n```\n\nAdd to `AppState`:\n```go\nSavedCommands map[string][]SavedCommand `json:\"savedCommands,omitempty\"`\n```\n\n### `system.go` — 3 exported methods\n\n**`GetSavedCommands(workspaceID string) []SavedCommand`**\n- Validate workspace exists via `workspaceAndSettings`\n- Return deep clone of `s.state.SavedCommands[workspaceID]` (empty slice if none)\n\n**`UpsertSavedCommand(workspaceID, id, name, command string, order int) error`**\n- Validate workspace exists\n- Trim inputs; reject if name and command both empty\n- If id is empty, generate UUID (`uuid.New().String()`)\n- Lock `s.mu`, clone existing slice for workspace, find-by-id to update or append new\n- Call `s.saveLocked()`\n\n**`DeleteSavedCommand(workspaceID, id string) error`**\n- Validate workspace exists\n- Lock `s.mu`, filter out matching id from workspace's slice\n- Call `s.saveLocked()`\n\n### `state_persistence.go` — Clone support\n\nUpdate the state clone helper to deep-copy `SavedCommands`:\n```go\ndst.SavedCommands = make(map[string][]SavedCommand, len(src.SavedCommands))\nfor k, v := range src.SavedCommands {\n    dst.SavedCommands[k] = append([]SavedCommand{}, v...)\n}\n```\n\n### `webserver/server.go` — RPC whitelist\n\nAdd to `allowedRPCMethods`:\n```go\n\"GetSavedCommands\":     true,\n\"UpsertSavedCommand\":   true,\n\"DeleteSavedCommand\":   true,\n```\n\n## Verification\n- `go test ./...` passes",
+      "epic": "Terminal saved commands",
+      "tags": [
+        "backend",
+        "terminal",
+        "saved-commands"
+      ],
+      "acceptanceCriteria": [
+        "SavedCommand struct exported from services package with ID, Name, Command, Order fields",
+        "AppState has SavedCommands map[string][]SavedCommand field persisted to state.json",
+        "GetSavedCommands returns deep clone of workspace's saved commands",
+        "UpsertSavedCommand creates new (with UUID) or updates existing command",
+        "DeleteSavedCommand removes command by id from workspace's slice",
+        "All 3 methods whitelisted in webserver RPC allow-list",
+        "go test ./... passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-13T17:44:07.3957201Z",
+      "updatedAt": "2026-07-13T17:50:52.3944974Z",
+      "completedAt": "2026-07-13T17:50:52.3944974Z"
     },
     "5ed1fe14-0d00-455d-a67f-d73b50f22edc": {
       "title": "Add workspace activity summaries state and periodic refresh timer",
@@ -141,6 +210,58 @@
       "updatedAt": "2026-07-10T20:16:17.8192697Z",
       "completedAt": "2026-07-10T20:16:17.8192697Z"
     },
+    "858a63aa-0154-495c-9f20-b5344a2c0369": {
+      "title": "Regenerate Wails bindings for SavedCommand type and CRUD methods",
+      "details": "## Command\n\nRun from repo root:\n```powershell\nwails generate\n```\n\nThis generates the TypeScript type `services.SavedCommand` and the bindings `SystemService.GetSavedCommands`, `SystemService.UpsertSavedCommand`, `SystemService.DeleteSavedCommand` in `frontend/wailsjs/go/services/SystemService.ts` and `frontend/wailsjs/go/models.ts`.\n\n## Verification\n- `frontend/wailsjs/go/models.ts` has `SavedCommand` type with fields: `id`, `name`, `command`, `order`\n- `frontend/wailsjs/go/services/SystemService.ts` has exported `GetSavedCommands`, `UpsertSavedCommand`, `DeleteSavedCommand` methods",
+      "epic": "Terminal saved commands",
+      "tags": [
+        "wails",
+        "bindings"
+      ],
+      "acceptanceCriteria": [
+        "wails generate runs without errors",
+        "SavedCommand type present in frontend/wailsjs/go/models.ts",
+        "GetSavedCommands, UpsertSavedCommand, DeleteSavedCommand bindings present in SystemService.ts"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-13T17:45:31.586931Z",
+      "updatedAt": "2026-07-13T17:50:47.3847292Z",
+      "completedAt": "2026-07-13T17:50:47.3847292Z"
+    },
+    "85f77ab6-82f0-4056-bcc2-96ae43c42c64": {
+      "title": "Implement Saved Commands UI in Terminal Panel",
+      "details": "## Problem\nBackend SavedCommand type and CRUD methods are fully implemented but no frontend code exists to expose them. Users cannot save, view, run, edit, or delete saved commands.\n\n## Backend Reference (already done)\n- `SavedCommand` struct: `{ID, Name, Command, Order}` in `internal/services/system.go:152`\n- `AppState.SavedCommands map[string][]SavedCommand` persisted to state.json\n- `GetSavedCommands(workspaceID string) []SavedCommand` at line 339\n- `UpsertSavedCommand(workspaceID, id, name, command string, order int) error` at line 351\n- `DeleteSavedCommand(workspaceID, id string) error` at line 386\n- Wails bindings generated in `frontend/wailsjs/go/services/SystemService.d.ts` (lines 75, 103, 273)\n\n## Files to Modify\n\n### 1. `frontend/src/backend/services.ts` — Service Wrappers\nAdd 3 functions following the existing `call()` pattern:\n```ts\nexport function GetSavedCommands(...args: Parameters\u003ctypeof Wails.GetSavedCommands\u003e): ReturnType\u003ctypeof Wails.GetSavedCommands\u003e {\n  return call(\"GetSavedCommands\", Wails.GetSavedCommands, args);\n}\nexport function UpsertSavedCommand(...args: Parameters\u003ctypeof Wails.UpsertSavedCommand\u003e): ReturnType\u003ctypeof Wails.UpsertSavedCommand\u003e {\n  return call(\"UpsertSavedCommand\", Wails.UpsertSavedCommand, args);\n}\nexport function DeleteSavedCommand(...args: Parameters\u003ctypeof Wails.DeleteSavedCommand\u003e): ReturnType\u003ctypeof Wails.DeleteSavedCommand\u003e {\n  return call(\"DeleteSavedCommand\", Wails.DeleteSavedCommand, args);\n}\n```\n\n### 2. `frontend/src/app/state.ts` — State Fields\nAdd to the state object near terminal-related state (after `terminalOpen`):\n```ts\nsavedCommands: new Map\u003cstring, services.SavedCommand[]\u003e(),\nsavedCommandEditingId: \"\",\nsavedCommandDraftName: \"\",\nsavedCommandDraftCommand: \"\",\nsavedCommandOpenSections: new Set\u003cstring\u003e(),\n```\n\n### 3. `frontend/src/app/render.ts` — Terminal Panel Render\nIn `renderTerminalPanel()` at line 521, insert a collapsible \"Saved Commands\" section between `.terminal-runs` and `.terminal-input-row`:\n- `\u003cdetails\u003e` with summary toggling via `toggle-saved-commands` action\n- List of saved commands showing name + truncated command text\n- Each row has Run (▶), Edit (✎), Delete (✕) icon buttons\n- \"+ Save current\" button at bottom that captures the terminal input value\n- When editing, replace a row with inline form: name input + command input + Save/Cancel\n\nAdd helper function `renderSavedCommandItem(sc: services.SavedCommand, workspaceId: string): string`.\n\n### 4. `frontend/src/app/actions.ts` — Action Handlers\nAdd handlers for these actions in the delegation handler:\n- `toggle-saved-commands`: Toggle workspace ID in/out of `savedCommandOpenSections`, re-render\n- `run-saved-command`: Look up command from saved list, set `terminalDrafts`, programmatically trigger run or fill input and render\n- `add-saved-command`: Read `[data-terminal-input]` value; if non-empty, extract name (first word), set editing state with draft values, re-render to show inline form\n- `edit-saved-command`: Set `savedCommandEditingId`, populate drafts from existing command, re-render\n- `delete-saved-command`: Call `DeleteSavedCommand(workspaceID, id)`, clear edit state if needed, re-render\n- `save-edited-command`: Validate name+command non-empty, call `UpsertSavedCommand` with existing or new ID (generate UUID for new), clear editing state, refresh saved commands from backend, re-render\n\n### 5. `frontend/src/app/bootstrap.ts` — Bootstrap Load\nAfter `LoadState()` at line 62, load saved commands for each workspace:\n```ts\nfor (const ws of (state.appState?.workspaces ?? [])) {\n  const cmds = await GetSavedCommands(ws.id);\n  if (cmds.length \u003e 0) state.savedCommands.set(ws.id, cmds);\n}\n```\n\n### 6. `frontend/src/styles.css` — Styles\nAdd styles for:\n- `.terminal-saved-commands` — collapsible section with border-top separator\n- `.terminal-saved-header summary` — clickable toggle with muted text\n- `.terminal-saved-list` — flex column gap layout\n- `.terminal-saved-item` — flex row with name label, truncated command text, action buttons\n- `.terminal-saved-name` — bold, min-width 80px, ellipsis overflow\n- `.terminal-saved-cmd` — mono font, muted color, flex:1, ellipsis\n- `.terminal-saved-edit-form` — inline form with name+command inputs side by side\n- All interactive elements `min-height: 36px` for mobile tap targets\n- Mobile media query: items wrap, command text goes full-width below buttons\n\n### 7. `internal/webserver/server.go` — RPC Whitelist\nAdd to `allowedRPCMethods`:\n```go\n\"GetSavedCommands\":     true,\n\"UpsertSavedCommand\":   true,\n\"DeleteSavedCommand\":   true,\n```\n\n## UX Flow\n1. User types a command in terminal input\n2. User clicks \"+ Save current\" → inline form appears pre-filled with name (first word of command) and full command\n3. User edits name if desired, clicks Save → command persists and appears in saved list\n4. User clicks ▶ on any saved command → fills terminal input and runs it\n5. User clicks ✎ → switches to inline edit form for that command\n6. User clicks ✕ → deletes the command immediately\n\n## Verification\n- Open terminal panel → see \"Saved Commands\" collapsible section\n- Type a command, click \"+ Save current\", save → appears in list\n- Click ▶ → command runs through terminal\n- Click ✎ → edit inline, save → updates\n- Click ✕ → deletes\n- Restart app → saved commands persist\n- Mobile: tap targets ≥36px, layout wraps properly\n- `cd frontend; npm run build` passes\n- `go test ./...` passes",
+      "epic": "Terminal saved commands",
+      "tags": [
+        "frontend",
+        "terminal",
+        "saved-commands",
+        "crud",
+        "mobile"
+      ],
+      "acceptanceCriteria": [
+        "Saved Commands collapsible section renders in terminal panel between command history and input row",
+        "Clicking '+ Save current' captures the current terminal input and opens an inline edit form with name/command fields pre-filled",
+        "Saving a new command persists it via UpsertSavedCommand and shows it in the saved commands list",
+        "Clicking the Run button (▶) on a saved command fills the terminal input and executes it",
+        "Clicking Edit (✎) switches a saved command row to an inline edit form with Save/Cancel",
+        "Saving an edited command updates it via UpsertSavedCommand and exits edit mode",
+        "Clicking Delete (✕) removes the command via DeleteSavedCommand",
+        "Saved commands persist across app restarts (loaded from backend in bootstrap)",
+        "All 3 methods whitelisted in webserver RPC allow-list for web access",
+        "Mobile tap targets are at least 36px on all saved command action buttons",
+        "cd frontend; npm run build passes without errors",
+        "go test ./... passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-13T18:42:31.260831Z",
+      "updatedAt": "2026-07-13T19:36:30.0966851Z",
+      "completedAt": "2026-07-13T19:36:30.0966851Z"
+    },
     "a0b22fe9-bf5d-4971-811f-3260e829f9c0": {
       "title": "Regenerate Wails bindings for WorkspaceActivitySummary type and GetWorkspaceActivitySummaries method",
       "details": "## Command\n\nRun from repo root:\n```powershell\nwails generate\n```\n\nThis generates the TypeScript type `services.WorkspaceActivitySummary` and the binding `SystemService.GetWorkspaceActivitySummaries` in `frontend/wailsjs/go/services/SystemService.ts` and `frontend/wailsjs/go/models.ts`.\n\n## Verification\n- `frontend/wailsjs/go/models.ts` has `WorkspaceActivitySummary` type with fields: `workspaceId`, `isChatBusy`, `isKanbanRunning`, `activeAgentCount`, `lastMessageSnippet`\n- `frontend/wailsjs/go/services/SystemService.ts` has exported `GetWorkspaceActivitySummaries()` method",
@@ -156,6 +277,56 @@
       "createdAt": "2026-07-11T11:31:36.4209613Z",
       "updatedAt": "2026-07-11T11:44:00.3611923Z",
       "completedAt": "2026-07-11T11:44:00.3611923Z"
+    },
+    "a364b259-7865-434b-9569-e0623468f1c4": {
+      "title": "Re-enable toast notifications on mobile by removing viewport check in pushToast",
+      "details": "## Problem\nOn mobile (≤720px), all toast notifications are silently suppressed by a blanket early return in `pushToast`. This makes saved command save/delete/error feedback invisible, and breaks feedback for any other action that uses toasts.\n\n## Fix\n**File:** `frontend/src/app/toasts.ts`\n\nRemove these 3 lines from `pushToast`:\n```typescript\n  if (window.innerWidth \u003c= 720) {\n    return;\n  }\n```\n\nThe mobile CSS already positions `.toast-region` at `bottom: 82px` inside `@media (max-width: 720px)` to sit above the fixed bottom nav, so toasts are styled correctly for mobile. The suppression was added in commit `5fd0572` as an overly broad fix.\n\n## Verification\n- `cd frontend; npm run build` — confirm it compiles\n- Test on mobile viewport (≤720px): click \"Save current\" with text in terminal → dialog appears, save → toast shows \"Command saved.\"\n- Test on mobile: click \"Save current\" with empty input → toast shows \"Enter a command in the terminal first.\"",
+      "tags": [
+        "mobile",
+        "toasts",
+        "saved-commands",
+        "terminal"
+      ],
+      "acceptanceCriteria": [
+        "Toast notifications display on mobile viewports (≤720px)",
+        "\"Save current\" with empty input shows error toast on mobile",
+        "\"Command saved.\" success toast appears after saving on mobile",
+        "Toasts position correctly above the fixed bottom nav bar on mobile",
+        "`cd frontend; npm run build` passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-14T07:01:54.6499304Z",
+      "updatedAt": "2026-07-14T07:13:03.1342936Z",
+      "completedAt": "2026-07-14T07:13:03.1342936Z"
+    },
+    "aa1ff404-6dcb-40ba-abe1-d8aa7979fbf7": {
+      "title": "Redesign saved commands UI in terminal panel for mobile-first UX",
+      "details": "## Problem\n\nThe saved commands section in the terminal panel looks cluttered and takes up too much space, especially on mobile. Current issues from screenshot:\n\n1. **Edit form always renders inline** - `renderSavedCommandEditForm` shows two wide text inputs + check/X buttons inside the collapsible section, even when just adding a command\n2. **\"Save Commands (0)\" with open edit form** is confusing - user sees 0 commands but a large edit form dominates the section\n3. **Horizontal layout is cramped on mobile** - name input (120px) + command input (flex) + 2 buttons all on one row\n4. **Large blue/red square buttons** look out of place compared to the rest of the app's icon-button style\n5. **\"Save current\" button below edit form** creates confusion about what state you're in\n\n## Changes\n\n### 1. Replace inline edit form with compact overlay dialog\n\n**File: `frontend/src/app/render.ts`**\n\n- Remove `renderSavedCommandEditForm` from inside `renderSavedCommandsSection`\n- Create new `renderSavedCommandDialog()` that renders a floating overlay (similar to settings modals) with:\n  - Title: \"New Command\" or \"Edit Command\"\n  - Name input (full width, compact height)\n  - Command input (full width, monospace font)\n  - Two buttons: \"Save\" (primary/accent) and \"Cancel\" (secondary/ghost)\n- Show/hide based on `state.savedCommandEditingId`\n- Close on backdrop click or Escape key\n\n### 2. Redesign saved command items as compact cards\n\n**File: `frontend/src/app/render.ts` - `renderSavedCommandItem`**\n\nChange from horizontal row (name | command | actions) to vertical card layout:\n```\n┌─────────────────────────────┐\n│ Command Name                ▶ │  ← tap name area to run\n│ .\\bin\\kb.exe --timeout 10   ✎✕ │  ← edit/delete on right\n└─────────────────────────────┘\n```\n\n- Name as primary text (bold, regular size)\n- Command truncated below in monospace, smaller, muted color\n- Run icon on the left or tap entire card to run\n- Edit/delete icons small and subtle on the right edge\n\n### 3. Simplify empty state\n\n**File: `frontend/src/app/render.ts` - `renderSavedCommandsSection`**\n\nWhen no commands exist AND not editing:\n- Show minimal section with just \"Save current\" button (current behavior is correct)\n- When user clicks \"Save current\", show the overlay dialog instead of inline form\n\n### 4. Mobile-first CSS overhaul\n\n**File: `frontend/src/styles.css`**\n\nReplace existing `.terminal-saved-*` styles:\n\n```css\n/* Saved commands section - compact and clean */\n.terminal-saved-commands {\n  border-top: 1px solid var(--color-border);\n  margin-top: var(--space-md);\n  padding: var(--space-sm) 0;\n}\n\n.terminal-saved-item {\n  display: flex;\n  align-items: center;\n  gap: var(--space-sm);\n  padding: var(--space-sm) var(--space-md);\n  border-radius: var(--radius-md);\n  background: var(--color-surface);\n  margin-bottom: var(--space-xs);\n  cursor: pointer;\n  transition: background 100ms ease;\n}\n\n.terminal-saved-item:hover,\n.terminal-saved-item:focus-within {\n  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-surface));\n}\n\n.terminal-saved-info {\n  flex: 1 1 auto;\n  min-width: 0;\n  display: flex;\n  flex-direction: column;\n  gap: 2px;\n}\n\n.terminal-saved-name {\n  font-weight: 600;\n  font-size: var(--text-sm);\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.terminal-saved-cmd {\n  color: var(--color-text-muted);\n  font-family: \"Cascadia Mono\", monospace;\n  font-size: var(--text-xs);\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.terminal-saved-actions {\n  display: flex;\n  gap: var(--space-xs);\n  flex-shrink: 0;\n}\n\n/* Small subtle action buttons */\n.terminal-saved-actions .icon-button {\n  width: 28px;\n  height: 28px;\n  min-width: 28px;\n  min-height: 28px;\n  opacity: 0.6;\n  transition: opacity 100ms ease;\n}\n\n.terminal-saved-actions .icon-button:hover {\n  opacity: 1;\n}\n\n/* Run button - more prominent */\n.terminal-run-saved-button {\n  color: var(--color-accent);\n  opacity: 1;\n}\n\n/* Overlay dialog for add/edit */\n.saved-command-dialog-overlay {\n  position: fixed;\n  inset: 0;\n  background: rgba(0, 0, 0, 0.5);\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  z-index: 1000;\n}\n\n.saved-command-dialog {\n  background: var(--color-surface);\n  border-radius: var(--radius-lg);\n  padding: var(--space-lg);\n  width: 90%;\n  max-width: 400px;\n  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);\n}\n\n.saved-command-dialog h3 {\n  margin: 0 0 var(--space-md) 0;\n  font-size: var(--text-base);\n}\n\n.saved-command-dialog input {\n  width: 100%;\n  padding: var(--space-sm) var(--space-md);\n  border: 1px solid var(--color-border);\n  border-radius: var(--radius-md);\n  background: var(--color-bg);\n  color: var(--color-text);\n  font-size: var(--text-sm);\n  margin-bottom: var(--space-sm);\n}\n\n.saved-command-dialog .dialog-actions {\n  display: flex;\n  justify-content: flex-end;\n  gap: var(--space-sm);\n  margin-top: var(--space-md);\n}\n```\n\n### 5. Add tap-to-run on mobile\n\n**File: `frontend/src/app/actions.ts`**\n\n- Make entire `.terminal-saved-item` clickable to run (add data-action=\"run-saved-command\" on the div)\n- Prevent action buttons from bubbling up to the parent click handler\n\n### 6. Bootstrap integration\n\n**File: `frontend/src/app/bootstrap.ts`**\n\n- Add dialog close handler for backdrop clicks and Escape key\n- Ensure dialog renders at body level, not inside terminal panel (so it overlays everything)\n\n## Acceptance Criteria\n\n- [ ] Saved commands section is compact when collapsed or empty\n- [ ] Adding a command shows a clean overlay dialog, not inline form inputs\n- [ ] Each saved command appears as a compact card with name + truncated command\n- [ ] Tapping a saved command runs it (mobile-friendly)\n- [ ] Edit/delete buttons are small and subtle on the right edge\n- [ ] Dialog closes on backdrop click or Escape\n- [ ] Mobile layout stacks vertically with proper touch targets\n- [ ] Visual style matches existing app design language",
+      "epic": "Terminal Saved Commands",
+      "tags": [
+        "terminal",
+        "saved-commands",
+        "mobile",
+        "ui-redesign"
+      ],
+      "acceptanceCriteria": [
+        "Saved commands section is compact when collapsed or empty",
+        "Adding a command shows a clean overlay dialog instead of inline form inputs",
+        "Each saved command appears as a compact card with name + truncated command",
+        "Tapping a saved command runs it (mobile-friendly)",
+        "Edit/delete buttons are small and subtle on the right edge",
+        "Dialog closes on backdrop click or Escape key",
+        "Mobile layout stacks vertically with proper touch targets",
+        "Visual style matches existing app design language"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-13T22:37:29.8378174Z",
+      "updatedAt": "2026-07-13T22:44:51.9563159Z",
+      "completedAt": "2026-07-13T22:44:51.9563159Z"
     },
     "ac43ea4f-829a-4106-b9ac-f18a59d99ffd": {
       "title": "Add \"Add workspace\" button to mobile workspace dropdown",

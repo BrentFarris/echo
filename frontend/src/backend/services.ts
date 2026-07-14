@@ -499,6 +499,18 @@ export async function RunShellCommand(workspaceID: string, command: string, work
   return webRpc("RunShellCommand", [workspaceID, command, workingDirectory, timeoutSeconds, maxOutputBytes]);
 }
 
+export function GetSavedCommands(...args: Parameters<typeof Wails.GetSavedCommands>): ReturnType<typeof Wails.GetSavedCommands> {
+  return call("GetSavedCommands", Wails.GetSavedCommands, args);
+}
+
+export function UpsertSavedCommand(...args: Parameters<typeof Wails.UpsertSavedCommand>): ReturnType<typeof Wails.UpsertSavedCommand> {
+  return call("UpsertSavedCommand", Wails.UpsertSavedCommand, args);
+}
+
+export function DeleteSavedCommand(...args: Parameters<typeof Wails.DeleteSavedCommand>): ReturnType<typeof Wails.DeleteSavedCommand> {
+  return call("DeleteSavedCommand", Wails.DeleteSavedCommand, args);
+}
+
 export async function StopShellCommand(workspaceID: string, runID: string): Promise<void> {
   if (isWailsRuntime()) {
     return (window as any)["go"]["services"]["SystemService"]["StopShellCommand"](workspaceID, runID);

@@ -358,6 +358,7 @@ export namespace services {
 	    livenessConfigs?: Record<string, LivenessConfig>;
 	    watchdogConfigs?: Record<string, WatchdogConfig>;
 	    dashboardLayouts?: Record<string, Array<DashboardWidgetJSON>>;
+	    savedCommands?: Record<string, Array<SavedCommand>>;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppState(source);
@@ -373,6 +374,7 @@ export namespace services {
 	        this.livenessConfigs = this.convertValues(source["livenessConfigs"], LivenessConfig, true);
 	        this.watchdogConfigs = this.convertValues(source["watchdogConfigs"], WatchdogConfig, true);
 	        this.dashboardLayouts = this.convertValues(source["dashboardLayouts"], Array<DashboardWidgetJSON>, true);
+	        this.savedCommands = this.convertValues(source["savedCommands"], Array<SavedCommand>, true);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -883,6 +885,24 @@ export namespace services {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.activeKanbanWorkspaceIds = source["activeKanbanWorkspaceIds"];
+	    }
+	}
+	export class SavedCommand {
+	    id: string;
+	    name: string;
+	    command: string;
+	    order: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SavedCommand(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.command = source["command"];
+	        this.order = source["order"];
 	    }
 	}
 	export class WorkspaceTask {

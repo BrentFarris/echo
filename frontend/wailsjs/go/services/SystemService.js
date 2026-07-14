@@ -134,6 +134,10 @@ export function DeleteKanbanCard(arg1, arg2) {
   return window['go']['services']['SystemService']['DeleteKanbanCard'](arg1, arg2);
 }
 
+export function DeleteSavedCommand(arg1, arg2) {
+  return window['go']['services']['SystemService']['DeleteSavedCommand'](arg1, arg2);
+}
+
 export function DeleteWorkspace(arg1) {
   return window['go']['services']['SystemService']['DeleteWorkspace'](arg1);
 }
@@ -184,6 +188,10 @@ export function GetHeartbeatConfig(arg1) {
 
 export function GetLivenessConfig(arg1) {
   return window['go']['services']['SystemService']['GetLivenessConfig'](arg1);
+}
+
+export function GetSavedCommands(arg1) {
+  return window['go']['services']['SystemService']['GetSavedCommands'](arg1);
 }
 
 export function GetTokenBudget(arg1) {
@@ -520,6 +528,10 @@ export function UpdateKanbanCardDirection(arg1, arg2, arg3) {
 
 export function UpdateWorkspaceTask(arg1, arg2, arg3, arg4) {
   return window['go']['services']['SystemService']['UpdateWorkspaceTask'](arg1, arg2, arg3, arg4);
+}
+
+export function UpsertSavedCommand(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['services']['SystemService']['UpsertSavedCommand'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function WorkspaceIconHandler() {

@@ -26,6 +26,7 @@ type storedAppState struct {
 	WatchdogConfigs   map[string]WatchdogConfig          `json:"watchdogConfigs,omitempty"`
 	TokenBudgets      map[string]TokenBudget             `json:"tokenBudgets,omitempty"`
 	DashboardLayouts  map[string][]DashboardWidgetJSON   `json:"dashboardLayouts,omitempty"`
+	SavedCommands     map[string][]SavedCommand          `json:"savedCommands,omitempty"`
 	KanbanCards       []KanbanCard                       `json:"kanbanCards,omitempty"`
 	ChatSessions      map[string]persistedChatSession    `json:"chatSessions,omitempty"`
 }
@@ -63,6 +64,7 @@ func storedAppStateFrom(state AppState) storedAppState {
 		LivenessConfigs:   state.LivenessConfigs,
 		WatchdogConfigs:   state.WatchdogConfigs,
 		DashboardLayouts:  state.DashboardLayouts,
+		SavedCommands:     state.SavedCommands,
 	}
 }
 
@@ -76,6 +78,7 @@ func (state storedAppState) appState() AppState {
 		LivenessConfigs:   state.LivenessConfigs,
 		WatchdogConfigs:   state.WatchdogConfigs,
 		DashboardLayouts:  state.DashboardLayouts,
+		SavedCommands:     state.SavedCommands,
 	}
 }
 
