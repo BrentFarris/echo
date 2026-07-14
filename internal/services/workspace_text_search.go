@@ -317,6 +317,7 @@ func walkWorkspaceTextSearchCandidates(
 		if err != nil {
 			continue
 		}
+		ignoreMatcher := newWorkspaceIgnoreMatcher(root)
 		err = filepath.WalkDir(root, func(absolute string, entry os.DirEntry, walkErr error) error {
 			if ctx.Err() != nil {
 				return filepath.SkipAll
@@ -336,7 +337,7 @@ func walkWorkspaceTextSearchCandidates(
 			rootRelative := workspaceTextRootRelativePath(folder, relative)
 			name := entry.Name()
 			if entry.IsDir() {
-				if !request.IncludeIgnored && isIgnoredWorkspaceDirectory(name) {
+				if !request.IncludeIgnored && ignoreMatcher.ignores(rootRelative, true) {
 					return filepath.SkipDir
 				}
 				if workspaceTextPathFilterMatches(excludeFilters, relative, rootRelative, name) {

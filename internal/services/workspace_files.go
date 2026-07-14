@@ -31,6 +31,7 @@ type WorkspaceFileEntry struct {
 	Kind       string `json:"kind"`
 	Bytes      int64  `json:"bytes,omitempty"`
 	ModifiedAt string `json:"modifiedAt"`
+	Ignored    bool   `json:"ignored,omitempty"`
 }
 
 type WorkspaceFile struct {
@@ -114,15 +115,15 @@ type WorkspaceMediaFile struct {
 	Bytes       int64  `json:"bytes"`
 }
 
-func (s *SystemService) ListWorkspaceDirectory(workspaceID string, path string) (WorkspaceDirectory, error) {
+func (s *SystemService) ListWorkspaceDirectory(workspaceID string, requestedPath string) (WorkspaceDirectory, error) {
 	workspace, _, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {
 		return WorkspaceDirectory{}, err
 	}
-	if strings.TrimSpace(path) == "" || strings.TrimSpace(path) == "." {
+	if strings.TrimSpace(requestedPath) == "" || strings.TrimSpace(requestedPath) == "." {
 		return listWorkspaceVirtualRoot(workspace), nil
 	}
-	resolved, err := resolveWorkspaceServicePath(workspace, path)
+	resolved, err := resolveWorkspaceServicePath(workspace, requestedPath)
 	if err != nil {
 		return WorkspaceDirectory{}, err
 	}
@@ -143,6 +144,12 @@ func (s *SystemService) ListWorkspaceDirectory(workspaceID string, path string) 
 		Path:        workspaceRelativePath(workspace, resolved),
 		Entries:     make([]WorkspaceFileEntry, 0, len(entries)),
 	}
+	folderLabel, directoryRelative := splitWorkspaceLabeledPath(output.Path)
+	folder, hasFolder := workspaceFolderByLabel(workspace, folderLabel)
+	ignoreMatcher := workspaceIgnoreMatcher{}
+	if hasFolder {
+		ignoreMatcher = newWorkspaceIgnoreMatcher(folder.Path)
+	}
 	for _, entry := range entries {
 		entryInfo, err := entry.Info()
 		if err != nil {
@@ -154,6 +161,7 @@ func (s *SystemService) ListWorkspaceDirectory(workspaceID string, path string) 
 			Kind:       workspaceFileKind(entryInfo),
 			Bytes:      entryInfo.Size(),
 			ModifiedAt: formatWorkspaceModifiedAt(entryInfo.ModTime()),
+			Ignored:    hasFolder && ignoreMatcher.ignores(path.Join(directoryRelative, entry.Name()), entryInfo.IsDir()),
 		})
 	}
 	sort.Slice(output.Entries, func(i, j int) bool {
@@ -220,6 +228,7 @@ func searchWorkspaceFilesByWalking(workspace Workspace, query string, includeIgn
 		if err != nil {
 			continue
 		}
+		ignoreMatcher := newWorkspaceIgnoreMatcher(root)
 		err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return nil
@@ -232,7 +241,11 @@ func searchWorkspaceFilesByWalking(workspace Workspace, query string, includeIgn
 				return nil
 			}
 			relative := workspaceRelativePath(workspace, path)
-			if entry.IsDir() && !includeIgnored && isIgnoredWorkspaceDirectory(entry.Name()) {
+			rootRelative, relativeErr := filepath.Rel(root, path)
+			if relativeErr != nil {
+				return nil
+			}
+			if entry.IsDir() && !includeIgnored && ignoreMatcher.ignores(filepath.ToSlash(rootRelative), true) {
 				return filepath.SkipDir
 			}
 			if !workspaceSearchMatches(query, entry.Name(), relative) {
@@ -1375,15 +1388,6 @@ func workspaceFileKind(info os.FileInfo) string {
 func workspaceSearchMatches(query string, name string, relativePath string) bool {
 	_, matched := workspaceSearchScore(query, name, relativePath)
 	return matched
-}
-
-func isIgnoredWorkspaceDirectory(name string) bool {
-	switch strings.ToLower(name) {
-	case ".echo", ".git", ".next", ".vite", "bin", "build", "coverage", "dist", "node_modules", "obj", "target":
-		return true
-	default:
-		return false
-	}
 }
 
 func isWorkspaceTextLike(data []byte) bool {

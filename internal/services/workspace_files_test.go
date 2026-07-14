@@ -117,6 +117,33 @@ func TestSystemServiceListWorkspaceDirectorySortsDirectoriesFirst(t *testing.T) 
 	}
 }
 
+func TestSystemServiceListWorkspaceDirectoryUsesGitignoreInsteadOfFallback(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	for _, name := range []string{"build", "generated"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("generated/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	directory, err := service.ListWorkspaceDirectory(workspaceID, "workspace")
+	if err != nil {
+		t.Fatalf("list workspace directory: %v", err)
+	}
+	ignoredByName := map[string]bool{}
+	for _, entry := range directory.Entries {
+		ignoredByName[entry.Name] = entry.Ignored
+	}
+	if ignoredByName["build"] {
+		t.Fatalf("expected build to remain visible when .gitignore exists, got %#v", directory.Entries)
+	}
+	if !ignoredByName["generated"] {
+		t.Fatalf("expected .gitignore entry to be ignored, got %#v", directory.Entries)
+	}
+}
+
 func TestSystemServiceReadWorkspaceFileReturnsTextFile(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.Mkdir(filepath.Join(root, "src"), 0o755); err != nil {
@@ -896,6 +923,29 @@ func TestSystemServiceSearchWorkspaceFilesSkipsIgnoredFoldersByDefault(t *testin
 	}
 }
 
+func TestSystemServiceSearchWorkspaceFilesUsesGitignoreInsteadOfFallback(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	for _, directory := range []string{"build", "generated"} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, directory, "needle.txt"), []byte(directory), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("generated/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	filtered, err := service.SearchWorkspaceFiles(workspaceID, "needle", false)
+	if err != nil {
+		t.Fatalf("search filtered workspace: %v", err)
+	}
+	if got := strings.Join(entryPaths(filtered.Entries), ","); got != "workspace/build/needle.txt" {
+		t.Fatalf("expected .gitignore to replace fallback ignores, got %v", got)
+	}
+}
+
 func TestSystemServiceSearchWorkspaceFilesEmptyQueryListsWorkspaceEntries(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
@@ -1220,6 +1270,29 @@ func TestSystemServiceSearchWorkspaceTextSkipsIgnoredFoldersByDefault(t *testing
 	}
 	if got := strings.Join(workspaceTextSearchFilePaths(included.Files), ","); got != "workspace/needle.txt,workspace/node_modules/pkg/needle.js" {
 		t.Fatalf("expected ignored folder match when included, got %v", got)
+	}
+}
+
+func TestSystemServiceSearchWorkspaceTextUsesGitignoreInsteadOfFallback(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	for _, directory := range []string{"build", "generated"} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, directory, "needle.txt"), []byte("needle"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("generated/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	filtered, err := service.SearchWorkspaceText(workspaceID, WorkspaceTextSearchRequest{Query: "needle"})
+	if err != nil {
+		t.Fatalf("search filtered workspace text: %v", err)
+	}
+	if got := strings.Join(workspaceTextSearchFilePaths(filtered.Files), ","); got != "workspace/build/needle.txt" {
+		t.Fatalf("expected .gitignore to replace fallback ignores, got %v", got)
 	}
 }
 

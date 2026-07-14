@@ -24,6 +24,63 @@ type rootGitignorePattern struct {
 	hasSlash bool
 }
 
+type workspaceIgnoreMatcher struct {
+	useFallback bool
+	patterns    []rootGitignorePattern
+}
+
+func newWorkspaceIgnoreMatcher(workspacePath string) workspaceIgnoreMatcher {
+	patterns, err := loadRootGitignorePatterns(workspacePath)
+	if err != nil {
+		return workspaceIgnoreMatcher{useFallback: true}
+	}
+	return workspaceIgnoreMatcher{patterns: patterns}
+}
+
+func (m workspaceIgnoreMatcher) ignores(relativePath string, directory bool) bool {
+	relativePath = cleanChangePath(relativePath)
+	if relativePath == "" || relativePath == "." {
+		return false
+	}
+	for _, part := range strings.Split(strings.TrimSuffix(relativePath, "/"), "/") {
+		if isAlwaysIgnoredWorkspaceDirectory(part) || (m.useFallback && isFallbackIgnoredWorkspaceDirectory(part)) {
+			return true
+		}
+	}
+	if m.useFallback {
+		return false
+	}
+	candidate := relativePath
+	if directory && !strings.HasSuffix(candidate, "/") {
+		candidate += "/"
+	}
+	ignored := false
+	for _, pattern := range m.patterns {
+		if rootGitignorePatternMatches(pattern, candidate) {
+			ignored = !pattern.negated
+		}
+	}
+	return ignored
+}
+
+func isAlwaysIgnoredWorkspaceDirectory(name string) bool {
+	switch strings.ToLower(name) {
+	case ".echo", ".git":
+		return true
+	default:
+		return false
+	}
+}
+
+func isFallbackIgnoredWorkspaceDirectory(name string) bool {
+	switch strings.ToLower(name) {
+	case ".next", ".vite", "bin", "build", "coverage", "dist", "node_modules", "obj", "target":
+		return true
+	default:
+		return false
+	}
+}
+
 func cleanChangePath(path string) string {
 	path = strings.TrimSpace(strings.ReplaceAll(path, "\\", "/"))
 	for strings.Contains(path, "//") {

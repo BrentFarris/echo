@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	workspaceFileDatabaseVersion = 1
+	workspaceFileDatabaseVersion = 2
 	workspaceFileDatabaseName    = "files-v1.json"
 	workspaceFileDatabaseMaxAge  = 30 * time.Second
 )
@@ -122,7 +122,7 @@ func rebuildWorkspaceFileDatabase(folder WorkspaceFolder) (workspaceFileDatabase
 		GeneratedAt: formatWorkspaceModifiedAt(time.Now()),
 		Entries:     []workspaceFileDatabaseEntry{},
 	}
-	ignoredDirectories := map[string]bool{}
+	ignoreMatcher := newWorkspaceIgnoreMatcher(root)
 	err = filepath.WalkDir(root, func(absolute string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil || absolute == root {
 			return nil
@@ -140,11 +140,7 @@ func rebuildWorkspaceFileDatabase(folder WorkspaceFolder) (workspaceFileDatabase
 			return nil
 		}
 		rootRelative := filepath.ToSlash(relative)
-		parentIgnored := ignoredDirectories[filepath.Dir(absolute)]
-		ignored := parentIgnored || isIgnoredWorkspaceDirectory(name)
-		if entry.IsDir() && ignored {
-			ignoredDirectories[absolute] = true
-		}
+		ignored := ignoreMatcher.ignores(rootRelative, entry.IsDir())
 		database.Entries = append(database.Entries, workspaceFileDatabaseEntry{
 			Name:         name,
 			Path:         folder.Label + "/" + rootRelative,

@@ -2048,6 +2048,7 @@ export namespace services {
 	    kind: string;
 	    bytes?: number;
 	    modifiedAt: string;
+	    ignored?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new WorkspaceFileEntry(source);
@@ -2060,6 +2061,7 @@ export namespace services {
 	        this.kind = source["kind"];
 	        this.bytes = source["bytes"];
 	        this.modifiedAt = source["modifiedAt"];
+	        this.ignored = source["ignored"];
 	    }
 	}
 	export class WorkspaceDirectory {
