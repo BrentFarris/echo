@@ -59,7 +59,7 @@ func (s *SystemService) RunWorkspaceGitAction(workspaceID string, folderID strin
 func workspaceGitActionAllowed(action string) bool {
 	switch action {
 	case "commit_staged", "commit_all", "commit_staged_amend", "commit_all_amend", "commit_staged_signoff", "commit_all_signoff",
-		"abort_rebase", "stage_all", "unstage_all", "discard_all", "sync", "pull", "pull_rebase", "pull_from", "push", "push_to",
+		"abort_rebase", "stage_all", "unstage_all", "stage_folder", "unstage_folder", "discard_all", "sync", "pull", "pull_rebase", "pull_from", "push", "push_to",
 		"fetch", "fetch_prune", "fetch_all", "checkout", "merge", "rebase", "create_branch", "create_branch_from", "rename_branch",
 		"delete_branch", "delete_remote_branch", "publish_branch", "add_remote", "remove_remote", "stash", "stash_untracked", "stash_staged",
 		"apply_latest_stash", "apply_stash", "pop_latest_stash", "pop_stash", "drop_stash", "drop_all_stashes", "create_tag", "delete_tag",
@@ -108,6 +108,10 @@ func runWorkspaceGitAction(ctx context.Context, repository workspaceGitRepositor
 		return err
 	case "unstage_all":
 		return unstageWorkspaceGitAction(ctx, repository)
+	case "stage_folder":
+		return stageWorkspaceGitFolder(ctx, repository, request.Ref)
+	case "unstage_folder":
+		return unstageWorkspaceGitFolder(ctx, repository, request.Ref)
 	case "discard_all":
 		entries, err := workspaceGitStatusEntriesForRepository(ctx, repository)
 		if err != nil {

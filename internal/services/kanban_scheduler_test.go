@@ -120,6 +120,55 @@ func TestKanbanSchedulerSuccessfulCardMovesToDone(t *testing.T) {
 	}
 }
 
+func TestKanbanSchedulerRetriesReasoningOnlyResponse(t *testing.T) {
+	root := t.TempDir()
+	var requestCount atomic.Int32
+	var retryRequest llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"reasoning_content":"I should summarize this."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		case 2:
+			if err := json.NewDecoder(r.Body).Decode(&retryRequest); err != nil {
+				t.Fatalf("decode retry request: %v", err)
+			}
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Completed after retry."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected request %d", requestCount.Load())
+		}
+	}))
+	seedKanbanCards(t, service, []KanbanCard{{
+		ID:                 "card-1",
+		WorkspaceID:        workspaceID,
+		Title:              "Finish task",
+		Description:        "Do it",
+		AcceptanceCriteria: []string{"Done"},
+		Lane:               KanbanLaneReady,
+	}})
+
+	if _, err := service.StartKanbanExecution(workspaceID, 1); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	board := waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
+		return len(board.Done) == 1
+	})
+	if requestCount.Load() != 2 || !transcriptContains(board.Done[0].ProgressTranscript, "Completed after retry.") {
+		t.Fatalf("expected recovered card, got %#v after %d requests", board, requestCount.Load())
+	}
+	for _, message := range retryRequest.Messages {
+		if message.Role == llm.RoleAssistant && strings.TrimSpace(message.Content) == "" && len(message.ToolCalls) == 0 {
+			t.Fatalf("retry request contained malformed assistant history: %#v", retryRequest.Messages)
+		}
+	}
+}
+
 func TestKanbanSchedulerIncludesWorkspaceContextBrief(t *testing.T) {
 	root := t.TempDir()
 	writeWorkspaceContextFile(t, root, "internal/feature.go", "package internal\n\nfunc UpdateFeatureBehavior() {}\n")

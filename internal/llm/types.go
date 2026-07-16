@@ -90,7 +90,11 @@ func (m Message) MarshalJSON() ([]byte, error) {
 	}
 	if len(m.ContentParts) > 0 {
 		output.Content = append([]MessageContentPart(nil), m.ContentParts...)
-	} else if m.Content != "" {
+	} else if m.Content != "" || m.Role == RoleAssistant {
+		// OpenAI-compatible endpoints require assistant messages to contain
+		// either content or tool_calls. Keep an explicit empty content field as
+		// a final wire-format safeguard for legacy or externally constructed
+		// messages; NewChatRequest removes semantically empty assistant turns.
 		output.Content = m.Content
 	}
 	return json.Marshal(output)
@@ -287,9 +291,23 @@ func chatTemplateKwargsForSettings(settings Settings) *ChatTemplateKwargs {
 }
 
 func messagesForRequest(settings Settings, messages []Message) []Message {
-	output := cloneMessages(messages)
+	output := removeEmptyAssistantMessages(cloneMessages(messages))
 	if settings.ThinkingTokenBudget != 0 && settings.ThinkingCorrection {
 		appendThinkingCorrectionToLatestUserMessage(output)
+	}
+	return output
+}
+
+func removeEmptyAssistantMessages(messages []Message) []Message {
+	output := messages[:0]
+	for _, message := range messages {
+		if message.Role == RoleAssistant &&
+			strings.TrimSpace(message.Content) == "" &&
+			len(message.ContentParts) == 0 &&
+			len(message.ToolCalls) == 0 {
+			continue
+		}
+		output = append(output, message)
 	}
 	return output
 }

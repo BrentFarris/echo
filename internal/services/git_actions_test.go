@@ -67,6 +67,107 @@ func TestRunWorkspaceGitActionRejectsUnknownActionsAndUnsafeRefs(t *testing.T) {
 	if _, err := service.RunWorkspaceGitAction(workspaceID, folderID, WorkspaceGitActionRequest{Action: "checkout", Ref: "--help"}); err == nil {
 		t.Fatal("expected option-shaped ref to fail")
 	}
+	if _, err := service.RunWorkspaceGitAction(workspaceID, folderID, WorkspaceGitActionRequest{Action: "stage_folder", Ref: "../outside"}); err == nil {
+		t.Fatal("expected an escaping folder path to fail")
+	}
+}
+
+func TestRunWorkspaceGitActionStagesAndUnstagesFolder(t *testing.T) {
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, "src/one.txt", "one\n")
+	writeGitTestFile(t, root, "src/nested/two.txt", "two\n")
+	writeGitTestFile(t, root, "docs/readme.txt", "docs\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial")
+
+	writeGitTestFile(t, root, "src/one.txt", "one changed\n")
+	writeGitTestFile(t, root, "src/nested/two.txt", "two changed\n")
+	writeGitTestFile(t, root, "docs/readme.txt", "docs changed\n")
+	service, workspaceID, folderID := newGitRepositoryTestService(t, root)
+	label := normalizeWorkspaceFolderLabel(filepath.Base(root))
+
+	view, err := service.RunWorkspaceGitAction(workspaceID, folderID, WorkspaceGitActionRequest{
+		Action: "stage_folder",
+		Ref:    label + "/src",
+	})
+	if err != nil {
+		t.Fatalf("stage folder: %v", err)
+	}
+	if view.Repository == nil || view.Repository.StagedFileCount != 2 || view.Repository.UnstagedFileCount != 1 {
+		t.Fatalf("expected only source files staged, got %#v", view.Repository)
+	}
+	status := runGitTestCommand(t, root, "status", "--porcelain=v1", "--untracked-files=all")
+	if !strings.Contains(status, "M  src/one.txt") || !strings.Contains(status, "M  src/nested/two.txt") || !strings.Contains(status, " M docs/readme.txt") {
+		t.Fatalf("unexpected status after staging folder: %q", status)
+	}
+
+	view, err = service.RunWorkspaceGitAction(workspaceID, folderID, WorkspaceGitActionRequest{
+		Action: "unstage_folder",
+		Ref:    label + "/src",
+	})
+	if err != nil {
+		t.Fatalf("unstage folder: %v", err)
+	}
+	if view.Repository == nil || view.Repository.StagedFileCount != 0 || view.Repository.UnstagedFileCount != 3 {
+		t.Fatalf("expected all files unstaged, got %#v", view.Repository)
+	}
+}
+
+func TestRunWorkspaceGitNetworkActionsReturnUpdatedHistory(t *testing.T) {
+	parent := t.TempDir()
+	bare := filepath.Join(parent, "origin.git")
+	runGitTestCommand(t, parent, "init", "--bare", bare)
+
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, "base.txt", "base\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial")
+	baseBranch := strings.TrimSpace(runGitTestCommand(t, root, "branch", "--show-current"))
+	runGitTestCommand(t, root, "remote", "add", "origin", bare)
+	runGitTestCommand(t, root, "push", "-u", "origin", baseBranch)
+	runGitTestCommand(t, bare, "symbolic-ref", "HEAD", "refs/heads/"+baseBranch)
+
+	other := filepath.Join(parent, "other")
+	runGitTestCommand(t, parent, "clone", bare, other)
+	runGitTestCommand(t, other, "config", "user.name", "Echo Test")
+	runGitTestCommand(t, other, "config", "user.email", "echo@example.test")
+	runGitTestCommand(t, other, "config", "core.autocrlf", "false")
+
+	service, workspaceID, folderID := newGitRepositoryTestService(t, root)
+	writeGitTestFile(t, other, "fetched.txt", "fetched\n")
+	runGitTestCommand(t, other, "add", ".")
+	runGitTestCommand(t, other, "commit", "-m", "fetched commit")
+	runGitTestCommand(t, other, "push")
+
+	view, err := service.RunWorkspaceGitAction(workspaceID, folderID, WorkspaceGitActionRequest{Action: "fetch"})
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if view.Repository == nil || !workspaceGitHistoryContainsSubject(view.Repository.Commits, "fetched commit") {
+		t.Fatalf("expected fetched commit in returned history, got %#v", view.Repository)
+	}
+
+	writeGitTestFile(t, other, "pulled.txt", "pulled\n")
+	runGitTestCommand(t, other, "add", ".")
+	runGitTestCommand(t, other, "commit", "-m", "pulled commit")
+	runGitTestCommand(t, other, "push")
+
+	view, err = service.RunWorkspaceGitAction(workspaceID, folderID, WorkspaceGitActionRequest{Action: "pull"})
+	if err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	if view.Repository == nil || view.Repository.Head == "" || !workspaceGitHistoryContainsSubject(view.Repository.Commits, "pulled commit") {
+		t.Fatalf("expected pulled commit in returned history, got %#v", view.Repository)
+	}
+}
+
+func workspaceGitHistoryContainsSubject(commits []WorkspaceGitCommit, subject string) bool {
+	for _, commit := range commits {
+		if commit.Subject == subject {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCloneWorkspaceGitRepositoryAddsFolderToCurrentWorkspace(t *testing.T) {

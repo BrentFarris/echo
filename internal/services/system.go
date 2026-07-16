@@ -905,27 +905,13 @@ func (s *SystemService) OpenWorkspacePathExplorer(id string, path string) error 
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(path) == "" || strings.TrimSpace(path) == "." {
-		folderPath, ok := firstAvailableWorkspaceFolderPath(workspace)
-		if !ok {
-			return fmt.Errorf("workspace has no available folders")
-		}
-		path = workspaceFolderByPath(workspace, folderPath).Label
-	}
-	resolved, err := resolveWorkspaceServicePath(workspace, path)
+	resolved, selectFile, err := resolveWorkspaceExplorerTarget(workspace, path)
 	if err != nil {
 		return err
 	}
-	info, err := os.Stat(resolved)
-	if err != nil {
-		return fmt.Errorf("workspace path does not exist: %w", err)
-	}
-
 	target := resolved
-	selectFile := false
-	if !info.IsDir() {
+	if selectFile {
 		target = filepath.Dir(resolved)
-		selectFile = true
 	}
 
 	var cmd *exec.Cmd
@@ -950,6 +936,47 @@ func (s *SystemService) OpenWorkspacePathExplorer(id string, path string) error 
 		return fmt.Errorf("failed to open workspace path in explorer: %w", err)
 	}
 	return nil
+}
+
+func resolveWorkspaceExplorerTarget(workspace Workspace, path string) (string, bool, error) {
+	if strings.TrimSpace(path) == "" || strings.TrimSpace(path) == "." {
+		folderPath, ok := firstAvailableWorkspaceFolderPath(workspace)
+		if !ok {
+			return "", false, fmt.Errorf("workspace has no available folders")
+		}
+		path = workspaceFolderByPath(workspace, folderPath).Label
+	}
+	resolved, err := resolveWorkspaceServicePath(workspace, path)
+	if err != nil {
+		return "", false, err
+	}
+	info, err := os.Stat(resolved)
+	if err == nil {
+		return resolved, !info.IsDir(), nil
+	}
+	if !os.IsNotExist(err) {
+		return "", false, fmt.Errorf("inspect workspace path: %w", err)
+	}
+
+	label, _ := splitWorkspaceLabeledPath(path)
+	root, rootErr := resolveWorkspaceServicePath(workspace, label)
+	if rootErr != nil {
+		return "", false, rootErr
+	}
+	for candidate := filepath.Dir(resolved); ; candidate = filepath.Dir(candidate) {
+		relative, relErr := filepath.Rel(root, candidate)
+		if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			break
+		}
+		candidateInfo, candidateErr := os.Stat(candidate)
+		if candidateErr == nil && candidateInfo.IsDir() {
+			return candidate, false, nil
+		}
+		if samePath(candidate, root) {
+			break
+		}
+	}
+	return "", false, fmt.Errorf("workspace path and its parent folders do not exist")
 }
 
 func (s *SystemService) workspaceByID(id string) (Workspace, error) {

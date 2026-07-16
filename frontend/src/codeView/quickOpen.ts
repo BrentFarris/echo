@@ -97,6 +97,7 @@ export async function openQuickOpenSelection(
   state.quickOpen.truncated = false;
   state.quickOpen.selectedIndex = 0;
   state.quickOpen.requestSeq++;
+  callbacks.activateCodeView(workspaceID);
   const opened = await openPinnedCodeFile(workspaceID, selectedPath, callbacks);
   if (!opened) {
     callbacks.render();

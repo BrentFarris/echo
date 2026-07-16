@@ -1,12 +1,12 @@
 export { applyInlineCodePromptEvent, openInlineCodeChatAtCursor } from "./codeView/inlineChat";
-export { bindCodeViewEvents } from "./codeView/events";
+export { bindCodeQuickOpenEvents, bindCodeViewEvents, handleGlobalCodeTreeNavigation } from "./codeView/events";
 export { clearCodeTabSwitcher, closeActiveCodeTab, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, navigateCodeHistory, openDroppedCodeFile, openWorkspaceCodeFile, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk, saveActiveCodeFile, saveDirtyWorkspaceCodeTabs } from "./codeView/tabs";
 export { goToLspDefinitionFromContext } from "./codeView/lsp";
-export { destroyCodeEditor, selectedMountedCodeEditorText } from "./codeView/editor";
+export { destroyCodeEditor, openMountedCodeEditorGoToLine, selectedMountedCodeEditorText } from "./codeView/editor";
 export { deleteSelectedCodePaths, ensureCodeViewRootLoaded, startCodeCreate, startCodeRename, startSelectedCodeRename } from "./codeView/explorer";
-export { renderCodeView, setCodeGitChangeProvider } from "./codeView/render";
+export { renderCodeQuickOpen, renderCodeView, setCodeGitChangeProvider } from "./codeView/render";
 export { applyWorkspaceTextSearchEvent, openTextSearch } from "./codeView/search";
 export type { WorkspaceTextSearchEvent } from "./codeView/search";
 export { closeQuickOpen, openQuickOpen } from "./codeView/quickOpen";
-export { applyDebugEvent, getDebugState, handleGlobalDebugShortcut, loadWorkspaceDebugSettings, patchDebugChrome, startOrContinueDebug, stopActiveDebug } from "./codeView/debug";
+export { applyDebugEvent, getDebugState, handleGlobalDebugShortcut, loadWorkspaceDebugSettings, patchDebugChrome, setDebugStateChangeListener, startOrContinueDebug, stopActiveDebug } from "./codeView/debug";
 export type { DebugEvent, DebugState, WorkspaceDebugSettings } from "./codeView/debugTypes";

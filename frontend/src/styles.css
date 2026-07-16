@@ -33,7 +33,7 @@
   --code-editor-active-line-bg: rgba(208, 215, 222, 0.24);
   --code-editor-active-gutter: #f6f8fa;
   --code-editor-selection: rgba(9, 105, 218, 0.25);
-  --code-editor-selection-match: rgba(9, 105, 218, 0.14);
+  --code-editor-selection-match: rgba(9, 105, 218, 0.2);
   --code-editor-invalid: #cf222e;
   --code-editor-whitespace-indicator: rgba(110, 119, 129, 0.38);
   --code-token-comment: #6e7781;
@@ -111,7 +111,7 @@
     --code-editor-active-line-bg: rgba(48, 54, 61, 0.42);
     --code-editor-active-gutter: #161b22;
     --code-editor-selection: #264f78;
-    --code-editor-selection-match: rgba(56, 139, 253, 0.14);
+    --code-editor-selection-match: rgba(56, 139, 253, 0.22);
     --code-editor-invalid: #ff7b72;
     --code-editor-whitespace-indicator: rgba(125, 133, 144, 0.46);
     --code-token-comment: #8b949e;
@@ -4161,6 +4161,11 @@ h3 {
 .git-source-menu-popover > button svg {
   width: 16px;
   height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
 }
 
 .git-source-menu-popover > button.is-danger {
@@ -4250,17 +4255,23 @@ h3 {
   display: grid;
   flex: 1 1 auto;
   gap: var(--space-lg-md);
+  grid-template-rows: repeat(2, minmax(0, 1fr));
   min-height: 0;
   min-width: 0;
   overflow: hidden;
 }
 
-.git-source-change-sections.has-staged {
-  grid-template-rows: repeat(2, minmax(0, 1fr));
+.git-source-change-sections.is-staged-collapsed:not(.is-unstaged-collapsed) {
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
-.git-source-change-sections.has-unstaged-only {
-  grid-template-rows: minmax(0, 1fr);
+.git-source-change-sections.is-unstaged-collapsed:not(.is-staged-collapsed) {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.git-source-change-sections.is-staged-collapsed.is-unstaged-collapsed {
+  align-content: start;
+  grid-template-rows: auto auto;
 }
 
 .git-source-file-section {
@@ -4270,6 +4281,11 @@ h3 {
   min-height: 0;
   min-width: 0;
   overflow: hidden;
+}
+
+.git-source-file-section.is-collapsed {
+  grid-template-rows: auto;
+  gap: 0;
 }
 
 .git-source-section-heading {
@@ -4283,11 +4299,15 @@ h3 {
   border: 0;
   background: transparent;
   color: var(--color-text);
-  cursor: default;
+  cursor: pointer;
   font: inherit;
   font-size: var(--text-md-lg);
   font-weight: 900;
   text-align: left;
+}
+
+.git-source-file-section.is-empty .git-source-section-heading {
+  cursor: default;
 }
 
 .git-source-section-heading svg {
@@ -4323,6 +4343,15 @@ h3 {
 
 .git-source-folder-row {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  min-height: 32px;
+}
+
+.git-source-folder-main {
+  display: grid;
   grid-template-columns: 14px 16px minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-sm);
@@ -4338,8 +4367,8 @@ h3 {
   text-align: left;
 }
 
-.git-source-folder-row:hover,
-.git-source-folder-row:focus-visible {
+.git-source-folder-main:hover,
+.git-source-folder-main:focus-visible {
   background: var(--color-surface-muted);
   outline: none;
 }
@@ -4454,13 +4483,16 @@ h3 {
   font-size: var(--text-sm);
 }
 
+.git-source-folder-action,
 .git-source-file-action {
   width: 28px;
   height: 28px;
   opacity: 0;
 }
 
+.git-source-folder-row:hover .git-source-folder-action,
 .git-source-file-row:hover .git-source-file-action,
+.git-source-folder-action:focus-visible,
 .git-source-file-action:focus-visible {
   opacity: 1;
 }
@@ -5473,6 +5505,16 @@ h3 {
   white-space: nowrap;
 }
 
+.workspace-folder-path {
+  grid-column: 1 / -1;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
 .workspace-folder-agents {
   white-space: nowrap;
 }
@@ -5977,7 +6019,7 @@ h3 {
   gap: var(--space-md-lg);
   width: 100%;
   min-height: 1.4em;
-  padding: 0 var(--space-lg) 0 calc(8px + (var(--tree-depth, 0) * var(--space-3xl)));
+  padding: 0 var(--space-lg) 0 calc(8px + (var(--tree-depth, 0) * var(--space-lg-sm)));
   border: 1px solid transparent;
   border-radius: 7px;
   background: transparent;
@@ -5988,6 +6030,14 @@ h3 {
 
 .code-tree-search-row {
   min-height: 42px;
+}
+
+.code-tree-directory {
+  grid-template-columns: 18px minmax(0, 1fr);
+}
+
+.code-tree-file:not(.code-tree-search-row) {
+  grid-template-columns: 18px minmax(0, 1fr) auto;
 }
 
 .code-tree-row:hover,
@@ -6356,7 +6406,7 @@ h3 {
 }
 
 .code-tree-note.nested {
-  padding-left: calc(var(--space-lg) + (var(--tree-depth, 0) * var(--space-3xl)));
+  padding-left: calc(var(--space-lg) + (var(--tree-depth, 0) * var(--space-lg-sm)));
 }
 
 .code-tree-note .spinner {
@@ -6511,15 +6561,16 @@ h3 {
   overflow: hidden;
 }
 
-.debug-pane { min-width: 0; overflow: auto; border-right: 1px solid var(--color-border); }
+.debug-pane { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; border-right: 1px solid var(--color-border); }
 .debug-pane:last-child { border-right: 0; }
-.debug-pane > header { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0; background: var(--color-surface); border-bottom: 1px solid var(--color-border); font-size: var(--text-sm); }
+.debug-pane > header { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 30px; padding: 0; background: var(--color-surface); border-bottom: 1px solid var(--color-border); font-size: var(--text-sm); }
+.debug-pane-content { min-width: 0; min-height: 0; overflow: auto; }
 .debug-pane-heading { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 30px; padding: 4px 10px; border: 0; background: transparent; color: var(--color-text); text-align: left; }
 .debug-pane-heading:hover { background: var(--color-hover); }
 .debug-pane-chevron { display: inline-flex; flex: none; }
 .debug-pane-chevron svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; transition: transform 120ms ease; }
 .debug-pane-heading[aria-expanded="true"] .debug-pane-chevron svg { transform: rotate(90deg); }
-.debug-pane.is-collapsed { overflow: hidden; }
+.debug-pane.is-collapsed { grid-template-rows: minmax(0, 1fr); overflow: hidden; }
 .debug-pane.is-collapsed > header { height: 100%; border-bottom: 0; }
 .debug-pane.is-collapsed .debug-pane-heading { flex-direction: row; width: 100%; height: 100%; padding: 8px 0; writing-mode: vertical-rl; }
 .debug-pane.is-collapsed .debug-pane-chevron svg { transform: rotate(90deg); }
@@ -6543,7 +6594,7 @@ h3 {
 .debug-variable-value { color: var(--code-token-string); }
 .debug-variable-type { color: var(--color-text-muted); font-size: var(--text-xs); }
 .debug-load-more { margin: 4px 10px; border: 0; background: transparent; color: var(--color-accent); }
-.debug-output-pane pre { height: calc(100% - 30px); margin: 0; padding: 8px 10px; overflow: auto; color: var(--color-text-muted); font: var(--text-xs)/1.45 "Cascadia Mono", Consolas, monospace; white-space: pre; }
+.debug-output-pane pre { margin: 0; padding: 8px 10px; color: var(--color-text-muted); font: var(--text-xs)/1.45 "Cascadia Mono", Consolas, monospace; white-space: pre; }
 
 .cm-debug-gutter .cm-gutterElement { min-width: 17px; box-sizing: border-box; cursor: pointer; }
 .cm-debug-breakpoint-spacer { display: block; width: 17px; height: 1px; }
@@ -6746,6 +6797,11 @@ h3 {
   justify-items: center;
   padding: calc(5 * var(--space-sm)) var(--space-2xl) calc(1 * var(--space-md));
   pointer-events: none;
+}
+
+.code-quick-open.is-global {
+  position: fixed;
+  z-index: 110;
 }
 
 .code-quick-open-backdrop {
@@ -7173,11 +7229,17 @@ h3 {
   margin-right: var(--space-sm);
   width: 14px;
   height: 14px;
+  color: var(--color-text-muted);
 }
 
 .code-tab-icon svg {
   width: 100%;
   height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
 }
 
 .code-symbol-rename {
@@ -8125,11 +8187,6 @@ h3 {
     height: auto;
     min-height: 0;
     overflow: visible;
-  }
-
-  .workspace-panel.is-git-mode .git-source-change-sections.has-staged,
-  .workspace-panel.is-git-mode .git-source-change-sections.has-unstaged-only {
-    grid-template-rows: auto;
   }
 
   .workspace-panel.is-git-mode .git-source-file-list,

@@ -117,6 +117,33 @@ func TestSystemServiceListWorkspaceDirectorySortsDirectoriesFirst(t *testing.T) 
 	}
 }
 
+func TestSystemServiceListWorkspaceDirectoryUsesGitignoreInsteadOfFallback(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	for _, name := range []string{"build", "generated"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("generated/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	directory, err := service.ListWorkspaceDirectory(workspaceID, "workspace")
+	if err != nil {
+		t.Fatalf("list workspace directory: %v", err)
+	}
+	ignoredByName := map[string]bool{}
+	for _, entry := range directory.Entries {
+		ignoredByName[entry.Name] = entry.Ignored
+	}
+	if ignoredByName["build"] {
+		t.Fatalf("expected build to remain visible when .gitignore exists, got %#v", directory.Entries)
+	}
+	if !ignoredByName["generated"] {
+		t.Fatalf("expected .gitignore entry to be ignored, got %#v", directory.Entries)
+	}
+}
+
 func TestSystemServiceReadWorkspaceFileReturnsTextFile(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.Mkdir(filepath.Join(root, "src"), 0o755); err != nil {
@@ -896,6 +923,29 @@ func TestSystemServiceSearchWorkspaceFilesSkipsIgnoredFoldersByDefault(t *testin
 	}
 }
 
+func TestSystemServiceSearchWorkspaceFilesUsesGitignoreInsteadOfFallback(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	for _, directory := range []string{"build", "generated"} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, directory, "needle.txt"), []byte(directory), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("generated/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	filtered, err := service.SearchWorkspaceFiles(workspaceID, "needle", false)
+	if err != nil {
+		t.Fatalf("search filtered workspace: %v", err)
+	}
+	if got := strings.Join(entryPaths(filtered.Entries), ","); got != "workspace/build/needle.txt" {
+		t.Fatalf("expected .gitignore to replace fallback ignores, got %v", got)
+	}
+}
+
 func TestSystemServiceSearchWorkspaceFilesEmptyQueryListsWorkspaceEntries(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
@@ -1068,6 +1118,115 @@ func TestSystemServiceSearchWorkspaceTextRegexAndFileFilters(t *testing.T) {
 	}
 }
 
+func TestWorkspaceTextSearchPathFiltersSupportVSCodeGlobExpressions(t *testing.T) {
+	tests := []struct {
+		name         string
+		expression   string
+		relative     string
+		rootRelative string
+		fileName     string
+		want         bool
+	}{
+		{
+			name:         "brace extension group",
+			expression:   "*.{ts,tsx}",
+			relative:     "workspace/src/main.tsx",
+			rootRelative: "src/main.tsx",
+			fileName:     "main.tsx",
+			want:         true,
+		},
+		{
+			name:         "brace extension group rejects other extension",
+			expression:   "*.{ts,tsx}",
+			relative:     "workspace/src/main.js",
+			rootRelative: "src/main.js",
+			fileName:     "main.js",
+			want:         false,
+		},
+		{
+			name:         "grouped folders and character range",
+			expression:   "{src,test}/**/*.[jt]s",
+			relative:     "workspace/packages/app/src/lib/main.ts",
+			rootRelative: "packages/app/src/lib/main.ts",
+			fileName:     "main.ts",
+			want:         true,
+		},
+		{
+			name:         "implicit recursive prefix",
+			expression:   "src/*.ts",
+			relative:     "workspace/packages/app/src/main.ts",
+			rootRelative: "packages/app/src/main.ts",
+			fileName:     "main.ts",
+			want:         true,
+		},
+		{
+			name:         "dot slash anchors the expression",
+			expression:   "./src/*.ts",
+			relative:     "workspace/packages/app/src/main.ts",
+			rootRelative: "packages/app/src/main.ts",
+			fileName:     "main.ts",
+			want:         false,
+		},
+		{
+			name:         "dot slash matches from a root",
+			expression:   "./src/*.ts",
+			relative:     "workspace/src/main.ts",
+			rootRelative: "src/main.ts",
+			fileName:     "main.ts",
+			want:         true,
+		},
+		{
+			name:         "negated character range",
+			expression:   "example.[!0-9]",
+			relative:     "workspace/example.a",
+			rootRelative: "example.a",
+			fileName:     "example.a",
+			want:         true,
+		},
+		{
+			name:         "negated character range rejects digit",
+			expression:   "example.[!0-9]",
+			relative:     "workspace/example.4",
+			rootRelative: "example.4",
+			fileName:     "example.4",
+			want:         false,
+		},
+		{
+			name:         "literal brackets",
+			expression:   "src/routes/post/[[]id[]]/**",
+			relative:     "workspace/src/routes/post/[id]/handler.ts",
+			rootRelative: "src/routes/post/[id]/handler.ts",
+			fileName:     "handler.ts",
+			want:         true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			filters, err := compileWorkspaceTextPathFilters(test.expression)
+			if err != nil {
+				t.Fatalf("compile filter: %v", err)
+			}
+			if got := workspaceTextPathFilterMatches(filters, test.relative, test.rootRelative, test.fileName); got != test.want {
+				t.Fatalf("match %q = %v, want %v", test.expression, got, test.want)
+			}
+		})
+	}
+}
+
+func TestWorkspaceTextSearchPathFiltersKeepBraceCommasInOneExpression(t *testing.T) {
+	filters, err := compileWorkspaceTextPathFilters("*.{ts, tsx}, README.md")
+	if err != nil {
+		t.Fatalf("compile filters: %v", err)
+	}
+	if len(filters) != 3 {
+		t.Fatalf("expected three expanded filters, got %d", len(filters))
+	}
+	if _, err := compileWorkspaceTextPathFilters("*.{ts,tsx"); err == nil || !strings.Contains(err.Error(), "unmatched opening brace") {
+		t.Fatalf("expected an unmatched-brace error, got %v", err)
+	}
+}
+
 func TestSystemServiceSearchWorkspaceTextReportsUTF16OffsetsAcrossLines(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.WriteFile(filepath.Join(root, "unicode.txt"), []byte("😀 x\r\nneedle"), 0o600); err != nil {
@@ -1111,6 +1270,29 @@ func TestSystemServiceSearchWorkspaceTextSkipsIgnoredFoldersByDefault(t *testing
 	}
 	if got := strings.Join(workspaceTextSearchFilePaths(included.Files), ","); got != "workspace/needle.txt,workspace/node_modules/pkg/needle.js" {
 		t.Fatalf("expected ignored folder match when included, got %v", got)
+	}
+}
+
+func TestSystemServiceSearchWorkspaceTextUsesGitignoreInsteadOfFallback(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	for _, directory := range []string{"build", "generated"} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, directory, "needle.txt"), []byte("needle"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("generated/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	filtered, err := service.SearchWorkspaceText(workspaceID, WorkspaceTextSearchRequest{Query: "needle"})
+	if err != nil {
+		t.Fatalf("search filtered workspace text: %v", err)
+	}
+	if got := strings.Join(workspaceTextSearchFilePaths(filtered.Files), ","); got != "workspace/build/needle.txt" {
+		t.Fatalf("expected .gitignore to replace fallback ignores, got %v", got)
 	}
 }
 

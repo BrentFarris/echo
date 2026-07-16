@@ -115,6 +115,7 @@ func detectWorkspaceFolderLSPLanguages(root string) []string {
 		return nil
 	}
 	found := map[string]bool{}
+	ignoreMatcher := newWorkspaceIgnoreMatcher(root)
 	for _, definition := range definitions {
 		for _, marker := range definition.WorkspaceMarkers {
 			if workspaceMarkerExists(root, marker) {
@@ -137,7 +138,8 @@ func detectWorkspaceFolderLSPLanguages(root string) []string {
 			return filepath.SkipAll
 		}
 		if entry.IsDir() {
-			if isIgnoredWorkspaceDirectory(entry.Name()) {
+			relative, err := filepath.Rel(root, path)
+			if err == nil && ignoreMatcher.ignores(filepath.ToSlash(relative), true) {
 				return filepath.SkipDir
 			}
 			return nil

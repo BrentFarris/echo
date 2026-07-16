@@ -248,9 +248,9 @@ export function renderWorkspaceFolderSettings(workspace: services.Workspace): st
         .map(
           (folder) => `
             <div class="workspace-folder-row ${folder.missing ? "is-missing" : ""}">
+              <div class="workspace-folder-path">${escapeHtml(folder.path)}</div>
               <div class="workspace-folder-main">
                 <strong>${escapeHtml(folder.label)}${folder.missing ? " - Missing" : ""}</strong>
-                <span>${escapeHtml(folder.path)}</span>
                 <small>${escapeHtml(workspaceFolderStatus(folder))}</small>
               </div>
               <label class="settings-toggle workspace-folder-agents">

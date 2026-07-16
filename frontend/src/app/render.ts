@@ -1,4 +1,4 @@
-import { destroyCodeEditor, renderCodeView } from "../codeView";
+import { destroyCodeEditor, renderCodeQuickOpen, renderCodeView } from "../codeView";
 import {
   patchChatPanel,
   patchChatControls,
@@ -22,6 +22,7 @@ import { renderWorkspaceIcon, renderMissingWorkspace } from "./workspace";
 import { hasKanbanRuntime, getHeartbeatInterval, heartbeatIntervalLabel, getWatchdogInterval, watchdogIntervalLabel, renderCreateKanbanCardDialog, renderDecompositionState, renderEmptyBoard, renderKanbanBoard, renderKanbanDetail, renderKanbanRuntime } from "./kanban";
 import { services } from "../../wailsjs/go/models";
 import { renderDashboard } from "./dashboard";
+import { updateWindowTitle } from "./title";
 
 /** Persistent app-shell wrapper.  Creating it once inside appRoot means
  *  that subsequent renders only swap individual region fragments instead
@@ -97,6 +98,11 @@ function restoreRenderScrollSnapshots(snapshots: Map<string, RenderScrollSnapsho
 }
 
 function isScrollableForRenderSnapshot(element: HTMLElement): boolean {
+  // CodeMirror persists its own scroll state. Restoring a generic render
+  // snapshot here can overwrite an explicit same-file navigation reveal.
+  if (element.classList.contains("cm-scroller")) {
+    return false;
+  }
   return (
     element.scrollTop > 0 ||
     element.scrollLeft > 0 ||
@@ -160,6 +166,7 @@ function elementIndex(element: HTMLElement): number {
 
 export function render(): void {
   const workspace = activeWorkspace();
+  updateWindowTitle();
   if (state.appMode !== "code" || !workspace) {
     destroyCodeEditor();
   }
@@ -305,6 +312,10 @@ function buildOverlays(): string {
   parts.push(renderToasts());
   if (state.contextMenu) {
     parts.push(renderContextMenu(state.contextMenu));
+  }
+  const workspace = activeWorkspace();
+  if (workspace && state.appMode !== "code") {
+    parts.push(renderCodeQuickOpen(workspace.id, true));
   }
   return parts.join("\n");
 }

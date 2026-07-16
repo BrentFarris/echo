@@ -150,6 +150,89 @@ func unstageWorkspaceGitStatusEntry(ctx context.Context, repository workspaceGit
 	return unstageWorkspaceGitPaths(ctx, repository.WorktreePath, paths)
 }
 
+func stageWorkspaceGitFolder(ctx context.Context, repository workspaceGitRepositoryContext, requestedFolder string) error {
+	entries, err := workspaceGitStatusEntriesInFolder(ctx, repository, requestedFolder, gitStatusEntryHasUnstagedChanges)
+	if err != nil {
+		return err
+	}
+	paths, err := workspaceGitPathsForStatusEntries(repository, entries)
+	if err != nil {
+		return err
+	}
+	args := append([]string{"add", "-A", "--"}, paths...)
+	_, err = runWorkspaceGitCommand(ctx, repository.WorktreePath, args...)
+	return err
+}
+
+func unstageWorkspaceGitFolder(ctx context.Context, repository workspaceGitRepositoryContext, requestedFolder string) error {
+	entries, err := workspaceGitStatusEntriesInFolder(ctx, repository, requestedFolder, gitStatusEntryHasStagedChanges)
+	if err != nil {
+		return err
+	}
+	paths, err := workspaceGitPathsForStatusEntries(repository, entries)
+	if err != nil {
+		return err
+	}
+	return unstageWorkspaceGitPaths(ctx, repository.WorktreePath, paths)
+}
+
+func workspaceGitStatusEntriesInFolder(
+	ctx context.Context,
+	repository workspaceGitRepositoryContext,
+	requestedFolder string,
+	include func(gitStatusEntry) bool,
+) ([]gitStatusEntry, error) {
+	folder := cleanWorkspaceGitRelativePath(requestedFolder)
+	if folder == "" {
+		return nil, fmt.Errorf("git folder path is required")
+	}
+	if _, err := repository.requestedPathToGitPath(folder); err != nil {
+		return nil, err
+	}
+	entries, err := workspaceGitStatusEntriesForRepository(ctx, repository)
+	if err != nil {
+		return nil, err
+	}
+	selected := make([]gitStatusEntry, 0, len(entries))
+	for _, entry := range entries {
+		if !include(entry) || !workspaceGitPathIsInFolder(repository.labeledGitPath(entry.path), folder) {
+			continue
+		}
+		selected = append(selected, entry)
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("changed Git folder was not found")
+	}
+	return selected, nil
+}
+
+func workspaceGitPathIsInFolder(path string, folder string) bool {
+	path = cleanWorkspaceGitRelativePath(path)
+	folder = cleanWorkspaceGitRelativePath(folder)
+	return path == folder || strings.HasPrefix(path, folder+"/")
+}
+
+func workspaceGitPathsForStatusEntries(repository workspaceGitRepositoryContext, entries []gitStatusEntry) ([]string, error) {
+	paths := make([]string, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		for _, path := range workspaceGitDiscardPaths(entry) {
+			if err := repository.requireGitPathInFolder(path); err != nil {
+				return nil, err
+			}
+			if _, exists := seen[path]; exists {
+				continue
+			}
+			seen[path] = struct{}{}
+			paths = append(paths, path)
+		}
+	}
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("git folder contains no changed files")
+	}
+	return paths, nil
+}
+
 func unstageWorkspaceGitPaths(ctx context.Context, workspacePath string, paths []string) error {
 	if len(paths) == 0 {
 		return fmt.Errorf("git file path is required")

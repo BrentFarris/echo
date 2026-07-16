@@ -7,6 +7,7 @@ export type CodeGitChangeState = "" | "created" | "modified";
 
 export type CodeViewCallbacks = {
   render: () => void;
+  activateCodeView: (workspaceID: string) => void;
   pushToast: (message: string, tone?: ToastTone) => void;
   errorMessage: (error: unknown) => string;
   leadingWhitespaceIndicatorsEnabled: () => boolean;

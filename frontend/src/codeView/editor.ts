@@ -2,6 +2,7 @@ import { HighlightStyle, indentUnit, syntaxHighlighting } from "@codemirror/lang
 import { acceptCompletion } from "@codemirror/autocomplete";
 import { isolateHistory } from "@codemirror/commands";
 import { languages as languageData } from "@codemirror/language-data";
+import { gotoLine, highlightSelectionMatches } from "@codemirror/search";
 import { countColumn, EditorSelection, EditorState, findColumn, Prec, RangeSetBuilder, type Extension, type SelectionRange } from "@codemirror/state";
 import { crosshairCursor, Decoration, type DecorationSet, EditorView, GutterMarker, ViewPlugin, type ViewUpdate, gutter, keymap } from "@codemirror/view";
 import { showMinimap } from "@replit/codemirror-minimap";
@@ -196,6 +197,13 @@ export function selectedMountedCodeEditorText(workspaceID: string): string {
   return mountedEditor.state.sliceDoc(selection.from, selection.to);
 }
 
+export function openMountedCodeEditorGoToLine(workspaceID: string): boolean {
+  if (!mountedEditor || mountedEditorWorkspaceID !== workspaceID) {
+    return false;
+  }
+  return gotoLine(mountedEditor);
+}
+
 export function mountedCodeEditorMatches(workspaceID: string, path: string) {
   return Boolean(mountedEditor && mountedEditorWorkspaceID === workspaceID && mountedEditorPath === path);
 }
@@ -251,6 +259,7 @@ export async function mountActiveCodeEditor(
       mount.appendChild(mountedEditor.dom);
     }
     updateTabEditorState(workspaceID, tab.path, mountedEditor);
+    applyPendingEditorReveal(tab, mountedEditor);
     return;
   }
 
@@ -262,6 +271,11 @@ export async function mountActiveCodeEditor(
   const extensions = [
     ...(gitChangedLineGutter ? [gitChangedLineGutter] : []),
     basicSetup,
+    highlightSelectionMatches({
+      minSelectionLength: 1,
+      maxMatches: 2000,
+      wholeWords: false,
+    }),
     ...tabIndentionExtensions(),
     EditorState.lineSeparator.of(tab.lineSeparator),
     EditorState.allowMultipleSelections.of(true),
@@ -338,16 +352,7 @@ export async function mountActiveCodeEditor(
   const initialScrollTop = tab.scrollTop;
   const initialScrollLeft = tab.scrollLeft;
   restoreMountedEditorScroll(workspaceID, tab.path, initialScrollTop, initialScrollLeft);
-  if (tab.pendingRevealPosition !== undefined) {
-    const position = clamp(tab.pendingRevealPosition, 0, mountedEditor.state.doc.length);
-    const y = tab.pendingRevealScroll ?? "center";
-    tab.pendingRevealPosition = undefined;
-    tab.pendingRevealScroll = undefined;
-    mountedEditor.dispatch({
-      selection: { anchor: position },
-      effects: EditorView.scrollIntoView(position, { y }),
-    });
-  } else {
+  if (!applyPendingEditorReveal(tab, mountedEditor)) {
     window.requestAnimationFrame(() => {
       restoreMountedEditorScroll(workspaceID, tab.path, initialScrollTop, initialScrollLeft);
     });
@@ -355,6 +360,21 @@ export async function mountActiveCodeEditor(
   if (shouldFocusMountedEditor(workspaceID)) {
     mountedEditor.focus();
   }
+}
+
+function applyPendingEditorReveal(tab: CodeFileTab, view: EditorView): boolean {
+  if (tab.pendingRevealPosition === undefined) {
+    return false;
+  }
+  const position = clamp(tab.pendingRevealPosition, 0, view.state.doc.length);
+  const y = tab.pendingRevealScroll ?? "center";
+  tab.pendingRevealPosition = undefined;
+  tab.pendingRevealScroll = undefined;
+  view.dispatch({
+    selection: { anchor: position },
+    effects: EditorView.scrollIntoView(position, { y }),
+  });
+  return true;
 }
 
 function gitChangedLineGutterExtension(

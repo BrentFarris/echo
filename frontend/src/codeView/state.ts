@@ -2,18 +2,6 @@ import { services } from "../../wailsjs/go/models";
 import type { CodeEntryKind, CodeFileTab, CodeWorkspaceState, DirectoryState } from "./types";
 import { clamp, editableWorkspaceFile, editorDocumentLengthForFileContent } from "./utils";
 
-const ignoredDirectoryNames = new Set([
-  ".git",
-  ".next",
-  ".vite",
-  "bin",
-  "build",
-  "coverage",
-  "dist",
-  "node_modules",
-  "obj",
-  "target",
-]);
 export const codeStates = new Map<string, CodeWorkspaceState>();
 export const explorerWidthStorageKey = "echo:code-explorer-width";
 const defaultExplorerWidth = 300;
@@ -380,12 +368,7 @@ export function filteredEntries(
   if (state.showIgnored) {
     return entries;
   }
-  return entries.filter((entry) => {
-    if (entry.kind !== "directory") {
-      return true;
-    }
-    return !ignoredDirectoryNames.has(entry.name.toLowerCase());
-  });
+  return entries.filter((entry) => !entry.ignored);
 }
 
 function ensureCodeTreeSelectionState(state: CodeWorkspaceState) {

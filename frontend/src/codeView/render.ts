@@ -425,8 +425,9 @@ export function renderTextSearchPanelContent(workspaceID: string): string {
         class="code-text-search-filter"
         type="text"
         value="${escapeAttribute(state.textSearchInclude)}"
-        placeholder="files to include"
+        placeholder="e.g. *.ts, src/**/include"
         aria-label="Files to include"
+        title="Glob expressions: *, **, ?, {a,b}, [a-z]. Separate patterns with commas."
         spellcheck="false"
         data-code-text-search-field="include"
       />
@@ -434,8 +435,9 @@ export function renderTextSearchPanelContent(workspaceID: string): string {
         class="code-text-search-filter"
         type="text"
         value="${escapeAttribute(state.textSearchExclude)}"
-        placeholder="files to exclude"
+        placeholder="e.g. **/generated, *.{test,spec}.ts"
         aria-label="Files to exclude"
+        title="Glob expressions: *, **, ?, {a,b}, [a-z]. Separate patterns with commas."
         spellcheck="false"
         data-code-text-search-field="exclude"
       />
@@ -561,7 +563,7 @@ function renderFileEntry(
       <div class="code-tree-item">
         ${
           renaming
-            ? renderPendingRenameRow(state, entry, depth, codeIcons.folder, `<span class="code-tree-chevron">${codeIcons.chevron}</span>`)
+            ? renderPendingRenameRow(state, entry, depth, "", `<span class="code-tree-chevron">${codeIcons.chevron}</span>`)
             : `<button
                 class="code-tree-row code-tree-directory${changeClass} ${expanded ? "is-expanded" : ""} ${selected ? "is-selected" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}"
                 type="button"
@@ -577,7 +579,6 @@ function renderFileEntry(
                 data-code-kind="${escapeAttribute(entry.kind)}"
               >
                 <span class="code-tree-chevron">${codeIcons.chevron}</span>
-                <span class="code-tree-entry-icon">${codeIcons.folder}</span>
                 <span class="code-tree-name">${escapeHtml(entry.name)}</span>
               </button>`
         }
@@ -614,7 +615,6 @@ function renderFileEntry(
       data-code-path="${escapeAttribute(entry.path)}"
       data-code-kind="${escapeAttribute(entry.kind)}"
     >
-      <span class="code-tree-spacer"></span>
       <span class="code-tree-entry-icon">${fileIcon}</span>
       <span class="code-tree-name">${escapeHtml(entry.name)}</span>
       <span class="code-tree-size">${escapeHtml(formatBytes(entry.bytes ?? 0))}</span>
@@ -750,13 +750,13 @@ function renderCodeTabSwitcher(workspaceID: string): string {
   `;
 }
 
-export function renderCodeQuickOpen(workspaceID: string): string {
+export function renderCodeQuickOpen(workspaceID: string, global = false): string {
   const state = ensureCodeState(workspaceID);
   if (!state.quickOpen.open) {
     return "";
   }
   return `
-    <div class="code-quick-open" role="dialog" aria-modal="true" aria-label="Open file" data-code-quick-open>
+    <div class="code-quick-open${global ? " is-global" : ""}" role="dialog" aria-modal="true" aria-label="Open file" data-code-quick-open>
       <button class="code-quick-open-backdrop" type="button" aria-label="Close file search" data-code-quick-open-close></button>
       <div class="code-quick-open-panel">
         <input

@@ -831,7 +831,15 @@ func loadWorkspaceGitCommitHistory(ctx context.Context, workspacePath string, li
 	if limit <= 0 {
 		limit = workspaceGitHistoryLimit
 	}
-	output, err := runWorkspaceGitCommand(ctx, workspacePath, "log", fmt.Sprintf("-n%d", limit), "--date=iso-strict", "--format=%H%x00%h%x00%an%x00%ae%x00%aI%x00%s%x1e")
+	args := []string{"log", fmt.Sprintf("-n%d", limit), "--date-order", "--date=iso-strict", "--format=%H%x00%h%x00%an%x00%ae%x00%aI%x00%s%x1e"}
+	if workspaceGitHasHead(ctx, workspacePath) {
+		args = append(args, "HEAD")
+	}
+	// Include branch, remote-tracking, and tag refs so a successful fetch can
+	// immediately add newly discovered commits to the history view. Avoid
+	// --all because it also walks internal refs such as refs/stash.
+	args = append(args, "--branches", "--remotes", "--tags")
+	output, err := runWorkspaceGitCommand(ctx, workspacePath, args...)
 	if err != nil {
 		if gitRepositoryHasNoCommits(err) {
 			return []WorkspaceGitCommit{}, nil

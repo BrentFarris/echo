@@ -508,6 +508,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 	mediaPayloadsDisabled := false
 	skillCheckpointPending := false
 	skillCheckpointReminders := 0
+	emptyAssistantRetries := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			s.cancelChatMessage(workspace.ID, streamID, messageID)
@@ -621,6 +622,17 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 			return
 		}
 		forcedCompactions = 0
+		if isEmptyAssistantResponse(content, toolCalls) {
+			if emptyAssistantRetries >= maxEmptyAssistantRetries {
+				s.failChatMessage(workspace.ID, streamID, messageID, emptyAssistantResponseError().Error())
+				return
+			}
+			emptyAssistantRetries++
+			s.retryChatMessage(workspace.ID, streamID, messageID)
+			messages = append(messages, emptyAssistantRetryMessage())
+			continue
+		}
+		emptyAssistantRetries = 0
 
 		assistantHistory := llm.Message{Role: llm.RoleAssistant, Content: content, ToolCalls: toolCalls}
 		messages = append(messages, assistantHistory)
