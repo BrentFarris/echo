@@ -32,22 +32,23 @@ const (
 )
 
 type LLMEndpoint struct {
-	ID                  string  `json:"id"`
-	Name                string  `json:"name"`
-	Endpoint            string  `json:"endpoint"`
-	Model               string  `json:"model"`
-	Temperature         float64 `json:"temperature"`
-	TopK                int     `json:"topK"`
-	TopP                float64 `json:"topP"`
-	MinP                float64 `json:"minP"`
-	ContextLength       int     `json:"contextLength"`
-	MaxTokens           int     `json:"maxTokens"`
-	FrequencyPenalty    float64 `json:"frequencyPenalty"`
-	PresencePenalty     float64 `json:"presencePenalty"`
-	RepetitionPenalty   float64 `json:"repetitionPenalty"`
-	TimeoutSeconds      int     `json:"timeoutSeconds"`
-	ThinkingTokenBudget int     `json:"thinkingTokenBudget"`
-	ThinkingCorrection  bool    `json:"thinkingCorrection,omitempty"`
+	ID                  string            `json:"id"`
+	Name                string            `json:"name"`
+	Endpoint            string            `json:"endpoint"`
+	Model               string            `json:"model"`
+	Temperature         float64           `json:"temperature"`
+	TopK                int               `json:"topK"`
+	TopP                float64           `json:"topP"`
+	MinP                float64           `json:"minP"`
+	ContextLength       int               `json:"contextLength"`
+	MaxTokens           int               `json:"maxTokens"`
+	FrequencyPenalty    float64           `json:"frequencyPenalty"`
+	PresencePenalty     float64           `json:"presencePenalty"`
+	RepetitionPenalty   float64           `json:"repetitionPenalty"`
+	TimeoutSeconds      int               `json:"timeoutSeconds"`
+	ThinkingTokenBudget int               `json:"thinkingTokenBudget"`
+	ThinkingCorrection  bool              `json:"thinkingCorrection,omitempty"`
+	Headers             map[string]string `json:"headers,omitempty"`
 }
 
 type EndpointSelection struct {
@@ -84,6 +85,7 @@ type Settings struct {
 	ResearchAgentConcurrency          int               `json:"researchAgentConcurrency"`
 	DisableGitSplitDiffView           bool              `json:"disableGitSplitDiffView,omitempty"`
 	Theme                             Theme             `json:"theme,omitempty"`
+	Headers                           map[string]string `json:"headers,omitempty"`
 }
 
 type Theme struct {
@@ -162,6 +164,7 @@ func normalizeSettingsGeneration(s Settings) Settings {
 func (s Settings) Clone() Settings {
 	s.Endpoints = append([]LLMEndpoint(nil), s.Endpoints...)
 	s.Theme = s.Theme.Clone()
+	s.Headers = cloneStringMap(s.Headers)
 	return s
 }
 
@@ -323,7 +326,13 @@ func (e LLMEndpoint) Normalized(fallback Settings) LLMEndpoint {
 	e.Endpoint = strings.TrimSpace(e.Endpoint)
 	e.Model = strings.TrimSpace(e.Model)
 	if !e.hasGenerationConfig() {
+		// Preserve per-endpoint headers that would otherwise be overwritten
+		// by the fallback settings headers.
+		headers := cloneStringMap(e.Headers)
 		e = e.WithGenerationFromSettings(fallback)
+		if len(headers) > 0 {
+			e.Headers = headers
+		}
 	}
 	e = normalizeEndpointGeneration(e)
 	return e
@@ -343,6 +352,7 @@ func (e LLMEndpoint) WithGenerationFromSettings(settings Settings) LLMEndpoint {
 	e.TimeoutSeconds = settings.TimeoutSeconds
 	e.ThinkingTokenBudget = settings.ThinkingTokenBudget
 	e.ThinkingCorrection = settings.ThinkingCorrection
+	e.Headers = cloneStringMap(settings.Headers)
 	return e
 }
 
@@ -361,6 +371,7 @@ func (e LLMEndpoint) ApplyToSettings(settings Settings) Settings {
 	settings.TimeoutSeconds = e.TimeoutSeconds
 	settings.ThinkingTokenBudget = e.ThinkingTokenBudget
 	settings.ThinkingCorrection = e.ThinkingCorrection
+	settings.Headers = cloneStringMap(e.Headers)
 	return settings
 }
 
@@ -476,7 +487,13 @@ func applyLegacyEndpointFields(endpoints []LLMEndpoint, selectedID string, setti
 		if output[index].ID == selectedID {
 			output[index].Endpoint = settings.Endpoint
 			output[index].Model = settings.Model
+			// Preserve per-endpoint headers that would otherwise be overwritten
+			// by the top-level settings headers.
+			headers := cloneStringMap(output[index].Headers)
 			output[index] = output[index].WithGenerationFromSettings(settings)
+			if len(headers) > 0 {
+				output[index].Headers = headers
+			}
 			return output
 		}
 	}

@@ -37,6 +37,7 @@ export namespace llm {
 	    timeoutSeconds: number;
 	    thinkingTokenBudget: number;
 	    thinkingCorrection?: boolean;
+	    headers?: Record<string, string>;
 	
 	    static createFrom(source: any = {}) {
 	        return new LLMEndpoint(source);
@@ -60,6 +61,7 @@ export namespace llm {
 	        this.timeoutSeconds = source["timeoutSeconds"];
 	        this.thinkingTokenBudget = source["thinkingTokenBudget"];
 	        this.thinkingCorrection = source["thinkingCorrection"];
+	        this.headers = source["headers"];
 	    }
 	}
 	export class Theme {
@@ -102,6 +104,7 @@ export namespace llm {
 	    researchAgentConcurrency: number;
 	    disableGitSplitDiffView?: boolean;
 	    theme?: Theme;
+	    headers?: Record<string, string>;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -134,6 +137,7 @@ export namespace llm {
 	        this.researchAgentConcurrency = source["researchAgentConcurrency"];
 	        this.disableGitSplitDiffView = source["disableGitSplitDiffView"];
 	        this.theme = this.convertValues(source["theme"], Theme);
+	        this.headers = source["headers"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

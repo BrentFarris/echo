@@ -207,6 +207,118 @@ func TestSettingsCopiesLegacyGenerationFieldsIntoChatEndpoint(t *testing.T) {
 	}
 }
 
+func TestNormalizedPreservesEndpointHeadersWhenNoGenerationConfig(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoints = []LLMEndpoint{
+		{
+			ID:       "custom",
+			Name:     "Custom",
+			Endpoint: "https://custom.example.test/v1",
+			Model:    "custom-model",
+			Headers:  map[string]string{"X-Api-Key": "secret123", "X-Custom": "value"},
+		},
+	}
+	settings.EndpointSelection = defaultEndpointSelection("custom")
+	settings.Endpoint = "https://custom.example.test/v1"
+	settings.Model = "custom-model"
+
+	normalized := settings.Normalized()
+	endpoint := normalized.Endpoints[0]
+	if endpoint.Headers["X-Api-Key"] != "secret123" {
+		t.Fatalf("expected X-Api-Key header to be preserved, got %q", endpoint.Headers["X-Api-Key"])
+	}
+	if endpoint.Headers["X-Custom"] != "value" {
+		t.Fatalf("expected X-Custom header to be preserved, got %q", endpoint.Headers["X-Custom"])
+	}
+	if len(endpoint.Headers) != 2 {
+		t.Fatalf("expected 2 headers, got %d: %v", len(endpoint.Headers), endpoint.Headers)
+	}
+}
+
+func TestNormalizedPreservesEndpointHeadersWhenLegacyFieldsApplied(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoints = []LLMEndpoint{
+		{
+			ID:       "custom",
+			Name:     "Custom",
+			Endpoint: "https://custom.example.test/v1",
+			Model:    "custom-model",
+			Headers:  map[string]string{"X-Api-Key": "secret123"},
+		},
+	}
+	settings.EndpointSelection = defaultEndpointSelection("custom")
+	// Legacy fields that trigger applyLegacyEndpointFields
+	settings.Endpoint = "https://legacy-override.test/v1"
+	settings.Model = "legacy-override-model"
+	// Top-level headers should NOT overwrite per-endpoint headers
+	settings.Headers = map[string]string{"Authorization": "Bearer token"}
+
+	normalized := settings.Normalized()
+	endpoint := normalized.Endpoints[0]
+	// Per-endpoint headers must survive — not overwritten by settings.Headers
+	if endpoint.Headers["X-Api-Key"] != "secret123" {
+		t.Fatalf("expected X-Api-Key header to be preserved, got %q", endpoint.Headers["X-Api-Key"])
+	}
+	// The legacy endpoint fields should inherit endpoint + model from top-level
+	if endpoint.Endpoint != "https://legacy-override.test/v1" {
+		t.Fatalf("expected endpoint to be overridden by legacy field, got %q", endpoint.Endpoint)
+	}
+	if endpoint.Model != "legacy-override-model" {
+		t.Fatalf("expected model to be overridden by legacy field, got %q", endpoint.Model)
+	}
+}
+
+func TestNormalizedPreservesEndpointHeadersWithGenerationConfig(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoints = []LLMEndpoint{
+		{
+			ID:               "custom",
+			Name:             "Custom",
+			Endpoint:         "https://custom.example.test/v1",
+			Model:            "custom-model",
+			Temperature:      0.5,
+			ContextLength:    8192,
+			MaxTokens:        2048,
+			RepetitionPenalty: 1,
+			TimeoutSeconds:   30,
+			Headers:          map[string]string{"X-Api-Key": "secret123"},
+		},
+	}
+	settings.EndpointSelection = defaultEndpointSelection("custom")
+	settings.Endpoint = "https://custom.example.test/v1"
+	settings.Model = "custom-model"
+
+	normalized := settings.Normalized()
+	endpoint := normalized.Endpoints[0]
+	// The endpoint already has a generation config, so Normalized() should not
+	// call WithGenerationFromSettings and should preserve headers directly.
+	if endpoint.Headers["X-Api-Key"] != "secret123" {
+		t.Fatalf("expected X-Api-Key header to be preserved, got %q", endpoint.Headers["X-Api-Key"])
+	}
+}
+
+func TestApplyToSettingsPreservesEndpointHeaders(t *testing.T) {
+	endpoint := LLMEndpoint{
+		ID:       "custom",
+		Name:     "Custom",
+		Endpoint: "https://custom.example.test/v1",
+		Model:    "custom-model",
+		Headers:  map[string]string{"X-Api-Key": "secret123"},
+	}
+	settings := DefaultSettings()
+	settings.Headers = map[string]string{"Authorization": "Bearer token"}
+
+	applied := endpoint.ApplyToSettings(settings)
+	// Endpoint headers should replace settings headers entirely
+	if applied.Headers["X-Api-Key"] != "secret123" {
+		t.Fatalf("expected X-Api-Key header from endpoint to be applied, got %q", applied.Headers["X-Api-Key"])
+	}
+	// The previous settings.Headers should be gone (replaced by endpoint headers)
+	if len(applied.Headers) != 1 {
+		t.Fatalf("expected exactly 1 header (endpoint's), got %d: %v", len(applied.Headers), applied.Headers)
+	}
+}
+
 func TestSettingsRejectsDuplicateEndpointNames(t *testing.T) {
 	settings := DefaultSettings()
 	settings.Endpoints = []LLMEndpoint{
