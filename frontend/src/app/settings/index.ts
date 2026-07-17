@@ -1316,6 +1316,7 @@ function settingsWithEndpointSync(settings: llm.Settings): llm.Settings {
   for (const field of llmPresetFields) {
     source[field] = chatEndpoint?.[field] ?? endpointDefaultsFromSettings(settings)[field];
   }
+  source.headers = chatEndpoint?.headers;
   return llm.Settings.createFrom(source);
 }
 

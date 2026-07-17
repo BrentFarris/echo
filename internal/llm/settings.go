@@ -326,7 +326,13 @@ func (e LLMEndpoint) Normalized(fallback Settings) LLMEndpoint {
 	e.Endpoint = strings.TrimSpace(e.Endpoint)
 	e.Model = strings.TrimSpace(e.Model)
 	if !e.hasGenerationConfig() {
+		// Preserve per-endpoint headers that would otherwise be overwritten
+		// by the fallback settings headers.
+		headers := cloneStringMap(e.Headers)
 		e = e.WithGenerationFromSettings(fallback)
+		if len(headers) > 0 {
+			e.Headers = headers
+		}
 	}
 	e = normalizeEndpointGeneration(e)
 	return e
@@ -481,7 +487,13 @@ func applyLegacyEndpointFields(endpoints []LLMEndpoint, selectedID string, setti
 		if output[index].ID == selectedID {
 			output[index].Endpoint = settings.Endpoint
 			output[index].Model = settings.Model
+			// Preserve per-endpoint headers that would otherwise be overwritten
+			// by the top-level settings headers.
+			headers := cloneStringMap(output[index].Headers)
 			output[index] = output[index].WithGenerationFromSettings(settings)
+			if len(headers) > 0 {
+				output[index].Headers = headers
+			}
 			return output
 		}
 	}
