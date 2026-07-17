@@ -10,6 +10,9 @@ export function renderContextMenu(menu: ContextMenuState): string {
   if (menu.codePath) {
     return renderCodeContextMenu(menu);
   }
+  if (menu.gitPath) {
+    return renderGitContextMenu(menu);
+  }
   return `\
     <div class="workspace-context-menu" data-context-menu style="left:${menu.x}px;top:${menu.y}px">\
       <button\
@@ -19,6 +22,37 @@ export function renderContextMenu(menu: ContextMenuState): string {
         data-action="show-in-explorer"\
         data-workspace-id="${escapeAttribute(menu.workspaceId)}"\
         data-workspace-path="${escapeAttribute(menu.workspacePath ?? "")}"\
+      >\
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9l-6-6H5a2 2 0 0 0-2 2Z"/></svg>\
+        <span class="workspace-context-menu-label">Show in Explorer</span>\
+      </button>\
+    </div>\
+  `;
+}
+
+function renderGitContextMenu(menu: ContextMenuState): string {
+  const gitPath = menu.gitPath ?? "";
+  const isFolder = menu.gitKind === "folder";
+  return `\
+    <div class="workspace-context-menu" data-context-menu style="left:${menu.x}px;top:${menu.y}px">\
+      <button\
+        class="workspace-context-menu-item danger-button"\
+        type="button"\
+        title="${escapeAttribute(`Revert ${menu.displayPath}`)}"\
+        data-action="${isFolder ? "revert-git-folder" : "revert-git-file"}"\
+        data-${isFolder ? "git-folder-path" : "git-file-path"}="${escapeAttribute(gitPath)}"\
+      >\
+        ${icons.undo}\
+        <span class="workspace-context-menu-label">${isFolder ? "Revert folder changes" : "Revert file changes"}</span>\
+      </button>\
+      <hr class="workspace-context-menu-divider" />\
+      <button\
+        class="workspace-context-menu-item"\
+        type="button"\
+        title="${escapeAttribute(menu.displayPath)}"\
+        data-action="show-in-explorer"\
+        data-workspace-id="${escapeAttribute(menu.workspaceId)}"\
+        data-workspace-path="${escapeAttribute(menu.workspacePath ?? gitPath)}"\
       >\
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9l-6-6H5a2 2 0 0 0-2 2Z"/></svg>\
         <span class="workspace-context-menu-label">Show in Explorer</span>\

@@ -393,7 +393,7 @@ function renderGitSourceFileTreeNode(
     const folderActionLabel = mode === "stage" ? "Stage folder" : "Unstage folder";
     return `
       <div class="git-source-folder ${isCollapsed ? "is-collapsed" : "is-expanded"}" role="none">
-        <div class="git-source-folder-row" role="none" title="${escapeAttribute(node.displayPath)}" style="--tree-depth: ${depth}" data-git-browser-path="${escapeAttribute(node.displayPath)}">
+        <div class="git-source-folder-row" role="none" title="${escapeAttribute(node.displayPath)}" style="--tree-depth: ${depth}" data-git-browser-path="${escapeAttribute(node.displayPath)}" data-git-browser-kind="folder">
           <button class="git-source-folder-main" type="button" role="treeitem" aria-expanded="${!isCollapsed}" data-git-change-folder="${escapeAttribute(collapseKey)}">
             <span class="git-source-folder-chevron">${codeIcons.chevron}</span>
             <span class="git-source-folder-icon">${codeIcons.folder}</span>
@@ -412,7 +412,7 @@ function renderGitSourceFileTreeNode(
   const file = node.file;
   const displayPath = node.displayPath;
   return `
-    <div class="git-source-file-row" role="none" title="${escapeAttribute(displayPath)}" style="--tree-depth: ${depth}" data-git-browser-path="${escapeAttribute(displayPath)}">
+    <div class="git-source-file-row" role="none" title="${escapeAttribute(displayPath)}" style="--tree-depth: ${depth}" data-git-browser-path="${escapeAttribute(displayPath)}" data-git-browser-kind="file">
       <button class="git-source-file-main" type="button" role="treeitem" data-git-change-file="${escapeAttribute(node.path)}" data-git-diff-scope="${mode === "stage" ? "unstaged" : "staged"}">
         <span class="git-source-file-status is-${escapeAttribute(file.operation)}">${escapeHtml(gitSourceStatusLetter(file))}</span>
         <span class="git-source-file-icon">${codeIcons.file}</span>
@@ -1022,6 +1022,8 @@ function bindGitChangeContextMenus(root: ParentNode) {
       showContextMenu({
         workspaceId: workspace.id,
         workspacePath: path,
+        gitPath: path,
+        gitKind: row.dataset.gitBrowserKind === "folder" ? "folder" : "file",
         displayPath: path,
         x: event.clientX,
         y: event.clientY,
@@ -2075,9 +2077,10 @@ export async function unstageWorkspaceGitFolder(path: string) {
 
 async function runWorkspaceGitFolderOperation(
   operation: string,
-  action: "stage_folder" | "unstage_folder",
+  action: "stage_folder" | "unstage_folder" | "discard_folder",
   path: string,
   successMessage: string,
+  refreshCodeTabs = false,
 ) {
   path = path.trim();
   if (!path) {
@@ -2087,6 +2090,9 @@ async function runWorkspaceGitFolderOperation(
     const request = services.WorkspaceGitActionRequest.createFrom({ action, ref: path });
     const view = await RunWorkspaceGitAction(workspace.id, repository.folderId, request);
     storeGitRepositoryView(workspace.id, view);
+    if (refreshCodeTabs) {
+      await refreshOpenCodeTabsFromDisk(workspace.id, getAppCallbacks().codeViewCallbacks());
+    }
     pushToast(successMessage, "success");
   }, true);
 }
@@ -2254,6 +2260,14 @@ function gitRepositoryDraftKey(workspaceID: string, folderID: string): string {
 
 function gitChangeTreeStateKey(workspaceID: string, folderID: string): string {
   return `${workspaceID}:${folderID}`;
+}
+
+export async function revertWorkspaceGitFolder(path: string) {
+  path = path.trim();
+  if (!path || !window.confirm(`Revert all Git changes in ${path}? This cannot be undone.`)) {
+    return;
+  }
+  await runWorkspaceGitFolderOperation("Reverting folder", "discard_folder", path, "Reverted folder changes.", true);
 }
 
 function gitChangeSectionStateKey(workspaceID: string, folderID: string, section: "stage" | "unstage"): string {

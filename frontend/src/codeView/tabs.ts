@@ -30,12 +30,14 @@ type OpenCodeFileOptions = {
   selectionLine?: number;
   restoredLocation?: CodeNavigationLocation;
   recordNavigation?: boolean;
+  revealInExplorer?: boolean;
   suppressErrorToast?: boolean;
 };
 
 type ActivateCodeTabOptions = {
   saveMountedEditor?: boolean;
   recordNavigation?: boolean;
+  revealInExplorer?: boolean;
   sourceLocation?: CodeNavigationLocation | null;
 };
 
@@ -531,6 +533,7 @@ export async function openCodeFile(
     activateCodeTab(workspaceID, existing.path, callbacks, {
       saveMountedEditor: false,
       recordNavigation: false,
+      revealInExplorer: options.revealInExplorer,
     });
     return true;
   }
@@ -594,7 +597,7 @@ export async function openCodeFile(
   } finally {
     state.openingPath = "";
     callbacks.render();
-    if (openedPath) {
+    if (openedPath && options.revealInExplorer !== false) {
       void revealCodeFileInTree(workspaceID, openedPath, callbacks);
     }
   }
@@ -661,7 +664,7 @@ async function openCodeMediaFile(
   } finally {
     state.openingPath = "";
     callbacks.render();
-    if (openedPath) {
+    if (openedPath && options.revealInExplorer !== false) {
       void revealCodeFileInTree(workspaceID, openedPath, callbacks);
     }
   }
@@ -796,6 +799,7 @@ async function openExternalCodeFile(
     activateCodeTab(workspaceID, existing.path, callbacks, {
       saveMountedEditor: false,
       recordNavigation: false,
+      revealInExplorer: options.revealInExplorer,
     });
     return true;
   }
@@ -1094,7 +1098,11 @@ export function activateCodeTab(
     );
   }
   callbacks.render();
-  if (!activeCodeTab(workspaceID)?.external && !isUntitledCodePath(path)) {
+  if (
+    options.revealInExplorer !== false &&
+    !activeCodeTab(workspaceID)?.external &&
+    !isUntitledCodePath(path)
+  ) {
     void revealCodeFileInTree(workspaceID, path, callbacks);
   }
 }

@@ -6,7 +6,7 @@ import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
 import { dismissContextMenu } from "./contextMenu";
-import { closeGitMenu, closeGitStashReview, dropWorkspaceGitRepositoryState, openGitChangeInCode, openGitMenuPage, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, runGitMenuCommand, selectGitCommit, stageWorkspaceGitChanges, stageWorkspaceGitFile, stageWorkspaceGitFolder, syncWorkspaceGitRepository, toggleGitChangeSection, toggleGitDiffViewMode, toggleGitHistory, toggleGitSourceSidebar, unstageWorkspaceGitChanges, unstageWorkspaceGitFile, unstageWorkspaceGitFolder } from "./git";
+import { closeGitMenu, closeGitStashReview, dropWorkspaceGitRepositoryState, openGitChangeInCode, openGitMenuPage, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, revertWorkspaceGitFolder, runGitMenuCommand, selectGitCommit, stageWorkspaceGitChanges, stageWorkspaceGitFile, stageWorkspaceGitFolder, syncWorkspaceGitRepository, toggleGitChangeSection, toggleGitDiffViewMode, toggleGitHistory, toggleGitSourceSidebar, unstageWorkspaceGitChanges, unstageWorkspaceGitFile, unstageWorkspaceGitFolder } from "./git";
 import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification, toggleHeartbeatInterval, toggleWatchdogInterval } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, cancelAgentMode, deleteAgentModeSettings, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint, saveAgentMode, saveNewAgentMode, startCreateAgentMode, startEditAgentMode } from "./settings";
@@ -351,7 +351,15 @@ export async function handleAction(event: Event) {
       return;
     }
     if (action === "revert-git-file") {
-      await revertWorkspaceGitFile(target.dataset.gitFilePath ?? "");
+      const path = target.dataset.gitFilePath ?? "";
+      dismissContextMenu();
+      await revertWorkspaceGitFile(path);
+      return;
+    }
+    if (action === "revert-git-folder") {
+      const path = target.dataset.gitFolderPath ?? "";
+      dismissContextMenu();
+      await revertWorkspaceGitFolder(path);
       return;
     }
     if (action === "revert-git-changes") {

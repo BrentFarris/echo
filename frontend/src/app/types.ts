@@ -45,6 +45,8 @@ export type ContextMenuState = {
   workspacePath?: string;
   codePath?: string;
   codeKind?: CodeEntryKind;
+  gitPath?: string;
+  gitKind?: "file" | "folder";
   x: number;
   y: number;
 };

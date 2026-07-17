@@ -101,6 +101,7 @@ export async function openTextSearchMatch(
   await openCodeFile(workspaceID, path, callbacks, {
     temporary: true,
     selectionPosition: offset,
+    revealInExplorer: false,
   });
 }
 
