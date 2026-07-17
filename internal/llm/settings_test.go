@@ -30,6 +30,18 @@ func TestSettingsForInteractionUsesSelectedEndpoint(t *testing.T) {
 			ThinkingTokenBudget: 0,
 		},
 		{
+			ID:                  "research",
+			Name:                "Research",
+			Endpoint:            "https://research.example.test/v1",
+			Model:               "research-model",
+			Temperature:         0.15,
+			ContextLength:       24576,
+			MaxTokens:           1536,
+			RepetitionPenalty:   1,
+			TimeoutSeconds:      60,
+			ThinkingTokenBudget: 0,
+		},
+		{
 			ID:                  "kanban",
 			Name:                "Kanban",
 			Endpoint:            "https://kanban.example.test/v1",
@@ -56,12 +68,21 @@ func TestSettingsForInteractionUsesSelectedEndpoint(t *testing.T) {
 	}
 	settings.EndpointSelection = EndpointSelection{
 		Chat:            "chat",
+		Research:        "research",
 		KanbanDecompose: "decompose",
 		Kanban:          "kanban",
 		InlineCode:      "inline",
 	}
 	settings.Endpoint = "https://chat.example.test/v1"
 	settings.Model = "chat-model"
+
+	research := settings.ForInteraction(InteractionResearch)
+	if research.Endpoint != "https://research.example.test/v1" || research.Model != "research-model" {
+		t.Fatalf("expected research endpoint, got %#v", research)
+	}
+	if research.ContextLength != 24576 || research.TimeoutSeconds != 60 {
+		t.Fatalf("expected research generation settings, got %#v", research)
+	}
 
 	decompose := settings.ForInteraction(InteractionKanbanDecompose)
 	if decompose.Endpoint != "https://decompose.example.test/v1" {
@@ -94,6 +115,29 @@ func TestSettingsForInteractionUsesSelectedEndpoint(t *testing.T) {
 	}
 	if inline.Temperature != 0.2 || inline.ContextLength != 16384 || inline.TimeoutSeconds != 10 {
 		t.Fatalf("expected inline generation settings, got %#v", inline)
+	}
+}
+
+func TestSettingsDefaultsResearchSelectionToChatAndNormalizesConcurrency(t *testing.T) {
+	settings := DefaultSettings()
+	settings.EndpointSelection.Research = ""
+	settings.ResearchAgentConcurrency = 0
+
+	normalized := settings.Normalized()
+	if normalized.EndpointSelection.Research != normalized.EndpointSelection.Chat {
+		t.Fatalf("expected research to inherit chat, got %q", normalized.EndpointSelection.Research)
+	}
+	if normalized.ResearchAgentConcurrency != 0 {
+		t.Fatalf("expected zero concurrency to remain disabled, got %d", normalized.ResearchAgentConcurrency)
+	}
+
+	settings.ResearchAgentConcurrency = 99
+	if got := settings.Normalized().ResearchAgentConcurrency; got != 8 {
+		t.Fatalf("expected concurrency cap 8, got %d", got)
+	}
+	settings.ResearchAgentConcurrency = -3
+	if got := settings.Normalized().ResearchAgentConcurrency; got != 0 {
+		t.Fatalf("expected negative concurrency to normalize to disabled, got %d", got)
 	}
 }
 

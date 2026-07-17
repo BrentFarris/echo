@@ -3,7 +3,7 @@ import { llm, services } from "../../wailsjs/go/models";
 import type { ThemePaletteName } from "./theme";
 import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, DashboardWidget, GitDiffViewMode, GitMenuPage, KanbanCardCreationDraft, MobileNavView, TaskEditorDraft, TaskInlineEditState, Toast } from "./types";
 
-const endpointTopics = ["chat", "kanbanDecompose", "kanban", "inlineCode"] as const;
+const endpointTopics = ["chat", "research", "kanbanDecompose", "kanban", "inlineCode"] as const;
 type EndpointTopicKey = (typeof endpointTopics)[number];
 
 export type ChatKanbanTab = "chat" | "tasks" | "kanban";

@@ -952,6 +952,50 @@ h3 {
   min-width: 0;
 }
 
+.research-agent-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
+.research-agent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-md);
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--space-md) var(--space-lg);
+  border: 1px solid color-mix(in srgb, var(--color-info) 42%, var(--color-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-info) 10%, var(--color-surface));
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+}
+
+.research-agent-chip .spinner {
+  width: 13px;
+}
+
+.research-agent-chip > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.research-agent-chip strong {
+  color: var(--color-text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .research-agent-chip .spinner {
+    animation: none;
+    border-color: currentColor;
+    opacity: 0.65;
+  }
+}
+
 .debug-section {
   min-width: 0;
   border: 1px solid var(--color-border);

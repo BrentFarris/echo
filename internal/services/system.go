@@ -174,6 +174,9 @@ type SystemService struct {
 	chatSessions            map[string]*chatSessionState
 	chatStreams             map[string]context.CancelFunc
 	chatSeq                 uint64
+	researchMu              sync.Mutex
+	researchRuns            map[string]*chatResearchRun
+	researchAgentSeq        uint64
 	kanbanRuns              map[string]context.CancelFunc
 	kanbanAgents            map[string]*kanbanAgentRun
 	kanbanAgentSeq          uint64
@@ -224,6 +227,7 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 		persistedChatSessions: make(map[string]persistedChatSession),
 		chatSessions:          make(map[string]*chatSessionState),
 		chatStreams:           make(map[string]context.CancelFunc),
+		researchRuns:          make(map[string]*chatResearchRun),
 		kanbanRuns:            make(map[string]context.CancelFunc),
 		kanbanAgents:          make(map[string]*kanbanAgentRun),
 		kanbanDetailViews:     make(map[string]string),
@@ -1018,6 +1022,10 @@ func (s *SystemService) load() error {
 	legacyThinkingDisabled := stateFileLegacyThinkingDisabled(data) && !stateFileHasSettingKey(data, "thinkingTokenBudget")
 	legacyLLMEndpoints := !stateFileHasSettingKey(data, "endpoints")
 	legacyEndpointSelection := !stateFileHasSettingKey(data, "endpointSelection")
+	legacyResearchAgentConcurrency := !stateFileHasSettingKey(data, "researchAgentConcurrency")
+	if legacyResearchAgentConcurrency {
+		state.Settings.ResearchAgentConcurrency = llm.DefaultResearchAgentConcurrency
+	}
 	state.Settings = state.Settings.Normalized()
 	missingLLMEndpoint := state.Settings.Endpoint == ""
 	missingLLMModel := state.Settings.Model == ""
@@ -1117,7 +1125,7 @@ func (s *SystemService) load() error {
 			return err
 		}
 	}
-	if changed || interruptedKanban || interruptedChat || hadLegacyWorkspaceState || legacyThinkingDisabled || legacyLLMEndpoints || legacyEndpointSelection || missingLLMEndpoint || missingLLMModel || missingWebAccessToken || migratedWebAccessPort {
+	if changed || interruptedKanban || interruptedChat || hadLegacyWorkspaceState || legacyThinkingDisabled || legacyLLMEndpoints || legacyEndpointSelection || legacyResearchAgentConcurrency || missingLLMEndpoint || missingLLMModel || missingWebAccessToken || migratedWebAccessPort {
 		return s.saveLocked()
 	}
 	return nil

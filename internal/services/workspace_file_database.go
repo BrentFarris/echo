@@ -36,7 +36,7 @@ type workspaceFileDatabaseEntry struct {
 }
 
 func searchWorkspaceFilesWithDatabase(workspace Workspace, query string, includeIgnored bool, limit int) ([]WorkspaceFileEntry, bool, error) {
-	output := make([]WorkspaceFileEntry, 0)
+	output := workspaceRootSearchEntries(workspace, query)
 	truncated := false
 	for _, folder := range workspace.Folders {
 		if folder.Missing {

@@ -94,6 +94,7 @@ const llmCodingPresets: {
 
 const endpointTopics = [
   { key: "chat", label: "Chat" },
+  { key: "research", label: "Research" },
   { key: "kanbanDecompose", label: "Kanban Decompose" },
   { key: "kanban", label: "Kanban" },
   { key: "inlineCode", label: "Inline code" },
@@ -319,6 +320,18 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                   type="checkbox"
                   ${limitKanbanConcurrencyEnabled(state.settingsDraft) ? "checked" : ""}
                 />
+              </label>
+              <label class="field" title="Maximum number of chat research agents that may run at once. Set to 0 to disable research agents.">
+                <span>Research agent concurrency</span>
+                <input
+                  name="researchAgentConcurrency"
+                  type="number"
+                  min="0"
+                  max="8"
+                  step="1"
+                  value="${escapeAttribute(fieldValue("researchAgentConcurrency") || "4")}"
+                />
+                <span class="field-help">Set to 0 to disable research agents and use direct chat tools.</span>
               </label>
               <label class="settings-toggle">
                 <span>Leading whitespace indicators</span>
@@ -1261,6 +1274,9 @@ function endpointSelection(
   const kanban = validEndpointID(raw?.kanban, endpoints) ? raw!.kanban : fallback;
   return {
     chat: validEndpointID(raw?.chat, endpoints) ? raw!.chat : fallback,
+    research: validEndpointID(raw?.research, endpoints)
+      ? raw!.research
+      : validEndpointID(raw?.chat, endpoints) ? raw!.chat : fallback,
     kanbanDecompose: validEndpointID(raw?.kanbanDecompose, endpoints)
       ? raw!.kanbanDecompose
       : kanban,
@@ -1793,6 +1809,7 @@ export function handleSettingsInput(event: Event) {
     "repetitionPenalty",
     "timeoutSeconds",
     "thinkingTokenBudget",
+    "researchAgentConcurrency",
   ]);
   let value: number | string | boolean;
   if (input.type === "checkbox") {

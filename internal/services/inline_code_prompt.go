@@ -366,7 +366,7 @@ func inlineCodeSystemMessage(workspace Workspace, skillCandidates []tools.Worksp
 			workspaceSkillsPrompt("You are Echo's inline code assistant. Help with the user's prompt at the current editor cursor. "+
 				contextCheckpointSystemGuidance+" "+
 				"Use available workspace tools when you need to inspect or edit files. "+
-				"When the user mentions @path, treat it as a labeled workspace file reference like <folder-label>/path and read it before relying on its contents. "+
+				"When the user mentions @path, treat it as a labeled workspace file or directory reference like <folder-label>/path. Read referenced files, and list or search within referenced directories before relying on their contents. "+
 				"When you need to find code but do not know the target file, prefer filesystem_search_workspace before shell commands. "+
 				"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. "+
 				"When a search result gives a useful line number, read nearby code with filesystem_read_text aroundLine; copy the result's line value and avoid reading whole source files unless the entire file is genuinely needed. "+

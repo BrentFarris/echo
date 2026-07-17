@@ -400,7 +400,7 @@ export async function runChatMentionSearch(workspaceID: string, sequence: number
     if (!latest || sequence !== latest.requestSeq) {
       return;
     }
-    latest.results = (model.entries ?? []).filter((entry) => entry.kind === "file");
+    latest.results = model.entries ?? [];
     latest.error = "";
     clampChatMentionSelection(latest);
   } catch (error) {
@@ -500,18 +500,18 @@ export function renderChatMentionPicker(workspaceID: string): string {
   const entries = visibleChatMentionEntries(mention);
   let content = "";
   if (mention.loading) {
-    content = `<div class="chat-mention-status"><span class="spinner" aria-hidden="true"></span><span>Searching files...</span></div>`;
+    content = `<div class="chat-mention-status"><span class="spinner" aria-hidden="true"></span><span>Searching files and folders...</span></div>`;
   } else if (mention.error) {
     content = `<div class="chat-mention-status is-error">${escapeHtml(mention.error)}</div>`;
   } else if (!entries.length) {
-    content = `<div class="chat-mention-status">No matching files.</div>`;
+    content = `<div class="chat-mention-status">No matching files or folders.</div>`;
   } else {
     content = entries
       .map((entry, index) => renderChatMentionOption(entry, index, index === mention.selectedIndex))
       .join("");
   }
   return `
-    <div class="chat-mention-picker" id="chat-mention-list" role="listbox" aria-label="Workspace files" data-chat-mention-picker>
+    <div class="chat-mention-picker" id="chat-mention-list" role="listbox" aria-label="Workspace files and folders" data-chat-mention-picker>
       ${content}
     </div>
   `;
@@ -522,6 +522,7 @@ export function renderChatMentionOption(
   index: number,
   selected: boolean,
 ): string {
+  const isDirectory = entry.kind === "directory";
   return `
     <button
       class="chat-mention-option ${selected ? "is-active" : ""}"
@@ -533,12 +534,12 @@ export function renderChatMentionOption(
       data-chat-mention-option
       data-mention-index="${index}"
     >
-      <span class="chat-mention-icon">${icons.file}</span>
+      <span class="chat-mention-icon">${isDirectory ? icons.folder : icons.file}</span>
       <span class="chat-mention-name">
         <strong>${escapeHtml(fileName(entry.path))}</strong>
         <span>${escapeHtml(entry.path)}</span>
       </span>
-      <span class="chat-mention-size">${escapeHtml(formatBytes(entry.bytes ?? 0))}</span>
+      <span class="chat-mention-size">${isDirectory ? "Folder" : escapeHtml(formatBytes(entry.bytes ?? 0))}</span>
     </button>
   `;
 }
@@ -914,13 +915,33 @@ export function renderDebugSections(message: services.ChatMessage): string {
   }
   const hasReasoning = Boolean(message.reasoning);
   const toolCalls = message.toolCalls ?? [];
-  if (!hasReasoning && toolCalls.length === 0) {
+  const researchAgents = message.researchAgents ?? [];
+  if (!hasReasoning && toolCalls.length === 0 && researchAgents.length === 0) {
     return `<div class="debug-stack" data-debug-stack></div>`;
   }
   return `
     <div class="debug-stack" data-debug-stack>
+      ${researchAgents.length ? renderResearchAgents(researchAgents) : ""}
       ${hasReasoning ? renderReasoning(message.reasoning ?? "") : ""}
       ${toolCalls.length ? renderToolCalls(toolCalls) : ""}
+    </div>
+  `;
+}
+
+export function renderResearchAgents(agents: services.ChatResearchAgent[]): string {
+  return `
+    <div class="research-agent-strip" data-research-agent-strip role="status" aria-live="polite" aria-label="Active research agents">
+      ${agents.map(renderResearchAgent).join("")}
+    </div>
+  `;
+}
+
+export function renderResearchAgent(agent: services.ChatResearchAgent): string {
+  const phase = agent.phase || agent.status || "researching";
+  return `
+    <div class="research-agent-chip" data-research-agent-id="${escapeAttribute(agent.id)}" title="${escapeAttribute(agent.taskLabel || phase)}">
+      <span class="spinner" aria-hidden="true"></span>
+      <span><strong>${escapeHtml(agent.name || agent.id)}</strong> ${escapeHtml(phase)}</span>
     </div>
   `;
 }
@@ -946,10 +967,13 @@ export function renderToolCalls(toolCalls: services.ChatToolActivity[]): string 
 }
 
 export function renderToolCall(toolCall: services.ChatToolActivity): string {
+  const agentPrefix = toolCall.agentId
+    ? `[agent ${toolCall.agentName || toolCall.agentId} (${toolCall.agentId})] `
+    : "";
   return `
     <div class="tool-call">
       <div>
-        <strong>${escapeHtml(toolCall.name || "tool")}</strong>
+        <strong>${escapeHtml(`${agentPrefix}${toolCall.name || "tool"}`)}</strong>
         <span>${escapeHtml(toolCall.status)}</span>
       </div>
       ${toolCall.arguments ? `<code>${escapeHtml(toolCall.arguments)}</code>` : ""}
@@ -2171,7 +2195,7 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
   const session = chatSessionFor(event.workspaceId);
   const currentRevision = session.revision ?? 0;
   const eventRevision = event.revision ?? 0;
-  const stateful = event.type === "token" || event.type === "reasoning" || event.type === "tool_call" ||
+  const stateful = event.type === "token" || event.type === "reasoning" || event.type === "tool_call" || event.type === "agent_status" ||
     event.type === "complete" || event.type === "canceled" || event.type === "error" ||
     event.type === "retrying" || event.type === "compacting";
   if (stateful && eventRevision > 0) {
@@ -2211,6 +2235,24 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
       toolCalls.push(services.ChatToolActivity.createFrom(event.toolCall));
     }
     message.toolCalls = toolCalls;
+  }
+  if (event.type === "agent_status") {
+    const agents = message.researchAgents ?? [];
+    if (!event.researchAgent) {
+      message.researchAgents = [];
+    } else {
+      const next = services.ChatResearchAgent.createFrom(event.researchAgent);
+      const active = next.status === "queued" || next.status === "running" || next.status === "summarizing";
+      const index = agents.findIndex((item) => item.id === next.id);
+      if (active && index >= 0) {
+        agents[index] = next;
+      } else if (active) {
+        agents.push(next);
+      } else if (index >= 0) {
+        agents.splice(index, 1);
+      }
+      message.researchAgents = agents;
+    }
   }
   if (event.type === "complete" || event.type === "canceled" || event.type === "error") {
     session.busy = false;
@@ -2398,6 +2440,18 @@ export function patchDebugSections(stack: HTMLElement, message: services.ChatMes
 
   const reasoning = message.reasoning ?? "";
   const toolCalls = message.toolCalls ?? [];
+  const researchAgents = message.researchAgents ?? [];
+  let researchStrip = stack.querySelector<HTMLElement>("[data-research-agent-strip]");
+  if (researchAgents.length) {
+    if (!researchStrip) {
+      researchStrip = elementFromHtml(renderResearchAgents(researchAgents)) as HTMLElement;
+      stack.insertBefore(researchStrip, stack.firstChild);
+    } else {
+      morphElement(researchStrip, elementFromHtml(renderResearchAgents(researchAgents)));
+    }
+  } else {
+    researchStrip?.remove();
+  }
   let reasoningSection = stack.querySelector<HTMLDetailsElement>(
     '[data-debug-section="reasoning"]',
   );

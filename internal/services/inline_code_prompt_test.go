@@ -73,8 +73,9 @@ func TestSystemServiceSubmitInlineCodePromptIncludesCursorContextAndTools(t *tes
 	if !strings.Contains(captured.Messages[0].Content, "aroundLine") {
 		t.Fatalf("expected inline system prompt to mention targeted line reads, got %q", captured.Messages[0].Content)
 	}
-	if !strings.Contains(captured.Messages[0].Content, "mentions @path") {
-		t.Fatalf("expected inline system prompt to explain file references, got %q", captured.Messages[0].Content)
+	if !strings.Contains(captured.Messages[0].Content, "mentions @path") ||
+		!strings.Contains(captured.Messages[0].Content, "file or directory reference") {
+		t.Fatalf("expected inline system prompt to explain file and directory references, got %q", captured.Messages[0].Content)
 	}
 	assertSystemPromptOperatingContext(t, captured.Messages[0].Content, root)
 	userPrompt := captured.Messages[1].Content

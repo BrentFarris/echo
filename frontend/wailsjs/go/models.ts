@@ -2,6 +2,7 @@ export namespace llm {
 	
 	export class EndpointSelection {
 	    chat: string;
+	    research: string;
 	    kanbanDecompose: string;
 	    kanban: string;
 	    inlineCode: string;
@@ -13,6 +14,7 @@ export namespace llm {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.chat = source["chat"];
+	        this.research = source["research"];
 	        this.kanbanDecompose = source["kanbanDecompose"];
 	        this.kanban = source["kanban"];
 	        this.inlineCode = source["inlineCode"];
@@ -97,6 +99,7 @@ export namespace llm {
 	    enableChatCompletionNotifications?: boolean;
 	    enableKanbanCompleteNotifications?: boolean;
 	    limitKanbanConcurrency?: boolean;
+	    researchAgentConcurrency: number;
 	    disableGitSplitDiffView?: boolean;
 	    theme?: Theme;
 	
@@ -128,6 +131,7 @@ export namespace llm {
 	        this.enableChatCompletionNotifications = source["enableChatCompletionNotifications"];
 	        this.enableKanbanCompleteNotifications = source["enableKanbanCompleteNotifications"];
 	        this.limitKanbanConcurrency = source["limitKanbanConcurrency"];
+	        this.researchAgentConcurrency = source["researchAgentConcurrency"];
 	        this.disableGitSplitDiffView = source["disableGitSplitDiffView"];
 	        this.theme = this.convertValues(source["theme"], Theme);
 	    }
@@ -443,6 +447,28 @@ export namespace services {
 	        this.bytes = source["bytes"];
 	    }
 	}
+	export class ChatResearchAgent {
+	    id: string;
+	    name: string;
+	    status: string;
+	    phase?: string;
+	    taskLabel?: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatResearchAgent(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.status = source["status"];
+	        this.phase = source["phase"];
+	        this.taskLabel = source["taskLabel"];
+	        this.error = source["error"];
+	    }
+	}
 	export class ChatToolActivity {
 	    id: string;
 	    name?: string;
@@ -450,6 +476,8 @@ export namespace services {
 	    status: string;
 	    result?: string;
 	    error?: string;
+	    agentId?: string;
+	    agentName?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatToolActivity(source);
@@ -463,6 +491,8 @@ export namespace services {
 	        this.status = source["status"];
 	        this.result = source["result"];
 	        this.error = source["error"];
+	        this.agentId = source["agentId"];
+	        this.agentName = source["agentName"];
 	    }
 	}
 	export class ChatVideoAttachment {
@@ -497,6 +527,7 @@ export namespace services {
 	    videos?: ChatVideoAttachment[];
 	    reasoning?: string;
 	    toolCalls?: ChatToolActivity[];
+	    researchAgents?: ChatResearchAgent[];
 	    status: string;
 	    error?: string;
 	
@@ -513,6 +544,7 @@ export namespace services {
 	        this.videos = this.convertValues(source["videos"], ChatVideoAttachment);
 	        this.reasoning = source["reasoning"];
 	        this.toolCalls = this.convertValues(source["toolCalls"], ChatToolActivity);
+	        this.researchAgents = this.convertValues(source["researchAgents"], ChatResearchAgent);
 	        this.status = source["status"];
 	        this.error = source["error"];
 	    }
@@ -593,6 +625,7 @@ export namespace services {
 		    return a;
 		}
 	}
+	
 	export class ChatSession {
 	    workspaceId: string;
 	    messages: ChatMessage[];

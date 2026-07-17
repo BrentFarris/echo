@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"fmt"
 )
 
@@ -194,6 +195,17 @@ func (s *SystemService) onBudgetExceeded(workspaceID string) {
 	s.chatMu.Unlock()
 	if cancelRun != nil {
 		cancelRun()
+	}
+	s.researchMu.Lock()
+	researchCancels := make([]context.CancelFunc, 0)
+	for _, run := range s.researchRuns {
+		if run.workspace.ID == workspaceID {
+			researchCancels = append(researchCancels, run.cancel)
+		}
+	}
+	s.researchMu.Unlock()
+	for _, cancel := range researchCancels {
+		cancel()
 	}
 
 	// Emit budget_exceeded heartbeat event

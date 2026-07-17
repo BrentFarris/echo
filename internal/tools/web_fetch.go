@@ -77,6 +77,43 @@ func init() {
 		},
 		Run: webFetch,
 	})
+	Register(ToolFunc{
+		Meta: Metadata{
+			Name:        "web_read",
+			Description: "Read a public HTTP or HTTPS URL with GET or HEAD. This read-only fetch cannot send a body, custom headers, or mutating methods.",
+			Parameters: Schema{
+				"type": "object", "additionalProperties": false, "required": []any{"url"},
+				"properties": map[string]any{
+					"url":            map[string]any{"type": "string", "description": "Absolute HTTP or HTTPS URL."},
+					"method":         map[string]any{"type": "string", "enum": []any{"GET", "HEAD"}, "description": "Defaults to GET."},
+					"timeoutSeconds": map[string]any{"type": "integer", "minimum": 1, "maximum": maxWebFetchTimeoutSeconds},
+					"maxBytes":       map[string]any{"type": "integer", "minimum": 1, "maximum": maxWebFetchResponseBytes},
+				},
+			},
+		},
+		Run: webRead,
+	})
+}
+
+func webRead(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
+	var args struct {
+		URL            string `json:"url"`
+		Method         string `json:"method"`
+		TimeoutSeconds int    `json:"timeoutSeconds"`
+		MaxBytes       int    `json:"maxBytes"`
+	}
+	if err := DecodeToolArguments(arguments, &args); err != nil {
+		return nil, SafeError{Code: "invalid_arguments", Message: "arguments must be valid JSON"}
+	}
+	method := strings.ToUpper(strings.TrimSpace(args.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
+	if method != http.MethodGet && method != http.MethodHead {
+		return nil, SafeError{Code: "invalid_arguments", Message: "method must be GET or HEAD"}
+	}
+	payload, _ := json.Marshal(webFetchArgs{URL: args.URL, Method: method, TimeoutSeconds: args.TimeoutSeconds, MaxBytes: args.MaxBytes})
+	return webFetch(ctx, payload)
 }
 
 type webFetchArgs struct {

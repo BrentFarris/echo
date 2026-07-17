@@ -587,7 +587,7 @@ async function runTaskFileMentionSearch(workspaceID: string, sequence: number) {
     const latest = taskFileMentionFor(workspaceID);
     if (!latest || sequence !== latest.requestSeq) return;
     const model = services.WorkspaceFileSearchResult.createFrom(result);
-    latest.results = (model.entries ?? []).filter((entry) => entry.kind === "file");
+    latest.results = model.entries ?? [];
     latest.error = "";
     clampTaskFileMentionSelection(latest);
   } catch (error) {
@@ -622,11 +622,11 @@ function renderTaskFileMentionPicker(workspaceID: string): string {
   const entries = visibleTaskFileMentionEntries(mention);
   let content = "";
   if (mention.loading) {
-    content = `<div class="chat-mention-status"><span class="spinner" aria-hidden="true"></span><span>Searching files...</span></div>`;
+    content = `<div class="chat-mention-status"><span class="spinner" aria-hidden="true"></span><span>Searching files and folders...</span></div>`;
   } else if (mention.error) {
     content = `<div class="chat-mention-status is-error">${escapeHtml(mention.error)}</div>`;
   } else if (!entries.length) {
-    content = `<div class="chat-mention-status">No matching files.</div>`;
+    content = `<div class="chat-mention-status">No matching files or folders.</div>`;
   } else {
     content = entries.map((entry, index) => `
       <button
@@ -639,17 +639,17 @@ function renderTaskFileMentionPicker(workspaceID: string): string {
         data-task-file-mention-option
         data-mention-index="${index}"
       >
-        <span class="chat-mention-icon">${icons.file}</span>
+        <span class="chat-mention-icon">${entry.kind === "directory" ? icons.folder : icons.file}</span>
         <span class="chat-mention-name">
           <strong>${escapeHtml(fileName(entry.path))}</strong>
           <span>${escapeHtml(entry.path)}</span>
         </span>
-        <span class="chat-mention-size">${escapeHtml(formatBytes(entry.bytes ?? 0))}</span>
+        <span class="chat-mention-size">${entry.kind === "directory" ? "Folder" : escapeHtml(formatBytes(entry.bytes ?? 0))}</span>
       </button>
     `).join("");
   }
   return `
-    <div class="chat-mention-picker task-file-mention-picker" id="task-file-mention-list" role="listbox" aria-label="Workspace files" data-task-file-mention-picker>
+    <div class="chat-mention-picker task-file-mention-picker" id="task-file-mention-list" role="listbox" aria-label="Workspace files and folders" data-task-file-mention-picker>
       ${content}
     </div>
   `;

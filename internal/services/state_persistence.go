@@ -287,9 +287,15 @@ func ensureWorkspaceCacheDirectoryExists(dir string, boundary string) error {
 }
 
 func persistedChatSessionFrom(session *chatSessionState) persistedChatSession {
+	messages := cloneChatMessages(session.Messages)
+	for i := range messages {
+		// Active research agents are turn-scoped runtime state. Their bounded tool
+		// audit remains on the message, but indicators must never enter autosaves.
+		messages[i].ResearchAgents = nil
+	}
 	return persistedChatSession{
 		WorkspaceID: session.WorkspaceID,
-		Messages:    cloneChatMessages(session.Messages),
+		Messages:    messages,
 		History:     cloneLLMMessages(session.History),
 		Revision:    session.Revision,
 	}
@@ -310,6 +316,7 @@ func cloneChatMessages(messages []ChatMessage) []ChatMessage {
 	for i := range clone {
 		clone[i].Images = append([]ChatImageAttachment(nil), clone[i].Images...)
 		clone[i].ToolCalls = append([]ChatToolActivity(nil), clone[i].ToolCalls...)
+		clone[i].ResearchAgents = append([]ChatResearchAgent(nil), clone[i].ResearchAgents...)
 	}
 	return clone
 }
@@ -346,6 +353,10 @@ func (s *SystemService) restoreChatSessionsLocked() bool {
 		interrupted := false
 		for i := range session.Messages {
 			message := &session.Messages[i]
+			if len(message.ResearchAgents) > 0 {
+				message.ResearchAgents = nil
+				changed = true
+			}
 			if message.Status == "streaming" || message.Status == "retrying" {
 				message.Status = "canceled"
 				if message.Error == "" {

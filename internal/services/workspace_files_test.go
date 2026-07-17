@@ -969,7 +969,7 @@ func TestSystemServiceSearchWorkspaceFilesEmptyQueryListsWorkspaceEntries(t *tes
 		t.Fatalf("search workspace: %v", err)
 	}
 	paths := strings.Join(entryPaths(result.Entries), ",")
-	for _, expected := range []string{"workspace/README.md", "workspace/src", "workspace/src/main.go"} {
+	for _, expected := range []string{"workspace", "workspace/README.md", "workspace/src", "workspace/src/main.go"} {
 		if !strings.Contains(paths, expected) {
 			t.Fatalf("expected empty query results to include %q, got %v", expected, paths)
 		}
@@ -977,6 +977,24 @@ func TestSystemServiceSearchWorkspaceFilesEmptyQueryListsWorkspaceEntries(t *tes
 	if strings.Contains(paths, "node_modules") {
 		t.Fatalf("expected ignored folders to be skipped, got %v", paths)
 	}
+}
+
+func TestSystemServiceSearchWorkspaceFilesFindsWorkspaceRootFolder(t *testing.T) {
+	service, workspaceID, _ := newWorkspaceFilesTestService(t)
+
+	result, err := service.SearchWorkspaceFiles(workspaceID, "workspace", false)
+	if err != nil {
+		t.Fatalf("search workspace root folder: %v", err)
+	}
+	for _, entry := range result.Entries {
+		if entry.Path == "workspace" {
+			if entry.Kind != "directory" {
+				t.Fatalf("expected workspace root to be a directory, got %#v", entry)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected workspace root folder in results, got %v", entryPaths(result.Entries))
 }
 
 func TestSystemServiceSearchWorkspaceFilesRejectsInvalidWorkspace(t *testing.T) {
