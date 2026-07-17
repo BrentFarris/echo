@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/brent/echo/internal/llm"
 	"github.com/brent/echo/internal/tools"
@@ -43,7 +44,12 @@ func TestChatResearchAgentsRunConcurrentlyAndKeepPrivateHistoryOutOfParent(t *te
 				)
 				return
 			}
+			reasoning := "Inspecting code structure before choosing evidence."
+			if requestHasMessageText(request, "test structure") {
+				reasoning = "Inspecting test structure before choosing evidence."
+			}
 			writeSSE(t, w,
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"reasoning_content":%q}}]}`, reasoning),
 				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"inspect","type":"function","function":{"name":"filesystem_list","arguments":%q}}]}}]}`, `{"path":"."}`),
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 			)
@@ -96,11 +102,22 @@ func TestChatResearchAgentsRunConcurrentlyAndKeepPrivateHistoryOutOfParent(t *te
 	if attributed != 2 {
 		t.Fatalf("expected one visible child tool call per agent, got %#v", assistant.ToolCalls)
 	}
+	if len(assistant.ResearchReasoning) != 2 {
+		t.Fatalf("expected reasoning from both research agents, got %#v", assistant.ResearchReasoning)
+	}
+	for _, reasoning := range assistant.ResearchReasoning {
+		if reasoning.AgentID == "" || reasoning.AgentName == "" || !strings.Contains(reasoning.Reasoning, "Inspecting") {
+			t.Fatalf("unexpected attributed research reasoning: %#v", reasoning)
+		}
+	}
 
 	service.chatMu.Lock()
 	history := cloneLLMMessages(service.chatSessions[workspaceID].History)
 	service.chatMu.Unlock()
 	for _, message := range history {
+		if strings.Contains(message.Content, "Inspecting code structure") || strings.Contains(message.Content, "Inspecting test structure") {
+			t.Fatalf("child reasoning leaked into parent LLM history: %#v", history)
+		}
 		for _, call := range message.ToolCalls {
 			if call.Function.Name == "filesystem_list" {
 				t.Fatalf("child tool call leaked into parent LLM history: %#v", history)
@@ -535,7 +552,10 @@ func TestPersistedChatSessionOmitsActiveResearchRuntimeState(t *testing.T) {
 		Role:           llm.RoleAssistant,
 		Status:         "streaming",
 		ResearchAgents: []ChatResearchAgent{{ID: "agent-1", Name: "Docs", Status: "running"}},
-		ToolCalls:      []ChatToolActivity{{ID: "agent-1:call", Name: "web_search", AgentID: "agent-1", AgentName: "Docs", Status: "complete"}},
+		ResearchReasoning: []ChatResearchReasoning{{
+			AgentID: "agent-1", AgentName: "Docs", Reasoning: "Checking documentation.", Replace: true,
+		}},
+		ToolCalls: []ChatToolActivity{{ID: "agent-1:call", Name: "web_search", AgentID: "agent-1", AgentName: "Docs", Status: "complete"}},
 	}}}
 	persisted := persistedChatSessionFrom(session)
 	if len(persisted.Messages[0].ResearchAgents) != 0 {
@@ -543,6 +563,57 @@ func TestPersistedChatSessionOmitsActiveResearchRuntimeState(t *testing.T) {
 	}
 	if len(persisted.Messages[0].ToolCalls) != 1 || persisted.Messages[0].ToolCalls[0].AgentID != "agent-1" {
 		t.Fatalf("bounded attributed audit was not persisted: %#v", persisted.Messages[0])
+	}
+	if len(persisted.Messages[0].ResearchReasoning) != 1 || persisted.Messages[0].ResearchReasoning[0].Reasoning != "Checking documentation." || persisted.Messages[0].ResearchReasoning[0].Replace {
+		t.Fatalf("bounded research reasoning was not persisted safely: %#v", persisted.Messages[0])
+	}
+}
+
+func TestResearchAgentReasoningIsUTF8SafeAndBounded(t *testing.T) {
+	input := strings.Repeat("\U0001F642 evidence ", maxResearchAgentReasoning/8)
+	bounded, truncated := appendBoundedResearchReasoning("", input)
+	if !truncated || len(bounded) > maxResearchAgentReasoning {
+		t.Fatalf("expected bounded reasoning, bytes=%d truncated=%v", len(bounded), truncated)
+	}
+	if !utf8.ValidString(bounded) || !strings.HasPrefix(bounded, researchReasoningTruncatedMarker) {
+		t.Fatalf("expected valid UTF-8 reasoning with truncation marker, prefix=%q", bounded[:min(len(bounded), 64)])
+	}
+	next, truncated := appendBoundedResearchReasoning(bounded, "newest evidence")
+	if !truncated || len(next) > maxResearchAgentReasoning || !utf8.ValidString(next) || !strings.HasSuffix(next, "newest evidence") {
+		t.Fatalf("expected bounded reasoning to preserve the newest UTF-8 content")
+	}
+}
+
+func TestResearchAgentReasoningEmitsAttributedRevisionedEvent(t *testing.T) {
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+	service.chatSessions["workspace"] = &chatSessionState{
+		WorkspaceID: "workspace",
+		Messages:    []ChatMessage{{ID: "assistant", Role: llm.RoleAssistant, Status: "streaming"}},
+	}
+	events, unsubscribe := SubscribeEvents(service, 8)
+	defer unsubscribe()
+	run := &chatResearchRun{service: service, workspace: Workspace{ID: "workspace"}, streamID: "stream", messageID: "assistant"}
+	agent := &chatResearchAgentRun{id: "agent-1", name: "Docs"}
+
+	service.appendResearchAgentReasoning(run, agent, "Checking sources.")
+	select {
+	case runtimeEvent := <-events:
+		event, ok := runtimeEvent.Data.(ChatStreamEvent)
+		if !ok || event.Type != "agent_reasoning" || event.Revision != 1 || event.ResearchReasoning == nil {
+			t.Fatalf("unexpected research reasoning event: %#v", runtimeEvent)
+		}
+		if event.ResearchReasoning.AgentID != "agent-1" || event.ResearchReasoning.AgentName != "Docs" || event.ResearchReasoning.Reasoning != "Checking sources." {
+			t.Fatalf("unexpected attributed reasoning delta: %#v", event.ResearchReasoning)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for research reasoning event")
+	}
+
+	service.chatMu.Lock()
+	message := service.chatSessions["workspace"].Messages[0]
+	service.chatMu.Unlock()
+	if len(message.ResearchReasoning) != 1 || message.ResearchReasoning[0].Reasoning != "Checking sources." {
+		t.Fatalf("research reasoning was not retained on the visible message: %#v", message)
 	}
 }
 

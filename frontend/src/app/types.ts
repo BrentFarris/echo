@@ -56,6 +56,7 @@ export type ChatStreamEvent = {
   type: string;
   content?: string;
   reasoning?: string;
+  researchReasoning?: services.ChatResearchReasoning;
   toolCall?: services.ChatToolActivity;
   researchAgent?: services.ChatResearchAgent;
   error?: string;

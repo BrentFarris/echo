@@ -495,6 +495,26 @@ export namespace services {
 	        this.agentName = source["agentName"];
 	    }
 	}
+	export class ChatResearchReasoning {
+	    agentId: string;
+	    agentName: string;
+	    reasoning: string;
+	    truncated?: boolean;
+	    replace?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatResearchReasoning(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.agentId = source["agentId"];
+	        this.agentName = source["agentName"];
+	        this.reasoning = source["reasoning"];
+	        this.truncated = source["truncated"];
+	        this.replace = source["replace"];
+	    }
+	}
 	export class ChatVideoAttachment {
 	    id: string;
 	    source: string;
@@ -526,6 +546,7 @@ export namespace services {
 	    images?: ChatImageAttachment[];
 	    videos?: ChatVideoAttachment[];
 	    reasoning?: string;
+	    researchReasoning?: ChatResearchReasoning[];
 	    toolCalls?: ChatToolActivity[];
 	    researchAgents?: ChatResearchAgent[];
 	    status: string;
@@ -543,6 +564,7 @@ export namespace services {
 	        this.images = this.convertValues(source["images"], ChatImageAttachment);
 	        this.videos = this.convertValues(source["videos"], ChatVideoAttachment);
 	        this.reasoning = source["reasoning"];
+	        this.researchReasoning = this.convertValues(source["researchReasoning"], ChatResearchReasoning);
 	        this.toolCalls = this.convertValues(source["toolCalls"], ChatToolActivity);
 	        this.researchAgents = this.convertValues(source["researchAgents"], ChatResearchAgent);
 	        this.status = source["status"];
@@ -625,6 +647,7 @@ export namespace services {
 		    return a;
 		}
 	}
+	
 	
 	export class ChatSession {
 	    workspaceId: string;

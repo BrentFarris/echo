@@ -20,7 +20,10 @@ const (
 	researchContextTriggerPct    = 70
 	researchToolArgumentMaxBytes = 2 * 1024
 	researchToolResultMaxBytes   = 4 * 1024
+	maxResearchAgentReasoning    = 128 * 1024
 )
+
+const researchReasoningTruncatedMarker = "[Earlier agent thinking truncated]\n\n"
 
 const researchAgentSystemPrompt = `You are a focused, read-only research sub-agent working for a parent chat orchestrator.
 Investigate only the assigned question. Use the available inspection and research tools aggressively enough to establish facts.
@@ -805,7 +808,9 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 		if err != nil {
 			return "", err
 		}
-		result := streamResearchResponse(ctx, client, request, time.Duration(max(1, r.settings.TimeoutSeconds))*time.Second)
+		result := streamResearchResponse(ctx, client, request, time.Duration(max(1, r.settings.TimeoutSeconds))*time.Second, func(reasoning string) {
+			r.service.appendResearchAgentReasoning(r, agent, reasoning)
+		})
 		if result.usage != nil {
 			_, _ = r.service.RecordTokenUsage(r.workspace.ID, int64(result.usage.TotalTokens))
 		}
@@ -911,7 +916,9 @@ func (r *chatResearchRun) boundResearchReport(ctx context.Context, client *llm.C
 	}
 	request, err := llm.NewChatRequest(settings, messages)
 	if err == nil {
-		result := streamResearchResponse(ctx, client, request, time.Duration(max(1, settings.TimeoutSeconds))*time.Second)
+		result := streamResearchResponse(ctx, client, request, time.Duration(max(1, settings.TimeoutSeconds))*time.Second, func(reasoning string) {
+			r.service.appendResearchAgentReasoning(r, agent, reasoning)
+		})
 		if result.usage != nil {
 			_, _ = r.service.RecordTokenUsage(r.workspace.ID, int64(result.usage.TotalTokens))
 		}
@@ -922,7 +929,7 @@ func (r *chatResearchRun) boundResearchReport(ctx context.Context, client *llm.C
 	return truncateContextText(report, maxChars)
 }
 
-func streamResearchResponse(ctx context.Context, client *llm.Client, request llm.ChatRequest, idleTimeout time.Duration) researchStreamResult {
+func streamResearchResponse(ctx context.Context, client *llm.Client, request llm.ChatRequest, idleTimeout time.Duration, onReasoning func(string)) researchStreamResult {
 	stream := client.StreamChat(ctx, request)
 	defer stream.Cancel()
 	content := strings.Builder{}
@@ -937,6 +944,11 @@ func streamResearchResponse(ctx context.Context, client *llm.Client, request llm
 		for _, call := range calls {
 			toolCalls[nextInline] = call
 			nextInline++
+		}
+	}
+	emitReasoning := func(text string) {
+		if onReasoning != nil && text != "" {
+			onReasoning(text)
 		}
 	}
 	timer := time.NewTimer(idleTimeout)
@@ -962,7 +974,9 @@ func streamResearchResponse(ctx context.Context, client *llm.Client, request llm
 				parsed := contentParser.Flush()
 				content.WriteString(parsed.Text)
 				record(parsed.ToolCalls)
-				record(reasoningParser.Flush().ToolCalls)
+				parsedReasoning := reasoningParser.Flush()
+				record(parsedReasoning.ToolCalls)
+				emitReasoning(parsedReasoning.Text)
 				return researchStreamResult{content: content.String(), toolCalls: orderedToolCalls(toolCalls), finished: finished, finishReason: finishReason, usage: stream.Usage}
 			}
 			resetTimer()
@@ -972,7 +986,9 @@ func streamResearchResponse(ctx context.Context, client *llm.Client, request llm
 				content.WriteString(parsed.Text)
 				record(parsed.ToolCalls)
 			case llm.EventReasoning:
-				record(reasoningParser.Consume(event.Content).ToolCalls)
+				parsed := reasoningParser.Consume(event.Content)
+				record(parsed.ToolCalls)
+				emitReasoning(parsed.Text)
 			case llm.EventToolCall:
 				if event.ToolCall != nil {
 					toolCalls[event.ToolCall.Index] = mergeToolDelta(toolCalls[event.ToolCall.Index], *event.ToolCall)
@@ -990,6 +1006,71 @@ func streamResearchResponse(ctx context.Context, client *llm.Client, request llm
 
 func contextNeedsCompactionAt(settings llm.Settings, messages []llm.Message, toolSchema []llm.Tool, percent int) bool {
 	return estimateContextRequestTokens(messages, toolSchema) >= percentageOf(effectiveContextInputBudget(settings), percent)
+}
+
+func appendBoundedResearchReasoning(current string, delta string) (string, bool) {
+	combined := current + delta
+	if len(combined) <= maxResearchAgentReasoning {
+		return combined, false
+	}
+	remaining := max(0, maxResearchAgentReasoning-len(researchReasoningTruncatedMarker))
+	start := contextUTF8SuffixStart(combined, remaining)
+	return researchReasoningTruncatedMarker + combined[start:], true
+}
+
+func (s *SystemService) appendResearchAgentReasoning(run *chatResearchRun, agent *chatResearchAgentRun, reasoning string) {
+	if reasoning == "" {
+		return
+	}
+	update := ChatResearchReasoning{
+		AgentID:   agent.id,
+		AgentName: agent.name,
+		Reasoning: reasoning,
+	}
+	s.mutateChatMessage(run.workspace.ID, run.messageID, func(message *ChatMessage) {
+		index := -1
+		for i := range message.ResearchReasoning {
+			if message.ResearchReasoning[i].AgentID == agent.id {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			bounded, truncated := appendBoundedResearchReasoning("", reasoning)
+			entry := ChatResearchReasoning{
+				AgentID:   agent.id,
+				AgentName: agent.name,
+				Reasoning: bounded,
+				Truncated: truncated,
+			}
+			message.ResearchReasoning = append(message.ResearchReasoning, entry)
+			update.Truncated = truncated
+			if truncated {
+				update.Reasoning = bounded
+				update.Replace = true
+			}
+			return
+		}
+
+		entry := &message.ResearchReasoning[index]
+		wasTruncated := entry.Truncated
+		bounded, truncated := appendBoundedResearchReasoning(entry.Reasoning, reasoning)
+		entry.AgentName = agent.name
+		entry.Reasoning = bounded
+		entry.Truncated = entry.Truncated || truncated
+		entry.Replace = false
+		update.Truncated = entry.Truncated
+		if truncated && !wasTruncated {
+			update.Reasoning = bounded
+			update.Replace = true
+		}
+	}, ChatStreamEvent{
+		WorkspaceID:       run.workspace.ID,
+		StreamID:          run.streamID,
+		MessageID:         run.messageID,
+		Type:              "agent_reasoning",
+		ResearchReasoning: &update,
+	})
 }
 
 func (s *SystemService) updateResearchAgentState(workspaceID string, streamID string, messageID string, agent ChatResearchAgent) {

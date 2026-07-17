@@ -24,16 +24,17 @@ type ChatSession struct {
 }
 
 type ChatMessage struct {
-	ID             string                `json:"id"`
-	Role           string                `json:"role"`
-	Content        string                `json:"content,omitempty"`
-	Images         []ChatImageAttachment `json:"images,omitempty"`
-	Videos         []ChatVideoAttachment `json:"videos,omitempty"`
-	Reasoning      string                `json:"reasoning,omitempty"`
-	ToolCalls      []ChatToolActivity    `json:"toolCalls,omitempty"`
-	ResearchAgents []ChatResearchAgent   `json:"researchAgents,omitempty"`
-	Status         string                `json:"status"`
-	Error          string                `json:"error,omitempty"`
+	ID                string                  `json:"id"`
+	Role              string                  `json:"role"`
+	Content           string                  `json:"content,omitempty"`
+	Images            []ChatImageAttachment   `json:"images,omitempty"`
+	Videos            []ChatVideoAttachment   `json:"videos,omitempty"`
+	Reasoning         string                  `json:"reasoning,omitempty"`
+	ResearchReasoning []ChatResearchReasoning `json:"researchReasoning,omitempty"`
+	ToolCalls         []ChatToolActivity      `json:"toolCalls,omitempty"`
+	ResearchAgents    []ChatResearchAgent     `json:"researchAgents,omitempty"`
+	Status            string                  `json:"status"`
+	Error             string                  `json:"error,omitempty"`
 }
 
 type ChatToolActivity struct {
@@ -56,19 +57,28 @@ type ChatResearchAgent struct {
 	Error     string `json:"error,omitempty"`
 }
 
+type ChatResearchReasoning struct {
+	AgentID   string `json:"agentId"`
+	AgentName string `json:"agentName"`
+	Reasoning string `json:"reasoning"`
+	Truncated bool   `json:"truncated,omitempty"`
+	Replace   bool   `json:"replace,omitempty"`
+}
+
 type ChatStreamEvent struct {
-	WorkspaceID   string             `json:"workspaceId"`
-	StreamID      string             `json:"streamId"`
-	MessageID     string             `json:"messageId"`
-	Type          string             `json:"type"`
-	Content       string             `json:"content,omitempty"`
-	Reasoning     string             `json:"reasoning,omitempty"`
-	ToolCall      *ChatToolActivity  `json:"toolCall,omitempty"`
-	ResearchAgent *ChatResearchAgent `json:"researchAgent,omitempty"`
-	Error         string             `json:"error,omitempty"`
-	FinishReason  string             `json:"finishReason,omitempty"`
-	Revision      uint64             `json:"revision"`
-	Session       *ChatSession       `json:"session,omitempty"`
+	WorkspaceID       string                 `json:"workspaceId"`
+	StreamID          string                 `json:"streamId"`
+	MessageID         string                 `json:"messageId"`
+	Type              string                 `json:"type"`
+	Content           string                 `json:"content,omitempty"`
+	Reasoning         string                 `json:"reasoning,omitempty"`
+	ResearchReasoning *ChatResearchReasoning `json:"researchReasoning,omitempty"`
+	ToolCall          *ChatToolActivity      `json:"toolCall,omitempty"`
+	ResearchAgent     *ChatResearchAgent     `json:"researchAgent,omitempty"`
+	Error             string                 `json:"error,omitempty"`
+	FinishReason      string                 `json:"finishReason,omitempty"`
+	Revision          uint64                 `json:"revision"`
+	Session           *ChatSession           `json:"session,omitempty"`
 }
 
 type chatSessionState struct {
