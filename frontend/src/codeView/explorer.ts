@@ -1,8 +1,8 @@
-import { CreateWorkspaceFile, CreateWorkspaceFolder, ListWorkspaceDirectory, MoveWorkspacePath, RenameWorkspacePath, SearchWorkspaceFiles } from "../backend/services";
+import { CreateWorkspaceFile, CreateWorkspaceFolder, DeleteWorkspacePaths, ListWorkspaceDirectory, MoveWorkspacePath, RenameWorkspacePath, SearchWorkspaceFiles } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
 import { captureCodeTreeScroll, patchCodeTree, patchSearchResults } from "./dom";
-import { rewriteCodeNavigationHistoryPaths } from "./navigation";
-import { directoryStateFor, ensureCodeState } from "./state";
+import { removeCodeNavigationHistoryPaths, rewriteCodeNavigationHistoryPaths } from "./navigation";
+import { directoryStateFor, ensureCodeState, normalizeCodeEntryKind, removeCodeTreeSelectionPaths, removeTabMruPath, rewriteCodeTreeSelectionPaths, selectCodeTreeEntryInState, selectedCodeTreeEntries, setSingleCodeTreeSelection, type CodeTreeSelectionOptions } from "./state";
 import { openPinnedCodeFile } from "./tabs";
 import { saveMountedEditorContent } from "./editor";
 import type { CodeCreateKind, CodeEntryKind, CodeViewCallbacks, CodeWorkspaceState } from "./types";
@@ -48,13 +48,13 @@ export async function toggleDirectory(workspaceID: string, path: string, callbac
   patchCodeTree(workspaceID, callbacks);
 }
 
-export function selectCodeTreeEntry(workspaceID: string, path: string, kind: string) {
-  if (!path) {
-    return;
-  }
-  const state = ensureCodeState(workspaceID);
-  state.selectedPath = path;
-  state.selectedKind = normalizeCodeEntryKind(kind);
+export function selectCodeTreeEntry(
+  workspaceID: string,
+  path: string,
+  kind: string,
+  options?: CodeTreeSelectionOptions,
+) {
+  selectCodeTreeEntryInState(ensureCodeState(workspaceID), path, kind, options);
 }
 
 export async function startSelectedCodeCreate(
@@ -178,6 +178,55 @@ export function collapseCodeTree(workspaceID: string, callbacks: CodeViewCallbac
   patchCodeTree(workspaceID, callbacks);
 }
 
+export async function deleteSelectedCodePaths(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const state = ensureCodeState(workspaceID);
+  const paths = selectedCodeTreeEntries(state)
+    .filter((entry) => entry.kind === "file" || entry.kind === "directory")
+    .map((entry) => entry.path);
+  await deleteCodePaths(workspaceID, paths, callbacks);
+}
+
+export async function deleteCodePaths(
+  workspaceID: string,
+  paths: string[],
+  callbacks: CodeViewCallbacks,
+) {
+  const uniquePaths = [...new Set(paths.filter(Boolean))];
+  if (!uniquePaths.length) {
+    callbacks.pushToast("Select a file or folder first.", "error");
+    return;
+  }
+  if (!window.confirm(deleteCodePathsConfirmation(uniquePaths))) {
+    return;
+  }
+
+  const state = ensureCodeState(workspaceID);
+  captureCodeTreeScroll(workspaceID);
+  saveMountedEditorContent();
+  try {
+    const deleted = await DeleteWorkspacePaths(workspaceID, uniquePaths);
+    const deletedPaths = deleted.map((entry) => entry.path).filter(Boolean);
+    removeDeletedCodeTabs(workspaceID, deletedPaths);
+    removeCodeTreeSelectionPaths(state, deletedPaths);
+    pruneDirectoryCacheAfterDelete(state, deletedPaths);
+    pruneWorkspaceSearchAfterDelete(state, deletedPaths);
+    state.pendingCreate = null;
+    state.pendingRename = null;
+    callbacks.pushToast(
+      `${deletedPaths.length} item${deletedPaths.length === 1 ? "" : "s"} deleted.`,
+      "success",
+    );
+    void callbacks.refreshGitChanges(workspaceID);
+    callbacks.render();
+  } catch (error) {
+    callbacks.pushToast(callbacks.errorMessage(error), "error");
+    patchCodeTree(workspaceID, callbacks);
+  }
+}
+
 export function startCodeDrag(workspaceID: string, path: string, kind: string): boolean {
   const entryKind = normalizeCodeEntryKind(kind);
   if (!path || (entryKind !== "file" && entryKind !== "directory") || !sourceParentPath(path)) {
@@ -253,8 +302,7 @@ export async function dropCodeDrag(
     rewriteCodeNavigationHistoryPaths(workspaceID, sourcePath, moved.path);
     clearWorkspaceSearchState(workspaceID);
     pruneDirectoryCacheAfterMove(state, sourcePath, sourceParent, targetParentPath, moved.path);
-    state.selectedPath = moved.path;
-    state.selectedKind = normalizeCodeEntryKind(moved.kind);
+    setSingleCodeTreeSelection(state, moved.path, normalizeCodeEntryKind(moved.kind));
     state.drag = null;
     directoryAncestors(targetParentPath).forEach((ancestor) => state.expandedPaths.add(ancestor));
     state.expandedPaths.add(targetParentPath);
@@ -352,8 +400,7 @@ export async function submitPendingCodeRename(
     clearWorkspaceSearchState(workspaceID);
     pruneDirectoryCacheAfterMove(state, sourcePath, sourceParent, sourceParent, renamed.path);
     state.pendingRename = null;
-    state.selectedPath = renamed.path;
-    state.selectedKind = normalizeCodeEntryKind(renamed.kind);
+    setSingleCodeTreeSelection(state, renamed.path, normalizeCodeEntryKind(renamed.kind));
     if (sourceParent) {
       await loadDirectory(workspaceID, sourceParent);
     }
@@ -399,8 +446,7 @@ export async function submitPendingCodeCreate(
       );
       state.pendingCreate = null;
       await loadDirectory(workspaceID, pending.parentPath);
-      state.selectedPath = created.path;
-      state.selectedKind = "file";
+      setSingleCodeTreeSelection(state, created.path, "file");
       state.explorerDrawerOpen = false;
       patchCodeTree(workspaceID, callbacks);
       await openPinnedCodeFile(workspaceID, created.path, callbacks);
@@ -413,8 +459,7 @@ export async function submitPendingCodeCreate(
     );
     state.pendingCreate = null;
     await loadDirectory(workspaceID, pending.parentPath);
-    state.selectedPath = created.path;
-    state.selectedKind = normalizeCodeEntryKind(created.kind);
+    setSingleCodeTreeSelection(state, created.path, normalizeCodeEntryKind(created.kind));
     patchCodeTree(workspaceID, callbacks);
     callbacks.pushToast("Folder created.", "success");
   } catch (error) {
@@ -537,13 +582,6 @@ export async function loadDirectory(workspaceID: string, path: string) {
   }
 }
 
-function normalizeCodeEntryKind(kind: string): CodeEntryKind {
-  if (kind === "file" || kind === "directory") {
-    return kind;
-  }
-  return "other";
-}
-
 function createParentPath(path: string, kind: CodeEntryKind): string {
   if (!path) {
     return "";
@@ -599,7 +637,7 @@ function rewriteMovedCodePaths(state: CodeWorkspaceState, sourcePath: string, de
   });
   state.activePath = movedCodePath(state.activePath, sourcePath, destinationPath);
   state.openingPath = movedCodePath(state.openingPath, sourcePath, destinationPath);
-  state.selectedPath = movedCodePath(state.selectedPath, sourcePath, destinationPath);
+  rewriteCodeTreeSelectionPaths(state, (path) => movedCodePath(path, sourcePath, destinationPath));
   if (state.inlineChat) {
     state.inlineChat.path = movedCodePath(state.inlineChat.path, sourcePath, destinationPath);
   }
@@ -663,6 +701,82 @@ function pruneDirectoryCacheAfterMove(
     ),
   );
   state.expandedPaths.add(".");
+}
+
+function pruneDirectoryCacheAfterDelete(
+  state: CodeWorkspaceState,
+  deletedPaths: string[],
+) {
+  if (!deletedPaths.length) {
+    return;
+  }
+  state.directories.forEach((directory, path) => {
+    if (deletedPaths.some((deleted) => path === deleted || path.startsWith(`${deleted}/`))) {
+      state.directories.delete(path);
+      return;
+    }
+    directory.entries = directory.entries.filter(
+      (entry) => !deletedPaths.some((deleted) => entry.path === deleted || entry.path.startsWith(`${deleted}/`)),
+    );
+  });
+  state.expandedPaths = new Set(
+    Array.from(state.expandedPaths).filter(
+      (path) => !deletedPaths.some((deleted) => path === deleted || path.startsWith(`${deleted}/`)),
+    ),
+  );
+  state.expandedPaths.add(".");
+}
+
+function pruneWorkspaceSearchAfterDelete(
+  state: CodeWorkspaceState,
+  deletedPaths: string[],
+) {
+  if (!deletedPaths.length) {
+    return;
+  }
+  state.searchResults = state.searchResults.filter(
+    (entry) => !deletedPaths.some((deleted) => entry.path === deleted || entry.path.startsWith(`${deleted}/`)),
+  );
+}
+
+function removeDeletedCodeTabs(workspaceID: string, deletedPaths: string[]) {
+  if (!deletedPaths.length) {
+    return;
+  }
+  const state = ensureCodeState(workspaceID);
+  const removedActive = deletedPaths.some(
+    (path) => state.activePath === path || state.activePath.startsWith(`${path}/`),
+  );
+  state.tabs = state.tabs.filter(
+    (tab) => !deletedPaths.some((path) => !tab.external && (tab.path === path || tab.path.startsWith(`${path}/`))),
+  );
+  deletedPaths.forEach((path) => removeTabMruPath(state, path));
+  state.tabMruPaths = state.tabMruPaths.filter(
+    (path) => !deletedPaths.some((deleted) => path === deleted || path.startsWith(`${deleted}/`)),
+  );
+  if (state.tabSwitcher) {
+    state.tabSwitcher.paths = state.tabSwitcher.paths.filter(
+      (path) => !deletedPaths.some((deleted) => path === deleted || path.startsWith(`${deleted}/`)),
+    );
+    state.tabSwitcher.selectedIndex = Math.min(
+      state.tabSwitcher.selectedIndex,
+      Math.max(0, state.tabSwitcher.paths.length - 1),
+    );
+  }
+  if (removedActive) {
+    state.activePath = state.tabMruPaths[0] ?? state.tabs[0]?.path ?? "";
+  }
+  if (state.inlineChat && deletedPaths.some((path) => state.inlineChat?.path === path || state.inlineChat?.path.startsWith(`${path}/`))) {
+    state.inlineChat = null;
+  }
+  removeCodeNavigationHistoryPaths(workspaceID, deletedPaths);
+}
+
+function deleteCodePathsConfirmation(paths: string[]): string {
+  if (paths.length === 1) {
+    return `Delete "${paths[0]}"?\n\nThis cannot be undone.`;
+  }
+  return `Delete ${paths.length} selected items?\n\nThis cannot be undone.`;
 }
 
 function clearWorkspaceSearchState(workspaceID: string) {

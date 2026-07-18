@@ -381,6 +381,83 @@ func chatMediaContentParts(content string, images []ChatImageAttachment, videos 
 	return parts
 }
 
+// isUnsupportedChatMediaError identifies endpoint rejections that explicitly
+// say the selected model cannot accept image or video request content.
+func isUnsupportedChatMediaError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	mediaMarker := false
+	for _, marker := range []string{
+		"multimodal",
+		"vision",
+		"image_url",
+		"video_url",
+		"image input",
+		"video input",
+		"image",
+		"video",
+		"images",
+		"videos",
+	} {
+		if strings.Contains(message, marker) {
+			mediaMarker = true
+			break
+		}
+	}
+	if !mediaMarker {
+		return false
+	}
+	for _, marker := range []string{
+		"not supported",
+		"unsupported",
+		"does not support",
+		"doesn't support",
+		"not a multimodal",
+		"only supported",
+		"only supports text",
+		"text only",
+		"text-only",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// chatMessagesWithoutMediaPayloads converts multimodal messages to their text
+// representation. Tagged workspace paths remain in that text, so a text-only
+// model can still inspect the referenced file with workspace tools.
+func chatMessagesWithoutMediaPayloads(messages []llm.Message) ([]llm.Message, bool) {
+	output := cloneLLMMessages(messages)
+	changed := false
+	for index := range output {
+		hasMedia := false
+		var textParts []string
+		for _, part := range output[index].ContentParts {
+			switch part.Type {
+			case "image_url", "video_url":
+				hasMedia = true
+			case "text":
+				if text := strings.TrimSpace(part.Text); text != "" {
+					textParts = append(textParts, text)
+				}
+			}
+		}
+		if !hasMedia {
+			continue
+		}
+		if strings.TrimSpace(output[index].Content) == "" && len(textParts) > 0 {
+			output[index].Content = strings.Join(textParts, "\n")
+		}
+		output[index].ContentParts = nil
+		changed = true
+	}
+	return output, changed
+}
+
 func referencedWorkspaceImages(content string) []workspaceImageReference {
 	seen := map[string]bool{}
 	var references []workspaceImageReference

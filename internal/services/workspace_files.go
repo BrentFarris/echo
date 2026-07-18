@@ -31,6 +31,7 @@ type WorkspaceFileEntry struct {
 	Kind       string `json:"kind"`
 	Bytes      int64  `json:"bytes,omitempty"`
 	ModifiedAt string `json:"modifiedAt"`
+	Ignored    bool   `json:"ignored,omitempty"`
 }
 
 type WorkspaceFile struct {
@@ -39,6 +40,11 @@ type WorkspaceFile struct {
 	Content     string `json:"content"`
 	Bytes       int64  `json:"bytes"`
 	ModifiedAt  string `json:"modifiedAt"`
+}
+
+type WorkspaceDeletedPath struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
 }
 
 func (s *SystemService) ReadExternalTextFile(path string) (WorkspaceFile, error) {
@@ -109,15 +115,15 @@ type WorkspaceMediaFile struct {
 	Bytes       int64  `json:"bytes"`
 }
 
-func (s *SystemService) ListWorkspaceDirectory(workspaceID string, path string) (WorkspaceDirectory, error) {
+func (s *SystemService) ListWorkspaceDirectory(workspaceID string, requestedPath string) (WorkspaceDirectory, error) {
 	workspace, _, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {
 		return WorkspaceDirectory{}, err
 	}
-	if strings.TrimSpace(path) == "" || strings.TrimSpace(path) == "." {
+	if strings.TrimSpace(requestedPath) == "" || strings.TrimSpace(requestedPath) == "." {
 		return listWorkspaceVirtualRoot(workspace), nil
 	}
-	resolved, err := resolveWorkspaceServicePath(workspace, path)
+	resolved, err := resolveWorkspaceServicePath(workspace, requestedPath)
 	if err != nil {
 		return WorkspaceDirectory{}, err
 	}
@@ -138,6 +144,12 @@ func (s *SystemService) ListWorkspaceDirectory(workspaceID string, path string) 
 		Path:        workspaceRelativePath(workspace, resolved),
 		Entries:     make([]WorkspaceFileEntry, 0, len(entries)),
 	}
+	folderLabel, directoryRelative := splitWorkspaceLabeledPath(output.Path)
+	folder, hasFolder := workspaceFolderByLabel(workspace, folderLabel)
+	ignoreMatcher := workspaceIgnoreMatcher{}
+	if hasFolder {
+		ignoreMatcher = newWorkspaceIgnoreMatcher(folder.Path)
+	}
 	for _, entry := range entries {
 		entryInfo, err := entry.Info()
 		if err != nil {
@@ -149,6 +161,7 @@ func (s *SystemService) ListWorkspaceDirectory(workspaceID string, path string) 
 			Kind:       workspaceFileKind(entryInfo),
 			Bytes:      entryInfo.Size(),
 			ModifiedAt: formatWorkspaceModifiedAt(entryInfo.ModTime()),
+			Ignored:    hasFolder && ignoreMatcher.ignores(path.Join(directoryRelative, entry.Name()), entryInfo.IsDir()),
 		})
 	}
 	sort.Slice(output.Entries, func(i, j int) bool {
@@ -207,6 +220,7 @@ func (s *SystemService) SearchWorkspaceFiles(workspaceID string, query string, i
 }
 
 func searchWorkspaceFilesByWalking(workspace Workspace, query string, includeIgnored bool, output WorkspaceFileSearchResult) (WorkspaceFileSearchResult, error) {
+	output.Entries = append(output.Entries, workspaceRootSearchEntries(workspace, query)...)
 	for _, folder := range workspace.Folders {
 		if folder.Missing {
 			continue
@@ -215,6 +229,7 @@ func searchWorkspaceFilesByWalking(workspace Workspace, query string, includeIgn
 		if err != nil {
 			continue
 		}
+		ignoreMatcher := newWorkspaceIgnoreMatcher(root)
 		err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return nil
@@ -227,7 +242,11 @@ func searchWorkspaceFilesByWalking(workspace Workspace, query string, includeIgn
 				return nil
 			}
 			relative := workspaceRelativePath(workspace, path)
-			if entry.IsDir() && !includeIgnored && isIgnoredWorkspaceDirectory(entry.Name()) {
+			rootRelative, relativeErr := filepath.Rel(root, path)
+			if relativeErr != nil {
+				return nil
+			}
+			if entry.IsDir() && !includeIgnored && ignoreMatcher.ignores(filepath.ToSlash(rootRelative), true) {
 				return filepath.SkipDir
 			}
 			if !workspaceSearchMatches(query, entry.Name(), relative) {
@@ -252,6 +271,28 @@ func searchWorkspaceFilesByWalking(workspace Workspace, query string, includeIgn
 		output.Truncated = true
 	}
 	return output, nil
+}
+
+func workspaceRootSearchEntries(workspace Workspace, query string) []WorkspaceFileEntry {
+	entries := make([]WorkspaceFileEntry, 0, len(workspace.Folders))
+	for _, folder := range workspace.Folders {
+		if folder.Missing || !workspaceSearchMatches(query, folder.Label, folder.Label) {
+			continue
+		}
+		entry := WorkspaceFileEntry{
+			Name: folder.Label,
+			Path: folder.Label,
+			Kind: "directory",
+		}
+		if root, err := workspaceFolderAbsolutePath(folder); err == nil {
+			if info, statErr := os.Stat(root); statErr == nil {
+				entry.Bytes = info.Size()
+				entry.ModifiedAt = formatWorkspaceModifiedAt(info.ModTime())
+			}
+		}
+		entries = append(entries, entry)
+	}
+	return entries
 }
 
 func (s *SystemService) CreateWorkspaceFile(workspaceID string, parentPath string, name string) (WorkspaceFile, error) {
@@ -342,6 +383,35 @@ func (s *SystemService) RenameWorkspacePath(workspaceID string, sourcePath strin
 	return workspaceFileEntry(workspace, target, info), nil
 }
 
+func (s *SystemService) DeleteWorkspacePaths(workspaceID string, paths []string) ([]WorkspaceDeletedPath, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	targets, err := resolveWorkspaceDeleteTargets(workspace, paths)
+	if err != nil {
+		return nil, err
+	}
+	deleted := make([]WorkspaceDeletedPath, 0, len(targets))
+	for _, target := range targets {
+		if target.info.IsDir() {
+			if err := os.RemoveAll(target.absolute); err != nil {
+				return nil, fmt.Errorf("delete folder: %w", err)
+			}
+		} else {
+			if err := os.Remove(target.absolute); err != nil {
+				return nil, fmt.Errorf("delete file: %w", err)
+			}
+		}
+		deleted = append(deleted, WorkspaceDeletedPath{
+			Path: target.relative,
+			Kind: workspaceFileKind(target.info),
+		})
+	}
+	s.removeWorkspaceFileDatabases(workspaceID)
+	return deleted, nil
+}
+
 func (s *SystemService) ReadWorkspaceFile(workspaceID string, path string) (WorkspaceFile, error) {
 	workspace, _, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {
@@ -384,7 +454,7 @@ func (s *SystemService) ReadWorkspaceMediaFile(workspaceID string, path string) 
 		return WorkspaceMediaFile{}, fmt.Errorf("read file: %w", err)
 	}
 	mimeType := detectMediaType(data, resolved)
-	if mimeType == "" || !strings.HasPrefix(mimeType, "image/") && !strings.HasPrefix(mimeType, "video/") {
+	if mimeType == "" || !strings.HasPrefix(mimeType, "image/") && !strings.HasPrefix(mimeType, "video/") && !strings.HasPrefix(mimeType, "audio/") {
 		return WorkspaceMediaFile{}, fmt.Errorf("file is not a supported media type")
 	}
 	dataURL := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)
@@ -398,6 +468,11 @@ func (s *SystemService) ReadWorkspaceMediaFile(workspaceID string, path string) 
 }
 
 func detectMediaType(data []byte, path string) string {
+	// Audio containers can share signatures with video containers (for example,
+	// M4A/MP4 and Ogg), so retain the more specific type supplied by the suffix.
+	if mime := detectExtensionMIME(path); strings.HasPrefix(mime, "audio/") {
+		return mime
+	}
 	if mime := detectMagicByteMIME(data); mime != "" {
 		return mime
 	}
@@ -421,13 +496,45 @@ func detectMagicByteMIME(data []byte) string {
 	if len(data) >= 12 && string(data[0:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
 		return "image/webp"
 	}
-	// MP4: ftyp at offset 4
-	if len(data) >= 8 && string(data[4:8]) == "ftyp" {
+	// MP4/M4A: ftyp at offset 4
+	if len(data) >= 12 && string(data[4:8]) == "ftyp" {
+		brand := string(data[8:12])
+		if brand == "M4A " || brand == "M4B " {
+			return "audio/mp4"
+		}
 		return "video/mp4"
 	}
 	// WebM: EBBR or "\x1A\x45\xDF\xA3" (EBML header)
 	if len(data) >= 4 && data[0] == 0x1A && data[1] == 0x45 && data[2] == 0xDF && data[3] == 0xA3 {
 		return "video/webm"
+	}
+	// MP3: ID3 tag or sync-safe frame sync
+	if len(data) >= 3 && data[0] == 0x49 && data[1] == 0x44 && data[2] == 0x33 {
+		return "audio/mpeg"
+	}
+	if len(data) >= 2 && data[0] == 0xFF && (data[1]&0xFE) == 0xFA {
+		return "audio/mpeg"
+	}
+	// WAV: RIFF....WAVE
+	if len(data) >= 12 && string(data[0:4]) == "RIFF" && string(data[8:12]) == "WAVE" {
+		return "audio/wav"
+	}
+	// Ogg: OggS
+	if len(data) >= 4 && data[0] == 0x4F && data[1] == 0x67 && data[2] == 0x67 && data[3] == 0x53 {
+		return "audio/ogg"
+	}
+	// FLAC: fLaC
+	if len(data) >= 4 && data[0] == 0x66 && data[1] == 0x4C && data[2] == 0x61 && data[3] == 0x43 {
+		return "audio/flac"
+	}
+	// AAC: ADTS frame sync (0xFFF1, 0xFFF9, etc.)
+	if len(data) >= 2 && data[0] == 0xFF && (data[1]&0xF6) == 0xF0 {
+		return "audio/aac"
+	}
+	// Opus: OpusHead inside Ogg is handled by Ogg detection above.
+	// Additional Opus-in-CA container check: "OpusHead" at offset 8
+	if len(data) >= 8 && string(data[0:8]) == "OpusHead" {
+		return "audio/opus"
 	}
 	return ""
 }
@@ -447,6 +554,16 @@ var extensionMIMETypes = map[string]string{
 	".webm": "video/webm",
 	".avi":  "video/x-msvideo",
 	".mov":  "video/quicktime",
+	".mp3":  "audio/mpeg",
+	".wav":  "audio/wav",
+	".ogg":  "audio/ogg",
+	".oga":  "audio/ogg",
+	".m4a":  "audio/mp4",
+	".aac":  "audio/aac",
+	".flac": "audio/flac",
+	".opus": "audio/opus",
+	".wma":  "audio/x-ms-wma",
+	".weba": "audio/webm",
 }
 
 func detectExtensionMIME(path string) string {
@@ -527,7 +644,7 @@ func (s *SystemService) SaveWorkspaceFile(workspaceID string, path string, conte
 	if !isWorkspaceTextLike(currentData) || !utf8.Valid(currentData) {
 		return WorkspaceFile{}, fmt.Errorf("file appears to be binary")
 	}
-	content, err = formatWorkspaceFileContentBeforeSave(resolved, content)
+	content, err = s.prepareWorkspaceFileContentBeforeSave(workspace, resolved, content)
 	if err != nil {
 		return WorkspaceFile{}, err
 	}
@@ -617,7 +734,7 @@ func (s *SystemService) SaveWorkspaceFileAs(workspaceID string, path string, con
 		return WorkspaceFile{}, fmt.Errorf("check save path: %w", statErr)
 	}
 
-	content, err = formatWorkspaceFileContentBeforeSave(resolved, content)
+	content, err = s.prepareWorkspaceFileContentBeforeSave(workspace, resolved, content)
 	if err != nil {
 		return WorkspaceFile{}, err
 	}
@@ -887,6 +1004,105 @@ func resolveWorkspaceRenameTarget(workspace Workspace, sourcePath string, name s
 		return "", "", err
 	}
 	return source, target, nil
+}
+
+type workspaceDeleteTarget struct {
+	relative string
+	absolute string
+	info     os.FileInfo
+}
+
+func resolveWorkspaceDeleteTargets(workspace Workspace, paths []string) ([]workspaceDeleteTarget, error) {
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("select a file or folder to delete")
+	}
+	targetsByRelative := map[string]workspaceDeleteTarget{}
+	for _, path := range paths {
+		target, err := resolveWorkspaceDeleteTarget(workspace, path)
+		if err != nil {
+			return nil, err
+		}
+		targetsByRelative[target.relative] = target
+	}
+	targets := make([]workspaceDeleteTarget, 0, len(targetsByRelative))
+	for _, target := range targetsByRelative {
+		targets = append(targets, target)
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		return strings.Count(targets[i].relative, "/") < strings.Count(targets[j].relative, "/")
+	})
+	pruned := make([]workspaceDeleteTarget, 0, len(targets))
+	for _, target := range targets {
+		if hasSelectedDeleteAncestor(pruned, target.relative) {
+			continue
+		}
+		pruned = append(pruned, target)
+	}
+	return pruned, nil
+}
+
+func resolveWorkspaceDeleteTarget(workspace Workspace, requestedPath string) (workspaceDeleteTarget, error) {
+	if strings.TrimSpace(requestedPath) == "" {
+		return workspaceDeleteTarget{}, fmt.Errorf("path is required")
+	}
+	label, relativePath := splitWorkspaceLabeledPath(requestedPath)
+	if label == "" || relativePath == "." {
+		return workspaceDeleteTarget{}, fmt.Errorf("workspace folder roots cannot be deleted")
+	}
+	folder, ok := workspaceFolderByLabel(workspace, label)
+	if !ok {
+		return workspaceDeleteTarget{}, fmt.Errorf("workspace folder %q was not found", label)
+	}
+	if folder.Missing {
+		return workspaceDeleteTarget{}, fmt.Errorf("workspace folder %q is unavailable", folder.Label)
+	}
+	workspaceAbs, err := workspaceFolderAbsolutePath(folder)
+	if err != nil {
+		return workspaceDeleteTarget{}, err
+	}
+	requested := filepath.Clean(filepath.Join(workspaceAbs, relativePath))
+	relative, err := filepath.Rel(workspaceAbs, requested)
+	if err != nil {
+		return workspaceDeleteTarget{}, fmt.Errorf("resolve relative path: %w", err)
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return workspaceDeleteTarget{}, fmt.Errorf("path escapes the workspace")
+	}
+	realParent, err := filepath.EvalSymlinks(filepath.Dir(requested))
+	if err != nil {
+		return workspaceDeleteTarget{}, fmt.Errorf("parent directory was not found")
+	}
+	if _, err := workspaceRelativeCandidate(workspace, realParent); err != nil {
+		return workspaceDeleteTarget{}, err
+	}
+	resolved := filepath.Join(realParent, filepath.Base(requested))
+	info, err := os.Lstat(resolved)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return workspaceDeleteTarget{}, fmt.Errorf("path was not found")
+		}
+		return workspaceDeleteTarget{}, fmt.Errorf("stat path: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return workspaceDeleteTarget{}, fmt.Errorf("symbolic links cannot be deleted from Echo")
+	}
+	if !info.IsDir() && !info.Mode().IsRegular() {
+		return workspaceDeleteTarget{}, fmt.Errorf("path is not a deletable file or folder")
+	}
+	return workspaceDeleteTarget{
+		relative: workspaceRelativePath(workspace, resolved),
+		absolute: resolved,
+		info:     info,
+	}, nil
+}
+
+func hasSelectedDeleteAncestor(targets []workspaceDeleteTarget, relative string) bool {
+	for _, target := range targets {
+		if target.info.IsDir() && strings.HasPrefix(relative, target.relative+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveWorkspaceCreateTarget(workspace Workspace, parentPath string, name string) (string, error) {
@@ -1195,15 +1411,6 @@ func workspaceFileKind(info os.FileInfo) string {
 func workspaceSearchMatches(query string, name string, relativePath string) bool {
 	_, matched := workspaceSearchScore(query, name, relativePath)
 	return matched
-}
-
-func isIgnoredWorkspaceDirectory(name string) bool {
-	switch strings.ToLower(name) {
-	case ".echo", ".git", ".next", ".vite", "bin", "build", "coverage", "dist", "node_modules", "obj", "target":
-		return true
-	default:
-		return false
-	}
 }
 
 func isWorkspaceTextLike(data []byte) bool {

@@ -1,7 +1,7 @@
 import { ListWorkspaceDirectory } from "../backend/services";
 import { services } from "../../wailsjs/go/models";
 import { patchCodeTree, scrollSelectedCodeTreeEntryIntoView } from "./dom";
-import { directoryStateFor, ensureCodeState } from "./state";
+import { directoryStateFor, ensureCodeState, setSingleCodeTreeSelection } from "./state";
 import type { CodeViewCallbacks } from "./types";
 
 export async function revealCodeFileInTree(
@@ -13,8 +13,7 @@ export async function revealCodeFileInTree(
     return;
   }
   const state = ensureCodeState(workspaceID);
-  state.selectedPath = path;
-  state.selectedKind = "file";
+  setSingleCodeTreeSelection(state, path, "file");
   state.textSearchOpen = false;
   clearWorkspaceFileSearch(workspaceID);
 

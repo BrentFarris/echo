@@ -3,9 +3,10 @@ import { refreshOpenCodeTabsFromDisk } from "../../codeView";
 import { LoadWorkspaceChangeReview } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
+import { renderSpinnerLabel } from "../components";
 import { appRoot } from "../dom";
 import { icons } from "../icons";
-import { activeWorkspace, changeReviewFor, gitRepositoryViewFor, gitSplitDiffViewEnabled, state } from "../state";
+import { activeWorkspace, changeReviewFor, gitRepositoryViewFor, state } from "../state";
 import { pushToast } from "../toasts";
 import type { FileChangesEvent } from "../types";
 import { changeOperationLabel, changeSourceLabel, errorMessage, escapeAttribute, escapeHtml, fileName, formatBytes } from "../utils";
@@ -85,14 +86,7 @@ export function renderChangeReviewPage(
   const files = review.files ?? [];
   const hasChanges = (review.changeCount ?? 0) > 0;
   return `
-    <section class="work-panel change-review change-review-page" aria-labelledby="git-repository-title" data-change-review>
-      <header class="change-review-header">
-        <div>
-          <p class="eyebrow">${escapeHtml(workspace.displayName)}</p>
-          <h2 id="git-repository-title">Changes</h2>
-        </div>
-      </header>
-
+    <section class="work-panel change-review change-review-page" aria-label="Changes" data-change-review>
       <div class="change-review-summary" aria-label="Change summary">
         <span>${escapeHtml(String(review.fileCount ?? files.length))} files</span>
         <span>${escapeHtml(String(review.changeCount ?? 0))} tool changes</span>
@@ -136,14 +130,14 @@ export function renderChangedFile(file: services.WorkspaceChangedFile): string {
   `;
 }
 
-export function renderGitChangedFile(file: services.WorkspaceGitChangedFile): string {
+export function renderGitChangedFile(file: services.WorkspaceGitChangedFile, diffPending = false, diffScope = ""): string {
   const workspace = activeWorkspace();
   const busy = Boolean(workspace && state.gitRepositoryOperations.has(workspace.id));
   const openable = isGitChangedFileOpenable(file);
   const openLine = gitChangedFileOpenLine(file);
   const normalizedPath = normalizeGitChangePath(file.path);
   return `
-    <article class="change-file" data-change-file data-git-change-file-path="${escapeAttribute(normalizedPath)}">
+    <article class="change-file" data-change-file data-git-change-file-path="${escapeAttribute(normalizedPath)}" ${diffScope ? `data-git-diff-scope="${escapeAttribute(diffScope)}"` : ""} ${diffPending ? "data-git-diff-pending=\"true\"" : ""}>
       <header>
         <div class="change-file-title">
           ${icons.file}
@@ -163,7 +157,9 @@ export function renderGitChangedFile(file: services.WorkspaceGitChangedFile): st
         </div>
       </header>
       ${renderGitChangeStatus(file)}
-      ${file.diffAvailable && file.diff ? renderGitDiff(file.diff, openable ? file.path : "") : renderGitChangeMetadata(file)}
+      ${diffPending
+        ? `<div class="change-metadata git-diff-loading">${renderSpinnerLabel("Loading diff")}</div>`
+        : file.diffAvailable && file.diff ? renderGitDiff(file.diff, openable ? file.path : "") : renderGitChangeMetadata(file)}
     </article>
   `;
 }
@@ -275,7 +271,7 @@ export function renderChangeDiff(diff: string): string {
 }
 
 export function renderGitChangeDiff(diff: string, path: string): string {
-  const targets = new Map(gitDiffHunkTargets(diff).map((target) => [target.lineIndex, target]));
+  const targets = gitDiffLineTargets(diff);
   const lines = diff.split("\n");
   const rendered = lines
     .map((line, index) => {
@@ -288,11 +284,11 @@ export function renderGitChangeDiff(diff: string, path: string): string {
         kind = "meta";
       }
       const marker = kind === "added" || kind === "removed" ? " data-change-line" : "";
-      const target = path ? targets.get(index) : undefined;
-      if (!target) {
+      const targetLine = path ? targets.get(index) : undefined;
+      if (!targetLine) {
         return `<span class="change-diff-line is-${kind}"${marker}>${escapeHtml(line || " ")}</span>`;
       }
-      return `<span class="change-diff-line is-${kind} is-hunk"${marker}>${renderGitLineOpenButton(path, target.targetLine)}<span>${escapeHtml(line || " ")}</span></span>`;
+      return `<span class="change-diff-line is-${kind} has-open-target"${marker}><span>${escapeHtml(line || " ")}</span>${renderGitLineOpenButton(path, targetLine)}</span>`;
     })
     .join("");
   return `<pre class="change-diff"><code>${rendered}</code></pre>`;
@@ -308,15 +304,10 @@ function renderGitLineOpenButton(path: string, line: number): string {
 
 export function renderGitDiff(diff: string, path: string): string {
   const unified = renderGitChangeDiff(diff, path);
-  if (!gitSplitDiffViewEnabled(state.appState?.settings)) {
+  if (state.gitDiffViewMode !== "split") {
     return unified;
   }
-  return `
-    <div class="git-diff-views">
-      <div class="git-diff-unified">${unified}</div>
-      ${renderGitSplitDiff(diff, path)}
-    </div>
-  `;
+  return renderGitSplitDiff(diff, path);
 }
 
 function renderGitSplitDiff(diff: string, path: string): string {
@@ -417,11 +408,45 @@ function gitSplitDiffRows(diff: string): GitSplitDiffRow[] {
       leftKind: "context",
       right: line,
       rightKind: "context",
+      targetLine: nextTargetLine,
     });
     nextTargetLine++;
   });
   flushRemoved();
   return rows;
+}
+
+function gitDiffLineTargets(diff: string): Map<number, number> {
+  const targets = new Map<number, number>();
+  let nextNewLine: number | null = null;
+
+  diff.split("\n").forEach((line, index) => {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (hunk) {
+      const startLine = Number.parseInt(hunk[1], 10);
+      nextNewLine = Number.isFinite(startLine) ? Math.max(1, startLine) : 1;
+      targets.set(index, nextNewLine);
+      return;
+    }
+    if (nextNewLine === null || line.startsWith("\\ No newline")) {
+      return;
+    }
+    if (line.startsWith("-") && !line.startsWith("---")) {
+      targets.set(index, Math.max(1, nextNewLine));
+      return;
+    }
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      targets.set(index, Math.max(1, nextNewLine));
+      nextNewLine++;
+      return;
+    }
+    if (!line.startsWith("diff ") && !line.startsWith("index ") && !line.startsWith("---") && !line.startsWith("+++")) {
+      targets.set(index, Math.max(1, nextNewLine));
+      nextNewLine++;
+    }
+  });
+
+  return targets;
 }
 
 function gitDiffHunkTargets(diff: string): GitDiffHunkTarget[] {

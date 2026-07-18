@@ -1,5 +1,5 @@
 
-import { CreateAgentMode, CreateAgentModePerTool, DeleteAgentMode, LoadWebAccessStatus, ListAgentModes, PrepareRebuildAndRelaunch, SaveSettings, SaveWebAccessSettings, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter, UpdateAgentMode, UpdateAgentModePerTool } from "../../backend/services";
+import { CreateAgentMode, CreateAgentModePerTool, DeleteAgentMode, LoadWebAccessStatus, ListAgentModes, PrepareRebuildAndRelaunch, SaveSettings, SaveWebAccessSettings, SaveWorkspaceDebugSettings, SetWorkspaceBuildCommand, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter, SetWorkspaceSearchParentGitRepositories, UpdateAgentMode, UpdateAgentModePerTool } from "../../backend/services";
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
@@ -8,9 +8,10 @@ import { cloneSettings, cloneWebAccessSettings, fieldValue, gitSplitDiffViewEnab
 import { applyTheme, normalizeHexColor, settingsWithCompactTheme, settingsWithThemeColor, themeColorValue, themeGroups, themeTokens, type ThemePaletteName } from "../theme";
 import { pushToast } from "../toasts";
 import { errorMessage, escapeAttribute, escapeHtml, workspaceFolderSummary } from "../utils";
-import { hydrateWorkspaceLetterDrafts, renderWorkspaceFolderSettings, renderWorkspaceIcon, workspaceLetterDraft } from "../workspace";
+import { hydrateWorkspaceLetterDrafts, renderWorkspaceFolderSettings, renderWorkspaceIcon, workspaceBuildCommandDraft, workspaceLetterDraft } from "../workspace";
 import { renderBudgetSettingsSection, handleBudgetLimitInput } from "../budget";
 import { renderLivenessSettingsSection, handleLivenessInput, loadLivenessConfig } from "../liveness";
+import { applyWorkspaceDebugSettings, getWorkspaceDebugSettings, loadWorkspaceDebugSettings } from "../../codeView/debug";
 
 const llmPresetFields = [
   "temperature",
@@ -93,6 +94,7 @@ const llmCodingPresets: {
 
 const endpointTopics = [
   { key: "chat", label: "Chat" },
+  { key: "research", label: "Research" },
   { key: "kanbanDecompose", label: "Kanban Decompose" },
   { key: "kanban", label: "Kanban" },
   { key: "inlineCode", label: "Inline code" },
@@ -104,6 +106,7 @@ const settingsSections = [
   { id: "comfyui-settings-title", label: "ComfyUI" },
   { id: "notification-settings-title", label: "Notifications" },
   { id: "programming-settings-title", label: "Programming" },
+  { id: "debug-settings-title", label: "Debug" },
   { id: "budget-settings-title", label: "Token Budget" },
   { id: "liveness-settings-title", label: "Liveness Enforcement" },
   { id: "web-access-settings-title", label: "Web Access" },
@@ -194,8 +197,30 @@ export function bindSettingsEvents(root: ParentNode) {
       }),
     );
   form
+    ?.querySelectorAll<HTMLInputElement>("[data-workspace-parent-git-repositories]")
+    .forEach((input) =>
+      input.addEventListener("change", () => {
+        void handleWorkspaceParentGitRepositoriesChange(input);
+      }),
+    );
+  form
     ?.querySelectorAll<HTMLTextAreaElement>("textarea")
     .forEach((textarea) => textarea.addEventListener("input", handleSettingsInput));
+  form?.querySelector<HTMLButtonElement>("[data-debug-template]")?.addEventListener("click", () => {
+    const textarea = form.querySelector<HTMLTextAreaElement>("[data-debug-settings-json]");
+    if (!textarea) return;
+    textarea.value = goDebugConfigurationTemplate();
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    textarea.focus();
+  });
+  const workspaceID = activeWorkspace()?.id ?? "";
+  if (workspaceID && !getWorkspaceDebugSettings(workspaceID)) {
+    void loadWorkspaceDebugSettings(workspaceID, { patch: false }).then(() => {
+      if (state.settingsOpen && activeWorkspace()?.id === workspaceID) {
+        getAppCallbacks().render();
+      }
+    });
+  }
 }
 
 export function renderSettingsOverlay(workspaces: services.Workspace[]): string {
@@ -331,6 +356,18 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                   ${limitKanbanConcurrencyEnabled(state.settingsDraft) ? "checked" : ""}
                 />
               </label>
+              <label class="field" title="Maximum number of chat research agents that may run at once. Set to 0 to disable research agents.">
+                <span>Research agent concurrency</span>
+                <input
+                  name="researchAgentConcurrency"
+                  type="number"
+                  min="0"
+                  max="8"
+                  step="1"
+                  value="${escapeAttribute(fieldValue("researchAgentConcurrency") || "4")}"
+                />
+                <span class="field-help">Set to 0 to disable research agents and use direct chat tools.</span>
+              </label>
               <label class="settings-toggle">
                 <span>Leading whitespace indicators</span>
                 <input
@@ -350,6 +387,8 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                 />
               </label>
             </section>
+
+            ${renderDebugSettingsSection()}
 
             ${renderWebAccessSettings()}
 
@@ -371,6 +410,16 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                               <div class="workspace-row-main">
                                 <strong>${escapeHtml(workspace.displayName)}${workspace.missing ? " - Folder missing" : ""}</strong>
                                 <span>${escapeHtml(workspaceFolderSummary(workspace))}</span>
+                                <label class="field field-wide workspace-build-command-field">
+                                  <span>Build command</span>
+                                  <textarea
+                                    name="workspaceBuildCommand"
+                                    rows="2"
+                                    placeholder="go test -tags=&quot;debug editor&quot; ./..."
+                                    data-workspace-build-command
+                                    data-workspace-id="${escapeAttribute(workspace.id)}"
+                                  >${escapeHtml(workspaceBuildCommandDraft(workspace))}</textarea>
+                                </label>
                                 ${renderWorkspaceFolderSettings(workspace)}
                               </div>
                               <label class="settings-toggle workspace-default-plan-mode">
@@ -379,6 +428,15 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                                   type="checkbox"
                                   ${workspace.defaultPlanMode ? "checked" : ""}
                                   data-workspace-default-plan-mode
+                                  data-workspace-id="${escapeAttribute(workspace.id)}"
+                                />
+                              </label>
+                              <label class="settings-toggle workspace-parent-git-repositories" title="Allow Git tools to use a repository found above the workspace folder.">
+                                <span>Search parent folders for Git</span>
+                                <input
+                                  type="checkbox"
+                                  ${workspace.searchParentGitRepositories ? "checked" : ""}
+                                  data-workspace-parent-git-repositories
                                   data-workspace-id="${escapeAttribute(workspace.id)}"
                                 />
                               </label>
@@ -434,6 +492,91 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
 }
 
 /* ── Agent Modes settings section ── */
+
+function renderDebugSettingsSection(): string {
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    return `
+      <section class="settings-section" aria-labelledby="debug-settings-title">
+        <h3 id="debug-settings-title" class="settings-section-title">Debug</h3>
+        <p class="empty-state compact">Select a workspace to configure debugging.</p>
+      </section>`;
+  }
+  const settings = getWorkspaceDebugSettings(workspace.id);
+  if (!settings) {
+    return `
+      <section class="settings-section" aria-labelledby="debug-settings-title">
+        <h3 id="debug-settings-title" class="settings-section-title">Debug</h3>
+        <p class="empty-state compact"><span class="spinner" aria-hidden="true"></span> Loading workspace debug settings&hellip;</p>
+      </section>`;
+  }
+  return `
+    <section class="settings-section debug-settings-section" aria-labelledby="debug-settings-title">
+      <div class="settings-section-heading">
+        <div>
+          <h3 id="debug-settings-title" class="settings-section-title">Debug</h3>
+          <p>Launch configurations for <strong>${escapeHtml(workspace.displayName)}</strong>.</p>
+        </div>
+        <button class="secondary-button compact-button" type="button" data-debug-template>Use Go/Delve template</button>
+      </div>
+      <label class="field field-wide">
+        <span>Workspace debug JSON</span>
+        <textarea
+          class="debug-settings-json"
+          rows="18"
+          spellcheck="false"
+          autocomplete="off"
+          data-debug-settings-json
+          data-debug-workspace-id="${escapeAttribute(workspace.id)}"
+          data-debug-revision="${escapeAttribute(settings.revision)}"
+          data-debug-original="${escapeAttribute(settings.json)}"
+        >${escapeHtml(settings.json)}</textarea>
+      </label>
+      <p class="field-help">Stored at <code>${escapeHtml(settings.storagePath)}</code>. This editor accepts strict JSON only (no comments or trailing commas). Configuration names must be unique and non-empty.</p>
+      <p class="field-help warning">Environment values are stored literally and may commit secrets. Prefer <code>\${env:NAME}</code> when possible.</p>
+    </section>`;
+}
+
+function goDebugConfigurationTemplate() {
+  return JSON.stringify({
+    version: "0.2.0",
+    configurations: [{
+      name: "Launch Go Package",
+      type: "go",
+      request: "launch",
+      mode: "debug",
+      program: "${workspaceFolder}",
+      cwd: "${workspaceFolder}",
+      args: [],
+      env: {},
+    }],
+  }, null, 2);
+}
+
+async function saveWorkspaceDebugSettingsFromForm(form: HTMLFormElement) {
+  const textarea = form.querySelector<HTMLTextAreaElement>("[data-debug-settings-json]");
+  if (!textarea || textarea.value === textarea.dataset.debugOriginal) {
+    return;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(textarea.value);
+  } catch (error) {
+    throw new Error(`Debug configuration is not valid strict JSON: ${errorMessage(error)}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Debug configuration must be a JSON object.");
+  }
+  const workspaceID = textarea.dataset.debugWorkspaceId ?? "";
+  if (!workspaceID) {
+    throw new Error("The debug settings workspace is unavailable.");
+  }
+  const saved = await SaveWorkspaceDebugSettings(workspaceID, {
+    json: textarea.value,
+    expectedRevision: textarea.dataset.debugRevision ?? "",
+  });
+  applyWorkspaceDebugSettings(saved);
+}
 
 function renderAgentModesSection(): string {
   const ws = activeWorkspace();
@@ -928,7 +1071,7 @@ function renderLLMEndpointRow(endpoint: llm.LLMEndpoint, index: number, endpoint
               required
               data-llm-endpoint-field
               data-endpoint-id="${escapeAttribute(id)}"
-              data-endpoint-field="model"
+              data-endpoint-field=\"model\"
             />
           </label>
           <label class="field field-wide llm-endpoint-preset-field">
@@ -940,6 +1083,19 @@ function renderLLMEndpointRow(endpoint: llm.LLMEndpoint, index: number, endpoint
             >
               ${renderLLMPresetOptions(endpoint)}
             </select>
+          </label>
+          <label class="field field-wide">
+            <span>Headers</span>
+            <textarea
+              name="endpointHeaders-${escapeAttribute(id)}"
+              rows="4"
+              placeholder="key: value&#10;Authorization: Bearer my-token&#10;X-Custom-Header: value"
+              autocomplete="off"
+              spellcheck="false"
+              data-llm-endpoint-field
+              data-endpoint-id="${escapeAttribute(id)}"
+              data-endpoint-field="headers"
+            >${escapeHtml(headersToText(endpoint))}</textarea>
           </label>
           ${renderLLMEndpointGenerationFields(endpoint, id)}
         </div>
@@ -1095,6 +1251,7 @@ function settingsEndpoints(settings: llm.Settings | null | undefined): llm.LLMEn
         name: endpoint.name ?? `Endpoint ${index + 1}`,
         endpoint: endpoint.endpoint ?? "",
         model: endpoint.model ?? "",
+        headers: endpoint.headers,
         ...endpointGenerationValues(endpoint, defaults),
       }),
     );
@@ -1166,6 +1323,9 @@ function endpointSelection(
   const kanban = validEndpointID(raw?.kanban, endpoints) ? raw!.kanban : fallback;
   return {
     chat: validEndpointID(raw?.chat, endpoints) ? raw!.chat : fallback,
+    research: validEndpointID(raw?.research, endpoints)
+      ? raw!.research
+      : validEndpointID(raw?.chat, endpoints) ? raw!.chat : fallback,
     kanbanDecompose: validEndpointID(raw?.kanbanDecompose, endpoints)
       ? raw!.kanbanDecompose
       : kanban,
@@ -1191,6 +1351,7 @@ function settingsWithEndpointSync(settings: llm.Settings): llm.Settings {
   for (const field of llmPresetFields) {
     source[field] = chatEndpoint?.[field] ?? endpointDefaultsFromSettings(settings)[field];
   }
+  source.headers = chatEndpoint?.headers;
   return llm.Settings.createFrom(source);
 }
 
@@ -1226,7 +1387,7 @@ function handleLLMEndpointSelectionInput(select: HTMLSelectElement) {
   state.formError = "";
 }
 
-function handleLLMEndpointFieldInput(input: HTMLInputElement) {
+function handleLLMEndpointFieldInput(input: HTMLInputElement | HTMLTextAreaElement) {
   if (!state.settingsDraft) {
     return;
   }
@@ -1235,12 +1396,19 @@ function handleLLMEndpointFieldInput(input: HTMLInputElement) {
   if (!endpointID || !isEndpointField(field)) {
     return;
   }
-  const value =
-    input.type === "checkbox"
-      ? input.checked
-      : isEndpointNumericField(field)
-        ? Number(input.value)
-        : input.value;
+  let value: string | number | boolean | Record<string, string> | undefined;
+  if (field === "headers") {
+    value = parseHeadersText((input as HTMLTextAreaElement).value);
+  } else if (input instanceof HTMLInputElement) {
+    value =
+      input.type === "checkbox"
+        ? input.checked
+        : isEndpointNumericField(field)
+          ? Number(input.value)
+          : input.value;
+  } else {
+    return;
+  }
   const endpoints = settingsEndpoints(state.settingsDraft).map((endpoint) => {
     if (endpoint.id !== endpointID) {
       return endpoint;
@@ -1251,7 +1419,7 @@ function handleLLMEndpointFieldInput(input: HTMLInputElement) {
     });
   });
   state.settingsDraft = settingsWithEndpointDraft(state.settingsDraft, endpoints);
-  if (field === "thinkingTokenBudget") {
+  if (field === "thinkingTokenBudget" && input instanceof HTMLInputElement) {
     const correctionInput = input.form?.querySelector<HTMLInputElement>(
       `input[data-endpoint-id="${CSS.escape(endpointID)}"][data-endpoint-field="thinkingCorrection"]`,
     );
@@ -1266,10 +1434,10 @@ function isEndpointTopic(value: string | undefined): value is EndpointTopic {
   return endpointTopics.some((topic) => topic.key === value);
 }
 
-type EndpointField = "name" | "endpoint" | "model" | LLMPresetField;
+type EndpointField = "name" | "endpoint" | "model" | "headers" | LLMPresetField;
 
 function isEndpointField(value: string | undefined): value is EndpointField {
-  return value === "name" || value === "endpoint" || value === "model" ||
+  return value === "name" || value === "endpoint" || value === "model" || value === "headers" ||
     (llmPresetFields as readonly string[]).includes(value ?? "");
 }
 
@@ -1277,7 +1445,38 @@ function isEndpointNumericField(value: EndpointField): value is Exclude<LLMPrese
   return value !== "name" &&
     value !== "endpoint" &&
     value !== "model" &&
+    value !== "headers" &&
     value !== "thinkingCorrection";
+}
+
+/* ── Headers helpers ── */
+
+function headersToText(endpoint: llm.LLMEndpoint): string {
+  const headers = endpoint.headers;
+  if (!headers) {
+    return "";
+  }
+  return Object.entries(headers)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join("\n");
+}
+
+function parseHeadersText(text: string): Record<string, string> | undefined {
+  const result: Record<string, string> = {};
+  let hasHeaders = false;
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const colonIndex = trimmed.indexOf(":");
+    if (colonIndex <= 0) continue;
+    const key = trimmed.slice(0, colonIndex).trim();
+    const value = trimmed.slice(colonIndex + 1).trim();
+    if (key && value) {
+      result[key] = value;
+      hasHeaders = true;
+    }
+  }
+  return hasHeaders ? result : undefined;
 }
 
 export function addLLMEndpoint() {
@@ -1638,7 +1837,7 @@ export function handleSettingsInput(event: Event) {
     handleLLMEndpointSelectionInput(input);
     return;
   }
-  if (input.dataset.llmEndpointField !== undefined && input instanceof HTMLInputElement) {
+  if (input.dataset.llmEndpointField !== undefined && (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) {
     handleLLMEndpointFieldInput(input);
     return;
   }
@@ -1660,12 +1859,20 @@ export function handleSettingsInput(event: Event) {
   if (input.dataset.workspaceDefaultPlanMode !== undefined) {
     return;
   }
+  if (input.dataset.workspaceParentGitRepositories !== undefined) {
+    return;
+  }
   if (input.dataset.webAccessField !== undefined) {
     void handleWebAccessInput(input as HTMLInputElement);
     return;
   }
   if (input.dataset.workspaceLetter !== undefined) {
     state.workspaceLetterDrafts.set(input.dataset.workspaceId ?? "", input.value);
+    state.formError = "";
+    return;
+  }
+  if (input.dataset.workspaceBuildCommand !== undefined) {
+    state.workspaceBuildCommandDrafts.set(input.dataset.workspaceId ?? "", input.value);
     state.formError = "";
     return;
   }
@@ -1690,6 +1897,7 @@ export function handleSettingsInput(event: Event) {
     "repetitionPenalty",
     "timeoutSeconds",
     "thinkingTokenBudget",
+    "researchAgentConcurrency",
   ]);
   let value: number | string | boolean;
   if (input.type === "checkbox") {
@@ -1842,6 +2050,20 @@ export async function handleWorkspaceDefaultPlanModeChange(input: HTMLInputEleme
   }
 }
 
+export async function handleWorkspaceParentGitRepositoriesChange(input: HTMLInputElement) {
+  const workspaceID = input.dataset.workspaceId ?? "";
+  if (!workspaceID) {
+    return;
+  }
+  try {
+    state.appState = await SetWorkspaceSearchParentGitRepositories(workspaceID, input.checked);
+    getAppCallbacks().render();
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+    getAppCallbacks().render();
+  }
+}
+
 export async function handleSettingsSubmit(event: SubmitEvent) {
   event.preventDefault();
   if (!state.settingsDraft) {
@@ -1855,6 +2077,7 @@ export async function handleSettingsSubmit(event: SubmitEvent) {
   }
 
   try {
+    await saveWorkspaceDebugSettingsFromForm(event.currentTarget as HTMLFormElement);
     state.settingsDraft = settingsWithEndpointSync(state.settingsDraft);
     state.appState = await SaveSettings(settingsWithCompactTheme(state.settingsDraft));
     if (state.webAccessDraft) {
@@ -1865,6 +2088,10 @@ export async function handleSettingsSubmit(event: SubmitEvent) {
       const draft = state.workspaceLetterDrafts.get(workspace.id);
       if (draft !== undefined && draft !== (workspace.letter ?? "")) {
         state.appState = await SetWorkspaceLetter(workspace.id, draft);
+      }
+      const buildCommandDraft = state.workspaceBuildCommandDrafts.get(workspace.id);
+      if (buildCommandDraft !== undefined && buildCommandDraft !== (workspace.buildCommand ?? "")) {
+        state.appState = await SetWorkspaceBuildCommand(workspace.id, buildCommandDraft);
       }
     }
     state.settingsDraft = cloneSettings(state.appState.settings);

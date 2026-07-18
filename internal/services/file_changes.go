@@ -17,13 +17,14 @@ import (
 const fileChangesEventName = "echo:file-changes:event"
 
 type WorkspaceChangeSource struct {
-	Type       string `json:"type"`
-	CardID     string `json:"cardId,omitempty"`
-	CardTitle  string `json:"cardTitle,omitempty"`
-	MessageID  string `json:"messageId,omitempty"`
-	RequestID  string `json:"requestId,omitempty"`
-	ToolCallID string `json:"toolCallId,omitempty"`
-	ToolName   string `json:"toolName,omitempty"`
+	Type           string `json:"type"`
+	CardID         string `json:"cardId,omitempty"`
+	CardTitle      string `json:"cardTitle,omitempty"`
+	MessageID      string `json:"messageId,omitempty"`
+	RequestID      string `json:"requestId,omitempty"`
+	ToolCallID     string `json:"toolCallId,omitempty"`
+	ToolName       string `json:"toolName,omitempty"`
+	researchAgents tools.ResearchAgentCoordinator
 }
 
 type WorkspaceFileSnapshot struct {
@@ -143,27 +144,28 @@ func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Wo
 		lock.Lock()
 		unlock = lock.Unlock
 	}
-		result := tools.Execute(tools.ExecutionContext{
-			Context:          ctx,
-			WorkspaceRoots:   workspaceToolRoots(workspace),
-			SearxngURL:       settings.SearxngURL,
-			ComfyuiURL:               settings.ComfyuiURL,
-			ComfyuiDefaultCheckpoint: settings.ComfyuiDefaultCheckpoint,
-			ComfyuiTxt2imgWorkflow:   settings.ComfyuiTxt2imgWorkflow,
-			ComfyuiImg2imgWorkflow:   settings.ComfyuiImg2imgWorkflow,
-			CodeNavigator:    s.codeNavigator(workspace),
-			WorkspaceContext: s.workspaceContextProvider(workspace),
-			WorkspaceSkills:  s.workspaceSkillsProvider(workspace),
-			WorkspaceTasks:   s.workspaceTasksProvider(workspace),
-			Emit:             emit,
-			FileChanges:      sink,
-			ToolScopes:       toolScopes,
-			AgentModes:       s,
-			KanbanExecutor:   s,
-			KanbanManager:    &kanbanManagerAdapter{service: s},
-			AttachedImages:   s.latestUserMessageImages(workspace.ID),
-			GeneratedImages:  generatedImages,
-		}, call.Function.Name, json.RawMessage(call.Function.Arguments))
+	result := tools.Execute(tools.ExecutionContext{
+		Context:          ctx,
+		WorkspaceRoots:   workspaceToolRoots(workspace),
+		SearxngURL:       settings.SearxngURL,
+		ComfyuiURL:               settings.ComfyuiURL,
+		ComfyuiDefaultCheckpoint: settings.ComfyuiDefaultCheckpoint,
+		ComfyuiTxt2imgWorkflow:   settings.ComfyuiTxt2imgWorkflow,
+		ComfyuiImg2imgWorkflow:   settings.ComfyuiImg2imgWorkflow,
+		CodeNavigator:    s.codeNavigator(workspace),
+		WorkspaceContext: s.workspaceContextProvider(workspace),
+		WorkspaceSkills:  s.workspaceSkillsProvider(workspace),
+		WorkspaceTasks:   s.workspaceTasksProvider(workspace),
+		Emit:             emit,
+		FileChanges:      sink,
+		ToolScopes:       toolScopes,
+		AgentModes:       s,
+		KanbanExecutor:   s,
+		KanbanManager:    &kanbanManagerAdapter{service: s},
+		ResearchAgents:   source.researchAgents,
+		AttachedImages:   s.latestUserMessageImages(workspace.ID),
+		GeneratedImages:  generatedImages,
+	}, call.Function.Name, json.RawMessage(call.Function.Arguments))
 
 	if len(captured) > 0 {
 		s.recordToolFileChanges(workspace.ID, source, captured)
@@ -408,6 +410,15 @@ func (s *SystemService) dropWorkspaceChangeReview(workspaceID string) {
 	delete(s.fileChanges, workspaceID)
 	delete(s.workspaceToolLocks, workspaceID)
 	s.fileChangeMu.Unlock()
+
+	s.gitViewMu.Lock()
+	prefix := workspaceID + "\x00"
+	for key := range s.gitRepositoryViews {
+		if strings.HasPrefix(key, prefix) {
+			delete(s.gitRepositoryViews, key)
+		}
+	}
+	s.gitViewMu.Unlock()
 }
 
 func (s *SystemService) emitFileChangesEvent(event FileChangesEvent) {

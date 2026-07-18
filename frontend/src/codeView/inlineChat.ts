@@ -5,7 +5,7 @@ import { services } from "../../wailsjs/go/models";
 import { renderMarkdown } from "../markdown";
 import { icons } from "../app/icons";
 import { patchInlineCodeChatOutput as patchInlineCodeChatOutputDom } from "./dom";
-import { getMountedCodeEditor, mountedCodeEditorMatches, replaceMountedEditorContent, saveMountedEditorContent } from "./editor";
+import { getMountedCodeEditor, mountedCodeEditorMatches, resetMountedEditorDocument, saveMountedEditorContent } from "./editor";
 import { applySavedFile, ensureCodeState, findTab, workspaceFileChanged } from "./state";
 import type { CodeFileTab, CodeViewCallbacks, InlineCodeChatState, InlineCodeMentionState, InlineCodePromptEvent } from "./types";
 import { clamp, editableWorkspaceFile, escapeAttribute, escapeHtml, fileName, formatBytes, sleep } from "./utils";
@@ -380,7 +380,7 @@ async function runInlineCodeMentionSearch(
     if (!latest || sequence !== latest.requestSeq) {
       return;
     }
-    latest.results = (model.entries ?? []).filter((entry) => entry.kind === "file");
+    latest.results = model.entries ?? [];
     latest.error = "";
     clampInlineCodeMentionSelection(latest);
   } catch (error) {
@@ -477,11 +477,11 @@ function renderInlineCodeMentionPicker(mention: InlineCodeMentionState | null) {
   const entries = visibleInlineCodeMentionEntries(mention);
   let content = "";
   if (mention.loading) {
-    content = `<div class="chat-mention-status"><span class="spinner" aria-hidden="true"></span><span>Searching files...</span></div>`;
+    content = `<div class="chat-mention-status"><span class="spinner" aria-hidden="true"></span><span>Searching files and folders...</span></div>`;
   } else if (mention.error) {
     content = `<div class="chat-mention-status is-error">${escapeHtml(mention.error)}</div>`;
   } else if (!entries.length) {
-    content = `<div class="chat-mention-status">No matching files.</div>`;
+    content = `<div class="chat-mention-status">No matching files or folders.</div>`;
   } else {
     content = entries
       .map(
@@ -496,19 +496,19 @@ function renderInlineCodeMentionPicker(mention: InlineCodeMentionState | null) {
             data-inline-code-mention-option
             data-mention-index="${index}"
           >
-            <span class="chat-mention-icon">${icons.file}</span>
+            <span class="chat-mention-icon">${entry.kind === "directory" ? icons.folder : icons.file}</span>
             <span class="chat-mention-name">
               <strong>${escapeHtml(fileName(entry.path))}</strong>
               <span>${escapeHtml(entry.path)}</span>
             </span>
-            <span class="chat-mention-size">${escapeHtml(formatBytes(entry.bytes ?? 0))}</span>
+            <span class="chat-mention-size">${entry.kind === "directory" ? "Folder" : escapeHtml(formatBytes(entry.bytes ?? 0))}</span>
           </button>
         `,
       )
       .join("");
   }
   return `
-    <div class="chat-mention-picker inline-code-chat-mention-picker" id="inline-code-mention-list" role="listbox" aria-label="Workspace files" data-inline-code-mention-picker>
+    <div class="chat-mention-picker inline-code-chat-mention-picker" id="inline-code-mention-list" role="listbox" aria-label="Workspace files and folders" data-inline-code-mention-picker>
       ${content}
     </div>
   `;
@@ -983,7 +983,13 @@ async function reloadInlineCodePromptTabs(
       }
       applySavedFile(workspaceID, file);
       const reloadedTab = findTab(workspaceID, path);
-      replaceMountedEditorContent(workspaceID, path, reloadedTab?.content ?? editableWorkspaceFile(file).content);
+      const editable = editableWorkspaceFile(file);
+      resetMountedEditorDocument(
+        workspaceID,
+        path,
+        reloadedTab?.content ?? editable.content,
+        reloadedTab?.lineSeparator ?? editable.lineSeparator,
+      );
       reloaded = true;
     } catch (error) {
       callbacks.pushToast(callbacks.errorMessage(error), "error");

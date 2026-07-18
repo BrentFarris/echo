@@ -1009,6 +1009,11 @@ export function applyKanbanEvent(event: KanbanEvent) {
       scheduleKanbanProgressPatch(event.workspaceId);
       return;
     }
+    // The task editor is a live form. Keep background Kanban transitions from
+    // replacing its DOM (and the user's focus/caret) while a draft is open.
+    if (state.taskEditorDrafts.has(event.workspaceId)) {
+      return;
+    }
     renderKanbanEventPreservingScroll();
   }
 }
@@ -1140,11 +1145,7 @@ export function patchKanbanBoard(workspaceID: string): boolean {
   if (heading && workspace) {
     const reviewCount = review?.fileCount ?? 0;
     heading.innerHTML = `
-      <div class="kanban-heading-main">
-        <span>Kanban</span>
-        <strong id="kanban-title">${escapeHtml(workspace.displayName)}</strong>
-        ${hasKanbanRuntime(workspace.id) ? renderKanbanRuntime(workspace.id, running) : ""}
-      </div>
+      ${hasKanbanRuntime(workspace.id) ? `<div class="kanban-heading-main">${renderKanbanRuntime(workspace.id, running)}</div>` : `<div></div>`}
       <div class="kanban-actions">
         <button class="secondary-button icon-text-button change-review-button" type="button" title="Review AI file changes" data-action="open-change-review">
           ${icons.file}

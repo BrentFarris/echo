@@ -1,19 +1,7 @@
 import { services } from "../../wailsjs/go/models";
-import type { CodeFileTab, CodeWorkspaceState, DirectoryState } from "./types";
+import type { CodeEntryKind, CodeFileTab, CodeWorkspaceState, DirectoryState } from "./types";
 import { clamp, editableWorkspaceFile, editorDocumentLengthForFileContent } from "./utils";
 
-const ignoredDirectoryNames = new Set([
-  ".git",
-  ".next",
-  ".vite",
-  "bin",
-  "build",
-  "coverage",
-  "dist",
-  "node_modules",
-  "obj",
-  "target",
-]);
 export const codeStates = new Map<string, CodeWorkspaceState>();
 export const explorerWidthStorageKey = "echo:code-explorer-width";
 const defaultExplorerWidth = 300;
@@ -38,6 +26,9 @@ export function ensureCodeState(workspaceID: string): CodeWorkspaceState {
       activePath: "",
       selectedPath: "",
       selectedKind: "other",
+      selectedEntries: new Map(),
+      selectionAnchorPath: "",
+      selectionAnchorKind: "other",
       tabMruPaths: [],
       navigationHistory: {
         entries: [],
@@ -74,6 +65,7 @@ export function ensureCodeState(workspaceID: string): CodeWorkspaceState {
       textSearchLoading: false,
       textSearchError: "",
       textSearchRequestSeq: 0,
+      textSearchStreamID: "",
       textSearchTimerID: null,
       textSearchFocusedField: "",
       preservingTextSearchFocus: false,
@@ -212,6 +204,124 @@ export function directoryStateFor(
   return directory;
 }
 
+export type CodeTreeSelectionEntry = {
+  path: string;
+  kind: string;
+};
+
+export type CodeTreeSelectionOptions = {
+  mode?: "single" | "toggle" | "range";
+  rangeEntries?: CodeTreeSelectionEntry[];
+  additiveRange?: boolean;
+};
+
+export function normalizeCodeEntryKind(kind: string): CodeEntryKind {
+  if (kind === "file" || kind === "directory") {
+    return kind;
+  }
+  return "other";
+}
+
+export function isCodeTreeEntrySelected(
+  state: CodeWorkspaceState,
+  path: string,
+): boolean {
+  if (!path) {
+    return false;
+  }
+  ensureCodeTreeSelectionState(state);
+  return state.selectedEntries.has(path) || state.selectedPath === path;
+}
+
+export function selectCodeTreeEntryInState(
+  state: CodeWorkspaceState,
+  path: string,
+  kind: string,
+  options: CodeTreeSelectionOptions = {},
+) {
+  if (!path) {
+    return;
+  }
+  ensureCodeTreeSelectionState(state);
+  const entryKind = normalizeCodeEntryKind(kind);
+  if (options.mode === "toggle") {
+    toggleCodeTreeSelection(state, path, entryKind);
+    return;
+  }
+  if (options.mode === "range") {
+    selectCodeTreeRange(state, path, entryKind, options);
+    return;
+  }
+  setSingleCodeTreeSelection(state, path, entryKind);
+}
+
+export function setSingleCodeTreeSelection(
+  state: CodeWorkspaceState,
+  path: string,
+  kind: CodeEntryKind,
+) {
+  state.selectedPath = path;
+  state.selectedKind = kind;
+  state.selectedEntries = new Map([[path, kind]]);
+  state.selectionAnchorPath = path;
+  state.selectionAnchorKind = kind;
+}
+
+export function selectedCodeTreeEntries(
+  state: CodeWorkspaceState,
+): CodeTreeSelectionEntry[] {
+  ensureCodeTreeSelectionState(state);
+  return Array.from(state.selectedEntries.entries()).map(([path, kind]) => ({
+    path,
+    kind,
+  }));
+}
+
+export function clearCodeTreeSelection(state: CodeWorkspaceState) {
+  state.selectedPath = "";
+  state.selectedKind = "other";
+  state.selectedEntries = new Map();
+  state.selectionAnchorPath = "";
+  state.selectionAnchorKind = "other";
+}
+
+export function removeCodeTreeSelectionPaths(
+  state: CodeWorkspaceState,
+  paths: string[],
+) {
+  ensureCodeTreeSelectionState(state);
+  const deletedPaths = paths.filter(Boolean);
+  state.selectedEntries = new Map(
+    Array.from(state.selectedEntries.entries()).filter(
+      ([path]) => !deletedPaths.some((deleted) => path === deleted || path.startsWith(`${deleted}/`)),
+    ),
+  );
+  if (deletedPaths.some((path) => state.selectedPath === path || state.selectedPath.startsWith(`${path}/`))) {
+    const last = Array.from(state.selectedEntries.entries()).at(-1);
+    state.selectedPath = last?.[0] ?? "";
+    state.selectedKind = last?.[1] ?? "other";
+  }
+  if (deletedPaths.some((path) => state.selectionAnchorPath === path || state.selectionAnchorPath.startsWith(`${path}/`))) {
+    state.selectionAnchorPath = state.selectedPath;
+    state.selectionAnchorKind = state.selectedKind;
+  }
+}
+
+export function rewriteCodeTreeSelectionPaths(
+  state: CodeWorkspaceState,
+  rewrite: (path: string) => string,
+) {
+  ensureCodeTreeSelectionState(state);
+  state.selectedPath = rewrite(state.selectedPath);
+  state.selectionAnchorPath = rewrite(state.selectionAnchorPath);
+  state.selectedEntries = uniqueSelectionEntries(
+    Array.from(state.selectedEntries.entries()).map(([path, kind]) => [
+      rewrite(path),
+      kind,
+    ]),
+  );
+}
+
 export function filteredEntries(
   state: CodeWorkspaceState,
   entries: services.WorkspaceFileEntry[],
@@ -219,12 +329,103 @@ export function filteredEntries(
   if (state.showIgnored) {
     return entries;
   }
-  return entries.filter((entry) => {
-    if (entry.kind !== "directory") {
-      return true;
-    }
-    return !ignoredDirectoryNames.has(entry.name.toLowerCase());
+  return entries.filter((entry) => !entry.ignored);
+}
+
+function ensureCodeTreeSelectionState(state: CodeWorkspaceState) {
+  if (!state.selectedEntries) {
+    state.selectedEntries = new Map();
+  }
+  if (state.selectedPath && !state.selectedEntries.has(state.selectedPath)) {
+    state.selectedEntries.set(state.selectedPath, state.selectedKind);
+  }
+  state.selectionAnchorPath = state.selectionAnchorPath ?? "";
+  state.selectionAnchorKind = state.selectionAnchorKind ?? "other";
+}
+
+function toggleCodeTreeSelection(
+  state: CodeWorkspaceState,
+  path: string,
+  kind: CodeEntryKind,
+) {
+  const next = new Map(state.selectedEntries);
+  if (next.has(path)) {
+    next.delete(path);
+  } else {
+    next.set(path, kind);
+  }
+  state.selectedEntries = next;
+  if (next.has(path)) {
+    state.selectedPath = path;
+    state.selectedKind = kind;
+  } else {
+    const last = Array.from(next.entries()).at(-1);
+    state.selectedPath = last?.[0] ?? "";
+    state.selectedKind = last?.[1] ?? "other";
+  }
+  state.selectionAnchorPath = path;
+  state.selectionAnchorKind = kind;
+}
+
+function selectCodeTreeRange(
+  state: CodeWorkspaceState,
+  path: string,
+  kind: CodeEntryKind,
+  options: CodeTreeSelectionOptions,
+) {
+  const entries = (options.rangeEntries ?? []).filter((entry) => entry.path);
+  const anchorPath = firstVisibleAnchorPath(state, entries, path);
+  const anchorIndex = entries.findIndex((entry) => entry.path === anchorPath);
+  const targetIndex = entries.findIndex((entry) => entry.path === path);
+  if (anchorIndex < 0 || targetIndex < 0) {
+    setSingleCodeTreeSelection(state, path, kind);
+    return;
+  }
+
+  const [from, to] = anchorIndex < targetIndex
+    ? [anchorIndex, targetIndex]
+    : [targetIndex, anchorIndex];
+  const next = options.additiveRange
+    ? new Map(state.selectedEntries)
+    : new Map<string, CodeEntryKind>();
+  entries.slice(from, to + 1).forEach((entry) => {
+    next.set(entry.path, normalizeCodeEntryKind(entry.kind));
   });
+  state.selectedEntries = next;
+  state.selectedPath = path;
+  state.selectedKind = kind;
+  if (!state.selectionAnchorPath) {
+    state.selectionAnchorPath = anchorPath;
+    state.selectionAnchorKind = normalizeCodeEntryKind(
+      entries[anchorIndex]?.kind ?? kind,
+    );
+  }
+}
+
+function firstVisibleAnchorPath(
+  state: CodeWorkspaceState,
+  entries: CodeTreeSelectionEntry[],
+  fallbackPath: string,
+): string {
+  const visiblePaths = new Set(entries.map((entry) => entry.path));
+  for (const path of [state.selectionAnchorPath, state.selectedPath, fallbackPath]) {
+    if (path && visiblePaths.has(path)) {
+      return path;
+    }
+  }
+  return fallbackPath;
+}
+
+function uniqueSelectionEntries(
+  entries: Array<[string, CodeEntryKind]>,
+): Map<string, CodeEntryKind> {
+  const next = new Map<string, CodeEntryKind>();
+  entries.forEach(([path, kind]) => {
+    if (path) {
+      next.set(path, kind);
+    }
+  });
+  return next;
 }
 
 export function workspaceFileChanged(

@@ -71,33 +71,39 @@ func (f *WorkspaceFolder) UnmarshalJSON(data []byte) error {
 }
 
 type Workspace struct {
-	ID              string            `json:"id"`
-	Folders         []WorkspaceFolder `json:"folders"`
-	DisplayName     string            `json:"displayName"`
-	DefaultPlanMode bool              `json:"defaultPlanMode"`
-	Letter          string            `json:"letter,omitempty"`
-	IconPath        string            `json:"iconPath,omitempty"`
-	IconURL         string            `json:"iconUrl,omitempty"`
-	Active          bool              `json:"active"`
-	Missing         bool              `json:"missing"`
-	Error           string            `json:"error,omitempty"`
+	ID                          string            `json:"id"`
+	Folders                     []WorkspaceFolder `json:"folders"`
+	DisplayName                 string            `json:"displayName"`
+	SelectedDebugConfiguration  string            `json:"selectedDebugConfiguration,omitempty"`
+	DefaultPlanMode             bool              `json:"defaultPlanMode"`
+	SearchParentGitRepositories bool              `json:"searchParentGitRepositories"`
+	BuildCommand                string            `json:"buildCommand,omitempty"`
+	Letter                      string            `json:"letter,omitempty"`
+	IconPath                    string            `json:"iconPath,omitempty"`
+	IconURL                     string            `json:"iconUrl,omitempty"`
+	Active                      bool              `json:"active"`
+	Missing                     bool              `json:"missing"`
+	Error                       string            `json:"error,omitempty"`
 }
 
 func (w *Workspace) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		ID              string            `json:"id"`
-		Folders         []WorkspaceFolder `json:"folders"`
-		FolderPath      string            `json:"folderPath"`
-		DisplayName     string            `json:"displayName"`
-		DefaultPlanMode bool              `json:"defaultPlanMode"`
-		Letter          string            `json:"letter"`
-		IconPath        string            `json:"iconPath"`
-		IconURL         string            `json:"iconUrl"`
-		LegacyPath      string            `json:"path"`
-		LegacyName      string            `json:"name"`
-		Active          bool              `json:"active"`
-		Missing         bool              `json:"missing"`
-		Error           string            `json:"error"`
+		ID                          string            `json:"id"`
+		Folders                     []WorkspaceFolder `json:"folders"`
+		FolderPath                  string            `json:"folderPath"`
+		DisplayName                 string            `json:"displayName"`
+		SelectedDebugConfiguration  string            `json:"selectedDebugConfiguration"`
+		DefaultPlanMode             bool              `json:"defaultPlanMode"`
+		SearchParentGitRepositories bool              `json:"searchParentGitRepositories"`
+		BuildCommand                string            `json:"buildCommand"`
+		Letter                      string            `json:"letter"`
+		IconPath                    string            `json:"iconPath"`
+		IconURL                     string            `json:"iconUrl"`
+		LegacyPath                  string            `json:"path"`
+		LegacyName                  string            `json:"name"`
+		Active                      bool              `json:"active"`
+		Missing                     bool              `json:"missing"`
+		Error                       string            `json:"error"`
 	}
 	var keys map[string]json.RawMessage
 	if err := json.Unmarshal(data, &keys); err != nil {
@@ -107,16 +113,19 @@ func (w *Workspace) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*w = Workspace{
-		ID:              raw.ID,
-		Folders:         raw.Folders,
-		DisplayName:     raw.DisplayName,
-		DefaultPlanMode: raw.DefaultPlanMode,
-		Letter:          normalizeWorkspaceLetter(raw.Letter),
-		IconPath:        raw.IconPath,
-		IconURL:         raw.IconURL,
-		Active:          raw.Active,
-		Missing:         raw.Missing,
-		Error:           raw.Error,
+		ID:                          raw.ID,
+		Folders:                     raw.Folders,
+		DisplayName:                 raw.DisplayName,
+		SelectedDebugConfiguration:  strings.TrimSpace(raw.SelectedDebugConfiguration),
+		DefaultPlanMode:             raw.DefaultPlanMode,
+		SearchParentGitRepositories: raw.SearchParentGitRepositories,
+		BuildCommand:                normalizeWorkspaceBuildCommand(raw.BuildCommand),
+		Letter:                      normalizeWorkspaceLetter(raw.Letter),
+		IconPath:                    raw.IconPath,
+		IconURL:                     raw.IconURL,
+		Active:                      raw.Active,
+		Missing:                     raw.Missing,
+		Error:                       raw.Error,
 	}
 	if _, ok := keys["defaultPlanMode"]; !ok {
 		w.DefaultPlanMode = true
@@ -158,16 +167,16 @@ type SavedCommand struct {
 }
 
 type AppState struct {
-	Settings          llm.Settings                 `json:"settings"`
-	WebAccess         WebAccessSettings            `json:"webAccess"`
-	Workspaces        []Workspace                  `json:"workspaces"`
-	ActiveWorkspaceID string                       `json:"activeWorkspaceId"`
-	HeartbeatConfigs  map[string]HeartbeatConfig   `json:"heartbeatConfigs,omitempty"`
-	LivenessConfigs   map[string]LivenessConfig    `json:"livenessConfigs,omitempty"`
-	WatchdogConfigs   map[string]WatchdogConfig    `json:"watchdogConfigs,omitempty"`
+	Settings          llm.Settings                     `json:"settings"`
+	WebAccess         WebAccessSettings                `json:"webAccess"`
+	Workspaces        []Workspace                      `json:"workspaces"`
+	ActiveWorkspaceID string                           `json:"activeWorkspaceId"`
+	HeartbeatConfigs  map[string]HeartbeatConfig       `json:"heartbeatConfigs,omitempty"`
+	LivenessConfigs   map[string]LivenessConfig        `json:"livenessConfigs,omitempty"`
+	WatchdogConfigs   map[string]WatchdogConfig        `json:"watchdogConfigs,omitempty"`
 	DashboardLayouts  map[string][]DashboardWidgetJSON `json:"dashboardLayouts,omitempty"`
 	SavedCommands     map[string][]SavedCommand        `json:"savedCommands,omitempty"`
-	KanbanCards       []KanbanCard                 `json:"-"`
+	KanbanCards       []KanbanCard                     `json:"-"`
 }
 
 type SystemService struct {
@@ -183,6 +192,9 @@ type SystemService struct {
 	chatSessions            map[string]*chatSessionState
 	chatStreams             map[string]context.CancelFunc
 	chatSeq                 uint64
+	researchMu              sync.Mutex
+	researchRuns            map[string]*chatResearchRun
+	researchAgentSeq        uint64
 	kanbanRuns              map[string]context.CancelFunc
 	kanbanAgents            map[string]*kanbanAgentRun
 	kanbanAgentSeq          uint64
@@ -195,9 +207,15 @@ type SystemService struct {
 	fileChangeSeq           uint64
 	fileChanges             map[string][]trackedFileChange
 	workspaceToolLocks      map[string]*sync.Mutex
+	gitViewMu               sync.Mutex
+	gitRepositoryViews      map[string]WorkspaceGitRepositoryView
 	lspMu                   sync.Mutex
 	lspClients              map[string]*lspClient
 	lspWarmups              map[string]struct{}
+	workspaceTextSearchMu   sync.Mutex
+	workspaceTextSearchSeq  uint64
+	workspaceTextSearches   map[string]workspaceTextSearchRun
+	debugger                *debugManager
 	workspaceContextBuilder workspaceContextBuildFunc
 	webAccessController     WebAccessController
 	eventMu                 sync.Mutex
@@ -229,6 +247,7 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 		persistedChatSessions: make(map[string]persistedChatSession),
 		chatSessions:          make(map[string]*chatSessionState),
 		chatStreams:           make(map[string]context.CancelFunc),
+		researchRuns:          make(map[string]*chatResearchRun),
 		kanbanRuns:            make(map[string]context.CancelFunc),
 		kanbanAgents:          make(map[string]*kanbanAgentRun),
 		kanbanDetailViews:     make(map[string]string),
@@ -237,12 +256,15 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 		watchdogs:             make(map[string]*watchdogHandle),
 		fileChanges:           make(map[string][]trackedFileChange),
 		workspaceToolLocks:    make(map[string]*sync.Mutex),
+		gitRepositoryViews:    make(map[string]WorkspaceGitRepositoryView),
 		lspClients:            make(map[string]*lspClient),
 		lspWarmups:            make(map[string]struct{}),
+		workspaceTextSearches: make(map[string]workspaceTextSearchRun),
 		eventSubscribers:      make(map[uint64]chan RuntimeEvent),
 		tokenBudget:           newTokenBudgetService(),
 	}
 	_ = service.load()
+	service.debugger = newDebugManager(service)
 	return service
 }
 
@@ -639,6 +661,52 @@ func (s *SystemService) SetWorkspaceDefaultPlanMode(workspaceID string, enabled 
 	return AppState{}, fmt.Errorf("workspace was not found")
 }
 
+func (s *SystemService) SetWorkspaceSearchParentGitRepositories(workspaceID string, enabled bool) (AppState, error) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return AppState{}, fmt.Errorf("workspace id is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.Workspaces {
+		if s.state.Workspaces[i].ID == workspaceID {
+			s.state.Workspaces[i].SearchParentGitRepositories = enabled
+			s.refreshWorkspaceStatusesLocked()
+			if err := s.saveLocked(); err != nil {
+				return AppState{}, err
+			}
+			return cloneState(s.state), nil
+		}
+	}
+	return AppState{}, fmt.Errorf("workspace was not found")
+}
+
+func (s *SystemService) SetWorkspaceBuildCommand(workspaceID string, command string) (AppState, error) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return AppState{}, fmt.Errorf("workspace id is required")
+	}
+	command = normalizeWorkspaceBuildCommand(command)
+	if len(command) > 2000 {
+		return AppState{}, fmt.Errorf("workspace build command must be 2000 characters or fewer")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.Workspaces {
+		if s.state.Workspaces[i].ID == workspaceID {
+			s.state.Workspaces[i].BuildCommand = command
+			s.refreshWorkspaceStatusesLocked()
+			if err := s.saveLocked(); err != nil {
+				return AppState{}, err
+			}
+			return cloneState(s.state), nil
+		}
+	}
+	return AppState{}, fmt.Errorf("workspace was not found")
+}
+
 func (s *SystemService) SetActiveWorkspace(id string) (AppState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -917,6 +985,9 @@ func (s *SystemService) DeleteWorkspace(id string) (AppState, error) {
 	s.chatMu.Unlock()
 	s.dropWorkspaceChangeReview(id)
 	s.closeWorkspaceLSPClients(id)
+	if s.debugger != nil {
+		_ = s.debugger.dropWorkspace(id)
+	}
 	removeStoredWorkspaceIcon(deletedIconPath)
 	s.warmActiveWorkspaceLSPClients(state)
 	return state, nil
@@ -972,27 +1043,13 @@ func (s *SystemService) OpenWorkspacePathExplorer(id string, path string) error 
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(path) == "" || strings.TrimSpace(path) == "." {
-		folderPath, ok := firstAvailableWorkspaceFolderPath(workspace)
-		if !ok {
-			return fmt.Errorf("workspace has no available folders")
-		}
-		path = workspaceFolderByPath(workspace, folderPath).Label
-	}
-	resolved, err := resolveWorkspaceServicePath(workspace, path)
+	resolved, selectFile, err := resolveWorkspaceExplorerTarget(workspace, path)
 	if err != nil {
 		return err
 	}
-	info, err := os.Stat(resolved)
-	if err != nil {
-		return fmt.Errorf("workspace path does not exist: %w", err)
-	}
-
 	target := resolved
-	selectFile := false
-	if !info.IsDir() {
+	if selectFile {
 		target = filepath.Dir(resolved)
-		selectFile = true
 	}
 
 	var cmd *exec.Cmd
@@ -1017,6 +1074,47 @@ func (s *SystemService) OpenWorkspacePathExplorer(id string, path string) error 
 		return fmt.Errorf("failed to open workspace path in explorer: %w", err)
 	}
 	return nil
+}
+
+func resolveWorkspaceExplorerTarget(workspace Workspace, path string) (string, bool, error) {
+	if strings.TrimSpace(path) == "" || strings.TrimSpace(path) == "." {
+		folderPath, ok := firstAvailableWorkspaceFolderPath(workspace)
+		if !ok {
+			return "", false, fmt.Errorf("workspace has no available folders")
+		}
+		path = workspaceFolderByPath(workspace, folderPath).Label
+	}
+	resolved, err := resolveWorkspaceServicePath(workspace, path)
+	if err != nil {
+		return "", false, err
+	}
+	info, err := os.Stat(resolved)
+	if err == nil {
+		return resolved, !info.IsDir(), nil
+	}
+	if !os.IsNotExist(err) {
+		return "", false, fmt.Errorf("inspect workspace path: %w", err)
+	}
+
+	label, _ := splitWorkspaceLabeledPath(path)
+	root, rootErr := resolveWorkspaceServicePath(workspace, label)
+	if rootErr != nil {
+		return "", false, rootErr
+	}
+	for candidate := filepath.Dir(resolved); ; candidate = filepath.Dir(candidate) {
+		relative, relErr := filepath.Rel(root, candidate)
+		if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			break
+		}
+		candidateInfo, candidateErr := os.Stat(candidate)
+		if candidateErr == nil && candidateInfo.IsDir() {
+			return candidate, false, nil
+		}
+		if samePath(candidate, root) {
+			break
+		}
+	}
+	return "", false, fmt.Errorf("workspace path and its parent folders do not exist")
 }
 
 func (s *SystemService) workspaceByID(id string) (Workspace, error) {
@@ -1073,6 +1171,10 @@ func (s *SystemService) load() error {
 		}
 	}
 
+	legacyResearchAgentConcurrency := !stateFileHasSettingKey(data, "researchAgentConcurrency")
+	if legacyResearchAgentConcurrency {
+		state.Settings.ResearchAgentConcurrency = llm.DefaultResearchAgentConcurrency
+	}
 	state.Settings = state.Settings.Normalized()
 	missingLLMEndpoint := state.Settings.Endpoint == ""
 	missingLLMModel := state.Settings.Model == ""
@@ -1172,7 +1274,7 @@ func (s *SystemService) load() error {
 			return err
 		}
 	}
-	if changed || interruptedKanban || interruptedChat || hadLegacyWorkspaceState || legacyThinkingDisabled || legacyLLMEndpoints || legacyEndpointSelection || missingLLMEndpoint || missingLLMModel || missingWebAccessToken || migratedWebAccessPort {
+	if changed || interruptedKanban || interruptedChat || hadLegacyWorkspaceState || legacyThinkingDisabled || legacyLLMEndpoints || legacyEndpointSelection || legacyResearchAgentConcurrency || missingLLMEndpoint || missingLLMModel || missingWebAccessToken || migratedWebAccessPort {
 		return s.saveLocked()
 	}
 	return nil
@@ -1354,6 +1456,7 @@ func normalizeLoadedWorkspaces(state *AppState) {
 			}
 		}
 		normalizeWorkspaceFolders(workspace)
+		workspace.BuildCommand = normalizeWorkspaceBuildCommand(workspace.BuildCommand)
 		workspace.Letter = normalizeWorkspaceLetter(workspace.Letter)
 		if workspace.IconPath != "" {
 			workspace.IconURL = workspaceIconURL(workspace.IconPath)
@@ -1481,6 +1584,12 @@ func normalizeWorkspaceLetter(letter string) string {
 		return ""
 	}
 	return strings.ToUpper(letter)
+}
+
+func normalizeWorkspaceBuildCommand(command string) string {
+	command = strings.ReplaceAll(command, "\r\n", "\n")
+	command = strings.ReplaceAll(command, "\r", "\n")
+	return strings.TrimSpace(command)
 }
 
 func validateWorkspaceIconFile(path string) (string, error) {

@@ -1,23 +1,26 @@
 import { setCodeQuickOpenEventBinder, setCodeTextSearchEventBinder, setCodeTreeEventBinder, restoreCodeTreeScroll, startExplorerResize } from "./dom";
-import { ensureCodeState } from "./state";
+import { ensureCodeState, isCodeTreeEntrySelected, type CodeTreeSelectionEntry } from "./state";
 import type { CodeViewCallbacks } from "./types";
-import { cancelPendingCodeCreate, cancelPendingCodeRename, clearCodeDrag, collapseCodeTree, dropCodeDrag, handleSearchInput, refreshCodeTree, selectCodeTreeEntry, startCodeDrag, startSelectedCodeCreate, startSelectedCodeRename, submitPendingCodeCreate, submitPendingCodeRename, toggleDirectory, toggleIgnoredFilter, updateCodeDropTarget, updatePendingCodeCreateName, updatePendingCodeRenameName } from "./explorer";
+import { cancelPendingCodeCreate, cancelPendingCodeRename, clearCodeDrag, collapseCodeTree, deleteSelectedCodePaths, dropCodeDrag, handleSearchInput, refreshCodeTree, selectCodeTreeEntry, startCodeDrag, startSelectedCodeCreate, startSelectedCodeRename, submitPendingCodeCreate, submitPendingCodeRename, toggleDirectory, toggleIgnoredFilter, updateCodeDropTarget, updatePendingCodeCreateName, updatePendingCodeRenameName } from "./explorer";
 import { activateCodeTab, closeCodeTab, createUntitledCodeFile, navigateCodeHistory, openCodeFile, openPinnedCodeFile, pinCodeTab, saveActiveCodeFile, startOpenTabFileWatch, toggleTemporaryFiles } from "./tabs";
 import { mountActiveCodeEditor } from "./editor";
 import { openInlineCodeChatAtCursor } from "./inlineChat";
 import { closeQuickOpen, handleQuickOpenInput, moveQuickOpenSelection, openQuickOpenSelection } from "./quickOpen";
 import { closeTextSearch, handleTextSearchFieldInput, openTextSearch, openTextSearchMatch, runTextSearchNow, toggleTextSearchOption } from "./search";
+import { bindDebugViewEvents } from "./debug";
 
 export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallbacks) {
   const view = root.querySelector<HTMLElement>("[data-code-view]");
   const workspaceID = view?.dataset.codeViewWorkspaceId ?? "";
-  if (!workspaceID) {
+  if (!view || !workspaceID) {
     return;
   }
 
+  bindCodeHistoryMouseButtonEvents(view, workspaceID, callbacks);
   bindCodeTreeEvents(root, workspaceID, callbacks);
   bindCodeTextSearchEvents(root, workspaceID, callbacks);
   bindCodeQuickOpenEvents(root, workspaceID, callbacks);
+  bindDebugViewEvents(root, workspaceID, callbacks);
 
   root.querySelectorAll<HTMLElement>("[data-code-tab-main]").forEach((element) => {
     element.addEventListener("mousedown", (event) => {
@@ -70,6 +73,39 @@ export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallback
   restoreCodeTreeScroll(workspaceID);
   startOpenTabFileWatch(callbacks);
   void mountActiveCodeEditor(workspaceID, callbacks, { openCodeFile, navigateCodeHistory, saveActiveCodeFile });
+}
+
+function bindCodeHistoryMouseButtonEvents(
+  view: HTMLElement,
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const preventSideButtonDefault = (event: MouseEvent) => {
+    const direction = codeHistoryMouseButtonDirection(event);
+    if (!direction) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    if (event.type === "mousedown") {
+      void navigateCodeHistory(workspaceID, callbacks, direction);
+    }
+  };
+
+  view.addEventListener("mousedown", preventSideButtonDefault, { capture: true });
+  view.addEventListener("mouseup", preventSideButtonDefault, { capture: true });
+  view.addEventListener("auxclick", preventSideButtonDefault, { capture: true });
+}
+
+function codeHistoryMouseButtonDirection(event: MouseEvent): -1 | 1 | null {
+  if (event.button === 3) {
+    return -1;
+  }
+  if (event.button === 4) {
+    return 1;
+  }
+  return null;
 }
 
 function bindUntitledFileCreationEvents(
@@ -169,7 +205,7 @@ function bindCodeTextSearchEvents(root: ParentNode, workspaceID: string, callbac
   }
 }
 
-function bindCodeQuickOpenEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
+export function bindCodeQuickOpenEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
   const input = root.querySelector<HTMLInputElement>("[data-code-quick-open-input]");
   input?.addEventListener("input", () => {
     handleQuickOpenInput(workspaceID, input, callbacks);
@@ -216,23 +252,64 @@ function bindCodeQuickOpenResultEvents(root: ParentNode, workspaceID: string, ca
       event.stopPropagation();
       void openQuickOpenSelection(workspaceID, callbacks, element.dataset.codePath ?? "");
     });
-    element.addEventListener("mouseenter", () => {
-      const index = Number(element.dataset.codeQuickOpenIndex);
-      const state = ensureCodeState(workspaceID);
-      if (!Number.isInteger(index) || index < 0 || index >= state.quickOpen.results.length) {
-        return;
-      }
-      state.quickOpen.selectedIndex = index;
-    });
   });
+}
+
+export function handleGlobalCodeTreeNavigation(
+  workspaceID: string,
+  event: KeyboardEvent,
+): boolean {
+  if (
+    (event.key !== "ArrowDown" && event.key !== "ArrowUp") ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.shiftKey
+  ) {
+    return false;
+  }
+  const state = ensureCodeState(workspaceID);
+  if (state.textSearchOpen || state.quickOpen.open || state.pendingCreate || state.pendingRename) {
+    return false;
+  }
+  const explorer = document.querySelector<HTMLElement>(".code-explorer:not(.code-text-search-sidebar)");
+  const tree = explorer?.querySelector<HTMLElement>("[data-code-tree]");
+  const target = event.target instanceof Element ? event.target : null;
+  const activeElement = document.activeElement;
+  const treeContextActive = Boolean(
+    (activeElement && explorer?.contains(activeElement)) ||
+    target?.closest(".code-explorer") ||
+    activeElement === document.body,
+  );
+  if (
+    !explorer ||
+    !tree ||
+    !state.selectedPath ||
+    !treeContextActive ||
+    Boolean(target?.closest("input, textarea, select, .cm-editor"))
+  ) {
+    return false;
+  }
+  const rows = visibleCodeBrowserRows(tree);
+  const targetRow = target?.closest<HTMLElement>("[data-code-browser-row]") ?? null;
+  const current = targetRow && rows.includes(targetRow)
+    ? targetRow
+    : rows.find((row) => row.dataset.codePath === state.selectedPath);
+  if (!current) {
+    return false;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  focusAdjacentCodeBrowserRow(tree, workspaceID, current, event.key === "ArrowDown" ? 1 : -1);
+  return true;
 }
 
 function bindCodeActionEvents(root: ParentNode, workspaceID: string, callbacks: CodeViewCallbacks) {
   root.querySelectorAll<HTMLElement>("[data-code-action]").forEach((element) => {
     element.addEventListener("click", (event) => {
       event.preventDefault();
-      event.stopPropagation();
-      void handleCodeAction(element, workspaceID, callbacks);
+      event.stopImmediatePropagation();
+      void handleCodeAction(element, workspaceID, callbacks, event);
     });
   });
 }
@@ -241,12 +318,23 @@ function bindCodeFileRowEvents(root: ParentNode, workspaceID: string, callbacks:
   root.querySelectorAll<HTMLElement>("[data-code-file-row]").forEach((element) => {
     element.addEventListener("click", (event) => {
       event.preventDefault();
-      selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "file");
+      event.stopImmediatePropagation();
+      const selectionOnly = selectCodeBrowserRowFromMouse(root, workspaceID, element, event);
+      if (selectionOnly) {
+        updateCodeBrowserRowSelectionClasses(root, workspaceID);
+        return;
+      }
       ensureCodeState(workspaceID).explorerDrawerOpen = false;
       void openCodeFile(workspaceID, element.dataset.codePath ?? "", callbacks, { temporary: true });
     });
     element.addEventListener("dblclick", (event) => {
       event.preventDefault();
+      event.stopImmediatePropagation();
+      if (hasCodeSelectionModifier(event)) {
+        selectCodeBrowserRowFromMouse(root, workspaceID, element, event);
+        updateCodeBrowserRowSelectionClasses(root, workspaceID);
+        return;
+      }
       selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "file");
       ensureCodeState(workspaceID).explorerDrawerOpen = false;
       void openPinnedCodeFile(workspaceID, element.dataset.codePath ?? "", callbacks);
@@ -256,8 +344,9 @@ function bindCodeFileRowEvents(root: ParentNode, workspaceID: string, callbacks:
 
 function bindCodeBrowserRowSelectionEvents(root: ParentNode, workspaceID: string) {
   root.querySelectorAll<HTMLElement>("[data-code-browser-row]").forEach((element) => {
-    element.addEventListener("click", () => {
-      selectCodeTreeEntry(workspaceID, element.dataset.codePath ?? "", element.dataset.codeKind ?? "");
+    element.addEventListener("click", (event) => {
+      selectCodeBrowserRowFromMouse(root, workspaceID, element, event);
+      updateCodeBrowserRowSelectionClasses(root, workspaceID);
     });
   });
 }
@@ -306,6 +395,12 @@ async function handleCodeBrowserRowKeydown(
     await startSelectedCodeRename(workspaceID, callbacks);
     return;
   }
+  if (event.key === "Delete") {
+    event.preventDefault();
+    event.stopPropagation();
+    await deleteSelectedCodePaths(workspaceID, callbacks);
+    return;
+  }
   if (event.key !== "Enter") {
     return;
   }
@@ -334,6 +429,55 @@ function focusAdjacentCodeBrowserRow(
 
 function visibleCodeBrowserRows(root: ParentNode) {
   return Array.from(root.querySelectorAll<HTMLElement>("[data-code-browser-row]")).filter((row) => row.offsetParent !== null);
+}
+
+function visibleCodeBrowserSelectionEntries(root: ParentNode): CodeTreeSelectionEntry[] {
+  return visibleCodeBrowserRows(root)
+    .map((row) => ({
+      path: row.dataset.codePath ?? "",
+      kind: row.dataset.codeKind ?? "",
+    }))
+    .filter((entry) => entry.path);
+}
+
+function selectCodeBrowserRowFromMouse(
+  root: ParentNode,
+  workspaceID: string,
+  row: HTMLElement,
+  event: MouseEvent,
+): boolean {
+  const path = row.dataset.codePath ?? "";
+  const kind = row.dataset.codeKind ?? "";
+  if (!path) {
+    return false;
+  }
+  if (event.shiftKey) {
+    selectCodeTreeEntry(workspaceID, path, kind, {
+      mode: "range",
+      rangeEntries: visibleCodeBrowserSelectionEntries(root),
+      additiveRange: event.ctrlKey || event.metaKey,
+    });
+    return true;
+  }
+  if (event.ctrlKey || event.metaKey) {
+    selectCodeTreeEntry(workspaceID, path, kind, { mode: "toggle" });
+    return true;
+  }
+  selectCodeTreeEntry(workspaceID, path, kind);
+  return false;
+}
+
+function updateCodeBrowserRowSelectionClasses(root: ParentNode, workspaceID: string) {
+  const state = ensureCodeState(workspaceID);
+  root.querySelectorAll<HTMLElement>("[data-code-browser-row]").forEach((row) => {
+    const selected = isCodeTreeEntrySelected(state, row.dataset.codePath ?? "");
+    row.classList.toggle("is-selected", selected);
+    row.setAttribute("aria-selected", String(selected));
+  });
+}
+
+function hasCodeSelectionModifier(event: MouseEvent): boolean {
+  return event.shiftKey || event.ctrlKey || event.metaKey;
 }
 
 function focusCodeBrowserRow(workspaceID: string, row: HTMLElement) {
@@ -392,7 +536,14 @@ function bindCodeBrowserRowContextMenus(root: ParentNode, workspaceID: string, c
         return;
       }
       const kind = element.dataset.codeKind ?? "";
-      selectCodeTreeEntry(workspaceID, path, kind);
+      const state = ensureCodeState(workspaceID);
+      if (!isCodeTreeEntrySelected(state, path)) {
+        selectCodeTreeEntry(workspaceID, path, kind);
+        updateCodeBrowserRowSelectionClasses(root, workspaceID);
+      } else {
+        state.selectedPath = path;
+        state.selectedKind = kind === "file" || kind === "directory" ? kind : "other";
+      }
       callbacks.showCodePathContextMenu(
         workspaceID,
         path,
@@ -522,7 +673,12 @@ function bindCodeRenameInputEvents(root: ParentNode, workspaceID: string, callba
   });
 }
 
-async function handleCodeAction(target: HTMLElement, workspaceID: string, callbacks: CodeViewCallbacks) {
+async function handleCodeAction(
+  target: HTMLElement,
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+  event: MouseEvent,
+) {
   const action = target.dataset.codeAction ?? "";
   const path = target.dataset.codePath ?? "";
   if (action === "toggle-filter") {
@@ -579,6 +735,19 @@ async function handleCodeAction(target: HTMLElement, workspaceID: string, callba
     return;
   }
   if (action === "toggle-directory") {
+    if (hasCodeSelectionModifier(event)) {
+      selectCodeBrowserRowFromMouse(
+        target.closest("[data-code-tree]") ?? document,
+        workspaceID,
+        target,
+        event,
+      );
+      updateCodeBrowserRowSelectionClasses(
+        target.closest("[data-code-tree]") ?? document,
+        workspaceID,
+      );
+      return;
+    }
     selectCodeTreeEntry(workspaceID, path, target.dataset.codeKind ?? "directory");
     await toggleDirectory(workspaceID, path, callbacks);
     return;

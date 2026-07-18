@@ -2,13 +2,16 @@ package services
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,6 +31,36 @@ func TestSystemServiceAppInfo(t *testing.T) {
 	}
 	if info.AccentHex != "#8f1d2c" {
 		t.Fatalf("expected dark red accent, got %q", info.AccentHex)
+	}
+}
+
+func TestResolveWorkspaceExplorerTarget(t *testing.T) {
+	root := t.TempDir()
+	sourceDir := filepath.Join(root, "src")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("create source directory: %v", err)
+	}
+	filePath := filepath.Join(sourceDir, "main.go")
+	if err := os.WriteFile(filePath, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	folder := workspaceFolderFromPath(root, nil)
+	workspace := Workspace{Folders: []WorkspaceFolder{folder}}
+
+	target, selectFile, err := resolveWorkspaceExplorerTarget(workspace, folder.Label+"/src/main.go")
+	if err != nil {
+		t.Fatalf("resolve existing file: %v", err)
+	}
+	if !samePath(target, filePath) || !selectFile {
+		t.Fatalf("expected existing file selection, got target %q selectFile %v", target, selectFile)
+	}
+
+	target, selectFile, err = resolveWorkspaceExplorerTarget(workspace, folder.Label+"/src/deleted.go")
+	if err != nil {
+		t.Fatalf("resolve deleted file parent: %v", err)
+	}
+	if !samePath(target, sourceDir) || selectFile {
+		t.Fatalf("expected deleted file parent folder, got target %q selectFile %v", target, selectFile)
 	}
 }
 
@@ -113,6 +146,92 @@ func TestSystemServiceChatSendStreamsAssistantMessage(t *testing.T) {
 	}
 	if session.Messages[1].Status != "complete" {
 		t.Fatalf("expected complete assistant message, got %#v", session.Messages[1])
+	}
+}
+
+func TestSystemServiceChatRetriesReasoningOnlyResponseWithoutPoisoningHistory(t *testing.T) {
+	root := t.TempDir()
+	var requestCount atomic.Int32
+	var retryRequest llm.ChatRequest
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"reasoning_content":"I should answer now."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		case 2:
+			if err := json.NewDecoder(r.Body).Decode(&retryRequest); err != nil {
+				t.Fatalf("decode retry request: %v", err)
+			}
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Recovered answer."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+
+	if _, err := service.SendChatMessage(workspaceID, "Answer this"); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+	if requestCount.Load() != 2 {
+		t.Fatalf("expected one recovery request, got %d", requestCount.Load())
+	}
+	assistant := session.Messages[1]
+	if assistant.Status != "complete" || assistant.Content != "Recovered answer." {
+		t.Fatalf("expected recovered assistant response, got %#v", assistant)
+	}
+	for _, message := range retryRequest.Messages {
+		if message.Role == llm.RoleAssistant && strings.TrimSpace(message.Content) == "" && len(message.ToolCalls) == 0 {
+			t.Fatalf("retry request contained malformed assistant history: %#v", retryRequest.Messages)
+		}
+	}
+	last := retryRequest.Messages[len(retryRequest.Messages)-1]
+	if last.Role != llm.RoleUser || !strings.Contains(last.Content, "reasoning-only") {
+		t.Fatalf("expected recovery guidance, got %#v", retryRequest.Messages)
+	}
+	service.chatMu.Lock()
+	history := append([]llm.Message(nil), service.chatSessions[workspaceID].History...)
+	service.chatMu.Unlock()
+	for _, message := range history {
+		if message.Role == llm.RoleAssistant && strings.TrimSpace(message.Content) == "" && len(message.ToolCalls) == 0 {
+			t.Fatalf("runtime history was poisoned by empty assistant response: %#v", history)
+		}
+	}
+}
+
+func TestSystemServiceChatBoundsReasoningOnlyRetries(t *testing.T) {
+	root := t.TempDir()
+	var requestCount atomic.Int32
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		requestCount.Add(1)
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"reasoning_content":"Still thinking."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+
+	if _, err := service.SendChatMessage(workspaceID, "Answer this"); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+	if requestCount.Load() != int32(maxEmptyAssistantRetries+1) {
+		t.Fatalf("expected bounded attempts, got %d", requestCount.Load())
+	}
+	assistant := session.Messages[1]
+	if assistant.Status != "error" || !strings.Contains(assistant.Error, "without producing visible content") {
+		t.Fatalf("expected useful empty-response error, got %#v", assistant)
+	}
+	service.chatMu.Lock()
+	history := append([]llm.Message(nil), service.chatSessions[workspaceID].History...)
+	service.chatMu.Unlock()
+	if len(history) != 1 || history[0].Role != llm.RoleUser {
+		t.Fatalf("expected empty assistant attempts to stay out of history, got %#v", history)
 	}
 }
 
@@ -661,6 +780,72 @@ func TestSystemServiceChatSendsWorkspaceImageMentionAsContentPart(t *testing.T) 
 	}
 	if !strings.Contains(user.ContentParts[0].Text, imagePath) {
 		t.Fatalf("expected text part to name workspace image, got %q", user.ContentParts[0].Text)
+	}
+}
+
+func TestSystemServiceChatRetriesWorkspaceMediaAsTextWhenModelIsNotMultimodal(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "ui.png"), tinyPNGBytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var requestCount atomic.Int32
+	requests := make([]llm.ChatRequest, 0, 2)
+	var requestsMu sync.Mutex
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		var request llm.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		requestsMu.Lock()
+		requests = append(requests, request)
+		requestsMu.Unlock()
+
+		if requestCount.Add(1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"message":"deepseek-ai/DeepSeek-V4-Flash is not a multimodal model","type":"BadRequestError","code":400}}`)
+			return
+		}
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"I will inspect the referenced path."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+	imagePath := labeledTestPath(t, service, workspaceID, "ui.png")
+
+	if _, err := service.SendChatMessage(workspaceID, "Review @"+imagePath); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	session := waitForChatIdle(t, service, workspaceID)
+
+	if requestCount.Load() != 2 {
+		t.Fatalf("expected one multimodal request and one transparent text retry, got %d requests", requestCount.Load())
+	}
+	requestsMu.Lock()
+	captured := append([]llm.ChatRequest(nil), requests...)
+	requestsMu.Unlock()
+	if len(captured) != 2 || len(captured[0].Messages) < 2 || len(captured[1].Messages) < 2 {
+		t.Fatalf("expected two complete captured requests, got %#v", captured)
+	}
+	firstUser := captured[0].Messages[1]
+	if len(firstUser.ContentParts) != 2 || firstUser.ContentParts[1].ImageURL == nil {
+		t.Fatalf("expected first request to contain the image payload, got %#v", firstUser)
+	}
+	secondUser := captured[1].Messages[1]
+	if len(secondUser.ContentParts) != 0 || !strings.Contains(secondUser.Content, imagePath) {
+		t.Fatalf("expected retry to contain only path-bearing text, got %#v", secondUser)
+	}
+	if len(session.Messages) != 2 || session.Messages[1].Status != "complete" || session.Messages[1].Error != "" {
+		t.Fatalf("expected transparent successful completion, got %#v", session.Messages)
+	}
+	if len(session.Messages[0].Images) != 1 {
+		t.Fatalf("expected the visible user message to retain its image, got %#v", session.Messages[0])
+	}
+	history := service.chatHistory(workspaceID)
+	if len(history) == 0 || len(history[0].ContentParts) != 0 || !strings.Contains(history[0].Content, imagePath) {
+		t.Fatalf("expected persisted model history to use path-bearing text, got %#v", history)
 	}
 }
 
@@ -3113,6 +3298,53 @@ func TestChatMediaContentParts(t *testing.T) {
 	parts = chatMediaContentParts("hi", nil, nil)
 	if parts != nil {
 		t.Fatalf("expected nil, got %#v", parts)
+	}
+}
+
+func TestUnsupportedChatMediaError(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		want    bool
+	}{
+		{"multimodal model", `llm endpoint returned 400 Bad Request: {"error":{"message":"model is not a multimodal model"}}`, true},
+		{"image input", "This model does not support image input.", true},
+		{"video content", "Video content is not supported by this provider.", true},
+		{"vision text only", "The selected vision model is text only.", true},
+		{"unrelated unsupported feature", "parallel tool calls are not supported", false},
+		{"unrelated image failure", "image data is too large", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isUnsupportedChatMediaError(errors.New(test.message)); got != test.want {
+				t.Fatalf("isUnsupportedChatMediaError() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestChatMessagesWithoutMediaPayloads(t *testing.T) {
+	messages := []llm.Message{
+		{
+			Role:    llm.RoleUser,
+			Content: "Review @workspace/ui.png and @workspace/demo.mp4",
+			ContentParts: []llm.MessageContentPart{
+				llm.TextContentPart("Review @workspace/ui.png and @workspace/demo.mp4"),
+				llm.ImageURLContentPart("data:image/png;base64,test"),
+				llm.VideoURLContentPart("data:video/mp4;base64,test"),
+			},
+		},
+	}
+
+	stripped, changed := chatMessagesWithoutMediaPayloads(messages)
+	if !changed || len(stripped[0].ContentParts) != 0 {
+		t.Fatalf("expected image and video payloads to be removed, got %#v", stripped)
+	}
+	if stripped[0].Content != messages[0].Content {
+		t.Fatalf("expected tagged paths to remain in text, got %q", stripped[0].Content)
+	}
+	if len(messages[0].ContentParts) != 3 {
+		t.Fatalf("expected input messages to remain unchanged, got %#v", messages)
 	}
 }
 

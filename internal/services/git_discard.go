@@ -22,17 +22,18 @@ func (s *SystemService) DiscardWorkspaceGitFile(workspaceID string, folderID str
 
 	ctx, cancel := context.WithTimeout(context.Background(), workspaceGitCommandTimeout)
 	defer cancel()
-	if err := ensureWorkspaceGitRepositoryRoot(ctx, folder); err != nil {
-		return WorkspaceGitRepositoryView{}, err
-	}
-	entry, err := workspaceGitStatusEntryForPath(ctx, folder, path)
+	repository, err := s.workspaceGitRepositoryContext(ctx, workspace, folder)
 	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	if err := discardWorkspaceGitStatusEntry(ctx, folder.Path, entry); err != nil {
+	entry, err := workspaceGitStatusEntryForPath(ctx, repository, path)
+	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	return s.loadWorkspaceGitRepository(workspace, folder.ID)
+	if err := discardWorkspaceGitStatusEntry(ctx, repository, entry); err != nil {
+		return WorkspaceGitRepositoryView{}, err
+	}
+	return s.refreshCachedWorkspaceGitRepositoryStatus(workspace, folder)
 }
 
 func (s *SystemService) DiscardWorkspaceGitChanges(workspaceID string, folderID string) (WorkspaceGitRepositoryView, error) {
@@ -47,37 +48,31 @@ func (s *SystemService) DiscardWorkspaceGitChanges(workspaceID string, folderID 
 
 	ctx, cancel := context.WithTimeout(context.Background(), workspaceGitCommandTimeout)
 	defer cancel()
-	if err := ensureWorkspaceGitRepositoryRoot(ctx, folder); err != nil {
+	repository, err := s.workspaceGitRepositoryContext(ctx, workspace, folder)
+	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	if dirty, err := workspaceGitRepositoryDirty(ctx, folder.Path); err != nil {
+	entries, err := workspaceGitStatusEntriesForRepository(ctx, repository)
+	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
-	} else if !dirty {
-		return s.loadWorkspaceGitRepository(workspace, folder.ID)
 	}
-	if workspaceGitHasHead(ctx, folder.Path) {
-		if _, err := runWorkspaceGitCommand(ctx, folder.Path, "reset", "--hard", "HEAD"); err != nil {
+	if len(entries) == 0 {
+		return s.refreshCachedWorkspaceGitRepositoryStatus(workspace, folder)
+	}
+	for _, entry := range entries {
+		if err := discardWorkspaceGitStatusEntry(ctx, repository, entry); err != nil {
 			return WorkspaceGitRepositoryView{}, err
 		}
-	} else if _, err := runWorkspaceGitCommand(ctx, folder.Path, "rm", "-r", "--cached", "--ignore-unmatch", "--", "."); err != nil {
-		return WorkspaceGitRepositoryView{}, err
 	}
-	if _, err := runWorkspaceGitCommand(ctx, folder.Path, "clean", "-fd"); err != nil {
-		return WorkspaceGitRepositoryView{}, err
-	}
-	return s.loadWorkspaceGitRepository(workspace, folder.ID)
+	return s.refreshCachedWorkspaceGitRepositoryStatus(workspace, folder)
 }
 
-func workspaceGitStatusEntryForPath(ctx context.Context, folder WorkspaceFolder, requestedPath string) (gitStatusEntry, error) {
-	path, err := normalizeWorkspaceGitRequestedPath(folder, requestedPath)
+func workspaceGitStatusEntryForPath(ctx context.Context, repository workspaceGitRepositoryContext, requestedPath string) (gitStatusEntry, error) {
+	path, err := normalizeWorkspaceGitRequestedPath(repository, requestedPath)
 	if err != nil {
 		return gitStatusEntry{}, err
 	}
-	status, err := runWorkspaceGitCommand(ctx, folder.Path, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-	if err != nil {
-		return gitStatusEntry{}, err
-	}
-	entries, err := parseGitStatusPorcelain(status)
+	entries, err := workspaceGitStatusEntriesForRepository(ctx, repository)
 	if err != nil {
 		return gitStatusEntry{}, err
 	}
@@ -89,46 +84,48 @@ func workspaceGitStatusEntryForPath(ctx context.Context, folder WorkspaceFolder,
 	return gitStatusEntry{}, fmt.Errorf("changed Git file was not found")
 }
 
-func normalizeWorkspaceGitRequestedPath(folder WorkspaceFolder, requestedPath string) (string, error) {
-	path := cleanWorkspaceGitRelativePath(requestedPath)
-	labelPrefix := cleanWorkspaceGitRelativePath(folder.Label) + "/"
-	if len(path) > len(labelPrefix) && strings.EqualFold(path[:len(labelPrefix)], labelPrefix) {
-		path = path[len(labelPrefix):]
-	}
-	if path == "" {
-		return "", fmt.Errorf("git file path is required")
-	}
-	if _, err := resolveWorkspaceGitPath(folder.Path, path); err != nil {
-		return "", err
-	}
-	return path, nil
+func normalizeWorkspaceGitRequestedPath(repository workspaceGitRepositoryContext, requestedPath string) (string, error) {
+	return repository.requestedPathToGitPath(requestedPath)
 }
 
-func discardWorkspaceGitStatusEntry(ctx context.Context, workspacePath string, entry gitStatusEntry) error {
+func discardWorkspaceGitStatusEntry(ctx context.Context, repository workspaceGitRepositoryContext, entry gitStatusEntry) error {
 	paths := workspaceGitDiscardPaths(entry)
 	if len(paths) == 0 {
 		return fmt.Errorf("git file path is required")
 	}
 	for _, path := range paths {
-		if _, err := resolveWorkspaceGitPath(workspacePath, path); err != nil {
+		if err := repository.requireGitPathInFolder(path); err != nil {
 			return err
 		}
 	}
 	if entry.index == '?' && entry.worktree == '?' {
-		return cleanWorkspaceGitPaths(ctx, workspacePath, paths)
+		return cleanWorkspaceGitPaths(ctx, repository.WorktreePath, paths)
 	}
-	if workspaceGitHasHead(ctx, workspacePath) {
+	if workspaceGitHasHead(ctx, repository.WorktreePath) {
 		args := append([]string{"restore", "--source=HEAD", "--staged", "--worktree", "--"}, paths...)
-		if _, err := runWorkspaceGitCommand(ctx, workspacePath, args...); err != nil {
+		if _, err := runWorkspaceGitCommand(ctx, repository.WorktreePath, args...); err != nil {
 			return err
 		}
 	} else {
 		args := append([]string{"rm", "-r", "--cached", "--ignore-unmatch", "--"}, paths...)
-		if _, err := runWorkspaceGitCommand(ctx, workspacePath, args...); err != nil {
+		if _, err := runWorkspaceGitCommand(ctx, repository.WorktreePath, args...); err != nil {
 			return err
 		}
 	}
-	return cleanWorkspaceGitPaths(ctx, workspacePath, paths)
+	return cleanWorkspaceGitPaths(ctx, repository.WorktreePath, paths)
+}
+
+func discardWorkspaceGitFolder(ctx context.Context, repository workspaceGitRepositoryContext, requestedFolder string) error {
+	entries, err := workspaceGitStatusEntriesInFolder(ctx, repository, requestedFolder, func(gitStatusEntry) bool { return true })
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := discardWorkspaceGitStatusEntry(ctx, repository, entry); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func workspaceGitDiscardPaths(entry gitStatusEntry) []string {

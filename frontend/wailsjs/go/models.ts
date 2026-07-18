@@ -2,6 +2,7 @@ export namespace llm {
 	
 	export class EndpointSelection {
 	    chat: string;
+	    research: string;
 	    kanbanDecompose: string;
 	    kanban: string;
 	    inlineCode: string;
@@ -13,6 +14,7 @@ export namespace llm {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.chat = source["chat"];
+	        this.research = source["research"];
 	        this.kanbanDecompose = source["kanbanDecompose"];
 	        this.kanban = source["kanban"];
 	        this.inlineCode = source["inlineCode"];
@@ -35,6 +37,7 @@ export namespace llm {
 	    timeoutSeconds: number;
 	    thinkingTokenBudget: number;
 	    thinkingCorrection?: boolean;
+	    headers?: Record<string, string>;
 	
 	    static createFrom(source: any = {}) {
 	        return new LLMEndpoint(source);
@@ -58,6 +61,7 @@ export namespace llm {
 	        this.timeoutSeconds = source["timeoutSeconds"];
 	        this.thinkingTokenBudget = source["thinkingTokenBudget"];
 	        this.thinkingCorrection = source["thinkingCorrection"];
+	        this.headers = source["headers"];
 	    }
 	}
 	export class Theme {
@@ -97,12 +101,14 @@ export namespace llm {
 	    enableChatCompletionNotifications?: boolean;
 	    enableKanbanCompleteNotifications?: boolean;
 	    limitKanbanConcurrency?: boolean;
+	    researchAgentConcurrency: number;
 	    disableGitSplitDiffView?: boolean;
 	    comfyuiUrl: string;
 	    comfyuiDefaultCheckpoint: string;
 	    comfyuiTxt2imgWorkflow: string;
 	    comfyuiImg2imgWorkflow: string;
 	    theme?: Theme;
+	    headers?: Record<string, string>;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -132,12 +138,14 @@ export namespace llm {
 	        this.enableChatCompletionNotifications = source["enableChatCompletionNotifications"];
 	        this.enableKanbanCompleteNotifications = source["enableKanbanCompleteNotifications"];
 	        this.limitKanbanConcurrency = source["limitKanbanConcurrency"];
+	        this.researchAgentConcurrency = source["researchAgentConcurrency"];
 	        this.disableGitSplitDiffView = source["disableGitSplitDiffView"];
 	        this.comfyuiUrl = source["comfyuiUrl"];
 	        this.comfyuiDefaultCheckpoint = source["comfyuiDefaultCheckpoint"];
 	        this.comfyuiTxt2imgWorkflow = source["comfyuiTxt2imgWorkflow"];
 	        this.comfyuiImg2imgWorkflow = source["comfyuiImg2imgWorkflow"];
 	        this.theme = this.convertValues(source["theme"], Theme);
+	        this.headers = source["headers"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -293,7 +301,10 @@ export namespace services {
 	    id: string;
 	    folders: WorkspaceFolder[];
 	    displayName: string;
+	    selectedDebugConfiguration?: string;
 	    defaultPlanMode: boolean;
+	    searchParentGitRepositories: boolean;
+	    buildCommand?: string;
 	    letter?: string;
 	    iconPath?: string;
 	    iconUrl?: string;
@@ -310,7 +321,10 @@ export namespace services {
 	        this.id = source["id"];
 	        this.folders = this.convertValues(source["folders"], WorkspaceFolder);
 	        this.displayName = source["displayName"];
+	        this.selectedDebugConfiguration = source["selectedDebugConfiguration"];
 	        this.defaultPlanMode = source["defaultPlanMode"];
+	        this.searchParentGitRepositories = source["searchParentGitRepositories"];
+	        this.buildCommand = source["buildCommand"];
 	        this.letter = source["letter"];
 	        this.iconPath = source["iconPath"];
 	        this.iconUrl = source["iconUrl"];
@@ -451,16 +465,38 @@ export namespace services {
 	    name: string;
 	    mediaType: string;
 	    dataUrl: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ChatImageSaveRequest(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
 	        this.mediaType = source["mediaType"];
 	        this.dataUrl = source["dataUrl"];
+	    }
+	}
+	export class ChatResearchAgent {
+	    id: string;
+	    name: string;
+	    status: string;
+	    phase?: string;
+	    taskLabel?: string;
+	    error?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new ChatResearchAgent(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.status = source["status"];
+	        this.phase = source["phase"];
+	        this.taskLabel = source["taskLabel"];
+	        this.error = source["error"];
 	    }
 	}
 	export class ChatToolActivity {
@@ -471,6 +507,8 @@ export namespace services {
 	    result?: string;
 	    error?: string;
 	    consoleOutput?: string;
+	    agentId?: string;
+	    agentName?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatToolActivity(source);
@@ -485,6 +523,28 @@ export namespace services {
 	        this.result = source["result"];
 	        this.error = source["error"];
 	        this.consoleOutput = source["consoleOutput"];
+	        this.agentId = source["agentId"];
+	        this.agentName = source["agentName"];
+	    }
+	}
+	export class ChatResearchReasoning {
+	    agentId: string;
+	    agentName: string;
+	    reasoning: string;
+	    truncated?: boolean;
+	    replace?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatResearchReasoning(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.agentId = source["agentId"];
+	        this.agentName = source["agentName"];
+	        this.reasoning = source["reasoning"];
+	        this.truncated = source["truncated"];
+	        this.replace = source["replace"];
 	    }
 	}
 	export class ChatVideoAttachment {
@@ -518,7 +578,9 @@ export namespace services {
 	    images?: ChatImageAttachment[];
 	    videos?: ChatVideoAttachment[];
 	    reasoning?: string;
+	    researchReasoning?: ChatResearchReasoning[];
 	    toolCalls?: ChatToolActivity[];
+	    researchAgents?: ChatResearchAgent[];
 	    status: string;
 	    error?: string;
 	
@@ -534,7 +596,9 @@ export namespace services {
 	        this.images = this.convertValues(source["images"], ChatImageAttachment);
 	        this.videos = this.convertValues(source["videos"], ChatVideoAttachment);
 	        this.reasoning = source["reasoning"];
+	        this.researchReasoning = this.convertValues(source["researchReasoning"], ChatResearchReasoning);
 	        this.toolCalls = this.convertValues(source["toolCalls"], ChatToolActivity);
+	        this.researchAgents = this.convertValues(source["researchAgents"], ChatResearchAgent);
 	        this.status = source["status"];
 	        this.error = source["error"];
 	    }
@@ -615,11 +679,14 @@ export namespace services {
 		    return a;
 		}
 	}
+	
+	
 	export class ChatSession {
 	    workspaceId: string;
 	    messages: ChatMessage[];
 	    busy: boolean;
 	    streamId?: string;
+	    revision: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatSession(source);
@@ -631,6 +698,7 @@ export namespace services {
 	        this.messages = this.convertValues(source["messages"], ChatMessage);
 	        this.busy = source["busy"];
 	        this.streamId = source["streamId"];
+	        this.revision = source["revision"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -673,6 +741,568 @@ export namespace services {
 	        this.size = source["size"];
 	        this.order = source["order"];
 	    }
+	}
+	export class DebugBreakpoint {
+	    id?: number;
+	    path: string;
+	    line: number;
+	    column?: number;
+	    verified: boolean;
+	    message?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugBreakpoint(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.path = source["path"];
+	        this.line = source["line"];
+	        this.column = source["column"];
+	        this.verified = source["verified"];
+	        this.message = source["message"];
+	    }
+	}
+	export class DebugConfigurationSummary {
+	    name: string;
+	    type: string;
+	    request: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugConfigurationSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.request = source["request"];
+	    }
+	}
+	export class DebugEvaluateRequest {
+	    sessionId: string;
+	    expression: string;
+	    frameId?: number;
+	    context?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugEvaluateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	        this.expression = source["expression"];
+	        this.frameId = source["frameId"];
+	        this.context = source["context"];
+	    }
+	}
+	export class DebugEvaluateResponse {
+	    workspaceId: string;
+	    sessionId: string;
+	    revision: number;
+	    result: string;
+	    type?: string;
+	    variablesReference?: number;
+	    namedVariables?: number;
+	    indexedVariables?: number;
+	    memoryReference?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugEvaluateResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.sessionId = source["sessionId"];
+	        this.revision = source["revision"];
+	        this.result = source["result"];
+	        this.type = source["type"];
+	        this.variablesReference = source["variablesReference"];
+	        this.namedVariables = source["namedVariables"];
+	        this.indexedVariables = source["indexedVariables"];
+	        this.memoryReference = source["memoryReference"];
+	    }
+	}
+	export class DebugSourceLocation {
+	    path?: string;
+	    name?: string;
+	    line?: number;
+	    column?: number;
+	    external?: boolean;
+	    sourceReference?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugSourceLocation(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.name = source["name"];
+	        this.line = source["line"];
+	        this.column = source["column"];
+	        this.external = source["external"];
+	        this.sourceReference = source["sourceReference"];
+	    }
+	}
+	export class DebugScope {
+	    name: string;
+	    presentationHint?: string;
+	    variablesReference: number;
+	    namedVariables?: number;
+	    indexedVariables?: number;
+	    expensive: boolean;
+	    location?: DebugSourceLocation;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugScope(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.presentationHint = source["presentationHint"];
+	        this.variablesReference = source["variablesReference"];
+	        this.namedVariables = source["namedVariables"];
+	        this.indexedVariables = source["indexedVariables"];
+	        this.expensive = source["expensive"];
+	        this.location = this.convertValues(source["location"], DebugSourceLocation);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DebugScopesRequest {
+	    sessionId: string;
+	    frameId: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugScopesRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	        this.frameId = source["frameId"];
+	    }
+	}
+	export class DebugScopesResponse {
+	    workspaceId: string;
+	    sessionId: string;
+	    revision: number;
+	    scopes: DebugScope[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugScopesResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.sessionId = source["sessionId"];
+	        this.revision = source["revision"];
+	        this.scopes = this.convertValues(source["scopes"], DebugScope);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DebugSessionRequest {
+	    sessionId: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugSessionRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	    }
+	}
+	export class DebugSourceBreakpoint {
+	    line: number;
+	    column?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugSourceBreakpoint(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.line = source["line"];
+	        this.column = source["column"];
+	    }
+	}
+	export class DebugSetBreakpointsRequest {
+	    sessionId?: string;
+	    sourcePath: string;
+	    breakpoints: DebugSourceBreakpoint[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugSetBreakpointsRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	        this.sourcePath = source["sourcePath"];
+	        this.breakpoints = this.convertValues(source["breakpoints"], DebugSourceBreakpoint);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	export class DebugStackFrame {
+	    id: number;
+	    name: string;
+	    location: DebugSourceLocation;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugStackFrame(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.location = this.convertValues(source["location"], DebugSourceLocation);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DebugStackTraceRequest {
+	    sessionId: string;
+	    threadId: number;
+	    startFrame?: number;
+	    levels?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugStackTraceRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	        this.threadId = source["threadId"];
+	        this.startFrame = source["startFrame"];
+	        this.levels = source["levels"];
+	    }
+	}
+	export class DebugStackTraceResponse {
+	    workspaceId: string;
+	    sessionId: string;
+	    revision: number;
+	    stackFrames: DebugStackFrame[];
+	    totalFrames?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugStackTraceResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.sessionId = source["sessionId"];
+	        this.revision = source["revision"];
+	        this.stackFrames = this.convertValues(source["stackFrames"], DebugStackFrame);
+	        this.totalFrames = source["totalFrames"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DebugStartRequest {
+	    configurationName?: string;
+	    currentFile?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugStartRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.configurationName = source["configurationName"];
+	        this.currentFile = source["currentFile"];
+	    }
+	}
+	export class DebugState {
+	    workspaceId?: string;
+	    sessionId?: string;
+	    revision: number;
+	    status: string;
+	    configuration?: string;
+	    adapterType?: string;
+	    threadId?: number;
+	    frameId?: number;
+	    currentLocation?: DebugSourceLocation;
+	    breakpoints?: DebugBreakpoint[];
+	    output?: string;
+	    error?: string;
+	    capabilities?: number[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.sessionId = source["sessionId"];
+	        this.revision = source["revision"];
+	        this.status = source["status"];
+	        this.configuration = source["configuration"];
+	        this.adapterType = source["adapterType"];
+	        this.threadId = source["threadId"];
+	        this.frameId = source["frameId"];
+	        this.currentLocation = this.convertValues(source["currentLocation"], DebugSourceLocation);
+	        this.breakpoints = this.convertValues(source["breakpoints"], DebugBreakpoint);
+	        this.output = source["output"];
+	        this.error = source["error"];
+	        this.capabilities = source["capabilities"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DebugThread {
+	    id: number;
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugThread(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	    }
+	}
+	export class DebugThreadsRequest {
+	    sessionId: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugThreadsRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	    }
+	}
+	export class DebugThreadsResponse {
+	    workspaceId: string;
+	    sessionId: string;
+	    revision: number;
+	    threads: DebugThread[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugThreadsResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.sessionId = source["sessionId"];
+	        this.revision = source["revision"];
+	        this.threads = this.convertValues(source["threads"], DebugThread);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class DebugVariable {
+	    name: string;
+	    value: string;
+	    type?: string;
+	    evaluateName?: string;
+	    variablesReference: number;
+	    namedVariables?: number;
+	    indexedVariables?: number;
+	    memoryReference?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugVariable(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.value = source["value"];
+	        this.type = source["type"];
+	        this.evaluateName = source["evaluateName"];
+	        this.variablesReference = source["variablesReference"];
+	        this.namedVariables = source["namedVariables"];
+	        this.indexedVariables = source["indexedVariables"];
+	        this.memoryReference = source["memoryReference"];
+	    }
+	}
+	export class DebugVariablesRequest {
+	    sessionId: string;
+	    variablesReference: number;
+	    filter?: string;
+	    start?: number;
+	    count?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugVariablesRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	        this.variablesReference = source["variablesReference"];
+	        this.filter = source["filter"];
+	        this.start = source["start"];
+	        this.count = source["count"];
+	    }
+	}
+	export class DebugVariablesResponse {
+	    workspaceId: string;
+	    sessionId: string;
+	    revision: number;
+	    variables: DebugVariable[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DebugVariablesResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.sessionId = source["sessionId"];
+	        this.revision = source["revision"];
+	        this.variables = this.convertValues(source["variables"], DebugVariable);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	
 	export class InlineCodePromptRequest {
@@ -1426,6 +2056,62 @@ export namespace services {
 		    return a;
 		}
 	}
+	export class WorkspaceDebugSettings {
+	    workspaceId: string;
+	    storagePath: string;
+	    revision: string;
+	    selectedConfiguration: string;
+	    configurations: DebugConfigurationSummary[];
+	    json: string;
+	    implicit: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceDebugSettings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.storagePath = source["storagePath"];
+	        this.revision = source["revision"];
+	        this.selectedConfiguration = source["selectedConfiguration"];
+	        this.configurations = this.convertValues(source["configurations"], DebugConfigurationSummary);
+	        this.json = source["json"];
+	        this.implicit = source["implicit"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class WorkspaceDebugSettingsInput {
+	    json: string;
+	    expectedRevision: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceDebugSettingsInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.json = source["json"];
+	        this.expectedRevision = source["expectedRevision"];
+	    }
+	}
 	export class WorkspaceDefinitionRequest {
 	    filePath: string;
 	    content: string;
@@ -1468,12 +2154,27 @@ export namespace services {
 	        this.message = source["message"];
 	    }
 	}
+	export class WorkspaceDeletedPath {
+	    path: string;
+	    kind: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceDeletedPath(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.kind = source["kind"];
+	    }
+	}
 	export class WorkspaceFileEntry {
 	    name: string;
 	    path: string;
 	    kind: string;
 	    bytes?: number;
 	    modifiedAt: string;
+	    ignored?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new WorkspaceFileEntry(source);
@@ -1486,6 +2187,7 @@ export namespace services {
 	        this.kind = source["kind"];
 	        this.bytes = source["bytes"];
 	        this.modifiedAt = source["modifiedAt"];
+	        this.ignored = source["ignored"];
 	    }
 	}
 	export class WorkspaceDirectory {
@@ -1582,6 +2284,30 @@ export namespace services {
 	}
 	
 	
+	export class WorkspaceGitActionRequest {
+	    action: string;
+	    message?: string;
+	    name?: string;
+	    ref?: string;
+	    remote?: string;
+	    branch?: string;
+	    url?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceGitActionRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.action = source["action"];
+	        this.message = source["message"];
+	        this.name = source["name"];
+	        this.ref = source["ref"];
+	        this.remote = source["remote"];
+	        this.branch = source["branch"];
+	        this.url = source["url"];
+	    }
+	}
 	export class WorkspaceGitBranch {
 	    name: string;
 	    current: boolean;
@@ -1603,6 +2329,8 @@ export namespace services {
 	    status: string;
 	    indexStatus?: string;
 	    worktreeStatus?: string;
+	    staged: boolean;
+	    unstaged: boolean;
 	    diff?: string;
 	    diffAvailable: boolean;
 	
@@ -1618,6 +2346,8 @@ export namespace services {
 	        this.status = source["status"];
 	        this.indexStatus = source["indexStatus"];
 	        this.worktreeStatus = source["worktreeStatus"];
+	        this.staged = source["staged"];
+	        this.unstaged = source["unstaged"];
 	        this.diff = source["diff"];
 	        this.diffAvailable = source["diffAvailable"];
 	    }
@@ -1717,6 +2447,72 @@ export namespace services {
 		    return a;
 		}
 	}
+	export class WorkspaceGitRemote {
+	    name: string;
+	    fetchUrl?: string;
+	    pushUrl?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceGitRemote(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.fetchUrl = source["fetchUrl"];
+	        this.pushUrl = source["pushUrl"];
+	    }
+	}
+	export class WorkspaceGitRemoteBranch {
+	    name: string;
+	    remote: string;
+	    branch: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceGitRemoteBranch(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.remote = source["remote"];
+	        this.branch = source["branch"];
+	    }
+	}
+	export class WorkspaceGitStash {
+	    ref: string;
+	    index: number;
+	    branch?: string;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceGitStash(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ref = source["ref"];
+	        this.index = source["index"];
+	        this.branch = source["branch"];
+	        this.message = source["message"];
+	    }
+	}
+	export class WorkspaceGitTag {
+	    name: string;
+	    target?: string;
+	    subject?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceGitTag(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.target = source["target"];
+	        this.subject = source["subject"];
+	    }
+	}
 	export class WorkspaceGitRepositoryStatus {
 	    folderId: string;
 	    label: string;
@@ -1730,7 +2526,15 @@ export namespace services {
 	    detached: boolean;
 	    dirty: boolean;
 	    branches: WorkspaceGitBranch[];
+	    remoteBranches: WorkspaceGitRemoteBranch[];
+	    remotes: WorkspaceGitRemote[];
+	    tags: WorkspaceGitTag[];
+	    stashes: WorkspaceGitStash[];
+	    rebaseInProgress: boolean;
+	    supportsStashStaged: boolean;
 	    fileCount: number;
+	    stagedFileCount: number;
+	    unstagedFileCount: number;
 	    files: WorkspaceGitChangedFile[];
 	    commits: WorkspaceGitCommit[];
 	
@@ -1752,7 +2556,15 @@ export namespace services {
 	        this.detached = source["detached"];
 	        this.dirty = source["dirty"];
 	        this.branches = this.convertValues(source["branches"], WorkspaceGitBranch);
+	        this.remoteBranches = this.convertValues(source["remoteBranches"], WorkspaceGitRemoteBranch);
+	        this.remotes = this.convertValues(source["remotes"], WorkspaceGitRemote);
+	        this.tags = this.convertValues(source["tags"], WorkspaceGitTag);
+	        this.stashes = this.convertValues(source["stashes"], WorkspaceGitStash);
+	        this.rebaseInProgress = source["rebaseInProgress"];
+	        this.supportsStashStaged = source["supportsStashStaged"];
 	        this.fileCount = source["fileCount"];
+	        this.stagedFileCount = source["stagedFileCount"];
+	        this.unstagedFileCount = source["unstagedFileCount"];
 	        this.files = this.convertValues(source["files"], WorkspaceGitChangedFile);
 	        this.commits = this.convertValues(source["commits"], WorkspaceGitCommit);
 	    }
@@ -1847,6 +2659,46 @@ export namespace services {
 		    return a;
 		}
 	}
+	
+	export class WorkspaceGitStashDetail {
+	    workspaceId: string;
+	    folderId: string;
+	    stash: WorkspaceGitStash;
+	    fileCount: number;
+	    files: WorkspaceGitChangedFile[];
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceGitStashDetail(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.folderId = source["folderId"];
+	        this.stash = this.convertValues(source["stash"], WorkspaceGitStash);
+	        this.fileCount = source["fileCount"];
+	        this.files = this.convertValues(source["files"], WorkspaceGitChangedFile);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class WorkspaceIconInput {
 	    name?: string;
 	    mediaType?: string;
@@ -2358,6 +3210,7 @@ export namespace services {
 	}
 	
 	export class WorkspaceTextSearchRequest {
+	    searchId?: string;
 	    query: string;
 	    regex: boolean;
 	    caseSensitive: boolean;
@@ -2372,6 +3225,7 @@ export namespace services {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.searchId = source["searchId"];
 	        this.query = source["query"];
 	        this.regex = source["regex"];
 	        this.caseSensitive = source["caseSensitive"];

@@ -7,12 +7,20 @@ export type CodeGitChangeState = "" | "created" | "modified";
 
 export type CodeViewCallbacks = {
   render: () => void;
+  activateCodeView: (workspaceID: string) => void;
   pushToast: (message: string, tone?: ToastTone) => void;
   errorMessage: (error: unknown) => string;
   leadingWhitespaceIndicatorsEnabled: () => boolean;
   gitChangedLineNumbers: (workspaceID: string, path: string) => number[];
   gitChangeStateForPath: (workspaceID: string, path: string, kind: CodeEntryKind) => CodeGitChangeState;
   refreshGitChanges: (workspaceID: string) => Promise<void>;
+  saveDirtyWorkspaceFiles: (workspaceID: string) => Promise<boolean>;
+  openWorkspaceFileAtLine: (
+    workspaceID: string,
+    path: string,
+    line: number,
+  ) => Promise<unknown>;
+  openDebugSettings: (workspaceID: string) => void;
   showCodePathContextMenu: (
     workspaceID: string,
     path: string,
@@ -169,6 +177,9 @@ export type CodeWorkspaceState = {
   activePath: string;
   selectedPath: string;
   selectedKind: CodeEntryKind;
+  selectedEntries: Map<string, CodeEntryKind>;
+  selectionAnchorPath: string;
+  selectionAnchorKind: CodeEntryKind;
   tabMruPaths: string[];
   navigationHistory: CodeNavigationHistoryState;
   tabSwitcher: CodeTabSwitcherState | null;
@@ -201,6 +212,7 @@ export type CodeWorkspaceState = {
   textSearchLoading: boolean;
   textSearchError: string;
   textSearchRequestSeq: number;
+  textSearchStreamID: string;
   textSearchTimerID: number | null;
   textSearchFocusedField: "" | "query" | "include" | "exclude";
   preservingTextSearchFocus: boolean;

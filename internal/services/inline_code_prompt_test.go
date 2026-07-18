@@ -73,8 +73,9 @@ func TestSystemServiceSubmitInlineCodePromptIncludesCursorContextAndTools(t *tes
 	if !strings.Contains(captured.Messages[0].Content, "aroundLine") {
 		t.Fatalf("expected inline system prompt to mention targeted line reads, got %q", captured.Messages[0].Content)
 	}
-	if !strings.Contains(captured.Messages[0].Content, "mentions @path") {
-		t.Fatalf("expected inline system prompt to explain file references, got %q", captured.Messages[0].Content)
+	if !strings.Contains(captured.Messages[0].Content, "mentions @path") ||
+		!strings.Contains(captured.Messages[0].Content, "file or directory reference") {
+		t.Fatalf("expected inline system prompt to explain file and directory references, got %q", captured.Messages[0].Content)
 	}
 	assertSystemPromptOperatingContext(t, captured.Messages[0].Content, root)
 	userPrompt := captured.Messages[1].Content
@@ -155,7 +156,10 @@ func TestSystemServiceSubmitInlineCodePromptExecutesEditToolAndReturnsAffectedPa
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
 			)
 		case 3:
-			writeSSE(t, w, `{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Updated notes."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
 		default:
 			t.Fatalf("unexpected request %d", count)
 		}
@@ -176,8 +180,8 @@ func TestSystemServiceSubmitInlineCodePromptExecutesEditToolAndReturnsAffectedPa
 	if err != nil {
 		t.Fatalf("submit inline prompt: %v", err)
 	}
-	if response.Content != "" {
-		t.Fatalf("expected empty final content, got %#v", response)
+	if response.Content != "Updated notes." {
+		t.Fatalf("expected final content, got %#v", response)
 	}
 	if strings.Join(response.AffectedPaths, ",") != notesPath {
 		t.Fatalf("expected affected path, got %#v", response.AffectedPaths)
@@ -195,6 +199,52 @@ func TestSystemServiceSubmitInlineCodePromptExecutesEditToolAndReturnsAffectedPa
 	}
 	if string(data) != "after\n" {
 		t.Fatalf("expected file edit, got %q", data)
+	}
+}
+
+func TestSystemServiceSubmitInlineCodePromptRetriesReasoningOnlyResponse(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var requestCount atomic.Int32
+	var retryRequest llm.ChatRequest
+	service, workspaceID := newDecompositionTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"reasoning_content":"I need to make this visible."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		case 2:
+			if err := json.NewDecoder(r.Body).Decode(&retryRequest); err != nil {
+				t.Fatalf("decode retry request: %v", err)
+			}
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Visible inline answer."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected request %d", requestCount.Load())
+		}
+	}))
+
+	filePath := labeledTestPath(t, service, workspaceID, "main.go")
+	response, err := service.SubmitInlineCodePrompt(workspaceID, InlineCodePromptRequest{
+		FilePath: filePath,
+		Prompt:   "Explain this code.",
+	})
+	if err != nil {
+		t.Fatalf("submit inline prompt: %v", err)
+	}
+	if response.Content != "Visible inline answer." || requestCount.Load() != 2 {
+		t.Fatalf("expected recovered inline response, got %#v after %d requests", response, requestCount.Load())
+	}
+	for _, message := range retryRequest.Messages {
+		if message.Role == llm.RoleAssistant && strings.TrimSpace(message.Content) == "" && len(message.ToolCalls) == 0 {
+			t.Fatalf("retry request contained malformed assistant history: %#v", retryRequest.Messages)
+		}
 	}
 }
 

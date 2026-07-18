@@ -1,9 +1,9 @@
 
 import { llm, services } from "../../wailsjs/go/models";
 import type { ThemePaletteName } from "./theme";
-import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, DashboardWidget, KanbanCardCreationDraft, MobileNavView, ShellCommandRun, TaskEditorDraft, TaskInlineEditState, Toast } from "./types";
+import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, DashboardWidget, GitDiffViewMode, GitMenuPage, KanbanCardCreationDraft, MobileNavView, ShellCommandRun, TaskEditorDraft, TaskInlineEditState, Toast } from "./types";
 
-const endpointTopics = ["chat", "kanbanDecompose", "kanban", "inlineCode"] as const;
+const endpointTopics = ["chat", "research", "kanbanDecompose", "kanban", "inlineCode"] as const;
 type EndpointTopicKey = (typeof endpointTopics)[number];
 
 export type ChatKanbanTab = "chat" | "tasks" | "kanban";
@@ -25,6 +25,7 @@ export const state = {
   agentModeDraftPermissions: {} as Record<string, string[]>, // tool name -> glob paths[]
   settingsThemePalette: "light" as ThemePaletteName,
   workspaceLetterDrafts: new Map<string, string>(),
+  workspaceBuildCommandDrafts: new Map<string, string>(),
   appMode: "chat" as AppMode,
   dashboardPreviousMode: null as AppMode | null, // remembers mode before dashboard
   dashboardLayouts: defaultDashboardLayouts(), // per-view widget layouts (initialized with defaults)
@@ -54,16 +55,25 @@ export const state = {
   changeReviews: new Map<string, services.WorkspaceChangeReview>(),
   gitChangeReviews: new Map<string, services.WorkspaceGitChangeReview>(),
   gitRepositoryViews: new Map<string, services.WorkspaceGitRepositoryView>(),
+  gitWorkingDiffs: new Map<string, services.WorkspaceGitChangedFile>(),
+  gitWorkingDiffFailures: new Set<string>(),
+  loadingGitWorkingDiffs: new Set<string>(),
+  gitWorkingDiffGenerations: new Map<string, number>(),
   gitCommitDetails: new Map<string, services.WorkspaceGitCommitDetail>(),
   selectedGitRepositoryFolders: new Map<string, string>(),
   selectedGitCommitHashes: new Map<string, string>(),
   collapsedGitChangeFolders: new Map<string, Set<string>>(),
+  collapsedGitChangeSections: new Set<string>(),
   collapsedGitChangeTrees: new Set<string>(),
+  expandedGitHistories: new Set<string>(),
   gitCommitMessageDrafts: new Map<string, string>(),
   gitNewBranchDrafts: new Map<string, string>(),
   gitSwitchBranchDrafts: new Map<string, string>(),
   gitMergeBranchDrafts: new Map<string, string>(),
+  gitMenuPages: new Map<string, GitMenuPage>(),
+  gitStashDetails: new Map<string, services.WorkspaceGitStashDetail>(),
   gitRepositoryOperations: new Map<string, string>(),
+  gitDiffViewMode: "inline" as GitDiffViewMode,
   loadingGitRepositoryWorkspaces: new Set<string>(),
   loadingGitCommitDetails: new Set<string>(),
   executingPlans: new Set<string>(),
@@ -187,6 +197,7 @@ export function chatSessionFor(workspaceID: string): services.ChatSession {
       workspaceId: workspaceID,
       messages: [],
       busy: false,
+      revision: 0,
     })
   );
 }

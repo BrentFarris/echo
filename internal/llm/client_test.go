@@ -310,6 +310,59 @@ func TestMessageSerializesStringContent(t *testing.T) {
 	}
 }
 
+func TestMessageSerializesExplicitEmptyAssistantContent(t *testing.T) {
+	data, err := json.Marshal(Message{Role: RoleAssistant})
+	if err != nil {
+		t.Fatalf("marshal message: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode message: %v", err)
+	}
+	content, ok := decoded["content"]
+	if !ok || content != "" {
+		t.Fatalf("expected explicit empty assistant content, got %s", data)
+	}
+}
+
+func TestNewChatRequestRemovesEmptyAssistantHistory(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoint = "https://example.test/v1"
+	messages := []Message{
+		{Role: RoleSystem, Content: "be helpful"},
+		{Role: RoleUser, Content: "first task"},
+		{Role: RoleAssistant},
+		{Role: RoleUser, Content: "continue"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: FunctionCall{
+				Name:      "read_file",
+				Arguments: `{}`,
+			},
+		}}},
+	}
+
+	request, err := NewChatRequest(settings, messages)
+	if err != nil {
+		t.Fatalf("new chat request: %v", err)
+	}
+	if len(request.Messages) != len(messages)-1 {
+		t.Fatalf("expected only empty assistant history to be removed, got %#v", request.Messages)
+	}
+	for _, message := range request.Messages {
+		if message.Role == RoleAssistant && strings.TrimSpace(message.Content) == "" && len(message.ToolCalls) == 0 {
+			t.Fatalf("found empty assistant message in request: %#v", request.Messages)
+		}
+	}
+	if len(request.Messages[len(request.Messages)-1].ToolCalls) != 1 {
+		t.Fatalf("expected assistant tool call to be preserved, got %#v", request.Messages)
+	}
+	if messages[2].Role != RoleAssistant {
+		t.Fatalf("expected source history to remain unchanged, got %#v", messages)
+	}
+}
+
 func TestMessageSerializesTextAndImageContentParts(t *testing.T) {
 	message := Message{
 		Role:    RoleUser,

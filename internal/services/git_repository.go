@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -41,26 +42,67 @@ type WorkspaceGitRepositorySummary struct {
 }
 
 type WorkspaceGitRepositoryStatus struct {
-	FolderID      string                    `json:"folderId"`
-	Label         string                    `json:"label"`
-	Path          string                    `json:"path"`
-	CurrentBranch string                    `json:"currentBranch,omitempty"`
-	Upstream      string                    `json:"upstream,omitempty"`
-	AheadCount    int                       `json:"aheadCount"`
-	BehindCount   int                       `json:"behindCount"`
-	Head          string                    `json:"head,omitempty"`
-	ShortHead     string                    `json:"shortHead,omitempty"`
-	Detached      bool                      `json:"detached"`
-	Dirty         bool                      `json:"dirty"`
-	Branches      []WorkspaceGitBranch      `json:"branches"`
-	FileCount     int                       `json:"fileCount"`
-	Files         []WorkspaceGitChangedFile `json:"files"`
-	Commits       []WorkspaceGitCommit      `json:"commits"`
+	FolderID            string                     `json:"folderId"`
+	Label               string                     `json:"label"`
+	Path                string                     `json:"path"`
+	CurrentBranch       string                     `json:"currentBranch,omitempty"`
+	Upstream            string                     `json:"upstream,omitempty"`
+	AheadCount          int                        `json:"aheadCount"`
+	BehindCount         int                        `json:"behindCount"`
+	Head                string                     `json:"head,omitempty"`
+	ShortHead           string                     `json:"shortHead,omitempty"`
+	Detached            bool                       `json:"detached"`
+	Dirty               bool                       `json:"dirty"`
+	Branches            []WorkspaceGitBranch       `json:"branches"`
+	RemoteBranches      []WorkspaceGitRemoteBranch `json:"remoteBranches"`
+	Remotes             []WorkspaceGitRemote       `json:"remotes"`
+	Tags                []WorkspaceGitTag          `json:"tags"`
+	Stashes             []WorkspaceGitStash        `json:"stashes"`
+	RebaseInProgress    bool                       `json:"rebaseInProgress"`
+	SupportsStashStaged bool                       `json:"supportsStashStaged"`
+	FileCount           int                        `json:"fileCount"`
+	StagedFileCount     int                        `json:"stagedFileCount"`
+	UnstagedFileCount   int                        `json:"unstagedFileCount"`
+	Files               []WorkspaceGitChangedFile  `json:"files"`
+	Commits             []WorkspaceGitCommit       `json:"commits"`
 }
 
 type WorkspaceGitBranch struct {
 	Name    string `json:"name"`
 	Current bool   `json:"current"`
+}
+
+type WorkspaceGitRemoteBranch struct {
+	Name   string `json:"name"`
+	Remote string `json:"remote"`
+	Branch string `json:"branch"`
+}
+
+type WorkspaceGitRemote struct {
+	Name     string `json:"name"`
+	FetchURL string `json:"fetchUrl,omitempty"`
+	PushURL  string `json:"pushUrl,omitempty"`
+}
+
+type WorkspaceGitTag struct {
+	Name    string `json:"name"`
+	Target  string `json:"target,omitempty"`
+	Subject string `json:"subject,omitempty"`
+}
+
+type WorkspaceGitStash struct {
+	Ref     string `json:"ref"`
+	Index   int    `json:"index"`
+	Branch  string `json:"branch,omitempty"`
+	Message string `json:"message"`
+}
+
+type WorkspaceGitStashDetail struct {
+	WorkspaceID string                    `json:"workspaceId"`
+	FolderID    string                    `json:"folderId"`
+	Stash       WorkspaceGitStash         `json:"stash"`
+	FileCount   int                       `json:"fileCount"`
+	Files       []WorkspaceGitChangedFile `json:"files"`
 }
 
 type WorkspaceGitCommit struct {
@@ -86,6 +128,12 @@ type gitNameStatusEntry struct {
 	oldPath string
 }
 
+type workspaceGitRepositorySnapshot struct {
+	context workspaceGitRepositoryContext
+	summary WorkspaceGitRepositorySummary
+	files   []WorkspaceGitChangedFile
+}
+
 func (s *SystemService) LoadWorkspaceGitRepository(workspaceID string, folderID string) (WorkspaceGitRepositoryView, error) {
 	workspace, _, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {
@@ -106,19 +154,20 @@ func (s *SystemService) LoadWorkspaceGitCommit(workspaceID string, folderID stri
 
 	ctx, cancel := context.WithTimeout(context.Background(), workspaceGitCommandTimeout)
 	defer cancel()
-	if err := ensureWorkspaceGitRepositoryRoot(ctx, folder); err != nil {
+	repository, err := s.workspaceGitRepositoryContext(ctx, workspace, folder)
+	if err != nil {
 		return WorkspaceGitCommitDetail{}, err
 	}
 
-	canonical, err := workspaceGitCommitHash(ctx, folder.Path, hash)
+	canonical, err := workspaceGitCommitHash(ctx, repository.WorktreePath, hash)
 	if err != nil {
 		return WorkspaceGitCommitDetail{}, err
 	}
-	commit, err := loadWorkspaceGitCommitMetadata(ctx, folder.Path, canonical)
+	commit, err := loadWorkspaceGitCommitMetadata(ctx, repository.WorktreePath, canonical)
 	if err != nil {
 		return WorkspaceGitCommitDetail{}, err
 	}
-	files, err := loadWorkspaceGitCommitFiles(ctx, folder, canonical)
+	files, err := loadWorkspaceGitCommitFiles(ctx, repository, canonical)
 	if err != nil {
 		return WorkspaceGitCommitDetail{}, err
 	}
@@ -153,21 +202,19 @@ func (s *SystemService) CommitWorkspaceGitChanges(workspaceID string, folderID s
 
 	ctx, cancel := context.WithTimeout(context.Background(), workspaceGitCommandTimeout)
 	defer cancel()
-	if err := ensureWorkspaceGitRepositoryRoot(ctx, folder); err != nil {
+	repository, err := s.workspaceGitRepositoryContext(ctx, workspace, folder)
+	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	if dirty, err := workspaceGitRepositoryDirty(ctx, folder.Path); err != nil {
+	if staged, err := workspaceGitRepositoryHasStagedChangesForContext(ctx, repository); err != nil {
 		return WorkspaceGitRepositoryView{}, err
-	} else if !dirty {
-		return WorkspaceGitRepositoryView{}, fmt.Errorf("there are no Git changes to commit")
+	} else if !staged {
+		return WorkspaceGitRepositoryView{}, fmt.Errorf("stage Git changes before committing")
 	}
-	if err := requireWorkspaceGitCommitIdentity(ctx, folder.Path); err != nil {
-		return WorkspaceGitRepositoryView{}, err
-	}
-	if _, err := runWorkspaceGitCommand(ctx, folder.Path, "add", "-A"); err != nil {
+	if err := requireWorkspaceGitCommitIdentity(ctx, repository.WorktreePath); err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	if _, err := runWorkspaceGitCommandWithInput(ctx, folder.Path, []byte(message), "commit", "-F", "-"); err != nil {
+	if _, err := runWorkspaceGitCommandWithInput(ctx, repository.WorktreePath, []byte(message), "commit", "-F", "-"); err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
 	return s.loadWorkspaceGitRepository(workspace, folder.ID)
@@ -185,14 +232,15 @@ func (s *SystemService) CreateWorkspaceGitBranch(workspaceID string, folderID st
 
 	ctx, cancel := context.WithTimeout(context.Background(), workspaceGitCommandTimeout)
 	defer cancel()
-	if err := ensureWorkspaceGitRepositoryRoot(ctx, folder); err != nil {
-		return WorkspaceGitRepositoryView{}, err
-	}
-	branch, err := validateWorkspaceGitBranchName(ctx, folder.Path, name)
+	repository, err := s.workspaceGitRepositoryContext(ctx, workspace, folder)
 	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	if _, err := runWorkspaceGitCommand(ctx, folder.Path, "checkout", "-b", branch); err != nil {
+	branch, err := validateWorkspaceGitBranchName(ctx, repository.WorktreePath, name)
+	if err != nil {
+		return WorkspaceGitRepositoryView{}, err
+	}
+	if _, err := runWorkspaceGitCommand(ctx, repository.WorktreePath, "checkout", "-b", branch); err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
 	return s.loadWorkspaceGitRepository(workspace, folder.ID)
@@ -210,17 +258,15 @@ func (s *SystemService) SwitchWorkspaceGitBranch(workspaceID string, folderID st
 
 	ctx, cancel := context.WithTimeout(context.Background(), workspaceGitCommandTimeout)
 	defer cancel()
-	if err := ensureWorkspaceGitRepositoryRoot(ctx, folder); err != nil {
-		return WorkspaceGitRepositoryView{}, err
-	}
-	branch, err := validateExistingWorkspaceGitBranch(ctx, folder.Path, name)
+	repository, err := s.workspaceGitRepositoryContext(ctx, workspace, folder)
 	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	if err := requireCleanWorkspaceGitRepository(ctx, folder.Path); err != nil {
+	branch, err := validateExistingWorkspaceGitBranch(ctx, repository.WorktreePath, name)
+	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	if _, err := runWorkspaceGitCommand(ctx, folder.Path, "checkout", branch); err != nil {
+	if _, err := runWorkspaceGitCommand(ctx, repository.WorktreePath, "checkout", branch); err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
 	return s.loadWorkspaceGitRepository(workspace, folder.ID)
@@ -238,21 +284,19 @@ func (s *SystemService) MergeWorkspaceGitBranch(workspaceID string, folderID str
 
 	ctx, cancel := context.WithTimeout(context.Background(), workspaceGitCommandTimeout)
 	defer cancel()
-	if err := ensureWorkspaceGitRepositoryRoot(ctx, folder); err != nil {
-		return WorkspaceGitRepositoryView{}, err
-	}
-	branch, err := validateExistingWorkspaceGitBranch(ctx, folder.Path, name)
+	repository, err := s.workspaceGitRepositoryContext(ctx, workspace, folder)
 	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	if err := requireCleanWorkspaceGitRepository(ctx, folder.Path); err != nil {
+	branch, err := validateExistingWorkspaceGitBranch(ctx, repository.WorktreePath, name)
+	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	current := strings.TrimSpace(string(mustGitOutput(ctx, folder.Path, "branch", "--show-current")))
+	current := strings.TrimSpace(string(mustGitOutput(ctx, repository.WorktreePath, "branch", "--show-current")))
 	if current != "" && current == branch {
 		return WorkspaceGitRepositoryView{}, fmt.Errorf("cannot merge the current branch into itself")
 	}
-	if _, err := runWorkspaceGitCommand(ctx, folder.Path, "merge", "--no-edit", branch); err != nil {
+	if _, err := runWorkspaceGitCommand(ctx, repository.WorktreePath, "merge", "--no-edit", branch); err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
 	return s.loadWorkspaceGitRepository(workspace, folder.ID)
@@ -270,35 +314,12 @@ func (s *SystemService) SyncWorkspaceGitBranch(workspaceID string, folderID stri
 
 	ctx, cancel := context.WithTimeout(context.Background(), workspaceGitSyncTimeout)
 	defer cancel()
-	if err := ensureWorkspaceGitRepositoryRoot(ctx, folder); err != nil {
-		return WorkspaceGitRepositoryView{}, err
-	}
-	currentBranch, detached := workspaceGitCurrentBranch(ctx, folder.Path)
-	if detached || currentBranch == "" {
-		return WorkspaceGitRepositoryView{}, fmt.Errorf("cannot sync a detached Git HEAD")
-	}
-	upstream, ahead, behind, err := workspaceGitRemoteStatus(ctx, folder.Path)
+	repository, err := s.workspaceGitRepositoryContext(ctx, workspace, folder)
 	if err != nil {
 		return WorkspaceGitRepositoryView{}, err
 	}
-	if upstream == "" {
-		return WorkspaceGitRepositoryView{}, fmt.Errorf("current branch has no upstream configured")
-	}
-	if ahead == 0 && behind == 0 {
-		return s.loadWorkspaceGitRepository(workspace, folder.ID)
-	}
-	if behind > 0 {
-		if err := requireCleanWorkspaceGitRepository(ctx, folder.Path); err != nil {
-			return WorkspaceGitRepositoryView{}, fmt.Errorf("commit or discard Git changes before syncing incoming commits")
-		}
-		if _, err := runWorkspaceGitCommand(ctx, folder.Path, "-c", "pull.rebase=false", "-c", "core.editor=true", "pull", "--no-edit"); err != nil {
-			return WorkspaceGitRepositoryView{}, err
-		}
-	}
-	if ahead > 0 {
-		if _, err := runWorkspaceGitCommand(ctx, folder.Path, "push"); err != nil {
-			return WorkspaceGitRepositoryView{}, err
-		}
+	if err := syncWorkspaceGitAction(ctx, repository.WorktreePath); err != nil {
+		return WorkspaceGitRepositoryView{}, err
 	}
 	return s.loadWorkspaceGitRepository(workspace, folder.ID)
 }
@@ -312,17 +333,27 @@ func (s *SystemService) loadWorkspaceGitRepository(workspace Workspace, folderID
 		Repositories: make([]WorkspaceGitRepositorySummary, 0, len(workspace.Folders)),
 	}
 	var selectedFolder WorkspaceFolder
+	var selectedSnapshot workspaceGitRepositorySnapshot
+	var selectedErr error
 	var selectedFound bool
 
 	for _, folder := range workspace.Folders {
-		summary := workspaceGitRepositorySummary(ctx, folder)
+		snapshot, err := s.workspaceGitRepositorySnapshot(ctx, workspace, folder)
+		summary := snapshot.summary
+		if err != nil {
+			summary = WorkspaceGitRepositorySummary{FolderID: folder.ID, Label: folder.Label, Path: folder.Path, Error: err.Error()}
+		}
 		view.Repositories = append(view.Repositories, summary)
 		if folder.ID == folderID {
 			selectedFolder = folder
+			selectedSnapshot = snapshot
+			selectedErr = err
 			selectedFound = true
 		}
 		if strings.TrimSpace(folderID) == "" && !selectedFound && summary.Available {
 			selectedFolder = folder
+			selectedSnapshot = snapshot
+			selectedErr = err
 			selectedFound = true
 		}
 	}
@@ -332,16 +363,94 @@ func (s *SystemService) loadWorkspaceGitRepository(workspace Workspace, folderID
 	if !selectedFound {
 		return view, fmt.Errorf("workspace has no manageable Git repositories")
 	}
-	if err := ensureWorkspaceGitRepositoryRoot(ctx, selectedFolder); err != nil {
-		return view, err
+	if selectedErr != nil {
+		return view, selectedErr
 	}
-	repository, err := loadWorkspaceGitRepositoryStatus(ctx, selectedFolder)
+	if !selectedSnapshot.summary.Available {
+		return view, fmt.Errorf("workspace folder has no manageable Git repository")
+	}
+	repository, err := loadWorkspaceGitRepositoryStatus(ctx, selectedSnapshot)
 	if err != nil {
 		return view, err
 	}
 	view.SelectedFolderID = selectedFolder.ID
 	view.Repository = &repository
+	s.storeWorkspaceGitRepositoryView(view)
 	return view, nil
+}
+
+func (s *SystemService) refreshCachedWorkspaceGitRepositoryStatus(workspace Workspace, folder WorkspaceFolder) (WorkspaceGitRepositoryView, error) {
+	cached, ok := s.cachedWorkspaceGitRepositoryView(workspace.ID, folder.ID)
+	if !ok || cached.Repository == nil {
+		return s.loadWorkspaceGitRepository(workspace, folder.ID)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), workspaceGitCommandTimeout)
+	defer cancel()
+	repository, err := s.workspaceGitRepositoryContext(ctx, workspace, folder)
+	if err != nil {
+		return WorkspaceGitRepositoryView{}, err
+	}
+	files, err := loadGitStatusFilesForRepository(ctx, repository)
+	if err != nil {
+		return WorkspaceGitRepositoryView{}, err
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return strings.ToLower(files[i].Path) < strings.ToLower(files[j].Path)
+	})
+	staged, unstaged := workspaceGitChangeStageCounts(files)
+	cached.Repository.Dirty = len(files) > 0
+	cached.Repository.FileCount = len(files)
+	cached.Repository.StagedFileCount = staged
+	cached.Repository.UnstagedFileCount = unstaged
+	cached.Repository.Files = files
+	for i := range cached.Repositories {
+		if cached.Repositories[i].FolderID == folder.ID {
+			cached.Repositories[i].Dirty = len(files) > 0
+		}
+	}
+	s.storeWorkspaceGitRepositoryView(cached)
+	return cloneWorkspaceGitRepositoryView(cached), nil
+}
+
+func workspaceGitRepositoryViewCacheKey(workspaceID string, folderID string) string {
+	return workspaceID + "\x00" + folderID
+}
+
+func (s *SystemService) cachedWorkspaceGitRepositoryView(workspaceID string, folderID string) (WorkspaceGitRepositoryView, bool) {
+	s.gitViewMu.Lock()
+	defer s.gitViewMu.Unlock()
+	view, ok := s.gitRepositoryViews[workspaceGitRepositoryViewCacheKey(workspaceID, folderID)]
+	if !ok {
+		return WorkspaceGitRepositoryView{}, false
+	}
+	return cloneWorkspaceGitRepositoryView(view), true
+}
+
+func (s *SystemService) storeWorkspaceGitRepositoryView(view WorkspaceGitRepositoryView) {
+	if view.WorkspaceID == "" || view.SelectedFolderID == "" || view.Repository == nil {
+		return
+	}
+	s.gitViewMu.Lock()
+	s.gitRepositoryViews[workspaceGitRepositoryViewCacheKey(view.WorkspaceID, view.SelectedFolderID)] = cloneWorkspaceGitRepositoryView(view)
+	s.gitViewMu.Unlock()
+}
+
+func cloneWorkspaceGitRepositoryView(view WorkspaceGitRepositoryView) WorkspaceGitRepositoryView {
+	clone := view
+	clone.Repositories = append([]WorkspaceGitRepositorySummary(nil), view.Repositories...)
+	if view.Repository != nil {
+		repository := *view.Repository
+		repository.Branches = append([]WorkspaceGitBranch(nil), view.Repository.Branches...)
+		repository.RemoteBranches = append([]WorkspaceGitRemoteBranch(nil), view.Repository.RemoteBranches...)
+		repository.Remotes = append([]WorkspaceGitRemote(nil), view.Repository.Remotes...)
+		repository.Tags = append([]WorkspaceGitTag(nil), view.Repository.Tags...)
+		repository.Stashes = append([]WorkspaceGitStash(nil), view.Repository.Stashes...)
+		repository.Files = append([]WorkspaceGitChangedFile(nil), view.Repository.Files...)
+		repository.Commits = append([]WorkspaceGitCommit(nil), view.Repository.Commits...)
+		clone.Repository = &repository
+	}
+	return clone
 }
 
 func (s *SystemService) workspaceGitRepositoryFolder(workspaceID string, folderID string) (Workspace, WorkspaceFolder, error) {
@@ -364,87 +473,102 @@ func (s *SystemService) workspaceGitRepositoryFolder(workspaceID string, folderI
 	return Workspace{}, WorkspaceFolder{}, fmt.Errorf("workspace folder was not found")
 }
 
-func workspaceGitRepositorySummary(ctx context.Context, folder WorkspaceFolder) WorkspaceGitRepositorySummary {
+func (s *SystemService) workspaceGitRepositorySnapshot(ctx context.Context, workspace Workspace, folder WorkspaceFolder) (workspaceGitRepositorySnapshot, error) {
 	summary := WorkspaceGitRepositorySummary{
 		FolderID: folder.ID,
 		Label:    folder.Label,
 		Path:     folder.Path,
 	}
 	if folder.Missing {
-		summary.Error = "workspace folder is unavailable"
-		return summary
+		return workspaceGitRepositorySnapshot{summary: summary}, fmt.Errorf("workspace folder is unavailable")
 	}
-	if err := ensureWorkspaceGitRepositoryRoot(ctx, folder); err != nil {
-		summary.Error = err.Error()
-		return summary
+	repository, err := s.workspaceGitRepositoryContext(ctx, workspace, folder)
+	if err != nil {
+		return workspaceGitRepositorySnapshot{summary: summary}, err
 	}
 	summary.Available = true
-	summary.CurrentBranch, summary.Detached = workspaceGitCurrentBranch(ctx, folder.Path)
-	summary.Upstream, summary.AheadCount, summary.BehindCount, _ = workspaceGitRemoteStatus(ctx, folder.Path)
-	summary.Head, summary.ShortHead = workspaceGitHead(ctx, folder.Path)
-	summary.Dirty, _ = workspaceGitRepositoryDirty(ctx, folder.Path)
-	return summary
+	summary.CurrentBranch, summary.Detached = workspaceGitCurrentBranch(ctx, repository.WorktreePath)
+	summary.Upstream, summary.AheadCount, summary.BehindCount, _ = workspaceGitRemoteStatus(ctx, repository.WorktreePath)
+	summary.Head, summary.ShortHead = workspaceGitHead(ctx, repository.WorktreePath)
+	files, err := loadGitStatusFilesForRepository(ctx, repository)
+	if err != nil {
+		return workspaceGitRepositorySnapshot{context: repository, summary: summary}, err
+	}
+	summary.Dirty = len(files) > 0
+	return workspaceGitRepositorySnapshot{context: repository, summary: summary, files: files}, nil
 }
 
-func loadWorkspaceGitRepositoryStatus(ctx context.Context, folder WorkspaceFolder) (WorkspaceGitRepositoryStatus, error) {
-	currentBranch, detached := workspaceGitCurrentBranch(ctx, folder.Path)
-	upstream, ahead, behind, _ := workspaceGitRemoteStatus(ctx, folder.Path)
-	head, shortHead := workspaceGitHead(ctx, folder.Path)
-	branches, err := loadWorkspaceGitBranches(ctx, folder.Path, currentBranch)
+func loadWorkspaceGitRepositoryStatus(ctx context.Context, snapshot workspaceGitRepositorySnapshot) (WorkspaceGitRepositoryStatus, error) {
+	repository := snapshot.context
+	summary := snapshot.summary
+	branches, err := loadWorkspaceGitBranches(ctx, repository.WorktreePath, summary.CurrentBranch)
 	if err != nil {
 		return WorkspaceGitRepositoryStatus{}, err
 	}
-	files, err := loadGitChangedFilesForFolder(ctx, folder)
+	remoteBranches, err := loadWorkspaceGitRemoteBranches(ctx, repository.WorktreePath)
 	if err != nil {
 		return WorkspaceGitRepositoryStatus{}, err
 	}
+	remotes, err := loadWorkspaceGitRemotes(ctx, repository.WorktreePath)
+	if err != nil {
+		return WorkspaceGitRepositoryStatus{}, err
+	}
+	tags, err := loadWorkspaceGitTags(ctx, repository.WorktreePath)
+	if err != nil {
+		return WorkspaceGitRepositoryStatus{}, err
+	}
+	stashes, err := loadWorkspaceGitStashes(ctx, repository.WorktreePath)
+	if err != nil {
+		return WorkspaceGitRepositoryStatus{}, err
+	}
+	files := snapshot.files
 	sort.Slice(files, func(i, j int) bool {
 		return strings.ToLower(files[i].Path) < strings.ToLower(files[j].Path)
 	})
-	commits, err := loadWorkspaceGitCommitHistory(ctx, folder.Path, workspaceGitHistoryLimit)
+	stagedFileCount, unstagedFileCount := workspaceGitChangeStageCounts(files)
+	commits, err := loadWorkspaceGitCommitHistory(ctx, repository.WorktreePath, workspaceGitHistoryLimit)
 	if err != nil {
 		return WorkspaceGitRepositoryStatus{}, err
 	}
 	return WorkspaceGitRepositoryStatus{
-		FolderID:      folder.ID,
-		Label:         folder.Label,
-		Path:          folder.Path,
-		CurrentBranch: currentBranch,
-		Upstream:      upstream,
-		AheadCount:    ahead,
-		BehindCount:   behind,
-		Head:          head,
-		ShortHead:     shortHead,
-		Detached:      detached,
-		Dirty:         len(files) > 0,
-		Branches:      branches,
-		FileCount:     len(files),
-		Files:         files,
-		Commits:       commits,
+		FolderID:            repository.Folder.ID,
+		Label:               repository.Folder.Label,
+		Path:                repository.Folder.Path,
+		CurrentBranch:       summary.CurrentBranch,
+		Upstream:            summary.Upstream,
+		AheadCount:          summary.AheadCount,
+		BehindCount:         summary.BehindCount,
+		Head:                summary.Head,
+		ShortHead:           summary.ShortHead,
+		Detached:            summary.Detached,
+		Dirty:               len(files) > 0,
+		Branches:            branches,
+		RemoteBranches:      remoteBranches,
+		Remotes:             remotes,
+		Tags:                tags,
+		Stashes:             stashes,
+		RebaseInProgress:    workspaceGitRebaseInProgress(ctx, repository.WorktreePath),
+		SupportsStashStaged: workspaceGitSupportsStashStaged(ctx, repository.WorktreePath),
+		FileCount:           len(files),
+		StagedFileCount:     stagedFileCount,
+		UnstagedFileCount:   unstagedFileCount,
+		Files:               files,
+		Commits:             commits,
 	}, nil
 }
 
-func ensureWorkspaceGitRepositoryRoot(ctx context.Context, folder WorkspaceFolder) error {
-	output, err := runWorkspaceGitCommand(ctx, folder.Path, "rev-parse", "--show-toplevel")
-	if err != nil {
-		return err
+func workspaceGitChangeStageCounts(files []WorkspaceGitChangedFile) (int, int) {
+	staged := 0
+	unstaged := 0
+	for _, file := range files {
+		if file.Staged {
+			staged++
+		}
+		if file.Unstaged {
+			unstaged++
+		}
 	}
-	root, err := normalizedGitPath(strings.TrimSpace(string(output)))
-	if err != nil {
-		return fmt.Errorf("resolve Git repository root: %w", err)
-	}
-	folderRoot, err := workspaceFolderAbsolutePath(folder)
-	if err != nil {
-		return err
-	}
-	folderRoot, err = normalizedGitPath(folderRoot)
-	if err != nil {
-		return fmt.Errorf("resolve workspace folder: %w", err)
-	}
-	if !samePath(root, folderRoot) {
-		return fmt.Errorf("workspace folder must be the Git repository root")
-	}
-	return nil
+	return staged, unstaged
 }
 
 func normalizedGitPath(path string) (string, error) {
@@ -475,11 +599,12 @@ func workspaceGitHead(ctx context.Context, workspacePath string) (string, string
 	if err != nil {
 		return "", ""
 	}
-	shortOutput, err := runWorkspaceGitCommand(ctx, workspacePath, "rev-parse", "--short", "HEAD")
-	if err != nil {
-		return strings.TrimSpace(string(headOutput)), ""
+	head := strings.TrimSpace(string(headOutput))
+	shortHead := head
+	if len(shortHead) > 7 {
+		shortHead = shortHead[:7]
 	}
-	return strings.TrimSpace(string(headOutput)), strings.TrimSpace(string(shortOutput))
+	return head, shortHead
 }
 
 func workspaceGitRemoteStatus(ctx context.Context, workspacePath string) (string, int, int, error) {
@@ -522,6 +647,19 @@ func workspaceGitRepositoryDirty(ctx context.Context, workspacePath string) (boo
 		return false, err
 	}
 	return len(status) > 0, nil
+}
+
+func workspaceGitRepositoryHasStagedChangesForContext(ctx context.Context, repository workspaceGitRepositoryContext) (bool, error) {
+	entries, err := workspaceGitStatusEntriesForRepository(ctx, repository)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if gitStatusEntryHasStagedChanges(entry) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func requireCleanWorkspaceGitRepository(ctx context.Context, workspacePath string) error {
@@ -570,11 +708,138 @@ func loadWorkspaceGitBranches(ctx context.Context, workspacePath string, current
 	return branches, nil
 }
 
+func loadWorkspaceGitRemoteBranches(ctx context.Context, workspacePath string) ([]WorkspaceGitRemoteBranch, error) {
+	output, err := runWorkspaceGitCommand(ctx, workspacePath, "for-each-ref", "--format=%(refname:short)%00", "refs/remotes")
+	if err != nil {
+		return nil, err
+	}
+	items := make([]WorkspaceGitRemoteBranch, 0)
+	for _, raw := range strings.Split(string(output), "\x00") {
+		name := strings.TrimSpace(raw)
+		if name == "" || strings.HasSuffix(name, "/HEAD") {
+			continue
+		}
+		remote, branch, ok := strings.Cut(name, "/")
+		if !ok || remote == "" || branch == "" {
+			continue
+		}
+		items = append(items, WorkspaceGitRemoteBranch{Name: name, Remote: remote, Branch: branch})
+	}
+	sort.Slice(items, func(i, j int) bool { return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name) })
+	return items, nil
+}
+
+func loadWorkspaceGitRemotes(ctx context.Context, workspacePath string) ([]WorkspaceGitRemote, error) {
+	output, err := runWorkspaceGitCommand(ctx, workspacePath, "remote")
+	if err != nil {
+		return nil, err
+	}
+	items := make([]WorkspaceGitRemote, 0)
+	for _, line := range strings.Split(strings.ReplaceAll(string(output), "\r\n", "\n"), "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" {
+			continue
+		}
+		fetch, _ := runWorkspaceGitCommand(ctx, workspacePath, "remote", "get-url", name)
+		push, _ := runWorkspaceGitCommand(ctx, workspacePath, "remote", "get-url", "--push", name)
+		items = append(items, WorkspaceGitRemote{Name: name, FetchURL: strings.TrimSpace(string(fetch)), PushURL: strings.TrimSpace(string(push))})
+	}
+	sort.Slice(items, func(i, j int) bool { return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name) })
+	return items, nil
+}
+
+func loadWorkspaceGitTags(ctx context.Context, workspacePath string) ([]WorkspaceGitTag, error) {
+	output, err := runWorkspaceGitCommand(ctx, workspacePath, "for-each-ref", "--format=%(refname:short)%00%(objectname)%00%(subject)%1e", "refs/tags")
+	if err != nil {
+		return nil, err
+	}
+	items := make([]WorkspaceGitTag, 0)
+	for _, record := range strings.Split(string(output), "\x1e") {
+		fields := strings.Split(strings.TrimSpace(record), "\x00")
+		if len(fields) < 3 || strings.TrimSpace(fields[0]) == "" {
+			continue
+		}
+		items = append(items, WorkspaceGitTag{Name: strings.TrimSpace(fields[0]), Target: strings.TrimSpace(fields[1]), Subject: strings.TrimSpace(fields[2])})
+	}
+	sort.Slice(items, func(i, j int) bool { return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name) })
+	return items, nil
+}
+
+func loadWorkspaceGitStashes(ctx context.Context, workspacePath string) ([]WorkspaceGitStash, error) {
+	output, err := runWorkspaceGitCommand(ctx, workspacePath, "stash", "list", "--format=%gd%x00%gs%x1e")
+	if err != nil {
+		return nil, err
+	}
+	items := make([]WorkspaceGitStash, 0)
+	for _, record := range strings.Split(string(output), "\x1e") {
+		fields := strings.Split(strings.TrimSpace(record), "\x00")
+		if len(fields) < 2 || strings.TrimSpace(fields[0]) == "" {
+			continue
+		}
+		ref := strings.TrimSpace(fields[0])
+		index := len(items)
+		if start := strings.IndexByte(ref, '{'); start >= 0 {
+			if end := strings.IndexByte(ref[start+1:], '}'); end >= 0 {
+				if parsed, parseErr := strconv.Atoi(ref[start+1 : start+1+end]); parseErr == nil {
+					index = parsed
+				}
+			}
+		}
+		message := strings.TrimSpace(fields[1])
+		branch := ""
+		if before, after, ok := strings.Cut(message, ": "); ok {
+			if _, candidate, found := strings.Cut(before, " on "); found {
+				branch = strings.TrimSpace(candidate)
+			}
+			message = strings.TrimSpace(after)
+		}
+		items = append(items, WorkspaceGitStash{Ref: ref, Index: index, Branch: branch, Message: message})
+	}
+	return items, nil
+}
+
+func workspaceGitRebaseInProgress(ctx context.Context, workspacePath string) bool {
+	for _, name := range []string{"rebase-merge", "rebase-apply"} {
+		output, err := runWorkspaceGitCommand(ctx, workspacePath, "rev-parse", "--git-path", name)
+		if err != nil {
+			continue
+		}
+		path := strings.TrimSpace(string(output))
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(workspacePath, path)
+		}
+		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+func workspaceGitSupportsStashStaged(ctx context.Context, workspacePath string) bool {
+	output, err := runWorkspaceGitCommand(ctx, workspacePath, "version")
+	if err != nil {
+		return false
+	}
+	var major, minor int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(output)), "git version %d.%d", &major, &minor); err != nil {
+		return false
+	}
+	return major > 2 || major == 2 && minor >= 35
+}
+
 func loadWorkspaceGitCommitHistory(ctx context.Context, workspacePath string, limit int) ([]WorkspaceGitCommit, error) {
 	if limit <= 0 {
 		limit = workspaceGitHistoryLimit
 	}
-	output, err := runWorkspaceGitCommand(ctx, workspacePath, "log", fmt.Sprintf("-n%d", limit), "--date=iso-strict", "--format=%H%x00%h%x00%an%x00%ae%x00%aI%x00%s%x1e")
+	args := []string{"log", fmt.Sprintf("-n%d", limit), "--date-order", "--date=iso-strict", "--format=%H%x00%h%x00%an%x00%ae%x00%aI%x00%s%x1e"}
+	if workspaceGitHasHead(ctx, workspacePath) {
+		args = append(args, "HEAD")
+	}
+	// Include branch, remote-tracking, and tag refs so a successful fetch can
+	// immediately add newly discovered commits to the history view. Avoid
+	// --all because it also walks internal refs such as refs/stash.
+	args = append(args, "--branches", "--remotes", "--tags")
+	output, err := runWorkspaceGitCommand(ctx, workspacePath, args...)
 	if err != nil {
 		if gitRepositoryHasNoCommits(err) {
 			return []WorkspaceGitCommit{}, nil
@@ -628,16 +893,16 @@ func loadWorkspaceGitCommitMetadata(ctx context.Context, workspacePath string, h
 	return commits[0], nil
 }
 
-func loadWorkspaceGitCommitFiles(ctx context.Context, folder WorkspaceFolder, hash string) ([]WorkspaceGitChangedFile, error) {
-	parent, hasParent, err := workspaceGitFirstParent(ctx, folder.Path, hash)
+func loadWorkspaceGitCommitFiles(ctx context.Context, repository workspaceGitRepositoryContext, hash string) ([]WorkspaceGitChangedFile, error) {
+	parent, hasParent, err := workspaceGitFirstParent(ctx, repository.WorktreePath, hash)
 	if err != nil {
 		return nil, err
 	}
 	var output []byte
 	if hasParent {
-		output, err = runWorkspaceGitCommand(ctx, folder.Path, "diff", "--name-status", "-z", "--find-renames", parent, hash)
+		output, err = runWorkspaceGitCommand(ctx, repository.WorktreePath, "diff", "--name-status", "-z", "--find-renames", parent, hash)
 	} else {
-		output, err = runWorkspaceGitCommand(ctx, folder.Path, "diff-tree", "--root", "--no-commit-id", "--name-status", "-z", "-r", "--find-renames", hash)
+		output, err = runWorkspaceGitCommand(ctx, repository.WorktreePath, "diff-tree", "--root", "--no-commit-id", "--name-status", "-z", "-r", "--find-renames", hash)
 	}
 	if err != nil {
 		return nil, err
@@ -648,9 +913,12 @@ func loadWorkspaceGitCommitFiles(ctx context.Context, folder WorkspaceFolder, ha
 	}
 	files := make([]WorkspaceGitChangedFile, 0, len(entries))
 	for _, entry := range entries {
+		if _, ok := repository.gitPathInFolder(entry.path); !ok {
+			continue
+		}
 		file := WorkspaceGitChangedFile{
-			Path:      labeledWorkspacePath(folder.Label, entry.path),
-			OldPath:   labeledWorkspacePath(folder.Label, entry.oldPath),
+			Path:      repository.labeledGitPath(entry.path),
+			OldPath:   repository.labeledGitPath(entry.oldPath),
 			Operation: gitNameStatusOperation(entry.status),
 			Status:    entry.status,
 		}
@@ -660,12 +928,12 @@ func loadWorkspaceGitCommitFiles(ctx context.Context, folder WorkspaceFolder, ha
 		}
 		var diff string
 		if hasParent {
-			diff, err = loadWorkspaceGitCommitDiffForPath(ctx, folder.Path, parent, hash, diffPath)
+			diff, err = loadWorkspaceGitCommitDiffForPath(ctx, repository.WorktreePath, parent, hash, diffPath)
 		} else {
-			diff, err = loadWorkspaceGitRootCommitDiffForPath(ctx, folder.Path, hash, diffPath)
+			diff, err = loadWorkspaceGitRootCommitDiffForPath(ctx, repository.WorktreePath, hash, diffPath)
 		}
 		if err == nil && strings.TrimSpace(diff) != "" {
-			file.Diff = prefixGitDiffPaths(diff, folder.Label)
+			file.Diff = prefixGitDiffPathsForRepository(diff, repository)
 			file.DiffAvailable = true
 		}
 		files = append(files, file)

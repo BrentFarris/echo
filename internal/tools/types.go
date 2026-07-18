@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 type Schema map[string]any
@@ -56,8 +57,8 @@ type ExecutionContext struct {
 	Context          context.Context
 	WorkspacePath    string
 	WorkspaceRoots   []WorkspaceRoot
-	SearxngURL             string
-	ComfyuiURL              string
+	SearxngURL               string
+	ComfyuiURL               string
 	ComfyuiDefaultCheckpoint string
 	ComfyuiTxt2imgWorkflow   string
 	ComfyuiImg2imgWorkflow   string
@@ -77,12 +78,40 @@ type ExecutionContext struct {
 	AgentModes      AgentModeProvider
 	KanbanExecutor  KanbanExecutor
 	KanbanManager   KanbanManager
-	// AttachedImages are images from the latest user chat message, available to
-	// tools (e.g., comfyui_generate via attachedImageIndex) without disk I/O.
 	AttachedImages []AttachedImage
 	// GeneratedImages tracks images produced by tools during the current turn,
 	// keyed by ImageID. Used by save_image to resolve image data.
 	GeneratedImages map[string]AttachedImage
+	ResearchAgents  ResearchAgentCoordinator
+}
+
+type ResearchAgentSpec struct {
+	Name string `json:"name,omitempty"`
+	Task string `json:"task"`
+}
+
+type ResearchAgentSnapshot struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Status   string `json:"status"`
+	Phase    string `json:"phase,omitempty"`
+	Report   string `json:"report,omitempty"`
+	Error    string `json:"error,omitempty"`
+	Sequence int    `json:"sequence,omitempty"`
+}
+
+type ResearchAgentWaitResult struct {
+	ConditionMet bool                    `json:"conditionMet"`
+	Agents       []ResearchAgentSnapshot `json:"agents"`
+}
+
+// ResearchAgentCoordinator is attached only to a parent chat tool context.
+// Research agents themselves never receive this interface, preventing nesting.
+type ResearchAgentCoordinator interface {
+	SpawnResearchAgents(ctx context.Context, agents []ResearchAgentSpec) ([]ResearchAgentSnapshot, error)
+	SendResearchAgentMessage(ctx context.Context, agentID string, message string) (ResearchAgentSnapshot, error)
+	WaitResearchAgents(ctx context.Context, agentIDs []string, waitFor string, timeout time.Duration) (ResearchAgentWaitResult, error)
+	CancelResearchAgents(ctx context.Context, agentIDs []string) ([]ResearchAgentSnapshot, error)
 }
 
 // AgentModeSummary describes an available agent mode without the full prompt.
@@ -170,22 +199,22 @@ type KanbanManager interface {
 
 // KanbanBoard groups kanban cards by lane.
 type KanbanBoard struct {
-	WorkspaceID string        `json:"workspaceId"`
-	Ready       []KanbanCard  `json:"ready"`
-	InProgress  []KanbanCard  `json:"inProgress"`
-	Blocked     []KanbanCard  `json:"blocked"`
-	Done        []KanbanCard  `json:"done"`
+	WorkspaceID string       `json:"workspaceId"`
+	Ready       []KanbanCard `json:"ready"`
+	InProgress  []KanbanCard `json:"inProgress"`
+	Blocked     []KanbanCard `json:"blocked"`
+	Done        []KanbanCard `json:"done"`
 }
 
 // KanbanCard represents a kanban execution card.
 type KanbanCard struct {
-	ID                 string           `json:"id"`
-	WorkspaceID        string           `json:"workspaceId"`
-	Title              string           `json:"title"`
-	Description        string           `json:"description"`
-	AcceptanceCriteria []string         `json:"acceptanceCriteria"`
-	Lane               string           `json:"lane"`
-	Status             string           `json:"status"`
+	ID                 string   `json:"id"`
+	WorkspaceID        string   `json:"workspaceId"`
+	Title              string   `json:"title"`
+	Description        string   `json:"description"`
+	AcceptanceCriteria []string `json:"acceptanceCriteria"`
+	Lane               string   `json:"lane"`
+	Status             string   `json:"status"`
 }
 
 // KanbanExecutor starts kanban execution for a workspace.
@@ -233,17 +262,17 @@ type WorkspaceTaskMutationResponse struct {
 }
 
 type WorkspaceTaskConvertRequest struct {
-	TaskID                 string   `json:"taskID"`
-	Title                  string   `json:"title,omitempty"`
-	Description            string   `json:"description,omitempty"`
-	AcceptanceCriteria     []string `json:"acceptanceCriteria,omitempty"`
-	ExpectedUpdatedAt      string   `json:"expectedUpdatedAt"`
+	TaskID             string   `json:"taskID"`
+	Title              string   `json:"title,omitempty"`
+	Description        string   `json:"description,omitempty"`
+	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
+	ExpectedUpdatedAt  string   `json:"expectedUpdatedAt"`
 }
 
 type WorkspaceTaskConversionResponse struct {
 	TaskID       string          `json:"taskID"`
 	Task         *WorkspaceTask  `json:"task"`
-	KanbanCardID string         `json:"kanbanCardID"`
+	KanbanCardID string          `json:"kanbanCardID"`
 	Tasks        []WorkspaceTask `json:"tasks"`
 }
 

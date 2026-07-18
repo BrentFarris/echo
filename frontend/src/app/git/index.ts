@@ -1,23 +1,29 @@
 import { ensureCodeViewRootLoaded, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk } from "../../codeView";
 import { codeIcons } from "../../codeView/icons";
-import { CommitWorkspaceGitChanges, CreateWorkspaceGitBranch, DiscardWorkspaceGitChanges, DiscardWorkspaceGitFile, LoadWorkspaceChangeReview, LoadWorkspaceGitCommit, LoadWorkspaceGitRepository, MergeWorkspaceGitBranch, SwitchWorkspaceGitBranch, SyncWorkspaceGitBranch } from "../../backend/services";
+import { ChooseWorkspaceGitCloneParent, CloneWorkspaceGitRepository, CommitWorkspaceGitChanges, CreateWorkspaceGitBranch, DiscardWorkspaceGitChanges, DiscardWorkspaceGitFile, LoadWorkspaceChangeReview, LoadWorkspaceGitCommit, LoadWorkspaceGitFileDiffForScope, LoadWorkspaceGitRepository, LoadWorkspaceGitStash, MergeWorkspaceGitBranch, RunWorkspaceGitAction, StageWorkspaceGitChanges, StageWorkspaceGitFile, SwitchWorkspaceGitBranch, SyncWorkspaceGitBranch, UnstageWorkspaceGitChanges, UnstageWorkspaceGitFile } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
 import type { CodeEntryKind, CodeGitChangeState } from "../../codeView/types";
 import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";
+import { showContextMenu } from "../contextMenu";
+import { appRoot } from "../dom";
 import { icons } from "../icons";
 import { activeWorkspace, changeReviewFor, gitChangeReviewFor, gitRepositoryViewFor, state } from "../state";
 import { pushToast } from "../toasts";
 import { changeOperationLabel, errorMessage, escapeAttribute, escapeHtml } from "../utils";
-import { markCurrentChangeTarget, renderChangeReviewPage, renderGitChangedFile, renderGitDiff } from "../changes";
+import { markCurrentChangeTarget, renderChangeReviewPage, renderGitChangedFile, renderGitChangeMetadata, renderGitChangeStatus, renderGitDiff } from "../changes";
+import type { GitMenuPage } from "../types";
 
 type GitChangeTreeFolder = {
   kind: "folder";
   name: string;
   path: string;
+  displayPath: string;
   count: number;
   children: Map<string, GitChangeTreeNode>;
 };
+
+let gitMenuHistoryBound = false;
 
 type GitChangeTreeFile = {
   kind: "file";
@@ -28,6 +34,9 @@ type GitChangeTreeFile = {
 };
 
 type GitChangeTreeNode = GitChangeTreeFolder | GitChangeTreeFile;
+type GitWorkingDiffScope = "staged" | "unstaged";
+
+let gitWorkingDiffObserver: IntersectionObserver | null = null;
 
 export function renderGitRepositoryPage(
   workspace: services.Workspace,
@@ -41,62 +50,34 @@ export function renderGitRepositoryPage(
   if (!repository && !loading && !repositories.some((item) => item.available)) {
     return renderChangeReviewPage(workspace, changeReviewFor(workspace.id));
   }
+  const sidebarCollapsed = repository ? isGitChangeTreeCollapsed(workspace.id, repository.folderId) : false;
   return `
-    <section class="work-panel git-repository" aria-labelledby="git-repository-title" data-change-review data-git-repository>
-      <header class="panel-heading git-repository-header">
-        <div>
-          <p class="eyebrow">${escapeHtml(workspace.displayName)}</p>
-          <h2 id="git-repository-title">Git</h2>
-        </div>
-      </header>
-
-      <div class="git-repository-topbar">
-        <label class="field git-repository-picker">
-          <span>Repository</span>
-          <select data-git-repository-select ${loading || operation ? "disabled" : ""}>
-            ${repositories.length
-              ? repositories.map((item) => renderGitRepositoryOption(item, selectedFolderID)).join("")
-              : `<option value="">No repositories</option>`}
-          </select>
-        </label>
-        ${renderGitRepositorySummary(repository, loading, operation)}
-      </div>
-
-      <div class="change-review-actions">
-        <button class="icon-button" type="button" title="Previous change" aria-label="Previous change" data-action="previous-change" ${repository?.fileCount ? "" : "disabled"}>
-          ${icons.arrowUp}
-        </button>
-        <button class="icon-button" type="button" title="Next change" aria-label="Next change" data-action="next-change" ${repository?.fileCount ? "" : "disabled"}>
-          ${icons.arrowDown}
-        </button>
-        ${renderGitRefreshOrSyncButton(repository, loading, operation)}
-        <button class="secondary-button icon-text-button danger-button" type="button" data-action="revert-git-changes" ${repository?.fileCount && !loading && !operation ? "" : "disabled"}>
-          ${operation === "Reverting changes" ? `<span class="spinner" aria-hidden="true"></span>` : icons.undo}
-          <span>Revert All</span>
-        </button>
-      </div>
-
+    <section class="work-panel git-repository" aria-label="Git" data-change-review data-git-repository>
       ${repository
         ? `
-          <div class="git-management-grid">
-            ${renderGitCommitForm(workspace.id, repository, operation)}
-            ${renderGitBranchControls(workspace.id, repository, operation)}
-          </div>
-          <div class="git-repository-layout">
-            <section class="git-panel git-working-tree" aria-labelledby="git-working-title">
-              <header>
-                <h3 id="git-working-title">Working Changes</h3>
-                <span>${escapeHtml(String(repository.fileCount ?? 0))} files</span>
+          <div class="git-source-layout ${sidebarCollapsed ? "is-sidebar-collapsed" : ""}" data-git-source-layout>
+            ${renderGitSourceSidebarRail(repository)}
+            ${renderGitSourceSidebar(workspace.id, repository, repositories, selectedFolderID, loading, operation)}
+            <section class="git-source-diff-panel" aria-labelledby="git-diff-title">
+              <header class="git-source-diff-header">
+                <div>
+                  <h3 id="git-diff-title">Changes</h3>
+                  <span>${escapeHtml(String(repository.fileCount ?? 0))} files</span>
+                </div>
+                <div class="git-source-diff-actions">
+                  <button class="secondary-button icon-text-button git-diff-view-toggle" type="button" title="${state.gitDiffViewMode === "split" ? "Show inline diff" : "Show split diff"}" aria-label="${state.gitDiffViewMode === "split" ? "Show inline diff" : "Show split diff"}" data-action="toggle-git-diff-view">
+                    ${state.gitDiffViewMode === "split" ? icons.code : icons.split}
+                    <span>${state.gitDiffViewMode === "split" ? "Inline" : "Split"}</span>
+                  </button>
+                  <button class="icon-button" type="button" title="Previous change" aria-label="Previous change" data-action="previous-change" ${repository.fileCount ? "" : "disabled"}>
+                    ${icons.arrowUp}
+                  </button>
+                  <button class="icon-button" type="button" title="Next change" aria-label="Next change" data-action="next-change" ${repository.fileCount ? "" : "disabled"}>
+                    ${icons.arrowDown}
+                  </button>
+                </div>
               </header>
               ${renderGitWorkingChanges(workspace.id, repository)}
-            </section>
-            <section class="git-panel git-history" aria-labelledby="git-history-title">
-              <header>
-                <h3 id="git-history-title">History</h3>
-                <span>${escapeHtml(String((repository.commits ?? []).length))} commits</span>
-              </header>
-              ${renderGitCommitHistory(workspace.id, repository)}
-              ${renderGitSelectedCommit(workspace.id, repository)}
             </section>
           </div>
         `
@@ -105,21 +86,475 @@ export function renderGitRepositoryPage(
   `;
 }
 
-function renderGitWorkingChanges(workspaceID: string, repository: services.WorkspaceGitRepositoryStatus): string {
+function renderGitSourceSidebar(
+  workspaceID: string,
+  repository: services.WorkspaceGitRepositoryStatus,
+  repositories: services.WorkspaceGitRepositorySummary[],
+  selectedFolderID: string,
+  loading: boolean,
+  operation: string,
+): string {
+  const historyExpanded = state.expandedGitHistories.has(gitRepositoryDraftKey(workspaceID, repository.folderId));
+  return `
+    <aside class="git-source-sidebar ${historyExpanded ? "is-history-expanded" : "is-history-collapsed"}" aria-label="Source Control">
+      <div class="git-source-sidebar-top">
+        <div class="git-source-title-row">
+          ${renderGitRepositorySummary(repository, loading, operation)}
+          <div class="git-source-title-actions">
+            <button class="icon-button git-change-tree-toggle" type="button" title="Collapse source control" aria-label="Collapse source control" data-action="toggle-git-sidebar">
+              ${icons.collapse}
+            </button>
+            ${renderGitSourceMenu(workspaceID, repository, loading, operation)}
+          </div>
+        </div>
+        ${renderGitRepositoryPicker(repositories, selectedFolderID, loading, operation)}
+        ${renderGitCommitForm(workspaceID, repository, operation)}
+        ${renderGitSourceChangeSections(workspaceID, repository, operation)}
+      </div>
+      <section class="git-source-history ${historyExpanded ? "is-expanded" : "is-collapsed"}" aria-labelledby="git-history-title">
+        <header>
+          <h3 id="git-history-title">History</h3>
+          <div class="git-source-history-actions">
+            <span>${escapeHtml(String((repository.commits ?? []).length))}</span>
+            <button class="icon-button git-source-history-toggle" type="button" title="${historyExpanded ? "Collapse history" : "Expand history"}" aria-label="${historyExpanded ? "Collapse history" : "Expand history"}" aria-expanded="${historyExpanded}" data-action="toggle-git-history">
+              ${historyExpanded ? icons.arrowDown : icons.arrowUp}
+            </button>
+          </div>
+        </header>
+        ${historyExpanded ? renderGitCommitHistory(workspaceID, repository) : ""}
+      </section>
+    </aside>
+  `;
+}
+
+function renderGitRepositoryPicker(
+  repositories: services.WorkspaceGitRepositorySummary[],
+  selectedFolderID: string,
+  loading: boolean,
+  operation: string,
+): string {
+  const available = repositories.filter((item) => item.available);
+  if (available.length <= 1) {
+    return "";
+  }
+  return `
+    <label class="field git-repository-picker git-source-repository-picker">
+      <span>Repository</span>
+      <select data-git-repository-select ${loading || operation ? "disabled" : ""}>
+        ${repositories.length
+          ? repositories.map((item) => renderGitRepositoryOption(item, selectedFolderID)).join("")
+          : `<option value="">No repositories</option>`}
+      </select>
+    </label>
+  `;
+}
+
+function renderGitSourceSidebarRail(repository: services.WorkspaceGitRepositoryStatus): string {
+  return `
+    <aside class="git-source-sidebar-rail" aria-label="Source Control collapsed">
+      <button class="icon-button git-change-tree-toggle" type="button" title="Expand source control" aria-label="Expand source control" data-action="toggle-git-sidebar">
+        ${icons.expand}
+      </button>
+      <span>${escapeHtml(String(repository.fileCount ?? 0))}</span>
+    </aside>
+  `;
+}
+
+function renderGitSourceMenu(
+  workspaceID: string,
+  repository: services.WorkspaceGitRepositoryStatus,
+  loading: boolean,
+  operation: string,
+): string {
+  const busy = loading || Boolean(operation);
+  const key = gitRepositoryDraftKey(workspaceID, repository.folderId);
+  const menuOpen = state.gitMenuPages.has(key);
+  const page = state.gitMenuPages.get(key) ?? "root";
+  const content = renderGitMenuPage(repository, page, busy, loading);
+  return `
+    <details class="git-source-menu" ${menuOpen ? "open" : ""} data-git-source-menu>
+      <summary class="icon-button" title="More Git actions" aria-label="More Git actions">${icons.moreHorizontal}</summary>
+      <button class="git-menu-backdrop" type="button" tabindex="-1" data-action="close-git-menu" aria-label="Close Git actions"></button>
+      <div class="git-source-menu-popover" role="menu">
+        ${content}
+      </div>
+    </details>
+  `;
+}
+
+function renderGitMenuPage(repository: services.WorkspaceGitRepositoryStatus, page: GitMenuPage, busy: boolean, loading: boolean): string {
+  if (page === "root") {
+    return `
+      <div class="git-menu-header"><strong>Git actions</strong><button class="icon-button" type="button" data-action="close-git-menu" aria-label="Close">${icons.x}</button></div>
+      ${gitMenuButton("refresh", "Refresh", busy, false, loading ? `<span class="spinner" aria-hidden="true"></span>` : icons.refresh)}
+      ${gitMenuButton("pull", "Pull", busy)}
+      ${gitMenuButton("push", "Push", busy)}
+      ${gitMenuButton("clone", "Clone", busy)}
+      ${gitMenuButton("checkout", "Checkout to…", busy)}
+      ${gitMenuButton("fetch", "Fetch", busy)}
+      <hr />
+      ${gitMenuCategory("commit", "Commit")}
+      ${gitMenuCategory("changes", "Changes")}
+      ${gitMenuCategory("pull-push", "Pull, Push")}
+      ${gitMenuCategory("branch", "Branch")}
+      ${gitMenuCategory("remote", "Remote")}
+      ${gitMenuCategory("stash", "Stash")}
+      ${gitMenuCategory("tags", "Tags")}
+    `;
+  }
+  const title = ({ commit: "Commit", changes: "Changes", "pull-push": "Pull, Push", branch: "Branch", remote: "Remote", stash: "Stash", tags: "Tags" } as Record<string, string>)[page];
+  return `<div class="git-menu-header"><button class="icon-button" type="button" data-action="open-git-menu-page" data-git-menu-page="root" aria-label="Back">${icons.undo}</button><strong>${escapeHtml(title)}</strong><button class="icon-button" type="button" data-action="close-git-menu" aria-label="Close">${icons.x}</button></div>${renderGitMenuSection(repository, page, busy)}`;
+}
+
+function renderGitMenuSection(repository: services.WorkspaceGitRepositoryStatus, page: Exclude<GitMenuPage, "root">, busy: boolean): string {
+  const hasStaged = (repository.stagedFileCount ?? 0) > 0;
+  const hasChanges = (repository.fileCount ?? 0) > 0;
+  const hasRemotes = (repository.remotes ?? []).length > 0;
+  const hasStashes = (repository.stashes ?? []).length > 0;
+  const hasTags = (repository.tags ?? []).length > 0;
+  switch (page) {
+    case "commit":
+      return `${gitMenuButton("commit", "Commit", busy || (!hasStaged && !hasChanges))}${gitMenuButton("commit_staged", "Commit staged", busy || !hasStaged)}${gitMenuButton("commit_all", "Commit all", busy || !hasChanges)}${repository.rebaseInProgress ? gitMenuButton("abort_rebase", "Abort rebase", busy, true) : ""}<hr />${gitMenuButton("commit_staged_amend", "Commit (amend)", busy, true)}${gitMenuButton("commit_staged_amend", "Commit staged (amend)", busy || !hasStaged, true)}${gitMenuButton("commit_all_amend", "Commit all (amend)", busy, true)}<hr />${gitMenuButton("commit_staged_signoff", "Commit (signed off)", busy || !hasStaged)}${gitMenuButton("commit_staged_signoff", "Commit staged (signed off)", busy || !hasStaged)}${gitMenuButton("commit_all_signoff", "Commit all (signed off)", busy || !hasChanges)}`;
+    case "changes":
+      return `${gitMenuButton("stage_all", "Stage all changes", busy || !hasChanges)}${gitMenuButton("unstage_all", "Unstage all changes", busy || !hasStaged)}${gitMenuButton("discard_all", "Discard all changes", busy || !hasChanges, true)}`;
+    case "pull-push":
+      return `${gitMenuButton("sync", gitSyncMenuLabel(repository), busy || !repository.upstream)}<hr />${gitMenuButton("pull", "Pull", busy)}${gitMenuButton("pull_rebase", "Pull (rebase)", busy)}${gitMenuButton("pull_from", "Pull from…", busy || !hasRemotes)}<hr />${gitMenuButton("push", "Push", busy)}${gitMenuButton("push_to", "Push to…", busy || !hasRemotes)}<hr />${gitMenuButton("fetch", "Fetch", busy || !hasRemotes)}${gitMenuButton("fetch_prune", "Fetch (prune)", busy || !hasRemotes)}${gitMenuButton("fetch_all", "Fetch all from remotes", busy || !hasRemotes)}`;
+    case "branch":
+      return `${gitMenuButton("merge", "Merge…", busy || !(repository.branches ?? []).length)}${gitMenuButton("rebase", "Rebase branch…", busy || !(repository.branches ?? []).length)}<hr />${gitMenuButton("create_branch", "Create branch…", busy)}${gitMenuButton("create_branch_from", "Create branch from…", busy)}<hr />${gitMenuButton("rename_branch", "Rename branch…", busy || !(repository.branches ?? []).length)}${gitMenuButton("delete_branch", "Delete branch…", busy || (repository.branches ?? []).length < 2, true)}${gitMenuButton("delete_remote_branch", "Delete remote branch…", busy || !(repository.remoteBranches ?? []).length, true)}<hr />${gitMenuButton("publish_branch", "Publish branch…", busy || repository.detached || !hasRemotes)}`;
+    case "remote":
+      return `${gitMenuButton("add_remote", "Add remote…", busy)}${gitMenuButton("remove_remote", "Remove remote…", busy || !hasRemotes, true)}`;
+    case "stash":
+      return `${gitMenuButton("stash", "Stash", busy || !hasChanges)}${gitMenuButton("stash_untracked", "Stash (include untracked)", busy || !hasChanges)}${gitMenuButton("stash_staged", "Stash staged", busy || !hasStaged || !repository.supportsStashStaged)}<hr />${gitMenuButton("apply_latest_stash", "Apply latest stash", busy || !hasStashes)}${gitMenuButton("apply_stash", "Apply stash…", busy || !hasStashes)}<hr />${gitMenuButton("pop_latest_stash", "Pop latest stash", busy || !hasStashes)}${gitMenuButton("pop_stash", "Pop stash…", busy || !hasStashes)}<hr />${gitMenuButton("drop_stash", "Drop stash…", busy || !hasStashes, true)}${gitMenuButton("drop_all_stashes", "Drop all stashes", busy || !hasStashes, true)}<hr />${gitMenuButton("view_stash", "View stash…", busy || !hasStashes)}`;
+    case "tags":
+      return `${gitMenuButton("create_tag", "Create tag…", busy)}${gitMenuButton("delete_tag", "Delete tag…", busy || !hasTags, true)}${gitMenuButton("delete_remote_tag", "Delete remote tag…", busy || !hasRemotes, true)}<hr />${gitMenuButton("push_tags", "Push tags", busy || !hasRemotes || !hasTags)}`;
+  }
+}
+
+function gitMenuButton(command: string, label: string, disabled: boolean, danger = false, icon?: string): string {
+  return `<button class="${danger ? "is-danger" : ""}" type="button" role="menuitem" data-action="run-git-menu-command" data-git-command="${escapeAttribute(command)}" ${disabled ? "disabled" : ""}>${icon ?? gitMenuCommandIcon(command)}<span>${escapeHtml(label)}</span></button>`;
+}
+
+function gitMenuCategory(page: Exclude<GitMenuPage, "root">, label: string): string {
+  return `<button type="button" role="menuitem" data-action="open-git-menu-page" data-git-menu-page="${escapeAttribute(page)}"><span class="git-menu-category-icon">${gitMenuCategoryIcon(page)}</span><span>${escapeHtml(label)}</span><span class="git-menu-chevron">${icons.arrowRight}</span></button>`;
+}
+
+function gitMenuCommandIcon(command: string): string {
+  if (["pull", "pull_rebase", "pull_from", "fetch", "fetch_prune", "fetch_all", "apply_latest_stash", "apply_stash", "pop_latest_stash", "pop_stash"].includes(command)) {
+    return icons.download;
+  }
+  if (["push", "push_to", "publish_branch", "push_tags"].includes(command)) {
+    return icons.upload;
+  }
+  if (["commit", "commit_staged", "commit_all", "commit_staged_amend", "commit_all_amend", "commit_staged_signoff", "commit_all_signoff"].includes(command)) {
+    return icons.gitCommit;
+  }
+  if (["create_branch", "create_branch_from", "checkout"].includes(command)) {
+    return icons.gitBranch;
+  }
+  if (["delete_branch", "delete_remote_branch", "remove_remote", "drop_stash", "drop_all_stashes", "delete_tag", "delete_remote_tag", "discard_all"].includes(command)) {
+    return icons.trash;
+  }
+  if (["stash", "stash_untracked", "stash_staged"].includes(command)) {
+    return icons.archive;
+  }
+  switch (command) {
+    case "refresh":
+    case "sync":
+      return icons.refresh;
+    case "clone":
+      return icons.copy;
+    case "stage_all":
+    case "add_remote":
+      return icons.plus;
+    case "unstage_all":
+    case "abort_rebase":
+      return icons.undo;
+    case "merge":
+      return icons.gitMerge;
+    case "rebase":
+      return icons.gitRebase;
+    case "rename_branch":
+      return icons.edit;
+    case "view_stash":
+      return icons.eye;
+    case "create_tag":
+      return icons.tag;
+    default:
+      return icons.git;
+  }
+}
+
+function gitMenuCategoryIcon(page: Exclude<GitMenuPage, "root">): string {
+  switch (page) {
+    case "commit":
+      return icons.gitCommit;
+    case "changes":
+      return icons.layers;
+    case "pull-push":
+      return icons.refresh;
+    case "branch":
+      return icons.gitBranch;
+    case "remote":
+      return icons.cloud;
+    case "stash":
+      return icons.archive;
+    case "tags":
+      return icons.tag;
+  }
+}
+
+function gitSyncMenuLabel(repository: services.WorkspaceGitRepositoryStatus): string {
+  const ahead = Math.max(0, repository.aheadCount ?? 0);
+  const behind = Math.max(0, repository.behindCount ?? 0);
+  return ahead > 0 || behind > 0 ? `Sync (${behind} down / ${ahead} up)` : "Sync";
+}
+
+function renderGitSourceChangeSections(workspaceID: string, repository: services.WorkspaceGitRepositoryStatus, operation: string): string {
   const files = repository.files ?? [];
-  if (!files.length) {
+  const staged = files.filter((file) => file.staged);
+  const unstaged = files.filter((file) => file.unstaged);
+  const stagedCollapsed = isGitSourceFileSectionCollapsed(workspaceID, repository.folderId, "unstage", staged.length);
+  const unstagedCollapsed = isGitSourceFileSectionCollapsed(workspaceID, repository.folderId, "stage", unstaged.length);
+  return `
+    <div class="git-source-change-sections ${stagedCollapsed ? "is-staged-collapsed" : ""} ${unstagedCollapsed ? "is-unstaged-collapsed" : ""}">
+      ${renderGitSourceFileSection(workspaceID, repository.folderId, "Staged Changes", staged, "unstage", operation, stagedCollapsed)}
+      ${renderGitSourceFileSection(workspaceID, repository.folderId, "Changes", unstaged, "stage", operation, unstagedCollapsed)}
+    </div>
+  `;
+}
+
+function renderGitSourceFileSection(
+  workspaceID: string,
+  folderID: string,
+  title: string,
+  files: services.WorkspaceGitChangedFile[],
+  mode: "stage" | "unstage",
+  operation: string,
+  collapsed: boolean,
+): string {
+  const busy = Boolean(operation);
+  const action = mode === "stage" ? "stage-git-file" : "unstage-git-file";
+  const allAction = mode === "stage" ? "stage-git-changes" : "unstage-git-changes";
+  const icon = mode === "stage" ? icons.plus : icons.undo;
+  const fileActionLabel = mode === "stage" ? "Stage file" : "Unstage file";
+  const allActionLabel = mode === "stage" ? "Stage all changes" : "Unstage all changes";
+  const sectionActionLabel = `${collapsed ? "Expand" : "Collapse"} ${title}`;
+  return `
+    <section class="git-source-file-section ${collapsed ? "is-collapsed" : "is-expanded"} ${files.length ? "" : "is-empty"}">
+      <header>
+        <button class="git-source-section-heading" type="button" title="${escapeAttribute(files.length ? sectionActionLabel : `${title} has no files`)}" aria-label="${escapeAttribute(sectionActionLabel)}" aria-expanded="${!collapsed}" aria-disabled="${files.length === 0}" data-action="toggle-git-change-section" data-git-change-section="${mode}">
+          ${collapsed ? icons.arrowRight : icons.arrowDown}
+          <span>${escapeHtml(title)}</span>
+          <em>${escapeHtml(String(files.length))}</em>
+        </button>
+        <button class="icon-button" type="button" title="${escapeAttribute(allActionLabel)}" aria-label="${escapeAttribute(allActionLabel)}" data-action="${allAction}" ${files.length && !busy ? "" : "disabled"}>
+          ${icon}
+        </button>
+      </header>
+      ${collapsed
+        ? ""
+        : files.length
+          ? renderGitSourceFileTree(workspaceID, folderID, files, mode, action, icon, fileActionLabel, busy)
+          : `<div class="git-source-empty">No files.</div>`}
+    </section>
+  `;
+}
+
+function renderGitSourceFileTree(
+  workspaceID: string,
+  folderID: string,
+  files: services.WorkspaceGitChangedFile[],
+  mode: "stage" | "unstage",
+  action: string,
+  icon: string,
+  actionLabel: string,
+  busy: boolean,
+): string {
+  const root = buildGitChangeTree(files);
+  const collapsed = gitCollapsedChangeFolders(workspaceID, folderID);
+  return `<div class="git-source-file-list" role="tree">
+    ${sortedGitChangeTreeChildren(root).map((node) => renderGitSourceFileTreeNode(node, collapsed, mode, action, icon, actionLabel, busy, 0)).join("")}
+  </div>`;
+}
+
+function renderGitSourceFileTreeNode(
+  node: GitChangeTreeNode,
+  collapsed: Set<string>,
+  mode: "stage" | "unstage",
+  action: string,
+  icon: string,
+  actionLabel: string,
+  busy: boolean,
+  depth: number,
+): string {
+  if (node.kind === "folder") {
+    const collapseKey = `${mode}:${node.path}`;
+    const isCollapsed = collapsed.has(collapseKey);
+    const folderActionLabel = mode === "stage" ? "Stage folder" : "Unstage folder";
+    return `
+      <div class="git-source-folder ${isCollapsed ? "is-collapsed" : "is-expanded"}" role="none">
+        <div class="git-source-folder-row" role="none" title="${escapeAttribute(node.displayPath)}" style="--tree-depth: ${depth}" data-git-browser-path="${escapeAttribute(node.displayPath)}" data-git-browser-kind="folder">
+          <button class="git-source-folder-main" type="button" role="treeitem" aria-expanded="${!isCollapsed}" data-git-change-folder="${escapeAttribute(collapseKey)}">
+            <span class="git-source-folder-chevron">${codeIcons.chevron}</span>
+            <span class="git-source-folder-icon">${codeIcons.folder}</span>
+            <span class="git-source-folder-name">${escapeHtml(node.name)}</span>
+            <span class="git-source-folder-count">${escapeHtml(String(node.count))}</span>
+          </button>
+          <button class="icon-button git-source-folder-action" type="button" title="${folderActionLabel}" aria-label="${escapeAttribute(`${folderActionLabel}: ${node.displayPath}`)}" data-action="${mode === "stage" ? "stage-git-folder" : "unstage-git-folder"}" data-git-folder-path="${escapeAttribute(node.displayPath)}" ${busy ? "disabled" : ""}>
+            ${icon}
+          </button>
+        </div>
+        ${isCollapsed ? "" : `<div class="git-source-folder-children" role="group">${sortedGitChangeTreeChildren(node).map((child) => renderGitSourceFileTreeNode(child, collapsed, mode, action, icon, actionLabel, busy, depth + 1)).join("")}</div>`}
+      </div>
+    `;
+  }
+
+  const file = node.file;
+  const displayPath = node.displayPath;
+  return `
+    <div class="git-source-file-row" role="none" title="${escapeAttribute(displayPath)}" style="--tree-depth: ${depth}" data-git-browser-path="${escapeAttribute(displayPath)}" data-git-browser-kind="file">
+      <button class="git-source-file-main" type="button" role="treeitem" data-git-change-file="${escapeAttribute(node.path)}" data-git-diff-scope="${mode === "stage" ? "unstaged" : "staged"}">
+        <span class="git-source-file-status is-${escapeAttribute(file.operation)}">${escapeHtml(gitSourceStatusLetter(file))}</span>
+        <span class="git-source-file-icon">${codeIcons.file}</span>
+        <span class="git-source-file-name">${escapeHtml(node.name)}</span>
+      </button>
+      <button class="icon-button git-source-file-action" type="button" title="${escapeAttribute(actionLabel)}" aria-label="${escapeAttribute(`${actionLabel}: ${displayPath}`)}" data-action="${escapeAttribute(action)}" data-git-file-path="${escapeAttribute(file.path)}" ${busy ? "disabled" : ""}>
+        ${icon}
+      </button>
+    </div>
+  `;
+}
+
+function gitSourceStatusLetter(file: services.WorkspaceGitChangedFile): string {
+  switch (file.operation) {
+    case "created":
+      return "A";
+    case "deleted":
+      return "D";
+    case "renamed":
+      return "R";
+    case "copied":
+      return "C";
+    case "conflicted":
+      return "U";
+    default:
+      return "M";
+  }
+}
+
+function renderGitWorkingChanges(workspaceID: string, repository: services.WorkspaceGitRepositoryStatus): string {
+  const stashDetail = state.gitStashDetails.get(gitRepositoryDraftKey(workspaceID, repository.folderId));
+  if (stashDetail) {
+    return renderSelectedGitStashReview(stashDetail);
+  }
+  const files = repository.files ?? [];
+  const selectedCommitReview = renderSelectedGitCommitReview(workspaceID, repository);
+  if (!files.length && !selectedCommitReview) {
     return `<div class="empty-state compact">No Git changes.</div>`;
   }
-  const treeCollapsed = isGitChangeTreeCollapsed(workspaceID, repository.folderId);
   return `
-    <div class="git-working-changes-layout ${treeCollapsed ? "is-tree-collapsed" : ""}">
-      <aside class="git-change-tree-panel" aria-label="Changed files">
-        ${treeCollapsed ? renderGitChangeTreeCollapsedRail(repository) : renderGitChangeFileTree(workspaceID, repository)}
-      </aside>
-      <div class="change-file-list git-change-file-list" data-git-change-file-list>
-        ${files.map(renderGitChangedFile).join("")}
-      </div>
+    <div class="change-file-list git-change-file-list" data-git-change-file-list>
+      ${files.length
+        ? files.filter((file) => file.staged).map((file) => renderGitWorkingChangedFile(workspaceID, repository.folderId, file, "staged")).join("")
+          + files.filter((file) => file.unstaged).map((file) => renderGitWorkingChangedFile(workspaceID, repository.folderId, file, "unstaged")).join("")
+        : `<div class="empty-state compact">No working tree changes.</div>`}
+      ${selectedCommitReview}
     </div>
+  `;
+}
+
+function renderSelectedGitStashReview(detail: services.WorkspaceGitStashDetail): string {
+  const files = detail.files ?? [];
+  return `
+    <section class="git-stash-review" aria-label="Stash review">
+      <header class="git-commit-review-header">
+        <div><strong>${escapeHtml(detail.stash?.ref ?? "Stash")}</strong><span>${escapeHtml(detail.stash?.message ?? "")}</span></div>
+        <button class="secondary-button" type="button" data-action="close-git-stash-review">Close</button>
+      </header>
+      ${files.length ? `<div class="git-commit-review-files">${files.map((file) => renderGitCommitReviewFile(detail.stash?.ref ?? "stash", file)).join("")}</div>` : `<div class="empty-state compact">No files in this stash.</div>`}
+    </section>
+  `;
+}
+
+function renderGitWorkingChangedFile(workspaceID: string, folderID: string, file: services.WorkspaceGitChangedFile, scope: GitWorkingDiffScope): string {
+  const key = gitWorkingDiffKey(workspaceID, folderID, file.path, scope);
+  const hydrated = state.gitWorkingDiffs.get(key);
+  const loaded = Boolean(hydrated) || state.gitWorkingDiffFailures.has(key);
+  return renderGitChangedFile(hydrated ?? gitChangedFileForScope(file, scope), !loaded, scope);
+}
+
+function gitChangedFileForScope(file: services.WorkspaceGitChangedFile, scope: GitWorkingDiffScope): services.WorkspaceGitChangedFile {
+  const status = scope === "staged" ? file.indexStatus ?? "" : file.worktreeStatus ?? "";
+  const untracked = scope === "unstaged" && file.indexStatus === "?" && file.worktreeStatus === "?";
+  return {
+    ...file,
+    operation: untracked ? file.operation : gitOperationForScopedStatus(status, file.operation),
+    status: untracked ? file.status : scope === "staged" ? `${status} ` : ` ${status}`,
+    indexStatus: scope === "staged" ? file.indexStatus : undefined,
+    worktreeStatus: scope === "unstaged" ? file.worktreeStatus : undefined,
+    staged: scope === "staged",
+    unstaged: scope === "unstaged",
+  };
+}
+
+function gitOperationForScopedStatus(status: string, fallback: string): string {
+  switch (status) {
+    case "A": return "created";
+    case "D": return "deleted";
+    case "R": return "renamed";
+    case "C": return "copied";
+    case "U": return "conflicted";
+    case "M":
+    case "?": return "edited";
+    default: return fallback;
+  }
+}
+
+function renderSelectedGitCommitReview(workspaceID: string, repository: services.WorkspaceGitRepositoryStatus): string {
+  const selectedHash = state.selectedGitCommitHashes.get(workspaceID) ?? "";
+  if (!selectedHash) {
+    return "";
+  }
+  const key = gitCommitDetailKey(workspaceID, repository.folderId, selectedHash);
+  const detail = state.gitCommitDetails.get(key);
+  const commit = detail?.commit ?? (repository.commits ?? []).find((item) => item.hash === selectedHash);
+  if (!commit) {
+    return "";
+  }
+  const files = detail?.files ?? [];
+  return `
+    <section class="git-commit-review" aria-labelledby="git-commit-review-${escapeAttribute(commit.hash)}">
+      <header class="git-commit-review-header" data-git-commit-review-header data-commit-hash="${escapeAttribute(commit.hash)}">
+        <div>
+          <h3 id="git-commit-review-${escapeAttribute(commit.hash)}">${escapeHtml(commit.subject || commit.shortHash)}</h3>
+          <button class="git-commit-review-copy" type="button" title="Copy commit hash" data-action="copy-git-commit-hash" data-commit-hash="${escapeAttribute(commit.hash)}">
+            ${escapeHtml(`${commit.shortHash} - ${commit.authorName || "Unknown"} - ${formatGitDate(commit.authoredAt)}`)}
+          </button>
+        </div>
+      </header>
+      ${state.loadingGitCommitDetails.has(key)
+        ? `<div class="empty-state compact">${renderSpinnerLabel("Loading commit")}</div>`
+        : files.length
+          ? `<div class="git-commit-review-files">${files.map((file) => renderGitCommitReviewFile(commit.hash, file)).join("")}</div>`
+          : `<div class="empty-state compact">No changed files in this commit.</div>`}
+    </section>
+  `;
+}
+
+function renderGitCommitReviewFile(hash: string, file: services.WorkspaceGitChangedFile): string {
+  const normalizedPath = normalizeGitChangePath(file.path);
+  return `
+    <article class="change-file git-commit-review-file" data-change-file data-git-commit-hash="${escapeAttribute(hash)}" data-git-commit-file-path="${escapeAttribute(normalizedPath)}">
+      <header>
+        <div class="change-file-title">
+          ${icons.file}
+          <strong title="${escapeAttribute(file.path)}">${escapeHtml(file.path)}</strong>
+        </div>
+        <span class="change-operation is-${escapeAttribute(file.operation)}">${escapeHtml(changeOperationLabel(file.operation))}</span>
+      </header>
+      ${renderGitChangeStatus(file)}
+      ${file.diffAvailable && file.diff ? renderGitDiff(file.diff, "") : renderGitChangeMetadata(file)}
+    </article>
   `;
 }
 
@@ -161,6 +596,7 @@ function buildGitChangeTree(files: services.WorkspaceGitChangedFile[]): GitChang
     kind: "folder",
     name: "",
     path: "",
+    displayPath: "",
     count: 0,
     children: new Map<string, GitChangeTreeNode>(),
   };
@@ -177,6 +613,7 @@ function buildGitChangeTree(files: services.WorkspaceGitChangedFile[]): GitChang
     folder.count++;
     segments.slice(0, -1).forEach((segment) => {
       const nextPath = folder.path ? `${folder.path}/${normalizeGitChangePath(segment)}` : normalizeGitChangePath(segment);
+      const nextDisplayPath = folder.displayPath ? `${folder.displayPath}/${segment}` : segment;
       const key = normalizeGitChangePath(segment);
       let child = folder.children.get(key);
       if (!child || child.kind !== "folder") {
@@ -184,6 +621,7 @@ function buildGitChangeTree(files: services.WorkspaceGitChangedFile[]): GitChang
           kind: "folder",
           name: segment,
           path: nextPath,
+          displayPath: nextDisplayPath,
           count: 0,
           children: new Map<string, GitChangeTreeNode>(),
         };
@@ -288,6 +726,25 @@ function renderGitRefreshOrSyncButton(
   `;
 }
 
+function renderGitSummarySyncButton(
+  repository: services.WorkspaceGitRepositoryStatus,
+  loading: boolean,
+  operation: string,
+): string {
+  const ahead = Math.max(0, repository.aheadCount ?? 0);
+  const behind = Math.max(0, repository.behindCount ?? 0);
+  const pending = ahead > 0 || behind > 0;
+  const label = pending ? `Sync (${behind} down, ${ahead} up)` : "Sync";
+  const busy = loading || Boolean(operation);
+  return `
+    <button class="secondary-button icon-text-button git-sync-button git-summary-sync-button" type="button" title="${escapeAttribute(label)}" aria-label="${escapeAttribute(label)}" data-action="sync-git-branch" ${busy ? "disabled" : ""}>
+      ${operation === "Syncing branch" ? `<span class="spinner" aria-hidden="true"></span>` : icons.refresh}
+      <span>Sync</span>
+      ${pending ? `<span class="git-sync-counts" aria-hidden="true">${escapeHtml(`${behind} down / ${ahead} up`)}</span>` : ""}
+    </button>
+  `;
+}
+
 function renderGitRepositoryOption(repository: services.WorkspaceGitRepositorySummary, selectedFolderID: string): string {
   const label = `${repository.label}${repository.available ? "" : " unavailable"}`;
   return `
@@ -315,10 +772,10 @@ function renderGitRepositorySummary(
       : "detached"
     : repository.currentBranch || "unborn";
   return `
-    <div class="change-review-summary git-repository-summary" aria-label="Git summary">
+    <div class="git-repository-summary" aria-label="Git summary">
       <span>${escapeHtml(branch)}</span>
-      <span>${repository.dirty ? "Dirty" : "Clean"}</span>
       <span>${escapeHtml(String(repository.fileCount ?? 0))} files</span>
+      ${renderGitSummarySyncButton(repository, loading, operation)}
       ${operation ? `<span><span class="spinner" aria-hidden="true"></span>${escapeHtml(operation)}</span>` : ""}
       ${loading && !operation ? `<span><span class="spinner" aria-hidden="true"></span>Refreshing</span>` : ""}
     </div>
@@ -335,8 +792,8 @@ function renderGitCommitForm(workspaceID: string, repository: services.Workspace
         <span>Commit message</span>
         <textarea rows="3" spellcheck="true" data-git-commit-message ${busy ? "disabled" : ""}>${escapeHtml(draft)}</textarea>
       </label>
-      <button class="primary-button icon-text-button" type="submit" ${repository.dirty && draft.trim() && !busy ? "" : "disabled"}>
-        ${busy && operation === "Committing" ? `<span class="spinner" aria-hidden="true"></span>` : icons.check}
+      <button class="primary-button icon-text-button git-commit-button" type="submit" ${(repository.stagedFileCount ?? 0) && draft.trim() && !busy ? "" : "disabled"}>
+        ${busy && operation === "Committing" ? `<span class="spinner" aria-hidden="true"></span>` : icons.gitCommit}
         <span>Commit</span>
       </button>
     </form>
@@ -371,7 +828,7 @@ function renderGitBranchControls(workspaceID: string, repository: services.Works
           </select>
         </label>
         <button class="secondary-button icon-text-button" type="submit" ${switchDraft && switchDraft !== currentBranch && !repository.dirty && !busy ? "" : "disabled"}>
-          ${busy && operation === "Switching branch" ? `<span class="spinner" aria-hidden="true"></span>` : icons.git}
+          ${busy && operation === "Switching branch" ? `<span class="spinner" aria-hidden="true"></span>` : icons.gitBranch}
           <span>Switch</span>
         </button>
       </form>
@@ -383,7 +840,7 @@ function renderGitBranchControls(workspaceID: string, repository: services.Works
           </select>
         </label>
         <button class="secondary-button icon-text-button" type="submit" ${mergeDraft && mergeDraft !== currentBranch && !repository.dirty && !busy ? "" : "disabled"}>
-          ${busy && operation === "Merging branch" ? `<span class="spinner" aria-hidden="true"></span>` : icons.git}
+          ${busy && operation === "Merging branch" ? `<span class="spinner" aria-hidden="true"></span>` : icons.gitMerge}
           <span>Merge</span>
         </button>
       </form>
@@ -424,68 +881,93 @@ function renderGitCommitHistory(workspaceID: string, repository: services.Worksp
   const selectedHash = state.selectedGitCommitHashes.get(workspaceID) ?? "";
   return `
     <div class="git-commit-list" role="list">
-      ${commits.map((commit) => renderGitCommitItem(commit, selectedHash)).join("")}
+      ${commits.map((commit) => renderGitCommitItem(workspaceID, repository, commit, selectedHash)).join("")}
     </div>
   `;
 }
 
-function renderGitCommitItem(commit: services.WorkspaceGitCommit, selectedHash: string): string {
+function renderGitCommitItem(
+  workspaceID: string,
+  repository: services.WorkspaceGitRepositoryStatus,
+  commit: services.WorkspaceGitCommit,
+  selectedHash: string,
+): string {
   const selected = selectedHash === commit.hash;
+  const key = gitCommitDetailKey(workspaceID, repository.folderId, commit.hash);
   return `
-    <button class="git-commit-item ${selected ? "is-selected" : ""}" type="button" data-action="select-git-commit" data-commit-hash="${escapeAttribute(commit.hash)}">
-      <strong title="${escapeAttribute(commit.subject)}">${escapeHtml(commit.subject || commit.shortHash)}</strong>
-      <span>${escapeHtml(commit.shortHash)} · ${escapeHtml(commit.authorName || "Unknown")} · ${escapeHtml(formatGitDate(commit.authoredAt))}</span>
-    </button>
+    <article class="git-commit-item ${selected ? "is-selected" : ""}">
+      <button class="git-commit-main" type="button" aria-expanded="${selected}" data-action="select-git-commit" data-commit-hash="${escapeAttribute(commit.hash)}">
+        <span class="git-commit-dot" aria-hidden="true"></span>
+        <span class="git-commit-text">
+          <strong title="${escapeAttribute(commit.subject)}">${escapeHtml(commit.subject || commit.shortHash)}</strong>
+          <span>${escapeHtml(commit.shortHash)} - ${escapeHtml(commit.authorName || "Unknown")} - ${escapeHtml(formatGitDate(commit.authoredAt))}</span>
+        </span>
+      </button>
+      ${selected ? renderGitCommitExpandedFiles(key, commit.hash) : ""}
+    </article>
   `;
 }
 
-function renderGitSelectedCommit(workspaceID: string, repository: services.WorkspaceGitRepositoryStatus): string {
-  const selectedHash = state.selectedGitCommitHashes.get(workspaceID) ?? "";
-  if (!selectedHash) {
-    return "";
-  }
-  const key = gitCommitDetailKey(workspaceID, repository.folderId, selectedHash);
+function renderGitCommitExpandedFiles(key: string, hash: string): string {
   if (state.loadingGitCommitDetails.has(key)) {
-    return `<div class="git-commit-detail">${renderSpinnerLabel("Loading commit")}</div>`;
+    return `<div class="git-commit-files">${renderSpinnerLabel("Loading commit")}</div>`;
   }
   const detail = state.gitCommitDetails.get(key);
   if (!detail) {
     return "";
   }
   const files = detail.files ?? [];
-  return `
-    <article class="git-commit-detail">
-      <header>
-        <div>
-          <h3 title="${escapeAttribute(detail.commit.subject)}">${escapeHtml(detail.commit.subject || detail.commit.shortHash)}</h3>
-          <span>${escapeHtml(detail.commit.shortHash)} · ${escapeHtml(detail.commit.authorName || "Unknown")} · ${escapeHtml(formatGitDate(detail.commit.authoredAt))}</span>
-        </div>
-      </header>
-      ${files.length
-        ? `<div class="change-file-list">${files.map(renderGitCommitChangedFile).join("")}</div>`
-        : `<div class="empty-state compact">No changed files.</div>`}
-    </article>
-  `;
+  if (!files.length) {
+    return `<div class="git-commit-files"><span>No changed files.</span></div>`;
+  }
+  return `<div class="git-commit-files">${files.map((file) => renderGitCommitChangedFile(hash, file)).join("")}</div>`;
 }
 
-function renderGitCommitChangedFile(file: services.WorkspaceGitChangedFile): string {
+function renderGitCommitChangedFile(hash: string, file: services.WorkspaceGitChangedFile): string {
+  const displayPath = displayGitChangePath(file.path);
+  const normalizedPath = normalizeGitChangePath(file.path);
   return `
-    <article class="change-file" data-change-file>
-      <header>
-        <div class="change-file-title">
-          ${icons.file}
-          <strong title="${escapeAttribute(file.path)}">${escapeHtml(file.path)}</strong>
-        </div>
-        <span class="change-operation is-${escapeAttribute(file.operation)}">${escapeHtml(changeOperationLabel(file.operation))}</span>
-      </header>
-      ${file.diffAvailable && file.diff ? renderGitDiff(file.diff, "") : `<div class="change-metadata"><span>Diff is unavailable.</span></div>`}
-    </article>
+    <button class="git-commit-file-row" type="button" title="${escapeAttribute(displayPath)}" data-git-commit-file data-commit-hash="${escapeAttribute(hash)}" data-git-commit-file-path="${escapeAttribute(normalizedPath)}">
+      <span class="git-source-file-status is-${escapeAttribute(file.operation)}">${escapeHtml(gitSourceStatusLetter(file))}</span>
+      <span>${escapeHtml(displayPath)}</span>
+    </button>
   `;
 }
 
 export function bindGitEvents(root: ParentNode) {
+  if (!gitMenuHistoryBound) {
+    gitMenuHistoryBound = true;
+    window.addEventListener("popstate", () => {
+      const workspace = activeWorkspace();
+      const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+      if (!workspace || !repository) return;
+      const key = gitRepositoryDraftKey(workspace.id, repository.folderId);
+      if ((state.gitMenuPages.get(key) ?? "root") !== "root") {
+        state.gitMenuPages.set(key, "root");
+        getAppCallbacks().render();
+      }
+    });
+  }
+  root.querySelectorAll<HTMLDetailsElement>("[data-git-source-menu]").forEach((menu) => {
+    menu.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeGitMenu();
+      }
+    });
+    menu.addEventListener("toggle", () => {
+      if (!menu.open) {
+        const workspace = activeWorkspace();
+        const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+        if (workspace && repository) state.gitMenuPages.delete(gitRepositoryDraftKey(workspace.id, repository.folderId));
+        if ((window.history.state as { echoGitMenu?: boolean } | null)?.echoGitMenu) window.history.back();
+      }
+    });
+  });
   bindGitSplitDiffScroll(root);
   bindGitChangeTree(root);
+  bindGitChangeContextMenus(root);
+  bindGitWorkingDiffs(root);
   root
     .querySelectorAll<HTMLSelectElement>("[data-git-repository-select]")
     .forEach((select) => select.addEventListener("change", () => handleGitRepositorySelect(select)));
@@ -522,6 +1004,32 @@ function bindGitChangeTree(root: ParentNode) {
   root
     .querySelectorAll<HTMLButtonElement>("[data-git-change-file]")
     .forEach((button) => button.addEventListener("click", handleGitChangeFileSelect));
+  root
+    .querySelectorAll<HTMLButtonElement>("[data-git-commit-file]")
+    .forEach((button) => button.addEventListener("click", handleGitCommitFileSelect));
+}
+
+function bindGitChangeContextMenus(root: ParentNode) {
+  root.querySelectorAll<HTMLElement>("[data-git-browser-path]").forEach((row) => {
+    row.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const workspace = activeWorkspace();
+      const path = row.dataset.gitBrowserPath ?? "";
+      if (!workspace || !path) {
+        return;
+      }
+      showContextMenu({
+        workspaceId: workspace.id,
+        workspacePath: path,
+        gitPath: path,
+        gitKind: row.dataset.gitBrowserKind === "folder" ? "folder" : "file",
+        displayPath: path,
+        x: event.clientX,
+        y: event.clientY,
+      });
+    });
+  });
 }
 
 function handleGitChangeTreeToggle() {
@@ -559,18 +1067,121 @@ function handleGitChangeFolderToggle(event: MouseEvent) {
 function handleGitChangeFileSelect(event: MouseEvent) {
   const button = event.currentTarget as HTMLButtonElement;
   const targetPath = button.dataset.gitChangeFile ?? "";
-  if (!targetPath) {
+  const scope = gitWorkingDiffScope(button.dataset.gitDiffScope);
+  if (!targetPath || !scope) {
     return;
+  }
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+  const file = repository?.files?.find((candidate) => normalizeGitChangePath(candidate.path) === targetPath);
+  if (workspace && repository && file) {
+    void loadGitWorkingDiff(workspace.id, repository.folderId, file, scope);
   }
   const repositoryRoot = button.closest<HTMLElement>("[data-git-repository]");
   const target = Array.from(repositoryRoot?.querySelectorAll<HTMLElement>("[data-git-change-file-path]") ?? [])
-    .find((element) => element.dataset.gitChangeFilePath === targetPath);
+    .find((element) => element.dataset.gitChangeFilePath === targetPath && element.dataset.gitDiffScope === scope);
   if (!target) {
     return;
   }
   button
-    .closest<HTMLElement>("[data-git-change-tree]")
-    ?.querySelectorAll<HTMLElement>(".git-change-tree-row.is-selected")
+    .closest<HTMLElement>(".git-source-change-sections")
+    ?.querySelectorAll<HTMLElement>("[data-git-change-file].is-selected")
+    .forEach((row) => row.classList.remove("is-selected"));
+  button.classList.add("is-selected");
+  const review = target.closest<HTMLElement>("[data-change-review]");
+  if (review) {
+    markCurrentChangeTarget(review, target);
+  }
+  target.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function bindGitWorkingDiffs(root: ParentNode) {
+  gitWorkingDiffObserver?.disconnect();
+  gitWorkingDiffObserver = null;
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+  const list = root.querySelector<HTMLElement>("[data-git-change-file-list]");
+  if (!workspace || !repository || !list) {
+    return;
+  }
+  const pending = Array.from(list.querySelectorAll<HTMLElement>("[data-git-diff-pending]"));
+  if (!pending.length) {
+    return;
+  }
+  if (!("IntersectionObserver" in window)) {
+    const element = pending[0];
+    const file = repository.files?.find((candidate) => normalizeGitChangePath(candidate.path) === element?.dataset.gitChangeFilePath);
+    const scope = gitWorkingDiffScope(element?.dataset.gitDiffScope);
+    if (file && scope) {
+      void loadGitWorkingDiff(workspace.id, repository.folderId, file, scope);
+    }
+    return;
+  }
+  gitWorkingDiffObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) {
+        continue;
+      }
+      const element = entry.target as HTMLElement;
+      gitWorkingDiffObserver?.unobserve(element);
+      const path = element.dataset.gitChangeFilePath ?? "";
+      const file = repository.files?.find((candidate) => normalizeGitChangePath(candidate.path) === path);
+      const scope = gitWorkingDiffScope(element.dataset.gitDiffScope);
+      if (file && scope) {
+        void loadGitWorkingDiff(workspace.id, repository.folderId, file, scope);
+      }
+    }
+  }, { root: list, rootMargin: "320px 0px" });
+  pending.forEach((element) => gitWorkingDiffObserver?.observe(element));
+}
+
+async function loadGitWorkingDiff(workspaceID: string, folderID: string, file: services.WorkspaceGitChangedFile, scope: GitWorkingDiffScope) {
+  const key = gitWorkingDiffKey(workspaceID, folderID, file.path, scope);
+  if (state.gitWorkingDiffs.has(key) || state.gitWorkingDiffFailures.has(key) || state.loadingGitWorkingDiffs.has(key)) {
+    return;
+  }
+  const generationKey = gitWorkingDiffGenerationKey(workspaceID, folderID);
+  const generation = state.gitWorkingDiffGenerations.get(generationKey) ?? 0;
+  state.loadingGitWorkingDiffs.add(key);
+  try {
+    const hydrated = await LoadWorkspaceGitFileDiffForScope(workspaceID, folderID, file.path, scope);
+    if ((state.gitWorkingDiffGenerations.get(generationKey) ?? 0) !== generation) {
+      return;
+    }
+    state.gitWorkingDiffs.set(key, hydrated);
+    patchGitWorkingDiffCard(hydrated, scope);
+  } catch (error) {
+    if ((state.gitWorkingDiffGenerations.get(generationKey) ?? 0) !== generation) {
+      return;
+    }
+    state.gitWorkingDiffFailures.add(key);
+    pushToast(errorMessage(error), "error");
+    patchGitWorkingDiffCard(file, scope);
+  } finally {
+    state.loadingGitWorkingDiffs.delete(key);
+  }
+}
+
+function handleGitCommitFileSelect(event: MouseEvent) {
+  const button = event.currentTarget as HTMLButtonElement;
+  const hash = button.dataset.commitHash ?? "";
+  const targetPath = button.dataset.gitCommitFilePath ?? "";
+  if (!hash || !targetPath) {
+    return;
+  }
+  const repositoryRoot = button.closest<HTMLElement>("[data-git-repository]");
+  const target = Array.from(repositoryRoot?.querySelectorAll<HTMLElement>("[data-git-commit-file-path]") ?? [])
+    .find((element) =>
+      element.dataset.gitCommitHash === hash &&
+      element.dataset.gitCommitFilePath === targetPath &&
+      element.matches("[data-change-file]")
+    );
+  if (!target) {
+    return;
+  }
+  button
+    .closest<HTMLElement>(".git-commit-files")
+    ?.querySelectorAll<HTMLElement>(".git-commit-file-row.is-selected")
     .forEach((row) => row.classList.remove("is-selected"));
   button.classList.add("is-selected");
   const review = target.closest<HTMLElement>("[data-change-review]");
@@ -838,6 +1449,11 @@ export async function selectGitCommit(hash: string) {
   if (!workspace || !hash) {
     return;
   }
+  if (state.selectedGitCommitHashes.get(workspace.id) === hash) {
+    state.selectedGitCommitHashes.delete(workspace.id);
+    getAppCallbacks().render();
+    return;
+  }
   const view = gitRepositoryViewFor(workspace.id);
   const folderID = selectedGitRepositoryFolderID(workspace.id, view);
   if (!folderID) {
@@ -847,10 +1463,12 @@ export async function selectGitCommit(hash: string) {
   const key = gitCommitDetailKey(workspace.id, folderID, hash);
   if (state.gitCommitDetails.has(key)) {
     getAppCallbacks().render();
+    scheduleScrollToGitCommitReview(hash);
     return;
   }
   state.loadingGitCommitDetails.add(key);
   getAppCallbacks().render();
+  scheduleScrollToGitCommitReview(hash);
   try {
     state.gitCommitDetails.set(key, await LoadWorkspaceGitCommit(workspace.id, folderID, hash));
   } catch (error) {
@@ -858,6 +1476,7 @@ export async function selectGitCommit(hash: string) {
   } finally {
     state.loadingGitCommitDetails.delete(key);
     getAppCallbacks().render();
+    scheduleScrollToGitCommitReview(hash);
   }
 }
 
@@ -872,9 +1491,19 @@ export function dropWorkspaceGitRepositoryState(workspaceID: string) {
       state.collapsedGitChangeFolders.delete(key);
     }
   }
+  for (const key of Array.from(state.collapsedGitChangeSections)) {
+    if (key.startsWith(`${workspaceID}:`)) {
+      state.collapsedGitChangeSections.delete(key);
+    }
+  }
   for (const key of Array.from(state.collapsedGitChangeTrees)) {
     if (key.startsWith(`${workspaceID}:`)) {
       state.collapsedGitChangeTrees.delete(key);
+    }
+  }
+  for (const key of Array.from(state.expandedGitHistories)) {
+    if (key.startsWith(`${workspaceID}:`)) {
+      state.expandedGitHistories.delete(key);
     }
   }
   for (const key of Array.from(state.gitCommitDetails.keys())) {
@@ -907,6 +1536,31 @@ export function dropWorkspaceGitRepositoryState(workspaceID: string) {
       state.gitMergeBranchDrafts.delete(key);
     }
   }
+  for (const key of Array.from(state.gitMenuPages.keys())) {
+    if (key.startsWith(`${workspaceID}:`)) state.gitMenuPages.delete(key);
+  }
+  for (const key of Array.from(state.gitStashDetails.keys())) {
+    if (key.startsWith(`${workspaceID}:`)) state.gitStashDetails.delete(key);
+  }
+}
+
+function patchGitWorkingDiffCard(file: services.WorkspaceGitChangedFile, scope: GitWorkingDiffScope) {
+  const path = normalizeGitChangePath(file.path);
+  const list = appRoot.querySelector<HTMLElement>("[data-git-change-file-list]");
+  const current = Array.from(list?.querySelectorAll<HTMLElement>("[data-git-change-file-path]") ?? [])
+    .find((element) => element.dataset.gitChangeFilePath === path && element.dataset.gitDiffScope === scope && !element.dataset.gitCommitHash);
+  if (!current) {
+    return;
+  }
+  const template = document.createElement("template");
+  template.innerHTML = renderGitChangedFile(file, false, scope).trim();
+  const replacement = template.content.firstElementChild;
+  if (!(replacement instanceof HTMLElement)) {
+    return;
+  }
+  current.replaceWith(replacement);
+  getAppCallbacks().bindActionEvents(replacement);
+  bindGitSplitDiffScroll(replacement);
 }
 
 function handleGitRepositorySelect(select: HTMLSelectElement) {
@@ -1048,6 +1702,417 @@ export async function syncWorkspaceGitRepository(workspaceID: string) {
   }, true);
 }
 
+export function openGitMenuPage(page: string) {
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+  const allowed: GitMenuPage[] = ["root", "commit", "changes", "pull-push", "branch", "remote", "stash", "tags"];
+  if (!workspace || !repository || !allowed.includes(page as GitMenuPage)) {
+    return;
+  }
+  state.gitMenuPages.set(gitRepositoryDraftKey(workspace.id, repository.folderId), page as GitMenuPage);
+  if (page !== "root" && !(window.history.state as { echoGitMenu?: boolean } | null)?.echoGitMenu) {
+    window.history.pushState({ ...(window.history.state ?? {}), echoGitMenu: true }, "");
+  } else if (page === "root" && (window.history.state as { echoGitMenu?: boolean } | null)?.echoGitMenu) {
+    window.history.back();
+  }
+  getAppCallbacks().render();
+  window.requestAnimationFrame(() => {
+    appRoot.querySelector<HTMLElement>("[data-git-source-menu] .git-menu-header button, [data-git-source-menu] .git-source-menu-popover > button")?.focus();
+  });
+}
+
+export function closeGitMenu() {
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+  if (workspace && repository) {
+    state.gitMenuPages.delete(gitRepositoryDraftKey(workspace.id, repository.folderId));
+  }
+  if ((window.history.state as { echoGitMenu?: boolean } | null)?.echoGitMenu) {
+    window.history.back();
+  }
+  const menu = appRoot.querySelector<HTMLDetailsElement>("[data-git-source-menu]");
+  if (menu) {
+    menu.open = false;
+    menu.querySelector<HTMLElement>("summary")?.focus();
+  }
+}
+
+export function closeGitStashReview() {
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+  if (!workspace || !repository) {
+    return;
+  }
+  state.gitStashDetails.delete(gitRepositoryDraftKey(workspace.id, repository.folderId));
+  getAppCallbacks().render();
+}
+
+export async function runGitMenuCommand(command: string) {
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+  if (!workspace || !repository || !command) {
+    return;
+  }
+  if (command === "refresh") {
+    closeGitMenu();
+    await refreshWorkspaceGitRepository(workspace.id);
+    return;
+  }
+  if (command === "clone") {
+    await cloneGitRepositoryIntoWorkspace(workspace.id);
+    return;
+  }
+  if (command === "view_stash") {
+    const ref = await chooseGitValue("View stash", (repository.stashes ?? []).map((item) => ({ value: item.ref, label: `${item.ref}: ${item.message}` })));
+    if (!ref) return;
+    try {
+      const detail = await LoadWorkspaceGitStash(workspace.id, repository.folderId, ref);
+      state.gitStashDetails.set(gitRepositoryDraftKey(workspace.id, repository.folderId), detail);
+      closeGitMenu();
+      getAppCallbacks().render();
+    } catch (error) {
+      pushToast(errorMessage(error), "error");
+    }
+    return;
+  }
+  const request = await buildGitActionRequest(command, repository);
+  if (!request) {
+    return;
+  }
+  const label = gitActionOperationLabel(command);
+  closeGitMenu();
+  await runGitOperation(label, async (active, selectedRepository) => {
+    const view = await RunWorkspaceGitAction(active.id, selectedRepository.folderId, services.WorkspaceGitActionRequest.createFrom(request));
+    storeGitRepositoryView(active.id, view);
+    if (gitActionChangesWorktree(command)) {
+      await refreshOpenCodeTabsFromDisk(active.id, getAppCallbacks().codeViewCallbacks());
+    }
+    state.gitCommitMessageDrafts.delete(gitRepositoryDraftKey(active.id, selectedRepository.folderId));
+    pushToast(`${label.replace(/ing$/, "ed")}.`, "success");
+  }, true);
+}
+
+async function buildGitActionRequest(command: string, repository: services.WorkspaceGitRepositoryStatus): Promise<Partial<services.WorkspaceGitActionRequest> | null> {
+  const request: Partial<services.WorkspaceGitActionRequest> = { action: command };
+  const key = gitRepositoryDraftKey(activeWorkspace()?.id ?? "", repository.folderId);
+  const message = state.gitCommitMessageDrafts.get(key)?.trim() ?? "";
+  if (command === "commit") {
+    if (!message) {
+      pushToast("Enter a commit message first.", "error");
+      return null;
+    }
+    if ((repository.stagedFileCount ?? 0) > 0) {
+      request.action = "commit_staged";
+    } else if (window.confirm("No changes are staged. Stage all visible changes and commit them?")) {
+      request.action = "commit_all";
+    } else {
+      return null;
+    }
+    request.message = message;
+    return request;
+  }
+  if (command.startsWith("commit_")) {
+    const amend = command.includes("amend");
+    if (!message && !amend) {
+      pushToast("Enter a commit message first.", "error");
+      return null;
+    }
+    if (amend && !window.confirm("Amend the latest commit? This rewrites commit history.")) return null;
+    request.message = message;
+  }
+  const localBranches = (repository.branches ?? []).map((item) => ({ value: item.name, label: item.name }));
+  const otherBranches = localBranches.filter((item) => item.value !== repository.currentBranch);
+  const remoteBranches = (repository.remoteBranches ?? []).map((item) => ({ value: item.name, label: item.name }));
+  const tags = (repository.tags ?? []).map((item) => ({ value: item.name, label: item.name }));
+  const remotes = (repository.remotes ?? []).map((item) => ({ value: item.name, label: `${item.name}${item.fetchUrl ? ` — ${item.fetchUrl}` : ""}` }));
+  const stashes = (repository.stashes ?? []).map((item) => ({ value: item.ref, label: `${item.ref}: ${item.message}` }));
+  if (command === "checkout") {
+    request.ref = await chooseGitValue("Checkout to", [...localBranches, ...remoteBranches, ...tags], true);
+    if (!request.ref) return null;
+  } else if (command === "merge" || command === "rebase") {
+    request.ref = await chooseGitValue(command === "merge" ? "Merge branch" : "Rebase onto branch", otherBranches);
+    if (!request.ref) return null;
+  } else if (command === "create_branch" || command === "create_branch_from") {
+    request.name = window.prompt("New branch name")?.trim() ?? "";
+    if (!request.name) return null;
+    if (command === "create_branch_from") {
+      request.ref = await chooseGitValue("Create branch from", [...localBranches, ...remoteBranches, ...tags], true);
+      if (!request.ref) return null;
+    }
+  } else if (command === "rename_branch") {
+    request.ref = await chooseGitValue("Branch to rename", localBranches);
+    if (!request.ref) return null;
+    request.name = window.prompt("New branch name", request.ref)?.trim() ?? "";
+    if (!request.name || !window.confirm(`Rename ${request.ref} to ${request.name}?`)) return null;
+  } else if (command === "delete_branch") {
+    request.ref = await chooseGitValue("Delete branch", otherBranches);
+    if (!request.ref || !window.confirm(`Delete local branch ${request.ref}?`)) return null;
+  } else if (command === "delete_remote_branch") {
+    const selected = await chooseGitValue("Delete remote branch", remoteBranches);
+    const item = (repository.remoteBranches ?? []).find((candidate) => candidate.name === selected);
+    if (!item || !window.confirm(`Delete remote branch ${item.name}?`)) return null;
+    request.remote = item.remote;
+    request.branch = item.branch;
+  } else if (command === "publish_branch" || command === "push_tags") {
+    request.remote = await chooseGitValue(command === "publish_branch" ? "Publish to remote" : "Push tags to remote", remotes);
+    if (!request.remote) return null;
+  } else if (command === "pull_from" || command === "push_to") {
+    request.remote = await chooseGitValue(command === "pull_from" ? "Pull from remote" : "Push to remote", remotes);
+    if (!request.remote) return null;
+    request.branch = window.prompt("Remote branch name", repository.currentBranch ?? "")?.trim() ?? "";
+    if (!request.branch) return null;
+  } else if (command === "add_remote") {
+    request.name = window.prompt("Remote name", "origin")?.trim() ?? "";
+    if (!request.name) return null;
+    request.url = window.prompt("Remote URL")?.trim() ?? "";
+    if (!request.url) return null;
+  } else if (command === "remove_remote") {
+    request.remote = await chooseGitValue("Remove remote", remotes);
+    if (!request.remote || !window.confirm(`Remove remote ${request.remote}?`)) return null;
+  } else if (["apply_stash", "pop_stash", "drop_stash"].includes(command)) {
+    request.ref = await chooseGitValue(command === "apply_stash" ? "Apply stash" : command === "pop_stash" ? "Pop stash" : "Drop stash", stashes);
+    if (!request.ref || command === "drop_stash" && !window.confirm(`Drop ${request.ref}? This cannot be undone.`)) return null;
+  } else if (command === "drop_all_stashes") {
+    if (!window.confirm("Drop all stashes? This cannot be undone.")) return null;
+  } else if (["stash", "stash_untracked", "stash_staged"].includes(command)) {
+    request.message = window.prompt("Stash message (optional)")?.trim() ?? "";
+  } else if (command === "create_tag") {
+    request.name = window.prompt("Tag name")?.trim() ?? "";
+    if (!request.name) return null;
+    request.message = window.prompt("Annotated tag message (optional; leave blank for a lightweight tag)")?.trim() ?? "";
+  } else if (command === "delete_tag") {
+    request.ref = await chooseGitValue("Delete tag", tags);
+    if (!request.ref || !window.confirm(`Delete local tag ${request.ref}?`)) return null;
+  } else if (command === "delete_remote_tag") {
+    request.remote = await chooseGitValue("Delete tag from remote", remotes);
+    if (!request.remote) return null;
+    request.ref = window.prompt("Remote tag name")?.trim() ?? "";
+    if (!request.ref || !window.confirm(`Delete tag ${request.ref} from ${request.remote}?`)) return null;
+  } else if (command === "discard_all") {
+    if (!window.confirm(`Discard all Git changes in ${repository.label}? This cannot be undone.`)) return null;
+  } else if (command === "abort_rebase") {
+    if (!window.confirm("Abort the current rebase and restore its original state?")) return null;
+  }
+  return request;
+}
+
+function chooseGitValue(title: string, options: Array<{ value: string; label: string }>, allowCustom = false): Promise<string> {
+  return new Promise((resolve) => {
+    const id = `git-picker-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const backdrop = document.createElement("aside");
+    backdrop.className = "git-picker-backdrop";
+    backdrop.setAttribute("role", "dialog");
+    backdrop.setAttribute("aria-modal", "true");
+    backdrop.setAttribute("aria-labelledby", `${id}-title`);
+    backdrop.innerHTML = `
+      <form class="git-picker-dialog">
+        <header><strong id="${id}-title">${escapeHtml(title)}</strong><button class="icon-button" type="button" data-git-picker-cancel aria-label="Cancel">${icons.x}</button></header>
+        <label><span>Search or select</span><input type="text" autocomplete="off" list="${id}-options" data-git-picker-input ${allowCustom ? "" : "required"} /></label>
+        <datalist id="${id}-options">${options.map((item) => `<option value="${escapeAttribute(item.value)}">${escapeHtml(item.label)}</option>`).join("")}</datalist>
+        <div class="git-picker-options" role="listbox">${options.map((item) => `<button type="button" data-git-picker-value="${escapeAttribute(item.value)}" title="${escapeAttribute(item.label)}">${escapeHtml(item.label)}</button>`).join("")}</div>
+        <footer><button class="secondary-button" type="button" data-git-picker-cancel>Cancel</button><button class="primary-button" type="submit">Select</button></footer>
+      </form>`;
+    const finish = (value: string) => {
+      backdrop.remove();
+      resolve(value);
+    };
+    const input = backdrop.querySelector<HTMLInputElement>("[data-git-picker-input]")!;
+    backdrop.querySelectorAll<HTMLElement>("[data-git-picker-cancel]").forEach((button) => button.addEventListener("click", () => finish("")));
+    backdrop.querySelectorAll<HTMLButtonElement>("[data-git-picker-value]").forEach((button) => button.addEventListener("click", () => finish(button.dataset.gitPickerValue ?? "")));
+    backdrop.querySelector<HTMLFormElement>("form")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const value = input.value.trim();
+      const exact = options.find((item) => item.value === value);
+      if (exact || allowCustom) finish(exact?.value ?? value);
+      else input.setCustomValidity("Select a value from the list.");
+      input.reportValidity();
+    });
+    input.addEventListener("input", () => {
+      input.setCustomValidity("");
+      const query = input.value.trim().toLowerCase();
+      backdrop.querySelectorAll<HTMLButtonElement>("[data-git-picker-value]").forEach((button) => {
+        button.hidden = Boolean(query) && !button.textContent?.toLowerCase().includes(query) && !button.dataset.gitPickerValue?.toLowerCase().includes(query);
+      });
+    });
+    backdrop.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") finish("");
+    });
+    appRoot.append(backdrop);
+    input.focus();
+  });
+}
+
+async function cloneGitRepositoryIntoWorkspace(workspaceID: string) {
+  const url = window.prompt("Repository URL")?.trim() ?? "";
+  if (!url) return;
+  let parent = "";
+  try {
+    parent = (await ChooseWorkspaceGitCloneParent()).trim();
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+    return;
+  }
+  if (!parent) return;
+  const suggested = gitCloneDirectoryName(url);
+  const directory = window.prompt("Clone directory name", suggested)?.trim() ?? "";
+  if (!directory) return;
+  closeGitMenu();
+  state.gitRepositoryOperations.set(workspaceID, "Cloning repository");
+  getAppCallbacks().render();
+  try {
+    state.appState = await CloneWorkspaceGitRepository(workspaceID, url, parent, directory);
+    await refreshWorkspaceGitRepository(workspaceID, "", false);
+    pushToast("Cloned repository and added it to this workspace.", "success");
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+  } finally {
+    state.gitRepositoryOperations.delete(workspaceID);
+    getAppCallbacks().render();
+  }
+}
+
+function gitCloneDirectoryName(url: string): string {
+  return url.trim().replace(/[\\/]+$/, "").split(/[\\/:]/).pop()?.replace(/\.git$/i, "") ?? "repository";
+}
+
+function gitActionOperationLabel(command: string): string {
+  const labels: Record<string, string> = { pull: "Pulling", pull_rebase: "Pulling with rebase", pull_from: "Pulling", push: "Pushing", push_to: "Pushing", fetch: "Fetching", fetch_prune: "Fetching and pruning", fetch_all: "Fetching remotes", sync: "Syncing branch", checkout: "Checking out", merge: "Merging", rebase: "Rebasing", create_branch: "Creating branch", create_branch_from: "Creating branch", rename_branch: "Renaming branch", delete_branch: "Deleting branch", delete_remote_branch: "Deleting remote branch", publish_branch: "Publishing branch", add_remote: "Adding remote", remove_remote: "Removing remote", stash: "Stashing changes", stash_untracked: "Stashing changes", stash_staged: "Stashing staged changes", apply_latest_stash: "Applying stash", apply_stash: "Applying stash", pop_latest_stash: "Popping stash", pop_stash: "Popping stash", drop_stash: "Dropping stash", drop_all_stashes: "Dropping stashes", create_tag: "Creating tag", delete_tag: "Deleting tag", delete_remote_tag: "Deleting remote tag", push_tags: "Pushing tags", stage_all: "Staging changes", unstage_all: "Unstaging changes", discard_all: "Discarding changes", abort_rebase: "Aborting rebase", commit_staged: "Committing", commit_all: "Committing", commit_staged_amend: "Amending commit", commit_all_amend: "Amending commit", commit_staged_signoff: "Committing", commit_all_signoff: "Committing" };
+  return labels[command] ?? "Running Git action";
+}
+
+function gitActionChangesWorktree(command: string): boolean {
+  return ["pull", "pull_rebase", "pull_from", "sync", "checkout", "merge", "rebase", "abort_rebase", "apply_latest_stash", "apply_stash", "pop_latest_stash", "pop_stash", "discard_all", "create_branch", "create_branch_from"].includes(command);
+}
+
+export function toggleGitSourceSidebar() {
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+  if (!workspace || !repository) {
+    return;
+  }
+  const key = gitChangeTreeStateKey(workspace.id, repository.folderId);
+  if (state.collapsedGitChangeTrees.has(key)) {
+    state.collapsedGitChangeTrees.delete(key);
+  } else {
+    state.collapsedGitChangeTrees.add(key);
+  }
+  if (!patchGitSourceSidebarCollapsedState(state.collapsedGitChangeTrees.has(key))) {
+    getAppCallbacks().render();
+  }
+}
+
+export function toggleGitHistory() {
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+  if (!workspace || !repository) {
+    return;
+  }
+  const key = gitRepositoryDraftKey(workspace.id, repository.folderId);
+  if (state.expandedGitHistories.has(key)) {
+    state.expandedGitHistories.delete(key);
+  } else {
+    state.expandedGitHistories.add(key);
+  }
+  getAppCallbacks().render();
+}
+
+export function toggleGitChangeSection(section: string) {
+  if (section !== "stage" && section !== "unstage") {
+    return;
+  }
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+  if (!workspace || !repository) {
+    return;
+  }
+  const hasFiles = (repository.files ?? []).some((file) => section === "stage" ? file.unstaged : file.staged);
+  if (!hasFiles) {
+    return;
+  }
+  const key = gitChangeSectionStateKey(workspace.id, repository.folderId, section);
+  if (state.collapsedGitChangeSections.has(key)) {
+    state.collapsedGitChangeSections.delete(key);
+  } else {
+    state.collapsedGitChangeSections.add(key);
+  }
+  getAppCallbacks().render();
+}
+
+export function toggleGitDiffViewMode() {
+  state.gitDiffViewMode = state.gitDiffViewMode === "split" ? "inline" : "split";
+  getAppCallbacks().render();
+}
+
+export async function stageWorkspaceGitFile(path: string) {
+  path = path.trim();
+  if (!path) {
+    return;
+  }
+  await runGitOperation("Staging file", async (workspace, repository) => {
+    const view = await StageWorkspaceGitFile(workspace.id, repository.folderId, path);
+    storeGitRepositoryView(workspace.id, view);
+    pushToast("Staged file.", "success");
+  }, true);
+}
+
+export async function stageWorkspaceGitFolder(path: string) {
+  await runWorkspaceGitFolderOperation("Staging folder", "stage_folder", path, "Staged folder.");
+}
+
+export async function unstageWorkspaceGitFile(path: string) {
+  path = path.trim();
+  if (!path) {
+    return;
+  }
+  await runGitOperation("Unstaging file", async (workspace, repository) => {
+    const view = await UnstageWorkspaceGitFile(workspace.id, repository.folderId, path);
+    storeGitRepositoryView(workspace.id, view);
+    pushToast("Unstaged file.", "success");
+  }, true);
+}
+
+export async function unstageWorkspaceGitFolder(path: string) {
+  await runWorkspaceGitFolderOperation("Unstaging folder", "unstage_folder", path, "Unstaged folder.");
+}
+
+async function runWorkspaceGitFolderOperation(
+  operation: string,
+  action: "stage_folder" | "unstage_folder" | "discard_folder",
+  path: string,
+  successMessage: string,
+  refreshCodeTabs = false,
+) {
+  path = path.trim();
+  if (!path) {
+    return;
+  }
+  await runGitOperation(operation, async (workspace, repository) => {
+    const request = services.WorkspaceGitActionRequest.createFrom({ action, ref: path });
+    const view = await RunWorkspaceGitAction(workspace.id, repository.folderId, request);
+    storeGitRepositoryView(workspace.id, view);
+    if (refreshCodeTabs) {
+      await refreshOpenCodeTabsFromDisk(workspace.id, getAppCallbacks().codeViewCallbacks());
+    }
+    pushToast(successMessage, "success");
+  }, true);
+}
+
+export async function stageWorkspaceGitChanges() {
+  await runGitOperation("Staging changes", async (workspace, repository) => {
+    const view = await StageWorkspaceGitChanges(workspace.id, repository.folderId);
+    storeGitRepositoryView(workspace.id, view);
+    pushToast("Staged changes.", "success");
+  }, true);
+}
+
+export async function unstageWorkspaceGitChanges() {
+  await runGitOperation("Unstaging changes", async (workspace, repository) => {
+    const view = await UnstageWorkspaceGitChanges(workspace.id, repository.folderId);
+    storeGitRepositoryView(workspace.id, view);
+    pushToast("Unstaged changes.", "success");
+  }, true);
+}
+
 export async function openGitChangeInCode(path: string, line: number) {
   path = path.trim();
   const workspace = activeWorkspace();
@@ -1138,11 +2203,45 @@ function storeGitRepositoryView(workspaceID: string, view: services.WorkspaceGit
   const folderID = view.selectedFolderId || view.repository?.folderId || "";
   if (folderID) {
     state.selectedGitRepositoryFolders.set(workspaceID, folderID);
+    invalidateGitWorkingDiffs(workspaceID, folderID);
   }
   const selectedHash = state.selectedGitCommitHashes.get(workspaceID);
   if (selectedHash && !(view.repository?.commits ?? []).some((commit) => commit.hash === selectedHash)) {
     state.selectedGitCommitHashes.delete(workspaceID);
   }
+}
+
+function invalidateGitWorkingDiffs(workspaceID: string, folderID: string) {
+  const generationKey = gitWorkingDiffGenerationKey(workspaceID, folderID);
+  state.gitWorkingDiffGenerations.set(generationKey, (state.gitWorkingDiffGenerations.get(generationKey) ?? 0) + 1);
+  const prefix = `${generationKey}\u0000`;
+  for (const key of state.gitWorkingDiffs.keys()) {
+    if (key.startsWith(prefix)) {
+      state.gitWorkingDiffs.delete(key);
+    }
+  }
+  for (const key of state.gitWorkingDiffFailures) {
+    if (key.startsWith(prefix)) {
+      state.gitWorkingDiffFailures.delete(key);
+    }
+  }
+  for (const key of state.loadingGitWorkingDiffs) {
+    if (key.startsWith(prefix)) {
+      state.loadingGitWorkingDiffs.delete(key);
+    }
+  }
+}
+
+function gitWorkingDiffGenerationKey(workspaceID: string, folderID: string): string {
+  return `${workspaceID}\u0000${folderID}`;
+}
+
+function gitWorkingDiffKey(workspaceID: string, folderID: string, path: string, scope: GitWorkingDiffScope): string {
+  return `${gitWorkingDiffGenerationKey(workspaceID, folderID)}\u0000${scope}\u0000${normalizeGitChangePath(path)}`;
+}
+
+function gitWorkingDiffScope(value: string | undefined): GitWorkingDiffScope | null {
+  return value === "staged" || value === "unstaged" ? value : null;
 }
 
 function selectedGitRepositoryFolderID(workspaceID: string, view: services.WorkspaceGitRepositoryView): string {
@@ -1163,6 +2262,22 @@ function gitChangeTreeStateKey(workspaceID: string, folderID: string): string {
   return `${workspaceID}:${folderID}`;
 }
 
+export async function revertWorkspaceGitFolder(path: string) {
+  path = path.trim();
+  if (!path || !window.confirm(`Revert all Git changes in ${path}? This cannot be undone.`)) {
+    return;
+  }
+  await runWorkspaceGitFolderOperation("Reverting folder", "discard_folder", path, "Reverted folder changes.", true);
+}
+
+function gitChangeSectionStateKey(workspaceID: string, folderID: string, section: "stage" | "unstage"): string {
+  return `${workspaceID}:${folderID}:${section}`;
+}
+
+function isGitSourceFileSectionCollapsed(workspaceID: string, folderID: string, section: "stage" | "unstage", fileCount: number): boolean {
+  return fileCount === 0 || state.collapsedGitChangeSections.has(gitChangeSectionStateKey(workspaceID, folderID, section));
+}
+
 function isGitChangeTreeCollapsed(workspaceID: string, folderID: string): boolean {
   return state.collapsedGitChangeTrees.has(gitChangeTreeStateKey(workspaceID, folderID));
 }
@@ -1181,6 +2296,31 @@ function gitCommitDetailKey(workspaceID: string, folderID: string, hash: string)
   return `${workspaceID}:${folderID}:${hash}`;
 }
 
+function patchGitSourceSidebarCollapsedState(collapsed: boolean): boolean {
+  const layout = appRoot.querySelector<HTMLElement>("[data-git-source-layout]");
+  if (!layout) {
+    return false;
+  }
+  layout.classList.toggle("is-sidebar-collapsed", collapsed);
+  layout
+    .querySelectorAll<HTMLButtonElement>("[data-action='toggle-git-sidebar']")
+    .forEach((button) => {
+      button.title = collapsed ? "Expand source control" : "Collapse source control";
+      button.setAttribute("aria-label", button.title);
+    });
+  return true;
+}
+
+function scheduleScrollToGitCommitReview(hash: string) {
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      const target = Array.from(appRoot.querySelectorAll<HTMLElement>("[data-git-commit-review-header]"))
+        .find((element) => element.dataset.commitHash === hash);
+      target?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+}
+
 function updateGitFormButtons(form: HTMLFormElement | null) {
   if (!form) {
     return;
@@ -1194,7 +2334,7 @@ function updateGitFormButtons(form: HTMLFormElement | null) {
   }
   if (form.matches("[data-git-commit-form]")) {
     const textarea = form.querySelector<HTMLTextAreaElement>("[data-git-commit-message]");
-    button.disabled = !repository?.dirty || !(textarea?.value.trim()) || busy;
+    button.disabled = !(repository?.stagedFileCount ?? 0) || !(textarea?.value.trim()) || busy;
     return;
   }
   if (form.matches("[data-git-create-branch-form]")) {

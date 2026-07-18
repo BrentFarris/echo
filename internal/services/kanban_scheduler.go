@@ -202,6 +202,16 @@ func (s *SystemService) CloseKanbanCardDetail(workspaceID string, cardID string)
 }
 
 func (s *SystemService) Shutdown() {
+	if s.debugger != nil {
+		s.debugger.shutdown()
+	}
+	s.cancelWorkspaceTextSearches()
+	s.researchMu.Lock()
+	researchRuns := make([]*chatResearchRun, 0, len(s.researchRuns))
+	for _, run := range s.researchRuns {
+		researchRuns = append(researchRuns, run)
+	}
+	s.researchMu.Unlock()
 	s.chatMu.Lock()
 	runCancels := make([]context.CancelFunc, 0, len(s.kanbanRuns))
 	for _, cancel := range s.kanbanRuns {
@@ -264,6 +274,9 @@ func (s *SystemService) Shutdown() {
 	}
 	for _, cancel := range chatCancels {
 		cancel()
+	}
+	for _, run := range researchRuns {
+		run.Close()
 	}
 	_ = s.persistAllWorkspaceAutosaves()
 	s.closeAllLSPClients()
@@ -393,6 +406,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 	forcedCompactions := 0
 	verificationAttempts := 0
 	noToolContinuationAttempts := 0
+	emptyAssistantRetries := 0
 	hasProjectChanges := false
 	verificationCurrent := false
 	skillCheckpointPending := false
@@ -512,9 +526,22 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 		}
 		forcedCompactions = 0
 
-		if len(toolCalls) == 0 && strings.TrimSpace(content) == "" {
+		if isEmptyAssistantResponse(content, toolCalls) {
+			if emptyAssistantRetries >= maxEmptyAssistantRetries {
+				s.blockKanbanCard(workspace.ID, cardID, agentID, "Agent returned no answer", emptyAssistantResponseError().Error())
+				return
+			}
+			emptyAssistantRetries++
+			s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
+				Type:    "status",
+				Title:   "Agent retrying",
+				Content: "The model completed without a visible answer or tool call, so Echo asked it to continue from its reasoning.",
+				Status:  KanbanLaneInProgress,
+			})
+			messages = append(messages, emptyAssistantRetryMessage())
 			continue
 		}
+		emptyAssistantRetries = 0
 
 		assistantMessage := llm.Message{Role: llm.RoleAssistant, Content: content, ToolCalls: toolCalls}
 		messages = append(messages, assistantMessage)
@@ -1226,11 +1253,7 @@ func (s *SystemService) emitKanbanProgressEvent(event KanbanEvent) {
 	if event.CardID == "" {
 		return
 	}
-	s.emitRuntimeEvent(kanbanEventName, event)
-	if !s.hasOpenKanbanCardDetail(event.WorkspaceID, event.CardID) {
-		return
-	}
-	s.emitKanbanEventToWails(event)
+	s.emitKanbanEvent(event)
 }
 
 func (s *SystemService) emitKanbanEvent(event KanbanEvent) {
@@ -1263,6 +1286,7 @@ func kanbanAgentSystemMessage(workspace Workspace, skillCandidates []tools.Works
 				"Use workspace_context for broad repo context when the brief is missing or the target files remain unclear. "+
 				"Use git_inspect when commit history, regressions, legacy behavior, ownership, or prior rationale would materially clarify the card; avoid routine history searches when the current code is sufficient. "+
 				"Use available tools when you need workspace facts. Invoke tools through the tool-call API; do not print a function name or JSON arguments in the card transcript. "+
+				"When the card mentions @path, treat it as a labeled workspace file or directory reference like <folder-label>/path. Read referenced files, and list or search within referenced directories before relying on their contents. "+
 				"If you need to inspect or modify files, call the tool immediately instead of saying you will. "+
 				"When you need to find code but do not know the target file, prefer filesystem_search_workspace before shell commands. "+
 				"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. "+

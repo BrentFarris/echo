@@ -1,4 +1,4 @@
-import { destroyCodeEditor, renderCodeView } from "../codeView";
+import { destroyCodeEditor, renderCodeQuickOpen, renderCodeView } from "../codeView";
 import {
   patchChatPanel,
   patchChatControls,
@@ -22,6 +22,7 @@ import { renderWorkspaceIcon, renderMissingWorkspace } from "./workspace";
 import { hasKanbanRuntime, getHeartbeatInterval, heartbeatIntervalLabel, getWatchdogInterval, watchdogIntervalLabel, renderCreateKanbanCardDialog, renderDecompositionState, renderEmptyBoard, renderKanbanBoard, renderKanbanDetail, renderKanbanRuntime } from "./kanban";
 import { services } from "../../wailsjs/go/models";
 import { renderDashboard } from "./dashboard";
+import { updateWindowTitle } from "./title";
 
 /* ------------------------------------------------------------------ */
 /*  Workspace activity helpers                                         */
@@ -144,6 +145,11 @@ function restoreRenderScrollSnapshots(snapshots: Map<string, RenderScrollSnapsho
 }
 
 function isScrollableForRenderSnapshot(element: HTMLElement): boolean {
+  // CodeMirror persists its own scroll state. Restoring a generic render
+  // snapshot here can overwrite an explicit same-file navigation reveal.
+  if (element.classList.contains("cm-scroller")) {
+    return false;
+  }
   return (
     element.scrollTop > 0 ||
     element.scrollLeft > 0 ||
@@ -206,11 +212,14 @@ function elementIndex(element: HTMLElement): number {
 /* ------------------------------------------------------------------ */
 
 export function render(): void {
-  destroyCodeEditor();
+  const workspace = activeWorkspace();
+  updateWindowTitle();
+  if (state.appMode !== "code" || !workspace) {
+    destroyCodeEditor();
+  }
   const hadDialog = Boolean(appRoot.querySelector('[role="dialog"]'));
   const scrollSnapshots = captureRenderScrollSnapshots();
 
-  const workspace = activeWorkspace();
   const workspaces = state.appState?.workspaces ?? [];
 
   if (
@@ -314,7 +323,7 @@ function buildMain(
   if (mode === "dashboard") {
     return `
       <main class="main-content">
-        <section class="workspace-panel" aria-labelledby="dashboard-title">
+        <section class="workspace-panel" aria-label="Dashboard">
           ${renderDashboard()}
         </section>
       </main>
@@ -323,27 +332,27 @@ function buildMain(
 
   return `
     <main class="main-content">
-      <section class="workspace-panel${mode === "code" ? " is-code-mode" : ""}${mode === "git" ? " is-git-mode" : ""}" aria-labelledby="${getPanelTitleId(mode)}">
+      <section class="workspace-panel${mode === "code" ? " is-code-mode" : ""}${mode === "git" ? " is-git-mode" : ""}" aria-label="${escapeAttribute(getPanelLabel(mode))}">
         ${mode === "code" && workspace
           ? renderCodeView(workspace)
           : mode === "git" && workspace
             ? renderGitRepositoryPage(workspace, gitRepositoryViewFor(workspace.id))
             : workspace
-              ? renderWorkspacePanels(workspace, workspaces.length)
+              ? renderWorkspacePanels(workspace)
               : ""}
       </section>
     </main>
   `;
 }
 
-function getPanelTitleId(mode: string): string {
+function getPanelLabel(mode: string): string {
   switch (mode) {
-    case "code": return "code-title";
-    case "git": return "git-repository-title";
-    case "kanban": return "kanban-title";
-    case "tasks": return "tasks-title";
-    case "dashboard": return "dashboard-title";
-    default: return "chat-title";
+    case "code": return "Code";
+    case "git": return "Git";
+    case "kanban": return "Kanban";
+    case "tasks": return "Backlog";
+    case "dashboard": return "Dashboard";
+    default: return "Chat";
   }
 }
 
@@ -359,6 +368,10 @@ function buildOverlays(): string {
   if (state.contextMenu) {
     parts.push(renderContextMenu(state.contextMenu));
   }
+  const workspace = activeWorkspace();
+  if (workspace && state.appMode !== "code") {
+    parts.push(renderCodeQuickOpen(workspace.id, true));
+  }
   return parts.join("\n");
 }
 
@@ -366,7 +379,7 @@ function buildOverlays(): string {
 /*  Preserved helpers                                                  */
 /* ------------------------------------------------------------------ */
 
-export function renderWorkspacePanels(workspace: services.Workspace | null, workspaceCount: number): string {
+export function renderWorkspacePanels(workspace: services.Workspace | null): string {
   const mode = state.appMode;
   const board = workspace ? kanbanBoardFor(workspace.id) : null;
   const running = workspace ? state.runningKanbanWorkspaces.has(workspace.id) : false;
@@ -386,14 +399,10 @@ export function renderWorkspacePanels(workspace: services.Workspace | null, work
     mainPanel = workspace ? renderTaskPanel(workspace) : `<div class="empty-state">Add a workspace to create tasks.</div>`;
   } else if (mode === "kanban") {
     mainPanel = `
-      <section class="work-panel kanban-panel" aria-labelledby="kanban-title">
+      <section class="work-panel kanban-panel" aria-label="Kanban">
         ${workspace ? renderBudgetBar(workspace.id) : ""}
-        <div class="panel-heading">
-          <div class="kanban-heading-main">
-            <span>Kanban</span>
-            <strong id="kanban-title">${workspace ? escapeHtml(workspace.displayName) : `${workspaceCount} workspace${workspaceCount === 1 ? "" : "s"}`}</strong>
-            ${workspace && hasKanbanRuntime(workspace.id) ? renderKanbanRuntime(workspace.id, running) : ""}
-          </div>
+        <div class="panel-heading kanban-toolbar">
+          ${workspace && hasKanbanRuntime(workspace.id) ? `<div class="kanban-heading-main">${renderKanbanRuntime(workspace.id, running)}</div>` : `<div></div>`}
           ${
             workspace
               ? `<div class="kanban-actions">

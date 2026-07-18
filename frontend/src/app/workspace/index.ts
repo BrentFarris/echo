@@ -26,10 +26,16 @@ export function workspaceLetterDraft(workspace: services.Workspace): string {
   return state.workspaceLetterDrafts.get(workspace.id) ?? (workspace.letter ?? "");
 }
 
+export function workspaceBuildCommandDraft(workspace: services.Workspace): string {
+  return state.workspaceBuildCommandDrafts.get(workspace.id) ?? (workspace.buildCommand ?? "");
+}
+
 export function hydrateWorkspaceLetterDrafts(workspaces: services.Workspace[]) {
   state.workspaceLetterDrafts.clear();
+  state.workspaceBuildCommandDrafts.clear();
   workspaces.forEach((workspace) => {
     state.workspaceLetterDrafts.set(workspace.id, workspace.letter ?? "");
+    state.workspaceBuildCommandDrafts.set(workspace.id, workspace.buildCommand ?? "");
   });
 }
 
@@ -242,9 +248,9 @@ export function renderWorkspaceFolderSettings(workspace: services.Workspace): st
         .map(
           (folder) => `
             <div class="workspace-folder-row ${folder.missing ? "is-missing" : ""}">
+              <div class="workspace-folder-path">${escapeHtml(folder.path)}</div>
               <div class="workspace-folder-main">
                 <strong>${escapeHtml(folder.label)}${folder.missing ? " - Missing" : ""}</strong>
-                <span>${escapeHtml(folder.path)}</span>
                 <small>${escapeHtml(workspaceFolderStatus(folder))}</small>
               </div>
               <label class="settings-toggle workspace-folder-agents">

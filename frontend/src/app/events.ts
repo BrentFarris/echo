@@ -1,5 +1,5 @@
 
-import { bindCodeViewEvents, closeActiveCodeTab, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, navigateCodeHistory, openQuickOpen, openTextSearch, saveActiveCodeFile, startSelectedCodeRename } from "../codeView";
+import { bindCodeQuickOpenEvents, bindCodeViewEvents, closeActiveCodeTab, ensureCodeViewRootLoaded, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, handleGlobalCodeTreeNavigation, handleGlobalDebugShortcut, navigateCodeHistory, openMountedCodeEditorGoToLine, openQuickOpen, openTextSearch, saveActiveCodeFile, selectedMountedCodeEditorText, startSelectedCodeRename } from "../codeView";
 import { bindActionEvents } from "./actions";
 import { getAppCallbacks } from "./callbacks";
 import { bindChatEvents, clearChatMention, patchChatMentionPicker } from "./chat";
@@ -24,6 +24,10 @@ export function bindEvents() {
   bindKanbanCardCreationEvents(appRoot);
   bindGitEvents(appRoot);
   bindCodeViewEvents(appRoot, getAppCallbacks().codeViewCallbacks());
+  const workspace = activeWorkspace();
+  if (workspace && state.appMode !== "code") {
+    bindCodeQuickOpenEvents(appRoot, workspace.id, getAppCallbacks().codeViewCallbacks());
+  }
   bindWorkspaceDragEvents(appRoot);
   bindTaskEvents(appRoot);
 
@@ -76,10 +80,14 @@ export function bindEvents() {
         const desktopDropdown = appRoot.querySelector<HTMLElement>(
           "[data-workspace-dropdown]",
         );
+        const contextMenu = appRoot.querySelector<HTMLElement>(
+          "[data-context-menu]",
+        );
         const isInPill = pillBtn && pillBtn.contains(target);
         const isInMobileDropdown = mobileDropdown && mobileDropdown.contains(target);
         const isInDesktopDropdown = desktopDropdown && desktopDropdown.contains(target);
-        if (!isInPill && !isInMobileDropdown && !isInDesktopDropdown) {
+        const isInContextMenu = contextMenu && contextMenu.contains(target);
+        if (!isInPill && !isInMobileDropdown && !isInDesktopDropdown && !isInContextMenu) {
           state.workspaceDropdownOpen = false;
           getAppCallbacks().render();
         }
@@ -114,10 +122,16 @@ export function handleGlobalPointerDown(event: PointerEvent) {
 }
 
 export function handleGlobalKeydown(event: KeyboardEvent) {
+  const debugWorkspace = activeWorkspace();
+  if (handleGlobalDebugShortcut(event, debugWorkspace?.id ?? "", getAppCallbacks().codeViewCallbacks())) {
+    return;
+  }
   if (isFindInFilesShortcut(event)) {
+    const workspace = activeWorkspace();
+    const selectedText = workspace ? selectedMountedCodeEditorText(workspace.id) : "";
     event.preventDefault();
     event.stopPropagation();
-    void openActiveWorkspaceTextSearch();
+    void openActiveWorkspaceTextSearch(selectedText);
     return;
   }
   if (isQuickOpenShortcut(event)) {
@@ -126,8 +140,26 @@ export function handleGlobalKeydown(event: KeyboardEvent) {
     openActiveWorkspaceQuickOpen();
     return;
   }
+  const navigationWorkspace = activeWorkspace();
+  if (
+    state.appMode === "code" &&
+    !state.settingsOpen &&
+    navigationWorkspace &&
+    handleGlobalCodeTreeNavigation(navigationWorkspace.id, event)
+  ) {
+    return;
+  }
   if (state.appMode === "code" && !state.settingsOpen) {
     const workspace = activeWorkspace();
+    if (
+      workspace &&
+      isGoToLineShortcut(event) &&
+      openMountedCodeEditorGoToLine(workspace.id)
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (
       workspace &&
       isCodeRenameShortcut(event) &&
@@ -338,12 +370,20 @@ function isFindInFilesShortcut(event: KeyboardEvent): boolean {
 function isQuickOpenShortcut(event: KeyboardEvent): boolean {
   const key = event.key.toLowerCase();
   return (
-    state.appMode === "code" &&
-    !state.settingsOpen &&
     !event.altKey &&
     !event.shiftKey &&
     (event.ctrlKey || event.metaKey) &&
     (key === "p" || event.code === "KeyP")
+  );
+}
+
+function isGoToLineShortcut(event: KeyboardEvent): boolean {
+  const key = event.key.toLowerCase();
+  return (
+    !event.altKey &&
+    !event.shiftKey &&
+    (event.ctrlKey || event.metaKey) &&
+    (key === "g" || event.code === "KeyG")
   );
 }
 
@@ -365,14 +405,14 @@ function openActiveWorkspaceQuickOpen() {
   openQuickOpen(workspace.id, getAppCallbacks().codeViewCallbacks());
 }
 
-async function openActiveWorkspaceTextSearch() {
+async function openActiveWorkspaceTextSearch(initialQuery = "") {
   const workspace = activeWorkspace();
   if (!workspace) {
     return;
   }
   state.appMode = "code";
   const loading = ensureCodeViewRootLoaded(workspace.id);
-  openTextSearch(workspace.id, getAppCallbacks().codeViewCallbacks());
+  openTextSearch(workspace.id, getAppCallbacks().codeViewCallbacks(), initialQuery);
   await loading;
   getAppCallbacks().render();
 }

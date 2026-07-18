@@ -223,6 +223,9 @@ func (c *Client) applyHeaders(request *http.Request) {
 	if c.apiKey != "" {
 		request.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
+	for key, value := range c.settings.Headers {
+		request.Header.Set(key, value)
+	}
 }
 
 func defaultHTTPClient(timeoutSeconds int) *http.Client {

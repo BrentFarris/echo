@@ -15,7 +15,7 @@ import {
 } from "./navigation";
 import type { CodeFileTab, CodeNavigationLocation, CodeViewCallbacks } from "./types";
 import { clamp, codeTabName, editableWorkspaceFile, fileContentOffsetToEditorPosition, isMediaFile, isUntitledCodePath, sleep, untitledCodeTabPrefix } from "./utils";
-import { replaceMountedEditorContent, saveMountedEditorContent } from "./editor";
+import { applyMountedEditorUserContentChange, focusMountedCodeEditor, getMountedCodeEditor, resetMountedEditorDocument, saveMountedEditorContent } from "./editor";
 import { revealCodeFileInTree } from "./treeReveal";
 
 const openTabFileWatchIntervalMs = 1500;
@@ -30,12 +30,14 @@ type OpenCodeFileOptions = {
   selectionLine?: number;
   restoredLocation?: CodeNavigationLocation;
   recordNavigation?: boolean;
+  revealInExplorer?: boolean;
   suppressErrorToast?: boolean;
 };
 
 type ActivateCodeTabOptions = {
   saveMountedEditor?: boolean;
   recordNavigation?: boolean;
+  revealInExplorer?: boolean;
   sourceLocation?: CodeNavigationLocation | null;
 };
 
@@ -149,10 +151,11 @@ async function reloadWorkspaceOpenCodeTabsFromDisk(
       }
       applySavedFile(workspaceID, file);
       const reloadedTab = findTab(workspaceID, path);
-      replaceMountedEditorContent(
+      resetMountedEditorDocument(
         workspaceID,
         path,
         reloadedTab?.content ?? editableWorkspaceFile(file).content,
+        reloadedTab?.lineSeparator ?? editableWorkspaceFile(file).lineSeparator,
       );
     } catch (error) {
       const latest = findTab(workspaceID, path);
@@ -250,7 +253,30 @@ export async function saveActiveCodeFile(workspaceID: string, callbacks: CodeVie
   if (!tab) {
     return false;
   }
-  return saveCodeTab(workspaceID, tab.path, callbacks);
+  const restoreEditorFocus = shouldRestoreEditorFocusAfterSave(workspaceID, tab.path);
+  const saved = await saveCodeTab(workspaceID, tab.path, callbacks);
+  if (restoreEditorFocus) {
+    window.requestAnimationFrame(() => {
+      focusMountedCodeEditor(workspaceID, tab.path);
+    });
+  }
+  return saved;
+}
+
+export async function saveDirtyWorkspaceCodeTabs(
+  workspaceID: string,
+  callbacks: CodeViewCallbacks,
+) {
+  saveMountedEditorContent();
+  const paths = ensureCodeState(workspaceID).tabs
+    .filter((tab) => tab.dirty && !tab.untitled && !tab.external && !tab.isMedia)
+    .map((tab) => tab.path);
+  for (const path of paths) {
+    if (!(await saveCodeTab(workspaceID, path, callbacks))) {
+      return false;
+    }
+  }
+  return true;
 }
 
 async function saveCodeTab(
@@ -283,15 +309,33 @@ async function saveCodeTab(
           latestBeforeApply.lineSeparator !== savedLineSeparatorBeforeSave),
     );
     const savedFile = services.WorkspaceFile.createFrom(saved);
-    applySavedFile(workspaceID, savedFile);
-    const savedTab = findTab(workspaceID, savedFile.path);
-    if (
-      savedTab &&
-      (editorChangedDuringSave ||
-        savedTab.content !== savedContentBeforeSave ||
-        savedTab.lineSeparator !== savedLineSeparatorBeforeSave)
-    ) {
-      replaceMountedEditorContent(workspaceID, savedFile.path, savedTab.content);
+    if (editorChangedDuringSave && latestBeforeApply) {
+      const latestContent = latestBeforeApply.content;
+      const latestLineSeparator = latestBeforeApply.lineSeparator;
+      applySavedFile(workspaceID, savedFile);
+      const restoredTab = findTab(workspaceID, savedFile.path);
+      if (restoredTab) {
+        restoredTab.content = latestContent;
+        restoredTab.lineSeparator = latestLineSeparator;
+        restoredTab.bytes = new TextEncoder().encode(latestContent).length;
+        restoredTab.dirty = restoredTab.content !== restoredTab.savedContent;
+      }
+    } else {
+      applySavedFile(workspaceID, savedFile);
+      const savedTab = findTab(workspaceID, savedFile.path);
+      if (
+        savedTab &&
+        (savedTab.content !== savedContentBeforeSave ||
+          savedTab.lineSeparator !== savedLineSeparatorBeforeSave)
+      ) {
+        if (savedTab.lineSeparator === savedLineSeparatorBeforeSave) {
+          applyMountedEditorUserContentChange(workspaceID, savedFile.path, savedTab.content, {
+            userEvent: "input.format",
+          });
+        } else {
+          resetMountedEditorDocument(workspaceID, savedFile.path, savedTab.content, savedTab.lineSeparator);
+        }
+      }
     }
     callbacks.pushToast("File saved.", "success");
     void callbacks.refreshGitChanges(workspaceID);
@@ -462,6 +506,9 @@ export async function openCodeFile(
   if (!path) {
     return false;
   }
+  if (isAbsoluteCodeFilePath(path)) {
+    return openExternalCodeFile(workspaceID, path, callbacks, options);
+  }
   let openedPath = "";
   captureCodeTreeScroll(workspaceID);
   saveMountedEditorContent();
@@ -486,6 +533,7 @@ export async function openCodeFile(
     activateCodeTab(workspaceID, existing.path, callbacks, {
       saveMountedEditor: false,
       recordNavigation: false,
+      revealInExplorer: options.revealInExplorer,
     });
     return true;
   }
@@ -549,7 +597,7 @@ export async function openCodeFile(
   } finally {
     state.openingPath = "";
     callbacks.render();
-    if (openedPath) {
+    if (openedPath && options.revealInExplorer !== false) {
       void revealCodeFileInTree(workspaceID, openedPath, callbacks);
     }
   }
@@ -616,7 +664,7 @@ async function openCodeMediaFile(
   } finally {
     state.openingPath = "";
     callbacks.render();
-    if (openedPath) {
+    if (openedPath && options.revealInExplorer !== false) {
       void revealCodeFileInTree(workspaceID, openedPath, callbacks);
     }
   }
@@ -727,15 +775,32 @@ async function openExternalCodeFile(
   workspaceID: string,
   path: string,
   callbacks: CodeViewCallbacks,
+  options: OpenCodeFileOptions = { temporary: false },
 ) {
   captureCodeTreeScroll(workspaceID);
   saveMountedEditorContent();
+  const sourceLocation =
+    options.recordNavigation === false
+      ? null
+      : captureActiveCodeNavigationLocation(workspaceID);
   const state = ensureCodeState(workspaceID);
   const existing = state.tabs.find(
     (tab) => tab.external && sameWorkspacePath(tab.path, path),
   );
   if (existing) {
-    activateCodeTab(workspaceID, existing.path, callbacks);
+    applyCodeTabOpenLocation(existing, options);
+    if (options.recordNavigation !== false) {
+      recordCodeNavigationTransition(
+        workspaceID,
+        sourceLocation,
+        codeNavigationLocationFromTab(existing),
+      );
+    }
+    activateCodeTab(workspaceID, existing.path, callbacks, {
+      saveMountedEditor: false,
+      recordNavigation: false,
+      revealInExplorer: options.revealInExplorer,
+    });
     return true;
   }
   if (state.openingPath === path) {
@@ -764,9 +829,17 @@ async function openExternalCodeFile(
       scrollTop: 0,
       scrollLeft: 0,
     };
+    applyCodeTabOpenLocation(tab, options);
     state.tabs.push(tab);
     state.activePath = tab.path;
     promoteTabMruPath(state, tab.path);
+    if (options.recordNavigation !== false) {
+      recordCodeNavigationTransition(
+        workspaceID,
+        sourceLocation,
+        codeNavigationLocationFromTab(tab),
+      );
+    }
     return true;
   } catch (error) {
     callbacks.pushToast(callbacks.errorMessage(error), "error");
@@ -775,6 +848,10 @@ async function openExternalCodeFile(
     state.openingPath = "";
     callbacks.render();
   }
+}
+
+function isAbsoluteCodeFilePath(path: string) {
+  return path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || /^\\\\/.test(path);
 }
 
 export async function openWorkspaceCodeFileAtLine(
@@ -1021,11 +1098,27 @@ export function activateCodeTab(
     );
   }
   callbacks.render();
-  if (!activeCodeTab(workspaceID)?.external && !isUntitledCodePath(path)) {
+  if (
+    options.revealInExplorer !== false &&
+    !activeCodeTab(workspaceID)?.external &&
+    !isUntitledCodePath(path)
+  ) {
     void revealCodeFileInTree(workspaceID, path, callbacks);
   }
 }
 
 function sameWorkspacePath(left: string, right: string) {
   return left.replaceAll("\\", "/").toLowerCase() === right.replaceAll("\\", "/").toLowerCase();
+}
+
+function shouldRestoreEditorFocusAfterSave(workspaceID: string, path: string) {
+  const mounted = getMountedCodeEditor();
+  if (!mounted.view || mounted.workspaceID !== workspaceID || mounted.path !== path) {
+    return false;
+  }
+  const active = document.activeElement;
+  if (!(active instanceof Element)) {
+    return false;
+  }
+  return mounted.view.dom.contains(active) || Boolean(active.closest("[data-code-save]"));
 }

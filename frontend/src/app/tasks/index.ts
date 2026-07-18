@@ -5,6 +5,7 @@ import {
   LoadTaskBoard,
   MoveWorkspaceTask,
   ReorderWorkspaceTasks,
+  SearchWorkspaceFiles,
   SetWorkspaceTaskCompleted,
   UpdateWorkspaceTask,
 } from "../../backend/services";
@@ -16,10 +17,33 @@ import { icons } from "../icons";
 import { activeWorkspace, state, taskBoardFor } from "../state";
 import { pushToast } from "../toasts";
 import type { TaskEvent } from "../types";
-import { errorMessage, escapeAttribute, escapeHtml } from "../utils";
+import { errorMessage, escapeAttribute, escapeHtml, fileName, formatBytes } from "../utils";
 
 const priorities = ["P0", "P1", "P2"] as const;
+const taskTagSuggestionLimit = 8;
+const taskFileMentionSearchDelay = 160;
+const taskFileMentionResultLimit = 8;
 let draggingTaskID = "";
+
+type TaskFileMentionState = {
+  workspaceId: string;
+  triggerStart: number;
+  query: string;
+  results: services.WorkspaceFileEntry[];
+  loading: boolean;
+  error: string;
+  selectedIndex: number;
+  requestSeq: number;
+  timerID: number | null;
+};
+
+type TaskFileMentionMatch = {
+  triggerStart: number;
+  query: string;
+  caret: number;
+};
+
+let taskFileMention: TaskFileMentionState | null = null;
 
 export async function loadActiveTaskBoard() {
   const workspace = activeWorkspace();
@@ -96,11 +120,9 @@ export function renderTaskPanel(workspace: services.Workspace): string {
   const tagList = Array.from(allTags).sort();
 
   return `
-    <section class="work-panel task-panel" aria-labelledby="tasks-title" data-task-panel>
+    <section class="work-panel task-panel" aria-label="Backlog" data-task-panel>
       <div class="panel-heading">
-        <div class="kanban-heading-main">
-          <span>Tasks</span>
-          <strong id="tasks-title">Backlog</strong>
+        <div class="kanban-heading-main task-storage-summary">
           <small class="task-storage-path">Active: ${escapeHtml(board.storagePath || ".echo/tasks.json")}</small>
           <small class="task-storage-path">Completed: ${escapeHtml(board.doneStoragePath || ".echo/tasks_done.json")}</small>
         </div>
@@ -349,8 +371,37 @@ function renderTaskEditor(workspaceID: string): string {
         </header>
         <label><span>Title</span><input type="text" name="title" required value="${escapeAttribute(draft.title)}" data-task-title data-initial-focus></label>
         <label><span>Epic</span><input type="text" name="epic" placeholder="Optional group name" value="${escapeAttribute(draft.epic || "")}" data-task-epic></label>
-        <label><span>Tags</span><input type="text" name="tags" placeholder="Comma-separated tags (e.g. frontend, bug)" value="${escapeAttribute(draft.tags || "")}" data-task-tags></label>
-        <label><span>Details</span><textarea name="details" rows="6" placeholder="Optional Markdown details" data-task-details>${escapeHtml(draft.details)}</textarea></label>
+        <label class="task-tags-field">
+          <span>Tags</span>
+          <input
+            type="text"
+            name="tags"
+            placeholder="Comma-separated tags (e.g. frontend, bug)"
+            value="${escapeAttribute(draft.tags || "")}"
+            autocomplete="off"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded="false"
+            aria-controls="task-tag-suggestion-list"
+            data-task-tags
+          >
+          <div class="task-tag-suggestions" id="task-tag-suggestion-list" role="listbox" aria-label="Matching tags" data-task-tag-suggestions hidden></div>
+        </label>
+        <label class="task-details-field">
+          <span>Details</span>
+          <div class="task-details-input-wrap" data-task-details-input-wrap>
+            <textarea
+              name="details"
+              rows="6"
+              placeholder="Optional Markdown details; type @ to reference a file"
+              aria-autocomplete="list"
+              aria-expanded="${Boolean(taskFileMentionFor(workspaceID))}"
+              ${taskFileMentionFor(workspaceID) ? `aria-controls="task-file-mention-list"` : ""}
+              data-task-details
+            >${escapeHtml(draft.details)}</textarea>
+            ${renderTaskFileMentionPicker(workspaceID)}
+          </div>
+        </label>
         <label><span>Acceptance criteria</span><textarea name="acceptanceCriteria" rows="4" placeholder="Optional; one criterion per line" data-task-criteria>${escapeHtml(draft.acceptanceCriteria)}</textarea></label>
         <label><span>Priority</span><select name="priority" data-task-priority>${priorities.map((priority) => `<option value="${priority}" ${draft.priority === priority ? "selected" : ""}>${priority}</option>`).join("")}</select></label>
         <div class="kanban-card-create-actions">
@@ -366,7 +417,12 @@ export function bindTaskEvents(root: ParentNode) {
   root.querySelectorAll<HTMLElement>("[data-task-action]").forEach((element) => {
     element.addEventListener("click", handleTaskAction);
   });
-  root.querySelector<HTMLFormElement>("[data-task-editor-form]")?.addEventListener("submit", handleTaskEditorSubmit);
+  const editorForm = root.querySelector<HTMLFormElement>("[data-task-editor-form]");
+  if (editorForm) {
+    editorForm.addEventListener("submit", handleTaskEditorSubmit);
+    editorForm.addEventListener("input", () => syncTaskEditorDraftFromForm(editorForm));
+    editorForm.addEventListener("change", () => syncTaskEditorDraftFromForm(editorForm));
+  }
   // Backdrop click to close task detail
   const backdrop = root.querySelector<HTMLElement>("aside.card-detail-backdrop[data-task-detail-backdrop]");
   if (backdrop) {
@@ -391,6 +447,35 @@ export function bindTaskEvents(root: ParentNode) {
     lane.addEventListener("drop", handleTaskDrop);
   });
   root.querySelector<HTMLInputElement>("[data-task-search]")?.addEventListener("input", handleTaskSearch);
+  const tagInput = root.querySelector<HTMLInputElement>("[data-task-tags]");
+  if (tagInput) {
+    tagInput.addEventListener("input", () => syncTaskTagSuggestions(tagInput));
+    tagInput.addEventListener("focus", () => syncTaskTagSuggestions(tagInput));
+    tagInput.addEventListener("keydown", handleTaskTagSuggestionsKeydown);
+    tagInput.addEventListener("blur", () => {
+      window.setTimeout(() => hideTaskTagSuggestions(tagInput), 120);
+    });
+  }
+  const detailsInput = root.querySelector<HTMLTextAreaElement>("[data-task-details]");
+  if (detailsInput) {
+    detailsInput.addEventListener("input", () => syncTaskFileMention(detailsInput));
+    detailsInput.addEventListener("click", () => syncTaskFileMention(detailsInput));
+    detailsInput.addEventListener("keyup", (event) => {
+      if (!["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)) {
+        syncTaskFileMention(detailsInput);
+      }
+    });
+    detailsInput.addEventListener("keydown", handleTaskFileMentionKeydown);
+    detailsInput.addEventListener("blur", () => {
+      window.setTimeout(() => {
+        if (document.activeElement?.closest("[data-task-file-mention-picker]")) return;
+        clearTaskFileMention();
+        patchTaskFileMentionPicker();
+      }, 120);
+    });
+    const workspace = activeWorkspace();
+    if (workspace) bindTaskFileMentionOptions(root, detailsInput, workspace.id);
+  }
   root.querySelectorAll<HTMLButtonElement>("[data-task-filter]").forEach((btn) => {
     btn.addEventListener("click", handleTaskFilter);
   });
@@ -400,6 +485,450 @@ export function bindTaskEvents(root: ParentNode) {
   root.querySelectorAll<HTMLButtonElement>("[data-task-tag-filter]").forEach((btn) => {
     btn.addEventListener("click", handleTaskTagFilter);
   });
+}
+
+function syncTaskEditorDraftFromForm(form: HTMLFormElement) {
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+  const draft = state.taskEditorDrafts.get(workspace.id);
+  if (!draft) return;
+  state.taskEditorDrafts.set(workspace.id, {
+    ...draft,
+    title: form.querySelector<HTMLInputElement>("[data-task-title]")?.value ?? draft.title,
+    details: form.querySelector<HTMLTextAreaElement>("[data-task-details]")?.value ?? draft.details,
+    epic: form.querySelector<HTMLInputElement>("[data-task-epic]")?.value ?? draft.epic,
+    tags: form.querySelector<HTMLInputElement>("[data-task-tags]")?.value ?? draft.tags,
+    acceptanceCriteria: form.querySelector<HTMLTextAreaElement>("[data-task-criteria]")?.value ?? draft.acceptanceCriteria,
+    priority: form.querySelector<HTMLSelectElement>("[data-task-priority]")?.value ?? draft.priority,
+  });
+}
+
+function syncTaskEditorDraftFromElement(element: Element) {
+  const form = element.closest<HTMLFormElement>("[data-task-editor-form]");
+  if (form) syncTaskEditorDraftFromForm(form);
+}
+
+function activeTaskFileMentionMatch(input: HTMLTextAreaElement): TaskFileMentionMatch | null {
+  if (input.selectionStart !== input.selectionEnd) return null;
+  const caret = input.selectionStart;
+  const beforeCaret = input.value.slice(0, caret);
+  const match = beforeCaret.match(/(^|\s)@([^\s@]*)$/);
+  if (!match) return null;
+  const query = match[2] ?? "";
+  return {
+    triggerStart: beforeCaret.length - query.length - 1,
+    query,
+    caret,
+  };
+}
+
+function taskFileMentionFor(workspaceID: string): TaskFileMentionState | null {
+  return taskFileMention?.workspaceId === workspaceID ? taskFileMention : null;
+}
+
+function clearTaskFileMention() {
+  if (taskFileMention?.timerID !== null && taskFileMention?.timerID !== undefined) {
+    window.clearTimeout(taskFileMention.timerID);
+  }
+  taskFileMention = null;
+}
+
+function syncTaskFileMention(input: HTMLTextAreaElement) {
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+  const match = activeTaskFileMentionMatch(input);
+  if (!match) {
+    if (taskFileMentionFor(workspace.id)) {
+      clearTaskFileMention();
+      patchTaskFileMentionPicker();
+    }
+    return;
+  }
+
+  let mention = taskFileMentionFor(workspace.id);
+  const changed = !mention || mention.query !== match.query || mention.triggerStart !== match.triggerStart;
+  if (!mention) {
+    mention = {
+      workspaceId: workspace.id,
+      triggerStart: match.triggerStart,
+      query: match.query,
+      results: [],
+      loading: false,
+      error: "",
+      selectedIndex: 0,
+      requestSeq: 0,
+      timerID: null,
+    };
+    taskFileMention = mention;
+  }
+  mention.triggerStart = match.triggerStart;
+  mention.query = match.query;
+
+  if (!changed) {
+    patchTaskFileMentionPicker();
+    return;
+  }
+  mention.requestSeq++;
+  mention.loading = true;
+  mention.error = "";
+  mention.results = [];
+  mention.selectedIndex = 0;
+  if (mention.timerID !== null) window.clearTimeout(mention.timerID);
+  const sequence = mention.requestSeq;
+  mention.timerID = window.setTimeout(() => {
+    void runTaskFileMentionSearch(workspace.id, sequence);
+  }, taskFileMentionSearchDelay);
+  patchTaskFileMentionPicker();
+}
+
+async function runTaskFileMentionSearch(workspaceID: string, sequence: number) {
+  const mention = taskFileMentionFor(workspaceID);
+  if (!mention || sequence !== mention.requestSeq) return;
+  mention.timerID = null;
+  patchTaskFileMentionPicker();
+  try {
+    const result = await SearchWorkspaceFiles(workspaceID, mention.query, false);
+    const latest = taskFileMentionFor(workspaceID);
+    if (!latest || sequence !== latest.requestSeq) return;
+    const model = services.WorkspaceFileSearchResult.createFrom(result);
+    latest.results = model.entries ?? [];
+    latest.error = "";
+    clampTaskFileMentionSelection(latest);
+  } catch (error) {
+    const latest = taskFileMentionFor(workspaceID);
+    if (latest && sequence === latest.requestSeq) {
+      latest.results = [];
+      latest.error = errorMessage(error);
+      latest.selectedIndex = 0;
+    }
+  } finally {
+    const latest = taskFileMentionFor(workspaceID);
+    if (latest && sequence === latest.requestSeq) {
+      latest.loading = false;
+      latest.timerID = null;
+      patchTaskFileMentionPicker();
+    }
+  }
+}
+
+function visibleTaskFileMentionEntries(mention: TaskFileMentionState) {
+  return mention.results.slice(0, taskFileMentionResultLimit);
+}
+
+function clampTaskFileMentionSelection(mention: TaskFileMentionState) {
+  const count = visibleTaskFileMentionEntries(mention).length;
+  mention.selectedIndex = count ? Math.min(Math.max(mention.selectedIndex, 0), count - 1) : 0;
+}
+
+function renderTaskFileMentionPicker(workspaceID: string): string {
+  const mention = taskFileMentionFor(workspaceID);
+  if (!mention) return "";
+  const entries = visibleTaskFileMentionEntries(mention);
+  let content = "";
+  if (mention.loading) {
+    content = `<div class="chat-mention-status"><span class="spinner" aria-hidden="true"></span><span>Searching files and folders...</span></div>`;
+  } else if (mention.error) {
+    content = `<div class="chat-mention-status is-error">${escapeHtml(mention.error)}</div>`;
+  } else if (!entries.length) {
+    content = `<div class="chat-mention-status">No matching files or folders.</div>`;
+  } else {
+    content = entries.map((entry, index) => `
+      <button
+        class="chat-mention-option ${index === mention.selectedIndex ? "is-active" : ""}"
+        id="task-file-mention-option-${index}"
+        type="button"
+        role="option"
+        aria-selected="${index === mention.selectedIndex}"
+        title="${escapeAttribute(entry.path)}"
+        data-task-file-mention-option
+        data-mention-index="${index}"
+      >
+        <span class="chat-mention-icon">${entry.kind === "directory" ? icons.folder : icons.file}</span>
+        <span class="chat-mention-name">
+          <strong>${escapeHtml(fileName(entry.path))}</strong>
+          <span>${escapeHtml(entry.path)}</span>
+        </span>
+        <span class="chat-mention-size">${entry.kind === "directory" ? "Folder" : escapeHtml(formatBytes(entry.bytes ?? 0))}</span>
+      </button>
+    `).join("");
+  }
+  return `
+    <div class="chat-mention-picker task-file-mention-picker" id="task-file-mention-list" role="listbox" aria-label="Workspace files and folders" data-task-file-mention-picker>
+      ${content}
+    </div>
+  `;
+}
+
+function patchTaskFileMentionPicker() {
+  const workspace = activeWorkspace();
+  const input = appRoot.querySelector<HTMLTextAreaElement>("[data-task-details]");
+  const wrapper = appRoot.querySelector<HTMLElement>("[data-task-details-input-wrap]");
+  if (!workspace || !input || !wrapper) return;
+  const existing = wrapper.querySelector<HTMLElement>("[data-task-file-mention-picker]");
+  const html = renderTaskFileMentionPicker(workspace.id).trim();
+  if (!html) {
+    existing?.remove();
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-controls");
+    input.removeAttribute("aria-activedescendant");
+    return;
+  }
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const next = template.content.firstElementChild as HTMLElement | null;
+  if (!next) return;
+  if (existing) existing.replaceWith(next);
+  else wrapper.append(next);
+  bindTaskFileMentionOptions(next, input, workspace.id);
+  input.setAttribute("aria-expanded", "true");
+  input.setAttribute("aria-controls", "task-file-mention-list");
+  const mention = taskFileMentionFor(workspace.id);
+  if (mention && visibleTaskFileMentionEntries(mention).length) {
+    input.setAttribute("aria-activedescendant", `task-file-mention-option-${mention.selectedIndex}`);
+  } else {
+    input.removeAttribute("aria-activedescendant");
+  }
+}
+
+function bindTaskFileMentionOptions(root: ParentNode, input: HTMLTextAreaElement, workspaceID: string) {
+  root.querySelectorAll<HTMLButtonElement>("[data-task-file-mention-option]").forEach((option) => {
+    option.addEventListener("mousedown", (event) => event.preventDefault());
+    option.addEventListener("click", () => {
+      const mention = taskFileMentionFor(workspaceID);
+      if (!mention) return;
+      mention.selectedIndex = Number(option.dataset.mentionIndex ?? "0");
+      clampTaskFileMentionSelection(mention);
+      const entry = visibleTaskFileMentionEntries(mention)[mention.selectedIndex];
+      if (entry) insertTaskFileMention(input, entry);
+    });
+  });
+}
+
+function formatTaskFileMentionPath(path: string) {
+  return /\s/.test(path) ? `@"${path.replaceAll('"', '\\"')}"` : `@${path}`;
+}
+
+function insertTaskFileMention(input: HTMLTextAreaElement, entry: services.WorkspaceFileEntry) {
+  const workspace = activeWorkspace();
+  const mention = workspace ? taskFileMentionFor(workspace.id) : null;
+  if (!mention) return;
+  const match = activeTaskFileMentionMatch(input);
+  const triggerStart = match?.triggerStart ?? mention.triggerStart;
+  const caret = match?.caret ?? input.selectionStart;
+  const suffix = input.value.slice(caret);
+  const trailingSpace = suffix.length === 0 || !/^\s/.test(suffix) ? " " : "";
+  const replacement = formatTaskFileMentionPath(entry.path);
+  input.value = input.value.slice(0, triggerStart) + replacement + trailingSpace + suffix;
+  syncTaskEditorDraftFromElement(input);
+  const nextCaret = triggerStart + replacement.length + trailingSpace.length;
+  clearTaskFileMention();
+  input.focus();
+  input.setSelectionRange(nextCaret, nextCaret);
+  patchTaskFileMentionPicker();
+}
+
+function handleTaskFileMentionKeydown(event: KeyboardEvent) {
+  const workspace = activeWorkspace();
+  const input = event.currentTarget as HTMLTextAreaElement;
+  const mention = workspace ? taskFileMentionFor(workspace.id) : null;
+  if (!mention) return;
+  const match = activeTaskFileMentionMatch(input);
+  if (!match || match.triggerStart !== mention.triggerStart) {
+    clearTaskFileMention();
+    patchTaskFileMentionPicker();
+    return;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    clearTaskFileMention();
+    patchTaskFileMentionPicker();
+    return;
+  }
+  const entries = visibleTaskFileMentionEntries(mention);
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    if (!entries.length) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const delta = event.key === "ArrowDown" ? 1 : -1;
+    mention.selectedIndex = (mention.selectedIndex + delta + entries.length) % entries.length;
+    patchTaskFileMentionPicker();
+    return;
+  }
+  if ((event.key === "Enter" || event.key === "Tab") && entries.length) {
+    event.preventDefault();
+    event.stopPropagation();
+    insertTaskFileMention(input, entries[mention.selectedIndex] ?? entries[0]);
+  }
+}
+
+type TaskTagSegment = {
+  start: number;
+  end: number;
+  query: string;
+};
+
+function currentTaskTagSegment(input: HTMLInputElement): TaskTagSegment {
+  const value = input.value;
+  const cursor = input.selectionStart ?? value.length;
+  const previousComma = cursor > 0 ? value.lastIndexOf(",", cursor - 1) : -1;
+  const nextComma = value.indexOf(",", cursor);
+  const start = previousComma === -1 ? 0 : previousComma + 1;
+  const end = nextComma === -1 ? value.length : nextComma;
+  let queryStart = start;
+  while (queryStart < cursor && /\s/.test(value.charAt(queryStart))) {
+    queryStart++;
+  }
+  return {
+    start,
+    end,
+    query: value.slice(queryStart, cursor).trim().toLowerCase(),
+  };
+}
+
+function availableTaskTags(workspaceID: string): string[] {
+  const board = taskBoardFor(workspaceID);
+  const tags = new Map<string, string>();
+  for (const tag of board.tags ?? []) {
+    const trimmed = tag.trim();
+    if (trimmed) {
+      tags.set(trimmed.toLowerCase(), trimmed);
+    }
+  }
+  for (const task of board.tasks ?? []) {
+    for (const tag of task.tags ?? []) {
+      const trimmed = tag.trim();
+      if (trimmed) {
+        tags.set(trimmed.toLowerCase(), trimmed);
+      }
+    }
+  }
+  return Array.from(tags.values()).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+}
+
+function splitTaskTagInput(value: string): Set<string> {
+  return new Set(
+    value
+      .split(",")
+      .map((tag) => tag.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+function matchingTaskTagSuggestions(input: HTMLInputElement): string[] {
+  const workspace = activeWorkspace();
+  if (!workspace) return [];
+  const segment = currentTaskTagSegment(input);
+  const selectedTags = splitTaskTagInput(input.value);
+  return availableTaskTags(workspace.id)
+    .filter((tag) => {
+      const key = tag.toLowerCase();
+      return !selectedTags.has(key) && (!segment.query || key.includes(segment.query));
+    })
+    .slice(0, taskTagSuggestionLimit);
+}
+
+function taskTagSuggestionsElement(input: HTMLInputElement): HTMLElement | null {
+  return input.closest(".task-tags-field")?.querySelector<HTMLElement>("[data-task-tag-suggestions]") ?? null;
+}
+
+function syncTaskTagSuggestions(input: HTMLInputElement) {
+  const menu = taskTagSuggestionsElement(input);
+  if (!menu) return;
+  const suggestions = matchingTaskTagSuggestions(input);
+  const selectedIndex = Number(input.dataset.taskTagSuggestionIndex ?? "0");
+  const clampedIndex = suggestions.length ? Math.min(Math.max(selectedIndex, 0), suggestions.length - 1) : 0;
+  input.dataset.taskTagSuggestionIndex = String(clampedIndex);
+  input.setAttribute("aria-expanded", suggestions.length ? "true" : "false");
+  input.toggleAttribute("aria-activedescendant", suggestions.length > 0);
+  if (suggestions.length) {
+    input.setAttribute("aria-activedescendant", `task-tag-suggestion-${clampedIndex}`);
+  }
+
+  if (!suggestions.length) {
+    menu.hidden = true;
+    menu.replaceChildren();
+    return;
+  }
+
+  menu.hidden = false;
+  const html = suggestions
+    .map((tag, index) => `
+      <button
+        class="task-tag-suggestion${index === clampedIndex ? " is-active" : ""}"
+        id="task-tag-suggestion-${index}"
+        type="button"
+        role="option"
+        aria-selected="${index === clampedIndex}"
+        data-task-tag-suggestion="${escapeAttribute(tag)}"
+      >${escapeHtml(tag)}</button>
+    `)
+    .join("");
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  menu.replaceChildren(...Array.from(template.content.children));
+  menu.querySelectorAll<HTMLButtonElement>("[data-task-tag-suggestion]").forEach((button) => {
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", () => insertTaskTagSuggestion(input, button.dataset.taskTagSuggestion ?? ""));
+  });
+}
+
+function hideTaskTagSuggestions(input: HTMLInputElement) {
+  const menu = taskTagSuggestionsElement(input);
+  if (!menu) return;
+  menu.hidden = true;
+  input.setAttribute("aria-expanded", "false");
+  input.removeAttribute("aria-activedescendant");
+}
+
+function moveTaskTagSuggestionSelection(input: HTMLInputElement, delta: number) {
+  const suggestions = matchingTaskTagSuggestions(input);
+  if (!suggestions.length) return;
+  const current = Number(input.dataset.taskTagSuggestionIndex ?? "0");
+  input.dataset.taskTagSuggestionIndex = String((current + delta + suggestions.length) % suggestions.length);
+  syncTaskTagSuggestions(input);
+}
+
+function insertTaskTagSuggestion(input: HTMLInputElement, tag: string) {
+  if (!tag) return;
+  const segment = currentTaskTagSegment(input);
+  const before = input.value.slice(0, segment.start);
+  const after = input.value.slice(segment.end);
+  const spacer = before.endsWith(",") ? " " : "";
+  input.value = `${before}${spacer}${tag}${after}`;
+  syncTaskEditorDraftFromElement(input);
+  const cursor = before.length + spacer.length + tag.length;
+  input.setSelectionRange(cursor, cursor);
+  hideTaskTagSuggestions(input);
+  input.focus();
+}
+
+function handleTaskTagSuggestionsKeydown(event: KeyboardEvent) {
+  const input = event.currentTarget as HTMLInputElement;
+  const suggestions = matchingTaskTagSuggestions(input);
+  if (event.key === "Escape") {
+    hideTaskTagSuggestions(input);
+    return;
+  }
+  if (!suggestions.length) return;
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    moveTaskTagSuggestionSelection(input, 1);
+    return;
+  }
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    moveTaskTagSuggestionSelection(input, -1);
+    return;
+  }
+  if (event.key === "Enter" || event.key === "Tab") {
+    const index = Number(input.dataset.taskTagSuggestionIndex ?? "0");
+    const tag = suggestions[Math.min(Math.max(index, 0), suggestions.length - 1)];
+    if (tag) {
+      event.preventDefault();
+      insertTaskTagSuggestion(input, tag);
+    }
+  }
 }
 
 function handleTaskDetailBackdropClick(backdrop: HTMLElement) {
@@ -439,11 +968,13 @@ async function handleTaskAction(event: Event) {
       return;
     }
     if (action === "new") {
+      clearTaskFileMention();
       state.taskEditorDrafts.set(workspace.id, { title: "", details: "", epic: "", tags: "", acceptanceCriteria: "", priority: target.dataset.priority || "P1" });
       getAppCallbacks().render();
       return;
     }
     if (action === "cancel-editor") {
+      clearTaskFileMention();
       state.taskEditorDrafts.delete(workspace.id);
       getAppCallbacks().render();
       return;
@@ -463,6 +994,7 @@ async function handleTaskAction(event: Event) {
     }
     if (!task) return;
     if (action === "edit") {
+      clearTaskFileMention();
       state.taskEditorDrafts.set(workspace.id, {
         taskId: task.id,
         title: task.title,
@@ -566,6 +1098,7 @@ async function handleTaskEditorSubmit(event: SubmitEvent) {
       ? await UpdateWorkspaceTask(workspace.id, draft.taskId, input, draft.expectedUpdatedAt || "")
       : await CreateWorkspaceTask(workspace.id, input);
     state.taskBoards.set(workspace.id, board);
+    clearTaskFileMention();
     state.taskEditorDrafts.delete(workspace.id);
     pushToast(draft.taskId ? "Task updated." : "Task created.", "success");
     getAppCallbacks().render();

@@ -8,6 +8,10 @@ export type MobileNavView = AppMode;
 
 export type WidgetSize = "small" | "medium" | "large" | "wide";
 
+export type GitDiffViewMode = "inline" | "split";
+
+export type GitMenuPage = "root" | "commit" | "changes" | "pull-push" | "branch" | "remote" | "stash" | "tags";
+
 export type WidgetId =
   | "chat-recent"
   | "chat-busy-status"
@@ -41,6 +45,8 @@ export type ContextMenuState = {
   workspacePath?: string;
   codePath?: string;
   codeKind?: CodeEntryKind;
+  gitPath?: string;
+  gitKind?: "file" | "folder";
   x: number;
   y: number;
 };
@@ -52,11 +58,15 @@ export type ChatStreamEvent = {
   type: string;
   content?: string;
   reasoning?: string;
+  researchReasoning?: services.ChatResearchReasoning;
   toolCall?: services.ChatToolActivity;
+  researchAgent?: services.ChatResearchAgent;
   error?: string;
   finishReason?: string;
   imageAttachment?: services.ChatImageAttachment;
   videoAttachment?: services.ChatVideoAttachment;
+  revision: number;
+  session?: services.ChatSession;
 };
 
 export type KanbanEvent = {

@@ -154,6 +154,38 @@ export function rewriteCodeNavigationHistoryPaths(
   });
 }
 
+export function removeCodeNavigationHistoryPaths(
+  workspaceID: string,
+  paths: string[],
+) {
+  const normalizedPaths = paths
+    .filter(Boolean)
+    .map((path) => normalizedCodeNavigationPath(path));
+  if (!normalizedPaths.length) {
+    return;
+  }
+  const history = ensureCodeState(workspaceID).navigationHistory;
+  const current = history.currentIndex >= 0
+    ? history.entries[history.currentIndex]
+    : null;
+  history.entries = history.entries.filter((entry) => {
+    const normalizedEntry = normalizedCodeNavigationPath(entry.path);
+    return !normalizedPaths.some(
+      (path) => normalizedEntry === path || normalizedEntry.startsWith(`${path}/`),
+    );
+  });
+  if (!history.entries.length) {
+    history.currentIndex = -1;
+    return;
+  }
+  const currentIndex = current
+    ? history.entries.findIndex((entry) => sameCodeNavigationLocation(entry, current))
+    : -1;
+  history.currentIndex = currentIndex >= 0
+    ? currentIndex
+    : clamp(history.currentIndex, 0, history.entries.length - 1);
+}
+
 function appendCodeNavigationLocation(
   workspaceID: string,
   location: CodeNavigationLocation,

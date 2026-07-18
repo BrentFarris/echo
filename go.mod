@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/disintegration/imaging v1.6.2
+	github.com/google/go-dap v0.12.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/wailsapp/wails/v2 v2.11.0

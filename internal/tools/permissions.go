@@ -215,6 +215,12 @@ func NewToolScopeChecker(permissions []ToolPermission) *ToolScopeChecker {
 	return &ToolScopeChecker{permissions: m}
 }
 
+// NewDenyAllToolScopeChecker creates an explicit empty allowlist. It differs
+// from NewToolScopeChecker(nil), which intentionally preserves legacy allow-all behavior.
+func NewDenyAllToolScopeChecker() *ToolScopeChecker {
+	return &ToolScopeChecker{permissions: make(map[string]*ToolPermission)}
+}
+
 // Allowed reports whether the given tool name and optional workspace-relative
 // path are permitted.  An empty path argument skips path evaluation and checks
 // only the tool name.  A nil or empty checker allows everything.

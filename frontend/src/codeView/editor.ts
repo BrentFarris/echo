@@ -1,7 +1,9 @@
 import { HighlightStyle, indentUnit, syntaxHighlighting } from "@codemirror/language";
 import { acceptCompletion } from "@codemirror/autocomplete";
+import { isolateHistory } from "@codemirror/commands";
 import { languages as languageData } from "@codemirror/language-data";
-import { countColumn, EditorSelection, EditorState, findColumn, Prec, RangeSetBuilder, Transaction, type Extension, type SelectionRange } from "@codemirror/state";
+import { gotoLine, highlightSelectionMatches } from "@codemirror/search";
+import { countColumn, EditorSelection, EditorState, findColumn, Prec, RangeSetBuilder, type Extension, type SelectionRange } from "@codemirror/state";
 import { crosshairCursor, Decoration, type DecorationSet, EditorView, GutterMarker, ViewPlugin, type ViewUpdate, gutter, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { tags } from "@lezer/highlight";
@@ -12,7 +14,8 @@ import { lspCompletionExtension, lspDefinitionExtension, lspRenameExtension } fr
 import { referencesPanelExtension } from "./references";
 import { activeCodeTab, ensureCodeState, findTab } from "./state";
 import type { CodeViewCallbacks } from "./types";
-import { clamp, codeTabName, editorDocumentLengthForFileContent, editorStateToFileContent, escapeAttribute, escapeHtml, formatBytes } from "./utils";
+import { clamp, codeTabName, editorDocumentLengthForFileContent, editorStateToFileContent, escapeAttribute, escapeHtml, formatBytes, isAudioFile } from "./utils";
+import { debugEditorExtension, releaseDebugEditor } from "./debug";
 
 export type EditorFeatureHooks = {
   openCodeFile: (
@@ -34,6 +37,10 @@ const maxRectangularSelectionOffset = 2000;
 let mountedEditor: EditorView | null = null;
 let mountedEditorWorkspaceID = "";
 let mountedEditorPath = "";
+let mountedEditorLineSeparator = "\n";
+let mountedEditorWhitespaceIndicators = false;
+let mountedEditorCallbacks: CodeViewCallbacks | null = null;
+let mountedEditorHooks: EditorFeatureHooks | null = null;
 let editorMountToken = 0;
 
 class GitChangedLineMarker extends GutterMarker {
@@ -150,13 +157,24 @@ function tabIndentionExtensions(): Extension[] {
 }
 
 export function destroyCodeEditor() {
-  saveMountedEditorContent();
+  teardownMountedEditor(true);
+}
+
+function teardownMountedEditor(saveContent: boolean) {
+  if (saveContent) {
+    saveMountedEditorContent();
+  }
   if (mountedEditor) {
+    releaseDebugEditor(mountedEditor);
     mountedEditor.destroy();
   }
   mountedEditor = null;
   mountedEditorWorkspaceID = "";
   mountedEditorPath = "";
+  mountedEditorLineSeparator = "\n";
+  mountedEditorWhitespaceIndicators = false;
+  mountedEditorCallbacks = null;
+  mountedEditorHooks = null;
   editorMountToken++;
 }
 
@@ -164,8 +182,34 @@ export function getMountedCodeEditor() {
   return { view: mountedEditor, workspaceID: mountedEditorWorkspaceID, path: mountedEditorPath };
 }
 
+export function selectedMountedCodeEditorText(workspaceID: string): string {
+  if (!mountedEditor || mountedEditorWorkspaceID !== workspaceID || !mountedEditor.hasFocus) {
+    return "";
+  }
+  const selection = mountedEditor.state.selection.main;
+  if (selection.empty) {
+    return "";
+  }
+  return mountedEditor.state.sliceDoc(selection.from, selection.to);
+}
+
+export function openMountedCodeEditorGoToLine(workspaceID: string): boolean {
+  if (!mountedEditor || mountedEditorWorkspaceID !== workspaceID) {
+    return false;
+  }
+  return gotoLine(mountedEditor);
+}
+
 export function mountedCodeEditorMatches(workspaceID: string, path: string) {
   return Boolean(mountedEditor && mountedEditorWorkspaceID === workspaceID && mountedEditorPath === path);
+}
+
+export function focusMountedCodeEditor(workspaceID: string, path: string) {
+  if (!mountedCodeEditorMatches(workspaceID, path) || !mountedEditor) {
+    return false;
+  }
+  mountedEditor.focus();
+  return true;
 }
 
 export async function mountActiveCodeEditor(
@@ -173,17 +217,25 @@ export async function mountActiveCodeEditor(
   callbacks: CodeViewCallbacks,
   hooks: EditorFeatureHooks,
 ) {
+  mountedEditorCallbacks = callbacks;
+  mountedEditorHooks = hooks;
   const mount = document.querySelector<HTMLElement>("[data-code-editor-mount]");
   const tab = activeCodeTab(workspaceID);
-  destroyCodeEditor();
   if (!mount || !tab) {
+    destroyCodeEditor();
     return;
   }
 
   // Render media tabs as dedicated viewers instead of CodeMirror
   if (tab.isMedia && tab.mediaDataUrl) {
-    if (tab.mediaMimeType?.startsWith("video/")) {
+    destroyCodeEditor();
+    if (tab.mediaMimeType?.startsWith("audio/")) {
+      mount.innerHTML = renderAudioViewer(tab);
+      bindAudioViewerEvents(mount);
+    } else if (tab.mediaMimeType?.startsWith("video/")) {
       mount.innerHTML = renderVideoViewer(tab);
+    } else if (tab.mediaMimeType?.startsWith("audio/")) {
+      mount.innerHTML = renderAudioViewer(tab);
     } else {
       mount.innerHTML = renderImageViewer(tab);
       bindImageViewerEvents(mount, workspaceID, tab.path, callbacks);
@@ -191,11 +243,35 @@ export async function mountActiveCodeEditor(
     return;
   }
 
+  const whitespaceIndicators = callbacks.leadingWhitespaceIndicatorsEnabled();
+  if (
+    mountedCodeEditorMatches(workspaceID, tab.path) &&
+    mountedEditor &&
+    mountedEditorLineSeparator === tab.lineSeparator &&
+    mountedEditorWhitespaceIndicators === whitespaceIndicators
+  ) {
+    if (mountedEditor.dom.parentElement !== mount) {
+      mount.innerHTML = "";
+      mount.appendChild(mountedEditor.dom);
+    }
+    updateTabEditorState(workspaceID, tab.path, mountedEditor);
+    applyPendingEditorReveal(tab, mountedEditor);
+    return;
+  }
+
+  destroyCodeEditor();
+  mountedEditorCallbacks = callbacks;
+  mountedEditorHooks = hooks;
   const token = ++editorMountToken;
   const gitChangedLineGutter = gitChangedLineGutterExtension(workspaceID, tab.path, callbacks);
   const extensions = [
     ...(gitChangedLineGutter ? [gitChangedLineGutter] : []),
     basicSetup,
+    highlightSelectionMatches({
+      minSelectionLength: 1,
+      maxMatches: 2000,
+      wholeWords: false,
+    }),
     ...tabIndentionExtensions(),
     EditorState.lineSeparator.of(tab.lineSeparator),
     EditorState.allowMultipleSelections.of(true),
@@ -221,13 +297,14 @@ export async function mountActiveCodeEditor(
   ];
   if (!tab.untitled && !tab.external) {
     extensions.push(
+      debugEditorExtension(workspaceID, tab.path),
       lspDefinitionExtension(workspaceID, tab.path, callbacks, hooks.openCodeFile),
       lspRenameExtension(workspaceID, tab.path, callbacks),
       referencesPanelExtension(workspaceID, tab.path, callbacks, hooks.openCodeFile),
       inlineCodeChatExtension(workspaceID, tab.path, callbacks, { saveActiveCodeFile: hooks.saveActiveCodeFile }),
     );
   }
-  if (callbacks.leadingWhitespaceIndicatorsEnabled()) {
+  if (whitespaceIndicators) {
     extensions.push(leadingWhitespaceIndicatorExtension());
   }
   const language = await languageExtensionForPath(tab.path);
@@ -253,19 +330,12 @@ export async function mountActiveCodeEditor(
   });
   mountedEditorWorkspaceID = workspaceID;
   mountedEditorPath = tab.path;
+  mountedEditorLineSeparator = tab.lineSeparator;
+  mountedEditorWhitespaceIndicators = whitespaceIndicators;
   const initialScrollTop = tab.scrollTop;
   const initialScrollLeft = tab.scrollLeft;
   restoreMountedEditorScroll(workspaceID, tab.path, initialScrollTop, initialScrollLeft);
-  if (tab.pendingRevealPosition !== undefined) {
-    const position = clamp(tab.pendingRevealPosition, 0, mountedEditor.state.doc.length);
-    const y = tab.pendingRevealScroll ?? "center";
-    tab.pendingRevealPosition = undefined;
-    tab.pendingRevealScroll = undefined;
-    mountedEditor.dispatch({
-      selection: { anchor: position },
-      effects: EditorView.scrollIntoView(position, { y }),
-    });
-  } else {
+  if (!applyPendingEditorReveal(tab, mountedEditor)) {
     window.requestAnimationFrame(() => {
       restoreMountedEditorScroll(workspaceID, tab.path, initialScrollTop, initialScrollLeft);
     });
@@ -273,6 +343,21 @@ export async function mountActiveCodeEditor(
   if (shouldFocusMountedEditor(workspaceID)) {
     mountedEditor.focus();
   }
+}
+
+function applyPendingEditorReveal(tab: CodeFileTab, view: EditorView): boolean {
+  if (tab.pendingRevealPosition === undefined) {
+    return false;
+  }
+  const position = clamp(tab.pendingRevealPosition, 0, view.state.doc.length);
+  const y = tab.pendingRevealScroll ?? "center";
+  tab.pendingRevealPosition = undefined;
+  tab.pendingRevealScroll = undefined;
+  view.dispatch({
+    selection: { anchor: position },
+    effects: EditorView.scrollIntoView(position, { y }),
+  });
+  return true;
 }
 
 function gitChangedLineGutterExtension(
@@ -570,26 +655,80 @@ function updateTabEditorState(workspaceID: string, path: string, view: EditorVie
   tab.scrollLeft = view.scrollDOM.scrollLeft;
 }
 
-export function replaceMountedEditorContent(workspaceID: string, path: string, content: string) {
+type MountedEditorContentChangeOptions = {
+  userEvent?: string;
+};
+
+export function applyMountedEditorUserContentChange(
+  workspaceID: string,
+  path: string,
+  content: string,
+  options: MountedEditorContentChangeOptions = {},
+) {
   if (!mountedEditor || mountedEditorWorkspaceID !== workspaceID || mountedEditorPath !== path) {
-    return;
+    return false;
+  }
+  const current = mountedEditor.state.sliceDoc(0);
+  const change = minimalContentChange(current, content);
+  if (!change) {
+    return true;
   }
   const scrollTop = mountedEditor.scrollDOM.scrollTop;
   const scrollLeft = mountedEditor.scrollDOM.scrollLeft;
-  const selection = mountedEditor.state.selection.main;
-  const nextDocLength = editorDocumentLengthForFileContent(content, mountedEditor.state.lineBreak);
   mountedEditor.dispatch({
-    changes: { from: 0, to: mountedEditor.state.doc.length, insert: content },
-    selection: {
-      anchor: clamp(selection.anchor, 0, nextDocLength),
-      head: clamp(selection.head, 0, nextDocLength),
-    },
-    annotations: Transaction.addToHistory.of(false),
+    changes: change,
+    annotations: isolateHistory.of("full"),
+    userEvent: options.userEvent ?? "input",
   });
   restoreMountedEditorScroll(workspaceID, path, scrollTop, scrollLeft);
   window.requestAnimationFrame(() => {
     restoreMountedEditorScroll(workspaceID, path, scrollTop, scrollLeft);
   });
+  return true;
+}
+
+export function resetMountedEditorDocument(
+  workspaceID: string,
+  path: string,
+  _content: string,
+  _lineSeparator: string,
+) {
+  if (!mountedEditor || mountedEditorWorkspaceID !== workspaceID || mountedEditorPath !== path) {
+    return false;
+  }
+  const callbacks = mountedEditorCallbacks;
+  const hooks = mountedEditorHooks;
+  const mount = mountedEditor.dom.parentElement;
+  teardownMountedEditor(false);
+  if (!callbacks || !hooks || !mount?.isConnected) {
+    return true;
+  }
+  void mountActiveCodeEditor(workspaceID, callbacks, hooks);
+  return true;
+}
+
+function minimalContentChange(current: string, next: string) {
+  if (current === next) {
+    return null;
+  }
+  let prefix = 0;
+  const maxPrefix = Math.min(current.length, next.length);
+  while (prefix < maxPrefix && current.charCodeAt(prefix) === next.charCodeAt(prefix)) {
+    prefix++;
+  }
+  let suffix = 0;
+  const maxSuffix = Math.min(current.length - prefix, next.length - prefix);
+  while (
+    suffix < maxSuffix &&
+    current.charCodeAt(current.length - 1 - suffix) === next.charCodeAt(next.length - 1 - suffix)
+  ) {
+    suffix++;
+  }
+  return {
+    from: prefix,
+    to: current.length - suffix,
+    insert: next.slice(prefix, next.length - suffix),
+  };
 }
 
 function restoreMountedEditorScroll(
@@ -740,7 +879,89 @@ function patchImageZoomUI(tab: CodeFileTab) {
   }
 }
 
-// ─── Video Viewer ──────────────────────────────────────────────
+// ─── Audio Viewer ──────────────────────────────────────────────
+
+function renderAudioViewer(tab: CodeFileTab): string {
+  return `
+    <div class="code-audio-viewer" data-code-audio-viewer>
+      <div class="code-audio-player">
+        <audio src="${escapeAttribute(tab.mediaDataUrl ?? "")}" preload="metadata" data-code-audio></audio>
+        <button class="code-audio-play" type="button" aria-label="Play audio" data-code-audio-play>
+          <span data-code-audio-play-icon>▶</span>
+        </button>
+        <input
+          class="code-audio-seek"
+          type="range"
+          min="0"
+          max="1000"
+          value="0"
+          step="1"
+          aria-label="Audio position"
+          data-code-audio-seek
+        />
+        <span class="code-audio-time" data-code-audio-time>0:00 / 0:00</span>
+      </div>
+    </div>
+  `;
+}
+
+function bindAudioViewerEvents(mount: HTMLElement) {
+  const audio = mount.querySelector<HTMLAudioElement>("[data-code-audio]");
+  const play = mount.querySelector<HTMLButtonElement>("[data-code-audio-play]");
+  const playIcon = mount.querySelector<HTMLElement>("[data-code-audio-play-icon]");
+  const seek = mount.querySelector<HTMLInputElement>("[data-code-audio-seek]");
+  const time = mount.querySelector<HTMLElement>("[data-code-audio-time]");
+  if (!audio || !play || !playIcon || !seek || !time) {
+    return;
+  }
+
+  const update = () => {
+    const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+    const current = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+    seek.value = duration > 0 ? String(Math.round((current / duration) * 1000)) : "0";
+    time.textContent = `${formatAudioTime(current)} / ${formatAudioTime(duration)}`;
+  };
+  const updatePlaybackState = () => {
+    const paused = audio.paused;
+    playIcon.textContent = paused ? "▶" : "❚❚";
+    play.setAttribute("aria-label", paused ? "Play audio" : "Pause audio");
+    play.classList.toggle("is-playing", !paused);
+  };
+
+  play.addEventListener("click", () => {
+    if (audio.paused) {
+      void audio.play().catch(() => {
+        time.textContent = "Unable to play audio";
+      });
+    } else {
+      audio.pause();
+    }
+  });
+  seek.addEventListener("input", () => {
+    if (Number.isFinite(audio.duration) && audio.duration > 0) {
+      audio.currentTime = (Number(seek.value) / 1000) * audio.duration;
+      update();
+    }
+  });
+  audio.addEventListener("loadedmetadata", update);
+  audio.addEventListener("durationchange", update);
+  audio.addEventListener("timeupdate", update);
+  audio.addEventListener("play", updatePlaybackState);
+  audio.addEventListener("pause", updatePlaybackState);
+  audio.addEventListener("ended", updatePlaybackState);
+  update();
+  updatePlaybackState();
+}
+
+function formatAudioTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return "0:00";
+  }
+  const wholeSeconds = Math.floor(seconds);
+  const minutes = Math.floor(wholeSeconds / 60);
+  const remainder = String(wholeSeconds % 60).padStart(2, "0");
+  return `${minutes}:${remainder}`;
+}
 
 function renderVideoViewer(tab: CodeFileTab): string {
   return `

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -98,6 +99,9 @@ func (s *SystemService) runKanbanVerification(ctx context.Context, workspace Wor
 }
 
 func detectKanbanVerificationCommands(workspace Workspace, changedPaths []string) []kanbanVerificationCommand {
+	if command, ok := customKanbanVerificationCommand(workspace); ok {
+		return []kanbanVerificationCommand{command}
+	}
 	commands := make([]kanbanVerificationCommand, 0)
 	seen := map[string]bool{}
 	for _, changedPath := range normalizedChangedPaths(changedPaths) {
@@ -154,6 +158,23 @@ func detectKanbanVerificationCommands(workspace Workspace, changedPaths []string
 	return commands
 }
 
+func customKanbanVerificationCommand(workspace Workspace) (kanbanVerificationCommand, bool) {
+	command := normalizeWorkspaceBuildCommand(workspace.BuildCommand)
+	if command == "" {
+		return kanbanVerificationCommand{}, false
+	}
+	root, ok := firstAvailableWorkspaceFolderPath(workspace)
+	if !ok {
+		return kanbanVerificationCommand{}, false
+	}
+	return kanbanVerificationCommand{
+		Kind:             "custom",
+		Command:          command,
+		WorkingDirectory: workspaceRelativePath(workspace, root),
+		absoluteDir:      root,
+	}, true
+}
+
 func nodeVerificationCommand(workspace Workspace, projectRoot string) (kanbanVerificationCommand, bool) {
 	data, err := os.ReadFile(filepath.Join(projectRoot, "package.json"))
 	if err != nil {
@@ -192,7 +213,15 @@ func runKanbanVerificationCommand(ctx context.Context, command kanbanVerificatio
 
 	stdout := newKanbanVerificationBuffer(kanbanVerificationOutputBytes)
 	stderr := newKanbanVerificationBuffer(kanbanVerificationOutputBytes)
-	cmd := exec.CommandContext(commandContext, command.Executable, command.Args...)
+	cmd, err := kanbanVerificationExecCommand(commandContext, command)
+	if err != nil {
+		return kanbanVerificationResult{
+			Command:          command.Command,
+			WorkingDirectory: command.WorkingDirectory,
+			ExitCode:         -1,
+			Stderr:           err.Error(),
+		}, nil
+	}
 	cmd.Dir = command.absoluteDir
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
@@ -229,6 +258,33 @@ func runKanbanVerificationCommand(ctx context.Context, command kanbanVerificatio
 		result.Stderr = runErr.Error()
 	}
 	return result, nil
+}
+
+func kanbanVerificationExecCommand(ctx context.Context, command kanbanVerificationCommand) (*exec.Cmd, error) {
+	if command.Executable != "" {
+		return exec.CommandContext(ctx, command.Executable, command.Args...), nil
+	}
+	shellName, shellArgs, err := kanbanVerificationShellInvocation(command.Command)
+	if err != nil {
+		return nil, err
+	}
+	return exec.CommandContext(ctx, shellName, shellArgs...), nil
+}
+
+func kanbanVerificationShellInvocation(command string) (string, []string, error) {
+	if runtime.GOOS == "windows" {
+		if shell, err := exec.LookPath("pwsh.exe"); err == nil {
+			return shell, []string{"-NoProfile", "-NonInteractive", "-Command", command}, nil
+		}
+		if shell, err := exec.LookPath("powershell.exe"); err == nil {
+			return shell, []string{"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command}, nil
+		}
+		return "", nil, fmt.Errorf("PowerShell was not found")
+	}
+	if shell := strings.TrimSpace(os.Getenv("SHELL")); shell != "" && filepath.IsAbs(shell) {
+		return shell, []string{"-c", command}, nil
+	}
+	return "/bin/sh", []string{"-c", command}, nil
 }
 
 func nearestMarkerRoot(path string, workspaceRoot string, marker string) (string, bool) {

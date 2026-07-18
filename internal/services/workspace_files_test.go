@@ -117,6 +117,33 @@ func TestSystemServiceListWorkspaceDirectorySortsDirectoriesFirst(t *testing.T) 
 	}
 }
 
+func TestSystemServiceListWorkspaceDirectoryUsesGitignoreInsteadOfFallback(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	for _, name := range []string{"build", "generated"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("generated/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	directory, err := service.ListWorkspaceDirectory(workspaceID, "workspace")
+	if err != nil {
+		t.Fatalf("list workspace directory: %v", err)
+	}
+	ignoredByName := map[string]bool{}
+	for _, entry := range directory.Entries {
+		ignoredByName[entry.Name] = entry.Ignored
+	}
+	if ignoredByName["build"] {
+		t.Fatalf("expected build to remain visible when .gitignore exists, got %#v", directory.Entries)
+	}
+	if !ignoredByName["generated"] {
+		t.Fatalf("expected .gitignore entry to be ignored, got %#v", directory.Entries)
+	}
+}
+
 func TestSystemServiceReadWorkspaceFileReturnsTextFile(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.Mkdir(filepath.Join(root, "src"), 0o755); err != nil {
@@ -166,6 +193,9 @@ func TestSystemServiceSaveWorkspaceFileWritesWhenUnchanged(t *testing.T) {
 }
 
 func TestSystemServiceSaveWorkspaceFileFormatsGoFilesBeforeWriting(t *testing.T) {
+	withWorkspaceGoImportOrganizer(t, func(_ *SystemService, _ Workspace, _ string, content string) (string, error) {
+		return content, nil
+	})
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	path := filepath.Join(root, "main.go")
 	if err := os.WriteFile(path, []byte("package main\n"), 0o640); err != nil {
@@ -195,6 +225,9 @@ func TestSystemServiceSaveWorkspaceFileFormatsGoFilesBeforeWriting(t *testing.T)
 }
 
 func TestSystemServiceSaveWorkspaceFileDoesNotWriteGoFileWhenFormattingFails(t *testing.T) {
+	withWorkspaceGoImportOrganizer(t, func(_ *SystemService, _ Workspace, _ string, content string) (string, error) {
+		return content, nil
+	})
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	path := filepath.Join(root, "main.go")
 	original := "package main\n\nfunc main() {}\n"
@@ -216,6 +249,91 @@ func TestSystemServiceSaveWorkspaceFileDoesNotWriteGoFileWhenFormattingFails(t *
 	}
 	if string(data) != original {
 		t.Fatalf("expected failed format to leave file alone, got %q", string(data))
+	}
+}
+
+func TestSystemServiceSaveWorkspaceFileOrganizesGoImportsBeforeWriting(t *testing.T) {
+	withWorkspaceGoImportOrganizer(t, func(_ *SystemService, _ Workspace, _ string, content string) (string, error) {
+		organized := strings.Replace(content, "package main\n\n", "package main\n\nimport \"fmt\"\n\n", 1)
+		organized = strings.Replace(organized, "import (\n\t\"strings\"\n)\n\n", "", 1)
+		return organized, nil
+	})
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := service.ReadWorkspaceFile(workspaceID, "workspace/main.go")
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+
+	input := "package main\n\nimport (\n\t\"strings\"\n)\n\nfunc main(){fmt.Println(\"ok\")}\n"
+	saved, err := service.SaveWorkspaceFile(workspaceID, "workspace/main.go", input, opened.ModifiedAt)
+	if err != nil {
+		t.Fatalf("save file: %v", err)
+	}
+	expected := "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(\"ok\") }\n"
+	if saved.Content != expected {
+		t.Fatalf("expected imports organized and formatted, got %q", saved.Content)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != expected {
+		t.Fatalf("expected saved file content %q, got %q", expected, string(data))
+	}
+}
+
+func TestSystemServiceSaveWorkspaceFileDoesNotWriteWhenGoImportOrganizationFails(t *testing.T) {
+	withWorkspaceGoImportOrganizer(t, func(_ *SystemService, _ Workspace, _ string, _ string) (string, error) {
+		return "", fmt.Errorf("organizer unavailable")
+	})
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	path := filepath.Join(root, "main.go")
+	original := "package main\n\nfunc main() {}\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := service.ReadWorkspaceFile(workspaceID, "workspace/main.go")
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+
+	_, err = service.SaveWorkspaceFile(workspaceID, "workspace/main.go", "package main\n\nfunc main() {}\n", opened.ModifiedAt)
+	if err == nil || !strings.Contains(err.Error(), "organizer unavailable") {
+		t.Fatalf("expected organizer error, got %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != original {
+		t.Fatalf("expected failed organization to leave file alone, got %q", string(data))
+	}
+}
+
+func TestSystemServiceSaveWorkspaceFileBypassesGoImportOrganizationForNonGoFiles(t *testing.T) {
+	withWorkspaceGoImportOrganizer(t, func(_ *SystemService, _ Workspace, _ string, _ string) (string, error) {
+		return "", fmt.Errorf("organizer should not run")
+	})
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	path := filepath.Join(root, "README.md")
+	if err := os.WriteFile(path, []byte("before\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := service.ReadWorkspaceFile(workspaceID, "workspace/README.md")
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+
+	saved, err := service.SaveWorkspaceFile(workspaceID, "workspace/README.md", "after\n", opened.ModifiedAt)
+	if err != nil {
+		t.Fatalf("save file: %v", err)
+	}
+	if saved.Content != "after\n" {
+		t.Fatalf("expected non-Go save to bypass organizer, got %#v", saved)
 	}
 }
 
@@ -547,6 +665,66 @@ func TestSystemServiceRenameWorkspacePathRejectsInvalidTargets(t *testing.T) {
 	}
 }
 
+func TestSystemServiceDeleteWorkspacePathsDeletesFilesAndFolders(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.MkdirAll(filepath.Join(root, "src", "feature"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "feature", "readme.md"), []byte("feature"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := service.DeleteWorkspacePaths(workspaceID, []string{
+		"workspace/main.go",
+		"workspace/src",
+		"workspace/src/feature/readme.md",
+	})
+	if err != nil {
+		t.Fatalf("delete paths: %v", err)
+	}
+	if len(deleted) != 2 {
+		t.Fatalf("expected parent folder delete to cover nested child, got %#v", deleted)
+	}
+	if _, err := os.Stat(filepath.Join(root, "main.go")); !os.IsNotExist(err) {
+		t.Fatalf("expected file to be deleted, stat error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "src")); !os.IsNotExist(err) {
+		t.Fatalf("expected folder subtree to be deleted, stat error: %v", err)
+	}
+}
+
+func TestSystemServiceDeleteWorkspacePathsRejectsInvalidTargets(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name  string
+		paths []string
+	}{
+		{name: "empty selection", paths: nil},
+		{name: "workspace root", paths: []string{"workspace"}},
+		{name: "missing path", paths: []string{"workspace/missing.go"}},
+		{name: "traversal", paths: []string{"workspace/../outside.txt"}},
+		{name: "absolute path", paths: []string{outside}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := service.DeleteWorkspacePaths(workspaceID, tc.paths); err == nil {
+				t.Fatalf("expected error deleting %#v", tc.paths)
+			}
+		})
+	}
+}
+
 func TestSystemServiceWorkspaceFilesRejectBinaryAndLargeFiles(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.WriteFile(filepath.Join(root, "image.bin"), []byte{0x01, 0x00, 0x02}, 0o600); err != nil {
@@ -745,6 +923,29 @@ func TestSystemServiceSearchWorkspaceFilesSkipsIgnoredFoldersByDefault(t *testin
 	}
 }
 
+func TestSystemServiceSearchWorkspaceFilesUsesGitignoreInsteadOfFallback(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	for _, directory := range []string{"build", "generated"} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, directory, "needle.txt"), []byte(directory), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("generated/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	filtered, err := service.SearchWorkspaceFiles(workspaceID, "needle", false)
+	if err != nil {
+		t.Fatalf("search filtered workspace: %v", err)
+	}
+	if got := strings.Join(entryPaths(filtered.Entries), ","); got != "workspace/build/needle.txt" {
+		t.Fatalf("expected .gitignore to replace fallback ignores, got %v", got)
+	}
+}
+
 func TestSystemServiceSearchWorkspaceFilesEmptyQueryListsWorkspaceEntries(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
@@ -768,7 +969,7 @@ func TestSystemServiceSearchWorkspaceFilesEmptyQueryListsWorkspaceEntries(t *tes
 		t.Fatalf("search workspace: %v", err)
 	}
 	paths := strings.Join(entryPaths(result.Entries), ",")
-	for _, expected := range []string{"workspace/README.md", "workspace/src", "workspace/src/main.go"} {
+	for _, expected := range []string{"workspace", "workspace/README.md", "workspace/src", "workspace/src/main.go"} {
 		if !strings.Contains(paths, expected) {
 			t.Fatalf("expected empty query results to include %q, got %v", expected, paths)
 		}
@@ -776,6 +977,24 @@ func TestSystemServiceSearchWorkspaceFilesEmptyQueryListsWorkspaceEntries(t *tes
 	if strings.Contains(paths, "node_modules") {
 		t.Fatalf("expected ignored folders to be skipped, got %v", paths)
 	}
+}
+
+func TestSystemServiceSearchWorkspaceFilesFindsWorkspaceRootFolder(t *testing.T) {
+	service, workspaceID, _ := newWorkspaceFilesTestService(t)
+
+	result, err := service.SearchWorkspaceFiles(workspaceID, "workspace", false)
+	if err != nil {
+		t.Fatalf("search workspace root folder: %v", err)
+	}
+	for _, entry := range result.Entries {
+		if entry.Path == "workspace" {
+			if entry.Kind != "directory" {
+				t.Fatalf("expected workspace root to be a directory, got %#v", entry)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected workspace root folder in results, got %v", entryPaths(result.Entries))
 }
 
 func TestSystemServiceSearchWorkspaceFilesRejectsInvalidWorkspace(t *testing.T) {
@@ -917,6 +1136,133 @@ func TestSystemServiceSearchWorkspaceTextRegexAndFileFilters(t *testing.T) {
 	}
 }
 
+func TestWorkspaceTextSearchPathFiltersSupportVSCodeGlobExpressions(t *testing.T) {
+	tests := []struct {
+		name         string
+		expression   string
+		relative     string
+		rootRelative string
+		fileName     string
+		want         bool
+	}{
+		{
+			name:         "brace extension group",
+			expression:   "*.{ts,tsx}",
+			relative:     "workspace/src/main.tsx",
+			rootRelative: "src/main.tsx",
+			fileName:     "main.tsx",
+			want:         true,
+		},
+		{
+			name:         "brace extension group rejects other extension",
+			expression:   "*.{ts,tsx}",
+			relative:     "workspace/src/main.js",
+			rootRelative: "src/main.js",
+			fileName:     "main.js",
+			want:         false,
+		},
+		{
+			name:         "grouped folders and character range",
+			expression:   "{src,test}/**/*.[jt]s",
+			relative:     "workspace/packages/app/src/lib/main.ts",
+			rootRelative: "packages/app/src/lib/main.ts",
+			fileName:     "main.ts",
+			want:         true,
+		},
+		{
+			name:         "implicit recursive prefix",
+			expression:   "src/*.ts",
+			relative:     "workspace/packages/app/src/main.ts",
+			rootRelative: "packages/app/src/main.ts",
+			fileName:     "main.ts",
+			want:         true,
+		},
+		{
+			name:         "dot slash anchors the expression",
+			expression:   "./src/*.ts",
+			relative:     "workspace/packages/app/src/main.ts",
+			rootRelative: "packages/app/src/main.ts",
+			fileName:     "main.ts",
+			want:         false,
+		},
+		{
+			name:         "dot slash matches from a root",
+			expression:   "./src/*.ts",
+			relative:     "workspace/src/main.ts",
+			rootRelative: "src/main.ts",
+			fileName:     "main.ts",
+			want:         true,
+		},
+		{
+			name:         "negated character range",
+			expression:   "example.[!0-9]",
+			relative:     "workspace/example.a",
+			rootRelative: "example.a",
+			fileName:     "example.a",
+			want:         true,
+		},
+		{
+			name:         "negated character range rejects digit",
+			expression:   "example.[!0-9]",
+			relative:     "workspace/example.4",
+			rootRelative: "example.4",
+			fileName:     "example.4",
+			want:         false,
+		},
+		{
+			name:         "literal brackets",
+			expression:   "src/routes/post/[[]id[]]/**",
+			relative:     "workspace/src/routes/post/[id]/handler.ts",
+			rootRelative: "src/routes/post/[id]/handler.ts",
+			fileName:     "handler.ts",
+			want:         true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			filters, err := compileWorkspaceTextPathFilters(test.expression)
+			if err != nil {
+				t.Fatalf("compile filter: %v", err)
+			}
+			if got := workspaceTextPathFilterMatches(filters, test.relative, test.rootRelative, test.fileName); got != test.want {
+				t.Fatalf("match %q = %v, want %v", test.expression, got, test.want)
+			}
+		})
+	}
+}
+
+func TestWorkspaceTextSearchPathFiltersKeepBraceCommasInOneExpression(t *testing.T) {
+	filters, err := compileWorkspaceTextPathFilters("*.{ts, tsx}, README.md")
+	if err != nil {
+		t.Fatalf("compile filters: %v", err)
+	}
+	if len(filters) != 3 {
+		t.Fatalf("expected three expanded filters, got %d", len(filters))
+	}
+	if _, err := compileWorkspaceTextPathFilters("*.{ts,tsx"); err == nil || !strings.Contains(err.Error(), "unmatched opening brace") {
+		t.Fatalf("expected an unmatched-brace error, got %v", err)
+	}
+}
+
+func TestSystemServiceSearchWorkspaceTextReportsUTF16OffsetsAcrossLines(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.WriteFile(filepath.Join(root, "unicode.txt"), []byte("😀 x\r\nneedle"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.SearchWorkspaceText(workspaceID, WorkspaceTextSearchRequest{Query: "needle"})
+	if err != nil {
+		t.Fatalf("search workspace text: %v", err)
+	}
+	if result.MatchCount != 1 {
+		t.Fatalf("expected one match, got %#v", result)
+	}
+	match := result.Files[0].Matches[0]
+	if match.Line != 2 || match.Column != 1 || match.Offset != 6 || match.EndOffset != 12 {
+		t.Fatalf("unexpected UTF-16 match metadata: %#v", match)
+	}
+}
+
 func TestSystemServiceSearchWorkspaceTextSkipsIgnoredFoldersByDefault(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.MkdirAll(filepath.Join(root, "node_modules", "pkg"), 0o755); err != nil {
@@ -942,6 +1288,29 @@ func TestSystemServiceSearchWorkspaceTextSkipsIgnoredFoldersByDefault(t *testing
 	}
 	if got := strings.Join(workspaceTextSearchFilePaths(included.Files), ","); got != "workspace/needle.txt,workspace/node_modules/pkg/needle.js" {
 		t.Fatalf("expected ignored folder match when included, got %v", got)
+	}
+}
+
+func TestSystemServiceSearchWorkspaceTextUsesGitignoreInsteadOfFallback(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	for _, directory := range []string{"build", "generated"} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, directory, "needle.txt"), []byte("needle"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("generated/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	filtered, err := service.SearchWorkspaceText(workspaceID, WorkspaceTextSearchRequest{Query: "needle"})
+	if err != nil {
+		t.Fatalf("search filtered workspace text: %v", err)
+	}
+	if got := strings.Join(workspaceTextSearchFilePaths(filtered.Files), ","); got != "workspace/build/needle.txt" {
+		t.Fatalf("expected .gitignore to replace fallback ignores, got %v", got)
 	}
 }
 
@@ -974,6 +1343,82 @@ func TestSystemServiceSearchWorkspaceTextCapsResults(t *testing.T) {
 	}
 }
 
+func TestWorkspaceTextSearchStartingNewRunCancelsPrevious(t *testing.T) {
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+	first, firstID := service.startWorkspaceTextSearch("workspace")
+	second, secondID := service.startWorkspaceTextSearch("workspace")
+	if firstID == secondID {
+		t.Fatal("expected distinct search run IDs")
+	}
+	select {
+	case <-first.Done():
+	default:
+		t.Fatal("expected the superseded search to be canceled")
+	}
+	select {
+	case <-second.Done():
+		t.Fatal("expected the current search to remain active")
+	default:
+	}
+	service.finishWorkspaceTextSearch("workspace", firstID)
+	select {
+	case <-second.Done():
+		t.Fatal("expected finishing an old search not to cancel the current search")
+	default:
+	}
+	service.finishWorkspaceTextSearch("workspace", secondID)
+	select {
+	case <-second.Done():
+	default:
+		t.Fatal("expected the finished search to be canceled")
+	}
+}
+
+func TestSystemServiceSearchWorkspaceTextStreamsMatches(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.WriteFile(filepath.Join(root, "match.txt"), []byte("needle"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	events, unsubscribe := SubscribeEvents(service, 16)
+	defer unsubscribe()
+
+	result, err := service.SearchWorkspaceText(workspaceID, WorkspaceTextSearchRequest{SearchID: "search-1", Query: "needle"})
+	if err != nil {
+		t.Fatalf("search workspace text: %v", err)
+	}
+	if result.MatchCount != 1 {
+		t.Fatalf("expected one final match, got %#v", result)
+	}
+
+	seenStarted := false
+	seenMatches := false
+	for {
+		select {
+		case runtimeEvent := <-events:
+			if runtimeEvent.Name != WorkspaceTextSearchRuntimeEventName {
+				continue
+			}
+			event, ok := runtimeEvent.Data.(WorkspaceTextSearchEvent)
+			if !ok || event.SearchID != "search-1" || event.WorkspaceID != workspaceID {
+				t.Fatalf("unexpected streamed search event: %#v", runtimeEvent.Data)
+			}
+			switch event.Type {
+			case "started":
+				seenStarted = true
+			case "matches":
+				seenMatches = len(event.Files) == 1 && event.MatchCount == 1
+			case "complete":
+				if !seenStarted || !seenMatches || event.Result == nil || event.Result.MatchCount != 1 {
+					t.Fatalf("incomplete streamed event sequence: started=%v matches=%v complete=%#v", seenStarted, seenMatches, event)
+				}
+				return
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for streamed search events")
+		}
+	}
+}
+
 func newWorkspaceFilesTestService(t *testing.T) (*SystemService, string, string) {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "workspace")
@@ -986,6 +1431,15 @@ func newWorkspaceFilesTestService(t *testing.T) (*SystemService, string, string)
 		t.Fatalf("add workspace: %v", err)
 	}
 	return service, state.ActiveWorkspaceID, root
+}
+
+func withWorkspaceGoImportOrganizer(t *testing.T, organize func(*SystemService, Workspace, string, string) (string, error)) {
+	t.Helper()
+	previous := organizeWorkspaceGoImportsBeforeSave
+	organizeWorkspaceGoImportsBeforeSave = organize
+	t.Cleanup(func() {
+		organizeWorkspaceGoImportsBeforeSave = previous
+	})
 }
 
 func entryNames(entries []WorkspaceFileEntry) []string {
@@ -1084,6 +1538,170 @@ func TestSystemServiceReadWorkspaceMediaFileDetectsGIF(t *testing.T) {
 	}
 }
 
+func TestSystemServiceReadWorkspaceMediaFileDetectsAudioMP3(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	mp3Data := []byte{0x49, 0x44, 0x33, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	if err := os.WriteFile(filepath.Join(root, "track.mp3"), mp3Data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/track.mp3")
+	if err != nil {
+		t.Fatalf("read audio file: %v", err)
+	}
+	if result.MimeType != "audio/mpeg" {
+		t.Fatalf("expected mime type audio/mpeg, got %q", result.MimeType)
+	}
+	if !strings.HasPrefix(result.DataURL, "data:audio/mpeg;base64,") {
+		t.Fatalf("expected data URL prefix, got %q", result.DataURL)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileDetectsAudioWAV(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	wavHeader := append([]byte("RIFF"), []byte{0, 0, 0, 0}...)
+	wavData := append(wavHeader, []byte("WAVE")...)
+	if err := os.WriteFile(filepath.Join(root, "sample.wav"), wavData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/sample.wav")
+	if err != nil {
+		t.Fatalf("read audio file: %v", err)
+	}
+	if result.MimeType != "audio/wav" {
+		t.Fatalf("expected mime type audio/wav, got %q", result.MimeType)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileDetectsAudioOGG(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	oggData := []byte{0x4F, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00}
+	if err := os.WriteFile(filepath.Join(root, "music.ogg"), oggData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/music.ogg")
+	if err != nil {
+		t.Fatalf("read audio file: %v", err)
+	}
+	if result.MimeType != "audio/ogg" {
+		t.Fatalf("expected mime type audio/ogg, got %q", result.MimeType)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileDetectsAudioFLAC(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	flacData := []byte{0x66, 0x4C, 0x61, 0x43, 0x00, 0x00, 0x00, 0x22}
+	if err := os.WriteFile(filepath.Join(root, "lossless.flac"), flacData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/lossless.flac")
+	if err != nil {
+		t.Fatalf("read audio file: %v", err)
+	}
+	if result.MimeType != "audio/flac" {
+		t.Fatalf("expected mime type audio/flac, got %q", result.MimeType)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileDetectsAudioAAC(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	aacData := []byte{0xFF, 0xF1, 0x50, 0x80}
+	if err := os.WriteFile(filepath.Join(root, "audio.aac"), aacData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/audio.aac")
+	if err != nil {
+		t.Fatalf("read audio file: %v", err)
+	}
+	if result.MimeType != "audio/aac" {
+		t.Fatalf("expected mime type audio/aac, got %q", result.MimeType)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileDetectsAudioM4A(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	m4aData := append([]byte("    "), []byte("ftypM4A ")...)
+	if err := os.WriteFile(filepath.Join(root, "song.m4a"), m4aData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/song.m4a")
+	if err != nil {
+		t.Fatalf("read audio file: %v", err)
+	}
+	if result.MimeType != "audio/mp4" {
+		t.Fatalf("expected mime type audio/mp4, got %q", result.MimeType)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileDetectsAudioOpus(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	opusData := []byte("OpusHead")
+	if err := os.WriteFile(filepath.Join(root, "voice.opus"), opusData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/voice.opus")
+	if err != nil {
+		t.Fatalf("read audio file: %v", err)
+	}
+	if result.MimeType != "audio/opus" {
+		t.Fatalf("expected mime type audio/opus, got %q", result.MimeType)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileDetectsAudioByExtensionFallback(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	// Unknown magic bytes but .wma extension should resolve via extension map
+	wmaData := []byte{0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11}
+	if err := os.WriteFile(filepath.Join(root, "track.wma"), wmaData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/track.wma")
+	if err != nil {
+		t.Fatalf("read audio file: %v", err)
+	}
+	if result.MimeType != "audio/x-ms-wma" {
+		t.Fatalf("expected mime type audio/x-ms-wma, got %q", result.MimeType)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileExistingImageStillWorks(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.WriteFile(filepath.Join(root, "icon.png"), smallPNGData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/icon.png")
+	if err != nil {
+		t.Fatalf("read media file: %v", err)
+	}
+	if result.MimeType != "image/png" {
+		t.Fatalf("expected mime type image/png, got %q", result.MimeType)
+	}
+}
+
+func TestSystemServiceReadWorkspaceMediaFileExistingVideoStillWorks(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	mp4Data := append([]byte("    "), []byte("ftypmp42")...)
+	if err := os.WriteFile(filepath.Join(root, "video.mp4"), mp4Data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReadWorkspaceMediaFile(workspaceID, "workspace/video.mp4")
+	if err != nil {
+		t.Fatalf("read media file: %v", err)
+	}
+	if result.MimeType != "video/mp4" {
+		t.Fatalf("expected mime type video/mp4, got %q", result.MimeType)
+	}
+}
+
 func TestSystemServiceReadWorkspaceMediaFileRejectsNonMediaFile(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
@@ -1151,8 +1769,17 @@ func TestDetectMagicByteMIME(t *testing.T) {
 		{"jpeg", []byte{0xFF, 0xD8, 0xFF}, "image/jpeg"},
 		{"gif", []byte{'G', 'I', 'F', '8'}, "image/gif"},
 		{"webp", append([]byte("RIFF"), append([]byte{0, 0, 0, 0}, append([]byte("WEBP"), 0, 0)...)...), "image/webp"},
-		{"mp4", append([]byte("    "), []byte("ftyp")...), "video/mp4"},
+		{"mp4", append([]byte("    "), []byte("ftypmp42")...), "video/mp4"},
+		{"m4a", append([]byte("    "), []byte("ftypM4A ")...), "audio/mp4"},
+		{"m4b", append([]byte("    "), []byte("ftypM4B ")...), "audio/mp4"},
 		{"webm", []byte{0x1A, 0x45, 0xDF, 0xA3}, "video/webm"},
+		{"mp3_id3", []byte{0x49, 0x44, 0x33, 0x04, 0x00, 0x00}, "audio/mpeg"},
+		{"mp3_sync", []byte{0xFF, 0xFB, 0x90, 0x00}, "audio/mpeg"},
+		{"wav", append([]byte("RIFF"), append([]byte{0, 0, 0, 0}, []byte("WAVE")...)...), "audio/wav"},
+		{"ogg", []byte{0x4F, 0x67, 0x67, 0x53, 0x00, 0x02}, "audio/ogg"},
+		{"flac", []byte{0x66, 0x4C, 0x61, 0x43, 0x00, 0x00, 0x00, 0x22}, "audio/flac"},
+		{"aac", []byte{0xFF, 0xF1, 0x50, 0x80}, "audio/aac"},
+		{"opus", []byte("OpusHead"), "audio/opus"},
 		{"unknown", []byte{0x01, 0x02, 0x03}, ""},
 		{"short", []byte{0x89}, ""},
 	}
