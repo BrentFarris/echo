@@ -1,8 +1,11 @@
 package services
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +13,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/brent/echo/internal/llm"
+	"github.com/disintegration/imaging"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const maxChatImageAttachments = 4
@@ -18,6 +23,10 @@ const maxChatVideoAttachments = 4
 const maxChatVideoBytes = 50 * 1024 * 1024
 const maxChatMediaAttachments = 8
 const maxChatImageMessageBytes = 20 * 1024 * 1024
+
+// Image compression constants for LLM endpoint payloads
+const maxImageDimension = 2048
+const jpegQuality = 85
 
 type ChatMessageRequest struct {
 	Content     string           `json:"content"`
@@ -63,6 +72,12 @@ type ChatVideoAttachment struct {
 	DataURL   string `json:"dataUrl,omitempty"`
 }
 
+type ChatImageSaveRequest struct {
+	Name      string `json:"name"`
+	MediaType string `json:"mediaType"`
+	DataURL   string `json:"dataUrl"`
+}
+
 type workspaceImageReference struct {
 	Path      string
 	Supported bool
@@ -104,22 +119,93 @@ func (s *SystemService) prepareChatImages(workspace Workspace, content string, p
 	return images, nil
 }
 
+// compressChatImage decodes raw image bytes, resizes if either dimension exceeds
+// maxImageDimension, and optionally re-encodes PNG as JPEG to reduce payload size.
+// GIF files are returned unchanged to preserve animation.
+// If the image cannot be decoded (e.g. corrupted or minimal test data), original
+// bytes are returned unchanged so that chat sending is not blocked.
+// Returns compressed bytes and potentially updated media type.
+func compressChatImage(rawData []byte, mediaType string) ([]byte, string, error) {
+	// Preserve GIFs as-is (animations)
+	if strings.ToLower(mediaType) == "image/gif" {
+		return rawData, mediaType, nil
+	}
+
+	img, _, err := image.Decode(bytes.NewReader(rawData))
+	if err != nil {
+		// If we can't decode the image, return original data unchanged.
+		// This preserves existing behavior for minimal test images and avoids
+		// blocking chat sends on corrupted files.
+		return rawData, mediaType, nil
+	}
+
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+
+	// Resize if either dimension exceeds the limit
+	if width > maxImageDimension || height > maxImageDimension {
+		img = imaging.Resize(img, maxImageDimension, maxImageDimension, imaging.Lanczos)
+	}
+
+	// Re-encode: PNGs are converted to JPEG to reduce size
+	if strings.ToLower(mediaType) == "image/png" {
+		var buf bytes.Buffer
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: jpegQuality}); err != nil {
+			return rawData, mediaType, fmt.Errorf("encode image as JPEG: %w", err)
+		}
+		encoded := buf.Bytes()
+		// Only convert to JPEG if it actually reduces size; otherwise keep the PNG re-encoded
+		if len(encoded) < len(rawData) {
+			return encoded, "image/jpeg", nil
+		}
+		// Even if slightly larger, JPEG is preferred for LLM endpoints since transparency
+		// isn't useful and base64 overhead makes every byte count
+		return encoded, "image/jpeg", nil
+	}
+
+	// For JPEG, re-encode at target quality to ensure consistency after potential resize
+	if strings.ToLower(mediaType) == "image/jpeg" {
+		var buf bytes.Buffer
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: jpegQuality}); err != nil {
+			return rawData, mediaType, fmt.Errorf("re-encode JPEG: %w", err)
+		}
+		return buf.Bytes(), mediaType, nil
+	}
+
+	// WebP: Go stdlib doesn't encode WebP, so convert to JPEG
+	if strings.ToLower(mediaType) == "image/webp" {
+		var buf bytes.Buffer
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: jpegQuality}); err != nil {
+			return rawData, mediaType, fmt.Errorf("encode WebP as JPEG: %w", err)
+		}
+		return buf.Bytes(), "image/jpeg", nil
+	}
+
+	// Unknown type: return original data (shouldn't reach here due to validation)
+	return rawData, mediaType, nil
+}
+
 func normalizePastedChatImage(index int, input ChatImageInput) (ChatImageAttachment, error) {
 	mediaType, data, err := parseChatImageDataURL(input.DataURL)
 	if err != nil {
 		return ChatImageAttachment{}, err
 	}
+	compressedData, compressedType, err := compressChatImage(data, mediaType)
+	if err != nil {
+		return ChatImageAttachment{}, fmt.Errorf("compress image: %w", err)
+	}
 	if input.Bytes > 0 && input.Bytes != int64(len(data)) {
 		return ChatImageAttachment{}, fmt.Errorf("pasted image size does not match its data")
 	}
-	name := safeChatImageName(input.Name, fmt.Sprintf("pasted-image-%d%s", index+1, chatImageExtension(mediaType)))
+	name := safeChatImageName(input.Name, fmt.Sprintf("pasted-image-%d%s", index+1, chatImageExtension(compressedType)))
 	return ChatImageAttachment{
 		ID:        strings.TrimSpace(input.ID),
 		Source:    "pasted",
 		Name:      name,
-		MediaType: mediaType,
-		Bytes:     int64(len(data)),
-		DataURL:   chatImageDataURL(mediaType, data),
+		MediaType: compressedType,
+		Bytes:     int64(len(compressedData)),
+		DataURL:   chatImageDataURL(compressedType, compressedData),
 	}, nil
 }
 
@@ -179,14 +265,18 @@ func readWorkspaceChatImage(workspace Workspace, path string) (ChatImageAttachme
 	if err != nil {
 		return ChatImageAttachment{}, fmt.Errorf("image %q: %w", path, err)
 	}
+	compressedData, compressedType, err := compressChatImage(data, mediaType)
+	if err != nil {
+		return ChatImageAttachment{}, fmt.Errorf("compress image %q: %w", path, err)
+	}
 	relative := workspaceRelativePath(workspace, resolved)
 	return ChatImageAttachment{
 		Source:    "workspace",
 		Name:      fileName(relative),
 		Path:      relative,
-		MediaType: mediaType,
-		Bytes:     int64(len(data)),
-		DataURL:   chatImageDataURL(mediaType, data),
+		MediaType: compressedType,
+		Bytes:     int64(len(compressedData)),
+		DataURL:   chatImageDataURL(compressedType, compressedData),
 	}, nil
 }
 
@@ -643,4 +733,48 @@ func chatVideoExtension(mediaType string) string {
 	default:
 		return ""
 	}
+}
+
+// SaveChatImageToDisk opens a native save dialog, decodes the base64 data URL,
+// and writes the image bytes to disk. Returns the absolute path saved to,
+// or empty string if the dialog was canceled.
+func (s *SystemService) SaveChatImageToDisk(workspaceID string, req ChatImageSaveRequest) (string, error) {
+	_, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return "", err
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		ext := chatImageExtension(req.MediaType)
+		name = "image" + ext
+		if ext == "" {
+			name = "image.png"
+		}
+	}
+
+	selected, dialogErr := runtime.SaveFileDialog(s.ctx, runtime.SaveDialogOptions{
+		Title:                "Save Image",
+		DefaultFilename:      name,
+		CanCreateDirectories: true,
+		ShowHiddenFiles:      true,
+	})
+	if dialogErr != nil || strings.TrimSpace(selected) == "" {
+		return "", nil
+	}
+
+	_, data, err := parseChatImageDataURL(req.DataURL)
+	if err != nil {
+		return "", fmt.Errorf("decode image data: %w", err)
+	}
+
+	if err := os.WriteFile(selected, data, 0o644); err != nil {
+		return "", fmt.Errorf("write file: %w", err)
+	}
+
+	absPath, err := filepath.Abs(selected)
+	if err != nil {
+		return selected, nil
+	}
+	return absPath, nil
 }

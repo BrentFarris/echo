@@ -55,6 +55,8 @@ export type ChatStreamEvent = {
   toolCall?: services.ChatToolActivity;
   error?: string;
   finishReason?: string;
+  imageAttachment?: services.ChatImageAttachment;
+  videoAttachment?: services.ChatVideoAttachment;
 };
 
 export type KanbanEvent = {

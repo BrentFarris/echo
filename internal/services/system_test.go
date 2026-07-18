@@ -710,15 +710,17 @@ func TestSystemServiceChatReadImageToolSendsImageContentPart(t *testing.T) {
 		t.Fatalf("expected visible tool result to omit image data URL, got %q", session.Messages[1].ToolCalls[0].Result)
 	}
 
+	// After stripping, the second request should NOT include raw image data URLs in tool result messages.
+	// The LLM sees the compact tool result and a text description instead.
 	var toolMessage *llm.Message
-	var imageMessage *llm.Message
+	var descriptionMessage *llm.Message
 	for i := range secondRequest.Messages {
 		message := &secondRequest.Messages[i]
 		if message.Role == llm.RoleTool && message.ToolCallID == "call_image" {
 			toolMessage = message
 		}
-		if message.Role == llm.RoleUser && len(message.ContentParts) == 2 && message.ContentParts[1].ImageURL != nil {
-			imageMessage = message
+		if message.Role == llm.RoleUser && strings.Contains(message.Content, "Image returned by tool filesystem_read_image") {
+			descriptionMessage = message
 		}
 	}
 	if toolMessage == nil || !strings.Contains(toolMessage.Content, `"contentType":"image_url"`) {
@@ -727,15 +729,16 @@ func TestSystemServiceChatReadImageToolSendsImageContentPart(t *testing.T) {
 	if strings.Contains(toolMessage.Content, "data:image") {
 		t.Fatalf("expected tool message to omit image data URL, got %q", toolMessage.Content)
 	}
-	if imageMessage == nil {
-		t.Fatalf("expected image content-parts user message, got %#v", secondRequest.Messages)
+	if descriptionMessage == nil {
+		t.Fatalf("expected text description of image in user message, got %#v", secondRequest.Messages)
 	}
-	if imageMessage.ContentParts[0].Type != "text" || !strings.Contains(imageMessage.ContentParts[0].Text, "filesystem_read_image") {
-		t.Fatalf("expected image message text to name the tool, got %#v", imageMessage.ContentParts[0])
-	}
-	imagePart := imageMessage.ContentParts[1]
-	if imagePart.Type != "image_url" || imagePart.ImageURL == nil || !strings.HasPrefix(imagePart.ImageURL.URL, "data:image/png;base64,") || imagePart.ImageURL.Detail != "high" {
-		t.Fatalf("expected image_url data URL with detail, got %#v", imagePart)
+	// Verify no image_url content parts remain (stripped from messages slice)
+	for i, msg := range secondRequest.Messages {
+		for j, part := range msg.ContentParts {
+			if part.ImageURL != nil && strings.HasPrefix(part.ImageURL.URL, "data:image") {
+				t.Fatalf("expected image data URL to be stripped from messages slice, found in message %d part %d", i, j)
+			}
+		}
 	}
 }
 
@@ -3149,5 +3152,163 @@ func TestCloneMessagesPreservesVideoURL(t *testing.T) {
 	part := req.Messages[0].ContentParts[1]
 	if part.Type != "video_url" || part.VideoURL == nil || part.VideoURL.URL != "data:video/mp4;base64,test" {
 		t.Fatalf("expected preserved VideoURL, got %#v", part)
+	}
+}
+
+func TestStripMediaContentPartsRemovesImagesAndVideos(t *testing.T) {
+	// Message with no content parts should pass through unchanged
+	plain := llm.Message{Role: llm.RoleTool, Content: "ok", ToolCallID: "call-1"}
+	stripped := stripMediaContentParts(plain)
+	if len(stripped.ContentParts) != 0 {
+		t.Fatal("expected no content parts")
+	}
+	if stripped.Content != "ok" || stripped.Role != llm.RoleTool || stripped.ToolCallID != "call-1" {
+		t.Fatalf("expected plain message preserved, got %#v", stripped)
+	}
+
+	// Image-bearing message should lose ContentParts but keep text
+	imageDataURL := "data:image/png;base64,aW1hZ2U="
+	imageMsg := llm.Message{
+		Role:    llm.RoleUser,
+		Content: "Image returned by tool filesystem_read_image: output.png (image/png, 10 bytes).",
+		ContentParts: []llm.MessageContentPart{
+			llm.TextContentPart("Image returned by tool filesystem_read_image: output.png (image/png, 10 bytes)."),
+			llm.ImageURLContentPart(imageDataURL),
+		},
+	}
+	stripped = stripMediaContentParts(imageMsg)
+	if len(stripped.ContentParts) != 0 {
+		t.Fatalf("expected image content parts stripped, got %#v", stripped.ContentParts)
+	}
+	if !strings.Contains(stripped.Content, "filesystem_read_image") {
+		t.Fatalf("expected text description preserved, got %q", stripped.Content)
+	}
+
+	// Video-bearing message should also lose ContentParts
+	videoDataURL := "data:video/mp4;base64,dmlkZW8="
+	videoMsg := llm.Message{
+		Role:    llm.RoleUser,
+		Content: "Video returned by tool filesystem_read_video: clip.mp4 (video/mp4, 20 bytes).",
+		ContentParts: []llm.MessageContentPart{
+			llm.TextContentPart("Video returned by tool filesystem_read_video: clip.mp4 (video/mp4, 20 bytes)."),
+			llm.VideoURLContentPart(videoDataURL),
+		},
+	}
+	stripped = stripMediaContentParts(videoMsg)
+	if len(stripped.ContentParts) != 0 {
+		t.Fatalf("expected video content parts stripped, got %#v", stripped.ContentParts)
+	}
+	if !strings.Contains(stripped.Content, "filesystem_read_video") {
+		t.Fatalf("expected text description preserved, got %q", stripped.Content)
+	}
+}
+
+func TestSystemServiceChatStripsImagesFromHistory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "ui.png"), tinyPNGBytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var requestCount atomic.Int32
+	var secondRequest llm.ChatRequest
+	var thirdRequest llm.ChatRequest
+	var imagePath string
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertChatStreamRequest(t, r)
+		switch requestCount.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_image","type":"function","function":{"name":"filesystem_read_image","arguments":%q}}]}}]}`, fmt.Sprintf(`{"path":%q,"detail":"high"}`, imagePath)),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		case 2:
+			if err := json.NewDecoder(r.Body).Decode(&secondRequest); err != nil {
+				t.Fatalf("decode second request: %v", err)
+			}
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"The screenshot shows the UI."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		case 3:
+			if err := json.NewDecoder(r.Body).Decode(&thirdRequest); err != nil {
+				t.Fatalf("decode third request: %v", err)
+			}
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Confirmed."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+	}))
+	imagePath = labeledTestPath(t, service, workspaceID, "ui.png")
+
+	if _, err := service.SendChatMessageWithPlanMode(workspaceID, "Inspect ui.png visually.", true); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	waitForChatIdle(t, service, workspaceID)
+
+	// Second request: images are now stripped from the messages slice too, preventing 413 errors.
+	// The LLM sees text descriptions instead of raw image data URLs.
+	if requestCount.Load() != 2 {
+		t.Fatalf("expected image tool follow-up request, got %d requests", requestCount.Load())
+	}
+	hasImage := false
+	for _, msg := range secondRequest.Messages {
+		for _, part := range msg.ContentParts {
+			if part.ImageURL != nil && strings.HasPrefix(part.ImageURL.URL, "data:image") {
+				hasImage = true
+			}
+		}
+	}
+	if hasImage {
+		t.Fatal("expected second request to strip image data URLs from messages slice")
+	}
+
+	// Verify text description is present in the second request
+	foundDescription := false
+	for _, msg := range secondRequest.Messages {
+		if strings.Contains(msg.Content, "Image returned by tool filesystem_read_image") {
+			foundDescription = true
+			break
+		}
+	}
+	if !foundDescription {
+		t.Fatal("expected image text description in second request messages")
+	}
+
+	// Third turn: send another message to verify history doesn't contain image data URL
+	if _, err := service.SendChatMessageWithPlanMode(workspaceID, "What did you find?", true); err != nil {
+		t.Fatalf("send follow-up: %v", err)
+	}
+	waitForChatIdle(t, service, workspaceID)
+
+	if requestCount.Load() != 3 {
+		t.Fatalf("expected third request, got %d requests", requestCount.Load())
+	}
+
+	// Verify third request history does NOT contain image data URLs
+	for i, msg := range thirdRequest.Messages {
+		for j, part := range msg.ContentParts {
+			if part.ImageURL != nil && strings.HasPrefix(part.ImageURL.URL, "data:image") {
+				t.Fatalf("expected image data URL to be stripped from history, found in message %d part %d: %q", i, j, part.ImageURL.URL)
+			}
+		}
+		// But text description should still be present
+		if strings.Contains(msg.Content, "data:image") {
+			t.Fatalf("expected image data URL to be absent from message %d content", i)
+		}
+	}
+
+	// Verify the text description of the image is preserved in history
+	foundDescriptionInHistory := false
+	for _, msg := range thirdRequest.Messages {
+		if strings.Contains(msg.Content, "Image returned by tool filesystem_read_image") {
+			foundDescriptionInHistory = true
+			break
+		}
+	}
+	if !foundDescriptionInHistory {
+		t.Fatal("expected image text description to be preserved in history for LLM context")
 	}
 }

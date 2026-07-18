@@ -192,6 +192,8 @@ export function RotateWebAccessToken():Promise<services.AppState>;
 
 export function RunShellCommand(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number):Promise<string>;
 
+export function SaveChatImageToDisk(arg1:string,arg2:services.ChatImageSaveRequest):Promise<string>;
+
 export function SaveDashboardLayout(arg1:string,arg2:Array<services.DashboardWidgetJSON>):Promise<void>;
 
 export function SaveExternalTextFile(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFile>;

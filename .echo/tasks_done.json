@@ -1,6 +1,28 @@
 {
   "version": 1,
   "tasks": {
+    "0437b6d1-f5e1-4cb8-90b1-bf09039a0a69": {
+      "title": "Expose ImageID in comfyui_generate output so agents can reference generated images",
+      "details": "## Problem\nWhen `comfyui_generate` returns, the agent sees metadata (name, mediaType, bytes) but cannot save the image because:\n- `dataURL` is unexported and never serialized to JSON\n- No binary file write tool exists\n\n## Changes\n### `internal/tools/comfyui_generate.go`\n- Add exported `ImageID string json:\"imageId\"` field to `comfyuiOutput`\n- Generate a unique ID (e.g., `uuid.New().String()` or `s.nextChatID(\"img\")` pattern) when image data is fetched\n- Set `output.ImageID` alongside Name/MediaType/Bytes\n\n### `internal/tools/types.go`\n- Add `GeneratedImages map[string]AttachedImage` to `ExecutionContext` — tracks images produced by tools during the current turn, keyed by ImageID\n\n### Wiring in chat execution (`internal/services/chat.go`)\n- When building `ExecutionContext` for tool calls, populate `GeneratedImages` from images attached to the current assistant message (from previous tool results)\n- This allows multi-turn chains: generate → save\n\n## Files\n- `internal/tools/comfyui_generate.go` — add ImageID field and generation\n- `internal/tools/types.go` — add GeneratedImages to ExecutionContext\n- `internal/services/chat.go` — wire generated images into execution context\n\n## Verification\n- Agent sees `\"imageId\": \"uuid...\"` in comfyui_generate JSON response\n- Generated images are available in subsequent tool calls within the same turn",
+      "epic": "Save chat images to disk (agent capability)",
+      "tags": [
+        "save-images",
+        "comfyui",
+        "agent-tools"
+      ],
+      "acceptanceCriteria": [
+        "comfyuiOutput includes exported ImageID field in JSON",
+        "ImageID is a unique identifier generated when image data is fetched",
+        "ExecutionContext.GeneratedImages maps image IDs to AttachedImage data",
+        "Chat execution populates GeneratedImages from tool-result images before each tool call"
+      ],
+      "priority": "P0",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-17T16:57:20.4567539Z",
+      "updatedAt": "2026-07-17T17:11:10.075307Z",
+      "completedAt": "2026-07-17T17:11:10.075307Z"
+    },
     "0ada881b-2f54-445f-8a95-69a79c91b8bd": {
       "title": "Backend: Add RunShellCommand/StopShellCommand to SystemService with event streaming",
       "details": "## Files\n- **New** `internal/services/shell_command.go`\n- **Modify** `internal/services/events.go`\n- **Modify** `internal/webserver/server.go`\n\n## Work\n- Define `ShellCommandEvent` struct: `{ WorkspaceID, ID, Type (\"started\"|\"stdout\"|\"stderr\"|\"completed\"), Data any }`\n- Add `shellCommandRuns map[string]context.CancelFunc` to `SystemService` (protected by `chatMu`, keyed by run ID)\n- **`RunShellCommand(workspaceID, command, workingDirectory string, timeoutSeconds, maxOutputBytes int) (string, error)`**\n  - Validate workspace and working directory (reuse tool logic from `internal/tools`)\n  - Generate unique run ID (`workspaceID:seq`)\n  - Store cancel func in `shellCommandRuns`\n  - Emit `\"started\"` event\n  - Goroutine runs `exec.CommandContext` via `shellCommandInvocation`, pipes stdout/stderr through `bufio.Scanner`, emits per-line `\"stdout\"`/`\"stderr\"` events\n  - On completion, emit `\"completed\"` with exitCode, timedOut, durationMilliseconds; clean up map entry\n- **`StopShellCommand(workspaceID, runID string) error`** — cancels and removes from map\n- Export `ShellRuntimeEventName = \"echo:shell:event\"` constant in `events.go`\n- Add `\"RunShellCommand\": true` and `\"StopShellCommand\": true` to `allowedRPCMethods`\n- Run `wails generate`",
@@ -21,6 +43,31 @@
       "createdAt": "2026-07-13T15:54:40.0776022Z",
       "updatedAt": "2026-07-13T15:56:09.8277296Z",
       "completedAt": "2026-07-13T15:56:09.8277296Z"
+    },
+    "0c8cc2de-2456-4bd4-b3c2-5d54d6590989": {
+      "title": "Support chat-attached images as direct img2img input for comfyui_generate",
+      "details": "## Problem\nCurrently `comfyui_generate` only accepts workspace file paths via `imagePath`. When users attach images in chat (paste/drag-drop), the base64 data lives in memory and is never accessible to ComfyUI. The workaround requires saving the image to disk first, which creates temp file bloat.\n\n## Solution\nPass chat-attached image data directly from memory to ComfyUI's `/upload/image` endpoint via a new `attachedImageIndex` parameter. Zero workspace disk I/O — decode base64 → HTTP multipart upload.\n\n### Changes Required\n\n**1. `internal/tools/types.go`**\n- Add `AttachedImage` struct (Name, MediaType, DataURL)\n- Add `AttachedImages []AttachedImage` field to `ExecutionContext`\n\n**2. `internal/services/chat.go`**\n- Add `latestUserMessageImages(workspaceID string) []tools.AttachedImage` helper that walks the chat session in reverse and returns the latest user message's images (Name, MediaType, DataURL only — no full base64 copy needed beyond what's already there)\n\n**3. `internal/services/file_changes.go`**\n- Wire `AttachedImages` into `ExecutionContext` inside `executeTrackedToolCall` before calling `tools.Execute`\n\n**4. `internal/tools/comfyui_generate.go`**\n- Add `attachedImageIndex` schema parameter (integer, 0-based)\n- Resolution priority: explicit `imagePath` \u003e `attachedImageIndex` with attached images available\n- Decode base64 from DataURL → determine extension from MediaType → generate server filename → call `client.UploadImage`\n- Update default workflow selection to recognize attached images (routes to img2img workflow when `attachedImageIndex` is used)\n\n**5. System prompt update** (`chat.go` `chatSystemMessage`)\n- Add guidance so the model knows about `attachedImageIndex` and that image data passes directly from memory\n\n### Acceptance Criteria\n- Attaching an image in chat and running `comfyui_generate` with `attachedImageIndex: 0` produces img2img output using that image as input\n- Explicit `imagePath` still takes precedence over attached images\n- No temporary files written to workspace disk\n- Tests cover: attached image resolution, base64 decode validation, workflow selection routing, index bounds handling",
+      "epic": "ComfyUI img2img integration",
+      "tags": [
+        "comfyui",
+        "img2img",
+        "chat-attachments",
+        "tool-enhancement"
+      ],
+      "acceptanceCriteria": [
+        "Chat-attached images accessible via attachedImageIndex parameter without disk I/O",
+        "Explicit imagePath takes precedence over attached images",
+        "Base64 decode and ComfyUI upload works end-to-end for all supported image formats (PNG, JPEG, WebP, GIF)",
+        "Default workflow selection routes to img2img when attachedImageIndex is used",
+        "System prompt includes guidance for the model about attachedImageIndex",
+        "Tests cover resolution priority, decode validation, workflow routing, and index bounds handling"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-17T05:15:15.7328188Z",
+      "updatedAt": "2026-07-17T05:21:38.9307187Z",
+      "completedAt": "2026-07-17T05:21:38.9307187Z"
     },
     "0df9e13c-a96a-4263-b0cc-f52aaa649f27": {
       "title": "Replace crypto.randomUUID with fallback UUID generator for non-secure contexts",
@@ -65,6 +112,17 @@
       "updatedAt": "2026-07-11T10:59:38.7737732Z",
       "completedAt": "2026-07-11T10:59:38.7737732Z"
     },
+    "1c825eb8-82fc-4fcb-b361-52f7a3d72d7e": {
+      "title": "Wire default workflow into comfyui_generate tool; remove workflowName parameter",
+      "details": "**Files:** `internal/tools/comfyui_generate.go`, `internal/tools/types.go`\n\n- Remove `workflowName` field from `comfyuiArgs` and schema (was server-side ComfyUI-Manager fetch).\n- When no `workflowPath` or `workflowJSON` is provided, load the local workflow JSON matching `ComfyuiDefaultWorkflow` from settings. Fall back to `BuildDefaultWorkflow` if none set.\n- Keep `workflowPath` (workspace-relative) and `workflowJSON` (inline) parameters.\n\n**Tests:** Update `internal/tools/comfyui_generate_test.go`.",
+      "epic": "ComfyUI local workflow directory",
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-16T07:00:02.96439Z",
+      "updatedAt": "2026-07-16T07:07:38.1670938Z",
+      "completedAt": "2026-07-16T07:07:38.1670938Z"
+    },
     "21d15427-2d87-4e53-893a-dde9c06a9d8c": {
       "title": "Render console output in chat tool calls (frontend)",
       "details": "## Changes to `echo/frontend/src/app/chat/index.ts`\n\n### 1. Update `renderToolCall` (line ~959)\nAdd console output rendering before the existing result/error blocks:\n```typescript\n${toolCall.consoleOutput \n  ? `\u003cpre class=\"console-output\" data-console-output\u003e${escapeHtml(toolCall.consoleOutput)}\u003c/pre\u003e` \n  : \"\"}\n```\n\n### 2. Update markdown link targets selector (line ~180)\nAdd `.chat-message.from-assistant .tool-call .console-output` to the `chatFileLinkTargets` selector list so file links in console output work.\n\n## Changes to `echo/frontend/src/styles.css`\n\nAdd terminal-style styling:\n```css\n.tool-call .console-output {\n  font-family: var(--font-mono, monospace);\n  font-size: 0.85em;\n  background: var(--color-surface-1, #1e1e2e);\n  color: var(--color-text, #cdd6f4);\n  padding: 10px 12px;\n  border-radius: 6px;\n  margin: 8px 0;\n  overflow-x: auto;\n  max-height: 300px;\n  white-space: pre-wrap;\n  word-break: break-word;\n  border-left: 3px solid var(--color-blue, #89b4fa);\n}\n```\n\n## Regenerate bindings\nRun `wails generate` to pick up new `ConsoleOutput` field on `ChatToolActivity`.\n\n## Verification\n- `cd frontend; npm run build` passes\n- Console output visible in chat for shell_command tool calls",
@@ -103,6 +161,129 @@
       "createdAt": "2026-07-13T19:08:11.3850355Z",
       "updatedAt": "2026-07-13T19:36:33.9203848Z",
       "completedAt": "2026-07-13T19:36:33.9203848Z"
+    },
+    "2acc40fa-fb1c-4928-aee0-3ded352e304e": {
+      "title": "Update ComfyUI integration plan: custom workflow support via workflowPath and workflowJSON parameters with template substitution",
+      "details": "## Changes to V1 ComfyUI Integration Plan\n\n### Problem\nThe original plan only supports a hardcoded minimal CLIPTextEncode → KSampler → SaveImage workflow. Users have custom ComfyUI workflows (ControlNet, LoRA, upscaling chains, multi-step pipelines) that need to be usable from Echo.\n\n### Solution — Three Layers\n\n**Layer 1: Prompt substitution in any workflow (automatic)**\nWhen sending *any* workflow JSON to `/prompt`, the client scans for nodes by `class_type` and substitutes template variables into matching inputs:\n- `CLIPTextEncode` → `text` input gets `{{PROMPT}}` / `{{NEGATIVE_PROMPT}}`\n- `KSampler` / `KSamplerAdvanced` → `seed`, `steps`, `cfg` inputs get substituted\n- `EmptyLatentImage` → `width`, `height` inputs get substituted\n\nThis means even the default minimal workflow benefits from this — it's not hardcoded node IDs, it's class-type matching.\n\n**Layer 2: Inline workflowJSON parameter**\nNew tool parameter `workflowJSON string` (optional). If provided, the full ComfyUI workflow JSON is sent instead of the default. Template variables in the JSON are substituted with tool parameters before sending.\n\n**Layer 3: Workflow files from workspace (primary use case)**\nNew tool parameter `workflowPath string` (optional). Loads a `.json` file from a workspace folder, does template substitution, sends to ComfyUI. This is how users actually work — export workflow from ComfyUI UI → save JSON in workspace → reference by path.\n\n### Updated Tool Parameters\n\n```\ncomfyui_generate:\n  prompt           string    required   — positive text prompt\n  negativePrompt   string    optional   — default \"\"\n  workflowPath     string    optional   — workspace-relative .json file; overrides default workflow\n  workflowJSON     string    optional   — inline JSON; takes precedence over workflowPath\n  model            string    optional   — checkpoint name, substituted as {{MODEL}}\n  width            int       optional   — default 512, substituted as {{WIDTH}}\n  height           int       optional   — default 512, substituted as {{HEIGHT}}\n  steps            int       optional   — default 20, substituted as {{STEPS}}\n  cfgScale         number    optional   — default 7.5, substituted as {{CFG_SCALE}}\n  seed             int64     optional   — -1 for random, substituted as {{SEED}}\n```\n\n### Implementation Changes\n\n**`internal/comfyui/workflow.go`** (new file):\n- `LoadWorkflowJSON(path string) (map[string]any, error)` — reads and validates workflow JSON structure\n- `SubstituteTemplateVariables(workflow map[string]any, params TemplateParams) map[string]any` — recursive JSON walker that replaces `{{VAR}}` strings in node inputs\n- `BuildDefaultWorkflow(params TemplateParams) map[string]any` — builds minimal CLIPTextEncode → KSampler → SaveImage using class-type matching (not hardcoded node IDs)\n- `TemplateParams` struct holding all substitutable values\n\n**`internal/comfyui/client.go`** changes:\n- `Generate` accepts optional workflow JSON; if nil, calls `BuildDefaultWorkflow`\n- POST body uses the substituted workflow directly\n\n**`internal/tools/comfyui_generate.go`** changes:\n- Add `workflowPath` and `workflowJSON` to argument struct and JSON schema\n- If `workflowPath` provided, read from workspace using existing `ExecutionContext.WorkspaceRoots` path resolution (same as filesystem tools)\n- If `workflowJSON` provided, parse directly\n- If neither, use built-in default workflow\n- Pass resulting workflow JSON to `comfyui.Generate`\n\n**Workspace workflow file format:**\nUsers export from ComfyUI UI (Manager → Export API or just the raw graph JSON). Template variables are standard double-brace strings:\n```json\n{\n  \"3\": {\n    \"class_type\": \"CLIPTextEncode\",\n    \"inputs\": {\n      \"text\": \"{{PROMPT}}\",\n      \"clip\": \"6\"\n    }\n  },\n  \"5\": {\n    \"class_type\": \"KSampler\",\n    \"inputs\": {\n      \"seed\": \"{{SEED}}\",\n      \"steps\": \"{{STEPS}}\",\n      \"cfg\": \"{{CFG_SCALE}}\"\n    }\n  },\n  \"7\": {\n    \"class_type\": \"EmptyLatentImage\",\n    \"inputs\": {\n      \"width\": \"{{WIDTH}}\",\n      \"height\": \"{{HEIGHT}}\"\n    }\n  }\n}\n```\n\n### User Workflow\n\n1. Build custom pipeline in ComfyUI desktop UI (ControlNet, LoRA, upscale, whatever)\n2. Export as JSON with `{{VARIABLE}}` placeholders where dynamic inputs go\n3. Save to workspace folder (e.g., `comfy-workflows/face-portrait.json`)\n4. In Echo: agent calls `comfyui_generate` with `workflowPath: \"echo/comfy-workflows/face-portrait.json\"` + prompt\n5. Tool loads file → substitutes variables → sends to ComfyUI → returns image\n\n### Security/Validation\n\n- Workflow JSON is validated for basic structure (must have node objects with `class_type`)\n- No execution of arbitrary code — ComfyUI handles the workflow execution server-side\n- `workflowPath` uses existing workspace path resolution (rejects traversal outside workspace)\n- `workflowJSON` size capped at reasonable limit (e.g., 500KB) to prevent abuse\n\n### Testing\n\n- Unit tests for template substitution with various JSON structures\n- Test default workflow generation produces valid ComfyUI prompt structure\n- Test workflow file loading from workspace path\n- Mock ComfyUI server returns known image; verify end-to-end with custom workflow JSON",
+      "epic": "ComfyUI Integration",
+      "tags": [
+        "comfyui",
+        "custom-workflows",
+        "template-substitution",
+        "agent-tool"
+      ],
+      "acceptanceCriteria": [
+        "Template variable substitution ({{PROMPT}}, {{SEED}}, etc.) works in any ComfyUI workflow JSON structure",
+        "workflowPath parameter loads .json files from workspace folders using existing path resolution",
+        "workflowJSON parameter accepts inline JSON that overrides default workflow",
+        "Default minimal workflow uses class-type matching (CLIPTextEncode, KSampler, EmptyLatentImage) not hardcoded node IDs",
+        "Users can export custom workflows from ComfyUI UI, add template variables, and use them via workflowPath",
+        "go test ./... passes with new workflow.go tests"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-15T15:35:26.8769793Z",
+      "updatedAt": "2026-07-15T15:38:39.5808212Z",
+      "completedAt": "2026-07-15T15:38:39.5808212Z"
+    },
+    "303777da-1ff4-4e1c-bec2-e81ff3072a43": {
+      "title": "Add Image field to TemplateParams and {{IMAGE}} substitution support",
+      "details": "## Problem\n\nThe img2img workflow (`internal/comfyui/workflows/comfyui/img2img.json`) uses `{{IMAGE}}` as a template variable on the `LoadImage` node. But `TemplateParams` has no `Image` field, so `buildReplaceMap` never substitutes it.\n\n## Change\n**File:** `internal/comfyui/workflow.go`\n\nAdd to `TemplateParams`:\n```go\ntype TemplateParams struct {\n    Prompt         string\n    NegativePrompt string\n    Model          string\n    Image          string  // NEW: filename on ComfyUI server for img2img\n    Width          int\n    Height         int\n    Steps          int\n    CfgScale       float64\n    Seed           int64\n}\n```\n\nAdd to `buildReplaceMap`:\n```go\nif params.Image != \"\" {\n    m[\"IMAGE\"] = params.Image\n}\n```\n\n**File:** `internal/comfyui/workflow_test.go` — add test that verifies `{{IMAGE}}` substitution in a workflow node.\n\n## Verification\n- `go test ./...` passes",
+      "epic": "ComfyUI image-to-image support",
+      "tags": [
+        "comfyui",
+        "img2img",
+        "backend"
+      ],
+      "acceptanceCriteria": [
+        "Image string field added to TemplateParams struct",
+        "buildReplaceMap substitutes {{IMAGE}} when Image is non-empty",
+        "Test verifies {{IMAGE}} substitution in workflow node inputs",
+        "go test ./... passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-17T00:15:58.526858Z",
+      "updatedAt": "2026-07-17T00:20:29.334572Z",
+      "completedAt": "2026-07-17T00:20:29.334572Z"
+    },
+    "4367bd5c-c699-49c1-b20c-3172414b431c": {
+      "title": "Fix 413 Request Entity Too Large from accumulated image data in LLM requests",
+      "details": "## Problem\n\nAfter a tool returns an image (e.g., `filesystem_read_image`, ComfyUI generate), the base64-encoded data URL is included in `ContentParts` on the tool result message. This message is appended to both the in-memory `messages` slice AND persistent chat history via `appendChatHistory`. On every subsequent LLM request, all accumulated image-bearing messages are serialized into the JSON body — a single generated image can be several MB of base64. After a few turns, the payload exceeds nginx's `client_max_body_size` → **413 Request Entity Too Large**.\n\nThe error occurs on the *next* turn after successful image generation because that's when the previously-stored image-bearing history is included again in the request body.\n\n## Root Cause Trace\n\n1. `toolResultImageMessage` (`internal/services/tool_images.go:29`) creates a message with `ContentParts` containing the full base64 data URL\n2. `runChatTurnWithHistory` (`internal/services/chat.go:599-601`) appends these messages to both in-memory `messages` AND persistent history\n3. On every subsequent turn, all image-bearing messages are serialized into the request body\n\n## Fix\n\nStrip image/video `ContentParts` from tool result messages before storing them in persistent chat history. Keep only the text description (e.g., \"Image returned by tool filesystem_read_image: output.png (image/png, 2.3 MB).\").\n\n### 1. `internal/services/tool_images.go` — Add helper\n\n```go\nfunc stripMediaContentParts(message llm.Message) llm.Message {\n    if len(message.ContentParts) == 0 {\n        return message\n    }\n    // Keep the text content, discard image/video parts\n    return llm.Message{\n        Role:    message.Role,\n        Content: message.Content,\n    }\n}\n```\n\n### 2. `internal/services/chat.go` — Strip before storing in history (line ~600-601)\n\nChange:\n```go\nfor _, resultMessage := range execution.Messages {\n    s.appendChatHistory(workspace.ID, resultMessage)\n}\n```\n\nTo:\n```go\nfor _, resultMessage := range execution.Messages {\n    stripped := stripMediaContentParts(resultMessage)\n    s.appendChatHistory(workspace.ID, stripped)\n}\n```\n\n### 3. Verify context compaction also strips images\n\nCheck `internal/services/context_compaction.go` (or wherever compaction logic lives) to ensure forced compaction also strips image ContentParts so they don't survive a compaction pass.\n\n### 4. Test — `internal/services/system_test.go` or new test file\n\nAdd test that verifies image data URLs don't persist in chat history after tool execution, extending the existing `TestVisibleChatHistoryPreservesRemainingImages`.\n\n## Why this works\n\n- The LLM still sees the image **during the turn it was generated** (the `messages` slice includes it for the current request)\n- On subsequent turns, only the text description persists (~100 bytes vs. megabytes of base64)\n- User-visible chat messages (`ChatMessage.Images`) are unaffected — images still display in the UI",
+      "epic": "Chat stability",
+      "tags": [
+        "413-error",
+        "chat-history",
+        "image-data-url",
+        "payload-size"
+      ],
+      "acceptanceCriteria": [
+        "Image data URLs are not stored in persistent chat history after tool execution",
+        "Text descriptions of images remain in history for LLM context",
+        "User-visible image attachments in the UI are unaffected",
+        "Context compaction also strips image ContentParts to prevent accumulation",
+        "go test ./... passes"
+      ],
+      "priority": "P0",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-16T18:33:24.5917306Z",
+      "updatedAt": "2026-07-16T19:20:03.7202931Z",
+      "completedAt": "2026-07-16T19:20:03.7202931Z"
+    },
+    "438fdf39-5966-4311-8c53-85bb04014bcd": {
+      "title": "Wire generatedImages map through kanban agent tool execution loop",
+      "details": "## Problem\n\nKanban agents cannot chain `comfyui_generate` → `save_image` because `generatedImages` is never passed to their tool calls. `executeKanbanToolCall` (line 793 of `kanban_scheduler.go`) calls `executeTrackedToolCall(..., nil, nil)` — the last `nil` is for `generatedImages`.\n\n## Fix\n\n### `internal/services/kanban_scheduler.go`\n\n**1. Add `generatedImages` to the kanban agent loop** (around line 430, where `messages`, `recoverableToolCalls`, etc. are declared):\n\n```go\ngeneratedImages := make(map[string]tools.AttachedImage)\n```\n\n**2. Pass it through in `executeKanbanToolCall`** (line 793):\n\nChange:\n```go\nexecution := s.executeTrackedToolCall(ctx, workspace, settings, call, WorkspaceChangeSource{...}, func(event tools.Event) {...}, nil, nil)\n```\n\nTo:\n```go\nexecution := s.executeTrackedToolCall(ctx, workspace, settings, call, WorkspaceChangeSource{...}, func(event tools.Event) {...}, nil, generatedImages)\n```\n\n**3. Populate `generatedImages` after image-producing tool calls** (after the tool result processing, around line 810):\n\nCopy the same logic from `chat.go` lines 864-882 that extracts ImageID from tool results and adds them to the map:\n\n```go\n// Track images produced by tools so subsequent tool calls can reference them.\nif image, ok := toolResultImageMessage(call.Function.Name, result); ok {\n    if idProvider, ok := result.Output.(tools.ImageIDProvider); ok \u0026\u0026 idProvider.ImageID() != \"\" {\n        generatedImages[idProvider.ImageID()] = tools.AttachedImage{\n            Name:      image.Name,\n            MediaType: image.MediaType,\n            DataURL:   image.DataURL,\n        }\n    } else if outMap, jsonOk := result.Output.(map[string]any); jsonOk {\n        if imageID, ok := outMap[\"imageId\"].(string); ok \u0026\u0026 imageID != \"\" {\n            generatedImages[imageID] = tools.AttachedImage{\n                Name:      image.Name,\n                MediaType: image.MediaType,\n                DataURL:   image.DataURL,\n            }\n        }\n    }\n}\n```\n\nWait — `toolResultImageMessage` is in `chat.go` / `tool_images.go`. Need to check if it's accessible from `kanban_scheduler.go` (same package? No, different files but same `services` package).\n\nActually, looking at the code: both `chat.go` and `kanban_scheduler.go` are in `internal/services/`, so they share the package. The helper `toolResultImageMessage` is likely in `tool_images.go` which is also in `internal/services/`. So it should be directly callable.\n\n### Verification\n\n- `go test ./...` passes\n- Kanban agent can call `comfyui_generate` then `save_image` with the imageId from the generation result",
+      "epic": "save_image cross-turn persistence",
+      "tags": [
+        "backend",
+        "tools",
+        "kanban",
+        "comfyui"
+      ],
+      "acceptanceCriteria": [
+        "generatedImages map created in kanban agent loop (same package scope as chat.go)",
+        "generatedImages passed to executeTrackedToolCall instead of nil",
+        "Image-producing tool results populate generatedImages after execution (same pattern as chat.go lines 864-882)",
+        "go test ./... passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-17T23:20:06.7701326Z",
+      "updatedAt": "2026-07-17T23:33:21.5898084Z",
+      "completedAt": "2026-07-17T23:33:21.5898084Z"
+    },
+    "5204ac68-1a0a-4299-af99-25c220a58e06": {
+      "title": "ComfyUI model/workflow discovery and default checkpoint settings",
+      "details": "## Problem\n\n`comfyui_generate` uses a hardcoded checkpoint name (`\"checkpoint1\"`) when no model is specified, causing opaque \"execution status is error\" failures. Users have no way to discover available models or workflows on their ComfyUI server, and Echo stores nothing locally that would help.\n\n## Approach\n\nUse **ComfyUI-Manager's built-in API** (already installed on the server) for discovery. No local storage of workflows — everything stays on the ComfyUI machine. On-demand fetches only.\n\n### ComfyUI-Manager endpoints to use:\n- `GET /api/manage/models` — lists checkpoint/LoRA/VAE/CLIP models with metadata (filename, size, hash)\n- `POST /api/manage/workflows/list` — lists saved workflows (names + descriptions)\n- `POST /api/manage/workflows/get?workflow=\u003cname\u003e` — fetches workflow JSON on-demand by name\n\n### Changes by file:\n\n#### Backend — `internal/comfyui/client.go`\n- Add `ListModels(ctx) ([]ModelInfo, error)` — queries `/api/manage/models`, parses checkpoint entries into typed list\n- Add `ListWorkflows(ctx) ([]WorkflowSummary, error)` — queries `/api/manage/workflows/list`\n- Add `GetWorkflow(ctx, name) (map[string]any, error)` — queries `/api/manage/workflows/get?workflow=\u003cname\u003e`, parses JSON, validates structure\n\n#### Settings — `internal/llm/settings.go`\n- Add `ComfyuiDefaultCheckpoint string` field to `Settings` struct\n- Wire into `Normalized()` and validation\n\n#### Service layer — `internal/services/system.go`\n- Add `ListComfyUIModels() ([]ModelInfo, error)` — Wails-bound method that calls client.ListModels, returns to frontend\n- Add `ListComfyUIWorkflows() ([]WorkflowSummary, error)` — Wails-bound method that calls client.ListWorkflows\n\n#### Service layer — `internal/services/file_changes.go`\n- Pass `settings.ComfyuiDefaultCheckpoint` into `ExecutionContext.ComfyuiDefaultCheckpoint`\n\n#### Tool types — `internal/tools/types.go`\n- Add `ComfyuiDefaultCheckpoint string` to `ExecutionContext` struct\n\n#### Tool — `internal/tools/comfyui_generate.go`\n- Add `workflowName` parameter to schema and args struct (name of a server-side workflow from ComfyUI-Manager)\n- When `workflowName` is provided: fetch via `client.GetWorkflow(name)`, do template substitution, send to `/prompt`, discard JSON\n- Cascade model resolution: explicit `model` arg → `ctx.ComfyuiDefaultCheckpoint` → `\"checkpoint1\"` fallback\n- Better error messages: when ComfyUI execution fails due to missing model, list available checkpoints from cached/discovered models\n\n#### Frontend — `frontend/src/app/settings/index.ts`\n- Add \"Refresh Models\" button next to ComfyUI URL field (calls `ListComfyUIModels`)\n- Add \"Default Checkpoint\" dropdown populated from discovered models (saves to `ComfyuiDefaultCheckpoint`)\n- Add \"Available Workflows\" section with list of workflows from `ListComfyUIWorkflows`, selectable at generation time\n\n#### Web access — `internal/webserver/server.go`\n- Whitelist `ListComfyUIModels` and `ListComfyUIWorkflows` in RPC methods array\n\n### Design constraints:\n- **No local storage** of workflow JSON files. Fetch on-demand, use once, discard.\n- **No ComfyUI server modifications** — rely solely on ComfyUI-Manager API endpoints.\n- Model/workflow lists are **session-cached only** (in memory), never persisted to disk.\n- If ComfyUI-Manager endpoints fail (404, etc.), fall back gracefully with clear error message rather than crashing.\n\n## Testing\n- `go test ./...` for backend changes\n- `cd frontend; npm run build` for frontend changes\n- Manual test: generate image with discovered model and workflow name",
+      "epic": "ComfyUI integration improvements",
+      "tags": [
+        "comfyui",
+        "model-discovery",
+        "workflow-discovery",
+        "settings",
+        "comfyui-manager-api"
+      ],
+      "acceptanceCriteria": [
+        "ListComfyUIModels returns checkpoint names from /api/manage/models endpoint",
+        "ListComfyUIWorkflows returns workflow summaries from /api/manage/workflows/list endpoint",
+        "GetWorkflow fetches workflow JSON by name on-demand without storing locally",
+        "ComfyuiDefaultCheckpoint setting persists and is used as fallback model in comfyui_generate",
+        "workflowName parameter fetches, substitutes templates, sends to ComfyUI, then discards JSON",
+        "Settings UI shows Refresh Models button, Default Checkpoint dropdown, and Available Workflows list",
+        "Model resolution cascades: explicit arg \u003e context default checkpoint \u003e hardcoded fallback",
+        "New SystemService methods are whitelisted in web access RPC",
+        "All existing tests pass (go test ./..., npm run build)"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-16T05:11:06.6118033Z",
+      "updatedAt": "2026-07-16T05:14:09.2077608Z",
+      "completedAt": "2026-07-16T05:14:09.2077608Z"
     },
     "5dd2f461-225e-498b-ad59-56913965f0cf": {
       "title": "Backend: Add SavedCommand type and CRUD methods to SystemService",
@@ -147,6 +328,29 @@
       "updatedAt": "2026-07-11T11:44:00.5064905Z",
       "completedAt": "2026-07-11T11:44:00.5064905Z"
     },
+    "5f9366cd-e79f-4e01-a1d2-ffc4e5082f4f": {
+      "title": "Handle image_attached and video_attached stream events in frontend",
+      "details": "## Context\n\nThe frontend already renders `message.images[].dataUrl` via `renderChatMessageImages`. The backend will emit new `image_attached`/`video_attached` stream events containing attachment data. The frontend needs to handle these events and update the affected message in real time.\n\n## Changes — Frontend chat event handler\n\n### 1. Locate the SSE/RPC event handler for chat stream events\n\nFind where `EventsOn(\"echo:chat:event\", ...)` or equivalent is handled. This is likely in `frontend/src/app/chat/` or a central events file. The handler already dispatches on `event.Type` (e.g., `\"message\"`, `\"tool_call\"`, `\"content\"`, etc.).\n\n### 2. Add handlers for new event types\n\n```typescript\ncase \"image_attached\":\n    if (event.imageAttachment \u0026\u0026 event.messageID) {\n        const msg = findMessage(appState, event.messageID);\n        if (msg) {\n            msg.images.push(event.imageAttachment);\n            renderChatMessageImages(msg); // or trigger targeted re-render\n            return;\n        }\n    }\n    break;\n\ncase \"video_attached\":\n    // Same pattern for videos\n    break;\n```\n\n### 3. Verify existing image rendering handles `source: \"tool\"` attachments\n\n`renderChatMessageImages` already handles `dataUrl` format. The new attachments use `{source: \"tool\", name: \"...\", dataUrl: \"data:...\"}`, which should render identically to user-uploaded images that have a `dataUrl`. Verify no filtering excludes non-user sources.\n\n### Key files to investigate\n\n- `frontend/src/app/chat/` — event handlers, message rendering\n- `frontend/src/app/events.ts` or similar — SSE/RPC event subscription\n- `frontend/src/app/render.ts` — `renderChatMessageImages` or equivalent\n\n### Acceptance criteria\n\n- `image_attached` events append the attachment to the correct message's images array\n- The image appears in chat immediately without requiring a full re-render\n- `video_attached` follows the same pattern\n- Existing stream event handling is unaffected",
+      "epic": "Tool-generated images in chat",
+      "tags": [
+        "chat",
+        "images",
+        "stream-events",
+        "frontend"
+      ],
+      "acceptanceCriteria": [
+        "image_attached events append to correct message images array",
+        "Image appears in chat immediately without full re-render",
+        "video_attached follows the same pattern",
+        "Existing stream event handling is unaffected"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-16T14:57:01.7845891Z",
+      "updatedAt": "2026-07-16T14:59:48.5465877Z",
+      "completedAt": "2026-07-16T14:59:48.5465877Z"
+    },
     "68a000a9-1e40-4664-984a-82b6aa9840de": {
       "title": "Render activity status dots and preview text on workspace dropdown options",
       "details": "## Changes to `echo/frontend/src/app/render.ts`\n\n### 1. Add helper function (near top of file with other workspace helpers)\n\n```typescript\nfunction getWorkspaceActivityStatus(workspaceID: string): {\n  isChatBusy: boolean;\n  isKanbanRunning: boolean;\n  activeAgentCount: number;\n  lastMessageSnippet: string;\n} {\n  const summary = state.workspaceActivitySummaries.get(workspaceID);\n  if (!summary) {\n    return { isChatBusy: false, isKanbanRunning: false, activeAgentCount: 0, lastMessageSnippet: \"\" };\n  }\n  return {\n    isChatBusy: summary.isChatBusy,\n    isKanbanRunning: summary.isKanbanRunning,\n    activeAgentCount: summary.activeAgentCount,\n    lastMessageSnippet: summary.lastMessageSnippet ?? \"\",\n  };\n}\n\nfunction renderWorkspaceActivityStatus(workspaceID: string): string {\n  const status = getWorkspaceActivityStatus(workspaceID);\n  let dotClass = \"workspace-activity-dot is-idle\";\n  let activityText = \"\";\n\n  if (status.isChatBusy) {\n    dotClass = \"workspace-activity-dot is-chat-busy\";\n    activityText = \"Streaming…\";\n  } else if (status.isKanbanRunning) {\n    dotClass = \"workspace-activity-dot is-kanban-running\";\n    activityText = status.activeAgentCount \u003e 0\n      ? `${status.activeAgentCount} agent${status.activeAgentCount \u003e 1 ? \"s\" : \"\"} running`\n      : \"Kanban running\";\n  }\n\n  if (!activityText \u0026\u0026 status.lastMessageSnippet) {\n    activityText = status.lastMessageSnippet;\n  }\n\n  return `\n    \u003cspan class=\"${dotClass}\" aria-hidden=\"true\"\u003e\u003c/span\u003e\n    ${activityText ? `\u003cspan class=\"workspace-activity-text\" title=\"${escapeAttribute(activityText)}\"\u003e${escapeHtml(activityText)}\u003c/span\u003e` : \"\"}\n  `;\n}\n```\n\n### 2. Update desktop workspace dropdown rendering (buildLeftNav, ~line 220)\n\nFind the workspace-dropdown-option button template and add activity status after the display name:\n\n```typescript\n\u003cbutton\n  class=\"workspace-dropdown-option${ws.id === workspace?.id ? \" is-active\" : \"\"} ${ws.missing ? \"is-missing\" : \"\"}\"\n  type=\"button\"\n  role=\"menuitem\"\n  data-action=\"activate-workspace\"\n  data-workspace-id=\"${escapeHtml(ws.id)}\"\n  title=\"${escapeHtml(workspaceFolderSummary(ws))}\"\n\u003e\n  \u003cspan class=\"workspace-dropdown-option-main\"\u003e\n    ${escapeHtml(ws.displayName)}\n    ${renderWorkspaceActivityStatus(ws.id)}\n  \u003c/span\u003e\n\u003c/button\u003e\n```\n\n### 3. Update mobile workspace dropdown (buildMain, ~line 407)\n\nSame pattern for the mobile-nav-workspace-option buttons:\n\n```typescript\n\u003cbutton\n  class=\"mobile-nav-workspace-option${ws.id === workspace?.id ? \" is-active\" : \"\"}\"\n  type=\"button\"\n  role=\"menuitem\"\n  data-action=\"activate-workspace\"\n  data-workspace-id=\"${escapeHtml(ws.id)}\"\n  ${ws.id === workspace?.id ? ' aria-current=\"page\"' : ''}\n\u003e\n  ${escapeHtml(ws.displayName)}\n  ${ws.missing ? ' \u003cspan class=\"is-missing\"\u003e(missing)\u003c/span\u003e' : ''}\n  ${renderWorkspaceActivityStatus(ws.id)}\n\u003c/button\u003e\n```\n\n## Changes to `echo/frontend/src/styles.css`\n\nAdd styling for the activity status elements:\n\n```css\n/* Workspace dropdown option layout */\n.workspace-dropdown-option-main {\n  display: flex;\n  align-items: center;\n  gap: var(--space-xs);\n}\n\n/* Activity dot indicator */\n.workspace-activity-dot {\n  display: inline-block;\n  width: 8px;\n  height: 8px;\n  border-radius: 50%;\n  flex-shrink: 0;\n}\n\n.workspace-activity-dot.is-idle {\n  background-color: var(--color-text-muted, #6b7280);\n  opacity: 0.4;\n}\n\n.workspace-activity-dot.is-chat-busy {\n  background-color: var(--color-blue, #3b82f6);\n  animation: activity-pulse 1.5s ease-in-out infinite;\n}\n\n.workspace-activity-dot.is-kanban-running {\n  background-color: var(--color-green, #22c55e);\n  animation: activity-pulse 1.5s ease-in-out infinite;\n}\n\n@keyframes activity-pulse {\n  0%, 100% { opacity: 1; transform: scale(1); }\n  50% { opacity: 0.6; transform: scale(1.2); }\n}\n\n/* Activity text label */\n.workspace-activity-text {\n  font-size: var(--text-xs, 0.75rem);\n  color: var(--color-text-muted, #6b7280);\n  max-width: 180px;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n/* Mobile nav workspace option layout */\n.mobile-nav-workspace-option {\n  display: flex;\n  align-items: center;\n  gap: var(--space-xs);\n  flex-wrap: wrap;\n}\n```\n\n## Changes to `echo/frontend/src/app/bootstrap.ts`\n\nImport and call `startActivityRefreshTimer()` after initial app setup.\n\n## Verification\n- Desktop dropdown shows colored dot + activity text for each workspace\n- Mobile dropdown shows the same indicators\n- Blue pulsing dot = chat streaming active\n- Green pulsing dot = kanban agents running (with count)\n- Gray dot = idle\n- Activity text shows \"Streaming…\", \"N agents running\", or last message snippet\n- `npm run build` passes",
@@ -167,6 +371,56 @@
       "createdAt": "2026-07-11T11:33:10.542126Z",
       "updatedAt": "2026-07-11T11:44:00.5758675Z",
       "completedAt": "2026-07-11T11:44:00.5758675Z"
+    },
+    "6c390b71-366e-4aff-9b7e-5e93ec6caade": {
+      "title": "Update web access RPC whitelist and regenerate Wails bindings",
+      "details": "**Files:** `internal/webserver/server.go`, `frontend/wailsjs/go/...`\n\n- Remove `ListComfyUIModels` and `ListComfyUIWorkflows` from the web access RPC whitelist.\n- Add `ListLocalComfyuiWorkflows` if it should be available over HTTP.\n- Run `wails generate` to regenerate TypeScript bindings after backend changes.",
+      "epic": "ComfyUI local workflow directory",
+      "priority": "P2",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-16T07:00:03.1549798Z",
+      "updatedAt": "2026-07-16T07:07:38.3309068Z",
+      "completedAt": "2026-07-16T07:07:38.3309068Z"
+    },
+    "74958278-c454-45f2-b29e-cfbb7a844b72": {
+      "title": "ComfyUI integration: remote endpoint, agent tool, settings, and chat image display",
+      "details": "## Overview\n\nAdd ComfyUI as a remote endpoint in Echo — same architectural pattern as the SearXNG web search integration. Users configure a ComfyUI host URL in settings; agents call a `comfyui_generate` tool to produce images; results render inline in chat via the existing `ChatImageAttachment` path.\n\n## Architecture\n\n### 1. Settings (`internal/llm/settings.go`)\n\nAdd `ComfyuiURL string` to the `Settings` struct, parallel to `SearxngURL`.\n\n- Add `DefaultComfyuiURL = \"http://127.0.0.1:8188\"` constant\n- Normalize in `Settings.Normalized()` (trim, fallback to default if empty — but allow empty to mean \"disabled\")\n- Validate HTTP URL format in `Settings.Validate()` only when non-empty\n- Clone copies it\n\n### 2. ComfyUI client package (`internal/comfyui/`)\n\nNew package mirroring `internal/searxng/`:\n\n**`client.go`** — HTTP client for the ComfyUI API:\n- `Generate(ctx, baseURL, prompt, negativePrompt, model, width, height, steps, cfgScale, seed) (*GenerationResult, error)`\n- POST to `/prompt` with a minimal workflow JSON (CLIPTextEncode → KSampler → SaveImage or PreviewImage)\n- Returns prompt ID for queue tracking\n\n**`queue.go`** — WebSocket progress/result polling:\n- `WaitForCompletion(ctx, baseURL, promptID) (*GenerationResult, error)`\n- Connects to `/ws?clientId=\u003cuuid\u003e`, listens for execution_start/execution_cached/executing/status events\n- On `executing` with null payload = generation done; fetch result from `/view?filename=\u0026subfolder=\u0026type=result`\n- Returns base64 image data and format\n\n**`types.go`** — Request/response models:\n- `GenerationRequest`, `GenerationResult`, `WorkflowPrompt`\n\n### 3. Agent tool (`internal/tools/comfyui_generate.go`)\n\nFollows the `web_search.go` pattern exactly:\n\n```go\nfunc init() {\n    Register(ToolFunc{\n        Meta: Metadata{\n            Name:        \"comfyui_generate\",\n            Description: \"Generate an image using a remote ComfyUI Stable Diffusion instance.\",\n            Parameters: Schema{...},\n        },\n        Run: comfyuiGenerate,\n    })\n}\n```\n\n**Parameters:**\n- `prompt` (string, required) — positive text prompt\n- `negativePrompt` (string, optional)\n- `model` (string, optional) — checkpoint name\n- `width` (integer, default 512)\n- `height` (integer, default 512)\n- `steps` (integer, default 20)\n- `cfgScale` (number, default 7.5)\n- `seed` (integer, optional; -1 for random)\n\n**ExecutionContext dependency:** Needs a new field `ComfyuiURL string` on `ExecutionContext`, populated from settings when building the context in chat.go/kanban_scheduler.go.\n\n**Output:** Returns `ComfyuiGenerateOutput` with:\n- `Prompt string` — the prompt used\n- `ImageDataURL string` — base64 data URL of generated image\n- `Seed int64` — seed actually used\n- `Steps int` — steps taken\n- `GenerationTimeMs int` — wall-clock time\n\n**Tool classification:** Mutating (produces a side-effect on the ComfyUI server). Add to `mutatingToolNames`.\n\n### 4. Chat integration (`internal/services/chat.go`)\n\n- Pass `settings.ComfyuiURL` into `ExecutionContext.ComfyuiURL` when building tool execution context\n- When `comfyui_generate` returns, the result image data URL can be attached to the assistant message as a `ChatImageAttachment` (same path as pasted images) — or simply rendered inline in the markdown output\n\n### 5. Settings UI (`frontend/src/app/settings/index.ts`)\n\nAdd ComfyUI section in settings form, parallel to SearXNG:\n- Text input for `comfyuiUrl` with label \"ComfyUI Host URL\"\n- Placeholder `http://127.0.0.1:8188`\n- Help text: \"URL of your ComfyUI instance. Leave empty to disable.\"\n- Save/load in the existing settings save flow\n\n### 6. Web access (`internal/webserver/server.go`)\n\nIf new `SystemService` methods are added for ComfyUI status/testing, they need explicit RPC entry. The tool approach doesn't require this since tools execute through the agent loop, not direct RPC.\n\n## Files to Create/Modify\n\n| File | Action |\n|------|--------|\n| `internal/comfyui/client.go` | New — HTTP client for `/prompt` API |\n| `internal/comfyui/queue.go` | New — WebSocket progress polling |\n| `internal/comfyui/types.go` | New — request/response types |\n| `internal/comfyui/client_test.go` | New — httptest + mock WS server tests |\n| `internal/llm/settings.go` | Modify — add `ComfyuiURL` field, normalize, validate |\n| `internal/tools/comfyui_generate.go` | New — tool registration and handler |\n| `internal/tools/comfyui_generate_test.go` | New — unit tests |\n| `internal/tools/registry.go` | Modify — add to `mutatingToolNames`, `isPathArgKey` if needed |\n| `internal/tools/types.go` | Modify — add `ComfyuiURL` to `ExecutionContext` |\n| `internal/services/chat.go` | Modify — pass ComfyUI URL into ExecutionContext |\n| `internal/services/kanban_scheduler.go` | Modify — pass ComfyUI URL into ExecutionContext |\n| `frontend/src/app/settings/index.ts` | Modify — add ComfyUI URL input field |\n\n## Key Design Decisions\n\n1. **No node graph UI** — Echo is a remote control, not a ComfyUI replacement. The tool sends a minimal text-to-image workflow. Advanced workflows come later if needed.\n2. **Minimal workflow by default** — CLIPTextEncode (+) → KSampler → SaveImage. Users with custom workflows can extend via a `workflowJSON` parameter in V2.\n3. **WebSocket polling, not long-polling** — ComfyUI's WS API is the standard way to track generation progress and get results.\n4. **Seed handling** -1 means random; otherwise use exact seed for reproducibility.\n5. **Timeout** — Generation can take 30s-5min depending on model/hardware. Use a generous default timeout (300s) configurable per-generation, separate from LLM timeout.\n\n## Testing Strategy\n\n- `internal/comfyui/` tests use `httptest` for the HTTP endpoints and a mock WebSocket server\n- Tool tests verify argument validation, URL passthrough, and output shaping\n- Integration test: mock ComfyUI server returns a known PNG; tool returns correct data URL\n- No live model calls in tests\n\n## V2 Scope (not now)\n\n- Custom workflow JSON parameter\n- Image-to-image, inpainting, upscale workflows\n- Model/list endpoint to show available checkpoints\n- Generation history gallery\n- Progress streaming to chat UI",
+      "epic": "ComfyUI Integration",
+      "tags": [
+        "comfyui",
+        "image-generation",
+        "stable-diffusion",
+        "agent-tool",
+        "settings"
+      ],
+      "acceptanceCriteria": [
+        "ComfyuiURL field added to Settings struct with normalize and validate logic",
+        "internal/comfyui package implements HTTP /prompt POST and WebSocket progress polling",
+        "comfyui_generate tool registered in agent registry with prompt, negativePrompt, model, width, height, steps, cfgScale, seed parameters",
+        "Tool returns base64 image data URL that renders inline in chat via ChatImageAttachment",
+        "ExecutionContext passes ComfyuiURL from settings to tools",
+        "Settings UI includes ComfyUI host URL input field",
+        "go test ./... passes",
+        "npm run build passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-15T15:28:05.6507991Z",
+      "updatedAt": "2026-07-15T15:38:45.9810777Z",
+      "completedAt": "2026-07-15T15:38:45.9810777Z"
+    },
+    "763416a8-5337-4751-967e-c65f15b5e794": {
+      "title": "Remove ComfyUI server-side model and workflow discovery from backend",
+      "details": "**Files:** `internal/comfyui/client.go`, `internal/services/system.go`\n\n- Remove `ModelInfo`, `WorkflowSummary` types from `client.go`.\n- Remove `ListModels`, `ListAllModels`, `fetchManagerModels`, `fetchNativeModels`, `ListWorkflows`, `GetWorkflow` methods from `client.go`.\n- Remove `ListComfyUIModels()` and `ListComfyUIWorkflows()` from `SystemService` in `system.go`.\n- Keep: `Client`, `Generate`, `GetHistory`, `WaitForCompletionPoll`, `FetchImageBytes`, `GenerateResult`, `ExecutionError`.\n\n**Tests:** Update `internal/comfyui/client_test.go` — remove discovery-related tests.",
+      "epic": "ComfyUI local workflow directory",
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-16T07:00:02.6209561Z",
+      "updatedAt": "2026-07-16T07:06:21.8436782Z",
+      "completedAt": "2026-07-16T07:06:21.8436782Z"
     },
     "772ab4be-3857-43c8-ad63-da9b58a16954": {
       "title": "Fix mobile task view epic/tag filter bars layout",
@@ -209,6 +463,23 @@
       "createdAt": "2026-07-10T20:13:54.8230079Z",
       "updatedAt": "2026-07-10T20:16:17.8192697Z",
       "completedAt": "2026-07-10T20:16:17.8192697Z"
+    },
+    "7c6bd638-14fd-427f-b1da-57b1619c5e0d": {
+      "title": "Allow custom workflow path input in ComfyUI settings UI",
+      "details": "## Problem\nThe ComfyUI \"Default Workflow\" setting only shows a `\u003cselect\u003e` dropdown of **bundled** workflows. Users can't type their own file path, even though the backend (`comfyui_generate.go` line 173) already supports arbitrary paths via `ComfyuiDefaultWorkflow`.\n\n## Changes\n\n### `echo/frontend/src/app/settings/index.ts`\nReplace the `\u003cselect name=\"comfyuiDefaultWorkflow\"\u003e` with a text `\u003cinput\u003e` that accepts any file path, plus quick-select buttons for bundled workflows:\n\n```html\n\u003clabel class=\"field\" style=\"margin-top:0.5rem;\"\u003e\n  \u003cspan\u003eDefault Workflow\u003c/span\u003e\n  \u003cinput\n    name=\"comfyuiDefaultWorkflow\"\n    type=\"text\"\n    value=\"${escapeHtml(fieldValue(\"comfyuiDefaultWorkflow\"))}\"\n    placeholder=\"Path to workflow JSON file; leave empty for built-in\"\n    autocomplete=\"off\"\n  /\u003e\n\u003c/label\u003e\n${state.comfyuiLocalWorkflows.length \u003e 0 ? `\n  \u003cdiv class=\"comfyui-workflow-presets\"\u003e\n    \u003cspan class=\"compact muted\"\u003eBundled:\u003c/span\u003e\n    ${state.comfyuiLocalWorkflows.map((w) =\u003e `\n      \u003cbutton\n        class=\"secondary-button compact-button\"\n        type=\"button\"\n        data-action=\"select-comfyui-workflow\"\n        data-comfyui-workflow=\"${escapeAttribute(w.name)}\"\n        title=\"${escapeAttribute(w.description ?? w.name)}\"\n      \u003e${escapeHtml(w.name)}\u003c/button\u003e\n    `).join(\"\")}\n  \u003c/div\u003e\n` : \"\"}\n```\n\n### `echo/frontend/src/app/actions.ts`\nAdd handler for `select-comfyui-workflow`:\n\n```ts\nif (action === \"select-comfyui-workflow\") {\n  const btn = event.target as HTMLElement;\n  const workflow = btn.dataset.comfyuiWorkflow ?? \"\";\n  if (!state.settingsDraft) return;\n  state.settingsDraft = { ...state.settingsDraft, comfyuiDefaultWorkflow: workflow };\n  getAppCallbacks().render();\n}\n```\n\n### `echo/frontend/src/styles.css`\nAdd styling for `.comfyui-workflow-presets`:\n\n```css\n.comfyui-workflow-presets {\n  display: flex;\n  gap: 0.25rem;\n  align-items: center;\n  flex-wrap: wrap;\n}\n```\n\n## Backend\nNo changes needed — `ctx.ComfyuiDefaultWorkflow` is already read as a file path at `internal/tools/comfyui_generate.go:173-175`.",
+      "acceptanceCriteria": [
+        "Settings ComfyUI section shows a text input for Default Workflow path instead of a dropdown",
+        "Bundled workflows shown as quick-select buttons below the input",
+        "Clicking a bundled workflow button fills the text input with its path",
+        "Typing a custom absolute or relative path and saving persists it to state.json",
+        "comfyui_generate uses the custom path when no workflowPath argument is provided"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-16T16:12:19.4837229Z",
+      "updatedAt": "2026-07-16T16:16:45.2034798Z",
+      "completedAt": "2026-07-16T16:16:45.2034798Z"
     },
     "858a63aa-0154-495c-9f20-b5344a2c0369": {
       "title": "Regenerate Wails bindings for SavedCommand type and CRUD methods",
@@ -262,6 +533,92 @@
       "updatedAt": "2026-07-13T19:36:30.0966851Z",
       "completedAt": "2026-07-13T19:36:30.0966851Z"
     },
+    "86032c20-8227-40e7-983e-992b983386d6": {
+      "title": "Fix terminal output clipping on mobile screens",
+      "details": "## Problem\nOn narrow mobile viewports, terminal output lines wrap aggressively due to `overflow-wrap: anywhere` and `word-break: break-word` on `.terminal-line`. Each single log line becomes 3-4 visual lines of fragmented text, making it nearly unreadable.\n\n## Changes\n**File:** `frontend/src/styles.css`\n\nExtend the existing `@media (max-width: 720px)` block (currently at line ~9606) with terminal-specific rules:\n\n```css\n@media (max-width: 720px) {\n  /* ... existing saved-command-dialog rules ... */\n\n  /* Terminal: allow horizontal scroll instead of aggressive line wrapping */\n  .terminal-output {\n    overflow-x: auto;\n    -webkit-overflow-scrolling: touch;\n    padding: var(--space-sm);\n  }\n\n  .terminal-line {\n    white-space: pre;\n    overflow-wrap: normal;\n    word-break: normal;\n  }\n}\n```\n\n### Rationale\n- `white-space: pre` preserves the line as-is without wrapping\n- `overflow-x: auto` on `.terminal-output` lets users horizontally scroll long lines\n- `-webkit-overflow-scrolling: touch` ensures smooth scrolling on iOS/Android\n- Reduced padding (`var(--space-sm)` = 4px vs current 6px) gives a few more pixels of usable width\n\n### Verification\n- `cd frontend; npm run build` (TypeScript/CSS lint check)\n- Test on mobile viewport (Chrome DevTools device emulation at 360px width)",
+      "tags": [
+        "mobile",
+        "terminal",
+        "CSS",
+        "responsive"
+      ],
+      "acceptanceCriteria": [
+        "Terminal output lines do not wrap aggressively on narrow viewports (\u003c720px)",
+        "Long terminal lines are horizontally scrollable within the output container",
+        "Terminal output remains readable and usable on mobile devices",
+        "Desktop terminal behavior is unchanged (no wrapping override outside media query)"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-14T12:58:38.856595Z",
+      "updatedAt": "2026-07-14T13:05:57.9901891Z",
+      "completedAt": "2026-07-14T13:05:57.9901891Z"
+    },
+    "8bd72699-6844-44d2-b5bb-0a6afb15d001": {
+      "title": "Add SaveChatImageToDisk backend method on SystemService",
+      "details": "## Context\n\nComfyUI-generated images arrive in chat as `ChatImageAttachment` with a base64 `dataUrl`. Users want to save them to disk. For Wails desktop mode, we need a native save dialog + file write via the backend.\n\n## Changes\n\n### `internal/services/chat_images.go` — New type and method\n\nAdd request type:\n```go\ntype ChatImageSaveRequest struct {\n    Name      string `json:\"name\"`\n    MediaType string `json:\"mediaType\"`\n    DataURL   string `json:\"dataUrl\"`\n}\n```\n\nAdd exported method on `*SystemService`:\n```go\nfunc (s *SystemService) SaveChatImageToDisk(workspaceID string, req ChatImageSaveRequest) (string, error)\n```\n\nThe method:\n1. Validates the workspace exists via `workspaceAndSettings`\n2. Opens a Wails `runtime.SaveFileDialog` with `DefaultFilename` set to the image name\n3. Decodes the base64 data URL to raw bytes (reuse existing `parseChatImageDataURL` or similar logic)\n4. Writes the binary file to the chosen path using `os.WriteFile`\n5. Returns the absolute path saved to (or empty string if dialog was canceled)\n\n### `internal/webserver/server.go` — RPC whitelist\n\nAdd `\"SaveChatImageToDisk\": true` to `allowedRPCMethods`.\n\n## Verification\n- `go test ./...` passes\n- Method is callable via Wails bindings and web RPC",
+      "epic": "Save chat images to disk",
+      "tags": [
+        "backend",
+        "chat",
+        "images"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-17T14:15:16.0138552Z",
+      "updatedAt": "2026-07-17T14:30:08.9922631Z",
+      "completedAt": "2026-07-17T14:30:08.9922631Z"
+    },
+    "951da82b-0462-494a-906c-b9473151e09d": {
+      "title": "Add save_image agent tool for saving generated images to workspace disk",
+      "details": "## Problem\nWhen `comfyui_generate` returns an image, the agent sees only metadata (name, mediaType, bytes) in its JSON response — not the base64 data. The `dataURL` field on `comfyuiOutput` is unexported and never serialized to the model. There's no way for the agent to save generated images because:\n\n1. Agent can't see the image binary data\n2. No tool exists to write binary files (`filesystem_create_text` only handles text)\n3. No way to reference previously-generated images across tool calls within a turn\n\n## Solution: `save_image` tool\n\n### 1. Expose ImageID in comfyui_generate output\n**File: `internal/tools/comfyui_generate.go`**\n- Add exported `ImageID string json:\"imageId\"` field to `comfyuiOutput`\n- Generate a unique ID (e.g., `uuid.New().String()`) when image data is fetched\n- Set `output.ImageID` alongside Name/MediaType/Bytes\n\n### 2. Track generated images in ExecutionContext\n**File: `internal/tools/types.go`**\n- Add `GeneratedImages map[string]AttachedImage` to `ExecutionContext` — tracks images produced by tools during the current turn, keyed by ImageID\n\n### 3. Wire generated images into execution context\n**File: `internal/services/chat.go`** (in `runChatTurnWithHistory`)\n- When building `ExecutionContext` for tool calls within a turn, populate `GeneratedImages` from images attached to the current assistant message (from previous tool results)\n- This allows multi-turn chains: generate image → save_image with imageId\n\n### 4. Create `save_image` tool\n**File: `internal/tools/save_image.go`** (new)\n\n```go\nfunc init() {\n    Register(ToolFunc{\n        Meta: Metadata{\n            Name: \"save_image\",\n            Description: \"Save an image to the workspace. Use this after generating images with comfyui_generate to persist them to disk.\",\n            Parameters: Schema{...},\n        },\n        Run: saveImage,\n    })\n}\n```\n\nParameters:\n- `imageId` (string, required) — ImageID from a previous tool result (e.g., comfyui_generate output)\n- `path` (string, required) — Workspace-relative path to save the image to\n- `overwrite` (bool, optional) — Whether to replace an existing file\n\nLogic:\n1. Look up `imageId` in `ctx.GeneratedImages`\n2. Decode base64 from DataURL to raw bytes\n3. Resolve workspace path via `resolveWorkspaceChildPath(ctx, args.Path)`\n4. Write binary file using `os.WriteFile` (same pattern as `filesystem_create_text`)\n5. Record file change for tracking\n\n### 5. Add save_image to mutating tools\n**File: `internal/tools/registry.go`**\n- Add `\"save_image\"` to `mutatingToolNames`\n- Add `\"path\"` to `isPathArgKey` switch\n\n### 6. Update system prompt guidance\n**File: `internal/services/chat.go`** (`chatSystemMessage`)\n- Add guidance so the model knows about `save_image` and that it should use the `imageId` from tool results\n\n## Verification\n- Agent sees `\"imageId\": \"uuid...\"` in comfyui_generate JSON response\n- Generated images are available in subsequent tool calls within the same turn\n- save_image writes binary file correctly to workspace disk\n- File change tracking records the creation",
+      "epic": "Save chat images to disk (agent capability)",
+      "tags": [
+        "save-images",
+        "comfyui",
+        "agent-tools"
+      ],
+      "acceptanceCriteria": [
+        "comfyuiOutput includes exported ImageID field in JSON",
+        "ImageID is a unique identifier generated when image data is fetched",
+        "ExecutionContext.GeneratedImages maps image IDs to AttachedImage data",
+        "save_image tool resolves imageId from GeneratedImages and writes binary file to workspace",
+        "Generated images are available in subsequent tool calls within the same turn",
+        "System prompt includes guidance for save_image usage"
+      ],
+      "priority": "P0",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-17T17:00:23.5293514Z",
+      "updatedAt": "2026-07-17T17:11:06.63279Z",
+      "completedAt": "2026-07-17T17:11:06.63279Z"
+    },
+    "9a640b69-ed7b-4af3-84d7-f22b912b20e1": {
+      "title": "Add imagePath parameter to comfyui_generate tool with upload-to-server pipeline",
+      "details": "## Problem\n\nThe `comfyui_generate` tool has no way to accept a source image for img2img workflows. Users can't pass an input image from the workspace or chat.\n\n## Change\n\n**File:** `internal/tools/comfyui_generate.go`\n\n### 1. Add `imagePath` parameter to schema and args struct\n\nAdd to JSON Schema properties:\n```go\n\"imagePath\": map[string]any{\n    \"type\":        \"string\",\n    \"description\": \"Workspace-relative path to an input image for img2img workflows. Uploaded to ComfyUI before generation.\",\n},\n```\n\nAdd to `comfyuiArgs` struct:\n```go\nImagePath string `json:\"imagePath\"`\n```\n\n### 2. Wire upload pipeline in comfyuiGenerate handler\n\nAfter loading the workflow but before calling `client.Generate`:\n1. If `args.ImagePath` is non-empty, resolve via `resolveWorkspaceChildPath(ctx, args.ImagePath)`\n2. Read image bytes from disk (use existing workspace path guards)\n3. Generate a unique filename (e.g., `echo_input_{uuid}.png`)\n4. Call `client.UploadImage(ctx, filename, imageData)` to upload to ComfyUI server\n5. Set `params.Image = serverFilename` so template substitution replaces `{{IMAGE}}`\n\n### 3. Add `imagePath` to isPathArgKey in registry.go\n\nAdd `\"imagePath\"` to the `isPathArgKey` switch in `registry.go` so path permission checks apply.\n\n**File:** `internal/tools/comfyui_generate_test.go` — add test for imagePath upload flow with mock server.\n\n## Verification\n- `go test ./...` passes",
+      "epic": "ComfyUI image-to-image support",
+      "tags": [
+        "comfyui",
+        "img2img",
+        "tool"
+      ],
+      "acceptanceCriteria": [
+        "imagePath string parameter added to comfyui_generate tool schema and comfyuiArgs struct",
+        "When imagePath is provided, tool resolves workspace path, reads image bytes, uploads to ComfyUI via UploadImage",
+        "Upload filename set as params.Image for {{IMAGE}} template substitution",
+        "imagePath added to isPathArgKey in registry.go for permission checks",
+        "Test covers imagePath upload flow with mock server",
+        "go test ./... passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-17T00:17:52.5481211Z",
+      "updatedAt": "2026-07-17T00:22:46.2744571Z",
+      "completedAt": "2026-07-17T00:22:46.2744571Z"
+    },
     "a0b22fe9-bf5d-4971-811f-3260e829f9c0": {
       "title": "Regenerate Wails bindings for WorkspaceActivitySummary type and GetWorkspaceActivitySummaries method",
       "details": "## Command\n\nRun from repo root:\n```powershell\nwails generate\n```\n\nThis generates the TypeScript type `services.WorkspaceActivitySummary` and the binding `SystemService.GetWorkspaceActivitySummaries` in `frontend/wailsjs/go/services/SystemService.ts` and `frontend/wailsjs/go/models.ts`.\n\n## Verification\n- `frontend/wailsjs/go/models.ts` has `WorkspaceActivitySummary` type with fields: `workspaceId`, `isChatBusy`, `isKanbanRunning`, `activeAgentCount`, `lastMessageSnippet`\n- `frontend/wailsjs/go/services/SystemService.ts` has exported `GetWorkspaceActivitySummaries()` method",
@@ -277,6 +634,17 @@
       "createdAt": "2026-07-11T11:31:36.4209613Z",
       "updatedAt": "2026-07-11T11:44:00.3611923Z",
       "completedAt": "2026-07-11T11:44:00.3611923Z"
+    },
+    "a21b2ca1-d57e-470d-a849-208fb553f706": {
+      "title": "Replace ComfyUI settings UI with default workflow selector",
+      "details": "**Files:** `frontend/src/app/settings/index.ts`, `frontend/src/backend/services.ts`, `frontend/src/app/state.ts`, `frontend/src/app/actions.ts`\n\n- Remove `refreshComfyUIModels()` function and `\"refresh-comfyui-models\"` action handler.\n- Remove `renderComfyUIModels()` and `renderComfyUIWorkflows()`.\n- Replace \"Refresh Models\" button + discovery list with a dropdown to select the default workflow from `ListLocalComfyuiWorkflows()`.\n- Update state: replace `comfyuiModels`/`comfyuiWorkflows` with `comfyuiLocalWorkflows: WorkflowSummary[]`.\n- Update `services.ts`: remove `ListComfyUIModels`/`ListComfyUIWorkflows`, add `ListLocalComfyuiWorkflows`.",
+      "epic": "ComfyUI local workflow directory",
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-16T07:00:03.0918984Z",
+      "updatedAt": "2026-07-16T07:07:38.2480357Z",
+      "completedAt": "2026-07-16T07:07:38.2480357Z"
     },
     "a364b259-7865-434b-9569-e0623468f1c4": {
       "title": "Re-enable toast notifications on mobile by removing viewport check in pushToast",
@@ -328,6 +696,36 @@
       "updatedAt": "2026-07-13T22:44:51.9563159Z",
       "completedAt": "2026-07-13T22:44:51.9563159Z"
     },
+    "aa450c11-8601-4201-92c2-f28b45c7dc7f": {
+      "title": "Split ComfyUI workflows into separate txt2img and img2img settings; remove bundled workflows",
+      "details": "## Background\n\nThe current ComfyUI integration uses a single `ComfyuiDefaultWorkflow` setting and bundled workflow templates embedded at compile time. Users want two explicit workflow paths (txt2img / img2img) pointing to disk-based JSON files they manage, with no bundled presets.\n\n## Changes\n\n### Backend — Settings model (`internal/llm/settings.go`)\n- Replace `ComfyuiDefaultWorkflow string` with:\n  - `ComfyuiTxt2imgWorkflow string` (json key `comfyuiTxt2imgWorkflow`)\n  - `ComfyuiImg2imgWorkflow string` (json key `comfyuiImg2imgWorkflow`)\n- Trim in `Normalized()`\n- Add migration in state persistence (`internal/services/state_persistence.go` or wherever `LoadState` lives): on first load, if old `comfyuiDefaultWorkflow` is present and both new fields are empty, copy the old value into both new fields so users don't lose their existing path.\n\n### Backend — Tool execution context (`internal/tools/types.go`)\n- Replace `ComfyuiDefaultWorkflow string` with:\n  - `ComfyuiTxt2imgWorkflow string`\n  - `ComfyuiImg2imgWorkflow string`\n\n### Backend — Tool logic (`internal/tools/comfyui_generate.go`)\n- When no explicit `workflowPath`/`workflowJSON` is given, select the default based on whether `imagePath` was supplied:\n  - `imagePath` present → load from `ComfyuiImg2imgWorkflow`\n  - No `imagePath` → load from `ComfyuiTxt2imgWorkflow`\n- Fall through to `BuildDefaultWorkflow` only if neither setting is configured\n\n### Backend — Service plumbing (`internal/services/file_changes.go`)\n- Wire the two new fields into `ExecutionContext` construction (replace the single `ComfyuiDefaultWorkflow` assignment)\n\n### Backend — SystemService (`internal/services/system.go`)\n- Remove `ListLocalComfyuiWorkflows()` method entirely\n\n### Backend — Web server RPC whitelist (`internal/webserver/server.go`)\n- Remove `\"ListLocalComfyuiWorkflows\"` entry\n\n### Backend — Delete embedded workflow infrastructure\n- Remove `internal/comfyui/embedded.go`\n- Remove `internal/comfyui/embedded_test.go`\n- Remove `internal/comfyui/workflows/` directory and all contents (`basic-txt2img.json`, `img2img.json`)\n- Any other imports/references to the embedded package functions\n\n### Frontend — Settings UI (`frontend/src/app/settings/index.ts`)\n- Replace the single \"Default Workflow\" text input + bundled preset buttons with two fields:\n  - **\"Txt2img Workflow\"** — text input, placeholder `\"Path to txt2img workflow JSON\"`\n  - **\"Img2img Workflow\"** — text input, placeholder `\"Path to img2img workflow JSON (requires LoadImage node)\"`\n\n### Frontend — State (`frontend/src/app/state.ts`)\n- Remove `comfyuiLocalWorkflows` field\n\n### Frontend — Actions (`frontend/src/app/actions.ts`)\n- Remove the bundled workflow loading logic and the `select-comfyui-workflow` handler\n\n### Frontend — Backend services (`frontend/src/backend/services.ts`)\n- Remove `ListLocalComfyuiWorkflows()` export\n\n### Tests\n- Update `internal/tools/comfyui_generate_test.go`: all references from `ComfyuiDefaultWorkflow` to appropriate new field; add tests verifying txt2img vs img2img workflow selection based on presence of `imagePath`\n- Remove embedded workflow tests\n- Run `go test ./...` and `cd frontend; npm run build`\n\n### Regenerate bindings\n- Run `wails generate` after removing `ListLocalComfyuiWorkflows` from SystemService\n\n## User-facing outcome\n- Settings shows two independent workflow path fields\n- No \"Bundled\" preset buttons\n- Txt2img uses the txt2img workflow; img2img (when imagePath is provided) uses the img2img workflow\n- Existing users' single workflow path is migrated to both fields on first load",
+      "epic": "ComfyUI Integration",
+      "tags": [
+        "comfyui",
+        "settings",
+        "img2img",
+        "txt2img",
+        "frontend",
+        "backend"
+      ],
+      "acceptanceCriteria": [
+        "ComfyuiDefaultWorkflow field removed from Settings struct; replaced with ComfyuiTxt2imgWorkflow and ComfyuiImg2imgWorkflow",
+        "Migration copies old comfyuiDefaultWorkflow value to both new fields on first load if present",
+        "comfyui_generate selects img2img workflow when imagePath is supplied, txt2img otherwise, falls back to BuildDefaultWorkflow",
+        "ListLocalComfyuiWorkflows removed from SystemService and web RPC whitelist",
+        "Embedded workflows directory, embedded.go, and embedded_test.go deleted",
+        "Settings UI shows two separate workflow path inputs with no bundled preset buttons",
+        "comfyuiLocalWorkflows state field and select-comfyui-workflow action handler removed from frontend",
+        "ListLocalComfyuiWorkflows export removed from frontend backend services",
+        "go test ./... passes; npm run build succeeds; wails generate completed"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-17T01:04:00.1867353Z",
+      "updatedAt": "2026-07-17T01:11:39.8491131Z",
+      "completedAt": "2026-07-17T01:11:39.8491131Z"
+    },
     "ac43ea4f-829a-4106-b9ac-f18a59d99ffd": {
       "title": "Add \"Add workspace\" button to mobile workspace dropdown",
       "details": "## Problem\n\nOn mobile (≤720px), there is no way to add a new workspace. The desktop sidebar dropdown includes an \"Add workspace\" menu item, but the mobile bottom nav workspace dropdown does not. Additionally, when zero workspaces exist, the mobile nav pill is hidden entirely, leaving no entry point.\n\n## Root cause\n\n`renderMobileBottomNav()` in `frontend/src/app/render.ts` (~line 459) renders only existing workspace options inside `.mobile-nav-workspace-dropdown`. It omits the \"Add workspace\" button that the desktop dropdown includes. When `workspaces.length === 0`, the pill is not rendered at all (`workspaces.length \u003e 0 \u0026\u0026 workspace` guard).\n\n## Changes\n\n### 1. `frontend/src/app/render.ts` — Mobile dropdown \"Add workspace\" entry\n\nInside `.mobile-nav-workspace-dropdown`, after the workspace options loop, add a divider and an \"Add workspace\" button matching the desktop pattern:\n\n```html\n\u003cdiv class=\"workspace-dropdown-divider\"\u003e\u003c/div\u003e\n\u003cbutton class=\"mobile-nav-workspace-option\" type=\"button\" role=\"menuitem\" data-action=\"add-workspace\"\u003eAdd workspace\u003c/button\u003e\n```\n\n### 2. `frontend/src/app/render.ts` — Zero-workspace pill\n\nWhen `workspaces.length === 0`, render a pill that triggers `data-action=\"add-workspace\"` instead of hiding the pill entirely:\n\n```typescript\n${workspaces.length \u003e 0 \u0026\u0026 workspace \n  ? `\u003cbutton class=\"mobile-nav-pill\"...\u003e...\u003c/button\u003e`\n  : `\u003cbutton class=\"mobile-nav-pill mobile-nav-add-workspace\" type=\"button\" aria-label=\"Add workspace\" data-action=\"add-workspace\"\u003e${icons.plus}\u003cspan\u003eAdd\u003c/span\u003e\u003c/button\u003e`\n}\n```\n\n### 3. `frontend/src/styles.css` — Mobile add-workspace pill styling\n\nInside the `@media (max-width: 720px)` block, add styles for `.mobile-nav-add-workspace` to make it visually distinct (e.g., dashed border or accent color) so users recognize it as an action button rather than a workspace name.\n\n## Key files\n- `frontend/src/app/render.ts` — `renderMobileBottomNav()` function (~line 443–508)\n- `frontend/src/styles.css` — mobile responsive block\n- `frontend/src/app/actions.ts` — `add-workspace` handler already exists (line 458), no backend changes needed\n\n## Verification\n- Open app on mobile viewport (≤720px) with zero workspaces → pill shows \"Add\" button, tapping opens folder picker\n- Open app with one+ workspaces → tap workspace pill → dropdown includes \"Add workspace\" at bottom with divider\n- `npm run build` passes in `frontend/`",
@@ -370,6 +768,61 @@
       "updatedAt": "2026-07-11T11:44:00.2762271Z",
       "completedAt": "2026-07-11T11:44:00.2762271Z"
     },
+    "b514bec2-f94a-47cf-b754-2f1751a79259": {
+      "title": "Handle save-chat-image action in frontend (desktop vs web mode)",
+      "details": "## Context\n\nThe first task added a save button to each chat image attachment with `data-action=\"save-chat-image\"`. This task handles the click.\n\n## Changes\n\n### `frontend/src/app/actions.ts`\n\nAdd handler for `\"save-chat-image\"` action:\n\n```typescript\nif (action === \"save-chat-image\") {\n  const btn = target as HTMLElement;\n  const name = btn.dataset.imageName ?? \"image.png\";\n  const mediaType = btn.dataset.imageMediaType ?? \"image/png\";\n  const dataUrl = btn.dataset.imageUrl ?? \"\";\n  \n  if (!dataUrl) return;\n\n  // Desktop (Wails): call backend SaveChatImageToDisk for native save dialog + file write\n  if (isWebMode()) {\n    // Web mode: use browser-native download via \u003ca\u003e element trick\n    const link = document.createElement(\"a\");\n    link.href = dataUrl;\n    link.download = name;\n    document.body.appendChild(link);\n    link.click();\n    document.body.removeChild(link);\n  } else {\n    // Desktop mode: use backend method for native save dialog\n    SaveChatImageToDisk(workspace?.id ?? \"\", {\n      name,\n      mediaType,\n      dataUrl,\n    }).then((savedPath) =\u003e {\n      if (savedPath) {\n        pushToast({ message: `Saved to ${savedPath}`, type: \"success\" });\n      }\n      // If savedPath is empty string, user canceled the dialog — no toast needed.\n    }).catch(() =\u003e {\n      // Fallback to browser download on error\n      const link = document.createElement(\"a\");\n      link.href = dataUrl;\n      link.download = name;\n      document.body.appendChild(link);\n      link.click();\n      document.body.removeChild(link);\n    });\n  }\n}\n```\n\n### `frontend/src/backend/services.ts`\n\nAdd wrapper:\n```typescript\nexport function SaveChatImageToDisk(...args: Parameters\u003ctypeof Wails.SaveChatImageToDisk\u003e): ReturnType\u003ctypeof Wails.SaveChatImageToDisk\u003e {\n  return call(\"SaveChatImageToDisk\", Wails.SaveChatImageToDisk, args);\n}\n```\n\n## Verification\n- `cd frontend; npm run build` passes\n- Desktop: clicking save button opens native file dialog and writes file\n- Web mode: clicking save button triggers browser download",
+      "epic": "Save chat images to disk",
+      "tags": [
+        "frontend",
+        "chat",
+        "images",
+        "actions"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-17T14:16:37.9577856Z",
+      "updatedAt": "2026-07-17T14:35:03.4039025Z",
+      "completedAt": "2026-07-17T14:35:03.4039025Z"
+    },
+    "b79a492e-ad38-4f0a-b376-a4943439c5a6": {
+      "title": "Style chat image save button and regenerate Wails bindings",
+      "details": "## Context\n\nThis is the finishing task for the \"Save chat images to disk\" epic. It covers CSS styling for the save button and the required `wails generate` step after backend changes.\n\n## Changes\n\n### `frontend/src/styles.css` — Save button styling\n\nAdd styles for `.chat-save-image` that blend with existing image figcaption content:\n\n```css\n/* Chat image save button */\n.chat-message-image .chat-save-image {\n  opacity: 0;\n  transition: opacity 150ms ease;\n}\n\n.chat-message-image:hover .chat-save-image {\n  opacity: 1;\n}\n\n/* Mobile: always visible since hover doesn't work well on touch */\n@media (max-width: 720px) {\n  .chat-message-image .chat-save-image {\n    opacity: 0.7;\n  }\n  \n  .chat-message-image .chat-save-image:hover,\n  .chat-message-image .chat-save-image:active {\n    opacity: 1;\n  }\n}\n```\n\nThe save button should appear in the figcaption alongside the image name/size text, positioned to the right end of the caption.\n\n### Regenerate Wails bindings\n\nAfter implementing `SaveChatImageToDisk` on `SystemService`:\n\n```powershell\nwails generate\n```\n\nThis generates the TypeScript binding and `ChatImageSaveRequest` type in `frontend/wailsjs/go/...`.\n\n## Verification\n- `cd frontend; npm run build` passes\n- Save button appears on hover over chat images (desktop)\n- Save button is semi-visible by default on mobile\n- `wails generate` completes without errors\n- `go test ./...` passes",
+      "epic": "Save chat images to disk",
+      "tags": [
+        "css",
+        "wails",
+        "bindings"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-17T14:18:10.6574226Z",
+      "updatedAt": "2026-07-17T14:35:03.4762946Z",
+      "completedAt": "2026-07-17T14:35:03.4762946Z"
+    },
+    "bbd80d0d-3bc4-4bd0-be21-eeb6bcbd73d1": {
+      "title": "Add ComfyuiDefaultWorkflow setting and local workflow listing to backend",
+      "details": "**Files:** `internal/llm/settings.go`, `internal/services/system.go`\n\n- Add `ComfyuiDefaultWorkflow string` field to `Settings` struct in `settings.go`.\n- Add `ListLocalComfyuiWorkflows() []WorkflowSummary` method on `SystemService` that reads workflow JSON files from a local directory (config dir or embedded) and returns name/description summaries. No network calls.",
+      "epic": "ComfyUI local workflow directory",
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-16T07:00:02.8876622Z",
+      "updatedAt": "2026-07-16T07:07:38.0801162Z",
+      "completedAt": "2026-07-16T07:07:38.0801162Z"
+    },
+    "bc894eae-b6cf-4ca7-9884-256493e1e508": {
+      "title": "Create bundled default ComfyUI workflow JSON templates",
+      "details": "- Create a directory of ComfyUI workflow JSON templates (e.g., `embed/workflows/comfyui/basic-txt2img.json`, `img2img.json`, etc.) with standard template variables (`{{PROMPT}}`, `{{MODEL}}`, `{{WIDTH}}`, `{{HEIGHT}}`, `{{STEPS}}`, `{{CFG_SCALE}}`, `{{SEED}}`).\n- Each file is a valid ComfyUI prompt JSON (node-id → node object structure).\n- The local workflow listing in SystemService reads from this directory.",
+      "epic": "ComfyUI local workflow directory",
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-16T07:00:03.028912Z",
+      "updatedAt": "2026-07-16T07:06:21.9291261Z",
+      "completedAt": "2026-07-16T07:06:21.9291261Z"
+    },
     "c406d766-e68a-45b8-b7d3-5b892df596bc": {
       "title": "Show current tool call in dashboard kanban progress widget",
       "details": "## Context\n\nThe dashboard's `renderKanbanProgress` widget shows card title, progress bar, and percentage — but not the current tool call. The kanban view already displays this via `getLastToolCallName()` which reads the last `tool_call` entry from `progressTranscript`.\n\n## Implementation\n\n**File: `echo/frontend/src/app/dashboard/widgets.ts`**\n\n1. Add helper `getLastToolCallName(transcript)` that finds the most recent `tool_call` progress entry and extracts the tool name from its `title` field (format: `\"Tool call: filesystem_read_text\"`).\n2. Update `renderKanbanProgress` template to include a `\u003cspan class=\"widget-tool-label\"\u003e` after the percentage showing the current tool name.\n\nTemplate addition per card row:\n```typescript\nconst toolName = getLastToolCallName(card.progressTranscript);\nconst toolLabel = toolName ? `\u003cspan class=\"widget-tool-label\"\u003e${escapeHtml(toolName)}\u003c/span\u003e` : '';\n```\n\n**File: `echo/frontend/src/styles.css`**\n\nAdd `.widget-tool-label` styling matching the existing kanban `.kanban-card-tool-label` pattern (muted text, small font):\n```css\n.widget-tool-label {\n  color: var(--color-text-muted);\n  font-size: var(--text-xs);\n  margin-left: var(--space-sm);\n}\n```\n\n## Reference\n\n- `getLastToolCallName` is already implemented in `echo/frontend/src/app/kanban/card-progress.ts` — use the same logic.\n- `renderKanbanProgress` template is in `echo/frontend/src/app/dashboard/widgets.ts`.",
@@ -392,6 +845,29 @@
       "updatedAt": "2026-07-10T00:04:40.5065058Z",
       "completedAt": "2026-07-10T00:04:40.5065058Z"
     },
+    "cb401bc8-4106-4cd6-b702-fb1b707a8ac1": {
+      "title": "Add UploadImage method to ComfyUI client",
+      "details": "## Problem\nComfyUI's `LoadImage` node requires images to exist on the server's input directory. The current `Client` has no way to upload images, so img2img workflows can't receive input images from Echo.\n\n## Change\n**File:** `internal/comfyui/client.go`\n\nAdd method:\n```go\n// UploadImage uploads an image file to ComfyUI's /upload/image endpoint.\n// Returns the filename as stored on the server (used for LoadImage \"image\" input).\nfunc (c *Client) UploadImage(ctx context.Context, filename string, data []byte) (string, error)\n```\n\nImplementation: POST multipart form to `{BaseURL}/upload/image` with field `image` containing the file. Parse JSON response for stored filename. ComfyUI returns `{\"name\": \"filename.png\", \"subfolder\": \"\", \"type\": \"input\"}`.\n\n**File:** `internal/comfyui/client_test.go`\n- Add test with `httptest` server that mocks `/upload/image` endpoint.\n\n## Verification\n- `go test ./...` passes",
+      "epic": "ComfyUI image-to-image support",
+      "tags": [
+        "comfyui",
+        "img2img",
+        "backend"
+      ],
+      "acceptanceCriteria": [
+        "UploadImage method added to Client with ctx, filename, data parameters",
+        "POSTs multipart form to /upload/image endpoint",
+        "Returns server-stored filename string",
+        "Test with httptest server covering success case",
+        "go test ./... passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-17T00:14:54.4720458Z",
+      "updatedAt": "2026-07-17T00:19:17.1783045Z",
+      "completedAt": "2026-07-17T00:19:17.1783045Z"
+    },
     "d1d64412-6097-4429-94cc-fc3aa4272a25": {
       "title": "Add \"Reference Task\" button to task detail view",
       "details": "In `echo/frontend/src/app/tasks/index.ts`, add a new button in the `task-detail-footer-actions` div alongside the existing \"Use as Chat Prompt\" button.\n\n**Button spec:**\n- `data-task-action=\"reference\"` with `data-task-id=\"${escapeAttribute(task.id)}\"`\n- Icon: link or paperclip icon (use existing icon from `icons.ts`)\n- Label: \"Reference Task\"\n- Class: `secondary-button icon-text-button` (match existing buttons in the footer)\n\n**Handler** (new case in `handleTaskAction`):\n- Call `formatTaskReference(task)` to produce a compact reference string like `@task:${task.id}`\n- Append it to the existing chat draft (with leading space if needed, trailing space after) — do NOT replace existing draft\n- Switch to chat mode and focus input (same pattern as existing `chat` action: set `appMode`, `mobileNavView`, `activeChatKanbanTab`, clear `selectedTaskCards`, render, focus `[data-chat-input]`)\n\n**Helper function:**\n```ts\nfunction formatTaskReference(task: services.WorkspaceTask): string {\n  return `@task:${task.id}`;\n}\n```\n\n**Files to change:**\n- `echo/frontend/src/app/tasks/index.ts` — button HTML, handler case, helper function",
@@ -413,6 +889,135 @@
       "createdAt": "2026-07-11T10:55:51.0518582Z",
       "updatedAt": "2026-07-11T10:59:25.1036183Z",
       "completedAt": "2026-07-11T10:59:25.1036183Z"
+    },
+    "d2da4a23-2168-4e89-9313-7fd12a73fd12": {
+      "title": "Attach images from tool results to chat messages in backend",
+      "details": "## Context\n\nWhen `comfyui_generate` (or any image-producing tool) runs during a chat turn, the generated image data flows to the LLM context via `toolResultMessages` but is **never** added to the `ChatMessage.Images` field that the frontend renders. The assistant message has no images attached, so nothing shows up in chat.\n\n## Changes — `internal/services/chat.go`\n\n### 1. Add optional attachment fields to `ChatStreamEvent`\n\n```go\ntype ChatStreamEvent struct {\n    // ... existing fields ...\n    ImageAttachment *ChatImageAttachment `json:\"imageAttachment,omitempty\"`\n    VideoAttachment *ChatVideoAttachment `json:\"videoAttachment,omitempty\"`\n}\n```\n\n### 2. Add `attachChatImage` helper method\n\n```go\nfunc (s *SystemService) attachChatImage(workspaceID string, streamID string, messageID string, attachment ChatImageAttachment) {\n    s.mutateChatMessage(workspaceID, messageID, func(message *ChatMessage) {\n        message.Images = append(message.Images, attachment)\n    }, ChatStreamEvent{\n        WorkspaceID:     workspaceID,\n        StreamID:        streamID,\n        MessageID:       messageID,\n        Type:            \"image_attached\",\n        ImageAttachment: \u0026attachment,\n    })\n}\n```\n\nSame pattern for `attachChatVideo` using `Videos` slice and `VideoAttachment`.\n\n### 3. Hook into `executeToolCall` (after `updateToolActivity`, ~line 850)\n\nAfter a successful tool result, check if the result contains image/video data and attach it:\n\n```go\n// Attach images from tool results to the chat message for display.\nif imgMsg, ok := toolResultImageMessage(call.Function.Name, result); ok {\n    for _, part := range imgMsg.ContentParts {\n        if part.ImageURL != nil \u0026\u0026 part.ImageURL.URL != \"\" {\n            s.attachChatImage(workspace.ID, streamID, messageID,\n                ChatImageAttachment{\n                    Source:  \"tool\",\n                    Name:    call.Function.Name + \"-generated\",\n                    DataURL: part.ImageURL.URL,\n                })\n        }\n    }\n}\n\n// Same for videos via toolResultVideoMessage(...)\n```\n\n### Key files to reference\n\n- `internal/services/chat.go` — `executeToolCall`, `updateToolActivity`, `mutateChatMessage`, `ChatStreamEvent`\n- `internal/services/chat_images.go` — `ChatImageAttachment`, `ChatVideoAttachment`, image handling patterns\n- `internal/tools/comfyui_generate.go` — `toolResultImageMessage`, `comfyuiOutput.LLMImageContent()`\n\n### Acceptance criteria\n\n- Image-producing tool results (e.g., comfyui_generate) are automatically attached to the assistant message's `Images` field\n- An `image_attached` stream event is emitted so the UI updates in real time\n- Video-producing tools follow the same pattern via `attachChatVideo`",
+      "epic": "Tool-generated images in chat",
+      "tags": [
+        "chat",
+        "images",
+        "tool-results",
+        "backend"
+      ],
+      "acceptanceCriteria": [
+        "Image-producing tool results are attached to assistant message Images field",
+        "image_attached stream event is emitted with ImageAttachment data",
+        "Video-producing tools follow the same pattern via attachChatVideo",
+        "No existing stream events or chat message behavior is broken"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-16T14:57:01.71919Z",
+      "updatedAt": "2026-07-16T14:59:57.0056026Z",
+      "completedAt": "2026-07-16T14:59:57.0056026Z"
+    },
+    "d3d1b58f-ea87-4ae2-acb1-76de08ead777": {
+      "title": "Compress chat image attachments before sending to LLM endpoint",
+      "details": "## Problem\n\nChat messages with large image attachments (e.g. 1.1 MB PNG screenshots) cause **413 Request Entity Too Large** errors from nginx sitting in front of the LLM endpoint. The root cause: images are sent as raw base64 data URLs with zero compression or resizing. A 1.1 MB PNG inflates to ~1.5 MB base64, exceeding nginx's default `client_max_body_size` (typically 1 MB).\n\nMost vision models don't need full-resolution images — 2048px on the longest side is more than sufficient.\n\n## Changes\n\n### 1. Add image processing dependency (`go.mod`)\n- Add `github.com/disintegration/imaging` for resize support\n\n### 2. Backend compression (`internal/services/chat_images.go`)\n- Add constants: `maxImageDimension = 2048`, `jpegQuality = 85`\n- Create `compressChatImage(rawData []byte, mediaType string) ([]byte, string, error)` that:\n  - Decodes via `image.Decode`\n  - Resizes proportionally if either dimension exceeds `maxImageDimension` (using `imaging.Resize`)\n  - For PNG files \u003e ~500KB after resizing, re-encode as JPEG at quality 85\n  - For GIF files, keep as-is to preserve animation\n  - Returns compressed bytes and potentially updated media type\n- Apply compression in **both** entry points:\n  - `normalizePastedChatImage`: After `parseChatImageDataURL` returns raw data\n  - `readWorkspaceChatImage`: After `os.ReadFile` returns file bytes\n\n### 3. Better 413 error messaging (`internal/llm/client.go`)\n- In `responseError`, detect HTTP 413 status codes and return a user-friendly message: *\"LLM endpoint rejected the request (413 Request Entity Too Large). This is usually caused by large image attachments or accumulated context. Try using smaller images.\"*\n\n### 4. Optional: Browser-side pre-compression (`frontend/src/app/chat/index.ts`)\n- When preparing chat image drafts, check decoded image dimensions\n- Use Canvas API to resize + re-encode as JPEG/WebP if needed\n- Reduces bandwidth frontend ↔ backend (important for web access mode)\n\n## Testing\n- Add unit tests in `internal/services` for `compressChatImage`:\n  - Small images pass through unchanged\n  - Large PNGs get resized and optionally re-encoded as JPEG\n  - GIFs are preserved as-is\n  - Verify resulting data URL is valid and under expected size",
+      "epic": "Chat reliability",
+      "tags": [
+        "chat",
+        "images",
+        "413-error",
+        "compression",
+        "LLM-request-size"
+      ],
+      "acceptanceCriteria": [
+        "Large PNG screenshots (1-5 MB) are resized to max 2048px and re-encoded as JPEG, reducing base64 payload by 70%+",
+        "GIF attachments are preserved without lossy compression",
+        "Small images (\u003c500KB, \u003c2048px) pass through with minimal overhead",
+        "413 errors from nginx produce a user-friendly error message instead of raw HTML",
+        "compression is applied to both pasted and workspace-referenced (@path) images",
+        "No new external dependencies beyond github.com/disintegration/imaging"
+      ],
+      "priority": "P0",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-17T02:06:23.5060803Z",
+      "updatedAt": "2026-07-17T02:14:22.3650562Z",
+      "completedAt": "2026-07-17T02:14:22.3650562Z"
+    },
+    "d5e8afae-794d-44da-a9a8-e313350d6e7f": {
+      "title": "Fix save_image \"image not found\" error",
+      "details": "## Problem\n\nWhen the agent calls `save_image` after `comfyui_generate`, it fails with:\n```\nimage with ID \"...\" was not found; it may have been generated in a previous turn\n```\n\n## Root Causes (2 bugs)\n\n### Bug 1: `save_image` missing from frontend per-tool permission selector\n\n**File:** `frontend/src/app/settings/index.ts` (~line 117)\n\nThe `availableToolNames` array doesn't include `\"save_image\"`. Custom agent modes can't grant it via the UI, so agents with restricted tool scopes get `tool_not_allowed`.\n\n**Fix:** Add `\"save_image\"` to `availableToolNames` in alphabetical order (after `\"restart\"`).\n\n### Bug 2: Image tracking may silently fail; error message gives no diagnostics\n\n**Files:**\n- `internal/tools/save_image.go` (~line 78) — error message\n- `internal/services/chat.go` (~lines 856-882) — image tracking\n- `internal/services/kanban_scheduler.go` (~lines 814-834) — image tracking\n\nThe `\"image not found\"` error is useless for debugging. It doesn't tell you whether:\n- The tracking code never ran (type assertion to `LLMImageContentProvider` failed)\n- ComfyUI returned zero output images (`ImageID` stays empty, nothing tracked)\n- The agent passed a wrong/mangled ID\n\n**Fixes:**\n\n1. **Enhance error message** in `save_image.go` — when image not found, include list of available image IDs so the agent can compare:\n   ```go\n   return nil, SafeError{Code: \"image_not_found\", Message: fmt.Sprintf(\"image with ID %q was not found. Available image IDs: %v\", args.ImageID, keys)}\n   ```\n\n2. **Add logging** in both `chat.go` and `kanban_scheduler.go` image tracking blocks — log when an image is successfully tracked vs when type assertions fail, so you can see if the tracking code path executed.\n\n3. **Handle zero-output-images case** — When ComfyUI returns no output images, `comfyui_generate` sets neither `ImageID` nor `dataURL`. The image tracking code correctly skips this (both checks fail), but the agent sees a successful result with no `imageId` and doesn't know why. Consider adding guidance to the system prompt: \"If comfyui_generate returns no imageId, the generation produced no images — check outputImages and statusMessage for details.\"\n\n## Tests\n\nAdd unit test in `internal/tools/save_image_test.go`:\n- Happy path: generate mock image → track in GeneratedImages → save successfully\n- Image not found: verify error includes available IDs  \n- Empty data URL: verify error is returned",
+      "tags": [
+        "save-image",
+        "comfyui",
+        "image-tracking",
+        "bugfix"
+      ],
+      "acceptanceCriteria": [
+        "save_image added to frontend availableToolNames array",
+        "Error message includes list of available image IDs when lookup fails",
+        "Image tracking logs diagnostics when type assertions fail or succeed",
+        "Unit test covers happy path and failure cases for save_image"
+      ],
+      "priority": "P0",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-18T01:12:48.1218237Z",
+      "updatedAt": "2026-07-18T02:07:59.4901299Z",
+      "completedAt": "2026-07-18T02:07:59.4901299Z"
+    },
+    "eeb43ddf-91e6-4e8d-b931-264b65a2f516": {
+      "title": "Strip media ContentParts from local messages slice to prevent 413 errors",
+      "details": "## Problem\n\nTool result messages containing base64 image/video data URLs accumulate in the local `messages` slice within `runChatTurnWithHistory`, causing LLM request bodies to exceed nginx's `client_max_body_size` and triggering **413 Request Entity Too Large** errors.\n\nThe stripped versions are correctly stored in `session.History` (via `appendChatHistory`), but the local `messages` slice keeps unstripped copies that grow with each tool call across iterations within a single turn.\n\n## Fix\n\n**File:** `echo/internal/services/chat.go`\n\nIn `runChatTurnWithHistory`, after appending tool result messages to `messages`, immediately replace them with stripped versions in the `messages` slice as well:\n\n```go\n// Current code (around line 596-603):\nfor _, call := range toolCalls {\n    if err := ctx.Err(); err != nil {\n        s.cancelChatMessage(workspace.ID, streamID, messageID)\n        return\n    }\n    execution := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, isPlanMode, toolScopes)\n    recoverableToolCalls[call.ID] = true\n    messages = append(messages, execution.Messages...)\n    for _, resultMessage := range execution.Messages {\n        stripped := stripMediaContentParts(resultMessage)\n        s.appendChatHistory(workspace.ID, stripped)\n    }\n    // ... rest of loop\n}\n```\n\n**Change to:**\n\n```go\nfor _, call := range toolCalls {\n    if err := ctx.Err(); err != nil {\n        s.cancelChatMessage(workspace.ID, streamID, messageID)\n        return\n    }\n    execution := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, isPlanMode, toolScopes)\n    recoverableToolCalls[call.ID] = true\n    // Append stripped versions to messages to prevent base64 data accumulation.\n    // The LLM still sees the text description (e.g., \"Image returned by tool...\")\n    // but not the megabytes of base64 pixel data.\n    for _, resultMessage := range execution.Messages {\n        stripped := stripMediaContentParts(resultMessage)\n        messages = append(messages, stripped)\n        s.appendChatHistory(workspace.ID, stripped)\n    }\n    // ... rest of loop\n}\n```\n\nKey change: Replace `messages = append(messages, execution.Messages...)` with a loop that appends the already-stripped versions. This ensures both `messages` and `session.History` contain only stripped tool result messages.\n\n## Trade-off\n\nThe LLM will no longer see generated image/video pixels in subsequent iterations within a turn. It still sees:\n- The tool's JSON text output\n- The descriptive text (e.g., \"Image returned by tool comfyui_generate: ComfyUI_00024_.png (image/png, 1.0 MB).\")\n\nThis is acceptable because the model already knows what prompt was sent to the image generator, and the visual verification benefit is outweighed by the 413 error prevention.\n\n## Verification\n\n- Run `go test ./...` from repo root\n- Specifically verify `internal/services` tests pass\n- Test with a chat turn that generates an image via comfyui_generate, then continues with more LLM calls in the same turn",
+      "epic": "413 error fix",
+      "tags": [
+        "chat",
+        "media",
+        "413",
+        "base64",
+        "tool-results"
+      ],
+      "priority": "P0",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-16T19:45:47.0808236Z",
+      "updatedAt": "2026-07-16T19:51:44.7468848Z",
+      "completedAt": "2026-07-16T19:51:44.7468848Z"
+    },
+    "f3aeeba2-118a-4335-b78d-211d1b439c7a": {
+      "title": "Add save_image agent tool for saving generated images to workspace disk",
+      "details": "## Problem\nWhen `comfyui_generate` returns, the agent sees metadata (name, mediaType, bytes) but cannot save the image because:\n- `dataURL` is unexported and never serialized to JSON\n- No binary file write tool exists\n- No way to reference previously-generated images across tool calls\n\n## Solution\n\n### 1. Expose ImageID in comfyui_generate output\n**File:** `internal/tools/comfyui_generate.go`\n- Add exported `ImageID string json:\"imageId\"` field to `comfyuiOutput`\n- Generate a unique ID (e.g., `uuid.New().String()`) when image data is fetched\n- Set `output.ImageID` alongside Name/MediaType/Bytes\n\n### 2. Track generated images in ExecutionContext  \n**File:** `internal/tools/types.go`\n- Add `GeneratedImages map[string]AttachedImage` to `ExecutionContext` — tracks images produced by tools during the current turn, keyed by ImageID\n\n### 3. Wire generated images into execution context\n**File:** `internal/services/chat.go` (in `runChatTurnWithHistory`)\n- When building `ExecutionContext` for tool calls within a turn, populate `GeneratedImages` from images attached to the current assistant message (from previous tool results)\n- This allows multi-turn chains: generate image → save_image with imageId\n\n### 4. Create `save_image` tool\n**File:** `internal/tools/save_image.go` (new)\n\n```go\nfunc init() {\n    Register(ToolFunc{\n        Meta: Metadata{\n            Name: \"save_image\",\n            Description: \"Save an image to the workspace. Use this after generating images with comfyui_generate to persist them to disk.\",\n            Parameters: Schema{...},\n        },\n        Run: saveImage,\n    })\n}\n```\n\nParameters:\n- `imageId` (string, required) — ImageID from a previous tool result (e.g., comfyui_generate output)\n- `path` (string, required) — Workspace-relative path to save the image to  \n- `overwrite` (bool, optional) — Whether to replace an existing file\n\nLogic:\n1. Look up `imageId` in `ctx.GeneratedImages`\n2. Decode base64 from DataURL to raw bytes\n3. Resolve workspace path via `resolveWorkspaceChildPath(ctx, args.Path)`\n4. Write binary file using `os.WriteFile` (same pattern as `filesystem_create_text`)\n5. Record file change for tracking\n\n### 5. Add save_image to mutating tools\n**File:** `internal/tools/registry.go`\n- Add `\"save_image\"` to `mutatingToolNames`\n- Add `\"path\"` to `isPathArgKey` switch\n\n### 6. Update system prompt guidance\n**File:** `internal/services/chat.go` (`chatSystemMessage`)\n- Add guidance so the model knows about `save_image` and that it should use the `imageId` from tool results\n\n## Verification\n- Agent sees `\"imageId\": \"uuid...\"` in comfyui_generate JSON response\n- Generated images are available in subsequent tool calls within the same turn\n- save_image writes binary file correctly to workspace disk\n- File change tracking records the creation",
+      "epic": "Save chat images to disk (agent capability)",
+      "tags": [
+        "save-images",
+        "comfyui",
+        "agent-tools"
+      ],
+      "acceptanceCriteria": [
+        "comfyuiOutput includes exported ImageID field in JSON",
+        "ImageID is a unique identifier generated when image data is fetched",
+        "ExecutionContext.GeneratedImages maps image IDs to AttachedImage data",
+        "save_image tool resolves imageId from GeneratedImages and writes binary file to workspace",
+        "Generated images are available in subsequent tool calls within the same turn",
+        "System prompt includes guidance for save_image usage"
+      ],
+      "priority": "P0",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-17T17:03:32.8407022Z",
+      "updatedAt": "2026-07-17T17:10:55.378351Z",
+      "completedAt": "2026-07-17T17:10:55.378351Z"
+    },
+    "fa39b0af-6836-4a0e-9480-14a37be3968a": {
+      "title": "Add download icon and save button to chat image attachments",
+      "details": "## Changes\n\n### `frontend/src/app/icons.ts`\n- Add a `download` SVG icon (Lucide-style arrow-to-line): `\u003csvg viewBox=\"0 0 24 24\" aria-hidden=\"true\"\u003e\u003cpath d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\"/\u003e\u003cpolyline points=\"7 10 12 15 17 10\"/\u003e\u003cline x1=\"12\" y1=\"15\" x2=\"12\" y2=\"3\"/\u003e\u003c/svg\u003e`\n\n### `frontend/src/app/chat/index.ts` — `renderChatMessageImages()`\n- Add a save icon button inside each `\u003cfigure class=\"chat-message-image\"\u003e` figcaption area\n- Button attributes:\n  - `data-action=\"save-chat-image\"`\n  - `data-image-id=\"${image.id}\"`\n  - `data-image-name=\"${escapeAttribute(image.name)}\"`\n  - `data-image-media-type=\"${escapeAttribute(image.mediaType)}\"`\n  - `data-image-data-url=\"${escapeAttribute(image.dataUrl)}\"` (for web mode browser download)\n- Button class: `icon-button chat-save-image`\n\n### `frontend/src/styles.css`\n- Style `.chat-save-image` so it blends with existing figcaption content (inline at end, or floated right)\n- Match existing icon-button sizing/padding conventions\n- Ensure mobile-responsive sizing matches the image grid constraints (~≤720px)\n\n## Verification\n- `cd frontend; npm run build` succeeds\n- Save button appears on every tool-generated image in chat",
+      "epic": "Save chat images to disk",
+      "tags": [
+        "frontend",
+        "chat",
+        "images"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-17T14:12:53.9934131Z",
+      "updatedAt": "2026-07-17T14:31:51.3193791Z",
+      "completedAt": "2026-07-17T14:31:51.3193791Z"
     },
     "fc32a1ba-d84f-47ff-91d1-76200e240161": {
       "title": "Frontend: Add terminal panel with live streaming output to chat view",

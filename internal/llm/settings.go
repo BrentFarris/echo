@@ -78,6 +78,10 @@ type Settings struct {
 	EnableKanbanCompleteNotifications   bool            `json:"enableKanbanCompleteNotifications,omitempty"`
 	LimitKanbanConcurrency          bool              `json:"limitKanbanConcurrency,omitempty"`
 	DisableGitSplitDiffView         bool              `json:"disableGitSplitDiffView,omitempty"`
+	ComfyuiURL                      string            `json:"comfyuiUrl"`
+	ComfyuiDefaultCheckpoint        string            `json:"comfyuiDefaultCheckpoint"`
+	ComfyuiTxt2imgWorkflow          string            `json:"comfyuiTxt2imgWorkflow"`
+	ComfyuiImg2imgWorkflow          string            `json:"comfyuiImg2imgWorkflow"`
 	Theme                           Theme             `json:"theme,omitempty"`
 }
 
@@ -127,6 +131,9 @@ func (s Settings) Normalized() Settings {
 	if s.SearxngURL == "" {
 		s.SearxngURL = DefaultSearxngURL
 	}
+	s.ComfyuiURL = strings.TrimSpace(s.ComfyuiURL)
+	s.ComfyuiTxt2imgWorkflow = strings.TrimSpace(s.ComfyuiTxt2imgWorkflow)
+	s.ComfyuiImg2imgWorkflow = strings.TrimSpace(s.ComfyuiImg2imgWorkflow)
 	s.Theme = s.Theme.Normalized()
 	return s
 }
@@ -206,6 +213,11 @@ func (s Settings) Validate() error {
 	}
 	if err := validateHTTPURL(s.SearxngURL, "searxng url"); err != nil {
 		return err
+	}
+	if s.ComfyuiURL != "" {
+		if err := validateHTTPURL(s.ComfyuiURL, "comfyui url"); err != nil {
+			return err
+		}
 	}
 
 	if s.Temperature < 0 || s.Temperature > 2 {

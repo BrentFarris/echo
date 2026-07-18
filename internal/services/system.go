@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 
+
 	"github.com/brent/echo/internal/llm"
 	"github.com/google/uuid"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -1057,6 +1058,21 @@ func (s *SystemService) load() error {
 	legacyThinkingDisabled := stateFileLegacyThinkingDisabled(data) && !stateFileHasSettingKey(data, "thinkingTokenBudget")
 	legacyLLMEndpoints := !stateFileHasSettingKey(data, "endpoints")
 	legacyEndpointSelection := !stateFileHasSettingKey(data, "endpointSelection")
+
+	// Migrate legacy comfyuiDefaultWorkflow → separate txt2img/img2img workflow fields.
+	if stateFileHasSettingKey(data, "comfyuiDefaultWorkflow") {
+		var oldSettings struct {
+			ComfyuiDefaultWorkflow string `json:"comfyuiDefaultWorkflow"`
+		}
+		if err := json.Unmarshal(stateFileSettingsRaw(data), &oldSettings); err == nil {
+			oldValue := strings.TrimSpace(oldSettings.ComfyuiDefaultWorkflow)
+			if oldValue != "" && state.Settings.ComfyuiTxt2imgWorkflow == "" && state.Settings.ComfyuiImg2imgWorkflow == "" {
+				state.Settings.ComfyuiTxt2imgWorkflow = oldValue
+				state.Settings.ComfyuiImg2imgWorkflow = oldValue
+			}
+		}
+	}
+
 	state.Settings = state.Settings.Normalized()
 	missingLLMEndpoint := state.Settings.Endpoint == ""
 	missingLLMModel := state.Settings.Model == ""
@@ -1251,6 +1267,16 @@ func stateFileHasSettingKey(data []byte, key string) bool {
 	}
 	_, ok := raw.Settings[key]
 	return ok
+}
+
+func stateFileSettingsRaw(data []byte) json.RawMessage {
+	var raw struct {
+		Settings json.RawMessage `json:"settings"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+	return raw.Settings
 }
 
 func stateFileLegacyThinkingDisabled(data []byte) bool {

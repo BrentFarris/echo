@@ -604,6 +604,7 @@ var allowedRPCMethods = map[string]bool{
 	"GetDashboardLayouts":              true,
 	"SaveDashboardLayout":              true,
 	"RunShellCommand":                  true,
+	"SaveChatImageToDisk":              true,
 	"StopShellCommand":                 true,
 	"GetSavedCommands":                 true,
 	"UpsertSavedCommand":               true,

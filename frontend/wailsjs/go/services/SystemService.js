@@ -374,6 +374,10 @@ export function RunShellCommand(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['services']['SystemService']['RunShellCommand'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function SaveChatImageToDisk(arg1, arg2) {
+  return window['go']['services']['SystemService']['SaveChatImageToDisk'](arg1, arg2);
+}
+
 export function SaveDashboardLayout(arg1, arg2) {
   return window['go']['services']['SystemService']['SaveDashboardLayout'](arg1, arg2);
 }

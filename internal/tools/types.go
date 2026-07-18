@@ -44,12 +44,24 @@ func (t ToolFunc) Execute(ctx ExecutionContext, arguments json.RawMessage) (any,
 	return t.Run(ctx, arguments)
 }
 
+// AttachedImage carries a chat-attached image's metadata for tools that accept
+// in-memory image input without writing to disk.
+type AttachedImage struct {
+	Name      string `json:"name"`
+	MediaType string `json:"mediaType"`
+	DataURL   string `json:"dataUrl"`
+}
+
 type ExecutionContext struct {
 	Context          context.Context
 	WorkspacePath    string
 	WorkspaceRoots   []WorkspaceRoot
-	SearxngURL       string
-	CodeNavigator    CodeNavigator
+	SearxngURL             string
+	ComfyuiURL              string
+	ComfyuiDefaultCheckpoint string
+	ComfyuiTxt2imgWorkflow   string
+	ComfyuiImg2imgWorkflow   string
+	CodeNavigator            CodeNavigator
 	WorkspaceContext WorkspaceContextProvider
 	WorkspaceSkills  WorkspaceSkillsProvider
 	WorkspaceTasks   WorkspaceTasksProvider
@@ -65,6 +77,12 @@ type ExecutionContext struct {
 	AgentModes      AgentModeProvider
 	KanbanExecutor  KanbanExecutor
 	KanbanManager   KanbanManager
+	// AttachedImages are images from the latest user chat message, available to
+	// tools (e.g., comfyui_generate via attachedImageIndex) without disk I/O.
+	AttachedImages []AttachedImage
+	// GeneratedImages tracks images produced by tools during the current turn,
+	// keyed by ImageID. Used by save_image to resolve image data.
+	GeneratedImages map[string]AttachedImage
 }
 
 // AgentModeSummary describes an available agent mode without the full prompt.

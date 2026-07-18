@@ -89,27 +89,6 @@
       "createdAt": "2026-07-11T10:42:47.5553447Z",
       "updatedAt": "2026-07-11T10:42:47.5553447Z"
     },
-    "6c65db05-b330-42ea-abf3-f03b08cdd547": {
-      "title": "Replace crypto.randomUUID with fallback UUID generator for non-secure contexts",
-      "details": "## Problem\nOn mobile (via LAN web access over HTTP), `crypto.randomUUID()` throws because the Web Crypto API requires a secure context. This breaks saving terminal commands to favorites.\n\n**Error:** `crypto.randomUUID is not a function`\n**Location:** `frontend/src/app/actions.ts` line 1179\n\n## Fix\n\n### 1. Add fallback UUID generator to `frontend/src/app/utils.ts`:\n\n```typescript\nexport function generateUUID(): string {\n  if (typeof crypto?.randomUUID === 'function') {\n    return crypto.randomUUID();\n  }\n  // Fallback for non-secure contexts (HTTP web access)\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) =\u003e {\n    const r = Math.random() * 16 | 0;\n    const v = c === 'x' ? r : (r \u0026 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\n```\n\n### 2. In `frontend/src/app/actions.ts`:\n- Add import: `generateUUID` from `./utils`\n- Line 1179: Replace `crypto.randomUUID()` with `generateUUID()`\n\n## Verification\n- Save terminal command to favorites on mobile web access (HTTP) → works without error\n- Save terminal command to favorites in Wails desktop app → still works\n- `cd frontend; npm run build` passes",
-      "tags": [
-        "mobile",
-        "web-access",
-        "saved-commands",
-        "crypto"
-      ],
-      "acceptanceCriteria": [
-        "crypto.randomUUID replaced with generateUUID fallback that works over HTTP",
-        "Saving a new terminal command to favorites works on mobile web access",
-        "No regression in Wails desktop app",
-        "cd frontend; npm run build passes"
-      ],
-      "priority": "P1",
-      "sortOrder": 0,
-      "completed": false,
-      "createdAt": "2026-07-14T07:25:11.4157674Z",
-      "updatedAt": "2026-07-14T07:25:11.4157674Z"
-    },
     "6fee9d83-f2bc-4bfb-a9d6-274577541c6c": {
       "title": "Terminal saved commands with CRUD",
       "details": "## Terminal Saved Commands — Implementation Plan\n\n### Backend (Go)\n\n**`internal/services/system.go`**\n- Add type:\n  ```go\n  type SavedCommand struct {\n      ID      string `json:\"id\"`\n      Name    string `json:\"name\"`\n      Command string `json:\"command\"`\n      Order   int    `json:\"order\"`\n  }\n  ```\n- Add to `AppState`: `SavedCommands map[string][]SavedCommand \\`json:\"savedCommands,omitempty\"\\``\n- Add methods:\n  - `GetSavedCommands(workspaceID string) []SavedCommand` — validate workspace, return deep clone\n  - `UpsertSavedCommand(workspaceID, id, name, command string, order int) error` — create if id empty (UUID), update if exists; trim+validate inputs; clone slice before mutation; save\n  - `DeleteSavedCommand(workspaceID, id string) error` — filter out matching id from workspace's slice; save\n\n**`internal/services/state_persistence.go`**\n- Update `cloneStateLocked` to deep-copy `SavedCommands` map\n\n**`internal/webserver/server.go`**\n- Add `\"GetSavedCommands\"`, `\"UpsertSavedCommand\"`, `\"DeleteSavedCommand\"` to RPC whitelist\n\n### Regenerate bindings\n- Run `wails generate`\n\n### Frontend Types\n\n**`frontend/src/app/types.ts`**\n```ts\nexport type SavedCommand = {\n  id: string;\n  name: string;\n  command: string;\n  order: number;\n};\n```\n\n### Frontend State\n\n**`frontend/src/app/state.ts`**\n- Add to state object:\n  - `savedCommands: new Map\u003cstring, SavedCommand[]\u003e()`\n  - `savedCommandEditingId: \"\"`\n  - `savedCommandDraftName: \"\"`\n  - `savedCommandDraftCommand: \"\"`\n\n### Frontend Backend Services\n\n**`frontend/src/backend/services.ts`**\n- Add:\n  ```ts\n  export async function GetSavedCommands(workspaceID: string): Promise\u003cSavedCommand[]\u003e { ... }\n  export async function UpsertSavedCommand(workspaceID, id, name, command: string, order: number): Promise\u003cvoid\u003e { ... }\n  export async function DeleteSavedCommand(workspaceID, id: string): Promise\u003cvoid\u003e { ... }\n  ```\n\n### Frontend Render\n\n**`frontend/src/app/render.ts`**\nIn `renderTerminalPanel`, insert between `.terminal-runs` and `.terminal-input-row`:\n```html\n\u003cdiv class=\"terminal-saved-commands\"\u003e\n  \u003cdetails class=\"terminal-saved-header\" data-terminal-saved-header\u003e\n    \u003csummary data-action=\"toggle-saved-commands\"\u003e\n      ${icons.bookmark} Saved Commands\n    \u003c/summary\u003e\n  \u003c/details\u003e\n  \u003cdiv class=\"terminal-saved-list\" data-terminal-saved-list\u003e\n    \u003c!-- rendered saved commands or inline edit forms --\u003e\n    \u003cbutton class=\"icon-button terminal-add-saved\" title=\"Save current command\" \n            data-action=\"add-saved-command\" data-workspace-id=\"${...}\"\u003e+ Save\u003c/button\u003e\n  \u003c/div\u003e\n\u003c/div\u003e\n```\n\nEach saved command row:\n- Command text (clickable to run)\n- Edit button (✎) → switches to inline form\n- Delete button (✕)\n\nInline edit form: name input + command textarea + Save/Cancel buttons.\n\n### Frontend Actions\n\n**`frontend/src/app/actions.ts`**\n- `run-saved-command`: Get from saved list, set terminalDrafts, trigger run-shell-command\n- `add-saved-command`: Read current terminal input; if non-empty generate UUID and call UpsertSavedCommand with name = truncated command or \"Untitled\"\n- `edit-saved-command`: Set editing state for that id, populate draft fields, re-render\n- `delete-saved-command`: Call backend DeleteSavedCommand, re-render\n- `save-edited-command`: Validate inputs, call UpsertSavedCommand with existing id, clear edit state, re-render\n\n### Frontend Patch Support\n\n**`frontend/src/app/bootstrap.ts`**\n- In `patchTerminalPanel`, also patch `[data-terminal-saved-list]` innerHTML so saved-command changes don't require full re-render.\n\n### CSS\n\n**`frontend/src/styles.css`**\n```css\n.terminal-saved-commands { /* collapsible section */ }\n.terminal-saved-header summary { /* styled like terminal header */ }\n.terminal-saved-list { /* scrollable list */ }\n.terminal-saved-item { /* flex row: command text + action buttons */ }\n.terminal-saved-run { /* main clickable area */ }\n.terminal-saved-edit, .terminal-saved-delete { /* small icon buttons */ }\n.terminal-add-saved { /* compact add button */ }\n/* Inline edit form styles */\n/* Mobile tap target: min 36px height on interactive elements */\n```\n\n### Bootstrap Load\n\n**`frontend/src/app/bootstrap.ts`**\n- After `LoadState`, call `GetSavedCommands` for each workspace and populate `state.savedCommands`.\n\n### Verification\n- Desktop: wails dev, verify saved commands appear in terminal panel\n- Mobile/web: verify tap targets are usable\n- Persistence: restart app, verify saved commands persist\n- `go test ./...`\n- `cd frontend; npm run build`",
@@ -124,6 +103,14 @@
       "completed": false,
       "createdAt": "2026-07-13T17:33:10.0301295Z",
       "updatedAt": "2026-07-13T17:33:10.0301295Z"
+    },
+    "72db0420-427a-4ed4-b836-f9a9024c377b": {
+      "title": "Fix save_image \"image not found\" error",
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-18T01:15:36.6170965Z",
+      "updatedAt": "2026-07-18T01:15:36.6170965Z"
     },
     "96d218dc-5379-4c66-8406-81211c649d0d": {
       "title": "Bind desktop contextmenu and mobile long-press on task cards",

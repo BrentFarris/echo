@@ -989,6 +989,45 @@ h3 {
   font-weight: 800;
 }
 
+/* Chat image save button */
+.chat-message-image .chat-save-image {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.chat-message-image:hover .chat-save-image {
+  opacity: 1;
+}
+
+.chat-message-image .chat-save-image svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Mobile: always visible since hover doesn't work well on touch */
+@media (max-width: 720px) {
+  .chat-message-image .chat-save-image {
+    width: 24px;
+    height: 24px;
+    opacity: 0.7;
+  }
+
+  .chat-message-image .chat-save-image:hover,
+  .chat-message-image .chat-save-image:active {
+    opacity: 1;
+  }
+
+  .chat-message-image .chat-save-image svg {
+    width: 14px;
+    height: 14px;
+  }
+}
+
 .chat-file-link {
   cursor: pointer;
   text-decoration: underline;
@@ -4292,6 +4331,13 @@ h3 {
   min-height: 34px;
   padding: 0 var(--space-xl);
   font-size: var(--text-base-lg);
+}
+
+.comfyui-workflow-presets {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .field {
@@ -9611,5 +9657,18 @@ h3 {
   .saved-command-dialog {
     width: 100%;
     max-width: 400px;
+  }
+
+  /* Terminal: allow horizontal scroll instead of aggressive line wrapping */
+  .terminal-output {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: var(--space-sm);
+  }
+
+  .terminal-line {
+    white-space: pre;
+    overflow-wrap: normal;
+    word-break: normal;
   }
 }

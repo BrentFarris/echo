@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -45,15 +46,17 @@ type ChatToolActivity struct {
 }
 
 type ChatStreamEvent struct {
-	WorkspaceID  string            `json:"workspaceId"`
-	StreamID     string            `json:"streamId"`
-	MessageID    string            `json:"messageId"`
-	Type         string            `json:"type"`
-	Content      string            `json:"content,omitempty"`
-	Reasoning    string            `json:"reasoning,omitempty"`
-	ToolCall     *ChatToolActivity `json:"toolCall,omitempty"`
-	Error        string            `json:"error,omitempty"`
-	FinishReason string            `json:"finishReason,omitempty"`
+	WorkspaceID     string                 `json:"workspaceId"`
+	StreamID        string                 `json:"streamId"`
+	MessageID       string                 `json:"messageId"`
+	Type            string                 `json:"type"`
+	Content         string                 `json:"content,omitempty"`
+	Reasoning       string                 `json:"reasoning,omitempty"`
+	ToolCall        *ChatToolActivity      `json:"toolCall,omitempty"`
+	Error           string                 `json:"error,omitempty"`
+	FinishReason    string                 `json:"finishReason,omitempty"`
+	ImageAttachment *ChatImageAttachment   `json:"imageAttachment,omitempty"`
+	VideoAttachment *ChatVideoAttachment   `json:"videoAttachment,omitempty"`
 }
 
 type chatSessionState struct {
@@ -62,6 +65,33 @@ type chatSessionState struct {
 	History     []llm.Message
 	Busy        bool
 	StreamID    string
+}
+
+func (s *SystemService) latestUserMessageImages(workspaceID string) []tools.AttachedImage {
+	s.chatMu.Lock()
+	defer s.chatMu.Unlock()
+	session := s.chatSessions[workspaceID]
+	if session == nil {
+		return nil
+	}
+	for i := len(session.Messages) - 1; i >= 0; i-- {
+		msg := &session.Messages[i]
+		if msg.Role != llm.RoleUser || len(msg.Images) == 0 {
+			continue
+		}
+		result := make([]tools.AttachedImage, 0, len(msg.Images))
+		for _, img := range msg.Images {
+			if img.DataURL != "" {
+				result = append(result, tools.AttachedImage{
+					Name:      img.Name,
+					MediaType: img.MediaType,
+					DataURL:   img.DataURL,
+				})
+			}
+		}
+		return result
+	}
+	return nil
 }
 
 func (s *SystemService) LoadChatSession(workspaceID string) (ChatSession, error) {
@@ -467,6 +497,9 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 	forcedCompactions := 0
 	skillCheckpointPending := false
 	skillCheckpointReminders := 0
+	// Track images produced by tools during this turn so subsequent tool calls
+	// (e.g., save_image) can reference them by imageId.
+	generatedImages := make(map[string]tools.AttachedImage)
 	for {
 		if err := ctx.Err(); err != nil {
 			s.cancelChatMessage(workspace.ID, streamID, messageID)
@@ -592,11 +625,15 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 				s.cancelChatMessage(workspace.ID, streamID, messageID)
 				return
 			}
-			execution := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, isPlanMode, toolScopes)
+			execution := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, isPlanMode, toolScopes, generatedImages)
 			recoverableToolCalls[call.ID] = true
-			messages = append(messages, execution.Messages...)
+			// Append stripped versions to messages to prevent base64 data accumulation.
+			// The LLM still sees the text description (e.g., "Image returned by tool...")
+			// but not the megabytes of base64 pixel data.
 			for _, resultMessage := range execution.Messages {
-				s.appendChatHistory(workspace.ID, resultMessage)
+				stripped := stripMediaContentParts(resultMessage)
+				messages = append(messages, stripped)
+				s.appendChatHistory(workspace.ID, stripped)
 			}
 			if len(execution.Changes) > 0 {
 				skillCheckpointPending = true
@@ -739,7 +776,7 @@ type chatToolCallExecution struct {
 	SkillCheckpoint bool
 }
 
-func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, streamID string, messageID string, call llm.ToolCall, readOnlyOnly bool, toolScopes *tools.ToolScopeChecker) chatToolCallExecution {
+func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, streamID string, messageID string, call llm.ToolCall, readOnlyOnly bool, toolScopes *tools.ToolScopeChecker, generatedImages map[string]tools.AttachedImage) chatToolCallExecution {
 	if call.ID == "" {
 		call.ID = s.nextChatID("call")
 	}
@@ -794,7 +831,7 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 	execution := s.executeTrackedToolCall(ctx, workspace, settings, call, WorkspaceChangeSource{
 		Type:      "chat",
 		MessageID: messageID,
-	}, events, toolScopes)
+	}, events, toolScopes, generatedImages)
 	result := execution.Result
 
 	data, err := json.Marshal(result)
@@ -814,6 +851,61 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 		consoleOutput = extractShellConsoleOutput(call, result)
 	}
 	s.updateToolActivity(workspace.ID, streamID, messageID, call, status, string(data), errorText, consoleOutput)
+
+	// Attach images/videos from tool results to the assistant chat message so they render in the UI.
+	if result.Success && result.Output != nil {
+		if provider, ok := result.Output.(tools.LLMImageContentProvider); ok {
+			if image, ok := provider.LLMImageContent(); ok && image.DataURL != "" {
+				s.attachChatImage(workspace.ID, streamID, messageID, ChatImageAttachment{
+					ID:        s.nextChatID("img"),
+					Source:    "tool",
+					Name:      call.Function.Name + "-generated",
+					MediaType: image.MediaType,
+					Bytes:     image.Bytes,
+					DataURL:   image.DataURL,
+				})
+				// Track the generated image so subsequent tool calls (e.g., save_image) can reference it.
+				if idProvider, ok := result.Output.(tools.ImageIDProvider); ok && idProvider.GetImageID() != "" {
+					imageID := idProvider.GetImageID()
+					generatedImages[imageID] = tools.AttachedImage{
+						Name:      image.Name,
+						MediaType: image.MediaType,
+						DataURL:   image.DataURL,
+					}
+					fmt.Fprintln(os.Stderr, "[chat] tracked generated image", imageID, "from tool", call.Function.Name)
+				} else if outMap, jsonOk := result.Output.(map[string]any); jsonOk {
+					if imageID, ok := outMap["imageId"].(string); ok && imageID != "" {
+						generatedImages[imageID] = tools.AttachedImage{
+							Name:      image.Name,
+							MediaType: image.MediaType,
+							DataURL:   image.DataURL,
+						}
+						fmt.Fprintln(os.Stderr, "[chat] tracked generated image", imageID, "from tool", call.Function.Name, "(via map)")
+					} else {
+						fmt.Fprintln(os.Stderr, "[chat] tool", call.Function.Name, "returned image but no imageId in output map")
+					}
+				} else {
+					fmt.Fprintln(os.Stderr, "[chat] tool", call.Function.Name, "returned image but output is not ImageIDProvider or map[string]any")
+				}
+			} else {
+				fmt.Fprintln(os.Stderr, "[chat] tool", call.Function.Name, "LLMImageContent returned empty DataURL")
+			}
+		} else {
+			fmt.Fprintln(os.Stderr, "[chat] tool", call.Function.Name, "output does not implement LLMImageContentProvider")
+		}
+		if provider, ok := result.Output.(tools.LLMVideoContentProvider); ok {
+			if video, ok := provider.LLMVideoContent(); ok && video.DataURL != "" {
+				s.attachChatVideo(workspace.ID, streamID, messageID, ChatVideoAttachment{
+					ID:        s.nextChatID("vid"),
+					Source:    "tool",
+					Name:      call.Function.Name + "-generated",
+					MediaType: video.MediaType,
+					Bytes:     video.Bytes,
+					DataURL:   video.DataURL,
+				})
+			}
+		}
+	}
 
 	return chatToolCallExecution{
 		Messages:        toolResultMessages(call, result, data),
@@ -1042,6 +1134,30 @@ func (s *SystemService) mutateChatMessage(workspaceID string, messageID string, 
 	s.emitChatEvent(event)
 }
 
+func (s *SystemService) attachChatImage(workspaceID string, streamID string, messageID string, attachment ChatImageAttachment) {
+	s.mutateChatMessage(workspaceID, messageID, func(message *ChatMessage) {
+		message.Images = append(message.Images, attachment)
+	}, ChatStreamEvent{
+		WorkspaceID:     workspaceID,
+		StreamID:        streamID,
+		MessageID:       messageID,
+		Type:            "image_attached",
+		ImageAttachment: &attachment,
+	})
+}
+
+func (s *SystemService) attachChatVideo(workspaceID string, streamID string, messageID string, attachment ChatVideoAttachment) {
+	s.mutateChatMessage(workspaceID, messageID, func(message *ChatMessage) {
+		message.Videos = append(message.Videos, attachment)
+	}, ChatStreamEvent{
+		WorkspaceID:     workspaceID,
+		StreamID:        streamID,
+		MessageID:       messageID,
+		Type:            "video_attached",
+		VideoAttachment: &attachment,
+	})
+}
+
 func (s *SystemService) finishChatStream(workspaceID string, streamID string) {
 	s.chatMu.Lock()
 	if session := s.chatSessions[workspaceID]; session != nil && session.StreamID == streamID {
@@ -1093,7 +1209,11 @@ func (s *SystemService) replaceChatHistory(workspaceID string, history []llm.Mes
 	s.chatMu.Lock()
 	defer s.chatMu.Unlock()
 	if session := s.chatSessions[workspaceID]; session != nil {
-		session.History = cloneLLMMessages(history)
+		stripped := make([]llm.Message, 0, len(history))
+		for _, msg := range history {
+			stripped = append(stripped, stripMediaContentParts(msg))
+		}
+		session.History = cloneLLMMessages(stripped)
 	}
 }
 
@@ -1159,7 +1279,9 @@ func chatSystemMessage(workspace Workspace, mode AgentMode, skillCandidates []to
 		"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. " +
 		"When a search result gives a useful line number, read nearby code with filesystem_read_text aroundLine; copy the result's line value and avoid reading whole source files unless the entire file is genuinely needed. " +
 		"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. " +
-		"Keep plans concrete and concise."
+			"When images are attached to a chat message, use comfyui_generate with attachedImageIndex (0-based) to pass them directly as img2img input — no need to save to disk first. Index 0 refers to the first attached image. " +
+				"After generating an image with comfyui_generate, use the returned imageId with save_image to persist it to workspace disk if needed. " +
+				"Keep plans concrete and concise."
 	if isPlanMode {
 		instructions = "You are Echo, a personal AI assistant helping research and plan work inside the active workspace. " +
 			contextCheckpointSystemGuidance + " " +

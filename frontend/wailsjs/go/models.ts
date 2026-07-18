@@ -98,6 +98,10 @@ export namespace llm {
 	    enableKanbanCompleteNotifications?: boolean;
 	    limitKanbanConcurrency?: boolean;
 	    disableGitSplitDiffView?: boolean;
+	    comfyuiUrl: string;
+	    comfyuiDefaultCheckpoint: string;
+	    comfyuiTxt2imgWorkflow: string;
+	    comfyuiImg2imgWorkflow: string;
 	    theme?: Theme;
 	
 	    static createFrom(source: any = {}) {
@@ -129,6 +133,10 @@ export namespace llm {
 	        this.enableKanbanCompleteNotifications = source["enableKanbanCompleteNotifications"];
 	        this.limitKanbanConcurrency = source["limitKanbanConcurrency"];
 	        this.disableGitSplitDiffView = source["disableGitSplitDiffView"];
+	        this.comfyuiUrl = source["comfyuiUrl"];
+	        this.comfyuiDefaultCheckpoint = source["comfyuiDefaultCheckpoint"];
+	        this.comfyuiTxt2imgWorkflow = source["comfyuiTxt2imgWorkflow"];
+	        this.comfyuiImg2imgWorkflow = source["comfyuiImg2imgWorkflow"];
 	        this.theme = this.convertValues(source["theme"], Theme);
 	    }
 	
@@ -437,6 +445,22 @@ export namespace services {
 	        this.mediaType = source["mediaType"];
 	        this.dataUrl = source["dataUrl"];
 	        this.bytes = source["bytes"];
+	    }
+	}
+	export class ChatImageSaveRequest {
+	    name: string;
+	    mediaType: string;
+	    dataUrl: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatImageSaveRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.mediaType = source["mediaType"];
+	        this.dataUrl = source["dataUrl"];
 	    }
 	}
 	export class ChatToolActivity {

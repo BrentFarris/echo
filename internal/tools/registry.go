@@ -34,6 +34,7 @@ var readOnlyToolNames = map[string]bool{
 }
 
 var mutatingToolNames = map[string]bool{
+	"comfyui_generate":                 true,
 	"create_agent_mode":              true,
 	"filesystem_create_text":         true,
 	"filesystem_delete_file":         true,
@@ -45,6 +46,7 @@ var mutatingToolNames = map[string]bool{
 	"kanban_stop_card":               true,
 	"kanban_update_card_description": true,
 	"restart":                        true,
+	"save_image":                     true,
 	"shell_command":                  true,
 	"workspace_skill_record":         true,
 	"workspace_task_create":          true,
@@ -315,7 +317,7 @@ func extractWorkspacePaths(ctx ExecutionContext, arguments json.RawMessage) []st
 // isPathArgKey reports whether a JSON key name represents a filesystem path argument.
 func isPathArgKey(key string) bool {
 	switch key {
-	case "path", "workingDirectory", "repository", "base", "revision", "target":
+	case "path", "workingDirectory", "repository", "base", "revision", "target", "workflowPath", "imagePath":
 		return true
 	default:
 		return false

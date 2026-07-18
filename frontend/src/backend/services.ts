@@ -170,6 +170,10 @@ export function GetDashboardLayouts(...args: Parameters<typeof Wails.GetDashboar
   return call("GetDashboardLayouts", Wails.GetDashboardLayouts, args);
 }
 
+export function SaveChatImageToDisk(...args: Parameters<typeof Wails.SaveChatImageToDisk>): ReturnType<typeof Wails.SaveChatImageToDisk> {
+  return call("SaveChatImageToDisk", Wails.SaveChatImageToDisk, args);
+}
+
 export function SaveDashboardLayout(...args: Parameters<typeof Wails.SaveDashboardLayout>): ReturnType<typeof Wails.SaveDashboardLayout> {
   return call("SaveDashboardLayout", Wails.SaveDashboardLayout, args);
 }

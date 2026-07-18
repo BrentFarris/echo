@@ -927,6 +927,9 @@ export function renderChatMessageImages(message: services.ChatMessage): string {
               <figcaption>
                 <strong>${escapeHtml(image.name)}</strong>
                 <span>${escapeHtml(image.path || image.source)} - ${escapeHtml(formatBytes(image.bytes ?? 0))}</span>
+                <button class="icon-button chat-save-image" type="button" title="Save image" aria-label="Save ${escapeAttribute(image.name)}" data-action="save-chat-image" data-image-id="${escapeAttribute(image.id)}" data-image-name="${escapeAttribute(image.name)}" data-image-media-type="${escapeAttribute(image.mediaType)}" data-image-data-url="${escapeAttribute(image.dataUrl || '')}">
+                  ${icons.download}
+                </button>
               </figcaption>
             </figure>
           `,
@@ -2222,6 +2225,16 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
   if (event.type === "compaction_warning" && event.content) {
     pushToast(event.content, "info");
   }
+  if (event.type === "image_attached" && event.imageAttachment) {
+    const images = message.images ?? [];
+    images.push(services.ChatImageAttachment.createFrom(event.imageAttachment));
+    message.images = images;
+  }
+  if (event.type === "video_attached" && event.videoAttachment) {
+    const videos = message.videos ?? [];
+    videos.push(services.ChatVideoAttachment.createFrom(event.videoAttachment));
+    message.videos = videos;
+  }
 
   state.chatSessions.set(event.workspaceId, session);
   if (activeWorkspace()?.id === event.workspaceId) {
@@ -2321,6 +2334,38 @@ export function patchChatMessage(
     patchMarkdownElement(content, message.content ?? "");
   }
   const error = element.querySelector<HTMLElement>("[data-message-error]");
+  // Patch images container: replace entire element in-place to avoid nesting
+  const imagesContainer = element.querySelector<HTMLElement>(".chat-message-images");
+  if (imagesContainer) {
+    const template = document.createElement("template");
+    template.innerHTML = renderChatMessageImages(message);
+    const newContent = template.content;
+    if (!message.images?.length && newContent.childElementCount === 0) {
+      imagesContainer.remove();
+    } else {
+      element.replaceChild(newContent, imagesContainer);
+    }
+  } else if (message.images?.length) {
+    const template = document.createElement("template");
+    template.innerHTML = renderChatMessageImages(message);
+    element.insertBefore(template.content, content || error);
+  }
+  // Patch videos container: same pattern
+  const videosContainer = element.querySelector<HTMLElement>(".chat-message-videos");
+  if (videosContainer) {
+    const template = document.createElement("template");
+    template.innerHTML = renderChatMessageVideos(message);
+    const newContent = template.content;
+    if (!message.videos?.length && newContent.childElementCount === 0) {
+      videosContainer.remove();
+    } else {
+      element.replaceChild(newContent, videosContainer);
+    }
+  } else if (message.videos?.length) {
+    const template = document.createElement("template");
+    template.innerHTML = renderChatMessageVideos(message);
+    element.insertBefore(template.content, content || error);
+  }
   if (error) {
     error.textContent = message.error ?? "";
     error.hidden = !message.error;

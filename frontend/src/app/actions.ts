@@ -1,6 +1,7 @@
 
+import { isWailsRuntime } from "../backend/web";
 import { clearCodeTabSwitcher, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, startCodeCreate, startCodeRename } from "../codeView";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteSavedCommand, DeleteWorkspace, ExecutePlan, GetHeartbeatConfig, GetSavedCommands, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, RunShellCommand, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution, StopShellCommand, UpsertSavedCommand } from "../backend/services";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteSavedCommand, DeleteWorkspace, ExecutePlan, GetHeartbeatConfig, GetSavedCommands, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, RunShellCommand, SaveChatImageToDisk, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution, StopShellCommand, UpsertSavedCommand } from "../backend/services";
 import { appRoot } from "./dom";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
@@ -710,6 +711,46 @@ export async function handleAction(event: Event) {
       );
       patchChatPanel();
       patchChatControls();
+    }
+    if (action === "save-chat-image") {
+      const btn = target as HTMLElement;
+      const name = btn.dataset.imageName ?? "image.png";
+      const mediaType = btn.dataset.imageMediaType ?? "image/png";
+      const dataUrl = btn.dataset.imageUrl ?? "";
+
+      if (!dataUrl) return;
+
+      // Web mode: use browser-native download via <a> element trick
+      if (!isWailsRuntime()) {
+        const link = document.createElement("a");
+        link.href = dataUrl;
+        link.download = name;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        return;
+      }
+
+      // Desktop mode: use backend method for native save dialog
+      const workspace = activeWorkspace();
+      SaveChatImageToDisk(workspace?.id ?? "", {
+        name,
+        mediaType,
+        dataUrl,
+      }).then((savedPath) => {
+        if (savedPath) {
+          pushToast(`Saved to ${savedPath}`, "success");
+        }
+        // If savedPath is empty string, user canceled the dialog — no toast needed.
+      }).catch(() => {
+        // Fallback to browser download on error
+        const link = document.createElement("a");
+        link.href = dataUrl;
+        link.download = name;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      });
     }
     if (action === "toggle-heartbeat") {
       const workspaceID = target.dataset.workspaceId ?? "";
