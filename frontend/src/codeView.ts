@@ -1,6 +1,7 @@
 export { applyInlineCodePromptEvent, openInlineCodeChatAtCursor } from "./codeView/inlineChat";
 export { bindCodeQuickOpenEvents, bindCodeViewEvents, handleGlobalCodeTreeNavigation } from "./codeView/events";
-export { clearCodeTabSwitcher, closeActiveCodeTab, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, navigateCodeHistory, openDroppedCodeFile, openWorkspaceCodeFile, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk, saveActiveCodeFile, saveDirtyWorkspaceCodeTabs } from "./codeView/tabs";
+export { clearCodeTabSwitcher, closeActiveCodeTab, closeCodeTabs, finishCodeTabSwitcher, handleCodeTabSwitcherKeydown, navigateCodeHistory, openDroppedCodeFile, openWorkspaceCodeFile, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk, revealCodeTabInWorkspace, saveActiveCodeFile, saveDirtyWorkspaceCodeTabs } from "./codeView/tabs";
+export type { CodeTabCloseMode } from "./codeView/tabs";
 export { destroyCodeEditor, openMountedCodeEditorGoToLine, selectedMountedCodeEditorText } from "./codeView/editor";
 export { deleteSelectedCodePaths, ensureCodeViewRootLoaded, startCodeCreate, startCodeRename, startSelectedCodeRename } from "./codeView/explorer";
 export { renderCodeQuickOpen, renderCodeView, setCodeGitChangeProvider } from "./codeView/render";

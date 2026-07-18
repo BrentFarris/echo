@@ -553,6 +553,7 @@ var allowedRPCMethods = map[string]bool{
 	"OpenKanbanCardDetail":                    true,
 	"OpenWorkspaceExplorer":                   true,
 	"OpenWorkspacePathExplorer":               true,
+	"ResolveWorkspacePath":                    true,
 	"PruneChatMessage":                        true,
 	"PrepareRebuildAndRelaunch":               true,
 	"PrepareWorkspaceSymbolRename":            true,

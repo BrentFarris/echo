@@ -45,6 +45,34 @@ export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallback
     });
   });
 
+  root.querySelectorAll<HTMLElement>("[data-code-tab]").forEach((element) => {
+    element.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const state = ensureCodeState(workspaceID);
+      const path = element.dataset.codeTab ?? "";
+      const index = state.tabs.findIndex((tab) => tab.path === path);
+      const tab = state.tabs[index];
+      if (!tab || index < 0) {
+        return;
+      }
+      callbacks.showCodeTabContextMenu(
+        workspaceID,
+        {
+          path: tab.path,
+          label: element.querySelector<HTMLElement>(".code-tab-title")?.textContent ?? tab.path,
+          untitled: tab.untitled,
+          external: tab.external,
+          canCloseOthers: state.tabs.length > 1,
+          canCloseToRight: index < state.tabs.length - 1,
+          canCloseSaved: state.tabs.some((candidate) => !candidate.dirty),
+        },
+        event.clientX,
+        event.clientY,
+      );
+    });
+  });
+
   bindUntitledFileCreationEvents(root, workspaceID, callbacks);
 
   const search = root.querySelector<HTMLInputElement>("[data-code-search]");

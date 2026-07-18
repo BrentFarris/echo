@@ -21,7 +21,7 @@ import { pushToast } from "./toasts";
 import type { ChatStreamEvent, FileChangesEvent, HeartbeatEvent, KanbanEvent, LivenessEvent, TaskEvent, WatchdogEvent } from "./types";
 import { errorMessage } from "./utils";
 import { loadActiveChatSession } from "./chat";
-import type { CodeEntryKind } from "../codeView/types";
+import type { CodeEntryKind, CodeTabContextMenu } from "../codeView/types";
 import type { DebugEvent } from "../codeView/debugTypes";
 import { loadTokenBudget } from "./budget";
 import { loadLivenessConfig } from "./liveness";
@@ -87,6 +87,25 @@ function codeViewCallbacks() {
         codePath: path,
         codeKind: kind,
         displayPath: label || path,
+        x,
+        y,
+      });
+    },
+    showCodeTabContextMenu(
+      workspaceId: string,
+      menu: CodeTabContextMenu,
+      x: number,
+      y: number,
+    ) {
+      showContextMenu({
+        workspaceId,
+        displayPath: menu.label,
+        codeTabPath: menu.path,
+        codeTabUntitled: menu.untitled,
+        codeTabExternal: menu.external,
+        codeTabCanCloseOthers: menu.canCloseOthers,
+        codeTabCanCloseToRight: menu.canCloseToRight,
+        codeTabCanCloseSaved: menu.canCloseSaved,
         x,
         y,
       });

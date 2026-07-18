@@ -7,6 +7,9 @@ import type { ContextMenuState } from "./types";
 import { escapeAttribute, escapeHtml } from "./utils";
 
 export function renderContextMenu(menu: ContextMenuState): string {
+  if (menu.codeTabPath) {
+    return renderCodeTabContextMenu(menu);
+  }
   if (menu.codePath) {
     return renderCodeContextMenu(menu);
   }
@@ -26,6 +29,48 @@ export function renderContextMenu(menu: ContextMenuState): string {
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9l-6-6H5a2 2 0 0 0-2 2Z"/></svg>\
         <span class="workspace-context-menu-label">Show in Explorer</span>\
       </button>\
+    </div>\
+  `;
+}
+
+function renderCodeTabContextMenu(menu: ContextMenuState): string {
+  const tabPath = menu.codeTabPath ?? "";
+  const pathActionsDisabled = menu.codeTabUntitled === true;
+  const workspaceActionsDisabled = pathActionsDisabled || menu.codeTabExternal === true;
+  const item = (
+    action: string,
+    label: string,
+    icon: string,
+    disabled = false,
+  ) => `\
+    <button\
+      class="workspace-context-menu-item"\
+      type="button"\
+      role="menuitem"\
+      data-action="${escapeAttribute(action)}"\
+      data-workspace-id="${escapeAttribute(menu.workspaceId)}"\
+      data-code-tab-path="${escapeAttribute(tabPath)}"\
+      data-code-tab-external="${menu.codeTabExternal === true ? "true" : "false"}"\
+      ${disabled ? "disabled aria-disabled=\"true\"" : ""}\
+    >\
+      ${icon}\
+      <span class="workspace-context-menu-label">${escapeHtml(label)}</span>\
+    </button>\
+  `;
+
+  return `\
+    <div class="workspace-context-menu code-tab-context-menu" role="menu" aria-label="Tab actions for ${escapeAttribute(menu.displayPath)}" data-context-menu style="left:${menu.x}px;top:${menu.y}px">\
+      ${item("close-code-tab", "Close", icons.x)}\
+      ${item("close-other-code-tabs", "Close Others", icons.collapse, !menu.codeTabCanCloseOthers)}\
+      ${item("close-code-tabs-to-right", "Close to the Right", icons.arrowRight, !menu.codeTabCanCloseToRight)}\
+      ${item("close-saved-code-tabs", "Close Saved", icons.check, !menu.codeTabCanCloseSaved)}\
+      ${item("close-all-code-tabs", "Close All", icons.x)}\
+      <hr class="workspace-context-menu-divider" />\
+      ${item("copy-code-tab-path", "Copy Path", icons.copy, pathActionsDisabled)}\
+      ${item("copy-code-tab-relative-path", "Copy Relative Path", icons.copy, workspaceActionsDisabled)}\
+      <hr class="workspace-context-menu-divider" />\
+      ${item("reveal-code-tab-in-explorer", "Reveal in Explorer", icons.folder, pathActionsDisabled)}\
+      ${item("reveal-code-tab-in-workspace", "Reveal in Workspace", icons.file, workspaceActionsDisabled)}\
     </div>\
   `;
 }
