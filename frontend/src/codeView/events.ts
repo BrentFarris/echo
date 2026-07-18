@@ -180,13 +180,22 @@ function bindCodeTextSearchEvents(root: ParentNode, workspaceID: string, callbac
   });
 
   root.querySelectorAll<HTMLInputElement>("[data-code-text-search-field]").forEach((input) => {
+    const field = input.dataset.codeTextSearchField ?? "";
     input.addEventListener("input", () => {
       handleTextSearchFieldInput(workspaceID, input, callbacks);
     });
+    input.addEventListener("pointerdown", () => {
+      if (field === "query") {
+        ensureCodeState(workspaceID).textSearchSelectQuery = false;
+      }
+    });
     input.addEventListener("focus", () => {
-      const field = input.dataset.codeTextSearchField ?? "";
       if (field === "query" || field === "include" || field === "exclude") {
-        ensureCodeState(workspaceID).textSearchFocusedField = field;
+        const latest = ensureCodeState(workspaceID);
+        latest.textSearchFocusedField = field;
+        if (field !== "query") {
+          latest.textSearchSelectQuery = false;
+        }
       }
     });
     input.addEventListener("blur", () => {
@@ -196,6 +205,9 @@ function bindCodeTextSearchEvents(root: ParentNode, workspaceID: string, callbac
       }
     });
     input.addEventListener("keydown", (event) => {
+      if (field === "query") {
+        ensureCodeState(workspaceID).textSearchSelectQuery = false;
+      }
       if (event.key === "Enter") {
         event.preventDefault();
         event.stopPropagation();
@@ -229,7 +241,11 @@ function bindCodeTextSearchEvents(root: ParentNode, workspaceID: string, callbac
   if (state.textSearchFocusedField) {
     const input = root.querySelector<HTMLInputElement>(`[data-code-text-search-field="${state.textSearchFocusedField}"]`);
     input?.focus();
-    input?.setSelectionRange(input.value.length, input.value.length);
+    if (state.textSearchFocusedField === "query" && state.textSearchSelectQuery) {
+      input?.select();
+    } else {
+      input?.setSelectionRange(input.value.length, input.value.length);
+    }
   }
 }
 

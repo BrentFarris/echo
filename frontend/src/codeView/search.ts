@@ -16,6 +16,7 @@ export function openTextSearch(
   state.textSearchOpen = true;
   state.explorerDrawerOpen = true;
   state.textSearchFocusedField = "query";
+  state.textSearchSelectQuery = true;
   if (initialQuery) {
     state.textSearchQuery = initialQuery;
   }
@@ -30,6 +31,7 @@ export function closeTextSearch(workspaceID: string, callbacks: CodeViewCallback
   const state = ensureCodeState(workspaceID);
   state.textSearchOpen = false;
   state.textSearchFocusedField = "";
+  state.textSearchSelectQuery = false;
   state.textSearchRequestSeq++;
   state.textSearchStreamID = "";
   state.textSearchLoading = false;
@@ -48,6 +50,7 @@ export function handleTextSearchFieldInput(
   }
   state.textSearchFocusedField = field;
   if (field === "query") {
+    state.textSearchSelectQuery = false;
     state.textSearchQuery = input.value;
   } else if (field === "include") {
     state.textSearchInclude = input.value;
@@ -243,7 +246,7 @@ function focusTextSearchQuery() {
       '[data-code-text-search-field="query"]',
     );
     input?.focus({ preventScroll: true });
-    input?.setSelectionRange(input.value.length, input.value.length);
+    input?.select();
   });
 }
 
