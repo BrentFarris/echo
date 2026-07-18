@@ -200,9 +200,7 @@ function bindCodeTextSearchEvents(root: ParentNode, workspaceID: string, callbac
     });
     input.addEventListener("blur", () => {
       const latest = ensureCodeState(workspaceID);
-      if (!latest.preservingTextSearchFocus) {
-        latest.textSearchFocusedField = "";
-      }
+      latest.textSearchFocusedField = "";
     });
     input.addEventListener("keydown", (event) => {
       if (field === "query") {

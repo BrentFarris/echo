@@ -13,7 +13,7 @@ import { showContextMenu } from "./contextMenu";
 import { handleGlobalKeydown, handleGlobalKeyup, handleGlobalPointerDown, handleGlobalWindowBlur } from "./events";
 import { applyKanbanEvent, applyHeartbeatEvent, applyLivenessEvent, applyWatchdogEvent, loadActiveKanbanBoard, markKanbanRunStarted } from "./kanban";
 import { gitChangedLineNumbersForFile, gitChangeStateForPath } from "./git";
-import { render } from "./render";
+import { render, renderCodeViewUI } from "./render";
 import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state, loadDashboardLayoutsFromBackend } from "./state";
 import { applyTheme } from "./theme";
 import { applyTaskEvent, loadActiveTaskBoard } from "./tasks";
@@ -47,13 +47,13 @@ function scheduleWebRealtimeResync() {
 
 function codeViewCallbacks() {
   return {
-    render,
+    render: renderCodeViewUI,
     activateCodeView(workspaceID: string) {
       state.appMode = "code";
       state.mobileNavView = "code";
       state.settingsOpen = false;
       state.openGitChangeWorkspaces.delete(workspaceID);
-      void ensureCodeViewRootLoaded(workspaceID).finally(render);
+      void ensureCodeViewRootLoaded(workspaceID).finally(renderCodeViewUI);
     },
     pushToast,
     errorMessage,

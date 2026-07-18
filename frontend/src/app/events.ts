@@ -14,38 +14,40 @@ import { activeWorkspace, state } from "./state";
 import { applyTheme } from "./theme";
 import { bindWorkspaceDragEvents } from "./workspace";
 
-export function bindEvents() {
-  bindActionEvents(appRoot);
-  bindSettingsEvents(appRoot);
-  bindChatEvents(appRoot);
-  bindCardDescriptionEvents(appRoot);
-  bindCardDirectionEvents(appRoot);
-  bindCardMessageEvents(appRoot);
-  bindKanbanCardCreationEvents(appRoot);
-  bindGitEvents(appRoot);
-  bindCodeViewEvents(appRoot, getAppCallbacks().codeViewCallbacks());
+let persistentDocumentEventsBound = false;
+
+export function bindEvents(root: ParentNode = appRoot) {
+  bindActionEvents(root);
+  bindSettingsEvents(root);
+  bindChatEvents(root);
+  bindCardDescriptionEvents(root);
+  bindCardDirectionEvents(root);
+  bindCardMessageEvents(root);
+  bindKanbanCardCreationEvents(root);
+  bindGitEvents(root);
+  bindCodeViewEvents(root, getAppCallbacks().codeViewCallbacks());
   const workspace = activeWorkspace();
   if (workspace && state.appMode !== "code") {
-    bindCodeQuickOpenEvents(appRoot, workspace.id, getAppCallbacks().codeViewCallbacks());
+    bindCodeQuickOpenEvents(root, workspace.id, getAppCallbacks().codeViewCallbacks());
   }
-  bindWorkspaceDragEvents(appRoot);
-  bindTaskEvents(appRoot);
+  bindWorkspaceDragEvents(root);
+  bindTaskEvents(root);
 
   // Mobile nav keyboard navigation
-  const navEl = appRoot.querySelector(".mobile-bottom-nav");
+  const navEl = root.querySelector(".mobile-bottom-nav");
   if (navEl) {
     navEl.addEventListener("keydown", handleMobileNavKeydown as EventListener);
   }
 
   // Close workspace dropdown on Escape
   if (state.workspaceDropdownOpen) {
-    const pillBtn = appRoot.querySelector<HTMLButtonElement>("button#mobile-nav-pill");
+    const pillBtn = root.querySelector<HTMLButtonElement>("button#mobile-nav-pill");
     if (pillBtn) {
       pillBtn.focus();
     }
   }
 
-  appRoot.querySelectorAll<HTMLElement>('[data-action="activate-workspace"]').forEach((button) => {
+  root.querySelectorAll<HTMLElement>('[data-action="activate-workspace"]').forEach((button) => {
     button.addEventListener("contextmenu", (event: MouseEvent) => {
       event.preventDefault();
       const workspaceId = button.dataset.workspaceId ?? "";
@@ -62,6 +64,14 @@ export function bindEvents() {
     });
   });
 
+  bindPersistentDocumentEvents();
+}
+
+function bindPersistentDocumentEvents() {
+  if (persistentDocumentEventsBound) {
+    return;
+  }
+  persistentDocumentEventsBound = true;
   document.addEventListener(
     "pointerdown",
     (event: PointerEvent) => {

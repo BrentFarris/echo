@@ -107,7 +107,7 @@ export async function handleAction(event: Event) {
       const loading = ensureCodeViewRootLoaded(workspace.id);
       getAppCallbacks().render();
       await loading;
-      getAppCallbacks().render();
+      getAppCallbacks().codeViewCallbacks().render();
       return;
     }
     if (action === "close-code-view") {

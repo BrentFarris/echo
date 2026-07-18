@@ -69,7 +69,6 @@ export function ensureCodeState(workspaceID: string): CodeWorkspaceState {
       textSearchTimerID: null,
       textSearchFocusedField: "",
       textSearchSelectQuery: false,
-      preservingTextSearchFocus: false,
       inlineChat: null,
       referencesPanel: null,
       quickOpen: {

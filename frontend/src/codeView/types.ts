@@ -232,7 +232,6 @@ export type CodeWorkspaceState = {
   textSearchTimerID: number | null;
   textSearchFocusedField: "" | "query" | "include" | "exclude";
   textSearchSelectQuery: boolean;
-  preservingTextSearchFocus: boolean;
   inlineChat: InlineCodeChatState | null;
   referencesPanel: CodeReferencePanelState | null;
   quickOpen: CodeQuickOpenState;
