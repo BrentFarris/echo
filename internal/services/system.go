@@ -191,7 +191,8 @@ type SystemService struct {
 	gitRepositoryViews      map[string]WorkspaceGitRepositoryView
 	lspMu                   sync.Mutex
 	lspClients              map[string]*lspClient
-	lspWarmups              map[string]struct{}
+	lspClientStarts         map[string]*lspClientStart
+	lspWarmups              map[string]*lspWarmupRun
 	workspaceTextSearchMu   sync.Mutex
 	workspaceTextSearchSeq  uint64
 	workspaceTextSearches   map[string]workspaceTextSearchRun
@@ -237,7 +238,8 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 		workspaceToolLocks:    make(map[string]*sync.Mutex),
 		gitRepositoryViews:    make(map[string]WorkspaceGitRepositoryView),
 		lspClients:            make(map[string]*lspClient),
-		lspWarmups:            make(map[string]struct{}),
+		lspClientStarts:       make(map[string]*lspClientStart),
+		lspWarmups:            make(map[string]*lspWarmupRun),
 		workspaceTextSearches: make(map[string]workspaceTextSearchRun),
 		eventSubscribers:      make(map[uint64]chan RuntimeEvent),
 		tokenBudget:           newTokenBudgetService(),
