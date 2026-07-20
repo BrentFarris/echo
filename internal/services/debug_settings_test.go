@@ -50,7 +50,7 @@ func TestWorkspaceDebugSettingsRoundTripPreservesWorkspaceState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load debug settings: %v", err)
 	}
-	if loaded.Revision == "" || loaded.StoragePath != statePath {
+	if loaded.Revision == "" || !samePath(loaded.StoragePath, statePath) {
 		t.Fatalf("unexpected initial settings view: %#v", loaded)
 	}
 	if !loaded.Implicit || loaded.SelectedConfiguration != implicitGoDebugConfiguration || len(loaded.Configurations) != 1 {

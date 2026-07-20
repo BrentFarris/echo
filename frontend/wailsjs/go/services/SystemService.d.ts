@@ -222,8 +222,9 @@ export function RotateWebAccessToken():Promise<services.AppState>;
 
 export function RunShellCommand(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number):Promise<string>;
 
-export function SaveChatImageToDisk(arg1:string,arg2:services.ChatImageSaveRequest):Promise<string>;
 export function RunWorkspaceGitAction(arg1:string,arg2:string,arg3:services.WorkspaceGitActionRequest):Promise<services.WorkspaceGitRepositoryView>;
+
+export function SaveChatImageToDisk(arg1:string,arg2:services.ChatImageSaveRequest):Promise<string>;
 
 export function SaveDashboardLayout(arg1:string,arg2:Array<services.DashboardWidgetJSON>):Promise<void>;
 
