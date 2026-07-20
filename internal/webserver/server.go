@@ -541,6 +541,7 @@ var allowedRPCMethods = map[string]bool{
 	"GetTokenBudget":                          true,
 	"GetWatchdogConfig":                       true,
 	"ListAgentModes":                          true,
+	"ListWorkspaceDirectory":                  true,
 	"LoadChatSession":                         true,
 	"LoadDebugScopes":                         true,
 	"LoadDebugState":                          true,
