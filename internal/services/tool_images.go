@@ -89,3 +89,20 @@ func toolResultVideoMessage(toolName string, result tools.ExecutionResult) (llm.
 		ContentParts: []llm.MessageContentPart{llm.TextContentPart(text), videoPart},
 	}, true
 }
+
+// stripMediaContentParts removes image and video ContentParts from a message,
+// keeping only the plain text Content. Use this before storing tool-result
+// messages in persistent chat history so that base64 data URLs do not
+// accumulate across turns.
+func stripMediaContentParts(message llm.Message) llm.Message {
+	if len(message.ContentParts) == 0 {
+		return message
+	}
+	// Keep the text content, discard image/video parts
+	return llm.Message{
+		Role:       message.Role,
+		Content:    message.Content,
+		ToolCallID: message.ToolCallID,
+		Name:       message.Name,
+	}
+}

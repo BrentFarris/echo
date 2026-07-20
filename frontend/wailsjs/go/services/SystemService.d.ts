@@ -78,6 +78,8 @@ export function DeleteAgentMode(arg1:string):Promise<Array<services.AgentMode>>;
 
 export function DeleteKanbanCard(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
+export function DeleteSavedCommand(arg1:string,arg2:string):Promise<void>;
+
 export function DeleteWorkspace(arg1:string):Promise<services.AppState>;
 
 export function DeleteWorkspacePaths(arg1:string,arg2:Array<string>):Promise<Array<services.WorkspaceDeletedPath>>;
@@ -108,9 +110,13 @@ export function GetHeartbeatConfig(arg1:string):Promise<services.HeartbeatConfig
 
 export function GetLivenessConfig(arg1:string):Promise<services.LivenessConfig>;
 
+export function GetSavedCommands(arg1:string):Promise<Array<services.SavedCommand>>;
+
 export function GetTokenBudget(arg1:string):Promise<services.TokenBudget>;
 
 export function GetWatchdogConfig(arg1:string):Promise<services.WatchdogConfig>;
+
+export function GetWorkspaceActivitySummaries():Promise<Array<services.WorkspaceActivitySummary>>;
 
 export function ListAgentModes(arg1:string):Promise<Array<services.AgentMode>>;
 
@@ -218,7 +224,11 @@ export function RetryChatMessage(arg1:string,arg2:string,arg3:string):Promise<se
 
 export function RotateWebAccessToken():Promise<services.AppState>;
 
+export function RunShellCommand(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number):Promise<string>;
+
 export function RunWorkspaceGitAction(arg1:string,arg2:string,arg3:services.WorkspaceGitActionRequest):Promise<services.WorkspaceGitRepositoryView>;
+
+export function SaveChatImageToDisk(arg1:string,arg2:services.ChatImageSaveRequest):Promise<string>;
 
 export function SaveDashboardLayout(arg1:string,arg2:Array<services.DashboardWidgetJSON>):Promise<void>;
 
@@ -302,6 +312,8 @@ export function StopKanbanCard(arg1:string,arg2:string):Promise<services.KanbanB
 
 export function StopKanbanExecution(arg1:string):Promise<services.KanbanBoard>;
 
+export function StopShellCommand(arg1:string,arg2:string):Promise<void>;
+
 export function StopWatchdog(arg1:string):Promise<void>;
 
 export function SubmitInlineCodePrompt(arg1:string,arg2:services.InlineCodePromptRequest):Promise<services.InlineCodePromptResponse>;
@@ -323,6 +335,8 @@ export function UpdateKanbanCardDescription(arg1:string,arg2:string,arg3:string)
 export function UpdateKanbanCardDirection(arg1:string,arg2:string,arg3:string):Promise<services.KanbanBoard>;
 
 export function UpdateWorkspaceTask(arg1:string,arg2:string,arg3:services.TaskInput,arg4:string):Promise<services.TaskBoard>;
+
+export function UpsertSavedCommand(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<void>;
 
 export function WorkspaceIconHandler():Promise<http.Handler>;
 

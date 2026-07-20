@@ -103,6 +103,10 @@ export namespace llm {
 	    limitKanbanConcurrency?: boolean;
 	    researchAgentConcurrency: number;
 	    disableGitSplitDiffView?: boolean;
+	    comfyuiUrl: string;
+	    comfyuiDefaultCheckpoint: string;
+	    comfyuiTxt2imgWorkflow: string;
+	    comfyuiImg2imgWorkflow: string;
 	    theme?: Theme;
 	    headers?: Record<string, string>;
 	
@@ -136,6 +140,10 @@ export namespace llm {
 	        this.limitKanbanConcurrency = source["limitKanbanConcurrency"];
 	        this.researchAgentConcurrency = source["researchAgentConcurrency"];
 	        this.disableGitSplitDiffView = source["disableGitSplitDiffView"];
+	        this.comfyuiUrl = source["comfyuiUrl"];
+	        this.comfyuiDefaultCheckpoint = source["comfyuiDefaultCheckpoint"];
+	        this.comfyuiTxt2imgWorkflow = source["comfyuiTxt2imgWorkflow"];
+	        this.comfyuiImg2imgWorkflow = source["comfyuiImg2imgWorkflow"];
 	        this.theme = this.convertValues(source["theme"], Theme);
 	        this.headers = source["headers"];
 	    }
@@ -372,6 +380,7 @@ export namespace services {
 	    livenessConfigs?: Record<string, LivenessConfig>;
 	    watchdogConfigs?: Record<string, WatchdogConfig>;
 	    dashboardLayouts?: Record<string, Array<DashboardWidgetJSON>>;
+	    savedCommands?: Record<string, Array<SavedCommand>>;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppState(source);
@@ -387,6 +396,7 @@ export namespace services {
 	        this.livenessConfigs = this.convertValues(source["livenessConfigs"], LivenessConfig, true);
 	        this.watchdogConfigs = this.convertValues(source["watchdogConfigs"], WatchdogConfig, true);
 	        this.dashboardLayouts = this.convertValues(source["dashboardLayouts"], Array<DashboardWidgetJSON>, true);
+	        this.savedCommands = this.convertValues(source["savedCommands"], Array<SavedCommand>, true);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -451,6 +461,22 @@ export namespace services {
 	        this.bytes = source["bytes"];
 	    }
 	}
+	export class ChatImageSaveRequest {
+	    name: string;
+	    mediaType: string;
+	    dataUrl: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatImageSaveRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.mediaType = source["mediaType"];
+	        this.dataUrl = source["dataUrl"];
+	    }
+	}
 	export class ChatResearchAgent {
 	    id: string;
 	    name: string;
@@ -480,6 +506,7 @@ export namespace services {
 	    status: string;
 	    result?: string;
 	    error?: string;
+	    consoleOutput?: string;
 	    agentId?: string;
 	    agentName?: string;
 	
@@ -495,6 +522,7 @@ export namespace services {
 	        this.status = source["status"];
 	        this.result = source["result"];
 	        this.error = source["error"];
+	        this.consoleOutput = source["consoleOutput"];
 	        this.agentId = source["agentId"];
 	        this.agentName = source["agentName"];
 	    }
@@ -1513,6 +1541,24 @@ export namespace services {
 	        this.activeKanbanWorkspaceIds = source["activeKanbanWorkspaceIds"];
 	    }
 	}
+	export class SavedCommand {
+	    id: string;
+	    name: string;
+	    command: string;
+	    order: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SavedCommand(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.command = source["command"];
+	        this.order = source["order"];
+	    }
+	}
 	export class WorkspaceTask {
 	    id: string;
 	    title: string;
@@ -1694,6 +1740,26 @@ export namespace services {
 	    }
 	}
 	
+	export class WorkspaceActivitySummary {
+	    workspaceId: string;
+	    isChatBusy: boolean;
+	    isKanbanRunning: boolean;
+	    activeAgentCount: number;
+	    lastMessageSnippet?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceActivitySummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.isChatBusy = source["isChatBusy"];
+	        this.isKanbanRunning = source["isKanbanRunning"];
+	        this.activeAgentCount = source["activeAgentCount"];
+	        this.lastMessageSnippet = source["lastMessageSnippet"];
+	    }
+	}
 	export class WorkspaceFileChange {
 	    id: string;
 	    workspaceId: string;

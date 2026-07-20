@@ -9,7 +9,7 @@ import { renderSpinnerLabel } from "../components";
 import { appRoot, isElementScrolledNearBottom } from "../dom";
 import { icons } from "../icons";
 import { playNotificationSound, maybeSendChatCompletionNotification } from "../notifications";
-import { activeWorkspace, agentModesForWorkspace, chatImageDraftsFor, chatImageDraftTotalBytes, chatVideoDraftsFor, chatVideoDraftTotalBytes, chatPlanModeFor, chatAgentModeIDFor, chatAgentModeNameFor, setChatAgentMode, chatComposerModeFor, setChatComposerMode, chatSessionFor, getActiveChatModelLabel, cloneSettings, state } from "../state";
+import { activeWorkspace, agentModesForWorkspace, chatImageDraftsFor, chatImageDraftTotalBytes, chatVideoDraftsFor, chatVideoDraftTotalBytes, chatPlanModeFor, chatAgentModeIDFor, chatAgentModeNameFor, setChatAgentMode, chatComposerModeFor, setChatComposerMode, chatSessionFor, getActiveChatModelLabel, cloneSettings, state, taskBoardFor } from "../state";
 import { settingsWithCompactTheme } from "../theme";
 import { pushToast } from "../toasts";
 import type { ChatImageDraft, ChatMentionState, ChatStreamEvent, ChatVideoDraft, ScrollSnapshot } from "../types";
@@ -184,6 +184,7 @@ export function chatFileLinkTargets(root: ParentNode): HTMLElement[] {
     ".chat-message.from-assistant [data-message-reasoning]",
     ".chat-message.from-assistant .tool-call code",
     ".chat-message.from-assistant .tool-call pre",
+    ".chat-message.from-assistant .tool-call .console-output",
   ].join(", ");
   const targets = Array.from(root.querySelectorAll<HTMLElement>(selector));
   if (root instanceof HTMLElement && root.matches(selector)) {
@@ -296,6 +297,48 @@ export async function handleChatFileLinkClick(event: MouseEvent) {
   getAppCallbacks().render();
   await loading;
   await openWorkspaceCodeFile(workspace.id, path, getAppCallbacks().codeViewCallbacks());
+}
+
+// ---------------------------------------------------------------------------
+// Task reference resolution and click handling
+// ---------------------------------------------------------------------------
+
+export function resolveChatTaskRefs(root: ParentNode = appRoot) {
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+
+  const board = taskBoardFor(workspace.id);
+  const tasks = board.tasks ?? [];
+
+  root.querySelectorAll<HTMLElement>("[data-task-ref]").forEach((el) => {
+    if (el.dataset.taskRefBound) return;
+    el.dataset.taskRefBound = "true";
+
+    const taskID = el.dataset.taskId ?? "";
+    const task = tasks.find((t) => t.id === taskID);
+    if (task && task.title) {
+      el.textContent = `@${escapeHtml(task.title)}`;
+      el.title = `${task.title} (${taskID})`;
+    } else {
+      el.title = `Task ${taskID}`;
+    }
+
+    el.addEventListener("click", handleChatTaskRefClick);
+  });
+}
+
+export function handleChatTaskRefClick(event: MouseEvent) {
+  event.preventDefault();
+  const el = event.currentTarget as HTMLElement;
+  const taskID = el.dataset.taskId ?? "";
+  if (!taskID) return;
+
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+
+  state.selectedTaskCards.set(workspace.id, taskID);
+  state.appMode = "tasks";
+  getAppCallbacks().render();
 }
 
 export type ChatMentionMatch = {
@@ -878,6 +921,9 @@ export function renderChatMessageImages(message: services.ChatMessage): string {
               <figcaption>
                 <strong>${escapeHtml(image.name)}</strong>
                 <span>${escapeHtml(image.path || image.source)} - ${escapeHtml(formatBytes(image.bytes ?? 0))}</span>
+                <button class="icon-button chat-save-image" type="button" title="Save image" aria-label="Save ${escapeAttribute(image.name)}" data-action="save-chat-image" data-image-id="${escapeAttribute(image.id)}" data-image-name="${escapeAttribute(image.name)}" data-image-media-type="${escapeAttribute(image.mediaType)}" data-image-data-url="${escapeAttribute(image.dataUrl || '')}">
+                  ${icons.download}
+                </button>
               </figcaption>
             </figure>
           `,
@@ -1022,6 +1068,9 @@ export function renderToolCall(toolCall: services.ChatToolActivity): string {
         <span>${escapeHtml(toolCall.status)}</span>
       </div>
       ${toolCall.arguments ? `<code>${escapeHtml(toolCall.arguments)}</code>` : ""}
+      ${toolCall.consoleOutput 
+        ? `<pre class="console-output" data-console-output>${escapeHtml(toolCall.consoleOutput)}</pre>` 
+        : ""}
       ${toolCall.error ? `<p>${escapeHtml(toolCall.error)}</p>` : ""}
       ${toolCall.result ? `<pre>${escapeHtml(toolCall.result)}</pre>` : ""}
     </div>
@@ -1593,6 +1642,7 @@ export function handleChatDebugSectionToggle(event: Event) {
   }
   patchDebugSections(stack, message);
   void linkifyAssistantFilePaths(section);
+  resolveChatTaskRefs(section);
 }
 
 
@@ -2343,6 +2393,16 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
   if (stateful && eventRevision > 0) {
     session.revision = eventRevision;
   }
+  if (event.type === "image_attached" && event.imageAttachment) {
+    const images = message.images ?? [];
+    images.push(services.ChatImageAttachment.createFrom(event.imageAttachment));
+    message.images = images;
+  }
+  if (event.type === "video_attached" && event.videoAttachment) {
+    const videos = message.videos ?? [];
+    videos.push(services.ChatVideoAttachment.createFrom(event.videoAttachment));
+    message.videos = videos;
+  }
 
   state.chatSessions.set(event.workspaceId, session);
   if (activeWorkspace()?.id === event.workspaceId) {
@@ -2442,6 +2502,38 @@ export function patchChatMessage(
     patchMarkdownElement(content, message.content ?? "");
   }
   const error = element.querySelector<HTMLElement>("[data-message-error]");
+  // Patch images container: replace entire element in-place to avoid nesting
+  const imagesContainer = element.querySelector<HTMLElement>(".chat-message-images");
+  if (imagesContainer) {
+    const template = document.createElement("template");
+    template.innerHTML = renderChatMessageImages(message);
+    const newContent = template.content;
+    if (!message.images?.length && newContent.childElementCount === 0) {
+      imagesContainer.remove();
+    } else {
+      element.replaceChild(newContent, imagesContainer);
+    }
+  } else if (message.images?.length) {
+    const template = document.createElement("template");
+    template.innerHTML = renderChatMessageImages(message);
+    element.insertBefore(template.content, content || error);
+  }
+  // Patch videos container: same pattern
+  const videosContainer = element.querySelector<HTMLElement>(".chat-message-videos");
+  if (videosContainer) {
+    const template = document.createElement("template");
+    template.innerHTML = renderChatMessageVideos(message);
+    const newContent = template.content;
+    if (!message.videos?.length && newContent.childElementCount === 0) {
+      videosContainer.remove();
+    } else {
+      element.replaceChild(newContent, videosContainer);
+    }
+  } else if (message.videos?.length) {
+    const template = document.createElement("template");
+    template.innerHTML = renderChatMessageVideos(message);
+    element.insertBefore(template.content, content || error);
+  }
   if (error) {
     error.textContent = message.error ?? "";
     error.hidden = !message.error;
@@ -2455,6 +2547,7 @@ export function patchChatMessage(
   if (message.role === "assistant" && linkify) {
     void linkifyAssistantFilePaths(element);
   }
+  resolveChatTaskRefs(element);
 }
 
 export function patchMessageStatus(element: HTMLElement, message: services.ChatMessage) {
@@ -2602,6 +2695,7 @@ export function patchChatPanel() {
   getAppCallbacks().bindActionEvents(replacement);
   getAppCallbacks().bindChatEvents(replacement);
   void linkifyAssistantFilePaths(replacement);
+  resolveChatTaskRefs(replacement);
 }
 
 export function patchChatControls() {

@@ -71,6 +71,42 @@ func TestIsContextLengthExceeded(t *testing.T) {
 	}
 }
 
+func TestResponseError413ReturnsUserFriendlyMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		_, _ = w.Write([]byte("nginx 413 error page html content"))
+	}))
+	defer server.Close()
+
+	settings := DefaultSettings()
+	settings.Endpoint = server.URL + "/v1"
+	client, err := NewClient(settings)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	request, err := NewChatRequest(settings, []Message{{Role: RoleUser, Content: "hello"}})
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	_, err = client.Complete(context.Background(), request)
+	if err == nil {
+		t.Fatal("expected error for 413 response")
+	}
+
+	msg := err.Error()
+	if !strings.Contains(msg, "413") {
+		t.Fatalf("expected error to mention 413, got: %s", msg)
+	}
+	if !strings.Contains(msg, "Request Entity Too Large") {
+		t.Fatalf("expected user-friendly message, got: %s", msg)
+	}
+	if strings.Contains(msg, "nginx") {
+		t.Fatalf("expected error to hide raw response body, got: %s", msg)
+	}
+}
+
 func TestNewChatRequestAddsThinkingCorrectionToLatestUserMessage(t *testing.T) {
 	settings := DefaultSettings()
 	settings.Endpoint = "https://example.test/v1"

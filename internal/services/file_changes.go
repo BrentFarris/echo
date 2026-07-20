@@ -129,7 +129,7 @@ func (s *SystemService) ClearWorkspaceChangeReview(workspaceID string) (Workspac
 	return review, nil
 }
 
-func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, call llm.ToolCall, source WorkspaceChangeSource, emit tools.EventEmitter, toolScopes *tools.ToolScopeChecker) toolExecution {
+func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, call llm.ToolCall, source WorkspaceChangeSource, emit tools.EventEmitter, toolScopes *tools.ToolScopeChecker, generatedImages map[string]tools.AttachedImage) toolExecution {
 	source.ToolCallID = call.ID
 	source.ToolName = call.Function.Name
 
@@ -148,6 +148,10 @@ func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Wo
 		Context:          ctx,
 		WorkspaceRoots:   workspaceToolRoots(workspace),
 		SearxngURL:       settings.SearxngURL,
+		ComfyuiURL:               settings.ComfyuiURL,
+		ComfyuiDefaultCheckpoint: settings.ComfyuiDefaultCheckpoint,
+		ComfyuiTxt2imgWorkflow:   settings.ComfyuiTxt2imgWorkflow,
+		ComfyuiImg2imgWorkflow:   settings.ComfyuiImg2imgWorkflow,
 		CodeNavigator:    s.codeNavigator(workspace),
 		WorkspaceContext: s.workspaceContextProvider(workspace),
 		WorkspaceSkills:  s.workspaceSkillsProvider(workspace),
@@ -159,6 +163,8 @@ func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Wo
 		KanbanExecutor:   s,
 		KanbanManager:    &kanbanManagerAdapter{service: s},
 		ResearchAgents:   source.researchAgents,
+		AttachedImages:   s.latestUserMessageImages(workspace.ID),
+		GeneratedImages:  generatedImages,
 	}, call.Function.Name, json.RawMessage(call.Function.Arguments))
 
 	if len(captured) > 0 {

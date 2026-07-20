@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -401,6 +402,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 	toolSchema := tools.LLMSchema()
 	changedPaths := map[string]bool{}
 	recoverableToolCalls := make(map[string]bool)
+	generatedImages := make(map[string]tools.AttachedImage)
 	forcedCompactions := 0
 	verificationAttempts := 0
 	noToolContinuationAttempts := 0
@@ -629,9 +631,12 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 				s.blockKanbanCard(workspace.ID, cardID, agentID, "Canceled", agentCancellationText)
 				return
 			}
-			execution := s.executeKanbanToolCall(ctx, workspace, settings, cardID, agentID, call)
+			execution := s.executeKanbanToolCall(ctx, workspace, settings, cardID, agentID, call, generatedImages)
 			recoverableToolCalls[call.ID] = true
-			messages = append(messages, execution.Messages...)
+			for _, resultMessage := range execution.Messages {
+				stripped := stripMediaContentParts(resultMessage)
+				messages = append(messages, stripped)
+			}
 			for _, path := range execution.ChangedPaths {
 				changedPaths[path] = true
 			}
@@ -789,7 +794,7 @@ func (s *SystemService) streamKanbanAgentResponseAttempt(ctx context.Context, cl
 	return kanbanStreamAttemptResult{content: content.String(), reasoning: reasoning.String(), toolCalls: orderedToolCalls(toolCalls), finished: finished, finishReason: finishReason, usage: stream.Usage}
 }
 
-func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, cardID string, agentID uint64, call llm.ToolCall) kanbanToolCallExecution {
+func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, cardID string, agentID uint64, call llm.ToolCall, generatedImages map[string]tools.AttachedImage) kanbanToolCallExecution {
 	if call.ID == "" {
 		call.ID = s.nextChatID("call")
 	}
@@ -815,7 +820,7 @@ func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Wor
 				Content: event.Message,
 			})
 		}
-	}, nil)
+	}, nil, generatedImages)
 	result := execution.Result
 
 	data, err := json.Marshal(result)
@@ -833,6 +838,39 @@ func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Wor
 		Content: string(data),
 		Status:  status,
 	})
+
+	// Track images produced by tools so subsequent tool calls can reference them.
+	if result.Success && result.Output != nil {
+		if provider, ok := result.Output.(tools.LLMImageContentProvider); ok {
+			if image, ok := provider.LLMImageContent(); ok && image.DataURL != "" {
+				if idProvider, ok := result.Output.(tools.ImageIDProvider); ok && idProvider.GetImageID() != "" {
+					generatedImages[idProvider.GetImageID()] = tools.AttachedImage{
+						Name:      image.Name,
+						MediaType: image.MediaType,
+						DataURL:   image.DataURL,
+					}
+					fmt.Fprintln(os.Stderr, "[kanban] tracked generated image", idProvider.GetImageID(), "from tool", call.Function.Name)
+				} else if outMap, jsonOk := result.Output.(map[string]any); jsonOk {
+					if imageID, ok := outMap["imageId"].(string); ok && imageID != "" {
+						generatedImages[imageID] = tools.AttachedImage{
+							Name:      image.Name,
+							MediaType: image.MediaType,
+							DataURL:   image.DataURL,
+						}
+						fmt.Fprintln(os.Stderr, "[kanban] tracked generated image", imageID, "from tool", call.Function.Name, "(via map)")
+					} else {
+						fmt.Fprintln(os.Stderr, "[kanban] tool", call.Function.Name, "returned image but no imageId in output map")
+					}
+				} else {
+					fmt.Fprintln(os.Stderr, "[kanban] tool", call.Function.Name, "returned image but output is not ImageIDProvider or map[string]any")
+				}
+			} else {
+				fmt.Fprintln(os.Stderr, "[kanban] tool", call.Function.Name, "LLMImageContent returned empty DataURL")
+			}
+		} else {
+			fmt.Fprintln(os.Stderr, "[kanban] tool", call.Function.Name, "output does not implement LLMImageContentProvider")
+		}
+	}
 
 	return kanbanToolCallExecution{
 		Messages:        toolResultMessages(call, result, data),

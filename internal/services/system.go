@@ -17,7 +17,9 @@ import (
 	"strings"
 	"sync"
 
+
 	"github.com/brent/echo/internal/llm"
+	"github.com/google/uuid"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -149,6 +151,21 @@ type DashboardWidgetJSON struct {
 	Order int    `json:"order"`
 }
 
+type WorkspaceActivitySummary struct {
+	WorkspaceID        string `json:"workspaceId"`
+	IsChatBusy         bool   `json:"isChatBusy"`
+	IsKanbanRunning    bool   `json:"isKanbanRunning"`
+	ActiveAgentCount   int    `json:"activeAgentCount"`
+	LastMessageSnippet string `json:"lastMessageSnippet,omitempty"`
+}
+
+type SavedCommand struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Command string `json:"command"`
+	Order   int    `json:"order"`
+}
+
 type AppState struct {
 	Settings          llm.Settings                     `json:"settings"`
 	WebAccess         WebAccessSettings                `json:"webAccess"`
@@ -158,6 +175,7 @@ type AppState struct {
 	LivenessConfigs   map[string]LivenessConfig        `json:"livenessConfigs,omitempty"`
 	WatchdogConfigs   map[string]WatchdogConfig        `json:"watchdogConfigs,omitempty"`
 	DashboardLayouts  map[string][]DashboardWidgetJSON `json:"dashboardLayouts,omitempty"`
+	SavedCommands     map[string][]SavedCommand        `json:"savedCommands,omitempty"`
 	KanbanCards       []KanbanCard                     `json:"-"`
 }
 
@@ -181,7 +199,9 @@ type SystemService struct {
 	kanbanAgents            map[string]*kanbanAgentRun
 	kanbanAgentSeq          uint64
 	kanbanDetailViews       map[string]string
-	heartbeats              map[string]*heartbeatHandle // workspaceID -> running heartbeat
+	shellCommandRuns        map[string]context.CancelFunc // runID -> cancel func
+	shellCommandSeq         uint64
+	heartbeats              map[string]*heartbeatHandle // workspaceID -\u003e running heartbeat
 	watchdogs               map[string]*watchdogHandle  // workspaceID -> running watchdog
 	fileChangeMu            sync.Mutex
 	fileChangeSeq           uint64
@@ -232,6 +252,7 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 		kanbanRuns:            make(map[string]context.CancelFunc),
 		kanbanAgents:          make(map[string]*kanbanAgentRun),
 		kanbanDetailViews:     make(map[string]string),
+		shellCommandRuns:      make(map[string]context.CancelFunc),
 		heartbeats:            make(map[string]*heartbeatHandle),
 		watchdogs:             make(map[string]*watchdogHandle),
 		fileChanges:           make(map[string][]trackedFileChange),
@@ -268,6 +289,54 @@ func (s *SystemService) LoadState() AppState {
 	return state
 }
 
+// GetWorkspaceActivitySummaries returns activity status for all workspaces.
+func (s *SystemService) GetWorkspaceActivitySummaries() []WorkspaceActivitySummary {
+	s.mu.Lock()
+	workspaceIDs := make([]string, 0, len(s.state.Workspaces))
+	for _, w := range s.state.Workspaces {
+		workspaceIDs = append(workspaceIDs, w.ID)
+	}
+	s.mu.Unlock()
+
+	summaries := make([]WorkspaceActivitySummary, 0, len(workspaceIDs))
+
+	for _, wsID := range workspaceIDs {
+		var summary WorkspaceActivitySummary
+		summary.WorkspaceID = wsID
+
+		// Chat busy check
+		s.chatMu.Lock()
+		_, summary.IsChatBusy = s.chatStreams[wsID]
+		_, summary.IsKanbanRunning = s.kanbanRuns[wsID]
+		summary.ActiveAgentCount = 0
+		for agentKey := range s.kanbanAgents {
+			if strings.HasPrefix(agentKey, wsID+":") {
+				summary.ActiveAgentCount++
+			}
+		}
+
+		// Last message snippet from chat session
+		if session, ok := s.chatSessions[wsID]; ok {
+			for i := len(session.Messages) - 1; i >= 0; i-- {
+				msg := session.Messages[i]
+				if msg.Role == "assistant" && msg.Content != "" {
+					snippet := msg.Content
+					if len(snippet) > 60 {
+						snippet = snippet[:60] + "…"
+					}
+					summary.LastMessageSnippet = strings.TrimSpace(strings.ReplaceAll(snippet, "\n", " "))
+					break
+				}
+			}
+		}
+		s.chatMu.Unlock()
+
+		summaries = append(summaries, summary)
+	}
+
+	return summaries
+}
+
 func (s *SystemService) GetDashboardLayouts() map[string][]DashboardWidgetJSON {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -289,6 +358,71 @@ func (s *SystemService) SaveDashboardLayout(view string, widgets []DashboardWidg
 		s.state.DashboardLayouts = make(map[string][]DashboardWidgetJSON)
 	}
 	s.state.DashboardLayouts[view] = append([]DashboardWidgetJSON{}, widgets...)
+	return s.saveLocked()
+}
+
+func (s *SystemService) GetSavedCommands(workspaceID string) []SavedCommand {
+	if _, err := s.workspaceByID(workspaceID); err != nil {
+		return []SavedCommand{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cmds := s.state.SavedCommands[workspaceID]
+	result := make([]SavedCommand, len(cmds))
+	copy(result, cmds)
+	return result
+}
+
+func (s *SystemService) UpsertSavedCommand(workspaceID, id, name, command string, order int) error {
+	if _, err := s.workspaceByID(workspaceID); err != nil {
+		return err
+	}
+	name = strings.TrimSpace(name)
+	command = strings.TrimSpace(command)
+	if name == "" && command == "" {
+		return fmt.Errorf("name and command cannot both be empty")
+	}
+	if id == "" {
+		id = uuid.New().String()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state.SavedCommands == nil {
+		s.state.SavedCommands = make(map[string][]SavedCommand)
+	}
+	existing := s.state.SavedCommands[workspaceID]
+	found := false
+	for i, cmd := range existing {
+		if cmd.ID == id {
+			existing[i].Name = name
+			existing[i].Command = command
+			existing[i].Order = order
+			found = true
+			break
+		}
+	}
+	if !found {
+		existing = append(existing, SavedCommand{ID: id, Name: name, Command: command, Order: order})
+	}
+	s.state.SavedCommands[workspaceID] = existing
+	return s.saveLocked()
+}
+
+func (s *SystemService) DeleteSavedCommand(workspaceID, id string) error {
+	if _, err := s.workspaceByID(workspaceID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing := s.state.SavedCommands[workspaceID]
+	next := make([]SavedCommand, 0, len(existing))
+	for _, cmd := range existing {
+		if cmd.ID == id {
+			continue
+		}
+		next = append(next, cmd)
+	}
+	s.state.SavedCommands[workspaceID] = next
 	return s.saveLocked()
 }
 
@@ -1077,6 +1211,21 @@ func (s *SystemService) load() error {
 	legacyThinkingDisabled := stateFileLegacyThinkingDisabled(data) && !stateFileHasSettingKey(data, "thinkingTokenBudget")
 	legacyLLMEndpoints := !stateFileHasSettingKey(data, "endpoints")
 	legacyEndpointSelection := !stateFileHasSettingKey(data, "endpointSelection")
+
+	// Migrate legacy comfyuiDefaultWorkflow → separate txt2img/img2img workflow fields.
+	if stateFileHasSettingKey(data, "comfyuiDefaultWorkflow") {
+		var oldSettings struct {
+			ComfyuiDefaultWorkflow string `json:"comfyuiDefaultWorkflow"`
+		}
+		if err := json.Unmarshal(stateFileSettingsRaw(data), &oldSettings); err == nil {
+			oldValue := strings.TrimSpace(oldSettings.ComfyuiDefaultWorkflow)
+			if oldValue != "" && state.Settings.ComfyuiTxt2imgWorkflow == "" && state.Settings.ComfyuiImg2imgWorkflow == "" {
+				state.Settings.ComfyuiTxt2imgWorkflow = oldValue
+				state.Settings.ComfyuiImg2imgWorkflow = oldValue
+			}
+		}
+	}
+
 	legacyResearchAgentConcurrency := !stateFileHasSettingKey(data, "researchAgentConcurrency")
 	if legacyResearchAgentConcurrency {
 		state.Settings.ResearchAgentConcurrency = llm.DefaultResearchAgentConcurrency
@@ -1242,6 +1391,7 @@ func defaultAppState() AppState {
 		Settings:         llm.DefaultSettings(),
 		WebAccess:        defaultWebAccessSettings(),
 		Workspaces:       []Workspace{},
+		SavedCommands:    make(map[string][]SavedCommand),
 		HeartbeatConfigs: make(map[string]HeartbeatConfig),
 		WatchdogConfigs:  make(map[string]WatchdogConfig),
 		KanbanCards:      []KanbanCard{},
@@ -1274,6 +1424,16 @@ func stateFileHasSettingKey(data []byte, key string) bool {
 	}
 	_, ok := raw.Settings[key]
 	return ok
+}
+
+func stateFileSettingsRaw(data []byte) json.RawMessage {
+	var raw struct {
+		Settings json.RawMessage `json:"settings"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+	return raw.Settings
 }
 
 func stateFileLegacyThinkingDisabled(data []byte) bool {
@@ -1624,6 +1784,12 @@ func cloneState(state AppState) AppState {
 	state.Workspaces = append([]Workspace{}, state.Workspaces...)
 	for i := range state.Workspaces {
 		state.Workspaces[i].Folders = append([]WorkspaceFolder{}, state.Workspaces[i].Folders...)
+	}
+	if state.SavedCommands != nil {
+		state.SavedCommands = make(map[string][]SavedCommand, len(state.SavedCommands))
+		for k, v := range state.SavedCommands {
+			state.SavedCommands[k] = append([]SavedCommand{}, v...)
+		}
 	}
 	if state.HeartbeatConfigs != nil {
 		state.HeartbeatConfigs = cloneHeartbeatConfigs(state.HeartbeatConfigs)

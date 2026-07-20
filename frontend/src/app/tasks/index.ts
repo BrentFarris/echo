@@ -344,6 +344,10 @@ export function renderTaskDetail(workspace: services.Workspace): string {
             ${task.completed ? icons.undo : icons.check}
             <span>${task.completed ? "Reopen" : "Complete"}</span>
           </button>
+          <button class="secondary-button icon-text-button" type="button" data-task-action="reference" data-task-id="${escapeAttribute(task.id)}">
+            ${icons.paperclip}
+            <span>Reference Task</span>
+          </button>
           <button class="secondary-button icon-text-button" type="button" data-task-action="chat" data-task-id="${escapeAttribute(task.id)}">
             ${icons.chat}
             <span>Use as Chat Prompt</span>
@@ -1032,6 +1036,19 @@ async function handleTaskAction(event: Event) {
       window.requestAnimationFrame(() => appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus());
       return;
     }
+    if (action === "reference") {
+      const reference = formatTaskReference(task);
+      const existing = state.chatDrafts.get(workspace.id) ?? "";
+      const appended = (existing ? existing.trimEnd() + " " : "") + reference + " ";
+      state.chatDrafts.set(workspace.id, appended);
+      state.appMode = "chat";
+      state.mobileNavView = "chat";
+      state.activeChatKanbanTab.set(workspace.id, "chat");
+      state.selectedTaskCards.delete(workspace.id);
+      getAppCallbacks().render();
+      window.requestAnimationFrame(() => appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus());
+      return;
+    }
     if (action === "kanban") {
       state.kanbanCardCreationDrafts.set(workspace.id, {
         title: task.title,
@@ -1374,6 +1391,10 @@ function handleTaskDragEnd(event: DragEvent) {
   (event.currentTarget as HTMLElement).classList.remove("is-dragging");
   appRoot.querySelectorAll(".task-lane.is-drop-target").forEach((lane) => lane.classList.remove("is-drop-target"));
   draggingTaskID = "";
+}
+
+function formatTaskReference(task: services.WorkspaceTask): string {
+  return `@task:${task.id}`;
 }
 
 function taskChatPrompt(task: services.WorkspaceTask): string {

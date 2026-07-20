@@ -1,0 +1,83 @@
+{
+  "39": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    }
+  },
+  "40": {
+    "class_type": "DualCLIPLoader",
+    "inputs": {
+      "clip_name1": "clip_l.safetensors",
+      "clip_name2": "t5xxl_fp16.safetensors",
+      "type": "flux",
+      "precision": "default"
+    }
+  },
+  "38": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "flux1-schnell.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "100": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "{{IMAGE}}",
+      "upload": "image"
+    }
+  },
+  "101": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": ["100", 0],
+      "vae": ["39", 0]
+    }
+  },
+  "41": {
+    "class_type": "CLIPTextEncodeFlux",
+    "inputs": {
+      "clip": ["40", 0],
+      "clip_l": "{{PROMPT}}",
+      "t5xxl": "{{PROMPT}}",
+      "guidance": "{{CFG_SCALE}}"
+    }
+  },
+  "42": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+      "conditioning": ["41", 0]
+    }
+  },
+  "31": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["38", 0],
+      "positive": ["41", 0],
+      "negative": ["42", 0],
+      "latent_image": ["101", 0],
+      "seed": "{{SEED}}",
+      "control_after_generate": "randomize",
+      "steps": "{{STEPS}}",
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 0.85
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["31", 0],
+      "vae": ["39", 0]
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": ["8", 0],
+      "filename_prefix": "ComfyUI"
+    }
+  }
+}

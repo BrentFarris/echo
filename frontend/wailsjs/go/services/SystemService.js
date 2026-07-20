@@ -146,6 +146,10 @@ export function DeleteKanbanCard(arg1, arg2) {
   return window['go']['services']['SystemService']['DeleteKanbanCard'](arg1, arg2);
 }
 
+export function DeleteSavedCommand(arg1, arg2) {
+  return window['go']['services']['SystemService']['DeleteSavedCommand'](arg1, arg2);
+}
+
 export function DeleteWorkspace(arg1) {
   return window['go']['services']['SystemService']['DeleteWorkspace'](arg1);
 }
@@ -206,12 +210,20 @@ export function GetLivenessConfig(arg1) {
   return window['go']['services']['SystemService']['GetLivenessConfig'](arg1);
 }
 
+export function GetSavedCommands(arg1) {
+  return window['go']['services']['SystemService']['GetSavedCommands'](arg1);
+}
+
 export function GetTokenBudget(arg1) {
   return window['go']['services']['SystemService']['GetTokenBudget'](arg1);
 }
 
 export function GetWatchdogConfig(arg1) {
   return window['go']['services']['SystemService']['GetWatchdogConfig'](arg1);
+}
+
+export function GetWorkspaceActivitySummaries() {
+  return window['go']['services']['SystemService']['GetWorkspaceActivitySummaries']();
 }
 
 export function ListAgentModes(arg1) {
@@ -426,8 +438,16 @@ export function RotateWebAccessToken() {
   return window['go']['services']['SystemService']['RotateWebAccessToken']();
 }
 
+export function RunShellCommand(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['services']['SystemService']['RunShellCommand'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function RunWorkspaceGitAction(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['RunWorkspaceGitAction'](arg1, arg2, arg3);
+}
+
+export function SaveChatImageToDisk(arg1, arg2) {
+  return window['go']['services']['SystemService']['SaveChatImageToDisk'](arg1, arg2);
 }
 
 export function SaveDashboardLayout(arg1, arg2) {
@@ -594,6 +614,10 @@ export function StopKanbanExecution(arg1) {
   return window['go']['services']['SystemService']['StopKanbanExecution'](arg1);
 }
 
+export function StopShellCommand(arg1, arg2) {
+  return window['go']['services']['SystemService']['StopShellCommand'](arg1, arg2);
+}
+
 export function StopWatchdog(arg1) {
   return window['go']['services']['SystemService']['StopWatchdog'](arg1);
 }
@@ -636,6 +660,10 @@ export function UpdateKanbanCardDirection(arg1, arg2, arg3) {
 
 export function UpdateWorkspaceTask(arg1, arg2, arg3, arg4) {
   return window['go']['services']['SystemService']['UpdateWorkspaceTask'](arg1, arg2, arg3, arg4);
+}
+
+export function UpsertSavedCommand(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['services']['SystemService']['UpsertSavedCommand'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function WorkspaceIconHandler() {

@@ -103,6 +103,7 @@ const endpointTopics = [
 const settingsSections = [
   { id: "llm-endpoints-title", label: "LLM Endpoints" },
   { id: "search-settings-title", label: "Search" },
+  { id: "comfyui-settings-title", label: "ComfyUI" },
   { id: "notification-settings-title", label: "Notifications" },
   { id: "programming-settings-title", label: "Programming" },
   { id: "debug-settings-title", label: "Debug" },
@@ -135,11 +136,13 @@ const availableToolNames = [
   "kanban_start_execution",
   "kanban_stop_card",
   "kanban_update_card_description",
-  "lsp_query",
-  "restart",
-  "shell_command",
-  "web_fetch",
+	"lsp_query",
+	"restart",
+	"save_image",
+	"shell_command",
+	"web_fetch",
   "web_search",
+  "comfyui_generate",
   "workspace_context",
   "workspace_skill_read",
   "workspace_skill_record",
@@ -279,6 +282,38 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                   <input name="searxngUrl" type="url" value="${escapeHtml(fieldValue("searxngUrl"))}" autocomplete="off" />
                 </label>
               </div>
+            </section>
+
+            <section class="settings-section" aria-labelledby="comfyui-settings-title">
+              <h3 id="comfyui-settings-title" class="settings-section-title">ComfyUI</h3>
+              <p>Configure a remote ComfyUI instance for image generation.</p>
+              <div class="settings-grid">
+                <label class="field field-wide">
+                  <span>ComfyUI Host URL</span>
+                  <input name="comfyuiUrl" type="url" value="${escapeHtml(fieldValue("comfyuiUrl"))}" placeholder="http://127.0.0.1:8188" autocomplete="off" />
+                </label>
+              </div>
+              <p class="compact muted">URL of your ComfyUI instance. Leave empty to disable.</p>
+              <label class="field" style="margin-top:0.5rem;">
+                <span>Txt2img Workflow</span>
+                <input
+                  name="comfyuiTxt2imgWorkflow"
+                  type="text"
+                  value="${escapeHtml(fieldValue("comfyuiTxt2imgWorkflow"))}"
+                  placeholder="Path to txt2img workflow JSON"
+                  autocomplete="off"
+                />
+              </label>
+              <label class="field" style="margin-top:0.5rem;">
+                <span>Img2img Workflow</span>
+                <input
+                  name="comfyuiImg2imgWorkflow"
+                  type="text"
+                  value="${escapeHtml(fieldValue("comfyuiImg2imgWorkflow"))}"
+                  placeholder="Path to img2img workflow JSON (requires LoadImage node)"
+                  autocomplete="off"
+                />
+              </label>
             </section>
 
             <section class="settings-section" aria-labelledby="notification-settings-title">

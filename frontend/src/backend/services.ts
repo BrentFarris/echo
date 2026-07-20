@@ -183,6 +183,10 @@ export function GetDashboardLayouts(...args: Parameters<typeof Wails.GetDashboar
   return call("GetDashboardLayouts", Wails.GetDashboardLayouts, args);
 }
 
+export function SaveChatImageToDisk(...args: Parameters<typeof Wails.SaveChatImageToDisk>): ReturnType<typeof Wails.SaveChatImageToDisk> {
+  return call("SaveChatImageToDisk", Wails.SaveChatImageToDisk, args);
+}
+
 export function SaveDashboardLayout(...args: Parameters<typeof Wails.SaveDashboardLayout>): ReturnType<typeof Wails.SaveDashboardLayout> {
   return call("SaveDashboardLayout", Wails.SaveDashboardLayout, args);
 }
@@ -636,6 +640,10 @@ export function GetTokenBudget(...args: Parameters<typeof Wails.GetTokenBudget>)
   return call("GetTokenBudget", Wails.GetTokenBudget, args);
 }
 
+export function GetWorkspaceActivitySummaries(...args: Parameters<typeof Wails.GetWorkspaceActivitySummaries>): ReturnType<typeof Wails.GetWorkspaceActivitySummaries> {
+  return call("GetWorkspaceActivitySummaries", Wails.GetWorkspaceActivitySummaries, args);
+}
+
 export function SetTokenBudget(...args: Parameters<typeof Wails.SetTokenBudget>): ReturnType<typeof Wails.SetTokenBudget> {
   return call("SetTokenBudget", Wails.SetTokenBudget, args);
 }
@@ -685,4 +693,30 @@ export function ClearKanbanCardRecovery(workspaceID: string, cardID: string): Pr
 
 export function UpdateWorkspaceTask(...args: Parameters<typeof Wails.UpdateWorkspaceTask>): ReturnType<typeof Wails.UpdateWorkspaceTask> {
   return call("UpdateWorkspaceTask", Wails.UpdateWorkspaceTask, args);
+}
+
+export async function RunShellCommand(workspaceID: string, command: string, workingDirectory: string, timeoutSeconds: number, maxOutputBytes: number): Promise<string> {
+  if (isWailsRuntime()) {
+    return (window as any)["go"]["services"]["SystemService"]["RunShellCommand"](workspaceID, command, workingDirectory, timeoutSeconds, maxOutputBytes);
+  }
+  return webRpc("RunShellCommand", [workspaceID, command, workingDirectory, timeoutSeconds, maxOutputBytes]);
+}
+
+export function GetSavedCommands(...args: Parameters<typeof Wails.GetSavedCommands>): ReturnType<typeof Wails.GetSavedCommands> {
+  return call("GetSavedCommands", Wails.GetSavedCommands, args);
+}
+
+export function UpsertSavedCommand(...args: Parameters<typeof Wails.UpsertSavedCommand>): ReturnType<typeof Wails.UpsertSavedCommand> {
+  return call("UpsertSavedCommand", Wails.UpsertSavedCommand, args);
+}
+
+export function DeleteSavedCommand(...args: Parameters<typeof Wails.DeleteSavedCommand>): ReturnType<typeof Wails.DeleteSavedCommand> {
+  return call("DeleteSavedCommand", Wails.DeleteSavedCommand, args);
+}
+
+export async function StopShellCommand(workspaceID: string, runID: string): Promise<void> {
+  if (isWailsRuntime()) {
+    return (window as any)["go"]["services"]["SystemService"]["StopShellCommand"](workspaceID, runID);
+  }
+  return webRpc("StopShellCommand", [workspaceID, runID]);
 }

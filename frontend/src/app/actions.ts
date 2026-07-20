@@ -1,7 +1,7 @@
 
-import { clearCodeTabSwitcher, closeCodeTabs, deleteSelectedCodePaths, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, revealCodeTabInWorkspace, startCodeCreate, startCodeRename } from "../codeView";
-import type { CodeTabCloseMode } from "../codeView";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, GetHeartbeatConfig, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenExternalPathExplorer, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, ResolveWorkspacePath, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
+import { isWailsRuntime } from "../backend/web";
+import { CodeTabCloseMode, clearCodeTabSwitcher, closeCodeTabs, deleteSelectedCodePaths, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, revealCodeTabInWorkspace, startCodeCreate, startCodeRename } from "../codeView";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteSavedCommand, DeleteWorkspace, ExecutePlan, GetHeartbeatConfig, GetSavedCommands, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenExternalPathExplorer, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, ResolveWorkspacePath, RetryChatMessage, RotateWebAccessToken, RunShellCommand, SaveChatImageToDisk, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution, StopShellCommand, UpsertSavedCommand } from "../backend/services";
 import { appRoot } from "./dom";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
@@ -18,11 +18,12 @@ import type { AppMode, MobileNavView, WidgetId, WidgetSize } from "./types";
 import { applyTheme, settingsWithThemeDefaults, themePaletteNames } from "./theme";
 import { pushToast, dismissToast } from "./toasts";
 import { loadActiveTaskBoard } from "./tasks";
-import { copyTextToClipboard, errorMessage, laneLabel } from "./utils";
+import { copyTextToClipboard, errorMessage, generateUUID, laneLabel } from "./utils";
 import { hydrateWorkspaceLetterDrafts } from "./workspace";
 import { resetTokenBudget, loadTokenBudget } from "./budget";
 import { loadLivenessConfig } from "./liveness";
 import { availableWidgets } from "./dashboard/grid";
+import { services } from "../../wailsjs/go/models";
 
 export async function handleAction(event: Event) {
   const target = event.currentTarget as HTMLElement;
@@ -854,6 +855,46 @@ export async function handleAction(event: Event) {
       patchChatPanel();
       patchChatControls();
     }
+    if (action === "save-chat-image") {
+      const btn = target as HTMLElement;
+      const name = btn.dataset.imageName ?? "image.png";
+      const mediaType = btn.dataset.imageMediaType ?? "image/png";
+      const dataUrl = btn.dataset.imageUrl ?? "";
+
+      if (!dataUrl) return;
+
+      // Web mode: use browser-native download via <a> element trick
+      if (!isWailsRuntime()) {
+        const link = document.createElement("a");
+        link.href = dataUrl;
+        link.download = name;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        return;
+      }
+
+      // Desktop mode: use backend method for native save dialog
+      const workspace = activeWorkspace();
+      SaveChatImageToDisk(workspace?.id ?? "", {
+        name,
+        mediaType,
+        dataUrl,
+      }).then((savedPath) => {
+        if (savedPath) {
+          pushToast(`Saved to ${savedPath}`, "success");
+        }
+        // If savedPath is empty string, user canceled the dialog — no toast needed.
+      }).catch(() => {
+        // Fallback to browser download on error
+        const link = document.createElement("a");
+        link.href = dataUrl;
+        link.download = name;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      });
+    }
     if (action === "toggle-heartbeat") {
       const workspaceID = target.dataset.workspaceId ?? "";
       if (!workspaceID) return;
@@ -1192,6 +1233,182 @@ export async function handleAction(event: Event) {
       pushToast("Workspace removed.", "success");
       getAppCallbacks().render();
     }
+    if (action === "run-shell-command") {
+      const commandInput = appRoot.querySelector<HTMLInputElement>(`[data-terminal-input][data-workspace-id="${CSS.escape(workspaceID)}"]`);
+      const command = commandInput?.value.trim() ?? "";
+      if (!workspaceID || !command) return;
+      state.terminalDrafts.set(workspaceID, "");
+      try {
+        const runID = await RunShellCommand(workspaceID, command, "", 300, 256 * 1024);
+        // Update the run's command text in existing runs
+        const runs = state.terminalRuns.get(workspaceID) ?? [];
+        const run = runs.find((r) => r.id === runID);
+        if (run) {
+          run.command = command;
+        }
+        state.terminalOpen.add(workspaceID);
+        getAppCallbacks().render();
+      } catch (error) {
+        pushToast(errorMessage(error), "error");
+      }
+      return;
+    }
+    if (action === "stop-shell-command") {
+      const runID = target.dataset.runId ?? "";
+      if (!workspaceID || !runID) return;
+      try {
+        await StopShellCommand(workspaceID, runID);
+      } catch (error) {
+        pushToast(errorMessage(error), "error");
+      }
+      return;
+    }
+    if (action === "toggle-saved-commands") {
+      const wsID = target.dataset.workspaceId ?? "";
+      if (!wsID) return;
+      if (state.savedCommandOpenSections.has(wsID)) {
+        state.savedCommandOpenSections.delete(wsID);
+      } else {
+        state.savedCommandOpenSections.add(wsID);
+      }
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "run-saved-command") {
+      const savedId = target.dataset.savedId ?? "";
+      if (!workspaceID || !savedId) return;
+      const cmds = state.savedCommands.get(workspaceID) ?? [];
+      const cmd = cmds.find((c) => c.id === savedId);
+      if (!cmd) return;
+      // Set the terminal input and trigger run
+      state.terminalDrafts.set(workspaceID, cmd.command);
+      state.terminalOpen.add(workspaceID);
+      getAppCallbacks().render();
+      // Programmatically trigger the run button
+      setTimeout(() => {
+        const runBtn = appRoot.querySelector<HTMLButtonElement>(`[data-action="run-shell-command"][data-workspace-id="${CSS.escape(workspaceID)}"]`);
+        runBtn?.click();
+      }, 50);
+      return;
+    }
+    if (action === "add-saved-command") {
+      const commandInput = appRoot.querySelector<HTMLInputElement>(`[data-terminal-input][data-workspace-id="${CSS.escape(workspaceID)}"]`);
+      const commandText = commandInput?.value.trim() ?? "";
+      if (!commandText) {
+        pushToast("Enter a command in the terminal first.", "error");
+        return;
+      }
+      // Extract name from first word of command
+      const firstWord = commandText.split(/\s+/)[0].replace(/[^\w\-\.]/g, "");
+      state.savedCommandEditingId = `new-${Date.now()}`;
+      state.savedCommandDraftName = firstWord || "Command";
+      state.savedCommandDraftCommand = commandText;
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "edit-saved-command") {
+      const savedId = target.dataset.savedId ?? "";
+      if (!workspaceID || !savedId) return;
+      const cmds = state.savedCommands.get(workspaceID) ?? [];
+      const cmd = cmds.find((c) => c.id === savedId);
+      if (!cmd) return;
+      state.savedCommandEditingId = cmd.id;
+      state.savedCommandDraftName = cmd.name;
+      state.savedCommandDraftCommand = cmd.command;
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "delete-saved-command") {
+      const savedId = target.dataset.savedId ?? "";
+      if (!workspaceID || !savedId) return;
+      try {
+        await DeleteSavedCommand(workspaceID, savedId);
+        if (state.savedCommandEditingId === savedId) {
+          state.savedCommandEditingId = "";
+          state.savedCommandDraftName = "";
+          state.savedCommandDraftCommand = "";
+        }
+        const cmds = state.savedCommands.get(workspaceID) ?? [];
+        const filtered = cmds.filter((c) => c.id !== savedId);
+        if (filtered.length > 0) {
+          state.savedCommands.set(workspaceID, filtered);
+        } else {
+          state.savedCommands.delete(workspaceID);
+        }
+        pushToast("Command deleted.", "success");
+      } catch (error) {
+        pushToast(errorMessage(error), "error");
+      }
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "save-edited-command") {
+      const savedEditId = target.dataset.savedEditId ?? "";
+      if (!workspaceID || !savedEditId) return;
+
+      // Read values from the dialog inputs (overlay is within appRoot)
+      const nameInput = appRoot.querySelector<HTMLInputElement>("[data-saved-edit-name]");
+      const cmdInput = appRoot.querySelector<HTMLInputElement>("[data-saved-edit-command]");
+      const name = nameInput?.value.trim() ?? "";
+      const command = cmdInput?.value.trim() ?? "";
+
+      if (!name || !command) {
+        pushToast("Name and command are required.", "error");
+        return;
+      }
+
+      try {
+        const isEdit = !savedEditId.startsWith("new-");
+        const id = isEdit ? savedEditId : generateUUID();
+        // Determine order: append after existing commands
+        const existing = state.savedCommands.get(workspaceID) ?? [];
+        const maxOrder = existing.reduce((max, c) => Math.max(max, c.order), 0);
+        const order = isEdit ? (existing.find((c) => c.id === savedEditId)?.order ?? maxOrder + 1) : maxOrder + 1;
+
+        await UpsertSavedCommand(workspaceID, id, name, command, order);
+
+        // Update local state
+        const cmds = state.savedCommands.get(workspaceID) ?? [];
+        if (isEdit) {
+          const idx = cmds.findIndex((c) => c.id === savedEditId);
+          if (idx >= 0) {
+            cmds[idx] = services.SavedCommand.createFrom({ id, name, command, order });
+          }
+        } else {
+          cmds.push(services.SavedCommand.createFrom({ id, name, command, order }));
+        }
+        state.savedCommands.set(workspaceID, cmds);
+
+        // Clear editing state
+        state.savedCommandEditingId = "";
+        state.savedCommandDraftName = "";
+        state.savedCommandDraftCommand = "";
+
+        pushToast("Command saved.", "success");
+      } catch (error) {
+        pushToast(errorMessage(error), "error");
+      }
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "cancel-edit-command") {
+      state.savedCommandEditingId = "";
+      state.savedCommandDraftName = "";
+      state.savedCommandDraftCommand = "";
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "toggle-terminal") {
+      const wsID = target.dataset.workspaceId ?? "";
+      if (!wsID) return;
+      if (state.terminalOpen.has(wsID)) {
+        state.terminalOpen.delete(wsID);
+      } else {
+        state.terminalOpen.add(wsID);
+      }
+      getAppCallbacks().render();
+      return;
+    }
   } catch (error) {
     const message = errorMessage(error);
     if (state.settingsOpen) {
@@ -1231,6 +1448,12 @@ async function loadActiveChangesViewIfNeeded() {
 
 export function bindActionEvents(root: ParentNode) {
   root.querySelectorAll<HTMLElement>("[data-action]").forEach((element) => {
-    element.addEventListener("click", handleAction);
+    element.addEventListener("click", (event) => {
+      // Prevent action buttons inside saved command items from bubbling to the parent run handler
+      if (element.closest(".terminal-saved-actions")) {
+        event.stopPropagation();
+      }
+      handleAction(event);
+    });
   });
 }

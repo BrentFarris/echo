@@ -237,6 +237,9 @@ func defaultHTTPClient(timeoutSeconds int) *http.Client {
 func responseError(response *http.Response) error {
 	data, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 	detail := strings.TrimSpace(string(data))
+	if response.StatusCode == http.StatusRequestEntityTooLarge {
+		return fmt.Errorf("LLM endpoint rejected the request (413 Request Entity Too Large). This is usually caused by large image attachments or accumulated context. Try using smaller images")
+	}
 	if detail == "" {
 		return fmt.Errorf("llm endpoint returned %s", response.Status)
 	}

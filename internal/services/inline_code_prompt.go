@@ -424,7 +424,7 @@ func (s *SystemService) executeInlineCodeToolCall(workspace Workspace, settings 
 	execution := s.executeTrackedToolCall(context.Background(), workspace, settings, call, WorkspaceChangeSource{
 		Type:      "inline",
 		RequestID: eventBase.RequestID,
-	}, nil, nil)
+	}, nil, nil, nil)
 	result := execution.Result
 
 	data, err := json.Marshal(result)

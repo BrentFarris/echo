@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -38,14 +39,15 @@ type ChatMessage struct {
 }
 
 type ChatToolActivity struct {
-	ID        string `json:"id"`
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
-	Status    string `json:"status"`
-	Result    string `json:"result,omitempty"`
-	Error     string `json:"error,omitempty"`
-	AgentID   string `json:"agentId,omitempty"`
-	AgentName string `json:"agentName,omitempty"`
+	ID            string `json:"id"`
+	Name          string `json:"name,omitempty"`
+	Arguments     string `json:"arguments,omitempty"`
+	Status        string `json:"status"`
+	Result        string `json:"result,omitempty"`
+	Error         string `json:"error,omitempty"`
+	ConsoleOutput string `json:"consoleOutput,omitempty"`
+	AgentID       string `json:"agentId,omitempty"`
+	AgentName     string `json:"agentName,omitempty"`
 }
 
 type ChatResearchAgent struct {
@@ -77,6 +79,8 @@ type ChatStreamEvent struct {
 	ResearchAgent     *ChatResearchAgent     `json:"researchAgent,omitempty"`
 	Error             string                 `json:"error,omitempty"`
 	FinishReason      string                 `json:"finishReason,omitempty"`
+	ImageAttachment   *ChatImageAttachment   `json:"imageAttachment,omitempty"`
+	VideoAttachment   *ChatVideoAttachment   `json:"videoAttachment,omitempty"`
 	Revision          uint64                 `json:"revision"`
 	Session           *ChatSession           `json:"session,omitempty"`
 }
@@ -88,6 +92,33 @@ type chatSessionState struct {
 	Busy        bool
 	StreamID    string
 	Revision    uint64
+}
+
+func (s *SystemService) latestUserMessageImages(workspaceID string) []tools.AttachedImage {
+	s.chatMu.Lock()
+	defer s.chatMu.Unlock()
+	session := s.chatSessions[workspaceID]
+	if session == nil {
+		return nil
+	}
+	for i := len(session.Messages) - 1; i >= 0; i-- {
+		msg := &session.Messages[i]
+		if msg.Role != llm.RoleUser || len(msg.Images) == 0 {
+			continue
+		}
+		result := make([]tools.AttachedImage, 0, len(msg.Images))
+		for _, img := range msg.Images {
+			if img.DataURL != "" {
+				result = append(result, tools.AttachedImage{
+					Name:      img.Name,
+					MediaType: img.MediaType,
+					DataURL:   img.DataURL,
+				})
+			}
+		}
+		return result
+	}
+	return nil
 }
 
 func (s *SystemService) LoadChatSession(workspaceID string) (ChatSession, error) {
@@ -570,7 +601,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 			assistant := llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{call}}
 			messages = append(messages, assistant)
 			s.appendChatHistory(workspace.ID, assistant)
-			execution := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, isPlanMode, toolScopes, research)
+			execution := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, isPlanMode, toolScopes, make(map[string]tools.AttachedImage), research)
 			research.MarkAutomaticScout()
 			recoverableToolCalls[call.ID] = true
 			messages = append(messages, execution.Messages...)
@@ -583,11 +614,15 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 	mediaPayloadsDisabled := false
 	skillCheckpointPending := false
 	skillCheckpointReminders := 0
+	// Track images produced by tools during this turn so subsequent tool calls
+	// (e.g., save_image) can reference them by imageId.
+	generatedImages := make(map[string]tools.AttachedImage)
 	emptyAssistantRetries := 0
 	transientResponseRetries := 0
 	researchFinalizeReminders := 0
 	forceFinalNoTools := false
 	orchestrationRounds := 0
+
 	for {
 		orchestrationRounds++
 		if orchestrationRounds > 64 {
@@ -678,7 +713,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 				if recovery, ok := recoverToolResultContext(messages, recoverableToolCalls); ok {
 					messages = recovery.Messages
 					s.replaceChatHistory(workspace.ID, messages[1:])
-					s.updateToolActivity(workspace.ID, streamID, messageID, recovery.Call, "error", recovery.ResultMessage.Content, toolResultContextErrorText)
+					s.updateToolActivity(workspace.ID, streamID, messageID, recovery.Call, "error", recovery.ResultMessage.Content, toolResultContextErrorText, "")
 					s.retryChatMessage(workspace.ID, streamID, messageID)
 					continue
 				}
@@ -811,14 +846,19 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 				s.cancelChatMessage(workspace.ID, streamID, messageID)
 				return
 			}
-			execution := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, isPlanMode, toolScopes, research)
+			execution := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, isPlanMode, toolScopes, generatedImages, research)
 			if tools.IsResearchAgentToolName(call.Function.Name) {
 				researchFinalizeReminders = 0
 			}
+
 			recoverableToolCalls[call.ID] = true
-			messages = append(messages, execution.Messages...)
+			// Append stripped versions to messages to prevent base64 data accumulation.
+			// The LLM still sees the text description (e.g., "Image returned by tool...")
+			// but not the megabytes of base64 pixel data.
 			for _, resultMessage := range execution.Messages {
-				s.appendChatHistory(workspace.ID, resultMessage)
+				stripped := stripMediaContentParts(resultMessage)
+				messages = append(messages, stripped)
+				s.appendChatHistory(workspace.ID, stripped)
 			}
 			if len(execution.Changes) > 0 {
 				skillCheckpointPending = true
@@ -878,8 +918,8 @@ func (s *SystemService) streamAssistantResponseAttempt(ctx context.Context, clie
 			call = s.normalizeToolCall(call)
 			toolCalls[nextInlineToolIndex] = call
 			nextInlineToolIndex++
-			s.updateToolActivity(workspaceID, streamID, messageID, call, "streaming", "", "")
-		}
+		s.updateToolActivity(workspaceID, streamID, messageID, call, "streaming", "", "", "")
+	}
 	}
 	appendContent := func(text string) *streamLoopDetection {
 		if text == "" {
@@ -936,7 +976,7 @@ func (s *SystemService) streamAssistantResponseAttempt(ctx context.Context, clie
 			if event.ToolCall != nil {
 				call := mergeToolDelta(toolCalls[event.ToolCall.Index], *event.ToolCall)
 				toolCalls[event.ToolCall.Index] = call
-				s.updateToolActivity(workspaceID, streamID, messageID, call, "streaming", "", "")
+				s.updateToolActivity(workspaceID, streamID, messageID, call, "streaming", "", "", "")
 			}
 		case llm.EventComplete:
 			finished = true
@@ -961,13 +1001,14 @@ type chatToolCallExecution struct {
 	SkillCheckpoint bool
 }
 
-func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, streamID string, messageID string, call llm.ToolCall, readOnlyOnly bool, toolScopes *tools.ToolScopeChecker, research *chatResearchRun) chatToolCallExecution {
+func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, streamID string, messageID string, call llm.ToolCall, readOnlyOnly bool, toolScopes *tools.ToolScopeChecker, generatedImages map[string]tools.AttachedImage, research *chatResearchRun) chatToolCallExecution {
+
 	if call.ID == "" {
 		call.ID = s.nextChatID("call")
 	}
 	if tools.IsResearchAgentToolName(call.Function.Name) && research == nil {
 		data := fmt.Sprintf(`{"tool":%q,"success":false,"error":{"code":"research_agents_disabled","message":"research agents are disabled in settings"}}`, call.Function.Name)
-		s.updateToolActivity(workspace.ID, streamID, messageID, call, "error", data, "research agents are disabled in settings")
+		s.updateToolActivity(workspace.ID, streamID, messageID, call, "error", data, "research agents are disabled in settings", "")
 		return chatToolCallExecution{
 			Messages: []llm.Message{{
 				Role:       llm.RoleTool,
@@ -978,7 +1019,7 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 	}
 	if readOnlyOnly && !tools.IsPlanModeToolName(call.Function.Name) {
 		data := fmt.Sprintf(`{"tool":%q,"success":false,"error":{"code":"tool_not_allowed","message":"tool is not available in plan mode"}}`, call.Function.Name)
-		s.updateToolActivity(workspace.ID, streamID, messageID, call, "error", data, "tool is not available in plan mode")
+		s.updateToolActivity(workspace.ID, streamID, messageID, call, "error", data, "tool is not available in plan mode", "")
 		return chatToolCallExecution{
 			Messages: []llm.Message{{
 				Role:       llm.RoleTool,
@@ -987,7 +1028,26 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 			}},
 		}
 	}
-	s.updateToolActivity(workspace.ID, streamID, messageID, call, "running", "", "")
+	s.updateToolActivity(workspace.ID, streamID, messageID, call, "running", "", "", "")
+
+	if call.Function.Name == "shell_command" {
+		var args map[string]any
+		_ = json.Unmarshal([]byte(call.Function.Arguments), &args)
+		if cmd, ok := args["command"].(string); ok && cmd != "" {
+			s.emitChatEvent(ChatStreamEvent{
+				WorkspaceID: workspace.ID,
+				StreamID:    streamID,
+				MessageID:   messageID,
+				Type:        "tool_event",
+				ToolCall: &ChatToolActivity{
+					ID:            call.ID,
+					Name:          call.Function.Name,
+					Status:        "running",
+					ConsoleOutput: "â³ Running: " + cmd,
+				},
+			})
+		}
+	}
 
 	events := func(event tools.Event) {
 		if event.Message != "" {
@@ -1009,7 +1069,7 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 		Type:           "chat",
 		MessageID:      messageID,
 		researchAgents: research,
-	}, events, toolScopes)
+	}, events, toolScopes, generatedImages)
 	result := execution.Result
 
 	data, err := json.Marshal(result)
@@ -1024,7 +1084,66 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 			errorText = result.Error.Message
 		}
 	}
-	s.updateToolActivity(workspace.ID, streamID, messageID, call, status, string(data), errorText)
+	consoleOutput := ""
+	if call.Function.Name == "shell_command" {
+		consoleOutput = extractShellConsoleOutput(call, result)
+	}
+	s.updateToolActivity(workspace.ID, streamID, messageID, call, status, string(data), errorText, consoleOutput)
+
+	// Attach images/videos from tool results to the assistant chat message so they render in the UI.
+	if result.Success && result.Output != nil {
+		if provider, ok := result.Output.(tools.LLMImageContentProvider); ok {
+			if image, ok := provider.LLMImageContent(); ok && image.DataURL != "" {
+				s.attachChatImage(workspace.ID, streamID, messageID, ChatImageAttachment{
+					ID:        s.nextChatID("img"),
+					Source:    "tool",
+					Name:      call.Function.Name + "-generated",
+					MediaType: image.MediaType,
+					Bytes:     image.Bytes,
+					DataURL:   image.DataURL,
+				})
+				// Track the generated image so subsequent tool calls (e.g., save_image) can reference it.
+				if idProvider, ok := result.Output.(tools.ImageIDProvider); ok && idProvider.GetImageID() != "" {
+					imageID := idProvider.GetImageID()
+					generatedImages[imageID] = tools.AttachedImage{
+						Name:      image.Name,
+						MediaType: image.MediaType,
+						DataURL:   image.DataURL,
+					}
+					fmt.Fprintln(os.Stderr, "[chat] tracked generated image", imageID, "from tool", call.Function.Name)
+				} else if outMap, jsonOk := result.Output.(map[string]any); jsonOk {
+					if imageID, ok := outMap["imageId"].(string); ok && imageID != "" {
+						generatedImages[imageID] = tools.AttachedImage{
+							Name:      image.Name,
+							MediaType: image.MediaType,
+							DataURL:   image.DataURL,
+						}
+						fmt.Fprintln(os.Stderr, "[chat] tracked generated image", imageID, "from tool", call.Function.Name, "(via map)")
+					} else {
+						fmt.Fprintln(os.Stderr, "[chat] tool", call.Function.Name, "returned image but no imageId in output map")
+					}
+				} else {
+					fmt.Fprintln(os.Stderr, "[chat] tool", call.Function.Name, "returned image but output is not ImageIDProvider or map[string]any")
+				}
+			} else {
+				fmt.Fprintln(os.Stderr, "[chat] tool", call.Function.Name, "LLMImageContent returned empty DataURL")
+			}
+		} else {
+			fmt.Fprintln(os.Stderr, "[chat] tool", call.Function.Name, "output does not implement LLMImageContentProvider")
+		}
+		if provider, ok := result.Output.(tools.LLMVideoContentProvider); ok {
+			if video, ok := provider.LLMVideoContent(); ok && video.DataURL != "" {
+				s.attachChatVideo(workspace.ID, streamID, messageID, ChatVideoAttachment{
+					ID:        s.nextChatID("vid"),
+					Source:    "tool",
+					Name:      call.Function.Name + "-generated",
+					MediaType: video.MediaType,
+					Bytes:     video.Bytes,
+					DataURL:   video.DataURL,
+				})
+			}
+		}
+	}
 
 	return chatToolCallExecution{
 		Messages:        toolResultMessages(call, result, data),
@@ -1057,14 +1176,15 @@ func (s *SystemService) appendChatReasoning(workspaceID string, streamID string,
 	})
 }
 
-func (s *SystemService) updateToolActivity(workspaceID string, streamID string, messageID string, call llm.ToolCall, status string, result string, errorText string) {
+func (s *SystemService) updateToolActivity(workspaceID string, streamID string, messageID string, call llm.ToolCall, status string, result string, errorText string, consoleOutput string) {
 	activity := ChatToolActivity{
-		ID:        call.ID,
-		Name:      call.Function.Name,
-		Arguments: call.Function.Arguments,
-		Status:    status,
-		Result:    result,
-		Error:     errorText,
+		ID:            call.ID,
+		Name:          call.Function.Name,
+		Arguments:     call.Function.Arguments,
+		Status:        status,
+		Result:        result,
+		Error:         errorText,
+		ConsoleOutput: consoleOutput,
 	}
 	s.mutateChatMessage(workspaceID, messageID, func(message *ChatMessage) {
 		for i := range message.ToolCalls {
@@ -1085,6 +1205,63 @@ func (s *SystemService) updateToolActivity(workspaceID string, streamID string, 
 		Type:        "tool_call",
 		ToolCall:    &activity,
 	})
+}
+
+// extractShellConsoleOutput extracts shell_command output fields from an ExecutionResult
+// and formats them as a readable console string. Returns empty string if not applicable.
+func extractShellConsoleOutput(call llm.ToolCall, result tools.ExecutionResult) string {
+	if call.Function.Name != "shell_command" {
+		return ""
+	}
+	output, ok := result.Output.(map[string]any)
+	if !ok {
+		return ""
+	}
+
+	cmd := ""
+	if v, ok := output["command"].(string); ok {
+		cmd = v
+	}
+	stdout := ""
+	if v, ok := output["stdout"].(string); ok {
+		stdout = v
+	}
+	stderr := ""
+	if v, ok := output["stderr"].(string); ok {
+		stderr = v
+	}
+	exitCode := 0
+	if v, ok := output["exitCode"].(float64); ok {
+		exitCode = int(v)
+	}
+	durationMs := int64(0)
+	if v, ok := output["durationMilliseconds"].(float64); ok {
+		durationMs = int64(v)
+	}
+
+	return formatShellConsoleOutput(cmd, stdout, stderr, exitCode, durationMs)
+}
+
+// formatShellConsoleOutput builds a readable console-style string from shell command output.
+func formatShellConsoleOutput(cmd, stdout, stderr string, exitCode int, durationMs int64) string {
+	var b strings.Builder
+	b.WriteString("> ")
+	b.WriteString(cmd)
+	b.WriteString("\n")
+	if stdout != "" {
+		b.WriteString(stdout)
+		if !strings.HasSuffix(stdout, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	if stderr != "" {
+		b.WriteString(stderr)
+		if !strings.HasSuffix(stderr, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString(fmt.Sprintf("\nexit code: %d  duration: %dms\n", exitCode, durationMs))
+	return b.String()
 }
 
 func (s *SystemService) completeChatMessage(workspaceID string, streamID string, messageID string, finishReason string) {
@@ -1227,6 +1404,30 @@ func (s *SystemService) mutateChatMessage(workspaceID string, messageID string, 
 	s.emitChatEvent(event)
 }
 
+func (s *SystemService) attachChatImage(workspaceID string, streamID string, messageID string, attachment ChatImageAttachment) {
+	s.mutateChatMessage(workspaceID, messageID, func(message *ChatMessage) {
+		message.Images = append(message.Images, attachment)
+	}, ChatStreamEvent{
+		WorkspaceID:     workspaceID,
+		StreamID:        streamID,
+		MessageID:       messageID,
+		Type:            "image_attached",
+		ImageAttachment: &attachment,
+	})
+}
+
+func (s *SystemService) attachChatVideo(workspaceID string, streamID string, messageID string, attachment ChatVideoAttachment) {
+	s.mutateChatMessage(workspaceID, messageID, func(message *ChatMessage) {
+		message.Videos = append(message.Videos, attachment)
+	}, ChatStreamEvent{
+		WorkspaceID:     workspaceID,
+		StreamID:        streamID,
+		MessageID:       messageID,
+		Type:            "video_attached",
+		VideoAttachment: &attachment,
+	})
+}
+
 func (s *SystemService) finishChatStream(workspaceID string, streamID string) {
 	s.chatMu.Lock()
 	if session := s.chatSessions[workspaceID]; session != nil && session.StreamID == streamID {
@@ -1278,7 +1479,11 @@ func (s *SystemService) replaceChatHistory(workspaceID string, history []llm.Mes
 	s.chatMu.Lock()
 	defer s.chatMu.Unlock()
 	if session := s.chatSessions[workspaceID]; session != nil {
-		session.History = cloneLLMMessages(history)
+		stripped := make([]llm.Message, 0, len(history))
+		for _, msg := range history {
+			stripped = append(stripped, stripMediaContentParts(msg))
+		}
+		session.History = cloneLLMMessages(stripped)
 	}
 }
 
@@ -1344,10 +1549,13 @@ func chatSystemMessage(workspace Workspace, mode AgentMode, skillCandidates []to
 		"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. " +
 		"When a search result gives a useful line number, read nearby code with filesystem_read_text aroundLine; copy the result's line value and avoid reading whole source files unless the entire file is genuinely needed. " +
 		"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. " +
-		"Keep plans concrete and concise."
+		"When images are attached to a chat message, use comfyui_generate with attachedImageIndex (0-based) to pass them directly as img2img input â€” no need to save to disk first. Index 0 refers to the first attached image. " +
+			"After generating an image with comfyui_generate, use the returned imageId with save_image to persist it to workspace disk if needed. " +
+			"Keep plans concrete and concise."
 	if researchEnabled {
 		instructions += " " + researchOrchestratorSystemGuidance
 	}
+
 	if isPlanMode {
 		instructions = "You are Echo, a personal AI assistant helping research and plan work inside the active workspace. " +
 			contextCheckpointSystemGuidance + " " +
