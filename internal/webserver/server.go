@@ -573,7 +573,6 @@ var allowedRPCMethods = map[string]bool{
 	"PruneChatMessage":                        true,
 	"PrepareRebuildAndRelaunch":               true,
 	"PrepareWorkspaceSymbolRename":            true,
-	"PruneChatMessage":                        true,
 	"ReadWorkspaceFile":                       true,
 	"ReadWorkspaceMediaFile":                  true,
 	"RemoveWorkspaceFolder":                   true,
