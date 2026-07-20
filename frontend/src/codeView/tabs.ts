@@ -42,6 +42,7 @@ type ActivateCodeTabOptions = {
 };
 
 type DirtyCodeTabCloseChoice = "save" | "cancel" | "discard";
+export type CodeTabCloseMode = "one" | "others" | "right" | "saved" | "all";
 
 let dirtyCodeTabDialogOpen = false;
 let dirtyCodeTabDialogSeq = 0;
@@ -909,7 +910,7 @@ export function closeCodeTab(
   path: string,
   callbacks: CodeViewCallbacks,
 ): Promise<boolean> {
-  return closeCodeTabAtPath(workspaceID, path, callbacks);
+  return closeCodeTabs(workspaceID, path, "one", callbacks);
 }
 
 export function closeActiveCodeTab(
@@ -921,22 +922,33 @@ export function closeActiveCodeTab(
   if (!tab) {
     return Promise.resolve(false);
   }
-  return closeCodeTabAtPath(workspaceID, tab.path, callbacks);
+  return closeCodeTabs(workspaceID, tab.path, "one", callbacks);
 }
 
-async function closeCodeTabAtPath(
+export async function closeCodeTabs(
   workspaceID: string,
-  path: string,
+  anchorPath: string,
+  mode: CodeTabCloseMode,
   callbacks: CodeViewCallbacks,
 ) {
   saveMountedEditorContent();
   const state = ensureCodeState(workspaceID);
-  let index = state.tabs.findIndex((tab) => tab.path === path);
-  if (index < 0) {
+  const originalTabs = [...state.tabs];
+  const anchorIndex = originalTabs.findIndex((tab) => tab.path === anchorPath);
+  if (anchorIndex < 0) {
     return false;
   }
-  let tab = state.tabs[index];
-  if (tab.dirty) {
+
+  const targets = codeTabCloseTargets(originalTabs, anchorIndex, mode);
+  if (!targets.length) {
+    return false;
+  }
+
+  const originalActiveTab = originalTabs.find((tab) => tab.path === state.activePath) ?? null;
+  for (const tab of targets) {
+    if (!state.tabs.includes(tab) || !tab.dirty) {
+      continue;
+    }
     const choice = await promptDirtyCodeTabClose(tab);
     if (choice === "cancel") {
       return false;
@@ -944,20 +956,25 @@ async function closeCodeTabAtPath(
     if (choice === "save" && !(await saveCodeTab(workspaceID, tab.path, callbacks))) {
       return false;
     }
-    path = tab.path;
-    index = state.tabs.indexOf(tab);
-    if (index < 0) {
+    if (choice === "save" && tab.dirty) {
       return false;
     }
-    tab = state.tabs[index];
   }
-  state.tabs.splice(index, 1);
-  removeTabMruPath(state, path);
-  if (state.activePath === path) {
-    state.activePath =
-      state.tabs[Math.max(0, index - 1)]?.path ?? state.tabs[0]?.path ?? "";
-    promoteTabMruPath(state, state.activePath);
+
+  const targetSet = new Set(targets.filter((tab) => state.tabs.includes(tab)));
+  const survivors = state.tabs.filter((tab) => !targetSet.has(tab));
+  if (targetSet.size === 0) {
+    return false;
   }
+
+  state.tabs = survivors;
+  if (originalActiveTab && !targetSet.has(originalActiveTab) && survivors.includes(originalActiveTab)) {
+    state.activePath = originalActiveTab.path;
+  } else {
+    const nextActive = nearestSurvivingCodeTab(originalTabs, originalActiveTab, targetSet, survivors);
+    state.activePath = nextActive?.path ?? "";
+  }
+  promoteTabMruPath(state, state.activePath);
   state.tabSwitcher = null;
   pruneTabMruPaths(state);
   if (!state.tabs.some((candidate) => candidate.untitled)) {
@@ -967,6 +984,62 @@ async function closeCodeTabAtPath(
   if (state.activePath && !activeCodeTab(workspaceID)?.external && !isUntitledCodePath(state.activePath)) {
     void revealCodeFileInTree(workspaceID, state.activePath, callbacks);
   }
+  return true;
+}
+
+function codeTabCloseTargets(
+  tabs: CodeFileTab[],
+  anchorIndex: number,
+  mode: CodeTabCloseMode,
+): CodeFileTab[] {
+  switch (mode) {
+    case "others":
+      return tabs.filter((_, index) => index !== anchorIndex);
+    case "right":
+      return tabs.slice(anchorIndex + 1);
+    case "saved":
+      return tabs.filter((tab) => !tab.dirty);
+    case "all":
+      return tabs;
+    default:
+      return tabs[anchorIndex] ? [tabs[anchorIndex]] : [];
+  }
+}
+
+function nearestSurvivingCodeTab(
+  originalTabs: CodeFileTab[],
+  originalActiveTab: CodeFileTab | null,
+  closedTabs: Set<CodeFileTab>,
+  survivors: CodeFileTab[],
+): CodeFileTab | null {
+  const activeIndex = originalActiveTab ? originalTabs.indexOf(originalActiveTab) : -1;
+  for (let index = activeIndex - 1; index >= 0; index--) {
+    const candidate = originalTabs[index];
+    if (!closedTabs.has(candidate) && survivors.includes(candidate)) {
+      return candidate;
+    }
+  }
+  for (let index = Math.max(0, activeIndex + 1); index < originalTabs.length; index++) {
+    const candidate = originalTabs[index];
+    if (!closedTabs.has(candidate) && survivors.includes(candidate)) {
+      return candidate;
+    }
+  }
+  return survivors[0] ?? null;
+}
+
+export async function revealCodeTabInWorkspace(
+  workspaceID: string,
+  path: string,
+  callbacks: CodeViewCallbacks,
+) {
+  const tab = findTab(workspaceID, path);
+  if (!tab || tab.untitled || tab.external) {
+    return false;
+  }
+  ensureCodeState(workspaceID).explorerDrawerOpen = true;
+  callbacks.render();
+  await revealCodeFileInTree(workspaceID, tab.path, callbacks);
   return true;
 }
 

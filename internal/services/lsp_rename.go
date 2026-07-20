@@ -114,9 +114,7 @@ func (s *SystemService) PrepareWorkspaceSymbolRename(workspaceID string, request
 	}
 	response.FilePath = workspaceRelativePath(workspace, resolved)
 
-	ctx, cancel := context.WithTimeout(context.Background(), lspRenameTimeout)
-	defer cancel()
-	target, placeholder, available, err := client.prepareRename(ctx, resolved, request.Content, request.Position)
+	target, placeholder, available, err := client.prepareRename(context.Background(), resolved, request.Content, request.Position)
 	if err != nil {
 		return WorkspacePrepareRenameResponse{}, err
 	}
@@ -180,9 +178,7 @@ func (s *SystemService) RenameWorkspaceSymbol(workspaceID string, request Worksp
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), lspRenameTimeout)
-	defer cancel()
-	edits, err := client.rename(ctx, resolved, request.Content, request.Position, request.NewName, openFiles)
+	edits, err := client.rename(context.Background(), resolved, request.Content, request.Position, request.NewName, openFiles)
 	if err != nil {
 		return WorkspaceRenameResponse{}, err
 	}
@@ -287,19 +283,25 @@ func (s *SystemService) workspaceRenameClient(workspace Workspace, path string, 
 }
 
 func (c *lspClient) prepareRename(ctx context.Context, absolutePath string, content string, position int) (lspRange, string, bool, error) {
-	c.operationMu.Lock()
-	defer c.operationMu.Unlock()
 	uri := fileURI(absolutePath)
+	release, err := c.acquireOperation(ctx, "textDocument/prepareRename")
+	if err != nil {
+		return lspRange{}, "", false, err
+	}
+	defer release()
+	requestCtx, cancel := c.documentOperationContext(ctx, uri, lspRenameTimeout)
+	defer cancel()
 	if err := c.syncDocument(absolutePath, uri, content); err != nil {
 		return lspRange{}, "", false, err
 	}
-	raw, err := c.requestWithRetry(ctx, "textDocument/prepareRename", map[string]any{
+	raw, err := c.requestWithRetry(requestCtx, "textDocument/prepareRename", map[string]any{
 		"textDocument": map[string]string{"uri": uri},
 		"position":     lspPositionFromUTF16Offset(content, position),
 	})
 	if err != nil {
 		return lspRange{}, "", false, err
 	}
+	c.markDocumentReady(uri)
 	return parseLSPPrepareRenameResponse(raw)
 }
 
@@ -311,8 +313,14 @@ func (c *lspClient) rename(
 	newName string,
 	openFiles map[string]WorkspaceRenameFileContent,
 ) (map[string][]lspTextEdit, error) {
-	c.operationMu.Lock()
-	defer c.operationMu.Unlock()
+	uri := fileURI(absolutePath)
+	release, err := c.acquireOperation(ctx, "textDocument/rename")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	requestCtx, cancel := c.documentOperationContext(ctx, uri, lspRenameTimeout)
+	defer cancel()
 	for path, file := range openFiles {
 		languageID, ok := lspLanguageIDForPath(path)
 		if !ok || languageID != c.languageID || !pathWithinRoot(c.rootPath, path) {
@@ -322,11 +330,10 @@ func (c *lspClient) rename(
 			return nil, err
 		}
 	}
-	uri := fileURI(absolutePath)
 	if err := c.syncDocument(absolutePath, uri, content); err != nil {
 		return nil, err
 	}
-	raw, err := c.requestWithRetry(ctx, "textDocument/rename", map[string]any{
+	raw, err := c.requestWithRetry(requestCtx, "textDocument/rename", map[string]any{
 		"textDocument": map[string]string{"uri": uri},
 		"position":     lspPositionFromUTF16Offset(content, position),
 		"newName":      newName,
@@ -334,6 +341,7 @@ func (c *lspClient) rename(
 	if err != nil {
 		return nil, err
 	}
+	c.markDocumentReady(uri)
 	return parseLSPWorkspaceEdit(raw)
 }
 

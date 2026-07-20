@@ -1096,14 +1096,24 @@ function handleGitChangeFileSelect(event: MouseEvent) {
 }
 
 function bindGitWorkingDiffs(root: ParentNode) {
-  gitWorkingDiffObserver?.disconnect();
-  gitWorkingDiffObserver = null;
   const workspace = activeWorkspace();
   const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
   const list = root.querySelector<HTMLElement>("[data-git-change-file-list]");
   if (!workspace || !repository || !list) {
+    // Fragment rendering binds each changed shell region independently. A
+    // non-main fragment must not tear down the observer created by the Git
+    // main region a moment earlier.
+    if (
+      root === appRoot ||
+      (root instanceof HTMLElement && root.dataset.region === "main")
+    ) {
+      gitWorkingDiffObserver?.disconnect();
+      gitWorkingDiffObserver = null;
+    }
     return;
   }
+  gitWorkingDiffObserver?.disconnect();
+  gitWorkingDiffObserver = null;
   const pending = Array.from(list.querySelectorAll<HTMLElement>("[data-git-diff-pending]"));
   if (!pending.length) {
     return;

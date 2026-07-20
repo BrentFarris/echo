@@ -13,7 +13,7 @@ import { appRoot, focusInitialElement } from "./dom";
 import { bindEvents } from "./events";
 import { renderGitRepositoryPage } from "./git";
 import { icons } from "./icons";
-import { kanbanBoardFor, gitRepositoryViewFor, activeWorkspace, kanbanCards, state, getActiveChatKanbanTab, changeReviewFor } from "./state";
+import { kanbanBoardFor, gitRepositoryViewFor, activeWorkspace, kanbanCards, state, getActiveChatKanbanTab, changeReviewFor, leadingWhitespaceIndicatorsEnabled } from "./state";
 import { renderSettingsOverlay } from "./settings";
 import { renderToasts } from "./toasts";
 import { renderTaskPanel, renderTaskDetail } from "./tasks";
@@ -85,17 +85,42 @@ function ensureShell(): HTMLElement {
   return shell;
 }
 
-/** Replace the innerHTML of a named region, creating the region element
- *  lazily on first write. */
-function updateRegion(shell: HTMLElement, name: string, html: string): void {
+type RegionUpdate = {
+  element: HTMLElement;
+  changed: boolean;
+};
+
+const renderedRegionHTML = new WeakMap<HTMLElement, string>();
+let mountedCodeViewBoundaryKey = "";
+
+/** Replace a named region only when its rendered output changed.  Local
+ *  patch helpers own any DOM changes between region renders. */
+function updateRegion(
+  shell: HTMLElement,
+  name: string,
+  html: string,
+  force = false,
+): RegionUpdate {
   let region = shell.querySelector(`[data-region="${name}"]`) as HTMLElement;
   if (!region) {
     region = document.createElement("div");
     region.dataset.region = name;
     shell.appendChild(region);
   }
+  if (!force && renderedRegionHTML.get(region) === html) {
+    return { element: region, changed: false };
+  }
   region.innerHTML = html;
+  renderedRegionHTML.set(region, html);
+  return { element: region, changed: true };
 }
+
+type RenderFocusSnapshot = {
+  key: string;
+  selectionStart: number | null;
+  selectionEnd: number | null;
+  selectionDirection: "forward" | "backward" | "none" | null;
+};
 
 type RenderScrollSnapshot = {
   top: number;
@@ -142,6 +167,67 @@ function restoreRenderScrollSnapshots(snapshots: Map<string, RenderScrollSnapsho
     element.scrollTop = Math.min(snapshot.top, maxTop);
     element.scrollLeft = Math.min(snapshot.left, maxLeft);
   });
+}
+
+function captureRenderFocusSnapshot(): RenderFocusSnapshot | null {
+  const active = document.activeElement;
+  if (
+    !(active instanceof HTMLElement) ||
+    !appRoot.contains(active) ||
+    !(
+      active instanceof HTMLInputElement ||
+      active instanceof HTMLTextAreaElement ||
+      active.isContentEditable
+    )
+  ) {
+    return null;
+  }
+  let selectionStart: number | null = null;
+  let selectionEnd: number | null = null;
+  let selectionDirection: "forward" | "backward" | "none" | null = null;
+  if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+    try {
+      selectionStart = active.selectionStart;
+      selectionEnd = active.selectionEnd;
+      selectionDirection = active.selectionDirection;
+    } catch {
+      // Some input types do not expose a text selection.
+    }
+  }
+  return {
+    key: renderScrollKey(active),
+    selectionStart,
+    selectionEnd,
+    selectionDirection,
+  };
+}
+
+function restoreRenderFocusSnapshot(snapshot: RenderFocusSnapshot | null): void {
+  if (!snapshot) {
+    return;
+  }
+  const element = Array.from(appRoot.querySelectorAll<HTMLElement>("*")).find(
+    (candidate) => renderScrollKey(candidate) === snapshot.key,
+  );
+  if (!element) {
+    return;
+  }
+  element.focus({ preventScroll: true });
+  if (
+    snapshot.selectionStart !== null &&
+    snapshot.selectionEnd !== null &&
+    (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)
+  ) {
+    try {
+      element.setSelectionRange(
+        snapshot.selectionStart,
+        snapshot.selectionEnd,
+        snapshot.selectionDirection ?? undefined,
+      );
+    } catch {
+      // Some input types can be focused but do not support setSelectionRange.
+    }
+  }
 }
 
 function isScrollableForRenderSnapshot(element: HTMLElement): boolean {
@@ -212,6 +298,16 @@ function elementIndex(element: HTMLElement): number {
 /* ------------------------------------------------------------------ */
 
 export function render(): void {
+  renderApp(false);
+}
+
+/** Code-owned structural updates use this entry point. Background app events
+ *  use render(), which keeps an already-mounted code workspace attached. */
+export function renderCodeViewUI(): void {
+  renderApp(true);
+}
+
+function renderApp(refreshCodeView: boolean): void {
   const workspace = activeWorkspace();
   updateWindowTitle();
   if (state.appMode !== "code" || !workspace) {
@@ -219,6 +315,7 @@ export function render(): void {
   }
   const hadDialog = Boolean(appRoot.querySelector('[role="dialog"]'));
   const scrollSnapshots = captureRenderScrollSnapshots();
+  const focusSnapshot = captureRenderFocusSnapshot();
 
   const workspaces = state.appState?.workspaces ?? [];
 
@@ -230,23 +327,77 @@ export function render(): void {
   }
 
   const shell = ensureShell();
+  const changedRegions: HTMLElement[] = [];
+  const leftNav = updateRegion(shell, "left-nav", buildLeftNav(workspaces, workspace));
+  if (leftNav.changed) {
+    changedRegions.push(leftNav.element);
+  }
 
-  updateRegion(shell, "left-nav", buildLeftNav(workspaces, workspace));
-  updateRegion(shell, "main", buildMain(workspace, workspaces));
-  updateRegion(
+  const mountedCodeView = shell.querySelector<HTMLElement>(
+    '[data-region="main"] [data-code-view]',
+  );
+  const nextCodeViewBoundaryKey = codeViewBoundaryKey(workspace);
+  const preserveMountedCodeView =
+    !refreshCodeView &&
+    state.appMode === "code" &&
+    Boolean(workspace) &&
+    mountedCodeViewBoundaryKey === nextCodeViewBoundaryKey &&
+    mountedCodeView?.dataset.codeViewWorkspaceId === workspace?.id;
+  if (!preserveMountedCodeView) {
+    const main = updateRegion(
+      shell,
+      "main",
+      buildMain(workspace, workspaces),
+      refreshCodeView || mountedCodeViewBoundaryKey !== nextCodeViewBoundaryKey,
+    );
+    if (main.changed) {
+      changedRegions.push(main.element);
+    }
+    mountedCodeViewBoundaryKey = state.appMode === "code"
+      ? nextCodeViewBoundaryKey
+      : "";
+  }
+
+  const mobileNav = updateRegion(
     shell,
     "mobile-nav",
     renderMobileBottomNav(workspaces, workspace),
   );
-  updateRegion(shell, "overlays", buildOverlays());
+  if (mobileNav.changed) {
+    changedRegions.push(mobileNav.element);
+  }
+  const overlays = updateRegion(shell, "overlays", buildOverlays());
+  if (overlays.changed) {
+    changedRegions.push(overlays.element);
+  }
 
-  bindEvents();
+  changedRegions.forEach((region) => bindEvents(region));
   restoreRenderScrollSnapshots(scrollSnapshots);
+  restoreRenderFocusSnapshot(focusSnapshot);
   window.requestAnimationFrame(() => restoreRenderScrollSnapshots(scrollSnapshots));
   if (!hadDialog) {
     focusInitialElement();
   }
   void linkifyAssistantFilePaths();
+}
+
+function codeViewBoundaryKey(workspace: services.Workspace | null): string {
+  if (state.appMode !== "code" || !workspace) {
+    return "";
+  }
+  const settings = state.appState?.settings ?? state.settingsDraft;
+  return JSON.stringify({
+    workspaceId: workspace.id,
+    displayName: workspace.displayName,
+    missing: workspace.missing,
+    folders: (workspace.folders ?? []).map((folder) => ({
+      id: folder.id,
+      label: folder.label,
+      path: folder.path,
+      missing: folder.missing,
+    })),
+    leadingWhitespaceIndicators: leadingWhitespaceIndicatorsEnabled(settings),
+  });
 }
 
 /* ------------------------------------------------------------------ */

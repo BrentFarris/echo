@@ -15,7 +15,7 @@ import { appRoot } from "./dom";
 import { handleGlobalKeydown, handleGlobalKeyup, handleGlobalPointerDown, handleGlobalWindowBlur } from "./events";
 import { applyKanbanEvent, applyHeartbeatEvent, applyLivenessEvent, applyWatchdogEvent, loadActiveKanbanBoard, markKanbanRunStarted } from "./kanban";
 import { gitChangedLineNumbersForFile, gitChangeStateForPath } from "./git";
-import { render } from "./render";
+import { render, renderCodeViewUI } from "./render";
 import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state, loadDashboardLayoutsFromBackend, startActivityRefreshTimer } from "./state";
 import { applyTheme } from "./theme";
 import { applyTaskEvent, loadActiveTaskBoard } from "./tasks";
@@ -23,7 +23,7 @@ import { pushToast } from "./toasts";
 import type { ChatStreamEvent, FileChangesEvent, HeartbeatEvent, KanbanEvent, LivenessEvent, ShellCommandEvent, ShellCommandRun, TaskEvent, WatchdogEvent } from "./types";
 import { errorMessage, escapeHtml, escapeAttribute } from "./utils";
 import { loadActiveChatSession } from "./chat";
-import type { CodeEntryKind } from "../codeView/types";
+import type { CodeEntryKind, CodeTabContextMenu } from "../codeView/types";
 import type { DebugEvent } from "../codeView/debugTypes";
 import { loadTokenBudget } from "./budget";
 import { loadLivenessConfig } from "./liveness";
@@ -49,13 +49,13 @@ function scheduleWebRealtimeResync() {
 
 function codeViewCallbacks() {
   return {
-    render,
+    render: renderCodeViewUI,
     activateCodeView(workspaceID: string) {
       state.appMode = "code";
       state.mobileNavView = "code";
       state.settingsOpen = false;
       state.openGitChangeWorkspaces.delete(workspaceID);
-      void ensureCodeViewRootLoaded(workspaceID).finally(render);
+      void ensureCodeViewRootLoaded(workspaceID).finally(renderCodeViewUI);
     },
     pushToast,
     errorMessage,
@@ -89,6 +89,25 @@ function codeViewCallbacks() {
         codePath: path,
         codeKind: kind,
         displayPath: label || path,
+        x,
+        y,
+      });
+    },
+    showCodeTabContextMenu(
+      workspaceId: string,
+      menu: CodeTabContextMenu,
+      x: number,
+      y: number,
+    ) {
+      showContextMenu({
+        workspaceId,
+        displayPath: menu.label,
+        codeTabPath: menu.path,
+        codeTabUntitled: menu.untitled,
+        codeTabExternal: menu.external,
+        codeTabCanCloseOthers: menu.canCloseOthers,
+        codeTabCanCloseToRight: menu.canCloseToRight,
+        codeTabCanCloseSaved: menu.canCloseSaved,
         x,
         y,
       });

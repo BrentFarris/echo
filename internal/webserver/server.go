@@ -569,6 +569,8 @@ var allowedRPCMethods = map[string]bool{
 	"OpenWorkspaceExplorer":                   true,
 	"OpenWorkspacePathExplorer":               true,
 	"PauseDebugSession":                       true,
+	"ResolveWorkspacePath":                    true,
+	"PruneChatMessage":                        true,
 	"PrepareRebuildAndRelaunch":               true,
 	"PrepareWorkspaceSymbolRename":            true,
 	"PruneChatMessage":                        true,

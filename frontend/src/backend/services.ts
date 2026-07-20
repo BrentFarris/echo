@@ -473,6 +473,10 @@ export function OpenKanbanCardDetail(...args: Parameters<typeof Wails.OpenKanban
   return call("OpenKanbanCardDetail", Wails.OpenKanbanCardDetail, args);
 }
 
+export function OpenExternalPathExplorer(...args: Parameters<typeof Wails.OpenExternalPathExplorer>): ReturnType<typeof Wails.OpenExternalPathExplorer> {
+  return call("OpenExternalPathExplorer", Wails.OpenExternalPathExplorer, args);
+}
+
 export function OpenWorkspaceExplorer(...args: Parameters<typeof Wails.OpenWorkspaceExplorer>): ReturnType<typeof Wails.OpenWorkspaceExplorer> {
   return call("OpenWorkspaceExplorer", Wails.OpenWorkspaceExplorer, args);
 }
@@ -534,6 +538,10 @@ export function ReadExternalTextFile(...args: Parameters<typeof Wails.ReadExtern
 
 export function ResolveWorkspaceTextFilePath(...args: Parameters<typeof Wails.ResolveWorkspaceTextFilePath>): ReturnType<typeof Wails.ResolveWorkspaceTextFilePath> {
   return call("ResolveWorkspaceTextFilePath", Wails.ResolveWorkspaceTextFilePath, args);
+}
+
+export function ResolveWorkspacePath(...args: Parameters<typeof Wails.ResolveWorkspacePath>): ReturnType<typeof Wails.ResolveWorkspacePath> {
+  return call("ResolveWorkspacePath", Wails.ResolveWorkspacePath, args);
 }
 
 export function ReorderWorkspaces(...args: Parameters<typeof Wails.ReorderWorkspaces>): ReturnType<typeof Wails.ReorderWorkspaces> {

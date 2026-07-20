@@ -334,6 +334,10 @@ export function MoveWorkspaceTask(arg1, arg2, arg3, arg4) {
   return window['go']['services']['SystemService']['MoveWorkspaceTask'](arg1, arg2, arg3, arg4);
 }
 
+export function OpenExternalPathExplorer(arg1) {
+  return window['go']['services']['SystemService']['OpenExternalPathExplorer'](arg1);
+}
+
 export function OpenKanbanCardDetail(arg1, arg2) {
   return window['go']['services']['SystemService']['OpenKanbanCardDetail'](arg1, arg2);
 }
@@ -416,6 +420,10 @@ export function ResolveMode(arg1) {
 
 export function ResolveModeProvider(arg1) {
   return window['go']['services']['SystemService']['ResolveModeProvider'](arg1);
+}
+
+export function ResolveWorkspacePath(arg1, arg2) {
+  return window['go']['services']['SystemService']['ResolveWorkspacePath'](arg1, arg2);
 }
 
 export function ResolveWorkspaceTextFilePath(arg1, arg2) {
