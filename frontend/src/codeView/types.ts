@@ -45,6 +45,17 @@ export type CodeViewCallbacks = {
     x: number,
     y: number,
   ) => void;
+  showEditorSymbolContextMenu: (
+    workspaceID: string,
+    path: string,
+    position: number | null,
+    x: number,
+    y: number,
+    spellCheckWord?: string,
+    spellCheckSuggestions?: string[],
+    spellCheckFrom?: number,
+    spellCheckTo?: number,
+  ) => void;
 };
 
 export type DirectoryState = {

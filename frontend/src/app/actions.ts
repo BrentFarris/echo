@@ -1,5 +1,8 @@
 import { clearCodeTabSwitcher, closeCodeTabs, deleteSelectedCodePaths, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, revealCodeTabInWorkspace, startCodeCreate, startCodeRename } from "../codeView";
 import type { CodeTabCloseMode } from "../codeView";
+import { getMountedCodeEditor } from "../codeView/editor";
+import { addToSpellCheckDictionary, codeStates } from "../codeView/state";
+import { goToLspDefinitionFromContext } from "../codeView/lsp";
 import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, GetHeartbeatConfig, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenExternalPathExplorer, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, ResolveWorkspacePath, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
 import { appRoot } from "./dom";
 import { getAppCallbacks } from "./callbacks";
