@@ -17,13 +17,14 @@ import (
 const fileChangesEventName = "echo:file-changes:event"
 
 type WorkspaceChangeSource struct {
-	Type       string `json:"type"`
-	CardID     string `json:"cardId,omitempty"`
-	CardTitle  string `json:"cardTitle,omitempty"`
-	MessageID  string `json:"messageId,omitempty"`
-	RequestID  string `json:"requestId,omitempty"`
-	ToolCallID string `json:"toolCallId,omitempty"`
-	ToolName   string `json:"toolName,omitempty"`
+	Type           string `json:"type"`
+	CardID         string `json:"cardId,omitempty"`
+	CardTitle      string `json:"cardTitle,omitempty"`
+	MessageID      string `json:"messageId,omitempty"`
+	RequestID      string `json:"requestId,omitempty"`
+	ToolCallID     string `json:"toolCallId,omitempty"`
+	ToolName       string `json:"toolName,omitempty"`
+	researchAgents tools.ResearchAgentCoordinator
 }
 
 type WorkspaceFileSnapshot struct {
@@ -143,21 +144,22 @@ func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Wo
 		lock.Lock()
 		unlock = lock.Unlock
 	}
-		result := tools.Execute(tools.ExecutionContext{
-			Context:          ctx,
-			WorkspaceRoots:   workspaceToolRoots(workspace),
-			SearxngURL:       settings.SearxngURL,
-			CodeNavigator:    s.codeNavigator(workspace),
-			WorkspaceContext: s.workspaceContextProvider(workspace),
-			WorkspaceSkills:  s.workspaceSkillsProvider(workspace),
-			WorkspaceTasks:   s.workspaceTasksProvider(workspace),
-			Emit:             emit,
-			FileChanges:      sink,
-			ToolScopes:       toolScopes,
-			AgentModes:       s,
-			KanbanExecutor:   s,
-			KanbanManager:    &kanbanManagerAdapter{service: s},
-		}, call.Function.Name, json.RawMessage(call.Function.Arguments))
+	result := tools.Execute(tools.ExecutionContext{
+		Context:          ctx,
+		WorkspaceRoots:   workspaceToolRoots(workspace),
+		SearxngURL:       settings.SearxngURL,
+		CodeNavigator:    s.codeNavigator(workspace),
+		WorkspaceContext: s.workspaceContextProvider(workspace),
+		WorkspaceSkills:  s.workspaceSkillsProvider(workspace),
+		WorkspaceTasks:   s.workspaceTasksProvider(workspace),
+		Emit:             emit,
+		FileChanges:      sink,
+		ToolScopes:       toolScopes,
+		AgentModes:       s,
+		KanbanExecutor:   s,
+		KanbanManager:    &kanbanManagerAdapter{service: s},
+		ResearchAgents:   source.researchAgents,
+	}, call.Function.Name, json.RawMessage(call.Function.Arguments))
 
 	if len(captured) > 0 {
 		s.recordToolFileChanges(workspace.ID, source, captured)

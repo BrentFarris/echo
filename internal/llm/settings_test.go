@@ -30,6 +30,18 @@ func TestSettingsForInteractionUsesSelectedEndpoint(t *testing.T) {
 			ThinkingTokenBudget: 0,
 		},
 		{
+			ID:                  "research",
+			Name:                "Research",
+			Endpoint:            "https://research.example.test/v1",
+			Model:               "research-model",
+			Temperature:         0.15,
+			ContextLength:       24576,
+			MaxTokens:           1536,
+			RepetitionPenalty:   1,
+			TimeoutSeconds:      60,
+			ThinkingTokenBudget: 0,
+		},
+		{
 			ID:                  "kanban",
 			Name:                "Kanban",
 			Endpoint:            "https://kanban.example.test/v1",
@@ -56,12 +68,21 @@ func TestSettingsForInteractionUsesSelectedEndpoint(t *testing.T) {
 	}
 	settings.EndpointSelection = EndpointSelection{
 		Chat:            "chat",
+		Research:        "research",
 		KanbanDecompose: "decompose",
 		Kanban:          "kanban",
 		InlineCode:      "inline",
 	}
 	settings.Endpoint = "https://chat.example.test/v1"
 	settings.Model = "chat-model"
+
+	research := settings.ForInteraction(InteractionResearch)
+	if research.Endpoint != "https://research.example.test/v1" || research.Model != "research-model" {
+		t.Fatalf("expected research endpoint, got %#v", research)
+	}
+	if research.ContextLength != 24576 || research.TimeoutSeconds != 60 {
+		t.Fatalf("expected research generation settings, got %#v", research)
+	}
 
 	decompose := settings.ForInteraction(InteractionKanbanDecompose)
 	if decompose.Endpoint != "https://decompose.example.test/v1" {
@@ -94,6 +115,29 @@ func TestSettingsForInteractionUsesSelectedEndpoint(t *testing.T) {
 	}
 	if inline.Temperature != 0.2 || inline.ContextLength != 16384 || inline.TimeoutSeconds != 10 {
 		t.Fatalf("expected inline generation settings, got %#v", inline)
+	}
+}
+
+func TestSettingsDefaultsResearchSelectionToChatAndNormalizesConcurrency(t *testing.T) {
+	settings := DefaultSettings()
+	settings.EndpointSelection.Research = ""
+	settings.ResearchAgentConcurrency = 0
+
+	normalized := settings.Normalized()
+	if normalized.EndpointSelection.Research != normalized.EndpointSelection.Chat {
+		t.Fatalf("expected research to inherit chat, got %q", normalized.EndpointSelection.Research)
+	}
+	if normalized.ResearchAgentConcurrency != 0 {
+		t.Fatalf("expected zero concurrency to remain disabled, got %d", normalized.ResearchAgentConcurrency)
+	}
+
+	settings.ResearchAgentConcurrency = 99
+	if got := settings.Normalized().ResearchAgentConcurrency; got != 8 {
+		t.Fatalf("expected concurrency cap 8, got %d", got)
+	}
+	settings.ResearchAgentConcurrency = -3
+	if got := settings.Normalized().ResearchAgentConcurrency; got != 0 {
+		t.Fatalf("expected negative concurrency to normalize to disabled, got %d", got)
 	}
 }
 
@@ -160,6 +204,118 @@ func TestSettingsCopiesLegacyGenerationFieldsIntoChatEndpoint(t *testing.T) {
 	}
 	if endpoint.ThinkingTokenBudget != 0 {
 		t.Fatalf("expected migrated thinking budget, got %d", endpoint.ThinkingTokenBudget)
+	}
+}
+
+func TestNormalizedPreservesEndpointHeadersWhenNoGenerationConfig(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoints = []LLMEndpoint{
+		{
+			ID:       "custom",
+			Name:     "Custom",
+			Endpoint: "https://custom.example.test/v1",
+			Model:    "custom-model",
+			Headers:  map[string]string{"X-Api-Key": "secret123", "X-Custom": "value"},
+		},
+	}
+	settings.EndpointSelection = defaultEndpointSelection("custom")
+	settings.Endpoint = "https://custom.example.test/v1"
+	settings.Model = "custom-model"
+
+	normalized := settings.Normalized()
+	endpoint := normalized.Endpoints[0]
+	if endpoint.Headers["X-Api-Key"] != "secret123" {
+		t.Fatalf("expected X-Api-Key header to be preserved, got %q", endpoint.Headers["X-Api-Key"])
+	}
+	if endpoint.Headers["X-Custom"] != "value" {
+		t.Fatalf("expected X-Custom header to be preserved, got %q", endpoint.Headers["X-Custom"])
+	}
+	if len(endpoint.Headers) != 2 {
+		t.Fatalf("expected 2 headers, got %d: %v", len(endpoint.Headers), endpoint.Headers)
+	}
+}
+
+func TestNormalizedPreservesEndpointHeadersWhenLegacyFieldsApplied(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoints = []LLMEndpoint{
+		{
+			ID:       "custom",
+			Name:     "Custom",
+			Endpoint: "https://custom.example.test/v1",
+			Model:    "custom-model",
+			Headers:  map[string]string{"X-Api-Key": "secret123"},
+		},
+	}
+	settings.EndpointSelection = defaultEndpointSelection("custom")
+	// Legacy fields that trigger applyLegacyEndpointFields
+	settings.Endpoint = "https://legacy-override.test/v1"
+	settings.Model = "legacy-override-model"
+	// Top-level headers should NOT overwrite per-endpoint headers
+	settings.Headers = map[string]string{"Authorization": "Bearer token"}
+
+	normalized := settings.Normalized()
+	endpoint := normalized.Endpoints[0]
+	// Per-endpoint headers must survive — not overwritten by settings.Headers
+	if endpoint.Headers["X-Api-Key"] != "secret123" {
+		t.Fatalf("expected X-Api-Key header to be preserved, got %q", endpoint.Headers["X-Api-Key"])
+	}
+	// The legacy endpoint fields should inherit endpoint + model from top-level
+	if endpoint.Endpoint != "https://legacy-override.test/v1" {
+		t.Fatalf("expected endpoint to be overridden by legacy field, got %q", endpoint.Endpoint)
+	}
+	if endpoint.Model != "legacy-override-model" {
+		t.Fatalf("expected model to be overridden by legacy field, got %q", endpoint.Model)
+	}
+}
+
+func TestNormalizedPreservesEndpointHeadersWithGenerationConfig(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoints = []LLMEndpoint{
+		{
+			ID:               "custom",
+			Name:             "Custom",
+			Endpoint:         "https://custom.example.test/v1",
+			Model:            "custom-model",
+			Temperature:      0.5,
+			ContextLength:    8192,
+			MaxTokens:        2048,
+			RepetitionPenalty: 1,
+			TimeoutSeconds:   30,
+			Headers:          map[string]string{"X-Api-Key": "secret123"},
+		},
+	}
+	settings.EndpointSelection = defaultEndpointSelection("custom")
+	settings.Endpoint = "https://custom.example.test/v1"
+	settings.Model = "custom-model"
+
+	normalized := settings.Normalized()
+	endpoint := normalized.Endpoints[0]
+	// The endpoint already has a generation config, so Normalized() should not
+	// call WithGenerationFromSettings and should preserve headers directly.
+	if endpoint.Headers["X-Api-Key"] != "secret123" {
+		t.Fatalf("expected X-Api-Key header to be preserved, got %q", endpoint.Headers["X-Api-Key"])
+	}
+}
+
+func TestApplyToSettingsPreservesEndpointHeaders(t *testing.T) {
+	endpoint := LLMEndpoint{
+		ID:       "custom",
+		Name:     "Custom",
+		Endpoint: "https://custom.example.test/v1",
+		Model:    "custom-model",
+		Headers:  map[string]string{"X-Api-Key": "secret123"},
+	}
+	settings := DefaultSettings()
+	settings.Headers = map[string]string{"Authorization": "Bearer token"}
+
+	applied := endpoint.ApplyToSettings(settings)
+	// Endpoint headers should replace settings headers entirely
+	if applied.Headers["X-Api-Key"] != "secret123" {
+		t.Fatalf("expected X-Api-Key header from endpoint to be applied, got %q", applied.Headers["X-Api-Key"])
+	}
+	// The previous settings.Headers should be gone (replaced by endpoint headers)
+	if len(applied.Headers) != 1 {
+		t.Fatalf("expected exactly 1 header (endpoint's), got %d: %v", len(applied.Headers), applied.Headers)
 	}
 }
 

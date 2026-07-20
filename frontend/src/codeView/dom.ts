@@ -1,6 +1,6 @@
 import { patchChildrenFromHtml } from "../markdown";
 import { codeIcons } from "./icons";
-import { renderCodeQuickOpenResults, renderFileList, renderTextSearchPanelContent, renderTextSearchResults } from "./render";
+import { renderCodeQuickOpenResults, renderFileList, renderTextSearchResults } from "./render";
 import { activeCodeTab, ensureCodeState, explorerWidthStorageKey, maxExplorerWidth, minExplorerWidth } from "./state";
 import type { CodeFileTab, CodeViewCallbacks } from "./types";
 import { clamp, codeTabName, formatBytes } from "./utils";
@@ -170,10 +170,35 @@ export function patchTextSearchPanel(
     return;
   }
   const state = ensureCodeState(workspaceID);
-  state.preservingTextSearchFocus = Boolean(state.textSearchFocusedField);
-  panel.innerHTML = renderTextSearchPanelContent(workspaceID);
-  codeTextSearchEventBinder?.(panel, workspaceID, callbacks);
-  state.preservingTextSearchFocus = false;
+  panel.querySelectorAll<HTMLButtonElement>("[data-code-text-search-option]").forEach((button) => {
+    const option = button.dataset.codeTextSearchOption ?? "";
+    const active = option === "regex"
+      ? state.textSearchRegex
+      : option === "case"
+        ? state.textSearchCaseSensitive
+        : option === "word"
+          ? state.textSearchWholeWord
+          : false;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  syncTextSearchField(panel, "query", state.textSearchQuery);
+  syncTextSearchField(panel, "include", state.textSearchInclude);
+  syncTextSearchField(panel, "exclude", state.textSearchExclude);
+  patchTextSearchResults(workspaceID, callbacks);
+}
+
+function syncTextSearchField(
+  panel: HTMLElement,
+  field: "query" | "include" | "exclude",
+  value: string,
+) {
+  const input = panel.querySelector<HTMLInputElement>(
+    `[data-code-text-search-field="${field}"]`,
+  );
+  if (input && input.value !== value) {
+    input.value = value;
+  }
 }
 
 export function patchTextSearchResults(
@@ -182,7 +207,7 @@ export function patchTextSearchResults(
 ) {
   const results = document.querySelector<HTMLElement>("[data-code-text-search-results]");
   if (!results) {
-    patchTextSearchPanel(workspaceID, callbacks);
+    callbacks.render();
     return;
   }
   results.innerHTML = renderTextSearchResults(workspaceID);

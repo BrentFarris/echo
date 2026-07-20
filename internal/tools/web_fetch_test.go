@@ -164,3 +164,22 @@ func TestWebFetchRejectsUnsupportedInputs(t *testing.T) {
 		})
 	}
 }
+
+func TestWebReadAllowsOnlyReadMethods(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			t.Fatalf("expected HEAD, got %s", r.Method)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	result := Execute(ExecutionContext{Context: context.Background()}, "web_read", mustJSON(t, map[string]any{"url": server.URL, "method": "HEAD"}))
+	if !result.Success {
+		t.Fatalf("expected read success, got %#v", result)
+	}
+	result = Execute(ExecutionContext{Context: context.Background()}, "web_read", mustJSON(t, map[string]any{"url": server.URL, "method": "POST"}))
+	if result.Success || result.Error == nil || result.Error.Code != "invalid_arguments" {
+		t.Fatalf("expected POST to be rejected, got %#v", result)
+	}
+}

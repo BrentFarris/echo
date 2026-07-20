@@ -43,8 +43,15 @@ export type ContextMenuState = {
   workspaceId: string;
   displayPath: string;
   workspacePath?: string;
+  codeTabPath?: string;
+  codeTabUntitled?: boolean;
+  codeTabExternal?: boolean;
+  codeTabCanCloseOthers?: boolean;
+  codeTabCanCloseToRight?: boolean;
+  codeTabCanCloseSaved?: boolean;
   codePath?: string;
   codeKind?: CodeEntryKind;
+  // Editor context menu (legacy)
   editorPath?: string;
   editorPosition?: number | null;
   editorPositionValid?: boolean;
@@ -53,6 +60,9 @@ export type ContextMenuState = {
   spellCheckSuggestions?: string[];
   spellCheckFrom?: number;
   spellCheckTo?: number;
+  // Git context menu
+  gitPath?: string;
+  gitKind?: "file" | "folder";
   x: number;
   y: number;
 };
@@ -64,7 +74,9 @@ export type ChatStreamEvent = {
   type: string;
   content?: string;
   reasoning?: string;
+  researchReasoning?: services.ChatResearchReasoning;
   toolCall?: services.ChatToolActivity;
+  researchAgent?: services.ChatResearchAgent;
   error?: string;
   finishReason?: string;
   revision: number;

@@ -28,11 +28,24 @@ func sortWorkspaceFileEntries(entries []WorkspaceFileEntry, query string) {
 		if left.entry.Kind != right.entry.Kind {
 			return left.entry.Kind == "directory"
 		}
+		leftDepth := workspaceSearchPathDepth(left.entry.Path)
+		rightDepth := workspaceSearchPathDepth(right.entry.Path)
+		if leftDepth != rightDepth {
+			return leftDepth < rightDepth
+		}
 		return strings.ToLower(left.entry.Path) < strings.ToLower(right.entry.Path)
 	})
 	for i := range scored {
 		entries[i] = scored[i].entry
 	}
+}
+
+func workspaceSearchPathDepth(value string) int {
+	value = strings.Trim(filepath.ToSlash(value), "/")
+	if value == "" {
+		return 0
+	}
+	return strings.Count(value, "/")
 }
 
 func workspaceSearchScore(query string, name string, relativePath string) (int, bool) {

@@ -220,6 +220,7 @@ func (s *SystemService) SearchWorkspaceFiles(workspaceID string, query string, i
 }
 
 func searchWorkspaceFilesByWalking(workspace Workspace, query string, includeIgnored bool, output WorkspaceFileSearchResult) (WorkspaceFileSearchResult, error) {
+	output.Entries = append(output.Entries, workspaceRootSearchEntries(workspace, query)...)
 	for _, folder := range workspace.Folders {
 		if folder.Missing {
 			continue
@@ -270,6 +271,28 @@ func searchWorkspaceFilesByWalking(workspace Workspace, query string, includeIgn
 		output.Truncated = true
 	}
 	return output, nil
+}
+
+func workspaceRootSearchEntries(workspace Workspace, query string) []WorkspaceFileEntry {
+	entries := make([]WorkspaceFileEntry, 0, len(workspace.Folders))
+	for _, folder := range workspace.Folders {
+		if folder.Missing || !workspaceSearchMatches(query, folder.Label, folder.Label) {
+			continue
+		}
+		entry := WorkspaceFileEntry{
+			Name: folder.Label,
+			Path: folder.Label,
+			Kind: "directory",
+		}
+		if root, err := workspaceFolderAbsolutePath(folder); err == nil {
+			if info, statErr := os.Stat(root); statErr == nil {
+				entry.Bytes = info.Size()
+				entry.ModifiedAt = formatWorkspaceModifiedAt(info.ModTime())
+			}
+		}
+		entries = append(entries, entry)
+	}
+	return entries
 }
 
 func (s *SystemService) CreateWorkspaceFile(workspaceID string, parentPath string, name string) (WorkspaceFile, error) {

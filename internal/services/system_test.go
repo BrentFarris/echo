@@ -64,6 +64,68 @@ func TestResolveWorkspaceExplorerTarget(t *testing.T) {
 	}
 }
 
+func TestResolveWorkspaceAbsolutePath(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "src", "main.go")
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+		t.Fatalf("create source directory: %v", err)
+	}
+	if err := os.WriteFile(filePath, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	folder := workspaceFolderFromPath(root, nil)
+	workspace := Workspace{Folders: []WorkspaceFolder{folder}}
+
+	resolved, err := resolveWorkspaceAbsolutePath(workspace, folder.Label+"/src/main.go")
+	if err != nil {
+		t.Fatalf("resolve workspace path: %v", err)
+	}
+	if !samePath(resolved, filePath) {
+		t.Fatalf("expected %q, got %q", filePath, resolved)
+	}
+
+	for _, candidate := range []string{
+		"",
+		"missing/src/main.go",
+		folder.Label + "/../outside.go",
+		filePath,
+	} {
+		if _, err := resolveWorkspaceAbsolutePath(workspace, candidate); err == nil {
+			t.Fatalf("expected path %q to be rejected", candidate)
+		}
+	}
+}
+
+func TestResolveExternalExplorerTarget(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "notes.txt")
+	if err := os.WriteFile(filePath, []byte("notes\n"), 0o644); err != nil {
+		t.Fatalf("write external file: %v", err)
+	}
+
+	resolved, selectFile, err := resolveExternalExplorerTarget(filePath)
+	if err != nil {
+		t.Fatalf("resolve external file: %v", err)
+	}
+	if !samePath(resolved, filePath) || !selectFile {
+		t.Fatalf("expected existing file selection, got target %q selectFile %v", resolved, selectFile)
+	}
+
+	resolved, selectFile, err = resolveExternalExplorerTarget(root)
+	if err != nil {
+		t.Fatalf("resolve external directory: %v", err)
+	}
+	if !samePath(resolved, root) || selectFile {
+		t.Fatalf("expected directory reveal, got target %q selectFile %v", resolved, selectFile)
+	}
+
+	for _, candidate := range []string{"", "relative.txt", filepath.Join(root, "missing.txt")} {
+		if _, _, err := resolveExternalExplorerTarget(candidate); err == nil {
+			t.Fatalf("expected path %q to be rejected", candidate)
+		}
+	}
+}
+
 func TestSystemServiceReturnsEmptyCollectionsForUI(t *testing.T) {
 	root := t.TempDir()
 	storePath := filepath.Join(root, "state.json")

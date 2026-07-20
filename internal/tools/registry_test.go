@@ -247,7 +247,7 @@ func TestReadOnlyLLMSchemaIncludesOnlyInspectionTools(t *testing.T) {
 		names[tool.Function.Name] = true
 	}
 
-	for _, name := range []string{"filesystem_list", "filesystem_read_image", "filesystem_read_video", "filesystem_read_text", "filesystem_search_text", "filesystem_search_workspace", "filesystem_stat", "git_inspect", "lsp_query", "web_search", "workspace_context", "workspace_skill_read", "workspace_skill_search", "workspace_task_list"} {
+	for _, name := range []string{"filesystem_list", "filesystem_read_image", "filesystem_read_video", "filesystem_read_text", "filesystem_search_text", "filesystem_search_workspace", "filesystem_stat", "git_inspect", "lsp_query", "web_read", "web_search", "workspace_context", "workspace_skill_read", "workspace_skill_search", "workspace_task_list"} {
 		if !names[name] {
 			t.Fatalf("expected read-only schema to include %s, got %#v", name, names)
 		}
@@ -257,9 +257,40 @@ func TestReadOnlyLLMSchemaIncludesOnlyInspectionTools(t *testing.T) {
 			t.Fatalf("expected read-only schema to exclude %s, got %#v", name, names)
 		}
 	}
-	if len(names) != 14 {
-		t.Fatalf("expected exactly fourteen read-only tools, got %#v", names)
+	if len(names) != 15 {
+		t.Fatalf("expected exactly fifteen read-only tools, got %#v", names)
 	}
+}
+
+func TestResearchOrchestrationToolsAreChatOnly(t *testing.T) {
+	chatNames := schemaNames(ChatLLMSchema())
+	defaultNames := schemaNames(LLMSchema())
+	researchNames := schemaNames(ResearchLLMSchema())
+	planNames := schemaNames(PlanModeLLMSchema())
+	directPlanNames := schemaNames(PlanModeDirectLLMSchema())
+
+	for _, name := range []string{"research_agents_spawn", "research_agent_send", "research_agents_wait", "research_agents_cancel"} {
+		if !chatNames[name] || !planNames[name] {
+			t.Fatalf("expected %s in chat and plan schemas", name)
+		}
+		if defaultNames[name] || researchNames[name] || directPlanNames[name] {
+			t.Fatalf("expected %s to be excluded from default, direct-plan, and child-research schemas", name)
+		}
+	}
+	if !researchNames["filesystem_read_text"] || !researchNames["web_read"] {
+		t.Fatalf("expected child-research schema to include read-only tools, got %#v", researchNames)
+	}
+	if !directPlanNames["filesystem_read_text"] || !directPlanNames["workspace_task_create"] {
+		t.Fatalf("expected direct plan schema to retain safe plan tools, got %#v", directPlanNames)
+	}
+}
+
+func schemaNames(schema []llm.Tool) map[string]bool {
+	names := make(map[string]bool, len(schema))
+	for _, tool := range schema {
+		names[tool.Function.Name] = true
+	}
+	return names
 }
 
 func toolSchemaProperties(t *testing.T, schema []llm.Tool, name string) map[string]any {

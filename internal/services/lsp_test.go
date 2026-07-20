@@ -1,13 +1,19 @@
 package services
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestLSPUTF16PositionMapping(t *testing.T) {
@@ -237,6 +243,242 @@ func TestDetectWorkspaceFolderLSPLanguagesSkipsIgnoredDirectories(t *testing.T) 
 	}
 }
 
+func TestWorkspaceLSPWarmupTargetsFindNestedGoModule(t *testing.T) {
+	root := t.TempDir()
+	moduleRoot := filepath.Join(root, "src")
+	if err := os.MkdirAll(filepath.Join(moduleRoot, "rendering"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(moduleRoot, "go.mod"), []byte("module example.com/nested\n\ngo 1.23\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(moduleRoot, "rendering", "draw.go")
+	if err := os.WriteFile(sourcePath, []byte("package rendering\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	targets := workspaceLSPWarmupTargets(workspaceFromPath(root))
+	for _, target := range targets {
+		if target.languageID == "go" {
+			if len(target.sourcePaths) != 1 || !samePath(target.sourcePaths[0], sourcePath) {
+				t.Fatalf("expected nested Go module seed %q, got %#v", sourcePath, target.sourcePaths)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected Go warmup target, got %#v", targets)
+}
+
+func TestGoWarmupSourcePrefersCurrentNonTestBuild(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/preferred\n\ngo 1.23\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inactiveOS := "windows"
+	if runtime.GOOS == "windows" {
+		inactiveOS = "linux"
+	}
+	inactive := filepath.Join(root, "a_"+inactiveOS+".go")
+	testFile := filepath.Join(root, "b_test.go")
+	preferred := filepath.Join(root, "z.go")
+	for path, content := range map[string]string{
+		inactive:  "package preferred\n",
+		testFile:  "package preferred\n",
+		preferred: "package preferred\n",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	scan := scanWorkspaceFolderLSPWarmup(root)
+	selected := goWarmupSourcePaths(scan.sourcePaths["go"], scan.goBuildRoots)
+	if len(selected) != 1 || !samePath(selected[0], preferred) {
+		t.Fatalf("expected current non-test build seed %q, got %#v", preferred, selected)
+	}
+}
+
+func TestWorkspaceLSPWarmupCapsNestedGoBuilds(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < lspWarmupMaxGoBuilds+2; i++ {
+		moduleRoot := filepath.Join(root, fmt.Sprintf("module-%02d", i))
+		if err := os.MkdirAll(moduleRoot, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(moduleRoot, "go.mod"), []byte(fmt.Sprintf("module example.com/module%d\n\ngo 1.23\n", i)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(moduleRoot, "main.go"), []byte("package main\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	targets := workspaceLSPWarmupTargets(workspaceFromPath(root))
+	for _, target := range targets {
+		if target.languageID == "go" {
+			if len(target.sourcePaths) != lspWarmupMaxGoBuilds {
+				t.Fatalf("expected %d Go warmup seeds, got %#v", lspWarmupMaxGoBuilds, target.sourcePaths)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected Go warmup target, got %#v", targets)
+}
+
+func TestWorkspaceLSPClientStartIsSingleFlight(t *testing.T) {
+	root := t.TempDir()
+	workspace := workspaceFromPath(root)
+	folder := workspace.Folders[0]
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+
+	oldStart := startLSPClient
+	defer func() { startLSPClient = oldStart }()
+	var starts atomic.Int32
+	releaseStart := make(chan struct{})
+	fakeClient := &lspClient{languageID: "go"}
+	startLSPClient = func(ctx context.Context, gotWorkspace Workspace, gotFolder WorkspaceFolder, languageID string) (*lspClient, error) {
+		starts.Add(1)
+		select {
+		case <-releaseStart:
+			return fakeClient, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	const callers = 8
+	clients := make(chan *lspClient, callers)
+	errs := make(chan error, callers)
+	var wait sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			client, err := service.workspaceLSPClient(workspace, folder, "go")
+			clients <- client
+			errs <- err
+		}()
+	}
+	for starts.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	close(releaseStart)
+	wait.Wait()
+	close(clients)
+	close(errs)
+
+	if starts.Load() != 1 {
+		t.Fatalf("expected one language server start, got %d", starts.Load())
+	}
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("unexpected client error: %v", err)
+		}
+	}
+	for client := range clients {
+		if client != fakeClient {
+			t.Fatalf("expected callers to share the same client")
+		}
+	}
+	service.lspMu.Lock()
+	delete(service.lspClients, workspaceLSPClientKey(workspace.ID, folder.ID, "go"))
+	service.lspMu.Unlock()
+}
+
+func TestCloseWorkspaceCancelsLSPClientStart(t *testing.T) {
+	root := t.TempDir()
+	workspace := workspaceFromPath(root)
+	folder := workspace.Folders[0]
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+
+	oldStart := startLSPClient
+	defer func() { startLSPClient = oldStart }()
+	started := make(chan struct{})
+	startLSPClient = func(ctx context.Context, gotWorkspace Workspace, gotFolder WorkspaceFolder, languageID string) (*lspClient, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.workspaceLSPClient(workspace, folder, "go")
+		result <- err
+	}()
+	<-started
+	service.closeWorkspaceLSPClients(workspace.ID)
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled client start, got %v", err)
+	}
+}
+
+func TestLSPOperationTimeoutStartsAfterQueue(t *testing.T) {
+	client := &lspClient{
+		languageID:    "go",
+		operationGate: make(chan struct{}, 1),
+		documents:     map[string]lspDocumentState{},
+	}
+	client.operationGate <- struct{}{}
+	uri := "file:///workspace/main.go"
+	client.documents[uri] = lspDocumentState{ready: true}
+
+	warmupRelease, err := client.acquireOperation(context.Background(), "textDocument/documentSymbol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan time.Duration, 1)
+	go func() {
+		foregroundRelease, acquireErr := client.acquireOperation(context.Background(), "textDocument/definition")
+		if acquireErr != nil {
+			result <- 0
+			return
+		}
+		defer foregroundRelease()
+		ctx, cancel := client.documentOperationContext(context.Background(), uri, 50*time.Millisecond)
+		defer cancel()
+		deadline, _ := ctx.Deadline()
+		result <- time.Until(deadline)
+	}()
+	time.Sleep(75 * time.Millisecond)
+	warmupRelease()
+	if remaining := <-result; remaining < 35*time.Millisecond {
+		t.Fatalf("expected a fresh foreground timeout after queueing, got %s", remaining)
+	}
+}
+
+func TestLSPColdDocumentGetsExtendedTimeout(t *testing.T) {
+	client := &lspClient{documents: map[string]lspDocumentState{}}
+	ctx, cancel := client.documentOperationContext(context.Background(), "file:///workspace/cold.go", time.Second)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	if remaining := time.Until(deadline); remaining < 59*time.Second {
+		t.Fatalf("expected cold-start timeout, got %s", remaining)
+	}
+}
+
+func TestLSPTimeoutErrorIsLanguageSpecific(t *testing.T) {
+	for _, tc := range []struct {
+		languageID string
+		method     string
+		expected   string
+	}{
+		{languageID: "go", method: "textDocument/definition", expected: "The Go language server timed out while loading the workspace for definition lookup."},
+		{languageID: "cpp", method: "textDocument/references", expected: "The C/C++ language server timed out while loading the workspace for reference lookup."},
+	} {
+		t.Run(tc.languageID, func(t *testing.T) {
+			err := (&lspClient{languageID: tc.languageID}).contextError(tc.method, context.DeadlineExceeded)
+			if err.Error() != tc.expected {
+				t.Fatalf("expected %q, got %q", tc.expected, err)
+			}
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("expected timeout error to unwrap to context deadline")
+			}
+			if strings.Contains(err.Error(), "context deadline exceeded") || strings.Contains(err.Error(), "LLM") {
+				t.Fatalf("unexpected transport or LLM wording: %q", err)
+			}
+		})
+	}
+}
+
 func stringSliceContains(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
@@ -389,14 +631,34 @@ func TestSystemServiceCompleteWorkspaceFileWithGopls(t *testing.T) {
 		lspCommandForLanguage = oldCommandForLanguage
 	}()
 
-	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/echo_lsp_test\n\ngo 1.23\n"), 0o600); err != nil {
+	moduleRoot := filepath.Join(root, "src")
+	if err := os.MkdirAll(moduleRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(moduleRoot, "go.mod"), []byte("module example.com/echo_lsp_test\n\ngo 1.23\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	content := "package main\n\nimport \"fmt\"\n\nfunc helper() {}\n\nfunc main() {\n\thelper()\n\tfmt.Pr\n}\n"
-	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte(content), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(moduleRoot, "main.go"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	filePath := labeledTestPath(t, service, workspaceID, "main.go")
+	workspace, _, err := service.workspaceAndSettings(workspaceID)
+	if err != nil {
+		t.Fatalf("workspace settings: %v", err)
+	}
+	foundGoTarget := false
+	for _, target := range workspaceLSPWarmupTargets(workspace) {
+		if target.languageID == "go" {
+			service.warmWorkspaceLSPTarget(context.Background(), workspace, target)
+			foundGoTarget = true
+			break
+		}
+	}
+	if !foundGoTarget {
+		t.Fatal("expected nested Go warmup target")
+	}
+
+	filePath := labeledTestPath(t, service, workspaceID, "src/main.go")
 	position := utf16Length(content[:strings.Index(content, "Pr")+len("Pr")])
 
 	response, err := service.CompleteWorkspaceFile(workspaceID, WorkspaceCompletionRequest{
@@ -413,16 +675,30 @@ func TestSystemServiceCompleteWorkspaceFileWithGopls(t *testing.T) {
 	}
 	for _, item := range response.Items {
 		if item.Label == "Println" {
+			helperPosition := utf16Length(content[:strings.LastIndex(content, "helper()")+len("helper")])
 			definition, err := service.FindWorkspaceFileDefinition(workspaceID, WorkspaceDefinitionRequest{
 				FilePath: filePath,
 				Content:  content,
-				Position: utf16Length(content[:strings.LastIndex(content, "helper()")+len("helper")]),
+				Position: helperPosition,
 			})
 			if err != nil {
 				t.Fatalf("find definition: %v", err)
 			}
 			if !definition.Found || definition.TargetPath != filePath {
 				t.Fatalf("expected main definition in main.go, got %#v", definition)
+			}
+			includeDeclaration := true
+			references, err := service.FindWorkspaceFileReferences(workspaceID, WorkspaceReferenceRequest{
+				FilePath:           filePath,
+				Content:            content,
+				Position:           helperPosition,
+				IncludeDeclaration: &includeDeclaration,
+			})
+			if err != nil {
+				t.Fatalf("find references: %v", err)
+			}
+			if !references.Found || references.ResultCount < 2 {
+				t.Fatalf("expected declaration and call references, got %#v", references)
 			}
 			return
 		}

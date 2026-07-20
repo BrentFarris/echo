@@ -115,6 +115,19 @@ func discardWorkspaceGitStatusEntry(ctx context.Context, repository workspaceGit
 	return cleanWorkspaceGitPaths(ctx, repository.WorktreePath, paths)
 }
 
+func discardWorkspaceGitFolder(ctx context.Context, repository workspaceGitRepositoryContext, requestedFolder string) error {
+	entries, err := workspaceGitStatusEntriesInFolder(ctx, repository, requestedFolder, func(gitStatusEntry) bool { return true })
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := discardWorkspaceGitStatusEntry(ctx, repository, entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func workspaceGitDiscardPaths(entry gitStatusEntry) []string {
 	paths := make([]string, 0, 2)
 	if entry.path != "" {

@@ -49,9 +49,7 @@ func (s *SystemService) organizeWorkspaceGoImportsBeforeSave(workspace Workspace
 	if err != nil {
 		return "", fmt.Errorf("organize Go imports: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), lspCodeActionTimeout)
-	defer cancel()
-	updated, _, err := client.organizeImports(ctx, resolvedPath, content)
+	updated, _, err := client.organizeImports(context.Background(), resolvedPath, content)
 	if err != nil {
 		return "", fmt.Errorf("organize Go imports: %w", err)
 	}
@@ -59,14 +57,18 @@ func (s *SystemService) organizeWorkspaceGoImportsBeforeSave(workspace Workspace
 }
 
 func (c *lspClient) organizeImports(ctx context.Context, absolutePath string, content string) (string, bool, error) {
-	c.operationMu.Lock()
-	defer c.operationMu.Unlock()
-
 	uri := fileURI(absolutePath)
+	release, err := c.acquireOperation(ctx, "textDocument/codeAction")
+	if err != nil {
+		return "", false, err
+	}
+	defer release()
+	requestCtx, cancel := c.documentOperationContext(ctx, uri, lspCodeActionTimeout)
+	defer cancel()
 	if err := c.syncDocument(absolutePath, uri, content); err != nil {
 		return "", false, err
 	}
-	raw, err := c.requestWithRetry(ctx, "textDocument/codeAction", map[string]any{
+	raw, err := c.requestWithRetry(requestCtx, "textDocument/codeAction", map[string]any{
 		"textDocument": map[string]string{"uri": uri},
 		"range": lspRange{
 			Start: lspPosition{Line: 0, Character: 0},
@@ -80,12 +82,13 @@ func (c *lspClient) organizeImports(ctx context.Context, absolutePath string, co
 	if err != nil {
 		return "", false, err
 	}
+	c.markDocumentReady(uri)
 	actions, err := parseLSPCodeActionResponse(raw)
 	if err != nil {
 		return "", false, err
 	}
 	for _, action := range actions {
-		updated, changed, ok, err := c.applyCodeActionWorkspaceEdit(ctx, absolutePath, content, action)
+		updated, changed, ok, err := c.applyCodeActionWorkspaceEdit(requestCtx, absolutePath, content, action)
 		if err != nil {
 			return "", false, err
 		}

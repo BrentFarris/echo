@@ -1,13 +1,12 @@
-import { clearCodeTabSwitcher, deleteSelectedCodePaths, ensureCodeViewRootLoaded, goToLspDefinitionFromContext, refreshOpenCodeTabsFromDisk, startCodeCreate, startCodeRename } from "../codeView";
-import { getMountedCodeEditor } from "../codeView/editor";
-import { addToSpellCheckDictionary, codeStates } from "../codeView/state";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, GetHeartbeatConfig, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
+import { clearCodeTabSwitcher, closeCodeTabs, deleteSelectedCodePaths, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, revealCodeTabInWorkspace, startCodeCreate, startCodeRename } from "../codeView";
+import type { CodeTabCloseMode } from "../codeView";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, GetHeartbeatConfig, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenExternalPathExplorer, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, ResolveWorkspacePath, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
 import { appRoot } from "./dom";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
 import { dismissContextMenu } from "./contextMenu";
-import { closeGitMenu, closeGitStashReview, dropWorkspaceGitRepositoryState, openGitChangeInCode, openGitMenuPage, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, runGitMenuCommand, selectGitCommit, stageWorkspaceGitChanges, stageWorkspaceGitFile, stageWorkspaceGitFolder, syncWorkspaceGitRepository, toggleGitChangeSection, toggleGitDiffViewMode, toggleGitHistory, toggleGitSourceSidebar, unstageWorkspaceGitChanges, unstageWorkspaceGitFile, unstageWorkspaceGitFolder } from "./git";
+import { closeGitMenu, closeGitStashReview, dropWorkspaceGitRepositoryState, openGitChangeInCode, openGitMenuPage, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, revertWorkspaceGitFolder, runGitMenuCommand, selectGitCommit, stageWorkspaceGitChanges, stageWorkspaceGitFile, stageWorkspaceGitFolder, syncWorkspaceGitRepository, toggleGitChangeSection, toggleGitDiffViewMode, toggleGitHistory, toggleGitSourceSidebar, unstageWorkspaceGitChanges, unstageWorkspaceGitFile, unstageWorkspaceGitFolder } from "./git";
 import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification, toggleHeartbeatInterval, toggleWatchdogInterval } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, cancelAgentMode, deleteAgentModeSettings, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint, saveAgentMode, saveNewAgentMode, startCreateAgentMode, startEditAgentMode } from "./settings";
@@ -157,7 +156,7 @@ export async function handleAction(event: Event) {
       const loading = ensureCodeViewRootLoaded(workspace.id);
       getAppCallbacks().render();
       await loading;
-      getAppCallbacks().render();
+      getAppCallbacks().codeViewCallbacks().render();
       return;
     }
     if (action === "close-code-view") {
@@ -369,6 +368,66 @@ export async function handleAction(event: Event) {
       toggleGitHistory();
       return;
     }
+    const codeTabCloseModes: Partial<Record<string, CodeTabCloseMode>> = {
+      "close-code-tab": "one",
+      "close-other-code-tabs": "others",
+      "close-code-tabs-to-right": "right",
+      "close-saved-code-tabs": "saved",
+      "close-all-code-tabs": "all",
+    };
+    const codeTabCloseMode = action ? codeTabCloseModes[action] : undefined;
+    if (codeTabCloseMode) {
+      const path = target.dataset.codeTabPath ?? "";
+      if (!workspaceID || !path) {
+        return;
+      }
+      dismissContextMenu();
+      await closeCodeTabs(
+        workspaceID,
+        path,
+        codeTabCloseMode,
+        getAppCallbacks().codeViewCallbacks(),
+      );
+      return;
+    }
+    if (action === "copy-code-tab-path" || action === "copy-code-tab-relative-path") {
+      const path = target.dataset.codeTabPath ?? "";
+      if (!workspaceID || !path) {
+        return;
+      }
+      dismissContextMenu();
+      const copiedPath = action === "copy-code-tab-relative-path"
+        ? path
+        : target.dataset.codeTabExternal === "true"
+          ? path
+          : await ResolveWorkspacePath(workspaceID, path);
+      await copyTextToClipboard(copiedPath);
+      pushToast(action === "copy-code-tab-relative-path" ? "Copied relative path." : "Copied path.", "success");
+      return;
+    }
+    if (action === "reveal-code-tab-in-explorer") {
+      const path = target.dataset.codeTabPath ?? "";
+      if (!workspaceID || !path) {
+        return;
+      }
+      dismissContextMenu();
+      if (target.dataset.codeTabExternal === "true") {
+        await OpenExternalPathExplorer(path);
+      } else {
+        await OpenWorkspacePathExplorer(workspaceID, path);
+      }
+      pushToast("Revealed in Explorer.", "success");
+      return;
+    }
+    if (action === "reveal-code-tab-in-workspace") {
+      const path = target.dataset.codeTabPath ?? "";
+      if (!workspaceID || !path) {
+        return;
+      }
+      dismissContextMenu();
+      await revealCodeTabInWorkspace(workspaceID, path, getAppCallbacks().codeViewCallbacks());
+      return;
+    }
     if (action === "toggle-git-change-section") {
       toggleGitChangeSection(target.dataset.gitChangeSection ?? "");
       return;
@@ -402,7 +461,15 @@ export async function handleAction(event: Event) {
       return;
     }
     if (action === "revert-git-file") {
-      await revertWorkspaceGitFile(target.dataset.gitFilePath ?? "");
+      const path = target.dataset.gitFilePath ?? "";
+      dismissContextMenu();
+      await revertWorkspaceGitFile(path);
+      return;
+    }
+    if (action === "revert-git-folder") {
+      const path = target.dataset.gitFolderPath ?? "";
+      dismissContextMenu();
+      await revertWorkspaceGitFolder(path);
       return;
     }
     if (action === "revert-git-changes") {

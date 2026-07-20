@@ -26,6 +26,7 @@ var readOnlyToolNames = map[string]bool{
 	"filesystem_stat":             true,
 	"git_inspect":                 true,
 	"lsp_query":                   true,
+	"web_read":                    true,
 	"web_search":                  true,
 	"workspace_context":           true,
 	"workspace_skill_read":        true,
@@ -34,28 +35,28 @@ var readOnlyToolNames = map[string]bool{
 }
 
 var mutatingToolNames = map[string]bool{
-	"create_agent_mode":              true,
-	"filesystem_create_text":         true,
-	"filesystem_delete_file":         true,
-	"filesystem_edit_text":           true,
-	"kanban_delete_card":             true,
-	"kanban_move_card":               true,
-	"kanban_reset_card":              true,
-	"kanban_start_execution":         true,
-	"kanban_stop_card":               true,
-	"kanban_update_card_description": true,
-	"restart":                        true,
-	"shell_command":                  true,
-	"workspace_skill_record":         true,
-	"workspace_task_create":          true,
+	"create_agent_mode":                true,
+	"filesystem_create_text":           true,
+	"filesystem_delete_file":           true,
+	"filesystem_edit_text":             true,
+	"kanban_delete_card":               true,
+	"kanban_move_card":                 true,
+	"kanban_reset_card":                true,
+	"kanban_start_execution":           true,
+	"kanban_stop_card":                 true,
+	"kanban_update_card_description":   true,
+	"restart":                          true,
+	"shell_command":                    true,
+	"workspace_skill_record":           true,
+	"workspace_task_create":            true,
 	"workspace_task_convert_to_kanban": true,
-	"workspace_task_delete":          true,
-	"workspace_task_move":            true,
-	"workspace_task_set_completed":   true,
-	"workspace_task_update":          true,
+	"workspace_task_delete":            true,
+	"workspace_task_move":              true,
+	"workspace_task_set_completed":     true,
+	"workspace_task_update":            true,
 }
 
-var planModeToolNames = func() map[string]bool {
+var planModeDirectToolNames = func() map[string]bool {
 	result := make(map[string]bool, len(readOnlyToolNames)+1)
 	for name, allowed := range readOnlyToolNames {
 		result[name] = allowed
@@ -63,6 +64,24 @@ var planModeToolNames = func() map[string]bool {
 	result["workspace_task_create"] = true
 	return result
 }()
+
+var planModeToolNames = func() map[string]bool {
+	result := make(map[string]bool, len(planModeDirectToolNames)+len(researchAgentToolNames))
+	for name, allowed := range planModeDirectToolNames {
+		result[name] = allowed
+	}
+	for name, allowed := range researchAgentToolNames {
+		result[name] = allowed
+	}
+	return result
+}()
+
+var researchAgentToolNames = map[string]bool{
+	"research_agents_spawn":  true,
+	"research_agent_send":    true,
+	"research_agents_wait":   true,
+	"research_agents_cancel": true,
+}
 
 type Registry struct {
 	mu    sync.RWMutex
@@ -126,6 +145,12 @@ func (r *Registry) Registered() []Tool {
 }
 
 func LLMSchema() []llm.Tool {
+	return schemaExcludingTools(defaultRegistry.Registered(), researchAgentToolNames)
+}
+
+// ChatLLMSchema includes chat-only orchestration tools in addition to the
+// normal agent tool set. Other agent surfaces must use LLMSchema instead.
+func ChatLLMSchema() []llm.Tool {
 	return defaultRegistry.LLMSchema()
 }
 
@@ -135,6 +160,14 @@ func ReadOnlyLLMSchema() []llm.Tool {
 
 func PlanModeLLMSchema() []llm.Tool {
 	return schemaForTools(defaultRegistry.Registered(), planModeToolNames)
+}
+
+func PlanModeDirectLLMSchema() []llm.Tool {
+	return schemaForTools(defaultRegistry.Registered(), planModeDirectToolNames)
+}
+
+func ResearchLLMSchema() []llm.Tool {
+	return schemaForTools(defaultRegistry.Registered(), readOnlyToolNames)
 }
 
 func IsReadOnlyToolName(name string) bool {
@@ -147,6 +180,10 @@ func IsPlanModeToolName(name string) bool {
 
 func IsMutatingToolName(name string) bool {
 	return mutatingToolNames[name]
+}
+
+func IsResearchAgentToolName(name string) bool {
+	return researchAgentToolNames[name]
 }
 
 func (r *Registry) LLMSchema() []llm.Tool {
@@ -162,6 +199,25 @@ func schemaForTools(registered []Tool, include map[string]bool) []llm.Tool {
 	for _, tool := range registered {
 		metadata := tool.Metadata()
 		if include != nil && !include[metadata.Name] {
+			continue
+		}
+		schema = append(schema, llm.Tool{
+			Type: "function",
+			Function: llm.ToolFunction{
+				Name:        metadata.Name,
+				Description: metadata.Description,
+				Parameters:  cloneSchema(metadata.Parameters),
+			},
+		})
+	}
+	return schema
+}
+
+func schemaExcludingTools(registered []Tool, exclude map[string]bool) []llm.Tool {
+	schema := make([]llm.Tool, 0, len(registered))
+	for _, tool := range registered {
+		metadata := tool.Metadata()
+		if exclude[metadata.Name] {
 			continue
 		}
 		schema = append(schema, llm.Tool{

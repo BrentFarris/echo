@@ -39,3 +39,16 @@ func TestSortWorkspaceFileEntriesRanksExactAndNameMatchesFirst(t *testing.T) {
 		t.Fatalf("expected path-only match after filename matches, got %#v", entries)
 	}
 }
+
+func TestSortWorkspaceFileEntriesPrefersShallowerDuplicateName(t *testing.T) {
+	entries := []WorkspaceFileEntry{
+		{Name: "flash_war", Path: "flashwar/flashwar/src/game/flash_war", Kind: "directory"},
+		{Name: "flash_war", Path: "flashwar/src/game/flash_war", Kind: "directory"},
+	}
+
+	sortWorkspaceFileEntries(entries, "flash_war")
+
+	if got := entries[0].Path; got != "flashwar/src/game/flash_war" {
+		t.Fatalf("expected shallower duplicate-name path first, got %q", got)
+	}
+}

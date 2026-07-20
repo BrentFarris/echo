@@ -26,6 +26,7 @@ const (
 	lspCompletionTimeout = 15 * time.Second
 	lspDefinitionTimeout = 15 * time.Second
 	lspInitializeTimeout = 20 * time.Second
+	lspColdStartTimeout  = 60 * time.Second
 	lspMaxDocumentation  = 4096
 )
 
@@ -152,9 +153,63 @@ type lspLanguageDefinition struct {
 
 var (
 	lspCommandForLanguage = registeredLSPCommandForLanguage
+	startLSPClient        = startWorkspaceLSPClient
 	lspLanguagesByID      = map[string]lspLanguageDefinition{}
 	lspLanguageIDsByExt   = map[string]string{}
 )
+
+type lspClientStart struct {
+	done   chan struct{}
+	cancel context.CancelFunc
+	client *lspClient
+	err    error
+	closed bool
+}
+
+type lspRequestTimeoutError struct {
+	languageID string
+	method     string
+	cause      error
+}
+
+func (e lspRequestTimeoutError) Error() string {
+	language := lspLanguageDisplayName(e.languageID)
+	if language == "" {
+		language = "Code"
+	}
+	return fmt.Sprintf("The %s language server timed out while %s.", language, lspTimeoutAction(e.method))
+}
+
+func (e lspRequestTimeoutError) Unwrap() error {
+	return e.cause
+}
+
+func lspTimeoutAction(method string) string {
+	switch method {
+	case "initialize":
+		return "starting"
+	case "textDocument/completion":
+		return "loading the workspace for completion"
+	case "textDocument/definition":
+		return "loading the workspace for definition lookup"
+	case "textDocument/references":
+		return "loading the workspace for reference lookup"
+	case "textDocument/implementation":
+		return "loading the workspace for implementation lookup"
+	case "textDocument/typeDefinition":
+		return "loading the workspace for type-definition lookup"
+	case "textDocument/hover":
+		return "loading the workspace for hover information"
+	case "textDocument/documentSymbol":
+		return "loading the workspace"
+	case "textDocument/prepareRename", "textDocument/rename":
+		return "loading the workspace for rename"
+	case "textDocument/codeAction", "workspace/executeCommand":
+		return "loading the workspace for a code action"
+	default:
+		return "waiting for a request"
+	}
+}
 
 type lspClient struct {
 	languageID    string
@@ -166,11 +221,11 @@ type lspClient struct {
 	stdin         io.WriteCloser
 	readerDone    chan struct{}
 
-	writeMu     sync.Mutex
-	operationMu sync.Mutex
-	pendingMu   sync.Mutex
-	pending     map[string]chan lspPendingResponse
-	nextID      uint64
+	writeMu       sync.Mutex
+	operationGate chan struct{}
+	pendingMu     sync.Mutex
+	pending       map[string]chan lspPendingResponse
+	nextID        uint64
 
 	docMu     sync.Mutex
 	documents map[string]lspDocumentState
@@ -183,6 +238,7 @@ type lspClient struct {
 type lspDocumentState struct {
 	content string
 	version int
+	ready   bool
 }
 
 type lspPendingResponse struct {
@@ -426,9 +482,7 @@ func (s *SystemService) CompleteWorkspaceFile(workspaceID string, request Worksp
 		return WorkspaceCompletionResponse{}, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), lspCompletionTimeout)
-	defer cancel()
-	response, err := client.complete(ctx, resolved, request)
+	response, err := client.complete(context.Background(), resolved, request)
 	if err != nil {
 		return WorkspaceCompletionResponse{}, err
 	}
@@ -484,9 +538,7 @@ func (s *SystemService) FindWorkspaceFileDefinition(workspaceID string, request 
 		return WorkspaceDefinitionResponse{}, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), lspDefinitionTimeout)
-	defer cancel()
-	locations, err := client.definition(ctx, resolved, request)
+	locations, err := client.definition(context.Background(), resolved, request)
 	if err != nil {
 		return WorkspaceDefinitionResponse{}, err
 	}
@@ -617,10 +669,8 @@ func (s *SystemService) findWorkspaceFileLocations(workspaceID string, request W
 	if lookup.ExtraParams != nil {
 		extraParams = lookup.ExtraParams(request)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), lspDefinitionTimeout)
-	defer cancel()
 	locations, err := client.locations(
-		ctx,
+		context.Background(),
 		lookup.Method,
 		resolved,
 		request.Content,
@@ -762,10 +812,15 @@ func limitWorkspaceReferenceLocations(locations []WorkspaceReferenceLocation, ma
 func (s *SystemService) workspaceLSPClient(workspace Workspace, folder WorkspaceFolder, languageID string) (*lspClient, error) {
 	key := workspaceLSPClientKey(workspace.ID, folder.ID, languageID)
 	s.lspMu.Lock()
-	existing := s.lspClients[key]
-	s.lspMu.Unlock()
-	if existing != nil {
+	if existing := s.lspClients[key]; existing != nil {
+		s.lspMu.Unlock()
 		return existing, nil
+	}
+	if starting := s.lspClientStarts[key]; starting != nil {
+		done := starting.done
+		s.lspMu.Unlock()
+		<-done
+		return starting.client, starting.err
 	}
 
 	onDiagnostics := func(workspaceID string, filePath string, diagnostics []WorkspaceDiagnostic) {
@@ -774,22 +829,37 @@ func (s *SystemService) workspaceLSPClient(workspace Workspace, folder Workspace
 	resolvePath := func(absolutePath string) string {
 		return workspaceRelativePath(workspace, absolutePath)
 	}
-	client, err := startWorkspaceLSPClient(workspace, folder, languageID, onDiagnostics, resolvePath)
-	if err != nil {
-		return nil, err
+
+	baseCtx := s.ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
 	}
+	startCtx, cancel := context.WithCancel(baseCtx)
+	starting := &lspClientStart{done: make(chan struct{}), cancel: cancel}
+	s.lspClientStarts[key] = starting
+	s.lspMu.Unlock()
+
+	client, err := startLSPClient(startCtx, workspace, folder, languageID, onDiagnostics, resolvePath)
+	cancel()
 
 	s.lspMu.Lock()
-	defer s.lspMu.Unlock()
-	if existing = s.lspClients[key]; existing != nil {
-		client.close()
-		return existing, nil
+	if starting.closed && err == nil {
+		err = fmt.Errorf("%s language server startup was canceled", lspLanguageDisplayName(languageID))
 	}
-	s.lspClients[key] = client
-	return client, nil
+	if err == nil {
+		s.lspClients[key] = client
+		starting.client = client
+	} else if client != nil {
+		client.close()
+	}
+	starting.err = err
+	delete(s.lspClientStarts, key)
+	close(starting.done)
+	s.lspMu.Unlock()
+	return starting.client, starting.err
 }
 
-func startWorkspaceLSPClient(workspace Workspace, folder WorkspaceFolder, languageID string, onDiagnostics func(WorkspaceID string, filePath string, diagnostics []WorkspaceDiagnostic), resolveFilePath func(string) string) (*lspClient, error) {
+func startWorkspaceLSPClient(parent context.Context, workspace Workspace, folder WorkspaceFolder, languageID string, onDiagnostics func(workspaceID string, filePath string, diagnostics []WorkspaceDiagnostic), resolveFilePath func(string) string) (*lspClient, error) {
 	command, ok := lspCommandForLanguage(languageID)
 	if !ok {
 		return nil, fmt.Errorf("language server is not configured for %s files", languageID)
@@ -828,11 +898,13 @@ func startWorkspaceLSPClient(workspace Workspace, folder WorkspaceFolder, langua
 		cmd:           cmd,
 		stdin:         stdin,
 		readerDone:    make(chan struct{}),
+		operationGate: make(chan struct{}, 1),
 		pending:       make(map[string]chan lspPendingResponse),
 		documents:     make(map[string]lspDocumentState),
 		resolveFilePath: resolveFilePath,
 		onDiagnostics: onDiagnostics,
 	}
+	client.operationGate <- struct{}{}
 	go io.Copy(io.Discard, stderr)
 	go client.readLoop(stdout)
 	go func() {
@@ -840,7 +912,7 @@ func startWorkspaceLSPClient(workspace Workspace, folder WorkspaceFolder, langua
 		client.failPending(fmt.Errorf("%s language server stopped: %w", languageID, err))
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), lspInitializeTimeout)
+	ctx, cancel := context.WithTimeout(parent, lspInitializeTimeout)
 	defer cancel()
 	if err := client.initialize(ctx, workspace.DisplayName+"/"+folder.Label); err != nil {
 		client.close()
@@ -929,11 +1001,86 @@ func (c *lspClient) initialize(ctx context.Context, workspaceName string) error 
 	return c.notify("initialized", map[string]any{})
 }
 
-func (c *lspClient) complete(ctx context.Context, absolutePath string, request WorkspaceCompletionRequest) (WorkspaceCompletionResponse, error) {
-	c.operationMu.Lock()
-	defer c.operationMu.Unlock()
+func (c *lspClient) acquireOperation(ctx context.Context, method string) (func(), error) {
+	select {
+	case <-c.operationGate:
+		return func() { c.operationGate <- struct{}{} }, nil
+	case <-ctx.Done():
+		return nil, c.contextError(method, ctx.Err())
+	}
+}
 
+func (c *lspClient) documentOperationContext(parent context.Context, uri string, normalTimeout time.Duration) (context.Context, context.CancelFunc) {
+	timeout := normalTimeout
+	if !c.documentReady(uri) && timeout < lspColdStartTimeout {
+		timeout = lspColdStartTimeout
+	}
+	return context.WithTimeout(parent, timeout)
+}
+
+func (c *lspClient) documentReady(uri string) bool {
+	c.docMu.Lock()
+	defer c.docMu.Unlock()
+	return c.documents[uri].ready
+}
+
+func (c *lspClient) markDocumentReady(uri string) {
+	c.docMu.Lock()
+	state, ok := c.documents[uri]
+	if ok {
+		state.ready = true
+		c.documents[uri] = state
+	}
+	c.docMu.Unlock()
+}
+
+func (c *lspClient) contextError(method string, err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return lspRequestTimeoutError{
+			languageID: c.languageID,
+			method:     method,
+			cause:      err,
+		}
+	}
+	return err
+}
+
+func (c *lspClient) primeDocument(parent context.Context, absolutePath string, content string) (bool, error) {
 	uri := fileURI(absolutePath)
+	if c.documentReady(uri) {
+		return false, nil
+	}
+	release, err := c.acquireOperation(parent, "textDocument/documentSymbol")
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	if c.documentReady(uri) {
+		return false, nil
+	}
+	ctx, cancel := context.WithTimeout(parent, lspColdStartTimeout)
+	defer cancel()
+	if err := c.syncDocument(absolutePath, uri, content); err != nil {
+		return false, err
+	}
+	if _, err := c.requestWithRetry(ctx, "textDocument/documentSymbol", map[string]any{
+		"textDocument": map[string]string{"uri": uri},
+	}); err != nil {
+		return false, err
+	}
+	c.markDocumentReady(uri)
+	return true, nil
+}
+
+func (c *lspClient) complete(ctx context.Context, absolutePath string, request WorkspaceCompletionRequest) (WorkspaceCompletionResponse, error) {
+	uri := fileURI(absolutePath)
+	release, err := c.acquireOperation(ctx, "textDocument/completion")
+	if err != nil {
+		return WorkspaceCompletionResponse{}, err
+	}
+	defer release()
+	requestCtx, cancel := c.documentOperationContext(ctx, uri, lspCompletionTimeout)
+	defer cancel()
 	if err := c.syncDocument(absolutePath, uri, request.Content); err != nil {
 		return WorkspaceCompletionResponse{}, err
 	}
@@ -948,10 +1095,11 @@ func (c *lspClient) complete(ctx context.Context, absolutePath string, request W
 		}
 		params["context"] = context
 	}
-	raw, err := c.requestWithRetry(ctx, "textDocument/completion", params)
+	raw, err := c.requestWithRetry(requestCtx, "textDocument/completion", params)
 	if err != nil {
 		return WorkspaceCompletionResponse{}, err
 	}
+	c.markDocumentReady(uri)
 	response, err := parseLSPCompletionResponse(raw, request.Content, request.Position)
 	if err != nil {
 		return WorkspaceCompletionResponse{}, err
@@ -961,10 +1109,14 @@ func (c *lspClient) complete(ctx context.Context, absolutePath string, request W
 }
 
 func (c *lspClient) definition(ctx context.Context, absolutePath string, request WorkspaceDefinitionRequest) ([]lspDefinitionLocation, error) {
-	c.operationMu.Lock()
-	defer c.operationMu.Unlock()
-
 	uri := fileURI(absolutePath)
+	release, err := c.acquireOperation(ctx, "textDocument/definition")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	requestCtx, cancel := c.documentOperationContext(ctx, uri, lspDefinitionTimeout)
+	defer cancel()
 	if err := c.syncDocument(absolutePath, uri, request.Content); err != nil {
 		return nil, err
 	}
@@ -972,10 +1124,11 @@ func (c *lspClient) definition(ctx context.Context, absolutePath string, request
 		"textDocument": map[string]string{"uri": uri},
 		"position":     lspPositionFromUTF16Offset(request.Content, request.Position),
 	}
-	raw, err := c.requestWithRetry(ctx, "textDocument/definition", params)
+	raw, err := c.requestWithRetry(requestCtx, "textDocument/definition", params)
 	if err != nil {
 		return nil, err
 	}
+	c.markDocumentReady(uri)
 	return parseLSPDefinitionResponse(raw)
 }
 
@@ -1006,7 +1159,7 @@ func (c *lspClient) requestWithRetry(ctx context.Context, method string, params 
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, c.contextError(method, ctx.Err())
 			}
 		}
 		raw, err := c.request(ctx, method, params)
@@ -1089,7 +1242,7 @@ func (c *lspClient) request(ctx context.Context, method string, params any) (jso
 	case <-ctx.Done():
 		c.removePending(key)
 		_ = c.notify("$/cancelRequest", map[string]any{"id": id})
-		return nil, ctx.Err()
+		return nil, c.contextError(method, ctx.Err())
 	}
 }
 
@@ -1355,6 +1508,18 @@ func (c *lspClient) close() {
 func (s *SystemService) closeWorkspaceLSPClients(workspaceID string) {
 	prefix := workspaceID + ":"
 	s.lspMu.Lock()
+	startDones := make([]<-chan struct{}, 0)
+	if warmup := s.lspWarmups[workspaceID]; warmup != nil {
+		delete(s.lspWarmups, workspaceID)
+		warmup.cancel()
+	}
+	for key, starting := range s.lspClientStarts {
+		if strings.HasPrefix(key, prefix) {
+			starting.closed = true
+			starting.cancel()
+			startDones = append(startDones, starting.done)
+		}
+	}
 	clients := make([]*lspClient, 0)
 	for key, client := range s.lspClients {
 		if strings.HasPrefix(key, prefix) {
@@ -1366,10 +1531,21 @@ func (s *SystemService) closeWorkspaceLSPClients(workspaceID string) {
 	for _, client := range clients {
 		client.close()
 	}
+	waitForLSPClientStarts(startDones)
 }
 
 func (s *SystemService) closeAllLSPClients() {
 	s.lspMu.Lock()
+	startDones := make([]<-chan struct{}, 0, len(s.lspClientStarts))
+	for workspaceID, warmup := range s.lspWarmups {
+		delete(s.lspWarmups, workspaceID)
+		warmup.cancel()
+	}
+	for _, starting := range s.lspClientStarts {
+		starting.closed = true
+		starting.cancel()
+		startDones = append(startDones, starting.done)
+	}
 	clients := make([]*lspClient, 0, len(s.lspClients))
 	for key, client := range s.lspClients {
 		clients = append(clients, client)
@@ -1378,6 +1554,22 @@ func (s *SystemService) closeAllLSPClients() {
 	s.lspMu.Unlock()
 	for _, client := range clients {
 		client.close()
+	}
+	waitForLSPClientStarts(startDones)
+}
+
+func waitForLSPClientStarts(dones []<-chan struct{}) {
+	if len(dones) == 0 {
+		return
+	}
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	for _, done := range dones {
+		select {
+		case <-done:
+		case <-timer.C:
+			return
+		}
 	}
 }
 

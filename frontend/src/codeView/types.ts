@@ -5,6 +5,16 @@ export type CodeEntryKind = "file" | "directory" | "other";
 export type CodeCreateKind = "file" | "folder";
 export type CodeGitChangeState = "" | "created" | "modified";
 
+export type CodeTabContextMenu = {
+  path: string;
+  label: string;
+  untitled: boolean;
+  external: boolean;
+  canCloseOthers: boolean;
+  canCloseToRight: boolean;
+  canCloseSaved: boolean;
+};
+
 export type CodeViewCallbacks = {
   render: () => void;
   activateCodeView: (workspaceID: string) => void;
@@ -29,16 +39,11 @@ export type CodeViewCallbacks = {
     x: number,
     y: number,
   ) => void;
-  showEditorSymbolContextMenu: (
+  showCodeTabContextMenu: (
     workspaceID: string,
-    path: string,
-    position: number | null,
+    menu: CodeTabContextMenu,
     x: number,
     y: number,
-    spellCheckWord?: string,
-    spellCheckSuggestions?: string[],
-    spellCheckFrom?: number,
-    spellCheckTo?: number,
   ) => void;
 };
 
@@ -226,7 +231,7 @@ export type CodeWorkspaceState = {
   textSearchStreamID: string;
   textSearchTimerID: number | null;
   textSearchFocusedField: "" | "query" | "include" | "exclude";
-  preservingTextSearchFocus: boolean;
+  textSearchSelectQuery: boolean;
   inlineChat: InlineCodeChatState | null;
   referencesPanel: CodeReferencePanelState | null;
   quickOpen: CodeQuickOpenState;

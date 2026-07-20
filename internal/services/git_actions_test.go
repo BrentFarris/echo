@@ -70,6 +70,9 @@ func TestRunWorkspaceGitActionRejectsUnknownActionsAndUnsafeRefs(t *testing.T) {
 	if _, err := service.RunWorkspaceGitAction(workspaceID, folderID, WorkspaceGitActionRequest{Action: "stage_folder", Ref: "../outside"}); err == nil {
 		t.Fatal("expected an escaping folder path to fail")
 	}
+	if _, err := service.RunWorkspaceGitAction(workspaceID, folderID, WorkspaceGitActionRequest{Action: "discard_folder", Ref: "../outside"}); err == nil {
+		t.Fatal("expected discarding an escaping folder path to fail")
+	}
 }
 
 func TestRunWorkspaceGitActionStagesAndUnstagesFolder(t *testing.T) {
@@ -110,6 +113,50 @@ func TestRunWorkspaceGitActionStagesAndUnstagesFolder(t *testing.T) {
 	}
 	if view.Repository == nil || view.Repository.StagedFileCount != 0 || view.Repository.UnstagedFileCount != 3 {
 		t.Fatalf("expected all files unstaged, got %#v", view.Repository)
+	}
+}
+
+func TestRunWorkspaceGitActionDiscardsFolder(t *testing.T) {
+	root := newGitTestRepo(t)
+	writeGitTestFile(t, root, "src/one.txt", "one\n")
+	writeGitTestFile(t, root, "src/nested/two.txt", "two\n")
+	writeGitTestFile(t, root, "docs/readme.txt", "docs\n")
+	runGitTestCommand(t, root, "add", ".")
+	runGitTestCommand(t, root, "commit", "-m", "initial")
+
+	writeGitTestFile(t, root, "src/one.txt", "one changed\n")
+	writeGitTestFile(t, root, "src/nested/new.txt", "new\n")
+	writeGitTestFile(t, root, "docs/readme.txt", "docs changed\n")
+	runGitTestCommand(t, root, "add", "src/one.txt")
+	service, workspaceID, folderID := newGitRepositoryTestService(t, root)
+	label := normalizeWorkspaceFolderLabel(filepath.Base(root))
+
+	view, err := service.RunWorkspaceGitAction(workspaceID, folderID, WorkspaceGitActionRequest{
+		Action: "discard_folder",
+		Ref:    label + "/src",
+	})
+	if err != nil {
+		t.Fatalf("discard folder: %v", err)
+	}
+	if view.Repository == nil || view.Repository.FileCount != 1 || !view.Repository.Dirty {
+		t.Fatalf("expected only docs change to remain, got %#v", view.Repository)
+	}
+	restored, err := os.ReadFile(filepath.Join(root, "src", "one.txt"))
+	if err != nil {
+		t.Fatalf("read restored file: %v", err)
+	}
+	if got := string(restored); got != "one\n" {
+		t.Fatalf("expected tracked file restored, got %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, "src", "nested", "new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected untracked file removed, stat error: %v", err)
+	}
+	preserved, err := os.ReadFile(filepath.Join(root, "docs", "readme.txt"))
+	if err != nil {
+		t.Fatalf("read preserved file: %v", err)
+	}
+	if got := string(preserved); got != "docs changed\n" {
+		t.Fatalf("expected outside change preserved, got %q", got)
 	}
 }
 

@@ -1,11 +1,62 @@
 package services
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/brent/echo/internal/llm"
 )
+
+func TestResearchAgentConcurrencyZeroPersistsAndMissingLegacyValueMigrates(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "state.json")
+	service := NewSystemServiceWithStorePath(storePath)
+	settings := service.LoadState().Settings
+	settings.ResearchAgentConcurrency = 0
+	if _, err := service.SaveSettings(settings); err != nil {
+		t.Fatalf("save disabled research setting: %v", err)
+	}
+
+	data, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("read saved state: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("decode saved state: %v", err)
+	}
+	settingsRaw, ok := raw["settings"].(map[string]any)
+	if !ok {
+		t.Fatalf("saved settings were missing: %#v", raw)
+	}
+	if value, exists := settingsRaw["researchAgentConcurrency"]; !exists || value != float64(0) {
+		t.Fatalf("expected explicit zero in saved state, got %#v", settingsRaw)
+	}
+	if got := NewSystemServiceWithStorePath(storePath).LoadState().Settings.ResearchAgentConcurrency; got != 0 {
+		t.Fatalf("expected explicit zero to survive reload, got %d", got)
+	}
+
+	delete(settingsRaw, "researchAgentConcurrency")
+	legacyData, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("encode legacy state: %v", err)
+	}
+	if err := os.WriteFile(storePath, legacyData, 0o600); err != nil {
+		t.Fatalf("write legacy state: %v", err)
+	}
+	legacyService := NewSystemServiceWithStorePath(storePath)
+	if got := legacyService.LoadState().Settings.ResearchAgentConcurrency; got != llm.DefaultResearchAgentConcurrency {
+		t.Fatalf("expected missing legacy value to migrate to %d, got %d", llm.DefaultResearchAgentConcurrency, got)
+	}
+	migratedData, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("read migrated state: %v", err)
+	}
+	if !stateFileHasSettingKey(migratedData, "researchAgentConcurrency") {
+		t.Fatal("expected migrated state to persist researchAgentConcurrency")
+	}
+}
 
 func TestSystemServiceResolvesSettingsForInteraction(t *testing.T) {
 	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
@@ -41,6 +92,18 @@ func TestSystemServiceResolvesSettingsForInteraction(t *testing.T) {
 			ThinkingTokenBudget: 0,
 		},
 		{
+			ID:                  "research",
+			Name:                "Research",
+			Endpoint:            "https://research.example.test/v1",
+			Model:               "research-model",
+			Temperature:         0.15,
+			ContextLength:       24576,
+			MaxTokens:           1536,
+			RepetitionPenalty:   1,
+			TimeoutSeconds:      60,
+			ThinkingTokenBudget: 0,
+		},
+		{
 			ID:                  "kanban",
 			Name:                "Kanban",
 			Endpoint:            "https://kanban.example.test/v1",
@@ -67,6 +130,7 @@ func TestSystemServiceResolvesSettingsForInteraction(t *testing.T) {
 	}
 	settings.EndpointSelection = llm.EndpointSelection{
 		Chat:            "chat",
+		Research:        "research",
 		KanbanDecompose: "decompose",
 		Kanban:          "kanban",
 		InlineCode:      "inline",
@@ -75,6 +139,14 @@ func TestSystemServiceResolvesSettingsForInteraction(t *testing.T) {
 	settings.Model = "chat-model"
 	if _, err := service.SaveSettings(settings); err != nil {
 		t.Fatalf("save settings: %v", err)
+	}
+
+	_, researchSettings, err := service.workspaceAndSettingsFor(state.ActiveWorkspaceID, llm.InteractionResearch)
+	if err != nil {
+		t.Fatalf("load research settings: %v", err)
+	}
+	if researchSettings.Endpoint != "https://research.example.test/v1" || researchSettings.Model != "research-model" {
+		t.Fatalf("expected research endpoint, got %q / %q", researchSettings.Endpoint, researchSettings.Model)
 	}
 
 	_, decomposeSettings, err := service.workspaceAndSettingsFor(state.ActiveWorkspaceID, llm.InteractionKanbanDecompose)

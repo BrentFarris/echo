@@ -85,11 +85,8 @@ func (n workspaceCodeNavigator) QueryCode(ctx context.Context, request tools.Cod
 		return tools.CodeNavigationResponse{}, err
 	}
 
-	opCtx, cancel := context.WithTimeout(ctx, lspDefinitionTimeout)
-	defer cancel()
-
 	if operation == "document_symbols" {
-		return n.queryDocumentSymbols(opCtx, client, resolved, file, response, codeNavigationMaxResults(request.MaxResults))
+		return n.queryDocumentSymbols(ctx, client, resolved, file, response, codeNavigationMaxResults(request.MaxResults))
 	}
 
 	position, offset, err := codeNavigationRequestPosition(file.Content, request)
@@ -102,11 +99,11 @@ func (n workspaceCodeNavigator) QueryCode(ctx context.Context, request tools.Cod
 
 	switch operation {
 	case "completion", "members":
-		return n.queryCompletion(opCtx, client, resolved, file, request, response, position, offset, codeNavigationMaxResults(request.MaxResults))
+		return n.queryCompletion(ctx, client, resolved, file, request, response, position, offset, codeNavigationMaxResults(request.MaxResults))
 	case "hover":
-		return n.queryHover(opCtx, client, resolved, file, response, position)
+		return n.queryHover(ctx, client, resolved, file, response, position)
 	default:
-		return n.queryLocations(opCtx, client, resolved, file, request, response, position, codeNavigationMaxResults(request.MaxResults))
+		return n.queryLocations(ctx, client, resolved, file, request, response, position, codeNavigationMaxResults(request.MaxResults))
 	}
 }
 
@@ -204,10 +201,14 @@ func (n workspaceCodeNavigator) queryDocumentSymbols(ctx context.Context, client
 }
 
 func (c *lspClient) locations(ctx context.Context, method string, absolutePath string, content string, position lspPosition, extraParams map[string]any) ([]lspDefinitionLocation, error) {
-	c.operationMu.Lock()
-	defer c.operationMu.Unlock()
-
 	uri := fileURI(absolutePath)
+	release, err := c.acquireOperation(ctx, method)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	requestCtx, cancel := c.documentOperationContext(ctx, uri, lspDefinitionTimeout)
+	defer cancel()
 	if err := c.syncDocument(absolutePath, uri, content); err != nil {
 		return nil, err
 	}
@@ -218,18 +219,23 @@ func (c *lspClient) locations(ctx context.Context, method string, absolutePath s
 	for key, value := range extraParams {
 		params[key] = value
 	}
-	raw, err := c.requestWithRetry(ctx, method, params)
+	raw, err := c.requestWithRetry(requestCtx, method, params)
 	if err != nil {
 		return nil, err
 	}
+	c.markDocumentReady(uri)
 	return parseLSPDefinitionResponse(raw)
 }
 
 func (c *lspClient) unfilteredCompletion(ctx context.Context, absolutePath string, content string, position lspPosition, offset int, triggerKind int, triggerCharacter string) (WorkspaceCompletionResponse, error) {
-	c.operationMu.Lock()
-	defer c.operationMu.Unlock()
-
 	uri := fileURI(absolutePath)
+	release, err := c.acquireOperation(ctx, "textDocument/completion")
+	if err != nil {
+		return WorkspaceCompletionResponse{}, err
+	}
+	defer release()
+	requestCtx, cancel := c.documentOperationContext(ctx, uri, lspCompletionTimeout)
+	defer cancel()
 	if err := c.syncDocument(absolutePath, uri, content); err != nil {
 		return WorkspaceCompletionResponse{}, err
 	}
@@ -244,42 +250,56 @@ func (c *lspClient) unfilteredCompletion(ctx context.Context, absolutePath strin
 		}
 		params["context"] = context
 	}
-	raw, err := c.requestWithRetry(ctx, "textDocument/completion", params)
+	raw, err := c.requestWithRetry(requestCtx, "textDocument/completion", params)
 	if err != nil {
 		return WorkspaceCompletionResponse{}, err
 	}
+	c.markDocumentReady(uri)
 	return parseLSPCompletionResponse(raw, content, offset)
 }
 
 func (c *lspClient) hover(ctx context.Context, absolutePath string, content string, position lspPosition) (lspHoverResponse, bool, error) {
-	c.operationMu.Lock()
-	defer c.operationMu.Unlock()
-
 	uri := fileURI(absolutePath)
+	release, err := c.acquireOperation(ctx, "textDocument/hover")
+	if err != nil {
+		return lspHoverResponse{}, false, err
+	}
+	defer release()
+	requestCtx, cancel := c.documentOperationContext(ctx, uri, lspDefinitionTimeout)
+	defer cancel()
 	if err := c.syncDocument(absolutePath, uri, content); err != nil {
 		return lspHoverResponse{}, false, err
 	}
-	raw, err := c.requestWithRetry(ctx, "textDocument/hover", map[string]any{
+	raw, err := c.requestWithRetry(requestCtx, "textDocument/hover", map[string]any{
 		"textDocument": map[string]string{"uri": uri},
 		"position":     position,
 	})
 	if err != nil {
 		return lspHoverResponse{}, false, err
 	}
+	c.markDocumentReady(uri)
 	return parseLSPHoverResponse(raw)
 }
 
 func (c *lspClient) documentSymbols(ctx context.Context, absolutePath string, content string) (json.RawMessage, error) {
-	c.operationMu.Lock()
-	defer c.operationMu.Unlock()
-
 	uri := fileURI(absolutePath)
+	release, err := c.acquireOperation(ctx, "textDocument/documentSymbol")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	requestCtx, cancel := c.documentOperationContext(ctx, uri, lspDefinitionTimeout)
+	defer cancel()
 	if err := c.syncDocument(absolutePath, uri, content); err != nil {
 		return nil, err
 	}
-	return c.requestWithRetry(ctx, "textDocument/documentSymbol", map[string]any{
+	raw, err := c.requestWithRetry(requestCtx, "textDocument/documentSymbol", map[string]any{
 		"textDocument": map[string]string{"uri": uri},
 	})
+	if err == nil {
+		c.markDocumentReady(uri)
+	}
+	return raw, err
 }
 
 func (n workspaceCodeNavigator) codeLocations(locations []lspDefinitionLocation) ([]tools.CodeLocation, int) {

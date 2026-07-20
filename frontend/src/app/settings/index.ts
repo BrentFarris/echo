@@ -94,6 +94,7 @@ const llmCodingPresets: {
 
 const endpointTopics = [
   { key: "chat", label: "Chat" },
+  { key: "research", label: "Research" },
   { key: "kanbanDecompose", label: "Kanban Decompose" },
   { key: "kanban", label: "Kanban" },
   { key: "inlineCode", label: "Inline code" },
@@ -319,6 +320,18 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                   type="checkbox"
                   ${limitKanbanConcurrencyEnabled(state.settingsDraft) ? "checked" : ""}
                 />
+              </label>
+              <label class="field" title="Maximum number of chat research agents that may run at once. Set to 0 to disable research agents.">
+                <span>Research agent concurrency</span>
+                <input
+                  name="researchAgentConcurrency"
+                  type="number"
+                  min="0"
+                  max="8"
+                  step="1"
+                  value="${escapeAttribute(fieldValue("researchAgentConcurrency") || "4")}"
+                />
+                <span class="field-help">Set to 0 to disable research agents and use direct chat tools.</span>
               </label>
               <label class="settings-toggle">
                 <span>Leading whitespace indicators</span>
@@ -1023,7 +1036,7 @@ function renderLLMEndpointRow(endpoint: llm.LLMEndpoint, index: number, endpoint
               required
               data-llm-endpoint-field
               data-endpoint-id="${escapeAttribute(id)}"
-              data-endpoint-field="model"
+              data-endpoint-field=\"model\"
             />
           </label>
           <label class="field field-wide llm-endpoint-preset-field">
@@ -1035,6 +1048,19 @@ function renderLLMEndpointRow(endpoint: llm.LLMEndpoint, index: number, endpoint
             >
               ${renderLLMPresetOptions(endpoint)}
             </select>
+          </label>
+          <label class="field field-wide">
+            <span>Headers</span>
+            <textarea
+              name="endpointHeaders-${escapeAttribute(id)}"
+              rows="4"
+              placeholder="key: value&#10;Authorization: Bearer my-token&#10;X-Custom-Header: value"
+              autocomplete="off"
+              spellcheck="false"
+              data-llm-endpoint-field
+              data-endpoint-id="${escapeAttribute(id)}"
+              data-endpoint-field="headers"
+            >${escapeHtml(headersToText(endpoint))}</textarea>
           </label>
           ${renderLLMEndpointGenerationFields(endpoint, id)}
         </div>
@@ -1190,6 +1216,7 @@ function settingsEndpoints(settings: llm.Settings | null | undefined): llm.LLMEn
         name: endpoint.name ?? `Endpoint ${index + 1}`,
         endpoint: endpoint.endpoint ?? "",
         model: endpoint.model ?? "",
+        headers: endpoint.headers,
         ...endpointGenerationValues(endpoint, defaults),
       }),
     );
@@ -1261,6 +1288,9 @@ function endpointSelection(
   const kanban = validEndpointID(raw?.kanban, endpoints) ? raw!.kanban : fallback;
   return {
     chat: validEndpointID(raw?.chat, endpoints) ? raw!.chat : fallback,
+    research: validEndpointID(raw?.research, endpoints)
+      ? raw!.research
+      : validEndpointID(raw?.chat, endpoints) ? raw!.chat : fallback,
     kanbanDecompose: validEndpointID(raw?.kanbanDecompose, endpoints)
       ? raw!.kanbanDecompose
       : kanban,
@@ -1286,6 +1316,7 @@ function settingsWithEndpointSync(settings: llm.Settings): llm.Settings {
   for (const field of llmPresetFields) {
     source[field] = chatEndpoint?.[field] ?? endpointDefaultsFromSettings(settings)[field];
   }
+  source.headers = chatEndpoint?.headers;
   return llm.Settings.createFrom(source);
 }
 
@@ -1321,7 +1352,7 @@ function handleLLMEndpointSelectionInput(select: HTMLSelectElement) {
   state.formError = "";
 }
 
-function handleLLMEndpointFieldInput(input: HTMLInputElement) {
+function handleLLMEndpointFieldInput(input: HTMLInputElement | HTMLTextAreaElement) {
   if (!state.settingsDraft) {
     return;
   }
@@ -1330,12 +1361,19 @@ function handleLLMEndpointFieldInput(input: HTMLInputElement) {
   if (!endpointID || !isEndpointField(field)) {
     return;
   }
-  const value =
-    input.type === "checkbox"
-      ? input.checked
-      : isEndpointNumericField(field)
-        ? Number(input.value)
-        : input.value;
+  let value: string | number | boolean | Record<string, string> | undefined;
+  if (field === "headers") {
+    value = parseHeadersText((input as HTMLTextAreaElement).value);
+  } else if (input instanceof HTMLInputElement) {
+    value =
+      input.type === "checkbox"
+        ? input.checked
+        : isEndpointNumericField(field)
+          ? Number(input.value)
+          : input.value;
+  } else {
+    return;
+  }
   const endpoints = settingsEndpoints(state.settingsDraft).map((endpoint) => {
     if (endpoint.id !== endpointID) {
       return endpoint;
@@ -1346,7 +1384,7 @@ function handleLLMEndpointFieldInput(input: HTMLInputElement) {
     });
   });
   state.settingsDraft = settingsWithEndpointDraft(state.settingsDraft, endpoints);
-  if (field === "thinkingTokenBudget") {
+  if (field === "thinkingTokenBudget" && input instanceof HTMLInputElement) {
     const correctionInput = input.form?.querySelector<HTMLInputElement>(
       `input[data-endpoint-id="${CSS.escape(endpointID)}"][data-endpoint-field="thinkingCorrection"]`,
     );
@@ -1361,10 +1399,10 @@ function isEndpointTopic(value: string | undefined): value is EndpointTopic {
   return endpointTopics.some((topic) => topic.key === value);
 }
 
-type EndpointField = "name" | "endpoint" | "model" | LLMPresetField;
+type EndpointField = "name" | "endpoint" | "model" | "headers" | LLMPresetField;
 
 function isEndpointField(value: string | undefined): value is EndpointField {
-  return value === "name" || value === "endpoint" || value === "model" ||
+  return value === "name" || value === "endpoint" || value === "model" || value === "headers" ||
     (llmPresetFields as readonly string[]).includes(value ?? "");
 }
 
@@ -1372,7 +1410,38 @@ function isEndpointNumericField(value: EndpointField): value is Exclude<LLMPrese
   return value !== "name" &&
     value !== "endpoint" &&
     value !== "model" &&
+    value !== "headers" &&
     value !== "thinkingCorrection";
+}
+
+/* ── Headers helpers ── */
+
+function headersToText(endpoint: llm.LLMEndpoint): string {
+  const headers = endpoint.headers;
+  if (!headers) {
+    return "";
+  }
+  return Object.entries(headers)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join("\n");
+}
+
+function parseHeadersText(text: string): Record<string, string> | undefined {
+  const result: Record<string, string> = {};
+  let hasHeaders = false;
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const colonIndex = trimmed.indexOf(":");
+    if (colonIndex <= 0) continue;
+    const key = trimmed.slice(0, colonIndex).trim();
+    const value = trimmed.slice(colonIndex + 1).trim();
+    if (key && value) {
+      result[key] = value;
+      hasHeaders = true;
+    }
+  }
+  return hasHeaders ? result : undefined;
 }
 
 export function addLLMEndpoint() {
@@ -1733,7 +1802,7 @@ export function handleSettingsInput(event: Event) {
     handleLLMEndpointSelectionInput(input);
     return;
   }
-  if (input.dataset.llmEndpointField !== undefined && input instanceof HTMLInputElement) {
+  if (input.dataset.llmEndpointField !== undefined && (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) {
     handleLLMEndpointFieldInput(input);
     return;
   }
@@ -1793,6 +1862,7 @@ export function handleSettingsInput(event: Event) {
     "repetitionPenalty",
     "timeoutSeconds",
     "thinkingTokenBudget",
+    "researchAgentConcurrency",
   ]);
   let value: number | string | boolean;
   if (input.type === "checkbox") {
