@@ -45,6 +45,34 @@ export function bindCodeViewEvents(root: ParentNode, callbacks: CodeViewCallback
     });
   });
 
+  root.querySelectorAll<HTMLElement>("[data-code-tab]").forEach((element) => {
+    element.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const state = ensureCodeState(workspaceID);
+      const path = element.dataset.codeTab ?? "";
+      const index = state.tabs.findIndex((tab) => tab.path === path);
+      const tab = state.tabs[index];
+      if (!tab || index < 0) {
+        return;
+      }
+      callbacks.showCodeTabContextMenu(
+        workspaceID,
+        {
+          path: tab.path,
+          label: element.querySelector<HTMLElement>(".code-tab-title")?.textContent ?? tab.path,
+          untitled: tab.untitled,
+          external: tab.external,
+          canCloseOthers: state.tabs.length > 1,
+          canCloseToRight: index < state.tabs.length - 1,
+          canCloseSaved: state.tabs.some((candidate) => !candidate.dirty),
+        },
+        event.clientX,
+        event.clientY,
+      );
+    });
+  });
+
   bindUntitledFileCreationEvents(root, workspaceID, callbacks);
 
   const search = root.querySelector<HTMLInputElement>("[data-code-search]");
@@ -152,22 +180,32 @@ function bindCodeTextSearchEvents(root: ParentNode, workspaceID: string, callbac
   });
 
   root.querySelectorAll<HTMLInputElement>("[data-code-text-search-field]").forEach((input) => {
+    const field = input.dataset.codeTextSearchField ?? "";
     input.addEventListener("input", () => {
       handleTextSearchFieldInput(workspaceID, input, callbacks);
     });
+    input.addEventListener("pointerdown", () => {
+      if (field === "query") {
+        ensureCodeState(workspaceID).textSearchSelectQuery = false;
+      }
+    });
     input.addEventListener("focus", () => {
-      const field = input.dataset.codeTextSearchField ?? "";
       if (field === "query" || field === "include" || field === "exclude") {
-        ensureCodeState(workspaceID).textSearchFocusedField = field;
+        const latest = ensureCodeState(workspaceID);
+        latest.textSearchFocusedField = field;
+        if (field !== "query") {
+          latest.textSearchSelectQuery = false;
+        }
       }
     });
     input.addEventListener("blur", () => {
       const latest = ensureCodeState(workspaceID);
-      if (!latest.preservingTextSearchFocus) {
-        latest.textSearchFocusedField = "";
-      }
+      latest.textSearchFocusedField = "";
     });
     input.addEventListener("keydown", (event) => {
+      if (field === "query") {
+        ensureCodeState(workspaceID).textSearchSelectQuery = false;
+      }
       if (event.key === "Enter") {
         event.preventDefault();
         event.stopPropagation();
@@ -201,7 +239,11 @@ function bindCodeTextSearchEvents(root: ParentNode, workspaceID: string, callbac
   if (state.textSearchFocusedField) {
     const input = root.querySelector<HTMLInputElement>(`[data-code-text-search-field="${state.textSearchFocusedField}"]`);
     input?.focus();
-    input?.setSelectionRange(input.value.length, input.value.length);
+    if (state.textSearchFocusedField === "query" && state.textSearchSelectQuery) {
+      input?.select();
+    } else {
+      input?.setSelectionRange(input.value.length, input.value.length);
+    }
   }
 }
 

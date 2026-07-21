@@ -174,6 +174,8 @@ export function MoveWorkspacePath(arg1:string,arg2:string,arg3:string):Promise<s
 
 export function MoveWorkspaceTask(arg1:string,arg2:string,arg3:string,arg4:string):Promise<services.TaskBoard>;
 
+export function OpenExternalPathExplorer(arg1:string):Promise<void>;
+
 export function OpenKanbanCardDetail(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
 export function OpenWorkspaceExplorer(arg1:string):Promise<void>;
@@ -215,6 +217,8 @@ export function ResetTokenBudget(arg1:string):Promise<void>;
 export function ResolveMode(arg1:string):Promise<tools.AgentModeSummary>;
 
 export function ResolveModeProvider(arg1:string):Promise<tools.AgentModeSummary>;
+
+export function ResolveWorkspacePath(arg1:string,arg2:string):Promise<string>;
 
 export function ResolveWorkspaceTextFilePath(arg1:string,arg2:string):Promise<string>;
 

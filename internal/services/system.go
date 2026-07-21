@@ -211,7 +211,8 @@ type SystemService struct {
 	gitRepositoryViews      map[string]WorkspaceGitRepositoryView
 	lspMu                   sync.Mutex
 	lspClients              map[string]*lspClient
-	lspWarmups              map[string]struct{}
+	lspClientStarts         map[string]*lspClientStart
+	lspWarmups              map[string]*lspWarmupRun
 	workspaceTextSearchMu   sync.Mutex
 	workspaceTextSearchSeq  uint64
 	workspaceTextSearches   map[string]workspaceTextSearchRun
@@ -258,7 +259,8 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 		workspaceToolLocks:    make(map[string]*sync.Mutex),
 		gitRepositoryViews:    make(map[string]WorkspaceGitRepositoryView),
 		lspClients:            make(map[string]*lspClient),
-		lspWarmups:            make(map[string]struct{}),
+		lspClientStarts:       make(map[string]*lspClientStart),
+		lspWarmups:            make(map[string]*lspWarmupRun),
 		workspaceTextSearches: make(map[string]workspaceTextSearchRun),
 		eventSubscribers:      make(map[uint64]chan RuntimeEvent),
 		tokenBudget:           newTokenBudgetService(),
@@ -1034,6 +1036,25 @@ func (s *SystemService) OpenWorkspaceExplorer(id string) error {
 	return nil
 }
 
+func (s *SystemService) ResolveWorkspacePath(id string, path string) (string, error) {
+	if strings.TrimSpace(id) == "" {
+		return "", fmt.Errorf("workspace id is required")
+	}
+
+	workspace, err := s.workspaceByID(id)
+	if err != nil {
+		return "", err
+	}
+	return resolveWorkspaceAbsolutePath(workspace, path)
+}
+
+func resolveWorkspaceAbsolutePath(workspace Workspace, path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	return resolveWorkspaceServicePath(workspace, path)
+}
+
 func (s *SystemService) OpenWorkspacePathExplorer(id string, path string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("workspace id is required")
@@ -1047,6 +1068,40 @@ func (s *SystemService) OpenWorkspacePathExplorer(id string, path string) error 
 	if err != nil {
 		return err
 	}
+	return openPathInExplorer(resolved, selectFile)
+}
+
+func (s *SystemService) OpenExternalPathExplorer(path string) error {
+	resolved, selectFile, err := resolveExternalExplorerTarget(path)
+	if err != nil {
+		return err
+	}
+	return openPathInExplorer(resolved, selectFile)
+}
+
+func resolveExternalExplorerTarget(path string) (string, bool, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", false, fmt.Errorf("path is required")
+	}
+	if !filepath.IsAbs(path) {
+		return "", false, fmt.Errorf("external path must be absolute")
+	}
+	resolved, err := filepath.Abs(path)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve external path: %w", err)
+	}
+	if realResolved, evalErr := filepath.EvalSymlinks(resolved); evalErr == nil {
+		resolved = realResolved
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", false, fmt.Errorf("external path does not exist: %w", err)
+	}
+	return resolved, !info.IsDir(), nil
+}
+
+func openPathInExplorer(resolved string, selectFile bool) error {
 	target := resolved
 	if selectFile {
 		target = filepath.Dir(resolved)
@@ -1071,7 +1126,7 @@ func (s *SystemService) OpenWorkspacePathExplorer(id string, path string) error 
 	}
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to open workspace path in explorer: %w", err)
+		return fmt.Errorf("failed to open path in explorer: %w", err)
 	}
 	return nil
 }

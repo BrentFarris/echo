@@ -16,6 +16,7 @@ export function openTextSearch(
   state.textSearchOpen = true;
   state.explorerDrawerOpen = true;
   state.textSearchFocusedField = "query";
+  state.textSearchSelectQuery = true;
   if (initialQuery) {
     state.textSearchQuery = initialQuery;
   }
@@ -30,6 +31,7 @@ export function closeTextSearch(workspaceID: string, callbacks: CodeViewCallback
   const state = ensureCodeState(workspaceID);
   state.textSearchOpen = false;
   state.textSearchFocusedField = "";
+  state.textSearchSelectQuery = false;
   state.textSearchRequestSeq++;
   state.textSearchStreamID = "";
   state.textSearchLoading = false;
@@ -48,6 +50,7 @@ export function handleTextSearchFieldInput(
   }
   state.textSearchFocusedField = field;
   if (field === "query") {
+    state.textSearchSelectQuery = false;
     state.textSearchQuery = input.value;
   } else if (field === "include") {
     state.textSearchInclude = input.value;
@@ -63,6 +66,11 @@ export function toggleTextSearchOption(
   callbacks: CodeViewCallbacks,
 ) {
   const state = ensureCodeState(workspaceID);
+  const queryInput = document.querySelector<HTMLInputElement>(
+    '[data-code-text-search-field="query"]',
+  );
+  const selectionStart = queryInput?.selectionStart ?? null;
+  const selectionEnd = queryInput?.selectionEnd ?? null;
   if (option === "regex") {
     state.textSearchRegex = !state.textSearchRegex;
   } else if (option === "case") {
@@ -74,6 +82,10 @@ export function toggleTextSearchOption(
   }
   state.textSearchFocusedField = "query";
   scheduleTextSearch(workspaceID, callbacks, 0);
+  queryInput?.focus({ preventScroll: true });
+  if (queryInput && selectionStart !== null && selectionEnd !== null) {
+    queryInput.setSelectionRange(selectionStart, selectionEnd);
+  }
 }
 
 export function runTextSearchNow(workspaceID: string, callbacks: CodeViewCallbacks) {
@@ -243,7 +255,7 @@ function focusTextSearchQuery() {
       '[data-code-text-search-field="query"]',
     );
     input?.focus({ preventScroll: true });
-    input?.setSelectionRange(input.value.length, input.value.length);
+    input?.select();
   });
 }
 

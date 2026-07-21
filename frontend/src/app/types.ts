@@ -43,6 +43,12 @@ export type ContextMenuState = {
   workspaceId: string;
   displayPath: string;
   workspacePath?: string;
+  codeTabPath?: string;
+  codeTabUntitled?: boolean;
+  codeTabExternal?: boolean;
+  codeTabCanCloseOthers?: boolean;
+  codeTabCanCloseToRight?: boolean;
+  codeTabCanCloseSaved?: boolean;
   codePath?: string;
   codeKind?: CodeEntryKind;
   gitPath?: string;
