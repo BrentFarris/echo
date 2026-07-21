@@ -4,7 +4,7 @@ import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
 import { renderQRCodeSVG } from "../qr";
-import { cloneSettings, cloneWebAccessSettings, fieldValue, gitSplitDiffViewEnabled, leadingWhitespaceIndicatorsEnabled, limitKanbanConcurrencyEnabled, notificationSoundsEnabled, chatCompletionNotificationsEnabled, kanbanCompleteNotificationsEnabled, state, activeWorkspace, agentModesForWorkspace } from "../state";
+import { cloneSettings, cloneWebAccessSettings, fieldValue, gitSplitDiffViewEnabled, leadingWhitespaceIndicatorsEnabled, limitKanbanConcurrencyEnabled, notificationSoundsEnabled, chatCompletionNotificationsEnabled, kanbanCompleteNotificationsEnabled, state, activeWorkspace, agentModesForWorkspace, vimKeybindingsEnabled } from "../state";
 import { applyTheme, normalizeHexColor, settingsWithCompactTheme, settingsWithThemeColor, themeColorValue, themeGroups, themeTokens, type ThemePaletteName } from "../theme";
 import { pushToast } from "../toasts";
 import { errorMessage, escapeAttribute, escapeHtml, workspaceFolderSummary } from "../utils";
@@ -375,6 +375,14 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                   type="checkbox"
                   data-settings-inverted-boolean
                   ${leadingWhitespaceIndicatorsEnabled(state.settingsDraft) ? "checked" : ""}
+                />
+              </label>
+              <label class="settings-toggle">
+                <span>Vim keybindings</span>
+                <input
+                  name="enableVimKeybindings"
+                  type="checkbox"
+                  ${vimKeybindingsEnabled(state.settingsDraft) ? "checked" : ""}
                 />
               </label>
               <label class="settings-toggle" title="Use a side-by-side Git diff layout on wide windows. Narrow windows always use the combined diff.">

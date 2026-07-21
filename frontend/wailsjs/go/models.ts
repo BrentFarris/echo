@@ -1676,7 +1676,7 @@ export namespace services {
 	        this.tasks = this.convertValues(source["tasks"], TaskBoard);
 	        this.kanban = this.convertValues(source["kanban"], KanbanBoard);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1694,26 +1694,6 @@ export namespace services {
 		    }
 		    return a;
 		}
-	}
-	export class EpicTaskConversion {
-	    taskId: string;
-	    title: string;
-	    description: string;
-	    acceptanceCriteria: string[];
-	    expectedUpdatedAt: string;
-
-	    static createFrom(source: any = {}) {
-	        return new EpicTaskConversion(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.taskId = source["taskId"];
-	        this.title = source["title"];
-	        this.description = source["description"];
-	        this.acceptanceCriteria = source["acceptanceCriteria"];
-	        this.expectedUpdatedAt = source["expectedUpdatedAt"];
-	    }
 	}
 	export class TokenBudget {
 	    limit: number;
@@ -3310,6 +3290,26 @@ export namespace services {
 		    }
 		    return a;
 		}
+	}
+	export class epicTaskConversion {
+	    TaskID: string;
+	    Title: string;
+	    Description: string;
+	    AcceptanceCriteria: string[];
+	    ExpectedUpdatedAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new epicTaskConversion(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.TaskID = source["TaskID"];
+	        this.Title = source["Title"];
+	        this.Description = source["Description"];
+	        this.AcceptanceCriteria = source["AcceptanceCriteria"];
+	        this.ExpectedUpdatedAt = source["ExpectedUpdatedAt"];
+	    }
 	}
 
 }

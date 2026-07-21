@@ -16,7 +16,7 @@ import { handleGlobalKeydown, handleGlobalKeyup, handleGlobalPointerDown, handle
 import { applyKanbanEvent, applyHeartbeatEvent, applyLivenessEvent, applyWatchdogEvent, loadActiveKanbanBoard, markKanbanRunStarted } from "./kanban";
 import { gitChangedLineNumbersForFile, gitChangeStateForPath } from "./git";
 import { render } from "./render";
-import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state, loadDashboardLayoutsFromBackend, startActivityRefreshTimer } from "./state";
+import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, vimKeybindingsEnabled, state, loadDashboardLayoutsFromBackend, startActivityRefreshTimer } from "./state";
 import { applyTheme } from "./theme";
 import { applyTaskEvent, loadActiveTaskBoard } from "./tasks";
 import { pushToast } from "./toasts";
@@ -61,6 +61,8 @@ function codeViewCallbacks() {
     errorMessage,
     leadingWhitespaceIndicatorsEnabled: () =>
       leadingWhitespaceIndicatorsEnabled(state.appState?.settings ?? state.settingsDraft),
+    vimKeybindingsEnabled: () =>
+      vimKeybindingsEnabled(state.appState?.settings ?? state.settingsDraft),
     gitChangedLineNumbers: gitChangedLineNumbersForFile,
     gitChangeStateForPath,
     refreshGitChanges: refreshWorkspaceChangeReview,

@@ -123,6 +123,48 @@
       "updatedAt": "2026-07-16T07:07:38.1670938Z",
       "completedAt": "2026-07-16T07:07:38.1670938Z"
     },
+    "20d1401a-dab8-4264-a149-214548348247": {
+      "title": "Add preemptive request body size logging in LLM client",
+      "details": "**Problem:** `internal/llm/client.go` marshals and sends the JSON request without measuring `len(body)`. When a 413 occurs, there's no visibility into how large the payload actually was.\n\n**Fix:** In both `Complete()` (~line 62) and `StreamChat()` (~line 127), log `len(body)` after marshaling. Add a warning threshold (e.g., configurable or hardcoded at 8 MB) that emits a warning event before sending. This gives users and operators actionable data when endpoints reject requests.\n\n**Files:** `internal/llm/client.go`",
+      "epic": "Fix 413 Request Entity Too Large errors",
+      "tags": [
+        "llm",
+        "debugging",
+        "safety"
+      ],
+      "acceptanceCriteria": [
+        "Body size is logged at info level for every LLM request",
+        "A warning is emitted when body exceeds a configurable threshold",
+        "Existing 413 error handling behavior is unchanged"
+      ],
+      "priority": "P0",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-20T19:44:27.3786518Z",
+      "updatedAt": "2026-07-20T21:37:02.5170209Z",
+      "completedAt": "2026-07-20T21:37:02.5170209Z"
+    },
+    "211c03e0-8d87-4b5b-b9a7-9a890d3b721b": {
+      "title": "Frontend: Add Convert Epic button to epic group headers",
+      "details": "In `renderTaskLane()`, add a \"Convert all\" button inside each epic group header (both `\u003cdetails\u003e` and inline variants).\n\n- Only show for epics with ≥2 uncompleted tasks\n- Button: `data-task-action=\"convert-epic\"` with `data-task-epic=\"${epicName}\"`\n- Use the kanban icon + \"Convert all\" label, styled as a secondary button\n- Fits within the existing `.task-epic-group-header` flex layout\n\n**File:** `frontend/src/app/tasks/index.ts`",
+      "epic": "Bulk Epic-to-Kanban Conversion",
+      "tags": [
+        "frontend",
+        "UI"
+      ],
+      "acceptanceCriteria": [
+        "Button appears in epic group headers for epics with ≥2 uncompleted tasks",
+        "Button has data-task-action=\"convert-epic\" and data-task-epic attributes",
+        "Single-task epics do not show the button",
+        "cd frontend; npm run build passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-21T00:42:13.9308165Z",
+      "updatedAt": "2026-07-21T00:49:25.3468646Z",
+      "completedAt": "2026-07-21T00:49:25.3468646Z"
+    },
     "21d15427-2d87-4e53-893a-dde9c06a9d8c": {
       "title": "Render console output in chat tool calls (frontend)",
       "details": "## Changes to `echo/frontend/src/app/chat/index.ts`\n\n### 1. Update `renderToolCall` (line ~959)\nAdd console output rendering before the existing result/error blocks:\n```typescript\n${toolCall.consoleOutput \n  ? `\u003cpre class=\"console-output\" data-console-output\u003e${escapeHtml(toolCall.consoleOutput)}\u003c/pre\u003e` \n  : \"\"}\n```\n\n### 2. Update markdown link targets selector (line ~180)\nAdd `.chat-message.from-assistant .tool-call .console-output` to the `chatFileLinkTargets` selector list so file links in console output work.\n\n## Changes to `echo/frontend/src/styles.css`\n\nAdd terminal-style styling:\n```css\n.tool-call .console-output {\n  font-family: var(--font-mono, monospace);\n  font-size: 0.85em;\n  background: var(--color-surface-1, #1e1e2e);\n  color: var(--color-text, #cdd6f4);\n  padding: 10px 12px;\n  border-radius: 6px;\n  margin: 8px 0;\n  overflow-x: auto;\n  max-height: 300px;\n  white-space: pre-wrap;\n  word-break: break-word;\n  border-left: 3px solid var(--color-blue, #89b4fa);\n}\n```\n\n## Regenerate bindings\nRun `wails generate` to pick up new `ConsoleOutput` field on `ChatToolActivity`.\n\n## Verification\n- `cd frontend; npm run build` passes\n- Console output visible in chat for shell_command tool calls",
@@ -161,6 +203,21 @@
       "createdAt": "2026-07-13T19:08:11.3850355Z",
       "updatedAt": "2026-07-13T19:36:33.9203848Z",
       "completedAt": "2026-07-13T19:36:33.9203848Z"
+    },
+    "2928f85c-2989-49d8-9f6b-10b1c23ceed8": {
+      "title": "Frontend: Add epic conversion state and types",
+      "acceptanceCriteria": [
+        "EpicConversionDraft type added to types.ts with epicName and taskIds fields",
+        "epicConversionDrafts Map and convertingEpicWorkspaces Set added to state.ts",
+        "State properly initialized in app bootstrap",
+        "cd frontend; npm run build passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-21T00:38:02.8026363Z",
+      "updatedAt": "2026-07-21T01:23:01.7778768Z",
+      "completedAt": "2026-07-21T01:23:01.7778768Z"
     },
     "2acc40fa-fb1c-4928-aee0-3ded352e304e": {
       "title": "Update ComfyUI integration plan: custom workflow support via workflowPath and workflowJSON parameters with template substitution",
@@ -208,6 +265,30 @@
       "createdAt": "2026-07-17T00:15:58.526858Z",
       "updatedAt": "2026-07-17T00:20:29.334572Z",
       "completedAt": "2026-07-17T00:20:29.334572Z"
+    },
+    "31f541ad-52c2-4c8e-964e-676339dc1ad4": {
+      "title": "Backend: Add CreateKanbanCardsFromEpic method",
+      "details": "Add a new exported `SystemService.CreateKanbanCardsFromEpic` method in `internal/services/tasks.go` that converts all non-completed tasks sharing an epic into individual Kanban cards.\n\n**Input:** workspaceID, epicName, array of `{taskID, title, description, criteria[], expectedUpdatedAt}`\n\n**Logic:**\n- Guard: no active kanban run (same check as `CreateKanbanCardFromTask`)\n- Loop through each task: create a Ready-lane Kanban card and mark the task completed (reuse core logic from the single-task method)\n- Return `{Tasks TaskBoard, Kanban KanbanBoard}` — same return shape so frontend updates both boards\n\n**File:** `internal/services/tasks.go`",
+      "epic": "Bulk Epic-to-Kanban Conversion",
+      "tags": [
+        "backend",
+        "kanban",
+        "tasks"
+      ],
+      "acceptanceCriteria": [
+        "Method accepts workspaceID, epicName, and array of task data",
+        "Validates no active kanban run before proceeding",
+        "Creates one Kanban card per task in Ready lane with title/description/criteria from the task",
+        "Marks each source task as completed after successful card creation",
+        "Returns updated TaskBoard and KanbanBoard",
+        "go test ./... passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-21T00:39:44.6021861Z",
+      "updatedAt": "2026-07-21T00:49:31.9451637Z",
+      "completedAt": "2026-07-21T00:49:31.9451637Z"
     },
     "4367bd5c-c699-49c1-b20c-3172414b431c": {
       "title": "Fix 413 Request Entity Too Large from accumulated image data in LLM requests",
@@ -351,6 +432,20 @@
       "updatedAt": "2026-07-16T14:59:48.5465877Z",
       "completedAt": "2026-07-16T14:59:48.5465877Z"
     },
+    "676c47b3-0e78-4e74-b08e-be4f218ef45c": {
+      "title": "Frontend: Add epic convert button and dialog styling",
+      "acceptanceCriteria": [
+        "CSS added for .epic-convert-button within .task-epic-group-header flex layout",
+        "Confirmation dialog styled with reusable patterns from .kanban-card-create-dialog",
+        "cd frontend; npm run build passes"
+      ],
+      "priority": "P2",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-21T00:38:03.0476344Z",
+      "updatedAt": "2026-07-21T01:23:02.046879Z",
+      "completedAt": "2026-07-21T01:23:02.046879Z"
+    },
     "68a000a9-1e40-4664-984a-82b6aa9840de": {
       "title": "Render activity status dots and preview text on workspace dropdown options",
       "details": "## Changes to `echo/frontend/src/app/render.ts`\n\n### 1. Add helper function (near top of file with other workspace helpers)\n\n```typescript\nfunction getWorkspaceActivityStatus(workspaceID: string): {\n  isChatBusy: boolean;\n  isKanbanRunning: boolean;\n  activeAgentCount: number;\n  lastMessageSnippet: string;\n} {\n  const summary = state.workspaceActivitySummaries.get(workspaceID);\n  if (!summary) {\n    return { isChatBusy: false, isKanbanRunning: false, activeAgentCount: 0, lastMessageSnippet: \"\" };\n  }\n  return {\n    isChatBusy: summary.isChatBusy,\n    isKanbanRunning: summary.isKanbanRunning,\n    activeAgentCount: summary.activeAgentCount,\n    lastMessageSnippet: summary.lastMessageSnippet ?? \"\",\n  };\n}\n\nfunction renderWorkspaceActivityStatus(workspaceID: string): string {\n  const status = getWorkspaceActivityStatus(workspaceID);\n  let dotClass = \"workspace-activity-dot is-idle\";\n  let activityText = \"\";\n\n  if (status.isChatBusy) {\n    dotClass = \"workspace-activity-dot is-chat-busy\";\n    activityText = \"Streaming…\";\n  } else if (status.isKanbanRunning) {\n    dotClass = \"workspace-activity-dot is-kanban-running\";\n    activityText = status.activeAgentCount \u003e 0\n      ? `${status.activeAgentCount} agent${status.activeAgentCount \u003e 1 ? \"s\" : \"\"} running`\n      : \"Kanban running\";\n  }\n\n  if (!activityText \u0026\u0026 status.lastMessageSnippet) {\n    activityText = status.lastMessageSnippet;\n  }\n\n  return `\n    \u003cspan class=\"${dotClass}\" aria-hidden=\"true\"\u003e\u003c/span\u003e\n    ${activityText ? `\u003cspan class=\"workspace-activity-text\" title=\"${escapeAttribute(activityText)}\"\u003e${escapeHtml(activityText)}\u003c/span\u003e` : \"\"}\n  `;\n}\n```\n\n### 2. Update desktop workspace dropdown rendering (buildLeftNav, ~line 220)\n\nFind the workspace-dropdown-option button template and add activity status after the display name:\n\n```typescript\n\u003cbutton\n  class=\"workspace-dropdown-option${ws.id === workspace?.id ? \" is-active\" : \"\"} ${ws.missing ? \"is-missing\" : \"\"}\"\n  type=\"button\"\n  role=\"menuitem\"\n  data-action=\"activate-workspace\"\n  data-workspace-id=\"${escapeHtml(ws.id)}\"\n  title=\"${escapeHtml(workspaceFolderSummary(ws))}\"\n\u003e\n  \u003cspan class=\"workspace-dropdown-option-main\"\u003e\n    ${escapeHtml(ws.displayName)}\n    ${renderWorkspaceActivityStatus(ws.id)}\n  \u003c/span\u003e\n\u003c/button\u003e\n```\n\n### 3. Update mobile workspace dropdown (buildMain, ~line 407)\n\nSame pattern for the mobile-nav-workspace-option buttons:\n\n```typescript\n\u003cbutton\n  class=\"mobile-nav-workspace-option${ws.id === workspace?.id ? \" is-active\" : \"\"}\"\n  type=\"button\"\n  role=\"menuitem\"\n  data-action=\"activate-workspace\"\n  data-workspace-id=\"${escapeHtml(ws.id)}\"\n  ${ws.id === workspace?.id ? ' aria-current=\"page\"' : ''}\n\u003e\n  ${escapeHtml(ws.displayName)}\n  ${ws.missing ? ' \u003cspan class=\"is-missing\"\u003e(missing)\u003c/span\u003e' : ''}\n  ${renderWorkspaceActivityStatus(ws.id)}\n\u003c/button\u003e\n```\n\n## Changes to `echo/frontend/src/styles.css`\n\nAdd styling for the activity status elements:\n\n```css\n/* Workspace dropdown option layout */\n.workspace-dropdown-option-main {\n  display: flex;\n  align-items: center;\n  gap: var(--space-xs);\n}\n\n/* Activity dot indicator */\n.workspace-activity-dot {\n  display: inline-block;\n  width: 8px;\n  height: 8px;\n  border-radius: 50%;\n  flex-shrink: 0;\n}\n\n.workspace-activity-dot.is-idle {\n  background-color: var(--color-text-muted, #6b7280);\n  opacity: 0.4;\n}\n\n.workspace-activity-dot.is-chat-busy {\n  background-color: var(--color-blue, #3b82f6);\n  animation: activity-pulse 1.5s ease-in-out infinite;\n}\n\n.workspace-activity-dot.is-kanban-running {\n  background-color: var(--color-green, #22c55e);\n  animation: activity-pulse 1.5s ease-in-out infinite;\n}\n\n@keyframes activity-pulse {\n  0%, 100% { opacity: 1; transform: scale(1); }\n  50% { opacity: 0.6; transform: scale(1.2); }\n}\n\n/* Activity text label */\n.workspace-activity-text {\n  font-size: var(--text-xs, 0.75rem);\n  color: var(--color-text-muted, #6b7280);\n  max-width: 180px;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n/* Mobile nav workspace option layout */\n.mobile-nav-workspace-option {\n  display: flex;\n  align-items: center;\n  gap: var(--space-xs);\n  flex-wrap: wrap;\n}\n```\n\n## Changes to `echo/frontend/src/app/bootstrap.ts`\n\nImport and call `startActivityRefreshTimer()` after initial app setup.\n\n## Verification\n- Desktop dropdown shows colored dot + activity text for each workspace\n- Mobile dropdown shows the same indicators\n- Blue pulsing dot = chat streaming active\n- Green pulsing dot = kanban agents running (with count)\n- Gray dot = idle\n- Activity text shows \"Streaming…\", \"N agents running\", or last message snippet\n- `npm run build` passes",
@@ -382,6 +477,20 @@
       "createdAt": "2026-07-16T07:00:03.1549798Z",
       "updatedAt": "2026-07-16T07:07:38.3309068Z",
       "completedAt": "2026-07-16T07:07:38.3309068Z"
+    },
+    "6d94ee0a-e025-4bef-b108-fc0e5eee81e7": {
+      "title": "Backend: Whitelist CreateKanbanCardsFromEpic for web access RPC",
+      "acceptanceCriteria": [
+        "\"CreateKanbanCardsFromEpic\": true added to allowedRPCMethods in internal/webserver/server.go",
+        "Method is available over HTTP for web access mode",
+        "go test ./... passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-21T00:38:02.7246321Z",
+      "updatedAt": "2026-07-21T01:23:01.6858761Z",
+      "completedAt": "2026-07-21T01:23:01.6858761Z"
     },
     "74958278-c454-45f2-b29e-cfbb7a844b72": {
       "title": "ComfyUI integration: remote endpoint, agent tool, settings, and chat image display",
@@ -481,6 +590,26 @@
       "updatedAt": "2026-07-16T16:16:45.2034798Z",
       "completedAt": "2026-07-16T16:16:45.2034798Z"
     },
+    "7ca061b0-d567-4a77-a920-8510204bc7e4": {
+      "title": "Clone Videos slice in cloneChatMessages in state_persistence.go",
+      "details": "## Problem\n\n`cloneChatMessages` in `internal/services/state_persistence.go` (~line 328) clones the `Images` slice but does **not** clone the `Videos` slice. This means multiple references share the same underlying array, and mutations to one session's videos can corrupt another.\n\n## Fix\n\n**File:** `echo/internal/services/state_persistence.go`\n\nIn `cloneChatMessages`, after the existing Images clone:\n\n```go\nif len(msg.Videos) \u003e 0 {\n    dst.Videos = make([]ChatVideoAttachment, len(msg.Videos))\n    copy(dst.Videos, msg.Videos)\n}\n```\n\n## Verification\n- `go test ./...` passes",
+      "epic": "Fix 413 Request Entity Too Large errors",
+      "tags": [
+        "persistence",
+        "cloning",
+        "videos"
+      ],
+      "acceptanceCriteria": [
+        "Videos slice is cloned in cloneChatMessages",
+        "go test ./... passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-20T19:51:39.9664653Z",
+      "updatedAt": "2026-07-21T01:30:13.3351215Z",
+      "completedAt": "2026-07-21T01:30:13.3351215Z"
+    },
     "858a63aa-0154-495c-9f20-b5344a2c0369": {
       "title": "Regenerate Wails bindings for SavedCommand type and CRUD methods",
       "details": "## Command\n\nRun from repo root:\n```powershell\nwails generate\n```\n\nThis generates the TypeScript type `services.SavedCommand` and the bindings `SystemService.GetSavedCommands`, `SystemService.UpsertSavedCommand`, `SystemService.DeleteSavedCommand` in `frontend/wailsjs/go/services/SystemService.ts` and `frontend/wailsjs/go/models.ts`.\n\n## Verification\n- `frontend/wailsjs/go/models.ts` has `SavedCommand` type with fields: `id`, `name`, `command`, `order`\n- `frontend/wailsjs/go/services/SystemService.ts` has exported `GetSavedCommands`, `UpsertSavedCommand`, `DeleteSavedCommand` methods",
@@ -555,6 +684,47 @@
       "updatedAt": "2026-07-14T13:05:57.9901891Z",
       "completedAt": "2026-07-14T13:05:57.9901891Z"
     },
+    "868905ba-814d-4617-a192-84582d6bdbff": {
+      "title": "Add EnableVimKeybindings field to Go Settings struct",
+      "details": "In `internal/llm/settings.go`, add `EnableVimKeybindings bool \\`json:\"enableVimKeybindings,omitempty\"\\`` alongside existing editor preferences (near `HideLeadingWhitespaceIndicators`). No persistence changes needed — it flows through the existing state.json mechanism.\\n\\nAfter adding the field, run `wails generate` to regenerate TypeScript bindings in `frontend/wailsjs/go/models.ts`.",
+      "epic": "Vim keybindings in code editor",
+      "tags": [
+        "backend",
+        "settings"
+      ],
+      "acceptanceCriteria": [
+        "EnableVimKeybindings field exists in Settings struct with correct JSON tag",
+        "wails generate completes without errors",
+        "frontend/wailsjs/go/models.ts includes enableVimKeybindings in Settings interface"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-20T21:33:37.760632Z",
+      "updatedAt": "2026-07-20T21:37:56.6553898Z",
+      "completedAt": "2026-07-20T21:37:56.6553898Z"
+    },
+    "8b08ab98-547e-4628-b0b1-7f1f7f35f067": {
+      "title": "Improve token estimation for base64 data URLs in context compaction",
+      "details": "## Problem\n\nThe context compaction (`internal/services/context_compaction.go`) uses a flat `1600` tokens per image regardless of actual base64 size. This is a massive underestimate: a 2 MB image produces ~2.7 MB of base64 text, which at chars/3 = ~900K tokens — not 1600.\n\nThis means compaction triggers too late (or not at all) when images are present in history, and the actual JSON wire size far exceeds what the endpoint can accept.\n\n## Fix\n\n**File:** `internal/services/context_compaction.go`\n\nIn `estimateContextMessageTokens`, instead of adding a flat `contextCompactionImageTokens` constant, count the actual characters in the base64 data URL:\n\n```go\nif part.ImageURL != nil \u0026\u0026 part.ImageURL.URL != \"\" {\n    total += estimateContextTextTokens(part.ImageURL.URL)\n}\n```\n\nThis counts every character of the base64 string at chars/3, giving a much more accurate token estimate. The flat 1600 constant can be removed.\n\n## Impact\n\n- Context compaction will trigger earlier when images are present\n- The estimated token count will match actual wire size much more closely\n- Fewer surprise 413 errors from accumulated image data\n\n## Verification\n- `go test ./...` passes\n- Token estimate for a message with a 2MB base64 image is ~900K tokens, not 1600",
+      "epic": "Fix 413 Request Entity Too Large errors",
+      "tags": [
+        "llm",
+        "compaction",
+        "estimation"
+      ],
+      "acceptanceCriteria": [
+        "Image token estimation counts actual base64 data URL characters instead of flat 1600 constant",
+        "estimateContextTextTokens applied to ImageURL.URL content",
+        "go test ./... passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-20T19:47:57.5120375Z",
+      "updatedAt": "2026-07-21T01:30:13.4241227Z",
+      "completedAt": "2026-07-21T01:30:13.4241227Z"
+    },
     "8bd72699-6844-44d2-b5bb-0a6afb15d001": {
       "title": "Add SaveChatImageToDisk backend method on SystemService",
       "details": "## Context\n\nComfyUI-generated images arrive in chat as `ChatImageAttachment` with a base64 `dataUrl`. Users want to save them to disk. For Wails desktop mode, we need a native save dialog + file write via the backend.\n\n## Changes\n\n### `internal/services/chat_images.go` — New type and method\n\nAdd request type:\n```go\ntype ChatImageSaveRequest struct {\n    Name      string `json:\"name\"`\n    MediaType string `json:\"mediaType\"`\n    DataURL   string `json:\"dataUrl\"`\n}\n```\n\nAdd exported method on `*SystemService`:\n```go\nfunc (s *SystemService) SaveChatImageToDisk(workspaceID string, req ChatImageSaveRequest) (string, error)\n```\n\nThe method:\n1. Validates the workspace exists via `workspaceAndSettings`\n2. Opens a Wails `runtime.SaveFileDialog` with `DefaultFilename` set to the image name\n3. Decodes the base64 data URL to raw bytes (reuse existing `parseChatImageDataURL` or similar logic)\n4. Writes the binary file to the chosen path using `os.WriteFile`\n5. Returns the absolute path saved to (or empty string if dialog was canceled)\n\n### `internal/webserver/server.go` — RPC whitelist\n\nAdd `\"SaveChatImageToDisk\": true` to `allowedRPCMethods`.\n\n## Verification\n- `go test ./...` passes\n- Method is callable via Wails bindings and web RPC",
@@ -570,6 +740,26 @@
       "createdAt": "2026-07-17T14:15:16.0138552Z",
       "updatedAt": "2026-07-17T14:30:08.9922631Z",
       "completedAt": "2026-07-17T14:30:08.9922631Z"
+    },
+    "8ccead33-f6d4-41e8-b918-bcc6e38ef448": {
+      "title": "Add @replit/codemirror-vim npm dependency",
+      "details": "Add `\"@replit/codemirror-vim\": \"^6.2.3\"` to `frontend/package.json` dependencies, then run `npm install` in `frontend/`. Verify the package resolves correctly and is compatible with the existing CodeMirror 6 setup (`codemirror ^6.0.2`).",
+      "epic": "Vim keybindings in code editor",
+      "tags": [
+        "frontend",
+        "dependency"
+      ],
+      "acceptanceCriteria": [
+        "@replit/codemirror-vim listed in package.json dependencies",
+        "npm install completes without errors",
+        "Package imports resolve correctly in TypeScript compilation"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-20T21:33:42.6451538Z",
+      "updatedAt": "2026-07-20T21:37:53.351877Z",
+      "completedAt": "2026-07-20T21:37:53.351877Z"
     },
     "951da82b-0462-494a-906c-b9473151e09d": {
       "title": "Add save_image agent tool for saving generated images to workspace disk",
@@ -594,6 +784,23 @@
       "createdAt": "2026-07-17T17:00:23.5293514Z",
       "updatedAt": "2026-07-17T17:11:06.63279Z",
       "completedAt": "2026-07-17T17:11:06.63279Z"
+    },
+    "98073cc6-eb48-4490-a899-3d227e4f439e": {
+      "title": "Frontend: Epic conversion confirmation dialog and action handler",
+      "acceptanceCriteria": [
+        "renderEpicConversionDialog shows epic name, task count, list of task titles, and Cancel/Convert All buttons",
+        "Action handler for convert-epic populates draft with all uncompleted tasks matching the epic",
+        "Confirm calls backend CreateKanbanCardsFromEpic and updates both boards atomically",
+        "Toast shown on success; error toast on failure",
+        "Service wrapper added in services.ts after wails generate",
+        "cd frontend; npm run build passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-21T00:38:02.9646354Z",
+      "updatedAt": "2026-07-21T01:23:01.9593794Z",
+      "completedAt": "2026-07-21T01:23:01.9593794Z"
     },
     "9a640b69-ed7b-4af3-84d7-f22b912b20e1": {
       "title": "Add imagePath parameter to comfyui_generate tool with upload-to-server pipeline",
@@ -668,6 +875,28 @@
       "createdAt": "2026-07-14T07:01:54.6499304Z",
       "updatedAt": "2026-07-14T07:13:03.1342936Z",
       "completedAt": "2026-07-14T07:13:03.1342936Z"
+    },
+    "a71f0693-d889-4a8d-8b2b-c09cd5384c96": {
+      "title": "Strip media ContentParts from research bootstrap results in chat.go",
+      "details": "## Problem\n\nIn `runChatTurnWithHistory` (line 608-610), the research bootstrap tool execution appends raw (unstripped) result messages to both `messages` and history:\n\n```go\nmessages = append(messages, execution.Messages...)\nfor _, resultMessage := range execution.Messages {\n    s.appendChatHistory(workspace.ID, resultMessage)  // \u003c- raw, not stripped!\n}\n```\n\nCompare to the **main tool loop** (line 857-861) which correctly strips:\n\n```go\nfor _, resultMessage := range execution.Messages {\n    stripped := stripMediaContentParts(resultMessage)\n    messages = append(messages, stripped)\n    s.appendChatHistory(workspace.ID, stripped)\n}\n```\n\nIf a research tool returns media content (e.g., `filesystem_read_image`), the full base64 DataURL gets appended to `session.History` unstripped in the bootstrap path. This could cause 413 errors on subsequent LLM calls within the same turn if multiple image-producing tools run during bootstrap.\n\n## Fix\n\n**File:** `internal/services/chat.go`, lines 608-610\n\nChange:\n```go\nmessages = append(messages, execution.Messages...)\nfor _, resultMessage := range execution.Messages {\n    s.appendChatHistory(workspace.ID, resultMessage)\n}\n```\n\nTo:\n```go\nfor _, resultMessage := range execution.Messages {\n    stripped := stripMediaContentParts(resultMessage)\n    messages = append(messages, stripped)\n    s.appendChatHistory(workspace.ID, stripped)\n}\n```\n\n## Verification\n- `go test ./...` passes\n- Research bootstrap with image-producing tools doesn't accumulate base64 data in history",
+      "epic": "Fix 413 Request Entity Too Large errors",
+      "tags": [
+        "bug",
+        "chat",
+        "media",
+        "research"
+      ],
+      "acceptanceCriteria": [
+        "Research bootstrap path strips media ContentParts before appending to messages and history",
+        "Matches main tool loop behavior exactly",
+        "go test ./... passes"
+      ],
+      "priority": "P0",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-20T19:45:39.1776389Z",
+      "updatedAt": "2026-07-20T21:36:57.0372747Z",
+      "completedAt": "2026-07-20T21:36:57.0372747Z"
     },
     "aa1ff404-6dcb-40ba-abe1-d8aa7979fbf7": {
       "title": "Redesign saved commands UI in terminal panel for mobile-first UX",
@@ -750,6 +979,31 @@
       "createdAt": "2026-07-11T12:42:30.4063347Z",
       "updatedAt": "2026-07-11T12:45:10.3222804Z",
       "completedAt": "2026-07-11T12:45:10.3222804Z"
+    },
+    "acbd4b54-f024-4b5f-94cd-35c8c5b83ebf": {
+      "title": "Backend: Add CreateKanbanCardsFromEpic method",
+      "details": "## Task\n\nAdd a new exported `SystemService` method that bulk-converts all non-completed tasks sharing an epic into Ready-lane Kanban cards.\n\n### Method signature\n\n```go\nfunc (s *SystemService) CreateKanbanCardsFromEpic(workspaceID string, epicName string) (TaskBoard, KanbanBoard, error)\n```\n\n### Behavior\n\n1. Validate workspace exists.\n2. Find all non-completed tasks matching `epicName` in the workspace's task board.\n3. For each matching task, reuse the core logic from `CreateKanbanCardFromTask` to create a Ready-lane Kanban card and mark the task completed.\n4. Return updated `TaskBoard` and `KanbanBoard` so the frontend can update both atomically.\n\n### Files\n\n- `internal/services/decomposition.go` — new method on `SystemService`\n\n### Verification\n\n- `go test ./...` passes\n- After implementation, run `wails generate` to regenerate TypeScript bindings",
+      "epic": "Bulk Epic-to-Kanban Conversion",
+      "tags": [
+        "backend",
+        "epic",
+        "bulk-conversion"
+      ],
+      "acceptanceCriteria": [
+        "CreateKanbanCardsFromEpic method added to SystemService in decomposition.go",
+        "Method validates workspace exists and returns error if not found",
+        "Method finds all non-completed tasks matching epicName",
+        "Each task is converted to a Ready-lane Kanban card reusing CreateKanbanCardFromTask core logic",
+        "Tasks are marked completed after conversion",
+        "Returns updated TaskBoard and KanbanBoard for atomic frontend update",
+        "go test ./... passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-21T01:18:33.4160843Z",
+      "updatedAt": "2026-07-21T01:20:02.235397Z",
+      "completedAt": "2026-07-21T01:20:02.235397Z"
     },
     "b48a11ea-0710-4128-bd76-c361f1df5449": {
       "title": "Add WorkspaceActivitySummary struct and GetWorkspaceActivitySummaries backend method",
@@ -845,6 +1099,20 @@
       "updatedAt": "2026-07-10T00:04:40.5065058Z",
       "completedAt": "2026-07-10T00:04:40.5065058Z"
     },
+    "ca2ec341-6c44-4ffa-933f-ef1e3a6ffe86": {
+      "title": "Add ListWorkspaceDirectory to web server RPC allowlist",
+      "details": "**Bug:** Opening the Files panel in web access mode shows \"method is not available\" in red.\n\n**Fix:** Add `\"ListWorkspaceDirectory\": true,` to `allowedRPCMethods` in `internal/webserver/server.go`, alphabetically after `\"ListAgentModes\"`.",
+      "acceptanceCriteria": [
+        "ListWorkspaceDirectory added to allowedRPCMethods in internal/webserver/server.go",
+        "go test ./... passes"
+      ],
+      "priority": "P0",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-20T14:08:48.6562104Z",
+      "updatedAt": "2026-07-20T14:18:20.0417933Z",
+      "completedAt": "2026-07-20T14:18:20.0417933Z"
+    },
     "cb401bc8-4106-4cd6-b702-fb1b707a8ac1": {
       "title": "Add UploadImage method to ComfyUI client",
       "details": "## Problem\nComfyUI's `LoadImage` node requires images to exist on the server's input directory. The current `Client` has no way to upload images, so img2img workflows can't receive input images from Echo.\n\n## Change\n**File:** `internal/comfyui/client.go`\n\nAdd method:\n```go\n// UploadImage uploads an image file to ComfyUI's /upload/image endpoint.\n// Returns the filename as stored on the server (used for LoadImage \"image\" input).\nfunc (c *Client) UploadImage(ctx context.Context, filename string, data []byte) (string, error)\n```\n\nImplementation: POST multipart form to `{BaseURL}/upload/image` with field `image` containing the file. Parse JSON response for stored filename. ComfyUI returns `{\"name\": \"filename.png\", \"subfolder\": \"\", \"type\": \"input\"}`.\n\n**File:** `internal/comfyui/client_test.go`\n- Add test with `httptest` server that mocks `/upload/image` endpoint.\n\n## Verification\n- `go test ./...` passes",
@@ -867,6 +1135,28 @@
       "createdAt": "2026-07-17T00:14:54.4720458Z",
       "updatedAt": "2026-07-17T00:19:17.1783045Z",
       "completedAt": "2026-07-17T00:19:17.1783045Z"
+    },
+    "cc6b72d7-20a4-41e7-9336-81ec104b97df": {
+      "title": "Add configurable request body size limit with warning threshold in LLM client",
+      "details": "## Problem\n\nThe LLM client sends requests without any body size guard. If context compaction fails to trigger (due to estimation bugs) or history accumulates unexpectedly, the request can grow until the endpoint rejects it with 413.\n\n## Fix\n\n### `internal/llm/client.go`\n\nAdd a hard request body size limit that triggers forced action before sending:\n\n```go\nconst defaultMaxRequestBodyBytes = 8 * 1024 * 1024 // 8 MB\n\n// After JSON marshaling in both Complete() and StreamChat():\nif len(body) \u003e maxRequestBodyBytes {\n    log.Printf(\"ERROR: LLM request body %d bytes exceeds limit of %d bytes. Truncating history.\", len(body), maxRequestBodyBytes)\n    // Return a structured error so the chat layer can trigger forced compaction\n    return ChatCompletion{Error: \u0026requestTooLargeError{actual: len(body)}}\n}\n```\n\n### `internal/llm/settings.go`\n\nMake the limit configurable via settings:\n\n```go\ntype Settings struct {\n    // ... existing fields ...\n    MaxRequestBodyBytes int `json:\"maxRequestBodyBytes,omitempty\"` // 0 = use default (8 MB)\n}\n```\n\n### `internal/services/chat.go`\n\nWhen the LLM client returns a `requestTooLargeError`, trigger forced compaction on the session history before retrying:\n\n```go\nif errors.As(err, \u0026requestTooLargeError{}) {\n    s.forceCompactSession(workspace.ID)\n    // Retry the request once after compaction\n}\n```\n\n## Why this matters\n\n- **Last line of defense**: Even if token estimation is wrong and compaction doesn't trigger, the hard limit catches oversized requests.\n- **Self-healing**: Returning a structured error lets chat.go retry after forced compaction instead of showing a raw 413 to the user.\n- **Configurable**: Users with generous endpoint limits can raise the threshold.\n\n## Files\n- `internal/llm/client.go` — body size check in Complete() and StreamChat()\n- `internal/llm/settings.go` — configurable limit field\n- `internal/services/chat.go` — retry logic on requestTooLargeError\n\n## Verification\n- `go test ./...` passes\n- Requests exceeding the limit return structured error instead of 413",
+      "epic": "Fix 413 Request Entity Too Large errors",
+      "tags": [
+        "llm",
+        "safety",
+        "configuration"
+      ],
+      "acceptanceCriteria": [
+        "Hard body size check added in both Complete() and StreamChat()",
+        "Configurable via settings with sensible default (8 MB)",
+        "Structured error returned that triggers forced compaction + retry",
+        "go test ./... passes"
+      ],
+      "priority": "P2",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-20T19:53:07.6805098Z",
+      "updatedAt": "2026-07-21T01:30:13.245121Z",
+      "completedAt": "2026-07-21T01:30:13.245121Z"
     },
     "d1d64412-6097-4429-94cc-fc3aa4272a25": {
       "title": "Add \"Reference Task\" button to task detail view",
@@ -961,6 +1251,47 @@
       "updatedAt": "2026-07-18T02:07:59.4901299Z",
       "completedAt": "2026-07-18T02:07:59.4901299Z"
     },
+    "db201c23-64f7-4374-a71d-bf961f2ecdc7": {
+      "title": "Wire Vim extension into CodeMirror editor with conditional mount",
+      "details": "**`frontend/src/codeView/types.ts`:** Add `vimKeybindingsEnabled: () =\u003e boolean` to `CodeViewCallbacks`.\\n\\n**`frontend/src/app/bootstrap.ts`:** Wire the callback using `vimKeybindingsEnabled(state.appState?.settings ?? state.settingsDraft)`.\\n\\n**`frontend/src/codeView/editor.ts`:**\\n- Import `{ vim } from \"@replit/codemirror-vim\"`\\n- Track `mountedEditorVimMode` module-level variable alongside existing mount state\\n- Add conditional `vim()` extension to the extensions array when enabled\\n- Extend the mount-skip guard to also check `mountedEditorVimMode === vimEnabled` so toggling triggers a re-mount\\n- Ensure `vim()` is added before custom keymaps so it intercepts keys at proper priority\\n\\nVerify: Toggle setting → return to code view → editor re-mounts with/without Vim mode. Test `i`, `Esc`, `hjkl`, `dd`, search, and autocomplete.",
+      "epic": "Vim keybindings in code editor",
+      "tags": [
+        "frontend",
+        "editor"
+      ],
+      "acceptanceCriteria": [
+        "vim() extension added to CodeMirror when setting is enabled",
+        "Editor re-mounts when Vim setting toggled on/off",
+        "Vim normal/insert/visual modes work correctly in editor",
+        "Existing autocomplete (Tab), LSP, and custom keymaps remain functional"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-20T21:33:47.0784262Z",
+      "updatedAt": "2026-07-20T21:37:46.382701Z",
+      "completedAt": "2026-07-20T21:37:46.382701Z"
+    },
+    "ead46910-ff82-49c4-b7d7-f97d71b84ac2": {
+      "title": "Add vimKeybindingsEnabled state helper and settings UI toggle",
+      "details": "**`frontend/src/app/state.ts`:** Add `vimKeybindingsEnabled()` helper function alongside `leadingWhitespaceIndicatorsEnabled()` (~line 327).\\n\\n**`frontend/src/app/settings/index.ts`:** Import the helper and add a \"Vim keybindings\" checkbox toggle in the editor preferences section (near \"Leading whitespace indicators\" ~line 372). Use standard positive checkbox pattern (no `data-settings-inverted-boolean`).",
+      "epic": "Vim keybindings in code editor",
+      "tags": [
+        "frontend",
+        "settings"
+      ],
+      "acceptanceCriteria": [
+        "vimKeybindingsEnabled() helper reads enableVimKeybindings from settings",
+        "Toggle checkbox renders in Settings UI under editor preferences",
+        "Checkbox checked/unchecked state reflects settingsDraft value"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-20T21:33:46.150421Z",
+      "updatedAt": "2026-07-20T21:37:49.7393702Z",
+      "completedAt": "2026-07-20T21:37:49.7393702Z"
+    },
     "eeb43ddf-91e6-4e8d-b931-264b65a2f516": {
       "title": "Strip media ContentParts from local messages slice to prevent 413 errors",
       "details": "## Problem\n\nTool result messages containing base64 image/video data URLs accumulate in the local `messages` slice within `runChatTurnWithHistory`, causing LLM request bodies to exceed nginx's `client_max_body_size` and triggering **413 Request Entity Too Large** errors.\n\nThe stripped versions are correctly stored in `session.History` (via `appendChatHistory`), but the local `messages` slice keeps unstripped copies that grow with each tool call across iterations within a single turn.\n\n## Fix\n\n**File:** `echo/internal/services/chat.go`\n\nIn `runChatTurnWithHistory`, after appending tool result messages to `messages`, immediately replace them with stripped versions in the `messages` slice as well:\n\n```go\n// Current code (around line 596-603):\nfor _, call := range toolCalls {\n    if err := ctx.Err(); err != nil {\n        s.cancelChatMessage(workspace.ID, streamID, messageID)\n        return\n    }\n    execution := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, isPlanMode, toolScopes)\n    recoverableToolCalls[call.ID] = true\n    messages = append(messages, execution.Messages...)\n    for _, resultMessage := range execution.Messages {\n        stripped := stripMediaContentParts(resultMessage)\n        s.appendChatHistory(workspace.ID, stripped)\n    }\n    // ... rest of loop\n}\n```\n\n**Change to:**\n\n```go\nfor _, call := range toolCalls {\n    if err := ctx.Err(); err != nil {\n        s.cancelChatMessage(workspace.ID, streamID, messageID)\n        return\n    }\n    execution := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, isPlanMode, toolScopes)\n    recoverableToolCalls[call.ID] = true\n    // Append stripped versions to messages to prevent base64 data accumulation.\n    // The LLM still sees the text description (e.g., \"Image returned by tool...\")\n    // but not the megabytes of base64 pixel data.\n    for _, resultMessage := range execution.Messages {\n        stripped := stripMediaContentParts(resultMessage)\n        messages = append(messages, stripped)\n        s.appendChatHistory(workspace.ID, stripped)\n    }\n    // ... rest of loop\n}\n```\n\nKey change: Replace `messages = append(messages, execution.Messages...)` with a loop that appends the already-stripped versions. This ensures both `messages` and `session.History` contain only stripped tool result messages.\n\n## Trade-off\n\nThe LLM will no longer see generated image/video pixels in subsequent iterations within a turn. It still sees:\n- The tool's JSON text output\n- The descriptive text (e.g., \"Image returned by tool comfyui_generate: ComfyUI_00024_.png (image/png, 1.0 MB).\")\n\nThis is acceptable because the model already knows what prompt was sent to the image generator, and the visual verification benefit is outweighed by the 413 error prevention.\n\n## Verification\n\n- Run `go test ./...` from repo root\n- Specifically verify `internal/services` tests pass\n- Test with a chat turn that generates an image via comfyui_generate, then continues with more LLM calls in the same turn",
@@ -978,6 +1309,21 @@
       "createdAt": "2026-07-16T19:45:47.0808236Z",
       "updatedAt": "2026-07-16T19:51:44.7468848Z",
       "completedAt": "2026-07-16T19:51:44.7468848Z"
+    },
+    "ef8d282c-c9c8-4cf3-9370-bfecefc77596": {
+      "title": "Frontend: Add Convert Epic button to epic group headers",
+      "acceptanceCriteria": [
+        "Convert all button appears in epic group headers for epics with 2 or more uncompleted tasks",
+        "Button has data-task-action=\"convert-epic\" and data-task-epic attributes",
+        "Single-task epics do not show the button",
+        "cd frontend; npm run build passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-21T00:38:02.8816358Z",
+      "updatedAt": "2026-07-21T01:23:01.8683771Z",
+      "completedAt": "2026-07-21T01:23:01.8683771Z"
     },
     "f3aeeba2-118a-4335-b78d-211d1b439c7a": {
       "title": "Add save_image agent tool for saving generated images to workspace disk",
@@ -1002,6 +1348,54 @@
       "createdAt": "2026-07-17T17:03:32.8407022Z",
       "updatedAt": "2026-07-17T17:10:55.378351Z",
       "completedAt": "2026-07-17T17:10:55.378351Z"
+    },
+    "f40ad6a7-6704-4c25-8065-4b6a3f53e808": {
+      "title": "Force-strip image ContentParts from persisted chat history on session restore",
+      "details": "## Problem\n\nThe user reports 413 errors even when their current message has no image attachments. The root cause: **base64 image data URLs persist in `session.History` across turns** from previous tool results (e.g., `filesystem_read_image`, `comfyui_generate`). Even after the P0 fix strips images on *new* tool results, existing persisted history still contains full base64 payloads.\n\nWhen a chat session is restored from `state.json`, all historical image-bearing messages are loaded with their full data URLs intact. On every subsequent LLM request, these accumulated megabytes of base64 inflate the JSON body. Since token estimation uses a flat 1600 tokens/image instead of actual base64 length, compaction never triggers before hitting the endpoint's size limit.\n\n## Fix\n\n### Option A: Strip on history load (recommended)\n\nIn `internal/services/state_persistence.go` or wherever chat sessions are restored, run `stripMediaContentParts` over all history messages after loading:\n\n```go\nfunc stripHistoryMedia(session *ChatSession) {\n    for i := range session.History {\n        session.History[i] = stripMediaContentParts(session.History[i])\n    }\n}\n```\n\nCall this in the session restoration path (likely `restoreSessions` or equivalent).\n\n### Option B: Strip on state.json load\n\nIn the state deserialization, walk all workspaces → sessions → history and strip. This is a one-time migration that runs every startup.\n\n### Option C: Both A and hard body size guard\n\nAdd both the strip-on-load AND a hard request body size check in `internal/llm/client.go`:\n\n```go\nconst maxRequestBodyBytes = 4 * 1024 * 1024 // 4 MB\n\n// After marshaling...\nif len(body) \u003e maxRequestBodyBytes {\n    log.Printf(\"WARN: LLM request body %d bytes exceeds limit, truncating history\", len(body))\n    // Trigger forced compaction or drop oldest messages\n}\n```\n\n## Why this matters\n\n- **Immediate relief**: Existing persisted sessions with accumulated image data will be cleaned on next app restart.\n- **Prevention**: New tool results are already stripped by the P0 bootstrap fix, so no new base64 enters history.\n- **Defense in depth**: The body size guard catches any edge cases where compaction fails to trigger.\n\n## Files\n- `internal/services/state_persistence.go` — session restoration\n- `internal/services/chat.go` — `stripMediaContentParts` already exists\n- `internal/llm/client.go` — optional body size guard\n\n## Verification\n- Load a persisted session with historical image tool results\n- Verify history messages have no ImageURL ContentParts after restore\n- `go test ./...` passes",
+      "epic": "Fix 413 Request Entity Too Large errors",
+      "tags": [
+        "llm",
+        "compaction",
+        "history",
+        "persistence"
+      ],
+      "acceptanceCriteria": [
+        "Persisted chat history is stripped of image ContentParts on session restore",
+        "Existing sessions with accumulated base64 data are cleaned on next app restart",
+        "New tool results remain stripped (P0 bootstrap fix), so no regression",
+        "go test ./... passes"
+      ],
+      "priority": "P0",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-20T19:49:35.282174Z",
+      "updatedAt": "2026-07-20T21:36:54.3807691Z",
+      "completedAt": "2026-07-20T21:36:54.3807691Z"
+    },
+    "f9f7569e-31b7-48a2-8f24-ddcc7aa7678c": {
+      "title": "Add CreateKanbanCardsFromEpic backend method",
+      "details": "In `internal/services/tasks.go`, add a new exported `SystemService` method that converts all non-completed tasks sharing an epic into individual Kanban cards in the Ready lane.\n\n**Signature:**\\n```go\\nfunc (s *SystemService) CreateKanbanCardsFromEpic(req struct {\\n    WorkspaceID string\\n    EpicName    string\\n    Tasks       []struct {\\n        TaskID            string   `json:\"taskID\"`\\n        Title             string   `json:\"title\"`\\n        Description       string   `json:\"description\"`\\n        Criteria          []string `json:\"criteria\"`\\n        ExpectedUpdatedAt int64    `json:\"expectedUpdatedAt\"`\\n    } `json:\"tasks\"`\\n} struct {\\n    Tasks  TaskBoard\\n    Kanban KanbanBoard\\n})\\n```\\n\\n**Logic:**\\n- Guard against active kanban run (same as single conversion)\\n- Lock `chatMu` then `mu` (same nesting order)\\n- Loop through each task: validate `ExpectedUpdatedAt`, create a Kanban card in Ready lane, mark the task completed\\n- Return cloned boards\n\n**Also add:** Whitelist entry `\"CreateKanbanCardsFromEpic\": true` in `internal/webserver/server.go`.",
+      "epic": "Bulk Epic-to-Kanban Conversion",
+      "tags": [
+        "backend",
+        "kanban",
+        "tasks"
+      ],
+      "acceptanceCriteria": [
+        "Method is exported on SystemService and accepts workspaceID, epicName, and task array",
+        "Validates no active kanban run before proceeding",
+        "Creates one Kanban card per task in Ready lane with title/description/criteria from the task",
+        "Marks each source task as completed after successful card creation",
+        "Returns updated TaskBoard and KanbanBoard",
+        "Method is whitelisted in webserver RPC methods",
+        "go test ./... passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-21T00:38:43.6688739Z",
+      "updatedAt": "2026-07-21T00:49:36.1727888Z",
+      "completedAt": "2026-07-21T00:49:36.1727888Z"
     },
     "fa39b0af-6836-4a0e-9480-14a37be3968a": {
       "title": "Add download icon and save button to chat image attachments",

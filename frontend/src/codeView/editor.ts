@@ -7,6 +7,7 @@ import { countColumn, EditorSelection, EditorState, findColumn, Prec, RangeSetBu
 import { crosshairCursor, Decoration, type DecorationSet, EditorView, GutterMarker, ViewPlugin, type ViewUpdate, gutter, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { tags } from "@lezer/highlight";
+import { vim } from "@replit/codemirror-vim";
 import { patchDirtyUI } from "./dom";
 import type { CodeFileTab } from "./types";
 import { inlineCodeChatExtension } from "./inlineChat";
@@ -39,6 +40,7 @@ let mountedEditorWorkspaceID = "";
 let mountedEditorPath = "";
 let mountedEditorLineSeparator = "\n";
 let mountedEditorWhitespaceIndicators = false;
+let mountedEditorVimMode = false;
 let mountedEditorCallbacks: CodeViewCallbacks | null = null;
 let mountedEditorHooks: EditorFeatureHooks | null = null;
 let editorMountToken = 0;
@@ -173,6 +175,7 @@ function teardownMountedEditor(saveContent: boolean) {
   mountedEditorPath = "";
   mountedEditorLineSeparator = "\n";
   mountedEditorWhitespaceIndicators = false;
+  mountedEditorVimMode = false;
   mountedEditorCallbacks = null;
   mountedEditorHooks = null;
   editorMountToken++;
@@ -244,11 +247,13 @@ export async function mountActiveCodeEditor(
   }
 
   const whitespaceIndicators = callbacks.leadingWhitespaceIndicatorsEnabled();
+  const vimEnabled = callbacks.vimKeybindingsEnabled();
   if (
     mountedCodeEditorMatches(workspaceID, tab.path) &&
     mountedEditor &&
     mountedEditorLineSeparator === tab.lineSeparator &&
-    mountedEditorWhitespaceIndicators === whitespaceIndicators
+    mountedEditorWhitespaceIndicators === whitespaceIndicators &&
+    mountedEditorVimMode === vimEnabled
   ) {
     if (mountedEditor.dom.parentElement !== mount) {
       mount.innerHTML = "";
@@ -267,6 +272,7 @@ export async function mountActiveCodeEditor(
   const extensions = [
     ...(gitChangedLineGutter ? [gitChangedLineGutter] : []),
     basicSetup,
+    ...(vimEnabled ? [vim()] : []),
     highlightSelectionMatches({
       minSelectionLength: 1,
       maxMatches: 2000,
@@ -332,6 +338,7 @@ export async function mountActiveCodeEditor(
   mountedEditorPath = tab.path;
   mountedEditorLineSeparator = tab.lineSeparator;
   mountedEditorWhitespaceIndicators = whitespaceIndicators;
+  mountedEditorVimMode = vimEnabled;
   const initialScrollTop = tab.scrollTop;
   const initialScrollLeft = tab.scrollLeft;
   restoreMountedEditorScroll(workspaceID, tab.path, initialScrollTop, initialScrollLeft);

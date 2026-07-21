@@ -11,6 +11,7 @@ export type CodeViewCallbacks = {
   pushToast: (message: string, tone?: ToastTone) => void;
   errorMessage: (error: unknown) => string;
   leadingWhitespaceIndicatorsEnabled: () => boolean;
+  vimKeybindingsEnabled: () => boolean;
   gitChangedLineNumbers: (workspaceID: string, path: string) => number[];
   gitChangeStateForPath: (workspaceID: string, path: string, kind: CodeEntryKind) => CodeGitChangeState;
   refreshGitChanges: (workspaceID: string) => Promise<void>;

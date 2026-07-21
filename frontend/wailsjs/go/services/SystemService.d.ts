@@ -58,7 +58,7 @@ export function CreateKanbanCardFromChatMessage(arg1:string,arg2:string):Promise
 
 export function CreateKanbanCardFromTask(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>,arg6:string):Promise<services.TaskKanbanConversion>;
 
-export function CreateKanbanCardsFromEpic(arg1:string,arg2:string,arg3:services.EpicTaskConversion[]):Promise<services.TaskKanbanConversion>;
+export function CreateKanbanCardsFromEpic(arg1:string,arg2:string,arg3:Array<services.epicTaskConversion>):Promise<services.TaskKanbanConversion>;
 
 export function CreateMode(arg1:context.Context,arg2:tools.AgentModeCreationRequest):Promise<tools.AgentModeCreationResult>;
 

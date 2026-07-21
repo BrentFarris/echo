@@ -18,6 +18,20 @@
       "createdAt": "2026-07-11T10:30:31.8063851Z",
       "updatedAt": "2026-07-11T10:30:57.8754996Z"
     },
+    "0bd57717-75a0-4df9-9689-8e6659e23ce1": {
+      "title": "Add Jira, Confluence, and Perforce settings fields",
+      "details": "**Files:** `internal/llm/settings.go`\n\nAdd 9 new fields to the `Settings` struct:\n- `JiraURL`, `JiraUsername`, `JiraAuthToken`\n- `ConfluenceURL`, `ConfluenceUsername`, `ConfluenceAuthToken`\n- `PerforceURL`, `PerforceUser`, `PerforceToken`\n\nUpdate `Normalized()` to trim whitespace on all new fields. Empty URL means the service is disabled (no default).\n\nUpdate `Validate()` to validate non-empty URLs as HTTP/HTTPS and require matching username+token pairs (both set or both empty).\n\nUpdate `Clone()` if needed.\n\n**Tests:** Add coverage in `internal/services/system_test.go` for persistence round-trip and validation of the new fields (missing token, invalid URL, etc.).",
+      "epic": "Enterprise Search Tools",
+      "tags": [
+        "backend",
+        "settings"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-20T19:33:26.0111016Z",
+      "updatedAt": "2026-07-20T19:33:26.0111016Z"
+    },
     "14ec4aea-050b-4228-bb66-bd3a2bb01e4d": {
       "title": "Make file path green in Git view if it is a new file",
       "tags": [
@@ -45,6 +59,20 @@
       "createdAt": "2026-07-11T10:31:31.7411418Z",
       "updatedAt": "2026-07-11T10:32:49.7734688Z"
     },
+    "21e573a7-a747-409e-8153-c00ecefc802d": {
+      "title": "Perforce JSON API client package (internal/perforce)",
+      "details": "- HTTP client for Perforce JSON API (`/p4api/json`)\n- `Search(ctx, baseURL, user, authToken, command, args)` sending P4 commands as JSON\n- Key operations: `files` (search depot files), `changes` (search changelists), `describe` (get change details)\n- Response types: `SearchResponse`, `FileSpec`, `ChangeSpec`\n- Auth via `P4USER`/`P4PASSWD` headers\n- Tests via `httptest` server mocking Perforce JSON responses\n\n**Acceptance:** `go test ./internal/perforce/...` passes with coverage of files, changes, describe, and error paths.",
+      "epic": "Jira, Confluence, Perforce Search Tools",
+      "tags": [
+        "backend",
+        "perforce"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-20T19:34:58.9341466Z",
+      "updatedAt": "2026-07-20T19:34:58.9341466Z"
+    },
     "238faa75-f97b-4ba9-a3ad-40a64dd23b53": {
       "title": "Bind mobile long-press on kanban cards for context menu",
       "details": "## Changes to `echo/frontend/src/app/kanban/index.ts`\n\nExport a new function `bindKanbanCardLongPressEvents(root: ParentNode)` that adds pointer event listeners to `article.kanban-card` elements for mobile long-press support.\n\n```typescript\nexport function bindKanbanCardLongPressEvents(root: ParentNode) {\n  root.querySelectorAll\u003cHTMLElement\u003e(\"article.kanban-card\").forEach((card) =\u003e {\n    let timer: number | null = null;\n    let cancelled = false;\n\n    const startTimer = (event: PointerEvent) =\u003e {\n      cancelled = false;\n      timer = window.setTimeout(() =\u003e {\n        if (!cancelled) {\n          triggerContextMenu(card, event);\n        }\n      }, 500);\n    };\n\n    const cancelTimer = () =\u003e {\n      cancelled = true;\n      if (timer !== null) {\n        window.clearTimeout(timer);\n        timer = null;\n      }\n    };\n\n    card.addEventListener(\"pointerdown\", startTimer as EventListener);\n    card.addEventListener(\"pointerup\", cancelTimer);\n    card.addEventListener(\"pointercancel\", cancelTimer);\n    card.addEventListener(\"pointermove\", (event: PointerEvent) =\u003e {\n      // Cancel if finger moved more than 10px (prevents menu on scroll)\n      cancelTimer();\n    });\n  });\n}\n\nfunction triggerContextMenu(card: HTMLElement, event: PointerEvent) {\n  const openBtn = card.querySelector\u003cHTMLButtonElement\u003e(\"button.kanban-card-open\");\n  if (!openBtn) return;\n\n  const workspace = activeWorkspace();\n  if (!workspace) return;\n\n  const cardId = openBtn.dataset.cardId ?? \"\";\n  const titleEl = card.querySelector(\"strong\");\n  const cardTitle = titleEl?.textContent ?? cardId;\n\n  // Use pointer position or element center as fallback\n  const rect = card.getBoundingClientRect();\n  showContextMenu({\n    workspaceId: workspace.id,\n    displayPath: \"\",\n    cardId,\n    cardTitle,\n    x: event.clientX || (rect.left + rect.width / 2),\n    y: event.clientY || (rect.top + rect.height / 2),\n  });\n}\n```\n\n## Changes to `echo/frontend/src/app/events.ts`\n\nImport and call `bindKanbanCardLongPressEvents(appRoot)` in `bindEvents()`.\n\n## Verification\n- Long-press a kanban card on mobile → shows \"Add to chat\" context menu near touch point\n- Quick tap still opens card detail (no interference)\n- Scroll doesn't trigger the menu",
@@ -62,6 +90,48 @@
       "createdAt": "2026-07-11T10:32:14.8173222Z",
       "updatedAt": "2026-07-11T10:32:49.7734688Z"
     },
+    "29e7e514-a676-4390-b125-b0ed067df17f": {
+      "title": "Register confluence_search tool",
+      "details": "**Files:** `internal/tools/confluence_search.go`, `internal/tools/confluence_search_test.go`, `internal/tools/registry.go`\n\nTool name: `confluence_search` (read-only)\n\nParameters:\n- `query` (string, required) — CQL query string\n- `maxResults` (int, optional, default 5, max 20)\n\nBehavior: Call Confluence search API with the CQL query. Return structured results with title, type, excerpt, URL, created/updated dates. Error if not configured.\n\nAdd `\"confluence_search\": true` to `readOnlyToolNames` in `registry.go`.\n\n**Tests:** Missing config error, empty query error, successful search via httptest.",
+      "epic": "Enterprise Search Tools",
+      "tags": [
+        "backend",
+        "tool"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-20T19:33:26.4481644Z",
+      "updatedAt": "2026-07-20T19:33:26.4481644Z"
+    },
+    "300393e8-583b-4a3e-84b9-d6961df81ae1": {
+      "title": "Confluence REST client package (internal/confluence)",
+      "details": "- HTTP client for Confluence Cloud/Server REST API v2 (`/rest/api/content/search?cql=...`)\n- `Search(ctx, baseURL, username, authToken, cql, maxResults)`\n- Response types: `SearchResponse`, `Content` (id, title, type, status, body.storage.value, _links, created, updated)\n- Auth via `username:token` header\n- Validate baseURL as HTTP/HTTPS\n- Tests via `httptest` server mocking Confluence responses\n\n**Acceptance:** `go test ./internal/confluence/...` passes with coverage of search and error paths.",
+      "epic": "Jira, Confluence, Perforce Search Tools",
+      "tags": [
+        "backend",
+        "confluence"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-20T19:34:58.8580199Z",
+      "updatedAt": "2026-07-20T19:34:58.8580199Z"
+    },
+    "383fda1a-33a6-43cf-9c89-27ffeee5a73a": {
+      "title": "Add ExecutionContext fields for enterprise tools",
+      "details": "**Files:** `internal/tools/types.go`\n\nAdd 9 new fields to `ExecutionContext`:\n- `JiraURL`, `JiraUsername`, `JiraAuthToken`\n- `ConfluenceURL`, `ConfluenceUsername`, `ConfluenceAuthToken`\n- `PerforceURL`, `PerforceUser`, `PerforceToken`\n\nWire these from settings in every place that constructs `ExecutionContext`:\n- `internal/services/chat_research.go` (~line 876)\n- `internal/services/file_changes.go` (~line 150)\n- Search for `SearxngURL:` to find any other construction sites.",
+      "epic": "Enterprise Search Tools",
+      "tags": [
+        "backend",
+        "wiring"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-20T19:33:26.3008463Z",
+      "updatedAt": "2026-07-20T19:33:26.3008463Z"
+    },
     "5400801a-638c-498d-b6c4-db2811cb5445": {
       "title": "Add a folder/file view on the left of the git view",
       "details": "This should work like Gitea/GitHub when viewing a commit/changes. It will need to be collapsed, and expandible, on mobile",
@@ -73,6 +143,20 @@
       "completed": false,
       "createdAt": "2026-07-08T16:34:52.8375128Z",
       "updatedAt": "2026-07-11T10:32:49.7734688Z"
+    },
+    "5f77b79c-cc84-408d-a145-c64e1874475d": {
+      "title": "Create Perforce JSON API client package",
+      "details": "**Files:** `internal/perforce/perforce.go`, `internal/perforce/perforce_test.go`\n\nNew package with HTTP client for Perforce's JSON API (`/p4api/json`):\n- `Search(ctx, baseURL, user, authToken, command, args) (SearchResponse, error)` — sends P4 commands as JSON\n- Key operations: `files` (search depot files), `changes` (search changelists), `describe` (get change details)\n- Response types: `SearchResponse`, `FileSpec`, `ChangeSpec`\n- Auth via `P4USER` and `P4PASSWD` headers\n\n**Tests:** httptest server mocking Perforce JSON API responses. Cover success, auth error, empty query, and network failure.",
+      "epic": "Enterprise Search Tools",
+      "tags": [
+        "backend",
+        "client"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-20T19:33:26.2304628Z",
+      "updatedAt": "2026-07-20T19:33:26.2304628Z"
     },
     "68dd874f-debb-47aa-8ced-1ec45ce8b732": {
       "title": "Update ContextMenuState with cardType discriminator for task vs kanban cards",
@@ -112,6 +196,47 @@
       "createdAt": "2026-07-18T01:15:36.6170965Z",
       "updatedAt": "2026-07-18T01:15:36.6170965Z"
     },
+    "8644528f-b4f4-4c79-8c81-66ff0bf5d8c6": {
+      "title": "Update AGENTS.md with new enterprise search tools",
+      "details": "**Files:** `AGENTS.md`\n\nAdd the three new tools to the tool behavior section alongside `web_search`:\n\n- \\`jira_search\\` tool searches Jira issues using JQL queries.\n- \\`confluence_search\\` tool searches Confluence pages using CQL queries.\n- \\`perforce_search\\` tool searches Perforce depot files and changelists.",
+      "epic": "Enterprise Search Tools",
+      "tags": [
+        "docs"
+      ],
+      "priority": "P2",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-20T19:33:26.661958Z",
+      "updatedAt": "2026-07-20T19:33:26.661958Z"
+    },
+    "89d4ce5b-4dd0-4e2f-b7f0-e91c9dc616e9": {
+      "title": "Jira REST client package (internal/jira)",
+      "details": "- HTTP client for Jira REST API v3 (`/rest/api/3/search`, `/rest/api/3/issue/{key}`)\n- `Search(ctx, baseURL, username, authToken, jql, maxResults)` and `GetIssue(ctx, baseURL, username, authToken, issueKey)`\n- Response types: `SearchResponse`, `Issue`, `IssueFields` (key, summary, status, priority, assignee, reporter, description, created, updated)\n- Basic auth via `username:token` header\n- Validate baseURL as HTTP/HTTPS\n- Tests via `httptest` server mocking Jira responses\n\n**Acceptance:** `go test ./internal/jira/...` passes with coverage of search, get-issue, and error paths (bad URL, 401, empty query).",
+      "epic": "Jira, Confluence, Perforce Search Tools",
+      "tags": [
+        "backend",
+        "jira"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-20T19:34:58.7792248Z",
+      "updatedAt": "2026-07-20T19:34:58.7792248Z"
+    },
+    "936525e5-3b12-4602-ba97-f59414d3ae7a": {
+      "title": "Create Jira REST client package",
+      "details": "**Files:** `internal/jira/jira.go`, `internal/jira/jira_test.go`\n\nNew package with HTTP client for the Jira REST API v3:\n- `Search(ctx, baseURL, username, authToken, jql, maxResults) (SearchResponse, error)` — calls `/rest/api/3/search`\n- `GetIssue(ctx, baseURL, username, authToken, issueKey) (Issue, error)` — calls `/rest/api/3/issue/{key}`\n- Response types: `SearchResponse`, `Issue`, `IssueFields` (key, summary, status, priority, assignee, reporter, description, created, updated)\n- Basic auth via `username:token` header\n- URL validation (HTTP/HTTPS only)\n\n**Tests:** httptest server mocking Jira REST responses. Cover success, auth error, empty query, and network failure.",
+      "epic": "Enterprise Search Tools",
+      "tags": [
+        "backend",
+        "client"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-20T19:33:26.0856149Z",
+      "updatedAt": "2026-07-20T19:33:26.0856149Z"
+    },
     "96d218dc-5379-4c66-8406-81211c649d0d": {
       "title": "Bind desktop contextmenu and mobile long-press on task cards",
       "details": "## Two changes needed:\n\n### 1. `events.ts` — Desktop right-click on task cards\n\nAdd alongside the kanban card contextmenu binding:\n\n```typescript\nappRoot.querySelectorAll\u003cHTMLElement\u003e(\"article.task-card\").forEach((card) =\u003e {\n  card.addEventListener(\"contextmenu\", (event: MouseEvent) =\u003e {\n    event.preventDefault();\n    event.stopPropagation();\n    const openBtn = card.querySelector\u003cHTMLButtonElement\u003e(\"button.task-card-open\");\n    if (!openBtn) return;\n    const workspace = activeWorkspace();\n    if (!workspace) return;\n    showContextMenu({\n      workspaceId: workspace.id, displayPath: \"\",\n      cardId: openBtn.dataset.taskId ?? \"\",\n      cardTitle: card.querySelector(\"strong\")?.textContent ?? \"\",\n      cardType: \"task\",\n      x: event.clientX, y: event.clientY,\n    });\n  });\n});\n```\n\n### 2. `tasks/index.ts` — Mobile long-press on task cards\n\nExport `bindTaskCardLongPressEvents(root: ParentNode)` with the same 500ms pointer pattern as kanban, calling `showContextMenu` with `cardType: \"task\"`. Wire into `bindEvents()` in `events.ts`.\n\n## Verification\n- Right-click/long-press task card → shows \"Add to chat\" menu\n- Quick tap still opens task detail",
@@ -141,6 +266,34 @@
       "createdAt": "2026-07-08T16:30:24.1672007Z",
       "updatedAt": "2026-07-11T10:32:49.7734688Z"
     },
+    "a4c5ea76-cc56-47fd-8083-a5df0e2f2cf7": {
+      "title": "Create Confluence REST client package",
+      "details": "**Files:** `internal/confluence/confluence.go`, `internal/confluence/confluence_test.go`\n\nNew package with HTTP client for the Confluence REST API v2:\n- `Search(ctx, baseURL, username, authToken, cql, maxResults) (SearchResponse, error)` — calls `/rest/api/content/search` or `/rest/api/content` with CQL\n- Response types: `SearchResponse`, `Content` (id, title, type, status, body.storage.value, _links, created, updated)\n- Auth via `username:token` header\n\n**Tests:** httptest server mocking Confluence REST responses. Cover success, auth error, empty query, and network failure.",
+      "epic": "Enterprise Search Tools",
+      "tags": [
+        "backend",
+        "client"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-20T19:33:26.1591271Z",
+      "updatedAt": "2026-07-20T19:33:26.1591271Z"
+    },
+    "a98d0d0e-2796-4211-806b-52fcc95e2d0c": {
+      "title": "Register jira_search, confluence_search, perforce_search tools",
+      "details": "- `internal/tools/jira_search.go` — params: `query` (JQL, required), `maxResults` (optional, default 5, max 20), `issueKey` (optional). If issueKey provided → GetIssue, else → Search. Read-only tool.\n- `internal/tools/confluence_search.go` — params: `query` (CQL, required), `maxResults` (optional, default 5, max 20). Read-only tool.\n- `internal/tools/perforce_search.go` — params: `query` (string, required), `maxResults` (optional, default 5, max 20), `type` (\"files\" or \"changes\", optional, default \"files\"). Read-only tool.\n- Add all three to `readOnlyToolNames` in `registry.go`\n- Error if URL/credentials not configured: \"X is not configured in settings\"\n- Tests for each: missing config error, empty query error, successful search via httptest\n\n**Acceptance:** `go test ./internal/tools/...` passes. Tools appear in `LLMSchema()`.",
+      "epic": "Jira, Confluence, Perforce Search Tools",
+      "tags": [
+        "backend",
+        "tools"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-20T19:34:59.080195Z",
+      "updatedAt": "2026-07-20T19:34:59.080195Z"
+    },
     "b060987c-90f6-4938-b941-50d353be9722": {
       "title": "Extend ContextMenuState with kanban card fields",
       "details": "Add optional `cardId?: string` and `cardTitle?: string` to `ContextMenuState` in `frontend/src/app/types.ts`. No other files change.",
@@ -155,6 +308,20 @@
       "createdAt": "2026-07-11T10:27:29.7310654Z",
       "updatedAt": "2026-07-11T10:27:29.7310654Z"
     },
+    "cad5ad22-6d12-448f-b8d0-783be72098e8": {
+      "title": "Add work tool settings fields to Settings struct and ExecutionContext",
+      "details": "- Add 9 new fields to `llm.Settings`: `JiraURL`, `JiraUsername`, `JiraAuthToken`, `ConfluenceURL`, `ConfluenceUsername`, `ConfluenceAuthToken`, `PerforceURL`, `PerforceUser`, `PerforceToken`\n- Update `Normalized()` to trim whitespace on all new fields\n- Update `Validate()` — non-empty URL must be HTTP/HTTPS; username+token pairs must both be set or both empty\n- Add matching fields to `tools.ExecutionContext`\n- Wire settings into `ExecutionContext` in `chat_research.go`, `file_changes.go`, and any other construction sites (search for `SearxngURL:`)\n\n**Acceptance:** `go test ./internal/llm/...` and `go test ./internal/tools/...` pass. Settings round-trip through `Clone()` correctly.",
+      "epic": "Jira, Confluence, Perforce Search Tools",
+      "tags": [
+        "backend",
+        "settings"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-20T19:34:59.009823Z",
+      "updatedAt": "2026-07-20T19:34:59.009823Z"
+    },
     "d8ae9680-11a3-4c5f-bdf2-b7827c10da35": {
       "title": "Workspace setting to search parent directories for git repository",
       "details": "Sometimes workspaces are created in a sub-folder of a git repository. Currently, this means that the git feature will not work. We should add a per-workspace setting to recursively check for a git repository on a parent directory until one is found. If one is found, it should be stored into the `.echo/workspace.json` file so it doesn't need to do the recursive check every time git is invoked.",
@@ -166,6 +333,33 @@
       "completed": false,
       "createdAt": "2026-07-08T16:32:38.7143363Z",
       "updatedAt": "2026-07-08T16:32:38.7143363Z"
+    },
+    "d995a2e2-e78b-45ee-b16c-f2b8e3acc7df": {
+      "title": "Update AGENTS.md with new tool documentation",
+      "details": "- Add entries to the Tool behavior section documenting `jira_search`, `confluence_search`, and `perforce_search`\n- Include brief descriptions, parameter notes, and example queries (JQL, CQL, depot paths)\n\n**Acceptance:** AGENTS.md accurately reflects available tools.",
+      "epic": "Jira, Confluence, Perforce Search Tools",
+      "tags": [
+        "docs"
+      ],
+      "priority": "P2",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-20T19:34:59.2235278Z",
+      "updatedAt": "2026-07-20T19:34:59.2235278Z"
+    },
+    "e3efa090-19dd-4185-90ac-72ed589b1b35": {
+      "title": "Add Work Tools section to frontend settings UI",
+      "details": "**Files:** `frontend/src/app/settings/index.ts`\n\nAdd a new \"Work Tools\" settings section after the existing \"Search\" (SearXNG) section. Three subsections:\n\n**Jira:** Host URL, Username, Auth Token fields. Auth token uses `type=\"password\"`. Empty URL disables.\n**Confluence:** Host URL, Username, Auth Token fields. Same pattern.\n**Perforce:** Host URL, User, Token fields. Same pattern.\n\nFollow the existing `fieldValue(\"fieldName\")` pattern for populating inputs and the section/grid layout used by ComfyUI settings.\n\nVerify with `cd frontend; npm run build`.",
+      "epic": "Enterprise Search Tools",
+      "tags": [
+        "frontend",
+        "settings"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-20T19:33:26.591536Z",
+      "updatedAt": "2026-07-20T19:33:26.591536Z"
     },
     "e4e85fd0-5733-4fd0-b49b-f9f7847dba7a": {
       "title": "Add kanban card context menu rendering variant",
@@ -182,6 +376,20 @@
       "completed": false,
       "createdAt": "2026-07-11T10:28:55.5684515Z",
       "updatedAt": "2026-07-11T10:30:57.8754996Z"
+    },
+    "e5f0496c-c4ae-4bd6-afbd-090afa1ce517": {
+      "title": "Register perforce_search tool",
+      "details": "**Files:** `internal/tools/perforce_search.go`, `internal/tools/perforce_search_test.go`, `internal/tools/registry.go`\n\nTool name: `perforce_search` (read-only)\n\nParameters:\n- `query` (string, required) — depot path pattern or changelist number\n- `type` (string, optional, \"files\" or \"changes\", default \"files\")\n- `maxResults` (int, optional, default 5, max 20)\n\nBehavior: Map to `p4 files`, `p4 changes`, or `p4 describe` commands. Return structured results with path/number, description, user, date. Error if not configured.\n\nAdd `\"perforce_search\": true` to `readOnlyToolNames` in `registry.go`.\n\n**Tests:** Missing config error, empty query error, successful search via httptest.",
+      "epic": "Enterprise Search Tools",
+      "tags": [
+        "backend",
+        "tool"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-20T19:33:26.5197783Z",
+      "updatedAt": "2026-07-20T19:33:26.5197783Z"
     },
     "ee2e86ac-182c-40d0-8ff8-33b483a7f629": {
       "title": "Make file path red in Git/changes view if it is deleted",
@@ -224,6 +432,34 @@
       "completed": false,
       "createdAt": "2026-07-14T02:31:50.3998818Z",
       "updatedAt": "2026-07-14T02:31:50.3998818Z"
+    },
+    "f4151fbf-2098-4408-b253-77110f9bfc76": {
+      "title": "Add Work Tools settings section to frontend",
+      "details": "- New `settings-section` after \"Search\" (SearXNG) in `frontend/src/app/settings/index.ts`\n- Subsections for Jira, Confluence, and Perforce\n- Fields: URL (`type=\"url\"`), Username (`type=\"text\"`), Auth Token (`type=\"password\"`) for each service\n- Use existing `fieldValue(\"fieldName\")` pattern for populating inputs\n- Empty URL disables the service (no validation error)\n- Follow existing field/label/grid styling\n\n**Acceptance:** `npm run build` passes. Settings persist and reload correctly after save.",
+      "epic": "Jira, Confluence, Perforce Search Tools",
+      "tags": [
+        "frontend",
+        "settings"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-20T19:34:59.1523029Z",
+      "updatedAt": "2026-07-20T19:34:59.1523029Z"
+    },
+    "f55b7b38-9fc4-4c8d-a39d-192368e2f300": {
+      "title": "Register jira_search tool",
+      "details": "**Files:** `internal/tools/jira_search.go`, `internal/tools/jira_search_test.go`, `internal/tools/registry.go`\n\nTool name: `jira_search` (read-only)\n\nParameters:\n- `query` (string, required) — JQL query string\n- `issueKey` (string, optional) — look up a specific issue by key\n- `maxResults` (int, optional, default 5, max 20)\n\nBehavior: If `issueKey` provided, call `GetIssue`. Otherwise use `query` as JQL and call `Search`. Return structured results with key, summary, status, priority, assignee, URL. Error if not configured.\n\nAdd `\"jira_search\": true` to `readOnlyToolNames` in `registry.go`.\n\n**Tests:** Missing config error, empty query error, successful search via httptest.",
+      "epic": "Enterprise Search Tools",
+      "tags": [
+        "backend",
+        "tool"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-20T19:33:26.3773954Z",
+      "updatedAt": "2026-07-20T19:33:26.3773954Z"
     }
   }
 }

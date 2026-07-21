@@ -1141,23 +1141,23 @@ async function handleEpicConversionSubmit(event: SubmitEvent) {
   const tasks = (board.tasks ?? []).filter((t) => draft.taskIds.includes(t.id));
 
   try {
-    const conversions = tasks.map((t) => services.EpicTaskConversion.createFrom({
-      taskId: t.id,
-      title: t.title,
-      description: t.details || "",
-      acceptanceCriteria: t.acceptanceCriteria ?? [],
-      expectedUpdatedAt: t.updatedAt,
+    const conversions = tasks.map((t) => services.epicTaskConversion.createFrom({
+      TaskID: t.id,
+      Title: t.title,
+      Description: t.details || "",
+      AcceptanceCriteria: t.acceptanceCriteria ?? [],
+      ExpectedUpdatedAt: t.updatedAt,
     }));
 
     const result = await CreateKanbanCardsFromEpic(
       workspace.id,
       draft.epicName,
       conversions.map((c) => ({
-        taskId: c.taskId,
-        title: c.title,
-        description: c.description,
-        acceptanceCriteria: c.acceptanceCriteria,
-        expectedUpdatedAt: c.expectedUpdatedAt,
+        TaskID: c.TaskID,
+        Title: c.Title,
+        Description: c.Description,
+        AcceptanceCriteria: c.AcceptanceCriteria,
+        ExpectedUpdatedAt: c.ExpectedUpdatedAt,
       })),
     );
 
