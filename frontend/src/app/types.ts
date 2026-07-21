@@ -176,6 +176,11 @@ export type KanbanCardCreationDraft = {
   sourceTaskUpdatedAt?: string;
 };
 
+export type EpicConversionDraft = {
+  epicName: string;
+  taskIds: string[];
+};
+
 export type TaskEditorDraft = {
   taskId?: string;
   title: string;

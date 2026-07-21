@@ -583,6 +583,144 @@ func (s *SystemService) CreateKanbanCardFromTask(workspaceID string, taskID stri
 	return TaskKanbanConversion{Tasks: board, Kanban: kanban}, nil
 }
 
+func (s *SystemService) CreateKanbanCardsFromEpic(workspaceID string, epicName string, taskConversions []epicTaskConversion) (TaskKanbanConversion, error) {
+	epicName = strings.TrimSpace(epicName)
+	if epicName == "" {
+		return TaskKanbanConversion{}, fmt.Errorf("epic name is required")
+	}
+	if len(taskConversions) == 0 {
+		return TaskKanbanConversion{}, fmt.Errorf("no tasks to convert")
+	}
+	for _, tc := range taskConversions {
+		tc.TaskID = strings.TrimSpace(tc.TaskID)
+		if tc.TaskID == "" {
+			return TaskKanbanConversion{}, fmt.Errorf("task id is required")
+		}
+	}
+
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return TaskKanbanConversion{}, err
+	}
+
+	s.taskMu.Lock()
+	location, active, done, err := readWorkspaceTaskFiles(workspace)
+	if err != nil {
+		s.taskMu.Unlock()
+		return TaskKanbanConversion{}, err
+	}
+
+	// Validate all tasks exist, are uncompleted, belong to the epic, and have valid revisions.
+	now := time.Now().UTC().Format(timeRFC3339Nano)
+	for _, tc := range taskConversions {
+		task, found := active.Tasks[tc.TaskID]
+		if !found {
+			s.taskMu.Unlock()
+			if _, completed := done.Tasks[tc.TaskID]; completed {
+				return TaskKanbanConversion{}, fmt.Errorf("completed tasks cannot be converted to kanban cards")
+			}
+			return TaskKanbanConversion{}, fmt.Errorf("task %s was not found", tc.TaskID)
+		}
+		if task.Epic != epicName {
+			s.taskMu.Unlock()
+			return TaskKanbanConversion{}, fmt.Errorf("task %s does not belong to epic %q", tc.TaskID, epicName)
+		}
+		if err := requireTaskRevision(task, tc.ExpectedUpdatedAt); err != nil {
+			s.taskMu.Unlock()
+			return TaskKanbanConversion{}, fmt.Errorf("task %s: %w", tc.TaskID, err)
+		}
+	}
+
+	s.chatMu.Lock()
+	if _, running := s.kanbanRuns[workspaceID]; running {
+		s.chatMu.Unlock()
+		s.taskMu.Unlock()
+		return TaskKanbanConversion{}, fmt.Errorf("kanban cards cannot be created while agents are running")
+	}
+	s.mu.Lock()
+
+	previousCount := len(s.state.KanbanCards)
+	cardIDs := make([]string, 0, len(taskConversions))
+
+	for _, tc := range taskConversions {
+		task := active.Tasks[tc.TaskID]
+		title := strings.TrimSpace(tc.Title)
+		description := strings.TrimSpace(tc.Description)
+		criteria := normalizeTaskCriteria(tc.AcceptanceCriteria)
+
+		if title == "" {
+			title = task.Title
+		}
+		if description == "" {
+			description = task.Details
+		}
+		if len(criteria) == 0 {
+			criteria = append([]string(nil), task.AcceptanceCriteria...)
+		}
+
+		card := KanbanCard{
+			ID:          fmt.Sprintf("card-%d", s.nextKanbanCardNumberLocked()),
+			WorkspaceID: workspaceID,
+			Title:       title,
+			Description: description,
+			AcceptanceCriteria: criteria,
+			Lane:        KanbanLaneReady,
+			Status:      KanbanLaneReady,
+			ProgressTranscript: []KanbanProgressEntry{{
+				Type:    "message",
+				Title:   "Card created",
+				Content: "Converted from backlog task " + tc.TaskID + ".",
+				Status:  KanbanLaneReady,
+			}},
+		}
+		s.state.KanbanCards = append(s.state.KanbanCards, card)
+		cardIDs = append(cardIDs, card.ID)
+
+		task.Completed = true
+		task.CompletedAt = now
+		task.UpdatedAt = now
+		delete(active.Tasks, tc.TaskID)
+		done.Tasks[tc.TaskID] = task
+	}
+
+	if err := writeWorkspaceTaskFiles(location, active, done, false); err != nil {
+		s.state.KanbanCards = s.state.KanbanCards[:previousCount]
+		s.mu.Unlock()
+		s.chatMu.Unlock()
+		s.taskMu.Unlock()
+		return TaskKanbanConversion{}, err
+	}
+
+	kanban := boardForWorkspace(workspaceID, s.state.KanbanCards)
+	s.mu.Unlock()
+	s.chatMu.Unlock()
+
+	board, err := taskBoardFromData(workspaceID, location, active, done)
+	if err != nil {
+		s.taskMu.Unlock()
+		return TaskKanbanConversion{}, err
+	}
+	s.taskMu.Unlock()
+
+	// Emit events for each converted task.
+	for _, tc := range taskConversions {
+		s.emitTaskEvent(TaskEvent{WorkspaceID: workspaceID, TaskID: tc.TaskID, Type: "completed", Board: board})
+	}
+	for _, cardID := range cardIDs {
+		s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_created", Board: kanban})
+	}
+
+	return TaskKanbanConversion{Tasks: board, Kanban: kanban}, nil
+}
+
+type epicTaskConversion struct {
+	TaskID             string
+	Title              string
+	Description        string
+	AcceptanceCriteria []string
+	ExpectedUpdatedAt  string
+}
+
 func (s *SystemService) mutateWorkspaceTask(workspaceID string, taskID string, expectedUpdatedAt string, eventType string, mutate func(*storedWorkspaceTask, string) error) (TaskBoard, error) {
 	workspace, _, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {

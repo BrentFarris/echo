@@ -2797,6 +2797,37 @@ h3 {
   padding: var(--space-xxs) 0;
 }
 
+.epic-convert-btn {
+  margin-left: var(--space-sm);
+  padding: var(--space-xxs) var(--space-md);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+.epic-conversion-list {
+  list-style: none;
+  padding: 0;
+  margin: var(--space-md) 0;
+  display: grid;
+  gap: var(--space-xxs);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.epic-conversion-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 6px;
+  background: var(--color-surface-muted);
+  font-size: var(--text-sm);
+}
+
+.epic-conversion-list li .priority-badge {
+  flex-shrink: 0;
+}
+
 /* ── Epic filter bar ── */
 
 .task-epic-bar {

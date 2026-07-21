@@ -516,6 +516,7 @@ var allowedRPCMethods = map[string]bool{
 	"CreateAgentModePerTool":                  true,
 	"CreateKanbanCardFromChatMessage":         true,
 	"CreateKanbanCardFromTask":                true,
+	"CreateKanbanCardsFromEpic":               true,
 	"CreateReadyKanbanCard":                   true,
 	"CreateSkillFromChat":                     true,
 	"CreateWorkspaceGitBranch":                true,

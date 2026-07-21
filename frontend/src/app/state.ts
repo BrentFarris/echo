@@ -1,7 +1,7 @@
 
 import { llm, services } from "../../wailsjs/go/models";
 import type { ThemePaletteName } from "./theme";
-import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, DashboardWidget, GitDiffViewMode, GitMenuPage, KanbanCardCreationDraft, MobileNavView, ShellCommandRun, TaskEditorDraft, TaskInlineEditState, Toast } from "./types";
+import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, DashboardWidget, EpicConversionDraft, GitDiffViewMode, GitMenuPage, KanbanCardCreationDraft, MobileNavView, ShellCommandRun, TaskEditorDraft, TaskInlineEditState, Toast } from "./types";
 
 const endpointTopics = ["chat", "research", "kanbanDecompose", "kanban", "inlineCode"] as const;
 type EndpointTopicKey = (typeof endpointTopics)[number];
@@ -88,6 +88,8 @@ export const state = {
   cardMessageDrafts: new Map<string, string>(),
   creatingKanbanCardWorkspaces: new Set<string>(),
   kanbanCardCreationDrafts: new Map<string, KanbanCardCreationDraft>(),
+  epicConversionDrafts: new Map<string, EpicConversionDraft>(),
+  convertingEpicWorkspaces: new Set<string>(),
   expandedChatWorkspaces: new Set<string>(),
   expandedKanbanWorkspaces: new Set<string>(),
   editingMessageIds: new Set<string>(),
@@ -327,6 +329,11 @@ export function fieldValue<K extends keyof llm.Settings>(key: K): string {
 export function leadingWhitespaceIndicatorsEnabled(settings: llm.Settings | null | undefined): boolean {
   return (settings as { hideLeadingWhitespaceIndicators?: boolean } | null | undefined)
     ?.hideLeadingWhitespaceIndicators !== true;
+}
+
+export function vimKeybindingsEnabled(settings: llm.Settings | null | undefined): boolean {
+  return (settings as { enableVimKeybindings?: boolean } | null | undefined)
+    ?.enableVimKeybindings === true;
 }
 
 export function notificationSoundsEnabled(settings: llm.Settings | null | undefined): boolean {

@@ -106,6 +106,10 @@ export function CreateKanbanCardFromTask(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['services']['SystemService']['CreateKanbanCardFromTask'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
+export function CreateKanbanCardsFromEpic(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['CreateKanbanCardsFromEpic'](arg1, arg2, arg3);
+}
+
 export function CreateMode(arg1, arg2) {
   return window['go']['services']['SystemService']['CreateMode'](arg1, arg2);
 }

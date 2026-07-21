@@ -100,6 +100,10 @@ export function CreateKanbanCardFromTask(...args: Parameters<typeof Wails.Create
   return call("CreateKanbanCardFromTask", Wails.CreateKanbanCardFromTask, args);
 }
 
+export function CreateKanbanCardsFromEpic(...args: Parameters<typeof Wails.CreateKanbanCardsFromEpic>): ReturnType<typeof Wails.CreateKanbanCardsFromEpic> {
+  return call("CreateKanbanCardsFromEpic", Wails.CreateKanbanCardsFromEpic, args);
+}
+
 export function CreateSkillFromChat(...args: Parameters<typeof Wails.CreateSkillFromChat>): ReturnType<typeof Wails.CreateSkillFromChat> {
   return call("CreateSkillFromChat", Wails.CreateSkillFromChat, args);
 }

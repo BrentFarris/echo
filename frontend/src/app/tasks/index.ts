@@ -1,5 +1,6 @@
 import {
   CreateKanbanCardFromTask,
+  CreateKanbanCardsFromEpic,
   CreateWorkspaceTask,
   DeleteWorkspaceTask,
   LoadTaskBoard,
@@ -170,6 +171,7 @@ export function renderTaskPanel(workspace: services.Workspace): string {
       </div>
     </section>
     ${renderTaskEditor(workspace.id)}
+    ${renderEpicConversionDialog(workspace.id)}
   `;
 }
 
@@ -195,9 +197,10 @@ function renderTaskLane(priority: string, tasks: services.WorkspaceTask[]): stri
       const isUngrouped = key === "__ungrouped__";
       const label = isUngrouped ? "Ungrouped" : key;
       if (hasMultipleGroups) {
+        const uncompleted = groupTasks.filter((t) => !t.completed);
         cardsHtml += `
           <details class="task-epic-group">
-            <summary class="task-epic-group-header"><span class="task-epic-group-label">${escapeHtml(label)}</span><span class="task-epic-group-count">${groupTasks.length}</span></summary>
+            <summary class="task-epic-group-header"><span class="task-epic-group-label">${escapeHtml(label)}</span><span class="task-epic-group-count">${groupTasks.length}</span>${uncompleted.length >= 2 ? `<button class="secondary-button icon-text-button epic-convert-btn" type="button" data-task-action="convert-epic" data-task-epic="${escapeAttribute(key)}">${icons.kanban}<span>Convert all</span></button>` : ""}</summary>
             <div class="task-cards">
               ${groupTasks.map(renderTaskCard).join("")}
             </div>
@@ -205,10 +208,12 @@ function renderTaskLane(priority: string, tasks: services.WorkspaceTask[]): stri
       } else {
         // Single group — render cards directly without wrapper details element
         if (!isUngrouped) {
+          const uncompleted = groupTasks.filter((t) => !t.completed);
           // Has epic but it's the only group — still show header inline for clarity
           cardsHtml += `
             <div class="task-epic-group-inline">
               <span class="task-epic-group-label">${escapeHtml(label)}</span>
+              ${uncompleted.length >= 2 ? `<button class="secondary-button icon-text-button epic-convert-btn" type="button" data-task-action="convert-epic" data-task-epic="${escapeAttribute(key)}">${icons.kanban}<span>Convert all</span></button>` : ""}
             </div>`;
         }
         cardsHtml += `<div class="task-cards">${groupTasks.map(renderTaskCard).join("")}</div>`;
@@ -413,6 +418,32 @@ function renderTaskEditor(workspaceID: string): string {
   `;
 }
 
+function renderEpicConversionDialog(workspaceID: string): string {
+  const draft = state.epicConversionDrafts.get(workspaceID);
+  if (!draft || !state.convertingEpicWorkspaces.has(workspaceID)) return "";
+  const board = taskBoardFor(workspaceID);
+  const tasks = (board.tasks ?? []).filter((t) => draft.taskIds.includes(t.id));
+
+  return `
+    <aside class="kanban-card-create-backdrop" role="dialog" aria-modal="true" aria-labelledby="epic-conversion-title">
+      <form class="kanban-card-create-dialog" data-epic-conversion-form>
+        <header>
+          <div><p class="eyebrow">${draft.taskIds.length} tasks</p><h2 id="epic-conversion-title">Convert epic to Kanban</h2></div>
+          <button class="icon-button close-button" type="button" data-task-action="cancel-epic-conversion" aria-label="Cancel">${icons.x}</button>
+        </header>
+        <p class="compact muted">All uncompleted tasks in epic <strong>${escapeHtml(draft.epicName)}</strong> will be converted into Ready Kanban cards.</p>
+        <ul class="epic-conversion-list">
+          ${tasks.map((t) => `<li><span class="priority-badge priority-${t.priority.toLowerCase()}">${t.priority}</span> ${escapeHtml(t.title)}</li>`).join("")}
+        </ul>
+        <div class="kanban-card-create-actions">
+          <button class="secondary-button" type="button" data-task-action="cancel-epic-conversion">Cancel</button>
+          <button class="primary-button icon-text-button" type="submit">${icons.kanban}<span>Convert all ${draft.taskIds.length} tasks</span></button>
+        </div>
+      </form>
+    </aside>
+  `;
+}
+
 export function bindTaskEvents(root: ParentNode) {
   root.querySelectorAll<HTMLElement>("[data-task-action]").forEach((element) => {
     element.addEventListener("click", handleTaskAction);
@@ -422,6 +453,10 @@ export function bindTaskEvents(root: ParentNode) {
     editorForm.addEventListener("submit", handleTaskEditorSubmit);
     editorForm.addEventListener("input", () => syncTaskEditorDraftFromForm(editorForm));
     editorForm.addEventListener("change", () => syncTaskEditorDraftFromForm(editorForm));
+  }
+  const epicConversionForm = root.querySelector<HTMLFormElement>("[data-epic-conversion-form]");
+  if (epicConversionForm) {
+    epicConversionForm.addEventListener("submit", handleEpicConversionSubmit);
   }
   // Backdrop click to close task detail
   const backdrop = root.querySelector<HTMLElement>("aside.card-detail-backdrop[data-task-detail-backdrop]");
@@ -1062,6 +1097,25 @@ async function handleTaskAction(event: Event) {
       getAppCallbacks().render();
       return;
     }
+    if (action === "convert-epic") {
+      const epicName = target.dataset.taskEpic ?? "";
+      if (!epicName) return;
+      const board = taskBoardFor(workspace.id);
+      const epicTaskIds = (board.tasks ?? [])
+        .filter((t) => t.epic === epicName && !t.completed)
+        .map((t) => t.id);
+      if (epicTaskIds.length < 2) return;
+      state.epicConversionDrafts.set(workspace.id, { epicName, taskIds: epicTaskIds });
+      state.convertingEpicWorkspaces.add(workspace.id);
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "cancel-epic-conversion") {
+      state.epicConversionDrafts.delete(workspace.id);
+      state.convertingEpicWorkspaces.delete(workspace.id);
+      getAppCallbacks().render();
+      return;
+    }
     if (action === "cycle-priority") {
       const currentIdx = priorities.indexOf(task.priority as (typeof priorities)[number]);
       const nextIdx = (currentIdx + 1) % priorities.length;
@@ -1071,6 +1125,48 @@ async function handleTaskAction(event: Event) {
       getAppCallbacks().render();
       return;
     }
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+  }
+}
+
+async function handleEpicConversionSubmit(event: SubmitEvent) {
+  event.preventDefault();
+  const workspace = activeWorkspace();
+  if (!workspace || state.runningKanbanWorkspaces.has(workspace.id)) return;
+  const draft = state.epicConversionDrafts.get(workspace.id);
+  if (!draft) return;
+
+  const board = taskBoardFor(workspace.id);
+  const tasks = (board.tasks ?? []).filter((t) => draft.taskIds.includes(t.id));
+
+  try {
+    const conversions = tasks.map((t) => services.EpicTaskConversion.createFrom({
+      taskId: t.id,
+      title: t.title,
+      description: t.details || "",
+      acceptanceCriteria: t.acceptanceCriteria ?? [],
+      expectedUpdatedAt: t.updatedAt,
+    }));
+
+    const result = await CreateKanbanCardsFromEpic(
+      workspace.id,
+      draft.epicName,
+      conversions.map((c) => ({
+        taskId: c.taskId,
+        title: c.title,
+        description: c.description,
+        acceptanceCriteria: c.acceptanceCriteria,
+        expectedUpdatedAt: c.expectedUpdatedAt,
+      })),
+    );
+
+    state.kanbanBoards.set(workspace.id, services.KanbanBoard.createFrom(result.kanban));
+    state.taskBoards.set(workspace.id, services.TaskBoard.createFrom(result.tasks));
+    state.epicConversionDrafts.delete(workspace.id);
+    state.convertingEpicWorkspaces.delete(workspace.id);
+    pushToast(`Converted ${tasks.length} tasks to Kanban cards.`, "success");
+    getAppCallbacks().render();
   } catch (error) {
     pushToast(errorMessage(error), "error");
   }

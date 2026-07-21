@@ -103,6 +103,7 @@ export namespace llm {
 	    limitKanbanConcurrency?: boolean;
 	    researchAgentConcurrency: number;
 	    disableGitSplitDiffView?: boolean;
+	    enableVimKeybindings?: boolean;
 	    comfyuiUrl: string;
 	    comfyuiDefaultCheckpoint: string;
 	    comfyuiTxt2imgWorkflow: string;
@@ -140,6 +141,7 @@ export namespace llm {
 	        this.limitKanbanConcurrency = source["limitKanbanConcurrency"];
 	        this.researchAgentConcurrency = source["researchAgentConcurrency"];
 	        this.disableGitSplitDiffView = source["disableGitSplitDiffView"];
+	        this.enableVimKeybindings = source["enableVimKeybindings"];
 	        this.comfyuiUrl = source["comfyuiUrl"];
 	        this.comfyuiDefaultCheckpoint = source["comfyuiDefaultCheckpoint"];
 	        this.comfyuiTxt2imgWorkflow = source["comfyuiTxt2imgWorkflow"];
@@ -1674,7 +1676,7 @@ export namespace services {
 	        this.tasks = this.convertValues(source["tasks"], TaskBoard);
 	        this.kanban = this.convertValues(source["kanban"], KanbanBoard);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1692,6 +1694,26 @@ export namespace services {
 		    }
 		    return a;
 		}
+	}
+	export class EpicTaskConversion {
+	    taskId: string;
+	    title: string;
+	    description: string;
+	    acceptanceCriteria: string[];
+	    expectedUpdatedAt: string;
+
+	    static createFrom(source: any = {}) {
+	        return new EpicTaskConversion(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.taskId = source["taskId"];
+	        this.title = source["title"];
+	        this.description = source["description"];
+	        this.acceptanceCriteria = source["acceptanceCriteria"];
+	        this.expectedUpdatedAt = source["expectedUpdatedAt"];
+	    }
 	}
 	export class TokenBudget {
 	    limit: number;
