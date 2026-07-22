@@ -138,6 +138,8 @@ export function LoadDebugThreads(arg1:string,arg2:services.DebugThreadsRequest):
 
 export function LoadDebugVariables(arg1:string,arg2:services.DebugVariablesRequest):Promise<services.DebugVariablesResponse>;
 
+export function LoadDevelopmentLogStatus():Promise<services.DevelopmentLogStatus>;
+
 export function LoadKanbanBoard(arg1:string):Promise<services.KanbanBoard>;
 
 export function LoadRuntimeStatus():Promise<services.RuntimeStatus>;
@@ -257,6 +259,8 @@ export function SendChatMessageWithPlanMode(arg1:string,arg2:string,arg3:boolean
 export function SetActiveWorkspace(arg1:string):Promise<services.AppState>;
 
 export function SetDebugBreakpoints(arg1:string,arg2:services.DebugSetBreakpointsRequest):Promise<services.DebugState>;
+
+export function SetDevelopmentLoggingEnabled(arg1:boolean):Promise<services.DevelopmentLogStatus>;
 
 export function SetLivenessConfig(arg1:string,arg2:services.LivenessConfig):Promise<void>;
 

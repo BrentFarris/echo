@@ -13,6 +13,7 @@ export const state = {
   settingsDraft: null as llm.Settings | null,
   webAccessDraft: null as services.WebAccessSettings | null,
   webAccessStatus: null as services.WebAccessStatus | null,
+  developmentLogStatus: null as services.DevelopmentLogStatus | null,
   webAccessQRCodeURL: "",
   settingsOpen: false,
   settingsEndpointEditId: "",

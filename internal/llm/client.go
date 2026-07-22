@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/brent/echo/internal/flowlog"
 )
 
 type Client struct {
@@ -18,6 +21,7 @@ type Client struct {
 	endpoint   string
 	apiKey     string
 	httpClient *http.Client
+	flowLog    *flowlog.Controller
 
 	nextID        atomic.Uint64
 	mu            sync.Mutex
@@ -68,6 +72,18 @@ func WithHTTPClient(httpClient *http.Client) ClientOption {
 	}
 }
 
+func WithFlowLogger(logger *flowlog.Controller) ClientOption {
+	return func(client *Client) {
+		client.flowLog = logger
+	}
+}
+
+func (c *Client) LogFlowEvent(level slog.Level, event string, attrs ...slog.Attr) {
+	if c != nil && c.flowLog != nil {
+		c.flowLog.Log(level, event, attrs...)
+	}
+}
+
 func (c *Client) Complete(ctx context.Context, request ChatRequest) (ChatResponse, error) {
 	request.Stream = false
 
@@ -77,27 +93,41 @@ func (c *Client) Complete(ctx context.Context, request ChatRequest) (ChatRespons
 
 	body, err := json.Marshal(request)
 	if err != nil {
+		c.flowLog.Log(slog.LevelError, "llm_error", slog.String("model", request.Model), slog.String("error", err.Error()))
 		return ChatResponse{}, fmt.Errorf("marshal chat request: %w", err)
 	}
+	trace := c.flowLog.StartRequest(request.Model, body)
 
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
+		trace.Log(slog.LevelError, "llm_error", slog.String("error", err.Error()))
 		return ChatResponse{}, fmt.Errorf("create chat request: %w", err)
 	}
 	c.applyHeaders(httpRequest)
 
 	response, err := c.httpClient.Do(httpRequest)
 	if err != nil {
+		trace.Log(slog.LevelError, "llm_error", slog.String("error", err.Error()))
 		return ChatResponse{}, fmt.Errorf("send chat request: %w", err)
 	}
 	defer response.Body.Close()
 
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return ChatResponse{}, responseError(response)
+	data, readErr := io.ReadAll(response.Body)
+	if readErr != nil {
+		trace.Log(slog.LevelError, "llm_error", slog.String("error", readErr.Error()))
+		return ChatResponse{}, fmt.Errorf("read chat response: %w", readErr)
 	}
+	trace.Log(slog.LevelInfo, "llm_response",
+		slog.Int("status", response.StatusCode),
+		slog.String("payload", string(data)),
+	)
 
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return ChatResponse{}, responseErrorData(response.StatusCode, response.Status, data)
+	}
 	var chatResponse ChatResponse
-	if err := json.NewDecoder(response.Body).Decode(&chatResponse); err != nil {
+	if err := json.Unmarshal(data, &chatResponse); err != nil {
+		trace.Log(slog.LevelError, "llm_error", slog.String("error", err.Error()))
 		return ChatResponse{}, fmt.Errorf("decode chat response: %w", err)
 	}
 	return chatResponse, nil
@@ -107,7 +137,6 @@ func (c *Client) StreamChat(ctx context.Context, request ChatRequest) *Stream {
 	streamID := c.newStreamID()
 	streamContext, cancel := context.WithCancel(ctx)
 	events := make(chan StreamEvent, 32)
-	streamLogger := newStreamLogger(streamID, c.endpoint)
 
 	c.mu.Lock()
 	c.activeStreams[streamID] = cancel
@@ -126,9 +155,12 @@ func (c *Client) StreamChat(ctx context.Context, request ChatRequest) *Stream {
 		request.Stream = true
 		body, err := json.Marshal(request)
 		if err != nil {
-			emitLogged(streamContext, events, StreamEvent{Type: EventError, Error: fmt.Sprintf("marshal chat request: %v", err)}, streamLogger)
+			c.flowLog.Log(slog.LevelError, "llm_error", slog.String("model", request.Model), slog.String("error", err.Error()))
+			emitLogged(streamContext, events, StreamEvent{Type: EventError, Error: fmt.Sprintf("marshal chat request: %v", err)}, nil)
 			return
 		}
+		trace := c.flowLog.StartRequest(request.Model, body)
+		streamLogger := newStreamLogger(streamID, trace)
 
 		httpRequest, err := http.NewRequestWithContext(streamContext, http.MethodPost, c.endpoint, bytes.NewReader(body))
 		if err != nil {
@@ -150,9 +182,15 @@ func (c *Client) StreamChat(ctx context.Context, request ChatRequest) *Stream {
 		defer response.Body.Close()
 
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			emitLogged(streamContext, events, StreamEvent{Type: EventError, Error: responseError(response).Error()}, streamLogger)
+			data, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+			trace.Log(slog.LevelError, "llm_response",
+				slog.Int("status", response.StatusCode),
+				slog.String("payload", string(data)),
+			)
+			emitLogged(streamContext, events, StreamEvent{Type: EventError, Error: responseErrorData(response.StatusCode, response.Status, data).Error()}, streamLogger)
 			return
 		}
+		trace.Log(slog.LevelDebug, "llm_response_started", slog.Int("status", response.StatusCode))
 
 		parseStreamLogged(streamContext, response.Body, events, streamLogger, &stream.Usage)
 	}()
@@ -236,14 +274,21 @@ func defaultHTTPClient(timeoutSeconds int) *http.Client {
 
 func responseError(response *http.Response) error {
 	data, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+	return responseErrorData(response.StatusCode, response.Status, data)
+}
+
+func responseErrorData(statusCode int, status string, data []byte) error {
+	if len(data) > 4096 {
+		data = data[:4096]
+	}
 	detail := strings.TrimSpace(string(data))
-	if response.StatusCode == http.StatusRequestEntityTooLarge {
+	if statusCode == http.StatusRequestEntityTooLarge {
 		return fmt.Errorf("LLM endpoint rejected the request (413 Request Entity Too Large). This is usually caused by large image attachments or accumulated context. Try using smaller images")
 	}
 	if detail == "" {
-		return fmt.Errorf("llm endpoint returned %s", response.Status)
+		return fmt.Errorf("llm endpoint returned %s", status)
 	}
-	return fmt.Errorf("llm endpoint returned %s: %s", response.Status, detail)
+	return fmt.Errorf("llm endpoint returned %s: %s", status, detail)
 }
 
 // IsContextLengthExceeded reports whether an endpoint rejected a request because

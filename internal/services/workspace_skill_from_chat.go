@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"unicode/utf8"
@@ -58,6 +59,8 @@ type generatedWorkspaceSkill struct {
 }
 
 func (s *SystemService) CreateSkillFromChat(workspaceID string) (WorkspaceSkillCreationResult, error) {
+	s.logAIEvent(slog.LevelInfo, "ai_operation_started", slog.String("surface", "skill_generation"))
+	defer s.logAIEvent(slog.LevelInfo, "ai_operation_finished", slog.String("surface", "skill_generation"))
 	workspace, settings, err := s.workspaceAndSettingsFor(workspaceID, llm.InteractionChat)
 	if err != nil {
 		return WorkspaceSkillCreationResult{}, err
@@ -71,7 +74,7 @@ func (s *SystemService) CreateSkillFromChat(workspaceID string) (WorkspaceSkillC
 		return WorkspaceSkillCreationResult{}, err
 	}
 
-	client, err := llm.NewClient(settings)
+	client, err := s.newLLMClient(settings)
 	if err != nil {
 		return WorkspaceSkillCreationResult{}, err
 	}

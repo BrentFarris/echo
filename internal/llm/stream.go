@@ -34,6 +34,9 @@ func parseStream(ctx context.Context, reader io.Reader, events chan<- StreamEven
 }
 
 func parseStreamLogged(ctx context.Context, reader io.Reader, events chan<- StreamEvent, logger *streamLogger, usageOut **Usage) {
+	if logger != nil {
+		defer logger.finish()
+	}
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
@@ -132,24 +135,24 @@ func (d streamDelta) reasoningText() string {
 }
 
 func emitLogged(ctx context.Context, events chan<- StreamEvent, event StreamEvent, logger *streamLogger) bool {
+	if logger != nil {
+		logger.event(event)
+	}
 	select {
 	case <-ctx.Done():
 		return false
 	case events <- event:
-		if logger != nil {
-			logger.event(event)
-		}
 		return true
 	}
 }
 
 func emitCanceledLogged(events chan<- StreamEvent, logger *streamLogger) {
 	event := StreamEvent{Type: EventCanceled}
+	if logger != nil {
+		logger.event(event)
+	}
 	select {
 	case events <- event:
-		if logger != nil {
-			logger.event(event)
-		}
 	default:
 	}
 }

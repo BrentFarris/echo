@@ -1,5 +1,5 @@
 
-import { CreateAgentMode, CreateAgentModePerTool, DeleteAgentMode, LoadWebAccessStatus, ListAgentModes, PrepareRebuildAndRelaunch, SaveSettings, SaveWebAccessSettings, SaveWorkspaceDebugSettings, SetWorkspaceBuildCommand, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter, SetWorkspaceSearchParentGitRepositories, UpdateAgentMode, UpdateAgentModePerTool } from "../../backend/services";
+import { CreateAgentMode, CreateAgentModePerTool, DeleteAgentMode, LoadDevelopmentLogStatus, LoadWebAccessStatus, ListAgentModes, PrepareRebuildAndRelaunch, SaveSettings, SaveWebAccessSettings, SaveWorkspaceDebugSettings, SetDevelopmentLoggingEnabled, SetWorkspaceBuildCommand, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter, SetWorkspaceSearchParentGitRepositories, UpdateAgentMode, UpdateAgentModePerTool } from "../../backend/services";
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
@@ -224,6 +224,13 @@ export function bindSettingsEvents(root: ParentNode) {
     .forEach((input) =>
       input.addEventListener("change", () => {
         void handleWorkspaceParentGitRepositoriesChange(input);
+      }),
+    );
+  form
+    ?.querySelectorAll<HTMLInputElement>("[data-development-logging]")
+    .forEach((input) =>
+      input.addEventListener("change", () => {
+        void handleDevelopmentLoggingChange(input);
       }),
     );
   form
@@ -499,6 +506,16 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
 
             <section class="settings-section" aria-labelledby="development-settings-title">
               <h3 id="development-settings-title" class="settings-section-title">Development</h3>
+              <label class="settings-toggle" title="Capture the exact AI transcript for this app session.">
+                <span>AI flow logging</span>
+                <input
+                  type="checkbox"
+                  data-development-logging
+                  ${state.developmentLogStatus?.enabled ? "checked" : ""}
+                />
+              </label>
+              <p class="field-help">Writes JSONL to <code>./echo/echo.log</code> relative to the process working directory. Enabling erases the previous capture, and this setting is not remembered after restart.</p>
+              <p class="field-help warning">The exact transcript may contain sensitive prompts, workspace content, paths, tool output, and embedded media.</p>
               <p>Echo source workspace actions.</p>
               ${renderRebuildRelaunchButton()}
             </section>
@@ -1896,6 +1913,9 @@ export function handleSettingsInput(event: Event) {
     void handleLivenessInput(input as HTMLInputElement);
     return;
   }
+  if (input.dataset.developmentLogging !== undefined) {
+    return;
+  }
   if (input.dataset.workspaceFolderAgents !== undefined) {
     return;
   }
@@ -2105,6 +2125,22 @@ export async function handleWorkspaceParentGitRepositoriesChange(input: HTMLInpu
     pushToast(errorMessage(error), "error");
     getAppCallbacks().render();
   }
+}
+
+export async function handleDevelopmentLoggingChange(input: HTMLInputElement) {
+  input.disabled = true;
+  try {
+    state.developmentLogStatus = await SetDevelopmentLoggingEnabled(input.checked);
+    pushToast(input.checked ? "AI flow logging enabled." : "AI flow logging disabled.", "success");
+  } catch (error) {
+    try {
+      state.developmentLogStatus = await LoadDevelopmentLogStatus();
+    } catch {
+      state.developmentLogStatus = null;
+    }
+    pushToast(errorMessage(error), "error");
+  }
+  getAppCallbacks().render();
 }
 
 export async function handleSettingsSubmit(event: SubmitEvent) {

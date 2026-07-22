@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"unicode/utf8"
 
@@ -102,6 +103,12 @@ func compactContextIfNeeded(
 	if !policy.Force && before < percentageOf(budget, contextCompactionTriggerPercent) {
 		return result, nil
 	}
+	client.LogFlowEvent(slog.LevelInfo, "context_compaction_started",
+		slog.Int("before_tokens", before),
+		slog.Int("budget_tokens", budget),
+		slog.Bool("forced", policy.Force),
+		slog.Int("aggressiveness", policy.Aggressiveness),
+	)
 
 	systemIndex, originalUserIndex := contextHeadIndexes(messages)
 	if systemIndex < 0 || originalUserIndex < 0 {
@@ -162,6 +169,12 @@ func compactContextIfNeeded(
 	result.AfterTokens = after
 	result.RemovedMessages = len(stale)
 	result.Warning = warning
+	client.LogFlowEvent(slog.LevelInfo, "context_compaction_completed",
+		slog.Int("before_tokens", result.BeforeTokens),
+		slog.Int("after_tokens", result.AfterTokens),
+		slog.Int("removed_messages", result.RemovedMessages),
+		slog.Bool("used_fallback", result.UsedFallback),
+	)
 	return result, nil
 }
 

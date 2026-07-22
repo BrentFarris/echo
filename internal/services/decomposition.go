@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/brent/echo/internal/llm"
@@ -53,6 +54,8 @@ type decomposedCard struct {
 }
 
 func (s *SystemService) ExecutePlan(workspaceID string) (KanbanBoard, error) {
+	s.logAIEvent(slog.LevelInfo, "ai_operation_started", slog.String("surface", "kanban_decompose"))
+	defer s.logAIEvent(slog.LevelInfo, "ai_operation_finished", slog.String("surface", "kanban_decompose"))
 	_, settings, err := s.workspaceAndSettingsFor(workspaceID, llm.InteractionKanbanDecompose)
 	if err != nil {
 		return KanbanBoard{}, err
@@ -63,7 +66,7 @@ func (s *SystemService) ExecutePlan(workspaceID string) (KanbanBoard, error) {
 		return KanbanBoard{}, err
 	}
 
-	client, err := llm.NewClient(settings)
+	client, err := s.newLLMClient(settings)
 	if err != nil {
 		return KanbanBoard{}, err
 	}

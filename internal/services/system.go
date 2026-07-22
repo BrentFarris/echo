@@ -17,7 +17,7 @@ import (
 	"strings"
 	"sync"
 
-
+	"github.com/brent/echo/internal/flowlog"
 	"github.com/brent/echo/internal/llm"
 	"github.com/google/uuid"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -226,6 +226,7 @@ type SystemService struct {
 	fileChangesEventSink    func(FileChangesEvent)
 	inlineCodeEventSink     func(InlineCodePromptEvent)
 	tokenBudget             *TokenBudgetService
+	flowLog                 *flowlog.Controller
 }
 
 func NewSystemService() *SystemService {
@@ -264,6 +265,7 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 		workspaceTextSearches: make(map[string]workspaceTextSearchRun),
 		eventSubscribers:      make(map[uint64]chan RuntimeEvent),
 		tokenBudget:           newTokenBudgetService(),
+		flowLog:               flowlog.NewController(),
 	}
 	_ = service.load()
 	service.debugger = newDebugManager(service)

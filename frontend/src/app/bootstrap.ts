@@ -1,7 +1,7 @@
 
 import { applyDebugEvent, applyInlineCodePromptEvent, applyWorkspaceTextSearchEvent, ensureCodeViewRootLoaded, finishCodeTabSwitcher, openDroppedCodeFile, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk, saveActiveCodeFile, saveDirtyWorkspaceCodeTabs, setCodeGitChangeProvider, setDebugStateChangeListener } from "../codeView";
 import type { WorkspaceTextSearchEvent } from "../codeView";
-import { GetSavedCommands, LoadRuntimeStatus, LoadState, LoadWebAccessStatus, ListAgentModes, ReadWorkspaceMediaFile } from "../backend/services";
+import { GetSavedCommands, LoadDevelopmentLogStatus, LoadRuntimeStatus, LoadState, LoadWebAccessStatus, ListAgentModes, ReadWorkspaceMediaFile } from "../backend/services";
 import { llm, services } from "../../wailsjs/go/models";
 import { EventsOn, OnFileDrop } from "../backend/runtime";
 import { initializeWebAccessTokenFromURL, isWailsRuntime, webConnectionOn } from "../backend/web";
@@ -128,6 +128,7 @@ async function initialize() {
     state.settingsDraft = cloneSettings(state.appState.settings);
     state.webAccessDraft = cloneWebAccessSettings(state.appState.webAccess);
     state.webAccessStatus = await LoadWebAccessStatus();
+    state.developmentLogStatus = await LoadDevelopmentLogStatus();
     try {
       const activeWS = state.appState?.activeWorkspaceId ?? "";
       const modes = await ListAgentModes(activeWS);

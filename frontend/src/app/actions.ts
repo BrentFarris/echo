@@ -1,7 +1,7 @@
 
 import { isWailsRuntime } from "../backend/web";
 import { CodeTabCloseMode, clearCodeTabSwitcher, closeCodeTabs, deleteSelectedCodePaths, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, revealCodeTabInWorkspace, startCodeCreate, startCodeRename } from "../codeView";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteSavedCommand, DeleteWorkspace, ExecutePlan, GetHeartbeatConfig, GetSavedCommands, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenExternalPathExplorer, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, ResolveWorkspacePath, RetryChatMessage, RotateWebAccessToken, RunShellCommand, SaveChatImageToDisk, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution, StopShellCommand, UpsertSavedCommand } from "../backend/services";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteSavedCommand, DeleteWorkspace, ExecutePlan, GetHeartbeatConfig, GetSavedCommands, LoadDevelopmentLogStatus, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenExternalPathExplorer, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, ResolveWorkspacePath, RetryChatMessage, RotateWebAccessToken, RunShellCommand, SaveChatImageToDisk, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution, StopShellCommand, UpsertSavedCommand } from "../backend/services";
 import { appRoot } from "./dom";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
@@ -460,6 +460,7 @@ export async function handleAction(event: Event) {
       state.settingsDraft = cloneSettings(state.appState!.settings);
       state.webAccessDraft = cloneWebAccessSettings(state.appState!.webAccess);
       state.webAccessStatus = await LoadWebAccessStatus();
+      state.developmentLogStatus = await LoadDevelopmentLogStatus();
       applyTheme(state.settingsDraft);
       hydrateWorkspaceLetterDrafts(state.appState?.workspaces ?? []);
       getAppCallbacks().render();

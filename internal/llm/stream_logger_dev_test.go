@@ -41,13 +41,13 @@ func TestDevStreamLoggerPrintsRawMessagesAndEventsInOrder(t *testing.T) {
 		context.Background(),
 		strings.NewReader(input),
 		events,
-		newStreamLogger("stream-1", "http://localhost/chat/completions"),
+		newStreamLogger("stream-1", nil),
 		nil,
 	)
 
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
-	if len(lines) != 5 {
-		t.Fatalf("expected 5 log lines, got %d:\n%s", len(lines), output.String())
+	if len(lines) != 6 {
+		t.Fatalf("expected 6 log lines, got %d:\n%s", len(lines), output.String())
 	}
 
 	entries := make([]streamLogEntry, len(lines))
@@ -70,16 +70,19 @@ func TestDevStreamLoggerPrintsRawMessagesAndEventsInOrder(t *testing.T) {
 	if entries[0].Kind != "raw" || !strings.Contains(entries[0].Data, `"usage"`) {
 		t.Fatalf("expected metadata-only raw message first, got %#v", entries[0])
 	}
-	if entries[1].Kind != "raw" || !strings.Contains(entries[1].Data, `"hello"`) {
-		t.Fatalf("expected content raw message second, got %#v", entries[1])
+	if entries[1].Kind != "event" || !bytes.Contains(entries[1].Event, []byte(`"type":"usage"`)) {
+		t.Fatalf("expected usage event second, got %#v", entries[1])
 	}
-	if entries[2].Kind != "event" || !bytes.Contains(entries[2].Event, []byte(`"type":"token"`)) {
-		t.Fatalf("expected token event third, got %#v", entries[2])
+	if entries[2].Kind != "raw" || !strings.Contains(entries[2].Data, `"hello"`) {
+		t.Fatalf("expected content raw message third, got %#v", entries[2])
 	}
-	if entries[3].Kind != "raw" || entries[3].Data != `{"choices":` {
-		t.Fatalf("expected malformed raw message fourth, got %#v", entries[3])
+	if entries[3].Kind != "event" || !bytes.Contains(entries[3].Event, []byte(`"type":"token"`)) {
+		t.Fatalf("expected token event fourth, got %#v", entries[3])
 	}
-	if entries[4].Kind != "event" || !bytes.Contains(entries[4].Event, []byte(`"type":"error"`)) {
-		t.Fatalf("expected error event fifth, got %#v", entries[4])
+	if entries[4].Kind != "raw" || entries[4].Data != `{"choices":` {
+		t.Fatalf("expected malformed raw message fifth, got %#v", entries[4])
+	}
+	if entries[5].Kind != "event" || !bytes.Contains(entries[5].Event, []byte(`"type":"error"`)) {
+		t.Fatalf("expected error event sixth, got %#v", entries[5])
 	}
 }

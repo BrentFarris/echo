@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
@@ -544,10 +545,12 @@ func (s *SystemService) runChatTurn(ctx context.Context, cancel context.CancelFu
 }
 
 func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, streamID string, messageID string, history []llm.Message, agentModeID string, onUsage func(workspaceID string, usage llm.Usage)) {
+	s.logAIEvent(slog.LevelInfo, "ai_operation_started", slog.String("surface", "chat"), slog.String("operation_id", streamID))
+	defer s.logAIEvent(slog.LevelInfo, "ai_operation_finished", slog.String("surface", "chat"), slog.String("operation_id", streamID))
 	defer cancel()
 	defer s.finishChatStream(workspace.ID, streamID)
 
-	client, err := llm.NewClient(settings)
+	client, err := s.newLLMClient(settings)
 	if err != nil {
 		s.failChatMessage(workspace.ID, streamID, messageID, err.Error())
 		return
@@ -711,6 +714,8 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 			}
 			if llm.IsContextLengthExceeded(err) {
 				if recovery, ok := recoverToolResultContext(messages, recoverableToolCalls); ok {
+					s.logAIEvent(slog.LevelWarn, "context_recovery", slog.String("surface", "chat"), slog.String("tool_call_id", recovery.Call.ID))
+					s.logModelFacingToolResult(recovery.Call, []llm.Message{recovery.ResultMessage})
 					messages = recovery.Messages
 					s.replaceChatHistory(workspace.ID, messages[1:])
 					s.updateToolActivity(workspace.ID, streamID, messageID, recovery.Call, "error", recovery.ResultMessage.Content, toolResultContextErrorText, "")
@@ -918,8 +923,8 @@ func (s *SystemService) streamAssistantResponseAttempt(ctx context.Context, clie
 			call = s.normalizeToolCall(call)
 			toolCalls[nextInlineToolIndex] = call
 			nextInlineToolIndex++
-		s.updateToolActivity(workspaceID, streamID, messageID, call, "streaming", "", "", "")
-	}
+			s.updateToolActivity(workspaceID, streamID, messageID, call, "streaming", "", "", "")
+		}
 	}
 	appendContent := func(text string) *streamLoopDetection {
 		if text == "" {
@@ -1007,25 +1012,31 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 		call.ID = s.nextChatID("call")
 	}
 	if tools.IsResearchAgentToolName(call.Function.Name) && research == nil {
+		s.logToolRequest(call)
 		data := fmt.Sprintf(`{"tool":%q,"success":false,"error":{"code":"research_agents_disabled","message":"research agents are disabled in settings"}}`, call.Function.Name)
 		s.updateToolActivity(workspace.ID, streamID, messageID, call, "error", data, "research agents are disabled in settings", "")
+		messages := []llm.Message{{
+			Role:       llm.RoleTool,
+			ToolCallID: call.ID,
+			Content:    data,
+		}}
+		s.logModelFacingToolResult(call, messages)
 		return chatToolCallExecution{
-			Messages: []llm.Message{{
-				Role:       llm.RoleTool,
-				ToolCallID: call.ID,
-				Content:    data,
-			}},
+			Messages: messages,
 		}
 	}
 	if readOnlyOnly && !tools.IsPlanModeToolName(call.Function.Name) {
+		s.logToolRequest(call)
 		data := fmt.Sprintf(`{"tool":%q,"success":false,"error":{"code":"tool_not_allowed","message":"tool is not available in plan mode"}}`, call.Function.Name)
 		s.updateToolActivity(workspace.ID, streamID, messageID, call, "error", data, "tool is not available in plan mode", "")
+		messages := []llm.Message{{
+			Role:       llm.RoleTool,
+			ToolCallID: call.ID,
+			Content:    data,
+		}}
+		s.logModelFacingToolResult(call, messages)
 		return chatToolCallExecution{
-			Messages: []llm.Message{{
-				Role:       llm.RoleTool,
-				ToolCallID: call.ID,
-				Content:    data,
-			}},
+			Messages: messages,
 		}
 	}
 	s.updateToolActivity(workspace.ID, streamID, messageID, call, "running", "", "", "")
@@ -1146,7 +1157,7 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 	}
 
 	return chatToolCallExecution{
-		Messages:        toolResultMessages(call, result, data),
+		Messages:        s.loggedToolResultMessages(call, result, data),
 		Changes:         execution.Changes,
 		SkillCheckpoint: workspaceSkillCheckpointCompleted(call, result),
 	}
@@ -1297,6 +1308,7 @@ func (s *SystemService) completeChatMessage(workspaceID string, streamID string,
 }
 
 func (s *SystemService) retryChatMessage(workspaceID string, streamID string, messageID string) {
+	s.logAIEvent(slog.LevelWarn, "ai_retry", slog.String("surface", "chat"), slog.String("operation_id", streamID))
 	s.mutateChatMessage(workspaceID, messageID, func(message *ChatMessage) {
 		message.Status = "retrying"
 	}, ChatStreamEvent{
@@ -1550,8 +1562,8 @@ func chatSystemMessage(workspace Workspace, mode AgentMode, skillCandidates []to
 		"When a search result gives a useful line number, read nearby code with filesystem_read_text aroundLine; copy the result's line value and avoid reading whole source files unless the entire file is genuinely needed. " +
 		"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. " +
 		"When images are attached to a chat message, use comfyui_generate with attachedImageIndex (0-based) to pass them directly as img2img input â€” no need to save to disk first. Index 0 refers to the first attached image. " +
-			"After generating an image with comfyui_generate, use the returned imageId with save_image to persist it to workspace disk if needed. " +
-			"Keep plans concrete and concise."
+		"After generating an image with comfyui_generate, use the returned imageId with save_image to persist it to workspace disk if needed. " +
+		"Keep plans concrete and concise."
 	if researchEnabled {
 		instructions += " " + researchOrchestratorSystemGuidance
 	}

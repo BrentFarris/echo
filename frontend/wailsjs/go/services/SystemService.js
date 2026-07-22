@@ -266,6 +266,10 @@ export function LoadDebugVariables(arg1, arg2) {
   return window['go']['services']['SystemService']['LoadDebugVariables'](arg1, arg2);
 }
 
+export function LoadDevelopmentLogStatus() {
+  return window['go']['services']['SystemService']['LoadDevelopmentLogStatus']();
+}
+
 export function LoadKanbanBoard(arg1) {
   return window['go']['services']['SystemService']['LoadKanbanBoard'](arg1);
 }
@@ -504,6 +508,10 @@ export function SetActiveWorkspace(arg1) {
 
 export function SetDebugBreakpoints(arg1, arg2) {
   return window['go']['services']['SystemService']['SetDebugBreakpoints'](arg1, arg2);
+}
+
+export function SetDevelopmentLoggingEnabled(arg1) {
+  return window['go']['services']['SystemService']['SetDevelopmentLoggingEnabled'](arg1);
 }
 
 export function SetLivenessConfig(arg1, arg2) {

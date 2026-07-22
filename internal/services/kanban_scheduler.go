@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
@@ -280,6 +281,9 @@ func (s *SystemService) Shutdown() {
 	}
 	_ = s.persistAllWorkspaceAutosaves()
 	s.closeAllLSPClients()
+	if s.flowLog != nil {
+		_ = s.flowLog.Close()
+	}
 }
 
 func (s *SystemService) runKanbanScheduler(ctx context.Context, workspace Workspace, settings llm.Settings, concurrency int) {
@@ -381,6 +385,8 @@ func (s *SystemService) startKanbanAgent(parent context.Context, workspace Works
 }
 
 func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace, settings llm.Settings, cardID string, agentID uint64) {
+	s.logAIEvent(slog.LevelInfo, "ai_operation_started", slog.String("surface", "kanban"), slog.Uint64("agent_id", agentID))
+	defer s.logAIEvent(slog.LevelInfo, "ai_operation_finished", slog.String("surface", "kanban"), slog.Uint64("agent_id", agentID))
 	card, dependencyOutputs, ok := s.agentCardSnapshot(workspace.ID, cardID)
 	if !ok {
 		return
@@ -388,7 +394,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 
 	contextBrief := s.kanbanWorkspaceContextBrief(ctx, workspace, card, dependencyOutputs, agentID)
 
-	client, err := llm.NewClient(settings)
+	client, err := s.newLLMClient(settings)
 	if err != nil {
 		s.blockKanbanCard(workspace.ID, cardID, agentID, "Agent error", err.Error())
 		return
@@ -464,6 +470,8 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 			}
 			if llm.IsContextLengthExceeded(err) {
 				if recovery, ok := recoverToolResultContext(messages, recoverableToolCalls); ok {
+					s.logAIEvent(slog.LevelWarn, "context_recovery", slog.String("surface", "kanban"), slog.String("tool_call_id", recovery.Call.ID))
+					s.logModelFacingToolResult(recovery.Call, []llm.Message{recovery.ResultMessage})
 					messages = recovery.Messages
 					s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
 						Type:    "tool_result",
@@ -873,7 +881,7 @@ func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Wor
 	}
 
 	return kanbanToolCallExecution{
-		Messages:        toolResultMessages(call, result, data),
+		Messages:        s.loggedToolResultMessages(call, result, data),
 		ChangedPaths:    affectedPathsFromChanges(execution.Changes),
 		SkillCheckpoint: workspaceSkillCheckpointCompleted(call, result),
 	}

@@ -1308,6 +1308,20 @@ export namespace services {
 		    return a;
 		}
 	}
+	export class DevelopmentLogStatus {
+	    enabled: boolean;
+	    path: string;
+
+	    static createFrom(source: any = {}) {
+	        return new DevelopmentLogStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.path = source["path"];
+	    }
+	}
 	
 	export class InlineCodePromptRequest {
 	    requestId?: string;
@@ -3374,4 +3388,3 @@ export namespace tools {
 	}
 
 }
-

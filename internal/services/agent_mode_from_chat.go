@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/brent/echo/internal/llm"
@@ -12,7 +13,7 @@ import (
 )
 
 const agentModeFromChatTranscriptMaxBytes = 96 * 1024
-const agentModeFromChatBlockMaxBytes     = 24 * 1024
+const agentModeFromChatBlockMaxBytes = 24 * 1024
 
 const agentModeFromChatSystemPrompt = `You analyze chat transcripts and synthesize Echo agent modes from tool usage patterns.
 
@@ -39,17 +40,19 @@ Rules:
 - Do not include commentary or extra JSON keys.`
 
 type generatedAgentMode struct {
-	Name            string                                  `json:"name"`
-	Prompt          string                                  `json:"prompt"`
-	Permissions     map[string]tools.ToolPermission         `json:"permissions,omitempty"`
-	ToolPermissions []string                                `json:"toolPermissions,omitempty"` // backward compat
-	PathPermissions []string                                `json:"pathPermissions,omitempty"` // backward compat
+	Name            string                          `json:"name"`
+	Prompt          string                          `json:"prompt"`
+	Permissions     map[string]tools.ToolPermission `json:"permissions,omitempty"`
+	ToolPermissions []string                        `json:"toolPermissions,omitempty"` // backward compat
+	PathPermissions []string                        `json:"pathPermissions,omitempty"` // backward compat
 }
 
 // CreateAgentModeFromChat analyzes the current chat transcript, extracts tool
 // usage patterns, sends the analysis to the LLM, and creates a new agent mode
 // from the synthesized result.
 func (s *SystemService) CreateAgentModeFromChat(workspaceID string) (tools.AgentModeCreationResult, error) {
+	s.logAIEvent(slog.LevelInfo, "ai_operation_started", slog.String("surface", "agent_mode_generation"))
+	defer s.logAIEvent(slog.LevelInfo, "ai_operation_finished", slog.String("surface", "agent_mode_generation"))
 	workspace, settings, err := s.workspaceAndSettingsFor(workspaceID, llm.InteractionChat)
 	if err != nil {
 		return tools.AgentModeCreationResult{}, err
@@ -65,7 +68,7 @@ func (s *SystemService) CreateAgentModeFromChat(workspaceID string) (tools.Agent
 		return tools.AgentModeCreationResult{}, err
 	}
 
-	client, err := llm.NewClient(settings)
+	client, err := s.newLLMClient(settings)
 	if err != nil {
 		return tools.AgentModeCreationResult{}, err
 	}
@@ -139,9 +142,9 @@ func (s *SystemService) CreateModePerTool(ctx context.Context, name, prompt stri
 
 // toolUsageSummary captures which tools were used in the transcript.
 type toolUsageSummary struct {
-	Name     string
+	Name      string
 	CallCount int
-	PathArgs []string
+	PathArgs  []string
 }
 
 func agentModeChatTranscript(messages []ChatMessage) (string, []toolUsageSummary, error) {

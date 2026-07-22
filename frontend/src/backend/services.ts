@@ -223,6 +223,10 @@ export function LoadChatSession(...args: Parameters<typeof Wails.LoadChatSession
   return call("LoadChatSession", Wails.LoadChatSession, args);
 }
 
+export function LoadDevelopmentLogStatus(...args: Parameters<typeof Wails.LoadDevelopmentLogStatus>): ReturnType<typeof Wails.LoadDevelopmentLogStatus> {
+  return call("LoadDevelopmentLogStatus", Wails.LoadDevelopmentLogStatus, args);
+}
+
 export function LoadKanbanBoard(...args: Parameters<typeof Wails.LoadKanbanBoard>): ReturnType<typeof Wails.LoadKanbanBoard> {
   return call("LoadKanbanBoard", Wails.LoadKanbanBoard, args);
 }
@@ -598,6 +602,10 @@ export function SendChatMessageWithPlanMode(...args: Parameters<typeof Wails.Sen
 
 export function SetActiveWorkspace(...args: Parameters<typeof Wails.SetActiveWorkspace>): ReturnType<typeof Wails.SetActiveWorkspace> {
   return call("SetActiveWorkspace", Wails.SetActiveWorkspace, args);
+}
+
+export function SetDevelopmentLoggingEnabled(...args: Parameters<typeof Wails.SetDevelopmentLoggingEnabled>): ReturnType<typeof Wails.SetDevelopmentLoggingEnabled> {
+  return call("SetDevelopmentLoggingEnabled", Wails.SetDevelopmentLoggingEnabled, args);
 }
 
 export function SetWorkspaceBuildCommand(...args: Parameters<typeof Wails.SetWorkspaceBuildCommand>): ReturnType<typeof Wails.SetWorkspaceBuildCommand> {
