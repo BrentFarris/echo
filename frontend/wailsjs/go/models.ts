@@ -37,6 +37,7 @@ export namespace llm {
 	    timeoutSeconds: number;
 	    thinkingTokenBudget: number;
 	    thinkingCorrection?: boolean;
+	    systemPromptAppendage?: string;
 	    headers?: Record<string, string>;
 	
 	    static createFrom(source: any = {}) {
@@ -61,6 +62,7 @@ export namespace llm {
 	        this.timeoutSeconds = source["timeoutSeconds"];
 	        this.thinkingTokenBudget = source["thinkingTokenBudget"];
 	        this.thinkingCorrection = source["thinkingCorrection"];
+	        this.systemPromptAppendage = source["systemPromptAppendage"];
 	        this.headers = source["headers"];
 	    }
 	}
@@ -96,6 +98,7 @@ export namespace llm {
 	    searxngUrl: string;
 	    thinkingTokenBudget: number;
 	    thinkingCorrection?: boolean;
+	    systemPromptAppendage?: string;
 	    hideLeadingWhitespaceIndicators?: boolean;
 	    disableNotificationSounds?: boolean;
 	    enableChatCompletionNotifications?: boolean;
@@ -133,6 +136,7 @@ export namespace llm {
 	        this.searxngUrl = source["searxngUrl"];
 	        this.thinkingTokenBudget = source["thinkingTokenBudget"];
 	        this.thinkingCorrection = source["thinkingCorrection"];
+	        this.systemPromptAppendage = source["systemPromptAppendage"];
 	        this.hideLeadingWhitespaceIndicators = source["hideLeadingWhitespaceIndicators"];
 	        this.disableNotificationSounds = source["disableNotificationSounds"];
 	        this.enableChatCompletionNotifications = source["enableChatCompletionNotifications"];

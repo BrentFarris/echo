@@ -135,6 +135,28 @@ func TestNewChatRequestAddsThinkingCorrectionToLatestUserMessage(t *testing.T) {
 	}
 }
 
+func TestNewChatRequestAppendsModelInstructionsToSystemPrompt(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoint = "https://example.test/v1"
+	settings.SystemPromptAppendage = "  Prefer concise answers.\nUse metric units.  "
+	messages := []Message{
+		{Role: RoleSystem, Content: "Be helpful."},
+		{Role: RoleUser, Content: "Hello"},
+	}
+
+	request, err := NewChatRequest(settings, messages)
+	if err != nil {
+		t.Fatalf("new chat request: %v", err)
+	}
+
+	if got, want := request.Messages[0].Content, "Be helpful.\n\nPrefer concise answers.\nUse metric units."; got != want {
+		t.Fatalf("expected system prompt appendage %q, got %q", want, got)
+	}
+	if messages[0].Content != "Be helpful." {
+		t.Fatalf("expected source system prompt to remain unchanged, got %q", messages[0].Content)
+	}
+}
+
 func TestNewChatRequestAddsThinkingCorrectionAsFinalContentPart(t *testing.T) {
 	settings := DefaultSettings()
 	settings.Endpoint = "https://example.test/v1"

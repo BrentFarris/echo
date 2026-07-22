@@ -92,16 +92,17 @@ func TestSystemServiceResolvesSettingsForInteraction(t *testing.T) {
 			ThinkingTokenBudget: 0,
 		},
 		{
-			ID:                  "research",
-			Name:                "Research",
-			Endpoint:            "https://research.example.test/v1",
-			Model:               "research-model",
-			Temperature:         0.15,
-			ContextLength:       24576,
-			MaxTokens:           1536,
-			RepetitionPenalty:   1,
-			TimeoutSeconds:      60,
-			ThinkingTokenBudget: 0,
+			ID:                    "research",
+			Name:                  "Research",
+			Endpoint:              "https://research.example.test/v1",
+			Model:                 "research-model",
+			Temperature:           0.15,
+			ContextLength:         24576,
+			MaxTokens:             1536,
+			RepetitionPenalty:     1,
+			TimeoutSeconds:        60,
+			ThinkingTokenBudget:   0,
+			SystemPromptAppendage: "Use research-specific instructions.",
 		},
 		{
 			ID:                  "kanban",
@@ -147,6 +148,9 @@ func TestSystemServiceResolvesSettingsForInteraction(t *testing.T) {
 	}
 	if researchSettings.Endpoint != "https://research.example.test/v1" || researchSettings.Model != "research-model" {
 		t.Fatalf("expected research endpoint, got %q / %q", researchSettings.Endpoint, researchSettings.Model)
+	}
+	if researchSettings.SystemPromptAppendage != "Use research-specific instructions." {
+		t.Fatalf("expected research system prompt appendage, got %q", researchSettings.SystemPromptAppendage)
 	}
 
 	_, decomposeSettings, err := service.workspaceAndSettingsFor(state.ActiveWorkspaceID, llm.InteractionKanbanDecompose)

@@ -30,16 +30,17 @@ func TestSettingsForInteractionUsesSelectedEndpoint(t *testing.T) {
 			ThinkingTokenBudget: 0,
 		},
 		{
-			ID:                  "research",
-			Name:                "Research",
-			Endpoint:            "https://research.example.test/v1",
-			Model:               "research-model",
-			Temperature:         0.15,
-			ContextLength:       24576,
-			MaxTokens:           1536,
-			RepetitionPenalty:   1,
-			TimeoutSeconds:      60,
-			ThinkingTokenBudget: 0,
+			ID:                    "research",
+			Name:                  "Research",
+			Endpoint:              "https://research.example.test/v1",
+			Model:                 "research-model",
+			Temperature:           0.15,
+			ContextLength:         24576,
+			MaxTokens:             1536,
+			RepetitionPenalty:     1,
+			TimeoutSeconds:        60,
+			ThinkingTokenBudget:   0,
+			SystemPromptAppendage: "Use the research model instructions.",
 		},
 		{
 			ID:                  "kanban",
@@ -82,6 +83,9 @@ func TestSettingsForInteractionUsesSelectedEndpoint(t *testing.T) {
 	}
 	if research.ContextLength != 24576 || research.TimeoutSeconds != 60 {
 		t.Fatalf("expected research generation settings, got %#v", research)
+	}
+	if research.SystemPromptAppendage != "Use the research model instructions." {
+		t.Fatalf("expected research system prompt appendage, got %q", research.SystemPromptAppendage)
 	}
 
 	decompose := settings.ForInteraction(InteractionKanbanDecompose)
@@ -272,16 +276,16 @@ func TestNormalizedPreservesEndpointHeadersWithGenerationConfig(t *testing.T) {
 	settings := DefaultSettings()
 	settings.Endpoints = []LLMEndpoint{
 		{
-			ID:               "custom",
-			Name:             "Custom",
-			Endpoint:         "https://custom.example.test/v1",
-			Model:            "custom-model",
-			Temperature:      0.5,
-			ContextLength:    8192,
-			MaxTokens:        2048,
+			ID:                "custom",
+			Name:              "Custom",
+			Endpoint:          "https://custom.example.test/v1",
+			Model:             "custom-model",
+			Temperature:       0.5,
+			ContextLength:     8192,
+			MaxTokens:         2048,
 			RepetitionPenalty: 1,
-			TimeoutSeconds:   30,
-			Headers:          map[string]string{"X-Api-Key": "secret123"},
+			TimeoutSeconds:    30,
+			Headers:           map[string]string{"X-Api-Key": "secret123"},
 		},
 	}
 	settings.EndpointSelection = defaultEndpointSelection("custom")
