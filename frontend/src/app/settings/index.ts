@@ -514,7 +514,7 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                   ${state.developmentLogStatus?.enabled ? "checked" : ""}
                 />
               </label>
-              <p class="field-help">Writes JSONL to <code>./echo/echo.log</code> relative to the process working directory. Enabling erases the previous capture, and this setting is not remembered after restart.</p>
+              <p class="field-help">Writes JSONL to <code>${escapeHtml(state.developmentLogStatus?.path || ".echo/echo.log")}</code> in the active workspace's first folder. Enabling erases the previous capture, and this setting is not remembered after restart.</p>
               <p class="field-help warning">The exact transcript may contain sensitive prompts, workspace content, paths, tool output, and embedded media.</p>
               <p>Echo source workspace actions.</p>
               ${renderRebuildRelaunchButton()}

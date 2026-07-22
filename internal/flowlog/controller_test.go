@@ -17,6 +17,9 @@ func TestControllerWritesOrderedJSONLAndTruncates(t *testing.T) {
 	if err := controller.Enable(path); err != nil {
 		t.Fatal(err)
 	}
+	if got := controller.Path(); got != filepath.Clean(path) {
+		t.Fatalf("expected controller path %q, got %q", filepath.Clean(path), got)
+	}
 	trace := controller.StartRequest("model-one", []byte(`{"model":"model-one","messages":[]}`))
 	trace.Log(slog.LevelDebug, "llm_stream_chunk", slog.String("payload", `{"choices":[]}`))
 

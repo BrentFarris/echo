@@ -28,6 +28,7 @@ const maxChatVideoBytes = 50 * 1024 * 1024;
 const maxChatMediaDrafts = 8;
 const supportedChatVideoTypes = new Set(["video/mp4", "video/webm", "video/quicktime"]);
 const chatStreamPatchDelay = 50;
+const thinkingScrollBottomTolerance = 2;
 let chatInputWindowResizeBound = false;
 const chatSessionReloads = new Map<string, Promise<void>>();
 
@@ -2627,10 +2628,18 @@ export function patchDebugSections(stack: HTMLElement, message: services.ChatMes
       stack.insertBefore(reasoningSection, toolsSection);
       bindChatDebugSections(reasoningSection);
     } else if (reasoningSection.open || !isAssistantMessageStreaming(message)) {
+      const thinkingList = reasoningSection.querySelector<HTMLElement>("[data-thinking-list]");
+      const keepThinkingPinned = isThinkingListAtBottom(thinkingList);
       morphElement(
         reasoningSection,
         elementFromHtml(renderReasoning(reasoning, researchReasoning)),
       );
+      if (keepThinkingPinned) {
+        const nextThinkingList = reasoningSection.querySelector<HTMLElement>("[data-thinking-list]");
+        if (nextThinkingList) {
+          nextThinkingList.scrollTop = nextThinkingList.scrollHeight;
+        }
+      }
     }
   } else {
     reasoningSection?.remove();
@@ -2656,6 +2665,16 @@ export function patchDebugSections(stack: HTMLElement, message: services.ChatMes
   } else {
     toolsSection?.remove();
   }
+}
+
+function isThinkingListAtBottom(element: HTMLElement | null): boolean {
+  if (!element) {
+    return true;
+  }
+  return (
+    element.scrollHeight - element.scrollTop - element.clientHeight <=
+    thinkingScrollBottomTolerance
+  );
 }
 
 export function patchChatPanel() {

@@ -15,6 +15,7 @@ type Controller struct {
 	mu            sync.Mutex
 	logger        *slog.Logger
 	file          *os.File
+	path          string
 	generation    uint64
 	sequence      uint64
 	nextRequestID uint64
@@ -41,6 +42,16 @@ func (c *Controller) Enabled() bool {
 	return c.logger != nil
 }
 
+// Path returns the file used by the current or most recent capture.
+func (c *Controller) Path() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.path
+}
+
 // Enable starts a new capture, truncating any existing file at path.
 func (c *Controller) Enable(path string) error {
 	if c == nil {
@@ -55,9 +66,6 @@ func (c *Controller) Enable(path string) error {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
 	}
-	if err := os.Chmod(directory, 0o700); err != nil {
-		return err
-	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
@@ -67,6 +75,7 @@ func (c *Controller) Enable(path string) error {
 		return err
 	}
 	c.file = file
+	c.path = filepath.Clean(path)
 	c.logger = slog.New(slog.NewJSONHandler(file, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	c.generation++
 	c.sequence = 0
