@@ -211,6 +211,52 @@ func TestSettingsCopiesLegacyGenerationFieldsIntoChatEndpoint(t *testing.T) {
 	}
 }
 
+func TestNormalizedEndpointProfilesKeepsEndpointModelsIsolated(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoints = []LLMEndpoint{
+		{
+			ID:                "first",
+			Name:              "First",
+			Endpoint:          "https://first.example.test/v1",
+			Model:             "first-model",
+			ContextLength:     8192,
+			MaxTokens:         2048,
+			RepetitionPenalty: 1,
+			TimeoutSeconds:    30,
+		},
+		{
+			ID:                "second",
+			Name:              "Second",
+			Endpoint:          "https://second.example.test/v1",
+			Model:             "second-model",
+			ContextLength:     16384,
+			MaxTokens:         4096,
+			RepetitionPenalty: 1,
+			TimeoutSeconds:    60,
+		},
+	}
+	settings.EndpointSelection = defaultEndpointSelection("second")
+
+	// Simulate stale legacy mirrors arriving alongside modern endpoint
+	// profiles. These used to overwrite the selected profile on save.
+	settings.Endpoint = "https://first.example.test/v1"
+	settings.Model = "first-model"
+
+	normalized := settings.NormalizedEndpointProfiles()
+	if normalized.Endpoints[0].Model != "first-model" {
+		t.Fatalf("expected first endpoint model to remain isolated, got %q", normalized.Endpoints[0].Model)
+	}
+	if normalized.Endpoints[1].Model != "second-model" {
+		t.Fatalf("expected second endpoint model to remain isolated, got %q", normalized.Endpoints[1].Model)
+	}
+	if normalized.Endpoint != "https://second.example.test/v1" {
+		t.Fatalf("expected legacy endpoint mirror to follow selected profile, got %q", normalized.Endpoint)
+	}
+	if normalized.Model != "second-model" {
+		t.Fatalf("expected legacy model mirror to follow selected profile, got %q", normalized.Model)
+	}
+}
+
 func TestNormalizedPreservesEndpointHeadersWhenNoGenerationConfig(t *testing.T) {
 	settings := DefaultSettings()
 	settings.Endpoints = []LLMEndpoint{

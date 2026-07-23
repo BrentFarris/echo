@@ -122,6 +122,18 @@ func DefaultSettings() Settings {
 }
 
 func (s Settings) Normalized() Settings {
+	return s.normalized(false)
+}
+
+// NormalizedEndpointProfiles normalizes settings while treating Endpoints as
+// the source of truth. The top-level endpoint fields are legacy mirrors used by
+// older callers and must not overwrite an endpoint profile when modern
+// settings are saved or loaded.
+func (s Settings) NormalizedEndpointProfiles() Settings {
+	return s.normalized(true)
+}
+
+func (s Settings) normalized(endpointProfilesAuthoritative bool) Settings {
 	s.Endpoint = strings.TrimSpace(s.Endpoint)
 	s.Model = strings.TrimSpace(s.Model)
 	s.SearxngURL = strings.TrimSpace(s.SearxngURL)
@@ -131,7 +143,7 @@ func (s Settings) Normalized() Settings {
 	s = normalizeSettingsGeneration(s)
 	s.Endpoints = normalizeLLMEndpoints(s.Endpoints, s)
 	s.EndpointSelection = normalizeEndpointSelection(s.EndpointSelection, s.Endpoints)
-	if s.Endpoint != "" || s.Model != "" {
+	if !endpointProfilesAuthoritative && (s.Endpoint != "" || s.Model != "") {
 		s.Endpoints = applyLegacyEndpointFields(s.Endpoints, s.EndpointSelection.Chat, s)
 	}
 	if endpoint, ok := endpointByID(s.Endpoints, s.EndpointSelection.Chat); ok {

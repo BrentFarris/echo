@@ -58,6 +58,83 @@ func TestResearchAgentConcurrencyZeroPersistsAndMissingLegacyValueMigrates(t *te
 	}
 }
 
+func TestSaveSettingsPreservesIndependentEndpointModels(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "state.json")
+	service := NewSystemServiceWithStorePath(storePath)
+	settings := service.LoadState().Settings
+	settings.Endpoints = append(settings.Endpoints, llm.LLMEndpoint{
+		ID:                  "second",
+		Name:                "Second",
+		Endpoint:            "https://second.example.test/v1",
+		Model:               "second-model",
+		Temperature:         0.2,
+		ContextLength:       16384,
+		MaxTokens:           4096,
+		RepetitionPenalty:   1,
+		TimeoutSeconds:      60,
+		ThinkingTokenBudget: 0,
+	})
+	settings.EndpointSelection = llm.EndpointSelection{
+		Chat:            "second",
+		Research:        "second",
+		KanbanDecompose: "second",
+		Kanban:          "second",
+		InlineCode:      "second",
+	}
+
+	// Leave the legacy top-level fields pointing at the original endpoint, as
+	// can happen while a newly-added endpoint draft is being saved.
+	saved, err := service.SaveSettings(settings)
+	if err != nil {
+		t.Fatalf("save endpoint settings: %v", err)
+	}
+	if got := saved.Settings.Endpoints[1].Model; got != "second-model" {
+		t.Fatalf("expected new endpoint model to survive first save, got %q", got)
+	}
+	if saved.Settings.Model != "second-model" {
+		t.Fatalf("expected top-level model mirror to follow selected endpoint, got %q", saved.Settings.Model)
+	}
+
+	saved.Settings.Endpoints[0].Model = "first-model-updated"
+	savedAgain, err := service.SaveSettings(saved.Settings)
+	if err != nil {
+		t.Fatalf("save updated first endpoint: %v", err)
+	}
+	if got := savedAgain.Settings.Endpoints[0].Model; got != "first-model-updated" {
+		t.Fatalf("expected first endpoint model update to persist, got %q", got)
+	}
+	if got := savedAgain.Settings.Endpoints[1].Model; got != "second-model" {
+		t.Fatalf("expected second endpoint model to remain unchanged, got %q", got)
+	}
+
+	reloaded := NewSystemServiceWithStorePath(storePath).LoadState().Settings
+	if reloaded.Endpoints[0].Model != "first-model-updated" || reloaded.Endpoints[1].Model != "second-model" {
+		t.Fatalf("expected endpoint models to remain isolated after reload, got %#v", reloaded.Endpoints)
+	}
+}
+
+func TestSaveSettingsStillAcceptsLegacyTopLevelEndpointUpdates(t *testing.T) {
+	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
+	settings := service.LoadState().Settings
+	settings.Endpoint = "https://legacy-client.example.test/v1"
+	settings.Model = "legacy-client-model"
+
+	saved, err := service.SaveSettings(settings)
+	if err != nil {
+		t.Fatalf("save legacy endpoint fields: %v", err)
+	}
+	if saved.Settings.Endpoint != "https://legacy-client.example.test/v1" {
+		t.Fatalf("expected legacy endpoint update to persist, got %q", saved.Settings.Endpoint)
+	}
+	if saved.Settings.Model != "legacy-client-model" {
+		t.Fatalf("expected legacy model update to persist, got %q", saved.Settings.Model)
+	}
+	if saved.Settings.Endpoints[0].Endpoint != saved.Settings.Endpoint ||
+		saved.Settings.Endpoints[0].Model != saved.Settings.Model {
+		t.Fatalf("expected legacy fields to migrate into endpoint profile, got %#v", saved.Settings.Endpoints[0])
+	}
+}
+
 func TestSystemServiceResolvesSettingsForInteraction(t *testing.T) {
 	service := NewSystemServiceWithStorePath(filepath.Join(t.TempDir(), "state.json"))
 	state, err := service.AddWorkspace(t.TempDir())

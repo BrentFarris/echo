@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	goruntime "runtime"
 	"strings"
 	"sync"
@@ -429,19 +430,29 @@ func (s *SystemService) DeleteSavedCommand(workspaceID, id string) error {
 }
 
 func (s *SystemService) SaveSettings(settings llm.Settings) (AppState, error) {
-	settings = settings.Normalized()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if endpointProfilesChanged(settings, s.state.Settings) {
+		settings = settings.NormalizedEndpointProfiles()
+	} else {
+		settings = settings.Normalized()
+	}
 	if err := settings.Validate(); err != nil {
 		return AppState{}, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.state.Settings = settings
 	s.refreshWorkspaceStatusesLocked()
 	if err := s.saveLocked(); err != nil {
 		return AppState{}, err
 	}
 	return cloneState(s.state), nil
+}
+
+func endpointProfilesChanged(incoming llm.Settings, current llm.Settings) bool {
+	return incoming.EndpointSelection != current.EndpointSelection ||
+		!reflect.DeepEqual(incoming.Endpoints, current.Endpoints)
 }
 
 func (s *SystemService) AddWorkspace(path string) (AppState, error) {
@@ -1232,7 +1243,11 @@ func (s *SystemService) load() error {
 	if legacyResearchAgentConcurrency {
 		state.Settings.ResearchAgentConcurrency = llm.DefaultResearchAgentConcurrency
 	}
-	state.Settings = state.Settings.Normalized()
+	if legacyLLMEndpoints {
+		state.Settings = state.Settings.Normalized()
+	} else {
+		state.Settings = state.Settings.NormalizedEndpointProfiles()
+	}
 	missingLLMEndpoint := state.Settings.Endpoint == ""
 	missingLLMModel := state.Settings.Model == ""
 	missingWebAccessToken := strings.TrimSpace(state.WebAccess.AccessToken) == ""
@@ -1248,7 +1263,11 @@ func (s *SystemService) load() error {
 	if state.Settings.Model == "" {
 		state.Settings.Model = llm.DefaultModel
 	}
-	state.Settings = state.Settings.Normalized()
+	if legacyThinkingDisabled || missingLLMEndpoint || missingLLMModel {
+		state.Settings = state.Settings.Normalized()
+	} else {
+		state.Settings = state.Settings.NormalizedEndpointProfiles()
+	}
 	normalizeLoadedWorkspaces(&state)
 	state.KanbanCards = []KanbanCard{}
 	loadedChatSessions := make(map[string]persistedChatSession)
