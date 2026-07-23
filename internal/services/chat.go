@@ -1039,26 +1039,16 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 			Messages: messages,
 		}
 	}
-	s.updateToolActivity(workspace.ID, streamID, messageID, call, "running", "", "", "")
+	runningConsole := ""
 
 	if call.Function.Name == "shell_command" {
 		var args map[string]any
 		_ = json.Unmarshal([]byte(call.Function.Arguments), &args)
 		if cmd, ok := args["command"].(string); ok && cmd != "" {
-			s.emitChatEvent(ChatStreamEvent{
-				WorkspaceID: workspace.ID,
-				StreamID:    streamID,
-				MessageID:   messageID,
-				Type:        "tool_event",
-				ToolCall: &ChatToolActivity{
-					ID:            call.ID,
-					Name:          call.Function.Name,
-					Status:        "running",
-					ConsoleOutput: "â³ Running: " + cmd,
-				},
-			})
+			runningConsole = "> " + cmd + "\n\nRunning..."
 		}
 	}
+	s.updateToolActivity(workspace.ID, streamID, messageID, call, "running", "", "", runningConsole)
 
 	events := func(event tools.Event) {
 		if event.Message != "" {
@@ -1221,36 +1211,25 @@ func (s *SystemService) updateToolActivity(workspaceID string, streamID string, 
 // extractShellConsoleOutput extracts shell_command output fields from an ExecutionResult
 // and formats them as a readable console string. Returns empty string if not applicable.
 func extractShellConsoleOutput(call llm.ToolCall, result tools.ExecutionResult) string {
-	if call.Function.Name != "shell_command" {
+	if call.Function.Name != "shell_command" || result.Output == nil {
 		return ""
 	}
-	output, ok := result.Output.(map[string]any)
-	if !ok {
+	data, err := json.Marshal(result.Output)
+	if err != nil {
+		return ""
+	}
+	var output struct {
+		Command              string `json:"command"`
+		Stdout               string `json:"stdout"`
+		Stderr               string `json:"stderr"`
+		ExitCode             int    `json:"exitCode"`
+		DurationMilliseconds int64  `json:"durationMilliseconds"`
+	}
+	if err := json.Unmarshal(data, &output); err != nil {
 		return ""
 	}
 
-	cmd := ""
-	if v, ok := output["command"].(string); ok {
-		cmd = v
-	}
-	stdout := ""
-	if v, ok := output["stdout"].(string); ok {
-		stdout = v
-	}
-	stderr := ""
-	if v, ok := output["stderr"].(string); ok {
-		stderr = v
-	}
-	exitCode := 0
-	if v, ok := output["exitCode"].(float64); ok {
-		exitCode = int(v)
-	}
-	durationMs := int64(0)
-	if v, ok := output["durationMilliseconds"].(float64); ok {
-		durationMs = int64(v)
-	}
-
-	return formatShellConsoleOutput(cmd, stdout, stderr, exitCode, durationMs)
+	return formatShellConsoleOutput(output.Command, output.Stdout, output.Stderr, output.ExitCode, output.DurationMilliseconds)
 }
 
 // formatShellConsoleOutput builds a readable console-style string from shell command output.

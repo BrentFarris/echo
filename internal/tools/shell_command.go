@@ -19,7 +19,10 @@ const (
 	maxShellTimeoutSeconds     = 300
 	defaultShellOutputBytes    = 64 * 1024
 	maxShellOutputBytes        = maxTextFileBytes
+	shellCommandWaitDelay      = 2 * time.Second
 )
+
+var shellChangeTrackingTimeout = time.Second
 
 func init() {
 	Register(ToolFunc{
@@ -33,11 +36,11 @@ func init() {
 				"properties": map[string]any{
 					"command": map[string]any{
 						"type":        "string",
-						"description": "Shell command to execute. On Windows this runs in PowerShell, not cmd.exe; write PowerShell-native syntax and avoid CMD syntax such as dir /s, copy, del, type, set VAR=VALUE, and %VAR%. Prefer commands such as Get-ChildItem, Copy-Item, Remove-Item, Get-Content, Select-String, and $env:VAR.",
+						"description": "Shell command to execute. Set workingDirectory instead of putting cd or Set-Location in the command. On Windows this runs in PowerShell, not cmd.exe; write PowerShell-native syntax and avoid CMD syntax such as dir /s, copy, del, type, set VAR=VALUE, and %VAR%. Prefer commands such as Get-ChildItem, Copy-Item, Remove-Item, Get-Content, Select-String, and $env:VAR.",
 					},
 					"workingDirectory": map[string]any{
 						"type":        "string",
-						"description": "Labeled workspace directory to run in. Defaults to the first workspace folder. " + labeledPathSchemaHint,
+						"description": "Labeled workspace directory to run in. Defaults to the first workspace folder. Prefer this over changing directories inside command so execution and file-change tracking stay scoped to the intended project. " + labeledPathSchemaHint,
 					},
 					"timeoutSeconds": map[string]any{
 						"type":        "integer",
@@ -122,6 +125,7 @@ func executeShellCommand(ctx ExecutionContext, arguments json.RawMessage) (any, 
 	command := exec.CommandContext(commandContext, shellName, shellArgs...)
 	command.Dir = workingDirectory
 	configureShellCommandProcess(command)
+	command.WaitDelay = shellCommandWaitDelay
 
 	stdout := newLimitedBuffer(outputLimit)
 	stderr := newLimitedBuffer(outputLimit)
@@ -131,16 +135,14 @@ func executeShellCommand(ctx ExecutionContext, arguments json.RawMessage) (any, 
 	var before workspaceSnapshot
 	trackChanges := ctx.FileChanges != nil
 	if trackChanges {
-		if snapshot, err := snapshotWorkspaceChanges(ctx.context(), ctx); err == nil {
-			before = snapshot
-		}
+		before = snapshotShellWorkspaceChanges(ctx, workingDirectory)
 	}
 
 	started := time.Now()
 	runErr := command.Run()
 	duration := time.Since(started)
 	if trackChanges && before != nil {
-		if after, err := snapshotWorkspaceChanges(ctx.context(), ctx); err == nil {
+		if after := snapshotShellWorkspaceChanges(ctx, workingDirectory); after != nil {
 			ctx.recordFileChanges(diffWorkspaceSnapshots(before, after)...)
 		}
 	}
@@ -168,6 +170,17 @@ func executeShellCommand(ctx ExecutionContext, arguments json.RawMessage) (any, 
 		TimedOut:             timedOut,
 		DurationMilliseconds: duration.Milliseconds(),
 	}, nil
+}
+
+func snapshotShellWorkspaceChanges(ctx ExecutionContext, workingDirectory string) workspaceSnapshot {
+	snapshotContext, cancel := context.WithTimeout(ctx.context(), shellChangeTrackingTimeout)
+	defer cancel()
+
+	snapshot, err := snapshotWorkspaceDirectoryChanges(snapshotContext, ctx, workingDirectory)
+	if err != nil {
+		return nil
+	}
+	return snapshot
 }
 
 func resolveShellWorkingDirectory(ctx ExecutionContext, requestedPath string) (string, error) {

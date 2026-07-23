@@ -80,9 +80,9 @@ func defaultShellDescription() string {
 
 func shellCommandGuidance() string {
 	if runtime.GOOS == "windows" {
-		return "shell_command runs through PowerShell, not cmd.exe. Always write PowerShell-native commands and avoid CMD syntax such as dir /s, copy, del, type, set VAR=VALUE, and %VAR%. Use PowerShell cmdlets and forms such as Get-ChildItem, Copy-Item, Remove-Item, Get-Content, Select-String, and $env:VAR."
+		return "shell_command runs through PowerShell, not cmd.exe. Always write PowerShell-native commands and avoid CMD syntax such as dir /s, copy, del, type, set VAR=VALUE, and %VAR%. Use PowerShell cmdlets and forms such as Get-ChildItem, Copy-Item, Remove-Item, Get-Content, Select-String, and $env:VAR. Set the tool's workingDirectory argument instead of changing directories inside the command."
 	}
-	return "shell_command runs through $SHELL when set, otherwise /bin/sh; use POSIX sh-compatible commands unless workspace tooling requires otherwise."
+	return "shell_command runs through $SHELL when set, otherwise /bin/sh; use POSIX sh-compatible commands unless workspace tooling requires otherwise. Set the tool's workingDirectory argument instead of changing directories inside the command."
 }
 
 func currentOSUser() string {
