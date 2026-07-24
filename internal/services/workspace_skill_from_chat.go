@@ -59,13 +59,21 @@ type generatedWorkspaceSkill struct {
 }
 
 func (s *SystemService) CreateSkillFromChat(workspaceID string) (WorkspaceSkillCreationResult, error) {
+	return s.createSkillFromChat(workspaceID, "")
+}
+
+func (s *SystemService) CreateSkillFromChatForTab(workspaceID string, chatID string) (WorkspaceSkillCreationResult, error) {
+	return s.createSkillFromChat(workspaceID, chatID)
+}
+
+func (s *SystemService) createSkillFromChat(workspaceID string, chatID string) (WorkspaceSkillCreationResult, error) {
 	s.logAIEvent(slog.LevelInfo, "ai_operation_started", slog.String("surface", "skill_generation"))
 	defer s.logAIEvent(slog.LevelInfo, "ai_operation_finished", slog.String("surface", "skill_generation"))
 	workspace, settings, err := s.workspaceAndSettingsFor(workspaceID, llm.InteractionChat)
 	if err != nil {
 		return WorkspaceSkillCreationResult{}, err
 	}
-	messages, err := s.chatMessagesForSkill(workspaceID)
+	messages, err := s.chatMessagesForSkill(workspaceID, chatID)
 	if err != nil {
 		return WorkspaceSkillCreationResult{}, err
 	}
@@ -131,10 +139,10 @@ func (s *SystemService) CreateSkillFromChat(workspaceID string) (WorkspaceSkillC
 	}, nil
 }
 
-func (s *SystemService) chatMessagesForSkill(workspaceID string) ([]ChatMessage, error) {
+func (s *SystemService) chatMessagesForSkill(workspaceID string, chatIDs ...string) ([]ChatMessage, error) {
 	s.chatMu.Lock()
 	defer s.chatMu.Unlock()
-	session := s.chatSessions[workspaceID]
+	session := s.chatSessionForIDLocked(workspaceID, firstChatID(chatIDs))
 	if session == nil || len(session.Messages) == 0 {
 		return nil, fmt.Errorf("the current chat is empty")
 	}

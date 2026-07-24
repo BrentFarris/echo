@@ -13,7 +13,7 @@ import { appRoot, focusInitialElement } from "./dom";
 import { bindEvents } from "./events";
 import { renderGitRepositoryPage } from "./git";
 import { icons } from "./icons";
-import { kanbanBoardFor, gitRepositoryViewFor, activeWorkspace, kanbanCards, state, getActiveChatKanbanTab, changeReviewFor, leadingWhitespaceIndicatorsEnabled } from "./state";
+import { kanbanBoardFor, gitRepositoryViewFor, activeWorkspace, chatStateKey, kanbanCards, state, getActiveChatKanbanTab, changeReviewFor, leadingWhitespaceIndicatorsEnabled } from "./state";
 import { renderSettingsOverlay } from "./settings";
 import { renderToasts } from "./toasts";
 import { renderTaskPanel, renderTaskDetail } from "./tasks";
@@ -541,7 +541,7 @@ export function renderWorkspacePanels(workspace: services.Workspace | null): str
   const mode = state.appMode;
   const board = workspace ? kanbanBoardFor(workspace.id) : null;
   const running = workspace ? state.runningKanbanWorkspaces.has(workspace.id) : false;
-  const decomposing = workspace ? state.executingPlans.has(workspace.id) : false;
+  const decomposing = workspace ? state.executingPlans.has(chatStateKey(workspace.id)) : false;
   const hasCards = board ? kanbanCards(board).length > 0 : false;
   const hasDoneCards = board ? (board.done ?? []).length > 0 : false;
 

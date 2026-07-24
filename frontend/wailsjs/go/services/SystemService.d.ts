@@ -6,6 +6,8 @@ import {context} from '../models';
 import {llm} from '../models';
 import {http} from '../models';
 
+export function ActivateChatTab(arg1:string,arg2:string):Promise<services.ChatWorkspaceState>;
+
 export function AddKanbanCardMessage(arg1:string,arg2:string,arg3:string):Promise<services.KanbanBoard>;
 
 export function AddWorkspace(arg1:string):Promise<services.AppState>;
@@ -28,6 +30,8 @@ export function ChooseWorkspaceIcon(arg1:string):Promise<services.AppState>;
 
 export function ClearChat(arg1:string):Promise<services.ChatSession>;
 
+export function ClearChatForTab(arg1:string,arg2:string):Promise<services.ChatSession>;
+
 export function ClearDoneKanbanCards(arg1:string):Promise<services.KanbanBoard>;
 
 export function ClearKanbanCardRecovery(arg1:string,arg2:string):Promise<services.KanbanBoard>;
@@ -37,6 +41,8 @@ export function ClearWorkspaceChangeReview(arg1:string):Promise<services.Workspa
 export function ClearWorkspaceIcon(arg1:string):Promise<services.AppState>;
 
 export function CloneWorkspaceGitRepository(arg1:string,arg2:string,arg3:string,arg4:string):Promise<services.AppState>;
+
+export function CloseChatTab(arg1:string,arg2:string):Promise<services.ChatWorkspaceState>;
 
 export function CloseKanbanCardDetail(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
@@ -50,11 +56,17 @@ export function CreateAgentMode(arg1:string,arg2:string,arg3:Array<string>,arg4:
 
 export function CreateAgentModeFromChat(arg1:string):Promise<tools.AgentModeCreationResult>;
 
+export function CreateAgentModeFromChatForTab(arg1:string,arg2:string):Promise<tools.AgentModeCreationResult>;
+
 export function CreateAgentModeFromChatProvider(arg1:string):Promise<tools.AgentModeCreationResult>;
 
 export function CreateAgentModePerTool(arg1:string,arg2:string,arg3:Record<string, Array<string>>):Promise<Array<services.AgentMode>>;
 
+export function CreateChatTab(arg1:string):Promise<services.ChatWorkspaceState>;
+
 export function CreateKanbanCardFromChatMessage(arg1:string,arg2:string):Promise<services.KanbanBoard>;
+
+export function CreateKanbanCardFromChatMessageForTab(arg1:string,arg2:string,arg3:string):Promise<services.KanbanBoard>;
 
 export function CreateKanbanCardFromTask(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>,arg6:string):Promise<services.TaskKanbanConversion>;
 
@@ -65,6 +77,8 @@ export function CreateModePerTool(arg1:context.Context,arg2:string,arg3:string,a
 export function CreateReadyKanbanCard(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<services.KanbanBoard>;
 
 export function CreateSkillFromChat(arg1:string):Promise<services.WorkspaceSkillCreationResult>;
+
+export function CreateSkillFromChatForTab(arg1:string,arg2:string):Promise<services.WorkspaceSkillCreationResult>;
 
 export function CreateWorkspaceFile(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFile>;
 
@@ -92,11 +106,15 @@ export function DiscardWorkspaceGitFile(arg1:string,arg2:string,arg3:string):Pro
 
 export function EditChatMessage(arg1:string,arg2:string,arg3:string,arg4:string):Promise<services.ChatSession>;
 
+export function EditChatMessageForTab(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<services.ChatSession>;
+
 export function EnforceLiveness(arg1:string,arg2:services.LivenessConfig):Promise<void>;
 
 export function EvaluateDebugExpression(arg1:string,arg2:services.DebugEvaluateRequest):Promise<services.DebugEvaluateResponse>;
 
 export function ExecutePlan(arg1:string):Promise<services.KanbanBoard>;
+
+export function ExecutePlanForTab(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
 export function FindWorkspaceFileDefinition(arg1:string,arg2:services.WorkspaceDefinitionRequest):Promise<services.WorkspaceDefinitionResponse>;
 
@@ -127,6 +145,10 @@ export function ListModes():Promise<Array<tools.AgentModeSummary>>;
 export function ListWorkspaceDirectory(arg1:string,arg2:string):Promise<services.WorkspaceDirectory>;
 
 export function LoadChatSession(arg1:string):Promise<services.ChatSession>;
+
+export function LoadChatSessionForTab(arg1:string,arg2:string):Promise<services.ChatSession>;
+
+export function LoadChatWorkspace(arg1:string):Promise<services.ChatWorkspaceState>;
 
 export function LoadDebugScopes(arg1:string,arg2:services.DebugScopesRequest):Promise<services.DebugScopesResponse>;
 
@@ -190,6 +212,8 @@ export function PrepareWorkspaceSymbolRename(arg1:string,arg2:services.Workspace
 
 export function PruneChatMessage(arg1:string,arg2:string):Promise<services.ChatSession>;
 
+export function PruneChatMessageForTab(arg1:string,arg2:string,arg3:string):Promise<services.ChatSession>;
+
 export function ReadExternalTextFile(arg1:string):Promise<services.WorkspaceFile>;
 
 export function ReadWorkspaceFile(arg1:string,arg2:string):Promise<services.WorkspaceFile>;
@@ -228,6 +252,8 @@ export function RestartTerminalSession(arg1:string,arg2:string,arg3:number,arg4:
 
 export function RetryChatMessage(arg1:string,arg2:string,arg3:string):Promise<services.ChatSession>;
 
+export function RetryChatMessageForTab(arg1:string,arg2:string,arg3:string,arg4:string):Promise<services.ChatSession>;
+
 export function RotateWebAccessToken():Promise<services.AppState>;
 
 export function RunWorkspaceGitAction(arg1:string,arg2:string,arg3:services.WorkspaceGitActionRequest):Promise<services.WorkspaceGitRepositoryView>;
@@ -255,6 +281,8 @@ export function SearchWorkspaceText(arg1:string,arg2:services.WorkspaceTextSearc
 export function SendChatMessage(arg1:string,arg2:string):Promise<services.ChatSession>;
 
 export function SendChatMessageWithAttachments(arg1:string,arg2:services.ChatMessageRequest):Promise<services.ChatSession>;
+
+export function SendChatMessageWithAttachmentsToTab(arg1:string,arg2:string,arg3:services.ChatMessageRequest):Promise<services.ChatSession>;
 
 export function SendChatMessageWithPlanMode(arg1:string,arg2:string,arg3:boolean):Promise<services.ChatSession>;
 
@@ -311,6 +339,8 @@ export function StepOutDebugSession(arg1:string,arg2:services.DebugSessionReques
 export function StepOverDebugSession(arg1:string,arg2:services.DebugSessionRequest):Promise<services.DebugState>;
 
 export function StopChatStream(arg1:string):Promise<services.ChatSession>;
+
+export function StopChatStreamForTab(arg1:string,arg2:string):Promise<services.ChatSession>;
 
 export function StopDebugSession(arg1:string,arg2:services.DebugSessionRequest):Promise<services.DebugState>;
 

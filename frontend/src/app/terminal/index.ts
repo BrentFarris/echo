@@ -435,7 +435,11 @@ export function mountTerminalDock(region: HTMLElement, workspace: services.Works
     return;
   }
   const controller = terminalController(workspaceID);
+  const wasAlreadyMounted = controller.host.isConnected;
   controller.mount(viewport);
+  if (!wasAlreadyMounted) {
+    controller.terminal.focus();
+  }
   void controller.ensureStarted();
 }
 

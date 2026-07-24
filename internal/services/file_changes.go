@@ -20,6 +20,7 @@ type WorkspaceChangeSource struct {
 	Type           string `json:"type"`
 	CardID         string `json:"cardId,omitempty"`
 	CardTitle      string `json:"cardTitle,omitempty"`
+	ChatID         string `json:"chatId,omitempty"`
 	MessageID      string `json:"messageId,omitempty"`
 	RequestID      string `json:"requestId,omitempty"`
 	ToolCallID     string `json:"toolCallId,omitempty"`
@@ -165,7 +166,7 @@ func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Wo
 		KanbanExecutor:           s,
 		KanbanManager:            &kanbanManagerAdapter{service: s},
 		ResearchAgents:           source.researchAgents,
-		AttachedImages:           s.latestUserMessageImages(workspace.ID),
+		AttachedImages:           s.latestUserMessageImages(workspace.ID, source.ChatID),
 		GeneratedImages:          generatedImages,
 	}, call.Function.Name, json.RawMessage(call.Function.Arguments))
 

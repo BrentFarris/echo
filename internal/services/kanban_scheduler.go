@@ -238,17 +238,19 @@ func (s *SystemService) Shutdown() {
 	for _, cancel := range s.chatStreams {
 		chatCancels = append(chatCancels, cancel)
 	}
-	for _, session := range s.chatSessions {
-		if session == nil || !session.Busy {
-			continue
-		}
-		session.Busy = false
-		session.StreamID = ""
-		for i := range session.Messages {
-			if session.Messages[i].Status == "streaming" || session.Messages[i].Status == "retrying" {
-				session.Messages[i].Status = "canceled"
-				if session.Messages[i].Error == "" {
-					session.Messages[i].Error = "Interrupted when Echo closed."
+	for _, workspace := range s.chatWorkspaces {
+		for _, session := range workspace.Sessions {
+			if session == nil || !session.Busy {
+				continue
+			}
+			session.Busy = false
+			session.StreamID = ""
+			for i := range session.Messages {
+				if session.Messages[i].Status == "streaming" || session.Messages[i].Status == "retrying" || session.Messages[i].Status == "compacting" {
+					session.Messages[i].Status = "canceled"
+					if session.Messages[i].Error == "" {
+						session.Messages[i].Error = "Interrupted when Echo closed."
+					}
 				}
 			}
 		}
@@ -1092,10 +1094,15 @@ func (s *SystemService) finishKanbanCard(workspaceID string, cardID string, agen
 				break
 			}
 		}
+		var chatWorkspace *persistedChatWorkspace
 		var chat *persistedChatSession
-		if session := s.chatSessions[workspaceID]; session != nil && (len(session.Messages) > 0 || len(session.History) > 0) {
-			snapshot := persistedChatSessionFrom(session)
-			chat = &snapshot
+		if workspaceState := s.chatWorkspaces[workspaceID]; workspaceState != nil {
+			snapshot := persistedChatWorkspaceFrom(workspaceState)
+			chatWorkspace = &snapshot
+			if active := workspaceState.Sessions[workspaceState.ActiveChatID]; active != nil {
+				activeSnapshot := persistedChatSessionFrom(active)
+				chat = &activeSnapshot
+			}
 		}
 		cards := make([]KanbanCard, 0, len(board.Done))
 		for _, card := range s.state.KanbanCards {
@@ -1104,9 +1111,10 @@ func (s *SystemService) finishKanbanCard(workspaceID string, cardID string, agen
 			}
 		}
 		_ = writeWorkspaceAutosave(workspace, workspaceAutosave{
-			Version:     workspaceAutosaveVersion,
-			ChatSession: chat,
-			KanbanCards: cards,
+			Version:       workspaceAutosaveVersion,
+			ChatSession:   chat,
+			ChatWorkspace: chatWorkspace,
+			KanbanCards:   cards,
 		})
 	}
 	s.mu.Unlock()
