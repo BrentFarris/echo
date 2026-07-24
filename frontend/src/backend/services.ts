@@ -68,8 +68,28 @@ export function CreateAgentModeFromChat(...args: Parameters<typeof Wails.CreateA
   return call("CreateAgentModeFromChat", Wails.CreateAgentModeFromChat, args);
 }
 
+export function CreateAgentModeFromChatForTab(...args: Parameters<typeof Wails.CreateAgentModeFromChatForTab>): ReturnType<typeof Wails.CreateAgentModeFromChatForTab> {
+  return call("CreateAgentModeFromChatForTab", Wails.CreateAgentModeFromChatForTab, args);
+}
+
 export function ClearChat(...args: Parameters<typeof Wails.ClearChat>): ReturnType<typeof Wails.ClearChat> {
   return call("ClearChat", Wails.ClearChat, args);
+}
+
+export function ClearChatForTab(...args: Parameters<typeof Wails.ClearChatForTab>): ReturnType<typeof Wails.ClearChatForTab> {
+  return call("ClearChatForTab", Wails.ClearChatForTab, args);
+}
+
+export function ActivateChatTab(...args: Parameters<typeof Wails.ActivateChatTab>): ReturnType<typeof Wails.ActivateChatTab> {
+  return call("ActivateChatTab", Wails.ActivateChatTab, args);
+}
+
+export function CloseChatTab(...args: Parameters<typeof Wails.CloseChatTab>): ReturnType<typeof Wails.CloseChatTab> {
+  return call("CloseChatTab", Wails.CloseChatTab, args);
+}
+
+export function CreateChatTab(...args: Parameters<typeof Wails.CreateChatTab>): ReturnType<typeof Wails.CreateChatTab> {
+  return call("CreateChatTab", Wails.CreateChatTab, args);
 }
 
 export function ClearDoneKanbanCards(...args: Parameters<typeof Wails.ClearDoneKanbanCards>): ReturnType<typeof Wails.ClearDoneKanbanCards> {
@@ -96,6 +116,10 @@ export function CreateKanbanCardFromChatMessage(...args: Parameters<typeof Wails
   return call("CreateKanbanCardFromChatMessage", Wails.CreateKanbanCardFromChatMessage, args);
 }
 
+export function CreateKanbanCardFromChatMessageForTab(...args: Parameters<typeof Wails.CreateKanbanCardFromChatMessageForTab>): ReturnType<typeof Wails.CreateKanbanCardFromChatMessageForTab> {
+  return call("CreateKanbanCardFromChatMessageForTab", Wails.CreateKanbanCardFromChatMessageForTab, args);
+}
+
 export function CreateKanbanCardFromTask(...args: Parameters<typeof Wails.CreateKanbanCardFromTask>): ReturnType<typeof Wails.CreateKanbanCardFromTask> {
   return call("CreateKanbanCardFromTask", Wails.CreateKanbanCardFromTask, args);
 }
@@ -106,6 +130,10 @@ export function CreateKanbanCardsFromEpic(...args: Parameters<typeof Wails.Creat
 
 export function CreateSkillFromChat(...args: Parameters<typeof Wails.CreateSkillFromChat>): ReturnType<typeof Wails.CreateSkillFromChat> {
   return call("CreateSkillFromChat", Wails.CreateSkillFromChat, args);
+}
+
+export function CreateSkillFromChatForTab(...args: Parameters<typeof Wails.CreateSkillFromChatForTab>): ReturnType<typeof Wails.CreateSkillFromChatForTab> {
+  return call("CreateSkillFromChatForTab", Wails.CreateSkillFromChatForTab, args);
 }
 
 export function CreateReadyKanbanCard(...args: Parameters<typeof Wails.CreateReadyKanbanCard>): ReturnType<typeof Wails.CreateReadyKanbanCard> {
@@ -148,8 +176,16 @@ export function EditChatMessage(...args: Parameters<typeof Wails.EditChatMessage
   return call("EditChatMessage", Wails.EditChatMessage, args);
 }
 
+export function EditChatMessageForTab(...args: Parameters<typeof Wails.EditChatMessageForTab>): ReturnType<typeof Wails.EditChatMessageForTab> {
+  return call("EditChatMessageForTab", Wails.EditChatMessageForTab, args);
+}
+
 export function ExecutePlan(...args: Parameters<typeof Wails.ExecutePlan>): ReturnType<typeof Wails.ExecutePlan> {
   return call("ExecutePlan", Wails.ExecutePlan, args);
+}
+
+export function ExecutePlanForTab(...args: Parameters<typeof Wails.ExecutePlanForTab>): ReturnType<typeof Wails.ExecutePlanForTab> {
+  return call("ExecutePlanForTab", Wails.ExecutePlanForTab, args);
 }
 
 export function FindWorkspaceFileDefinition(...args: Parameters<typeof Wails.FindWorkspaceFileDefinition>): ReturnType<typeof Wails.FindWorkspaceFileDefinition> {
@@ -225,6 +261,18 @@ export function ListWorkspaceDirectory(...args: Parameters<typeof Wails.ListWork
 
 export function LoadChatSession(...args: Parameters<typeof Wails.LoadChatSession>): ReturnType<typeof Wails.LoadChatSession> {
   return call("LoadChatSession", Wails.LoadChatSession, args);
+}
+
+export function LoadChatSessionForTab(...args: Parameters<typeof Wails.LoadChatSessionForTab>): ReturnType<typeof Wails.LoadChatSessionForTab> {
+  return call("LoadChatSessionForTab", Wails.LoadChatSessionForTab, args);
+}
+
+export function LoadChatWorkspace(...args: Parameters<typeof Wails.LoadChatWorkspace>): ReturnType<typeof Wails.LoadChatWorkspace> {
+  return call("LoadChatWorkspace", Wails.LoadChatWorkspace, args);
+}
+
+export function LoadDevelopmentLogStatus(...args: Parameters<typeof Wails.LoadDevelopmentLogStatus>): ReturnType<typeof Wails.LoadDevelopmentLogStatus> {
+  return call("LoadDevelopmentLogStatus", Wails.LoadDevelopmentLogStatus, args);
 }
 
 export function LoadKanbanBoard(...args: Parameters<typeof Wails.LoadKanbanBoard>): ReturnType<typeof Wails.LoadKanbanBoard> {
@@ -493,6 +541,10 @@ export function PruneChatMessage(...args: Parameters<typeof Wails.PruneChatMessa
   return call("PruneChatMessage", Wails.PruneChatMessage, args);
 }
 
+export function PruneChatMessageForTab(...args: Parameters<typeof Wails.PruneChatMessageForTab>): ReturnType<typeof Wails.PruneChatMessageForTab> {
+  return call("PruneChatMessageForTab", Wails.PruneChatMessageForTab, args);
+}
+
 export function PrepareRebuildAndRelaunch(workspaceID: string): Promise<void> {
   if (isWailsRuntime()) {
     return (window as any)["go"]["services"]["SystemService"]["PrepareRebuildAndRelaunch"](workspaceID);
@@ -556,6 +608,10 @@ export function RetryChatMessage(...args: Parameters<typeof Wails.RetryChatMessa
   return call("RetryChatMessage", Wails.RetryChatMessage, args);
 }
 
+export function RetryChatMessageForTab(...args: Parameters<typeof Wails.RetryChatMessageForTab>): ReturnType<typeof Wails.RetryChatMessageForTab> {
+  return call("RetryChatMessageForTab", Wails.RetryChatMessageForTab, args);
+}
+
 export function RotateWebAccessToken(...args: Parameters<typeof Wails.RotateWebAccessToken>): ReturnType<typeof Wails.RotateWebAccessToken> {
   return call("RotateWebAccessToken", Wails.RotateWebAccessToken, args);
 }
@@ -596,12 +652,20 @@ export function SendChatMessageWithAttachments(...args: Parameters<typeof Wails.
   return call("SendChatMessageWithAttachments", Wails.SendChatMessageWithAttachments, args);
 }
 
+export function SendChatMessageWithAttachmentsToTab(...args: Parameters<typeof Wails.SendChatMessageWithAttachmentsToTab>): ReturnType<typeof Wails.SendChatMessageWithAttachmentsToTab> {
+  return call("SendChatMessageWithAttachmentsToTab", Wails.SendChatMessageWithAttachmentsToTab, args);
+}
+
 export function SendChatMessageWithPlanMode(...args: Parameters<typeof Wails.SendChatMessageWithPlanMode>): ReturnType<typeof Wails.SendChatMessageWithPlanMode> {
   return call("SendChatMessageWithPlanMode", Wails.SendChatMessageWithPlanMode, args);
 }
 
 export function SetActiveWorkspace(...args: Parameters<typeof Wails.SetActiveWorkspace>): ReturnType<typeof Wails.SetActiveWorkspace> {
   return call("SetActiveWorkspace", Wails.SetActiveWorkspace, args);
+}
+
+export function SetDevelopmentLoggingEnabled(...args: Parameters<typeof Wails.SetDevelopmentLoggingEnabled>): ReturnType<typeof Wails.SetDevelopmentLoggingEnabled> {
+  return call("SetDevelopmentLoggingEnabled", Wails.SetDevelopmentLoggingEnabled, args);
 }
 
 export function SetWorkspaceBuildCommand(...args: Parameters<typeof Wails.SetWorkspaceBuildCommand>): ReturnType<typeof Wails.SetWorkspaceBuildCommand> {
@@ -668,6 +732,10 @@ export function StopChatStream(...args: Parameters<typeof Wails.StopChatStream>)
   return call("StopChatStream", Wails.StopChatStream, args);
 }
 
+export function StopChatStreamForTab(...args: Parameters<typeof Wails.StopChatStreamForTab>): ReturnType<typeof Wails.StopChatStreamForTab> {
+  return call("StopChatStreamForTab", Wails.StopChatStreamForTab, args);
+}
+
 export function StopKanbanCard(...args: Parameters<typeof Wails.StopKanbanCard>): ReturnType<typeof Wails.StopKanbanCard> {
   return call("StopKanbanCard", Wails.StopKanbanCard, args);
 }
@@ -699,11 +767,28 @@ export function UpdateWorkspaceTask(...args: Parameters<typeof Wails.UpdateWorks
   return call("UpdateWorkspaceTask", Wails.UpdateWorkspaceTask, args);
 }
 
-export async function RunShellCommand(workspaceID: string, command: string, workingDirectory: string, timeoutSeconds: number, maxOutputBytes: number): Promise<string> {
-  if (isWailsRuntime()) {
-    return (window as any)["go"]["services"]["SystemService"]["RunShellCommand"](workspaceID, command, workingDirectory, timeoutSeconds, maxOutputBytes);
-  }
-  return webRpc("RunShellCommand", [workspaceID, command, workingDirectory, timeoutSeconds, maxOutputBytes]);
+export function StartTerminalSession(...args: Parameters<typeof Wails.StartTerminalSession>): ReturnType<typeof Wails.StartTerminalSession> {
+  return call("StartTerminalSession", Wails.StartTerminalSession, args);
+}
+
+export function SyncTerminalSession(...args: Parameters<typeof Wails.SyncTerminalSession>): ReturnType<typeof Wails.SyncTerminalSession> {
+  return call("SyncTerminalSession", Wails.SyncTerminalSession, args);
+}
+
+export function WriteTerminalSession(...args: Parameters<typeof Wails.WriteTerminalSession>): ReturnType<typeof Wails.WriteTerminalSession> {
+  return call("WriteTerminalSession", Wails.WriteTerminalSession, args);
+}
+
+export function ResizeTerminalSession(...args: Parameters<typeof Wails.ResizeTerminalSession>): ReturnType<typeof Wails.ResizeTerminalSession> {
+  return call("ResizeTerminalSession", Wails.ResizeTerminalSession, args);
+}
+
+export function StopTerminalSession(...args: Parameters<typeof Wails.StopTerminalSession>): ReturnType<typeof Wails.StopTerminalSession> {
+  return call("StopTerminalSession", Wails.StopTerminalSession, args);
+}
+
+export function RestartTerminalSession(...args: Parameters<typeof Wails.RestartTerminalSession>): ReturnType<typeof Wails.RestartTerminalSession> {
+  return call("RestartTerminalSession", Wails.RestartTerminalSession, args);
 }
 
 export function GetSavedCommands(...args: Parameters<typeof Wails.GetSavedCommands>): ReturnType<typeof Wails.GetSavedCommands> {
@@ -716,11 +801,4 @@ export function UpsertSavedCommand(...args: Parameters<typeof Wails.UpsertSavedC
 
 export function DeleteSavedCommand(...args: Parameters<typeof Wails.DeleteSavedCommand>): ReturnType<typeof Wails.DeleteSavedCommand> {
   return call("DeleteSavedCommand", Wails.DeleteSavedCommand, args);
-}
-
-export async function StopShellCommand(workspaceID: string, runID: string): Promise<void> {
-  if (isWailsRuntime()) {
-    return (window as any)["go"]["services"]["SystemService"]["StopShellCommand"](workspaceID, runID);
-  }
-  return webRpc("StopShellCommand", [workspaceID, runID]);
 }

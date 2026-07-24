@@ -1,33 +1,32 @@
 
 import { applyDebugEvent, applyInlineCodePromptEvent, applyWorkspaceTextSearchEvent, ensureCodeViewRootLoaded, finishCodeTabSwitcher, openDroppedCodeFile, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk, saveActiveCodeFile, saveDirtyWorkspaceCodeTabs, setCodeGitChangeProvider, setDebugStateChangeListener } from "../codeView";
 import type { WorkspaceTextSearchEvent } from "../codeView";
-import { GetSavedCommands, LoadRuntimeStatus, LoadState, LoadWebAccessStatus, ListAgentModes, ReadWorkspaceMediaFile } from "../backend/services";
+import { GetSavedCommands, LoadDevelopmentLogStatus, LoadRuntimeStatus, LoadState, LoadWebAccessStatus, ListAgentModes, ReadWorkspaceMediaFile } from "../backend/services";
 import { llm, services } from "../../wailsjs/go/models";
 import { EventsOn, OnFileDrop } from "../backend/runtime";
 import { initializeWebAccessTokenFromURL, isWailsRuntime, webConnectionOn } from "../backend/web";
 import { bindActionEvents } from "./actions";
-import { icons } from "./icons";
 import { setAppCallbacks, getAppCallbacks } from "./callbacks";
 import { bindChatEvents, applyChatStreamEvent, isSupportedChatImageType, isSupportedChatVideoType, patchChatControls, patchChatPanel } from "./chat";
 import { applyFileChangesEvent, loadActiveChangeReview, refreshWorkspaceChangeReview } from "./changes";
 import { showContextMenu } from "./contextMenu";
-import { appRoot } from "./dom";
 import { handleGlobalKeydown, handleGlobalKeyup, handleGlobalPointerDown, handleGlobalWindowBlur } from "./events";
 import { applyKanbanEvent, applyHeartbeatEvent, applyLivenessEvent, applyWatchdogEvent, loadActiveKanbanBoard, markKanbanRunStarted } from "./kanban";
 import { gitChangedLineNumbersForFile, gitChangeStateForPath } from "./git";
 import { render, renderCodeViewUI } from "./render";
-import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, vimKeybindingsEnabled, state, loadDashboardLayoutsFromBackend, startActivityRefreshTimer } from "./state";
+import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatStateKey, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, vimKeybindingsEnabled, state, loadDashboardLayoutsFromBackend, startActivityRefreshTimer } from "./state";
 import { applyTheme } from "./theme";
 import { applyTaskEvent, loadActiveTaskBoard } from "./tasks";
 import { pushToast } from "./toasts";
-import type { ChatStreamEvent, FileChangesEvent, HeartbeatEvent, KanbanEvent, LivenessEvent, ShellCommandEvent, ShellCommandRun, TaskEvent, WatchdogEvent } from "./types";
-import { errorMessage, escapeHtml, escapeAttribute } from "./utils";
+import type { ChatStreamEvent, FileChangesEvent, HeartbeatEvent, KanbanEvent, LivenessEvent, TaskEvent, TerminalEvent, WatchdogEvent } from "./types";
+import { errorMessage } from "./utils";
 import { loadActiveChatSession } from "./chat";
 import type { CodeEntryKind, CodeTabContextMenu } from "../codeView/types";
 import type { DebugEvent } from "../codeView/debugTypes";
 import { loadTokenBudget } from "./budget";
 import { loadLivenessConfig } from "./liveness";
 import { updateWindowTitle } from "./title";
+import { applyTerminalEvent, loadTerminalPreferences, syncActiveTerminal } from "./terminal";
 
 let realtimeResyncTimer = 0;
 
@@ -43,6 +42,7 @@ function scheduleWebRealtimeResync() {
     void Promise.allSettled([
       loadActiveChatSession(),
       loadActiveKanbanBoard(),
+      syncActiveTerminal(),
     ]);
   }, 100);
 }
@@ -127,9 +127,11 @@ async function initialize() {
         if (cmds.length > 0) state.savedCommands.set(ws.id, cmds);
       } catch { /* Non-fatal */ }
     }
+    loadTerminalPreferences(state.appState?.workspaces ?? []);
     state.settingsDraft = cloneSettings(state.appState.settings);
     state.webAccessDraft = cloneWebAccessSettings(state.appState.webAccess);
     state.webAccessStatus = await LoadWebAccessStatus();
+    state.developmentLogStatus = await LoadDevelopmentLogStatus();
     try {
       const activeWS = state.appState?.activeWorkspaceId ?? "";
       const modes = await ListAgentModes(activeWS);
@@ -266,22 +268,9 @@ export function startApp() {
     render();
   });
 
-  EventsOn("echo:shell:event", (event: ShellCommandEvent) => {
-    applyShellCommandEvent(event);
+  EventsOn("echo:terminal:event", (event: TerminalEvent) => {
+    applyTerminalEvent(event);
   });
-
-  // Bind terminal input Enter key handler globally
-  document.addEventListener("keydown", (event: KeyboardEvent) => {
-    const target = event.target as HTMLElement;
-    if (target.dataset?.terminalInput && event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      const wsID = target.dataset.workspaceId ?? "";
-      if (!wsID) return;
-      // Trigger the run button click programmatically
-      const runBtn = appRoot.querySelector<HTMLButtonElement>(`[data-action="run-shell-command"][data-workspace-id="${CSS.escape(wsID)}"]`);
-      runBtn?.click();
-    }
-  }, true);
 
   // Close saved command dialog on Escape key
   document.addEventListener("keydown", (event: KeyboardEvent) => {
@@ -312,91 +301,6 @@ export function startApp() {
   void initialize();
 }
 
-function applyShellCommandEvent(event: ShellCommandEvent) {
-  const runs = state.terminalRuns.get(event.workspaceId) ?? [];
-  let run = runs.find((r) => r.id === event.id);
-
-  if (event.type === "started") {
-    run = {
-      id: event.id,
-      command: "",
-      lines: [],
-      status: "running",
-      startedAt: Date.now(),
-    };
-    runs.push(run);
-    state.terminalRuns.set(event.workspaceId, runs);
-  } else if (event.type === "stdout" || event.type === "stderr") {
-    if (!run) return;
-    const text = typeof event.data === "string" ? event.data : "";
-    run.lines.push({ type: event.type, text });
-    // Auto-open terminal when output arrives
-    state.terminalOpen.add(event.workspaceId);
-  } else if (event.type === "completed") {
-    if (!run) return;
-    const data = event.data as { exitCode: number; timedOut: boolean; durationMilliseconds: number } | undefined;
-    if (data) {
-      run.status = data.timedOut ? "timed-out" : "completed";
-      run.exitCode = data.exitCode;
-      run.durationMs = data.durationMilliseconds;
-    }
-  }
-
-  // Re-render terminal panel if open for this workspace
-  if (state.terminalOpen.has(event.workspaceId)) {
-    patchTerminalPanel();
-  }
-}
-
-export function patchTerminalPanel() {
-  const workspaceId = state.appState?.activeWorkspaceId ?? "";
-  if (!workspaceId) return;
-  const container = appRoot.querySelector(`[data-terminal-panel][data-workspace-id="${CSS.escape(workspaceId)}"]`);
-  if (!container) {
-    getAppCallbacks().render();
-    return;
-  }
-  // Patch the runs section and input row
-  const runsContainer = container.querySelector("[data-terminal-runs]");
-  if (runsContainer) {
-    const runs = state.terminalRuns.get(workspaceId) ?? [];
-    runsContainer.innerHTML = runs.map((run) => renderTerminalRunHtml(run)).join("");
-  }
-  // Auto-scroll to bottom of output
-  const lastOutput = container.querySelector<HTMLElement>("[data-terminal-output-for]");
-  if (lastOutput) {
-    lastOutput.scrollTop = lastOutput.scrollHeight;
-  }
-}
-
-function renderTerminalRunHtml(run: ShellCommandRun): string {
-  const isRunning = run.status === "running";
-  let statusHtml = "";
-
-  if (isRunning) {
-    const wsId = run.id.split(":")[0];
-    statusHtml = `<span class="spinner terminal-run-spinner"></span><button class="icon-button danger-button terminal-stop-button" type="button" title="Stop command" data-action="stop-shell-command" data-workspace-id="${escapeAttribute(wsId)}" data-run-id="${escapeAttribute(run.id)}">${icons.stop}</button>`;
-  } else if (run.status === "completed" || run.status === "timed-out") {
-    const exitClass = run.exitCode === 0 ? "terminal-exit-success" : "terminal-exit-error";
-    const durationSec = run.durationMs !== undefined ? (run.durationMs / 1000).toFixed(1) + "s" : "";
-    statusHtml = `<span class="terminal-exit-badge ${exitClass}">Exit ${run.exitCode ?? "?"}</span>${durationSec ? `<time class="terminal-duration">${escapeHtml(durationSec)}</time>` : ""}`;
-  }
-
-  return `
-    <div class="terminal-run" data-terminal-run data-run-id="${escapeAttribute(run.id)}">
-      <div class="terminal-run-header">
-        <code class="terminal-command">${escapeHtml(run.command || "(command)")}</code>
-        <div class="terminal-run-status">${statusHtml}</div>
-      </div>
-      ${run.lines.length > 0 ? `
-        <div class="terminal-output" data-terminal-output-for="${escapeAttribute(run.id)}">
-          ${run.lines.map((line) => `<div class="terminal-line terminal-${line.type}"><span>${escapeHtml(line.text)}</span></div>`).join("")}
-        </div>
-      ` : ""}
-    </div>
-  `;
-}
-
 async function openDroppedFiles(paths: string[]) {
   const workspace = activeWorkspace();
   if (!workspace) {
@@ -409,7 +313,7 @@ async function openDroppedFiles(paths: string[]) {
   }
 
   // If in chat mode, try to attach media files to the composer instead of opening them.
-  if (state.appMode === "chat" && !chatSessionFor(workspace.id).busy && !state.executingPlans.has(workspace.id)) {
+  if (state.appMode === "chat" && !chatSessionFor(workspace.id).busy && !state.executingPlans.has(chatStateKey(workspace.id))) {
     const imagePaths: string[] = [];
     const videoPaths: string[] = [];
     const otherPaths: string[] = [];
@@ -438,7 +342,7 @@ async function openDroppedFiles(paths: string[]) {
             continue;
           }
           const name = path.split(/[\\/]/).pop() ?? "image";
-          state.chatImageDrafts.set(workspace.id, [
+          state.chatImageDrafts.set(chatStateKey(workspace.id), [
             ...chatImageDraftsFor(workspace.id),
             {
               id: `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -463,7 +367,7 @@ async function openDroppedFiles(paths: string[]) {
             continue;
           }
           const name = path.split(/[\\/]/).pop() ?? "video";
-          state.chatVideoDrafts.set(workspace.id, [
+          state.chatVideoDrafts.set(chatStateKey(workspace.id), [
             ...chatVideoDraftsFor(workspace.id),
             {
               id: `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,

@@ -1,7 +1,9 @@
 package services
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/brent/echo/internal/llm"
@@ -24,6 +26,32 @@ func toolResultMessages(call llm.ToolCall, result tools.ExecutionResult, data []
 		messages = append(messages, videoMessage)
 	}
 	return messages
+}
+
+func (s *SystemService) loggedToolResultMessages(call llm.ToolCall, result tools.ExecutionResult, data []byte) []llm.Message {
+	messages := toolResultMessages(call, result, data)
+	s.logModelFacingToolResult(call, messages)
+	return messages
+}
+
+func (s *SystemService) logModelFacingToolResult(call llm.ToolCall, messages []llm.Message) {
+	data, err := json.Marshal(messages)
+	if err != nil {
+		data = []byte(fmt.Sprintf(`{"error":%q}`, err.Error()))
+	}
+	s.logAIEvent(slog.LevelInfo, "tool_result",
+		slog.String("tool_call_id", call.ID),
+		slog.String("tool", call.Function.Name),
+		slog.String("payload", string(data)),
+	)
+}
+
+func (s *SystemService) logToolRequest(call llm.ToolCall) {
+	s.logAIEvent(slog.LevelInfo, "tool_request",
+		slog.String("tool_call_id", call.ID),
+		slog.String("tool", call.Function.Name),
+		slog.String("arguments", call.Function.Arguments),
+	)
 }
 
 func toolResultImageMessage(toolName string, result tools.ExecutionResult) (llm.Message, bool) {

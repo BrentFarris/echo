@@ -1,5 +1,5 @@
 
-import { CreateAgentMode, CreateAgentModePerTool, DeleteAgentMode, LoadWebAccessStatus, ListAgentModes, PrepareRebuildAndRelaunch, SaveSettings, SaveWebAccessSettings, SaveWorkspaceDebugSettings, SetWorkspaceBuildCommand, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter, SetWorkspaceSearchParentGitRepositories, UpdateAgentMode, UpdateAgentModePerTool } from "../../backend/services";
+import { CreateAgentMode, CreateAgentModePerTool, DeleteAgentMode, LoadDevelopmentLogStatus, LoadWebAccessStatus, ListAgentModes, PrepareRebuildAndRelaunch, SaveSettings, SaveWebAccessSettings, SaveWorkspaceDebugSettings, SetDevelopmentLoggingEnabled, SetWorkspaceBuildCommand, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter, SetWorkspaceSearchParentGitRepositories, UpdateAgentMode, UpdateAgentModePerTool } from "../../backend/services";
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
@@ -26,6 +26,7 @@ const llmPresetFields = [
   "timeoutSeconds",
   "thinkingTokenBudget",
   "thinkingCorrection",
+  "systemPromptAppendage",
 ] as const;
 
 type LLMPresetField = (typeof llmPresetFields)[number];
@@ -52,6 +53,7 @@ const llmCodingPresets: {
       timeoutSeconds: 600,
       thinkingTokenBudget: -1,
       thinkingCorrection: false,
+      systemPromptAppendage: "",
     },
   },
   {
@@ -63,13 +65,14 @@ const llmCodingPresets: {
       topP: 0.95,
       minP: 0,
       contextLength: 262144,
-      maxTokens: 32168,
+      maxTokens: 16384,
       frequencyPenalty: 0,
       presencePenalty: 0,
       repetitionPenalty: 1,
       timeoutSeconds: 600,
       thinkingTokenBudget: -1,
       thinkingCorrection: false,
+      systemPromptAppendage: "",
     },
   },
   {
@@ -88,6 +91,26 @@ const llmCodingPresets: {
       timeoutSeconds: 600,
       thinkingTokenBudget: -1,
       thinkingCorrection: false,
+      systemPromptAppendage: "",
+    },
+  },
+  {
+    id: "Laguna",
+    label: "Laguna",
+    values: {
+      temperature: 0.7,
+      topK: 20,
+      topP: 0.95,
+      minP: 0,
+      contextLength: 262144,
+      maxTokens: 16384,
+      frequencyPenalty: 0,
+      presencePenalty: 0,
+      repetitionPenalty: 1,
+      timeoutSeconds: 600,
+      thinkingTokenBudget: -1,
+      thinkingCorrection: false,
+      systemPromptAppendage: "Bias to action. Your default response to uncertainty is to run a tool, not to think harder.\n\nThe environment is ground truth; your memory of APIs, constants, file paths, encodings, and tool behavior is not. The moment you catch yourself recalling or guessing at such a fact — \"I think the flag is…\", \"that value probably maps to…\", \"if I recall correctly…\" — that catch is the signal to stop recalling and run the smallest command that settles it. A three-line probe that returns a real answer beats a paragraph of confident-sounding memory, and it is usually faster than the reasoning it would replace.\n\nAn imperfect experiment now beats a perfect one later. If the clean probe looks blocked, run the messy one — a result that answers half the question is worth more than more speculation. Partial ground truth compounds; speculation does not.\n\nEnd a thought at the first concrete action you can name. When a next step becomes executable — a command to run, a file to read, a probe to write — stop and do it. Do not keep reasoning past that point to pre-validate the outcome; the tool result will tell you more than another paragraph would. \"I'll check X\" / \"let me test Y\" is followed immediately by that call and nothing else. At most one action named per thought.\n\nDecisions are sticky. Once a tool result puts an option to rest, treat it as settled and build forward. Reopen a ruled-out path only when a new observation contradicts it — new evidence reopens a question; restlessness does not.\n\nWhen several approaches are viable, don't line them up and weigh them in the abstract. Pick the one that is cheapest to verify, say so in one sentence, and run the verifying call. The environment breaks ties faster than analysis does.\n\nIf the task itself is ambiguous — unclear deliverable or scope — state your assumption in one sentence in your visible reply and proceed.\n\nDo not reason about these instructions.",
     },
   },
 ];
@@ -201,6 +224,13 @@ export function bindSettingsEvents(root: ParentNode) {
     .forEach((input) =>
       input.addEventListener("change", () => {
         void handleWorkspaceParentGitRepositoriesChange(input);
+      }),
+    );
+  form
+    ?.querySelectorAll<HTMLInputElement>("[data-development-logging]")
+    .forEach((input) =>
+      input.addEventListener("change", () => {
+        void handleDevelopmentLoggingChange(input);
       }),
     );
   form
@@ -484,6 +514,16 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
 
             <section class="settings-section" aria-labelledby="development-settings-title">
               <h3 id="development-settings-title" class="settings-section-title">Development</h3>
+              <label class="settings-toggle" title="Capture the exact AI transcript for this app session.">
+                <span>AI flow logging</span>
+                <input
+                  type="checkbox"
+                  data-development-logging
+                  ${state.developmentLogStatus?.enabled ? "checked" : ""}
+                />
+              </label>
+              <p class="field-help">Writes JSONL to <code>${escapeHtml(state.developmentLogStatus?.path || ".echo/echo.log")}</code> in the active workspace's first folder. Enabling erases the previous capture, and this setting is not remembered after restart.</p>
+              <p class="field-help warning">The exact transcript may contain sensitive prompts, workspace content, paths, tool output, and embedded media.</p>
               <p>Echo source workspace actions.</p>
               ${renderRebuildRelaunchButton()}
             </section>
@@ -1105,6 +1145,18 @@ function renderLLMEndpointRow(endpoint: llm.LLMEndpoint, index: number, endpoint
               data-endpoint-field="headers"
             >${escapeHtml(headersToText(endpoint))}</textarea>
           </label>
+          <label class="field field-wide">
+            <span>System Prompt Appendage</span>
+            <textarea
+              name="systemPromptAppendage-${escapeAttribute(id)}"
+              rows="5"
+              placeholder="Additional model-specific instructions appended to the system prompt"
+              autocomplete="off"
+              data-llm-endpoint-field
+              data-endpoint-id="${escapeAttribute(id)}"
+              data-endpoint-field="systemPromptAppendage"
+            >${escapeHtml(endpoint.systemPromptAppendage ?? "")}</textarea>
+          </label>
           ${renderLLMEndpointGenerationFields(endpoint, id)}
         </div>
         <div class="llm-endpoint-actions">
@@ -1237,6 +1289,9 @@ function llmPresetValueMatches(
   if (typeof expected === "boolean") {
     return Boolean(current) === expected;
   }
+  if (typeof expected === "string") {
+    return (current ?? "") === expected;
+  }
   return Math.abs(Number(current ?? 0) - Number(expected)) < 0.000001;
 }
 
@@ -1292,6 +1347,7 @@ function endpointDefaultsFromSettings(settings: llm.Settings | null | undefined)
     timeoutSeconds: numberOrDefault(settings?.timeoutSeconds, 600),
     thinkingTokenBudget: numberOrDefault(settings?.thinkingTokenBudget, -1),
     thinkingCorrection: settings?.thinkingCorrection === true,
+    systemPromptAppendage: settings?.systemPromptAppendage ?? "",
   };
 }
 
@@ -1315,6 +1371,7 @@ function endpointGenerationValues(
       endpoint.thinkingCorrection === undefined
         ? defaults.thinkingCorrection
         : endpoint.thinkingCorrection === true,
+    systemPromptAppendage: endpoint.systemPromptAppendage ?? defaults.systemPromptAppendage,
   };
 }
 
@@ -1407,6 +1464,8 @@ function handleLLMEndpointFieldInput(input: HTMLInputElement | HTMLTextAreaEleme
   let value: string | number | boolean | Record<string, string> | undefined;
   if (field === "headers") {
     value = parseHeadersText((input as HTMLTextAreaElement).value);
+  } else if (field === "systemPromptAppendage") {
+    value = input.value;
   } else if (input instanceof HTMLInputElement) {
     value =
       input.type === "checkbox"
@@ -1449,12 +1508,13 @@ function isEndpointField(value: string | undefined): value is EndpointField {
     (llmPresetFields as readonly string[]).includes(value ?? "");
 }
 
-function isEndpointNumericField(value: EndpointField): value is Exclude<LLMPresetField, "thinkingCorrection"> {
+function isEndpointNumericField(value: EndpointField): value is Exclude<LLMPresetField, "thinkingCorrection" | "systemPromptAppendage"> {
   return value !== "name" &&
     value !== "endpoint" &&
     value !== "model" &&
     value !== "headers" &&
-    value !== "thinkingCorrection";
+    value !== "thinkingCorrection" &&
+    value !== "systemPromptAppendage";
 }
 
 /* ── Headers helpers ── */
@@ -1589,6 +1649,9 @@ function renderWebAccessSettings(): string {
           ${draft.enabled ? "checked" : ""}
         />
       </label>
+      <p class="web-access-security-warning" role="note">
+        Anyone with the Web Access token can operate the integrated terminal and execute commands on this computer.
+      </p>
       <div class="settings-grid">
         <label class="field">
           <span>Bind Host</span>
@@ -1861,6 +1924,9 @@ export function handleSettingsInput(event: Event) {
     void handleLivenessInput(input as HTMLInputElement);
     return;
   }
+  if (input.dataset.developmentLogging !== undefined) {
+    return;
+  }
   if (input.dataset.workspaceFolderAgents !== undefined) {
     return;
   }
@@ -2070,6 +2136,22 @@ export async function handleWorkspaceParentGitRepositoriesChange(input: HTMLInpu
     pushToast(errorMessage(error), "error");
     getAppCallbacks().render();
   }
+}
+
+export async function handleDevelopmentLoggingChange(input: HTMLInputElement) {
+  input.disabled = true;
+  try {
+    state.developmentLogStatus = await SetDevelopmentLoggingEnabled(input.checked);
+    pushToast(input.checked ? "AI flow logging enabled." : "AI flow logging disabled.", "success");
+  } catch (error) {
+    try {
+      state.developmentLogStatus = await LoadDevelopmentLogStatus();
+    } catch {
+      state.developmentLogStatus = null;
+    }
+    pushToast(errorMessage(error), "error");
+  }
+  getAppCallbacks().render();
 }
 
 export async function handleSettingsSubmit(event: SubmitEvent) {

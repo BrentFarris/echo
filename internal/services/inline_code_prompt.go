@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
@@ -89,10 +90,12 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 		return fail(fmt.Errorf("path is not a regular file"))
 	}
 
-	client, err := llm.NewClient(settings)
+	client, err := s.newLLMClient(settings)
 	if err != nil {
 		return fail(err)
 	}
+	s.logAIEvent(slog.LevelInfo, "ai_operation_started", slog.String("surface", "inline_code"), slog.String("operation_id", request.RequestID))
+	defer s.logAIEvent(slog.LevelInfo, "ai_operation_finished", slog.String("surface", "inline_code"), slog.String("operation_id", request.RequestID))
 
 	messages := []llm.Message{
 		inlineCodeSystemMessage(workspace, workspaceSkillCandidates(context.Background(), workspace, request.Prompt+"\n"+request.FilePath)),
@@ -138,6 +141,8 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 		if result.err != nil {
 			if llm.IsContextLengthExceeded(result.err) {
 				if recovery, ok := recoverToolResultContext(messages, recoverableToolCalls); ok {
+					s.logAIEvent(slog.LevelWarn, "context_recovery", slog.String("surface", "inline_code"), slog.String("tool_call_id", recovery.Call.ID))
+					s.logModelFacingToolResult(recovery.Call, []llm.Message{recovery.ResultMessage})
 					messages = recovery.Messages
 					s.markInlineToolContextTooLarge(&output, eventBase, recovery)
 					continue
@@ -448,13 +453,15 @@ func (s *SystemService) executeInlineCodeToolCall(workspace Workspace, settings 
 		Error:     errorText,
 	}
 
+	message := llm.Message{
+		Role:       llm.RoleTool,
+		ToolCallID: call.ID,
+		Content:    string(data),
+	}
+	s.logModelFacingToolResult(call, []llm.Message{message})
 	return inlineCodeToolCallExecution{
-		Activity: activity,
-		Message: llm.Message{
-			Role:       llm.RoleTool,
-			ToolCallID: call.ID,
-			Content:    string(data),
-		},
+		Activity:        activity,
+		Message:         message,
 		ChangedPaths:    affectedPathsFromChanges(execution.Changes),
 		SkillCheckpoint: workspaceSkillCheckpointCompleted(call, result),
 	}

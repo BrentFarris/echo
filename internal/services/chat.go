@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
@@ -18,10 +19,26 @@ const chatStreamEventName = "echo:chat:event"
 
 type ChatSession struct {
 	WorkspaceID string        `json:"workspaceId"`
+	ChatID      string        `json:"chatId"`
+	Preview     string        `json:"preview,omitempty"`
 	Messages    []ChatMessage `json:"messages"`
 	Busy        bool          `json:"busy"`
 	StreamID    string        `json:"streamId,omitempty"`
 	Revision    uint64        `json:"revision"`
+}
+
+type ChatTabSummary struct {
+	ChatID   string `json:"chatId"`
+	Preview  string `json:"preview"`
+	Busy     bool   `json:"busy"`
+	Revision uint64 `json:"revision"`
+}
+
+type ChatWorkspaceState struct {
+	WorkspaceID   string           `json:"workspaceId"`
+	ActiveChatID  string           `json:"activeChatId"`
+	Tabs          []ChatTabSummary `json:"tabs"`
+	ActiveSession ChatSession      `json:"activeSession"`
 }
 
 type ChatMessage struct {
@@ -69,6 +86,7 @@ type ChatResearchReasoning struct {
 
 type ChatStreamEvent struct {
 	WorkspaceID       string                 `json:"workspaceId"`
+	ChatID            string                 `json:"chatId"`
 	StreamID          string                 `json:"streamId"`
 	MessageID         string                 `json:"messageId"`
 	Type              string                 `json:"type"`
@@ -83,10 +101,13 @@ type ChatStreamEvent struct {
 	VideoAttachment   *ChatVideoAttachment   `json:"videoAttachment,omitempty"`
 	Revision          uint64                 `json:"revision"`
 	Session           *ChatSession           `json:"session,omitempty"`
+	WorkspaceState    *ChatWorkspaceState    `json:"workspaceState,omitempty"`
 }
 
 type chatSessionState struct {
 	WorkspaceID string
+	ChatID      string
+	Preview     string
 	Messages    []ChatMessage
 	History     []llm.Message
 	Busy        bool
@@ -94,10 +115,17 @@ type chatSessionState struct {
 	Revision    uint64
 }
 
-func (s *SystemService) latestUserMessageImages(workspaceID string) []tools.AttachedImage {
+type chatWorkspaceState struct {
+	WorkspaceID  string
+	ActiveChatID string
+	TabIDs       []string
+	Sessions     map[string]*chatSessionState
+}
+
+func (s *SystemService) latestUserMessageImages(workspaceID string, chatIDs ...string) []tools.AttachedImage {
 	s.chatMu.Lock()
 	defer s.chatMu.Unlock()
-	session := s.chatSessions[workspaceID]
+	session := s.chatSessionForIDLocked(workspaceID, firstChatID(chatIDs))
 	if session == nil {
 		return nil
 	}
@@ -131,6 +159,140 @@ func (s *SystemService) LoadChatSession(workspaceID string) (ChatSession, error)
 	return cloneChatSession(s.ensureChatSessionLocked(workspaceID)), nil
 }
 
+func (s *SystemService) LoadChatSessionForTab(workspaceID string, chatID string) (ChatSession, error) {
+	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
+		return ChatSession{}, err
+	}
+	s.chatMu.Lock()
+	defer s.chatMu.Unlock()
+	session := s.chatSessionForIDLocked(workspaceID, chatID)
+	if session == nil {
+		return ChatSession{}, fmt.Errorf("chat tab was not found")
+	}
+	return cloneChatSession(session), nil
+}
+
+func (s *SystemService) LoadChatWorkspace(workspaceID string) (ChatWorkspaceState, error) {
+	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
+		return ChatWorkspaceState{}, err
+	}
+	s.chatMu.Lock()
+	defer s.chatMu.Unlock()
+	return cloneChatWorkspace(s.ensureChatWorkspaceLocked(workspaceID)), nil
+}
+
+func (s *SystemService) CreateChatTab(workspaceID string) (ChatWorkspaceState, error) {
+	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
+		return ChatWorkspaceState{}, err
+	}
+	s.chatMu.Lock()
+	workspace := s.ensureChatWorkspaceLocked(workspaceID)
+	session := s.newChatSessionLocked(workspaceID)
+	workspace.Sessions[session.ChatID] = session
+	workspace.TabIDs = append(workspace.TabIDs, session.ChatID)
+	workspace.ActiveChatID = session.ChatID
+	s.chatSessions[workspaceID] = session
+	clone := cloneChatWorkspace(workspace)
+	s.chatMu.Unlock()
+	s.emitChatEvent(ChatStreamEvent{
+		WorkspaceID:    workspaceID,
+		ChatID:         session.ChatID,
+		Type:           "tab_created",
+		WorkspaceState: &clone,
+	})
+	_ = s.persistWorkspaceAutosave(workspaceID)
+	return clone, nil
+}
+
+func (s *SystemService) ActivateChatTab(workspaceID string, chatID string) (ChatWorkspaceState, error) {
+	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
+		return ChatWorkspaceState{}, err
+	}
+	s.chatMu.Lock()
+	workspace := s.ensureChatWorkspaceLocked(workspaceID)
+	session := workspace.Sessions[chatID]
+	if session == nil {
+		s.chatMu.Unlock()
+		return ChatWorkspaceState{}, fmt.Errorf("chat tab was not found")
+	}
+	workspace.ActiveChatID = chatID
+	s.chatSessions[workspaceID] = session
+	clone := cloneChatWorkspace(workspace)
+	s.chatMu.Unlock()
+	s.emitChatEvent(ChatStreamEvent{
+		WorkspaceID:    workspaceID,
+		ChatID:         chatID,
+		Type:           "tab_activated",
+		WorkspaceState: &clone,
+	})
+	_ = s.persistWorkspaceAutosave(workspaceID)
+	return clone, nil
+}
+
+func (s *SystemService) CloseChatTab(workspaceID string, chatID string) (ChatWorkspaceState, error) {
+	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
+		return ChatWorkspaceState{}, err
+	}
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return ChatWorkspaceState{}, fmt.Errorf("chat id is required")
+	}
+
+	s.chatMu.Lock()
+	workspace := s.ensureChatWorkspaceLocked(workspaceID)
+	session := workspace.Sessions[chatID]
+	if session == nil {
+		s.chatMu.Unlock()
+		return ChatWorkspaceState{}, fmt.Errorf("chat tab was not found")
+	}
+	streamID := session.StreamID
+	if cancel := s.chatStreams[chatID]; cancel != nil {
+		cancel()
+		delete(s.chatStreams, chatID)
+	}
+	closedIndex := -1
+	for index, candidate := range workspace.TabIDs {
+		if candidate == chatID {
+			closedIndex = index
+			break
+		}
+	}
+	delete(workspace.Sessions, chatID)
+	if closedIndex >= 0 {
+		workspace.TabIDs = append(workspace.TabIDs[:closedIndex], workspace.TabIDs[closedIndex+1:]...)
+	}
+	if len(workspace.TabIDs) == 0 {
+		replacement := s.newChatSessionLocked(workspaceID)
+		workspace.Sessions[replacement.ChatID] = replacement
+		workspace.TabIDs = append(workspace.TabIDs, replacement.ChatID)
+		workspace.ActiveChatID = replacement.ChatID
+	} else if workspace.ActiveChatID == chatID {
+		nextIndex := closedIndex - 1
+		if nextIndex < 0 {
+			nextIndex = 0
+		}
+		if nextIndex >= len(workspace.TabIDs) {
+			nextIndex = len(workspace.TabIDs) - 1
+		}
+		workspace.ActiveChatID = workspace.TabIDs[nextIndex]
+	}
+	s.chatSessions[workspaceID] = workspace.Sessions[workspace.ActiveChatID]
+	clone := cloneChatWorkspace(workspace)
+	s.chatMu.Unlock()
+
+	if streamID != "" {
+		s.closeChatResearchRun(workspaceID, streamID)
+	}
+	s.emitChatEvent(ChatStreamEvent{
+		WorkspaceID:    workspaceID,
+		ChatID:         chatID,
+		Type:           "tab_closed",
+		WorkspaceState: &clone,
+	})
+	_ = s.persistWorkspaceAutosave(workspaceID)
+	return clone, nil
+}
+
 func (s *SystemService) SendChatMessage(workspaceID string, content string) (ChatSession, error) {
 	return s.SendChatMessageWithAttachments(workspaceID, ChatMessageRequest{Content: content})
 }
@@ -140,10 +302,14 @@ func (s *SystemService) SendChatMessageWithPlanMode(workspaceID string, content 
 }
 
 func (s *SystemService) SendChatMessageWithAttachments(workspaceID string, request ChatMessageRequest) (ChatSession, error) {
-	return s.sendChatMessage(workspaceID, request)
+	return s.sendChatMessage(workspaceID, "", request)
 }
 
-func (s *SystemService) sendChatMessage(workspaceID string, request ChatMessageRequest) (ChatSession, error) {
+func (s *SystemService) SendChatMessageWithAttachmentsToTab(workspaceID string, chatID string, request ChatMessageRequest) (ChatSession, error) {
+	return s.sendChatMessage(workspaceID, chatID, request)
+}
+
+func (s *SystemService) sendChatMessage(workspaceID string, chatID string, request ChatMessageRequest) (ChatSession, error) {
 	content := strings.TrimSpace(request.Content)
 	workspace, settings, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {
@@ -178,7 +344,12 @@ func (s *SystemService) sendChatMessage(workspaceID string, request ChatMessageR
 	runContext, cancel := context.WithCancel(context.Background())
 
 	s.chatMu.Lock()
-	session := s.ensureChatSessionLocked(workspaceID)
+	session := s.chatSessionForIDLocked(workspaceID, chatID)
+	if session == nil {
+		s.chatMu.Unlock()
+		cancel()
+		return ChatSession{}, fmt.Errorf("chat tab was not found")
+	}
 	if session.Busy {
 		s.chatMu.Unlock()
 		cancel()
@@ -201,15 +372,19 @@ func (s *SystemService) sendChatMessage(workspaceID string, request ChatMessageR
 	streamID := s.nextChatIDLocked("stream")
 	session.Messages = append(session.Messages, userMessage, assistantMessage)
 	session.History = append(session.History, userHistory)
+	if session.Preview == "" {
+		session.Preview = chatPreview(content)
+	}
 	session.Busy = true
 	session.StreamID = streamID
 	session.Revision++
-	s.chatStreams[workspaceID] = cancel
+	s.chatStreams[session.ChatID] = cancel
 	clone := cloneChatSession(session)
 	s.chatMu.Unlock()
 
 	s.emitChatEvent(ChatStreamEvent{
 		WorkspaceID: workspaceID,
+		ChatID:      session.ChatID,
 		StreamID:    streamID,
 		MessageID:   assistantMessage.ID,
 		Type:        "started",
@@ -217,42 +392,70 @@ func (s *SystemService) sendChatMessage(workspaceID string, request ChatMessageR
 		Session:     &clone,
 	})
 
-	go s.runChatTurn(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, agentModeID)
+	go s.runChatTurn(runContext, cancel, workspace, settings, session.ChatID, streamID, assistantMessage.ID, agentModeID)
 
 	return clone, nil
 }
 
 func (s *SystemService) StopChatStream(workspaceID string) (ChatSession, error) {
+	return s.stopChatStream(workspaceID, "")
+}
+
+func (s *SystemService) StopChatStreamForTab(workspaceID string, chatID string) (ChatSession, error) {
+	return s.stopChatStream(workspaceID, chatID)
+}
+
+func (s *SystemService) stopChatStream(workspaceID string, chatID string) (ChatSession, error) {
 	s.chatMu.Lock()
-	cancel, ok := s.chatStreams[workspaceID]
+	session := s.chatSessionForIDLocked(workspaceID, chatID)
+	if session == nil {
+		s.chatMu.Unlock()
+		return ChatSession{}, fmt.Errorf("chat tab was not found")
+	}
+	cancel, ok := s.chatStreams[session.ChatID]
 	s.chatMu.Unlock()
 	if !ok {
-		return s.LoadChatSession(workspaceID)
+		return cloneChatSessionThreadSafe(s, workspaceID, session.ChatID)
 	}
 	cancel()
-	return s.LoadChatSession(workspaceID)
+	return cloneChatSessionThreadSafe(s, workspaceID, session.ChatID)
 }
 
 func (s *SystemService) ClearChat(workspaceID string) (ChatSession, error) {
+	return s.clearChat(workspaceID, "")
+}
+
+func (s *SystemService) ClearChatForTab(workspaceID string, chatID string) (ChatSession, error) {
+	return s.clearChat(workspaceID, chatID)
+}
+
+func (s *SystemService) clearChat(workspaceID string, chatID string) (ChatSession, error) {
 	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
 		return ChatSession{}, err
 	}
 
 	s.chatMu.Lock()
+	workspace := s.ensureChatWorkspaceLocked(workspaceID)
+	existing := s.chatSessionForIDLocked(workspaceID, chatID)
+	if existing == nil {
+		s.chatMu.Unlock()
+		return ChatSession{}, fmt.Errorf("chat tab was not found")
+	}
 	streamID := ""
-	if cancel, ok := s.chatStreams[workspaceID]; ok {
-		if existing := s.chatSessions[workspaceID]; existing != nil {
-			streamID = existing.StreamID
-		}
+	if cancel, ok := s.chatStreams[existing.ChatID]; ok {
+		streamID = existing.StreamID
 		cancel()
-		delete(s.chatStreams, workspaceID)
+		delete(s.chatStreams, existing.ChatID)
 	}
-	revision := uint64(1)
-	if existing := s.chatSessions[workspaceID]; existing != nil {
-		revision = existing.Revision + 1
+	session := &chatSessionState{
+		WorkspaceID: workspaceID,
+		ChatID:      existing.ChatID,
+		Revision:    existing.Revision + 1,
 	}
-	session := &chatSessionState{WorkspaceID: workspaceID, Revision: revision}
-	s.chatSessions[workspaceID] = session
+	workspace.Sessions[session.ChatID] = session
+	if workspace.ActiveChatID == session.ChatID {
+		s.chatSessions[workspaceID] = session
+	}
 	clone := cloneChatSession(session)
 	s.chatMu.Unlock()
 	if streamID != "" {
@@ -260,6 +463,7 @@ func (s *SystemService) ClearChat(workspaceID string) (ChatSession, error) {
 	}
 	s.emitChatEvent(ChatStreamEvent{
 		WorkspaceID: workspaceID,
+		ChatID:      session.ChatID,
 		Type:        "session_updated",
 		Revision:    clone.Revision,
 		Session:     &clone,
@@ -269,6 +473,14 @@ func (s *SystemService) ClearChat(workspaceID string) (ChatSession, error) {
 }
 
 func (s *SystemService) PruneChatMessage(workspaceID string, messageID string) (ChatSession, error) {
+	return s.pruneChatMessage(workspaceID, "", messageID)
+}
+
+func (s *SystemService) PruneChatMessageForTab(workspaceID string, chatID string, messageID string) (ChatSession, error) {
+	return s.pruneChatMessage(workspaceID, chatID, messageID)
+}
+
+func (s *SystemService) pruneChatMessage(workspaceID string, chatID string, messageID string) (ChatSession, error) {
 	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
 		return ChatSession{}, err
 	}
@@ -278,7 +490,11 @@ func (s *SystemService) PruneChatMessage(workspaceID string, messageID string) (
 	}
 
 	s.chatMu.Lock()
-	session := s.ensureChatSessionLocked(workspaceID)
+	session := s.chatSessionForIDLocked(workspaceID, chatID)
+	if session == nil {
+		s.chatMu.Unlock()
+		return ChatSession{}, fmt.Errorf("chat tab was not found")
+	}
 	if session.Busy {
 		s.chatMu.Unlock()
 		return ChatSession{}, fmt.Errorf("wait for the current chat response to finish before pruning messages")
@@ -306,6 +522,7 @@ func (s *SystemService) PruneChatMessage(workspaceID string, messageID string) (
 	s.chatMu.Unlock()
 	s.emitChatEvent(ChatStreamEvent{
 		WorkspaceID: workspaceID,
+		ChatID:      session.ChatID,
 		Type:        "session_updated",
 		Revision:    clone.Revision,
 		Session:     &clone,
@@ -344,13 +561,25 @@ func visibleChatHistory(messages []ChatMessage) []llm.Message {
 }
 
 func (s *SystemService) RetryChatMessage(workspaceID string, messageID string, agentModeID string) (ChatSession, error) {
+	return s.retryChatMessageFromTab(workspaceID, "", messageID, agentModeID)
+}
+
+func (s *SystemService) RetryChatMessageForTab(workspaceID string, chatID string, messageID string, agentModeID string) (ChatSession, error) {
+	return s.retryChatMessageFromTab(workspaceID, chatID, messageID, agentModeID)
+}
+
+func (s *SystemService) retryChatMessageFromTab(workspaceID string, chatID string, messageID string, agentModeID string) (ChatSession, error) {
 	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
 		return ChatSession{}, err
 	}
 
 	s.chatMu.Lock()
 
-	session := s.ensureChatSessionLocked(workspaceID)
+	session := s.chatSessionForIDLocked(workspaceID, chatID)
+	if session == nil {
+		s.chatMu.Unlock()
+		return ChatSession{}, fmt.Errorf("chat tab was not found")
+	}
 
 	if session.Busy {
 		s.chatMu.Unlock()
@@ -397,13 +626,14 @@ func (s *SystemService) RetryChatMessage(workspaceID string, messageID string, a
 	session.Revision++
 
 	runContext, cancel := context.WithCancel(context.Background())
-	s.chatStreams[workspaceID] = cancel
+	s.chatStreams[session.ChatID] = cancel
 
 	clone := cloneChatSession(session)
 	s.chatMu.Unlock()
 
 	s.emitChatEvent(ChatStreamEvent{
 		WorkspaceID: workspaceID,
+		ChatID:      session.ChatID,
 		StreamID:    streamID,
 		MessageID:   assistantMessage.ID,
 		Type:        "started",
@@ -417,7 +647,7 @@ func (s *SystemService) RetryChatMessage(workspaceID string, messageID string, a
 			s.failChatMessage(workspaceID, streamID, assistantMessage.ID, err.Error())
 			return
 		}
-		s.runChatTurnWithHistory(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, history, agentModeID, func(wid string, u llm.Usage) {
+		s.runChatTurnWithHistory(runContext, cancel, workspace, settings, session.ChatID, streamID, assistantMessage.ID, history, agentModeID, func(wid string, u llm.Usage) {
 			_, _ = s.RecordTokenUsage(wid, int64(u.TotalTokens))
 		})
 	}()
@@ -426,6 +656,14 @@ func (s *SystemService) RetryChatMessage(workspaceID string, messageID string, a
 }
 
 func (s *SystemService) EditChatMessage(workspaceID string, messageID string, content string, agentModeID string) (ChatSession, error) {
+	return s.editChatMessage(workspaceID, "", messageID, content, agentModeID)
+}
+
+func (s *SystemService) EditChatMessageForTab(workspaceID string, chatID string, messageID string, content string, agentModeID string) (ChatSession, error) {
+	return s.editChatMessage(workspaceID, chatID, messageID, content, agentModeID)
+}
+
+func (s *SystemService) editChatMessage(workspaceID string, chatID string, messageID string, content string, agentModeID string) (ChatSession, error) {
 	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
 		return ChatSession{}, err
 	}
@@ -437,7 +675,11 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 
 	s.chatMu.Lock()
 
-	session := s.ensureChatSessionLocked(workspaceID)
+	session := s.chatSessionForIDLocked(workspaceID, chatID)
+	if session == nil {
+		s.chatMu.Unlock()
+		return ChatSession{}, fmt.Errorf("chat tab was not found")
+	}
 
 	if session.Busy {
 		s.chatMu.Unlock()
@@ -469,6 +711,7 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 		s.chatMu.Unlock()
 		s.emitChatEvent(ChatStreamEvent{
 			WorkspaceID: workspaceID,
+			ChatID:      session.ChatID,
 			MessageID:   messageID,
 			Type:        "session_updated",
 			Revision:    clone.Revision,
@@ -509,13 +752,14 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 	session.Revision++
 
 	runContext, cancel := context.WithCancel(context.Background())
-	s.chatStreams[workspaceID] = cancel
+	s.chatStreams[session.ChatID] = cancel
 
 	clone := cloneChatSession(session)
 	s.chatMu.Unlock()
 
 	s.emitChatEvent(ChatStreamEvent{
 		WorkspaceID: workspaceID,
+		ChatID:      session.ChatID,
 		StreamID:    streamID,
 		MessageID:   assistantMessage.ID,
 		Type:        "started",
@@ -529,7 +773,7 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 			s.failChatMessage(workspaceID, streamID, assistantMessage.ID, err.Error())
 			return
 		}
-		s.runChatTurnWithHistory(runContext, cancel, workspace, settings, streamID, assistantMessage.ID, history, agentModeID, func(wid string, u llm.Usage) {
+		s.runChatTurnWithHistory(runContext, cancel, workspace, settings, session.ChatID, streamID, assistantMessage.ID, history, agentModeID, func(wid string, u llm.Usage) {
 			_, _ = s.RecordTokenUsage(wid, int64(u.TotalTokens))
 		})
 	}()
@@ -537,17 +781,19 @@ func (s *SystemService) EditChatMessage(workspaceID string, messageID string, co
 	return clone, nil
 }
 
-func (s *SystemService) runChatTurn(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, streamID string, messageID string, agentModeID string) {
-	s.runChatTurnWithHistory(ctx, cancel, workspace, settings, streamID, messageID, s.chatHistory(workspace.ID), agentModeID, func(wid string, u llm.Usage) {
+func (s *SystemService) runChatTurn(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, chatID string, streamID string, messageID string, agentModeID string) {
+	s.runChatTurnWithHistory(ctx, cancel, workspace, settings, chatID, streamID, messageID, s.chatHistory(workspace.ID, chatID), agentModeID, func(wid string, u llm.Usage) {
 		_, _ = s.RecordTokenUsage(wid, int64(u.TotalTokens))
 	})
 }
 
-func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, streamID string, messageID string, history []llm.Message, agentModeID string, onUsage func(workspaceID string, usage llm.Usage)) {
+func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel context.CancelFunc, workspace Workspace, settings llm.Settings, chatID string, streamID string, messageID string, history []llm.Message, agentModeID string, onUsage func(workspaceID string, usage llm.Usage)) {
+	s.logAIEvent(slog.LevelInfo, "ai_operation_started", slog.String("surface", "chat"), slog.String("operation_id", streamID))
+	defer s.logAIEvent(slog.LevelInfo, "ai_operation_finished", slog.String("surface", "chat"), slog.String("operation_id", streamID))
 	defer cancel()
 	defer s.finishChatStream(workspace.ID, streamID)
 
-	client, err := llm.NewClient(settings)
+	client, err := s.newLLMClient(settings)
 	if err != nil {
 		s.failChatMessage(workspace.ID, streamID, messageID, err.Error())
 		return
@@ -600,13 +846,13 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 			}
 			assistant := llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{call}}
 			messages = append(messages, assistant)
-			s.appendChatHistory(workspace.ID, assistant)
-			execution := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, isPlanMode, toolScopes, make(map[string]tools.AttachedImage), research)
+			s.appendChatHistory(workspace.ID, assistant, chatID)
+			execution := s.executeToolCall(ctx, workspace, settings, chatID, streamID, messageID, call, isPlanMode, toolScopes, make(map[string]tools.AttachedImage), research)
 			research.MarkAutomaticScout()
 			recoverableToolCalls[call.ID] = true
 			messages = append(messages, execution.Messages...)
 			for _, resultMessage := range execution.Messages {
-				s.appendChatHistory(workspace.ID, resultMessage)
+				s.appendChatHistory(workspace.ID, resultMessage, chatID)
 			}
 		}
 	}
@@ -659,7 +905,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 				s.retryChatMessage(workspace.ID, streamID, messageID)
 			} else if compaction.Compacted {
 				messages = compaction.Messages
-				s.replaceChatHistory(workspace.ID, messages[1:])
+				s.replaceChatHistory(workspace.ID, messages[1:], chatID)
 				s.emitChatCompactionResult(workspace.ID, streamID, messageID, compaction)
 				s.retryChatMessage(workspace.ID, streamID, messageID)
 			}
@@ -669,7 +915,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 			var changed bool
 			messages, changed = chatMessagesWithoutMediaPayloads(messages)
 			if changed {
-				s.replaceChatHistory(workspace.ID, messages[1:])
+				s.replaceChatHistory(workspace.ID, messages[1:], chatID)
 				currentUser = latestContextUserMessage(messages)
 			}
 		}
@@ -704,15 +950,17 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 				messages, changed = chatMessagesWithoutMediaPayloads(messages)
 				if changed {
 					mediaPayloadsDisabled = true
-					s.replaceChatHistory(workspace.ID, messages[1:])
+					s.replaceChatHistory(workspace.ID, messages[1:], chatID)
 					currentUser = latestContextUserMessage(messages)
 					continue
 				}
 			}
 			if llm.IsContextLengthExceeded(err) {
 				if recovery, ok := recoverToolResultContext(messages, recoverableToolCalls); ok {
+					s.logAIEvent(slog.LevelWarn, "context_recovery", slog.String("surface", "chat"), slog.String("tool_call_id", recovery.Call.ID))
+					s.logModelFacingToolResult(recovery.Call, []llm.Message{recovery.ResultMessage})
 					messages = recovery.Messages
-					s.replaceChatHistory(workspace.ID, messages[1:])
+					s.replaceChatHistory(workspace.ID, messages[1:], chatID)
 					s.updateToolActivity(workspace.ID, streamID, messageID, recovery.Call, "error", recovery.ResultMessage.Content, toolResultContextErrorText, "")
 					s.retryChatMessage(workspace.ID, streamID, messageID)
 					continue
@@ -750,7 +998,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 					return
 				}
 				messages = compaction.Messages
-				s.replaceChatHistory(workspace.ID, messages[1:])
+				s.replaceChatHistory(workspace.ID, messages[1:], chatID)
 				s.emitChatCompactionResult(workspace.ID, streamID, messageID, compaction)
 				s.retryChatMessage(workspace.ID, streamID, messageID)
 				continue
@@ -819,7 +1067,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 		}
 		messages = append(messages, assistantHistory)
 		if publishResponse || len(toolCalls) > 0 {
-			s.appendChatHistory(workspace.ID, assistantHistory)
+			s.appendChatHistory(workspace.ID, assistantHistory, chatID)
 		}
 		if len(toolCalls) == 0 {
 			if skillCheckpointPending {
@@ -835,7 +1083,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 					s.appendChatContent(workspace.ID, streamID, messageID, content)
 				}
 				s.appendChatContent(workspace.ID, streamID, messageID, "\n\n"+workspaceSkillCheckpointWarning())
-				s.appendChatHistory(workspace.ID, assistantHistory)
+				s.appendChatHistory(workspace.ID, assistantHistory, chatID)
 			}
 			s.completeChatMessage(workspace.ID, streamID, messageID, finishReason)
 			return
@@ -846,7 +1094,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 				s.cancelChatMessage(workspace.ID, streamID, messageID)
 				return
 			}
-			execution := s.executeToolCall(ctx, workspace, settings, streamID, messageID, call, isPlanMode, toolScopes, generatedImages, research)
+			execution := s.executeToolCall(ctx, workspace, settings, chatID, streamID, messageID, call, isPlanMode, toolScopes, generatedImages, research)
 			if tools.IsResearchAgentToolName(call.Function.Name) {
 				researchFinalizeReminders = 0
 			}
@@ -858,7 +1106,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 			for _, resultMessage := range execution.Messages {
 				stripped := stripMediaContentParts(resultMessage)
 				messages = append(messages, stripped)
-				s.appendChatHistory(workspace.ID, stripped)
+				s.appendChatHistory(workspace.ID, stripped, chatID)
 			}
 			if len(execution.Changes) > 0 {
 				skillCheckpointPending = true
@@ -918,8 +1166,8 @@ func (s *SystemService) streamAssistantResponseAttempt(ctx context.Context, clie
 			call = s.normalizeToolCall(call)
 			toolCalls[nextInlineToolIndex] = call
 			nextInlineToolIndex++
-		s.updateToolActivity(workspaceID, streamID, messageID, call, "streaming", "", "", "")
-	}
+			s.updateToolActivity(workspaceID, streamID, messageID, call, "streaming", "", "", "")
+		}
 	}
 	appendContent := func(text string) *streamLoopDetection {
 		if text == "" {
@@ -1001,58 +1249,55 @@ type chatToolCallExecution struct {
 	SkillCheckpoint bool
 }
 
-func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, streamID string, messageID string, call llm.ToolCall, readOnlyOnly bool, toolScopes *tools.ToolScopeChecker, generatedImages map[string]tools.AttachedImage, research *chatResearchRun) chatToolCallExecution {
+func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, chatID string, streamID string, messageID string, call llm.ToolCall, readOnlyOnly bool, toolScopes *tools.ToolScopeChecker, generatedImages map[string]tools.AttachedImage, research *chatResearchRun) chatToolCallExecution {
 
 	if call.ID == "" {
 		call.ID = s.nextChatID("call")
 	}
 	if tools.IsResearchAgentToolName(call.Function.Name) && research == nil {
+		s.logToolRequest(call)
 		data := fmt.Sprintf(`{"tool":%q,"success":false,"error":{"code":"research_agents_disabled","message":"research agents are disabled in settings"}}`, call.Function.Name)
 		s.updateToolActivity(workspace.ID, streamID, messageID, call, "error", data, "research agents are disabled in settings", "")
+		messages := []llm.Message{{
+			Role:       llm.RoleTool,
+			ToolCallID: call.ID,
+			Content:    data,
+		}}
+		s.logModelFacingToolResult(call, messages)
 		return chatToolCallExecution{
-			Messages: []llm.Message{{
-				Role:       llm.RoleTool,
-				ToolCallID: call.ID,
-				Content:    data,
-			}},
+			Messages: messages,
 		}
 	}
 	if readOnlyOnly && !tools.IsPlanModeToolName(call.Function.Name) {
+		s.logToolRequest(call)
 		data := fmt.Sprintf(`{"tool":%q,"success":false,"error":{"code":"tool_not_allowed","message":"tool is not available in plan mode"}}`, call.Function.Name)
 		s.updateToolActivity(workspace.ID, streamID, messageID, call, "error", data, "tool is not available in plan mode", "")
+		messages := []llm.Message{{
+			Role:       llm.RoleTool,
+			ToolCallID: call.ID,
+			Content:    data,
+		}}
+		s.logModelFacingToolResult(call, messages)
 		return chatToolCallExecution{
-			Messages: []llm.Message{{
-				Role:       llm.RoleTool,
-				ToolCallID: call.ID,
-				Content:    data,
-			}},
+			Messages: messages,
 		}
 	}
-	s.updateToolActivity(workspace.ID, streamID, messageID, call, "running", "", "", "")
+	runningConsole := ""
 
 	if call.Function.Name == "shell_command" {
 		var args map[string]any
 		_ = json.Unmarshal([]byte(call.Function.Arguments), &args)
 		if cmd, ok := args["command"].(string); ok && cmd != "" {
-			s.emitChatEvent(ChatStreamEvent{
-				WorkspaceID: workspace.ID,
-				StreamID:    streamID,
-				MessageID:   messageID,
-				Type:        "tool_event",
-				ToolCall: &ChatToolActivity{
-					ID:            call.ID,
-					Name:          call.Function.Name,
-					Status:        "running",
-					ConsoleOutput: "â³ Running: " + cmd,
-				},
-			})
+			runningConsole = "> " + cmd + "\n\nRunning..."
 		}
 	}
+	s.updateToolActivity(workspace.ID, streamID, messageID, call, "running", "", "", runningConsole)
 
 	events := func(event tools.Event) {
 		if event.Message != "" {
 			s.emitChatEvent(ChatStreamEvent{
 				WorkspaceID: workspace.ID,
+				ChatID:      chatID,
 				StreamID:    streamID,
 				MessageID:   messageID,
 				Type:        "tool_event",
@@ -1067,6 +1312,7 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 	}
 	execution := s.executeTrackedToolCall(ctx, workspace, settings, call, WorkspaceChangeSource{
 		Type:           "chat",
+		ChatID:         chatID,
 		MessageID:      messageID,
 		researchAgents: research,
 	}, events, toolScopes, generatedImages)
@@ -1146,7 +1392,7 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 	}
 
 	return chatToolCallExecution{
-		Messages:        toolResultMessages(call, result, data),
+		Messages:        s.loggedToolResultMessages(call, result, data),
 		Changes:         execution.Changes,
 		SkillCheckpoint: workspaceSkillCheckpointCompleted(call, result),
 	}
@@ -1210,36 +1456,25 @@ func (s *SystemService) updateToolActivity(workspaceID string, streamID string, 
 // extractShellConsoleOutput extracts shell_command output fields from an ExecutionResult
 // and formats them as a readable console string. Returns empty string if not applicable.
 func extractShellConsoleOutput(call llm.ToolCall, result tools.ExecutionResult) string {
-	if call.Function.Name != "shell_command" {
+	if call.Function.Name != "shell_command" || result.Output == nil {
 		return ""
 	}
-	output, ok := result.Output.(map[string]any)
-	if !ok {
+	data, err := json.Marshal(result.Output)
+	if err != nil {
+		return ""
+	}
+	var output struct {
+		Command              string `json:"command"`
+		Stdout               string `json:"stdout"`
+		Stderr               string `json:"stderr"`
+		ExitCode             int    `json:"exitCode"`
+		DurationMilliseconds int64  `json:"durationMilliseconds"`
+	}
+	if err := json.Unmarshal(data, &output); err != nil {
 		return ""
 	}
 
-	cmd := ""
-	if v, ok := output["command"].(string); ok {
-		cmd = v
-	}
-	stdout := ""
-	if v, ok := output["stdout"].(string); ok {
-		stdout = v
-	}
-	stderr := ""
-	if v, ok := output["stderr"].(string); ok {
-		stderr = v
-	}
-	exitCode := 0
-	if v, ok := output["exitCode"].(float64); ok {
-		exitCode = int(v)
-	}
-	durationMs := int64(0)
-	if v, ok := output["durationMilliseconds"].(float64); ok {
-		durationMs = int64(v)
-	}
-
-	return formatShellConsoleOutput(cmd, stdout, stderr, exitCode, durationMs)
+	return formatShellConsoleOutput(output.Command, output.Stdout, output.Stderr, output.ExitCode, output.DurationMilliseconds)
 }
 
 // formatShellConsoleOutput builds a readable console-style string from shell command output.
@@ -1277,7 +1512,8 @@ func (s *SystemService) completeChatMessage(workspaceID string, streamID string,
 	// synchronous autosave finishes. Callers can therefore trust !Busy as a
 	// true turn-settled boundary with no late persistence work still running.
 	s.chatMu.Lock()
-	if session := s.chatSessions[workspaceID]; session != nil && (session.StreamID == streamID || session.StreamID == "") {
+	if session := s.chatSessionByMessageLocked(workspaceID, messageID); session != nil && (session.StreamID == streamID || session.StreamID == "") {
+		event.ChatID = session.ChatID
 		for i := range session.Messages {
 			if session.Messages[i].ID == messageID {
 				session.Messages[i].Status = "complete"
@@ -1292,11 +1528,12 @@ func (s *SystemService) completeChatMessage(workspaceID string, streamID string,
 	_ = s.persistWorkspaceAutosave(workspaceID)
 	if event.Revision > 0 {
 		s.finishChatStream(workspaceID, streamID)
+		s.emitChatEvent(event)
 	}
-	s.emitChatEvent(event)
 }
 
 func (s *SystemService) retryChatMessage(workspaceID string, streamID string, messageID string) {
+	s.logAIEvent(slog.LevelWarn, "ai_retry", slog.String("surface", "chat"), slog.String("operation_id", streamID))
 	s.mutateChatMessage(workspaceID, messageID, func(message *ChatMessage) {
 		message.Status = "retrying"
 	}, ChatStreamEvent{
@@ -1328,16 +1565,20 @@ func (s *SystemService) emitChatCompactionResult(workspaceID string, streamID st
 	)
 	if result.UsedFallback && result.Warning != "" {
 		content += " " + result.Warning
+		chatID := s.chatIDForMessage(workspaceID, messageID)
 		s.emitChatEvent(ChatStreamEvent{
 			WorkspaceID: workspaceID,
+			ChatID:      chatID,
 			StreamID:    streamID,
 			MessageID:   messageID,
 			Type:        "compaction_warning",
 			Content:     result.Warning,
 		})
 	}
+	chatID := s.chatIDForMessage(workspaceID, messageID)
 	s.emitChatEvent(ChatStreamEvent{
 		WorkspaceID: workspaceID,
+		ChatID:      chatID,
 		StreamID:    streamID,
 		MessageID:   messageID,
 		Type:        "compacted",
@@ -1347,12 +1588,18 @@ func (s *SystemService) emitChatCompactionResult(workspaceID string, streamID st
 
 func (s *SystemService) cancelChatMessage(workspaceID string, streamID string, messageID string) {
 	s.closeChatResearchRun(workspaceID, streamID)
-	s.emitChatEvent(s.settleChatMessage(workspaceID, streamID, messageID, "canceled", ""))
+	event := s.settleChatMessage(workspaceID, streamID, messageID, "canceled", "")
+	if event.ChatID != "" {
+		s.emitChatEvent(event)
+	}
 }
 
 func (s *SystemService) failChatMessage(workspaceID string, streamID string, messageID string, messageError string) {
 	s.closeChatResearchRun(workspaceID, streamID)
-	s.emitChatEvent(s.settleChatMessage(workspaceID, streamID, messageID, "error", messageError))
+	event := s.settleChatMessage(workspaceID, streamID, messageID, "error", messageError)
+	if event.ChatID != "" {
+		s.emitChatEvent(event)
+	}
 }
 
 func (s *SystemService) settleChatMessage(workspaceID string, streamID string, messageID string, status string, messageError string) ChatStreamEvent {
@@ -1364,7 +1611,8 @@ func (s *SystemService) settleChatMessage(workspaceID string, streamID string, m
 		Error:       messageError,
 	}
 	s.chatMu.Lock()
-	if session := s.chatSessions[workspaceID]; session != nil {
+	if session := s.chatSessionByMessageLocked(workspaceID, messageID); session != nil {
+		event.ChatID = session.ChatID
 		messageFound := false
 		for i := range session.Messages {
 			if session.Messages[i].ID == messageID {
@@ -1381,7 +1629,7 @@ func (s *SystemService) settleChatMessage(workspaceID string, streamID string, m
 			session.StreamID = ""
 			session.Revision++
 			event.Revision = session.Revision
-			delete(s.chatStreams, workspaceID)
+			delete(s.chatStreams, session.ChatID)
 		}
 	}
 	s.chatMu.Unlock()
@@ -1389,19 +1637,24 @@ func (s *SystemService) settleChatMessage(workspaceID string, streamID string, m
 }
 
 func (s *SystemService) mutateChatMessage(workspaceID string, messageID string, mutate func(*ChatMessage), event ChatStreamEvent) {
+	messageFound := false
 	s.chatMu.Lock()
-	if session := s.chatSessions[workspaceID]; session != nil {
+	if session := s.chatSessionByMessageLocked(workspaceID, messageID); session != nil {
+		event.ChatID = session.ChatID
 		for i := range session.Messages {
 			if session.Messages[i].ID == messageID {
 				mutate(&session.Messages[i])
 				session.Revision++
 				event.Revision = session.Revision
+				messageFound = true
 				break
 			}
 		}
 	}
 	s.chatMu.Unlock()
-	s.emitChatEvent(event)
+	if messageFound {
+		s.emitChatEvent(event)
+	}
 }
 
 func (s *SystemService) attachChatImage(workspaceID string, streamID string, messageID string, attachment ChatImageAttachment) {
@@ -1430,21 +1683,26 @@ func (s *SystemService) attachChatVideo(workspaceID string, streamID string, mes
 
 func (s *SystemService) finishChatStream(workspaceID string, streamID string) {
 	s.chatMu.Lock()
-	if session := s.chatSessions[workspaceID]; session != nil && session.StreamID == streamID {
+	if session := s.chatSessionByStreamLocked(workspaceID, streamID); session != nil {
 		session.Busy = false
 		session.StreamID = ""
-		delete(s.chatStreams, workspaceID)
+		delete(s.chatStreams, session.ChatID)
 	}
 	s.chatMu.Unlock()
 }
 
 func (s *SystemService) dropChatSession(workspaceID string) {
 	s.chatMu.Lock()
-	if cancel, ok := s.chatStreams[workspaceID]; ok {
-		cancel()
-		delete(s.chatStreams, workspaceID)
+	if workspace := s.chatWorkspaces[workspaceID]; workspace != nil {
+		for _, chatID := range workspace.TabIDs {
+			if cancel := s.chatStreams[chatID]; cancel != nil {
+				cancel()
+				delete(s.chatStreams, chatID)
+			}
+		}
 	}
 	delete(s.chatSessions, workspaceID)
+	delete(s.chatWorkspaces, workspaceID)
 	s.chatMu.Unlock()
 }
 
@@ -1458,27 +1716,27 @@ func (s *SystemService) chatHistoryUpToLocked(workspaceID string, messageIndex i
 	return nil
 }
 
-func (s *SystemService) chatHistory(workspaceID string) []llm.Message {
+func (s *SystemService) chatHistory(workspaceID string, chatIDs ...string) []llm.Message {
 	s.chatMu.Lock()
 	defer s.chatMu.Unlock()
-	if session := s.chatSessions[workspaceID]; session != nil {
+	if session := s.chatSessionForIDLocked(workspaceID, firstChatID(chatIDs)); session != nil {
 		return append([]llm.Message(nil), session.History...)
 	}
 	return nil
 }
 
-func (s *SystemService) appendChatHistory(workspaceID string, message llm.Message) {
+func (s *SystemService) appendChatHistory(workspaceID string, message llm.Message, chatIDs ...string) {
 	s.chatMu.Lock()
 	defer s.chatMu.Unlock()
-	if session := s.chatSessions[workspaceID]; session != nil {
+	if session := s.chatSessionForIDLocked(workspaceID, firstChatID(chatIDs)); session != nil {
 		session.History = append(session.History, message)
 	}
 }
 
-func (s *SystemService) replaceChatHistory(workspaceID string, history []llm.Message) {
+func (s *SystemService) replaceChatHistory(workspaceID string, history []llm.Message, chatIDs ...string) {
 	s.chatMu.Lock()
 	defer s.chatMu.Unlock()
-	if session := s.chatSessions[workspaceID]; session != nil {
+	if session := s.chatSessionForIDLocked(workspaceID, firstChatID(chatIDs)); session != nil {
 		stripped := make([]llm.Message, 0, len(history))
 		for _, msg := range history {
 			stripped = append(stripped, stripMediaContentParts(msg))
@@ -1511,12 +1769,161 @@ func (s *SystemService) validateWorkspaceAvailable(workspaceID string) error {
 }
 
 func (s *SystemService) ensureChatSessionLocked(workspaceID string) *chatSessionState {
+	workspace := s.ensureChatWorkspaceLocked(workspaceID)
+	return workspace.Sessions[workspace.ActiveChatID]
+}
+
+func (s *SystemService) ensureChatWorkspaceLocked(workspaceID string) *chatWorkspaceState {
+	if s.chatWorkspaces == nil {
+		s.chatWorkspaces = make(map[string]*chatWorkspaceState)
+	}
+	if workspace := s.chatWorkspaces[workspaceID]; workspace != nil {
+		active := workspace.Sessions[workspace.ActiveChatID]
+		if legacy := s.chatSessions[workspaceID]; legacy != nil && legacy != active && legacy.ChatID == "" {
+			legacy.WorkspaceID = workspaceID
+			legacy.ChatID = workspace.ActiveChatID
+			workspace.Sessions[workspace.ActiveChatID] = legacy
+		}
+		s.chatSessions[workspaceID] = workspace.Sessions[workspace.ActiveChatID]
+		return workspace
+	}
+
+	workspace := &chatWorkspaceState{
+		WorkspaceID: workspaceID,
+		Sessions:    make(map[string]*chatSessionState),
+	}
 	session := s.chatSessions[workspaceID]
 	if session == nil {
-		session = &chatSessionState{WorkspaceID: workspaceID}
-		s.chatSessions[workspaceID] = session
+		session = s.newChatSessionLocked(workspaceID)
+	} else {
+		session.WorkspaceID = workspaceID
+		if session.ChatID == "" {
+			session.ChatID = s.nextChatIDLocked("chat")
+		}
 	}
-	return session
+	workspace.ActiveChatID = session.ChatID
+	workspace.TabIDs = []string{session.ChatID}
+	workspace.Sessions[session.ChatID] = session
+	s.chatSessions[workspaceID] = session
+	s.chatWorkspaces[workspaceID] = workspace
+	return workspace
+}
+
+func (s *SystemService) newChatSessionLocked(workspaceID string) *chatSessionState {
+	return &chatSessionState{
+		WorkspaceID: workspaceID,
+		ChatID:      s.nextChatIDLocked("chat"),
+	}
+}
+
+func (s *SystemService) chatSessionForIDLocked(workspaceID string, chatID string) *chatSessionState {
+	workspace := s.ensureChatWorkspaceLocked(workspaceID)
+	if chatID == "" {
+		chatID = workspace.ActiveChatID
+	}
+	return workspace.Sessions[chatID]
+}
+
+func (s *SystemService) chatSessionByMessageLocked(workspaceID string, messageID string) *chatSessionState {
+	workspace := s.chatWorkspaces[workspaceID]
+	if workspace == nil {
+		if session := s.chatSessions[workspaceID]; session != nil {
+			for i := range session.Messages {
+				if session.Messages[i].ID == messageID {
+					return session
+				}
+			}
+		}
+		return nil
+	}
+	for _, chatID := range workspace.TabIDs {
+		session := workspace.Sessions[chatID]
+		if session == nil {
+			continue
+		}
+		for i := range session.Messages {
+			if session.Messages[i].ID == messageID {
+				return session
+			}
+		}
+	}
+	return nil
+}
+
+func (s *SystemService) chatSessionByStreamLocked(workspaceID string, streamID string) *chatSessionState {
+	workspace := s.chatWorkspaces[workspaceID]
+	if workspace == nil {
+		session := s.chatSessions[workspaceID]
+		if session != nil && session.StreamID == streamID {
+			return session
+		}
+		return nil
+	}
+	for _, chatID := range workspace.TabIDs {
+		session := workspace.Sessions[chatID]
+		if session != nil && session.StreamID == streamID {
+			return session
+		}
+	}
+	return nil
+}
+
+func (s *SystemService) chatIDForMessage(workspaceID string, messageID string) string {
+	s.chatMu.Lock()
+	defer s.chatMu.Unlock()
+	if session := s.chatSessionByMessageLocked(workspaceID, messageID); session != nil {
+		return session.ChatID
+	}
+	return ""
+}
+
+func firstChatID(chatIDs []string) string {
+	if len(chatIDs) == 0 {
+		return ""
+	}
+	return chatIDs[0]
+}
+
+func chatPreview(content string) string {
+	return strings.Join(strings.Fields(content), " ")
+}
+
+func cloneChatSessionThreadSafe(s *SystemService, workspaceID string, chatID string) (ChatSession, error) {
+	s.chatMu.Lock()
+	defer s.chatMu.Unlock()
+	session := s.chatSessionForIDLocked(workspaceID, chatID)
+	if session == nil {
+		return ChatSession{}, fmt.Errorf("chat tab was not found")
+	}
+	return cloneChatSession(session), nil
+}
+
+func cloneChatWorkspace(workspace *chatWorkspaceState) ChatWorkspaceState {
+	clone := ChatWorkspaceState{
+		WorkspaceID:  workspace.WorkspaceID,
+		ActiveChatID: workspace.ActiveChatID,
+		Tabs:         make([]ChatTabSummary, 0, len(workspace.TabIDs)),
+	}
+	for _, chatID := range workspace.TabIDs {
+		session := workspace.Sessions[chatID]
+		if session == nil {
+			continue
+		}
+		preview := session.Preview
+		if preview == "" {
+			preview = "New chat"
+		}
+		clone.Tabs = append(clone.Tabs, ChatTabSummary{
+			ChatID:   session.ChatID,
+			Preview:  preview,
+			Busy:     session.Busy,
+			Revision: session.Revision,
+		})
+	}
+	if active := workspace.Sessions[workspace.ActiveChatID]; active != nil {
+		clone.ActiveSession = cloneChatSession(active)
+	}
+	return clone
 }
 
 func (s *SystemService) nextChatID(prefix string) string {
@@ -1550,8 +1957,8 @@ func chatSystemMessage(workspace Workspace, mode AgentMode, skillCandidates []to
 		"When a search result gives a useful line number, read nearby code with filesystem_read_text aroundLine; copy the result's line value and avoid reading whole source files unless the entire file is genuinely needed. " +
 		"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. " +
 		"When images are attached to a chat message, use comfyui_generate with attachedImageIndex (0-based) to pass them directly as img2img input â€” no need to save to disk first. Index 0 refers to the first attached image. " +
-			"After generating an image with comfyui_generate, use the returned imageId with save_image to persist it to workspace disk if needed. " +
-			"Keep plans concrete and concise."
+		"After generating an image with comfyui_generate, use the returned imageId with save_image to persist it to workspace disk if needed. " +
+		"Keep plans concrete and concise."
 	if researchEnabled {
 		instructions += " " + researchOrchestratorSystemGuidance
 	}
@@ -1722,6 +2129,8 @@ func orderedToolCalls(calls map[int]llm.ToolCall) []llm.ToolCall {
 func cloneChatSession(session *chatSessionState) ChatSession {
 	clone := ChatSession{
 		WorkspaceID: session.WorkspaceID,
+		ChatID:      session.ChatID,
+		Preview:     session.Preview,
 		Messages:    append([]ChatMessage{}, session.Messages...),
 		Busy:        session.Busy,
 		StreamID:    session.StreamID,
