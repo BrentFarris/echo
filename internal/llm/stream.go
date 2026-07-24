@@ -39,6 +39,7 @@ func parseStreamLogged(ctx context.Context, reader io.Reader, events chan<- Stre
 
 	var dataLines []string
 	completed := false
+	receivedData := false
 	for scanner.Scan() {
 		if ctx.Err() != nil {
 			emitCanceledLogged(events, logger)
@@ -47,7 +48,7 @@ func parseStreamLogged(ctx context.Context, reader io.Reader, events chan<- Stre
 
 		line := scanner.Text()
 		if line == "" {
-			if flushStreamData(ctx, events, dataLines, &completed, logger, usageOut) {
+			if flushStreamData(ctx, events, dataLines, &completed, &receivedData, logger, usageOut) {
 				return
 			}
 			dataLines = nil
@@ -61,19 +62,37 @@ func parseStreamLogged(ctx context.Context, reader io.Reader, events chan<- Stre
 		}
 	}
 
-	if len(dataLines) > 0 && flushStreamData(ctx, events, dataLines, &completed, logger, usageOut) {
-		return
-	}
 	if ctx.Err() != nil {
 		emitCanceledLogged(events, logger)
 		return
 	}
 	if err := scanner.Err(); err != nil {
+		// Scanner error (typically unexpected EOF from a dropped connection).
+		// Do NOT flush remaining dataLines because they are likely incomplete/truncated.
+		// Valid events were already emitted during the scanning loop above,
+		// and receivedData tracks whether any meaningful content arrived.
+
+		// Handle EOF and other read errors gracefully based on what was received.
+		if completed {
+			// [DONE] or finish_reason already received; trailing EOF is harmless.
+			return
+		}
+		if receivedData {
+			// Partial content streamed; emit completion so the partial response is usable.
+			emitLogged(ctx, events, StreamEvent{Type: EventComplete}, logger)
+			return
+		}
+		// No data received at all; this is a genuine error.
 		emitLogged(ctx, events, StreamEvent{Type: EventError, Error: fmt.Sprintf("read stream: %v", err)}, logger)
+		return
+	}
+	// Clean finish: flush any remaining dataLines that lacked a trailing newline.
+	if len(dataLines) > 0 {
+		flushStreamData(ctx, events, dataLines, &completed, &receivedData, logger, usageOut)
 	}
 }
 
-func flushStreamData(ctx context.Context, events chan<- StreamEvent, dataLines []string, completed *bool, logger *streamLogger, usageOut **Usage) bool {
+func flushStreamData(ctx context.Context, events chan<- StreamEvent, dataLines []string, completed *bool, receivedData *bool, logger *streamLogger, usageOut **Usage) bool {
 	if len(dataLines) == 0 {
 		return false
 	}
@@ -96,21 +115,28 @@ func flushStreamData(ctx context.Context, events chan<- StreamEvent, dataLines [
 		return true
 	}
 
+	hasData := false
 	for _, choice := range chunk.Choices {
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
 			emitLogged(ctx, events, StreamEvent{Type: EventToken, Content: *choice.Delta.Content, Raw: json.RawMessage(data)}, logger)
+			hasData = true
 		}
 		if reasoning := choice.Delta.reasoningText(); reasoning != "" {
 			emitLogged(ctx, events, StreamEvent{Type: EventReasoning, Content: reasoning, Raw: json.RawMessage(data)}, logger)
+			hasData = true
 		}
 		for _, toolCall := range choice.Delta.ToolCalls {
 			copy := toolCall
 			emitLogged(ctx, events, StreamEvent{Type: EventToolCall, ToolCall: &copy, Raw: json.RawMessage(data)}, logger)
+			hasData = true
 		}
 		if choice.FinishReason != nil && !*completed {
 			emitLogged(ctx, events, StreamEvent{Type: EventComplete, FinishReason: *choice.FinishReason, Raw: json.RawMessage(data)}, logger)
 			*completed = true
 		}
+	}
+	if hasData {
+		*receivedData = true
 	}
 	if chunk.Usage != nil {
 		usage := *chunk.Usage

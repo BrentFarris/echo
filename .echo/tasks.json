@@ -460,6 +460,27 @@
       "completed": false,
       "createdAt": "2026-07-20T19:33:26.3773954Z",
       "updatedAt": "2026-07-20T19:33:26.3773954Z"
+    },
+    "fb940a9c-0e45-4f02-ad37-0cb695fc0bb7": {
+      "title": "Enforce mandatory Kanban fields on backlog task creation",
+      "details": "## Problem\n\nWhen an agent creates a backlog task (via `workspace_task_create`), it often omits the fields that `CreateReadyKanbanCard` requires. Later, when the user tries to create a Kanban card from that task — either via the \"Create Kanban Card\" button in the UI or through `CreateReadyKanbanCard(workspaceID, title, description, acceptanceCriteria)` — the call is rejected with errors like:\n\n- `\"description is required\"`\n- `\"at least one acceptance criterion is required\"`\n\nThis forces the user to fill in the missing fields manually instead of the agent doing it upfront.\n\n## Requirement\n\nEvery future backlog task created via `workspace_task_create` MUST include all three Kanban-card-required fields:\n\n1. **`title`** — concise imperative phrase (already a required parameter)\n2. **`details`** — concrete implementation description, not just one-liners; must be non-empty after trim\n3. **`acceptanceCriteria`** — at least one observable, verifiable acceptance criterion array entry\n\nIf any of these are missing or effectively empty on task creation, the agent should treat it as incomplete and refine the task rather than leaving a half-baked backlog item.\n\n## Validation reference\n\nThe backend validation in `internal/services/kanban.go:CreateReadyKanbanCard` rejects cards when:\n- `title == \"\"` (after trim)\n- `description == \"\"` (after trim)\n- `acceptanceCriteria` has zero non-empty entries after trimming each element\n\nThe agent prompt or system instructions should mirror these same rules at the point of `workspace_task_create` so that every task in `.echo/backlog.md` is immediately convertible to a Kanban card without user intervention.\n\n## Scope\n\nThis applies to:\n- Agent-created tasks (primary target — the decomposer/agent calling `workspace_task_create`)\n- It may also inform prompt updates in `internal/services/decomposition.go` or workspace skill notes to reinforce the rule at creation time, not just at conversion time.",
+      "epic": "Agent quality of life",
+      "tags": [
+        "agent-behavior",
+        "backlog",
+        "kanban"
+      ],
+      "acceptanceCriteria": [
+        "New backlog tasks created via workspace_task_create include non-empty title, details (description), and at least one acceptance criterion",
+        "The agent refuses to create a task if any of the three required Kanban fields are missing or effectively empty after trimming",
+        "An existing backlog task with missing fields can be retroactively updated to include all three before creating a Kanban card from it",
+        "The rejection errors from CreateReadyKanbanCard (title is required, description is required, at least one acceptance criterion is required) are prevented by enforcement at task-creation time"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": false,
+      "createdAt": "2026-07-21T22:04:13.6674952Z",
+      "updatedAt": "2026-07-21T22:04:13.6674952Z"
     }
   }
 }

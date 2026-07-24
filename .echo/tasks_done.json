@@ -432,6 +432,29 @@
       "updatedAt": "2026-07-16T14:59:48.5465877Z",
       "completedAt": "2026-07-16T14:59:48.5465877Z"
     },
+    "5fb4ce1e-80a8-4704-a4d2-247e0b067160": {
+      "title": "Handle unexpected EOF gracefully in SSE stream parser when partial content received",
+      "details": "In `echo/internal/llm/stream.go`, when the LLM endpoint closes the connection without a proper SSE terminator (`[DONE]` or `finish_reason`), the scanner returns `io.ErrUnexpectedEOF`. This is treated as a hard `EventError` even if partial content was already streamed.\\n\\nWhen EOF occurs:\\n- If `completed` is already true (a `[DONE]` or `finish_reason` was received), treat EOF as harmless — no event needed\\n- If content/tool-calls were partially streamed, emit an `EventComplete` instead of an `EventError` so the partial response is usable\\n- Only emit `EventError` for EOF if no data was received at all",
+      "epic": "LLM streaming robustness",
+      "tags": [
+        "backend",
+        "llm",
+        "streaming"
+      ],
+      "acceptanceCriteria": [
+        "EOF after [DONE] or finish_reason is silently ignored (no error event)",
+        "EOF with partial content emits EventComplete instead of EventError",
+        "EOF with no data received still emits EventError",
+        "Add tests in stream_test.go for all three EOF scenarios",
+        "go test ./... passes"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-22T17:15:23.9376629Z",
+      "updatedAt": "2026-07-22T17:18:22.3617018Z",
+      "completedAt": "2026-07-22T17:18:22.3617018Z"
+    },
     "676c47b3-0e78-4e74-b08e-be4f218ef45c": {
       "title": "Frontend: Add epic convert button and dialog styling",
       "acceptanceCriteria": [
@@ -1021,6 +1044,26 @@
       "createdAt": "2026-07-11T11:30:05.4828588Z",
       "updatedAt": "2026-07-11T11:44:00.2762271Z",
       "completedAt": "2026-07-11T11:44:00.2762271Z"
+    },
+    "b4a9b21f-315a-486b-96dd-bdb3c06bfecc": {
+      "title": "Add user-facing error message for \"read stream\" EOF errors",
+      "details": "The `userFacingLLMError` function in `echo/internal/services/errors.go` doesn't handle `\"read stream: unexpected EOF\"` from the SSE parser. It falls through to raw output, giving users a confusing technical message.\n\nAdd a case that matches `\"read stream: unexpected EOF\"` and returns something user-friendly like: \"The LLM endpoint closed the connection mid-response. This can happen with large prompts or unstable endpoints. Try again.\"",
+      "epic": "LLM streaming robustness",
+      "tags": [
+        "backend",
+        "llm",
+        "error-handling"
+      ],
+      "acceptanceCriteria": [
+        "userFacingLLMError matches \"read stream\" errors and returns a user-friendly message",
+        "Raw technical error string is no longer shown to the user for this case"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-07-22T17:15:23.8311615Z",
+      "updatedAt": "2026-07-22T17:18:21.5621977Z",
+      "completedAt": "2026-07-22T17:18:21.5621977Z"
     },
     "b514bec2-f94a-47cf-b754-2f1751a79259": {
       "title": "Handle save-chat-image action in frontend (desktop vs web mode)",

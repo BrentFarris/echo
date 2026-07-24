@@ -18,6 +18,8 @@ func userFacingLLMError(err error) string {
 	case strings.Contains(raw, "context deadline exceeded"),
 		strings.Contains(raw, "Client.Timeout"):
 		return "The LLM endpoint timed out. Increase Timeout Seconds or check the endpoint. " + raw
+	case strings.Contains(raw, "read stream"):
+		return "The LLM endpoint closed the connection mid-response. This can happen with large prompts or unstable endpoints. Try again."
 	default:
 		return raw
 	}
