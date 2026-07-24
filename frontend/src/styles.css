@@ -6160,6 +6160,8 @@ h3 {
   justify-content: flex-end;
 }
 
+.code-view-actions .code-view-save-action,
+.code-view-actions .code-view-ignored-action,
 .code-view-actions .code-explorer-toggle,
 .code-view-actions .code-inline-chat-toggle,
 .code-empty .code-empty-file-list-button,
@@ -6226,6 +6228,12 @@ h3 {
   width: 30px;
   min-width: 30px;
   min-height: 30px;
+}
+
+.code-explorer-meta .code-text-search-ignored-toggle.is-active {
+  border-color: color-mix(in srgb, var(--color-accent) 46%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
+  color: var(--color-accent-strong);
 }
 
 .code-search {
@@ -8578,6 +8586,11 @@ h3 {
   .code-view-actions .primary-button,
   .code-view-actions .secondary-button {
     flex: 0 0 auto;
+  }
+
+  .code-view-actions .code-view-save-action,
+  .code-view-actions .code-view-ignored-action {
+    display: inline-flex;
   }
 
   .code-tab {
