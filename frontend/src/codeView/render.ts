@@ -274,6 +274,7 @@ function renderPendingCreateRow(state: CodeWorkspaceState, depth: number): strin
 
 function renderCodeExplorerSidebar(workspaceID: string, dirtyCount: number): string {
   const state = ensureCodeState(workspaceID);
+  const filterLabel = state.showIgnored ? "Hide ignored" : "Show ignored";
   return `
     <aside class="code-explorer" id="code-explorer-${escapeAttribute(workspaceID)}" aria-label="Workspace files">
       <div class="code-explorer-dismiss-handle" data-code-action="close-explorer-drawer"><span></span></div>
@@ -282,6 +283,16 @@ function renderCodeExplorerSidebar(workspaceID: string, dirtyCount: number): str
         <div class="code-explorer-toolbar" aria-label="File explorer actions">
           <button class="icon-button" type="button" title="Find in files" aria-label="Find in files" data-code-action="open-text-search">
             ${codeIcons.search}
+          </button>
+          <button
+            class="icon-button code-text-search-ignored-toggle ${state.showIgnored ? "is-active" : ""}"
+            type="button"
+            title="${escapeAttribute(filterLabel)}"
+            aria-label="${escapeAttribute(filterLabel)}"
+            aria-pressed="${state.showIgnored}"
+            data-code-action="toggle-filter"
+          >
+            ${codeIcons.code}
           </button>
           <button class="icon-button" type="button" title="New file" aria-label="New file" data-code-action="create-selected-file">
             ${codeIcons.newFile}
