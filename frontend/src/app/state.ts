@@ -42,6 +42,7 @@ export const state = {
   chatVideoDrafts: new Map<string, ChatVideoDraft[]>(),
   chatComposerModes: new Map<string, "plan" | "edit">(),
   chatPlanModes: new Map<string, boolean>(),
+  chatScrollPositions: new Map<string, number>(),
   chatFileLinkCache: new Map<string, Promise<string | null>>(),
   chatMention: null as ChatMentionState | null,
   kanbanBoards: new Map<string, services.KanbanBoard>(),

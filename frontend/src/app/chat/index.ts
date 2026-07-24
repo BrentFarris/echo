@@ -1245,6 +1245,7 @@ async function closeChatTabFromUI(chatID: string) {
     state.chatVideoDrafts.delete(closedKey);
     state.chatComposerModes.delete(closedKey);
     state.chatPlanModes.delete(closedKey);
+    state.chatScrollPositions.delete(closedKey);
     state.selectedAgentModeIds.delete(closedKey);
     clearChatMention();
     patchChatPanel();
@@ -2463,6 +2464,7 @@ export function applyChatWorkspaceSnapshot(nextWorkspace: services.ChatWorkspace
     state.chatVideoDrafts.delete(key);
     state.chatComposerModes.delete(key);
     state.chatPlanModes.delete(key);
+    state.chatScrollPositions.delete(key);
     state.selectedAgentModeIds.delete(key);
   }
   state.chatWorkspaces.set(workspace.workspaceId, workspace);
@@ -2924,8 +2926,26 @@ export function patchChatPanel() {
     return;
   }
 
+  const renderedWorkspaceID = panel.dataset.workspaceId ?? workspace.id;
+  const renderedChatID = panel.dataset.chatId ?? "";
+  const existingLog = panel.querySelector<HTMLElement>("[data-chat-log]");
+  if (renderedChatID) {
+    const renderedTabStillExists = state.chatWorkspaces
+      .get(renderedWorkspaceID)
+      ?.tabs?.some((tab) => tab.chatId === renderedChatID);
+    const renderedKey = chatStateKey(renderedWorkspaceID, renderedChatID);
+    if (existingLog && renderedTabStillExists) {
+      state.chatScrollPositions.set(renderedKey, existingLog.scrollTop);
+    } else if (!renderedTabStillExists) {
+      state.chatScrollPositions.delete(renderedKey);
+    }
+  }
+
   // Preserve the current draft value and scroll position before regenerating the panel.
-  const draft = state.chatDrafts.get(chatStateKey(workspace.id)) ?? "";
+  const destinationChatID = activeChatIDFor(workspace.id);
+  const activeChatKey = chatStateKey(workspace.id, destinationChatID);
+  const draft = state.chatDrafts.get(activeChatKey) ?? "";
+  const chatScrollTop = state.chatScrollPositions.get(activeChatKey);
   const existingInput = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
   const inputScrollTop = existingInput?.scrollTop ?? 0;
   const restoreInputFocus = document.activeElement === existingInput;
@@ -2937,6 +2957,23 @@ export function patchChatPanel() {
   next.innerHTML = renderChatPanel(workspace, state.expandedChatWorkspaces.has(workspace.id)).trim();
   const replacement = next.content.firstElementChild as HTMLElement;
   panel.replaceWith(replacement);
+
+  const log = replacement.querySelector<HTMLElement>("[data-chat-log]");
+  if (log && chatScrollTop !== undefined) {
+    log.scrollTop = chatScrollTop;
+    window.requestAnimationFrame(() => {
+      const currentPanel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
+      const currentLog = currentPanel?.querySelector<HTMLElement>("[data-chat-log]");
+      if (
+        currentLog &&
+        currentPanel?.dataset.workspaceId === workspace.id &&
+        currentPanel.dataset.chatId === destinationChatID &&
+        activeChatIDFor(workspace.id) === destinationChatID
+      ) {
+        currentLog.scrollTop = chatScrollTop;
+      }
+    });
+  }
 
   // Restore the draft to the newly created textarea if it differs from the rendered value.
   const input = replacement.querySelector<HTMLTextAreaElement>("[data-chat-input]");

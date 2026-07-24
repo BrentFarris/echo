@@ -1232,6 +1232,7 @@ export async function handleAction(event: Event) {
         state.chatVideoDrafts,
         state.chatComposerModes,
         state.chatPlanModes,
+        state.chatScrollPositions,
         state.selectedAgentModeIds,
       ].forEach((map) => {
         for (const key of map.keys()) {
