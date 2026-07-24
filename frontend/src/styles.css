@@ -36,6 +36,7 @@
   --code-editor-selection-match: rgba(9, 105, 218, 0.2);
   --code-editor-invalid: #cf222e;
   --code-editor-whitespace-indicator: rgba(110, 119, 129, 0.38);
+  --terminal-bg: var(--color-bg);
   --code-token-comment: #6e7781;
   --code-token-keyword: #cf222e;
   --code-token-atom: #0550ae;
@@ -114,6 +115,7 @@
     --code-editor-selection-match: rgba(56, 139, 253, 0.22);
     --code-editor-invalid: #ff7b72;
     --code-editor-whitespace-indicator: rgba(125, 133, 144, 0.46);
+    --terminal-bg: var(--code-editor-bg);
     --code-token-comment: #8b949e;
     --code-token-keyword: #ff7b72;
     --code-token-atom: #79c0ff;
@@ -11238,7 +11240,7 @@ h3 {
   min-width: 0;
   overflow: visible;
   border-top: 1px solid var(--code-editor-border);
-  background: var(--code-editor-bg);
+  background: var(--terminal-bg);
   color: var(--code-editor-text);
 }
 
@@ -11433,7 +11435,7 @@ h3 {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: var(--code-editor-bg);
+  background: var(--terminal-bg);
 }
 
 .terminal-xterm-instance {
@@ -11444,11 +11446,13 @@ h3 {
 .terminal-xterm-instance .xterm {
   height: 100%;
   padding: 7px 10px;
+  background: var(--terminal-bg);
 }
 
-.terminal-xterm-instance .xterm-viewport,
-.terminal-xterm-instance .xterm-screen {
+.terminal-xterm-instance .xterm .xterm-viewport,
+.terminal-xterm-instance .xterm .xterm-screen {
   min-width: 0;
+  background-color: var(--terminal-bg);
 }
 
 .terminal-saved-menu-wrap {

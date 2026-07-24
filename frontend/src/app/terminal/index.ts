@@ -24,6 +24,7 @@ const defaultTerminalHeight = 280;
 const minimumTerminalHeight = 160;
 const terminalInputChunkSize = 48 * 1024;
 const terminalTextEncoder = new TextEncoder();
+const terminalColorScheme = window.matchMedia("(prefers-color-scheme: dark)");
 
 type TerminalSessionMeta = {
   id: string;
@@ -806,6 +807,33 @@ function splitTerminalInput(value: string): string[] {
 function readTerminalTheme(): ITheme {
   const styles = window.getComputedStyle(document.documentElement);
   const value = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback;
+  if (!terminalColorScheme.matches) {
+    const background = value("--color-bg", "#f7f3f1");
+    const foreground = value("--color-text", "#241f1f");
+    return {
+      background,
+      foreground,
+      cursor: foreground,
+      cursorAccent: background,
+      selectionBackground: value("--code-editor-selection", "rgba(9, 105, 218, 0.25)"),
+      black: foreground,
+      red: value("--color-danger", "#b42332"),
+      green: value("--color-success", "#1a7f37"),
+      yellow: value("--color-warning", "#9a6700"),
+      blue: value("--color-accent-strong", "#1d4ed8"),
+      magenta: "#7557a8",
+      cyan: "#277a80",
+      white: foreground,
+      brightBlack: value("--color-text-muted", "#6f6360"),
+      brightRed: value("--color-danger", "#b42332"),
+      brightGreen: value("--color-success", "#1a7f37"),
+      brightYellow: value("--color-warning", "#9a6700"),
+      brightBlue: value("--color-accent", "#2563eb"),
+      brightMagenta: "#6f42c1",
+      brightCyan: "#0f766e",
+      brightWhite: foreground,
+    };
+  }
   return {
     background: value("--code-editor-bg", "#0d1117"),
     foreground: value("--code-editor-text", "#e6edf3"),
@@ -852,4 +880,4 @@ window.addEventListener("resize", updateMobileTerminalViewport);
 window.visualViewport?.addEventListener("resize", updateMobileTerminalViewport);
 window.visualViewport?.addEventListener("scroll", updateMobileTerminalViewport);
 
-window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", refreshTerminalThemes);
+terminalColorScheme.addEventListener("change", refreshTerminalThemes);
