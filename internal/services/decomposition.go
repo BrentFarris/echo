@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/brent/echo/internal/llm"
@@ -53,17 +54,27 @@ type decomposedCard struct {
 }
 
 func (s *SystemService) ExecutePlan(workspaceID string) (KanbanBoard, error) {
+	return s.executePlan(workspaceID, "")
+}
+
+func (s *SystemService) ExecutePlanForTab(workspaceID string, chatID string) (KanbanBoard, error) {
+	return s.executePlan(workspaceID, chatID)
+}
+
+func (s *SystemService) executePlan(workspaceID string, chatID string) (KanbanBoard, error) {
+	s.logAIEvent(slog.LevelInfo, "ai_operation_started", slog.String("surface", "kanban_decompose"))
+	defer s.logAIEvent(slog.LevelInfo, "ai_operation_finished", slog.String("surface", "kanban_decompose"))
 	_, settings, err := s.workspaceAndSettingsFor(workspaceID, llm.InteractionKanbanDecompose)
 	if err != nil {
 		return KanbanBoard{}, err
 	}
 
-	visible, err := s.visiblePlanMessages(workspaceID)
+	visible, err := s.visiblePlanMessages(workspaceID, chatID)
 	if err != nil {
 		return KanbanBoard{}, err
 	}
 
-	client, err := llm.NewClient(settings)
+	client, err := s.newLLMClient(settings)
 	if err != nil {
 		return KanbanBoard{}, err
 	}
@@ -96,11 +107,11 @@ func (s *SystemService) ExecutePlan(workspaceID string) (KanbanBoard, error) {
 	return s.appendReadyCards(workspaceID, cards)
 }
 
-func (s *SystemService) visiblePlanMessages(workspaceID string) ([]llm.Message, error) {
+func (s *SystemService) visiblePlanMessages(workspaceID string, chatIDs ...string) ([]llm.Message, error) {
 	s.chatMu.Lock()
 	defer s.chatMu.Unlock()
 
-	session := s.chatSessions[workspaceID]
+	session := s.chatSessionForIDLocked(workspaceID, firstChatID(chatIDs))
 	if session == nil || len(session.Messages) == 0 {
 		return nil, fmt.Errorf("ask Echo for a plan before executing it")
 	}

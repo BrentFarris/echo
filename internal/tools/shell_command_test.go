@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestShellCommandExecutesInWorkspace(t *testing.T) {
@@ -53,6 +54,33 @@ func TestShellCommandReturnsNonZeroExitCodeAsOutput(t *testing.T) {
 	}
 }
 
+func TestShellCommandRunsWhenChangeTrackingExceedsBudget(t *testing.T) {
+	workspace := t.TempDir()
+	originalTimeout := shellChangeTrackingTimeout
+	shellChangeTrackingTimeout = time.Nanosecond
+	t.Cleanup(func() {
+		shellChangeTrackingTimeout = originalTimeout
+	})
+
+	result := Execute(
+		ExecutionContext{
+			Context:       context.Background(),
+			WorkspacePath: workspace,
+			FileChanges:   func([]FileChange) {},
+		},
+		"shell_command",
+		mustJSON(t, map[string]any{"command": testEchoCommand("tracking skipped")}),
+	)
+
+	if !result.Success {
+		t.Fatalf("shell command should run when best-effort change tracking times out: %#v", result)
+	}
+	output := result.Output.(shellCommandOutput)
+	if !strings.Contains(output.Stdout, "tracking skipped") {
+		t.Fatalf("expected command output after tracking timeout, got %#v", output)
+	}
+}
+
 func TestShellCommandRejectsWorkingDirectoryOutsideWorkspace(t *testing.T) {
 	workspace := t.TempDir()
 	result := Execute(
@@ -92,6 +120,41 @@ func TestShellCommandUsesRequestedWorkingDirectory(t *testing.T) {
 	}
 	if !strings.Contains(strings.TrimSpace(output.Stdout), expectedDirectory) {
 		t.Fatalf("expected command to run in %q, got %#v", expectedDirectory, output)
+	}
+}
+
+func TestShellCommandScopesChangeTrackingToWorkingDirectory(t *testing.T) {
+	workspace := t.TempDir()
+	subdir := filepath.Join(workspace, "src")
+	if err := os.Mkdir(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var changes []FileChange
+	command := "printf 'generated\\n' > generated.txt"
+	if runtime.GOOS == "windows" {
+		command = "Set-Content -LiteralPath generated.txt -Value generated"
+	}
+	result := Execute(
+		ExecutionContext{
+			Context:       context.Background(),
+			WorkspacePath: workspace,
+			FileChanges: func(captured []FileChange) {
+				changes = append(changes, captured...)
+			},
+		},
+		"shell_command",
+		mustJSON(t, map[string]any{
+			"command":          command,
+			"workingDirectory": "src",
+		}),
+	)
+
+	if !result.Success {
+		t.Fatalf("shell command failed: %#v", result)
+	}
+	if len(changes) != 1 || changes[0].Operation != FileChangeCreated || changes[0].Path != "src/generated.txt" {
+		t.Fatalf("expected one scoped generated-file change, got %#v", changes)
 	}
 }
 

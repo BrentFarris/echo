@@ -75,13 +75,29 @@ func snapshotWorkspaceChanges(ctx context.Context, execution ExecutionContext) (
 	if len(roots) == 0 {
 		return nil, SafeError{Code: "missing_workspace", Message: "workspace path is required"}
 	}
-	snapshot := workspaceSnapshot{}
+	paths := make([]string, 0, len(roots))
 	for _, workspaceRoot := range roots {
 		root, err := workspaceRootAbsolutePath(workspaceRoot)
 		if err != nil {
 			return nil, err
 		}
-		err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		paths = append(paths, root)
+	}
+	return snapshotWorkspacePaths(ctx, execution, paths)
+}
+
+func snapshotWorkspaceDirectoryChanges(ctx context.Context, execution ExecutionContext, directory string) (workspaceSnapshot, error) {
+	directory = strings.TrimSpace(directory)
+	if directory == "" {
+		return nil, SafeError{Code: "missing_workspace", Message: "working directory is required"}
+	}
+	return snapshotWorkspacePaths(ctx, execution, []string{directory})
+}
+
+func snapshotWorkspacePaths(ctx context.Context, execution ExecutionContext, roots []string) (workspaceSnapshot, error) {
+	snapshot := workspaceSnapshot{}
+	for _, root := range roots {
+		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return nil
 			}
@@ -105,7 +121,7 @@ func snapshotWorkspaceChanges(ctx context.Context, execution ExecutionContext) (
 			if !info.Mode().IsRegular() {
 				return nil
 			}
-			fileSnapshot, err := readFileSnapshot(execution, path, info)
+			fileSnapshot, err := readFileSnapshotContext(ctx, execution, path, info)
 			if err != nil {
 				return nil
 			}
@@ -198,6 +214,10 @@ func snapshotExistingFile(ctx ExecutionContext, absolutePath string) (*FileSnaps
 }
 
 func readFileSnapshot(ctx ExecutionContext, absolutePath string, info os.FileInfo) (*FileSnapshot, error) {
+	return readFileSnapshotContext(ctx.context(), ctx, absolutePath, info)
+}
+
+func readFileSnapshotContext(runContext context.Context, ctx ExecutionContext, absolutePath string, info os.FileInfo) (*FileSnapshot, error) {
 	path := relativeWorkspacePath(ctx, absolutePath)
 	snapshot := &FileSnapshot{
 		Path:   path,
@@ -205,7 +225,7 @@ func readFileSnapshot(ctx ExecutionContext, absolutePath string, info os.FileInf
 		Bytes:  info.Size(),
 	}
 	if info.Size() > maxTextFileBytes {
-		hash, err := hashFile(absolutePath)
+		hash, err := hashFile(runContext, absolutePath)
 		if err != nil {
 			return nil, err
 		}
@@ -234,7 +254,7 @@ func snapshotHash(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func hashFile(path string) (string, error) {
+func hashFile(ctx context.Context, path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -242,7 +262,25 @@ func hashFile(path string) (string, error) {
 	defer file.Close()
 
 	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
+	buffer := make([]byte, 64*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		count, readErr := file.Read(buffer)
+		if count > 0 {
+			if _, err := hash.Write(buffer[:count]); err != nil {
+				return "", err
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return "", readErr
+		}
+	}
+	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil

@@ -32,23 +32,24 @@ const (
 )
 
 type LLMEndpoint struct {
-	ID                  string            `json:"id"`
-	Name                string            `json:"name"`
-	Endpoint            string            `json:"endpoint"`
-	Model               string            `json:"model"`
-	Temperature         float64           `json:"temperature"`
-	TopK                int               `json:"topK"`
-	TopP                float64           `json:"topP"`
-	MinP                float64           `json:"minP"`
-	ContextLength       int               `json:"contextLength"`
-	MaxTokens           int               `json:"maxTokens"`
-	FrequencyPenalty    float64           `json:"frequencyPenalty"`
-	PresencePenalty     float64           `json:"presencePenalty"`
-	RepetitionPenalty   float64           `json:"repetitionPenalty"`
-	TimeoutSeconds      int               `json:"timeoutSeconds"`
-	ThinkingTokenBudget int               `json:"thinkingTokenBudget"`
-	ThinkingCorrection  bool              `json:"thinkingCorrection,omitempty"`
-	Headers             map[string]string `json:"headers,omitempty"`
+	ID                    string            `json:"id"`
+	Name                  string            `json:"name"`
+	Endpoint              string            `json:"endpoint"`
+	Model                 string            `json:"model"`
+	Temperature           float64           `json:"temperature"`
+	TopK                  int               `json:"topK"`
+	TopP                  float64           `json:"topP"`
+	MinP                  float64           `json:"minP"`
+	ContextLength         int               `json:"contextLength"`
+	MaxTokens             int               `json:"maxTokens"`
+	FrequencyPenalty      float64           `json:"frequencyPenalty"`
+	PresencePenalty       float64           `json:"presencePenalty"`
+	RepetitionPenalty     float64           `json:"repetitionPenalty"`
+	TimeoutSeconds        int               `json:"timeoutSeconds"`
+	ThinkingTokenBudget   int               `json:"thinkingTokenBudget"`
+	ThinkingCorrection    bool              `json:"thinkingCorrection,omitempty"`
+	SystemPromptAppendage string            `json:"systemPromptAppendage,omitempty"`
+	Headers               map[string]string `json:"headers,omitempty"`
 }
 
 type EndpointSelection struct {
@@ -77,6 +78,7 @@ type Settings struct {
 	SearxngURL                        string            `json:"searxngUrl"`
 	ThinkingTokenBudget               int               `json:"thinkingTokenBudget"`
 	ThinkingCorrection                bool              `json:"thinkingCorrection,omitempty"`
+	SystemPromptAppendage             string            `json:"systemPromptAppendage,omitempty"`
 	HideLeadingWhitespaceIndicators   bool              `json:"hideLeadingWhitespaceIndicators,omitempty"`
 	DisableNotificationSounds         bool              `json:"disableNotificationSounds,omitempty"`
 	EnableChatCompletionNotifications bool              `json:"enableChatCompletionNotifications,omitempty"`
@@ -121,6 +123,18 @@ func DefaultSettings() Settings {
 }
 
 func (s Settings) Normalized() Settings {
+	return s.normalized(false)
+}
+
+// NormalizedEndpointProfiles normalizes settings while treating Endpoints as
+// the source of truth. The top-level endpoint fields are legacy mirrors used by
+// older callers and must not overwrite an endpoint profile when modern
+// settings are saved or loaded.
+func (s Settings) NormalizedEndpointProfiles() Settings {
+	return s.normalized(true)
+}
+
+func (s Settings) normalized(endpointProfilesAuthoritative bool) Settings {
 	s.Endpoint = strings.TrimSpace(s.Endpoint)
 	s.Model = strings.TrimSpace(s.Model)
 	s.SearxngURL = strings.TrimSpace(s.SearxngURL)
@@ -130,7 +144,7 @@ func (s Settings) Normalized() Settings {
 	s = normalizeSettingsGeneration(s)
 	s.Endpoints = normalizeLLMEndpoints(s.Endpoints, s)
 	s.EndpointSelection = normalizeEndpointSelection(s.EndpointSelection, s.Endpoints)
-	if s.Endpoint != "" || s.Model != "" {
+	if !endpointProfilesAuthoritative && (s.Endpoint != "" || s.Model != "") {
 		s.Endpoints = applyLegacyEndpointFields(s.Endpoints, s.EndpointSelection.Chat, s)
 	}
 	if endpoint, ok := endpointByID(s.Endpoints, s.EndpointSelection.Chat); ok {
@@ -340,11 +354,15 @@ func (e LLMEndpoint) Normalized(fallback Settings) LLMEndpoint {
 	e.Model = strings.TrimSpace(e.Model)
 	if !e.hasGenerationConfig() {
 		// Preserve per-endpoint headers that would otherwise be overwritten
-		// by the fallback settings headers.
+		// by the fallback settings values.
 		headers := cloneStringMap(e.Headers)
+		systemPromptAppendage := e.SystemPromptAppendage
 		e = e.WithGenerationFromSettings(fallback)
 		if len(headers) > 0 {
 			e.Headers = headers
+		}
+		if systemPromptAppendage != "" {
+			e.SystemPromptAppendage = systemPromptAppendage
 		}
 	}
 	e = normalizeEndpointGeneration(e)
@@ -365,6 +383,7 @@ func (e LLMEndpoint) WithGenerationFromSettings(settings Settings) LLMEndpoint {
 	e.TimeoutSeconds = settings.TimeoutSeconds
 	e.ThinkingTokenBudget = settings.ThinkingTokenBudget
 	e.ThinkingCorrection = settings.ThinkingCorrection
+	e.SystemPromptAppendage = settings.SystemPromptAppendage
 	e.Headers = cloneStringMap(settings.Headers)
 	return e
 }
@@ -384,6 +403,7 @@ func (e LLMEndpoint) ApplyToSettings(settings Settings) Settings {
 	settings.TimeoutSeconds = e.TimeoutSeconds
 	settings.ThinkingTokenBudget = e.ThinkingTokenBudget
 	settings.ThinkingCorrection = e.ThinkingCorrection
+	settings.SystemPromptAppendage = e.SystemPromptAppendage
 	settings.Headers = cloneStringMap(e.Headers)
 	return settings
 }

@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -240,6 +241,31 @@ func Execute(ctx ExecutionContext, name string, arguments json.RawMessage) Execu
 
 func (r *Registry) Execute(ctx ExecutionContext, name string, arguments json.RawMessage) (result ExecutionResult) {
 	result = ExecutionResult{Tool: name}
+	if ctx.FlowLog != nil {
+		ctx.FlowLog.Log(slog.LevelInfo, "tool_request",
+			slog.String("tool_call_id", ctx.ToolCallID),
+			slog.String("tool", name),
+			slog.String("arguments", string(arguments)),
+		)
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			result.Success = false
+			result.Output = nil
+			result.Error = &ExecutionError{Code: "tool_panic", Message: fmt.Sprintf("tool execution failed: %v", recovered)}
+		}
+		if ctx.FlowLog != nil {
+			data, err := json.Marshal(result)
+			if err != nil {
+				data = []byte(fmt.Sprintf(`{"tool":%q,"success":false,"error":{"code":"marshal_error","message":%q}}`, name, err.Error()))
+			}
+			ctx.FlowLog.Log(slog.LevelInfo, "tool_execution_result",
+				slog.String("tool_call_id", ctx.ToolCallID),
+				slog.String("tool", name),
+				slog.String("payload", string(data)),
+			)
+		}
+	}()
 
 	/* Permission checks: validate tool allowlist and path scope before execution. */
 	if err := r.checkPermissions(ctx, name, arguments); err != nil {
@@ -258,14 +284,6 @@ func (r *Registry) Execute(ctx ExecutionContext, name string, arguments json.Raw
 		result.Error = &ExecutionError{Code: "canceled", Message: "tool execution was canceled"}
 		return result
 	}
-
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			result.Success = false
-			result.Output = nil
-			result.Error = &ExecutionError{Code: "tool_panic", Message: fmt.Sprintf("tool execution failed: %v", recovered)}
-		}
-	}()
 
 	ctx.emit(Event{Type: "started", Tool: name})
 	output, err := tool.Execute(ctx, arguments)

@@ -292,10 +292,28 @@ func chatTemplateKwargsForSettings(settings Settings) *ChatTemplateKwargs {
 
 func messagesForRequest(settings Settings, messages []Message) []Message {
 	output := removeEmptyAssistantMessages(cloneMessages(messages))
+	appendSystemPromptAppendage(output, settings.SystemPromptAppendage)
 	if settings.ThinkingTokenBudget != 0 && settings.ThinkingCorrection {
 		appendThinkingCorrectionToLatestUserMessage(output)
 	}
 	return output
+}
+
+func appendSystemPromptAppendage(messages []Message, appendage string) {
+	appendage = strings.TrimSpace(appendage)
+	if appendage == "" {
+		return
+	}
+	for i := range messages {
+		if messages[i].Role != RoleSystem {
+			continue
+		}
+		messages[i].Content = appendPromptText(messages[i].Content, appendage)
+		if len(messages[i].ContentParts) > 0 {
+			messages[i].ContentParts = append(messages[i].ContentParts, TextContentPart(appendage))
+		}
+		return
+	}
 }
 
 func removeEmptyAssistantMessages(messages []Message) []Message {

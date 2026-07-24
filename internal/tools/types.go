@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/brent/echo/internal/flowlog"
 )
 
 type Schema map[string]any
@@ -54,20 +56,22 @@ type AttachedImage struct {
 }
 
 type ExecutionContext struct {
-	Context          context.Context
-	WorkspacePath    string
-	WorkspaceRoots   []WorkspaceRoot
+	Context                  context.Context
+	FlowLog                  *flowlog.Controller
+	ToolCallID               string
+	WorkspacePath            string
+	WorkspaceRoots           []WorkspaceRoot
 	SearxngURL               string
 	ComfyuiURL               string
 	ComfyuiDefaultCheckpoint string
 	ComfyuiTxt2imgWorkflow   string
 	ComfyuiImg2imgWorkflow   string
 	CodeNavigator            CodeNavigator
-	WorkspaceContext WorkspaceContextProvider
-	WorkspaceSkills  WorkspaceSkillsProvider
-	WorkspaceTasks   WorkspaceTasksProvider
-	Emit             EventEmitter
-	FileChanges      FileChangeSink
+	WorkspaceContext         WorkspaceContextProvider
+	WorkspaceSkills          WorkspaceSkillsProvider
+	WorkspaceTasks           WorkspaceTasksProvider
+	Emit                     EventEmitter
+	FileChanges              FileChangeSink
 	// ToolScopes is the unified per-tool permission and path-scope checker.
 	// Use this instead of ToolPermissions and PathPermissions.
 	ToolScopes *ToolScopeChecker
@@ -78,7 +82,7 @@ type ExecutionContext struct {
 	AgentModes      AgentModeProvider
 	KanbanExecutor  KanbanExecutor
 	KanbanManager   KanbanManager
-	AttachedImages []AttachedImage
+	AttachedImages  []AttachedImage
 	// GeneratedImages tracks images produced by tools during the current turn,
 	// keyed by ImageID. Used by save_image to resolve image data.
 	GeneratedImages map[string]AttachedImage

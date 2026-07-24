@@ -50,14 +50,6 @@ export function renderCodeView(workspace: services.Workspace): string {
           <span class="heading-path">${escapeHtml(codeWorkspaceFolderSummary(workspace))}</span>
         </div>
         <div class="code-view-actions">
-          <button class="secondary-button icon-text-button" type="button" data-action="close-code-view">
-            ${codeIcons.back}
-            <span>Chat</span>
-          </button>
-          <button class="secondary-button icon-text-button" type="button" data-action="open-git-changes">
-            ${codeIcons.git}
-            <span>Git</span>
-          </button>
           <button
             class="secondary-button icon-text-button code-explorer-toggle"
             type="button"
@@ -79,11 +71,11 @@ export function renderCodeView(workspace: services.Workspace): string {
             ${codeIcons.message}
             <span>Ask</span>
           </button>
-          <button class="primary-button icon-text-button" type="button" data-code-action="save-active-file" data-code-save ${saveDisabled ? "disabled" : ""}>
+          <button class="primary-button icon-text-button code-view-save-action" type="button" data-code-action="save-active-file" data-code-save ${saveDisabled ? "disabled" : ""}>
             ${activeTab?.saving ? `<span class="spinner" aria-hidden="true"></span>` : codeIcons.save}
             <span>Save</span>
           </button>
-          <button class="secondary-button icon-text-button" type="button" data-code-action="toggle-filter" aria-pressed="${state.showIgnored}">
+          <button class="secondary-button icon-text-button code-view-ignored-action" type="button" data-code-action="toggle-filter" aria-pressed="${state.showIgnored}">
             ${codeIcons.code}
             <span>${escapeHtml(filterLabel)}</span>
           </button>
@@ -282,6 +274,7 @@ function renderPendingCreateRow(state: CodeWorkspaceState, depth: number): strin
 
 function renderCodeExplorerSidebar(workspaceID: string, dirtyCount: number): string {
   const state = ensureCodeState(workspaceID);
+  const filterLabel = state.showIgnored ? "Hide ignored" : "Show ignored";
   return `
     <aside class="code-explorer" id="code-explorer-${escapeAttribute(workspaceID)}" aria-label="Workspace files">
       <div class="code-explorer-dismiss-handle" data-code-action="close-explorer-drawer"><span></span></div>
@@ -290,6 +283,16 @@ function renderCodeExplorerSidebar(workspaceID: string, dirtyCount: number): str
         <div class="code-explorer-toolbar" aria-label="File explorer actions">
           <button class="icon-button" type="button" title="Find in files" aria-label="Find in files" data-code-action="open-text-search">
             ${codeIcons.search}
+          </button>
+          <button
+            class="icon-button code-text-search-ignored-toggle ${state.showIgnored ? "is-active" : ""}"
+            type="button"
+            title="${escapeAttribute(filterLabel)}"
+            aria-label="${escapeAttribute(filterLabel)}"
+            aria-pressed="${state.showIgnored}"
+            data-code-action="toggle-filter"
+          >
+            ${codeIcons.code}
           </button>
           <button class="icon-button" type="button" title="New file" aria-label="New file" data-code-action="create-selected-file">
             ${codeIcons.newFile}
@@ -380,6 +383,8 @@ function renderTemporaryFileEntry(
 }
 
 function renderTextSearchSidebar(workspaceID: string): string {
+  const state = ensureCodeState(workspaceID);
+  const filterLabel = state.showIgnored ? "Hide ignored" : "Show ignored";
   return `
     <aside class="code-explorer code-text-search-sidebar" id="code-explorer-${escapeAttribute(workspaceID)}" aria-label="Find in files">
       <div class="code-explorer-dismiss-handle" data-code-action="close-explorer-drawer"><span></span></div>
@@ -388,6 +393,16 @@ function renderTextSearchSidebar(workspaceID: string): string {
         <div class="code-explorer-toolbar" aria-label="Find in files actions">
           <button class="icon-button" type="button" title="Show files" aria-label="Show files" data-code-action="close-text-search">
             ${codeIcons.file}
+          </button>
+          <button
+            class="icon-button code-text-search-ignored-toggle ${state.showIgnored ? "is-active" : ""}"
+            type="button"
+            title="${escapeAttribute(filterLabel)}"
+            aria-label="${escapeAttribute(filterLabel)}"
+            aria-pressed="${state.showIgnored}"
+            data-code-action="toggle-filter"
+          >
+            ${codeIcons.code}
           </button>
           <button class="icon-button code-explorer-drawer-close" type="button" title="Close file list" aria-label="Close file list" data-code-action="close-explorer-drawer">
             ${codeIcons.close}

@@ -13,11 +13,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	goruntime "runtime"
 	"strings"
 	"sync"
 
-
+	"github.com/brent/echo/internal/flowlog"
 	"github.com/brent/echo/internal/llm"
 	"github.com/google/uuid"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -188,8 +189,10 @@ type SystemService struct {
 	taskMu                  sync.Mutex
 	state                   AppState
 	persistedChatSessions   map[string]persistedChatSession
+	persistedChatWorkspaces map[string]persistedChatWorkspace
 	chatMu                  sync.Mutex
 	chatSessions            map[string]*chatSessionState
+	chatWorkspaces          map[string]*chatWorkspaceState
 	chatStreams             map[string]context.CancelFunc
 	chatSeq                 uint64
 	researchMu              sync.Mutex
@@ -199,8 +202,9 @@ type SystemService struct {
 	kanbanAgents            map[string]*kanbanAgentRun
 	kanbanAgentSeq          uint64
 	kanbanDetailViews       map[string]string
-	shellCommandRuns        map[string]context.CancelFunc // runID -> cancel func
-	shellCommandSeq         uint64
+	terminalMu              sync.Mutex
+	terminalSessions        map[string]*terminalSession // workspaceID -> session
+	terminalSeq             uint64
 	heartbeats              map[string]*heartbeatHandle // workspaceID -\u003e running heartbeat
 	watchdogs               map[string]*watchdogHandle  // workspaceID -> running watchdog
 	fileChangeMu            sync.Mutex
@@ -226,6 +230,7 @@ type SystemService struct {
 	fileChangesEventSink    func(FileChangesEvent)
 	inlineCodeEventSink     func(InlineCodePromptEvent)
 	tokenBudget             *TokenBudgetService
+	flowLog                 *flowlog.Controller
 }
 
 func NewSystemService() *SystemService {
@@ -243,27 +248,30 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 			Phase:     "release-readiness",
 			AccentHex: "#8f1d2c",
 		},
-		storePath:             storePath,
-		state:                 defaultAppState(),
-		persistedChatSessions: make(map[string]persistedChatSession),
-		chatSessions:          make(map[string]*chatSessionState),
-		chatStreams:           make(map[string]context.CancelFunc),
-		researchRuns:          make(map[string]*chatResearchRun),
-		kanbanRuns:            make(map[string]context.CancelFunc),
-		kanbanAgents:          make(map[string]*kanbanAgentRun),
-		kanbanDetailViews:     make(map[string]string),
-		shellCommandRuns:      make(map[string]context.CancelFunc),
-		heartbeats:            make(map[string]*heartbeatHandle),
-		watchdogs:             make(map[string]*watchdogHandle),
-		fileChanges:           make(map[string][]trackedFileChange),
-		workspaceToolLocks:    make(map[string]*sync.Mutex),
-		gitRepositoryViews:    make(map[string]WorkspaceGitRepositoryView),
-		lspClients:            make(map[string]*lspClient),
-		lspClientStarts:       make(map[string]*lspClientStart),
-		lspWarmups:            make(map[string]*lspWarmupRun),
-		workspaceTextSearches: make(map[string]workspaceTextSearchRun),
-		eventSubscribers:      make(map[uint64]chan RuntimeEvent),
-		tokenBudget:           newTokenBudgetService(),
+		storePath:               storePath,
+		state:                   defaultAppState(),
+		persistedChatSessions:   make(map[string]persistedChatSession),
+		persistedChatWorkspaces: make(map[string]persistedChatWorkspace),
+		chatSessions:            make(map[string]*chatSessionState),
+		chatWorkspaces:          make(map[string]*chatWorkspaceState),
+		chatStreams:             make(map[string]context.CancelFunc),
+		researchRuns:            make(map[string]*chatResearchRun),
+		kanbanRuns:              make(map[string]context.CancelFunc),
+		kanbanAgents:            make(map[string]*kanbanAgentRun),
+		kanbanDetailViews:       make(map[string]string),
+		terminalSessions:        make(map[string]*terminalSession),
+		heartbeats:              make(map[string]*heartbeatHandle),
+		watchdogs:               make(map[string]*watchdogHandle),
+		fileChanges:             make(map[string][]trackedFileChange),
+		workspaceToolLocks:      make(map[string]*sync.Mutex),
+		gitRepositoryViews:      make(map[string]WorkspaceGitRepositoryView),
+		lspClients:              make(map[string]*lspClient),
+		lspClientStarts:         make(map[string]*lspClientStart),
+		lspWarmups:              make(map[string]*lspWarmupRun),
+		workspaceTextSearches:   make(map[string]workspaceTextSearchRun),
+		eventSubscribers:        make(map[uint64]chan RuntimeEvent),
+		tokenBudget:             newTokenBudgetService(),
+		flowLog:                 flowlog.NewController(),
 	}
 	_ = service.load()
 	service.debugger = newDebugManager(service)
@@ -306,7 +314,14 @@ func (s *SystemService) GetWorkspaceActivitySummaries() []WorkspaceActivitySumma
 
 		// Chat busy check
 		s.chatMu.Lock()
-		_, summary.IsChatBusy = s.chatStreams[wsID]
+		if chatWorkspace := s.chatWorkspaces[wsID]; chatWorkspace != nil {
+			for _, chatID := range chatWorkspace.TabIDs {
+				if _, busy := s.chatStreams[chatID]; busy {
+					summary.IsChatBusy = true
+					break
+				}
+			}
+		}
 		_, summary.IsKanbanRunning = s.kanbanRuns[wsID]
 		summary.ActiveAgentCount = 0
 		for agentKey := range s.kanbanAgents {
@@ -427,19 +442,29 @@ func (s *SystemService) DeleteSavedCommand(workspaceID, id string) error {
 }
 
 func (s *SystemService) SaveSettings(settings llm.Settings) (AppState, error) {
-	settings = settings.Normalized()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if endpointProfilesChanged(settings, s.state.Settings) {
+		settings = settings.NormalizedEndpointProfiles()
+	} else {
+		settings = settings.Normalized()
+	}
 	if err := settings.Validate(); err != nil {
 		return AppState{}, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.state.Settings = settings
 	s.refreshWorkspaceStatusesLocked()
 	if err := s.saveLocked(); err != nil {
 		return AppState{}, err
 	}
 	return cloneState(s.state), nil
+}
+
+func endpointProfilesChanged(incoming llm.Settings, current llm.Settings) bool {
+	return incoming.EndpointSelection != current.EndpointSelection ||
+		!reflect.DeepEqual(incoming.Endpoints, current.Endpoints)
 }
 
 func (s *SystemService) AddWorkspace(path string) (AppState, error) {
@@ -966,6 +991,7 @@ func (s *SystemService) DeleteWorkspace(id string) (AppState, error) {
 	s.state.Workspaces = next
 	s.state.KanbanCards = cardsWithoutWorkspace(s.state.KanbanCards, id)
 	delete(s.persistedChatSessions, id)
+	delete(s.persistedChatWorkspaces, id)
 	delete(s.tokenBudget.budgets, id)
 	if s.state.ActiveWorkspaceID == id {
 		s.state.ActiveWorkspaceID = ""
@@ -987,6 +1013,7 @@ func (s *SystemService) DeleteWorkspace(id string) (AppState, error) {
 	s.chatMu.Unlock()
 	s.dropWorkspaceChangeReview(id)
 	s.closeWorkspaceLSPClients(id)
+	s.closeWorkspaceTerminalSession(id)
 	if s.debugger != nil {
 		_ = s.debugger.dropWorkspace(id)
 	}
@@ -1230,7 +1257,11 @@ func (s *SystemService) load() error {
 	if legacyResearchAgentConcurrency {
 		state.Settings.ResearchAgentConcurrency = llm.DefaultResearchAgentConcurrency
 	}
-	state.Settings = state.Settings.Normalized()
+	if legacyLLMEndpoints {
+		state.Settings = state.Settings.Normalized()
+	} else {
+		state.Settings = state.Settings.NormalizedEndpointProfiles()
+	}
 	missingLLMEndpoint := state.Settings.Endpoint == ""
 	missingLLMModel := state.Settings.Model == ""
 	missingWebAccessToken := strings.TrimSpace(state.WebAccess.AccessToken) == ""
@@ -1246,10 +1277,15 @@ func (s *SystemService) load() error {
 	if state.Settings.Model == "" {
 		state.Settings.Model = llm.DefaultModel
 	}
-	state.Settings = state.Settings.Normalized()
+	if legacyThinkingDisabled || missingLLMEndpoint || missingLLMModel {
+		state.Settings = state.Settings.Normalized()
+	} else {
+		state.Settings = state.Settings.NormalizedEndpointProfiles()
+	}
 	normalizeLoadedWorkspaces(&state)
 	state.KanbanCards = []KanbanCard{}
 	loadedChatSessions := make(map[string]persistedChatSession)
+	loadedChatWorkspaces := make(map[string]persistedChatWorkspace)
 	workspacesToMigrate := make(map[string]bool)
 	for _, workspace := range state.Workspaces {
 		autosave, found, autosaveErr := readWorkspaceAutosave(workspace)
@@ -1258,12 +1294,22 @@ func (s *SystemService) load() error {
 				card.WorkspaceID = workspace.ID
 				state.KanbanCards = append(state.KanbanCards, cloneKanbanCard(card))
 			}
-			if autosave.ChatSession != nil {
+			if autosave.ChatWorkspace != nil {
+				chatWorkspace := *autosave.ChatWorkspace
+				chatWorkspace.WorkspaceID = workspace.ID
+				for index := range chatWorkspace.Sessions {
+					chatWorkspace.Sessions[index].WorkspaceID = workspace.ID
+					chatWorkspace.Sessions[index].Messages = cloneChatMessages(chatWorkspace.Sessions[index].Messages)
+					chatWorkspace.Sessions[index].History = cloneLLMMessages(chatWorkspace.Sessions[index].History)
+				}
+				loadedChatWorkspaces[workspace.ID] = chatWorkspace
+			} else if autosave.ChatSession != nil {
 				session := *autosave.ChatSession
 				session.WorkspaceID = workspace.ID
 				session.Messages = cloneChatMessages(session.Messages)
 				session.History = cloneLLMMessages(session.History)
 				loadedChatSessions[workspace.ID] = session
+				workspacesToMigrate[workspace.ID] = true
 			}
 			continue
 		}
@@ -1304,16 +1350,25 @@ func (s *SystemService) load() error {
 		s.migrateGlobalAgentModesToDisk(storedRaw.AgentModes)
 	}
 	s.persistedChatSessions = loadedChatSessions
+	s.persistedChatWorkspaces = loadedChatWorkspaces
 	interruptedChat := s.restoreChatSessionsLocked()
 	changed := s.refreshWorkspaceStatusesLocked()
 	for _, workspace := range s.state.Workspaces {
 		if !workspacesToMigrate[workspace.ID] {
 			continue
 		}
+		var chatWorkspace *persistedChatWorkspace
 		var chat *persistedChatSession
-		if persisted, ok := s.persistedChatSessions[workspace.ID]; ok {
+		if persisted, ok := s.persistedChatWorkspaces[workspace.ID]; ok {
 			snapshot := persisted
-			chat = &snapshot
+			chatWorkspace = &snapshot
+			for _, session := range persisted.Sessions {
+				if session.ChatID == persisted.ActiveChatID {
+					activeSnapshot := session
+					chat = &activeSnapshot
+					break
+				}
+			}
 		}
 		cards := make([]KanbanCard, 0)
 		for _, card := range s.state.KanbanCards {
@@ -1322,9 +1377,10 @@ func (s *SystemService) load() error {
 			}
 		}
 		if err := writeWorkspaceAutosave(workspace, workspaceAutosave{
-			Version:     workspaceAutosaveVersion,
-			ChatSession: chat,
-			KanbanCards: cards,
+			Version:       workspaceAutosaveVersion,
+			ChatSession:   chat,
+			ChatWorkspace: chatWorkspace,
+			KanbanCards:   cards,
 		}); err != nil {
 			return err
 		}

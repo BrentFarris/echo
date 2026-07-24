@@ -77,6 +77,26 @@ func TestWebServerRejectsDisallowedRPCMethod(t *testing.T) {
 	}
 }
 
+func TestWebServerTerminalRPCAllowlist(t *testing.T) {
+	for _, method := range []string{
+		"StartTerminalSession",
+		"SyncTerminalSession",
+		"WriteTerminalSession",
+		"ResizeTerminalSession",
+		"StopTerminalSession",
+		"RestartTerminalSession",
+	} {
+		if !allowedRPCMethods[method] {
+			t.Fatalf("expected terminal RPC %s to be allowlisted", method)
+		}
+	}
+	for _, retired := range []string{"RunShellCommand", "StopShellCommand"} {
+		if allowedRPCMethods[retired] {
+			t.Fatalf("expected retired shell RPC %s to be removed", retired)
+		}
+	}
+}
+
 func TestWebServerSSEReceivesServiceEventsAndTokenRotationClosesOldClient(t *testing.T) {
 	service, token := newWebServerTestService(t)
 	state, err := service.AddWorkspace(t.TempDir())

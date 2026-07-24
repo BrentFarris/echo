@@ -10,13 +10,13 @@ const (
 	HeartbeatRuntimeEventName           = heartbeatEventName
 	LivenessRuntimeEventName            = livenessEventName
 	WatchdogRuntimeEventName            = watchdogEventName
-	ShellRuntimeEventName               = shellCommandEventName
+	TerminalRuntimeEventName            = terminalEventName
 	WorkspaceTextSearchRuntimeEventName = workspaceTextSearchEventName
 )
 
 const watchdogEventName = "echo:watchdog:event"
 
-const shellCommandEventName = "echo:shell:event"
+const terminalEventName = "echo:terminal:event"
 
 type HeartbeatEvent struct {
 	WorkspaceID string `json:"workspaceId"`

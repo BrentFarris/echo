@@ -13,7 +13,7 @@ import { appRoot, focusInitialElement } from "./dom";
 import { bindEvents } from "./events";
 import { renderGitRepositoryPage } from "./git";
 import { icons } from "./icons";
-import { kanbanBoardFor, gitRepositoryViewFor, activeWorkspace, kanbanCards, state, getActiveChatKanbanTab, changeReviewFor, leadingWhitespaceIndicatorsEnabled } from "./state";
+import { kanbanBoardFor, gitRepositoryViewFor, activeWorkspace, chatStateKey, kanbanCards, state, getActiveChatKanbanTab, changeReviewFor, leadingWhitespaceIndicatorsEnabled } from "./state";
 import { renderSettingsOverlay } from "./settings";
 import { renderToasts } from "./toasts";
 import { renderTaskPanel, renderTaskDetail } from "./tasks";
@@ -23,6 +23,7 @@ import { hasKanbanRuntime, getHeartbeatInterval, heartbeatIntervalLabel, getWatc
 import { services } from "../../wailsjs/go/models";
 import { renderDashboard } from "./dashboard";
 import { updateWindowTitle } from "./title";
+import { mountTerminalDock, renderTerminalDock } from "./terminal";
 
 /* ------------------------------------------------------------------ */
 /*  Workspace activity helpers                                         */
@@ -358,6 +359,11 @@ function renderApp(refreshCodeView: boolean): void {
       : "";
   }
 
+  const terminal = updateRegion(shell, "terminal", renderTerminalDock(workspace));
+  if (terminal.changed) {
+    changedRegions.push(terminal.element);
+  }
+
   const mobileNav = updateRegion(
     shell,
     "mobile-nav",
@@ -372,6 +378,7 @@ function renderApp(refreshCodeView: boolean): void {
   }
 
   changedRegions.forEach((region) => bindEvents(region));
+  mountTerminalDock(terminal.element, workspace);
   restoreRenderScrollSnapshots(scrollSnapshots);
   restoreRenderFocusSnapshot(focusSnapshot);
   window.requestAnimationFrame(() => restoreRenderScrollSnapshots(scrollSnapshots));
@@ -534,7 +541,7 @@ export function renderWorkspacePanels(workspace: services.Workspace | null): str
   const mode = state.appMode;
   const board = workspace ? kanbanBoardFor(workspace.id) : null;
   const running = workspace ? state.runningKanbanWorkspaces.has(workspace.id) : false;
-  const decomposing = workspace ? state.executingPlans.has(workspace.id) : false;
+  const decomposing = workspace ? state.executingPlans.has(chatStateKey(workspace.id)) : false;
   const hasCards = board ? kanbanCards(board).length > 0 : false;
   const hasDoneCards = board ? (board.done ?? []).length > 0 : false;
 
@@ -544,7 +551,6 @@ export function renderWorkspacePanels(workspace: services.Workspace | null): str
     mainPanel = `
       ${workspace ? renderBudgetBar(workspace.id) : ""}
       ${renderChatPanel(workspace, true)}
-      ${workspace ? renderTerminalPanel(workspace) : ""}
     `;
   } else if (mode === "tasks") {
     mainPanel = workspace ? renderTaskPanel(workspace) : `<div class="empty-state">Add a workspace to create tasks.</div>`;
@@ -675,87 +681,6 @@ function pendingChangesCount(workspaceID: string): number {
   return Math.max(0, changeReviewFor(workspaceID).fileCount ?? 0);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Terminal panel                                                     */
-/* ------------------------------------------------------------------ */
-
-import type { ShellCommandRun } from "./types";
-
-export function renderTerminalPanel(workspace: services.Workspace): string {
-  const isOpen = state.terminalOpen.has(workspace.id);
-  const runs = state.terminalRuns.get(workspace.id) ?? [];
-  const draft = state.terminalDrafts.get(workspace.id) ?? "";
-  const hasRunning = runs.some((r) => r.status === "running");
-  const savedCmds = state.savedCommands.get(workspace.id) ?? [];
-  const isSavedOpen = state.savedCommandOpenSections.has(workspace.id);
-
-  return `
-    <details class="terminal-panel" data-terminal-panel data-workspace-id="${escapeAttribute(workspace.id)}" ${isOpen ? "open" : ""}>
-      <summary data-action="toggle-terminal" data-workspace-id="${escapeAttribute(workspace.id)}">
-        ${icons.terminal}
-        <span>Terminal</span>
-        ${hasRunning ? `<span class="spinner terminal-spinner"></span>` : ""}
-      </summary>
-      <div class="terminal-content">
-        <div class="terminal-runs" data-terminal-runs>
-          ${runs.map((run) => renderTerminalRun(run)).join("")}
-        </div>
-        ${renderSavedCommandsSection(workspace)}
-        <div class="terminal-input-row">
-          <span class="terminal-prompt">$</span>
-          <input
-            class="terminal-input"
-            type="text"
-            placeholder="Enter command..."
-            value="${escapeAttribute(draft)}"
-            data-terminal-input
-            data-workspace-id="${escapeAttribute(workspace.id)}"
-            aria-label="Terminal command input"
-          />
-          <button class="icon-button terminal-run-button" type="button" title="Run command" data-action="run-shell-command" data-workspace-id="${escapeAttribute(workspace.id)}">
-            ${icons.execute}
-          </button>
-        </div>
-      </div>
-    </details>
-  `;
-}
-
-function renderSavedCommandsSection(workspace: services.Workspace): string {
-  const savedCmds = state.savedCommands.get(workspace.id) ?? [];
-  const isSavedOpen = state.savedCommandOpenSections.has(workspace.id);
-  const wsIdAttr = escapeAttribute(workspace.id);
-
-  if (savedCmds.length === 0) {
-    // Show minimal section with just the "Save current" button when no commands exist
-    return `
-      <div class="terminal-saved-commands">
-        <div class="terminal-saved-bar">
-          <button type="button" class="icon-button terminal-save-current-button" title="Save current command" data-action="add-saved-command" data-workspace-id="${wsIdAttr}">
-            ${icons.plus} Save current
-          </button>
-        </div>
-      </div>
-    `;
-  }
-
-  return `
-    <details class="terminal-saved-commands" ${isSavedOpen ? "open" : ""}>
-      <summary class="terminal-saved-header" data-action="toggle-saved-commands" data-workspace-id="${wsIdAttr}">
-        Saved Commands (${savedCmds.length})
-      </summary>
-      <div class="terminal-saved-list">
-        ${savedCmds.map((sc) => renderSavedCommandItem(sc, workspace.id)).join("")}
-        <div class="terminal-saved-bar">
-          <button type="button" class="icon-button terminal-save-current-button" title="Save current command" data-action="add-saved-command" data-workspace-id="${wsIdAttr}">
-            ${icons.plus} Save current
-          </button>
-        </div>
-      </div>
-    </details>
-  `;
-}
-
 function renderSavedCommandDialog(): string {
   const editingId = state.savedCommandEditingId;
   if (!editingId) return "";
@@ -789,54 +714,6 @@ function renderSavedCommandDialog(): string {
           <button type="button" class="primary-button" data-action="save-edited-command" data-workspace-id="${wsIdAttr}" data-saved-edit-id="${escapeAttribute(editingId)}">Save</button>
         </div>
       </div>
-    </div>
-  `;
-}
-
-function renderSavedCommandItem(sc: services.SavedCommand, workspaceId: string): string {
-  const wsIdAttr = escapeAttribute(workspaceId);
-
-  return `
-    <div class="terminal-saved-item" data-action="run-saved-command" data-workspace-id="${wsIdAttr}" data-saved-id="${escapeAttribute(sc.id)}">
-      <div class="terminal-saved-info">
-        <span class="terminal-saved-name" title="${escapeAttribute(sc.name)}">${escapeHtml(sc.name)}</span>
-        <span class="terminal-saved-cmd" title="${escapeAttribute(sc.command)}">${escapeHtml(sc.command)}</span>
-      </div>
-      <div class="terminal-saved-actions">
-        <button type="button" class="icon-button terminal-edit-saved-button" title="Edit ${escapeAttribute(sc.name)}" data-action="edit-saved-command" data-workspace-id="${wsIdAttr}" data-saved-id="${escapeAttribute(sc.id)}">
-          ${icons.edit}
-        </button>
-        <button type="button" class="icon-button danger-button terminal-delete-saved-button" title="Delete ${escapeAttribute(sc.name)}" data-action="delete-saved-command" data-workspace-id="${wsIdAttr}" data-saved-id="${escapeAttribute(sc.id)}">
-          ${icons.trash}
-        </button>
-      </div>
-    </div>
-  `;
-}
-
-function renderTerminalRun(run: ShellCommandRun): string {
-  const isRunning = run.status === "running";
-  let statusHtml = "";
-
-  if (isRunning) {
-    statusHtml = `<span class="spinner terminal-run-spinner"></span><button class="icon-button danger-button terminal-stop-button" type="button" title="Stop command" data-action="stop-shell-command" data-workspace-id="${escapeAttribute(run.id.split(':')[0])}" data-run-id="${escapeAttribute(run.id)}">${icons.stop}</button>`;
-  } else if (run.status === "completed" || run.status === "timed-out") {
-    const exitClass = run.exitCode === 0 ? "terminal-exit-success" : "terminal-exit-error";
-    const durationSec = run.durationMs !== undefined ? (run.durationMs / 1000).toFixed(1) + "s" : "";
-    statusHtml = `<span class="terminal-exit-badge ${exitClass}">Exit ${run.exitCode ?? "?"}</span>${durationSec ? `<time class="terminal-duration">${escapeHtml(durationSec)}</time>` : ""}`;
-  }
-
-  return `
-    <div class="terminal-run" data-terminal-run data-run-id="${escapeAttribute(run.id)}">
-      <div class="terminal-run-header">
-        <code class="terminal-command">${escapeHtml(run.command || "(command)")}</code>
-        <div class="terminal-run-status">${statusHtml}</div>
-      </div>
-      ${run.lines.length > 0 ? `
-        <div class="terminal-output" data-terminal-output-for="${escapeAttribute(run.id)}">
-          ${run.lines.map((line) => `<div class="terminal-line terminal-${line.type}"><span>${escapeHtml(line.text)}</span></div>`).join("")}
-        </div>
-      ` : ""}
     </div>
   `;
 }

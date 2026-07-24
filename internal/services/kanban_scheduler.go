@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
@@ -237,17 +238,19 @@ func (s *SystemService) Shutdown() {
 	for _, cancel := range s.chatStreams {
 		chatCancels = append(chatCancels, cancel)
 	}
-	for _, session := range s.chatSessions {
-		if session == nil || !session.Busy {
-			continue
-		}
-		session.Busy = false
-		session.StreamID = ""
-		for i := range session.Messages {
-			if session.Messages[i].Status == "streaming" || session.Messages[i].Status == "retrying" {
-				session.Messages[i].Status = "canceled"
-				if session.Messages[i].Error == "" {
-					session.Messages[i].Error = "Interrupted when Echo closed."
+	for _, workspace := range s.chatWorkspaces {
+		for _, session := range workspace.Sessions {
+			if session == nil || !session.Busy {
+				continue
+			}
+			session.Busy = false
+			session.StreamID = ""
+			for i := range session.Messages {
+				if session.Messages[i].Status == "streaming" || session.Messages[i].Status == "retrying" || session.Messages[i].Status == "compacting" {
+					session.Messages[i].Status = "canceled"
+					if session.Messages[i].Error == "" {
+						session.Messages[i].Error = "Interrupted when Echo closed."
+					}
 				}
 			}
 		}
@@ -280,6 +283,10 @@ func (s *SystemService) Shutdown() {
 	}
 	_ = s.persistAllWorkspaceAutosaves()
 	s.closeAllLSPClients()
+	s.closeAllTerminalSessions()
+	if s.flowLog != nil {
+		_ = s.flowLog.Close()
+	}
 }
 
 func (s *SystemService) runKanbanScheduler(ctx context.Context, workspace Workspace, settings llm.Settings, concurrency int) {
@@ -381,6 +388,8 @@ func (s *SystemService) startKanbanAgent(parent context.Context, workspace Works
 }
 
 func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace, settings llm.Settings, cardID string, agentID uint64) {
+	s.logAIEvent(slog.LevelInfo, "ai_operation_started", slog.String("surface", "kanban"), slog.Uint64("agent_id", agentID))
+	defer s.logAIEvent(slog.LevelInfo, "ai_operation_finished", slog.String("surface", "kanban"), slog.Uint64("agent_id", agentID))
 	card, dependencyOutputs, ok := s.agentCardSnapshot(workspace.ID, cardID)
 	if !ok {
 		return
@@ -388,7 +397,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 
 	contextBrief := s.kanbanWorkspaceContextBrief(ctx, workspace, card, dependencyOutputs, agentID)
 
-	client, err := llm.NewClient(settings)
+	client, err := s.newLLMClient(settings)
 	if err != nil {
 		s.blockKanbanCard(workspace.ID, cardID, agentID, "Agent error", err.Error())
 		return
@@ -464,6 +473,8 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 			}
 			if llm.IsContextLengthExceeded(err) {
 				if recovery, ok := recoverToolResultContext(messages, recoverableToolCalls); ok {
+					s.logAIEvent(slog.LevelWarn, "context_recovery", slog.String("surface", "kanban"), slog.String("tool_call_id", recovery.Call.ID))
+					s.logModelFacingToolResult(recovery.Call, []llm.Message{recovery.ResultMessage})
 					messages = recovery.Messages
 					s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
 						Type:    "tool_result",
@@ -873,7 +884,7 @@ func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Wor
 	}
 
 	return kanbanToolCallExecution{
-		Messages:        toolResultMessages(call, result, data),
+		Messages:        s.loggedToolResultMessages(call, result, data),
 		ChangedPaths:    affectedPathsFromChanges(execution.Changes),
 		SkillCheckpoint: workspaceSkillCheckpointCompleted(call, result),
 	}
@@ -1083,10 +1094,15 @@ func (s *SystemService) finishKanbanCard(workspaceID string, cardID string, agen
 				break
 			}
 		}
+		var chatWorkspace *persistedChatWorkspace
 		var chat *persistedChatSession
-		if session := s.chatSessions[workspaceID]; session != nil && (len(session.Messages) > 0 || len(session.History) > 0) {
-			snapshot := persistedChatSessionFrom(session)
-			chat = &snapshot
+		if workspaceState := s.chatWorkspaces[workspaceID]; workspaceState != nil {
+			snapshot := persistedChatWorkspaceFrom(workspaceState)
+			chatWorkspace = &snapshot
+			if active := workspaceState.Sessions[workspaceState.ActiveChatID]; active != nil {
+				activeSnapshot := persistedChatSessionFrom(active)
+				chat = &activeSnapshot
+			}
 		}
 		cards := make([]KanbanCard, 0, len(board.Done))
 		for _, card := range s.state.KanbanCards {
@@ -1095,9 +1111,10 @@ func (s *SystemService) finishKanbanCard(workspaceID string, cardID string, agen
 			}
 		}
 		_ = writeWorkspaceAutosave(workspace, workspaceAutosave{
-			Version:     workspaceAutosaveVersion,
-			ChatSession: chat,
-			KanbanCards: cards,
+			Version:       workspaceAutosaveVersion,
+			ChatSession:   chat,
+			ChatWorkspace: chatWorkspace,
+			KanbanCards:   cards,
 		})
 	}
 	s.mu.Unlock()

@@ -13,22 +13,22 @@ import (
 
 const (
 	workspaceAutosaveFileName = "autosave.json"
-	workspaceAutosaveVersion  = 1
+	workspaceAutosaveVersion  = 2
 )
 
 type storedAppState struct {
-	Settings          llm.Settings                       `json:"settings"`
-	WebAccess         WebAccessSettings                  `json:"webAccess"`
-	Workspaces        []Workspace                        `json:"workspaces"`
-	ActiveWorkspaceID string                             `json:"activeWorkspaceId"`
-	HeartbeatConfigs  map[string]HeartbeatConfig         `json:"heartbeatConfigs,omitempty"`
-	LivenessConfigs   map[string]LivenessConfig          `json:"livenessConfigs,omitempty"`
-	WatchdogConfigs   map[string]WatchdogConfig          `json:"watchdogConfigs,omitempty"`
-	TokenBudgets      map[string]TokenBudget             `json:"tokenBudgets,omitempty"`
-	DashboardLayouts  map[string][]DashboardWidgetJSON   `json:"dashboardLayouts,omitempty"`
-	SavedCommands     map[string][]SavedCommand          `json:"savedCommands,omitempty"`
-	KanbanCards       []KanbanCard                       `json:"kanbanCards,omitempty"`
-	ChatSessions      map[string]persistedChatSession    `json:"chatSessions,omitempty"`
+	Settings          llm.Settings                     `json:"settings"`
+	WebAccess         WebAccessSettings                `json:"webAccess"`
+	Workspaces        []Workspace                      `json:"workspaces"`
+	ActiveWorkspaceID string                           `json:"activeWorkspaceId"`
+	HeartbeatConfigs  map[string]HeartbeatConfig       `json:"heartbeatConfigs,omitempty"`
+	LivenessConfigs   map[string]LivenessConfig        `json:"livenessConfigs,omitempty"`
+	WatchdogConfigs   map[string]WatchdogConfig        `json:"watchdogConfigs,omitempty"`
+	TokenBudgets      map[string]TokenBudget           `json:"tokenBudgets,omitempty"`
+	DashboardLayouts  map[string][]DashboardWidgetJSON `json:"dashboardLayouts,omitempty"`
+	SavedCommands     map[string][]SavedCommand        `json:"savedCommands,omitempty"`
+	KanbanCards       []KanbanCard                     `json:"kanbanCards,omitempty"`
+	ChatSessions      map[string]persistedChatSession  `json:"chatSessions,omitempty"`
 }
 
 // storedAppStateRaw is used to read old state files that may contain agentModes.
@@ -43,16 +43,25 @@ type storedAppStateRaw struct {
 }
 
 type workspaceAutosave struct {
-	Version     int                   `json:"version"`
-	ChatSession *persistedChatSession `json:"chatSession,omitempty"`
-	KanbanCards []KanbanCard          `json:"kanbanCards"`
+	Version       int                     `json:"version"`
+	ChatSession   *persistedChatSession   `json:"chatSession,omitempty"`
+	ChatWorkspace *persistedChatWorkspace `json:"chatWorkspace,omitempty"`
+	KanbanCards   []KanbanCard            `json:"kanbanCards"`
 }
 
 type persistedChatSession struct {
 	WorkspaceID string        `json:"workspaceId"`
+	ChatID      string        `json:"chatId,omitempty"`
+	Preview     string        `json:"preview,omitempty"`
 	Messages    []ChatMessage `json:"messages"`
 	History     []llm.Message `json:"history"`
 	Revision    uint64        `json:"revision"`
+}
+
+type persistedChatWorkspace struct {
+	WorkspaceID  string                 `json:"workspaceId"`
+	ActiveChatID string                 `json:"activeChatId"`
+	Sessions     []persistedChatSession `json:"sessions"`
 }
 
 func storedAppStateFrom(state AppState) storedAppState {
@@ -88,12 +97,12 @@ func (s *SystemService) persistWorkspaceAutosave(workspaceID string) error {
 	defer s.autosaveMu.Unlock()
 
 	s.chatMu.Lock()
-	session := s.chatSessions[workspaceID]
-	var persisted *persistedChatSession
-	if session != nil && (session.Revision > 0 || len(session.Messages) > 0 || len(session.History) > 0) {
-		snapshot := persistedChatSessionFrom(session)
-		persisted = &snapshot
+	workspaceState := s.chatWorkspaces[workspaceID]
+	if workspaceState == nil {
+		workspaceState = s.ensureChatWorkspaceLocked(workspaceID)
 	}
+	snapshot := persistedChatWorkspaceFrom(workspaceState)
+	activeSnapshot := persistedChatSessionFrom(workspaceState.Sessions[workspaceState.ActiveChatID])
 	s.chatMu.Unlock()
 
 	s.mu.Lock()
@@ -118,9 +127,10 @@ func (s *SystemService) persistWorkspaceAutosave(workspaceID string) error {
 	}
 
 	return writeWorkspaceAutosave(workspace, workspaceAutosave{
-		Version:     workspaceAutosaveVersion,
-		ChatSession: persisted,
-		KanbanCards: cards,
+		Version:       workspaceAutosaveVersion,
+		ChatSession:   &activeSnapshot,
+		ChatWorkspace: &snapshot,
+		KanbanCards:   cards,
 	})
 }
 
@@ -306,10 +316,44 @@ func persistedChatSessionFrom(session *chatSessionState) persistedChatSession {
 	}
 	return persistedChatSession{
 		WorkspaceID: session.WorkspaceID,
+		ChatID:      session.ChatID,
+		Preview:     session.Preview,
 		Messages:    messages,
 		History:     cloneLLMMessages(session.History),
 		Revision:    session.Revision,
 	}
+}
+
+func persistedChatWorkspaceFrom(workspace *chatWorkspaceState) persistedChatWorkspace {
+	persisted := persistedChatWorkspace{
+		WorkspaceID:  workspace.WorkspaceID,
+		ActiveChatID: workspace.ActiveChatID,
+		Sessions:     make([]persistedChatSession, 0, len(workspace.TabIDs)),
+	}
+	for _, chatID := range workspace.TabIDs {
+		if session := workspace.Sessions[chatID]; session != nil {
+			persisted.Sessions = append(persisted.Sessions, persistedChatSessionFrom(session))
+		}
+	}
+	return persisted
+}
+
+func clonePersistedChatWorkspaces(workspaces map[string]persistedChatWorkspace) map[string]persistedChatWorkspace {
+	clone := make(map[string]persistedChatWorkspace, len(workspaces))
+	for workspaceID, workspace := range workspaces {
+		next := persistedChatWorkspace{
+			WorkspaceID:  workspace.WorkspaceID,
+			ActiveChatID: workspace.ActiveChatID,
+			Sessions:     make([]persistedChatSession, 0, len(workspace.Sessions)),
+		}
+		for _, session := range workspace.Sessions {
+			session.Messages = cloneChatMessages(session.Messages)
+			session.History = cloneLLMMessages(session.History)
+			next.Sessions = append(next.Sessions, session)
+		}
+		clone[workspaceID] = next
+	}
+	return clone
 }
 
 func clonePersistedChatSessions(sessions map[string]persistedChatSession) map[string]persistedChatSession {
@@ -350,61 +394,137 @@ func cloneLLMMessages(messages []llm.Message) []llm.Message {
 
 func (s *SystemService) restoreChatSessionsLocked() bool {
 	changed := false
+	if s.chatWorkspaces == nil {
+		s.chatWorkspaces = make(map[string]*chatWorkspaceState)
+	}
+	for workspaceID, persistedWorkspace := range s.persistedChatWorkspaces {
+		if !workspaceExists(s.state.Workspaces, workspaceID) {
+			delete(s.persistedChatWorkspaces, workspaceID)
+			changed = true
+			continue
+		}
+		workspace := &chatWorkspaceState{
+			WorkspaceID: workspaceID,
+			Sessions:    make(map[string]*chatSessionState),
+		}
+		for _, persisted := range persistedWorkspace.Sessions {
+			session, sessionChanged := s.restorePersistedChatSessionLocked(workspaceID, persisted)
+			changed = changed || sessionChanged
+			if _, exists := workspace.Sessions[session.ChatID]; exists {
+				session.ChatID = s.nextChatIDLocked("chat")
+				changed = true
+			}
+			workspace.TabIDs = append(workspace.TabIDs, session.ChatID)
+			workspace.Sessions[session.ChatID] = session
+		}
+		if len(workspace.TabIDs) == 0 {
+			session := s.newChatSessionLocked(workspaceID)
+			workspace.TabIDs = []string{session.ChatID}
+			workspace.Sessions[session.ChatID] = session
+			changed = true
+		}
+		workspace.ActiveChatID = persistedWorkspace.ActiveChatID
+		if workspace.Sessions[workspace.ActiveChatID] == nil {
+			workspace.ActiveChatID = workspace.TabIDs[0]
+			changed = true
+		}
+		s.chatWorkspaces[workspaceID] = workspace
+		s.chatSessions[workspaceID] = workspace.Sessions[workspace.ActiveChatID]
+		s.persistedChatWorkspaces[workspaceID] = persistedChatWorkspaceFrom(workspace)
+		delete(s.persistedChatSessions, workspaceID)
+	}
+
 	for workspaceID, persisted := range s.persistedChatSessions {
+		if s.chatWorkspaces[workspaceID] != nil {
+			continue
+		}
 		if !workspaceExists(s.state.Workspaces, workspaceID) {
 			delete(s.persistedChatSessions, workspaceID)
 			changed = true
 			continue
 		}
-		session := &chatSessionState{
-			WorkspaceID: workspaceID,
-			Messages:    cloneChatMessages(persisted.Messages),
-			History:     cloneLLMMessages(persisted.History),
-			Revision:    persisted.Revision,
+		session, sessionChanged := s.restorePersistedChatSessionLocked(workspaceID, persisted)
+		changed = changed || sessionChanged
+		workspace := &chatWorkspaceState{
+			WorkspaceID:  workspaceID,
+			ActiveChatID: session.ChatID,
+			TabIDs:       []string{session.ChatID},
+			Sessions:     map[string]*chatSessionState{session.ChatID: session},
 		}
-		interrupted := false
-		for i := range session.Messages {
-			message := &session.Messages[i]
-			if len(message.ResearchAgents) > 0 {
-				message.ResearchAgents = nil
-				changed = true
-			}
-			for reasoningIndex := range message.ResearchReasoning {
-				entry := &message.ResearchReasoning[reasoningIndex]
-				original := entry.Reasoning
-				bounded, truncated := appendBoundedResearchReasoning("", original)
-				if bounded != original || entry.Replace {
-					changed = true
-				}
-				entry.Reasoning = bounded
-				entry.Truncated = entry.Truncated || truncated
-				entry.Replace = false
-			}
-			if message.Status == "streaming" || message.Status == "retrying" {
-				message.Status = "canceled"
-				if message.Error == "" {
-					message.Error = "Interrupted when Echo closed."
-				}
-				changed = true
-				interrupted = true
-			}
-			s.observeChatID(message.ID)
-			for _, activity := range message.ToolCalls {
-				s.observeChatID(activity.ID)
-			}
-		}
-		if interrupted {
-			session.Revision++
-		}
-		for _, message := range session.History {
-			for _, call := range message.ToolCalls {
-				s.observeChatID(call.ID)
-			}
-		}
+		s.chatWorkspaces[workspaceID] = workspace
 		s.chatSessions[workspaceID] = session
 		s.persistedChatSessions[workspaceID] = persistedChatSessionFrom(session)
+		s.persistedChatWorkspaces[workspaceID] = persistedChatWorkspaceFrom(workspace)
+		changed = true
 	}
 	return changed
+}
+
+func (s *SystemService) restorePersistedChatSessionLocked(workspaceID string, persisted persistedChatSession) (*chatSessionState, bool) {
+	changed := false
+	session := &chatSessionState{
+		WorkspaceID: workspaceID,
+		ChatID:      persisted.ChatID,
+		Preview:     persisted.Preview,
+		Messages:    cloneChatMessages(persisted.Messages),
+		History:     cloneLLMMessages(persisted.History),
+		Revision:    persisted.Revision,
+	}
+	if session.ChatID == "" {
+		session.ChatID = s.nextChatIDLocked("chat")
+		changed = true
+	} else {
+		s.observeChatID(session.ChatID)
+	}
+	interrupted := false
+	for i := range session.Messages {
+		message := &session.Messages[i]
+		if len(message.ResearchAgents) > 0 {
+			message.ResearchAgents = nil
+			changed = true
+		}
+		for reasoningIndex := range message.ResearchReasoning {
+			entry := &message.ResearchReasoning[reasoningIndex]
+			original := entry.Reasoning
+			bounded, truncated := appendBoundedResearchReasoning("", original)
+			if bounded != original || entry.Replace {
+				changed = true
+			}
+			entry.Reasoning = bounded
+			entry.Truncated = entry.Truncated || truncated
+			entry.Replace = false
+		}
+		if message.Status == "streaming" || message.Status == "retrying" || message.Status == "compacting" {
+			message.Status = "canceled"
+			if message.Error == "" {
+				message.Error = "Interrupted when Echo closed."
+			}
+			changed = true
+			interrupted = true
+		}
+		s.observeChatID(message.ID)
+		for _, activity := range message.ToolCalls {
+			s.observeChatID(activity.ID)
+		}
+	}
+	if session.Preview == "" {
+		for _, message := range session.Messages {
+			if message.Role == llm.RoleUser && strings.TrimSpace(message.Content) != "" {
+				session.Preview = chatPreview(message.Content)
+				changed = true
+				break
+			}
+		}
+	}
+	if interrupted {
+		session.Revision++
+	}
+	for _, message := range session.History {
+		for _, call := range message.ToolCalls {
+			s.observeChatID(call.ID)
+		}
+	}
+	return session, changed
 }
 
 func (s *SystemService) observeChatID(id string) {
