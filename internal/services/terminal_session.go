@@ -154,6 +154,7 @@ type terminalSession struct {
 	mu          sync.Mutex
 	writeMu     sync.Mutex
 	stopOnce    sync.Once
+	closeOnce   sync.Once
 	done        chan struct{}
 	status      string
 	exitCode    *int
@@ -369,7 +370,7 @@ func (s *SystemService) runTerminalSession(session *terminalSession) {
 		}
 	}
 	result := <-waitResult
-	_ = session.backend.Close()
+	session.closeBackend()
 	session.cancel()
 
 	message := ""
@@ -473,6 +474,12 @@ func (session *terminalSession) stop() {
 		session.mu.Unlock()
 		session.cancel()
 		_ = session.process.Kill()
+		session.closeBackend()
+	})
+}
+
+func (session *terminalSession) closeBackend() {
+	session.closeOnce.Do(func() {
 		_ = session.backend.Close()
 	})
 }

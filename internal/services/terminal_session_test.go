@@ -18,16 +18,17 @@ type fakeTerminalWaitResult struct {
 }
 
 type fakeTerminalBackend struct {
-	mu        sync.Mutex
-	readCh    chan []byte
-	closed    chan struct{}
-	closeOnce sync.Once
-	writes    bytes.Buffer
-	cols      int
-	rows      int
-	spec      terminalCommandSpec
-	process   *fakeTerminalProcess
-	pending   []byte
+	mu         sync.Mutex
+	readCh     chan []byte
+	closed     chan struct{}
+	closeOnce  sync.Once
+	closeCalls int
+	writes     bytes.Buffer
+	cols       int
+	rows       int
+	spec       terminalCommandSpec
+	process    *fakeTerminalProcess
+	pending    []byte
 }
 
 type fakeTerminalProcess struct {
@@ -76,10 +77,17 @@ func (b *fakeTerminalBackend) Write(buffer []byte) (int, error) {
 }
 
 func (b *fakeTerminalBackend) Close() error {
+	b.mu.Lock()
+	b.closeCalls++
+	b.mu.Unlock()
+	b.signalClosed()
+	return nil
+}
+
+func (b *fakeTerminalBackend) signalClosed() {
 	b.closeOnce.Do(func() {
 		close(b.closed)
 	})
-	return nil
 }
 
 func (b *fakeTerminalBackend) Resize(cols, rows int) error {
@@ -107,6 +115,12 @@ func (b *fakeTerminalBackend) written() string {
 	return b.writes.String()
 }
 
+func (b *fakeTerminalBackend) closeCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.closeCalls
+}
+
 func (p *fakeTerminalProcess) Wait() (int, error) {
 	result := <-p.waitCh
 	return result.exitCode, result.err
@@ -120,7 +134,7 @@ func (p *fakeTerminalProcess) Kill() error {
 func (p *fakeTerminalProcess) complete(exitCode int, err error) {
 	p.waitOnce.Do(func() {
 		p.waitCh <- fakeTerminalWaitResult{exitCode: exitCode, err: err}
-		_ = p.backend.Close()
+		p.backend.signalClosed()
 	})
 }
 
@@ -261,6 +275,9 @@ func TestTerminalSessionRejectsInvalidOrStaleRequests(t *testing.T) {
 	if err := service.StopTerminalSession(workspaceID, snapshot.ID); err != nil {
 		t.Fatalf("stop terminal: %v", err)
 	}
+	if backend.closeCount() != 1 {
+		t.Fatalf("expected stopped PTY to close once, got %d closes", backend.closeCount())
+	}
 	waitForTerminalStatus(t, service, workspaceID, snapshot.ID, "exited")
 	if err := service.WriteTerminalSession(workspaceID, snapshot.ID, "x"); err == nil {
 		t.Fatal("expected write to stopped terminal to fail")
@@ -300,6 +317,9 @@ func TestTerminalSessionRestartAndWorkspaceCleanup(t *testing.T) {
 	case <-first.closed:
 	case <-time.After(time.Second):
 		t.Fatal("expected restart to close the previous PTY")
+	}
+	if first.closeCount() != 1 {
+		t.Fatalf("expected restarted PTY to close once, got %d closes", first.closeCount())
 	}
 
 	if _, err := service.DeleteWorkspace(workspaceID); err != nil {
