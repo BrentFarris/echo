@@ -51,6 +51,14 @@ type generatedAgentMode struct {
 // usage patterns, sends the analysis to the LLM, and creates a new agent mode
 // from the synthesized result.
 func (s *SystemService) CreateAgentModeFromChat(workspaceID string) (tools.AgentModeCreationResult, error) {
+	return s.createAgentModeFromChat(workspaceID, "")
+}
+
+func (s *SystemService) CreateAgentModeFromChatForTab(workspaceID string, chatID string) (tools.AgentModeCreationResult, error) {
+	return s.createAgentModeFromChat(workspaceID, chatID)
+}
+
+func (s *SystemService) createAgentModeFromChat(workspaceID string, chatID string) (tools.AgentModeCreationResult, error) {
 	s.logAIEvent(slog.LevelInfo, "ai_operation_started", slog.String("surface", "agent_mode_generation"))
 	defer s.logAIEvent(slog.LevelInfo, "ai_operation_finished", slog.String("surface", "agent_mode_generation"))
 	workspace, settings, err := s.workspaceAndSettingsFor(workspaceID, llm.InteractionChat)
@@ -58,7 +66,7 @@ func (s *SystemService) CreateAgentModeFromChat(workspaceID string) (tools.Agent
 		return tools.AgentModeCreationResult{}, err
 	}
 
-	messages, err := s.chatMessagesForSkill(workspaceID)
+	messages, err := s.chatMessagesForSkill(workspaceID, chatID)
 	if err != nil {
 		return tools.AgentModeCreationResult{}, err
 	}

@@ -146,6 +146,14 @@ func (s *SystemService) DeleteKanbanCard(workspaceID string, cardID string) (Kan
 }
 
 func (s *SystemService) CreateKanbanCardFromChatMessage(workspaceID string, messageID string) (KanbanBoard, error) {
+	return s.createKanbanCardFromChatMessage(workspaceID, "", messageID)
+}
+
+func (s *SystemService) CreateKanbanCardFromChatMessageForTab(workspaceID string, chatID string, messageID string) (KanbanBoard, error) {
+	return s.createKanbanCardFromChatMessage(workspaceID, chatID, messageID)
+}
+
+func (s *SystemService) createKanbanCardFromChatMessage(workspaceID string, chatID string, messageID string) (KanbanBoard, error) {
 	messageID = strings.TrimSpace(messageID)
 	if messageID == "" {
 		return KanbanBoard{}, fmt.Errorf("message id is required")
@@ -155,7 +163,7 @@ func (s *SystemService) CreateKanbanCardFromChatMessage(workspaceID string, mess
 	}
 
 	s.chatMu.Lock()
-	session := s.chatSessions[workspaceID]
+	session := s.chatSessionForIDLocked(workspaceID, chatID)
 	if session == nil {
 		s.chatMu.Unlock()
 		return KanbanBoard{}, fmt.Errorf("message was not found")
@@ -236,12 +244,12 @@ func (s *SystemService) CreateReadyKanbanCard(workspaceID string, title string, 
 		Lane:               KanbanLaneReady,
 		Status:             KanbanLaneReady,
 		ProgressTranscript: []KanbanProgressEntry{{
-				Type:      "message",
-				Title:     "Card created",
-				Content:   "Created manually in the Ready lane.",
-				Status:    KanbanLaneReady,
-				Timestamp: time.Now(),
-			}},
+			Type:      "message",
+			Title:     "Card created",
+			Content:   "Created manually in the Ready lane.",
+			Status:    KanbanLaneReady,
+			Timestamp: time.Now(),
+		}},
 	}
 	s.state.KanbanCards = append(s.state.KanbanCards, card)
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
@@ -507,14 +515,14 @@ func (s *SystemService) appendReadyCards(workspaceID string, cards []decomposedC
 			Lane:               KanbanLaneReady,
 			Status:             KanbanLaneReady,
 			ProgressTranscript: []KanbanProgressEntry{{
-					Type:      "message",
-					Title:     "Card created",
-					Content:   "Created from the approved chat plan.",
-					Status:    KanbanLaneReady,
-					Timestamp: time.Now(),
-				}},
-			}
-			for _, dependency := range card.Dependencies {
+				Type:      "message",
+				Title:     "Card created",
+				Content:   "Created from the approved chat plan.",
+				Status:    KanbanLaneReady,
+				Timestamp: time.Now(),
+			}},
+		}
+		for _, dependency := range card.Dependencies {
 			runtimeCard.Dependencies = append(runtimeCard.Dependencies, idMap[dependency])
 		}
 		s.state.KanbanCards = append(s.state.KanbanCards, runtimeCard)

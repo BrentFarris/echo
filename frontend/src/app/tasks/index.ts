@@ -14,7 +14,7 @@ import { renderMarkdown } from "../../markdown";
 import { appRoot } from "../dom";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
-import { activeWorkspace, state, taskBoardFor } from "../state";
+import { activeWorkspace, chatStateKey, state, taskBoardFor } from "../state";
 import { pushToast } from "../toasts";
 import type { TaskEvent } from "../types";
 import { errorMessage, escapeAttribute, escapeHtml, fileName, formatBytes } from "../utils";
@@ -1025,9 +1025,10 @@ async function handleTaskAction(event: Event) {
     }
     if (action === "chat") {
       const prompt = taskChatPrompt(task);
-      const existing = state.chatDrafts.get(workspace.id)?.trim() ?? "";
+      const chatKey = chatStateKey(workspace.id);
+      const existing = state.chatDrafts.get(chatKey)?.trim() ?? "";
       if (existing && existing !== prompt.trim() && !window.confirm("Replace the current chat draft with this task?")) return;
-      state.chatDrafts.set(workspace.id, prompt);
+      state.chatDrafts.set(chatKey, prompt);
       state.appMode = "chat";
       state.mobileNavView = "chat";
       state.activeChatKanbanTab.set(workspace.id, "chat");
@@ -1038,9 +1039,10 @@ async function handleTaskAction(event: Event) {
     }
     if (action === "reference") {
       const reference = formatTaskReference(task);
-      const existing = state.chatDrafts.get(workspace.id) ?? "";
+      const chatKey = chatStateKey(workspace.id);
+      const existing = state.chatDrafts.get(chatKey) ?? "";
       const appended = (existing ? existing.trimEnd() + " " : "") + reference + " ";
-      state.chatDrafts.set(workspace.id, appended);
+      state.chatDrafts.set(chatKey, appended);
       state.appMode = "chat";
       state.mobileNavView = "chat";
       state.activeChatKanbanTab.set(workspace.id, "chat");

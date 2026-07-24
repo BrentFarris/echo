@@ -59,6 +59,7 @@ export type ContextMenuState = {
 
 export type ChatStreamEvent = {
   workspaceId: string;
+  chatId: string;
   streamId: string;
   messageId: string;
   type: string;
@@ -73,6 +74,7 @@ export type ChatStreamEvent = {
   videoAttachment?: services.ChatVideoAttachment;
   revision: number;
   session?: services.ChatSession;
+  workspaceState?: services.ChatWorkspaceState;
 };
 
 export type KanbanEvent = {

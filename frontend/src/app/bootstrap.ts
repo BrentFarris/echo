@@ -14,7 +14,7 @@ import { handleGlobalKeydown, handleGlobalKeyup, handleGlobalPointerDown, handle
 import { applyKanbanEvent, applyHeartbeatEvent, applyLivenessEvent, applyWatchdogEvent, loadActiveKanbanBoard, markKanbanRunStarted } from "./kanban";
 import { gitChangedLineNumbersForFile, gitChangeStateForPath } from "./git";
 import { render, renderCodeViewUI } from "./render";
-import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state, loadDashboardLayoutsFromBackend, startActivityRefreshTimer } from "./state";
+import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatStateKey, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state, loadDashboardLayoutsFromBackend, startActivityRefreshTimer } from "./state";
 import { applyTheme } from "./theme";
 import { applyTaskEvent, loadActiveTaskBoard } from "./tasks";
 import { pushToast } from "./toasts";
@@ -311,7 +311,7 @@ async function openDroppedFiles(paths: string[]) {
   }
 
   // If in chat mode, try to attach media files to the composer instead of opening them.
-  if (state.appMode === "chat" && !chatSessionFor(workspace.id).busy && !state.executingPlans.has(workspace.id)) {
+  if (state.appMode === "chat" && !chatSessionFor(workspace.id).busy && !state.executingPlans.has(chatStateKey(workspace.id))) {
     const imagePaths: string[] = [];
     const videoPaths: string[] = [];
     const otherPaths: string[] = [];
@@ -340,7 +340,7 @@ async function openDroppedFiles(paths: string[]) {
             continue;
           }
           const name = path.split(/[\\/]/).pop() ?? "image";
-          state.chatImageDrafts.set(workspace.id, [
+          state.chatImageDrafts.set(chatStateKey(workspace.id), [
             ...chatImageDraftsFor(workspace.id),
             {
               id: `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -365,7 +365,7 @@ async function openDroppedFiles(paths: string[]) {
             continue;
           }
           const name = path.split(/[\\/]/).pop() ?? "video";
-          state.chatVideoDrafts.set(workspace.id, [
+          state.chatVideoDrafts.set(chatStateKey(workspace.id), [
             ...chatVideoDraftsFor(workspace.id),
             {
               id: `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,

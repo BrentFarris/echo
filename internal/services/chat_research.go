@@ -1109,7 +1109,9 @@ func (s *SystemService) clearResearchAgentIndicators(workspaceID string, streamI
 	s.chatMu.Lock()
 	changed := false
 	var revision uint64
-	if session := s.chatSessions[workspaceID]; session != nil {
+	var chatID string
+	if session := s.chatSessionByMessageLocked(workspaceID, messageID); session != nil {
+		chatID = session.ChatID
 		for i := range session.Messages {
 			if session.Messages[i].ID == messageID && len(session.Messages[i].ResearchAgents) > 0 {
 				session.Messages[i].ResearchAgents = nil
@@ -1122,7 +1124,7 @@ func (s *SystemService) clearResearchAgentIndicators(workspaceID string, streamI
 	}
 	s.chatMu.Unlock()
 	if changed {
-		s.emitChatEvent(ChatStreamEvent{WorkspaceID: workspaceID, StreamID: streamID, MessageID: messageID, Type: "agent_status", Revision: revision})
+		s.emitChatEvent(ChatStreamEvent{WorkspaceID: workspaceID, ChatID: chatID, StreamID: streamID, MessageID: messageID, Type: "agent_status", Revision: revision})
 	}
 }
 

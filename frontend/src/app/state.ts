@@ -35,6 +35,7 @@ export const state = {
   activeChatKanbanTab: new Map<string, ChatKanbanTab>(),
   formError: "",
   workspaceDropdownOpen: false,
+  chatWorkspaces: new Map<string, services.ChatWorkspaceState>(),
   chatSessions: new Map<string, services.ChatSession>(),
   chatDrafts: new Map<string, string>(),
   chatImageDrafts: new Map<string, ChatImageDraft[]>(),
@@ -129,22 +130,24 @@ export function getActiveChatKanbanTab(workspaceID: string): ChatKanbanTab {
 }
 
 export function chatComposerModeFor(workspaceID: string): "plan" | "edit" {
-  const mode = state.chatComposerModes.get(workspaceID);
+  const key = chatStateKey(workspaceID);
+  const mode = state.chatComposerModes.get(key);
   if (mode !== undefined) {
     return mode;
   }
   /* Derive chatPlanModes from the composer mode map. */
-  state.chatPlanModes.delete(workspaceID);
+  state.chatPlanModes.delete(key);
   return "plan";
 }
 
 export function setChatComposerMode(workspaceID: string, mode: "plan" | "edit") {
+  const key = chatStateKey(workspaceID);
   if (mode === "plan") {
-    state.chatComposerModes.delete(workspaceID);
-    state.chatPlanModes.delete(workspaceID);
+    state.chatComposerModes.delete(key);
+    state.chatPlanModes.delete(key);
   } else {
-    state.chatComposerModes.set(workspaceID, mode);
-    state.chatPlanModes.set(workspaceID, false);
+    state.chatComposerModes.set(key, mode);
+    state.chatPlanModes.set(key, false);
   }
 }
 
@@ -175,27 +178,36 @@ export function activeWorkspace(): services.Workspace | null {
   );
 }
 
-export function chatImageDraftsFor(workspaceID: string): ChatImageDraft[] {
-  return state.chatImageDrafts.get(workspaceID) ?? [];
+export function activeChatIDFor(workspaceID: string): string {
+  return state.chatWorkspaces.get(workspaceID)?.activeChatId ?? "";
 }
 
-export function chatImageDraftTotalBytes(workspaceID: string): number {
-  return chatImageDraftsFor(workspaceID).reduce((total, image) => total + image.bytes, 0);
+export function chatStateKey(workspaceID: string, chatID = activeChatIDFor(workspaceID)): string {
+  return `${workspaceID}\0${chatID}`;
 }
 
-export function chatVideoDraftsFor(workspaceID: string): ChatVideoDraft[] {
-  return state.chatVideoDrafts.get(workspaceID) ?? [];
+export function chatImageDraftsFor(workspaceID: string, chatID = activeChatIDFor(workspaceID)): ChatImageDraft[] {
+  return state.chatImageDrafts.get(chatStateKey(workspaceID, chatID)) ?? [];
 }
 
-export function chatVideoDraftTotalBytes(workspaceID: string): number {
-  return chatVideoDraftsFor(workspaceID).reduce((total, video) => total + video.bytes, 0);
+export function chatImageDraftTotalBytes(workspaceID: string, chatID = activeChatIDFor(workspaceID)): number {
+  return chatImageDraftsFor(workspaceID, chatID).reduce((total, image) => total + image.bytes, 0);
 }
 
-export function chatSessionFor(workspaceID: string): services.ChatSession {
+export function chatVideoDraftsFor(workspaceID: string, chatID = activeChatIDFor(workspaceID)): ChatVideoDraft[] {
+  return state.chatVideoDrafts.get(chatStateKey(workspaceID, chatID)) ?? [];
+}
+
+export function chatVideoDraftTotalBytes(workspaceID: string, chatID = activeChatIDFor(workspaceID)): number {
+  return chatVideoDraftsFor(workspaceID, chatID).reduce((total, video) => total + video.bytes, 0);
+}
+
+export function chatSessionFor(workspaceID: string, chatID = activeChatIDFor(workspaceID)): services.ChatSession {
   return (
-    state.chatSessions.get(workspaceID) ??
+    state.chatSessions.get(chatStateKey(workspaceID, chatID)) ??
     services.ChatSession.createFrom({
       workspaceId: workspaceID,
+      chatId: chatID,
       messages: [],
       busy: false,
       revision: 0,
@@ -209,7 +221,7 @@ export function chatPlanModeFor(workspaceID: string): boolean {
 }
 
 export function chatAgentModeIDFor(workspaceID: string): string {
-  const selected = state.selectedAgentModeIds.get(workspaceID);
+  const selected = state.selectedAgentModeIds.get(chatStateKey(workspaceID));
   if (selected !== undefined && selected !== "") {
     return selected;
   }
@@ -233,10 +245,11 @@ export function chatAgentModeNameFor(workspaceID: string): string {
 }
 
 export function setChatAgentMode(workspaceID: string, modeID: string) {
+  const key = chatStateKey(workspaceID);
   if (modeID) {
-    state.selectedAgentModeIds.set(workspaceID, modeID);
+    state.selectedAgentModeIds.set(key, modeID);
   } else {
-    state.selectedAgentModeIds.delete(workspaceID);
+    state.selectedAgentModeIds.delete(key);
   }
 }
 
