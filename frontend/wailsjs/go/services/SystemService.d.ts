@@ -214,6 +214,8 @@ export function ResetKanbanCard(arg1:string,arg2:string):Promise<services.Kanban
 
 export function ResetTokenBudget(arg1:string):Promise<void>;
 
+export function ResizeTerminalSession(arg1:string,arg2:string,arg3:number,arg4:number):Promise<void>;
+
 export function ResolveMode(arg1:string):Promise<tools.AgentModeSummary>;
 
 export function ResolveModeProvider(arg1:string):Promise<tools.AgentModeSummary>;
@@ -222,11 +224,11 @@ export function ResolveWorkspacePath(arg1:string,arg2:string):Promise<string>;
 
 export function ResolveWorkspaceTextFilePath(arg1:string,arg2:string):Promise<string>;
 
+export function RestartTerminalSession(arg1:string,arg2:string,arg3:number,arg4:number):Promise<services.TerminalSessionSnapshot>;
+
 export function RetryChatMessage(arg1:string,arg2:string,arg3:string):Promise<services.ChatSession>;
 
 export function RotateWebAccessToken():Promise<services.AppState>;
-
-export function RunShellCommand(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number):Promise<string>;
 
 export function RunWorkspaceGitAction(arg1:string,arg2:string,arg3:services.WorkspaceGitActionRequest):Promise<services.WorkspaceGitRepositoryView>;
 
@@ -298,6 +300,8 @@ export function StartKanbanExecution(arg1:string,arg2:number):Promise<services.K
 
 export function StartKanbanExecutionWithContext(arg1:context.Context,arg2:string,arg3:number):Promise<void>;
 
+export function StartTerminalSession(arg1:string,arg2:number,arg3:number):Promise<services.TerminalSessionSnapshot>;
+
 export function StartWatchdog(arg1:string,arg2:services.WatchdogConfig):Promise<void>;
 
 export function StepIntoDebugSession(arg1:string,arg2:services.DebugSessionRequest):Promise<services.DebugState>;
@@ -316,13 +320,15 @@ export function StopKanbanCard(arg1:string,arg2:string):Promise<services.KanbanB
 
 export function StopKanbanExecution(arg1:string):Promise<services.KanbanBoard>;
 
-export function StopShellCommand(arg1:string,arg2:string):Promise<void>;
+export function StopTerminalSession(arg1:string,arg2:string):Promise<void>;
 
 export function StopWatchdog(arg1:string):Promise<void>;
 
 export function SubmitInlineCodePrompt(arg1:string,arg2:services.InlineCodePromptRequest):Promise<services.InlineCodePromptResponse>;
 
 export function SwitchWorkspaceGitBranch(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
+
+export function SyncTerminalSession(arg1:string,arg2:string,arg3:number):Promise<services.TerminalSessionSnapshot>;
 
 export function SyncWorkspaceGitBranch(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
 
@@ -345,3 +351,5 @@ export function UpsertSavedCommand(arg1:string,arg2:string,arg3:string,arg4:stri
 export function WorkspaceIconHandler():Promise<http.Handler>;
 
 export function WorkspaceIconMiddleware(arg1:http.Handler):Promise<http.Handler>;
+
+export function WriteTerminalSession(arg1:string,arg2:string,arg3:string):Promise<void>;

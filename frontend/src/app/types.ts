@@ -116,28 +116,14 @@ export type WatchdogEvent = {
   message?: string;
 };
 
-export type ShellCommandRunStatus = "running" | "completed" | "timed-out";
-
-export type ShellCommandLine = {
-  type: "stdout" | "stderr";
-  text: string;
-};
-
-export type ShellCommandRun = {
-  id: string;
-  command: string;
-  lines: ShellCommandLine[];
-  status: ShellCommandRunStatus;
-  exitCode?: number;
-  durationMs?: number;
-  startedAt: number;
-};
-
-export type ShellCommandEvent = {
+export type TerminalEvent = {
   workspaceId: string;
   id: string;
-  type: "started" | "stdout" | "stderr" | "completed";
-  data?: string | { exitCode: number; timedOut: boolean; durationMilliseconds: number };
+  type: "started" | "data" | "exited";
+  sequence?: number;
+  data?: string;
+  exitCode?: number;
+  message?: string;
 };
 
 export type Toast = {

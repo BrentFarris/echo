@@ -418,6 +418,10 @@ export function ResetTokenBudget(arg1) {
   return window['go']['services']['SystemService']['ResetTokenBudget'](arg1);
 }
 
+export function ResizeTerminalSession(arg1, arg2, arg3, arg4) {
+  return window['go']['services']['SystemService']['ResizeTerminalSession'](arg1, arg2, arg3, arg4);
+}
+
 export function ResolveMode(arg1) {
   return window['go']['services']['SystemService']['ResolveMode'](arg1);
 }
@@ -434,16 +438,16 @@ export function ResolveWorkspaceTextFilePath(arg1, arg2) {
   return window['go']['services']['SystemService']['ResolveWorkspaceTextFilePath'](arg1, arg2);
 }
 
+export function RestartTerminalSession(arg1, arg2, arg3, arg4) {
+  return window['go']['services']['SystemService']['RestartTerminalSession'](arg1, arg2, arg3, arg4);
+}
+
 export function RetryChatMessage(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['RetryChatMessage'](arg1, arg2, arg3);
 }
 
 export function RotateWebAccessToken() {
   return window['go']['services']['SystemService']['RotateWebAccessToken']();
-}
-
-export function RunShellCommand(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['services']['SystemService']['RunShellCommand'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function RunWorkspaceGitAction(arg1, arg2, arg3) {
@@ -586,6 +590,10 @@ export function StartKanbanExecutionWithContext(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['StartKanbanExecutionWithContext'](arg1, arg2, arg3);
 }
 
+export function StartTerminalSession(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['StartTerminalSession'](arg1, arg2, arg3);
+}
+
 export function StartWatchdog(arg1, arg2) {
   return window['go']['services']['SystemService']['StartWatchdog'](arg1, arg2);
 }
@@ -622,8 +630,8 @@ export function StopKanbanExecution(arg1) {
   return window['go']['services']['SystemService']['StopKanbanExecution'](arg1);
 }
 
-export function StopShellCommand(arg1, arg2) {
-  return window['go']['services']['SystemService']['StopShellCommand'](arg1, arg2);
+export function StopTerminalSession(arg1, arg2) {
+  return window['go']['services']['SystemService']['StopTerminalSession'](arg1, arg2);
 }
 
 export function StopWatchdog(arg1) {
@@ -636,6 +644,10 @@ export function SubmitInlineCodePrompt(arg1, arg2) {
 
 export function SwitchWorkspaceGitBranch(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['SwitchWorkspaceGitBranch'](arg1, arg2, arg3);
+}
+
+export function SyncTerminalSession(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['SyncTerminalSession'](arg1, arg2, arg3);
 }
 
 export function SyncWorkspaceGitBranch(arg1, arg2) {
@@ -680,4 +692,8 @@ export function WorkspaceIconHandler() {
 
 export function WorkspaceIconMiddleware(arg1) {
   return window['go']['services']['SystemService']['WorkspaceIconMiddleware'](arg1);
+}
+
+export function WriteTerminalSession(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['WriteTerminalSession'](arg1, arg2, arg3);
 }

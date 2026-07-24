@@ -703,11 +703,28 @@ export function UpdateWorkspaceTask(...args: Parameters<typeof Wails.UpdateWorks
   return call("UpdateWorkspaceTask", Wails.UpdateWorkspaceTask, args);
 }
 
-export async function RunShellCommand(workspaceID: string, command: string, workingDirectory: string, timeoutSeconds: number, maxOutputBytes: number): Promise<string> {
-  if (isWailsRuntime()) {
-    return (window as any)["go"]["services"]["SystemService"]["RunShellCommand"](workspaceID, command, workingDirectory, timeoutSeconds, maxOutputBytes);
-  }
-  return webRpc("RunShellCommand", [workspaceID, command, workingDirectory, timeoutSeconds, maxOutputBytes]);
+export function StartTerminalSession(...args: Parameters<typeof Wails.StartTerminalSession>): ReturnType<typeof Wails.StartTerminalSession> {
+  return call("StartTerminalSession", Wails.StartTerminalSession, args);
+}
+
+export function SyncTerminalSession(...args: Parameters<typeof Wails.SyncTerminalSession>): ReturnType<typeof Wails.SyncTerminalSession> {
+  return call("SyncTerminalSession", Wails.SyncTerminalSession, args);
+}
+
+export function WriteTerminalSession(...args: Parameters<typeof Wails.WriteTerminalSession>): ReturnType<typeof Wails.WriteTerminalSession> {
+  return call("WriteTerminalSession", Wails.WriteTerminalSession, args);
+}
+
+export function ResizeTerminalSession(...args: Parameters<typeof Wails.ResizeTerminalSession>): ReturnType<typeof Wails.ResizeTerminalSession> {
+  return call("ResizeTerminalSession", Wails.ResizeTerminalSession, args);
+}
+
+export function StopTerminalSession(...args: Parameters<typeof Wails.StopTerminalSession>): ReturnType<typeof Wails.StopTerminalSession> {
+  return call("StopTerminalSession", Wails.StopTerminalSession, args);
+}
+
+export function RestartTerminalSession(...args: Parameters<typeof Wails.RestartTerminalSession>): ReturnType<typeof Wails.RestartTerminalSession> {
+  return call("RestartTerminalSession", Wails.RestartTerminalSession, args);
 }
 
 export function GetSavedCommands(...args: Parameters<typeof Wails.GetSavedCommands>): ReturnType<typeof Wails.GetSavedCommands> {
@@ -720,11 +737,4 @@ export function UpsertSavedCommand(...args: Parameters<typeof Wails.UpsertSavedC
 
 export function DeleteSavedCommand(...args: Parameters<typeof Wails.DeleteSavedCommand>): ReturnType<typeof Wails.DeleteSavedCommand> {
   return call("DeleteSavedCommand", Wails.DeleteSavedCommand, args);
-}
-
-export async function StopShellCommand(workspaceID: string, runID: string): Promise<void> {
-  if (isWailsRuntime()) {
-    return (window as any)["go"]["services"]["SystemService"]["StopShellCommand"](workspaceID, runID);
-  }
-  return webRpc("StopShellCommand", [workspaceID, runID]);
 }

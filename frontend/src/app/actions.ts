@@ -1,7 +1,7 @@
 
 import { isWailsRuntime } from "../backend/web";
 import { CodeTabCloseMode, clearCodeTabSwitcher, closeCodeTabs, deleteSelectedCodePaths, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, revealCodeTabInWorkspace, startCodeCreate, startCodeRename } from "../codeView";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteSavedCommand, DeleteWorkspace, ExecutePlan, GetHeartbeatConfig, GetSavedCommands, LoadDevelopmentLogStatus, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenExternalPathExplorer, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, ResolveWorkspacePath, RetryChatMessage, RotateWebAccessToken, RunShellCommand, SaveChatImageToDisk, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution, StopShellCommand, UpsertSavedCommand } from "../backend/services";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteSavedCommand, DeleteWorkspace, ExecutePlan, GetHeartbeatConfig, GetSavedCommands, LoadDevelopmentLogStatus, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenExternalPathExplorer, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, ResolveWorkspacePath, RetryChatMessage, RotateWebAccessToken, SaveChatImageToDisk, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution, UpsertSavedCommand } from "../backend/services";
 import { appRoot } from "./dom";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
@@ -24,6 +24,7 @@ import { resetTokenBudget, loadTokenBudget } from "./budget";
 import { loadLivenessConfig } from "./liveness";
 import { availableWidgets } from "./dashboard/grid";
 import { services } from "../../wailsjs/go/models";
+import { disposeWorkspaceTerminal, restartTerminal, runSavedTerminalCommand, stopTerminal, toggleTerminal, toggleTerminalMaximized, toggleTerminalSavedCommands } from "./terminal";
 
 export async function handleAction(event: Event) {
   const target = event.currentTarget as HTMLElement;
@@ -1225,6 +1226,7 @@ export async function handleAction(event: Event) {
       state.chatImageDrafts.delete(workspaceID);
       state.activeChatKanbanTab.delete(workspaceID);
       state.agentModes.delete(workspaceID);
+      disposeWorkspaceTerminal(workspaceID);
       forgetKanbanRun(workspaceID);
       if (!activeWorkspace()) {
         state.appMode = "chat";
@@ -1234,45 +1236,10 @@ export async function handleAction(event: Event) {
       pushToast("Workspace removed.", "success");
       getAppCallbacks().render();
     }
-    if (action === "run-shell-command") {
-      const commandInput = appRoot.querySelector<HTMLInputElement>(`[data-terminal-input][data-workspace-id="${CSS.escape(workspaceID)}"]`);
-      const command = commandInput?.value.trim() ?? "";
-      if (!workspaceID || !command) return;
-      state.terminalDrafts.set(workspaceID, "");
-      try {
-        const runID = await RunShellCommand(workspaceID, command, "", 300, 256 * 1024);
-        // Update the run's command text in existing runs
-        const runs = state.terminalRuns.get(workspaceID) ?? [];
-        const run = runs.find((r) => r.id === runID);
-        if (run) {
-          run.command = command;
-        }
-        state.terminalOpen.add(workspaceID);
-        getAppCallbacks().render();
-      } catch (error) {
-        pushToast(errorMessage(error), "error");
-      }
-      return;
-    }
-    if (action === "stop-shell-command") {
-      const runID = target.dataset.runId ?? "";
-      if (!workspaceID || !runID) return;
-      try {
-        await StopShellCommand(workspaceID, runID);
-      } catch (error) {
-        pushToast(errorMessage(error), "error");
-      }
-      return;
-    }
     if (action === "toggle-saved-commands") {
       const wsID = target.dataset.workspaceId ?? "";
       if (!wsID) return;
-      if (state.savedCommandOpenSections.has(wsID)) {
-        state.savedCommandOpenSections.delete(wsID);
-      } else {
-        state.savedCommandOpenSections.add(wsID);
-      }
-      getAppCallbacks().render();
+      toggleTerminalSavedCommands(wsID);
       return;
     }
     if (action === "run-saved-command") {
@@ -1281,29 +1248,14 @@ export async function handleAction(event: Event) {
       const cmds = state.savedCommands.get(workspaceID) ?? [];
       const cmd = cmds.find((c) => c.id === savedId);
       if (!cmd) return;
-      // Set the terminal input and trigger run
-      state.terminalDrafts.set(workspaceID, cmd.command);
-      state.terminalOpen.add(workspaceID);
-      getAppCallbacks().render();
-      // Programmatically trigger the run button
-      setTimeout(() => {
-        const runBtn = appRoot.querySelector<HTMLButtonElement>(`[data-action="run-shell-command"][data-workspace-id="${CSS.escape(workspaceID)}"]`);
-        runBtn?.click();
-      }, 50);
+      runSavedTerminalCommand(workspaceID, cmd.command);
       return;
     }
     if (action === "add-saved-command") {
-      const commandInput = appRoot.querySelector<HTMLInputElement>(`[data-terminal-input][data-workspace-id="${CSS.escape(workspaceID)}"]`);
-      const commandText = commandInput?.value.trim() ?? "";
-      if (!commandText) {
-        pushToast("Enter a command in the terminal first.", "error");
-        return;
-      }
-      // Extract name from first word of command
-      const firstWord = commandText.split(/\s+/)[0].replace(/[^\w\-\.]/g, "");
       state.savedCommandEditingId = `new-${Date.now()}`;
-      state.savedCommandDraftName = firstWord || "Command";
-      state.savedCommandDraftCommand = commandText;
+      state.savedCommandDraftName = "";
+      state.savedCommandDraftCommand = "";
+      state.terminalSavedMenuOpen.delete(workspaceID);
       getAppCallbacks().render();
       return;
     }
@@ -1402,12 +1354,22 @@ export async function handleAction(event: Event) {
     if (action === "toggle-terminal") {
       const wsID = target.dataset.workspaceId ?? "";
       if (!wsID) return;
-      if (state.terminalOpen.has(wsID)) {
-        state.terminalOpen.delete(wsID);
-      } else {
-        state.terminalOpen.add(wsID);
-      }
-      getAppCallbacks().render();
+      toggleTerminal(wsID);
+      return;
+    }
+    if (action === "maximize-terminal") {
+      if (!workspaceID) return;
+      toggleTerminalMaximized(workspaceID);
+      return;
+    }
+    if (action === "restart-terminal") {
+      if (!workspaceID) return;
+      await restartTerminal(workspaceID);
+      return;
+    }
+    if (action === "stop-terminal") {
+      if (!workspaceID) return;
+      await stopTerminal(workspaceID);
       return;
     }
   } catch (error) {

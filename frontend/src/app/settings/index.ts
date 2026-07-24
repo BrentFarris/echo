@@ -1641,6 +1641,9 @@ function renderWebAccessSettings(): string {
           ${draft.enabled ? "checked" : ""}
         />
       </label>
+      <p class="web-access-security-warning" role="note">
+        Anyone with the Web Access token can operate the integrated terminal and execute commands on this computer.
+      </p>
       <div class="settings-grid">
         <label class="field">
           <span>Bind Host</span>

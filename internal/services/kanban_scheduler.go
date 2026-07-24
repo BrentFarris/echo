@@ -281,6 +281,7 @@ func (s *SystemService) Shutdown() {
 	}
 	_ = s.persistAllWorkspaceAutosaves()
 	s.closeAllLSPClients()
+	s.closeAllTerminalSessions()
 	if s.flowLog != nil {
 		_ = s.flowLog.Close()
 	}

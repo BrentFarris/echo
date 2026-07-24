@@ -1,7 +1,7 @@
 
 import { llm, services } from "../../wailsjs/go/models";
 import type { ThemePaletteName } from "./theme";
-import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, DashboardWidget, GitDiffViewMode, GitMenuPage, KanbanCardCreationDraft, MobileNavView, ShellCommandRun, TaskEditorDraft, TaskInlineEditState, Toast } from "./types";
+import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, DashboardWidget, GitDiffViewMode, GitMenuPage, KanbanCardCreationDraft, MobileNavView, TaskEditorDraft, TaskInlineEditState, Toast } from "./types";
 
 const endpointTopics = ["chat", "research", "kanbanDecompose", "kanban", "inlineCode"] as const;
 type EndpointTopicKey = (typeof endpointTopics)[number];
@@ -107,14 +107,14 @@ export const state = {
   watchdogIntervals: new Map<string, number>(), // workspaceID -> interval in milliseconds
   workspaceActivitySummaries: new Map<string, services.WorkspaceActivitySummary>(),
   activityRefreshTimerID: null as number | null,
-  terminalRuns: new Map<string, ShellCommandRun[]>(),
-  terminalDrafts: new Map<string, string>(),
   terminalOpen: new Set<string>(),
+  terminalMaximized: new Set<string>(),
+  terminalHeights: new Map<string, number>(),
+  terminalSavedMenuOpen: new Set<string>(),
   savedCommands: new Map<string, services.SavedCommand[]>(),
   savedCommandEditingId: "",
   savedCommandDraftName: "",
   savedCommandDraftCommand: "",
-  savedCommandOpenSections: new Set<string>(),
 };
 
 export type AgentModeDraft = {

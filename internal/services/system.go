@@ -200,8 +200,9 @@ type SystemService struct {
 	kanbanAgents            map[string]*kanbanAgentRun
 	kanbanAgentSeq          uint64
 	kanbanDetailViews       map[string]string
-	shellCommandRuns        map[string]context.CancelFunc // runID -> cancel func
-	shellCommandSeq         uint64
+	terminalMu              sync.Mutex
+	terminalSessions        map[string]*terminalSession // workspaceID -> session
+	terminalSeq             uint64
 	heartbeats              map[string]*heartbeatHandle // workspaceID -\u003e running heartbeat
 	watchdogs               map[string]*watchdogHandle  // workspaceID -> running watchdog
 	fileChangeMu            sync.Mutex
@@ -254,7 +255,7 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 		kanbanRuns:            make(map[string]context.CancelFunc),
 		kanbanAgents:          make(map[string]*kanbanAgentRun),
 		kanbanDetailViews:     make(map[string]string),
-		shellCommandRuns:      make(map[string]context.CancelFunc),
+		terminalSessions:      make(map[string]*terminalSession),
 		heartbeats:            make(map[string]*heartbeatHandle),
 		watchdogs:             make(map[string]*watchdogHandle),
 		fileChanges:           make(map[string][]trackedFileChange),
@@ -1000,6 +1001,7 @@ func (s *SystemService) DeleteWorkspace(id string) (AppState, error) {
 	s.chatMu.Unlock()
 	s.dropWorkspaceChangeReview(id)
 	s.closeWorkspaceLSPClients(id)
+	s.closeWorkspaceTerminalSession(id)
 	if s.debugger != nil {
 		_ = s.debugger.dropWorkspace(id)
 	}
