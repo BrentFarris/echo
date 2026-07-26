@@ -1946,9 +1946,10 @@ func (s *SystemService) emitChatEvent(event ChatStreamEvent) {
 
 func chatSystemMessage(workspace Workspace, mode AgentMode, skillCandidates []tools.WorkspaceSkillSummary, researchEnabled bool) llm.Message {
 	isPlanMode := mode.ID == AgentModeIDPlan
-	instructions := "You are Echo, a personal AI assistant helping plan work inside the active workspace. " +
+	instructions := "You are Echo, a personal AI assistant helping complete work inside the active workspace. " +
 		contextCheckpointSystemGuidance + " " +
 		"Use available tools when workspace facts are needed. " +
+		"When the user asks for a change, implementation, or fix, use the available tools to carry it out directly. Do not stop after describing a plan unless the user specifically asks for a plan or approval is required. " +
 		"When the user mentions @path, treat it as a labeled workspace file or directory reference like <folder-label>/path. Read referenced files, and list or search within referenced directories before relying on their contents. " +
 		"Use workspace_context for broad implementation planning when target files are unknown. " +
 		"Use git_inspect when commit history, regressions, legacy behavior, ownership, or prior rationale would materially clarify the request; avoid routine history searches when the current code is sufficient. " +
@@ -1958,7 +1959,7 @@ func chatSystemMessage(workspace Workspace, mode AgentMode, skillCandidates []to
 		"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. " +
 		"When images are attached to a chat message, use comfyui_generate with attachedImageIndex (0-based) to pass them directly as img2img input â€” no need to save to disk first. Index 0 refers to the first attached image. " +
 		"After generating an image with comfyui_generate, use the returned imageId with save_image to persist it to workspace disk if needed. " +
-		"Keep plans concrete and concise."
+		"Keep responses concrete and concise."
 	if researchEnabled {
 		instructions += " " + researchOrchestratorSystemGuidance
 	}

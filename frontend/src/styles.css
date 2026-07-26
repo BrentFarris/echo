@@ -3846,9 +3846,10 @@ h3 {
   transform: rotate(90deg);
 }
 
-.git-diff-file-chevron svg {
+.change-file-title .git-diff-file-chevron svg {
   width: 14px;
   height: 14px;
+  color: var(--color-accent-strong);
 }
 
 .git-diff-file-body {
@@ -3870,6 +3871,11 @@ h3 {
   width: 16px;
   height: 16px;
   color: var(--color-text-muted);
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
 }
 
 .change-file-title strong {
