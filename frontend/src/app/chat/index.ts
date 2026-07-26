@@ -1704,6 +1704,9 @@ async function deleteAgentMode(modeID: string) {
   try {
     const updated = await DeleteAgentMode(modeID);
     state.agentModes.set(workspace.id, Array.isArray(updated) ? updated : []);
+    if (workspace.defaultAgentModeId === modeID) {
+      workspace.defaultAgentModeId = "general";
+    }
     /* Clear selection if deleted mode was active. */
     if (chatAgentModeIDFor(workspace.id) === modeID) {
       setChatAgentMode(workspace.id, "");

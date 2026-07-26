@@ -462,6 +462,15 @@ export async function handleAction(event: Event) {
       state.webAccessDraft = cloneWebAccessSettings(state.appState!.webAccess);
       state.webAccessStatus = await LoadWebAccessStatus();
       state.developmentLogStatus = await LoadDevelopmentLogStatus();
+      await Promise.all(
+        (state.appState?.workspaces ?? []).map(async (item) => {
+          try {
+            state.agentModes.set(item.id, await ListAgentModes(item.id));
+          } catch {
+            /* Keep built-in fallback options available if a workspace cannot load its custom modes. */
+          }
+        }),
+      );
       applyTheme(state.settingsDraft);
       hydrateWorkspaceLetterDrafts(state.appState?.workspaces ?? []);
       getAppCallbacks().render();

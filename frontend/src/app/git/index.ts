@@ -445,7 +445,7 @@ function gitSourceStatusLetter(file: services.WorkspaceGitChangedFile): string {
 function renderGitWorkingChanges(workspaceID: string, repository: services.WorkspaceGitRepositoryStatus): string {
   const stashDetail = state.gitStashDetails.get(gitRepositoryDraftKey(workspaceID, repository.folderId));
   if (stashDetail) {
-    return renderSelectedGitStashReview(stashDetail);
+    return renderSelectedGitStashReview(workspaceID, repository.folderId, stashDetail);
   }
   const files = repository.files ?? [];
   const selectedCommitReview = renderSelectedGitCommitReview(workspaceID, repository);
@@ -463,15 +463,16 @@ function renderGitWorkingChanges(workspaceID: string, repository: services.Works
   `;
 }
 
-function renderSelectedGitStashReview(detail: services.WorkspaceGitStashDetail): string {
+function renderSelectedGitStashReview(workspaceID: string, folderID: string, detail: services.WorkspaceGitStashDetail): string {
   const files = detail.files ?? [];
+  const stashRef = detail.stash?.ref ?? "stash";
   return `
     <section class="git-stash-review" aria-label="Stash review">
       <header class="git-commit-review-header">
         <div><strong>${escapeHtml(detail.stash?.ref ?? "Stash")}</strong><span>${escapeHtml(detail.stash?.message ?? "")}</span></div>
         <button class="secondary-button" type="button" data-action="close-git-stash-review">Close</button>
       </header>
-      ${files.length ? `<div class="git-commit-review-files">${files.map((file) => renderGitCommitReviewFile(detail.stash?.ref ?? "stash", file)).join("")}</div>` : `<div class="empty-state compact">No files in this stash.</div>`}
+      ${files.length ? `<div class="git-commit-review-files">${files.map((file) => renderGitCommitReviewFile(workspaceID, folderID, stashRef, file)).join("")}</div>` : `<div class="empty-state compact">No files in this stash.</div>`}
     </section>
   `;
 }
@@ -480,7 +481,12 @@ function renderGitWorkingChangedFile(workspaceID: string, folderID: string, file
   const key = gitWorkingDiffKey(workspaceID, folderID, file.path, scope);
   const hydrated = state.gitWorkingDiffs.get(key);
   const loaded = Boolean(hydrated) || state.gitWorkingDiffFailures.has(key);
-  return renderGitChangedFile(hydrated ?? gitChangedFileForScope(file, scope), !loaded, scope);
+  return renderGitChangedFile(
+    hydrated ?? gitChangedFileForScope(file, scope),
+    !loaded,
+    scope,
+    state.collapsedGitDiffFiles.has(key),
+  );
 }
 
 function gitChangedFileForScope(file: services.WorkspaceGitChangedFile, scope: GitWorkingDiffScope): services.WorkspaceGitChangedFile {
@@ -535,25 +541,34 @@ function renderSelectedGitCommitReview(workspaceID: string, repository: services
       ${state.loadingGitCommitDetails.has(key)
         ? `<div class="empty-state compact">${renderSpinnerLabel("Loading commit")}</div>`
         : files.length
-          ? `<div class="git-commit-review-files">${files.map((file) => renderGitCommitReviewFile(commit.hash, file)).join("")}</div>`
+          ? `<div class="git-commit-review-files">${files.map((file) => renderGitCommitReviewFile(workspaceID, repository.folderId, commit.hash, file)).join("")}</div>`
           : `<div class="empty-state compact">No changed files in this commit.</div>`}
     </section>
   `;
 }
 
-function renderGitCommitReviewFile(hash: string, file: services.WorkspaceGitChangedFile): string {
+function renderGitCommitReviewFile(
+  workspaceID: string,
+  folderID: string,
+  hash: string,
+  file: services.WorkspaceGitChangedFile,
+): string {
   const normalizedPath = normalizeGitChangePath(file.path);
+  const collapsed = state.collapsedGitDiffFiles.has(gitReviewDiffKey(workspaceID, folderID, hash, normalizedPath));
   return `
-    <article class="change-file git-commit-review-file" data-change-file data-git-commit-hash="${escapeAttribute(hash)}" data-git-commit-file-path="${escapeAttribute(normalizedPath)}">
+    <article class="change-file git-diff-file git-commit-review-file${collapsed ? " is-collapsed" : ""}" data-change-file data-git-commit-hash="${escapeAttribute(hash)}" data-git-commit-file-path="${escapeAttribute(normalizedPath)}">
       <header>
-        <div class="change-file-title">
+        <button class="change-file-title git-diff-file-toggle" type="button" title="${collapsed ? "Expand" : "Collapse"} diff for ${escapeAttribute(file.path)}" aria-label="${collapsed ? "Expand" : "Collapse"} diff for ${escapeAttribute(file.path)}" aria-expanded="${collapsed ? "false" : "true"}" data-git-diff-file-toggle>
+          <span class="git-diff-file-chevron">${icons.arrowRight}</span>
           ${icons.file}
           <strong title="${escapeAttribute(file.path)}">${escapeHtml(file.path)}</strong>
-        </div>
+        </button>
         <span class="change-operation is-${escapeAttribute(file.operation)}">${escapeHtml(changeOperationLabel(file.operation))}</span>
       </header>
-      ${renderGitChangeStatus(file)}
-      ${file.diffAvailable && file.diff ? renderGitDiff(file.diff, "") : renderGitChangeMetadata(file)}
+      <div class="git-diff-file-body">
+        ${renderGitChangeStatus(file)}
+        ${file.diffAvailable && file.diff ? renderGitDiff(file.diff, "") : renderGitChangeMetadata(file)}
+      </div>
     </article>
   `;
 }
@@ -967,6 +982,7 @@ export function bindGitEvents(root: ParentNode) {
   bindGitSplitDiffScroll(root);
   bindGitChangeTree(root);
   bindGitChangeContextMenus(root);
+  bindGitDiffFileToggles(root);
   bindGitWorkingDiffs(root);
   root
     .querySelectorAll<HTMLSelectElement>("[data-git-repository-select]")
@@ -1030,6 +1046,38 @@ function bindGitChangeContextMenus(root: ParentNode) {
       });
     });
   });
+}
+
+function bindGitDiffFileToggles(root: ParentNode) {
+  root
+    .querySelectorAll<HTMLButtonElement>("[data-git-diff-file-toggle]")
+    .forEach((button) => button.addEventListener("click", handleGitDiffFileToggle));
+}
+
+function handleGitDiffFileToggle(event: MouseEvent) {
+  const button = event.currentTarget as HTMLButtonElement;
+  const file = button.closest<HTMLElement>("[data-git-change-file-path], [data-git-commit-file-path]");
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
+  const path = file?.dataset.gitChangeFilePath ?? file?.dataset.gitCommitFilePath ?? "";
+  const scope = gitWorkingDiffScope(file?.dataset.gitDiffScope);
+  const reviewRef = file?.dataset.gitCommitHash ?? "";
+  if (!file || !workspace || !repository || !path || (!scope && !reviewRef)) {
+    return;
+  }
+  const key = scope
+    ? gitWorkingDiffKey(workspace.id, repository.folderId, path, scope)
+    : gitReviewDiffKey(workspace.id, repository.folderId, reviewRef, path);
+  const collapsed = !state.collapsedGitDiffFiles.has(key);
+  if (collapsed) {
+    state.collapsedGitDiffFiles.add(key);
+  } else {
+    state.collapsedGitDiffFiles.delete(key);
+  }
+  file.classList.toggle("is-collapsed", collapsed);
+  button.setAttribute("aria-expanded", String(!collapsed));
+  button.title = `${collapsed ? "Expand" : "Collapse"} diff for ${path}`;
+  button.setAttribute("aria-label", button.title);
 }
 
 function handleGitChangeTreeToggle() {
@@ -1511,6 +1559,11 @@ export function dropWorkspaceGitRepositoryState(workspaceID: string) {
       state.collapsedGitChangeTrees.delete(key);
     }
   }
+  for (const key of Array.from(state.collapsedGitDiffFiles)) {
+    if (key.startsWith(`${workspaceID}\u0000`)) {
+      state.collapsedGitDiffFiles.delete(key);
+    }
+  }
   for (const key of Array.from(state.expandedGitHistories)) {
     if (key.startsWith(`${workspaceID}:`)) {
       state.expandedGitHistories.delete(key);
@@ -1555,15 +1608,18 @@ export function dropWorkspaceGitRepositoryState(workspaceID: string) {
 }
 
 function patchGitWorkingDiffCard(file: services.WorkspaceGitChangedFile, scope: GitWorkingDiffScope) {
+  const workspace = activeWorkspace();
+  const repository = gitRepositoryViewFor(workspace?.id ?? "").repository;
   const path = normalizeGitChangePath(file.path);
   const list = appRoot.querySelector<HTMLElement>("[data-git-change-file-list]");
   const current = Array.from(list?.querySelectorAll<HTMLElement>("[data-git-change-file-path]") ?? [])
     .find((element) => element.dataset.gitChangeFilePath === path && element.dataset.gitDiffScope === scope && !element.dataset.gitCommitHash);
-  if (!current) {
+  if (!current || !workspace || !repository) {
     return;
   }
   const template = document.createElement("template");
-  template.innerHTML = renderGitChangedFile(file, false, scope).trim();
+  const key = gitWorkingDiffKey(workspace.id, repository.folderId, path, scope);
+  template.innerHTML = renderGitChangedFile(file, false, scope, state.collapsedGitDiffFiles.has(key)).trim();
   const replacement = template.content.firstElementChild;
   if (!(replacement instanceof HTMLElement)) {
     return;
@@ -1571,6 +1627,7 @@ function patchGitWorkingDiffCard(file: services.WorkspaceGitChangedFile, scope: 
   current.replaceWith(replacement);
   getAppCallbacks().bindActionEvents(replacement);
   bindGitSplitDiffScroll(replacement);
+  bindGitDiffFileToggles(replacement);
 }
 
 function handleGitRepositorySelect(select: HTMLSelectElement) {
@@ -2248,6 +2305,10 @@ function gitWorkingDiffGenerationKey(workspaceID: string, folderID: string): str
 
 function gitWorkingDiffKey(workspaceID: string, folderID: string, path: string, scope: GitWorkingDiffScope): string {
   return `${gitWorkingDiffGenerationKey(workspaceID, folderID)}\u0000${scope}\u0000${normalizeGitChangePath(path)}`;
+}
+
+function gitReviewDiffKey(workspaceID: string, folderID: string, ref: string, path: string): string {
+  return `${gitWorkingDiffGenerationKey(workspaceID, folderID)}\u0000review\u0000${ref}\u0000${normalizeGitChangePath(path)}`;
 }
 
 function gitWorkingDiffScope(value: string | undefined): GitWorkingDiffScope | null {

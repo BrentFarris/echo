@@ -14,13 +14,13 @@ import (
 // AgentMode defines a named chat mode with its own system prompt and
 // tool/path permission boundaries.
 type AgentMode struct {
-	ID              string                                    `json:"id"`
-	Name            string                                    `json:"name"`
-	Prompt          string                                    `json:"prompt"`
-	Permissions     map[string]tools.ToolPermission           `json:"permissions,omitempty"`
-	BuiltIn         bool                                      `json:"builtIn"`
-	ToolPermissions []string                                  `json:"toolPermissions,omitempty"` // deprecated: use Permissions
-	PathPermissions []string                                  `json:"pathPermissions,omitempty"` // deprecated: use Permissions
+	ID              string                          `json:"id"`
+	Name            string                          `json:"name"`
+	Prompt          string                          `json:"prompt"`
+	Permissions     map[string]tools.ToolPermission `json:"permissions,omitempty"`
+	BuiltIn         bool                            `json:"builtIn"`
+	ToolPermissions []string                        `json:"toolPermissions,omitempty"` // deprecated: use Permissions
+	PathPermissions []string                        `json:"pathPermissions,omitempty"` // deprecated: use Permissions
 }
 
 const agentModeEventName = "echo:agent-mode:event"
@@ -321,6 +321,15 @@ func (s *SystemService) DeleteAgentMode(id string) ([]AgentMode, error) {
 
 	if err := s.workspaceModeDelete(workspace, id); err != nil {
 		return nil, err
+	}
+	for i := range s.state.Workspaces {
+		if s.state.Workspaces[i].ID == workspace.ID && s.state.Workspaces[i].DefaultAgentModeID == id {
+			s.state.Workspaces[i].DefaultAgentModeID = AgentModeIDGeneral
+			if err := s.saveLocked(); err != nil {
+				return nil, err
+			}
+			break
+		}
 	}
 
 	result := s.listAgentModesLocked()

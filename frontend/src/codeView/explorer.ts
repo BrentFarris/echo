@@ -25,12 +25,15 @@ export function toggleIgnoredFilter(workspaceID: string, callbacks: CodeViewCall
 export async function refreshCodeTree(workspaceID: string, callbacks: CodeViewCallbacks) {
   captureCodeTreeScroll(workspaceID);
   const state = ensureCodeState(workspaceID);
+  const expandedPaths = new Set(state.expandedPaths);
+  expandedPaths.add(".");
   state.directories.clear();
-  state.expandedPaths = new Set(["."]);
+  state.expandedPaths = expandedPaths;
   state.pendingCreate = null;
   state.pendingRename = null;
+  const directoryLoads = Array.from(expandedPaths, (path) => loadDirectory(workspaceID, path));
   patchCodeTree(workspaceID, callbacks);
-  await loadDirectory(workspaceID, ".");
+  await Promise.all(directoryLoads);
   patchCodeTree(workspaceID, callbacks);
 }
 

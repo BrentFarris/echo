@@ -3818,6 +3818,53 @@ h3 {
   flex: 1 1 auto;
 }
 
+.git-diff-file-toggle {
+  min-width: 0;
+  margin: calc(var(--space-sm) * -1);
+  padding: var(--space-sm);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.git-diff-file-toggle:hover,
+.git-diff-file-toggle:focus-visible {
+  background: color-mix(in srgb, var(--color-accent) 9%, transparent);
+}
+
+.git-diff-file-chevron {
+  display: inline-flex;
+  flex: 0 0 auto;
+  transition: transform 120ms ease;
+}
+
+.git-diff-file:not(.is-collapsed) .git-diff-file-chevron {
+  transform: rotate(90deg);
+}
+
+.git-diff-file-chevron svg {
+  width: 14px;
+  height: 14px;
+}
+
+.git-diff-file-body {
+  display: grid;
+  gap: var(--space-lg-md);
+  min-width: 0;
+}
+
+.git-diff-file.is-collapsed {
+  gap: 0;
+}
+
+.git-diff-file.is-collapsed .git-diff-file-body {
+  display: none;
+}
+
 .change-file-title svg {
   flex: 0 0 auto;
   width: 16px;
@@ -5829,34 +5876,110 @@ h3 {
 
 .workspace-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
-  align-items: center;
-  gap: var(--space-xl);
-  min-height: 68px;
-  padding: var(--space-xl);
+  gap: var(--space-xl-lg);
+  padding: var(--space-xl-lg);
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--color-bg);
 }
 
-.workspace-row-main {
-  display: grid;
-  gap: var(--space-sm);
+.workspace-row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2xl);
   min-width: 0;
+}
+
+.workspace-row-heading {
+  display: grid;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.workspace-row-heading strong {
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: var(--text-2xl-lg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-row-heading span {
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: var(--text-base-lg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-row-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: end;
+  gap: var(--space-lg-md);
+}
+
+.workspace-row-preferences {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(160px, 190px) minmax(230px, auto);
+  align-items: end;
+  gap: var(--space-xl);
+  min-width: 0;
+  padding-top: var(--space-xl);
+  border-top: 1px solid var(--color-border);
+}
+
+.workspace-build-command-field textarea {
+  width: 100%;
+  min-width: 0;
+  height: 42px;
+  min-height: 42px;
+  max-height: 120px;
+  padding: var(--space-lg) var(--space-lg-lg);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--text-base-lg)/1.4 "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  resize: vertical;
+}
+
+.workspace-default-agent-mode {
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.workspace-parent-git-repositories {
+  width: 100%;
+  min-width: 0;
+}
+
+.workspace-row-folders {
+  display: grid;
+  gap: var(--space-lg);
+  padding-top: var(--space-xl);
+  border-top: 1px solid var(--color-border);
+}
+
+.workspace-row .workspace-row-section-label,
+.workspace-icon-control > span {
+  color: var(--color-text-muted);
+  font-size: var(--text-md-lg);
+  font-weight: 700;
 }
 
 .workspace-folder-list {
   display: grid;
   gap: var(--space-lg);
-  margin-top: var(--space-lg);
 }
 
 .workspace-folder-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: var(--space-lg-md);
-  padding: var(--space-lg);
+  gap: var(--space-xl);
+  padding: var(--space-lg-md) var(--space-lg-lg);
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: var(--color-surface);
@@ -5868,8 +5991,16 @@ h3 {
 
 .workspace-folder-main {
   display: grid;
-  gap: var(--space-xxs);
+  gap: 2px;
   min-width: 0;
+}
+
+.workspace-folder-main strong {
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: var(--text-base-lg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .workspace-folder-main small {
@@ -5880,22 +6011,30 @@ h3 {
   white-space: nowrap;
 }
 
-.workspace-folder-path {
-  grid-column: 1 / -1;
+.workspace-row .workspace-folder-path {
+  overflow: hidden;
+  color: var(--color-text-muted);
   font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
   font-size: var(--text-xs);
-  color: var(--color-text-muted);
-  word-break: break-all;
-  overflow-wrap: anywhere;
   line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .workspace-folder-agents {
+  width: auto;
+  min-height: 38px;
   white-space: nowrap;
 }
 
-.workspace-default-plan-mode {
-  white-space: nowrap;
+.workspace-folder-list > .secondary-button {
+  justify-self: start;
+  min-width: 150px;
+}
+
+.workspace-icon-control {
+  display: grid;
+  gap: var(--space-sm);
 }
 
 .workspace-icon-setting {
@@ -5919,15 +6058,12 @@ h3 {
   line-height: 1;
 }
 
-.workspace-icon-setting .icon-button {
-  width: 34px;
+.workspace-row .workspace-icon-preview {
+  font-size: var(--text-sm);
 }
 
-.workspace-row strong,
-.workspace-row span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.workspace-icon-setting .icon-button {
+  width: 34px;
 }
 
 .workspace-letter-field {
@@ -5952,6 +6088,43 @@ h3 {
 }
 
 /* â”€â”€ Agent Modes settings section â”€â”€ */
+
+.workspace-delete-button {
+  align-self: end;
+  width: 34px;
+  height: 34px;
+}
+
+.workspace-letter-field > span {
+  font-size: var(--text-md-lg);
+}
+
+@media (max-width: 760px) {
+  .workspace-row-header {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .workspace-row-actions {
+    width: 100%;
+  }
+
+  .workspace-delete-button {
+    margin-left: auto;
+  }
+
+  .workspace-row-preferences {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workspace-folder-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .workspace-folder-main {
+    grid-column: 1 / -1;
+  }
+}
 
 .agent-mode-list {
   display: grid;

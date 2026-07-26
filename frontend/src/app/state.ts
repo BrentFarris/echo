@@ -68,6 +68,7 @@ export const state = {
   collapsedGitChangeFolders: new Map<string, Set<string>>(),
   collapsedGitChangeSections: new Set<string>(),
   collapsedGitChangeTrees: new Set<string>(),
+  collapsedGitDiffFiles: new Set<string>(),
   expandedGitHistories: new Set<string>(),
   gitCommitMessageDrafts: new Map<string, string>(),
   gitNewBranchDrafts: new Map<string, string>(),
@@ -136,20 +137,15 @@ export function chatComposerModeFor(workspaceID: string): "plan" | "edit" {
   if (mode !== undefined) {
     return mode;
   }
-  /* Derive chatPlanModes from the composer mode map. */
   state.chatPlanModes.delete(key);
-  return "plan";
+  return defaultAgentModeIDFor(workspaceID) === "plan" ? "plan" : "edit";
 }
 
 export function setChatComposerMode(workspaceID: string, mode: "plan" | "edit") {
   const key = chatStateKey(workspaceID);
-  if (mode === "plan") {
-    state.chatComposerModes.delete(key);
-    state.chatPlanModes.delete(key);
-  } else {
-    state.chatComposerModes.set(key, mode);
-    state.chatPlanModes.set(key, false);
-  }
+  state.chatComposerModes.set(key, mode);
+  state.chatPlanModes.set(key, mode === "plan");
+  state.selectedAgentModeIds.set(key, mode === "plan" ? "plan" : "general");
 }
 
 export const kanbanLaneLabels: Record<string, string> = {
@@ -217,8 +213,7 @@ export function chatSessionFor(workspaceID: string, chatID = activeChatIDFor(wor
 }
 
 export function chatPlanModeFor(workspaceID: string): boolean {
-  const mode = chatComposerModeFor(workspaceID);
-  return mode === "plan";
+  return chatAgentModeIDFor(workspaceID) === "plan";
 }
 
 export function chatAgentModeIDFor(workspaceID: string): string {
@@ -226,12 +221,12 @@ export function chatAgentModeIDFor(workspaceID: string): string {
   if (selected !== undefined && selected !== "") {
     return selected;
   }
-  /* Fallback to built-in plan/general IDs for backward compatibility. */
-  const mode = chatComposerModeFor(workspaceID);
-  if (mode === "plan") {
-    return "plan";
-  }
-  return "general";
+  return defaultAgentModeIDFor(workspaceID);
+}
+
+export function defaultAgentModeIDFor(workspaceID: string): string {
+  const workspace = state.appState?.workspaces?.find((candidate) => candidate.id === workspaceID);
+  return workspace?.defaultAgentModeId?.trim() || "plan";
 }
 
 export function agentModesForWorkspace(workspaceID: string): services.AgentMode[] {
@@ -247,6 +242,8 @@ export function chatAgentModeNameFor(workspaceID: string): string {
 
 export function setChatAgentMode(workspaceID: string, modeID: string) {
   const key = chatStateKey(workspaceID);
+  state.chatComposerModes.delete(key);
+  state.chatPlanModes.delete(key);
   if (modeID) {
     state.selectedAgentModeIds.set(key, modeID);
   } else {
