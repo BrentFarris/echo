@@ -5436,6 +5436,11 @@ h3 {
   list-style: none;
 }
 
+.settings-nav .settings-nav-workspaces {
+  gap: 0;
+  margin: 0 0 var(--space-sm);
+}
+
 .settings-nav button {
   width: 100%;
   padding: var(--space-lg) var(--space-lg-md);
@@ -5449,6 +5454,17 @@ h3 {
   line-height: 1.25;
   text-align: left;
   cursor: pointer;
+}
+
+.settings-nav .settings-workspace-nav-button {
+  overflow: hidden;
+  padding: var(--space-sm) var(--space-lg-md) var(--space-sm) calc(var(--space-lg-md) + var(--space-xl));
+  color: color-mix(in srgb, var(--color-text-muted) 84%, transparent);
+  font-size: var(--text-base-lg);
+  font-weight: 400;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-nav button:hover {
@@ -5877,6 +5893,7 @@ h3 {
 .workspace-row {
   display: grid;
   gap: var(--space-xl-lg);
+  scroll-margin-top: var(--space-lg);
   padding: var(--space-xl-lg);
   border: 1px solid var(--color-border);
   border-radius: 10px;
@@ -8607,6 +8624,10 @@ h3 {
   .settings-nav ul {
     display: flex;
     width: max-content;
+  }
+
+  .settings-nav .settings-nav-workspaces {
+    display: none;
   }
 
   .settings-nav button {

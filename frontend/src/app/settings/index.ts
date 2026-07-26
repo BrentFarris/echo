@@ -273,7 +273,7 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
 
         <div class="settings-layout">
           <nav class="settings-nav" aria-label="Settings sections">
-            <ul>
+            <ul class="settings-nav-list">
               ${settingsSections
                 .map(
                   (section) => `
@@ -281,6 +281,30 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                       <button type="button" data-settings-nav-target="${section.id}">
                         ${section.label}
                       </button>
+                      ${
+                        section.id === "workspace-settings-title" && workspaces.length
+                          ? `
+                            <ul class="settings-nav-workspaces" aria-label="Workspace settings">
+                              ${workspaces
+                                .map(
+                                  (workspace, index) => `
+                                    <li>
+                                      <button
+                                        class="settings-workspace-nav-button"
+                                        type="button"
+                                        title="${escapeAttribute(workspace.displayName)}"
+                                        data-settings-nav-target="${settingsWorkspaceTargetID(index)}"
+                                      >
+                                        ${escapeHtml(workspace.displayName)}
+                                      </button>
+                                    </li>
+                                  `,
+                                )
+                                .join("")}
+                            </ul>
+                          `
+                          : ""
+                      }
                     </li>
                   `,
                 )
@@ -435,8 +459,8 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                   workspaces.length
                     ? workspaces
                         .map(
-                          (workspace) => `
-                            <div class="workspace-row">
+                          (workspace, index) => `
+                            <div class="workspace-row" id="${settingsWorkspaceTargetID(index)}">
                               <div class="workspace-row-header">
                                 <div class="workspace-row-heading">
                                   <strong>${escapeHtml(workspace.displayName)}${workspace.missing ? " - Folder missing" : ""}</strong>
@@ -544,6 +568,10 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
 }
 
 /* ── Agent Modes settings section ── */
+
+function settingsWorkspaceTargetID(index: number): string {
+  return `workspace-settings-${index}`;
+}
 
 function renderWorkspaceDefaultAgentModeOptions(workspace: services.Workspace): string {
   const loadedModes = agentModesForWorkspace(workspace.id);
