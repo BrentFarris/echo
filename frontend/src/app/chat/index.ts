@@ -3105,8 +3105,25 @@ export function patchChatControls() {
 }
 
 export function scrollChatToBottom() {
-  const log = appRoot.querySelector<HTMLElement>("[data-chat-log]");
-  if (log) {
-    log.scrollTop = log.scrollHeight;
+  const panel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
+  const workspaceID = panel?.dataset.workspaceId ?? "";
+  const chatID = panel?.dataset.chatId ?? "";
+  if (!panel || !workspaceID || !chatID) {
+    return;
   }
+  const scroll = () => {
+    const currentPanel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
+    if (
+      currentPanel?.dataset.workspaceId !== workspaceID ||
+      currentPanel.dataset.chatId !== chatID
+    ) {
+      return;
+    }
+    const log = currentPanel.querySelector<HTMLElement>("[data-chat-log]");
+    if (log) {
+      log.scrollTop = log.scrollHeight;
+    }
+  };
+  scroll();
+  window.requestAnimationFrame(scroll);
 }

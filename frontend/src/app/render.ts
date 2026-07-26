@@ -5,6 +5,7 @@ import {
   renderChatPanel,
   clearChatMention,
   linkifyAssistantFilePaths,
+  scrollChatToBottom,
 } from "./chat";
 import { loadTokenBudget, renderBudgetBar } from "./budget";
 import { renderChangeReviewDrawer } from "./changes";
@@ -381,7 +382,30 @@ function renderApp(refreshCodeView: boolean): void {
   mountTerminalDock(terminal.element, workspace);
   restoreRenderScrollSnapshots(scrollSnapshots);
   restoreRenderFocusSnapshot(focusSnapshot);
-  window.requestAnimationFrame(() => restoreRenderScrollSnapshots(scrollSnapshots));
+  const pendingChatScrollKey =
+    state.appMode === "chat" && workspace
+      ? chatStateKey(workspace.id)
+      : "";
+  const shouldScrollChatToBottom = Boolean(
+    pendingChatScrollKey &&
+    state.pendingChatScrollToBottom.has(pendingChatScrollKey),
+  );
+  if (shouldScrollChatToBottom) {
+    state.pendingChatScrollToBottom.delete(pendingChatScrollKey);
+    scrollChatToBottom();
+  }
+  window.requestAnimationFrame(() => {
+    restoreRenderScrollSnapshots(scrollSnapshots);
+    const currentWorkspace = activeWorkspace();
+    if (
+      shouldScrollChatToBottom &&
+      state.appMode === "chat" &&
+      currentWorkspace &&
+      chatStateKey(currentWorkspace.id) === pendingChatScrollKey
+    ) {
+      scrollChatToBottom();
+    }
+  });
   if (!hadDialog) {
     focusInitialElement();
   }

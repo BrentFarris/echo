@@ -733,6 +733,7 @@ export async function handleAction(event: Event) {
     }
     if (action === "activate-workspace") {
       const current = activeWorkspace();
+      const changingWorkspace = current?.id !== workspaceID;
       if (current && current.id !== workspaceID) {
         await closeSelectedCardDetail(current.id);
         state.openChangeReviewWorkspaces.delete(current.id);
@@ -743,6 +744,11 @@ export async function handleAction(event: Event) {
       }
       state.appState = await SetActiveWorkspace(workspaceID);
       await loadActiveChatSession();
+      if (changingWorkspace) {
+        const destinationChatKey = chatStateKey(workspaceID);
+        state.chatScrollPositions.delete(destinationChatKey);
+        state.pendingChatScrollToBottom.add(destinationChatKey);
+      }
       await loadActiveKanbanBoard();
       await loadActiveTaskBoard();
       await loadActiveChangeReview();
@@ -1250,6 +1256,11 @@ export async function handleAction(event: Event) {
           }
         }
       });
+      for (const key of state.pendingChatScrollToBottom) {
+        if (key.startsWith(chatKeyPrefix)) {
+          state.pendingChatScrollToBottom.delete(key);
+        }
+      }
       state.activeChatKanbanTab.delete(workspaceID);
       state.agentModes.delete(workspaceID);
       disposeWorkspaceTerminal(workspaceID);
