@@ -25,8 +25,6 @@ Echo keeps the whole development loop in one desktop application: talk through a
 
 It works with local or remote providers that expose an OpenAI-compatible `/chat/completions` API. Ollama, LM Studio, llama.cpp, vLLM, and other compatible servers can all be used without an Echo account or hosted Echo backend.
 
-> The screenshots use an isolated demo workspace. No private project or model data is included.
-
 ## What Echo can do
 
 | Area | Capabilities |
