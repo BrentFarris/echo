@@ -14,6 +14,12 @@ const (
 	workspaceSkillMaxReminders   = 2
 )
 
+const workspaceSkillLearningPolicy = "Be conservative: default to workspace_skill_record action skip. " +
+	"Use upsert only when the knowledge is stable, applies to multiple distinct future tasks, and is not already adequately captured by current code, tests, documentation, or an existing skill. " +
+	"One-off bug fixes, requested changes, line-level implementation details, and before/after patch summaries must be skipped. " +
+	"Do not create a skill named after the current bug or fix. Prefer updating an existing broad skill after reading it. " +
+	"For upsert, provide a durabilityReason and two to four futureTasks that are different from the current task, and write generalized guidance rather than Bug/Root Cause/Fix sections. "
+
 func workspaceSkillCandidates(ctx context.Context, workspace Workspace, query string) []tools.WorkspaceSkillSummary {
 	response, err := searchWorkspaceSkills(ctx, workspace, tools.WorkspaceSkillSearchRequest{
 		Query: query,
@@ -43,7 +49,8 @@ func workspaceSkillsPrompt(base string, candidates []tools.WorkspaceSkillSummary
 		guidance.WriteString("No skill candidate was surfaced automatically. Use workspace_skill_search when reusable project guidance may still exist. ")
 	}
 	if learningEnabled {
-		guidance.WriteString("After changing project files, you must complete the learning checkpoint before finishing: call workspace_skill_record with upsert for concise durable project knowledge, or skip with a reason for routine, temporary, speculative, sensitive, or already-documented information. Read an existing skill before updating it. ")
+		guidance.WriteString("After changing project files, you must complete the learning checkpoint before finishing. ")
+		guidance.WriteString(workspaceSkillLearningPolicy)
 	}
 	guidance.WriteString("If repeated tool usage in this chat suggests a reusable workflow, call create_agent_mode to synthesize a new agent mode from the transcript. Pass the workspace ID that owns the chat; the tool analyzes completed tool calls and creates a named mode with matching permissions. Use list_agent_modes to see available modes before creating a duplicate. ")
 	return strings.TrimSpace(guidance.String())
@@ -67,10 +74,9 @@ func workspaceSkillCheckpointPrompt(verified bool) string {
 	if verified {
 		prefix = "Verification passed. Before finishing, complete the required workspace-skill learning checkpoint. "
 	}
-	return prefix +
-		"Call workspace_skill_record with action upsert if this task produced concise, durable, project-specific knowledge about architecture, workflows, invariants, pitfalls, or verification. " +
-		"Search and read first to avoid duplicating or blindly overwriting an existing skill. " +
-		"Otherwise call workspace_skill_record with action skip and a brief reason. Do not repeat the final summary until the checkpoint tool succeeds."
+	return prefix + workspaceSkillLearningPolicy +
+		"Call workspace_skill_record now with upsert only if every requirement is met; otherwise call skip with a brief reason. " +
+		"Do not repeat the final summary until the checkpoint tool succeeds."
 }
 
 func workspaceSkillCheckpointWarning() string {
