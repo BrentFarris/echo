@@ -304,6 +304,9 @@ func TestDeleteAgentModeSucceeds(t *testing.T) {
 			break
 		}
 	}
+	if _, err := svc.SetWorkspaceDefaultAgentMode(svc.state.ActiveWorkspaceID, custom.ID); err != nil {
+		t.Fatalf("set custom default mode: %v", err)
+	}
 
 	modes, err := svc.DeleteAgentMode(custom.ID)
 	if err != nil {
@@ -327,6 +330,9 @@ func TestDeleteAgentModeSucceeds(t *testing.T) {
 	}
 	if !foundGeneral || !foundPlan {
 		t.Fatalf("expected built-in modes to remain, got general=%v plan=%v", foundGeneral, foundPlan)
+	}
+	if got := svc.state.Workspaces[0].DefaultAgentModeID; got != AgentModeIDGeneral {
+		t.Fatalf("expected deleting the default custom mode to fall back to general, got %q", got)
 	}
 }
 

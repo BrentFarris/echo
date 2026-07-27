@@ -2895,7 +2895,7 @@ func TestSystemServiceSetWorkspaceLetterPersists(t *testing.T) {
 	}
 }
 
-func TestSystemServiceWorkspaceDefaultPlanModePersists(t *testing.T) {
+func TestSystemServiceWorkspaceDefaultAgentModePersists(t *testing.T) {
 	root := t.TempDir()
 	workspacePath := filepath.Join(root, "workspace")
 	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
@@ -2908,39 +2908,49 @@ func TestSystemServiceWorkspaceDefaultPlanModePersists(t *testing.T) {
 		t.Fatalf("add workspace: %v", err)
 	}
 	workspaceID := state.ActiveWorkspaceID
-	if !state.Workspaces[0].DefaultPlanMode {
-		t.Fatal("expected new workspace to default plan mode on")
+	if got := state.Workspaces[0].DefaultAgentModeID; got != AgentModeIDPlan {
+		t.Fatalf("expected new workspace to default to plan mode, got %q", got)
 	}
 
-	state, err = service.SetWorkspaceDefaultPlanMode(workspaceID, false)
+	state, err = service.SetWorkspaceDefaultAgentMode(workspaceID, AgentModeIDGeneral)
 	if err != nil {
-		t.Fatalf("set default plan mode: %v", err)
+		t.Fatalf("set default agent mode: %v", err)
 	}
-	if state.Workspaces[0].DefaultPlanMode {
-		t.Fatal("expected default plan mode to be disabled")
+	if got := state.Workspaces[0].DefaultAgentModeID; got != AgentModeIDGeneral {
+		t.Fatalf("expected default agent mode general, got %q", got)
 	}
 
 	reloaded := NewSystemServiceWithStorePath(storePath).LoadState()
-	if reloaded.Workspaces[0].DefaultPlanMode {
-		t.Fatal("expected disabled default plan mode to persist")
+	if got := reloaded.Workspaces[0].DefaultAgentModeID; got != AgentModeIDGeneral {
+		t.Fatalf("expected general default agent mode to persist, got %q", got)
+	}
+
+	if _, err := service.SetWorkspaceDefaultAgentMode(workspaceID, "missing-mode"); err == nil {
+		t.Fatal("expected unknown default agent mode to be rejected")
 	}
 }
 
-func TestSystemServiceLegacyWorkspaceDefaultPlanModeDefaultsOn(t *testing.T) {
+func TestSystemServiceLegacyWorkspaceDefaultAgentModeMigration(t *testing.T) {
 	root := t.TempDir()
 	workspacePath := filepath.Join(root, "workspace")
 	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	storePath := filepath.Join(root, "state.json")
-	payload := fmt.Sprintf(`{"activeWorkspaceId":"workspace-1","workspaces":[{"id":"workspace-1","folders":[{"id":"folder-1","label":"workspace","path":%q,"useAgents":true}],"displayName":"workspace"}]}`, workspacePath)
+	payload := fmt.Sprintf(`{"activeWorkspaceId":"workspace-1","workspaces":[
+		{"id":"workspace-1","folders":[{"id":"folder-1","label":"workspace","path":%q,"useAgents":true}],"displayName":"workspace"},
+		{"id":"workspace-2","folders":[{"id":"folder-2","label":"workspace-2","path":%q,"useAgents":true}],"displayName":"workspace-2","defaultPlanMode":false}
+	]}`, workspacePath, workspacePath)
 	if err := os.WriteFile(storePath, []byte(payload), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	state := NewSystemServiceWithStorePath(storePath).LoadState()
-	if !state.Workspaces[0].DefaultPlanMode {
-		t.Fatal("expected legacy workspace to default plan mode on")
+	if got := state.Workspaces[0].DefaultAgentModeID; got != AgentModeIDPlan {
+		t.Fatalf("expected legacy workspace without a setting to default to plan, got %q", got)
+	}
+	if got := state.Workspaces[1].DefaultAgentModeID; got != AgentModeIDGeneral {
+		t.Fatalf("expected legacy defaultPlanMode=false to migrate to general, got %q", got)
 	}
 }
 

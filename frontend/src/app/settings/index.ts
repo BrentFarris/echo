@@ -1,10 +1,10 @@
 
-import { CreateAgentMode, CreateAgentModePerTool, DeleteAgentMode, LoadDevelopmentLogStatus, LoadWebAccessStatus, ListAgentModes, PrepareRebuildAndRelaunch, SaveSettings, SaveWebAccessSettings, SaveWorkspaceDebugSettings, SetDevelopmentLoggingEnabled, SetWorkspaceBuildCommand, SetWorkspaceDefaultPlanMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter, SetWorkspaceSearchParentGitRepositories, UpdateAgentMode, UpdateAgentModePerTool } from "../../backend/services";
+import { CreateAgentMode, CreateAgentModePerTool, DeleteAgentMode, LoadDevelopmentLogStatus, LoadWebAccessStatus, ListAgentModes, PrepareRebuildAndRelaunch, SaveSettings, SaveWebAccessSettings, SaveWorkspaceDebugSettings, SetDevelopmentLoggingEnabled, SetWorkspaceBuildCommand, SetWorkspaceDefaultAgentMode, SetWorkspaceFolderUseAgents, SetWorkspaceLetter, SetWorkspaceSearchParentGitRepositories, UpdateAgentMode, UpdateAgentModePerTool } from "../../backend/services";
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
 import { renderQRCodeSVG } from "../qr";
-import { cloneSettings, cloneWebAccessSettings, fieldValue, gitSplitDiffViewEnabled, leadingWhitespaceIndicatorsEnabled, limitKanbanConcurrencyEnabled, notificationSoundsEnabled, chatCompletionNotificationsEnabled, kanbanCompleteNotificationsEnabled, state, activeWorkspace, agentModesForWorkspace } from "../state";
+import { cloneSettings, cloneWebAccessSettings, fieldValue, gitSplitDiffViewEnabled, leadingWhitespaceIndicatorsEnabled, limitKanbanConcurrencyEnabled, notificationSoundsEnabled, chatCompletionNotificationsEnabled, kanbanCompleteNotificationsEnabled, state, activeWorkspace, agentModesForWorkspace, chatAgentModeIDFor, setChatAgentMode } from "../state";
 import { applyTheme, normalizeHexColor, settingsWithCompactTheme, settingsWithThemeColor, themeColorValue, themeGroups, themeTokens, type ThemePaletteName } from "../theme";
 import { pushToast } from "../toasts";
 import { errorMessage, escapeAttribute, escapeHtml, workspaceFolderSummary } from "../utils";
@@ -213,10 +213,10 @@ export function bindSettingsEvents(root: ParentNode) {
       }),
     );
   form
-    ?.querySelectorAll<HTMLInputElement>("[data-workspace-default-plan-mode]")
-    .forEach((input) =>
-      input.addEventListener("change", () => {
-        void handleWorkspaceDefaultPlanModeChange(input);
+    ?.querySelectorAll<HTMLSelectElement>("[data-workspace-default-agent-mode]")
+    .forEach((select) =>
+      select.addEventListener("change", () => {
+        void handleWorkspaceDefaultAgentModeChange(select);
       }),
     );
   form
@@ -273,7 +273,7 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
 
         <div class="settings-layout">
           <nav class="settings-nav" aria-label="Settings sections">
-            <ul>
+            <ul class="settings-nav-list">
               ${settingsSections
                 .map(
                   (section) => `
@@ -281,6 +281,30 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                       <button type="button" data-settings-nav-target="${section.id}">
                         ${section.label}
                       </button>
+                      ${
+                        section.id === "workspace-settings-title" && workspaces.length
+                          ? `
+                            <ul class="settings-nav-workspaces" aria-label="Workspace settings">
+                              ${workspaces
+                                .map(
+                                  (workspace, index) => `
+                                    <li>
+                                      <button
+                                        class="settings-workspace-nav-button"
+                                        type="button"
+                                        title="${escapeAttribute(workspace.displayName)}"
+                                        data-settings-nav-target="${settingsWorkspaceTargetID(index)}"
+                                      >
+                                        ${escapeHtml(workspace.displayName)}
+                                      </button>
+                                    </li>
+                                  `,
+                                )
+                                .join("")}
+                            </ul>
+                          `
+                          : ""
+                      }
                     </li>
                   `,
                 )
@@ -435,64 +459,76 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                   workspaces.length
                     ? workspaces
                         .map(
-                          (workspace) => `
-                            <div class="workspace-row">
-                              <div class="workspace-row-main">
-                                <strong>${escapeHtml(workspace.displayName)}${workspace.missing ? " - Folder missing" : ""}</strong>
-                                <span>${escapeHtml(workspaceFolderSummary(workspace))}</span>
-                                <label class="field field-wide workspace-build-command-field">
+                          (workspace, index) => `
+                            <div class="workspace-row" id="${settingsWorkspaceTargetID(index)}">
+                              <div class="workspace-row-header">
+                                <div class="workspace-row-heading">
+                                  <strong>${escapeHtml(workspace.displayName)}${workspace.missing ? " - Folder missing" : ""}</strong>
+                                  <span>${escapeHtml(workspaceFolderSummary(workspace))}</span>
+                                </div>
+                                <div class="workspace-row-actions">
+                                  <div class="workspace-icon-control" aria-label="Workspace icon for ${escapeAttribute(workspace.displayName)}">
+                                    <span>Icon</span>
+                                    <div class="workspace-icon-setting">
+                                      <span class="workspace-icon-preview" aria-hidden="true">${renderWorkspaceIcon(workspace)}</span>
+                                      <button class="icon-button" type="button" title="Choose workspace icon" aria-label="Choose icon for ${escapeAttribute(workspace.displayName)}" data-action="choose-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}">
+                                        ${icons.image}
+                                      </button>
+                                      <button class="icon-button" type="button" title="Clear workspace icon" aria-label="Clear icon for ${escapeAttribute(workspace.displayName)}" data-action="clear-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}" ${(workspace.iconUrl ?? "").trim() ? "" : "disabled"}>
+                                        ${icons.x}
+                                      </button>
+                                    </div>
+                                  </div>
+                                  <label class="workspace-letter-field">
+                                    <span>Label</span>
+                                    <input
+                                      name="workspaceLetter"
+                                      type="text"
+                                      value="${escapeHtml(workspaceLetterDraft(workspace))}"
+                                      aria-label="Workspace icon label for ${escapeHtml(workspace.displayName)}"
+                                      data-workspace-letter
+                                      data-workspace-id="${escapeHtml(workspace.id)}"
+                                    />
+                                  </label>
+                                  <button class="icon-button danger-button workspace-delete-button" type="button" title="Delete workspace" aria-label="Delete ${escapeHtml(workspace.displayName)}" data-action="delete-workspace" data-workspace-id="${escapeHtml(workspace.id)}">
+                                    ${icons.trash}
+                                  </button>
+                                </div>
+                              </div>
+                              <div class="workspace-row-preferences">
+                                <label class="field workspace-build-command-field">
                                   <span>Build command</span>
                                   <textarea
                                     name="workspaceBuildCommand"
-                                    rows="2"
+                                    rows="1"
                                     placeholder="go test -tags=&quot;debug editor&quot; ./..."
                                     data-workspace-build-command
                                     data-workspace-id="${escapeAttribute(workspace.id)}"
                                   >${escapeHtml(workspaceBuildCommandDraft(workspace))}</textarea>
                                 </label>
+                                <label class="field workspace-default-agent-mode">
+                                  <span>Default agent mode</span>
+                                  <select
+                                    data-workspace-default-agent-mode
+                                    data-workspace-id="${escapeAttribute(workspace.id)}"
+                                  >
+                                    ${renderWorkspaceDefaultAgentModeOptions(workspace)}
+                                  </select>
+                                </label>
+                                <label class="settings-toggle workspace-parent-git-repositories" title="Allow Git tools to use a repository found above the workspace folder.">
+                                  <span>Search parent folders for Git</span>
+                                  <input
+                                    type="checkbox"
+                                    ${workspace.searchParentGitRepositories ? "checked" : ""}
+                                    data-workspace-parent-git-repositories
+                                    data-workspace-id="${escapeAttribute(workspace.id)}"
+                                  />
+                                </label>
+                              </div>
+                              <div class="workspace-row-folders">
+                                <span class="workspace-row-section-label">Folders</span>
                                 ${renderWorkspaceFolderSettings(workspace)}
                               </div>
-                              <label class="settings-toggle workspace-default-plan-mode">
-                                <span>Plan by default</span>
-                                <input
-                                  type="checkbox"
-                                  ${workspace.defaultPlanMode ? "checked" : ""}
-                                  data-workspace-default-plan-mode
-                                  data-workspace-id="${escapeAttribute(workspace.id)}"
-                                />
-                              </label>
-                              <label class="settings-toggle workspace-parent-git-repositories" title="Allow Git tools to use a repository found above the workspace folder.">
-                                <span>Search parent folders for Git</span>
-                                <input
-                                  type="checkbox"
-                                  ${workspace.searchParentGitRepositories ? "checked" : ""}
-                                  data-workspace-parent-git-repositories
-                                  data-workspace-id="${escapeAttribute(workspace.id)}"
-                                />
-                              </label>
-                              <div class="workspace-icon-setting" aria-label="Workspace icon for ${escapeAttribute(workspace.displayName)}">
-                                <span class="workspace-icon-preview" aria-hidden="true">${renderWorkspaceIcon(workspace)}</span>
-                                <button class="icon-button" type="button" title="Choose workspace icon" aria-label="Choose icon for ${escapeAttribute(workspace.displayName)}" data-action="choose-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}">
-                                  ${icons.image}
-                                </button>
-                                <button class="icon-button" type="button" title="Clear workspace icon" aria-label="Clear icon for ${escapeAttribute(workspace.displayName)}" data-action="clear-workspace-icon" data-workspace-id="${escapeAttribute(workspace.id)}" ${(workspace.iconUrl ?? "").trim() ? "" : "disabled"}>
-                                  ${icons.x}
-                                </button>
-                              </div>
-                              <label class="workspace-letter-field">
-                                <span>Label</span>
-                                <input
-                                  name="workspaceLetter"
-                                  type="text"
-                                  value="${escapeHtml(workspaceLetterDraft(workspace))}"
-                                  aria-label="Workspace icon label for ${escapeHtml(workspace.displayName)}"
-                                  data-workspace-letter
-                                  data-workspace-id="${escapeHtml(workspace.id)}"
-                                />
-                              </label>
-                              <button class="icon-button danger-button" type="button" title="Delete workspace" aria-label="Delete ${escapeHtml(workspace.displayName)}" data-action="delete-workspace" data-workspace-id="${escapeHtml(workspace.id)}">
-                                ${icons.trash}
-                              </button>
                             </div>
                           `,
                         )
@@ -532,6 +568,30 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
 }
 
 /* ── Agent Modes settings section ── */
+
+function settingsWorkspaceTargetID(index: number): string {
+  return `workspace-settings-${index}`;
+}
+
+function renderWorkspaceDefaultAgentModeOptions(workspace: services.Workspace): string {
+  const loadedModes = agentModesForWorkspace(workspace.id);
+  const modes = loadedModes.length
+    ? loadedModes
+    : [
+        { id: "general", name: "General" },
+        { id: "plan", name: "Plan" },
+      ];
+  const selectedID = workspace.defaultAgentModeId?.trim() || "plan";
+  const options = modes.some((mode) => mode.id === selectedID)
+    ? modes
+    : [{ id: selectedID, name: `${selectedID} (unavailable)` }, ...modes];
+  return options
+    .map(
+      (mode) =>
+        `<option value="${escapeAttribute(mode.id)}" ${mode.id === selectedID ? "selected" : ""}>${escapeHtml(mode.name)}</option>`,
+    )
+    .join("");
+}
 
 function renderDebugSettingsSection(): string {
   const workspace = activeWorkspace();
@@ -915,6 +975,12 @@ export async function deleteAgentModeSettings(modeID: string) {
   try {
     const updated = await DeleteAgentMode(modeID);
     state.agentModes.set(ws.id, Array.isArray(updated) ? updated : []);
+    if (ws.defaultAgentModeId === modeID) {
+      ws.defaultAgentModeId = "general";
+    }
+    if (chatAgentModeIDFor(ws.id) === modeID) {
+      setChatAgentMode(ws.id, "");
+    }
     if (state.agentModeEditingId === modeID) {
       cancelAgentMode();
     }
@@ -1922,7 +1988,7 @@ export function handleSettingsInput(event: Event) {
   if (input.dataset.workspaceFolderAgents !== undefined) {
     return;
   }
-  if (input.dataset.workspaceDefaultPlanMode !== undefined) {
+  if (input.dataset.workspaceDefaultAgentMode !== undefined) {
     return;
   }
   if (input.dataset.workspaceParentGitRepositories !== undefined) {
@@ -2102,13 +2168,13 @@ export async function handleWorkspaceFolderAgentsChange(input: HTMLInputElement)
   }
 }
 
-export async function handleWorkspaceDefaultPlanModeChange(input: HTMLInputElement) {
-  const workspaceID = input.dataset.workspaceId ?? "";
+export async function handleWorkspaceDefaultAgentModeChange(select: HTMLSelectElement) {
+  const workspaceID = select.dataset.workspaceId ?? "";
   if (!workspaceID) {
     return;
   }
   try {
-    state.appState = await SetWorkspaceDefaultPlanMode(workspaceID, input.checked);
+    state.appState = await SetWorkspaceDefaultAgentMode(workspaceID, select.value);
     getAppCallbacks().render();
   } catch (error) {
     pushToast(errorMessage(error), "error");

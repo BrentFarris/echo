@@ -668,8 +668,8 @@ export function SetWorkspaceBuildCommand(...args: Parameters<typeof Wails.SetWor
   return call("SetWorkspaceBuildCommand", Wails.SetWorkspaceBuildCommand, args);
 }
 
-export function SetWorkspaceDefaultPlanMode(...args: Parameters<typeof Wails.SetWorkspaceDefaultPlanMode>): ReturnType<typeof Wails.SetWorkspaceDefaultPlanMode> {
-  return call("SetWorkspaceDefaultPlanMode", Wails.SetWorkspaceDefaultPlanMode, args);
+export function SetWorkspaceDefaultAgentMode(...args: Parameters<typeof Wails.SetWorkspaceDefaultAgentMode>): ReturnType<typeof Wails.SetWorkspaceDefaultAgentMode> {
+  return call("SetWorkspaceDefaultAgentMode", Wails.SetWorkspaceDefaultAgentMode, args);
 }
 
 export function SetWorkspaceFolderUseAgents(...args: Parameters<typeof Wails.SetWorkspaceFolderUseAgents>): ReturnType<typeof Wails.SetWorkspaceFolderUseAgents> {

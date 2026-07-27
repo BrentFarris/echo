@@ -618,7 +618,7 @@ var allowedRPCMethods = map[string]bool{
 	"SetLivenessConfig":                       true,
 	"SetTokenBudget":                          true,
 	"SetWorkspaceBuildCommand":                true,
-	"SetWorkspaceDefaultPlanMode":             true,
+	"SetWorkspaceDefaultAgentMode":            true,
 	"SetWorkspaceFolderUseAgents":             true,
 	"SetWorkspaceIconFromPath":                true,
 	"SetWorkspaceIconFromUpload":              true,

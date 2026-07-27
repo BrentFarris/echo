@@ -586,8 +586,8 @@ export function SetWorkspaceBuildCommand(arg1, arg2) {
   return window['go']['services']['SystemService']['SetWorkspaceBuildCommand'](arg1, arg2);
 }
 
-export function SetWorkspaceDefaultPlanMode(arg1, arg2) {
-  return window['go']['services']['SystemService']['SetWorkspaceDefaultPlanMode'](arg1, arg2);
+export function SetWorkspaceDefaultAgentMode(arg1, arg2) {
+  return window['go']['services']['SystemService']['SetWorkspaceDefaultAgentMode'](arg1, arg2);
 }
 
 export function SetWorkspaceFolderUseAgents(arg1, arg2, arg3) {

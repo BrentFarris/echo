@@ -306,7 +306,7 @@ export namespace services {
 	    folders: WorkspaceFolder[];
 	    displayName: string;
 	    selectedDebugConfiguration?: string;
-	    defaultPlanMode: boolean;
+	    defaultAgentModeId: string;
 	    searchParentGitRepositories: boolean;
 	    buildCommand?: string;
 	    letter?: string;
@@ -326,7 +326,7 @@ export namespace services {
 	        this.folders = this.convertValues(source["folders"], WorkspaceFolder);
 	        this.displayName = source["displayName"];
 	        this.selectedDebugConfiguration = source["selectedDebugConfiguration"];
-	        this.defaultPlanMode = source["defaultPlanMode"];
+	        this.defaultAgentModeId = source["defaultAgentModeId"];
 	        this.searchParentGitRepositories = source["searchParentGitRepositories"];
 	        this.buildCommand = source["buildCommand"];
 	        this.letter = source["letter"];

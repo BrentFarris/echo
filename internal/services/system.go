@@ -76,7 +76,7 @@ type Workspace struct {
 	Folders                     []WorkspaceFolder `json:"folders"`
 	DisplayName                 string            `json:"displayName"`
 	SelectedDebugConfiguration  string            `json:"selectedDebugConfiguration,omitempty"`
-	DefaultPlanMode             bool              `json:"defaultPlanMode"`
+	DefaultAgentModeID          string            `json:"defaultAgentModeId"`
 	SearchParentGitRepositories bool              `json:"searchParentGitRepositories"`
 	BuildCommand                string            `json:"buildCommand,omitempty"`
 	Letter                      string            `json:"letter,omitempty"`
@@ -94,7 +94,8 @@ func (w *Workspace) UnmarshalJSON(data []byte) error {
 		FolderPath                  string            `json:"folderPath"`
 		DisplayName                 string            `json:"displayName"`
 		SelectedDebugConfiguration  string            `json:"selectedDebugConfiguration"`
-		DefaultPlanMode             bool              `json:"defaultPlanMode"`
+		DefaultAgentModeID          string            `json:"defaultAgentModeId"`
+		DefaultPlanMode             *bool             `json:"defaultPlanMode"`
 		SearchParentGitRepositories bool              `json:"searchParentGitRepositories"`
 		BuildCommand                string            `json:"buildCommand"`
 		Letter                      string            `json:"letter"`
@@ -106,19 +107,22 @@ func (w *Workspace) UnmarshalJSON(data []byte) error {
 		Missing                     bool              `json:"missing"`
 		Error                       string            `json:"error"`
 	}
-	var keys map[string]json.RawMessage
-	if err := json.Unmarshal(data, &keys); err != nil {
-		return err
-	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
+	}
+	defaultAgentModeID := strings.TrimSpace(raw.DefaultAgentModeID)
+	if defaultAgentModeID == "" {
+		defaultAgentModeID = AgentModeIDPlan
+		if raw.DefaultPlanMode != nil && !*raw.DefaultPlanMode {
+			defaultAgentModeID = AgentModeIDGeneral
+		}
 	}
 	*w = Workspace{
 		ID:                          raw.ID,
 		Folders:                     raw.Folders,
 		DisplayName:                 raw.DisplayName,
 		SelectedDebugConfiguration:  strings.TrimSpace(raw.SelectedDebugConfiguration),
-		DefaultPlanMode:             raw.DefaultPlanMode,
+		DefaultAgentModeID:          defaultAgentModeID,
 		SearchParentGitRepositories: raw.SearchParentGitRepositories,
 		BuildCommand:                normalizeWorkspaceBuildCommand(raw.BuildCommand),
 		Letter:                      normalizeWorkspaceLetter(raw.Letter),
@@ -127,9 +131,6 @@ func (w *Workspace) UnmarshalJSON(data []byte) error {
 		Active:                      raw.Active,
 		Missing:                     raw.Missing,
 		Error:                       raw.Error,
-	}
-	if _, ok := keys["defaultPlanMode"]; !ok {
-		w.DefaultPlanMode = true
 	}
 	legacyPath := raw.FolderPath
 	if legacyPath == "" {
@@ -667,23 +668,38 @@ func (s *SystemService) SetWorkspaceFolderUseAgents(workspaceID string, folderID
 	return AppState{}, fmt.Errorf("workspace was not found")
 }
 
-func (s *SystemService) SetWorkspaceDefaultPlanMode(workspaceID string, enabled bool) (AppState, error) {
+func (s *SystemService) SetWorkspaceDefaultAgentMode(workspaceID string, modeID string) (AppState, error) {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if workspaceID == "" {
 		return AppState{}, fmt.Errorf("workspace id is required")
+	}
+	modeID = strings.TrimSpace(modeID)
+	if modeID == "" {
+		return AppState{}, fmt.Errorf("agent mode id is required")
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.state.Workspaces {
-		if s.state.Workspaces[i].ID == workspaceID {
-			s.state.Workspaces[i].DefaultPlanMode = enabled
-			s.refreshWorkspaceStatusesLocked()
-			if err := s.saveLocked(); err != nil {
-				return AppState{}, err
-			}
-			return cloneState(s.state), nil
+		if s.state.Workspaces[i].ID != workspaceID {
+			continue
 		}
+		found := false
+		for _, mode := range s.listAllWorkspaceModes(s.state.Workspaces[i]) {
+			if mode.ID == modeID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return AppState{}, fmt.Errorf("agent mode was not found")
+		}
+		s.state.Workspaces[i].DefaultAgentModeID = modeID
+		s.refreshWorkspaceStatusesLocked()
+		if err := s.saveLocked(); err != nil {
+			return AppState{}, err
+		}
+		return cloneState(s.state), nil
 	}
 	return AppState{}, fmt.Errorf("workspace was not found")
 }
@@ -1512,10 +1528,10 @@ func workspaceFromPath(path string) Workspace {
 		name = clean
 	}
 	return Workspace{
-		ID:              hex.EncodeToString(hash[:8]),
-		Folders:         []WorkspaceFolder{workspaceFolderFromPath(clean, nil)},
-		DisplayName:     name,
-		DefaultPlanMode: true,
+		ID:                 hex.EncodeToString(hash[:8]),
+		Folders:            []WorkspaceFolder{workspaceFolderFromPath(clean, nil)},
+		DisplayName:        name,
+		DefaultAgentModeID: AgentModeIDPlan,
 	}
 }
 

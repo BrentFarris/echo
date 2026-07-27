@@ -130,19 +130,25 @@ export function renderChangedFile(file: services.WorkspaceChangedFile): string {
   `;
 }
 
-export function renderGitChangedFile(file: services.WorkspaceGitChangedFile, diffPending = false, diffScope = ""): string {
+export function renderGitChangedFile(
+  file: services.WorkspaceGitChangedFile,
+  diffPending = false,
+  diffScope = "",
+  collapsed = false,
+): string {
   const workspace = activeWorkspace();
   const busy = Boolean(workspace && state.gitRepositoryOperations.has(workspace.id));
   const openable = isGitChangedFileOpenable(file);
   const openLine = gitChangedFileOpenLine(file);
   const normalizedPath = normalizeGitChangePath(file.path);
   return `
-    <article class="change-file" data-change-file data-git-change-file-path="${escapeAttribute(normalizedPath)}" ${diffScope ? `data-git-diff-scope="${escapeAttribute(diffScope)}"` : ""} ${diffPending ? "data-git-diff-pending=\"true\"" : ""}>
+    <article class="change-file git-diff-file${collapsed ? " is-collapsed" : ""}" data-change-file data-git-change-file-path="${escapeAttribute(normalizedPath)}" ${diffScope ? `data-git-diff-scope="${escapeAttribute(diffScope)}"` : ""} ${diffPending ? "data-git-diff-pending=\"true\"" : ""}>
       <header>
-        <div class="change-file-title">
+        <button class="change-file-title git-diff-file-toggle" type="button" title="${collapsed ? "Expand" : "Collapse"} diff for ${escapeAttribute(file.path)}" aria-label="${collapsed ? "Expand" : "Collapse"} diff for ${escapeAttribute(file.path)}" aria-expanded="${collapsed ? "false" : "true"}" data-git-diff-file-toggle>
+          <span class="git-diff-file-chevron">${icons.arrowRight}</span>
           ${icons.file}
           <strong title="${escapeAttribute(file.path)}">${escapeHtml(file.path)}</strong>
-        </div>
+        </button>
         <div class="change-file-actions">
           <span class="change-operation is-${escapeAttribute(file.operation)}">${escapeHtml(changeOperationLabel(file.operation))}</span>
           ${openable
@@ -156,10 +162,12 @@ export function renderGitChangedFile(file: services.WorkspaceGitChangedFile, dif
           </button>
         </div>
       </header>
-      ${renderGitChangeStatus(file)}
-      ${diffPending
-        ? `<div class="change-metadata git-diff-loading">${renderSpinnerLabel("Loading diff")}</div>`
-        : file.diffAvailable && file.diff ? renderGitDiff(file.diff, openable ? file.path : "") : renderGitChangeMetadata(file)}
+      <div class="git-diff-file-body">
+        ${renderGitChangeStatus(file)}
+        ${diffPending
+          ? `<div class="change-metadata git-diff-loading">${renderSpinnerLabel("Loading diff")}</div>`
+          : file.diffAvailable && file.diff ? renderGitDiff(file.diff, openable ? file.path : "") : renderGitChangeMetadata(file)}
+      </div>
     </article>
   `;
 }
