@@ -1443,6 +1443,30 @@ export namespace services {
 		    return a;
 		}
 	}
+	export class KanbanProgressSummary {
+	    entryCount: number;
+	    toolCallCount: number;
+	    lastToolCall?: string;
+	    lastVerificationTitle?: string;
+	    lastVerificationAt?: string;
+	    changedPathCount?: number;
+	    blockedReason?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new KanbanProgressSummary(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.entryCount = source["entryCount"];
+	        this.toolCallCount = source["toolCallCount"];
+	        this.lastToolCall = source["lastToolCall"];
+	        this.lastVerificationTitle = source["lastVerificationTitle"];
+	        this.lastVerificationAt = source["lastVerificationAt"];
+	        this.changedPathCount = source["changedPathCount"];
+	        this.blockedReason = source["blockedReason"];
+	    }
+	}
 	export class KanbanProgressEntry {
 	    type: string;
 	    title?: string;
@@ -1514,6 +1538,8 @@ export namespace services {
 	    lane: string;
 	    status: string;
 	    progressTranscript?: KanbanProgressEntry[];
+	    progressSummary?: KanbanProgressSummary;
+	    progressRevision?: number;
 	    autoRetriesUsed?: number;
 	    recoveryType?: string;
 	    // Go type: time
@@ -1539,6 +1565,8 @@ export namespace services {
 	        this.lane = source["lane"];
 	        this.status = source["status"];
 	        this.progressTranscript = this.convertValues(source["progressTranscript"], KanbanProgressEntry);
+	        this.progressSummary = this.convertValues(source["progressSummary"], KanbanProgressSummary);
+	        this.progressRevision = source["progressRevision"];
 	        this.autoRetriesUsed = source["autoRetriesUsed"];
 	        this.recoveryType = source["recoveryType"];
 	        this.stalledAt = this.convertValues(source["stalledAt"], null);
@@ -3510,4 +3538,3 @@ export namespace tools {
 	}
 
 }
-

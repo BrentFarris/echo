@@ -20,7 +20,7 @@ import { renderToasts } from "./toasts";
 import { renderTaskPanel, renderTaskDetail } from "./tasks";
 import { escapeHtml, escapeAttribute, workspaceFolderSummary } from "./utils";
 import { renderWorkspaceIcon, renderMissingWorkspace } from "./workspace";
-import { hasKanbanRuntime, getHeartbeatInterval, heartbeatIntervalLabel, getWatchdogInterval, watchdogIntervalLabel, renderCreateKanbanCardDialog, renderDecompositionState, renderEmptyBoard, renderKanbanBoard, renderKanbanDetail, renderKanbanRuntime } from "./kanban";
+import { hasKanbanRuntime, getHeartbeatInterval, heartbeatIntervalLabel, getWatchdogInterval, watchdogIntervalLabel, renderCreateKanbanCardDialog, renderDecompositionState, renderEmptyBoard, renderKanbanBoard, renderKanbanDetail, renderKanbanRuntime, unloadAllKanbanCardDetails, unloadKanbanCardDetail } from "./kanban";
 import { services } from "../../wailsjs/go/models";
 import { renderDashboard } from "./dashboard";
 import { updateWindowTitle } from "./title";
@@ -311,6 +311,19 @@ export function renderCodeViewUI(): void {
 
 function renderApp(refreshCodeView: boolean): void {
   const workspace = activeWorkspace();
+  if (state.appMode !== "kanban") {
+    unloadAllKanbanCardDetails();
+  } else {
+    const detailWorkspaceIDs = new Set([
+      ...state.selectedKanbanCards.keys(),
+      ...state.kanbanCardDetails.keys(),
+    ]);
+    for (const workspaceID of detailWorkspaceIDs) {
+      if (workspaceID !== workspace?.id) {
+        unloadKanbanCardDetail(workspaceID);
+      }
+    }
+  }
   updateWindowTitle();
   if (state.appMode !== "code" || !workspace) {
     destroyCodeEditor();

@@ -87,6 +87,7 @@ export const state = {
   kanbanRunStarts: new Map<string, number>(),
   kanbanRunElapsed: new Map<string, number>(),
   selectedKanbanCards: new Map<string, string>(),
+  kanbanCardDetails: new Map<string, services.KanbanCard>(),
   selectedTaskCards: new Map<string, string>(),
   openChangeReviewWorkspaces: new Set<string>(),
   openGitChangeWorkspaces: new Set<string>(),

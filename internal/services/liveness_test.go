@@ -23,9 +23,9 @@ func TestDefaultLivenessConfigReturnsSensibleDefaults(t *testing.T) {
 
 func TestIsStalledCardReturnsTrueWhenNoProgress(t *testing.T) {
 	card := KanbanCard{
-		ID:        "card-1",
-		Lane:      KanbanLaneInProgress,
-		Status:    KanbanLaneInProgress,
+		ID:     "card-1",
+		Lane:   KanbanLaneInProgress,
+		Status: KanbanLaneInProgress,
 	}
 	if !isStalledCard(card, time.Now(), 5*time.Minute) {
 		t.Error("expected card with no progress transcript to be stalled")
@@ -146,9 +146,13 @@ func TestEnforceLivenessResetsStalledCardToReady(t *testing.T) {
 	if card.StalledAt != nil {
 		t.Fatal("expected StalledAt cleared after reset")
 	}
-	// Verify transcript entry.
+	// Verify transcript entry is available only through the lazy detail payload.
+	detail, err := service.LoadKanbanCardDetail(workspaceID, card.ID)
+	if err != nil {
+		t.Fatalf("load card detail: %v", err)
+	}
 	found := false
-	for _, entry := range card.ProgressTranscript {
+	for _, entry := range detail.ProgressTranscript {
 		if entry.Title == "Auto-reset due to stall" {
 			found = true
 			break

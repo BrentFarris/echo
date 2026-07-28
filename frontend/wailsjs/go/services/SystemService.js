@@ -78,10 +78,6 @@ export function CloseChatTab(arg1, arg2) {
   return window['go']['services']['SystemService']['CloseChatTab'](arg1, arg2);
 }
 
-export function CloseKanbanCardDetail(arg1, arg2) {
-  return window['go']['services']['SystemService']['CloseKanbanCardDetail'](arg1, arg2);
-}
-
 export function CommitWorkspaceGitChanges(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['CommitWorkspaceGitChanges'](arg1, arg2, arg3);
 }
@@ -318,6 +314,10 @@ export function LoadKanbanBoard(arg1) {
   return window['go']['services']['SystemService']['LoadKanbanBoard'](arg1);
 }
 
+export function LoadKanbanCardDetail(arg1, arg2) {
+  return window['go']['services']['SystemService']['LoadKanbanCardDetail'](arg1, arg2);
+}
+
 export function LoadRuntimeStatus() {
   return window['go']['services']['SystemService']['LoadRuntimeStatus']();
 }
@@ -384,10 +384,6 @@ export function MoveWorkspaceTask(arg1, arg2, arg3, arg4) {
 
 export function OpenExternalPathExplorer(arg1) {
   return window['go']['services']['SystemService']['OpenExternalPathExplorer'](arg1);
-}
-
-export function OpenKanbanCardDetail(arg1, arg2) {
-  return window['go']['services']['SystemService']['OpenKanbanCardDetail'](arg1, arg2);
 }
 
 export function OpenWorkspaceExplorer(arg1) {

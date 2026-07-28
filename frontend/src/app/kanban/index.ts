@@ -1,6 +1,6 @@
 
 import { patchChildrenFromHtml, renderMarkdown } from "../../markdown";
-import { AddKanbanCardMessage, ClearKanbanCardRecovery, CloseKanbanCardDetail, CreateKanbanCardFromTask, CreateReadyKanbanCard, GetHeartbeatConfig, GetWatchdogConfig, LoadKanbanBoard, StartHeartbeat, StartWatchdog, StopHeartbeat, StopWatchdog, UpdateKanbanCardDescription, UpdateKanbanCardDirection } from "../../backend/services";
+import { AddKanbanCardMessage, ClearKanbanCardRecovery, CreateKanbanCardFromTask, CreateReadyKanbanCard, GetHeartbeatConfig, GetWatchdogConfig, LoadKanbanBoard, LoadKanbanCardDetail, StartHeartbeat, StartWatchdog, StopHeartbeat, StopWatchdog, UpdateKanbanCardDescription, UpdateKanbanCardDirection } from "../../backend/services";
 import { services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
 import { renderSpinnerLabel } from "../components";
@@ -9,7 +9,7 @@ import { icons } from "../icons";
 import { playNotificationSound, maybeSendKanbanCompleteNotification } from "../notifications";
 import { activeWorkspace, kanbanBoardFor, kanbanCards, selectedKanbanCard, state, changeReviewFor } from "../state";
 import { pushToast } from "../toasts";
-import type { HeartbeatEvent, KanbanEvent, LivenessEvent, WatchdogEvent } from "../types";
+import type { HeartbeatEvent, KanbanEvent, KanbanProgressDelta, LivenessEvent, WatchdogEvent } from "../types";
 import { errorMessage, escapeAttribute, escapeHtml, laneLabel } from "../utils";
 import { refreshWorkspaceChangeReview } from "../changes";
 import { render } from "../render";
@@ -19,6 +19,8 @@ const HeartbeatIntervals = [0, 60_000, 180_000, 360_000, 900_000] as const; // o
 type HeartbeatInterval = (typeof HeartbeatIntervals)[number];
 
 const KANBAN_PROGRESS_DEBOUNCE_MS = 150;
+const kanbanDetailLoadGenerations = new Map<string, number>();
+const pendingKanbanDetailProgress = new Map<string, KanbanProgressDelta[]>();
 
 function scheduleKanbanProgressPatch(workspaceId: string) {
   const existing = state.kanbanRenderDebounceTimers.get(workspaceId);
@@ -31,21 +33,10 @@ function scheduleKanbanProgressPatch(workspaceId: string) {
     const board = kanbanBoardFor(workspaceId);
     if (!board) return;
 
-    // Try open card detail patch first (when user has a card selected)
-    const card = selectedKanbanCard(board);
-    if (card) {
-      const fakeEvent: KanbanEvent = {
-        workspaceId,
-        cardId: card.id,
-        type: "card_progress",
-        board,
-      };
-      if (patchOpenCardProgress(fakeEvent)) return;
-    }
+    let patched = patchOpenCardProgress(workspaceId);
 
     // Patch the active in-progress cards on the board
     const inProgressCards = kanbanCards(board).filter(c => c.lane === "inProgress");
-    let patched = false;
     for (const c of inProgressCards) {
       if (patchCardProgress(c)) {
         patched = true;
@@ -312,7 +303,7 @@ export function renderKanbanCard(card: services.KanbanCard): string {
   const repairBadge = isRepairCard(card) ? renderRepairBadge() : "";
   const progressPct = kanbanCardProgressPercent(card);
   const statusMessage = renderKanbanCardStatus(card);
-  const progressBar = card.lane === "inProgress" ? renderInProgressProgressBar(progressPct, card.progressTranscript) : "";
+  const progressBar = card.lane === "inProgress" ? renderInProgressProgressBar(progressPct, card) : "";
   return `
     <article class="kanban-card ${unavailable ? "is-unavailable" : ""} ${card.recoveryType ? "has-recovery-badge" : ""} ${isRepairCard(card) ? "is-repair" : ""}" data-lane="${escapeAttribute(card.lane)}">
       <button
@@ -356,7 +347,8 @@ function kanbanCardProgressPercent(card: services.KanbanCard): number {
   // Status/thinking/message/verification entries are overhead and should not
   // inflate the percentage.
   const transcript = card.progressTranscript ?? [];
-  const toolCallCount = transcript.filter(e => e.type === "tool_call").length;
+  const toolCallCount = card.progressSummary?.toolCallCount
+    ?? transcript.filter(e => e.type === "tool_call").length;
   const criteriaLen = (card.acceptanceCriteria ?? []).length;
   if (criteriaLen > 0) {
     // Each tool call counts as ~1/criteriaLen of the work, scaled to fill 0-95%.
@@ -392,14 +384,15 @@ function countChangedPaths(card: services.KanbanCard): number {
 
 function renderDoneStatus(card: services.KanbanCard): string {
   const entry = getLastVerificationEntry(card.progressTranscript);
-  if (!entry) {
+  const verificationTitle = card.progressSummary?.lastVerificationTitle ?? entry?.title ?? "";
+  if (!verificationTitle) {
     return `<p class="kanban-card-status-text status-success">${icons.check} verification passed</p>`;
   }
   // Check if verification passed by looking at the title
-  const passed = entry.title?.includes("passed") ?? false;
-  const failed = entry.title?.includes("failed") ?? false;
-  const skipped = entry.title?.includes("skipped") ?? false;
-  const fileCount = countChangedPaths(card);
+  const passed = verificationTitle.includes("passed");
+  const failed = verificationTitle.includes("failed");
+  const skipped = verificationTitle.includes("skipped");
+  const fileCount = card.progressSummary?.changedPathCount ?? countChangedPaths(card);
 
   let statusClass = "status-success";
   let icon = icons.check;
@@ -419,13 +412,15 @@ function renderDoneStatus(card: services.KanbanCard): string {
     icon = "\u23F3"; // hourglass emoji
     text = `verification skipped`;
   } else {
-    text = entry.title ?? "verification complete";
+    text = verificationTitle || "verification complete";
   }
 
   return `<p class="kanban-card-status-text ${statusClass}">${icon} ${escapeHtml(text)}</p>`;
 }
 
-function getLastToolCallName(transcript: services.KanbanProgressEntry[] | undefined): string {
+function getLastToolCallName(card: services.KanbanCard): string {
+  if (card.progressSummary?.lastToolCall) return card.progressSummary.lastToolCall;
+  const transcript = card.progressTranscript;
   if (!transcript) return "";
   for (let i = transcript.length - 1; i >= 0; i--) {
     const entry = transcript[i];
@@ -443,8 +438,8 @@ function renderInProgressStatus(card: services.KanbanCard): string {
   return `<p class="kanban-card-status-text status-inprogress">${pct}%</p>`;
 }
 
-function renderInProgressProgressBar(pct: number, transcript: services.KanbanProgressEntry[] | undefined): string {
-  const toolName = getLastToolCallName(transcript);
+function renderInProgressProgressBar(pct: number, card: services.KanbanCard): string {
+  const toolName = getLastToolCallName(card);
   const toolLabel = toolName ? ` <span class="kanban-card-tool-label">${escapeHtml(toolName)}</span>` : "";
   return `
     <div class="kanban-card-progress-bar">
@@ -483,6 +478,10 @@ function renderBlockedStatus(card: services.KanbanCard): string {
   // Check for escalated recovery type first
   if (card.recoveryType === "escalated") {
     return `<p class="kanban-card-status-text status-error">${icons.x} escalated after repeated stalls</p>`;
+  }
+
+  if (card.progressSummary?.blockedReason) {
+    return `<p class="kanban-card-status-text status-error">${icons.x} ${escapeHtml(card.progressSummary.blockedReason)}</p>`;
   }
 
   // Look for the last status/message entry that might explain the block
@@ -550,8 +549,9 @@ export function canDeleteKanbanCard(card: services.KanbanCard): boolean {
 }
 
 export function renderKanbanDetail(board: services.KanbanBoard): string {
-  const card = selectedKanbanCard(board);
-  if (!card) {
+  const selectedID = state.selectedKanbanCards.get(board.workspaceId);
+  const card = state.kanbanCardDetails.get(board.workspaceId);
+  if (!selectedID || !card || card.id !== selectedID) {
     return "";
   }
 
@@ -729,15 +729,15 @@ export function renderLaneButton(card: services.KanbanCard, lane: string, blocke
   `;
 }
 
-export function renderProgressEntry(entry: services.KanbanProgressEntry): string {
+export function renderProgressEntry(entry: services.KanbanProgressEntry, index = -1): string {
   const verificationClass = entry.type === "verification" ? " is-verification" : "";
   return `
-    <article class="transcript-entry${verificationClass}">
+    <article class="transcript-entry${verificationClass}" ${index >= 0 ? `data-progress-entry-index="${index}"` : ""}>
       <header>
         <strong>${escapeHtml(entry.title || entry.type || "Progress")}</strong>
         ${entry.status ? `<span>${escapeHtml(laneLabel(entry.status))}</span>` : ""}
       </header>
-      <p>${escapeHtml(entry.content)}</p>
+      <p data-progress-entry-content>${escapeHtml(entry.content)}</p>
     </article>
   `;
 }
@@ -747,7 +747,7 @@ export function renderProgressSectionContent(transcript: services.KanbanProgress
     <h3>Progress Transcript</h3>
     ${
       transcript.length
-        ? `<div class="transcript-list" data-transcript-list>${transcript.map(renderProgressEntry).join("")}</div>`
+        ? `<div class="transcript-list" data-transcript-list>${transcript.map((entry, index) => renderProgressEntry(entry, index)).join("")}</div>`
         : `<p>No progress recorded yet.</p>`
     }
   `;
@@ -873,7 +873,7 @@ export async function handleCardDescriptionSubmit(event: SubmitEvent) {
 
   try {
     state.kanbanBoards.set(workspace.id, await UpdateKanbanCardDescription(workspace.id, cardID, description));
-    state.selectedKanbanCards.set(workspace.id, cardID);
+    await openKanbanCardDetail(workspace.id, cardID);
     pushToast("Card description updated.", "success");
     getAppCallbacks().render();
   } catch (error) {
@@ -914,7 +914,7 @@ export async function handleCardMessageSubmit(event: SubmitEvent) {
   try {
     state.kanbanBoards.set(workspace.id, await AddKanbanCardMessage(workspace.id, cardID, message));
     state.cardMessageDrafts.delete(key);
-    state.selectedKanbanCards.set(workspace.id, cardID);
+    await openKanbanCardDetail(workspace.id, cardID);
     pushToast("Card returned to Ready.", "success");
     getAppCallbacks().render();
   } catch (error) {
@@ -961,7 +961,7 @@ export async function handleCardDirectionSubmit(event: SubmitEvent) {
 
   try {
     state.kanbanBoards.set(workspace.id, await UpdateKanbanCardDirection(workspace.id, cardID, direction));
-    state.selectedKanbanCards.set(workspace.id, cardID);
+    await openKanbanCardDetail(workspace.id, cardID);
     pushToast("Card direction updated.", "success");
     getAppCallbacks().render();
   } catch (error) {
@@ -978,24 +978,81 @@ export async function loadActiveKanbanBoard() {
   state.kanbanBoards.set(workspace.id, await LoadKanbanBoard(workspace.id));
 }
 
+export async function openKanbanCardDetail(workspaceID: string, cardID: string): Promise<boolean> {
+  const generation = (kanbanDetailLoadGenerations.get(workspaceID) ?? 0) + 1;
+  kanbanDetailLoadGenerations.set(workspaceID, generation);
+  pendingKanbanDetailProgress.set(workspaceID, []);
+  state.selectedKanbanCards.set(workspaceID, cardID);
+  state.kanbanCardDetails.delete(workspaceID);
+  return hydrateKanbanCardDetail(workspaceID, cardID, generation);
+}
+
+async function hydrateKanbanCardDetail(workspaceID: string, cardID: string, generation: number): Promise<boolean> {
+  while (
+    kanbanDetailLoadGenerations.get(workspaceID) === generation
+    && state.selectedKanbanCards.get(workspaceID) === cardID
+  ) {
+    const detail = services.KanbanCard.createFrom(await LoadKanbanCardDetail(workspaceID, cardID));
+    if (
+      kanbanDetailLoadGenerations.get(workspaceID) !== generation
+      || state.selectedKanbanCards.get(workspaceID) !== cardID
+    ) {
+      return false;
+    }
+
+    const pending = pendingKanbanDetailProgress.get(workspaceID) ?? [];
+    pendingKanbanDetailProgress.set(workspaceID, []);
+    let gap = false;
+    for (const progress of pending) {
+      if (applyProgressDelta(detail, progress) === "gap") {
+        gap = true;
+        break;
+      }
+    }
+    const compactRevision = kanbanCards(kanbanBoardFor(workspaceID))
+      .find((card) => card.id === cardID)?.progressRevision ?? 0;
+    if (gap || (detail.progressRevision ?? 0) < compactRevision) {
+      continue;
+    }
+    state.kanbanCardDetails.set(workspaceID, detail);
+    pendingKanbanDetailProgress.delete(workspaceID);
+    return true;
+  }
+  return false;
+}
+
+export function unloadKanbanCardDetail(workspaceID: string) {
+  kanbanDetailLoadGenerations.set(workspaceID, (kanbanDetailLoadGenerations.get(workspaceID) ?? 0) + 1);
+  pendingKanbanDetailProgress.delete(workspaceID);
+  state.kanbanCardDetails.delete(workspaceID);
+  state.selectedKanbanCards.delete(workspaceID);
+}
+
+export function unloadAllKanbanCardDetails() {
+  const workspaceIDs = new Set([
+    ...state.selectedKanbanCards.keys(),
+    ...state.kanbanCardDetails.keys(),
+  ]);
+  workspaceIDs.forEach(unloadKanbanCardDetail);
+}
+
 export async function closeSelectedCardDetail(workspaceID: string) {
-  const cardID = state.selectedKanbanCards.get(workspaceID) ?? "";
-  if (!cardID) {
-    return;
-  }
-  try {
-    state.kanbanBoards.set(workspaceID, await CloseKanbanCardDetail(workspaceID, cardID));
-  } catch {
-  } finally {
-    state.selectedKanbanCards.delete(workspaceID);
-  }
+  unloadKanbanCardDetail(workspaceID);
 }
 
 export function applyKanbanEvent(event: KanbanEvent) {
   const previousBoard = state.kanbanBoards.get(event.workspaceId);
-  const board = services.KanbanBoard.createFrom(event.board);
-  state.kanbanBoards.set(event.workspaceId, board);
-  maybePlayKanbanBoardNotification(previousBoard, board);
+  let board = previousBoard ?? kanbanBoardFor(event.workspaceId);
+  if (event.board) {
+    board = services.KanbanBoard.createFrom(event.board);
+    state.kanbanBoards.set(event.workspaceId, board);
+    maybePlayKanbanBoardNotification(previousBoard, board);
+  } else if (event.card) {
+    const card = services.KanbanCard.createFrom(event.card);
+    board = replaceKanbanCardSnapshot(board, card);
+    state.kanbanBoards.set(event.workspaceId, board);
+  }
+  syncOpenDetailFromEvent(event, board);
   if (event.type === "card_started") {
     markKanbanRunStarted(event.workspaceId);
   }
@@ -1006,7 +1063,9 @@ export function applyKanbanEvent(event: KanbanEvent) {
   }
   if (activeWorkspace()?.id === event.workspaceId) {
     if (event.type === "card_progress") {
-      scheduleKanbanProgressPatch(event.workspaceId);
+      if (state.appMode === "kanban") {
+        scheduleKanbanProgressPatch(event.workspaceId);
+      }
       return;
     }
     // The task editor is a live form. Keep background Kanban transitions from
@@ -1016,6 +1075,102 @@ export function applyKanbanEvent(event: KanbanEvent) {
     }
     renderKanbanEventPreservingScroll();
   }
+}
+
+function replaceKanbanCardSnapshot(board: services.KanbanBoard, card: services.KanbanCard): services.KanbanBoard {
+  const lanes: Array<keyof Pick<services.KanbanBoard, "ready" | "inProgress" | "blocked" | "done">> = [
+    "ready",
+    "inProgress",
+    "blocked",
+    "done",
+  ];
+  let priorIndex = -1;
+  for (const lane of lanes) {
+    const cards = board[lane] ?? [];
+    const index = cards.findIndex((candidate) => candidate.id === card.id);
+    if (index >= 0) {
+      priorIndex = index;
+      cards.splice(index, 1);
+    }
+  }
+  const targetLane = card.lane === "inProgress"
+    ? "inProgress"
+    : card.lane === "blocked"
+      ? "blocked"
+      : card.lane === "done"
+        ? "done"
+        : "ready";
+  const target = board[targetLane] ?? [];
+  target.splice(priorIndex >= 0 ? Math.min(priorIndex, target.length) : target.length, 0, card);
+  board[targetLane] = target;
+  return board;
+}
+
+function syncOpenDetailFromEvent(event: KanbanEvent, board: services.KanbanBoard) {
+  const selectedID = state.selectedKanbanCards.get(event.workspaceId);
+  if (!selectedID) return;
+  const compactCard = kanbanCards(board).find((card) => card.id === selectedID);
+  if (!compactCard) {
+    unloadKanbanCardDetail(event.workspaceId);
+    return;
+  }
+  const detail = state.kanbanCardDetails.get(event.workspaceId);
+  if (event.type === "card_progress" && event.cardId === selectedID && event.progress) {
+    if (!detail) {
+      const pending = pendingKanbanDetailProgress.get(event.workspaceId) ?? [];
+      pending.push(event.progress);
+      pendingKanbanDetailProgress.set(event.workspaceId, pending);
+      return;
+    }
+    const result = applyProgressDelta(detail, event.progress);
+    if (result === "gap") {
+      pendingKanbanDetailProgress.set(event.workspaceId, [event.progress]);
+      const generation = kanbanDetailLoadGenerations.get(event.workspaceId) ?? 0;
+      void hydrateKanbanCardDetail(event.workspaceId, selectedID, generation).then((loaded) => {
+        if (loaded && activeWorkspace()?.id === event.workspaceId && state.appMode === "kanban") {
+          renderKanbanEventPreservingScroll();
+        }
+      });
+      return;
+    }
+    detail.progressSummary = compactCard.progressSummary;
+    state.kanbanCardDetails.set(event.workspaceId, detail);
+    return;
+  }
+  if (detail) {
+    const transcript = detail.progressTranscript;
+    const detailRevision = detail.progressRevision ?? 0;
+    Object.assign(detail, compactCard);
+    detail.progressTranscript = transcript;
+    detail.progressRevision = detailRevision;
+    state.kanbanCardDetails.set(event.workspaceId, detail);
+    if (detailRevision < (compactCard.progressRevision ?? 0)) {
+      const generation = kanbanDetailLoadGenerations.get(event.workspaceId) ?? 0;
+      void hydrateKanbanCardDetail(event.workspaceId, selectedID, generation).then((loaded) => {
+        if (loaded && activeWorkspace()?.id === event.workspaceId && state.appMode === "kanban") {
+          renderKanbanEventPreservingScroll();
+        }
+      });
+    }
+  }
+}
+
+function applyProgressDelta(card: services.KanbanCard, progress: KanbanProgressDelta): "applied" | "stale" | "gap" {
+  const revision = card.progressRevision ?? 0;
+  if (progress.revision <= revision) return "stale";
+  if (progress.revision !== revision + 1) return "gap";
+  const transcript = card.progressTranscript ?? [];
+  if (progress.merge) {
+    const existing = transcript[progress.entryIndex];
+    if (!existing) return "gap";
+    existing.content = `${existing.content ?? ""}${progress.entry.content ?? ""}`;
+  } else {
+    if (progress.entryIndex !== transcript.length) return "gap";
+    transcript.push(services.KanbanProgressEntry.createFrom(progress.entry));
+  }
+  card.progressTranscript = transcript;
+  card.progressRevision = progress.revision;
+  return "applied";
 }
 
 function renderKanbanEventPreservingScroll() {
@@ -1033,12 +1188,10 @@ function renderKanbanEventPreservingScroll() {
   renderedMainContent.scrollLeft = scrollLeft;
 }
 
-export function patchOpenCardProgress(event: KanbanEvent): boolean {
-  const board = kanbanBoardFor(event.workspaceId);
-  const card = selectedKanbanCard(board);
-  if (!card || card.id !== event.cardId) {
-    return false;
-  }
+export function patchOpenCardProgress(workspaceID: string): boolean {
+  const selectedID = state.selectedKanbanCards.get(workspaceID);
+  const card = state.kanbanCardDetails.get(workspaceID);
+  if (!selectedID || !card || card.id !== selectedID) return false;
 
   const detail = appRoot.querySelector<HTMLElement>("[data-card-detail]");
   const section = detail?.querySelector<HTMLElement>("[data-card-progress-section]");
@@ -1047,7 +1200,32 @@ export function patchOpenCardProgress(event: KanbanEvent): boolean {
   }
 
   const keepPinned = isElementScrolledNearBottom(detail);
-  patchChildrenFromHtml(section, renderProgressSectionContent(card.progressTranscript ?? []));
+  const transcript = card.progressTranscript ?? [];
+  let list = section.querySelector<HTMLElement>("[data-transcript-list]");
+  if (transcript.length === 0) {
+    if (list) {
+      patchChildrenFromHtml(section, renderProgressSectionContent(transcript));
+    }
+  } else if (!list) {
+    patchChildrenFromHtml(section, renderProgressSectionContent(transcript));
+    list = section.querySelector<HTMLElement>("[data-transcript-list]");
+  } else {
+    const renderedCount = list.querySelectorAll<HTMLElement>(":scope > [data-progress-entry-index]").length;
+    if (renderedCount > transcript.length) {
+      patchChildrenFromHtml(section, renderProgressSectionContent(transcript));
+    } else {
+      for (let index = renderedCount; index < transcript.length; index++) {
+        list.insertAdjacentHTML("beforeend", renderProgressEntry(transcript[index], index));
+      }
+      const lastIndex = transcript.length - 1;
+      const lastContent = list.querySelector<HTMLElement>(
+        `[data-progress-entry-index="${lastIndex}"] [data-progress-entry-content]`,
+      );
+      if (lastContent) {
+        lastContent.textContent = transcript[lastIndex].content ?? "";
+      }
+    }
+  }
   if (keepPinned) {
     detail.scrollTop = detail.scrollHeight;
   }
@@ -1092,7 +1270,7 @@ export function patchCardProgress(card: services.KanbanCard): boolean {
       // Update label text (percentage + tool label)
       const label = progressBar.querySelector<HTMLElement>(".kanban-card-progress-label");
       if (label) {
-        const toolName = getLastToolCallName(card.progressTranscript);
+        const toolName = getLastToolCallName(card);
         const toolLabel = toolName ? ` <span class="kanban-card-tool-label">${escapeHtml(toolName)}</span>` : "";
         label.innerHTML = `${pct}% complete${toolLabel}`;
       }
@@ -1100,7 +1278,7 @@ export function patchCardProgress(card: services.KanbanCard): boolean {
       // Progress bar didn't exist — card may have just started, inject it
       const openButton = container.querySelector<HTMLElement>("button.kanban-card-open");
       if (openButton) {
-        const newBarHtml = renderInProgressProgressBar(pct, card.progressTranscript);
+        const newBarHtml = renderInProgressProgressBar(pct, card);
         const template = document.createElement("template");
         template.innerHTML = newBarHtml;
         const newBar = template.content.firstElementChild;

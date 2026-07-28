@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1105,7 +1106,7 @@ func TestKanbanAgentIncludesWorkspaceInstructions(t *testing.T) {
 	assertSystemPromptOperatingContext(t, captured.Messages[0].Content, root)
 }
 
-func TestKanbanCardProgressStreamsRegardlessOfOpenDetail(t *testing.T) {
+func TestKanbanCardProgressEventsStayCompactWhileDetailIsClosed(t *testing.T) {
 	service, workspaceID := newKanbanTestService(t)
 	seedKanbanCards(t, service, []KanbanCard{
 		{ID: "card-1", WorkspaceID: workspaceID, Title: "Inspectable", Description: "Watch it", AcceptanceCriteria: []string{"Progress"}, Lane: KanbanLaneReady},
@@ -1120,13 +1121,20 @@ func TestKanbanCardProgressStreamsRegardlessOfOpenDetail(t *testing.T) {
 	if got := events.countType("card_progress"); got != 1 {
 		t.Fatalf("expected progress event before detail opens, got %d", got)
 	}
-
-	board, err := service.OpenKanbanCardDetail(workspaceID, "card-1")
-	if err != nil {
-		t.Fatalf("open card detail: %v", err)
+	firstEvent := events.snapshot()[0]
+	if firstEvent.Board != nil || firstEvent.Card == nil || len(firstEvent.Card.ProgressTranscript) != 0 {
+		t.Fatalf("expected compact card-only progress event, got %#v", firstEvent)
 	}
-	if len(board.Ready) != 1 || !transcriptContains(board.Ready[0].ProgressTranscript, "Buffered while closed.") {
-		t.Fatalf("expected opened detail to include buffered progress, got %#v", board)
+	if firstEvent.Progress == nil || firstEvent.Progress.Entry.Content != "Buffered while closed." {
+		t.Fatalf("expected progress delta, got %#v", firstEvent.Progress)
+	}
+
+	detail, err := service.LoadKanbanCardDetail(workspaceID, "card-1")
+	if err != nil {
+		t.Fatalf("load card detail: %v", err)
+	}
+	if !transcriptContains(detail.ProgressTranscript, "Buffered while closed.") {
+		t.Fatalf("expected loaded detail to include buffered progress, got %#v", detail)
 	}
 
 	service.appendKanbanProgress(workspaceID, "card-1", KanbanProgressEntry{
@@ -1135,14 +1143,11 @@ func TestKanbanCardProgressStreamsRegardlessOfOpenDetail(t *testing.T) {
 		Content: "Visible while open.",
 	})
 	if !events.waitFor(func(event KanbanEvent) bool {
-		return event.Type == "card_progress" && event.CardID == "card-1" && event.Entry != nil && event.Entry.Content == "Visible while open."
+		return event.Type == "card_progress" && event.CardID == "card-1" && event.Progress != nil && event.Progress.Entry.Content == "Visible while open."
 	}) {
 		t.Fatalf("expected live progress event while card detail is open, got %#v", events.snapshot())
 	}
 
-	if _, err := service.CloseKanbanCardDetail(workspaceID, "card-1"); err != nil {
-		t.Fatalf("close card detail: %v", err)
-	}
 	service.appendKanbanProgress(workspaceID, "card-1", KanbanProgressEntry{
 		Type:    "message",
 		Title:   "Buffered",
@@ -1153,7 +1158,68 @@ func TestKanbanCardProgressStreamsRegardlessOfOpenDetail(t *testing.T) {
 	}
 }
 
-func TestClosingCardDetailKeepsProgressEventsAndAgentContinues(t *testing.T) {
+func TestKanbanProgressEventPayloadDoesNotGrowWithPriorTranscript(t *testing.T) {
+	service, workspaceID := newKanbanTestService(t)
+	oldContent := strings.Repeat("old-history-", 32*1024)
+	seedKanbanCards(t, service, []KanbanCard{{
+		ID:                 "card-1",
+		WorkspaceID:        workspaceID,
+		Title:              "Large history",
+		Description:        "Keep the event compact",
+		AcceptanceCriteria: []string{"Progress"},
+		Lane:               KanbanLaneInProgress,
+		Status:             KanbanLaneInProgress,
+		ProgressTranscript: []KanbanProgressEntry{{
+			Type:    "message",
+			Title:   "Old",
+			Content: oldContent,
+		}},
+		ProgressRevision: 1,
+	}})
+
+	events := newKanbanEventRecorder(service)
+	service.appendKanbanProgress(workspaceID, "card-1", KanbanProgressEntry{
+		Type:    "message",
+		Title:   "Live",
+		Content: "first",
+	})
+	service.appendKanbanProgress(workspaceID, "card-1", KanbanProgressEntry{
+		Type:    "message",
+		Title:   "Live",
+		Content: " second",
+	})
+
+	snapshot := events.snapshot()
+	if len(snapshot) != 2 {
+		t.Fatalf("expected two progress events, got %#v", snapshot)
+	}
+	first, second := snapshot[0], snapshot[1]
+	if first.Progress == nil || first.Progress.Merge || first.Progress.Revision != 2 {
+		t.Fatalf("expected first append delta at revision 2, got %#v", first.Progress)
+	}
+	if second.Progress == nil || !second.Progress.Merge || second.Progress.Revision != 3 || second.Progress.EntryIndex != 1 {
+		t.Fatalf("expected merged delta at revision 3, got %#v", second.Progress)
+	}
+	data, err := json.Marshal(second)
+	if err != nil {
+		t.Fatalf("marshal compact event: %v", err)
+	}
+	if bytes.Contains(data, []byte("old-history-")) {
+		t.Fatal("compact progress event included prior transcript content")
+	}
+	if len(data) > 8*1024 {
+		t.Fatalf("compact progress event unexpectedly large: %d bytes", len(data))
+	}
+	detail, err := service.LoadKanbanCardDetail(workspaceID, "card-1")
+	if err != nil {
+		t.Fatalf("load card detail: %v", err)
+	}
+	if len(detail.ProgressTranscript) != 2 || detail.ProgressTranscript[1].Content != "first second" {
+		t.Fatalf("expected canonical transcript to retain merged content, got %#v", detail.ProgressTranscript)
+	}
+}
+
+func TestUnloadedCardDetailKeepsProgressEventsAndAgentContinues(t *testing.T) {
 	root := t.TempDir()
 	requestSeen := make(chan struct{})
 	writeFirst := make(chan struct{})
@@ -1186,19 +1252,16 @@ func TestClosingCardDetailKeepsProgressEventsAndAgentContinues(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("agent request did not start")
 	}
-	if _, err := service.OpenKanbanCardDetail(workspaceID, "card-1"); err != nil {
-		t.Fatalf("open card detail: %v", err)
+	if _, err := service.LoadKanbanCardDetail(workspaceID, "card-1"); err != nil {
+		t.Fatalf("load card detail: %v", err)
 	}
 	close(writeFirst)
 	if !events.waitFor(func(event KanbanEvent) bool {
-		return event.Type == "card_progress" && event.CardID == "card-1" && event.Entry != nil && event.Entry.Content == "started"
+		return event.Type == "card_progress" && event.CardID == "card-1" && event.Progress != nil && event.Progress.Entry.Content == "started"
 	}) {
 		t.Fatalf("expected live progress before closing detail, got %#v", events.snapshot())
 	}
 
-	if _, err := service.CloseKanbanCardDetail(workspaceID, "card-1"); err != nil {
-		t.Fatalf("close card detail: %v", err)
-	}
 	close(writeFinal)
 	board := waitForKanbanBoard(t, service, workspaceID, func(board KanbanBoard) bool {
 		return len(board.Done) == 1
@@ -1207,16 +1270,16 @@ func TestClosingCardDetailKeepsProgressEventsAndAgentContinues(t *testing.T) {
 		t.Fatalf("expected closed card to keep buffering progress, got %#v", board.Done[0].ProgressTranscript)
 	}
 	if !events.any(func(event KanbanEvent) bool {
-		return event.Type == "card_progress" && event.Entry != nil && strings.Contains(event.Entry.Content, "finished")
+		return event.Type == "card_progress" && event.Progress != nil && strings.Contains(event.Progress.Entry.Content, "finished")
 	}) {
 		t.Fatalf("expected final progress event after closing detail, got %#v", events.snapshot())
 	}
 
-	reopened, err := service.OpenKanbanCardDetail(workspaceID, "card-1")
+	reopened, err := service.LoadKanbanCardDetail(workspaceID, "card-1")
 	if err != nil {
 		t.Fatalf("reopen card detail: %v", err)
 	}
-	if len(reopened.Done) != 1 || !transcriptContains(reopened.Done[0].ProgressTranscript, " finished") {
+	if !transcriptContains(reopened.ProgressTranscript, " finished") {
 		t.Fatalf("expected reopened detail to show prior progress, got %#v", reopened)
 	}
 }
@@ -1352,16 +1415,17 @@ func waitForKanbanBoard(t *testing.T, service *SystemService, workspaceID string
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		board, err := service.LoadKanbanBoard(workspaceID)
-		if err != nil {
-			t.Fatalf("load board: %v", err)
-		}
+		service.mu.Lock()
+		board := fullBoardForWorkspace(workspaceID, service.state.KanbanCards)
+		service.mu.Unlock()
 		if done(board) {
 			return board
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	board, _ := service.LoadKanbanBoard(workspaceID)
+	service.mu.Lock()
+	board := fullBoardForWorkspace(workspaceID, service.state.KanbanCards)
+	service.mu.Unlock()
 	t.Fatalf("timed out waiting for kanban board, got %#v", board)
 	return KanbanBoard{}
 }
@@ -1482,8 +1546,12 @@ func TestKanbanBlockedCardCanReceiveUserMessageAndReturnToReady(t *testing.T) {
 	if len(board.Ready) != 1 || board.Ready[0].ID != "card-1" {
 		t.Fatalf("expected card to return to ready, got %#v", board)
 	}
-	if !transcriptContains(board.Ready[0].ProgressTranscript, "Try a smaller implementation.") {
-		t.Fatalf("expected user message in transcript, got %#v", board.Ready[0].ProgressTranscript)
+	detail, err := service.LoadKanbanCardDetail(workspaceID, "card-1")
+	if err != nil {
+		t.Fatalf("load card detail: %v", err)
+	}
+	if !transcriptContains(detail.ProgressTranscript, "Try a smaller implementation.") {
+		t.Fatalf("expected user message in transcript, got %#v", detail.ProgressTranscript)
 	}
 }
 

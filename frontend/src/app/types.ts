@@ -81,7 +81,16 @@ export type KanbanEvent = {
   workspaceId: string;
   cardId?: string;
   type: string;
-  board: services.KanbanBoard;
+  board?: services.KanbanBoard;
+  card?: services.KanbanCard;
+  progress?: KanbanProgressDelta;
+};
+
+export type KanbanProgressDelta = {
+  revision: number;
+  entryIndex: number;
+  merge?: boolean;
+  entry: services.KanbanProgressEntry;
 };
 
 export type TaskEvent = {

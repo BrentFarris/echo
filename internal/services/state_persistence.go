@@ -542,12 +542,17 @@ func normalizeInterruptedKanbanCards(cards []KanbanCard) bool {
 	changed := false
 	for i := range cards {
 		card := &cards[i]
+		card.ProgressSummary = nil
+		if card.ProgressRevision == 0 && len(card.ProgressTranscript) > 0 {
+			card.ProgressRevision = uint64(len(card.ProgressTranscript))
+			changed = true
+		}
 		if effectiveKanbanLane(*card) != KanbanLaneInProgress {
 			continue
 		}
 		card.Lane = KanbanLaneBlocked
 		card.Status = KanbanLaneBlocked
-		card.ProgressTranscript = append(card.ProgressTranscript, KanbanProgressEntry{
+		appendKanbanCardProgress(card, KanbanProgressEntry{
 			Type:    "error",
 			Title:   "Execution interrupted",
 			Content: "Echo closed while this card was running. Reset or message the card to continue.",

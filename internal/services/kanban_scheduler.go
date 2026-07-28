@@ -27,8 +27,16 @@ type KanbanEvent struct {
 	WorkspaceID string               `json:"workspaceId"`
 	CardID      string               `json:"cardId,omitempty"`
 	Type        string               `json:"type"`
-	Board       KanbanBoard          `json:"board"`
-	Entry       *KanbanProgressEntry `json:"entry,omitempty"`
+	Board       *KanbanBoard         `json:"board,omitempty"`
+	Card        *KanbanCard          `json:"card,omitempty"`
+	Progress    *KanbanProgressDelta `json:"progress,omitempty"`
+}
+
+type KanbanProgressDelta struct {
+	Revision   uint64              `json:"revision"`
+	EntryIndex int                 `json:"entryIndex"`
+	Merge      bool                `json:"merge,omitempty"`
+	Entry      KanbanProgressEntry `json:"entry"`
 }
 
 type kanbanAgentRun struct {
@@ -135,7 +143,7 @@ func (s *SystemService) StopKanbanCard(workspaceID string, cardID string) (Kanba
 	}
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 	s.mu.Unlock()
-	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_updated", Board: board})
+	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_updated", Board: &board})
 	return board, nil
 }
 
@@ -160,46 +168,8 @@ func (s *SystemService) AddKanbanCardMessage(workspaceID string, cardID string, 
 	}
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 	s.mu.Unlock()
-	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_updated", Board: board})
+	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_updated", Board: &board})
 	return board, nil
-}
-
-func (s *SystemService) OpenKanbanCardDetail(workspaceID string, cardID string) (KanbanBoard, error) {
-	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
-		return KanbanBoard{}, err
-	}
-
-	s.mu.Lock()
-	found := false
-	for _, card := range s.state.KanbanCards {
-		if card.WorkspaceID == workspaceID && card.ID == cardID {
-			found = true
-			break
-		}
-	}
-	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
-	s.mu.Unlock()
-	if !found {
-		return KanbanBoard{}, fmt.Errorf("kanban card was not found")
-	}
-
-	s.chatMu.Lock()
-	s.kanbanDetailViews[workspaceID] = cardID
-	s.chatMu.Unlock()
-	return board, nil
-}
-
-func (s *SystemService) CloseKanbanCardDetail(workspaceID string, cardID string) (KanbanBoard, error) {
-	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
-		return KanbanBoard{}, err
-	}
-
-	s.chatMu.Lock()
-	if activeCardID := s.kanbanDetailViews[workspaceID]; cardID == "" || activeCardID == cardID {
-		delete(s.kanbanDetailViews, workspaceID)
-	}
-	s.chatMu.Unlock()
-	return s.LoadKanbanBoard(workspaceID)
 }
 
 func (s *SystemService) Shutdown() {
@@ -372,7 +342,7 @@ func (s *SystemService) startKanbanAgent(parent context.Context, workspace Works
 	board := boardForWorkspace(workspace.ID, s.state.KanbanCards)
 	s.mu.Unlock()
 	s.chatMu.Unlock()
-	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspace.ID, CardID: cardID, Type: "card_started", Board: board})
+	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspace.ID, CardID: cardID, Type: "card_started", Board: &board})
 
 	go func() {
 		defer func() {
@@ -945,7 +915,7 @@ func (s *SystemService) blockUnstartableReadyCards(workspaceID string) bool {
 		sort.Strings(blockedBy)
 		card.Lane = KanbanLaneBlocked
 		card.Status = KanbanLaneBlocked
-		card.ProgressTranscript = append(card.ProgressTranscript, KanbanProgressEntry{
+		appendKanbanCardProgress(card, KanbanProgressEntry{
 			Type:    "error",
 			Title:   "Dependencies blocked",
 			Content: fmt.Sprintf("Could not start because dependencies are not Done: %s.", strings.Join(blockedBy, ", ")),
@@ -959,7 +929,7 @@ func (s *SystemService) blockUnstartableReadyCards(workspaceID string) bool {
 	}
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 	s.mu.Unlock()
-	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, Type: "card_updated", Board: board})
+	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, Type: "card_updated", Board: &board})
 	return true
 }
 
@@ -1010,10 +980,10 @@ func (s *SystemService) agentCardSnapshot(workspaceID string, cardID string) (Ka
 
 func (s *SystemService) appendKanbanProgress(workspaceID string, cardID string, entry KanbanProgressEntry) {
 	s.mu.Lock()
-	if s.appendKanbanProgressLocked(workspaceID, cardID, entry) {
-		board := boardForWorkspace(workspaceID, s.state.KanbanCards)
+	if card, progress, ok := s.appendKanbanProgressLocked(workspaceID, cardID, entry); ok {
+		view := compactKanbanCard(*card)
 		s.mu.Unlock()
-		s.emitKanbanProgressEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_progress", Board: board, Entry: &entry})
+		s.emitKanbanProgressEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_progress", Card: &view, Progress: &progress})
 		return
 	}
 	s.mu.Unlock()
@@ -1026,11 +996,11 @@ func (s *SystemService) appendKanbanAgentProgress(workspaceID string, cardID str
 		return
 	}
 	s.mu.Lock()
-	if s.appendKanbanProgressLocked(workspaceID, cardID, entry) {
-		board := boardForWorkspace(workspaceID, s.state.KanbanCards)
+	if card, progress, ok := s.appendKanbanProgressLocked(workspaceID, cardID, entry); ok {
+		view := compactKanbanCard(*card)
 		s.mu.Unlock()
 		s.chatMu.Unlock()
-		s.emitKanbanProgressEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_progress", Board: board, Entry: &entry})
+		s.emitKanbanProgressEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_progress", Card: &view, Progress: &progress})
 		return
 	}
 	s.mu.Unlock()
@@ -1120,7 +1090,7 @@ func (s *SystemService) finishKanbanCard(workspaceID string, cardID string, agen
 	s.mu.Unlock()
 	s.chatMu.Unlock()
 	s.autosaveMu.Unlock()
-	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_done", Board: board})
+	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_done", Board: &board})
 }
 
 func (s *SystemService) blockKanbanCard(workspaceID string, cardID string, agentID uint64, title string, reason string) {
@@ -1152,7 +1122,7 @@ func (s *SystemService) blockKanbanCard(workspaceID string, cardID string, agent
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 	s.mu.Unlock()
 	s.chatMu.Unlock()
-	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_blocked", Board: board})
+	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_blocked", Board: &board})
 }
 
 func (s *SystemService) moveKanbanCardLocked(workspaceID string, cardID string, lane string, entry KanbanProgressEntry) error {
@@ -1177,8 +1147,7 @@ func (s *SystemService) moveKanbanCardLocked(workspaceID string, cardID string, 
 			if entry.Status == "" {
 				entry.Status = lane
 			}
-			entry.Timestamp = time.Now()
-			card.ProgressTranscript = append(card.ProgressTranscript, entry)
+			appendKanbanCardProgress(card, entry)
 		}
 		return nil
 	}
@@ -1198,23 +1167,18 @@ func (s *SystemService) kanbanCardInLaneLocked(workspaceID string, cardID string
 	return false
 }
 
-func (s *SystemService) appendKanbanProgressLocked(workspaceID string, cardID string, entry KanbanProgressEntry) bool {
+func (s *SystemService) appendKanbanProgressLocked(workspaceID string, cardID string, entry KanbanProgressEntry) (*KanbanCard, KanbanProgressDelta, bool) {
 	if strings.TrimSpace(entry.Content) == "" {
-		return false
+		return nil, KanbanProgressDelta{}, false
 	}
 	for index := range s.state.KanbanCards {
 		card := &s.state.KanbanCards[index]
 		if card.WorkspaceID == workspaceID && card.ID == cardID {
-			if canMergeKanbanProgress(card.ProgressTranscript, entry) {
-				card.ProgressTranscript[len(card.ProgressTranscript)-1].Content += entry.Content
-				return true
-			}
-			entry.Timestamp = time.Now()
-			card.ProgressTranscript = append(card.ProgressTranscript, entry)
-			return true
+			progress := appendKanbanCardProgress(card, entry)
+			return card, progress, true
 		}
 	}
-	return false
+	return nil, KanbanProgressDelta{}, false
 }
 
 func canMergeKanbanProgress(transcript []KanbanProgressEntry, entry KanbanProgressEntry) bool {
@@ -1223,6 +1187,30 @@ func canMergeKanbanProgress(transcript []KanbanProgressEntry, entry KanbanProgre
 	}
 	previous := transcript[len(transcript)-1]
 	return previous.Status == "" && previous.Type == entry.Type && previous.Title == entry.Title
+}
+
+func appendKanbanCardProgress(card *KanbanCard, entry KanbanProgressEntry) KanbanProgressDelta {
+	card.ProgressRevision++
+	if canMergeKanbanProgress(card.ProgressTranscript, entry) {
+		entryIndex := len(card.ProgressTranscript) - 1
+		card.ProgressTranscript[entryIndex].Content += entry.Content
+		entry.Timestamp = card.ProgressTranscript[entryIndex].Timestamp
+		return KanbanProgressDelta{
+			Revision:   card.ProgressRevision,
+			EntryIndex: entryIndex,
+			Merge:      true,
+			Entry:      entry,
+		}
+	}
+	if entry.Timestamp.IsZero() {
+		entry.Timestamp = time.Now()
+	}
+	card.ProgressTranscript = append(card.ProgressTranscript, entry)
+	return KanbanProgressDelta{
+		Revision:   card.ProgressRevision,
+		EntryIndex: len(card.ProgressTranscript) - 1,
+		Entry:      entry,
+	}
 }
 
 func (s *SystemService) forgetKanbanRun(workspaceID string) {
@@ -1263,7 +1251,7 @@ func (s *SystemService) emitKanbanSnapshot(workspaceID string, eventType string)
 	s.mu.Lock()
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 	s.mu.Unlock()
-	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, Type: eventType, Board: board})
+	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, Type: eventType, Board: &board})
 }
 
 func (s *SystemService) emitKanbanProgressEvent(event KanbanEvent) {
@@ -1285,12 +1273,6 @@ func (s *SystemService) emitKanbanEventToWails(event KanbanEvent) {
 	if s.ctx != nil {
 		runtime.EventsEmit(s.ctx, kanbanEventName, event)
 	}
-}
-
-func (s *SystemService) hasOpenKanbanCardDetail(workspaceID string, cardID string) bool {
-	s.chatMu.Lock()
-	defer s.chatMu.Unlock()
-	return s.kanbanDetailViews[workspaceID] == cardID
 }
 
 func kanbanAgentSystemMessage(workspace Workspace, skillCandidates []tools.WorkspaceSkillSummary) llm.Message {

@@ -202,7 +202,6 @@ type SystemService struct {
 	kanbanRuns              map[string]context.CancelFunc
 	kanbanAgents            map[string]*kanbanAgentRun
 	kanbanAgentSeq          uint64
-	kanbanDetailViews       map[string]string
 	terminalMu              sync.Mutex
 	terminalSessions        map[string]*terminalSession // workspaceID -> session
 	terminalSeq             uint64
@@ -259,7 +258,6 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 		researchRuns:            make(map[string]*chatResearchRun),
 		kanbanRuns:              make(map[string]context.CancelFunc),
 		kanbanAgents:            make(map[string]*kanbanAgentRun),
-		kanbanDetailViews:       make(map[string]string),
 		terminalSessions:        make(map[string]*terminalSession),
 		heartbeats:              make(map[string]*heartbeatHandle),
 		watchdogs:               make(map[string]*watchdogHandle),
@@ -1024,9 +1022,6 @@ func (s *SystemService) DeleteWorkspace(id string) (AppState, error) {
 	s.mu.Unlock()
 
 	s.dropChatSession(id)
-	s.chatMu.Lock()
-	delete(s.kanbanDetailViews, id)
-	s.chatMu.Unlock()
 	s.dropWorkspaceChangeReview(id)
 	s.closeWorkspaceLSPClients(id)
 	s.closeWorkspaceTerminalSession(id)
