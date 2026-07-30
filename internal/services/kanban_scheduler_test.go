@@ -912,7 +912,7 @@ func TestKanbanSchedulerHandlesInlineReasoningToolCall(t *testing.T) {
 	}
 }
 
-func TestKanbanSchedulerReadImageToolStripsMediaFromContext(t *testing.T) {
+func TestKanbanSchedulerReadImageToolKeepsMediaForVisualReview(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "ui.png"), tinyPNGBytes(), 0o600); err != nil {
 		t.Fatal(err)
@@ -959,20 +959,20 @@ func TestKanbanSchedulerReadImageToolStripsMediaFromContext(t *testing.T) {
 	if !transcriptContains(board.Done[0].ProgressTranscript, `"contentType":"image_url"`) {
 		t.Fatalf("expected image tool metadata in transcript, got %#v", board.Done[0].ProgressTranscript)
 	}
-	// Verify that media content parts are stripped from the second LLM request context,
-	// matching the behavior in chat.go to prevent 413 errors from accumulated base64 data.
+	foundImage := false
 	for i := range secondRequest.Messages {
 		message := &secondRequest.Messages[i]
-		if len(message.ContentParts) > 0 {
-			for _, part := range message.ContentParts {
-				if part.ImageURL != nil || part.VideoURL != nil {
-					t.Fatalf("expected media content parts to be stripped from request context, got image/video in message %d", i)
-				}
+		for _, part := range message.ContentParts {
+			if part.ImageURL != nil && strings.HasPrefix(part.ImageURL.URL, "data:image/png;base64,") {
+				foundImage = true
 			}
 		}
 		if message.Role == llm.RoleTool && strings.Contains(message.Content, "data:image") {
 			t.Fatalf("expected tool message to omit image data URL, got %q", message.Content)
 		}
+	}
+	if !foundImage {
+		t.Fatal("expected image content in the visual follow-up request")
 	}
 }
 

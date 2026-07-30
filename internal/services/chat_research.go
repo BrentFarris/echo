@@ -780,7 +780,7 @@ func (r *chatResearchRun) parentContextNeedsCompaction(messages []llm.Message, t
 func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchAgentRun, prompt string) (string, error) {
 	r.service.logAIEvent(slog.LevelInfo, "ai_operation_started", slog.String("surface", "research"), slog.Int("agent_sequence", agent.sequence))
 	defer r.service.logAIEvent(slog.LevelInfo, "ai_operation_finished", slog.String("surface", "research"), slog.Int("agent_sequence", agent.sequence))
-	client, err := r.service.newLLMClient(r.settings)
+	modelRouter, err := r.service.newVisionLLMRouter(r.workspace.ID, r.settings)
 	if err != nil {
 		return "", err
 	}
@@ -800,18 +800,19 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if contextNeedsCompactionAt(r.settings, messages, toolSchema, researchContextTriggerPct) && contextHasCompressibleStale(r.settings, messages, contextCompactionPolicy{CurrentUser: currentUser}) {
-			compaction, compactErr := compactContextIfNeeded(ctx, client, r.settings, messages, toolSchema, contextCompactionPolicy{CurrentUser: currentUser, Force: true})
+		activeSettings, client := modelRouter.route(messages)
+		if contextNeedsCompactionAt(activeSettings, messages, toolSchema, researchContextTriggerPct) && contextHasCompressibleStale(activeSettings, messages, contextCompactionPolicy{CurrentUser: currentUser}) {
+			compaction, compactErr := compactContextIfNeeded(ctx, client, activeSettings, messages, toolSchema, contextCompactionPolicy{CurrentUser: currentUser, Force: true})
 			if compactErr == nil && compaction.Compacted {
 				messages = compaction.Messages
 			}
 		}
 
-		request, err := llm.NewChatRequest(r.settings, messages, llm.WithTools(toolSchema), llm.WithToolChoice("auto"))
+		request, err := llm.NewChatRequest(activeSettings, messages, llm.WithTools(toolSchema), llm.WithToolChoice("auto"))
 		if err != nil {
 			return "", err
 		}
-		result := streamResearchResponse(ctx, client, request, time.Duration(max(1, r.settings.TimeoutSeconds))*time.Second, func(reasoning string) {
+		result := streamResearchResponse(ctx, client, request, time.Duration(max(1, activeSettings.TimeoutSeconds))*time.Second, func(reasoning string) {
 			r.service.appendResearchAgentReasoning(r, agent, reasoning)
 		})
 		if result.usage != nil {
@@ -827,7 +828,7 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 				}
 				if forcedCompactions < 2 {
 					forcedCompactions++
-					compaction, compactErr := compactContextIfNeeded(ctx, client, r.settings, messages, toolSchema, contextCompactionPolicy{CurrentUser: currentUser, Force: true, Aggressiveness: forcedCompactions})
+					compaction, compactErr := compactContextIfNeeded(ctx, client, activeSettings, messages, toolSchema, contextCompactionPolicy{CurrentUser: currentUser, Force: true, Aggressiveness: forcedCompactions})
 					if compactErr == nil && compaction.Compacted {
 						messages = compaction.Messages
 						continue
@@ -872,7 +873,7 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 			r.mu.Lock()
 			agent.messages = cloneLLMMessages(messages)
 			r.mu.Unlock()
-			return r.boundResearchReport(ctx, client, agent, strings.TrimSpace(result.content)), nil
+			return r.boundResearchReport(ctx, client, activeSettings, agent, strings.TrimSpace(result.content)), nil
 		}
 
 		for _, call := range toolCalls {
@@ -910,14 +911,14 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 	return "", fmt.Errorf("research agent exceeded %d assistant/tool rounds", maxResearchAgentRounds)
 }
 
-func (r *chatResearchRun) boundResearchReport(ctx context.Context, client *llm.Client, agent *chatResearchAgentRun, report string) string {
+func (r *chatResearchRun) boundResearchReport(ctx context.Context, client *llm.Client, activeSettings llm.Settings, agent *chatResearchAgentRun, report string) string {
 	maxChars := r.reportTokenBudget() * contextCompactionCharsPerToken
 	if len(report) <= maxChars {
 		return report
 	}
 
 	r.setAgentState(agent, "summarizing", "summarizing", "")
-	settings := r.settings
+	settings := activeSettings
 	settings.MaxTokens = r.reportTokenBudget()
 	inputLimit := max(1024, effectiveContextInputBudget(settings)*contextCompactionCharsPerToken/2)
 	messages := []llm.Message{

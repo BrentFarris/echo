@@ -45,7 +45,7 @@ It works with local or remote providers that expose an OpenAI-compatible `/chat/
 - Let Echo read each workspace's `AGENTS.md` before planning or changing code.
 - Give models workspace-scoped filesystem, shell, Git, LSP, task, and web-search tools.
 - Create custom agent modes with their own system prompts and per-tool path permissions.
-- Route chat, research, plan decomposition, Kanban work, and inline code tasks to different model endpoints.
+- Route chat, research, vision, plan decomposition, Kanban work, and inline code tasks to different model endpoints.
 - Set a daily token budget per workspace and stop agent runs automatically at the limit.
 - Review AI-created file changes before accepting or committing them.
 

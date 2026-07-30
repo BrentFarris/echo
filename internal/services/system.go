@@ -1249,6 +1249,7 @@ func (s *SystemService) load() error {
 	legacyThinkingDisabled := stateFileLegacyThinkingDisabled(data) && !stateFileHasSettingKey(data, "thinkingTokenBudget")
 	legacyLLMEndpoints := !stateFileHasSettingKey(data, "endpoints")
 	legacyEndpointSelection := !stateFileHasSettingKey(data, "endpointSelection")
+	legacyVisionEndpointSelection := !stateFileEndpointSelectionHasKey(data, "vision")
 
 	// Migrate legacy comfyuiDefaultWorkflow → separate txt2img/img2img workflow fields.
 	if stateFileHasSettingKey(data, "comfyuiDefaultWorkflow") {
@@ -1396,7 +1397,7 @@ func (s *SystemService) load() error {
 			return err
 		}
 	}
-	if changed || interruptedKanban || interruptedChat || hadLegacyWorkspaceState || legacyThinkingDisabled || legacyLLMEndpoints || legacyEndpointSelection || legacyResearchAgentConcurrency || missingLLMEndpoint || missingLLMModel || missingWebAccessToken || migratedWebAccessPort {
+	if changed || interruptedKanban || interruptedChat || hadLegacyWorkspaceState || legacyThinkingDisabled || legacyLLMEndpoints || legacyEndpointSelection || legacyVisionEndpointSelection || legacyResearchAgentConcurrency || missingLLMEndpoint || missingLLMModel || missingWebAccessToken || migratedWebAccessPort {
 		return s.saveLocked()
 	}
 	return nil
@@ -1490,6 +1491,19 @@ func stateFileHasSettingKey(data []byte, key string) bool {
 		return false
 	}
 	_, ok := raw.Settings[key]
+	return ok
+}
+
+func stateFileEndpointSelectionHasKey(data []byte, key string) bool {
+	var raw struct {
+		Settings struct {
+			EndpointSelection map[string]json.RawMessage `json:"endpointSelection"`
+		} `json:"settings"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	_, ok := raw.Settings.EndpointSelection[key]
 	return ok
 }
 

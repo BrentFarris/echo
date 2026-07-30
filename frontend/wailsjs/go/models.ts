@@ -3,6 +3,7 @@ export namespace llm {
 	export class EndpointSelection {
 	    chat: string;
 	    research: string;
+	    vision: string;
 	    kanbanDecompose: string;
 	    kanban: string;
 	    inlineCode: string;
@@ -15,6 +16,7 @@ export namespace llm {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.chat = source["chat"];
 	        this.research = source["research"];
+	        this.vision = source["vision"];
 	        this.kanbanDecompose = source["kanbanDecompose"];
 	        this.kanban = source["kanban"];
 	        this.inlineCode = source["inlineCode"];
@@ -1451,11 +1453,11 @@ export namespace services {
 	    lastVerificationAt?: string;
 	    changedPathCount?: number;
 	    blockedReason?: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new KanbanProgressSummary(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.entryCount = source["entryCount"];
@@ -1629,6 +1631,7 @@ export namespace services {
 		    return a;
 		}
 	}
+	
 	
 	
 	
@@ -3538,3 +3541,4 @@ export namespace tools {
 	}
 
 }
+

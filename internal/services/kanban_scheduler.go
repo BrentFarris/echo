@@ -367,7 +367,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 
 	contextBrief := s.kanbanWorkspaceContextBrief(ctx, workspace, card, dependencyOutputs, agentID)
 
-	client, err := s.newLLMClient(settings)
+	modelRouter, err := s.newVisionLLMRouter(workspace.ID, settings)
 	if err != nil {
 		s.blockKanbanCard(workspace.ID, cardID, agentID, "Agent error", err.Error())
 		return
@@ -402,16 +402,17 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 			return
 		}
 
+		activeSettings, client := modelRouter.route(messages)
 		preflightPolicy := contextCompactionPolicy{CurrentUser: currentUser}
-		if contextNeedsCompaction(settings, messages, toolSchema) &&
-			contextHasCompressibleStale(settings, messages, preflightPolicy) {
+		if contextNeedsCompaction(activeSettings, messages, toolSchema) &&
+			contextHasCompressibleStale(activeSettings, messages, preflightPolicy) {
 			s.appendKanbanAgentProgress(workspace.ID, cardID, agentID, KanbanProgressEntry{
 				Type:    "status",
 				Title:   "Context compaction started",
 				Content: "The agent is condensing stale context while preserving the original card and recent work.",
 				Status:  KanbanLaneInProgress,
 			})
-			compaction, compactErr := compactContextIfNeeded(ctx, client, settings, messages, toolSchema, preflightPolicy)
+			compaction, compactErr := compactContextIfNeeded(ctx, client, activeSettings, messages, toolSchema, preflightPolicy)
 			if compactErr != nil {
 				if ctx.Err() != nil {
 					s.blockKanbanCard(workspace.ID, cardID, agentID, "Canceled", agentCancellationText)
@@ -429,7 +430,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 			}
 		}
 
-		request, err := llm.NewChatRequest(settings, messages, llm.WithTools(toolSchema), llm.WithToolChoice("auto"))
+		request, err := llm.NewChatRequest(activeSettings, messages, llm.WithTools(toolSchema), llm.WithToolChoice("auto"))
 		if err != nil {
 			s.blockKanbanCard(workspace.ID, cardID, agentID, "Agent error", err.Error())
 			return
@@ -467,7 +468,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 						Content: "The provider rejected the request for context length, so Echo is compacting stale agent history.",
 						Status:  KanbanLaneInProgress,
 					})
-					compaction, compactErr = compactContextIfNeeded(ctx, client, settings, messages, toolSchema, contextCompactionPolicy{
+					compaction, compactErr = compactContextIfNeeded(ctx, client, activeSettings, messages, toolSchema, contextCompactionPolicy{
 						CurrentUser:    currentUser,
 						Force:          true,
 						Aggressiveness: forcedCompactions,
@@ -615,8 +616,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 			execution := s.executeKanbanToolCall(ctx, workspace, settings, cardID, agentID, call, generatedImages)
 			recoverableToolCalls[call.ID] = true
 			for _, resultMessage := range execution.Messages {
-				stripped := stripMediaContentParts(resultMessage)
-				messages = append(messages, stripped)
+				messages = append(messages, resultMessage)
 			}
 			for _, path := range execution.ChangedPaths {
 				changedPaths[path] = true

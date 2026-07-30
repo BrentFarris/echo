@@ -118,6 +118,7 @@ const llmCodingPresets: {
 const endpointTopics = [
   { key: "chat", label: "Chat" },
   { key: "research", label: "Research" },
+  { key: "vision", label: "Vision" },
   { key: "kanbanDecompose", label: "Kanban Decompose" },
   { key: "kanban", label: "Kanban" },
   { key: "inlineCode", label: "Inline code" },
@@ -1079,6 +1080,7 @@ function handlePerToolPathsInput(textarea: HTMLTextAreaElement) {
 function renderLLMEndpointRouting(endpoints: llm.LLMEndpoint[]): string {
   const selection = endpointSelection(state.settingsDraft, endpoints);
   return `
+    <p class="compact muted">Vision is selected automatically for image and video prompts and for visual results returned by tools, including ComfyUI workflows.</p>
     <div class="llm-endpoint-routing settings-grid" aria-label="LLM endpoint routing">
       ${endpointTopics
         .map(
@@ -1444,11 +1446,13 @@ function endpointSelection(
   const fallback = endpoints[0]?.id ?? "";
   const raw = settings?.endpointSelection;
   const kanban = validEndpointID(raw?.kanban, endpoints) ? raw!.kanban : fallback;
+  const chat = validEndpointID(raw?.chat, endpoints) ? raw!.chat : fallback;
   return {
-    chat: validEndpointID(raw?.chat, endpoints) ? raw!.chat : fallback,
+    chat,
     research: validEndpointID(raw?.research, endpoints)
       ? raw!.research
-      : validEndpointID(raw?.chat, endpoints) ? raw!.chat : fallback,
+      : chat,
+    vision: validEndpointID(raw?.vision, endpoints) ? raw!.vision : chat,
     kanbanDecompose: validEndpointID(raw?.kanbanDecompose, endpoints)
       ? raw!.kanbanDecompose
       : kanban,

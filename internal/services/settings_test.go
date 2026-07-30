@@ -58,6 +58,41 @@ func TestResearchAgentConcurrencyZeroPersistsAndMissingLegacyValueMigrates(t *te
 	}
 }
 
+func TestMissingVisionEndpointSelectionMigratesToChat(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "state.json")
+	_ = NewSystemServiceWithStorePath(storePath)
+	data, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	settingsRaw := raw["settings"].(map[string]any)
+	selectionRaw := settingsRaw["endpointSelection"].(map[string]any)
+	delete(selectionRaw, "vision")
+	legacyData, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("encode legacy state: %v", err)
+	}
+	if err := os.WriteFile(storePath, legacyData, 0o600); err != nil {
+		t.Fatalf("write legacy state: %v", err)
+	}
+
+	migrated := NewSystemServiceWithStorePath(storePath).LoadState().Settings
+	if migrated.EndpointSelection.Vision != migrated.EndpointSelection.Chat {
+		t.Fatalf("expected vision to inherit chat, got %#v", migrated.EndpointSelection)
+	}
+	migratedData, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("read migrated state: %v", err)
+	}
+	if !stateFileEndpointSelectionHasKey(migratedData, "vision") {
+		t.Fatal("expected migrated state to persist the vision selection")
+	}
+}
+
 func TestSaveSettingsPreservesIndependentEndpointModels(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "state.json")
 	service := NewSystemServiceWithStorePath(storePath)
@@ -182,6 +217,18 @@ func TestSystemServiceResolvesSettingsForInteraction(t *testing.T) {
 			SystemPromptAppendage: "Use research-specific instructions.",
 		},
 		{
+			ID:                  "vision",
+			Name:                "Vision",
+			Endpoint:            "https://vision.example.test/v1",
+			Model:               "vision-model",
+			Temperature:         0.05,
+			ContextLength:       32768,
+			MaxTokens:           2048,
+			RepetitionPenalty:   1,
+			TimeoutSeconds:      90,
+			ThinkingTokenBudget: 0,
+		},
+		{
 			ID:                  "kanban",
 			Name:                "Kanban",
 			Endpoint:            "https://kanban.example.test/v1",
@@ -209,6 +256,7 @@ func TestSystemServiceResolvesSettingsForInteraction(t *testing.T) {
 	settings.EndpointSelection = llm.EndpointSelection{
 		Chat:            "chat",
 		Research:        "research",
+		Vision:          "vision",
 		KanbanDecompose: "decompose",
 		Kanban:          "kanban",
 		InlineCode:      "inline",
@@ -228,6 +276,17 @@ func TestSystemServiceResolvesSettingsForInteraction(t *testing.T) {
 	}
 	if researchSettings.SystemPromptAppendage != "Use research-specific instructions." {
 		t.Fatalf("expected research system prompt appendage, got %q", researchSettings.SystemPromptAppendage)
+	}
+
+	_, visionSettings, err := service.workspaceAndSettingsFor(state.ActiveWorkspaceID, llm.InteractionVision)
+	if err != nil {
+		t.Fatalf("load vision settings: %v", err)
+	}
+	if visionSettings.Endpoint != "https://vision.example.test/v1" || visionSettings.Model != "vision-model" {
+		t.Fatalf("expected vision endpoint, got %q / %q", visionSettings.Endpoint, visionSettings.Model)
+	}
+	if visionSettings.Temperature != 0.05 || visionSettings.ContextLength != 32768 || visionSettings.TimeoutSeconds != 90 {
+		t.Fatalf("expected vision generation settings, got %#v", visionSettings)
 	}
 
 	_, decomposeSettings, err := service.workspaceAndSettingsFor(state.ActiveWorkspaceID, llm.InteractionKanbanDecompose)

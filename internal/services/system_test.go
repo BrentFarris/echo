@@ -810,6 +810,52 @@ func TestSystemServiceChatSendsPastedImageAsContentPart(t *testing.T) {
 	}
 }
 
+func TestSystemServiceChatRoutesImagePromptToVisionEndpoint(t *testing.T) {
+	root := t.TempDir()
+	var chatRequests atomic.Int32
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chatRequests.Add(1)
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"Unexpected chat route."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+
+	var visionRequests atomic.Int32
+	var captured llm.ChatRequest
+	visionServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		visionRequests.Add(1)
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode vision request: %v", err)
+		}
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"Vision reviewed."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+	t.Cleanup(visionServer.Close)
+	configureVisionTestEndpoint(t, service, visionServer.URL+"/v1")
+
+	if _, err := service.SendChatMessageWithAttachments(workspaceID, ChatMessageRequest{
+		Content: "Review this screenshot.",
+		Images:  []ChatImageInput{{Name: "screen.png", DataURL: tinyPNGDataURL()}},
+	}); err != nil {
+		t.Fatalf("send visual chat: %v", err)
+	}
+	waitForChatIdle(t, service, workspaceID)
+
+	if chatRequests.Load() != 0 || visionRequests.Load() != 1 {
+		t.Fatalf("expected only the vision endpoint, chat=%d vision=%d", chatRequests.Load(), visionRequests.Load())
+	}
+	if captured.Model != "vision-model" {
+		t.Fatalf("expected vision model, got %q", captured.Model)
+	}
+	if len(captured.Messages) < 2 || len(captured.Messages[1].ContentParts) != 2 ||
+		captured.Messages[1].ContentParts[1].ImageURL == nil {
+		t.Fatalf("expected image content on vision request, got %#v", captured.Messages)
+	}
+}
+
 func TestSystemServiceChatSendsWorkspaceImageMentionAsContentPart(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "ui.png"), tinyPNGBytes(), 0o600); err != nil {
@@ -957,8 +1003,8 @@ func TestSystemServiceChatReadImageToolSendsImageContentPart(t *testing.T) {
 		t.Fatalf("expected visible tool result to omit image data URL, got %q", session.Messages[1].ToolCalls[0].Result)
 	}
 
-	// After stripping, the second request should NOT include raw image data URLs in tool result messages.
-	// The LLM sees the compact tool result and a text description instead.
+	// The compact tool result remains small, while a separate user message
+	// carries the image payload for the Vision model to inspect.
 	var toolMessage *llm.Message
 	var descriptionMessage *llm.Message
 	for i := range secondRequest.Messages {
@@ -977,15 +1023,64 @@ func TestSystemServiceChatReadImageToolSendsImageContentPart(t *testing.T) {
 		t.Fatalf("expected tool message to omit image data URL, got %q", toolMessage.Content)
 	}
 	if descriptionMessage == nil {
-		t.Fatalf("expected text description of image in user message, got %#v", secondRequest.Messages)
+		t.Fatalf("expected image-bearing description in user message, got %#v", secondRequest.Messages)
 	}
-	// Verify no image_url content parts remain (stripped from messages slice)
-	for i, msg := range secondRequest.Messages {
-		for j, part := range msg.ContentParts {
-			if part.ImageURL != nil && strings.HasPrefix(part.ImageURL.URL, "data:image") {
-				t.Fatalf("expected image data URL to be stripped from messages slice, found in message %d part %d", i, j)
-			}
+	if len(descriptionMessage.ContentParts) != 2 ||
+		descriptionMessage.ContentParts[1].ImageURL == nil ||
+		!strings.HasPrefix(descriptionMessage.ContentParts[1].ImageURL.URL, "data:image/png;base64,") {
+		t.Fatalf("expected image data URL for visual review, got %#v", descriptionMessage.ContentParts)
+	}
+}
+
+func TestSystemServiceChatRoutesVisualToolResultToVisionEndpoint(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "ui.png"), tinyPNGBytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var imagePath string
+	var chatRequests atomic.Int32
+	service, workspaceID := newChatTestService(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch chatRequests.Add(1) {
+		case 1:
+			writeSSE(t, w,
+				fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_image","type":"function","function":{"name":"filesystem_read_image","arguments":%q}}]}}]}`, fmt.Sprintf(`{"path":%q,"detail":"high"}`, imagePath)),
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+		default:
+			writeSSE(t, w,
+				`{"choices":[{"index":0,"delta":{"content":"Unexpected chat follow-up."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)
 		}
+	}))
+	imagePath = labeledTestPath(t, service, workspaceID, "ui.png")
+
+	var visionRequests atomic.Int32
+	var captured llm.ChatRequest
+	visionServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		visionRequests.Add(1)
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode vision request: %v", err)
+		}
+		writeSSE(t, w,
+			`{"choices":[{"index":0,"delta":{"content":"The capture is visible."}}]}`,
+			`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		)
+	}))
+	t.Cleanup(visionServer.Close)
+	configureVisionTestEndpoint(t, service, visionServer.URL+"/v1")
+
+	if _, err := service.SendChatMessageWithPlanMode(workspaceID, "Inspect ui.png visually.", true); err != nil {
+		t.Fatalf("send chat: %v", err)
+	}
+	waitForChatIdle(t, service, workspaceID)
+
+	if chatRequests.Load() != 1 || visionRequests.Load() != 1 {
+		t.Fatalf("expected chat tool selection followed by vision review, chat=%d vision=%d", chatRequests.Load(), visionRequests.Load())
+	}
+	if captured.Model != "vision-model" || !messagesRequireVision(captured.Messages) {
+		t.Fatalf("expected visual follow-up on vision model, got model=%q messages=%#v", captured.Model, captured.Messages)
 	}
 }
 
@@ -2073,6 +2168,22 @@ func newChatTestService(t *testing.T, workspacePath string, handler http.Handler
 		t.Fatalf("save settings: %v", err)
 	}
 	return service, state.ActiveWorkspaceID
+}
+
+func configureVisionTestEndpoint(t *testing.T, service *SystemService, endpointURL string) {
+	t.Helper()
+	settings := service.LoadState().Settings
+	vision := settings.Endpoints[0]
+	vision.ID = "vision"
+	vision.Name = "Vision"
+	vision.Endpoint = endpointURL
+	vision.Model = "vision-model"
+	settings.Endpoints = append(settings.Endpoints, vision)
+	settings.EndpointSelection.Vision = vision.ID
+	settings.ResearchAgentConcurrency = 0
+	if _, err := service.SaveSettings(settings); err != nil {
+		t.Fatalf("save vision endpoint: %v", err)
+	}
 }
 
 func newDecompositionTestService(t *testing.T, workspacePath string, handler http.Handler) (*SystemService, string) {
@@ -3552,8 +3663,8 @@ func TestSystemServiceChatStripsImagesFromHistory(t *testing.T) {
 	}
 	waitForChatIdle(t, service, workspaceID)
 
-	// Second request: images are now stripped from the messages slice too, preventing 413 errors.
-	// The LLM sees text descriptions instead of raw image data URLs.
+	// Second request: the in-memory turn keeps the image so Vision can inspect
+	// it before the compact description is persisted for future turns.
 	if requestCount.Load() != 2 {
 		t.Fatalf("expected image tool follow-up request, got %d requests", requestCount.Load())
 	}
@@ -3565,8 +3676,8 @@ func TestSystemServiceChatStripsImagesFromHistory(t *testing.T) {
 			}
 		}
 	}
-	if hasImage {
-		t.Fatal("expected second request to strip image data URLs from messages slice")
+	if !hasImage {
+		t.Fatal("expected second request to include the image for visual review")
 	}
 
 	// Verify text description is present in the second request
