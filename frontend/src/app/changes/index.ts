@@ -320,8 +320,8 @@ export function renderGitDiff(diff: string, path: string): string {
 
 function renderGitSplitDiff(diff: string, path: string): string {
   const rows = gitSplitDiffRows(diff);
-  const beforeRows = rows.map((row) => renderGitSplitDiffPaneRow(row, "left", "")).join("");
-  const afterRows = rows.map((row) => renderGitSplitDiffPaneRow(row, "right", path)).join("");
+  const beforeRows = rows.map((row, i) => renderGitSplitDiffPaneRow(row, "left", "", i)).join("");
+  const afterRows = rows.map((row, i) => renderGitSplitDiffPaneRow(row, "right", path, i)).join("");
   return `
     <div class="git-split-diff" aria-label="Side-by-side Git diff" data-git-split-diff>
       <section class="git-split-diff-pane" aria-label="Before">
@@ -343,10 +343,10 @@ function renderGitSplitDiff(diff: string, path: string): string {
   `;
 }
 
-function renderGitSplitDiffPaneRow(row: GitSplitDiffRow, side: "left" | "right", path: string): string {
+function renderGitSplitDiffPaneRow(row: GitSplitDiffRow, side: "left" | "right", path: string, index: number): string {
   if (row.kind === "meta") {
     const text = side === "left" ? row.left : row.right;
-    return `<div class="git-split-diff-row is-meta" title="${escapeAttribute(text ?? "")}"><span>${escapeHtml(text || " ")}</span></div>`;
+    return `<div class="git-split-diff-row is-meta" data-git-split-row-index="${index}" title="${escapeAttribute(text ?? "")}"><span>${escapeHtml(text || " ")}</span></div>`;
   }
   const kind = side === "left" ? row.leftKind : row.rightKind;
   const text = side === "left" ? row.left : row.right;
@@ -354,7 +354,7 @@ function renderGitSplitDiffPaneRow(row: GitSplitDiffRow, side: "left" | "right",
   const openButton = side === "right" && path && row.targetLine
     ? renderGitLineOpenButton(path, row.targetLine)
     : "";
-  return `<div class="git-split-diff-row is-${row.kind} is-${kind ?? "blank"}"${marker}><span>${escapeHtml(text || " ")}</span>${openButton}</div>`;
+  return `<div class="git-split-diff-row is-${row.kind} is-${kind ?? "blank"}" data-git-split-row-index="${index}"${marker}><span>${escapeHtml(text || " ")}</span>${openButton}</div>`;
 }
 
 function gitSplitDiffRows(diff: string): GitSplitDiffRow[] {

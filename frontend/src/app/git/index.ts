@@ -1274,6 +1274,41 @@ function bindGitSplitDiffScroll(root: ParentNode) {
     shared.addEventListener("pointerenter", update);
     shared.addEventListener("focus", update);
     window.requestAnimationFrame(update);
+
+    // Sync row heights between panes so lines stay aligned
+    syncGitSplitDiffRowHeights(diff);
+    const heightObserver = new ResizeObserver(() => {
+      syncGitSplitDiffRowHeights(diff);
+    });
+    const leftPane = diff.querySelector<HTMLElement>("[data-git-split-scroll=\"left\"]");
+    const rightPane = diff.querySelector<HTMLElement>("[data-git-split-scroll=\"right\"]");
+    if (leftPane) heightObserver.observe(leftPane);
+    if (rightPane) heightObserver.observe(rightPane);
+  });
+}
+
+function syncGitSplitDiffRowHeights(diff: HTMLElement) {
+  const leftRows = diff.querySelectorAll<HTMLElement>("[data-git-split-scroll=\"left\"] [data-git-split-row-index]");
+  const rightRows = diff.querySelectorAll<HTMLElement>("[data-git-split-scroll=\"right\"] [data-git-split-row-index]");
+  if (!leftRows.length || !rightRows.length) return;
+
+  const leftMap = new Map<string, HTMLElement>();
+  leftRows.forEach((r) => leftMap.set(r.getAttribute("data-git-split-row-index")!, r));
+  const rightMap = new Map<string, HTMLElement>();
+  rightRows.forEach((r) => rightMap.set(r.getAttribute("data-git-split-row-index")!, r));
+
+  leftMap.forEach((leftRow, index) => {
+    const rightRow = rightMap.get(index);
+    if (!rightRow) return;
+    const leftH = leftRow.getBoundingClientRect().height;
+    const rightH = rightRow.getBoundingClientRect().height;
+    const maxH = Math.max(leftH, rightH);
+    if (leftRow.style.height !== `${maxH}px`) {
+      leftRow.style.height = `${maxH}px`;
+    }
+    if (rightRow.style.height !== `${maxH}px`) {
+      rightRow.style.height = `${maxH}px`;
+    }
   });
 }
 
