@@ -336,7 +336,7 @@ func TestWorkspaceLSPClientStartIsSingleFlight(t *testing.T) {
 	var starts atomic.Int32
 	releaseStart := make(chan struct{})
 	fakeClient := &lspClient{languageID: "go"}
-	startLSPClient = func(ctx context.Context, gotWorkspace Workspace, gotFolder WorkspaceFolder, languageID string) (*lspClient, error) {
+	startLSPClient = func(ctx context.Context, gotWorkspace Workspace, gotFolder WorkspaceFolder, languageID string, onDiagnostics func(workspaceID string, filePath string, diagnostics []WorkspaceDiagnostic), resolveFilePath func(string) string) (*lspClient, error) {
 		starts.Add(1)
 		select {
 		case <-releaseStart:
@@ -394,7 +394,7 @@ func TestCloseWorkspaceCancelsLSPClientStart(t *testing.T) {
 	oldStart := startLSPClient
 	defer func() { startLSPClient = oldStart }()
 	started := make(chan struct{})
-	startLSPClient = func(ctx context.Context, gotWorkspace Workspace, gotFolder WorkspaceFolder, languageID string) (*lspClient, error) {
+	startLSPClient = func(ctx context.Context, gotWorkspace Workspace, gotFolder WorkspaceFolder, languageID string, onDiagnostics func(workspaceID string, filePath string, diagnostics []WorkspaceDiagnostic), resolveFilePath func(string) string) (*lspClient, error) {
 		close(started)
 		<-ctx.Done()
 		return nil, ctx.Err()
