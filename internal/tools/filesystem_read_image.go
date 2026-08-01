@@ -50,6 +50,12 @@ type LLMImageContentProvider interface {
 	LLMImageContent() (LLMImageContent, bool)
 }
 
+// ImageIDProvider is implemented by tool output types that produce a unique
+// image ID usable by subsequent tool calls (e.g., save_image).
+type ImageIDProvider interface {
+	GetImageID() string
+}
+
 type readImageFileArgs struct {
 	Path   string `json:"path"`
 	Detail string `json:"detail"`

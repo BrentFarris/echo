@@ -4,11 +4,40 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/brent/echo/internal/llm"
 )
+
+func TestGeneralAgentModePromptExecutesRequestedWork(t *testing.T) {
+	message := chatSystemMessage(
+		Workspace{},
+		AgentMode{ID: AgentModeIDGeneral, Name: "General", BuiltIn: true},
+		nil,
+		false,
+	)
+
+	for _, expected := range []string{
+		"helping complete work",
+		"use the available tools to carry it out directly",
+		"Do not stop after describing a plan",
+	} {
+		if !strings.Contains(message.Content, expected) {
+			t.Fatalf("expected General prompt to include %q, got %q", expected, message.Content)
+		}
+	}
+	for _, planOnly := range []string{
+		"helping plan work",
+		"planning changes only",
+		"Keep plans concrete and concise",
+	} {
+		if strings.Contains(message.Content, planOnly) {
+			t.Fatalf("expected General prompt to exclude plan-only wording %q, got %q", planOnly, message.Content)
+		}
+	}
+}
 
 func TestSendChatMessageWithAgentModeIDUsesModePermissions(t *testing.T) {
 	root := t.TempDir()

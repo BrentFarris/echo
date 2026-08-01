@@ -29,7 +29,7 @@ func TestPrepareDebugConfigurationExpandsVariablesAndPreservesAdapterProperties(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := config["program"]; got != mainPath {
+	if got := config["program"]; !samePath(got.(string), mainPath) {
 		t.Fatalf("program = %#v, want %q", got, mainPath)
 	}
 	if _, exists := config["dlvToolPath"]; exists {
@@ -75,10 +75,10 @@ func TestPrepareDebugConfigurationInfersDelveModuleWorkingDirectory(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := config["dlvCwd"]; got != moduleRoot {
+	if got := config["dlvCwd"]; !samePath(got.(string), moduleRoot) {
 		t.Fatalf("dlvCwd = %#v, want %q", got, moduleRoot)
 	}
-	if got := config["cwd"]; got != root {
+	if got := config["cwd"]; !samePath(got.(string), root) {
 		t.Fatalf("runtime cwd = %#v, want %q", got, root)
 	}
 }

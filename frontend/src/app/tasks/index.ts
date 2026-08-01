@@ -14,7 +14,7 @@ import { renderMarkdown } from "../../markdown";
 import { appRoot } from "../dom";
 import { getAppCallbacks } from "../callbacks";
 import { icons } from "../icons";
-import { activeWorkspace, state, taskBoardFor } from "../state";
+import { activeWorkspace, chatStateKey, state, taskBoardFor } from "../state";
 import { pushToast } from "../toasts";
 import type { TaskEvent } from "../types";
 import { errorMessage, escapeAttribute, escapeHtml, fileName, formatBytes } from "../utils";
@@ -343,6 +343,10 @@ export function renderTaskDetail(workspace: services.Workspace): string {
           <button class="secondary-button icon-text-button" type="button" data-task-action="complete" data-task-id="${escapeAttribute(task.id)}">
             ${task.completed ? icons.undo : icons.check}
             <span>${task.completed ? "Reopen" : "Complete"}</span>
+          </button>
+          <button class="secondary-button icon-text-button" type="button" data-task-action="reference" data-task-id="${escapeAttribute(task.id)}">
+            ${icons.paperclip}
+            <span>Reference Task</span>
           </button>
           <button class="secondary-button icon-text-button" type="button" data-task-action="chat" data-task-id="${escapeAttribute(task.id)}">
             ${icons.chat}
@@ -1021,9 +1025,24 @@ async function handleTaskAction(event: Event) {
     }
     if (action === "chat") {
       const prompt = taskChatPrompt(task);
-      const existing = state.chatDrafts.get(workspace.id)?.trim() ?? "";
+      const chatKey = chatStateKey(workspace.id);
+      const existing = state.chatDrafts.get(chatKey)?.trim() ?? "";
       if (existing && existing !== prompt.trim() && !window.confirm("Replace the current chat draft with this task?")) return;
-      state.chatDrafts.set(workspace.id, prompt);
+      state.chatDrafts.set(chatKey, prompt);
+      state.appMode = "chat";
+      state.mobileNavView = "chat";
+      state.activeChatKanbanTab.set(workspace.id, "chat");
+      state.selectedTaskCards.delete(workspace.id);
+      getAppCallbacks().render();
+      window.requestAnimationFrame(() => appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus());
+      return;
+    }
+    if (action === "reference") {
+      const reference = formatTaskReference(task);
+      const chatKey = chatStateKey(workspace.id);
+      const existing = state.chatDrafts.get(chatKey) ?? "";
+      const appended = (existing ? existing.trimEnd() + " " : "") + reference + " ";
+      state.chatDrafts.set(chatKey, appended);
       state.appMode = "chat";
       state.mobileNavView = "chat";
       state.activeChatKanbanTab.set(workspace.id, "chat");
@@ -1374,6 +1393,10 @@ function handleTaskDragEnd(event: DragEvent) {
   (event.currentTarget as HTMLElement).classList.remove("is-dragging");
   appRoot.querySelectorAll(".task-lane.is-drop-target").forEach((lane) => lane.classList.remove("is-drop-target"));
   draggingTaskID = "";
+}
+
+function formatTaskReference(task: services.WorkspaceTask): string {
+  return `@task:${task.id}`;
 }
 
 function taskChatPrompt(task: services.WorkspaceTask): string {

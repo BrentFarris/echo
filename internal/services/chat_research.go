@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -777,7 +778,9 @@ func (r *chatResearchRun) parentContextNeedsCompaction(messages []llm.Message, t
 }
 
 func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchAgentRun, prompt string) (string, error) {
-	client, err := llm.NewClient(r.settings)
+	r.service.logAIEvent(slog.LevelInfo, "ai_operation_started", slog.String("surface", "research"), slog.Int("agent_sequence", agent.sequence))
+	defer r.service.logAIEvent(slog.LevelInfo, "ai_operation_finished", slog.String("surface", "research"), slog.Int("agent_sequence", agent.sequence))
+	modelRouter, err := r.service.newVisionLLMRouter(r.workspace.ID, r.settings)
 	if err != nil {
 		return "", err
 	}
@@ -797,18 +800,19 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if contextNeedsCompactionAt(r.settings, messages, toolSchema, researchContextTriggerPct) && contextHasCompressibleStale(r.settings, messages, contextCompactionPolicy{CurrentUser: currentUser}) {
-			compaction, compactErr := compactContextIfNeeded(ctx, client, r.settings, messages, toolSchema, contextCompactionPolicy{CurrentUser: currentUser, Force: true})
+		activeSettings, client := modelRouter.route(messages)
+		if contextNeedsCompactionAt(activeSettings, messages, toolSchema, researchContextTriggerPct) && contextHasCompressibleStale(activeSettings, messages, contextCompactionPolicy{CurrentUser: currentUser}) {
+			compaction, compactErr := compactContextIfNeeded(ctx, client, activeSettings, messages, toolSchema, contextCompactionPolicy{CurrentUser: currentUser, Force: true})
 			if compactErr == nil && compaction.Compacted {
 				messages = compaction.Messages
 			}
 		}
 
-		request, err := llm.NewChatRequest(r.settings, messages, llm.WithTools(toolSchema), llm.WithToolChoice("auto"))
+		request, err := llm.NewChatRequest(activeSettings, messages, llm.WithTools(toolSchema), llm.WithToolChoice("auto"))
 		if err != nil {
 			return "", err
 		}
-		result := streamResearchResponse(ctx, client, request, time.Duration(max(1, r.settings.TimeoutSeconds))*time.Second, func(reasoning string) {
+		result := streamResearchResponse(ctx, client, request, time.Duration(max(1, activeSettings.TimeoutSeconds))*time.Second, func(reasoning string) {
 			r.service.appendResearchAgentReasoning(r, agent, reasoning)
 		})
 		if result.usage != nil {
@@ -817,12 +821,14 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 		if result.err != nil {
 			if llm.IsContextLengthExceeded(result.err) {
 				if recovery, ok := recoverToolResultContext(messages, recoverableToolCalls); ok {
+					r.service.logAIEvent(slog.LevelWarn, "context_recovery", slog.String("surface", "research"), slog.String("tool_call_id", recovery.Call.ID))
+					r.service.logModelFacingToolResult(recovery.Call, []llm.Message{recovery.ResultMessage})
 					messages = recovery.Messages
 					continue
 				}
 				if forcedCompactions < 2 {
 					forcedCompactions++
-					compaction, compactErr := compactContextIfNeeded(ctx, client, r.settings, messages, toolSchema, contextCompactionPolicy{CurrentUser: currentUser, Force: true, Aggressiveness: forcedCompactions})
+					compaction, compactErr := compactContextIfNeeded(ctx, client, activeSettings, messages, toolSchema, contextCompactionPolicy{CurrentUser: currentUser, Force: true, Aggressiveness: forcedCompactions})
 					if compactErr == nil && compaction.Compacted {
 						messages = compaction.Messages
 						continue
@@ -830,6 +836,7 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 				}
 			}
 			if transientRetries < 1 && ctx.Err() == nil {
+				r.service.logAIEvent(slog.LevelWarn, "ai_retry", slog.String("surface", "research"), slog.String("reason", "stream_error"))
 				transientRetries++
 				messages = append(messages, llm.Message{Role: llm.RoleUser, Content: "The previous research response failed. Retry once from the existing evidence and return a usable answer or tool call."})
 				continue
@@ -840,6 +847,7 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 		toolCalls := r.service.normalizeToolCalls(result.toolCalls)
 		if !result.finished {
 			if transientRetries < 1 && ctx.Err() == nil {
+				r.service.logAIEvent(slog.LevelWarn, "ai_retry", slog.String("surface", "research"), slog.String("reason", "incomplete_stream"))
 				transientRetries++
 				messages = append(messages, llm.Message{Role: llm.RoleUser, Content: "The previous research stream ended before completion. Retry once from the existing evidence."})
 				continue
@@ -854,6 +862,7 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 				return "", emptyAssistantResponseError()
 			}
 			emptyRetries++
+			r.service.logAIEvent(slog.LevelWarn, "ai_retry", slog.String("surface", "research"), slog.String("reason", "empty_response"))
 			messages = append(messages, emptyAssistantRetryMessage())
 			continue
 		}
@@ -864,7 +873,7 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 			r.mu.Lock()
 			agent.messages = cloneLLMMessages(messages)
 			r.mu.Unlock()
-			return r.boundResearchReport(ctx, client, agent, strings.TrimSpace(result.content)), nil
+			return r.boundResearchReport(ctx, client, activeSettings, agent, strings.TrimSpace(result.content)), nil
 		}
 
 		for _, call := range toolCalls {
@@ -872,6 +881,8 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 			r.service.updateResearchToolActivity(r, agent, call, "running", "", "")
 			execution := tools.Execute(tools.ExecutionContext{
 				Context:          ctx,
+				FlowLog:          r.service.flowLog,
+				ToolCallID:       call.ID,
 				WorkspaceRoots:   workspaceToolRoots(r.workspace),
 				SearxngURL:       r.settings.SearxngURL,
 				CodeNavigator:    r.service.codeNavigator(r.workspace),
@@ -893,21 +904,21 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 			}
 			r.service.updateResearchToolActivity(r, agent, call, status, string(data), errorText)
 			recoverableToolCalls[call.ID] = true
-			messages = append(messages, toolResultMessages(call, execution, data)...)
+			messages = append(messages, r.service.loggedToolResultMessages(call, execution, data)...)
 		}
 		r.setAgentState(agent, "running", "researching", "")
 	}
 	return "", fmt.Errorf("research agent exceeded %d assistant/tool rounds", maxResearchAgentRounds)
 }
 
-func (r *chatResearchRun) boundResearchReport(ctx context.Context, client *llm.Client, agent *chatResearchAgentRun, report string) string {
+func (r *chatResearchRun) boundResearchReport(ctx context.Context, client *llm.Client, activeSettings llm.Settings, agent *chatResearchAgentRun, report string) string {
 	maxChars := r.reportTokenBudget() * contextCompactionCharsPerToken
 	if len(report) <= maxChars {
 		return report
 	}
 
 	r.setAgentState(agent, "summarizing", "summarizing", "")
-	settings := r.settings
+	settings := activeSettings
 	settings.MaxTokens = r.reportTokenBudget()
 	inputLimit := max(1024, effectiveContextInputBudget(settings)*contextCompactionCharsPerToken/2)
 	messages := []llm.Message{
@@ -1099,7 +1110,9 @@ func (s *SystemService) clearResearchAgentIndicators(workspaceID string, streamI
 	s.chatMu.Lock()
 	changed := false
 	var revision uint64
-	if session := s.chatSessions[workspaceID]; session != nil {
+	var chatID string
+	if session := s.chatSessionByMessageLocked(workspaceID, messageID); session != nil {
+		chatID = session.ChatID
 		for i := range session.Messages {
 			if session.Messages[i].ID == messageID && len(session.Messages[i].ResearchAgents) > 0 {
 				session.Messages[i].ResearchAgents = nil
@@ -1112,7 +1125,7 @@ func (s *SystemService) clearResearchAgentIndicators(workspaceID string, streamI
 	}
 	s.chatMu.Unlock()
 	if changed {
-		s.emitChatEvent(ChatStreamEvent{WorkspaceID: workspaceID, StreamID: streamID, MessageID: messageID, Type: "agent_status", Revision: revision})
+		s.emitChatEvent(ChatStreamEvent{WorkspaceID: workspaceID, ChatID: chatID, StreamID: streamID, MessageID: messageID, Type: "agent_status", Revision: revision})
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
@@ -89,10 +90,12 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 		return fail(fmt.Errorf("path is not a regular file"))
 	}
 
-	client, err := llm.NewClient(settings)
+	modelRouter, err := s.newVisionLLMRouter(workspace.ID, settings)
 	if err != nil {
 		return fail(err)
 	}
+	s.logAIEvent(slog.LevelInfo, "ai_operation_started", slog.String("surface", "inline_code"), slog.String("operation_id", request.RequestID))
+	defer s.logAIEvent(slog.LevelInfo, "ai_operation_finished", slog.String("surface", "inline_code"), slog.String("operation_id", request.RequestID))
 
 	messages := []llm.Message{
 		inlineCodeSystemMessage(workspace, workspaceSkillCandidates(context.Background(), workspace, request.Prompt+"\n"+request.FilePath)),
@@ -112,9 +115,10 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 	emptyAssistantRetries := 0
 
 	for {
+		activeSettings, client := modelRouter.route(messages)
 		preflightPolicy := contextCompactionPolicy{CurrentUser: currentUser}
-		if contextNeedsCompaction(settings, messages, toolSchema) &&
-			contextHasCompressibleStale(settings, messages, preflightPolicy) {
+		if contextNeedsCompaction(activeSettings, messages, toolSchema) &&
+			contextHasCompressibleStale(activeSettings, messages, preflightPolicy) {
 			s.emitInlineCodePromptEvent(InlineCodePromptEvent{
 				WorkspaceID: eventBase.WorkspaceID,
 				RequestID:   eventBase.RequestID,
@@ -122,14 +126,14 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 				Type:        "compacting",
 				Content:     "Compacting stale context while preserving the current inline request and recent work.",
 			})
-			compaction, compactErr := compactContextIfNeeded(context.Background(), client, settings, messages, toolSchema, preflightPolicy)
+			compaction, compactErr := compactContextIfNeeded(context.Background(), client, activeSettings, messages, toolSchema, preflightPolicy)
 			if compactErr == nil && compaction.Compacted {
 				messages = compaction.Messages
 				s.emitInlineCodeCompactionResult(eventBase, compaction)
 			}
 		}
 
-		chatRequest, err := llm.NewChatRequest(settings, messages, llm.WithTools(toolSchema), llm.WithToolChoice("auto"))
+		chatRequest, err := llm.NewChatRequest(activeSettings, messages, llm.WithTools(toolSchema), llm.WithToolChoice("auto"))
 		if err != nil {
 			return fail(err)
 		}
@@ -138,6 +142,8 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 		if result.err != nil {
 			if llm.IsContextLengthExceeded(result.err) {
 				if recovery, ok := recoverToolResultContext(messages, recoverableToolCalls); ok {
+					s.logAIEvent(slog.LevelWarn, "context_recovery", slog.String("surface", "inline_code"), slog.String("tool_call_id", recovery.Call.ID))
+					s.logModelFacingToolResult(recovery.Call, []llm.Message{recovery.ResultMessage})
 					messages = recovery.Messages
 					s.markInlineToolContextTooLarge(&output, eventBase, recovery)
 					continue
@@ -156,7 +162,7 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 						Type:        "compacting",
 						Content:     "The provider rejected the request for context length, so Echo is compacting stale inline-agent history.",
 					})
-					compaction, compactErr = compactContextIfNeeded(context.Background(), client, settings, messages, toolSchema, contextCompactionPolicy{
+					compaction, compactErr = compactContextIfNeeded(context.Background(), client, activeSettings, messages, toolSchema, contextCompactionPolicy{
 						CurrentUser:    currentUser,
 						Force:          true,
 						Aggressiveness: forcedCompactions,
@@ -243,7 +249,7 @@ func (s *SystemService) SubmitInlineCodePrompt(workspaceID string, request Inlin
 			for _, changedPath := range execution.ChangedPaths {
 				affected[changedPath] = true
 			}
-			messages = append(messages, execution.Message)
+			messages = append(messages, execution.Messages...)
 			if len(execution.ChangedPaths) > 0 {
 				skillCheckpointPending = true
 				skillCheckpointReminders = 0
@@ -415,7 +421,7 @@ func inlineCodeAssistantContentAndToolCalls(message llm.Message) (string, []llm.
 
 type inlineCodeToolCallExecution struct {
 	Activity        ChatToolActivity
-	Message         llm.Message
+	Messages        []llm.Message
 	ChangedPaths    []string
 	SkillCheckpoint bool
 }
@@ -424,7 +430,7 @@ func (s *SystemService) executeInlineCodeToolCall(workspace Workspace, settings 
 	execution := s.executeTrackedToolCall(context.Background(), workspace, settings, call, WorkspaceChangeSource{
 		Type:      "inline",
 		RequestID: eventBase.RequestID,
-	}, nil, nil)
+	}, nil, nil, nil)
 	result := execution.Result
 
 	data, err := json.Marshal(result)
@@ -448,13 +454,10 @@ func (s *SystemService) executeInlineCodeToolCall(workspace Workspace, settings 
 		Error:     errorText,
 	}
 
+	messages := s.loggedToolResultMessages(call, result, data)
 	return inlineCodeToolCallExecution{
-		Activity: activity,
-		Message: llm.Message{
-			Role:       llm.RoleTool,
-			ToolCallID: call.ID,
-			Content:    string(data),
-		},
+		Activity:        activity,
+		Messages:        messages,
 		ChangedPaths:    affectedPathsFromChanges(execution.Changes),
 		SkillCheckpoint: workspaceSkillCheckpointCompleted(call, result),
 	}

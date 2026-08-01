@@ -13,11 +13,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	goruntime "runtime"
 	"strings"
 	"sync"
 
+	"github.com/brent/echo/internal/flowlog"
 	"github.com/brent/echo/internal/llm"
+	"github.com/google/uuid"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -73,7 +76,7 @@ type Workspace struct {
 	Folders                     []WorkspaceFolder `json:"folders"`
 	DisplayName                 string            `json:"displayName"`
 	SelectedDebugConfiguration  string            `json:"selectedDebugConfiguration,omitempty"`
-	DefaultPlanMode             bool              `json:"defaultPlanMode"`
+	DefaultAgentModeID          string            `json:"defaultAgentModeId"`
 	SearchParentGitRepositories bool              `json:"searchParentGitRepositories"`
 	BuildCommand                string            `json:"buildCommand,omitempty"`
 	Letter                      string            `json:"letter,omitempty"`
@@ -91,7 +94,8 @@ func (w *Workspace) UnmarshalJSON(data []byte) error {
 		FolderPath                  string            `json:"folderPath"`
 		DisplayName                 string            `json:"displayName"`
 		SelectedDebugConfiguration  string            `json:"selectedDebugConfiguration"`
-		DefaultPlanMode             bool              `json:"defaultPlanMode"`
+		DefaultAgentModeID          string            `json:"defaultAgentModeId"`
+		DefaultPlanMode             *bool             `json:"defaultPlanMode"`
 		SearchParentGitRepositories bool              `json:"searchParentGitRepositories"`
 		BuildCommand                string            `json:"buildCommand"`
 		Letter                      string            `json:"letter"`
@@ -103,19 +107,22 @@ func (w *Workspace) UnmarshalJSON(data []byte) error {
 		Missing                     bool              `json:"missing"`
 		Error                       string            `json:"error"`
 	}
-	var keys map[string]json.RawMessage
-	if err := json.Unmarshal(data, &keys); err != nil {
-		return err
-	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
+	}
+	defaultAgentModeID := strings.TrimSpace(raw.DefaultAgentModeID)
+	if defaultAgentModeID == "" {
+		defaultAgentModeID = AgentModeIDPlan
+		if raw.DefaultPlanMode != nil && !*raw.DefaultPlanMode {
+			defaultAgentModeID = AgentModeIDGeneral
+		}
 	}
 	*w = Workspace{
 		ID:                          raw.ID,
 		Folders:                     raw.Folders,
 		DisplayName:                 raw.DisplayName,
 		SelectedDebugConfiguration:  strings.TrimSpace(raw.SelectedDebugConfiguration),
-		DefaultPlanMode:             raw.DefaultPlanMode,
+		DefaultAgentModeID:          defaultAgentModeID,
 		SearchParentGitRepositories: raw.SearchParentGitRepositories,
 		BuildCommand:                normalizeWorkspaceBuildCommand(raw.BuildCommand),
 		Letter:                      normalizeWorkspaceLetter(raw.Letter),
@@ -124,9 +131,6 @@ func (w *Workspace) UnmarshalJSON(data []byte) error {
 		Active:                      raw.Active,
 		Missing:                     raw.Missing,
 		Error:                       raw.Error,
-	}
-	if _, ok := keys["defaultPlanMode"]; !ok {
-		w.DefaultPlanMode = true
 	}
 	legacyPath := raw.FolderPath
 	if legacyPath == "" {
@@ -149,6 +153,21 @@ type DashboardWidgetJSON struct {
 	Order int    `json:"order"`
 }
 
+type WorkspaceActivitySummary struct {
+	WorkspaceID        string `json:"workspaceId"`
+	IsChatBusy         bool   `json:"isChatBusy"`
+	IsKanbanRunning    bool   `json:"isKanbanRunning"`
+	ActiveAgentCount   int    `json:"activeAgentCount"`
+	LastMessageSnippet string `json:"lastMessageSnippet,omitempty"`
+}
+
+type SavedCommand struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Command string `json:"command"`
+	Order   int    `json:"order"`
+}
+
 type AppState struct {
 	Settings          llm.Settings                     `json:"settings"`
 	WebAccess         WebAccessSettings                `json:"webAccess"`
@@ -158,6 +177,7 @@ type AppState struct {
 	LivenessConfigs   map[string]LivenessConfig        `json:"livenessConfigs,omitempty"`
 	WatchdogConfigs   map[string]WatchdogConfig        `json:"watchdogConfigs,omitempty"`
 	DashboardLayouts  map[string][]DashboardWidgetJSON `json:"dashboardLayouts,omitempty"`
+	SavedCommands     map[string][]SavedCommand        `json:"savedCommands,omitempty"`
 	KanbanCards       []KanbanCard                     `json:"-"`
 }
 
@@ -170,8 +190,10 @@ type SystemService struct {
 	taskMu                  sync.Mutex
 	state                   AppState
 	persistedChatSessions   map[string]persistedChatSession
+	persistedChatWorkspaces map[string]persistedChatWorkspace
 	chatMu                  sync.Mutex
 	chatSessions            map[string]*chatSessionState
+	chatWorkspaces          map[string]*chatWorkspaceState
 	chatStreams             map[string]context.CancelFunc
 	chatSeq                 uint64
 	researchMu              sync.Mutex
@@ -180,8 +202,10 @@ type SystemService struct {
 	kanbanRuns              map[string]context.CancelFunc
 	kanbanAgents            map[string]*kanbanAgentRun
 	kanbanAgentSeq          uint64
-	kanbanDetailViews       map[string]string
-	heartbeats              map[string]*heartbeatHandle // workspaceID -> running heartbeat
+	terminalMu              sync.Mutex
+	terminalSessions        map[string]*terminalSession // workspaceID -> session
+	terminalSeq             uint64
+	heartbeats              map[string]*heartbeatHandle // workspaceID -\u003e running heartbeat
 	watchdogs               map[string]*watchdogHandle  // workspaceID -> running watchdog
 	fileChangeMu            sync.Mutex
 	fileChangeSeq           uint64
@@ -206,6 +230,7 @@ type SystemService struct {
 	fileChangesEventSink    func(FileChangesEvent)
 	inlineCodeEventSink     func(InlineCodePromptEvent)
 	tokenBudget             *TokenBudgetService
+	flowLog                 *flowlog.Controller
 }
 
 func NewSystemService() *SystemService {
@@ -223,26 +248,29 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 			Phase:     "release-readiness",
 			AccentHex: "#8f1d2c",
 		},
-		storePath:             storePath,
-		state:                 defaultAppState(),
-		persistedChatSessions: make(map[string]persistedChatSession),
-		chatSessions:          make(map[string]*chatSessionState),
-		chatStreams:           make(map[string]context.CancelFunc),
-		researchRuns:          make(map[string]*chatResearchRun),
-		kanbanRuns:            make(map[string]context.CancelFunc),
-		kanbanAgents:          make(map[string]*kanbanAgentRun),
-		kanbanDetailViews:     make(map[string]string),
-		heartbeats:            make(map[string]*heartbeatHandle),
-		watchdogs:             make(map[string]*watchdogHandle),
-		fileChanges:           make(map[string][]trackedFileChange),
-		workspaceToolLocks:    make(map[string]*sync.Mutex),
-		gitRepositoryViews:    make(map[string]WorkspaceGitRepositoryView),
-		lspClients:            make(map[string]*lspClient),
-		lspClientStarts:       make(map[string]*lspClientStart),
-		lspWarmups:            make(map[string]*lspWarmupRun),
-		workspaceTextSearches: make(map[string]workspaceTextSearchRun),
-		eventSubscribers:      make(map[uint64]chan RuntimeEvent),
-		tokenBudget:           newTokenBudgetService(),
+		storePath:               storePath,
+		state:                   defaultAppState(),
+		persistedChatSessions:   make(map[string]persistedChatSession),
+		persistedChatWorkspaces: make(map[string]persistedChatWorkspace),
+		chatSessions:            make(map[string]*chatSessionState),
+		chatWorkspaces:          make(map[string]*chatWorkspaceState),
+		chatStreams:             make(map[string]context.CancelFunc),
+		researchRuns:            make(map[string]*chatResearchRun),
+		kanbanRuns:              make(map[string]context.CancelFunc),
+		kanbanAgents:            make(map[string]*kanbanAgentRun),
+		terminalSessions:        make(map[string]*terminalSession),
+		heartbeats:              make(map[string]*heartbeatHandle),
+		watchdogs:               make(map[string]*watchdogHandle),
+		fileChanges:             make(map[string][]trackedFileChange),
+		workspaceToolLocks:      make(map[string]*sync.Mutex),
+		gitRepositoryViews:      make(map[string]WorkspaceGitRepositoryView),
+		lspClients:              make(map[string]*lspClient),
+		lspClientStarts:         make(map[string]*lspClientStart),
+		lspWarmups:              make(map[string]*lspWarmupRun),
+		workspaceTextSearches:   make(map[string]workspaceTextSearchRun),
+		eventSubscribers:        make(map[uint64]chan RuntimeEvent),
+		tokenBudget:             newTokenBudgetService(),
+		flowLog:                 flowlog.NewController(),
 	}
 	_ = service.load()
 	service.debugger = newDebugManager(service)
@@ -266,6 +294,61 @@ func (s *SystemService) LoadState() AppState {
 	state := cloneState(s.state)
 	s.warmActiveWorkspaceLSPClients(state)
 	return state
+}
+
+// GetWorkspaceActivitySummaries returns activity status for all workspaces.
+func (s *SystemService) GetWorkspaceActivitySummaries() []WorkspaceActivitySummary {
+	s.mu.Lock()
+	workspaceIDs := make([]string, 0, len(s.state.Workspaces))
+	for _, w := range s.state.Workspaces {
+		workspaceIDs = append(workspaceIDs, w.ID)
+	}
+	s.mu.Unlock()
+
+	summaries := make([]WorkspaceActivitySummary, 0, len(workspaceIDs))
+
+	for _, wsID := range workspaceIDs {
+		var summary WorkspaceActivitySummary
+		summary.WorkspaceID = wsID
+
+		// Chat busy check
+		s.chatMu.Lock()
+		if chatWorkspace := s.chatWorkspaces[wsID]; chatWorkspace != nil {
+			for _, chatID := range chatWorkspace.TabIDs {
+				if _, busy := s.chatStreams[chatID]; busy {
+					summary.IsChatBusy = true
+					break
+				}
+			}
+		}
+		_, summary.IsKanbanRunning = s.kanbanRuns[wsID]
+		summary.ActiveAgentCount = 0
+		for agentKey := range s.kanbanAgents {
+			if strings.HasPrefix(agentKey, wsID+":") {
+				summary.ActiveAgentCount++
+			}
+		}
+
+		// Last message snippet from chat session
+		if session, ok := s.chatSessions[wsID]; ok {
+			for i := len(session.Messages) - 1; i >= 0; i-- {
+				msg := session.Messages[i]
+				if msg.Role == "assistant" && msg.Content != "" {
+					snippet := msg.Content
+					if len(snippet) > 60 {
+						snippet = snippet[:60] + "…"
+					}
+					summary.LastMessageSnippet = strings.TrimSpace(strings.ReplaceAll(snippet, "\n", " "))
+					break
+				}
+			}
+		}
+		s.chatMu.Unlock()
+
+		summaries = append(summaries, summary)
+	}
+
+	return summaries
 }
 
 func (s *SystemService) GetDashboardLayouts() map[string][]DashboardWidgetJSON {
@@ -292,20 +375,95 @@ func (s *SystemService) SaveDashboardLayout(view string, widgets []DashboardWidg
 	return s.saveLocked()
 }
 
+func (s *SystemService) GetSavedCommands(workspaceID string) []SavedCommand {
+	if _, err := s.workspaceByID(workspaceID); err != nil {
+		return []SavedCommand{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cmds := s.state.SavedCommands[workspaceID]
+	result := make([]SavedCommand, len(cmds))
+	copy(result, cmds)
+	return result
+}
+
+func (s *SystemService) UpsertSavedCommand(workspaceID, id, name, command string, order int) error {
+	if _, err := s.workspaceByID(workspaceID); err != nil {
+		return err
+	}
+	name = strings.TrimSpace(name)
+	command = strings.TrimSpace(command)
+	if name == "" && command == "" {
+		return fmt.Errorf("name and command cannot both be empty")
+	}
+	if id == "" {
+		id = uuid.New().String()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state.SavedCommands == nil {
+		s.state.SavedCommands = make(map[string][]SavedCommand)
+	}
+	existing := s.state.SavedCommands[workspaceID]
+	found := false
+	for i, cmd := range existing {
+		if cmd.ID == id {
+			existing[i].Name = name
+			existing[i].Command = command
+			existing[i].Order = order
+			found = true
+			break
+		}
+	}
+	if !found {
+		existing = append(existing, SavedCommand{ID: id, Name: name, Command: command, Order: order})
+	}
+	s.state.SavedCommands[workspaceID] = existing
+	return s.saveLocked()
+}
+
+func (s *SystemService) DeleteSavedCommand(workspaceID, id string) error {
+	if _, err := s.workspaceByID(workspaceID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing := s.state.SavedCommands[workspaceID]
+	next := make([]SavedCommand, 0, len(existing))
+	for _, cmd := range existing {
+		if cmd.ID == id {
+			continue
+		}
+		next = append(next, cmd)
+	}
+	s.state.SavedCommands[workspaceID] = next
+	return s.saveLocked()
+}
+
 func (s *SystemService) SaveSettings(settings llm.Settings) (AppState, error) {
-	settings = settings.Normalized()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if endpointProfilesChanged(settings, s.state.Settings) {
+		settings = settings.NormalizedEndpointProfiles()
+	} else {
+		settings = settings.Normalized()
+	}
 	if err := settings.Validate(); err != nil {
 		return AppState{}, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.state.Settings = settings
 	s.refreshWorkspaceStatusesLocked()
 	if err := s.saveLocked(); err != nil {
 		return AppState{}, err
 	}
 	return cloneState(s.state), nil
+}
+
+func endpointProfilesChanged(incoming llm.Settings, current llm.Settings) bool {
+	return incoming.EndpointSelection != current.EndpointSelection ||
+		!reflect.DeepEqual(incoming.Endpoints, current.Endpoints)
 }
 
 func (s *SystemService) AddWorkspace(path string) (AppState, error) {
@@ -508,23 +666,38 @@ func (s *SystemService) SetWorkspaceFolderUseAgents(workspaceID string, folderID
 	return AppState{}, fmt.Errorf("workspace was not found")
 }
 
-func (s *SystemService) SetWorkspaceDefaultPlanMode(workspaceID string, enabled bool) (AppState, error) {
+func (s *SystemService) SetWorkspaceDefaultAgentMode(workspaceID string, modeID string) (AppState, error) {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if workspaceID == "" {
 		return AppState{}, fmt.Errorf("workspace id is required")
+	}
+	modeID = strings.TrimSpace(modeID)
+	if modeID == "" {
+		return AppState{}, fmt.Errorf("agent mode id is required")
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.state.Workspaces {
-		if s.state.Workspaces[i].ID == workspaceID {
-			s.state.Workspaces[i].DefaultPlanMode = enabled
-			s.refreshWorkspaceStatusesLocked()
-			if err := s.saveLocked(); err != nil {
-				return AppState{}, err
-			}
-			return cloneState(s.state), nil
+		if s.state.Workspaces[i].ID != workspaceID {
+			continue
 		}
+		found := false
+		for _, mode := range s.listAllWorkspaceModes(s.state.Workspaces[i]) {
+			if mode.ID == modeID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return AppState{}, fmt.Errorf("agent mode was not found")
+		}
+		s.state.Workspaces[i].DefaultAgentModeID = modeID
+		s.refreshWorkspaceStatusesLocked()
+		if err := s.saveLocked(); err != nil {
+			return AppState{}, err
+		}
+		return cloneState(s.state), nil
 	}
 	return AppState{}, fmt.Errorf("workspace was not found")
 }
@@ -832,6 +1005,7 @@ func (s *SystemService) DeleteWorkspace(id string) (AppState, error) {
 	s.state.Workspaces = next
 	s.state.KanbanCards = cardsWithoutWorkspace(s.state.KanbanCards, id)
 	delete(s.persistedChatSessions, id)
+	delete(s.persistedChatWorkspaces, id)
 	delete(s.tokenBudget.budgets, id)
 	if s.state.ActiveWorkspaceID == id {
 		s.state.ActiveWorkspaceID = ""
@@ -848,11 +1022,9 @@ func (s *SystemService) DeleteWorkspace(id string) (AppState, error) {
 	s.mu.Unlock()
 
 	s.dropChatSession(id)
-	s.chatMu.Lock()
-	delete(s.kanbanDetailViews, id)
-	s.chatMu.Unlock()
 	s.dropWorkspaceChangeReview(id)
 	s.closeWorkspaceLSPClients(id)
+	s.closeWorkspaceTerminalSession(id)
 	if s.debugger != nil {
 		_ = s.debugger.dropWorkspace(id)
 	}
@@ -1077,11 +1249,31 @@ func (s *SystemService) load() error {
 	legacyThinkingDisabled := stateFileLegacyThinkingDisabled(data) && !stateFileHasSettingKey(data, "thinkingTokenBudget")
 	legacyLLMEndpoints := !stateFileHasSettingKey(data, "endpoints")
 	legacyEndpointSelection := !stateFileHasSettingKey(data, "endpointSelection")
+	legacyVisionEndpointSelection := !stateFileEndpointSelectionHasKey(data, "vision")
+
+	// Migrate legacy comfyuiDefaultWorkflow → separate txt2img/img2img workflow fields.
+	if stateFileHasSettingKey(data, "comfyuiDefaultWorkflow") {
+		var oldSettings struct {
+			ComfyuiDefaultWorkflow string `json:"comfyuiDefaultWorkflow"`
+		}
+		if err := json.Unmarshal(stateFileSettingsRaw(data), &oldSettings); err == nil {
+			oldValue := strings.TrimSpace(oldSettings.ComfyuiDefaultWorkflow)
+			if oldValue != "" && state.Settings.ComfyuiTxt2imgWorkflow == "" && state.Settings.ComfyuiImg2imgWorkflow == "" {
+				state.Settings.ComfyuiTxt2imgWorkflow = oldValue
+				state.Settings.ComfyuiImg2imgWorkflow = oldValue
+			}
+		}
+	}
+
 	legacyResearchAgentConcurrency := !stateFileHasSettingKey(data, "researchAgentConcurrency")
 	if legacyResearchAgentConcurrency {
 		state.Settings.ResearchAgentConcurrency = llm.DefaultResearchAgentConcurrency
 	}
-	state.Settings = state.Settings.Normalized()
+	if legacyLLMEndpoints {
+		state.Settings = state.Settings.Normalized()
+	} else {
+		state.Settings = state.Settings.NormalizedEndpointProfiles()
+	}
 	missingLLMEndpoint := state.Settings.Endpoint == ""
 	missingLLMModel := state.Settings.Model == ""
 	missingWebAccessToken := strings.TrimSpace(state.WebAccess.AccessToken) == ""
@@ -1097,10 +1289,15 @@ func (s *SystemService) load() error {
 	if state.Settings.Model == "" {
 		state.Settings.Model = llm.DefaultModel
 	}
-	state.Settings = state.Settings.Normalized()
+	if legacyThinkingDisabled || missingLLMEndpoint || missingLLMModel {
+		state.Settings = state.Settings.Normalized()
+	} else {
+		state.Settings = state.Settings.NormalizedEndpointProfiles()
+	}
 	normalizeLoadedWorkspaces(&state)
 	state.KanbanCards = []KanbanCard{}
 	loadedChatSessions := make(map[string]persistedChatSession)
+	loadedChatWorkspaces := make(map[string]persistedChatWorkspace)
 	workspacesToMigrate := make(map[string]bool)
 	for _, workspace := range state.Workspaces {
 		autosave, found, autosaveErr := readWorkspaceAutosave(workspace)
@@ -1109,12 +1306,22 @@ func (s *SystemService) load() error {
 				card.WorkspaceID = workspace.ID
 				state.KanbanCards = append(state.KanbanCards, cloneKanbanCard(card))
 			}
-			if autosave.ChatSession != nil {
+			if autosave.ChatWorkspace != nil {
+				chatWorkspace := *autosave.ChatWorkspace
+				chatWorkspace.WorkspaceID = workspace.ID
+				for index := range chatWorkspace.Sessions {
+					chatWorkspace.Sessions[index].WorkspaceID = workspace.ID
+					chatWorkspace.Sessions[index].Messages = cloneChatMessages(chatWorkspace.Sessions[index].Messages)
+					chatWorkspace.Sessions[index].History = cloneLLMMessages(chatWorkspace.Sessions[index].History)
+				}
+				loadedChatWorkspaces[workspace.ID] = chatWorkspace
+			} else if autosave.ChatSession != nil {
 				session := *autosave.ChatSession
 				session.WorkspaceID = workspace.ID
 				session.Messages = cloneChatMessages(session.Messages)
 				session.History = cloneLLMMessages(session.History)
 				loadedChatSessions[workspace.ID] = session
+				workspacesToMigrate[workspace.ID] = true
 			}
 			continue
 		}
@@ -1155,16 +1362,25 @@ func (s *SystemService) load() error {
 		s.migrateGlobalAgentModesToDisk(storedRaw.AgentModes)
 	}
 	s.persistedChatSessions = loadedChatSessions
+	s.persistedChatWorkspaces = loadedChatWorkspaces
 	interruptedChat := s.restoreChatSessionsLocked()
 	changed := s.refreshWorkspaceStatusesLocked()
 	for _, workspace := range s.state.Workspaces {
 		if !workspacesToMigrate[workspace.ID] {
 			continue
 		}
+		var chatWorkspace *persistedChatWorkspace
 		var chat *persistedChatSession
-		if persisted, ok := s.persistedChatSessions[workspace.ID]; ok {
+		if persisted, ok := s.persistedChatWorkspaces[workspace.ID]; ok {
 			snapshot := persisted
-			chat = &snapshot
+			chatWorkspace = &snapshot
+			for _, session := range persisted.Sessions {
+				if session.ChatID == persisted.ActiveChatID {
+					activeSnapshot := session
+					chat = &activeSnapshot
+					break
+				}
+			}
 		}
 		cards := make([]KanbanCard, 0)
 		for _, card := range s.state.KanbanCards {
@@ -1173,14 +1389,15 @@ func (s *SystemService) load() error {
 			}
 		}
 		if err := writeWorkspaceAutosave(workspace, workspaceAutosave{
-			Version:     workspaceAutosaveVersion,
-			ChatSession: chat,
-			KanbanCards: cards,
+			Version:       workspaceAutosaveVersion,
+			ChatSession:   chat,
+			ChatWorkspace: chatWorkspace,
+			KanbanCards:   cards,
 		}); err != nil {
 			return err
 		}
 	}
-	if changed || interruptedKanban || interruptedChat || hadLegacyWorkspaceState || legacyThinkingDisabled || legacyLLMEndpoints || legacyEndpointSelection || legacyResearchAgentConcurrency || missingLLMEndpoint || missingLLMModel || missingWebAccessToken || migratedWebAccessPort {
+	if changed || interruptedKanban || interruptedChat || hadLegacyWorkspaceState || legacyThinkingDisabled || legacyLLMEndpoints || legacyEndpointSelection || legacyVisionEndpointSelection || legacyResearchAgentConcurrency || missingLLMEndpoint || missingLLMModel || missingWebAccessToken || migratedWebAccessPort {
 		return s.saveLocked()
 	}
 	return nil
@@ -1242,6 +1459,7 @@ func defaultAppState() AppState {
 		Settings:         llm.DefaultSettings(),
 		WebAccess:        defaultWebAccessSettings(),
 		Workspaces:       []Workspace{},
+		SavedCommands:    make(map[string][]SavedCommand),
 		HeartbeatConfigs: make(map[string]HeartbeatConfig),
 		WatchdogConfigs:  make(map[string]WatchdogConfig),
 		KanbanCards:      []KanbanCard{},
@@ -1276,6 +1494,29 @@ func stateFileHasSettingKey(data []byte, key string) bool {
 	return ok
 }
 
+func stateFileEndpointSelectionHasKey(data []byte, key string) bool {
+	var raw struct {
+		Settings struct {
+			EndpointSelection map[string]json.RawMessage `json:"endpointSelection"`
+		} `json:"settings"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	_, ok := raw.Settings.EndpointSelection[key]
+	return ok
+}
+
+func stateFileSettingsRaw(data []byte) json.RawMessage {
+	var raw struct {
+		Settings json.RawMessage `json:"settings"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+	return raw.Settings
+}
+
 func stateFileLegacyThinkingDisabled(data []byte) bool {
 	var raw struct {
 		Settings struct {
@@ -1296,10 +1537,10 @@ func workspaceFromPath(path string) Workspace {
 		name = clean
 	}
 	return Workspace{
-		ID:              hex.EncodeToString(hash[:8]),
-		Folders:         []WorkspaceFolder{workspaceFolderFromPath(clean, nil)},
-		DisplayName:     name,
-		DefaultPlanMode: true,
+		ID:                 hex.EncodeToString(hash[:8]),
+		Folders:            []WorkspaceFolder{workspaceFolderFromPath(clean, nil)},
+		DisplayName:        name,
+		DefaultAgentModeID: AgentModeIDPlan,
 	}
 }
 
@@ -1624,6 +1865,12 @@ func cloneState(state AppState) AppState {
 	state.Workspaces = append([]Workspace{}, state.Workspaces...)
 	for i := range state.Workspaces {
 		state.Workspaces[i].Folders = append([]WorkspaceFolder{}, state.Workspaces[i].Folders...)
+	}
+	if state.SavedCommands != nil {
+		state.SavedCommands = make(map[string][]SavedCommand, len(state.SavedCommands))
+		for k, v := range state.SavedCommands {
+			state.SavedCommands[k] = append([]SavedCommand{}, v...)
+		}
 	}
 	if state.HeartbeatConfigs != nil {
 		state.HeartbeatConfigs = cloneHeartbeatConfigs(state.HeartbeatConfigs)

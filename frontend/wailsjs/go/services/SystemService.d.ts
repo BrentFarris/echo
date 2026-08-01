@@ -6,6 +6,8 @@ import {context} from '../models';
 import {llm} from '../models';
 import {http} from '../models';
 
+export function ActivateChatTab(arg1:string,arg2:string):Promise<services.ChatWorkspaceState>;
+
 export function AddKanbanCardMessage(arg1:string,arg2:string,arg3:string):Promise<services.KanbanBoard>;
 
 export function AddWorkspace(arg1:string):Promise<services.AppState>;
@@ -28,6 +30,8 @@ export function ChooseWorkspaceIcon(arg1:string):Promise<services.AppState>;
 
 export function ClearChat(arg1:string):Promise<services.ChatSession>;
 
+export function ClearChatForTab(arg1:string,arg2:string):Promise<services.ChatSession>;
+
 export function ClearDoneKanbanCards(arg1:string):Promise<services.KanbanBoard>;
 
 export function ClearKanbanCardRecovery(arg1:string,arg2:string):Promise<services.KanbanBoard>;
@@ -38,7 +42,7 @@ export function ClearWorkspaceIcon(arg1:string):Promise<services.AppState>;
 
 export function CloneWorkspaceGitRepository(arg1:string,arg2:string,arg3:string,arg4:string):Promise<services.AppState>;
 
-export function CloseKanbanCardDetail(arg1:string,arg2:string):Promise<services.KanbanBoard>;
+export function CloseChatTab(arg1:string,arg2:string):Promise<services.ChatWorkspaceState>;
 
 export function CommitWorkspaceGitChanges(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
 
@@ -50,11 +54,17 @@ export function CreateAgentMode(arg1:string,arg2:string,arg3:Array<string>,arg4:
 
 export function CreateAgentModeFromChat(arg1:string):Promise<tools.AgentModeCreationResult>;
 
+export function CreateAgentModeFromChatForTab(arg1:string,arg2:string):Promise<tools.AgentModeCreationResult>;
+
 export function CreateAgentModeFromChatProvider(arg1:string):Promise<tools.AgentModeCreationResult>;
 
 export function CreateAgentModePerTool(arg1:string,arg2:string,arg3:Record<string, Array<string>>):Promise<Array<services.AgentMode>>;
 
+export function CreateChatTab(arg1:string):Promise<services.ChatWorkspaceState>;
+
 export function CreateKanbanCardFromChatMessage(arg1:string,arg2:string):Promise<services.KanbanBoard>;
+
+export function CreateKanbanCardFromChatMessageForTab(arg1:string,arg2:string,arg3:string):Promise<services.KanbanBoard>;
 
 export function CreateKanbanCardFromTask(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>,arg6:string):Promise<services.TaskKanbanConversion>;
 
@@ -65,6 +75,8 @@ export function CreateModePerTool(arg1:context.Context,arg2:string,arg3:string,a
 export function CreateReadyKanbanCard(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<services.KanbanBoard>;
 
 export function CreateSkillFromChat(arg1:string):Promise<services.WorkspaceSkillCreationResult>;
+
+export function CreateSkillFromChatForTab(arg1:string,arg2:string):Promise<services.WorkspaceSkillCreationResult>;
 
 export function CreateWorkspaceFile(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceFile>;
 
@@ -78,6 +90,8 @@ export function DeleteAgentMode(arg1:string):Promise<Array<services.AgentMode>>;
 
 export function DeleteKanbanCard(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
+export function DeleteSavedCommand(arg1:string,arg2:string):Promise<void>;
+
 export function DeleteWorkspace(arg1:string):Promise<services.AppState>;
 
 export function DeleteWorkspacePaths(arg1:string,arg2:Array<string>):Promise<Array<services.WorkspaceDeletedPath>>;
@@ -90,11 +104,15 @@ export function DiscardWorkspaceGitFile(arg1:string,arg2:string,arg3:string):Pro
 
 export function EditChatMessage(arg1:string,arg2:string,arg3:string,arg4:string):Promise<services.ChatSession>;
 
+export function EditChatMessageForTab(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<services.ChatSession>;
+
 export function EnforceLiveness(arg1:string,arg2:services.LivenessConfig):Promise<void>;
 
 export function EvaluateDebugExpression(arg1:string,arg2:services.DebugEvaluateRequest):Promise<services.DebugEvaluateResponse>;
 
 export function ExecutePlan(arg1:string):Promise<services.KanbanBoard>;
+
+export function ExecutePlanForTab(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
 export function FindWorkspaceFileDefinition(arg1:string,arg2:services.WorkspaceDefinitionRequest):Promise<services.WorkspaceDefinitionResponse>;
 
@@ -108,9 +126,13 @@ export function GetHeartbeatConfig(arg1:string):Promise<services.HeartbeatConfig
 
 export function GetLivenessConfig(arg1:string):Promise<services.LivenessConfig>;
 
+export function GetSavedCommands(arg1:string):Promise<Array<services.SavedCommand>>;
+
 export function GetTokenBudget(arg1:string):Promise<services.TokenBudget>;
 
 export function GetWatchdogConfig(arg1:string):Promise<services.WatchdogConfig>;
+
+export function GetWorkspaceActivitySummaries():Promise<Array<services.WorkspaceActivitySummary>>;
 
 export function ListAgentModes(arg1:string):Promise<Array<services.AgentMode>>;
 
@@ -122,6 +144,10 @@ export function ListWorkspaceDirectory(arg1:string,arg2:string):Promise<services
 
 export function LoadChatSession(arg1:string):Promise<services.ChatSession>;
 
+export function LoadChatSessionForTab(arg1:string,arg2:string):Promise<services.ChatSession>;
+
+export function LoadChatWorkspace(arg1:string):Promise<services.ChatWorkspaceState>;
+
 export function LoadDebugScopes(arg1:string,arg2:services.DebugScopesRequest):Promise<services.DebugScopesResponse>;
 
 export function LoadDebugStackTrace(arg1:string,arg2:services.DebugStackTraceRequest):Promise<services.DebugStackTraceResponse>;
@@ -132,7 +158,11 @@ export function LoadDebugThreads(arg1:string,arg2:services.DebugThreadsRequest):
 
 export function LoadDebugVariables(arg1:string,arg2:services.DebugVariablesRequest):Promise<services.DebugVariablesResponse>;
 
+export function LoadDevelopmentLogStatus():Promise<services.DevelopmentLogStatus>;
+
 export function LoadKanbanBoard(arg1:string):Promise<services.KanbanBoard>;
+
+export function LoadKanbanCardDetail(arg1:string,arg2:string):Promise<services.KanbanCard>;
 
 export function LoadRuntimeStatus():Promise<services.RuntimeStatus>;
 
@@ -168,8 +198,6 @@ export function MoveWorkspaceTask(arg1:string,arg2:string,arg3:string,arg4:strin
 
 export function OpenExternalPathExplorer(arg1:string):Promise<void>;
 
-export function OpenKanbanCardDetail(arg1:string,arg2:string):Promise<services.KanbanBoard>;
-
 export function OpenWorkspaceExplorer(arg1:string):Promise<void>;
 
 export function OpenWorkspacePathExplorer(arg1:string,arg2:string):Promise<void>;
@@ -181,6 +209,8 @@ export function PrepareRebuildAndRelaunch(arg1:string):Promise<void>;
 export function PrepareWorkspaceSymbolRename(arg1:string,arg2:services.WorkspaceDefinitionRequest):Promise<services.WorkspacePrepareRenameResponse>;
 
 export function PruneChatMessage(arg1:string,arg2:string):Promise<services.ChatSession>;
+
+export function PruneChatMessageForTab(arg1:string,arg2:string,arg3:string):Promise<services.ChatSession>;
 
 export function ReadExternalTextFile(arg1:string):Promise<services.WorkspaceFile>;
 
@@ -206,6 +236,8 @@ export function ResetKanbanCard(arg1:string,arg2:string):Promise<services.Kanban
 
 export function ResetTokenBudget(arg1:string):Promise<void>;
 
+export function ResizeTerminalSession(arg1:string,arg2:string,arg3:number,arg4:number):Promise<void>;
+
 export function ResolveMode(arg1:string):Promise<tools.AgentModeSummary>;
 
 export function ResolveModeProvider(arg1:string):Promise<tools.AgentModeSummary>;
@@ -214,11 +246,17 @@ export function ResolveWorkspacePath(arg1:string,arg2:string):Promise<string>;
 
 export function ResolveWorkspaceTextFilePath(arg1:string,arg2:string):Promise<string>;
 
+export function RestartTerminalSession(arg1:string,arg2:string,arg3:number,arg4:number):Promise<services.TerminalSessionSnapshot>;
+
 export function RetryChatMessage(arg1:string,arg2:string,arg3:string):Promise<services.ChatSession>;
+
+export function RetryChatMessageForTab(arg1:string,arg2:string,arg3:string,arg4:string):Promise<services.ChatSession>;
 
 export function RotateWebAccessToken():Promise<services.AppState>;
 
 export function RunWorkspaceGitAction(arg1:string,arg2:string,arg3:services.WorkspaceGitActionRequest):Promise<services.WorkspaceGitRepositoryView>;
+
+export function SaveChatImageToDisk(arg1:string,arg2:services.ChatImageSaveRequest):Promise<string>;
 
 export function SaveDashboardLayout(arg1:string,arg2:Array<services.DashboardWidgetJSON>):Promise<void>;
 
@@ -242,11 +280,15 @@ export function SendChatMessage(arg1:string,arg2:string):Promise<services.ChatSe
 
 export function SendChatMessageWithAttachments(arg1:string,arg2:services.ChatMessageRequest):Promise<services.ChatSession>;
 
+export function SendChatMessageWithAttachmentsToTab(arg1:string,arg2:string,arg3:services.ChatMessageRequest):Promise<services.ChatSession>;
+
 export function SendChatMessageWithPlanMode(arg1:string,arg2:string,arg3:boolean):Promise<services.ChatSession>;
 
 export function SetActiveWorkspace(arg1:string):Promise<services.AppState>;
 
 export function SetDebugBreakpoints(arg1:string,arg2:services.DebugSetBreakpointsRequest):Promise<services.DebugState>;
+
+export function SetDevelopmentLoggingEnabled(arg1:boolean):Promise<services.DevelopmentLogStatus>;
 
 export function SetLivenessConfig(arg1:string,arg2:services.LivenessConfig):Promise<void>;
 
@@ -254,7 +296,7 @@ export function SetTokenBudget(arg1:string,arg2:number):Promise<void>;
 
 export function SetWorkspaceBuildCommand(arg1:string,arg2:string):Promise<services.AppState>;
 
-export function SetWorkspaceDefaultPlanMode(arg1:string,arg2:boolean):Promise<services.AppState>;
+export function SetWorkspaceDefaultAgentMode(arg1:string,arg2:string):Promise<services.AppState>;
 
 export function SetWorkspaceFolderUseAgents(arg1:string,arg2:string,arg3:boolean):Promise<services.AppState>;
 
@@ -284,6 +326,8 @@ export function StartKanbanExecution(arg1:string,arg2:number):Promise<services.K
 
 export function StartKanbanExecutionWithContext(arg1:context.Context,arg2:string,arg3:number):Promise<void>;
 
+export function StartTerminalSession(arg1:string,arg2:number,arg3:number):Promise<services.TerminalSessionSnapshot>;
+
 export function StartWatchdog(arg1:string,arg2:services.WatchdogConfig):Promise<void>;
 
 export function StepIntoDebugSession(arg1:string,arg2:services.DebugSessionRequest):Promise<services.DebugState>;
@@ -294,6 +338,8 @@ export function StepOverDebugSession(arg1:string,arg2:services.DebugSessionReque
 
 export function StopChatStream(arg1:string):Promise<services.ChatSession>;
 
+export function StopChatStreamForTab(arg1:string,arg2:string):Promise<services.ChatSession>;
+
 export function StopDebugSession(arg1:string,arg2:services.DebugSessionRequest):Promise<services.DebugState>;
 
 export function StopHeartbeat(arg1:string):Promise<void>;
@@ -302,6 +348,8 @@ export function StopKanbanCard(arg1:string,arg2:string):Promise<services.KanbanB
 
 export function StopKanbanExecution(arg1:string):Promise<services.KanbanBoard>;
 
+export function StopTerminalSession(arg1:string,arg2:string):Promise<void>;
+
 export function StopWatchdog(arg1:string):Promise<void>;
 
 export function SubmitInlineCodePrompt(arg1:string,arg2:services.InlineCodePromptRequest):Promise<services.InlineCodePromptResponse>;
@@ -309,6 +357,8 @@ export function SubmitInlineCodePrompt(arg1:string,arg2:services.InlineCodePromp
 export function SwitchWorkspaceGitBranch(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
 
 export function SyncLSPDocument(arg1:string,arg2:services.WorkspaceDefinitionRequest):Promise<void>;
+
+export function SyncTerminalSession(arg1:string,arg2:string,arg3:number):Promise<services.TerminalSessionSnapshot>;
 
 export function SyncWorkspaceGitBranch(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
 
@@ -326,6 +376,10 @@ export function UpdateKanbanCardDirection(arg1:string,arg2:string,arg3:string):P
 
 export function UpdateWorkspaceTask(arg1:string,arg2:string,arg3:services.TaskInput,arg4:string):Promise<services.TaskBoard>;
 
+export function UpsertSavedCommand(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<void>;
+
 export function WorkspaceIconHandler():Promise<http.Handler>;
 
 export function WorkspaceIconMiddleware(arg1:http.Handler):Promise<http.Handler>;
+
+export function WriteTerminalSession(arg1:string,arg2:string,arg3:string):Promise<void>;

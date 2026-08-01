@@ -69,6 +69,7 @@ export type ContextMenuState = {
 
 export type ChatStreamEvent = {
   workspaceId: string;
+  chatId: string;
   streamId: string;
   messageId: string;
   type: string;
@@ -79,15 +80,27 @@ export type ChatStreamEvent = {
   researchAgent?: services.ChatResearchAgent;
   error?: string;
   finishReason?: string;
+  imageAttachment?: services.ChatImageAttachment;
+  videoAttachment?: services.ChatVideoAttachment;
   revision: number;
   session?: services.ChatSession;
+  workspaceState?: services.ChatWorkspaceState;
 };
 
 export type KanbanEvent = {
   workspaceId: string;
   cardId?: string;
   type: string;
-  board: services.KanbanBoard;
+  board?: services.KanbanBoard;
+  card?: services.KanbanCard;
+  progress?: KanbanProgressDelta;
+};
+
+export type KanbanProgressDelta = {
+  revision: number;
+  entryIndex: number;
+  merge?: boolean;
+  entry: services.KanbanProgressEntry;
 };
 
 export type TaskEvent = {
@@ -121,6 +134,16 @@ export type WatchdogEvent = {
   workspaceId: string;
   type: string; // "started", "stopped", "check_complete", "repair_created"
   cardId?: string;
+  message?: string;
+};
+
+export type TerminalEvent = {
+  workspaceId: string;
+  id: string;
+  type: "started" | "data" | "exited";
+  sequence?: number;
+  data?: string;
+  exitCode?: number;
   message?: string;
 };
 

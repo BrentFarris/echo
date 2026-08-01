@@ -26,34 +26,37 @@ type Interaction string
 const (
 	InteractionChat            Interaction = "chat"
 	InteractionResearch        Interaction = "research"
+	InteractionVision          Interaction = "vision"
 	InteractionKanbanDecompose Interaction = "kanbanDecompose"
 	InteractionKanban          Interaction = "kanban"
 	InteractionInlineCode      Interaction = "inlineCode"
 )
 
 type LLMEndpoint struct {
-	ID                  string            `json:"id"`
-	Name                string            `json:"name"`
-	Endpoint            string            `json:"endpoint"`
-	Model               string            `json:"model"`
-	Temperature         float64           `json:"temperature"`
-	TopK                int               `json:"topK"`
-	TopP                float64           `json:"topP"`
-	MinP                float64           `json:"minP"`
-	ContextLength       int               `json:"contextLength"`
-	MaxTokens           int               `json:"maxTokens"`
-	FrequencyPenalty    float64           `json:"frequencyPenalty"`
-	PresencePenalty     float64           `json:"presencePenalty"`
-	RepetitionPenalty   float64           `json:"repetitionPenalty"`
-	TimeoutSeconds      int               `json:"timeoutSeconds"`
-	ThinkingTokenBudget int               `json:"thinkingTokenBudget"`
-	ThinkingCorrection  bool              `json:"thinkingCorrection,omitempty"`
-	Headers             map[string]string `json:"headers,omitempty"`
+	ID                    string            `json:"id"`
+	Name                  string            `json:"name"`
+	Endpoint              string            `json:"endpoint"`
+	Model                 string            `json:"model"`
+	Temperature           float64           `json:"temperature"`
+	TopK                  int               `json:"topK"`
+	TopP                  float64           `json:"topP"`
+	MinP                  float64           `json:"minP"`
+	ContextLength         int               `json:"contextLength"`
+	MaxTokens             int               `json:"maxTokens"`
+	FrequencyPenalty      float64           `json:"frequencyPenalty"`
+	PresencePenalty       float64           `json:"presencePenalty"`
+	RepetitionPenalty     float64           `json:"repetitionPenalty"`
+	TimeoutSeconds        int               `json:"timeoutSeconds"`
+	ThinkingTokenBudget   int               `json:"thinkingTokenBudget"`
+	ThinkingCorrection    bool              `json:"thinkingCorrection,omitempty"`
+	SystemPromptAppendage string            `json:"systemPromptAppendage,omitempty"`
+	Headers               map[string]string `json:"headers,omitempty"`
 }
 
 type EndpointSelection struct {
 	Chat            string `json:"chat"`
 	Research        string `json:"research"`
+	Vision          string `json:"vision"`
 	KanbanDecompose string `json:"kanbanDecompose"`
 	Kanban          string `json:"kanban"`
 	InlineCode      string `json:"inlineCode"`
@@ -77,6 +80,7 @@ type Settings struct {
 	SearxngURL                        string            `json:"searxngUrl"`
 	ThinkingTokenBudget               int               `json:"thinkingTokenBudget"`
 	ThinkingCorrection                bool              `json:"thinkingCorrection,omitempty"`
+	SystemPromptAppendage             string            `json:"systemPromptAppendage,omitempty"`
 	HideLeadingWhitespaceIndicators   bool              `json:"hideLeadingWhitespaceIndicators,omitempty"`
 	DisableNotificationSounds         bool              `json:"disableNotificationSounds,omitempty"`
 	EnableChatCompletionNotifications bool              `json:"enableChatCompletionNotifications,omitempty"`
@@ -84,6 +88,10 @@ type Settings struct {
 	LimitKanbanConcurrency            bool              `json:"limitKanbanConcurrency,omitempty"`
 	ResearchAgentConcurrency          int               `json:"researchAgentConcurrency"`
 	DisableGitSplitDiffView           bool              `json:"disableGitSplitDiffView,omitempty"`
+	ComfyuiURL                        string            `json:"comfyuiUrl"`
+	ComfyuiDefaultCheckpoint          string            `json:"comfyuiDefaultCheckpoint"`
+	ComfyuiTxt2imgWorkflow            string            `json:"comfyuiTxt2imgWorkflow"`
+	ComfyuiImg2imgWorkflow            string            `json:"comfyuiImg2imgWorkflow"`
 	Theme                             Theme             `json:"theme,omitempty"`
 	Headers                           map[string]string `json:"headers,omitempty"`
 }
@@ -116,6 +124,18 @@ func DefaultSettings() Settings {
 }
 
 func (s Settings) Normalized() Settings {
+	return s.normalized(false)
+}
+
+// NormalizedEndpointProfiles normalizes settings while treating Endpoints as
+// the source of truth. The top-level endpoint fields are legacy mirrors used by
+// older callers and must not overwrite an endpoint profile when modern
+// settings are saved or loaded.
+func (s Settings) NormalizedEndpointProfiles() Settings {
+	return s.normalized(true)
+}
+
+func (s Settings) normalized(endpointProfilesAuthoritative bool) Settings {
 	s.Endpoint = strings.TrimSpace(s.Endpoint)
 	s.Model = strings.TrimSpace(s.Model)
 	s.SearxngURL = strings.TrimSpace(s.SearxngURL)
@@ -125,7 +145,7 @@ func (s Settings) Normalized() Settings {
 	s = normalizeSettingsGeneration(s)
 	s.Endpoints = normalizeLLMEndpoints(s.Endpoints, s)
 	s.EndpointSelection = normalizeEndpointSelection(s.EndpointSelection, s.Endpoints)
-	if s.Endpoint != "" || s.Model != "" {
+	if !endpointProfilesAuthoritative && (s.Endpoint != "" || s.Model != "") {
 		s.Endpoints = applyLegacyEndpointFields(s.Endpoints, s.EndpointSelection.Chat, s)
 	}
 	if endpoint, ok := endpointByID(s.Endpoints, s.EndpointSelection.Chat); ok {
@@ -135,6 +155,9 @@ func (s Settings) Normalized() Settings {
 	if s.SearxngURL == "" {
 		s.SearxngURL = DefaultSearxngURL
 	}
+	s.ComfyuiURL = strings.TrimSpace(s.ComfyuiURL)
+	s.ComfyuiTxt2imgWorkflow = strings.TrimSpace(s.ComfyuiTxt2imgWorkflow)
+	s.ComfyuiImg2imgWorkflow = strings.TrimSpace(s.ComfyuiImg2imgWorkflow)
 	s.Theme = s.Theme.Normalized()
 	return s
 }
@@ -174,6 +197,8 @@ func (s Settings) ForInteraction(interaction Interaction) Settings {
 	switch interaction {
 	case InteractionResearch:
 		endpointID = s.EndpointSelection.Research
+	case InteractionVision:
+		endpointID = s.EndpointSelection.Vision
 	case InteractionKanbanDecompose:
 		endpointID = s.EndpointSelection.KanbanDecompose
 	case InteractionKanban:
@@ -223,6 +248,11 @@ func (s Settings) Validate() error {
 	}
 	if err := validateHTTPURL(s.SearxngURL, "searxng url"); err != nil {
 		return err
+	}
+	if s.ComfyuiURL != "" {
+		if err := validateHTTPURL(s.ComfyuiURL, "comfyui url"); err != nil {
+			return err
+		}
 	}
 
 	if s.Temperature < 0 || s.Temperature > 2 {
@@ -288,6 +318,7 @@ func defaultEndpointSelection(endpointID string) EndpointSelection {
 	return EndpointSelection{
 		Chat:            endpointID,
 		Research:        endpointID,
+		Vision:          endpointID,
 		KanbanDecompose: endpointID,
 		Kanban:          endpointID,
 		InlineCode:      endpointID,
@@ -327,11 +358,15 @@ func (e LLMEndpoint) Normalized(fallback Settings) LLMEndpoint {
 	e.Model = strings.TrimSpace(e.Model)
 	if !e.hasGenerationConfig() {
 		// Preserve per-endpoint headers that would otherwise be overwritten
-		// by the fallback settings headers.
+		// by the fallback settings values.
 		headers := cloneStringMap(e.Headers)
+		systemPromptAppendage := e.SystemPromptAppendage
 		e = e.WithGenerationFromSettings(fallback)
 		if len(headers) > 0 {
 			e.Headers = headers
+		}
+		if systemPromptAppendage != "" {
+			e.SystemPromptAppendage = systemPromptAppendage
 		}
 	}
 	e = normalizeEndpointGeneration(e)
@@ -352,6 +387,7 @@ func (e LLMEndpoint) WithGenerationFromSettings(settings Settings) LLMEndpoint {
 	e.TimeoutSeconds = settings.TimeoutSeconds
 	e.ThinkingTokenBudget = settings.ThinkingTokenBudget
 	e.ThinkingCorrection = settings.ThinkingCorrection
+	e.SystemPromptAppendage = settings.SystemPromptAppendage
 	e.Headers = cloneStringMap(settings.Headers)
 	return e
 }
@@ -371,6 +407,7 @@ func (e LLMEndpoint) ApplyToSettings(settings Settings) Settings {
 	settings.TimeoutSeconds = e.TimeoutSeconds
 	settings.ThinkingTokenBudget = e.ThinkingTokenBudget
 	settings.ThinkingCorrection = e.ThinkingCorrection
+	settings.SystemPromptAppendage = e.SystemPromptAppendage
 	settings.Headers = cloneStringMap(e.Headers)
 	return settings
 }
@@ -467,6 +504,7 @@ func normalizeEndpointSelection(selection EndpointSelection, endpoints []LLMEndp
 	}
 	selection.Chat = normalizeSelectedEndpointID(selection.Chat, fallback, endpoints)
 	selection.Research = normalizeSelectedEndpointID(selection.Research, selection.Chat, endpoints)
+	selection.Vision = normalizeSelectedEndpointID(selection.Vision, selection.Chat, endpoints)
 	selection.Kanban = normalizeSelectedEndpointID(selection.Kanban, fallback, endpoints)
 	selection.KanbanDecompose = normalizeSelectedEndpointID(selection.KanbanDecompose, selection.Kanban, endpoints)
 	selection.InlineCode = normalizeSelectedEndpointID(selection.InlineCode, fallback, endpoints)

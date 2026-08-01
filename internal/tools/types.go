@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/brent/echo/internal/flowlog"
 )
 
 type Schema map[string]any
@@ -45,17 +47,31 @@ func (t ToolFunc) Execute(ctx ExecutionContext, arguments json.RawMessage) (any,
 	return t.Run(ctx, arguments)
 }
 
+// AttachedImage carries a chat-attached image's metadata for tools that accept
+// in-memory image input without writing to disk.
+type AttachedImage struct {
+	Name      string `json:"name"`
+	MediaType string `json:"mediaType"`
+	DataURL   string `json:"dataUrl"`
+}
+
 type ExecutionContext struct {
-	Context          context.Context
-	WorkspacePath    string
-	WorkspaceRoots   []WorkspaceRoot
-	SearxngURL       string
-	CodeNavigator    CodeNavigator
-	WorkspaceContext WorkspaceContextProvider
-	WorkspaceSkills  WorkspaceSkillsProvider
-	WorkspaceTasks   WorkspaceTasksProvider
-	Emit             EventEmitter
-	FileChanges      FileChangeSink
+	Context                  context.Context
+	FlowLog                  *flowlog.Controller
+	ToolCallID               string
+	WorkspacePath            string
+	WorkspaceRoots           []WorkspaceRoot
+	SearxngURL               string
+	ComfyuiURL               string
+	ComfyuiDefaultCheckpoint string
+	ComfyuiTxt2imgWorkflow   string
+	ComfyuiImg2imgWorkflow   string
+	CodeNavigator            CodeNavigator
+	WorkspaceContext         WorkspaceContextProvider
+	WorkspaceSkills          WorkspaceSkillsProvider
+	WorkspaceTasks           WorkspaceTasksProvider
+	Emit                     EventEmitter
+	FileChanges              FileChangeSink
 	// ToolScopes is the unified per-tool permission and path-scope checker.
 	// Use this instead of ToolPermissions and PathPermissions.
 	ToolScopes *ToolScopeChecker
@@ -66,6 +82,10 @@ type ExecutionContext struct {
 	AgentModes      AgentModeProvider
 	KanbanExecutor  KanbanExecutor
 	KanbanManager   KanbanManager
+	AttachedImages  []AttachedImage
+	// GeneratedImages tracks images produced by tools during the current turn,
+	// keyed by ImageID. Used by save_image to resolve image data.
+	GeneratedImages map[string]AttachedImage
 	ResearchAgents  ResearchAgentCoordinator
 }
 

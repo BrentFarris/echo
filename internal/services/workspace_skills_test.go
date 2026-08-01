@@ -205,7 +205,7 @@ func TestWorkspaceSkillToolWriteStaysOutOfProjectChangesAndFileSearch(t *testing
 			Name:      "workspace_skill_record",
 			Arguments: string(arguments),
 		},
-	}, WorkspaceChangeSource{Type: "chat"}, nil, nil)
+	}, WorkspaceChangeSource{Type: "chat"}, nil, nil, nil)
 	if !execution.Result.Success || len(execution.Changes) != 0 {
 		t.Fatalf("unexpected skill tool execution: %#v", execution)
 	}

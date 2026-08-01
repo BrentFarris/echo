@@ -36,6 +36,19 @@ const iconDot = `<svg viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
+/** Extract tool name from the most recent tool_call entry in a transcript. */
+function getLastToolCallName(transcript: services.KanbanProgressEntry[] | undefined): string {
+	if (!transcript) return "";
+	for (let i = transcript.length - 1; i >= 0; i--) {
+		const entry = transcript[i];
+		if (entry.type === "tool_call" && entry.title) {
+			const parts = entry.title.split(": ");
+			if (parts.length > 1) return parts[1];
+		}
+	}
+	return "";
+}
+
 /** Truncate text to a max length, adding ellipsis if needed. */
 function truncate(text: string, maxLen = 120): string {
 	if (text.length <= maxLen) return text;
@@ -79,7 +92,8 @@ function cardProgressPercent(card: services.KanbanCard): number {
 	if (lane === "done") return 100;
 	if (lane === "ready" || lane === "blocked") return 0;
 	const transcript = card.progressTranscript ?? [];
-	const toolCallCount = transcript.filter((e: any) => e.type === "tool_call").length;
+	const toolCallCount = card.progressSummary?.toolCallCount
+		?? transcript.filter((e: any) => e.type === "tool_call").length;
 	const criteriaLen = (card.acceptanceCriteria ?? []).length;
 	if (criteriaLen > 0) {
 		return Math.min(Math.round((toolCallCount / criteriaLen) * 95), 97);
@@ -215,6 +229,8 @@ function renderKanbanProgress(ws: services.Workspace | null): string {
 	const rows = cards.map((card: any) => {
 		const pct = cardProgressPercent(card);
 		const colorClass = pct >= 90 ? "budget-critical" : pct >= 70 ? "budget-warning" : "budget-ok";
+		const toolName = card.progressSummary?.lastToolCall ?? getLastToolCallName(card.progressTranscript);
+		const toolLabel = toolName ? `<span class="widget-tool-label">${escapeHtml(toolName)}</span>` : '';
 		return `
       <div class="widget-progress-item">
         <span class="widget-progress-title">${escapeHtml(truncate(card.title ?? "", 60))}</span>
@@ -222,6 +238,7 @@ function renderKanbanProgress(ws: services.Workspace | null): string {
           <div class="widget-progress-fill ${colorClass}" style="width: ${pct}%"></div>
         </div>
         <span class="widget-progress-pct">${pct}%</span>
+        ${toolLabel}
       </div>`;
 	}).join("");
 	return `<div class="widget-kanban-progress">${rows}</div>`;
@@ -237,8 +254,13 @@ function renderKanbanDoneCount(ws: services.Workspace | null): string {
 
 	let trendHTML = "";
 	if (count > 0) {
-		// Check if any cards were recently completed (within last hour based on transcript)
+		// Check if any cards were recently completed (within last hour based on the compact summary).
 		const recentDone = doneCards.filter((card: any) => {
+			const summaryTimestamp = card.progressSummary?.lastVerificationAt;
+			if (summaryTimestamp) {
+				const timestamp = new Date(summaryTimestamp).getTime();
+				return Number.isFinite(timestamp) && Date.now() - timestamp < 3600000;
+			}
 			const entries = card.progressTranscript ?? [];
 			for (let i = entries.length - 1; i >= 0; i--) {
 				if (entries[i].type === "verification") {

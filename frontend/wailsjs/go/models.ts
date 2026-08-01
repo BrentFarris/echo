@@ -3,6 +3,7 @@ export namespace llm {
 	export class EndpointSelection {
 	    chat: string;
 	    research: string;
+	    vision: string;
 	    kanbanDecompose: string;
 	    kanban: string;
 	    inlineCode: string;
@@ -15,6 +16,7 @@ export namespace llm {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.chat = source["chat"];
 	        this.research = source["research"];
+	        this.vision = source["vision"];
 	        this.kanbanDecompose = source["kanbanDecompose"];
 	        this.kanban = source["kanban"];
 	        this.inlineCode = source["inlineCode"];
@@ -37,6 +39,7 @@ export namespace llm {
 	    timeoutSeconds: number;
 	    thinkingTokenBudget: number;
 	    thinkingCorrection?: boolean;
+	    systemPromptAppendage?: string;
 	    headers?: Record<string, string>;
 	
 	    static createFrom(source: any = {}) {
@@ -61,6 +64,7 @@ export namespace llm {
 	        this.timeoutSeconds = source["timeoutSeconds"];
 	        this.thinkingTokenBudget = source["thinkingTokenBudget"];
 	        this.thinkingCorrection = source["thinkingCorrection"];
+	        this.systemPromptAppendage = source["systemPromptAppendage"];
 	        this.headers = source["headers"];
 	    }
 	}
@@ -96,6 +100,7 @@ export namespace llm {
 	    searxngUrl: string;
 	    thinkingTokenBudget: number;
 	    thinkingCorrection?: boolean;
+	    systemPromptAppendage?: string;
 	    hideLeadingWhitespaceIndicators?: boolean;
 	    disableNotificationSounds?: boolean;
 	    enableChatCompletionNotifications?: boolean;
@@ -103,6 +108,10 @@ export namespace llm {
 	    limitKanbanConcurrency?: boolean;
 	    researchAgentConcurrency: number;
 	    disableGitSplitDiffView?: boolean;
+	    comfyuiUrl: string;
+	    comfyuiDefaultCheckpoint: string;
+	    comfyuiTxt2imgWorkflow: string;
+	    comfyuiImg2imgWorkflow: string;
 	    theme?: Theme;
 	    headers?: Record<string, string>;
 	
@@ -129,6 +138,7 @@ export namespace llm {
 	        this.searxngUrl = source["searxngUrl"];
 	        this.thinkingTokenBudget = source["thinkingTokenBudget"];
 	        this.thinkingCorrection = source["thinkingCorrection"];
+	        this.systemPromptAppendage = source["systemPromptAppendage"];
 	        this.hideLeadingWhitespaceIndicators = source["hideLeadingWhitespaceIndicators"];
 	        this.disableNotificationSounds = source["disableNotificationSounds"];
 	        this.enableChatCompletionNotifications = source["enableChatCompletionNotifications"];
@@ -136,6 +146,10 @@ export namespace llm {
 	        this.limitKanbanConcurrency = source["limitKanbanConcurrency"];
 	        this.researchAgentConcurrency = source["researchAgentConcurrency"];
 	        this.disableGitSplitDiffView = source["disableGitSplitDiffView"];
+	        this.comfyuiUrl = source["comfyuiUrl"];
+	        this.comfyuiDefaultCheckpoint = source["comfyuiDefaultCheckpoint"];
+	        this.comfyuiTxt2imgWorkflow = source["comfyuiTxt2imgWorkflow"];
+	        this.comfyuiImg2imgWorkflow = source["comfyuiImg2imgWorkflow"];
 	        this.theme = this.convertValues(source["theme"], Theme);
 	        this.headers = source["headers"];
 	    }
@@ -294,7 +308,7 @@ export namespace services {
 	    folders: WorkspaceFolder[];
 	    displayName: string;
 	    selectedDebugConfiguration?: string;
-	    defaultPlanMode: boolean;
+	    defaultAgentModeId: string;
 	    searchParentGitRepositories: boolean;
 	    buildCommand?: string;
 	    letter?: string;
@@ -314,7 +328,7 @@ export namespace services {
 	        this.folders = this.convertValues(source["folders"], WorkspaceFolder);
 	        this.displayName = source["displayName"];
 	        this.selectedDebugConfiguration = source["selectedDebugConfiguration"];
-	        this.defaultPlanMode = source["defaultPlanMode"];
+	        this.defaultAgentModeId = source["defaultAgentModeId"];
 	        this.searchParentGitRepositories = source["searchParentGitRepositories"];
 	        this.buildCommand = source["buildCommand"];
 	        this.letter = source["letter"];
@@ -372,6 +386,7 @@ export namespace services {
 	    livenessConfigs?: Record<string, LivenessConfig>;
 	    watchdogConfigs?: Record<string, WatchdogConfig>;
 	    dashboardLayouts?: Record<string, Array<DashboardWidgetJSON>>;
+	    savedCommands?: Record<string, Array<SavedCommand>>;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppState(source);
@@ -387,6 +402,7 @@ export namespace services {
 	        this.livenessConfigs = this.convertValues(source["livenessConfigs"], LivenessConfig, true);
 	        this.watchdogConfigs = this.convertValues(source["watchdogConfigs"], WatchdogConfig, true);
 	        this.dashboardLayouts = this.convertValues(source["dashboardLayouts"], Array<DashboardWidgetJSON>, true);
+	        this.savedCommands = this.convertValues(source["savedCommands"], Array<SavedCommand>, true);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -451,6 +467,22 @@ export namespace services {
 	        this.bytes = source["bytes"];
 	    }
 	}
+	export class ChatImageSaveRequest {
+	    name: string;
+	    mediaType: string;
+	    dataUrl: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatImageSaveRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.mediaType = source["mediaType"];
+	        this.dataUrl = source["dataUrl"];
+	    }
+	}
 	export class ChatResearchAgent {
 	    id: string;
 	    name: string;
@@ -480,6 +512,7 @@ export namespace services {
 	    status: string;
 	    result?: string;
 	    error?: string;
+	    consoleOutput?: string;
 	    agentId?: string;
 	    agentName?: string;
 	
@@ -495,6 +528,7 @@ export namespace services {
 	        this.status = source["status"];
 	        this.result = source["result"];
 	        this.error = source["error"];
+	        this.consoleOutput = source["consoleOutput"];
 	        this.agentId = source["agentId"];
 	        this.agentName = source["agentName"];
 	    }
@@ -655,6 +689,8 @@ export namespace services {
 	
 	export class ChatSession {
 	    workspaceId: string;
+	    chatId: string;
+	    preview?: string;
 	    messages: ChatMessage[];
 	    busy: boolean;
 	    streamId?: string;
@@ -667,6 +703,8 @@ export namespace services {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.workspaceId = source["workspaceId"];
+	        this.chatId = source["chatId"];
+	        this.preview = source["preview"];
 	        this.messages = this.convertValues(source["messages"], ChatMessage);
 	        this.busy = source["busy"];
 	        this.streamId = source["streamId"];
@@ -691,9 +729,63 @@ export namespace services {
 		    return a;
 		}
 	}
+	export class ChatTabSummary {
+	    chatId: string;
+	    preview: string;
+	    busy: boolean;
+	    revision: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatTabSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.chatId = source["chatId"];
+	        this.preview = source["preview"];
+	        this.busy = source["busy"];
+	        this.revision = source["revision"];
+	    }
+	}
 	
 	
 	
+	export class ChatWorkspaceState {
+	    workspaceId: string;
+	    activeChatId: string;
+	    tabs: ChatTabSummary[];
+	    activeSession: ChatSession;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatWorkspaceState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.activeChatId = source["activeChatId"];
+	        this.tabs = this.convertValues(source["tabs"], ChatTabSummary);
+	        this.activeSession = this.convertValues(source["activeSession"], ChatSession);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class DashboardWidgetJSON {
 	    id: string;
 	    view: string;
@@ -1276,6 +1368,20 @@ export namespace services {
 		    return a;
 		}
 	}
+	export class DevelopmentLogStatus {
+	    enabled: boolean;
+	    path: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DevelopmentLogStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.path = source["path"];
+	    }
+	}
 	
 	export class InlineCodePromptRequest {
 	    requestId?: string;
@@ -1338,6 +1444,30 @@ export namespace services {
 		    }
 		    return a;
 		}
+	}
+	export class KanbanProgressSummary {
+	    entryCount: number;
+	    toolCallCount: number;
+	    lastToolCall?: string;
+	    lastVerificationTitle?: string;
+	    lastVerificationAt?: string;
+	    changedPathCount?: number;
+	    blockedReason?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new KanbanProgressSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.entryCount = source["entryCount"];
+	        this.toolCallCount = source["toolCallCount"];
+	        this.lastToolCall = source["lastToolCall"];
+	        this.lastVerificationTitle = source["lastVerificationTitle"];
+	        this.lastVerificationAt = source["lastVerificationAt"];
+	        this.changedPathCount = source["changedPathCount"];
+	        this.blockedReason = source["blockedReason"];
+	    }
 	}
 	export class KanbanProgressEntry {
 	    type: string;
@@ -1410,6 +1540,8 @@ export namespace services {
 	    lane: string;
 	    status: string;
 	    progressTranscript?: KanbanProgressEntry[];
+	    progressSummary?: KanbanProgressSummary;
+	    progressRevision?: number;
 	    autoRetriesUsed?: number;
 	    recoveryType?: string;
 	    // Go type: time
@@ -1435,6 +1567,8 @@ export namespace services {
 	        this.lane = source["lane"];
 	        this.status = source["status"];
 	        this.progressTranscript = this.convertValues(source["progressTranscript"], KanbanProgressEntry);
+	        this.progressSummary = this.convertValues(source["progressSummary"], KanbanProgressSummary);
+	        this.progressRevision = source["progressRevision"];
 	        this.autoRetriesUsed = source["autoRetriesUsed"];
 	        this.recoveryType = source["recoveryType"];
 	        this.stalledAt = this.convertValues(source["stalledAt"], null);
@@ -1501,6 +1635,7 @@ export namespace services {
 	
 	
 	
+	
 	export class RuntimeStatus {
 	    activeKanbanWorkspaceIds: string[];
 	
@@ -1511,6 +1646,24 @@ export namespace services {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.activeKanbanWorkspaceIds = source["activeKanbanWorkspaceIds"];
+	    }
+	}
+	export class SavedCommand {
+	    id: string;
+	    name: string;
+	    command: string;
+	    order: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SavedCommand(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.command = source["command"];
+	        this.order = source["order"];
 	    }
 	}
 	export class WorkspaceTask {
@@ -1647,6 +1800,68 @@ export namespace services {
 		    return a;
 		}
 	}
+	export class TerminalOutputChunk {
+	    sequence: number;
+	    data: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TerminalOutputChunk(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sequence = source["sequence"];
+	        this.data = source["data"];
+	    }
+	}
+	export class TerminalSessionSnapshot {
+	    workspaceId: string;
+	    id: string;
+	    shell: string;
+	    workingDirectory: string;
+	    status: string;
+	    exitCode?: number;
+	    message?: string;
+	    lastSequence: number;
+	    reset?: boolean;
+	    output: TerminalOutputChunk[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TerminalSessionSnapshot(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.id = source["id"];
+	        this.shell = source["shell"];
+	        this.workingDirectory = source["workingDirectory"];
+	        this.status = source["status"];
+	        this.exitCode = source["exitCode"];
+	        this.message = source["message"];
+	        this.lastSequence = source["lastSequence"];
+	        this.reset = source["reset"];
+	        this.output = this.convertValues(source["output"], TerminalOutputChunk);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class TokenBudget {
 	    limit: number;
 	    used: number;
@@ -1694,6 +1909,26 @@ export namespace services {
 	    }
 	}
 	
+	export class WorkspaceActivitySummary {
+	    workspaceId: string;
+	    isChatBusy: boolean;
+	    isKanbanRunning: boolean;
+	    activeAgentCount: number;
+	    lastMessageSnippet?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceActivitySummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workspaceId = source["workspaceId"];
+	        this.isChatBusy = source["isChatBusy"];
+	        this.isKanbanRunning = source["isKanbanRunning"];
+	        this.activeAgentCount = source["activeAgentCount"];
+	        this.lastMessageSnippet = source["lastMessageSnippet"];
+	    }
+	}
 	export class WorkspaceFileChange {
 	    id: string;
 	    workspaceId: string;
@@ -1742,6 +1977,7 @@ export namespace services {
 	    type: string;
 	    cardId?: string;
 	    cardTitle?: string;
+	    chatId?: string;
 	    messageId?: string;
 	    requestId?: string;
 	    toolCallId?: string;
@@ -1756,6 +1992,7 @@ export namespace services {
 	        this.type = source["type"];
 	        this.cardId = source["cardId"];
 	        this.cardTitle = source["cardTitle"];
+	        this.chatId = source["chatId"];
 	        this.messageId = source["messageId"];
 	        this.requestId = source["requestId"];
 	        this.toolCallId = source["toolCallId"];

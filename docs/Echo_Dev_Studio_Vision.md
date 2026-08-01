@@ -526,6 +526,7 @@ Tasks are ordered by dependency — earlier tasks unblock later ones. All backen
 
 **Deliverable:** Backlog items accumulate from CEO chat, agent requests, and QA bugs. EP commits them to sprints; when a sprint starts, committed items become Kanban cards. Full traceability from backlog → sprint → board.
 
+
 #### Task 1.3 — Role Registry & Tool Scoping *(data-driven)*
 
 **New file:** `roles.go`

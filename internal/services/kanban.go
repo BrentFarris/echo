@@ -28,6 +28,8 @@ type KanbanCard struct {
 	Lane               string                   `json:"lane"`
 	Status             string                   `json:"status"`
 	ProgressTranscript []KanbanProgressEntry    `json:"progressTranscript,omitempty"`
+	ProgressSummary    *KanbanProgressSummary   `json:"progressSummary,omitempty"`
+	ProgressRevision   uint64                   `json:"progressRevision,omitempty"`
 	AutoRetriesUsed    int                      `json:"autoRetriesUsed,omitempty"`
 	RecoveryType       string                   `json:"recoveryType,omitempty"`
 	StalledAt          *time.Time               `json:"stalledAt,omitempty"`
@@ -49,6 +51,16 @@ type KanbanProgressEntry struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
+type KanbanProgressSummary struct {
+	EntryCount            int    `json:"entryCount"`
+	ToolCallCount         int    `json:"toolCallCount"`
+	LastToolCall          string `json:"lastToolCall,omitempty"`
+	LastVerificationTitle string `json:"lastVerificationTitle,omitempty"`
+	LastVerificationAt    string `json:"lastVerificationAt,omitempty"`
+	ChangedPathCount      int    `json:"changedPathCount,omitempty"`
+	BlockedReason         string `json:"blockedReason,omitempty"`
+}
+
 type KanbanBoard struct {
 	WorkspaceID string       `json:"workspaceId"`
 	Ready       []KanbanCard `json:"ready"`
@@ -65,6 +77,28 @@ func (s *SystemService) LoadKanbanBoard(workspaceID string) (KanbanBoard, error)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return boardForWorkspace(workspaceID, s.state.KanbanCards), nil
+}
+
+func (s *SystemService) LoadKanbanCardDetail(workspaceID string, cardID string) (KanbanCard, error) {
+	if err := s.validateWorkspaceAvailable(workspaceID); err != nil {
+		return KanbanCard{}, err
+	}
+	cardID = strings.TrimSpace(cardID)
+	if cardID == "" {
+		return KanbanCard{}, fmt.Errorf("kanban card id is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	byID := kanbanCardsByID(s.state.KanbanCards)
+	card, found := byID[cardID]
+	if !found || card.WorkspaceID != workspaceID {
+		return KanbanCard{}, fmt.Errorf("kanban card was not found")
+	}
+	card = enrichKanbanCard(cloneKanbanCard(card), byID)
+	summary := summarizeKanbanProgress(card)
+	card.ProgressSummary = &summary
+	return card, nil
 }
 
 func (s *SystemService) ClearDoneKanbanCards(workspaceID string) (KanbanBoard, error) {
@@ -95,9 +129,6 @@ func (s *SystemService) ClearDoneKanbanCards(workspaceID string) (KanbanBoard, e
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 	s.mu.Unlock()
 
-	if len(deletedIDs) > 0 {
-		s.clearKanbanDetailViewIfDeleted(workspaceID, deletedIDs)
-	}
 	return board, nil
 }
 
@@ -141,11 +172,18 @@ func (s *SystemService) DeleteKanbanCard(workspaceID string, cardID string) (Kan
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 	s.mu.Unlock()
 
-	s.clearKanbanDetailViewIfDeleted(workspaceID, deletedIDs)
 	return board, nil
 }
 
 func (s *SystemService) CreateKanbanCardFromChatMessage(workspaceID string, messageID string) (KanbanBoard, error) {
+	return s.createKanbanCardFromChatMessage(workspaceID, "", messageID)
+}
+
+func (s *SystemService) CreateKanbanCardFromChatMessageForTab(workspaceID string, chatID string, messageID string) (KanbanBoard, error) {
+	return s.createKanbanCardFromChatMessage(workspaceID, chatID, messageID)
+}
+
+func (s *SystemService) createKanbanCardFromChatMessage(workspaceID string, chatID string, messageID string) (KanbanBoard, error) {
 	messageID = strings.TrimSpace(messageID)
 	if messageID == "" {
 		return KanbanBoard{}, fmt.Errorf("message id is required")
@@ -155,7 +193,7 @@ func (s *SystemService) CreateKanbanCardFromChatMessage(workspaceID string, mess
 	}
 
 	s.chatMu.Lock()
-	session := s.chatSessions[workspaceID]
+	session := s.chatSessionForIDLocked(workspaceID, chatID)
 	if session == nil {
 		s.chatMu.Unlock()
 		return KanbanBoard{}, fmt.Errorf("message was not found")
@@ -236,18 +274,19 @@ func (s *SystemService) CreateReadyKanbanCard(workspaceID string, title string, 
 		Lane:               KanbanLaneReady,
 		Status:             KanbanLaneReady,
 		ProgressTranscript: []KanbanProgressEntry{{
-				Type:      "message",
-				Title:     "Card created",
-				Content:   "Created manually in the Ready lane.",
-				Status:    KanbanLaneReady,
-				Timestamp: time.Now(),
-			}},
+			Type:      "message",
+			Title:     "Card created",
+			Content:   "Created manually in the Ready lane.",
+			Status:    KanbanLaneReady,
+			Timestamp: time.Now(),
+		}},
+		ProgressRevision: 1,
 	}
 	s.state.KanbanCards = append(s.state.KanbanCards, card)
 	board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 	s.mu.Unlock()
 
-	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: card.ID, Type: "card_created", Board: board})
+	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: card.ID, Type: "card_created", Board: &board})
 
 	// Auto-schedule if no run is active so newly created cards are picked up immediately.
 	s.chatMu.Lock()
@@ -294,7 +333,7 @@ func (s *SystemService) MoveKanbanCard(workspaceID string, cardID string, lane s
 	card := &s.state.KanbanCards[cardIndex]
 	card.Lane = lane
 	card.Status = lane
-	card.ProgressTranscript = append(card.ProgressTranscript, KanbanProgressEntry{
+	appendKanbanCardProgress(card, KanbanProgressEntry{
 		Type:      "status",
 		Title:     "Status changed",
 		Content:   fmt.Sprintf("Moved to %s.", kanbanLaneLabel(lane)),
@@ -345,7 +384,7 @@ func (s *SystemService) UpdateKanbanCardDescription(workspaceID string, cardID s
 			return KanbanBoard{}, fmt.Errorf("only Ready card descriptions can be edited")
 		}
 		card.Description = description
-		card.ProgressTranscript = append(card.ProgressTranscript, KanbanProgressEntry{
+		appendKanbanCardProgress(card, KanbanProgressEntry{
 			Type:      "message",
 			Title:     "Description updated",
 			Content:   "User edited the card description before execution.",
@@ -355,7 +394,7 @@ func (s *SystemService) UpdateKanbanCardDescription(workspaceID string, cardID s
 		board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 		s.mu.Unlock()
 		s.chatMu.Unlock()
-		s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_updated", Board: board})
+		s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_updated", Board: &board})
 		return board, nil
 	}
 	s.mu.Unlock()
@@ -390,7 +429,7 @@ func (s *SystemService) UpdateKanbanCardDirection(workspaceID string, cardID str
 			return KanbanBoard{}, fmt.Errorf("only Ready card directions can be edited")
 		}
 		card.Direction = direction
-		card.ProgressTranscript = append(card.ProgressTranscript, KanbanProgressEntry{
+		appendKanbanCardProgress(card, KanbanProgressEntry{
 			Type:      "message",
 			Title:     "Direction updated",
 			Content:   "User edited the card direction before execution.",
@@ -400,7 +439,7 @@ func (s *SystemService) UpdateKanbanCardDirection(workspaceID string, cardID str
 		board := boardForWorkspace(workspaceID, s.state.KanbanCards)
 		s.mu.Unlock()
 		s.chatMu.Unlock()
-		s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_updated", Board: board})
+		s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: cardID, Type: "card_updated", Board: &board})
 		return board, nil
 	}
 	s.mu.Unlock()
@@ -432,6 +471,7 @@ func (s *SystemService) ResetKanbanCard(workspaceID string, cardID string) (Kanb
 		card.Lane = KanbanLaneReady
 		card.Status = KanbanLaneReady
 		card.ProgressTranscript = nil
+		card.ProgressRevision++
 		found = true
 		break
 	}
@@ -459,7 +499,7 @@ func boardForWorkspace(workspaceID string, cards []KanbanCard) KanbanBoard {
 		if card.WorkspaceID != workspaceID {
 			continue
 		}
-		card = enrichKanbanCard(cloneKanbanCard(card), byID)
+		card = enrichKanbanCard(compactKanbanCard(card), byID)
 		switch card.Lane {
 		case KanbanLaneInProgress:
 			board.InProgress = append(board.InProgress, card)
@@ -473,6 +513,98 @@ func boardForWorkspace(workspaceID string, cards []KanbanCard) KanbanBoard {
 		}
 	}
 	return board
+}
+
+func fullBoardForWorkspace(workspaceID string, cards []KanbanCard) KanbanBoard {
+	board := KanbanBoard{
+		WorkspaceID: workspaceID,
+		Ready:       []KanbanCard{},
+		InProgress:  []KanbanCard{},
+		Blocked:     []KanbanCard{},
+		Done:        []KanbanCard{},
+	}
+	byID := kanbanCardsByID(cards)
+	for _, card := range cards {
+		if card.WorkspaceID != workspaceID {
+			continue
+		}
+		card = enrichKanbanCard(cloneKanbanCard(card), byID)
+		summary := summarizeKanbanProgress(card)
+		card.ProgressSummary = &summary
+		switch card.Lane {
+		case KanbanLaneInProgress:
+			board.InProgress = append(board.InProgress, card)
+		case KanbanLaneBlocked:
+			board.Blocked = append(board.Blocked, card)
+		case KanbanLaneDone:
+			board.Done = append(board.Done, card)
+		default:
+			card.Lane = KanbanLaneReady
+			board.Ready = append(board.Ready, card)
+		}
+	}
+	return board
+}
+
+func compactKanbanCard(card KanbanCard) KanbanCard {
+	summary := summarizeKanbanProgress(card)
+	card.AcceptanceCriteria = append([]string(nil), card.AcceptanceCriteria...)
+	card.Dependencies = append([]string(nil), card.Dependencies...)
+	card.DependencyStatuses = nil
+	card.BlockedBy = nil
+	card.ProgressTranscript = nil
+	card.ProgressSummary = &summary
+	if card.StalledAt != nil {
+		t := *card.StalledAt
+		card.StalledAt = &t
+	}
+	return card
+}
+
+func summarizeKanbanProgress(card KanbanCard) KanbanProgressSummary {
+	transcript := card.ProgressTranscript
+	summary := KanbanProgressSummary{EntryCount: len(transcript)}
+	for _, entry := range transcript {
+		if entry.Type == "tool_call" {
+			summary.ToolCallCount++
+			if name := strings.TrimSpace(strings.TrimPrefix(entry.Title, "Tool call:")); name != "" {
+				summary.LastToolCall = name
+			}
+		}
+		if card.Lane == KanbanLaneDone && entry.Type == "verification" {
+			summary.LastVerificationTitle = entry.Title
+			if !entry.Timestamp.IsZero() {
+				summary.LastVerificationAt = entry.Timestamp.Format(time.RFC3339Nano)
+			}
+			summary.ChangedPathCount = 0
+			for _, line := range strings.Split(entry.Content, "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "- ") {
+					summary.ChangedPathCount++
+				}
+			}
+		}
+	}
+	if card.Lane != KanbanLaneBlocked {
+		return summary
+	}
+	for index := len(transcript) - 1; index >= 0; index-- {
+		entry := transcript[index]
+		if entry.Type != "status" && entry.Type != "message" {
+			continue
+		}
+		content := strings.TrimSpace(entry.Content)
+		title := strings.TrimSpace(entry.Title)
+		lowerContent := strings.ToLower(content)
+		if strings.Contains(lowerContent, "moved to blocked") || strings.Contains(lowerContent, "agent stopped") {
+			summary.BlockedReason = content
+			break
+		}
+		if title != "" && !strings.HasPrefix(content, "Moved to") {
+			summary.BlockedReason = title
+			break
+		}
+	}
+	return summary
 }
 
 func (s *SystemService) appendReadyCards(workspaceID string, cards []decomposedCard) (KanbanBoard, error) {
@@ -507,14 +639,15 @@ func (s *SystemService) appendReadyCards(workspaceID string, cards []decomposedC
 			Lane:               KanbanLaneReady,
 			Status:             KanbanLaneReady,
 			ProgressTranscript: []KanbanProgressEntry{{
-					Type:      "message",
-					Title:     "Card created",
-					Content:   "Created from the approved chat plan.",
-					Status:    KanbanLaneReady,
-					Timestamp: time.Now(),
-				}},
-			}
-			for _, dependency := range card.Dependencies {
+				Type:      "message",
+				Title:     "Card created",
+				Content:   "Created from the approved chat plan.",
+				Status:    KanbanLaneReady,
+				Timestamp: time.Now(),
+			}},
+			ProgressRevision: 1,
+		}
+		for _, dependency := range card.Dependencies {
 			runtimeCard.Dependencies = append(runtimeCard.Dependencies, idMap[dependency])
 		}
 		s.state.KanbanCards = append(s.state.KanbanCards, runtimeCard)
@@ -554,6 +687,7 @@ func (s *SystemService) appendAssistantMessageReadyCard(workspaceID string, cont
 			Status:    KanbanLaneReady,
 			Timestamp: time.Now(),
 		}},
+		ProgressRevision: 1,
 	}
 	s.state.KanbanCards = append(s.state.KanbanCards, card)
 
@@ -623,6 +757,10 @@ func cloneKanbanCard(card KanbanCard) KanbanCard {
 	card.DependencyStatuses = append([]KanbanDependencyStatus(nil), card.DependencyStatuses...)
 	card.BlockedBy = append([]string(nil), card.BlockedBy...)
 	card.ProgressTranscript = append([]KanbanProgressEntry(nil), card.ProgressTranscript...)
+	if card.ProgressSummary != nil {
+		summary := *card.ProgressSummary
+		card.ProgressSummary = &summary
+	}
 	if card.StalledAt != nil {
 		t := *card.StalledAt
 		card.StalledAt = &t
@@ -744,16 +882,6 @@ func removeDeletedKanbanDependencies(dependencies []string, deletedIDs map[strin
 		next = append(next, dependencyID)
 	}
 	return next
-}
-
-func (s *SystemService) clearKanbanDetailViewIfDeleted(workspaceID string, deletedIDs map[string]struct{}) {
-	s.chatMu.Lock()
-	if activeCardID := s.kanbanDetailViews[workspaceID]; activeCardID != "" {
-		if _, deleted := deletedIDs[activeCardID]; deleted {
-			delete(s.kanbanDetailViews, workspaceID)
-		}
-	}
-	s.chatMu.Unlock()
 }
 
 func enrichKanbanCard(card KanbanCard, byID map[string]KanbanCard) KanbanCard {

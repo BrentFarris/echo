@@ -39,4 +39,5 @@ frontend/dist/*
 
 # Database files
 echo.db
+/echo/echo.log
 frontend/package.json.md5

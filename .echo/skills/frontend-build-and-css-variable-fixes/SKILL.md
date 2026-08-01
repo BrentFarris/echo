@@ -1,6 +1,6 @@
 ---
 name: frontend-build-and-css-variable-fixes
-description: Post-merge frontend build verification, TypeScript import/callback resolution, Go build error patterns, and valid CSS variable naming conventions.
+description: Post-merge frontend build verification, TypeScript import/callback resolution, Go build error patterns, valid CSS variable naming conventions, and Wails binding regeneration.
 triggers:
     - build fix
     - npm run build
@@ -14,9 +14,18 @@ triggers:
     - CodeViewCallbacks
     - 'undefined: ctx'
     - operationMu undefined
+    - wails generate
+    - binding regeneration
+    - SystemService.ts
+    - models.ts
+    - TypeScript binding
+    - frontend wailsjs
+    - manual binding
+    - TS1127
+    - tab indentation
 ---
 
-# Post-Merge Build Verification & Fixes
+# Post-Merge Build Verification & Wails Binding Regeneration
 
 ## Post-Merge Build Verification
 Run both frontend and backend builds after resolving merge conflicts:
@@ -67,3 +76,23 @@ When HEAD adds a mutex field (e.g., `operationMu`) to a struct that master doesn
 - Residual `>>>>>>> branch` markers in template literals → search for them explicitly
 - Missing TypeScript imports after service/function additions → search the export module and add to import statement
 - Callback interface drift between branches → check types.ts for full interface definition
+
+## Wails Binding Regeneration
+
+### Standard approach
+Run `wails dev` or `wails build` from the repo root — bindings regenerate automatically in `frontend/wailsjs/go/`.
+
+### When wails generate is unavailable
+Wails v2.11+ replaced `wails generate` (bindings) with `wails generate module/template`. If you cannot run `wails dev` or `wails build` (e.g., in a headless agent environment), add bindings manually:
+
+**New types go in `frontend/wailsjs/go/models.ts`:**
+- Add inside the appropriate namespace (e.g., `services`) as an `export class`.
+- Follow the existing pattern: fields, `static createFrom()`, constructor with JSON parsing.
+- Use `\t` tab indentation consistently — literal `\t` escape sequences cause TS1127 errors.
+
+**New methods go in two files:**
+- `frontend/wailsjs/go/services/SystemService.d.ts`: add the TypeScript declaration (alphabetically).
+- `frontend/wailsjs/go/services/SystemService.js`: add the JS wrapper calling `window['go']['services']['SystemService']['MethodName'](...)`.
+
+### Verification
+After manual edits, run `cd frontend; npm run build` to confirm TypeScript compiles. Also run `go build ./...` to ensure Go is clean.

@@ -71,6 +71,42 @@ func TestIsContextLengthExceeded(t *testing.T) {
 	}
 }
 
+func TestResponseError413ReturnsUserFriendlyMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		_, _ = w.Write([]byte("nginx 413 error page html content"))
+	}))
+	defer server.Close()
+
+	settings := DefaultSettings()
+	settings.Endpoint = server.URL + "/v1"
+	client, err := NewClient(settings)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	request, err := NewChatRequest(settings, []Message{{Role: RoleUser, Content: "hello"}})
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	_, err = client.Complete(context.Background(), request)
+	if err == nil {
+		t.Fatal("expected error for 413 response")
+	}
+
+	msg := err.Error()
+	if !strings.Contains(msg, "413") {
+		t.Fatalf("expected error to mention 413, got: %s", msg)
+	}
+	if !strings.Contains(msg, "Request Entity Too Large") {
+		t.Fatalf("expected user-friendly message, got: %s", msg)
+	}
+	if strings.Contains(msg, "nginx") {
+		t.Fatalf("expected error to hide raw response body, got: %s", msg)
+	}
+}
+
 func TestNewChatRequestAddsThinkingCorrectionToLatestUserMessage(t *testing.T) {
 	settings := DefaultSettings()
 	settings.Endpoint = "https://example.test/v1"
@@ -96,6 +132,28 @@ func TestNewChatRequestAddsThinkingCorrectionToLatestUserMessage(t *testing.T) {
 	}
 	if messages[3].Content != "second task" {
 		t.Fatalf("expected source messages to remain unchanged, got %#v", messages)
+	}
+}
+
+func TestNewChatRequestAppendsModelInstructionsToSystemPrompt(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoint = "https://example.test/v1"
+	settings.SystemPromptAppendage = "  Prefer concise answers.\nUse metric units.  "
+	messages := []Message{
+		{Role: RoleSystem, Content: "Be helpful."},
+		{Role: RoleUser, Content: "Hello"},
+	}
+
+	request, err := NewChatRequest(settings, messages)
+	if err != nil {
+		t.Fatalf("new chat request: %v", err)
+	}
+
+	if got, want := request.Messages[0].Content, "Be helpful.\n\nPrefer concise answers.\nUse metric units."; got != want {
+		t.Fatalf("expected system prompt appendage %q, got %q", want, got)
+	}
+	if messages[0].Content != "Be helpful." {
+		t.Fatalf("expected source system prompt to remain unchanged, got %q", messages[0].Content)
 	}
 }
 

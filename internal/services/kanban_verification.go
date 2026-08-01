@@ -357,7 +357,18 @@ func samePath(left string, right string) bool {
 	if strings.EqualFold(left, right) {
 		return true
 	}
-	return left == right
+	if left == right {
+		return true
+	}
+	// On Windows, paths may differ due to DOS short-name equivalents (e.g.
+	// john.jackson vs JOHN~1.JAC). Resolve via EvalSymlinks to compare the
+	// actual volume-equivalent canonical paths.
+	if resolvedLeft, err := filepath.EvalSymlinks(left); err == nil {
+		if resolvedRight, err2 := filepath.EvalSymlinks(right); err2 == nil {
+			return strings.EqualFold(resolvedLeft, resolvedRight) || resolvedLeft == resolvedRight
+		}
+	}
+	return false
 }
 
 func kanbanVerificationReportSucceeded(report kanbanVerificationReport) bool {

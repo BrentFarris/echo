@@ -12,6 +12,7 @@ import { bindSettingsEvents } from "./settings";
 import { bindTaskEvents } from "./tasks";
 import { activeWorkspace, state } from "./state";
 import { applyTheme } from "./theme";
+import { toggleTerminal } from "./terminal";
 import { bindWorkspaceDragEvents } from "./workspace";
 
 let persistentDocumentEventsBound = false;
@@ -134,6 +135,20 @@ export function handleGlobalPointerDown(event: PointerEvent) {
 export function handleGlobalKeydown(event: KeyboardEvent) {
   const debugWorkspace = activeWorkspace();
   if (handleGlobalDebugShortcut(event, debugWorkspace?.id ?? "", getAppCallbacks().codeViewCallbacks())) {
+    return;
+  }
+  if (
+    debugWorkspace &&
+    !state.settingsOpen &&
+    !state.savedCommandEditingId &&
+    (event.ctrlKey || event.metaKey) &&
+    !event.altKey &&
+    !event.shiftKey &&
+    event.code === "Backquote"
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleTerminal(debugWorkspace.id);
     return;
   }
   if (isFindInFilesShortcut(event)) {

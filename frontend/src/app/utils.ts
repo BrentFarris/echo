@@ -123,6 +123,18 @@ export function formatElapsedTime(milliseconds: number): string {
   return `${minutes}:${paddedSeconds}`;
 }
 
+export function generateUUID(): string {
+  if (typeof crypto?.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // Fallback for non-secure contexts (HTTP web access)
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (crypto.getRandomValues(new Uint8Array(1))[0] % 16);
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 export function errorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   if (raw.includes("send chat request") || raw.includes("connection refused") || raw.includes("No connection could be made")) {

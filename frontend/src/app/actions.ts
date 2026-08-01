@@ -1,30 +1,32 @@
-import { clearCodeTabSwitcher, closeCodeTabs, deleteSelectedCodePaths, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, revealCodeTabInWorkspace, startCodeCreate, startCodeRename } from "../codeView";
-import type { CodeTabCloseMode } from "../codeView";
+import { isWailsRuntime } from "../backend/web";
+import { CodeTabCloseMode, clearCodeTabSwitcher, closeCodeTabs, deleteSelectedCodePaths, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, revealCodeTabInWorkspace, startCodeCreate, startCodeRename } from "../codeView";
 import { getMountedCodeEditor } from "../codeView/editor";
 import { addToSpellCheckDictionary, codeStates } from "../codeView/state";
 import { goToLspDefinitionFromContext } from "../codeView/lsp";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessage, DeleteKanbanCard, DeleteWorkspace, ExecutePlan, GetHeartbeatConfig, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenExternalPathExplorer, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessage, RemoveWorkspaceFolder, ResetKanbanCard, ResolveWorkspacePath, RetryChatMessage, RotateWebAccessToken, SetActiveWorkspace, StartKanbanExecution, StopChatStream, StopKanbanCard, StopKanbanExecution } from "../backend/services";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CreateKanbanCardFromChatMessageForTab, DeleteKanbanCard, DeleteSavedCommand, DeleteWorkspace, ExecutePlanForTab, GetHeartbeatConfig, GetSavedCommands, LoadDevelopmentLogStatus, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenExternalPathExplorer, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessageForTab, RemoveWorkspaceFolder, ResetKanbanCard, ResolveWorkspacePath, RetryChatMessageForTab, RotateWebAccessToken, SaveChatImageToDisk, SetActiveWorkspace, StartKanbanExecution, StopChatStreamForTab, StopKanbanCard, StopKanbanExecution, UpsertSavedCommand } from "../backend/services";
 import { appRoot } from "./dom";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
 import { dismissContextMenu } from "./contextMenu";
 import { closeGitMenu, closeGitStashReview, dropWorkspaceGitRepositoryState, openGitChangeInCode, openGitMenuPage, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, revertWorkspaceGitFolder, runGitMenuCommand, selectGitCommit, stageWorkspaceGitChanges, stageWorkspaceGitFile, stageWorkspaceGitFolder, syncWorkspaceGitRepository, toggleGitChangeSection, toggleGitDiffViewMode, toggleGitHistory, toggleGitSourceSidebar, unstageWorkspaceGitChanges, unstageWorkspaceGitFile, unstageWorkspaceGitFolder } from "./git";
-import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification, toggleHeartbeatInterval, toggleWatchdogInterval } from "./kanban";
+import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification, openKanbanCardDetail, toggleHeartbeatInterval, toggleWatchdogInterval, unloadKanbanCardDetail } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, cancelAgentMode, deleteAgentModeSettings, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint, saveAgentMode, saveNewAgentMode, startCreateAgentMode, startEditAgentMode } from "./settings";
-import { activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatAgentModeIDFor, chatComposerModeFor, setChatComposerMode, chatSessionFor, chatVideoDraftsFor, getActiveChatKanbanTab, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state, getDashboardWidgets, setDashboardWidgets, defaultDashboardLayouts } from "./state";
+import { activeChatIDFor, activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatAgentModeIDFor, chatComposerModeFor, setChatComposerMode, chatSessionFor, chatStateKey, chatVideoDraftsFor, getActiveChatKanbanTab, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state, getDashboardWidgets, setDashboardWidgets, defaultDashboardLayouts } from "./state";
 import { applyChatSessionSnapshot, clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
 import { cloneSettings, cloneWebAccessSettings } from "./state";
 import type { AppMode, MobileNavView, WidgetId, WidgetSize } from "./types";
 import { applyTheme, settingsWithThemeDefaults, themePaletteNames } from "./theme";
 import { pushToast, dismissToast } from "./toasts";
 import { loadActiveTaskBoard } from "./tasks";
-import { copyTextToClipboard, errorMessage, laneLabel } from "./utils";
+import { copyTextToClipboard, errorMessage, generateUUID, laneLabel } from "./utils";
 import { hydrateWorkspaceLetterDrafts } from "./workspace";
 import { resetTokenBudget, loadTokenBudget } from "./budget";
 import { loadLivenessConfig } from "./liveness";
 import { availableWidgets } from "./dashboard/grid";
+import { services } from "../../wailsjs/go/models";
+import { disposeWorkspaceTerminal, restartTerminal, runSavedTerminalCommand, stopTerminal, toggleTerminal, toggleTerminalMaximized, toggleTerminalSavedCommands } from "./terminal";
 
 export async function handleAction(event: Event) {
   const target = event.currentTarget as HTMLElement;
@@ -511,6 +513,16 @@ export async function handleAction(event: Event) {
       state.settingsDraft = cloneSettings(state.appState!.settings);
       state.webAccessDraft = cloneWebAccessSettings(state.appState!.webAccess);
       state.webAccessStatus = await LoadWebAccessStatus();
+      state.developmentLogStatus = await LoadDevelopmentLogStatus();
+      await Promise.all(
+        (state.appState?.workspaces ?? []).map(async (item) => {
+          try {
+            state.agentModes.set(item.id, await ListAgentModes(item.id));
+          } catch {
+            /* Keep built-in fallback options available if a workspace cannot load its custom modes. */
+          }
+        }),
+      );
       applyTheme(state.settingsDraft);
       hydrateWorkspaceLetterDrafts(state.appState?.workspaces ?? []);
       getAppCallbacks().render();
@@ -773,6 +785,7 @@ export async function handleAction(event: Event) {
     }
     if (action === "activate-workspace") {
       const current = activeWorkspace();
+      const changingWorkspace = current?.id !== workspaceID;
       if (current && current.id !== workspaceID) {
         await closeSelectedCardDetail(current.id);
         state.openChangeReviewWorkspaces.delete(current.id);
@@ -783,6 +796,11 @@ export async function handleAction(event: Event) {
       }
       state.appState = await SetActiveWorkspace(workspaceID);
       await loadActiveChatSession();
+      if (changingWorkspace) {
+        const destinationChatKey = chatStateKey(workspaceID);
+        state.chatScrollPositions.delete(destinationChatKey);
+        state.pendingChatScrollToBottom.add(destinationChatKey);
+      }
       await loadActiveKanbanBoard();
       await loadActiveTaskBoard();
       await loadActiveChangeReview();
@@ -814,13 +832,15 @@ export async function handleAction(event: Event) {
     }
     if (action === "execute-plan") {
       const workspace = activeWorkspace();
-      if (!workspace || state.executingPlans.has(workspace.id)) {
+      const chatID = workspace ? activeChatIDFor(workspace.id) : "";
+      const chatKey = workspace ? chatStateKey(workspace.id, chatID) : "";
+      if (!workspace || state.executingPlans.has(chatKey)) {
         return;
       }
-      state.executingPlans.add(workspace.id);
+      state.executingPlans.add(chatKey);
       getAppCallbacks().render();
       try {
-        const board = await ExecutePlan(workspace.id);
+        const board = await ExecutePlanForTab(workspace.id, chatID);
         state.kanbanBoards.set(workspace.id, board);
         if ((board.ready ?? []).length > 0) {
           playNotificationSound();
@@ -830,7 +850,7 @@ export async function handleAction(event: Event) {
         state.mobileNavView = "kanban";
         state.activeChatKanbanTab.set(workspace.id, "kanban");
       } finally {
-        state.executingPlans.delete(workspace.id);
+        state.executingPlans.delete(chatKey);
       }
       getAppCallbacks().render();
     }
@@ -887,7 +907,7 @@ export async function handleAction(event: Event) {
         return;
       }
       state.chatImageDrafts.set(
-        workspace.id,
+        chatStateKey(workspace.id),
         chatImageDraftsFor(workspace.id).filter((image) => image.id !== imageID),
       );
       patchChatPanel();
@@ -900,11 +920,51 @@ export async function handleAction(event: Event) {
         return;
       }
       state.chatVideoDrafts.set(
-        workspace.id,
+        chatStateKey(workspace.id),
         chatVideoDraftsFor(workspace.id).filter((video) => video.id !== videoID),
       );
       patchChatPanel();
       patchChatControls();
+    }
+    if (action === "save-chat-image") {
+      const btn = target as HTMLElement;
+      const name = btn.dataset.imageName ?? "image.png";
+      const mediaType = btn.dataset.imageMediaType ?? "image/png";
+      const dataUrl = btn.dataset.imageUrl ?? "";
+
+      if (!dataUrl) return;
+
+      // Web mode: use browser-native download via <a> element trick
+      if (!isWailsRuntime()) {
+        const link = document.createElement("a");
+        link.href = dataUrl;
+        link.download = name;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        return;
+      }
+
+      // Desktop mode: use backend method for native save dialog
+      const workspace = activeWorkspace();
+      SaveChatImageToDisk(workspace?.id ?? "", {
+        name,
+        mediaType,
+        dataUrl,
+      }).then((savedPath) => {
+        if (savedPath) {
+          pushToast(`Saved to ${savedPath}`, "success");
+        }
+        // If savedPath is empty string, user canceled the dialog — no toast needed.
+      }).catch(() => {
+        // Fallback to browser download on error
+        const link = document.createElement("a");
+        link.href = dataUrl;
+        link.download = name;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      });
     }
     if (action === "toggle-heartbeat") {
       const workspaceID = target.dataset.workspaceId ?? "";
@@ -984,7 +1044,7 @@ export async function handleAction(event: Event) {
       state.kanbanBoards.set(workspace.id, board);
       const selectedID = state.selectedKanbanCards.get(workspace.id);
       if (selectedID && !kanbanCards(board).some((card) => card.id === selectedID)) {
-        state.selectedKanbanCards.delete(workspace.id);
+        unloadKanbanCardDetail(workspace.id);
       }
       const clearedCount = beforeDoneCount - (board.done?.length ?? 0);
       pushToast(
@@ -1001,8 +1061,7 @@ export async function handleAction(event: Event) {
       if (!workspace || !cardID) {
         return;
       }
-      state.selectedKanbanCards.set(workspace.id, cardID);
-      state.kanbanBoards.set(workspace.id, await OpenKanbanCardDetail(workspace.id, cardID));
+      await openKanbanCardDetail(workspace.id, cardID);
       getAppCallbacks().render();
     }
     if (action === "stop-card") {
@@ -1012,7 +1071,7 @@ export async function handleAction(event: Event) {
         return;
       }
       state.kanbanBoards.set(workspace.id, await StopKanbanCard(workspace.id, cardID));
-      state.selectedKanbanCards.set(workspace.id, cardID);
+      await openKanbanCardDetail(workspace.id, cardID);
       pushToast("Card agent stopped.");
       getAppCallbacks().render();
     }
@@ -1023,7 +1082,7 @@ export async function handleAction(event: Event) {
         return;
       }
       state.kanbanBoards.set(workspace.id, await ResetKanbanCard(workspace.id, cardID));
-      state.selectedKanbanCards.set(workspace.id, cardID);
+      await openKanbanCardDetail(workspace.id, cardID);
       pushToast("Card reset.", "success");
       getAppCallbacks().render();
     }
@@ -1049,7 +1108,7 @@ export async function handleAction(event: Event) {
       state.kanbanBoards.set(workspace.id, board);
       const selectedID = state.selectedKanbanCards.get(workspace.id);
       if (selectedID && !kanbanCards(board).some((item) => item.id === selectedID)) {
-        state.selectedKanbanCards.delete(workspace.id);
+        unloadKanbanCardDetail(workspace.id);
       }
       const deletedCount = beforeCount - kanbanCards(board).length;
       pushToast(`${deletedCount} card${deletedCount === 1 ? "" : "s"} deleted.`, "success");
@@ -1059,11 +1118,7 @@ export async function handleAction(event: Event) {
     if (action === "close-card") {
       const workspace = activeWorkspace();
       if (workspace) {
-        const cardID = state.selectedKanbanCards.get(workspace.id) ?? "";
-        if (cardID) {
-          state.kanbanBoards.set(workspace.id, await CloseKanbanCardDetail(workspace.id, cardID));
-        }
-        state.selectedKanbanCards.delete(workspace.id);
+        await closeSelectedCardDetail(workspace.id);
       }
       getAppCallbacks().render();
     }
@@ -1077,7 +1132,7 @@ export async function handleAction(event: Event) {
       const previousBoard = kanbanBoardFor(workspace.id);
       const board = await MoveKanbanCard(workspace.id, cardID, lane);
       state.kanbanBoards.set(workspace.id, board);
-      state.selectedKanbanCards.set(workspace.id, cardID);
+      await openKanbanCardDetail(workspace.id, cardID);
       maybePlayKanbanBoardNotification(previousBoard, board);
       pushToast(`Card moved to ${laneLabel(lane)}.`, "success");
       getAppCallbacks().render();
@@ -1089,7 +1144,7 @@ export async function handleAction(event: Event) {
         return;
       }
       state.kanbanBoards.set(workspace.id, await ClearKanbanCardRecovery(workspace.id, cardID));
-      state.selectedKanbanCards.set(workspace.id, cardID);
+      await openKanbanCardDetail(workspace.id, cardID);
       pushToast("Recovery state cleared.", "success");
       getAppCallbacks().render();
     }
@@ -1099,7 +1154,7 @@ export async function handleAction(event: Event) {
       if (!workspace || !messageID) {
         return;
       }
-      const board = await CreateKanbanCardFromChatMessage(workspace.id, messageID);
+      const board = await CreateKanbanCardFromChatMessageForTab(workspace.id, activeChatIDFor(workspace.id), messageID);
       state.kanbanBoards.set(workspace.id, board);
       if ((board.ready ?? []).length > 0) {
         playNotificationSound();
@@ -1133,7 +1188,7 @@ export async function handleAction(event: Event) {
       state.editingMessageIds.delete(messageID);
       try {
         applyChatSessionSnapshot(
-          await RetryChatMessage(workspace.id, messageID, chatAgentModeIDFor(workspace.id)),
+          await RetryChatMessageForTab(workspace.id, activeChatIDFor(workspace.id), messageID, chatAgentModeIDFor(workspace.id)),
         );
         pushToast("Response regenerated.", "success");
       } catch (error) {
@@ -1148,7 +1203,7 @@ export async function handleAction(event: Event) {
       if (!workspace) {
         return;
       }
-      applyChatSessionSnapshot(await StopChatStream(workspace.id));
+      applyChatSessionSnapshot(await StopChatStreamForTab(workspace.id, activeChatIDFor(workspace.id)));
       patchChatPanel();
     }
     if (action === "prune-chat-message") {
@@ -1161,7 +1216,7 @@ export async function handleAction(event: Event) {
       ) {
         return;
       }
-      applyChatSessionSnapshot(await PruneChatMessage(workspace.id, messageID));
+      applyChatSessionSnapshot(await PruneChatMessageForTab(workspace.id, activeChatIDFor(workspace.id), messageID));
       state.editingMessageIds.delete(messageID);
       pushToast("Message pruned.", "success");
       patchChatPanel();
@@ -1230,11 +1285,32 @@ export async function handleAction(event: Event) {
       state.expandedChangeReviewWorkspaces.delete(workspaceID);
       state.expandedGitChangeWorkspaces.delete(workspaceID);
       state.loadingGitChangeWorkspaces.delete(workspaceID);
-      state.chatComposerModes.delete(workspaceID);
-      state.chatPlanModes.delete(workspaceID);
-      state.chatImageDrafts.delete(workspaceID);
+      state.chatWorkspaces.delete(workspaceID);
+      const chatKeyPrefix = `${workspaceID}\0`;
+      [
+        state.chatSessions,
+        state.chatDrafts,
+        state.chatImageDrafts,
+        state.chatVideoDrafts,
+        state.chatComposerModes,
+        state.chatPlanModes,
+        state.chatScrollPositions,
+        state.selectedAgentModeIds,
+      ].forEach((map) => {
+        for (const key of map.keys()) {
+          if (key.startsWith(chatKeyPrefix)) {
+            map.delete(key as never);
+          }
+        }
+      });
+      for (const key of state.pendingChatScrollToBottom) {
+        if (key.startsWith(chatKeyPrefix)) {
+          state.pendingChatScrollToBottom.delete(key);
+        }
+      }
       state.activeChatKanbanTab.delete(workspaceID);
       state.agentModes.delete(workspaceID);
+      disposeWorkspaceTerminal(workspaceID);
       forgetKanbanRun(workspaceID);
       if (!activeWorkspace()) {
         state.appMode = "chat";
@@ -1243,6 +1319,142 @@ export async function handleAction(event: Event) {
       }
       pushToast("Workspace removed.", "success");
       getAppCallbacks().render();
+    }
+    if (action === "toggle-saved-commands") {
+      const wsID = target.dataset.workspaceId ?? "";
+      if (!wsID) return;
+      toggleTerminalSavedCommands(wsID);
+      return;
+    }
+    if (action === "run-saved-command") {
+      const savedId = target.dataset.savedId ?? "";
+      if (!workspaceID || !savedId) return;
+      const cmds = state.savedCommands.get(workspaceID) ?? [];
+      const cmd = cmds.find((c) => c.id === savedId);
+      if (!cmd) return;
+      runSavedTerminalCommand(workspaceID, cmd.command);
+      return;
+    }
+    if (action === "add-saved-command") {
+      state.savedCommandEditingId = `new-${Date.now()}`;
+      state.savedCommandDraftName = "";
+      state.savedCommandDraftCommand = "";
+      state.terminalSavedMenuOpen.delete(workspaceID);
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "edit-saved-command") {
+      const savedId = target.dataset.savedId ?? "";
+      if (!workspaceID || !savedId) return;
+      const cmds = state.savedCommands.get(workspaceID) ?? [];
+      const cmd = cmds.find((c) => c.id === savedId);
+      if (!cmd) return;
+      state.savedCommandEditingId = cmd.id;
+      state.savedCommandDraftName = cmd.name;
+      state.savedCommandDraftCommand = cmd.command;
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "delete-saved-command") {
+      const savedId = target.dataset.savedId ?? "";
+      if (!workspaceID || !savedId) return;
+      try {
+        await DeleteSavedCommand(workspaceID, savedId);
+        if (state.savedCommandEditingId === savedId) {
+          state.savedCommandEditingId = "";
+          state.savedCommandDraftName = "";
+          state.savedCommandDraftCommand = "";
+        }
+        const cmds = state.savedCommands.get(workspaceID) ?? [];
+        const filtered = cmds.filter((c) => c.id !== savedId);
+        if (filtered.length > 0) {
+          state.savedCommands.set(workspaceID, filtered);
+        } else {
+          state.savedCommands.delete(workspaceID);
+        }
+        pushToast("Command deleted.", "success");
+      } catch (error) {
+        pushToast(errorMessage(error), "error");
+      }
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "save-edited-command") {
+      const savedEditId = target.dataset.savedEditId ?? "";
+      if (!workspaceID || !savedEditId) return;
+
+      // Read values from the dialog inputs (overlay is within appRoot)
+      const nameInput = appRoot.querySelector<HTMLInputElement>("[data-saved-edit-name]");
+      const cmdInput = appRoot.querySelector<HTMLInputElement>("[data-saved-edit-command]");
+      const name = nameInput?.value.trim() ?? "";
+      const command = cmdInput?.value.trim() ?? "";
+
+      if (!name || !command) {
+        pushToast("Name and command are required.", "error");
+        return;
+      }
+
+      try {
+        const isEdit = !savedEditId.startsWith("new-");
+        const id = isEdit ? savedEditId : generateUUID();
+        // Determine order: append after existing commands
+        const existing = state.savedCommands.get(workspaceID) ?? [];
+        const maxOrder = existing.reduce((max, c) => Math.max(max, c.order), 0);
+        const order = isEdit ? (existing.find((c) => c.id === savedEditId)?.order ?? maxOrder + 1) : maxOrder + 1;
+
+        await UpsertSavedCommand(workspaceID, id, name, command, order);
+
+        // Update local state
+        const cmds = state.savedCommands.get(workspaceID) ?? [];
+        if (isEdit) {
+          const idx = cmds.findIndex((c) => c.id === savedEditId);
+          if (idx >= 0) {
+            cmds[idx] = services.SavedCommand.createFrom({ id, name, command, order });
+          }
+        } else {
+          cmds.push(services.SavedCommand.createFrom({ id, name, command, order }));
+        }
+        state.savedCommands.set(workspaceID, cmds);
+
+        // Clear editing state
+        state.savedCommandEditingId = "";
+        state.savedCommandDraftName = "";
+        state.savedCommandDraftCommand = "";
+
+        pushToast("Command saved.", "success");
+      } catch (error) {
+        pushToast(errorMessage(error), "error");
+      }
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "cancel-edit-command") {
+      state.savedCommandEditingId = "";
+      state.savedCommandDraftName = "";
+      state.savedCommandDraftCommand = "";
+      getAppCallbacks().render();
+      return;
+    }
+    if (action === "toggle-terminal") {
+      const wsID = target.dataset.workspaceId ?? "";
+      if (!wsID) return;
+      toggleTerminal(wsID);
+      return;
+    }
+    if (action === "maximize-terminal") {
+      if (!workspaceID) return;
+      toggleTerminalMaximized(workspaceID);
+      return;
+    }
+    if (action === "restart-terminal") {
+      if (!workspaceID) return;
+      await restartTerminal(workspaceID);
+      return;
+    }
+    if (action === "stop-terminal") {
+      if (!workspaceID) return;
+      await stopTerminal(workspaceID);
+      return;
     }
   } catch (error) {
     const message = errorMessage(error);
@@ -1309,6 +1521,12 @@ async function loadActiveChangesViewIfNeeded() {
 
 export function bindActionEvents(root: ParentNode) {
   root.querySelectorAll<HTMLElement>("[data-action]").forEach((element) => {
-    element.addEventListener("click", handleAction);
+    element.addEventListener("click", (event) => {
+      // Prevent action buttons inside saved command items from bubbling to the parent run handler
+      if (element.closest(".terminal-saved-actions")) {
+        event.stopPropagation();
+      }
+      handleAction(event);
+    });
   });
 }

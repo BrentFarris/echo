@@ -3,7 +3,7 @@ import { llm, services } from "../../wailsjs/go/models";
 import type { ThemePaletteName } from "./theme";
 import type { AppMode, ChatImageDraft, ChatMentionState, ChatVideoDraft, ContextMenuState, DashboardWidget, GitDiffViewMode, GitMenuPage, KanbanCardCreationDraft, MobileNavView, TaskEditorDraft, TaskInlineEditState, Toast } from "./types";
 
-const endpointTopics = ["chat", "research", "kanbanDecompose", "kanban", "inlineCode"] as const;
+const endpointTopics = ["chat", "research", "vision", "kanbanDecompose", "kanban", "inlineCode"] as const;
 type EndpointTopicKey = (typeof endpointTopics)[number];
 
 export type ChatKanbanTab = "chat" | "tasks" | "kanban";
@@ -13,6 +13,7 @@ export const state = {
   settingsDraft: null as llm.Settings | null,
   webAccessDraft: null as services.WebAccessSettings | null,
   webAccessStatus: null as services.WebAccessStatus | null,
+  developmentLogStatus: null as services.DevelopmentLogStatus | null,
   webAccessQRCodeURL: "",
   settingsOpen: false,
   settingsEndpointEditId: "",
@@ -34,12 +35,15 @@ export const state = {
   activeChatKanbanTab: new Map<string, ChatKanbanTab>(),
   formError: "",
   workspaceDropdownOpen: false,
+  chatWorkspaces: new Map<string, services.ChatWorkspaceState>(),
   chatSessions: new Map<string, services.ChatSession>(),
   chatDrafts: new Map<string, string>(),
   chatImageDrafts: new Map<string, ChatImageDraft[]>(),
   chatVideoDrafts: new Map<string, ChatVideoDraft[]>(),
   chatComposerModes: new Map<string, "plan" | "edit">(),
   chatPlanModes: new Map<string, boolean>(),
+  chatScrollPositions: new Map<string, number>(),
+  pendingChatScrollToBottom: new Set<string>(),
   chatFileLinkCache: new Map<string, Promise<string | null>>(),
   chatMention: null as ChatMentionState | null,
   kanbanBoards: new Map<string, services.KanbanBoard>(),
@@ -65,6 +69,7 @@ export const state = {
   collapsedGitChangeFolders: new Map<string, Set<string>>(),
   collapsedGitChangeSections: new Set<string>(),
   collapsedGitChangeTrees: new Set<string>(),
+  collapsedGitDiffFiles: new Set<string>(),
   expandedGitHistories: new Set<string>(),
   gitCommitMessageDrafts: new Map<string, string>(),
   gitNewBranchDrafts: new Map<string, string>(),
@@ -82,6 +87,7 @@ export const state = {
   kanbanRunStarts: new Map<string, number>(),
   kanbanRunElapsed: new Map<string, number>(),
   selectedKanbanCards: new Map<string, string>(),
+  kanbanCardDetails: new Map<string, services.KanbanCard>(),
   selectedTaskCards: new Map<string, string>(),
   openChangeReviewWorkspaces: new Set<string>(),
   openGitChangeWorkspaces: new Set<string>(),
@@ -104,6 +110,16 @@ export const state = {
   creatingAgentModes: new Set<string>(),
   heartbeatIntervals: new Map<string, number>(), // workspaceID -> interval in milliseconds
   watchdogIntervals: new Map<string, number>(), // workspaceID -> interval in milliseconds
+  workspaceActivitySummaries: new Map<string, services.WorkspaceActivitySummary>(),
+  activityRefreshTimerID: null as number | null,
+  terminalOpen: new Set<string>(),
+  terminalMaximized: new Set<string>(),
+  terminalHeights: new Map<string, number>(),
+  terminalSavedMenuOpen: new Set<string>(),
+  savedCommands: new Map<string, services.SavedCommand[]>(),
+  savedCommandEditingId: "",
+  savedCommandDraftName: "",
+  savedCommandDraftCommand: "",
 };
 
 export type AgentModeDraft = {
@@ -118,23 +134,20 @@ export function getActiveChatKanbanTab(workspaceID: string): ChatKanbanTab {
 }
 
 export function chatComposerModeFor(workspaceID: string): "plan" | "edit" {
-  const mode = state.chatComposerModes.get(workspaceID);
+  const key = chatStateKey(workspaceID);
+  const mode = state.chatComposerModes.get(key);
   if (mode !== undefined) {
     return mode;
   }
-  /* Derive chatPlanModes from the composer mode map. */
-  state.chatPlanModes.delete(workspaceID);
-  return "plan";
+  state.chatPlanModes.delete(key);
+  return defaultAgentModeIDFor(workspaceID) === "plan" ? "plan" : "edit";
 }
 
 export function setChatComposerMode(workspaceID: string, mode: "plan" | "edit") {
-  if (mode === "plan") {
-    state.chatComposerModes.delete(workspaceID);
-    state.chatPlanModes.delete(workspaceID);
-  } else {
-    state.chatComposerModes.set(workspaceID, mode);
-    state.chatPlanModes.set(workspaceID, false);
-  }
+  const key = chatStateKey(workspaceID);
+  state.chatComposerModes.set(key, mode);
+  state.chatPlanModes.set(key, mode === "plan");
+  state.selectedAgentModeIds.set(key, mode === "plan" ? "plan" : "general");
 }
 
 export const kanbanLaneLabels: Record<string, string> = {
@@ -164,27 +177,36 @@ export function activeWorkspace(): services.Workspace | null {
   );
 }
 
-export function chatImageDraftsFor(workspaceID: string): ChatImageDraft[] {
-  return state.chatImageDrafts.get(workspaceID) ?? [];
+export function activeChatIDFor(workspaceID: string): string {
+  return state.chatWorkspaces.get(workspaceID)?.activeChatId ?? "";
 }
 
-export function chatImageDraftTotalBytes(workspaceID: string): number {
-  return chatImageDraftsFor(workspaceID).reduce((total, image) => total + image.bytes, 0);
+export function chatStateKey(workspaceID: string, chatID = activeChatIDFor(workspaceID)): string {
+  return `${workspaceID}\0${chatID}`;
 }
 
-export function chatVideoDraftsFor(workspaceID: string): ChatVideoDraft[] {
-  return state.chatVideoDrafts.get(workspaceID) ?? [];
+export function chatImageDraftsFor(workspaceID: string, chatID = activeChatIDFor(workspaceID)): ChatImageDraft[] {
+  return state.chatImageDrafts.get(chatStateKey(workspaceID, chatID)) ?? [];
 }
 
-export function chatVideoDraftTotalBytes(workspaceID: string): number {
-  return chatVideoDraftsFor(workspaceID).reduce((total, video) => total + video.bytes, 0);
+export function chatImageDraftTotalBytes(workspaceID: string, chatID = activeChatIDFor(workspaceID)): number {
+  return chatImageDraftsFor(workspaceID, chatID).reduce((total, image) => total + image.bytes, 0);
 }
 
-export function chatSessionFor(workspaceID: string): services.ChatSession {
+export function chatVideoDraftsFor(workspaceID: string, chatID = activeChatIDFor(workspaceID)): ChatVideoDraft[] {
+  return state.chatVideoDrafts.get(chatStateKey(workspaceID, chatID)) ?? [];
+}
+
+export function chatVideoDraftTotalBytes(workspaceID: string, chatID = activeChatIDFor(workspaceID)): number {
+  return chatVideoDraftsFor(workspaceID, chatID).reduce((total, video) => total + video.bytes, 0);
+}
+
+export function chatSessionFor(workspaceID: string, chatID = activeChatIDFor(workspaceID)): services.ChatSession {
   return (
-    state.chatSessions.get(workspaceID) ??
+    state.chatSessions.get(chatStateKey(workspaceID, chatID)) ??
     services.ChatSession.createFrom({
       workspaceId: workspaceID,
+      chatId: chatID,
       messages: [],
       busy: false,
       revision: 0,
@@ -193,21 +215,20 @@ export function chatSessionFor(workspaceID: string): services.ChatSession {
 }
 
 export function chatPlanModeFor(workspaceID: string): boolean {
-  const mode = chatComposerModeFor(workspaceID);
-  return mode === "plan";
+  return chatAgentModeIDFor(workspaceID) === "plan";
 }
 
 export function chatAgentModeIDFor(workspaceID: string): string {
-  const selected = state.selectedAgentModeIds.get(workspaceID);
+  const selected = state.selectedAgentModeIds.get(chatStateKey(workspaceID));
   if (selected !== undefined && selected !== "") {
     return selected;
   }
-  /* Fallback to built-in plan/general IDs for backward compatibility. */
-  const mode = chatComposerModeFor(workspaceID);
-  if (mode === "plan") {
-    return "plan";
-  }
-  return "general";
+  return defaultAgentModeIDFor(workspaceID);
+}
+
+export function defaultAgentModeIDFor(workspaceID: string): string {
+  const workspace = state.appState?.workspaces?.find((candidate) => candidate.id === workspaceID);
+  return workspace?.defaultAgentModeId?.trim() || "plan";
 }
 
 export function agentModesForWorkspace(workspaceID: string): services.AgentMode[] {
@@ -222,10 +243,13 @@ export function chatAgentModeNameFor(workspaceID: string): string {
 }
 
 export function setChatAgentMode(workspaceID: string, modeID: string) {
+  const key = chatStateKey(workspaceID);
+  state.chatComposerModes.delete(key);
+  state.chatPlanModes.delete(key);
   if (modeID) {
-    state.selectedAgentModeIds.set(workspaceID, modeID);
+    state.selectedAgentModeIds.set(key, modeID);
   } else {
-    state.selectedAgentModeIds.delete(workspaceID);
+    state.selectedAgentModeIds.delete(key);
   }
 }
 
@@ -457,5 +481,36 @@ async function saveDashboardLayoutsToBackend(): Promise<void> {
   const { SaveDashboardLayout } = await import("../backend/services");
   for (const [view, widgets] of Object.entries(state.dashboardLayouts)) {
     await SaveDashboardLayout(view as string, widgets);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Workspace activity summaries refresh                               */
+/* ------------------------------------------------------------------ */
+
+async function refreshActivitySummaries() {
+  try {
+    const { GetWorkspaceActivitySummaries } = await import("../backend/services");
+    const summaries = await GetWorkspaceActivitySummaries();
+    const map = new Map<string, services.WorkspaceActivitySummary>();
+    for (const s of summaries) {
+      map.set(s.workspaceId, s);
+    }
+    state.workspaceActivitySummaries = map;
+  } catch {
+    // Silently ignore — next poll will retry
+  }
+}
+
+export function startActivityRefreshTimer() {
+  if (state.activityRefreshTimerID !== null) return;
+  refreshActivitySummaries(); // immediate first call
+  state.activityRefreshTimerID = window.setInterval(refreshActivitySummaries, 5000);
+}
+
+export function stopActivityRefreshTimer() {
+  if (state.activityRefreshTimerID !== null) {
+    window.clearInterval(state.activityRefreshTimerID);
+    state.activityRefreshTimerID = null;
   }
 }

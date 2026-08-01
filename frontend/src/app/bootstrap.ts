@@ -1,12 +1,12 @@
 
 import { applyDebugEvent, applyInlineCodePromptEvent, applyWorkspaceTextSearchEvent, ensureCodeViewRootLoaded, finishCodeTabSwitcher, openDroppedCodeFile, openWorkspaceCodeFileAtLine, refreshOpenCodeTabsFromDisk, saveActiveCodeFile, saveDirtyWorkspaceCodeTabs, setCodeGitChangeProvider, setDebugStateChangeListener } from "../codeView";
 import type { WorkspaceTextSearchEvent } from "../codeView";
-import { LoadRuntimeStatus, LoadState, LoadWebAccessStatus, ListAgentModes, ReadWorkspaceMediaFile } from "../backend/services";
+import { GetSavedCommands, LoadDevelopmentLogStatus, LoadRuntimeStatus, LoadState, LoadWebAccessStatus, ListAgentModes, ReadWorkspaceMediaFile } from "../backend/services";
 import { llm, services } from "../../wailsjs/go/models";
 import { EventsOn, OnFileDrop } from "../backend/runtime";
 import { initializeWebAccessTokenFromURL, isWailsRuntime, webConnectionOn } from "../backend/web";
 import { bindActionEvents } from "./actions";
-import { setAppCallbacks } from "./callbacks";
+import { setAppCallbacks, getAppCallbacks } from "./callbacks";
 import { bindChatEvents, applyChatStreamEvent, isSupportedChatImageType, isSupportedChatVideoType, patchChatControls, patchChatPanel } from "./chat";
 import { applyFileChangesEvent, loadActiveChangeReview, refreshWorkspaceChangeReview } from "./changes";
 import { showContextMenu } from "./contextMenu";
@@ -14,11 +14,11 @@ import { handleGlobalKeydown, handleGlobalKeyup, handleGlobalPointerDown, handle
 import { applyKanbanEvent, applyHeartbeatEvent, applyLivenessEvent, applyWatchdogEvent, loadActiveKanbanBoard, markKanbanRunStarted } from "./kanban";
 import { gitChangedLineNumbersForFile, gitChangeStateForPath } from "./git";
 import { render, renderCodeViewUI } from "./render";
-import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state, loadDashboardLayoutsFromBackend } from "./state";
+import { activeWorkspace, chatImageDraftsFor, chatSessionFor, chatStateKey, chatVideoDraftsFor, cloneSettings, cloneWebAccessSettings, leadingWhitespaceIndicatorsEnabled, state, loadDashboardLayoutsFromBackend, startActivityRefreshTimer } from "./state";
 import { applyTheme } from "./theme";
 import { applyTaskEvent, loadActiveTaskBoard } from "./tasks";
 import { pushToast } from "./toasts";
-import type { ChatStreamEvent, FileChangesEvent, HeartbeatEvent, KanbanEvent, LivenessEvent, TaskEvent, WatchdogEvent } from "./types";
+import type { ChatStreamEvent, FileChangesEvent, HeartbeatEvent, KanbanEvent, LivenessEvent, TaskEvent, TerminalEvent, WatchdogEvent } from "./types";
 import { errorMessage } from "./utils";
 import { loadActiveChatSession } from "./chat";
 import type { CodeEntryKind, CodeTabContextMenu } from "../codeView/types";
@@ -26,6 +26,7 @@ import type { DebugEvent } from "../codeView/debugTypes";
 import { loadTokenBudget } from "./budget";
 import { loadLivenessConfig } from "./liveness";
 import { updateWindowTitle } from "./title";
+import { applyTerminalEvent, loadTerminalPreferences, syncActiveTerminal } from "./terminal";
 
 let realtimeResyncTimer = 0;
 
@@ -41,6 +42,7 @@ function scheduleWebRealtimeResync() {
     void Promise.allSettled([
       loadActiveChatSession(),
       loadActiveKanbanBoard(),
+      syncActiveTerminal(),
     ]);
   }, 100);
 }
@@ -140,9 +142,18 @@ function codeViewCallbacks() {
 async function initialize() {
   try {
     state.appState = await LoadState();
+    // Load saved commands for each workspace
+    for (const ws of (state.appState?.workspaces ?? [])) {
+      try {
+        const cmds = await GetSavedCommands(ws.id);
+        if (cmds.length > 0) state.savedCommands.set(ws.id, cmds);
+      } catch { /* Non-fatal */ }
+    }
+    loadTerminalPreferences(state.appState?.workspaces ?? []);
     state.settingsDraft = cloneSettings(state.appState.settings);
     state.webAccessDraft = cloneWebAccessSettings(state.appState.webAccess);
     state.webAccessStatus = await LoadWebAccessStatus();
+    state.developmentLogStatus = await LoadDevelopmentLogStatus();
     try {
       const activeWS = state.appState?.activeWorkspaceId ?? "";
       const modes = await ListAgentModes(activeWS);
@@ -185,6 +196,7 @@ async function initialize() {
         }
       }
     }
+    startActivityRefreshTimer();
   } catch (error) {
     state.appState = services.AppState.createFrom({
       settings: llm.Settings.createFrom({ endpoint: "", model: "" }),
@@ -278,6 +290,31 @@ export function startApp() {
     render();
   });
 
+  EventsOn("echo:terminal:event", (event: TerminalEvent) => {
+    applyTerminalEvent(event);
+  });
+
+  // Close saved command dialog on Escape key
+  document.addEventListener("keydown", (event: KeyboardEvent) => {
+    if (event.key === "Escape" && state.savedCommandEditingId) {
+      state.savedCommandEditingId = "";
+      state.savedCommandDraftName = "";
+      state.savedCommandDraftCommand = "";
+      getAppCallbacks().render();
+    }
+  }, true);
+
+  // Close saved command dialog on backdrop click
+  document.addEventListener("click", (event: Event) => {
+    const target = event.target as HTMLElement;
+    if (target?.dataset?.savedCommandOverlay && !target.closest("[data-saved-command-dialog]")) {
+      state.savedCommandEditingId = "";
+      state.savedCommandDraftName = "";
+      state.savedCommandDraftCommand = "";
+      getAppCallbacks().render();
+    }
+  });
+
   document.addEventListener("keydown", handleGlobalKeydown, true);
   document.addEventListener("keyup", handleGlobalKeyup, true);
   document.addEventListener("pointerdown", handleGlobalPointerDown);
@@ -298,7 +335,7 @@ async function openDroppedFiles(paths: string[]) {
   }
 
   // If in chat mode, try to attach media files to the composer instead of opening them.
-  if (state.appMode === "chat" && !chatSessionFor(workspace.id).busy && !state.executingPlans.has(workspace.id)) {
+  if (state.appMode === "chat" && !chatSessionFor(workspace.id).busy && !state.executingPlans.has(chatStateKey(workspace.id))) {
     const imagePaths: string[] = [];
     const videoPaths: string[] = [];
     const otherPaths: string[] = [];
@@ -327,7 +364,7 @@ async function openDroppedFiles(paths: string[]) {
             continue;
           }
           const name = path.split(/[\\/]/).pop() ?? "image";
-          state.chatImageDrafts.set(workspace.id, [
+          state.chatImageDrafts.set(chatStateKey(workspace.id), [
             ...chatImageDraftsFor(workspace.id),
             {
               id: `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -352,7 +389,7 @@ async function openDroppedFiles(paths: string[]) {
             continue;
           }
           const name = path.split(/[\\/]/).pop() ?? "video";
-          state.chatVideoDrafts.set(workspace.id, [
+          state.chatVideoDrafts.set(chatStateKey(workspace.id), [
             ...chatVideoDraftsFor(workspace.id),
             {
               id: `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,

@@ -5,6 +5,7 @@ import {
   renderChatPanel,
   clearChatMention,
   linkifyAssistantFilePaths,
+  scrollChatToBottom,
 } from "./chat";
 import { loadTokenBudget, renderBudgetBar } from "./budget";
 import { renderChangeReviewDrawer } from "./changes";
@@ -13,16 +14,64 @@ import { appRoot, focusInitialElement } from "./dom";
 import { bindEvents } from "./events";
 import { renderGitRepositoryPage } from "./git";
 import { icons } from "./icons";
-import { kanbanBoardFor, gitRepositoryViewFor, activeWorkspace, kanbanCards, state, getActiveChatKanbanTab, changeReviewFor, leadingWhitespaceIndicatorsEnabled } from "./state";
+import { kanbanBoardFor, gitRepositoryViewFor, activeWorkspace, chatStateKey, kanbanCards, state, getActiveChatKanbanTab, changeReviewFor, leadingWhitespaceIndicatorsEnabled } from "./state";
 import { renderSettingsOverlay } from "./settings";
 import { renderToasts } from "./toasts";
 import { renderTaskPanel, renderTaskDetail } from "./tasks";
 import { escapeHtml, escapeAttribute, workspaceFolderSummary } from "./utils";
 import { renderWorkspaceIcon, renderMissingWorkspace } from "./workspace";
-import { hasKanbanRuntime, getHeartbeatInterval, heartbeatIntervalLabel, getWatchdogInterval, watchdogIntervalLabel, renderCreateKanbanCardDialog, renderDecompositionState, renderEmptyBoard, renderKanbanBoard, renderKanbanDetail, renderKanbanRuntime } from "./kanban";
+import { hasKanbanRuntime, getHeartbeatInterval, heartbeatIntervalLabel, getWatchdogInterval, watchdogIntervalLabel, renderCreateKanbanCardDialog, renderDecompositionState, renderEmptyBoard, renderKanbanBoard, renderKanbanDetail, renderKanbanRuntime, unloadAllKanbanCardDetails, unloadKanbanCardDetail } from "./kanban";
 import { services } from "../../wailsjs/go/models";
 import { renderDashboard } from "./dashboard";
 import { updateWindowTitle } from "./title";
+import { mountTerminalDock, renderTerminalDock } from "./terminal";
+
+/* ------------------------------------------------------------------ */
+/*  Workspace activity helpers                                         */
+/* ------------------------------------------------------------------ */
+
+function getWorkspaceActivityStatus(workspaceID: string): {
+  isChatBusy: boolean;
+  isKanbanRunning: boolean;
+  activeAgentCount: number;
+  lastMessageSnippet: string;
+} {
+  const summary = state.workspaceActivitySummaries.get(workspaceID);
+  if (!summary) {
+    return { isChatBusy: false, isKanbanRunning: false, activeAgentCount: 0, lastMessageSnippet: "" };
+  }
+  return {
+    isChatBusy: summary.isChatBusy,
+    isKanbanRunning: summary.isKanbanRunning,
+    activeAgentCount: summary.activeAgentCount,
+    lastMessageSnippet: summary.lastMessageSnippet ?? "",
+  };
+}
+
+function renderWorkspaceActivityStatus(workspaceID: string): string {
+  const status = getWorkspaceActivityStatus(workspaceID);
+  let dotClass = "workspace-activity-dot is-idle";
+  let activityText = "";
+
+  if (status.isChatBusy) {
+    dotClass = "workspace-activity-dot is-chat-busy";
+    activityText = "Streaming…";
+  } else if (status.isKanbanRunning) {
+    dotClass = "workspace-activity-dot is-kanban-running";
+    activityText = status.activeAgentCount > 0
+      ? `${status.activeAgentCount} agent${status.activeAgentCount > 1 ? "s" : ""} running`
+      : "Kanban running";
+  }
+
+  if (!activityText && status.lastMessageSnippet) {
+    activityText = status.lastMessageSnippet;
+  }
+
+  return `
+    <span class="${dotClass}" aria-hidden="true"></span>
+    ${activityText ? `<span class="workspace-activity-text" title="${escapeAttribute(activityText)}">${escapeHtml(activityText)}</span>` : ""}
+  `;
+}
 
 /** Persistent app-shell wrapper.  Creating it once inside appRoot means
  *  that subsequent renders only swap individual region fragments instead
@@ -262,6 +311,19 @@ export function renderCodeViewUI(): void {
 
 function renderApp(refreshCodeView: boolean): void {
   const workspace = activeWorkspace();
+  if (state.appMode !== "kanban") {
+    unloadAllKanbanCardDetails();
+  } else {
+    const detailWorkspaceIDs = new Set([
+      ...state.selectedKanbanCards.keys(),
+      ...state.kanbanCardDetails.keys(),
+    ]);
+    for (const workspaceID of detailWorkspaceIDs) {
+      if (workspaceID !== workspace?.id) {
+        unloadKanbanCardDetail(workspaceID);
+      }
+    }
+  }
   updateWindowTitle();
   if (state.appMode !== "code" || !workspace) {
     destroyCodeEditor();
@@ -311,6 +373,11 @@ function renderApp(refreshCodeView: boolean): void {
       : "";
   }
 
+  const terminal = updateRegion(shell, "terminal", renderTerminalDock(workspace));
+  if (terminal.changed) {
+    changedRegions.push(terminal.element);
+  }
+
   const mobileNav = updateRegion(
     shell,
     "mobile-nav",
@@ -325,9 +392,33 @@ function renderApp(refreshCodeView: boolean): void {
   }
 
   changedRegions.forEach((region) => bindEvents(region));
+  mountTerminalDock(terminal.element, workspace);
   restoreRenderScrollSnapshots(scrollSnapshots);
   restoreRenderFocusSnapshot(focusSnapshot);
-  window.requestAnimationFrame(() => restoreRenderScrollSnapshots(scrollSnapshots));
+  const pendingChatScrollKey =
+    state.appMode === "chat" && workspace
+      ? chatStateKey(workspace.id)
+      : "";
+  const shouldScrollChatToBottom = Boolean(
+    pendingChatScrollKey &&
+    state.pendingChatScrollToBottom.has(pendingChatScrollKey),
+  );
+  if (shouldScrollChatToBottom) {
+    state.pendingChatScrollToBottom.delete(pendingChatScrollKey);
+    scrollChatToBottom();
+  }
+  window.requestAnimationFrame(() => {
+    restoreRenderScrollSnapshots(scrollSnapshots);
+    const currentWorkspace = activeWorkspace();
+    if (
+      shouldScrollChatToBottom &&
+      state.appMode === "chat" &&
+      currentWorkspace &&
+      chatStateKey(currentWorkspace.id) === pendingChatScrollKey
+    ) {
+      scrollChatToBottom();
+    }
+  });
   if (!hadDialog) {
     focusInitialElement();
   }
@@ -386,7 +477,12 @@ function buildLeftNav(
                 data-action="activate-workspace"
                 data-workspace-id="${escapeHtml(ws.id)}"
                 title="${escapeHtml(workspaceFolderSummary(ws))}"
-              >${escapeHtml(ws.displayName)}</button>
+              >
+                <span class="workspace-dropdown-option-main">
+                  ${escapeHtml(ws.displayName)}
+                  ${renderWorkspaceActivityStatus(ws.id)}
+                </span>
+              </button>
             `).join("")}
             <div class="workspace-dropdown-divider"></div>
             <button
@@ -460,6 +556,9 @@ function buildOverlays(): string {
   if (state.settingsOpen) {
     parts.push(renderSettingsOverlay(state.appState?.workspaces ?? []));
   }
+  if (state.savedCommandEditingId) {
+    parts.push(renderSavedCommandDialog());
+  }
   parts.push(renderToasts());
   if (state.contextMenu) {
     parts.push(renderContextMenu(state.contextMenu));
@@ -479,7 +578,7 @@ export function renderWorkspacePanels(workspace: services.Workspace | null): str
   const mode = state.appMode;
   const board = workspace ? kanbanBoardFor(workspace.id) : null;
   const running = workspace ? state.runningKanbanWorkspaces.has(workspace.id) : false;
-  const decomposing = workspace ? state.executingPlans.has(workspace.id) : false;
+  const decomposing = workspace ? state.executingPlans.has(chatStateKey(workspace.id)) : false;
   const hasCards = board ? kanbanCards(board).length > 0 : false;
   const hasDoneCards = board ? (board.done ?? []).length > 0 : false;
 
@@ -558,14 +657,18 @@ function renderMobileBottomNav(
   return `
     <nav class="mobile-bottom-nav" role="navigation" aria-label="Main navigation">
       <div class="mobile-nav-brand">
-        ${workspaces.length > 0 && workspace ? `<button class="mobile-nav-pill${state.workspaceDropdownOpen ? " is-open" : ""}" type="button" aria-label="Workspace selector" aria-expanded="${state.workspaceDropdownOpen}" data-action="toggle-workspace-dropdown" id="mobile-nav-pill">${escapeHtml(workspace.displayName)}</button>` : ""}
+        ${workspaces.length > 0 && workspace ? `<button class="mobile-nav-pill${state.workspaceDropdownOpen ? " is-open" : ""}" type="button" aria-label="Workspace selector" aria-expanded="${state.workspaceDropdownOpen}" data-action="toggle-workspace-dropdown" id="mobile-nav-pill">${escapeHtml(workspace.displayName)}</button>` : `<button class="mobile-nav-pill mobile-nav-add-workspace" type="button" aria-label="Add workspace" data-action="add-workspace">${icons.plus}<span>Add</span></button>`}
         <span class="mobile-nav-app-name">${appName}</span>
       </div>
       ${state.workspaceDropdownOpen ? `
         <div class="mobile-nav-workspace-dropdown" role="menu" aria-label="Workspace list" data-mobile-workspace-dropdown>
           ${workspaces.map((ws) => `
-            <button class="mobile-nav-workspace-option${ws.id === workspace?.id ? " is-active" : ""}" type="button" role="menuitem" data-action="activate-workspace" data-workspace-id="${escapeHtml(ws.id)}"${ws.id === workspace?.id ? ' aria-current="page"' : ''}>${escapeHtml(ws.displayName)}${ws.missing ? ' <span class="is-missing">(missing)</span>' : ''}</button>
+            <button class="mobile-nav-workspace-option${ws.id === workspace?.id ? " is-active" : ""}" type="button" role="menuitem" data-action="activate-workspace" data-workspace-id="${escapeHtml(ws.id)}"${ws.id === workspace?.id ? ' aria-current="page"' : ''}>${escapeHtml(ws.displayName)}${ws.missing ? ' <span class="is-missing">(missing)</span>' : ''}${renderWorkspaceActivityStatus(ws.id)}</button>
           `).join("")}
+          ${workspaces.length > 0 ? `
+            <div class="workspace-dropdown-divider"></div>
+            <button class="mobile-nav-workspace-option" type="button" role="menuitem" data-action="add-workspace">Add workspace</button>
+          ` : ""}
         </div>
       ` : ""}
       <div class="mobile-nav-tabs" role="tablist" aria-label="View tabs">
@@ -613,4 +716,41 @@ function pendingChangesCount(workspaceID: string): number {
     return Math.max(0, repository.fileCount ?? 0);
   }
   return Math.max(0, changeReviewFor(workspaceID).fileCount ?? 0);
+}
+
+function renderSavedCommandDialog(): string {
+  const editingId = state.savedCommandEditingId;
+  if (!editingId) return "";
+  const isEdit = !editingId.startsWith("new-");
+  const title = isEdit ? "Edit Command" : "New Command";
+  const ws = activeWorkspace();
+  const wsIdAttr = ws ? escapeAttribute(ws.id) : "";
+
+  return `
+    <div class="saved-command-dialog-overlay" data-saved-command-overlay role="dialog" aria-modal="true">
+      <div class="saved-command-dialog" data-saved-command-dialog>
+        <h3>${escapeHtml(title)}</h3>
+        <input
+          type="text"
+          placeholder="Name"
+          value="${escapeAttribute(state.savedCommandDraftName)}"
+          data-saved-edit-name
+          aria-label="Command name"
+          autofocus
+        />
+        <input
+          type="text"
+          placeholder="Command"
+          value="${escapeAttribute(state.savedCommandDraftCommand)}"
+          data-saved-edit-command
+          aria-label="Command text"
+          style="font-family: 'Cascadia Mono', monospace;"
+        />
+        <div class="dialog-actions">
+          <button type="button" class="secondary-button" data-action="cancel-edit-command" data-workspace-id="${wsIdAttr}">Cancel</button>
+          <button type="button" class="primary-button" data-action="save-edited-command" data-workspace-id="${wsIdAttr}" data-saved-edit-id="${escapeAttribute(editingId)}">Save</button>
+        </div>
+      </div>
+    </div>
+  `;
 }

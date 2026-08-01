@@ -1,7 +1,7 @@
 
 import { ensureCodeViewRootLoaded, openWorkspaceCodeFile } from "../../codeView";
 import { elementFromHtml, morphElement, patchChildrenFromHtml, patchMarkdownElement, renderMarkdown } from "../../markdown";
-import { ClearChat, CreateAgentModeFromChat, CreateSkillFromChat, DeleteAgentMode, EditChatMessage, ListAgentModes, LoadChatSession, ResolveWorkspaceTextFilePath, SaveSettings, SearchWorkspaceFiles, SendChatMessageWithAttachments, StopChatStream } from "../../backend/services";
+import { ActivateChatTab, ClearChatForTab, CloseChatTab, CreateAgentModeFromChatForTab, CreateChatTab, CreateSkillFromChatForTab, DeleteAgentMode, EditChatMessageForTab, ListAgentModes, LoadChatSessionForTab, LoadChatWorkspace, ResolveWorkspaceTextFilePath, SaveSettings, SearchWorkspaceFiles, SendChatMessageWithAttachmentsToTab, StopChatStreamForTab } from "../../backend/services";
 import { isWailsRuntime } from "../../backend/web";
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
@@ -9,7 +9,7 @@ import { renderSpinnerLabel } from "../components";
 import { appRoot, isElementScrolledNearBottom } from "../dom";
 import { icons } from "../icons";
 import { playNotificationSound, maybeSendChatCompletionNotification } from "../notifications";
-import { activeWorkspace, agentModesForWorkspace, chatImageDraftsFor, chatImageDraftTotalBytes, chatVideoDraftsFor, chatVideoDraftTotalBytes, chatPlanModeFor, chatAgentModeIDFor, chatAgentModeNameFor, setChatAgentMode, chatComposerModeFor, setChatComposerMode, chatSessionFor, getActiveChatModelLabel, cloneSettings, state } from "../state";
+import { activeChatIDFor, activeWorkspace, agentModesForWorkspace, chatImageDraftsFor, chatImageDraftTotalBytes, chatVideoDraftsFor, chatVideoDraftTotalBytes, chatPlanModeFor, chatAgentModeIDFor, chatAgentModeNameFor, setChatAgentMode, chatComposerModeFor, setChatComposerMode, chatSessionFor, chatStateKey, getActiveChatModelLabel, cloneSettings, state, taskBoardFor } from "../state";
 import { settingsWithCompactTheme } from "../theme";
 import { pushToast } from "../toasts";
 import type { ChatImageDraft, ChatMentionState, ChatStreamEvent, ChatVideoDraft, ScrollSnapshot } from "../types";
@@ -28,6 +28,7 @@ const maxChatVideoBytes = 50 * 1024 * 1024;
 const maxChatMediaDrafts = 8;
 const supportedChatVideoTypes = new Set(["video/mp4", "video/webm", "video/quicktime"]);
 const chatStreamPatchDelay = 50;
+const thinkingScrollBottomTolerance = 2;
 let chatInputWindowResizeBound = false;
 const chatSessionReloads = new Map<string, Promise<void>>();
 
@@ -97,6 +98,7 @@ export interface SpeechRecognitionInstance extends EventTarget {
 
 type PendingChatStreamPatch = {
   workspaceID: string;
+  chatID: string;
   message: services.ChatMessage;
   patchDebug: boolean;
   patchControls: boolean;
@@ -184,6 +186,7 @@ export function chatFileLinkTargets(root: ParentNode): HTMLElement[] {
     ".chat-message.from-assistant [data-message-reasoning]",
     ".chat-message.from-assistant .tool-call code",
     ".chat-message.from-assistant .tool-call pre",
+    ".chat-message.from-assistant .tool-call .console-output",
   ].join(", ");
   const targets = Array.from(root.querySelectorAll<HTMLElement>(selector));
   if (root instanceof HTMLElement && root.matches(selector)) {
@@ -296,6 +299,48 @@ export async function handleChatFileLinkClick(event: MouseEvent) {
   getAppCallbacks().render();
   await loading;
   await openWorkspaceCodeFile(workspace.id, path, getAppCallbacks().codeViewCallbacks());
+}
+
+// ---------------------------------------------------------------------------
+// Task reference resolution and click handling
+// ---------------------------------------------------------------------------
+
+export function resolveChatTaskRefs(root: ParentNode = appRoot) {
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+
+  const board = taskBoardFor(workspace.id);
+  const tasks = board.tasks ?? [];
+
+  root.querySelectorAll<HTMLElement>("[data-task-ref]").forEach((el) => {
+    if (el.dataset.taskRefBound) return;
+    el.dataset.taskRefBound = "true";
+
+    const taskID = el.dataset.taskId ?? "";
+    const task = tasks.find((t) => t.id === taskID);
+    if (task && task.title) {
+      el.textContent = `@${escapeHtml(task.title)}`;
+      el.title = `${task.title} (${taskID})`;
+    } else {
+      el.title = `Task ${taskID}`;
+    }
+
+    el.addEventListener("click", handleChatTaskRefClick);
+  });
+}
+
+export function handleChatTaskRefClick(event: MouseEvent) {
+  event.preventDefault();
+  const el = event.currentTarget as HTMLElement;
+  const taskID = el.dataset.taskId ?? "";
+  if (!taskID) return;
+
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+
+  state.selectedTaskCards.set(workspace.id, taskID);
+  state.appMode = "tasks";
+  getAppCallbacks().render();
 }
 
 export type ChatMentionMatch = {
@@ -479,7 +524,7 @@ export function insertChatMention(entry: services.WorkspaceFileEntry) {
   const nextCaret = triggerStart + replacement.length + trailingSpace.length;
   input.value = nextValue;
   resizeChatInput(input);
-  state.chatDrafts.set(workspace.id, nextValue);
+  state.chatDrafts.set(chatStateKey(workspace.id), nextValue);
   clearChatMention();
   input.focus();
   input.setSelectionRange(nextCaret, nextCaret);
@@ -592,6 +637,33 @@ export function bindChatMentionOptions(root: ParentNode) {
   });
 }
 
+export function renderChatTabs(workspaceID: string): string {
+  const chatWorkspace = state.chatWorkspaces.get(workspaceID);
+  const tabs = chatWorkspace?.tabs ?? [];
+  if (tabs.length < 2) {
+    return "";
+  }
+  return `
+    <div class="chat-tabs" role="tablist" aria-label="Open chats" data-chat-tabs>
+      ${tabs.map((tab) => {
+        const active = tab.chatId === chatWorkspace?.activeChatId;
+        const preview = tab.preview || "New chat";
+        return `
+          <div class="chat-tab${active ? " is-active" : ""}${tab.busy ? " is-busy" : ""}" data-chat-tab="${escapeAttribute(tab.chatId)}">
+            <button class="chat-tab-main" type="button" role="tab" aria-selected="${active}" title="${escapeAttribute(preview)}" data-chat-tab-main data-chat-id="${escapeAttribute(tab.chatId)}">
+              <span class="chat-tab-title">${escapeHtml(preview)}</span>
+              ${tab.busy ? `<span class="chat-tab-busy-dot" title="Chat is running" aria-label="Chat is running"></span>` : ""}
+            </button>
+            <button class="chat-tab-close" type="button" title="Close ${escapeAttribute(preview)}" aria-label="Close ${escapeAttribute(preview)}" data-chat-tab-close data-chat-id="${escapeAttribute(tab.chatId)}">
+              ${icons.x}
+            </button>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
 
 export function renderChatPanel(workspace: services.Workspace | null, expanded = false): string {
   if (!workspace) {
@@ -603,17 +675,21 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
   }
 
   const session = chatSessionFor(workspace.id);
+  const chatID = session.chatId || activeChatIDFor(workspace.id);
+  const chatKey = chatStateKey(workspace.id, chatID);
+  const chatWorkspace = state.chatWorkspaces.get(workspace.id);
   const messages = session.messages ?? [];
-  const draft = state.chatDrafts.get(workspace.id) ?? "";
+  const draft = state.chatDrafts.get(chatKey) ?? "";
   const imageDrafts = chatImageDraftsFor(workspace.id);
   const videoDrafts = chatVideoDraftsFor(workspace.id);
-  const executing = state.executingPlans.has(workspace.id);
+  const executing = state.executingPlans.has(chatKey);
   const sizeLabel = expanded ? "Collapse chat" : "Expand chat";
   const executeLabel = executing ? "Decomposing cards" : "Execute plan";
   const mentionOpen = Boolean(chatMentionFor(workspace.id));
-  const creatingSkill = state.creatingChatSkills.has(workspace.id);
+  const creatingSkill = state.creatingChatSkills.has(chatKey);
   return `
-    <section class="work-panel chat-panel" aria-label="Chat" aria-busy="${session.busy || executing}" data-chat-panel data-workspace-id="${escapeAttribute(workspace.id)}">
+    <section class="work-panel chat-panel${(chatWorkspace?.tabs?.length ?? 0) >= 2 ? " has-chat-tabs" : ""}" aria-label="Chat" aria-busy="${session.busy || executing}" data-chat-panel data-workspace-id="${escapeAttribute(workspace.id)}" data-chat-id="${escapeAttribute(chatID)}">
+      ${renderChatTabs(workspace.id)}
       <div class="chat-log" data-chat-log>
         ${
           messages.length
@@ -679,13 +755,17 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
               ${executing ? `<span class="spinner spinner-sm" aria-hidden="true"></span>` : icons.execute}
             </button>
             <span class="chat-toolbar-separator"></span>
-            <button class="chat-toolbar-icon" type="button" title="More options" aria-label="More options" data-chat-more-toggle ${session.busy || executing ? "disabled" : ""}>
+            <button class="chat-toolbar-icon" type="button" title="More options" aria-label="More options" data-chat-more-toggle>
               ${icons.moreHorizontal}
             </button>
             <div class="chat-more-menu" data-chat-more-menu hidden>
-              <button type="button" title="New chat" aria-label="Start a new chat" data-clear-chat-button>
+              <button type="button" title="New tab" aria-label="Open a new chat tab" data-new-chat-tab-button>
+                ${icons.plus}
+                <span>New tab</span>
+              </button>
+              <button type="button" title="Clear current chat" aria-label="Clear current chat" data-clear-chat-button ${session.busy || executing || messages.length === 0 ? "disabled" : ""}>
                 ${icons.refresh}
-                <span>New chat</span>
+                <span>Clear current chat</span>
               </button>
               <button type="button" title="Create skill from this chat" aria-label="Create workspace skill from chat" data-create-skill-button ${session.busy || executing || creatingSkill ? "disabled" : ""}>
                 ${icons.star}
@@ -878,6 +958,9 @@ export function renderChatMessageImages(message: services.ChatMessage): string {
               <figcaption>
                 <strong>${escapeHtml(image.name)}</strong>
                 <span>${escapeHtml(image.path || image.source)} - ${escapeHtml(formatBytes(image.bytes ?? 0))}</span>
+                <button class="icon-button chat-save-image" type="button" title="Save image" aria-label="Save ${escapeAttribute(image.name)}" data-action="save-chat-image" data-image-id="${escapeAttribute(image.id)}" data-image-name="${escapeAttribute(image.name)}" data-image-media-type="${escapeAttribute(image.mediaType)}" data-image-data-url="${escapeAttribute(image.dataUrl || '')}">
+                  ${icons.download}
+                </button>
               </figcaption>
             </figure>
           `,
@@ -1022,6 +1105,9 @@ export function renderToolCall(toolCall: services.ChatToolActivity): string {
         <span>${escapeHtml(toolCall.status)}</span>
       </div>
       ${toolCall.arguments ? `<code>${escapeHtml(toolCall.arguments)}</code>` : ""}
+      ${toolCall.consoleOutput 
+        ? `<pre class="console-output" data-console-output>${escapeHtml(toolCall.consoleOutput)}</pre>` 
+        : ""}
       ${toolCall.error ? `<p>${escapeHtml(toolCall.error)}</p>` : ""}
       ${toolCall.result ? `<pre>${escapeHtml(toolCall.result)}</pre>` : ""}
     </div>
@@ -1057,9 +1143,13 @@ export function bindChatEvents(root: ParentNode) {
     .querySelectorAll<HTMLButtonElement>("[data-chat-more-toggle]")
     .forEach((button) => button.addEventListener("click", handleChatMoreToggle));
   root
+    .querySelectorAll<HTMLButtonElement>("[data-new-chat-tab-button]")
+    .forEach((button) => button.addEventListener("click", handleNewChatTab));
+  root
     .querySelectorAll<HTMLButtonElement>("[data-attachment-type]")
     .forEach((button) => button.addEventListener("click", handleChatAttachmentSelect));
   bindClearChatButton(root);
+  bindChatTabEvents(root);
   bindCreateSkillButton(root);
   bindChatMentionOptions(root);
   bindChatFileLinks(root);
@@ -1071,6 +1161,140 @@ export function bindChatEvents(root: ParentNode) {
   bindModeSelector(root);
   bindModeDropdownEvents(root);
   initSpeechRecognition(root);
+}
+
+function bindChatTabEvents(root: ParentNode) {
+  root.querySelectorAll<HTMLButtonElement>("[data-chat-tab-main]").forEach((button) => {
+    button.addEventListener("click", () => {
+      void activateChatTab(button.dataset.chatId ?? "");
+    });
+    button.addEventListener("mousedown", (event) => {
+      if (event.button === 1) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    });
+    button.addEventListener("auxclick", (event) => {
+      if (event.button !== 1) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      void closeChatTabFromUI(button.dataset.chatId ?? "");
+    });
+  });
+  root.querySelectorAll<HTMLButtonElement>("[data-chat-tab-close]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void closeChatTabFromUI(button.dataset.chatId ?? "");
+    });
+  });
+}
+
+async function handleNewChatTab(event: Event) {
+  event.preventDefault();
+  event.stopPropagation();
+  dismissChatMoreMenu();
+  const workspace = activeWorkspace();
+  if (!workspace) {
+    return;
+  }
+  try {
+    applyChatWorkspaceSnapshot(await CreateChatTab(workspace.id));
+    clearChatMention();
+    patchChatPanel();
+    appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus();
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+  }
+}
+
+async function activateChatTab(chatID: string) {
+  const workspace = activeWorkspace();
+  if (!workspace || !chatID || activeChatIDFor(workspace.id) === chatID) {
+    return;
+  }
+  clearChatMention();
+  dismissChatMoreMenu();
+  dismissChatAttachmentMenu();
+  try {
+    applyChatWorkspaceSnapshot(await ActivateChatTab(workspace.id, chatID));
+    patchChatPanel();
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+  }
+}
+
+async function closeChatTabFromUI(chatID: string) {
+  const workspace = activeWorkspace();
+  const chatWorkspace = workspace ? state.chatWorkspaces.get(workspace.id) : null;
+  const tab = chatWorkspace?.tabs?.find((candidate) => candidate.chatId === chatID);
+  if (!workspace || !tab) {
+    return;
+  }
+  if (tab.busy && !(await confirmBusyChatClose(tab.preview || "New chat"))) {
+    return;
+  }
+  try {
+    const closedKey = chatStateKey(workspace.id, chatID);
+    applyChatWorkspaceSnapshot(await CloseChatTab(workspace.id, chatID));
+    state.chatSessions.delete(closedKey);
+    state.chatDrafts.delete(closedKey);
+    state.chatImageDrafts.delete(closedKey);
+    state.chatVideoDrafts.delete(closedKey);
+    state.chatComposerModes.delete(closedKey);
+    state.chatPlanModes.delete(closedKey);
+    state.chatScrollPositions.delete(closedKey);
+    state.selectedAgentModeIds.delete(closedKey);
+    clearChatMention();
+    patchChatPanel();
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+  }
+}
+
+function confirmBusyChatClose(preview: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "chat-close-busy-overlay";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-labelledby", "chat-close-busy-title");
+    overlay.innerHTML = `
+      <div class="chat-close-busy-dialog">
+        <h2 id="chat-close-busy-title">Chat is still running</h2>
+        <p>Close “${escapeHtml(preview)}” and stop its response?</p>
+        <div class="chat-close-busy-actions">
+          <button class="secondary-button" type="button" data-chat-close-cancel>Cancel</button>
+          <button class="secondary-button danger-button" type="button" data-chat-close-confirm>Stop and close</button>
+        </div>
+      </div>
+    `;
+    const finish = (confirmed: boolean) => {
+      document.removeEventListener("keydown", handleKeydown, true);
+      overlay.remove();
+      resolve(confirmed);
+    };
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      finish(false);
+    };
+    overlay.querySelector<HTMLButtonElement>("[data-chat-close-cancel]")?.addEventListener("click", () => finish(false));
+    overlay.querySelector<HTMLButtonElement>("[data-chat-close-confirm]")?.addEventListener("click", () => finish(true));
+    overlay.addEventListener("mousedown", (event) => {
+      if (event.target === overlay) {
+        finish(false);
+      }
+    });
+    document.addEventListener("keydown", handleKeydown, true);
+    document.body.appendChild(overlay);
+    overlay.querySelector<HTMLButtonElement>("[data-chat-close-cancel]")?.focus();
+  });
 }
 
 function bindChatAttachmentMenuDismissal() {
@@ -1480,6 +1704,9 @@ async function deleteAgentMode(modeID: string) {
   try {
     const updated = await DeleteAgentMode(modeID);
     state.agentModes.set(workspace.id, Array.isArray(updated) ? updated : []);
+    if (workspace.defaultAgentModeId === modeID) {
+      workspace.defaultAgentModeId = "general";
+    }
     /* Clear selection if deleted mode was active. */
     if (chatAgentModeIDFor(workspace.id) === modeID) {
       setChatAgentMode(workspace.id, "");
@@ -1493,14 +1720,15 @@ async function deleteAgentMode(modeID: string) {
 
 async function createAgentModeFromChat() {
   const workspace = activeWorkspace();
-  if (!workspace || state.creatingAgentModes.has(workspace.id)) {
+  const chatKey = workspace ? chatStateKey(workspace.id) : "";
+  if (!workspace || state.creatingAgentModes.has(chatKey)) {
     return;
   }
   dismissModeDropdown();
-  state.creatingAgentModes.add(workspace.id);
+  state.creatingAgentModes.add(chatKey);
   patchChatPanel();
   try {
-    const result = await CreateAgentModeFromChat(workspace.id);
+    const result = await CreateAgentModeFromChatForTab(workspace.id, activeChatIDFor(workspace.id));
     const modes = await ListAgentModes(workspace.id);
     state.agentModes.set(workspace.id, modes);
     setChatAgentMode(workspace.id, result.id);
@@ -1508,7 +1736,7 @@ async function createAgentModeFromChat() {
   } catch (error) {
     pushToast(errorMessage(error), "error");
   } finally {
-    state.creatingAgentModes.delete(workspace.id);
+    state.creatingAgentModes.delete(chatKey);
     patchChatPanel();
   }
 }
@@ -1522,10 +1750,13 @@ function bindClearChatButton(root: ParentNode) {
       if (!workspace || !window.confirm("Clear the current chat?")) {
         return;
       }
-      void ClearChat(workspace.id).then((result: services.ChatSession) => {
+      const chatID = activeChatIDFor(workspace.id);
+      void ClearChatForTab(workspace.id, chatID).then((result: services.ChatSession) => {
         applyChatSessionSnapshot(result);
-        state.chatDrafts.set(workspace.id, "");
-        state.chatImageDrafts.delete(workspace.id);
+        const key = chatStateKey(workspace.id, chatID);
+        state.chatDrafts.set(key, "");
+        state.chatImageDrafts.delete(key);
+        state.chatVideoDrafts.delete(key);
         patchChatPanel();
       });
     });
@@ -1541,12 +1772,13 @@ function bindCreateSkillButton(root: ParentNode) {
       event.stopPropagation();
       dismissChatMoreMenu();
       const workspace = activeWorkspace();
-      if (!workspace || state.creatingChatSkills.has(workspace.id)) {
+      const chatKey = workspace ? chatStateKey(workspace.id) : "";
+      if (!workspace || state.creatingChatSkills.has(chatKey)) {
         return;
       }
-      state.creatingChatSkills.add(workspace.id);
+      state.creatingChatSkills.add(chatKey);
       patchChatPanel();
-      CreateSkillFromChat(workspace.id)
+      CreateSkillFromChatForTab(workspace.id, activeChatIDFor(workspace.id))
         .then((skill: services.WorkspaceSkillCreationResult) => {
           pushToast(`Created skill "${skill.name}".`, "success");
         })
@@ -1555,7 +1787,7 @@ function bindCreateSkillButton(root: ParentNode) {
           pushToast(errorMessage(error), "error");
         })
         .finally(() => {
-          state.creatingChatSkills.delete(workspace.id);
+          state.creatingChatSkills.delete(chatKey);
           patchChatPanel();
         });
     });
@@ -1593,6 +1825,7 @@ export function handleChatDebugSectionToggle(event: Event) {
   }
   patchDebugSections(stack, message);
   void linkifyAssistantFilePaths(section);
+  resolveChatTaskRefs(section);
 }
 
 
@@ -1614,7 +1847,7 @@ export function handleChatInput(event: Event) {
   }
   const input = event.currentTarget as HTMLTextAreaElement;
   resizeChatInput(input);
-  state.chatDrafts.set(workspace.id, input.value);
+  state.chatDrafts.set(chatStateKey(workspace.id), input.value);
   syncChatMentionForInput(workspace.id, input);
   patchChatControls();
 }
@@ -1626,7 +1859,7 @@ export function resizeChatInput(input: HTMLTextAreaElement) {
 
 export function handleChatPaste(event: ClipboardEvent) {
   const workspace = activeWorkspace();
-  if (!workspace || chatSessionFor(workspace.id).busy || state.executingPlans.has(workspace.id)) {
+  if (!workspace || chatSessionFor(workspace.id).busy || state.executingPlans.has(chatStateKey(workspace.id))) {
     return;
   }
   const items = Array.from(event.clipboardData?.items ?? [])
@@ -1656,7 +1889,7 @@ let chatDismissalListenerBound = false;
 
 export function handleChatAttachmentToggle(event: Event) {
   const workspace = activeWorkspace();
-  if (!workspace || chatSessionFor(workspace.id).busy || state.executingPlans.has(workspace.id)) {
+  if (!workspace || chatSessionFor(workspace.id).busy || state.executingPlans.has(chatStateKey(workspace.id))) {
     return;
   }
   const button = event.currentTarget as HTMLButtonElement;
@@ -1741,7 +1974,7 @@ export function dismissChatMoreMenu() {
 
 export function handleChatAttachmentSelect(event: Event) {
   const workspace = activeWorkspace();
-  if (!workspace || chatSessionFor(workspace.id).busy || state.executingPlans.has(workspace.id)) {
+  if (!workspace || chatSessionFor(workspace.id).busy || state.executingPlans.has(chatStateKey(workspace.id))) {
     return;
   }
   const button = event.currentTarget as HTMLButtonElement;
@@ -1817,7 +2050,7 @@ export async function addPastedChatImages(workspaceID: string, files: File[]) {
   if (!accepted.length) {
     return;
   }
-  state.chatImageDrafts.set(workspaceID, [...current, ...accepted]);
+  state.chatImageDrafts.set(chatStateKey(workspaceID), [...current, ...accepted]);
   patchChatPanel();
   patchChatControls();
   appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus();
@@ -1825,7 +2058,7 @@ export async function addPastedChatImages(workspaceID: string, files: File[]) {
 
 export function handleChatVideoUpload(event: Event) {
   const workspace = activeWorkspace();
-  if (!workspace || chatSessionFor(workspace.id).busy || state.executingPlans.has(workspace.id)) {
+  if (!workspace || chatSessionFor(workspace.id).busy || state.executingPlans.has(chatStateKey(workspace.id))) {
     return;
   }
   const button = event.currentTarget as HTMLButtonElement;
@@ -1930,7 +2163,7 @@ export async function addPastedChatVideos(workspaceID: string, files: File[]) {
   if (!accepted.length) {
     return;
   }
-  state.chatVideoDrafts.set(workspaceID, [...current, ...accepted]);
+  state.chatVideoDrafts.set(chatStateKey(workspaceID), [...current, ...accepted]);
   patchChatPanel();
   patchChatControls();
   appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus();
@@ -2014,15 +2247,17 @@ export async function handleSendStopClick(event: Event) {
     return;
   }
   const session = chatSessionFor(workspace.id);
-  const executing = state.executingPlans.has(workspace.id);
+  const chatID = activeChatIDFor(workspace.id);
+  const chatKey = chatStateKey(workspace.id, chatID);
+  const executing = state.executingPlans.has(chatKey);
   if (session.busy || executing) {
     // Stop the stream
-    applyChatSessionSnapshot(await StopChatStream(workspace.id));
+    applyChatSessionSnapshot(await StopChatStreamForTab(workspace.id, chatID));
     patchChatPanel();
     return;
   }
   // Send the message – reuse the same logic as the form submit
-  const draft = (state.chatDrafts.get(workspace.id) ?? "").trim();
+  const draft = (state.chatDrafts.get(chatKey) ?? "").trim();
   const imageDrafts = chatImageDraftsFor(workspace.id);
   const videoDrafts = chatVideoDraftsFor(workspace.id);
   if ((!draft && imageDrafts.length === 0 && videoDrafts.length === 0)) {
@@ -2030,8 +2265,9 @@ export async function handleSendStopClick(event: Event) {
   }
   void (async () => {
     try {
-      const nextSession = await SendChatMessageWithAttachments(
+      const nextSession = await SendChatMessageWithAttachmentsToTab(
         workspace.id,
+        chatID,
         services.ChatMessageRequest.createFrom({
           content: draft,
           agentModeId: chatAgentModeIDFor(workspace.id),
@@ -2055,9 +2291,9 @@ export async function handleSendStopClick(event: Event) {
           ),
         }),
       );
-      state.chatDrafts.set(workspace.id, "");
-      state.chatImageDrafts.delete(workspace.id);
-      state.chatVideoDrafts.delete(workspace.id);
+      state.chatDrafts.set(chatKey, "");
+      state.chatImageDrafts.delete(chatKey);
+      state.chatVideoDrafts.delete(chatKey);
       clearChatMention();
       const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
       if (input) {
@@ -2065,7 +2301,9 @@ export async function handleSendStopClick(event: Event) {
       }
       applyChatSessionSnapshot(nextSession);
       getAppCallbacks().render();
-      scrollChatToBottom();
+      if (activeChatIDFor(workspace.id) === chatID) {
+        scrollChatToBottom();
+      }
     } catch (error) {
       pushToast(errorMessage(error), "error");
       getAppCallbacks().render();
@@ -2080,17 +2318,20 @@ export async function handleChatSubmit(event: SubmitEvent) {
   if (!workspace) {
     return;
   }
-  const message = (state.chatDrafts.get(workspace.id) ?? "").trim();
+  const chatID = activeChatIDFor(workspace.id);
+  const chatKey = chatStateKey(workspace.id, chatID);
+  const message = (state.chatDrafts.get(chatKey) ?? "").trim();
   const imageDrafts = chatImageDraftsFor(workspace.id);
   const videoDrafts = chatVideoDraftsFor(workspace.id);
   const session = chatSessionFor(workspace.id);
-  if ((!message && imageDrafts.length === 0 && videoDrafts.length === 0) || session.busy || state.executingPlans.has(workspace.id)) {
+  if ((!message && imageDrafts.length === 0 && videoDrafts.length === 0) || session.busy || state.executingPlans.has(chatKey)) {
     return;
   }
 
   try {
-    const nextSession = await SendChatMessageWithAttachments(
+    const nextSession = await SendChatMessageWithAttachmentsToTab(
       workspace.id,
+      chatID,
       services.ChatMessageRequest.createFrom({
         content: message,
         agentModeId: chatAgentModeIDFor(workspace.id),
@@ -2114,9 +2355,9 @@ export async function handleChatSubmit(event: SubmitEvent) {
         ),
       }),
     );
-    state.chatDrafts.set(workspace.id, "");
-    state.chatImageDrafts.delete(workspace.id);
-    state.chatVideoDrafts.delete(workspace.id);
+    state.chatDrafts.set(chatKey, "");
+    state.chatImageDrafts.delete(chatKey);
+    state.chatVideoDrafts.delete(chatKey);
     clearChatMention();
     const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
     if (input) {
@@ -2124,7 +2365,9 @@ export async function handleChatSubmit(event: SubmitEvent) {
     }
     applyChatSessionSnapshot(nextSession);
     getAppCallbacks().render();
-    scrollChatToBottom();
+    if (activeChatIDFor(workspace.id) === chatID) {
+      scrollChatToBottom();
+    }
   } catch (error) {
     pushToast(errorMessage(error), "error");
     getAppCallbacks().render();
@@ -2150,11 +2393,11 @@ export async function handleChatEditSubmit(event: SubmitEvent) {
   try {
     const editedMessage = (chatSessionFor(workspace.id).messages ?? []).find((message) => message.id === messageID);
     applyChatSessionSnapshot(
-      await EditChatMessage(workspace.id, messageID, trimmed, chatAgentModeIDFor(workspace.id)),
+      await EditChatMessageForTab(workspace.id, activeChatIDFor(workspace.id), messageID, trimmed, chatAgentModeIDFor(workspace.id)),
     );
     state.editingMessageIds.delete(messageID);
     if (editedMessage?.role === "user") {
-      state.chatDrafts.delete(workspace.id);
+      state.chatDrafts.delete(chatStateKey(workspace.id));
     }
     getAppCallbacks().render();
   } catch (error) {
@@ -2188,33 +2431,67 @@ export async function loadActiveChatSession() {
   if (!workspace) {
     return;
   }
-  await reloadChatSession(workspace.id);
+  const chatWorkspace = await LoadChatWorkspace(workspace.id);
+  applyChatWorkspaceSnapshot(chatWorkspace);
 }
 
 export function applyChatSessionSnapshot(nextSession: services.ChatSession): boolean {
-  const current = state.chatSessions.get(nextSession.workspaceId);
+  const key = chatStateKey(nextSession.workspaceId, nextSession.chatId);
+  const current = state.chatSessions.get(key);
   if (current && (nextSession.revision ?? 0) < (current.revision ?? 0)) {
     return false;
   }
-  state.chatSessions.set(nextSession.workspaceId, nextSession);
+  state.chatSessions.set(key, nextSession);
+  const chatWorkspace = state.chatWorkspaces.get(nextSession.workspaceId);
+  const tab = chatWorkspace?.tabs?.find((candidate) => candidate.chatId === nextSession.chatId);
+  if (tab) {
+    tab.preview = nextSession.preview || "New chat";
+    tab.busy = Boolean(nextSession.busy);
+    tab.revision = nextSession.revision ?? tab.revision;
+  }
   return true;
 }
 
-export function reloadChatSession(workspaceID: string): Promise<void> {
-  const existing = chatSessionReloads.get(workspaceID);
+export function applyChatWorkspaceSnapshot(nextWorkspace: services.ChatWorkspaceState): void {
+  const workspace = services.ChatWorkspaceState.createFrom(nextWorkspace);
+  const previous = state.chatWorkspaces.get(workspace.workspaceId);
+  const nextIDs = new Set((workspace.tabs ?? []).map((tab) => tab.chatId));
+  for (const tab of previous?.tabs ?? []) {
+    if (nextIDs.has(tab.chatId)) {
+      continue;
+    }
+    const key = chatStateKey(workspace.workspaceId, tab.chatId);
+    state.chatSessions.delete(key);
+    state.chatDrafts.delete(key);
+    state.chatImageDrafts.delete(key);
+    state.chatVideoDrafts.delete(key);
+    state.chatComposerModes.delete(key);
+    state.chatPlanModes.delete(key);
+    state.chatScrollPositions.delete(key);
+    state.selectedAgentModeIds.delete(key);
+  }
+  state.chatWorkspaces.set(workspace.workspaceId, workspace);
+  if (workspace.activeSession?.chatId) {
+    applyChatSessionSnapshot(services.ChatSession.createFrom(workspace.activeSession));
+  }
+}
+
+export function reloadChatSession(workspaceID: string, chatID = activeChatIDFor(workspaceID)): Promise<void> {
+  const key = chatStateKey(workspaceID, chatID);
+  const existing = chatSessionReloads.get(key);
   if (existing) {
     return existing;
   }
-  const reload = LoadChatSession(workspaceID)
+  const reload = LoadChatSessionForTab(workspaceID, chatID)
     .then((session) => {
-      if (applyChatSessionSnapshot(session) && activeWorkspace()?.id === workspaceID) {
+      if (applyChatSessionSnapshot(session) && activeWorkspace()?.id === workspaceID && activeChatIDFor(workspaceID) === chatID) {
         patchChatPanel();
       }
     })
     .finally(() => {
-      chatSessionReloads.delete(workspaceID);
+      chatSessionReloads.delete(key);
     });
-  chatSessionReloads.set(workspaceID, reload);
+  chatSessionReloads.set(key, reload);
   return reload;
 }
 
@@ -2223,12 +2500,20 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
     pushToast(event.content, "info");
   }
 
+  if (event.workspaceState) {
+    applyChatWorkspaceSnapshot(services.ChatWorkspaceState.createFrom(event.workspaceState));
+    if (activeWorkspace()?.id === event.workspaceId) {
+      patchChatPanel();
+    }
+    return;
+  }
+
   if (event.session) {
     const snapshot = services.ChatSession.createFrom(event.session);
     if (!applyChatSessionSnapshot(snapshot)) {
       return;
     }
-    if (activeWorkspace()?.id === event.workspaceId) {
+    if (activeWorkspace()?.id === event.workspaceId && activeChatIDFor(event.workspaceId) === snapshot.chatId) {
       patchChatPanel();
       if (event.type === "started") {
         scrollChatToBottom();
@@ -2237,7 +2522,8 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
     return;
   }
 
-  const session = chatSessionFor(event.workspaceId);
+  const chatID = event.chatId || activeChatIDFor(event.workspaceId);
+  const session = chatSessionFor(event.workspaceId, chatID);
   const currentRevision = session.revision ?? 0;
   const eventRevision = event.revision ?? 0;
   const stateful = event.type === "token" || event.type === "reasoning" || event.type === "agent_reasoning" || event.type === "tool_call" || event.type === "agent_status" ||
@@ -2248,7 +2534,7 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
       return;
     }
     if (eventRevision !== currentRevision + 1) {
-      void reloadChatSession(event.workspaceId).catch(() => {});
+      void reloadChatSession(event.workspaceId, chatID).catch(() => {});
       return;
     }
   }
@@ -2256,7 +2542,7 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
   const message = messages.find((item) => item.id === event.messageId);
   if (!message) {
     if (stateful) {
-      void reloadChatSession(event.workspaceId).catch(() => {});
+      void reloadChatSession(event.workspaceId, chatID).catch(() => {});
     }
     return;
   }
@@ -2343,12 +2629,29 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
   if (stateful && eventRevision > 0) {
     session.revision = eventRevision;
   }
+  if (event.type === "image_attached" && event.imageAttachment) {
+    const images = message.images ?? [];
+    images.push(services.ChatImageAttachment.createFrom(event.imageAttachment));
+    message.images = images;
+  }
+  if (event.type === "video_attached" && event.videoAttachment) {
+    const videos = message.videos ?? [];
+    videos.push(services.ChatVideoAttachment.createFrom(event.videoAttachment));
+    message.videos = videos;
+  }
 
-  state.chatSessions.set(event.workspaceId, session);
-  if (activeWorkspace()?.id === event.workspaceId) {
+  state.chatSessions.set(chatStateKey(event.workspaceId, chatID), session);
+  const chatWorkspace = state.chatWorkspaces.get(event.workspaceId);
+  const tab = chatWorkspace?.tabs?.find((candidate) => candidate.chatId === chatID);
+  if (tab) {
+    tab.busy = Boolean(session.busy);
+    tab.revision = session.revision ?? tab.revision;
+  }
+  if (activeWorkspace()?.id === event.workspaceId && activeChatIDFor(event.workspaceId) === chatID) {
     const terminal = event.type === "complete" || event.type === "canceled" || event.type === "error";
     queueChatStreamPatch(
       event.workspaceId,
+      chatID,
       message,
       event.type !== "token",
       terminal || event.type === "retrying" || event.type === "compacting",
@@ -2360,13 +2663,15 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
 
 export function queueChatStreamPatch(
   workspaceID: string,
+  chatID: string,
   message: services.ChatMessage,
   patchDebug: boolean,
   patchControls: boolean,
   linkify: boolean,
   flushImmediately = false,
 ) {
-  const pending = pendingChatStreamPatches.get(workspaceID);
+  const key = chatStateKey(workspaceID, chatID);
+  const pending = pendingChatStreamPatches.get(key);
   if (pending) {
     pending.message = message;
     pending.patchDebug ||= patchDebug;
@@ -2376,13 +2681,14 @@ export function queueChatStreamPatch(
       return;
     }
     window.clearTimeout(pending.timeoutID);
-    pendingChatStreamPatches.delete(workspaceID);
+    pendingChatStreamPatches.delete(key);
     applyPendingChatStreamPatch(pending);
     return;
   }
 
   const next: PendingChatStreamPatch = {
     workspaceID,
+    chatID,
     message,
     patchDebug,
     patchControls,
@@ -2394,21 +2700,21 @@ export function queueChatStreamPatch(
     return;
   }
   next.timeoutID = window.setTimeout(() => {
-    if (pendingChatStreamPatches.get(workspaceID) !== next) {
+    if (pendingChatStreamPatches.get(key) !== next) {
       return;
     }
-    pendingChatStreamPatches.delete(workspaceID);
+    pendingChatStreamPatches.delete(key);
     applyPendingChatStreamPatch(next);
   }, chatStreamPatchDelay);
-  pendingChatStreamPatches.set(workspaceID, next);
+  pendingChatStreamPatches.set(key, next);
 }
 
 export function applyPendingChatStreamPatch(pending: PendingChatStreamPatch) {
-  if (activeWorkspace()?.id !== pending.workspaceID) {
+  if (activeWorkspace()?.id !== pending.workspaceID || activeChatIDFor(pending.workspaceID) !== pending.chatID) {
     return;
   }
   const panel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
-  if (!panel || panel.dataset.workspaceId !== pending.workspaceID) {
+  if (!panel || panel.dataset.workspaceId !== pending.workspaceID || panel.dataset.chatId !== pending.chatID) {
     return;
   }
   const keepChatPinned = isElementScrolledNearBottom(
@@ -2442,6 +2748,38 @@ export function patchChatMessage(
     patchMarkdownElement(content, message.content ?? "");
   }
   const error = element.querySelector<HTMLElement>("[data-message-error]");
+  // Patch images container: replace entire element in-place to avoid nesting
+  const imagesContainer = element.querySelector<HTMLElement>(".chat-message-images");
+  if (imagesContainer) {
+    const template = document.createElement("template");
+    template.innerHTML = renderChatMessageImages(message);
+    const newContent = template.content;
+    if (!message.images?.length && newContent.childElementCount === 0) {
+      imagesContainer.remove();
+    } else {
+      element.replaceChild(newContent, imagesContainer);
+    }
+  } else if (message.images?.length) {
+    const template = document.createElement("template");
+    template.innerHTML = renderChatMessageImages(message);
+    element.insertBefore(template.content, content || error);
+  }
+  // Patch videos container: same pattern
+  const videosContainer = element.querySelector<HTMLElement>(".chat-message-videos");
+  if (videosContainer) {
+    const template = document.createElement("template");
+    template.innerHTML = renderChatMessageVideos(message);
+    const newContent = template.content;
+    if (!message.videos?.length && newContent.childElementCount === 0) {
+      videosContainer.remove();
+    } else {
+      element.replaceChild(newContent, videosContainer);
+    }
+  } else if (message.videos?.length) {
+    const template = document.createElement("template");
+    template.innerHTML = renderChatMessageVideos(message);
+    element.insertBefore(template.content, content || error);
+  }
   if (error) {
     error.textContent = message.error ?? "";
     error.hidden = !message.error;
@@ -2455,6 +2793,7 @@ export function patchChatMessage(
   if (message.role === "assistant" && linkify) {
     void linkifyAssistantFilePaths(element);
   }
+  resolveChatTaskRefs(element);
 }
 
 export function patchMessageStatus(element: HTMLElement, message: services.ChatMessage) {
@@ -2534,10 +2873,18 @@ export function patchDebugSections(stack: HTMLElement, message: services.ChatMes
       stack.insertBefore(reasoningSection, toolsSection);
       bindChatDebugSections(reasoningSection);
     } else if (reasoningSection.open || !isAssistantMessageStreaming(message)) {
+      const thinkingList = reasoningSection.querySelector<HTMLElement>("[data-thinking-list]");
+      const keepThinkingPinned = isThinkingListAtBottom(thinkingList);
       morphElement(
         reasoningSection,
         elementFromHtml(renderReasoning(reasoning, researchReasoning)),
       );
+      if (keepThinkingPinned) {
+        const nextThinkingList = reasoningSection.querySelector<HTMLElement>("[data-thinking-list]");
+        if (nextThinkingList) {
+          nextThinkingList.scrollTop = nextThinkingList.scrollHeight;
+        }
+      }
     }
   } else {
     reasoningSection?.remove();
@@ -2565,6 +2912,16 @@ export function patchDebugSections(stack: HTMLElement, message: services.ChatMes
   }
 }
 
+function isThinkingListAtBottom(element: HTMLElement | null): boolean {
+  if (!element) {
+    return true;
+  }
+  return (
+    element.scrollHeight - element.scrollTop - element.clientHeight <=
+    thinkingScrollBottomTolerance
+  );
+}
+
 export function patchChatPanel() {
   const workspace = activeWorkspace();
   const panel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
@@ -2572,8 +2929,26 @@ export function patchChatPanel() {
     return;
   }
 
+  const renderedWorkspaceID = panel.dataset.workspaceId ?? workspace.id;
+  const renderedChatID = panel.dataset.chatId ?? "";
+  const existingLog = panel.querySelector<HTMLElement>("[data-chat-log]");
+  if (renderedChatID) {
+    const renderedTabStillExists = state.chatWorkspaces
+      .get(renderedWorkspaceID)
+      ?.tabs?.some((tab) => tab.chatId === renderedChatID);
+    const renderedKey = chatStateKey(renderedWorkspaceID, renderedChatID);
+    if (existingLog && renderedTabStillExists) {
+      state.chatScrollPositions.set(renderedKey, existingLog.scrollTop);
+    } else if (!renderedTabStillExists) {
+      state.chatScrollPositions.delete(renderedKey);
+    }
+  }
+
   // Preserve the current draft value and scroll position before regenerating the panel.
-  const draft = state.chatDrafts.get(workspace.id) ?? "";
+  const destinationChatID = activeChatIDFor(workspace.id);
+  const activeChatKey = chatStateKey(workspace.id, destinationChatID);
+  const draft = state.chatDrafts.get(activeChatKey) ?? "";
+  const chatScrollTop = state.chatScrollPositions.get(activeChatKey);
   const existingInput = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
   const inputScrollTop = existingInput?.scrollTop ?? 0;
   const restoreInputFocus = document.activeElement === existingInput;
@@ -2585,6 +2960,23 @@ export function patchChatPanel() {
   next.innerHTML = renderChatPanel(workspace, state.expandedChatWorkspaces.has(workspace.id)).trim();
   const replacement = next.content.firstElementChild as HTMLElement;
   panel.replaceWith(replacement);
+
+  const log = replacement.querySelector<HTMLElement>("[data-chat-log]");
+  if (log && chatScrollTop !== undefined) {
+    log.scrollTop = chatScrollTop;
+    window.requestAnimationFrame(() => {
+      const currentPanel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
+      const currentLog = currentPanel?.querySelector<HTMLElement>("[data-chat-log]");
+      if (
+        currentLog &&
+        currentPanel?.dataset.workspaceId === workspace.id &&
+        currentPanel.dataset.chatId === destinationChatID &&
+        activeChatIDFor(workspace.id) === destinationChatID
+      ) {
+        currentLog.scrollTop = chatScrollTop;
+      }
+    });
+  }
 
   // Restore the draft to the newly created textarea if it differs from the rendered value.
   const input = replacement.querySelector<HTMLTextAreaElement>("[data-chat-input]");
@@ -2602,6 +2994,7 @@ export function patchChatPanel() {
   getAppCallbacks().bindActionEvents(replacement);
   getAppCallbacks().bindChatEvents(replacement);
   void linkifyAssistantFilePaths(replacement);
+  resolveChatTaskRefs(replacement);
 }
 
 export function patchChatControls() {
@@ -2610,12 +3003,13 @@ export function patchChatControls() {
     return;
   }
   const session = chatSessionFor(workspace.id);
-  const draft = state.chatDrafts.get(workspace.id) ?? "";
+  const chatKey = chatStateKey(workspace.id);
+  const draft = state.chatDrafts.get(chatKey) ?? "";
   const imageDrafts = chatImageDraftsFor(workspace.id);
   const videoDrafts = chatVideoDraftsFor(workspace.id);
   const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
-  const executing = state.executingPlans.has(workspace.id);
-  const creatingSkill = state.creatingChatSkills.has(workspace.id);
+  const executing = state.executingPlans.has(chatKey);
+  const creatingSkill = state.creatingChatSkills.has(chatKey);
   const locked = session.busy || executing;
 
   if (input) {
@@ -2633,7 +3027,7 @@ export function patchChatControls() {
       button.innerHTML = icons.stop;
       button.disabled = false;
     } else {
-      const draft = (state.chatDrafts.get(workspace.id) ?? "").trim();
+      const draft = (state.chatDrafts.get(chatKey) ?? "").trim();
       const imageDrafts = chatImageDraftsFor(workspace.id);
       const videoDrafts = chatVideoDraftsFor(workspace.id);
       const canSend = draft.length > 0 || imageDrafts.length > 0 || videoDrafts.length > 0;
@@ -2654,7 +3048,7 @@ export function patchChatControls() {
     button.disabled = locked;
   });
   appRoot.querySelectorAll<HTMLButtonElement>("[data-chat-more-toggle]").forEach((button) => {
-    button.disabled = locked;
+    button.disabled = false;
   });
   appRoot.querySelectorAll<HTMLButtonElement>("[data-create-skill-button]").forEach((button) => {
     button.disabled = locked || creatingSkill;
@@ -2697,11 +3091,39 @@ export function patchChatControls() {
   if (panel) {
     panel.setAttribute("aria-busy", String(locked));
   }
+  const activeTab = appRoot.querySelector<HTMLElement>(`[data-chat-tab="${CSS.escape(activeChatIDFor(workspace.id))}"]`);
+  if (activeTab) {
+    activeTab.classList.toggle("is-busy", Boolean(session.busy));
+    const main = activeTab.querySelector<HTMLElement>("[data-chat-tab-main]");
+    const dot = activeTab.querySelector<HTMLElement>(".chat-tab-busy-dot");
+    if (session.busy && main && !dot) {
+      main.insertAdjacentHTML("beforeend", `<span class="chat-tab-busy-dot" title="Chat is running" aria-label="Chat is running"></span>`);
+    } else if (!session.busy) {
+      dot?.remove();
+    }
+  }
 }
 
 export function scrollChatToBottom() {
-  const log = appRoot.querySelector<HTMLElement>("[data-chat-log]");
-  if (log) {
-    log.scrollTop = log.scrollHeight;
+  const panel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
+  const workspaceID = panel?.dataset.workspaceId ?? "";
+  const chatID = panel?.dataset.chatId ?? "";
+  if (!panel || !workspaceID || !chatID) {
+    return;
   }
+  const scroll = () => {
+    const currentPanel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
+    if (
+      currentPanel?.dataset.workspaceId !== workspaceID ||
+      currentPanel.dataset.chatId !== chatID
+    ) {
+      return;
+    }
+    const log = currentPanel.querySelector<HTMLElement>("[data-chat-log]");
+    if (log) {
+      log.scrollTop = log.scrollHeight;
+    }
+  };
+  scroll();
+  window.requestAnimationFrame(scroll);
 }
