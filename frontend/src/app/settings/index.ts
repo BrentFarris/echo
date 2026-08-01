@@ -423,6 +423,17 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                 />
                 <span class="field-help">Set to 0 to disable research agents and use direct chat tools.</span>
               </label>
+              <label class="field" title="Maximum number of message/tool call rounds per chat turn. Set to 0 to disable the limit.">
+                <span>Max chat rounds</span>
+                <input
+                  name="maxChatOrchestrationRounds"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value="${escapeAttribute(fieldValue("maxChatOrchestrationRounds") || "64")}"
+                />
+                <span class="field-help">Maximum assistant/tool rounds before the chat fails. Set to 0 for no limit.</span>
+              </label>
               <label class="settings-toggle">
                 <span>Leading whitespace indicators</span>
                 <input
@@ -2034,6 +2045,7 @@ export function handleSettingsInput(event: Event) {
     "timeoutSeconds",
     "thinkingTokenBudget",
     "researchAgentConcurrency",
+    "maxChatOrchestrationRounds",
   ]);
   let value: number | string | boolean;
   if (input.type === "checkbox") {

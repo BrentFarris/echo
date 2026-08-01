@@ -107,6 +107,7 @@ export namespace llm {
 	    enableKanbanCompleteNotifications?: boolean;
 	    limitKanbanConcurrency?: boolean;
 	    researchAgentConcurrency: number;
+	    maxChatOrchestrationRounds: number;
 	    disableGitSplitDiffView?: boolean;
 	    comfyuiUrl: string;
 	    comfyuiDefaultCheckpoint: string;
@@ -145,6 +146,7 @@ export namespace llm {
 	        this.enableKanbanCompleteNotifications = source["enableKanbanCompleteNotifications"];
 	        this.limitKanbanConcurrency = source["limitKanbanConcurrency"];
 	        this.researchAgentConcurrency = source["researchAgentConcurrency"];
+	        this.maxChatOrchestrationRounds = source["maxChatOrchestrationRounds"];
 	        this.disableGitSplitDiffView = source["disableGitSplitDiffView"];
 	        this.comfyuiUrl = source["comfyuiUrl"];
 	        this.comfyuiDefaultCheckpoint = source["comfyuiDefaultCheckpoint"];

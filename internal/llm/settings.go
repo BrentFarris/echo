@@ -18,6 +18,7 @@ const (
 	DefaultResearchAgentConcurrency = 4
 	MaxResearchAgentConcurrency     = 8
 	DefaultSearxngURL               = searxng.DefaultURL
+	DefaultMaxChatOrchestrationRounds = 64
 	defaultTimout                   = 600
 )
 
@@ -87,6 +88,7 @@ type Settings struct {
 	EnableKanbanCompleteNotifications bool              `json:"enableKanbanCompleteNotifications,omitempty"`
 	LimitKanbanConcurrency            bool              `json:"limitKanbanConcurrency,omitempty"`
 	ResearchAgentConcurrency          int               `json:"researchAgentConcurrency"`
+	MaxChatOrchestrationRounds        int               `json:"maxChatOrchestrationRounds"`
 	DisableGitSplitDiffView           bool              `json:"disableGitSplitDiffView,omitempty"`
 	ComfyuiURL                        string            `json:"comfyuiUrl"`
 	ComfyuiDefaultCheckpoint          string            `json:"comfyuiDefaultCheckpoint"`
@@ -120,6 +122,7 @@ func DefaultSettings() Settings {
 		SearxngURL:               DefaultSearxngURL,
 		ThinkingTokenBudget:      -1,
 		ResearchAgentConcurrency: DefaultResearchAgentConcurrency,
+		MaxChatOrchestrationRounds: DefaultMaxChatOrchestrationRounds,
 	}
 }
 
@@ -180,6 +183,9 @@ func normalizeSettingsGeneration(s Settings) Settings {
 	}
 	if s.ResearchAgentConcurrency > MaxResearchAgentConcurrency {
 		s.ResearchAgentConcurrency = MaxResearchAgentConcurrency
+	}
+	if s.MaxChatOrchestrationRounds < 0 {
+		s.MaxChatOrchestrationRounds = 0
 	}
 	return s
 }
