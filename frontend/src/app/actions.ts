@@ -1,14 +1,14 @@
 
 import { isWailsRuntime } from "../backend/web";
 import { CodeTabCloseMode, clearCodeTabSwitcher, closeCodeTabs, deleteSelectedCodePaths, ensureCodeViewRootLoaded, refreshOpenCodeTabsFromDisk, revealCodeTabInWorkspace, startCodeCreate, startCodeRename } from "../codeView";
-import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CloseKanbanCardDetail, CreateKanbanCardFromChatMessageForTab, DeleteKanbanCard, DeleteSavedCommand, DeleteWorkspace, ExecutePlanForTab, GetHeartbeatConfig, GetSavedCommands, LoadDevelopmentLogStatus, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenExternalPathExplorer, OpenKanbanCardDetail, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessageForTab, RemoveWorkspaceFolder, ResetKanbanCard, ResolveWorkspacePath, RetryChatMessageForTab, RotateWebAccessToken, SaveChatImageToDisk, SetActiveWorkspace, StartKanbanExecution, StopChatStreamForTab, StopKanbanCard, StopKanbanExecution, UpsertSavedCommand } from "../backend/services";
+import { ChooseWorkspaceFolder, ChooseWorkspaceFolderForWorkspace, ChooseWorkspaceIcon, ClearDoneKanbanCards, ClearKanbanCardRecovery, ClearWorkspaceChangeReview, ClearWorkspaceIcon, CreateKanbanCardFromChatMessageForTab, DeleteKanbanCard, DeleteSavedCommand, DeleteWorkspace, ExecutePlanForTab, GetHeartbeatConfig, GetSavedCommands, LoadDevelopmentLogStatus, LoadState, LoadWebAccessStatus, ListAgentModes, LoadWorkspaceChangeReview, MoveKanbanCard, OpenExternalPathExplorer, OpenWorkspaceExplorer, OpenWorkspacePathExplorer, PrepareRebuildAndRelaunch, PruneChatMessageForTab, RemoveWorkspaceFolder, ResetKanbanCard, ResolveWorkspacePath, RetryChatMessageForTab, RotateWebAccessToken, SaveChatImageToDisk, SetActiveWorkspace, StartKanbanExecution, StopChatStreamForTab, StopKanbanCard, StopKanbanExecution, UpsertSavedCommand } from "../backend/services";
 import { appRoot } from "./dom";
 import { getAppCallbacks } from "./callbacks";
 import { loadActiveChangeReview, refreshWorkspaceChangeReview, scrollChangeReview } from "./changes";
 import { loadActiveCodeViewIfNeeded } from "./codeViewBridge";
 import { dismissContextMenu } from "./contextMenu";
 import { closeGitMenu, closeGitStashReview, dropWorkspaceGitRepositoryState, openGitChangeInCode, openGitMenuPage, openWorkspaceGitRepository, refreshWorkspaceGitRepository, revertWorkspaceGitChanges, revertWorkspaceGitFile, revertWorkspaceGitFolder, runGitMenuCommand, selectGitCommit, stageWorkspaceGitChanges, stageWorkspaceGitFile, stageWorkspaceGitFolder, syncWorkspaceGitRepository, toggleGitChangeSection, toggleGitDiffViewMode, toggleGitHistory, toggleGitSourceSidebar, unstageWorkspaceGitChanges, unstageWorkspaceGitFile, unstageWorkspaceGitFolder } from "./git";
-import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification, toggleHeartbeatInterval, toggleWatchdogInterval } from "./kanban";
+import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKanbanBoard, markKanbanRunStarted, maybePlayKanbanBoardNotification, openKanbanCardDetail, toggleHeartbeatInterval, toggleWatchdogInterval, unloadKanbanCardDetail } from "./kanban";
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, cancelAgentMode, deleteAgentModeSettings, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint, saveAgentMode, saveNewAgentMode, startCreateAgentMode, startEditAgentMode } from "./settings";
 import { activeChatIDFor, activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatAgentModeIDFor, chatComposerModeFor, setChatComposerMode, chatSessionFor, chatStateKey, chatVideoDraftsFor, getActiveChatKanbanTab, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state, getDashboardWidgets, setDashboardWidgets, defaultDashboardLayouts } from "./state";
@@ -992,7 +992,7 @@ export async function handleAction(event: Event) {
       state.kanbanBoards.set(workspace.id, board);
       const selectedID = state.selectedKanbanCards.get(workspace.id);
       if (selectedID && !kanbanCards(board).some((card) => card.id === selectedID)) {
-        state.selectedKanbanCards.delete(workspace.id);
+        unloadKanbanCardDetail(workspace.id);
       }
       const clearedCount = beforeDoneCount - (board.done?.length ?? 0);
       pushToast(
@@ -1009,8 +1009,7 @@ export async function handleAction(event: Event) {
       if (!workspace || !cardID) {
         return;
       }
-      state.selectedKanbanCards.set(workspace.id, cardID);
-      state.kanbanBoards.set(workspace.id, await OpenKanbanCardDetail(workspace.id, cardID));
+      await openKanbanCardDetail(workspace.id, cardID);
       getAppCallbacks().render();
     }
     if (action === "stop-card") {
@@ -1020,7 +1019,7 @@ export async function handleAction(event: Event) {
         return;
       }
       state.kanbanBoards.set(workspace.id, await StopKanbanCard(workspace.id, cardID));
-      state.selectedKanbanCards.set(workspace.id, cardID);
+      await openKanbanCardDetail(workspace.id, cardID);
       pushToast("Card agent stopped.");
       getAppCallbacks().render();
     }
@@ -1031,7 +1030,7 @@ export async function handleAction(event: Event) {
         return;
       }
       state.kanbanBoards.set(workspace.id, await ResetKanbanCard(workspace.id, cardID));
-      state.selectedKanbanCards.set(workspace.id, cardID);
+      await openKanbanCardDetail(workspace.id, cardID);
       pushToast("Card reset.", "success");
       getAppCallbacks().render();
     }
@@ -1057,7 +1056,7 @@ export async function handleAction(event: Event) {
       state.kanbanBoards.set(workspace.id, board);
       const selectedID = state.selectedKanbanCards.get(workspace.id);
       if (selectedID && !kanbanCards(board).some((item) => item.id === selectedID)) {
-        state.selectedKanbanCards.delete(workspace.id);
+        unloadKanbanCardDetail(workspace.id);
       }
       const deletedCount = beforeCount - kanbanCards(board).length;
       pushToast(`${deletedCount} card${deletedCount === 1 ? "" : "s"} deleted.`, "success");
@@ -1067,11 +1066,7 @@ export async function handleAction(event: Event) {
     if (action === "close-card") {
       const workspace = activeWorkspace();
       if (workspace) {
-        const cardID = state.selectedKanbanCards.get(workspace.id) ?? "";
-        if (cardID) {
-          state.kanbanBoards.set(workspace.id, await CloseKanbanCardDetail(workspace.id, cardID));
-        }
-        state.selectedKanbanCards.delete(workspace.id);
+        await closeSelectedCardDetail(workspace.id);
       }
       getAppCallbacks().render();
     }
@@ -1085,7 +1080,7 @@ export async function handleAction(event: Event) {
       const previousBoard = kanbanBoardFor(workspace.id);
       const board = await MoveKanbanCard(workspace.id, cardID, lane);
       state.kanbanBoards.set(workspace.id, board);
-      state.selectedKanbanCards.set(workspace.id, cardID);
+      await openKanbanCardDetail(workspace.id, cardID);
       maybePlayKanbanBoardNotification(previousBoard, board);
       pushToast(`Card moved to ${laneLabel(lane)}.`, "success");
       getAppCallbacks().render();
@@ -1097,7 +1092,7 @@ export async function handleAction(event: Event) {
         return;
       }
       state.kanbanBoards.set(workspace.id, await ClearKanbanCardRecovery(workspace.id, cardID));
-      state.selectedKanbanCards.set(workspace.id, cardID);
+      await openKanbanCardDetail(workspace.id, cardID);
       pushToast("Recovery state cleared.", "success");
       getAppCallbacks().render();
     }

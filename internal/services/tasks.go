@@ -554,6 +554,7 @@ func (s *SystemService) CreateKanbanCardFromTask(workspaceID string, taskID stri
 			Content: "Converted from backlog task " + taskID + ".",
 			Status:  KanbanLaneReady,
 		}},
+		ProgressRevision: 1,
 	}
 	s.state.KanbanCards = append(s.state.KanbanCards, card)
 	now := time.Now().UTC().Format(timeRFC3339Nano)
@@ -579,7 +580,7 @@ func (s *SystemService) CreateKanbanCardFromTask(workspaceID string, taskID stri
 	}
 	s.taskMu.Unlock()
 	s.emitTaskEvent(TaskEvent{WorkspaceID: workspaceID, TaskID: taskID, Type: "completed", Board: board})
-	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: card.ID, Type: "card_created", Board: kanban})
+	s.emitKanbanEvent(KanbanEvent{WorkspaceID: workspaceID, CardID: card.ID, Type: "card_created", Board: &kanban})
 	return TaskKanbanConversion{Tasks: board, Kanban: kanban}, nil
 }
 

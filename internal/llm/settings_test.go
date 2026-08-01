@@ -43,6 +43,18 @@ func TestSettingsForInteractionUsesSelectedEndpoint(t *testing.T) {
 			SystemPromptAppendage: "Use the research model instructions.",
 		},
 		{
+			ID:                  "vision",
+			Name:                "Vision",
+			Endpoint:            "https://vision.example.test/v1",
+			Model:               "vision-model",
+			Temperature:         0.05,
+			ContextLength:       32768,
+			MaxTokens:           2048,
+			RepetitionPenalty:   1,
+			TimeoutSeconds:      90,
+			ThinkingTokenBudget: 0,
+		},
+		{
 			ID:                  "kanban",
 			Name:                "Kanban",
 			Endpoint:            "https://kanban.example.test/v1",
@@ -70,6 +82,7 @@ func TestSettingsForInteractionUsesSelectedEndpoint(t *testing.T) {
 	settings.EndpointSelection = EndpointSelection{
 		Chat:            "chat",
 		Research:        "research",
+		Vision:          "vision",
 		KanbanDecompose: "decompose",
 		Kanban:          "kanban",
 		InlineCode:      "inline",
@@ -86,6 +99,14 @@ func TestSettingsForInteractionUsesSelectedEndpoint(t *testing.T) {
 	}
 	if research.SystemPromptAppendage != "Use the research model instructions." {
 		t.Fatalf("expected research system prompt appendage, got %q", research.SystemPromptAppendage)
+	}
+
+	vision := settings.ForInteraction(InteractionVision)
+	if vision.Endpoint != "https://vision.example.test/v1" || vision.Model != "vision-model" {
+		t.Fatalf("expected vision endpoint, got %#v", vision)
+	}
+	if vision.Temperature != 0.05 || vision.ContextLength != 32768 || vision.TimeoutSeconds != 90 {
+		t.Fatalf("expected vision generation settings, got %#v", vision)
 	}
 
 	decompose := settings.ForInteraction(InteractionKanbanDecompose)
@@ -125,6 +146,7 @@ func TestSettingsForInteractionUsesSelectedEndpoint(t *testing.T) {
 func TestSettingsDefaultsResearchSelectionToChatAndNormalizesConcurrency(t *testing.T) {
 	settings := DefaultSettings()
 	settings.EndpointSelection.Research = ""
+	settings.EndpointSelection.Vision = ""
 	settings.ResearchAgentConcurrency = 0
 
 	normalized := settings.Normalized()
@@ -133,6 +155,9 @@ func TestSettingsDefaultsResearchSelectionToChatAndNormalizesConcurrency(t *test
 	}
 	if normalized.ResearchAgentConcurrency != 0 {
 		t.Fatalf("expected zero concurrency to remain disabled, got %d", normalized.ResearchAgentConcurrency)
+	}
+	if normalized.EndpointSelection.Vision != normalized.EndpointSelection.Chat {
+		t.Fatalf("expected vision to inherit chat, got %q", normalized.EndpointSelection.Vision)
 	}
 
 	settings.ResearchAgentConcurrency = 99

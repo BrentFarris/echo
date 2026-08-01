@@ -92,7 +92,8 @@ function cardProgressPercent(card: services.KanbanCard): number {
 	if (lane === "done") return 100;
 	if (lane === "ready" || lane === "blocked") return 0;
 	const transcript = card.progressTranscript ?? [];
-	const toolCallCount = transcript.filter((e: any) => e.type === "tool_call").length;
+	const toolCallCount = card.progressSummary?.toolCallCount
+		?? transcript.filter((e: any) => e.type === "tool_call").length;
 	const criteriaLen = (card.acceptanceCriteria ?? []).length;
 	if (criteriaLen > 0) {
 		return Math.min(Math.round((toolCallCount / criteriaLen) * 95), 97);
@@ -228,7 +229,7 @@ function renderKanbanProgress(ws: services.Workspace | null): string {
 	const rows = cards.map((card: any) => {
 		const pct = cardProgressPercent(card);
 		const colorClass = pct >= 90 ? "budget-critical" : pct >= 70 ? "budget-warning" : "budget-ok";
-		const toolName = getLastToolCallName(card.progressTranscript);
+		const toolName = card.progressSummary?.lastToolCall ?? getLastToolCallName(card.progressTranscript);
 		const toolLabel = toolName ? `<span class="widget-tool-label">${escapeHtml(toolName)}</span>` : '';
 		return `
       <div class="widget-progress-item">
@@ -253,8 +254,13 @@ function renderKanbanDoneCount(ws: services.Workspace | null): string {
 
 	let trendHTML = "";
 	if (count > 0) {
-		// Check if any cards were recently completed (within last hour based on transcript)
+		// Check if any cards were recently completed (within last hour based on the compact summary).
 		const recentDone = doneCards.filter((card: any) => {
+			const summaryTimestamp = card.progressSummary?.lastVerificationAt;
+			if (summaryTimestamp) {
+				const timestamp = new Date(summaryTimestamp).getTime();
+				return Number.isFinite(timestamp) && Date.now() - timestamp < 3600000;
+			}
 			const entries = card.progressTranscript ?? [];
 			for (let i = entries.length - 1; i >= 0; i--) {
 				if (entries[i].type === "verification") {

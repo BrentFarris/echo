@@ -10,20 +10,20 @@ const livenessEventName = "echo:liveness:event"
 
 // LivenessConfig defines configuration for stall detection and recovery.
 type LivenessConfig struct {
-	Enabled       bool          `json:"enabled"`
-	StallTimeout  time.Duration `json:"stallTimeout"`   // duration without progress before a card is considered stalled; default 10m
-	MaxAutoRetries int          `json:"maxAutoRetries"` // max automatic resets before escalation; default 3
-	CheckInterval time.Duration `json:"checkInterval"`  // how often to run EnforceLiveness; default 1m
+	Enabled        bool          `json:"enabled"`
+	StallTimeout   time.Duration `json:"stallTimeout"`   // duration without progress before a card is considered stalled; default 10m
+	MaxAutoRetries int           `json:"maxAutoRetries"` // max automatic resets before escalation; default 3
+	CheckInterval  time.Duration `json:"checkInterval"`  // how often to run EnforceLiveness; default 1m
 }
 
 // LivenessEvent is emitted when liveness enforcement detects a stalled card
 // and takes recovery action.
 type LivenessEvent struct {
-	WorkspaceID string       `json:"workspaceId"`
-	Type        string       `json:"type"` // "stalled_reset", "stalled_escalated", "check_no_stalls"
-	CardID      string       `json:"cardId,omitempty"`
-	Message     string       `json:"message,omitempty"`
-	Board       KanbanBoard  `json:"board,omitempty"`
+	WorkspaceID string      `json:"workspaceId"`
+	Type        string      `json:"type"` // "stalled_reset", "stalled_escalated", "check_no_stalls"
+	CardID      string      `json:"cardId,omitempty"`
+	Message     string      `json:"message,omitempty"`
+	Board       KanbanBoard `json:"board,omitempty"`
 }
 
 // DefaultLivenessConfig returns a LivenessConfig with sensible defaults.
@@ -178,7 +178,7 @@ func (s *SystemService) resetStalledCardLocked(card *KanbanCard, recoveryType st
 	// Clear stalled marker so future executions start fresh.
 	card.StalledAt = nil
 
-	card.ProgressTranscript = append(card.ProgressTranscript, KanbanProgressEntry{
+	appendKanbanCardProgress(card, KanbanProgressEntry{
 		Type:      "status",
 		Title:     "Auto-reset due to stall",
 		Content:   fmt.Sprintf("Card was stalled and auto-reset to Ready (retry %d).", card.AutoRetriesUsed),
@@ -203,7 +203,7 @@ func (s *SystemService) escalateStalledCardLocked(card *KanbanCard, now time.Tim
 	card.Lane = KanbanLaneBlocked
 	card.Status = KanbanLaneBlocked
 
-	card.ProgressTranscript = append(card.ProgressTranscript, KanbanProgressEntry{
+	appendKanbanCardProgress(card, KanbanProgressEntry{
 		Type:      "status",
 		Title:     "Escalated due to repeated stalls",
 		Content:   fmt.Sprintf("Card stalled %d times and was escalated to Blocked for manual review.", card.AutoRetriesUsed),

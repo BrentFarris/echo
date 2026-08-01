@@ -170,7 +170,7 @@ func (s *SystemService) watchdogTick(workspaceID string) {
 			effectiveKanbanLane(*card) == KanbanLaneDone &&
 			!card.WatchdogChecked {
 			card.WatchdogChecked = true
-			card.ProgressTranscript = append(card.ProgressTranscript, KanbanProgressEntry{
+			appendKanbanCardProgress(card, KanbanProgressEntry{
 				Type:      "message",
 				Title:     kanbanVerificationProgressTitle(report, 0),
 				Content:   kanbanVerificationReportText(report),
@@ -197,7 +197,7 @@ func (s *SystemService) watchdogTick(workspaceID string) {
 			WorkspaceID: workspaceID,
 			CardID:      cardID,
 			Type:        "watchdog_checked",
-			Board:       repairBoard,
+			Board:       &repairBoard,
 		})
 	}
 
@@ -256,6 +256,7 @@ func (s *SystemService) generateRepairCardsFromVerification(workspaceID string, 
 				Status:    KanbanLaneReady,
 				Timestamp: time.Now(),
 			}},
+			ProgressRevision: 1,
 		}
 
 		s.state.KanbanCards = append(s.state.KanbanCards, repairCard)
@@ -271,7 +272,7 @@ func (s *SystemService) generateRepairCardsFromVerification(workspaceID string, 
 			WorkspaceID: workspaceID,
 			CardID:      info.card.ID,
 			Type:        "card_created",
-			Board:       board,
+			Board:       &board,
 		})
 		s.emitWatchdogEvent(WatchdogEvent{
 			WorkspaceID: workspaceID,

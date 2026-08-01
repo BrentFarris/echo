@@ -44,8 +44,6 @@ export function CloneWorkspaceGitRepository(arg1:string,arg2:string,arg3:string,
 
 export function CloseChatTab(arg1:string,arg2:string):Promise<services.ChatWorkspaceState>;
 
-export function CloseKanbanCardDetail(arg1:string,arg2:string):Promise<services.KanbanBoard>;
-
 export function CommitWorkspaceGitChanges(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
 
 export function CompleteWorkspaceFile(arg1:string,arg2:services.WorkspaceCompletionRequest):Promise<services.WorkspaceCompletionResponse>;
@@ -164,6 +162,8 @@ export function LoadDevelopmentLogStatus():Promise<services.DevelopmentLogStatus
 
 export function LoadKanbanBoard(arg1:string):Promise<services.KanbanBoard>;
 
+export function LoadKanbanCardDetail(arg1:string,arg2:string):Promise<services.KanbanCard>;
+
 export function LoadRuntimeStatus():Promise<services.RuntimeStatus>;
 
 export function LoadState():Promise<services.AppState>;
@@ -197,8 +197,6 @@ export function MoveWorkspacePath(arg1:string,arg2:string,arg3:string):Promise<s
 export function MoveWorkspaceTask(arg1:string,arg2:string,arg3:string,arg4:string):Promise<services.TaskBoard>;
 
 export function OpenExternalPathExplorer(arg1:string):Promise<void>;
-
-export function OpenKanbanCardDetail(arg1:string,arg2:string):Promise<services.KanbanBoard>;
 
 export function OpenWorkspaceExplorer(arg1:string):Promise<void>;
 

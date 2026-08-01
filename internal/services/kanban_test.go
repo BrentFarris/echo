@@ -65,8 +65,15 @@ func TestCreateReadyKanbanCardPersistsManualCard(t *testing.T) {
 	if !card.Eligible || card.Lane != KanbanLaneReady || card.Status != KanbanLaneReady {
 		t.Fatalf("expected an eligible ready card, got %#v", card)
 	}
-	if len(card.ProgressTranscript) != 1 || card.ProgressTranscript[0].Content != "Created manually in the Ready lane." {
-		t.Fatalf("expected manual creation transcript, got %#v", card.ProgressTranscript)
+	if len(card.ProgressTranscript) != 0 || card.ProgressSummary == nil || card.ProgressSummary.EntryCount != 1 {
+		t.Fatalf("expected compact card summary without transcript, got %#v", card)
+	}
+	detail, err := service.LoadKanbanCardDetail(workspaceID, card.ID)
+	if err != nil {
+		t.Fatalf("load created card detail: %v", err)
+	}
+	if len(detail.ProgressTranscript) != 1 || detail.ProgressTranscript[0].Content != "Created manually in the Ready lane." {
+		t.Fatalf("expected manual creation transcript in detail, got %#v", detail.ProgressTranscript)
 	}
 
 	service.Shutdown()
@@ -230,13 +237,13 @@ func TestClearDoneKanbanCardsKeepsDonePrerequisitesForUnfinishedCards(t *testing
 	}
 }
 
-func TestClearDoneKanbanCardsClearsDeletedDetailSelection(t *testing.T) {
+func TestClearDoneKanbanCardsRemovesLazyDetail(t *testing.T) {
 	service, workspaceID := newKanbanTestService(t)
 	seedKanbanCards(t, service, []KanbanCard{
 		{ID: "card-1", WorkspaceID: workspaceID, Title: "Done", Description: "Done", AcceptanceCriteria: []string{"Done"}, Lane: KanbanLaneDone},
 	})
-	if _, err := service.OpenKanbanCardDetail(workspaceID, "card-1"); err != nil {
-		t.Fatalf("open detail: %v", err)
+	if _, err := service.LoadKanbanCardDetail(workspaceID, "card-1"); err != nil {
+		t.Fatalf("load detail: %v", err)
 	}
 
 	board, err := service.ClearDoneKanbanCards(workspaceID)
@@ -246,11 +253,8 @@ func TestClearDoneKanbanCardsClearsDeletedDetailSelection(t *testing.T) {
 	if len(kanbanCardsForTest(board)) != 0 {
 		t.Fatalf("expected done card to clear, got %#v", board)
 	}
-	service.chatMu.Lock()
-	activeDetail := service.kanbanDetailViews[workspaceID]
-	service.chatMu.Unlock()
-	if activeDetail != "" {
-		t.Fatalf("expected deleted card detail selection to clear, got %q", activeDetail)
+	if _, err := service.LoadKanbanCardDetail(workspaceID, "card-1"); err == nil {
+		t.Fatal("expected deleted card detail to be unavailable")
 	}
 }
 
@@ -262,8 +266,8 @@ func TestDeleteReadyKanbanCardDeletesDependentChain(t *testing.T) {
 		{ID: "card-3", WorkspaceID: workspaceID, Title: "Polish", Description: "Third", AcceptanceCriteria: []string{"Third"}, Dependencies: []string{"card-2"}, Lane: KanbanLaneReady},
 		{ID: "card-4", WorkspaceID: workspaceID, Title: "Independent", Description: "Fourth", AcceptanceCriteria: []string{"Fourth"}, Lane: KanbanLaneReady},
 	})
-	if _, err := service.OpenKanbanCardDetail(workspaceID, "card-2"); err != nil {
-		t.Fatalf("open detail: %v", err)
+	if _, err := service.LoadKanbanCardDetail(workspaceID, "card-2"); err != nil {
+		t.Fatalf("load detail: %v", err)
 	}
 
 	board, err := service.DeleteKanbanCard(workspaceID, "card-1")
@@ -273,11 +277,8 @@ func TestDeleteReadyKanbanCardDeletesDependentChain(t *testing.T) {
 	if len(board.Ready) != 1 || board.Ready[0].ID != "card-4" {
 		t.Fatalf("expected only independent card to remain, got %#v", board)
 	}
-	service.chatMu.Lock()
-	activeDetail := service.kanbanDetailViews[workspaceID]
-	service.chatMu.Unlock()
-	if activeDetail != "" {
-		t.Fatalf("expected deleted dependent detail selection to clear, got %q", activeDetail)
+	if _, err := service.LoadKanbanCardDetail(workspaceID, "card-2"); err == nil {
+		t.Fatal("expected deleted dependent detail to be unavailable")
 	}
 }
 
@@ -342,8 +343,12 @@ func TestUpdateKanbanCardDescriptionBeforeExecution(t *testing.T) {
 	if card.Description != "Updated detail" {
 		t.Fatalf("expected trimmed description, got %q", card.Description)
 	}
-	if len(card.ProgressTranscript) != 1 || card.ProgressTranscript[0].Title != "Description updated" {
-		t.Fatalf("expected description update in transcript, got %#v", card.ProgressTranscript)
+	detail, err := service.LoadKanbanCardDetail(workspaceID, card.ID)
+	if err != nil {
+		t.Fatalf("load card detail: %v", err)
+	}
+	if len(detail.ProgressTranscript) != 1 || detail.ProgressTranscript[0].Title != "Description updated" {
+		t.Fatalf("expected description update in transcript, got %#v", detail.ProgressTranscript)
 	}
 }
 
@@ -364,8 +369,12 @@ func TestUpdateKanbanCardDirectionBeforeExecution(t *testing.T) {
 	if card.Direction != "New direction" {
 		t.Fatalf("expected trimmed direction, got %q", card.Direction)
 	}
-	if len(card.ProgressTranscript) != 1 || card.ProgressTranscript[0].Title != "Direction updated" {
-		t.Fatalf("expected direction update in transcript, got %#v", card.ProgressTranscript)
+	detail, err := service.LoadKanbanCardDetail(workspaceID, card.ID)
+	if err != nil {
+		t.Fatalf("load card detail: %v", err)
+	}
+	if len(detail.ProgressTranscript) != 1 || detail.ProgressTranscript[0].Title != "Direction updated" {
+		t.Fatalf("expected direction update in transcript, got %#v", detail.ProgressTranscript)
 	}
 }
 
@@ -506,8 +515,12 @@ func TestCreateKanbanCardFromChatMessageUsesAssistantContentOnly(t *testing.T) {
 	if len(card.AcceptanceCriteria) != 1 || card.AcceptanceCriteria[0] == "" {
 		t.Fatalf("expected default acceptance criteria, got %#v", card.AcceptanceCriteria)
 	}
-	if len(card.ProgressTranscript) != 1 || card.ProgressTranscript[0].Content != "Created directly from an Echo chat message." {
-		t.Fatalf("expected direct creation transcript, got %#v", card.ProgressTranscript)
+	detail, err := service.LoadKanbanCardDetail(workspaceID, card.ID)
+	if err != nil {
+		t.Fatalf("load card detail: %v", err)
+	}
+	if len(detail.ProgressTranscript) != 1 || detail.ProgressTranscript[0].Content != "Created directly from an Echo chat message." {
+		t.Fatalf("expected direct creation transcript, got %#v", detail.ProgressTranscript)
 	}
 }
 
@@ -545,6 +558,13 @@ func TestResetKanbanCardStartsFresh(t *testing.T) {
 	}
 	if len(card.ProgressTranscript) != 0 {
 		t.Fatalf("expected reset to clear transcript, got %#v", card.ProgressTranscript)
+	}
+	detail, err := service.LoadKanbanCardDetail(workspaceID, card.ID)
+	if err != nil {
+		t.Fatalf("load reset card detail: %v", err)
+	}
+	if len(detail.ProgressTranscript) != 0 {
+		t.Fatalf("expected reset detail transcript to be empty, got %#v", detail.ProgressTranscript)
 	}
 	if card.Title != "Retryable" || card.Description != "Start again" || len(card.AcceptanceCriteria) != 1 || card.AcceptanceCriteria[0] != "Done" {
 		t.Fatalf("expected reset to preserve card definition, got %#v", card)
@@ -594,8 +614,12 @@ func TestInProgressKanbanCardRestoresAsInterrupted(t *testing.T) {
 	if len(board.Blocked) != 1 || board.Blocked[0].ID != "card-1" {
 		t.Fatalf("expected interrupted card to restore blocked, got %#v", board)
 	}
-	if !transcriptContains(board.Blocked[0].ProgressTranscript, "Echo closed") {
-		t.Fatalf("expected interruption transcript, got %#v", board.Blocked[0].ProgressTranscript)
+	detail, err := reloaded.LoadKanbanCardDetail(workspaceID, "card-1")
+	if err != nil {
+		t.Fatalf("load interrupted detail: %v", err)
+	}
+	if !transcriptContains(detail.ProgressTranscript, "Echo closed") {
+		t.Fatalf("expected interruption transcript, got %#v", detail.ProgressTranscript)
 	}
 }
 

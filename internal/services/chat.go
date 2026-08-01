@@ -793,7 +793,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 	defer cancel()
 	defer s.finishChatStream(workspace.ID, streamID)
 
-	client, err := s.newLLMClient(settings)
+	modelRouter, err := s.newVisionLLMRouter(workspace.ID, settings)
 	if err != nil {
 		s.failChatMessage(workspace.ID, streamID, messageID, err.Error())
 		return
@@ -889,15 +889,25 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 			}
 		}
 
+		if mediaPayloadsDisabled {
+			var changed bool
+			messages, changed = chatMessagesWithoutMediaPayloads(messages)
+			if changed {
+				s.replaceChatHistory(workspace.ID, messages[1:], chatID)
+				currentUser = latestContextUserMessage(messages)
+			}
+		}
+
+		activeSettings, client := modelRouter.route(messages)
 		preflightPolicy := contextCompactionPolicy{CurrentUser: currentUser}
 		researchHeadroomCompaction := research != nil && research.parentContextNeedsCompaction(messages, toolSchema)
 		if researchHeadroomCompaction &&
-			contextHasCompressibleStale(settings, messages, preflightPolicy) {
-			if !contextNeedsCompaction(settings, messages, toolSchema) {
+			contextHasCompressibleStale(activeSettings, messages, preflightPolicy) {
+			if !contextNeedsCompaction(activeSettings, messages, toolSchema) {
 				preflightPolicy.Force = true
 			}
 			s.compactingChatMessage(workspace.ID, streamID, messageID)
-			compaction, compactErr := compactContextIfNeeded(ctx, client, settings, messages, toolSchema, preflightPolicy)
+			compaction, compactErr := compactContextIfNeeded(ctx, client, activeSettings, messages, toolSchema, preflightPolicy)
 			if compactErr != nil {
 				if ctx.Err() != nil {
 					s.cancelChatMessage(workspace.ID, streamID, messageID)
@@ -912,21 +922,12 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 			}
 		}
 
-		if mediaPayloadsDisabled {
-			var changed bool
-			messages, changed = chatMessagesWithoutMediaPayloads(messages)
-			if changed {
-				s.replaceChatHistory(workspace.ID, messages[1:], chatID)
-				currentUser = latestContextUserMessage(messages)
-			}
-		}
-
 		var request llm.ChatRequest
 		var err error
 		if forceFinalNoTools {
-			request, err = llm.NewChatRequest(settings, messages)
+			request, err = llm.NewChatRequest(activeSettings, messages)
 		} else {
-			request, err = llm.NewChatRequest(settings, messages, llm.WithTools(toolSchema), llm.WithToolChoice("auto"))
+			request, err = llm.NewChatRequest(activeSettings, messages, llm.WithTools(toolSchema), llm.WithToolChoice("auto"))
 		}
 		if err != nil {
 			if s.completeChatWithResearchFallback(workspace.ID, streamID, messageID, research, err.Error()) {
@@ -978,7 +979,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 				for forcedCompactions < 2 {
 					forcedCompactions++
 					s.compactingChatMessage(workspace.ID, streamID, messageID)
-					compaction, compactErr = compactContextIfNeeded(ctx, client, settings, messages, toolSchema, contextCompactionPolicy{
+					compaction, compactErr = compactContextIfNeeded(ctx, client, activeSettings, messages, toolSchema, contextCompactionPolicy{
 						CurrentUser:    currentUser,
 						Force:          true,
 						Aggressiveness: forcedCompactions,
@@ -1101,12 +1102,12 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 			}
 
 			recoverableToolCalls[call.ID] = true
-			// Append stripped versions to messages to prevent base64 data accumulation.
-			// The LLM still sees the text description (e.g., "Image returned by tool...")
-			// but not the megabytes of base64 pixel data.
+			// Keep visual payloads in this in-memory turn so the selected Vision
+			// model can inspect tool captures and generated media. Persistent
+			// history still stores only the compact text description.
 			for _, resultMessage := range execution.Messages {
 				stripped := stripMediaContentParts(resultMessage)
-				messages = append(messages, stripped)
+				messages = append(messages, resultMessage)
 				s.appendChatHistory(workspace.ID, stripped, chatID)
 			}
 			if len(execution.Changes) > 0 {

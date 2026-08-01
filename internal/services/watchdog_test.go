@@ -93,9 +93,13 @@ func TestWatchdogTickMarksCheckedAndRunsVerification(t *testing.T) {
 	if !board.Done[0].WatchdogChecked {
 		t.Fatal("expected WatchdogChecked to be true after tick")
 	}
-	// Should have a progress entry from the verification
-	if len(board.Done[0].ProgressTranscript) < 1 {
-		t.Fatalf("expected at least 1 progress entry (watchdog), got %d", len(board.Done[0].ProgressTranscript))
+	// The compact board omits transcripts; the lazy detail retains verification history.
+	detail, err := service.LoadKanbanCardDetail(workspaceID, board.Done[0].ID)
+	if err != nil {
+		t.Fatalf("load card detail: %v", err)
+	}
+	if len(detail.ProgressTranscript) < 1 {
+		t.Fatalf("expected at least 1 progress entry (watchdog), got %d", len(detail.ProgressTranscript))
 	}
 }
 
@@ -589,12 +593,16 @@ func TestGenerateRepairCardsCreatesReadyCardOnVerificationFailure(t *testing.T) 
 		t.Fatalf("repair card lane should be Ready, got %q", repair.Lane)
 	}
 
-	// Verify progress transcript mentions watchdog and original card ID
-	if len(repair.ProgressTranscript) < 1 {
+	// Verify the lazy detail transcript mentions watchdog and original card ID.
+	detail, err := service.LoadKanbanCardDetail(workspaceID, repair.ID)
+	if err != nil {
+		t.Fatalf("load repair detail: %v", err)
+	}
+	if len(detail.ProgressTranscript) < 1 {
 		t.Fatal("expected at least 1 progress entry on repair card")
 	}
-	if !strings.Contains(repair.ProgressTranscript[0].Content, "card-1") {
-		t.Fatalf("progress should reference original card ID, got %q", repair.ProgressTranscript[0].Content)
+	if !strings.Contains(detail.ProgressTranscript[0].Content, "card-1") {
+		t.Fatalf("progress should reference original card ID, got %q", detail.ProgressTranscript[0].Content)
 	}
 }
 

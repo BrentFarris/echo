@@ -202,7 +202,6 @@ type SystemService struct {
 	kanbanRuns              map[string]context.CancelFunc
 	kanbanAgents            map[string]*kanbanAgentRun
 	kanbanAgentSeq          uint64
-	kanbanDetailViews       map[string]string
 	terminalMu              sync.Mutex
 	terminalSessions        map[string]*terminalSession // workspaceID -> session
 	terminalSeq             uint64
@@ -259,7 +258,6 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 		researchRuns:            make(map[string]*chatResearchRun),
 		kanbanRuns:              make(map[string]context.CancelFunc),
 		kanbanAgents:            make(map[string]*kanbanAgentRun),
-		kanbanDetailViews:       make(map[string]string),
 		terminalSessions:        make(map[string]*terminalSession),
 		heartbeats:              make(map[string]*heartbeatHandle),
 		watchdogs:               make(map[string]*watchdogHandle),
@@ -1024,9 +1022,6 @@ func (s *SystemService) DeleteWorkspace(id string) (AppState, error) {
 	s.mu.Unlock()
 
 	s.dropChatSession(id)
-	s.chatMu.Lock()
-	delete(s.kanbanDetailViews, id)
-	s.chatMu.Unlock()
 	s.dropWorkspaceChangeReview(id)
 	s.closeWorkspaceLSPClients(id)
 	s.closeWorkspaceTerminalSession(id)
@@ -1254,6 +1249,7 @@ func (s *SystemService) load() error {
 	legacyThinkingDisabled := stateFileLegacyThinkingDisabled(data) && !stateFileHasSettingKey(data, "thinkingTokenBudget")
 	legacyLLMEndpoints := !stateFileHasSettingKey(data, "endpoints")
 	legacyEndpointSelection := !stateFileHasSettingKey(data, "endpointSelection")
+	legacyVisionEndpointSelection := !stateFileEndpointSelectionHasKey(data, "vision")
 
 	// Migrate legacy comfyuiDefaultWorkflow → separate txt2img/img2img workflow fields.
 	if stateFileHasSettingKey(data, "comfyuiDefaultWorkflow") {
@@ -1401,7 +1397,7 @@ func (s *SystemService) load() error {
 			return err
 		}
 	}
-	if changed || interruptedKanban || interruptedChat || hadLegacyWorkspaceState || legacyThinkingDisabled || legacyLLMEndpoints || legacyEndpointSelection || legacyResearchAgentConcurrency || missingLLMEndpoint || missingLLMModel || missingWebAccessToken || migratedWebAccessPort {
+	if changed || interruptedKanban || interruptedChat || hadLegacyWorkspaceState || legacyThinkingDisabled || legacyLLMEndpoints || legacyEndpointSelection || legacyVisionEndpointSelection || legacyResearchAgentConcurrency || missingLLMEndpoint || missingLLMModel || missingWebAccessToken || migratedWebAccessPort {
 		return s.saveLocked()
 	}
 	return nil
@@ -1495,6 +1491,19 @@ func stateFileHasSettingKey(data []byte, key string) bool {
 		return false
 	}
 	_, ok := raw.Settings[key]
+	return ok
+}
+
+func stateFileEndpointSelectionHasKey(data []byte, key string) bool {
+	var raw struct {
+		Settings struct {
+			EndpointSelection map[string]json.RawMessage `json:"endpointSelection"`
+		} `json:"settings"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	_, ok := raw.Settings.EndpointSelection[key]
 	return ok
 }
 

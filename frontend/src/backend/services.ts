@@ -104,10 +104,6 @@ export function ClearWorkspaceIcon(...args: Parameters<typeof Wails.ClearWorkspa
   return call("ClearWorkspaceIcon", Wails.ClearWorkspaceIcon, args);
 }
 
-export function CloseKanbanCardDetail(...args: Parameters<typeof Wails.CloseKanbanCardDetail>): ReturnType<typeof Wails.CloseKanbanCardDetail> {
-  return call("CloseKanbanCardDetail", Wails.CloseKanbanCardDetail, args);
-}
-
 export function CompleteWorkspaceFile(...args: Parameters<typeof Wails.CompleteWorkspaceFile>): ReturnType<typeof Wails.CompleteWorkspaceFile> {
   return call("CompleteWorkspaceFile", Wails.CompleteWorkspaceFile, args);
 }
@@ -273,6 +269,10 @@ export function LoadDevelopmentLogStatus(...args: Parameters<typeof Wails.LoadDe
 
 export function LoadKanbanBoard(...args: Parameters<typeof Wails.LoadKanbanBoard>): ReturnType<typeof Wails.LoadKanbanBoard> {
   return call("LoadKanbanBoard", Wails.LoadKanbanBoard, args);
+}
+
+export function LoadKanbanCardDetail(...args: Parameters<typeof Wails.LoadKanbanCardDetail>): ReturnType<typeof Wails.LoadKanbanCardDetail> {
+  return call("LoadKanbanCardDetail", Wails.LoadKanbanCardDetail, args);
 }
 
 export function LoadTaskBoard(...args: Parameters<typeof Wails.LoadTaskBoard>): ReturnType<typeof Wails.LoadTaskBoard> {
@@ -515,10 +515,6 @@ export function MoveWorkspaceTask(...args: Parameters<typeof Wails.MoveWorkspace
 
 export function MoveWorkspacePath(...args: Parameters<typeof Wails.MoveWorkspacePath>): ReturnType<typeof Wails.MoveWorkspacePath> {
   return call("MoveWorkspacePath", Wails.MoveWorkspacePath, args);
-}
-
-export function OpenKanbanCardDetail(...args: Parameters<typeof Wails.OpenKanbanCardDetail>): ReturnType<typeof Wails.OpenKanbanCardDetail> {
-  return call("OpenKanbanCardDetail", Wails.OpenKanbanCardDetail, args);
 }
 
 export function OpenExternalPathExplorer(...args: Parameters<typeof Wails.OpenExternalPathExplorer>): ReturnType<typeof Wails.OpenExternalPathExplorer> {
