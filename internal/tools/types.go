@@ -342,6 +342,8 @@ type WorkspaceSkillRecordRequest struct {
 	Description      string   `json:"description,omitempty"`
 	Triggers         []string `json:"triggers,omitempty"`
 	Body             string   `json:"body,omitempty"`
+	DurabilityReason string   `json:"durabilityReason,omitempty"`
+	FutureTasks      []string `json:"futureTasks,omitempty"`
 	ExpectedRevision string   `json:"expectedRevision,omitempty"`
 }
 

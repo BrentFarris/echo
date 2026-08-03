@@ -868,14 +868,15 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 	researchFinalizeReminders := 0
 	forceFinalNoTools := false
 	orchestrationRounds := 0
+	maxChatRounds := settings.MaxChatRounds
 
 	for {
 		orchestrationRounds++
-		if orchestrationRounds > 64 {
+		if maxChatRounds > 0 && orchestrationRounds > maxChatRounds {
 			if s.completeChatWithResearchFallback(workspace.ID, streamID, messageID, research, "The chat orchestration limit was reached before the model produced a final answer.") {
 				return
 			}
-			s.failChatMessage(workspace.ID, streamID, messageID, "The chat exceeded 64 assistant/tool rounds without producing a final answer.")
+			s.failChatMessage(workspace.ID, streamID, messageID, fmt.Sprintf("The chat exceeded %d assistant/tool rounds without producing a final answer.", maxChatRounds))
 			return
 		}
 		if err := ctx.Err(); err != nil {

@@ -189,12 +189,17 @@ func TestWorkspaceSkillToolWriteStaysOutOfProjectChangesAndFileSearch(t *testing
 		t.Fatal(err)
 	}
 	arguments, err := json.Marshal(map[string]any{
-		"action":      "upsert",
-		"folder":      "workspace",
-		"name":        "hidden-skill",
-		"description": "Durable guidance that remains in Echo's local cache.",
-		"triggers":    []string{"hidden skill"},
-		"body":        "# Hidden skill\n\nThis should not appear as a project file.",
+		"action":           "upsert",
+		"folder":           "workspace",
+		"name":             "hidden-skill",
+		"description":      "Durable guidance that remains in Echo's local cache.",
+		"triggers":         []string{"hidden skill"},
+		"body":             "# Hidden skill\n\nThis should not appear as a project file.",
+		"durabilityReason": "This verifies the stable boundary between project changes and workspace-local guidance.",
+		"futureTasks": []string{
+			"Inspect workspace change tracking.",
+			"Change workspace file search exclusions.",
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -262,6 +267,35 @@ func TestWorkspaceSkillsPromptSurfacesMetadataWithoutBody(t *testing.T) {
 	}
 	if strings.Contains(prompt, "secret skill body") {
 		t.Fatalf("prompt unexpectedly included a skill body: %q", prompt)
+	}
+	for _, expected := range []string{
+		"default to workspace_skill_record action skip",
+		"One-off bug fixes",
+		"multiple distinct future tasks",
+		"Do not create a skill named after the current bug or fix",
+		"durabilityReason",
+		"futureTasks",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected conservative learning policy to contain %q, got %q", expected, prompt)
+		}
+	}
+}
+
+func TestWorkspaceSkillCheckpointPromptDefaultsNarrowFixesToSkip(t *testing.T) {
+	for _, verified := range []bool{false, true} {
+		prompt := workspaceSkillCheckpointPrompt(verified)
+		for _, expected := range []string{
+			"default to workspace_skill_record action skip",
+			"One-off bug fixes",
+			"line-level implementation details",
+			"two to four futureTasks",
+			"otherwise call skip",
+		} {
+			if !strings.Contains(prompt, expected) {
+				t.Fatalf("verified=%v: expected prompt to contain %q, got %q", verified, expected, prompt)
+			}
+		}
 	}
 }
 
