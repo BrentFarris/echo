@@ -4,6 +4,7 @@ export type ToastTone = "info" | "success" | "error";
 export type CodeEntryKind = "file" | "directory" | "other";
 export type CodeCreateKind = "file" | "folder";
 export type CodeGitChangeState = "" | "created" | "modified";
+export type MarkdownPreviewMode = "collapsed" | "split" | "full";
 
 export type CodeTabContextMenu = {
   path: string;
@@ -78,6 +79,7 @@ export type CodeFileTab = {
   mediaLoading?: boolean;
   mediaError?: string;
   zoomLevel?: number;
+  markdownPreviewMode?: MarkdownPreviewMode;
 };
 
 export type CodeNavigationLocation = {

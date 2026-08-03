@@ -1,6 +1,7 @@
 import { services } from "../../wailsjs/go/models";
 import { codeIcons } from "./icons";
 import { isWorkspaceDebugActive, renderDebugDock, renderDebugToolbar } from "./debug";
+import { isMarkdownPreviewTab, renderMarkdownEditorFrame } from "./markdownPreview";
 import { activeCodeTab, directoryStateFor, ensureCodeState, filteredEntries, isCodeTreeEntrySelected } from "./state";
 import type { CodeEntryKind, CodeFileTab, CodeGitChangeState, CodeWorkspaceState } from "./types";
 import { codeTabName, escapeAttribute, escapeHtml, fileName, formatBytes, isMediaFile, mediaKind } from "./utils";
@@ -93,7 +94,9 @@ export function renderCodeView(workspace: services.Workspace): string {
           <div class="code-editor-frame">
             ${
               activeTab
-                ? `<div class="code-editor-mount" data-code-editor-mount></div>`
+                ? isMarkdownPreviewTab(activeTab)
+                  ? renderMarkdownEditorFrame(workspace.id, activeTab)
+                  : `<div class="code-editor-mount" data-code-editor-mount></div>`
                 : `<div class="empty-state code-empty" data-code-empty>
                     <strong>No file open</strong>
                     <span>Select a text file, or double-click here to create a temporary file.</span>

@@ -11,6 +11,12 @@ import { patchDirtyUI } from "./dom";
 import type { CodeFileTab } from "./types";
 import { inlineCodeChatExtension } from "./inlineChat";
 import { lspCompletionExtension, lspDefinitionExtension, lspRenameExtension } from "./lsp";
+import {
+  isMarkdownPreviewTab,
+  markdownPreviewMode,
+  mountMarkdownPreview,
+  scheduleMarkdownPreviewPatch,
+} from "./markdownPreview";
 import { referencesPanelExtension } from "./references";
 import { activeCodeTab, ensureCodeState, findTab } from "./state";
 import type { CodeViewCallbacks } from "./types";
@@ -253,9 +259,13 @@ export async function mountActiveCodeEditor(
     if (mountedEditor.dom.parentElement !== mount) {
       mount.innerHTML = "";
       mount.appendChild(mountedEditor.dom);
+      mountedEditor.requestMeasure();
     }
     updateTabEditorState(workspaceID, tab.path, mountedEditor);
     applyPendingEditorReveal(tab, mountedEditor);
+    if (isMarkdownPreviewTab(tab)) {
+      mountMarkdownPreview(workspaceID, tab.path);
+    }
     return;
   }
 
@@ -343,6 +353,9 @@ export async function mountActiveCodeEditor(
   if (shouldFocusMountedEditor(workspaceID)) {
     mountedEditor.focus();
   }
+  if (isMarkdownPreviewTab(tab)) {
+    mountMarkdownPreview(workspaceID, tab.path);
+  }
 }
 
 function applyPendingEditorReveal(tab: CodeFileTab, view: EditorView): boolean {
@@ -383,7 +396,14 @@ function gitChangedLineGutterExtension(
 
 function shouldFocusMountedEditor(workspaceID: string) {
   const state = ensureCodeState(workspaceID);
-  return !state.searchFocused && !state.textSearchOpen && !state.textSearchFocusedField && !state.quickOpen.open;
+  const tab = activeCodeTab(workspaceID);
+  return (
+    !state.searchFocused &&
+    !state.textSearchOpen &&
+    !state.textSearchFocusedField &&
+    !state.quickOpen.open &&
+    (!isMarkdownPreviewTab(tab) || markdownPreviewMode(tab) !== "full")
+  );
 }
 
 function codeNavigationHistoryKeymap(
@@ -641,6 +661,9 @@ function updateTabContent(workspaceID: string, path: string, content: string) {
   tab.selectionAnchor = clamp(tab.selectionAnchor, 0, docLength);
   tab.selectionHead = clamp(tab.selectionHead, 0, docLength);
   patchDirtyUI(workspaceID, tab);
+  if (isMarkdownPreviewTab(tab)) {
+    scheduleMarkdownPreviewPatch(workspaceID, tab.path);
+  }
 }
 
 function updateTabEditorState(workspaceID: string, path: string, view: EditorView) {

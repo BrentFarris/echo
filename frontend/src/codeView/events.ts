@@ -1,5 +1,6 @@
 import { setCodeQuickOpenEventBinder, setCodeTextSearchEventBinder, setCodeTreeEventBinder, restoreCodeTreeScroll, startExplorerResize } from "./dom";
-import { ensureCodeState, isCodeTreeEntrySelected, type CodeTreeSelectionEntry } from "./state";
+import { isMarkdownPreviewTab, stepMarkdownPreviewMode } from "./markdownPreview";
+import { activeCodeTab, ensureCodeState, isCodeTreeEntrySelected, type CodeTreeSelectionEntry } from "./state";
 import type { CodeViewCallbacks } from "./types";
 import { cancelPendingCodeCreate, cancelPendingCodeRename, clearCodeDrag, collapseCodeTree, deleteSelectedCodePaths, dropCodeDrag, handleSearchInput, refreshCodeTree, selectCodeTreeEntry, startCodeDrag, startSelectedCodeCreate, startSelectedCodeRename, submitPendingCodeCreate, submitPendingCodeRename, toggleDirectory, toggleIgnoredFilter, updateCodeDropTarget, updatePendingCodeCreateName, updatePendingCodeRenameName } from "./explorer";
 import { activateCodeTab, closeCodeTab, createUntitledCodeFile, navigateCodeHistory, openCodeFile, openPinnedCodeFile, pinCodeTab, saveActiveCodeFile, startOpenTabFileWatch, toggleTemporaryFiles } from "./tabs";
@@ -742,6 +743,22 @@ async function handleCodeAction(
   }
   if (action === "open-inline-chat") {
     openInlineCodeChatAtCursor(workspaceID, callbacks);
+    return;
+  }
+  if (
+    action === "collapse-markdown-preview" ||
+    action === "expand-markdown-preview"
+  ) {
+    const tab = activeCodeTab(workspaceID);
+    if (
+      isMarkdownPreviewTab(tab) &&
+      stepMarkdownPreviewMode(
+        tab,
+        action === "expand-markdown-preview" ? 1 : -1,
+      )
+    ) {
+      callbacks.render();
+    }
     return;
   }
   if (action === "create-temporary-file") {

@@ -11,7 +11,19 @@ function escapeAttribute(value: string): string {
   return escapeHtml(value).replaceAll("`", "&#096;");
 }
 
-export function renderMarkdown(markdown = ""): string {
+export type MarkdownMediaKind = "image" | "audio" | "video";
+
+export type MarkdownRenderOptions = {
+  enableMedia?: boolean;
+  emptyPlaceholder?: string;
+  headingOffset?: number;
+  resolveMediaURL?: (source: string, kind: MarkdownMediaKind) => string;
+};
+
+export function renderMarkdown(
+  markdown = "",
+  options: MarkdownRenderOptions = {},
+): string {
   const lines = markdown.replaceAll("\r\n", "\n").split("\n");
   const blocks: string[] = [];
   let paragraph: string[] = [];
@@ -20,7 +32,7 @@ export function renderMarkdown(markdown = ""): string {
 
   const flushParagraph = () => {
     if (paragraph.length) {
-      blocks.push(`<p>${renderInlineMarkdown(paragraph.join(" "))}</p>`);
+      blocks.push(`<p>${renderInlineMarkdown(paragraph.join(" "), options)}</p>`);
       paragraph = [];
     }
   };
@@ -28,7 +40,7 @@ export function renderMarkdown(markdown = ""): string {
     if (list) {
       const tag = list.ordered ? "ol" : "ul";
       const start = list.ordered && list.start !== 1 ? ` start="${list.start}"` : "";
-      blocks.push(`<${tag}${start}>${list.items.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</${tag}>`);
+      blocks.push(`<${tag}${start}>${list.items.map((item) => `<li>${renderInlineMarkdown(item, options)}</li>`).join("")}</${tag}>`);
       list = null;
     }
   };
@@ -59,16 +71,17 @@ export function renderMarkdown(markdown = ""): string {
       flushParagraph();
       flushList();
       const table = collectMarkdownTable(lines, index);
-      blocks.push(renderMarkdownTable(table.rows, table.alignments));
+      blocks.push(renderMarkdownTable(table.rows, table.alignments, options));
       index = table.endIndex;
       continue;
     }
-    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
     if (heading) {
       flushParagraph();
       flushList();
-      const level = Math.min(heading[1].length + 2, 6);
-      blocks.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      const offset = options.headingOffset ?? 2;
+      const level = Math.min(Math.max(heading[1].length + offset, 1), 6);
+      blocks.push(`<h${level}>${renderInlineMarkdown(heading[2], options)}</h${level}>`);
       continue;
     }
     const unorderedItem = line.match(/^\s*[-*]\s+(.+)$/);
@@ -97,7 +110,7 @@ export function renderMarkdown(markdown = ""): string {
     blocks.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
   }
 
-  return blocks.join("") || `<p class="stream-placeholder">Thinking...</p>`;
+  return blocks.join("") || `<p class="stream-placeholder">${escapeHtml(options.emptyPlaceholder ?? "Thinking...")}</p>`;
 }
 
 export function patchMarkdownElement(element: HTMLElement, markdown = "") {
@@ -260,11 +273,15 @@ function tableColumnAlignment(separator: string): string {
   return "left";
 }
 
-function renderMarkdownTable(rows: string[][], alignments: string[]): string {
+function renderMarkdownTable(
+  rows: string[][],
+  alignments: string[],
+  options: MarkdownRenderOptions,
+): string {
   const columnCount = Math.max(...rows.map((row) => row.length));
   const renderCell = (tag: "th" | "td", value: string, index: number) => {
     const alignment = alignments[index] ?? "left";
-    return `<${tag} style="text-align: ${alignment}">${renderInlineMarkdown(value ?? "")}</${tag}>`;
+    return `<${tag} style="text-align: ${alignment}">${renderInlineMarkdown(value ?? "", options)}</${tag}>`;
   };
   const header = rows[0] ?? [];
   const body = rows.slice(1);
@@ -284,20 +301,215 @@ function renderMarkdownTable(rows: string[][], alignments: string[]): string {
   `;
 }
 
-function renderInlineMarkdown(value: string): string {
-  let html = escapeHtml(value);
+function renderInlineMarkdown(
+  value: string,
+  options: MarkdownRenderOptions,
+): string {
+  const tokens: string[] = [];
+  const storeToken = (html: string) => {
+    const index = tokens.push(html) - 1;
+    return `\uE000${index}\uE001`;
+  };
+  let prepared = value;
+
+  if (options.enableMedia) {
+    prepared = replaceRawMediaHTML(prepared, options, storeToken);
+    prepared = prepared.replace(
+      /!\[([^\]]*)\]\(\s*((?:<[^>]+>)|(?:[^)\s]+))(?:\s+["']([^"']*)["'])?\s*\)/g,
+      (_match, alt, source, title) => {
+        const destination = markdownDestination(source);
+        const kind = markdownMediaKindForSource(destination) ?? "image";
+        return storeToken(
+          renderMarkdownMedia(kind, destination, alt, title, options),
+        );
+      },
+    );
+  }
+
+  prepared = prepared.replace(
+    /\[([^\]]+)\]\(\s*((?:<[^>]+>)|(?:[^)\s]+))(?:\s+["']([^"']*)["'])?\s*\)/g,
+    (match, label, source, title) => {
+      const destination = markdownDestination(source);
+      const mediaKind = options.enableMedia
+        ? markdownMediaKindForSource(destination)
+        : null;
+      if (mediaKind) {
+        return storeToken(
+          renderMarkdownMedia(mediaKind, destination, label, title, options),
+        );
+      }
+      if (!isSafeMarkdownLink(destination)) {
+        return match;
+      }
+      return storeToken(
+        `<a href="${escapeAttribute(destination)}" target="_blank" rel="noreferrer">${renderInlineText(label)}</a>`,
+      );
+    },
+  );
+
+  prepared = prepared.replace(
+    /`([^`]+)`/g,
+    (_match, code) => storeToken(`<code>${escapeHtml(code)}</code>`),
+  );
+
+  let html = escapeHtml(prepared);
   // Render @task:<id> references as styled chips (before other inline replacements)
   html = html.replace(/@task:([A-Za-z0-9_-]+)/g, (_match, taskID) => {
     const escapedId = escapeAttribute(taskID);
     return `<span class="chat-task-ref" data-task-ref="${escapedId}" data-task-id="${escapedId}">@task:${taskID}</span>`;
   });
-  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
   html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-  html = html.replace(
-    /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
-    (_match, text, url) =>
-      `<a href="${escapeAttribute(url)}" target="_blank" rel="noreferrer">${text}</a>`,
-  );
+  html = html.replace(/\uE000(\d+)\uE001/g, (_match, index) => tokens[Number(index)] ?? "");
   return html;
+}
+
+function renderInlineText(value: string): string {
+  return escapeHtml(value)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+}
+
+function replaceRawMediaHTML(
+  value: string,
+  options: MarkdownRenderOptions,
+  storeToken: (html: string) => string,
+): string {
+  let output = value.replace(
+    /<img\b([^>]*)\/?>/gi,
+    (match, attributes) => {
+      const source = mediaHTMLAttribute(attributes, "src");
+      if (!source) {
+        return match;
+      }
+      return storeToken(
+        renderMarkdownMedia(
+          "image",
+          source,
+          mediaHTMLAttribute(attributes, "alt"),
+          mediaHTMLAttribute(attributes, "title"),
+          options,
+        ),
+      );
+    },
+  );
+  output = output.replace(
+    /<(audio|video)\b([^>]*)>([\s\S]*?)<\/\1>/gi,
+    (match, tag, attributes, content) => {
+      const source =
+        mediaHTMLAttribute(attributes, "src") ||
+        mediaHTMLAttributeFromSourceTag(content);
+      if (!source) {
+        return match;
+      }
+      const kind = tag.toLowerCase() as MarkdownMediaKind;
+      return storeToken(
+        renderMarkdownMedia(
+          kind,
+          source,
+          mediaHTMLAttribute(attributes, "aria-label"),
+          mediaHTMLAttribute(attributes, "title"),
+          options,
+        ),
+      );
+    },
+  );
+  return output;
+}
+
+function mediaHTMLAttribute(attributes: string, name: string): string {
+  const quoted = attributes.match(
+    new RegExp(`(?:^|\\s)${name}\\s*=\\s*(["'])(.*?)\\1`, "i"),
+  );
+  if (quoted) {
+    return quoted[2];
+  }
+  const unquoted = attributes.match(
+    new RegExp(`(?:^|\\s)${name}\\s*=\\s*([^\\s>]+)`, "i"),
+  );
+  return unquoted?.[1] ?? "";
+}
+
+function mediaHTMLAttributeFromSourceTag(content: string): string {
+  const source = content.match(/<source\b([^>]*)\/?>/i);
+  return source ? mediaHTMLAttribute(source[1], "src") : "";
+}
+
+function markdownDestination(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("<") && trimmed.endsWith(">")) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function isSafeMarkdownLink(value: string): boolean {
+  return /^https?:\/\//i.test(value);
+}
+
+function isDirectMarkdownMediaURL(value: string): boolean {
+  return (
+    /^https?:\/\//i.test(value) ||
+    /^blob:/i.test(value) ||
+    /^data:(?:image|audio|video)\//i.test(value)
+  );
+}
+
+function markdownMediaKindForSource(
+  source: string,
+): MarkdownMediaKind | null {
+  const path = source.split(/[?#]/, 1)[0].toLowerCase();
+  const extension = path.includes(".") ? path.slice(path.lastIndexOf(".") + 1) : "";
+  if (["apng", "avif", "bmp", "gif", "ico", "jpeg", "jpg", "png", "svg", "tif", "tiff", "webp"].includes(extension)) {
+    return "image";
+  }
+  if (["aac", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav", "weba", "wma"].includes(extension)) {
+    return "audio";
+  }
+  if (["avi", "flv", "mkv", "mov", "mp4", "ogv", "webm", "wmv"].includes(extension)) {
+    return "video";
+  }
+  if (/^data:image\//i.test(source)) {
+    return "image";
+  }
+  if (/^data:audio\//i.test(source)) {
+    return "audio";
+  }
+  if (/^data:video\//i.test(source)) {
+    return "video";
+  }
+  return null;
+}
+
+function renderMarkdownMedia(
+  kind: MarkdownMediaKind,
+  source: string,
+  label: string,
+  title: string,
+  options: MarkdownRenderOptions,
+): string {
+  const directURL = isDirectMarkdownMediaURL(source)
+    ? source
+    : options.resolveMediaURL?.(source, kind) ?? "";
+  const sourceAttribute = directURL
+    ? ` src="${escapeAttribute(directURL)}"`
+    : "";
+  const pendingAttribute = isDirectMarkdownMediaURL(source)
+    ? ""
+    : ` data-markdown-media-source="${escapeAttribute(source)}"`;
+  const hiddenAttribute = directURL ? "" : " hidden";
+  const titleAttribute = title
+    ? ` title="${escapeAttribute(title)}"`
+    : "";
+  const accessibleLabel = label || title || `${kind} preview`;
+  const media = kind === "image"
+    ? `<img${sourceAttribute}${titleAttribute} alt="${escapeAttribute(accessibleLabel)}" loading="lazy" decoding="async"${hiddenAttribute} data-markdown-media-target>`
+    : `<${kind}${sourceAttribute}${titleAttribute} aria-label="${escapeAttribute(accessibleLabel)}" controls preload="metadata"${hiddenAttribute} data-markdown-media-target></${kind}>`;
+  const status = directURL
+    ? ""
+    : `<span class="markdown-media-status" data-markdown-media-status>Loading ${kind}...</span>`;
+  const caption = label
+    ? `<span class="markdown-media-caption">${renderInlineText(label)}</span>`
+    : "";
+  return `<span class="markdown-media markdown-media-${kind}"${pendingAttribute} data-markdown-media-kind="${kind}">${status}${media}${caption}</span>`;
 }

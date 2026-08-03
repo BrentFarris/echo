@@ -163,6 +163,8 @@ const AUDIO_EXTENSIONS = new Set([
   "weba",
 ]);
 
+const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdown", "mkd", "mkdn"]);
+
 function fileExtension(path: string): string {
   const name = fileName(path).toLowerCase();
   const dotIndex = name.lastIndexOf(".");
@@ -183,6 +185,10 @@ export function isAudioFile(path: string): boolean {
 
 export function isMediaFile(path: string): boolean {
   return isImageFile(path) || isVideoFile(path) || isAudioFile(path);
+}
+
+export function isMarkdownFile(path: string): boolean {
+  return MARKDOWN_EXTENSIONS.has(fileExtension(path));
 }
 
 export function mediaKind(path: string): string {
