@@ -162,6 +162,11 @@ func main() {
 	if handle.cmd.ProcessState == nil || !handle.cmd.ProcessState.Exited() {
 		t.Fatalf("Delve process did not exit; state=%v", handle.cmd.ProcessState)
 	}
+	if binaries, err := delveDebugBinaries(root); err != nil {
+		t.Fatalf("inspect Delve debug binaries: %v", err)
+	} else if len(binaries) != 0 {
+		t.Fatalf("Delve debug binaries remain after stop: %v", binaries)
+	}
 }
 
 func waitDebugEvent(t *testing.T, ctx context.Context, events <-chan dapEnvelope, name string) dapEnvelope {

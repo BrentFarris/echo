@@ -3,10 +3,13 @@ package services
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -16,6 +19,8 @@ import (
 const (
 	debugAdapterStartupTimeout = 15 * time.Second
 	debugAdapterStopTimeout    = 3 * time.Second
+	debugBinaryCleanupTimeout  = time.Second
+	debugBinaryCleanupInterval = 50 * time.Millisecond
 )
 
 type debugAdapterOutput func(category string, output string)
@@ -28,6 +33,7 @@ type debugAdapterHandle struct {
 	transport io.ReadWriteCloser
 	cmd       *exec.Cmd
 	done      chan error
+	cleanup   func()
 	closeOnce sync.Once
 }
 
@@ -40,6 +46,9 @@ func (h *debugAdapterHandle) stop() {
 			_ = h.transport.Close()
 		}
 		if h.cmd == nil || h.cmd.Process == nil {
+			if h.cleanup != nil {
+				h.cleanup()
+			}
 			return
 		}
 		select {
@@ -111,10 +120,17 @@ func (delveDebugAdapter) Start(ctx context.Context, config map[string]any, outpu
 		return nil, fmt.Errorf("start Delve DAP server: %w", err)
 	}
 
-	handle := &debugAdapterHandle{cmd: cmd, done: make(chan error, 1)}
+	var cleanup func()
+	if debugString(config, "output") == "" {
+		cleanup = newDelveDebugBinaryCleanup(cmd.Dir, output)
+	}
+	handle := &debugAdapterHandle{cmd: cmd, done: make(chan error, 1), cleanup: cleanup}
 	processDone := make(chan error, 1)
 	go func() {
 		err := cmd.Wait()
+		if handle.cleanup != nil {
+			handle.cleanup()
+		}
 		handle.done <- err
 		processDone <- err
 	}()
@@ -168,4 +184,85 @@ func (delveDebugAdapter) Start(ctx context.Context, config map[string]any, outpu
 	}
 	handle.transport = transport
 	return handle, nil
+}
+
+func newDelveDebugBinaryCleanup(directory string, output debugAdapterOutput) func() {
+	if strings.TrimSpace(directory) == "" {
+		var err error
+		directory, err = os.Getwd()
+		if err != nil {
+			return nil
+		}
+	}
+	directory, err := filepath.Abs(directory)
+	if err != nil {
+		return nil
+	}
+	existing, err := delveDebugBinaries(directory)
+	if err != nil {
+		return nil
+	}
+	return func() {
+		if err := removeNewDelveDebugBinaries(directory, existing); err != nil && output != nil {
+			output("adapter stderr", fmt.Sprintf("Echo could not remove a Delve debug binary: %v\n", err))
+		}
+	}
+}
+
+func delveDebugBinaries(directory string) (map[string]struct{}, error) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil, err
+	}
+	binaries := make(map[string]struct{})
+	for _, entry := range entries {
+		if entry.Type().IsRegular() && isDelveDebugBinaryName(entry.Name()) {
+			binaries[entry.Name()] = struct{}{}
+		}
+	}
+	return binaries, nil
+}
+
+func removeNewDelveDebugBinaries(directory string, existing map[string]struct{}) error {
+	deadline := time.Now().Add(debugBinaryCleanupTimeout)
+	var cleanupErr error
+	for {
+		cleanupErr = nil
+		binaries, err := delveDebugBinaries(directory)
+		if err != nil {
+			return err
+		}
+		for name := range binaries {
+			if _, existed := existing[name]; existed {
+				continue
+			}
+			path := filepath.Join(directory, name)
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove %s: %w", path, err))
+			}
+		}
+		if cleanupErr == nil || time.Now().After(deadline) {
+			return cleanupErr
+		}
+		time.Sleep(debugBinaryCleanupInterval)
+	}
+}
+
+func isDelveDebugBinaryName(name string) bool {
+	suffix, ok := strings.CutPrefix(name, "__debug_bin")
+	if !ok {
+		return false
+	}
+	if strings.HasPrefix(suffix, ".exe") {
+		suffix = strings.TrimPrefix(suffix, ".exe")
+	}
+	if suffix == "" {
+		return true
+	}
+	for _, r := range suffix {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
