@@ -448,6 +448,8 @@ function renderGitWorkingChanges(workspaceID: string, repository: services.Works
     return renderSelectedGitStashReview(workspaceID, repository.folderId, stashDetail);
   }
   const files = repository.files ?? [];
+  const staged = sortedGitChangeTreeFiles(files.filter((file) => file.staged));
+  const unstaged = sortedGitChangeTreeFiles(files.filter((file) => file.unstaged));
   const selectedCommitReview = renderSelectedGitCommitReview(workspaceID, repository);
   if (!files.length && !selectedCommitReview) {
     return `<div class="empty-state compact">No Git changes.</div>`;
@@ -455,8 +457,8 @@ function renderGitWorkingChanges(workspaceID: string, repository: services.Works
   return `
     <div class="change-file-list git-change-file-list" data-git-change-file-list>
       ${files.length
-        ? files.filter((file) => file.staged).map((file) => renderGitWorkingChangedFile(workspaceID, repository.folderId, file, "staged")).join("")
-          + files.filter((file) => file.unstaged).map((file) => renderGitWorkingChangedFile(workspaceID, repository.folderId, file, "unstaged")).join("")
+        ? staged.map((file) => renderGitWorkingChangedFile(workspaceID, repository.folderId, file, "staged")).join("")
+          + unstaged.map((file) => renderGitWorkingChangedFile(workspaceID, repository.folderId, file, "unstaged")).join("")
         : `<div class="empty-state compact">No working tree changes.</div>`}
       ${selectedCommitReview}
     </div>
@@ -708,6 +710,21 @@ function sortedGitChangeTreeChildren(folder: GitChangeTreeFolder): GitChangeTree
     }
     return left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
   });
+}
+
+function sortedGitChangeTreeFiles(files: services.WorkspaceGitChangedFile[]): services.WorkspaceGitChangedFile[] {
+  const ordered: services.WorkspaceGitChangedFile[] = [];
+  const appendFiles = (folder: GitChangeTreeFolder) => {
+    sortedGitChangeTreeChildren(folder).forEach((node) => {
+      if (node.kind === "folder") {
+        appendFiles(node);
+      } else {
+        ordered.push(node.file);
+      }
+    });
+  };
+  appendFiles(buildGitChangeTree(files));
+  return ordered;
 }
 
 function displayGitChangePath(path: string): string {
