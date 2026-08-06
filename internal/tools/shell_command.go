@@ -124,7 +124,7 @@ func executeShellCommand(ctx ExecutionContext, arguments json.RawMessage) (any, 
 	}
 	command := exec.CommandContext(commandContext, shellName, shellArgs...)
 	command.Dir = workingDirectory
-	configureShellCommandProcess(command)
+	configureToolCommandProcess(command)
 	command.WaitDelay = shellCommandWaitDelay
 
 	stdout := newLimitedBuffer(outputLimit)

@@ -1134,7 +1134,7 @@ func runGitInspectCommand(ctx context.Context, repositoryPath string, outputLimi
 		"-c", "submodule.recurse=false",
 		"-C", repositoryPath,
 	}, args...)
-	command := exec.CommandContext(ctx, "git", commandArgs...)
+	command := newGitInspectCommand(ctx, commandArgs...)
 	command.Env = append(os.Environ(),
 		"GIT_OPTIONAL_LOCKS=0",
 		"GIT_TERMINAL_PROMPT=0",
@@ -1169,4 +1169,10 @@ func runGitInspectCommand(ctx context.Context, repositoryPath string, outputLimi
 		return []byte(stdout.String()), stdout.Truncated(), SafeError{Code: code, Message: message}
 	}
 	return []byte(stdout.String()), stdout.Truncated(), nil
+}
+
+func newGitInspectCommand(ctx context.Context, args ...string) *exec.Cmd {
+	command := exec.CommandContext(ctx, "git", args...)
+	configureToolCommandProcess(command)
+	return command
 }

@@ -9,7 +9,7 @@ import (
 	"syscall"
 )
 
-func configureShellCommandProcess(command *exec.Cmd) {
+func configureToolCommandProcess(command *exec.Cmd) {
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Cancel = func() error {
 		if command.Process == nil {

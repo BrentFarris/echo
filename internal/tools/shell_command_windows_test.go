@@ -10,10 +10,10 @@ import (
 	"time"
 )
 
-func TestConfigureShellCommandProcessHidesWindowsShell(t *testing.T) {
+func TestConfigureToolCommandProcessHidesWindowsCommand(t *testing.T) {
 	command := exec.Command("powershell.exe", "-NoProfile")
 
-	configureShellCommandProcess(command)
+	configureToolCommandProcess(command)
 
 	if command.SysProcAttr == nil {
 		t.Fatal("expected Windows process attributes to be configured")

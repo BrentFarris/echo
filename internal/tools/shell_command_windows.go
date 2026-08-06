@@ -14,7 +14,7 @@ import (
 
 const windowsCreateNoWindow = 0x08000000
 
-func configureShellCommandProcess(command *exec.Cmd) {
+func configureToolCommandProcess(command *exec.Cmd) {
 	command.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
 		CreationFlags: windowsCreateNoWindow,
