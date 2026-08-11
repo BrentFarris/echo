@@ -601,6 +601,35 @@ func (s *SystemService) ResolveWorkspaceTextFilePath(workspaceID string, path st
 	return file.Path, nil
 }
 
+// WorkspacePathKind reports whether a workspace path refers to a directory or a
+// regular file. It returns "" when the path does not exist or is neither.
+func (s *SystemService) WorkspacePathKind(workspaceID string, path string) (string, error) {
+	workspace, _, err := s.workspaceAndSettings(workspaceID)
+	if err != nil {
+		return "", err
+	}
+	path = cleanWorkspacePathCandidate(path)
+	if path == "" {
+		return "", nil
+	}
+	if filepath.IsAbs(path) {
+		relative, err := workspaceRelativeCandidate(workspace, path)
+		if err != nil {
+			return "", err
+		}
+		path = relative
+	}
+	resolved, err := resolveWorkspaceServicePath(workspace, path)
+	if err != nil {
+		return "", nil
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", nil
+	}
+	return workspaceFileKind(info), nil
+}
+
 func (s *SystemService) SaveWorkspaceFile(workspaceID string, path string, content string, expectedModifiedAt string) (WorkspaceFile, error) {
 	workspace, _, err := s.workspaceAndSettings(workspaceID)
 	if err != nil {

@@ -117,6 +117,26 @@ func TestSystemServiceListWorkspaceDirectorySortsDirectoriesFirst(t *testing.T) 
 	}
 }
 
+func TestSystemServiceWorkspacePathKind(t *testing.T) {
+	service, workspaceID, root := newWorkspaceFilesTestService(t)
+	if err := os.Mkdir(filepath.Join(root, "folder"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if kind, err := service.WorkspacePathKind(workspaceID, "workspace/folder"); err != nil || kind != "directory" {
+		t.Fatalf("expected directory kind, got %q (err %v)", kind, err)
+	}
+	if kind, err := service.WorkspacePathKind(workspaceID, "workspace/file.txt"); err != nil || kind != "file" {
+		t.Fatalf("expected file kind, got %q (err %v)", kind, err)
+	}
+	if kind, err := service.WorkspacePathKind(workspaceID, "workspace/missing.txt"); err != nil || kind != "" {
+		t.Fatalf("expected empty kind for missing path, got %q (err %v)", kind, err)
+	}
+}
+
 func TestSystemServiceListWorkspaceDirectoryUsesGitignoreInsteadOfFallback(t *testing.T) {
 	service, workspaceID, root := newWorkspaceFilesTestService(t)
 	for _, name := range []string{"build", "generated"} {

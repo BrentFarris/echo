@@ -1,7 +1,7 @@
 
 import { ensureCodeViewRootLoaded, openWorkspaceCodeFile } from "../../codeView";
 import { elementFromHtml, morphElement, patchChildrenFromHtml, patchMarkdownElement, renderMarkdown } from "../../markdown";
-import { ActivateChatTab, ClearChatForTab, CloseChatTab, CreateAgentModeFromChatForTab, CreateChatTab, CreateSkillFromChatForTab, DeleteAgentMode, EditChatMessageForTab, ListAgentModes, LoadChatSessionForTab, LoadChatWorkspace, ResolveWorkspaceTextFilePath, SaveSettings, SearchWorkspaceFiles, SendChatMessageWithAttachmentsToTab, StopChatStreamForTab, SkipPlanQuestions, SubmitPlanAnswers } from "../../backend/services";
+import { ActivateChatTab, ClearChatForTab, CloseChatTab, CreateAgentModeFromChatForTab, CreateChatTab, CreateSkillFromChatForTab, DeleteAgentMode, EditChatMessageForTab, ListAgentModes, LoadChatSessionForTab, LoadChatWorkspace, OpenWorkspacePathExplorer, ResolveWorkspaceTextFilePath, SaveSettings, SearchWorkspaceFiles, SendChatMessageWithAttachmentsToTab, StopChatStreamForTab, SkipPlanQuestions, SubmitPlanAnswers, WorkspacePathKind } from "../../backend/services";
 import { isWailsRuntime } from "../../backend/web";
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
@@ -349,12 +349,199 @@ export type ChatMentionMatch = {
   caret: number;
 };
 
-export function activeChatMentionMatch(input: HTMLTextAreaElement): ChatMentionMatch | null {
-  if (input.selectionStart !== input.selectionEnd) {
-    return null;
+// ---------------------------------------------------------------------------
+// Rich composer (contenteditable) helpers
+// ---------------------------------------------------------------------------
+
+const chatMentionKindCache = new Map<string, Promise<string>>();
+
+function isFileMentionPath(raw: string): boolean {
+  if (!raw) return false;
+  if (raw.startsWith("task:")) return false;
+  return raw.includes("/") || raw.includes("\\");
+}
+
+export function formatChatMentionPath(path: string): string {
+  if (!/\s/.test(path)) {
+    return `@${path}`;
   }
-  const caret = input.selectionStart;
-  const beforeCaret = input.value.slice(0, caret);
+  return `@"${path.replaceAll('"', '\\"')}"`;
+}
+
+function renderChatMentionChip(path: string, kind: string, workspaceID: string): string {
+  const isDir = kind === "directory";
+  const icon = isDir ? icons.folder : icons.code;
+  return `<span class="chat-mention-chip" contenteditable="false" data-chat-file-mention data-workspace-id="${escapeAttribute(workspaceID)}" data-workspace-path="${escapeAttribute(path)}" data-workspace-kind="${escapeAttribute(kind)}" title="${escapeAttribute(path)}">
+    <span class="chat-mention-chip-icon">${icon}</span>
+    <span class="chat-mention-chip-label">${escapeHtml(fileName(path))}</span>
+  </span>`;
+}
+
+export function chatComposerText(editor: HTMLElement): string {
+  const parts: string[] = [];
+  const serialize = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      parts.push(node.nodeValue ?? "");
+      return;
+    }
+    if (node instanceof HTMLElement && node.hasAttribute("data-chat-file-mention")) {
+      parts.push(formatChatMentionPath(node.dataset.workspacePath ?? ""));
+      return;
+    }
+    if (node instanceof HTMLElement && node.tagName === "BR") {
+      parts.push("\n");
+      return;
+    }
+    if (node instanceof HTMLElement && node.tagName === "DIV") {
+      for (const child of Array.from(node.childNodes)) serialize(child);
+      return;
+    }
+    for (const child of Array.from(node.childNodes)) serialize(child);
+  };
+  // Serialize each top-level child, inserting a newline between sibling block
+  // elements (contenteditable wraps lines in <div>). This keeps "line1\nline2"
+  // while not emitting a spurious trailing newline after the last line.
+  const children = Array.from(editor.childNodes);
+  children.forEach((child, index) => {
+    if (index > 0) {
+      const prev = children[index - 1];
+      const prevIsBlock =
+        prev instanceof HTMLElement &&
+        (prev.tagName === "DIV" || prev.tagName === "BR");
+      if (prevIsBlock) {
+        parts.push("\n");
+      }
+    }
+    serialize(child);
+  });
+  return parts.join("").replace(/\n+$/, "");
+}
+
+export function chatDraftToHTML(draft: string, workspaceID: string): string {
+  const pattern = /@"((?:[^"\\]|\\.)*)"|@([^\s@]+)/g;
+  let out = "";
+  let last = 0;
+  let m: RegExpExecArray | null;
+  pattern.lastIndex = 0;
+  while ((m = pattern.exec(draft))) {
+    out += escapeHtml(draft.slice(last, m.index));
+    const quoted = m[1];
+    const bare = m[2];
+    const raw = quoted !== undefined ? quoted.replace(/\\(["\\])/g, "$1") : bare;
+    if (raw && isFileMentionPath(raw)) {
+      out += renderChatMentionChip(raw, "unknown", workspaceID);
+    } else {
+      out += escapeHtml(m[0]);
+    }
+    last = m.index + m[0].length;
+  }
+  out += escapeHtml(draft.slice(last));
+  return out;
+}
+
+function resolveWorkspacePathKind(workspaceID: string, path: string): Promise<string> {
+  const key = `${workspaceID}\0${path}`;
+  let p = chatMentionKindCache.get(key);
+  if (!p) {
+    p = WorkspacePathKind(workspaceID, path)
+      .then((kind) => kind || "file")
+      .catch(() => "file");
+    chatMentionKindCache.set(key, p);
+  }
+  return p;
+}
+
+export async function resolveChatComposerMentionKinds(editor: HTMLElement, workspaceID: string) {
+  for (const chip of Array.from(editor.querySelectorAll<HTMLElement>("[data-chat-file-mention]"))) {
+    if (chip.dataset.workspaceKind && chip.dataset.workspaceKind !== "unknown") continue;
+    const path = chip.dataset.workspacePath ?? "";
+    if (!path) continue;
+    const kind = await resolveWorkspacePathKind(workspaceID, path);
+    if (!chip.isConnected) continue;
+    chip.dataset.workspaceKind = kind;
+    const iconEl = chip.querySelector<HTMLElement>(".chat-mention-chip-icon");
+    if (iconEl) iconEl.innerHTML = kind === "directory" ? icons.folder : icons.code;
+  }
+}
+
+export function createChatMentionChip(entry: services.WorkspaceFileEntry): HTMLElement {
+  const isDir = entry.kind === "directory";
+  const workspace = activeWorkspace();
+  const chip = document.createElement("span");
+  chip.className = "chat-mention-chip";
+  chip.contentEditable = "false";
+  chip.dataset.chatFileMention = "";
+  chip.dataset.workspaceId = workspace?.id ?? "";
+  chip.dataset.workspacePath = entry.path;
+  chip.dataset.workspaceKind = isDir ? "directory" : "file";
+  chip.title = entry.path;
+  chip.innerHTML = `<span class="chat-mention-chip-icon">${isDir ? icons.folder : icons.code}</span><span class="chat-mention-chip-label">${escapeHtml(fileName(entry.path))}</span>`;
+  chip.addEventListener("click", handleChatFileMentionClick);
+  return chip;
+}
+
+export async function handleChatFileMentionClick(event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  const chip = event.currentTarget as HTMLElement;
+  const workspace = activeWorkspace();
+  const workspaceID = chip.dataset.workspaceId || workspace?.id || "";
+  const path = chip.dataset.workspacePath ?? "";
+  if (!workspace || !path) return;
+  let kind = chip.dataset.workspaceKind ?? "";
+  if (kind === "unknown" || kind === "") {
+    kind = await resolveWorkspacePathKind(workspaceID, path);
+    chip.dataset.workspaceKind = kind;
+  }
+  if (kind === "directory") {
+    try {
+      await OpenWorkspacePathExplorer(workspaceID, path);
+      pushToast("Opened in Explorer.", "success");
+    } catch (error) {
+      pushToast(errorMessage(error), "error");
+    }
+    return;
+  }
+  state.appMode = "code";
+  const loading = ensureCodeViewRootLoaded(workspace.id);
+  getAppCallbacks().render();
+  await loading;
+  await openWorkspaceCodeFile(workspace.id, path, getAppCallbacks().codeViewCallbacks());
+}
+
+export function bindChatFileMentions(root: ParentNode) {
+  root.querySelectorAll<HTMLElement>("[data-chat-file-mention]").forEach((chip) => {
+    if (chip.dataset.chatFileMentionBound) return;
+    chip.dataset.chatFileMentionBound = "true";
+    chip.addEventListener("click", handleChatFileMentionClick);
+  });
+}
+
+function chatComposerCaretInfo(editor: HTMLElement): { beforeText: string; caret: number } {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) {
+    const text = chatComposerText(editor);
+    return { beforeText: text, caret: text.length };
+  }
+  const range = selection.getRangeAt(0);
+  if (!editor.contains(range.startContainer)) {
+    const text = chatComposerText(editor);
+    return { beforeText: text, caret: text.length };
+  }
+  const preRange = range.cloneRange();
+  preRange.selectNodeContents(editor);
+  preRange.setEnd(range.startContainer, range.startOffset);
+  const fragment = preRange.cloneContents();
+  const container = document.createElement("div");
+  container.appendChild(fragment);
+  const beforeText = chatComposerText(container);
+  return { beforeText, caret: beforeText.length };
+}
+
+export function activeChatMentionMatch(input: HTMLElement): ChatMentionMatch | null {
+  const info = chatComposerCaretInfo(input);
+  const beforeCaret = info.beforeText;
+  const caret = info.caret;
   const match = beforeCaret.match(/(^|\s)@([^\s@]*)$/);
   if (!match) {
     return null;
@@ -379,7 +566,7 @@ export function clearChatMention() {
   state.chatMention = null;
 }
 
-export function syncChatMentionForInput(workspaceID: string, input: HTMLTextAreaElement) {
+export function syncChatMentionForInput(workspaceID: string, input: HTMLElement) {
   const match = activeChatMentionMatch(input);
   if (!match) {
     if (chatMentionFor(workspaceID)) {
@@ -503,40 +690,88 @@ export function selectChatMentionIndex(index: number) {
   }
 }
 
+// Removes `count` characters of text immediately before the caret in the
+// editor and returns a collapsed range positioned where the removed text began.
+function removeTextBeforeCaret(editor: HTMLElement, count: number): Range {
+  const selection = window.getSelection();
+  let range: Range | null = null;
+  if (selection && selection.rangeCount > 0 && editor.contains(selection.getRangeAt(0).startContainer)) {
+    range = selection.getRangeAt(0);
+  }
+  if (!range) {
+    range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+  }
+  // Walk backwards from the caret, removing up to `count` characters.
+  let remaining = count;
+  let node: Node | null = range.startContainer;
+  let offset = range.startOffset;
+  while (remaining > 0 && node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.nodeValue ?? "";
+      const removable = Math.min(remaining, offset);
+      if (removable > 0) {
+        node.nodeValue = text.slice(0, offset - removable) + text.slice(offset);
+        offset -= removable;
+        remaining -= removable;
+      }
+      if (remaining > 0) {
+        node = node.previousSibling;
+        offset = node?.nodeType === Node.TEXT_NODE ? (node.nodeValue ?? "").length : 0;
+      }
+    } else {
+      node = node.lastChild;
+      offset = node?.nodeType === Node.TEXT_NODE ? (node.nodeValue ?? "").length : 0;
+    }
+  }
+  // Position the caret where the removed text began.
+  const result = document.createRange();
+  result.setStart(node ?? editor, offset);
+  result.collapse(true);
+  return result;
+}
+
 export function insertChatMention(entry: services.WorkspaceFileEntry) {
   const workspace = activeWorkspace();
-  const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
-  if (!workspace || !input || !chatMentionFor(workspace.id)) {
+  const editor = appRoot.querySelector<HTMLElement>("[data-chat-input]");
+  if (!workspace || !editor || !chatMentionFor(workspace.id)) {
     return;
   }
-  const match = activeChatMentionMatch(input);
   const mention = chatMentionFor(workspace.id);
   if (!mention) {
     return;
   }
+  const match = activeChatMentionMatch(editor);
   const triggerStart = match?.triggerStart ?? mention.triggerStart;
-  const caret = match?.caret ?? input.selectionStart;
-  const suffix = input.value.slice(caret);
+  const caret = match?.caret ?? chatComposerText(editor).length;
+
+  const fullText = chatComposerText(editor);
+  const suffix = fullText.slice(caret);
   const trailingSpace = suffix.length === 0 || !/^\s/.test(suffix) ? " " : "";
-  const replacement = formatChatMentionPath(entry.path);
-  const nextValue =
-    input.value.slice(0, triggerStart) + replacement + trailingSpace + suffix;
-  const nextCaret = triggerStart + replacement.length + trailingSpace.length;
-  input.value = nextValue;
-  resizeChatInput(input);
+
+  // Remove the "@query" text that triggered the mention.
+  const removalRange = removeTextBeforeCaret(editor, caret - triggerStart);
+
+  // Insert the chip and trailing space at the caret.
+  const chip = createChatMentionChip(entry);
+  const trailing = document.createTextNode(trailingSpace);
+  removalRange.insertNode(trailing);
+  removalRange.insertNode(chip);
+  removalRange.setStartAfter(trailing);
+  removalRange.collapse(true);
+
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(removalRange);
+
+  const nextValue = chatComposerText(editor);
   state.chatDrafts.set(chatStateKey(workspace.id), nextValue);
+  resizeChatInput(editor);
   clearChatMention();
-  input.focus();
-  input.setSelectionRange(nextCaret, nextCaret);
+  editor.focus();
   patchChatControls();
   patchChatMentionPicker();
-}
-
-export function formatChatMentionPath(path: string): string {
-  if (!/\s/.test(path)) {
-    return `@${path}`;
-  }
-  return `@"${path.replaceAll('"', '\\"')}"`;
 }
 
 export function renderChatMentionPicker(workspaceID: string): string {
@@ -593,7 +828,7 @@ export function renderChatMentionOption(
 
 export function patchChatMentionPicker() {
   const workspace = activeWorkspace();
-  const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
+  const input = appRoot.querySelector<HTMLElement>("[data-chat-input]");
   const wrapper = appRoot.querySelector<HTMLElement>("[data-chat-input-wrap]");
   if (!workspace || !input || !wrapper) {
     return;
@@ -702,19 +937,20 @@ export function renderChatPanel(workspace: services.Workspace | null, expanded =
           ${renderChatImageDrafts(workspace.id, session.busy || executing)}
           ${renderChatVideoDrafts(workspace.id, session.busy || executing)}
           ${renderChatMentionPicker(workspace.id)}
-          <textarea
-            name="message"
-            rows="1"
-            placeholder="Describe what to build"
+          <div
+            class="chat-composer-editor"
+            contenteditable="true"
+            role="textbox"
+            aria-multiline="true"
             aria-label="Message Echo"
             aria-autocomplete="list"
             aria-expanded="${mentionOpen}"
             ${mentionOpen ? `aria-controls="chat-mention-list"` : ""}
             spellcheck="true"
             data-chat-input
-            speechinput="true"
-            ${executing ? "disabled" : ""}
-          >${escapeHtml(draft)}</textarea>
+            data-placeholder="Describe what to build"
+            ${executing ? "aria-disabled=\"true\"" : ""}
+          >${chatDraftToHTML(draft, workspace.id)}</div>
         </div>
         <div class="chat-composer-toolbar">
           <div class="chat-composer-toolbar-left">
@@ -1336,17 +1572,21 @@ export function bindChatEvents(root: ParentNode) {
   const chatForm = root.querySelector<HTMLFormElement>("[data-chat-form]");
   chatForm?.addEventListener("submit", handleChatSubmit);
   root
-    .querySelectorAll<HTMLTextAreaElement>("[data-chat-input]")
+    .querySelectorAll<HTMLElement>("[data-chat-input]")
     .forEach((input) => {
       resizeChatInput(input);
       input.addEventListener("input", handleChatInput);
       input.addEventListener("keydown", handleChatKeydown);
       input.addEventListener("paste", handleChatPaste);
+      bindChatFileMentions(input);
+      if (input.hasAttribute("data-chat-input")) {
+        void resolveChatComposerMentionKinds(input, input.closest<HTMLElement>("[data-chat-panel]")?.dataset.workspaceId ?? "");
+      }
     });
   if (!chatInputWindowResizeBound) {
     window.addEventListener("resize", () => {
       appRoot
-        .querySelectorAll<HTMLTextAreaElement>("[data-chat-input]")
+        .querySelectorAll<HTMLElement>("[data-chat-input]")
         .forEach(resizeChatInput);
     });
     chatInputWindowResizeBound = true;
@@ -1428,7 +1668,7 @@ async function handleNewChatTab(event: Event) {
     applyChatWorkspaceSnapshot(await CreateChatTab(workspace.id));
     clearChatMention();
     patchChatPanel();
-    appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus();
+    appRoot.querySelector<HTMLElement>("[data-chat-input]")?.focus();
   } catch (error) {
     pushToast(errorMessage(error), "error");
   }
@@ -1637,7 +1877,7 @@ function startSpeechRecognition() {
 
   recognition.onresult = (event: any) => {
     // Fresh DOM lookup — textarea may have been replaced by a re-render during recognition
-    const inputEl = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
+    const inputEl = appRoot.querySelector<HTMLElement>("[data-chat-input]");
     if (!inputEl) return;
 
     let finalTranscript = "";
@@ -1651,14 +1891,22 @@ function startSpeechRecognition() {
       }
     }
 
-    const start = inputEl.selectionStart;
-    const end = inputEl.selectionEnd;
-    const before = inputEl.value.substring(0, start);
-    const after = inputEl.value.substring(end);
     const transcript = finalTranscript || interimTranscript;
-    inputEl.value = before + transcript + after;
-    const newPos = start + transcript.length;
-    inputEl.setSelectionRange(newPos, newPos);
+    const selection = window.getSelection();
+    let range: Range | null = null;
+    if (selection && selection.rangeCount > 0 && inputEl.contains(selection.getRangeAt(0).startContainer)) {
+      range = selection.getRangeAt(0);
+    }
+    if (range) {
+      range.deleteContents();
+      range.insertNode(document.createTextNode(transcript));
+      range.setStartAfter(range.endContainer);
+      range.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    } else {
+      inputEl.appendChild(document.createTextNode(transcript));
+    }
     inputEl.dispatchEvent(new Event("input", { bubbles: true }));
   };
 
@@ -2069,14 +2317,14 @@ export function handleChatInput(event: Event) {
   if (!workspace) {
     return;
   }
-  const input = event.currentTarget as HTMLTextAreaElement;
+  const input = event.currentTarget as HTMLElement;
   resizeChatInput(input);
-  state.chatDrafts.set(chatStateKey(workspace.id), input.value);
+  state.chatDrafts.set(chatStateKey(workspace.id), chatComposerText(input));
   syncChatMentionForInput(workspace.id, input);
   patchChatControls();
 }
 
-export function resizeChatInput(input: HTMLTextAreaElement) {
+export function resizeChatInput(input: HTMLElement) {
   input.style.height = "auto";
   input.style.height = `${input.scrollHeight}px`;
 }
@@ -2277,7 +2525,7 @@ export async function addPastedChatImages(workspaceID: string, files: File[]) {
   state.chatImageDrafts.set(chatStateKey(workspaceID), [...current, ...accepted]);
   patchChatPanel();
   patchChatControls();
-  appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus();
+  appRoot.querySelector<HTMLElement>("[data-chat-input]")?.focus();
 }
 
 export function handleChatVideoUpload(event: Event) {
@@ -2390,7 +2638,7 @@ export async function addPastedChatVideos(workspaceID: string, files: File[]) {
   state.chatVideoDrafts.set(chatStateKey(workspaceID), [...current, ...accepted]);
   patchChatPanel();
   patchChatControls();
-  appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus();
+  appRoot.querySelector<HTMLElement>("[data-chat-input]")?.focus();
 }
 
 export function handleChatPlanModeChange(event: Event) {
@@ -2416,13 +2664,13 @@ export function handleChatKeydown(event: KeyboardEvent) {
     return;
   }
   event.preventDefault();
-  const input = event.currentTarget as HTMLTextAreaElement;
-  input.form?.requestSubmit();
+  const form = appRoot.querySelector<HTMLFormElement>("[data-chat-form]");
+  form?.requestSubmit();
 }
 
 export function handleChatMentionKeydown(event: KeyboardEvent): boolean {
   const workspace = activeWorkspace();
-  const input = event.currentTarget as HTMLTextAreaElement;
+  const input = event.currentTarget as HTMLElement;
   const mention = workspace ? chatMentionFor(workspace.id) : null;
   if (!workspace || !mention) {
     return false;
@@ -2519,9 +2767,9 @@ export async function handleSendStopClick(event: Event) {
       state.chatImageDrafts.delete(chatKey);
       state.chatVideoDrafts.delete(chatKey);
       clearChatMention();
-      const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
+      const input = appRoot.querySelector<HTMLElement>("[data-chat-input]");
       if (input) {
-        input.value = "";
+        input.innerHTML = "";
       }
       applyChatSessionSnapshot(nextSession);
       getAppCallbacks().render();
@@ -2583,9 +2831,9 @@ export async function handleChatSubmit(event: SubmitEvent) {
     state.chatImageDrafts.delete(chatKey);
     state.chatVideoDrafts.delete(chatKey);
     clearChatMention();
-    const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
+    const input = appRoot.querySelector<HTMLElement>("[data-chat-input]");
     if (input) {
-      input.value = "";
+      input.innerHTML = "";
     }
     applyChatSessionSnapshot(nextSession);
     getAppCallbacks().render();
@@ -3174,12 +3422,9 @@ export function patchChatPanel() {
   const activeChatKey = chatStateKey(workspace.id, destinationChatID);
   const draft = state.chatDrafts.get(activeChatKey) ?? "";
   const chatScrollTop = state.chatScrollPositions.get(activeChatKey);
-  const existingInput = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
+  const existingInput = appRoot.querySelector<HTMLElement>("[data-chat-input]");
   const inputScrollTop = existingInput?.scrollTop ?? 0;
   const restoreInputFocus = document.activeElement === existingInput;
-  const selectionStart = existingInput?.selectionStart ?? draft.length;
-  const selectionEnd = existingInput?.selectionEnd ?? selectionStart;
-  const selectionDirection = existingInput?.selectionDirection ?? "none";
 
   const next = document.createElement("template");
   next.innerHTML = renderChatPanel(workspace, state.expandedChatWorkspaces.has(workspace.id)).trim();
@@ -3203,16 +3448,12 @@ export function patchChatPanel() {
     });
   }
 
-  // Restore the draft to the newly created textarea if it differs from the rendered value.
-  const input = replacement.querySelector<HTMLTextAreaElement>("[data-chat-input]");
-  if (input && input.value !== draft) {
-    input.value = draft;
-  }
+  const input = replacement.querySelector<HTMLElement>("[data-chat-input]");
   if (input) {
     input.scrollTop = inputScrollTop;
     if (restoreInputFocus) {
       input.focus();
-      input.setSelectionRange(selectionStart, selectionEnd, selectionDirection);
+      placeComposerCaretAtEnd(input);
     }
   }
 
@@ -3220,6 +3461,15 @@ export function patchChatPanel() {
   getAppCallbacks().bindChatEvents(replacement);
   void linkifyAssistantFilePaths(replacement);
   resolveChatTaskRefs(replacement);
+}
+
+function placeComposerCaretAtEnd(editor: HTMLElement) {
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  range.collapse(false);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
 }
 
 export function patchChatControls() {
@@ -3232,7 +3482,7 @@ export function patchChatControls() {
   const draft = state.chatDrafts.get(chatKey) ?? "";
   const imageDrafts = chatImageDraftsFor(workspace.id);
   const videoDrafts = chatVideoDraftsFor(workspace.id);
-  const input = appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]");
+  const input = appRoot.querySelector<HTMLElement>("[data-chat-input]");
   const executing = state.executingPlans.has(chatKey);
   const creatingSkill = state.creatingChatSkills.has(chatKey);
   const locked = session.busy || executing;
@@ -3240,7 +3490,8 @@ export function patchChatControls() {
   if (input) {
     // Keep the next prompt editable while a chat response is streaming. Plan
     // execution still locks the composer because it operates on chat state.
-    input.disabled = executing;
+    input.contentEditable = executing ? "false" : "true";
+    input.setAttribute("aria-disabled", executing ? "true" : "false");
   }
 
   // Update the send/stop button

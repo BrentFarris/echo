@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   color-scheme: light dark;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
@@ -464,7 +464,7 @@ textarea:focus-visible {
   object-fit: cover;
 }
 
-/* Mobile bottom nav is hidden on desktop â€” shown only inside the 720px media query */
+/* Mobile bottom nav is hidden on desktop Ã¢â‚¬â€ shown only inside the 720px media query */
 .mobile-bottom-nav {
   display: none;
 }
@@ -1407,7 +1407,8 @@ h3 {
   min-width: 0;
 }
 
-.chat-composer textarea {
+.chat-composer textarea,
+.chat-composer [data-chat-input] {
   width: 100%;
   min-width: 0;
   flex: 1 1 auto;
@@ -1423,15 +1424,60 @@ h3 {
   color: var(--color-text);
   font-size: var(--text-2xl);
   line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-.chat-composer textarea:focus {
+.chat-composer [data-chat-input]:focus {
   outline: none;
 }
 
-.chat-composer textarea::placeholder {
+.chat-composer [data-chat-input]:empty::before {
+  content: attr(data-placeholder);
   color: var(--color-text-muted);
   opacity: 0.6;
+  pointer-events: none;
+}
+
+.chat-mention-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent);
+  cursor: pointer;
+  font-size: inherit;
+  line-height: 1.4;
+  vertical-align: baseline;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.chat-mention-chip:hover {
+  background: color-mix(in srgb, var(--color-accent) 24%, transparent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.chat-mention-chip-icon {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+.chat-mention-chip-icon svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.chat-mention-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
 }
 
 .chat-composer-toolbar {
@@ -1556,12 +1602,12 @@ h3 {
   opacity: 0.5;
 }
 
-/* â”€â”€ Model dropdown: desktop overlay â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬ Model dropdown: desktop overlay Ã¢â€â‚¬Ã¢â€â‚¬ */
 .chat-composer-toolbar-left {
   position: relative;
 }
 
-/* â”€â”€ Chat composer dropdown containers (shared) â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬ Chat composer dropdown containers (shared) Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 .model-dropdown[hidden],
 .mode-dropdown[hidden] {
@@ -1696,7 +1742,7 @@ h3 {
   padding: 0;
 }
 
-/* â”€â”€ Chat composer dropdown items (shared) â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬ Chat composer dropdown items (shared) Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 .model-dropdown-option,
 .chat-more-menu button {
@@ -2532,7 +2578,7 @@ h3 {
   overflow: auto;
 }
 
-/* ── Task card drop zone (wrapper for within-lane drag-and-drop) ── */
+/* â”€â”€ Task card drop zone (wrapper for within-lane drag-and-drop) â”€â”€ */
 
 .task-card-drop-zone {
   position: relative;
@@ -2540,7 +2586,7 @@ h3 {
   flex-direction: column;
 }
 
-/* Drop indicator line — shown above the card when dragging over */
+/* Drop indicator line â€” shown above the card when dragging over */
 .task-drop-indicator {
   display: block;
   height: 3px;
@@ -2595,7 +2641,7 @@ h3 {
   text-decoration: line-through;
 }
 
-/* â”€â”€ Task card open button (click to open detail view) â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬ Task card open button (click to open detail view) Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 .task-card-open {
   display: block;
@@ -2612,7 +2658,7 @@ h3 {
   outline-offset: -3px;
 }
 
-/* â”€â”€ Task card header row: priority badge + title + status â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬ Task card header row: priority badge + title + status Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 .task-card-header {
   display: flex;
@@ -2630,7 +2676,7 @@ h3 {
   line-height: 1.35;
 }
 
-/* â”€â”€ Task status badge (compact inline) â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬ Task status badge (compact inline) Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 .task-status-badge {
   display: inline-flex;
@@ -2668,7 +2714,7 @@ h3 {
   color: var(--color-text-muted);
 }
 
-/* â”€â”€ Expandable body â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬ Expandable body Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 .task-card-body {
   max-height: 0;
@@ -2823,7 +2869,7 @@ h3 {
   height: 15px;
 }
 
-/* â”€â”€ Task detail view meta row â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬ Task detail view meta row Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 .task-detail-meta {
   display: flex;
@@ -2858,7 +2904,7 @@ h3 {
   background: color-mix(in srgb, var(--color-text-muted) 12%, transparent);
 }
 
-/* â”€â”€ Task detail footer actions â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬ Task detail footer actions Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 .task-detail-footer-actions {
   display: flex;
@@ -2868,7 +2914,7 @@ h3 {
   border-top: 1px solid var(--color-border);
 }
 
-/* â”€â”€ Priority badges â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬ Priority badges Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 .priority-badge {
   display: inline-flex;
@@ -2897,7 +2943,7 @@ h3 {
   color: var(--color-text-muted);
 }
 
-/* ── Epic group headers ── */
+/* â”€â”€ Epic group headers â”€â”€ */
 
 .task-epic-group {
   display: grid;
@@ -2925,7 +2971,7 @@ h3 {
 }
 
 .task-epic-group-header::before {
-  content: "▸";
+  content: "â–¸";
   display: inline-block;
   transition: transform 150ms ease;
   color: var(--color-text-muted);
@@ -2961,7 +3007,7 @@ h3 {
   padding: var(--space-xxs) 0;
 }
 
-/* ── Epic filter bar ── */
+/* â”€â”€ Epic filter bar â”€â”€ */
 
 .task-epic-bar {
   display: flex;
@@ -3000,7 +3046,7 @@ h3 {
   color: var(--color-accent-strong);
 }
 
-/* ── Tag filter bar ── */
+/* â”€â”€ Tag filter bar â”€â”€ */
 
 .task-tag-bar {
   display: flex;
@@ -3039,7 +3085,7 @@ h3 {
   color: var(--color-accent-strong);
 }
 
-/* ── Tag chips on task cards and detail ── */
+/* â”€â”€ Tag chips on task cards and detail â”€â”€ */
 
 .task-card-tags {
   display: flex;
@@ -3218,7 +3264,7 @@ h3 {
   background: color-mix(in srgb, var(--color-accent) 20%, transparent);
 }
 
-/* Repair badge on kanban cards â€” shows on watchdog repair cards */
+/* Repair badge on kanban cards Ã¢â‚¬â€ shows on watchdog repair cards */
 .repair-badge {
   position: absolute;
   top: 6px;
@@ -3326,7 +3372,7 @@ h3 {
   padding-left: calc(1 * var(--space-md-lg));
 }
 
-/* â”€â”€ Minimal kanban card elements â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬ Minimal kanban card elements Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 .kanban-card-title-row {
   display: flex;
@@ -3389,7 +3435,7 @@ h3 {
   min-width: 0;
 }
 
-/* Progress bar container â€” column layout matching dashboard */
+/* Progress bar container Ã¢â‚¬â€ column layout matching dashboard */
 .kanban-card-progress-bar {
   display: flex;
   flex-direction: column;
@@ -3423,7 +3469,7 @@ h3 {
   gap: var(--space-sm);
 }
 
-/* Tool call name â€” monospace like dashboard */
+/* Tool call name Ã¢â‚¬â€ monospace like dashboard */
 .kanban-card-tool-label {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: var(--text-xs);
@@ -3431,7 +3477,7 @@ h3 {
   opacity: 0.7;
 }
 
-/* â”€â”€ Kanban card compact layout â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬ Kanban card compact layout Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 .kanban-card-open {
   gap: var(--space-md);
@@ -3447,7 +3493,7 @@ h3 {
   line-height: 1.3;
 }
 
-/* Status text below card title â€” color-coded by lane state */
+/* Status text below card title Ã¢â‚¬â€ color-coded by lane state */
 .kanban-card-status-text {
   margin: 0;
   padding: 0;
@@ -3472,22 +3518,22 @@ h3 {
   height: 14px;
 }
 
-/* Green â€” success / done */
+/* Green Ã¢â‚¬â€ success / done */
 .kanban-card-status-text.status-success {
   color: var(--color-success);
 }
 
-/* Orange/amber â€” waiting / pending */
+/* Orange/amber Ã¢â‚¬â€ waiting / pending */
 .kanban-card-status-text.status-warning {
   color: var(--color-warning);
 }
 
-/* Red â€” error / blocked */
+/* Red Ã¢â‚¬â€ error / blocked */
 .kanban-card-status-text.status-error {
   color: var(--color-danger);
 }
 
-/* Accent â€” in progress */
+/* Accent Ã¢â‚¬â€ in progress */
 .kanban-card-status-text.status-inprogress {
   color: var(--color-accent-strong);
 }
@@ -6110,7 +6156,7 @@ h3 {
   text-transform: uppercase;
 }
 
-/* â”€â”€ Agent Modes settings section â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬ Agent Modes settings section Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 .workspace-delete-button {
   align-self: end;
@@ -6368,7 +6414,7 @@ h3 {
   display: none;
 }
 
-/* Bottom sheet dismiss handle â€” hidden on desktop, shown on mobile */
+/* Bottom sheet dismiss handle Ã¢â‚¬â€ hidden on desktop, shown on mobile */
 .code-explorer-dismiss-handle {
   display: none;
 }
@@ -7723,7 +7769,7 @@ h3 {
   color: var(--color-danger);
 }
 
-/* â”€â”€â”€ Image Viewer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Image Viewer Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 .code-image-viewer {
   display: grid;
@@ -7780,7 +7826,7 @@ h3 {
   text-align: center;
 }
 
-/* â”€â”€â”€ Video Viewer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Video Viewer Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 .code-audio-viewer {
   display: flex;
@@ -7917,7 +7963,7 @@ h3 {
   }
 }
 
-/* ─── Audio Viewer ────────────────────────────────────────────── */
+/* â”€â”€â”€ Audio Viewer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .code-audio-viewer {
   display: grid;
@@ -8673,12 +8719,12 @@ h3 {
     max-height: 100%;
   }
 
-  /* Hide the desktop left nav on mobile â€” replaced by bottom nav */
+  /* Hide the desktop left nav on mobile Ã¢â‚¬â€ replaced by bottom nav */
   .left-nav {
     display: none;
   }
 
-  /* Mobile fixed bottom navigation bar â€” two-zone layout */
+  /* Mobile fixed bottom navigation bar Ã¢â‚¬â€ two-zone layout */
   .mobile-bottom-nav {
     position: fixed;
     bottom: 0;
@@ -9144,7 +9190,8 @@ h3 {
     gap: var(--space-md);
   }
 
-  .chat-composer textarea {
+  .chat-composer textarea,
+  .chat-composer [data-chat-input] {
     width: 100%;
     min-width: 0;
   }
@@ -9168,19 +9215,19 @@ h3 {
     display: none;
   }
 
-  /* Hide expand/collapse buttons on mobile â€” panels stack vertically via tabs */
+  /* Hide expand/collapse buttons on mobile Ã¢â‚¬â€ panels stack vertically via tabs */
   .chat-actions [data-action="toggle-chat-size"],
   .kanban-actions [data-action="toggle-kanban-size"] {
     display: none;
   }
 
 
-  /* Hide the chat attachment menu popup on mobile â€” use native picker instead */
+  /* Hide the chat attachment menu popup on mobile Ã¢â‚¬â€ use native picker instead */
   .chat-attachment-menu {
     display: none !important;
   }
 
-  /* Unified single-row bottom nav â€” five view tabs + workspace pill */
+  /* Unified single-row bottom nav Ã¢â‚¬â€ five view tabs + workspace pill */
   .mobile-bottom-nav {
     position: fixed;
     bottom: 0;
@@ -9404,7 +9451,7 @@ h3 {
     touch-action: manipulation;
   }
 
-  /* â”€â”€ Chat message bubbles on mobile â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  /* Ã¢â€â‚¬Ã¢â€â‚¬ Chat message bubbles on mobile Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
   .chat-message {
     max-width: calc(100% - 32px);
     border: 0;
@@ -9480,13 +9527,13 @@ h3 {
     font-size: var(--text-md-lg);
   }
 
-  /* Task board — single column on mobile */
+  /* Task board â€” single column on mobile */
   .task-board {
     grid-template-columns: minmax(0, 1fr);
     gap: var(--space-md);
   }
 
-  /* Epic filter bar — horizontal scroll with no wrap */
+  /* Epic filter bar â€” horizontal scroll with no wrap */
   .task-epic-bar {
     display: flex;
     align-items: center;
@@ -9502,20 +9549,20 @@ h3 {
     display: none;
   }
 
-  /* Epic filter label — prevent shrinking */
+  /* Epic filter label â€” prevent shrinking */
   .task-epic-bar-label {
     flex-shrink: 0;
     margin-right: var(--space-xs);
   }
 
-  /* Epic filter buttons — prevent shrinking, ensure touch target */
+  /* Epic filter buttons â€” prevent shrinking, ensure touch target */
   .task-epic-btn {
     flex-shrink: 0;
     min-height: 32px;
     white-space: nowrap;
   }
 
-  /* Tag filter bar — horizontal scroll with no wrap */
+  /* Tag filter bar â€” horizontal scroll with no wrap */
   .task-tag-bar {
     display: flex;
     align-items: center;
@@ -9531,13 +9578,13 @@ h3 {
     display: none;
   }
 
-  /* Tag filter label — prevent shrinking */
+  /* Tag filter label â€” prevent shrinking */
   .task-tag-bar-label {
     flex-shrink: 0;
     margin-right: var(--space-xs);
   }
 
-  /* Tag filter buttons — prevent shrinking, ensure touch target */
+  /* Tag filter buttons â€” prevent shrinking, ensure touch target */
   .task-tag-btn {
     flex-shrink: 0;
     min-height: 32px;
@@ -9591,7 +9638,7 @@ h3 {
   }
 }
 
-/* Mobile layout â€” compact VS Code-style input bar */
+/* Mobile layout Ã¢â‚¬â€ compact VS Code-style input bar */
 @media (max-width: 720px) {
   .chat-log {
     overflow-y: auto;
@@ -9604,7 +9651,7 @@ h3 {
   }
 
  
-  /* â”€â”€ Model selector: compact inline button (VS Code style) â”€â”€ */
+  /* Ã¢â€â‚¬Ã¢â€â‚¬ Model selector: compact inline button (VS Code style) Ã¢â€â‚¬Ã¢â€â‚¬ */
   .model-selector {
     position: relative;
     display: flex !important;
@@ -9639,7 +9686,7 @@ h3 {
     max-width: calc(100vw - 16px);
   }
 
-  /* â”€â”€ Composer: VS Code-style compact single-row input â”€â”€ */
+  /* Ã¢â€â‚¬Ã¢â€â‚¬ Composer: VS Code-style compact single-row input Ã¢â€â‚¬Ã¢â€â‚¬ */
   .chat-composer {
     flex-direction: column;
     gap: 0;
@@ -9653,7 +9700,8 @@ h3 {
     gap: var(--space-sm);
   }
 
-  .chat-composer textarea {
+  .chat-composer textarea,
+  .chat-composer [data-chat-input] {
     flex: 1 1 auto;
     min-height: 36px;
     padding: var(--space-md) var(--space-lg);
@@ -9696,7 +9744,7 @@ h3 {
     align-self: flex-end;
   }
 
-  /* Chat mention picker â€” prevent overflow */
+  /* Chat mention picker Ã¢â‚¬â€ prevent overflow */
   .chat-mention-picker {
     max-height: 200px;
   }
@@ -10459,7 +10507,7 @@ h3 {
   gap: var(--space-lg);
 }
 
-/* -- Widget card shell â€” light chrome redesign -- */
+/* -- Widget card shell Ã¢â‚¬â€ light chrome redesign -- */
 .dashboard-widget-card,
 .widget-card {
   background: var(--color-surface);
@@ -10484,7 +10532,7 @@ h3 {
   border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
 }
 
-/* Light header â€” thin separator instead of heavy dark bar */
+/* Light header Ã¢â‚¬â€ thin separator instead of heavy dark bar */
 .widget-card-header {
   display: flex;
   align-items: center;
@@ -10503,7 +10551,7 @@ h3 {
   letter-spacing: 0.06em;
 }
 
-/* Body â€” handles its own padding */
+/* Body Ã¢â‚¬â€ handles its own padding */
 .widget-card-body {
   padding: var(--space-xl) var(--space-xl) var(--space-lg);
   flex: 1 1 auto;
@@ -10512,7 +10560,7 @@ h3 {
   line-height: 1.55;
 }
 
-/* Widget body SVG icons â€” constrain sizes to prevent giant triangles */
+/* Widget body SVG icons Ã¢â‚¬â€ constrain sizes to prevent giant triangles */
 .widget-card-body svg {
   display: inline-block;
   width: 16px;
@@ -10543,7 +10591,7 @@ h3 {
 .status-inactive { background: var(--color-text-muted); opacity: 0.5; }
 .status-running { background: var(--color-accent); animation: echo-pulse-dot 1.6s ease-in-out infinite; }
 
-/* Widget placeholder â€” shared empty state */
+/* Widget placeholder Ã¢â‚¬â€ shared empty state */
 .widget-placeholder,
 .dashboard-widget-placeholder {
   margin: 0;
@@ -10629,7 +10677,7 @@ h3 {
 .widget-budget-fill.budget-warning { background: var(--color-warning); }
 .widget-budget-fill.budget-critical { background: var(--color-danger); }
 
-/* -- Kanban Summary Widget â€” fixes "Ready 0In Progress 0Blocked 0Done 2" concatenation -- */
+/* -- Kanban Summary Widget Ã¢â‚¬â€ fixes "Ready 0In Progress 0Blocked 0Done 2" concatenation -- */
 .widget-kanban-summary { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
 
 .widget-lane-badge {
@@ -10666,7 +10714,7 @@ h3 {
   color: var(--color-text-muted);
 }
 
-/* -- Cards Done Widget â€” fixes giant SVG triangle -- */
+/* -- Cards Done Widget Ã¢â‚¬â€ fixes giant SVG triangle -- */
 .widget-done-count {
   display: flex; flex-direction: column; align-items: center;
   gap: var(--space-xs); padding: var(--space-lg) 0;
@@ -10742,7 +10790,7 @@ h3 {
 .widget-heartbeat-label { color: var(--color-text-muted); font-weight: 600; min-width: 70px; }
 .widget-heartbeat-value { color: var(--color-text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-xs); }
 
-/* -- Workspaces Widget â€” fixes "Workspaceecho" concatenation -- */
+/* -- Workspaces Widget Ã¢â‚¬â€ fixes "Workspaceecho" concatenation -- */
 .widget-workspaces { display: flex; flex-direction: column; gap: var(--space-sm); }
 
 .widget-workspace-item {
@@ -10873,7 +10921,7 @@ h3 {
 
 .dashboard-widget-large,
 .widget-size-large {
-  /* 2 columns Ã— 2 rows */
+  /* 2 columns Ãƒâ€” 2 rows */
 }
 
 .dashboard-widget-wide,
@@ -11270,7 +11318,7 @@ h3 {
   overflow-y: auto;
 }
 
-/* Kanban cards inside dashboard lanes â€” compact sizing */
+/* Kanban cards inside dashboard lanes Ã¢â‚¬â€ compact sizing */
 .dashboard-lane-cards .kanban-card {
   /* Inherits from existing .kanban-card styles */
 }
@@ -11409,7 +11457,7 @@ h3 {
   }
 }
 
-/* ── Terminal panel ── */
+/* â”€â”€ Terminal panel â”€â”€ */
 
 .terminal-panel {
   display: grid;
@@ -11440,7 +11488,7 @@ h3 {
 }
 
 .terminal-panel summary::before {
-  content: "▸";
+  content: "â–¸";
   display: inline-block;
   transition: transform 150ms ease;
   color: var(--color-text-muted);
@@ -11645,7 +11693,7 @@ h3 {
   height: 14px;
 }
 
-/* ── Saved Commands section in terminal panel ── */
+/* â”€â”€ Saved Commands section in terminal panel â”€â”€ */
 
 .terminal-saved-commands {
   border-top: 1px solid var(--color-border);
@@ -11667,7 +11715,7 @@ h3 {
 }
 
 .terminal-saved-header::before {
-  content: "▸";
+  content: "â–¸";
   display: inline-block;
   transition: transform 150ms ease;
   margin-right: var(--space-sm);
@@ -11902,7 +11950,7 @@ h3 {
 
 .terminal-session-label::before,
 .terminal-workspace-label::before {
-  content: "·";
+  content: "Â·";
   margin-right: 7px;
   color: var(--code-editor-border);
 }

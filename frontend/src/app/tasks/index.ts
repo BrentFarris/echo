@@ -1034,7 +1034,7 @@ async function handleTaskAction(event: Event) {
       state.activeChatKanbanTab.set(workspace.id, "chat");
       state.selectedTaskCards.delete(workspace.id);
       getAppCallbacks().render();
-      window.requestAnimationFrame(() => appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus());
+      window.requestAnimationFrame(() => appRoot.querySelector<HTMLElement>("[data-chat-input]")?.focus());
       return;
     }
     if (action === "reference") {
@@ -1048,7 +1048,7 @@ async function handleTaskAction(event: Event) {
       state.activeChatKanbanTab.set(workspace.id, "chat");
       state.selectedTaskCards.delete(workspace.id);
       getAppCallbacks().render();
-      window.requestAnimationFrame(() => appRoot.querySelector<HTMLTextAreaElement>("[data-chat-input]")?.focus());
+      window.requestAnimationFrame(() => appRoot.querySelector<HTMLElement>("[data-chat-input]")?.focus());
       return;
     }
     if (action === "kanban") {

@@ -758,6 +758,10 @@ export function WorkspaceIconMiddleware(arg1) {
   return window['go']['services']['SystemService']['WorkspaceIconMiddleware'](arg1);
 }
 
+export function WorkspacePathKind(arg1, arg2) {
+  return window['go']['services']['SystemService']['WorkspacePathKind'](arg1, arg2);
+}
+
 export function WriteTerminalSession(arg1, arg2, arg3) {
   return window['go']['services']['SystemService']['WriteTerminalSession'](arg1, arg2, arg3);
 }

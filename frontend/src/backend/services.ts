@@ -588,6 +588,10 @@ export function ResolveWorkspaceTextFilePath(...args: Parameters<typeof Wails.Re
   return call("ResolveWorkspaceTextFilePath", Wails.ResolveWorkspaceTextFilePath, args);
 }
 
+export function WorkspacePathKind(...args: Parameters<typeof Wails.WorkspacePathKind>): ReturnType<typeof Wails.WorkspacePathKind> {
+  return call("WorkspacePathKind", Wails.WorkspacePathKind, args);
+}
+
 export function ResolveWorkspacePath(...args: Parameters<typeof Wails.ResolveWorkspacePath>): ReturnType<typeof Wails.ResolveWorkspacePath> {
   return call("ResolveWorkspacePath", Wails.ResolveWorkspacePath, args);
 }

@@ -384,4 +384,6 @@ export function WorkspaceIconHandler():Promise<http.Handler>;
 
 export function WorkspaceIconMiddleware(arg1:http.Handler):Promise<http.Handler>;
 
+export function WorkspacePathKind(arg1:string,arg2:string):Promise<string>;
+
 export function WriteTerminalSession(arg1:string,arg2:string,arg3:string):Promise<void>;
