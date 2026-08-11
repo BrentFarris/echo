@@ -1175,22 +1175,26 @@ function renderPlanQuestionActivity(activity: services.ChatToolActivity): string
   `;
   }
   const answers = parsePlanAnswerResult(activity.result ?? "");
+  const answered = activity.status === "complete";
+  const note = answered
+    ? `<span class="plan-questions-note">Answered</span>`
+    : `<span class="plan-questions-note">${escapeHtml(activity.error || "Not answered")}</span>`;
   return `
-    <section class="plan-questions is-answered" data-plan-questions="${setKey}" data-plan-status="${escapeAttribute(activity.status || "complete")}" aria-label="Clarifying questions">
-      <div class="plan-questions-heading">
-        <strong>Clarifying questions</strong>
-        <span>${escapeHtml(activity.status === "error" ? (activity.error || "Could not ask questions") : "Answered")}</span>
+    <details class="debug-section" data-debug-section="plan-questions" data-plan-questions="${setKey}" data-plan-status="${escapeAttribute(activity.status || "complete")}" aria-label="Clarifying questions">
+      <summary>Clarifying questions ${note}</summary>
+      <div class="debug-content plan-questions-answers">
+        ${(set.questions ?? []).map((question) => {
+          const answer = answers.find((candidate) => candidate.questionId === question.id);
+          return `
+            <div class="plan-question-answer">
+              <strong>${escapeHtml(question.question || "Untitled question")}</strong>
+              <span>${escapeHtml(planAnswerLabel(question, answer))}</span>
+            </div>
+          `;
+        }).join("")}
+        ${activity.error ? `<p class="plan-questions-error">${escapeHtml(activity.error)}</p>` : ""}
       </div>
-      ${(set.questions ?? []).map((question) => {
-        const answer = answers.find((candidate) => candidate.questionId === question.id);
-        return `
-          <div class="plan-question-answer">
-            <strong>${escapeHtml(question.question || "Untitled question")}</strong>
-            <span>${escapeHtml(planAnswerLabel(question, answer))}</span>
-          </div>
-        `;
-      }).join("")}
-    </section>
+    </details>
   `;
 }
 
@@ -1228,33 +1232,35 @@ function planAnswerLabel(question: services.PlanQuestion, answer: services.PlanA
   return "No answer provided";
 }
 
+const planQuestionRenderSignatures = new WeakMap<HTMLElement, string>();
+
+function planQuestionSignature(message: services.ChatMessage): string {
+  return planQuestionActivities(message)
+    .map((activity) => `${activity.id}:${activity.status}`)
+    .join("|");
+}
+
 function patchPlanQuestions(stack: HTMLElement, message: services.ChatMessage) {
   const wanted = renderPlanQuestionsMarkup(message);
   const current = stack.querySelectorAll<HTMLElement>("[data-plan-questions]");
   if (!wanted) {
     current.forEach((section) => section.remove());
+    planQuestionRenderSignatures.delete(stack);
     return;
   }
   const first = current[0];
-  if (!first) {
-    const node = elementFromHtml(wanted) as HTMLElement;
-    stack.insertBefore(node, stack.firstChild);
-    bindChatDebugSections(node);
-    getAppCallbacks().bindChatEvents(node);
+  // While nothing about the question set changed (same activities/statuses),
+  // keep the existing DOM so the user's in-progress answers and any expanded
+  // answered summary stay intact during streaming.
+  if (first && planQuestionRenderSignatures.get(stack) === planQuestionSignature(message)) {
     return;
-  }
-  const currentlyAwaiting = first.dataset.planStatus === "awaiting_input";
-  const stillPending = planQuestionActivities(message).some(
-    (activity) => activity.status === "awaiting_input",
-  );
-  if (currentlyAwaiting && stillPending) {
-    return; // preserve the user's in-progress answers
   }
   current.forEach((section) => section.remove());
   const node = elementFromHtml(wanted) as HTMLElement;
   stack.insertBefore(node, stack.firstChild);
   bindChatDebugSections(node);
   getAppCallbacks().bindChatEvents(node);
+  planQuestionRenderSignatures.set(stack, planQuestionSignature(message));
 }
 
 export async function handleSubmitPlanAnswers(event: Event) {
