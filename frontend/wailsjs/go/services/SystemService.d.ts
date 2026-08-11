@@ -314,6 +314,8 @@ export function SetWorkspaceTaskCompleted(arg1:string,arg2:string,arg3:boolean,a
 
 export function Shutdown():Promise<void>;
 
+export function SkipPlanQuestions(arg1:string,arg2:string,arg3:string):Promise<services.ChatSession>;
+
 export function StageWorkspaceGitChanges(arg1:string,arg2:string):Promise<services.WorkspaceGitRepositoryView>;
 
 export function StageWorkspaceGitFile(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
@@ -353,6 +355,8 @@ export function StopTerminalSession(arg1:string,arg2:string):Promise<void>;
 export function StopWatchdog(arg1:string):Promise<void>;
 
 export function SubmitInlineCodePrompt(arg1:string,arg2:services.InlineCodePromptRequest):Promise<services.InlineCodePromptResponse>;
+
+export function SubmitPlanAnswers(arg1:string,arg2:string,arg3:string,arg4:Array<services.PlanAnswer>):Promise<services.ChatSession>;
 
 export function SwitchWorkspaceGitBranch(arg1:string,arg2:string,arg3:string):Promise<services.WorkspaceGitRepositoryView>;
 

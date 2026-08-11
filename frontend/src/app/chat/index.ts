@@ -1,7 +1,7 @@
 
 import { ensureCodeViewRootLoaded, openWorkspaceCodeFile } from "../../codeView";
 import { elementFromHtml, morphElement, patchChildrenFromHtml, patchMarkdownElement, renderMarkdown } from "../../markdown";
-import { ActivateChatTab, ClearChatForTab, CloseChatTab, CreateAgentModeFromChatForTab, CreateChatTab, CreateSkillFromChatForTab, DeleteAgentMode, EditChatMessageForTab, ListAgentModes, LoadChatSessionForTab, LoadChatWorkspace, ResolveWorkspaceTextFilePath, SaveSettings, SearchWorkspaceFiles, SendChatMessageWithAttachmentsToTab, StopChatStreamForTab } from "../../backend/services";
+import { ActivateChatTab, ClearChatForTab, CloseChatTab, CreateAgentModeFromChatForTab, CreateChatTab, CreateSkillFromChatForTab, DeleteAgentMode, EditChatMessageForTab, ListAgentModes, LoadChatSessionForTab, LoadChatWorkspace, ResolveWorkspaceTextFilePath, SaveSettings, SearchWorkspaceFiles, SendChatMessageWithAttachmentsToTab, StopChatStreamForTab, SkipPlanQuestions, SubmitPlanAnswers } from "../../backend/services";
 import { isWailsRuntime } from "../../backend/web";
 import { llm, services } from "../../../wailsjs/go/models";
 import { getAppCallbacks } from "../callbacks";
@@ -1007,6 +1007,7 @@ export function renderDebugSections(message: services.ChatMessage): string {
   }
   return `
     <div class="debug-stack" data-debug-stack>
+      ${renderPlanQuestionsMarkup(message)}
       ${researchAgents.length ? renderResearchAgents(researchAgents) : ""}
       ${hasReasoning ? renderReasoning(message.reasoning ?? "", researchReasoning) : ""}
       ${toolCalls.length ? renderToolCalls(toolCalls) : ""}
@@ -1114,6 +1115,217 @@ export function renderToolCall(toolCall: services.ChatToolActivity): string {
   `;
 }
 
+// ---------------------------------------------------------------------------
+// Plan-mode clarifying questions
+// ---------------------------------------------------------------------------
+
+const planQuestionsToolName = "ask_user_questions";
+
+function planQuestionActivities(message: services.ChatMessage): services.ChatToolActivity[] {
+  const toolCalls = message.toolCalls ?? [];
+  return toolCalls.filter(
+    (activity) =>
+      activity.name === planQuestionsToolName &&
+      (activity.planQuestions?.questions?.length ?? 0) > 0,
+  );
+}
+
+function renderPlanQuestionsMarkup(message: services.ChatMessage): string {
+  const activities = planQuestionActivities(message);
+  if (!activities.length) {
+    return "";
+  }
+  return activities.map(renderPlanQuestionActivity).join("");
+}
+
+function renderPlanQuestionActivity(activity: services.ChatToolActivity): string {
+  const set = activity.planQuestions;
+  if (!set) {
+    return "";
+  }
+  const setKey = escapeAttribute(set.questionSetId || activity.id || "");
+  const channel = escapeAttribute(set.questionSetId || activity.id || "planq");
+  if (activity.status === "awaiting_input") {
+    return `
+    <section class="plan-questions" data-plan-questions="${setKey}" data-plan-status="awaiting_input" role="group" aria-label="Clarifying questions">
+      <div class="plan-questions-heading">
+        <strong>Clarifying questions</strong>
+        <span>Answer to refine the plan</span>
+      </div>
+      ${(set.questions ?? []).map((question, index) => `
+        <fieldset class="plan-question" data-plan-question data-plan-question-id="${escapeAttribute(question.id)}">
+          <legend>${index + 1}. ${escapeHtml(question.question || "Untitled question")}</legend>
+          ${(question.options ?? []).map((option, optionIndex) => `
+            <label class="plan-option">
+              <input type="radio" name="planq-${channel}-${escapeAttribute(question.id)}" value="${optionIndex}" data-plan-option>
+              <span>${escapeHtml(option)}</span>
+            </label>
+          `).join("")}
+          <label class="plan-option plan-free-text">
+            <span>Other / custom answer</span>
+            <input type="text" data-plan-free-text autocomplete="off" placeholder="Type your own answer...">
+          </label>
+        </fieldset>
+      `).join("")}
+      <div class="plan-questions-actions">
+        <button type="button" class="primary-button" data-action="submit-plan-answers" data-question-set-id="${setKey}">Submit answers</button>
+        <button type="button" class="secondary-button" data-action="skip-plan-questions" data-question-set-id="${setKey}">Skip</button>
+      </div>
+    </section>
+  `;
+  }
+  const answers = parsePlanAnswerResult(activity.result ?? "");
+  return `
+    <section class="plan-questions is-answered" data-plan-questions="${setKey}" data-plan-status="${escapeAttribute(activity.status || "complete")}" aria-label="Clarifying questions">
+      <div class="plan-questions-heading">
+        <strong>Clarifying questions</strong>
+        <span>${escapeHtml(activity.status === "error" ? (activity.error || "Could not ask questions") : "Answered")}</span>
+      </div>
+      ${(set.questions ?? []).map((question) => {
+        const answer = answers.find((candidate) => candidate.questionId === question.id);
+        return `
+          <div class="plan-question-answer">
+            <strong>${escapeHtml(question.question || "Untitled question")}</strong>
+            <span>${escapeHtml(planAnswerLabel(question, answer))}</span>
+          </div>
+        `;
+      }).join("")}
+    </section>
+  `;
+}
+
+function parsePlanAnswerResult(result: string): services.PlanAnswer[] {
+  if (!result) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(result) as {
+      answers?: Array<{ questionId?: string; optionIndex?: number; text?: string }>;
+    };
+    return (parsed.answers ?? []).map((entry) =>
+      services.PlanAnswer.createFrom({
+        questionId: entry.questionId ?? "",
+        optionIndex: entry.optionIndex ?? -1,
+        text: entry.text ?? "",
+      }),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function planAnswerLabel(question: services.PlanQuestion, answer: services.PlanAnswer | undefined): string {
+  if (!answer) {
+    return "No answer provided";
+  }
+  const options = question.options ?? [];
+  if (answer.optionIndex != null && answer.optionIndex >= 0 && answer.optionIndex < options.length) {
+    return options[answer.optionIndex];
+  }
+  if ((answer.text ?? "").trim()) {
+    return answer.text ?? "";
+  }
+  return "No answer provided";
+}
+
+function patchPlanQuestions(stack: HTMLElement, message: services.ChatMessage) {
+  const wanted = renderPlanQuestionsMarkup(message);
+  const current = stack.querySelectorAll<HTMLElement>("[data-plan-questions]");
+  if (!wanted) {
+    current.forEach((section) => section.remove());
+    return;
+  }
+  const first = current[0];
+  if (!first) {
+    const node = elementFromHtml(wanted) as HTMLElement;
+    stack.insertBefore(node, stack.firstChild);
+    bindChatDebugSections(node);
+    getAppCallbacks().bindChatEvents(node);
+    return;
+  }
+  const currentlyAwaiting = first.dataset.planStatus === "awaiting_input";
+  const stillPending = planQuestionActivities(message).some(
+    (activity) => activity.status === "awaiting_input",
+  );
+  if (currentlyAwaiting && stillPending) {
+    return; // preserve the user's in-progress answers
+  }
+  current.forEach((section) => section.remove());
+  const node = elementFromHtml(wanted) as HTMLElement;
+  stack.insertBefore(node, stack.firstChild);
+  bindChatDebugSections(node);
+  getAppCallbacks().bindChatEvents(node);
+}
+
+export async function handleSubmitPlanAnswers(event: Event) {
+  const button = (event.currentTarget as HTMLButtonElement | null) ?? null;
+  if (!button || button.disabled) {
+    return;
+  }
+  const container = button.closest<HTMLElement>("[data-plan-questions]");
+  const questionSetId = container?.dataset.planQuestions ?? "";
+  const workspace = activeWorkspace();
+  const chatID = workspace ? activeChatIDFor(workspace.id) : "";
+  if (!container || !workspace || !chatID || !questionSetId) {
+    return;
+  }
+  const fields = Array.from(container.querySelectorAll<HTMLElement>("[data-plan-question]"));
+  const answers: services.PlanAnswer[] = [];
+  let invalid = false;
+  fields.forEach((field) => {
+    field.classList.remove("is-invalid");
+    const questionId = field.dataset.planQuestionId ?? "";
+    const selected = field.querySelector<HTMLInputElement>('[data-plan-option]:checked');
+    const freeText = field.querySelector<HTMLInputElement>("[data-plan-free-text]")?.value.trim() ?? "";
+    if (selected) {
+      answers.push(
+        services.PlanAnswer.createFrom({
+          questionId,
+          optionIndex: parseInt(selected.value, 10),
+          text: "",
+        }),
+      );
+    } else if (freeText) {
+      answers.push(services.PlanAnswer.createFrom({ questionId, optionIndex: -1, text: freeText }));
+    } else {
+      field.classList.add("is-invalid");
+      invalid = true;
+    }
+  });
+  if (invalid) {
+    pushToast("Answer every question, or use Skip.", "error");
+    return;
+  }
+  button.disabled = true;
+  try {
+    await SubmitPlanAnswers(workspace.id, chatID, questionSetId, answers);
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+    button.disabled = false;
+  }
+}
+
+export async function handleSkipPlanQuestions(event: Event) {
+  const button = (event.currentTarget as HTMLButtonElement | null) ?? null;
+  if (!button || button.disabled) {
+    return;
+  }
+  const container = button.closest<HTMLElement>("[data-plan-questions]");
+  const questionSetId = container?.dataset.planQuestions ?? "";
+  const workspace = activeWorkspace();
+  const chatID = workspace ? activeChatIDFor(workspace.id) : "";
+  if (!container || !workspace || !chatID || !questionSetId) {
+    return;
+  }
+  button.disabled = true;
+  try {
+    await SkipPlanQuestions(workspace.id, chatID, questionSetId);
+  } catch (error) {
+    pushToast(errorMessage(error), "error");
+    button.disabled = false;
+  }
+}
+
 export function bindChatEvents(root: ParentNode) {
   const chatForm = root.querySelector<HTMLFormElement>("[data-chat-form]");
   chatForm?.addEventListener("submit", handleChatSubmit);
@@ -1136,6 +1348,12 @@ export function bindChatEvents(root: ParentNode) {
   root
     .querySelectorAll<HTMLButtonElement>("[data-action=\"send-stop\"]")
     .forEach((button) => button.addEventListener("click", handleSendStopClick));
+  root
+    .querySelectorAll<HTMLButtonElement>("[data-action=\"submit-plan-answers\"]")
+    .forEach((button) => button.addEventListener("click", handleSubmitPlanAnswers));
+  root
+    .querySelectorAll<HTMLButtonElement>("[data-action=\"skip-plan-questions\"]")
+    .forEach((button) => button.addEventListener("click", handleSkipPlanQuestions));
   root
     .querySelectorAll<HTMLButtonElement>("[data-chat-attachment-toggle]")
     .forEach((button) => button.addEventListener("click", handleChatAttachmentToggle));
@@ -2526,7 +2744,7 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
   const session = chatSessionFor(event.workspaceId, chatID);
   const currentRevision = session.revision ?? 0;
   const eventRevision = event.revision ?? 0;
-  const stateful = event.type === "token" || event.type === "reasoning" || event.type === "agent_reasoning" || event.type === "tool_call" || event.type === "agent_status" ||
+  const stateful = event.type === "token" || event.type === "reasoning" || event.type === "agent_reasoning" || event.type === "tool_call" || event.type === "plan_questions" || event.type === "agent_status" ||
     event.type === "complete" || event.type === "canceled" || event.type === "error" ||
     event.type === "retrying" || event.type === "compacting";
   if (stateful && eventRevision > 0) {
@@ -2576,7 +2794,7 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
     }
     message.researchReasoning = updates;
   }
-  if (event.type === "tool_call" && event.toolCall) {
+  if ((event.type === "tool_call" || event.type === "plan_questions") && event.toolCall) {
     const toolCalls = message.toolCalls ?? [];
     const index = toolCalls.findIndex(
       (item) =>
@@ -2844,6 +3062,7 @@ export function patchDebugSections(stack: HTMLElement, message: services.ChatMes
   if (message.role !== "assistant") {
     return;
   }
+  patchPlanQuestions(stack, message);
 
   const reasoning = message.reasoning ?? "";
   const researchReasoning = (message.researchReasoning ?? []).filter((entry) => Boolean(entry.reasoning));

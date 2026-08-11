@@ -728,6 +728,10 @@ export function StopChatStreamForTab(...args: Parameters<typeof Wails.StopChatSt
   return call("StopChatStreamForTab", Wails.StopChatStreamForTab, args);
 }
 
+export function SkipPlanQuestions(...args: Parameters<typeof Wails.SkipPlanQuestions>): ReturnType<typeof Wails.SkipPlanQuestions> {
+  return call("SkipPlanQuestions", Wails.SkipPlanQuestions, args);
+}
+
 export function StopKanbanCard(...args: Parameters<typeof Wails.StopKanbanCard>): ReturnType<typeof Wails.StopKanbanCard> {
   return call("StopKanbanCard", Wails.StopKanbanCard, args);
 }
@@ -738,6 +742,10 @@ export function StopKanbanExecution(...args: Parameters<typeof Wails.StopKanbanE
 
 export function SubmitInlineCodePrompt(...args: Parameters<typeof Wails.SubmitInlineCodePrompt>): ReturnType<typeof Wails.SubmitInlineCodePrompt> {
   return call("SubmitInlineCodePrompt", Wails.SubmitInlineCodePrompt, args);
+}
+
+export function SubmitPlanAnswers(...args: Parameters<typeof Wails.SubmitPlanAnswers>): ReturnType<typeof Wails.SubmitPlanAnswers> {
+  return call("SubmitPlanAnswers", Wails.SubmitPlanAnswers, args);
 }
 
 export function UpdateKanbanCardDescription(...args: Parameters<typeof Wails.UpdateKanbanCardDescription>): ReturnType<typeof Wails.UpdateKanbanCardDescription> {

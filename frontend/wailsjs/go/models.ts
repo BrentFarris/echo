@@ -507,6 +507,54 @@ export namespace services {
 	        this.error = source["error"];
 	    }
 	}
+	export class PlanQuestion {
+	    id: string;
+	    question: string;
+	    options?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PlanQuestion(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.question = source["question"];
+	        this.options = source["options"];
+	    }
+	}
+	export class PlanQuestionSet {
+	    questionSetId: string;
+	    questions: PlanQuestion[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PlanQuestionSet(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.questionSetId = source["questionSetId"];
+	        this.questions = this.convertValues(source["questions"], PlanQuestion);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ChatToolActivity {
 	    id: string;
 	    name?: string;
@@ -517,6 +565,7 @@ export namespace services {
 	    consoleOutput?: string;
 	    agentId?: string;
 	    agentName?: string;
+	    planQuestions?: PlanQuestionSet;
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatToolActivity(source);
@@ -533,7 +582,26 @@ export namespace services {
 	        this.consoleOutput = source["consoleOutput"];
 	        this.agentId = source["agentId"];
 	        this.agentName = source["agentName"];
+	        this.planQuestions = this.convertValues(source["planQuestions"], PlanQuestionSet);
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class ChatResearchReasoning {
 	    agentId: string;
@@ -1636,6 +1704,24 @@ export namespace services {
 	
 	
 	
+	
+	
+	export class PlanAnswer {
+	    questionId: string;
+	    optionIndex: number;
+	    text?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PlanAnswer(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.questionId = source["questionId"];
+	        this.optionIndex = source["optionIndex"];
+	        this.text = source["text"];
+	    }
+	}
 	
 	
 	export class RuntimeStatus {

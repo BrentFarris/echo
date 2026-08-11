@@ -195,6 +195,7 @@ type SystemService struct {
 	chatSessions            map[string]*chatSessionState
 	chatWorkspaces          map[string]*chatWorkspaceState
 	chatStreams             map[string]context.CancelFunc
+	planQuestionWaits       map[string]*planQuestionWait
 	chatSeq                 uint64
 	researchMu              sync.Mutex
 	researchRuns            map[string]*chatResearchRun
@@ -256,6 +257,7 @@ func NewSystemServiceWithStorePath(storePath string) *SystemService {
 		chatSessions:            make(map[string]*chatSessionState),
 		chatWorkspaces:          make(map[string]*chatWorkspaceState),
 		chatStreams:             make(map[string]context.CancelFunc),
+		planQuestionWaits:       make(map[string]*planQuestionWait),
 		researchRuns:            make(map[string]*chatResearchRun),
 		kanbanRuns:              make(map[string]context.CancelFunc),
 		kanbanAgents:            make(map[string]*kanbanAgentRun),

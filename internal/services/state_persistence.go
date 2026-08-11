@@ -503,8 +503,18 @@ func (s *SystemService) restorePersistedChatSessionLocked(workspaceID string, pe
 			interrupted = true
 		}
 		s.observeChatID(message.ID)
-		for _, activity := range message.ToolCalls {
+		for index := range message.ToolCalls {
+			activity := &message.ToolCalls[index]
 			s.observeChatID(activity.ID)
+			// A persisted awaiting_input activity has no live wait after restart;
+			// downgrade it so clients never render dead input cards.
+			if activity.Status == "awaiting_input" {
+				activity.Status = "complete"
+				if strings.TrimSpace(activity.Result) == "" {
+					activity.Result = `{"note":"Plan questions were not answered because Echo was restarted."}`
+				}
+				changed = true
+			}
 		}
 	}
 	if session.Preview == "" {

@@ -41,3 +41,4 @@ frontend/dist/*
 echo.db
 /echo/echo.log
 frontend/package.json.md5
+.gotmp/

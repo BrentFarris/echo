@@ -618,6 +618,10 @@ export function Shutdown() {
   return window['go']['services']['SystemService']['Shutdown']();
 }
 
+export function SkipPlanQuestions(arg1, arg2, arg3) {
+  return window['go']['services']['SystemService']['SkipPlanQuestions'](arg1, arg2, arg3);
+}
+
 export function StageWorkspaceGitChanges(arg1, arg2) {
   return window['go']['services']['SystemService']['StageWorkspaceGitChanges'](arg1, arg2);
 }
@@ -696,6 +700,10 @@ export function StopWatchdog(arg1) {
 
 export function SubmitInlineCodePrompt(arg1, arg2) {
   return window['go']['services']['SystemService']['SubmitInlineCodePrompt'](arg1, arg2);
+}
+
+export function SubmitPlanAnswers(arg1, arg2, arg3, arg4) {
+  return window['go']['services']['SystemService']['SubmitPlanAnswers'](arg1, arg2, arg3, arg4);
 }
 
 export function SwitchWorkspaceGitBranch(arg1, arg2, arg3) {

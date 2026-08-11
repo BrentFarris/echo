@@ -56,15 +56,16 @@ type ChatMessage struct {
 }
 
 type ChatToolActivity struct {
-	ID            string `json:"id"`
-	Name          string `json:"name,omitempty"`
-	Arguments     string `json:"arguments,omitempty"`
-	Status        string `json:"status"`
-	Result        string `json:"result,omitempty"`
-	Error         string `json:"error,omitempty"`
-	ConsoleOutput string `json:"consoleOutput,omitempty"`
-	AgentID       string `json:"agentId,omitempty"`
-	AgentName     string `json:"agentName,omitempty"`
+	ID            string           `json:"id"`
+	Name          string           `json:"name,omitempty"`
+	Arguments     string           `json:"arguments,omitempty"`
+	Status        string           `json:"status"`
+	Result        string           `json:"result,omitempty"`
+	Error         string           `json:"error,omitempty"`
+	ConsoleOutput string           `json:"consoleOutput,omitempty"`
+	AgentID       string           `json:"agentId,omitempty"`
+	AgentName     string           `json:"agentName,omitempty"`
+	PlanQuestions *PlanQuestionSet `json:"planQuestions,omitempty"`
 }
 
 type ChatResearchAgent struct {
@@ -93,6 +94,7 @@ type ChatStreamEvent struct {
 	Content           string                 `json:"content,omitempty"`
 	Reasoning         string                 `json:"reasoning,omitempty"`
 	ResearchReasoning *ChatResearchReasoning `json:"researchReasoning,omitempty"`
+	PlanQuestions     *PlanQuestionSet       `json:"planQuestions,omitempty"`
 	ToolCall          *ChatToolActivity      `json:"toolCall,omitempty"`
 	ResearchAgent     *ChatResearchAgent     `json:"researchAgent,omitempty"`
 	Error             string                 `json:"error,omitempty"`
@@ -828,6 +830,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 		}
 	}
 	recoverableToolCalls := make(map[string]bool)
+	planQuestionRounds := 0
 	if researchEnabled && shouldBootstrapResearch(currentUser, resolvedModeID) {
 		arguments, marshalErr := json.Marshal(map[string]any{
 			"agents": []map[string]string{{
@@ -847,7 +850,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 			assistant := llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{call}}
 			messages = append(messages, assistant)
 			s.appendChatHistory(workspace.ID, assistant, chatID)
-			execution := s.executeToolCall(ctx, workspace, settings, chatID, streamID, messageID, call, isPlanMode, toolScopes, make(map[string]tools.AttachedImage), research)
+			execution := s.executeToolCall(ctx, workspace, settings, chatID, streamID, messageID, call, planQuestionRounds, isPlanMode, toolScopes, make(map[string]tools.AttachedImage), research)
 			research.MarkAutomaticScout()
 			recoverableToolCalls[call.ID] = true
 			messages = append(messages, execution.Messages...)
@@ -1131,7 +1134,10 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 				s.cancelChatMessage(workspace.ID, streamID, messageID)
 				return
 			}
-			execution := s.executeToolCall(ctx, workspace, settings, chatID, streamID, messageID, call, isPlanMode, toolScopes, generatedImages, research)
+			if call.Function.Name == tools.AskUserQuestionsToolName {
+				planQuestionRounds++
+			}
+			execution := s.executeToolCall(ctx, workspace, settings, chatID, streamID, messageID, call, planQuestionRounds, isPlanMode, toolScopes, generatedImages, research)
 			if tools.IsResearchAgentToolName(call.Function.Name) {
 				researchFinalizeReminders = 0
 			}
@@ -1291,10 +1297,13 @@ type chatToolCallExecution struct {
 	SkillCheckpoint bool
 }
 
-func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, chatID string, streamID string, messageID string, call llm.ToolCall, readOnlyOnly bool, toolScopes *tools.ToolScopeChecker, generatedImages map[string]tools.AttachedImage, research *chatResearchRun) chatToolCallExecution {
+func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, chatID string, streamID string, messageID string, call llm.ToolCall, questionRound int, readOnlyOnly bool, toolScopes *tools.ToolScopeChecker, generatedImages map[string]tools.AttachedImage, research *chatResearchRun) chatToolCallExecution {
 
 	if call.ID == "" {
 		call.ID = s.nextChatID("call")
+	}
+	if call.Function.Name == tools.AskUserQuestionsToolName {
+		return s.executePlanQuestions(ctx, workspace, chatID, streamID, messageID, call, readOnlyOnly, questionRound)
 	}
 	if tools.IsResearchAgentToolName(call.Function.Name) && research == nil {
 		s.logToolRequest(call)
@@ -1476,11 +1485,13 @@ func (s *SystemService) updateToolActivity(workspaceID string, streamID string, 
 	}
 	s.mutateChatMessage(workspaceID, messageID, func(message *ChatMessage) {
 		for i := range message.ToolCalls {
-			if message.ToolCalls[i].ID != "" && message.ToolCalls[i].ID == activity.ID {
-				message.ToolCalls[i] = activity
-				return
-			}
-			if message.ToolCalls[i].ID == "" && message.ToolCalls[i].Name == activity.Name {
+			if (message.ToolCalls[i].ID != "" && message.ToolCalls[i].ID == activity.ID) ||
+				(message.ToolCalls[i].ID == "" && message.ToolCalls[i].Name == activity.Name) {
+				// Preserve the typed plan-question set across status updates so
+				// answered/errored cards still render for the user.
+				if activity.PlanQuestions == nil {
+					activity.PlanQuestions = message.ToolCalls[i].PlanQuestions
+				}
 				message.ToolCalls[i] = activity
 				return
 			}
@@ -1999,7 +2010,7 @@ func chatSystemMessage(workspace Workspace, mode AgentMode, skillCandidates []to
 		"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. " +
 		"When a search result gives a useful line number, read nearby code with filesystem_read_text aroundLine; copy the result's line value and avoid reading whole source files unless the entire file is genuinely needed. " +
 		"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. " +
-		"When images are attached to a chat message, use comfyui_generate with attachedImageIndex (0-based) to pass them directly as img2img input â€” no need to save to disk first. Index 0 refers to the first attached image. " +
+		"When images are attached to a chat message, use comfyui_generate with attachedImageIndex (0-based) to pass them directly as img2img input — no need to save to disk first. Index 0 refers to the first attached image. " +
 		"After generating an image with comfyui_generate, use the returned imageId with save_image to persist it to workspace disk if needed. " +
 		"When you change or add code in the workspace, verify it before finalizing: add or update focused unit tests that exercise the changed behavior, then run the relevant checks (for example go test ./... or the package's test script) with shell_command using a workspace workingDirectory. " +
 		"When the change is runnable, also run it or a small probe (for example a temporary go run file, node -e, or a short script) that calls the changed code with representative inputs and confirms the observed output; treat that as a simulation of the change. " +
@@ -2022,6 +2033,7 @@ func chatSystemMessage(workspace Workspace, mode AgentMode, skillCandidates []to
 			"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. " +
 			"When a search result gives a useful line number, read nearby code with filesystem_read_text aroundLine; copy the result's line value and avoid reading whole source files unless the entire file is genuinely needed. " +
 			"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. " +
+			"After exploring, if high-impact ambiguities remain in scope, target files, approach, constraints, or priorities that you cannot resolve by reading the workspace, call ask_user_questions with 1-3 concise questions, each with up to 3 suggested options (free text is always available). Wait for the answers and incorporate them into the final plan; answer once and then finalize. Do not ask questions you can resolve yourself, and never use it for clear or trivial requests. If the user skips, finalize with your best judgment. " +
 			"Create a concrete, concise plan that follows the user's request and clearly describes the intended changes. " +
 			"Even if the user asks you to modify files, tell them you are unable to because you are in planning mode."
 		if researchEnabled {

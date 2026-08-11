@@ -65,6 +65,7 @@ var planModeDirectToolNames = func() map[string]bool {
 		result[name] = allowed
 	}
 	result["workspace_task_create"] = true
+	result[AskUserQuestionsToolName] = true
 	return result
 }()
 
@@ -84,6 +85,11 @@ var researchAgentToolNames = map[string]bool{
 	"research_agent_send":    true,
 	"research_agents_wait":   true,
 	"research_agents_cancel": true,
+}
+
+// planOrchestrationToolNames are tools exposed only through plan-mode schemas.
+var planOrchestrationToolNames = map[string]bool{
+	AskUserQuestionsToolName: true,
 }
 
 type Registry struct {
@@ -147,8 +153,19 @@ func (r *Registry) Registered() []Tool {
 	return registered
 }
 
+func excludedFromAgentSchemas() map[string]bool {
+	excluded := make(map[string]bool, len(researchAgentToolNames)+len(planOrchestrationToolNames))
+	for name := range researchAgentToolNames {
+		excluded[name] = true
+	}
+	for name := range planOrchestrationToolNames {
+		excluded[name] = true
+	}
+	return excluded
+}
+
 func LLMSchema() []llm.Tool {
-	return schemaExcludingTools(defaultRegistry.Registered(), researchAgentToolNames)
+	return schemaExcludingTools(defaultRegistry.Registered(), excludedFromAgentSchemas())
 }
 
 // ChatLLMSchema includes chat-only orchestration tools in addition to the
@@ -190,7 +207,7 @@ func IsResearchAgentToolName(name string) bool {
 }
 
 func (r *Registry) LLMSchema() []llm.Tool {
-	return schemaForTools(r.Registered(), nil)
+	return schemaExcludingTools(r.Registered(), planOrchestrationToolNames)
 }
 
 func (r *Registry) ReadOnlyLLMSchema() []llm.Tool {

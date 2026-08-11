@@ -12299,3 +12299,115 @@ h3 {
     white-space: nowrap;
   }
 }
+/* Plan-mode clarifying questions */
+.plan-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 10px 0 4px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface);
+}
+.plan-questions-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.plan-questions-heading strong {
+  color: var(--color-text);
+}
+.plan-questions-heading span {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+.plan-question {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
+}
+.plan-question legend {
+  padding: 0 4px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+.plan-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.plan-option:hover {
+  background: rgba(37, 99, 235, 0.08);
+}
+.plan-option input[type="radio"] {
+  accent-color: var(--color-accent);
+  margin: 0;
+}
+.plan-free-text {
+  flex-wrap: wrap;
+}
+.plan-free-text input {
+  flex: 1 1 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--text-base-md);
+}
+.plan-free-text input:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+.plan-question.is-invalid {
+  border-color: var(--color-danger);
+}
+.plan-questions-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+.plan-question-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
+}
+.plan-question-answer strong {
+  color: var(--color-text);
+  font-weight: 600;
+}
+.plan-question-answer span {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+ @media (max-width: 720px) {
+  .plan-questions {
+    padding: 10px;
+  }
+  .plan-questions-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .plan-questions-actions .primary-button,
+  .plan-questions-actions .secondary-button {
+    width: 100%;
+  }
+}
+
