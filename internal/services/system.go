@@ -222,6 +222,7 @@ type SystemService struct {
 	workspaceTextSearches   map[string]workspaceTextSearchRun
 	debugger                *debugManager
 	workspaceContextBuilder workspaceContextBuildFunc
+	chatVerificationRunner  func(context.Context, Workspace, []string) (kanbanVerificationReport, error)
 	webAccessController     WebAccessController
 	eventMu                 sync.Mutex
 	eventSeq                uint64

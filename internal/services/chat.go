@@ -860,6 +860,11 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 	mediaPayloadsDisabled := false
 	skillCheckpointPending := false
 	skillCheckpointReminders := 0
+	changedPaths := make(map[string]bool)
+	hasProjectChanges := false
+	verificationAttempts := 0
+	verificationCurrent := false
+	verificationNotice := ""
 	// Track images produced by tools during this turn so subsequent tool calls
 	// (e.g., save_image) can reference them by imageId.
 	generatedImages := make(map[string]tools.AttachedImage)
@@ -1072,6 +1077,33 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 			s.appendChatHistory(workspace.ID, assistantHistory, chatID)
 		}
 		if len(toolCalls) == 0 {
+			if !isPlanMode && hasProjectChanges && !verificationCurrent {
+				report, action, verifyErr := s.checkChatFileChanges(ctx, workspace, streamID, messageID, changedPaths, verificationAttempts)
+				if verifyErr != nil {
+					if ctx.Err() != nil {
+						s.cancelChatMessage(workspace.ID, streamID, messageID)
+					} else {
+						s.failChatMessage(workspace.ID, streamID, messageID, verifyErr.Error())
+					}
+					return
+				}
+				switch action {
+				case chatVerificationActionRetryRepair:
+					verificationAttempts++
+					messages = append(messages, llm.Message{Role: llm.RoleUser, Content: chatVerificationRepairMessage(report, verificationAttempts)})
+					continue
+				case chatVerificationActionVerified:
+					verificationCurrent = true
+					verificationNotice = chatVerificationResultLine(report)
+				case chatVerificationActionFinalizedFailed:
+					verificationAttempts++
+					verificationCurrent = true
+					s.appendChatContent(workspace.ID, streamID, messageID, chatVerificationFailedNotice(report, verificationAttempts))
+					s.appendChatHistory(workspace.ID, assistantHistory, chatID)
+					s.completeChatMessage(workspace.ID, streamID, messageID, finishReason)
+					return
+				}
+			}
 			if skillCheckpointPending {
 				if skillCheckpointReminders < workspaceSkillMaxReminders {
 					skillCheckpointReminders++
@@ -1086,6 +1118,9 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 				}
 				s.appendChatContent(workspace.ID, streamID, messageID, "\n\n"+workspaceSkillCheckpointWarning())
 				s.appendChatHistory(workspace.ID, assistantHistory, chatID)
+			}
+			if verificationNotice != "" {
+				s.appendChatContent(workspace.ID, streamID, messageID, verificationNotice)
 			}
 			s.completeChatMessage(workspace.ID, streamID, messageID, finishReason)
 			return
@@ -1113,6 +1148,11 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 			if len(execution.Changes) > 0 {
 				skillCheckpointPending = true
 				skillCheckpointReminders = 0
+				hasProjectChanges = true
+				verificationCurrent = false
+				for _, change := range execution.Changes {
+					changedPaths[change.Path] = true
+				}
 			}
 			if execution.SkillCheckpoint {
 				skillCheckpointPending = false
@@ -1961,6 +2001,10 @@ func chatSystemMessage(workspace Workspace, mode AgentMode, skillCandidates []to
 		"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. " +
 		"When images are attached to a chat message, use comfyui_generate with attachedImageIndex (0-based) to pass them directly as img2img input â€” no need to save to disk first. Index 0 refers to the first attached image. " +
 		"After generating an image with comfyui_generate, use the returned imageId with save_image to persist it to workspace disk if needed. " +
+		"When you change or add code in the workspace, verify it before finalizing: add or update focused unit tests that exercise the changed behavior, then run the relevant checks (for example go test ./... or the package's test script) with shell_command using a workspace workingDirectory. " +
+		"When the change is runnable, also run it or a small probe (for example a temporary go run file, node -e, or a short script) that calls the changed code with representative inputs and confirms the observed output; treat that as a simulation of the change. " +
+		"Fix any failures and re-run until passing, then finalize with a one-line statement of what you ran and the result. Scale verification to the change, and state plainly when a change is not runnable or testable. " +
+		"Echo also runs an automatic verification pass on your file changes before the final answer; if it reports a failure you will receive the report and must repair it. " +
 		"Keep responses concrete and concise."
 	if researchEnabled {
 		instructions += " " + researchOrchestratorSystemGuidance
