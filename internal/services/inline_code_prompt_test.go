@@ -546,3 +546,15 @@ func hasInlineToolEvent(events []InlineCodePromptEvent, name string, status stri
 	}
 	return false
 }
+
+func TestInlineCodeSystemMessageEncouragesTestVerification(t *testing.T) {
+	message := inlineCodeSystemMessage(Workspace{}, nil)
+	for _, expected := range []string{
+		"If your change alters behavior, add or update a focused test",
+		"otherwise state clearly that the change was not verified",
+	} {
+		if !strings.Contains(message.Content, expected) {
+			t.Fatalf("expected inline system prompt to include %q, got %q", expected, message.Content)
+		}
+	}
+}

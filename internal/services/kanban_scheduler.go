@@ -1291,6 +1291,8 @@ func kanbanAgentSystemMessage(workspace Workspace, skillCandidates []tools.Works
 				"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. "+
 				"When a search result gives a useful line number, read nearby code with filesystem_read_text aroundLine; copy the result's line value and avoid reading whole source files unless the entire file is genuinely needed. "+
 				"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. "+
+				"When a card changes or adds code, write or update focused unit tests that exercise the changed behavior, matching the project's existing test conventions, so Echo's verification run (for example go test ./... or npm test) exercises the new behavior. "+
+				"Run the relevant check yourself when practical and do not finish a code-change card while its tests or verification are failing. "+
 				"Echo automatically runs detected verification commands before marking the card Done; if verification fails, repair the issue using the report. "+
 				"When project files changed, first provide the completion summary to trigger verification; do not call workspace_skill_record until Echo reports that verification passed and requests the learning checkpoint. "+
 				"Write the final message as a concise handoff summary for dependent cards, including what was done, important files or decisions, and how it was verified.",
