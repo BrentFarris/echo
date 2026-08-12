@@ -13,16 +13,20 @@ import (
 
 const (
 	workspaceInstructionsFile     = "AGENTS.md"
+	workspaceSecretsDirName       = "secrets"
 	maxWorkspaceInstructionsBytes = 64 * 1024
 )
 
 func workspaceSystemPrompt(base string, workspace Workspace) string {
 	content := strings.TrimSpace(base) + "\n\n" + workspaceOperatingContext(workspace)
 	instructions := workspaceInstructions(workspace)
-	if instructions == "" {
-		return content
+	if instructions != "" {
+		content += "\n\nWorkspace instructions:\n\n" + instructions
 	}
-	return content + "\n\nWorkspace instructions:\n\n" + instructions
+	if notice := workspaceSecretsNotice(workspace); notice != "" {
+		content += "\n\n" + notice
+	}
+	return content
 }
 
 func workspaceOperatingContext(workspace Workspace) string {
@@ -127,4 +131,22 @@ func workspaceInstructions(workspace Workspace) string {
 		sections = append(sections, fmt.Sprintf("AGENTS.md from %s (%s):\n\n%s", folder.Label, path, content))
 	}
 	return strings.Join(sections, "\n\n")
+}
+
+// workspaceSecretsNotice reports whether any available workspace folder contains
+// a .echo/secrets directory. It only surfaces the directory's existence so the
+// agent knows it is present; it never reads or includes its contents.
+func workspaceSecretsNotice(workspace Workspace) string {
+	for _, folder := range workspace.Folders {
+		if !folder.UseAgents || folder.Missing {
+			continue
+		}
+		path := filepath.Join(folder.Path, workspaceCacheDirName, workspaceSecretsDirName)
+		info, err := os.Stat(path)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		return fmt.Sprintf("A project secrets directory exists at %s. It is present so you know it exists; do not read or echo its contents unless the user explicitly asks, and treat it as sensitive project credentials.", path)
+	}
+	return ""
 }
