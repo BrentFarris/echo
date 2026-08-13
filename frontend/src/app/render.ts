@@ -6,6 +6,7 @@ import {
   clearChatMention,
   linkifyAssistantFilePaths,
   scrollChatToBottom,
+  syncChatMessageTimers,
 } from "./chat";
 import { loadTokenBudget, renderBudgetBar } from "./budget";
 import { renderChangeReviewDrawer } from "./changes";
@@ -392,6 +393,7 @@ function renderApp(refreshCodeView: boolean): void {
   }
 
   changedRegions.forEach((region) => bindEvents(region));
+  syncChatMessageTimers();
   mountTerminalDock(terminal.element, workspace);
   restoreRenderScrollSnapshots(scrollSnapshots);
   restoreRenderFocusSnapshot(focusSnapshot);

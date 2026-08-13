@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/brent/echo/internal/llm"
 	"github.com/brent/echo/internal/tools"
@@ -53,6 +54,8 @@ type ChatMessage struct {
 	ResearchAgents    []ChatResearchAgent     `json:"researchAgents,omitempty"`
 	Status            string                  `json:"status"`
 	Error             string                  `json:"error,omitempty"`
+	StartedAtMs       int64                   `json:"startedAtMs,omitempty"`
+	DurationMs        int64                   `json:"durationMs,omitempty"`
 }
 
 type ChatToolActivity struct {
@@ -99,6 +102,7 @@ type ChatStreamEvent struct {
 	ResearchAgent     *ChatResearchAgent     `json:"researchAgent,omitempty"`
 	Error             string                 `json:"error,omitempty"`
 	FinishReason      string                 `json:"finishReason,omitempty"`
+	DurationMs        int64                  `json:"durationMs,omitempty"`
 	ImageAttachment   *ChatImageAttachment   `json:"imageAttachment,omitempty"`
 	VideoAttachment   *ChatVideoAttachment   `json:"videoAttachment,omitempty"`
 	Revision          uint64                 `json:"revision"`
@@ -367,9 +371,10 @@ func (s *SystemService) sendChatMessage(workspaceID string, chatID string, reque
 		Status:  "complete",
 	}
 	assistantMessage := ChatMessage{
-		ID:     s.nextChatIDLocked("msg"),
-		Role:   llm.RoleAssistant,
-		Status: "streaming",
+		ID:          s.nextChatIDLocked("msg"),
+		Role:        llm.RoleAssistant,
+		Status:      "streaming",
+		StartedAtMs: time.Now().UnixMilli(),
 	}
 	streamID := s.nextChatIDLocked("stream")
 	session.Messages = append(session.Messages, userMessage, assistantMessage)
@@ -617,9 +622,10 @@ func (s *SystemService) retryChatMessageFromTab(workspaceID string, chatID strin
 	}
 
 	assistantMessage := ChatMessage{
-		ID:     s.nextChatIDLocked("msg"),
-		Role:   llm.RoleAssistant,
-		Status: "streaming",
+		ID:          s.nextChatIDLocked("msg"),
+		Role:        llm.RoleAssistant,
+		Status:      "streaming",
+		StartedAtMs: time.Now().UnixMilli(),
 	}
 	streamID := s.nextChatIDLocked("stream")
 	session.Messages = append(session.Messages, assistantMessage)
@@ -743,9 +749,10 @@ func (s *SystemService) editChatMessage(workspaceID string, chatID string, messa
 	}
 
 	assistantMessage := ChatMessage{
-		ID:     s.nextChatIDLocked("msg"),
-		Role:   llm.RoleAssistant,
-		Status: "streaming",
+		ID:          s.nextChatIDLocked("msg"),
+		Role:        llm.RoleAssistant,
+		Status:      "streaming",
+		StartedAtMs: time.Now().UnixMilli(),
 	}
 	streamID := s.nextChatIDLocked("stream")
 	session.Messages = append(session.Messages, assistantMessage)
@@ -1571,6 +1578,10 @@ func (s *SystemService) completeChatMessage(workspaceID string, streamID string,
 			if session.Messages[i].ID == messageID {
 				session.Messages[i].Status = "complete"
 				session.Messages[i].Error = ""
+				if session.Messages[i].StartedAtMs > 0 {
+					session.Messages[i].DurationMs = time.Now().UnixMilli() - session.Messages[i].StartedAtMs
+				}
+				event.DurationMs = session.Messages[i].DurationMs
 				session.Revision++
 				event.Revision = session.Revision
 				break
@@ -1673,6 +1684,10 @@ func (s *SystemService) settleChatMessage(workspaceID string, streamID string, m
 				if session.StreamID == streamID || session.StreamID == "" {
 					session.Messages[i].Status = status
 					session.Messages[i].Error = messageError
+					if session.Messages[i].StartedAtMs > 0 {
+						session.Messages[i].DurationMs = time.Now().UnixMilli() - session.Messages[i].StartedAtMs
+					}
+					event.DurationMs = session.Messages[i].DurationMs
 				}
 				break
 			}

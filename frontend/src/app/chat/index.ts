@@ -1099,6 +1099,7 @@ export function renderChatMessage(message: services.ChatMessage, actionsDisabled
       }
       ${message.error ? `<p class="message-error" data-message-error>${escapeHtml(message.error)}</p>` : `<p class="message-error" data-message-error hidden></p>`}
       ${renderDebugSections(message)}
+      ${renderChatMessageTimer(message)}
     </article>
   `;
 }
@@ -1349,6 +1350,162 @@ export function renderToolCall(toolCall: services.ChatToolActivity): string {
       ${toolCall.result ? `<pre>${escapeHtml(toolCall.result)}</pre>` : ""}
     </div>
   `;
+}
+
+// ---------------------------------------------------------------------------
+// Assistant message elapsed-time timer
+// ---------------------------------------------------------------------------
+
+const chatMessageTimerTickMs = 250;
+const chatMessageTimerIntervals = new Map<string, { handle: number; element: HTMLElement }>();
+
+function formatElapsedTime(ms: number): string {
+  const totalMs = Math.max(0, ms);
+  const totalSeconds = Math.floor(totalMs / 1000);
+  const seconds = totalSeconds % 60;
+  const minutes = Math.floor((totalSeconds / 60) % 60);
+  const hours = Math.floor(totalSeconds / 3600);
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  }
+  if (totalSeconds >= 60) {
+    return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  }
+  return `${(totalMs / 1000).toFixed(1)}s`;
+}
+
+function chatMessageElapsedMs(message: services.ChatMessage, now = Date.now()): number {
+  if (!isAssistantMessageStreaming(message)) {
+    return message.durationMs ?? 0;
+  }
+  const startedAtMs = message.startedAtMs ?? 0;
+  return startedAtMs > 0 ? now - startedAtMs : 0;
+}
+
+function chatMessageTimerVisible(message: services.ChatMessage): boolean {
+  if (message.role !== "assistant") {
+    return false;
+  }
+  if (isAssistantMessageStreaming(message)) {
+    return (message.startedAtMs ?? 0) > 0;
+  }
+  return (message.durationMs ?? 0) > 0;
+}
+
+export function renderChatMessageTimer(message: services.ChatMessage): string {
+  if (!chatMessageTimerVisible(message)) {
+    return "";
+  }
+  const isStreaming = isAssistantMessageStreaming(message);
+  const live = isStreaming ? ' data-live=""' : "";
+  return `<div class="chat-message-timer" data-message-timer${live}>${escapeHtml(formatElapsedTime(chatMessageElapsedMs(message)))}</div>`;
+}
+
+function resolveChatMessageById(
+  messageId: string,
+): { workspaceId: string; chatId: string; message: services.ChatMessage | undefined } {
+  for (const workspace of state.chatWorkspaces.values()) {
+    for (const tab of workspace.tabs ?? []) {
+      const session = chatSessionFor(workspace.workspaceId, tab.chatId);
+      const message = (session.messages ?? []).find((item) => item.id === messageId);
+      if (message) {
+        return { workspaceId: workspace.workspaceId, chatId: tab.chatId, message };
+      }
+    }
+  }
+  return { workspaceId: "", chatId: "", message: undefined };
+}
+
+function stopChatMessageTimer(messageId: string) {
+  const entry = chatMessageTimerIntervals.get(messageId);
+  if (entry) {
+    window.clearInterval(entry.handle);
+    chatMessageTimerIntervals.delete(messageId);
+  }
+}
+
+function ensureChatMessageTimer(element: HTMLElement, message: services.ChatMessage) {
+  const existing = chatMessageTimerIntervals.get(message.id);
+  if (existing && existing.element === element && existing.element.isConnected) {
+    return;
+  }
+  if (existing) {
+    window.clearInterval(existing.handle);
+  }
+  const handle = window.setInterval(() => {
+    const current = resolveChatMessageById(message.id).message ?? message;
+    const timer = element.querySelector<HTMLElement>("[data-message-timer]");
+    if (!timer || !element.isConnected) {
+      stopChatMessageTimer(message.id);
+      return;
+    }
+    if (!isAssistantMessageStreaming(current)) {
+      timer.removeAttribute("data-live");
+      timer.textContent = formatElapsedTime(chatMessageElapsedMs(current));
+      stopChatMessageTimer(message.id);
+      return;
+    }
+    timer.textContent = formatElapsedTime(chatMessageElapsedMs(current));
+  }, chatMessageTimerTickMs);
+  chatMessageTimerIntervals.set(message.id, { handle, element });
+}
+
+export function patchChatMessageTimer(element: HTMLElement, message: services.ChatMessage) {
+  if (!chatMessageTimerVisible(message)) {
+    stopChatMessageTimer(message.id);
+    element.querySelector<HTMLElement>("[data-message-timer]")?.remove();
+    return;
+  }
+  const isStreaming = isAssistantMessageStreaming(message);
+  let timer = element.querySelector<HTMLElement>("[data-message-timer]");
+  if (!timer) {
+    timer = document.createElement("div");
+    timer.className = "chat-message-timer";
+    timer.dataset.messageTimer = "";
+    element.appendChild(timer);
+  }
+  timer.textContent = formatElapsedTime(chatMessageElapsedMs(message));
+  if (isStreaming) {
+    timer.dataset.live = "";
+    ensureChatMessageTimer(element, message);
+  } else {
+    timer.removeAttribute("data-live");
+    stopChatMessageTimer(message.id);
+  }
+}
+
+export function syncChatMessageTimers() {
+  const panel = appRoot.querySelector<HTMLElement>("[data-chat-panel]");
+  if (!panel || !activeWorkspace()) {
+    for (const messageId of chatMessageTimerIntervals.keys()) {
+      stopChatMessageTimer(messageId);
+    }
+    return;
+  }
+  const presentIds = new Set<string>();
+  panel.querySelectorAll<HTMLElement>("[data-message-timer][data-live]").forEach((timer) => {
+    const article = timer.closest<HTMLElement>("[data-message-id]");
+    const messageId = article?.dataset.messageId ?? "";
+    if (!article || !messageId) {
+      return;
+    }
+    const message = resolveChatMessageById(messageId).message;
+    if (!message || !isAssistantMessageStreaming(message)) {
+      return;
+    }
+    const startedAtMs = message.startedAtMs ?? 0;
+    if (startedAtMs <= 0) {
+      return;
+    }
+    presentIds.add(messageId);
+    timer.textContent = formatElapsedTime(chatMessageElapsedMs(message));
+    ensureChatMessageTimer(article, message);
+  });
+  for (const messageId of chatMessageTimerIntervals.keys()) {
+    if (!presentIds.has(messageId)) {
+      stopChatMessageTimer(messageId);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3085,6 +3242,10 @@ export function applyChatStreamEvent(event: ChatStreamEvent) {
     session.streamId = "";
     message.status = event.type === "complete" ? "complete" : event.type;
     message.error = event.error ?? "";
+    const eventDurationMs = event.durationMs ?? 0;
+    if (eventDurationMs > 0) {
+      message.durationMs = eventDurationMs;
+    }
     if (event.type === "complete") {
       playNotificationSound();
       maybeSendChatCompletionNotification(event.workspaceId);
@@ -3262,6 +3423,7 @@ export function patchChatMessage(
   if (patchDebug && debugStack) {
     patchDebugSections(debugStack, message);
   }
+  patchChatMessageTimer(element, message);
   if (message.role === "assistant" && linkify) {
     void linkifyAssistantFilePaths(element);
   }
@@ -3461,6 +3623,7 @@ export function patchChatPanel() {
   getAppCallbacks().bindChatEvents(replacement);
   void linkifyAssistantFilePaths(replacement);
   resolveChatTaskRefs(replacement);
+  syncChatMessageTimers();
 }
 
 function placeComposerCaretAtEnd(editor: HTMLElement) {

@@ -659,6 +659,8 @@ export namespace services {
 	    researchAgents?: ChatResearchAgent[];
 	    status: string;
 	    error?: string;
+	    startedAtMs?: number;
+	    durationMs?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatMessage(source);
@@ -677,6 +679,8 @@ export namespace services {
 	        this.researchAgents = this.convertValues(source["researchAgents"], ChatResearchAgent);
 	        this.status = source["status"];
 	        this.error = source["error"];
+	        this.startedAtMs = source["startedAtMs"];
+	        this.durationMs = source["durationMs"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

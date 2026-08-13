@@ -1221,6 +1221,22 @@ h3 {
   min-width: 0;
 }
 
+.chat-message-timer {
+  justify-self: end;
+  margin-top: var(--space-md);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.chat-message-timer[data-live] {
+  color: color-mix(in srgb, var(--color-info) 55%, var(--color-text-muted));
+  font-weight: 600;
+}
+
 .research-agent-strip {
   display: flex;
   flex-wrap: wrap;

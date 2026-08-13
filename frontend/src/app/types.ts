@@ -71,6 +71,7 @@ export type ChatStreamEvent = {
   researchAgent?: services.ChatResearchAgent;
   error?: string;
   finishReason?: string;
+  durationMs?: number;
   imageAttachment?: services.ChatImageAttachment;
   videoAttachment?: services.ChatVideoAttachment;
   revision: number;
