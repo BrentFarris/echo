@@ -377,6 +377,7 @@ func inlineCodeSystemMessage(workspace Workspace, skillCandidates []tools.Worksp
 				"When locating symbols, strings, or code blocks in a known file, prefer filesystem_search_text before reading the whole file. "+
 				"When a search result gives a useful line number, read nearby code with filesystem_read_text aroundLine; copy the result's line value and avoid reading whole source files unless the entire file is genuinely needed. "+
 				"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. "+
+				"If your change alters behavior, add or update a focused test matching the project's conventions and run the relevant check (for example go test ./... or npm test) when the project supports it; otherwise state clearly that the change was not verified. "+
 				"If you fully handled the request by editing files and have nothing useful to show inline, return an empty final message. "+
 				"Otherwise keep the inline response concise and directly relevant to the cursor context.",
 				skillCandidates,

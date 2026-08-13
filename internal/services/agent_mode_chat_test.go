@@ -23,6 +23,9 @@ func TestGeneralAgentModePromptExecutesRequestedWork(t *testing.T) {
 		"helping complete work",
 		"use the available tools to carry it out directly",
 		"Do not stop after describing a plan",
+		"Write or update focused unit tests",
+		"Run the relevant checks yourself",
+		"do not skip writing tests just because none exist",
 	} {
 		if !strings.Contains(message.Content, expected) {
 			t.Fatalf("expected General prompt to include %q, got %q", expected, message.Content)

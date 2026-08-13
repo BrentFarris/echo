@@ -24,6 +24,14 @@ func TestKanbanAgentSystemMessageExplainsFileMentions(t *testing.T) {
 		!strings.Contains(message.Content, "labeled workspace file or directory reference") {
 		t.Fatalf("expected Kanban system prompt to explain backlog file and directory references, got %q", message.Content)
 	}
+	for _, expected := range []string{
+		"write or update focused unit tests that exercise the changed behavior",
+		"matching the project's existing test conventions",
+	} {
+		if !strings.Contains(message.Content, expected) {
+			t.Fatalf("expected Kanban system prompt to include %q, got %q", expected, message.Content)
+		}
+	}
 }
 
 func TestKanbanSchedulerRespectsDependencies(t *testing.T) {
