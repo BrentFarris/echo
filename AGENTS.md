@@ -51,6 +51,19 @@ cd ..
 wails build
 ```
 
+### Headless mode
+
+Run Echo without the desktop window so it can be used from a remote web browser only:
+
+```powershell
+cd frontend; npm run build   # ensure embedded dist is fresh
+go run . -headless           # dev, uses saved web access settings
+wails build                  # release
+.\build\bin\echo.exe -headless [-port 4000] [-bind 0.0.0.0]
+```
+
+Headless mode lives in `main.go` (branch on `-headless`) and `headless.go`. It reuses the web access server from `internal/webserver`, force-enables web access in memory only (`ApplyWebAccessSettingsRuntime` — nothing is persisted, so desktop settings are untouched), prints tokenized LAN URLs to the console, and blocks until Ctrl+C/SIGTERM. It never calls `SetSystemServiceContext`, so `s.ctx` stays nil; all service event emitters and dialog code paths guard on nil ctx, which is what makes web-only operation safe.
+
 When backend service method signatures or exported Go models change, regenerate Wails bindings:
 
 ```powershell

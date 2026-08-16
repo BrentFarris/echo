@@ -53,9 +53,16 @@ func prepareHeadlessWebAccessSettings(current services.WebAccessSettings, port i
 // until the process receives an interrupt signal. It returns the exit code.
 func runHeadless() int {
 	flags := flag.NewFlagSet("echo", flag.ExitOnError)
+	// main only reaches runHeadless when -headless is present, so register it
+	// here as a no-op to keep flag.Parse from rejecting the argument.
+	headless := flags.Bool(headlessFlagName, false, "Run Echo without the desktop window; serve the web UI only.")
 	port := flags.Int("port", 0, "Web access port for headless mode (defaults to the saved setting or 3740).")
 	bindHost := flags.String("bind", "", "Web access bind host for headless mode (defaults to the saved setting or 0.0.0.0).")
 	_ = flags.Parse(os.Args[1:])
+	if !*headless {
+		fmt.Fprintf(os.Stderr, "echo: %s is only accepted with -headless\n", headlessFlagName)
+		return 2
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

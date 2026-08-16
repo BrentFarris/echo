@@ -199,7 +199,13 @@ func TestRunHeadlessWithInterruptEndToEnd(t *testing.T) {
 	resp.Body.Close()
 
 	// A remote browser with the saved token can call whitelisted RPC methods.
-	resp, err = http.Post(baseURL+"/api/rpc/SystemService/AppInfo", "application/json", bytes.NewReader([]byte(`{"args":[]}`)))
+	rpcReq, err := http.NewRequest(http.MethodPost, baseURL+"/api/rpc/SystemService/AppInfo", bytes.NewReader([]byte(`{"args":[]}`)))
+	if err != nil {
+		t.Fatalf("build rpc request: %v", err)
+	}
+	rpcReq.Header.Set("Content-Type", "application/json")
+	rpcReq.Header.Set("X-Echo-Access-Token", token)
+	resp, err = http.DefaultClient.Do(rpcReq)
 	if err != nil {
 		t.Fatalf("rpc AppInfo: %v", err)
 	}
