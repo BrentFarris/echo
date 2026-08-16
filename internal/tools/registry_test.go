@@ -257,8 +257,8 @@ func TestReadOnlyLLMSchemaIncludesOnlyInspectionTools(t *testing.T) {
 			t.Fatalf("expected read-only schema to exclude %s, got %#v", name, names)
 		}
 	}
-	if len(names) != 15 {
-		t.Fatalf("expected exactly fifteen read-only tools, got %#v", names)
+	if len(names) != 16 {
+		t.Fatalf("expected exactly sixteen read-only tools, got %#v", names)
 	}
 }
 

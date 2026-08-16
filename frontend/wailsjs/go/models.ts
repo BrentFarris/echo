@@ -96,6 +96,9 @@ export namespace llm {
 	    repetitionPenalty: number;
 	    timeoutSeconds: number;
 	    searxngUrl: string;
+	    jiraHost: string;
+	    jiraUsername: string;
+	    jiraApiToken: string;
 	    thinkingTokenBudget: number;
 	    thinkingCorrection?: boolean;
 	    systemPromptAppendage?: string;
@@ -111,6 +114,7 @@ export namespace llm {
 	    comfyuiDefaultCheckpoint: string;
 	    comfyuiTxt2imgWorkflow: string;
 	    comfyuiImg2imgWorkflow: string;
+	    comfyuiVideoWorkflow?: string;
 	    theme?: Theme;
 	    headers?: Record<string, string>;
 	
@@ -135,6 +139,9 @@ export namespace llm {
 	        this.repetitionPenalty = source["repetitionPenalty"];
 	        this.timeoutSeconds = source["timeoutSeconds"];
 	        this.searxngUrl = source["searxngUrl"];
+	        this.jiraHost = source["jiraHost"];
+	        this.jiraUsername = source["jiraUsername"];
+	        this.jiraApiToken = source["jiraApiToken"];
 	        this.thinkingTokenBudget = source["thinkingTokenBudget"];
 	        this.thinkingCorrection = source["thinkingCorrection"];
 	        this.systemPromptAppendage = source["systemPromptAppendage"];
@@ -150,6 +157,7 @@ export namespace llm {
 	        this.comfyuiDefaultCheckpoint = source["comfyuiDefaultCheckpoint"];
 	        this.comfyuiTxt2imgWorkflow = source["comfyuiTxt2imgWorkflow"];
 	        this.comfyuiImg2imgWorkflow = source["comfyuiImg2imgWorkflow"];
+	        this.comfyuiVideoWorkflow = source["comfyuiVideoWorkflow"];
 	        this.theme = this.convertValues(source["theme"], Theme);
 	        this.headers = source["headers"];
 	    }

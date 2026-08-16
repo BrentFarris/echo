@@ -12,7 +12,7 @@ import { closeSelectedCardDetail, finishKanbanRun, forgetKanbanRun, loadActiveKa
 import { playNotificationSound } from "./notifications";
 import { addLLMEndpoint, cancelAgentMode, deleteAgentModeSettings, deleteLLMEndpoint, editLLMEndpoint, finishEditingLLMEndpoint, saveAgentMode, saveNewAgentMode, startCreateAgentMode, startEditAgentMode } from "./settings";
 import { activeChatIDFor, activeWorkspace, chatImageDraftsFor, chatPlanModeFor, chatAgentModeIDFor, chatComposerModeFor, setChatComposerMode, chatSessionFor, chatStateKey, chatVideoDraftsFor, getActiveChatKanbanTab, kanbanBoardFor, kanbanCards, limitKanbanConcurrencyEnabled, state, getDashboardWidgets, setDashboardWidgets, defaultDashboardLayouts } from "./state";
-import { applyChatSessionSnapshot, clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, scrollChatToBottom } from "./chat";
+import { applyChatSessionSnapshot, clearChatMention, loadActiveChatSession, patchChatControls, patchChatPanel, renderChatMessageMedia, scrollChatToBottom } from "./chat";
 import { cloneSettings, cloneWebAccessSettings } from "./state";
 import type { AppMode, MobileNavView, WidgetId, WidgetSize } from "./types";
 import { applyTheme, settingsWithThemeDefaults, themePaletteNames } from "./theme";
@@ -858,6 +858,47 @@ export async function handleAction(event: Event) {
       );
       patchChatPanel();
       patchChatControls();
+    }
+    if (action === "toggle-chat-media") {
+      const messageID = target.dataset.messageId ?? "";
+      if (!messageID) {
+        return;
+      }
+      if (state.chatMediaExpanded.has(messageID)) {
+        state.chatMediaExpanded.delete(messageID);
+      } else {
+        state.chatMediaExpanded.add(messageID);
+      }
+      const article = appRoot.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageID)}"]`);
+      if (!article) {
+        return;
+      }
+      const workspace = activeWorkspace();
+      const message = workspace
+        ? (chatSessionFor(workspace.id).messages ?? []).find((item) => item.id === messageID)
+        : null;
+      if (!message) {
+        return;
+      }
+      const content = article.querySelector<HTMLElement>("[data-message-content]");
+      const errorEl = article.querySelector<HTMLElement>("[data-message-error]");
+      const existingMedia = article.querySelector<HTMLElement>(".chat-message-media");
+      const template = document.createElement("template");
+      template.innerHTML = renderChatMessageMedia(message);
+      const nextMedia = template.content.firstElementChild as HTMLElement | null;
+      if (existingMedia) {
+        if (nextMedia) {
+          article.replaceChild(nextMedia, existingMedia);
+        } else {
+          existingMedia.remove();
+        }
+      } else if (nextMedia) {
+        article.insertBefore(template.content, content || errorEl);
+      }
+      // Click listeners are bound per-element at render time; rebind for the freshly inserted media node
+      if (nextMedia) {
+        bindActionEvents(nextMedia);
+      }
     }
     if (action === "save-chat-image") {
       const btn = target as HTMLElement;

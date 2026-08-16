@@ -58,17 +58,17 @@ func (c *Client) WaitForCompletion(ctx context.Context, clientID string, promptI
 				lastError = errors.New("comfyui execution error")
 				return
 			case "status":
-				// Status update — check if queue is empty and we're not executing
+				// Status update â€” check if queue is empty and we're not executing
 				if status, ok := event.Data.Payload.(map[string]interface{}); ok {
 					info, _ := status["exec_info"].(map[string]interface{})
 					if info != nil {
 						executing, _ := info["executing"].(bool)
 						if !executing {
 							// Check if our prompt is done by polling history
-							result, histErr := c.GetHistory(ctx, promptID)
-							if histErr == nil && len(result.OutputImages) > 0 {
-								return
-							}
+						result, histErr := c.GetHistory(ctx, promptID)
+						if histErr == nil && (len(result.OutputImages) > 0 || len(result.OutputVideos) > 0) {
+							return
+						}
 						}
 					}
 				}
@@ -127,22 +127,22 @@ func (c *Client) WaitForCompletionPoll(ctx context.Context, promptID string) (*G
 
 			result, err := c.GetHistory(ctxTimeout, promptID)
 			if err != nil {
-				// Execution errors are fatal — don't retry.
+				// Execution errors are fatal â€” don't retry.
 				if _, isExecErr := err.(*ExecutionError); isExecErr {
 					return nil, err
 				}
-				// "not found in history" means still running — keep polling.
+				// "not found in history" means still running â€” keep polling.
 				continue
 			}
-			// GetHistory returned successfully, meaning the prompt is in history
-			// (execution has completed). If there are images, we're done.
-			if len(result.OutputImages) > 0 {
-				return result, nil
-			}
-			// Completed but produced no output images.
-			// This can happen if the workflow has no image-saving nodes,
-			// or execution finished without errors but also without output.
-			return nil, errors.New("generation completed but produced no output images")
+		// GetHistory returned successfully, meaning the prompt is in history
+		// (execution has completed). If there are media outputs, we're done.
+		if len(result.OutputImages) > 0 || len(result.OutputVideos) > 0 {
+			return result, nil
+		}
+		// Completed but produced no output media.
+		// This can happen if the workflow has no save nodes,
+		// or execution finished without errors but also without output.
+		return nil, errors.New("generation completed but produced no output images or videos")
 		}
 	}
 }
@@ -200,14 +200,26 @@ func connectWS(ctx context.Context, wsURL string) (*websocket.Conn, error) {
 
 // FetchImageBytes retrieves the actual image bytes from ComfyUI's /view endpoint.
 func (c *Client) FetchImageBytes(ctx context.Context, filename, subfolder, imgType string) ([]byte, error) {
+	return c.fetchMediaBytes(ctx, filename, subfolder, imgType)
+}
+
+// FetchVideoBytes retrieves video or GIF bytes from ComfyUI's /view endpoint.
+func (c *Client) FetchVideoBytes(ctx context.Context, filename, subfolder, videoType string) ([]byte, error) {
+	return c.fetchMediaBytes(ctx, filename, subfolder, videoType)
+}
+
+// fetchMediaBytes is the shared implementation for fetching media from /view.
+// Retries on 4xx/5xx to absorb ComfyUI's write-visibility race (history marked complete
+// before the file finishes flushing to disk).
+func (c *Client) fetchMediaBytes(ctx context.Context, filename, subfolder, mediaType string) ([]byte, error) {
 	viewURL := strings.TrimRight(c.BaseURL, "/") + "/view"
 	query := url.Values{}
 	query.Set("filename", filename)
 	if subfolder != "" {
 		query.Set("subfolder", subfolder)
 	}
-	if imgType != "" {
-		query.Set("type", imgType)
+	if mediaType != "" {
+		query.Set("type", mediaType)
 	}
 	viewURL += "?" + query.Encode()
 
@@ -218,21 +230,35 @@ func (c *Client) FetchImageBytes(ctx context.Context, filename, subfolder, imgTy
 
 	client := c.httpDoer()
 
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("fetch image: %w", err)
+	var resp *http.Response
+	var lastStatus int
+	for attempt := 0; ; attempt++ {
+		resp, err = client.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("fetch media: %w", err)
+		}
+		lastStatus = resp.StatusCode
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 || attempt >= 5 {
+			break
+		}
+		resp.Body.Close()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(500 * time.Millisecond * time.Duration(attempt+1)):
+		}
 	}
+
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("ComfyUI /view returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("ComfyUI /view returned status %d", lastStatus)
 	}
 
 	buf := make([]byte, 0, 1<<20) // Pre-allocate 1MB
 	var mu sync.Mutex
 	writer := &syncWriter{buf: buf}
 
-	// Read in chunks to handle large images
 	buf2 := make([]byte, 32*1024)
 	for {
 		n, readErr := resp.Body.Read(buf2)

@@ -128,6 +128,16 @@ func (s *SystemService) setWebAccessController(controller WebAccessController) {
 	s.mu.Unlock()
 }
 
+// ApplyWebAccessSettingsRuntime updates the in-memory web access settings so
+// token checks and status reads reflect a runtime-only configuration, without
+// persisting anything to disk. Headless mode uses this to force web access on
+// for the current process while leaving saved desktop settings untouched.
+func (s *SystemService) ApplyWebAccessSettingsRuntime(settings WebAccessSettings) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.WebAccess = normalizeWebAccessSettings(settings, s.state.WebAccess.AccessToken)
+}
+
 func (s *SystemService) SaveWebAccessSettings(settings WebAccessSettings) (AppState, error) {
 	s.mu.Lock()
 	current := s.state.WebAccess

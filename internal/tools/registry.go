@@ -33,10 +33,12 @@ var readOnlyToolNames = map[string]bool{
 	"workspace_skill_read":        true,
 	"workspace_skill_search":      true,
 	"workspace_task_list":         true,
+	"jira_read":                   true,
 }
 
 var mutatingToolNames = map[string]bool{
 	"comfyui_generate":                 true,
+	"comfyui_generate_video":           true,
 	"create_agent_mode":                true,
 	"filesystem_create_text":           true,
 	"filesystem_delete_file":           true,
@@ -49,6 +51,7 @@ var mutatingToolNames = map[string]bool{
 	"kanban_update_card_description":   true,
 	"restart":                          true,
 	"save_image":                       true,
+	"save_video":                       true,
 	"shell_command":                    true,
 	"workspace_skill_record":           true,
 	"workspace_task_create":            true,

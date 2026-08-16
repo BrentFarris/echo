@@ -40,6 +40,7 @@ export const state = {
   chatDrafts: new Map<string, string>(),
   chatImageDrafts: new Map<string, ChatImageDraft[]>(),
   chatVideoDrafts: new Map<string, ChatVideoDraft[]>(),
+  chatMediaExpanded: new Set<string>(), // message IDs whose inline images/videos are shown; media is hidden by default (runtime-only)
   chatComposerModes: new Map<string, "plan" | "edit">(),
   chatPlanModes: new Map<string, boolean>(),
   chatScrollPositions: new Map<string, number>(),

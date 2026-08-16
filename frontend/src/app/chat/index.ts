@@ -11,6 +11,7 @@ import { icons } from "../icons";
 import { playNotificationSound, maybeSendChatCompletionNotification } from "../notifications";
 import { activeChatIDFor, activeWorkspace, agentModesForWorkspace, chatImageDraftsFor, chatImageDraftTotalBytes, chatVideoDraftsFor, chatVideoDraftTotalBytes, chatPlanModeFor, chatAgentModeIDFor, chatAgentModeNameFor, setChatAgentMode, chatComposerModeFor, setChatComposerMode, chatSessionFor, chatStateKey, getActiveChatModelLabel, cloneSettings, state, taskBoardFor } from "../state";
 import { settingsWithCompactTheme } from "../theme";
+import { settingsWithEndpointSync } from "../endpointSync";
 import { pushToast } from "../toasts";
 import type { ChatImageDraft, ChatMentionState, ChatStreamEvent, ChatVideoDraft, ScrollSnapshot } from "../types";
 import { errorMessage, escapeAttribute, escapeHtml, fileName, formatBytes } from "../utils";
@@ -855,8 +856,7 @@ export function renderChatMessage(message: services.ChatMessage, actionsDisabled
           : renderAssistantControls(message, isEditing, actionsDisabled)
         }
       </header>
-      ${renderChatMessageImages(message)}
-      ${renderChatMessageVideos(message)}
+      ${renderChatMessageMedia(message)}
       ${isEditing
         ? renderEditTextarea(message)
         : `<div class="markdown-body" data-message-content>${renderMarkdown(message.content ?? "")}</div>`
@@ -981,7 +981,7 @@ export function renderChatMessageVideos(message: services.ChatMessage): string {
         .map(
           (video) => `
             <figure class="chat-message-video">
-              ${video.dataUrl ? `<video src="${escapeAttribute(video.dataUrl)}" muted preload="metadata"></video>` : `<span>${icons.video}</span>`}
+              ${video.dataUrl ? `<video src="${escapeAttribute(video.dataUrl)}" controls autoplay loop muted preload="metadata" playsinline></video>` : `<span>${icons.video}</span>`}
               <figcaption>
                 <strong>${escapeHtml(video.name)}</strong>
                 <span>${escapeHtml(video.path || video.source)} - ${escapeHtml(formatBytes(video.bytes ?? 0))}</span>
@@ -990,6 +990,69 @@ export function renderChatMessageVideos(message: services.ChatMessage): string {
           `,
         )
         .join("")}
+    </div>
+  `;
+}
+
+function chatMediaSummary(message: services.ChatMessage): { imageCount: number; videoCount: number; totalBytes: number } {
+  const images = message.images ?? [];
+  const videos = message.videos ?? [];
+  return {
+    imageCount: images.length,
+    videoCount: videos.length,
+    totalBytes: [...images, ...videos].reduce((total, item) => total + (item.bytes ?? 0), 0),
+  };
+}
+
+// Cheap fingerprint of a message's media payload; lets streaming patches skip re-rendering identical media.
+function chatMediaSignature(message: services.ChatMessage): string {
+  const images = message.images ?? [];
+  const videos = message.videos ?? [];
+  const expanded = state.chatMediaExpanded.has(message.id);
+  return [
+    `${expanded ? "1" : "0"}:${images.length}:${videos.length}`,
+    ...images.map((image) => `${image.id}|${image.name}|${image.bytes ?? 0}|${image.dataUrl ? 1 : 0}`),
+    ...videos.map((video) => `${video.id}|${video.name}|${video.bytes ?? 0}|${video.dataUrl ? 1 : 0}`),
+  ].join(";");
+}
+
+export function renderChatMessageMedia(message: services.ChatMessage): string {
+  const summary = chatMediaSummary(message);
+  if (!summary.imageCount && !summary.videoCount) {
+    return "";
+  }
+  const collapsed = !state.chatMediaExpanded.has(message.id);
+  const parts: string[] = [];
+  if (summary.imageCount) {
+    parts.push(`${summary.imageCount} image${summary.imageCount === 1 ? "" : "s"}`);
+  }
+  if (summary.videoCount) {
+    parts.push(`${summary.videoCount} video${summary.videoCount === 1 ? "" : "s"}`);
+  }
+  const label = `${parts.join(" + ")} - ${formatBytes(summary.totalBytes)}`;
+  if (collapsed) {
+    return `
+      <div class="chat-message-media is-collapsed" data-media-signature="${escapeAttribute(chatMediaSignature(message))}">
+        <button class="chat-media-chip" type="button" title="Show media" aria-label="Show media: ${escapeAttribute(label)}" data-action="toggle-chat-media" data-message-id="${escapeAttribute(message.id)}">
+          ${summary.imageCount ? `<span class="chat-media-chip-icon">${icons.image}</span>` : ""}
+          ${summary.videoCount ? `<span class="chat-media-chip-icon">${icons.video}</span>` : ""}
+          <span>${escapeHtml(label)}</span>
+          <span class="chat-media-chip-toggle">${icons.eye}</span>
+        </button>
+      </div>
+    `;
+  }
+  const toggleTitle = "Hide media";
+  return `
+    <div class="chat-message-media" data-media-signature="${escapeAttribute(chatMediaSignature(message))}">
+      <div class="chat-message-media-bar">
+        <span>${escapeHtml(label)}</span>
+        <button class="icon-button chat-media-toggle" type="button" title="${toggleTitle}" aria-label="${toggleTitle}: ${escapeAttribute(label)}" data-action="toggle-chat-media" data-message-id="${escapeAttribute(message.id)}">
+          ${icons.collapse}
+        </button>
+      </div>
+      ${renderChatMessageImages(message)}
+      ${renderChatMessageVideos(message)}
     </div>
   `;
 }
@@ -1566,7 +1629,12 @@ async function selectChatModel(endpointID: string) {
     endpoints,
   });
   try {
-    state.appState = await SaveSettings(settingsWithCompactTheme(state.settingsDraft));
+    // Sync the legacy top-level mirrors to the newly selected endpoint before
+    // saving. Without this, stale mirrors of the previous endpoint can be
+    // written back over an endpoint profile by the backend's normalization.
+    state.appState = await SaveSettings(
+      settingsWithCompactTheme(settingsWithEndpointSync(state.settingsDraft)),
+    );
     state.settingsDraft = cloneSettings(state.appState.settings);
   } catch (err) {
     pushToast(`Failed to save model selection: ${errorMessage(err)}`, "error");
@@ -2745,37 +2813,31 @@ export function patchChatMessage(
     patchMarkdownElement(content, message.content ?? "");
   }
   const error = element.querySelector<HTMLElement>("[data-message-error]");
-  // Patch images container: replace entire element in-place to avoid nesting
-  const imagesContainer = element.querySelector<HTMLElement>(".chat-message-images");
-  if (imagesContainer) {
-    const template = document.createElement("template");
-    template.innerHTML = renderChatMessageImages(message);
-    const newContent = template.content;
-    if (!message.images?.length && newContent.childElementCount === 0) {
-      imagesContainer.remove();
-    } else {
-      element.replaceChild(newContent, imagesContainer);
+  // Patch media container (images + videos, including collapsed state): replace entire element in-place to avoid nesting.
+  // Skip when the rendered output would be identical so streaming content deltas don't rebuild expanded media (which restarts video playback).
+  const mediaContainer = element.querySelector<HTMLElement>(".chat-message-media");
+  const hasMedia = Boolean(message.images?.length || message.videos?.length);
+  if (mediaContainer) {
+    if (!hasMedia) {
+      mediaContainer.remove();
+    } else if (mediaContainer.dataset.mediaSignature !== chatMediaSignature(message)) {
+      const template = document.createElement("template");
+      template.innerHTML = renderChatMessageMedia(message);
+      const nextMedia = template.content.firstElementChild as HTMLElement | null;
+      if (nextMedia) {
+        element.replaceChild(nextMedia, mediaContainer);
+        // Click listeners are bound per-element at render time; rebind for the freshly inserted media node
+        getAppCallbacks().bindActionEvents(nextMedia);
+      }
     }
-  } else if (message.images?.length) {
+  } else if (hasMedia) {
     const template = document.createElement("template");
-    template.innerHTML = renderChatMessageImages(message);
-    element.insertBefore(template.content, content || error);
-  }
-  // Patch videos container: same pattern
-  const videosContainer = element.querySelector<HTMLElement>(".chat-message-videos");
-  if (videosContainer) {
-    const template = document.createElement("template");
-    template.innerHTML = renderChatMessageVideos(message);
-    const newContent = template.content;
-    if (!message.videos?.length && newContent.childElementCount === 0) {
-      videosContainer.remove();
-    } else {
-      element.replaceChild(newContent, videosContainer);
+    template.innerHTML = renderChatMessageMedia(message);
+    const nextMedia = template.content.firstElementChild as HTMLElement | null;
+    if (nextMedia) {
+      element.insertBefore(template.content, content || error);
+      getAppCallbacks().bindActionEvents(nextMedia);
     }
-  } else if (message.videos?.length) {
-    const template = document.createElement("template");
-    template.innerHTML = renderChatMessageVideos(message);
-    element.insertBefore(template.content, content || error);
   }
   if (error) {
     error.textContent = message.error ?? "";

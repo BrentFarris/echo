@@ -76,6 +76,9 @@ type Settings struct {
 	RepetitionPenalty                 float64           `json:"repetitionPenalty"`
 	TimeoutSeconds                    int               `json:"timeoutSeconds"`
 	SearxngURL                        string            `json:"searxngUrl"`
+	JiraHost                          string            `json:"jiraHost"`
+	JiraUsername                      string            `json:"jiraUsername"`
+	JiraAPIToken                      string            `json:"jiraApiToken"`
 	ThinkingTokenBudget               int               `json:"thinkingTokenBudget"`
 	ThinkingCorrection                bool              `json:"thinkingCorrection,omitempty"`
 	SystemPromptAppendage             string            `json:"systemPromptAppendage,omitempty"`
@@ -91,6 +94,7 @@ type Settings struct {
 	ComfyuiDefaultCheckpoint          string            `json:"comfyuiDefaultCheckpoint"`
 	ComfyuiTxt2imgWorkflow            string            `json:"comfyuiTxt2imgWorkflow"`
 	ComfyuiImg2imgWorkflow            string            `json:"comfyuiImg2imgWorkflow"`
+	ComfyuiVideoWorkflow              string            `json:"comfyuiVideoWorkflow,omitempty"` // Path to video generation workflow JSON (e.g., AnimateDiff, SVD)
 	Theme                             Theme             `json:"theme,omitempty"`
 	Headers                           map[string]string `json:"headers,omitempty"`
 }
@@ -157,6 +161,10 @@ func (s Settings) normalized(endpointProfilesAuthoritative bool) Settings {
 	s.ComfyuiURL = strings.TrimSpace(s.ComfyuiURL)
 	s.ComfyuiTxt2imgWorkflow = strings.TrimSpace(s.ComfyuiTxt2imgWorkflow)
 	s.ComfyuiImg2imgWorkflow = strings.TrimSpace(s.ComfyuiImg2imgWorkflow)
+	s.ComfyuiVideoWorkflow = strings.TrimSpace(s.ComfyuiVideoWorkflow)
+	s.JiraHost = strings.TrimSpace(s.JiraHost)
+	s.JiraUsername = strings.TrimSpace(s.JiraUsername)
+	s.JiraAPIToken = strings.TrimSpace(s.JiraAPIToken)
 	s.Theme = s.Theme.Normalized()
 	return s
 }
@@ -248,6 +256,11 @@ func (s Settings) Validate() error {
 	}
 	if s.ComfyuiURL != "" {
 		if err := validateHTTPURL(s.ComfyuiURL, "comfyui url"); err != nil {
+			return err
+		}
+	}
+	if s.JiraHost != "" {
+		if err := validateHTTPURL(s.JiraHost, "jira host url"); err != nil {
 			return err
 		}
 	}

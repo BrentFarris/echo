@@ -32,7 +32,11 @@ func (c *Client) httpDoer() *http.Client {
 type GenerateResult struct {
 	PromptID      string   `json:"promptId"`
 	OutputImages  []string `json:"outputImages,omitempty"`
-	StatusMessage string   `json:"statusMessage,omitempty"`
+	OutputVideos  []string `json:"outputVideos,omitempty"`
+	// MediaTypes maps each entry in OutputImages/OutputVideos to the storage
+	// type ComfyUI reported ("output", "temp", or "custom"). Needed for /view.
+	MediaTypes    map[string]string `json:"mediaTypes,omitempty"`
+	StatusMessage string            `json:"statusMessage,omitempty"`
 }
 
 // ExecutionError represents a ComfyUI execution error returned in history.
@@ -286,31 +290,74 @@ func (c *Client) GetHistory(ctx context.Context, promptID string) (*GenerateResu
 		return nil, firstExecError
 	}
 
-	// No errors — collect output images.
+	// No errors — collect output images and videos.
 	var images []string
+	var videos []string
+	mediaTypes := map[string]string{}
+	videoExts := map[string]bool{".mp4": true, ".webm": true, ".avi": true, ".mov": true, ".mkv": true, ".gif": true}
+
 	for _, nodeOutputs := range outputs {
 		nodeMap, ok := nodeOutputs.(map[string]any)
 		if !ok {
 			continue
 		}
-		imgList, ok := nodeMap["images"].([]any)
-		if !ok {
-			continue
+
+		// Collect image/video outputs from "images" key (SaveImage and some SaveVideo nodes use this).
+		imgList, hasImages := nodeMap["images"].([]any)
+		if hasImages {
+			for _, itemAny := range imgList {
+				itemMap, ok := itemAny.(map[string]any)
+				if !ok {
+					continue
+				}
+			filename, _ := itemMap["filename"].(string)
+			subfolder, _ := itemMap["subfolder"].(string)
+			typ, _ := itemMap["type"].(string)
+			if typ != "output" || filename == "" {
+				continue
+			}
+			path := filename
+			if subfolder != "" {
+				path = subfolder + "/" + path
+			}
+			// Route video extensions to videos, everything else stays as images.
+			ext := strings.ToLower(filepath.Ext(filename))
+			if videoExts[ext] {
+				videos = append(videos, path)
+				mediaTypes[path] = typ
+			} else {
+				images = append(images, path)
+				mediaTypes[path] = typ
+			}
+			}
 		}
-		for _, imgAny := range imgList {
-			imgMap, ok := imgAny.(map[string]any)
+
+		// Collect video outputs from dedicated video keys (VideoCombine, SaveAnimatedGIF, etc.).
+		for _, key := range []string{"videos", "video", "gifs", "animated_gifs"} {
+			videoList, ok := nodeMap[key].([]any)
 			if !ok {
 				continue
 			}
-			filename, _ := imgMap["filename"].(string)
-			subfolder, _ := imgMap["subfolder"].(string)
-			typ, _ := imgMap["type"].(string)
-			if typ == "output" && filename != "" {
-				path := filename
-				if subfolder != "" {
-					path = subfolder + "/" + path
+			for _, vAny := range videoList {
+				vMap, ok := vAny.(map[string]any)
+				if !ok {
+					continue
 				}
-				images = append(images, path)
+			filename, _ := vMap["filename"].(string)
+			subfolder, _ := vMap["subfolder"].(string)
+			typ, _ := vMap["type"].(string)
+			if filename == "" {
+				continue
+			}
+			if typ != "" && typ != "output" && typ != "custom" {
+				continue
+			}
+			path := filename
+			if subfolder != "" {
+				path = subfolder + "/" + path
+			}
+			videos = append(videos, path)
+			mediaTypes[path] = typ
 			}
 		}
 	}
@@ -318,5 +365,6 @@ func (c *Client) GetHistory(ctx context.Context, promptID string) (*GenerateResu
 	return &GenerateResult{
 		PromptID:     promptID,
 		OutputImages: images,
+		OutputVideos: videos,
 	}, nil
 }

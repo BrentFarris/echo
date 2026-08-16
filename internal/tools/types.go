@@ -55,6 +55,19 @@ type AttachedImage struct {
 	DataURL   string `json:"dataUrl"`
 }
 
+// AttachedVideo carries video output metadata from ComfyUI generation tools.
+type AttachedVideo struct {
+	Name      string `json:"name"`
+	MediaType string `json:"mediaType"`
+	DataURL   string `json:"dataUrl"`
+}
+
+// VideoIDProvider is implemented by tool output types that produce a unique
+// video ID usable by subsequent tool calls (e.g., save_video).
+type VideoIDProvider interface {
+	VideoID() string
+}
+
 type ExecutionContext struct {
 	Context                  context.Context
 	FlowLog                  *flowlog.Controller
@@ -62,10 +75,14 @@ type ExecutionContext struct {
 	WorkspacePath            string
 	WorkspaceRoots           []WorkspaceRoot
 	SearxngURL               string
+	JiraHost                 string
+	JiraUsername             string
+	JiraAPIToken             string
 	ComfyuiURL               string
 	ComfyuiDefaultCheckpoint string
 	ComfyuiTxt2imgWorkflow   string
 	ComfyuiImg2imgWorkflow   string
+	ComfyuiVideoWorkflow     string
 	CodeNavigator            CodeNavigator
 	WorkspaceContext         WorkspaceContextProvider
 	WorkspaceSkills          WorkspaceSkillsProvider
@@ -86,6 +103,9 @@ type ExecutionContext struct {
 	// GeneratedImages tracks images produced by tools during the current turn,
 	// keyed by ImageID. Used by save_image to resolve image data.
 	GeneratedImages map[string]AttachedImage
+	// GeneratedVideos tracks videos produced by tools during the current turn,
+	// keyed by VideoID. Used by save_video to resolve video data.
+	GeneratedVideos map[string]AttachedVideo
 	ResearchAgents  ResearchAgentCoordinator
 }
 

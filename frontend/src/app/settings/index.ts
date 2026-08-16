@@ -12,25 +12,19 @@ import { hydrateWorkspaceLetterDrafts, renderWorkspaceFolderSettings, renderWork
 import { renderBudgetSettingsSection, handleBudgetLimitInput } from "../budget";
 import { renderLivenessSettingsSection, handleLivenessInput, loadLivenessConfig } from "../liveness";
 import { applyWorkspaceDebugSettings, getWorkspaceDebugSettings, loadWorkspaceDebugSettings } from "../../codeView/debug";
-
-const llmPresetFields = [
-  "temperature",
-  "topK",
-  "topP",
-  "minP",
-  "contextLength",
-  "maxTokens",
-  "frequencyPenalty",
-  "presencePenalty",
-  "repetitionPenalty",
-  "timeoutSeconds",
-  "thinkingTokenBudget",
-  "thinkingCorrection",
-  "systemPromptAppendage",
-] as const;
-
-type LLMPresetField = (typeof llmPresetFields)[number];
-type LLMPresetValues = Pick<llm.LLMEndpoint, LLMPresetField>;
+import {
+  endpointDefaultsFromSettings,
+  endpointGenerationValues,
+  endpointSelection,
+  llmPresetFields,
+  numberOrDefault,
+  settingsEndpoints,
+  settingsWithEndpointDraft,
+  settingsWithEndpointSync,
+  validEndpointID,
+  type LLMPresetField,
+  type LLMPresetValues,
+} from "../endpointSync";
 
 const llmCodingPresets: {
   id: string;
@@ -125,8 +119,9 @@ const endpointTopics = [
 
 const settingsSections = [
   { id: "llm-endpoints-title", label: "LLM Endpoints" },
-  { id: "search-settings-title", label: "Search" },
-  { id: "comfyui-settings-title", label: "ComfyUI" },
+      { id: "search-settings-title", label: "Search" },
+      { id: "jira-settings-title", label: "Jira" },
+      { id: "comfyui-settings-title", label: "ComfyUI" },
   { id: "notification-settings-title", label: "Notifications" },
   { id: "programming-settings-title", label: "Programming" },
   { id: "debug-settings-title", label: "Debug" },
@@ -153,6 +148,7 @@ const availableToolNames = [
   "filesystem_search_workspace",
   "filesystem_stat",
   "git_inspect",
+  "jira_read",
   "kanban_delete_card",
   "kanban_move_card",
   "kanban_reset_card",
@@ -314,6 +310,28 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
               </div>
             </section>
 
+            <section class="settings-section" aria-labelledby="jira-settings-title">
+              <h3 id="jira-settings-title" class="settings-section-title">Jira</h3>
+              <p>Configure Jira so agents can read issues and evaluate current tasks.</p>
+              <div class="settings-grid">
+                <label class="field field-wide">
+                  <span>Jira Host URL</span>
+                  <input name="jiraHost" type="url" value="${escapeHtml(fieldValue("jiraHost"))}" placeholder="https://company.atlassian.net" autocomplete="off"/>
+                </label>
+              </div>
+              <p class="compact muted">Base URL of your Jira instance. Leave empty to disable.</p>
+              <label class="field" style="margin-top:0.5rem;">
+                <span>Email (Account)</span>
+                <input name="jiraUsername" type="email" value="${escapeHtml(fieldValue("jiraUsername"))}" placeholder="you@company.com" autocomplete="email"/>
+              </label>
+              <p class="compact muted">Your Atlassian account email. Required for Jira Cloud Basic auth.</p>
+              <label class="field" style="margin-top:0.5rem;">
+                <span>API Token</span>
+                <input name="jiraApiToken" type="password" value="${escapeHtml(fieldValue("jiraApiToken"))}" autocomplete="current-password"/>
+              </label>
+              <p class="compact muted">For Jira Cloud, create an API token at id.atlassian.com/manage/security/api-tokens.</p>
+            </section>
+
             <section class="settings-section" aria-labelledby="comfyui-settings-title">
               <h3 id="comfyui-settings-title" class="settings-section-title">ComfyUI</h3>
               <p>Configure a remote ComfyUI instance for image generation.</p>
@@ -344,9 +362,17 @@ export function renderSettingsOverlay(workspaces: services.Workspace[]): string 
                   autocomplete="off"
                 />
               </label>
+              <label class="field" style="margin-top:0.5rem;">
+                <span>Video Workflow</span>
+                <input
+                  name="comfyuiVideoWorkflow"
+                  type="text"
+                  value="${escapeHtml(fieldValue("comfyuiVideoWorkflow"))}"
+                  placeholder="Path to video workflow JSON (e.g., AnimateDiff)"
+                  autocomplete="off"
+                />
+              </label>
             </section>
-
-            <section class="settings-section" aria-labelledby="notification-settings-title">
               <h3 id="notification-settings-title" class="settings-section-title">Notifications</h3>
               <label class="settings-toggle">
                 <span>Notification sounds</span>
@@ -1301,138 +1327,6 @@ function endpointFieldValue<K extends keyof llm.LLMEndpoint>(
 ): string {
   const value = endpoint[key];
   return value === undefined || value === null ? "" : String(value);
-}
-
-function settingsEndpoints(settings: llm.Settings | null | undefined): llm.LLMEndpoint[] {
-  const saved = settings?.endpoints ?? [];
-  const defaults = endpointDefaultsFromSettings(settings);
-  if (saved.length) {
-    return saved.map((endpoint, index) =>
-      llm.LLMEndpoint.createFrom({
-        ...defaults,
-        id: endpoint.id || `endpoint-${index + 1}`,
-        name: endpoint.name ?? `Endpoint ${index + 1}`,
-        endpoint: endpoint.endpoint ?? "",
-        model: endpoint.model ?? "",
-        headers: endpoint.headers,
-        ...endpointGenerationValues(endpoint, defaults),
-      }),
-    );
-  }
-  if (!settings) {
-    return [];
-  }
-  return [
-    llm.LLMEndpoint.createFrom({
-      ...defaults,
-      id: "default",
-      name: "Default",
-      endpoint: settings.endpoint ?? "",
-      model: settings.model ?? "",
-    }),
-  ];
-}
-
-function endpointDefaultsFromSettings(settings: llm.Settings | null | undefined): LLMPresetValues {
-  return {
-    temperature: numberOrDefault(settings?.temperature, 0.6),
-    topK: numberOrDefault(settings?.topK, 20),
-    topP: numberOrDefault(settings?.topP, 0.95),
-    minP: numberOrDefault(settings?.minP, 0),
-    contextLength: numberOrDefault(settings?.contextLength, 262144),
-    maxTokens: numberOrDefault(settings?.maxTokens, 32168),
-    frequencyPenalty: numberOrDefault(settings?.frequencyPenalty, 0),
-    presencePenalty: numberOrDefault(settings?.presencePenalty, 1.5),
-    repetitionPenalty: numberOrDefault(settings?.repetitionPenalty, 1.05),
-    timeoutSeconds: numberOrDefault(settings?.timeoutSeconds, 600),
-    thinkingTokenBudget: numberOrDefault(settings?.thinkingTokenBudget, -1),
-    thinkingCorrection: settings?.thinkingCorrection === true,
-    systemPromptAppendage: settings?.systemPromptAppendage ?? "",
-  };
-}
-
-function endpointGenerationValues(
-  endpoint: llm.LLMEndpoint,
-  defaults: LLMPresetValues,
-): LLMPresetValues {
-  return {
-    temperature: numberOrDefault(endpoint.temperature, defaults.temperature),
-    topK: numberOrDefault(endpoint.topK, defaults.topK),
-    topP: numberOrDefault(endpoint.topP, defaults.topP),
-    minP: numberOrDefault(endpoint.minP, defaults.minP),
-    contextLength: numberOrDefault(endpoint.contextLength, defaults.contextLength),
-    maxTokens: numberOrDefault(endpoint.maxTokens, defaults.maxTokens),
-    frequencyPenalty: numberOrDefault(endpoint.frequencyPenalty, defaults.frequencyPenalty),
-    presencePenalty: numberOrDefault(endpoint.presencePenalty, defaults.presencePenalty),
-    repetitionPenalty: numberOrDefault(endpoint.repetitionPenalty, defaults.repetitionPenalty),
-    timeoutSeconds: numberOrDefault(endpoint.timeoutSeconds, defaults.timeoutSeconds),
-    thinkingTokenBudget: numberOrDefault(endpoint.thinkingTokenBudget, defaults.thinkingTokenBudget),
-    thinkingCorrection:
-      endpoint.thinkingCorrection === undefined
-        ? defaults.thinkingCorrection
-        : endpoint.thinkingCorrection === true,
-    systemPromptAppendage: endpoint.systemPromptAppendage ?? defaults.systemPromptAppendage,
-  };
-}
-
-function numberOrDefault(value: number | undefined, fallback: number): number {
-  return typeof value === "number" && !Number.isNaN(value) ? value : fallback;
-}
-
-function endpointSelection(
-  settings: llm.Settings | null | undefined,
-  endpoints = settingsEndpoints(settings),
-): Record<EndpointTopic, string> {
-  const fallback = endpoints[0]?.id ?? "";
-  const raw = settings?.endpointSelection;
-  const kanban = validEndpointID(raw?.kanban, endpoints) ? raw!.kanban : fallback;
-  return {
-    chat: validEndpointID(raw?.chat, endpoints) ? raw!.chat : fallback,
-    research: validEndpointID(raw?.research, endpoints)
-      ? raw!.research
-      : validEndpointID(raw?.chat, endpoints) ? raw!.chat : fallback,
-    kanbanDecompose: validEndpointID(raw?.kanbanDecompose, endpoints)
-      ? raw!.kanbanDecompose
-      : kanban,
-    kanban,
-    inlineCode: validEndpointID(raw?.inlineCode, endpoints) ? raw!.inlineCode : fallback,
-  };
-}
-
-function validEndpointID(id: string | undefined, endpoints: llm.LLMEndpoint[]): id is string {
-  return Boolean(id && endpoints.some((endpoint) => endpoint.id === id));
-}
-
-function settingsWithEndpointSync(settings: llm.Settings): llm.Settings {
-  const source = settingsSource(settings);
-  const endpoints = settingsEndpoints(settings);
-  const selection = endpointSelection(settings, endpoints);
-  const chatEndpoint =
-    endpoints.find((endpoint) => endpoint.id === selection.chat) ?? endpoints[0];
-  source.endpoints = endpoints;
-  source.endpointSelection = selection;
-  source.endpoint = chatEndpoint?.endpoint ?? "";
-  source.model = chatEndpoint?.model ?? "";
-  for (const field of llmPresetFields) {
-    source[field] = chatEndpoint?.[field] ?? endpointDefaultsFromSettings(settings)[field];
-  }
-  source.headers = chatEndpoint?.headers;
-  return llm.Settings.createFrom(source);
-}
-
-function settingsSource(settings: llm.Settings): Record<string, unknown> {
-  return JSON.parse(JSON.stringify(settings)) as Record<string, unknown>;
-}
-
-function settingsWithEndpointDraft(
-  settings: llm.Settings,
-  endpoints: llm.LLMEndpoint[],
-  selection = endpointSelection(settings, endpoints),
-): llm.Settings {
-  const source = settingsSource(settings);
-  source.endpoints = endpoints;
-  source.endpointSelection = selection;
-  return settingsWithEndpointSync(llm.Settings.createFrom(source));
 }
 
 function handleLLMEndpointSelectionInput(select: HTMLSelectElement) {

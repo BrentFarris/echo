@@ -112,6 +112,7 @@ Tool behavior:
 - Filesystem tools are individually gated: `filesystem_list`, `filesystem_read_text`, `filesystem_read_image`, `filesystem_read_video`, `filesystem_search_text`, `filesystem_search_workspace`, `filesystem_stat`, `filesystem_create_text`, `filesystem_edit_text`, `filesystem_delete_file`.
 - `lsp_query` tool gives agents code navigation (definitions, references, implementations, hover, symbols, members).
 - `web_search` tool provides web search via a configurable SearXNG endpoint.
+- `jira_read` tool searches Jira issues using JQL queries. Requires Jira configuration in settings. Read-only tool available in plan mode. Examples: `key = PROJ-123` for single issue, `assignee = currentUser() AND status != Done` for active tasks.
 - `workspace_context` tool builds compact programming context briefs for agents.
 
 ## Frontend Notes

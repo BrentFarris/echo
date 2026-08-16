@@ -130,7 +130,7 @@ func (s *SystemService) ClearWorkspaceChangeReview(workspaceID string) (Workspac
 	return review, nil
 }
 
-func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, call llm.ToolCall, source WorkspaceChangeSource, emit tools.EventEmitter, toolScopes *tools.ToolScopeChecker, generatedImages map[string]tools.AttachedImage) toolExecution {
+func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, call llm.ToolCall, source WorkspaceChangeSource, emit tools.EventEmitter, toolScopes *tools.ToolScopeChecker, generatedImages map[string]tools.AttachedImage, generatedVideos map[string]tools.AttachedVideo) toolExecution {
 	source.ToolCallID = call.ID
 	source.ToolName = call.Function.Name
 
@@ -151,10 +151,14 @@ func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Wo
 		ToolCallID:               call.ID,
 		WorkspaceRoots:           workspaceToolRoots(workspace),
 		SearxngURL:               settings.SearxngURL,
+		JiraHost:                 settings.JiraHost,
+		JiraUsername:             settings.JiraUsername,
+		JiraAPIToken:             settings.JiraAPIToken,
 		ComfyuiURL:               settings.ComfyuiURL,
 		ComfyuiDefaultCheckpoint: settings.ComfyuiDefaultCheckpoint,
 		ComfyuiTxt2imgWorkflow:   settings.ComfyuiTxt2imgWorkflow,
 		ComfyuiImg2imgWorkflow:   settings.ComfyuiImg2imgWorkflow,
+		ComfyuiVideoWorkflow:     settings.ComfyuiVideoWorkflow,
 		CodeNavigator:            s.codeNavigator(workspace),
 		WorkspaceContext:         s.workspaceContextProvider(workspace),
 		WorkspaceSkills:          s.workspaceSkillsProvider(workspace),
@@ -168,6 +172,7 @@ func (s *SystemService) executeTrackedToolCall(ctx context.Context, workspace Wo
 		ResearchAgents:           source.researchAgents,
 		AttachedImages:           s.latestUserMessageImages(workspace.ID, source.ChatID),
 		GeneratedImages:          generatedImages,
+		GeneratedVideos:          generatedVideos,
 	}, call.Function.Name, json.RawMessage(call.Function.Arguments))
 
 	if len(captured) > 0 {

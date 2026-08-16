@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -476,5 +477,378 @@ func TestSubstituteTemplateVariables_Image(t *testing.T) {
 	image := inputs["image"].(string)
 	if image != "input-photo.png" {
 		t.Errorf("expected IMAGE substitution, got %q", image)
+	}
+}
+
+func TestVideoTemplateVariables(t *testing.T) {
+	// Simulate a video workflow with AnimateDiff and VHS_VideoCombine nodes
+	workflow := map[string]any{
+		"10": map[string]any{
+			"class_type": "AnimateDiff",
+			"inputs": map[string]any{
+				"model":  "6_0",
+				"motion": "mm_sd_v15.ckpt",
+				"value":  "{{FRAMES}}",
+			},
+		},
+		"11": map[string]any{
+			"class_type": "VHS_VideoCombine",
+			"inputs": map[string]any{
+				"frame_rate": "{{FPS}}",
+				"format":     "{{FORMAT}}",
+				"pingpong":   false,
+			},
+		},
+	}
+
+	params := TemplateParams{
+		Prompt:  "a walking cat",
+		Frames:  24,
+		FPS:     12.0,
+		Format:  "mp4",
+	}
+	result := SubstituteTemplateVariables(workflow, params)
+
+	// Check AnimateDiff frames
+	node10 := result["10"].(map[string]any)
+	inputs10 := node10["inputs"].(map[string]any)
+	framesVal := inputs10["value"]
+	if f, ok := framesVal.(float64); !ok || int(f) != 24 {
+		t.Errorf("expected FRAMES=24 (numeric), got %v (%T)", framesVal, framesVal)
+	}
+
+	// Check VHS_VideoCombine fps and format
+	node11 := result["11"].(map[string]any)
+	inputs11 := node11["inputs"].(map[string]any)
+	fpsVal := inputs11["frame_rate"]
+	if f, ok := fpsVal.(float64); !ok || f != 12.0 {
+		t.Errorf("expected FPS=12 (numeric), got %v (%T)", fpsVal, fpsVal)
+	}
+	formatVal, ok := inputs11["format"].(string)
+	if !ok || formatVal != "mp4" {
+		t.Errorf("expected FORMAT=mp4 (string), got %v (%T)", inputs11["format"], inputs11["format"])
+	}
+}
+
+func TestVideoDefaults(t *testing.T) {
+	// When video params are not specified, buildReplaceMap should use defaults:
+	// 16 frames, 8.0 fps, mp4 format
+	workflow := map[string]any{
+		"10": map[string]any{
+			"class_type": "VHS_VideoCombine",
+			"inputs": map[string]any{
+				"frame_rate": "{{FPS}}",
+				"format":     "{{FORMAT}}",
+			},
+		},
+		"20": map[string]any{
+			"class_type": "AnimateDiff",
+			"inputs": map[string]any{
+				"value": "{{FRAMES}}",
+			},
+		},
+	}
+
+	params := TemplateParams{Prompt: "default video"} // No Frames, FPS, Format set
+	result := SubstituteTemplateVariables(workflow, params)
+
+	node10 := result["10"].(map[string]any)
+	inputs10 := node10["inputs"].(map[string]any)
+
+	// Default FPS should be 8.0
+	fpsVal := inputs10["frame_rate"]
+	if f, ok := fpsVal.(float64); !ok || f != 8.0 {
+		t.Errorf("expected default FPS=8 (numeric), got %v (%T)", fpsVal, fpsVal)
+	}
+
+	// Default FORMAT should be "mp4"
+	formatVal, ok := inputs10["format"].(string)
+	if !ok || formatVal != "mp4" {
+		t.Errorf("expected default FORMAT=mp4 (string), got %v (%T)", inputs10["format"], inputs10["format"])
+	}
+
+	// Default FRAMES should be 16
+	node20 := result["20"].(map[string]any)
+	inputs20 := node20["inputs"].(map[string]any)
+	framesVal := inputs20["value"]
+	if f, ok := framesVal.(float64); !ok || int(f) != 16 {
+		t.Errorf("expected default FRAMES=16 (numeric), got %v (%T)", framesVal, framesVal)
+	}
+}
+
+func TestVideoTemplateVariableGifFormat(t *testing.T) {
+	workflow := map[string]any{
+		"11": map[string]any{
+			"class_type": "SaveAnimatedGIF",
+			"inputs": map[string]any{
+				"format": "{{FORMAT}}",
+			},
+		},
+	}
+
+	params := TemplateParams{Format: "gif"}
+	result := SubstituteTemplateVariables(workflow, params)
+
+	node11 := result["11"].(map[string]any)
+	inputs11 := node11["inputs"].(map[string]any)
+	formatVal, ok := inputs11["format"].(string)
+	if !ok || formatVal != "gif" {
+		t.Errorf("expected FORMAT=gif, got %v (%T)", inputs11["format"], inputs11["format"])
+	}
+}
+
+func TestVideoTemplateVariableFormatUppercaseNormalization(t *testing.T) {
+	workflow := map[string]any{
+		"11": map[string]any{
+			"class_type": "VHS_VideoCombine",
+			"inputs": map[string]any{
+				"format": "{{FORMAT}}",
+			},
+		},
+	}
+
+	params := TemplateParams{Format: "MP4"} // Uppercase input
+	result := SubstituteTemplateVariables(workflow, params)
+
+	node11 := result["11"].(map[string]any)
+	inputs11 := node11["inputs"].(map[string]any)
+	formatVal, ok := inputs11["format"].(string)
+	if !ok || formatVal != "mp4" {
+		t.Errorf("expected FORMAT normalized to 'mp4', got %q", formatVal)
+	}
+}
+
+func TestVideoTemplateVariableInvalidFormatFallback(t *testing.T) {
+	workflow := map[string]any{
+		"11": map[string]any{
+			"class_type": "VHS_VideoCombine",
+			"inputs": map[string]any{
+				"format": "{{FORMAT}}",
+			},
+		},
+	}
+
+	for _, invalidFormat := range []string{"webm", "avi", "mp3", ""} {
+		params := TemplateParams{Format: invalidFormat}
+		result := SubstituteTemplateVariables(workflow, params)
+
+		node11 := result["11"].(map[string]any)
+		inputs11 := node11["inputs"].(map[string]any)
+		formatVal, ok := inputs11["format"].(string)
+		if !ok || formatVal != "mp4" {
+			t.Errorf("Format=%q: expected invalid format to fall back to 'mp4', got %v (%T)", invalidFormat, inputs11["format"], inputs11["format"])
+		}
+	}
+}
+
+func TestDurationDrivenVideoTemplateVariables(t *testing.T) {
+	// MiniMax H3-style workflow: duration feeds a math expression that
+	// computes frame count; resolution comes from aspect ratio + megapixels.
+	workflow := map[string]any{
+		"105:111": map[string]any{
+			"class_type": "PrimitiveFloat",
+			"inputs":     map[string]any{"value": "{{DURATION}}"},
+		},
+		"115": map[string]any{
+			"class_type": "ResolutionSelector",
+			"inputs": map[string]any{
+				"aspect_ratio": "{{ASPECT_RATIO}}",
+				"megapixels":   "{{MEGAPIXELS}}",
+			},
+		},
+	}
+
+	params := TemplateParams{
+		Prompt:      "a test video",
+		Duration:    5,
+		AspectRatio: "3:4 (Portrait Standard)",
+		Megapixels:  0.2,
+	}
+	result := SubstituteTemplateVariables(workflow, params)
+
+	nodeFloat := result["105:111"].(map[string]any)
+	durationVal := nodeFloat["inputs"].(map[string]any)["value"]
+	if f, ok := durationVal.(float64); !ok || f != 5.0 {
+		t.Errorf("expected DURATION=5 (numeric), got %v (%T)", durationVal, durationVal)
+	}
+
+	nodeRes := result["115"].(map[string]any)
+	resInputs := nodeRes["inputs"].(map[string]any)
+	if ar, ok := resInputs["aspect_ratio"].(string); !ok || ar != "3:4 (Portrait Standard)" {
+		t.Errorf("expected ASPECT_RATIO label passthrough, got %v (%T)", resInputs["aspect_ratio"], resInputs["aspect_ratio"])
+	}
+	if mp, ok := resInputs["megapixels"].(float64); !ok || mp != 0.2 {
+		t.Errorf("expected MEGAPIXELS=0.2 (numeric), got %v (%T)", resInputs["megapixels"], resInputs["megapixels"])
+	}
+}
+
+func TestDurationDrivenVideoDefaults(t *testing.T) {
+	workflow := map[string]any{
+		"105:111": map[string]any{
+			"class_type": "PrimitiveFloat",
+			"inputs":     map[string]any{"value": "{{DURATION}}"},
+		},
+		"115": map[string]any{
+			"class_type": "ResolutionSelector",
+			"inputs": map[string]any{
+				"aspect_ratio": "{{ASPECT_RATIO}}",
+				"megapixels":   "{{MEGAPIXELS}}",
+			},
+		},
+	}
+
+	params := TemplateParams{Prompt: "defaults"} // no duration params set
+	result := SubstituteTemplateVariables(workflow, params)
+
+	nodeFloat := result["105:111"].(map[string]any)
+	durationVal := nodeFloat["inputs"].(map[string]any)["value"]
+	if f, ok := durationVal.(float64); !ok || f != 5.0 {
+		t.Errorf("expected default DURATION=5 (numeric), got %v (%T)", durationVal, durationVal)
+	}
+
+	nodeRes := result["115"].(map[string]any)
+	resInputs := nodeRes["inputs"].(map[string]any)
+	if ar, ok := resInputs["aspect_ratio"].(string); !ok || ar != "16:9 (Widescreen)" {
+		t.Errorf("expected default ASPECT_RATIO=16:9 (Widescreen), got %v (%T)", resInputs["aspect_ratio"], resInputs["aspect_ratio"])
+	}
+	if mp, ok := resInputs["megapixels"].(float64); !ok || mp != 0.4 {
+		t.Errorf("expected default MEGAPIXELS=0.4 (numeric), got %v (%T)", resInputs["megapixels"], resInputs["megapixels"])
+	}
+}
+
+func TestNegativeSeedIsRandomized(t *testing.T) {
+	// Fresh workflow per call: SubstituteTemplateVariables mutates inputs in place,
+	// so a reused map would hand back the previously substituted seed.
+	freshWorkflow := func() map[string]any {
+		return map[string]any{
+			"5": map[string]any{
+				"class_type": "RandomNoise",
+				"inputs":     map[string]any{"noise_seed": "{{SEED}}"},
+			},
+		}
+	}
+
+	first, second := int64(-1), int64(-1)
+	for i := 0; i < 20; i++ {
+		result := SubstituteTemplateVariables(freshWorkflow(), TemplateParams{Prompt: "x", Seed: first})
+		seedVal := result["5"].(map[string]any)["inputs"].(map[string]any)["noise_seed"]
+		f, ok := seedVal.(float64)
+		if !ok || f < 0 {
+			t.Fatalf("expected non-negative numeric seed, got %v (%T)", seedVal, seedVal)
+		}
+		first = int64(f)
+
+		result = SubstituteTemplateVariables(freshWorkflow(), TemplateParams{Prompt: "x", Seed: second})
+		seedVal2 := result["5"].(map[string]any)["inputs"].(map[string]any)["noise_seed"]
+		f2, ok := seedVal2.(float64)
+		if !ok || f2 < 0 {
+			t.Fatalf("expected non-negative numeric seed, got %v (%T)", seedVal2, seedVal2)
+		}
+		second = int64(f2)
+
+		if first == second {
+			t.Fatalf("negative seeds should be randomized, but two consecutive draws both produced %d", first)
+		}
+	}
+
+	// Seeds must survive JSON float64 round-tripping (ComfyUI API transport).
+	result := SubstituteTemplateVariables(freshWorkflow(), TemplateParams{Prompt: "x", Seed: -1})
+	seedVal := result["5"].(map[string]any)["inputs"].(map[string]any)["noise_seed"]
+	f, ok := seedVal.(float64)
+	if !ok {
+		t.Fatalf("expected numeric seed, got %T", seedVal)
+	}
+	if f != float64(int64(f)) {
+		t.Errorf("seed %v is not exactly representable as int64 through float64", f)
+	}
+}
+
+func TestPositiveSeedUnchanged(t *testing.T) {
+	workflow := map[string]any{
+		"5": map[string]any{
+			"class_type": "RandomNoise",
+			"inputs":     map[string]any{"noise_seed": "{{SEED}}"},
+		},
+	}
+
+	result := SubstituteTemplateVariables(workflow, TemplateParams{Prompt: "x", Seed: 123456})
+	seedVal := result["5"].(map[string]any)["inputs"].(map[string]any)["noise_seed"]
+	if f, ok := seedVal.(float64); !ok || int64(f) != 123456 {
+		t.Errorf("expected explicit seed 123456 preserved, got %v (%T)", seedVal, seedVal)
+	}
+}
+
+func TestMiniMaxH3WorkflowFileSubstitutes(t *testing.T) {
+	path := filepath.Join("..", "..", ".comfy", "workflows", "minimax_h3_video.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("workflow file not present: %v", err)
+	}
+
+	workflow, err := LoadWorkflowJSON(path)
+	if err != nil {
+		t.Fatalf("failed to load workflow: %v", err)
+	}
+
+	params := TemplateParams{
+		Prompt:      "a bird flying",
+		Duration:    5,
+		AspectRatio: "3:4 (Portrait Standard)",
+		Megapixels:  0.2,
+		Steps:       8,
+		Seed:        42,
+	}
+	result := SubstituteTemplateVariables(workflow, params)
+
+	checks := []struct {
+		node  string
+		input string
+		want  any
+	}{
+		{"105:104", "prompt", "a bird flying"},
+		{"105:111", "value", float64(5)},
+		{"115", "aspect_ratio", "3:4 (Portrait Standard)"},
+		{"115", "megapixels", 0.2},
+		{"105:9", "steps", float64(8)},
+		{"105:15", "noise_seed", float64(42)},
+	}
+	for _, c := range checks {
+		node, ok := result[c.node].(map[string]any)
+		if !ok {
+			t.Fatalf("node %s missing", c.node)
+		}
+		inputs := node["inputs"].(map[string]any)
+		got, ok := inputs[c.input]
+		if !ok {
+			t.Fatalf("node %s input %s missing", c.node, c.input)
+		}
+		switch want := c.want.(type) {
+		case string:
+			if s, isStr := got.(string); !isStr || s != want {
+				t.Errorf("node %s %s = %v (%T), want %q", c.node, c.input, got, got, want)
+			}
+		case float64:
+			f, isNum := got.(float64)
+			if !isNum || f != want {
+				t.Errorf("node %s %s = %v (%T), want %v", c.node, c.input, got, got, want)
+			}
+		}
+	}
+
+	// The frame-count math expression and fixed 24fps output must be preserved
+	// verbatim — they are what keep Echo runs in lockstep with manual ComfyUI runs.
+	mathNode := result["105:107"].(map[string]any)
+	expr, _ := mathNode["inputs"].(map[string]any)["expression"].(string)
+	if expr != "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17" {
+		t.Errorf("math expression altered: %q", expr)
+	}
+	videoNode := result["105:91"].(map[string]any)
+	if fps, _ := videoNode["inputs"].(map[string]any)["fps"].(float64); fps != 24 {
+		t.Errorf("CreateVideo fps = %v, want 24", videoNode["inputs"].(map[string]any)["fps"])
+	}
+
+	// No unsubstituted template placeholders may remain anywhere in the graph.
+	data, _ := json.Marshal(result)
+	if s := string(data); strings.Contains(s, "{{") {
+		t.Errorf("unsubstituted template placeholder remains in workflow: %s", s)
 	}
 }

@@ -847,7 +847,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 			assistant := llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{call}}
 			messages = append(messages, assistant)
 			s.appendChatHistory(workspace.ID, assistant, chatID)
-			execution := s.executeToolCall(ctx, workspace, settings, chatID, streamID, messageID, call, isPlanMode, toolScopes, make(map[string]tools.AttachedImage), research)
+			execution := s.executeToolCall(ctx, workspace, settings, chatID, streamID, messageID, call, isPlanMode, toolScopes, make(map[string]tools.AttachedImage), make(map[string]tools.AttachedVideo), research)
 			research.MarkAutomaticScout()
 			recoverableToolCalls[call.ID] = true
 			messages = append(messages, execution.Messages...)
@@ -863,6 +863,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 	// Track images produced by tools during this turn so subsequent tool calls
 	// (e.g., save_image) can reference them by imageId.
 	generatedImages := make(map[string]tools.AttachedImage)
+	generatedVideos := make(map[string]tools.AttachedVideo)
 	emptyAssistantRetries := 0
 	transientResponseRetries := 0
 	researchFinalizeReminders := 0
@@ -1094,7 +1095,7 @@ func (s *SystemService) runChatTurnWithHistory(ctx context.Context, cancel conte
 				s.cancelChatMessage(workspace.ID, streamID, messageID)
 				return
 			}
-			execution := s.executeToolCall(ctx, workspace, settings, chatID, streamID, messageID, call, isPlanMode, toolScopes, generatedImages, research)
+			execution := s.executeToolCall(ctx, workspace, settings, chatID, streamID, messageID, call, isPlanMode, toolScopes, generatedImages, generatedVideos, research)
 			if tools.IsResearchAgentToolName(call.Function.Name) {
 				researchFinalizeReminders = 0
 			}
@@ -1249,7 +1250,7 @@ type chatToolCallExecution struct {
 	SkillCheckpoint bool
 }
 
-func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, chatID string, streamID string, messageID string, call llm.ToolCall, readOnlyOnly bool, toolScopes *tools.ToolScopeChecker, generatedImages map[string]tools.AttachedImage, research *chatResearchRun) chatToolCallExecution {
+func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, chatID string, streamID string, messageID string, call llm.ToolCall, readOnlyOnly bool, toolScopes *tools.ToolScopeChecker, generatedImages map[string]tools.AttachedImage, generatedVideos map[string]tools.AttachedVideo, research *chatResearchRun) chatToolCallExecution {
 
 	if call.ID == "" {
 		call.ID = s.nextChatID("call")
@@ -1315,7 +1316,7 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 		ChatID:         chatID,
 		MessageID:      messageID,
 		researchAgents: research,
-	}, events, toolScopes, generatedImages)
+	}, events, toolScopes, generatedImages, generatedVideos)
 	result := execution.Result
 
 	data, err := json.Marshal(result)
@@ -1387,6 +1388,29 @@ func (s *SystemService) executeToolCall(ctx context.Context, workspace Workspace
 					Bytes:     video.Bytes,
 					DataURL:   video.DataURL,
 				})
+				// Track the generated video so subsequent tool calls (e.g., save_video) can reference it.
+				if idProvider, ok := result.Output.(tools.VideoIDProvider); ok && idProvider.VideoID() != "" {
+					videoID := idProvider.VideoID()
+					generatedVideos[videoID] = tools.AttachedVideo{
+						Name:      video.Name,
+						MediaType: video.MediaType,
+						DataURL:   video.DataURL,
+					}
+					fmt.Fprintln(os.Stderr, "[chat] tracked generated video", videoID, "from tool", call.Function.Name)
+				} else if outMap, jsonOk := result.Output.(map[string]any); jsonOk {
+					if videoID, ok := outMap["videoId"].(string); ok && videoID != "" {
+						generatedVideos[videoID] = tools.AttachedVideo{
+							Name:      video.Name,
+							MediaType: video.MediaType,
+							DataURL:   video.DataURL,
+						}
+						fmt.Fprintln(os.Stderr, "[chat] tracked generated video", videoID, "from tool", call.Function.Name, "(via map)")
+					} else {
+						fmt.Fprintln(os.Stderr, "[chat] tool", call.Function.Name, "returned video but no videoId in output map")
+					}
+				} else {
+					fmt.Fprintln(os.Stderr, "[chat] tool", call.Function.Name, "returned video but output is not VideoIDProvider or map[string]any")
+				}
 			}
 		}
 	}
@@ -1958,6 +1982,7 @@ func chatSystemMessage(workspace Workspace, mode AgentMode, skillCandidates []to
 		"Use lsp_query for definitions, references, hover info, document symbols, and member/completion candidates once you know the file and cursor position. " +
 		"When images are attached to a chat message, use comfyui_generate with attachedImageIndex (0-based) to pass them directly as img2img input â€” no need to save to disk first. Index 0 refers to the first attached image. " +
 		"After generating an image with comfyui_generate, use the returned imageId with save_image to persist it to workspace disk if needed. " +
+		"comfyui_generate_video generates short videos using ComfyUI. Use frames to control length (default 16), fps for frame rate (default 8). When the user asks for a specific duration, compute frames = duration × fps and pass both frames and fps (e.g., 5s at 24fps → frames: 120); only rely on the duration parameter when the workflow is duration-driven. When the user does not specify a particular workflow, call comfyui_generate_video without workflowPath or workflowJSON so it uses the default video workflow configured in settings; only pass workflowPath or workflowJSON when the user explicitly requests a specific workflow. Do not call save_video automatically after generating a video; only call save_video with the returned videoId when the user explicitly asks to save or download the video. " +
 		"Keep plans concrete and concise."
 	if researchEnabled {
 		instructions += " " + researchOrchestratorSystemGuidance

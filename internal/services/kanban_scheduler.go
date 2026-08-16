@@ -412,6 +412,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 	changedPaths := map[string]bool{}
 	recoverableToolCalls := make(map[string]bool)
 	generatedImages := make(map[string]tools.AttachedImage)
+	generatedVideos := make(map[string]tools.AttachedVideo)
 	forcedCompactions := 0
 	verificationAttempts := 0
 	noToolContinuationAttempts := 0
@@ -642,7 +643,7 @@ func (s *SystemService) runKanbanAgent(ctx context.Context, workspace Workspace,
 				s.blockKanbanCard(workspace.ID, cardID, agentID, "Canceled", agentCancellationText)
 				return
 			}
-			execution := s.executeKanbanToolCall(ctx, workspace, settings, cardID, agentID, call, generatedImages)
+			execution := s.executeKanbanToolCall(ctx, workspace, settings, cardID, agentID, call, generatedImages, generatedVideos)
 			recoverableToolCalls[call.ID] = true
 			for _, resultMessage := range execution.Messages {
 				stripped := stripMediaContentParts(resultMessage)
@@ -805,7 +806,7 @@ func (s *SystemService) streamKanbanAgentResponseAttempt(ctx context.Context, cl
 	return kanbanStreamAttemptResult{content: content.String(), reasoning: reasoning.String(), toolCalls: orderedToolCalls(toolCalls), finished: finished, finishReason: finishReason, usage: stream.Usage}
 }
 
-func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, cardID string, agentID uint64, call llm.ToolCall, generatedImages map[string]tools.AttachedImage) kanbanToolCallExecution {
+func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Workspace, settings llm.Settings, cardID string, agentID uint64, call llm.ToolCall, generatedImages map[string]tools.AttachedImage, generatedVideos map[string]tools.AttachedVideo) kanbanToolCallExecution {
 	if call.ID == "" {
 		call.ID = s.nextChatID("call")
 	}
@@ -831,7 +832,7 @@ func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Wor
 				Content: event.Message,
 			})
 		}
-	}, nil, generatedImages)
+	}, nil, generatedImages, generatedVideos)
 	result := execution.Result
 
 	data, err := json.Marshal(result)
@@ -880,6 +881,31 @@ func (s *SystemService) executeKanbanToolCall(ctx context.Context, workspace Wor
 			}
 		} else {
 			fmt.Fprintln(os.Stderr, "[kanban] tool", call.Function.Name, "output does not implement LLMImageContentProvider")
+		}
+		if provider, ok := result.Output.(tools.LLMVideoContentProvider); ok {
+			if video, ok := provider.LLMVideoContent(); ok && video.DataURL != "" {
+				if idProvider, ok := result.Output.(tools.VideoIDProvider); ok && idProvider.VideoID() != "" {
+					generatedVideos[idProvider.VideoID()] = tools.AttachedVideo{
+						Name:      video.Name,
+						MediaType: video.MediaType,
+						DataURL:   video.DataURL,
+					}
+					fmt.Fprintln(os.Stderr, "[kanban] tracked generated video", idProvider.VideoID(), "from tool", call.Function.Name)
+				} else if outMap, jsonOk := result.Output.(map[string]any); jsonOk {
+					if videoID, ok := outMap["videoId"].(string); ok && videoID != "" {
+						generatedVideos[videoID] = tools.AttachedVideo{
+							Name:      video.Name,
+							MediaType: video.MediaType,
+							DataURL:   video.DataURL,
+						}
+						fmt.Fprintln(os.Stderr, "[kanban] tracked generated video", videoID, "from tool", call.Function.Name, "(via map)")
+					} else {
+						fmt.Fprintln(os.Stderr, "[kanban] tool", call.Function.Name, "returned video but no videoId in output map")
+					}
+				} else {
+					fmt.Fprintln(os.Stderr, "[kanban] tool", call.Function.Name, "returned video but output is not VideoIDProvider or map[string]any")
+				}
+			}
 		}
 	}
 

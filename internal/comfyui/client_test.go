@@ -481,8 +481,8 @@ func TestWaitForCompletionPollFailsOnCompletedNoImages(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when execution completes with no images")
 	}
-	if !strings.Contains(err.Error(), "no output images") {
-		t.Fatalf("expected 'no output images' in error, got %q", err.Error())
+	if !strings.Contains(err.Error(), "no output images or videos") {
+		t.Fatalf("expected 'no output images or videos' in error, got %q", err.Error())
 	}
 	// Should only poll once — history returned immediately
 	if callCount != 1 {
@@ -521,5 +521,242 @@ func TestWaitForCompletionPollMaxPollCount(t *testing.T) {
 	// Poll count should be bounded by the timeout seconds + 1
 	if callCount > 5 {
 		t.Fatalf("expected at most ~4 polls for a 3-second timeout, got %d", callCount)
+	}
+}
+
+func TestGetHistoryReturnsVideos(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/history/") {
+			t.Fatalf("expected /history/ path, got %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"test-prompt-123": map[string]any{
+				"outputs": map[string]any{
+					"10": map[string]any{
+						"videos": []any{
+							map[string]any{
+								"filename":  "ComfyUI_video.mp4",
+								"subfolder": "",
+								"type":      "output",
+							},
+							map[string]any{
+								"filename":  "preview.mp4",
+								"subfolder": "",
+								"type":      "temp",
+							},
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := &Client{BaseURL: server.URL}
+	result, err := client.GetHistory(context.Background(), "test-prompt-123")
+	if err != nil {
+		t.Fatalf("GetHistory failed: %v", err)
+	}
+	if len(result.OutputVideos) != 1 {
+		t.Fatalf("expected 1 output video, got %d", len(result.OutputVideos))
+	}
+	if result.OutputVideos[0] != "ComfyUI_video.mp4" {
+		t.Fatalf("expected ComfyUI_video.mp4, got %s", result.OutputVideos[0])
+	}
+	// Should have no images since none were in the outputs
+	if len(result.OutputImages) != 0 {
+		t.Fatalf("expected 0 output images, got %d", len(result.OutputImages))
+	}
+}
+
+func TestGetHistoryReturnsGIFs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"test-prompt-123": map[string]any{
+				"outputs": map[string]any{
+					"11": map[string]any{
+						"gifs": []any{
+							map[string]any{
+								"filename":  "animated.gif",
+								"subfolder": "",
+								"type":      "output",
+							},
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := &Client{BaseURL: server.URL}
+	result, err := client.GetHistory(context.Background(), "test-prompt-123")
+	if err != nil {
+		t.Fatalf("GetHistory failed: %v", err)
+	}
+	if len(result.OutputVideos) != 1 {
+		t.Fatalf("expected 1 GIF in output videos, got %d", len(result.OutputVideos))
+	}
+	if result.OutputVideos[0] != "animated.gif" {
+		t.Fatalf("expected animated.gif, got %s", result.OutputVideos[0])
+	}
+}
+
+func TestGetHistoryReturnsMixedImagesAndVideos(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"test-prompt-123": map[string]any{
+				"outputs": map[string]any{
+					"9": map[string]any{
+						"images": []any{
+							map[string]any{
+								"filename":  "output.png",
+								"subfolder": "",
+								"type":      "output",
+							},
+						},
+					},
+					"10": map[string]any{
+						"videos": []any{
+							map[string]any{
+								"filename":  "output.mp4",
+								"subfolder": "sub",
+								"type":      "output",
+							},
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := &Client{BaseURL: server.URL}
+	result, err := client.GetHistory(context.Background(), "test-prompt-123")
+	if err != nil {
+		t.Fatalf("GetHistory failed: %v", err)
+	}
+	if len(result.OutputImages) != 1 {
+		t.Fatalf("expected 1 output image, got %d", len(result.OutputImages))
+	}
+	if result.OutputImages[0] != "output.png" {
+		t.Fatalf("expected output.png, got %s", result.OutputImages[0])
+	}
+	if len(result.OutputVideos) != 1 {
+		t.Fatalf("expected 1 output video, got %d", len(result.OutputVideos))
+	}
+	if result.OutputVideos[0] != "sub/output.mp4" {
+		t.Fatalf("expected sub/output.mp4, got %s", result.OutputVideos[0])
+	}
+}
+
+func TestWaitForCompletionPollAcceptsVideos(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/history/test-prompt-123"):
+			callCount++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			// Prompt is in history with video output but no images
+			json.NewEncoder(w).Encode(map[string]any{
+				"test-prompt-123": map[string]any{
+					"status": map[string]any{},
+					"outputs": map[string]any{
+						"10": map[string]any{
+							"videos": []any{
+								map[string]any{
+									"filename":  "result.mp4",
+									"subfolder": "",
+									"type":      "output",
+								},
+							},
+						},
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &Client{BaseURL: server.URL}
+	result, err := client.WaitForCompletionPoll(context.Background(), "test-prompt-123")
+	if err != nil {
+		t.Fatalf("WaitForCompletionPoll failed with video output: %v", err)
+	}
+	if len(result.OutputVideos) != 1 {
+		t.Fatalf("expected 1 video, got %d", len(result.OutputVideos))
+	}
+	if result.OutputVideos[0] != "result.mp4" {
+		t.Fatalf("expected result.mp4, got %s", result.OutputVideos[0])
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 history call, got %d", callCount)
+	}
+}
+
+func TestFetchVideoBytes(t *testing.T) {
+	mp4Data := []byte{0x00, 0x00, 0x00, 0x1C, 0x66, 0x74, 0x79, 0x70, 0x6D, 0x70, 0x34, 0x32}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/view") {
+			t.Fatalf("expected /view path, got %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("filename") != "test.mp4" {
+			t.Fatalf("expected filename=test.mp4, got %s", r.URL.Query().Get("filename"))
+		}
+		if r.URL.Query().Get("type") != "video" {
+			t.Fatalf("expected type=video, got %s", r.URL.Query().Get("type"))
+		}
+		w.Header().Set("Content-Type", "video/mp4")
+		w.WriteHeader(http.StatusOK)
+		w.Write(mp4Data)
+	}))
+	defer server.Close()
+
+	client := &Client{BaseURL: server.URL}
+	data, err := client.FetchVideoBytes(context.Background(), "test.mp4", "", "video")
+	if err != nil {
+		t.Fatalf("FetchVideoBytes failed: %v", err)
+	}
+	if len(data) != len(mp4Data) {
+		t.Fatalf("expected %d bytes, got %d", len(mp4Data), len(data))
+	}
+	for i := range mp4Data {
+		if data[i] != mp4Data[i] {
+			t.Fatalf("byte mismatch at index %d: expected %02x, got %02x", i, mp4Data[i], data[i])
+		}
+	}
+}
+
+func TestFetchVideoBytesWithSubfolder(t *testing.T) {
+	gifData := []byte{0x47, 0x49, 0x46, 0x38, 0x39, 0x61}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("subfolder") != "animations" {
+			t.Fatalf("expected subfolder=animations, got %s", r.URL.Query().Get("subfolder"))
+		}
+		if r.URL.Query().Get("type") != "custom" {
+			t.Fatalf("expected type=custom for GIF, got %s", r.URL.Query().Get("type"))
+		}
+		w.Header().Set("Content-Type", "image/gif")
+		w.WriteHeader(http.StatusOK)
+		w.Write(gifData)
+	}))
+	defer server.Close()
+
+	client := &Client{BaseURL: server.URL}
+	data, err := client.FetchVideoBytes(context.Background(), "animated.gif", "animations", "custom")
+	if err != nil {
+		t.Fatalf("FetchVideoBytes failed: %v", err)
+	}
+	if len(data) != len(gifData) {
+		t.Fatalf("expected %d bytes, got %d", len(gifData), len(data))
 	}
 }

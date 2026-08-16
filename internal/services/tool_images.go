@@ -107,14 +107,12 @@ func toolResultVideoMessage(toolName string, result tools.ExecutionResult) (llm.
 		label = "video"
 	}
 	text := fmt.Sprintf("Video returned by tool %s: %s (%s, %s).", toolName, label, video.MediaType, formatChatImageBytes(video.Bytes))
-	videoPart := llm.VideoURLContentPart(video.DataURL)
-	if video.Detail != "" && videoPart.VideoURL != nil {
-		videoPart.VideoURL.Detail = video.Detail
-	}
+	// Return text-only — don't embed the full base64 video dataURL into the LLM
+	// context (videos are megabytes and exceed context windows). The UI renders
+	// inline via attachChatVideo which reads from the provider independently.
 	return llm.Message{
-		Role:         llm.RoleUser,
-		Content:      text,
-		ContentParts: []llm.MessageContentPart{llm.TextContentPart(text), videoPart},
+		Role:    llm.RoleUser,
+		Content: text,
 	}, true
 }
 
