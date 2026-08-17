@@ -26,7 +26,7 @@ function leftNav() {
         <button class="nav-icon-button" type="button" title="Tasks" aria-label="Tasks">${icons.tasks}</button>
         <button class="nav-icon-button" type="button" title="Git" aria-label="Git">${icons.git}</button>
         <button class="nav-icon-button" type="button" title="Dashboard" aria-label="Dashboard">${icons.dashboard}</button>
-        <button class="nav-icon-button" type="button" title="Settings" aria-label="Settings">${icons.settings}</button>
+        <button class="nav-icon-button" type="button" title="Settings" aria-label="Settings" data-nav="settings">${icons.settings}</button>
       </div>
     </aside>
   `;
@@ -118,6 +118,13 @@ export function mount(root) {
   const input = root.querySelector("[data-chat-input]");
   const sendBtn = root.querySelector(".send-button");
 
+  // Navigate to settings when the sidebar Settings button is clicked.
+  const settingsBtn = root.querySelector("[data-nav='settings']");
+  const onSettingsClick = () => {
+    location.hash = "#/settings";
+  };
+  settingsBtn?.addEventListener("click", onSettingsClick);
+
   const submit = () => {
     const text = input.textContent || "";
     if (!text.trim()) return;
@@ -147,6 +154,7 @@ export function mount(root) {
     form.removeEventListener("submit", submit);
     sendBtn.removeEventListener("click", submit);
     input.removeEventListener("keydown", onKeydown);
+    settingsBtn?.removeEventListener("click", onSettingsClick);
   };
 }
 

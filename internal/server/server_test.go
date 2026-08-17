@@ -16,14 +16,16 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// newTestServer builds a Server with a temp web dir containing an index.html.
+// newTestServer builds a Server with a temp web dir containing an index.html
+// and an isolated temp settings path so tests never touch the real config.
 func newTestServer(t *testing.T) (*Server, string) {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html><body>index</body></html>"), 0o644); err != nil {
 		t.Fatalf("write index: %v", err)
 	}
-	s := New("127.0.0.1:0", dir)
+	settingsPath := filepath.Join(dir, "echo.json")
+	s := NewWithSettingsPath("127.0.0.1:0", dir, settingsPath)
 	return s, dir
 }
 
@@ -98,6 +100,98 @@ func TestEchoEndpoint(t *testing.T) {
 	}
 	if env.Data.Message != "hi" {
 		t.Fatalf("expected message hi, got %q", env.Data.Message)
+	}
+}
+
+func TestGetSettings(t *testing.T) {
+	s, _ := newTestServer(t)
+	rr := doRequest(t, s, http.MethodGet, "/api/settings")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var env struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Settings llm.Settings `json:"settings"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !env.OK {
+		t.Fatalf("expected ok=true")
+	}
+	if len(env.Data.Settings.Endpoints) == 0 {
+		t.Fatalf("expected default endpoints")
+	}
+}
+
+func TestPutSettingsRoundTrip(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	// Build a settings payload with a custom endpoint.
+	cfg := llm.DefaultSettings()
+	cfg.Endpoints = append(cfg.Endpoints, llm.LLMEndpoint{
+		ID:       "second",
+		Name:     "Second",
+		Endpoint: "http://example.com/v1",
+		Model:    "model-b",
+	})
+	cfg.EndpointSelection.Chat = "second"
+
+	body, err := json.Marshal(map[string]any{"settings": cfg})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Now GET should reflect the saved settings.
+	rr2 := doRequest(t, s, http.MethodGet, "/api/settings")
+	var env struct {
+		Data struct {
+			Settings llm.Settings `json:"settings"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr2.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(env.Data.Settings.Endpoints) != 2 {
+		t.Fatalf("expected 2 endpoints, got %d", len(env.Data.Settings.Endpoints))
+	}
+	if env.Data.Settings.EndpointSelection.Chat != "second" {
+		t.Fatalf("expected chat routing to second, got %q", env.Data.Settings.EndpointSelection.Chat)
+	}
+}
+
+func TestPutSettingsRejectsInvalid(t *testing.T) {
+	s, _ := newTestServer(t)
+	// An invalid endpoint URL should fail validation. Build a minimal payload
+	// matching what the frontend sends (endpoints + endpointSelection only).
+	cfg := llm.Settings{
+		Endpoints: []llm.LLMEndpoint{{
+			ID:       "x",
+			Name:     "Bad",
+			Endpoint: "not-a-url",
+			Model:    "m",
+		}},
+		EndpointSelection: llm.EndpointSelection{Chat: "x", Research: "x", Vision: "x", InlineCode: "x"},
+	}
+	body, err := json.Marshal(map[string]any{"settings": cfg})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
 

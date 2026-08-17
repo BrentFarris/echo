@@ -12,25 +12,20 @@ import (
 	"strings"
 
 	"github.com/brent/echo/internal/llm"
-)
-
-// LLM endpoint configuration. These are hard-coded for now so the chat view
-// can be tested against a known server; they will move into user-configurable
-// settings (and be removed from here) in a later step.
-const (
-	llmEndpoint = "http://192.168.50.178:8023/v1"
-	llmModel    = "deepseek-ai/DeepSeek-V4-Flash-0731"
+	"github.com/brent/echo/internal/settings"
 )
 
 // Server is the Echo HTTP server. It serves the SPA frontend from a static
 // directory, hosts JSON API endpoints under /api, and runs a WebSocket hub for
 // real-time events.
 type Server struct {
-	httpServer  *http.Server
-	webDir      string
-	hub         *Hub
-	llm         chatStreamer
-	llmSettings llm.Settings
+	httpServer   *http.Server
+	webDir       string
+	hub          *Hub
+	settingsPath string
+	store        *settings.Store
+	llm          chatStreamer
+	llmSettings  llm.Settings
 }
 
 // chatStreamer is the subset of the LLM client the chat endpoint needs. It is
@@ -42,10 +37,27 @@ type chatStreamer interface {
 // New constructs a Server bound to addr that serves frontend assets from
 // webDir. It does not start listening; call ListenAndServe.
 func New(addr, webDir string) *Server {
+	return NewWithSettingsPath(addr, webDir, "")
+}
+
+// NewWithSettingsPath constructs a Server like New but with an explicit path
+// to the settings file. When settingsPath is empty, the platform default
+// (echo/echo.json under the user config dir) is used.
+func NewWithSettingsPath(addr, webDir, settingsPath string) *Server {
 	s := &Server{
 		webDir: webDir,
 		hub:    NewHub(),
 	}
+	if settingsPath == "" {
+		path, err := settings.DefaultStorePath()
+		if err != nil {
+			logf("resolve settings path: %v", err)
+			path = "echo.json"
+		}
+		settingsPath = path
+	}
+	s.settingsPath = settingsPath
+	s.store = settings.NewStore(settingsPath)
 	s.initLLM()
 	s.httpServer = &http.Server{
 		Addr:    addr,
@@ -54,20 +66,21 @@ func New(addr, webDir string) *Server {
 	return s
 }
 
-// initLLM builds the LLM client used by the chat endpoint. It uses the
-// hard-coded endpoint/model until settings support is added.
+// initLLM builds the LLM client used by the chat endpoint. It loads settings
+// from the store (falling back to defaults) and selects the chat endpoint.
 func (s *Server) initLLM() {
-	settings := llm.DefaultSettings()
-	settings.Endpoint = llmEndpoint
-	settings.Model = llmModel
-	settings.MaxTokens = 2048
-	client, err := llm.NewClient(settings)
+	cfg, err := s.store.Load()
+	if err != nil {
+		logf("load settings: %v", err)
+		cfg = llm.DefaultSettings()
+	}
+	s.llmSettings = cfg.ForInteraction(llm.InteractionChat)
+	client, err := llm.NewClient(s.llmSettings)
 	if err != nil {
 		logf("init llm client: %v", err)
 		return
 	}
 	s.llm = client
-	s.llmSettings = settings
 }
 
 // routes builds the HTTP handler tree for the server.
@@ -77,6 +90,8 @@ func (s *Server) routes() http.Handler {
 	// JSON API endpoints.
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/echo", s.handleEcho)
+	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
 
 	// WebSocket endpoint for real-time push.
 	mux.HandleFunc("GET /ws", s.handleWebSocket)

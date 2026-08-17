@@ -10,6 +10,7 @@ import * as ws from "./ws.js";
 const routes = {
   "/": () => import("./views/home.js"),
   "/home": () => import("./views/home.js"),
+  "/settings": () => import("./views/settings.js"),
 };
 
 const app = document.getElementById("app");
