@@ -2,66 +2,49 @@ package main
 
 import (
 	"context"
-	"embed"
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
-	"github.com/brent/echo/internal/services"
-	"github.com/brent/echo/internal/webserver"
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	"github.com/wailsapp/wails/v2/pkg/options/linux"
-	"github.com/wailsapp/wails/v2/pkg/options/mac"
+	"github.com/brent/echo/internal/server"
 )
 
-//go:embed all:frontend/dist
-var assets embed.FS
-
-//go:embed build/appicon.png
-var appIcon []byte
-
 func main() {
-	app := NewApp()
-	webAccess := webserver.New(app.System, assets)
-	services.SetWebAccessController(app.System, webAccess)
+	port := flag.Int("port", 3740, "port to listen on")
+	webDir := flag.String("web", "web", "directory containing the SPA frontend assets")
+	flag.Parse()
 
-	err := wails.Run(&options.App{
-		Title:     "Echo",
-		Width:     1200,
-		Height:    780,
-		MinWidth:  900,
-		MinHeight: 620,
-		AssetServer: &assetserver.Options{
-			Assets:     assets,
-			Handler:    app.System.WorkspaceIconHandler(),
-			Middleware: app.System.WorkspaceIconMiddleware,
-		},
-		BackgroundColour:         &options.RGBA{R: 18, G: 18, B: 20, A: 1},
-		EnableDefaultContextMenu: true,
-		DragAndDrop: &options.DragAndDrop{
-			EnableFileDrop: true,
-		},
-		OnStartup: func(ctx context.Context) {
-			app.startup(ctx)
-			_, _ = webAccess.ApplyWebAccessSettings(app.System.LoadState().WebAccess)
-		},
-		OnShutdown: func(ctx context.Context) {
-			_ = webAccess.Shutdown(ctx)
-			app.shutdown(ctx)
-		},
-		Linux: &linux.Options{
-			Icon: appIcon,
-		},
-		Mac: &mac.Options{
-			About: &mac.AboutInfo{
-				Title: "Echo",
-				Icon:  appIcon,
-			},
-		},
-		Bind: []interface{}{
-			app.System,
-		},
-	})
-	if err != nil {
-		println("Error:", err.Error())
+	addr := fmt.Sprintf(":%d", *port)
+	srv := server.New(addr, *webDir)
+
+	// Run the server in a goroutine so we can wait for signals.
+	errCh := make(chan error, 1)
+	go func() {
+		log.Printf("Echo web server listening on http://localhost:%d", *port)
+		errCh <- srv.ListenAndServe()
+	}()
+
+	// Wait for an interrupt or a fatal serve error.
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	select {
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server error: %v", err)
+		}
+	case sig := <-stop:
+		log.Printf("received signal %v, shutting down", sig)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("shutdown error: %v", err)
 	}
 }
