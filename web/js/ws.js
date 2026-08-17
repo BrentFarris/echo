@@ -112,6 +112,19 @@ function connect() {
 }
 
 /**
+ * Send a JSON message over the WebSocket. If the socket is not open, the
+ * message is dropped.
+ * @param {object} data
+ */
+export function send(data) {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(data));
+  } else {
+    console.warn("ws.send: socket not open, dropping message", data);
+  }
+}
+
+/**
  * Establish the WebSocket connection.
  */
 export function start() {

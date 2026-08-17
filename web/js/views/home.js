@@ -1,10 +1,14 @@
-// views/home.js — Echo base layout shell (non-functional).
+// views/home.js — Echo base layout shell with a functional chat view.
 //
 // Renders the primary chat view with the left sidebar and terminal bar,
-// matching the OLD (Wails) frontend's structure and styling. This is a visual
-// shell only: no chat logic, no terminal functionality, no backend wiring.
+// matching the OLD (Wails) frontend's structure and styling. The chat
+// composer sends messages over WebSocket and streams the reply incrementally.
 
 import { icons } from "../icons.js";
+import { sendMessage, stopStream } from "../chat.js";
+
+// Holds the cleanup function for the currently mounted chat view.
+let chatCleanup = null;
 
 function leftNav() {
   return `
@@ -16,7 +20,6 @@ function leftNav() {
       </div>
       <nav class="left-nav-buttons" aria-label="Views">
         <button class="nav-icon-button is-active" type="button" title="Chat" aria-label="Chat">${icons.chat}</button>
-        <button class="nav-icon-button" type="button" title="Kanban" aria-label="Kanban">${icons.kanban}</button>
       </nav>
       <div class="left-nav-actions">
         <button class="nav-icon-button" type="button" title="Code" aria-label="Code view">${icons.code}</button>
@@ -109,8 +112,47 @@ export function mount(root) {
       <div data-region="terminal">${terminalDock()}</div>
     </div>
   `;
+
+  const log = root.querySelector("[data-chat-log]");
+  const form = root.querySelector("[data-chat-form]");
+  const input = root.querySelector("[data-chat-input]");
+  const sendBtn = root.querySelector(".send-button");
+
+  const submit = () => {
+    const text = input.textContent || "";
+    if (!text.trim()) return;
+    sendMessage(log, text);
+    input.textContent = "";
+    input.dispatchEvent(new Event("input"));
+    input.focus();
+  };
+
+  const onKeydown = (e) => {
+    // Enter sends (Shift+Enter inserts a newline).
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submit();
+    }
+  };
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    submit();
+  });
+  sendBtn.addEventListener("click", submit);
+  input.addEventListener("keydown", onKeydown);
+
+  // Store cleanup so unmount removes listeners.
+  chatCleanup = () => {
+    form.removeEventListener("submit", submit);
+    sendBtn.removeEventListener("click", submit);
+    input.removeEventListener("keydown", onKeydown);
+  };
 }
 
 export function unmount() {
-  // No listeners to clean up — the base layout is non-functional.
+  if (chatCleanup) {
+    chatCleanup();
+    chatCleanup = null;
+  }
 }

@@ -328,6 +328,91 @@ textarea:disabled {
   padding: var(--space-4xl);
 }
 
+/* Chat message rows — full-width cards matching OLD. */
+.chat-message {
+  display: flex;
+  flex-direction: column;
+  max-width: 100%;
+  min-width: 0;
+  padding: var(--space-lg);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+}
+
+.chat-message-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.chat-message-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  line-height: 1.5;
+  font-size: var(--text-2xl-lg);
+  min-width: 0;
+}
+
+/* User messages: nearly full width, subtly tinted card, small left margin. */
+.chat-message-user {
+  margin-left: var(--space-md);
+  border-color: color-mix(in srgb, var(--color-info) 36%, var(--color-border));
+  background: color-mix(in srgb, var(--color-info) 10%, var(--color-surface));
+}
+
+.chat-message-user .chat-message-content {
+  max-width: 100%;
+}
+
+/* Assistant messages: nearly full width, small right margin. */
+.chat-message-assistant {
+  margin-right: var(--space-xl);
+}
+
+.chat-message-assistant .chat-message-content {
+  max-width: 100%;
+  padding: var(--space-md) var(--space-lg);
+}
+
+/* Reasoning/thinking block for reasoning models, shown above the answer. */
+.chat-message-reasoning {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  line-height: 1.45;
+  font-size: var(--text-base-lg);
+  color: var(--color-text-muted);
+  background: var(--color-surface-muted);
+  border-left: 3px solid var(--color-border);
+  border-radius: 0 8px 8px 0;
+  padding: var(--space-md) var(--space-xl);
+  margin: 0 0 var(--space-md) 0;
+  max-width: 100%;
+}
+
+.chat-message-reasoning[hidden] {
+  display: none;
+}
+
+.chat-message.is-streaming .chat-message-content::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 14px;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--color-accent);
+  animation: chat-caret-blink 1s steps(2, start) infinite;
+}
+
+@keyframes chat-caret-blink {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+
 /* ==========================================================================
    Chat composer.
    ========================================================================== */

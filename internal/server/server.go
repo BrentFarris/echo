@@ -10,15 +10,33 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/brent/echo/internal/llm"
+)
+
+// LLM endpoint configuration. These are hard-coded for now so the chat view
+// can be tested against a known server; they will move into user-configurable
+// settings (and be removed from here) in a later step.
+const (
+	llmEndpoint = "http://192.168.50.178:8023/v1"
+	llmModel    = "deepseek-ai/DeepSeek-V4-Flash-0731"
 )
 
 // Server is the Echo HTTP server. It serves the SPA frontend from a static
 // directory, hosts JSON API endpoints under /api, and runs a WebSocket hub for
 // real-time events.
 type Server struct {
-	httpServer *http.Server
-	webDir     string
-	hub        *Hub
+	httpServer  *http.Server
+	webDir      string
+	hub         *Hub
+	llm         chatStreamer
+	llmSettings llm.Settings
+}
+
+// chatStreamer is the subset of the LLM client the chat endpoint needs. It is
+// an interface so tests can inject a fake streamer.
+type chatStreamer interface {
+	StreamChat(ctx context.Context, request llm.ChatRequest) *llm.Stream
 }
 
 // New constructs a Server bound to addr that serves frontend assets from
@@ -28,11 +46,28 @@ func New(addr, webDir string) *Server {
 		webDir: webDir,
 		hub:    NewHub(),
 	}
+	s.initLLM()
 	s.httpServer = &http.Server{
 		Addr:    addr,
 		Handler: s.routes(),
 	}
 	return s
+}
+
+// initLLM builds the LLM client used by the chat endpoint. It uses the
+// hard-coded endpoint/model until settings support is added.
+func (s *Server) initLLM() {
+	settings := llm.DefaultSettings()
+	settings.Endpoint = llmEndpoint
+	settings.Model = llmModel
+	settings.MaxTokens = 2048
+	client, err := llm.NewClient(settings)
+	if err != nil {
+		logf("init llm client: %v", err)
+		return
+	}
+	s.llm = client
+	s.llmSettings = settings
 }
 
 // routes builds the HTTP handler tree for the server.

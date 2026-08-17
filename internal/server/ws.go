@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/brent/echo/internal/llm"
 	"github.com/gorilla/websocket"
 )
 
@@ -24,8 +27,24 @@ var upgrader = websocket.Upgrader{
 
 // client represents a single connected WebSocket peer.
 type client struct {
-	conn *websocket.Conn
-	send chan []byte
+	conn   *websocket.Conn
+	send   chan []byte
+	server *Server
+}
+
+// sendJSON marshals v and queues it to the client's outbound channel. It is
+// safe to call from any goroutine; if the client's buffer is full the message
+// is dropped (the write pump will close the connection if it cannot keep up).
+func (c *client) sendJSON(v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		logf("client send marshal: %v", err)
+		return
+	}
+	select {
+	case c.send <- data:
+	default:
+	}
 }
 
 // Hub manages all connected WebSocket clients and broadcasts events to them.
@@ -145,8 +164,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := &client{
-		conn: conn,
-		send: make(chan []byte, 256),
+		conn:   conn,
+		send:   make(chan []byte, 256),
+		server: s,
 	}
 	go c.writePump()
 	s.hub.register <- c
@@ -154,8 +174,8 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 // readPump reads messages from the client until the connection closes, then
-// unregisters it. The application currently does not act on inbound messages;
-// this loop keeps the connection alive and detects disconnects.
+// unregisters it. Inbound JSON messages are dispatched to handlers; currently
+// the only supported message type is "chat".
 func (c *client) readPump(h *Hub) {
 	defer func() {
 		h.unregister <- c
@@ -168,10 +188,64 @@ func (c *client) readPump(h *Hub) {
 		return nil
 	})
 	for {
-		if _, _, err := c.conn.ReadMessage(); err != nil {
+		_, data, err := c.conn.ReadMessage()
+		if err != nil {
 			break
 		}
+		var msg inboundMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			logf("ws decode inbound: %v", err)
+			continue
+		}
+		switch msg.Type {
+		case "chat":
+			c.handleChatMessage(msg)
+		}
 	}
+}
+
+// inboundMessage is the envelope the frontend sends over WebSocket.
+type inboundMessage struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+// handleChatMessage runs an LLM chat completion for the given message and
+// streams the resulting events back to the sending client.
+func (c *client) handleChatMessage(msg inboundMessage) {
+	if c.server == nil || c.server.llm == nil {
+		c.sendJSON(map[string]any{"type": "chat_error", "error": "LLM client is not configured"})
+		return
+	}
+	text := strings.TrimSpace(msg.Message)
+	if text == "" {
+		return
+	}
+
+	// Send an ack so the frontend knows the message was accepted.
+	c.sendJSON(map[string]any{"type": "chat_start", "message": text})
+
+	request, err := llm.NewChatRequest(
+		c.server.llmSettings,
+		[]llm.Message{{Role: llm.RoleUser, Content: text}},
+		llm.WithStream(true),
+	)
+	if err != nil {
+		c.sendJSON(map[string]any{"type": "chat_error", "error": err.Error()})
+		return
+	}
+
+	stream := c.server.llm.StreamChat(context.Background(), request)
+	for event := range stream.Events {
+		c.sendJSON(map[string]any{
+			"type":         "chat_event",
+			"eventType":    string(event.Type),
+			"content":      event.Content,
+			"finishReason": event.FinishReason,
+			"error":        event.Error,
+		})
+	}
+	c.sendJSON(map[string]any{"type": "chat_done"})
 }
 
 // writePump writes queued messages to the client. It sends periodic pings to

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/brent/echo/internal/llm"
 	"github.com/gorilla/websocket"
 )
 
@@ -130,4 +132,72 @@ func TestWebSocketUpgradeAndWelcome(t *testing.T) {
 	if evt["type"] != "welcome" {
 		t.Fatalf("expected welcome event, got %v", evt["type"])
 	}
+}
+
+func TestChatStreamingOverWebSocket(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	// Inject a fake streamer that emits a token, a complete, then closes.
+	fake := &fakeStreamer{}
+	s.llm = fake
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go s.httpServer.Serve(ln)
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+ln.Addr().String()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Consume the welcome event.
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("read welcome: %v", err)
+	}
+
+	// Send a chat message.
+	if err := conn.WriteJSON(map[string]any{"type": "chat", "message": "hello"}); err != nil {
+		t.Fatalf("write chat: %v", err)
+	}
+
+	// Expect chat_start, a token event, and chat_done.
+	var got []string
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for {
+		var evt map[string]any
+		if err := conn.ReadJSON(&evt); err != nil {
+			t.Fatalf("read event: %v", err)
+		}
+		typ, _ := evt["type"].(string)
+		got = append(got, typ)
+		if typ == "chat_done" {
+			break
+		}
+	}
+	joined := strings.Join(got, ",")
+	if !strings.Contains(joined, "chat_start") {
+		t.Fatalf("expected chat_start, got %v", got)
+	}
+	if !strings.Contains(joined, "chat_event") {
+		t.Fatalf("expected chat_event, got %v", got)
+	}
+	if !strings.Contains(joined, "chat_done") {
+		t.Fatalf("expected chat_done, got %v", got)
+	}
+}
+
+// fakeStreamer is a minimal chatStreamer for tests.
+type fakeStreamer struct{}
+
+func (f *fakeStreamer) StreamChat(_ context.Context, _ llm.ChatRequest) *llm.Stream {
+	events := make(chan llm.StreamEvent, 4)
+	events <- llm.StreamEvent{Type: llm.EventToken, Content: "hello"}
+	events <- llm.StreamEvent{Type: llm.EventComplete, FinishReason: "stop"}
+	close(events)
+	return &llm.Stream{ID: "fake", Events: events}
 }
