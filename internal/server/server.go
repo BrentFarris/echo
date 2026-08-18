@@ -26,6 +26,7 @@ type Server struct {
 	settingsPath string
 	store        *settings.Store
 	workspaces   *workspaces.Manager
+	sessions     *chatSessionManager
 	llm          chatStreamer
 	llmSettings  llm.Settings
 	// settings holds the full normalized settings (all endpoints) so the chat
@@ -64,6 +65,7 @@ func NewWithSettingsPath(addr, webDir, settingsPath string) *Server {
 	s.settingsPath = settingsPath
 	s.store = settings.NewStore(settingsPath)
 	s.workspaces = workspaces.NewManager(settingsPath)
+	s.sessions = newChatSessionManager(s)
 	s.initLLM()
 	s.httpServer = &http.Server{
 		Addr:    addr,
@@ -175,6 +177,7 @@ func (s *Server) ListenAndServe() error {
 
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.sessions.shutdown(ctx)
 	s.hub.Shutdown()
 	return s.httpServer.Shutdown(ctx)
 }

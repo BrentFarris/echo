@@ -32,6 +32,85 @@ func newTestServer(t *testing.T) (*Server, string) {
 	return s, dir
 }
 
+func createChatWorkspace(t *testing.T, s *Server, name string) workspaces.Workspace {
+	t.Helper()
+	workspace, err := s.workspaces.Create(workspaces.CreateRequest{Name: name, MainPath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("create chat workspace: %v", err)
+	}
+	return workspace
+}
+
+func subscribeChat(t *testing.T, conn *websocket.Conn, workspaceID string) {
+	t.Helper()
+	if err := conn.WriteJSON(map[string]any{"type": "session_subscribe", "workspaceId": workspaceID}); err != nil {
+		t.Fatalf("subscribe chat: %v", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for {
+		var message map[string]any
+		if err := conn.ReadJSON(&message); err != nil {
+			t.Fatalf("read session snapshot: %v", err)
+		}
+		if message["type"] == "session_snapshot" {
+			return
+		}
+	}
+}
+
+func sendSharedChat(t *testing.T, conn *websocket.Conn, workspaceID, message, model string) {
+	t.Helper()
+	subscribeChat(t, conn, workspaceID)
+	payload := map[string]any{
+		"type": "chat_send", "workspaceId": workspaceID,
+		"requestId": "request-" + strings.ReplaceAll(message, " ", "-"), "message": message,
+	}
+	if model != "" {
+		payload["model"] = model
+	}
+	if err := conn.WriteJSON(payload); err != nil {
+		t.Fatalf("write shared chat: %v", err)
+	}
+}
+
+// readCompatChatEvent maps the session protocol to the old assertion shape so
+// the detailed tool-loop expectations remain concise.
+func readCompatChatEvent(t *testing.T, conn *websocket.Conn) map[string]any {
+	t.Helper()
+	for {
+		var message map[string]any
+		if err := conn.ReadJSON(&message); err != nil {
+			t.Fatalf("read event: %v", err)
+		}
+		if message["type"] != "session_event" {
+			if message["type"] == "command_error" {
+				return map[string]any{"type": "chat_error", "error": message["error"]}
+			}
+			continue
+		}
+		event, _ := message["event"].(map[string]any)
+		eventType, _ := event["type"].(string)
+		switch eventType {
+		case "turn_started":
+			event["type"] = "chat_start"
+		case "turn_finished":
+			status, _ := event["status"].(string)
+			switch status {
+			case "done":
+				event["type"] = "chat_done"
+			case "stopped":
+				event["type"] = "chat_stopped"
+			default:
+				event["type"] = "chat_error"
+			}
+		default:
+			event["type"] = "chat_event"
+			event["eventType"] = eventType
+		}
+		return event
+	}
+}
+
 func doRequest(t *testing.T, s *Server, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, nil)
@@ -280,6 +359,7 @@ func TestWebSocketUpgradeAndWelcome(t *testing.T) {
 
 func TestChatStreamingOverWebSocket(t *testing.T) {
 	s, _ := newTestServer(t)
+	workspace := createChatWorkspace(t, s, "streaming")
 
 	// Inject a fake streamer that emits a token, a complete, then closes.
 	fake := &fakeStreamer{}
@@ -305,18 +385,13 @@ func TestChatStreamingOverWebSocket(t *testing.T) {
 	}
 
 	// Send a chat message.
-	if err := conn.WriteJSON(map[string]any{"type": "chat", "message": "hello"}); err != nil {
-		t.Fatalf("write chat: %v", err)
-	}
+	sendSharedChat(t, conn, workspace.ID, "hello", "")
 
 	// Expect an explicitly bounded assistant turn around the token stream.
 	var got []string
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	for {
-		var evt map[string]any
-		if err := conn.ReadJSON(&evt); err != nil {
-			t.Fatalf("read event: %v", err)
-		}
+		evt := readCompatChatEvent(t, conn)
 		typ, _ := evt["type"].(string)
 		label := typ
 		if typ == "chat_event" {
@@ -362,6 +437,7 @@ func (f *cancellableStreamer) StreamChat(ctx context.Context, _ llm.ChatRequest)
 
 func TestChatStopOverWebSocket(t *testing.T) {
 	s, _ := newTestServer(t)
+	workspace := createChatWorkspace(t, s, "stopping")
 
 	// Inject a streamer that blocks until canceled so we can exercise the
 	// stop path deterministically.
@@ -389,17 +465,12 @@ func TestChatStopOverWebSocket(t *testing.T) {
 	}
 
 	// Send a chat message that will block streaming.
-	if err := conn.WriteJSON(map[string]any{"type": "chat", "message": "hello"}); err != nil {
-		t.Fatalf("write chat: %v", err)
-	}
+	sendSharedChat(t, conn, workspace.ID, "hello", "")
 
 	// Wait for the stream to start (chat_start + first token), then send stop.
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	for {
-		var evt map[string]any
-		if err := conn.ReadJSON(&evt); err != nil {
-			t.Fatalf("read event: %v", err)
-		}
+		evt := readCompatChatEvent(t, conn)
 		if evt["type"] == "chat_start" {
 			break
 		}
@@ -411,17 +482,14 @@ func TestChatStopOverWebSocket(t *testing.T) {
 	}
 
 	// Send the stop message and expect chat_stopped (not chat_done/chat_error).
-	if err := conn.WriteJSON(map[string]any{"type": "stop"}); err != nil {
+	if err := conn.WriteJSON(map[string]any{"type": "chat_stop", "workspaceId": workspace.ID}); err != nil {
 		t.Fatalf("write stop: %v", err)
 	}
 
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	var stoppedSeen bool
 	for {
-		var evt map[string]any
-		if err := conn.ReadJSON(&evt); err != nil {
-			t.Fatalf("read event after stop: %v", err)
-		}
+		evt := readCompatChatEvent(t, conn)
 		typ, _ := evt["type"].(string)
 		if typ == "chat_stopped" {
 			stoppedSeen = true
@@ -438,6 +506,7 @@ func TestChatStopOverWebSocket(t *testing.T) {
 
 func TestChatRoutesToSelectedModel(t *testing.T) {
 	s, _ := newTestServer(t)
+	workspace := createChatWorkspace(t, s, "model-routing")
 
 	// Configure a second endpoint with a distinct model and route chat to it.
 	cfg := llm.DefaultSettings()
@@ -476,17 +545,12 @@ func TestChatRoutesToSelectedModel(t *testing.T) {
 	}
 
 	// Send a chat message with the second endpoint's model selected.
-	if err := conn.WriteJSON(map[string]any{"type": "chat", "message": "hello", "model": "model-b"}); err != nil {
-		t.Fatalf("write chat: %v", err)
-	}
+	sendSharedChat(t, conn, workspace.ID, "hello", "model-b")
 
 	// Drain until chat_done.
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	for {
-		var evt map[string]any
-		if err := conn.ReadJSON(&evt); err != nil {
-			t.Fatalf("read event: %v", err)
-		}
+		evt := readCompatChatEvent(t, conn)
 		if evt["type"] == "chat_done" {
 			break
 		}
@@ -499,6 +563,7 @@ func TestChatRoutesToSelectedModel(t *testing.T) {
 
 func TestChatFallsBackToDefaultModelWhenUnknown(t *testing.T) {
 	s, _ := newTestServer(t)
+	workspace := createChatWorkspace(t, s, "model-fallback")
 
 	cfg := llm.DefaultSettings()
 	cfg.Endpoints = append(cfg.Endpoints, llm.LLMEndpoint{
@@ -534,16 +599,11 @@ func TestChatFallsBackToDefaultModelWhenUnknown(t *testing.T) {
 	}
 
 	// Send a chat message with a model that does not exist on any endpoint.
-	if err := conn.WriteJSON(map[string]any{"type": "chat", "message": "hello", "model": "does-not-exist"}); err != nil {
-		t.Fatalf("write chat: %v", err)
-	}
+	sendSharedChat(t, conn, workspace.ID, "hello", "does-not-exist")
 
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	for {
-		var evt map[string]any
-		if err := conn.ReadJSON(&evt); err != nil {
-			t.Fatalf("read event: %v", err)
-		}
+		evt := readCompatChatEvent(t, conn)
 		if evt["type"] == "chat_done" {
 			break
 		}
@@ -689,19 +749,14 @@ func TestChatToolCallingExecutesFilesystemList(t *testing.T) {
 		t.Fatalf("read welcome: %v", err)
 	}
 
-	if err := conn.WriteJSON(map[string]any{"type": "chat", "message": "list the workspace"}); err != nil {
-		t.Fatalf("write chat: %v", err)
-	}
+	sendSharedChat(t, conn, ws.ID, "list the workspace", "")
 
 	var toolCallSeen, toolResultSeen, doneSeen bool
 	var eventOrder []string
 	var emittedCallID string
 	var turnEndToolFlags []bool
 	for {
-		var evt map[string]any
-		if err := conn.ReadJSON(&evt); err != nil {
-			t.Fatalf("read event: %v", err)
-		}
+		evt := readCompatChatEvent(t, conn)
 		typ, _ := evt["type"].(string)
 		if typ == "chat_event" {
 			eventType, _ := evt["eventType"].(string)
@@ -863,16 +918,11 @@ func TestChatMultipleToolEventsPreserveOrderAndFailures(t *testing.T) {
 	if _, _, err := conn.ReadMessage(); err != nil {
 		t.Fatalf("read welcome: %v", err)
 	}
-	if err := conn.WriteJSON(map[string]any{"type": "chat", "message": "run two tools"}); err != nil {
-		t.Fatalf("write chat: %v", err)
-	}
+	sendSharedChat(t, conn, ws.ID, "run two tools", "")
 
 	var calls, results []map[string]any
 	for {
-		var evt map[string]any
-		if err := conn.ReadJSON(&evt); err != nil {
-			t.Fatalf("read event: %v", err)
-		}
+		evt := readCompatChatEvent(t, conn)
 		if evt["type"] == "chat_event" {
 			switch evt["eventType"] {
 			case "tool_call":
@@ -996,16 +1046,11 @@ func TestChatToolCallingFeedsImageToModel(t *testing.T) {
 		t.Fatalf("read welcome: %v", err)
 	}
 
-	if err := conn.WriteJSON(map[string]any{"type": "chat", "message": "read the image"}); err != nil {
-		t.Fatalf("write chat: %v", err)
-	}
+	sendSharedChat(t, conn, ws.ID, "read the image", "")
 
 	var doneSeen bool
 	for {
-		var evt map[string]any
-		if err := conn.ReadJSON(&evt); err != nil {
-			t.Fatalf("read event: %v", err)
-		}
+		evt := readCompatChatEvent(t, conn)
 		typ, _ := evt["type"].(string)
 		if typ == "chat_done" {
 			doneSeen = true
@@ -1124,16 +1169,11 @@ func TestChatToolCallingFeedsVideoToModel(t *testing.T) {
 		t.Fatalf("read welcome: %v", err)
 	}
 
-	if err := conn.WriteJSON(map[string]any{"type": "chat", "message": "read the video"}); err != nil {
-		t.Fatalf("write chat: %v", err)
-	}
+	sendSharedChat(t, conn, ws.ID, "read the video", "")
 
 	var doneSeen bool
 	for {
-		var evt map[string]any
-		if err := conn.ReadJSON(&evt); err != nil {
-			t.Fatalf("read event: %v", err)
-		}
+		evt := readCompatChatEvent(t, conn)
 		typ, _ := evt["type"].(string)
 		if typ == "chat_done" {
 			doneSeen = true

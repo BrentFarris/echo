@@ -6,7 +6,7 @@
 
 import { icons } from "../icons.js";
 import { get } from "../api.js";
-import { sendMessage, stopStream, isStreaming, onStreamingChange } from "../chat.js";
+import { sendMessage, stopStream, isStreaming, onStreamingChange, openWorkspaceSession, closeWorkspaceSession } from "../chat.js";
 import { loadWorkspaces, openWorkspaceDropdown, openAddWorkspaceModal, setActiveWorkspace, getActive, renderWorkspaceIcon } from "../workspaces.js";
 
 // Holds the cleanup function for the currently mounted chat view.
@@ -186,13 +186,24 @@ export function mount(root) {
         try {
           await setActiveWorkspace(id);
           updateWorkspaceIcon();
+          openWorkspaceSession(log, id);
         } catch (err) {
           console.error("Failed to set active workspace:", err);
         }
       },
       onAdd: () => {
         closeWorkspaceDropdown = null;
-        openAddWorkspaceModal({ onCreate: () => updateWorkspaceIcon() });
+        openAddWorkspaceModal({
+          onCreate: async (workspace) => {
+            try {
+              await setActiveWorkspace(workspace.id);
+              updateWorkspaceIcon();
+              openWorkspaceSession(log, workspace.id);
+            } catch (err) {
+              console.error("Failed to open created workspace:", err);
+            }
+          },
+        });
       },
     });
   };
@@ -288,10 +299,11 @@ export function mount(root) {
   const submit = () => {
     const text = input.textContent || "";
     if (!text.trim()) return;
-    sendMessage(log, text, selectedModel || undefined);
-    input.textContent = "";
-    input.dispatchEvent(new Event("input"));
-    input.focus();
+    if (sendMessage(log, text, selectedModel || undefined)) {
+      input.textContent = "";
+      input.dispatchEvent(new Event("input"));
+      input.focus();
+    }
   };
 
   // setSendButtonBusy toggles the send button between send and stop while a
@@ -347,13 +359,17 @@ export function mount(root) {
     document.removeEventListener("click", onDocClick);
     window.removeEventListener("resize", onResize);
     modelDropdown.remove();
+    closeWorkspaceSession(log);
   };
 
   // Load the configured endpoints so the model selector can be populated.
   loadEndpoints();
   // Load the registered workspaces so the selector dropdown can be populated,
   // then set the trigger icon to the active (last opened) workspace.
-  loadWorkspaces().then(updateWorkspaceIcon);
+  loadWorkspaces().then(() => {
+    updateWorkspaceIcon();
+    openWorkspaceSession(log, getActive()?.id || "");
+  });
 }
 
 export function unmount() {

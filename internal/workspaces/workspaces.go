@@ -230,6 +230,23 @@ func (m *Manager) Active() (Workspace, bool, error) {
 	return Workspace{}, false, nil
 }
 
+// Get returns a registered workspace by id. Unlike Active, it does not depend
+// on the process-wide last-opened workspace and is therefore safe for
+// per-client chat sessions.
+func (m *Manager) Get(id string) (Workspace, bool, error) {
+	w, ok, err := m.find(id)
+	if err != nil || !ok {
+		return Workspace{}, ok, err
+	}
+	return Workspace{
+		ID:       w.ID,
+		Name:     w.Name,
+		MainPath: w.MainPath,
+		IconExt:  w.IconExt,
+		Folders:  append([]string(nil), w.Folders...),
+	}, true, nil
+}
+
 // SetActive records the given workspace id as the active (last opened)
 // workspace, preserving settings and the workspace list.
 func (m *Manager) SetActive(id string) error {

@@ -119,8 +119,10 @@ function connect() {
 export function send(data) {
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(data));
+    return true;
   } else {
     console.warn("ws.send: socket not open, dropping message", data);
+    return false;
   }
 }
 

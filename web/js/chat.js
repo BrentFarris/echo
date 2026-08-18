@@ -1,62 +1,186 @@
-// chat.js — chat view logic: send messages over WebSocket and render the
-// assistant's streamed work as a chronological, inline timeline.
+// chat.js — workspace-scoped shared chat state and rendering.
 
 import * as ws from "./ws.js";
 
+let binding = null;
 let activeStream = null;
 const streamingListeners = new Set();
 
 function setStreaming(streaming) {
   for (const cb of streamingListeners) {
-    try {
-      cb(streaming);
-    } catch (err) {
-      console.error("streaming state handler error:", err);
+    try { cb(streaming); } catch (err) { console.error("streaming state handler error:", err); }
+  }
+}
+
+export function onStreamingChange(cb) {
+  streamingListeners.add(cb);
+  try { cb(activeStream != null); } catch (err) { console.error("streaming state handler error:", err); }
+  return () => streamingListeners.delete(cb);
+}
+
+export function isStreaming() { return activeStream != null; }
+
+export function openWorkspaceSession(log, workspaceId) {
+  activeStream = null;
+  setStreaming(false);
+  binding = { log, workspaceId: workspaceId || "", sequence: 0, hasSnapshot: false, turns: new Map() };
+  renderEmpty(log, workspaceId ? "Loading conversation…" : "Select a workspace to start chatting.");
+  if (workspaceId) ws.send({ type: "session_subscribe", workspaceId });
+}
+
+export function closeWorkspaceSession(log) {
+  if (binding?.log === log) binding = null;
+  activeStream = null;
+  setStreaming(false);
+}
+
+ws.onState((state) => {
+  if (state === "open" && binding?.workspaceId) {
+    ws.send({ type: "session_subscribe", workspaceId: binding.workspaceId });
+  }
+});
+
+ws.on("session_snapshot", (snapshot) => {
+  if (!binding || snapshot.workspaceId !== binding.workspaceId) return;
+  binding.sequence = Number(snapshot.sequence) || 0;
+  binding.hasSnapshot = true;
+  binding.turns.clear();
+  activeStream = null;
+  binding.log.textContent = "";
+  for (const turn of snapshot.turns || []) renderStoredTurn(turn, false);
+  if (snapshot.activeTurn) renderStoredTurn(snapshot.activeTurn, true);
+  if (!binding.log.childElementCount) renderEmpty(binding.log, "Ask Echo to inspect, plan, or build in this workspace.");
+  setStreaming(activeStream != null);
+  scrollToBottom(binding.log);
+});
+
+ws.on("session_event", (message) => {
+  if (!binding || message.workspaceId !== binding.workspaceId) return;
+  const sequence = Number(message.sequence) || 0;
+  if (sequence <= binding.sequence) return;
+  if (!binding.hasSnapshot) {
+    ws.send({ type: "session_subscribe", workspaceId: binding.workspaceId });
+    return;
+  }
+  if (binding.sequence && sequence !== binding.sequence + 1) {
+    ws.send({ type: "session_subscribe", workspaceId: binding.workspaceId });
+    return;
+  }
+  binding.sequence = sequence;
+  applyEvent(message.event || {});
+  scrollToBottom(binding.log);
+});
+
+ws.on("command_error", (message) => {
+  if (!binding || (message.workspaceId && message.workspaceId !== binding.workspaceId)) return;
+  const status = document.createElement("div");
+  status.className = "chat-stream-status is-error";
+  status.textContent = message.error || "The chat command failed.";
+  binding.log.querySelector(".chat-empty")?.remove();
+  binding.log.appendChild(status);
+  scrollToBottom(binding.log);
+});
+
+function applyEvent(event) {
+  switch (event.type) {
+    case "turn_started": {
+      binding.log.querySelector(".chat-empty")?.remove();
+      const stream = createTurnView(event.turnId, event.message || "");
+      binding.turns.set(event.turnId, stream);
+      activeStream = stream;
+      setStreaming(true);
+      break;
+    }
+    case "assistant_turn_start":
+      startTurn(findStream(event.turnId), event.turn);
+      break;
+    case "token":
+      appendTurnText(findStream(event.turnId), event.turn, event.content || "");
+      break;
+    case "reasoning":
+      appendReasoning(findStream(event.turnId), event.turn, event.content || "");
+      break;
+    case "assistant_turn_end":
+      endTurn(findStream(event.turnId), event.turn, Boolean(event.hasToolCalls));
+      break;
+    case "tool_call":
+      appendToolCall(findStream(event.turnId), event, event.turn);
+      break;
+    case "tool_result":
+      completeToolCall(findStream(event.turnId), event, event.turn);
+      break;
+    case "turn_finished": {
+      const stream = findStream(event.turnId);
+      finishStream(stream, event.status || "error", event.error || "");
+      break;
     }
   }
 }
 
-/**
- * Subscribe to streaming-state changes. The handler is invoked immediately
- * with the current state, then on every transition.
- * @param {(streaming: boolean) => void} cb
- * @returns {() => void}
- */
-export function onStreamingChange(cb) {
-  streamingListeners.add(cb);
-  try {
-    cb(activeStream != null);
-  } catch (err) {
-    console.error("streaming state handler error:", err);
+function findStream(turnId) { return binding?.turns.get(turnId) || null; }
+
+export function sendMessage(log, text, model) {
+  text = text.trim();
+  if (!text || activeStream || !binding?.workspaceId || binding.log !== log) return false;
+  const requestId = globalThis.crypto?.randomUUID?.() || `request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return ws.send({
+    type: "chat_send", workspaceId: binding.workspaceId, requestId,
+    message: text, ...(model ? { model } : {}),
+  });
+}
+
+export function stopStream() {
+  if (binding?.workspaceId && activeStream) {
+    ws.send({ type: "chat_stop", workspaceId: binding.workspaceId });
   }
-  return () => streamingListeners.delete(cb);
 }
 
-export function isStreaming() {
-  return activeStream != null;
+function renderStoredTurn(turn, active) {
+  const stream = createTurnView(turn.id, turn.userContent || "");
+  binding.turns.set(turn.id, stream);
+  for (const assistant of turn.assistantTurns || []) {
+    startTurn(stream, assistant.number);
+    appendReasoning(stream, assistant.number, assistant.reasoning || "");
+    appendTurnText(stream, assistant.number, assistant.content || "");
+    endTurn(stream, assistant.number, Boolean(assistant.hasToolCalls));
+    for (const tool of assistant.tools || []) {
+      const data = {
+        turn: assistant.number, callId: tool.callId, callOrder: tool.callOrder,
+        tool: tool.name, arguments: tool.arguments || "",
+      };
+      appendToolCall(stream, data, assistant.number);
+      if (tool.status !== "running") {
+        completeToolCall(stream, { ...data, success: tool.success, content: tool.result || "" }, assistant.number);
+      }
+    }
+  }
+  if (active || turn.status === "streaming") {
+    activeStream = stream;
+    return;
+  }
+  finishStream(stream, turn.status || "done", turn.error || "");
 }
 
-/**
- * Build the DOM for a single message row.
- * @param {"user"|"assistant"} role
- * @param {string} text
- * @returns {HTMLElement}
- */
+function renderEmpty(log, text) {
+  log.innerHTML = "";
+  const empty = document.createElement("div");
+  empty.className = "empty-state chat-empty";
+  empty.textContent = text;
+  log.appendChild(empty);
+}
+
 function createMessageEl(role, text) {
   const el = document.createElement("div");
   el.className = `chat-message chat-message-${role}`;
-  el.setAttribute("data-role", role);
-
+  el.dataset.role = role;
   const body = document.createElement("div");
   body.className = "chat-message-body";
   el.appendChild(body);
-
   if (role === "assistant") {
     const timeline = document.createElement("div");
     timeline.className = "chat-timeline";
     timeline.hidden = true;
     body.appendChild(timeline);
-
     const content = document.createElement("div");
     content.className = "chat-message-content chat-final-content";
     content.textContent = text;
@@ -68,135 +192,48 @@ function createMessageEl(role, text) {
     content.textContent = text;
     body.appendChild(content);
   }
-
   return el;
 }
 
-function appendMessage(log, role, text) {
-  const el = createMessageEl(role, text);
-  log.appendChild(el);
-  scrollToBottom(log);
-  return el;
+function createTurnView(turnId, userText) {
+  binding.log.appendChild(createMessageEl("user", userText));
+  const el = createMessageEl("assistant", "");
+  el.classList.add("is-streaming");
+  el.dataset.turnId = turnId;
+  binding.log.appendChild(el);
+  return {
+    id: turnId, el, timeline: el.querySelector(".chat-timeline"),
+    content: el.querySelector(".chat-final-content"), done: false,
+    currentTurn: null, finalTurn: null, turns: new Map(), tools: new Map(),
+  };
 }
 
 function scrollToBottom(log) {
-  requestAnimationFrame(() => {
-    log.scrollTop = log.scrollHeight;
-  });
-}
-
-function createStreamingMessage(log) {
-  const el = createMessageEl("assistant", "");
-  const timeline = el.querySelector(".chat-timeline");
-  const content = el.querySelector(".chat-final-content");
-  el.classList.add("is-streaming");
-  log.appendChild(el);
-  scrollToBottom(log);
-  return { el, timeline, content };
-}
-
-/**
- * Send a chat message and stream the assistant reply into the log.
- * @param {HTMLElement} log
- * @param {string} text
- * @param {string} [model]
- */
-export function sendMessage(log, text, model) {
-  text = text.trim();
-  if (!text || activeStream) return;
-
-  log.querySelector(".chat-empty")?.remove();
-  appendMessage(log, "user", text);
-
-  const { el, timeline, content } = createStreamingMessage(log);
-  const stream = {
-    el,
-    timeline,
-    content,
-    done: false,
-    currentTurn: null,
-    finalTurn: null,
-    turns: new Map(),
-    tools: new Map(),
-    unsubs: [],
-  };
-  activeStream = stream;
-  setStreaming(true);
-
-  stream.unsubs.push(ws.on("chat_event", (data) => {
-    handleChatEvent(stream, data);
-    scrollToBottom(log);
-  }));
-  stream.unsubs.push(ws.on("chat_done", () => finishStream(stream, log, "done")));
-  stream.unsubs.push(ws.on("chat_error", (data) => {
-    finishStream(stream, log, "error", data.error || "The response failed.");
-  }));
-  stream.unsubs.push(ws.on("chat_stopped", () => {
-    finishStream(stream, log, "stopped", "Response stopped.");
-  }));
-
-  ws.send({ type: "chat", message: text, ...(model ? { model } : {}) });
-}
-
-function handleChatEvent(stream, data) {
-  const turnNumber = Number.isInteger(data.turn)
-    ? data.turn
-    : (stream.currentTurn?.number ?? 0);
-
-  switch (data.eventType) {
-    case "assistant_turn_start":
-      startTurn(stream, turnNumber);
-      break;
-    case "token":
-      appendTurnText(stream, turnNumber, data.content || "");
-      break;
-    case "reasoning":
-      appendReasoning(stream, turnNumber, data.content || "");
-      break;
-    case "assistant_turn_end":
-      endTurn(stream, turnNumber, Boolean(data.hasToolCalls));
-      break;
-    case "tool_call":
-      appendToolCall(stream, data, turnNumber);
-      break;
-    case "tool_result":
-      completeToolCall(stream, data, turnNumber);
-      break;
-  }
+  requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
 }
 
 function startTurn(stream, number) {
-  const turn = ensureTurn(stream, number);
-  stream.currentTurn = turn;
+  if (!stream) return;
+  stream.currentTurn = ensureTurn(stream, Number.isInteger(number) ? number : 0);
 }
 
 function ensureTurn(stream, number) {
   let turn = stream.turns.get(number);
   if (turn) return turn;
-
   const el = document.createElement("div");
   el.className = "chat-turn";
   el.dataset.turn = String(number);
   stream.timeline.hidden = false;
   stream.timeline.appendChild(el);
-
-  turn = {
-    number,
-    el,
-    text: "",
-    lastKind: "",
-    textBlock: null,
-    reasoning: null,
-  };
+  turn = { number, el, text: "", lastKind: "", textBlock: null, reasoning: null };
   stream.turns.set(number, turn);
   return turn;
 }
 
 function appendTurnText(stream, turnNumber, text) {
-  if (!text) return;
-  const turn = ensureTurn(stream, turnNumber);
+  if (!stream || !text) return;
+  const turn = ensureTurn(stream, Number.isInteger(turnNumber) ? turnNumber : 0);
   completeReasoning(turn);
-
   if (turn.lastKind !== "text" || !turn.textBlock) {
     turn.textBlock = document.createElement("div");
     turn.textBlock.className = "chat-progress-text";
@@ -208,9 +245,8 @@ function appendTurnText(stream, turnNumber, text) {
 }
 
 function appendReasoning(stream, turnNumber, text) {
-  if (!text) return;
-  const turn = ensureTurn(stream, turnNumber);
-
+  if (!stream || !text) return;
+  const turn = ensureTurn(stream, Number.isInteger(turnNumber) ? turnNumber : 0);
   if (turn.lastKind !== "reasoning" || !turn.reasoning) {
     completeReasoning(turn);
     turn.reasoning = createReasoningItem();
@@ -225,18 +261,15 @@ function appendReasoning(stream, turnNumber, text) {
 function createReasoningItem() {
   const details = document.createElement("details");
   details.className = "chat-activity-item chat-reasoning-item is-running";
-
   const summary = document.createElement("summary");
   const label = document.createElement("span");
   label.className = "chat-activity-name";
   label.textContent = "Thinking…";
   summary.appendChild(label);
   details.appendChild(summary);
-
   const body = document.createElement("div");
   body.className = "chat-activity-body chat-reasoning-content";
   details.appendChild(body);
-
   return { details, label, body, text: "", complete: false };
 }
 
@@ -249,11 +282,11 @@ function completeReasoning(turn) {
 }
 
 function endTurn(stream, turnNumber, hasToolCalls) {
-  const turn = ensureTurn(stream, turnNumber);
+  if (!stream) return;
+  const turn = ensureTurn(stream, Number.isInteger(turnNumber) ? turnNumber : 0);
   completeReasoning(turn);
   turn.lastKind = "";
   turn.textBlock = null;
-
   if (hasToolCalls) {
     turn.el.classList.add("is-progress-turn");
   } else {
@@ -266,18 +299,16 @@ function endTurn(stream, turnNumber, hasToolCalls) {
 function promoteFinalText(stream, turn) {
   stream.content.textContent = turn.text;
   stream.content.hidden = turn.text === "";
-  for (const textBlock of turn.el.querySelectorAll(":scope > .chat-progress-text")) {
-    textBlock.remove();
-  }
+  for (const block of turn.el.querySelectorAll(":scope > .chat-progress-text")) block.remove();
   removeEmptyTurn(turn);
 }
 
 function appendToolCall(stream, data, turnNumber) {
+  if (!stream) return;
   const callOrder = Number.isInteger(data.callOrder) ? data.callOrder : stream.tools.size;
   const callId = data.callId || `turn-${turnNumber}-call-${callOrder}`;
-  const toolName = data.tool || "tool";
-  const item = createToolItem(toolName, data.arguments || "");
-
+  if (stream.tools.has(callId)) return;
+  const item = createToolItem(data.tool || "tool", data.arguments || "");
   item.details.dataset.callId = callId;
   stream.timeline.hidden = false;
   stream.timeline.appendChild(item.details);
@@ -287,7 +318,6 @@ function appendToolCall(stream, data, turnNumber) {
 function createToolItem(toolName, args) {
   const details = document.createElement("details");
   details.className = "chat-activity-item chat-tool-item is-running";
-
   const summary = document.createElement("summary");
   const name = document.createElement("span");
   name.className = "chat-activity-name";
@@ -297,15 +327,13 @@ function createToolItem(toolName, args) {
   status.textContent = "Running…";
   summary.append(name, status);
   details.appendChild(summary);
-
   const body = document.createElement("div");
   body.className = "chat-activity-body";
   body.appendChild(createToolSection("Arguments", formatStructured(args) || "No arguments").section);
-  const resultSection = createToolSection("Result", "Waiting for result…");
-  body.appendChild(resultSection.section);
+  const result = createToolSection("Result", "Waiting for result…");
+  body.appendChild(result.section);
   details.appendChild(body);
-
-  return { details, status, result: resultSection.content };
+  return { details, status, result: result.content };
 }
 
 function createToolSection(labelText, value) {
@@ -322,15 +350,12 @@ function createToolSection(labelText, value) {
 }
 
 function completeToolCall(stream, data, turnNumber) {
+  if (!stream) return;
   const callOrder = Number.isInteger(data.callOrder) ? data.callOrder : stream.tools.size;
   const callId = data.callId || `turn-${turnNumber}-call-${callOrder}`;
-  let item = stream.tools.get(callId);
-  if (!item) {
-    appendToolCall(stream, { ...data, callId }, turnNumber);
-    item = stream.tools.get(callId);
-  }
+  if (!stream.tools.has(callId)) appendToolCall(stream, { ...data, callId }, turnNumber);
+  const item = stream.tools.get(callId);
   if (!item) return;
-
   const succeeded = data.success === true;
   item.details.classList.remove("is-running");
   item.details.classList.add(succeeded ? "is-success" : "is-error");
@@ -341,55 +366,41 @@ function completeToolCall(stream, data, turnNumber) {
 function formatStructured(value) {
   if (value == null) return "";
   if (typeof value !== "string") {
-    try {
-      return JSON.stringify(value, null, 2);
-    } catch {
-      return String(value);
-    }
+    try { return JSON.stringify(value, null, 2); } catch { return String(value); }
   }
-
   const trimmed = value.trim();
   if (!trimmed) return "";
-  try {
-    return JSON.stringify(JSON.parse(trimmed), null, 2);
-  } catch {
-    return value;
-  }
+  try { return JSON.stringify(JSON.parse(trimmed), null, 2); } catch { return value; }
 }
 
-function finishStream(stream, log, outcome, message = "") {
-  if (stream.done) return;
+function finishStream(stream, outcome, message = "") {
+  if (!stream || stream.done) return;
   stream.done = true;
-  for (const unsub of stream.unsubs) unsub();
   stream.el.classList.remove("is-streaming");
-
   for (const turn of stream.turns.values()) completeReasoning(turn);
-
+  if (!stream.finalTurn && stream.currentTurn) {
+    promoteFinalText(stream, stream.currentTurn);
+    stream.finalTurn = stream.currentTurn;
+  }
   if (outcome === "done") {
     finalizeSuccessfulResponse(stream);
   } else {
     markRunningToolsInterrupted(stream, outcome);
     appendStreamStatus(stream, outcome, message);
   }
-
   if (activeStream === stream) {
     activeStream = null;
     setStreaming(false);
   }
-  scrollToBottom(log);
 }
 
 function finalizeSuccessfulResponse(stream) {
   for (const turn of stream.turns.values()) removeEmptyTurn(turn);
-  for (const details of stream.timeline.querySelectorAll("details")) {
-    details.open = false;
-  }
-
+  for (const details of stream.timeline.querySelectorAll("details")) details.open = false;
   if (!stream.timeline.childElementCount) {
     stream.timeline.remove();
     return;
   }
-
   const work = document.createElement("details");
   work.className = "chat-work-disclosure";
   const summary = document.createElement("summary");
@@ -401,9 +412,7 @@ function finalizeSuccessfulResponse(stream) {
   stream.content.parentElement.insertBefore(work, stream.content);
 }
 
-function removeEmptyTurn(turn) {
-  if (turn?.el && !turn.el.childElementCount) turn.el.remove();
-}
+function removeEmptyTurn(turn) { if (turn?.el && !turn.el.childElementCount) turn.el.remove(); }
 
 function markRunningToolsInterrupted(stream, outcome) {
   for (const item of stream.tools.values()) {
@@ -411,9 +420,7 @@ function markRunningToolsInterrupted(stream, outcome) {
     item.details.classList.remove("is-running");
     item.details.classList.add("is-error");
     item.status.textContent = outcome === "stopped" ? "Stopped" : "Interrupted";
-    item.result.textContent = outcome === "stopped"
-      ? "Tool execution was stopped."
-      : "Tool execution was interrupted by the response error.";
+    item.result.textContent = outcome === "stopped" ? "Tool execution was stopped." : "Tool execution was interrupted.";
   }
 }
 
@@ -423,8 +430,4 @@ function appendStreamStatus(stream, outcome, message) {
   status.className = `chat-stream-status is-${outcome}`;
   status.textContent = message || (outcome === "stopped" ? "Response stopped." : "The response failed.");
   stream.timeline.appendChild(status);
-}
-
-export function stopStream() {
-  ws.send({ type: "stop" });
 }
