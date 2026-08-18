@@ -10,7 +10,7 @@ const resultsRoot = resolve(webRoot, "test-results");
 const runtimeRoot = resolve(resultsRoot, "e2e-runtime");
 const statePath = join(runtimeRoot, "state.json");
 
-function prepareRuntime(): { binary: string; workspace: string; dataPath: string } {
+function prepareRuntime(): { binary: string; workspace: string; secondaryWorkspace: string; dataPath: string } {
   if (!runtimeRoot.startsWith(resultsRoot + sep)) throw new Error("Refusing to prepare an unsafe E2E runtime path");
   rmSync(runtimeRoot, { recursive: true, force: true });
   const workspace = join(runtimeRoot, "workspace");
@@ -24,9 +24,18 @@ function prepareRuntime(): { binary: string; workspace: string; dataPath: string
   git("config", "user.email", "echo-e2e@example.com");
   git("add", ".");
   git("commit", "-m", "Initial E2E workspace");
+  const secondaryWorkspace = join(runtimeRoot, "secondary-workspace");
+  mkdirSync(secondaryWorkspace, { recursive: true });
+  writeFileSync(join(secondaryWorkspace, "secondary.txt"), "secondary workspace\n", "utf8");
+  const secondaryGit = (...args: string[]) => execFileSync("git", ["-C", secondaryWorkspace, ...args], { stdio: "inherit" });
+  secondaryGit("init", "-b", "main");
+  secondaryGit("config", "user.name", "Echo E2E");
+  secondaryGit("config", "user.email", "echo-e2e@example.com");
+  secondaryGit("add", ".");
+  secondaryGit("commit", "-m", "Initial secondary workspace");
   const binary = join(runtimeRoot, process.platform === "win32" ? "echo-e2e.exe" : "echo-e2e");
   execFileSync("go", ["build", "-o", binary, ".."], { cwd: webRoot, stdio: "inherit" });
-  return { binary, workspace, dataPath: join(runtimeRoot, "echo.json") };
+  return { binary, workspace, secondaryWorkspace, dataPath: join(runtimeRoot, "echo.json") };
 }
 
 async function waitForSetup(child: ChildProcess): Promise<string> {
@@ -73,7 +82,11 @@ export default async function globalSetup(_config: FullConfig): Promise<() => Pr
   });
   const setupCode = await waitForSetup(child);
   await waitForHealth();
-  writeFileSync(statePath, JSON.stringify({ setupCode, workspace: runtime.workspace }, null, 2), "utf8");
+  writeFileSync(statePath, JSON.stringify({
+    setupCode,
+    workspace: runtime.workspace,
+    secondaryWorkspace: runtime.secondaryWorkspace,
+  }, null, 2), "utf8");
 
   return async () => {
     if (child.exitCode === null) {

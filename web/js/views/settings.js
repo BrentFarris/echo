@@ -10,9 +10,13 @@ import { icons } from "../icons.js";
 import { del, get, post, put } from "../api.js";
 import { logout } from "../../src/auth/authGate.ts";
 import { hasDirtySessions } from "../../src/code/persistence.ts";
-import { navigateBackFromSettings } from "../../src/navigation.ts";
+import { codeRouteHash, navigateBackFromSettings } from "../../src/navigation.ts";
+import { renderMobilePrimaryNav } from "../../src/primaryNav.ts";
+import { openAddWorkspaceModal, openWorkspaceDropdown } from "../workspaces.js";
 
 let mountedRoot = null;
+let closeSettingsWorkspaceDropdown = null;
+let closeSettingsAddWorkspaceModal = null;
 
 // ---- Theme token table (matches OLD theme.ts, carried into the new SPA) ----
 const themeTokens = [
@@ -594,6 +598,9 @@ function renderContent() {
 function render() {
   const root = mountedRoot;
   if (!root) return;
+  closeSettingsWorkspaceDropdown?.();
+  closeSettingsWorkspaceDropdown = null;
+  const activeWorkspace = state.workspaces.find((workspace) => workspace.id === state.modeWorkspaceId) || null;
   root.innerHTML = `
     <div class="settings-view">
       <nav class="settings-sidebar" aria-label="Settings sections">
@@ -620,12 +627,70 @@ function render() {
       <main class="settings-content">
         ${renderContent()}
       </main>
+      ${renderMobilePrimaryNav({ active: "settings", workspaceName: activeWorkspace?.name, workspaceSelector: true })}
     </div>
   `;
   bindEvents(root);
 }
 
 function bindEvents(root) {
+  const leaveSettings = async (hash) => {
+    captureExternalFields(root);
+    await saveSettings();
+    location.hash = hash;
+  };
+
+  root.querySelectorAll("[data-nav='chat']").forEach((button) => {
+    button.addEventListener("click", () => { void leaveSettings("#/home"); });
+  });
+  root.querySelectorAll("[data-nav='code']").forEach((button) => {
+    button.addEventListener("click", () => { void leaveSettings("#/code"); });
+  });
+  root.querySelectorAll("[data-nav='git']").forEach((button) => {
+    button.addEventListener("click", () => { void leaveSettings(codeRouteHash("git")); });
+  });
+
+  root.querySelectorAll(".workspace-dropdown-trigger").forEach((trigger) => {
+    trigger.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (closeSettingsWorkspaceDropdown) {
+        closeSettingsWorkspaceDropdown();
+        return;
+      }
+      closeSettingsWorkspaceDropdown = openWorkspaceDropdown(trigger, {
+        items: state.workspaces,
+        selectedId: state.modeWorkspaceId,
+        onClose: () => { closeSettingsWorkspaceDropdown = null; },
+        onSelect: async (id) => {
+          try {
+            captureExternalFields(root);
+            await saveSettings();
+            await put("/api/workspaces/active", { id });
+            await loadAgentModes();
+          } catch (err) {
+            state.modeStatus = `Error: ${err.message}`;
+            render();
+          }
+        },
+        onAdd: () => {
+          closeSettingsAddWorkspaceModal = openAddWorkspaceModal({
+            onCreate: async (workspace) => {
+              try {
+                captureExternalFields(root);
+                await saveSettings();
+                await put("/api/workspaces/active", { id: workspace.id });
+                await loadAgentModes();
+              } catch (err) {
+                state.modeStatus = `Error: ${err.message}`;
+                render();
+              }
+            },
+          });
+        },
+      });
+    });
+  });
+
   root.querySelectorAll("[data-section]").forEach((btn) => {
     btn.addEventListener("click", () => {
       // Persist any in-progress external connection edits before switching away.
@@ -916,6 +981,10 @@ export function mount(root) {
 export function unmount() {
   // Async settings requests may complete after another view has mounted. Do
   // not let their completion render Settings over that active view.
+  closeSettingsWorkspaceDropdown?.();
+  closeSettingsWorkspaceDropdown = null;
+  closeSettingsAddWorkspaceModal?.();
+  closeSettingsAddWorkspaceModal = null;
   mountedRoot = null;
 }
 

@@ -83,6 +83,7 @@
 }
 
 .code-workbench {
+  position: relative;
   display: grid;
   grid-template-columns: var(--explorer-width, 280px) 4px minmax(0, 1fr);
   min-width: 0;
@@ -656,6 +657,10 @@
   border: 1px solid var(--code-border);
   border-radius: 3px;
   overflow: hidden;
+}
+
+.code-sidebar-backdrop {
+  display: none;
 }
 
 .git-review > header {
@@ -1548,6 +1553,7 @@
 @media (max-width: 720px) {
   .code-app-shell {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
   }
 
   .code-app-shell .code-left-nav {
@@ -1555,7 +1561,51 @@
   }
 
   .code-workbench {
+    grid-row: 1;
     grid-template-columns: min(78vw, var(--explorer-width, 280px)) 0 minmax(0, 1fr);
+  }
+
+  .code-app-shell > .mobile-bottom-nav {
+    grid-row: 2;
+    background: var(--code-chrome-bg);
+    border-color: var(--code-border);
+    color: var(--code-fg);
+  }
+
+  .code-app-shell > .mobile-bottom-nav .mobile-nav-pill {
+    background: var(--code-hover);
+    color: var(--code-fg);
+  }
+
+  .code-app-shell > .mobile-bottom-nav .mobile-nav-tab {
+    color: var(--code-muted);
+  }
+
+  .code-app-shell > .mobile-bottom-nav .mobile-nav-tab:hover,
+  .code-app-shell > .mobile-bottom-nav .mobile-nav-tab:focus-visible {
+    background: var(--code-hover);
+    color: var(--code-fg);
+  }
+
+  .code-app-shell > .mobile-bottom-nav .mobile-nav-tab.is-active {
+    background: color-mix(in srgb, var(--code-accent) 18%, transparent);
+    color: var(--code-fg);
+  }
+
+  .code-sidebar-backdrop {
+    position: absolute;
+    z-index: 7;
+    inset: 0 0 22px;
+    display: block;
+    background: rgba(0, 0, 0, 0.32);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms ease-out;
+  }
+
+  .code-app-shell.is-explorer-open .code-sidebar-backdrop {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .code-sidebar {

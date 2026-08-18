@@ -1,6 +1,7 @@
 import { Virtualizer, elementScroll, observeElementOffset, observeElementRect } from "@tanstack/virtual-core";
 import type { editor as MonacoEditor, Uri as MonacoUri } from "monaco-editor";
 import { api } from "../../js/api.js";
+import { openAddWorkspaceModal, openWorkspaceDropdown } from "../../js/workspaces.js";
 import { on as onSocket, onState as onSocketState, send as sendSocket } from "../../js/ws.js";
 import * as editorAPI from "./editorApi";
 import type { APIError } from "./editorApi";
@@ -10,7 +11,7 @@ import type { GitChange, GitDiffDocument, GitRepository } from "./gitTypes";
 import { GitView } from "./gitView";
 import { loadSession, saveSession } from "./persistence";
 import { CODE_ROUTE, codeRouteHash, codeSidebarFromHash, routePathFromHash } from "../navigation";
-import { renderPrimaryNav } from "../primaryNav";
+import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 import type {
   FileRef, FileSnapshot, FsEntry, PersistedTab, PersistedWorkspaceSession,
   SearchResult, TrashItem, WorkspaceRoot,
@@ -21,7 +22,7 @@ import {
   promptDialog, showContextMenu, toast,
 } from "./ui";
 
-type Workspace = { id: string; name: string; mainPath: string; folders: string[] };
+type Workspace = { id: string; name: string; mainPath: string; folders: string[]; iconExt?: string };
 
 type TreeNode = {
   key: string;
@@ -116,6 +117,9 @@ class CodeView {
   private lastSequence = 0;
   private pollTimer = 0;
   private commands: Command[] = [];
+  private closeWorkspaceDropdown: (() => void) | null = null;
+  private closeAddWorkspaceModal: (() => void) | null = null;
+  private workspaceSwitching = false;
   private mediaTheme = window.matchMedia("(prefers-color-scheme: dark)");
 
   constructor(root: HTMLElement) {
@@ -170,6 +174,7 @@ class CodeView {
       <div class="code-app-shell" style="--explorer-width:${this.explorerWidth}px">
         ${renderPrimaryNav({ active: explorerActive ? "explorer" : "git", workspaceName })}
         <section class="code-workbench">
+          <div class="code-sidebar-backdrop" data-mobile-sidebar-backdrop aria-hidden="true"></div>
           <div class="code-sidebar">
           <aside class="code-explorer" aria-label="Explorer" data-sidebar-view="explorer"${explorerActive ? "" : " hidden"}>
             <header class="code-explorer-header">
@@ -214,32 +219,60 @@ class CodeView {
             </footer>
           </main>
         </section>
+        ${renderMobilePrimaryNav({ active: explorerActive ? "explorer" : "git", workspaceName, workspaceSelector: true })}
       </div>
     `;
   }
 
   private installNavigation(): void {
-    this.root.querySelector("[data-nav=chat]")?.addEventListener("click", () => { location.hash = "#/home"; }, { signal: this.abort.signal });
-    this.root.querySelector("[data-nav=settings]")?.addEventListener("click", () => { location.hash = "#/settings"; }, { signal: this.abort.signal });
-    this.root.querySelector("[data-nav=workspace]")?.addEventListener("click", () => { location.hash = "#/home"; }, { signal: this.abort.signal });
+    const signal = this.abort.signal;
+    this.root.querySelectorAll("[data-nav=chat]").forEach((button) => {
+      button.addEventListener("click", () => { location.hash = "#/home"; }, { signal });
+    });
+    this.root.querySelectorAll("[data-nav=settings]").forEach((button) => {
+      button.addEventListener("click", () => { location.hash = "#/settings"; }, { signal });
+    });
+    this.root.querySelectorAll<HTMLElement>("[data-code-sidebar]").forEach((button) => {
+      button.addEventListener("click", () => this.setSidebar(button.dataset.codeSidebar === "git" ? "git" : "explorer"), { signal });
+    });
+    this.root.querySelectorAll("[data-nav=workspace]:not(.workspace-dropdown-trigger)").forEach((button) => {
+      button.addEventListener("click", () => { location.hash = "#/home"; }, { signal });
+    });
+    this.root.querySelectorAll<HTMLElement>(".workspace-dropdown-trigger").forEach((trigger) => {
+      trigger.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (this.closeWorkspaceDropdown) {
+          this.closeWorkspaceDropdown();
+          return;
+        }
+        this.closeWorkspaceDropdown = openWorkspaceDropdown(trigger, {
+          items: this.workspaces,
+          selectedId: this.workspace?.id || "",
+          onClose: () => { this.closeWorkspaceDropdown = null; },
+          onSelect: (id: string) => { void this.switchWorkspace(id); },
+          onAdd: () => {
+            this.closeAddWorkspaceModal = openAddWorkspaceModal({
+              onCreate: (workspace: Workspace) => { void this.switchWorkspace(workspace.id); },
+            });
+          },
+        });
+      }, { signal });
+    });
   }
 
   private initializeGitView(): void {
     if (!this.workspace) return;
     const host = this.root.querySelector<HTMLElement>("[data-sidebar-view=git]");
     if (!host) return;
-    this.root.querySelectorAll<HTMLButtonElement>("[data-code-sidebar]").forEach((button) => {
-      button.addEventListener("click", () => this.setSidebar(button.dataset.codeSidebar === "git" ? "git" : "explorer"), { signal: this.abort.signal });
-    });
     this.gitView = new GitView(host, this.workspace.id, this.abort.signal, {
       roots: () => this.roots,
       openFile: (ref, pin) => this.openFile(ref, pin),
       openDiff: (repository, change, scope, ref, pin) => this.openGitDiff(repository, change, scope, ref, pin),
       updateBadge: (count) => {
-        const badge = this.root.querySelector<HTMLElement>("[data-git-badge]");
-        if (!badge) return;
-        badge.hidden = count === 0;
-        badge.textContent = count > 99 ? "99+" : String(count);
+        this.root.querySelectorAll<HTMLElement>("[data-git-badge]").forEach((badge) => {
+          badge.hidden = count === 0;
+          badge.textContent = count > 99 ? "99+" : String(count);
+        });
       },
     });
     void this.gitView.start();
@@ -248,13 +281,38 @@ class CodeView {
   private setSidebar(view: "explorer" | "git"): void {
     this.activeSidebar = view;
     this.root.querySelectorAll<HTMLElement>("[data-sidebar-view]").forEach((element) => { element.hidden = element.dataset.sidebarView !== view; });
-    this.root.querySelectorAll<HTMLElement>("[data-code-sidebar]").forEach((button) => button.classList.toggle("is-active", button.dataset.codeSidebar === view));
+    this.root.querySelectorAll<HTMLElement>("[data-code-sidebar]").forEach((button) => {
+      const active = button.dataset.codeSidebar === view;
+      button.classList.toggle("is-active", active);
+      if (button.classList.contains("mobile-nav-tab")) {
+        if (active) button.setAttribute("aria-current", "page");
+        else button.removeAttribute("aria-current");
+      }
+    });
     const mobile = this.root.querySelector<HTMLElement>("[data-mobile-explorer] .codicon");
     if (mobile) mobile.className = `codicon codicon-${view === "git" ? "source-control" : "files"}`;
     if (routePathFromHash(window.location.hash) === CODE_ROUTE) {
       window.history.replaceState(window.history.state, "", codeRouteHash(view));
     }
     if (window.innerWidth <= 720) this.setMobileExplorer(true);
+  }
+
+  private async switchWorkspace(workspaceId: string): Promise<void> {
+    if (!workspaceId || workspaceId === this.workspace?.id || this.workspaceSwitching) return;
+    this.workspaceSwitching = true;
+    const hasDirtyBuffers = this.tabs.some((tab) => tab.dirty);
+    const persisted = await this.persistNow();
+    if (!persisted && hasDirtyBuffers) {
+      this.workspaceSwitching = false;
+      return;
+    }
+    try {
+      await api("/api/workspaces/active", { method: "PUT", body: { id: workspaceId } });
+      window.location.reload();
+    } catch (error) {
+      this.workspaceSwitching = false;
+      toast(error instanceof Error ? error.message : String(error), { sticky: true });
+    }
   }
 
   private showNoWorkspace(): void {
@@ -1704,6 +1762,9 @@ class CodeView {
       const shell = this.root.querySelector<HTMLElement>(".code-app-shell");
       this.setMobileExplorer(!shell?.classList.contains("is-explorer-open"));
     }, { signal });
+    this.root.querySelector("[data-mobile-sidebar-backdrop]")?.addEventListener("click", () => {
+      this.setMobileExplorer(false);
+    }, { signal });
     this.root.querySelector("[data-diff-toolbar]")?.addEventListener("click", (event) => {
       const action = (event.target as Element).closest<HTMLElement>("[data-diff-action]")?.dataset.diffAction;
       if (action === "previous" || action === "next") void this.diffEditor.goToDiff(action);
@@ -1805,6 +1866,11 @@ class CodeView {
 
   private handleGlobalKeyboard(event: KeyboardEvent): void {
     if (document.querySelector(".code-modal-overlay, .code-picker-overlay") && event.key !== "Escape") return;
+    if (event.key === "Escape" && this.root.querySelector(".code-app-shell.is-explorer-open")) {
+      event.preventDefault();
+      this.setMobileExplorer(false);
+      return;
+    }
     const modifier = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
     if (modifier && event.shiftKey && key === "p") { event.preventDefault(); event.stopPropagation(); this.showCommandPalette(); }
@@ -1978,8 +2044,8 @@ class CodeView {
     this.persistTimer = window.setTimeout(() => void this.persistNow(), 750);
   }
 
-  private async persistNow(): Promise<void> {
-    if (!this.workspace) return;
+  private async persistNow(): Promise<boolean> {
+    if (!this.workspace) return true;
     window.clearTimeout(this.persistTimer);
     const active = this.activeTab();
     if (active?.kind === "diff" && active.diff) active.diff.viewState = this.diffEditor.saveViewState();
@@ -2012,9 +2078,11 @@ class CodeView {
         explorerWidth: this.explorerWidth, treeScrollTop: this.treeScroller?.scrollTop || 0,
       });
       this.persistenceFailed = false;
+      return true;
     } catch (error) {
       if (!this.persistenceFailed) toast(`Unsaved-buffer recovery is unavailable: ${error instanceof Error ? error.message : String(error)}`, { sticky: true });
       this.persistenceFailed = true;
+      return false;
     }
   }
 
@@ -2157,6 +2225,10 @@ class CodeView {
   dispose(): void {
     if (this.abort.signal.aborted) return;
     void this.persistNow();
+    this.closeWorkspaceDropdown?.();
+    this.closeWorkspaceDropdown = null;
+    this.closeAddWorkspaceModal?.();
+    this.closeAddWorkspaceModal = null;
     this.abort.abort();
     window.clearTimeout(this.persistTimer);
     window.clearInterval(this.pollTimer);

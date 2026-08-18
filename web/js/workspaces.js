@@ -77,13 +77,13 @@ export function renderWorkspaceIcon(w) {
 }
 
 // ---- Dropdown ----
-export function renderWorkspaceDropdown() {
+export function renderWorkspaceDropdown(items = workspaces, selectedId = activeId) {
   return `
     <div class="workspace-dropdown" role="menu" aria-label="Workspaces">
       <div class="workspace-dropdown-header">Workspaces</div>
       <div class="workspace-dropdown-list">
-        ${workspaces.length ? workspaces.map((w) => `
-          <button type="button" role="menuitem" class="workspace-dropdown-item ${w.id === activeId ? "is-active" : ""}" data-workspace-id="${esc(w.id)}">
+        ${items.length ? items.map((w) => `
+          <button type="button" role="menuitem" class="workspace-dropdown-item ${w.id === selectedId ? "is-active" : ""}" data-workspace-id="${esc(w.id)}"${w.id === selectedId ? ' aria-current="true"' : ""}>
             <span class="workspace-dropdown-icon">${renderWorkspaceIcon(w)}</span>
             <span class="workspace-dropdown-main">
               <strong>${esc(w.name)}</strong>
@@ -92,7 +92,7 @@ export function renderWorkspaceDropdown() {
           </button>
         `).join("") : `<p class="workspace-dropdown-empty">No workspaces yet.</p>`}
       </div>
-      <button type="button" class="workspace-dropdown-add" data-action="add-workspace">
+      <button type="button" role="menuitem" class="workspace-dropdown-add" data-action="add-workspace">
         ${icons.plus}<span>Add a workspace</span>
       </button>
     </div>
@@ -159,19 +159,45 @@ function folderRow(index, isMain) {
 // returns a cleanup function that removes it. onSelect is called with the
 // workspace id when a workspace row is clicked; onAdd is called when "+ Add a
 // workspace" is clicked.
-export function openWorkspaceDropdown(trigger, { onSelect, onAdd }) {
+/**
+ * @param {HTMLElement} trigger
+ * @param {{
+ *   onSelect?: (id: string) => void,
+ *   onAdd?: () => void,
+ *   onClose?: () => void,
+ *   items?: Array<any>,
+ *   selectedId?: string,
+ * }} [options]
+ */
+export function openWorkspaceDropdown(trigger, options = {}) {
+  const {
+    onSelect,
+    onAdd,
+    onClose,
+    items = workspaces,
+    selectedId = activeId,
+  } = options;
   const dropdown = document.createElement("div");
   dropdown.className = "workspace-dropdown-anchor";
-  dropdown.innerHTML = renderWorkspaceDropdown();
+  dropdown.innerHTML = renderWorkspaceDropdown(items, selectedId);
   document.body.appendChild(dropdown);
+  let closed = false;
 
   const position = () => {
     const rect = trigger.getBoundingClientRect();
-    dropdown.style.top = `${rect.bottom + 6}px`;
-    dropdown.style.left = `${rect.left}px`;
-    const width = dropdown.offsetWidth || 240;
-    const overflow = rect.left + width - window.innerWidth + 8;
-    if (overflow > 0) dropdown.style.left = `${Math.max(8, rect.left - overflow)}px`;
+    const margin = 8;
+    const gap = 6;
+    const width = Math.min(dropdown.offsetWidth || 240, window.innerWidth - margin * 2);
+    const height = Math.min(dropdown.offsetHeight || 320, window.innerHeight - margin * 2);
+    const spaceBelow = window.innerHeight - rect.bottom - gap - margin;
+    const spaceAbove = rect.top - gap - margin;
+    const openAbove = spaceBelow < Math.min(height, 180) && spaceAbove > spaceBelow;
+    const naturalTop = openAbove ? rect.top - height - gap : rect.bottom + gap;
+    const top = Math.max(margin, Math.min(naturalTop, window.innerHeight - height - margin));
+    const left = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin));
+    dropdown.style.top = `${top}px`;
+    dropdown.style.left = `${left}px`;
+    dropdown.dataset.placement = openAbove ? "above" : "below";
   };
   position();
   trigger.setAttribute("aria-expanded", "true");
@@ -183,29 +209,59 @@ export function openWorkspaceDropdown(trigger, { onSelect, onAdd }) {
   };
   const onResize = () => position();
 
+  const menuItems = () => [...dropdown.querySelectorAll('button[role="menuitem"]')];
+  const onKeydown = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      close(true);
+      return;
+    }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+    const buttons = menuItems();
+    if (!buttons.length) return;
+    e.preventDefault();
+    const current = buttons.indexOf(document.activeElement);
+    const next = e.key === "Home"
+      ? 0
+      : e.key === "End"
+        ? buttons.length - 1
+        : (current + (e.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+    buttons[next].focus();
+  };
+
   const onDropdownClick = (e) => {
     const item = e.target.closest("[data-workspace-id]");
     if (item) {
-      close();
+      close(false);
       onSelect?.(item.dataset.workspaceId);
       return;
     }
     if (e.target.closest('[data-action="add-workspace"]')) {
-      close();
+      close(false);
       onAdd?.();
     }
   };
 
-  function close() {
+  function close(restoreFocus = false) {
+    if (closed) return;
+    closed = true;
     document.removeEventListener("click", onDocClick);
+    document.removeEventListener("keydown", onKeydown);
     window.removeEventListener("resize", onResize);
     dropdown.remove();
     trigger.setAttribute("aria-expanded", "false");
+    onClose?.();
+    if (restoreFocus && trigger.isConnected) trigger.focus();
   }
 
   document.addEventListener("click", onDocClick);
+  document.addEventListener("keydown", onKeydown);
   window.addEventListener("resize", onResize);
   dropdown.addEventListener("click", onDropdownClick);
+  requestAnimationFrame(() => {
+    const first = dropdown.querySelector(".workspace-dropdown-item.is-active") || menuItems()[0];
+    first?.focus();
+  });
   return close;
 }
 

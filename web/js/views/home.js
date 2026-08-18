@@ -9,7 +9,7 @@ import { get } from "../api.js";
 import { sendMessage, stopStream, isStreaming, onStreamingChange, openWorkspaceSession, closeWorkspaceSession } from "../chat.js";
 import { loadWorkspaces, openWorkspaceDropdown, openAddWorkspaceModal, setActiveWorkspace, getActive, renderWorkspaceIcon } from "../workspaces.js";
 import { codeRouteHash } from "../../src/navigation.ts";
-import { renderPrimaryNav } from "../../src/primaryNav.ts";
+import { renderMobilePrimaryNav, renderPrimaryNav } from "../../src/primaryNav.ts";
 
 // Holds the cleanup function for the currently mounted chat view.
 let chatCleanup = null;
@@ -125,6 +125,7 @@ export function mount(root) {
       <div data-region="left-nav">${renderPrimaryNav({ active: "chat", workspaceName: "Echo", workspaceSelector: true })}</div>
       <div data-region="main">${chatPanel()}</div>
       <div data-region="terminal">${terminalDock()}</div>
+      ${renderMobilePrimaryNav({ active: "chat", workspaceSelector: true })}
     </div>
   `;
 
@@ -137,30 +138,35 @@ export function mount(root) {
   const modeTrigger = root.querySelector("[data-mode-trigger]");
   const modeLabel = root.querySelector("[data-mode-label]");
 
-  // Navigate to settings when the sidebar Settings button is clicked.
-  const settingsBtn = root.querySelector("[data-nav='settings']");
-  const codeBtn = root.querySelector("[data-nav='code']");
-  const gitBtn = root.querySelector("[data-nav='git']");
+  // The desktop activity bar and mobile bottom bar share the same actions.
+  const settingsButtons = [...root.querySelectorAll("[data-nav='settings']")];
+  const codeButtons = [...root.querySelectorAll("[data-nav='code']")];
+  const gitButtons = [...root.querySelectorAll("[data-nav='git']")];
   const onSettingsClick = () => {
     location.hash = "#/settings";
   };
-  settingsBtn?.addEventListener("click", onSettingsClick);
+  settingsButtons.forEach((button) => button.addEventListener("click", onSettingsClick));
   const onCodeClick = () => { location.hash = "#/code"; };
-  codeBtn?.addEventListener("click", onCodeClick);
+  codeButtons.forEach((button) => button.addEventListener("click", onCodeClick));
   const onGitClick = () => { location.hash = codeRouteHash("git"); };
-  gitBtn?.addEventListener("click", onGitClick);
+  gitButtons.forEach((button) => button.addEventListener("click", onGitClick));
 
   // Workspace selector: open the dropdown, and the "+ Add a workspace" modal.
-  const workspaceTrigger = root.querySelector(".workspace-dropdown-trigger");
-  const workspaceIconLabel = root.querySelector(".workspace-icon-label");
+  const workspaceTriggers = [...root.querySelectorAll(".workspace-dropdown-trigger")];
+  const workspaceIconLabels = [...root.querySelectorAll(".workspace-icon-label")];
+  const mobileWorkspaceNames = [...root.querySelectorAll("[data-mobile-workspace-name]")];
   let closeWorkspaceDropdown = null;
 
-  // updateWorkspaceIcon refreshes the trigger's icon to the active workspace.
-  const updateWorkspaceIcon = () => {
+  // Keep both navigation variants synchronized with the active workspace.
+  const updateWorkspaceNavigation = () => {
     const active = getActive();
-    if (!workspaceIconLabel) return;
-    workspaceIconLabel.innerHTML = renderWorkspaceIcon(active);
-    workspaceTrigger?.setAttribute("title", active ? `Switch workspace (${active.name})` : "Select workspace");
+    workspaceIconLabels.forEach((label) => { label.innerHTML = renderWorkspaceIcon(active); });
+    mobileWorkspaceNames.forEach((label) => { label.textContent = active?.name || "No workspace"; });
+    workspaceTriggers.forEach((trigger) => {
+      const title = active ? `Switch workspace (${active.name})` : "Select workspace";
+      trigger.setAttribute("title", title);
+      trigger.setAttribute("aria-label", title);
+    });
   };
 
   const onWorkspaceTriggerClick = (e) => {
@@ -170,12 +176,12 @@ export function mount(root) {
       closeWorkspaceDropdown = null;
       return;
     }
-    closeWorkspaceDropdown = openWorkspaceDropdown(workspaceTrigger, {
+    closeWorkspaceDropdown = openWorkspaceDropdown(e.currentTarget, {
+      onClose: () => { closeWorkspaceDropdown = null; },
       onSelect: async (id) => {
-        closeWorkspaceDropdown = null;
         try {
           await setActiveWorkspace(id);
-          updateWorkspaceIcon();
+          updateWorkspaceNavigation();
           openWorkspaceSession(log, id);
           await loadAgentModes(id, modeLabel);
         } catch (err) {
@@ -183,12 +189,11 @@ export function mount(root) {
         }
       },
       onAdd: () => {
-        closeWorkspaceDropdown = null;
         openAddWorkspaceModal({
           onCreate: async (workspace) => {
             try {
               await setActiveWorkspace(workspace.id);
-              updateWorkspaceIcon();
+              updateWorkspaceNavigation();
               openWorkspaceSession(log, workspace.id);
               await loadAgentModes(workspace.id, modeLabel);
             } catch (err) {
@@ -199,7 +204,7 @@ export function mount(root) {
       },
     });
   };
-  workspaceTrigger?.addEventListener("click", onWorkspaceTriggerClick);
+  workspaceTriggers.forEach((trigger) => trigger.addEventListener("click", onWorkspaceTriggerClick));
 
   // Build the dropdown as a fixed-position overlay appended to <body> so it is
   // not clipped by the chat panel's overflow:hidden.
@@ -407,10 +412,10 @@ export function mount(root) {
     sendBtn.removeEventListener("click", onSendButtonClick);
     input.removeEventListener("keydown", onKeydown);
     unsubStreaming();
-    settingsBtn?.removeEventListener("click", onSettingsClick);
-    codeBtn?.removeEventListener("click", onCodeClick);
-    gitBtn?.removeEventListener("click", onGitClick);
-    workspaceTrigger?.removeEventListener("click", onWorkspaceTriggerClick);
+    settingsButtons.forEach((button) => button.removeEventListener("click", onSettingsClick));
+    codeButtons.forEach((button) => button.removeEventListener("click", onCodeClick));
+    gitButtons.forEach((button) => button.removeEventListener("click", onGitClick));
+    workspaceTriggers.forEach((trigger) => trigger.removeEventListener("click", onWorkspaceTriggerClick));
     if (closeWorkspaceDropdown) {
       closeWorkspaceDropdown();
       closeWorkspaceDropdown = null;
@@ -431,7 +436,7 @@ export function mount(root) {
   // Load the registered workspaces so the selector dropdown can be populated,
   // then set the trigger icon to the active (last opened) workspace.
   loadWorkspaces().then(() => {
-    updateWorkspaceIcon();
+    updateWorkspaceNavigation();
     const workspaceId = getActive()?.id || "";
     openWorkspaceSession(log, workspaceId);
     loadAgentModes(workspaceId, modeLabel);

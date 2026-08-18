@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderPrimaryNav } from "./primaryNav";
+import { renderMobilePrimaryNav, renderPrimaryNav } from "./primaryNav";
 
 function render(options: Parameters<typeof renderPrimaryNav>[0]): HTMLElement {
   const host = document.createElement("div");
@@ -33,5 +33,35 @@ describe("primary navigation", () => {
     expect(nav.querySelector("script")).toBeNull();
     expect(nav.querySelector("[data-nav=workspace]")?.getAttribute("title"))
       .toBe('Workspace: <script>alert("no")</script>');
+  });
+
+  it("renders the enabled mobile destinations with the selected view marked current", () => {
+    const mobile = renderMobilePrimaryNav({ active: "git", workspaceName: "Echo", workspaceSelector: true });
+    const host = document.createElement("div");
+    host.innerHTML = mobile;
+
+    expect(host.querySelector("[data-mobile-primary-nav]")).not.toBeNull();
+    expect([...host.querySelectorAll(".mobile-nav-tab")].map((item) => item.getAttribute("aria-label")))
+      .toEqual(["Chat", "Code", "Source Control", "Settings"]);
+    expect(host.querySelector("[aria-label=Tasks]")).toBeNull();
+    expect(host.querySelector("[data-nav=git]")?.getAttribute("aria-current")).toBe("page");
+    expect(host.querySelector("[data-nav=code]")?.hasAttribute("aria-current")).toBe(false);
+    expect(host.querySelector("[data-git-badge]")).not.toBeNull();
+    expect(host.querySelector(".workspace-dropdown-trigger")?.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("escapes mobile workspace names and marks Settings active", () => {
+    const host = document.createElement("div");
+    host.innerHTML = renderMobilePrimaryNav({
+      active: "settings",
+      workspaceName: '<img src=x onerror="alert(1)">',
+      workspaceSelector: true,
+    });
+
+    expect(host.querySelector("img")).toBeNull();
+    expect(host.querySelector("[data-mobile-workspace-name]")?.textContent)
+      .toBe('<img src=x onerror="alert(1)">');
+    expect(host.querySelector("[data-nav=settings]")?.classList.contains("is-active")).toBe(true);
+    expect(host.querySelector("[data-nav=settings]")?.getAttribute("aria-current")).toBe("page");
   });
 });

@@ -1180,6 +1180,10 @@ textarea:disabled {
       "mobile-nav";
   }
 
+  .app-shell > .mobile-bottom-nav {
+    grid-area: mobile-nav;
+  }
+
   .left-nav {
     display: none;
   }
@@ -1194,56 +1198,74 @@ textarea:disabled {
   }
 
   .mobile-bottom-nav {
-    display: flex;
+    position: relative;
+    z-index: 20;
+    display: grid;
+    grid-template-columns: minmax(52px, min(34vw, 132px)) minmax(0, 1fr);
     align-items: center;
-    justify-content: space-between;
     gap: var(--space-sm);
     min-height: 56px;
-    padding: var(--space-sm) var(--space-lg-md);
+    padding: var(--space-sm) var(--space-md) calc(var(--space-sm) + env(safe-area-inset-bottom));
     border-top: 1px solid var(--color-border);
     background: var(--color-surface);
   }
 
   .mobile-nav-brand {
-    display: flex;
+    display: grid;
     align-items: center;
-    gap: var(--space-sm);
     min-width: 0;
   }
 
-  .mobile-nav-app-name {
-    font-weight: 800;
-    font-size: var(--text-xl);
-  }
-
   .mobile-nav-pill {
-    display: inline-flex;
+    display: flex;
     align-items: center;
     gap: var(--space-sm);
-    max-width: 140px;
-    padding: var(--space-sm) var(--space-lg-md);
-    border-radius: 999px;
+    width: 100%;
+    min-width: 0;
+    height: 44px;
+    padding: 0 var(--space-lg-md);
+    border: 1px solid transparent;
+    border-radius: 8px;
     background: var(--color-surface-muted);
     color: var(--color-text);
     cursor: pointer;
     font-size: var(--text-base-md);
     font-weight: 700;
+  }
+
+  .mobile-nav-pill:hover,
+  .mobile-nav-pill:focus-visible,
+  .mobile-nav-pill[aria-expanded="true"] {
+    border-color: var(--color-accent);
+    color: var(--color-accent-strong);
+    outline: none;
+  }
+
+  .mobile-nav-pill > .codicon {
+    flex: 0 0 auto;
+    font-size: 18px;
+  }
+
+  .mobile-nav-workspace-name {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .mobile-nav-tabs {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(44px, 1fr));
     align-items: center;
     gap: var(--space-sm);
+    min-width: 0;
   }
 
   .mobile-nav-tab {
     display: grid;
     place-items: center;
-    width: 40px;
-    height: 40px;
+    min-width: 44px;
+    height: 44px;
     padding: 0;
     border-radius: 8px;
     background: transparent;
@@ -1251,19 +1273,20 @@ textarea:disabled {
     cursor: pointer;
   }
 
+  .mobile-nav-tab:hover,
+  .mobile-nav-tab:focus-visible {
+    background: var(--color-surface-muted);
+    color: var(--color-text);
+    outline: none;
+  }
+
   .mobile-nav-tab.is-active {
     background: color-mix(in srgb, var(--color-accent) 44%, transparent);
     color: var(--color-accent-strong);
   }
 
-  .mobile-nav-tab svg {
-    width: 20px;
-    height: 20px;
-    fill: none;
-    stroke: currentColor;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    stroke-width: 2;
+  .mobile-nav-tab .codicon {
+    font-size: 20px;
   }
 }
 
@@ -1925,10 +1948,15 @@ textarea:disabled {
 @media (max-width: 720px) {
   .settings-view {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "settings-navigation"
+      "settings-content"
+      "mobile-navigation";
   }
 
   .settings-sidebar {
+    grid-area: settings-navigation;
     flex-direction: row;
     align-items: center;
     border-right: 0;
@@ -1947,12 +1975,18 @@ textarea:disabled {
   }
 
   .settings-nav-button {
+    min-height: 44px;
     white-space: nowrap;
     padding: var(--space-md) var(--space-xl);
   }
 
   .settings-content {
+    grid-area: settings-content;
     padding: var(--space-2xl);
+  }
+
+  .settings-view > .mobile-bottom-nav {
+    grid-area: mobile-navigation;
   }
 }
 
@@ -1964,7 +1998,8 @@ textarea:disabled {
 .workspace-dropdown-anchor {
   position: fixed;
   z-index: 1000;
-  min-width: 240px;
+  width: min(320px, calc(100vw - 16px));
+  min-width: min(240px, calc(100vw - 16px));
   max-width: 320px;
 }
 
@@ -2005,8 +2040,10 @@ textarea:disabled {
   cursor: pointer;
 }
 
-.workspace-dropdown-item:hover {
+.workspace-dropdown-item:hover,
+.workspace-dropdown-item:focus-visible {
   background: var(--color-surface-muted);
+  outline: none;
 }
 
 .workspace-dropdown-item.is-active {
@@ -2079,8 +2116,10 @@ textarea:disabled {
   cursor: pointer;
 }
 
-.workspace-dropdown-add:hover {
+.workspace-dropdown-add:hover,
+.workspace-dropdown-add:focus-visible {
   background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  outline: none;
 }
 
 .workspace-dropdown-add svg {

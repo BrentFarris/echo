@@ -1,6 +1,6 @@
-export type PrimaryNavView = "chat" | "explorer" | "git";
+export type PrimaryNavView = "chat" | "explorer" | "git" | "settings";
 
-type PrimaryNavOptions = {
+export type PrimaryNavOptions = {
   active: PrimaryNavView;
   workspaceName?: string;
   workspaceSelector?: boolean;
@@ -18,6 +18,10 @@ function escapeHTML(value: string): string {
 
 function activeClass(active: boolean): string {
   return active ? " is-active" : "";
+}
+
+function currentPage(active: boolean): string {
+  return active ? ' aria-current="page"' : "";
 }
 
 /**
@@ -50,5 +54,34 @@ export function renderPrimaryNav(options: PrimaryNavOptions): string {
         <button class="nav-icon-button" type="button" title="Settings" aria-label="Settings" data-nav="settings"><span class="codicon codicon-settings-gear"></span></button>
       </div>
     </aside>
+  `;
+}
+
+/**
+ * Renders the compact navigation used by every Echo route on narrow screens.
+ * The owning view wires the shared data-nav/data-code-sidebar actions.
+ */
+export function renderMobilePrimaryNav(options: PrimaryNavOptions): string {
+  const workspaceName = options.workspaceName?.trim() || "No workspace";
+  const workspaceSelectorClass = options.workspaceSelector ? " workspace-dropdown-trigger" : "";
+  const workspaceTitle = options.workspaceSelector
+    ? `Switch workspace (${workspaceName})`
+    : `Workspace: ${workspaceName}`;
+
+  return `
+    <nav class="mobile-bottom-nav" aria-label="Mobile primary navigation" data-mobile-primary-nav>
+      <div class="mobile-nav-brand">
+        <button class="mobile-nav-pill${workspaceSelectorClass}" type="button" title="${escapeHTML(workspaceTitle)}" aria-label="${escapeHTML(workspaceTitle)}"${options.workspaceSelector ? ' aria-expanded="false"' : ""} data-nav="workspace">
+          <span class="codicon codicon-folder-library" aria-hidden="true"></span>
+          <span class="mobile-nav-workspace-name" data-mobile-workspace-name>${escapeHTML(workspaceName)}</span>
+        </button>
+      </div>
+      <div class="mobile-nav-tabs">
+        <button class="mobile-nav-tab${activeClass(options.active === "chat")}" type="button" title="Chat" aria-label="Chat" data-nav="chat"${currentPage(options.active === "chat")}><span class="codicon codicon-comment-discussion" aria-hidden="true"></span></button>
+        <button class="mobile-nav-tab${activeClass(options.active === "explorer")}" type="button" title="Code" aria-label="Code" data-nav="code" data-code-sidebar="explorer"${currentPage(options.active === "explorer")}><span class="codicon codicon-code" aria-hidden="true"></span></button>
+        <button class="mobile-nav-tab code-git-activity${activeClass(options.active === "git")}" type="button" title="Source Control" aria-label="Source Control" data-nav="git" data-code-sidebar="git"${currentPage(options.active === "git")}><span class="codicon codicon-source-control" aria-hidden="true"></span><b data-git-badge hidden></b></button>
+        <button class="mobile-nav-tab${activeClass(options.active === "settings")}" type="button" title="Settings" aria-label="Settings" data-nav="settings"${currentPage(options.active === "settings")}><span class="codicon codicon-settings-gear" aria-hidden="true"></span></button>
+      </div>
+    </nav>
   `;
 }

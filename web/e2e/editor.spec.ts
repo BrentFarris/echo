@@ -7,9 +7,11 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const password = "Echo-E2E-Password!";
 
 test("first-run auth and the real Monaco filesystem workflow", async ({ page }) => {
+  test.setTimeout(120_000);
   const state = JSON.parse(readFileSync(resolve(directory, "../test-results/e2e-runtime/state.json"), "utf8")) as {
     setupCode: string;
     workspace: string;
+    secondaryWorkspace: string;
   };
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Secure this Echo server" })).toBeVisible();
@@ -18,9 +20,9 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.getByLabel("Confirm password").fill(password);
   await page.getByLabel("Device name").fill("Playwright Chromium");
   await page.getByRole("button", { name: "Finish setup" }).click();
-  await expect(page.getByRole("button", { name: "Code view" })).toBeVisible();
+  await expect(page.locator(".app-shell")).toBeVisible();
 
-  const workspaceID = await page.evaluate(async (workspacePath) => {
+  const workspaceIDs = await page.evaluate(async (workspacePaths) => {
     const request = async (path: string, init: RequestInit) => {
       const response = await fetch(path, { ...init, headers: { "Content-Type": "application/json" } });
       const payload = await response.json();
@@ -29,15 +31,20 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
     };
     const created = await request("/api/workspaces", {
       method: "POST",
-      body: JSON.stringify({ name: "E2E Workspace", mainPath: workspacePath, folders: [] }),
+      body: JSON.stringify({ name: "E2E Workspace", mainPath: workspacePaths.primary, folders: [] }),
+    });
+    const secondary = await request("/api/workspaces", {
+      method: "POST",
+      body: JSON.stringify({ name: "E2E Secondary", mainPath: workspacePaths.secondary, folders: [] }),
     });
     await request("/api/workspaces/active", {
       method: "PUT",
       body: JSON.stringify({ id: created.workspace.id }),
     });
-    return created.workspace.id as string;
-  }, state.workspace);
-  expect(workspaceID).toBeTruthy();
+    return { primary: created.workspace.id as string, secondary: secondary.workspace.id as string };
+  }, { primary: state.workspace, secondary: state.secondaryWorkspace });
+  expect(workspaceIDs.primary).toBeTruthy();
+  expect(workspaceIDs.secondary).toBeTruthy();
 
   await page.getByRole("button", { name: "Source Control" }).click();
   await expect(page.locator(".code-app-shell")).toBeVisible();
@@ -173,4 +180,75 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(page.locator(".settings-view")).toBeVisible();
   await page.getByRole("button", { name: "Back to previous view" }).click();
   await expect(page.locator(".app-shell")).toBeVisible();
+
+  // The mobile shell preserves the same workspace and route capabilities as
+  // the desktop rail without covering each view's bottom-most controls.
+  await page.setViewportSize({ width: 390, height: 844 });
+  let mobileNav = page.locator("[data-mobile-primary-nav]");
+  await expect(mobileNav).toBeVisible();
+  await expect(page.locator(".left-nav")).toBeHidden();
+  const touchTargets = await mobileNav.locator(".mobile-nav-pill, .mobile-nav-tab").evaluateAll((items) => (
+    items.map((item) => ({ width: item.getBoundingClientRect().width, height: item.getBoundingClientRect().height }))
+  ));
+  expect(touchTargets.every((target) => target.width >= 44 && target.height >= 44)).toBe(true);
+
+  const chatWorkspace = mobileNav.locator(".workspace-dropdown-trigger");
+  await chatWorkspace.click();
+  await expect(page.locator(".workspace-dropdown-anchor")).toHaveAttribute("data-placement", "above");
+  await page.getByRole("menuitem", { name: /E2E Secondary/ }).click();
+  await expect(chatWorkspace.locator("[data-mobile-workspace-name]")).toHaveText("E2E Secondary");
+  await expect(page.getByLabel("Message Echo")).toBeVisible();
+
+  await mobileNav.getByRole("button", { name: "Code", exact: true }).click();
+  await expect(page.locator(".code-app-shell")).toBeVisible();
+  mobileNav = page.locator("[data-mobile-primary-nav]");
+  await expect(mobileNav.getByRole("button", { name: "Code", exact: true })).toHaveAttribute("aria-current", "page");
+  await mobileNav.getByRole("button", { name: "Code", exact: true }).click();
+  await expect(page.locator(".code-app-shell")).toHaveClass(/is-explorer-open/);
+  await expect(page.locator(".code-tree-label", { hasText: "secondary.txt" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".code-app-shell")).not.toHaveClass(/is-explorer-open/);
+
+  await mobileNav.getByRole("button", { name: "Source Control" }).click();
+  await expect(page).toHaveURL(/#\/code\?sidebar=git$/);
+  await expect(page.locator(".code-app-shell")).toHaveClass(/is-explorer-open/);
+  await expect(page.getByText("SOURCE CONTROL", { exact: true })).toBeVisible();
+  await expect(mobileNav.getByRole("button", { name: "Source Control" })).toHaveAttribute("aria-current", "page");
+
+  const codeWorkspace = mobileNav.locator(".workspace-dropdown-trigger");
+  await codeWorkspace.click();
+  await page.getByRole("menuitem", { name: /E2E Workspace/ }).click();
+  await expect(page).toHaveURL(/#\/code\?sidebar=git$/);
+  await expect(page.locator("[data-mobile-workspace-name]")).toHaveText("E2E Workspace");
+
+  mobileNav = page.locator("[data-mobile-primary-nav]");
+  await mobileNav.getByRole("button", { name: "Settings" }).click();
+  await expect(page.locator(".settings-view")).toBeVisible();
+  mobileNav = page.locator("[data-mobile-primary-nav]");
+  await expect(mobileNav.getByRole("button", { name: "Settings" })).toHaveAttribute("aria-current", "page");
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  await expect(page.getByLabel("Split Git diff view")).toBeVisible();
+
+  await mobileNav.getByRole("button", { name: "Chat" }).click();
+  await expect(page.locator(".app-shell")).toBeVisible();
+  await page.setViewportSize({ width: 320, height: 700 });
+  mobileNav = page.locator("[data-mobile-primary-nav]");
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const layout = await page.evaluate(() => {
+    const nav = document.querySelector("[data-mobile-primary-nav]")?.getBoundingClientRect();
+    const terminal = document.querySelector(".terminal-dock")?.getBoundingClientRect();
+    const composer = document.querySelector(".chat-composer")?.getBoundingClientRect();
+    return nav && terminal && composer
+      ? { navTop: nav.top, terminalBottom: terminal.bottom, terminalTop: terminal.top, composerBottom: composer.bottom }
+      : null;
+  });
+  expect(layout).not.toBeNull();
+  expect(layout!.navTop).toBeGreaterThanOrEqual(layout!.terminalBottom - 1);
+  expect(layout!.terminalTop).toBeGreaterThanOrEqual(layout!.composerBottom - 1);
+
+  const finalWorkspace = mobileNav.locator(".workspace-dropdown-trigger");
+  await finalWorkspace.click();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".workspace-dropdown-anchor")).toHaveCount(0);
+  await expect(finalWorkspace).toBeFocused();
 });
