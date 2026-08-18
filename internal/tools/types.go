@@ -49,12 +49,26 @@ type WorkspaceRoot struct {
 	Path  string
 }
 
+// AttachedImage carries a chat-attached image's metadata for tools that accept
+// in-memory image input without writing to disk.
+type AttachedImage struct {
+	Name      string `json:"name"`
+	MediaType string `json:"mediaType"`
+	DataURL   string `json:"dataUrl"`
+}
+
 // ExecutionContext carries the per-call state tools need to resolve and
 // validate workspace paths.
 type ExecutionContext struct {
 	Context        context.Context
 	WorkspacePath  string
 	WorkspaceRoots []WorkspaceRoot
+	// FileChanges, when set, receives any file mutations a tool records during
+	// execution so the caller can surface workspace changes to the user.
+	FileChanges FileChangeSink
+	// GeneratedImages tracks images produced by tools during the current turn,
+	// keyed by ImageID. Used by save_image to resolve image data.
+	GeneratedImages map[string]AttachedImage
 }
 
 func (c ExecutionContext) context() context.Context {

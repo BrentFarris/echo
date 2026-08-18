@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const maxTextFileBytes = 256 * 1024
+
 func (ctx ExecutionContext) workspaceRoots() []WorkspaceRoot {
 	if len(ctx.WorkspaceRoots) > 0 {
 		roots := make([]WorkspaceRoot, 0, len(ctx.WorkspaceRoots))
@@ -68,6 +70,59 @@ func resolveWorkspacePath(ctx ExecutionContext, requestedPath string) (string, e
 		resolved = realResolved
 	}
 	return resolved, nil
+}
+
+func resolveWorkspaceChildPath(ctx ExecutionContext, requestedPath string) (string, error) {
+	roots := ctx.workspaceRoots()
+	if len(roots) == 0 {
+		return "", SafeError{Code: "missing_workspace", Message: "workspace path is required"}
+	}
+	requestedPath = strings.TrimSpace(requestedPath)
+	if requestedPath == "" {
+		return "", SafeError{Code: "invalid_arguments", Message: "path is required"}
+	}
+	if filepath.IsAbs(requestedPath) {
+		return "", SafeError{Code: "path_outside_workspace", Message: "path must be relative to the workspace"}
+	}
+	root, relativePath, err := resolveWorkspaceRoot(roots, requestedPath, false)
+	if err != nil {
+		return "", err
+	}
+	workspaceAbs, err := workspaceRootAbsolutePath(root)
+	if err != nil {
+		return "", err
+	}
+
+	resolved := filepath.Clean(filepath.Join(workspaceAbs, relativePath))
+	relative, err := filepath.Rel(workspaceAbs, resolved)
+	if err != nil {
+		return "", fmt.Errorf("resolve relative path: %w", err)
+	}
+	if relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", SafeError{Code: "path_outside_workspace", Message: "path escapes the workspace"}
+	}
+
+	parent := filepath.Dir(resolved)
+	parentInfo, err := os.Stat(parent)
+	if err != nil {
+		return "", SafeError{Code: "parent_not_found", Message: "parent directory was not found"}
+	}
+	if !parentInfo.IsDir() {
+		return "", SafeError{Code: "parent_not_directory", Message: "parent path is not a directory"}
+	}
+	realParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", fmt.Errorf("resolve parent path: %w", err)
+	}
+	relativeParent, err := filepath.Rel(workspaceAbs, realParent)
+	if err != nil {
+		return "", fmt.Errorf("resolve parent relative path: %w", err)
+	}
+	if relativeParent == ".." || strings.HasPrefix(relativeParent, ".."+string(filepath.Separator)) {
+		return "", SafeError{Code: "path_outside_workspace", Message: "path escapes the workspace"}
+	}
+
+	return filepath.Join(realParent, filepath.Base(resolved)), nil
 }
 
 func relativeWorkspacePath(ctx ExecutionContext, absolutePath string) string {
@@ -176,4 +231,129 @@ func fileKind(info os.FileInfo) string {
 		return "file"
 	}
 	return "other"
+}
+
+func isTextLike(data []byte) bool {
+	if len(data) == 0 {
+		return true
+	}
+	for _, b := range data {
+		if b == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeToolTextLineBreaks(text string) string {
+	// XML-ish inline tool calls can decode newline character references to
+	// Unicode line controls that editors render as glyphs instead of lines.
+	return strings.NewReplacer(
+		"\u0085", "\n",
+		"\u2028", "\n",
+		"\u2029", "\n",
+	).Replace(text)
+}
+
+func normalizeToolTextLineBreaksForFile(text, fileContent string) string {
+	return normalizeTextLineBreaks(text, preferredTextLineBreak(fileContent))
+}
+
+func normalizeTextLineBreaks(text, lineBreak string) string {
+	text = normalizeToolTextLineBreaks(text)
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	if lineBreak == "\r\n" {
+		text = strings.ReplaceAll(text, "\n", "\r\n")
+	}
+	return text
+}
+
+func preferredTextLineBreak(text string) string {
+	crlf := 0
+	lf := 0
+	for index := 0; index < len(text); index++ {
+		switch text[index] {
+		case '\r':
+			if index+1 < len(text) && text[index+1] == '\n' {
+				crlf++
+				index++
+			} else {
+				lf++
+			}
+		case '\n':
+			lf++
+		}
+	}
+	if crlf > 0 && crlf >= lf {
+		return "\r\n"
+	}
+	return "\n"
+}
+
+func maxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
+}
+
+func lineStartIndexes(content string) []int {
+	starts := []int{0}
+	for index, char := range content {
+		if char == '\n' && index+1 < len(content) {
+			starts = append(starts, index+1)
+		}
+	}
+	return starts
+}
+
+func lineIndexForOffset(lineStarts []int, offset int) int {
+	line := 0
+	for i := 1; i < len(lineStarts); i++ {
+		if lineStarts[i] > offset {
+			break
+		}
+		line = i
+	}
+	return line
+}
+
+// ignoredChangePathNames lists directory names that are treated as noisy or
+// generated and skipped by default during workspace-wide scans.
+var ignoredChangePathNames = map[string]bool{
+	".cache":       true,
+	".echo":        true,
+	".git":         true,
+	".next":        true,
+	".vite":        true,
+	"bin":          true,
+	"build":        true,
+	"coverage":     true,
+	"dist":         true,
+	"node_modules": true,
+	"obj":          true,
+	"target":       true,
+}
+
+// IsIgnoredChangePath reports whether any path segment matches a known noisy
+// or generated directory name.
+func IsIgnoredChangePath(path string) bool {
+	path = strings.TrimSpace(filepath.ToSlash(path))
+	if path == "" || path == "." {
+		return false
+	}
+	for _, part := range strings.Split(path, "/") {
+		if ignoredChangePathNames[strings.ToLower(part)] {
+			return true
+		}
+	}
+	return false
 }

@@ -603,3 +603,260 @@ func TestChatToolCallingExecutesFilesystemList(t *testing.T) {
 		t.Fatal("expected a tool result message in the follow-up request")
 	}
 }
+
+// imageToolStreamer emits a filesystem_read_image tool call on the first
+// request, then a final answer on subsequent requests.
+type imageToolStreamer struct {
+	mu       sync.Mutex
+	requests []llm.ChatRequest
+	path     string
+}
+
+func (f *imageToolStreamer) StreamChat(_ context.Context, request llm.ChatRequest) *llm.Stream {
+	f.mu.Lock()
+	f.requests = append(f.requests, request)
+	callCount := len(f.requests)
+	f.mu.Unlock()
+
+	events := make(chan llm.StreamEvent, 8)
+	if callCount == 1 {
+		events <- llm.StreamEvent{
+			Type: llm.EventToolCall,
+			ToolCall: &llm.ToolCallDelta{
+				Index: 0,
+				ID:    "call-1",
+				Type:  "function",
+				Function: llm.FunctionCallDelta{
+					Name:      "filesystem_read_image",
+					Arguments: `{"path":"` + f.path + `"}`,
+				},
+			},
+		}
+		events <- llm.StreamEvent{Type: llm.EventComplete, FinishReason: "tool_calls"}
+	} else {
+		events <- llm.StreamEvent{Type: llm.EventToken, Content: "Here is the image."}
+		events <- llm.StreamEvent{Type: llm.EventComplete, FinishReason: "stop"}
+	}
+	close(events)
+	return &llm.Stream{ID: "fake", Events: events}
+}
+
+func (f *imageToolStreamer) lastRequest() llm.ChatRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.requests) == 0 {
+		return llm.ChatRequest{}
+	}
+	return f.requests[len(f.requests)-1]
+}
+
+func TestChatToolCallingFeedsImageToModel(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	wsDir := t.TempDir()
+	// A minimal valid PNG header so filesystem_read_image detects image/png.
+	pngBytes := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(wsDir, "pic.png"), pngBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := s.workspaces.Create(workspaces.CreateRequest{
+		Name:     "img-ws",
+		MainPath: wsDir,
+	})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := s.workspaces.SetActive(ws.ID); err != nil {
+		t.Fatalf("set active: %v", err)
+	}
+
+	fake := &imageToolStreamer{path: normalizeWorkspaceFolderLabel(filepath.Base(wsDir)) + "/pic.png"}
+	s.llm = fake
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go s.httpServer.Serve(ln)
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+ln.Addr().String()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("read welcome: %v", err)
+	}
+
+	if err := conn.WriteJSON(map[string]any{"type": "chat", "message": "read the image"}); err != nil {
+		t.Fatalf("write chat: %v", err)
+	}
+
+	var doneSeen bool
+	for {
+		var evt map[string]any
+		if err := conn.ReadJSON(&evt); err != nil {
+			t.Fatalf("read event: %v", err)
+		}
+		typ, _ := evt["type"].(string)
+		if typ == "chat_done" {
+			doneSeen = true
+			break
+		}
+		if typ == "chat_error" {
+			t.Fatalf("unexpected chat_error: %v", evt)
+		}
+	}
+	if !doneSeen {
+		t.Fatal("expected chat_done")
+	}
+
+	// The follow-up request must carry the image as a user content part so the
+	// model can see it.
+	last := fake.lastRequest()
+	var foundImage bool
+	for _, m := range last.Messages {
+		if m.Role == llm.RoleUser && len(m.ContentParts) > 0 {
+			for _, part := range m.ContentParts {
+				if part.Type == "image_url" && part.ImageURL != nil && strings.HasPrefix(part.ImageURL.URL, "data:image/png;base64,") {
+					foundImage = true
+				}
+			}
+		}
+	}
+	if !foundImage {
+		t.Fatal("expected the image to be fed back to the model as an image_url content part")
+	}
+}
+
+// videoToolStreamer emits a filesystem_read_video tool call on the first
+// request, then a final answer on subsequent requests.
+type videoToolStreamer struct {
+	mu       sync.Mutex
+	requests []llm.ChatRequest
+	path     string
+}
+
+func (f *videoToolStreamer) StreamChat(_ context.Context, request llm.ChatRequest) *llm.Stream {
+	f.mu.Lock()
+	f.requests = append(f.requests, request)
+	callCount := len(f.requests)
+	f.mu.Unlock()
+
+	events := make(chan llm.StreamEvent, 8)
+	if callCount == 1 {
+		events <- llm.StreamEvent{
+			Type: llm.EventToolCall,
+			ToolCall: &llm.ToolCallDelta{
+				Index: 0,
+				ID:    "call-1",
+				Type:  "function",
+				Function: llm.FunctionCallDelta{
+					Name:      "filesystem_read_video",
+					Arguments: `{"path":"` + f.path + `"}`,
+				},
+			},
+		}
+		events <- llm.StreamEvent{Type: llm.EventComplete, FinishReason: "tool_calls"}
+	} else {
+		events <- llm.StreamEvent{Type: llm.EventToken, Content: "Here is the video."}
+		events <- llm.StreamEvent{Type: llm.EventComplete, FinishReason: "stop"}
+	}
+	close(events)
+	return &llm.Stream{ID: "fake", Events: events}
+}
+
+func (f *videoToolStreamer) lastRequest() llm.ChatRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.requests) == 0 {
+		return llm.ChatRequest{}
+	}
+	return f.requests[len(f.requests)-1]
+}
+
+func TestChatToolCallingFeedsVideoToModel(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	wsDir := t.TempDir()
+	// A minimal MP4 ftyp header so filesystem_read_video detects video/mp4.
+	mp4Bytes := []byte{0x00, 0x00, 0x00, 0x20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}
+	if err := os.WriteFile(filepath.Join(wsDir, "clip.mp4"), mp4Bytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := s.workspaces.Create(workspaces.CreateRequest{
+		Name:     "vid-ws",
+		MainPath: wsDir,
+	})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := s.workspaces.SetActive(ws.ID); err != nil {
+		t.Fatalf("set active: %v", err)
+	}
+
+	fake := &videoToolStreamer{path: normalizeWorkspaceFolderLabel(filepath.Base(wsDir)) + "/clip.mp4"}
+	s.llm = fake
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go s.httpServer.Serve(ln)
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+ln.Addr().String()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("read welcome: %v", err)
+	}
+
+	if err := conn.WriteJSON(map[string]any{"type": "chat", "message": "read the video"}); err != nil {
+		t.Fatalf("write chat: %v", err)
+	}
+
+	var doneSeen bool
+	for {
+		var evt map[string]any
+		if err := conn.ReadJSON(&evt); err != nil {
+			t.Fatalf("read event: %v", err)
+		}
+		typ, _ := evt["type"].(string)
+		if typ == "chat_done" {
+			doneSeen = true
+			break
+		}
+		if typ == "chat_error" {
+			t.Fatalf("unexpected chat_error: %v", evt)
+		}
+	}
+	if !doneSeen {
+		t.Fatal("expected chat_done")
+	}
+
+	// The follow-up request must carry the video as a user content part so the
+	// model can see it.
+	last := fake.lastRequest()
+	var foundVideo bool
+	for _, m := range last.Messages {
+		if m.Role == llm.RoleUser && len(m.ContentParts) > 0 {
+			for _, part := range m.ContentParts {
+				if part.Type == "video_url" && part.VideoURL != nil && strings.HasPrefix(part.VideoURL.URL, "data:video/mp4;base64,") {
+					foundVideo = true
+				}
+			}
+		}
+	}
+	if !foundVideo {
+		t.Fatal("expected the video to be fed back to the model as a video_url content part")
+	}
+}
+
