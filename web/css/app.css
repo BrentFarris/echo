@@ -384,44 +384,98 @@ textarea:disabled {
   padding: var(--space-md) var(--space-lg);
 }
 
-/* Reasoning/thinking block for reasoning models, shown above the answer. */
-.chat-message-reasoning {
+/* Collapsed progress line: pinned at the bottom of the assistant message, it
+   shows the latest line of thinking or tool activity in chronological order.
+   It has a subtle "breathing" pulse while the model is working. Once complete
+   it stops breathing, dims to the "dark" end of the pulse, and stays on screen
+   as a clickable summary that reveals the full activity log on hover/click. */
+.chat-progress-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: break-word;
   line-height: 1.45;
-  font-size: var(--text-base-lg);
-  color: var(--color-text-muted);
-  background: var(--color-surface-muted);
-  border-left: 3px solid var(--color-border);
-  border-radius: 0 8px 8px 0;
-  padding: var(--space-md) var(--space-xl);
-  margin: 0 0 var(--space-md) 0;
-  max-width: 100%;
-}
-
-.chat-message-reasoning[hidden] {
-  display: none;
-}
-
-/* Tool activity lines shown inside assistant messages while the model invokes
-   tools (e.g. filesystem_list) and reports their results. The container sits
-   between the reasoning block and the answer so activity appears inline where
-   it happened. */
-.chat-tools {
-  display: flex;
-  flex-direction: column;
-  margin: 0 0 var(--space-sm) 0;
-}
-
-.chat-tool-line {
   font-size: var(--text-base-sm);
   color: var(--color-text-muted);
   font-family: var(--font-mono, monospace);
-  padding: 2px 0;
+  background: var(--color-surface-muted);
+  border-left: 3px solid var(--color-border);
+  border-radius: 0 8px 8px 0;
+  padding: var(--space-sm) var(--space-lg);
+  margin: var(--space-sm) 0 0 0;
+  max-width: 100%;
 }
 
-.chat-tool-line-done {
+.chat-progress-line[hidden] {
+  display: none;
+}
+
+/* Breathing pulse while activity is ongoing. */
+.chat-progress-line.is-active {
+  animation: chat-progress-breathe 1.6s ease-in-out infinite;
+}
+
+/* Completed state: dimmed (the "dark" end of the pulse), clickable, and it
+   lightens up on hover to invite interaction. */
+.chat-progress-line.is-complete {
+  opacity: 0.55;
+  cursor: pointer;
+  transition: opacity 150ms ease, background 150ms ease;
+}
+
+.chat-progress-line.is-complete:hover,
+.chat-progress-line.is-complete:focus-visible {
+  opacity: 1;
+  background: var(--color-surface);
+}
+
+.chat-progress-line.is-complete.is-open {
+  opacity: 1;
+}
+
+.chat-progress-line[data-kind="tool-done"] {
+  color: var(--color-success, #2e7d32);
+}
+
+@keyframes chat-progress-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* Reveal-on-click activity log shown below the completed progress line. */
+.chat-activity-log {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs, 4px);
+  margin: var(--space-sm) 0 0 0;
+  padding: var(--space-sm) var(--space-lg);
+  border-left: 3px solid var(--color-border);
+  border-radius: 0 8px 8px 0;
+  background: var(--color-surface-muted);
+  max-width: 100%;
+}
+
+.chat-activity-log[hidden] {
+  display: none;
+}
+
+.chat-activity-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  font-size: var(--text-base-sm);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, monospace);
+  line-height: 1.45;
+}
+
+.chat-activity-line-tool_call {
+  color: var(--color-text);
+}
+
+.chat-activity-line-tool_result {
   color: var(--color-success, #2e7d32);
 }
 

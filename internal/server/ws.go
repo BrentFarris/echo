@@ -399,9 +399,13 @@ func toolResultVideoMessage(toolName string, result tools.ExecutionResult) (llm.
 }
 
 // toolContext builds the tools.ExecutionContext for the active workspace so
-// tools can resolve labeled workspace paths.
+// tools can resolve labeled workspace paths and reach configured services
+// (e.g. the SearXNG endpoint used by web_search).
 func (c *client) toolContext() tools.ExecutionContext {
-	ctx := tools.ExecutionContext{Context: context.Background()}
+	ctx := tools.ExecutionContext{
+		Context:    context.Background(),
+		SearxngURL: c.server.settings.SearxngURL,
+	}
 	active, ok, err := c.server.workspaces.Active()
 	if err != nil || !ok {
 		return ctx

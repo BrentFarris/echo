@@ -63,6 +63,8 @@ type ExecutionContext struct {
 	Context        context.Context
 	WorkspacePath  string
 	WorkspaceRoots []WorkspaceRoot
+	// SearxngURL is the configured SearXNG endpoint used by the web_search tool.
+	SearxngURL string
 	// FileChanges, when set, receives any file mutations a tool records during
 	// execution so the caller can surface workspace changes to the user.
 	FileChanges FileChangeSink

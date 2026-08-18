@@ -8,9 +8,16 @@
 //   server -> {type:"chat_done"}  (or {type:"chat_error", error})
 //
 // Reasoning models stream `reasoning` events BEFORE any `token` events. We
-// render reasoning into a separate "thinking" block so the user sees activity
-// immediately, and stream the final answer tokens into the main content area.
-// Both are mutated incrementally — no DOM recreation during streaming.
+// collapse both thinking and tool activity into a single progress line pinned
+// at the bottom of the assistant message, showing the latest line of what is
+// happening (chronologically) while the answer prints above it. It has a
+// subtle "breathing" pulse while the model is working. Once complete it stops
+// breathing, dims, and stays on screen as a clickable summary that reveals the
+// full activity log.
+//
+// The server emits events in chronological order: reasoning, then tool_call /
+// tool_result for each tool, then (possibly more reasoning) and finally the
+// answer tokens. The progress line updates to reflect whichever is current.
 
 import * as ws from "./ws.js";
 
@@ -33,22 +40,27 @@ function createMessageEl(role, text) {
   el.appendChild(body);
 
   if (role === "assistant") {
-    // Reasoning/thinking block, shown separately from the answer.
-    const reasoning = document.createElement("div");
-    reasoning.className = "chat-message-reasoning";
-    reasoning.hidden = true;
-    body.appendChild(reasoning);
-
-    // Tool-activity container sits between reasoning and the answer so tool
-    // calls/results render inline where they happened (before the answer).
-    const tools = document.createElement("div");
-    tools.className = "chat-tools";
-    body.appendChild(tools);
-
+    // The answer content prints above, and a single collapsed progress line
+    // sits at the bottom showing the latest thinking/tool activity as it
+    // happens (chronologically). It stays hidden until there is activity, and
+    // remains on screen after completion — clickable to reveal the full log.
     const content = document.createElement("div");
     content.className = "chat-message-content";
     content.textContent = text;
     body.appendChild(content);
+
+    const progress = document.createElement("div");
+    progress.className = "chat-progress-line";
+    progress.hidden = true;
+    progress.setAttribute("role", "button");
+    progress.tabIndex = 0;
+    body.appendChild(progress);
+
+    // Hidden log of all activity, revealed when the progress line is clicked.
+    const activityLog = document.createElement("div");
+    activityLog.className = "chat-activity-log";
+    activityLog.hidden = true;
+    body.appendChild(activityLog);
   } else {
     const content = document.createElement("div");
     content.className = "chat-message-content";
@@ -83,17 +95,17 @@ function scrollToBottom(log) {
  * Create an assistant message element that will receive streamed reasoning and
  * answer tokens.
  * @param {HTMLElement} log
- * @returns {{el: HTMLElement, reasoning: HTMLElement, content: HTMLElement}}
+ * @returns {{el: HTMLElement, progress: HTMLElement, content: HTMLElement, activityLog: HTMLElement}}
  */
 function createStreamingMessage(log) {
   const el = createMessageEl("assistant", "");
-  const reasoning = el.querySelector(".chat-message-reasoning");
-  const tools = el.querySelector(".chat-tools");
+  const progress = el.querySelector(".chat-progress-line");
   const content = el.querySelector(".chat-message-content");
+  const activityLog = el.querySelector(".chat-activity-log");
   el.classList.add("is-streaming");
   log.appendChild(el);
   scrollToBottom(log);
-  return { el, reasoning, tools, content };
+  return { el, progress, content, activityLog };
 }
 
 /**
@@ -117,33 +129,38 @@ export function sendMessage(log, text, model) {
   appendMessage(log, "user", text);
 
   // Create the assistant message we'll stream into.
-  const { el, reasoning, tools, content } = createStreamingMessage(log);
-  const stream = { el, reasoning, tools, content, done: false, answer: "", thinking: "" };
+  const { el, progress, content, activityLog } = createStreamingMessage(log);
+  const stream = {
+    el, progress, content, activityLog,
+    done: false, answer: "", thinking: "",
+    activity: [], // chronological entries for the reveal-on-click log
+  };
   activeStream = stream;
 
   const unsubscribe = ws.on("chat_event", (data) => {
     if (data.eventType === "token") {
+      // The final answer prints above the progress line, which stays pinned at
+      // the bottom of the message.
       stream.answer += data.content || "";
       content.textContent = stream.answer;
       scrollToBottom(log);
     } else if (data.eventType === "reasoning") {
       stream.thinking += data.content || "";
-      // Reveal the thinking block once there is content to show.
-      if (stream.thinking && reasoning.hidden) reasoning.hidden = false;
-      reasoning.textContent = stream.thinking;
+      // Show the last non-empty line of thinking as the current progress line.
+      setProgress(stream, lastLine(stream.thinking), "thinking");
+      // Accumulate the full thinking text for the reveal-on-click log.
+      stream.activity.push({ kind: "thinking", text: data.content || "" });
       scrollToBottom(log);
     } else if (data.eventType === "tool_call" || data.eventType === "tool_result") {
-      // Render a lightweight tool-activity line inline (above the answer) so
-      // the user can see when the model invoked a tool and its result.
-      const toolLine = document.createElement("div");
-      toolLine.className = "chat-tool-line";
+      // Collapse tool activity into the same progress line (chronological).
+      const tool = data.tool || "tool";
       if (data.eventType === "tool_call") {
-        toolLine.textContent = `🔧 ${data.tool || "tool"}…`;
+        setProgress(stream, `🔧 ${tool}…`, "tool");
+        stream.activity.push({ kind: "tool_call", text: `🔧 ${tool}` });
       } else {
-        toolLine.textContent = `✓ ${data.tool || "tool"} completed`;
-        toolLine.classList.add("chat-tool-line-done");
+        setProgress(stream, `✓ ${tool} completed`, "tool-done");
+        stream.activity.push({ kind: "tool_result", text: `✓ ${tool} completed` });
       }
-      tools.appendChild(toolLine);
       scrollToBottom(log);
     }
   });
@@ -162,11 +179,71 @@ export function sendMessage(log, text, model) {
   ws.send({ type: "chat", message: text, ...(model ? { model } : {}) });
 }
 
+/**
+ * Update the collapsed progress line to show the given text. Reveals it if
+ * hidden and applies a "breathing" pulse while activity is ongoing.
+ * @param {{progress: HTMLElement}} stream
+ * @param {string} text
+ * @param {"thinking"|"tool"|"tool-done"} kind
+ */
+function setProgress(stream, text, kind) {
+  if (stream.progress.hidden) stream.progress.hidden = false;
+  stream.progress.textContent = text;
+  stream.progress.dataset.kind = kind;
+  // Re-trigger the breathing animation so each update pulses visibly.
+  stream.progress.classList.remove("is-active");
+  void stream.progress.offsetWidth; // force reflow to restart the animation
+  stream.progress.classList.add("is-active");
+}
+
+/**
+ * Finalize the progress line once streaming completes: stop breathing and make
+ * it a static, dimmed, clickable summary that reveals the activity log.
+ * @param {{progress: HTMLElement, activityLog: HTMLElement, activity: Array}} stream
+ */
+function completeProgress(stream) {
+  stream.progress.classList.remove("is-active");
+  stream.progress.classList.add("is-complete");
+  // Rebuild the reveal-on-click activity log from the accumulated entries.
+  stream.activityLog.textContent = "";
+  for (const entry of stream.activity) {
+    const line = document.createElement("div");
+    line.className = `chat-activity-line chat-activity-line-${entry.kind}`;
+    line.textContent = entry.text;
+    stream.activityLog.appendChild(line);
+  }
+  // Toggle the log open/closed on click (and keyboard Enter/Space).
+  const toggle = () => {
+    const willOpen = stream.activityLog.hidden;
+    stream.activityLog.hidden = !willOpen;
+    stream.progress.classList.toggle("is-open", willOpen);
+  };
+  stream.progress.addEventListener("click", toggle);
+  stream.progress.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      toggle();
+    }
+  });
+}
+
+/**
+ * Return the last non-empty line of a multi-line string, or the whole string.
+ * @param {string} text
+ * @returns {string}
+ */
+function lastLine(text) {
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  return lines.length ? lines[lines.length - 1] : text.trim();
+}
+
 function finishStream(stream, log, ...unsubs) {
   if (stream.done) return;
   stream.done = true;
   for (const unsub of unsubs) unsub();
   stream.el?.classList.remove("is-streaming");
+  // Keep the progress line on screen but stop it breathing once done.
+  completeProgress(stream);
   if (activeStream === stream) activeStream = null;
   scrollToBottom(log);
 }
