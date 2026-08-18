@@ -7,6 +7,9 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -175,4 +178,98 @@ func changeSnapshotsEqual(before *FileSnapshot, after *FileSnapshot) bool {
 func snapshotHash(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+type workspaceSnapshot map[string]FileSnapshot
+
+// snapshotWorkspaceDirectoryChanges captures a snapshot of regular files under
+// a single directory (used by shell_command to track file mutations scoped to
+// the working directory). Ignored/generated paths are skipped.
+func snapshotWorkspaceDirectoryChanges(ctx context.Context, execution ExecutionContext, directory string) (workspaceSnapshot, error) {
+	directory = strings.TrimSpace(directory)
+	if directory == "" {
+		return nil, SafeError{Code: "missing_workspace", Message: "working directory is required"}
+	}
+	return snapshotWorkspacePaths(ctx, execution, []string{directory})
+}
+
+func snapshotWorkspacePaths(ctx context.Context, execution ExecutionContext, roots []string) (workspaceSnapshot, error) {
+	snapshot := workspaceSnapshot{}
+	for _, root := range roots {
+		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return nil
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if path == root {
+				return nil
+			}
+			relative := relativeWorkspacePath(execution, path)
+			if IsIgnoredChangePath(relative) {
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return nil
+			}
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+			fileSnapshot, err := readFileSnapshotContext(ctx, execution, path, info)
+			if err != nil {
+				return nil
+			}
+			snapshot[fileSnapshot.Path] = *fileSnapshot
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return snapshot, nil
+}
+
+func diffWorkspaceSnapshots(before, after workspaceSnapshot) []FileChange {
+	if len(before) == 0 && len(after) == 0 {
+		return nil
+	}
+	paths := make(map[string]bool, len(before)+len(after))
+	for path := range before {
+		paths[path] = true
+	}
+	for path := range after {
+		paths[path] = true
+	}
+	ordered := make([]string, 0, len(paths))
+	for path := range paths {
+		ordered = append(ordered, path)
+	}
+	sort.Strings(ordered)
+
+	changes := make([]FileChange, 0)
+	for _, path := range ordered {
+		if IsIgnoredChangePath(path) {
+			continue
+		}
+		beforeSnapshot, hadBefore := before[path]
+		afterSnapshot, hasAfter := after[path]
+		switch {
+		case !hadBefore && hasAfter:
+			afterCopy := afterSnapshot
+			changes = append(changes, FileChange{Path: path, Operation: FileChangeCreated, After: &afterCopy})
+		case hadBefore && !hasAfter:
+			beforeCopy := beforeSnapshot
+			changes = append(changes, FileChange{Path: path, Operation: FileChangeDeleted, Before: &beforeCopy})
+		case hadBefore && hasAfter && beforeSnapshot.SHA256 != afterSnapshot.SHA256:
+			beforeCopy := beforeSnapshot
+			afterCopy := afterSnapshot
+			changes = append(changes, FileChange{Path: path, Operation: FileChangeEdited, Before: &beforeCopy, After: &afterCopy})
+		}
+	}
+	return changes
 }
