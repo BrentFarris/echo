@@ -827,6 +827,11 @@ textarea:disabled {
   color: var(--color-text);
 }
 
+.chat-toolbar-icon[aria-expanded="true"] {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
 .chat-toolbar-icon svg {
   width: 15px;
   height: 15px;
@@ -965,6 +970,68 @@ textarea:disabled {
 
 .mode-dropdown-settings:hover {
   background: var(--color-surface-muted);
+}
+
+/* More chat options menu */
+.chat-more-menu {
+  position: fixed;
+  z-index: 1000;
+  display: grid;
+  gap: 1px;
+  min-width: 190px;
+  padding: var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-modal);
+}
+
+.chat-more-menu[hidden] {
+  display: none;
+}
+
+.chat-more-menu button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  transition: background 120ms ease;
+}
+
+.chat-more-menu button:hover,
+.chat-more-menu button:focus-visible {
+  background: var(--color-surface-muted);
+  outline: none;
+}
+
+.chat-more-menu button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.chat-more-menu button:disabled:hover {
+  background: transparent;
+}
+
+.chat-more-menu button svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  color: var(--color-text-muted);
 }
 
 .send-button {

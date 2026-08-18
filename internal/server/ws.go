@@ -215,6 +215,8 @@ func (c *client) readPump(h *Hub) {
 			c.server.sessions.send(c, msg)
 		case "chat_stop":
 			c.server.sessions.stop(c, msg.WorkspaceID)
+		case "chat_clear":
+			c.server.sessions.clear(c, msg.WorkspaceID)
 		default:
 			c.sendJSON(map[string]any{"type": "command_error", "workspaceId": msg.WorkspaceID, "code": "unknown_command", "error": "unsupported message type"})
 		}

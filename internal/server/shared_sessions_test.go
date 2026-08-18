@@ -268,6 +268,53 @@ func TestCompletedHistoryFeedsNextPromptAndDuplicateRequestIsIdempotent(t *testi
 	}
 }
 
+func TestClearChatPersistsAndBroadcastsEmptySnapshot(t *testing.T) {
+	s, _ := newTestServer(t)
+	workspace := createChatWorkspace(t, s, "clear-chat")
+	s.llm = &historyStreamer{}
+	url := startWebSocketTestServer(t, s)
+	first := dialSharedClient(t, url)
+	second := dialSharedClient(t, url)
+	subscribeChat(t, first, workspace.ID)
+	subscribeChat(t, second, workspace.ID)
+
+	if err := first.WriteJSON(map[string]any{
+		"type": "chat_send", "workspaceId": workspace.ID, "requestId": "request-clear", "message": "clear me",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	readUntilSessionEvent(t, first, "turn_finished")
+
+	if err := first.WriteJSON(map[string]any{"type": "chat_clear", "workspaceId": workspace.ID}); err != nil {
+		t.Fatal(err)
+	}
+	for index, conn := range []*websocket.Conn{first, second} {
+		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		for {
+			var snapshot map[string]any
+			if err := conn.ReadJSON(&snapshot); err != nil {
+				t.Fatalf("client %d read cleared snapshot: %v", index, err)
+			}
+			if snapshot["type"] != "session_snapshot" {
+				continue
+			}
+			turns, _ := snapshot["turns"].([]any)
+			if len(turns) != 0 || snapshot["activeTurn"] != nil {
+				t.Fatalf("client %d received non-empty cleared snapshot: %v", index, snapshot)
+			}
+			break
+		}
+	}
+
+	transcript, err := sessions.NewStore(workspace.MainPath).Load(workspace.ID)
+	if err != nil {
+		t.Fatalf("load cleared transcript: %v", err)
+	}
+	if len(transcript.Turns) != 0 || len(transcript.Messages) != 0 || transcript.Revision == 0 {
+		t.Fatalf("chat was not durably cleared: %#v", transcript)
+	}
+}
+
 func TestBusySessionRejectsNewPromptButDeduplicatesAcceptedRequest(t *testing.T) {
 	s, _ := newTestServer(t)
 	workspace := createChatWorkspace(t, s, "busy")
@@ -299,6 +346,21 @@ func TestBusySessionRejectsNewPromptButDeduplicatesAcceptedRequest(t *testing.T)
 			t.Fatalf("read duplicate snapshot: %v", err)
 		}
 		if message["type"] == "session_snapshot" {
+			break
+		}
+	}
+	if err := second.WriteJSON(map[string]any{"type": "chat_clear", "workspaceId": workspace.ID}); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var message map[string]any
+		if err := second.ReadJSON(&message); err != nil {
+			t.Fatalf("read busy clear error: %v", err)
+		}
+		if message["type"] == "command_error" {
+			if message["code"] != "session_busy" {
+				t.Fatalf("unexpected clear command error: %v", message)
+			}
 			break
 		}
 	}

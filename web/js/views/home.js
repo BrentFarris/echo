@@ -6,7 +6,7 @@
 
 import { icons } from "../icons.js";
 import { get } from "../api.js";
-import { sendMessage, stopStream, isStreaming, onStreamingChange, openWorkspaceSession, closeWorkspaceSession } from "../chat.js";
+import { canClearChat, clearChat, sendMessage, stopStream, isStreaming, onStreamingChange, openWorkspaceSession, closeWorkspaceSession } from "../chat.js";
 import { loadWorkspaces, openWorkspaceDropdown, openAddWorkspaceModal, setActiveWorkspace, getActive, renderWorkspaceIcon } from "../workspaces.js";
 import { codeRouteHash } from "../../src/navigation.ts";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../../src/primaryNav.ts";
@@ -83,7 +83,7 @@ function chatPanel() {
                   <span class="model-selector-chevron">${icons.arrowDown}</span>
                 </button>
                 <span class="chat-toolbar-separator"></span>
-                <button class="chat-toolbar-icon" type="button" title="More options" aria-label="More options">${icons.moreHorizontal}</button>
+                <button class="chat-toolbar-icon" type="button" title="More options" aria-label="More options" aria-haspopup="menu" aria-expanded="false" aria-controls="chat-more-menu" data-chat-more-trigger>${icons.moreHorizontal}</button>
               </div>
               <div class="chat-composer-toolbar-right">
                 <button class="send-button" type="button" title="Send" aria-label="Send message">${icons.send}</button>
@@ -137,6 +137,7 @@ export function mount(root) {
   const modelLabel = root.querySelector("[data-model-label]");
   const modeTrigger = root.querySelector("[data-mode-trigger]");
   const modeLabel = root.querySelector("[data-mode-label]");
+  const moreTrigger = root.querySelector("[data-chat-more-trigger]");
 
   // The desktop activity bar and mobile bottom bar share the same actions.
   const settingsButtons = [...root.querySelectorAll("[data-nav='settings']")];
@@ -229,6 +230,29 @@ export function mount(root) {
   const modeList = modeDropdown.querySelector("[data-mode-list]");
   document.body.appendChild(modeDropdown);
 
+  const moreMenu = document.createElement("div");
+  moreMenu.id = "chat-more-menu";
+  moreMenu.className = "chat-more-menu";
+  moreMenu.hidden = true;
+  moreMenu.setAttribute("role", "menu");
+  moreMenu.setAttribute("aria-label", "More chat options");
+  moreMenu.innerHTML = `
+    <button type="button" role="menuitem" title="New tab" aria-label="Open a new chat tab" data-new-chat-tab-button>
+      ${icons.plus}
+      <span>New tab</span>
+    </button>
+    <button type="button" role="menuitem" title="Clear current chat" aria-label="Clear current chat" data-clear-chat-button>
+      ${icons.refresh}
+      <span>Clear current chat</span>
+    </button>
+    <button type="button" role="menuitem" title="Create skill from this chat" aria-label="Create workspace skill from chat" data-create-skill-button>
+      ${icons.star}
+      <span>Create skill</span>
+    </button>
+  `;
+  document.body.appendChild(moreMenu);
+  const clearChatButton = moreMenu.querySelector("[data-clear-chat-button]");
+
   // Render the model dropdown options from the loaded endpoints.
   const renderModelOptions = () => {
     const options = endpoints.map((e) => ({
@@ -286,9 +310,43 @@ export function mount(root) {
     modeTrigger?.setAttribute("aria-expanded", "false");
   };
 
+  const positionMoreMenu = () => {
+    const rect = moreTrigger?.getBoundingClientRect();
+    if (!rect) return;
+    const margin = 8;
+    const gap = 6;
+    const width = moreMenu.offsetWidth || 190;
+    const height = moreMenu.offsetHeight || 116;
+    const left = Math.min(
+      Math.max(margin, rect.left),
+      Math.max(margin, window.innerWidth - width - margin),
+    );
+    const top = rect.top - height - gap >= margin
+      ? rect.top - height - gap
+      : Math.min(rect.bottom + gap, window.innerHeight - height - margin);
+    moreMenu.style.left = `${left}px`;
+    moreMenu.style.top = `${Math.max(margin, top)}px`;
+  };
+
+  const closeMoreMenu = (restoreFocus = false) => {
+    moreMenu.hidden = true;
+    moreTrigger?.setAttribute("aria-expanded", "false");
+    if (restoreFocus) moreTrigger?.focus();
+  };
+
+  const openMoreMenu = () => {
+    closeModelDropdown();
+    closeModeDropdown();
+    clearChatButton.disabled = !canClearChat(log);
+    moreMenu.hidden = false;
+    positionMoreMenu();
+    moreTrigger?.setAttribute("aria-expanded", "true");
+  };
+
   const onModeTriggerClick = (e) => {
     e.stopPropagation();
     closeModelDropdown();
+    closeMoreMenu();
     if (modeDropdown.hidden) {
       renderModeOptions();
       modeDropdown.hidden = false;
@@ -315,6 +373,7 @@ export function mount(root) {
     if (!endpoints.length) return;
     if (modelDropdown.hidden) {
       closeModeDropdown();
+      closeMoreMenu();
       renderModelOptions();
       modelDropdown.hidden = false;
       positionModelDropdown();
@@ -339,6 +398,43 @@ export function mount(root) {
     closeModelDropdown();
   };
 
+  const onMoreTriggerClick = (e) => {
+    e.stopPropagation();
+    if (moreMenu.hidden) {
+      openMoreMenu();
+      if (e.detail === 0) moreMenu.querySelector('[role="menuitem"]')?.focus();
+    } else {
+      closeMoreMenu();
+    }
+  };
+
+  const onClearChatClick = (e) => {
+    e.stopPropagation();
+    closeMoreMenu();
+    if (clearChatButton.disabled || !window.confirm("Clear the current chat?")) return;
+    if (clearChat(log)) {
+      input.textContent = "";
+      input.dispatchEvent(new Event("input"));
+    }
+  };
+
+  const onMoreMenuKeydown = (e) => {
+    const items = [...moreMenu.querySelectorAll('[role="menuitem"]')];
+    const current = items.indexOf(document.activeElement);
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeMoreMenu(true);
+      return;
+    }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
+    e.preventDefault();
+    let next = 0;
+    if (e.key === "End") next = items.length - 1;
+    if (e.key === "ArrowDown") next = current < items.length - 1 ? current + 1 : 0;
+    if (e.key === "ArrowUp") next = current > 0 ? current - 1 : items.length - 1;
+    items[next]?.focus();
+  };
+
   const onDocClick = (e) => {
     if (!modelDropdown.hidden && !modelDropdown.contains(e.target) && e.target !== modelTrigger) {
       closeModelDropdown();
@@ -346,17 +442,24 @@ export function mount(root) {
     if (!modeDropdown.hidden && !modeDropdown.contains(e.target) && e.target !== modeTrigger) {
       closeModeDropdown();
     }
+    if (!moreMenu.hidden && !moreMenu.contains(e.target) && !moreTrigger?.contains(e.target)) {
+      closeMoreMenu();
+    }
   };
 
   const onResize = () => {
     if (!modelDropdown.hidden) positionModelDropdown();
     if (!modeDropdown.hidden) positionModeDropdown();
+    if (!moreMenu.hidden) positionMoreMenu();
   };
 
   modelTrigger?.addEventListener("click", onModelTriggerClick);
   modelList?.addEventListener("click", onModelListClick);
   modeTrigger?.addEventListener("click", onModeTriggerClick);
   modeList?.addEventListener("click", onModeListClick);
+  moreTrigger?.addEventListener("click", onMoreTriggerClick);
+  clearChatButton.addEventListener("click", onClearChatClick);
+  moreMenu.addEventListener("keydown", onMoreMenuKeydown);
   document.addEventListener("click", onDocClick);
   window.addEventListener("resize", onResize);
 
@@ -377,6 +480,7 @@ export function mount(root) {
     sendBtn.innerHTML = busy ? icons.stop : icons.send;
     sendBtn.title = busy ? "Stop" : "Send";
     sendBtn.setAttribute("aria-label", busy ? "Stop stream" : "Send message");
+    clearChatButton.disabled = busy || !canClearChat(log);
   };
 
   // While streaming, the button stops the reply; otherwise it sends.
@@ -424,10 +528,14 @@ export function mount(root) {
     modelList?.removeEventListener("click", onModelListClick);
     modeTrigger?.removeEventListener("click", onModeTriggerClick);
     modeList?.removeEventListener("click", onModeListClick);
+    moreTrigger?.removeEventListener("click", onMoreTriggerClick);
+    clearChatButton.removeEventListener("click", onClearChatClick);
+    moreMenu.removeEventListener("keydown", onMoreMenuKeydown);
     document.removeEventListener("click", onDocClick);
     window.removeEventListener("resize", onResize);
     modelDropdown.remove();
     modeDropdown.remove();
+    moreMenu.remove();
     closeWorkspaceSession(log);
   };
 

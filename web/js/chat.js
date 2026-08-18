@@ -26,6 +26,21 @@ export function onStreamingChange(cb) {
 
 export function isStreaming() { return activeStream != null; }
 
+export function canClearChat(log) {
+  return Boolean(
+    binding?.log === log
+    && binding.workspaceId
+    && binding.hasSnapshot
+    && binding.turns.size > 0
+    && activeStream == null,
+  );
+}
+
+export function clearChat(log) {
+  if (!canClearChat(log)) return false;
+  return ws.send({ type: "chat_clear", workspaceId: binding.workspaceId });
+}
+
 export function openWorkspaceSession(log, workspaceId) {
   cancelBindingMarkdownPatches();
   activeStream = null;

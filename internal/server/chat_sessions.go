@@ -237,6 +237,46 @@ func (m *chatSessionManager) stop(c *client, workspaceID string) {
 	}
 }
 
+func (m *chatSessionManager) clear(c *client, workspaceID string) {
+	session, err := m.get(workspaceID)
+	if err != nil {
+		m.commandError(c, workspaceID, "invalid_workspace", err.Error(), "")
+		return
+	}
+
+	session.mu.Lock()
+	if session.loadErr != nil {
+		session.mu.Unlock()
+		m.commandError(c, workspaceID, "session_load_failed", session.loadErr.Error(), "")
+		return
+	}
+	if session.active != nil {
+		session.mu.Unlock()
+		m.commandError(c, workspaceID, "session_busy", "the current chat cannot be cleared while a response is active", "")
+		return
+	}
+
+	cleared := sessions.Transcript{
+		Version:     sessions.Version,
+		WorkspaceID: session.workspace.ID,
+		Revision:    session.sequence + 1,
+		Turns:       []sessions.Turn{},
+		Messages:    []llm.Message{},
+	}
+	if err := session.store.Save(cleared); err != nil {
+		session.mu.Unlock()
+		m.commandError(c, workspaceID, "session_clear_failed", err.Error(), "")
+		return
+	}
+
+	session.transcript = cleared
+	session.sequence = cleared.Revision
+	for subscriber := range session.subscribers {
+		session.sendSnapshotLocked(subscriber)
+	}
+	session.mu.Unlock()
+}
+
 func (m *chatSessionManager) commandError(c *client, workspaceID, code, message, requestID string) {
 	c.sendJSON(map[string]any{
 		"type": "command_error", "workspaceId": workspaceID, "code": code,
