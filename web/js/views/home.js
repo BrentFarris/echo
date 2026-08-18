@@ -16,6 +16,7 @@ import { codeRouteHash } from "../../src/navigation.ts";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../../src/primaryNav.ts";
 import { watchGitBadge } from "../../src/gitBadge.ts";
 import { toast } from "../../src/code/ui.ts";
+import { detachTerminalDock, mountTerminalDock } from "../../src/terminal/index.ts";
 
 // Holds the cleanup function for the currently mounted chat view.
 let chatCleanup = null;
@@ -147,40 +148,18 @@ function chatPanel() {
   `;
 }
 
-function terminalDock() {
-  return `
-    <section class="terminal-dock" data-terminal-dock aria-label="Integrated terminal">
-      <header class="terminal-toolbar">
-        <button class="terminal-title-button" type="button" aria-expanded="false">
-          ${icons.terminal}
-          <span class="terminal-title">Terminal</span>
-          <span class="terminal-session-label">pwsh</span>
-          <span class="terminal-status-indicator is-running" title="Terminal ready"></span>
-          <span class="terminal-status-text">ready</span>
-        </button>
-        <div class="terminal-toolbar-actions">
-          <button class="terminal-toolbar-button" type="button" title="Saved commands" aria-label="Saved commands">${icons.star}<span>Saved</span></button>
-          <button class="terminal-toolbar-button icon-only" type="button" title="Restart terminal" aria-label="Restart terminal">${icons.refresh}</button>
-          <button class="terminal-toolbar-button icon-only danger" type="button" title="Kill terminal" aria-label="Kill terminal">${icons.trash}</button>
-          <button class="terminal-toolbar-button icon-only terminal-maximize-button" type="button" title="Maximize terminal" aria-label="Maximize terminal">${icons.expand}</button>
-          <button class="terminal-toolbar-button icon-only" type="button" title="Open terminal" aria-label="Open terminal">${icons.arrowUp}</button>
-        </div>
-      </header>
-    </section>
-  `;
-}
-
 export function mount(root) {
   root.innerHTML = `
     <div class="app-shell">
       <div data-region="left-nav">${renderPrimaryNav({ active: "chat", workspaceName: "Echo", workspaceSelector: true })}</div>
       <div data-region="main">${chatPanel()}</div>
-      <div data-region="terminal">${terminalDock()}</div>
+      <div data-region="terminal"></div>
       ${renderMobilePrimaryNav({ active: "chat", workspaceSelector: true })}
     </div>
   `;
 
   const log = root.querySelector("[data-chat-log]");
+  const terminalRegion = root.querySelector("[data-region='terminal']");
   const panel = root.querySelector(".chat-panel");
   const tabsShell = root.querySelector("[data-chat-tabs-shell]");
   const tabsHost = root.querySelector("[data-chat-tabs]");
@@ -363,6 +342,7 @@ export function mount(root) {
         try {
           await setActiveWorkspace(id);
           updateWorkspaceNavigation();
+          mountTerminalDock(terminalRegion, getActive());
           openWorkspaceSession(log, id);
           await loadAgentModes(id, modeLabel);
           restoreCurrentComposer();
@@ -376,6 +356,7 @@ export function mount(root) {
             try {
               await setActiveWorkspace(workspace.id);
               updateWorkspaceNavigation();
+              mountTerminalDock(terminalRegion, getActive());
               openWorkspaceSession(log, workspace.id);
               await loadAgentModes(workspace.id, modeLabel);
               restoreCurrentComposer();
@@ -903,6 +884,7 @@ export function mount(root) {
     modeDropdown.remove();
     moreMenu.remove();
     stopGitBadge();
+    detachTerminalDock(terminalRegion);
     closeWorkspaceSession(log);
   };
 
@@ -912,7 +894,9 @@ export function mount(root) {
   // then set the trigger icon to the active (last opened) workspace.
   loadWorkspaces().then(async () => {
     updateWorkspaceNavigation();
-    const workspaceId = getActive()?.id || "";
+    const activeWorkspace = getActive();
+    const workspaceId = activeWorkspace?.id || "";
+    mountTerminalDock(terminalRegion, activeWorkspace);
     openWorkspaceSession(log, workspaceId);
     await loadAgentModes(workspaceId, modeLabel);
     restoreCurrentComposer();

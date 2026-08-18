@@ -7,7 +7,7 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const password = "Echo-E2E-Password!";
 
 test("first-run auth and the real Monaco filesystem workflow", async ({ page }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(300_000);
   const state = JSON.parse(readFileSync(resolve(directory, "../test-results/e2e-runtime/state.json"), "utf8")) as {
     setupCode: string;
     workspace: string;
@@ -45,11 +45,44 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   }, { primary: state.workspace, secondary: state.secondaryWorkspace });
   expect(workspaceIDs.primary).toBeTruthy();
   expect(workspaceIDs.secondary).toBeTruthy();
+  await page.reload();
+  await expect(page.locator(".app-shell")).toBeVisible();
+
+  // The terminal is a single workspace session shared across Chat and Code.
+  await page.getByRole("button", { name: "Open terminal" }).click();
+  await expect(page.locator(".terminal-dock")).toHaveClass(/is-open/);
+  await expect(page.locator(".terminal-status-text")).toHaveText("Running");
+  await page.locator(".terminal-xterm-instance .xterm-helper-textarea").focus();
+  await page.keyboard.type("echo ECHO_TERMINAL_ROUTE_OK");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".terminal-xterm-instance .xterm-rows")).toContainText("ECHO_TERMINAL_ROUTE_OK");
 
   await page.getByRole("button", { name: "Source Control" }).click();
   await expect(page.locator(".code-app-shell")).toBeVisible();
   await expect(page).toHaveURL(/#\/code\?sidebar=git$/);
   await expect(page.getByText("SOURCE CONTROL", { exact: true })).toBeVisible();
+  await expect(page.locator(".terminal-xterm-instance .xterm-rows")).toContainText("ECHO_TERMINAL_ROUTE_OK");
+
+  await page.getByRole("button", { name: "Restart terminal" }).click();
+  await expect(page.locator(".terminal-status-text")).toHaveText("Running");
+  await page.getByRole("button", { name: "Saved commands" }).click();
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await page.getByLabel("Command name").fill("E2E Echo");
+  await page.getByLabel("Command text").fill("echo ECHO_TERMINAL_SAVED_OK");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.locator(".code-toast", { hasText: "Command saved" })).toBeVisible();
+  await expect(page.locator(".code-toast", { hasText: "terminal session was not found" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Saved commands" }).click();
+  await page.getByRole("menuitem", { name: /E2E Echo/ }).click();
+  await expect(page.locator(".terminal-xterm-instance .xterm-rows")).toContainText("ECHO_TERMINAL_SAVED_OK");
+
+  await page.getByRole("button", { name: "Kill terminal" }).click();
+  await expect(page.locator(".terminal-process-message")).toContainText("Process exited");
+  await page.locator(".terminal-process-message").getByRole("button", { name: "Restart", exact: true }).click();
+  await expect(page.locator(".terminal-status-text")).toHaveText("Running");
+  await page.getByRole("button", { name: "Close terminal" }).click();
+  await expect(page.locator(".terminal-dock")).not.toHaveClass(/is-open/);
+
   await page.getByRole("button", { name: "Explorer", exact: true }).click();
   await expect(page).toHaveURL(/#\/code$/);
   await expect(page.locator(".code-tree-label", { hasText: "main.go" })).toBeVisible();
@@ -233,6 +266,18 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(page.locator(".app-shell")).toBeVisible();
   await page.setViewportSize({ width: 320, height: 700 });
   mobileNav = page.locator("[data-mobile-primary-nav]");
+  await page.getByRole("button", { name: "Open terminal" }).click();
+  await expect(page.locator(".terminal-dock")).toHaveClass(/is-open/);
+  await expect(page.locator(".terminal-status-text")).toHaveText("Running");
+  const mobileTerminal = await page.locator(".terminal-dock").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { position: getComputedStyle(element).position, top: rect.top, width: rect.width, height: rect.height };
+  });
+  expect(mobileTerminal.position).toBe("fixed");
+  expect(mobileTerminal.top).toBeLessThanOrEqual(1);
+  expect(mobileTerminal.width).toBeGreaterThanOrEqual(319);
+  expect(mobileTerminal.height).toBeGreaterThanOrEqual(699);
+  await page.getByRole("button", { name: "Close terminal" }).click();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   const layout = await page.evaluate(() => {
     const nav = document.querySelector("[data-mobile-primary-nav]")?.getBoundingClientRect();

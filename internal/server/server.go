@@ -21,6 +21,7 @@ import (
 	"github.com/brent/echo/internal/gitservice"
 	"github.com/brent/echo/internal/llm"
 	"github.com/brent/echo/internal/settings"
+	terminalruntime "github.com/brent/echo/internal/terminal"
 	"github.com/brent/echo/internal/workspacefs"
 	"github.com/brent/echo/internal/workspaces"
 	"github.com/brent/echo/internal/workspaceskills"
@@ -41,6 +42,7 @@ type Server struct {
 	fs           *workspacefs.Service
 	watcher      *workspacefs.WatchManager
 	git          *gitservice.Service
+	terminal     *terminalruntime.Service
 	auth         *auth.Manager
 	authDisabled bool
 	loginLimiter *loginRateLimiter
@@ -104,6 +106,10 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string) *Server
 	s.data = appdata.NewStore(settingsPath)
 	s.store = settings.NewStoreWithData(s.data)
 	s.workspaces = workspaces.NewManagerWithData(s.data)
+	s.terminal = terminalruntime.New(s.workspaces, s.data)
+	s.terminal.SetNotifier(func(event terminalruntime.Event) {
+		s.hub.BroadcastWorkspaceTerminal(event.WorkspaceID, event)
+	})
 	s.fs = workspacefs.New(s.workspaces, settingsPath)
 	s.git = gitservice.New(s.workspaces, s.fs)
 	s.git.SetNotifier(func(event gitservice.Event) {
@@ -218,6 +224,16 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/workspaces/{id}/git/initialize", s.handleGitInitialize)
 	mux.HandleFunc("PUT /api/workspaces/{id}/git/settings", s.handleGitSettings)
 	mux.HandleFunc("POST /api/workspaces/{id}/chats/{chatId}/skills", s.handleCreateSkillFromChat)
+	mux.HandleFunc("POST /api/workspaces/{id}/terminal/sessions", s.handleStartTerminalSession)
+	mux.HandleFunc("GET /api/workspaces/{id}/terminal/sessions/{sessionId}", s.handleSyncTerminalSession)
+	mux.HandleFunc("POST /api/workspaces/{id}/terminal/sessions/{sessionId}/input", s.handleWriteTerminalSession)
+	mux.HandleFunc("PUT /api/workspaces/{id}/terminal/sessions/{sessionId}/size", s.handleResizeTerminalSession)
+	mux.HandleFunc("POST /api/workspaces/{id}/terminal/sessions/{sessionId}/stop", s.handleStopTerminalSession)
+	mux.HandleFunc("POST /api/workspaces/{id}/terminal/sessions/{sessionId}/restart", s.handleRestartTerminalSession)
+	mux.HandleFunc("GET /api/workspaces/{id}/terminal/saved-commands", s.handleListSavedCommands)
+	mux.HandleFunc("POST /api/workspaces/{id}/terminal/saved-commands", s.handleCreateSavedCommand)
+	mux.HandleFunc("PUT /api/workspaces/{id}/terminal/saved-commands/{commandId}", s.handleUpdateSavedCommand)
+	mux.HandleFunc("DELETE /api/workspaces/{id}/terminal/saved-commands/{commandId}", s.handleDeleteSavedCommand)
 
 	// WebSocket endpoint for real-time push.
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
@@ -298,6 +314,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.git.Close()
 	s.fs.Close()
 	s.sessions.shutdown(ctx)
+	if err := s.terminal.Shutdown(ctx); err != nil && ctx.Err() == nil {
+		logf("terminal shutdown: %v", err)
+	}
 	s.hub.Shutdown()
 	return s.httpServer.Shutdown(ctx)
 }

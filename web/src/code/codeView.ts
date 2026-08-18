@@ -13,6 +13,7 @@ import { loadSession, saveSession } from "./persistence";
 import { CODE_ROUTE, codeRouteHash, codeSidebarFromHash, routePathFromHash } from "../navigation";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 import { setGitBadgeCount } from "../gitBadge";
+import { detachTerminalDock, mountTerminalDock } from "../terminal";
 import type {
   FileRef, FileSnapshot, FsEntry, PersistedTab, PersistedWorkspaceSession,
   SearchResult, TrashItem, WorkspaceRoot,
@@ -220,9 +221,11 @@ class CodeView {
             </footer>
           </main>
         </section>
+        <div data-region="terminal"></div>
         ${renderMobilePrimaryNav({ active: explorerActive ? "explorer" : "git", workspaceName, workspaceSelector: true })}
       </div>
     `;
+    mountTerminalDock(this.root.querySelector<HTMLElement>("[data-region=terminal]"), this.workspace);
   }
 
   private installNavigation(): void {
@@ -2220,6 +2223,7 @@ class CodeView {
 
   dispose(): void {
     if (this.abort.signal.aborted) return;
+    detachTerminalDock(this.root.querySelector<HTMLElement>("[data-region=terminal]"));
     void this.persistNow();
     this.closeWorkspaceDropdown?.();
     this.closeWorkspaceDropdown = null;

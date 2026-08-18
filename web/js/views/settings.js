@@ -517,6 +517,10 @@ function renderSecurity() {
           <span>Authentication controls access, but a hostile network participant could still observe passwords, cookies, and source code. Prefer a trusted network until TLS is configured.</span>
         </div>
       `}
+      <div class="settings-security-warning">
+        <strong>Integrated terminal grants server command access</strong>
+        <span>Every authenticated device can execute arbitrary commands on the Echo server through workspace terminals. Revoke any device you do not fully trust.</span>
+      </div>
       ${state.securityStatus ? `<p class="settings-status ${state.securityStatus.startsWith("Error:") ? "is-error" : ""}">${esc(state.securityStatus)}</p>` : ""}
 
       <div class="settings-card">

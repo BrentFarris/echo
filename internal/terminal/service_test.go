@@ -1,0 +1,448 @@
+package terminal
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/brent/echo/internal/appdata"
+	"github.com/brent/echo/internal/workspaces"
+)
+
+type fakeWaitResult struct {
+	exitCode int
+	err      error
+}
+
+type fakeBackend struct {
+	mu         sync.Mutex
+	readCh     chan []byte
+	closed     chan struct{}
+	closeOnce  sync.Once
+	closeCalls int
+	writes     bytes.Buffer
+	cols       int
+	rows       int
+	spec       CommandSpec
+	process    *fakeProcess
+	pending    []byte
+}
+
+type fakeProcess struct {
+	backend  *fakeBackend
+	waitCh   chan fakeWaitResult
+	waitOnce sync.Once
+}
+
+func newFakeBackend() *fakeBackend {
+	backend := &fakeBackend{readCh: make(chan []byte, 128), closed: make(chan struct{})}
+	backend.process = &fakeProcess{backend: backend, waitCh: make(chan fakeWaitResult, 1)}
+	return backend
+}
+
+func (b *fakeBackend) Read(buffer []byte) (int, error) {
+	b.mu.Lock()
+	if len(b.pending) > 0 {
+		count := copy(buffer, b.pending)
+		b.pending = b.pending[count:]
+		b.mu.Unlock()
+		return count, nil
+	}
+	b.mu.Unlock()
+	select {
+	case value := <-b.readCh:
+		b.mu.Lock()
+		count := copy(buffer, value)
+		b.pending = append(b.pending[:0], value[count:]...)
+		b.mu.Unlock()
+		return count, nil
+	case <-b.closed:
+		return 0, io.EOF
+	}
+}
+
+func (b *fakeBackend) Write(buffer []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.writes.Write(buffer)
+}
+
+func (b *fakeBackend) Close() error {
+	b.mu.Lock()
+	b.closeCalls++
+	b.mu.Unlock()
+	b.signalClosed()
+	return nil
+}
+
+func (b *fakeBackend) Resize(cols, rows int) error {
+	b.mu.Lock()
+	b.cols, b.rows = cols, rows
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *fakeBackend) Start(_ context.Context, spec CommandSpec) (Process, error) {
+	b.mu.Lock()
+	b.spec = spec
+	b.mu.Unlock()
+	return b.process, nil
+}
+
+func (b *fakeBackend) signalClosed()    { b.closeOnce.Do(func() { close(b.closed) }) }
+func (b *fakeBackend) send(data []byte) { b.readCh <- append([]byte(nil), data...) }
+func (b *fakeBackend) written() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.writes.String()
+}
+func (b *fakeBackend) size() (int, int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.cols, b.rows
+}
+func (b *fakeBackend) closeCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.closeCalls
+}
+
+func (p *fakeProcess) Wait() (int, error) {
+	result := <-p.waitCh
+	return result.exitCode, result.err
+}
+func (p *fakeProcess) Kill() error {
+	p.complete(-1, errors.New("killed"))
+	return nil
+}
+func (p *fakeProcess) complete(exitCode int, err error) {
+	p.waitOnce.Do(func() {
+		p.waitCh <- fakeWaitResult{exitCode: exitCode, err: err}
+		p.backend.signalClosed()
+	})
+}
+
+func TestSessionLifecycleReplayAndExit(t *testing.T) {
+	service, workspace, _ := newTestService(t)
+	backend := newFakeBackend()
+	service.SetBackendFactory(func() (Backend, error) { return backend, nil })
+	t.Cleanup(func() { shutdownTestService(t, service) })
+
+	events := make(chan Event, 16)
+	service.SetNotifier(func(event Event) { events <- event })
+	started, err := service.Start(workspace.ID, 120, 40)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if started.ID == "" || started.Status != "running" {
+		t.Fatalf("unexpected start snapshot: %#v", started)
+	}
+	if cols, rows := backend.size(); cols != 120 || rows != 40 {
+		t.Fatalf("initial size = %dx%d, want 120x40", cols, rows)
+	}
+	if backend.spec.Dir != workspace.MainPath || len(backend.spec.Env) == 0 {
+		t.Fatalf("unexpected command spec: %#v", backend.spec)
+	}
+
+	again, err := service.Start(workspace.ID, 80, 24)
+	if err != nil || again.ID != started.ID {
+		t.Fatalf("idempotent start = %#v, %v", again, err)
+	}
+	if err := service.Write(workspace.ID, started.ID, "echo hello\r"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := backend.written(); got != "echo hello\r" {
+		t.Fatalf("input = %q", got)
+	}
+	if err := service.Resize(workspace.ID, started.ID, 999, 1); err != nil {
+		t.Fatalf("resize: %v", err)
+	}
+	if cols, rows := backend.size(); cols != MaxCols || rows != MinRows {
+		t.Fatalf("clamped size = %dx%d", cols, rows)
+	}
+
+	ansi := []byte("\x1b[32mhello\x1b[0m\r\n")
+	backend.send(ansi)
+	dataEvent := waitEvent(t, events, "data")
+	decoded, err := base64.StdEncoding.DecodeString(dataEvent.Data)
+	if err != nil || !bytes.Equal(decoded, ansi) || dataEvent.Sequence != 1 {
+		t.Fatalf("raw output event = %#v, decoded %q, err %v", dataEvent, decoded, err)
+	}
+	replay, err := service.Sync(workspace.ID, started.ID, 0)
+	if err != nil || replay.LastSequence != 1 || len(replay.Output) != 1 {
+		t.Fatalf("replay = %#v, %v", replay, err)
+	}
+	caughtUp, err := service.Sync(workspace.ID, started.ID, 1)
+	if err != nil || len(caughtUp.Output) != 0 {
+		t.Fatalf("caught-up replay = %#v, %v", caughtUp, err)
+	}
+
+	backend.process.complete(7, errors.New("exit status 7"))
+	exit := waitEvent(t, events, "exited")
+	if exit.ExitCode == nil || *exit.ExitCode != 7 {
+		t.Fatalf("exit event = %#v", exit)
+	}
+	exited := waitStatus(t, service, workspace.ID, started.ID, "exited")
+	if exited.ExitCode == nil || *exited.ExitCode != 7 {
+		t.Fatalf("exit snapshot = %#v", exited)
+	}
+	if err := service.Write(workspace.ID, started.ID, "x"); !errors.Is(err, ErrSessionNotRunning) {
+		t.Fatalf("write after exit = %v", err)
+	}
+}
+
+func TestReplayResetAfterTruncation(t *testing.T) {
+	service, workspace, _ := newTestService(t)
+	backend := newFakeBackend()
+	service.SetBackendFactory(func() (Backend, error) { return backend, nil })
+	t.Cleanup(func() { shutdownTestService(t, service) })
+	started, err := service.Start(workspace.ID, 80, 24)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	chunk := bytes.Repeat([]byte("x"), readBytes)
+	count := ReplayBytes/readBytes + 8
+	for index := 0; index < count; index++ {
+		backend.send(chunk)
+	}
+	waitSequence(t, service, workspace.ID, started.ID, uint64(count))
+	replay, err := service.Sync(workspace.ID, started.ID, 1)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if !replay.Reset || len(replay.Output) == 0 || len(replay.Output) >= count {
+		t.Fatalf("expected retained reset snapshot, got reset=%v chunks=%d", replay.Reset, len(replay.Output))
+	}
+}
+
+func TestStaleOversizedAndStoppedRequests(t *testing.T) {
+	service, workspace, _ := newTestService(t)
+	backend := newFakeBackend()
+	service.SetBackendFactory(func() (Backend, error) { return backend, nil })
+	started, err := service.Start(workspace.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if cols, rows := backend.size(); cols != MinCols || rows != MinRows {
+		t.Fatalf("minimum size = %dx%d", cols, rows)
+	}
+	if err := service.Write(workspace.ID, "stale", "x"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("stale write = %v", err)
+	}
+	if err := service.Resize(workspace.ID, "stale", 80, 24); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("stale resize = %v", err)
+	}
+	if err := service.Write(workspace.ID, started.ID, string(make([]byte, MaxInput+1))); !errors.Is(err, ErrInputTooLarge) {
+		t.Fatalf("oversized write = %v", err)
+	}
+	if err := service.Stop(workspace.ID, started.ID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if backend.closeCount() != 1 {
+		t.Fatalf("PTY closed %d times", backend.closeCount())
+	}
+	if err := service.Resize(workspace.ID, started.ID, 80, 24); !errors.Is(err, ErrSessionNotRunning) {
+		t.Fatalf("resize after stop = %v", err)
+	}
+}
+
+func TestRestartAndConcurrentShutdownCloseOnce(t *testing.T) {
+	service, workspace, _ := newTestService(t)
+	first, second := newFakeBackend(), newFakeBackend()
+	backends := []Backend{first, second}
+	var factoryMu sync.Mutex
+	service.SetBackendFactory(func() (Backend, error) {
+		factoryMu.Lock()
+		defer factoryMu.Unlock()
+		backend := backends[0]
+		backends = backends[1:]
+		return backend, nil
+	})
+	started, err := service.Start(workspace.ID, 80, 24)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	restarted, err := service.Restart(workspace.ID, started.ID, 100, 30)
+	if err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	if restarted.ID == started.ID {
+		t.Fatal("restart reused session id")
+	}
+	if err := service.Write(workspace.ID, started.ID, "stale"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("old id after restart = %v", err)
+	}
+	if first.closeCount() != 1 {
+		t.Fatalf("first PTY closed %d times", first.closeCount())
+	}
+
+	finished := make(chan struct{})
+	go func() {
+		var wait sync.WaitGroup
+		wait.Add(2)
+		go func() { defer wait.Done(); _ = service.Stop(workspace.ID, restarted.ID) }()
+		go func() {
+			defer wait.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = service.Shutdown(ctx)
+		}()
+		wait.Wait()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("concurrent stop and shutdown deadlocked")
+	}
+	if second.closeCount() != 1 {
+		t.Fatalf("second PTY closed %d times", second.closeCount())
+	}
+}
+
+func TestWorkingDirectoryFallsBackToFirstAvailableFolder(t *testing.T) {
+	root := t.TempDir()
+	mainPath := filepath.Join(root, "gone")
+	extraPath := filepath.Join(root, "available")
+	if err := os.MkdirAll(mainPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(extraPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := appdata.NewStore(filepath.Join(root, "echo.json"))
+	manager := workspaces.NewManagerWithData(data)
+	workspace, err := manager.Create(workspaces.CreateRequest{Name: "fallback", MainPath: mainPath, Folders: []string{extraPath}})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := os.RemoveAll(mainPath); err != nil {
+		t.Fatalf("remove main folder: %v", err)
+	}
+	service := New(manager, data)
+	backend := newFakeBackend()
+	service.SetBackendFactory(func() (Backend, error) { return backend, nil })
+	t.Cleanup(func() { shutdownTestService(t, service) })
+	if _, err := service.Start(workspace.ID, 80, 24); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if backend.spec.Dir != extraPath {
+		t.Fatalf("working directory = %q, want %q", backend.spec.Dir, extraPath)
+	}
+}
+
+func TestSavedCommandCRUDOrderingAndPersistence(t *testing.T) {
+	service, workspace, path := newTestService(t)
+	if _, err := service.CreateSavedCommand(workspace.ID, " ", "echo nope"); err == nil {
+		t.Fatal("blank name was accepted")
+	}
+	first, err := service.CreateSavedCommand(workspace.ID, " Status ", " git status ")
+	if err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	second, err := service.CreateSavedCommand(workspace.ID, "Tests", "go test ./...")
+	if err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	if first.Order != 0 || second.Order != 1 || first.Name != "Status" || first.Command != "git status" {
+		t.Fatalf("unexpected commands: %#v %#v", first, second)
+	}
+	updated, err := service.UpdateSavedCommand(workspace.ID, first.ID, "Git status", "git status --short")
+	if err != nil || updated.Order != first.Order {
+		t.Fatalf("update: %#v, %v", updated, err)
+	}
+	if err := service.DeleteSavedCommand(workspace.ID, "missing"); !errors.Is(err, ErrSavedCommandNotFound) {
+		t.Fatalf("delete missing = %v", err)
+	}
+	if err := service.DeleteSavedCommand(workspace.ID, second.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	reloadedData := appdata.NewStore(path)
+	reloaded := New(workspaces.NewManagerWithData(reloadedData), reloadedData)
+	list, err := reloaded.ListSavedCommands(workspace.ID)
+	if err != nil {
+		t.Fatalf("reload commands: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != first.ID || list[0].Command != "git status --short" {
+		t.Fatalf("persisted commands = %#v", list)
+	}
+}
+
+func newTestService(t *testing.T) (*Service, workspaces.Workspace, string) {
+	t.Helper()
+	root := t.TempDir()
+	path := filepath.Join(root, "echo.json")
+	data := appdata.NewStore(path)
+	manager := workspaces.NewManagerWithData(data)
+	workspace, err := manager.Create(workspaces.CreateRequest{Name: "terminal", MainPath: filepath.Join(root, "workspace")})
+	if err != nil {
+		if mkdirErr := os.MkdirAll(filepath.Join(root, "workspace"), 0o755); mkdirErr != nil {
+			t.Fatal(mkdirErr)
+		}
+		workspace, err = manager.Create(workspaces.CreateRequest{Name: "terminal", MainPath: filepath.Join(root, "workspace")})
+	}
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	return New(manager, data), workspace, path
+}
+
+func shutdownTestService(t *testing.T, service *Service) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := service.Shutdown(ctx); err != nil {
+		t.Errorf("shutdown: %v", err)
+	}
+}
+
+func waitEvent(t *testing.T, events <-chan Event, eventType string) Event {
+	t.Helper()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case event := <-events:
+			if event.Event == eventType {
+				return event
+			}
+		case <-timer.C:
+			t.Fatalf("timed out waiting for %s event", eventType)
+		}
+	}
+}
+
+func waitStatus(t *testing.T, service *Service, workspaceID, sessionID, status string) Snapshot {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot, err := service.Sync(workspaceID, sessionID, 0)
+		if err == nil && snapshot.Status == status {
+			return snapshot
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for status %q", status)
+	return Snapshot{}
+}
+
+func waitSequence(t *testing.T, service *Service, workspaceID, sessionID string, sequence uint64) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot, err := service.Sync(workspaceID, sessionID, 0)
+		if err == nil && snapshot.LastSequence >= sequence {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for sequence %d", sequence)
+}
