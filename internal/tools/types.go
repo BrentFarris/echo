@@ -65,6 +65,21 @@ type ExecutionContext struct {
 	WorkspaceRoots []WorkspaceRoot
 	// SearxngURL is the configured SearXNG endpoint used by the web_search tool.
 	SearxngURL string
+	// ComfyuiURL is the configured ComfyUI server base URL used by
+	// comfyui_generate (e.g. "http://localhost:8188").
+	ComfyuiURL string
+	// ComfyuiDefaultCheckpoint is the default checkpoint/model name used by
+	// comfyui_generate when no model argument is supplied.
+	ComfyuiDefaultCheckpoint string
+	// ComfyuiTxt2imgWorkflow is a workspace-relative path to the default
+	// txt2img workflow used by comfyui_generate when none is supplied.
+	ComfyuiTxt2imgWorkflow string
+	// ComfyuiImg2imgWorkflow is a workspace-relative path to the default
+	// img2img workflow used by comfyui_generate when an input image is present.
+	ComfyuiImg2imgWorkflow string
+	// AttachedImages carries chat-attached images for tools that accept
+	// in-memory image input (e.g. comfyui_generate img2img).
+	AttachedImages []AttachedImage
 	// FileChanges, when set, receives any file mutations a tool records during
 	// execution so the caller can surface workspace changes to the user.
 	FileChanges FileChangeSink

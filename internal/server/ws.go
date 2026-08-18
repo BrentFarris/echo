@@ -486,8 +486,12 @@ func toolResultVideoMessage(toolName string, result tools.ExecutionResult) (llm.
 // context through so tools observe cancellation when the user stops a reply.
 func (c *client) toolContext(ctx context.Context) tools.ExecutionContext {
 	execCtx := tools.ExecutionContext{
-		Context:    ctx,
-		SearxngURL: c.server.settings.SearxngURL,
+		Context:                  ctx,
+		SearxngURL:               c.server.settings.SearxngURL,
+		ComfyuiURL:               c.server.settings.ComfyuiURL,
+		ComfyuiDefaultCheckpoint: c.server.settings.ComfyuiDefaultCheckpoint,
+		ComfyuiTxt2imgWorkflow:   c.server.settings.ComfyuiTxt2imgWorkflow,
+		ComfyuiImg2imgWorkflow:   c.server.settings.ComfyuiImg2imgWorkflow,
 	}
 	active, ok, err := c.server.workspaces.Active()
 	if err != nil || !ok {
