@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/brent/echo/internal/agentmodes"
@@ -22,6 +23,7 @@ import (
 	"github.com/brent/echo/internal/settings"
 	"github.com/brent/echo/internal/workspacefs"
 	"github.com/brent/echo/internal/workspaces"
+	"github.com/brent/echo/internal/workspaceskills"
 )
 
 // Server is the Echo HTTP server. It serves the SPA frontend from a static
@@ -45,7 +47,10 @@ type Server struct {
 	modes        *agentmodes.Manager
 	sessions     *chatSessionManager
 	llm          chatStreamer
+	llmCompleter chatCompleter
 	llmSettings  llm.Settings
+	skillsMu     sync.Mutex
+	skills       map[string]*workspaceskills.Service
 	// settings holds the full normalized settings (all endpoints) so the chat
 	// handler can resolve a user-selected model to its owning endpoint.
 	settings llm.Settings
@@ -55,6 +60,10 @@ type Server struct {
 // an interface so tests can inject a fake streamer.
 type chatStreamer interface {
 	StreamChat(ctx context.Context, request llm.ChatRequest) *llm.Stream
+}
+
+type chatCompleter interface {
+	Complete(ctx context.Context, request llm.ChatRequest) (llm.ChatResponse, error)
 }
 
 // New constructs a Server bound to addr that serves frontend assets from
@@ -81,6 +90,7 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string) *Server
 		webDir:    webDir,
 		webAssets: assets,
 		hub:       NewHub(),
+		skills:    make(map[string]*workspaceskills.Service),
 	}
 	if settingsPath == "" {
 		path, err := settings.DefaultStorePath()
@@ -139,6 +149,7 @@ func (s *Server) initLLM() {
 		return
 	}
 	s.llm = client
+	s.llmCompleter = client
 }
 
 // settingsForModel returns the settings for the endpoint that owns the given
@@ -206,6 +217,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/workspaces/{id}/git/clone", s.handleGitClone)
 	mux.HandleFunc("POST /api/workspaces/{id}/git/initialize", s.handleGitInitialize)
 	mux.HandleFunc("PUT /api/workspaces/{id}/git/settings", s.handleGitSettings)
+	mux.HandleFunc("POST /api/workspaces/{id}/chats/{chatId}/skills", s.handleCreateSkillFromChat)
 
 	// WebSocket endpoint for real-time push.
 	mux.HandleFunc("GET /ws", s.handleWebSocket)

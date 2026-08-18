@@ -35,9 +35,12 @@ const chat = vi.hoisted(() => {
   };
 });
 
+const api = vi.hoisted(() => ({ post: vi.fn() }));
+
 vi.mock("../js/chat.js", () => chat);
 
 vi.mock("../js/api.js", () => ({
+  post: api.post,
   get: vi.fn(async (path: string) => path === "/api/settings"
     ? {
         settings: {
@@ -94,6 +97,8 @@ describe("multi-chat tab UI", () => {
     chat.activateChatTab.mockClear();
     chat.closeChatTab.mockClear();
     chat.createChatTab.mockClear();
+    chat.canClearChat.mockReturnValue(false);
+    api.post.mockReset();
   });
 
   it("creates a new tab from the menu and shows the shared active tab", () => {
@@ -199,5 +204,21 @@ describe("multi-chat tab UI", () => {
     document.querySelector<HTMLButtonElement>("[data-chat-close-choice='confirm']")!.click();
     await Promise.resolve();
     expect(chat.closeChatTab).toHaveBeenLastCalledWith("chat-two", true);
+  });
+
+  it("keeps skill creation targeted at the initiating tab when selection changes", async () => {
+    chat.canClearChat.mockReturnValue(true);
+    let finish!: (value: { name: string }) => void;
+    api.post.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    chat.emitWorkspace(twoTabs("chat-one"));
+    root.querySelector<HTMLButtonElement>("[data-chat-more-trigger]")!.click();
+    document.querySelector<HTMLButtonElement>("[data-create-skill-button]")!.click();
+
+    chat.emitWorkspace(twoTabs("chat-two"));
+    expect(api.post).toHaveBeenCalledWith("/api/workspaces/workspace-tabs/chats/chat-one/skills", {});
+
+    finish({ name: "chat-streaming" });
+    await Promise.resolve();
+    await Promise.resolve();
   });
 });

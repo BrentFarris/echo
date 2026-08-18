@@ -93,6 +93,83 @@ type ExecutionContext struct {
 	GeneratedImages map[string]AttachedImage
 	// ToolScopes enforces the selected agent mode's tool and path allowlist.
 	ToolScopes *ToolScopeChecker
+	// WorkspaceSkills supplies workspace-local reusable guidance. It is set by
+	// the chat host and intentionally does not participate in project file
+	// change tracking because skills live under Echo's .echo metadata folder.
+	WorkspaceSkills WorkspaceSkillsProvider
+}
+
+const (
+	DefaultWorkspaceSkillSearchLimit = 5
+	MaxWorkspaceSkillSearchLimit     = 10
+)
+
+type WorkspaceSkillSearchRequest struct {
+	Query  string `json:"query"`
+	Folder string `json:"folder,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+}
+
+type WorkspaceSkillSearchResponse struct {
+	Query    string                  `json:"query"`
+	Skills   []WorkspaceSkillSummary `json:"skills"`
+	Warnings []string                `json:"warnings,omitempty"`
+}
+
+type WorkspaceSkillReadRequest struct {
+	ID string `json:"id"`
+}
+
+type WorkspaceSkillRecordRequest struct {
+	Action           string   `json:"action"`
+	Reason           string   `json:"reason,omitempty"`
+	Folder           string   `json:"folder,omitempty"`
+	Name             string   `json:"name,omitempty"`
+	Description      string   `json:"description,omitempty"`
+	Triggers         []string `json:"triggers,omitempty"`
+	Body             string   `json:"body,omitempty"`
+	DurabilityReason string   `json:"durabilityReason,omitempty"`
+	FutureTasks      []string `json:"futureTasks,omitempty"`
+	ExpectedRevision string   `json:"expectedRevision,omitempty"`
+}
+
+type WorkspaceSkillSummary struct {
+	ID          string   `json:"id"`
+	Folder      string   `json:"folder"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Triggers    []string `json:"triggers,omitempty"`
+}
+
+type WorkspaceSkill struct {
+	WorkspaceSkillSummary
+	Body       string `json:"body"`
+	Revision   string `json:"revision"`
+	ModifiedAt string `json:"modifiedAt"`
+}
+
+type WorkspaceSkillRecordResponse struct {
+	Action    string          `json:"action"`
+	Reason    string          `json:"reason,omitempty"`
+	Skill     *WorkspaceSkill `json:"skill,omitempty"`
+	Created   bool            `json:"created,omitempty"`
+	Unchanged bool            `json:"unchanged,omitempty"`
+}
+
+type WorkspaceSkillsProvider interface {
+	SearchWorkspaceSkills(context.Context, WorkspaceSkillSearchRequest) (WorkspaceSkillSearchResponse, error)
+	ReadWorkspaceSkill(context.Context, WorkspaceSkillReadRequest) (WorkspaceSkill, error)
+	RecordWorkspaceSkill(context.Context, WorkspaceSkillRecordRequest) (WorkspaceSkillRecordResponse, error)
+}
+
+func NormalizeWorkspaceSkillSearchLimit(value int) int {
+	if value <= 0 {
+		return DefaultWorkspaceSkillSearchLimit
+	}
+	if value > MaxWorkspaceSkillSearchLimit {
+		return MaxWorkspaceSkillSearchLimit
+	}
+	return value
 }
 
 func (c ExecutionContext) context() context.Context {

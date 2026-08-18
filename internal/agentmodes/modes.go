@@ -55,6 +55,8 @@ func Defaults() []Mode {
 				"filesystem_search_text":      {Name: "filesystem_search_text"},
 				"filesystem_search_workspace": {Name: "filesystem_search_workspace"},
 				"filesystem_stat":             {Name: "filesystem_stat"},
+				"workspace_skill_search":      {Name: "workspace_skill_search"},
+				"workspace_skill_read":        {Name: "workspace_skill_read"},
 				"web_fetch":                   {Name: "web_fetch"},
 				"web_search":                  {Name: "web_search"},
 			},

@@ -5,7 +5,7 @@
 // composer sends messages over WebSocket and streams the reply incrementally.
 
 import { icons } from "../icons.js";
-import { get } from "../api.js";
+import { get, post } from "../api.js";
 import {
   activateChatTab, canClearChat, clearChat, closeChatTab, closeWorkspaceSession,
   createChatTab, isStreaming, onChatCommandError, onChatWorkspaceChange,
@@ -14,6 +14,7 @@ import {
 import { loadWorkspaces, openWorkspaceDropdown, openAddWorkspaceModal, setActiveWorkspace, getActive, renderWorkspaceIcon } from "../workspaces.js";
 import { codeRouteHash } from "../../src/navigation.ts";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../../src/primaryNav.ts";
+import { toast } from "../../src/code/ui.ts";
 
 // Holds the cleanup function for the currently mounted chat view.
 let chatCleanup = null;
@@ -195,6 +196,7 @@ export function mount(root) {
   let currentWorkspaceId = "";
   let currentChatId = "";
   let currentTabs = [];
+  const creatingChatSkills = new Set();
   let focusNewTab = false;
   let renderedActiveChatId = "";
   const pendingTabCloses = new Set();
@@ -431,6 +433,15 @@ export function mount(root) {
   document.body.appendChild(moreMenu);
   const newTabButton = moreMenu.querySelector("[data-new-chat-tab-button]");
   const clearChatButton = moreMenu.querySelector("[data-clear-chat-button]");
+  const createSkillButton = moreMenu.querySelector("[data-create-skill-button]");
+
+  const updateChatMenuActions = () => {
+    const busy = currentTabs.find((tab) => tab.chatId === currentChatId)?.busy || isStreaming();
+    const creating = creatingChatSkills.has(currentChatId);
+    const hasTranscript = canClearChat(log);
+    clearChatButton.disabled = busy || creating || !hasTranscript;
+    createSkillButton.disabled = !currentWorkspaceId || !currentChatId || busy || creating || !hasTranscript;
+  };
 
   // Render the model dropdown options from the loaded endpoints.
   const renderModelOptions = () => {
@@ -516,7 +527,7 @@ export function mount(root) {
   const openMoreMenu = () => {
     closeModelDropdown();
     closeModeDropdown();
-    clearChatButton.disabled = !canClearChat(log);
+    updateChatMenuActions();
     moreMenu.hidden = false;
     positionMoreMenu();
     moreTrigger?.setAttribute("aria-expanded", "true");
@@ -601,6 +612,25 @@ export function mount(root) {
     e.stopPropagation();
     closeMoreMenu();
     focusNewTab = createChatTab();
+  };
+
+  const onCreateSkillClick = async (e) => {
+    e.stopPropagation();
+    if (createSkillButton.disabled) return;
+    const workspaceId = currentWorkspaceId;
+    const chatId = currentChatId;
+    closeMoreMenu();
+    creatingChatSkills.add(chatId);
+    updateChatMenuActions();
+    try {
+      const result = await post(`/api/workspaces/${encodeURIComponent(workspaceId)}/chats/${encodeURIComponent(chatId)}/skills`, {});
+      toast(`Created skill "${result.name}".`);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), { sticky: true });
+    } finally {
+      creatingChatSkills.delete(chatId);
+      updateChatMenuActions();
+    }
   };
 
   const onTabsClick = (e) => {
@@ -707,6 +737,7 @@ export function mount(root) {
   moreTrigger?.addEventListener("click", onMoreTriggerClick);
   newTabButton.addEventListener("click", onNewTabClick);
   clearChatButton.addEventListener("click", onClearChatClick);
+  createSkillButton.addEventListener("click", onCreateSkillClick);
   tabsHost.addEventListener("click", onTabsClick);
   tabsHost.addEventListener("auxclick", onTabsAuxClick);
   tabsHost.addEventListener("keydown", onTabsKeydown);
@@ -739,7 +770,7 @@ export function mount(root) {
     sendBtn.innerHTML = busy ? icons.stop : icons.send;
     sendBtn.title = busy ? "Stop" : "Send";
     sendBtn.setAttribute("aria-label", busy ? "Stop stream" : "Send message");
-    clearChatButton.disabled = busy || !canClearChat(log);
+    updateChatMenuActions();
   };
 
   const handleWorkspaceState = (state) => {
@@ -772,7 +803,7 @@ export function mount(root) {
       restoreCurrentComposer();
     }
     renderTabs();
-    clearChatButton.disabled = isStreaming() || !canClearChat(log);
+    updateChatMenuActions();
 
     if (focusNewTab && state?.hasSnapshot && currentChatId) {
       focusNewTab = false;
@@ -849,6 +880,7 @@ export function mount(root) {
     moreTrigger?.removeEventListener("click", onMoreTriggerClick);
     newTabButton.removeEventListener("click", onNewTabClick);
     clearChatButton.removeEventListener("click", onClearChatClick);
+    createSkillButton.removeEventListener("click", onCreateSkillClick);
     tabsHost.removeEventListener("click", onTabsClick);
     tabsHost.removeEventListener("auxclick", onTabsAuxClick);
     tabsHost.removeEventListener("keydown", onTabsKeydown);

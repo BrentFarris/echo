@@ -9,6 +9,7 @@ import (
 	"github.com/brent/echo/internal/tools"
 	"github.com/brent/echo/internal/workspacefs"
 	"github.com/brent/echo/internal/workspaces"
+	"github.com/brent/echo/internal/workspaceskills"
 )
 
 // workspaceToolRoots converts a workspace's folders into labeled tool roots so
@@ -38,6 +39,20 @@ func workspaceToolRoots(workspace workspaces.Workspace) []tools.WorkspaceRoot {
 		})
 	}
 	return roots
+}
+
+func (s *Server) workspaceSkills(workspace workspaces.Workspace) *workspaceskills.Service {
+	s.skillsMu.Lock()
+	defer s.skillsMu.Unlock()
+	if s.skills == nil {
+		s.skills = make(map[string]*workspaceskills.Service)
+	}
+	if service := s.skills[workspace.ID]; service != nil {
+		return service
+	}
+	service := workspaceskills.New(s.confinedToolRoots(workspace))
+	s.skills[workspace.ID] = service
+	return service
 }
 
 func (s *Server) confinedToolRoots(workspace workspaces.Workspace) []tools.WorkspaceRoot {

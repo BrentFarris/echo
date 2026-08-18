@@ -25,9 +25,14 @@ const chat = vi.hoisted(() => ({
   stopStream: vi.fn(),
 }));
 
+const api = vi.hoisted(() => ({
+  post: vi.fn(async () => ({ name: "chat-streaming" })),
+}));
+
 vi.mock("../js/chat.js", () => chat);
 
 vi.mock("../js/api.js", () => ({
+	post: api.post,
   get: vi.fn(async (path: string) => path === "/api/settings"
     ? { settings: { endpoints: [] } }
     : { modes: [{ id: "general", name: "General", builtIn: true }] }),
@@ -60,6 +65,7 @@ describe("clear current chat menu action", () => {
     document.body.innerHTML = "";
     vi.restoreAllMocks();
     chat.clearChat.mockClear();
+    api.post.mockClear();
   });
 
   function openClearAction(): HTMLButtonElement {
@@ -88,5 +94,43 @@ describe("clear current chat menu action", () => {
 
     expect(chat.clearChat).not.toHaveBeenCalled();
     expect(input.textContent).toBe("keep this draft");
+  });
+
+  it("creates a skill from the captured active chat and reports success", async () => {
+    root.querySelector<HTMLButtonElement>("[data-chat-more-trigger]")!.click();
+    document.querySelector<HTMLButtonElement>("[data-create-skill-button]")!.click();
+
+    expect(api.post).toHaveBeenCalledWith("/api/workspaces/workspace-1/chats/chat-1/skills", {});
+    expect(document.querySelector<HTMLElement>(".chat-more-menu")!.hidden).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(document.querySelector(".code-toast")?.textContent).toContain('Created skill "chat-streaming".');
+  });
+
+  it("shows skill creation failures in a sticky toast", async () => {
+    api.post.mockRejectedValueOnce(new Error("Skill creation returned an invalid result."));
+    root.querySelector<HTMLButtonElement>("[data-chat-more-trigger]")!.click();
+    document.querySelector<HTMLButtonElement>("[data-create-skill-button]")!.click();
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(document.querySelector(".code-toast")?.textContent).toContain("Skill creation returned an invalid result.");
+  });
+
+  it("prevents duplicate creation and clearing while a skill is being generated", async () => {
+    let finish!: (value: { name: string }) => void;
+    api.post.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    root.querySelector<HTMLButtonElement>("[data-chat-more-trigger]")!.click();
+    document.querySelector<HTMLButtonElement>("[data-create-skill-button]")!.click();
+
+    root.querySelector<HTMLButtonElement>("[data-chat-more-trigger]")!.click();
+    expect(document.querySelector<HTMLButtonElement>("[data-create-skill-button]")!.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>("[data-clear-chat-button]")!.disabled).toBe(true);
+    document.querySelector<HTMLButtonElement>("[data-create-skill-button]")!.click();
+    expect(api.post).toHaveBeenCalledOnce();
+
+    finish({ name: "chat-streaming" });
+    await Promise.resolve();
+    await Promise.resolve();
   });
 });
