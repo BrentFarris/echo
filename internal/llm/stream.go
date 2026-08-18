@@ -90,11 +90,15 @@ func flushStreamData(ctx context.Context, events chan<- StreamEvent, dataLines [
 	}
 
 	for _, choice := range chunk.Choices {
-		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
-			emitLogged(ctx, events, StreamEvent{Type: EventToken, Content: *choice.Delta.Content, Raw: json.RawMessage(data)})
-		}
+		// Some OpenAI-compatible reasoning backends put the last reasoning
+		// fragment and the first answer fragment in the same delta. Reasoning is
+		// semantically before answer content at that boundary, regardless of the
+		// order of fields in the JSON object.
 		if reasoning := choice.Delta.reasoningText(); reasoning != "" {
 			emitLogged(ctx, events, StreamEvent{Type: EventReasoning, Content: reasoning, Raw: json.RawMessage(data)})
+		}
+		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
+			emitLogged(ctx, events, StreamEvent{Type: EventToken, Content: *choice.Delta.Content, Raw: json.RawMessage(data)})
 		}
 		for _, toolCall := range choice.Delta.ToolCalls {
 			copy := toolCall
