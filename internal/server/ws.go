@@ -337,7 +337,7 @@ func (c *client) handleStopMessage() {
 func (c *client) runChatLoop(ctx context.Context, settings llm.Settings, request llm.ChatRequest) {
 	messages := append([]llm.Message(nil), request.Messages...)
 
-	for turn := 0; turn < maxToolCallTurns; turn++ {
+	for turn := 0; ; turn++ {
 		// If the user asked to stop between turns, halt immediately without
 		// starting another LLM request or executing further tools.
 		if ctx.Err() != nil {
@@ -425,13 +425,7 @@ func (c *client) runChatLoop(ctx context.Context, settings llm.Settings, request
 			})
 		}
 	}
-
-	c.sendJSON(map[string]any{"type": "chat_error", "error": "tool call loop exceeded the maximum number of turns"})
 }
-
-// maxToolCallTurns caps the number of model turns in a single chat message to
-// prevent a runaway tool-calling loop.
-const maxToolCallTurns = 10
 
 // toolResultImageMessage builds a user message carrying the image a tool
 // returned (e.g. filesystem_read_image) as an OpenAI image_url content part so
