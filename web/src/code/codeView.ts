@@ -13,6 +13,7 @@ import { loadSession, saveSession } from "./persistence";
 import { CODE_ROUTE, codeRouteHash, codeSidebarFromHash, routePathFromHash } from "../navigation";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 import { setGitBadgeCount } from "../gitBadge";
+import { randomUUID } from "../randomUUID";
 import { detachTerminalDock, mountTerminalDock } from "../terminal";
 import type {
   FileRef, FileSnapshot, FsEntry, PersistedTab, PersistedWorkspaceSession,
@@ -609,7 +610,7 @@ class CodeView {
     }
     try {
       const snapshot = await editorAPI.readFile(this.workspace.id, ref);
-      const tab = this.createModel(snapshot, crypto.randomUUID());
+      const tab = this.createModel(snapshot, randomUUID());
       tab.pinned = pin;
       if (!pin) {
         const previewIndex = this.tabs.findIndex((candidate) => !candidate.pinned && !candidate.dirty);
@@ -688,7 +689,7 @@ class CodeView {
         const modifiedURI = document.editable && document.ref ? this.modelURI(document.ref) : monaco.Uri.from({
           scheme: "echo-git", authority: repository.id,
           path: `/${encodeURIComponent(scope)}/${encodeURIComponent(reviewRef || String(document.revision))}/${document.path.split("/").map(encodeURIComponent).join("/")}`,
-          query: crypto.randomUUID(),
+          query: randomUUID(),
         });
         const reusable = monaco.editor.getModel(modifiedURI);
         modifiedModel = reusable || monaco.editor.createModel(document.modified.content || "", language, modifiedURI);
@@ -740,8 +741,8 @@ class CodeView {
     reason: string,
   ): void {
     const language = languageForPath(change.path);
-    const originalModel = monaco.editor.createModel("", language, monaco.Uri.from({ scheme: "echo-git-missing", authority: repository.id, path: `/${crypto.randomUUID()}/original` }));
-    const modifiedModel = monaco.editor.createModel("", language, monaco.Uri.from({ scheme: "echo-git-missing", authority: repository.id, path: `/${crypto.randomUUID()}/modified` }));
+    const originalModel = monaco.editor.createModel("", language, monaco.Uri.from({ scheme: "echo-git-missing", authority: repository.id, path: `/${randomUUID()}/original` }));
+    const modifiedModel = monaco.editor.createModel("", language, monaco.Uri.from({ scheme: "echo-git-missing", authority: repository.id, path: `/${randomUUID()}/modified` }));
     this.retainModel(originalModel);
     this.retainModel(modifiedModel);
     const tab: OpenTab = {
@@ -937,7 +938,7 @@ class CodeView {
 
   private newUntitled(): void {
     const title = `Untitled-${this.untitledCounter++}`;
-    const id = crypto.randomUUID();
+    const id = randomUUID();
     const model = monaco.editor.createModel("", "plaintext", monaco.Uri.from({ scheme: "untitled", authority: this.workspace?.id || "workspace", path: `/${id}` }));
     this.retainModel(model);
     const tab: OpenTab = {
@@ -1603,7 +1604,7 @@ class CodeView {
     await this.saveUntitled(duplicate);
   }
 
-  private newUntitledFrom(content: string, title: string, id: string = crypto.randomUUID()): OpenTab {
+  private newUntitledFrom(content: string, title: string, id: string = randomUUID()): OpenTab {
     const model = monaco.editor.createModel(content, languageForPath(title), monaco.Uri.from({ scheme: "untitled", authority: this.workspace?.id || "workspace", path: `/${id}` }));
     this.retainModel(model);
     const tab: OpenTab = {

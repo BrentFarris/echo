@@ -10,6 +10,7 @@ import type {
 } from "./gitTypes";
 import type { FileRef, WorkspaceRoot } from "./types";
 import { choiceDialog, escapeHTML, promptDialog, showContextMenu, toast } from "./ui";
+import { randomUUID } from "../randomUUID";
 
 type GitViewCallbacks = {
   roots(): WorkspaceRoot[];
@@ -412,7 +413,7 @@ export class GitView {
     const groupAction = target.closest<HTMLElement>("[data-git-group-action]");
     if (groupAction) {
       const action = groupAction.dataset.gitGroupAction as "stage_all" | "unstage_all";
-      await this.run(repository, { requestId: crypto.randomUUID(), action });
+      await this.run(repository, { requestId: randomUUID(), action });
       return;
     }
     if (target.closest("[data-git-history-toggle]")) {
@@ -487,10 +488,10 @@ export class GitView {
         choices: [{ id: "cancel", label: "Cancel" }, { id: "revert", label: "Revert", danger: true, primary: true }],
       });
       if (answer !== "revert") return;
-      await this.run(repository, { requestId: crypto.randomUUID(), action: "discard", paths, confirmed: true });
+      await this.run(repository, { requestId: randomUUID(), action: "discard", paths, confirmed: true });
       return;
     }
-    await this.run(repository, { requestId: crypto.randomUUID(), action: action as "stage" | "unstage", paths });
+    await this.run(repository, { requestId: randomUUID(), action: action as "stage" | "unstage", paths });
   }
 
   private async commit(repositoryId: string, action: "commit_staged" | "commit_all" | "commit_staged_amend" | "commit_all_amend" | "commit_staged_signoff" | "commit_all_signoff"): Promise<void> {
@@ -498,7 +499,7 @@ export class GitView {
     if (!repository) return;
     const message = (this.drafts.get(repositoryId) || "").trim();
     if (!message && !action.includes("amend")) { toast("Enter a commit message first."); return; }
-    await this.run(repository, { requestId: crypto.randomUUID(), action, message });
+    await this.run(repository, { requestId: randomUUID(), action, message });
   }
 
   private async runPrimaryAction(repositoryId: string): Promise<void> {
@@ -604,7 +605,7 @@ export class GitView {
       { label: "Unstage All Changes", icon: "remove", disabled: !status?.staged.length, run: () => this.runSimple(repository, "unstage_all") },
       { label: "Discard All Changes", icon: "discard", danger: true, separatorBefore: true, disabled: !status?.unstaged.length, run: async () => {
         const choice = await choiceDialog({ title: "Discard all changes?", message: "Tracked changes cannot be recovered. Untracked files will be moved to Echo Trash.", choices: [{ id: "cancel", label: "Cancel" }, { id: "discard", label: "Discard All", danger: true, primary: true }] });
-        if (choice === "discard") await this.run(repository, { requestId: crypto.randomUUID(), action: "discard_all", confirmed: true });
+        if (choice === "discard") await this.run(repository, { requestId: randomUUID(), action: "discard_all", confirmed: true });
       } },
     ]);
   }
@@ -633,7 +634,7 @@ export class GitView {
       { label: "Rename Current Branch…", icon: "edit", run: () => this.promptNameAction(repository, "rename_branch", "Rename Branch", "New branch name") },
       { label: "Merge Branch…", icon: "git-merge", separatorBefore: true, run: () => this.chooseRefAction(repository, "merge", metadata.branches.filter((branch) => !branch.current).map((branch) => branch.name)) },
       { label: "Rebase Current Branch…", icon: "git-pull-request", run: () => this.chooseRefAction(repository, "rebase", metadata.branches.filter((branch) => !branch.current).map((branch) => branch.name)) },
-      { label: "Publish Branch", icon: "cloud-upload", run: () => this.run(repository, { requestId: crypto.randomUUID(), action: "publish_branch", remote: metadata.remotes[0]?.name || "origin" }) },
+      { label: "Publish Branch", icon: "cloud-upload", run: () => this.run(repository, { requestId: randomUUID(), action: "publish_branch", remote: metadata.remotes[0]?.name || "origin" }) },
       { label: "Delete Local Branch…", icon: "trash", danger: true, separatorBefore: true, run: () => this.chooseRefAction(repository, "delete_branch", metadata.branches.filter((branch) => !branch.current).map((branch) => branch.name)) },
       { label: "Delete Remote Branch…", icon: "trash", danger: true, run: () => this.deleteRemoteBranch(repository, metadata) },
     ]);
@@ -646,7 +647,7 @@ export class GitView {
       { label: "Add Remote…", icon: "add", run: () => this.addRemote(repository) },
       { label: "Remove Remote…", icon: "remove", danger: true, disabled: metadata.remotes.length === 0, run: async () => {
         const name = await choose("Remove Remote", metadata.remotes.map((remote) => remote.name));
-        if (name) await this.run(repository, { requestId: crypto.randomUUID(), action: "remove_remote", name });
+        if (name) await this.run(repository, { requestId: randomUUID(), action: "remove_remote", name });
       } },
     ]);
   }
@@ -678,12 +679,12 @@ export class GitView {
     showContextMenu(x, y, [
       { label: "Create Tag…", icon: "tag-add", run: () => this.promptNameAction(repository, "create_tag", "Create Tag", "Tag name") },
       { label: "Delete Local Tag…", icon: "trash", danger: true, disabled: metadata.tags.length === 0, run: async () => {
-        const name = await choose("Delete Tag", metadata.tags); if (name) await this.run(repository, { requestId: crypto.randomUUID(), action: "delete_tag", name });
+        const name = await choose("Delete Tag", metadata.tags); if (name) await this.run(repository, { requestId: randomUUID(), action: "delete_tag", name });
       } },
       { label: "Delete Remote Tag…", icon: "trash", danger: true, disabled: metadata.tags.length === 0, run: async () => {
-        const name = await choose("Delete Remote Tag", metadata.tags); if (name) await this.run(repository, { requestId: crypto.randomUUID(), action: "delete_remote_tag", name, remote: metadata.remotes[0]?.name || "origin" });
+        const name = await choose("Delete Remote Tag", metadata.tags); if (name) await this.run(repository, { requestId: randomUUID(), action: "delete_remote_tag", name, remote: metadata.remotes[0]?.name || "origin" });
       } },
-      { label: "Push Tags", icon: "cloud-upload", separatorBefore: true, disabled: metadata.tags.length === 0, run: () => this.run(repository, { requestId: crypto.randomUUID(), action: "push_tags", remote: metadata.remotes[0]?.name || "origin" }) },
+      { label: "Push Tags", icon: "cloud-upload", separatorBefore: true, disabled: metadata.tags.length === 0, run: () => this.run(repository, { requestId: randomUUID(), action: "push_tags", remote: metadata.remotes[0]?.name || "origin" }) },
     ]);
   }
 
@@ -725,7 +726,7 @@ export class GitView {
   }
 
   private async runSimple(repository: GitRepository, action: string): Promise<void> {
-    await this.run(repository, { requestId: crypto.randomUUID(), action });
+    await this.run(repository, { requestId: randomUUID(), action });
   }
 
   private async runWithRemote(repository: GitRepository, action: string): Promise<void> {
@@ -735,24 +736,24 @@ export class GitView {
     if (!remote) return;
     const ref = await promptDialog({ title: action === "pull_from" ? "Pull From" : "Push To", label: "Branch or ref (optional)", confirmLabel: action === "pull_from" ? "Pull" : "Push", required: false });
     if (ref === null) return;
-    await this.run(repository, { requestId: crypto.randomUUID(), action, remote, ref });
+    await this.run(repository, { requestId: randomUUID(), action, remote, ref });
   }
 
   private async chooseRefAction(repository: GitRepository, action: string, refs: string[]): Promise<void> {
     const ref = await choose(actionLabel(action), refs);
-    if (ref) await this.run(repository, { requestId: crypto.randomUUID(), action, ref });
+    if (ref) await this.run(repository, { requestId: randomUUID(), action, ref });
   }
 
   private async promptNameAction(repository: GitRepository, action: string, title: string, label: string): Promise<void> {
     const name = await promptDialog({ title, label, confirmLabel: title.split(" ")[0] });
-    if (name) await this.run(repository, { requestId: crypto.randomUUID(), action, name });
+    if (name) await this.run(repository, { requestId: randomUUID(), action, name });
   }
 
   private async createBranchFrom(repository: GitRepository, metadata: GitMetadata): Promise<void> {
     const startPoint = await choose("Create Branch From", [...metadata.branches, ...metadata.remoteBranches].map((branch) => branch.name));
     if (!startPoint) return;
     const name = await promptDialog({ title: "Create Branch", label: "Branch name", confirmLabel: "Create" });
-    if (name) await this.run(repository, { requestId: crypto.randomUUID(), action: "create_branch_from", name, startPoint });
+    if (name) await this.run(repository, { requestId: randomUUID(), action: "create_branch_from", name, startPoint });
   }
 
   private async deleteRemoteBranch(repository: GitRepository, metadata: GitMetadata): Promise<void> {
@@ -761,19 +762,19 @@ export class GitView {
     const slash = selected.indexOf("/");
     const remote = slash > 0 ? selected.slice(0, slash) : metadata.remotes[0]?.name || "origin";
     const ref = slash > 0 ? selected.slice(slash + 1) : selected;
-    await this.run(repository, { requestId: crypto.randomUUID(), action: "delete_remote_branch", remote, ref });
+    await this.run(repository, { requestId: randomUUID(), action: "delete_remote_branch", remote, ref });
   }
 
   private async addRemote(repository: GitRepository): Promise<void> {
     const name = await promptDialog({ title: "Add Remote", label: "Remote name", initial: "origin", confirmLabel: "Next" });
     if (!name) return;
     const url = await promptDialog({ title: "Add Remote", label: "Remote URL", confirmLabel: "Add" });
-    if (url) await this.run(repository, { requestId: crypto.randomUUID(), action: "add_remote", name, url });
+    if (url) await this.run(repository, { requestId: randomUUID(), action: "add_remote", name, url });
   }
 
   private async chooseStashAction(repository: GitRepository, metadata: GitMetadata, action: string): Promise<void> {
     const ref = await choose(actionLabel(action), metadata.stashes.map((stash) => stash.ref), metadata.stashes.map((stash) => stash.message));
-    if (ref) await this.run(repository, { requestId: crypto.randomUUID(), action, ref });
+    if (ref) await this.run(repository, { requestId: randomUUID(), action, ref });
   }
 
   private async chooseRoot(title: string): Promise<WorkspaceRoot | null> {
