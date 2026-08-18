@@ -1,31 +1,9 @@
-// chat.js — chat view logic: send messages over WebSocket and stream the
-// assistant's reply into the DOM incrementally (no full DOM recreation).
-//
-// The chat flows over the WebSocket channel:
-//   client -> {type:"chat", message:"..."}
-//   server -> {type:"chat_start", message}
-//   server -> {type:"chat_event", eventType:"token"|"reasoning"|..., content}
-//   server -> {type:"chat_done"}  (or {type:"chat_error", error})
-//
-// Reasoning models stream `reasoning` events BEFORE any `token` events. We
-// collapse both thinking and tool activity into a single progress line pinned
-// at the bottom of the assistant message, showing the latest line of what is
-// happening (chronologically) while the answer prints above it. It has a
-// subtle "breathing" pulse while the model is working. Once complete it stops
-// breathing, dims, and stays on screen as a clickable summary that reveals the
-// full activity log.
-//
-// The server emits events in chronological order: reasoning, then tool_call /
-// tool_result for each tool, then (possibly more reasoning) and finally the
-// answer tokens. The progress line updates to reflect whichever is current.
+// chat.js — chat view logic: send messages over WebSocket and render the
+// assistant's streamed work as a chronological, inline timeline.
 
 import * as ws from "./ws.js";
 
-// Current streaming state so we can stop an in-progress reply.
 let activeStream = null;
-
-// Listeners notified whenever the streaming state changes (start/finish) so
-// the view can toggle the send button between send and stop.
 const streamingListeners = new Set();
 
 function setStreaming(streaming) {
@@ -42,7 +20,7 @@ function setStreaming(streaming) {
  * Subscribe to streaming-state changes. The handler is invoked immediately
  * with the current state, then on every transition.
  * @param {(streaming: boolean) => void} cb
- * @returns {() => void} unsubscribe function.
+ * @returns {() => void}
  */
 export function onStreamingChange(cb) {
   streamingListeners.add(cb);
@@ -54,9 +32,6 @@ export function onStreamingChange(cb) {
   return () => streamingListeners.delete(cb);
 }
 
-/**
- * @returns {boolean} whether a chat reply is currently streaming.
- */
 export function isStreaming() {
   return activeStream != null;
 }
@@ -77,27 +52,16 @@ function createMessageEl(role, text) {
   el.appendChild(body);
 
   if (role === "assistant") {
-    // The answer content prints above, and a single collapsed progress line
-    // sits at the bottom showing the latest thinking/tool activity as it
-    // happens (chronologically). It stays hidden until there is activity, and
-    // remains on screen after completion — clickable to reveal the full log.
+    const timeline = document.createElement("div");
+    timeline.className = "chat-timeline";
+    timeline.hidden = true;
+    body.appendChild(timeline);
+
     const content = document.createElement("div");
-    content.className = "chat-message-content";
+    content.className = "chat-message-content chat-final-content";
     content.textContent = text;
+    content.hidden = text === "";
     body.appendChild(content);
-
-    const progress = document.createElement("div");
-    progress.className = "chat-progress-line";
-    progress.hidden = true;
-    progress.setAttribute("role", "button");
-    progress.tabIndex = 0;
-    body.appendChild(progress);
-
-    // Hidden log of all activity, revealed when the progress line is clicked.
-    const activityLog = document.createElement("div");
-    activityLog.className = "chat-activity-log";
-    activityLog.hidden = true;
-    body.appendChild(activityLog);
   } else {
     const content = document.createElement("div");
     content.className = "chat-message-content";
@@ -108,13 +72,6 @@ function createMessageEl(role, text) {
   return el;
 }
 
-/**
- * Append a completed message to the log and scroll it into view.
- * @param {HTMLElement} log
- * @param {"user"|"assistant"} role
- * @param {string} text
- * @returns {HTMLElement} the message element
- */
 function appendMessage(log, role, text) {
   const el = createMessageEl(role, text);
   log.appendChild(el);
@@ -128,166 +85,293 @@ function scrollToBottom(log) {
   });
 }
 
-/**
- * Create an assistant message element that will receive streamed reasoning and
- * answer tokens.
- * @param {HTMLElement} log
- * @returns {{el: HTMLElement, progress: HTMLElement, content: HTMLElement, activityLog: HTMLElement}}
- */
 function createStreamingMessage(log) {
   const el = createMessageEl("assistant", "");
-  const progress = el.querySelector(".chat-progress-line");
-  const content = el.querySelector(".chat-message-content");
-  const activityLog = el.querySelector(".chat-activity-log");
+  const timeline = el.querySelector(".chat-timeline");
+  const content = el.querySelector(".chat-final-content");
   el.classList.add("is-streaming");
   log.appendChild(el);
   scrollToBottom(log);
-  return { el, progress, content, activityLog };
+  return { el, timeline, content };
 }
 
 /**
  * Send a chat message and stream the assistant reply into the log.
  * @param {HTMLElement} log
  * @param {string} text
- * @param {string} [model] optional model name to route this prompt to.
+ * @param {string} [model]
  */
 export function sendMessage(log, text, model) {
   text = text.trim();
-  if (!text) return;
+  if (!text || activeStream) return;
 
-  // If a stream is already in progress, ignore the new send.
-  if (activeStream) return;
-
-  // Remove the empty-state placeholder on the first message.
-  const empty = log.querySelector(".chat-empty");
-  if (empty) empty.remove();
-
-  // Render the user's message immediately.
+  log.querySelector(".chat-empty")?.remove();
   appendMessage(log, "user", text);
 
-  // Create the assistant message we'll stream into.
-  const { el, progress, content, activityLog } = createStreamingMessage(log);
+  const { el, timeline, content } = createStreamingMessage(log);
   const stream = {
-    el, progress, content, activityLog,
-    done: false, answer: "", thinking: "",
-    activity: [], // chronological entries for the reveal-on-click log
+    el,
+    timeline,
+    content,
+    done: false,
+    currentTurn: null,
+    finalTurn: null,
+    turns: new Map(),
+    tools: new Map(),
+    unsubs: [],
   };
   activeStream = stream;
   setStreaming(true);
 
-  const unsubscribe = ws.on("chat_event", (data) => {
-    if (data.eventType === "token") {
-      // The final answer prints above the progress line, which stays pinned at
-      // the bottom of the message.
-      stream.answer += data.content || "";
-      content.textContent = stream.answer;
-      scrollToBottom(log);
-    } else if (data.eventType === "reasoning") {
-      stream.thinking += data.content || "";
-      // Show the last non-empty line of thinking as the current progress line.
-      setProgress(stream, lastLine(stream.thinking), "thinking");
-      // Accumulate the full thinking text for the reveal-on-click log.
-      stream.activity.push({ kind: "thinking", text: data.content || "" });
-      scrollToBottom(log);
-    } else if (data.eventType === "tool_call" || data.eventType === "tool_result") {
-      // Collapse tool activity into the same progress line (chronological).
-      const tool = data.tool || "tool";
-      if (data.eventType === "tool_call") {
-        setProgress(stream, `🔧 ${tool}…`, "tool");
-        stream.activity.push({ kind: "tool_call", text: `🔧 ${tool}` });
-      } else {
-        setProgress(stream, `✓ ${tool} completed`, "tool-done");
-        stream.activity.push({ kind: "tool_result", text: `✓ ${tool} completed` });
-      }
-      scrollToBottom(log);
-    }
-  });
+  stream.unsubs.push(ws.on("chat_event", (data) => {
+    handleChatEvent(stream, data);
+    scrollToBottom(log);
+  }));
+  stream.unsubs.push(ws.on("chat_done", () => finishStream(stream, log, "done")));
+  stream.unsubs.push(ws.on("chat_error", (data) => {
+    finishStream(stream, log, "error", data.error || "The response failed.");
+  }));
+  stream.unsubs.push(ws.on("chat_stopped", () => {
+    finishStream(stream, log, "stopped", "Response stopped.");
+  }));
 
-  const doneUnsub = ws.on("chat_done", () => {
-    finishStream(stream, log, unsubscribe, doneUnsub);
-  });
-
-  const errorUnsub = ws.on("chat_error", (data) => {
-    stream.answer += (data.error ? `\n[error] ${data.error}` : "\n[error]");
-    content.textContent = stream.answer;
-    finishStream(stream, log, unsubscribe, doneUnsub, errorUnsub);
-  });
-
-  // When the user clicks Stop, the server cancels the stream and replies with
-  // chat_stopped. Finalize the message so the button reverts to send.
-  const stoppedUnsub = ws.on("chat_stopped", () => {
-    finishStream(stream, log, unsubscribe, doneUnsub, errorUnsub, stoppedUnsub);
-  });
-
-  // Send the message over the WebSocket.
   ws.send({ type: "chat", message: text, ...(model ? { model } : {}) });
 }
 
-/**
- * Update the collapsed progress line to show the given text. Reveals it if
- * hidden and applies a "breathing" pulse while activity is ongoing.
- * @param {{progress: HTMLElement}} stream
- * @param {string} text
- * @param {"thinking"|"tool"|"tool-done"} kind
- */
-function setProgress(stream, text, kind) {
-  if (stream.progress.hidden) stream.progress.hidden = false;
-  stream.progress.textContent = text;
-  stream.progress.dataset.kind = kind;
-  // Re-trigger the breathing animation so each update pulses visibly.
-  stream.progress.classList.remove("is-active");
-  void stream.progress.offsetWidth; // force reflow to restart the animation
-  stream.progress.classList.add("is-active");
-}
+function handleChatEvent(stream, data) {
+  const turnNumber = Number.isInteger(data.turn)
+    ? data.turn
+    : (stream.currentTurn?.number ?? 0);
 
-/**
- * Finalize the progress line once streaming completes: stop breathing and make
- * it a static, dimmed, clickable summary that reveals the activity log.
- * @param {{progress: HTMLElement, activityLog: HTMLElement, activity: Array}} stream
- */
-function completeProgress(stream) {
-  stream.progress.classList.remove("is-active");
-  stream.progress.classList.add("is-complete");
-  // Rebuild the reveal-on-click activity log from the accumulated entries.
-  stream.activityLog.textContent = "";
-  for (const entry of stream.activity) {
-    const line = document.createElement("div");
-    line.className = `chat-activity-line chat-activity-line-${entry.kind}`;
-    line.textContent = entry.text;
-    stream.activityLog.appendChild(line);
+  switch (data.eventType) {
+    case "assistant_turn_start":
+      startTurn(stream, turnNumber);
+      break;
+    case "token":
+      appendTurnText(stream, turnNumber, data.content || "");
+      break;
+    case "reasoning":
+      appendReasoning(stream, turnNumber, data.content || "");
+      break;
+    case "assistant_turn_end":
+      endTurn(stream, turnNumber, Boolean(data.hasToolCalls));
+      break;
+    case "tool_call":
+      appendToolCall(stream, data, turnNumber);
+      break;
+    case "tool_result":
+      completeToolCall(stream, data, turnNumber);
+      break;
   }
-  // Toggle the log open/closed on click (and keyboard Enter/Space).
-  const toggle = () => {
-    const willOpen = stream.activityLog.hidden;
-    stream.activityLog.hidden = !willOpen;
-    stream.progress.classList.toggle("is-open", willOpen);
+}
+
+function startTurn(stream, number) {
+  const turn = ensureTurn(stream, number);
+  stream.currentTurn = turn;
+}
+
+function ensureTurn(stream, number) {
+  let turn = stream.turns.get(number);
+  if (turn) return turn;
+
+  const el = document.createElement("div");
+  el.className = "chat-turn";
+  el.dataset.turn = String(number);
+  stream.timeline.hidden = false;
+  stream.timeline.appendChild(el);
+
+  turn = {
+    number,
+    el,
+    text: "",
+    lastKind: "",
+    textBlock: null,
+    reasoning: null,
   };
-  stream.progress.addEventListener("click", toggle);
-  stream.progress.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      toggle();
+  stream.turns.set(number, turn);
+  return turn;
+}
+
+function appendTurnText(stream, turnNumber, text) {
+  if (!text) return;
+  const turn = ensureTurn(stream, turnNumber);
+  completeReasoning(turn);
+
+  if (turn.lastKind !== "text" || !turn.textBlock) {
+    turn.textBlock = document.createElement("div");
+    turn.textBlock.className = "chat-progress-text";
+    turn.el.appendChild(turn.textBlock);
+  }
+  turn.lastKind = "text";
+  turn.text += text;
+  turn.textBlock.textContent += text;
+}
+
+function appendReasoning(stream, turnNumber, text) {
+  if (!text) return;
+  const turn = ensureTurn(stream, turnNumber);
+
+  if (turn.lastKind !== "reasoning" || !turn.reasoning) {
+    completeReasoning(turn);
+    turn.reasoning = createReasoningItem();
+    turn.el.appendChild(turn.reasoning.details);
+  }
+  turn.lastKind = "reasoning";
+  turn.textBlock = null;
+  turn.reasoning.text += text;
+  turn.reasoning.body.textContent = turn.reasoning.text;
+}
+
+function createReasoningItem() {
+  const details = document.createElement("details");
+  details.className = "chat-activity-item chat-reasoning-item is-running";
+
+  const summary = document.createElement("summary");
+  const label = document.createElement("span");
+  label.className = "chat-activity-name";
+  label.textContent = "Thinking…";
+  summary.appendChild(label);
+  details.appendChild(summary);
+
+  const body = document.createElement("div");
+  body.className = "chat-activity-body chat-reasoning-content";
+  details.appendChild(body);
+
+  return { details, label, body, text: "", complete: false };
+}
+
+function completeReasoning(turn) {
+  const reasoning = turn?.reasoning;
+  if (!reasoning || reasoning.complete) return;
+  reasoning.complete = true;
+  reasoning.label.textContent = "Thinking";
+  reasoning.details.classList.remove("is-running");
+}
+
+function endTurn(stream, turnNumber, hasToolCalls) {
+  const turn = ensureTurn(stream, turnNumber);
+  completeReasoning(turn);
+  turn.lastKind = "";
+  turn.textBlock = null;
+
+  if (hasToolCalls) {
+    turn.el.classList.add("is-progress-turn");
+  } else {
+    stream.finalTurn = turn;
+    promoteFinalText(stream, turn);
+  }
+  if (stream.currentTurn === turn) stream.currentTurn = null;
+}
+
+function promoteFinalText(stream, turn) {
+  stream.content.textContent = turn.text;
+  stream.content.hidden = turn.text === "";
+  for (const textBlock of turn.el.querySelectorAll(":scope > .chat-progress-text")) {
+    textBlock.remove();
+  }
+  removeEmptyTurn(turn);
+}
+
+function appendToolCall(stream, data, turnNumber) {
+  const callOrder = Number.isInteger(data.callOrder) ? data.callOrder : stream.tools.size;
+  const callId = data.callId || `turn-${turnNumber}-call-${callOrder}`;
+  const toolName = data.tool || "tool";
+  const item = createToolItem(toolName, data.arguments || "");
+
+  item.details.dataset.callId = callId;
+  stream.timeline.hidden = false;
+  stream.timeline.appendChild(item.details);
+  stream.tools.set(callId, item);
+}
+
+function createToolItem(toolName, args) {
+  const details = document.createElement("details");
+  details.className = "chat-activity-item chat-tool-item is-running";
+
+  const summary = document.createElement("summary");
+  const name = document.createElement("span");
+  name.className = "chat-activity-name";
+  name.textContent = toolName;
+  const status = document.createElement("span");
+  status.className = "chat-activity-status";
+  status.textContent = "Running…";
+  summary.append(name, status);
+  details.appendChild(summary);
+
+  const body = document.createElement("div");
+  body.className = "chat-activity-body";
+  body.appendChild(createToolSection("Arguments", formatStructured(args) || "No arguments").section);
+  const resultSection = createToolSection("Result", "Waiting for result…");
+  body.appendChild(resultSection.section);
+  details.appendChild(body);
+
+  return { details, status, result: resultSection.content };
+}
+
+function createToolSection(labelText, value) {
+  const section = document.createElement("section");
+  section.className = "chat-tool-section";
+  const label = document.createElement("div");
+  label.className = "chat-tool-label";
+  label.textContent = labelText;
+  const content = document.createElement("pre");
+  content.className = "chat-tool-value";
+  content.textContent = value;
+  section.append(label, content);
+  return { section, content };
+}
+
+function completeToolCall(stream, data, turnNumber) {
+  const callOrder = Number.isInteger(data.callOrder) ? data.callOrder : stream.tools.size;
+  const callId = data.callId || `turn-${turnNumber}-call-${callOrder}`;
+  let item = stream.tools.get(callId);
+  if (!item) {
+    appendToolCall(stream, { ...data, callId }, turnNumber);
+    item = stream.tools.get(callId);
+  }
+  if (!item) return;
+
+  const succeeded = data.success === true;
+  item.details.classList.remove("is-running");
+  item.details.classList.add(succeeded ? "is-success" : "is-error");
+  item.status.textContent = succeeded ? "Completed" : "Failed";
+  item.result.textContent = formatStructured(data.content) || "No result";
+}
+
+function formatStructured(value) {
+  if (value == null) return "";
+  if (typeof value !== "string") {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
     }
-  });
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    return JSON.stringify(JSON.parse(trimmed), null, 2);
+  } catch {
+    return value;
+  }
 }
 
-/**
- * Return the last non-empty line of a multi-line string, or the whole string.
- * @param {string} text
- * @returns {string}
- */
-function lastLine(text) {
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  return lines.length ? lines[lines.length - 1] : text.trim();
-}
-
-function finishStream(stream, log, ...unsubs) {
+function finishStream(stream, log, outcome, message = "") {
   if (stream.done) return;
   stream.done = true;
-  for (const unsub of unsubs) unsub();
-  stream.el?.classList.remove("is-streaming");
-  // Keep the progress line on screen but stop it breathing once done.
-  completeProgress(stream);
+  for (const unsub of stream.unsubs) unsub();
+  stream.el.classList.remove("is-streaming");
+
+  for (const turn of stream.turns.values()) completeReasoning(turn);
+
+  if (outcome === "done") {
+    finalizeSuccessfulResponse(stream);
+  } else {
+    markRunningToolsInterrupted(stream, outcome);
+    appendStreamStatus(stream, outcome, message);
+  }
+
   if (activeStream === stream) {
     activeStream = null;
     setStreaming(false);
@@ -295,12 +379,52 @@ function finishStream(stream, log, ...unsubs) {
   scrollToBottom(log);
 }
 
-/**
- * Stop the currently in-progress stream (if any). Sends a "stop" message over
- * the WebSocket so the server cancels the active LLM/tool activity. The server
- * replies with chat_stopped, which finalizes the message and reverts the
- * button to send.
- */
+function finalizeSuccessfulResponse(stream) {
+  for (const turn of stream.turns.values()) removeEmptyTurn(turn);
+  for (const details of stream.timeline.querySelectorAll("details")) {
+    details.open = false;
+  }
+
+  if (!stream.timeline.childElementCount) {
+    stream.timeline.remove();
+    return;
+  }
+
+  const work = document.createElement("details");
+  work.className = "chat-work-disclosure";
+  const summary = document.createElement("summary");
+  summary.textContent = "Show work";
+  const body = document.createElement("div");
+  body.className = "chat-work-content";
+  body.appendChild(stream.timeline);
+  work.append(summary, body);
+  stream.content.parentElement.insertBefore(work, stream.content);
+}
+
+function removeEmptyTurn(turn) {
+  if (turn?.el && !turn.el.childElementCount) turn.el.remove();
+}
+
+function markRunningToolsInterrupted(stream, outcome) {
+  for (const item of stream.tools.values()) {
+    if (!item.details.classList.contains("is-running")) continue;
+    item.details.classList.remove("is-running");
+    item.details.classList.add("is-error");
+    item.status.textContent = outcome === "stopped" ? "Stopped" : "Interrupted";
+    item.result.textContent = outcome === "stopped"
+      ? "Tool execution was stopped."
+      : "Tool execution was interrupted by the response error.";
+  }
+}
+
+function appendStreamStatus(stream, outcome, message) {
+  stream.timeline.hidden = false;
+  const status = document.createElement("div");
+  status.className = `chat-stream-status is-${outcome}`;
+  status.textContent = message || (outcome === "stopped" ? "Response stopped." : "The response failed.");
+  stream.timeline.appendChild(status);
+}
+
 export function stopStream() {
   ws.send({ type: "stop" });
 }

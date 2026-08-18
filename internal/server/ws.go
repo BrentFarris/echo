@@ -347,9 +347,14 @@ func (c *client) runChatLoop(ctx context.Context, settings llm.Settings, request
 
 		turnRequest := request
 		turnRequest.Messages = messages
+		c.sendJSON(map[string]any{
+			"type":      "chat_event",
+			"eventType": "assistant_turn_start",
+			"turn":      turn,
+		})
 
 		stream := c.server.llm.StreamChat(ctx, turnRequest)
-		content, toolCalls, err := c.collectAssistantTurn(stream)
+		content, toolCalls, err := c.collectAssistantTurn(stream, turn)
 		if err != nil {
 			if errors.Is(err, errChatCanceled) {
 				c.sendJSON(map[string]any{"type": "chat_stopped"})
@@ -358,6 +363,12 @@ func (c *client) runChatLoop(ctx context.Context, settings llm.Settings, request
 			}
 			return
 		}
+		c.sendJSON(map[string]any{
+			"type":         "chat_event",
+			"eventType":    "assistant_turn_end",
+			"turn":         turn,
+			"hasToolCalls": len(toolCalls) > 0,
+		})
 
 		// Record the assistant turn in the conversation history.
 		assistant := llm.Message{Role: llm.RoleAssistant, Content: content, ToolCalls: toolCalls}
@@ -370,16 +381,26 @@ func (c *client) runChatLoop(ctx context.Context, settings llm.Settings, request
 		}
 
 		// Execute each requested tool and append its result.
-		for _, call := range toolCalls {
+		for callOrder, call := range toolCalls {
+			callID := call.ID
+			if callID == "" {
+				callID = fmt.Sprintf("turn-%d-call-%d", turn, callOrder)
+			}
 			c.sendJSON(map[string]any{
 				"type":      "chat_event",
 				"eventType": "tool_call",
+				"turn":      turn,
+				"callId":    callID,
+				"callOrder": callOrder,
 				"tool":      call.Function.Name,
+				"arguments": call.Function.Arguments,
 			})
 			result := tools.Execute(c.toolContext(ctx), call.Function.Name, json.RawMessage(call.Function.Arguments))
 			data, marshalErr := json.Marshal(result)
+			resultSuccess := result.Success
 			if marshalErr != nil {
 				data = []byte(fmt.Sprintf(`{"tool":%q,"success":false,"error":{"code":"marshal_error","message":%q}}`, call.Function.Name, marshalErr.Error()))
+				resultSuccess = false
 			}
 			messages = append(messages, llm.Message{
 				Role:       llm.RoleTool,
@@ -395,7 +416,11 @@ func (c *client) runChatLoop(ctx context.Context, settings llm.Settings, request
 			c.sendJSON(map[string]any{
 				"type":      "chat_event",
 				"eventType": "tool_result",
+				"turn":      turn,
+				"callId":    callID,
+				"callOrder": callOrder,
 				"tool":      call.Function.Name,
+				"success":   resultSuccess,
 				"content":   string(data),
 			})
 		}
@@ -504,7 +529,7 @@ func (c *client) toolContext(ctx context.Context) tools.ExecutionContext {
 // collectAssistantTurn drains a stream, merging streamed tool-call deltas and
 // forwarding token/reasoning events to the client. It returns the assembled
 // assistant content, the complete tool calls (if any), and any fatal error.
-func (c *client) collectAssistantTurn(stream *llm.Stream) (string, []llm.ToolCall, error) {
+func (c *client) collectAssistantTurn(stream *llm.Stream, turn int) (string, []llm.ToolCall, error) {
 	var content strings.Builder
 	toolCalls := make(map[int]llm.ToolCall)
 	var firstErr error
@@ -516,6 +541,7 @@ func (c *client) collectAssistantTurn(stream *llm.Stream) (string, []llm.ToolCal
 			c.sendJSON(map[string]any{
 				"type":         "chat_event",
 				"eventType":    string(event.Type),
+				"turn":         turn,
 				"content":      event.Content,
 				"finishReason": event.FinishReason,
 				"error":        event.Error,
@@ -524,6 +550,7 @@ func (c *client) collectAssistantTurn(stream *llm.Stream) (string, []llm.ToolCal
 			c.sendJSON(map[string]any{
 				"type":         "chat_event",
 				"eventType":    string(event.Type),
+				"turn":         turn,
 				"content":      event.Content,
 				"finishReason": event.FinishReason,
 				"error":        event.Error,

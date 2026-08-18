@@ -384,115 +384,174 @@ textarea:disabled {
   padding: var(--space-md) var(--space-lg);
 }
 
-/* Collapsed progress line: pinned at the bottom of the assistant message, it
-   shows the latest line of thinking or tool activity in chronological order.
-   It has a subtle "breathing" pulse while the model is working. Once complete
-   it stops breathing, dims to the "dark" end of the pulse, and stays on screen
-   as a clickable summary that reveals the full activity log on hover/click. */
-.chat-progress-line {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-wrap: break-word;
-  line-height: 1.45;
-  font-size: var(--text-base-sm);
-  color: var(--color-text-muted);
-  font-family: var(--font-mono, monospace);
-  background: var(--color-surface-muted);
-  border-left: 3px solid var(--color-border);
-  border-radius: 0 8px 8px 0;
-  padding: var(--space-sm) var(--space-lg);
-  margin: var(--space-sm) 0 0 0;
-  max-width: 100%;
-}
-
-.chat-progress-line[hidden] {
-  display: none;
-}
-
-/* Breathing pulse while activity is ongoing. */
-.chat-progress-line.is-active {
-  animation: chat-progress-breathe 1.6s ease-in-out infinite;
-}
-
-/* Completed state: dimmed (the "dark" end of the pulse), clickable, and it
-   lightens up on hover to invite interaction. */
-.chat-progress-line.is-complete {
-  opacity: 0.55;
-  cursor: pointer;
-  transition: opacity 150ms ease, background 150ms ease;
-}
-
-.chat-progress-line.is-complete:hover,
-.chat-progress-line.is-complete:focus-visible {
-  opacity: 1;
-  background: var(--color-surface);
-}
-
-.chat-progress-line.is-complete.is-open {
-  opacity: 1;
-}
-
-.chat-progress-line[data-kind="tool-done"] {
-  color: var(--color-success, #2e7d32);
-}
-
-@keyframes chat-progress-breathe {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.55; }
-}
-
-/* Reveal-on-click activity log shown below the completed progress line. */
-.chat-activity-log {
+/* Assistant work is rendered chronologically while streaming. Model text from
+   tool-producing turns, reasoning disclosures, and tool disclosures all live
+   in this same flow. */
+.chat-timeline,
+.chat-turn {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs, 4px);
-  margin: var(--space-sm) 0 0 0;
-  padding: var(--space-sm) var(--space-lg);
-  border-left: 3px solid var(--color-border);
-  border-radius: 0 8px 8px 0;
-  background: var(--color-surface-muted);
-  max-width: 100%;
+  gap: var(--space-md);
+  min-width: 0;
 }
 
-.chat-activity-log[hidden] {
+.chat-timeline[hidden],
+.chat-final-content[hidden] {
   display: none;
 }
 
-.chat-activity-line {
+.chat-progress-text {
+  padding: var(--space-md) var(--space-lg);
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: break-word;
-  font-size: var(--text-base-sm);
+  color: var(--color-text);
+  font-size: var(--text-2xl-lg);
+  line-height: 1.5;
+}
+
+/* Native details/summary controls keep every inline activity keyboard- and
+   screen-reader-operable without custom click handlers. */
+.chat-activity-item,
+.chat-work-disclosure {
+  min-width: 0;
+}
+
+.chat-activity-item > summary,
+.chat-work-disclosure > summary {
+  cursor: pointer;
   color: var(--color-text-muted);
+  border-radius: 6px;
+  outline: none;
+  user-select: none;
+}
+
+.chat-activity-item > summary {
+  display: list-item;
+  padding: var(--space-sm) var(--space-lg);
+  border: 1px solid transparent;
+  background: color-mix(in srgb, var(--color-surface-muted) 72%, transparent);
   font-family: var(--font-mono, monospace);
+  font-size: var(--text-base-sm);
   line-height: 1.45;
 }
 
-.chat-activity-line-tool_call {
+.chat-activity-item > summary:hover,
+.chat-activity-item > summary:focus-visible,
+.chat-work-disclosure > summary:hover,
+.chat-work-disclosure > summary:focus-visible {
+  color: var(--color-text);
+  background: var(--color-surface-muted);
+}
+
+.chat-activity-item > summary:focus-visible,
+.chat-work-disclosure > summary:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 52%, transparent);
+}
+
+.chat-activity-name {
   color: var(--color-text);
 }
 
-.chat-activity-line-tool_result {
-  color: var(--color-success, #2e7d32);
+.chat-activity-status {
+  margin-left: var(--space-lg);
+  color: var(--color-text-muted);
 }
 
-.chat-message.is-streaming .chat-message-content::after {
-  content: "";
-  display: inline-block;
-  width: 7px;
-  height: 14px;
-  margin-left: 2px;
-  vertical-align: text-bottom;
-  background: var(--color-accent);
-  animation: chat-caret-blink 1s steps(2, start) infinite;
+.chat-tool-item.is-success .chat-activity-status {
+  color: var(--color-success);
 }
 
-@keyframes chat-caret-blink {
-  0%, 50% { opacity: 1; }
-  50.01%, 100% { opacity: 0; }
+.chat-tool-item.is-error .chat-activity-status {
+  color: var(--color-danger);
+}
+
+.chat-tool-item.is-running > summary,
+.chat-reasoning-item.is-running > summary {
+  border-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+
+.chat-activity-body {
+  margin: var(--space-xs) 0 var(--space-sm) var(--space-xl);
+  padding: var(--space-md) var(--space-lg);
+  border-left: 2px solid var(--color-border);
+  border-radius: 0 6px 6px 0;
+  background: color-mix(in srgb, var(--color-surface-muted) 64%, transparent);
+  color: var(--color-text-muted);
+  min-width: 0;
+}
+
+.chat-reasoning-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-base-sm);
+  line-height: 1.5;
+}
+
+.chat-tool-section + .chat-tool-section {
+  margin-top: var(--space-lg);
+}
+
+.chat-tool-label {
+  margin-bottom: var(--space-sm);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.chat-tool-value {
+  max-height: min(44vh, 420px);
+  margin: 0;
+  padding: var(--space-md);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-base-sm);
+  line-height: 1.45;
+}
+
+/* Completed responses keep the live transcript intact inside one outer
+   disclosure immediately above the promoted final answer. */
+.chat-work-disclosure {
+  margin: 0 var(--space-lg);
+}
+
+.chat-work-disclosure > summary {
+  width: fit-content;
+  padding: var(--space-sm) var(--space-md);
+  font-size: var(--text-base-md);
+  font-weight: 600;
+}
+
+.chat-work-content {
+  margin-top: var(--space-sm);
+  padding: var(--space-md) 0 var(--space-lg);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.chat-stream-status {
+  margin: var(--space-sm) var(--space-lg);
+  padding: var(--space-md) var(--space-lg);
+  border-left: 3px solid var(--color-danger);
+  border-radius: 0 6px 6px 0;
+  background: color-mix(in srgb, var(--color-danger) 8%, var(--color-surface));
+  color: var(--color-danger);
+  font-size: var(--text-base-lg);
+}
+
+.chat-stream-status.is-stopped {
+  border-left-color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 8%, var(--color-surface));
+  color: var(--color-warning);
 }
 
 /* ==========================================================================

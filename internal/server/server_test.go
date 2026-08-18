@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -308,7 +309,7 @@ func TestChatStreamingOverWebSocket(t *testing.T) {
 		t.Fatalf("write chat: %v", err)
 	}
 
-	// Expect chat_start, a token event, and chat_done.
+	// Expect an explicitly bounded assistant turn around the token stream.
 	var got []string
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	for {
@@ -317,20 +318,24 @@ func TestChatStreamingOverWebSocket(t *testing.T) {
 			t.Fatalf("read event: %v", err)
 		}
 		typ, _ := evt["type"].(string)
-		got = append(got, typ)
+		label := typ
+		if typ == "chat_event" {
+			label, _ = evt["eventType"].(string)
+			if turn, ok := evt["turn"].(float64); !ok || turn != 0 {
+				t.Fatalf("expected turn 0 on %q, got %v", label, evt["turn"])
+			}
+			if label == "assistant_turn_end" && evt["hasToolCalls"] != false {
+				t.Fatalf("expected direct response to end without tool calls, got %v", evt["hasToolCalls"])
+			}
+		}
+		got = append(got, label)
 		if typ == "chat_done" {
 			break
 		}
 	}
-	joined := strings.Join(got, ",")
-	if !strings.Contains(joined, "chat_start") {
-		t.Fatalf("expected chat_start, got %v", got)
-	}
-	if !strings.Contains(joined, "chat_event") {
-		t.Fatalf("expected chat_event, got %v", got)
-	}
-	if !strings.Contains(joined, "chat_done") {
-		t.Fatalf("expected chat_done, got %v", got)
+	want := []string{"chat_start", "assistant_turn_start", "token", "assistant_turn_end", "chat_done"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected chat event order: got %v, want %v", got, want)
 	}
 }
 
@@ -601,8 +606,10 @@ func (f *toolCallingStreamer) StreamChat(_ context.Context, request llm.ChatRequ
 	callCount := len(f.requests)
 	f.mu.Unlock()
 
-	events := make(chan llm.StreamEvent, 8)
+	events := make(chan llm.StreamEvent, 10)
 	if callCount == 1 {
+		events <- llm.StreamEvent{Type: llm.EventReasoning, Content: "I should inspect the workspace."}
+		events <- llm.StreamEvent{Type: llm.EventToken, Content: "I'll list the workspace first."}
 		events <- llm.StreamEvent{
 			Type: llm.EventToolCall,
 			ToolCall: &llm.ToolCallDelta{
@@ -687,6 +694,9 @@ func TestChatToolCallingExecutesFilesystemList(t *testing.T) {
 	}
 
 	var toolCallSeen, toolResultSeen, doneSeen bool
+	var eventOrder []string
+	var emittedCallID string
+	var turnEndToolFlags []bool
 	for {
 		var evt map[string]any
 		if err := conn.ReadJSON(&evt); err != nil {
@@ -695,13 +705,36 @@ func TestChatToolCallingExecutesFilesystemList(t *testing.T) {
 		typ, _ := evt["type"].(string)
 		if typ == "chat_event" {
 			eventType, _ := evt["eventType"].(string)
+			eventOrder = append(eventOrder, eventType)
+			if eventType == "assistant_turn_end" {
+				turnEndToolFlags = append(turnEndToolFlags, evt["hasToolCalls"] == true)
+			}
 			if eventType == "tool_call" {
 				toolCallSeen = true
+				emittedCallID, _ = evt["callId"].(string)
+				if emittedCallID != "call-1" {
+					t.Fatalf("expected tool call ID call-1, got %q", emittedCallID)
+				}
+				if args, _ := evt["arguments"].(string); !strings.Contains(args, `"path"`) {
+					t.Fatalf("expected complete tool arguments, got %q", args)
+				}
+				if order, ok := evt["callOrder"].(float64); !ok || order != 0 {
+					t.Fatalf("expected call order 0, got %v", evt["callOrder"])
+				}
 			}
 			if eventType == "tool_result" {
 				toolResultSeen = true
 				if tool, _ := evt["tool"].(string); tool != "filesystem_list" {
 					t.Fatalf("expected filesystem_list tool result, got %q", tool)
+				}
+				if callID, _ := evt["callId"].(string); callID != emittedCallID {
+					t.Fatalf("tool result call ID %q does not match %q", callID, emittedCallID)
+				}
+				if success, ok := evt["success"].(bool); !ok || !success {
+					t.Fatalf("expected successful tool result, got %v", evt["success"])
+				}
+				if content, _ := evt["content"].(string); !strings.Contains(content, "notes.txt") {
+					t.Fatalf("expected complete tool result content, got %q", content)
 				}
 			}
 		}
@@ -722,6 +755,17 @@ func TestChatToolCallingExecutesFilesystemList(t *testing.T) {
 	}
 	if !doneSeen {
 		t.Fatal("expected chat_done")
+	}
+	wantOrder := []string{
+		"assistant_turn_start", "reasoning", "token", "assistant_turn_end",
+		"tool_call", "tool_result", "assistant_turn_start", "token",
+		"assistant_turn_end",
+	}
+	if !reflect.DeepEqual(eventOrder, wantOrder) {
+		t.Fatalf("unexpected tool-loop event order: got %v, want %v", eventOrder, wantOrder)
+	}
+	if !reflect.DeepEqual(turnEndToolFlags, []bool{true, false}) {
+		t.Fatalf("unexpected turn completion flags: %v", turnEndToolFlags)
 	}
 
 	// The loop must have made two requests: the initial turn and the follow-up
@@ -745,6 +789,123 @@ func TestChatToolCallingExecutesFilesystemList(t *testing.T) {
 	}
 	if !foundToolResult {
 		t.Fatal("expected a tool result message in the follow-up request")
+	}
+}
+
+// multipleToolStreamer requests one valid and one unknown tool in the same
+// turn, then emits a final answer. It exercises ordered call metadata, failure
+// payloads, and the fallback ID used when a provider omits a call ID.
+type multipleToolStreamer struct {
+	mu       sync.Mutex
+	requests int
+	path     string
+}
+
+func (f *multipleToolStreamer) StreamChat(_ context.Context, _ llm.ChatRequest) *llm.Stream {
+	f.mu.Lock()
+	f.requests++
+	requestNumber := f.requests
+	f.mu.Unlock()
+
+	events := make(chan llm.StreamEvent, 8)
+	if requestNumber == 1 {
+		events <- llm.StreamEvent{Type: llm.EventToolCall, ToolCall: &llm.ToolCallDelta{
+			Index: 0,
+			ID:    "call-good",
+			Type:  "function",
+			Function: llm.FunctionCallDelta{
+				Name:      "filesystem_list",
+				Arguments: `{"path":"` + f.path + `"}`,
+			},
+		}}
+		events <- llm.StreamEvent{Type: llm.EventToolCall, ToolCall: &llm.ToolCallDelta{
+			Index: 1,
+			Type:  "function",
+			Function: llm.FunctionCallDelta{
+				Name:      "missing_tool",
+				Arguments: `{"value":42}`,
+			},
+		}}
+		events <- llm.StreamEvent{Type: llm.EventComplete, FinishReason: "tool_calls"}
+	} else {
+		events <- llm.StreamEvent{Type: llm.EventToken, Content: "Finished both tool calls."}
+		events <- llm.StreamEvent{Type: llm.EventComplete, FinishReason: "stop"}
+	}
+	close(events)
+	return &llm.Stream{ID: "fake", Events: events}
+}
+
+func TestChatMultipleToolEventsPreserveOrderAndFailures(t *testing.T) {
+	s, _ := newTestServer(t)
+	wsDir := t.TempDir()
+	ws, err := s.workspaces.Create(workspaces.CreateRequest{Name: "multi-tools", MainPath: wsDir})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := s.workspaces.SetActive(ws.ID); err != nil {
+		t.Fatalf("set active: %v", err)
+	}
+	s.llm = &multipleToolStreamer{path: normalizeWorkspaceFolderLabel(filepath.Base(wsDir))}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go s.httpServer.Serve(ln)
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+ln.Addr().String()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("read welcome: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{"type": "chat", "message": "run two tools"}); err != nil {
+		t.Fatalf("write chat: %v", err)
+	}
+
+	var calls, results []map[string]any
+	for {
+		var evt map[string]any
+		if err := conn.ReadJSON(&evt); err != nil {
+			t.Fatalf("read event: %v", err)
+		}
+		if evt["type"] == "chat_event" {
+			switch evt["eventType"] {
+			case "tool_call":
+				calls = append(calls, evt)
+			case "tool_result":
+				results = append(results, evt)
+			}
+		}
+		if evt["type"] == "chat_done" {
+			break
+		}
+		if evt["type"] == "chat_error" {
+			t.Fatalf("unexpected chat error: %v", evt)
+		}
+	}
+
+	if len(calls) != 2 || len(results) != 2 {
+		t.Fatalf("expected two calls and results, got calls=%d results=%d", len(calls), len(results))
+	}
+	if calls[0]["callId"] != "call-good" || calls[1]["callId"] != "turn-0-call-1" {
+		t.Fatalf("unexpected call IDs: %v, %v", calls[0]["callId"], calls[1]["callId"])
+	}
+	if calls[0]["callOrder"] != float64(0) || calls[1]["callOrder"] != float64(1) {
+		t.Fatalf("unexpected call order: %v, %v", calls[0]["callOrder"], calls[1]["callOrder"])
+	}
+	if results[0]["success"] != true || results[1]["success"] != false {
+		t.Fatalf("unexpected result statuses: %v, %v", results[0]["success"], results[1]["success"])
+	}
+	if results[0]["callId"] != calls[0]["callId"] || results[1]["callId"] != calls[1]["callId"] {
+		t.Fatalf("result IDs do not match calls: calls=%v results=%v", calls, results)
+	}
+	if content, _ := results[1]["content"].(string); !strings.Contains(content, "missing_tool") {
+		t.Fatalf("expected complete unknown-tool error payload, got %q", content)
 	}
 }
 
@@ -1003,4 +1164,3 @@ func TestChatToolCallingFeedsVideoToModel(t *testing.T) {
 		t.Fatal("expected the video to be fed back to the model as a video_url content part")
 	}
 }
-
