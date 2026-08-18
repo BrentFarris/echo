@@ -485,9 +485,12 @@ func (s *chatSession) isActiveLocked(turnID string) bool {
 
 func (s *chatSession) toolContext(ctx context.Context, scopes *tools.ToolScopeChecker) tools.ExecutionContext {
 	settings := s.manager.server.settings
+	roots := s.manager.server.confinedToolRoots(s.workspace)
 	return tools.ExecutionContext{
-		Context: ctx, WorkspaceRoots: workspaceToolRoots(s.workspace), SearxngURL: settings.SearxngURL,
-		ComfyuiURL: settings.ComfyuiURL, ComfyuiDefaultCheckpoint: settings.ComfyuiDefaultCheckpoint,
+		Context: ctx, WorkspaceRoots: roots, SearxngURL: settings.SearxngURL,
+		ResolveWorkspacePath:      s.manager.server.toolPathResolver(s.workspace.ID, roots, false),
+		ResolveWorkspaceChildPath: s.manager.server.toolPathResolver(s.workspace.ID, roots, true),
+		ComfyuiURL:                settings.ComfyuiURL, ComfyuiDefaultCheckpoint: settings.ComfyuiDefaultCheckpoint,
 		ComfyuiTxt2imgWorkflow: settings.ComfyuiTxt2imgWorkflow, ComfyuiImg2imgWorkflow: settings.ComfyuiImg2imgWorkflow,
 		ToolScopes: scopes,
 	}

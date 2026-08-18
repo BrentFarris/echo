@@ -5,15 +5,21 @@ package server
 
 import (
 	"context"
+	"fmt"
+	iofs "io/fs"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/brent/echo/internal/agentmodes"
+	"github.com/brent/echo/internal/appdata"
+	"github.com/brent/echo/internal/auth"
 	"github.com/brent/echo/internal/llm"
 	"github.com/brent/echo/internal/settings"
+	"github.com/brent/echo/internal/workspacefs"
 	"github.com/brent/echo/internal/workspaces"
 )
 
@@ -23,10 +29,17 @@ import (
 type Server struct {
 	httpServer   *http.Server
 	webDir       string
+	webAssets    iofs.FS
 	hub          *Hub
 	settingsPath string
+	data         *appdata.Store
 	store        *settings.Store
 	workspaces   *workspaces.Manager
+	fs           *workspacefs.Service
+	watcher      *workspacefs.WatchManager
+	auth         *auth.Manager
+	authDisabled bool
+	loginLimiter *loginRateLimiter
 	modes        *agentmodes.Manager
 	sessions     *chatSessionManager
 	llm          chatStreamer
@@ -52,9 +65,20 @@ func New(addr, webDir string) *Server {
 // to the settings file. When settingsPath is empty, the platform default
 // (echo/echo.json under the user config dir) is used.
 func NewWithSettingsPath(addr, webDir, settingsPath string) *Server {
+	return newServer(addr, webDir, nil, settingsPath)
+}
+
+// NewWithAssets constructs a Server that serves an embedded production SPA.
+// The supplied filesystem's root must contain index.html.
+func NewWithAssets(addr string, assets iofs.FS, settingsPath string) *Server {
+	return newServer(addr, "", assets, settingsPath)
+}
+
+func newServer(addr, webDir string, assets iofs.FS, settingsPath string) *Server {
 	s := &Server{
-		webDir: webDir,
-		hub:    NewHub(),
+		webDir:    webDir,
+		webAssets: assets,
+		hub:       NewHub(),
 	}
 	if settingsPath == "" {
 		path, err := settings.DefaultStorePath()
@@ -65,14 +89,28 @@ func NewWithSettingsPath(addr, webDir, settingsPath string) *Server {
 		settingsPath = path
 	}
 	s.settingsPath = settingsPath
-	s.store = settings.NewStore(settingsPath)
-	s.workspaces = workspaces.NewManager(settingsPath)
+	s.data = appdata.NewStore(settingsPath)
+	s.store = settings.NewStoreWithData(s.data)
+	s.workspaces = workspaces.NewManagerWithData(s.data)
+	s.fs = workspacefs.New(s.workspaces, settingsPath)
+	s.watcher = workspacefs.NewWatchManager(s.fs, func(event workspacefs.WatchEvent) {
+		s.hub.BroadcastWorkspaceFS(event.WorkspaceID, event)
+	})
+	authManager, authErr := auth.New(s.data)
+	s.auth = authManager
+	if authErr != nil {
+		log.Printf("initialize authentication: %v", authErr)
+	}
+	s.loginLimiter = newLoginRateLimiter()
 	s.modes = agentmodes.NewManager()
 	s.sessions = newChatSessionManager(s)
 	s.initLLM()
 	s.httpServer = &http.Server{
-		Addr:    addr,
-		Handler: s.routes(),
+		Addr:              addr,
+		Handler:           s.routes(),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 20,
 	}
 	return s
 }
@@ -119,6 +157,13 @@ func (s *Server) routes() http.Handler {
 
 	// JSON API endpoints.
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
+	mux.HandleFunc("POST /api/auth/setup", s.handleAuthSetup)
+	mux.HandleFunc("POST /api/auth/login", s.handleAuthLogin)
+	mux.HandleFunc("POST /api/auth/logout", s.handleAuthLogout)
+	mux.HandleFunc("GET /api/auth/sessions", s.handleAuthSessions)
+	mux.HandleFunc("DELETE /api/auth/sessions/{id}", s.handleAuthRevokeSession)
+	mux.HandleFunc("PUT /api/auth/password", s.handleAuthChangePassword)
 	mux.HandleFunc("GET /api/echo", s.handleEcho)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
@@ -132,38 +177,64 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/workspaces", s.handleCreateWorkspace)
 	mux.HandleFunc("PUT /api/workspaces/active", s.handleSetActiveWorkspace)
 	mux.HandleFunc("GET /api/workspaces/{id}/icon", s.handleGetWorkspaceIcon)
+	mux.HandleFunc("GET /api/workspaces/{id}/fs/roots", s.handleFSRoots)
+	mux.HandleFunc("GET /api/workspaces/{id}/fs/entries", s.handleFSEntries)
+	mux.HandleFunc("POST /api/workspaces/{id}/fs/entries", s.handleFSCreateEntry)
+	mux.HandleFunc("GET /api/workspaces/{id}/fs/file", s.handleFSReadFile)
+	mux.HandleFunc("PUT /api/workspaces/{id}/fs/file", s.handleFSSaveFile)
+	mux.HandleFunc("PATCH /api/workspaces/{id}/fs/entry", s.handleFSRenameEntry)
+	mux.HandleFunc("DELETE /api/workspaces/{id}/fs/entry", s.handleFSTrashEntry)
+	mux.HandleFunc("GET /api/workspaces/{id}/fs/trash", s.handleFSListTrash)
+	mux.HandleFunc("POST /api/workspaces/{id}/fs/trash/{trashId}/restore", s.handleFSRestoreTrash)
+	mux.HandleFunc("DELETE /api/workspaces/{id}/fs/trash/{trashId}", s.handleFSPurgeTrash)
+	mux.HandleFunc("POST /api/workspaces/{id}/fs/reveal", s.handleFSReveal)
+	mux.HandleFunc("GET /api/workspaces/{id}/fs/search", s.handleFSSearch)
 
 	// WebSocket endpoint for real-time push.
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
 
 	// Static assets from the web directory.
-	fileServer := http.FileServer(http.Dir(s.webDir))
+	var fileServer http.Handler
+	if s.webAssets != nil {
+		fileServer = http.FileServer(http.FS(s.webAssets))
+	} else {
+		fileServer = http.FileServer(http.Dir(s.webDir))
+	}
 	mux.Handle("/", fileServer)
 
 	// Wrap the mux with SPA fallback so unknown non-API paths serve index.html,
 	// enabling client-side routing.
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	spa := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Never rewrite API or WebSocket paths.
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/ws" {
 			mux.ServeHTTP(w, r)
 			return
 		}
 		// Let the file server handle real files; otherwise fall back to index.html.
-		if isStaticAsset(r.URL.Path, s.webDir) {
+		if s.isStaticAsset(r.URL.Path) {
 			mux.ServeHTTP(w, r)
 			return
 		}
-		serveIndex(w, r, s.webDir)
+		s.serveIndex(w, r)
 	})
+	return s.securityHeaders(s.requireAuthentication(spa))
 }
 
 // isStaticAsset reports whether path maps to an existing file under webDir.
-func isStaticAsset(path, webDir string) bool {
-	if path == "/" {
+func (s *Server) isStaticAsset(requestPath string) bool {
+	if requestPath == "/" {
 		return false
 	}
-	clean := filepath.Clean(filepath.FromSlash(path))
-	full := filepath.Join(webDir, clean)
+	if s.webAssets != nil {
+		clean := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(requestPath)), "/")
+		if clean == "." || !iofs.ValidPath(clean) {
+			return false
+		}
+		info, err := iofs.Stat(s.webAssets, clean)
+		return err == nil && !info.IsDir()
+	}
+	clean := filepath.Clean(filepath.FromSlash(requestPath))
+	full := filepath.Join(s.webDir, clean)
 	info, err := os.Stat(full)
 	if err != nil {
 		return false
@@ -172,8 +243,18 @@ func isStaticAsset(path, webDir string) bool {
 }
 
 // serveIndex writes the SPA entry point for the given request.
-func serveIndex(w http.ResponseWriter, r *http.Request, webDir string) {
-	index := filepath.Join(webDir, "index.html")
+func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
+	if s.webAssets != nil {
+		index, err := iofs.ReadFile(s.webAssets, "index.html")
+		if err != nil {
+			http.Error(w, "frontend assets are unavailable", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(index)
+		return
+	}
+	index := filepath.Join(s.webDir, "index.html")
 	http.ServeFile(w, r, index)
 }
 
@@ -184,9 +265,29 @@ func (s *Server) ListenAndServe() error {
 
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.watcher.Close()
+	s.fs.Close()
 	s.sessions.shutdown(ctx)
 	s.hub.Shutdown()
 	return s.httpServer.Shutdown(ctx)
+}
+
+// ResetAuthentication clears the configured owner password and remembered
+// devices, returning the new one-time setup code.
+func (s *Server) ResetAuthentication() (string, error) {
+	if s.auth == nil {
+		return "", fmt.Errorf("authentication manager is unavailable")
+	}
+	return s.auth.Reset()
+}
+
+// AuthenticationSetupCode returns the memory-only first-run code, if Echo is
+// still in setup mode. It is intended for display by the host process only.
+func (s *Server) AuthenticationSetupCode() string {
+	if s.auth == nil {
+		return ""
+	}
+	return s.auth.SetupCode()
 }
 
 // logf is a small logging helper so handlers can log without importing log

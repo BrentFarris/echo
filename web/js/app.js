@@ -4,6 +4,7 @@
 // maps hash routes (e.g. #/home) to view modules and swaps them into #app.
 
 import * as ws from "./ws.js";
+import { ensureAuthenticated } from "../src/auth/authGate.ts";
 
 // Route table: hash path -> () => Promise<view module>.
 // Views are lazy-loaded so the shell stays light.
@@ -11,6 +12,7 @@ const routes = {
   "/": () => import("./views/home.js"),
   "/home": () => import("./views/home.js"),
   "/settings": () => import("./views/settings.js"),
+  "/code": () => import("../src/code/codeView.ts"),
 };
 
 const app = document.getElementById("app");
@@ -58,6 +60,33 @@ function escapeHtml(value) {
 
 window.addEventListener("hashchange", render);
 
-// Start the real-time channel and render the initial view.
-ws.start();
-render();
+let authenticating = false;
+async function bootstrap() {
+  if (authenticating) return;
+  authenticating = true;
+  try {
+    ws.stop();
+    if (currentView?.unmount) {
+      try {
+        currentView.unmount();
+      } catch (err) {
+        console.error("view unmount error:", err);
+      }
+    }
+    currentView = null;
+    app.innerHTML = "";
+    await ensureAuthenticated(app);
+    ws.start();
+    await render();
+  } catch (err) {
+    console.error("authentication bootstrap failed:", err);
+    app.innerHTML = `<main class="auth-screen"><section class="auth-panel"><h1>Echo is unavailable</h1><p>${escapeHtml(String(err))}</p><button class="auth-submit" data-auth-retry>Retry</button></section></main>`;
+    app.querySelector("[data-auth-retry]")?.addEventListener("click", () => location.reload());
+  } finally {
+    authenticating = false;
+  }
+}
+
+window.addEventListener("echo:unauthorized", bootstrap);
+window.addEventListener("echo:logged-out", bootstrap);
+bootstrap();

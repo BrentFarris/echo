@@ -29,6 +29,12 @@ func NewStore(path string) *Store {
 	return &Store{data: appdata.NewStore(path)}
 }
 
+// NewStoreWithData creates a settings store that shares an application data
+// transaction boundary with the other Echo managers.
+func NewStoreWithData(data *appdata.Store) *Store {
+	return &Store{data: data}
+}
+
 // Path returns the app data file path this store uses.
 func (s *Store) Path() string {
 	return s.data.Path()
@@ -56,14 +62,12 @@ func (s *Store) Load() (llm.Settings, error) {
 // existing workspace list.
 func (s *Store) Save(settings llm.Settings) error {
 	settings = settings.NormalizedEndpointProfiles()
-	f, err := s.data.Load()
-	if err != nil {
-		return err
-	}
 	raw, err := json.Marshal(settings)
 	if err != nil {
 		return fmt.Errorf("marshal settings: %w", err)
 	}
-	f.Settings = raw
-	return s.data.Save(f)
+	return s.data.Update(func(f *appdata.File) error {
+		f.Settings = raw
+		return nil
+	})
 }

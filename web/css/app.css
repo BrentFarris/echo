@@ -1445,6 +1445,97 @@ textarea:disabled {
   background: color-mix(in srgb, var(--color-danger) 8%, transparent);
 }
 
+.settings-security-warning {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin: var(--space-xl) 0 var(--space-2xl);
+  padding: var(--space-lg) var(--space-xl);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 45%, var(--color-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-warning) 9%, var(--color-surface));
+  color: var(--color-text);
+  font-size: var(--text-base-md);
+}
+
+.settings-security-warning span {
+  color: var(--color-text-muted);
+}
+
+.security-session-list,
+.security-session-main {
+  display: flex;
+  flex-direction: column;
+}
+
+.security-session-list {
+  gap: var(--space-md);
+}
+
+.security-session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xl);
+  padding: var(--space-lg) var(--space-xl);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
+}
+
+.security-session-main {
+  min-width: 0;
+  gap: var(--space-xs);
+}
+
+.security-session-main span {
+  color: var(--color-text-muted);
+  font-size: var(--text-base-sm);
+}
+
+.security-user-agent {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-confirm-dialog {
+  width: min(520px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: 0 18px 55px rgb(0 0 0 / 28%);
+}
+
+.settings-confirm-dialog::backdrop {
+  background: rgb(0 0 0 / 52%);
+}
+
+.settings-confirm-dialog form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding: var(--space-2xl);
+}
+
+.settings-confirm-dialog h2,
+.settings-confirm-dialog p {
+  margin: 0;
+}
+
+.settings-confirm-dialog p {
+  color: var(--color-text-muted);
+}
+
+.settings-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-md);
+}
+
 .agent-mode-editor {
   display: grid;
   gap: var(--space-xl);

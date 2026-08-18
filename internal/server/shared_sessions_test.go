@@ -150,6 +150,7 @@ func TestLateJoinSnapshotAndInitiatorDisconnectDoNotStopStream(t *testing.T) {
 	}
 
 	restarted := NewWithSettingsPath("127.0.0.1:0", s.webDir, s.settingsPath)
+	restarted.authDisabled = true
 	t.Cleanup(restarted.hub.Shutdown)
 	reloaded, err := restarted.sessions.get(workspace.ID)
 	if err != nil {

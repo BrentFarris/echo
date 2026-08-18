@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/brent/echo/internal/appdata"
@@ -62,6 +63,12 @@ type Manager struct {
 // NewManager creates a Manager backed by the given app data store path.
 func NewManager(path string) *Manager {
 	return &Manager{data: appdata.NewStore(path)}
+}
+
+// NewManagerWithData creates a workspace manager that shares the same
+// transactional app-data store as settings and authentication.
+func NewManagerWithData(data *appdata.Store) *Manager {
+	return &Manager{data: data}
 }
 
 // List returns all registered workspaces.
@@ -167,18 +174,21 @@ func (m *Manager) Create(req CreateRequest) (Workspace, error) {
 
 // append adds a workspace to the shared app data file, preserving settings.
 func (m *Manager) append(ws Workspace) error {
-	f, err := m.data.Load()
-	if err != nil {
-		return err
-	}
-	f.Workspaces = append(f.Workspaces, appdata.Workspace{
-		ID:       ws.ID,
-		Name:     ws.Name,
-		MainPath: ws.MainPath,
-		IconExt:  ws.IconExt,
-		Folders:  append([]string(nil), ws.Folders...),
+	return m.data.Update(func(f *appdata.File) error {
+		for _, existing := range f.Workspaces {
+			if strings.EqualFold(existing.Name, ws.Name) {
+				return fmt.Errorf("a workspace named %q already exists", ws.Name)
+			}
+		}
+		f.Workspaces = append(f.Workspaces, appdata.Workspace{
+			ID:       ws.ID,
+			Name:     ws.Name,
+			MainPath: ws.MainPath,
+			IconExt:  ws.IconExt,
+			Folders:  append([]string(nil), ws.Folders...),
+		})
+		return nil
 	})
-	return m.data.Save(f)
 }
 
 // IconPath returns the path to a workspace's icon file, or "" when the
@@ -250,23 +260,15 @@ func (m *Manager) Get(id string) (Workspace, bool, error) {
 // SetActive records the given workspace id as the active (last opened)
 // workspace, preserving settings and the workspace list.
 func (m *Manager) SetActive(id string) error {
-	f, err := m.data.Load()
-	if err != nil {
-		return err
-	}
-	// Only allow setting an id that exists.
-	found := false
-	for _, w := range f.Workspaces {
-		if w.ID == id {
-			found = true
-			break
+	return m.data.Update(func(f *appdata.File) error {
+		for _, w := range f.Workspaces {
+			if w.ID == id {
+				f.ActiveWorkspaceID = id
+				return nil
+			}
 		}
-	}
-	if !found {
 		return fmt.Errorf("workspace %q not found", id)
-	}
-	f.ActiveWorkspaceID = id
-	return m.data.Save(f)
+	})
 }
 
 func (m *Manager) find(id string) (appdata.Workspace, bool, error) {
@@ -302,20 +304,35 @@ func writeWorkspaceFile(echoDir string, wf workspaceFile) error {
 // cleanFolders trims whitespace and drops empty/duplicate entries, excluding
 // the main path.
 func cleanFolders(folders []string, mainPath string) []string {
-	seen := map[string]bool{mainPath: true}
+	seen := map[string]bool{folderIdentity(mainPath): true}
 	var out []string
 	for _, f := range folders {
 		f = strings.TrimSpace(f)
 		if f == "" {
 			continue
 		}
-		if seen[f] {
+		identity := folderIdentity(f)
+		if seen[identity] {
 			continue
 		}
-		seen[f] = true
+		seen[identity] = true
 		out = append(out, f)
 	}
 	return out
+}
+
+func folderIdentity(folder string) string {
+	folder = filepath.Clean(strings.TrimSpace(folder))
+	if absolute, err := filepath.Abs(folder); err == nil {
+		folder = absolute
+	}
+	if real, err := filepath.EvalSymlinks(folder); err == nil {
+		folder = real
+	}
+	if runtime.GOOS == "windows" {
+		folder = strings.ToLower(folder)
+	}
+	return folder
 }
 
 // sanitizeExt normalizes an icon extension to a safe lowercase value without a

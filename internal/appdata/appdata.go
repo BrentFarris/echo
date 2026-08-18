@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 )
 
@@ -30,9 +32,11 @@ type Workspace struct {
 // owns parsing it. ActiveWorkspaceID records the last workspace the user
 // opened so Echo can restore it as the current workspace on startup.
 type File struct {
-	Settings           json.RawMessage `json:"settings"`
-	Workspaces         []Workspace     `json:"workspaces"`
-	ActiveWorkspaceID  string          `json:"activeWorkspaceId,omitempty"`
+	Version           int             `json:"version,omitempty"`
+	Settings          json.RawMessage `json:"settings"`
+	Auth              json.RawMessage `json:"auth,omitempty"`
+	Workspaces        []Workspace     `json:"workspaces"`
+	ActiveWorkspaceID string          `json:"activeWorkspaceId,omitempty"`
 }
 
 // DefaultStorePath returns the platform-appropriate path to the Echo app data
@@ -52,9 +56,27 @@ type Store struct {
 	mu   sync.Mutex
 }
 
+var stores sync.Map
+
 // NewStore creates a Store that reads and writes the app data file at path.
 func NewStore(path string) *Store {
-	return &Store{path: path}
+	if absolute, err := filepath.Abs(path); err == nil {
+		path = absolute
+	}
+	path = filepath.Clean(path)
+	if parent, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
+		path = filepath.Join(parent, filepath.Base(path))
+	}
+	key := path
+	if runtime.GOOS == "windows" {
+		key = strings.ToLower(key)
+	}
+	if existing, ok := stores.Load(key); ok {
+		return existing.(*Store)
+	}
+	created := &Store{path: path}
+	actual, _ := stores.LoadOrStore(key, created)
+	return actual.(*Store)
 }
 
 // Path returns the app data file path this store uses.
@@ -68,7 +90,10 @@ func (s *Store) Path() string {
 func (s *Store) Load() (File, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.loadLocked()
+}
 
+func (s *Store) loadLocked() (File, error) {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -100,7 +125,28 @@ func (s *Store) Load() (File, error) {
 func (s *Store) Save(f File) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.saveLocked(f)
+}
 
+// Update performs an atomic read-modify-write transaction while holding the
+// store lock. Every subsystem that shares echo.json must use Update for
+// mutations so concurrent settings, workspace, and authentication writes do
+// not clobber one another.
+func (s *Store) Update(update func(*File) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	f, err := s.loadLocked()
+	if err != nil {
+		return err
+	}
+	if err := update(&f); err != nil {
+		return err
+	}
+	return s.saveLocked(f)
+}
+
+func (s *Store) saveLocked(f File) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return fmt.Errorf("create app data dir: %w", err)
 	}
@@ -108,12 +154,33 @@ func (s *Store) Save(f File) error {
 	if err != nil {
 		return fmt.Errorf("marshal app data: %w", err)
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	tmpFile, err := os.CreateTemp(filepath.Dir(s.path), filepath.Base(s.path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create app data temp file: %w", err)
+	}
+	tmp := tmpFile.Name()
+	defer os.Remove(tmp)
+	if err := tmpFile.Chmod(0o600); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("chmod app data temp file: %w", err)
+	}
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
 		return fmt.Errorf("write app data: %w", err)
 	}
-	if err := os.Rename(tmp, s.path); err != nil {
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("sync app data: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("close app data: %w", err)
+	}
+	if err := replaceFile(tmp, s.path); err != nil {
 		return fmt.Errorf("rename app data: %w", err)
+	}
+	if directory, err := os.Open(filepath.Dir(s.path)); err == nil {
+		_ = directory.Sync()
+		_ = directory.Close()
 	}
 	return nil
 }

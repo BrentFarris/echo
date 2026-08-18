@@ -20,7 +20,6 @@ jobs:
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
       reason: ${{ steps.check.outputs.reason }}
-
     steps:
       - name: Compare with last successful nightly build
         id: check
@@ -50,42 +49,20 @@ jobs:
           if [ -z "$last_successful_sha" ]; then
             echo "should_build=true" >> "$GITHUB_OUTPUT"
             echo "reason=No previous successful nightly build found." >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ "$last_successful_sha" = "$CURRENT_SHA" ]; then
+          elif [ "$last_successful_sha" = "$CURRENT_SHA" ]; then
             echo "should_build=false" >> "$GITHUB_OUTPUT"
             echo "reason=No commits since the last successful nightly build." >> "$GITHUB_OUTPUT"
-            exit 0
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "reason=Current commit differs from the last successful nightly build." >> "$GITHUB_OUTPUT"
           fi
 
-          echo "should_build=true" >> "$GITHUB_OUTPUT"
-          echo "reason=Current commit differs from the last successful nightly build." >> "$GITHUB_OUTPUT"
-
-  build:
-    name: Build ${{ matrix.target }}
+  verify:
+    name: Test Go, frontend, and Monaco
     needs: check-changes
     if: needs.check-changes.outputs.should_build == 'true'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: windows
-            os: windows-latest
-            archive: echo-windows-nightly.zip
-            wails_tags: ""
-          - target: linux
-            os: ubuntu-24.04
-            archive: echo-linux-nightly.tar.gz
-            wails_tags: "-tags webkit2_41"
-          - target: macos
-            os: macos-latest
-            archive: echo-macos-nightly.tar.gz
-            wails_tags: ""
-
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -101,50 +78,96 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: web/package-lock.json
 
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Run Go tests
+        run: go test ./...
+
+      - name: Type-check and test frontend
+        working-directory: web
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+          npm run check
+          npm test
 
-      - name: Add Go tools to PATH
+      - name: Build embedded frontend
+        working-directory: web
+        run: npm run build
+
+      - name: Install Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: Run authenticated Monaco acceptance test
+        working-directory: web
+        run: npm run test:e2e
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [check-changes, verify]
+    if: needs.check-changes.outputs.should_build == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows
+            os: windows-latest
+            archive: echo-windows-nightly.zip
+          - target: linux
+            os: ubuntu-24.04
+            archive: echo-linux-nightly.tar.gz
+          - target: macos
+            os: macos-latest
+            archive: echo-macos-nightly.tar.gz
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Test Go on target platform
+        run: go test ./...
+
+      - name: Build embedded Echo binary
         shell: pwsh
         run: |
-          "$(go env GOPATH)/bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-
-      - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.11.0
-
-      - name: Build Echo
-        shell: pwsh
-        run: wails build -clean ${{ matrix.wails_tags }}
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          if ($env:RUNNER_OS -eq "Windows") {
+            go build -trimpath -o build/echo.exe .
+          } else {
+            go build -trimpath -o build/echo .
+          }
 
       - name: Package build output
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-
           if ($env:RUNNER_OS -eq "Windows") {
-            if (-not (Test-Path -LiteralPath "build/bin/echo.exe")) {
-              Get-ChildItem -Recurse build/bin
-              exit 1
-            }
-            Compress-Archive -LiteralPath "build/bin/echo.exe" -DestinationPath "dist/${{ matrix.archive }}" -Force
-          } elseif ($env:RUNNER_OS -eq "macOS") {
-            $appBundle = Get-ChildItem -Path "build/bin" -Directory -Filter "*.app" | Select-Object -First 1
-            if ($null -eq $appBundle) {
-              Get-ChildItem -Recurse build/bin
-              exit 1
-            }
-            tar -czf "dist/${{ matrix.archive }}" -C "build/bin" $appBundle.Name
+            Compress-Archive -LiteralPath "build/echo.exe" -DestinationPath "dist/${{ matrix.archive }}" -Force
           } else {
-            if (-not (Test-Path -LiteralPath "build/bin/echo")) {
-              Get-ChildItem -Recurse build/bin
-              exit 1
-            }
-            tar -czf "dist/${{ matrix.archive }}" -C "build/bin" "echo"
+            tar -czf "dist/${{ matrix.archive }}" -C "build" "echo"
           }
 
       - name: Upload nightly artifact
@@ -157,13 +180,10 @@ jobs:
 
   release:
     name: Create nightly release
-    needs:
-      - check-changes
-      - build
+    needs: [check-changes, verify, build]
     if: needs.check-changes.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -181,13 +201,11 @@ jobs:
         run: |
           release_date="$(date -u +%Y-%m-%d)"
           tag="nightly-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"
-
           {
             echo "Automated nightly build for ${SOURCE_SHA}."
             echo
             echo "${CHECK_REASON}"
           } > release-notes.md
-
           gh release create "$tag" release-assets/* \
             --target "$SOURCE_SHA" \
             --title "Echo Nightly $release_date" \

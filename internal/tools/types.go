@@ -63,6 +63,11 @@ type ExecutionContext struct {
 	Context        context.Context
 	WorkspacePath  string
 	WorkspaceRoots []WorkspaceRoot
+	// ResolveWorkspacePath and ResolveWorkspaceChildPath let the host route
+	// tools through its canonical workspace confinement service. Tests and
+	// standalone callers retain the local fallback when these are nil.
+	ResolveWorkspacePath      func(string) (string, error)
+	ResolveWorkspaceChildPath func(string) (string, error)
 	// SearxngURL is the configured SearXNG endpoint used by the web_search tool.
 	SearxngURL string
 	// ComfyuiURL is the configured ComfyUI server base URL used by

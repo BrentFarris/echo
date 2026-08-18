@@ -59,7 +59,7 @@ function leftNav() {
         <button class="nav-icon-button is-active" type="button" title="Chat" aria-label="Chat">${icons.chat}</button>
       </nav>
       <div class="left-nav-actions">
-        <button class="nav-icon-button" type="button" title="Code" aria-label="Code view">${icons.code}</button>
+        <button class="nav-icon-button" type="button" title="Code" aria-label="Code view" data-nav="code">${icons.code}</button>
         <button class="nav-icon-button" type="button" title="Tasks" aria-label="Tasks">${icons.tasks}</button>
         <button class="nav-icon-button" type="button" title="Git" aria-label="Git">${icons.git}</button>
         <button class="nav-icon-button" type="button" title="Dashboard" aria-label="Dashboard">${icons.dashboard}</button>
@@ -159,10 +159,13 @@ export function mount(root) {
 
   // Navigate to settings when the sidebar Settings button is clicked.
   const settingsBtn = root.querySelector("[data-nav='settings']");
+	const codeBtn = root.querySelector("[data-nav='code']");
   const onSettingsClick = () => {
     location.hash = "#/settings";
   };
   settingsBtn?.addEventListener("click", onSettingsClick);
+	const onCodeClick = () => { location.hash = "#/code"; };
+	codeBtn?.addEventListener("click", onCodeClick);
 
   // Workspace selector: open the dropdown, and the "+ Add a workspace" modal.
   const workspaceTrigger = root.querySelector(".workspace-dropdown-trigger");
@@ -422,6 +425,7 @@ export function mount(root) {
     input.removeEventListener("keydown", onKeydown);
     unsubStreaming();
     settingsBtn?.removeEventListener("click", onSettingsClick);
+	codeBtn?.removeEventListener("click", onCodeClick);
     workspaceTrigger?.removeEventListener("click", onWorkspaceTriggerClick);
     if (closeWorkspaceDropdown) {
       closeWorkspaceDropdown();

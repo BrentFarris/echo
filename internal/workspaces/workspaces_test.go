@@ -240,3 +240,22 @@ func TestActiveWorkspacePersistsAcrossStoreInstances(t *testing.T) {
 		t.Fatalf("unexpected active: %+v", active)
 	}
 }
+
+func TestCreateDeduplicatesCanonicalFolderPaths(t *testing.T) {
+	directory := t.TempDir()
+	root := filepath.Join(directory, "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(filepath.Join(directory, "echo.json"))
+	workspace, err := manager.Create(CreateRequest{
+		Name: "Canonical", MainPath: root,
+		Folders: []string{filepath.Join(root, "."), root + string(filepath.Separator)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workspace.Folders) != 1 {
+		t.Fatalf("expected one canonical folder, got %#v", workspace.Folders)
+	}
+}

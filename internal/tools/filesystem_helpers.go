@@ -31,6 +31,9 @@ func (ctx ExecutionContext) workspaceRoots() []WorkspaceRoot {
 }
 
 func resolveWorkspacePath(ctx ExecutionContext, requestedPath string) (string, error) {
+	if ctx.ResolveWorkspacePath != nil {
+		return ctx.ResolveWorkspacePath(requestedPath)
+	}
 	roots := ctx.workspaceRoots()
 	if len(roots) == 0 {
 		return "", SafeError{Code: "missing_workspace", Message: "workspace path is required"}
@@ -73,6 +76,9 @@ func resolveWorkspacePath(ctx ExecutionContext, requestedPath string) (string, e
 }
 
 func resolveWorkspaceChildPath(ctx ExecutionContext, requestedPath string) (string, error) {
+	if ctx.ResolveWorkspaceChildPath != nil {
+		return ctx.ResolveWorkspaceChildPath(requestedPath)
+	}
 	roots := ctx.workspaceRoots()
 	if len(roots) == 0 {
 		return "", SafeError{Code: "missing_workspace", Message: "workspace path is required"}

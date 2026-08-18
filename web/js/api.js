@@ -8,9 +8,7 @@
  * Perform a JSON request to the Echo API.
  *
  * @param {string} path API path, e.g. "/api/health".
- * @param {object} [options] fetch options.
- * @param {object} [options.query] query params merged into the URL.
- * @param {object} [options.body] JSON body for POST/PUT/PATCH.
+ * @param {Omit<RequestInit, "body"> & {query?: Record<string, unknown>, body?: unknown}} [options] fetch options.
  * @returns {Promise<any>} the `data` field of the response envelope.
  * @throws {Error} on network failure or a non-ok envelope.
  */
@@ -51,6 +49,9 @@ export async function api(path, { query, body, ...rest } = {}) {
     const error = new Error(message);
     error.status = res.status;
     error.payload = payload;
+	if (res.status === 401 && path !== "/api/auth/status" && path !== "/api/auth/login") {
+	  window.dispatchEvent(new CustomEvent("echo:unauthorized"));
+	}
     throw error;
   }
 

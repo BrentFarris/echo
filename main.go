@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"embed"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -14,13 +16,36 @@ import (
 	"github.com/brent/echo/internal/server"
 )
 
+//go:embed web/dist
+var embeddedWeb embed.FS
+
 func main() {
 	port := flag.Int("port", 3740, "port to listen on")
-	webDir := flag.String("web", "web", "directory containing the SPA frontend assets")
+	webDir := flag.String("web", "", "serve SPA assets from this directory instead of the embedded production build")
+	dataPath := flag.String("data", "", "path to Echo's application-data JSON (defaults to the platform config directory)")
+	resetAuth := flag.Bool("reset-auth", false, "clear the owner password and remembered sessions")
 	flag.Parse()
 
 	addr := fmt.Sprintf(":%d", *port)
-	srv := server.New(addr, *webDir)
+	var srv *server.Server
+	if *webDir != "" {
+		srv = server.NewWithSettingsPath(addr, *webDir, *dataPath)
+	} else {
+		assets, err := fs.Sub(embeddedWeb, "web/dist")
+		if err != nil {
+			log.Fatalf("load embedded frontend: %v", err)
+		}
+		srv = server.NewWithAssets(addr, assets, *dataPath)
+	}
+	if *resetAuth {
+		code, err := srv.ResetAuthentication()
+		if err != nil {
+			log.Fatalf("reset authentication: %v", err)
+		}
+		log.Printf("Echo authentication was reset. New setup code: %s", code)
+	} else if code := srv.AuthenticationSetupCode(); code != "" {
+		log.Printf("Echo authentication setup code: %s", code)
+	}
 
 	// Run the server in a goroutine so we can wait for signals.
 	errCh := make(chan error, 1)

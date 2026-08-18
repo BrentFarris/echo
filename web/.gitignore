@@ -1,0 +1,5 @@
+dist/*
+!dist/placeholder.txt
+node_modules/
+test-results/
+playwright-report/

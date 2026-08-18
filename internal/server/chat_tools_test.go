@@ -39,6 +39,14 @@ func TestWorkspaceToolRootsSkipsEmptyFolders(t *testing.T) {
 	}
 }
 
+func TestWorkspaceToolRootsDisambiguatesDuplicateLabels(t *testing.T) {
+	ws := workspaces.Workspace{Folders: []string{"C:/one/src", "D:/two/src", "E:/three/src-2", "F:/four/..."}}
+	roots := workspaceToolRoots(ws)
+	if len(roots) != 4 || roots[0].Label != "src" || roots[1].Label != "src-2" || roots[2].Label != "src-2-2" || roots[3].Label != "workspace" {
+		t.Fatalf("unexpected disambiguated labels: %#v", roots)
+	}
+}
+
 func TestNormalizeWorkspaceFolderLabel(t *testing.T) {
 	cases := map[string]string{
 		"Hello World": "hello-world",

@@ -1,0 +1,1 @@
+Echo's Vite production build replaces this directory before release builds.

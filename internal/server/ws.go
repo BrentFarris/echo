@@ -3,9 +3,11 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/brent/echo/internal/workspacefs"
 	"github.com/gorilla/websocket"
 )
 
@@ -13,15 +15,17 @@ const maxMessageBytes = 1 << 20
 
 var upgrader = websocket.Upgrader{
 	ReadBufferSize: 1024, WriteBufferSize: 1024,
-	CheckOrigin: func(*http.Request) bool { return true },
+	CheckOrigin: requestOriginAllowed,
 }
 
 type client struct {
-	conn      *websocket.Conn
-	send      chan []byte
-	done      chan struct{}
-	closeOnce sync.Once
-	server    *Server
+	conn            *websocket.Conn
+	send            chan []byte
+	done            chan struct{}
+	closeOnce       sync.Once
+	server          *Server
+	fsMu            sync.RWMutex
+	fsSubscriptions map[string]bool
 }
 
 func (c *client) close() {
@@ -114,30 +118,48 @@ func (h *Hub) Broadcast(event any) {
 	}
 }
 
+func (h *Hub) BroadcastWorkspaceFS(workspaceID string, event any) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.clients {
+		c.fsMu.RLock()
+		subscribed := c.fsSubscriptions[workspaceID]
+		c.fsMu.RUnlock()
+		if subscribed {
+			c.sendJSON(event)
+		}
+	}
+}
+
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		logf("websocket upgrade: %v", err)
 		return
 	}
-	c := &client{conn: conn, send: make(chan []byte, 1024), done: make(chan struct{}), server: s}
+	c := &client{
+		conn: conn, send: make(chan []byte, 1024), done: make(chan struct{}), server: s,
+		fsSubscriptions: make(map[string]bool),
+	}
 	go c.writePump()
 	s.hub.register <- c
 	c.readPump(s.hub)
 }
 
 type inboundMessage struct {
-	Type        string `json:"type"`
-	WorkspaceID string `json:"workspaceId,omitempty"`
-	RequestID   string `json:"requestId,omitempty"`
-	Message     string `json:"message,omitempty"`
-	Model       string `json:"model,omitempty"`
-	AgentModeID string `json:"agentModeId,omitempty"`
+	Type        string                `json:"type"`
+	WorkspaceID string                `json:"workspaceId,omitempty"`
+	RequestID   string                `json:"requestId,omitempty"`
+	Message     string                `json:"message,omitempty"`
+	Model       string                `json:"model,omitempty"`
+	AgentModeID string                `json:"agentModeId,omitempty"`
+	Refs        []workspacefs.FileRef `json:"refs,omitempty"`
 }
 
 func (c *client) readPump(h *Hub) {
 	defer func() {
 		c.server.sessions.unsubscribe(c)
+		c.unsubscribeAllFS()
 		select {
 		case h.unregister <- c:
 		case <-h.shutdown:
@@ -164,6 +186,10 @@ func (c *client) readPump(h *Hub) {
 		switch msg.Type {
 		case "session_subscribe":
 			c.server.sessions.subscribe(c, msg.WorkspaceID)
+		case "fs_subscribe":
+			c.subscribeFS(msg.WorkspaceID, msg.Refs)
+		case "fs_unsubscribe":
+			c.unsubscribeFS(msg.WorkspaceID)
 		case "chat_send":
 			c.server.sessions.send(c, msg)
 		case "chat_stop":
@@ -171,6 +197,61 @@ func (c *client) readPump(h *Hub) {
 		default:
 			c.sendJSON(map[string]any{"type": "command_error", "workspaceId": msg.WorkspaceID, "code": "unknown_command", "error": "unsupported message type"})
 		}
+	}
+}
+
+func (c *client) subscribeFS(workspaceID string, refs []workspacefs.FileRef) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		c.sendJSON(map[string]any{"type": "command_error", "code": "missing_workspace", "error": "workspaceId is required"})
+		return
+	}
+	c.fsMu.RLock()
+	already := c.fsSubscriptions[workspaceID]
+	c.fsMu.RUnlock()
+	if already {
+		c.server.watcher.AddReferences(workspaceID, refs)
+		return
+	}
+	// Mark the client subscribed before constructing the watcher. Watcher setup
+	// can synchronously emit fs_resync_required (for example on a network
+	// filesystem), and that fallback event must reach the first subscriber.
+	c.fsMu.Lock()
+	c.fsSubscriptions[workspaceID] = true
+	c.fsMu.Unlock()
+	if err := c.server.watcher.Subscribe(workspaceID); err != nil {
+		c.fsMu.Lock()
+		delete(c.fsSubscriptions, workspaceID)
+		c.fsMu.Unlock()
+		c.sendJSON(map[string]any{"type": "command_error", "workspaceId": workspaceID, "code": "watch_failed", "error": "failed to watch workspace"})
+		c.sendJSON(map[string]any{"type": "fs_resync_required", "workspaceId": workspaceID, "sequence": 0, "resyncRequired": true})
+		return
+	}
+	c.server.watcher.AddReferences(workspaceID, refs)
+	c.sendJSON(map[string]any{"type": "fs_subscribed", "workspaceId": workspaceID})
+}
+
+func (c *client) unsubscribeFS(workspaceID string) {
+	c.fsMu.Lock()
+	if !c.fsSubscriptions[workspaceID] {
+		c.fsMu.Unlock()
+		return
+	}
+	delete(c.fsSubscriptions, workspaceID)
+	c.fsMu.Unlock()
+	c.server.watcher.Unsubscribe(workspaceID)
+}
+
+func (c *client) unsubscribeAllFS() {
+	c.fsMu.Lock()
+	workspaceIDs := make([]string, 0, len(c.fsSubscriptions))
+	for workspaceID := range c.fsSubscriptions {
+		workspaceIDs = append(workspaceIDs, workspaceID)
+	}
+	c.fsSubscriptions = make(map[string]bool)
+	c.fsMu.Unlock()
+	for _, workspaceID := range workspaceIDs {
+		c.server.watcher.Unsubscribe(workspaceID)
 	}
 }
 

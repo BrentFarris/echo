@@ -8,6 +8,8 @@
 
 import { icons } from "../icons.js";
 import { del, get, post, put } from "../api.js";
+import { logout } from "../../src/auth/authGate.ts";
+import { hasDirtySessions } from "../../src/code/persistence.ts";
 
 // ---- Theme token table (matches OLD theme.ts, carried into the new SPA) ----
 const themeTokens = [
@@ -36,6 +38,7 @@ const sections = [
   { id: "git", label: "Git", icon: icons.git },
   { id: "theme", label: "Theme", icon: icons.dashboard },
   { id: "workspaces", label: "Workspaces", icon: icons.code },
+  { id: "security", label: "Security", icon: icons.settings },
   { id: "development", label: "Development", icon: icons.execute },
 ];
 
@@ -77,6 +80,9 @@ const state = {
   },
   storagePath: "",
   saveStatus: "",
+  authSessions: [],
+  transportSecure: false,
+  securityStatus: "",
 };
 
 function esc(value) {
@@ -483,6 +489,60 @@ function renderWorkspaces() {
   `;
 }
 
+function formatSessionTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? "Unknown" : date.toLocaleString();
+}
+
+function renderSecurity() {
+  return `
+    <section class="settings-section">
+      <h2 class="settings-section-title">Security</h2>
+      ${state.transportSecure ? "" : `
+        <div class="settings-security-warning">
+          <strong>Trusted-LAN HTTP is not encrypted</strong>
+          <span>Authentication controls access, but a hostile network participant could still observe passwords, cookies, and source code. Prefer a trusted network until TLS is configured.</span>
+        </div>
+      `}
+      ${state.securityStatus ? `<p class="settings-status ${state.securityStatus.startsWith("Error:") ? "is-error" : ""}">${esc(state.securityStatus)}</p>` : ""}
+
+      <div class="settings-card">
+        <h3 class="settings-card-title">Remembered devices</h3>
+        <p class="settings-card-help">Echo supports concurrent owner sessions. Revoke any device you no longer recognize.</p>
+        <div class="security-session-list">
+          ${state.authSessions.length ? state.authSessions.map((session) => `
+            <div class="security-session-row">
+              <div class="security-session-main">
+                <strong>${esc(session.device || "Browser")}${session.current ? " (this device)" : ""}</strong>
+                <span>${esc(session.remoteIp || "Unknown address")} · Last used ${esc(formatSessionTime(session.lastUsed))}</span>
+                <span class="security-user-agent">${esc(session.userAgent || "Unknown browser")}</span>
+              </div>
+              ${session.current ? "" : `<button class="secondary-button compact-button danger-button" type="button" data-action="revoke-session" data-session-id="${esc(session.id)}">Revoke</button>`}
+            </div>
+          `).join("") : `<p class="settings-card-help">Loading remembered devices…</p>`}
+        </div>
+      </div>
+
+      <div class="settings-card">
+        <h3 class="settings-card-title">Change owner password</h3>
+        <p class="settings-card-help">Changing the password revokes every other remembered device.</p>
+        <div class="settings-grid">
+          <label class="field"><span>Current password</span><input type="password" autocomplete="current-password" data-security-field="current-password"></label>
+          <label class="field"><span>New password</span><input type="password" minlength="12" maxlength="128" autocomplete="new-password" data-security-field="new-password"></label>
+          <label class="field"><span>Confirm new password</span><input type="password" minlength="12" maxlength="128" autocomplete="new-password" data-security-field="confirm-password"></label>
+        </div>
+        <div><button class="secondary-button" type="button" data-action="change-password">Change password</button></div>
+      </div>
+
+      <div class="settings-card">
+        <h3 class="settings-card-title">Sign out</h3>
+        <p class="settings-card-help">Signing out explicitly clears this browser's saved Code hot-exit buffers.</p>
+        <div><button class="secondary-button danger-button" type="button" data-action="logout">Sign out of Echo</button></div>
+      </div>
+    </section>
+  `;
+}
+
 function renderDevelopment() {
   return `
     <section class="settings-section">
@@ -514,6 +574,7 @@ const renderers = {
   git: renderGit,
   theme: renderTheme,
   workspaces: renderWorkspaces,
+  security: renderSecurity,
   development: renderDevelopment,
 };
 
@@ -562,6 +623,7 @@ function bindEvents(root) {
       saveSettings();
       state.activeSection = btn.dataset.section;
       render();
+      if (state.activeSection === "security") loadSecurity();
     });
   });
 
@@ -775,16 +837,98 @@ function bindEvents(root) {
       if (/^#[0-9a-fA-F]{6}$/.test(hex.value)) swatch.value = hex.value;
     });
   });
+
+  root.querySelectorAll("[data-action='revoke-session']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await del(`/api/auth/sessions/${encodeURIComponent(button.dataset.sessionId)}`);
+        state.securityStatus = "Device session revoked.";
+        await loadSecurity();
+      } catch (err) {
+        state.securityStatus = `Error: ${err.message}`;
+        render();
+      }
+    });
+  });
+
+  root.querySelector("[data-action='change-password']")?.addEventListener("click", async () => {
+    const currentPassword = root.querySelector("[data-security-field='current-password']")?.value || "";
+    const newPassword = root.querySelector("[data-security-field='new-password']")?.value || "";
+    const confirmation = root.querySelector("[data-security-field='confirm-password']")?.value || "";
+    if (newPassword !== confirmation) {
+      state.securityStatus = "Error: New passwords do not match.";
+      render();
+      return;
+    }
+    try {
+      await put("/api/auth/password", { currentPassword, newPassword });
+      state.securityStatus = "Password changed. Other remembered devices were revoked.";
+      await loadSecurity();
+    } catch (err) {
+      state.securityStatus = `Error: ${err.message}`;
+      render();
+    }
+  });
+
+  root.querySelector("[data-action='logout']")?.addEventListener("click", async () => {
+    try {
+      if (await hasDirtySessions()) {
+        const choice = await chooseDirtyLogout();
+        if (choice === "save") {
+          location.hash = "#/code";
+          return;
+        }
+        if (choice !== "discard") return;
+      }
+      await logout();
+    } catch (err) {
+      state.securityStatus = `Error: ${err.message}`;
+      render();
+    }
+  });
 }
 
 export function mount(root) {
   render();
   loadSettings();
   loadAgentModes();
+  loadSecurity();
 }
 
 export function unmount() {
   // No persistent listeners outside the re-rendered DOM.
+}
+
+function chooseDirtyLogout() {
+  return new Promise((resolve) => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "settings-confirm-dialog";
+    dialog.innerHTML = `
+      <form method="dialog">
+        <h2>Unsaved code changes</h2>
+        <p>Signing out clears the browser's recoverable editor buffers. Return to Code to save them, discard them and sign out, or cancel.</p>
+        <div class="settings-confirm-actions">
+          <button class="secondary-button" type="button" data-choice="cancel">Cancel</button>
+          <button class="secondary-button" type="button" data-choice="save">Return to Code</button>
+          <button class="secondary-button danger-button" type="button" data-choice="discard">Discard &amp; Sign Out</button>
+        </div>
+      </form>
+    `;
+    const finish = (choice) => {
+      dialog.close();
+      dialog.remove();
+      resolve(choice);
+    };
+    dialog.querySelectorAll("[data-choice]").forEach((button) => {
+      button.addEventListener("click", () => finish(button.dataset.choice));
+    });
+    dialog.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      finish("cancel");
+    }, { once: true });
+    document.body.append(dialog);
+    dialog.showModal();
+  });
 }
 
 // ---- Persistence ----
@@ -827,6 +971,21 @@ async function loadSettings() {
     applySettings(data);
   } catch (err) {
     state.saveStatus = `Failed to load settings: ${err.message}`;
+    render();
+  }
+}
+
+async function loadSecurity() {
+  try {
+    const [statusData, sessionData] = await Promise.all([
+      get("/api/auth/status"),
+      get("/api/auth/sessions"),
+    ]);
+    state.transportSecure = Boolean(statusData.transportSecure);
+    state.authSessions = sessionData.sessions || [];
+    render();
+  } catch (err) {
+    state.securityStatus = `Error: Failed to load security settings: ${err.message}`;
     render();
   }
 }
