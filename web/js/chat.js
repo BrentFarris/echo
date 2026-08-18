@@ -24,6 +24,43 @@ import * as ws from "./ws.js";
 // Current streaming state so we can stop an in-progress reply.
 let activeStream = null;
 
+// Listeners notified whenever the streaming state changes (start/finish) so
+// the view can toggle the send button between send and stop.
+const streamingListeners = new Set();
+
+function setStreaming(streaming) {
+  for (const cb of streamingListeners) {
+    try {
+      cb(streaming);
+    } catch (err) {
+      console.error("streaming state handler error:", err);
+    }
+  }
+}
+
+/**
+ * Subscribe to streaming-state changes. The handler is invoked immediately
+ * with the current state, then on every transition.
+ * @param {(streaming: boolean) => void} cb
+ * @returns {() => void} unsubscribe function.
+ */
+export function onStreamingChange(cb) {
+  streamingListeners.add(cb);
+  try {
+    cb(activeStream != null);
+  } catch (err) {
+    console.error("streaming state handler error:", err);
+  }
+  return () => streamingListeners.delete(cb);
+}
+
+/**
+ * @returns {boolean} whether a chat reply is currently streaming.
+ */
+export function isStreaming() {
+  return activeStream != null;
+}
+
 /**
  * Build the DOM for a single message row.
  * @param {"user"|"assistant"} role
@@ -136,6 +173,7 @@ export function sendMessage(log, text, model) {
     activity: [], // chronological entries for the reveal-on-click log
   };
   activeStream = stream;
+  setStreaming(true);
 
   const unsubscribe = ws.on("chat_event", (data) => {
     if (data.eventType === "token") {
@@ -173,6 +211,12 @@ export function sendMessage(log, text, model) {
     stream.answer += (data.error ? `\n[error] ${data.error}` : "\n[error]");
     content.textContent = stream.answer;
     finishStream(stream, log, unsubscribe, doneUnsub, errorUnsub);
+  });
+
+  // When the user clicks Stop, the server cancels the stream and replies with
+  // chat_stopped. Finalize the message so the button reverts to send.
+  const stoppedUnsub = ws.on("chat_stopped", () => {
+    finishStream(stream, log, unsubscribe, doneUnsub, errorUnsub, stoppedUnsub);
   });
 
   // Send the message over the WebSocket.
@@ -244,16 +288,19 @@ function finishStream(stream, log, ...unsubs) {
   stream.el?.classList.remove("is-streaming");
   // Keep the progress line on screen but stop it breathing once done.
   completeProgress(stream);
-  if (activeStream === stream) activeStream = null;
+  if (activeStream === stream) {
+    activeStream = null;
+    setStreaming(false);
+  }
   scrollToBottom(log);
 }
 
 /**
- * Stop the currently in-progress stream (if any). The server will eventually
- * send chat_done or chat_error, which finalizes the message.
+ * Stop the currently in-progress stream (if any). Sends a "stop" message over
+ * the WebSocket so the server cancels the active LLM/tool activity. The server
+ * replies with chat_stopped, which finalizes the message and reverts the
+ * button to send.
  */
 export function stopStream() {
-  // There is currently no server-side cancel; the stream completes naturally.
-  // This is a no-op placeholder until cancellation is wired up.
-  activeStream = null;
+  ws.send({ type: "stop" });
 }

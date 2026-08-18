@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -17,6 +18,12 @@ import (
 
 // maxMessageBytes caps the size of a single WebSocket message.
 const maxMessageBytes = 1 << 20 // 1 MiB
+
+// errChatCanceled is returned by collectAssistantTurn when the stream was
+// canceled (e.g. the user pressed Stop). It lets runChatLoop distinguish a
+// user-initiated stop from a genuine error so it can emit chat_stopped instead
+// of chat_error.
+var errChatCanceled = errors.New("chat stream canceled")
 
 // upgrader upgrades HTTP connections to WebSockets. CheckOrigin is permissive
 // because the server is bound to localhost and is the origin for the SPA.
@@ -33,6 +40,52 @@ type client struct {
 	conn   *websocket.Conn
 	send   chan []byte
 	server *Server
+
+	// cancelMu guards the active chat cancel function so a "stop" message can
+	// cancel an in-progress stream from the read pump while the chat loop runs
+	// in its own goroutine.
+	cancelMu sync.Mutex
+	cancel   *streamCancel
+}
+
+// streamCancel wraps a context cancel function so it can be stored as a
+// pointer and compared by identity (Go functions cannot be compared directly).
+type streamCancel struct {
+	cancel context.CancelFunc
+}
+
+// setCancel records the cancel function for the currently active chat stream
+// and returns a handle the chat loop can use to clear exactly its own
+// registration when it finishes.
+func (c *client) setCancel(fn context.CancelFunc) *streamCancel {
+	sc := &streamCancel{cancel: fn}
+	c.cancelMu.Lock()
+	defer c.cancelMu.Unlock()
+	// Defensively cancel any prior stream before replacing it.
+	if c.cancel != nil {
+		c.cancel.cancel()
+	}
+	c.cancel = sc
+	return sc
+}
+
+// clearCancel removes the stored cancel function if it is still the given one.
+func (c *client) clearCancel(sc *streamCancel) {
+	c.cancelMu.Lock()
+	defer c.cancelMu.Unlock()
+	if c.cancel == sc {
+		c.cancel = nil
+	}
+}
+
+// cancelActive cancels the currently active chat stream, if any.
+func (c *client) cancelActive() {
+	c.cancelMu.Lock()
+	defer c.cancelMu.Unlock()
+	if c.cancel != nil {
+		c.cancel.cancel()
+		c.cancel = nil
+	}
 }
 
 // sendJSON marshals v and queues it to the client's outbound channel. It is
@@ -203,6 +256,8 @@ func (c *client) readPump(h *Hub) {
 		switch msg.Type {
 		case "chat":
 			c.handleChatMessage(msg)
+		case "stop":
+			c.handleStopMessage()
 		}
 	}
 }
@@ -256,7 +311,23 @@ func (c *client) handleChatMessage(msg inboundMessage) {
 		return
 	}
 
-	c.runChatLoop(context.Background(), settings, request)
+	// Run the chat loop in a goroutine so the read pump stays live and can
+	// receive a "stop" message while the reply is streaming. The cancellable
+	// context lets a stop message cancel the in-progress LLM stream.
+	ctx, cancel := context.WithCancel(context.Background())
+	sc := c.setCancel(cancel)
+	go func() {
+		defer c.clearCancel(sc)
+		c.runChatLoop(ctx, settings, request)
+	}()
+}
+
+// handleStopMessage cancels the currently active chat stream (if any) and
+// notifies the client that activity was stopped. It is invoked from the read
+// pump so it can run while the chat loop streams in its own goroutine.
+func (c *client) handleStopMessage() {
+	c.cancelActive()
+	c.sendJSON(map[string]any{"type": "chat_stopped"})
 }
 
 // runChatLoop executes the tool-calling loop for a chat request. It streams
@@ -267,13 +338,24 @@ func (c *client) runChatLoop(ctx context.Context, settings llm.Settings, request
 	messages := append([]llm.Message(nil), request.Messages...)
 
 	for turn := 0; turn < maxToolCallTurns; turn++ {
+		// If the user asked to stop between turns, halt immediately without
+		// starting another LLM request or executing further tools.
+		if ctx.Err() != nil {
+			c.sendJSON(map[string]any{"type": "chat_stopped"})
+			return
+		}
+
 		turnRequest := request
 		turnRequest.Messages = messages
 
 		stream := c.server.llm.StreamChat(ctx, turnRequest)
 		content, toolCalls, err := c.collectAssistantTurn(stream)
 		if err != nil {
-			c.sendJSON(map[string]any{"type": "chat_error", "error": err.Error()})
+			if errors.Is(err, errChatCanceled) {
+				c.sendJSON(map[string]any{"type": "chat_stopped"})
+			} else {
+				c.sendJSON(map[string]any{"type": "chat_error", "error": err.Error()})
+			}
 			return
 		}
 
@@ -294,7 +376,7 @@ func (c *client) runChatLoop(ctx context.Context, settings llm.Settings, request
 				"eventType": "tool_call",
 				"tool":      call.Function.Name,
 			})
-			result := tools.Execute(c.toolContext(), call.Function.Name, json.RawMessage(call.Function.Arguments))
+			result := tools.Execute(c.toolContext(ctx), call.Function.Name, json.RawMessage(call.Function.Arguments))
 			data, marshalErr := json.Marshal(result)
 			if marshalErr != nil {
 				data = []byte(fmt.Sprintf(`{"tool":%q,"success":false,"error":{"code":"marshal_error","message":%q}}`, call.Function.Name, marshalErr.Error()))
@@ -400,18 +482,19 @@ func toolResultVideoMessage(toolName string, result tools.ExecutionResult) (llm.
 
 // toolContext builds the tools.ExecutionContext for the active workspace so
 // tools can resolve labeled workspace paths and reach configured services
-// (e.g. the SearXNG endpoint used by web_search).
-func (c *client) toolContext() tools.ExecutionContext {
-	ctx := tools.ExecutionContext{
-		Context:    context.Background(),
+// (e.g. the SearXNG endpoint used by web_search). It threads the chat's
+// context through so tools observe cancellation when the user stops a reply.
+func (c *client) toolContext(ctx context.Context) tools.ExecutionContext {
+	execCtx := tools.ExecutionContext{
+		Context:    ctx,
 		SearxngURL: c.server.settings.SearxngURL,
 	}
 	active, ok, err := c.server.workspaces.Active()
 	if err != nil || !ok {
-		return ctx
+		return execCtx
 	}
-	ctx.WorkspaceRoots = workspaceToolRoots(active)
-	return ctx
+	execCtx.WorkspaceRoots = workspaceToolRoots(active)
+	return execCtx
 }
 
 // collectAssistantTurn drains a stream, merging streamed tool-call deltas and
@@ -451,7 +534,7 @@ func (c *client) collectAssistantTurn(stream *llm.Stream) (string, []llm.ToolCal
 				firstErr = fmt.Errorf("%s", event.Error)
 			}
 		case llm.EventCanceled:
-			return content.String(), orderedToolCalls(toolCalls), fmt.Errorf("chat stream was canceled")
+			return content.String(), orderedToolCalls(toolCalls), errChatCanceled
 		}
 	}
 	if firstErr != nil {

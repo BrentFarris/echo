@@ -334,6 +334,103 @@ func TestChatStreamingOverWebSocket(t *testing.T) {
 	}
 }
 
+// cancellableStreamer emits a token then blocks until its context is canceled,
+// at which point it emits an EventCanceled and closes. It lets tests verify
+// that a "stop" message cancels the in-progress stream.
+type cancellableStreamer struct {
+	started chan struct{}
+}
+
+func (f *cancellableStreamer) StreamChat(ctx context.Context, _ llm.ChatRequest) *llm.Stream {
+	events := make(chan llm.StreamEvent, 4)
+	events <- llm.StreamEvent{Type: llm.EventToken, Content: "partial"}
+	if f.started != nil {
+		close(f.started)
+	}
+	go func() {
+		<-ctx.Done()
+		events <- llm.StreamEvent{Type: llm.EventCanceled}
+		close(events)
+	}()
+	return &llm.Stream{ID: "fake", Events: events}
+}
+
+func TestChatStopOverWebSocket(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	// Inject a streamer that blocks until canceled so we can exercise the
+	// stop path deterministically.
+	started := make(chan struct{})
+	fake := &cancellableStreamer{started: started}
+	s.llm = fake
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go s.httpServer.Serve(ln)
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+ln.Addr().String()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Consume the welcome event.
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("read welcome: %v", err)
+	}
+
+	// Send a chat message that will block streaming.
+	if err := conn.WriteJSON(map[string]any{"type": "chat", "message": "hello"}); err != nil {
+		t.Fatalf("write chat: %v", err)
+	}
+
+	// Wait for the stream to start (chat_start + first token), then send stop.
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for {
+		var evt map[string]any
+		if err := conn.ReadJSON(&evt); err != nil {
+			t.Fatalf("read event: %v", err)
+		}
+		if evt["type"] == "chat_start" {
+			break
+		}
+	}
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("stream never started")
+	}
+
+	// Send the stop message and expect chat_stopped (not chat_done/chat_error).
+	if err := conn.WriteJSON(map[string]any{"type": "stop"}); err != nil {
+		t.Fatalf("write stop: %v", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	var stoppedSeen bool
+	for {
+		var evt map[string]any
+		if err := conn.ReadJSON(&evt); err != nil {
+			t.Fatalf("read event after stop: %v", err)
+		}
+		typ, _ := evt["type"].(string)
+		if typ == "chat_stopped" {
+			stoppedSeen = true
+			break
+		}
+		if typ == "chat_done" || typ == "chat_error" {
+			t.Fatalf("expected chat_stopped, got %q", typ)
+		}
+	}
+	if !stoppedSeen {
+		t.Fatal("expected chat_stopped")
+	}
+}
+
 func TestChatRoutesToSelectedModel(t *testing.T) {
 	s, _ := newTestServer(t)
 

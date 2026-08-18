@@ -710,6 +710,14 @@ textarea:disabled {
   background: var(--color-accent-strong);
 }
 
+.send-button.is-busy {
+  background: var(--color-danger);
+}
+
+.send-button.is-busy:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 82%, black);
+}
+
 .send-button svg {
   width: 15px;
   height: 15px;

@@ -6,7 +6,7 @@
 
 import { icons } from "../icons.js";
 import { get } from "../api.js";
-import { sendMessage, stopStream } from "../chat.js";
+import { sendMessage, stopStream, isStreaming, onStreamingChange } from "../chat.js";
 import { loadWorkspaces, openWorkspaceDropdown, openAddWorkspaceModal, setActiveWorkspace, getActive, renderWorkspaceIcon } from "../workspaces.js";
 
 // Holds the cleanup function for the currently mounted chat view.
@@ -294,6 +294,24 @@ export function mount(root) {
     input.focus();
   };
 
+  // setSendButtonBusy toggles the send button between send and stop while a
+  // reply is streaming, matching the OLD Echo behavior.
+  const setSendButtonBusy = (busy) => {
+    sendBtn.classList.toggle("is-busy", busy);
+    sendBtn.innerHTML = busy ? icons.stop : icons.send;
+    sendBtn.title = busy ? "Stop" : "Send";
+    sendBtn.setAttribute("aria-label", busy ? "Stop stream" : "Send message");
+  };
+
+  // While streaming, the button stops the reply; otherwise it sends.
+  const onSendButtonClick = () => {
+    if (isStreaming()) {
+      stopStream();
+    } else {
+      submit();
+    }
+  };
+
   const onKeydown = (e) => {
     // Enter sends (Shift+Enter inserts a newline).
     if (e.key === "Enter" && !e.shiftKey) {
@@ -306,14 +324,18 @@ export function mount(root) {
     e.preventDefault();
     submit();
   });
-  sendBtn.addEventListener("click", submit);
+  sendBtn.addEventListener("click", onSendButtonClick);
   input.addEventListener("keydown", onKeydown);
+
+  // Reflect streaming state on the send button as it starts and stops.
+  const unsubStreaming = onStreamingChange(setSendButtonBusy);
 
   // Store cleanup so unmount removes listeners.
   chatCleanup = () => {
     form.removeEventListener("submit", submit);
-    sendBtn.removeEventListener("click", submit);
+    sendBtn.removeEventListener("click", onSendButtonClick);
     input.removeEventListener("keydown", onKeydown);
+    unsubStreaming();
     settingsBtn?.removeEventListener("click", onSettingsClick);
     workspaceTrigger?.removeEventListener("click", onWorkspaceTriggerClick);
     if (closeWorkspaceDropdown) {
