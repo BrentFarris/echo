@@ -956,6 +956,8 @@ textarea:disabled {
   display: flex;
   flex-direction: column;
   gap: 0;
+  min-width: 0;
+  max-width: 100%;
   padding: var(--space-md);
   border-top: 1px solid var(--color-border);
   background: var(--color-surface);
@@ -1001,10 +1003,11 @@ textarea:disabled {
 }
 
 .chat-composer-toolbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-sm);
+  min-width: 0;
   min-height: 0;
 }
 
@@ -1014,6 +1017,7 @@ textarea:disabled {
   gap: 0;
   flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
 }
 
 .chat-composer-toolbar-right {
@@ -1026,6 +1030,7 @@ textarea:disabled {
 .chat-toolbar-icon {
   display: grid;
   place-items: center;
+  flex: 0 0 26px;
   width: 26px;
   height: 26px;
   padding: 0;
@@ -1058,6 +1063,7 @@ textarea:disabled {
 }
 
 .chat-toolbar-separator {
+  flex: 0 0 1px;
   width: 1px;
   height: 18px;
   margin: 0 var(--space-md);
@@ -1068,6 +1074,7 @@ textarea:disabled {
   display: inline-flex;
   align-items: center;
   gap: var(--space-sm);
+  min-width: 0;
   height: 26px;
   padding: 0 var(--space-lg-sm);
   border: none;
@@ -1077,6 +1084,16 @@ textarea:disabled {
   cursor: pointer;
   font-size: var(--text-base-md);
   white-space: nowrap;
+}
+
+.model-selector-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-selector-chevron {
+  flex: 0 0 auto;
 }
 
 .model-selector:hover {
