@@ -42,4 +42,9 @@ echo.db
 /echo/echo.log
 frontend/package.json.md5
 .gotmp/
-OLD/
+
+# Echo stuff
+_srv_err.txt
+_srv_out.txt
+server.err.log
+server.out.log

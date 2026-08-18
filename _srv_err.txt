@@ -1,4 +1,0 @@
-2026/08/17 17:28:15 Echo web server listening on http://localhost:3740
-2026/08/17 17:31:57 received signal terminated, shutting down
- one usage of each socket address (protocol/network address/port) is normally permitted.
-exit status 1
