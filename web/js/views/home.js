@@ -14,6 +14,7 @@ import {
 import { loadWorkspaces, openWorkspaceDropdown, openAddWorkspaceModal, setActiveWorkspace, getActive, renderWorkspaceIcon } from "../workspaces.js";
 import { codeRouteHash } from "../../src/navigation.ts";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../../src/primaryNav.ts";
+import { watchGitBadge } from "../../src/gitBadge.ts";
 import { toast } from "../../src/code/ui.ts";
 
 // Holds the cleanup function for the currently mounted chat view.
@@ -196,6 +197,7 @@ export function mount(root) {
   let currentWorkspaceId = "";
   let currentChatId = "";
   let currentTabs = [];
+  let stopGitBadge = () => {};
   const creatingChatSkills = new Set();
   let focusNewTab = false;
   let renderedActiveChatId = "";
@@ -787,6 +789,11 @@ export function mount(root) {
     currentChatId = nextChatId;
     currentTabs = state?.tabs || [];
 
+    if (previousWorkspaceId !== currentWorkspaceId) {
+      stopGitBadge();
+      stopGitBadge = watchGitBadge(root, currentWorkspaceId);
+    }
+
     if (state?.hasSnapshot && currentWorkspaceId) {
       const remaining = new Set(currentTabs.map((tab) => tab.chatId));
       for (const chatId of knownWorkspaceTabs.get(currentWorkspaceId) || []) {
@@ -895,6 +902,7 @@ export function mount(root) {
     modelDropdown.remove();
     modeDropdown.remove();
     moreMenu.remove();
+    stopGitBadge();
     closeWorkspaceSession(log);
   };
 

@@ -36,8 +36,13 @@ const chat = vi.hoisted(() => {
 });
 
 const api = vi.hoisted(() => ({ post: vi.fn() }));
+const gitBadge = vi.hoisted(() => {
+  const stop = vi.fn();
+  return { stop, watchGitBadge: vi.fn(() => stop) };
+});
 
 vi.mock("../js/chat.js", () => chat);
+vi.mock("./gitBadge.ts", () => ({ watchGitBadge: gitBadge.watchGitBadge }));
 
 vi.mock("../js/api.js", () => ({
   post: api.post,
@@ -99,6 +104,15 @@ describe("multi-chat tab UI", () => {
     chat.createChatTab.mockClear();
     chat.canClearChat.mockReturnValue(false);
     api.post.mockReset();
+    gitBadge.watchGitBadge.mockClear();
+    gitBadge.stop.mockClear();
+  });
+
+  it("tracks the active workspace's Git changes and stops tracking on unmount", () => {
+    expect(gitBadge.watchGitBadge).toHaveBeenCalledWith(root, "workspace-tabs");
+
+    unmount();
+    expect(gitBadge.stop).toHaveBeenCalledOnce();
   });
 
   it("creates a new tab from the menu and shows the shared active tab", () => {

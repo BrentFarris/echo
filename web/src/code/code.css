@@ -140,6 +140,10 @@
   font-weight: 600;
 }
 
+.code-git-activity > b[hidden] {
+  display: none;
+}
+
 .code-git-view {
   display: grid;
   grid-template-rows: 35px minmax(0, 1fr);

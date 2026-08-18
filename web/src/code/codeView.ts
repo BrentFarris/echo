@@ -12,6 +12,7 @@ import { GitView } from "./gitView";
 import { loadSession, saveSession } from "./persistence";
 import { CODE_ROUTE, codeRouteHash, codeSidebarFromHash, routePathFromHash } from "../navigation";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
+import { setGitBadgeCount } from "../gitBadge";
 import type {
   FileRef, FileSnapshot, FsEntry, PersistedTab, PersistedWorkspaceSession,
   SearchResult, TrashItem, WorkspaceRoot,
@@ -268,12 +269,7 @@ class CodeView {
       roots: () => this.roots,
       openFile: (ref, pin) => this.openFile(ref, pin),
       openDiff: (repository, change, scope, ref, pin) => this.openGitDiff(repository, change, scope, ref, pin),
-      updateBadge: (count) => {
-        this.root.querySelectorAll<HTMLElement>("[data-git-badge]").forEach((badge) => {
-          badge.hidden = count === 0;
-          badge.textContent = count > 99 ? "99+" : String(count);
-        });
-      },
+      updateBadge: (count) => setGitBadgeCount(this.root, count),
     });
     void this.gitView.start();
   }
