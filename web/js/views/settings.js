@@ -10,6 +10,9 @@ import { icons } from "../icons.js";
 import { del, get, post, put } from "../api.js";
 import { logout } from "../../src/auth/authGate.ts";
 import { hasDirtySessions } from "../../src/code/persistence.ts";
+import { navigateBackFromSettings } from "../../src/navigation.ts";
+
+let mountedRoot = null;
 
 // ---- Theme token table (matches OLD theme.ts, carried into the new SPA) ----
 const themeTokens = [
@@ -583,12 +586,13 @@ function renderContent() {
 }
 
 function render() {
-  const root = document.getElementById("app");
+  const root = mountedRoot;
+  if (!root) return;
   root.innerHTML = `
     <div class="settings-view">
       <nav class="settings-sidebar" aria-label="Settings sections">
         <div class="settings-sidebar-header">
-          <button class="settings-back-button" type="button" data-action="back-to-chat" title="Back to chat" aria-label="Back to main interface">
+          <button class="settings-back-button" type="button" data-action="back-from-settings" title="Back to previous view" aria-label="Back to previous view">
             ${icons.arrowLeft}
             <span>Back</span>
           </button>
@@ -634,13 +638,13 @@ function bindEvents(root) {
     });
   });
 
-  // Navigate back to the main chat interface.
-  root.querySelectorAll("[data-action='back-to-chat']").forEach((btn) => {
+  // Return to the view that opened Settings, or Chat for a direct page load.
+  root.querySelectorAll("[data-action='back-from-settings']").forEach((btn) => {
     btn.addEventListener("click", () => {
       // Persist any in-progress external connection edits before leaving.
       captureExternalFields(root);
-      saveSettings();
-      location.hash = "#/";
+      void saveSettings();
+      navigateBackFromSettings();
     });
   });
 
@@ -889,6 +893,7 @@ function bindEvents(root) {
 }
 
 export function mount(root) {
+  mountedRoot = root;
   render();
   loadSettings();
   loadAgentModes();
@@ -896,7 +901,9 @@ export function mount(root) {
 }
 
 export function unmount() {
-  // No persistent listeners outside the re-rendered DOM.
+  // Async settings requests may complete after another view has mounted. Do
+  // not let their completion render Settings over that active view.
+  mountedRoot = null;
 }
 
 function chooseDirtyLogout() {

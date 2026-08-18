@@ -97,4 +97,19 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.locator(".code-diff-dialog").getByRole("button", { name: "Close" }).click();
   await page.getByRole("button", { name: "Reload from Disk" }).click();
   await expect(page.locator(".view-lines")).toContainText("conflicting disk edit");
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  await expect(page.locator(".settings-view")).toBeVisible();
+  await page.getByRole("button", { name: "Back to previous view" }).click();
+  await expect(page.locator(".code-app-shell")).toBeVisible();
+  await page.waitForTimeout(500);
+  await expect(page.locator(".code-app-shell")).toBeVisible();
+
+  // Reloading at the Settings hash creates a true direct-load scenario with
+  // no in-memory origin. Back must use Chat as the safe fallback.
+  await page.goto("/#/settings");
+  await page.reload();
+  await expect(page.locator(".settings-view")).toBeVisible();
+  await page.getByRole("button", { name: "Back to previous view" }).click();
+  await expect(page.locator(".app-shell")).toBeVisible();
 });

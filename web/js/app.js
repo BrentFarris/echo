@@ -5,6 +5,7 @@
 
 import * as ws from "./ws.js";
 import { ensureAuthenticated } from "../src/auth/authGate.ts";
+import { recordNavigationRoute } from "../src/navigation.ts";
 
 // Route table: hash path -> () => Promise<view module>.
 // Views are lazy-loaded so the shell stays light.
@@ -24,8 +25,10 @@ function currentRoute() {
 }
 
 async function render() {
-  const route = currentRoute();
-  const loader = routes[route] || routes["/"];
+  const requestedRoute = currentRoute();
+  const route = routes[requestedRoute] ? requestedRoute : "/";
+  const loader = routes[route];
+  recordNavigationRoute(route);
 
   // Tear down the previous view.
   if (currentView?.unmount) {
