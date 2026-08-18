@@ -25,4 +25,6 @@ export const icons = {
   trash: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>`,
   terminal: `<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`,
   star: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2.9 6.1 6.5.9-4.7 4.6 1.1 6.4L12 17.8 6.2 21l1.1-6.4L2.6 10l6.5-.9z"/></svg>`,
+  image: `\u003csvg viewBox=\"0 0 24 24\" aria-hidden=\"true\"\u003e\u003crect x=\"3\" y=\"3\" width=\"18\" height=\"18\" rx=\"2\"/\u003e\u003ccircle cx=\"8.5\" cy=\"8.5\" r=\"1.5\"/\u003e\u003cpath d=\"m21 15-5-5L5 21\"/\u003e\u003c/svg\u003e`,
+  upload: `\u003csvg viewBox=\"0 0 24 24\" aria-hidden=\"true\"\u003e\u003cpath d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\"/\u003e\u003cpolyline points=\"17 8 12 3 7 8\"/\u003e\u003cline x1=\"12\" y1=\"3\" x2=\"12\" y2=\"15\"/\u003e\u003c/svg\u003e`,
 };

@@ -7,6 +7,7 @@
 import { icons } from "../icons.js";
 import { get } from "../api.js";
 import { sendMessage, stopStream } from "../chat.js";
+import { loadWorkspaces, openWorkspaceDropdown, openAddWorkspaceModal, setActiveWorkspace, getActive, renderWorkspaceIcon } from "../workspaces.js";
 
 // Holds the cleanup function for the currently mounted chat view.
 let chatCleanup = null;
@@ -159,6 +160,44 @@ export function mount(root) {
   };
   settingsBtn?.addEventListener("click", onSettingsClick);
 
+  // Workspace selector: open the dropdown, and the "+ Add a workspace" modal.
+  const workspaceTrigger = root.querySelector(".workspace-dropdown-trigger");
+  const workspaceIconLabel = root.querySelector(".workspace-icon-label");
+  let closeWorkspaceDropdown = null;
+
+  // updateWorkspaceIcon refreshes the trigger's icon to the active workspace.
+  const updateWorkspaceIcon = () => {
+    const active = getActive();
+    if (!workspaceIconLabel) return;
+    workspaceIconLabel.innerHTML = renderWorkspaceIcon(active);
+    workspaceTrigger?.setAttribute("title", active ? `Switch workspace (${active.name})` : "Select workspace");
+  };
+
+  const onWorkspaceTriggerClick = (e) => {
+    e.stopPropagation();
+    if (closeWorkspaceDropdown) {
+      closeWorkspaceDropdown();
+      closeWorkspaceDropdown = null;
+      return;
+    }
+    closeWorkspaceDropdown = openWorkspaceDropdown(workspaceTrigger, {
+      onSelect: async (id) => {
+        closeWorkspaceDropdown = null;
+        try {
+          await setActiveWorkspace(id);
+          updateWorkspaceIcon();
+        } catch (err) {
+          console.error("Failed to set active workspace:", err);
+        }
+      },
+      onAdd: () => {
+        closeWorkspaceDropdown = null;
+        openAddWorkspaceModal({ onCreate: () => updateWorkspaceIcon() });
+      },
+    });
+  };
+  workspaceTrigger?.addEventListener("click", onWorkspaceTriggerClick);
+
   // Build the dropdown as a fixed-position overlay appended to <body> so it is
   // not clipped by the chat panel's overflow:hidden.
   const modelDropdown = document.createElement("div");
@@ -276,6 +315,11 @@ export function mount(root) {
     sendBtn.removeEventListener("click", submit);
     input.removeEventListener("keydown", onKeydown);
     settingsBtn?.removeEventListener("click", onSettingsClick);
+    workspaceTrigger?.removeEventListener("click", onWorkspaceTriggerClick);
+    if (closeWorkspaceDropdown) {
+      closeWorkspaceDropdown();
+      closeWorkspaceDropdown = null;
+    }
     modelTrigger?.removeEventListener("click", onModelTriggerClick);
     modelList?.removeEventListener("click", onModelListClick);
     document.removeEventListener("click", onDocClick);
@@ -285,6 +329,9 @@ export function mount(root) {
 
   // Load the configured endpoints so the model selector can be populated.
   loadEndpoints();
+  // Load the registered workspaces so the selector dropdown can be populated,
+  // then set the trigger icon to the active (last opened) workspace.
+  loadWorkspaces().then(updateWorkspaceIcon);
 }
 
 export function unmount() {

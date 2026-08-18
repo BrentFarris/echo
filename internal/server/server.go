@@ -13,6 +13,7 @@ import (
 
 	"github.com/brent/echo/internal/llm"
 	"github.com/brent/echo/internal/settings"
+	"github.com/brent/echo/internal/workspaces"
 )
 
 // Server is the Echo HTTP server. It serves the SPA frontend from a static
@@ -24,6 +25,7 @@ type Server struct {
 	hub          *Hub
 	settingsPath string
 	store        *settings.Store
+	workspaces   *workspaces.Manager
 	llm          chatStreamer
 	llmSettings  llm.Settings
 	// settings holds the full normalized settings (all endpoints) so the chat
@@ -61,6 +63,7 @@ func NewWithSettingsPath(addr, webDir, settingsPath string) *Server {
 	}
 	s.settingsPath = settingsPath
 	s.store = settings.NewStore(settingsPath)
+	s.workspaces = workspaces.NewManager(settingsPath)
 	s.initLLM()
 	s.httpServer = &http.Server{
 		Addr:    addr,
@@ -114,6 +117,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/echo", s.handleEcho)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
+
+	// Workspace endpoints.
+	mux.HandleFunc("GET /api/workspaces", s.handleGetWorkspaces)
+	mux.HandleFunc("POST /api/workspaces", s.handleCreateWorkspace)
+	mux.HandleFunc("PUT /api/workspaces/active", s.handleSetActiveWorkspace)
+	mux.HandleFunc("GET /api/workspaces/{id}/icon", s.handleGetWorkspaceIcon)
 
 	// WebSocket endpoint for real-time push.
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
