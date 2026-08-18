@@ -68,6 +68,13 @@ const state = {
   workspaces: [
     { id: "ws-1", name: "echo", path: "C:\\Users\\brent\\Documents\\git\\echo" },
   ],
+  // External connection settings (SearXNG + ComfyUI).
+  external: {
+    searxngUrl: "",
+    comfyuiUrl: "",
+    comfyuiTxt2imgWorkflow: "",
+    comfyuiImg2imgWorkflow: "",
+  },
   storagePath: "",
   saveStatus: "",
 };
@@ -283,7 +290,7 @@ function renderExternal() {
         <p class="settings-card-help">Self-hosted metasearch engine used for web research.</p>
         <label class="field">
           <span>SearXNG URL</span>
-          <input type="url" value="http://localhost:8080/" placeholder="http://localhost:8080/" autocomplete="off" />
+          <input type="url" value="${esc(state.external.searxngUrl)}" placeholder="http://localhost:8080/" autocomplete="off" data-external-field="searxngUrl" />
         </label>
       </div>
 
@@ -293,15 +300,15 @@ function renderExternal() {
         <div class="settings-grid">
           <label class="field field-wide">
             <span>ComfyUI Host URL</span>
-            <input type="url" value="" placeholder="http://127.0.0.1:8188" autocomplete="off" />
+            <input type="url" value="${esc(state.external.comfyuiUrl)}" placeholder="http://127.0.0.1:8188" autocomplete="off" data-external-field="comfyuiUrl" />
           </label>
           <label class="field field-wide">
             <span>Txt2img Workflow</span>
-            <input type="text" value="" placeholder="Path to txt2img workflow JSON" autocomplete="off" />
+            <input type="text" value="${esc(state.external.comfyuiTxt2imgWorkflow)}" placeholder="Path to txt2img workflow JSON" autocomplete="off" data-external-field="comfyuiTxt2imgWorkflow" />
           </label>
           <label class="field field-wide">
             <span>Img2img Workflow</span>
-            <input type="text" value="" placeholder="Path to img2img workflow JSON" autocomplete="off" />
+            <input type="text" value="${esc(state.external.comfyuiImg2imgWorkflow)}" placeholder="Path to img2img workflow JSON" autocomplete="off" data-external-field="comfyuiImg2imgWorkflow" />
           </label>
         </div>
       </div>
@@ -494,6 +501,9 @@ function render() {
 function bindEvents(root) {
   root.querySelectorAll("[data-section]").forEach((btn) => {
     btn.addEventListener("click", () => {
+      // Persist any in-progress external connection edits before switching away.
+      captureExternalFields(root);
+      saveSettings();
       state.activeSection = btn.dataset.section;
       render();
     });
@@ -509,6 +519,9 @@ function bindEvents(root) {
   // Navigate back to the main chat interface.
   root.querySelectorAll("[data-action='back-to-chat']").forEach((btn) => {
     btn.addEventListener("click", () => {
+      // Persist any in-progress external connection edits before leaving.
+      captureExternalFields(root);
+      saveSettings();
       location.hash = "#/";
     });
   });
@@ -593,6 +606,17 @@ function bindEvents(root) {
     });
   });
 
+  // External connection fields. Update state live while typing so focus is
+  // preserved, and persist to the server when the field loses focus.
+  root.querySelectorAll("[data-external-field]").forEach((field) => {
+    field.addEventListener("input", () => {
+      state.external[field.dataset.externalField] = field.value;
+    });
+    field.addEventListener("blur", () => {
+      saveSettings();
+    });
+  });
+
   root.querySelectorAll("[data-action='add-mode']").forEach((btn) => {
     btn.addEventListener("click", () => {
       state.modes.push({
@@ -631,6 +655,15 @@ export function unmount() {
 
 // ---- Persistence ----
 
+// captureExternalFields reads any external connection inputs currently in the
+// DOM into state. This is used on navigation (back button, switching sections)
+// so edits are not lost even if a field never fired a blur event.
+function captureExternalFields(root) {
+  root.querySelectorAll("[data-external-field]").forEach((field) => {
+    state.external[field.dataset.externalField] = field.value;
+  });
+}
+
 // applySettings copies the loaded settings into the view state and re-renders.
 function applySettings(cfg) {
   // The server returns { settings: <llm.Settings>, storagePath }; tolerate both
@@ -644,6 +677,12 @@ function applySettings(cfg) {
     inlineCode: s.endpointSelection?.inlineCode || state.endpoints[0]?.id || "",
   };
   state.storagePath = cfg.storagePath || "";
+  state.external = {
+    searxngUrl: s.searxngUrl || "",
+    comfyuiUrl: s.comfyuiUrl || "",
+    comfyuiTxt2imgWorkflow: s.comfyuiTxt2imgWorkflow || "",
+    comfyuiImg2imgWorkflow: s.comfyuiImg2imgWorkflow || "",
+  };
   render();
 }
 
@@ -669,6 +708,10 @@ function buildSettings() {
       vision: state.routing.vision,
       inlineCode: state.routing.inlineCode,
     },
+    searxngUrl: state.external.searxngUrl,
+    comfyuiUrl: state.external.comfyuiUrl,
+    comfyuiTxt2imgWorkflow: state.external.comfyuiTxt2imgWorkflow,
+    comfyuiImg2imgWorkflow: state.external.comfyuiImg2imgWorkflow,
   };
 }
 

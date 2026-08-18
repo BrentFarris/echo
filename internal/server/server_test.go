@@ -171,6 +171,53 @@ func TestPutSettingsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPutSettingsExternalConnectionsRoundTrip(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	// Persist external connection values exactly as the frontend sends them.
+	cfg := llm.DefaultSettings()
+	cfg.SearxngURL = "http://searxng.example:8080/"
+	cfg.ComfyuiURL = "http://comfy.example:8188"
+	cfg.ComfyuiTxt2imgWorkflow = "workflows/txt2img.json"
+	cfg.ComfyuiImg2imgWorkflow = "workflows/img2img.json"
+
+	body, err := json.Marshal(map[string]any{"settings": cfg})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// GET should reflect the saved external connection values.
+	rr2 := doRequest(t, s, http.MethodGet, "/api/settings")
+	var env struct {
+		Data struct {
+			Settings llm.Settings `json:"settings"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr2.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := env.Data.Settings
+	if got.SearxngURL != cfg.SearxngURL {
+		t.Fatalf("expected searxngUrl %q, got %q", cfg.SearxngURL, got.SearxngURL)
+	}
+	if got.ComfyuiURL != cfg.ComfyuiURL {
+		t.Fatalf("expected comfyuiUrl %q, got %q", cfg.ComfyuiURL, got.ComfyuiURL)
+	}
+	if got.ComfyuiTxt2imgWorkflow != cfg.ComfyuiTxt2imgWorkflow {
+		t.Fatalf("expected comfyuiTxt2imgWorkflow %q, got %q", cfg.ComfyuiTxt2imgWorkflow, got.ComfyuiTxt2imgWorkflow)
+	}
+	if got.ComfyuiImg2imgWorkflow != cfg.ComfyuiImg2imgWorkflow {
+		t.Fatalf("expected comfyuiImg2imgWorkflow %q, got %q", cfg.ComfyuiImg2imgWorkflow, got.ComfyuiImg2imgWorkflow)
+	}
+}
+
 func TestPutSettingsRejectsInvalid(t *testing.T) {
 	s, _ := newTestServer(t)
 	// An invalid endpoint URL should fail validation. Build a minimal payload
