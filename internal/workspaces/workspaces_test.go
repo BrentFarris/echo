@@ -1,10 +1,14 @@
 package workspaces
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
-	"strings"
+	"runtime"
 	"testing"
+
+	"github.com/brent/echo/internal/appdata"
 )
 
 func TestCreateValidatesNameAndPaths(t *testing.T) {
@@ -75,13 +79,17 @@ func TestCreateWritesEchoLayoutAndRegisters(t *testing.T) {
 	if fi, err := os.Stat(echoDir); err != nil || !fi.IsDir() {
 		t.Fatalf("expected .echo dir: %v", err)
 	}
-	// workspace.json exists and contains the folders list.
+	// workspace.json stores portable paths relative to its .echo directory.
 	wfData, err := os.ReadFile(filepath.Join(echoDir, "workspace.json"))
 	if err != nil {
 		t.Fatalf("read workspace.json: %v", err)
 	}
-	if !strings.Contains(string(wfData), `"folders"`) || !strings.Contains(string(wfData), "extra") {
-		t.Fatalf("workspace.json missing folders: %s", wfData)
+	var wf workspaceFile
+	if err := json.Unmarshal(wfData, &wf); err != nil {
+		t.Fatalf("parse workspace.json: %v", err)
+	}
+	if wf.MainPath != "../" || len(wf.Folders) != 2 || wf.Folders[0] != "../" || wf.Folders[1] != "../../extra" {
+		t.Fatalf("workspace.json paths are not portable: %+v", wf)
 	}
 	// Icon copied.
 	iconData, err := os.ReadFile(filepath.Join(echoDir, "icon.png"))
@@ -107,16 +115,19 @@ func TestCreateWritesEchoLayoutAndRegisters(t *testing.T) {
 
 func TestCreateRejectsDuplicateName(t *testing.T) {
 	dir := t.TempDir()
-	main := filepath.Join(dir, "main")
-	if err := os.MkdirAll(main, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
+	mainA := filepath.Join(dir, "main-a")
+	mainB := filepath.Join(dir, "main-b")
+	for _, main := range []string{mainA, mainB} {
+		if err := os.MkdirAll(main, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
 	}
 	m := NewManager(filepath.Join(dir, "echo.json"))
-	if _, err := m.Create(CreateRequest{Name: "Dup", MainPath: main}); err != nil {
+	if _, err := m.Create(CreateRequest{Name: "Dup", MainPath: mainA}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	// Case-insensitive duplicate.
-	if _, err := m.Create(CreateRequest{Name: "dup", MainPath: main}); err == nil {
+	if _, err := m.Create(CreateRequest{Name: "dup", MainPath: mainB}); err == nil {
 		t.Fatal("expected duplicate name error")
 	}
 }
@@ -258,4 +269,215 @@ func TestCreateDeduplicatesCanonicalFolderPaths(t *testing.T) {
 	if len(workspace.Folders) != 1 {
 		t.Fatalf("expected one canonical folder, got %#v", workspace.Folders)
 	}
+}
+
+func TestCreateLoadsLegacyWorkspaceFileAndNormalizesIt(t *testing.T) {
+	directory := t.TempDir()
+	main := filepath.Join(directory, "main")
+	extra := filepath.Join(directory, "extra")
+	for _, folder := range []string{main, extra} {
+		if err := os.MkdirAll(folder, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	echoDir := filepath.Join(main, EchoDirName)
+	if err := os.MkdirAll(echoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeRawWorkspaceFile(t, echoDir, workspaceFile{
+		Name: "From File", MainPath: main, Folders: []string{main, extra},
+		SearchParentGitRepositories: true,
+	})
+
+	manager := NewManager(filepath.Join(directory, "echo.json"))
+	workspace, err := manager.Create(CreateRequest{Name: "Ignored", MainPath: main})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspace.Name != "From File" || workspace.MainPath != main || len(workspace.Folders) != 2 || workspace.Folders[1] != extra {
+		t.Fatalf("unexpected loaded workspace: %+v", workspace)
+	}
+	if !workspace.SearchParentGitRepositories {
+		t.Fatal("expected workspace-owned setting to load")
+	}
+	wf := readRawWorkspaceFile(t, echoDir)
+	if wf.MainPath != "../" || len(wf.Folders) != 2 || wf.Folders[0] != "../" || wf.Folders[1] != "../../extra" {
+		t.Fatalf("legacy config was not normalized: %+v", wf)
+	}
+}
+
+func TestCreateRebindsExistingRegistrationAndPreservesIDState(t *testing.T) {
+	directory := t.TempDir()
+	oldMain := filepath.Join(directory, "old", "project")
+	newMain := filepath.Join(directory, "new", "project")
+	for _, folder := range []string{oldMain, newMain} {
+		if err := os.MkdirAll(folder, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dataPath := filepath.Join(directory, "echo.json")
+	manager := NewManager(dataPath)
+	original, err := manager.Create(CreateRequest{Name: "Portable", MainPath: oldMain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetActive(original.ID); err != nil {
+		t.Fatal(err)
+	}
+	data := appdata.NewStore(dataPath)
+	if err := data.Update(func(file *appdata.File) error {
+		file.SavedCommands = map[string][]appdata.SavedCommand{
+			original.ID: {{ID: "command", Name: "Status", Command: "git status"}},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	echoDir := filepath.Join(newMain, EchoDirName)
+	if err := os.MkdirAll(echoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	missingExtra := filepath.Join(directory, "missing-extra")
+	missingRelative, err := filepath.Rel(echoDir, missingExtra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRawWorkspaceFile(t, echoDir, workspaceFile{
+		Name: "Portable", MainPath: "../", Folders: []string{"../", filepath.ToSlash(missingRelative)},
+	})
+	rebound, err := manager.Create(CreateRequest{Name: "Ignored", MainPath: newMain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebound.ID != original.ID || rebound.MainPath != newMain {
+		t.Fatalf("registration was not rebound: original=%+v rebound=%+v", original, rebound)
+	}
+	if len(rebound.Folders) != 2 || rebound.Folders[1] != missingExtra {
+		t.Fatalf("missing additional folder was not retained: %#v", rebound.Folders)
+	}
+	stored, err := data.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Workspaces) != 1 || stored.Workspaces[0].ID != original.ID || stored.Workspaces[0].MainPath != newMain {
+		t.Fatalf("unexpected registrations after rebind: %+v", stored.Workspaces)
+	}
+	if stored.ActiveWorkspaceID != original.ID || len(stored.SavedCommands[original.ID]) != 1 {
+		t.Fatalf("workspace-ID state was not preserved: %+v", stored)
+	}
+}
+
+func TestCreateRejectsMalformedOrMismatchedWorkspaceFileWithoutRewriting(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		data string
+		code string
+	}{
+		{name: "malformed", data: `{`, code: ConfigMalformed},
+		{name: "mismatched main", data: `{"name":"Wrong","mainPath":"../../other","folders":["../../other"]}`, code: ConfigMainMismatch},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			main := filepath.Join(directory, "main")
+			for _, folder := range []string{main, filepath.Join(directory, "other")} {
+				if err := os.MkdirAll(folder, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			echoDir := filepath.Join(main, EchoDirName)
+			if err := os.MkdirAll(echoDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(echoDir, "workspace.json")
+			if err := os.WriteFile(path, []byte(test.data), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			manager := NewManager(filepath.Join(directory, "echo.json"))
+			_, err := manager.Create(CreateRequest{Name: "Ignored", MainPath: main})
+			var configErr *ConfigError
+			if !errors.As(err, &configErr) || configErr.Code != test.code {
+				t.Fatalf("expected %s, got %T %v", test.code, err, err)
+			}
+			unchanged, readErr := os.ReadFile(path)
+			if readErr != nil || string(unchanged) != test.data {
+				t.Fatalf("invalid config was rewritten: %q %v", unchanged, readErr)
+			}
+		})
+	}
+}
+
+func TestWorkspaceFileIsAuthoritativeAndSettingsStayPortable(t *testing.T) {
+	directory := t.TempDir()
+	main := filepath.Join(directory, "main")
+	extra := filepath.Join(directory, "extra")
+	for _, folder := range []string{main, extra} {
+		if err := os.MkdirAll(folder, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager := NewManager(filepath.Join(directory, "echo.json"))
+	created, err := manager.Create(CreateRequest{Name: "Original", MainPath: main})
+	if err != nil {
+		t.Fatal(err)
+	}
+	echoDir := filepath.Join(main, EchoDirName)
+	writeRawWorkspaceFile(t, echoDir, workspaceFile{
+		Name: "Edited", MainPath: "../", Folders: []string{"../", "../../extra"},
+	})
+	loaded, ok, err := manager.Get(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get: ok=%v err=%v", ok, err)
+	}
+	if loaded.Name != "Edited" || len(loaded.Folders) != 2 || loaded.Folders[1] != extra {
+		t.Fatalf("workspace file did not override registry mirror: %+v", loaded)
+	}
+	other := filepath.Join(directory, "other")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Create(CreateRequest{Name: "edited", MainPath: other}); err == nil {
+		t.Fatal("authoritative workspace name was not used for uniqueness")
+	}
+	if _, err := manager.SetSearchParentGitRepositories(created.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	wf := readRawWorkspaceFile(t, echoDir)
+	if wf.MainPath != "../" || wf.Folders[0] != "../" || wf.Folders[1] != "../../extra" || !wf.SearchParentGitRepositories {
+		t.Fatalf("settings update reintroduced non-portable paths: %+v", wf)
+	}
+}
+
+func TestPortableWorkspacePathFallsBackAcrossWindowsVolumes(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("different-volume filepath.Rel behavior is Windows-specific")
+	}
+	echoDir := `C:\project\.echo`
+	if got := portableWorkspacePath(echoDir, `Z:\shared`); got != `Z:\shared` {
+		t.Fatalf("expected absolute fallback, got %q", got)
+	}
+}
+
+func writeRawWorkspaceFile(t *testing.T, echoDir string, wf workspaceFile) {
+	t.Helper()
+	data, err := json.MarshalIndent(wf, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(echoDir, "workspace.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readRawWorkspaceFile(t *testing.T, echoDir string) workspaceFile {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(echoDir, "workspace.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wf workspaceFile
+	if err := json.Unmarshal(data, &wf); err != nil {
+		t.Fatal(err)
+	}
+	return wf
 }

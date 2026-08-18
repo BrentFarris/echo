@@ -135,6 +135,7 @@ func (i *Index) ApplyChanges(workspaceID string, changes []Change) {
 		i.Invalidate(workspaceID)
 		return
 	}
+	roots = availableResolvedRoots(roots)
 	rootByID := make(map[string]resolvedRoot, len(roots))
 	matchers := make(map[string]*ignore.GitIgnore, len(roots))
 	for _, root := range roots {
@@ -251,6 +252,7 @@ func (i *Index) build(ctx context.Context, workspaceID string, generation uint64
 		i.finish(workspaceID, generation, nil, false)
 		return
 	}
+	roots = availableResolvedRoots(roots)
 	entries := make([]SearchResult, 0, 4096)
 	truncated := false
 	for _, root := range roots {

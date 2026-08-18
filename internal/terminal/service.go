@@ -335,6 +335,18 @@ func (s *Service) Stop(workspaceID, sessionID string) error {
 	return nil
 }
 
+// StopWorkspace terminates and forgets a workspace terminal when its root is
+// rebound. A subsequent Start resolves the new authoritative workspace path.
+func (s *Service) StopWorkspace(workspaceID string) {
+	s.mu.Lock()
+	current := s.sessions[workspaceID]
+	delete(s.sessions, workspaceID)
+	s.mu.Unlock()
+	if current != nil {
+		current.stopAndWait()
+	}
+}
+
 func (s *Service) Restart(workspaceID, sessionID string, cols, rows int) (Snapshot, error) {
 	current, err := s.current(workspaceID, sessionID)
 	if err != nil {

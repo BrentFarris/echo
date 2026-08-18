@@ -15,10 +15,10 @@ import (
 	"sync"
 )
 
-// Workspace describes a workspace registered with Echo. MainPath is the
-// primary folder (the one that owns the .echo directory); Folders lists every
-// folder the workspace operates on. IconExt is the detected extension of the
-// workspace icon stored at .echo/icon.<ext> (empty when no icon was set).
+// Workspace describes Echo's local registration and absolute locator mirror.
+// The workspace-owned .echo/workspace.json remains authoritative for its name,
+// folders, and settings. IconExt is the detected extension of the workspace
+// icon stored at .echo/icon.<ext> (empty when no icon was set).
 type Workspace struct {
 	ID                          string   `json:"id"`
 	Name                        string   `json:"name"`

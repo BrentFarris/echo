@@ -209,6 +209,49 @@ func TestRootsHaveUniqueDisambiguatedLabels(t *testing.T) {
 	}
 }
 
+func TestUnavailableAdditionalRootDoesNotBlockMainRoot(t *testing.T) {
+	base := t.TempDir()
+	main := filepath.Join(base, "main")
+	extra := filepath.Join(base, "extra")
+	for _, folder := range []string{main, extra} {
+		if err := os.MkdirAll(folder, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(main, "main.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manager := workspaces.NewManager(filepath.Join(base, "echo.json"))
+	workspace, err := manager.Create(workspaces.CreateRequest{Name: "Partial", MainPath: main, Folders: []string{extra}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(extra); err != nil {
+		t.Fatal(err)
+	}
+	service := New(manager, filepath.Join(base, "echo.json"))
+	roots, err := service.Roots(workspace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roots) != 2 || roots[0].BlockedReason != "" || roots[1].BlockedReason == "" {
+		t.Fatalf("unexpected root availability: %#v", roots)
+	}
+	entries, err := service.List(workspace.ID, FileRef{RootID: roots[0].ID})
+	foundMainFile := false
+	for _, entry := range entries {
+		foundMainFile = foundMainFile || entry.Name == "main.txt"
+	}
+	if err != nil || !foundMainFile {
+		t.Fatalf("main root is not usable: %#v %v", entries, err)
+	}
+	_, err = service.ResolveExistingHostPath(workspace.ID, FileRef{RootID: roots[1].ID}, true)
+	var fsErr *Error
+	if !errors.As(err, &fsErr) || fsErr.Code != "workspace_root_unavailable" {
+		t.Fatalf("expected unavailable-root error, got %T %v", err, err)
+	}
+}
+
 func TestRevealCommandKeepsPathInOneArgument(t *testing.T) {
 	path := filepath.Join("workspace", "name; echo injected.txt")
 	command, arguments := revealCommand(path, false)

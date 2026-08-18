@@ -307,7 +307,7 @@ func TestRestartAndConcurrentShutdownCloseOnce(t *testing.T) {
 	}
 }
 
-func TestWorkingDirectoryFallsBackToFirstAvailableFolder(t *testing.T) {
+func TestWorkingDirectoryRejectsUnavailableMainFolder(t *testing.T) {
 	root := t.TempDir()
 	mainPath := filepath.Join(root, "gone")
 	extraPath := filepath.Join(root, "available")
@@ -330,11 +330,10 @@ func TestWorkingDirectoryFallsBackToFirstAvailableFolder(t *testing.T) {
 	backend := newFakeBackend()
 	service.SetBackendFactory(func() (Backend, error) { return backend, nil })
 	t.Cleanup(func() { shutdownTestService(t, service) })
-	if _, err := service.Start(workspace.ID, 80, 24); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	if backend.spec.Dir != extraPath {
-		t.Fatalf("working directory = %q, want %q", backend.spec.Dir, extraPath)
+	_, err = service.Start(workspace.ID, 80, 24)
+	var configErr *workspaces.ConfigError
+	if !errors.As(err, &configErr) || configErr.Code != workspaces.ConfigMainUnavailable {
+		t.Fatalf("expected unavailable-main error, got %T %v", err, err)
 	}
 }
 

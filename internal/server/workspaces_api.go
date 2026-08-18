@@ -16,14 +16,14 @@ func (s *Server) handleGetWorkspaces(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load workspaces: "+err.Error())
 		return
 	}
-	active, _, err := s.workspaces.Active()
+	activeID, err := s.workspaces.ActiveID()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load active workspace: "+err.Error())
 		return
 	}
 	writeData(w, http.StatusOK, map[string]any{
 		"workspaces": list,
-		"activeId":   active.ID,
+		"activeId":   activeID,
 	})
 }
 
@@ -56,6 +56,7 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
+	before, _ := s.workspaces.List()
 	ws, err := s.workspaces.Create(workspaces.CreateRequest{
 		Name:     body.Name,
 		MainPath: body.MainPath,
@@ -65,6 +66,12 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	for _, existing := range before {
+		if existing.ID == ws.ID {
+			s.refreshWorkspaceCaches(r.Context(), ws.ID)
+			break
+		}
 	}
 	writeData(w, http.StatusCreated, map[string]any{"workspace": ws})
 }

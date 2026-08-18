@@ -514,6 +514,30 @@ func (m *chatSessionManager) shutdown(ctx context.Context) {
 	}
 }
 
+func (m *chatSessionManager) invalidate(workspaceID string) {
+	m.mu.Lock()
+	parent := m.sessions[workspaceID]
+	delete(m.sessions, workspaceID)
+	m.mu.Unlock()
+	if parent == nil {
+		return
+	}
+	parent.mu.Lock()
+	tabs := make([]*chatSession, 0, len(parent.tabs))
+	for _, tab := range parent.tabs {
+		tabs = append(tabs, tab)
+	}
+	parent.mu.Unlock()
+	for _, tab := range tabs {
+		tab.mu.Lock()
+		cancel := tab.cancel
+		tab.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	}
+}
+
 func blankTabTranscript() sessions.TabTranscript {
 	return sessions.TabTranscript{ChatID: newSessionID("chat"), Turns: []sessions.Turn{}, Messages: []llm.Message{}}
 }

@@ -51,9 +51,10 @@ type FileRef struct {
 }
 
 type Root struct {
-	ID       string `json:"id"`
-	Label    string `json:"label"`
-	HostPath string `json:"hostPath"`
+	ID            string `json:"id"`
+	Label         string `json:"label"`
+	HostPath      string `json:"hostPath"`
+	BlockedReason string `json:"blockedReason,omitempty"`
 }
 
 type Entry struct {
@@ -97,7 +98,8 @@ type CreateRequest struct {
 
 type resolvedRoot struct {
 	Root
-	realPath string
+	realPath   string
+	resolveErr error
 }
 
 type referencedPathLock struct {
@@ -125,6 +127,12 @@ func (s *Service) Close() {
 	s.index.Close()
 }
 
+// RefreshWorkspace rebuilds cached search state after a workspace registration
+// is rebound to a different main folder.
+func (s *Service) RefreshWorkspace(workspaceID string) {
+	s.index.Invalidate(workspaceID)
+}
+
 func (s *Service) Roots(workspaceID string) ([]Root, error) {
 	resolved, err := s.resolvedRoots(workspaceID)
 	if err != nil {
@@ -140,6 +148,10 @@ func (s *Service) Roots(workspaceID string) ([]Root, error) {
 func (s *Service) resolvedRoots(workspaceID string) ([]resolvedRoot, error) {
 	workspace, ok, err := s.workspaces.Get(strings.TrimSpace(workspaceID))
 	if err != nil {
+		var configErr *workspaces.ConfigError
+		if errors.As(err, &configErr) {
+			return nil, &Error{Code: configErr.Code, Message: configErr.Message, Cause: err}
+		}
 		return nil, err
 	}
 	if !ok {
@@ -163,11 +175,19 @@ func (s *Service) resolvedRoots(workspaceID string) ([]resolvedRoot, error) {
 			return nil, fmt.Errorf("resolve workspace root: %w", err)
 		}
 		absolute = filepath.Clean(absolute)
-		realPath, err := filepath.EvalSymlinks(absolute)
-		if err != nil {
-			return nil, &Error{Code: "workspace_root_unavailable", Message: "a workspace folder is unavailable", Cause: err}
+		realPath, resolveErr := filepath.EvalSymlinks(absolute)
+		if resolveErr == nil {
+			if info, statErr := os.Stat(realPath); statErr != nil {
+				resolveErr = statErr
+			} else if !info.IsDir() {
+				resolveErr = fmt.Errorf("workspace root is not a directory")
+			}
 		}
-		pathKey := realPath
+		identityPath := realPath
+		if resolveErr != nil {
+			identityPath = absolute
+		}
+		pathKey := identityPath
 		if runtime.GOOS == "windows" {
 			pathKey = strings.ToLower(pathKey)
 		}
@@ -184,16 +204,30 @@ func (s *Service) resolvedRoots(workspaceID string) ([]resolvedRoot, error) {
 			label = fmt.Sprintf("%s-%d", baseLabel, suffix)
 		}
 		labels[strings.ToLower(label)] = true
-		digestInput := realPath
+		digestInput := identityPath
 		if runtime.GOOS == "windows" {
 			digestInput = strings.ToLower(digestInput)
 		}
 		digest := sha256.Sum256([]byte(digestInput))
-		result = append(result, resolvedRoot{Root: Root{
+		root := resolvedRoot{Root: Root{
 			ID: hex.EncodeToString(digest[:8]), Label: label, HostPath: absolute,
-		}, realPath: realPath})
+		}, realPath: realPath, resolveErr: resolveErr}
+		if resolveErr != nil {
+			root.BlockedReason = "Workspace folder is unavailable"
+		}
+		result = append(result, root)
 	}
 	return result, nil
+}
+
+func availableResolvedRoots(roots []resolvedRoot) []resolvedRoot {
+	available := make([]resolvedRoot, 0, len(roots))
+	for _, root := range roots {
+		if root.resolveErr == nil {
+			available = append(available, root)
+		}
+	}
+	return available
 }
 
 func (s *Service) rootFor(workspaceID, rootID string) (resolvedRoot, error) {
@@ -203,6 +237,9 @@ func (s *Service) rootFor(workspaceID, rootID string) (resolvedRoot, error) {
 	}
 	for _, root := range roots {
 		if subtleStringEqual(root.ID, rootID) {
+			if root.resolveErr != nil {
+				return resolvedRoot{}, &Error{Code: "workspace_root_unavailable", Message: "workspace folder is unavailable", Cause: root.resolveErr}
+			}
 			return root, nil
 		}
 	}

@@ -1,8 +1,12 @@
 package server
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/brent/echo/internal/tools"
 	"github.com/brent/echo/internal/workspaces"
 )
 
@@ -60,5 +64,34 @@ func TestNormalizeWorkspaceFolderLabel(t *testing.T) {
 		if got := normalizeWorkspaceFolderLabel(in); got != want {
 			t.Errorf("normalizeWorkspaceFolderLabel(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestToolResolverReportsUnavailableAdditionalRoot(t *testing.T) {
+	server, directory := newTestServer(t)
+	main := filepath.Join(directory, "main")
+	extra := filepath.Join(directory, "extra")
+	for _, folder := range []string{main, extra} {
+		if err := os.MkdirAll(folder, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	workspace, err := server.workspaces.Create(workspaces.CreateRequest{
+		Name: "Tools", MainPath: main, Folders: []string{extra},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(extra); err != nil {
+		t.Fatal(err)
+	}
+	roots := server.confinedToolRoots(workspace)
+	if len(roots) != 2 {
+		t.Fatalf("expected configured tool roots, got %#v", roots)
+	}
+	_, err = server.toolPathResolver(workspace.ID, roots, false)(roots[1].Label)
+	var safe tools.SafeError
+	if !errors.As(err, &safe) || safe.Code != "workspace_root_unavailable" {
+		t.Fatalf("expected safe unavailable-root error, got %T %v", err, err)
 	}
 }

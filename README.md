@@ -219,6 +219,11 @@ The main folder of each workspace owns a `.echo/` directory. Current workspace f
     └── <skill-name>/SKILL.md
 ```
 
+`workspace.json` is the authoritative workspace configuration. Its paths are
+stored relative to the `.echo` directory when possible (`mainPath` and the
+main `folders` entry are `../`), then resolved to absolute host paths whenever
+Echo opens the workspace or supplies paths to tools and other services.
+
 Echo writes these files atomically. Deleted workspace entries are moved to a separate trash store beside the global data file so they can be restored from the Code view. Browser hot-exit state is local to that browser and is cleared when signing out.
 
 ## Security

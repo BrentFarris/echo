@@ -74,6 +74,7 @@ func (m *WatchManager) Subscribe(workspaceID string) error {
 		m.mu.Unlock()
 		return err
 	}
+	roots = availableResolvedRoots(roots)
 	workspace := &watchedWorkspace{
 		id: workspaceID, watcher: watcher, roots: roots, references: 1,
 		stop: make(chan struct{}), done: make(chan struct{}), pending: make(map[string]Change),
@@ -139,6 +140,27 @@ func (m *WatchManager) Unsubscribe(workspaceID string) {
 	close(workspace.stop)
 	m.mu.Unlock()
 	<-workspace.done
+}
+
+// Refresh replaces an active watcher while preserving its subscription count.
+// It is a no-op when the workspace is not currently watched.
+func (m *WatchManager) Refresh(workspaceID string) {
+	m.mu.Lock()
+	workspace := m.workspaces[workspaceID]
+	if workspace == nil {
+		m.mu.Unlock()
+		return
+	}
+	references := workspace.references
+	delete(m.workspaces, workspaceID)
+	close(workspace.stop)
+	m.mu.Unlock()
+	<-workspace.done
+	for index := 0; index < references; index++ {
+		if err := m.Subscribe(workspaceID); err != nil {
+			return
+		}
+	}
 }
 
 func (m *WatchManager) Close() {

@@ -142,6 +142,37 @@ func (s *Service) InvalidateWorkspace(workspaceID string) {
 	}
 }
 
+// ResetWorkspace clears repository state after the workspace registry is
+// rebound, then recreates any active subscriptions against the new roots.
+func (s *Service) ResetWorkspace(ctx context.Context, workspaceID string) error {
+	s.mu.Lock()
+	watch := s.watches[workspaceID]
+	references := 0
+	if watch != nil {
+		references = watch.references
+		delete(s.watches, workspaceID)
+		close(watch.stop)
+	}
+	for _, state := range s.repos[workspaceID] {
+		state.scheduleMu.Lock()
+		if state.refreshTimer != nil {
+			state.refreshTimer.Stop()
+		}
+		state.scheduleMu.Unlock()
+	}
+	delete(s.repos, workspaceID)
+	s.mu.Unlock()
+	if watch != nil {
+		<-watch.done
+	}
+	for index := 0; index < references; index++ {
+		if err := s.Subscribe(ctx, workspaceID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Service) scheduleStatusRefresh(state *repositoryState) {
 	state.scheduleMu.Lock()
 	if state.refreshTimer != nil {

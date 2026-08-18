@@ -321,6 +321,19 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
 }
 
+func (s *Server) refreshWorkspaceCaches(ctx context.Context, workspaceID string) {
+	s.sessions.invalidate(workspaceID)
+	s.terminal.StopWorkspace(workspaceID)
+	s.watcher.Refresh(workspaceID)
+	if err := s.git.ResetWorkspace(ctx, workspaceID); err != nil {
+		logf("refresh git workspace %s: %v", workspaceID, err)
+	}
+	s.fs.RefreshWorkspace(workspaceID)
+	s.skillsMu.Lock()
+	delete(s.skills, workspaceID)
+	s.skillsMu.Unlock()
+}
+
 // ResetAuthentication clears the configured owner password and remembered
 // devices, returning the new one-time setup code.
 func (s *Server) ResetAuthentication() (string, error) {

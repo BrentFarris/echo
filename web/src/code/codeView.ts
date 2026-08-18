@@ -426,7 +426,7 @@ class CodeView {
       this.nodes.set(key, {
         key, ref: { rootId: root.id, path: "" }, name: root.label, hostPath: root.hostPath,
         kind: "directory", isRoot: true, isSymlink: false, depth: 0, parentKey: null,
-        loaded: false, loading: false, children: [],
+        blockedReason: root.blockedReason, loaded: false, loading: false, children: [],
       });
     }
     this.expanded.add(key);

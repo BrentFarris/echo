@@ -24,7 +24,8 @@ import (
 // workspace's main folder.
 const EchoDirName = ".echo"
 
-// Workspace is the shape returned to the frontend. It mirrors appdata.Workspace.
+// Workspace is the resolved shape returned to runtime consumers and the
+// frontend. Its paths are always absolute even when workspace.json is portable.
 type Workspace struct {
 	ID                          string   `json:"id"`
 	Name                        string   `json:"name"`
@@ -57,7 +58,25 @@ type workspaceFile struct {
 	SearchParentGitRepositories bool     `json:"searchParentGitRepositories,omitempty"`
 }
 
-// Manager reads and writes the workspace list in the shared app data file.
+const (
+	ConfigMalformed       = "invalid_workspace_config"
+	ConfigMainMismatch    = "workspace_main_mismatch"
+	ConfigMainUnavailable = "workspace_main_unavailable"
+)
+
+// ConfigError reports a stable workspace-configuration failure code while
+// retaining the underlying filesystem or JSON error for logs and tests.
+type ConfigError struct {
+	Code    string
+	Message string
+	Cause   error
+}
+
+func (e *ConfigError) Error() string { return e.Message }
+func (e *ConfigError) Unwrap() error { return e.Cause }
+
+// Manager uses shared app data as the registration/locator store and each
+// main folder's workspace.json as the authoritative workspace configuration.
 type Manager struct {
 	data *appdata.Store
 }
@@ -81,75 +100,74 @@ func (m *Manager) List() ([]Workspace, error) {
 	}
 	out := make([]Workspace, 0, len(f.Workspaces))
 	for _, w := range f.Workspaces {
-		out = append(out, Workspace{
-			ID:                          w.ID,
-			Name:                        w.Name,
-			MainPath:                    w.MainPath,
-			IconExt:                     w.IconExt,
-			Folders:                     append([]string(nil), w.Folders...),
-			SearchParentGitRepositories: w.SearchParentGitRepositories,
-		})
+		workspace, resolveErr := resolveRegisteredWorkspace(w)
+		if resolveErr != nil {
+			// Keep the workspace picker usable so a moved workspace can be
+			// rebound. Operational lookups still return the configuration error.
+			workspace = workspaceFromRegistration(w)
+		}
+		out = append(out, workspace)
 	}
 	return out, nil
 }
 
-// Create validates and registers a new workspace. It verifies the name is
-// unique, ensures every folder path exists on the server, creates the .echo
-// directory in the main folder, writes .echo/workspace.json, copies any
-// uploaded icon to .echo/icon.<ext>, and appends an entry to the shared app
-// data file.
+// Create registers a new workspace or opens/rebinds an existing portable
+// workspace. New configurations require every requested folder to exist;
+// existing configurations retain temporarily unavailable additional folders.
 func (m *Manager) Create(req CreateRequest) (Workspace, error) {
-	name := strings.TrimSpace(req.Name)
-	mainPath := strings.TrimSpace(req.MainPath)
-	if name == "" {
-		return Workspace{}, fmt.Errorf("workspace name is required")
-	}
-	if mainPath == "" {
+	requestedMain := strings.TrimSpace(req.MainPath)
+	if requestedMain == "" {
 		return Workspace{}, fmt.Errorf("main folder path is required")
 	}
+	mainPath, err := absolutePath("", requestedMain)
+	if err != nil {
+		return Workspace{}, fmt.Errorf("resolve main folder path: %w", err)
+	}
+	if err := requireDirectory(mainPath, ConfigMainUnavailable, "main workspace folder is unavailable"); err != nil {
+		return Workspace{}, err
+	}
+	echoDir := filepath.Join(mainPath, EchoDirName)
 
-	// Folders: the main folder is always first; additional folders follow.
-	folders := append([]string{mainPath}, cleanFolders(req.Folders, mainPath)...)
-
-	// 1. Verify the workspace name is unique.
-	existing, err := m.List()
+	loadedFile, fileExists, err := readWorkspaceFile(echoDir)
 	if err != nil {
 		return Workspace{}, err
 	}
-	for _, w := range existing {
-		if strings.EqualFold(w.Name, name) {
-			return Workspace{}, fmt.Errorf("a workspace named %q already exists", name)
-		}
-	}
 
-	// 2. Ensure every path is a valid directory on the server.
-	for _, folder := range folders {
-		info, err := os.Stat(folder)
+	workspace := Workspace{MainPath: mainPath}
+	if fileExists {
+		workspace, err = workspaceFromFile("", "", echoDir, mainPath, loadedFile)
 		if err != nil {
-			return Workspace{}, fmt.Errorf("path %q is not accessible: %v", folder, err)
+			return Workspace{}, err
 		}
-		if !info.IsDir() {
-			return Workspace{}, fmt.Errorf("path %q is not a folder", folder)
+	} else {
+		workspace.Name = strings.TrimSpace(req.Name)
+		if workspace.Name == "" {
+			return Workspace{}, fmt.Errorf("workspace name is required")
+		}
+		workspace.Folders = []string{mainPath}
+		for _, requested := range req.Folders {
+			requested = strings.TrimSpace(requested)
+			if requested == "" {
+				continue
+			}
+			folder, resolveErr := absolutePath("", requested)
+			if resolveErr != nil {
+				return Workspace{}, fmt.Errorf("resolve workspace folder %q: %w", requested, resolveErr)
+			}
+			workspace.Folders = append(workspace.Folders, folder)
+		}
+		workspace.Folders = append([]string{mainPath}, cleanFolders(workspace.Folders[1:], mainPath)...)
+		for _, folder := range workspace.Folders {
+			if err := requireDirectory(folder, "", fmt.Sprintf("path %q is not accessible", folder)); err != nil {
+				return Workspace{}, err
+			}
 		}
 	}
 
-	// 3. Create the .echo folder in the main folder if it isn't already there.
-	echoDir := filepath.Join(mainPath, EchoDirName)
 	if err := os.MkdirAll(echoDir, 0o755); err != nil {
 		return Workspace{}, fmt.Errorf("create .echo folder: %w", err)
 	}
-
-	// 5. Write .echo/workspace.json with the workspace settings (folders list).
-	if err := writeWorkspaceFile(echoDir, workspaceFile{
-		Name:     name,
-		MainPath: mainPath,
-		Folders:  folders,
-	}); err != nil {
-		return Workspace{}, err
-	}
-
-	// 4. Copy the uploaded image (if any) to .echo/icon.<ext>.
-	iconExt := ""
+	workspace.IconExt = detectIconExt(echoDir)
 	if req.Icon != nil && len(req.Icon.Data) > 0 {
 		ext := sanitizeExt(req.Icon.Ext)
 		if ext == "" {
@@ -158,39 +176,49 @@ func (m *Manager) Create(req CreateRequest) (Workspace, error) {
 		if err := os.WriteFile(filepath.Join(echoDir, "icon."+ext), req.Icon.Data, 0o644); err != nil {
 			return Workspace{}, fmt.Errorf("write icon: %w", err)
 		}
-		iconExt = ext
+		workspace.IconExt = ext
 	}
 
-	// 6. Append an entry to the shared app data file.
-	ws := Workspace{
-		ID:       newID(),
-		Name:     name,
-		MainPath: mainPath,
-		IconExt:  iconExt,
-		Folders:  folders,
-	}
-	if err := m.append(ws); err != nil {
+	registrations, err := m.data.Load()
+	if err != nil {
 		return Workspace{}, err
 	}
-	return ws, nil
+	registrationIndex, err := registrationForWorkspace(registrations.Workspaces, workspace, fileExists)
+	if err != nil {
+		return Workspace{}, err
+	}
+	if registrationIndex >= 0 {
+		workspace.ID = registrations.Workspaces[registrationIndex].ID
+	} else {
+		workspace.ID = newID()
+	}
+
+	// Adding/rebinding is an explicit normalization point for legacy absolute
+	// configs. Routine List/Get reads never rewrite the workspace file.
+	if err := writeWorkspaceFile(echoDir, workspaceFileFromWorkspace(workspace)); err != nil {
+		return Workspace{}, err
+	}
+	if err := m.register(workspace, fileExists); err != nil {
+		return Workspace{}, err
+	}
+	return workspace, nil
 }
 
-// append adds a workspace to the shared app data file, preserving settings.
-func (m *Manager) append(ws Workspace) error {
+// register adds or rebinds a workspace in shared app data, preserving all
+// workspace-ID keyed state such as active selection and saved commands.
+func (m *Manager) register(ws Workspace, allowRebind bool) error {
 	return m.data.Update(func(f *appdata.File) error {
-		for _, existing := range f.Workspaces {
-			if strings.EqualFold(existing.Name, ws.Name) {
-				return fmt.Errorf("a workspace named %q already exists", ws.Name)
-			}
+		index, err := registrationForWorkspace(f.Workspaces, ws, allowRebind)
+		if err != nil {
+			return err
 		}
-		f.Workspaces = append(f.Workspaces, appdata.Workspace{
-			ID:                          ws.ID,
-			Name:                        ws.Name,
-			MainPath:                    ws.MainPath,
-			IconExt:                     ws.IconExt,
-			Folders:                     append([]string(nil), ws.Folders...),
-			SearchParentGitRepositories: ws.SearchParentGitRepositories,
-		})
+		stored := workspaceRegistration(ws)
+		if index >= 0 {
+			stored.ID = f.Workspaces[index].ID
+			f.Workspaces[index] = stored
+			return nil
+		}
+		f.Workspaces = append(f.Workspaces, stored)
 		return nil
 	})
 }
@@ -199,7 +227,7 @@ func (m *Manager) append(ws Workspace) error {
 // workspace has no icon. The extension is auto-detected from the stored
 // IconExt; if that is empty it scans the .echo directory for an icon.* file.
 func (m *Manager) IconPath(id string) (string, error) {
-	ws, ok, err := m.find(id)
+	ws, ok, err := m.Get(id)
 	if err != nil {
 		return "", err
 	}
@@ -232,14 +260,8 @@ func (m *Manager) Active() (Workspace, bool, error) {
 	}
 	for _, w := range f.Workspaces {
 		if w.ID == f.ActiveWorkspaceID {
-			return Workspace{
-				ID:                          w.ID,
-				Name:                        w.Name,
-				MainPath:                    w.MainPath,
-				IconExt:                     w.IconExt,
-				Folders:                     append([]string(nil), w.Folders...),
-				SearchParentGitRepositories: w.SearchParentGitRepositories,
-			}, true, nil
+			workspace, resolveErr := resolveRegisteredWorkspace(w)
+			return workspace, resolveErr == nil, resolveErr
 		}
 	}
 	return Workspace{}, false, nil
@@ -253,42 +275,44 @@ func (m *Manager) Get(id string) (Workspace, bool, error) {
 	if err != nil || !ok {
 		return Workspace{}, ok, err
 	}
-	return Workspace{
-		ID:                          w.ID,
-		Name:                        w.Name,
-		MainPath:                    w.MainPath,
-		IconExt:                     w.IconExt,
-		Folders:                     append([]string(nil), w.Folders...),
-		SearchParentGitRepositories: w.SearchParentGitRepositories,
-	}, true, nil
+	workspace, err := resolveRegisteredWorkspace(w)
+	return workspace, err == nil, err
+}
+
+// ActiveID returns the last-opened registration ID without resolving its
+// workspace-owned config. This keeps the workspace picker available when a
+// moved or malformed workspace needs to be rebound.
+func (m *Manager) ActiveID() (string, error) {
+	f, err := m.data.Load()
+	if err != nil {
+		return "", err
+	}
+	return f.ActiveWorkspaceID, nil
 }
 
 // SetSearchParentGitRepositories updates the workspace-scoped parent
 // repository discovery preference in both the shared app data and the
 // workspace-owned settings file.
 func (m *Manager) SetSearchParentGitRepositories(id string, enabled bool) (Workspace, error) {
-	var updated appdata.Workspace
-	if err := m.data.Update(func(f *appdata.File) error {
-		for index := range f.Workspaces {
-			if f.Workspaces[index].ID != id {
-				continue
-			}
-			f.Workspaces[index].SearchParentGitRepositories = enabled
-			updated = f.Workspaces[index]
-			return nil
-		}
-		return fmt.Errorf("workspace %q not found", id)
-	}); err != nil {
+	workspace, ok, err := m.Get(id)
+	if err != nil {
 		return Workspace{}, err
 	}
-	workspace := Workspace{
-		ID: updated.ID, Name: updated.Name, MainPath: updated.MainPath,
-		IconExt: updated.IconExt, Folders: append([]string(nil), updated.Folders...),
-		SearchParentGitRepositories: enabled,
+	if !ok {
+		return Workspace{}, fmt.Errorf("workspace %q not found", id)
 	}
-	if err := writeWorkspaceFile(filepath.Join(workspace.MainPath, EchoDirName), workspaceFile{
-		Name: workspace.Name, MainPath: workspace.MainPath, Folders: workspace.Folders,
-		SearchParentGitRepositories: enabled,
+	workspace.SearchParentGitRepositories = enabled
+	if err := writeWorkspaceFile(filepath.Join(workspace.MainPath, EchoDirName), workspaceFileFromWorkspace(workspace)); err != nil {
+		return Workspace{}, err
+	}
+	if err := m.data.Update(func(f *appdata.File) error {
+		for index := range f.Workspaces {
+			if f.Workspaces[index].ID == id {
+				f.Workspaces[index] = workspaceRegistration(workspace)
+				return nil
+			}
+		}
+		return fmt.Errorf("workspace %q not found", id)
 	}); err != nil {
 		return Workspace{}, err
 	}
@@ -298,6 +322,11 @@ func (m *Manager) SetSearchParentGitRepositories(id string, enabled bool) (Works
 // SetActive records the given workspace id as the active (last opened)
 // workspace, preserving settings and the workspace list.
 func (m *Manager) SetActive(id string) error {
+	if _, ok, err := m.Get(id); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("workspace %q not found", id)
+	}
 	return m.data.Update(func(f *appdata.File) error {
 		for _, w := range f.Workspaces {
 			if w.ID == id {
@@ -307,6 +336,179 @@ func (m *Manager) SetActive(id string) error {
 		}
 		return fmt.Errorf("workspace %q not found", id)
 	})
+}
+
+func workspaceFromRegistration(w appdata.Workspace) Workspace {
+	mainPath, _ := absolutePath("", w.MainPath)
+	folders := make([]string, 0, len(w.Folders)+1)
+	if mainPath != "" {
+		folders = append(folders, mainPath)
+	}
+	for _, folder := range w.Folders {
+		if absolute, err := absolutePath("", folder); err == nil {
+			folders = append(folders, absolute)
+		}
+	}
+	if mainPath != "" {
+		folders = append([]string{mainPath}, cleanFolders(folders[1:], mainPath)...)
+	}
+	return Workspace{
+		ID: w.ID, Name: w.Name, MainPath: mainPath, IconExt: w.IconExt, Folders: folders,
+		SearchParentGitRepositories: w.SearchParentGitRepositories,
+	}
+}
+
+func resolveRegisteredWorkspace(w appdata.Workspace) (Workspace, error) {
+	mainPath, err := absolutePath("", w.MainPath)
+	if err != nil {
+		return Workspace{}, &ConfigError{Code: ConfigMainUnavailable, Message: "main workspace folder is unavailable", Cause: err}
+	}
+	if err := requireDirectory(mainPath, ConfigMainUnavailable, "main workspace folder is unavailable"); err != nil {
+		return Workspace{}, err
+	}
+	echoDir := filepath.Join(mainPath, EchoDirName)
+	wf, exists, err := readWorkspaceFile(echoDir)
+	if err != nil {
+		return Workspace{}, err
+	}
+	if !exists {
+		return Workspace{}, &ConfigError{Code: ConfigMalformed, Message: "workspace config is missing", Cause: os.ErrNotExist}
+	}
+	return workspaceFromFile(w.ID, w.IconExt, echoDir, mainPath, wf)
+}
+
+func workspaceFromFile(id, iconExt, echoDir, expectedMain string, wf workspaceFile) (Workspace, error) {
+	name := strings.TrimSpace(wf.Name)
+	if name == "" {
+		return Workspace{}, &ConfigError{Code: ConfigMalformed, Message: "workspace config name is required"}
+	}
+	mainPath, err := absolutePath(echoDir, wf.MainPath)
+	if err != nil || strings.TrimSpace(wf.MainPath) == "" {
+		return Workspace{}, &ConfigError{Code: ConfigMalformed, Message: "workspace config mainPath is invalid", Cause: err}
+	}
+	if folderIdentity(mainPath) != folderIdentity(expectedMain) {
+		return Workspace{}, &ConfigError{Code: ConfigMainMismatch, Message: "workspace config mainPath does not identify the folder that owns .echo"}
+	}
+	folders := []string{expectedMain}
+	for _, configured := range wf.Folders {
+		configured = strings.TrimSpace(configured)
+		if configured == "" {
+			continue
+		}
+		folder, resolveErr := absolutePath(echoDir, configured)
+		if resolveErr != nil {
+			return Workspace{}, &ConfigError{Code: ConfigMalformed, Message: fmt.Sprintf("workspace folder path %q is invalid", configured), Cause: resolveErr}
+		}
+		folders = append(folders, folder)
+	}
+	folders = append([]string{expectedMain}, cleanFolders(folders[1:], expectedMain)...)
+	return Workspace{
+		ID: id, Name: name, MainPath: expectedMain, IconExt: iconExt, Folders: folders,
+		SearchParentGitRepositories: wf.SearchParentGitRepositories,
+	}, nil
+}
+
+func readWorkspaceFile(echoDir string) (workspaceFile, bool, error) {
+	path := filepath.Join(echoDir, "workspace.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return workspaceFile{}, false, nil
+		}
+		return workspaceFile{}, false, &ConfigError{Code: ConfigMalformed, Message: "read workspace config", Cause: err}
+	}
+	var wf workspaceFile
+	if err := json.Unmarshal(data, &wf); err != nil {
+		return workspaceFile{}, true, &ConfigError{Code: ConfigMalformed, Message: "parse workspace config", Cause: err}
+	}
+	return wf, true, nil
+}
+
+func registrationForWorkspace(existing []appdata.Workspace, workspace Workspace, allowRebind bool) (int, error) {
+	pathIndex, nameIndex := -1, -1
+	for index, candidate := range existing {
+		candidateName := candidate.Name
+		if resolved, err := resolveRegisteredWorkspace(candidate); err == nil {
+			candidateName = resolved.Name
+		}
+		if strings.TrimSpace(candidate.MainPath) != "" && folderIdentity(candidate.MainPath) == folderIdentity(workspace.MainPath) {
+			pathIndex = index
+		}
+		if strings.EqualFold(strings.TrimSpace(candidateName), workspace.Name) {
+			nameIndex = index
+		}
+	}
+	if pathIndex >= 0 && nameIndex >= 0 && pathIndex != nameIndex {
+		return -1, fmt.Errorf("workspace path and name belong to different registrations")
+	}
+	matched := pathIndex
+	if matched < 0 {
+		matched = nameIndex
+	}
+	if matched >= 0 && !allowRebind {
+		if nameIndex >= 0 {
+			return -1, fmt.Errorf("a workspace named %q already exists", workspace.Name)
+		}
+		return -1, fmt.Errorf("workspace folder %q is already registered", workspace.MainPath)
+	}
+	return matched, nil
+}
+
+func workspaceRegistration(ws Workspace) appdata.Workspace {
+	return appdata.Workspace{
+		ID: ws.ID, Name: ws.Name, MainPath: ws.MainPath, IconExt: ws.IconExt,
+		Folders:                     append([]string(nil), ws.Folders...),
+		SearchParentGitRepositories: ws.SearchParentGitRepositories,
+	}
+}
+
+func workspaceFileFromWorkspace(ws Workspace) workspaceFile {
+	return workspaceFile{
+		Name: ws.Name, MainPath: ws.MainPath, Folders: append([]string(nil), ws.Folders...),
+		SearchParentGitRepositories: ws.SearchParentGitRepositories,
+	}
+}
+
+func absolutePath(base, value string) (string, error) {
+	value = filepath.FromSlash(strings.TrimSpace(value))
+	if value == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	if !filepath.IsAbs(value) && base != "" {
+		value = filepath.Join(base, value)
+	}
+	absolute, err := filepath.Abs(value)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(absolute), nil
+}
+
+func requireDirectory(path, code, message string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if code != "" {
+			return &ConfigError{Code: code, Message: message, Cause: err}
+		}
+		return fmt.Errorf("%s: %w", message, err)
+	}
+	if !info.IsDir() {
+		if code != "" {
+			return &ConfigError{Code: code, Message: message, Cause: fmt.Errorf("not a directory")}
+		}
+		return fmt.Errorf("%s: not a folder", message)
+	}
+	return nil
+}
+
+func detectIconExt(echoDir string) string {
+	matches, _ := filepath.Glob(filepath.Join(echoDir, "icon.*"))
+	for _, match := range matches {
+		if ext := sanitizeExt(filepath.Ext(match)); ext != "" {
+			return ext
+		}
+	}
+	return ""
 }
 
 func (m *Manager) find(id string) (appdata.Workspace, bool, error) {
@@ -324,7 +526,13 @@ func (m *Manager) find(id string) (appdata.Workspace, bool, error) {
 
 // writeWorkspaceFile writes the workspace settings JSON atomically.
 func writeWorkspaceFile(echoDir string, wf workspaceFile) error {
-	data, err := json.MarshalIndent(wf, "", "  ")
+	portable := wf
+	portable.MainPath = portableWorkspacePath(echoDir, wf.MainPath)
+	portable.Folders = make([]string, 0, len(wf.Folders))
+	for _, folder := range wf.Folders {
+		portable.Folders = append(portable.Folders, portableWorkspacePath(echoDir, folder))
+	}
+	data, err := json.MarshalIndent(portable, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal workspace file: %w", err)
 	}
@@ -337,6 +545,22 @@ func writeWorkspaceFile(echoDir string, wf workspaceFile) error {
 		return fmt.Errorf("rename workspace file: %w", err)
 	}
 	return nil
+}
+
+func portableWorkspacePath(echoDir, folder string) string {
+	configured := strings.TrimSpace(folder)
+	folder, err := absolutePath("", configured)
+	if err != nil {
+		return filepath.Clean(configured)
+	}
+	if relative, relErr := filepath.Rel(echoDir, folder); relErr == nil {
+		relative = filepath.ToSlash(relative)
+		if relative == ".." {
+			return "../"
+		}
+		return relative
+	}
+	return filepath.Clean(folder)
 }
 
 // cleanFolders trims whitespace and drops empty/duplicate entries, excluding

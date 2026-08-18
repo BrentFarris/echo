@@ -4,6 +4,7 @@ export type WorkspaceRoot = {
   id: string;
   label: string;
   hostPath: string;
+  blockedReason?: string;
 };
 
 export type FsEntry = {

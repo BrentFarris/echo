@@ -124,11 +124,14 @@ func TestCreateWorkspaceAndGetIcon(t *testing.T) {
 
 func TestCreateWorkspaceDuplicateName(t *testing.T) {
 	s, dir := newTestServer(t)
-	main := filepath.Join(dir, "main")
-	if err := os.MkdirAll(main, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
+	mainA := filepath.Join(dir, "main-a")
+	mainB := filepath.Join(dir, "main-b")
+	for _, main := range []string{mainA, mainB} {
+		if err := os.MkdirAll(main, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
 	}
-	create := func(name string) *httptest.ResponseRecorder {
+	create := func(name, main string) *httptest.ResponseRecorder {
 		payload, _ := json.Marshal(map[string]any{"name": name, "mainPath": main})
 		req := httptest.NewRequest(http.MethodPost, "/api/workspaces", strings.NewReader(string(payload)))
 		req.Header.Set("Content-Type", "application/json")
@@ -136,10 +139,10 @@ func TestCreateWorkspaceDuplicateName(t *testing.T) {
 		s.routes().ServeHTTP(rr, req)
 		return rr
 	}
-	if rr := create("Beta"); rr.Code != http.StatusCreated {
+	if rr := create("Beta", mainA); rr.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", rr.Code)
 	}
-	if rr := create("beta"); rr.Code != http.StatusBadRequest {
+	if rr := create("beta", mainB); rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for duplicate, got %d", rr.Code)
 	}
 }
@@ -153,6 +156,98 @@ func TestCreateWorkspaceInvalidPath(t *testing.T) {
 	s.routes().ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid path, got %d", rr.Code)
+	}
+}
+
+func TestCreateWorkspaceRebindsExistingPortableWorkspace(t *testing.T) {
+	s, directory := newTestServer(t)
+	oldMain := filepath.Join(directory, "old", "project")
+	newMain := filepath.Join(directory, "new", "project")
+	for _, folder := range []string{oldMain, newMain} {
+		if err := os.MkdirAll(folder, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	postWorkspace := func(name, mainPath string) (int, struct {
+		Data struct {
+			Workspace struct {
+				ID       string   `json:"id"`
+				Name     string   `json:"name"`
+				MainPath string   `json:"mainPath"`
+				Folders  []string `json:"folders"`
+			} `json:"workspace"`
+		} `json:"data"`
+	}) {
+		payload, _ := json.Marshal(map[string]any{"name": name, "mainPath": mainPath})
+		req := httptest.NewRequest(http.MethodPost, "/api/workspaces", strings.NewReader(string(payload)))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		s.routes().ServeHTTP(rr, req)
+		var response struct {
+			Data struct {
+				Workspace struct {
+					ID       string   `json:"id"`
+					Name     string   `json:"name"`
+					MainPath string   `json:"mainPath"`
+					Folders  []string `json:"folders"`
+				} `json:"workspace"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return rr.Code, response
+	}
+
+	status, original := postWorkspace("Portable", oldMain)
+	if status != http.StatusCreated {
+		t.Fatalf("create original: %d", status)
+	}
+	echoDir := filepath.Join(newMain, ".echo")
+	if err := os.MkdirAll(echoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(echoDir, "workspace.json"), []byte(`{"name":"Portable","mainPath":"../","folders":["../"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	status, rebound := postWorkspace("Ignored", newMain)
+	if status != http.StatusCreated {
+		t.Fatalf("rebind: %d", status)
+	}
+	if rebound.Data.Workspace.ID != original.Data.Workspace.ID || rebound.Data.Workspace.Name != "Portable" || rebound.Data.Workspace.MainPath != newMain {
+		t.Fatalf("unexpected rebound workspace: %+v", rebound.Data.Workspace)
+	}
+	list := doRequest(t, s, http.MethodGet, "/api/workspaces")
+	var listed struct {
+		Data struct {
+			Workspaces []map[string]any `json:"workspaces"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(list.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Data.Workspaces) != 1 {
+		t.Fatalf("expected one rebound registration, got %+v", listed.Data.Workspaces)
+	}
+}
+
+func TestCreateWorkspaceRejectsMalformedExistingConfig(t *testing.T) {
+	s, directory := newTestServer(t)
+	main := filepath.Join(directory, "main")
+	echoDir := filepath.Join(main, ".echo")
+	if err := os.MkdirAll(echoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(echoDir, "workspace.json"), []byte(`{`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(map[string]any{"name": "Ignored", "mainPath": main})
+	req := httptest.NewRequest(http.MethodPost, "/api/workspaces", strings.NewReader(string(payload)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "parse workspace config") {
+		t.Fatalf("expected clear malformed-config response, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
 

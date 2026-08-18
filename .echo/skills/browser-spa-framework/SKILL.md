@@ -27,13 +27,12 @@ Echo is now a browser-based app (not Wails). A Go server hosts a single-page app
 - Tests must use `NewWithSettingsPath(addr, webDir, tempPath)` with an isolated temp path so they never touch the real `echo.json`.
 
 ## Workspace registration (internal/workspaces)
-- `workspaces.Manager` reads/writes the workspace list inside the shared appdata file. `Create(CreateRequest{Name, MainPath, Folders, Icon})`:
-  1. Verifies the name is unique (case-insensitive).
-  2. Ensures every folder path exists and is a directory on the server machine.
-  3. Creates `.echo/` in the main folder (`os.MkdirAll`).
-  4. Copies an uploaded icon to `.echo/icon.<ext>` (ext whitelisted: png/gif/jpeg/jpg/webp/bmp/svg/ico).
-  5. Writes `.echo/workspace.json` with `{name, mainPath, folders}` — the full folder list (main first, then extras) that Echo operates on.
-  6. Appends an entry (id, name, mainPath, iconExt, folders) to the shared appdata file.
+- `workspaces.Manager` keeps the workspace ID and absolute main-folder locator in shared appdata, while `.echo/workspace.json` is authoritative for the workspace name, folders, and settings. `Create(CreateRequest{Name, MainPath, Folders, Icon})`:
+  1. Resolves the selected main folder to an absolute path and requires it to be available.
+  2. Loads an existing `.echo/workspace.json` or creates a new configuration after validating requested folders.
+  3. Resolves config-relative paths against `.echo`, keeps temporarily missing additional folders, and rejects a `mainPath` that does not identify `.echo`'s parent.
+  4. Writes portable config paths (`../` for the main folder; relative extras when possible, absolute fallback across volumes).
+  5. Copies an uploaded icon to `.echo/icon.<ext>` and registers or ID-preservingly rebinds the absolute locator in appdata.
 - `Icon.Data` is `[]byte`, so the frontend must send image bytes as a **base64 string** (Go decodes `[]byte` from base64 JSON). `IconPath(id)` auto-detects the icon extension from `iconExt`, falling back to scanning `icon.*`.
 - API endpoints in `internal/server/workspaces_api.go`: `GET /api/workspaces`, `POST /api/workspaces`, `GET /api/workspaces/{id}/icon` (serves the image). All use the standard JSON envelope.
 
