@@ -147,11 +147,11 @@ cd echo/web
 npm ci
 npm run build
 cd ..
-go build -trimpath -o build/echo .
-./build/echo
+go build .
+./echo
 ```
 
-On Windows, use `go build -trimpath -o build/echo.exe .` and run `.\build\echo.exe`.
+On Windows, `go build .` creates `echo.exe`; run it with `.\echo.exe`.
 
 ### Development
 

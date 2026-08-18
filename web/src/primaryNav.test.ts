@@ -18,6 +18,7 @@ describe("primary navigation", () => {
     expect(chat.querySelectorAll(".nav-icon-button")).toHaveLength(code.querySelectorAll(".nav-icon-button").length);
     expect(chat.querySelector("[data-nav=chat]")?.classList.contains("is-active")).toBe(true);
     expect(chat.querySelector("[data-nav=code]")?.classList.contains("is-active")).toBe(false);
+    expect(chat.querySelector("[aria-label=Tasks]")).toBeNull();
   });
 
   it("marks the selected Code sidebar item active", () => {
