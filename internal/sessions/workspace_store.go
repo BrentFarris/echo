@@ -95,8 +95,18 @@ func (s *WorkspaceStore) loadLocked(workspaceID string) (ChatWorkspace, error) {
 	if err := json.Unmarshal(data, &workspace); err != nil {
 		return ChatWorkspace{}, fmt.Errorf("parse chat workspace %q: %w", s.path, err)
 	}
+	previousWorkspaceID := workspace.WorkspaceID
 	if err := normalizeAndValidateWorkspace(&workspace, workspaceID); err != nil {
 		return ChatWorkspace{}, err
+	}
+	if previousWorkspaceID != "" && previousWorkspaceID != workspaceID {
+		// Workspace IDs live in the machine-local registry. When a portable
+		// workspace is opened after that registry was recreated or rebound, the
+		// file location is the ownership boundary and its chat state can safely
+		// adopt the current local ID.
+		if err := s.saveLocked(workspace); err != nil {
+			return ChatWorkspace{}, fmt.Errorf("rebind chat workspace id: %w", err)
+		}
 	}
 	return workspace, nil
 }
@@ -108,9 +118,6 @@ func normalizeAndValidateWorkspace(workspace *ChatWorkspace, workspaceID string)
 	}
 	if workspace.Version != WorkspaceVersion {
 		return fmt.Errorf("unsupported chat workspace version %d", workspace.Version)
-	}
-	if workspace.WorkspaceID != "" && workspace.WorkspaceID != workspaceID {
-		return fmt.Errorf("chat workspace belongs to workspace %q", workspace.WorkspaceID)
 	}
 	workspace.WorkspaceID = workspaceID
 	if workspace.Tabs == nil {

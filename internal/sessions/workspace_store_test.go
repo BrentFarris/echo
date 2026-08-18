@@ -63,6 +63,31 @@ func TestWorkspaceStoreRoundTripPreservesOrderAndActiveTab(t *testing.T) {
 	}
 }
 
+func TestWorkspaceStoreRebindsMachineLocalWorkspaceID(t *testing.T) {
+	store := NewWorkspaceStore(t.TempDir())
+	want := ChatWorkspace{
+		Version: WorkspaceVersion, WorkspaceID: "ws-old", Revision: 7, ActiveChatID: "chat-a",
+		Tabs: []TabTranscript{{ChatID: "chat-a", Preview: "preserved", Turns: []Turn{}, Messages: []llm.Message{}}},
+	}
+	if err := store.Save(want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Load("ws-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.WorkspaceID != "ws-new" || got.Revision != want.Revision || len(got.Tabs) != 1 || got.Tabs[0].Preview != "preserved" {
+		t.Fatalf("chat state was not preserved during rebind: %#v", got)
+	}
+	data, err := os.ReadFile(store.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"workspaceId": "ws-old"`) || !strings.Contains(string(data), `"workspaceId": "ws-new"`) {
+		t.Fatalf("rebound workspace id was not persisted: %s", data)
+	}
+}
+
 func TestWorkspaceStoreSerializesConcurrentUpdates(t *testing.T) {
 	store := NewWorkspaceStore(t.TempDir())
 	initial := ChatWorkspace{
