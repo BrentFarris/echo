@@ -1,6 +1,12 @@
 // chat.js — workspace-scoped shared chat state and rendering.
 
 import * as ws from "./ws.js";
+import {
+  cancelMarkdownPatch,
+  flushMarkdownPatch,
+  patchMarkdownElement,
+  queueMarkdownPatch,
+} from "../src/markdown.ts";
 
 let binding = null;
 let activeStream = null;
@@ -21,6 +27,7 @@ export function onStreamingChange(cb) {
 export function isStreaming() { return activeStream != null; }
 
 export function openWorkspaceSession(log, workspaceId) {
+  cancelBindingMarkdownPatches();
   activeStream = null;
   setStreaming(false);
   binding = { log, workspaceId: workspaceId || "", sequence: 0, hasSnapshot: false, turns: new Map() };
@@ -29,6 +36,7 @@ export function openWorkspaceSession(log, workspaceId) {
 }
 
 export function closeWorkspaceSession(log) {
+  if (binding?.log === log) cancelBindingMarkdownPatches();
   if (binding?.log === log) binding = null;
   activeStream = null;
   setStreaming(false);
@@ -42,6 +50,7 @@ ws.onState((state) => {
 
 ws.on("session_snapshot", (snapshot) => {
   if (!binding || snapshot.workspaceId !== binding.workspaceId) return;
+  cancelBindingMarkdownPatches();
   binding.sequence = Number(snapshot.sequence) || 0;
   binding.hasSnapshot = true;
   binding.turns.clear();
@@ -162,6 +171,7 @@ function renderStoredTurn(turn, active) {
 }
 
 function renderEmpty(log, text) {
+  for (const element of log.querySelectorAll(".chat-progress-text")) cancelMarkdownPatch(element);
   log.innerHTML = "";
   const empty = document.createElement("div");
   empty.className = "empty-state chat-empty";
@@ -182,14 +192,14 @@ function createMessageEl(role, text) {
     timeline.hidden = true;
     body.appendChild(timeline);
     const content = document.createElement("div");
-    content.className = "chat-message-content chat-final-content";
-    content.textContent = text;
+    content.className = "chat-message-content chat-final-content markdown-body";
+    patchMarkdownElement(content, text);
     content.hidden = text === "";
     body.appendChild(content);
   } else {
     const content = document.createElement("div");
-    content.className = "chat-message-content";
-    content.textContent = text;
+    content.className = "chat-message-content markdown-body";
+    patchMarkdownElement(content, text);
     body.appendChild(content);
   }
   return el;
@@ -225,7 +235,10 @@ function ensureTurn(stream, number) {
   el.dataset.turn = String(number);
   stream.timeline.hidden = false;
   stream.timeline.appendChild(el);
-  turn = { number, el, text: "", lastKind: "", textBlock: null, reasoning: null };
+  turn = {
+    number, el, text: "", lastKind: "", textBlock: null,
+    textBlockText: "", reasoning: null,
+  };
   stream.turns.set(number, turn);
   return turn;
 }
@@ -236,24 +249,29 @@ function appendTurnText(stream, turnNumber, text) {
   completeReasoning(turn);
   if (turn.lastKind !== "text" || !turn.textBlock) {
     turn.textBlock = document.createElement("div");
-    turn.textBlock.className = "chat-progress-text";
+    turn.textBlock.className = "chat-progress-text markdown-body";
+    turn.textBlockText = "";
     turn.el.appendChild(turn.textBlock);
   }
   turn.lastKind = "text";
   turn.text += text;
-  turn.textBlock.textContent += text;
+  turn.textBlockText += text;
+  const log = binding?.log;
+  queueMarkdownPatch(turn.textBlock, turn.textBlockText, () => {
+    if (log && stream.el.isConnected && stream.el.parentElement === log) scrollToBottom(log);
+  });
 }
 
 function appendReasoning(stream, turnNumber, text) {
   if (!stream || !text) return;
   const turn = ensureTurn(stream, Number.isInteger(turnNumber) ? turnNumber : 0);
+  if (turn.lastKind === "text") flushTurnTextBlock(turn);
   if (turn.lastKind !== "reasoning" || !turn.reasoning) {
     completeReasoning(turn);
     turn.reasoning = createReasoningItem();
     turn.el.appendChild(turn.reasoning.details);
   }
   turn.lastKind = "reasoning";
-  turn.textBlock = null;
   turn.reasoning.text += text;
   turn.reasoning.body.textContent = turn.reasoning.text;
 }
@@ -285,8 +303,8 @@ function endTurn(stream, turnNumber, hasToolCalls) {
   if (!stream) return;
   const turn = ensureTurn(stream, Number.isInteger(turnNumber) ? turnNumber : 0);
   completeReasoning(turn);
+  flushTurnTextBlock(turn);
   turn.lastKind = "";
-  turn.textBlock = null;
   if (hasToolCalls) {
     turn.el.classList.add("is-progress-turn");
   } else {
@@ -297,10 +315,20 @@ function endTurn(stream, turnNumber, hasToolCalls) {
 }
 
 function promoteFinalText(stream, turn) {
-  stream.content.textContent = turn.text;
+  patchMarkdownElement(stream.content, turn.text);
   stream.content.hidden = turn.text === "";
-  for (const block of turn.el.querySelectorAll(":scope > .chat-progress-text")) block.remove();
+  for (const block of turn.el.querySelectorAll(":scope > .chat-progress-text")) {
+    cancelMarkdownPatch(block);
+    block.remove();
+  }
   removeEmptyTurn(turn);
+}
+
+function flushTurnTextBlock(turn) {
+  if (!turn?.textBlock) return;
+  flushMarkdownPatch(turn.textBlock, turn.textBlockText);
+  turn.textBlock = null;
+  turn.textBlockText = "";
 }
 
 function appendToolCall(stream, data, turnNumber) {
@@ -377,7 +405,10 @@ function finishStream(stream, outcome, message = "") {
   if (!stream || stream.done) return;
   stream.done = true;
   stream.el.classList.remove("is-streaming");
-  for (const turn of stream.turns.values()) completeReasoning(turn);
+  for (const turn of stream.turns.values()) {
+    completeReasoning(turn);
+    flushTurnTextBlock(turn);
+  }
   if (!stream.finalTurn && stream.currentTurn) {
     promoteFinalText(stream, stream.currentTurn);
     stream.finalTurn = stream.currentTurn;
@@ -413,6 +444,13 @@ function finalizeSuccessfulResponse(stream) {
 }
 
 function removeEmptyTurn(turn) { if (turn?.el && !turn.el.childElementCount) turn.el.remove(); }
+
+function cancelBindingMarkdownPatches() {
+  if (!binding?.log) return;
+  for (const element of binding.log.querySelectorAll(".chat-progress-text")) {
+    cancelMarkdownPatch(element);
+  }
+}
 
 function markRunningToolsInterrupted(stream, outcome) {
   for (const item of stream.tools.values()) {
