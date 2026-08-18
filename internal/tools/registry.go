@@ -3,8 +3,10 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/brent/echo/internal/llm"
@@ -83,11 +85,23 @@ func LLMSchema() []llm.Tool {
 	return defaultRegistry.LLMSchema()
 }
 
+// LLMSchemaForScopes returns only tools available to the selected agent mode.
+func LLMSchemaForScopes(scopes *ToolScopeChecker) []llm.Tool {
+	return defaultRegistry.LLMSchemaForScopes(scopes)
+}
+
 func (r *Registry) LLMSchema() []llm.Tool {
+	return r.LLMSchemaForScopes(nil)
+}
+
+func (r *Registry) LLMSchemaForScopes(scopes *ToolScopeChecker) []llm.Tool {
 	registered := r.Registered()
 	schema := make([]llm.Tool, 0, len(registered))
 	for _, tool := range registered {
 		metadata := tool.Metadata()
+		if scopes != nil && !scopes.HasTool(metadata.Name) {
+			continue
+		}
 		schema = append(schema, llm.Tool{
 			Type: "function",
 			Function: llm.ToolFunction{
@@ -120,6 +134,18 @@ func (r *Registry) Execute(ctx ExecutionContext, name string, arguments json.Raw
 		result.Error = &ExecutionError{Code: "canceled", Message: "tool execution was canceled"}
 		return result
 	}
+	if ctx.ToolScopes != nil {
+		if !ctx.ToolScopes.HasTool(name) {
+			result.Error = &ExecutionError{Code: "tool_not_allowed", Message: fmt.Sprintf("tool %q is not allowed by the current agent mode", name)}
+			return result
+		}
+		for _, path := range extractWorkspacePaths(ctx, arguments) {
+			if !ctx.ToolScopes.Allowed(name, path) {
+				result.Error = &ExecutionError{Code: "path_not_allowed", Message: fmt.Sprintf("path %q is not allowed by the current agent mode", path)}
+				return result
+			}
+		}
+	}
 
 	tool, ok := r.lookup(name)
 	if !ok {
@@ -143,6 +169,43 @@ func (r *Registry) Execute(ctx ExecutionContext, name string, arguments json.Raw
 	result.Success = true
 	result.Output = output
 	return result
+}
+
+func extractWorkspacePaths(ctx ExecutionContext, arguments json.RawMessage) []string {
+	var args map[string]any
+	if err := DecodeToolArguments(arguments, &args); err != nil {
+		return nil
+	}
+	paths := []string{}
+	for key, value := range args {
+		path, ok := value.(string)
+		if !ok || path == "" || !isPathArgKey(key) {
+			continue
+		}
+		normalized := filepath.ToSlash(filepath.Clean(path))
+		for _, root := range ctx.WorkspaceRoots {
+			prefix := root.Label + "/"
+			if strings.EqualFold(normalized, root.Label) {
+				normalized = "."
+				break
+			}
+			if len(normalized) > len(prefix) && strings.EqualFold(normalized[:len(prefix)], prefix) {
+				normalized = normalized[len(prefix):]
+				break
+			}
+		}
+		paths = append(paths, normalized)
+	}
+	return paths
+}
+
+func isPathArgKey(key string) bool {
+	switch key {
+	case "path", "workingDirectory", "repository", "base", "target", "workflowPath", "imagePath":
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *Registry) lookup(name string) (Tool, bool) {

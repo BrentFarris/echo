@@ -29,6 +29,8 @@ type Turn struct {
 	RequestID      string          `json:"requestId"`
 	UserContent    string          `json:"userContent"`
 	Model          string          `json:"model,omitempty"`
+	AgentModeID    string          `json:"agentModeId,omitempty"`
+	AgentModeName  string          `json:"agentModeName,omitempty"`
 	Status         string          `json:"status"`
 	Error          string          `json:"error,omitempty"`
 	StartedAt      time.Time       `json:"startedAt"`

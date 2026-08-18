@@ -132,6 +132,7 @@ type inboundMessage struct {
 	RequestID   string `json:"requestId,omitempty"`
 	Message     string `json:"message,omitempty"`
 	Model       string `json:"model,omitempty"`
+	AgentModeID string `json:"agentModeId,omitempty"`
 }
 
 func (c *client) readPump(h *Hub) {

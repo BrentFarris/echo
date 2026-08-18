@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/brent/echo/internal/agentmodes"
 	"github.com/brent/echo/internal/llm"
 	"github.com/brent/echo/internal/sessions"
 	"github.com/brent/echo/internal/tools"
@@ -161,6 +162,12 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 			settings = resolved
 		}
 	}
+	mode, err := m.server.modes.Resolve(session.workspace.MainPath, msg.AgentModeID)
+	if err != nil {
+		m.commandError(c, msg.WorkspaceID, "agent_mode_load_failed", err.Error(), requestID)
+		return
+	}
+	scopes := tools.NewToolScopeChecker(agentmodes.PermissionList(mode))
 
 	session.mu.Lock()
 	if session.loadErr != nil {
@@ -179,9 +186,10 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		return
 	}
 
-	messages := append([]llm.Message(nil), session.transcript.Messages...)
-	messages = append(messages, llm.Message{Role: llm.RoleUser, Content: text})
-	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(tools.LLMSchema()))
+	history := append([]llm.Message(nil), session.transcript.Messages...)
+	history = append(history, llm.Message{Role: llm.RoleUser, Content: text})
+	messages := append([]llm.Message{agentModeSystemMessage(session.workspace, mode)}, history...)
+	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(tools.LLMSchemaForScopes(scopes)))
 	if err != nil {
 		session.mu.Unlock()
 		m.commandError(c, msg.WorkspaceID, "invalid_request", err.Error(), requestID)
@@ -195,6 +203,8 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		RequestID:      requestID,
 		UserContent:    text,
 		Model:          request.Model,
+		AgentModeID:    mode.ID,
+		AgentModeName:  mode.Name,
 		Status:         "streaming",
 		StartedAt:      time.Now().UTC(),
 		AssistantTurns: []sessions.AssistantTurn{},
@@ -202,14 +212,14 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	turnID := session.active.ID
 	session.emitLocked(map[string]any{
 		"type": "turn_started", "turnId": turnID, "requestId": requestID,
-		"message": text, "model": request.Model, "startedAt": session.active.StartedAt,
+		"message": text, "model": request.Model, "agentModeId": mode.ID, "agentModeName": mode.Name, "startedAt": session.active.StartedAt,
 	})
 	session.mu.Unlock()
 
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		session.run(ctx, settings, request, messages, turnID)
+		session.run(ctx, settings, request, messages, turnID, scopes)
 	}()
 }
 
@@ -285,7 +295,7 @@ func (s *chatSession) emitLocked(event map[string]any) {
 	}
 }
 
-func (s *chatSession) run(ctx context.Context, settings llm.Settings, request llm.ChatRequest, messages []llm.Message, turnID string) {
+func (s *chatSession) run(ctx context.Context, settings llm.Settings, request llm.ChatRequest, messages []llm.Message, turnID string, scopes *tools.ToolScopeChecker) {
 	for assistantNumber := 0; ; assistantNumber++ {
 		if ctx.Err() != nil {
 			s.finish(turnID, "stopped", "", messages)
@@ -361,7 +371,7 @@ func (s *chatSession) run(ctx context.Context, settings llm.Settings, request ll
 			})
 			s.mu.Unlock()
 
-			result := tools.Execute(s.toolContext(ctx), call.Function.Name, json.RawMessage(call.Function.Arguments))
+			result := tools.Execute(s.toolContext(ctx, scopes), call.Function.Name, json.RawMessage(call.Function.Arguments))
 			data, marshalErr := json.Marshal(result)
 			resultSuccess := result.Success
 			if marshalErr != nil {
@@ -473,23 +483,51 @@ func (s *chatSession) isActiveLocked(turnID string) bool {
 	return s.active != nil && s.active.ID == turnID
 }
 
-func (s *chatSession) toolContext(ctx context.Context) tools.ExecutionContext {
+func (s *chatSession) toolContext(ctx context.Context, scopes *tools.ToolScopeChecker) tools.ExecutionContext {
 	settings := s.manager.server.settings
 	return tools.ExecutionContext{
 		Context: ctx, WorkspaceRoots: workspaceToolRoots(s.workspace), SearxngURL: settings.SearxngURL,
 		ComfyuiURL: settings.ComfyuiURL, ComfyuiDefaultCheckpoint: settings.ComfyuiDefaultCheckpoint,
 		ComfyuiTxt2imgWorkflow: settings.ComfyuiTxt2imgWorkflow, ComfyuiImg2imgWorkflow: settings.ComfyuiImg2imgWorkflow,
+		ToolScopes: scopes,
 	}
 }
 
 func sanitizeMessages(messages []llm.Message) []llm.Message {
-	out := make([]llm.Message, len(messages))
-	for i, message := range messages {
-		out[i] = message
-		out[i].ContentParts = nil
-		out[i].ToolCalls = append([]llm.ToolCall(nil), message.ToolCalls...)
+	out := make([]llm.Message, 0, len(messages))
+	for _, message := range messages {
+		if message.Role == llm.RoleSystem && message.Name == "echo-agent-mode" {
+			continue
+		}
+		message.ContentParts = nil
+		message.ToolCalls = append([]llm.ToolCall(nil), message.ToolCalls...)
+		out = append(out, message)
 	}
 	return out
+}
+
+func agentModeSystemMessage(workspace workspaces.Workspace, mode agentmodes.Mode) llm.Message {
+	var prompt strings.Builder
+	prompt.WriteString("You are Echo, an AI assistant working inside the user's active workspace. Use the available tools when workspace facts or changes are needed. Carry out requested implementation work directly, verify meaningful changes, and keep the final response concrete and concise.")
+	if len(workspace.Folders) > 0 {
+		prompt.WriteString("\n\nWorkspace folders are addressed by their labels: ")
+		roots := workspaceToolRoots(workspace)
+		for i, root := range roots {
+			if i > 0 {
+				prompt.WriteString(", ")
+			}
+			prompt.WriteString(root.Label)
+		}
+		prompt.WriteString(". Start file paths with the appropriate label.")
+	}
+	if strings.TrimSpace(mode.Prompt) != "" {
+		prompt.WriteString("\n\nAgent mode instructions (follow these for this turn):\n")
+		prompt.WriteString(strings.TrimSpace(mode.Prompt))
+	}
+	if len(mode.Permissions) > 0 {
+		prompt.WriteString("\n\nThis mode can only use its configured tool allowlist. Do not claim access to unavailable tools or paths.")
+	}
+	return llm.Message{Role: llm.RoleSystem, Name: "echo-agent-mode", Content: prompt.String()}
 }
 
 func newSessionID(prefix string) string {

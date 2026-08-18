@@ -3,12 +3,11 @@
 // A redesigned, full-page settings view (not the old modal overlay). Sections
 // are selected from a left sidebar and their controls render on the right.
 //
-// LLM Endpoints are functional: add, edit (gear), delete, and route each
-// interaction type (chat/research/vision/inlineCode) to any endpoint. The
-// other sections remain UI stubs for now.
+// LLM Endpoints and Agent Modes are functional. The remaining sections are
+// incrementally replacing the earlier visual stubs.
 
 import { icons } from "../icons.js";
-import { get, put } from "../api.js";
+import { del, get, post, put } from "../api.js";
 
 // ---- Theme token table (matches OLD theme.ts, carried into the new SPA) ----
 const themeTokens = [
@@ -61,13 +60,14 @@ const state = {
   },
   // Endpoint currently being edited (id) or null.
   editingEndpointId: null,
-  modes: [
-    { id: "general", name: "General", builtIn: true, prompt: "General-purpose assistant mode." },
-    { id: "plan", name: "Plan", builtIn: true, prompt: "Plan-first mode that breaks work down before acting." },
-  ],
-  workspaces: [
-    { id: "ws-1", name: "echo", path: "C:\\Users\\brent\\Documents\\git\\echo" },
-  ],
+  modes: [],
+  modeTools: [],
+  modeWorkspaceId: "",
+  modeWorkspaceName: "",
+  editingModeId: null,
+  modeDraft: null,
+  modeStatus: "",
+  workspaces: [],
   // External connection settings (SearXNG + ComfyUI).
   external: {
     searxngUrl: "",
@@ -249,34 +249,90 @@ function textToHeaders(text) {
   return headers;
 }
 
-// ---- Other section renderers (stubs) ----
+// ---- Other section renderers ----
 
 function renderAgentModes() {
+  const draft = state.modeDraft;
   return `
     <section class="settings-section">
       <div class="settings-section-heading">
         <h2 class="settings-section-title">Agent Modes</h2>
-        <button class="secondary-button compact-button" type="button" data-action="add-mode">${icons.plus}<span>Add Mode</span></button>
+        <button class="secondary-button compact-button" type="button" data-action="add-mode" ${state.modeWorkspaceId ? "" : "disabled"}>${icons.plus}<span>Add Mode</span></button>
       </div>
+      <p class="settings-card-help">Modes are saved in the active workspace${state.modeWorkspaceName ? `, <strong>${esc(state.modeWorkspaceName)}</strong>` : ""}. A mode changes the system instructions and can limit the tools and paths available to chat.</p>
+      ${state.modeStatus ? `<p class="settings-status ${state.modeStatus.startsWith("Error:") ? "is-error" : ""}">${esc(state.modeStatus)}</p>` : ""}
+      ${draft ? renderAgentModeEditor(draft) : ""}
       <div class="settings-card">
         <div class="agent-mode-list">
-          ${state.modes.map((m) => `
+          ${state.modes.length ? state.modes.map((m) => `
             <div class="agent-mode-row">
               <div class="agent-mode-row-main">
                 <strong>${esc(m.name)}</strong>
                 <span class="agent-mode-row-sub">${m.builtIn ? "Built-in" : esc(m.prompt)}</span>
+                <span class="mode-permission-summary">${renderModeSummary(m)}</span>
               </div>
               ${m.builtIn ? "" : `
                 <div class="endpoint-row-actions">
-                  <button class="icon-button" type="button" title="Edit">${icons.settings}</button>
-                  <button class="icon-button danger-button" type="button" title="Delete">${icons.trash}</button>
+                  <button class="icon-button" type="button" title="Edit" data-action="edit-mode" data-mode-id="${esc(m.id)}">${icons.settings}</button>
+                  <button class="icon-button danger-button" type="button" title="Delete" data-action="delete-mode" data-mode-id="${esc(m.id)}">${icons.trash}</button>
                 </div>
               `}
             </div>
-          `).join("")}
+          `).join("") : `<p class="empty-state compact">${state.modeWorkspaceId ? "No modes available." : "Select a workspace to manage its agent modes."}</p>`}
         </div>
       </div>
     </section>
+  `;
+}
+
+function renderModeSummary(mode) {
+  const names = Object.keys(mode.permissions || {});
+  if (!names.length) return "All tools";
+  return `${names.length} tool${names.length === 1 ? "" : "s"} allowed`;
+}
+
+function renderAgentModeEditor(draft) {
+  const restricted = draft.restricted;
+  return `
+    <div class="settings-card agent-mode-editor">
+      <div class="settings-section-heading">
+        <h3 class="settings-card-title">${state.editingModeId ? "Edit mode" : "New mode"}</h3>
+        <button class="icon-button" type="button" title="Close" data-action="cancel-mode">${icons.x}</button>
+      </div>
+      <label class="field">
+        <span>Name</span>
+        <input type="text" maxlength="80" value="${esc(draft.name)}" data-mode-field="name" placeholder="Code reviewer" autocomplete="off" />
+      </label>
+      <label class="field">
+        <span>System instructions</span>
+        <textarea rows="7" data-mode-field="prompt" placeholder="Describe how this agent should work, what it should prioritize, and any boundaries it should follow.">${esc(draft.prompt)}</textarea>
+      </label>
+      <label class="settings-toggle mode-tools-toggle">
+        <span><strong>Restrict tool access</strong><span class="field-help">Only checked tools will be sent to the model and executable in this mode.</span></span>
+        <input type="checkbox" data-mode-field="restricted" ${restricted ? "checked" : ""} />
+      </label>
+      ${restricted ? `
+        <div class="mode-tool-list">
+          ${state.modeTools.map((tool) => {
+            const permission = draft.permissions[tool.name];
+            const checked = Boolean(permission);
+            return `
+              <div class="mode-tool-row ${checked ? "is-enabled" : ""}">
+                <label class="mode-tool-check">
+                  <input type="checkbox" data-mode-tool="${esc(tool.name)}" ${checked ? "checked" : ""} />
+                  <span><strong>${esc(tool.name)}</strong><small>${esc(tool.description)}</small></span>
+                </label>
+                ${checked ? `<input class="mode-tool-paths" type="text" data-mode-paths="${esc(tool.name)}" value="${esc((permission.paths || []).join(", "))}" placeholder="All paths, or globs: src/**, tests/**" aria-label="Allowed paths for ${esc(tool.name)}" />` : ""}
+              </div>
+            `;
+          }).join("")}
+        </div>
+      ` : `<p class="field-help">All registered tools are available without additional path restrictions.</p>`}
+      <div class="mode-editor-actions">
+        <button class="secondary-button" type="button" data-action="cancel-mode">Cancel</button>
+        <button class="primary-button" type="button" data-action="save-mode">${icons.check}<span>Save Mode</span></button>
+      </div>
+    </div>
   `;
 }
 
@@ -414,7 +470,7 @@ function renderWorkspaces() {
               <span class="workspace-icon-label">${esc(w.name[0].toUpperCase())}</span>
               <div>
                 <strong>${esc(w.name)}</strong>
-                <span class="workspace-row-path">${esc(w.path)}</span>
+                <span class="workspace-row-path">${esc(w.mainPath)}</span>
               </div>
             </div>
             <div class="endpoint-row-actions">
@@ -619,13 +675,90 @@ function bindEvents(root) {
 
   root.querySelectorAll("[data-action='add-mode']").forEach((btn) => {
     btn.addEventListener("click", () => {
-      state.modes.push({
-        id: `mode-${state.modes.length + 1}`,
-        name: `Mode ${state.modes.length + 1}`,
-        builtIn: false,
-        prompt: "Custom mode.",
-      });
+      state.editingModeId = null;
+      state.modeDraft = { name: "", prompt: "", restricted: false, permissions: {} };
+      state.modeStatus = "";
       render();
+    });
+  });
+
+  root.querySelectorAll("[data-action='edit-mode']").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const mode = state.modes.find((item) => item.id === btn.dataset.modeId);
+      if (!mode || mode.builtIn) return;
+      state.editingModeId = mode.id;
+      state.modeDraft = {
+        name: mode.name,
+        prompt: mode.prompt,
+        restricted: Object.keys(mode.permissions || {}).length > 0,
+        permissions: structuredClone(mode.permissions || {}),
+      };
+      state.modeStatus = "";
+      render();
+    });
+  });
+
+  root.querySelectorAll("[data-action='cancel-mode']").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.editingModeId = null;
+      state.modeDraft = null;
+      state.modeStatus = "";
+      render();
+    });
+  });
+
+  root.querySelectorAll("[data-mode-field]").forEach((field) => {
+    field.addEventListener(field.type === "checkbox" ? "change" : "input", () => {
+      if (!state.modeDraft) return;
+      const key = field.dataset.modeField;
+      if (key === "restricted") {
+        state.modeDraft.restricted = field.checked;
+        if (field.checked && !Object.keys(state.modeDraft.permissions).length && state.modeTools.length) {
+          const first = state.modeTools[0].name;
+          state.modeDraft.permissions[first] = { name: first, paths: [] };
+        }
+        render();
+      } else {
+        state.modeDraft[key] = field.value;
+      }
+    });
+  });
+
+  root.querySelectorAll("[data-mode-tool]").forEach((field) => {
+    field.addEventListener("change", () => {
+      if (!state.modeDraft) return;
+      const name = field.dataset.modeTool;
+      if (field.checked) state.modeDraft.permissions[name] = { name, paths: [] };
+      else delete state.modeDraft.permissions[name];
+      render();
+    });
+  });
+
+  root.querySelectorAll("[data-mode-paths]").forEach((field) => {
+    field.addEventListener("input", () => {
+      const permission = state.modeDraft?.permissions[field.dataset.modePaths];
+      if (!permission) return;
+      permission.paths = field.value.split(",").map((value) => value.trim()).filter(Boolean);
+    });
+  });
+
+  root.querySelectorAll("[data-action='save-mode']").forEach((btn) => {
+    btn.addEventListener("click", saveAgentMode);
+  });
+
+  root.querySelectorAll("[data-action='delete-mode']").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const mode = state.modes.find((item) => item.id === btn.dataset.modeId);
+      if (!mode || !confirm(`Delete the “${mode.name}” agent mode?`)) return;
+      try {
+        const data = await del(`/api/agent-modes/${encodeURIComponent(mode.id)}`, { query: { workspaceId: state.modeWorkspaceId } });
+        state.modes = data.modes || [];
+        state.modeStatus = `Deleted ${mode.name}.`;
+        render();
+      } catch (err) {
+        state.modeStatus = `Error: ${err.message}`;
+        render();
+      }
     });
   });
 
@@ -647,6 +780,7 @@ function bindEvents(root) {
 export function mount(root) {
   render();
   loadSettings();
+  loadAgentModes();
 }
 
 export function unmount() {
@@ -693,6 +827,62 @@ async function loadSettings() {
     applySettings(data);
   } catch (err) {
     state.saveStatus = `Failed to load settings: ${err.message}`;
+    render();
+  }
+}
+
+async function loadAgentModes() {
+  try {
+    const workspaceData = await get("/api/workspaces");
+    state.workspaces = workspaceData.workspaces || [];
+    state.modeWorkspaceId = workspaceData.activeId || "";
+    state.modeWorkspaceName = state.workspaces.find((workspace) => workspace.id === state.modeWorkspaceId)?.name || "";
+    if (!state.modeWorkspaceId) {
+      state.modes = [];
+      state.modeTools = [];
+      render();
+      return;
+    }
+    const data = await get("/api/agent-modes", { query: { workspaceId: state.modeWorkspaceId } });
+    state.modes = data.modes || [];
+    state.modeTools = data.tools || [];
+    state.modeStatus = "";
+    render();
+  } catch (err) {
+    state.modeStatus = `Error: ${err.message}`;
+    render();
+  }
+}
+
+async function saveAgentMode() {
+  const draft = state.modeDraft;
+  if (!draft) return;
+  if (!draft.name.trim() || !draft.prompt.trim()) {
+    state.modeStatus = "Error: Name and system instructions are required.";
+    render();
+    return;
+  }
+  if (draft.restricted && !Object.keys(draft.permissions).length) {
+    state.modeStatus = "Error: Select at least one tool, or turn off tool restrictions.";
+    render();
+    return;
+  }
+  const mode = {
+    name: draft.name.trim(),
+    prompt: draft.prompt.trim(),
+    permissions: draft.restricted ? draft.permissions : {},
+  };
+  try {
+    const data = state.editingModeId
+      ? await put(`/api/agent-modes/${encodeURIComponent(state.editingModeId)}`, { workspaceId: state.modeWorkspaceId, mode })
+      : await post("/api/agent-modes", { workspaceId: state.modeWorkspaceId, mode });
+    state.modes = data.modes || [];
+    state.modeStatus = `Saved ${mode.name}.`;
+    state.editingModeId = null;
+    state.modeDraft = null;
+    render();
+  } catch (err) {
+    state.modeStatus = `Error: ${err.message}`;
     render();
   }
 }

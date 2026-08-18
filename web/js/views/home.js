@@ -16,6 +16,8 @@ let chatCleanup = null;
 let endpoints = [];
 // The model currently selected in the toolbar, or null to use the default.
 let selectedModel = null;
+let agentModes = [];
+let selectedAgentModeId = "general";
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
@@ -96,8 +98,8 @@ function chatPanel() {
                   <span class="model-selector-label" data-model-label>Model</span>
                   <span class="model-selector-chevron">${icons.arrowDown}</span>
                 </button>
-                <button class="model-selector mode-selector chat-toolbar-mode" type="button" title="Agent mode" aria-haspopup="listbox" aria-expanded="false">
-                  <span class="model-selector-label">Mode</span>
+                <button class="model-selector mode-selector chat-toolbar-mode" type="button" title="Agent mode" aria-haspopup="listbox" aria-expanded="false" data-mode-trigger>
+                  <span class="model-selector-label" data-mode-label>Mode</span>
                   <span class="model-selector-chevron">${icons.arrowDown}</span>
                 </button>
                 <span class="chat-toolbar-separator"></span>
@@ -152,6 +154,8 @@ export function mount(root) {
   const sendBtn = root.querySelector(".send-button");
   const modelTrigger = root.querySelector("[data-model-trigger]");
   const modelLabel = root.querySelector("[data-model-label]");
+  const modeTrigger = root.querySelector("[data-mode-trigger]");
+  const modeLabel = root.querySelector("[data-mode-label]");
 
   // Navigate to settings when the sidebar Settings button is clicked.
   const settingsBtn = root.querySelector("[data-nav='settings']");
@@ -187,6 +191,7 @@ export function mount(root) {
           await setActiveWorkspace(id);
           updateWorkspaceIcon();
           openWorkspaceSession(log, id);
+          await loadAgentModes(id, modeLabel);
         } catch (err) {
           console.error("Failed to set active workspace:", err);
         }
@@ -199,6 +204,7 @@ export function mount(root) {
               await setActiveWorkspace(workspace.id);
               updateWorkspaceIcon();
               openWorkspaceSession(log, workspace.id);
+              await loadAgentModes(workspace.id, modeLabel);
             } catch (err) {
               console.error("Failed to open created workspace:", err);
             }
@@ -220,6 +226,17 @@ export function mount(root) {
   `;
   const modelList = modelDropdown.querySelector("[data-model-list]");
   document.body.appendChild(modelDropdown);
+
+  const modeDropdown = document.createElement("div");
+  modeDropdown.className = "model-dropdown mode-dropdown";
+  modeDropdown.hidden = true;
+  modeDropdown.innerHTML = `
+    <div class="model-dropdown-header">Agent mode</div>
+    <div class="model-dropdown-list" role="listbox" aria-label="Select agent mode" data-mode-list></div>
+    <a class="mode-dropdown-settings" href="#/settings">Manage modes in Settings</a>
+  `;
+  const modeList = modeDropdown.querySelector("[data-mode-list]");
+  document.body.appendChild(modeDropdown);
 
   // Render the model dropdown options from the loaded endpoints.
   const renderModelOptions = () => {
@@ -253,10 +270,60 @@ export function mount(root) {
     modelTrigger?.setAttribute("aria-expanded", "false");
   };
 
+  const renderModeOptions = () => {
+    modeList.innerHTML = agentModes.map((mode) => `
+      <button type="button" role="option" class="model-dropdown-item mode-dropdown-item ${selectedAgentModeId === mode.id ? "is-selected" : ""}" data-mode-id="${esc(mode.id)}">
+        <span>${esc(mode.name)}</span>
+        <small>${mode.builtIn ? "Built-in" : esc(mode.prompt)}</small>
+      </button>
+    `).join("");
+  };
+
+  const positionModeDropdown = () => {
+    const rect = modeTrigger?.getBoundingClientRect();
+    if (!rect) return;
+    const height = modeDropdown.offsetHeight || 280;
+    modeDropdown.style.top = `${Math.max(8, rect.top - height - 6)}px`;
+    modeDropdown.style.left = `${rect.left}px`;
+    const width = modeDropdown.offsetWidth || 280;
+    const overflow = rect.left + width - window.innerWidth + 8;
+    if (overflow > 0) modeDropdown.style.left = `${Math.max(8, rect.left - overflow)}px`;
+  };
+
+  const closeModeDropdown = () => {
+    modeDropdown.hidden = true;
+    modeTrigger?.setAttribute("aria-expanded", "false");
+  };
+
+  const onModeTriggerClick = (e) => {
+    e.stopPropagation();
+    closeModelDropdown();
+    if (modeDropdown.hidden) {
+      renderModeOptions();
+      modeDropdown.hidden = false;
+      positionModeDropdown();
+      modeTrigger?.setAttribute("aria-expanded", "true");
+    } else {
+      closeModeDropdown();
+    }
+  };
+
+  const onModeListClick = (e) => {
+    const item = e.target.closest("[data-mode-id]");
+    if (!item) return;
+    selectedAgentModeId = item.dataset.modeId || "general";
+    const selected = agentModes.find((mode) => mode.id === selectedAgentModeId);
+    modeLabel.textContent = selected?.name || "General";
+    const workspaceId = getActive()?.id;
+    if (workspaceId) localStorage.setItem(`echo.agentMode.${workspaceId}`, selectedAgentModeId);
+    closeModeDropdown();
+  };
+
   const toggleModelDropdown = () => {
     // If there are no configured models, do nothing (keep the plain "Model" label).
     if (!endpoints.length) return;
     if (modelDropdown.hidden) {
+      closeModeDropdown();
       renderModelOptions();
       modelDropdown.hidden = false;
       positionModelDropdown();
@@ -285,21 +352,27 @@ export function mount(root) {
     if (!modelDropdown.hidden && !modelDropdown.contains(e.target) && e.target !== modelTrigger) {
       closeModelDropdown();
     }
+    if (!modeDropdown.hidden && !modeDropdown.contains(e.target) && e.target !== modeTrigger) {
+      closeModeDropdown();
+    }
   };
 
   const onResize = () => {
     if (!modelDropdown.hidden) positionModelDropdown();
+    if (!modeDropdown.hidden) positionModeDropdown();
   };
 
   modelTrigger?.addEventListener("click", onModelTriggerClick);
   modelList?.addEventListener("click", onModelListClick);
+  modeTrigger?.addEventListener("click", onModeTriggerClick);
+  modeList?.addEventListener("click", onModeListClick);
   document.addEventListener("click", onDocClick);
   window.addEventListener("resize", onResize);
 
   const submit = () => {
     const text = input.textContent || "";
     if (!text.trim()) return;
-    if (sendMessage(log, text, selectedModel || undefined)) {
+    if (sendMessage(log, text, selectedModel || undefined, selectedAgentModeId)) {
       input.textContent = "";
       input.dispatchEvent(new Event("input"));
       input.focus();
@@ -356,9 +429,12 @@ export function mount(root) {
     }
     modelTrigger?.removeEventListener("click", onModelTriggerClick);
     modelList?.removeEventListener("click", onModelListClick);
+    modeTrigger?.removeEventListener("click", onModeTriggerClick);
+    modeList?.removeEventListener("click", onModeListClick);
     document.removeEventListener("click", onDocClick);
     window.removeEventListener("resize", onResize);
     modelDropdown.remove();
+    modeDropdown.remove();
     closeWorkspaceSession(log);
   };
 
@@ -368,8 +444,30 @@ export function mount(root) {
   // then set the trigger icon to the active (last opened) workspace.
   loadWorkspaces().then(() => {
     updateWorkspaceIcon();
-    openWorkspaceSession(log, getActive()?.id || "");
+    const workspaceId = getActive()?.id || "";
+    openWorkspaceSession(log, workspaceId);
+    loadAgentModes(workspaceId, modeLabel);
   });
+}
+
+async function loadAgentModes(workspaceId, label) {
+  agentModes = [];
+  selectedAgentModeId = "general";
+  if (!workspaceId) {
+    if (label) label.textContent = "Mode";
+    return;
+  }
+  try {
+    const data = await get("/api/agent-modes", { query: { workspaceId } });
+    agentModes = data.modes || [];
+    const stored = localStorage.getItem(`echo.agentMode.${workspaceId}`) || "general";
+    selectedAgentModeId = agentModes.some((mode) => mode.id === stored) ? stored : "general";
+    const selected = agentModes.find((mode) => mode.id === selectedAgentModeId);
+    if (label) label.textContent = selected?.name || "General";
+  } catch (err) {
+    console.error("Failed to load agent modes:", err);
+    if (label) label.textContent = "General";
+  }
 }
 
 export function unmount() {

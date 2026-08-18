@@ -86,6 +86,8 @@ type ExecutionContext struct {
 	// GeneratedImages tracks images produced by tools during the current turn,
 	// keyed by ImageID. Used by save_image to resolve image data.
 	GeneratedImages map[string]AttachedImage
+	// ToolScopes enforces the selected agent mode's tool and path allowlist.
+	ToolScopes *ToolScopeChecker
 }
 
 func (c ExecutionContext) context() context.Context {

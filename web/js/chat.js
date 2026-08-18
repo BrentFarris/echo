@@ -119,13 +119,13 @@ function applyEvent(event) {
 
 function findStream(turnId) { return binding?.turns.get(turnId) || null; }
 
-export function sendMessage(log, text, model) {
+export function sendMessage(log, text, model, agentModeId) {
   text = text.trim();
   if (!text || activeStream || !binding?.workspaceId || binding.log !== log) return false;
   const requestId = globalThis.crypto?.randomUUID?.() || `request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return ws.send({
     type: "chat_send", workspaceId: binding.workspaceId, requestId,
-    message: text, ...(model ? { model } : {}),
+    message: text, ...(model ? { model } : {}), ...(agentModeId ? { agentModeId } : {}),
   });
 }
 

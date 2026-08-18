@@ -243,7 +243,7 @@ func TestCompletedHistoryFeedsNextPromptAndDuplicateRequestIsIdempotent(t *testi
 		t.Fatalf("expected two model requests, got %d", len(requests))
 	}
 	second := requests[1].Messages
-	if len(second) < 3 || second[0].Content != "first prompt" || second[1].Content != "answer-1" || second[len(second)-1].Content != "second prompt" {
+	if len(second) < 4 || second[0].Role != llm.RoleSystem || second[1].Content != "first prompt" || second[2].Content != "answer-1" || second[len(second)-1].Content != "second prompt" {
 		t.Fatalf("prior conversation was not supplied to second request: %#v", second)
 	}
 

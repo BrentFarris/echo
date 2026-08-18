@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/brent/echo/internal/agentmodes"
 	"github.com/brent/echo/internal/llm"
 	"github.com/brent/echo/internal/settings"
 	"github.com/brent/echo/internal/workspaces"
@@ -26,6 +27,7 @@ type Server struct {
 	settingsPath string
 	store        *settings.Store
 	workspaces   *workspaces.Manager
+	modes        *agentmodes.Manager
 	sessions     *chatSessionManager
 	llm          chatStreamer
 	llmSettings  llm.Settings
@@ -65,6 +67,7 @@ func NewWithSettingsPath(addr, webDir, settingsPath string) *Server {
 	s.settingsPath = settingsPath
 	s.store = settings.NewStore(settingsPath)
 	s.workspaces = workspaces.NewManager(settingsPath)
+	s.modes = agentmodes.NewManager()
 	s.sessions = newChatSessionManager(s)
 	s.initLLM()
 	s.httpServer = &http.Server{
@@ -119,6 +122,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/echo", s.handleEcho)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
+	mux.HandleFunc("GET /api/agent-modes", s.handleGetAgentModes)
+	mux.HandleFunc("POST /api/agent-modes", s.handleCreateAgentMode)
+	mux.HandleFunc("PUT /api/agent-modes/{id}", s.handleUpdateAgentMode)
+	mux.HandleFunc("DELETE /api/agent-modes/{id}", s.handleDeleteAgentMode)
 
 	// Workspace endpoints.
 	mux.HandleFunc("GET /api/workspaces", s.handleGetWorkspaces)
