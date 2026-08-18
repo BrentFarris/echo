@@ -1,7 +1,13 @@
 {
-  "name": "Echo",
-  "mainPath": "C:\\Users\\brent\\Documents\\git\\echo",
   "folders": [
     "C:\\Users\\brent\\Documents\\git\\echo"
-  ]
+  ],
+  "mainPath": "C:\\Users\\brent\\Documents\\git\\echo",
+  "name": "Echo",
+  "tags": [
+    "chat",
+    "port",
+    "tools"
+  ],
+  "version": 1
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/brent/echo/internal/llm"
+	"github.com/brent/echo/internal/workspaces"
 	"github.com/gorilla/websocket"
 )
 
@@ -439,4 +440,166 @@ func (c *capturingStreamer) lastRequest() llm.ChatRequest {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.request
+}
+
+// toolCallingStreamer emits a filesystem_list tool call on the first request,
+// then a final answer on subsequent requests. It records each request so tests
+// can assert the tool result was fed back into the conversation.
+type toolCallingStreamer struct {
+	mu       sync.Mutex
+	requests []llm.ChatRequest
+	path     string
+}
+
+func (f *toolCallingStreamer) StreamChat(_ context.Context, request llm.ChatRequest) *llm.Stream {
+	f.mu.Lock()
+	f.requests = append(f.requests, request)
+	callCount := len(f.requests)
+	f.mu.Unlock()
+
+	events := make(chan llm.StreamEvent, 8)
+	if callCount == 1 {
+		events <- llm.StreamEvent{
+			Type: llm.EventToolCall,
+			ToolCall: &llm.ToolCallDelta{
+				Index: 0,
+				ID:    "call-1",
+				Type:  "function",
+				Function: llm.FunctionCallDelta{
+					Name:      "filesystem_list",
+					Arguments: `{"path":"` + f.path + `"}`,
+				},
+			},
+		}
+		events <- llm.StreamEvent{Type: llm.EventComplete, FinishReason: "tool_calls"}
+	} else {
+		events <- llm.StreamEvent{Type: llm.EventToken, Content: "Here are the files."}
+		events <- llm.StreamEvent{Type: llm.EventComplete, FinishReason: "stop"}
+	}
+	close(events)
+	return &llm.Stream{ID: "fake", Events: events}
+}
+
+func (f *toolCallingStreamer) requestCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.requests)
+}
+
+func (f *toolCallingStreamer) lastRequest() llm.ChatRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.requests) == 0 {
+		return llm.ChatRequest{}
+	}
+	return f.requests[len(f.requests)-1]
+}
+
+func TestChatToolCallingExecutesFilesystemList(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	// Create a workspace whose main folder holds a file, and make it active so
+	// the tool context resolves to a real directory.
+	wsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsDir, "notes.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := s.workspaces.Create(workspaces.CreateRequest{
+		Name:     "tool-ws",
+		MainPath: wsDir,
+	})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := s.workspaces.SetActive(ws.ID); err != nil {
+		t.Fatalf("set active: %v", err)
+	}
+
+	// Inject a streamer that requests filesystem_list then answers. The label
+	// is the normalized base name of the workspace folder.
+	fake := &toolCallingStreamer{path: normalizeWorkspaceFolderLabel(filepath.Base(wsDir))}
+	s.llm = fake
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go s.httpServer.Serve(ln)
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+ln.Addr().String()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("read welcome: %v", err)
+	}
+
+	if err := conn.WriteJSON(map[string]any{"type": "chat", "message": "list the workspace"}); err != nil {
+		t.Fatalf("write chat: %v", err)
+	}
+
+	var toolCallSeen, toolResultSeen, doneSeen bool
+	for {
+		var evt map[string]any
+		if err := conn.ReadJSON(&evt); err != nil {
+			t.Fatalf("read event: %v", err)
+		}
+		typ, _ := evt["type"].(string)
+		if typ == "chat_event" {
+			eventType, _ := evt["eventType"].(string)
+			if eventType == "tool_call" {
+				toolCallSeen = true
+			}
+			if eventType == "tool_result" {
+				toolResultSeen = true
+				if tool, _ := evt["tool"].(string); tool != "filesystem_list" {
+					t.Fatalf("expected filesystem_list tool result, got %q", tool)
+				}
+			}
+		}
+		if typ == "chat_done" {
+			doneSeen = true
+			break
+		}
+		if typ == "chat_error" {
+			t.Fatalf("unexpected chat_error: %v", evt)
+		}
+	}
+
+	if !toolCallSeen {
+		t.Fatal("expected a tool_call event")
+	}
+	if !toolResultSeen {
+		t.Fatal("expected a tool_result event")
+	}
+	if !doneSeen {
+		t.Fatal("expected chat_done")
+	}
+
+	// The loop must have made two requests: the initial turn and the follow-up
+	// after the tool result was fed back.
+	if fake.requestCount() != 2 {
+		t.Fatalf("expected two stream requests, got %d", fake.requestCount())
+	}
+	// The final request must include the tool result message.
+	last := fake.lastRequest()
+	foundToolResult := false
+	for _, m := range last.Messages {
+		if m.Role == llm.RoleTool && m.ToolCallID == "call-1" {
+			foundToolResult = true
+			if !strings.Contains(m.Content, `"success":true`) {
+				t.Fatalf("expected successful tool result, got %q", m.Content)
+			}
+			if !strings.Contains(m.Content, "notes.txt") {
+				t.Fatalf("expected notes.txt in tool result, got %q", m.Content)
+			}
+		}
+	}
+	if !foundToolResult {
+		t.Fatal("expected a tool result message in the follow-up request")
+	}
 }

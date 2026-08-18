@@ -404,6 +404,27 @@ textarea:disabled {
   display: none;
 }
 
+/* Tool activity lines shown inside assistant messages while the model invokes
+   tools (e.g. filesystem_list) and reports their results. The container sits
+   between the reasoning block and the answer so activity appears inline where
+   it happened. */
+.chat-tools {
+  display: flex;
+  flex-direction: column;
+  margin: 0 0 var(--space-sm) 0;
+}
+
+.chat-tool-line {
+  font-size: var(--text-base-sm);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, monospace);
+  padding: 2px 0;
+}
+
+.chat-tool-line-done {
+  color: var(--color-success, #2e7d32);
+}
+
 .chat-message.is-streaming .chat-message-content::after {
   content: "";
   display: inline-block;

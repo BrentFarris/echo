@@ -1,19 +1,19 @@
 ---
 name: browser-spa-framework
-description: 'Conventions and architecture for the browser-based Echo web app: Go stdlib server on port 3740 serving a plain-JS ES-module SPA, JSON API envelope, WebSocket hub, base UI shell with design tokens, internal/llm OpenAI-compatible client, WebSocket chat streaming, full-page settings view, shared appdata echo.json (settings + workspaces), and the workspace registration flow (.echo folder, workspace.json, icon).'
+description: 'Conventions and architecture for the browser-based Echo web app: Go stdlib server on port 3740 serving a plain-JS ES-module SPA, JSON API envelope, WebSocket hub, base UI shell with design tokens, internal/llm OpenAI-compatible client, WebSocket chat streaming, shared appdata echo.json (settings + workspaces), workspace registration flow (.echo folder, workspace.json, icon), and the internal/tools package with the chat tool-calling loop.'
 triggers:
     - Echo web server
     - SPA frontend
     - add API endpoint
-    - new view module
-    - JSON envelope
-    - port 3740
-    - base UI shell
     - LLM client
     - chat streaming
     - workspace
     - appdata echo.json
-    - add workspace
+    - internal/tools
+    - port a tool
+    - tool calling
+    - chat tool loop
+    - agent tool
 ---
 
 # Echo Browser SPA Framework
@@ -57,9 +57,18 @@ Echo is now a browser-based app (not Wails). A Go server hosts a single-page app
 - `Hub.Broadcast(event)` marshals to JSON and fans out to all clients; safe from any goroutine.
 - Each connection runs a `writePump` goroutine and a blocking `readPump`. `client.sendJSON(v)` queues JSON to one client safely.
 
-## Chat streaming (WebSocket, bidirectional)
-- client -> `{type:"chat", message}`; server -> `chat_start`, `chat_event` (token/reasoning/...), `chat_done`/`chat_error`. Handled in `ws.go` via `client.handleChatMessage`.
-- **Testability**: `Server.llm` is a `chatStreamer` interface (`StreamChat(ctx, req) *llm.Stream`). Use this pattern for any new LLM-backed endpoint.
+## Chat streaming + tool calling (WebSocket, bidirectional)
+- client -> `{type:"chat", message}`; server -> `chat_start`, `chat_event` (token/reasoning/tool_call/tool_result/...), `chat_done`/`chat_error`. Handled in `ws.go` via `client.handleChatMessage`.
+- `handleChatMessage` builds the `ChatRequest` with `llm.WithTools(tools.LLMSchema())`, then calls `client.runChatLoop(...)`.
+- **Tool-calling loop** (`runChatLoop` in `ws.go`): appends the user message, streams an assistant turn via `collectAssistantTurn` (merges streamed `EventToolCall` deltas by index with `mergeToolDelta`, orders with `orderedToolCalls`), and if the turn produced tool calls, executes each via `tools.Execute(c.toolContext(), name, args)`, marshals the `ExecutionResult` to JSON, appends `RoleTool` messages, and repeats. The loop is capped by `maxToolCallTurns` (10). `toolContext()` builds a `tools.ExecutionContext` from the active workspace's labeled roots.
+- **Testability**: `Server.llm` is a `chatStreamer` interface (`StreamChat(ctx, req) *llm.Stream`). Use this pattern for any new LLM-backed endpoint. Integration tests inject a fake streamer that emits a tool_call delta then a final answer, and assert the tool result was fed back into the follow-up request.
+
+## internal/tools package (tool registry + execution)
+- `internal/tools` mirrors the legacy OLD tool framework but trimmed to the minimal core. Each tool self-registers via `init()` calling `tools.Register(ToolFunc{Meta: Metadata{...}, Run: handler})`.
+- Files: `registry.go` (`Register`, `defaultRegistry`, `Registered()`, `LLMSchema()`, `Execute()`), `types.go` (`Tool`, `ToolFunc`, `Metadata`, `Schema`, `ExecutionContext`, `WorkspaceRoot`, `ExecutionResult`, `SafeError`), `arguments.go` (`DecodeToolArguments` with JSON-repair pass), `filesystem_helpers.go` (workspace path resolution), and one tool per file (e.g. `filesystem_list.go`).
+- `tools.LLMSchema()` returns `[]llm.Tool` for the model; `tools.Execute(ctx, name, args)` returns an `ExecutionResult` (recovering panics, mapping `SafeError` to `ExecutionError{Code,Message}`).
+- **Labeled workspace roots**: `ExecutionContext.WorkspaceRoots []WorkspaceRoot{ID,Label,Path}`. `server.workspaceToolRoots(workspace)` (in `chat_tools.go`) derives each label from the folder's base name via `normalizeWorkspaceFolderLabel` (lowercase slug, spaces->dashes), matching the legacy convention. A single folder still gets a label (not "."), so `filesystem_list` with `path:"."` lists the virtual roots; use the label path (e.g. `path:"echo"`) to list a folder's contents.
+- **To port a tool from OLD/**: copy its `init()` registration verbatim (same name/description/params) plus its `Run` handler and any helpers it needs from OLD's `internal/tools` (types/arguments/filesystem_helpers). Only port the subset of infrastructure the tool actually uses. Add a `_test.go` porting the OLD tool's tests.
 
 ## LLM client (`internal/llm`)
 - Raw OpenAI-compatible client. `types.go` (Message/ChatRequest/StreamEvent), `settings.go` (Settings/LLMEndpoint/EndpointSelection, `ForInteraction()`), `client.go` (`NewClient`, `Complete`, `StreamChat`, `Cancel`), `stream.go` (SSE parsing, emits token/reasoning/tool_call/complete/usage/error/canceled).
@@ -72,6 +81,7 @@ Echo is now a browser-based app (not Wails). A Go server hosts a single-page app
 - `js/icons.js` — inline stroke-based SVG icon set (24x24 viewBox, `currentColor`). Reuse these rather than adding icon libraries.
 - `js/app.js` — hash router mapping routes to lazy-loaded view modules; swaps them into `#app`.
 - **View contract**: each view module exports `mount(root)` and `unmount()`. `mount` renders HTML, wires listeners, and stores a cleanup closure (module-level var); `unmount` runs it. Keep `unmount` idempotent.
+- `js/chat.js` renders `chat_event` types: `token`/`reasoning` stream text; `tool_call`/`tool_result` render a lightweight `.chat-tool-line` activity line in the assistant message.
 
 ## Workspace selector + add-workspace modal (js/workspaces.js)
 - `loadWorkspaces()` fetches `GET /api/workspaces`; `openWorkspaceDropdown(trigger, {onSelect, onAdd})` renders a fixed-position dropdown anchored to the trigger (appended to `<body>` to avoid clipping) and returns a cleanup function. `openAddWorkspaceModal({onCreate})` renders and wires the modal, returns cleanup.

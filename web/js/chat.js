@@ -39,6 +39,12 @@ function createMessageEl(role, text) {
     reasoning.hidden = true;
     body.appendChild(reasoning);
 
+    // Tool-activity container sits between reasoning and the answer so tool
+    // calls/results render inline where they happened (before the answer).
+    const tools = document.createElement("div");
+    tools.className = "chat-tools";
+    body.appendChild(tools);
+
     const content = document.createElement("div");
     content.className = "chat-message-content";
     content.textContent = text;
@@ -82,11 +88,12 @@ function scrollToBottom(log) {
 function createStreamingMessage(log) {
   const el = createMessageEl("assistant", "");
   const reasoning = el.querySelector(".chat-message-reasoning");
+  const tools = el.querySelector(".chat-tools");
   const content = el.querySelector(".chat-message-content");
   el.classList.add("is-streaming");
   log.appendChild(el);
   scrollToBottom(log);
-  return { el, reasoning, content };
+  return { el, reasoning, tools, content };
 }
 
 /**
@@ -110,8 +117,8 @@ export function sendMessage(log, text, model) {
   appendMessage(log, "user", text);
 
   // Create the assistant message we'll stream into.
-  const { el, reasoning, content } = createStreamingMessage(log);
-  const stream = { el, reasoning, content, done: false, answer: "", thinking: "" };
+  const { el, reasoning, tools, content } = createStreamingMessage(log);
+  const stream = { el, reasoning, tools, content, done: false, answer: "", thinking: "" };
   activeStream = stream;
 
   const unsubscribe = ws.on("chat_event", (data) => {
@@ -124,6 +131,19 @@ export function sendMessage(log, text, model) {
       // Reveal the thinking block once there is content to show.
       if (stream.thinking && reasoning.hidden) reasoning.hidden = false;
       reasoning.textContent = stream.thinking;
+      scrollToBottom(log);
+    } else if (data.eventType === "tool_call" || data.eventType === "tool_result") {
+      // Render a lightweight tool-activity line inline (above the answer) so
+      // the user can see when the model invoked a tool and its result.
+      const toolLine = document.createElement("div");
+      toolLine.className = "chat-tool-line";
+      if (data.eventType === "tool_call") {
+        toolLine.textContent = `🔧 ${data.tool || "tool"}…`;
+      } else {
+        toolLine.textContent = `✓ ${data.tool || "tool"} completed`;
+        toolLine.classList.add("chat-tool-line-done");
+      }
+      tools.appendChild(toolLine);
       scrollToBottom(log);
     }
   });

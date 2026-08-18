@@ -3,12 +3,15 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/brent/echo/internal/llm"
+	"github.com/brent/echo/internal/tools"
 	"github.com/gorilla/websocket"
 )
 
@@ -215,7 +218,10 @@ type inboundMessage struct {
 }
 
 // handleChatMessage runs an LLM chat completion for the given message and
-// streams the resulting events back to the sending client.
+// streams the resulting events back to the sending client. It runs a
+// tool-calling loop so the model can invoke registered tools (e.g.
+// filesystem_list) and feed their results back until it produces a final
+// answer.
 func (c *client) handleChatMessage(msg inboundMessage) {
 	if c.server == nil || c.server.llm == nil {
 		c.sendJSON(map[string]any{"type": "chat_error", "error": "LLM client is not configured"})
@@ -243,23 +249,172 @@ func (c *client) handleChatMessage(msg inboundMessage) {
 		settings,
 		[]llm.Message{{Role: llm.RoleUser, Content: text}},
 		llm.WithStream(true),
+		llm.WithTools(tools.LLMSchema()),
 	)
 	if err != nil {
 		c.sendJSON(map[string]any{"type": "chat_error", "error": err.Error()})
 		return
 	}
 
-	stream := c.server.llm.StreamChat(context.Background(), request)
-	for event := range stream.Events {
-		c.sendJSON(map[string]any{
-			"type":         "chat_event",
-			"eventType":    string(event.Type),
-			"content":      event.Content,
-			"finishReason": event.FinishReason,
-			"error":        event.Error,
-		})
+	c.runChatLoop(context.Background(), settings, request)
+}
+
+// runChatLoop executes the tool-calling loop for a chat request. It streams
+// the assistant's turns to the client, executes any requested tools, feeds the
+// results back into the conversation, and repeats until the model stops
+// requesting tools or the loop budget is exhausted.
+func (c *client) runChatLoop(ctx context.Context, settings llm.Settings, request llm.ChatRequest) {
+	messages := append([]llm.Message(nil), request.Messages...)
+
+	for turn := 0; turn < maxToolCallTurns; turn++ {
+		turnRequest := request
+		turnRequest.Messages = messages
+
+		stream := c.server.llm.StreamChat(ctx, turnRequest)
+		content, toolCalls, err := c.collectAssistantTurn(stream)
+		if err != nil {
+			c.sendJSON(map[string]any{"type": "chat_error", "error": err.Error()})
+			return
+		}
+
+		// Record the assistant turn in the conversation history.
+		assistant := llm.Message{Role: llm.RoleAssistant, Content: content, ToolCalls: toolCalls}
+		messages = append(messages, assistant)
+
+		if len(toolCalls) == 0 {
+			// Final answer produced; nothing more to execute.
+			c.sendJSON(map[string]any{"type": "chat_done"})
+			return
+		}
+
+		// Execute each requested tool and append its result.
+		for _, call := range toolCalls {
+			c.sendJSON(map[string]any{
+				"type":      "chat_event",
+				"eventType": "tool_call",
+				"tool":      call.Function.Name,
+			})
+			result := tools.Execute(c.toolContext(), call.Function.Name, json.RawMessage(call.Function.Arguments))
+			data, marshalErr := json.Marshal(result)
+			if marshalErr != nil {
+				data = []byte(fmt.Sprintf(`{"tool":%q,"success":false,"error":{"code":"marshal_error","message":%q}}`, call.Function.Name, marshalErr.Error()))
+			}
+			messages = append(messages, llm.Message{
+				Role:       llm.RoleTool,
+				ToolCallID: call.ID,
+				Content:    string(data),
+			})
+			c.sendJSON(map[string]any{
+				"type":      "chat_event",
+				"eventType": "tool_result",
+				"tool":      call.Function.Name,
+				"content":   string(data),
+			})
+		}
 	}
-	c.sendJSON(map[string]any{"type": "chat_done"})
+
+	c.sendJSON(map[string]any{"type": "chat_error", "error": "tool call loop exceeded the maximum number of turns"})
+}
+
+// maxToolCallTurns caps the number of model turns in a single chat message to
+// prevent a runaway tool-calling loop.
+const maxToolCallTurns = 10
+
+// toolContext builds the tools.ExecutionContext for the active workspace so
+// tools can resolve labeled workspace paths.
+func (c *client) toolContext() tools.ExecutionContext {
+	ctx := tools.ExecutionContext{Context: context.Background()}
+	active, ok, err := c.server.workspaces.Active()
+	if err != nil || !ok {
+		return ctx
+	}
+	ctx.WorkspaceRoots = workspaceToolRoots(active)
+	return ctx
+}
+
+// collectAssistantTurn drains a stream, merging streamed tool-call deltas and
+// forwarding token/reasoning events to the client. It returns the assembled
+// assistant content, the complete tool calls (if any), and any fatal error.
+func (c *client) collectAssistantTurn(stream *llm.Stream) (string, []llm.ToolCall, error) {
+	var content strings.Builder
+	toolCalls := make(map[int]llm.ToolCall)
+	var firstErr error
+
+	for event := range stream.Events {
+		switch event.Type {
+		case llm.EventToken:
+			content.WriteString(event.Content)
+			c.sendJSON(map[string]any{
+				"type":         "chat_event",
+				"eventType":    string(event.Type),
+				"content":      event.Content,
+				"finishReason": event.FinishReason,
+				"error":        event.Error,
+			})
+		case llm.EventReasoning:
+			c.sendJSON(map[string]any{
+				"type":         "chat_event",
+				"eventType":    string(event.Type),
+				"content":      event.Content,
+				"finishReason": event.FinishReason,
+				"error":        event.Error,
+			})
+		case llm.EventToolCall:
+			if event.ToolCall != nil {
+				call := mergeToolDelta(toolCalls[event.ToolCall.Index], *event.ToolCall)
+				toolCalls[event.ToolCall.Index] = call
+			}
+		case llm.EventError:
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%s", event.Error)
+			}
+		case llm.EventCanceled:
+			return content.String(), orderedToolCalls(toolCalls), fmt.Errorf("chat stream was canceled")
+		}
+	}
+	if firstErr != nil {
+		return content.String(), orderedToolCalls(toolCalls), firstErr
+	}
+	return content.String(), orderedToolCalls(toolCalls), nil
+}
+
+// mergeToolDelta merges a streamed tool-call delta into an in-progress call.
+func mergeToolDelta(existing llm.ToolCall, delta llm.ToolCallDelta) llm.ToolCall {
+	if delta.ID != "" {
+		existing.ID = delta.ID
+	}
+	if delta.Type != "" {
+		existing.Type = delta.Type
+	}
+	if existing.Type == "" {
+		existing.Type = "function"
+	}
+	if delta.Function.Name != "" {
+		existing.Function.Name = delta.Function.Name
+	}
+	if delta.Function.Arguments != "" {
+		existing.Function.Arguments += delta.Function.Arguments
+	}
+	return existing
+}
+
+// orderedToolCalls returns the tool calls sorted by their stream index.
+func orderedToolCalls(calls map[int]llm.ToolCall) []llm.ToolCall {
+	indexes := make([]int, 0, len(calls))
+	for index := range calls {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+
+	ordered := make([]llm.ToolCall, 0, len(indexes))
+	for _, index := range indexes {
+		call := calls[index]
+		if call.Type == "" {
+			call.Type = "function"
+		}
+		ordered = append(ordered, call)
+	}
+	return ordered
 }
 
 // writePump writes queued messages to the client. It sends periodic pings to

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "tasks": {
+    "ae2c0102-7587-4d89-9c8d-b502322b1b9d": {
+      "title": "Port filesystem_list tool into new Echo with end-to-end chat tool calling",
+      "details": "Port the `filesystem_list` tool from OLD/ into the new Echo, matching OLD exactly (name, params, description, output shape), and wire tool calling into the WebSocket chat handler so the LLM can invoke it end-to-end.\n\nScope:\n- Create internal/tools package (registry, types, arguments, filesystem_helpers, filesystem_list) with init() self-registration identical to OLD.\n- Derive labeled workspace roots from the active workspace's folders (label = folder path basename, deduped; '.' for single-root).\n- Add a tool-calling loop to internal/server/ws.go handleChatMessage: include tools.LLMSchema() in the ChatRequest, collect streamed tool_call deltas, execute via tools.Execute, feed RoleTool results back, and loop until the model stops calling tools.\n- Surface tool activity to the frontend via new WS chat_event eventTypes (e.g. tool_call/tool_result) and render them in web/js/chat.js.\n- Add Go tests for the tools package (port OLD filesystem_list tests) and a server/chat integration test using the fake streamer.\n\nExplicitly NOT ported: all other OLD tools (filesystem_read_text, shell_command, etc.). Only filesystem_list.",
+      "tags": [
+        "tools",
+        "chat",
+        "port"
+      ],
+      "priority": "P1",
+      "sortOrder": 0,
+      "completed": true,
+      "createdAt": "2026-08-18T01:11:39.5625348Z",
+      "updatedAt": "2026-08-18T01:30:39.6277406Z",
+      "completedAt": "2026-08-18T01:30:39.6277406Z"
+    }
+  }
+}
