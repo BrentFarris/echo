@@ -5,10 +5,44 @@
 // composer sends messages over WebSocket and streams the reply incrementally.
 
 import { icons } from "../icons.js";
+import { get } from "../api.js";
 import { sendMessage, stopStream } from "../chat.js";
 
 // Holds the cleanup function for the currently mounted chat view.
 let chatCleanup = null;
+
+// Endpoints loaded from settings, used to populate the model selector.
+let endpoints = [];
+// The model currently selected in the toolbar, or null to use the default.
+let selectedModel = null;
+
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[ch]));
+}
+
+// loadEndpoints fetches the configured endpoints from the server so the model
+// selector can offer every endpoint's model for the next chat prompt. It also
+// starts the selector on the model configured for the chat interaction.
+async function loadEndpoints() {
+  try {
+    const data = await get("/api/settings");
+    const s = data.settings || data;
+    endpoints = (s.endpoints || []).map((e) => ({ ...e }));
+    // Start on the model routed to the chat interaction, if any.
+    const chatId = s.endpointSelection?.chat;
+    const chatEndpoint = endpoints.find((e) => e.id === chatId);
+    if (chatEndpoint?.model) {
+      selectedModel = chatEndpoint.model;
+      const label = document.querySelector("[data-model-label]");
+      if (label) label.textContent = chatEndpoint.name || chatEndpoint.model;
+    }
+  } catch (err) {
+    // Non-fatal: the selector just stays on the default model.
+    console.error("Failed to load endpoints for model selector:", err);
+  }
+}
 
 function leftNav() {
   return `
@@ -57,16 +91,14 @@ function chatPanel() {
               <div class="chat-composer-toolbar-left">
                 <button class="chat-toolbar-icon" type="button" title="Attach file" aria-label="Attach file">${icons.plus}</button>
                 <button class="chat-toolbar-icon chat-speech-recognition" type="button" title="Hold to speak" aria-label="Voice input">${icons.mic}</button>
-                <button class="model-selector chat-toolbar-model" type="button" title="Select model" aria-haspopup="listbox" aria-expanded="false">
-                  <span class="model-selector-label">Model</span>
+                <button class="model-selector chat-toolbar-model" type="button" title="Select model" aria-haspopup="listbox" aria-expanded="false" data-model-trigger>
+                  <span class="model-selector-label" data-model-label>Model</span>
                   <span class="model-selector-chevron">${icons.arrowDown}</span>
                 </button>
                 <button class="model-selector mode-selector chat-toolbar-mode" type="button" title="Agent mode" aria-haspopup="listbox" aria-expanded="false">
                   <span class="model-selector-label">Mode</span>
                   <span class="model-selector-chevron">${icons.arrowDown}</span>
                 </button>
-                <span class="chat-toolbar-separator"></span>
-                <button class="chat-toolbar-icon execute-button" type="button" title="Execute plan" aria-label="Execute plan">${icons.execute}</button>
                 <span class="chat-toolbar-separator"></span>
                 <button class="chat-toolbar-icon" type="button" title="More options" aria-label="More options">${icons.moreHorizontal}</button>
               </div>
@@ -117,6 +149,8 @@ export function mount(root) {
   const form = root.querySelector("[data-chat-form]");
   const input = root.querySelector("[data-chat-input]");
   const sendBtn = root.querySelector(".send-button");
+  const modelTrigger = root.querySelector("[data-model-trigger]");
+  const modelLabel = root.querySelector("[data-model-label]");
 
   // Navigate to settings when the sidebar Settings button is clicked.
   const settingsBtn = root.querySelector("[data-nav='settings']");
@@ -125,10 +159,97 @@ export function mount(root) {
   };
   settingsBtn?.addEventListener("click", onSettingsClick);
 
+  // Build the dropdown as a fixed-position overlay appended to <body> so it is
+  // not clipped by the chat panel's overflow:hidden.
+  const modelDropdown = document.createElement("div");
+  modelDropdown.className = "model-dropdown";
+  modelDropdown.hidden = true;
+  modelDropdown.innerHTML = `
+    <div class="model-dropdown-header">Model</div>
+    <div class="model-dropdown-list" role="listbox" aria-label="Select model" data-model-list></div>
+  `;
+  const modelList = modelDropdown.querySelector("[data-model-list]");
+  document.body.appendChild(modelDropdown);
+
+  // Render the model dropdown options from the loaded endpoints.
+  const renderModelOptions = () => {
+    const options = endpoints.map((e) => ({
+      value: e.model,
+      label: e.name ? `${e.name} — ${e.model}` : e.model,
+    }));
+    modelList.innerHTML = options.map((o) => `
+      <button type="button" role="option" class="model-dropdown-item ${selectedModel === o.value ? "is-selected" : ""}" data-model-value="${esc(o.value)}">
+        ${esc(o.label)}
+      </button>
+    `).join("");
+  };
+
+  const positionModelDropdown = () => {
+    const rect = modelTrigger?.getBoundingClientRect();
+    if (!rect) return;
+    // Open the dropdown above the trigger so it stays on screen even though the
+    // composer sits near the bottom of the viewport.
+    const height = modelDropdown.offsetHeight || 240;
+    modelDropdown.style.top = `${Math.max(8, rect.top - height - 6)}px`;
+    modelDropdown.style.left = `${rect.left}px`;
+    // Keep the dropdown within the viewport horizontally.
+    const width = modelDropdown.offsetWidth || 220;
+    const overflow = rect.left + width - window.innerWidth + 8;
+    if (overflow > 0) modelDropdown.style.left = `${Math.max(8, rect.left - overflow)}px`;
+  };
+
+  const closeModelDropdown = () => {
+    modelDropdown.hidden = true;
+    modelTrigger?.setAttribute("aria-expanded", "false");
+  };
+
+  const toggleModelDropdown = () => {
+    // If there are no configured models, do nothing (keep the plain "Model" label).
+    if (!endpoints.length) return;
+    if (modelDropdown.hidden) {
+      renderModelOptions();
+      modelDropdown.hidden = false;
+      positionModelDropdown();
+      modelTrigger?.setAttribute("aria-expanded", "true");
+    } else {
+      closeModelDropdown();
+    }
+  };
+
+  const onModelTriggerClick = (e) => {
+    e.stopPropagation();
+    toggleModelDropdown();
+  };
+
+  const onModelListClick = (e) => {
+    const item = e.target.closest("[data-model-value]");
+    if (!item) return;
+    selectedModel = item.dataset.modelValue || null;
+    modelLabel.textContent = selectedModel
+      ? endpoints.find((ep) => ep.model === selectedModel)?.name || selectedModel
+      : "Model";
+    closeModelDropdown();
+  };
+
+  const onDocClick = (e) => {
+    if (!modelDropdown.hidden && !modelDropdown.contains(e.target) && e.target !== modelTrigger) {
+      closeModelDropdown();
+    }
+  };
+
+  const onResize = () => {
+    if (!modelDropdown.hidden) positionModelDropdown();
+  };
+
+  modelTrigger?.addEventListener("click", onModelTriggerClick);
+  modelList?.addEventListener("click", onModelListClick);
+  document.addEventListener("click", onDocClick);
+  window.addEventListener("resize", onResize);
+
   const submit = () => {
     const text = input.textContent || "";
     if (!text.trim()) return;
-    sendMessage(log, text);
+    sendMessage(log, text, selectedModel || undefined);
     input.textContent = "";
     input.dispatchEvent(new Event("input"));
     input.focus();
@@ -155,7 +276,15 @@ export function mount(root) {
     sendBtn.removeEventListener("click", submit);
     input.removeEventListener("keydown", onKeydown);
     settingsBtn?.removeEventListener("click", onSettingsClick);
+    modelTrigger?.removeEventListener("click", onModelTriggerClick);
+    modelList?.removeEventListener("click", onModelListClick);
+    document.removeEventListener("click", onDocClick);
+    window.removeEventListener("resize", onResize);
+    modelDropdown.remove();
   };
+
+  // Load the configured endpoints so the model selector can be populated.
+  loadEndpoints();
 }
 
 export function unmount() {

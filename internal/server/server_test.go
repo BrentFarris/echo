@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -285,6 +286,126 @@ func TestChatStreamingOverWebSocket(t *testing.T) {
 	}
 }
 
+func TestChatRoutesToSelectedModel(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	// Configure a second endpoint with a distinct model and route chat to it.
+	cfg := llm.DefaultSettings()
+	cfg.Endpoints = append(cfg.Endpoints, llm.LLMEndpoint{
+		ID:       "second",
+		Name:     "Second",
+		Endpoint: "http://example.com/v1",
+		Model:    "model-b",
+	})
+	if err := s.store.Save(cfg); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	s.initLLM()
+
+	// Inject a capturing streamer so we can inspect the routed model.
+	capturing := &capturingStreamer{}
+	s.llm = capturing
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go s.httpServer.Serve(ln)
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+ln.Addr().String()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Consume the welcome event.
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("read welcome: %v", err)
+	}
+
+	// Send a chat message with the second endpoint's model selected.
+	if err := conn.WriteJSON(map[string]any{"type": "chat", "message": "hello", "model": "model-b"}); err != nil {
+		t.Fatalf("write chat: %v", err)
+	}
+
+	// Drain until chat_done.
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for {
+		var evt map[string]any
+		if err := conn.ReadJSON(&evt); err != nil {
+			t.Fatalf("read event: %v", err)
+		}
+		if evt["type"] == "chat_done" {
+			break
+		}
+	}
+
+	if got := capturing.lastRequest().Model; got != "model-b" {
+		t.Fatalf("expected routed model model-b, got %q", got)
+	}
+}
+
+func TestChatFallsBackToDefaultModelWhenUnknown(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	cfg := llm.DefaultSettings()
+	cfg.Endpoints = append(cfg.Endpoints, llm.LLMEndpoint{
+		ID:       "second",
+		Name:     "Second",
+		Endpoint: "http://example.com/v1",
+		Model:    "model-b",
+	})
+	if err := s.store.Save(cfg); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	s.initLLM()
+
+	capturing := &capturingStreamer{}
+	s.llm = capturing
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go s.httpServer.Serve(ln)
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+ln.Addr().String()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("read welcome: %v", err)
+	}
+
+	// Send a chat message with a model that does not exist on any endpoint.
+	if err := conn.WriteJSON(map[string]any{"type": "chat", "message": "hello", "model": "does-not-exist"}); err != nil {
+		t.Fatalf("write chat: %v", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for {
+		var evt map[string]any
+		if err := conn.ReadJSON(&evt); err != nil {
+			t.Fatalf("read event: %v", err)
+		}
+		if evt["type"] == "chat_done" {
+			break
+		}
+	}
+
+	// The default chat endpoint's model should be used.
+	defaultModel := llm.DefaultModel
+	if got := capturing.lastRequest().Model; got != defaultModel {
+		t.Fatalf("expected fallback model %q, got %q", defaultModel, got)
+	}
+}
+
 // fakeStreamer is a minimal chatStreamer for tests.
 type fakeStreamer struct{}
 
@@ -294,4 +415,28 @@ func (f *fakeStreamer) StreamChat(_ context.Context, _ llm.ChatRequest) *llm.Str
 	events <- llm.StreamEvent{Type: llm.EventComplete, FinishReason: "stop"}
 	close(events)
 	return &llm.Stream{ID: "fake", Events: events}
+}
+
+// capturingStreamer records the last ChatRequest it received so tests can
+// assert which model the chat handler routed the prompt to.
+type capturingStreamer struct {
+	mu      sync.Mutex
+	request llm.ChatRequest
+}
+
+func (c *capturingStreamer) StreamChat(_ context.Context, request llm.ChatRequest) *llm.Stream {
+	c.mu.Lock()
+	c.request = request
+	c.mu.Unlock()
+	events := make(chan llm.StreamEvent, 4)
+	events <- llm.StreamEvent{Type: llm.EventToken, Content: "hello"}
+	events <- llm.StreamEvent{Type: llm.EventComplete, FinishReason: "stop"}
+	close(events)
+	return &llm.Stream{ID: "fake", Events: events}
+}
+
+func (c *capturingStreamer) lastRequest() llm.ChatRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.request
 }

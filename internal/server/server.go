@@ -26,6 +26,9 @@ type Server struct {
 	store        *settings.Store
 	llm          chatStreamer
 	llmSettings  llm.Settings
+	// settings holds the full normalized settings (all endpoints) so the chat
+	// handler can resolve a user-selected model to its owning endpoint.
+	settings llm.Settings
 }
 
 // chatStreamer is the subset of the LLM client the chat endpoint needs. It is
@@ -74,6 +77,8 @@ func (s *Server) initLLM() {
 		logf("load settings: %v", err)
 		cfg = llm.DefaultSettings()
 	}
+	cfg = cfg.NormalizedEndpointProfiles()
+	s.settings = cfg
 	s.llmSettings = cfg.ForInteraction(llm.InteractionChat)
 	client, err := llm.NewClient(s.llmSettings)
 	if err != nil {
@@ -81,6 +86,23 @@ func (s *Server) initLLM() {
 		return
 	}
 	s.llm = client
+}
+
+// settingsForModel returns the settings for the endpoint that owns the given
+// model, if one is configured. It is used to route a chat prompt to a
+// user-selected model from the landing page. If no endpoint declares the model,
+// ok is false and the caller should fall back to the default chat endpoint.
+func (s *Server) settingsForModel(model string) (llm.Settings, bool) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return llm.Settings{}, false
+	}
+	for _, endpoint := range s.settings.Endpoints {
+		if strings.TrimSpace(endpoint.Model) == model {
+			return endpoint.ApplyToSettings(s.settings), true
+		}
+	}
+	return llm.Settings{}, false
 }
 
 // routes builds the HTTP handler tree for the server.

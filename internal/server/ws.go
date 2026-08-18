@@ -208,6 +208,10 @@ func (c *client) readPump(h *Hub) {
 type inboundMessage struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
+	// Model is the optional model the user selected for this prompt. When set,
+	// the chat request is routed to the endpoint that owns that model instead
+	// of the default chat endpoint.
+	Model string `json:"model,omitempty"`
 }
 
 // handleChatMessage runs an LLM chat completion for the given message and
@@ -225,8 +229,18 @@ func (c *client) handleChatMessage(msg inboundMessage) {
 	// Send an ack so the frontend knows the message was accepted.
 	c.sendJSON(map[string]any{"type": "chat_start", "message": text})
 
+	// Resolve the settings for this request. If the user selected a specific
+	// model, route to the endpoint that owns that model; otherwise use the
+	// default chat endpoint.
+	settings := c.server.llmSettings
+	if msg.Model != "" {
+		if resolved, ok := c.server.settingsForModel(msg.Model); ok {
+			settings = resolved
+		}
+	}
+
 	request, err := llm.NewChatRequest(
-		c.server.llmSettings,
+		settings,
 		[]llm.Message{{Role: llm.RoleUser, Content: text}},
 		llm.WithStream(true),
 	)

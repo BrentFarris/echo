@@ -93,8 +93,9 @@ function createStreamingMessage(log) {
  * Send a chat message and stream the assistant reply into the log.
  * @param {HTMLElement} log
  * @param {string} text
+ * @param {string} [model] optional model name to route this prompt to.
  */
-export function sendMessage(log, text) {
+export function sendMessage(log, text, model) {
   text = text.trim();
   if (!text) return;
 
@@ -138,7 +139,7 @@ export function sendMessage(log, text) {
   });
 
   // Send the message over the WebSocket.
-  ws.send({ type: "chat", message: text });
+  ws.send({ type: "chat", message: text, ...(model ? { model } : {}) });
 }
 
 function finishStream(stream, log, ...unsubs) {
