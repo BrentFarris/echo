@@ -47,6 +47,9 @@ export function predictGitStatus(current: GitStatus, request: GitActionRequest, 
   } else if (request.action.startsWith("commit_")) {
     status.staged = [];
     if (request.action.includes("all")) status.unstaged = [];
+  } else if (request.action === "sync") {
+    status.ahead = 0;
+    status.behind = 0;
   }
   status.totalChangeCount = new Set([...status.conflicts, ...status.staged, ...status.unstaged].map((change) => change.path)).size;
   return status;

@@ -1,6 +1,7 @@
 import { api } from "../../js/api.js";
 import { on as onSocket, onState as onSocketState, send as sendSocket } from "../../js/ws.js";
 import * as gitAPI from "./gitApi";
+import { shouldShowSyncAction } from "./gitPrimaryAction";
 import { actionKeys, updateSelection, type SelectionState } from "./gitSelection";
 import { predictGitStatus } from "./gitState";
 import type {
@@ -200,6 +201,7 @@ export class GitView {
     const expanded = this.expandedRepositories.has(repository.id);
     const status = this.statuses.get(repository.id);
     const operation = this.busyRepositories.get(repository.id);
+    const sync = shouldShowSyncAction(status);
     return `<article class="git-repository" data-git-repository="${escapeHTML(repository.id)}">
       <header class="git-repository-header">
         <button type="button" data-git-repository-toggle="${escapeHTML(repository.id)}" aria-expanded="${expanded}">
@@ -210,7 +212,7 @@ export class GitView {
           ${status?.branch ? `<span class="git-branch-label" title="${escapeHTML(status.upstream || "No upstream")}"><span class="codicon codicon-git-branch"></span>${escapeHTML(status.branch)}${status.ahead || status.behind ? ` ↑${status.ahead} ↓${status.behind}` : ""}</span>` : ""}
           ${operation ? `<span class="spinner" title="${escapeHTML(operation.action)}"></span>` : ""}
           <button type="button" title="Refresh" data-git-repo-action="refresh"><span class="codicon codicon-refresh"></span></button>
-          <button type="button" title="Commit staged changes" data-git-repo-action="commit"><span class="codicon codicon-check"></span></button>
+          <button type="button" title="${sync ? "Sync pending commits" : "Commit staged changes"}" data-git-repo-action="${sync ? "sync" : "commit"}" ${operation ? "disabled" : ""}><span class="codicon codicon-${sync ? "sync" : "check"}"></span></button>
           <button type="button" title="More Actions" data-git-repo-action="menu"><span class="codicon codicon-ellipsis"></span></button>
         </div>
       </header>
@@ -222,9 +224,10 @@ export class GitView {
     if (!status) return `<div class="git-empty compact"><span class="spinner"></span> Loading changes…</div>`;
     const draft = this.drafts.get(repository.id) || "";
     const busy = this.busyRepositories.has(repository.id);
+    const sync = shouldShowSyncAction(status);
     return `<div class="git-repository-body">
       <label class="git-commit-input"><span class="sr-only">Commit message</span><textarea rows="2" data-git-commit-message placeholder="Message (Ctrl+Enter to commit staged changes)" ${busy ? "disabled" : ""}>${escapeHTML(draft)}</textarea></label>
-      <button type="button" class="git-commit-button" data-git-repo-action="commit" ${busy || !draft.trim() || status.staged.length === 0 ? "disabled" : ""}><span class="codicon codicon-check"></span> Commit</button>
+      <button type="button" class="git-commit-button" data-git-repo-action="${sync ? "sync" : "commit"}" ${busy || (!sync && (!draft.trim() || status.staged.length === 0)) ? "disabled" : ""}><span class="codicon codicon-${sync ? "sync" : "check"}"></span> ${sync ? "Sync" : "Commit"}</button>
       ${status.hiddenStagedCount ? `<div class="git-warning"><span class="codicon codicon-warning"></span>${status.hiddenStagedCount} staged change${status.hiddenStagedCount === 1 ? " is" : "s are"} outside this workspace; commit is blocked.</div>` : ""}
       ${status.truncated ? `<div class="git-warning"><span class="codicon codicon-warning"></span>Showing the first 10,000 changed files.</div>` : ""}
       ${this.renderGroup(repository, "conflict", "Merge Changes", status.conflicts, "stage_all")}
@@ -342,7 +345,8 @@ export class GitView {
         this.drafts.set(repositoryId, input.value);
         const button = repository.querySelector<HTMLButtonElement>(".git-commit-button");
         const status = this.statuses.get(repositoryId);
-        if (button) button.disabled = this.busyRepositories.has(repositoryId) || !input.value.trim() || !status?.staged.length;
+        const sync = shouldShowSyncAction(status);
+        if (button) button.disabled = this.busyRepositories.has(repositoryId) || (!sync && (!input.value.trim() || !status?.staged.length));
       }
     }, { signal: this.signal });
     this.host.addEventListener("keydown", (event) => {
@@ -350,7 +354,7 @@ export class GitView {
       if (input && event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
         const repositoryId = input.closest<HTMLElement>("[data-git-repository]")?.dataset.gitRepository;
-        if (repositoryId) void this.commit(repositoryId, "commit_staged");
+        if (repositoryId) void this.runPrimaryAction(repositoryId);
       }
       const row = (event.target as Element).closest<HTMLElement>("[data-git-change-index]");
       if (row && (event.key === "Enter" || event.key === " ")) {
@@ -394,6 +398,7 @@ export class GitView {
       const action = repoAction.dataset.gitRepoAction;
       if (action === "refresh") await this.refreshStatus(repository.id);
       if (action === "commit") await this.commit(repository.id, "commit_staged");
+      if (action === "sync") await this.runSimple(repository, "sync");
       if (action === "menu") this.showRepositoryMenu(repository, event.clientX, event.clientY);
       return;
     }
@@ -494,6 +499,16 @@ export class GitView {
     const message = (this.drafts.get(repositoryId) || "").trim();
     if (!message && !action.includes("amend")) { toast("Enter a commit message first."); return; }
     await this.run(repository, { requestId: crypto.randomUUID(), action, message });
+  }
+
+  private async runPrimaryAction(repositoryId: string): Promise<void> {
+    const repository = this.repositories.find((candidate) => candidate.id === repositoryId);
+    if (!repository) return;
+    if (shouldShowSyncAction(this.statuses.get(repositoryId))) {
+      await this.runSimple(repository, "sync");
+      return;
+    }
+    await this.commit(repositoryId, "commit_staged");
   }
 
   private async run(repository: GitRepository, request: GitActionRequest): Promise<void> {

@@ -50,4 +50,15 @@ describe("predicted Git groups", () => {
     expect(next.staged).toHaveLength(0);
     expect(next.unstaged.filter((item) => item.path === "both.txt")).toHaveLength(1);
   });
+
+  it("clears pending upstream counts after a successful sync", () => {
+    const current = status();
+    current.ahead = 2;
+    current.behind = 1;
+    const next = predictGitStatus(current, { requestId: "5", action: "sync" }, {
+      requestId: "5", repositoryId: "repo", revision: 5,
+    });
+    expect(next.ahead).toBe(0);
+    expect(next.behind).toBe(0);
+  });
 });
