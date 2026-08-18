@@ -10,6 +10,7 @@ import type { GitChange, GitDiffDocument, GitRepository } from "./gitTypes";
 import { GitView } from "./gitView";
 import { loadSession, saveSession } from "./persistence";
 import { CODE_ROUTE, codeRouteHash, codeSidebarFromHash, routePathFromHash } from "../navigation";
+import { renderPrimaryNav } from "../primaryNav";
 import type {
   FileRef, FileSnapshot, FsEntry, PersistedTab, PersistedWorkspaceSession,
   SearchResult, TrashItem, WorkspaceRoot,
@@ -164,24 +165,10 @@ class CodeView {
 
   private renderShell(): void {
     const workspaceName = this.workspace?.name || "No workspace";
-    const initial = workspaceName.trim().charAt(0).toUpperCase() || "E";
     const explorerActive = this.activeSidebar === "explorer";
     this.root.innerHTML = `
       <div class="code-app-shell" style="--explorer-width:${this.explorerWidth}px">
-        <aside class="left-nav code-left-nav" aria-label="Primary">
-          <div class="left-nav-workspace">
-            <button class="nav-icon-button" type="button" title="Workspace: ${escapeHTML(workspaceName)}" data-nav="workspace"><span class="workspace-icon-label">${escapeHTML(initial)}</span></button>
-          </div>
-          <nav class="left-nav-buttons" aria-label="Views">
-            <button class="nav-icon-button" type="button" title="Chat" aria-label="Chat" data-nav="chat"><span class="codicon codicon-comment-discussion"></span></button>
-          </nav>
-          <div class="left-nav-actions">
-            <button class="nav-icon-button${explorerActive ? " is-active" : ""}" type="button" title="Explorer" aria-label="Explorer" data-code-sidebar="explorer"><span class="codicon codicon-code"></span></button>
-            <button class="nav-icon-button" type="button" title="Tasks" aria-label="Tasks" disabled><span class="codicon codicon-checklist"></span></button>
-            <button class="nav-icon-button code-git-activity${explorerActive ? "" : " is-active"}" type="button" title="Source Control" aria-label="Source Control" data-code-sidebar="git"><span class="codicon codicon-source-control"></span><b data-git-badge hidden></b></button>
-            <button class="nav-icon-button" type="button" title="Settings" aria-label="Settings" data-nav="settings"><span class="codicon codicon-settings-gear"></span></button>
-          </div>
-        </aside>
+        ${renderPrimaryNav({ active: explorerActive ? "explorer" : "git", workspaceName })}
         <section class="code-workbench">
           <div class="code-sidebar">
           <aside class="code-explorer" aria-label="Explorer" data-sidebar-view="explorer"${explorerActive ? "" : " hidden"}>

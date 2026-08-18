@@ -9,6 +9,7 @@ import { get } from "../api.js";
 import { sendMessage, stopStream, isStreaming, onStreamingChange, openWorkspaceSession, closeWorkspaceSession } from "../chat.js";
 import { loadWorkspaces, openWorkspaceDropdown, openAddWorkspaceModal, setActiveWorkspace, getActive, renderWorkspaceIcon } from "../workspaces.js";
 import { codeRouteHash } from "../../src/navigation.ts";
+import { renderPrimaryNav } from "../../src/primaryNav.ts";
 
 // Holds the cleanup function for the currently mounted chat view.
 let chatCleanup = null;
@@ -46,28 +47,6 @@ async function loadEndpoints() {
     // Non-fatal: the selector just stays on the default model.
     console.error("Failed to load endpoints for model selector:", err);
   }
-}
-
-function leftNav() {
-  return `
-    <aside class="left-nav" aria-label="Primary">
-      <div class="left-nav-workspace">
-        <button class="nav-icon-button workspace-dropdown-trigger" type="button" title="Select workspace" aria-label="Workspace selector" aria-expanded="false">
-          <span class="workspace-icon-label">E</span>
-        </button>
-      </div>
-      <nav class="left-nav-buttons" aria-label="Views">
-        <button class="nav-icon-button is-active" type="button" title="Chat" aria-label="Chat">${icons.chat}</button>
-      </nav>
-      <div class="left-nav-actions">
-        <button class="nav-icon-button" type="button" title="Code" aria-label="Code view" data-nav="code">${icons.code}</button>
-        <button class="nav-icon-button" type="button" title="Tasks" aria-label="Tasks">${icons.tasks}</button>
-        <button class="nav-icon-button" type="button" title="Source Control" aria-label="Source Control" data-nav="git">${icons.git}</button>
-        <button class="nav-icon-button" type="button" title="Dashboard" aria-label="Dashboard">${icons.dashboard}</button>
-        <button class="nav-icon-button" type="button" title="Settings" aria-label="Settings" data-nav="settings">${icons.settings}</button>
-      </div>
-    </aside>
-  `;
 }
 
 function chatPanel() {
@@ -143,7 +122,7 @@ function terminalDock() {
 export function mount(root) {
   root.innerHTML = `
     <div class="app-shell">
-      <div data-region="left-nav">${leftNav()}</div>
+      <div data-region="left-nav">${renderPrimaryNav({ active: "chat", workspaceName: "Echo", workspaceSelector: true })}</div>
       <div data-region="main">${chatPanel()}</div>
       <div data-region="terminal">${terminalDock()}</div>
     </div>
