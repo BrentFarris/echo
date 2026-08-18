@@ -39,8 +39,12 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   }, state.workspace);
   expect(workspaceID).toBeTruthy();
 
-  await page.getByRole("button", { name: "Code view" }).click();
+  await page.getByRole("button", { name: "Source Control" }).click();
   await expect(page.locator(".code-app-shell")).toBeVisible();
+  await expect(page).toHaveURL(/#\/code\?sidebar=git$/);
+  await expect(page.getByText("SOURCE CONTROL", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Explorer", exact: true }).click();
+  await expect(page).toHaveURL(/#\/code$/);
   await expect(page.locator(".code-tree-label", { hasText: "main.go" })).toBeVisible();
   await page.locator(".code-tree-label", { hasText: "main.go" }).click();
   await expect(page.locator(".code-tab.is-preview", { hasText: "main.go" })).toBeVisible();

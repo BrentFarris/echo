@@ -5,7 +5,7 @@
 
 import * as ws from "./ws.js";
 import { ensureAuthenticated } from "../src/auth/authGate.ts";
-import { recordNavigationRoute } from "../src/navigation.ts";
+import { recordNavigationRoute, routePathFromHash } from "../src/navigation.ts";
 
 // Route table: hash path -> () => Promise<view module>.
 // Views are lazy-loaded so the shell stays light.
@@ -20,8 +20,7 @@ const app = document.getElementById("app");
 let currentView = null;
 
 function currentRoute() {
-  const hash = location.hash.replace(/^#/, "");
-  return hash || "/";
+  return routePathFromHash(location.hash);
 }
 
 async function render() {

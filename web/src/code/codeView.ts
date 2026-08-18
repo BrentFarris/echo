@@ -9,6 +9,7 @@ import { loadDiff as loadGitDiff } from "./gitApi";
 import type { GitChange, GitDiffDocument, GitRepository } from "./gitTypes";
 import { GitView } from "./gitView";
 import { loadSession, saveSession } from "./persistence";
+import { CODE_ROUTE, codeRouteHash, codeSidebarFromHash, routePathFromHash } from "../navigation";
 import type {
   FileRef, FileSnapshot, FsEntry, PersistedTab, PersistedWorkspaceSession,
   SearchResult, TrashItem, WorkspaceRoot,
@@ -118,6 +119,7 @@ class CodeView {
 
   constructor(root: HTMLElement) {
     this.root = root;
+    this.activeSidebar = codeSidebarFromHash(window.location.hash);
   }
 
   async start(): Promise<void> {
@@ -163,6 +165,7 @@ class CodeView {
   private renderShell(): void {
     const workspaceName = this.workspace?.name || "No workspace";
     const initial = workspaceName.trim().charAt(0).toUpperCase() || "E";
+    const explorerActive = this.activeSidebar === "explorer";
     this.root.innerHTML = `
       <div class="code-app-shell" style="--explorer-width:${this.explorerWidth}px">
         <aside class="left-nav code-left-nav" aria-label="Primary">
@@ -173,15 +176,15 @@ class CodeView {
             <button class="nav-icon-button" type="button" title="Chat" aria-label="Chat" data-nav="chat"><span class="codicon codicon-comment-discussion"></span></button>
           </nav>
           <div class="left-nav-actions">
-            <button class="nav-icon-button is-active" type="button" title="Explorer" aria-label="Explorer" data-code-sidebar="explorer"><span class="codicon codicon-code"></span></button>
+            <button class="nav-icon-button${explorerActive ? " is-active" : ""}" type="button" title="Explorer" aria-label="Explorer" data-code-sidebar="explorer"><span class="codicon codicon-code"></span></button>
             <button class="nav-icon-button" type="button" title="Tasks" aria-label="Tasks" disabled><span class="codicon codicon-checklist"></span></button>
-            <button class="nav-icon-button code-git-activity" type="button" title="Source Control" aria-label="Source Control" data-code-sidebar="git"><span class="codicon codicon-source-control"></span><b data-git-badge hidden></b></button>
+            <button class="nav-icon-button code-git-activity${explorerActive ? "" : " is-active"}" type="button" title="Source Control" aria-label="Source Control" data-code-sidebar="git"><span class="codicon codicon-source-control"></span><b data-git-badge hidden></b></button>
             <button class="nav-icon-button" type="button" title="Settings" aria-label="Settings" data-nav="settings"><span class="codicon codicon-settings-gear"></span></button>
           </div>
         </aside>
         <section class="code-workbench">
           <div class="code-sidebar">
-          <aside class="code-explorer" aria-label="Explorer" data-sidebar-view="explorer">
+          <aside class="code-explorer" aria-label="Explorer" data-sidebar-view="explorer"${explorerActive ? "" : " hidden"}>
             <header class="code-explorer-header">
               <span>EXPLORER</span>
               <div class="code-header-actions">
@@ -196,7 +199,7 @@ class CodeView {
               <div class="code-tree-canvas" data-tree-canvas></div>
             </div>
           </aside>
-          <aside class="code-git-view" aria-label="Source Control" data-sidebar-view="git" hidden></aside>
+          <aside class="code-git-view" aria-label="Source Control" data-sidebar-view="git"${explorerActive ? " hidden" : ""}></aside>
           </div>
           <div class="code-explorer-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Explorer" tabindex="0"></div>
           <main class="code-editor-column">
@@ -219,7 +222,7 @@ class CodeView {
               <div class="code-diff-unavailable" data-diff-unavailable hidden></div>
             </section>
             <footer class="code-statusbar" data-statusbar>
-              <div><button type="button" class="code-mobile-explorer" data-mobile-explorer aria-label="Toggle Explorer" aria-expanded="false"><span class="codicon codicon-files"></span></button><button type="button" data-status="branch" disabled><span class="codicon codicon-source-control"></span></button></div>
+              <div><button type="button" class="code-mobile-explorer" data-mobile-explorer aria-label="Toggle Explorer" aria-expanded="false"><span class="codicon codicon-${explorerActive ? "files" : "source-control"}"></span></button><button type="button" data-status="branch" disabled><span class="codicon codicon-source-control"></span></button></div>
               <div class="code-status-right"><span data-status="cursor">Ln 1, Col 1</span><span>Spaces: 2</span><span>UTF-8</span><span data-status="eol">LF</span><span data-status="language">Plain Text</span></div>
             </footer>
           </main>
@@ -261,6 +264,9 @@ class CodeView {
     this.root.querySelectorAll<HTMLElement>("[data-code-sidebar]").forEach((button) => button.classList.toggle("is-active", button.dataset.codeSidebar === view));
     const mobile = this.root.querySelector<HTMLElement>("[data-mobile-explorer] .codicon");
     if (mobile) mobile.className = `codicon codicon-${view === "git" ? "source-control" : "files"}`;
+    if (routePathFromHash(window.location.hash) === CODE_ROUTE) {
+      window.history.replaceState(window.history.state, "", codeRouteHash(view));
+    }
     if (window.innerWidth <= 720) this.setMobileExplorer(true);
   }
 

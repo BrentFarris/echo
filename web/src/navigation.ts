@@ -1,5 +1,27 @@
 export const CHAT_ROUTE = "/home";
 export const SETTINGS_ROUTE = "/settings";
+export const CODE_ROUTE = "/code";
+
+export type CodeSidebar = "explorer" | "git";
+
+/** Returns the routable path while leaving hash query parameters to the view. */
+export function routePathFromHash(hash: string): string {
+  const route = hash.replace(/^#/, "");
+  return route.split("?", 1)[0] || "/";
+}
+
+/** Resolves the requested Echo Code sidebar from a deep-link hash. */
+export function codeSidebarFromHash(hash: string): CodeSidebar {
+  if (routePathFromHash(hash) !== CODE_ROUTE) return "explorer";
+  const queryIndex = hash.indexOf("?");
+  if (queryIndex < 0) return "explorer";
+  return new URLSearchParams(hash.slice(queryIndex + 1)).get("sidebar") === "git" ? "git" : "explorer";
+}
+
+/** Builds the canonical hash for an Echo Code sidebar. */
+export function codeRouteHash(sidebar: CodeSidebar): string {
+  return `#${CODE_ROUTE}${sidebar === "git" ? "?sidebar=git" : ""}`;
+}
 
 /**
  * Tracks view transitions in memory so Settings can distinguish an in-app

@@ -1,5 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { CHAT_ROUTE, NavigationTracker } from "./navigation";
+import {
+  CHAT_ROUTE, NavigationTracker, codeRouteHash, codeSidebarFromHash, routePathFromHash,
+} from "./navigation";
+
+describe("view route parsing", () => {
+  it("routes a Source Control deep link through Echo Code", () => {
+    expect(routePathFromHash("#/code?sidebar=git")).toBe("/code");
+    expect(codeSidebarFromHash("#/code?sidebar=git")).toBe("git");
+    expect(codeRouteHash("git")).toBe("#/code?sidebar=git");
+  });
+
+  it("defaults Code and unrelated routes to Explorer", () => {
+    expect(codeSidebarFromHash("#/code")).toBe("explorer");
+    expect(codeSidebarFromHash("#/code?sidebar=unknown")).toBe("explorer");
+    expect(codeSidebarFromHash("#/home?sidebar=git")).toBe("explorer");
+    expect(codeRouteHash("explorer")).toBe("#/code");
+  });
+});
 
 describe("NavigationTracker", () => {
   it("falls back to chat when Settings was loaded directly", () => {

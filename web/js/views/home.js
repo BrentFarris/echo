@@ -8,6 +8,7 @@ import { icons } from "../icons.js";
 import { get } from "../api.js";
 import { sendMessage, stopStream, isStreaming, onStreamingChange, openWorkspaceSession, closeWorkspaceSession } from "../chat.js";
 import { loadWorkspaces, openWorkspaceDropdown, openAddWorkspaceModal, setActiveWorkspace, getActive, renderWorkspaceIcon } from "../workspaces.js";
+import { codeRouteHash } from "../../src/navigation.ts";
 
 // Holds the cleanup function for the currently mounted chat view.
 let chatCleanup = null;
@@ -61,7 +62,7 @@ function leftNav() {
       <div class="left-nav-actions">
         <button class="nav-icon-button" type="button" title="Code" aria-label="Code view" data-nav="code">${icons.code}</button>
         <button class="nav-icon-button" type="button" title="Tasks" aria-label="Tasks">${icons.tasks}</button>
-        <button class="nav-icon-button" type="button" title="Git" aria-label="Git">${icons.git}</button>
+        <button class="nav-icon-button" type="button" title="Source Control" aria-label="Source Control" data-nav="git">${icons.git}</button>
         <button class="nav-icon-button" type="button" title="Dashboard" aria-label="Dashboard">${icons.dashboard}</button>
         <button class="nav-icon-button" type="button" title="Settings" aria-label="Settings" data-nav="settings">${icons.settings}</button>
       </div>
@@ -159,13 +160,16 @@ export function mount(root) {
 
   // Navigate to settings when the sidebar Settings button is clicked.
   const settingsBtn = root.querySelector("[data-nav='settings']");
-	const codeBtn = root.querySelector("[data-nav='code']");
+  const codeBtn = root.querySelector("[data-nav='code']");
+  const gitBtn = root.querySelector("[data-nav='git']");
   const onSettingsClick = () => {
     location.hash = "#/settings";
   };
   settingsBtn?.addEventListener("click", onSettingsClick);
-	const onCodeClick = () => { location.hash = "#/code"; };
-	codeBtn?.addEventListener("click", onCodeClick);
+  const onCodeClick = () => { location.hash = "#/code"; };
+  codeBtn?.addEventListener("click", onCodeClick);
+  const onGitClick = () => { location.hash = codeRouteHash("git"); };
+  gitBtn?.addEventListener("click", onGitClick);
 
   // Workspace selector: open the dropdown, and the "+ Add a workspace" modal.
   const workspaceTrigger = root.querySelector(".workspace-dropdown-trigger");
@@ -425,7 +429,8 @@ export function mount(root) {
     input.removeEventListener("keydown", onKeydown);
     unsubStreaming();
     settingsBtn?.removeEventListener("click", onSettingsClick);
-	codeBtn?.removeEventListener("click", onCodeClick);
+    codeBtn?.removeEventListener("click", onCodeClick);
+    gitBtn?.removeEventListener("click", onGitClick);
     workspaceTrigger?.removeEventListener("click", onWorkspaceTriggerClick);
     if (closeWorkspaceDropdown) {
       closeWorkspaceDropdown();
