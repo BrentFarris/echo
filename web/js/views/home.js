@@ -6,7 +6,11 @@
 
 import { icons } from "../icons.js";
 import { get } from "../api.js";
-import { canClearChat, clearChat, sendMessage, stopStream, isStreaming, onStreamingChange, openWorkspaceSession, closeWorkspaceSession } from "../chat.js";
+import {
+  activateChatTab, canClearChat, clearChat, closeChatTab, closeWorkspaceSession,
+  createChatTab, isStreaming, onChatCommandError, onChatWorkspaceChange,
+  onStreamingChange, openWorkspaceSession, sendMessage, stopStream,
+} from "../chat.js";
 import { loadWorkspaces, openWorkspaceDropdown, openAddWorkspaceModal, setActiveWorkspace, getActive, renderWorkspaceIcon } from "../workspaces.js";
 import { codeRouteHash } from "../../src/navigation.ts";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../../src/primaryNav.ts";
@@ -18,13 +22,52 @@ let chatCleanup = null;
 let endpoints = [];
 // The model currently selected in the toolbar, or null to use the default.
 let selectedModel = null;
+let defaultSelectedModel = null;
 let agentModes = [];
 let selectedAgentModeId = "general";
+const tabComposerState = new Map();
+const knownWorkspaceTabs = new Map();
+
+function tabStateKey(workspaceId, chatId) { return `${workspaceId}\0${chatId}`; }
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[ch]));
+}
+
+function confirmBusyChatClose() {
+  return new Promise((resolve) => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "settings-confirm-dialog chat-close-dialog";
+    dialog.innerHTML = `
+      <form method="dialog">
+        <h2>Chat is still running</h2>
+        <p>Stop the response and close this chat?</p>
+        <div class="settings-confirm-actions">
+          <button class="secondary-button" type="button" data-chat-close-choice="cancel">Cancel</button>
+          <button class="secondary-button danger-button" type="button" data-chat-close-choice="confirm">Stop and close</button>
+        </div>
+      </form>
+    `;
+    let finished = false;
+    const finish = (confirmed) => {
+      if (finished) return;
+      finished = true;
+      dialog.close?.();
+      dialog.remove();
+      resolve(confirmed);
+    };
+    dialog.querySelector("[data-chat-close-choice='cancel']")?.addEventListener("click", () => finish(false));
+    dialog.querySelector("[data-chat-close-choice='confirm']")?.addEventListener("click", () => finish(true));
+    dialog.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      finish(false);
+    }, { once: true });
+    document.body.append(dialog);
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+  });
 }
 
 // loadEndpoints fetches the configured endpoints from the server so the model
@@ -39,6 +82,7 @@ async function loadEndpoints() {
     const chatId = s.endpointSelection?.chat;
     const chatEndpoint = endpoints.find((e) => e.id === chatId);
     if (chatEndpoint?.model) {
+      defaultSelectedModel = chatEndpoint.model;
       selectedModel = chatEndpoint.model;
       const label = document.querySelector("[data-model-label]");
       if (label) label.textContent = chatEndpoint.name || chatEndpoint.model;
@@ -54,7 +98,12 @@ function chatPanel() {
     <main class="main-content">
       <section class="workspace-panel">
         <section class="work-panel chat-panel" aria-label="Chat">
-          <div class="chat-log" data-chat-log>
+          <div class="chat-tabs-shell" data-chat-tabs-shell hidden>
+            <button class="chat-tabs-scroll chat-tabs-scroll-previous" type="button" title="Scroll tabs left" aria-label="Scroll tabs left" data-chat-tabs-scroll="previous">${icons.arrowLeft}</button>
+            <div class="chat-tabs" role="tablist" aria-label="Open chats" data-chat-tabs></div>
+            <button class="chat-tabs-scroll chat-tabs-scroll-next" type="button" title="Scroll tabs right" aria-label="Scroll tabs right" data-chat-tabs-scroll="next">${icons.arrowLeft}</button>
+          </div>
+          <div class="chat-log" id="chat-transcript" data-chat-log>
             <div class="empty-state chat-empty">Ask Echo to inspect, plan, or break down work for this workspace.</div>
           </div>
           <form class="chat-composer" data-chat-form>
@@ -130,6 +179,11 @@ export function mount(root) {
   `;
 
   const log = root.querySelector("[data-chat-log]");
+  const panel = root.querySelector(".chat-panel");
+  const tabsShell = root.querySelector("[data-chat-tabs-shell]");
+  const tabsHost = root.querySelector("[data-chat-tabs]");
+  const tabsScrollPrevious = root.querySelector("[data-chat-tabs-scroll='previous']");
+  const tabsScrollNext = root.querySelector("[data-chat-tabs-scroll='next']");
   const form = root.querySelector("[data-chat-form]");
   const input = root.querySelector("[data-chat-input]");
   const sendBtn = root.querySelector(".send-button");
@@ -138,6 +192,128 @@ export function mount(root) {
   const modeTrigger = root.querySelector("[data-mode-trigger]");
   const modeLabel = root.querySelector("[data-mode-label]");
   const moreTrigger = root.querySelector("[data-chat-more-trigger]");
+  let currentWorkspaceId = "";
+  let currentChatId = "";
+  let currentTabs = [];
+  let focusNewTab = false;
+  let renderedActiveChatId = "";
+  const pendingTabCloses = new Set();
+
+  const updateModelLabel = () => {
+    modelLabel.textContent = selectedModel
+      ? endpoints.find((endpoint) => endpoint.model === selectedModel)?.name || selectedModel
+      : "Model";
+  };
+
+  const updateModeLabel = () => {
+    const selected = agentModes.find((mode) => mode.id === selectedAgentModeId);
+    modeLabel.textContent = selected?.name || (currentWorkspaceId ? "General" : "Mode");
+  };
+
+  const saveCurrentComposer = () => {
+    if (!currentWorkspaceId || !currentChatId) return;
+    tabComposerState.set(tabStateKey(currentWorkspaceId, currentChatId), {
+      draft: input.textContent || "",
+      model: selectedModel,
+      agentModeId: selectedAgentModeId,
+    });
+  };
+
+  const restoreCurrentComposer = () => {
+    if (!currentWorkspaceId || !currentChatId) return;
+    const key = tabStateKey(currentWorkspaceId, currentChatId);
+    let state = tabComposerState.get(key);
+    if (!state) {
+      state = { draft: "", model: defaultSelectedModel, agentModeId: "general" };
+      tabComposerState.set(key, state);
+    }
+    selectedModel = state.model || null;
+    selectedAgentModeId = agentModes.some((mode) => mode.id === state.agentModeId)
+      ? state.agentModeId
+      : "general";
+    input.textContent = state.draft || "";
+    updateModelLabel();
+    updateModeLabel();
+  };
+
+  const updateTabOverflow = () => {
+    if (tabsShell.hidden) return;
+    const hasOverflow = tabsHost.scrollWidth > tabsHost.clientWidth + 1;
+    tabsShell.classList.toggle("has-overflow", hasOverflow);
+    tabsScrollPrevious.disabled = !hasOverflow || tabsHost.scrollLeft <= 1;
+    tabsScrollNext.disabled = !hasOverflow
+      || tabsHost.scrollLeft + tabsHost.clientWidth >= tabsHost.scrollWidth - 1;
+  };
+
+  const renderTabs = () => {
+    tabsHost.replaceChildren();
+    const show = currentTabs.length >= 2;
+    tabsShell.hidden = !show;
+    panel.classList.toggle("has-chat-tabs", show);
+    if (!show) {
+      tabsShell.classList.remove("has-overflow");
+      renderedActiveChatId = currentChatId;
+      return;
+    }
+    for (const tab of currentTabs) {
+      const item = document.createElement("div");
+      item.className = `chat-tab-item${tab.chatId === currentChatId ? " is-active" : ""}`;
+      item.dataset.chatId = tab.chatId;
+
+      const activate = document.createElement("button");
+      activate.type = "button";
+      activate.className = "chat-tab-button";
+      activate.dataset.chatTabActivate = tab.chatId;
+      activate.setAttribute("role", "tab");
+      activate.setAttribute("aria-selected", String(tab.chatId === currentChatId));
+      activate.setAttribute("aria-controls", "chat-transcript");
+      activate.tabIndex = tab.chatId === currentChatId ? 0 : -1;
+      activate.title = tab.preview || "New chat";
+
+      if (tab.busy) {
+        const dot = document.createElement("span");
+        dot.className = "chat-tab-busy-dot";
+        dot.setAttribute("aria-label", "Response streaming");
+        activate.append(dot);
+      }
+      const label = document.createElement("span");
+      label.className = "chat-tab-label";
+      label.textContent = tab.preview || "New chat";
+      activate.append(label);
+
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "chat-tab-close";
+      close.dataset.chatTabClose = tab.chatId;
+      close.setAttribute("aria-label", `Close ${tab.preview || "New chat"}`);
+      close.title = "Close chat";
+      close.innerHTML = icons.x;
+      item.append(activate, close);
+      tabsHost.append(item);
+    }
+    const activeChanged = renderedActiveChatId !== currentChatId;
+    renderedActiveChatId = currentChatId;
+    requestAnimationFrame(() => {
+      if (activeChanged) {
+        [...tabsHost.querySelectorAll("[data-chat-tab-activate]")]
+          .find((tab) => tab.dataset.chatTabActivate === currentChatId)
+          ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
+      updateTabOverflow();
+    });
+  };
+
+  const requestTabClose = async (chatId, forceConfirmation = false) => {
+    const tab = currentTabs.find((candidate) => candidate.chatId === chatId);
+    if (!tab) return;
+    let stopIfBusy = false;
+    if (tab.busy || forceConfirmation) {
+      stopIfBusy = await confirmBusyChatClose();
+      if (!stopIfBusy) return;
+    }
+    pendingTabCloses.add(chatId);
+    if (!closeChatTab(chatId, stopIfBusy)) pendingTabCloses.delete(chatId);
+  };
 
   // The desktop activity bar and mobile bottom bar share the same actions.
   const settingsButtons = [...root.querySelectorAll("[data-nav='settings']")];
@@ -185,6 +361,7 @@ export function mount(root) {
           updateWorkspaceNavigation();
           openWorkspaceSession(log, id);
           await loadAgentModes(id, modeLabel);
+          restoreCurrentComposer();
         } catch (err) {
           console.error("Failed to set active workspace:", err);
         }
@@ -197,6 +374,7 @@ export function mount(root) {
               updateWorkspaceNavigation();
               openWorkspaceSession(log, workspace.id);
               await loadAgentModes(workspace.id, modeLabel);
+              restoreCurrentComposer();
             } catch (err) {
               console.error("Failed to open created workspace:", err);
             }
@@ -251,6 +429,7 @@ export function mount(root) {
     </button>
   `;
   document.body.appendChild(moreMenu);
+  const newTabButton = moreMenu.querySelector("[data-new-chat-tab-button]");
   const clearChatButton = moreMenu.querySelector("[data-clear-chat-button]");
 
   // Render the model dropdown options from the loaded endpoints.
@@ -363,8 +542,7 @@ export function mount(root) {
     selectedAgentModeId = item.dataset.modeId || "general";
     const selected = agentModes.find((mode) => mode.id === selectedAgentModeId);
     modeLabel.textContent = selected?.name || "General";
-    const workspaceId = getActive()?.id;
-    if (workspaceId) localStorage.setItem(`echo.agentMode.${workspaceId}`, selectedAgentModeId);
+    saveCurrentComposer();
     closeModeDropdown();
   };
 
@@ -395,6 +573,7 @@ export function mount(root) {
     modelLabel.textContent = selectedModel
       ? endpoints.find((ep) => ep.model === selectedModel)?.name || selectedModel
       : "Model";
+    saveCurrentComposer();
     closeModelDropdown();
   };
 
@@ -417,6 +596,73 @@ export function mount(root) {
       input.dispatchEvent(new Event("input"));
     }
   };
+
+  const onNewTabClick = (e) => {
+    e.stopPropagation();
+    closeMoreMenu();
+    focusNewTab = createChatTab();
+  };
+
+  const onTabsClick = (e) => {
+    const close = e.target.closest("[data-chat-tab-close]");
+    if (close) {
+      e.stopPropagation();
+      requestTabClose(close.dataset.chatTabClose);
+      return;
+    }
+    const activate = e.target.closest("[data-chat-tab-activate]");
+    if (activate && activate.dataset.chatTabActivate !== currentChatId) {
+      activateChatTab(activate.dataset.chatTabActivate);
+    }
+  };
+
+  const onTabsAuxClick = (e) => {
+    if (e.button !== 1) return;
+    const tab = e.target.closest("[data-chat-tab-activate]");
+    if (!tab) return;
+    e.preventDefault();
+    requestTabClose(tab.dataset.chatTabActivate);
+  };
+
+  const onTabsKeydown = (e) => {
+    const focused = e.target.closest("[data-chat-tab-activate]");
+    if (!focused) return;
+    const buttons = [...tabsHost.querySelectorAll("[data-chat-tab-activate]")];
+    const index = buttons.indexOf(focused);
+    let next = -1;
+    if (e.key === "ArrowLeft") next = index > 0 ? index - 1 : buttons.length - 1;
+    if (e.key === "ArrowRight") next = index < buttons.length - 1 ? index + 1 : 0;
+    if (e.key === "Home") next = 0;
+    if (e.key === "End") next = buttons.length - 1;
+    if (next < 0) return;
+    e.preventDefault();
+    const target = buttons[next];
+    target.focus();
+    if (target.dataset.chatTabActivate !== currentChatId) activateChatTab(target.dataset.chatTabActivate);
+  };
+
+  const scrollTabs = (direction) => {
+    const distance = Math.max(140, Math.floor(tabsHost.clientWidth * 0.7));
+    if (typeof tabsHost.scrollBy === "function") {
+      tabsHost.scrollBy({ left: direction * distance, behavior: "smooth" });
+    } else {
+      tabsHost.scrollLeft += direction * distance;
+    }
+    requestAnimationFrame(updateTabOverflow);
+  };
+
+  const onTabsWheel = (e) => {
+    if (!tabsShell.classList.contains("has-overflow")) return;
+    const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (!delta) return;
+    tabsHost.scrollLeft += delta;
+    e.preventDefault();
+    updateTabOverflow();
+  };
+
+  const onTabsScroll = () => updateTabOverflow();
+  const onTabsScrollPrevious = () => scrollTabs(-1);
+  const onTabsScrollNext = () => scrollTabs(1);
 
   const onMoreMenuKeydown = (e) => {
     const items = [...moreMenu.querySelectorAll('[role="menuitem"]')];
@@ -451,6 +697,7 @@ export function mount(root) {
     if (!modelDropdown.hidden) positionModelDropdown();
     if (!modeDropdown.hidden) positionModeDropdown();
     if (!moreMenu.hidden) positionMoreMenu();
+    updateTabOverflow();
   };
 
   modelTrigger?.addEventListener("click", onModelTriggerClick);
@@ -458,10 +705,22 @@ export function mount(root) {
   modeTrigger?.addEventListener("click", onModeTriggerClick);
   modeList?.addEventListener("click", onModeListClick);
   moreTrigger?.addEventListener("click", onMoreTriggerClick);
+  newTabButton.addEventListener("click", onNewTabClick);
   clearChatButton.addEventListener("click", onClearChatClick);
+  tabsHost.addEventListener("click", onTabsClick);
+  tabsHost.addEventListener("auxclick", onTabsAuxClick);
+  tabsHost.addEventListener("keydown", onTabsKeydown);
+  tabsHost.addEventListener("wheel", onTabsWheel, { passive: false });
+  tabsHost.addEventListener("scroll", onTabsScroll);
+  tabsScrollPrevious.addEventListener("click", onTabsScrollPrevious);
+  tabsScrollNext.addEventListener("click", onTabsScrollNext);
   moreMenu.addEventListener("keydown", onMoreMenuKeydown);
   document.addEventListener("click", onDocClick);
   window.addEventListener("resize", onResize);
+  const tabsResizeObserver = typeof ResizeObserver === "function"
+    ? new ResizeObserver(updateTabOverflow)
+    : null;
+  tabsResizeObserver?.observe(tabsHost);
 
   const submit = () => {
     const text = input.textContent || "";
@@ -483,6 +742,57 @@ export function mount(root) {
     clearChatButton.disabled = busy || !canClearChat(log);
   };
 
+  const handleWorkspaceState = (state) => {
+    const nextWorkspaceId = state?.workspaceId || "";
+    const nextChatId = state?.activeChatId || "";
+    const previousChatId = currentChatId;
+    if (currentWorkspaceId && currentChatId
+      && (nextWorkspaceId !== currentWorkspaceId || nextChatId !== currentChatId)) {
+      saveCurrentComposer();
+    }
+
+    const previousWorkspaceId = currentWorkspaceId;
+    currentWorkspaceId = nextWorkspaceId;
+    currentChatId = nextChatId;
+    currentTabs = state?.tabs || [];
+
+    if (state?.hasSnapshot && currentWorkspaceId) {
+      const remaining = new Set(currentTabs.map((tab) => tab.chatId));
+      for (const chatId of knownWorkspaceTabs.get(currentWorkspaceId) || []) {
+        if (!remaining.has(chatId)) {
+          tabComposerState.delete(tabStateKey(currentWorkspaceId, chatId));
+          pendingTabCloses.delete(chatId);
+        }
+      }
+      knownWorkspaceTabs.set(currentWorkspaceId, remaining);
+    }
+
+    if (currentWorkspaceId && currentChatId
+      && (previousWorkspaceId !== currentWorkspaceId || previousChatId !== currentChatId)) {
+      restoreCurrentComposer();
+    }
+    renderTabs();
+    clearChatButton.disabled = isStreaming() || !canClearChat(log);
+
+    if (focusNewTab && state?.hasSnapshot && currentChatId) {
+      focusNewTab = false;
+      requestAnimationFrame(() => {
+        [...tabsHost.querySelectorAll("[data-chat-tab-activate]")]
+          .find((tab) => tab.dataset.chatTabActivate === currentChatId)
+          ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+        input.focus();
+      });
+    }
+  };
+
+  const handleChatCommandError = (message) => {
+    const chatId = message.chatId || "";
+    if (message.code !== "session_busy" || !pendingTabCloses.has(chatId)) return false;
+    pendingTabCloses.delete(chatId);
+    requestTabClose(chatId, true);
+    return true;
+  };
+
   // While streaming, the button stops the reply; otherwise it sends.
   const onSendButtonClick = () => {
     if (isStreaming()) {
@@ -500,22 +810,30 @@ export function mount(root) {
     }
   };
 
-  form.addEventListener("submit", (e) => {
+  const onFormSubmit = (e) => {
     e.preventDefault();
     submit();
-  });
+  };
+  form.addEventListener("submit", onFormSubmit);
   sendBtn.addEventListener("click", onSendButtonClick);
   input.addEventListener("keydown", onKeydown);
+  input.addEventListener("input", saveCurrentComposer);
 
   // Reflect streaming state on the send button as it starts and stops.
   const unsubStreaming = onStreamingChange(setSendButtonBusy);
+  const unsubWorkspace = onChatWorkspaceChange(handleWorkspaceState);
+  const unsubCommandError = onChatCommandError(handleChatCommandError);
 
   // Store cleanup so unmount removes listeners.
   chatCleanup = () => {
-    form.removeEventListener("submit", submit);
+    saveCurrentComposer();
+    form.removeEventListener("submit", onFormSubmit);
     sendBtn.removeEventListener("click", onSendButtonClick);
     input.removeEventListener("keydown", onKeydown);
+    input.removeEventListener("input", saveCurrentComposer);
     unsubStreaming();
+    unsubWorkspace();
+    unsubCommandError();
     settingsButtons.forEach((button) => button.removeEventListener("click", onSettingsClick));
     codeButtons.forEach((button) => button.removeEventListener("click", onCodeClick));
     gitButtons.forEach((button) => button.removeEventListener("click", onGitClick));
@@ -529,7 +847,16 @@ export function mount(root) {
     modeTrigger?.removeEventListener("click", onModeTriggerClick);
     modeList?.removeEventListener("click", onModeListClick);
     moreTrigger?.removeEventListener("click", onMoreTriggerClick);
+    newTabButton.removeEventListener("click", onNewTabClick);
     clearChatButton.removeEventListener("click", onClearChatClick);
+    tabsHost.removeEventListener("click", onTabsClick);
+    tabsHost.removeEventListener("auxclick", onTabsAuxClick);
+    tabsHost.removeEventListener("keydown", onTabsKeydown);
+    tabsHost.removeEventListener("wheel", onTabsWheel);
+    tabsHost.removeEventListener("scroll", onTabsScroll);
+    tabsScrollPrevious.removeEventListener("click", onTabsScrollPrevious);
+    tabsScrollNext.removeEventListener("click", onTabsScrollNext);
+    tabsResizeObserver?.disconnect();
     moreMenu.removeEventListener("keydown", onMoreMenuKeydown);
     document.removeEventListener("click", onDocClick);
     window.removeEventListener("resize", onResize);
@@ -543,17 +870,17 @@ export function mount(root) {
   loadEndpoints();
   // Load the registered workspaces so the selector dropdown can be populated,
   // then set the trigger icon to the active (last opened) workspace.
-  loadWorkspaces().then(() => {
+  loadWorkspaces().then(async () => {
     updateWorkspaceNavigation();
     const workspaceId = getActive()?.id || "";
     openWorkspaceSession(log, workspaceId);
-    loadAgentModes(workspaceId, modeLabel);
+    await loadAgentModes(workspaceId, modeLabel);
+    restoreCurrentComposer();
   });
 }
 
 async function loadAgentModes(workspaceId, label) {
   agentModes = [];
-  selectedAgentModeId = "general";
   if (!workspaceId) {
     if (label) label.textContent = "Mode";
     return;
@@ -561,8 +888,6 @@ async function loadAgentModes(workspaceId, label) {
   try {
     const data = await get("/api/agent-modes", { query: { workspaceId } });
     agentModes = data.modes || [];
-    const stored = localStorage.getItem(`echo.agentMode.${workspaceId}`) || "general";
-    selectedAgentModeId = agentModes.some((mode) => mode.id === stored) ? stored : "general";
     const selected = agentModes.find((mode) => mode.id === selectedAgentModeId);
     if (label) label.textContent = selected?.name || "General";
   } catch (err) {

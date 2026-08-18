@@ -49,10 +49,13 @@ func TestChatSelectedAgentModeControlsPromptAndTools(t *testing.T) {
 		t.Fatalf("selected mode did not filter tools: %+v", request.Tools)
 	}
 
-	session, err := s.sessions.get(workspace.ID)
+	parent, err := s.sessions.get(workspace.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	parent.mu.Lock()
+	session := parent.tabs[parent.activeChatID]
+	parent.mu.Unlock()
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	if len(session.transcript.Turns) != 1 || session.transcript.Turns[0].AgentModeID != mode.ID || session.transcript.Turns[0].AgentModeName != mode.Name {

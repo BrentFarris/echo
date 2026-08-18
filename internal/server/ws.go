@@ -165,10 +165,12 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 type inboundMessage struct {
 	Type        string                `json:"type"`
 	WorkspaceID string                `json:"workspaceId,omitempty"`
+	ChatID      string                `json:"chatId,omitempty"`
 	RequestID   string                `json:"requestId,omitempty"`
 	Message     string                `json:"message,omitempty"`
 	Model       string                `json:"model,omitempty"`
 	AgentModeID string                `json:"agentModeId,omitempty"`
+	StopIfBusy  bool                  `json:"stopIfBusy,omitempty"`
 	Refs        []workspacefs.FileRef `json:"refs,omitempty"`
 }
 
@@ -214,9 +216,15 @@ func (c *client) readPump(h *Hub) {
 		case "chat_send":
 			c.server.sessions.send(c, msg)
 		case "chat_stop":
-			c.server.sessions.stop(c, msg.WorkspaceID)
+			c.server.sessions.stop(c, msg.WorkspaceID, msg.ChatID)
 		case "chat_clear":
-			c.server.sessions.clear(c, msg.WorkspaceID)
+			c.server.sessions.clear(c, msg.WorkspaceID, msg.ChatID)
+		case "chat_tab_create":
+			c.server.sessions.createTab(c, msg.WorkspaceID)
+		case "chat_tab_activate":
+			c.server.sessions.activateTab(c, msg.WorkspaceID, msg.ChatID)
+		case "chat_tab_close":
+			c.server.sessions.closeTab(c, msg.WorkspaceID, msg.ChatID, msg.StopIfBusy)
 		default:
 			c.sendJSON(map[string]any{"type": "command_error", "workspaceId": msg.WorkspaceID, "code": "unknown_command", "error": "unsupported message type"})
 		}

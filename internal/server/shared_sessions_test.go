@@ -13,6 +13,7 @@ import (
 
 	"github.com/brent/echo/internal/llm"
 	"github.com/brent/echo/internal/sessions"
+	"github.com/brent/echo/internal/workspaces"
 	"github.com/gorilla/websocket"
 )
 
@@ -87,6 +88,21 @@ func readUntilSessionEvent(t *testing.T, conn *websocket.Conn, eventType string)
 	}
 }
 
+func loadActiveTabTranscript(t *testing.T, workspace workspaces.Workspace) sessions.TabTranscript {
+	t.Helper()
+	stored, err := sessions.NewWorkspaceStore(workspace.MainPath).Load(workspace.ID)
+	if err != nil {
+		t.Fatalf("load persisted chat workspace: %v", err)
+	}
+	for _, tab := range stored.Tabs {
+		if tab.ChatID == stored.ActiveChatID {
+			return tab
+		}
+	}
+	t.Fatalf("active chat %q was not persisted: %#v", stored.ActiveChatID, stored.Tabs)
+	return sessions.TabTranscript{}
+}
+
 func TestLateJoinSnapshotAndInitiatorDisconnectDoNotStopStream(t *testing.T) {
 	s, _ := newTestServer(t)
 	workspace := createChatWorkspace(t, s, "late-join")
@@ -138,10 +154,7 @@ func TestLateJoinSnapshotAndInitiatorDisconnectDoNotStopStream(t *testing.T) {
 	if finished["status"] != "done" {
 		t.Fatalf("expected completed stream after initiator disconnect, got %v", finished)
 	}
-	transcript, err := sessions.NewStore(workspace.MainPath).Load(workspace.ID)
-	if err != nil {
-		t.Fatalf("load persisted transcript: %v", err)
-	}
+	transcript := loadActiveTabTranscript(t, workspace)
 	if len(transcript.Turns) != 1 || transcript.Turns[0].AssistantTurns[0].Content != "partial complete" {
 		t.Fatalf("unexpected persisted response: %#v", transcript.Turns)
 	}
@@ -157,9 +170,12 @@ func TestLateJoinSnapshotAndInitiatorDisconnectDoNotStopStream(t *testing.T) {
 		t.Fatalf("reload session after restart: %v", err)
 	}
 	reloaded.mu.Lock()
-	defer reloaded.mu.Unlock()
-	if reloaded.active != nil || len(reloaded.transcript.Turns) != 1 || reloaded.transcript.Turns[0].Status != "done" {
-		t.Fatalf("restart did not restore terminal state: %#v", reloaded.transcript)
+	reloadedTab := reloaded.tabs[reloaded.activeChatID]
+	reloaded.mu.Unlock()
+	reloadedTab.mu.Lock()
+	defer reloadedTab.mu.Unlock()
+	if reloadedTab.active != nil || len(reloadedTab.transcript.Turns) != 1 || reloadedTab.transcript.Turns[0].Status != "done" {
+		t.Fatalf("restart did not restore terminal state: %#v", reloadedTab.transcript)
 	}
 }
 
@@ -192,9 +208,9 @@ func TestSecondClientCanStopSharedStream(t *testing.T) {
 			t.Fatalf("client %d did not receive stopped state: %v", index, finished)
 		}
 	}
-	transcript, err := sessions.NewStore(workspace.MainPath).Load(workspace.ID)
-	if err != nil || len(transcript.Turns) != 1 || transcript.Turns[0].Status != "stopped" {
-		t.Fatalf("stopped turn was not persisted: %#v, %v", transcript, err)
+	transcript := loadActiveTabTranscript(t, workspace)
+	if len(transcript.Turns) != 1 || transcript.Turns[0].Status != "stopped" {
+		t.Fatalf("stopped turn was not persisted: %#v", transcript)
 	}
 }
 
@@ -306,10 +322,7 @@ func TestClearChatPersistsAndBroadcastsEmptySnapshot(t *testing.T) {
 		}
 	}
 
-	transcript, err := sessions.NewStore(workspace.MainPath).Load(workspace.ID)
-	if err != nil {
-		t.Fatalf("load cleared transcript: %v", err)
-	}
+	transcript := loadActiveTabTranscript(t, workspace)
 	if len(transcript.Turns) != 0 || len(transcript.Messages) != 0 || transcript.Revision == 0 {
 		t.Fatalf("chat was not durably cleared: %#v", transcript)
 	}

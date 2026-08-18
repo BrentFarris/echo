@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/brent/echo/internal/agentmodes"
@@ -24,54 +25,76 @@ var errChatCanceled = errors.New("chat stream canceled")
 type sessionEvent struct {
 	Type        string         `json:"type"`
 	WorkspaceID string         `json:"workspaceId"`
+	ChatID      string         `json:"chatId"`
 	Sequence    uint64         `json:"sequence"`
 	Event       map[string]any `json:"event"`
 }
 
+type chatTabSummary struct {
+	ChatID   string `json:"chatId"`
+	Preview  string `json:"preview"`
+	Busy     bool   `json:"busy"`
+	Revision uint64 `json:"revision"`
+}
+
 type sessionSnapshot struct {
-	Type        string          `json:"type"`
-	WorkspaceID string          `json:"workspaceId"`
-	Sequence    uint64          `json:"sequence"`
-	Revision    uint64          `json:"revision"`
-	Turns       []sessions.Turn `json:"turns"`
-	ActiveTurn  *sessions.Turn  `json:"activeTurn,omitempty"`
+	Type         string           `json:"type"`
+	WorkspaceID  string           `json:"workspaceId"`
+	ChatID       string           `json:"chatId"`
+	ActiveChatID string           `json:"activeChatId"`
+	Tabs         []chatTabSummary `json:"tabs"`
+	Sequence     uint64           `json:"sequence"`
+	Revision     uint64           `json:"revision"`
+	Turns        []sessions.Turn  `json:"turns"`
+	ActiveTurn   *sessions.Turn   `json:"activeTurn,omitempty"`
 }
 
 type chatSessionManager struct {
 	server   *Server
 	mu       sync.Mutex
-	sessions map[string]*chatSession
+	sessions map[string]*chatWorkspaceSession
 	wg       sync.WaitGroup
 }
 
+type chatWorkspaceSession struct {
+	manager      *chatSessionManager
+	workspace    workspaces.Workspace
+	store        *sessions.WorkspaceStore
+	mu           sync.Mutex
+	activeChatID string
+	tabOrder     []string
+	tabs         map[string]*chatSession
+	sequence     atomic.Uint64
+	subMu        sync.Mutex
+	subscribers  map[*client]struct{}
+	loadErr      error
+}
+
 type chatSession struct {
-	manager     *chatSessionManager
-	workspace   workspaces.Workspace
-	store       *sessions.Store
-	mu          sync.Mutex
-	transcript  sessions.Transcript
-	sequence    uint64
-	active      *sessions.Turn
-	cancel      context.CancelFunc
-	subscribers map[*client]struct{}
-	loadErr     error
+	manager    *chatSessionManager
+	parent     *chatWorkspaceSession
+	workspace  workspaces.Workspace
+	mu         sync.Mutex
+	transcript sessions.TabTranscript
+	active     *sessions.Turn
+	cancel     context.CancelFunc
+	closed     bool
 }
 
 func newChatSessionManager(server *Server) *chatSessionManager {
-	return &chatSessionManager{server: server, sessions: make(map[string]*chatSession)}
+	return &chatSessionManager{server: server, sessions: make(map[string]*chatWorkspaceSession)}
 }
 
-func (m *chatSessionManager) get(workspaceID string) (*chatSession, error) {
+func (m *chatSessionManager) get(workspaceID string) (*chatWorkspaceSession, error) {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if workspaceID == "" {
 		return nil, fmt.Errorf("workspaceId is required")
 	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	if session := m.sessions[workspaceID]; session != nil {
-		m.mu.Unlock()
 		return session, nil
 	}
-	m.mu.Unlock()
 
 	workspace, ok, err := m.server.workspaces.Get(workspaceID)
 	if err != nil {
@@ -80,59 +103,64 @@ func (m *chatSessionManager) get(workspaceID string) (*chatSession, error) {
 	if !ok {
 		return nil, fmt.Errorf("workspace %q not found", workspaceID)
 	}
-	store := sessions.NewStore(workspace.MainPath)
-	transcript, loadErr := store.Load(workspaceID)
-	session := &chatSession{
-		manager:     m,
-		workspace:   workspace,
-		store:       store,
-		transcript:  transcript,
-		sequence:    transcript.Revision,
-		subscribers: make(map[*client]struct{}),
-		loadErr:     loadErr,
+	store := sessions.NewWorkspaceStore(workspace.MainPath)
+	stored, loadErr := store.Load(workspaceID)
+	parent := &chatWorkspaceSession{
+		manager: m, workspace: workspace, store: store,
+		tabs: make(map[string]*chatSession), subscribers: make(map[*client]struct{}), loadErr: loadErr,
 	}
 	if loadErr != nil {
-		// Keep the corrupt file untouched and fail closed for this workspace.
-		session.transcript = sessions.Transcript{Version: sessions.Version, WorkspaceID: workspaceID}
+		stored = sessions.ChatWorkspace{Version: sessions.WorkspaceVersion, WorkspaceID: workspaceID, Tabs: []sessions.TabTranscript{}}
 	}
-
-	m.mu.Lock()
-	if existing := m.sessions[workspaceID]; existing != nil {
-		m.mu.Unlock()
-		return existing, nil
+	if len(stored.Tabs) == 0 {
+		blank := blankTabTranscript()
+		stored.Tabs = []sessions.TabTranscript{blank}
+		stored.ActiveChatID = blank.ChatID
+		if loadErr == nil {
+			stored.Revision++
+			if err := store.Save(stored); err != nil {
+				parent.loadErr = err
+			}
+		}
 	}
-	m.sessions[workspaceID] = session
-	m.mu.Unlock()
-	return session, nil
+	parent.activeChatID = stored.ActiveChatID
+	parent.sequence.Store(stored.Revision)
+	for _, transcript := range stored.Tabs {
+		tab := &chatSession{manager: m, parent: parent, workspace: workspace, transcript: transcript}
+		parent.tabOrder = append(parent.tabOrder, transcript.ChatID)
+		parent.tabs[transcript.ChatID] = tab
+	}
+	m.sessions[workspaceID] = parent
+	return parent, nil
 }
 
 func (m *chatSessionManager) subscribe(c *client, workspaceID string) {
-	session, err := m.get(workspaceID)
+	parent, err := m.get(workspaceID)
 	if err != nil {
 		m.commandError(c, workspaceID, "invalid_workspace", err.Error(), "")
 		return
 	}
 	m.unsubscribe(c)
-	session.mu.Lock()
-	session.subscribers[c] = struct{}{}
-	session.sendSnapshotLocked(c)
-	if session.loadErr != nil {
-		m.commandError(c, workspaceID, "session_load_failed", session.loadErr.Error(), "")
+	parent.subMu.Lock()
+	parent.subscribers[c] = struct{}{}
+	parent.subMu.Unlock()
+	parent.sendSnapshot(c)
+	if parent.loadErr != nil {
+		m.commandError(c, workspaceID, "session_load_failed", parent.loadErr.Error(), "")
 	}
-	session.mu.Unlock()
 }
 
 func (m *chatSessionManager) unsubscribe(c *client) {
 	m.mu.Lock()
-	all := make([]*chatSession, 0, len(m.sessions))
-	for _, session := range m.sessions {
-		all = append(all, session)
+	all := make([]*chatWorkspaceSession, 0, len(m.sessions))
+	for _, parent := range m.sessions {
+		all = append(all, parent)
 	}
 	m.mu.Unlock()
-	for _, session := range all {
-		session.mu.Lock()
-		delete(session.subscribers, c)
-		session.mu.Unlock()
+	for _, parent := range all {
+		parent.subMu.Lock()
+		delete(parent.subscribers, c)
+		parent.subMu.Unlock()
 	}
 }
 
@@ -141,9 +169,14 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		m.commandError(c, msg.WorkspaceID, "llm_unavailable", "LLM client is not configured", msg.RequestID)
 		return
 	}
-	session, err := m.get(msg.WorkspaceID)
+	parent, err := m.get(msg.WorkspaceID)
 	if err != nil {
 		m.commandError(c, msg.WorkspaceID, "invalid_workspace", err.Error(), msg.RequestID)
+		return
+	}
+	session, chatID, err := parent.resolveTab(msg.ChatID)
+	if err != nil {
+		m.commandErrorForTab(c, msg.WorkspaceID, msg.ChatID, "invalid_chat", err.Error(), msg.RequestID)
 		return
 	}
 	text := strings.TrimSpace(msg.Message)
@@ -164,25 +197,25 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	}
 	mode, err := m.server.modes.Resolve(session.workspace.MainPath, msg.AgentModeID)
 	if err != nil {
-		m.commandError(c, msg.WorkspaceID, "agent_mode_load_failed", err.Error(), requestID)
+		m.commandErrorForTab(c, msg.WorkspaceID, chatID, "agent_mode_load_failed", err.Error(), requestID)
 		return
 	}
 	scopes := tools.NewToolScopeChecker(agentmodes.PermissionList(mode))
 
 	session.mu.Lock()
-	if session.loadErr != nil {
+	if parent.loadErr != nil {
 		session.mu.Unlock()
-		m.commandError(c, msg.WorkspaceID, "session_load_failed", session.loadErr.Error(), requestID)
+		m.commandErrorForTab(c, msg.WorkspaceID, chatID, "session_load_failed", parent.loadErr.Error(), requestID)
 		return
 	}
 	if session.hasRequestLocked(requestID) {
-		session.sendSnapshotLocked(c)
 		session.mu.Unlock()
+		parent.sendSnapshot(c)
 		return
 	}
 	if session.active != nil {
 		session.mu.Unlock()
-		m.commandError(c, msg.WorkspaceID, "session_busy", "this workspace already has an active response", requestID)
+		m.commandErrorForTab(c, msg.WorkspaceID, chatID, "session_busy", "this chat already has an active response", requestID)
 		return
 	}
 
@@ -192,12 +225,13 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(tools.LLMSchemaForScopes(scopes)))
 	if err != nil {
 		session.mu.Unlock()
-		m.commandError(c, msg.WorkspaceID, "invalid_request", err.Error(), requestID)
+		m.commandErrorForTab(c, msg.WorkspaceID, chatID, "invalid_request", err.Error(), requestID)
 		return
 	}
 	messages = append([]llm.Message(nil), request.Messages...)
 	ctx, cancel := context.WithCancel(context.Background())
 	session.cancel = cancel
+	session.transcript.Preview = chatPreview(text)
 	session.active = &sessions.Turn{
 		ID:             newSessionID("turn"),
 		RequestID:      requestID,
@@ -223,10 +257,15 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	}()
 }
 
-func (m *chatSessionManager) stop(c *client, workspaceID string) {
-	session, err := m.get(workspaceID)
+func (m *chatSessionManager) stop(c *client, workspaceID, chatID string) {
+	parent, err := m.get(workspaceID)
 	if err != nil {
 		m.commandError(c, workspaceID, "invalid_workspace", err.Error(), "")
+		return
+	}
+	session, resolved, err := parent.resolveTab(chatID)
+	if err != nil {
+		m.commandErrorForTab(c, workspaceID, chatID, "invalid_chat", err.Error(), "")
 		return
 	}
 	session.mu.Lock()
@@ -234,61 +273,229 @@ func (m *chatSessionManager) stop(c *client, workspaceID string) {
 	session.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	} else if resolved == "" {
+		m.commandErrorForTab(c, workspaceID, chatID, "invalid_chat", "chat tab was not found", "")
 	}
 }
 
-func (m *chatSessionManager) clear(c *client, workspaceID string) {
-	session, err := m.get(workspaceID)
+func (m *chatSessionManager) clear(c *client, workspaceID, chatID string) {
+	parent, err := m.get(workspaceID)
 	if err != nil {
 		m.commandError(c, workspaceID, "invalid_workspace", err.Error(), "")
 		return
 	}
+	session, resolved, err := parent.resolveTab(chatID)
+	if err != nil {
+		m.commandErrorForTab(c, workspaceID, chatID, "invalid_chat", err.Error(), "")
+		return
+	}
 
 	session.mu.Lock()
-	if session.loadErr != nil {
+	if parent.loadErr != nil {
 		session.mu.Unlock()
-		m.commandError(c, workspaceID, "session_load_failed", session.loadErr.Error(), "")
+		m.commandErrorForTab(c, workspaceID, resolved, "session_load_failed", parent.loadErr.Error(), "")
 		return
 	}
 	if session.active != nil {
 		session.mu.Unlock()
-		m.commandError(c, workspaceID, "session_busy", "the current chat cannot be cleared while a response is active", "")
+		m.commandErrorForTab(c, workspaceID, resolved, "session_busy", "the current chat cannot be cleared while a response is active", "")
 		return
 	}
 
-	cleared := sessions.Transcript{
-		Version:     sessions.Version,
-		WorkspaceID: session.workspace.ID,
-		Revision:    session.sequence + 1,
-		Turns:       []sessions.Turn{},
-		Messages:    []llm.Message{},
+	cleared := sessions.TabTranscript{
+		ChatID: resolved, Revision: session.transcript.Revision + 1,
+		Turns: []sessions.Turn{}, Messages: []llm.Message{},
 	}
-	if err := session.store.Save(cleared); err != nil {
+	if err := parent.persistTabLocked(cleared); err != nil {
 		session.mu.Unlock()
-		m.commandError(c, workspaceID, "session_clear_failed", err.Error(), "")
+		m.commandErrorForTab(c, workspaceID, resolved, "session_clear_failed", err.Error(), "")
 		return
 	}
 
 	session.transcript = cleared
-	session.sequence = cleared.Revision
-	for subscriber := range session.subscribers {
-		session.sendSnapshotLocked(subscriber)
-	}
 	session.mu.Unlock()
+	parent.sequence.Add(1)
+	parent.broadcastSnapshot()
+}
+
+func (m *chatSessionManager) createTab(c *client, workspaceID string) {
+	parent, err := m.get(workspaceID)
+	if err != nil {
+		m.commandError(c, workspaceID, "invalid_workspace", err.Error(), "")
+		return
+	}
+	parent.mu.Lock()
+	if parent.loadErr != nil {
+		parent.mu.Unlock()
+		m.commandError(c, workspaceID, "session_load_failed", parent.loadErr.Error(), "")
+		return
+	}
+	transcript := blankTabTranscript()
+	sequence := parent.sequence.Add(1)
+	_, err = parent.store.Update(workspaceID, func(stored *sessions.ChatWorkspace) error {
+		stored.Tabs = append(stored.Tabs, transcript)
+		stored.ActiveChatID = transcript.ChatID
+		advanceStoredRevision(stored, sequence)
+		return nil
+	})
+	if err != nil {
+		parent.mu.Unlock()
+		m.commandError(c, workspaceID, "tab_create_failed", err.Error(), "")
+		return
+	}
+	tab := &chatSession{manager: m, parent: parent, workspace: parent.workspace, transcript: transcript}
+	parent.tabs[transcript.ChatID] = tab
+	parent.tabOrder = append(parent.tabOrder, transcript.ChatID)
+	parent.activeChatID = transcript.ChatID
+	parent.mu.Unlock()
+	parent.broadcastSnapshot()
+}
+
+func (m *chatSessionManager) activateTab(c *client, workspaceID, chatID string) {
+	parent, err := m.get(workspaceID)
+	if err != nil {
+		m.commandError(c, workspaceID, "invalid_workspace", err.Error(), "")
+		return
+	}
+	chatID = strings.TrimSpace(chatID)
+	parent.mu.Lock()
+	if parent.tabs[chatID] == nil {
+		parent.mu.Unlock()
+		m.commandErrorForTab(c, workspaceID, chatID, "invalid_chat", "chat tab was not found", "")
+		return
+	}
+	if parent.activeChatID == chatID {
+		parent.mu.Unlock()
+		parent.sendSnapshot(c)
+		return
+	}
+	sequence := parent.sequence.Add(1)
+	_, err = parent.store.Update(workspaceID, func(stored *sessions.ChatWorkspace) error {
+		stored.ActiveChatID = chatID
+		advanceStoredRevision(stored, sequence)
+		return nil
+	})
+	if err != nil {
+		parent.mu.Unlock()
+		m.commandErrorForTab(c, workspaceID, chatID, "tab_activate_failed", err.Error(), "")
+		return
+	}
+	parent.activeChatID = chatID
+	parent.mu.Unlock()
+	parent.broadcastSnapshot()
+}
+
+func (m *chatSessionManager) closeTab(c *client, workspaceID, chatID string, stopIfBusy bool) {
+	parent, err := m.get(workspaceID)
+	if err != nil {
+		m.commandError(c, workspaceID, "invalid_workspace", err.Error(), "")
+		return
+	}
+	chatID = strings.TrimSpace(chatID)
+	parent.mu.Lock()
+	tab := parent.tabs[chatID]
+	if tab == nil {
+		parent.mu.Unlock()
+		m.commandErrorForTab(c, workspaceID, chatID, "invalid_chat", "chat tab was not found", "")
+		return
+	}
+	tab.mu.Lock()
+	if tab.active != nil && !stopIfBusy {
+		tab.mu.Unlock()
+		parent.mu.Unlock()
+		m.commandErrorForTab(c, workspaceID, chatID, "session_busy", "chat is still running", "")
+		return
+	}
+	closedIndex := -1
+	nextOrder := make([]string, 0, len(parent.tabOrder))
+	for index, candidate := range parent.tabOrder {
+		if candidate == chatID {
+			closedIndex = index
+			continue
+		}
+		nextOrder = append(nextOrder, candidate)
+	}
+	nextActive := parent.activeChatID
+	var replacement *chatSession
+	if len(nextOrder) == 0 {
+		transcript := blankTabTranscript()
+		replacement = &chatSession{manager: m, parent: parent, workspace: parent.workspace, transcript: transcript}
+		nextOrder = []string{transcript.ChatID}
+		nextActive = transcript.ChatID
+	} else if nextActive == chatID {
+		nextIndex := closedIndex - 1
+		if nextIndex < 0 {
+			nextIndex = 0
+		}
+		if nextIndex >= len(nextOrder) {
+			nextIndex = len(nextOrder) - 1
+		}
+		nextActive = nextOrder[nextIndex]
+	}
+	sequence := parent.sequence.Add(1)
+	_, err = parent.store.Update(workspaceID, func(stored *sessions.ChatWorkspace) error {
+		tabs := stored.Tabs[:0]
+		for _, candidate := range stored.Tabs {
+			if candidate.ChatID != chatID {
+				tabs = append(tabs, candidate)
+			}
+		}
+		stored.Tabs = tabs
+		if replacement != nil {
+			stored.Tabs = append(stored.Tabs, replacement.transcript)
+		}
+		stored.ActiveChatID = nextActive
+		advanceStoredRevision(stored, sequence)
+		return nil
+	})
+	if err != nil {
+		tab.mu.Unlock()
+		parent.mu.Unlock()
+		m.commandErrorForTab(c, workspaceID, chatID, "tab_close_failed", err.Error(), "")
+		return
+	}
+	cancel := tab.cancel
+	tab.closed = true
+	tab.active = nil
+	tab.cancel = nil
+	delete(parent.tabs, chatID)
+	parent.tabOrder = nextOrder
+	parent.activeChatID = nextActive
+	if replacement != nil {
+		parent.tabs[replacement.transcript.ChatID] = replacement
+	}
+	tab.mu.Unlock()
+	parent.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	parent.broadcastSnapshot()
 }
 
 func (m *chatSessionManager) commandError(c *client, workspaceID, code, message, requestID string) {
-	c.sendJSON(map[string]any{
+	m.commandErrorForTab(c, workspaceID, "", code, message, requestID)
+}
+
+func (m *chatSessionManager) commandErrorForTab(c *client, workspaceID, chatID, code, message, requestID string) {
+	payload := map[string]any{
 		"type": "command_error", "workspaceId": workspaceID, "code": code,
 		"error": message, "requestId": requestID,
-	})
+	}
+	if chatID != "" {
+		payload["chatId"] = chatID
+	}
+	c.sendJSON(payload)
 }
 
 func (m *chatSessionManager) shutdown(ctx context.Context) {
 	m.mu.Lock()
 	all := make([]*chatSession, 0, len(m.sessions))
-	for _, session := range m.sessions {
-		all = append(all, session)
+	for _, parent := range m.sessions {
+		parent.mu.Lock()
+		for _, session := range parent.tabs {
+			all = append(all, session)
+		}
+		parent.mu.Unlock()
 	}
 	m.mu.Unlock()
 	for _, session := range all {
@@ -307,6 +514,106 @@ func (m *chatSessionManager) shutdown(ctx context.Context) {
 	}
 }
 
+func blankTabTranscript() sessions.TabTranscript {
+	return sessions.TabTranscript{ChatID: newSessionID("chat"), Turns: []sessions.Turn{}, Messages: []llm.Message{}}
+}
+
+func chatPreview(content string) string { return strings.Join(strings.Fields(content), " ") }
+
+func advanceStoredRevision(stored *sessions.ChatWorkspace, minimum uint64) {
+	stored.Revision++
+	if stored.Revision < minimum {
+		stored.Revision = minimum
+	}
+}
+
+func (w *chatWorkspaceSession) resolveTab(chatID string) (*chatSession, string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		chatID = w.activeChatID
+	}
+	tab := w.tabs[chatID]
+	if tab == nil {
+		return nil, chatID, fmt.Errorf("chat tab was not found")
+	}
+	return tab, chatID, nil
+}
+
+func (w *chatWorkspaceSession) persistTabLocked(transcript sessions.TabTranscript) error {
+	sequence := w.sequence.Load()
+	_, err := w.store.Update(w.workspace.ID, func(stored *sessions.ChatWorkspace) error {
+		for index := range stored.Tabs {
+			if stored.Tabs[index].ChatID == transcript.ChatID {
+				stored.Tabs[index] = transcript
+				advanceStoredRevision(stored, sequence)
+				return nil
+			}
+		}
+		return fmt.Errorf("chat tab was not found")
+	})
+	return err
+}
+
+func (w *chatWorkspaceSession) subscriberList() []*client {
+	w.subMu.Lock()
+	defer w.subMu.Unlock()
+	clients := make([]*client, 0, len(w.subscribers))
+	for subscriber := range w.subscribers {
+		clients = append(clients, subscriber)
+	}
+	return clients
+}
+
+func (w *chatWorkspaceSession) sendSnapshot(c *client) {
+	w.mu.Lock()
+	snapshot := sessionSnapshot{
+		Type: "session_snapshot", WorkspaceID: w.workspace.ID, ChatID: w.activeChatID,
+		ActiveChatID: w.activeChatID, Sequence: w.sequence.Load(), Tabs: make([]chatTabSummary, 0, len(w.tabOrder)),
+	}
+	var active *chatSession
+	for _, chatID := range w.tabOrder {
+		tab := w.tabs[chatID]
+		if tab == nil {
+			continue
+		}
+		tab.mu.Lock()
+		preview := tab.transcript.Preview
+		if preview == "" {
+			preview = "New chat"
+		}
+		snapshot.Tabs = append(snapshot.Tabs, chatTabSummary{
+			ChatID: chatID, Preview: preview, Busy: tab.active != nil, Revision: tab.transcript.Revision,
+		})
+		if chatID == w.activeChatID {
+			active = tab
+			snapshot.Revision = tab.transcript.Revision
+			snapshot.Turns = tab.transcript.Turns
+			snapshot.ActiveTurn = tab.active
+		} else {
+			tab.mu.Unlock()
+		}
+	}
+	c.sendJSON(snapshot)
+	if active != nil {
+		active.mu.Unlock()
+	}
+	w.mu.Unlock()
+}
+
+func (w *chatWorkspaceSession) broadcastSnapshot() {
+	for _, subscriber := range w.subscriberList() {
+		w.sendSnapshot(subscriber)
+	}
+}
+
+func (w *chatWorkspaceSession) broadcast(value any) {
+	for _, subscriber := range w.subscriberList() {
+		subscriber.sendJSON(value)
+	}
+}
+
 func (s *chatSession) hasRequestLocked(requestID string) bool {
 	if s.active != nil && s.active.RequestID == requestID {
 		return true
@@ -319,20 +626,10 @@ func (s *chatSession) hasRequestLocked(requestID string) bool {
 	return false
 }
 
-func (s *chatSession) sendSnapshotLocked(c *client) {
-	snapshot := sessionSnapshot{
-		Type: "session_snapshot", WorkspaceID: s.workspace.ID, Sequence: s.sequence,
-		Revision: s.transcript.Revision, Turns: s.transcript.Turns, ActiveTurn: s.active,
-	}
-	c.sendJSON(snapshot)
-}
-
 func (s *chatSession) emitLocked(event map[string]any) {
-	s.sequence++
-	message := sessionEvent{Type: "session_event", WorkspaceID: s.workspace.ID, Sequence: s.sequence, Event: event}
-	for subscriber := range s.subscribers {
-		subscriber.sendJSON(message)
-	}
+	sequence := s.parent.sequence.Add(1)
+	message := sessionEvent{Type: "session_event", WorkspaceID: s.workspace.ID, ChatID: s.transcript.ChatID, Sequence: sequence, Event: event}
+	s.parent.broadcast(message)
 }
 
 func (s *chatSession) run(ctx context.Context, settings llm.Settings, request llm.ChatRequest, messages []llm.Message, turnID string, scopes *tools.ToolScopeChecker) {
@@ -507,8 +804,8 @@ func (s *chatSession) finish(turnID, status, message string, messages []llm.Mess
 	completed := *s.active
 	s.transcript.Turns = append(s.transcript.Turns, completed)
 	s.transcript.Messages = sanitizeMessages(messages)
-	s.transcript.Revision = s.sequence + 1
-	persistErr := s.store.Save(s.transcript)
+	s.transcript.Revision++
+	persistErr := s.parent.persistTabLocked(s.transcript)
 	s.active = nil
 	s.cancel = nil
 	event := map[string]any{"type": "turn_finished", "turnId": turnID, "status": status, "error": message, "completedAt": now}
@@ -520,7 +817,7 @@ func (s *chatSession) finish(turnID, status, message string, messages []llm.Mess
 }
 
 func (s *chatSession) isActiveLocked(turnID string) bool {
-	return s.active != nil && s.active.ID == turnID
+	return !s.closed && s.active != nil && s.active.ID == turnID
 }
 
 func (s *chatSession) toolContext(ctx context.Context, scopes *tools.ToolScopeChecker) tools.ExecutionContext {

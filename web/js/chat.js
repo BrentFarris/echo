@@ -11,6 +11,8 @@ import {
 let binding = null;
 let activeStream = null;
 const streamingListeners = new Set();
+const workspaceListeners = new Set();
+const commandErrorListeners = new Set();
 
 function setStreaming(streaming) {
   for (const cb of streamingListeners) {
@@ -26,6 +28,36 @@ export function onStreamingChange(cb) {
 
 export function isStreaming() { return activeStream != null; }
 
+function publicWorkspaceState() {
+  if (!binding) return null;
+  return {
+    workspaceId: binding.workspaceId,
+    activeChatId: binding.activeChatId,
+    hasSnapshot: binding.hasSnapshot,
+    tabs: binding.tabs.map((tab) => ({ ...tab })),
+  };
+}
+
+function emitWorkspaceState() {
+  const state = publicWorkspaceState();
+  for (const cb of workspaceListeners) {
+    try { cb(state); } catch (err) { console.error("chat workspace state handler error:", err); }
+  }
+}
+
+export function getChatWorkspaceState() { return publicWorkspaceState(); }
+
+export function onChatWorkspaceChange(cb) {
+  workspaceListeners.add(cb);
+  try { cb(publicWorkspaceState()); } catch (err) { console.error("chat workspace state handler error:", err); }
+  return () => workspaceListeners.delete(cb);
+}
+
+export function onChatCommandError(cb) {
+  commandErrorListeners.add(cb);
+  return () => commandErrorListeners.delete(cb);
+}
+
 export function canClearChat(log) {
   return Boolean(
     binding?.log === log
@@ -38,14 +70,36 @@ export function canClearChat(log) {
 
 export function clearChat(log) {
   if (!canClearChat(log)) return false;
-  return ws.send({ type: "chat_clear", workspaceId: binding.workspaceId });
+  return ws.send({ type: "chat_clear", workspaceId: binding.workspaceId, chatId: binding.activeChatId });
+}
+
+export function createChatTab() {
+  if (!binding?.workspaceId) return false;
+  return ws.send({ type: "chat_tab_create", workspaceId: binding.workspaceId });
+}
+
+export function activateChatTab(chatId) {
+  if (!binding?.workspaceId || !chatId) return false;
+  return ws.send({ type: "chat_tab_activate", workspaceId: binding.workspaceId, chatId });
+}
+
+export function closeChatTab(chatId, stopIfBusy = false) {
+  if (!binding?.workspaceId || !chatId) return false;
+  return ws.send({
+    type: "chat_tab_close", workspaceId: binding.workspaceId, chatId,
+    ...(stopIfBusy ? { stopIfBusy: true } : {}),
+  });
 }
 
 export function openWorkspaceSession(log, workspaceId) {
   cancelBindingMarkdownPatches();
   activeStream = null;
   setStreaming(false);
-  binding = { log, workspaceId: workspaceId || "", sequence: 0, hasSnapshot: false, turns: new Map() };
+  binding = {
+    log, workspaceId: workspaceId || "", sequence: 0, hasSnapshot: false,
+    activeChatId: "", tabs: [], turns: new Map(),
+  };
+  emitWorkspaceState();
   renderEmpty(log, workspaceId ? "Loading conversation…" : "Select a workspace to start chatting.");
   if (workspaceId) ws.send({ type: "session_subscribe", workspaceId });
 }
@@ -55,6 +109,7 @@ export function closeWorkspaceSession(log) {
   if (binding?.log === log) binding = null;
   activeStream = null;
   setStreaming(false);
+  emitWorkspaceState();
 }
 
 ws.onState((state) => {
@@ -68,6 +123,16 @@ ws.on("session_snapshot", (snapshot) => {
   cancelBindingMarkdownPatches();
   binding.sequence = Number(snapshot.sequence) || 0;
   binding.hasSnapshot = true;
+  binding.activeChatId = snapshot.activeChatId || snapshot.chatId || binding.activeChatId || "legacy-active";
+  const incomingTabs = Array.isArray(snapshot.tabs) && snapshot.tabs.length
+    ? snapshot.tabs
+    : [{ chatId: binding.activeChatId, preview: "New chat", busy: Boolean(snapshot.activeTurn) }];
+  binding.tabs = incomingTabs.map((tab) => ({
+    chatId: tab.chatId,
+    preview: tab.preview || "New chat",
+    busy: Boolean(tab.busy),
+    revision: Number(tab.revision) || 0,
+  }));
   binding.turns.clear();
   activeStream = null;
   binding.log.textContent = "";
@@ -75,6 +140,7 @@ ws.on("session_snapshot", (snapshot) => {
   if (snapshot.activeTurn) renderStoredTurn(snapshot.activeTurn, true);
   if (!binding.log.childElementCount) renderEmpty(binding.log, "Ask Echo to inspect, plan, or build in this workspace.");
   setStreaming(activeStream != null);
+  emitWorkspaceState();
   scrollToBottom(binding.log);
 });
 
@@ -91,12 +157,29 @@ ws.on("session_event", (message) => {
     return;
   }
   binding.sequence = sequence;
-  applyEvent(message.event || {});
-  scrollToBottom(binding.log);
+  const event = message.event || {};
+  const chatId = message.chatId || binding.activeChatId;
+  const tab = binding.tabs.find((candidate) => candidate.chatId === chatId);
+  if (tab && event.type === "turn_started") {
+    tab.preview = normalizePreview(event.message) || "New chat";
+    tab.busy = true;
+  } else if (tab && event.type === "turn_finished") {
+    tab.busy = false;
+  }
+  emitWorkspaceState();
+  if (chatId === binding.activeChatId) {
+    applyEvent(event);
+    scrollToBottom(binding.log);
+  }
 });
 
 ws.on("command_error", (message) => {
   if (!binding || (message.workspaceId && message.workspaceId !== binding.workspaceId)) return;
+  let handled = false;
+  for (const cb of commandErrorListeners) {
+    try { handled = cb(message) === true || handled; } catch (err) { console.error("chat command error handler error:", err); }
+  }
+  if (handled) return;
   const status = document.createElement("div");
   status.className = "chat-stream-status is-error";
   status.textContent = message.error || "The chat command failed.";
@@ -104,6 +187,8 @@ ws.on("command_error", (message) => {
   binding.log.appendChild(status);
   scrollToBottom(binding.log);
 });
+
+function normalizePreview(value) { return String(value || "").trim().replace(/\s+/g, " "); }
 
 function applyEvent(event) {
   switch (event.type) {
@@ -145,17 +230,17 @@ function findStream(turnId) { return binding?.turns.get(turnId) || null; }
 
 export function sendMessage(log, text, model, agentModeId) {
   text = text.trim();
-  if (!text || activeStream || !binding?.workspaceId || binding.log !== log) return false;
+  if (!text || activeStream || !binding?.workspaceId || !binding.activeChatId || binding.log !== log) return false;
   const requestId = globalThis.crypto?.randomUUID?.() || `request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return ws.send({
-    type: "chat_send", workspaceId: binding.workspaceId, requestId,
+    type: "chat_send", workspaceId: binding.workspaceId, chatId: binding.activeChatId, requestId,
     message: text, ...(model ? { model } : {}), ...(agentModeId ? { agentModeId } : {}),
   });
 }
 
 export function stopStream() {
   if (binding?.workspaceId && activeStream) {
-    ws.send({ type: "chat_stop", workspaceId: binding.workspaceId });
+    ws.send({ type: "chat_stop", workspaceId: binding.workspaceId, chatId: binding.activeChatId });
   }
 }
 

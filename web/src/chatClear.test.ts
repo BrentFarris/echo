@@ -1,10 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const chat = vi.hoisted(() => ({
+  activateChatTab: vi.fn(() => true),
   canClearChat: vi.fn(() => true),
   clearChat: vi.fn(() => true),
+  closeChatTab: vi.fn(() => true),
   closeWorkspaceSession: vi.fn(),
+  createChatTab: vi.fn(() => true),
   isStreaming: vi.fn(() => false),
+  onChatCommandError: vi.fn(() => vi.fn()),
+  onChatWorkspaceChange: vi.fn((callback: (state: any) => void) => {
+    callback({
+      workspaceId: "workspace-1", activeChatId: "chat-1", hasSnapshot: true,
+      tabs: [{ chatId: "chat-1", preview: "New chat", busy: false }],
+    });
+    return vi.fn();
+  }),
   onStreamingChange: vi.fn((callback: (streaming: boolean) => void) => {
     callback(false);
     return vi.fn();
