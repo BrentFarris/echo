@@ -1,7 +1,7 @@
 {
   "name": "Echo",
-  "mainPath": "D:\\git\\echo",
+  "mainPath": "../",
   "folders": [
-    "D:\\git\\echo"
+    "../"
   ]
 }
