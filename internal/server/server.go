@@ -17,6 +17,7 @@ import (
 	"github.com/brent/echo/internal/agentmodes"
 	"github.com/brent/echo/internal/appdata"
 	"github.com/brent/echo/internal/auth"
+	"github.com/brent/echo/internal/gitservice"
 	"github.com/brent/echo/internal/llm"
 	"github.com/brent/echo/internal/settings"
 	"github.com/brent/echo/internal/workspacefs"
@@ -37,6 +38,7 @@ type Server struct {
 	workspaces   *workspaces.Manager
 	fs           *workspacefs.Service
 	watcher      *workspacefs.WatchManager
+	git          *gitservice.Service
 	auth         *auth.Manager
 	authDisabled bool
 	loginLimiter *loginRateLimiter
@@ -93,8 +95,13 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string) *Server
 	s.store = settings.NewStoreWithData(s.data)
 	s.workspaces = workspaces.NewManagerWithData(s.data)
 	s.fs = workspacefs.New(s.workspaces, settingsPath)
+	s.git = gitservice.New(s.workspaces, s.fs)
+	s.git.SetNotifier(func(event gitservice.Event) {
+		s.hub.BroadcastWorkspaceGit(event.WorkspaceID, event)
+	})
 	s.watcher = workspacefs.NewWatchManager(s.fs, func(event workspacefs.WatchEvent) {
 		s.hub.BroadcastWorkspaceFS(event.WorkspaceID, event)
+		s.git.InvalidateWorkspace(event.WorkspaceID)
 	})
 	authManager, authErr := auth.New(s.data)
 	s.auth = authManager
@@ -189,6 +196,16 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/workspaces/{id}/fs/trash/{trashId}", s.handleFSPurgeTrash)
 	mux.HandleFunc("POST /api/workspaces/{id}/fs/reveal", s.handleFSReveal)
 	mux.HandleFunc("GET /api/workspaces/{id}/fs/search", s.handleFSSearch)
+	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories", s.handleGitRepositories)
+	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories/{repositoryId}/status", s.handleGitStatus)
+	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories/{repositoryId}/diff", s.handleGitDiff)
+	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories/{repositoryId}/metadata", s.handleGitMetadata)
+	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories/{repositoryId}/history", s.handleGitHistory)
+	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories/{repositoryId}/detail", s.handleGitCommitDetail)
+	mux.HandleFunc("POST /api/workspaces/{id}/git/repositories/{repositoryId}/actions", s.handleGitAction)
+	mux.HandleFunc("POST /api/workspaces/{id}/git/clone", s.handleGitClone)
+	mux.HandleFunc("POST /api/workspaces/{id}/git/initialize", s.handleGitInitialize)
+	mux.HandleFunc("PUT /api/workspaces/{id}/git/settings", s.handleGitSettings)
 
 	// WebSocket endpoint for real-time push.
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
@@ -266,6 +283,7 @@ func (s *Server) ListenAndServe() error {
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.watcher.Close()
+	s.git.Close()
 	s.fs.Close()
 	s.sessions.shutdown(ctx)
 	s.hub.Shutdown()

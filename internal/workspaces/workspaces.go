@@ -26,11 +26,12 @@ const EchoDirName = ".echo"
 
 // Workspace is the shape returned to the frontend. It mirrors appdata.Workspace.
 type Workspace struct {
-	ID       string   `json:"id"`
-	Name     string   `json:"name"`
-	MainPath string   `json:"mainPath"`
-	IconExt  string   `json:"iconExt,omitempty"`
-	Folders  []string `json:"folders,omitempty"`
+	ID                          string   `json:"id"`
+	Name                        string   `json:"name"`
+	MainPath                    string   `json:"mainPath"`
+	IconExt                     string   `json:"iconExt,omitempty"`
+	Folders                     []string `json:"folders,omitempty"`
+	SearchParentGitRepositories bool     `json:"searchParentGitRepositories,omitempty"`
 }
 
 // CreateRequest is the payload accepted by the create-workspace endpoint.
@@ -50,9 +51,10 @@ type Icon struct {
 
 // workspaceFile is the on-disk shape of .echo/workspace.json.
 type workspaceFile struct {
-	Name     string   `json:"name"`
-	MainPath string   `json:"mainPath"`
-	Folders  []string `json:"folders"`
+	Name                        string   `json:"name"`
+	MainPath                    string   `json:"mainPath"`
+	Folders                     []string `json:"folders"`
+	SearchParentGitRepositories bool     `json:"searchParentGitRepositories,omitempty"`
 }
 
 // Manager reads and writes the workspace list in the shared app data file.
@@ -80,11 +82,12 @@ func (m *Manager) List() ([]Workspace, error) {
 	out := make([]Workspace, 0, len(f.Workspaces))
 	for _, w := range f.Workspaces {
 		out = append(out, Workspace{
-			ID:       w.ID,
-			Name:     w.Name,
-			MainPath: w.MainPath,
-			IconExt:  w.IconExt,
-			Folders:  append([]string(nil), w.Folders...),
+			ID:                          w.ID,
+			Name:                        w.Name,
+			MainPath:                    w.MainPath,
+			IconExt:                     w.IconExt,
+			Folders:                     append([]string(nil), w.Folders...),
+			SearchParentGitRepositories: w.SearchParentGitRepositories,
 		})
 	}
 	return out, nil
@@ -181,11 +184,12 @@ func (m *Manager) append(ws Workspace) error {
 			}
 		}
 		f.Workspaces = append(f.Workspaces, appdata.Workspace{
-			ID:       ws.ID,
-			Name:     ws.Name,
-			MainPath: ws.MainPath,
-			IconExt:  ws.IconExt,
-			Folders:  append([]string(nil), ws.Folders...),
+			ID:                          ws.ID,
+			Name:                        ws.Name,
+			MainPath:                    ws.MainPath,
+			IconExt:                     ws.IconExt,
+			Folders:                     append([]string(nil), ws.Folders...),
+			SearchParentGitRepositories: ws.SearchParentGitRepositories,
 		})
 		return nil
 	})
@@ -229,11 +233,12 @@ func (m *Manager) Active() (Workspace, bool, error) {
 	for _, w := range f.Workspaces {
 		if w.ID == f.ActiveWorkspaceID {
 			return Workspace{
-				ID:       w.ID,
-				Name:     w.Name,
-				MainPath: w.MainPath,
-				IconExt:  w.IconExt,
-				Folders:  append([]string(nil), w.Folders...),
+				ID:                          w.ID,
+				Name:                        w.Name,
+				MainPath:                    w.MainPath,
+				IconExt:                     w.IconExt,
+				Folders:                     append([]string(nil), w.Folders...),
+				SearchParentGitRepositories: w.SearchParentGitRepositories,
 			}, true, nil
 		}
 	}
@@ -249,12 +254,45 @@ func (m *Manager) Get(id string) (Workspace, bool, error) {
 		return Workspace{}, ok, err
 	}
 	return Workspace{
-		ID:       w.ID,
-		Name:     w.Name,
-		MainPath: w.MainPath,
-		IconExt:  w.IconExt,
-		Folders:  append([]string(nil), w.Folders...),
+		ID:                          w.ID,
+		Name:                        w.Name,
+		MainPath:                    w.MainPath,
+		IconExt:                     w.IconExt,
+		Folders:                     append([]string(nil), w.Folders...),
+		SearchParentGitRepositories: w.SearchParentGitRepositories,
 	}, true, nil
+}
+
+// SetSearchParentGitRepositories updates the workspace-scoped parent
+// repository discovery preference in both the shared app data and the
+// workspace-owned settings file.
+func (m *Manager) SetSearchParentGitRepositories(id string, enabled bool) (Workspace, error) {
+	var updated appdata.Workspace
+	if err := m.data.Update(func(f *appdata.File) error {
+		for index := range f.Workspaces {
+			if f.Workspaces[index].ID != id {
+				continue
+			}
+			f.Workspaces[index].SearchParentGitRepositories = enabled
+			updated = f.Workspaces[index]
+			return nil
+		}
+		return fmt.Errorf("workspace %q not found", id)
+	}); err != nil {
+		return Workspace{}, err
+	}
+	workspace := Workspace{
+		ID: updated.ID, Name: updated.Name, MainPath: updated.MainPath,
+		IconExt: updated.IconExt, Folders: append([]string(nil), updated.Folders...),
+		SearchParentGitRepositories: enabled,
+	}
+	if err := writeWorkspaceFile(filepath.Join(workspace.MainPath, EchoDirName), workspaceFile{
+		Name: workspace.Name, MainPath: workspace.MainPath, Folders: workspace.Folders,
+		SearchParentGitRepositories: enabled,
+	}); err != nil {
+		return Workspace{}, err
+	}
+	return workspace, nil
 }
 
 // SetActive records the given workspace id as the active (last opened)

@@ -113,6 +113,7 @@ export function promptDialog(options: {
   initial?: string;
   placeholder?: string;
   confirmLabel?: string;
+  required?: boolean;
 }): Promise<string | null> {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
@@ -120,7 +121,7 @@ export function promptDialog(options: {
     overlay.innerHTML = `
       <form class="code-modal code-prompt-modal" role="dialog" aria-modal="true">
         <h2>${escapeHTML(options.title)}</h2>
-        <label>${escapeHTML(options.label)}<input name="value" value="${escapeHTML(options.initial || "")}" placeholder="${escapeHTML(options.placeholder || "")}" required></label>
+        <label>${escapeHTML(options.label)}<input name="value" value="${escapeHTML(options.initial || "")}" placeholder="${escapeHTML(options.placeholder || "")}" ${options.required === false ? "" : "required"}></label>
         <p class="code-modal-error" data-prompt-error></p>
         <div class="code-modal-actions">
           <button type="button" data-cancel>Cancel</button>
@@ -134,7 +135,7 @@ export function promptDialog(options: {
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       const value = input.value.trim();
-      if (value) finish(value);
+      if (value || options.required === false) finish(value);
     });
     overlay.querySelector("[data-cancel]")?.addEventListener("click", () => finish(null));
     overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") finish(null); });

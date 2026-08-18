@@ -5,7 +5,10 @@ const storeName = "workspace-sessions";
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(databaseName, 1);
+    // Version 2 keeps the same keyed store, so existing version-1 file-tab
+    // sessions migrate in place while the payload gains discriminated diff
+    // descriptors.
+    const request = indexedDB.open(databaseName, 2);
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(storeName)) {
         request.result.createObjectStore(storeName);

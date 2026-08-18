@@ -20,11 +20,12 @@ import (
 // folder the workspace operates on. IconExt is the detected extension of the
 // workspace icon stored at .echo/icon.<ext> (empty when no icon was set).
 type Workspace struct {
-	ID       string   `json:"id"`
-	Name     string   `json:"name"`
-	MainPath string   `json:"mainPath"`
-	IconExt  string   `json:"iconExt,omitempty"`
-	Folders  []string `json:"folders,omitempty"`
+	ID                          string   `json:"id"`
+	Name                        string   `json:"name"`
+	MainPath                    string   `json:"mainPath"`
+	IconExt                     string   `json:"iconExt,omitempty"`
+	Folders                     []string `json:"folders,omitempty"`
+	SearchParentGitRepositories bool     `json:"searchParentGitRepositories,omitempty"`
 }
 
 // File is the top-level structure of echo.json. Settings is kept as raw JSON

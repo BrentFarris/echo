@@ -57,8 +57,9 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
 
   await page.keyboard.press("Control+p");
   await page.getByLabel("Go to File").fill("main.go");
-  await expect(page.getByRole("option", { name: /main\.go/ })).toBeVisible();
-  await page.getByLabel("Go to File").press("Enter");
+  const mainGoResult = page.getByRole("option", { name: /main\.go/ });
+  await expect(mainGoResult).toBeVisible();
+  await mainGoResult.click();
   await expect(page.getByRole("tab", { name: /main\.go/ })).toBeVisible();
 
   await page.locator(".view-lines").click();
@@ -98,10 +99,66 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.getByRole("button", { name: "Reload from Disk" }).click();
   await expect(page.locator(".view-lines")).toContainText("conflicting disk edit");
 
+  // Source Control keeps the editor alive, previews full-file diffs, applies
+  // row actions to the current multi-selection, and uses recoverable Trash for
+  // untracked reverts.
+  const trashPath = join(state.workspace, "trash-me.txt");
+  writeFileSync(trashPath, "recoverable\n", "utf8");
+  await page.getByRole("button", { name: "Source Control" }).click();
+  await expect(page.getByText("SOURCE CONTROL", { exact: true })).toBeVisible();
+  const changes = page.locator(".git-change-group[data-git-group='unstaged']");
+  const trashRow = changes.locator(".git-change-row", { hasText: "trash-me.txt" });
+  await expect(trashRow).toBeVisible();
+  await trashRow.hover();
+  await trashRow.getByRole("button", { name: "Revert Changes" }).click();
+  await page.getByRole("button", { name: "Revert", exact: true }).click();
+  await expect.poll(() => existsSync(trashPath)).toBe(false);
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect.poll(() => existsSync(trashPath)).toBe(true);
+
+  const mainChange = changes.locator(".git-change-row", { hasText: "main.go" });
+  await expect(mainChange).toBeVisible();
+  await mainChange.click();
+  await expect(page.getByRole("tab", { name: /main\.go \(Working Tree\)/ })).toBeVisible();
+  await expect(page.locator("[data-monaco-diff-host]")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Previous Change" })).toBeVisible();
+  await trashRow.click({ modifiers: ["Control"] });
+  await mainChange.hover();
+  await mainChange.getByRole("button", { name: "Stage Changes" }).click();
+
+  const staged = page.locator(".git-change-group[data-git-group='staged']");
+  const stagedMain = staged.locator(".git-change-row", { hasText: "main.go" });
+  const stagedTrash = staged.locator(".git-change-row", { hasText: "trash-me.txt" });
+  await expect(stagedMain).toBeVisible();
+  await expect(stagedTrash).toBeVisible();
+  await stagedMain.click();
+  await stagedTrash.click({ modifiers: ["Control"] });
+  await stagedTrash.hover();
+  await stagedTrash.getByRole("button", { name: "Unstage Changes" }).click();
+  await expect(changes.locator(".git-change-row", { hasText: "main.go" })).toBeVisible();
+  await changes.getByRole("button", { name: "Stage All Changes" }).click();
+  await expect(staged.locator(".git-change-row", { hasText: "main.go" })).toBeVisible();
+  await page.getByLabel("Commit message").fill("Commit from Source Control");
+  await page.locator(".git-commit-button").click();
+  await expect(page.getByText("No changes", { exact: true })).toBeVisible();
+
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(page.locator(".settings-view")).toBeVisible();
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  const splitDiff = page.getByLabel("Split Git diff view");
+  await expect(splitDiff).toBeChecked();
+  await splitDiff.uncheck();
+  await page.waitForTimeout(200);
   await page.getByRole("button", { name: "Back to previous view" }).click();
   await expect(page.locator(".code-app-shell")).toBeVisible();
+  writeFileSync(mainPath, "package main\n\n// inline diff setting\nfunc main() {}\n", "utf8");
+  await page.getByRole("button", { name: "Source Control" }).click();
+  const inlineMain = page.locator(".git-change-group[data-git-group='unstaged'] .git-change-row", { hasText: "main.go" });
+  await expect(inlineMain).toBeVisible();
+  await inlineMain.click();
+  await expect(page.locator("[data-monaco-diff-host]")).toHaveAttribute("data-diff-layout", "inline");
+  await page.getByRole("button", { name: "Use Side-by-Side Diff" }).click();
+  await expect(page.locator("[data-monaco-diff-host]")).toHaveAttribute("data-diff-layout", "split");
   await page.waitForTimeout(500);
   await expect(page.locator(".code-app-shell")).toBeVisible();
 

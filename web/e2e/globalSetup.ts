@@ -17,6 +17,13 @@ function prepareRuntime(): { binary: string; workspace: string; dataPath: string
   mkdirSync(join(workspace, "nested"), { recursive: true });
   writeFileSync(join(workspace, "main.go"), "package main\n\nfunc main() {}\n", "utf8");
   writeFileSync(join(workspace, "nested", "demo.py"), "print('echo')\n", "utf8");
+  writeFileSync(join(workspace, ".gitignore"), ".echo/\n", "utf8");
+  const git = (...args: string[]) => execFileSync("git", ["-C", workspace, ...args], { stdio: "inherit" });
+  git("init", "-b", "main");
+  git("config", "user.name", "Echo E2E");
+  git("config", "user.email", "echo-e2e@example.com");
+  git("add", ".");
+  git("commit", "-m", "Initial E2E workspace");
   const binary = join(runtimeRoot, process.platform === "win32" ? "echo-e2e.exe" : "echo-e2e");
   execFileSync("go", ["build", "-o", binary, ".."], { cwd: webRoot, stdio: "inherit" });
   return { binary, workspace, dataPath: join(runtimeRoot, "echo.json") };

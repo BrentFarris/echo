@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -19,13 +20,15 @@ var upgrader = websocket.Upgrader{
 }
 
 type client struct {
-	conn            *websocket.Conn
-	send            chan []byte
-	done            chan struct{}
-	closeOnce       sync.Once
-	server          *Server
-	fsMu            sync.RWMutex
-	fsSubscriptions map[string]bool
+	conn             *websocket.Conn
+	send             chan []byte
+	done             chan struct{}
+	closeOnce        sync.Once
+	server           *Server
+	fsMu             sync.RWMutex
+	fsSubscriptions  map[string]bool
+	gitMu            sync.RWMutex
+	gitSubscriptions map[string]bool
 }
 
 func (c *client) close() {
@@ -131,6 +134,19 @@ func (h *Hub) BroadcastWorkspaceFS(workspaceID string, event any) {
 	}
 }
 
+func (h *Hub) BroadcastWorkspaceGit(workspaceID string, event any) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.clients {
+		c.gitMu.RLock()
+		subscribed := c.gitSubscriptions[workspaceID]
+		c.gitMu.RUnlock()
+		if subscribed {
+			c.sendJSON(event)
+		}
+	}
+}
+
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -139,7 +155,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	c := &client{
 		conn: conn, send: make(chan []byte, 1024), done: make(chan struct{}), server: s,
-		fsSubscriptions: make(map[string]bool),
+		fsSubscriptions: make(map[string]bool), gitSubscriptions: make(map[string]bool),
 	}
 	go c.writePump()
 	s.hub.register <- c
@@ -160,6 +176,7 @@ func (c *client) readPump(h *Hub) {
 	defer func() {
 		c.server.sessions.unsubscribe(c)
 		c.unsubscribeAllFS()
+		c.unsubscribeAllGit()
 		select {
 		case h.unregister <- c:
 		case <-h.shutdown:
@@ -190,6 +207,10 @@ func (c *client) readPump(h *Hub) {
 			c.subscribeFS(msg.WorkspaceID, msg.Refs)
 		case "fs_unsubscribe":
 			c.unsubscribeFS(msg.WorkspaceID)
+		case "git_subscribe":
+			c.subscribeGit(msg.WorkspaceID)
+		case "git_unsubscribe":
+			c.unsubscribeGit(msg.WorkspaceID)
 		case "chat_send":
 			c.server.sessions.send(c, msg)
 		case "chat_stop":
@@ -252,6 +273,58 @@ func (c *client) unsubscribeAllFS() {
 	c.fsMu.Unlock()
 	for _, workspaceID := range workspaceIDs {
 		c.server.watcher.Unsubscribe(workspaceID)
+	}
+}
+
+func (c *client) subscribeGit(workspaceID string) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		c.sendJSON(map[string]any{"type": "command_error", "code": "missing_workspace", "error": "workspaceId is required"})
+		return
+	}
+	c.gitMu.RLock()
+	already := c.gitSubscriptions[workspaceID]
+	c.gitMu.RUnlock()
+	if already {
+		return
+	}
+	// Mark the subscription first so an initial status emitted during watcher
+	// setup cannot race past the first client.
+	c.gitMu.Lock()
+	c.gitSubscriptions[workspaceID] = true
+	c.gitMu.Unlock()
+	if err := c.server.git.Subscribe(context.Background(), workspaceID); err != nil {
+		c.gitMu.Lock()
+		delete(c.gitSubscriptions, workspaceID)
+		c.gitMu.Unlock()
+		c.sendJSON(map[string]any{"type": "command_error", "workspaceId": workspaceID, "code": "git_watch_failed", "error": err.Error()})
+		c.sendJSON(map[string]any{"type": "git_resync_required", "workspaceId": workspaceID})
+		return
+	}
+	c.sendJSON(map[string]any{"type": "git_subscribed", "workspaceId": workspaceID})
+}
+
+func (c *client) unsubscribeGit(workspaceID string) {
+	c.gitMu.Lock()
+	if !c.gitSubscriptions[workspaceID] {
+		c.gitMu.Unlock()
+		return
+	}
+	delete(c.gitSubscriptions, workspaceID)
+	c.gitMu.Unlock()
+	c.server.git.Unsubscribe(workspaceID)
+}
+
+func (c *client) unsubscribeAllGit() {
+	c.gitMu.Lock()
+	workspaceIDs := make([]string, 0, len(c.gitSubscriptions))
+	for workspaceID := range c.gitSubscriptions {
+		workspaceIDs = append(workspaceIDs, workspaceID)
+	}
+	c.gitSubscriptions = make(map[string]bool)
+	c.gitMu.Unlock()
+	for _, workspaceID := range workspaceIDs {
+		c.server.git.Unsubscribe(workspaceID)
 	}
 }
 

@@ -81,6 +81,12 @@ const state = {
     comfyuiTxt2imgWorkflow: "",
     comfyuiImg2imgWorkflow: "",
   },
+  rawSettings: {},
+  settingsLoaded: false,
+  git: {
+    leadingWhitespaceIndicators: true,
+    splitDiffView: true,
+  },
   storagePath: "",
   saveStatus: "",
   authSessions: [],
@@ -404,8 +410,8 @@ function renderMessaging() {
 
 function renderGit() {
   const toggles = [
-    { label: "Leading whitespace indicators", help: "Show leading whitespace changes in Git diffs." },
-    { label: "Split Git diff view", help: "Use a side-by-side diff layout on wide windows." },
+    { key: "leadingWhitespaceIndicators", checked: state.git.leadingWhitespaceIndicators, label: "Leading whitespace indicators", help: "Show leading whitespace changes in Git diffs." },
+    { key: "splitDiffView", checked: state.git.splitDiffView, label: "Split Git diff view", help: "Use a side-by-side diff layout on wide windows." },
   ];
   return `
     <section class="settings-section">
@@ -414,7 +420,7 @@ function renderGit() {
         ${toggles.map((t) => `
           <label class="settings-toggle" title="${esc(t.help)}">
             <span>${esc(t.label)}</span>
-            <input type="checkbox" ${t.checked ? "checked" : ""} />
+            <input type="checkbox" data-git-setting="${t.key}" ${t.checked ? "checked" : ""} ${state.settingsLoaded ? "" : "disabled"} />
           </label>
         `).join("")}
       </div>
@@ -640,10 +646,10 @@ function bindEvents(root) {
 
   // Return to the view that opened Settings, or Chat for a direct page load.
   root.querySelectorAll("[data-action='back-from-settings']").forEach((btn) => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       // Persist any in-progress external connection edits before leaving.
       captureExternalFields(root);
-      void saveSettings();
+      await saveSettings();
       navigateBackFromSettings();
     });
   });
@@ -735,6 +741,13 @@ function bindEvents(root) {
       state.external[field.dataset.externalField] = field.value;
     });
     field.addEventListener("blur", () => {
+      saveSettings();
+    });
+  });
+
+  root.querySelectorAll("[data-git-setting]").forEach((field) => {
+    field.addEventListener("change", () => {
+      state.git[field.dataset.gitSetting] = field.checked;
       saveSettings();
     });
   });
@@ -954,6 +967,8 @@ function applySettings(cfg) {
   // The server returns { settings: <llm.Settings>, storagePath }; tolerate both
   // the nested and flat shapes.
   const s = cfg.settings || cfg;
+  state.rawSettings = { ...s };
+  state.settingsLoaded = true;
   state.endpoints = (s.endpoints || []).map((e) => ({ ...e, headers: e.headers || {} }));
   state.routing = {
     chat: s.endpointSelection?.chat || state.endpoints[0]?.id || "",
@@ -967,6 +982,10 @@ function applySettings(cfg) {
     comfyuiUrl: s.comfyuiUrl || "",
     comfyuiTxt2imgWorkflow: s.comfyuiTxt2imgWorkflow || "",
     comfyuiImg2imgWorkflow: s.comfyuiImg2imgWorkflow || "",
+  };
+  state.git = {
+    leadingWhitespaceIndicators: s.hideLeadingWhitespaceIndicators !== true,
+    splitDiffView: s.disableGitSplitDiffView !== true,
   };
   render();
 }
@@ -1057,6 +1076,7 @@ async function saveAgentMode() {
 // shaped like the Go Settings struct.
 function buildSettings() {
   return {
+    ...state.rawSettings,
     endpoints: state.endpoints.map((e) => ({ ...e })),
     endpointSelection: {
       chat: state.routing.chat,
@@ -1068,12 +1088,15 @@ function buildSettings() {
     comfyuiUrl: state.external.comfyuiUrl,
     comfyuiTxt2imgWorkflow: state.external.comfyuiTxt2imgWorkflow,
     comfyuiImg2imgWorkflow: state.external.comfyuiImg2imgWorkflow,
+    hideLeadingWhitespaceIndicators: !state.git.leadingWhitespaceIndicators,
+    disableGitSplitDiffView: !state.git.splitDiffView,
   };
 }
 
 // saveSettings persists the current view state to the server and refreshes
 // state from the normalized response.
 async function saveSettings() {
+  if (!state.settingsLoaded) return;
   try {
     const data = await put("/api/settings", { settings: buildSettings() });
     applySettings(data);

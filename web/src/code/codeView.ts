@@ -5,6 +5,9 @@ import { on as onSocket, onState as onSocketState, send as sendSocket } from "..
 import * as editorAPI from "./editorApi";
 import type { APIError } from "./editorApi";
 import { languageForPath, monaco } from "./language";
+import { loadDiff as loadGitDiff } from "./gitApi";
+import type { GitChange, GitDiffDocument, GitRepository } from "./gitTypes";
+import { GitView } from "./gitView";
 import { loadSession, saveSession } from "./persistence";
 import type {
   FileRef, FileSnapshot, FsEntry, PersistedTab, PersistedWorkspaceSession,
@@ -35,6 +38,7 @@ type TreeNode = {
 };
 
 type OpenTab = {
+  kind: "file" | "diff";
   id: string;
   ref: FileRef | null;
   title: string;
@@ -50,6 +54,17 @@ type OpenTab = {
   viewState: MonacoEditor.ICodeEditorViewState | null;
   changeDisposable: { dispose(): void };
   applying: boolean;
+  diff?: {
+    repository: GitRepository;
+    scope: "staged" | "unstaged" | "commit" | "stash";
+    reviewRef?: string;
+    fileRef?: FileRef;
+    oldPath?: string;
+    originalModel: MonacoEditor.ITextModel;
+    viewState: MonacoEditor.IDiffEditorViewState | null;
+    editable: boolean;
+    unavailableReason?: string;
+  };
 };
 
 type Command = { id: string; label: string; keybinding?: string; run(): unknown | Promise<unknown> };
@@ -82,6 +97,12 @@ class CodeView {
   private activeTabId: string | null = null;
   private untitledCounter = 1;
   private editor!: MonacoEditor.IStandaloneCodeEditor;
+  private diffEditor!: MonacoEditor.IStandaloneDiffEditor;
+  private gitView: GitView | null = null;
+  private activeSidebar: "explorer" | "git" = "explorer";
+  private splitGitDiff = true;
+  private leadingWhitespaceIndicators = true;
+  private modelReferences = new Map<MonacoEditor.ITextModel, number>();
   private treeScroller!: HTMLElement;
   private treeCanvas!: HTMLElement;
   private treeVirtualizer!: Virtualizer<HTMLElement, HTMLElement>;
@@ -111,11 +132,18 @@ class CodeView {
         this.showNoWorkspace();
         return;
       }
-      this.roots = await editorAPI.getRoots(this.workspace.id);
+      const [roots, settingsData] = await Promise.all([
+        editorAPI.getRoots(this.workspace.id),
+        api("/api/settings", { method: "GET" }).catch(() => null) as Promise<{ settings?: { disableGitSplitDiffView?: boolean; hideLeadingWhitespaceIndicators?: boolean } } | null>,
+      ]);
+      this.roots = roots;
+      this.splitGitDiff = settingsData?.settings?.disableGitSplitDiffView !== true;
+      this.leadingWhitespaceIndicators = settingsData?.settings?.hideLeadingWhitespaceIndicators !== true;
       this.initializeEditor();
       this.initializeTree();
       this.registerCommands();
       this.installEvents();
+      this.initializeGitView();
       await this.restoreWorkspace();
       if (this.roots.length) {
         await Promise.all(this.roots.map((root) => this.ensureRoot(root)));
@@ -145,14 +173,15 @@ class CodeView {
             <button class="nav-icon-button" type="button" title="Chat" aria-label="Chat" data-nav="chat"><span class="codicon codicon-comment-discussion"></span></button>
           </nav>
           <div class="left-nav-actions">
-            <button class="nav-icon-button is-active" type="button" title="Code" aria-label="Code view"><span class="codicon codicon-code"></span></button>
+            <button class="nav-icon-button is-active" type="button" title="Explorer" aria-label="Explorer" data-code-sidebar="explorer"><span class="codicon codicon-code"></span></button>
             <button class="nav-icon-button" type="button" title="Tasks" aria-label="Tasks" disabled><span class="codicon codicon-checklist"></span></button>
-            <button class="nav-icon-button" type="button" title="Git" aria-label="Git" disabled><span class="codicon codicon-source-control"></span></button>
+            <button class="nav-icon-button code-git-activity" type="button" title="Source Control" aria-label="Source Control" data-code-sidebar="git"><span class="codicon codicon-source-control"></span><b data-git-badge hidden></b></button>
             <button class="nav-icon-button" type="button" title="Settings" aria-label="Settings" data-nav="settings"><span class="codicon codicon-settings-gear"></span></button>
           </div>
         </aside>
         <section class="code-workbench">
-          <aside class="code-explorer" aria-label="Explorer">
+          <div class="code-sidebar">
+          <aside class="code-explorer" aria-label="Explorer" data-sidebar-view="explorer">
             <header class="code-explorer-header">
               <span>EXPLORER</span>
               <div class="code-header-actions">
@@ -167,6 +196,8 @@ class CodeView {
               <div class="code-tree-canvas" data-tree-canvas></div>
             </div>
           </aside>
+          <aside class="code-git-view" aria-label="Source Control" data-sidebar-view="git" hidden></aside>
+          </div>
           <div class="code-explorer-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Explorer" tabindex="0"></div>
           <main class="code-editor-column">
             <div class="code-tabs-scroll" role="tablist" aria-label="Open editors" data-code-tabs><div class="code-tabs" data-tabs-list></div></div>
@@ -178,6 +209,14 @@ class CodeView {
                 <p>Open a file from Explorer or press <kbd>Ctrl+P</kbd>.</p>
               </div>
               <div class="code-monaco-host" data-monaco-host></div>
+              <div class="code-diff-toolbar" data-diff-toolbar hidden>
+                <span data-diff-label></span>
+                <button type="button" title="Previous Change" aria-label="Previous Change" data-diff-action="previous"><span class="codicon codicon-arrow-up"></span></button>
+                <button type="button" title="Next Change" aria-label="Next Change" data-diff-action="next"><span class="codicon codicon-arrow-down"></span></button>
+                <button type="button" title="Toggle Inline Diff" aria-label="Toggle Inline Diff" data-diff-action="layout"><span class="codicon codicon-layout"></span></button>
+              </div>
+              <div class="code-monaco-diff-host" data-monaco-diff-host hidden></div>
+              <div class="code-diff-unavailable" data-diff-unavailable hidden></div>
             </section>
             <footer class="code-statusbar" data-statusbar>
               <div><button type="button" class="code-mobile-explorer" data-mobile-explorer aria-label="Toggle Explorer" aria-expanded="false"><span class="codicon codicon-files"></span></button><button type="button" data-status="branch" disabled><span class="codicon codicon-source-control"></span></button></div>
@@ -193,6 +232,36 @@ class CodeView {
     this.root.querySelector("[data-nav=chat]")?.addEventListener("click", () => { location.hash = "#/home"; }, { signal: this.abort.signal });
     this.root.querySelector("[data-nav=settings]")?.addEventListener("click", () => { location.hash = "#/settings"; }, { signal: this.abort.signal });
     this.root.querySelector("[data-nav=workspace]")?.addEventListener("click", () => { location.hash = "#/home"; }, { signal: this.abort.signal });
+  }
+
+  private initializeGitView(): void {
+    if (!this.workspace) return;
+    const host = this.root.querySelector<HTMLElement>("[data-sidebar-view=git]");
+    if (!host) return;
+    this.root.querySelectorAll<HTMLButtonElement>("[data-code-sidebar]").forEach((button) => {
+      button.addEventListener("click", () => this.setSidebar(button.dataset.codeSidebar === "git" ? "git" : "explorer"), { signal: this.abort.signal });
+    });
+    this.gitView = new GitView(host, this.workspace.id, this.abort.signal, {
+      roots: () => this.roots,
+      openFile: (ref, pin) => this.openFile(ref, pin),
+      openDiff: (repository, change, scope, ref, pin) => this.openGitDiff(repository, change, scope, ref, pin),
+      updateBadge: (count) => {
+        const badge = this.root.querySelector<HTMLElement>("[data-git-badge]");
+        if (!badge) return;
+        badge.hidden = count === 0;
+        badge.textContent = count > 99 ? "99+" : String(count);
+      },
+    });
+    void this.gitView.start();
+  }
+
+  private setSidebar(view: "explorer" | "git"): void {
+    this.activeSidebar = view;
+    this.root.querySelectorAll<HTMLElement>("[data-sidebar-view]").forEach((element) => { element.hidden = element.dataset.sidebarView !== view; });
+    this.root.querySelectorAll<HTMLElement>("[data-code-sidebar]").forEach((button) => button.classList.toggle("is-active", button.dataset.codeSidebar === view));
+    const mobile = this.root.querySelector<HTMLElement>("[data-mobile-explorer] .codicon");
+    if (mobile) mobile.className = `codicon codicon-${view === "git" ? "source-control" : "files"}`;
+    if (window.innerWidth <= 720) this.setMobileExplorer(true);
   }
 
   private showNoWorkspace(): void {
@@ -240,7 +309,7 @@ class CodeView {
       foldingHighlight: true,
       glyphMargin: false,
       renderLineHighlight: "line",
-      renderWhitespace: "selection",
+      renderWhitespace: this.leadingWhitespaceIndicators ? "boundary" : "none",
       bracketPairColorization: { enabled: true, independentColorPoolPerBracketType: true },
       guides: { indentation: true, bracketPairs: true, highlightActiveIndentation: true },
       stickyScroll: { enabled: true },
@@ -253,6 +322,32 @@ class CodeView {
     });
     this.editor.onDidChangeCursorPosition(() => this.renderStatus());
     this.editor.onDidScrollChange(() => this.schedulePersist());
+    const diffHost = this.root.querySelector<HTMLElement>("[data-monaco-diff-host]")!;
+    this.diffEditor = monaco.editor.createDiffEditor(diffHost, {
+      theme: this.mediaTheme.matches ? "vs-dark" : "vs",
+      automaticLayout: true,
+      fontFamily: "Cascadia Code, JetBrains Mono, Consolas, monospace",
+      fontSize: 13.5,
+      lineHeight: 20,
+      lineNumbers: "on",
+      minimap: { enabled: true, maxColumn: 120, showSlider: "mouseover" },
+      renderSideBySide: this.splitGitDiff,
+      useInlineViewWhenSpaceIsLimited: true,
+      originalEditable: false,
+      readOnly: false,
+      diffAlgorithm: "advanced",
+      renderIndicators: true,
+      renderOverviewRuler: true,
+      ignoreTrimWhitespace: false,
+      hideUnchangedRegions: { enabled: false },
+      renderWhitespace: this.leadingWhitespaceIndicators ? "boundary" : "none",
+      scrollBeyondLastLine: false,
+      fixedOverflowWidgets: true,
+      padding: { top: 4, bottom: 4 },
+    });
+    this.diffEditor.getModifiedEditor().onDidChangeCursorPosition(() => this.renderStatus());
+    this.diffEditor.getModifiedEditor().onDidScrollChange(() => this.schedulePersist());
+    this.updateDiffLayoutState();
     this.mediaTheme.addEventListener("change", () => monaco.editor.setTheme(this.mediaTheme.matches ? "vs-dark" : "vs"), { signal: this.abort.signal });
   }
 
@@ -413,22 +508,20 @@ class CodeView {
 
   private createModel(snapshot: FileSnapshot, id: string): OpenTab {
     const uri = this.modelURI(snapshot.ref);
-    const model = monaco.editor.createModel(snapshot.content, languageForPath(snapshot.ref.path), uri);
-    model.setEOL(snapshot.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+    const shared = this.tabs.find((candidate) => candidate.kind === "diff" && candidate.diff?.editable && candidate.diff.fileRef && refKey(candidate.diff.fileRef) === refKey(snapshot.ref));
+    const reusable = shared?.model || monaco.editor.getModel(uri);
+    const model = reusable || monaco.editor.createModel(snapshot.content, languageForPath(snapshot.ref.path), uri);
+    this.retainModel(model);
+    if (!reusable) model.setEOL(snapshot.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
     const tab: OpenTab = {
-      id, ref: snapshot.ref, title: snapshot.ref.path.split("/").pop() || snapshot.ref.path,
-      hostPath: snapshot.hostPath, pinned: false, dirty: false, deleted: false, conflict: false,
-      revision: snapshot.revision, hasBom: snapshot.hasBom, eol: snapshot.eol,
+      kind: "file", id, ref: snapshot.ref, title: snapshot.ref.path.split("/").pop() || snapshot.ref.path,
+      hostPath: snapshot.hostPath, pinned: false, dirty: shared?.dirty || false, deleted: shared?.deleted || false, conflict: shared?.conflict || false,
+      revision: shared?.revision || snapshot.revision, hasBom: shared?.hasBom ?? snapshot.hasBom, eol: shared?.eol || snapshot.eol,
       model, viewState: null, changeDisposable: { dispose() {} }, applying: false,
     };
     tab.changeDisposable = model.onDidChangeContent(() => {
       if (tab.applying) return;
-      tab.dirty = true;
-      tab.pinned = true;
-      tab.eol = model.getEOL() === "\r\n" ? "crlf" : "lf";
-      this.renderTabs();
-      this.renderStatus();
-      this.schedulePersist();
+      this.markModelDirty(model);
     });
     return tab;
   }
@@ -438,6 +531,20 @@ class CodeView {
       scheme: "echo-workspace", authority: this.workspace?.id || "workspace",
       path: `/${encodeURIComponent(ref.rootId)}/${ref.path.split("/").map(encodeURIComponent).join("/")}`,
     });
+  }
+
+  private retainModel(model: MonacoEditor.ITextModel): void {
+    this.modelReferences.set(model, (this.modelReferences.get(model) || 0) + 1);
+  }
+
+  private releaseModel(model: MonacoEditor.ITextModel): void {
+    const references = (this.modelReferences.get(model) || 1) - 1;
+    if (references > 0) {
+      this.modelReferences.set(model, references);
+      return;
+    }
+    this.modelReferences.delete(model);
+    model.dispose();
   }
 
   private async openFile(ref: FileRef, pin: boolean, focusEditor = true): Promise<void> {
@@ -489,15 +596,165 @@ class CodeView {
     }
   }
 
+  private async openGitDiff(
+    repository: GitRepository,
+    change: GitChange | { path: string; oldPath?: string; ref?: FileRef },
+    scope: "staged" | "unstaged" | "commit" | "stash",
+    reviewRef: string | undefined,
+    pin: boolean,
+  ): Promise<void> {
+    if (!this.workspace) return;
+    const identity = `${repository.id}:${scope}:${reviewRef || ""}:${change.path}`;
+    const existing = this.tabs.find((tab) => tab.kind === "diff" && tab.id === identity);
+    if (existing) {
+      if (pin) existing.pinned = true;
+      this.activateTab(existing.id);
+      this.renderTabs();
+      return;
+    }
+    try {
+      const document = await loadGitDiff(this.workspace.id, repository.id, {
+        scope, path: change.path, oldPath: change.oldPath, ref: reviewRef,
+      });
+      const language = languageForPath(document.path);
+      const originalURI = monaco.Uri.from({
+        scheme: "echo-git", authority: repository.id,
+        path: `/${encodeURIComponent(scope)}/${encodeURIComponent(reviewRef || String(document.revision))}/${(document.oldPath || document.path).split("/").map(encodeURIComponent).join("/")}`,
+      });
+      const originalModel = monaco.editor.getModel(originalURI) || monaco.editor.createModel(document.original.content || "", language, originalURI);
+      this.retainModel(originalModel);
+      originalModel.setEOL(document.original.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+
+      const shared = document.editable && document.ref
+        ? this.tabs.find((candidate) => {
+          const ref = this.worktreeRef(candidate);
+          return ref && candidate.diff?.editable !== false && refKey(ref) === refKey(document.ref!);
+        })
+        : undefined;
+      let modifiedModel: MonacoEditor.ITextModel;
+      if (shared) {
+        modifiedModel = shared.model;
+      } else {
+        const modifiedURI = document.editable && document.ref ? this.modelURI(document.ref) : monaco.Uri.from({
+          scheme: "echo-git", authority: repository.id,
+          path: `/${encodeURIComponent(scope)}/${encodeURIComponent(reviewRef || String(document.revision))}/${document.path.split("/").map(encodeURIComponent).join("/")}`,
+          query: crypto.randomUUID(),
+        });
+        const reusable = monaco.editor.getModel(modifiedURI);
+        modifiedModel = reusable || monaco.editor.createModel(document.modified.content || "", language, modifiedURI);
+        if (!reusable) modifiedModel.setEOL(document.modified.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+      }
+      this.retainModel(modifiedModel);
+      const qualifier = scope === "unstaged" ? "Working Tree" : scope === "staged" ? "Index" : scope === "stash" ? "Stash" : shortGitRef(reviewRef || "Commit");
+      const tab: OpenTab = {
+        kind: "diff", id: identity, ref: null, title: `${document.path.split("/").pop() || document.path} (${qualifier})`,
+        hostPath: document.path, pinned: pin, dirty: shared?.dirty || false, deleted: !document.modified.exists,
+        conflict: shared?.conflict || false, revision: shared?.revision || document.modifiedRevision || "",
+        hasBom: shared?.hasBom ?? Boolean(document.modified.hasBom), eol: shared?.eol || document.modified.eol,
+        model: modifiedModel, viewState: null, changeDisposable: { dispose() {} }, applying: false,
+        diff: {
+          repository, scope, reviewRef, fileRef: document.ref, oldPath: document.oldPath,
+          originalModel, viewState: null, editable: document.editable && document.kind === "text",
+          unavailableReason: document.kind === "text" ? undefined : document.unavailableReason || "This Git object cannot be shown as text.",
+        },
+      };
+      tab.changeDisposable = modifiedModel.onDidChangeContent(() => {
+        if (tab.applying || !tab.diff?.editable) return;
+        this.markModelDirty(modifiedModel);
+      });
+      if (!pin) {
+        const previewIndex = this.tabs.findIndex((candidate) => !candidate.pinned && !candidate.dirty);
+        if (previewIndex >= 0) {
+          this.disposeTab(this.tabs[previewIndex]);
+          this.tabs.splice(previewIndex, 1, tab);
+        } else this.tabs.push(tab);
+      } else this.tabs.push(tab);
+      this.activateTab(tab.id);
+      this.renderTabs();
+      this.schedulePersist();
+      this.sendFilesystemSubscription();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.openUnavailableGitDiff(identity, repository, change, scope, reviewRef, pin, message);
+      toast(message, { sticky: true });
+    }
+  }
+
+  private openUnavailableGitDiff(
+    identity: string,
+    repository: GitRepository,
+    change: GitChange | { path: string; oldPath?: string; ref?: FileRef },
+    scope: "staged" | "unstaged" | "commit" | "stash",
+    reviewRef: string | undefined,
+    pin: boolean,
+    reason: string,
+  ): void {
+    const language = languageForPath(change.path);
+    const originalModel = monaco.editor.createModel("", language, monaco.Uri.from({ scheme: "echo-git-missing", authority: repository.id, path: `/${crypto.randomUUID()}/original` }));
+    const modifiedModel = monaco.editor.createModel("", language, monaco.Uri.from({ scheme: "echo-git-missing", authority: repository.id, path: `/${crypto.randomUUID()}/modified` }));
+    this.retainModel(originalModel);
+    this.retainModel(modifiedModel);
+    const tab: OpenTab = {
+      kind: "diff", id: identity, ref: null, title: `${change.path.split("/").pop() || change.path} (${scope})`,
+      hostPath: change.path, pinned: pin, dirty: false, deleted: false, conflict: false, revision: "",
+      hasBom: false, eol: "lf", model: modifiedModel, viewState: null, applying: false,
+      changeDisposable: { dispose() {} },
+      diff: {
+        repository, scope, reviewRef, fileRef: change.ref, oldPath: change.oldPath,
+        originalModel, viewState: null, editable: false,
+        unavailableReason: `${reason} The Git revision may no longer be available; refresh Source Control and reopen this diff.`,
+      },
+    };
+    if (!pin) {
+      const previewIndex = this.tabs.findIndex((candidate) => !candidate.pinned && !candidate.dirty);
+      if (previewIndex >= 0) {
+        this.disposeTab(this.tabs[previewIndex]);
+        this.tabs.splice(previewIndex, 1, tab);
+      } else this.tabs.push(tab);
+    } else this.tabs.push(tab);
+    this.activateTab(tab.id);
+    this.renderTabs();
+    this.schedulePersist();
+  }
+
+  private worktreeRef(tab: OpenTab): FileRef | null {
+    if (tab.kind === "diff") return tab.diff?.editable ? tab.diff.fileRef || null : null;
+    return tab.ref;
+  }
+
+  private markModelDirty(model: MonacoEditor.ITextModel): void {
+    for (const tab of this.tabs) {
+      if (tab.model !== model) continue;
+      tab.dirty = true;
+      tab.pinned = true;
+      tab.eol = model.getEOL() === "\r\n" ? "crlf" : "lf";
+    }
+    this.renderTabs();
+    this.renderStatus();
+    this.schedulePersist();
+  }
+
   private activateTab(id: string, focusEditor = true): void {
     const next = this.tabs.find((tab) => tab.id === id);
     if (!next) return;
     const active = this.activeTab();
-    if (active && active.id !== next.id) active.viewState = this.editor.saveViewState();
+    if (active && active.id !== next.id) {
+      if (active.kind === "diff" && active.diff) active.diff.viewState = this.diffEditor.saveViewState();
+      else active.viewState = this.editor.saveViewState();
+    }
     this.activeTabId = id;
-    this.editor.setModel(next.model);
-    if (next.viewState) this.editor.restoreViewState(next.viewState);
-    if (focusEditor) this.editor.focus();
+    if (next.kind === "diff" && next.diff) {
+      this.editor.setModel(null);
+      this.diffEditor.updateOptions({ readOnly: !next.diff.editable, renderSideBySide: this.splitGitDiff });
+      this.diffEditor.setModel({ original: next.diff.originalModel, modified: next.model });
+      if (next.diff.viewState) this.diffEditor.restoreViewState(next.diff.viewState);
+      if (focusEditor) this.diffEditor.getModifiedEditor().focus();
+    } else {
+      this.diffEditor.setModel(null);
+      this.editor.setModel(next.model);
+      if (next.viewState) this.editor.restoreViewState(next.viewState);
+      if (focusEditor) this.editor.focus();
+    }
     this.updateEditorSurface();
     this.renderBreadcrumbs();
     this.renderStatus();
@@ -513,7 +770,7 @@ class CodeView {
     if (!list) return;
     list.innerHTML = this.tabs.map((tab) => `
       <div class="code-tab ${tab.id === this.activeTabId ? "is-active" : ""} ${!tab.pinned ? "is-preview" : ""}" role="tab" aria-selected="${tab.id === this.activeTabId}" tabindex="${tab.id === this.activeTabId ? 0 : -1}" data-tab-id="${escapeHTML(tab.id)}" title="${escapeHTML(tab.hostPath || tab.title)}">
-        <span class="codicon codicon-file-code code-tab-icon"></span>
+        <span class="codicon codicon-${tab.kind === "diff" ? "diff" : "file-code"} code-tab-icon"></span>
         <span class="code-tab-title">${escapeHTML(tab.title)}</span>
         ${tab.conflict ? `<span class="codicon codicon-warning code-tab-conflict" title="Changed on disk"></span>` : ""}
         ${tab.deleted ? `<span class="codicon codicon-trash code-tab-conflict" title="Deleted on disk"></span>` : ""}
@@ -532,6 +789,10 @@ class CodeView {
       if (target) target.innerHTML = "";
       return;
     }
+    if (tab.kind === "diff" && tab.diff) {
+      target.innerHTML = `<span>${escapeHTML(tab.diff.repository.label)}</span><span class="codicon codicon-chevron-right"></span><span>${escapeHTML(tab.diff.oldPath || tab.title)}</span><span class="codicon codicon-chevron-right"></span><span>${escapeHTML(tab.diff.scope === "unstaged" ? "Working Tree" : tab.diff.scope === "staged" ? "Index" : tab.diff.scope)}</span>`;
+      return;
+    }
     if (!tab.ref) {
       target.innerHTML = `<span>${escapeHTML(tab.title)}</span>`;
       return;
@@ -546,7 +807,7 @@ class CodeView {
 
   private renderStatus(): void {
     const tab = this.activeTab();
-    const position = this.editor?.getPosition();
+    const position = tab?.kind === "diff" ? this.diffEditor?.getModifiedEditor().getPosition() : this.editor?.getPosition();
     const cursor = this.root.querySelector<HTMLElement>("[data-status=cursor]");
     const eol = this.root.querySelector<HTMLElement>("[data-status=eol]");
     const language = this.root.querySelector<HTMLElement>("[data-status=language]");
@@ -558,15 +819,41 @@ class CodeView {
   private updateEditorSurface(): void {
     const placeholder = this.root.querySelector<HTMLElement>("[data-editor-placeholder]");
     const host = this.root.querySelector<HTMLElement>("[data-monaco-host]");
-    const hasTab = Boolean(this.activeTab());
+    const diffHost = this.root.querySelector<HTMLElement>("[data-monaco-diff-host]");
+    const toolbar = this.root.querySelector<HTMLElement>("[data-diff-toolbar]");
+    const unavailable = this.root.querySelector<HTMLElement>("[data-diff-unavailable]");
+    const tab = this.activeTab();
+    const hasTab = Boolean(tab);
+    const isDiff = tab?.kind === "diff" && Boolean(tab.diff);
+    const diffUnavailable = isDiff && Boolean(tab?.diff?.unavailableReason);
     if (placeholder) placeholder.hidden = hasTab;
-    if (host) host.hidden = !hasTab;
+    if (host) host.hidden = !hasTab || isDiff;
+    if (diffHost) diffHost.hidden = !isDiff || diffUnavailable;
+    if (toolbar) toolbar.hidden = !isDiff || diffUnavailable;
+    if (unavailable) {
+      unavailable.hidden = !diffUnavailable;
+      unavailable.innerHTML = diffUnavailable ? `<span class="codicon codicon-file-binary"></span><h2>Diff unavailable</h2><p>${escapeHTML(tab?.diff?.unavailableReason || "")}</p>` : "";
+    }
+    const label = this.root.querySelector<HTMLElement>("[data-diff-label]");
+    if (label && isDiff) label.textContent = tab?.diff?.editable ? "Working Tree (editable)" : "Read-only Git snapshot";
     this.editor?.layout();
+    this.diffEditor?.layout();
+  }
+
+  private updateDiffLayoutState(): void {
+    const host = this.root.querySelector<HTMLElement>("[data-monaco-diff-host]");
+    if (host) host.dataset.diffLayout = this.splitGitDiff ? "split" : "inline";
+    const button = this.root.querySelector<HTMLButtonElement>("[data-diff-action=layout]");
+    if (button) {
+      button.title = this.splitGitDiff ? "Use Inline Diff" : "Use Side-by-Side Diff";
+      button.setAttribute("aria-label", button.title);
+    }
   }
 
   private disposeTab(tab: OpenTab): void {
     tab.changeDisposable.dispose();
-    tab.model.dispose();
+    this.releaseModel(tab.model);
+    if (tab.diff) this.releaseModel(tab.diff.originalModel);
   }
 
   private async closeTab(tab: OpenTab, skipPrompt = false): Promise<boolean> {
@@ -587,6 +874,7 @@ class CodeView {
       if (next) this.activateTab(next.id);
       else {
         this.editor.setModel(null);
+        this.diffEditor.setModel(null);
         this.updateEditorSurface();
         this.renderBreadcrumbs();
       }
@@ -601,8 +889,9 @@ class CodeView {
     const title = `Untitled-${this.untitledCounter++}`;
     const id = crypto.randomUUID();
     const model = monaco.editor.createModel("", "plaintext", monaco.Uri.from({ scheme: "untitled", authority: this.workspace?.id || "workspace", path: `/${id}` }));
+    this.retainModel(model);
     const tab: OpenTab = {
-      id, ref: null, title, hostPath: "", pinned: true, dirty: false,
+      kind: "file", id, ref: null, title, hostPath: "", pinned: true, dirty: false,
       deleted: false, conflict: false, revision: "", hasBom: false, eol: "lf", model,
       viewState: null, changeDisposable: { dispose() {} }, applying: false,
     };
@@ -619,6 +908,7 @@ class CodeView {
 
   private async saveTab(tab = this.activeTab()): Promise<boolean> {
     if (!tab || !this.workspace) return false;
+    if (tab.kind === "diff") return this.saveEditableDiff(tab);
     if (!tab.ref) return this.saveUntitled(tab);
     if (tab.deleted) {
       const choice = await choiceDialog({
@@ -657,15 +947,62 @@ class CodeView {
     }
   }
 
+  private async saveEditableDiff(tab: OpenTab): Promise<boolean> {
+    if (!this.workspace || !tab.diff?.editable || !tab.diff.fileRef) {
+      toast("This Git snapshot is read-only.");
+      return false;
+    }
+    const ref = tab.diff.fileRef;
+    try {
+      let snapshot: FileSnapshot;
+      if (tab.deleted) {
+        const parentPath = ref.path.includes("/") ? ref.path.slice(0, ref.path.lastIndexOf("/")) : "";
+        const result = await editorAPI.createEntry(this.workspace.id, {
+          parent: { rootId: ref.rootId, path: parentPath }, name: ref.path.split("/").pop() || tab.title,
+          kind: "file", content: tab.model.getValue(), hasBom: tab.hasBom,
+        });
+        if (!result.file) return false;
+        snapshot = result.file;
+      } else {
+        snapshot = await editorAPI.saveFile(this.workspace.id, {
+          ref, content: tab.model.getValue(), expectedRevision: tab.revision, hasBom: tab.hasBom,
+        });
+      }
+      this.applySavedSnapshot(tab, snapshot);
+      toast(`Saved ${ref.path.split("/").pop() || ref.path}`);
+      return true;
+    } catch (error) {
+      const apiError = error as APIError;
+      const disk = apiError.payload?.details?.current as FileSnapshot | undefined;
+      if (apiError.payload?.code === "revision_conflict" && disk) {
+        const choice = await choiceDialog({
+          title: `${tab.title} changed on disk`, message: "Reload the disk version or overwrite it with this editable diff buffer.",
+          choices: [{ id: "cancel", label: "Cancel" }, { id: "reload", label: "Reload" }, { id: "overwrite", label: "Overwrite", primary: true }],
+        });
+        if (choice === "reload") { this.applyDiskSnapshot(tab, disk); return false; }
+        if (choice === "overwrite") {
+          tab.revision = disk.revision;
+          return this.saveEditableDiff(tab);
+        }
+        return false;
+      }
+      toast(error instanceof Error ? error.message : String(error), { sticky: true });
+      return false;
+    }
+  }
+
   private applySavedSnapshot(tab: OpenTab, snapshot: FileSnapshot): void {
-    tab.revision = snapshot.revision;
-    tab.hostPath = snapshot.hostPath;
-    tab.hasBom = snapshot.hasBom;
-    tab.eol = snapshot.eol;
-    tab.dirty = false;
-    tab.conflict = false;
-    tab.deleted = false;
-    tab.pinned = true;
+    for (const candidate of this.tabs) {
+      if (candidate.model !== tab.model) continue;
+      candidate.revision = snapshot.revision;
+      candidate.hostPath = snapshot.hostPath;
+      candidate.hasBom = snapshot.hasBom;
+      candidate.eol = snapshot.eol;
+      candidate.dirty = false;
+      candidate.conflict = false;
+      candidate.deleted = false;
+      candidate.pinned = true;
+    }
     this.renderTabs();
     this.renderStatus();
     this.schedulePersist();
@@ -735,17 +1072,20 @@ class CodeView {
   }
 
   private applyDiskSnapshot(tab: OpenTab, snapshot: FileSnapshot): void {
-    tab.applying = true;
+    const sharedTabs = this.tabs.filter((candidate) => candidate.model === tab.model);
+    sharedTabs.forEach((candidate) => { candidate.applying = true; });
     tab.model.setValue(snapshot.content);
     tab.model.setEOL(snapshot.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
-    tab.applying = false;
-    tab.revision = snapshot.revision;
-    tab.hostPath = snapshot.hostPath;
-    tab.hasBom = snapshot.hasBom;
-    tab.eol = snapshot.eol;
-    tab.dirty = false;
-    tab.conflict = false;
-    tab.deleted = false;
+    for (const candidate of sharedTabs) {
+      candidate.applying = false;
+      candidate.revision = snapshot.revision;
+      candidate.hostPath = snapshot.hostPath;
+      candidate.hasBom = snapshot.hasBom;
+      candidate.eol = snapshot.eol;
+      candidate.dirty = false;
+      candidate.conflict = false;
+      candidate.deleted = false;
+    }
     this.renderTabs();
     this.renderStatus();
     this.schedulePersist();
@@ -812,11 +1152,12 @@ class CodeView {
     const language = languageForPath(snapshot.ref.path);
     const viewState = tab.id === this.activeTabId ? this.editor.saveViewState() : tab.viewState;
     tab.changeDisposable.dispose();
-    tab.model.dispose();
+    this.releaseModel(tab.model);
     tab.ref = snapshot.ref;
     tab.title = snapshot.ref.path.split("/").pop() || snapshot.ref.path;
     tab.hostPath = snapshot.hostPath;
     tab.model = monaco.editor.createModel(content, language, this.modelURI(snapshot.ref));
+    this.retainModel(tab.model);
     tab.changeDisposable = tab.model.onDidChangeContent(() => {
       if (tab.applying) return;
       tab.dirty = true;
@@ -900,11 +1241,12 @@ class CodeView {
       const language = languageForPath(nextRef.path);
       const viewState = tab.id === this.activeTabId ? this.editor.saveViewState() : tab.viewState;
       tab.changeDisposable.dispose();
-      tab.model.dispose();
+      this.releaseModel(tab.model);
       tab.ref = nextRef;
       tab.title = nextRef.path.split("/").pop() || nextRef.path;
       tab.hostPath = tab.hostPath.startsWith(previousHost) ? nextHost + tab.hostPath.slice(previousHost.length) : nextHost;
       tab.model = monaco.editor.createModel(content, language, this.modelURI(nextRef));
+      this.retainModel(tab.model);
       tab.changeDisposable = tab.model.onDidChangeContent(() => {
         if (tab.applying) return;
         tab.dirty = true;
@@ -1198,6 +1540,10 @@ class CodeView {
   private async saveAsActive(): Promise<void> {
     const active = this.activeTab();
     if (!active) return;
+    if (active.kind === "diff") {
+      await this.saveEditableDiff(active);
+      return;
+    }
     if (!active.ref) {
       await this.saveUntitled(active);
       return;
@@ -1209,8 +1555,9 @@ class CodeView {
 
   private newUntitledFrom(content: string, title: string, id: string = crypto.randomUUID()): OpenTab {
     const model = monaco.editor.createModel(content, languageForPath(title), monaco.Uri.from({ scheme: "untitled", authority: this.workspace?.id || "workspace", path: `/${id}` }));
+    this.retainModel(model);
     const tab: OpenTab = {
-      id, ref: null, title, hostPath: "", pinned: true, dirty: true,
+      kind: "file", id, ref: null, title, hostPath: "", pinned: true, dirty: true,
       deleted: false, conflict: false, revision: "", hasBom: false, eol: model.getEOL() === "\r\n" ? "crlf" : "lf",
       model, viewState: null, changeDisposable: { dispose() {} }, applying: false,
     };
@@ -1363,6 +1710,15 @@ class CodeView {
     this.root.querySelector("[data-mobile-explorer]")?.addEventListener("click", () => {
       const shell = this.root.querySelector<HTMLElement>(".code-app-shell");
       this.setMobileExplorer(!shell?.classList.contains("is-explorer-open"));
+    }, { signal });
+    this.root.querySelector("[data-diff-toolbar]")?.addEventListener("click", (event) => {
+      const action = (event.target as Element).closest<HTMLElement>("[data-diff-action]")?.dataset.diffAction;
+      if (action === "previous" || action === "next") void this.diffEditor.goToDiff(action);
+      if (action === "layout") {
+        this.splitGitDiff = !this.splitGitDiff;
+        this.diffEditor.updateOptions({ renderSideBySide: this.splitGitDiff });
+        this.updateDiffLayoutState();
+      }
     }, { signal });
 
     const tabs = this.root.querySelector<HTMLElement>("[data-code-tabs]")!;
@@ -1517,7 +1873,7 @@ class CodeView {
     if (!this.workspace) return;
     let saved: PersistedWorkspaceSession | null = null;
     try { saved = await loadSession(this.workspace.id); } catch (error) { console.warn("restore editor session", error); }
-    if (!saved || saved.version !== 1) return;
+    if (!saved || (saved.version !== 1 && saved.version !== 2)) return;
     this.explorerWidth = Math.max(220, Math.min(520, saved.explorerWidth || 280));
     this.root.querySelector<HTMLElement>(".code-app-shell")?.style.setProperty("--explorer-width", `${this.explorerWidth}px`);
     this.expanded = new Set(saved.expanded || []);
@@ -1537,8 +1893,9 @@ class CodeView {
     if (active) {
       this.activateTab(active.id);
       const persisted = saved.tabs.find((tab) => tab.id === active.id);
-      if (persisted?.cursor) this.editor.setPosition(persisted.cursor);
-      if (typeof persisted?.scrollTop === "number") this.editor.setScrollTop(persisted.scrollTop);
+      const restoredEditor = active.kind === "diff" ? this.diffEditor.getModifiedEditor() : this.editor;
+      if (persisted?.cursor) restoredEditor.setPosition(persisted.cursor);
+      if (typeof persisted?.scrollTop === "number") restoredEditor.setScrollTop(persisted.scrollTop);
     }
     this.restoredTreeScrollTop = saved.treeScrollTop || 0;
   }
@@ -1546,6 +1903,28 @@ class CodeView {
   private async restoreTab(persisted: PersistedTab): Promise<void> {
     if (!this.workspace) return;
     try {
+      if (persisted.kind === "diff" && persisted.diff) {
+        await this.openGitDiff(
+          persisted.diff.repository,
+          { path: persisted.diff.path, oldPath: persisted.diff.oldPath, ref: persisted.diff.fileRef },
+          persisted.diff.scope,
+          persisted.diff.reviewRef,
+          true,
+        );
+        const tab = this.tabs.find((candidate) => candidate.id === persisted.id);
+        if (!tab) return;
+        tab.pinned = persisted.pinned;
+        if (persisted.dirty && persisted.content !== undefined && tab.diff?.editable) {
+          tab.applying = true;
+          tab.model.setValue(persisted.content);
+          tab.applying = false;
+          this.markModelDirty(tab.model);
+        }
+        tab.deleted = persisted.deleted;
+        tab.revision = persisted.revision;
+        this.captureRestoredViewState(tab, persisted);
+        return;
+      }
       if (!persisted.ref) {
         const tab = this.newUntitledFrom(persisted.content || "", persisted.title, persisted.id);
         tab.dirty = persisted.dirty;
@@ -1578,6 +1957,13 @@ class CodeView {
   }
 
   private captureRestoredViewState(tab: OpenTab, persisted: PersistedTab): void {
+    if (tab.kind === "diff" && tab.diff) {
+      this.diffEditor.setModel({ original: tab.diff.originalModel, modified: tab.model });
+      if (persisted.cursor) this.diffEditor.getModifiedEditor().setPosition(persisted.cursor);
+      if (typeof persisted.scrollTop === "number") this.diffEditor.getModifiedEditor().setScrollTop(persisted.scrollTop);
+      tab.diff.viewState = this.diffEditor.saveViewState();
+      return;
+    }
     this.editor.setModel(tab.model);
     if (persisted.cursor) this.editor.setPosition(persisted.cursor);
     if (typeof persisted.scrollTop === "number") this.editor.setScrollTop(persisted.scrollTop);
@@ -1603,23 +1989,32 @@ class CodeView {
     if (!this.workspace) return;
     window.clearTimeout(this.persistTimer);
     const active = this.activeTab();
-    if (active) active.viewState = this.editor.saveViewState();
+    if (active?.kind === "diff" && active.diff) active.diff.viewState = this.diffEditor.saveViewState();
+    else if (active) active.viewState = this.editor.saveViewState();
     const tabs: PersistedTab[] = this.tabs.map((tab) => {
+      const diffState = tab.diff?.viewState?.modified;
       const position = tab.id === this.activeTabId
-        ? this.editor.getPosition() || undefined
-        : tab.viewState?.cursorState[0]?.position;
+        ? (tab.kind === "diff" ? this.diffEditor.getModifiedEditor().getPosition() : this.editor.getPosition()) || undefined
+        : tab.kind === "diff" ? diffState?.cursorState[0]?.position : tab.viewState?.cursorState[0]?.position;
       return {
-        id: tab.id, ref: tab.ref, title: tab.title, hostPath: tab.hostPath, pinned: tab.pinned,
+        kind: tab.kind, id: tab.id, ref: tab.ref, title: tab.title, hostPath: tab.hostPath, pinned: tab.pinned,
         preview: !tab.pinned, dirty: tab.dirty, deleted: tab.deleted, revision: tab.revision,
         hasBom: tab.hasBom, eol: tab.eol,
-        ...(tab.dirty || !tab.ref ? { content: tab.model.getValue() } : {}),
+        ...(tab.dirty || (tab.kind === "file" && !tab.ref) ? { content: tab.model.getValue() } : {}),
         cursor: position ? { lineNumber: position.lineNumber, column: position.column } : undefined,
-        scrollTop: tab.id === this.activeTabId ? this.editor.getScrollTop() : tab.viewState?.viewState.scrollTop,
+        scrollTop: tab.id === this.activeTabId
+          ? (tab.kind === "diff" ? this.diffEditor.getModifiedEditor().getScrollTop() : this.editor.getScrollTop())
+          : tab.kind === "diff" ? diffState?.viewState.scrollTop : tab.viewState?.viewState.scrollTop,
+        diff: tab.diff ? {
+          repository: tab.diff.repository, scope: tab.diff.scope, reviewRef: tab.diff.reviewRef,
+          fileRef: tab.diff.fileRef, oldPath: tab.diff.oldPath, path: tab.hostPath,
+          editable: tab.diff.editable,
+        } : undefined,
       };
     });
     try {
       await saveSession(this.workspace.id, {
-        version: 1, activeTabId: this.activeTabId, tabs, expanded: [...this.expanded],
+        version: 2, activeTabId: this.activeTabId, tabs, expanded: [...this.expanded],
         selectedTreeKey: this.selectedTreeKey,
         explorerWidth: this.explorerWidth, treeScrollTop: this.treeScroller?.scrollTop || 0,
       });
@@ -1683,7 +2078,8 @@ class CodeView {
       if (ref) refs.set(refKey(ref), ref);
     }
     for (const tab of this.tabs) {
-      if (tab.ref) refs.set(refKey(tab.ref), tab.ref);
+      const ref = this.worktreeRef(tab);
+      if (ref) refs.set(refKey(ref), ref);
     }
     sendSocket({ type: "fs_subscribe", workspaceId: this.workspace.id, refs: [...refs.values()] });
   }
@@ -1695,11 +2091,12 @@ class CodeView {
       const parent = { rootId: change.ref.rootId, path: slash >= 0 ? change.ref.path.slice(0, slash) : "" };
       parents.set(refKey(parent), parent);
       for (const tab of this.tabs) {
-        if (!tab.ref || !isRefWithin(tab.ref, change.ref)) continue;
+        const tabRef = this.worktreeRef(tab);
+        if (!tabRef || !isRefWithin(tabRef, change.ref)) continue;
         if (change.op === "delete" || change.op === "rename") {
           tab.deleted = true;
           if (tab.dirty) tab.conflict = true;
-        } else if (change.op === "write" && refKey(tab.ref) === refKey(change.ref)) {
+        } else if (change.op === "write" && refKey(tabRef) === refKey(change.ref)) {
           if (tab.dirty) tab.conflict = true;
           else await this.reloadCleanTab(tab);
         }
@@ -1714,14 +2111,18 @@ class CodeView {
   }
 
   private async reloadCleanTab(tab: OpenTab): Promise<void> {
-    if (!this.workspace || !tab.ref || tab.dirty) return;
+    const ref = this.worktreeRef(tab);
+    if (!this.workspace || !ref || tab.dirty) return;
     try {
-      const snapshot = await editorAPI.readFile(this.workspace.id, tab.ref);
+      const snapshot = await editorAPI.readFile(this.workspace.id, ref);
       tab.deleted = false;
       if (snapshot.revision !== tab.revision) {
-        const viewState = tab.id === this.activeTabId ? this.editor.saveViewState() : tab.viewState;
+        const activeEditor = tab.kind === "diff" ? this.diffEditor.getModifiedEditor() : this.editor;
+        const viewState = tab.id === this.activeTabId
+          ? activeEditor.saveViewState()
+          : tab.kind === "diff" ? tab.diff?.viewState?.modified : tab.viewState;
         this.applyDiskSnapshot(tab, snapshot);
-        if (tab.id === this.activeTabId && viewState) this.editor.restoreViewState(viewState);
+        if (tab.id === this.activeTabId && viewState) activeEditor.restoreViewState(viewState);
       } else {
         tab.conflict = false;
       }
@@ -1740,10 +2141,11 @@ class CodeView {
 
   private async pollOpenTabs(): Promise<void> {
     for (const tab of this.tabs) {
-      if (!tab.ref) continue;
+      const ref = this.worktreeRef(tab);
+      if (!ref) continue;
       if (tab.dirty && this.workspace) {
         try {
-          const disk = await editorAPI.readFile(this.workspace.id, tab.ref);
+          const disk = await editorAPI.readFile(this.workspace.id, ref);
           tab.deleted = false;
           tab.conflict = disk.revision !== tab.revision;
         } catch (error) {
@@ -1770,5 +2172,10 @@ class CodeView {
     for (const tab of this.tabs) this.disposeTab(tab);
     this.tabs = [];
     this.editor?.dispose();
+    this.diffEditor?.dispose();
   }
+}
+
+function shortGitRef(ref: string): string {
+  return /^[0-9a-f]{10,}$/i.test(ref) ? ref.slice(0, 9) : ref;
 }

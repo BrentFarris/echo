@@ -23,6 +23,20 @@ func TestLoadReturnsDefaultsWhenFileMissing(t *testing.T) {
 	}
 }
 
+func TestLoadReturnsDefaultsWhenSharedSettingsAreNull(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "echo.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"settings":null}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := NewStore(path).Load()
+	if err != nil {
+		t.Fatalf("load null settings: %v", err)
+	}
+	if len(cfg.Endpoints) == 0 || cfg.Endpoint == "" || cfg.Model == "" {
+		t.Fatalf("expected defaults for null shared settings: %#v", cfg)
+	}
+}
+
 func TestSaveAndLoadRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "echo.json")

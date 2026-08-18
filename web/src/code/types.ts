@@ -47,6 +47,7 @@ export type SearchResult = {
 };
 
 export type PersistedTab = {
+  kind?: "file" | "diff";
   id: string;
   ref: FileRef | null;
   title: string;
@@ -61,10 +62,26 @@ export type PersistedTab = {
   content?: string;
   cursor?: { lineNumber: number; column: number };
   scrollTop?: number;
+  diff?: {
+    repository: {
+      id: string;
+      label: string;
+      rootRef?: FileRef;
+      parent: boolean;
+      scopes: Array<{ rootId: string; rootLabel: string; repoPrefix: string }>;
+      revision: number;
+    };
+    scope: "staged" | "unstaged" | "commit" | "stash";
+    reviewRef?: string;
+    fileRef?: FileRef;
+    oldPath?: string;
+    path: string;
+    editable: boolean;
+  };
 };
 
 export type PersistedWorkspaceSession = {
-  version: 1;
+  version: 1 | 2;
   activeTabId: string | null;
   tabs: PersistedTab[];
   expanded: string[];

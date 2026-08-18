@@ -5,6 +5,7 @@
 package settings
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -48,7 +49,7 @@ func (s *Store) Load() (llm.Settings, error) {
 	if err != nil {
 		return llm.Settings{}, err
 	}
-	if len(f.Settings) == 0 {
+	if len(f.Settings) == 0 || bytes.Equal(bytes.TrimSpace(f.Settings), []byte("null")) {
 		return llm.DefaultSettings(), nil
 	}
 	var settings llm.Settings
