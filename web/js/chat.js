@@ -7,6 +7,8 @@ import {
   patchMarkdownElement,
   queueMarkdownPatch,
 } from "../src/markdown.ts";
+import { copyText, toast } from "../src/code/ui.ts";
+import { icons } from "./icons.js";
 
 let binding = null;
 let activeStream = null;
@@ -311,6 +313,8 @@ function createMessageEl(role, text, images = [], videos = []) {
   const el = document.createElement("div");
   el.className = `chat-message chat-message-${role}`;
   el.dataset.role = role;
+  el.dataset.copyText = text;
+  el.appendChild(createMessageActions(el, role));
   const body = document.createElement("div");
   body.className = "chat-message-body";
   el.appendChild(body);
@@ -332,6 +336,71 @@ function createMessageEl(role, text, images = [], videos = []) {
     body.appendChild(content);
   }
   return el;
+}
+
+function createMessageActions(message, role) {
+  const actions = document.createElement("div");
+  actions.className = "chat-message-actions";
+  actions.setAttribute("role", "toolbar");
+  actions.setAttribute("aria-label", "Message actions");
+
+  const copy = messageActionButton({
+    action: "copy",
+    label: role === "assistant" ? "Copy final response" : "Copy message",
+    icon: icons.copy,
+    className: "chat-message-copy",
+  });
+  let resetCopyState = 0;
+  copy.addEventListener("click", async () => {
+    const text = message.dataset.copyText || "";
+    if (!text) {
+      toast(role === "assistant" ? "There is no final response to copy yet." : "Message has no text to copy.", { sticky: true });
+      return;
+    }
+    try {
+      await copyText(text);
+      copy.innerHTML = icons.check;
+      copy.classList.add("is-copied");
+      copy.title = "Copied";
+      copy.setAttribute("aria-label", "Copied");
+      window.clearTimeout(resetCopyState);
+      resetCopyState = window.setTimeout(() => {
+        copy.innerHTML = icons.copy;
+        copy.classList.remove("is-copied");
+        copy.title = role === "assistant" ? "Copy final response" : "Copy message";
+        copy.setAttribute("aria-label", role === "assistant" ? "Copy final response" : "Copy message");
+      }, 1600);
+      toast(role === "assistant" ? "Final response copied." : "Message copied.");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Could not copy the message.", { sticky: true });
+    }
+  });
+
+  actions.append(
+    copy,
+    messageActionButton({ action: "edit", label: "Edit (coming soon)", icon: icons.edit, disabled: true }),
+    messageActionButton({ action: "rerun", label: "Rerun (coming soon)", icon: icons.refresh, disabled: true }),
+    messageActionButton({
+      action: "delete",
+      label: "Delete (coming soon)",
+      icon: icons.trash,
+      className: "chat-message-delete",
+      disabled: true,
+    }),
+  );
+  return actions;
+}
+
+function messageActionButton({ action, label, icon, className = "", disabled = false }) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `icon-button chat-message-action chat-message-${action} ${className}`.trim();
+  button.dataset.messageAction = action;
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.disabled = disabled;
+  button.innerHTML = icon;
+  return button;
 }
 
 function createTurnView(turnId, userText, images = [], videos = []) {
@@ -487,6 +556,7 @@ function endTurn(stream, turnNumber, hasToolCalls) {
 }
 
 function promoteFinalText(stream, turn) {
+  stream.el.dataset.copyText = turn.text;
   patchMarkdownElement(stream.content, turn.text);
   stream.content.hidden = turn.text === "";
   for (const block of turn.el.querySelectorAll(":scope > .chat-progress-text")) {

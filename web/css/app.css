@@ -552,6 +552,7 @@ textarea:disabled {
 
 /* Chat message rows — full-width cards matching OLD. */
 .chat-message {
+  position: relative;
   display: flex;
   flex-direction: column;
   max-width: 100%;
@@ -603,6 +604,70 @@ textarea:disabled {
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: var(--color-bg);
+}
+
+.chat-message-actions {
+  position: absolute;
+  z-index: 2;
+  top: var(--space-md);
+  right: var(--space-md);
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs);
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-surface) 94%, transparent);
+  box-shadow: 0 3px 12px color-mix(in srgb, var(--color-text) 12%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  backdrop-filter: blur(6px);
+}
+
+.chat-message:hover .chat-message-actions,
+.chat-message:focus-within .chat-message-actions {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.chat-message-action.icon-button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.chat-message-action.icon-button:hover:not(:disabled),
+.chat-message-action.icon-button:focus-visible {
+  border-color: var(--color-border);
+}
+
+.chat-message-copy.is-copied {
+  color: var(--color-success);
+}
+
+.chat-message-delete {
+  color: var(--color-danger);
+}
+
+@media (hover: none), (pointer: coarse) {
+  .chat-message-actions {
+    position: static;
+    align-self: flex-end;
+    order: -1;
+    opacity: 1;
+    pointer-events: auto;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-message-actions {
+    transition: none;
+  }
 }
 
 .chat-message-media-item img,
