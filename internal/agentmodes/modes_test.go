@@ -80,3 +80,28 @@ func TestResolveUnknownFallsBackToGeneral(t *testing.T) {
 		t.Fatalf("unexpected fallback: %+v", mode)
 	}
 }
+
+func TestManagerAllowsPermissionsOnlyMode(t *testing.T) {
+	modes, err := NewManager().Create(t.TempDir(), Mode{
+		Name: "Read files",
+		Permissions: map[string]tools.ToolPermission{
+			"filesystem_read_text": {Name: "filesystem_read_text"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(modes) != 3 || modes[2].Prompt != "" {
+		t.Fatalf("unexpected mode: %+v", modes)
+	}
+}
+
+func TestPlanModeAllowsGitInspection(t *testing.T) {
+	plan := Defaults()[1]
+	if _, ok := plan.Permissions["git_inspect"]; !ok {
+		t.Fatal("Plan mode must expose the read-only git_inspect tool")
+	}
+	if _, ok := plan.Permissions["create_agent_mode"]; ok {
+		t.Fatal("Plan mode must not expose create_agent_mode")
+	}
+}

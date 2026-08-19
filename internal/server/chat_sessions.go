@@ -1649,7 +1649,9 @@ func (s *chatSession) toolContext(ctx context.Context, scopes *tools.ToolScopeCh
 		ResolveWorkspaceChildPath: s.manager.server.toolPathResolver(s.workspace.ID, roots, true),
 		ComfyuiURL:                settings.ComfyuiURL, ComfyuiDefaultCheckpoint: settings.ComfyuiDefaultCheckpoint,
 		ComfyuiTxt2imgWorkflow: settings.ComfyuiTxt2imgWorkflow, ComfyuiImg2imgWorkflow: settings.ComfyuiImg2imgWorkflow,
-		AttachedImages: s.latestAttachedImages(), ToolScopes: scopes, WorkspaceSkills: s.manager.server.workspaceSkills(s.workspace),
+		AttachedImages: s.latestAttachedImages(), ToolScopes: scopes,
+		AgentModes:      agentModeToolProvider{manager: s.manager.server.modes, workspacePath: s.workspace.MainPath},
+		WorkspaceSkills: s.manager.server.workspaceSkills(s.workspace),
 	}
 }
 

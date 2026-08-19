@@ -93,10 +93,38 @@ type ExecutionContext struct {
 	GeneratedImages map[string]AttachedImage
 	// ToolScopes enforces the selected agent mode's tool and path allowlist.
 	ToolScopes *ToolScopeChecker
+	// AgentModes creates workspace-scoped custom agent modes when the
+	// create_agent_mode tool is available to the current chat mode.
+	AgentModes AgentModeProvider
 	// WorkspaceSkills supplies workspace-local reusable guidance. It is set by
 	// the chat host and intentionally does not participate in project file
 	// change tracking because skills live under Echo's .echo metadata folder.
 	WorkspaceSkills WorkspaceSkillsProvider
+}
+
+// AgentModeCreationRequest carries the model-provided definition for a custom
+// agent mode. Permissions is the preferred per-tool path mapping. The flat
+// tool/path lists remain supported for compatibility with legacy prompts.
+type AgentModeCreationRequest struct {
+	Name            string              `json:"name"`
+	Prompt          string              `json:"prompt,omitempty"`
+	ToolPermissions []string            `json:"toolPermissions,omitempty"`
+	PathPermissions []string            `json:"pathPermissions,omitempty"`
+	Permissions     map[string][]string `json:"permissions,omitempty"`
+}
+
+// AgentModeCreationResult describes the mode persisted by the host.
+type AgentModeCreationResult struct {
+	ID          string                    `json:"id"`
+	Name        string                    `json:"name"`
+	Prompt      string                    `json:"prompt"`
+	Permissions map[string]ToolPermission `json:"permissions,omitempty"`
+}
+
+// AgentModeProvider is supplied by the chat host so the tools package remains
+// independent of the concrete agent-mode persistence implementation.
+type AgentModeProvider interface {
+	CreateAgentMode(context.Context, AgentModeCreationRequest) (AgentModeCreationResult, error)
 }
 
 const (

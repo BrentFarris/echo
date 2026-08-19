@@ -55,6 +55,7 @@ func Defaults() []Mode {
 				"filesystem_search_text":      {Name: "filesystem_search_text"},
 				"filesystem_search_workspace": {Name: "filesystem_search_workspace"},
 				"filesystem_stat":             {Name: "filesystem_stat"},
+				"git_inspect":                 {Name: "git_inspect"},
 				"workspace_skill_search":      {Name: "workspace_skill_search"},
 				"workspace_skill_read":        {Name: "workspace_skill_read"},
 				"web_fetch":                   {Name: "web_fetch"},
@@ -229,9 +230,6 @@ func normalizeCustom(mode Mode) (Mode, error) {
 	mode.BuiltIn = false
 	if mode.Name == "" {
 		return Mode{}, fmt.Errorf("agent mode name is required")
-	}
-	if mode.Prompt == "" {
-		return Mode{}, fmt.Errorf("agent mode prompt is required")
 	}
 	if len(mode.Name) > 80 {
 		return Mode{}, fmt.Errorf("agent mode name must be 80 characters or fewer")
