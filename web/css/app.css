@@ -653,6 +653,45 @@ textarea:disabled {
   color: var(--color-danger);
 }
 
+.chat-edit-form {
+  display: grid;
+  gap: var(--space-lg);
+  min-width: 0;
+  padding: var(--space-sm);
+}
+
+.chat-edit-textarea {
+  width: 100%;
+  min-width: 0;
+  max-height: min(320px, 50vh);
+  resize: vertical;
+  padding: var(--space-lg-md) var(--space-xl);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: var(--text-2xl-lg);
+  line-height: 1.45;
+}
+
+.chat-edit-textarea:focus {
+  border-color: var(--color-accent);
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 26%, transparent);
+  outline-offset: 1px;
+}
+
+.chat-edit-help {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-base-md);
+}
+
+.chat-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-lg);
+}
+
 @media (hover: none), (pointer: coarse) {
   .chat-message-actions {
     position: static;

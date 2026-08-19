@@ -485,6 +485,30 @@ func (m *chatSessionManager) deleteMessage(c *client, workspaceID, chatID, surfa
 }
 
 func (m *chatSessionManager) rerunMessage(c *client, workspaceID, chatID, surfaceValue, turnID string) {
+	m.regenerateMessage(c, workspaceID, chatID, surfaceValue, turnID, "", false)
+}
+
+func (m *chatSessionManager) editMessage(c *client, workspaceID, chatID, surfaceValue, turnID, role, content string) {
+	errorSurface := chatSurfaceMain
+	if surface, err := normalizeChatSurface(surfaceValue); err == nil {
+		errorSurface = surface
+	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		m.commandErrorForSurface(c, workspaceID, errorSurface, "invalid_message", "message content is required", "")
+		return
+	}
+	switch strings.TrimSpace(role) {
+	case llm.RoleUser:
+		m.regenerateMessage(c, workspaceID, chatID, surfaceValue, turnID, content, true)
+	case llm.RoleAssistant:
+		m.editAssistantMessage(c, workspaceID, chatID, surfaceValue, turnID, content)
+	default:
+		m.commandErrorForSurface(c, workspaceID, errorSurface, "invalid_message_role", "role must be user or assistant", "")
+	}
+}
+
+func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, surfaceValue, turnID, replacement string, editing bool) {
 	surface, surfaceErr := normalizeChatSurface(surfaceValue)
 	if surfaceErr != nil {
 		m.commandErrorForSurface(c, workspaceID, chatSurfaceMain, "invalid_surface", surfaceErr.Error(), "")
@@ -547,6 +571,9 @@ func (m *chatSessionManager) rerunMessage(c *client, workspaceID, chatID, surfac
 	images := append([]sessions.MediaAttachment(nil), selected.Images...)
 	videos := append([]sessions.MediaAttachment(nil), selected.Videos...)
 	visibleText := strings.TrimSpace(selected.UserContent)
+	if editing {
+		visibleText = strings.TrimSpace(replacement)
+	}
 	modelText := chatMediaTextContent(visibleText, images, videos)
 	requestID := newSessionID("request")
 
@@ -611,8 +638,12 @@ func (m *chatSessionManager) rerunMessage(c *client, workspaceID, chatID, surfac
 		AssistantTurns:   []sessions.AssistantTurn{},
 	}
 	newTurnID := session.active.ID
+	eventType := "turn_rerun_started"
+	if editing {
+		eventType = "turn_edit_started"
+	}
 	session.emitLocked(map[string]any{
-		"type": "turn_rerun_started", "fromTurnId": turnID, "turnId": newTurnID, "requestId": requestID,
+		"type": eventType, "fromTurnId": turnID, "turnId": newTurnID, "requestId": requestID,
 		"message": visibleText, "images": images, "videos": videos,
 		"model": request.Model, "agentModeId": mode.ID, "agentModeName": mode.Name, "startedAt": session.active.StartedAt,
 	})
@@ -623,6 +654,114 @@ func (m *chatSessionManager) rerunMessage(c *client, workspaceID, chatID, surfac
 		defer m.wg.Done()
 		session.run(ctx, streamer, settings, messages, newTurnID, scopes)
 	}()
+}
+
+func (m *chatSessionManager) editAssistantMessage(c *client, workspaceID, chatID, surfaceValue, turnID, content string) {
+	surface, surfaceErr := normalizeChatSurface(surfaceValue)
+	if surfaceErr != nil {
+		m.commandErrorForSurface(c, workspaceID, chatSurfaceMain, "invalid_surface", surfaceErr.Error(), "")
+		return
+	}
+	parent, err := m.get(workspaceID)
+	if err != nil {
+		m.commandErrorForSurface(c, workspaceID, surface, "invalid_workspace", err.Error(), "")
+		return
+	}
+	if surface == chatSurfaceCode {
+		if err := parent.ensureCodeChat(); err != nil {
+			m.commandErrorForSurface(c, workspaceID, surface, "session_load_failed", err.Error(), "")
+			return
+		}
+	}
+	session, resolved, err := parent.resolveSurfaceTab(chatID, surface)
+	if err != nil {
+		m.commandErrorForTabSurface(c, workspaceID, chatID, surface, "invalid_chat", err.Error(), "")
+		return
+	}
+
+	session.mu.Lock()
+	if parent.loadErr != nil {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_load_failed", parent.loadErr.Error(), "")
+		return
+	}
+	if session.active != nil {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_busy", "messages cannot be edited while a response is active", "")
+		return
+	}
+	updated := cloneTabTranscript(session.transcript)
+	if err := editAssistantTranscript(&updated, turnID, content); err != nil {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "message_edit_failed", err.Error(), "")
+		return
+	}
+	if err := parent.persistTabLocked(updated); err != nil {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "message_edit_failed", err.Error(), "")
+		return
+	}
+	session.transcript = updated
+	session.mu.Unlock()
+	parent.sequenceFor(surface).Add(1)
+	parent.broadcastSnapshot(surface)
+}
+
+func editAssistantTranscript(transcript *sessions.TabTranscript, turnID, content string) error {
+	turnID = strings.TrimSpace(turnID)
+	content = strings.TrimSpace(content)
+	if turnID == "" || content == "" {
+		return fmt.Errorf("turnId and content are required")
+	}
+	turnIndex := -1
+	for index := range transcript.Turns {
+		if transcript.Turns[index].ID == turnID {
+			turnIndex = index
+			break
+		}
+	}
+	if turnIndex < 0 || transcript.Turns[turnIndex].AssistantDeleted {
+		return fmt.Errorf("assistant message was not found")
+	}
+
+	turn := &transcript.Turns[turnIndex]
+	assistantIndex := -1
+	for index := len(turn.AssistantTurns) - 1; index >= 0; index-- {
+		if !turn.AssistantTurns[index].HasToolCalls {
+			assistantIndex = index
+			break
+		}
+	}
+	if assistantIndex < 0 {
+		return fmt.Errorf("assistant response was not found")
+	}
+
+	start := turn.UserMessageIndex
+	if !turn.UserDeleted {
+		start++
+	}
+	end := len(transcript.Messages)
+	if turnIndex+1 < len(transcript.Turns) {
+		end = transcript.Turns[turnIndex+1].UserMessageIndex
+	}
+	if start < 0 || start > end || end > len(transcript.Messages) {
+		return fmt.Errorf("assistant message context is inconsistent")
+	}
+	messageIndex := -1
+	for index := end - 1; index >= start; index-- {
+		if transcript.Messages[index].Role == llm.RoleAssistant && len(transcript.Messages[index].ToolCalls) == 0 {
+			messageIndex = index
+			break
+		}
+	}
+	if messageIndex < 0 {
+		return fmt.Errorf("assistant response context was not found")
+	}
+
+	turn.AssistantTurns[assistantIndex].Content = content
+	transcript.Messages[messageIndex].Content = content
+	transcript.Revision++
+	return nil
 }
 
 // rerunTurn returns the selected user input and a transcript containing only
@@ -667,6 +806,16 @@ func rerunTurn(transcript sessions.TabTranscript, turnID string) (sessions.Turn,
 func cloneTabTranscript(transcript sessions.TabTranscript) sessions.TabTranscript {
 	clone := transcript
 	clone.Turns = append([]sessions.Turn(nil), transcript.Turns...)
+	for index := range clone.Turns {
+		clone.Turns[index].Images = append([]sessions.MediaAttachment(nil), transcript.Turns[index].Images...)
+		clone.Turns[index].Videos = append([]sessions.MediaAttachment(nil), transcript.Turns[index].Videos...)
+		clone.Turns[index].AssistantTurns = append([]sessions.AssistantTurn(nil), transcript.Turns[index].AssistantTurns...)
+		for assistantIndex := range clone.Turns[index].AssistantTurns {
+			clone.Turns[index].AssistantTurns[assistantIndex].Tools = append(
+				[]sessions.ToolActivity(nil), transcript.Turns[index].AssistantTurns[assistantIndex].Tools...,
+			)
+		}
+	}
 	clone.Messages = append([]llm.Message(nil), transcript.Messages...)
 	return clone
 }

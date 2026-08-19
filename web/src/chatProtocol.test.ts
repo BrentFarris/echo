@@ -137,6 +137,28 @@ describe("multi-chat WebSocket protocol", () => {
     expect(getChatWorkspaceState()?.tabs[0]).toMatchObject({ preview: "First prompt", busy: true });
   });
 
+  it("rewinds selected and later messages before rendering a user edit", () => {
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 20,
+      activeChatId: "chat-one", tabs: [{ chatId: "chat-one", preview: "Old", busy: false }],
+      turns: [{
+        id: "turn-old", userContent: "Old prompt", status: "done",
+        assistantTurns: [{ number: 0, content: "Old answer", hasToolCalls: false }],
+      }],
+    });
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 21,
+      event: {
+        type: "turn_edit_started", fromTurnId: "turn-old", turnId: "turn-edited",
+        message: "Edited prompt", images: [], videos: [],
+      },
+    });
+
+    expect(log.querySelector("[data-turn-id='turn-old']")).toBeNull();
+    expect(log.querySelector(".chat-message-user[data-turn-id='turn-edited']")?.textContent).toContain("Edited prompt");
+    expect(getChatWorkspaceState()?.tabs[0]).toMatchObject({ preview: "Edited prompt", busy: true });
+  });
+
   it("stops only the active stream", () => {
     emit("session_snapshot", {
       type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 0,

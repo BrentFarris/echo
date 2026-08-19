@@ -394,6 +394,102 @@ func TestRerunEarlierMessageReplacesSelectedTurnAndLaterContext(t *testing.T) {
 	}
 }
 
+func TestEditUserMessageResubmitsAndClearsLaterContext(t *testing.T) {
+	s, _ := newTestServer(t)
+	workspace := createChatWorkspace(t, s, "edit-user-message")
+	fake := &historyStreamer{}
+	s.llm = fake
+	url := startWebSocketTestServer(t, s)
+	conn := dialSharedClient(t, url)
+	subscribeChat(t, conn, workspace.ID)
+
+	for index, prompt := range []string{"original prompt", "later prompt"} {
+		if err := conn.WriteJSON(map[string]any{
+			"type": "chat_send", "workspaceId": workspace.ID,
+			"requestId": fmt.Sprintf("request-edit-user-%d", index), "message": prompt,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		readUntilSessionEvent(t, conn, "turn_finished")
+	}
+	beforeEdit := loadActiveTabTranscript(t, workspace)
+	if err := conn.WriteJSON(map[string]any{
+		"type": "chat_message_edit", "workspaceId": workspace.ID, "turnId": beforeEdit.Turns[0].ID,
+		"role": llm.RoleUser, "message": "revised prompt",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	started := readUntilSessionEvent(t, conn, "turn_edit_started")
+	if started["fromTurnId"] != beforeEdit.Turns[0].ID || started["message"] != "revised prompt" {
+		t.Fatalf("unexpected user edit start: %v", started)
+	}
+	readUntilSessionEvent(t, conn, "turn_finished")
+
+	fake.mu.Lock()
+	requests := append([]llm.ChatRequest(nil), fake.requests...)
+	fake.mu.Unlock()
+	if len(requests) != 3 || len(requests[2].Messages) != 2 || requests[2].Messages[1].Content != "revised prompt" {
+		t.Fatalf("edited user request retained old or later context: %#v", requests)
+	}
+	afterEdit := loadActiveTabTranscript(t, workspace)
+	if len(afterEdit.Turns) != 1 || afterEdit.Turns[0].UserContent != "revised prompt" ||
+		afterEdit.Turns[0].AssistantTurns[0].Content != "answer-3" {
+		t.Fatalf("edited user message was not durably regenerated: %#v", afterEdit)
+	}
+}
+
+func TestEditAssistantMessageUpdatesFutureContextWithoutRegenerating(t *testing.T) {
+	s, _ := newTestServer(t)
+	workspace := createChatWorkspace(t, s, "edit-assistant-message")
+	fake := &historyStreamer{}
+	s.llm = fake
+	url := startWebSocketTestServer(t, s)
+	conn := dialSharedClient(t, url)
+	subscribeChat(t, conn, workspace.ID)
+
+	for index, prompt := range []string{"first prompt", "second prompt"} {
+		if err := conn.WriteJSON(map[string]any{
+			"type": "chat_send", "workspaceId": workspace.ID,
+			"requestId": fmt.Sprintf("request-edit-assistant-%d", index), "message": prompt,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		readUntilSessionEvent(t, conn, "turn_finished")
+	}
+	beforeEdit := loadActiveTabTranscript(t, workspace)
+	if err := conn.WriteJSON(map[string]any{
+		"type": "chat_message_edit", "workspaceId": workspace.ID, "turnId": beforeEdit.Turns[0].ID,
+		"role": llm.RoleAssistant, "message": "edited answer",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	readChatSnapshot(t, conn)
+	afterEdit := loadActiveTabTranscript(t, workspace)
+	if len(afterEdit.Turns) != 2 || afterEdit.Turns[0].AssistantTurns[0].Content != "edited answer" {
+		t.Fatalf("assistant edit did not persist in place: %#v", afterEdit)
+	}
+
+	if err := conn.WriteJSON(map[string]any{
+		"type": "chat_send", "workspaceId": workspace.ID, "requestId": "request-after-assistant-edit", "message": "third prompt",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	readUntilSessionEvent(t, conn, "turn_finished")
+	fake.mu.Lock()
+	requests := append([]llm.ChatRequest(nil), fake.requests...)
+	fake.mu.Unlock()
+	if len(requests) != 3 {
+		t.Fatalf("assistant edit unexpectedly generated a request: %d", len(requests))
+	}
+	contents := make([]string, 0, len(requests[2].Messages))
+	for _, message := range requests[2].Messages {
+		contents = append(contents, message.Content)
+	}
+	if strings.Contains(strings.Join(contents, "\n"), "answer-1") || !strings.Contains(strings.Join(contents, "\n"), "edited answer") {
+		t.Fatalf("future context did not use edited assistant response: %#v", requests[2].Messages)
+	}
+}
+
 func TestClearChatPersistsAndBroadcastsEmptySnapshot(t *testing.T) {
 	s, _ := newTestServer(t)
 	workspace := createChatWorkspace(t, s, "clear-chat")

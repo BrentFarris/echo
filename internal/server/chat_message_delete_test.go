@@ -100,3 +100,22 @@ func TestRerunTurnRequiresPreservedUserMessage(t *testing.T) {
 		t.Fatal("expected rerun to reject a deleted user message")
 	}
 }
+
+func TestEditAssistantTranscriptChangesOnlyFinalResponse(t *testing.T) {
+	original := deletionTestTranscript()
+	updated := cloneTabTranscript(original)
+	if err := editAssistantTranscript(&updated, "turn-one", "edited first answer"); err != nil {
+		t.Fatal(err)
+	}
+
+	if updated.Turns[0].AssistantTurns[1].Content != "edited first answer" || updated.Messages[4].Content != "edited first answer" {
+		t.Fatalf("final response was not updated in both histories: %#v / %#v", updated.Turns[0], updated.Messages)
+	}
+	if updated.Turns[0].AssistantTurns[0].Content != "working" || updated.Messages[1].Content != "working" ||
+		updated.Messages[2].Content != "tool result" || updated.Turns[1].AssistantTurns[0].Content != "second answer" {
+		t.Fatalf("assistant edit changed tool or later context: %#v / %#v", updated.Turns, updated.Messages)
+	}
+	if original.Turns[0].AssistantTurns[1].Content != "first answer" {
+		t.Fatalf("failed edit rollback clone isolation: %#v", original.Turns[0])
+	}
+}

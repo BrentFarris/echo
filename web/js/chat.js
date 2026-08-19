@@ -181,7 +181,7 @@ ws.on("session_event", (message) => {
   const event = message.event || {};
   const chatId = message.chatId || binding.activeChatId;
   const tab = binding.tabs.find((candidate) => candidate.chatId === chatId);
-  if (tab && (event.type === "turn_started" || event.type === "turn_rerun_started")) {
+  if (tab && (event.type === "turn_started" || event.type === "turn_rerun_started" || event.type === "turn_edit_started")) {
     tab.preview = normalizePreview(event.message) || "New chat";
     tab.busy = true;
   } else if (tab && event.type === "turn_finished") {
@@ -222,7 +222,8 @@ function applyEvent(event) {
       setStreaming(true);
       break;
     }
-    case "turn_rerun_started": {
+    case "turn_rerun_started":
+    case "turn_edit_started": {
       rewindTurnViews(event.fromTurnId);
       binding.log.querySelector(".chat-empty")?.remove();
       const stream = createTurnView(event.turnId, event.message || "", event.images || [], event.videos || []);
@@ -442,9 +443,16 @@ function createMessageActions(message, role) {
     if (!sent) toast("Could not send the rerun request.", { sticky: true });
   });
 
+  const edit = messageActionButton({
+    action: "edit",
+    label: role === "assistant" ? "Edit response" : "Edit message",
+    icon: icons.edit,
+  });
+  edit.addEventListener("click", () => beginMessageEdit(message, role));
+
   actions.append(
     copy,
-    messageActionButton({ action: "edit", label: "Edit (coming soon)", icon: icons.edit, disabled: true }),
+    edit,
     rerun,
     remove,
   );
@@ -496,6 +504,85 @@ function rewindTurnViews(fromTurnId) {
     stream.el.remove();
     binding.turns.delete(turnId);
   }
+}
+
+function beginMessageEdit(message, role) {
+  if (activeStream) {
+    toast("Wait for the current response to finish before editing messages.", { sticky: true });
+    return;
+  }
+  if (message.querySelector(".chat-edit-form")) return;
+  const content = message.querySelector(".chat-message-content");
+  const original = message.dataset.copyText || "";
+  if (!content || !original.trim()) {
+    toast("Message has no editable text.", { sticky: true });
+    return;
+  }
+
+  const form = document.createElement("form");
+  form.className = "chat-edit-form";
+  const textarea = document.createElement("textarea");
+  textarea.className = "chat-edit-textarea";
+  textarea.rows = Math.min(10, Math.max(3, original.split("\n").length));
+  textarea.value = original;
+  textarea.setAttribute("aria-label", role === "assistant" ? "Edit assistant response" : "Edit user message");
+  const help = document.createElement("p");
+  help.className = "chat-edit-help";
+  help.textContent = role === "assistant"
+    ? "Saving updates conversation history without generating a new response."
+    : "Saving resubmits this message and removes its current response and all later messages.";
+  const controls = document.createElement("div");
+  controls.className = "chat-edit-actions";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "secondary-button compact-button";
+  cancel.textContent = "Cancel";
+  const save = document.createElement("button");
+  save.type = "submit";
+  save.className = "primary-button compact-button";
+  save.textContent = role === "user" ? "Save & Resubmit" : "Save";
+  controls.append(cancel, save);
+  form.append(textarea, help, controls);
+  content.hidden = true;
+  content.parentElement.insertBefore(form, content);
+
+  const close = () => {
+    form.remove();
+    content.hidden = false;
+  };
+  cancel.addEventListener("click", close);
+  textarea.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+    } else if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const value = textarea.value.trim();
+    const turnId = message.dataset.turnId || "";
+    if (!value) {
+      toast("Message cannot be empty.", { sticky: true });
+      textarea.focus();
+      return;
+    }
+    if (!binding?.workspaceId || !binding.activeChatId || !turnId) return;
+    const sent = ws.send({
+      type: "chat_message_edit",
+      workspaceId: binding.workspaceId,
+      chatId: binding.activeChatId,
+      turnId,
+      role,
+      message: value,
+      ...(binding.surface === "code" ? { surface: "code" } : {}),
+    });
+    if (!sent) toast("Could not send the edit request.", { sticky: true });
+  });
+  textarea.focus();
+  textarea.setSelectionRange(textarea.value.length, textarea.value.length);
 }
 
 function appendUserMedia(body, images, videos) {

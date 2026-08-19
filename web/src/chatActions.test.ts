@@ -167,6 +167,35 @@ describe("chat message actions", () => {
     });
   });
 
+  it.each([
+    ["user", ".chat-message-user", "Question", "Revised question"],
+    ["assistant", ".chat-message-assistant", "Answer", "Revised answer"],
+  ])("submits inline edits for %s messages", (role, selector, original, revised) => {
+    snapshot([{
+      id: "turn-edit",
+      userContent: "Question",
+      status: "done",
+      assistantTurns: [{ number: 0, content: "Answer", hasToolCalls: false }],
+    }]);
+    socket.send.mockClear();
+
+    log.querySelector<HTMLButtonElement>(`${selector} [data-message-action='edit']`)!.click();
+    const form = log.querySelector<HTMLFormElement>(`${selector} .chat-edit-form`)!;
+    const textarea = form.querySelector<HTMLTextAreaElement>(".chat-edit-textarea")!;
+    expect(textarea.value).toBe(original);
+    textarea.value = revised;
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    expect(socket.send).toHaveBeenCalledWith({
+      type: "chat_message_edit",
+      workspaceId: "workspace-actions",
+      chatId: "chat-actions",
+      turnId: "turn-edit",
+      role,
+      message: revised,
+    });
+  });
+
   it("does not render deleted halves restored from a snapshot", () => {
     snapshot([
       {

@@ -250,6 +250,8 @@ func (c *client) readPump(h *Hub) {
 			c.server.sessions.deleteMessage(c, msg.WorkspaceID, msg.ChatID, msg.Surface, msg.TurnID, msg.Role)
 		case "chat_message_rerun":
 			c.server.sessions.rerunMessage(c, msg.WorkspaceID, msg.ChatID, msg.Surface, msg.TurnID)
+		case "chat_message_edit":
+			c.server.sessions.editMessage(c, msg.WorkspaceID, msg.ChatID, msg.Surface, msg.TurnID, msg.Role, msg.Message)
 		case "chat_tab_create":
 			c.server.sessions.createTab(c, msg.WorkspaceID)
 		case "chat_tab_activate":
