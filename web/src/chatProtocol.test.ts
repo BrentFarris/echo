@@ -120,6 +120,49 @@ describe("multi-chat WebSocket protocol", () => {
     });
   });
 
+  it("sends attachment-only media and renders it from snapshots and live events", () => {
+    const storedImage = {
+      id: "image-one", name: "diagram.png", mediaType: "image/png", bytes: 12,
+      dataUrl: "data:image/png;base64,c3RvcmVk",
+    };
+    const storedVideo = {
+      id: "video-one", name: "demo.webm", mediaType: "video/webm", bytes: 34,
+      dataUrl: "data:video/webm;base64,c3RvcmVk",
+    };
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 7,
+      activeChatId: "chat-one", tabs: [{ chatId: "chat-one", preview: "Media", busy: false }],
+      turns: [{
+        id: "stored-media", userContent: "Review these.", status: "done",
+        images: [storedImage], videos: [storedVideo], assistantTurns: [],
+      }],
+    });
+
+    const restoredImage = log.querySelector<HTMLImageElement>(".chat-message-media img")!;
+    const restoredVideo = log.querySelector<HTMLVideoElement>(".chat-message-media video")!;
+    expect(restoredImage.alt).toBe("diagram.png");
+    expect(restoredImage.src).toBe(storedImage.dataUrl);
+    expect(restoredVideo.controls).toBe(true);
+    expect(restoredVideo.preload).toBe("metadata");
+    expect(restoredVideo.src).toBe(storedVideo.dataUrl);
+
+    expect(sendMessage(log, "", undefined, "general", { images: [storedImage], videos: [storedVideo] })).toBe(true);
+    expect(socket.send).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: "chat_send", workspaceId: "workspace-tabs", chatId: "chat-one", message: "",
+      images: [storedImage], videos: [storedVideo],
+    }));
+
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 8,
+      event: {
+        type: "turn_started", turnId: "live-media", message: "Please review the attached image(s).",
+        images: [{ ...storedImage, id: "live-image" }], videos: [],
+      },
+    });
+    expect(log.querySelectorAll(".chat-message-media img")).toHaveLength(2);
+    expect(log.textContent).toContain("Please review the attached image(s).");
+  });
+
   it("isolates the code surface and sends editor context", () => {
     closeWorkspaceSession(log);
     openWorkspaceSession(log, "workspace-tabs", { surface: "code" });

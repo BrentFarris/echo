@@ -33,34 +33,37 @@ import (
 // directory, hosts JSON API endpoints under /api, and runs a WebSocket hub for
 // real-time events.
 type Server struct {
-	httpServer   *http.Server
-	webDir       string
-	webAssets    iofs.FS
-	hub          *Hub
-	settingsPath string
-	data         *appdata.Store
-	store        *settings.Store
-	workspaces   *workspaces.Manager
-	fs           *workspacefs.Service
-	watcher      *workspacefs.WatchManager
-	git          *gitservice.Service
-	terminal     *terminalruntime.Service
-	auth         *auth.Manager
-	authDisabled bool
-	loginLimiter *loginRateLimiter
-	modes        *agentmodes.Manager
-	sessions     *chatSessionManager
-	llm          chatStreamer
-	llmCompleter chatCompleter
-	llmSettings  llm.Settings
-	skillsMu     sync.Mutex
-	skills       map[string]*workspaceskills.Service
-	rebuilder    rebuildCoordinator
-	restartCh    chan struct{}
-	instanceID   string
-	processID    int
-	processArgs  []string
-	workingDir   string
+	httpServer     *http.Server
+	webDir         string
+	webAssets      iofs.FS
+	hub            *Hub
+	settingsPath   string
+	data           *appdata.Store
+	store          *settings.Store
+	workspaces     *workspaces.Manager
+	fs             *workspacefs.Service
+	watcher        *workspacefs.WatchManager
+	git            *gitservice.Service
+	terminal       *terminalruntime.Service
+	auth           *auth.Manager
+	authDisabled   bool
+	loginLimiter   *loginRateLimiter
+	modes          *agentmodes.Manager
+	sessions       *chatSessionManager
+	llm            chatStreamer
+	llmCompleter   chatCompleter
+	llmSettings    llm.Settings
+	visionLLM      chatStreamer
+	visionSettings llm.Settings
+	visionSeparate bool
+	skillsMu       sync.Mutex
+	skills         map[string]*workspaceskills.Service
+	rebuilder      rebuildCoordinator
+	restartCh      chan struct{}
+	instanceID     string
+	processID      int
+	processArgs    []string
+	workingDir     string
 	// settings holds the full normalized settings (all endpoints) so the chat
 	// handler can resolve a user-selected model to its owning endpoint.
 	settings llm.Settings
@@ -164,6 +167,11 @@ func (s *Server) initLLM() {
 	cfg = cfg.NormalizedEndpointProfiles()
 	s.settings = cfg
 	s.llmSettings = cfg.ForInteraction(llm.InteractionChat)
+	s.visionSettings = cfg.ForInteraction(llm.InteractionVision)
+	s.llm = nil
+	s.llmCompleter = nil
+	s.visionLLM = nil
+	s.visionSeparate = cfg.EndpointSelection.Vision != cfg.EndpointSelection.Chat
 	client, err := llm.NewClient(s.llmSettings)
 	if err != nil {
 		logf("init llm client: %v", err)
@@ -171,6 +179,16 @@ func (s *Server) initLLM() {
 	}
 	s.llm = client
 	s.llmCompleter = client
+	if !s.visionSeparate {
+		s.visionLLM = client
+		return
+	}
+	visionClient, visionErr := llm.NewClient(s.visionSettings)
+	if visionErr != nil {
+		logf("init vision llm client: %v", visionErr)
+		return
+	}
+	s.visionLLM = visionClient
 }
 
 // settingsForModel returns the settings for the endpoint that owns the given

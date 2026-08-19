@@ -34,8 +34,42 @@ let agentModes = [];
 let selectedAgentModeId = "general";
 const tabComposerState = new Map();
 const knownWorkspaceTabs = new Map();
+const maxChatImages = 4;
+const maxChatVideos = 4;
+const maxChatImageBytes = 10 * 1024 * 1024;
+const maxChatMediaBytes = 20 * 1024 * 1024;
+const imageMediaTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+const videoMediaTypes = new Set(["video/mp4", "video/webm", "video/quicktime"]);
+const allMediaAccept = "image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,video/quicktime,.mov";
 
 function tabStateKey(workspaceId, chatId) { return `${workspaceId}\0${chatId}`; }
+
+function formatMediaBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function mediaTypeForFile(file) {
+  const reported = String(file.type || "").toLowerCase();
+  if (imageMediaTypes.has(reported) || videoMediaTypes.has(reported)) return reported;
+  const extension = String(file.name || "").toLowerCase().split(".").pop();
+  return ({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", mp4: "video/mp4", webm: "video/webm", mov: "video/quicktime" })[extension] || "";
+}
+
+function fileToDataURL(file, mediaType) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      const result = String(reader.result || "");
+      const comma = result.indexOf(",");
+      if (comma < 0) reject(new Error(`Unable to read ${file.name || "attachment"}.`));
+      else resolve(`data:${mediaType};base64,${result.slice(comma + 1)}`);
+    }, { once: true });
+    reader.addEventListener("error", () => reject(reader.error || new Error(`Unable to read ${file.name || "attachment"}.`)), { once: true });
+    reader.readAsDataURL(file);
+  });
+}
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
@@ -115,6 +149,7 @@ function chatPanel() {
           </div>
           <form class="chat-composer" data-chat-form>
             <div class="chat-composer-main" data-chat-input-wrap>
+              <div class="chat-attachment-drafts" data-chat-attachment-drafts hidden></div>
               <div
                 class="chat-composer-editor"
                 contenteditable="true"
@@ -130,7 +165,7 @@ function chatPanel() {
             </div>
             <div class="chat-composer-toolbar">
               <div class="chat-composer-toolbar-left">
-                <button class="chat-toolbar-icon" type="button" title="Attach file" aria-label="Attach file">${icons.plus}</button>
+                <button class="chat-toolbar-icon" type="button" title="Attach file" aria-label="Attach file" aria-haspopup="menu" aria-expanded="false" data-chat-attachment-trigger>${icons.plus}</button>
                 <button class="chat-toolbar-icon chat-speech-recognition" type="button" title="Hold to speak" aria-label="Voice input">${icons.mic}</button>
                 <button class="model-selector chat-toolbar-model" type="button" title="Select model" aria-haspopup="listbox" aria-expanded="false" data-model-trigger>
                   <span class="model-selector-label" data-model-label>Model</span>
@@ -174,6 +209,8 @@ export function mount(root) {
   const form = root.querySelector("[data-chat-form]");
   const inputWrap = root.querySelector("[data-chat-input-wrap]");
   const input = root.querySelector("[data-chat-input]");
+  const attachmentDrafts = root.querySelector("[data-chat-attachment-drafts]");
+  const attachmentTrigger = root.querySelector("[data-chat-attachment-trigger]");
   const sendBtn = root.querySelector(".send-button");
   const modelTrigger = root.querySelector("[data-model-trigger]");
   const modelLabel = root.querySelector("[data-model-label]");
@@ -476,10 +513,13 @@ export function mount(root) {
 
   const saveCurrentComposer = () => {
     if (!currentWorkspaceId || !currentChatId) return;
+    const existing = tabComposerState.get(tabStateKey(currentWorkspaceId, currentChatId));
     tabComposerState.set(tabStateKey(currentWorkspaceId, currentChatId), {
       segments: snapshotComposer(input),
       model: selectedModel,
       agentModeId: selectedAgentModeId,
+      images: existing?.images || [],
+      videos: existing?.videos || [],
     });
   };
 
@@ -488,14 +528,17 @@ export function mount(root) {
     const key = tabStateKey(currentWorkspaceId, currentChatId);
     let state = tabComposerState.get(key);
     if (!state) {
-      state = { segments: [], model: defaultSelectedModel, agentModeId: "general" };
+      state = { segments: [], model: defaultSelectedModel, agentModeId: "general", images: [], videos: [] };
       tabComposerState.set(key, state);
     }
+    state.images ||= [];
+    state.videos ||= [];
     selectedModel = state.model || null;
     selectedAgentModeId = agentModes.some((mode) => mode.id === state.agentModeId)
       ? state.agentModeId
       : "general";
     restoreComposer(input, state.segments || [], createReferenceChip);
+    renderAttachmentDrafts();
     updateModelLabel();
     updateModeLabel();
   };
@@ -699,6 +742,209 @@ export function mount(root) {
   const clearChatButton = moreMenu.querySelector("[data-clear-chat-button]");
   const createSkillButton = moreMenu.querySelector("[data-create-skill-button]");
 
+  const attachmentMenu = document.createElement("div");
+  attachmentMenu.className = "chat-attachment-menu";
+  attachmentMenu.hidden = true;
+  attachmentMenu.setAttribute("role", "menu");
+  attachmentMenu.setAttribute("aria-label", "Attach media");
+  attachmentMenu.innerHTML = `
+    <button type="button" role="menuitem" data-attachment-type="image">${icons.image}<span>Image</span></button>
+    <button type="button" role="menuitem" data-attachment-type="video">${icons.video}<span>Video</span></button>
+  `;
+  document.body.appendChild(attachmentMenu);
+
+  const currentComposerState = () => {
+    if (!currentWorkspaceId || !currentChatId) return null;
+    const key = tabStateKey(currentWorkspaceId, currentChatId);
+    let state = tabComposerState.get(key);
+    if (!state) {
+      state = { segments: snapshotComposer(input), model: selectedModel, agentModeId: selectedAgentModeId, images: [], videos: [] };
+      tabComposerState.set(key, state);
+    }
+    state.images ||= [];
+    state.videos ||= [];
+    return state;
+  };
+
+  const renderAttachmentDrafts = () => {
+    attachmentDrafts.replaceChildren();
+    const state = currentComposerState();
+    const entries = [
+      ...(state?.images || []).map((attachment) => ({ ...attachment, kind: "images" })),
+      ...(state?.videos || []).map((attachment) => ({ ...attachment, kind: "videos" })),
+    ];
+    attachmentDrafts.hidden = entries.length === 0;
+    for (const attachment of entries) {
+      const chip = document.createElement("div");
+      chip.className = `chat-attachment-draft is-${attachment.kind === "images" ? "image" : "video"}`;
+      const preview = document.createElement("span");
+      preview.className = "chat-attachment-draft-preview";
+      if (attachment.kind === "images") {
+        const image = document.createElement("img");
+        image.src = attachment.dataUrl;
+        image.alt = "";
+        preview.append(image);
+      } else {
+        preview.innerHTML = icons.video;
+      }
+      const details = document.createElement("span");
+      details.className = "chat-attachment-draft-details";
+      const name = document.createElement("strong");
+      name.textContent = attachment.name;
+      const size = document.createElement("small");
+      size.textContent = formatMediaBytes(attachment.bytes);
+      details.append(name, size);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "chat-attachment-draft-remove";
+      remove.title = `Remove ${attachment.name}`;
+      remove.setAttribute("aria-label", `Remove ${attachment.name}`);
+      remove.innerHTML = icons.x;
+      remove.addEventListener("click", () => {
+        const active = currentComposerState();
+        if (!active) return;
+        active[attachment.kind] = active[attachment.kind].filter((candidate) => candidate.id !== attachment.id);
+        renderAttachmentDrafts();
+        input.focus();
+      });
+      chip.append(preview, details, remove);
+      attachmentDrafts.append(chip);
+    }
+  };
+
+  const addMediaFiles = async (files) => {
+    if (!currentWorkspaceId || !currentChatId || !files.length) return;
+    const workspaceId = currentWorkspaceId;
+    const chatId = currentChatId;
+    const key = tabStateKey(workspaceId, chatId);
+    saveCurrentComposer();
+    const state = tabComposerState.get(key);
+    if (!state) return;
+    const images = [...(state.images || [])];
+    const videos = [...(state.videos || [])];
+    let totalBytes = [...images, ...videos].reduce((total, attachment) => total + attachment.bytes, 0);
+    let changed = false;
+    for (const file of files) {
+      const mediaType = mediaTypeForFile(file);
+      const isImage = imageMediaTypes.has(mediaType);
+      const isVideo = videoMediaTypes.has(mediaType);
+      if (!isImage && !isVideo) {
+        toast(`Unsupported media format: ${file.type || file.name || "unknown"}.`, { sticky: true });
+        continue;
+      }
+      if (isImage && images.length >= maxChatImages) {
+        toast(`A message can include at most ${maxChatImages} images.`, { sticky: true });
+        continue;
+      }
+      if (isVideo && videos.length >= maxChatVideos) {
+        toast(`A message can include at most ${maxChatVideos} videos.`, { sticky: true });
+        continue;
+      }
+      if (isImage && file.size > maxChatImageBytes) {
+        toast(`${file.name || "Image"} is larger than ${formatMediaBytes(maxChatImageBytes)}.`, { sticky: true });
+        continue;
+      }
+      if (file.size > maxChatMediaBytes || totalBytes + file.size > maxChatMediaBytes) {
+        toast(`Attached media cannot exceed ${formatMediaBytes(maxChatMediaBytes)} per message.`, { sticky: true });
+        continue;
+      }
+      try {
+        const attachment = {
+          id: globalThis.crypto?.randomUUID?.() || `draft-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          name: file.name || `${isImage ? "image" : "video"}-${isImage ? images.length + 1 : videos.length + 1}`,
+          mediaType,
+          bytes: file.size,
+          dataUrl: await fileToDataURL(file, mediaType),
+        };
+        (isImage ? images : videos).push(attachment);
+        totalBytes += file.size;
+        changed = true;
+      } catch (error) {
+        toast(error instanceof Error ? error.message : String(error), { sticky: true });
+      }
+    }
+    if (!changed || !tabComposerState.has(key)) return;
+    state.images = images;
+    state.videos = videos;
+    tabComposerState.set(key, state);
+    if (workspaceId === currentWorkspaceId && chatId === currentChatId) {
+      renderAttachmentDrafts();
+      input.focus();
+    }
+  };
+
+  const selectMediaFiles = (type = "all") => {
+    const picker = document.createElement("input");
+    picker.type = "file";
+    picker.multiple = true;
+    picker.accept = type === "image"
+      ? "image/png,image/jpeg,image/webp,image/gif"
+      : type === "video" ? "video/mp4,video/webm,video/quicktime,.mov" : allMediaAccept;
+    picker.dataset.chatMediaInput = type;
+    picker.hidden = true;
+    const removePicker = () => picker.remove();
+    picker.addEventListener("change", () => {
+      const files = Array.from(picker.files || []);
+      removePicker();
+      void addMediaFiles(files);
+    }, { once: true });
+    picker.addEventListener("cancel", removePicker, { once: true });
+    document.body.appendChild(picker);
+    picker.click();
+  };
+
+  const positionAttachmentMenu = () => {
+    const rect = attachmentTrigger?.getBoundingClientRect();
+    if (!rect) return;
+    const margin = 8;
+    const gap = 6;
+    const width = attachmentMenu.offsetWidth || 150;
+    const height = attachmentMenu.offsetHeight || 88;
+    attachmentMenu.style.left = `${Math.min(Math.max(margin, rect.left), Math.max(margin, window.innerWidth - width - margin))}px`;
+    attachmentMenu.style.top = `${Math.max(margin, rect.top - height - gap)}px`;
+  };
+
+  const closeAttachmentMenu = () => {
+    attachmentMenu.hidden = true;
+    attachmentTrigger?.setAttribute("aria-expanded", "false");
+  };
+
+  const openAttachmentMenu = () => {
+    closeModelDropdown();
+    closeModeDropdown();
+    closeMoreMenu();
+    attachmentMenu.hidden = false;
+    positionAttachmentMenu();
+    attachmentTrigger?.setAttribute("aria-expanded", "true");
+  };
+
+  const activeChatBusy = () => Boolean(currentTabs.find((tab) => tab.chatId === currentChatId)?.busy || isStreaming());
+
+  const updateAttachmentAvailability = () => {
+    attachmentTrigger.disabled = !currentWorkspaceId || !currentChatId || activeChatBusy();
+    if (attachmentTrigger.disabled) closeAttachmentMenu();
+  };
+
+  const onAttachmentTriggerClick = (event) => {
+    event.stopPropagation();
+    if (attachmentTrigger.disabled) return;
+    if (window.innerWidth <= 720) {
+      closeAttachmentMenu();
+      selectMediaFiles("all");
+      return;
+    }
+    if (attachmentMenu.hidden) openAttachmentMenu();
+    else closeAttachmentMenu();
+  };
+
+  const onAttachmentMenuClick = (event) => {
+    const button = event.target.closest("[data-attachment-type]");
+    if (!button) return;
+    event.stopPropagation();
+    closeAttachmentMenu();
+    selectMediaFiles(button.dataset.attachmentType);
+  };
+
   const updateChatMenuActions = () => {
     const busy = currentTabs.find((tab) => tab.chatId === currentChatId)?.busy || isStreaming();
     const creating = creatingChatSkills.has(currentChatId);
@@ -791,6 +1037,7 @@ export function mount(root) {
   const openMoreMenu = () => {
     closeModelDropdown();
     closeModeDropdown();
+    closeAttachmentMenu();
     updateChatMenuActions();
     moreMenu.hidden = false;
     positionMoreMenu();
@@ -801,6 +1048,7 @@ export function mount(root) {
     e.stopPropagation();
     closeModelDropdown();
     closeMoreMenu();
+    closeAttachmentMenu();
     if (modeDropdown.hidden) {
       renderModeOptions();
       modeDropdown.hidden = false;
@@ -827,6 +1075,7 @@ export function mount(root) {
     if (modelDropdown.hidden) {
       closeModeDropdown();
       closeMoreMenu();
+      closeAttachmentMenu();
       renderModelOptions();
       modelDropdown.hidden = false;
       positionModelDropdown();
@@ -867,6 +1116,12 @@ export function mount(root) {
     closeMoreMenu();
     if (clearChatButton.disabled || !window.confirm("Clear the current chat?")) return;
     if (clearChat(log)) {
+      const state = currentComposerState();
+      if (state) {
+        state.images = [];
+        state.videos = [];
+      }
+      renderAttachmentDrafts();
       input.replaceChildren();
       input.dispatchEvent(new Event("input", { bubbles: true }));
     }
@@ -985,6 +1240,9 @@ export function mount(root) {
     if (!moreMenu.hidden && !moreMenu.contains(e.target) && !moreTrigger?.contains(e.target)) {
       closeMoreMenu();
     }
+    if (!attachmentMenu.hidden && !attachmentMenu.contains(e.target) && !attachmentTrigger?.contains(e.target)) {
+      closeAttachmentMenu();
+    }
     if (mention && !inputWrap.contains(e.target)) clearMention();
   };
 
@@ -992,6 +1250,7 @@ export function mount(root) {
     if (!modelDropdown.hidden) positionModelDropdown();
     if (!modeDropdown.hidden) positionModeDropdown();
     if (!moreMenu.hidden) positionMoreMenu();
+    if (!attachmentMenu.hidden) positionAttachmentMenu();
     updateTabOverflow();
   };
 
@@ -1000,6 +1259,8 @@ export function mount(root) {
   modeTrigger?.addEventListener("click", onModeTriggerClick);
   modeList?.addEventListener("click", onModeListClick);
   moreTrigger?.addEventListener("click", onMoreTriggerClick);
+  attachmentTrigger?.addEventListener("click", onAttachmentTriggerClick);
+  attachmentMenu.addEventListener("click", onAttachmentMenuClick);
   newTabButton.addEventListener("click", onNewTabClick);
   clearChatButton.addEventListener("click", onClearChatClick);
   createSkillButton.addEventListener("click", onCreateSkillClick);
@@ -1020,8 +1281,16 @@ export function mount(root) {
 
   const submit = () => {
     const text = composerText(input);
-    if (!text.trim()) return;
-    if (sendMessage(log, text, selectedModel || undefined, selectedAgentModeId)) {
+    const state = currentComposerState();
+    const images = state?.images || [];
+    const videos = state?.videos || [];
+    if (!text.trim() && images.length === 0 && videos.length === 0) return;
+    if (sendMessage(log, text, selectedModel || undefined, selectedAgentModeId, { images, videos })) {
+      if (state) {
+        state.images = [];
+        state.videos = [];
+      }
+      renderAttachmentDrafts();
       input.replaceChildren();
       clearMention();
       input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1037,6 +1306,7 @@ export function mount(root) {
     sendBtn.title = busy ? "Stop" : "Send";
     sendBtn.setAttribute("aria-label", busy ? "Stop stream" : "Send message");
     updateChatMenuActions();
+    updateAttachmentAvailability();
   };
 
   const handleWorkspaceState = (state) => {
@@ -1076,6 +1346,7 @@ export function mount(root) {
     }
     renderTabs();
     updateChatMenuActions();
+    updateAttachmentAvailability();
 
     if (focusNewTab && state?.hasSnapshot && currentChatId) {
       focusNewTab = false;
@@ -1125,6 +1396,22 @@ export function mount(root) {
     syncMention();
   };
 
+  const onPaste = (event) => {
+    if (activeChatBusy()) return;
+    const files = Array.from(event.clipboardData?.items || [])
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter((file) => file && (
+        imageMediaTypes.has(mediaTypeForFile(file))
+        || videoMediaTypes.has(mediaTypeForFile(file))
+        || /^image\//i.test(file.type)
+        || /^video\//i.test(file.type)
+      ));
+    if (!files.length) return;
+    event.preventDefault();
+    void addMediaFiles(files);
+  };
+
   const onInputClick = (event) => {
     const chip = event.target.closest?.("[data-chat-file-mention]");
     if (!chip) return;
@@ -1146,6 +1433,7 @@ export function mount(root) {
   sendBtn.addEventListener("click", onSendButtonClick);
   input.addEventListener("keydown", onKeydown);
   input.addEventListener("input", onInput);
+  input.addEventListener("paste", onPaste);
   input.addEventListener("click", onInputClick);
   document.addEventListener("selectionchange", onSelectionChange);
 
@@ -1161,6 +1449,7 @@ export function mount(root) {
     sendBtn.removeEventListener("click", onSendButtonClick);
     input.removeEventListener("keydown", onKeydown);
     input.removeEventListener("input", onInput);
+    input.removeEventListener("paste", onPaste);
     input.removeEventListener("click", onInputClick);
     document.removeEventListener("selectionchange", onSelectionChange);
     unsubStreaming();
@@ -1179,6 +1468,8 @@ export function mount(root) {
     modeTrigger?.removeEventListener("click", onModeTriggerClick);
     modeList?.removeEventListener("click", onModeListClick);
     moreTrigger?.removeEventListener("click", onMoreTriggerClick);
+    attachmentTrigger?.removeEventListener("click", onAttachmentTriggerClick);
+    attachmentMenu.removeEventListener("click", onAttachmentMenuClick);
     newTabButton.removeEventListener("click", onNewTabClick);
     clearChatButton.removeEventListener("click", onClearChatClick);
     createSkillButton.removeEventListener("click", onCreateSkillClick);
@@ -1196,6 +1487,7 @@ export function mount(root) {
     modelDropdown.remove();
     modeDropdown.remove();
     moreMenu.remove();
+    attachmentMenu.remove();
     clearMention();
     stopGitBadge();
     detachTerminalDock(terminalRegion);

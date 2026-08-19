@@ -25,17 +25,32 @@ type Transcript struct {
 }
 
 type Turn struct {
-	ID             string          `json:"id"`
-	RequestID      string          `json:"requestId"`
-	UserContent    string          `json:"userContent"`
-	Model          string          `json:"model,omitempty"`
-	AgentModeID    string          `json:"agentModeId,omitempty"`
-	AgentModeName  string          `json:"agentModeName,omitempty"`
-	Status         string          `json:"status"`
-	Error          string          `json:"error,omitempty"`
-	StartedAt      time.Time       `json:"startedAt"`
-	CompletedAt    *time.Time      `json:"completedAt,omitempty"`
-	AssistantTurns []AssistantTurn `json:"assistantTurns"`
+	ID               string            `json:"id"`
+	RequestID        string            `json:"requestId"`
+	UserContent      string            `json:"userContent"`
+	UserMessageIndex int               `json:"userMessageIndex,omitempty"`
+	Images           []MediaAttachment `json:"images,omitempty"`
+	Videos           []MediaAttachment `json:"videos,omitempty"`
+	Model            string            `json:"model,omitempty"`
+	AgentModeID      string            `json:"agentModeId,omitempty"`
+	AgentModeName    string            `json:"agentModeName,omitempty"`
+	Status           string            `json:"status"`
+	Error            string            `json:"error,omitempty"`
+	StartedAt        time.Time         `json:"startedAt"`
+	CompletedAt      *time.Time        `json:"completedAt,omitempty"`
+	AssistantTurns   []AssistantTurn   `json:"assistantTurns"`
+}
+
+// MediaAttachment is a normalized image or video attached to a user turn.
+// DataURL is stored on the turn rather than the parallel LLM message so the
+// persisted transcript contains a single copy of each potentially large
+// payload. The server rehydrates LLM content parts from these values.
+type MediaAttachment struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	MediaType string `json:"mediaType"`
+	Bytes     int64  `json:"bytes"`
+	DataURL   string `json:"dataUrl"`
 }
 
 type AssistantTurn struct {

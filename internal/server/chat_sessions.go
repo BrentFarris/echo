@@ -244,6 +244,10 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		return
 	}
 	if surface == chatSurfaceCode {
+		if len(msg.Images) > 0 || len(msg.Videos) > 0 {
+			m.commandErrorForSurface(c, msg.WorkspaceID, surface, "invalid_attachments_surface", "media attachments are only supported in Main Chat", msg.RequestID)
+			return
+		}
 		if err := parent.ensureCodeChat(); err != nil {
 			m.commandErrorForSurface(c, msg.WorkspaceID, surface, "session_load_failed", err.Error(), msg.RequestID)
 			return
@@ -254,11 +258,21 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		m.commandErrorForTabSurface(c, msg.WorkspaceID, msg.ChatID, surface, "invalid_chat", err.Error(), msg.RequestID)
 		return
 	}
+	images, videos, mediaErr := prepareChatMedia(msg.Images, msg.Videos)
+	if mediaErr != nil {
+		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "invalid_attachments", mediaErr.Error(), msg.RequestID)
+		return
+	}
 	text := strings.TrimSpace(msg.Message)
-	if text == "" {
+	if text == "" && len(images) == 0 && len(videos) == 0 {
 		m.commandErrorForSurface(c, msg.WorkspaceID, surface, "invalid_message", "message is required", msg.RequestID)
 		return
 	}
+	visibleText := text
+	if visibleText == "" {
+		visibleText = chatMediaDefaultPrompt(images, videos)
+	}
+	modelText := chatMediaTextContent(text, images, videos)
 	contextMessage, contextErr := editorContextMessage(surface, msg.EditorContext)
 	if contextErr != nil {
 		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "invalid_editor_context", contextErr.Error(), msg.RequestID)
@@ -299,13 +313,17 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		return
 	}
 
-	history := append([]llm.Message(nil), session.transcript.Messages...)
-	history = append(history, llm.Message{Role: llm.RoleUser, Content: text})
-	messages := []llm.Message{m.server.agentModeSystemMessage(session.workspace, mode, text)}
+	history := hydrateChatMediaHistory(session.transcript.Messages, session.transcript.Turns)
+	userMessageIndex := len(history)
+	userMessage := llm.Message{Role: llm.RoleUser, Content: modelText}
+	userMessage.ContentParts = chatMediaContentParts(modelText, images, videos)
+	history = append(history, userMessage)
+	messages := []llm.Message{m.server.agentModeSystemMessage(session.workspace, mode, visibleText)}
 	if contextMessage != nil {
 		messages = append(messages, *contextMessage)
 	}
 	messages = append(messages, history...)
+	settings, streamer := m.server.routeMediaChat(settings, messages)
 	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(tools.LLMSchemaForScopes(scopes)))
 	if err != nil {
 		session.mu.Unlock()
@@ -315,29 +333,33 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	messages = append([]llm.Message(nil), request.Messages...)
 	ctx, cancel := context.WithCancel(context.Background())
 	session.cancel = cancel
-	session.transcript.Preview = chatPreview(text)
+	session.transcript.Preview = chatPreview(visibleText)
 	session.active = &sessions.Turn{
-		ID:             newSessionID("turn"),
-		RequestID:      requestID,
-		UserContent:    text,
-		Model:          request.Model,
-		AgentModeID:    mode.ID,
-		AgentModeName:  mode.Name,
-		Status:         "streaming",
-		StartedAt:      time.Now().UTC(),
-		AssistantTurns: []sessions.AssistantTurn{},
+		ID:               newSessionID("turn"),
+		RequestID:        requestID,
+		UserContent:      visibleText,
+		UserMessageIndex: userMessageIndex,
+		Images:           append([]sessions.MediaAttachment(nil), images...),
+		Videos:           append([]sessions.MediaAttachment(nil), videos...),
+		Model:            request.Model,
+		AgentModeID:      mode.ID,
+		AgentModeName:    mode.Name,
+		Status:           "streaming",
+		StartedAt:        time.Now().UTC(),
+		AssistantTurns:   []sessions.AssistantTurn{},
 	}
 	turnID := session.active.ID
 	session.emitLocked(map[string]any{
 		"type": "turn_started", "turnId": turnID, "requestId": requestID,
-		"message": text, "model": request.Model, "agentModeId": mode.ID, "agentModeName": mode.Name, "startedAt": session.active.StartedAt,
+		"message": visibleText, "images": images, "videos": videos,
+		"model": request.Model, "agentModeId": mode.ID, "agentModeName": mode.Name, "startedAt": session.active.StartedAt,
 	})
 	session.mu.Unlock()
 
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		session.run(ctx, settings, request, messages, turnID, scopes)
+		session.run(ctx, streamer, settings, request, messages, turnID, scopes)
 	}()
 }
 
@@ -913,7 +935,7 @@ func (s *chatSession) emitLocked(event map[string]any) {
 	s.parent.broadcast(message, s.surface)
 }
 
-func (s *chatSession) run(ctx context.Context, settings llm.Settings, request llm.ChatRequest, messages []llm.Message, turnID string, scopes *tools.ToolScopeChecker) {
+func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings llm.Settings, request llm.ChatRequest, messages []llm.Message, turnID string, scopes *tools.ToolScopeChecker) {
 	for assistantNumber := 0; ; assistantNumber++ {
 		if ctx.Err() != nil {
 			s.finish(turnID, "stopped", "", messages)
@@ -930,7 +952,7 @@ func (s *chatSession) run(ctx context.Context, settings llm.Settings, request ll
 		s.emitLocked(map[string]any{"type": "assistant_turn_start", "turnId": turnID, "turn": assistantNumber})
 		s.mu.Unlock()
 
-		stream := s.manager.server.llm.StreamChat(ctx, turnRequest)
+		stream := streamer.StreamChat(ctx, turnRequest)
 		content, toolCalls, err := s.collectAssistantTurn(stream, turnID, assistantNumber)
 		assistant := llm.Message{Role: llm.RoleAssistant, Content: content, ToolCalls: toolCalls}
 		if content != "" || len(toolCalls) > 0 {
@@ -1110,7 +1132,7 @@ func (s *chatSession) toolContext(ctx context.Context, scopes *tools.ToolScopeCh
 		ResolveWorkspaceChildPath: s.manager.server.toolPathResolver(s.workspace.ID, roots, true),
 		ComfyuiURL:                settings.ComfyuiURL, ComfyuiDefaultCheckpoint: settings.ComfyuiDefaultCheckpoint,
 		ComfyuiTxt2imgWorkflow: settings.ComfyuiTxt2imgWorkflow, ComfyuiImg2imgWorkflow: settings.ComfyuiImg2imgWorkflow,
-		ToolScopes: scopes, WorkspaceSkills: s.manager.server.workspaceSkills(s.workspace),
+		AttachedImages: s.latestAttachedImages(), ToolScopes: scopes, WorkspaceSkills: s.manager.server.workspaceSkills(s.workspace),
 	}
 }
 

@@ -214,7 +214,7 @@ function applyEvent(event) {
   switch (event.type) {
     case "turn_started": {
       binding.log.querySelector(".chat-empty")?.remove();
-      const stream = createTurnView(event.turnId, event.message || "");
+      const stream = createTurnView(event.turnId, event.message || "", event.images || [], event.videos || []);
       binding.turns.set(event.turnId, stream);
       activeStream = stream;
       setStreaming(true);
@@ -250,11 +250,14 @@ function findStream(turnId) { return binding?.turns.get(turnId) || null; }
 
 export function sendMessage(log, text, model, agentModeId, options = {}) {
   text = text.trim();
-  if (!text || activeStream || !binding?.workspaceId || !binding.activeChatId || binding.log !== log) return false;
+  const images = Array.isArray(options.images) ? options.images : [];
+  const videos = Array.isArray(options.videos) ? options.videos : [];
+  if ((!text && images.length === 0 && videos.length === 0) || activeStream || !binding?.workspaceId || !binding.activeChatId || binding.log !== log) return false;
   const requestId = globalThis.crypto?.randomUUID?.() || `request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return ws.send({
     type: "chat_send", workspaceId: binding.workspaceId, chatId: binding.activeChatId, requestId,
     message: text, ...(model ? { model } : {}), ...(agentModeId ? { agentModeId } : {}),
+    ...(images.length ? { images } : {}), ...(videos.length ? { videos } : {}),
     ...(binding.surface === "code" ? { surface: "code" } : {}),
     ...(options.editorContext ? { editorContext: options.editorContext } : {}),
   });
@@ -270,7 +273,7 @@ export function stopStream() {
 }
 
 function renderStoredTurn(turn, active) {
-  const stream = createTurnView(turn.id, turn.userContent || "");
+  const stream = createTurnView(turn.id, turn.userContent || "", turn.images || [], turn.videos || []);
   binding.turns.set(turn.id, stream);
   for (const assistant of turn.assistantTurns || []) {
     startTurn(stream, assistant.number);
@@ -304,7 +307,7 @@ function renderEmpty(log, text) {
   log.appendChild(empty);
 }
 
-function createMessageEl(role, text) {
+function createMessageEl(role, text, images = [], videos = []) {
   const el = document.createElement("div");
   el.className = `chat-message chat-message-${role}`;
   el.dataset.role = role;
@@ -322,6 +325,7 @@ function createMessageEl(role, text) {
     content.hidden = text === "";
     body.appendChild(content);
   } else {
+    appendUserMedia(body, images, videos);
     const content = document.createElement("div");
     content.className = "chat-message-content markdown-body";
     patchMarkdownElement(content, text);
@@ -330,8 +334,8 @@ function createMessageEl(role, text) {
   return el;
 }
 
-function createTurnView(turnId, userText) {
-  binding.log.appendChild(createMessageEl("user", userText));
+function createTurnView(turnId, userText, images = [], videos = []) {
+  binding.log.appendChild(createMessageEl("user", userText, images, videos));
   const el = createMessageEl("assistant", "");
   el.classList.add("is-streaming");
   el.dataset.turnId = turnId;
@@ -341,6 +345,49 @@ function createTurnView(turnId, userText) {
     content: el.querySelector(".chat-final-content"), done: false,
     currentTurn: null, finalTurn: null, turns: new Map(), tools: new Map(),
   };
+}
+
+function appendUserMedia(body, images, videos) {
+  if (!images.length && !videos.length) return;
+  const gallery = document.createElement("div");
+  gallery.className = "chat-message-media";
+  for (const attachment of images) {
+    const figure = document.createElement("figure");
+    figure.className = "chat-message-media-item is-image";
+    const image = document.createElement("img");
+    image.src = attachment.dataUrl || "";
+    image.alt = attachment.name || "Attached image";
+    figure.append(image, mediaCaption(attachment));
+    gallery.append(figure);
+  }
+  for (const attachment of videos) {
+    const figure = document.createElement("figure");
+    figure.className = "chat-message-media-item is-video";
+    const video = document.createElement("video");
+    video.src = attachment.dataUrl || "";
+    video.controls = true;
+    video.preload = "metadata";
+    video.playsInline = true;
+    figure.append(video, mediaCaption(attachment));
+    gallery.append(figure);
+  }
+  body.append(gallery);
+}
+
+function mediaCaption(attachment) {
+  const caption = document.createElement("figcaption");
+  const name = document.createElement("strong");
+  name.textContent = attachment.name || "Attachment";
+  const detail = document.createElement("span");
+  detail.textContent = `${attachment.mediaType || "media"} · ${formatMediaBytes(Number(attachment.bytes) || 0)}`;
+  caption.append(name, detail);
+  return caption;
+}
+
+function formatMediaBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function scrollToBottom(log) {

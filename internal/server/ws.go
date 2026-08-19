@@ -12,7 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const maxMessageBytes = 1 << 20
+const maxMessageBytes = 32 << 20
 
 var upgrader = websocket.Upgrader{
 	ReadBufferSize: 1024, WriteBufferSize: 1024,
@@ -190,6 +190,8 @@ type inboundMessage struct {
 	StopIfBusy    bool                  `json:"stopIfBusy,omitempty"`
 	Refs          []workspacefs.FileRef `json:"refs,omitempty"`
 	EditorContext *editorContext        `json:"editorContext,omitempty"`
+	Images        []chatMediaInput      `json:"images,omitempty"`
+	Videos        []chatMediaInput      `json:"videos,omitempty"`
 }
 
 func (c *client) readPump(h *Hub) {

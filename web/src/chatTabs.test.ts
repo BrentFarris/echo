@@ -28,7 +28,7 @@ const chat = vi.hoisted(() => {
       return vi.fn();
     }),
     openWorkspaceSession: vi.fn(),
-    sendMessage: vi.fn((_log: unknown, _text: string, _model?: string, _mode?: string) => true),
+    sendMessage: vi.fn((_log: unknown, _text: string, _model?: string, _mode?: string, _options?: any) => true),
     stopStream: vi.fn(),
     emitWorkspace(state: any) { workspaceHandler?.(state); },
     emitCommandError(message: any) { return commandErrorHandler?.(message); },
@@ -36,6 +36,7 @@ const chat = vi.hoisted(() => {
 });
 
 const api = vi.hoisted(() => ({ post: vi.fn() }));
+const ui = vi.hoisted(() => ({ toast: vi.fn() }));
 const editorAPI = vi.hoisted(() => ({
   getRoots: vi.fn(async () => [{
     id: "root", label: "Echo", referenceLabel: "echo", hostPath: "C:/Echo",
@@ -57,6 +58,7 @@ const gitBadge = vi.hoisted(() => {
 vi.mock("../js/chat.js", () => chat);
 vi.mock("./gitBadge.ts", () => ({ watchGitBadge: gitBadge.watchGitBadge }));
 vi.mock("./code/editorApi.ts", () => editorAPI);
+vi.mock("./code/ui.ts", () => ({ toast: ui.toast }));
 
 vi.mock("../js/api.js", () => ({
   post: api.post,
@@ -122,6 +124,7 @@ describe("multi-chat tab UI", () => {
     editorAPI.revealEntry.mockClear();
     gitBadge.watchGitBadge.mockClear();
     gitBadge.stop.mockClear();
+    ui.toast.mockClear();
     window.location.hash = "";
   });
 
@@ -233,6 +236,66 @@ describe("multi-chat tab UI", () => {
     expect(root.querySelector("[data-mode-label]")?.textContent).toBe("Review");
     chat.emitWorkspace(twoTabs("chat-two"));
     expect(editor.textContent).toBe("draft for two");
+  });
+
+  it("picks media, restores it per tab, removes drafts, and sends without text", async () => {
+    chat.emitWorkspace(twoTabs("chat-one"));
+    const editor = root.querySelector<HTMLElement>("[data-chat-input]")!;
+    editor.replaceChildren();
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+    root.querySelector<HTMLButtonElement>("[data-chat-attachment-trigger]")!.click();
+    expect(document.querySelector<HTMLElement>(".chat-attachment-menu")!.hidden).toBe(false);
+    document.querySelector<HTMLButtonElement>("[data-attachment-type='image']")!.click();
+
+    const picker = document.querySelector<HTMLInputElement>("[data-chat-media-input='image']")!;
+    const image = new File([new Uint8Array([137, 80, 78, 71])], "screen.png", { type: "image/png" });
+    const secondImage = new File([new Uint8Array([71, 73, 70, 56])], "animation.gif", { type: "image/gif" });
+    Object.defineProperty(picker, "files", { configurable: true, value: [image, secondImage] });
+    picker.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(root.querySelectorAll(".chat-attachment-draft")).toHaveLength(2));
+    expect(root.querySelector(".chat-attachment-draft")?.textContent).toContain("screen.png");
+
+    chat.emitWorkspace(twoTabs("chat-two"));
+    expect(root.querySelectorAll(".chat-attachment-draft")).toHaveLength(0);
+    chat.emitWorkspace(twoTabs("chat-one"));
+    expect(root.querySelectorAll(".chat-attachment-draft")).toHaveLength(2);
+
+    root.querySelector<HTMLButtonElement>(".send-button")!.click();
+    const options = chat.sendMessage.mock.calls.at(-1)?.[4];
+    expect(chat.sendMessage.mock.calls.at(-1)?.[1]).toBe("");
+    expect(options?.images).toEqual([
+      expect.objectContaining({ name: "screen.png", mediaType: "image/png", bytes: 4 }),
+      expect.objectContaining({ name: "animation.gif", mediaType: "image/gif", bytes: 4 }),
+    ]);
+    expect(options?.images[0].dataUrl).toMatch(/^data:image\/png;base64,/);
+    expect(options?.videos).toEqual([]);
+    expect(root.querySelectorAll(".chat-attachment-draft")).toHaveLength(0);
+
+    const pastedVideo = new File([new Uint8Array([0, 0, 0, 1])], "clip.mp4", { type: "video/mp4" });
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: { items: [{ kind: "file", getAsFile: () => pastedVideo }] },
+    });
+    root.querySelector<HTMLElement>("[data-chat-input]")!.dispatchEvent(paste);
+    await vi.waitFor(() => expect(root.querySelectorAll(".chat-attachment-draft.is-video")).toHaveLength(1));
+    expect(paste.defaultPrevented).toBe(true);
+    root.querySelector<HTMLButtonElement>(".chat-attachment-draft-remove")!.click();
+    expect(root.querySelectorAll(".chat-attachment-draft")).toHaveLength(0);
+  });
+
+  it("shows a validation toast and keeps oversized image files out of the draft", async () => {
+    chat.emitWorkspace(twoTabs("chat-one"));
+    root.querySelector<HTMLButtonElement>("[data-chat-attachment-trigger]")!.click();
+    document.querySelector<HTMLButtonElement>("[data-attachment-type='image']")!.click();
+    const picker = document.querySelector<HTMLInputElement>("[data-chat-media-input='image']")!;
+    const oversized = new File([new Uint8Array([137, 80, 78, 71])], "huge.png", { type: "image/png" });
+    Object.defineProperty(oversized, "size", { configurable: true, value: 10 * 1024 * 1024 + 1 });
+    Object.defineProperty(picker, "files", { configurable: true, value: [oversized] });
+    picker.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(ui.toast).toHaveBeenCalledWith(
+      "huge.png is larger than 10.0 MB.", { sticky: true },
+    ));
+    expect(root.querySelectorAll(".chat-attachment-draft")).toHaveLength(0);
   });
 
   it("uses roving keyboard navigation and exposes a busy indicator", () => {
