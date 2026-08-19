@@ -184,6 +184,8 @@ type inboundMessage struct {
 	Surface       string                `json:"surface,omitempty"`
 	ChatID        string                `json:"chatId,omitempty"`
 	RequestID     string                `json:"requestId,omitempty"`
+	TurnID        string                `json:"turnId,omitempty"`
+	Role          string                `json:"role,omitempty"`
 	Message       string                `json:"message,omitempty"`
 	Model         string                `json:"model,omitempty"`
 	AgentModeID   string                `json:"agentModeId,omitempty"`
@@ -244,6 +246,8 @@ func (c *client) readPump(h *Hub) {
 			c.server.sessions.stop(c, msg.WorkspaceID, msg.ChatID, msg.Surface)
 		case "chat_clear":
 			c.server.sessions.clear(c, msg.WorkspaceID, msg.ChatID, msg.Surface)
+		case "chat_message_delete":
+			c.server.sessions.deleteMessage(c, msg.WorkspaceID, msg.ChatID, msg.Surface, msg.TurnID, msg.Role)
 		case "chat_tab_create":
 			c.server.sessions.createTab(c, msg.WorkspaceID)
 		case "chat_tab_activate":

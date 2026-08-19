@@ -284,6 +284,65 @@ func TestCompletedHistoryFeedsNextPromptAndDuplicateRequestIsIdempotent(t *testi
 	}
 }
 
+func TestDeleteAssistantResponsePrunesPersistenceAndFutureContext(t *testing.T) {
+	s, _ := newTestServer(t)
+	workspace := createChatWorkspace(t, s, "delete-response-context")
+	fake := &historyStreamer{}
+	s.llm = fake
+	url := startWebSocketTestServer(t, s)
+	conn := dialSharedClient(t, url)
+	subscribeChat(t, conn, workspace.ID)
+
+	if err := conn.WriteJSON(map[string]any{
+		"type": "chat_send", "workspaceId": workspace.ID, "requestId": "request-delete-first", "message": "first prompt",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	readUntilSessionEvent(t, conn, "turn_finished")
+	beforeDelete := loadActiveTabTranscript(t, workspace)
+	if len(beforeDelete.Turns) != 1 {
+		t.Fatalf("expected one turn before deletion: %#v", beforeDelete.Turns)
+	}
+
+	if err := conn.WriteJSON(map[string]any{
+		"type": "chat_message_delete", "workspaceId": workspace.ID,
+		"turnId": beforeDelete.Turns[0].ID, "role": llm.RoleAssistant,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := readChatSnapshot(t, conn)
+	turns, _ := snapshot["turns"].([]any)
+	if len(turns) != 1 || turns[0].(map[string]any)["assistantDeleted"] != true {
+		t.Fatalf("deleted response was not broadcast: %v", snapshot)
+	}
+	afterDelete := loadActiveTabTranscript(t, workspace)
+	if !afterDelete.Turns[0].AssistantDeleted || len(afterDelete.Turns[0].AssistantTurns) != 0 ||
+		len(afterDelete.Messages) != 1 || afterDelete.Messages[0].Content != "first prompt" {
+		t.Fatalf("response was not durably pruned: %#v", afterDelete)
+	}
+
+	if err := conn.WriteJSON(map[string]any{
+		"type": "chat_send", "workspaceId": workspace.ID, "requestId": "request-delete-second", "message": "second prompt",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	readUntilSessionEvent(t, conn, "turn_finished")
+	fake.mu.Lock()
+	requests := append([]llm.ChatRequest(nil), fake.requests...)
+	fake.mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("expected two model requests, got %d", len(requests))
+	}
+	for _, message := range requests[1].Messages {
+		if message.Content == "answer-1" {
+			t.Fatalf("deleted response leaked into future context: %#v", requests[1].Messages)
+		}
+	}
+	if requests[1].Messages[len(requests[1].Messages)-1].Content != "second prompt" {
+		t.Fatalf("new prompt was not sent after deletion: %#v", requests[1].Messages)
+	}
+}
+
 func TestClearChatPersistsAndBroadcastsEmptySnapshot(t *testing.T) {
 	s, _ := newTestServer(t)
 	workspace := createChatWorkspace(t, s, "clear-chat")

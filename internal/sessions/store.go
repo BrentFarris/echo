@@ -39,6 +39,8 @@ type Turn struct {
 	StartedAt        time.Time         `json:"startedAt"`
 	CompletedAt      *time.Time        `json:"completedAt,omitempty"`
 	AssistantTurns   []AssistantTurn   `json:"assistantTurns"`
+	UserDeleted      bool              `json:"userDeleted,omitempty"`
+	AssistantDeleted bool              `json:"assistantDeleted,omitempty"`
 }
 
 // MediaAttachment is a normalized image or video attached to a user turn.

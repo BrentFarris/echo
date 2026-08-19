@@ -437,6 +437,167 @@ func (m *chatSessionManager) clear(c *client, workspaceID, chatID, surfaceValue 
 	parent.broadcastSnapshot(surface)
 }
 
+func (m *chatSessionManager) deleteMessage(c *client, workspaceID, chatID, surfaceValue, turnID, role string) {
+	surface, surfaceErr := normalizeChatSurface(surfaceValue)
+	if surfaceErr != nil {
+		m.commandErrorForSurface(c, workspaceID, chatSurfaceMain, "invalid_surface", surfaceErr.Error(), "")
+		return
+	}
+	parent, err := m.get(workspaceID)
+	if err != nil {
+		m.commandErrorForSurface(c, workspaceID, surface, "invalid_workspace", err.Error(), "")
+		return
+	}
+	session, resolved, err := parent.resolveSurfaceTab(chatID, surface)
+	if err != nil {
+		m.commandErrorForTabSurface(c, workspaceID, chatID, surface, "invalid_chat", err.Error(), "")
+		return
+	}
+
+	session.mu.Lock()
+	if parent.loadErr != nil {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_load_failed", parent.loadErr.Error(), "")
+		return
+	}
+	if session.active != nil {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_busy", "messages cannot be deleted while a response is active", "")
+		return
+	}
+
+	updated := cloneTabTranscript(session.transcript)
+	if err := deleteTranscriptMessage(&updated, turnID, role); err != nil {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "message_delete_failed", err.Error(), "")
+		return
+	}
+	if err := parent.persistTabLocked(updated); err != nil {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "message_delete_failed", err.Error(), "")
+		return
+	}
+
+	session.transcript = updated
+	session.mu.Unlock()
+	parent.sequenceFor(surface).Add(1)
+	parent.broadcastSnapshot(surface)
+}
+
+func cloneTabTranscript(transcript sessions.TabTranscript) sessions.TabTranscript {
+	clone := transcript
+	clone.Turns = append([]sessions.Turn(nil), transcript.Turns...)
+	clone.Messages = append([]llm.Message(nil), transcript.Messages...)
+	return clone
+}
+
+func deleteTranscriptMessage(transcript *sessions.TabTranscript, turnID, role string) error {
+	turnID = strings.TrimSpace(turnID)
+	role = strings.TrimSpace(role)
+	if turnID == "" {
+		return fmt.Errorf("turnId is required")
+	}
+	if role != llm.RoleUser && role != llm.RoleAssistant {
+		return fmt.Errorf("role must be user or assistant")
+	}
+
+	turnIndex := -1
+	for index := range transcript.Turns {
+		if transcript.Turns[index].ID == turnID {
+			turnIndex = index
+			break
+		}
+	}
+	if turnIndex < 0 {
+		return fmt.Errorf("message was not found")
+	}
+
+	turn := &transcript.Turns[turnIndex]
+	boundary := turn.UserMessageIndex
+	if boundary < 0 || boundary > len(transcript.Messages) {
+		return fmt.Errorf("message context is inconsistent")
+	}
+
+	switch role {
+	case llm.RoleUser:
+		if turn.UserDeleted {
+			return fmt.Errorf("message was not found")
+		}
+		if boundary >= len(transcript.Messages) || transcript.Messages[boundary].Role != llm.RoleUser {
+			return fmt.Errorf("user message context was not found")
+		}
+		removeTranscriptMessages(transcript, turnIndex, boundary, boundary+1)
+		turn = &transcript.Turns[turnIndex]
+		turn.UserDeleted = true
+		turn.UserContent = ""
+		turn.Images = nil
+		turn.Videos = nil
+	case llm.RoleAssistant:
+		if turn.AssistantDeleted {
+			return fmt.Errorf("message was not found")
+		}
+		start := boundary
+		if !turn.UserDeleted {
+			start++
+		}
+		end := len(transcript.Messages)
+		if turnIndex+1 < len(transcript.Turns) {
+			end = transcript.Turns[turnIndex+1].UserMessageIndex
+		}
+		if start < 0 || start > end || end > len(transcript.Messages) {
+			return fmt.Errorf("assistant message context is inconsistent")
+		}
+		removeTranscriptMessages(transcript, turnIndex, start, end)
+		turn = &transcript.Turns[turnIndex]
+		turn.AssistantDeleted = true
+		turn.AssistantTurns = nil
+		turn.Error = ""
+		turn.Model = ""
+		turn.AgentModeID = ""
+		turn.AgentModeName = ""
+		turn.CompletedAt = nil
+	}
+
+	turn = &transcript.Turns[turnIndex]
+	if turn.UserDeleted && turn.AssistantDeleted {
+		transcript.Turns = append(transcript.Turns[:turnIndex], transcript.Turns[turnIndex+1:]...)
+	}
+	transcript.Preview = previewForTurns(transcript.Turns)
+	transcript.Revision++
+	return nil
+}
+
+// UserMessageIndex doubles as the durable start boundary for a turn after its
+// user message is deleted. That lets either half be deleted later without
+// retaining a second index or any of the deleted payload.
+func removeTranscriptMessages(transcript *sessions.TabTranscript, turnIndex, start, end int) {
+	removed := end - start
+	if removed <= 0 {
+		return
+	}
+	messages := make([]llm.Message, 0, len(transcript.Messages)-removed)
+	messages = append(messages, transcript.Messages[:start]...)
+	messages = append(messages, transcript.Messages[end:]...)
+	transcript.Messages = messages
+	for index := range transcript.Turns {
+		if index != turnIndex && transcript.Turns[index].UserMessageIndex >= end {
+			transcript.Turns[index].UserMessageIndex -= removed
+		}
+	}
+}
+
+func previewForTurns(turns []sessions.Turn) string {
+	for index := len(turns) - 1; index >= 0; index-- {
+		if turns[index].UserDeleted {
+			continue
+		}
+		if content := strings.TrimSpace(turns[index].UserContent); content != "" {
+			return chatPreview(content)
+		}
+	}
+	return ""
+}
+
 func (m *chatSessionManager) createTab(c *client, workspaceID string) {
 	parent, err := m.get(workspaceID)
 	if err != nil {

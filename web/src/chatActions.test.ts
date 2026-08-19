@@ -26,7 +26,13 @@ vi.mock("../js/ws.js", () => ({
 import { closeWorkspaceSession, openWorkspaceSession } from "../js/chat.js";
 
 function snapshot(turns: any[]): void {
-  const message = { workspaceId: "workspace-actions", turns, sequence: 1 };
+  const message = {
+    workspaceId: "workspace-actions",
+    activeChatId: "chat-actions",
+    tabs: [{ chatId: "chat-actions", preview: "Actions", busy: false }],
+    turns,
+    sequence: 1,
+  };
   for (const handler of socket.handlers.get("session_snapshot") ?? []) handler(message);
 }
 
@@ -41,6 +47,7 @@ describe("chat message actions", () => {
       configurable: true,
       value: { writeText },
     });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
     log = document.createElement("div");
     document.body.appendChild(log);
     openWorkspaceSession(log, "workspace-actions");
@@ -93,5 +100,65 @@ describe("chat message actions", () => {
     log.querySelector<HTMLButtonElement>(".chat-message-assistant [data-message-action='copy']")!.click();
 
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("# Final response\n\nDone."));
+  });
+
+  it("requests deletion of the selected assistant response", () => {
+    snapshot([{
+      id: "turn-delete",
+      userContent: "Question",
+      status: "done",
+      assistantTurns: [{ number: 0, content: "Answer", hasToolCalls: false }],
+    }]);
+    socket.send.mockClear();
+
+    log.querySelector<HTMLButtonElement>(".chat-message-assistant [data-message-action='delete']")!.click();
+
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("tool calls"));
+    expect(socket.send).toHaveBeenCalledWith({
+      type: "chat_message_delete",
+      workspaceId: "workspace-actions",
+      chatId: "chat-actions",
+      turnId: "turn-delete",
+      role: "assistant",
+    });
+  });
+
+  it("requests deletion of the selected user message", () => {
+    snapshot([{
+      id: "turn-delete-user",
+      userContent: "Question",
+      status: "done",
+      assistantTurns: [{ number: 0, content: "Answer", hasToolCalls: false }],
+    }]);
+    socket.send.mockClear();
+
+    log.querySelector<HTMLButtonElement>(".chat-message-user [data-message-action='delete']")!.click();
+
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("attachments"));
+    expect(socket.send).toHaveBeenCalledWith({
+      type: "chat_message_delete",
+      workspaceId: "workspace-actions",
+      chatId: "chat-actions",
+      turnId: "turn-delete-user",
+      role: "user",
+    });
+  });
+
+  it("does not render deleted halves restored from a snapshot", () => {
+    snapshot([
+      {
+        id: "turn-user-deleted", userDeleted: true, userContent: "", status: "done",
+        assistantTurns: [{ number: 0, content: "Keep response", hasToolCalls: false }],
+      },
+      {
+        id: "turn-assistant-deleted", assistantDeleted: true, userContent: "Keep prompt", status: "done",
+        assistantTurns: [],
+      },
+    ]);
+
+    expect(log.querySelector(".chat-message-user[data-turn-id='turn-user-deleted']")).toBeNull();
+    expect(log.querySelector(".chat-message-assistant[data-turn-id='turn-user-deleted']")?.textContent).toContain("Keep response");
+    expect(log.querySelector(".chat-message-user[data-turn-id='turn-assistant-deleted']")?.textContent).toContain("Keep prompt");
+    expect(log.querySelector(".chat-message-assistant[data-turn-id='turn-assistant-deleted']")).toBeNull();
   });
 });

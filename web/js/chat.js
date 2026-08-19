@@ -275,9 +275,12 @@ export function stopStream() {
 }
 
 function renderStoredTurn(turn, active) {
-  const stream = createTurnView(turn.id, turn.userContent || "", turn.images || [], turn.videos || []);
+  const stream = createTurnView(turn.id, turn.userContent || "", turn.images || [], turn.videos || [], {
+    userDeleted: Boolean(turn.userDeleted),
+    assistantDeleted: Boolean(turn.assistantDeleted),
+  });
   binding.turns.set(turn.id, stream);
-  for (const assistant of turn.assistantTurns || []) {
+  for (const assistant of turn.assistantDeleted ? [] : (turn.assistantTurns || [])) {
     startTurn(stream, assistant.number);
     appendReasoning(stream, assistant.number, assistant.reasoning || "");
     appendTurnText(stream, assistant.number, assistant.content || "");
@@ -376,17 +379,39 @@ function createMessageActions(message, role) {
     }
   });
 
+  const remove = messageActionButton({
+    action: "delete",
+    label: role === "assistant" ? "Delete response" : "Delete message",
+    icon: icons.trash,
+    className: "chat-message-delete",
+  });
+  remove.addEventListener("click", () => {
+    const turnId = message.dataset.turnId || "";
+    if (!binding?.workspaceId || !binding.activeChatId || !turnId) return;
+    if (activeStream) {
+      toast("Wait for the current response to finish before deleting messages.", { sticky: true });
+      return;
+    }
+    const prompt = role === "assistant"
+      ? "Delete this AI response? Its content, reasoning, tool calls, and future AI context will be removed."
+      : "Delete this user message? Its text, attachments, and future AI context will be removed.";
+    if (!window.confirm(prompt)) return;
+    const sent = ws.send({
+      type: "chat_message_delete",
+      workspaceId: binding.workspaceId,
+      chatId: binding.activeChatId,
+      turnId,
+      role,
+      ...(binding.surface === "code" ? { surface: "code" } : {}),
+    });
+    if (!sent) toast("Could not send the delete request.", { sticky: true });
+  });
+
   actions.append(
     copy,
     messageActionButton({ action: "edit", label: "Edit (coming soon)", icon: icons.edit, disabled: true }),
     messageActionButton({ action: "rerun", label: "Rerun (coming soon)", icon: icons.refresh, disabled: true }),
-    messageActionButton({
-      action: "delete",
-      label: "Delete (coming soon)",
-      icon: icons.trash,
-      className: "chat-message-delete",
-      disabled: true,
-    }),
+    remove,
   );
   return actions;
 }
@@ -403,14 +428,16 @@ function messageActionButton({ action, label, icon, className = "", disabled = f
   return button;
 }
 
-function createTurnView(turnId, userText, images = [], videos = []) {
-  binding.log.appendChild(createMessageEl("user", userText, images, videos));
+function createTurnView(turnId, userText, images = [], videos = [], options = {}) {
+  const user = createMessageEl("user", userText, images, videos);
+  user.dataset.turnId = turnId;
+  if (!options.userDeleted) binding.log.appendChild(user);
   const el = createMessageEl("assistant", "");
   el.classList.add("is-streaming");
   el.dataset.turnId = turnId;
-  binding.log.appendChild(el);
+  if (!options.assistantDeleted) binding.log.appendChild(el);
   return {
-    id: turnId, el, timeline: el.querySelector(".chat-timeline"),
+    id: turnId, el, user, timeline: el.querySelector(".chat-timeline"),
     content: el.querySelector(".chat-final-content"), done: false,
     currentTurn: null, finalTurn: null, turns: new Map(), tools: new Map(),
   };
