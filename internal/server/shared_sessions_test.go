@@ -423,6 +423,11 @@ func TestEditUserMessageResubmitsAndClearsLaterContext(t *testing.T) {
 	if started["fromTurnId"] != beforeEdit.Turns[0].ID || started["message"] != "revised prompt" {
 		t.Fatalf("unexpected user edit start: %v", started)
 	}
+	activeSnapshot := readChatSnapshot(t, conn)
+	active, _ := activeSnapshot["activeTurn"].(map[string]any)
+	if active["userContent"] != "revised prompt" || active["status"] != "streaming" {
+		t.Fatalf("user edit did not broadcast its active replacement before streaming: %v", activeSnapshot)
+	}
 	readUntilSessionEvent(t, conn, "turn_finished")
 
 	fake.mu.Lock()

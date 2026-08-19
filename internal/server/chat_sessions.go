@@ -648,6 +648,12 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 		"model": request.Model, "agentModeId": mode.ID, "agentModeName": mode.Name, "startedAt": session.active.StartedAt,
 	})
 	session.mu.Unlock()
+	if editing {
+		// Establish the replacement active turn authoritatively before its model
+		// goroutine can emit tokens. If a browser missed or could not apply the
+		// rewind event, this snapshot still creates the local streaming view.
+		parent.broadcastSnapshot(surface)
+	}
 
 	m.wg.Add(1)
 	go func() {
