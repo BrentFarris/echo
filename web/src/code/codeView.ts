@@ -1815,6 +1815,15 @@ class CodeView {
       if ((event.target as Element).closest("[data-tab-close]")) void this.closeTab(tab);
       else this.activateTab(tab.id);
     }, { signal });
+    tabs.addEventListener("auxclick", (event) => {
+      if (event.button !== 1) return;
+      const element = (event.target as Element).closest<HTMLElement>("[data-tab-id]");
+      if (!element) return;
+      const tab = this.tabs.find((candidate) => candidate.id === element.dataset.tabId);
+      if (!tab) return;
+      event.preventDefault();
+      void this.closeTab(tab);
+    }, { signal });
     tabs.addEventListener("dblclick", (event) => {
       const element = (event.target as Element).closest<HTMLElement>("[data-tab-id]");
       if (element) {

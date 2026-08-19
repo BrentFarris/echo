@@ -122,6 +122,10 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await mainGoResult.click();
   await expect(page.getByRole("tab", { name: /main\.go/ })).toBeVisible();
 
+  await page.getByRole("tab", { name: /renamed\.py/ }).click({ button: "middle" });
+  await expect(page.getByRole("tab", { name: /renamed\.py/ })).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: /main\.go/ })).toBeVisible();
+
   // Code Chat is collapsed by default, opens beneath the editor tabs, keeps
   // the compact reference picker, and exposes an accessible width control.
   const codeChatToggle = page.getByRole("button", { name: "Open code assistant" });
