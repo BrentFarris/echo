@@ -148,6 +148,10 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
   let submitting = false;
   let rootsPromise: Promise<WorkspaceRoot[]> | null = null;
 
+  const updateNewChatAvailability = () => {
+    newChat.disabled = !canClearChat(log);
+  };
+
   const saveDraft = () => {
     drafts.set(draftKey(options.workspaceId, surface), {
       segments: snapshotComposer(input), model: modelSelect.value, mode: modeSelect.value || "general",
@@ -291,6 +295,7 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
     send.innerHTML = `<span class="codicon codicon-${busy ? "debug-stop" : "send"}"></span>`;
     send.title = busy ? "Stop" : "Send";
     send.setAttribute("aria-label", busy ? "Stop stream" : "Send message");
+    updateNewChatAvailability();
     options.onStreamingChange?.(busy);
   };
 
@@ -370,7 +375,7 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
   }, { signal });
 
   const unsubscribeStreaming = onStreamingChange(setBusy);
-  const unsubscribeWorkspace = onChatWorkspaceChange(() => { newChat.disabled = !canClearChat(log); });
+  const unsubscribeWorkspace = onChatWorkspaceChange(updateNewChatAvailability);
   openWorkspaceSession(log, options.workspaceId, { surface });
 
   void Promise.all([

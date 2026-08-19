@@ -1,16 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const chat = vi.hoisted(() => ({
-  canClearChat: vi.fn(() => false),
-  clearChat: vi.fn(() => false),
-  closeWorkspaceSession: vi.fn(),
-  isStreaming: vi.fn(() => false),
-  onChatWorkspaceChange: vi.fn((callback: () => void) => { callback(); return () => undefined; }),
-  onStreamingChange: vi.fn((callback: (streaming: boolean) => void) => { callback(false); return () => undefined; }),
-  openWorkspaceSession: vi.fn(),
-  sendMessage: vi.fn(() => true),
-  stopStream: vi.fn(),
-}));
+const chat = vi.hoisted(() => {
+  const streamingListeners: Array<(streaming: boolean) => void> = [];
+  return {
+    streamingListeners,
+    canClearChat: vi.fn(() => false),
+    clearChat: vi.fn(() => false),
+    closeWorkspaceSession: vi.fn(),
+    isStreaming: vi.fn(() => false),
+    onChatWorkspaceChange: vi.fn((callback: () => void) => { callback(); return () => undefined; }),
+    onStreamingChange: vi.fn((callback: (streaming: boolean) => void) => {
+      streamingListeners.push(callback);
+      callback(false);
+      return () => streamingListeners.splice(streamingListeners.indexOf(callback), 1);
+    }),
+    openWorkspaceSession: vi.fn(),
+    sendMessage: vi.fn(() => true),
+    stopStream: vi.fn(),
+  };
+});
 
 vi.mock("../js/chat.js", () => chat);
 vi.mock("../js/api.js", () => ({
@@ -31,6 +39,7 @@ describe("compact chat surface", () => {
     document.body.append(host);
     chat.sendMessage.mockClear();
     chat.openWorkspaceSession.mockClear();
+    chat.canClearChat.mockReturnValue(false);
   });
 
   afterEach(() => document.body.replaceChildren());
@@ -68,6 +77,21 @@ describe("compact chat surface", () => {
       expect.any(HTMLElement), "Review it", undefined, "general", { editorContext },
     );
     expect(input.textContent).toBe("");
+    surface.dispose();
+  });
+
+  it("re-enables New chat whenever a completed stream can be cleared", () => {
+    const surface = mountChatSurface(host, { workspaceId: "workspace-3", surface: "code" });
+    const newChat = host.querySelector<HTMLButtonElement>("[data-code-chat-new]")!;
+    expect(newChat.disabled).toBe(true);
+
+    chat.canClearChat.mockReturnValue(true);
+    chat.streamingListeners.at(-1)!(false);
+    expect(newChat.disabled).toBe(false);
+
+    chat.canClearChat.mockReturnValue(false);
+    chat.streamingListeners.at(-1)!(true);
+    expect(newChat.disabled).toBe(true);
     surface.dispose();
   });
 });
