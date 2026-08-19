@@ -1127,6 +1127,12 @@ textarea:disabled {
   transform: translateY(0);
 }
 
+.chat-message.is-editing .chat-message-actions {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+}
+
 .chat-message-action.icon-button {
   width: 28px;
   height: 28px;

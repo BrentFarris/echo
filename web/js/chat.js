@@ -552,6 +552,7 @@ function beginMessageEdit(message, role) {
     toast("Message has no editable text.", { sticky: true });
     return;
   }
+  message.classList.add("is-editing");
 
   const form = document.createElement("form");
   form.className = "chat-edit-form";
@@ -583,6 +584,7 @@ function beginMessageEdit(message, role) {
   const close = () => {
     form.remove();
     content.hidden = false;
+    message.classList.remove("is-editing");
   };
   cancel.addEventListener("click", close);
   textarea.addEventListener("keydown", (event) => {
@@ -614,6 +616,7 @@ function beginMessageEdit(message, role) {
       ...(binding.surface === "code" ? { surface: "code" } : {}),
     });
     if (!sent) toast("Could not send the edit request.", { sticky: true });
+    else message.classList.remove("is-editing");
   });
   textarea.focus();
   textarea.setSelectionRange(textarea.value.length, textarea.value.length);
