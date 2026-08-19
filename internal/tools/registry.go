@@ -16,6 +16,10 @@ var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 var defaultRegistry = NewRegistry()
 
+var planModeOnlyToolNames = map[string]bool{
+	AskUserQuestionsToolName: true,
+}
+
 type Registry struct {
 	mu    sync.RWMutex
 	tools map[string]Tool
@@ -79,8 +83,8 @@ func (r *Registry) Registered() []Tool {
 	return registered
 }
 
-// LLMSchema returns the OpenAI-compatible tool schema for every registered
-// tool, sorted by name.
+// LLMSchema returns the standard OpenAI-compatible tool schema, sorted by
+// name. Plan-mode-only orchestration tools are intentionally excluded.
 func LLMSchema() []llm.Tool {
 	return defaultRegistry.LLMSchema()
 }
@@ -90,15 +94,29 @@ func LLMSchemaForScopes(scopes *ToolScopeChecker) []llm.Tool {
 	return defaultRegistry.LLMSchemaForScopes(scopes)
 }
 
+// ChatLLMSchemaForScopes optionally includes plan-mode-only orchestration
+// tools. Callers must pass includePlanModeTools only for the built-in Plan
+// mode; custom modes cannot opt into interactive orchestration implicitly.
+func ChatLLMSchemaForScopes(scopes *ToolScopeChecker, includePlanModeTools bool) []llm.Tool {
+	return defaultRegistry.chatLLMSchemaForScopes(scopes, includePlanModeTools)
+}
+
 func (r *Registry) LLMSchema() []llm.Tool {
 	return r.LLMSchemaForScopes(nil)
 }
 
 func (r *Registry) LLMSchemaForScopes(scopes *ToolScopeChecker) []llm.Tool {
+	return r.chatLLMSchemaForScopes(scopes, false)
+}
+
+func (r *Registry) chatLLMSchemaForScopes(scopes *ToolScopeChecker, includePlanModeTools bool) []llm.Tool {
 	registered := r.Registered()
 	schema := make([]llm.Tool, 0, len(registered))
 	for _, tool := range registered {
 		metadata := tool.Metadata()
+		if planModeOnlyToolNames[metadata.Name] && !includePlanModeTools {
+			continue
+		}
 		if scopes != nil && !scopes.HasTool(metadata.Name) {
 			continue
 		}

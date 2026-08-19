@@ -64,13 +64,37 @@ type AssistantTurn struct {
 }
 
 type ToolActivity struct {
-	CallID    string `json:"callId"`
-	CallOrder int    `json:"callOrder"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments,omitempty"`
-	Status    string `json:"status"`
-	Success   bool   `json:"success"`
-	Result    string `json:"result,omitempty"`
+	CallID        string           `json:"callId"`
+	CallOrder     int              `json:"callOrder"`
+	Name          string           `json:"name"`
+	Arguments     string           `json:"arguments,omitempty"`
+	Status        string           `json:"status"`
+	Success       bool             `json:"success"`
+	Result        string           `json:"result,omitempty"`
+	PlanQuestions *PlanQuestionSet `json:"planQuestions,omitempty"`
+	Answers       []PlanAnswer     `json:"answers,omitempty"`
+	Skipped       bool             `json:"skipped,omitempty"`
+}
+
+// PlanQuestionSet is one interactive ask_user_questions call. QuestionSetID
+// is the tool call ID and remains stable across snapshots and reconnects.
+type PlanQuestionSet struct {
+	QuestionSetID string         `json:"questionSetId"`
+	Questions     []PlanQuestion `json:"questions"`
+}
+
+type PlanQuestion struct {
+	ID       string   `json:"id"`
+	Question string   `json:"question"`
+	Options  []string `json:"options,omitempty"`
+}
+
+// PlanAnswer selects a zero-based option, or supplies free text when
+// OptionIndex is negative.
+type PlanAnswer struct {
+	QuestionID  string `json:"questionId"`
+	OptionIndex int    `json:"optionIndex"`
+	Text        string `json:"text,omitempty"`
 }
 
 type Store struct {

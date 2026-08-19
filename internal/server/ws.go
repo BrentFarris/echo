@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/brent/echo/internal/sessions"
 	"github.com/brent/echo/internal/workspacefs"
 	"github.com/gorilla/websocket"
 )
@@ -190,6 +191,8 @@ type inboundMessage struct {
 	Model         string                `json:"model,omitempty"`
 	AgentModeID   string                `json:"agentModeId,omitempty"`
 	StopIfBusy    bool                  `json:"stopIfBusy,omitempty"`
+	QuestionSetID string                `json:"questionSetId,omitempty"`
+	Answers       []sessions.PlanAnswer `json:"answers,omitempty"`
 	Refs          []workspacefs.FileRef `json:"refs,omitempty"`
 	EditorContext *editorContext        `json:"editorContext,omitempty"`
 	Images        []chatMediaInput      `json:"images,omitempty"`
@@ -244,6 +247,10 @@ func (c *client) readPump(h *Hub) {
 			c.server.sessions.send(c, msg)
 		case "chat_stop":
 			c.server.sessions.stop(c, msg.WorkspaceID, msg.ChatID, msg.Surface)
+		case "plan_questions_submit":
+			c.server.sessions.resolvePlanQuestions(c, msg.WorkspaceID, msg.ChatID, msg.Surface, msg.QuestionSetID, msg.Answers, false, msg.RequestID)
+		case "plan_questions_skip":
+			c.server.sessions.resolvePlanQuestions(c, msg.WorkspaceID, msg.ChatID, msg.Surface, msg.QuestionSetID, nil, true, msg.RequestID)
 		case "chat_clear":
 			c.server.sessions.clear(c, msg.WorkspaceID, msg.ChatID, msg.Surface)
 		case "chat_message_delete":

@@ -15,6 +15,7 @@ let activeStream = null;
 const streamingListeners = new Set();
 const workspaceListeners = new Set();
 const commandErrorListeners = new Set();
+const askUserQuestionsToolName = "ask_user_questions";
 
 function setStreaming(streaming) {
   for (const cb of streamingListeners) {
@@ -247,6 +248,9 @@ function applyEvent(event) {
     case "tool_result":
       completeToolCall(findStream(event.turnId), event, event.turn);
       break;
+    case "plan_questions_resolved":
+      resolvePlanQuestionItem(findStream(event.turnId), event, event.turn);
+      break;
     case "turn_finished": {
       const stream = findStream(event.turnId);
       finishStream(stream, event.status || "error", event.error || "");
@@ -295,10 +299,13 @@ function renderStoredTurn(turn, active) {
     for (const tool of assistant.tools || []) {
       const data = {
         turn: assistant.number, callId: tool.callId, callOrder: tool.callOrder,
-        tool: tool.name, arguments: tool.arguments || "",
+        tool: tool.name, arguments: tool.arguments || "", status: tool.status,
+        planQuestions: tool.planQuestions, answers: tool.answers, skipped: Boolean(tool.skipped),
       };
       appendToolCall(stream, data, assistant.number);
-      if (tool.status !== "running") {
+      if (tool.status === "answered") {
+        resolvePlanQuestionItem(stream, data, assistant.number);
+      } else if (tool.status !== "running" && tool.status !== "awaiting_input") {
         completeToolCall(stream, { ...data, success: tool.success, content: tool.result || "" }, assistant.number);
       }
     }
@@ -737,7 +744,12 @@ function appendToolCall(stream, data, turnNumber) {
   const callOrder = Number.isInteger(data.callOrder) ? data.callOrder : stream.tools.size;
   const callId = data.callId || `turn-${turnNumber}-call-${callOrder}`;
   if (stream.tools.has(callId)) return;
-  const item = createToolItem(data.tool || "tool", data.arguments || "");
+  const questionSet = data.tool === askUserQuestionsToolName
+    ? normalizePlanQuestionSet(data.planQuestions, data.arguments, callId)
+    : null;
+  const item = questionSet
+    ? createPlanQuestionItem(questionSet)
+    : createToolItem(data.tool || "tool", data.arguments || "");
   item.details.dataset.callId = callId;
   stream.timeline.hidden = false;
   stream.timeline.appendChild(item.details);
@@ -765,6 +777,150 @@ function createToolItem(toolName, args) {
   return { details, status, result: result.content };
 }
 
+function normalizePlanQuestionSet(value, args, callId) {
+  let source = value;
+  if (!source && typeof args === "string") {
+    try { source = JSON.parse(args); } catch { return null; }
+  }
+  const questions = Array.isArray(source?.questions)
+    ? source.questions.map((question) => ({
+      id: String(question?.id || "").trim(),
+      question: String(question?.question || "").trim(),
+      options: Array.isArray(question?.options)
+        ? question.options.map((option) => String(option || "").trim()).filter(Boolean)
+        : [],
+    })).filter((question) => question.id && question.question)
+    : [];
+  if (!questions.length) return null;
+  return { questionSetId: String(source?.questionSetId || callId), questions };
+}
+
+function createPlanQuestionItem(questionSet) {
+  const details = document.createElement("details");
+  details.className = "chat-activity-item chat-plan-question-item is-running is-awaiting-input";
+  details.open = true;
+  const summary = document.createElement("summary");
+  const name = document.createElement("span");
+  name.className = "chat-activity-name";
+  name.textContent = questionSet.questions.length === 1 ? "Clarifying question" : "Clarifying questions";
+  const status = document.createElement("span");
+  status.className = "chat-activity-status";
+  status.textContent = "Waiting for your answers…";
+  summary.append(name, status);
+  details.appendChild(summary);
+
+  const body = document.createElement("div");
+  body.className = "chat-activity-body chat-plan-question-body";
+  const form = document.createElement("form");
+  form.className = "chat-plan-question-form";
+  const fields = [];
+  questionSet.questions.forEach((question, questionIndex) => {
+    const fieldset = document.createElement("fieldset");
+    fieldset.className = "chat-plan-question-field";
+    const legend = document.createElement("legend");
+    legend.textContent = question.question;
+    fieldset.appendChild(legend);
+    const radios = [];
+    question.options.forEach((option, optionIndex) => {
+      const label = document.createElement("label");
+      label.className = "chat-plan-question-option";
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = `plan-question-${questionSet.questionSetId}-${questionIndex}`;
+      radio.value = String(optionIndex);
+      const text = document.createElement("span");
+      text.textContent = option;
+      label.append(radio, text);
+      fieldset.appendChild(label);
+      radios.push(radio);
+    });
+    const custom = document.createElement("input");
+    custom.type = "text";
+    custom.className = "chat-plan-question-custom";
+    custom.maxLength = 2000;
+    custom.placeholder = question.options.length ? "Or type another answer…" : "Type your answer…";
+    custom.setAttribute("aria-label", `${question.question} — custom answer`);
+    custom.addEventListener("input", () => {
+      if (custom.value.trim()) radios.forEach((radio) => { radio.checked = false; });
+      fieldset.classList.remove("is-invalid");
+    });
+    radios.forEach((radio) => radio.addEventListener("change", () => {
+      if (radio.checked) custom.value = "";
+      fieldset.classList.remove("is-invalid");
+    }));
+    fieldset.appendChild(custom);
+    form.appendChild(fieldset);
+    fields.push({ question, fieldset, radios, custom });
+  });
+
+  const error = document.createElement("p");
+  error.className = "chat-plan-question-error";
+  error.hidden = true;
+  const actions = document.createElement("div");
+  actions.className = "chat-plan-question-actions";
+  const skip = document.createElement("button");
+  skip.type = "button";
+  skip.className = "secondary-button compact-button";
+  skip.textContent = "Skip";
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.className = "primary-button compact-button";
+  submit.textContent = "Submit answers";
+  actions.append(skip, submit);
+  form.append(error, actions);
+  body.appendChild(form);
+  details.appendChild(body);
+
+  const sendResolution = (type, answers = undefined) => {
+    if (!binding?.workspaceId || !binding.activeChatId) return false;
+    const requestId = globalThis.crypto?.randomUUID?.() || `request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    return ws.send({
+      type, workspaceId: binding.workspaceId, chatId: binding.activeChatId,
+      questionSetId: questionSet.questionSetId, requestId,
+      ...(answers ? { answers } : {}),
+      ...(binding.surface === "code" ? { surface: "code" } : {}),
+    });
+  };
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const answers = [];
+    let firstInvalid = null;
+    for (const field of fields) {
+      const customText = field.custom.value.trim();
+      const selected = field.radios.find((radio) => radio.checked);
+      if (!customText && !selected) {
+        field.fieldset.classList.add("is-invalid");
+        firstInvalid ||= field.fieldset;
+        continue;
+      }
+      answers.push({
+        questionId: field.question.id,
+        optionIndex: customText ? -1 : Number(selected.value),
+        ...(customText ? { text: customText } : {}),
+      });
+    }
+    if (firstInvalid) {
+      error.textContent = "Answer each question, or skip this set.";
+      error.hidden = false;
+      firstInvalid.querySelector("input")?.focus();
+      return;
+    }
+    error.hidden = true;
+    if (!sendResolution("plan_questions_submit", answers)) {
+      error.textContent = "Could not send your answers. Please try again.";
+      error.hidden = false;
+    }
+  });
+  skip.addEventListener("click", () => {
+    error.hidden = true;
+    if (!sendResolution("plan_questions_skip")) {
+      error.textContent = "Could not skip these questions. Please try again.";
+      error.hidden = false;
+    }
+  });
+  return { details, status, body, form, questionSet, planQuestions: true };
+}
+
 function createToolSection(labelText, value) {
   const section = document.createElement("section");
   section.className = "chat-tool-section";
@@ -786,10 +942,85 @@ function completeToolCall(stream, data, turnNumber) {
   const item = stream.tools.get(callId);
   if (!item) return;
   const succeeded = data.success === true;
+  if (item.planQuestions) {
+    if (succeeded) {
+      const resolution = planQuestionResolution(data);
+      showPlanQuestionResolution(item, resolution.answers, resolution.skipped);
+    } else {
+      item.details.classList.remove("is-running", "is-awaiting-input");
+      item.details.classList.add("is-error");
+      item.status.textContent = "Failed";
+      const failure = document.createElement("p");
+      failure.className = "chat-plan-question-error";
+      failure.textContent = toolFailureMessage(data.content) || "The questions could not be completed.";
+      item.body.replaceChildren(failure);
+    }
+    return;
+  }
   item.details.classList.remove("is-running");
   item.details.classList.add(succeeded ? "is-success" : "is-error");
   item.status.textContent = succeeded ? "Completed" : "Failed";
   item.result.textContent = formatStructured(data.content) || "No result";
+}
+
+function resolvePlanQuestionItem(stream, data, turnNumber) {
+  if (!stream) return;
+  const callOrder = Number.isInteger(data.callOrder) ? data.callOrder : stream.tools.size;
+  const callId = data.callId || `turn-${turnNumber}-call-${callOrder}`;
+  if (!stream.tools.has(callId)) appendToolCall(stream, { ...data, callId, tool: askUserQuestionsToolName }, turnNumber);
+  const item = stream.tools.get(callId);
+  if (!item?.planQuestions) return;
+  showPlanQuestionResolution(item, Array.isArray(data.answers) ? data.answers : [], Boolean(data.skipped));
+}
+
+function planQuestionResolution(data) {
+  let parsed = null;
+  if (typeof data.content === "string") {
+    try { parsed = JSON.parse(data.content); } catch { parsed = null; }
+  } else if (data.content && typeof data.content === "object") {
+    parsed = data.content;
+  }
+  const output = parsed?.output || {};
+  return {
+    answers: Array.isArray(data.answers) ? data.answers : (Array.isArray(output.answers) ? output.answers : []),
+    skipped: Boolean(data.skipped || output.skipped),
+  };
+}
+
+function toolFailureMessage(content) {
+  if (typeof content !== "string") return "";
+  try { return String(JSON.parse(content)?.error?.message || ""); } catch { return ""; }
+}
+
+function showPlanQuestionResolution(item, answers, skipped) {
+  item.details.classList.remove("is-running", "is-awaiting-input", "is-error");
+  item.details.classList.add("is-success");
+  item.status.textContent = skipped ? "Skipped" : "Answered";
+  const resolved = document.createElement("div");
+  resolved.className = "chat-plan-question-answers";
+  if (skipped) {
+    const note = document.createElement("p");
+    note.className = "chat-plan-question-skipped";
+    note.textContent = "Questions skipped.";
+    resolved.appendChild(note);
+  } else {
+    const byQuestion = new Map((answers || []).map((answer) => [answer.questionId, answer]));
+    for (const question of item.questionSet.questions) {
+      const answer = byQuestion.get(question.id);
+      const row = document.createElement("div");
+      row.className = "chat-plan-question-answer";
+      const prompt = document.createElement("div");
+      prompt.className = "chat-plan-question-answer-prompt";
+      prompt.textContent = question.question;
+      const value = document.createElement("div");
+      value.className = "chat-plan-question-answer-value";
+      value.textContent = answer?.text || question.options[Number(answer?.optionIndex)] || "No answer";
+      row.append(prompt, value);
+      resolved.appendChild(row);
+    }
+  }
+  item.body.replaceChildren(resolved);
+  item.details.open = false;
 }
 
 function formatStructured(value) {
@@ -829,6 +1060,10 @@ function finishStream(stream, outcome, message = "") {
 function finalizeSuccessfulResponse(stream) {
   for (const turn of stream.turns.values()) removeEmptyTurn(turn);
   for (const details of stream.timeline.querySelectorAll("details")) details.open = false;
+  const questionItems = [...stream.timeline.children].filter((child) => child.classList.contains("chat-plan-question-item"));
+  for (const item of questionItems) {
+    stream.content.parentElement.insertBefore(item, stream.content);
+  }
   if (!stream.timeline.childElementCount) {
     stream.timeline.remove();
     return;
@@ -856,10 +1091,18 @@ function cancelBindingMarkdownPatches() {
 function markRunningToolsInterrupted(stream, outcome) {
   for (const item of stream.tools.values()) {
     if (!item.details.classList.contains("is-running")) continue;
-    item.details.classList.remove("is-running");
+    item.details.classList.remove("is-running", "is-awaiting-input");
     item.details.classList.add("is-error");
     item.status.textContent = outcome === "stopped" ? "Stopped" : "Interrupted";
-    item.result.textContent = outcome === "stopped" ? "Tool execution was stopped." : "Tool execution was interrupted.";
+    const message = outcome === "stopped" ? "Tool execution was stopped." : "Tool execution was interrupted.";
+    if (item.planQuestions) {
+      const note = document.createElement("p");
+      note.className = "chat-plan-question-error";
+      note.textContent = message;
+      item.body.replaceChildren(note);
+    } else {
+      item.result.textContent = message;
+    }
   }
 }
 

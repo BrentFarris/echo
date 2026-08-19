@@ -48,6 +48,7 @@ func Defaults() []Mode {
 			BuiltIn: true,
 			Prompt:  "Planning only: inspect and reason about the workspace, but do not create, edit, delete, or otherwise mutate files. Provide a concrete implementation plan instead of carrying it out.",
 			Permissions: map[string]tools.ToolPermission{
+				"ask_user_questions":          {Name: "ask_user_questions"},
 				"filesystem_list":             {Name: "filesystem_list"},
 				"filesystem_read_image":       {Name: "filesystem_read_image"},
 				"filesystem_read_text":        {Name: "filesystem_read_text"},
