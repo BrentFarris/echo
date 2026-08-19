@@ -104,4 +104,11 @@ func TestPlanModeAllowsGitInspection(t *testing.T) {
 	if _, ok := plan.Permissions["create_agent_mode"]; ok {
 		t.Fatal("Plan mode must not expose create_agent_mode")
 	}
+	for _, name := range []string{
+		"research_agents_spawn", "research_agent_send", "research_agents_wait", "research_agents_cancel",
+	} {
+		if _, ok := plan.Permissions[name]; !ok {
+			t.Fatalf("Plan mode must expose %s", name)
+		}
+	}
 }

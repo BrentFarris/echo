@@ -248,6 +248,15 @@ function applyEvent(event) {
     case "tool_result":
       completeToolCall(findStream(event.turnId), event, event.turn);
       break;
+    case "research_agent_status":
+      updateResearchAgentStatus(findStream(event.turnId), event.researchAgent || {});
+      break;
+    case "research_agents_clear":
+      clearResearchAgentStatuses(findStream(event.turnId));
+      break;
+    case "research_reasoning":
+      appendResearchReasoning(findStream(event.turnId), event);
+      break;
     case "plan_questions_resolved":
       resolvePlanQuestionItem(findStream(event.turnId), event, event.turn);
       break;
@@ -310,7 +319,25 @@ function renderStoredTurn(turn, active) {
       }
     }
   }
+  for (const reasoning of turn.assistantDeleted ? [] : (turn.researchReasoning || [])) {
+    appendResearchReasoning(stream, {
+      agentId: reasoning.agentId, agentName: reasoning.agentName,
+      content: reasoning.reasoning || "", replace: true, truncated: Boolean(reasoning.truncated),
+    }, true);
+  }
+  for (const tool of turn.assistantDeleted ? [] : (turn.researchTools || [])) {
+    const data = {
+      callId: tool.callId, callOrder: tool.callOrder, tool: tool.name,
+      arguments: tool.arguments || "", status: tool.status, agentId: tool.agentId,
+      agentName: tool.agentName, research: true,
+    };
+    appendToolCall(stream, data);
+    if (tool.status !== "running") {
+      completeToolCall(stream, { ...data, success: tool.success, content: tool.result || "" });
+    }
+  }
   if (active || turn.status === "streaming") {
+    for (const agent of turn.researchAgents || []) updateResearchAgentStatus(stream, agent);
     activeStream = stream;
     return;
   }
@@ -495,6 +522,7 @@ function createTurnView(turnId, userText, images = [], videos = [], options = {}
     id: turnId, el, user, timeline: el.querySelector(".chat-timeline"),
     content: el.querySelector(".chat-final-content"), done: false,
     currentTurn: null, finalTurn: null, turns: new Map(), tools: new Map(),
+    researchAgents: new Map(), researchReasoning: new Map(), researchStatusContainer: null,
   };
 }
 
@@ -706,6 +734,83 @@ function completeReasoning(turn) {
   reasoning.details.classList.remove("is-running");
 }
 
+function updateResearchAgentStatus(stream, agent) {
+  if (!stream || !agent?.id) return;
+  const status = String(agent.status || "running");
+  const active = status === "queued" || status === "running" || status === "summarizing";
+  if (!active) {
+    stream.researchAgents.get(agent.id)?.remove();
+    stream.researchAgents.delete(agent.id);
+    if (stream.researchStatusContainer && !stream.researchStatusContainer.childElementCount) {
+      stream.researchStatusContainer.remove();
+      stream.researchStatusContainer = null;
+    }
+    const reasoning = stream.researchReasoning.get(agent.id);
+    if (reasoning) {
+      reasoning.details.classList.remove("is-running");
+      reasoning.label.textContent = `${reasoning.agentName} thinking`;
+    }
+    return;
+  }
+  if (!stream.researchStatusContainer) {
+    const container = document.createElement("div");
+    container.className = "chat-research-statuses";
+    stream.timeline.hidden = false;
+    stream.timeline.appendChild(container);
+    stream.researchStatusContainer = container;
+  }
+  let chip = stream.researchAgents.get(agent.id);
+  if (!chip) {
+    chip = document.createElement("span");
+    chip.className = "chat-research-status";
+    stream.researchAgents.set(agent.id, chip);
+    stream.researchStatusContainer.appendChild(chip);
+  }
+  chip.className = `chat-research-status is-${status}`;
+  chip.textContent = `${agent.name || "Researcher"}${agent.phase ? ` · ${agent.phase}` : ` · ${status}`}`;
+  chip.title = agent.taskLabel || agent.error || chip.textContent;
+}
+
+function clearResearchAgentStatuses(stream) {
+  if (!stream) return;
+  stream.researchStatusContainer?.remove();
+  stream.researchStatusContainer = null;
+  stream.researchAgents.clear();
+  for (const item of stream.researchReasoning.values()) {
+    item.details.classList.remove("is-running");
+    item.label.textContent = `${item.agentName} thinking`;
+  }
+}
+
+function appendResearchReasoning(stream, data, complete = false) {
+  if (!stream || !data?.agentId || !data.content) return;
+  let item = stream.researchReasoning.get(data.agentId);
+  if (!item) {
+    const details = document.createElement("details");
+    details.className = "chat-activity-item chat-reasoning-item chat-research-reasoning is-running";
+    const summary = document.createElement("summary");
+    const label = document.createElement("span");
+    label.className = "chat-activity-name";
+    const agentName = data.agentName || "Researcher";
+    label.textContent = `${agentName} thinking…`;
+    summary.appendChild(label);
+    const body = document.createElement("div");
+    body.className = "chat-activity-body chat-reasoning-content";
+    details.append(summary, body);
+    item = { details, label, body, text: "", agentName };
+    stream.researchReasoning.set(data.agentId, item);
+    stream.timeline.hidden = false;
+    stream.timeline.appendChild(details);
+  }
+  item.text = data.replace ? data.content : item.text + data.content;
+  item.body.textContent = item.text;
+  if (data.truncated) item.details.classList.add("is-truncated");
+  if (complete) {
+    item.details.classList.remove("is-running");
+    item.label.textContent = `${item.agentName} thinking`;
+  }
+}
+
 function endTurn(stream, turnNumber, hasToolCalls) {
   if (!stream) return;
   const turn = ensureTurn(stream, Number.isInteger(turnNumber) ? turnNumber : 0);
@@ -749,20 +854,21 @@ function appendToolCall(stream, data, turnNumber) {
     : null;
   const item = questionSet
     ? createPlanQuestionItem(questionSet)
-    : createToolItem(data.tool || "tool", data.arguments || "");
+    : createToolItem(data.tool || "tool", data.arguments || "", data.agentName || "");
+  if (data.research) item.details.classList.add("is-research-tool");
   item.details.dataset.callId = callId;
   stream.timeline.hidden = false;
   stream.timeline.appendChild(item.details);
   stream.tools.set(callId, item);
 }
 
-function createToolItem(toolName, args) {
+function createToolItem(toolName, args, agentName = "") {
   const details = document.createElement("details");
   details.className = "chat-activity-item chat-tool-item is-running";
   const summary = document.createElement("summary");
   const name = document.createElement("span");
   name.className = "chat-activity-name";
-  name.textContent = toolName;
+  name.textContent = agentName ? `${agentName} · ${toolName}` : toolName;
   const status = document.createElement("span");
   status.className = "chat-activity-status";
   status.textContent = "Running…";
@@ -1037,6 +1143,7 @@ function finishStream(stream, outcome, message = "") {
   if (!stream || stream.done) return;
   stream.done = true;
   stream.el.classList.remove("is-streaming");
+  clearResearchAgentStatuses(stream);
   for (const turn of stream.turns.values()) {
     completeReasoning(turn);
     flushTurnTextBlock(turn);

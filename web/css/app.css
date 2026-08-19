@@ -1516,6 +1516,44 @@ textarea:disabled {
   border-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
 }
 
+.chat-research-statuses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  margin: var(--space-sm) var(--space-lg);
+}
+
+.chat-research-status {
+  max-width: 100%;
+  padding: 0.2rem 0.55rem;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 34%, var(--color-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 9%, var(--color-surface));
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-research-status.is-completed {
+  border-color: color-mix(in srgb, var(--color-success) 38%, var(--color-border));
+  color: var(--color-success);
+}
+
+.chat-research-status.is-failed,
+.chat-research-status.is-canceled {
+  border-color: color-mix(in srgb, var(--color-danger) 34%, var(--color-border));
+  color: var(--color-danger);
+}
+
+.chat-research-reasoning > summary,
+.chat-tool-item.is-research-tool > summary {
+  border-left: 2px solid color-mix(in srgb, var(--color-accent) 52%, var(--color-border));
+}
+
 .chat-activity-body {
   margin: var(--space-xs) 0 var(--space-sm) var(--space-xl);
   padding: var(--space-md) var(--space-lg);

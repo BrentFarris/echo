@@ -20,6 +20,33 @@ var planModeOnlyToolNames = map[string]bool{
 	AskUserQuestionsToolName: true,
 }
 
+var researchAgentToolNames = map[string]bool{
+	ResearchAgentsSpawnToolName:  true,
+	ResearchAgentSendToolName:    true,
+	ResearchAgentsWaitToolName:   true,
+	ResearchAgentsCancelToolName: true,
+}
+
+var researchWorkerToolNames = map[string]bool{
+	"filesystem_list":             true,
+	"filesystem_read_image":       true,
+	"filesystem_read_text":        true,
+	"filesystem_read_video":       true,
+	"filesystem_search_text":      true,
+	"filesystem_search_workspace": true,
+	"filesystem_stat":             true,
+	"git_inspect":                 true,
+	"web_fetch":                   true,
+	"web_search":                  true,
+	"workspace_skill_read":        true,
+	"workspace_skill_search":      true,
+}
+
+type ChatSchemaOptions struct {
+	PlanMode        bool
+	ResearchEnabled bool
+}
+
 type Registry struct {
 	mu    sync.RWMutex
 	tools map[string]Tool
@@ -94,11 +121,24 @@ func LLMSchemaForScopes(scopes *ToolScopeChecker) []llm.Tool {
 	return defaultRegistry.LLMSchemaForScopes(scopes)
 }
 
-// ChatLLMSchemaForScopes optionally includes plan-mode-only orchestration
-// tools. Callers must pass includePlanModeTools only for the built-in Plan
-// mode; custom modes cannot opt into interactive orchestration implicitly.
-func ChatLLMSchemaForScopes(scopes *ToolScopeChecker, includePlanModeTools bool) []llm.Tool {
-	return defaultRegistry.chatLLMSchemaForScopes(scopes, includePlanModeTools)
+// ChatLLMSchemaForScopes includes chat-only orchestration tools according to
+// the active turn options while still enforcing the selected mode's scopes.
+func ChatLLMSchemaForScopes(scopes *ToolScopeChecker, options ChatSchemaOptions) []llm.Tool {
+	return defaultRegistry.chatLLMSchemaForScopes(scopes, options)
+}
+
+// ResearchLLMSchemaForScopes returns the non-mutating tools available to a
+// child research agent. Research orchestration itself is always excluded.
+func ResearchLLMSchemaForScopes(scopes *ToolScopeChecker) []llm.Tool {
+	return defaultRegistry.researchLLMSchemaForScopes(scopes)
+}
+
+func IsResearchAgentToolName(name string) bool {
+	return researchAgentToolNames[name]
+}
+
+func IsResearchWorkerToolName(name string) bool {
+	return researchWorkerToolNames[name]
 }
 
 func (r *Registry) LLMSchema() []llm.Tool {
@@ -106,15 +146,18 @@ func (r *Registry) LLMSchema() []llm.Tool {
 }
 
 func (r *Registry) LLMSchemaForScopes(scopes *ToolScopeChecker) []llm.Tool {
-	return r.chatLLMSchemaForScopes(scopes, false)
+	return r.chatLLMSchemaForScopes(scopes, ChatSchemaOptions{})
 }
 
-func (r *Registry) chatLLMSchemaForScopes(scopes *ToolScopeChecker, includePlanModeTools bool) []llm.Tool {
+func (r *Registry) chatLLMSchemaForScopes(scopes *ToolScopeChecker, options ChatSchemaOptions) []llm.Tool {
 	registered := r.Registered()
 	schema := make([]llm.Tool, 0, len(registered))
 	for _, tool := range registered {
 		metadata := tool.Metadata()
-		if planModeOnlyToolNames[metadata.Name] && !includePlanModeTools {
+		if planModeOnlyToolNames[metadata.Name] && !options.PlanMode {
+			continue
+		}
+		if researchAgentToolNames[metadata.Name] && !options.ResearchEnabled {
 			continue
 		}
 		if scopes != nil && !scopes.HasTool(metadata.Name) {
@@ -126,6 +169,24 @@ func (r *Registry) chatLLMSchemaForScopes(scopes *ToolScopeChecker, includePlanM
 				Name:        metadata.Name,
 				Description: metadata.Description,
 				Parameters:  cloneSchema(metadata.Parameters),
+			},
+		})
+	}
+	return schema
+}
+
+func (r *Registry) researchLLMSchemaForScopes(scopes *ToolScopeChecker) []llm.Tool {
+	registered := r.Registered()
+	schema := make([]llm.Tool, 0, len(researchWorkerToolNames))
+	for _, tool := range registered {
+		metadata := tool.Metadata()
+		if !researchWorkerToolNames[metadata.Name] || (scopes != nil && !scopes.HasTool(metadata.Name)) {
+			continue
+		}
+		schema = append(schema, llm.Tool{
+			Type: "function",
+			Function: llm.ToolFunction{
+				Name: metadata.Name, Description: metadata.Description, Parameters: cloneSchema(metadata.Parameters),
 			},
 		})
 	}

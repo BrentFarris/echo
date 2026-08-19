@@ -62,7 +62,7 @@ func TestAskUserQuestionsOnlyAppearsInPlanChatSchema(t *testing.T) {
 		}
 	}
 	found := false
-	for _, tool := range ChatLLMSchemaForScopes(scopes, true) {
+	for _, tool := range ChatLLMSchemaForScopes(scopes, ChatSchemaOptions{PlanMode: true}) {
 		found = found || tool.Function.Name == AskUserQuestionsToolName
 	}
 	if !found {

@@ -14,6 +14,8 @@ func deletionTestTranscript() sessions.TabTranscript {
 		Turns: []sessions.Turn{
 			{
 				ID: "turn-one", UserContent: "first prompt", UserMessageIndex: 0, Status: "done",
+				ResearchReasoning: []sessions.ResearchReasoning{{AgentID: "agent-one", AgentName: "Scout", Reasoning: "private work"}},
+				ResearchTools:     []sessions.ToolActivity{{CallID: "agent-one:read", Name: "filesystem_read_text", AgentID: "agent-one"}},
 				AssistantTurns: []sessions.AssistantTurn{{
 					Number: 0, Content: "working", HasToolCalls: true,
 					Tools: []sessions.ToolActivity{{CallID: "call-one", Name: "filesystem_read_text", Result: "tool result"}},
@@ -46,7 +48,8 @@ func TestDeleteTranscriptAssistantRemovesEntireToolChain(t *testing.T) {
 		transcript.Messages[1].Content != "second prompt" || transcript.Messages[2].Content != "second answer" {
 		t.Fatalf("assistant context was not fully removed: %#v", transcript.Messages)
 	}
-	if !transcript.Turns[0].AssistantDeleted || len(transcript.Turns[0].AssistantTurns) != 0 {
+	if !transcript.Turns[0].AssistantDeleted || len(transcript.Turns[0].AssistantTurns) != 0 ||
+		len(transcript.Turns[0].ResearchReasoning) != 0 || len(transcript.Turns[0].ResearchTools) != 0 {
 		t.Fatalf("assistant display payload was retained: %#v", transcript.Turns[0])
 	}
 	if transcript.Turns[1].UserMessageIndex != 1 {

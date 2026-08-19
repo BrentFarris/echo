@@ -88,6 +88,7 @@ const state = {
   },
   rawSettings: {},
   settingsLoaded: false,
+  researchAgentConcurrency: 4,
   git: {
     leadingWhitespaceIndicators: true,
     splitDiffView: true,
@@ -185,7 +186,7 @@ function renderLLMEndpoints() {
         <h3 class="settings-card-title">Research</h3>
         <label class="field">
           <span>Research agent concurrency</span>
-          <input type="number" min="0" max="8" step="1" value="4" />
+          <input type="number" min="0" max="8" step="1" value="${state.researchAgentConcurrency}" data-research-agent-concurrency />
           <span class="field-help">Maximum research agents that may run at once. 0 disables research agents.</span>
         </label>
       </div>
@@ -982,6 +983,15 @@ function bindEvents(root) {
     }
   });
 
+  root.querySelectorAll("[data-research-agent-concurrency]").forEach((field) => {
+    field.addEventListener("change", () => {
+      const value = Number.parseInt(field.value, 10);
+      state.researchAgentConcurrency = Math.max(0, Math.min(8, Number.isNaN(value) ? 0 : value));
+      field.value = String(state.researchAgentConcurrency);
+      saveSettings();
+    });
+  });
+
   root.querySelector("[data-action='rebuild-relaunch']")?.addEventListener("click", async () => {
     if (!window.confirm("Rebuild and relaunch Echo?\n\nThis will rebuild the frontend and server, stop the current instance, and launch the new build. Active chats and terminals will be interrupted.")) return;
 
@@ -1088,6 +1098,7 @@ function applySettings(cfg) {
     comfyuiTxt2imgWorkflow: s.comfyuiTxt2imgWorkflow || "",
     comfyuiImg2imgWorkflow: s.comfyuiImg2imgWorkflow || "",
   };
+  state.researchAgentConcurrency = Math.max(0, Math.min(8, Number(s.researchAgentConcurrency ?? 4) || 0));
   state.git = {
     leadingWhitespaceIndicators: s.hideLeadingWhitespaceIndicators !== true,
     splitDiffView: s.disableGitSplitDiffView !== true,
@@ -1195,6 +1206,7 @@ function buildSettings() {
     comfyuiImg2imgWorkflow: state.external.comfyuiImg2imgWorkflow,
     hideLeadingWhitespaceIndicators: !state.git.leadingWhitespaceIndicators,
     disableGitSplitDiffView: !state.git.splitDiffView,
+    researchAgentConcurrency: state.researchAgentConcurrency,
   };
 }
 
