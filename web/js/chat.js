@@ -155,7 +155,6 @@ ws.on("session_snapshot", (snapshot) => {
   if (!binding.log.childElementCount) renderEmpty(binding.log, "Ask Echo to inspect, plan, or build in this workspace.");
   setStreaming(activeStream != null);
   emitWorkspaceState();
-  scrollToBottom(binding.log);
 });
 
 ws.on("session_event", (message) => {
@@ -190,7 +189,6 @@ ws.on("session_event", (message) => {
   emitWorkspaceState();
   if (chatId === binding.activeChatId) {
     applyEvent(event);
-    scrollToBottom(binding.log);
   }
 });
 
@@ -207,7 +205,6 @@ ws.on("command_error", (message) => {
   status.textContent = message.error || "The chat command failed.";
   binding.log.querySelector(".chat-empty")?.remove();
   binding.log.appendChild(status);
-  scrollToBottom(binding.log);
 });
 
 function normalizePreview(value) { return String(value || "").trim().replace(/\s+/g, " "); }
@@ -628,10 +625,6 @@ function formatMediaBytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function scrollToBottom(log) {
-  requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
-}
-
 function startTurn(stream, number) {
   if (!stream) return;
   stream.currentTurn = ensureTurn(stream, Number.isInteger(number) ? number : 0);
@@ -666,10 +659,7 @@ function appendTurnText(stream, turnNumber, text) {
   turn.lastKind = "text";
   turn.text += text;
   turn.textBlockText += text;
-  const log = binding?.log;
-  queueMarkdownPatch(turn.textBlock, turn.textBlockText, () => {
-    if (log && stream.el.isConnected && stream.el.parentElement === log) scrollToBottom(log);
-  });
+  queueMarkdownPatch(turn.textBlock, turn.textBlockText);
 }
 
 function appendReasoning(stream, turnNumber, text) {

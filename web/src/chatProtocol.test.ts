@@ -106,6 +106,35 @@ describe("multi-chat WebSocket protocol", () => {
     unsubscribe();
   });
 
+  it("preserves manual transcript scrolling while messages stream", async () => {
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "chat-one", tabs: [{ chatId: "chat-one", preview: "Main", busy: false }],
+      turns: [{
+        id: "stored", userContent: "Earlier question", status: "done",
+        assistantTurns: [{ number: 0, content: "Earlier answer", hasToolCalls: false }],
+      }],
+    });
+    log.scrollTop = 37;
+
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 2,
+      event: { type: "turn_started", turnId: "live", message: "New question" },
+    });
+    expect(log.scrollTop).toBe(37);
+
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 3,
+      event: { type: "assistant_turn_start", turnId: "live", turn: 0 },
+    });
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 4,
+      event: { type: "token", turnId: "live", turn: 0, content: "Streaming answer" },
+    });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(log.scrollTop).toBe(37);
+  });
+
   it("rewinds selected and later messages before rendering a rerun", () => {
     emit("session_snapshot", {
       type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 10,
