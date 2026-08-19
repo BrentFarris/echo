@@ -119,4 +119,41 @@ describe("multi-chat WebSocket protocol", () => {
       type: "chat_stop", workspaceId: "workspace-tabs", chatId: "chat-one",
     });
   });
+
+  it("isolates the code surface and sends editor context", () => {
+    closeWorkspaceSession(log);
+    openWorkspaceSession(log, "workspace-tabs", { surface: "code" });
+    expect(socket.send).toHaveBeenLastCalledWith({
+      type: "session_subscribe", workspaceId: "workspace-tabs", surface: "code",
+    });
+    socket.send.mockClear();
+
+    emit("session_snapshot", {
+      type: "session_snapshot", surface: "chat", workspaceId: "workspace-tabs", sequence: 9,
+      activeChatId: "chat-one", tabs: [{ chatId: "chat-one", preview: "Main", busy: false }], turns: [],
+    });
+    expect(getChatWorkspaceState()?.hasSnapshot).toBe(false);
+
+    emit("session_snapshot", {
+      type: "session_snapshot", surface: "code", workspaceId: "workspace-tabs", sequence: 3,
+      activeChatId: "code-chat-one", tabs: [{ chatId: "code-chat-one", preview: "Code", busy: false }], turns: [],
+    });
+    const editorContext = {
+      tabs: [{ kind: "file", title: "main.go", active: true, ref: { rootId: "root", path: "main.go" } }],
+    };
+    expect(sendMessage(log, "review this", "model-a", "general", { editorContext })).toBe(true);
+    expect(socket.send).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: "chat_send", surface: "code", workspaceId: "workspace-tabs", chatId: "code-chat-one",
+      message: "review this", editorContext,
+    }));
+    emit("session_snapshot", {
+      type: "session_snapshot", surface: "code", workspaceId: "workspace-tabs", sequence: 4,
+      activeChatId: "code-chat-one", tabs: [{ chatId: "code-chat-one", preview: "Code", busy: false }],
+      turns: [{ id: "stored", userContent: "review this", status: "done", assistantTurns: [] }],
+    });
+    clearChat(log);
+    expect(socket.send).toHaveBeenLastCalledWith({
+      type: "chat_clear", surface: "code", workspaceId: "workspace-tabs", chatId: "code-chat-one",
+    });
+  });
 });

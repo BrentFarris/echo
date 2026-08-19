@@ -32,6 +32,7 @@ function publicWorkspaceState() {
   if (!binding) return null;
   return {
     workspaceId: binding.workspaceId,
+    surface: binding.surface,
     activeChatId: binding.activeChatId,
     hasSnapshot: binding.hasSnapshot,
     tabs: binding.tabs.map((tab) => ({ ...tab })),
@@ -70,7 +71,10 @@ export function canClearChat(log) {
 
 export function clearChat(log) {
   if (!canClearChat(log)) return false;
-  return ws.send({ type: "chat_clear", workspaceId: binding.workspaceId, chatId: binding.activeChatId });
+  return ws.send({
+    type: "chat_clear", workspaceId: binding.workspaceId, chatId: binding.activeChatId,
+    ...(binding.surface === "code" ? { surface: "code" } : {}),
+  });
 }
 
 export function createChatTab() {
@@ -91,17 +95,21 @@ export function closeChatTab(chatId, stopIfBusy = false) {
   });
 }
 
-export function openWorkspaceSession(log, workspaceId) {
+export function openWorkspaceSession(log, workspaceId, options = {}) {
   cancelBindingMarkdownPatches();
   activeStream = null;
   setStreaming(false);
   binding = {
-    log, workspaceId: workspaceId || "", sequence: 0, hasSnapshot: false,
+    log, workspaceId: workspaceId || "", surface: options.surface === "code" ? "code" : "chat",
+    sequence: 0, hasSnapshot: false,
     activeChatId: "", tabs: [], turns: new Map(),
   };
   emitWorkspaceState();
   renderEmpty(log, workspaceId ? "Loading conversation…" : "Select a workspace to start chatting.");
-  if (workspaceId) ws.send({ type: "session_subscribe", workspaceId });
+  if (workspaceId) ws.send({
+    type: "session_subscribe", workspaceId,
+    ...(binding.surface === "code" ? { surface: "code" } : {}),
+  });
 }
 
 export function closeWorkspaceSession(log) {
@@ -114,12 +122,16 @@ export function closeWorkspaceSession(log) {
 
 ws.onState((state) => {
   if (state === "open" && binding?.workspaceId) {
-    ws.send({ type: "session_subscribe", workspaceId: binding.workspaceId });
+    ws.send({
+      type: "session_subscribe", workspaceId: binding.workspaceId,
+      ...(binding.surface === "code" ? { surface: "code" } : {}),
+    });
   }
 });
 
 ws.on("session_snapshot", (snapshot) => {
-  if (!binding || snapshot.workspaceId !== binding.workspaceId) return;
+  const surface = snapshot.surface || "chat";
+  if (!binding || snapshot.workspaceId !== binding.workspaceId || surface !== binding.surface) return;
   cancelBindingMarkdownPatches();
   binding.sequence = Number(snapshot.sequence) || 0;
   binding.hasSnapshot = true;
@@ -145,15 +157,22 @@ ws.on("session_snapshot", (snapshot) => {
 });
 
 ws.on("session_event", (message) => {
-  if (!binding || message.workspaceId !== binding.workspaceId) return;
+  const surface = message.surface || "chat";
+  if (!binding || message.workspaceId !== binding.workspaceId || surface !== binding.surface) return;
   const sequence = Number(message.sequence) || 0;
   if (sequence <= binding.sequence) return;
   if (!binding.hasSnapshot) {
-    ws.send({ type: "session_subscribe", workspaceId: binding.workspaceId });
+    ws.send({
+      type: "session_subscribe", workspaceId: binding.workspaceId,
+      ...(binding.surface === "code" ? { surface: "code" } : {}),
+    });
     return;
   }
   if (binding.sequence && sequence !== binding.sequence + 1) {
-    ws.send({ type: "session_subscribe", workspaceId: binding.workspaceId });
+    ws.send({
+      type: "session_subscribe", workspaceId: binding.workspaceId,
+      ...(binding.surface === "code" ? { surface: "code" } : {}),
+    });
     return;
   }
   binding.sequence = sequence;
@@ -174,7 +193,8 @@ ws.on("session_event", (message) => {
 });
 
 ws.on("command_error", (message) => {
-  if (!binding || (message.workspaceId && message.workspaceId !== binding.workspaceId)) return;
+  const surface = message.surface || "chat";
+  if (!binding || (message.workspaceId && message.workspaceId !== binding.workspaceId) || surface !== binding.surface) return;
   let handled = false;
   for (const cb of commandErrorListeners) {
     try { handled = cb(message) === true || handled; } catch (err) { console.error("chat command error handler error:", err); }
@@ -228,19 +248,24 @@ function applyEvent(event) {
 
 function findStream(turnId) { return binding?.turns.get(turnId) || null; }
 
-export function sendMessage(log, text, model, agentModeId) {
+export function sendMessage(log, text, model, agentModeId, options = {}) {
   text = text.trim();
   if (!text || activeStream || !binding?.workspaceId || !binding.activeChatId || binding.log !== log) return false;
   const requestId = globalThis.crypto?.randomUUID?.() || `request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return ws.send({
     type: "chat_send", workspaceId: binding.workspaceId, chatId: binding.activeChatId, requestId,
     message: text, ...(model ? { model } : {}), ...(agentModeId ? { agentModeId } : {}),
+    ...(binding.surface === "code" ? { surface: "code" } : {}),
+    ...(options.editorContext ? { editorContext: options.editorContext } : {}),
   });
 }
 
 export function stopStream() {
   if (binding?.workspaceId && activeStream) {
-    ws.send({ type: "chat_stop", workspaceId: binding.workspaceId, chatId: binding.activeChatId });
+    ws.send({
+      type: "chat_stop", workspaceId: binding.workspaceId, chatId: binding.activeChatId,
+      ...(binding.surface === "code" ? { surface: "code" } : {}),
+    });
   }
 }
 

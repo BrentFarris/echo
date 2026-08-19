@@ -85,12 +85,13 @@ export type PersistedTab = {
 };
 
 export type PersistedWorkspaceSession = {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   activeTabId: string | null;
   tabs: PersistedTab[];
   expanded: string[];
   selectedTreeKey?: string | null;
   explorerWidth: number;
+  codeChatWidth?: number;
   treeScrollTop: number;
 };
 

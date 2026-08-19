@@ -9,11 +9,14 @@ import { languageForPath, monaco } from "./language";
 import { loadDiff as loadGitDiff } from "./gitApi";
 import type { GitChange, GitDiffDocument, GitRepository } from "./gitTypes";
 import { GitView } from "./gitView";
+import { buildCodeChatEditorContext, runCodeChatSavePreflight } from "./codeChatContext";
 import { loadSession, saveSession } from "./persistence";
 import { CODE_ROUTE, codeOpenTargetFromHash, codeRouteHash, codeSidebarFromHash, routePathFromHash } from "../navigation";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 import { setGitBadgeCount } from "../gitBadge";
 import { randomUUID } from "../randomUUID";
+import { mountChatSurface, type EditorContextPayload, type MountedChatSurface } from "../chatSurface";
+import type { ChatReference } from "../chatMentions";
 import { detachTerminalDock, mountTerminalDock } from "../terminal";
 import type {
   FileRef, FileSnapshot, FsEntry, PersistedTab, PersistedWorkspaceSession,
@@ -116,6 +119,9 @@ class CodeView {
   private persistTimer = 0;
   private persistenceFailed = false;
   private explorerWidth = 280;
+  private codeChatWidth = 360;
+  private codeChatOpen = false;
+  private codeChatSurface: MountedChatSurface | null = null;
   private restoredTreeScrollTop = 0;
   private lastSequence = 0;
   private pollTimer = 0;
@@ -183,7 +189,7 @@ class CodeView {
     const workspaceName = this.workspace?.name || "No workspace";
     const explorerActive = this.activeSidebar === "explorer";
     this.root.innerHTML = `
-      <div class="code-app-shell" style="--explorer-width:${this.explorerWidth}px">
+      <div class="code-app-shell" style="--explorer-width:${this.explorerWidth}px;--code-chat-width:${this.codeChatWidth}px">
         ${renderPrimaryNav({ active: explorerActive ? "explorer" : "git", workspaceName })}
         <section class="code-workbench">
           <div class="code-sidebar-backdrop" data-mobile-sidebar-backdrop aria-hidden="true"></div>
@@ -208,27 +214,37 @@ class CodeView {
           <div class="code-explorer-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Explorer" tabindex="0"></div>
           <main class="code-editor-column">
             <div class="code-tabs-scroll" role="tablist" aria-label="Open editors" data-code-tabs><div class="code-tabs" data-tabs-list></div></div>
-            <nav class="code-breadcrumbs" aria-label="Breadcrumb" data-breadcrumbs></nav>
-            <section class="code-editor-area">
-              <div class="code-editor-placeholder" data-editor-placeholder>
-                <span class="codicon codicon-code"></span>
-                <h2>Echo Code</h2>
-                <p>Open a file from Explorer or press <kbd>Ctrl+P</kbd>.</p>
+            <div class="code-editor-workspace">
+              <div class="code-editor-pane">
+                <nav class="code-breadcrumbs" aria-label="Breadcrumb" data-breadcrumbs>
+                  <span class="code-breadcrumb-path" data-breadcrumb-path></span>
+                  <button type="button" class="code-chat-toggle" title="Open Code Chat" aria-label="Open code assistant" aria-expanded="false" aria-controls="code-chat-dock" data-code-chat-toggle><span class="codicon codicon-comment-discussion"></span></button>
+                </nav>
+                <section class="code-editor-area">
+                  <div class="code-editor-placeholder" data-editor-placeholder>
+                    <span class="codicon codicon-code"></span>
+                    <h2>Echo Code</h2>
+                    <p>Open a file from Explorer or press <kbd>Ctrl+P</kbd>.</p>
+                  </div>
+                  <div class="code-monaco-host" data-monaco-host></div>
+                  <div class="code-diff-toolbar" data-diff-toolbar hidden>
+                    <span data-diff-label></span>
+                    <button type="button" title="Previous Change" aria-label="Previous Change" data-diff-action="previous"><span class="codicon codicon-arrow-up"></span></button>
+                    <button type="button" title="Next Change" aria-label="Next Change" data-diff-action="next"><span class="codicon codicon-arrow-down"></span></button>
+                    <button type="button" title="Toggle Inline Diff" aria-label="Toggle Inline Diff" data-diff-action="layout"><span class="codicon codicon-layout"></span></button>
+                  </div>
+                  <div class="code-monaco-diff-host" data-monaco-diff-host hidden></div>
+                  <div class="code-diff-unavailable" data-diff-unavailable hidden></div>
+                </section>
+                <footer class="code-statusbar" data-statusbar>
+                  <div><button type="button" class="code-mobile-explorer" data-mobile-explorer aria-label="Toggle Explorer" aria-expanded="false"><span class="codicon codicon-${explorerActive ? "files" : "source-control"}"></span></button><button type="button" data-status="branch" disabled><span class="codicon codicon-source-control"></span></button></div>
+                  <div class="code-status-right"><span data-status="cursor">Ln 1, Col 1</span><span>Spaces: 2</span><span>UTF-8</span><span data-status="eol">LF</span><span data-status="language">Plain Text</span></div>
+                </footer>
               </div>
-              <div class="code-monaco-host" data-monaco-host></div>
-              <div class="code-diff-toolbar" data-diff-toolbar hidden>
-                <span data-diff-label></span>
-                <button type="button" title="Previous Change" aria-label="Previous Change" data-diff-action="previous"><span class="codicon codicon-arrow-up"></span></button>
-                <button type="button" title="Next Change" aria-label="Next Change" data-diff-action="next"><span class="codicon codicon-arrow-down"></span></button>
-                <button type="button" title="Toggle Inline Diff" aria-label="Toggle Inline Diff" data-diff-action="layout"><span class="codicon codicon-layout"></span></button>
-              </div>
-              <div class="code-monaco-diff-host" data-monaco-diff-host hidden></div>
-              <div class="code-diff-unavailable" data-diff-unavailable hidden></div>
-            </section>
-            <footer class="code-statusbar" data-statusbar>
-              <div><button type="button" class="code-mobile-explorer" data-mobile-explorer aria-label="Toggle Explorer" aria-expanded="false"><span class="codicon codicon-${explorerActive ? "files" : "source-control"}"></span></button><button type="button" data-status="branch" disabled><span class="codicon codicon-source-control"></span></button></div>
-              <div class="code-status-right"><span data-status="cursor">Ln 1, Col 1</span><span>Spaces: 2</span><span>UTF-8</span><span data-status="eol">LF</span><span data-status="language">Plain Text</span></div>
-            </footer>
+              <div class="code-chat-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Code Chat" aria-valuemin="300" aria-valuemax="640" tabindex="0" hidden></div>
+              <aside class="code-chat-dock" id="code-chat-dock" aria-label="Code Chat" hidden data-code-chat-dock></aside>
+              <div class="code-chat-backdrop" data-code-chat-backdrop aria-hidden="true"></div>
+            </div>
           </main>
         </section>
         <div data-region="terminal"></div>
@@ -843,7 +859,7 @@ class CodeView {
   }
 
   private renderBreadcrumbs(): void {
-    const target = this.root.querySelector<HTMLElement>("[data-breadcrumbs]");
+    const target = this.root.querySelector<HTMLElement>("[data-breadcrumb-path]");
     const tab = this.activeTab();
     if (!target || !tab) {
       if (target) target.innerHTML = "";
@@ -1774,6 +1790,12 @@ class CodeView {
     this.root.querySelector("[data-mobile-sidebar-backdrop]")?.addEventListener("click", () => {
       this.setMobileExplorer(false);
     }, { signal });
+    this.root.querySelector("[data-code-chat-toggle]")?.addEventListener("click", () => {
+      this.setCodeChatOpen(!this.codeChatOpen);
+    }, { signal });
+    this.root.querySelector("[data-code-chat-backdrop]")?.addEventListener("click", () => {
+      this.setCodeChatOpen(false, true);
+    }, { signal });
     this.root.querySelector("[data-diff-toolbar]")?.addEventListener("click", (event) => {
       const action = (event.target as Element).closest<HTMLElement>("[data-diff-action]")?.dataset.diffAction;
       if (action === "previous" || action === "next") void this.diffEditor.goToDiff(action);
@@ -1833,6 +1855,7 @@ class CodeView {
       if (this.persistenceFailed && this.tabs.some((tab) => tab.dirty)) event.preventDefault();
     }, { signal });
     this.installResizer();
+    this.installCodeChatResizer();
   }
 
   private handleTreeKeyboard(event: KeyboardEvent): void {
@@ -1874,7 +1897,13 @@ class CodeView {
   }
 
   private handleGlobalKeyboard(event: KeyboardEvent): void {
-    if (document.querySelector(".code-modal-overlay, .code-picker-overlay") && event.key !== "Escape") return;
+    if (document.querySelector(".code-modal-overlay, .code-picker-overlay")) return;
+    if (event.key === "Escape" && this.root.querySelector("[data-chat-mention-picker]") && document.activeElement?.closest(".code-chat-surface")) return;
+    if (event.key === "Escape" && this.codeChatOpen) {
+      event.preventDefault();
+      this.setCodeChatOpen(false, true);
+      return;
+    }
     if (event.key === "Escape" && this.root.querySelector(".code-app-shell.is-explorer-open")) {
       event.preventDefault();
       this.setMobileExplorer(false);
@@ -1932,7 +1961,142 @@ class CodeView {
     }, { signal: this.abort.signal });
   }
 
+  private installCodeChatResizer(): void {
+    const resizer = this.root.querySelector<HTMLElement>(".code-chat-resizer")!;
+    const setWidth = (value: number) => this.applyCodeChatWidth(value);
+    resizer.setAttribute("aria-valuenow", String(this.codeChatWidth));
+    resizer.addEventListener("pointerdown", (event) => {
+      if (window.innerWidth <= 720) return;
+      event.preventDefault();
+      resizer.setPointerCapture(event.pointerId);
+      const startX = event.clientX;
+      const startWidth = this.codeChatWidth;
+      const move = (moveEvent: PointerEvent) => setWidth(startWidth + startX - moveEvent.clientX);
+      const up = () => {
+        resizer.removeEventListener("pointermove", move);
+        resizer.removeEventListener("pointerup", up);
+        resizer.classList.remove("is-dragging");
+        this.schedulePersist();
+      };
+      resizer.classList.add("is-dragging");
+      resizer.addEventListener("pointermove", move);
+      resizer.addEventListener("pointerup", up);
+    }, { signal: this.abort.signal });
+    resizer.addEventListener("dblclick", () => { setWidth(360); this.schedulePersist(); }, { signal: this.abort.signal });
+    resizer.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowLeft") { setWidth(this.codeChatWidth + 10); event.preventDefault(); }
+      if (event.key === "ArrowRight") { setWidth(this.codeChatWidth - 10); event.preventDefault(); }
+      if (event.key === "Home") { setWidth(300); event.preventDefault(); }
+      if (event.key === "End") { setWidth(640); event.preventDefault(); }
+      if (event.defaultPrevented) this.schedulePersist();
+    }, { signal: this.abort.signal });
+    window.addEventListener("resize", () => {
+      if (window.innerWidth > 720) setWidth(this.codeChatWidth);
+      this.editor?.layout();
+      this.diffEditor?.layout();
+    }, { signal: this.abort.signal });
+  }
+
+  private applyCodeChatWidth(value: number): void {
+    const workbench = this.root.querySelector<HTMLElement>(".code-editor-workspace");
+    const available = workbench?.clientWidth || window.innerWidth;
+    const maximum = Math.max(300, Math.min(640, Math.floor(available / 2)));
+    this.codeChatWidth = Math.max(300, Math.min(maximum, value));
+    this.root.querySelector<HTMLElement>(".code-app-shell")?.style.setProperty("--code-chat-width", `${this.codeChatWidth}px`);
+    const resizer = this.root.querySelector<HTMLElement>(".code-chat-resizer");
+    resizer?.setAttribute("aria-valuemax", String(maximum));
+    resizer?.setAttribute("aria-valuenow", String(this.codeChatWidth));
+    this.editor?.layout();
+    this.diffEditor?.layout();
+  }
+
+  private setCodeChatOpen(open: boolean, restoreFocus = false): void {
+    if (!this.workspace) return;
+    const shell = this.root.querySelector<HTMLElement>(".code-app-shell");
+    const dock = this.root.querySelector<HTMLElement>("[data-code-chat-dock]");
+    const resizer = this.root.querySelector<HTMLElement>(".code-chat-resizer");
+    const toggle = this.root.querySelector<HTMLButtonElement>("[data-code-chat-toggle]");
+    if (!shell || !dock || !resizer || !toggle) return;
+    if (open && !this.codeChatSurface) {
+      this.codeChatSurface = mountChatSurface(dock, {
+        workspaceId: this.workspace.id,
+        surface: "code",
+        title: "CODE CHAT",
+        onClose: () => this.setCodeChatOpen(false, true),
+        beforeSend: () => this.prepareEditorContext(),
+        onActivateReference: (reference) => this.activateChatReference(reference),
+        onStreamingChange: (streaming) => {
+          toggle.classList.toggle("is-streaming", streaming);
+          const action = this.codeChatOpen ? "Close code assistant" : "Open code assistant";
+          toggle.setAttribute("aria-label", streaming ? `${action} (response streaming)` : action);
+        },
+      });
+    }
+    this.codeChatOpen = open;
+    shell.classList.toggle("is-code-chat-open", open);
+    dock.hidden = !open;
+    resizer.hidden = !open;
+    toggle.setAttribute("aria-expanded", String(open));
+    toggle.title = open ? "Close Code Chat" : "Open Code Chat";
+    const action = open ? "Close code assistant" : "Open code assistant";
+    toggle.setAttribute("aria-label", toggle.classList.contains("is-streaming") ? `${action} (response streaming)` : action);
+    if (open && window.innerWidth <= 720) this.setMobileExplorer(false);
+    requestAnimationFrame(() => {
+      this.editor?.layout();
+      this.diffEditor?.layout();
+      if (open) this.codeChatSurface?.focus();
+      else if (restoreFocus) toggle.focus();
+    });
+  }
+
+  private async activateChatReference(reference: ChatReference): Promise<void> {
+    if (reference.kind === "file") {
+      await this.openFile(reference.ref, true);
+      return;
+    }
+    this.setSidebar("explorer");
+    await this.expandTo(reference.ref);
+    this.selectedTreeKey = refKey(reference.ref);
+    this.renderTree();
+  }
+
+  private async prepareEditorContext(): Promise<EditorContextPayload | false> {
+    const saved = await runCodeChatSavePreflight(
+      this.tabs,
+      (tab) => tab.dirty && Boolean(this.worktreeRef(tab)),
+      (tab) => this.saveTab(tab),
+    );
+    if (!saved) {
+      toast("Save the open file changes before sending them to Code Chat.", { sticky: true });
+      return false;
+    }
+    return this.buildEditorContext();
+  }
+
+  private buildEditorContext(): EditorContextPayload {
+    return buildCodeChatEditorContext(this.tabs.map((tab) => {
+      const ref = tab.kind === "diff" ? tab.diff?.fileRef || tab.ref || undefined : tab.ref || undefined;
+      const root = ref ? this.roots.find((candidate) => candidate.id === ref.rootId) : undefined;
+      return {
+        id: tab.id,
+        kind: tab.kind === "diff" ? "diff" : tab.ref ? "file" : "untitled",
+        title: tab.title,
+        dirty: tab.dirty,
+        ref,
+        reference: ref ? `${root?.referenceLabel || root?.label || "workspace"}${ref.path ? `/${ref.path}` : ""}` : undefined,
+        content: !ref && tab.kind !== "diff" ? tab.model.getValue() : undefined,
+        diff: tab.diff ? {
+          repository: tab.diff.repository.label,
+          scope: tab.diff.scope,
+          reviewRef: tab.diff.reviewRef,
+          oldPath: tab.diff.oldPath,
+        } : undefined,
+      };
+    }), this.activeTabId);
+  }
+
   private setMobileExplorer(open: boolean): void {
+    if (open && this.codeChatOpen) this.setCodeChatOpen(false);
     this.root.querySelector(".code-app-shell")?.classList.toggle("is-explorer-open", open);
     this.root.querySelector("[data-mobile-explorer]")?.setAttribute("aria-expanded", String(open));
   }
@@ -1941,9 +2105,14 @@ class CodeView {
     if (!this.workspace) return;
     let saved: PersistedWorkspaceSession | null = null;
     try { saved = await loadSession(this.workspace.id); } catch (error) { console.warn("restore editor session", error); }
-    if (!saved || (saved.version !== 1 && saved.version !== 2)) return;
+    if (!saved || (saved.version !== 1 && saved.version !== 2 && saved.version !== 3)) {
+      this.applyCodeChatWidth(this.codeChatWidth);
+      return;
+    }
     this.explorerWidth = Math.max(220, Math.min(520, saved.explorerWidth || 280));
-    this.root.querySelector<HTMLElement>(".code-app-shell")?.style.setProperty("--explorer-width", `${this.explorerWidth}px`);
+    this.applyCodeChatWidth(saved.codeChatWidth || 360);
+    const shell = this.root.querySelector<HTMLElement>(".code-app-shell");
+    shell?.style.setProperty("--explorer-width", `${this.explorerWidth}px`);
     this.expanded = new Set(saved.expanded || []);
     this.selectedTreeKey = saved.selectedTreeKey || null;
     for (const persisted of saved.tabs || []) await this.restoreTab(persisted);
@@ -2082,9 +2251,10 @@ class CodeView {
     });
     try {
       await saveSession(this.workspace.id, {
-        version: 2, activeTabId: this.activeTabId, tabs, expanded: [...this.expanded],
+        version: 3, activeTabId: this.activeTabId, tabs, expanded: [...this.expanded],
         selectedTreeKey: this.selectedTreeKey,
-        explorerWidth: this.explorerWidth, treeScrollTop: this.treeScroller?.scrollTop || 0,
+        explorerWidth: this.explorerWidth, codeChatWidth: this.codeChatWidth,
+        treeScrollTop: this.treeScroller?.scrollTop || 0,
       });
       this.persistenceFailed = false;
       return true;
@@ -2239,6 +2409,8 @@ class CodeView {
     this.closeWorkspaceDropdown = null;
     this.closeAddWorkspaceModal?.();
     this.closeAddWorkspaceModal = null;
+    this.codeChatSurface?.dispose();
+    this.codeChatSurface = null;
     this.abort.abort();
     window.clearTimeout(this.persistTimer);
     window.clearInterval(this.pollTimer);

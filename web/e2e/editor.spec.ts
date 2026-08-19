@@ -122,6 +122,42 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await mainGoResult.click();
   await expect(page.getByRole("tab", { name: /main\.go/ })).toBeVisible();
 
+  // Code Chat is collapsed by default, opens beneath the editor tabs, keeps
+  // the compact reference picker, and exposes an accessible width control.
+  const codeChatToggle = page.getByRole("button", { name: "Open code assistant" });
+  const codeChatToggleControl = page.locator("[data-code-chat-toggle]");
+  await expect(codeChatToggleControl).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("[data-code-chat-dock]")).toBeHidden();
+  await codeChatToggle.click();
+  await expect(page.locator("[data-code-chat-dock]")).toBeVisible();
+  await expect(codeChatToggleControl).toHaveAttribute("aria-expanded", "true");
+  const codeChatInput = page.getByLabel("Message Echo about this code");
+  await codeChatInput.fill("Review @main");
+  await expect(page.getByRole("option", { name: /main\.go/ })).toBeVisible();
+  await page.getByRole("option", { name: /main\.go/ }).click();
+  await expect(codeChatInput.locator("[data-chat-file-mention]")).toHaveAttribute("data-reference-path", /main\.go$/);
+  const codeChatResizer = page.getByRole("separator", { name: "Resize Code Chat" });
+  const widthBefore = Number(await codeChatResizer.getAttribute("aria-valuenow"));
+  await codeChatResizer.focus();
+  await page.keyboard.press("ArrowLeft");
+  const widthAfter = Number(await codeChatResizer.getAttribute("aria-valuenow"));
+  expect(widthAfter).toBeGreaterThan(widthBefore);
+  await codeChatInput.fill("Inspect @nest");
+  const folderMention = page.locator("[data-chat-mention-option]", { has: page.locator(".chat-mention-kind", { hasText: "Folder" }) });
+  await expect(folderMention).toBeVisible();
+  await folderMention.click();
+  await expect(codeChatInput.locator("[data-chat-file-mention]")).toHaveAttribute("data-workspace-kind", "directory");
+  await page.getByRole("button", { name: "Close chat" }).click();
+  await expect(page.locator("[data-code-chat-dock]")).toBeHidden();
+  await expect(codeChatToggleControl).toBeFocused();
+  await page.waitForTimeout(500);
+  await page.reload();
+  await expect(page.locator("[data-code-chat-dock]")).toBeHidden();
+  await expect(page.locator("[data-code-chat-toggle]")).toHaveAttribute("aria-expanded", "false");
+  await page.getByRole("button", { name: "Open code assistant" }).click();
+  await expect(page.getByRole("separator", { name: "Resize Code Chat" })).toHaveAttribute("aria-valuenow", String(widthAfter));
+  await page.getByRole("button", { name: "Close chat" }).click();
+
   await page.locator(".view-lines").click();
   await page.keyboard.press("Control+End");
   await page.keyboard.press("Enter");
@@ -257,6 +293,17 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(page.locator(".code-tree-label", { hasText: "secondary.txt" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.locator(".code-app-shell")).not.toHaveClass(/is-explorer-open/);
+  const mobileCodeChatToggle = page.getByRole("button", { name: "Open code assistant" });
+  await mobileCodeChatToggle.click();
+  await expect(page.locator(".code-app-shell")).toHaveClass(/is-code-chat-open/);
+  await expect(page.locator("[data-code-chat-backdrop]")).toBeVisible();
+  await page.locator("[data-code-chat-backdrop]").click({ position: { x: 5, y: 5 } });
+  await expect(page.locator(".code-app-shell")).not.toHaveClass(/is-code-chat-open/);
+  await expect(mobileCodeChatToggle).toBeFocused();
+  await mobileCodeChatToggle.click();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".code-app-shell")).not.toHaveClass(/is-code-chat-open/);
+  await expect(mobileCodeChatToggle).toBeFocused();
 
   await mobileNav.getByRole("button", { name: "Source Control" }).click();
   await expect(page).toHaveURL(/#\/code\?sidebar=git$/);

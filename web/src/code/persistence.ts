@@ -5,9 +5,8 @@ const storeName = "workspace-sessions";
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    // Version 2 keeps the same keyed store, so existing version-1 file-tab
-    // sessions migrate in place while the payload gains discriminated diff
-    // descriptors.
+    // The IndexedDB schema stays at version 2. Payload versions 1–3 share the
+    // same keyed store and are restored compatibly by the Code view.
     const request = indexedDB.open(databaseName, 2);
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(storeName)) {

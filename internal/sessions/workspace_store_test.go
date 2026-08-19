@@ -147,3 +147,35 @@ func TestWorkspaceStoreMalformedFileIsPreserved(t *testing.T) {
 		t.Fatalf("malformed workspace was changed: %q", data)
 	}
 }
+
+func TestWorkspaceStoreMigratesVersionOneAndPreservesNormalTabs(t *testing.T) {
+	root := t.TempDir()
+	store := NewWorkspaceStore(root)
+	if err := os.MkdirAll(filepath.Dir(store.Path()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{
+  "version": 1,
+  "workspaceId": "ws-1",
+  "revision": 4,
+  "activeChatId": "chat-a",
+  "tabs": [{"chatId":"chat-a","preview":"preserved","revision":2,"turns":[],"messages":[]}]
+}`
+	if err := os.WriteFile(store.Path(), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := store.Load("ws-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspace.Version != WorkspaceVersion || workspace.ActiveChatID != "chat-a" || len(workspace.Tabs) != 1 || workspace.Tabs[0].Preview != "preserved" || workspace.CodeChat != nil {
+		t.Fatalf("unexpected migrated workspace: %#v", workspace)
+	}
+	data, err := os.ReadFile(store.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"version": 2`) {
+		t.Fatalf("migration was not persisted: %s", data)
+	}
+}

@@ -179,15 +179,17 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 type inboundMessage struct {
-	Type        string                `json:"type"`
-	WorkspaceID string                `json:"workspaceId,omitempty"`
-	ChatID      string                `json:"chatId,omitempty"`
-	RequestID   string                `json:"requestId,omitempty"`
-	Message     string                `json:"message,omitempty"`
-	Model       string                `json:"model,omitempty"`
-	AgentModeID string                `json:"agentModeId,omitempty"`
-	StopIfBusy  bool                  `json:"stopIfBusy,omitempty"`
-	Refs        []workspacefs.FileRef `json:"refs,omitempty"`
+	Type          string                `json:"type"`
+	WorkspaceID   string                `json:"workspaceId,omitempty"`
+	Surface       string                `json:"surface,omitempty"`
+	ChatID        string                `json:"chatId,omitempty"`
+	RequestID     string                `json:"requestId,omitempty"`
+	Message       string                `json:"message,omitempty"`
+	Model         string                `json:"model,omitempty"`
+	AgentModeID   string                `json:"agentModeId,omitempty"`
+	StopIfBusy    bool                  `json:"stopIfBusy,omitempty"`
+	Refs          []workspacefs.FileRef `json:"refs,omitempty"`
+	EditorContext *editorContext        `json:"editorContext,omitempty"`
 }
 
 func (c *client) readPump(h *Hub) {
@@ -221,7 +223,7 @@ func (c *client) readPump(h *Hub) {
 		}
 		switch msg.Type {
 		case "session_subscribe":
-			c.server.sessions.subscribe(c, msg.WorkspaceID)
+			c.server.sessions.subscribe(c, msg.WorkspaceID, msg.Surface)
 		case "fs_subscribe":
 			c.subscribeFS(msg.WorkspaceID, msg.Refs)
 		case "fs_unsubscribe":
@@ -237,9 +239,9 @@ func (c *client) readPump(h *Hub) {
 		case "chat_send":
 			c.server.sessions.send(c, msg)
 		case "chat_stop":
-			c.server.sessions.stop(c, msg.WorkspaceID, msg.ChatID)
+			c.server.sessions.stop(c, msg.WorkspaceID, msg.ChatID, msg.Surface)
 		case "chat_clear":
-			c.server.sessions.clear(c, msg.WorkspaceID, msg.ChatID)
+			c.server.sessions.clear(c, msg.WorkspaceID, msg.ChatID, msg.Surface)
 		case "chat_tab_create":
 			c.server.sessions.createTab(c, msg.WorkspaceID)
 		case "chat_tab_activate":

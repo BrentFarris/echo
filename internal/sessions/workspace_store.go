@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	WorkspaceVersion  = 1
+	WorkspaceVersion  = 2
 	WorkspaceFileName = "chat-workspace.json"
 )
 
@@ -24,6 +24,7 @@ type ChatWorkspace struct {
 	Revision     uint64          `json:"revision"`
 	ActiveChatID string          `json:"activeChatId"`
 	Tabs         []TabTranscript `json:"tabs"`
+	CodeChat     *TabTranscript  `json:"codeChat,omitempty"`
 }
 
 // TabTranscript contains the durable history and display metadata for one tab.
@@ -96,10 +97,11 @@ func (s *WorkspaceStore) loadLocked(workspaceID string) (ChatWorkspace, error) {
 		return ChatWorkspace{}, fmt.Errorf("parse chat workspace %q: %w", s.path, err)
 	}
 	previousWorkspaceID := workspace.WorkspaceID
+	previousVersion := workspace.Version
 	if err := normalizeAndValidateWorkspace(&workspace, workspaceID); err != nil {
 		return ChatWorkspace{}, err
 	}
-	if previousWorkspaceID != "" && previousWorkspaceID != workspaceID {
+	if previousVersion != workspace.Version || (previousWorkspaceID != "" && previousWorkspaceID != workspaceID) {
 		// Workspace IDs live in the machine-local registry. When a portable
 		// workspace is opened after that registry was recreated or rebound, the
 		// file location is the ownership boundary and its chat state can safely
@@ -115,6 +117,9 @@ func normalizeAndValidateWorkspace(workspace *ChatWorkspace, workspaceID string)
 	if workspace.Version == 0 && len(workspace.Tabs) == 0 && workspace.WorkspaceID == "" {
 		workspace.Version = WorkspaceVersion
 		workspace.WorkspaceID = workspaceID
+	}
+	if workspace.Version == 1 {
+		workspace.Version = WorkspaceVersion
 	}
 	if workspace.Version != WorkspaceVersion {
 		return fmt.Errorf("unsupported chat workspace version %d", workspace.Version)
@@ -139,6 +144,22 @@ func normalizeAndValidateWorkspace(workspace *ChatWorkspace, workspaceID string)
 		}
 		if tab.Messages == nil {
 			tab.Messages = []llm.Message{}
+		}
+	}
+	if workspace.CodeChat != nil {
+		codeChat := workspace.CodeChat
+		codeChat.ChatID = strings.TrimSpace(codeChat.ChatID)
+		if codeChat.ChatID == "" {
+			return fmt.Errorf("code chat has no id")
+		}
+		if _, exists := seen[codeChat.ChatID]; exists {
+			return fmt.Errorf("duplicate chat id %q", codeChat.ChatID)
+		}
+		if codeChat.Turns == nil {
+			codeChat.Turns = []Turn{}
+		}
+		if codeChat.Messages == nil {
+			codeChat.Messages = []llm.Message{}
 		}
 	}
 	if len(workspace.Tabs) == 0 {
