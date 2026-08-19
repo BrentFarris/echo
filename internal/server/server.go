@@ -20,9 +20,11 @@ import (
 	"github.com/brent/echo/internal/auth"
 	"github.com/brent/echo/internal/gitservice"
 	"github.com/brent/echo/internal/llm"
+	"github.com/brent/echo/internal/plugins"
 	"github.com/brent/echo/internal/rebuild"
 	"github.com/brent/echo/internal/settings"
 	terminalruntime "github.com/brent/echo/internal/terminal"
+	"github.com/brent/echo/internal/tools"
 	"github.com/brent/echo/internal/workspacefs"
 	"github.com/brent/echo/internal/workspaces"
 	"github.com/brent/echo/internal/workspaceskills"
@@ -38,6 +40,8 @@ type Server struct {
 	webAssets        iofs.FS
 	hub              *Hub
 	settingsPath     string
+	plugins          *plugins.Manager
+	tools            *tools.Registry
 	data             *appdata.Store
 	store            *settings.Store
 	workspaces       *workspaces.Manager
@@ -92,16 +96,28 @@ func New(addr, webDir string) *Server {
 // to the settings file. When settingsPath is empty, the platform default
 // (echo/echo.json under the user config dir) is used.
 func NewWithSettingsPath(addr, webDir, settingsPath string) *Server {
-	return newServer(addr, webDir, nil, settingsPath)
+	return newServer(addr, webDir, nil, settingsPath, ServerOptions{})
 }
 
 // NewWithAssets constructs a Server that serves an embedded production SPA.
 // The supplied filesystem's root must contain index.html.
 func NewWithAssets(addr string, assets iofs.FS, settingsPath string) *Server {
-	return newServer(addr, "", assets, settingsPath)
+	return newServer(addr, "", assets, settingsPath, ServerOptions{})
 }
 
-func newServer(addr, webDir string, assets iofs.FS, settingsPath string) *Server {
+type ServerOptions struct {
+	SafeMode bool
+}
+
+func NewWithSettingsPathOptions(addr, webDir, settingsPath string, options ServerOptions) *Server {
+	return newServer(addr, webDir, nil, settingsPath, options)
+}
+
+func NewWithAssetsOptions(addr string, assets iofs.FS, settingsPath string, options ServerOptions) *Server {
+	return newServer(addr, "", assets, settingsPath, options)
+}
+
+func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options ServerOptions) *Server {
 	workingDir, _ := os.Getwd()
 	s := &Server{
 		webDir:      webDir,
@@ -114,6 +130,7 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string) *Server
 		processID:   os.Getpid(),
 		processArgs: append([]string(nil), os.Args[1:]...),
 		workingDir:  workingDir,
+		tools:       tools.CloneDefaultRegistry(),
 	}
 	if settingsPath == "" {
 		path, err := settings.DefaultStorePath()
@@ -140,6 +157,47 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string) *Server
 		s.hub.BroadcastWorkspaceFS(event.WorkspaceID, event)
 		s.git.InvalidateWorkspace(event.WorkspaceID)
 	})
+	coreToolNames := map[string]bool{}
+	for _, tool := range s.tools.Registered() {
+		coreToolNames[tool.Metadata().Name] = true
+	}
+	pluginManager, pluginErr := plugins.NewManager(plugins.Options{
+		RootDir: filepath.Join(filepath.Dir(settingsPath), "plugins"), CoreToolNames: coreToolNames,
+		SafeMode: options.SafeMode, Builtins: plugins.BuiltinPackages(),
+		WorkspacePath: func(workspaceID string) (string, error) {
+			workspace, ok, err := s.workspaces.Get(workspaceID)
+			if err != nil {
+				return "", err
+			}
+			if !ok {
+				return "", fmt.Errorf("workspace %q was not found", workspaceID)
+			}
+			return workspace.MainPath, nil
+		},
+		WorkspaceIDs: func() []string {
+			workspaces, err := s.workspaces.List()
+			if err != nil {
+				return nil
+			}
+			ids := make([]string, 0, len(workspaces))
+			for _, workspace := range workspaces {
+				ids = append(ids, workspace.ID)
+			}
+			return ids
+		},
+		Notify: func() { s.hub.Broadcast(map[string]any{"type": "plugins_changed"}) },
+		RuntimeEvent: func(event plugins.RuntimeEvent) {
+			s.hub.Broadcast(map[string]any{"type": "plugin_runtime_event", "event": event})
+		},
+	})
+	if pluginErr != nil {
+		logf("initialize plugins: %v", pluginErr)
+	} else {
+		s.plugins = pluginManager
+		if err := s.plugins.BindTools(s.tools); err != nil {
+			logf("register plugin tools: %v", err)
+		}
+	}
 	authManager, authErr := auth.New(s.data)
 	s.auth = authManager
 	if authErr != nil {
@@ -252,6 +310,18 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/agent-modes", s.handleCreateAgentMode)
 	mux.HandleFunc("PUT /api/agent-modes/{id}", s.handleUpdateAgentMode)
 	mux.HandleFunc("DELETE /api/agent-modes/{id}", s.handleDeleteAgentMode)
+	mux.HandleFunc("GET /api/plugins", s.handlePluginCatalog)
+	mux.HandleFunc("POST /api/plugins/stages", s.handlePluginStage)
+	mux.HandleFunc("POST /api/plugins/stages/{stageId}/approve", s.handlePluginApprove)
+	mux.HandleFunc("DELETE /api/plugins/stages/{stageId}", s.handlePluginReject)
+	mux.HandleFunc("POST /api/plugins/{id}/actions", s.handlePluginAction)
+	mux.HandleFunc("PUT /api/plugins/{id}/config", s.handlePluginConfig)
+	mux.HandleFunc("GET /api/plugins/{id}/logs", s.handlePluginLog)
+	mux.HandleFunc("GET /api/plugins/{id}/icon/{viewId}", s.handlePluginIcon)
+	mux.HandleFunc("POST /api/plugins/{id}/views/{viewId}/sessions", s.handlePluginUISession)
+	mux.HandleFunc("POST /api/plugins/ui-sessions/{token}/bridge", s.handlePluginUIBridge)
+	mux.HandleFunc("DELETE /api/plugins/ui-sessions/{token}", s.handlePluginUIClose)
+	mux.HandleFunc("POST /api/plugins/{id}/remove-data", s.handlePluginRemoveData)
 
 	// Workspace endpoints.
 	mux.HandleFunc("GET /api/workspaces", s.handleGetWorkspaces)
@@ -297,6 +367,7 @@ func (s *Server) routes() http.Handler {
 
 	// WebSocket endpoint for real-time push.
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
+	mux.HandleFunc("GET /plugin-ui/{token}/{path...}", s.handlePluginUIAsset)
 
 	// Static assets from the web directory.
 	var fileServer http.Handler
@@ -311,7 +382,7 @@ func (s *Server) routes() http.Handler {
 	// enabling client-side routing.
 	spa := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Never rewrite API or WebSocket paths.
-		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/ws" {
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/plugin-ui/") || r.URL.Path == "/ws" {
 			mux.ServeHTTP(w, r)
 			return
 		}
@@ -389,6 +460,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.sessions.shutdown(ctx)
 	if err := s.terminal.Shutdown(ctx); err != nil && ctx.Err() == nil {
 		logf("terminal shutdown: %v", err)
+	}
+	if s.plugins != nil {
+		if err := s.plugins.Shutdown(ctx); err != nil && ctx.Err() == nil {
+			logf("plugin shutdown: %v", err)
+		}
 	}
 	s.hub.Shutdown()
 	return s.httpServer.Shutdown(ctx)

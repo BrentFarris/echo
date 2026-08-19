@@ -104,6 +104,9 @@ func (s *Service) ReadWorkspaceSkill(ctx context.Context, request tools.Workspac
 			return tools.WorkspaceSkill{}, err
 		}
 	}
+	if strings.TrimSpace(request.ID) == "builtin/echo-plugins" {
+		return builtinEchoPluginsSkill()
+	}
 	root, name, err := s.identity(request.ID)
 	if err != nil {
 		return tools.WorkspaceSkill{}, err
@@ -176,6 +179,9 @@ func (s *Service) upsertLocked(ctx context.Context, request tools.WorkspaceSkill
 	if !validName(name) {
 		return tools.WorkspaceSkillRecordResponse{}, tools.SafeError{Code: "invalid_arguments", Message: "name must be a lowercase kebab-case slug no longer than 64 characters"}
 	}
+	if strings.EqualFold(root.Label, "builtin") && name == "echo-plugins" {
+		return tools.WorkspaceSkillRecordResponse{}, tools.SafeError{Code: "invalid_arguments", Message: "builtin/echo-plugins is a read-only built-in skill"}
+	}
 	description := strings.TrimSpace(request.Description)
 	if description == "" || utf8.RuneCountInString(description) > maxDescription {
 		return tools.WorkspaceSkillRecordResponse{}, tools.SafeError{Code: "invalid_arguments", Message: "description is required and must not exceed 500 characters"}
@@ -237,12 +243,21 @@ func (s *Service) upsertLocked(ctx context.Context, request tools.WorkspaceSkill
 
 func (s *Service) catalog(ctx context.Context, folderFilter string) ([]catalogEntry, []string, error) {
 	if folderFilter != "" {
-		if _, ok := s.rootByLabel(folderFilter); !ok {
-			return nil, nil, tools.SafeError{Code: "invalid_arguments", Message: "folder must name an available workspace folder"}
+		if !strings.EqualFold(folderFilter, "builtin") {
+			if _, ok := s.rootByLabel(folderFilter); !ok {
+				return nil, nil, tools.SafeError{Code: "invalid_arguments", Message: "folder must name an available workspace folder or builtin"}
+			}
 		}
 	}
 	entries := []catalogEntry{}
 	warnings := []string{}
+	if folderFilter == "" || strings.EqualFold(folderFilter, "builtin") {
+		if skill, err := builtinEchoPluginsSkill(); err == nil {
+			entries = append(entries, catalogEntry{skill: skill})
+		} else {
+			warnings = append(warnings, "builtin/echo-plugins: "+err.Error())
+		}
+	}
 	for _, root := range s.roots {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -273,6 +288,9 @@ func (s *Service) catalog(ctx context.Context, folderFilter string) ([]catalogEn
 			}
 			name := child.Name()
 			if !validName(name) {
+				continue
+			}
+			if strings.EqualFold(root.Label, "builtin") && name == "echo-plugins" {
 				continue
 			}
 			path, err := existingPath(root, name)

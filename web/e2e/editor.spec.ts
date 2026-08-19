@@ -7,7 +7,10 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const password = "Echo-E2E-Password!";
 
 test("first-run auth and the real Monaco filesystem workflow", async ({ page }) => {
-  test.setTimeout(300_000);
+  // This is a deliberately broad, real-process acceptance scenario. Plugin
+  // installation adds an additional reviewed lifecycle and browser-isolation
+  // pass before the existing editor/terminal/mobile coverage.
+  test.setTimeout(420_000);
   const state = JSON.parse(readFileSync(resolve(directory, "../test-results/e2e-runtime/state.json"), "utf8")) as {
     setupCode: string;
     workspace: string;
@@ -47,6 +50,65 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   expect(workspaceIDs.secondary).toBeTruthy();
   await page.reload();
   await expect(page.locator(".app-shell")).toBeVisible();
+
+  // Optional plugins install through a real reviewed stage. The Calculator
+  // stays isolated and alive while Echo's statically owned routes change.
+  await page.evaluate(async () => {
+    const request = async (path: string, body: unknown) => {
+      const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+      return payload.data;
+    };
+    const staged = await request("/api/plugins/stages", { source: { type: "builtin", builtin: "calculator" } });
+    await request(`/api/plugins/stages/${encodeURIComponent(staged.stage.id)}/approve`, { scope: "global", enable: true });
+  });
+  const calculatorButton = page.getByRole("button", { name: "Calculator", exact: true });
+  await expect(calculatorButton).toBeVisible();
+  await calculatorButton.click();
+  const calculatorWindow = page.locator(".plugin-floating-window", { has: page.locator('iframe[title="Calculator plugin"]') });
+  await expect(calculatorWindow).toBeVisible();
+  const calculator = page.frameLocator('iframe[title="Calculator plugin"]');
+  await calculator.getByRole("button", { name: "7", exact: true }).click();
+  await calculator.getByRole("button", { name: "×", exact: true }).click();
+  await calculator.getByRole("button", { name: "6", exact: true }).click();
+  await calculator.getByRole("button", { name: "=", exact: true }).click();
+  await expect(calculator.locator("#display")).toHaveText("42");
+  const isolation = await calculator.locator("body").evaluate(async () => {
+    let dom = "available";
+    let api = "available";
+    try { void window.parent.document.body; } catch { dom = "blocked"; }
+    try { await fetch("/api/plugins"); } catch { api = "blocked"; }
+    return { dom, api };
+  });
+  expect(isolation).toEqual({ dom: "blocked", api: "blocked" });
+  const beforeMove = await calculatorWindow.boundingBox();
+  const header = calculatorWindow.locator(".plugin-window-header");
+  const headerBox = await header.boundingBox();
+  if (beforeMove && headerBox) {
+    await page.mouse.move(headerBox.x + 40, headerBox.y + 18);
+    await page.mouse.down();
+    await page.mouse.move(headerBox.x - 20, headerBox.y + 55, { steps: 4 });
+    await page.mouse.up();
+    await expect.poll(async () => (await calculatorWindow.boundingBox())?.x).not.toBe(beforeMove.x);
+  }
+  await page.getByRole("button", { name: "Explorer", exact: true }).click();
+  await expect(page).toHaveURL(/#\/code$/);
+  await expect(calculatorWindow).toBeVisible();
+  await page.getByRole("button", { name: "Source Control", exact: true }).click();
+  await expect(page).toHaveURL(/#\/code\?sidebar=git$/);
+  await expect(calculatorWindow).toBeVisible();
+  await page.getByRole("button", { name: "Chat", exact: true }).click();
+  await expect(page).toHaveURL(/#\/home$/);
+  await expect(calculatorWindow).toBeVisible();
+  await page.evaluate(async () => {
+    const response = await fetch("/api/plugins/calculator/actions", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "disable-global" }),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  });
+  await expect(calculatorWindow).toHaveCount(0);
+  await expect(calculatorButton).toHaveCount(0);
 
   // Chat @ references use the workspace index, render as compact rich chips,
   // and open files directly in Echo Code.

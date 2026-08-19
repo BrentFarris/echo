@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Echo Plugin Showcase</title>
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <span class="eyebrow">Sandboxed page contribution</span>
+        <h1>Plugin Showcase</h1>
+        <p>This UI is isolated from Echo and can reach only the versioned message bridge.</p>
+      </header>
+
+      <section class="card">
+        <h2>Effective context</h2>
+        <dl>
+          <div><dt>Plugin</dt><dd id="plugin">Waiting for host…</dd></div>
+          <div><dt>Workspace</dt><dd id="workspace">None</dd></div>
+          <div><dt>Display name</dt><dd id="display-name">Not configured</dd></div>
+        </dl>
+      </section>
+
+      <section class="card actions">
+        <h2>Backend and bridge</h2>
+        <div class="button-row">
+          <button id="ping" type="button">Call backend</button>
+          <button id="event" type="button">Emit UI event</button>
+          <button id="remember" type="button">Remember visit</button>
+          <button id="notify" type="button">Notify through Echo</button>
+        </div>
+        <output id="result" aria-live="polite">Ready when Echo initializes the bridge.</output>
+      </section>
+
+      <footer>Open Settings → Plugins to change the host-rendered fields or inspect backend health.</footer>
+    </main>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

@@ -61,6 +61,7 @@ export function getActive() {
 export async function setActiveWorkspace(id) {
   await put("/api/workspaces/active", { id });
   activeId = id;
+  window.dispatchEvent(new CustomEvent("echo:workspace-changed", { detail: { workspaceId: id } }));
   return getActive();
 }
 

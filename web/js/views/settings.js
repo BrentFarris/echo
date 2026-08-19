@@ -14,10 +14,12 @@ import { codeRouteHash, navigateBackFromSettings } from "../../src/navigation.ts
 import { renderMobilePrimaryNav } from "../../src/primaryNav.ts";
 import { reloadForReplacementServer, waitForReplacementServer } from "../../src/rebuildRelaunch.ts";
 import { openAddWorkspaceModal, openWorkspaceDropdown } from "../workspaces.js";
+import { refreshPluginCatalog } from "../../src/plugins/catalog.ts";
 
 let mountedRoot = null;
 let closeSettingsWorkspaceDropdown = null;
 let closeSettingsAddWorkspaceModal = null;
+let pluginCatalogListener = null;
 
 // ---- Theme token table (matches OLD theme.ts, carried into the new SPA) ----
 const themeTokens = [
@@ -41,6 +43,7 @@ const themeGroups = ["Base", "Text", "Action", "Status"];
 const sections = [
   { id: "llm", label: "LLM Endpoints", icon: icons.settings },
   { id: "modes", label: "Agent Modes", icon: icons.tasks },
+  { id: "plugins", label: "Plugins", icon: icons.dashboard },
   { id: "external", label: "External Connections", icon: icons.git },
   { id: "messaging", label: "Messaging", icon: icons.mic },
   { id: "git", label: "Git", icon: icons.git },
@@ -102,6 +105,17 @@ const state = {
     running: false,
     status: "",
     logPath: "",
+  },
+  plugins: {
+    catalog: { safeMode: false, plugins: [], stages: [], missing: [], conflicts: [], retained: [] },
+    sourceType: "local",
+    localPath: "",
+    repository: "",
+    ref: "",
+    subdirectory: "",
+    status: "",
+    busy: false,
+    logs: {},
   },
 };
 
@@ -567,6 +581,143 @@ function renderSecurity() {
   `;
 }
 
+function renderPlugins() {
+  const catalog = state.plugins.catalog;
+  const statusError = state.plugins.status.startsWith("Error:");
+  return `
+    <section class="settings-section plugin-settings-section">
+      <div class="settings-section-heading">
+        <div><h2 class="settings-section-title">Plugins</h2><p class="settings-card-help">Add optional tools and isolated views without changing Echo's core features.</p></div>
+        <button class="secondary-button compact-button" type="button" data-plugin-action="refresh" ${state.plugins.busy ? "disabled" : ""}>Refresh</button>
+      </div>
+      ${catalog.safeMode ? `<div class="settings-callout is-warning"><strong>Safe mode is active.</strong> All optional plugins remain disabled until Echo restarts without <code>-safe-mode</code>.</div>` : ""}
+      ${catalog.credentialStoreAvailable === false ? `<div class="settings-callout is-warning"><strong>OS credential storage is unavailable.</strong> Plugin secrets can use an environment-variable reference or a session-only value that disappears on restart.</div>` : ""}
+      ${state.plugins.status ? `<p class="settings-status ${statusError ? "is-error" : ""}">${esc(state.plugins.status)}</p>` : ""}
+
+      <div class="settings-card plugin-install-card">
+        <h3 class="settings-card-title">Install a plugin</h3>
+        <p class="settings-card-help">Echo stages and inspects packages without running them. Installation requires a separate review below.</p>
+        <div class="plugin-source-tabs">
+          <button type="button" class="secondary-button compact-button ${state.plugins.sourceType === "local" ? "is-active" : ""}" data-plugin-source="local">Local folder</button>
+          <button type="button" class="secondary-button compact-button ${state.plugins.sourceType === "github" ? "is-active" : ""}" data-plugin-source="github">GitHub</button>
+        </div>
+        ${state.plugins.sourceType === "local" ? `
+          <label class="field"><span>Plugin source folder</span><input type="text" data-plugin-install-field="localPath" value="${esc(state.plugins.localPath)}" placeholder="C:\\path\\to\\plugin"><span class="field-help">Echo snapshots this folder. Reloads always create a new reviewable snapshot.</span></label>
+        ` : `
+          <div class="settings-grid">
+            <label class="field"><span>GitHub repository</span><input type="text" data-plugin-install-field="repository" value="${esc(state.plugins.repository)}" placeholder="owner/repository"></label>
+            <label class="field"><span>Ref</span><input type="text" data-plugin-install-field="ref" value="${esc(state.plugins.ref)}" placeholder="main, tag, or commit"></label>
+            <label class="field field-wide"><span>Subdirectory</span><input type="text" data-plugin-install-field="subdirectory" value="${esc(state.plugins.subdirectory)}" placeholder="optional/path"></label>
+          </div>
+        `}
+        <div class="plugin-install-actions">
+          <button class="secondary-button" type="button" data-plugin-action="stage-source" ${state.plugins.busy ? "disabled" : ""}>Stage for review</button>
+          <button class="secondary-button" type="button" data-plugin-action="stage-calculator" ${state.plugins.busy ? "disabled" : ""}>Try built-in Calculator</button>
+        </div>
+      </div>
+
+      ${renderWorkspacePluginRequirements(catalog)}
+      ${catalog.stages?.length ? `<div class="plugin-review-list"><h3>Pending review</h3>${catalog.stages.map(renderPluginStage).join("")}</div>` : ""}
+      <div class="plugin-installed-list">
+        <h3>Installed</h3>
+        ${catalog.plugins?.length ? catalog.plugins.map(renderInstalledPlugin).join("") : `<div class="settings-card"><p class="settings-card-help">No plugins are installed. Echo's core features are unaffected.</p></div>`}
+      </div>
+      ${catalog.retained?.length ? `<div class="settings-card"><h3 class="settings-card-title">Retained plugin data</h3><p class="settings-card-help">Uninstall preserves configuration, namespaced storage, and credential references for a future reinstall.</p>${catalog.retained.map(item => `<div class="plugin-requirement-row"><span><strong>${esc(item.name || item.id)}</strong> <small>v${esc(item.version || "")}</small></span><button type="button" class="secondary-button compact-button danger-button" data-plugin-action="remove-data" data-plugin-id="${esc(item.id)}">Remove retained data</button></div>`).join("")}</div>` : ""}
+    </section>
+  `;
+}
+
+function renderWorkspacePluginRequirements(catalog) {
+  const missing = catalog.missing || [];
+  const conflicts = catalog.conflicts || [];
+  if (!missing.length && !conflicts.length) return "";
+  return `<div class="settings-card plugin-requirements"><h3 class="settings-card-title">Workspace requirements</h3>
+    ${missing.map(recipe => `<div class="plugin-requirement-row"><span><strong>${esc(recipe.id)}</strong> is required by <code>.echo/plugins.json</code> but is not installed.</span>${recipe.source?.repository ? `<button type="button" class="secondary-button compact-button" data-plugin-action="stage-requirement" data-repository="${esc(recipe.source.repository)}" data-commit="${esc(recipe.source.commit || "")}" data-subdirectory="${esc(recipe.source.subdirectory || "")}">Install pinned package</button>` : ""}</div>`).join("")}
+    ${conflicts.map(recipe => `<div class="plugin-requirement-row is-conflict"><span><strong>${esc(recipe.id)}</strong> is installed at a different commit. It remains inactive for this workspace.</span><button type="button" class="secondary-button compact-button" data-plugin-action="stage-requirement" data-repository="${esc(recipe.source.repository || "")}" data-commit="${esc(recipe.source.commit || "")}" data-subdirectory="${esc(recipe.source.subdirectory || "")}">Review pinned commit</button></div>`).join("")}
+  </div>`;
+}
+
+function renderPluginStage(stage) {
+  const manifest = stage.validation?.manifest || {};
+  const permissions = manifest.permissions || [];
+  const tools = manifest.contributes?.tools || [];
+  const settings = manifest.contributes?.settings || [];
+  const source = stage.source || {};
+  return `<article class="settings-card plugin-review-card" data-stage-id="${esc(stage.id)}">
+    <div class="settings-section-heading"><div><span class="plugin-kicker">Untrusted staged code</span><h3 class="settings-card-title">${esc(manifest.name || manifest.id)} <small>v${esc(manifest.version)}</small></h3></div><code>${esc(stage.validation?.target || "")}</code></div>
+    <p>${esc(manifest.description || "No description provided.")}</p>
+    <dl class="plugin-facts"><dt>Source</dt><dd>${esc(pluginSourceLabel(source))}</dd>${source.commit ? `<dt>Commit</dt><dd><code>${esc(source.commit)}</code></dd>` : ""}<dt>Digest</dt><dd><code>${esc(stage.validation?.digest || "")}</code></dd>${stage.previousDigest ? `<dt>Replaces</dt><dd><code>${esc(stage.previousDigest)}</code></dd>` : ""}</dl>
+    ${stage.previousDigest ? renderPluginStageDiff(stage.diff || {}) : ""}
+    ${manifest.runtime ? `<div class="settings-callout is-warning"><strong>Native code warning:</strong> this backend will run with your OS account permissions. Declarations are review boundaries, not an OS sandbox.</div>` : `<div class="settings-callout">UI content runs in a restricted, opaque-origin iframe.</div>`}
+    <div class="plugin-review-columns"><div><strong>Permissions</strong>${permissions.length ? `<ul>${permissions.map(permission => `<li><code>${esc(permission.name)}</code> — ${esc(permission.reason)}${permission.hosts?.length ? `<small> Hosts: ${permission.hosts.map(host => `<code>${esc(host)}</code>`).join(" ")}</small>` : ""}</li>`).join("")}</ul>` : `<p>None requested.</p>`}</div><div><strong>Agent tools and schemas</strong>${tools.length ? `<ul>${tools.map(renderPluginReviewTool).join("")}</ul>` : `<p>None contributed.</p>`}</div><div><strong>Settings</strong>${settings.length ? `<ul>${settings.map(setting => `<li><code>${esc(setting.key)}</code> — ${esc(setting.label)} (${esc(setting.scope)}${setting.type === "secret" ? ", secret" : ""})</li>`).join("")}</ul>` : `<p>None contributed.</p>`}</div></div>
+    <div class="plugin-review-actions">
+      <button type="button" class="secondary-button" data-plugin-action="approve-stage" data-stage-id="${esc(stage.id)}" data-scope="none">Install, keep scopes</button>
+      <button type="button" class="secondary-button" data-plugin-action="approve-stage" data-stage-id="${esc(stage.id)}" data-scope="workspace" ${state.modeWorkspaceId ? "" : "disabled"}>Install &amp; enable here</button>
+      <button type="button" class="secondary-button" data-plugin-action="approve-stage" data-stage-id="${esc(stage.id)}" data-scope="global">Install &amp; enable globally</button>
+      <button type="button" class="secondary-button danger-button" data-plugin-action="reject-stage" data-stage-id="${esc(stage.id)}">Reject</button>
+    </div>
+  </article>`;
+}
+
+function renderPluginReviewTool(tool) {
+  const classification = tool.readOnly ? "read-only" : tool.mutating ? "mutating" : "unclassified";
+  const output = tool.outputSchema ? `<details><summary>Output schema</summary><pre>${esc(JSON.stringify(tool.outputSchema, null, 2))}</pre></details>` : "";
+  return `<li><code>${esc(tool.name)}</code> — ${esc(tool.description)}<small>${esc(classification)} · RPC <code>${esc(tool.method || "")}</code> · ${esc(tool.timeoutSeconds || 60)}s timeout</small><details><summary>Input schema</summary><pre>${esc(JSON.stringify(tool.inputSchema || {}, null, 2))}</pre></details>${output}</li>`;
+}
+
+function renderPluginStageDiff(diff) {
+  const rows = [
+    ["Permissions added", diff.permissionsAdded], ["Permissions removed", diff.permissionsRemoved],
+    ["Tools added", diff.toolsAdded], ["Tools removed", diff.toolsRemoved],
+    ["Views added", diff.viewsAdded], ["Views removed", diff.viewsRemoved],
+    ["Settings added", diff.settingsAdded], ["Settings removed", diff.settingsRemoved],
+  ].filter(([, values]) => values?.length);
+  return `<div class="plugin-update-diff"><strong>Update from v${esc(diff.previousVersion || "unknown")}</strong><span>Package content ${diff.codeChanged ? "changed" : "is unchanged"}.${diff.permissionsChanged ? " Permission declarations changed." : ""}${diff.toolContractsChanged ? " Agent-tool contracts changed." : ""}</span>${rows.length ? `<ul>${rows.map(([label, values]) => `<li><span>${label}:</span> ${values.map(value => `<code>${esc(value)}</code>`).join(" ")}</li>`).join("")}</ul>` : ""}</div>`;
+}
+
+function renderInstalledPlugin(plugin) {
+  const settings = plugin.settings || [];
+  const logs = state.plugins.logs[plugin.id];
+  return `<article class="settings-card installed-plugin ${plugin.effective ? "is-effective" : ""}">
+    <div class="settings-section-heading"><div><span class="plugin-kicker">${plugin.effective ? "Active" : plugin.health ? "Unhealthy" : "Inactive"}</span><h3 class="settings-card-title">${esc(plugin.name)} <small>v${esc(plugin.version)}</small></h3><p class="settings-card-help">${esc(plugin.description || "")}</p></div><span class="plugin-health-dot ${plugin.effective ? "is-active" : ""}" aria-hidden="true"></span></div>
+    ${plugin.health ? `<div class="settings-callout is-error"><strong>Runtime health:</strong> ${esc(plugin.health)}</div>` : ""}
+    <dl class="plugin-facts"><dt>Source</dt><dd>${esc(pluginSourceLabel(plugin.source))}</dd><dt>Digest</dt><dd><code>${esc(plugin.digest)}</code></dd><dt>Tools</dt><dd>${plugin.approvedTools?.length ? plugin.approvedTools.map(name => `<code>${esc(name)}</code>`).join(" ") : "None"}</dd><dt>Views</dt><dd>${plugin.views?.length ? plugin.views.map(view => esc(`${view.title} (${view.kind})`)).join(", ") : "None"}</dd></dl>
+    <div class="plugin-scope-controls">
+      <button type="button" class="secondary-button compact-button" data-plugin-action="${plugin.globalEnabled ? "disable-global" : "enable-global"}" data-plugin-id="${esc(plugin.id)}">${plugin.globalEnabled ? "Disable globally" : "Enable globally"}</button>
+      <button type="button" class="secondary-button compact-button" data-plugin-action="${plugin.workspaceEnabled ? "disable-workspace" : "enable-workspace"}" data-plugin-id="${esc(plugin.id)}" ${state.modeWorkspaceId ? "" : "disabled"}>${plugin.workspaceEnabled ? "Disable in workspace" : "Enable in workspace"}</button>
+    </div>
+    ${settings.length ? `<details class="plugin-config"><summary>Configuration</summary><div class="plugin-setting-grid">${settings.map(setting => renderPluginSetting(plugin, setting)).join("")}</div><button type="button" class="secondary-button" data-plugin-action="save-config" data-plugin-id="${esc(plugin.id)}">Save configuration</button></details>` : ""}
+    <div class="plugin-management-actions">
+      ${plugin.source?.type === "local" ? `<button type="button" class="secondary-button compact-button" data-plugin-action="reload" data-plugin-id="${esc(plugin.id)}">Reload local snapshot</button>` : ""}
+      ${plugin.source?.type === "github" ? `<button type="button" class="secondary-button compact-button" data-plugin-action="update-check" data-plugin-id="${esc(plugin.id)}">Check for update</button>` : ""}
+      <button type="button" class="secondary-button compact-button" data-plugin-action="logs" data-plugin-id="${esc(plugin.id)}">${logs === undefined ? "View logs" : "Refresh logs"}</button>
+      <button type="button" class="secondary-button compact-button danger-button" data-plugin-action="uninstall" data-plugin-id="${esc(plugin.id)}">Uninstall</button>
+      <button type="button" class="secondary-button compact-button danger-button" data-plugin-action="remove-data" data-plugin-id="${esc(plugin.id)}">Remove plugin data</button>
+    </div>
+    ${logs !== undefined ? `<pre class="plugin-log" aria-label="${esc(plugin.name)} runtime log">${esc(logs || "No runtime log entries.")}</pre>` : ""}
+  </article>`;
+}
+
+function renderPluginSetting(plugin, setting) {
+  const base = `data-plugin-setting="${esc(plugin.id)}" data-setting-key="${esc(setting.key)}" data-setting-type="${esc(setting.type)}" data-setting-scope="${esc(setting.scope)}"`;
+  const disabled = setting.scope === "workspace" && !state.modeWorkspaceId ? "disabled" : "";
+  if (setting.type === "secret") {
+    return `<fieldset class="plugin-secret-setting" data-plugin-secret="${esc(plugin.id)}" data-setting-key="${esc(setting.key)}" data-setting-scope="${esc(setting.scope)}"><legend>${esc(setting.label)}${setting.required ? " *" : ""}</legend><span class="field-help">${esc(setting.help || "Secret values are never returned by Echo.")} Current: ${setting.configured ? `configured (${esc(setting.secretSource || "credential store")})` : "missing"}</span><div class="settings-grid"><label class="field"><span>Source</span><select data-secret-part="source" ${disabled}><option value="os">OS credential store</option><option value="session">This session only</option><option value="environment">Environment variable</option><option value="clear">Clear</option></select></label><label class="field"><span>Secret value</span><input type="password" data-secret-part="value" autocomplete="new-password" ${disabled}></label><label class="field"><span>Environment variable</span><input type="text" data-secret-part="environment" placeholder="MY_PLUGIN_TOKEN" ${disabled}></label></div></fieldset>`;
+  }
+  let control = "";
+  if (setting.type === "boolean") control = `<input type="checkbox" ${setting.value ? "checked" : ""} ${base} ${disabled}>`;
+  else if (setting.type === "select") control = `<select ${base} ${disabled}>${(setting.options || []).map(option => `<option value="${esc(option.value)}" ${option.value === setting.value ? "selected" : ""}>${esc(option.label)}</option>`).join("")}</select>`;
+  else control = `<input type="${setting.type === "number" ? "number" : setting.type === "url" ? "url" : "text"}" value="${esc(setting.value ?? "")}" ${setting.minimum !== undefined ? `min="${esc(setting.minimum)}"` : ""} ${setting.maximum !== undefined ? `max="${esc(setting.maximum)}"` : ""} ${setting.pattern ? `pattern="${esc(setting.pattern)}"` : ""} ${base} ${disabled}>`;
+  return `<label class="field"><span>${esc(setting.label)}${setting.required ? " *" : ""} <small>${setting.scope}</small></span>${control}${setting.help ? `<span class="field-help">${esc(setting.help)}</span>` : ""}</label>`;
+}
+
+function pluginSourceLabel(source = {}) {
+  if (source.type === "github") return `${source.repository || "GitHub"}${source.commit ? ` @ ${source.commit}` : source.ref ? ` @ ${source.ref}` : ""}${source.subdirectory ? ` / ${source.subdirectory}` : ""}`;
+  if (source.type === "local") return source.path || "Local development folder";
+  if (source.type === "builtin") return `Built into Echo (${source.builtin || "package"})`;
+  return "Unknown source";
+}
+
 function renderDevelopment() {
   const rebuildError = state.rebuild.status.startsWith("Error:");
   return `
@@ -596,6 +747,7 @@ function renderDevelopment() {
 const renderers = {
   llm: renderLLMEndpoints,
   modes: renderAgentModes,
+  plugins: renderPlugins,
   external: renderExternal,
   messaging: renderMessaging,
   git: renderGit,
@@ -680,6 +832,7 @@ function bindEvents(root) {
             captureExternalFields(root);
             await saveSettings();
             await put("/api/workspaces/active", { id });
+            window.dispatchEvent(new CustomEvent("echo:workspace-changed", { detail: { workspaceId: id } }));
             await loadAgentModes();
           } catch (err) {
             state.modeStatus = `Error: ${err.message}`;
@@ -693,6 +846,7 @@ function bindEvents(root) {
                 captureExternalFields(root);
                 await saveSettings();
                 await put("/api/workspaces/active", { id: workspace.id });
+                window.dispatchEvent(new CustomEvent("echo:workspace-changed", { detail: { workspaceId: workspace.id } }));
                 await loadAgentModes();
               } catch (err) {
                 state.modeStatus = `Error: ${err.message}`;
@@ -713,8 +867,11 @@ function bindEvents(root) {
       state.activeSection = btn.dataset.section;
       render();
       if (state.activeSection === "security") loadSecurity();
+      if (state.activeSection === "plugins") loadPlugins();
     });
   });
+
+  bindPluginEvents(root);
 
   root.querySelectorAll("[data-action='set-theme-palette']").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1016,12 +1173,128 @@ function bindEvents(root) {
   });
 }
 
+function capturePluginInstallFields(root) {
+  root.querySelectorAll("[data-plugin-install-field]").forEach((field) => {
+    state.plugins[field.dataset.pluginInstallField] = field.value;
+  });
+}
+
+function bindPluginEvents(root) {
+  root.querySelectorAll("[data-plugin-source]").forEach((button) => button.addEventListener("click", () => {
+    capturePluginInstallFields(root);
+    state.plugins.sourceType = button.dataset.pluginSource;
+    render();
+  }));
+
+  root.querySelectorAll("[data-plugin-action]").forEach((button) => button.addEventListener("click", async () => {
+    const action = button.dataset.pluginAction;
+    if (!action || state.plugins.busy) return;
+    capturePluginInstallFields(root);
+    const configuration = action === "save-config" ? collectPluginConfiguration(root, button.dataset.pluginId) : null;
+    if (action === "refresh") { await loadPlugins(); return; }
+    if (action === "logs") {
+      try {
+        const data = await get(`/api/plugins/${encodeURIComponent(button.dataset.pluginId)}/logs`);
+        state.plugins.logs[button.dataset.pluginId] = data.log || "";
+        render();
+      } catch (err) {
+        state.plugins.status = `Error: ${err.message}`;
+        render();
+      }
+      return;
+    }
+    if (action === "uninstall" && !window.confirm(`Uninstall ${button.dataset.pluginId}? Plugin configuration and data will be preserved.`)) return;
+    if (action === "remove-data" && !window.confirm(`Permanently remove ${button.dataset.pluginId} data, configuration, logs, and stored credentials? This cannot be undone.`)) return;
+
+    state.plugins.busy = true;
+    state.plugins.status = action === "approve-stage" ? "Installing reviewed snapshot…" : "Working…";
+    render();
+    try {
+      if (action === "stage-source") {
+        const source = state.plugins.sourceType === "local"
+          ? { type: "local", path: state.plugins.localPath.trim() }
+          : { type: "github", repository: state.plugins.repository.trim(), ref: state.plugins.ref.trim(), subdirectory: state.plugins.subdirectory.trim() };
+        await post("/api/plugins/stages", { source });
+        state.plugins.status = "Package staged. Review its digest, permissions, and contributions below.";
+      } else if (action === "stage-calculator") {
+        await post("/api/plugins/stages", { source: { type: "builtin", builtin: "calculator" } });
+        state.plugins.status = "Built-in Calculator staged for review.";
+      } else if (action === "stage-requirement") {
+        await post("/api/plugins/stages", { source: { type: "github", repository: button.dataset.repository, ref: button.dataset.commit, commit: button.dataset.commit, subdirectory: button.dataset.subdirectory } });
+        state.plugins.status = "Pinned workspace package staged for review.";
+      } else if (action === "approve-stage") {
+        const scope = button.dataset.scope;
+        await post(`/api/plugins/stages/${encodeURIComponent(button.dataset.stageId)}/approve`, { scope, workspaceId: state.modeWorkspaceId, enable: scope !== "none" });
+        state.plugins.status = "Plugin installed from the approved immutable snapshot.";
+      } else if (action === "reject-stage") {
+        await del(`/api/plugins/stages/${encodeURIComponent(button.dataset.stageId)}`);
+        state.plugins.status = "Staged package rejected and removed.";
+      } else if (action === "save-config") {
+        await put(`/api/plugins/${encodeURIComponent(button.dataset.pluginId)}/config`, configuration);
+        state.plugins.status = "Plugin configuration saved.";
+      } else if (action === "remove-data") {
+        await post(`/api/plugins/${encodeURIComponent(button.dataset.pluginId)}/remove-data`, {});
+        state.plugins.logs[button.dataset.pluginId] = undefined;
+        state.plugins.status = "Plugin data and known credential-store entries removed.";
+      } else {
+		const response = await post(`/api/plugins/${encodeURIComponent(button.dataset.pluginId)}/actions`, { action, workspaceId: state.modeWorkspaceId });
+		if (action === "reload") {
+			const stage = response.stage;
+			const contractChanged = stage?.diff?.permissionsChanged || stage?.diff?.toolContractsChanged;
+			if (stage && !contractChanged && window.confirm(`Reload ${stage.validation.manifest.name} from its local source?\n\nDigest: ${stage.validation.digest}\n\n${stage.validation.manifest.runtime ? "Its native backend runs with your OS account permissions." : "Its UI remains sandboxed."}`)) {
+				await post(`/api/plugins/stages/${encodeURIComponent(stage.id)}/approve`, { scope: "none", workspaceId: state.modeWorkspaceId, enable: false });
+				state.plugins.status = "Local snapshot reloaded from the explicitly approved source; prior activation was preserved.";
+			} else {
+				state.plugins.status = contractChanged ? "Permission or agent-tool contracts changed. Review the candidate in full before installation." : "Reload candidate staged for review.";
+			}
+		} else {
+			state.plugins.status = action === "update-check" ? "Candidate snapshot staged. Review it before installation." : "Plugin state updated.";
+		}
+      }
+      await loadPlugins(false);
+    } catch (err) {
+      state.plugins.status = `Error: ${err.message}`;
+    } finally {
+      state.plugins.busy = false;
+      render();
+    }
+  }));
+}
+
+function collectPluginConfiguration(root, pluginId) {
+  const values = {};
+  root.querySelectorAll(`[data-plugin-setting="${CSS.escape(pluginId)}"]`).forEach((field) => {
+    const key = field.dataset.settingKey;
+    if (field.dataset.settingType === "boolean") values[key] = field.checked;
+    else if (field.dataset.settingType === "number") {
+      if (field.value !== "") values[key] = Number(field.value);
+    }
+    else values[key] = field.value;
+  });
+  const secrets = {};
+  root.querySelectorAll(`[data-plugin-secret="${CSS.escape(pluginId)}"]`).forEach((fieldset) => {
+    const source = fieldset.querySelector("[data-secret-part='source']")?.value || "";
+    const value = fieldset.querySelector("[data-secret-part='value']")?.value || "";
+    const environment = fieldset.querySelector("[data-secret-part='environment']")?.value || "";
+    if (source === "clear" || source === "environment" && environment || (source === "os" || source === "session") && value) {
+      secrets[fieldset.dataset.settingKey] = { source, value, environment };
+    }
+  });
+  return { workspaceId: state.modeWorkspaceId, values, secrets };
+}
+
 export function mount(root) {
   mountedRoot = root;
+  pluginCatalogListener = (event) => {
+    state.plugins.catalog = event.detail;
+    if (state.activeSection === "plugins") render();
+  };
+  window.addEventListener("echo:plugin-catalog", pluginCatalogListener);
   render();
   loadSettings();
   loadAgentModes();
   loadSecurity();
+  loadPlugins();
 }
 
 export function unmount() {
@@ -1031,6 +1304,8 @@ export function unmount() {
   closeSettingsWorkspaceDropdown = null;
   closeSettingsAddWorkspaceModal?.();
   closeSettingsAddWorkspaceModal = null;
+  if (pluginCatalogListener) window.removeEventListener("echo:plugin-catalog", pluginCatalogListener);
+  pluginCatalogListener = null;
   mountedRoot = null;
 }
 
@@ -1208,6 +1483,16 @@ function buildSettings() {
     disableGitSplitDiffView: !state.git.splitDiffView,
     researchAgentConcurrency: state.researchAgentConcurrency,
   };
+}
+
+async function loadPlugins(renderAfter = true) {
+  try {
+    state.plugins.catalog = await refreshPluginCatalog();
+    if (renderAfter) render();
+  } catch (err) {
+    state.plugins.status = `Error: Failed to load plugins: ${err.message}`;
+    if (renderAfter) render();
+  }
 }
 
 // saveSettings persists the current view state to the server and refreshes

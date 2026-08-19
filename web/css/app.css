@@ -1602,6 +1602,27 @@ textarea:disabled {
   line-height: 1.45;
 }
 
+.chat-plugin-approval-card { display: grid; gap: 10px; margin: 12px 0; padding: 15px; border: 1px solid color-mix(in srgb, var(--color-warning) 55%, var(--color-border)); border-radius: 11px; background: color-mix(in srgb, var(--color-surface) 92%, var(--color-warning)); box-shadow: var(--shadow-soft); }
+.chat-plugin-approval-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.chat-plugin-approval-heading > div { display: grid; gap: 3px; }
+.chat-plugin-approval-heading span { color: var(--color-text-muted); font-size: var(--text-xs); font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+.chat-plugin-approval-heading strong { font-size: var(--text-2xl); }
+.chat-plugin-trust-badge { padding: 4px 7px; border: 1px solid var(--color-success); border-radius: 20px; color: var(--color-success) !important; white-space: nowrap; }
+.chat-plugin-approval-card > p { margin: 0; font-size: var(--text-md); }
+.chat-plugin-approval-card dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 10px; margin: 0; font-size: var(--text-base-sm); }
+.chat-plugin-approval-card dt { color: var(--color-text-muted); }
+.chat-plugin-approval-card dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.chat-plugin-approval-warning { padding: 9px; border-radius: 7px; background: color-mix(in srgb, var(--color-warning) 12%, transparent); }
+.chat-plugin-approval-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.chat-plugin-tool-review { display: grid; gap: 6px; }
+.chat-plugin-tool-review summary,
+.plugin-review-columns summary { cursor: pointer; color: var(--color-text); font-size: var(--text-base-sm); font-weight: 650; }
+.chat-plugin-tool-review pre,
+.plugin-review-columns pre { max-height: 220px; overflow: auto; margin: 6px 0; padding: 8px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--code-editor-bg); color: var(--code-editor-text); white-space: pre-wrap; overflow-wrap: anywhere; font-size: .68rem; }
+.chat-plugin-approval-status { min-height: 1em; color: var(--color-text-muted); }
+.chat-plugin-approval-card.is-approved { border-color: var(--color-success); }
+.chat-plugin-approval-card.is-rejected { opacity: .7; }
+
 .chat-plan-question-item {
   margin: var(--space-sm) var(--space-lg);
 }
@@ -3271,6 +3292,54 @@ textarea:disabled {
   margin: 0;
   color: var(--color-text-muted);
   font-size: var(--text-md-lg);
+}
+
+/* Plugin management */
+.plugin-settings-section { max-width: 1040px; }
+.plugin-source-tabs,
+.plugin-install-actions,
+.plugin-review-actions,
+.plugin-scope-controls,
+.plugin-management-actions { display: flex; flex-wrap: wrap; gap: var(--space-lg); align-items: center; }
+.plugin-source-tabs { margin: var(--space-xl) 0; }
+.plugin-source-tabs .is-active { border-color: var(--color-accent); color: var(--color-accent-strong); }
+.plugin-install-actions { margin-top: var(--space-xl); }
+.plugin-installed-list,
+.plugin-review-list { display: grid; gap: var(--space-xl); }
+.plugin-installed-list > h3,
+.plugin-review-list > h3 { margin: var(--space-lg) 0 0; font-size: var(--text-3xl); }
+.plugin-review-card { border-color: color-mix(in srgb, var(--color-warning) 45%, var(--color-border)); }
+.plugin-kicker { display: block; margin-bottom: 4px; color: var(--color-text-muted); font-size: var(--text-xs); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.plugin-review-card small,
+.installed-plugin small { color: var(--color-text-muted); font-weight: 500; }
+.plugin-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 7px 14px; margin: 14px 0; font-size: var(--text-base-md); }
+.plugin-facts dt { color: var(--color-text-muted); }
+.plugin-facts dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.plugin-facts code { font-size: .72rem; }
+.settings-callout { margin: 12px 0; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface-muted); font-size: var(--text-base-md); }
+.settings-callout.is-warning { border-color: color-mix(in srgb, var(--color-warning) 55%, var(--color-border)); }
+.settings-callout.is-error { border-color: color-mix(in srgb, var(--color-danger) 55%, var(--color-border)); }
+.plugin-review-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px; margin: 14px 0; }
+.plugin-review-columns p,
+.plugin-review-columns ul { margin: 7px 0 0; color: var(--color-text-muted); font-size: var(--text-base-md); }
+.plugin-review-columns ul { padding-left: 18px; }
+.plugin-review-columns li > small { display: block; margin: 4px 0; }
+.plugin-health-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--color-text-muted); box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-text-muted) 12%, transparent); }
+.plugin-health-dot.is-active { background: var(--color-success); box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-success) 15%, transparent); }
+.plugin-config { margin: 15px 0; padding: 11px 0; border-block: 1px solid var(--color-border); }
+.plugin-config summary { margin-bottom: 12px; cursor: pointer; font-weight: 650; }
+.plugin-setting-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+.plugin-setting-grid small { margin-left: 4px; font-size: .65rem; text-transform: uppercase; }
+.plugin-secret-setting { grid-column: 1 / -1; margin: 0; padding: 12px; border: 1px solid var(--color-border); border-radius: 8px; }
+.plugin-secret-setting legend { padding: 0 5px; font-size: var(--text-base-md); font-weight: 650; }
+.plugin-requirement-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 0; border-top: 1px solid var(--color-border); }
+.plugin-requirement-row.is-conflict { color: var(--color-warning); }
+.plugin-log { max-height: 280px; overflow: auto; margin: 14px 0 0; padding: 11px; border: 1px solid var(--color-border); border-radius: 7px; background: var(--code-editor-bg); color: var(--code-editor-text); white-space: pre-wrap; overflow-wrap: anywhere; font-size: .7rem; }
+
+@media (max-width: 760px) {
+  .plugin-review-columns,
+  .plugin-setting-grid { grid-template-columns: 1fr; }
+  .plugin-requirement-row { align-items: flex-start; flex-direction: column; }
 }
 
 .settings-grid {

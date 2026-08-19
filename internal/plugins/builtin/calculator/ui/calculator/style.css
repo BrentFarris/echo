@@ -1,0 +1,22 @@
+:root {
+  color-scheme: dark;
+  font-family: var(--echo-font-family, ui-sans-serif, system-ui, sans-serif);
+  color: var(--echo-text, #f2f4f8);
+  background: var(--echo-surface, #15171c);
+}
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { background: radial-gradient(circle at 80% 0%, color-mix(in srgb, var(--echo-accent, #7b8cff) 18%, transparent), transparent 45%), var(--echo-surface, #15171c); }
+.calculator { height: 100%; display: grid; grid-template-rows: minmax(26px, auto) minmax(72px, auto) 1fr; gap: 12px; padding: 18px; }
+.history { min-height: 24px; color: var(--echo-text-muted, #9298a6); font-size: .82rem; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.display { align-self: end; display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-align: right; font-size: clamp(2rem, 11vw, 3.4rem); font-variant-numeric: tabular-nums; letter-spacing: -.04em; }
+.keys { min-height: 0; display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(6, 1fr); gap: 9px; }
+button { border: 1px solid var(--echo-border, #353945); border-radius: 13px; color: inherit; background: color-mix(in srgb, var(--echo-surface-raised, #242730) 90%, transparent); font: inherit; font-size: 1.08rem; cursor: pointer; transition: transform 80ms ease, background 120ms ease; }
+button:hover { background: color-mix(in srgb, var(--echo-surface-raised, #242730) 72%, var(--echo-text, #fff)); }
+button:active { transform: scale(.96); }
+button:focus-visible { outline: 2px solid var(--echo-accent, #7b8cff); outline-offset: 1px; }
+.utility { color: var(--echo-text-muted, #b5bac6); }
+.operator { color: var(--echo-accent, #93a0ff); font-size: 1.35rem; }
+.wide { grid-column: span 2; }
+.equals { grid-column: span 4; color: var(--echo-accent-contrast, white); background: var(--echo-accent, #6677ed); border-color: transparent; font-size: 1.3rem; }
+.equals:hover { background: color-mix(in srgb, var(--echo-accent, #6677ed) 82%, white); }

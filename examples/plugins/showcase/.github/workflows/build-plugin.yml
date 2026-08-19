@@ -1,0 +1,46 @@
+name: Build Echo plugin package
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache-dependency-path: backend-src/go.mod
+      - name: Test backend
+        working-directory: backend-src
+        run: go test ./...
+      - name: Build declared targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in windows-amd64 linux-amd64 darwin-amd64 darwin-arm64; do
+            goos="${target%-*}"
+            goarch="${target#*-}"
+            executable="showcase"
+            if [ "$goos" = windows ]; then executable="showcase.exe"; fi
+            mkdir -p "backend/$target"
+            (cd backend-src && GOOS="$goos" GOARCH="$goarch" go build -trimpath -o "../backend/$target/$executable" .)
+          done
+      - name: Assemble shareable package
+        shell: bash
+        run: |
+          mkdir -p dist/package
+          cp echo-plugin.json README.md LICENSE dist/package/
+          cp -R assets ui backend dist/package/
+          tar -czf dist/echo-plugin-showcase.tar.gz -C dist/package .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: echo-plugin-showcase
+          path: dist/echo-plugin-showcase.tar.gz
+          if-no-files-found: error

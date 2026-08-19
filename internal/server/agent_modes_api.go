@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/brent/echo/internal/agentmodes"
-	"github.com/brent/echo/internal/tools"
 	"github.com/brent/echo/internal/workspaces"
 )
 
@@ -31,7 +30,7 @@ func (s *Server) handleGetAgentModes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	registered := tools.Registered()
+	registered := s.tools.Registered()
 	available := make([]agentModeTool, 0, len(registered))
 	for _, tool := range registered {
 		metadata := tool.Metadata()

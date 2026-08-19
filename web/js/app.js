@@ -6,6 +6,7 @@
 import * as ws from "./ws.js";
 import { ensureAuthenticated } from "../src/auth/authGate.ts";
 import { recordNavigationRoute, routePathFromHash } from "../src/navigation.ts";
+import { initializePluginHost, mountPluginPage, resetPluginHost } from "../src/plugins/pluginHost.ts";
 
 // Route table: hash path -> () => Promise<view module>.
 // Views are lazy-loaded so the shell stays light.
@@ -18,14 +19,17 @@ const routes = {
 
 const app = document.getElementById("app");
 let currentView = null;
+let renderGeneration = 0;
 
 function currentRoute() {
   return routePathFromHash(location.hash);
 }
 
 async function render() {
+  const generation = ++renderGeneration;
   const requestedRoute = currentRoute();
-  const route = routes[requestedRoute] ? requestedRoute : "/";
+  const pluginMatch = requestedRoute.match(/^\/plugins\/([^/]+)\/([^/]+)$/);
+  const route = routes[requestedRoute] ? requestedRoute : pluginMatch ? requestedRoute : "/";
   const loader = routes[route];
   recordNavigationRoute(route);
 
@@ -41,10 +45,21 @@ async function render() {
   app.innerHTML = "";
 
   try {
+    if (pluginMatch) {
+      const mounted = await mountPluginPage(app, decodeURIComponent(pluginMatch[1]), decodeURIComponent(pluginMatch[2]));
+      if (generation !== renderGeneration) {
+        mounted?.unmount?.();
+        return;
+      }
+      currentView = mounted;
+      return;
+    }
     const view = await loader();
+    if (generation !== renderGeneration) return;
     currentView = view;
     view.mount(app);
   } catch (err) {
+    if (generation !== renderGeneration) return;
     console.error("failed to load view:", err);
     app.innerHTML = `<div class="card"><h2>Failed to load view</h2><p>${escapeHtml(String(err))}</p></div>`;
   }
@@ -67,7 +82,9 @@ async function bootstrap() {
   if (authenticating) return;
   authenticating = true;
   try {
+    ++renderGeneration;
     ws.stop();
+    resetPluginHost();
     if (currentView?.unmount) {
       try {
         currentView.unmount();
@@ -79,6 +96,7 @@ async function bootstrap() {
     app.innerHTML = "";
     await ensureAuthenticated(app);
     ws.start();
+    await initializePluginHost();
     await render();
   } catch (err) {
     console.error("authentication bootstrap failed:", err);

@@ -9,6 +9,8 @@ import {
 } from "../src/markdown.ts";
 import { copyText, toast } from "../src/code/ui.ts";
 import { icons } from "./icons.js";
+import { del, post } from "./api.js";
+import { refreshPluginCatalog } from "../src/plugins/catalog.ts";
 
 let binding = null;
 let activeStream = null;
@@ -880,7 +882,7 @@ function createToolItem(toolName, args, agentName = "") {
   const result = createToolSection("Result", "Waiting for result…");
   body.appendChild(result.section);
   details.appendChild(body);
-  return { details, status, result: result.content };
+  return { details, body, status, result: result.content, toolName };
 }
 
 function normalizePlanQuestionSet(value, args, callId) {
@@ -1067,6 +1069,123 @@ function completeToolCall(stream, data, turnNumber) {
   item.details.classList.add(succeeded ? "is-success" : "is-error");
   item.status.textContent = succeeded ? "Completed" : "Failed";
   item.result.textContent = formatStructured(data.content) || "No result";
+  if (succeeded && item.toolName === "echo_plugin_stage") {
+    const stage = pluginStageFromToolResult(data.content);
+    if (stage && !stream.timeline.querySelector(`[data-plugin-approval-stage="${CSS.escape(stage.id)}"]`)) {
+      stream.timeline.appendChild(createPluginApprovalCard(stage));
+    }
+  }
+}
+
+function pluginStageFromToolResult(content) {
+  let value = content;
+  if (typeof value === "string") {
+    try { value = JSON.parse(value); } catch { return null; }
+  }
+  const output = value?.output || value;
+  const stage = output?.stage;
+  if (!stage || typeof stage.id !== "string" || !/^stage-[a-z0-9-]{16,}$/.test(stage.id)) return null;
+  if (!stage.validation?.manifest?.id || !stage.validation?.digest) return null;
+  return stage;
+}
+
+function createPluginApprovalCard(stage) {
+  const card = document.createElement("section");
+  card.className = "chat-plugin-approval-card";
+  card.dataset.pluginApprovalStage = stage.id;
+  const heading = document.createElement("div");
+  heading.className = "chat-plugin-approval-heading";
+  const title = document.createElement("div");
+  const kicker = document.createElement("span");
+  kicker.textContent = "Owner approval required";
+  const name = document.createElement("strong");
+  name.textContent = `${stage.validation.manifest.name || stage.validation.manifest.id} v${stage.validation.manifest.version || ""}`;
+  title.append(kicker, name);
+  const trust = document.createElement("span");
+  trust.className = "chat-plugin-trust-badge";
+  trust.textContent = "Echo verified stage";
+  heading.append(title, trust);
+  const description = document.createElement("p");
+  description.textContent = stage.validation.manifest.description || "Review this generated plugin snapshot before Echo installs any of it.";
+  const facts = document.createElement("dl");
+  for (const [label, value] of [["Plugin ID", stage.validation.manifest.id], ["Target", stage.validation.target], ["Digest", stage.validation.digest]]) {
+    const term = document.createElement("dt"); term.textContent = label;
+    const detail = document.createElement("dd"); const code = document.createElement("code"); code.textContent = value; detail.append(code);
+    facts.append(term, detail);
+  }
+  const warning = document.createElement("p");
+  warning.className = "chat-plugin-approval-warning";
+  warning.textContent = stage.validation.manifest.runtime
+    ? "This package contains native code that will run with your OS account permissions. Permission declarations are not an OS sandbox."
+    : "This UI-only package will run in an opaque-origin sandboxed iframe.";
+  const contributions = document.createElement("p");
+  const permissionNames = (stage.validation.manifest.permissions || []).map(permission => permission.name);
+  const toolNames = (stage.validation.manifest.contributes?.tools || []).map(tool => tool.name);
+  const settingNames = (stage.validation.manifest.contributes?.settings || []).map(setting => `${setting.key} (${setting.scope})`);
+  contributions.textContent = `Permissions: ${permissionNames.join(", ") || "none"}. Agent tools: ${toolNames.join(", ") || "none"}. Settings: ${settingNames.join(", ") || "none"}.`;
+	const toolReview = document.createElement("div");
+	toolReview.className = "chat-plugin-tool-review";
+	for (const tool of stage.validation.manifest.contributes?.tools || []) {
+		const details = document.createElement("details");
+		const summary = document.createElement("summary");
+		summary.textContent = `${tool.name} — ${tool.readOnly ? "read-only" : "mutating"}`;
+		const schema = document.createElement("pre");
+		schema.textContent = `RPC: ${tool.method}\nInput schema:\n${JSON.stringify(tool.inputSchema || {}, null, 2)}${tool.outputSchema ? `\nOutput schema:\n${JSON.stringify(tool.outputSchema, null, 2)}` : ""}`;
+		details.append(summary, schema);
+		toolReview.append(details);
+	}
+  const status = document.createElement("p");
+  status.className = "chat-plugin-approval-status";
+  const actions = document.createElement("div");
+  actions.className = "chat-plugin-approval-actions";
+  const choices = [
+    ["Install, keep current scopes", "none"],
+    ["Enable in this workspace", "workspace"],
+    ["Enable globally", "global"],
+  ];
+  for (const [label, scope] of choices) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = scope === "global" ? "primary-button compact-button" : "secondary-button compact-button";
+    button.textContent = label;
+    if (scope === "workspace" && !binding?.workspaceId) button.disabled = true;
+    button.addEventListener("click", async () => {
+      setPluginApprovalBusy(card, true);
+      status.textContent = "Installing approved snapshot…";
+      try {
+        await post(`/api/plugins/stages/${encodeURIComponent(stage.id)}/approve`, { scope, workspaceId: binding?.workspaceId || "", enable: scope !== "none" });
+        status.textContent = "Installed. Navigation and approved tools are refreshing.";
+        card.classList.add("is-approved");
+        await refreshPluginCatalog();
+      } catch (error) {
+        status.textContent = `Could not install: ${error.message}`;
+        setPluginApprovalBusy(card, false);
+      }
+    });
+    actions.append(button);
+  }
+  const reject = document.createElement("button");
+  reject.type = "button";
+  reject.className = "secondary-button compact-button danger-button";
+  reject.textContent = "Reject";
+  reject.addEventListener("click", async () => {
+    setPluginApprovalBusy(card, true);
+    try {
+      await del(`/api/plugins/stages/${encodeURIComponent(stage.id)}`);
+      status.textContent = "Rejected. The staged snapshot was removed.";
+      card.classList.add("is-rejected");
+    } catch (error) {
+      status.textContent = `Could not reject: ${error.message}`;
+      setPluginApprovalBusy(card, false);
+    }
+  });
+  actions.append(reject);
+	card.append(heading, description, facts, warning, contributions, toolReview, actions, status);
+  return card;
+}
+
+function setPluginApprovalBusy(card, busy) {
+  card.querySelectorAll("button").forEach(button => { button.disabled = busy; });
 }
 
 function resolvePlanQuestionItem(stream, data, turnNumber) {
@@ -1171,6 +1290,8 @@ function finalizeSuccessfulResponse(stream) {
   for (const item of questionItems) {
     stream.content.parentElement.insertBefore(item, stream.content);
   }
+  const pluginApprovals = [...stream.timeline.children].filter((child) => child.classList.contains("chat-plugin-approval-card"));
+  for (const card of pluginApprovals) stream.content.parentElement.insertBefore(card, stream.content);
   if (!stream.timeline.childElementCount) {
     stream.timeline.remove();
     return;

@@ -587,7 +587,7 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 	messages = append(messages, llm.Message{Role: llm.RoleUser, Content: strings.TrimSpace(prompt)})
 	settings := r.settings
 	streamer := r.streamer
-	toolSchema := tools.ResearchLLMSchemaForScopes(r.toolScopes)
+	toolSchema := r.session.manager.server.tools.ResearchLLMSchemaForScopes(r.toolScopes)
 
 	for round := 0; round < maxResearchAgentRounds; round++ {
 		request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(toolSchema))
@@ -623,7 +623,7 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 			toolCtx := r.session.toolContext(ctx, r.toolScopes)
 			toolCtx.ResearchAgents = nil
 			toolCtx.AgentModes = nil
-			result := tools.Execute(toolCtx, call.Function.Name, json.RawMessage(call.Function.Arguments))
+			result := r.session.manager.server.tools.Execute(toolCtx, call.Function.Name, json.RawMessage(call.Function.Arguments))
 			data, marshalErr := json.Marshal(result)
 			if marshalErr != nil {
 				data = []byte(fmt.Sprintf(`{"tool":%q,"success":false,"error":{"code":"marshal_error","message":%q}}`, call.Function.Name, marshalErr.Error()))

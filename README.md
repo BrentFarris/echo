@@ -36,6 +36,7 @@ Connect Echo to a local or remote provider that exposes an OpenAI-compatible `/c
 | **Git** | Repository discovery, working-tree status, staged and unstaged diffs, staging, commits, branches, remotes, fetch/pull/push/sync, history, tags, and stashes |
 | **Terminal** | Workspace-aware PTY sessions powered by xterm.js, resize, restart, stop, and reusable saved commands |
 | **Agent tools** | Workspace-scoped file inspection and editing, shell commands, text and file search, image/video reads, web fetch/search, image generation, and reusable workspace skills |
+| **Plugins** | Reviewed local/GitHub packages with sandboxed page or floating views, optional native JSON-RPC tools, typed settings, secret references, immutable snapshots, and chat-driven authoring |
 | **Connections** | Multiple OpenAI-compatible LLM endpoints, custom HTTP headers, interaction routing, optional SearXNG research, and optional ComfyUI image generation |
 | **Access** | Owner-password authentication, remembered browser sessions, session revocation, WebSocket updates, and desktop/mobile browser layouts |
 
@@ -44,6 +45,8 @@ Connect Echo to a local or remote provider that exposes an OpenAI-compatible `/c
 Echo gives the selected model tools for the active workspace rather than unrestricted filesystem context. The built-in Plan mode exposes inspection and research tools without mutation tools. Custom modes can change the system instructions, choose exactly which tools are available, and limit path-aware tools with workspace-relative glob patterns.
 
 Reusable skills live in `.echo/skills/` inside a workspace. Echo can search and read them during a chat, record new skills through tool calls, or synthesize a skill from the current conversation.
+
+Echo also ships the read-only `builtin/echo-plugins` skill. You can ask Chat to scaffold, implement, validate, and stage an optional plugin; Echo then presents a trusted owner approval card before any generated or downloaded code can run. See the [Plugin API v1 guide](docs/plugins/README.md).
 
 ### Editor, Git, and terminal in one place
 
@@ -126,6 +129,8 @@ Optional connections are configured under **Settings → External Connections**:
     Use this application-data JSON file instead of the platform config directory
 -reset-auth
     Clear the owner password and remembered sessions and issue a new setup code
+-safe-mode
+    Start with all optional plugins disabled while keeping plugin management available
 ```
 
 Echo listens on the selected port, including non-loopback interfaces. Control network access with the host firewall or a reverse proxy.
@@ -200,6 +205,7 @@ npm run test:e2e
 | **Frontend** | Frameworkless TypeScript and Vite, with Monaco for editing and diffs and xterm.js for PTY terminals |
 | **LLM** | OpenAI-compatible chat-completions client with streaming, reasoning, tool-call orchestration, model routing, and configurable headers |
 | **Workspace services** | Path-scoped filesystem operations, indexed search, file watching, recoverable trash, Git, terminals, custom agent modes, and skills |
+| **Plugin host** | Server-owned package/lifecycle manager, dynamic tool registry, supervised stdio JSON-RPC runtimes, sandboxed iframe sessions, and host-owned plugin navigation/windows |
 | **Persistence** | Atomic JSON stores for global configuration and workspace-owned state |
 
 The same SPA is served in production from the Go binary. During development, Vite serves the frontend and proxies API and WebSocket traffic to the backend.
@@ -215,6 +221,7 @@ The main folder of each workspace owns a `.echo/` directory. Current workspace f
 ├── workspace.json
 ├── chat-workspace.json
 ├── agent-modes.json
+├── plugins.json
 ├── trajectories/
 │   └── <chat-id>.jsonl
 └── skills/
@@ -225,6 +232,8 @@ The main folder of each workspace owns a `.echo/` directory. Current workspace f
 stored relative to the `.echo` directory when possible (`mainPath` and the
 main `folders` entry are `../`), then resolved to absolute host paths whenever
 Echo opens the workspace or supplies paths to tools and other services.
+
+Machine-local plugin packages, immutable snapshots, logs, namespaced data, approvals, and non-secret global configuration live in a `plugins/` directory beside `echo.json`. Workspace `plugins.json` contains only portable public-GitHub pins, activation, non-secret configuration, and secret-source references; it never contains a local source path or secret value.
 
 Configuration and transcript snapshots are written atomically. Trajectory logs are append-only JSONL audit streams containing the exact secret-free model requests, raw provider chunks, reasoning, tool activity, usage, and timing observed by Echo. Custom endpoint headers and credentials are never copied into trajectory records. Clearing or closing a chat deletes its trajectory; otherwise logs currently have no automatic retention limit. See [Trajectory storage and behavior](docs/trajectory.md) for the event model, APIs, legacy behavior, and current limitations.
 
@@ -240,6 +249,7 @@ Echo is a single-owner development tool, not a multi-tenant service.
 - Every authenticated device can edit workspace files, run Git operations, and execute arbitrary commands through terminals and enabled agent tools.
 - Agent modes reduce what is offered to a model, but the General mode is intentionally powerful. Use trusted models, keep work in version control, and expose only the folders Echo needs.
 - Custom endpoint headers may contain secrets and are stored in the local application-data file. Protect that file with the same care as other developer credentials.
+- Sandboxed plugin views cannot access Echo's DOM or APIs directly, but optional native plugin backends run with the Echo owner's OS permissions. Permissions are review disclosures rather than OS containment; install native plugins only from code you trust.
 
 ## Contributing
 

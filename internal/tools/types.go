@@ -62,6 +62,7 @@ type AttachedImage struct {
 // validate workspace paths.
 type ExecutionContext struct {
 	Context        context.Context
+	WorkspaceID    string
 	WorkspacePath  string
 	WorkspaceRoots []WorkspaceRoot
 	// ResolveWorkspacePath and ResolveWorkspaceChildPath let the host route
@@ -104,6 +105,28 @@ type ExecutionContext struct {
 	// ResearchAgents is attached only to a parent chat turn. Child research
 	// agents never receive it, which prevents recursive agent spawning.
 	ResearchAgents ResearchAgentCoordinator
+	// PluginAuthoring exposes non-approving core plugin-development operations.
+	// It can scaffold, inspect, and stage, but never approve or execute a stage.
+	PluginAuthoring PluginAuthoringProvider
+}
+
+type PluginScaffoldRequest struct {
+	Path        string `json:"path"`
+	Template    string `json:"template"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+type PluginPackageRequest struct {
+	Path string `json:"path"`
+}
+
+type PluginAuthoringProvider interface {
+	ScaffoldPlugin(context.Context, PluginScaffoldRequest) (any, error)
+	ValidatePlugin(context.Context, PluginPackageRequest) (any, error)
+	PluginStatus(context.Context) (any, error)
+	StagePlugin(context.Context, PluginPackageRequest) (any, error)
 }
 
 type ResearchAgentSpec struct {

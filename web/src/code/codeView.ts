@@ -141,6 +141,7 @@ class CodeView {
   async start(): Promise<void> {
     try {
       const data = await api("/api/workspaces", { method: "GET" }) as { workspaces: Workspace[]; activeId: string };
+      if (this.abort.signal.aborted) return;
       this.workspaces = data.workspaces || [];
       this.workspace = data.workspaces.find((workspace) => workspace.id === data.activeId) || null;
       this.renderShell();
@@ -154,6 +155,7 @@ class CodeView {
         editorAPI.getRoots(this.workspace.id),
         api("/api/settings", { method: "GET" }).catch(() => null) as Promise<{ settings?: { disableGitSplitDiffView?: boolean; hideLeadingWhitespaceIndicators?: boolean } } | null>,
       ]);
+      if (this.abort.signal.aborted) return;
       this.roots = roots;
       this.splitGitDiff = settingsData?.settings?.disableGitSplitDiffView !== true;
       this.leadingWhitespaceIndicators = settingsData?.settings?.hideLeadingWhitespaceIndicators !== true;
@@ -163,23 +165,31 @@ class CodeView {
       this.installEvents();
       this.initializeGitView();
       await this.restoreWorkspace();
+      if (this.abort.signal.aborted) return;
       if (this.roots.length) {
         await Promise.all(this.roots.map((root) => this.ensureRoot(root)));
       }
+      if (this.abort.signal.aborted) return;
       await this.restoreTreeExpansion();
+      if (this.abort.signal.aborted) return;
       this.renderTree();
-      requestAnimationFrame(() => { this.treeScroller.scrollTop = this.restoredTreeScrollTop; });
+      requestAnimationFrame(() => {
+        if (!this.abort.signal.aborted) this.treeScroller.scrollTop = this.restoredTreeScrollTop;
+      });
       if (this.openTarget) {
         const target = this.openTarget;
         this.openTarget = null;
         await this.openFile(target, true, false);
+        if (this.abort.signal.aborted) return;
         await this.expandTo(target);
+        if (this.abort.signal.aborted) return;
         window.history.replaceState(window.history.state, "", codeRouteHash("explorer"));
       }
       this.renderTabs();
       this.updateEditorSurface();
       this.subscribeFilesystem();
     } catch (error) {
+      if (this.abort.signal.aborted) return;
       console.error("code view startup failed", error);
       this.showFatal(error);
     }
@@ -2114,6 +2124,7 @@ class CodeView {
     if (!this.workspace) return;
     let saved: PersistedWorkspaceSession | null = null;
     try { saved = await loadSession(this.workspace.id); } catch (error) { console.warn("restore editor session", error); }
+    if (this.abort.signal.aborted) return;
     if (!saved || (saved.version !== 1 && saved.version !== 2 && saved.version !== 3)) {
       this.applyCodeChatWidth(this.codeChatWidth);
       return;
@@ -2124,7 +2135,11 @@ class CodeView {
     shell?.style.setProperty("--explorer-width", `${this.explorerWidth}px`);
     this.expanded = new Set(saved.expanded || []);
     this.selectedTreeKey = saved.selectedTreeKey || null;
-    for (const persisted of saved.tabs || []) await this.restoreTab(persisted);
+    for (const persisted of saved.tabs || []) {
+      if (this.abort.signal.aborted) return;
+      await this.restoreTab(persisted);
+    }
+    if (this.abort.signal.aborted) return;
     // restoreTab temporarily attaches models so Monaco can materialize their
     // view state. Clear that transient active marker before choosing the
     // persisted active editor, otherwise a later activation could save one
@@ -2157,6 +2172,7 @@ class CodeView {
           persisted.diff.reviewRef,
           true,
         );
+        if (this.abort.signal.aborted) return;
         const tab = this.tabs.find((candidate) => candidate.id === persisted.id);
         if (!tab) return;
         tab.pinned = persisted.pinned;
@@ -2179,6 +2195,7 @@ class CodeView {
       }
       let disk: FileSnapshot | null = null;
       try { disk = await editorAPI.readFile(this.workspace.id, persisted.ref); } catch { /* preserve dirty orphan below */ }
+      if (this.abort.signal.aborted) return;
       if (!disk && !persisted.dirty) return;
       const snapshot: FileSnapshot = disk || {
         ref: persisted.ref, hostPath: persisted.hostPath, content: persisted.content || "", revision: persisted.revision,
@@ -2198,7 +2215,7 @@ class CodeView {
       this.tabs.push(tab);
       this.captureRestoredViewState(tab, persisted);
     } catch (error) {
-      console.warn(`restore tab ${persisted.title}`, error);
+      if (!this.abort.signal.aborted) console.warn(`restore tab ${persisted.title}`, error);
     }
   }
 

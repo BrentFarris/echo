@@ -1,0 +1,30 @@
+#echo-plugin-host { position: fixed; inset: 0; z-index: 35; pointer-events: none; }
+.left-nav-plugins { display: grid; gap: var(--space-lg-md); width: 100%; align-content: start; overflow: auto; padding-top: 10px; border-top: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent); }
+.plugin-nav-icon { display: block; width: 21px; height: 21px; object-fit: contain; color: currentColor; }
+.plugin-count { position: absolute; translate: 8px -8px; min-width: 15px; height: 15px; display: grid; place-items: center; border-radius: 20px; padding: 0 3px; background: var(--color-accent); color: var(--color-on-accent); font-size: .58rem; }
+.plugin-floating-window { position: fixed; display: grid; grid-template-rows: 40px minmax(0, 1fr); min-width: 260px; min-height: 320px; pointer-events: auto; overflow: hidden; border: 1px solid var(--color-border); border-radius: 13px; background: var(--color-surface); box-shadow: var(--shadow-modal); }
+.plugin-window-header { display: flex; align-items: center; gap: 8px; padding: 0 6px 0 13px; background: color-mix(in srgb, var(--color-surface-muted) 82%, transparent); border-bottom: 1px solid var(--color-border); cursor: move; user-select: none; touch-action: none; }
+.plugin-window-header:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.plugin-window-title { overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-md); font-weight: 650; }
+.plugin-window-header button { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 7px; color: var(--color-text-muted); background: transparent; cursor: pointer; }
+.plugin-window-header button:hover { color: var(--color-text); background: var(--color-surface); }
+.plugin-window-body { min-width: 0; min-height: 0; background: var(--color-surface); }
+.plugin-frame { display: block; width: 100%; height: 100%; border: 0; background: var(--color-surface); }
+.plugin-resize-handle { position: absolute; right: 0; bottom: 0; width: 23px; height: 23px; cursor: nwse-resize; touch-action: none; background: linear-gradient(135deg, transparent 48%, var(--color-border) 49%, var(--color-border) 57%, transparent 58%, transparent 67%, var(--color-border) 68%, var(--color-border) 76%, transparent 77%); }
+.plugin-page-shell { display: grid; grid-template-columns: 72px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); grid-template-areas: "navigation main"; width: 100%; height: 100%; background: var(--color-bg); }
+.plugin-page-main { grid-area: main; min-width: 0; min-height: 0; }
+.plugin-page-loading { height: 100%; display: grid; place-items: center; color: var(--color-text-muted); }
+.plugin-mobile-menu { position: fixed; z-index: 120; min-width: 230px; max-width: min(360px, calc(100vw - 16px)); display: grid; gap: 4px; padding: 10px; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-surface); box-shadow: var(--shadow-modal); }
+.plugin-mobile-menu > strong { padding: 5px 9px 8px; font-size: var(--text-sm); color: var(--color-text-muted); text-transform: uppercase; letter-spacing: .08em; }
+.plugin-mobile-menu button { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 9px; border-radius: 8px; color: var(--color-text); background: transparent; text-align: left; cursor: pointer; }
+.plugin-mobile-menu button:hover { background: var(--color-surface-muted); }
+.plugin-mobile-menu img { width: 22px; height: 22px; object-fit: contain; }
+.plugin-mobile-menu small { color: var(--color-text-muted); }
+.plugin-notice { position: absolute; right: 18px; bottom: 18px; max-width: min(420px, calc(100vw - 36px)); padding: 11px 14px; pointer-events: auto; border: 1px solid var(--color-border); border-radius: 9px; color: var(--color-text); background: var(--color-surface); box-shadow: var(--shadow-soft); }
+.plugin-notice.is-error { border-color: color-mix(in srgb, var(--color-danger) 55%, var(--color-border)); }
+@media (max-width: 720px) {
+  .left-nav-plugins { display: none; }
+  .plugin-page-shell { display: block; padding-bottom: 58px; }
+  .plugin-page-main { width: 100%; height: 100%; }
+  .plugin-floating-window { max-width: calc(100vw - 16px); max-height: calc(100dvh - 74px); }
+}

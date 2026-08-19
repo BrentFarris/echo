@@ -358,7 +358,7 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	visionMode := session.transcript.Vision || messagesRequireMedia(messages)
 	settings, streamer := m.server.routeMediaChat(settings, messages, visionMode)
 	planMode := mode.ID == agentmodes.PlanID
-	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: researchEnabled})))
+	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: researchEnabled, WorkspaceID: session.workspace.ID})))
 	if err != nil {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "invalid_request", err.Error(), requestID)
@@ -669,7 +669,7 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 	visionMode := updated.Vision || messagesRequireMedia(messages)
 	settings, streamer := m.server.routeMediaChat(settings, messages, visionMode)
 	planMode := mode.ID == agentmodes.PlanID
-	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: researchEnabled})))
+	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: researchEnabled, WorkspaceID: session.workspace.ID})))
 	if err != nil {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "invalid_request", err.Error(), requestID)
@@ -1585,7 +1585,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 		}
 		requestOptions := []llm.RequestOption{llm.WithStream(true)}
 		if !forceFinalWithoutTools {
-			requestOptions = append(requestOptions, llm.WithTools(tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: research != nil})))
+			requestOptions = append(requestOptions, llm.WithTools(s.manager.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: research != nil, WorkspaceID: s.workspace.ID})))
 		}
 		turnRequest, requestErr := llm.NewChatRequest(settings, messages, requestOptions...)
 		if requestErr != nil {
@@ -1751,7 +1751,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				if tools.IsResearchAgentToolName(call.Function.Name) && research == nil {
 					result = tools.ExecutionResult{Tool: call.Function.Name, Error: &tools.ExecutionError{Code: "research_agents_disabled", Message: "research agents are disabled for this chat turn"}}
 				} else {
-					result = tools.Execute(toolCtx, call.Function.Name, json.RawMessage(call.Function.Arguments))
+					result = s.manager.server.tools.Execute(toolCtx, call.Function.Name, json.RawMessage(call.Function.Arguments))
 				}
 			}
 			data, marshalErr := json.Marshal(result)
@@ -1985,7 +1985,7 @@ func (s *chatSession) toolContext(ctx context.Context, scopes *tools.ToolScopeCh
 	settings := s.manager.server.settings
 	roots := s.manager.server.confinedToolRoots(s.workspace)
 	return tools.ExecutionContext{
-		Context: ctx, WorkspaceRoots: roots, SearxngURL: settings.SearxngURL,
+		Context: ctx, WorkspaceID: s.workspace.ID, WorkspacePath: s.workspace.MainPath, WorkspaceRoots: roots, SearxngURL: settings.SearxngURL,
 		ResolveWorkspacePath:      s.manager.server.toolPathResolver(s.workspace.ID, roots, false),
 		ResolveWorkspaceChildPath: s.manager.server.toolPathResolver(s.workspace.ID, roots, true),
 		ComfyuiURL:                settings.ComfyuiURL, ComfyuiDefaultCheckpoint: settings.ComfyuiDefaultCheckpoint,
@@ -1993,6 +1993,7 @@ func (s *chatSession) toolContext(ctx context.Context, scopes *tools.ToolScopeCh
 		AttachedImages: s.latestAttachedImages(), ToolScopes: scopes,
 		AgentModes:      agentModeToolProvider{manager: s.manager.server.modes, workspacePath: s.workspace.MainPath},
 		WorkspaceSkills: s.manager.server.workspaceSkills(s.workspace),
+		PluginAuthoring: s.manager.server.pluginAuthoring(s.workspace.ID, roots),
 	}
 }
 
