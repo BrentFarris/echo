@@ -15,10 +15,16 @@ type launchSpec struct {
 	Arguments   []string
 	WorkingDir  string
 	LogPath     string
+	ReadyPath   string
 	WaitSeconds int
 }
 
 func prepareAndLaunch(spec launchSpec, dataDir string) error {
+	spec.ReadyPath = filepath.Join(dataDir, "rebuild-relaunch.ready")
+	if err := os.Remove(spec.ReadyPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stale relaunch readiness marker: %w", err)
+	}
+
 	var name, content string
 	if runtime.GOOS == "windows" {
 		name = "rebuild-relaunch.ps1"
@@ -46,11 +52,13 @@ func buildPowerShellLauncher(spec launchSpec) string {
 		fmt.Sprintf("$binaryPath = '%s'\r\n", quotePowerShell(spec.BinaryPath)) +
 		fmt.Sprintf("$workingDirectory = '%s'\r\n", quotePowerShell(spec.WorkingDir)) +
 		fmt.Sprintf("$logFile = '%s'\r\n", quotePowerShell(spec.LogPath)) +
+		fmt.Sprintf("$readyFile = '%s'\r\n", quotePowerShell(spec.ReadyPath)) +
 		fmt.Sprintf("$launchArguments = '%s'\r\n", quotePowerShell(strings.Join(argumentLine, " "))) +
 		fmt.Sprintf("$waitSeconds = %d\r\n", spec.WaitSeconds) +
 		"function Write-Log { param([string]$Message) \"$((Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) $Message\" | Out-File -LiteralPath $logFile -Append -Encoding utf8 }\r\n" +
 		"try {\r\n" +
 		"  Write-Log 'Waiting for the current Echo server to stop...'\r\n" +
+		"  Set-Content -LiteralPath $readyFile -Value $PID -Encoding ascii\r\n" +
 		"  $deadline = (Get-Date).AddSeconds($waitSeconds)\r\n" +
 		"  while (Get-Process -Id $echoProcessId -ErrorAction SilentlyContinue) {\r\n" +
 		"    if ((Get-Date) -ge $deadline) { Write-Log 'Graceful shutdown timed out; stopping the exact server process.'; Stop-Process -Id $echoProcessId -Force -ErrorAction SilentlyContinue; break }\r\n" +
@@ -59,7 +67,7 @@ func buildPowerShellLauncher(spec launchSpec) string {
 		"  while (Get-Process -Id $echoProcessId -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 100 }\r\n" +
 		"  Move-Item -LiteralPath $stagedBinary -Destination $binaryPath -Force\r\n" +
 		"  Write-Log \"Launching rebuilt Echo from $binaryPath\"\r\n" +
-		"  if ($launchArguments) { Start-Process -FilePath $binaryPath -ArgumentList $launchArguments -WorkingDirectory $workingDirectory } else { Start-Process -FilePath $binaryPath -WorkingDirectory $workingDirectory }\r\n" +
+		"  if ($launchArguments) { Start-Process -FilePath $binaryPath -ArgumentList $launchArguments -WorkingDirectory $workingDirectory -WindowStyle Hidden } else { Start-Process -FilePath $binaryPath -WorkingDirectory $workingDirectory -WindowStyle Hidden }\r\n" +
 		"  Write-Log 'Echo relaunch command completed.'\r\n" +
 		"} catch { Write-Log \"RELAUNCH FAILED: $($_.Exception.Message)\"; exit 1 }\r\n"
 }
@@ -80,9 +88,11 @@ func buildShellLauncher(spec launchSpec) string {
 		fmt.Sprintf("binary_path=%s\n", quoteShell(spec.BinaryPath)) +
 		fmt.Sprintf("working_directory=%s\n", quoteShell(spec.WorkingDir)) +
 		fmt.Sprintf("log_file=%s\n", quoteShell(spec.LogPath)) +
+		fmt.Sprintf("ready_file=%s\n", quoteShell(spec.ReadyPath)) +
 		fmt.Sprintf("wait_seconds=%d\n", spec.WaitSeconds) +
 		"log() { printf '%s %s\\n' \"$(date '+%Y-%m-%d %H:%M:%S')\" \"$1\" >> \"$log_file\"; }\n" +
 		"log 'Waiting for the current Echo server to stop...'\n" +
+		"printf '%s\\n' \"$$\" > \"$ready_file\" || { log 'RELAUNCH FAILED: could not create readiness marker.'; exit 1; }\n" +
 		"elapsed=0\n" +
 		"while kill -0 \"$echo_pid\" 2>/dev/null; do\n" +
 		"  if [ \"$elapsed\" -ge \"$wait_seconds\" ]; then log 'Graceful shutdown timed out; stopping the exact server process.'; kill -9 \"$echo_pid\" 2>/dev/null || true; break; fi\n" +

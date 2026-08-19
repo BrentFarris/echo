@@ -156,10 +156,10 @@ func TestConcurrentBuildIsRejected(t *testing.T) {
 func TestLaunchScriptsUseExactPIDAndPreserveQuotedArguments(t *testing.T) {
 	spec := launchSpec{
 		ProcessID: 77, StagedPath: `C:\Echo Source\echo.rebuild.exe`, BinaryPath: `C:\Echo Source\echo.exe`,
-		Arguments: []string{"-port", "4872", `-data=C:\Echo Data\echo.json`}, WorkingDir: `C:\Echo Source`, LogPath: `C:\Echo Data\rebuild.log`, WaitSeconds: 15,
+		Arguments: []string{"-port", "4872", `-data=C:\Echo Data\echo.json`}, WorkingDir: `C:\Echo Source`, LogPath: `C:\Echo Data\rebuild.log`, ReadyPath: `C:\Echo Data\rebuild.ready`, WaitSeconds: 15,
 	}
 	powerShell := buildPowerShellLauncher(spec)
-	for _, required := range []string{"$echoProcessId = 77", "Get-Process -Id $echoProcessId", "Stop-Process -Id $echoProcessId", `"-data=C:\Echo Data\echo.json"`} {
+	for _, required := range []string{"$echoProcessId = 77", "Get-Process -Id $echoProcessId", "Stop-Process -Id $echoProcessId", `"-data=C:\Echo Data\echo.json"`, "Set-Content -LiteralPath $readyFile", "-WindowStyle Hidden"} {
 		if !strings.Contains(powerShell, required) {
 			t.Errorf("PowerShell launcher missing %q", required)
 		}
@@ -168,8 +168,8 @@ func TestLaunchScriptsUseExactPIDAndPreserveQuotedArguments(t *testing.T) {
 		t.Fatal("PowerShell launcher kills processes by name")
 	}
 
-	shell := buildShellLauncher(launchSpec{ProcessID: 77, StagedPath: "/tmp/echo build", BinaryPath: "/tmp/echo", Arguments: []string{"-data=/tmp/echo data.json"}, WorkingDir: "/tmp", LogPath: "/tmp/rebuild.log", WaitSeconds: 15})
-	for _, required := range []string{`echo_pid=77`, `kill -0 "$echo_pid"`, `kill -9 "$echo_pid"`, `'-data=/tmp/echo data.json'`} {
+	shell := buildShellLauncher(launchSpec{ProcessID: 77, StagedPath: "/tmp/echo build", BinaryPath: "/tmp/echo", Arguments: []string{"-data=/tmp/echo data.json"}, WorkingDir: "/tmp", LogPath: "/tmp/rebuild.log", ReadyPath: "/tmp/rebuild.ready", WaitSeconds: 15})
+	for _, required := range []string{`echo_pid=77`, `kill -0 "$echo_pid"`, `kill -9 "$echo_pid"`, `'-data=/tmp/echo data.json'`, `ready_file='/tmp/rebuild.ready'`} {
 		if !strings.Contains(shell, required) {
 			t.Errorf("shell launcher missing %q", required)
 		}
