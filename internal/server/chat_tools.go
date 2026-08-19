@@ -24,7 +24,7 @@ func workspaceToolRoots(workspace workspaces.Workspace) []tools.WorkspaceRoot {
 		if folder == "" {
 			continue
 		}
-		label := normalizeWorkspaceFolderLabel(filepath.Base(folder))
+		label := workspacefs.NormalizeReferenceLabel(filepath.Base(folder))
 		if label == "" {
 			label = "workspace"
 		}
@@ -63,7 +63,10 @@ func (s *Server) confinedToolRoots(workspace workspaces.Workspace) []tools.Works
 	roots := make([]tools.WorkspaceRoot, 0, len(filesystemRoots))
 	labels := make(map[string]bool)
 	for _, filesystemRoot := range filesystemRoots {
-		label := normalizeWorkspaceFolderLabel(filesystemRoot.Label)
+		label := filesystemRoot.ReferenceLabel
+		if label == "" {
+			label = workspacefs.NormalizeReferenceLabel(filesystemRoot.Label)
+		}
 		if label == "" {
 			label = "workspace"
 		}
@@ -122,20 +125,5 @@ func (s *Server) toolPathResolver(workspaceID string, roots []tools.WorkspaceRoo
 // normalizeWorkspaceFolderLabel converts a folder name into a safe, lowercase
 // label suitable for use in labeled workspace paths.
 func normalizeWorkspaceFolderLabel(label string) string {
-	label = strings.TrimSpace(strings.ToLower(label))
-	var builder strings.Builder
-	lastDash := false
-	for _, r := range label {
-		valid := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-'
-		if valid {
-			builder.WriteRune(r)
-			lastDash = false
-			continue
-		}
-		if !lastDash {
-			builder.WriteByte('-')
-			lastDash = true
-		}
-	}
-	return strings.Trim(builder.String(), "-_.")
+	return workspacefs.NormalizeReferenceLabel(label)
 }

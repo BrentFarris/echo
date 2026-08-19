@@ -42,7 +42,9 @@ func TestChatSelectedAgentModeControlsPromptAndTools(t *testing.T) {
 	}
 
 	request := capturing.lastRequest()
-	if len(request.Messages) == 0 || request.Messages[0].Role != llm.RoleSystem || !strings.Contains(request.Messages[0].Content, mode.Prompt) {
+	if len(request.Messages) == 0 || request.Messages[0].Role != llm.RoleSystem ||
+		!strings.Contains(request.Messages[0].Content, mode.Prompt) ||
+		!strings.Contains(request.Messages[0].Content, "mentions @path") {
 		t.Fatalf("selected mode prompt missing from request: %+v", request.Messages)
 	}
 	if len(request.Tools) != 1 || request.Tools[0].Function.Name != "filesystem_read_text" {

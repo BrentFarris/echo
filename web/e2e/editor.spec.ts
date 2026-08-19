@@ -48,6 +48,22 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.reload();
   await expect(page.locator(".app-shell")).toBeVisible();
 
+  // Chat @ references use the workspace index, render as compact rich chips,
+  // and open files directly in Echo Code.
+  const composer = page.locator("[data-chat-input]");
+  await composer.fill("Review @main");
+  const mention = page.getByRole("option", { name: /main\.go/ });
+  await expect(mention).toBeVisible();
+  await mention.click();
+  const mentionChip = composer.locator("[data-chat-file-mention]");
+  await expect(mentionChip).toHaveAttribute("data-reference-path", /main\.go$/);
+  await mentionChip.click();
+  await expect(page).toHaveURL(/#\/code$/);
+  await expect(page.getByRole("tab", { name: /main\.go/ })).toBeVisible();
+  await page.getByRole("button", { name: "Close main.go" }).click();
+  await page.getByRole("button", { name: "Chat" }).click();
+  await expect(page.locator(".app-shell")).toBeVisible();
+
   // The terminal is a single workspace session shared across Chat and Code.
   await page.getByRole("button", { name: "Open terminal" }).click();
   await expect(page.locator(".terminal-dock")).toHaveClass(/is-open/);

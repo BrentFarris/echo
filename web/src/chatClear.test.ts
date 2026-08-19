@@ -30,6 +30,11 @@ const api = vi.hoisted(() => ({
 }));
 
 vi.mock("../js/chat.js", () => chat);
+vi.mock("./code/editorApi.ts", () => ({
+  getRoots: vi.fn(async () => []),
+  revealEntry: vi.fn(),
+  searchEntries: vi.fn(async () => ({ items: [], indexing: false, indexed: 0, truncated: false })),
+}));
 
 vi.mock("../js/api.js", () => ({
 	post: api.post,

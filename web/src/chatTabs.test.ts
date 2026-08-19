@@ -28,7 +28,7 @@ const chat = vi.hoisted(() => {
       return vi.fn();
     }),
     openWorkspaceSession: vi.fn(),
-    sendMessage: vi.fn(() => true),
+    sendMessage: vi.fn((_log: unknown, _text: string, _model?: string, _mode?: string) => true),
     stopStream: vi.fn(),
     emitWorkspace(state: any) { workspaceHandler?.(state); },
     emitCommandError(message: any) { return commandErrorHandler?.(message); },
@@ -36,6 +36,19 @@ const chat = vi.hoisted(() => {
 });
 
 const api = vi.hoisted(() => ({ post: vi.fn() }));
+const editorAPI = vi.hoisted(() => ({
+  getRoots: vi.fn(async () => [{
+    id: "root", label: "Echo", referenceLabel: "echo", hostPath: "C:/Echo",
+  }]),
+  revealEntry: vi.fn(async () => undefined),
+  searchEntries: vi.fn(async () => ({
+    items: [{
+      ref: { rootId: "root", path: "main.go" }, name: "main.go",
+      hostPath: "C:/Echo/main.go", referencePath: "echo/main.go", kind: "file", score: 1000,
+    }],
+    indexing: false, indexed: 1, truncated: false,
+  })),
+}));
 const gitBadge = vi.hoisted(() => {
   const stop = vi.fn();
   return { stop, watchGitBadge: vi.fn(() => stop) };
@@ -43,6 +56,7 @@ const gitBadge = vi.hoisted(() => {
 
 vi.mock("../js/chat.js", () => chat);
 vi.mock("./gitBadge.ts", () => ({ watchGitBadge: gitBadge.watchGitBadge }));
+vi.mock("./code/editorApi.ts", () => editorAPI);
 
 vi.mock("../js/api.js", () => ({
   post: api.post,
@@ -104,8 +118,72 @@ describe("multi-chat tab UI", () => {
     chat.createChatTab.mockClear();
     chat.canClearChat.mockReturnValue(false);
     api.post.mockReset();
+    editorAPI.searchEntries.mockClear();
+    editorAPI.revealEntry.mockClear();
     gitBadge.watchGitBadge.mockClear();
     gitBadge.stop.mockClear();
+    window.location.hash = "";
+  });
+
+  function placeCaretAtEnd(element: HTMLElement) {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    range.collapse(false);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  async function insertMention(query = "main") {
+    const editor = root.querySelector<HTMLElement>("[data-chat-input]")!;
+    editor.textContent = `Review @${query}`;
+    editor.focus();
+    placeCaretAtEnd(editor);
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((resolve) => window.setTimeout(resolve, 120));
+    await Promise.resolve();
+    root.querySelector<HTMLButtonElement>("[data-chat-mention-option]")!.click();
+    return editor;
+  }
+
+  it("inserts, restores, sends, and opens a file reference chip", async () => {
+    chat.emitWorkspace(twoTabs("chat-one"));
+    const editor = await insertMention();
+    const chip = editor.querySelector<HTMLElement>("[data-chat-file-mention]")!;
+    expect(chip.textContent).toContain("main.go");
+
+    chat.emitWorkspace(twoTabs("chat-two"));
+    expect(editor.querySelector("[data-chat-file-mention]")).toBeNull();
+    chat.emitWorkspace(twoTabs("chat-one"));
+    const restored = editor.querySelector<HTMLElement>("[data-chat-file-mention]")!;
+    expect(restored.dataset.referencePath).toBe("echo/main.go");
+
+    root.querySelector<HTMLButtonElement>(".send-button")!.click();
+    expect(chat.sendMessage.mock.calls.at(-1)?.[1]).toBe("Review @echo/main.go ");
+    expect(chat.sendMessage.mock.calls.at(-1)?.[3]).toBe("general");
+
+    chat.sendMessage.mockClear();
+    const reopenedEditor = await insertMention();
+    reopenedEditor.querySelector<HTMLElement>("[data-chat-file-mention]")!.click();
+    expect(window.location.hash).toBe("#/code?rootId=root&path=main.go");
+    reopenedEditor.replaceChildren();
+    reopenedEditor.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  it("opens folder chips through the confined file-browser API", async () => {
+    editorAPI.searchEntries.mockResolvedValueOnce({
+      items: [{
+        ref: { rootId: "root", path: "docs" }, name: "docs",
+        hostPath: "C:/Echo/docs", referencePath: "echo/docs", kind: "directory", score: 1000,
+      }],
+      indexing: false, indexed: 1, truncated: false,
+    });
+    const editor = await insertMention("docs");
+    editor.querySelector<HTMLElement>("[data-chat-file-mention]")!.click();
+    await Promise.resolve();
+    expect(editorAPI.revealEntry).toHaveBeenCalledWith("workspace-tabs", { rootId: "root", path: "docs" });
+    editor.replaceChildren();
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
   });
 
   it("tracks the active workspace's Git changes and stops tracking on unmount", () => {

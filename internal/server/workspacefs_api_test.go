@@ -1,14 +1,59 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/brent/echo/internal/workspacefs"
 	"github.com/brent/echo/internal/workspaces"
 )
+
+func TestFilesystemSearchDirectoryOptionAndRootReferenceLabel(t *testing.T) {
+	server, _ := newTestServer(t)
+	defer server.Shutdown(t.Context())
+	rootPath := filepath.Join(t.TempDir(), "My Project")
+	if err := os.MkdirAll(filepath.Join(rootPath, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := server.workspaces.Create(workspaces.CreateRequest{Name: "Search", MainPath: rootPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rootsResponse := doRequest(t, server, http.MethodGet, "/api/workspaces/"+workspace.ID+"/fs/roots")
+	if rootsResponse.Code != http.StatusOK || !strings.Contains(rootsResponse.Body.String(), `"referenceLabel":"my-project"`) {
+		t.Fatalf("roots response omitted the agent reference label: %d %s", rootsResponse.Code, rootsResponse.Body.String())
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		response := doRequest(t, server, http.MethodGet, "/api/workspaces/"+workspace.ID+"/fs/search?q=docs&limit=10&includeDirectories=true")
+		if response.Code != http.StatusOK {
+			t.Fatalf("search response: %d %s", response.Code, response.Body.String())
+		}
+		var envelope struct {
+			Data workspacefs.SearchResponse `json:"data"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if !envelope.Data.Indexing {
+			if len(envelope.Data.Items) != 1 || envelope.Data.Items[0].Kind != "directory" || envelope.Data.Items[0].Ref.Path != "docs" {
+				t.Fatalf("directory search returned unexpected results: %#v", envelope.Data.Items)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("filesystem search index did not finish")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 func TestPermanentTrashDeletionRequiresExplicitConfirmation(t *testing.T) {
 	server, _ := newTestServer(t)

@@ -82,3 +82,17 @@ export async function searchFiles(workspaceId: string, queryText: string): Promi
   const query = new URLSearchParams({ q: queryText, limit: "200" });
   return api(`${base(workspaceId)}/search?${query}`, { method: "GET" });
 }
+
+export async function searchEntries(workspaceId: string, queryText: string, limit = 12): Promise<{
+  items: SearchResult[];
+  indexing: boolean;
+  indexed: number;
+  truncated: boolean;
+}> {
+  const query = new URLSearchParams({
+    q: queryText,
+    limit: String(limit),
+    includeDirectories: "true",
+  });
+  return api(`${base(workspaceId)}/search?${query}`, { method: "GET" });
+}

@@ -1002,6 +1002,168 @@ textarea:disabled {
   pointer-events: none;
 }
 
+.chat-mention-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: min(280px, 72vw);
+  margin: 0 1px;
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 22%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  color: var(--color-accent-strong);
+  cursor: pointer;
+  font-size: 0.9em;
+  line-height: 1.35;
+  vertical-align: baseline;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.chat-mention-chip:hover,
+.chat-mention-chip:focus-visible {
+  border-color: color-mix(in srgb, var(--color-accent) 48%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 17%, transparent);
+  outline: none;
+}
+
+.chat-mention-chip-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.chat-mention-chip-icon svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.chat-mention-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-mention-picker {
+  position: absolute;
+  z-index: 15;
+  bottom: calc(100% + 6px);
+  left: var(--space-xl);
+  width: min(440px, calc(100% - 2 * var(--space-xl)));
+  max-width: calc(100vw - 28px);
+  max-height: min(312px, 42vh);
+  padding: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-modal);
+}
+
+.chat-mention-option {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 38px;
+  padding: 4px 7px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.chat-mention-option:hover,
+.chat-mention-option:focus-visible,
+.chat-mention-option.is-active {
+  background: color-mix(in srgb, var(--color-accent) 9%, var(--color-surface));
+  outline: none;
+}
+
+.chat-mention-icon {
+  display: grid;
+  place-items: center;
+  color: var(--color-text-muted);
+}
+
+.chat-mention-icon svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.chat-mention-name {
+  display: grid;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.chat-mention-name strong,
+.chat-mention-name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-mention-name strong {
+  font-size: var(--text-base-md);
+  font-weight: 650;
+}
+
+.chat-mention-name span,
+.chat-mention-kind,
+.chat-mention-status {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.chat-mention-kind {
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: var(--color-surface-muted);
+  white-space: nowrap;
+}
+
+.chat-mention-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 8px;
+}
+
+.chat-mention-status.is-error {
+  color: var(--color-danger);
+}
+
+.chat-mention-spinner {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border: 2px solid color-mix(in srgb, var(--color-text-muted) 35%, transparent);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: chat-mention-spin 700ms linear infinite;
+}
+
+@keyframes chat-mention-spin {
+  to { transform: rotate(360deg); }
+}
+
 .chat-composer-toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

@@ -3,6 +3,7 @@ export const SETTINGS_ROUTE = "/settings";
 export const CODE_ROUTE = "/code";
 
 export type CodeSidebar = "explorer" | "git";
+export type CodeOpenTarget = { rootId: string; path: string };
 
 /** Returns the routable path while leaving hash query parameters to the view. */
 export function routePathFromHash(hash: string): string {
@@ -21,6 +22,23 @@ export function codeSidebarFromHash(hash: string): CodeSidebar {
 /** Builds the canonical hash for an Echo Code sidebar. */
 export function codeRouteHash(sidebar: CodeSidebar): string {
   return `#${CODE_ROUTE}${sidebar === "git" ? "?sidebar=git" : ""}`;
+}
+
+/** Builds a transient Echo Code route that opens a specific workspace file. */
+export function codeFileRouteHash(target: CodeOpenTarget): string {
+  const query = new URLSearchParams({ rootId: target.rootId, path: target.path });
+  return `#${CODE_ROUTE}?${query}`;
+}
+
+/** Returns the file-open target embedded in a Code hash, if present. */
+export function codeOpenTargetFromHash(hash: string): CodeOpenTarget | null {
+  if (routePathFromHash(hash) !== CODE_ROUTE) return null;
+  const queryIndex = hash.indexOf("?");
+  if (queryIndex < 0) return null;
+  const query = new URLSearchParams(hash.slice(queryIndex + 1));
+  const rootId = query.get("rootId") || "";
+  const path = query.get("path") || "";
+  return rootId && path ? { rootId, path } : null;
 }
 
 /**

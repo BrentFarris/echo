@@ -51,10 +51,11 @@ type FileRef struct {
 }
 
 type Root struct {
-	ID            string `json:"id"`
-	Label         string `json:"label"`
-	HostPath      string `json:"hostPath"`
-	BlockedReason string `json:"blockedReason,omitempty"`
+	ID             string `json:"id"`
+	Label          string `json:"label"`
+	ReferenceLabel string `json:"referenceLabel"`
+	HostPath       string `json:"hostPath"`
+	BlockedReason  string `json:"blockedReason,omitempty"`
 }
 
 type Entry struct {
@@ -167,6 +168,7 @@ func (s *Service) resolvedRoots(workspaceID string) ([]resolvedRoot, error) {
 		folders = []string{workspace.MainPath}
 	}
 	labels := make(map[string]bool)
+	referenceLabels := make(map[string]bool)
 	seenPaths := make(map[string]bool)
 	result := make([]resolvedRoot, 0, len(folders))
 	for _, folder := range folders {
@@ -204,13 +206,22 @@ func (s *Service) resolvedRoots(workspaceID string) ([]resolvedRoot, error) {
 			label = fmt.Sprintf("%s-%d", baseLabel, suffix)
 		}
 		labels[strings.ToLower(label)] = true
+		referenceLabel := NormalizeReferenceLabel(label)
+		if referenceLabel == "" {
+			referenceLabel = "workspace"
+		}
+		baseReferenceLabel := referenceLabel
+		for suffix := 2; referenceLabels[strings.ToLower(referenceLabel)]; suffix++ {
+			referenceLabel = fmt.Sprintf("%s-%d", baseReferenceLabel, suffix)
+		}
+		referenceLabels[strings.ToLower(referenceLabel)] = true
 		digestInput := identityPath
 		if runtime.GOOS == "windows" {
 			digestInput = strings.ToLower(digestInput)
 		}
 		digest := sha256.Sum256([]byte(digestInput))
 		root := resolvedRoot{Root: Root{
-			ID: hex.EncodeToString(digest[:8]), Label: label, HostPath: absolute,
+			ID: hex.EncodeToString(digest[:8]), Label: label, ReferenceLabel: referenceLabel, HostPath: absolute,
 		}, realPath: realPath, resolveErr: resolveErr}
 		if resolveErr != nil {
 			root.BlockedReason = "Workspace folder is unavailable"
@@ -218,6 +229,28 @@ func (s *Service) resolvedRoots(workspaceID string) ([]resolvedRoot, error) {
 		result = append(result, root)
 	}
 	return result, nil
+}
+
+// NormalizeReferenceLabel converts a workspace folder name into the stable
+// label accepted by agent filesystem tools and emitted by chat references.
+func NormalizeReferenceLabel(label string) string {
+	label = strings.TrimSpace(strings.ToLower(label))
+	var builder strings.Builder
+	lastDash := false
+	for _, character := range label {
+		valid := (character >= 'a' && character <= 'z') ||
+			(character >= '0' && character <= '9') || character == '_' || character == '-'
+		if valid {
+			builder.WriteRune(character)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(builder.String(), "-_.")
 }
 
 func availableResolvedRoots(roots []resolvedRoot) []resolvedRoot {

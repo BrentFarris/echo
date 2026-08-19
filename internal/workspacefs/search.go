@@ -14,10 +14,12 @@ import (
 const maximumIndexedFiles = 250000
 
 type SearchResult struct {
-	Ref      FileRef `json:"ref"`
-	Name     string  `json:"name"`
-	HostPath string  `json:"hostPath"`
-	Score    int     `json:"score"`
+	Ref           FileRef `json:"ref"`
+	Name          string  `json:"name"`
+	HostPath      string  `json:"hostPath"`
+	ReferencePath string  `json:"referencePath"`
+	Kind          string  `json:"kind"`
+	Score         int     `json:"score"`
 }
 
 type SearchResponse struct {
@@ -47,7 +49,11 @@ type Index struct {
 }
 
 func (s *Service) Search(workspaceID, query string, limit int) SearchResponse {
-	return s.index.Search(workspaceID, query, limit)
+	return s.index.Search(workspaceID, query, limit, false)
+}
+
+func (s *Service) SearchEntries(workspaceID, query string, limit int, includeDirectories bool) SearchResponse {
+	return s.index.Search(workspaceID, query, limit, includeDirectories)
 }
 
 func (s *Service) StartIndex(workspaceID string) {
@@ -193,6 +199,7 @@ func (i *Index) ApplyChanges(workspaceID string, changes []Change) {
 		}
 		entries = append(entries, SearchResult{
 			Ref: change.Ref, Name: filepath.Base(cleanPath), HostPath: visible,
+			ReferencePath: root.ReferenceLabel + "/" + cleanPath, Kind: "file",
 		})
 	}
 	if rebuild {
@@ -209,7 +216,7 @@ func (i *Index) ApplyChanges(workspaceID string, changes []Change) {
 	i.mu.Unlock()
 }
 
-func (i *Index) Search(workspaceID, query string, limit int) SearchResponse {
+func (i *Index) Search(workspaceID, query string, limit int, includeDirectories bool) SearchResponse {
 	if limit <= 0 || limit > 200 {
 		limit = 200
 	}
@@ -226,8 +233,13 @@ func (i *Index) Search(workspaceID, query string, limit int) SearchResponse {
 
 	query = strings.ToLower(strings.TrimSpace(query))
 	matches := make([]SearchResult, 0, min(limit*2, len(entries)))
+	indexed := 0
 	for _, entry := range entries {
-		score := rankSearch(query, entry.Name, entry.Ref.Path)
+		if entry.Kind == "directory" && !includeDirectories {
+			continue
+		}
+		indexed++
+		score := rankSearch(query, entry.Name, entry.ReferencePath)
 		if score < 0 {
 			continue
 		}
@@ -243,7 +255,7 @@ func (i *Index) Search(workspaceID, query string, limit int) SearchResponse {
 	if len(matches) > limit {
 		matches = matches[:limit]
 	}
-	return SearchResponse{Items: matches, Indexing: building, Indexed: len(entries), Truncated: truncated}
+	return SearchResponse{Items: matches, Indexing: building, Indexed: indexed, Truncated: truncated}
 }
 
 func (i *Index) build(ctx context.Context, workspaceID string, generation uint64) {
@@ -254,8 +266,13 @@ func (i *Index) build(ctx context.Context, workspaceID string, generation uint64
 	}
 	roots = availableResolvedRoots(roots)
 	entries := make([]SearchResult, 0, 4096)
+	fileCount := 0
 	truncated := false
 	for _, root := range roots {
+		entries = append(entries, SearchResult{
+			Ref: FileRef{RootID: root.ID, Path: ""}, Name: root.Label, HostPath: root.HostPath,
+			ReferencePath: root.ReferenceLabel, Kind: "directory",
+		})
 		var matcher *ignore.GitIgnore
 		if compiled, compileErr := ignore.CompileIgnoreFile(filepath.Join(root.realPath, ".gitignore")); compileErr == nil {
 			matcher = compiled
@@ -281,18 +298,28 @@ func (i *Index) build(ctx context.Context, workspaceID string, generation uint64
 				if relative != "." && matcher != nil && matcher.MatchesPath(relative+"/") {
 					return filepath.SkipDir
 				}
+				if relative != "." {
+					entries = append(entries, SearchResult{
+						Ref: FileRef{RootID: root.ID, Path: relative}, Name: item.Name(),
+						HostPath:      filepath.Join(root.HostPath, filepath.FromSlash(relative)),
+						ReferencePath: root.ReferenceLabel + "/" + relative, Kind: "directory",
+					})
+				}
 				return nil
 			}
 			if item.Type()&os.ModeSymlink != 0 || (matcher != nil && matcher.MatchesPath(relative)) {
 				return nil
 			}
 			entries = append(entries, SearchResult{
-				Ref: FileRef{RootID: root.ID, Path: relative}, Name: item.Name(), HostPath: filepath.Join(root.HostPath, filepath.FromSlash(relative)),
+				Ref: FileRef{RootID: root.ID, Path: relative}, Name: item.Name(),
+				HostPath:      filepath.Join(root.HostPath, filepath.FromSlash(relative)),
+				ReferencePath: root.ReferenceLabel + "/" + relative, Kind: "file",
 			})
+			fileCount++
 			if len(entries)%512 == 0 {
 				i.publish(workspaceID, generation, entries, false, true)
 			}
-			if len(entries) >= maximumIndexedFiles {
+			if fileCount >= maximumIndexedFiles {
 				truncated = true
 				return context.Canceled
 			}

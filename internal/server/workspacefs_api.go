@@ -164,7 +164,8 @@ func (s *Server) handleFSReveal(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFSSearch(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	result := s.fs.Search(r.PathValue("id"), r.URL.Query().Get("q"), limit)
+	includeDirectories, _ := strconv.ParseBool(r.URL.Query().Get("includeDirectories"))
+	result := s.fs.SearchEntries(r.PathValue("id"), r.URL.Query().Get("q"), limit, includeDirectories)
 	writeData(w, http.StatusOK, result)
 }
 

@@ -209,6 +209,30 @@ func TestRootsHaveUniqueDisambiguatedLabels(t *testing.T) {
 	}
 }
 
+func TestRootsExposeCollisionSafeAgentReferenceLabels(t *testing.T) {
+	base := t.TempDir()
+	paths := []string{filepath.Join(base, "one", "My App"), filepath.Join(base, "two", "my-app")}
+	for _, path := range paths {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager := workspaces.NewManager(filepath.Join(base, "echo.json"))
+	workspace, err := manager.Create(workspaces.CreateRequest{Name: "References", MainPath: paths[0], Folders: paths[1:]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(manager, filepath.Join(base, "echo.json"))
+	t.Cleanup(service.Close)
+	roots, err := service.Roots(workspace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roots) != 2 || roots[0].ReferenceLabel != "my-app" || roots[1].ReferenceLabel != "my-app-2" {
+		t.Fatalf("unexpected reference labels: %#v", roots)
+	}
+}
+
 func TestUnavailableAdditionalRootDoesNotBlockMainRoot(t *testing.T) {
 	base := t.TempDir()
 	main := filepath.Join(base, "main")

@@ -10,7 +10,7 @@ import { loadDiff as loadGitDiff } from "./gitApi";
 import type { GitChange, GitDiffDocument, GitRepository } from "./gitTypes";
 import { GitView } from "./gitView";
 import { loadSession, saveSession } from "./persistence";
-import { CODE_ROUTE, codeRouteHash, codeSidebarFromHash, routePathFromHash } from "../navigation";
+import { CODE_ROUTE, codeOpenTargetFromHash, codeRouteHash, codeSidebarFromHash, routePathFromHash } from "../navigation";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 import { setGitBadgeCount } from "../gitBadge";
 import { randomUUID } from "../randomUUID";
@@ -124,10 +124,12 @@ class CodeView {
   private closeAddWorkspaceModal: (() => void) | null = null;
   private workspaceSwitching = false;
   private mediaTheme = window.matchMedia("(prefers-color-scheme: dark)");
+  private openTarget: FileRef | null;
 
   constructor(root: HTMLElement) {
     this.root = root;
     this.activeSidebar = codeSidebarFromHash(window.location.hash);
+    this.openTarget = codeOpenTargetFromHash(window.location.hash);
   }
 
   async start(): Promise<void> {
@@ -161,6 +163,13 @@ class CodeView {
       await this.restoreTreeExpansion();
       this.renderTree();
       requestAnimationFrame(() => { this.treeScroller.scrollTop = this.restoredTreeScrollTop; });
+      if (this.openTarget) {
+        const target = this.openTarget;
+        this.openTarget = null;
+        await this.openFile(target, true, false);
+        await this.expandTo(target);
+        window.history.replaceState(window.history.state, "", codeRouteHash("explorer"));
+      }
       this.renderTabs();
       this.updateEditorSurface();
       this.subscribeFilesystem();

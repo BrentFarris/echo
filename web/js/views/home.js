@@ -12,10 +12,14 @@ import {
   onStreamingChange, openWorkspaceSession, sendMessage, stopStream,
 } from "../chat.js";
 import { loadWorkspaces, openWorkspaceDropdown, openAddWorkspaceModal, setActiveWorkspace, getActive, renderWorkspaceIcon } from "../workspaces.js";
-import { codeRouteHash } from "../../src/navigation.ts";
+import { codeFileRouteHash, codeRouteHash } from "../../src/navigation.ts";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../../src/primaryNav.ts";
 import { watchGitBadge } from "../../src/gitBadge.ts";
 import { toast } from "../../src/code/ui.ts";
+import { getRoots, revealEntry, searchEntries } from "../../src/code/editorApi.ts";
+import {
+  activeMentionMatch, composerText, insertReferenceChip, restoreComposer, snapshotComposer,
+} from "../../src/chatMentions.ts";
 import { detachTerminalDock, mountTerminalDock } from "../../src/terminal/index.ts";
 
 // Holds the cleanup function for the currently mounted chat view.
@@ -117,6 +121,8 @@ function chatPanel() {
                 role="textbox"
                 aria-multiline="true"
                 aria-label="Message Echo"
+                aria-autocomplete="list"
+                aria-expanded="false"
                 spellcheck="true"
                 data-chat-input
                 data-placeholder="Describe what to build"
@@ -166,6 +172,7 @@ export function mount(root) {
   const tabsScrollPrevious = root.querySelector("[data-chat-tabs-scroll='previous']");
   const tabsScrollNext = root.querySelector("[data-chat-tabs-scroll='next']");
   const form = root.querySelector("[data-chat-form]");
+  const inputWrap = root.querySelector("[data-chat-input-wrap]");
   const input = root.querySelector("[data-chat-input]");
   const sendBtn = root.querySelector(".send-button");
   const modelTrigger = root.querySelector("[data-model-trigger]");
@@ -181,6 +188,10 @@ export function mount(root) {
   let focusNewTab = false;
   let renderedActiveChatId = "";
   const pendingTabCloses = new Set();
+  const rootsByWorkspace = new Map();
+  let mention = null;
+  let mentionTimer = 0;
+  let mentionSequence = 0;
 
   const updateModelLabel = () => {
     modelLabel.textContent = selectedModel
@@ -193,10 +204,280 @@ export function mount(root) {
     modeLabel.textContent = selected?.name || (currentWorkspaceId ? "General" : "Mode");
   };
 
+  const rootsForWorkspace = (workspaceId) => {
+    if (!rootsByWorkspace.has(workspaceId)) {
+      rootsByWorkspace.set(workspaceId, getRoots(workspaceId).catch((error) => {
+        rootsByWorkspace.delete(workspaceId);
+        throw error;
+      }));
+    }
+    return rootsByWorkspace.get(workspaceId);
+  };
+
+  const createReferenceChip = (reference) => {
+    const chip = document.createElement("span");
+    chip.className = "chat-mention-chip";
+    chip.contentEditable = "false";
+    chip.dataset.chatFileMention = "";
+    chip.dataset.workspaceId = reference.workspaceId;
+    chip.dataset.rootId = reference.ref.rootId;
+    chip.dataset.workspacePath = reference.ref.path;
+    chip.dataset.workspaceKind = reference.kind;
+    chip.dataset.referencePath = reference.referencePath;
+    chip.dataset.referenceLabel = reference.label;
+    chip.title = reference.referencePath;
+    chip.tabIndex = 0;
+    chip.setAttribute("role", "link");
+    chip.setAttribute("aria-label", `${reference.kind === "directory" ? "Open folder" : "Open file"} ${reference.referencePath}`);
+    const icon = document.createElement("span");
+    icon.className = "chat-mention-chip-icon";
+    icon.innerHTML = reference.kind === "directory" ? icons.folder : icons.code;
+    const label = document.createElement("span");
+    label.className = "chat-mention-chip-label";
+    label.textContent = reference.label;
+    chip.append(icon, label);
+    return chip;
+  };
+
+  const clearMention = () => {
+    window.clearTimeout(mentionTimer);
+    mentionTimer = 0;
+    mention = null;
+    inputWrap.querySelector("[data-chat-mention-picker]")?.remove();
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-controls");
+    input.removeAttribute("aria-activedescendant");
+  };
+
+  const referenceForEntry = (entry) => {
+    const workspaceRoot = mention?.roots?.find((candidate) => candidate.id === entry.ref.rootId);
+    if (!workspaceRoot) return null;
+    const referencePath = entry.referencePath || (entry.ref.path
+      ? `${workspaceRoot.referenceLabel || workspaceRoot.label}/${entry.ref.path}`
+      : workspaceRoot.referenceLabel || workspaceRoot.label);
+    return {
+      workspaceId: currentWorkspaceId,
+      ref: entry.ref,
+      kind: entry.kind,
+      referencePath,
+      label: entry.name,
+    };
+  };
+
+  const updateMentionSelection = () => {
+    const options = [...inputWrap.querySelectorAll("[data-chat-mention-option]")];
+    options.forEach((option, index) => {
+      const selected = index === mention?.selectedIndex;
+      option.classList.toggle("is-active", selected);
+      option.setAttribute("aria-selected", String(selected));
+    });
+    if (mention?.results.length) {
+      input.setAttribute("aria-activedescendant", `chat-mention-option-${mention.selectedIndex}`);
+    } else {
+      input.removeAttribute("aria-activedescendant");
+    }
+  };
+
+  const selectMention = (index) => {
+    const state = mention;
+    if (!state) return;
+    const entry = state.results[index];
+    const reference = entry ? referenceForEntry(entry) : null;
+    if (!reference) return;
+    // A pointer click moves the document selection into the picker before its
+    // click handler runs. Use the range captured while the mention was active
+    // so mouse selection is as reliable as keyboard selection.
+    const match = {
+      triggerStart: state.triggerStart,
+      caret: state.caret,
+      query: state.query,
+    };
+    insertReferenceChip(input, match, createReferenceChip(reference));
+    clearMention();
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus();
+  };
+
+  const renderMentionPicker = () => {
+    inputWrap.querySelector("[data-chat-mention-picker]")?.remove();
+    if (!mention) {
+      input.setAttribute("aria-expanded", "false");
+      return;
+    }
+    const picker = document.createElement("div");
+    picker.className = "chat-mention-picker";
+    picker.id = "chat-mention-list";
+    picker.dataset.chatMentionPicker = "";
+    picker.setAttribute("role", "listbox");
+    picker.setAttribute("aria-label", "Workspace files and folders");
+    picker.setAttribute("aria-busy", String(mention.loading));
+    if (mention.loading && !mention.results.length) {
+      const status = document.createElement("div");
+      status.className = "chat-mention-status";
+      status.setAttribute("role", "status");
+      status.innerHTML = `<span class="chat-mention-spinner" aria-hidden="true"></span><span>Searching workspace…</span>`;
+      picker.append(status);
+    } else if (mention.error) {
+      const status = document.createElement("div");
+      status.className = "chat-mention-status is-error";
+      status.setAttribute("role", "status");
+      status.textContent = mention.error;
+      picker.append(status);
+    } else if (!mention.results.length) {
+      const status = document.createElement("div");
+      status.className = "chat-mention-status";
+      status.setAttribute("role", "status");
+      status.textContent = "No matching files or folders.";
+      picker.append(status);
+    } else {
+      mention.results.forEach((entry, index) => {
+        const reference = referenceForEntry(entry);
+        if (!reference) return;
+        const option = document.createElement("button");
+        option.type = "button";
+        option.className = `chat-mention-option${index === mention.selectedIndex ? " is-active" : ""}`;
+        option.id = `chat-mention-option-${index}`;
+        option.dataset.chatMentionOption = "";
+        option.dataset.mentionIndex = String(index);
+        option.setAttribute("role", "option");
+        option.setAttribute("aria-selected", String(index === mention.selectedIndex));
+        option.title = reference.referencePath;
+        const icon = document.createElement("span");
+        icon.className = "chat-mention-icon";
+        icon.innerHTML = entry.kind === "directory" ? icons.folder : icons.file;
+        const name = document.createElement("span");
+        name.className = "chat-mention-name";
+        const strong = document.createElement("strong");
+        strong.textContent = entry.name;
+        const path = document.createElement("span");
+        path.textContent = reference.referencePath;
+        name.append(strong, path);
+        const kind = document.createElement("span");
+        kind.className = "chat-mention-kind";
+        kind.textContent = entry.kind === "directory" ? "Folder" : "File";
+        option.append(icon, name, kind);
+        option.addEventListener("mousedown", (event) => event.preventDefault());
+        option.addEventListener("mousemove", () => {
+          if (mention && mention.selectedIndex !== index) {
+            mention.selectedIndex = index;
+            updateMentionSelection();
+          }
+        });
+        option.addEventListener("click", () => selectMention(index));
+        picker.append(option);
+      });
+    }
+    inputWrap.append(picker);
+    input.setAttribute("aria-expanded", "true");
+    input.setAttribute("aria-controls", picker.id);
+    updateMentionSelection();
+  };
+
+  const runMentionSearch = async (workspaceId, sequence) => {
+    const state = mention;
+    if (!state || state.workspaceId !== workspaceId || state.sequence !== sequence) return;
+    mentionTimer = 0;
+    try {
+      const [roots, response] = await Promise.all([
+        rootsForWorkspace(workspaceId),
+        searchEntries(workspaceId, state.query, 12),
+      ]);
+      if (!mention || mention.workspaceId !== workspaceId || mention.sequence !== sequence) return;
+      mention.roots = roots;
+      mention.results = (response.items || []).slice(0, 8);
+      mention.loading = false;
+      mention.error = "";
+      mention.selectedIndex = Math.min(mention.selectedIndex, Math.max(0, mention.results.length - 1));
+      renderMentionPicker();
+      if (response.indexing) {
+        mentionTimer = window.setTimeout(() => runMentionSearch(workspaceId, sequence), 400);
+      }
+    } catch (error) {
+      if (!mention || mention.workspaceId !== workspaceId || mention.sequence !== sequence) return;
+      mention.loading = false;
+      mention.results = [];
+      mention.error = error instanceof Error ? error.message : String(error);
+      renderMentionPicker();
+    }
+  };
+
+  const syncMention = () => {
+    const match = currentWorkspaceId ? activeMentionMatch(input) : null;
+    if (!match) {
+      if (mention) clearMention();
+      return;
+    }
+    if (mention && mention.workspaceId === currentWorkspaceId
+      && mention.query === match.query && mention.triggerStart === match.triggerStart) {
+      return;
+    }
+    window.clearTimeout(mentionTimer);
+    const sequence = ++mentionSequence;
+    mention = {
+      workspaceId: currentWorkspaceId,
+      triggerStart: match.triggerStart,
+      caret: match.caret,
+      query: match.query,
+      results: [],
+      roots: [],
+      loading: true,
+      error: "",
+      selectedIndex: 0,
+      sequence,
+    };
+    renderMentionPicker();
+    mentionTimer = window.setTimeout(() => runMentionSearch(currentWorkspaceId, sequence), 100);
+  };
+
+  const handleMentionKeydown = (event) => {
+    if (!mention || event.isComposing) return false;
+    const match = activeMentionMatch(input);
+    if (!match || match.triggerStart !== mention.triggerStart) {
+      clearMention();
+      return false;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      clearMention();
+      return true;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      if (!mention.results.length) return true;
+      event.preventDefault();
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      mention.selectedIndex = (mention.selectedIndex + delta + mention.results.length) % mention.results.length;
+      updateMentionSelection();
+      return true;
+    }
+    if ((event.key === "Enter" || event.key === "Tab") && mention.results.length) {
+      event.preventDefault();
+      selectMention(mention.selectedIndex);
+      return true;
+    }
+    return false;
+  };
+
+  const activateReferenceChip = async (chip) => {
+    const workspaceId = chip.dataset.workspaceId || currentWorkspaceId;
+    const ref = { rootId: chip.dataset.rootId || "", path: chip.dataset.workspacePath || "" };
+    if (!workspaceId || !ref.rootId) return;
+    if (chip.dataset.workspaceKind === "directory") {
+      try {
+        await revealEntry(workspaceId, ref);
+        toast("Opened in file browser.");
+      } catch (error) {
+        toast(error instanceof Error ? error.message : String(error), { sticky: true });
+      }
+      return;
+    }
+    saveCurrentComposer();
+    location.hash = codeFileRouteHash(ref);
+  };
+
   const saveCurrentComposer = () => {
     if (!currentWorkspaceId || !currentChatId) return;
     tabComposerState.set(tabStateKey(currentWorkspaceId, currentChatId), {
-      draft: input.textContent || "",
+      segments: snapshotComposer(input),
       model: selectedModel,
       agentModeId: selectedAgentModeId,
     });
@@ -207,14 +488,14 @@ export function mount(root) {
     const key = tabStateKey(currentWorkspaceId, currentChatId);
     let state = tabComposerState.get(key);
     if (!state) {
-      state = { draft: "", model: defaultSelectedModel, agentModeId: "general" };
+      state = { segments: [], model: defaultSelectedModel, agentModeId: "general" };
       tabComposerState.set(key, state);
     }
     selectedModel = state.model || null;
     selectedAgentModeId = agentModes.some((mode) => mode.id === state.agentModeId)
       ? state.agentModeId
       : "general";
-    input.textContent = state.draft || "";
+    restoreComposer(input, state.segments || [], createReferenceChip);
     updateModelLabel();
     updateModeLabel();
   };
@@ -586,8 +867,8 @@ export function mount(root) {
     closeMoreMenu();
     if (clearChatButton.disabled || !window.confirm("Clear the current chat?")) return;
     if (clearChat(log)) {
-      input.textContent = "";
-      input.dispatchEvent(new Event("input"));
+      input.replaceChildren();
+      input.dispatchEvent(new Event("input", { bubbles: true }));
     }
   };
 
@@ -704,6 +985,7 @@ export function mount(root) {
     if (!moreMenu.hidden && !moreMenu.contains(e.target) && !moreTrigger?.contains(e.target)) {
       closeMoreMenu();
     }
+    if (mention && !inputWrap.contains(e.target)) clearMention();
   };
 
   const onResize = () => {
@@ -737,11 +1019,12 @@ export function mount(root) {
   tabsResizeObserver?.observe(tabsHost);
 
   const submit = () => {
-    const text = input.textContent || "";
+    const text = composerText(input);
     if (!text.trim()) return;
     if (sendMessage(log, text, selectedModel || undefined, selectedAgentModeId)) {
-      input.textContent = "";
-      input.dispatchEvent(new Event("input"));
+      input.replaceChildren();
+      clearMention();
+      input.dispatchEvent(new Event("input", { bubbles: true }));
       input.focus();
     }
   };
@@ -771,6 +1054,7 @@ export function mount(root) {
     currentTabs = state?.tabs || [];
 
     if (previousWorkspaceId !== currentWorkspaceId) {
+      clearMention();
       stopGitBadge();
       stopGitBadge = watchGitBadge(root, currentWorkspaceId);
     }
@@ -822,11 +1106,36 @@ export function mount(root) {
   };
 
   const onKeydown = (e) => {
+    const chip = e.target.closest?.("[data-chat-file-mention]");
+    if (chip && (e.key === "Enter" || e.key === " ")) {
+      e.preventDefault();
+      void activateReferenceChip(chip);
+      return;
+    }
+    if (handleMentionKeydown(e)) return;
     // Enter sends (Shift+Enter inserts a newline).
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       submit();
     }
+  };
+
+  const onInput = () => {
+    saveCurrentComposer();
+    syncMention();
+  };
+
+  const onInputClick = (event) => {
+    const chip = event.target.closest?.("[data-chat-file-mention]");
+    if (!chip) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void activateReferenceChip(chip);
+  };
+
+  const onSelectionChange = () => {
+    if (document.activeElement !== input) return;
+    queueMicrotask(syncMention);
   };
 
   const onFormSubmit = (e) => {
@@ -836,7 +1145,9 @@ export function mount(root) {
   form.addEventListener("submit", onFormSubmit);
   sendBtn.addEventListener("click", onSendButtonClick);
   input.addEventListener("keydown", onKeydown);
-  input.addEventListener("input", saveCurrentComposer);
+  input.addEventListener("input", onInput);
+  input.addEventListener("click", onInputClick);
+  document.addEventListener("selectionchange", onSelectionChange);
 
   // Reflect streaming state on the send button as it starts and stops.
   const unsubStreaming = onStreamingChange(setSendButtonBusy);
@@ -849,7 +1160,9 @@ export function mount(root) {
     form.removeEventListener("submit", onFormSubmit);
     sendBtn.removeEventListener("click", onSendButtonClick);
     input.removeEventListener("keydown", onKeydown);
-    input.removeEventListener("input", saveCurrentComposer);
+    input.removeEventListener("input", onInput);
+    input.removeEventListener("click", onInputClick);
+    document.removeEventListener("selectionchange", onSelectionChange);
     unsubStreaming();
     unsubWorkspace();
     unsubCommandError();
@@ -883,6 +1196,7 @@ export function mount(root) {
     modelDropdown.remove();
     modeDropdown.remove();
     moreMenu.remove();
+    clearMention();
     stopGitBadge();
     detachTerminalDock(terminalRegion);
     closeWorkspaceSession(log);

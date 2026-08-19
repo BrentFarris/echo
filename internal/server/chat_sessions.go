@@ -882,7 +882,7 @@ func (s *Server) agentModeSystemMessage(workspace workspaces.Workspace, mode age
 			}
 			prompt.WriteString(root.Label)
 		}
-		prompt.WriteString(". Start file paths with the appropriate label.")
+		prompt.WriteString(". Start file paths with the appropriate label. When the user mentions @path, treat it as a labeled workspace file or directory reference; read referenced files and list or search referenced directories before relying on their contents.")
 	}
 	if strings.TrimSpace(mode.Prompt) != "" {
 		prompt.WriteString("\n\nAgent mode instructions (follow these for this turn):\n")

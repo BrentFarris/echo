@@ -3,6 +3,7 @@ export type FileRef = { rootId: string; path: string };
 export type WorkspaceRoot = {
   id: string;
   label: string;
+  referenceLabel: string;
   hostPath: string;
   blockedReason?: string;
 };
@@ -44,6 +45,8 @@ export type SearchResult = {
   ref: FileRef;
   name: string;
   hostPath: string;
+  referencePath: string;
+  kind: "file" | "directory";
   score: number;
 };
 
