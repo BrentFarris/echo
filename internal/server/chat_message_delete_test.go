@@ -70,3 +70,33 @@ func TestDeleteTranscriptHalvesInEitherOrderRemovesEmptyTurn(t *testing.T) {
 		}
 	}
 }
+
+func TestRerunTurnReturnsInputAndDropsSelectedAndLaterContext(t *testing.T) {
+	transcript := deletionTestTranscript()
+	transcript.Turns[0].Model = "model-one"
+	transcript.Turns[0].AgentModeID = "general"
+	transcript.Turns[0].Images = []sessions.MediaAttachment{{ID: "image-one", Name: "input.png", DataURL: "data:image/png;base64,eA=="}}
+	selected, updated, err := rerunTurn(transcript, "turn-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if selected.UserContent != "first prompt" || selected.Model != "model-one" || selected.AgentModeID != "general" || len(selected.Images) != 1 {
+		t.Fatalf("selected input was not preserved: %#v", selected)
+	}
+	if len(updated.Turns) != 0 || len(updated.Messages) != 0 {
+		t.Fatalf("selected and later context remained: %#v / %#v", updated.Turns, updated.Messages)
+	}
+	if updated.Revision != transcript.Revision+1 {
+		t.Fatalf("rerun prefix revision was not advanced: %d", updated.Revision)
+	}
+}
+
+func TestRerunTurnRequiresPreservedUserMessage(t *testing.T) {
+	transcript := deletionTestTranscript()
+	transcript.Turns[0].UserDeleted = true
+	transcript.Turns[0].UserContent = ""
+	if _, _, err := rerunTurn(transcript, "turn-one"); err == nil {
+		t.Fatal("expected rerun to reject a deleted user message")
+	}
+}

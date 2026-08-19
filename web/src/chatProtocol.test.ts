@@ -106,6 +106,37 @@ describe("multi-chat WebSocket protocol", () => {
     unsubscribe();
   });
 
+  it("rewinds selected and later messages before rendering a rerun", () => {
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 10,
+      activeChatId: "chat-one", tabs: [{ chatId: "chat-one", preview: "Second", busy: false }],
+      turns: [
+        {
+          id: "turn-first", userContent: "First prompt", status: "done",
+          assistantTurns: [{ number: 0, content: "First answer", hasToolCalls: false }],
+        },
+        {
+          id: "turn-second", userContent: "Second prompt", status: "done",
+          assistantTurns: [{ number: 0, content: "Second answer", hasToolCalls: false }],
+        },
+      ],
+    });
+
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 11,
+      event: {
+        type: "turn_rerun_started", fromTurnId: "turn-first", turnId: "turn-replacement",
+        message: "First prompt", images: [], videos: [],
+      },
+    });
+
+    expect(log.querySelector("[data-turn-id='turn-first']")).toBeNull();
+    expect(log.querySelector("[data-turn-id='turn-second']")).toBeNull();
+    expect(log.querySelectorAll("[data-turn-id='turn-replacement']")).toHaveLength(2);
+    expect(log.querySelector(".chat-message-user[data-turn-id='turn-replacement']")?.textContent).toContain("First prompt");
+    expect(getChatWorkspaceState()?.tabs[0]).toMatchObject({ preview: "First prompt", busy: true });
+  });
+
   it("stops only the active stream", () => {
     emit("session_snapshot", {
       type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 0,

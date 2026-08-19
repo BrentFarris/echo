@@ -181,7 +181,7 @@ ws.on("session_event", (message) => {
   const event = message.event || {};
   const chatId = message.chatId || binding.activeChatId;
   const tab = binding.tabs.find((candidate) => candidate.chatId === chatId);
-  if (tab && event.type === "turn_started") {
+  if (tab && (event.type === "turn_started" || event.type === "turn_rerun_started")) {
     tab.preview = normalizePreview(event.message) || "New chat";
     tab.busy = true;
   } else if (tab && event.type === "turn_finished") {
@@ -215,6 +215,15 @@ function normalizePreview(value) { return String(value || "").trim().replace(/\s
 function applyEvent(event) {
   switch (event.type) {
     case "turn_started": {
+      binding.log.querySelector(".chat-empty")?.remove();
+      const stream = createTurnView(event.turnId, event.message || "", event.images || [], event.videos || []);
+      binding.turns.set(event.turnId, stream);
+      activeStream = stream;
+      setStreaming(true);
+      break;
+    }
+    case "turn_rerun_started": {
+      rewindTurnViews(event.fromTurnId);
       binding.log.querySelector(".chat-empty")?.remove();
       const stream = createTurnView(event.turnId, event.message || "", event.images || [], event.videos || []);
       binding.turns.set(event.turnId, stream);
@@ -407,10 +416,36 @@ function createMessageActions(message, role) {
     if (!sent) toast("Could not send the delete request.", { sticky: true });
   });
 
+  const rerun = messageActionButton({
+    action: "rerun",
+    label: role === "assistant" ? "Rerun response" : "Rerun from message",
+    icon: icons.refresh,
+  });
+  rerun.addEventListener("click", () => {
+    const turnId = message.dataset.turnId || "";
+    if (!binding?.workspaceId || !binding.activeChatId || !turnId) return;
+    if (activeStream) {
+      toast("Wait for the current response to finish before rerunning messages.", { sticky: true });
+      return;
+    }
+    const prompt = role === "assistant"
+      ? "Rerun this response? Its preceding user message will be rerun, and this response and all later messages will be removed."
+      : "Rerun from this message? Its response and all later messages will be removed.";
+    if (!window.confirm(prompt)) return;
+    const sent = ws.send({
+      type: "chat_message_rerun",
+      workspaceId: binding.workspaceId,
+      chatId: binding.activeChatId,
+      turnId,
+      ...(binding.surface === "code" ? { surface: "code" } : {}),
+    });
+    if (!sent) toast("Could not send the rerun request.", { sticky: true });
+  });
+
   actions.append(
     copy,
     messageActionButton({ action: "edit", label: "Edit (coming soon)", icon: icons.edit, disabled: true }),
-    messageActionButton({ action: "rerun", label: "Rerun (coming soon)", icon: icons.refresh, disabled: true }),
+    rerun,
     remove,
   );
   return actions;
@@ -435,12 +470,32 @@ function createTurnView(turnId, userText, images = [], videos = [], options = {}
   const el = createMessageEl("assistant", "");
   el.classList.add("is-streaming");
   el.dataset.turnId = turnId;
+  if (options.userDeleted) {
+    const rerun = el.querySelector("[data-message-action='rerun']");
+    if (rerun) {
+      rerun.disabled = true;
+      rerun.title = "Cannot rerun without the deleted user message";
+      rerun.setAttribute("aria-label", rerun.title);
+    }
+  }
   if (!options.assistantDeleted) binding.log.appendChild(el);
   return {
     id: turnId, el, user, timeline: el.querySelector(".chat-timeline"),
     content: el.querySelector(".chat-final-content"), done: false,
     currentTurn: null, finalTurn: null, turns: new Map(), tools: new Map(),
   };
+}
+
+function rewindTurnViews(fromTurnId) {
+  let removing = false;
+  for (const [turnId, stream] of binding.turns) {
+    if (turnId === fromTurnId) removing = true;
+    if (!removing) continue;
+    for (const element of stream.el.querySelectorAll(".chat-progress-text")) cancelMarkdownPatch(element);
+    stream.user.remove();
+    stream.el.remove();
+    binding.turns.delete(turnId);
+  }
 }
 
 function appendUserMedia(body, images, videos) {

@@ -484,6 +484,186 @@ func (m *chatSessionManager) deleteMessage(c *client, workspaceID, chatID, surfa
 	parent.broadcastSnapshot(surface)
 }
 
+func (m *chatSessionManager) rerunMessage(c *client, workspaceID, chatID, surfaceValue, turnID string) {
+	surface, surfaceErr := normalizeChatSurface(surfaceValue)
+	if surfaceErr != nil {
+		m.commandErrorForSurface(c, workspaceID, chatSurfaceMain, "invalid_surface", surfaceErr.Error(), "")
+		return
+	}
+	if m.server.llm == nil {
+		m.commandErrorForSurface(c, workspaceID, surface, "llm_unavailable", "LLM client is not configured", "")
+		return
+	}
+	parent, err := m.get(workspaceID)
+	if err != nil {
+		m.commandErrorForSurface(c, workspaceID, surface, "invalid_workspace", err.Error(), "")
+		return
+	}
+	if surface == chatSurfaceCode {
+		if err := parent.ensureCodeChat(); err != nil {
+			m.commandErrorForSurface(c, workspaceID, surface, "session_load_failed", err.Error(), "")
+			return
+		}
+	}
+	session, resolved, err := parent.resolveSurfaceTab(chatID, surface)
+	if err != nil {
+		m.commandErrorForTabSurface(c, workspaceID, chatID, surface, "invalid_chat", err.Error(), "")
+		return
+	}
+
+	turnID = strings.TrimSpace(turnID)
+	session.mu.Lock()
+	if parent.loadErr != nil {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_load_failed", parent.loadErr.Error(), "")
+		return
+	}
+	if session.active != nil {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_busy", "messages cannot be rerun while a response is active", "")
+		return
+	}
+	selected, _, err := rerunTurn(session.transcript, turnID)
+	if err != nil {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "message_rerun_failed", err.Error(), "")
+		return
+	}
+	expectedRevision := session.transcript.Revision
+	session.mu.Unlock()
+
+	settings := m.server.llmSettings
+	if selected.Model != "" {
+		if modelSettings, ok := m.server.settingsForModel(selected.Model); ok {
+			settings = modelSettings
+		}
+	}
+	mode, err := m.server.modes.Resolve(session.workspace.MainPath, selected.AgentModeID)
+	if err != nil {
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "agent_mode_load_failed", err.Error(), "")
+		return
+	}
+	scopes := tools.NewToolScopeChecker(agentmodes.PermissionList(mode))
+	images := append([]sessions.MediaAttachment(nil), selected.Images...)
+	videos := append([]sessions.MediaAttachment(nil), selected.Videos...)
+	visibleText := strings.TrimSpace(selected.UserContent)
+	modelText := chatMediaTextContent(visibleText, images, videos)
+	requestID := newSessionID("request")
+
+	session.mu.Lock()
+	if session.active != nil {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_busy", "messages cannot be rerun while a response is active", requestID)
+		return
+	}
+	if session.transcript.Revision != expectedRevision {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "message_rerun_conflict", "the conversation changed before the message could be rerun", requestID)
+		return
+	}
+	_, updated, err := rerunTurn(session.transcript, turnID)
+	if err != nil {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "message_rerun_failed", err.Error(), requestID)
+		return
+	}
+
+	history := hydrateChatMediaHistory(updated.Messages, updated.Turns)
+	userMessageIndex := len(history)
+	userMessage := llm.Message{Role: llm.RoleUser, Content: modelText}
+	userMessage.ContentParts = chatMediaContentParts(modelText, images, videos)
+	history = append(history, userMessage)
+	messages := []llm.Message{m.server.agentModeSystemMessage(session.workspace, mode, visibleText)}
+	messages = append(messages, history...)
+	visionMode := updated.Vision || messagesRequireMedia(messages)
+	settings, streamer := m.server.routeMediaChat(settings, messages, visionMode)
+	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(tools.LLMSchemaForScopes(scopes)))
+	if err != nil {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "invalid_request", err.Error(), requestID)
+		return
+	}
+	if visionMode {
+		updated.Vision = true
+	}
+	updated.Preview = chatPreview(visibleText)
+	if err := parent.persistTabLocked(updated); err != nil {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "message_rerun_failed", err.Error(), requestID)
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	session.cancel = cancel
+	session.transcript = updated
+	session.active = &sessions.Turn{
+		ID:               newSessionID("turn"),
+		RequestID:        requestID,
+		UserContent:      visibleText,
+		UserMessageIndex: userMessageIndex,
+		Images:           images,
+		Videos:           videos,
+		Model:            request.Model,
+		AgentModeID:      mode.ID,
+		AgentModeName:    mode.Name,
+		Status:           "streaming",
+		StartedAt:        time.Now().UTC(),
+		AssistantTurns:   []sessions.AssistantTurn{},
+	}
+	newTurnID := session.active.ID
+	session.emitLocked(map[string]any{
+		"type": "turn_rerun_started", "fromTurnId": turnID, "turnId": newTurnID, "requestId": requestID,
+		"message": visibleText, "images": images, "videos": videos,
+		"model": request.Model, "agentModeId": mode.ID, "agentModeName": mode.Name, "startedAt": session.active.StartedAt,
+	})
+	session.mu.Unlock()
+
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		session.run(ctx, streamer, settings, messages, newTurnID, scopes)
+	}()
+}
+
+// rerunTurn returns the selected user input and a transcript containing only
+// context that preceded it. The selected turn itself is replaced by the new
+// run, so its old response and every later message are physically discarded.
+func rerunTurn(transcript sessions.TabTranscript, turnID string) (sessions.Turn, sessions.TabTranscript, error) {
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		return sessions.Turn{}, sessions.TabTranscript{}, fmt.Errorf("turnId is required")
+	}
+	turnIndex := -1
+	for index := range transcript.Turns {
+		if transcript.Turns[index].ID == turnID {
+			turnIndex = index
+			break
+		}
+	}
+	if turnIndex < 0 {
+		return sessions.Turn{}, sessions.TabTranscript{}, fmt.Errorf("message was not found")
+	}
+	selected := transcript.Turns[turnIndex]
+	if selected.UserDeleted || strings.TrimSpace(selected.UserContent) == "" {
+		return sessions.Turn{}, sessions.TabTranscript{}, fmt.Errorf("the preceding user message was deleted")
+	}
+	boundary := selected.UserMessageIndex
+	if boundary < 0 || boundary >= len(transcript.Messages) || transcript.Messages[boundary].Role != llm.RoleUser {
+		return sessions.Turn{}, sessions.TabTranscript{}, fmt.Errorf("user message context was not found")
+	}
+
+	updated := transcript
+	updated.Turns = append([]sessions.Turn(nil), transcript.Turns[:turnIndex]...)
+	updated.Messages = append([]llm.Message(nil), transcript.Messages[:boundary]...)
+	updated.Revision++
+	selected.Images = append([]sessions.MediaAttachment(nil), selected.Images...)
+	selected.Videos = append([]sessions.MediaAttachment(nil), selected.Videos...)
+	selected.AssistantTurns = nil
+	selected.Error = ""
+	selected.CompletedAt = nil
+	return selected, updated, nil
+}
+
 func cloneTabTranscript(transcript sessions.TabTranscript) sessions.TabTranscript {
 	clone := transcript
 	clone.Turns = append([]sessions.Turn(nil), transcript.Turns...)

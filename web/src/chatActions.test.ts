@@ -144,6 +144,29 @@ describe("chat message actions", () => {
     });
   });
 
+  it.each([
+    ["user", ".chat-message-user", "Its response and all later messages"],
+    ["assistant", ".chat-message-assistant", "preceding user message"],
+  ])("reruns the turn from the %s action", (_role, selector, confirmation) => {
+    snapshot([{
+      id: "turn-rerun",
+      userContent: "Question",
+      status: "done",
+      assistantTurns: [{ number: 0, content: "Answer", hasToolCalls: false }],
+    }]);
+    socket.send.mockClear();
+
+    log.querySelector<HTMLButtonElement>(`${selector} [data-message-action='rerun']`)!.click();
+
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining(confirmation));
+    expect(socket.send).toHaveBeenCalledWith({
+      type: "chat_message_rerun",
+      workspaceId: "workspace-actions",
+      chatId: "chat-actions",
+      turnId: "turn-rerun",
+    });
+  });
+
   it("does not render deleted halves restored from a snapshot", () => {
     snapshot([
       {

@@ -343,6 +343,57 @@ func TestDeleteAssistantResponsePrunesPersistenceAndFutureContext(t *testing.T) 
 	}
 }
 
+func TestRerunEarlierMessageReplacesSelectedTurnAndLaterContext(t *testing.T) {
+	s, _ := newTestServer(t)
+	workspace := createChatWorkspace(t, s, "rerun-earlier-message")
+	fake := &historyStreamer{}
+	s.llm = fake
+	url := startWebSocketTestServer(t, s)
+	conn := dialSharedClient(t, url)
+	subscribeChat(t, conn, workspace.ID)
+
+	for index, prompt := range []string{"first prompt", "second prompt"} {
+		if err := conn.WriteJSON(map[string]any{
+			"type": "chat_send", "workspaceId": workspace.ID,
+			"requestId": fmt.Sprintf("request-rerun-%d", index), "message": prompt,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		readUntilSessionEvent(t, conn, "turn_finished")
+	}
+	beforeRerun := loadActiveTabTranscript(t, workspace)
+	if len(beforeRerun.Turns) != 2 {
+		t.Fatalf("expected two turns before rerun: %#v", beforeRerun.Turns)
+	}
+	originalTurnID := beforeRerun.Turns[0].ID
+	if err := conn.WriteJSON(map[string]any{
+		"type": "chat_message_rerun", "workspaceId": workspace.ID, "turnId": originalTurnID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	started := readUntilSessionEvent(t, conn, "turn_rerun_started")
+	if started["fromTurnId"] != originalTurnID || started["message"] != "first prompt" {
+		t.Fatalf("unexpected rerun start event: %v", started)
+	}
+	readUntilSessionEvent(t, conn, "turn_finished")
+
+	fake.mu.Lock()
+	requests := append([]llm.ChatRequest(nil), fake.requests...)
+	fake.mu.Unlock()
+	if len(requests) != 3 {
+		t.Fatalf("expected three model requests, got %d", len(requests))
+	}
+	third := requests[2].Messages
+	if len(third) != 2 || third[0].Role != llm.RoleSystem || third[1].Role != llm.RoleUser || third[1].Content != "first prompt" {
+		t.Fatalf("rerun request retained selected or later context: %#v", third)
+	}
+	afterRerun := loadActiveTabTranscript(t, workspace)
+	if len(afterRerun.Turns) != 1 || afterRerun.Turns[0].ID == originalTurnID ||
+		afterRerun.Turns[0].UserContent != "first prompt" || afterRerun.Turns[0].AssistantTurns[0].Content != "answer-3" {
+		t.Fatalf("rerun did not durably replace the transcript suffix: %#v", afterRerun)
+	}
+}
+
 func TestClearChatPersistsAndBroadcastsEmptySnapshot(t *testing.T) {
 	s, _ := newTestServer(t)
 	workspace := createChatWorkspace(t, s, "clear-chat")
