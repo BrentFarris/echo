@@ -20,11 +20,13 @@ import (
 	"github.com/brent/echo/internal/auth"
 	"github.com/brent/echo/internal/gitservice"
 	"github.com/brent/echo/internal/llm"
+	"github.com/brent/echo/internal/rebuild"
 	"github.com/brent/echo/internal/settings"
 	terminalruntime "github.com/brent/echo/internal/terminal"
 	"github.com/brent/echo/internal/workspacefs"
 	"github.com/brent/echo/internal/workspaces"
 	"github.com/brent/echo/internal/workspaceskills"
+	"github.com/google/uuid"
 )
 
 // Server is the Echo HTTP server. It serves the SPA frontend from a static
@@ -53,6 +55,12 @@ type Server struct {
 	llmSettings  llm.Settings
 	skillsMu     sync.Mutex
 	skills       map[string]*workspaceskills.Service
+	rebuilder    rebuildCoordinator
+	restartCh    chan struct{}
+	instanceID   string
+	processID    int
+	processArgs  []string
+	workingDir   string
 	// settings holds the full normalized settings (all endpoints) so the chat
 	// handler can resolve a user-selected model to its owning endpoint.
 	settings llm.Settings
@@ -88,11 +96,18 @@ func NewWithAssets(addr string, assets iofs.FS, settingsPath string) *Server {
 }
 
 func newServer(addr, webDir string, assets iofs.FS, settingsPath string) *Server {
+	workingDir, _ := os.Getwd()
 	s := &Server{
-		webDir:    webDir,
-		webAssets: assets,
-		hub:       NewHub(),
-		skills:    make(map[string]*workspaceskills.Service),
+		webDir:      webDir,
+		webAssets:   assets,
+		hub:         NewHub(),
+		skills:      make(map[string]*workspaceskills.Service),
+		rebuilder:   rebuild.NewCoordinator(),
+		restartCh:   make(chan struct{}, 1),
+		instanceID:  uuid.NewString(),
+		processID:   os.Getpid(),
+		processArgs: append([]string(nil), os.Args[1:]...),
+		workingDir:  workingDir,
 	}
 	if settingsPath == "" {
 		path, err := settings.DefaultStorePath()
@@ -191,6 +206,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/echo", s.handleEcho)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
+	mux.HandleFunc("POST /api/development/rebuild-relaunch", s.handleRebuildRelaunch)
 	mux.HandleFunc("GET /api/agent-modes", s.handleGetAgentModes)
 	mux.HandleFunc("POST /api/agent-modes", s.handleCreateAgentMode)
 	mux.HandleFunc("PUT /api/agent-modes/{id}", s.handleUpdateAgentMode)
@@ -306,6 +322,19 @@ func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
 // ListenAndServe starts serving HTTP requests on the configured address.
 func (s *Server) ListenAndServe() error {
 	return s.httpServer.ListenAndServe()
+}
+
+// RestartRequested is consumed by the host lifecycle. A value is sent only
+// after a replacement binary and detached launcher are ready.
+func (s *Server) RestartRequested() <-chan struct{} {
+	return s.restartCh
+}
+
+func (s *Server) requestRestart() {
+	select {
+	case s.restartCh <- struct{}{}:
+	default:
+	}
 }
 
 // Shutdown gracefully stops the server.

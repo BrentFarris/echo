@@ -12,6 +12,7 @@ import { logout } from "../../src/auth/authGate.ts";
 import { hasDirtySessions } from "../../src/code/persistence.ts";
 import { codeRouteHash, navigateBackFromSettings } from "../../src/navigation.ts";
 import { renderMobilePrimaryNav } from "../../src/primaryNav.ts";
+import { reloadForReplacementServer, waitForReplacementServer } from "../../src/rebuildRelaunch.ts";
 import { openAddWorkspaceModal, openWorkspaceDropdown } from "../workspaces.js";
 
 let mountedRoot = null;
@@ -96,6 +97,11 @@ const state = {
   authSessions: [],
   transportSecure: false,
   securityStatus: "",
+  rebuild: {
+    running: false,
+    status: "",
+    logPath: "",
+  },
 };
 
 function esc(value) {
@@ -561,6 +567,7 @@ function renderSecurity() {
 }
 
 function renderDevelopment() {
+  const rebuildError = state.rebuild.status.startsWith("Error:");
   return `
     <section class="settings-section">
       <h2 class="settings-section-title">Development</h2>
@@ -577,7 +584,9 @@ function renderDevelopment() {
       <div class="settings-card">
         <h3 class="settings-card-title">Rebuild &amp; Relaunch</h3>
         <p class="settings-card-help">Rebuilds the Echo application and relaunches it. Requires the Echo source workspace to be added.</p>
-        <button class="secondary-button danger-button" type="button" data-action="rebuild-relaunch">Rebuild &amp; Relaunch</button>
+        <button class="secondary-button danger-button" type="button" data-action="rebuild-relaunch" ${state.rebuild.running ? "disabled aria-busy=\"true\"" : ""}>${state.rebuild.running ? "Rebuilding Echo…" : "Rebuild &amp; Relaunch"}</button>
+        ${state.rebuild.status ? `<p class="settings-status ${rebuildError ? "is-error" : ""}" data-rebuild-status>${esc(state.rebuild.status)}</p>` : ""}
+        ${state.rebuild.logPath ? `<p class="field-help">Log: <code>${esc(state.rebuild.logPath)}</code></p>` : ""}
       </div>
     </section>
   `;
@@ -969,6 +978,29 @@ function bindEvents(root) {
       await logout();
     } catch (err) {
       state.securityStatus = `Error: ${err.message}`;
+      render();
+    }
+  });
+
+  root.querySelector("[data-action='rebuild-relaunch']")?.addEventListener("click", async () => {
+    if (!window.confirm("Rebuild and relaunch Echo?\n\nThis will rebuild the frontend and server, stop the current instance, and launch the new build. Active chats and terminals will be interrupted.")) return;
+
+    state.rebuild.running = true;
+    state.rebuild.status = "Building the Echo frontend and server…";
+    state.rebuild.logPath = "";
+    render();
+    try {
+      const result = await post("/api/development/rebuild-relaunch", {});
+      state.rebuild.status = "Build succeeded. Waiting for the rebuilt server…";
+      state.rebuild.logPath = result.logPath || "";
+      render();
+      await waitForReplacementServer(result.instanceId);
+      state.rebuild.running = false;
+      reloadForReplacementServer();
+    } catch (err) {
+      state.rebuild.running = false;
+      state.rebuild.status = `Error: ${err.message}`;
+      state.rebuild.logPath = err.payload?.details?.logPath || state.rebuild.logPath;
       render();
     }
   });

@@ -46,11 +46,12 @@ func writeCodedError(w http.ResponseWriter, status int, code, message string, de
 // handleHealth reports that the server is alive along with basic metadata.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, map[string]any{
-		"service": "echo",
-		"status":  "ok",
-		"time":    time.Now().UTC().Format(time.RFC3339),
-		"clients": s.hub.ClientCount(),
-		"version": "0.1.0",
+		"service":    "echo",
+		"status":     "ok",
+		"time":       time.Now().UTC().Format(time.RFC3339),
+		"clients":    s.hub.ClientCount(),
+		"version":    "0.1.0",
+		"instanceId": s.instanceID,
 	})
 }
 
