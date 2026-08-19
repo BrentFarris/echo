@@ -32,6 +32,7 @@ type TabTranscript struct {
 	ChatID   string        `json:"chatId"`
 	Preview  string        `json:"preview,omitempty"`
 	Revision uint64        `json:"revision"`
+	Vision   bool          `json:"vision,omitempty"`
 	Turns    []Turn        `json:"turns"`
 	Messages []llm.Message `json:"messages"`
 }

@@ -262,8 +262,8 @@ func messagesRequireMedia(messages []llm.Message) bool {
 	return false
 }
 
-func (s *Server) routeMediaChat(defaultSettings llm.Settings, messages []llm.Message) (llm.Settings, chatStreamer) {
-	if !messagesRequireMedia(messages) || !s.visionSeparate || s.visionLLM == nil {
+func (s *Server) routeMediaChat(defaultSettings llm.Settings, messages []llm.Message, visionMode bool) (llm.Settings, chatStreamer) {
+	if (!visionMode && !messagesRequireMedia(messages)) || !s.visionSeparate || s.visionLLM == nil {
 		return defaultSettings, s.llm
 	}
 	return s.visionSettings, s.visionLLM

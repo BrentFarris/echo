@@ -8,6 +8,8 @@ import (
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/brent/echo/internal/llm"
 	"github.com/brent/echo/internal/sessions"
 	"github.com/brent/echo/internal/tools"
+	"github.com/brent/echo/internal/workspaces"
 )
 
 func testPNGBytes(t *testing.T) []byte {
@@ -200,14 +203,14 @@ func TestChatMediaPromptHydrationRoutingAndToolContext(t *testing.T) {
 	server := &Server{llm: chat, visionLLM: vision, visionSeparate: true, llmSettings: llm.DefaultSettings(), visionSettings: llm.DefaultSettings()}
 	server.visionSettings.Endpoint = "http://vision.invalid/v1"
 	server.visionSettings.Endpoints = nil
-	_, routed := server.routeMediaChat(server.llmSettings, hydrated)
+	_, routed := server.routeMediaChat(server.llmSettings, hydrated, false)
 	if routed != vision {
 		t.Fatal("media-bearing history did not route to the vision streamer")
 	}
 	server.visionSeparate = false
 	selected := server.llmSettings
 	selected.Model = "selected-chat-model"
-	routedSettings, routed := server.routeMediaChat(selected, hydrated)
+	routedSettings, routed := server.routeMediaChat(selected, hydrated, false)
 	if routed != chat || routedSettings.Model != selected.Model {
 		t.Fatal("media did not fall back to the selected Chat route when Vision was not separate")
 	}
@@ -250,7 +253,7 @@ func TestChatMediaPersistsAndRehydratesAfterReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stored.Tabs) != 1 || len(stored.Tabs[0].Turns) != 1 || len(stored.Tabs[0].Turns[0].Images) != 1 || len(stored.Tabs[0].Turns[0].Videos) != 1 {
+	if len(stored.Tabs) != 1 || !stored.Tabs[0].Vision || len(stored.Tabs[0].Turns) != 1 || len(stored.Tabs[0].Turns[0].Images) != 1 || len(stored.Tabs[0].Turns[0].Videos) != 1 {
 		t.Fatalf("media turn was not persisted: %#v", stored)
 	}
 	for _, message := range stored.Tabs[0].Messages {
@@ -301,6 +304,80 @@ func TestChatMediaPersistsAndRehydratesAfterReload(t *testing.T) {
 		t.Fatal("reloaded history did not feed the earlier media back to the model")
 	}
 	reloaded.Close()
+}
+
+func TestVisualToolResultSwitchesToVisionAndPersistsAcrossReload(t *testing.T) {
+	server, _ := newTestServer(t)
+	workspacePath := t.TempDir()
+	imageBytes := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(workspacePath, "screen.png"), imageBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := server.workspaces.Create(workspaces.CreateRequest{Name: "vision-tool", MainPath: workspacePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := &imageToolStreamer{path: normalizeWorkspaceFolderLabel(filepath.Base(workspacePath)) + "/screen.png"}
+	vision := &historyStreamer{}
+	server.llm = chat
+	server.visionLLM = vision
+	server.visionSeparate = true
+	server.visionSettings = server.llmSettings
+	server.visionSettings.Model = "vision-test-model"
+	server.visionSettings.Endpoints = nil
+	server.visionSettings.EndpointSelection = llm.EndpointSelection{}
+
+	url := startWebSocketTestServer(t, server)
+	connection := dialSharedClient(t, url)
+	subscribeChat(t, connection, workspace.ID)
+	chatID := testActiveChatID(t, server, workspace.ID)
+	if err := connection.WriteJSON(map[string]any{
+		"type": "chat_send", "workspaceId": workspace.ID, "chatId": chatID, "requestId": "read-image", "message": "Read the image.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	readSessionEventForChat(t, connection, chatID, "turn_finished")
+	connection.Close()
+
+	chat.mu.Lock()
+	chatRequests := append([]llm.ChatRequest(nil), chat.requests...)
+	chat.mu.Unlock()
+	vision.mu.Lock()
+	visionRequests := append([]llm.ChatRequest(nil), vision.requests...)
+	vision.mu.Unlock()
+	if len(chatRequests) != 1 || len(visionRequests) != 1 || visionRequests[0].Model != "vision-test-model" {
+		t.Fatalf("visual tool result did not switch endpoints: chat=%d vision=%#v", len(chatRequests), visionRequests)
+	}
+	if !messagesRequireMedia(visionRequests[0].Messages) {
+		t.Fatal("Vision request did not contain the image returned by the tool")
+	}
+	stored, err := sessions.NewWorkspaceStore(workspace.MainPath).Load(workspace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Tabs) != 1 || !stored.Tabs[0].Vision {
+		t.Fatalf("Vision routing state was not persisted: %#v", stored)
+	}
+
+	server.sessions.invalidate(workspace.ID)
+	reloaded := dialSharedClient(t, url)
+	defer reloaded.Close()
+	subscribeChat(t, reloaded, workspace.ID)
+	if err := reloaded.WriteJSON(map[string]any{
+		"type": "chat_send", "workspaceId": workspace.ID, "chatId": chatID, "requestId": "later-text", "message": "Continue without another image.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	readSessionEventForChat(t, reloaded, chatID, "turn_finished")
+	chat.mu.Lock()
+	chatCount := len(chat.requests)
+	chat.mu.Unlock()
+	vision.mu.Lock()
+	visionRequests = append([]llm.ChatRequest(nil), vision.requests...)
+	vision.mu.Unlock()
+	if chatCount != 1 || len(visionRequests) != 2 || visionRequests[1].Model != "vision-test-model" {
+		t.Fatalf("later text turn did not stay on Vision: chat=%d vision=%#v", chatCount, visionRequests)
+	}
 }
 
 func TestChatMediaValidationFailureDoesNotCreateTurn(t *testing.T) {

@@ -323,14 +323,17 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		messages = append(messages, *contextMessage)
 	}
 	messages = append(messages, history...)
-	settings, streamer := m.server.routeMediaChat(settings, messages)
+	visionMode := session.transcript.Vision || messagesRequireMedia(messages)
+	settings, streamer := m.server.routeMediaChat(settings, messages, visionMode)
 	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(tools.LLMSchemaForScopes(scopes)))
 	if err != nil {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "invalid_request", err.Error(), requestID)
 		return
 	}
-	messages = append([]llm.Message(nil), request.Messages...)
+	if visionMode {
+		session.transcript.Vision = true
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	session.cancel = cancel
 	session.transcript.Preview = chatPreview(visibleText)
@@ -359,7 +362,7 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		session.run(ctx, streamer, settings, request, messages, turnID, scopes)
+		session.run(ctx, streamer, settings, messages, turnID, scopes)
 	}()
 }
 
@@ -935,19 +938,23 @@ func (s *chatSession) emitLocked(event map[string]any) {
 	s.parent.broadcast(message, s.surface)
 }
 
-func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings llm.Settings, request llm.ChatRequest, messages []llm.Message, turnID string, scopes *tools.ToolScopeChecker) {
+func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings llm.Settings, messages []llm.Message, turnID string, scopes *tools.ToolScopeChecker) {
 	for assistantNumber := 0; ; assistantNumber++ {
 		if ctx.Err() != nil {
 			s.finish(turnID, "stopped", "", messages)
 			return
 		}
-		turnRequest := request
-		turnRequest.Messages = messages
+		turnRequest, requestErr := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(tools.LLMSchemaForScopes(scopes)))
+		if requestErr != nil {
+			s.finish(turnID, "error", requestErr.Error(), messages)
+			return
+		}
 		s.mu.Lock()
 		if !s.isActiveLocked(turnID) {
 			s.mu.Unlock()
 			return
 		}
+		s.active.Model = turnRequest.Model
 		s.active.AssistantTurns = append(s.active.AssistantTurns, sessions.AssistantTurn{Number: assistantNumber})
 		s.emitLocked(map[string]any{"type": "assistant_turn_start", "turnId": turnID, "turn": assistantNumber})
 		s.mu.Unlock()
@@ -985,6 +992,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			return
 		}
 
+		visualResult := false
 		for callOrder, call := range toolCalls {
 			if ctx.Err() != nil {
 				s.finish(turnID, "stopped", "", messages)
@@ -1021,9 +1029,11 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			messages = append(messages, llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: string(data)})
 			if imageMessage, ok := toolResultImageMessage(call.Function.Name, result); ok {
 				messages = append(messages, imageMessage)
+				visualResult = true
 			}
 			if videoMessage, ok := toolResultVideoMessage(call.Function.Name, result); ok {
 				messages = append(messages, videoMessage)
+				visualResult = true
 			}
 
 			s.mu.Lock()
@@ -1046,6 +1056,17 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				"success": resultSuccess, "content": string(data),
 			})
 			s.mu.Unlock()
+		}
+		if visualResult {
+			s.mu.Lock()
+			if !s.isActiveLocked(turnID) {
+				s.mu.Unlock()
+				return
+			}
+			s.transcript.Vision = true
+			s.mu.Unlock()
+
+			settings, streamer = s.manager.server.routeMediaChat(settings, messages, true)
 		}
 	}
 }

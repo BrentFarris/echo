@@ -1081,6 +1081,9 @@ func TestChatToolCallingFeedsImageToModel(t *testing.T) {
 	if !foundImage {
 		t.Fatal("expected the image to be fed back to the model as an image_url content part")
 	}
+	if transcript := loadActiveTabTranscript(t, ws); !transcript.Vision {
+		t.Fatal("reading an image did not persist Vision routing for the chat")
+	}
 }
 
 // videoToolStreamer emits a filesystem_read_video tool call on the first
@@ -1203,5 +1206,8 @@ func TestChatToolCallingFeedsVideoToModel(t *testing.T) {
 	}
 	if !foundVideo {
 		t.Fatal("expected the video to be fed back to the model as a video_url content part")
+	}
+	if transcript := loadActiveTabTranscript(t, ws); !transcript.Vision {
+		t.Fatal("reading a video did not persist Vision routing for the chat")
 	}
 }
