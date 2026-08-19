@@ -36,7 +36,7 @@ const chat = vi.hoisted(() => {
 });
 
 const api = vi.hoisted(() => ({ post: vi.fn() }));
-const ui = vi.hoisted(() => ({ toast: vi.fn() }));
+const ui = vi.hoisted(() => ({ toast: vi.fn(), showContextMenu: vi.fn() }));
 const editorAPI = vi.hoisted(() => ({
   getRoots: vi.fn(async () => [{
     id: "root", label: "Echo", referenceLabel: "echo", hostPath: "C:/Echo",
@@ -58,7 +58,7 @@ const gitBadge = vi.hoisted(() => {
 vi.mock("../js/chat.js", () => chat);
 vi.mock("./gitBadge.ts", () => ({ watchGitBadge: gitBadge.watchGitBadge }));
 vi.mock("./code/editorApi.ts", () => editorAPI);
-vi.mock("./code/ui.ts", () => ({ toast: ui.toast }));
+vi.mock("./code/ui.ts", () => ({ toast: ui.toast, showContextMenu: ui.showContextMenu }));
 
 vi.mock("../js/api.js", () => ({
   post: api.post,
@@ -125,6 +125,7 @@ describe("multi-chat tab UI", () => {
     gitBadge.watchGitBadge.mockClear();
     gitBadge.stop.mockClear();
     ui.toast.mockClear();
+    ui.showContextMenu.mockClear();
     window.location.hash = "";
   });
 
@@ -310,6 +311,26 @@ describe("multi-chat tab UI", () => {
     first.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     expect(chat.activateChatTab).toHaveBeenCalledWith("chat-two");
     expect(document.activeElement).toBe(second);
+  });
+
+  it("opens trajectory from the view switcher and a tab context menu", () => {
+    chat.emitWorkspace(twoTabs("chat-one"));
+    const chatPane = root.querySelector<HTMLElement>("[data-chat-view-pane='chat']")!;
+    const trajectoryPane = root.querySelector<HTMLElement>("[data-chat-view-pane='trajectory']")!;
+    chatPane.querySelector<HTMLButtonElement>("[data-chat-view='trajectory']")!.click();
+    expect(chatPane.hidden).toBe(true);
+    expect(trajectoryPane.hidden).toBe(false);
+
+    trajectoryPane.querySelector<HTMLButtonElement>("[data-trajectory-view='chat']")!.click();
+    expect(chatPane.hidden).toBe(false);
+    expect(trajectoryPane.hidden).toBe(true);
+
+    root.querySelector<HTMLButtonElement>("[data-chat-tab-activate='chat-two']")!
+      .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 20, clientY: 30 }));
+    expect(ui.showContextMenu).toHaveBeenCalledWith(20, 30, expect.any(Array));
+    const actions = ui.showContextMenu.mock.calls.at(-1)?.[2];
+    actions.find((action: { label: string }) => action.label === "Open trajectory").run();
+    expect(chat.activateChatTab).toHaveBeenCalledWith("chat-two");
   });
 
   it("exposes scroll controls when the tab strip overflows", () => {

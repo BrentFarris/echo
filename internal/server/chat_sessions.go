@@ -17,6 +17,7 @@ import (
 	"github.com/brent/echo/internal/llm"
 	"github.com/brent/echo/internal/sessions"
 	"github.com/brent/echo/internal/tools"
+	trajectorylog "github.com/brent/echo/internal/trajectory"
 	"github.com/brent/echo/internal/workspacefs"
 	"github.com/brent/echo/internal/workspaces"
 )
@@ -62,6 +63,14 @@ type sessionEvent struct {
 	ChatID      string         `json:"chatId"`
 	Sequence    uint64         `json:"sequence"`
 	Event       map[string]any `json:"event"`
+}
+
+type trajectoryEventMessage struct {
+	Type        string              `json:"type"`
+	WorkspaceID string              `json:"workspaceId"`
+	Surface     chatSurface         `json:"surface"`
+	ChatID      string              `json:"chatId"`
+	Event       trajectorylog.Event `json:"event"`
 }
 
 type chatTabSummary struct {
@@ -117,11 +126,31 @@ type chatSession struct {
 	active               *sessions.Turn
 	cancel               context.CancelFunc
 	pendingPlanQuestions *planQuestionWait
+	trajectory           *trajectorylog.Store
+	trajectoryWarning    string
 	closed               bool
 }
 
 func newChatSessionManager(server *Server) *chatSessionManager {
 	return &chatSessionManager{server: server, sessions: make(map[string]*chatWorkspaceSession)}
+}
+
+func (m *chatSessionManager) newSession(parent *chatWorkspaceSession, surface chatSurface, transcript sessions.TabTranscript) *chatSession {
+	session := &chatSession{manager: m, parent: parent, workspace: parent.workspace, surface: surface, transcript: transcript}
+	store, err := trajectorylog.New(parent.workspace.MainPath, transcript.ChatID, string(surface))
+	if err != nil {
+		session.trajectoryWarning = err.Error()
+		return session
+	}
+	session.trajectory = store
+	if len(transcript.Turns) > 0 && !store.Exists() {
+		if _, err := store.Append("legacy/import", "", nil, map[string]any{
+			"partial": true, "reason": "reconstructed from the legacy transcript snapshot", "transcript": transcript,
+		}); err != nil {
+			session.trajectoryWarning = err.Error()
+		}
+	}
+	return session
 }
 
 func (m *chatSessionManager) get(workspaceID string) (*chatWorkspaceSession, error) {
@@ -166,12 +195,12 @@ func (m *chatSessionManager) get(workspaceID string) (*chatWorkspaceSession, err
 	parent.chatSequence.Store(stored.Revision)
 	parent.codeSequence.Store(stored.Revision)
 	for _, transcript := range stored.Tabs {
-		tab := &chatSession{manager: m, parent: parent, workspace: workspace, surface: chatSurfaceMain, transcript: transcript}
+		tab := m.newSession(parent, chatSurfaceMain, transcript)
 		parent.tabOrder = append(parent.tabOrder, transcript.ChatID)
 		parent.tabs[transcript.ChatID] = tab
 	}
 	if stored.CodeChat != nil {
-		parent.codeChat = &chatSession{manager: m, parent: parent, workspace: workspace, surface: chatSurfaceCode, transcript: *stored.CodeChat}
+		parent.codeChat = m.newSession(parent, chatSurfaceCode, *stored.CodeChat)
 	}
 	m.sessions[workspaceID] = parent
 	return parent, nil
@@ -354,6 +383,27 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		AssistantTurns:   []sessions.AssistantTurn{},
 	}
 	turnID := session.active.ID
+	session.appendTrajectoryLocked("turn/start", turnID, nil, map[string]any{
+		"requestId": requestID, "model": request.Model, "agentModeId": mode.ID,
+		"agentModeName": mode.Name, "startedAt": session.active.StartedAt, "origin": "send",
+	})
+	session.appendTrajectoryLocked("user/message", turnID, nil, map[string]any{
+		"content": visibleText, "modelContent": modelText, "images": images, "videos": videos,
+		"editorContext": msg.EditorContext,
+	})
+	session.appendTrajectoryLocked("context/injection", turnID, nil, map[string]any{
+		"source": "agent-mode", "message": messages[0],
+	})
+	contextOffset := 1
+	if contextMessage != nil {
+		session.appendTrajectoryLocked("context/injection", turnID, nil, map[string]any{
+			"source": "editor", "message": *contextMessage,
+		})
+		contextOffset++
+	}
+	session.appendTrajectoryLocked("context/injection", turnID, nil, map[string]any{
+		"source": "conversation-history", "messages": messages[contextOffset:],
+	})
 	session.emitLocked(map[string]any{
 		"type": "turn_started", "turnId": turnID, "requestId": requestID,
 		"message": visibleText, "images": images, "videos": videos,
@@ -434,7 +484,14 @@ func (m *chatSessionManager) clear(c *client, workspaceID, chatID, surfaceValue 
 	}
 
 	session.transcript = cleared
+	var trajectoryDeleteErr error
+	if session.trajectory != nil {
+		trajectoryDeleteErr = session.trajectory.Delete()
+	}
 	session.mu.Unlock()
+	if trajectoryDeleteErr != nil {
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "trajectory_delete_failed", trajectoryDeleteErr.Error(), "")
+	}
 	parent.sequenceFor(surface).Add(1)
 	parent.broadcastSnapshot(surface)
 }
@@ -481,6 +538,7 @@ func (m *chatSessionManager) deleteMessage(c *client, workspaceID, chatID, surfa
 	}
 
 	session.transcript = updated
+	session.appendTrajectoryLocked("transcript/delete", turnID, nil, map[string]any{"role": role, "revision": updated.Revision})
 	session.mu.Unlock()
 	parent.sequenceFor(surface).Add(1)
 	parent.broadcastSnapshot(surface)
@@ -642,9 +700,27 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 	}
 	newTurnID := session.active.ID
 	eventType := "turn_rerun_started"
+	origin := "rerun"
 	if editing {
 		eventType = "turn_edit_started"
+		origin = "edit"
 	}
+	session.appendTrajectoryLocked("transcript/rewind", newTurnID, nil, map[string]any{
+		"fromTurnId": turnID, "editing": editing, "revision": updated.Revision,
+	})
+	session.appendTrajectoryLocked("turn/start", newTurnID, nil, map[string]any{
+		"requestId": requestID, "model": request.Model, "agentModeId": mode.ID,
+		"agentModeName": mode.Name, "startedAt": session.active.StartedAt, "origin": origin,
+	})
+	session.appendTrajectoryLocked("user/message", newTurnID, nil, map[string]any{
+		"content": visibleText, "modelContent": modelText, "images": images, "videos": videos,
+	})
+	session.appendTrajectoryLocked("context/injection", newTurnID, nil, map[string]any{
+		"source": "agent-mode", "message": messages[0],
+	})
+	session.appendTrajectoryLocked("context/injection", newTurnID, nil, map[string]any{
+		"source": "conversation-history", "messages": messages[1:],
+	})
 	session.emitLocked(map[string]any{
 		"type": eventType, "fromTurnId": turnID, "turnId": newTurnID, "requestId": requestID,
 		"message": visibleText, "images": images, "videos": videos,
@@ -711,6 +787,9 @@ func (m *chatSessionManager) editAssistantMessage(c *client, workspaceID, chatID
 		return
 	}
 	session.transcript = updated
+	session.appendTrajectoryLocked("transcript/edit", turnID, nil, map[string]any{
+		"role": llm.RoleAssistant, "content": content, "revision": updated.Revision,
+	})
 	session.mu.Unlock()
 	parent.sequenceFor(surface).Add(1)
 	parent.broadcastSnapshot(surface)
@@ -961,7 +1040,7 @@ func (m *chatSessionManager) createTab(c *client, workspaceID string) {
 		m.commandError(c, workspaceID, "tab_create_failed", err.Error(), "")
 		return
 	}
-	tab := &chatSession{manager: m, parent: parent, workspace: parent.workspace, surface: chatSurfaceMain, transcript: transcript}
+	tab := m.newSession(parent, chatSurfaceMain, transcript)
 	parent.tabs[transcript.ChatID] = tab
 	parent.tabOrder = append(parent.tabOrder, transcript.ChatID)
 	parent.activeChatID = transcript.ChatID
@@ -1037,7 +1116,7 @@ func (m *chatSessionManager) closeTab(c *client, workspaceID, chatID string, sto
 	var replacement *chatSession
 	if len(nextOrder) == 0 {
 		transcript := blankTabTranscript()
-		replacement = &chatSession{manager: m, parent: parent, workspace: parent.workspace, surface: chatSurfaceMain, transcript: transcript}
+		replacement = m.newSession(parent, chatSurfaceMain, transcript)
 		nextOrder = []string{transcript.ChatID}
 		nextActive = transcript.ChatID
 	} else if nextActive == chatID {
@@ -1082,10 +1161,17 @@ func (m *chatSessionManager) closeTab(c *client, workspaceID, chatID string, sto
 	if replacement != nil {
 		parent.tabs[replacement.transcript.ChatID] = replacement
 	}
+	var trajectoryDeleteErr error
+	if tab.trajectory != nil {
+		trajectoryDeleteErr = tab.trajectory.Delete()
+	}
 	tab.mu.Unlock()
 	parent.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	if trajectoryDeleteErr != nil {
+		m.commandErrorForTab(c, workspaceID, chatID, "trajectory_delete_failed", trajectoryDeleteErr.Error(), "")
 	}
 	parent.broadcastSnapshot(chatSurfaceMain)
 }
@@ -1264,7 +1350,7 @@ func (w *chatWorkspaceSession) ensureCodeChat() error {
 	if err != nil {
 		return err
 	}
-	w.codeChat = &chatSession{manager: w.manager, parent: w, workspace: w.workspace, surface: chatSurfaceCode, transcript: transcript}
+	w.codeChat = w.manager.newSession(w, chatSurfaceCode, transcript)
 	return nil
 }
 
@@ -1437,6 +1523,41 @@ func (s *chatSession) emitLocked(event map[string]any) {
 	s.parent.broadcast(message, s.surface)
 }
 
+func (s *chatSession) appendTrajectoryLocked(eventType, turnID string, step *int, data any) {
+	if s.trajectory == nil {
+		return
+	}
+	event, err := s.trajectory.Append(eventType, turnID, step, data)
+	if err != nil {
+		warning := err.Error()
+		if warning != s.trajectoryWarning {
+			s.trajectoryWarning = warning
+			s.parent.broadcast(map[string]any{
+				"type": "trajectory_error", "workspaceId": s.workspace.ID, "surface": s.surface,
+				"chatId": s.transcript.ChatID, "error": warning,
+			}, s.surface)
+		}
+		return
+	}
+	s.trajectoryWarning = ""
+	s.parent.broadcast(trajectoryEventMessage{
+		Type: "trajectory_event", WorkspaceID: s.workspace.ID, Surface: s.surface,
+		ChatID: s.transcript.ChatID, Event: event,
+	}, s.surface)
+}
+
+type assistantStreamResult struct {
+	Content          string
+	Reasoning        string
+	ToolCalls        []llm.ToolCall
+	FinishReason     string
+	Usage            *llm.Usage
+	StartedAt        time.Time
+	FirstTokenAt     *time.Time
+	FirstReasoningAt *time.Time
+	CompletedAt      time.Time
+}
+
 func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings llm.Settings, messages []llm.Message, turnID string, scopes *tools.ToolScopeChecker, planMode bool) {
 	questionRounds := 0
 	for assistantNumber := 0; ; assistantNumber++ {
@@ -1449,6 +1570,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			s.finish(turnID, "error", requestErr.Error(), messages)
 			return
 		}
+		requestStartedAt := time.Now().UTC()
 		s.mu.Lock()
 		if !s.isActiveLocked(turnID) {
 			s.mu.Unlock()
@@ -1456,15 +1578,36 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 		}
 		s.active.Model = turnRequest.Model
 		s.active.AssistantTurns = append(s.active.AssistantTurns, sessions.AssistantTurn{Number: assistantNumber})
+		stepNumber := assistantNumber
+		s.appendTrajectoryLocked("request/start", turnID, &stepNumber, map[string]any{
+			"request": turnRequest, "startedAt": requestStartedAt,
+		})
 		s.emitLocked(map[string]any{"type": "assistant_turn_start", "turnId": turnID, "turn": assistantNumber})
 		s.mu.Unlock()
 
 		stream := streamer.StreamChat(ctx, turnRequest)
-		content, toolCalls, err := s.collectAssistantTurn(stream, turnID, assistantNumber)
-		assistant := llm.Message{Role: llm.RoleAssistant, Content: content, ToolCalls: toolCalls}
-		if content != "" || len(toolCalls) > 0 {
+		streamResult, err := s.collectAssistantTurn(stream, turnID, assistantNumber, requestStartedAt)
+		assistant := llm.Message{Role: llm.RoleAssistant, Content: streamResult.Content, ToolCalls: streamResult.ToolCalls}
+		if streamResult.Content != "" || len(streamResult.ToolCalls) > 0 {
 			messages = append(messages, assistant)
 		}
+		s.mu.Lock()
+		if s.isActiveLocked(turnID) {
+			streamError := ""
+			if err != nil && !errors.Is(err, errChatCanceled) {
+				streamError = err.Error()
+			}
+			s.appendTrajectoryLocked("assistant/message", turnID, &stepNumber, map[string]any{
+				"content": streamResult.Content, "reasoning": streamResult.Reasoning,
+				"toolCalls": streamResult.ToolCalls, "finishReason": streamResult.FinishReason,
+				"usage": streamResult.Usage, "streamError": streamError, "startedAt": streamResult.StartedAt,
+				"firstTokenAt": streamResult.FirstTokenAt, "firstReasoningAt": streamResult.FirstReasoningAt,
+				"completedAt": streamResult.CompletedAt,
+				"durationMs":  streamResult.CompletedAt.Sub(streamResult.StartedAt).Milliseconds(),
+				"ttftMs":      durationUntil(streamResult.StartedAt, streamResult.FirstTokenAt),
+			})
+		}
+		s.mu.Unlock()
 		if err != nil {
 			if errors.Is(err, errChatCanceled) {
 				s.finish(turnID, "stopped", "", messages)
@@ -1480,20 +1623,20 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			return
 		}
 		step := &s.active.AssistantTurns[len(s.active.AssistantTurns)-1]
-		step.HasToolCalls = len(toolCalls) > 0
+		step.HasToolCalls = len(streamResult.ToolCalls) > 0
 		s.emitLocked(map[string]any{
 			"type": "assistant_turn_end", "turnId": turnID, "turn": assistantNumber,
-			"hasToolCalls": len(toolCalls) > 0,
+			"hasToolCalls": len(streamResult.ToolCalls) > 0,
 		})
 		s.mu.Unlock()
 
-		if len(toolCalls) == 0 {
+		if len(streamResult.ToolCalls) == 0 {
 			s.finish(turnID, "done", "", messages)
 			return
 		}
 
 		visualResult := false
-		for callOrder, call := range toolCalls {
+		for callOrder, call := range streamResult.ToolCalls {
 			if ctx.Err() != nil {
 				s.finish(turnID, "stopped", "", messages)
 				return
@@ -1502,6 +1645,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			if callID == "" {
 				callID = fmt.Sprintf("turn-%d-call-%d", assistantNumber, callOrder)
 			}
+			toolStartedAt := time.Now().UTC()
 
 			var questionWait *planQuestionWait
 			var questionError *tools.ExecutionError
@@ -1547,6 +1691,11 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			if questionWait != nil {
 				toolCallEvent["planQuestions"] = questionWait.set
 			}
+			s.appendTrajectoryLocked("tool/call", turnID, &stepNumber, map[string]any{
+				"callId": callID, "callOrder": callOrder, "tool": call.Function.Name,
+				"arguments": call.Function.Arguments, "status": activity.Status,
+				"startedAt": toolStartedAt, "planQuestions": activity.PlanQuestions,
+			})
 			s.emitLocked(toolCallEvent)
 			s.mu.Unlock()
 
@@ -1608,6 +1757,13 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				toolResultEvent["answers"] = resolvedAnswers
 				toolResultEvent["skipped"] = questionsSkipped
 			}
+			toolCompletedAt := time.Now().UTC()
+			s.appendTrajectoryLocked("tool/result", turnID, &stepNumber, map[string]any{
+				"callId": callID, "callOrder": callOrder, "tool": call.Function.Name,
+				"success": resultSuccess, "result": json.RawMessage(data), "completedAt": toolCompletedAt,
+				"durationMs": toolCompletedAt.Sub(toolStartedAt).Milliseconds(),
+				"answers":    resolvedAnswers, "skipped": questionsSkipped,
+			})
 			s.emitLocked(toolResultEvent)
 			s.mu.Unlock()
 		}
@@ -1625,32 +1781,61 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 	}
 }
 
-func (s *chatSession) collectAssistantTurn(stream *llm.Stream, turnID string, assistantNumber int) (string, []llm.ToolCall, error) {
+func (s *chatSession) collectAssistantTurn(stream *llm.Stream, turnID string, assistantNumber int, startedAt time.Time) (assistantStreamResult, error) {
 	var content strings.Builder
+	var reasoning strings.Builder
 	toolCalls := make(map[int]llm.ToolCall)
 	var firstErr error
+	result := assistantStreamResult{StartedAt: startedAt}
+	stepNumber := assistantNumber
+	chunkBatch := make([]map[string]any, 0, 16)
+	flushChunksLocked := func() {
+		if len(chunkBatch) == 0 {
+			return
+		}
+		s.appendTrajectoryLocked("assistant/chunk", turnID, &stepNumber, map[string]any{"streamEvents": chunkBatch})
+		chunkBatch = make([]map[string]any, 0, 16)
+	}
+	finalize := func(at time.Time) assistantStreamResult {
+		result.Content = content.String()
+		result.Reasoning = reasoning.String()
+		result.ToolCalls = orderedToolCalls(toolCalls)
+		result.CompletedAt = at
+		return result
+	}
 	for event := range stream.Events {
+		now := time.Now().UTC()
+		s.mu.Lock()
+		if !s.isActiveLocked(turnID) {
+			s.mu.Unlock()
+			return finalize(now), errChatCanceled
+		}
+		chunkBatch = append(chunkBatch, map[string]any{"streamEvent": event, "receivedAt": now})
+		if len(chunkBatch) >= 16 || event.Type == llm.EventToolCall || event.Type == llm.EventUsage || event.Type == llm.EventComplete || event.Type == llm.EventError || event.Type == llm.EventCanceled {
+			flushChunksLocked()
+		}
 		switch event.Type {
 		case llm.EventToken, llm.EventReasoning:
-			if event.Type == llm.EventToken {
-				content.WriteString(event.Content)
-			}
-			s.mu.Lock()
-			if !s.isActiveLocked(turnID) {
-				s.mu.Unlock()
-				return content.String(), orderedToolCalls(toolCalls), errChatCanceled
-			}
 			step := &s.active.AssistantTurns[len(s.active.AssistantTurns)-1]
 			if event.Type == llm.EventToken {
+				content.WriteString(event.Content)
 				step.Content += event.Content
+				if result.FirstTokenAt == nil {
+					first := now
+					result.FirstTokenAt = &first
+				}
 			} else {
+				reasoning.WriteString(event.Content)
 				step.Reasoning += event.Content
+				if result.FirstReasoningAt == nil {
+					first := now
+					result.FirstReasoningAt = &first
+				}
 			}
 			s.emitLocked(map[string]any{
 				"type": string(event.Type), "turnId": turnID, "turn": assistantNumber,
 				"content": event.Content, "finishReason": event.FinishReason, "error": event.Error,
 			})
-			s.mu.Unlock()
 		case llm.EventToolCall:
 			if event.ToolCall != nil {
 				toolCalls[event.ToolCall.Index] = mergeToolDelta(toolCalls[event.ToolCall.Index], *event.ToolCall)
@@ -1660,13 +1845,44 @@ func (s *chatSession) collectAssistantTurn(stream *llm.Stream, turnID string, as
 				firstErr = fmt.Errorf("%s", event.Error)
 			}
 		case llm.EventCanceled:
-			return content.String(), orderedToolCalls(toolCalls), errChatCanceled
+			flushChunksLocked()
+			s.mu.Unlock()
+			return finalize(now), errChatCanceled
+		case llm.EventUsage:
+			if event.Usage != nil {
+				usage := *event.Usage
+				result.Usage = &usage
+			}
+		case llm.EventComplete:
+			result.FinishReason = event.FinishReason
+			if event.Usage != nil {
+				usage := *event.Usage
+				result.Usage = &usage
+			}
 		}
+		s.mu.Unlock()
+	}
+	s.mu.Lock()
+	if s.isActiveLocked(turnID) {
+		flushChunksLocked()
+	}
+	s.mu.Unlock()
+	result = finalize(time.Now().UTC())
+	if result.Usage == nil && stream.Usage != nil {
+		usage := *stream.Usage
+		result.Usage = &usage
 	}
 	if firstErr != nil {
-		return content.String(), orderedToolCalls(toolCalls), firstErr
+		return result, firstErr
 	}
-	return content.String(), orderedToolCalls(toolCalls), nil
+	return result, nil
+}
+
+func durationUntil(start time.Time, end *time.Time) any {
+	if end == nil {
+		return nil
+	}
+	return end.Sub(start).Milliseconds()
 }
 
 func (s *chatSession) finish(turnID, status, message string, messages []llm.Message) {
@@ -1680,10 +1896,19 @@ func (s *chatSession) finish(turnID, status, message string, messages []llm.Mess
 	s.active.Error = message
 	s.active.CompletedAt = &now
 	completed := *s.active
+	s.appendTrajectoryLocked("turn/end", turnID, nil, map[string]any{
+		"status": status, "error": message, "completedAt": now,
+		"durationMs": now.Sub(s.active.StartedAt).Milliseconds(),
+	})
 	s.transcript.Turns = append(s.transcript.Turns, completed)
 	s.transcript.Messages = sanitizeMessages(messages)
 	s.transcript.Revision++
 	persistErr := s.parent.persistTabLocked(s.transcript)
+	if persistErr != nil {
+		s.appendTrajectoryLocked("persistence/error", turnID, nil, map[string]any{
+			"operation": "save_transcript", "error": persistErr.Error(),
+		})
+	}
 	s.active = nil
 	s.cancel = nil
 	event := map[string]any{"type": "turn_finished", "turnId": turnID, "status": status, "error": message, "completedAt": now}

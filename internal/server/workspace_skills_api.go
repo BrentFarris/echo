@@ -131,10 +131,19 @@ func (s *Server) createSkillFromChat(ctx context.Context, workspaceID, chatID st
 	if err != nil {
 		return skillCreationResult{}, &createSkillError{http.StatusInternalServerError, "skill_generation_failed", "Skill generation could not be started."}
 	}
+	appendSkillTrajectory(tab, "auxiliary/request", map[string]any{
+		"operation": "create_workspace_skill", "request": request,
+	})
 	response, err := completer.Complete(ctx, request)
 	if err != nil {
+		appendSkillTrajectory(tab, "auxiliary/result", map[string]any{
+			"operation": "create_workspace_skill", "success": false, "error": err.Error(),
+		})
 		return skillCreationResult{}, &createSkillError{http.StatusBadGateway, "skill_generation_failed", "The model could not create a skill: " + err.Error()}
 	}
+	appendSkillTrajectory(tab, "auxiliary/result", map[string]any{
+		"operation": "create_workspace_skill", "success": true, "response": response,
+	})
 	if len(response.Choices) == 0 {
 		return skillCreationResult{}, &createSkillError{http.StatusBadGateway, "invalid_skill_response", "Skill creation returned no result."}
 	}
@@ -161,6 +170,14 @@ func (s *Server) createSkillFromChat(ctx context.Context, workspaceID, chatID st
 		Description: recorded.Skill.Description,
 		Path:        filepath.ToSlash(filepath.Join(recorded.Skill.Folder, ".echo", "skills", recorded.Skill.Name, workspaceskills.FileName)),
 	}, nil
+}
+
+func appendSkillTrajectory(tab *chatSession, eventType string, data any) {
+	tab.mu.Lock()
+	defer tab.mu.Unlock()
+	if !tab.closed {
+		tab.appendTrajectoryLocked(eventType, "", nil, data)
+	}
 }
 
 func cloneSkillTurns(turns []sessions.Turn) []sessions.Turn {

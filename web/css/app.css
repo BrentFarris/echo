@@ -314,7 +314,8 @@ textarea:disabled {
   gap: 0;
 }
 
-.chat-panel.has-chat-tabs .chat-log {
+.chat-panel.has-chat-tabs .chat-view-pane,
+.chat-panel.has-chat-tabs .trajectory-view {
   margin-top: var(--space-md);
 }
 
@@ -588,6 +589,499 @@ textarea:disabled {
 
 .chat-message-user .chat-message-content {
   max-width: 100%;
+}
+
+.chat-view-pane {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-view-pane[hidden],
+.trajectory-view[hidden] {
+  display: none;
+}
+
+.chat-view-switcher {
+  display: flex;
+  gap: var(--space-lg);
+  align-items: end;
+  min-height: 32px;
+  border-bottom: 1px solid var(--color-border);
+  transition: min-height 120ms ease, opacity 120ms ease;
+}
+
+.chat-view-switcher.is-scrolled {
+  min-height: 0;
+  height: 0;
+  overflow: hidden;
+  border-bottom: 0;
+  opacity: 0;
+}
+
+.chat-view-switcher button {
+  position: relative;
+  align-self: stretch;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--text-lg);
+  cursor: pointer;
+}
+
+.chat-view-switcher button::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: transparent;
+  content: "";
+}
+
+.chat-view-switcher button:hover,
+.chat-view-switcher button.is-active {
+  color: var(--color-text);
+}
+
+.chat-view-switcher button.is-active::after {
+  background: var(--color-info);
+}
+
+.chat-view-pane .chat-log {
+  margin-top: var(--space-md);
+}
+
+/* ==========================================================================
+   Trajectory view.
+   ========================================================================== */
+
+.trajectory-view {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  color: var(--color-text);
+}
+
+.trajectory-controls {
+  min-width: 0;
+  padding-right: var(--space-sm);
+}
+
+.trajectory-controls > .chat-view-switcher {
+  margin-bottom: var(--space-xl);
+}
+
+.trajectory-scroll-region {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: var(--space-sm);
+  scrollbar-gutter: stable;
+}
+
+.trajectory-header {
+  display: flex;
+  gap: var(--space-xl);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.trajectory-header h2 {
+  margin: 1px 0 0;
+  font-size: var(--text-3xl);
+  line-height: 1.15;
+}
+
+.trajectory-eyebrow {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.trajectory-header-actions,
+.trajectory-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.trajectory-header-actions button,
+.trajectory-filters button,
+.trajectory-load-older {
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--text-md);
+  cursor: pointer;
+}
+
+.trajectory-header-actions button:hover,
+.trajectory-filters button:hover,
+.trajectory-filters button.is-active,
+.trajectory-load-older:hover {
+  border-color: color-mix(in srgb, var(--color-info) 52%, var(--color-border));
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-info) 9%, var(--color-bg));
+}
+
+.trajectory-warning {
+  margin-top: var(--space-lg);
+  padding: var(--space-md) var(--space-lg);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 48%, var(--color-border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-warning) 9%, var(--color-bg));
+  color: var(--color-text);
+  font-size: var(--text-md);
+}
+
+.trajectory-overview {
+  display: grid;
+  grid-template-columns: 50px minmax(0, 1fr);
+  gap: var(--space-md);
+  margin-top: var(--space-xl);
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-bg);
+}
+
+.trajectory-overview-labels,
+.trajectory-overview-tracks {
+  display: grid;
+  grid-template-rows: repeat(4, 14px);
+  gap: 4px;
+}
+
+.trajectory-overview-plot {
+  min-width: 0;
+}
+
+.trajectory-overview-labels span {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.trajectory-track {
+  position: relative;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--color-border) 45%, transparent);
+}
+
+.trajectory-track button {
+  position: absolute;
+  top: 2px;
+  min-width: 3px;
+  height: 10px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: var(--color-info);
+  cursor: pointer;
+  z-index: 1;
+}
+
+.trajectory-track button.is-instant {
+  min-width: 4px;
+  border-radius: 1px;
+}
+
+.trajectory-track button.is-pending {
+  outline: 1px solid color-mix(in srgb, currentColor 72%, transparent);
+  outline-offset: 1px;
+}
+
+.trajectory-track button.is-selected,
+.trajectory-track button:focus-visible {
+  z-index: 2;
+  outline: 2px solid var(--color-text);
+  outline-offset: 1px;
+}
+
+.trajectory-turn-boundary {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--color-text-muted) 36%, transparent);
+  pointer-events: none;
+}
+
+.trajectory-track:nth-child(2) button { background: #9b78d0; }
+.trajectory-track:nth-child(3) button { background: #df8a28; }
+.trajectory-track:nth-child(4) button { background: #6f879b; }
+
+.trajectory-overview-empty {
+  grid-row: 1 / -1;
+  display: grid;
+  place-items: center start;
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+}
+
+.trajectory-overview-meta {
+  min-height: 12px;
+  margin-top: 5px;
+  color: var(--color-text-muted);
+  font-size: 9px;
+  line-height: 12px;
+  text-align: right;
+}
+
+.trajectory-toolbar {
+  display: flex;
+  gap: var(--space-md);
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-lg);
+}
+
+.trajectory-search {
+  display: flex;
+  flex: 1 1 260px;
+  gap: var(--space-sm);
+  align-items: center;
+  min-width: 160px;
+  max-width: 430px;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+}
+
+.trajectory-search:focus-within {
+  border-color: var(--color-info);
+}
+
+.trajectory-search input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--text-md);
+}
+
+.trajectory-status {
+  min-height: 26px;
+  padding: var(--space-md) 1px var(--space-sm);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.trajectory-workspace {
+  display: grid;
+  grid-template-columns: minmax(380px, 1fr) minmax(280px, 36%);
+  gap: var(--space-lg);
+  align-items: start;
+  min-width: 0;
+  min-height: 300px;
+}
+
+.trajectory-list {
+  min-width: 0;
+}
+
+.trajectory-load-older {
+  width: 100%;
+  margin-bottom: var(--space-sm);
+}
+
+.trajectory-canvas {
+  position: relative;
+  min-height: 180px;
+}
+
+.trajectory-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: grid;
+  grid-template-columns: 9px 48px minmax(0, 1fr) auto;
+  gap: var(--space-md);
+  align-items: center;
+  width: 100%;
+  min-height: 52px;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-bottom-color: var(--color-border);
+  background: transparent;
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.trajectory-row:hover,
+.trajectory-row.is-selected {
+  border-color: color-mix(in srgb, var(--color-info) 40%, var(--color-border));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--color-info) 7%, var(--color-bg));
+}
+
+.trajectory-row-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #6f879b;
+}
+
+.trajectory-row.lane-input .trajectory-row-dot { background: #55ae7c; }
+.trajectory-row.lane-model .trajectory-row-dot { background: #9b78d0; }
+.trajectory-row.lane-tools .trajectory-row-dot { background: #df8a28; }
+
+.trajectory-row-kind,
+.trajectory-source {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+.trajectory-row-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.trajectory-row-main strong,
+.trajectory-row-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trajectory-row-main strong { font-size: var(--text-md); font-weight: 600; }
+.trajectory-row-main span { color: var(--color-text-muted); font-size: var(--text-sm); }
+
+.trajectory-row-meta {
+  display: grid;
+  justify-items: end;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.trajectory-inspector {
+  position: sticky;
+  top: 0;
+  min-width: 0;
+  min-height: 260px;
+  max-height: calc(100vh - 250px);
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-bg);
+}
+
+.trajectory-inspector-empty,
+.trajectory-empty {
+  display: grid;
+  min-height: 180px;
+  padding: var(--space-xl);
+  place-items: center;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.trajectory-empty.is-error { color: var(--color-danger); }
+
+.trajectory-inspector-heading {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px var(--space-md);
+  align-items: center;
+  padding: var(--space-lg);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.trajectory-inspector-heading strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trajectory-inspector-heading small {
+  grid-column: 2;
+  color: var(--color-text-muted);
+}
+
+.trajectory-inspector-tabs {
+  display: flex;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.trajectory-inspector-tabs button {
+  padding: 8px 9px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.trajectory-inspector-tabs button.is-active {
+  border-bottom-color: var(--color-info);
+  color: var(--color-text);
+}
+
+.trajectory-inspector-content {
+  padding: var(--space-lg);
+  font-size: var(--text-sm);
+}
+
+.trajectory-inspector-content pre {
+  margin: 0;
+  overflow: auto;
+  color: var(--color-text);
+  font-family: var(--font-mono, "Cascadia Mono", "SFMono-Regular", Consolas, monospace);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.trajectory-inspector-content dl { display: grid; gap: var(--space-md); margin: 0; }
+.trajectory-inspector-content dl div { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: var(--space-md); }
+.trajectory-inspector-content dt { color: var(--color-text-muted); }
+.trajectory-inspector-content dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.trajectory-inspector-content p { line-height: 1.5; white-space: pre-wrap; }
+
+@media (max-width: 850px) {
+  .trajectory-toolbar { align-items: stretch; flex-direction: column; }
+  .trajectory-search { flex-basis: auto; max-width: none; }
+  .trajectory-workspace { grid-template-columns: minmax(0, 1fr); }
+  .trajectory-inspector { position: sticky; top: auto; bottom: 0; z-index: 4; max-height: 48vh; box-shadow: var(--shadow-soft); }
+}
+
+@media (max-width: 560px) {
+  .trajectory-header { align-items: flex-start; }
+  .trajectory-overview { grid-template-columns: 44px minmax(0, 1fr); }
+  .trajectory-row { grid-template-columns: 9px minmax(0, 1fr) auto; }
+  .trajectory-row-kind { display: none; }
+  .trajectory-row-meta time { display: none; }
 }
 
 .chat-message-media {

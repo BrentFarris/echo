@@ -15,12 +15,13 @@ import { loadWorkspaces, openWorkspaceDropdown, openAddWorkspaceModal, setActive
 import { codeFileRouteHash, codeRouteHash } from "../../src/navigation.ts";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../../src/primaryNav.ts";
 import { watchGitBadge } from "../../src/gitBadge.ts";
-import { toast } from "../../src/code/ui.ts";
+import { showContextMenu, toast } from "../../src/code/ui.ts";
 import { getRoots, revealEntry, searchEntries } from "../../src/code/editorApi.ts";
 import {
   activeMentionMatch, composerText, insertReferenceChip, restoreComposer, snapshotComposer,
 } from "../../src/chatMentions.ts";
 import { detachTerminalDock, mountTerminalDock } from "../../src/terminal/index.ts";
+import { TrajectoryView } from "../../src/trajectory/index.ts";
 
 // Holds the cleanup function for the currently mounted chat view.
 let chatCleanup = null;
@@ -34,6 +35,8 @@ let agentModes = [];
 let selectedAgentModeId = "general";
 const tabComposerState = new Map();
 const knownWorkspaceTabs = new Map();
+const tabViewState = new Map();
+const tabTrajectoryRevision = new Map();
 const maxChatImages = 4;
 const maxChatVideos = 4;
 const maxChatImageBytes = 10 * 1024 * 1024;
@@ -144,9 +147,16 @@ function chatPanel() {
             <div class="chat-tabs" role="tablist" aria-label="Open chats" data-chat-tabs></div>
             <button class="chat-tabs-scroll chat-tabs-scroll-next" type="button" title="Scroll tabs right" aria-label="Scroll tabs right" data-chat-tabs-scroll="next">${icons.arrowLeft}</button>
           </div>
-          <div class="chat-log" id="chat-transcript" data-chat-log>
-            <div class="empty-state chat-empty">Ask Echo to inspect, plan, or break down work for this workspace.</div>
+          <div class="chat-view-pane" data-chat-view-pane="chat">
+            <div class="chat-view-switcher" role="tablist" aria-label="Chat view" data-chat-view-switcher>
+              <button type="button" role="tab" aria-selected="true" class="is-active" data-chat-view="chat">Chat</button>
+              <button type="button" role="tab" aria-selected="false" data-chat-view="trajectory">Trajectory</button>
+            </div>
+            <div class="chat-log" id="chat-transcript" data-chat-log>
+              <div class="empty-state chat-empty">Ask Echo to inspect, plan, or break down work for this workspace.</div>
+            </div>
           </div>
+          <div class="trajectory-view" data-chat-view-pane="trajectory" data-trajectory-host hidden></div>
           <form class="chat-composer" data-chat-form>
             <div class="chat-composer-main" data-chat-input-wrap>
               <div class="chat-attachment-drafts" data-chat-attachment-drafts hidden></div>
@@ -200,6 +210,8 @@ export function mount(root) {
   `;
 
   const log = root.querySelector("[data-chat-log]");
+  const chatPane = root.querySelector("[data-chat-view-pane='chat']");
+  const trajectoryHost = root.querySelector("[data-trajectory-host]");
   const terminalRegion = root.querySelector("[data-region='terminal']");
   const panel = root.querySelector(".chat-panel");
   const tabsShell = root.querySelector("[data-chat-tabs-shell]");
@@ -229,6 +241,30 @@ export function mount(root) {
   let mention = null;
   let mentionTimer = 0;
   let mentionSequence = 0;
+  const trajectoryView = new TrajectoryView(trajectoryHost, (view) => setChatView(view));
+
+  function activeView() {
+    if (!currentWorkspaceId || !currentChatId) return "chat";
+    return tabViewState.get(tabStateKey(currentWorkspaceId, currentChatId)) || "chat";
+  }
+
+  function setChatView(view, chatId = currentChatId) {
+    if (view !== "trajectory") view = "chat";
+    if (currentWorkspaceId && chatId) tabViewState.set(tabStateKey(currentWorkspaceId, chatId), view);
+    if (chatId && chatId !== currentChatId) {
+      activateChatTab(chatId);
+      return;
+    }
+    const trajectoryActive = view === "trajectory";
+    chatPane.hidden = trajectoryActive;
+    trajectoryHost.hidden = !trajectoryActive;
+    chatPane.querySelectorAll("[data-chat-view]").forEach((button) => {
+      const selected = button.dataset.chatView === view;
+      button.classList.toggle("is-active", selected);
+      button.setAttribute("aria-selected", String(selected));
+    });
+    if (trajectoryActive) void trajectoryView.setTarget(currentWorkspaceId, currentChatId);
+  }
 
   const updateModelLabel = () => {
     modelLabel.textContent = selectedModel
@@ -1173,6 +1209,28 @@ export function mount(root) {
     requestTabClose(tab.dataset.chatTabActivate);
   };
 
+  const onTabsContextMenu = (e) => {
+    const tab = e.target.closest("[data-chat-tab-activate]");
+    if (!tab) return;
+    e.preventDefault();
+    const chatId = tab.dataset.chatTabActivate;
+    const view = tabViewState.get(tabStateKey(currentWorkspaceId, chatId)) || "chat";
+    showContextMenu(e.clientX, e.clientY, [
+      { label: "Open chat", icon: "comment-discussion", disabled: view === "chat", run: () => setChatView("chat", chatId) },
+      { label: "Open trajectory", icon: "pulse", disabled: view === "trajectory", run: () => setChatView("trajectory", chatId) },
+      { label: "Close chat", icon: "close", separatorBefore: true, run: () => requestTabClose(chatId) },
+    ]);
+  };
+
+  const onViewSwitcherClick = (e) => {
+    const button = e.target.closest("[data-chat-view]");
+    if (button) setChatView(button.dataset.chatView);
+  };
+
+  const onChatLogScroll = () => {
+    chatPane.querySelector("[data-chat-view-switcher]")?.classList.toggle("is-scrolled", log.scrollTop > 8);
+  };
+
   const onTabsKeydown = (e) => {
     const focused = e.target.closest("[data-chat-tab-activate]");
     if (!focused) return;
@@ -1231,6 +1289,7 @@ export function mount(root) {
   };
 
   const onDocClick = (e) => {
+    document.querySelector(".code-context-menu")?.remove();
     if (!modelDropdown.hidden && !modelDropdown.contains(e.target) && e.target !== modelTrigger) {
       closeModelDropdown();
     }
@@ -1266,11 +1325,14 @@ export function mount(root) {
   createSkillButton.addEventListener("click", onCreateSkillClick);
   tabsHost.addEventListener("click", onTabsClick);
   tabsHost.addEventListener("auxclick", onTabsAuxClick);
+  tabsHost.addEventListener("contextmenu", onTabsContextMenu);
   tabsHost.addEventListener("keydown", onTabsKeydown);
   tabsHost.addEventListener("wheel", onTabsWheel, { passive: false });
   tabsHost.addEventListener("scroll", onTabsScroll);
   tabsScrollPrevious.addEventListener("click", onTabsScrollPrevious);
   tabsScrollNext.addEventListener("click", onTabsScrollNext);
+  chatPane.addEventListener("click", onViewSwitcherClick);
+  log.addEventListener("scroll", onChatLogScroll, { passive: true });
   moreMenu.addEventListener("keydown", onMoreMenuKeydown);
   document.addEventListener("click", onDocClick);
   window.addEventListener("resize", onResize);
@@ -1334,6 +1396,8 @@ export function mount(root) {
       for (const chatId of knownWorkspaceTabs.get(currentWorkspaceId) || []) {
         if (!remaining.has(chatId)) {
           tabComposerState.delete(tabStateKey(currentWorkspaceId, chatId));
+          tabViewState.delete(tabStateKey(currentWorkspaceId, chatId));
+          tabTrajectoryRevision.delete(tabStateKey(currentWorkspaceId, chatId));
           pendingTabCloses.delete(chatId);
         }
       }
@@ -1345,6 +1409,15 @@ export function mount(root) {
       restoreCurrentComposer();
     }
     renderTabs();
+    setChatView(activeView());
+    const activeTab = currentTabs.find((tab) => tab.chatId === currentChatId);
+    const revisionKey = currentWorkspaceId && currentChatId ? tabStateKey(currentWorkspaceId, currentChatId) : "";
+    if (revisionKey && state?.hasSnapshot) {
+      const previousRevision = tabTrajectoryRevision.get(revisionKey);
+      const nextRevision = Number(activeTab?.revision) || 0;
+      tabTrajectoryRevision.set(revisionKey, nextRevision);
+      if (activeView() === "trajectory" && previousRevision !== undefined && previousRevision !== nextRevision) void trajectoryView.refresh();
+    }
     updateChatMenuActions();
     updateAttachmentAvailability();
 
@@ -1475,11 +1548,14 @@ export function mount(root) {
     createSkillButton.removeEventListener("click", onCreateSkillClick);
     tabsHost.removeEventListener("click", onTabsClick);
     tabsHost.removeEventListener("auxclick", onTabsAuxClick);
+    tabsHost.removeEventListener("contextmenu", onTabsContextMenu);
     tabsHost.removeEventListener("keydown", onTabsKeydown);
     tabsHost.removeEventListener("wheel", onTabsWheel);
     tabsHost.removeEventListener("scroll", onTabsScroll);
     tabsScrollPrevious.removeEventListener("click", onTabsScrollPrevious);
     tabsScrollNext.removeEventListener("click", onTabsScrollNext);
+    chatPane.removeEventListener("click", onViewSwitcherClick);
+    log.removeEventListener("scroll", onChatLogScroll);
     tabsResizeObserver?.disconnect();
     moreMenu.removeEventListener("keydown", onMoreMenuKeydown);
     document.removeEventListener("click", onDocClick);
@@ -1489,6 +1565,8 @@ export function mount(root) {
     moreMenu.remove();
     attachmentMenu.remove();
     clearMention();
+    document.querySelector(".code-context-menu")?.remove();
+    trajectoryView.destroy();
     stopGitBadge();
     detachTerminalDock(terminalRegion);
     closeWorkspaceSession(log);

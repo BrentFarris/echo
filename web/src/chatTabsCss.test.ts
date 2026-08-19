@@ -19,4 +19,11 @@ describe("chat tab visual contracts", () => {
     expect(css).toMatch(/\.chat-tabs-shell\.has-overflow\s*\{[\s\S]*?grid-template-columns:/);
     expect(css).toMatch(/\.chat-tabs-shell\.has-overflow \.chat-tabs-scroll\s*\{\s*display:\s*grid;/);
   });
+
+  it("keeps trajectory controls separate from its scrolling ledger", () => {
+    expect(css).toMatch(/\.trajectory-view\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-rows:\s*auto minmax\(0, 1fr\);[\s\S]*?overflow:\s*hidden;/);
+    expect(css).toMatch(/\.trajectory-scroll-region\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?overflow:\s*auto;/);
+    const overviewRule = css.match(/\.trajectory-overview\s*\{[\s\S]*?\}/)?.[0] || "";
+    expect(overviewRule).not.toContain("position: sticky");
+  });
 });

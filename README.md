@@ -30,7 +30,7 @@ Connect Echo to a local or remote provider that exposes an OpenAI-compatible `/c
 
 | Area | Current capabilities |
 | --- | --- |
-| **Chat** | Persistent workspace conversations, multiple chat tabs, per-chat model and agent-mode selection, streamed Markdown, reasoning, tool activity, stop and clear controls, and skill creation from a conversation |
+| **Chat** | Persistent workspace conversations, multiple chat tabs, per-chat model and agent-mode selection, streamed Markdown, reasoning, tool activity, stop and clear controls, skill creation, and an inspectable Trajectory event stream |
 | **Agent modes** | Built-in General and read-only Plan modes plus workspace-defined system instructions, tool allowlists, and path restrictions |
 | **Code** | Monaco editing, file tabs, workspace trees, quick open, text and file search, create/rename/save operations, external-change detection, recoverable trash, and browser hot-exit buffers |
 | **Git** | Repository discovery, working-tree status, staged and unstaged diffs, staging, commits, branches, remotes, fetch/pull/push/sync, history, tags, and stashes |
@@ -215,6 +215,8 @@ The main folder of each workspace owns a `.echo/` directory. Current workspace f
 ├── workspace.json
 ├── chat-workspace.json
 ├── agent-modes.json
+├── trajectories/
+│   └── <chat-id>.jsonl
 └── skills/
     └── <skill-name>/SKILL.md
 ```
@@ -224,7 +226,9 @@ stored relative to the `.echo` directory when possible (`mainPath` and the
 main `folders` entry are `../`), then resolved to absolute host paths whenever
 Echo opens the workspace or supplies paths to tools and other services.
 
-Echo writes these files atomically. Deleted workspace entries are moved to a separate trash store beside the global data file so they can be restored from the Code view. Browser hot-exit state is local to that browser and is cleared when signing out.
+Configuration and transcript snapshots are written atomically. Trajectory logs are append-only JSONL audit streams containing the exact secret-free model requests, raw provider chunks, reasoning, tool activity, usage, and timing observed by Echo. Custom endpoint headers and credentials are never copied into trajectory records. Clearing or closing a chat deletes its trajectory; otherwise logs currently have no automatic retention limit. See [Trajectory storage and behavior](docs/trajectory.md) for the event model, APIs, legacy behavior, and current limitations.
+
+Deleted workspace entries are moved to a separate trash store beside the global data file so they can be restored from the Code view. Browser hot-exit state is local to that browser and is cleared when signing out.
 
 ## Security
 
