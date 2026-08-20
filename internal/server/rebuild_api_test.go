@@ -108,6 +108,24 @@ func TestRebuildRelaunchRequiresRegisteredEchoSource(t *testing.T) {
 	}
 }
 
+func TestTerminateEchoRequestsShutdownWithoutRestart(t *testing.T) {
+	s, _ := newTestServer(t)
+	rr := doRequest(t, s, http.MethodPost, "/api/development/terminate")
+	if rr.Code != http.StatusAccepted || !strings.Contains(rr.Body.String(), `"status":"terminating"`) {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	select {
+	case <-s.TerminationRequested():
+	default:
+		t.Fatal("termination was not requested")
+	}
+	select {
+	case <-s.RestartRequested():
+		t.Fatal("restart requested while terminating")
+	default:
+	}
+}
+
 func TestEchoUpdateStatusComparesRegisteredSource(t *testing.T) {
 	s, _ := newTestServer(t)
 	workspace := registerEchoSource(t, s, "Echo")

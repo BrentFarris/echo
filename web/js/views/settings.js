@@ -116,6 +116,10 @@ const state = {
     status: "",
     logPath: "",
   },
+  terminate: {
+    running: false,
+    status: "",
+  },
   update: {
     available: false,
     checking: false,
@@ -752,7 +756,8 @@ function pluginSourceLabel(source = {}) {
 function renderDevelopment() {
   const rebuildError = state.rebuild.status.startsWith("Error:");
   const updateError = state.update.status.startsWith("Error:");
-  const developmentBusy = state.rebuild.running || state.update.running;
+  const terminateError = state.terminate.status.startsWith("Error:");
+  const developmentBusy = state.rebuild.running || state.update.running || state.terminate.running;
   const showUpdateCard = state.update.available || state.update.running || state.update.status;
   return `
     <section class="settings-section">
@@ -790,6 +795,13 @@ function renderDevelopment() {
         <button class="secondary-button danger-button" type="button" data-action="rebuild-relaunch" ${developmentBusy ? "disabled aria-busy=\"true\"" : ""}>${state.rebuild.running ? "Rebuilding Echo…" : "Rebuild &amp; Relaunch"}</button>
         ${state.rebuild.status ? `<p class="settings-status ${rebuildError ? "is-error" : ""}" data-rebuild-status>${esc(state.rebuild.status)}</p>` : ""}
         ${state.rebuild.logPath ? `<p class="field-help">Log: <code>${esc(state.rebuild.logPath)}</code></p>` : ""}
+      </div>
+
+      <div class="settings-card">
+        <h3 class="settings-card-title">Terminate Echo</h3>
+        <p class="settings-card-help">Stops the current Echo process without relaunching it. Active chats and terminals will be interrupted.</p>
+        <button class="secondary-button danger-button" type="button" data-action="terminate-echo" ${developmentBusy ? "disabled aria-busy=\"true\"" : ""}>${state.terminate.running ? "Terminating Echo…" : "Terminate Echo"}</button>
+        ${state.terminate.status ? `<p class="settings-status ${terminateError ? "is-error" : ""}" data-terminate-status>${esc(state.terminate.status)}</p>` : ""}
       </div>
     </section>
   `;
@@ -1239,6 +1251,23 @@ function bindEvents(root) {
       state.rebuild.running = false;
       state.rebuild.status = `Error: ${err.message}`;
       state.rebuild.logPath = err.payload?.details?.logPath || state.rebuild.logPath;
+      render();
+    }
+  });
+
+  root.querySelector("[data-action='terminate-echo']")?.addEventListener("click", async () => {
+    if (!window.confirm("Terminate Echo?\n\nThis will stop the current Echo process without relaunching it. Active chats and terminals will be interrupted.")) return;
+
+    state.terminate.running = true;
+    state.terminate.status = "Stopping the Echo process…";
+    render();
+    try {
+      await post("/api/development/terminate", {});
+      state.terminate.status = "Echo is shutting down. You can close this browser tab.";
+      render();
+    } catch (err) {
+      state.terminate.running = false;
+      state.terminate.status = `Error: ${err.message}`;
       render();
     }
   });

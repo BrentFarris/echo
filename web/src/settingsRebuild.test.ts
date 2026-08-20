@@ -94,4 +94,24 @@ describe("Development rebuild and relaunch", () => {
     root.querySelector<HTMLButtonElement>("[data-action=rebuild-relaunch]")!.click();
     expect(api.post).not.toHaveBeenCalled();
   });
+
+  it("does not terminate Echo when confirmation is canceled", () => {
+    vi.mocked(window.confirm).mockReturnValue(false);
+    root.querySelector<HTMLButtonElement>("[data-action=terminate-echo]")!.click();
+    expect(api.post).not.toHaveBeenCalled();
+  });
+
+  it("terminates Echo without waiting for a replacement", async () => {
+    api.post.mockResolvedValueOnce({ status: "terminating" });
+
+    root.querySelector<HTMLButtonElement>("[data-action=terminate-echo]")!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(api.post).toHaveBeenCalledWith("/api/development/terminate", {});
+    expect(root.querySelector<HTMLButtonElement>("[data-action=terminate-echo]")!.disabled).toBe(true);
+    expect(root.querySelector("[data-terminate-status]")?.textContent).toContain("shutting down");
+    expect(replacement.waitForReplacementServer).not.toHaveBeenCalled();
+    expect(replacement.reloadForReplacementServer).not.toHaveBeenCalled();
+  });
 });

@@ -68,6 +68,8 @@ func main() {
 		log.Printf("received signal %v, shutting down", sig)
 	case <-srv.RestartRequested():
 		log.Printf("rebuilt Echo is ready; shutting down for relaunch")
+	case <-srv.TerminationRequested():
+		log.Printf("termination requested from development settings; shutting down")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

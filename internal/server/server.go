@@ -69,6 +69,7 @@ type Server struct {
 	rebuilder        rebuildCoordinator
 	updateChecker    echoUpdateChecker
 	restartCh        chan struct{}
+	terminateCh      chan struct{}
 	instanceID       string
 	processID        int
 	processArgs      []string
@@ -129,6 +130,7 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 		rebuilder:     rebuild.NewCoordinator(),
 		updateChecker: echoupdate.NewChecker(),
 		restartCh:     make(chan struct{}, 1),
+		terminateCh:   make(chan struct{}, 1),
 		instanceID:    uuid.NewString(),
 		processID:     os.Getpid(),
 		processArgs:   append([]string(nil), os.Args[1:]...),
@@ -311,6 +313,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/development/update-status", s.handleEchoUpdateStatus)
 	mux.HandleFunc("POST /api/development/update", s.handleEchoUpdate)
 	mux.HandleFunc("POST /api/development/rebuild-relaunch", s.handleRebuildRelaunch)
+	mux.HandleFunc("POST /api/development/terminate", s.handleTerminateEcho)
 	mux.HandleFunc("GET /api/agent-modes", s.handleGetAgentModes)
 	mux.HandleFunc("POST /api/agent-modes", s.handleCreateAgentMode)
 	mux.HandleFunc("PUT /api/agent-modes/{id}", s.handleUpdateAgentMode)
@@ -455,6 +458,19 @@ func (s *Server) RestartRequested() <-chan struct{} {
 func (s *Server) requestRestart() {
 	select {
 	case s.restartCh <- struct{}{}:
+	default:
+	}
+}
+
+// TerminationRequested is consumed by the host lifecycle when the owner asks
+// Echo to exit without starting a replacement process.
+func (s *Server) TerminationRequested() <-chan struct{} {
+	return s.terminateCh
+}
+
+func (s *Server) requestTermination() {
+	select {
+	case s.terminateCh <- struct{}{}:
 	default:
 	}
 }
