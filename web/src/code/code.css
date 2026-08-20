@@ -174,7 +174,7 @@
 
 .code-search-view {
   display: grid;
-  grid-template-rows: 35px auto 25px minmax(0, 1fr);
+  grid-template-rows: 35px auto auto minmax(0, 1fr);
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -185,9 +185,8 @@
 
 .code-search-controls {
   display: grid;
-  gap: 4px;
-  padding: 3px 6px 5px;
-  border-bottom: 1px solid color-mix(in srgb, var(--code-border) 72%, transparent);
+  gap: 3px;
+  padding: 4px 8px 3px 6px;
 }
 
 .code-search-row {
@@ -207,7 +206,17 @@
   display: grid;
   place-items: center;
   padding: 0;
+  border-radius: 3px;
+  background: transparent;
   color: var(--code-muted);
+  cursor: pointer;
+}
+
+.code-search-expand:hover,
+.code-search-expand:focus-visible {
+  outline: none;
+  background: var(--code-hover);
+  color: var(--code-fg);
 }
 
 .code-search-input-wrap {
@@ -218,11 +227,12 @@
   border: 1px solid var(--code-border);
   border-radius: 2px;
   background: var(--code-editor-surface);
+  box-shadow: inset 0 0 0 1px transparent;
 }
 
 .code-search-input-wrap:focus-within {
   border-color: var(--code-accent);
-  outline: 1px solid var(--code-accent);
+  box-shadow: inset 0 0 0 1px var(--code-accent);
 }
 
 .code-search-input-wrap > input,
@@ -238,7 +248,14 @@
 
 .code-search-input-wrap > input {
   flex: 1;
-  padding: 0 5px;
+  padding: 0 7px;
+  font-size: 12px;
+}
+
+.code-search-input-wrap > input::placeholder,
+.code-search-details input::placeholder {
+  color: var(--code-muted);
+  opacity: 0.72;
 }
 
 .code-search-toggles {
@@ -256,8 +273,11 @@
   height: 22px;
   place-items: center;
   padding: 0;
+  border-radius: 3px;
+  background: transparent;
   color: var(--code-muted);
-  font-size: 11px;
+  font-size: 12px;
+  cursor: pointer;
 }
 
 .code-search-toggles button:hover,
@@ -269,70 +289,79 @@
 .code-search-file-header button:focus-visible,
 .code-search-match-replace:hover,
 .code-search-match-replace:focus-visible {
-  border-radius: 3px;
   outline: none;
   background: var(--code-hover);
   color: var(--code-fg);
 }
 
 .code-search-toggles button.is-active {
+  box-shadow: inset 0 -1px var(--code-accent);
   color: var(--code-accent);
 }
 
 .code-search-details-toggle {
-  display: flex;
-  height: 20px;
-  align-items: center;
-  justify-content: space-between;
-  margin-left: 20px;
-  padding: 0 3px;
+  display: grid;
+  width: 24px;
+  height: 18px;
+  place-items: center;
+  justify-self: end;
+  margin: -1px 0;
+  padding: 0;
+  border-radius: 3px;
+  background: transparent;
   color: var(--code-muted);
-  font-size: 10px;
-  text-align: left;
+  cursor: pointer;
 }
 
 .code-search-details-toggle:hover,
 .code-search-details-toggle:focus-visible {
   outline: none;
+  background: var(--code-hover);
   color: var(--code-fg);
 }
 
 .code-search-details {
   display: grid;
-  gap: 4px;
+  gap: 6px;
   margin-left: 20px;
+  padding-bottom: 2px;
 }
 
 .code-search-details label {
   display: grid;
-  gap: 2px;
+  gap: 3px;
   color: var(--code-muted);
-  font-size: 10px;
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .code-search-details input {
   width: 100%;
-  padding: 0 5px;
+  height: 27px;
+  padding: 0 7px;
   border: 1px solid var(--code-border);
   border-radius: 2px;
   background: var(--code-editor-surface);
-  font-size: 11px;
+  font-size: 12px;
+  box-shadow: inset 0 0 0 1px transparent;
 }
 
 .code-search-details input:focus {
   border-color: var(--code-accent);
-  outline: 1px solid var(--code-accent);
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--code-accent);
 }
 
 .code-search-summary {
   min-width: 0;
-  height: 25px;
-  padding: 5px 8px 3px;
+  min-height: 25px;
+  padding: 5px 10px 5px 28px;
   overflow: hidden;
   color: var(--code-muted);
-  font-size: 10px;
+  font-size: 12px;
+  line-height: 17px;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .code-search-summary.is-error {
@@ -346,16 +375,18 @@
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  padding-bottom: 10px;
+  padding-bottom: 8px;
+  scrollbar-color: color-mix(in srgb, var(--code-muted) 55%, transparent) transparent;
+  scrollbar-width: thin;
 }
 
 .code-search-root-label {
-  height: 22px;
-  padding: 4px 8px 2px;
+  height: 24px;
+  padding: 5px 8px 2px 20px;
   overflow: hidden;
   border-top: 1px solid var(--code-border);
   color: var(--code-muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   text-overflow: ellipsis;
   text-transform: uppercase;
@@ -370,6 +401,8 @@
   align-items: center;
   gap: 2px;
   padding: 0 4px 0 6px;
+  background: transparent;
+  color: var(--code-fg);
   cursor: pointer;
 }
 
@@ -389,7 +422,8 @@
 
 .code-search-file-name {
   overflow: hidden;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -398,7 +432,7 @@
   min-width: 0;
   overflow: hidden;
   color: var(--code-muted);
-  font-size: 10px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -410,27 +444,32 @@
   place-items: center;
   padding: 0 4px;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--code-muted) 24%, transparent);
-  color: var(--code-fg);
-  font-size: 9px;
+  background: color-mix(in srgb, var(--code-accent) 75%, #56b4d5);
+  color: #fff;
+  font-size: 10px;
 }
 
 .code-search-match-row {
   position: relative;
   display: flex;
+  height: 22px;
   min-width: 0;
-  align-items: stretch;
+  align-items: start;
+  overflow: hidden;
 }
 
 .code-search-match {
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
+  display: block;
   min-width: 0;
-  min-height: 22px;
+  height: 22px;
+  min-height: 0;
   flex: 1;
-  align-items: start;
-  padding: 2px 4px 2px 0;
+  padding: 0 30px 0 40px;
+  overflow: hidden;
+  border-radius: 0;
+  background: transparent;
   color: var(--code-fg);
+  cursor: pointer;
   text-align: left;
 }
 
@@ -441,36 +480,33 @@
 }
 
 .code-search-line {
-  padding: 1px 7px 0 2px;
-  color: var(--code-muted);
-  font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 9px;
-  text-align: right;
+  display: none;
 }
 
 .code-search-preview {
+  display: block;
   min-width: 0;
+  height: 22px;
   overflow: hidden;
   font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 10px;
-  line-height: 17px;
+  font-size: 12px;
+  line-height: 22px;
   text-overflow: ellipsis;
   white-space: pre;
 }
 
 .code-search-preview mark {
-  border-radius: 1px;
-  background: color-mix(in srgb, #ea5c00 54%, transparent);
+  border-radius: 0;
+  background: color-mix(in srgb, #0e639c 62%, transparent);
   color: inherit;
 }
 
 .code-search-preview small {
-  display: block;
-  overflow: hidden;
+  display: inline;
+  margin-left: 8px;
   color: #73c991;
   font: inherit;
-  text-overflow: ellipsis;
-  white-space: pre;
+  line-height: inherit;
 }
 
 .code-search-preview small .codicon {

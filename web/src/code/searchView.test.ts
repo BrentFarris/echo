@@ -18,9 +18,9 @@ const response: TextSearchResponse = {
     contentRevision: "content-revision",
     overlay: true,
     matches: [{
-      id: "match-one", line: 4, column: 5, endLine: 4, endColumn: 19,
-      preview: "var cameraPosition = 1", previewMatchStart: 4, previewMatchEnd: 18,
-      match: "cameraPosition", replacementPreview: "cameraLocation",
+      id: "match-one", line: 4, column: 9, endLine: 4, endColumn: 23,
+      preview: "    var cameraPosition = 1", previewMatchStart: 8, previewMatchEnd: 22,
+      match: "cameraPosition", replacementPreview: "    var cameraLocation = 1",
     }],
   }],
   matchCount: 1,
@@ -54,7 +54,7 @@ describe("workspace Search view", () => {
       signal: controller.signal,
       getOverlays: () => [{
         ref: { rootId: "root", path: "src/main.go" }, revision: "disk-revision",
-        content: "var cameraPosition = 1", hasBom: false,
+        content: "    var cameraPosition = 1", hasBom: false,
       }],
       openResult,
       confirmReplace,
@@ -73,15 +73,18 @@ describe("workspace Search view", () => {
 
     expect(editorAPI.searchText).toHaveBeenCalledWith("workspace", expect.objectContaining({
       query: "cameraPosition", caseSensitive: false, wholeWord: false, regex: false,
-      overlays: [expect.objectContaining({ content: "var cameraPosition = 1" })],
+      overlays: [expect.objectContaining({ content: "    var cameraPosition = 1" })],
     }), expect.any(AbortSignal));
     expect(document.querySelector("[data-search-summary]")?.textContent).toContain("1 result in 1 file");
     expect(document.querySelector(".code-search-preview mark")?.textContent).toBe("cameraPosition");
+    const preview = [...document.querySelectorAll(".code-search-preview > span, .code-search-preview > mark")]
+      .map((part) => part.textContent).join("");
+    expect(preview).toBe("var cameraPosition = 1");
 
     document.querySelector<HTMLButtonElement>("[data-search-result]")!.click();
     expect(openResult).toHaveBeenCalledWith(
       { rootId: "root", path: "src/main.go" },
-      expect.objectContaining({ line: 4, column: 5 }),
+      expect.objectContaining({ line: 4, column: 9 }),
       false,
     );
 

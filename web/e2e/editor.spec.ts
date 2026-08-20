@@ -195,7 +195,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   const workspaceSearch = page.getByLabel("Search workspace");
   await expect(workspaceSearch).toBeFocused();
   await workspaceSearch.fill("searchUnsavedToken");
-  await page.getByRole("button", { name: /files to include \/ exclude/i }).click();
+  await page.getByRole("button", { name: "Toggle Search Details" }).click();
   await page.getByLabel("Files to include").fill("*.go");
   const unsavedResult = page.getByRole("treeitem", { name: /searchUnsavedToken/ });
   await expect(unsavedResult).toBeVisible();
@@ -206,6 +206,8 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(workspaceReplace).toBeVisible();
   await workspaceReplace.fill("searchSavedToken");
   await expect(page.locator(".code-search-preview small")).toContainText("searchSavedToken");
+  await expect(unsavedResult).toHaveCSS("height", "22px");
+  await expect(unsavedResult).toHaveCSS("padding-left", "40px");
   await page.getByRole("button", { name: /Replace result on line/ }).click();
   await page.getByRole("button", { name: "Replace", exact: true }).click();
   const mainPath = join(state.workspace, "main.go");

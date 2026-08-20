@@ -312,8 +312,9 @@ export function openAddWorkspaceModal({ onCreate } = {}) {
   // Folder list: add / remove.
   modal.addEventListener("click", (e) => {
     if (e.target.closest('[data-action="add-folder"]')) {
+      const index = folders.length;
       folders.push({ path: "", main: false });
-      renderFolders();
+      folderList.insertAdjacentHTML("beforeend", folderRow(index, false));
       const last = folderList.lastElementChild?.querySelector("input");
       last?.focus();
     } else if (e.target.closest('[data-action="remove-folder"]')) {

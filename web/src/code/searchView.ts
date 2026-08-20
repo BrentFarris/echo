@@ -113,7 +113,7 @@ export class SearchView {
             <button type="button" class="code-search-inline-action" title="Replace All" aria-label="Replace All" data-search-action="replace-all"><span class="codicon codicon-replace-all"></span></button>
           </div>
         </div>
-        <button type="button" class="code-search-details-toggle" aria-expanded="false" data-search-action="toggle-details"><span>files to include / exclude</span><span class="codicon codicon-ellipsis"></span></button>
+        <button type="button" class="code-search-details-toggle" title="Toggle Search Details" aria-label="Toggle Search Details" aria-expanded="false" data-search-action="toggle-details"><span class="codicon codicon-ellipsis"></span></button>
         <div class="code-search-details" data-search-details hidden>
           <label><span>files to include</span><input type="text" aria-label="Files to include" placeholder="e.g. *.go, src/**" spellcheck="false" data-search-include></label>
           <label><span>files to exclude</span><input type="text" aria-label="Files to exclude" placeholder="e.g. **/generated/**" spellcheck="false" data-search-exclude></label>
@@ -329,14 +329,15 @@ export class SearchView {
   }
 
   private renderMatch(match: TextSearchMatch, fileIndex: number, matchIndex: number): string {
-    const before = match.preview.slice(0, match.previewMatchStart);
+    const before = match.preview.slice(0, match.previewMatchStart).replace(/^[\t ]+/, "");
     const highlighted = match.preview.slice(match.previewMatchStart, match.previewMatchEnd);
     const after = match.preview.slice(match.previewMatchEnd);
+    const replacementPreview = match.replacementPreview.replace(/^[\t ]+/, "");
     return `<div class="code-search-match-row">
       <button type="button" class="code-search-match" role="treeitem" data-search-result data-file-index="${fileIndex}" data-match-index="${matchIndex}" aria-label="Line ${match.line}: ${escapeHTML(match.preview)}">
         <span class="code-search-line">${match.line}</span>
         <span class="code-search-preview"><span>${escapeHTML(before)}</span><mark>${escapeHTML(highlighted)}</mark><span>${escapeHTML(after)}</span>
-          ${this.replaceOpen ? `<small><span class="codicon codicon-arrow-right"></span>${escapeHTML(match.replacementPreview)}</small>` : ""}
+          ${this.replaceOpen ? `<small><span class="codicon codicon-arrow-right"></span>${escapeHTML(replacementPreview)}</small>` : ""}
         </span>
       </button>
       ${this.replaceOpen ? `<button type="button" class="code-search-match-replace" title="Replace this result" aria-label="Replace result on line ${match.line}" data-search-match-replace data-file-index="${fileIndex}" data-match-index="${matchIndex}"><span class="codicon codicon-replace"></span></button>` : ""}

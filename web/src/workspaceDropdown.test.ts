@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { openWorkspaceDropdown } from "../js/workspaces.js";
+import { openAddWorkspaceModal, openWorkspaceDropdown } from "../js/workspaces.js";
 
 afterEach(() => {
   document.body.innerHTML = "";
@@ -43,5 +43,21 @@ describe("workspace dropdown", () => {
     expect(document.querySelector(".workspace-dropdown-anchor")).toBeNull();
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
     expect(document.activeElement).toBe(trigger);
+  });
+});
+
+describe("add workspace modal", () => {
+  it("preserves the main folder value when another folder is added", () => {
+    openAddWorkspaceModal();
+    const mainFolder = document.querySelector<HTMLInputElement>('[data-folder-path="0"]');
+    expect(mainFolder).not.toBeNull();
+    mainFolder!.value = "C:\\projects\\echo";
+
+    document.querySelector<HTMLButtonElement>('[data-action="add-folder"]')!.click();
+
+    expect(document.querySelector<HTMLInputElement>('[data-folder-path="0"]')).toBe(mainFolder);
+    expect(mainFolder!.value).toBe("C:\\projects\\echo");
+    expect(document.querySelectorAll("[data-folder-row]")).toHaveLength(2);
+    expect(document.activeElement).toBe(document.querySelector('[data-folder-path="1"]'));
   });
 });
