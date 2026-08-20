@@ -24,12 +24,6 @@ go.work.sum
 
 # env file
 .env
-.echo/*
-!.echo/skills/
-!.echo/skills/**
-!.echo/tasks.json
-!.echo/tasks_done.json
-!.echo/workspace.json
 
 .tmp/
 build/bin
@@ -37,15 +31,11 @@ node_modules
 frontend/dist/*
 !frontend/dist/.gitkeep
 
-# Database files
-echo.db
-/echo/echo.log
-frontend/package.json.md5
+# Echo
+.echo/autosave.json
+.echo/chat-*.json
+.echo/trajectories/
+.echo/icon.png
+.echo/workspace.json
 .gotmp/
-
-# Echo stuff
 OLD/
-_srv_err.txt
-_srv_out.txt
-server.err.log
-server.out.log
