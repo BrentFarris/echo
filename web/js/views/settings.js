@@ -16,6 +16,10 @@ import { renderMobilePrimaryNav } from "../../src/primaryNav.ts";
 import { reloadForReplacementServer, waitForReplacementServer } from "../../src/rebuildRelaunch.ts";
 import { openAddWorkspaceModal, openWorkspaceDropdown } from "../workspaces.js";
 import { refreshPluginCatalog } from "../../src/plugins/catalog.ts";
+import {
+  completionNotificationPermission, requestCompletionNotificationPermission,
+  updateCompletionNotificationSettings,
+} from "../../src/completionNotifications.ts";
 
 let mountedRoot = null;
 let closeSettingsWorkspaceDropdown = null;
@@ -97,6 +101,10 @@ const state = {
   git: {
     leadingWhitespaceIndicators: true,
     splitDiffView: true,
+  },
+  messaging: {
+    notificationSounds: true,
+    chatCompletionNotifications: true,
   },
   storagePath: "",
   saveStatus: "",
@@ -424,9 +432,17 @@ function renderExternal() {
 
 function renderMessaging() {
   const toggles = [
-    { label: "Notification sounds" },
-    { label: "Chat completion notifications" },
+    { key: "notificationSounds", label: "Notification sounds", checked: state.messaging.notificationSounds },
+    { key: "chatCompletionNotifications", label: "Chat completion notifications", checked: state.messaging.chatCompletionNotifications },
   ];
+  const permission = completionNotificationPermission();
+  const permissionStatus = permission === "granted"
+    ? '<p class="settings-card-help">Browser notifications are allowed.</p>'
+    : permission === "denied"
+      ? '<p class="settings-card-help">Browser notifications are blocked. Enable them in your browser or operating-system settings.</p>'
+      : permission === "unsupported"
+        ? '<p class="settings-card-help">Browser notifications are not supported in this environment.</p>'
+        : '<p class="settings-card-help">Allow browser notifications so Echo can alert you when another chat finishes.</p><button class="secondary-button compact-button" type="button" data-action="enable-browser-notifications">Allow browser notifications</button>';
   return `
     <section class="settings-section">
       <h2 class="settings-section-title">Messaging</h2>
@@ -435,9 +451,10 @@ function renderMessaging() {
         ${toggles.map((t) => `
           <label class="settings-toggle">
             <span>${esc(t.label)}</span>
-            <input type="checkbox" ${t.checked ? "checked" : ""} />
+            <input type="checkbox" data-notification-setting="${t.key}" ${t.checked ? "checked" : ""} ${state.settingsLoaded ? "" : "disabled"} />
           </label>
         `).join("")}
+        ${permissionStatus}
       </div>
     </section>
   `;
@@ -1172,6 +1189,21 @@ function bindEvents(root) {
     }
   });
 
+  root.querySelectorAll("[data-notification-setting]").forEach((field) => {
+    field.addEventListener("change", () => {
+      state.messaging[field.dataset.notificationSetting] = field.checked;
+      updateCompletionNotificationSettings(buildSettings());
+      if (field.dataset.notificationSetting === "chatCompletionNotifications" && field.checked) {
+        void requestCompletionNotificationPermission().then(() => render());
+      }
+      saveSettings();
+    });
+  });
+
+  root.querySelector("[data-action='enable-browser-notifications']")?.addEventListener("click", () => {
+    void requestCompletionNotificationPermission().then(() => render());
+  });
+
   root.querySelectorAll("[data-research-agent-concurrency]").forEach((field) => {
     field.addEventListener("change", () => {
       const value = Number.parseInt(field.value, 10);
@@ -1451,6 +1483,11 @@ function applySettings(cfg) {
     leadingWhitespaceIndicators: s.hideLeadingWhitespaceIndicators !== true,
     splitDiffView: s.disableGitSplitDiffView !== true,
   };
+  state.messaging = {
+    notificationSounds: s.disableNotificationSounds !== true,
+    chatCompletionNotifications: s.enableChatCompletionNotifications !== false,
+  };
+  updateCompletionNotificationSettings(s);
   render();
 }
 
@@ -1554,6 +1591,8 @@ function buildSettings() {
     comfyuiImg2imgWorkflow: state.external.comfyuiImg2imgWorkflow,
     hideLeadingWhitespaceIndicators: !state.git.leadingWhitespaceIndicators,
     disableGitSplitDiffView: !state.git.splitDiffView,
+    disableNotificationSounds: !state.messaging.notificationSounds,
+    enableChatCompletionNotifications: state.messaging.chatCompletionNotifications,
     researchAgentConcurrency: state.researchAgentConcurrency,
   };
 }

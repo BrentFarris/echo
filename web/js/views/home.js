@@ -12,7 +12,10 @@ import {
   onStreamingChange, openWorkspaceSession, sendMessage, stopStream,
 } from "../chat.js";
 import { loadWorkspaces, openWorkspaceDropdown, openAddWorkspaceModal, setActiveWorkspace, getActive, renderWorkspaceIcon } from "../workspaces.js";
-import { codeFileRouteHash, codeRouteHash } from "../../src/navigation.ts";
+import {
+  chatCompletionTargetFromHash, codeFileRouteHash, codeRouteHash,
+} from "../../src/navigation.ts";
+import { prepareCompletionNotificationPermission } from "../../src/completionNotifications.ts";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../../src/primaryNav.ts";
 import { watchGitBadge } from "../../src/gitBadge.ts";
 import { showContextMenu, toast } from "../../src/code/ui.ts";
@@ -200,6 +203,9 @@ function chatPanel() {
 }
 
 export function mount(root) {
+  let completionTarget = chatCompletionTargetFromHash(window.location.hash);
+  if (completionTarget?.surface !== "chat") completionTarget = null;
+  let completionActivationRequested = false;
   root.innerHTML = `
     <div class="app-shell">
       <div data-region="left-nav">${renderPrimaryNav({ active: "chat", workspaceName: "Echo", workspaceSelector: true })}</div>
@@ -242,6 +248,13 @@ export function mount(root) {
   let mentionTimer = 0;
   let mentionSequence = 0;
   const trajectoryView = new TrajectoryView(trajectoryHost, (view) => setChatView(view));
+
+  const finishCompletionNavigation = (message = "") => {
+    if (message) toast(message, { sticky: true });
+    completionTarget = null;
+    completionActivationRequested = false;
+    window.history.replaceState(window.history.state, "", "#/home");
+  };
 
   function activeView() {
     if (!currentWorkspaceId || !currentChatId) return "chat";
@@ -1347,6 +1360,7 @@ export function mount(root) {
     const images = state?.images || [];
     const videos = state?.videos || [];
     if (!text.trim() && images.length === 0 && videos.length === 0) return;
+    prepareCompletionNotificationPermission();
     if (sendMessage(log, text, selectedModel || undefined, selectedAgentModeId, { images, videos })) {
       if (state) {
         state.images = [];
@@ -1420,6 +1434,18 @@ export function mount(root) {
     }
     updateChatMenuActions();
     updateAttachmentAvailability();
+
+    if (completionTarget && state?.hasSnapshot && currentWorkspaceId === completionTarget.workspaceId) {
+      const targetExists = currentTabs.some((tab) => tab.chatId === completionTarget.chatId);
+      if (!targetExists) {
+        finishCompletionNavigation("That completed chat is no longer available.");
+      } else if (currentChatId === completionTarget.chatId) {
+        finishCompletionNavigation();
+      } else if (!completionActivationRequested) {
+        completionActivationRequested = true;
+        activateChatTab(completionTarget.chatId);
+      }
+    }
 
     if (focusNewTab && state?.hasSnapshot && currentChatId) {
       focusNewTab = false;
@@ -1576,7 +1602,19 @@ export function mount(root) {
   loadEndpoints();
   // Load the registered workspaces so the selector dropdown can be populated,
   // then set the trigger icon to the active (last opened) workspace.
-  loadWorkspaces().then(async () => {
+  loadWorkspaces().then(async (workspaceList) => {
+    if (completionTarget) {
+      const targetWorkspace = workspaceList.find((workspace) => workspace.id === completionTarget.workspaceId);
+      if (!targetWorkspace) {
+        finishCompletionNavigation("The workspace for that completed chat is no longer available.");
+      } else if (getActive()?.id !== completionTarget.workspaceId) {
+        try {
+          await setActiveWorkspace(completionTarget.workspaceId);
+        } catch (error) {
+          finishCompletionNavigation(error instanceof Error ? error.message : String(error));
+        }
+      }
+    }
     updateWorkspaceNavigation();
     const activeWorkspace = getActive();
     const workspaceId = activeWorkspace?.id || "";

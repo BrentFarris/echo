@@ -19,7 +19,10 @@ const chat = vi.hoisted(() => {
       workspaceHandler = callback;
       callback({
         workspaceId: "workspace-tabs", activeChatId: "chat-one", hasSnapshot: true,
-        tabs: [{ chatId: "chat-one", preview: "New chat", busy: false }],
+        tabs: [
+          { chatId: "chat-one", preview: "New chat", busy: false },
+          { chatId: "chat-two", preview: "Second chat", busy: false },
+        ],
       });
       return () => { workspaceHandler = null; };
     }),
@@ -59,6 +62,7 @@ vi.mock("../js/chat.js", () => chat);
 vi.mock("./gitBadge.ts", () => ({ watchGitBadge: gitBadge.watchGitBadge }));
 vi.mock("./code/editorApi.ts", () => editorAPI);
 vi.mock("./code/ui.ts", () => ({ toast: ui.toast, showContextMenu: ui.showContextMenu }));
+vi.mock("./completionNotifications.ts", () => ({ prepareCompletionNotificationPermission: vi.fn() }));
 
 vi.mock("../js/api.js", () => ({
   post: api.post,
@@ -80,7 +84,7 @@ vi.mock("../js/api.js", () => ({
 
 vi.mock("../js/workspaces.js", () => ({
   getActive: vi.fn(() => ({ id: "workspace-tabs", name: "Workspace" })),
-  loadWorkspaces: vi.fn(async () => undefined),
+  loadWorkspaces: vi.fn(async () => [{ id: "workspace-tabs", name: "Workspace" }]),
   openAddWorkspaceModal: vi.fn(),
   openWorkspaceDropdown: vi.fn(),
   renderWorkspaceIcon: vi.fn(() => "W"),
@@ -237,6 +241,18 @@ describe("multi-chat tab UI", () => {
     expect(root.querySelector("[data-mode-label]")?.textContent).toBe("Review");
     chat.emitWorkspace(twoTabs("chat-two"));
     expect(editor.textContent).toBe("draft for two");
+  });
+
+  it("activates and cleans an exact completion deep link", async () => {
+    unmount();
+    chat.activateChatTab.mockClear();
+    window.location.hash = "#/home?workspaceId=workspace-tabs&chatId=chat-two";
+    mount(root);
+    await Promise.resolve();
+
+    expect(chat.activateChatTab).toHaveBeenCalledWith("chat-two");
+    chat.emitWorkspace(twoTabs("chat-two"));
+    expect(window.location.hash).toBe("#/home");
   });
 
   it("picks media, restores it per tab, removes drafts, and sends without text", async () => {

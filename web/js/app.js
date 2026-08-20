@@ -6,6 +6,7 @@
 import * as ws from "./ws.js";
 import { ensureAuthenticated } from "../src/auth/authGate.ts";
 import { startEchoUpdateMonitor, stopEchoUpdateMonitor, syncEchoUpdateBadges } from "../src/echoUpdate.ts";
+import { startCompletionNotifications } from "../src/completionNotifications.ts";
 import { recordNavigationRoute, routePathFromHash } from "../src/navigation.ts";
 import { initializePluginHost, mountPluginPage, resetPluginHost } from "../src/plugins/pluginHost.ts";
 
@@ -99,6 +100,7 @@ async function bootstrap() {
     currentView = null;
     app.innerHTML = "";
     await ensureAuthenticated(app);
+    await startCompletionNotifications();
     ws.start();
     startEchoUpdateMonitor();
     await initializePluginHost();

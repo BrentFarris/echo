@@ -11,7 +11,10 @@ import type { GitChange, GitDiffDocument, GitRepository } from "./gitTypes";
 import { GitView } from "./gitView";
 import { buildCodeChatEditorContext, runCodeChatSavePreflight } from "./codeChatContext";
 import { loadSession, saveSession } from "./persistence";
-import { CODE_ROUTE, codeOpenTargetFromHash, codeRouteHash, codeSidebarFromHash, routePathFromHash } from "../navigation";
+import {
+  CODE_ROUTE, chatCompletionTargetFromHash, codeOpenTargetFromHash, codeRouteHash,
+  codeSidebarFromHash, routePathFromHash, type ChatCompletionTarget,
+} from "../navigation";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 import { setGitBadgeCount } from "../gitBadge";
 import { randomUUID } from "../randomUUID";
@@ -131,11 +134,14 @@ class CodeView {
   private workspaceSwitching = false;
   private mediaTheme = window.matchMedia("(prefers-color-scheme: dark)");
   private openTarget: FileRef | null;
+  private completionTarget: ChatCompletionTarget | null;
 
   constructor(root: HTMLElement) {
     this.root = root;
     this.activeSidebar = codeSidebarFromHash(window.location.hash);
     this.openTarget = codeOpenTargetFromHash(window.location.hash);
+    this.completionTarget = chatCompletionTargetFromHash(window.location.hash);
+    if (this.completionTarget?.surface !== "code") this.completionTarget = null;
   }
 
   async start(): Promise<void> {
@@ -143,7 +149,19 @@ class CodeView {
       const data = await api("/api/workspaces", { method: "GET" }) as { workspaces: Workspace[]; activeId: string };
       if (this.abort.signal.aborted) return;
       this.workspaces = data.workspaces || [];
-      this.workspace = data.workspaces.find((workspace) => workspace.id === data.activeId) || null;
+      const targetWorkspace = this.completionTarget
+        ? data.workspaces.find((workspace) => workspace.id === this.completionTarget!.workspaceId)
+        : null;
+      if (this.completionTarget && !targetWorkspace) {
+        toast("The workspace for that completed chat is no longer available.", { sticky: true });
+        this.completionTarget = null;
+        window.history.replaceState(window.history.state, "", codeRouteHash(this.activeSidebar));
+      }
+      if (targetWorkspace && targetWorkspace.id !== data.activeId) {
+        await api("/api/workspaces/active", { method: "PUT", body: { id: targetWorkspace.id } });
+        window.dispatchEvent(new CustomEvent("echo:workspace-changed", { detail: { workspaceId: targetWorkspace.id } }));
+      }
+      this.workspace = targetWorkspace || data.workspaces.find((workspace) => workspace.id === data.activeId) || null;
       this.renderShell();
       this.installNavigation();
       installMenuDismissal(this.abort.signal);
@@ -188,6 +206,9 @@ class CodeView {
       this.renderTabs();
       this.updateEditorSurface();
       this.subscribeFilesystem();
+      if (this.completionTarget) {
+        this.setCodeChatOpen(true);
+      }
     } catch (error) {
       if (this.abort.signal.aborted) return;
       console.error("code view startup failed", error);
@@ -2048,6 +2069,12 @@ class CodeView {
           toggle.classList.toggle("is-streaming", streaming);
           const action = this.codeChatOpen ? "Close code assistant" : "Open code assistant";
           toggle.setAttribute("aria-label", streaming ? `${action} (response streaming)` : action);
+        },
+        expectedChatId: this.completionTarget?.chatId,
+        onExpectedChatResolved: (found) => {
+          if (!found) toast("That completed Code Chat is no longer available.", { sticky: true });
+          this.completionTarget = null;
+          window.history.replaceState(window.history.state, "", codeRouteHash(this.activeSidebar));
         },
       });
     }

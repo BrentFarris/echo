@@ -65,6 +65,17 @@ type sessionEvent struct {
 	Event       map[string]any `json:"event"`
 }
 
+type chatCompletedMessage struct {
+	Type          string      `json:"type"`
+	WorkspaceID   string      `json:"workspaceId"`
+	WorkspaceName string      `json:"workspaceName"`
+	Surface       chatSurface `json:"surface"`
+	ChatID        string      `json:"chatId"`
+	TurnID        string      `json:"turnId"`
+	Preview       string      `json:"preview"`
+	CompletedAt   time.Time   `json:"completedAt"`
+}
+
 type trajectoryEventMessage struct {
 	Type        string              `json:"type"`
 	WorkspaceID string              `json:"workspaceId"`
@@ -1975,6 +1986,18 @@ func (s *chatSession) finish(turnID, status, message string, messages []llm.Mess
 		logf("persist chat session %s: %v", s.workspace.ID, persistErr)
 	}
 	s.emitLocked(event)
+	if status == "done" {
+		s.manager.server.hub.Broadcast(chatCompletedMessage{
+			Type:          "chat_completed",
+			WorkspaceID:   s.workspace.ID,
+			WorkspaceName: s.workspace.Name,
+			Surface:       s.surface,
+			ChatID:        s.transcript.ChatID,
+			TurnID:        turnID,
+			Preview:       s.transcript.Preview,
+			CompletedAt:   now,
+		})
+	}
 }
 
 func (s *chatSession) isActiveLocked(turnID string) bool {

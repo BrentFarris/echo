@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  CHAT_ROUTE, NavigationTracker, codeFileRouteHash, codeOpenTargetFromHash, codeRouteHash,
-  codeSidebarFromHash, routePathFromHash,
+  CHAT_ROUTE, NavigationTracker, chatCompletionRouteHash, chatCompletionTargetFromHash,
+  codeFileRouteHash, codeOpenTargetFromHash, codeRouteHash, codeSidebarFromHash, routePathFromHash,
 } from "./navigation";
 
 describe("view route parsing", () => {
@@ -26,6 +26,16 @@ describe("view route parsing", () => {
     expect(codeSidebarFromHash(hash)).toBe("explorer");
     expect(codeOpenTargetFromHash(hash)).toEqual(target);
     expect(codeOpenTargetFromHash("#/home?rootId=root&path=main.go")).toBeNull();
+  });
+
+  it("round-trips exact main and Code Chat completion targets", () => {
+    const main = { workspaceId: "workspace one", chatId: "chat#1", surface: "chat" as const };
+    const code = { workspaceId: "workspace one", chatId: "code#1", surface: "code" as const };
+
+    expect(chatCompletionTargetFromHash(chatCompletionRouteHash(main))).toEqual(main);
+    expect(chatCompletionTargetFromHash(chatCompletionRouteHash(code))).toEqual(code);
+    expect(chatCompletionRouteHash(code)).toContain("chat=open");
+    expect(chatCompletionTargetFromHash("#/code?workspaceId=one&chatId=two")).toBeNull();
   });
 });
 
