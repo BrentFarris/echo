@@ -72,7 +72,9 @@ describe("compact chat surface", () => {
       surface: "code",
       beforeSend: async () => editorContext,
     });
-    expect(chat.openWorkspaceSession).toHaveBeenCalledWith(expect.any(HTMLElement), "workspace-2", { surface: "code" });
+    expect(chat.openWorkspaceSession).toHaveBeenCalledWith(
+      expect.any(HTMLElement), "workspace-2", expect.objectContaining({ surface: "code", onActivateFile: expect.any(Function) }),
+    );
     const input = host.querySelector<HTMLElement>("[data-chat-input]")!;
     input.textContent = "Review it";
 
@@ -83,6 +85,23 @@ describe("compact chat surface", () => {
       expect.any(HTMLElement), "Review it", undefined, "general", { editorContext },
     );
     expect(input.textContent).toBe("");
+    surface.dispose();
+  });
+
+  it("routes changed files through the Code Chat reference activator", async () => {
+    const onActivateReference = vi.fn();
+    const surface = mountChatSurface(host, { workspaceId: "workspace-files", surface: "code", onActivateReference });
+    const sessionOptions = chat.openWorkspaceSession.mock.calls.at(-1)?.[2];
+
+    await sessionOptions.onActivateFile({ rootId: "root", path: "src/main.ts" });
+
+    expect(onActivateReference).toHaveBeenCalledWith({
+      workspaceId: "workspace-files",
+      ref: { rootId: "root", path: "src/main.ts" },
+      kind: "file",
+      referencePath: "src/main.ts",
+      label: "main.ts",
+    });
     surface.dispose();
   });
 

@@ -393,7 +393,16 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
       options.onExpectedChatResolved?.(workspace.activeChatId === options.expectedChatId);
     }
   });
-  openWorkspaceSession(log, options.workspaceId, { surface });
+  openWorkspaceSession(log, options.workspaceId, {
+    surface,
+    onActivateFile: (ref: FileRef) => options.onActivateReference?.({
+      workspaceId: options.workspaceId,
+      ref,
+      kind: "file",
+      referencePath: ref.path,
+      label: ref.path.split("/").at(-1) || ref.path,
+    }),
+  });
 
   void Promise.all([
     api("/api/settings", { method: "GET" }).then((data: { settings?: { endpoints?: Endpoint[]; endpointSelection?: { chat?: string } }; endpoints?: Endpoint[]; endpointSelection?: { chat?: string } }) => {

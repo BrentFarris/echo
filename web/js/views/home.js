@@ -572,6 +572,13 @@ export function mount(root) {
     });
   };
 
+  const openMainWorkspaceSession = (workspaceId) => openWorkspaceSession(log, workspaceId, {
+    onActivateFile: (ref) => {
+      saveCurrentComposer();
+      location.hash = codeFileRouteHash(ref);
+    },
+  });
+
   const restoreCurrentComposer = () => {
     if (!currentWorkspaceId || !currentChatId) return;
     const key = tabStateKey(currentWorkspaceId, currentChatId);
@@ -716,7 +723,7 @@ export function mount(root) {
           await setActiveWorkspace(id);
           updateWorkspaceNavigation();
           mountTerminalDock(terminalRegion, getActive());
-          openWorkspaceSession(log, id);
+          openMainWorkspaceSession(id);
           await loadAgentModes(id, modeLabel);
           restoreCurrentComposer();
         } catch (err) {
@@ -730,7 +737,7 @@ export function mount(root) {
               await setActiveWorkspace(workspace.id);
               updateWorkspaceNavigation();
               mountTerminalDock(terminalRegion, getActive());
-              openWorkspaceSession(log, workspace.id);
+              openMainWorkspaceSession(workspace.id);
               await loadAgentModes(workspace.id, modeLabel);
               restoreCurrentComposer();
             } catch (err) {
@@ -1619,7 +1626,7 @@ export function mount(root) {
     const activeWorkspace = getActive();
     const workspaceId = activeWorkspace?.id || "";
     mountTerminalDock(terminalRegion, activeWorkspace);
-    openWorkspaceSession(log, workspaceId);
+    openMainWorkspaceSession(workspaceId);
     await loadAgentModes(workspaceId, modeLabel);
     restoreCurrentComposer();
   });

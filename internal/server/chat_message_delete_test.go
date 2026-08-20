@@ -5,6 +5,7 @@ import (
 
 	"github.com/brent/echo/internal/llm"
 	"github.com/brent/echo/internal/sessions"
+	"github.com/brent/echo/internal/tools"
 )
 
 func deletionTestTranscript() sessions.TabTranscript {
@@ -14,6 +15,7 @@ func deletionTestTranscript() sessions.TabTranscript {
 		Turns: []sessions.Turn{
 			{
 				ID: "turn-one", UserContent: "first prompt", UserMessageIndex: 0, Status: "done",
+				FileChanges:       []sessions.FileChange{{Path: "echo/main.go", Operation: tools.FileChangeEdited, Ref: &sessions.FileReference{RootID: "root", Path: "main.go"}}},
 				ResearchReasoning: []sessions.ResearchReasoning{{AgentID: "agent-one", AgentName: "Scout", Reasoning: "private work"}},
 				ResearchTools:     []sessions.ToolActivity{{CallID: "agent-one:read", Name: "filesystem_read_text", AgentID: "agent-one"}},
 				AssistantTurns: []sessions.AssistantTurn{{
@@ -48,7 +50,7 @@ func TestDeleteTranscriptAssistantRemovesEntireToolChain(t *testing.T) {
 		transcript.Messages[1].Content != "second prompt" || transcript.Messages[2].Content != "second answer" {
 		t.Fatalf("assistant context was not fully removed: %#v", transcript.Messages)
 	}
-	if !transcript.Turns[0].AssistantDeleted || len(transcript.Turns[0].AssistantTurns) != 0 ||
+	if !transcript.Turns[0].AssistantDeleted || len(transcript.Turns[0].AssistantTurns) != 0 || len(transcript.Turns[0].FileChanges) != 0 ||
 		len(transcript.Turns[0].ResearchReasoning) != 0 || len(transcript.Turns[0].ResearchTools) != 0 {
 		t.Fatalf("assistant display payload was retained: %#v", transcript.Turns[0])
 	}
@@ -87,6 +89,9 @@ func TestRerunTurnReturnsInputAndDropsSelectedAndLaterContext(t *testing.T) {
 	if selected.UserContent != "first prompt" || selected.Model != "model-one" || selected.AgentModeID != "general" || len(selected.Images) != 1 {
 		t.Fatalf("selected input was not preserved: %#v", selected)
 	}
+	if len(selected.FileChanges) != 0 {
+		t.Fatalf("rerun retained obsolete file changes: %#v", selected.FileChanges)
+	}
 	if len(updated.Turns) != 0 || len(updated.Messages) != 0 {
 		t.Fatalf("selected and later context remained: %#v / %#v", updated.Turns, updated.Messages)
 	}
@@ -117,6 +122,9 @@ func TestEditAssistantTranscriptChangesOnlyFinalResponse(t *testing.T) {
 	if updated.Turns[0].AssistantTurns[0].Content != "working" || updated.Messages[1].Content != "working" ||
 		updated.Messages[2].Content != "tool result" || updated.Turns[1].AssistantTurns[0].Content != "second answer" {
 		t.Fatalf("assistant edit changed tool or later context: %#v / %#v", updated.Turns, updated.Messages)
+	}
+	if len(updated.Turns[0].FileChanges) != 1 || updated.Turns[0].FileChanges[0].Path != "echo/main.go" {
+		t.Fatalf("assistant edit removed its file change summary: %#v", updated.Turns[0].FileChanges)
 	}
 	if original.Turns[0].AssistantTurns[1].Content != "first answer" {
 		t.Fatalf("failed edit rollback clone isolation: %#v", original.Turns[0])

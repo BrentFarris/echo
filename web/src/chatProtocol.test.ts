@@ -245,6 +245,73 @@ describe("multi-chat WebSocket protocol", () => {
     expect(log.textContent).toContain("Please review the attached image(s).");
   });
 
+  it("restores, collapses, and activates completed file changes", () => {
+    const activateFile = vi.fn();
+    closeWorkspaceSession(log);
+    openWorkspaceSession(log, "workspace-tabs", { onActivateFile: activateFile });
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "chat-one", tabs: [{ chatId: "chat-one", preview: "Changed files", busy: false }],
+      turns: [{
+        id: "changed", userContent: "Make changes", status: "done",
+        assistantTurns: [{ number: 0, content: "Done.", hasToolCalls: false }],
+        fileChanges: [
+          { path: "echo/src/new.ts", operation: "created", ref: { rootId: "root", path: "src/new.ts" } },
+          { path: "echo/src/new.ts", operation: "edited", ref: { rootId: "root", path: "src/new.ts" } },
+          { path: "echo/src/old.ts", operation: "edited", ref: { rootId: "root", path: "src/old.ts" } },
+          { path: "echo/src/old.ts", operation: "deleted" },
+          { path: "echo/src/restored.ts", operation: "deleted" },
+          { path: "echo/src/restored.ts", operation: "created", ref: { rootId: "root", path: "src/restored.ts" } },
+        ],
+      }],
+    });
+
+    const summary = log.querySelector<HTMLElement>(".chat-file-changes")!;
+    expect(summary.querySelector(".chat-file-changes-header")?.textContent).toContain("3 files");
+    const rows = [...summary.querySelectorAll<HTMLElement>(".chat-file-change-row")];
+    expect(rows.map((row) => row.querySelector("code")?.textContent)).toEqual([
+      "echo/src/new.ts", "echo/src/old.ts", "echo/src/restored.ts",
+    ]);
+    expect(rows.map((row) => row.querySelector(".chat-file-change-operation")?.textContent)).toEqual([
+      "Created", "Deleted", "Edited",
+    ]);
+    expect(rows[1].tagName).toBe("DIV");
+    expect(rows[1].getAttribute("aria-disabled")).toBe("true");
+
+    (rows[0] as HTMLButtonElement).click();
+    (rows[2] as HTMLButtonElement).click();
+    expect(activateFile).toHaveBeenNthCalledWith(1, { rootId: "root", path: "src/new.ts" });
+    expect(activateFile).toHaveBeenNthCalledWith(2, { rootId: "root", path: "src/restored.ts" });
+  });
+
+  it("shows live file changes after a stopped run", () => {
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "chat-one", tabs: [{ chatId: "chat-one", preview: "Stopped", busy: false }], turns: [],
+    });
+    const events = [
+      { type: "turn_started", turnId: "stopped", message: "Start" },
+      { type: "assistant_turn_start", turnId: "stopped", turn: 0 },
+      { type: "assistant_turn_end", turnId: "stopped", turn: 0, hasToolCalls: true },
+      { type: "tool_call", turnId: "stopped", turn: 0, callId: "call-edit", callOrder: 0, tool: "filesystem_edit_text", arguments: "{}" },
+      {
+        type: "tool_result", turnId: "stopped", turn: 0, callId: "call-edit", callOrder: 0,
+        tool: "filesystem_edit_text", success: true, content: "{}",
+        fileChanges: [{ path: "echo/main.go", operation: "edited", ref: { rootId: "root", path: "main.go" } }],
+      },
+      { type: "assistant_turn_start", turnId: "stopped", turn: 1 },
+      { type: "token", turnId: "stopped", turn: 1, content: "Partial response" },
+      { type: "turn_finished", turnId: "stopped", status: "stopped" },
+    ];
+    events.forEach((event, index) => emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: index + 2, event,
+    }));
+
+    expect(log.querySelector(".chat-stream-status")?.textContent).toContain("stopped");
+    expect(log.querySelector(".chat-file-change-path")?.textContent).toBe("echo/main.go");
+    expect(log.querySelector(".chat-file-change-operation")?.textContent).toBe("Edited");
+  });
+
   it("isolates the code surface and sends editor context", () => {
     closeWorkspaceSession(log);
     openWorkspaceSession(log, "workspace-tabs", { surface: "code" });

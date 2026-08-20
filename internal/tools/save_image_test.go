@@ -12,6 +12,7 @@ import (
 func TestSaveImageHappyPath(t *testing.T) {
 	workspace := t.TempDir()
 	imgName := "test.png"
+	var changes []FileChange
 
 	pngData := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0xaa, 0xbb}
 	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngData)
@@ -24,6 +25,9 @@ func TestSaveImageHappyPath(t *testing.T) {
 		},
 		GeneratedImages: map[string]AttachedImage{
 			"img-123": {Name: imgName, MediaType: "image/png", DataURL: dataURL},
+		},
+		FileChanges: func(next []FileChange) {
+			changes = append(changes, next...)
 		},
 	}
 
@@ -55,6 +59,9 @@ func TestSaveImageHappyPath(t *testing.T) {
 	}
 	if len(data) != len(pngData) {
 		t.Fatalf("expected %d bytes, got %d", len(pngData), len(data))
+	}
+	if len(changes) != 1 || changes[0].Operation != FileChangeCreated || changes[0].Path != "echo/test_output.png" {
+		t.Fatalf("unexpected saved-image file changes: %#v", changes)
 	}
 }
 

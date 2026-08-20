@@ -42,8 +42,24 @@ type Turn struct {
 	ResearchAgents    []ResearchAgent     `json:"researchAgents,omitempty"`
 	ResearchReasoning []ResearchReasoning `json:"researchReasoning,omitempty"`
 	ResearchTools     []ToolActivity      `json:"researchTools,omitempty"`
+	FileChanges       []FileChange        `json:"fileChanges,omitempty"`
 	UserDeleted       bool                `json:"userDeleted,omitempty"`
 	AssistantDeleted  bool                `json:"assistantDeleted,omitempty"`
+}
+
+// FileChange is the compact, durable portion of a tool-reported workspace
+// mutation. Full before/after snapshots remain private to tool execution.
+type FileChange struct {
+	Path      string         `json:"path"`
+	Operation string         `json:"operation"`
+	Ref       *FileReference `json:"ref,omitempty"`
+}
+
+// FileReference identifies an entry inside one of the workspace's confined
+// roots so clients can open a changed file without using a host path.
+type FileReference struct {
+	RootID string `json:"rootId"`
+	Path   string `json:"path"`
 }
 
 // MediaAttachment is a normalized image or video attached to a user turn.

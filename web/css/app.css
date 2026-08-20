@@ -185,7 +185,8 @@ textarea:disabled {
 .left-nav-workspace {
   position: relative;
   display: grid;
-  place-items: center;
+  width: 100%;
+  justify-items: start;
 }
 
 .left-nav-buttons {
@@ -1807,6 +1808,105 @@ textarea:disabled {
   margin-top: var(--space-sm);
   padding: var(--space-md) 0 var(--space-lg);
   border-bottom: 1px solid var(--color-border);
+}
+
+.chat-file-changes {
+  display: grid;
+  gap: var(--space-sm);
+  margin: var(--space-md) var(--space-lg) 0;
+  padding-top: var(--space-lg);
+  border-top: 1px solid var(--color-border);
+}
+
+.chat-file-changes-header {
+  display: flex;
+  gap: var(--space-lg);
+  align-items: baseline;
+  justify-content: space-between;
+  color: var(--color-text);
+  font-size: var(--text-base-lg);
+}
+
+.chat-file-changes-header span {
+  color: var(--color-text-muted);
+  font-size: var(--text-base-sm);
+}
+
+.chat-file-change-list {
+  display: grid;
+  max-height: 190px;
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  list-style: none;
+  scrollbar-gutter: stable;
+}
+
+.chat-file-change-list li + li {
+  border-top: 1px solid var(--color-border);
+}
+
+.chat-file-change-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: var(--space-md);
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-md) var(--space-lg);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+}
+
+button.chat-file-change-row {
+  cursor: pointer;
+}
+
+button.chat-file-change-row:hover,
+button.chat-file-change-row:focus-visible {
+  background: var(--color-surface-muted);
+  outline: none;
+}
+
+button.chat-file-change-row:focus-visible {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--color-accent) 52%, transparent);
+}
+
+.chat-file-change-path {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  font-size: var(--text-base-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-file-change-operation {
+  font-size: var(--text-base-sm);
+  font-weight: 650;
+}
+
+.chat-file-change-row.is-created .chat-file-change-operation {
+  color: var(--color-success);
+}
+
+.chat-file-change-row.is-edited .chat-file-change-operation {
+  color: var(--color-accent-strong);
+}
+
+.chat-file-change-row.is-deleted {
+  color: var(--color-text-muted);
+}
+
+.chat-file-change-row.is-deleted .chat-file-change-operation {
+  color: var(--color-danger);
 }
 
 .chat-stream-status {

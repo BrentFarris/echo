@@ -106,6 +106,7 @@ export function openWorkspaceSession(log, workspaceId, options = {}) {
   setStreaming(false);
   binding = {
     log, workspaceId: workspaceId || "", surface: options.surface === "code" ? "code" : "chat",
+    onActivateFile: typeof options.onActivateFile === "function" ? options.onActivateFile : null,
     sequence: 0, hasSnapshot: false,
     activeChatId: "", tabs: [], turns: new Map(),
   };
@@ -338,6 +339,7 @@ function renderStoredTurn(turn, active) {
       completeToolCall(stream, { ...data, success: tool.success, content: tool.result || "" });
     }
   }
+  if (!turn.assistantDeleted) recordFileChanges(stream, turn.fileChanges);
   if (active || turn.status === "streaming") {
     for (const agent of turn.researchAgents || []) updateResearchAgentStatus(stream, agent);
     activeStream = stream;
@@ -524,6 +526,7 @@ function createTurnView(turnId, userText, images = [], videos = [], options = {}
     id: turnId, el, user, timeline: el.querySelector(".chat-timeline"),
     content: el.querySelector(".chat-final-content"), done: false,
     currentTurn: null, finalTurn: null, turns: new Map(), tools: new Map(),
+    fileChanges: [],
     researchAgents: new Map(), researchReasoning: new Map(), researchStatusContainer: null,
   };
 }
@@ -1047,6 +1050,7 @@ function createToolSection(labelText, value) {
 
 function completeToolCall(stream, data, turnNumber) {
   if (!stream) return;
+  recordFileChanges(stream, data.fileChanges);
   const callOrder = Number.isInteger(data.callOrder) ? data.callOrder : stream.tools.size;
   const callId = data.callId || `turn-${turnNumber}-call-${callOrder}`;
   if (!stream.tools.has(callId)) appendToolCall(stream, { ...data, callId }, turnNumber);
@@ -1280,6 +1284,7 @@ function finishStream(stream, outcome, message = "") {
     markRunningToolsInterrupted(stream, outcome);
     appendStreamStatus(stream, outcome, message);
   }
+  renderFileChangeSummary(stream);
   if (activeStream === stream) {
     activeStream = null;
     setStreaming(false);
@@ -1308,6 +1313,100 @@ function finalizeSuccessfulResponse(stream) {
   body.appendChild(stream.timeline);
   work.append(summary, body);
   stream.content.parentElement.insertBefore(work, stream.content);
+}
+
+function recordFileChanges(stream, changes) {
+  if (!stream || !Array.isArray(changes)) return;
+  for (const change of changes) {
+    const path = String(change?.path || "").trim();
+    const operation = String(change?.operation || "").trim().toLowerCase();
+    if (!path || !["created", "edited", "deleted"].includes(operation)) continue;
+    const rootId = String(change?.ref?.rootId || "").trim();
+    const refPath = typeof change?.ref?.path === "string" ? change.ref.path : "";
+    stream.fileChanges.push({
+      path,
+      operation,
+      ...(rootId ? { ref: { rootId, path: refPath } } : {}),
+    });
+  }
+}
+
+function aggregateFileChanges(changes) {
+  const byPath = new Map();
+  for (const change of changes || []) {
+    let aggregate = byPath.get(change.path);
+    if (!aggregate) {
+      aggregate = {
+        path: change.path,
+        ref: change.ref || null,
+        initiallyExisted: change.operation !== "created",
+        exists: change.operation !== "deleted",
+      };
+      byPath.set(change.path, aggregate);
+      continue;
+    }
+    aggregate.exists = change.operation !== "deleted";
+    if (change.ref) aggregate.ref = change.ref;
+  }
+  return [...byPath.values()].map((change) => ({
+    path: change.path,
+    ref: change.ref,
+    operation: !change.exists ? "deleted" : (change.initiallyExisted ? "edited" : "created"),
+  }));
+}
+
+function renderFileChangeSummary(stream) {
+  stream.el.querySelector(":scope .chat-file-changes")?.remove();
+  const changes = aggregateFileChanges(stream.fileChanges);
+  if (!changes.length) return;
+
+  const section = document.createElement("section");
+  section.className = "chat-file-changes";
+  section.setAttribute("aria-label", "Files changed");
+  const header = document.createElement("div");
+  header.className = "chat-file-changes-header";
+  const title = document.createElement("strong");
+  title.textContent = "Files changed";
+  const count = document.createElement("span");
+  count.textContent = `${changes.length} ${changes.length === 1 ? "file" : "files"}`;
+  header.append(title, count);
+
+  const list = document.createElement("ul");
+  list.className = "chat-file-change-list";
+  for (const change of changes) {
+    const item = document.createElement("li");
+    const canOpen = change.operation !== "deleted" && change.ref && typeof binding?.onActivateFile === "function";
+    const row = document.createElement(canOpen ? "button" : "div");
+    row.className = `chat-file-change-row is-${change.operation}`;
+    if (canOpen) {
+      row.type = "button";
+      row.title = `Open ${change.path} in Echo Code`;
+      row.addEventListener("click", async () => {
+        try {
+          await binding.onActivateFile(change.ref);
+        } catch (error) {
+          toast(error instanceof Error ? error.message : "Could not open the changed file.", { sticky: true });
+        }
+      });
+    } else if (change.operation === "deleted") {
+      row.setAttribute("aria-disabled", "true");
+      row.title = `${change.path} was deleted`;
+    }
+    const icon = document.createElement("span");
+    icon.className = `codicon codicon-${change.operation === "deleted" ? "trash" : "file-code"}`;
+    icon.setAttribute("aria-hidden", "true");
+    const path = document.createElement("code");
+    path.className = "chat-file-change-path";
+    path.textContent = change.path;
+    const badge = document.createElement("span");
+    badge.className = "chat-file-change-operation";
+    badge.textContent = change.operation === "created" ? "Created" : change.operation === "edited" ? "Edited" : "Deleted";
+    row.append(icon, path, badge);
+    item.appendChild(row);
+    list.appendChild(item);
+  }
+  section.append(header, list);
+  stream.content.parentElement.appendChild(section);
 }
 
 function removeEmptyTurn(turn) { if (turn?.el && !turn.el.childElementCount) turn.el.remove(); }

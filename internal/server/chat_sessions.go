@@ -901,6 +901,7 @@ func rerunTurn(transcript sessions.TabTranscript, turnID string) (sessions.Turn,
 	selected.Images = append([]sessions.MediaAttachment(nil), selected.Images...)
 	selected.Videos = append([]sessions.MediaAttachment(nil), selected.Videos...)
 	selected.AssistantTurns = nil
+	selected.FileChanges = nil
 	selected.Error = ""
 	selected.CompletedAt = nil
 	return selected, updated, nil
@@ -912,6 +913,7 @@ func cloneTabTranscript(transcript sessions.TabTranscript) sessions.TabTranscrip
 	for index := range clone.Turns {
 		clone.Turns[index].Images = append([]sessions.MediaAttachment(nil), transcript.Turns[index].Images...)
 		clone.Turns[index].Videos = append([]sessions.MediaAttachment(nil), transcript.Turns[index].Videos...)
+		clone.Turns[index].FileChanges = cloneFileChanges(transcript.Turns[index].FileChanges)
 		clone.Turns[index].AssistantTurns = append([]sessions.AssistantTurn(nil), transcript.Turns[index].AssistantTurns...)
 		for assistantIndex := range clone.Turns[index].AssistantTurns {
 			clone.Turns[index].AssistantTurns[assistantIndex].Tools = append(
@@ -920,6 +922,21 @@ func cloneTabTranscript(transcript sessions.TabTranscript) sessions.TabTranscrip
 		}
 	}
 	clone.Messages = append([]llm.Message(nil), transcript.Messages...)
+	return clone
+}
+
+func cloneFileChanges(changes []sessions.FileChange) []sessions.FileChange {
+	if len(changes) == 0 {
+		return nil
+	}
+	clone := append([]sessions.FileChange(nil), changes...)
+	for index := range clone {
+		if changes[index].Ref == nil {
+			continue
+		}
+		ref := *changes[index].Ref
+		clone[index].Ref = &ref
+	}
 	return clone
 }
 
@@ -986,6 +1003,7 @@ func deleteTranscriptMessage(transcript *sessions.TabTranscript, turnID, role st
 		turn.ResearchAgents = nil
 		turn.ResearchReasoning = nil
 		turn.ResearchTools = nil
+		turn.FileChanges = nil
 		turn.Error = ""
 		turn.Model = ""
 		turn.AgentModeID = ""
@@ -1751,6 +1769,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			s.mu.Unlock()
 
 			var result tools.ExecutionResult
+			var fileChanges []sessions.FileChange
 			switch {
 			case questionError != nil:
 				result = tools.ExecutionResult{Tool: call.Function.Name, Error: questionError}
@@ -1758,6 +1777,9 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				result = s.awaitPlanQuestions(ctx, questionWait)
 			default:
 				toolCtx := s.toolContext(ctx, scopes)
+				toolCtx.FileChanges = func(changes []tools.FileChange) {
+					fileChanges = append(fileChanges, compactFileChanges(changes, toolCtx.WorkspaceRoots)...)
+				}
 				toolCtx.ResearchAgents = research
 				if tools.IsResearchAgentToolName(call.Function.Name) && research == nil {
 					result = tools.ExecutionResult{Tool: call.Function.Name, Error: &tools.ExecutionError{Code: "research_agents_disabled", Message: "research agents are disabled for this chat turn"}}
@@ -1787,6 +1809,9 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				return
 			}
 			step = &s.active.AssistantTurns[len(s.active.AssistantTurns)-1]
+			if len(fileChanges) > 0 {
+				s.active.FileChanges = append(s.active.FileChanges, fileChanges...)
+			}
 			var resolvedAnswers []sessions.PlanAnswer
 			var questionsSkipped bool
 			if questionOutput, ok := result.Output.(planQuestionToolOutput); ok {
@@ -1813,6 +1838,9 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			if call.Function.Name == tools.AskUserQuestionsToolName {
 				toolResultEvent["answers"] = resolvedAnswers
 				toolResultEvent["skipped"] = questionsSkipped
+			}
+			if len(fileChanges) > 0 {
+				toolResultEvent["fileChanges"] = fileChanges
 			}
 			toolCompletedAt := time.Now().UTC()
 			s.appendTrajectoryLocked("tool/result", turnID, &stepNumber, map[string]any{
@@ -2018,6 +2046,40 @@ func (s *chatSession) toolContext(ctx context.Context, scopes *tools.ToolScopeCh
 		WorkspaceSkills: s.manager.server.workspaceSkills(s.workspace),
 		PluginAuthoring: s.manager.server.pluginAuthoring(s.workspace.ID, roots),
 	}
+}
+
+func compactFileChanges(changes []tools.FileChange, roots []tools.WorkspaceRoot) []sessions.FileChange {
+	if len(changes) == 0 {
+		return nil
+	}
+	result := make([]sessions.FileChange, 0, len(changes))
+	for _, change := range changes {
+		path := strings.Trim(strings.TrimPrefix(strings.ReplaceAll(strings.TrimSpace(change.Path), "\\", "/"), "./"), "/")
+		if path == "" || (change.Operation != tools.FileChangeCreated && change.Operation != tools.FileChangeEdited && change.Operation != tools.FileChangeDeleted) {
+			continue
+		}
+		item := sessions.FileChange{Path: path, Operation: change.Operation}
+		for _, root := range roots {
+			if root.ID == "" {
+				continue
+			}
+			relative := ""
+			switch {
+			case root.Label == ".":
+				relative = path
+			case strings.EqualFold(path, root.Label):
+				relative = ""
+			case len(path) > len(root.Label) && strings.EqualFold(path[:len(root.Label)], root.Label) && path[len(root.Label)] == '/':
+				relative = path[len(root.Label)+1:]
+			default:
+				continue
+			}
+			item.Ref = &sessions.FileReference{RootID: root.ID, Path: relative}
+			break
+		}
+		result = append(result, item)
+	}
+	return result
 }
 
 func sanitizeMessages(messages []llm.Message) []llm.Message {
