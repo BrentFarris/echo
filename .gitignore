@@ -38,4 +38,5 @@ frontend/dist/*
 .echo/icon.png
 .echo/workspace.json
 .gotmp/
+.echo-tools/
 OLD/

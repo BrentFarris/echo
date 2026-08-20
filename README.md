@@ -56,6 +56,20 @@ The Code view uses Monaco for editing and reviewing diffs. Its explorer watches 
 
 ## Quick start
 
+### Run from source with one click
+
+After cloning the repository or downloading and extracting its source archive, use the launcher for your operating system:
+
+| Platform | Double-click this file |
+| --- | --- |
+| Windows | `install-echo-windows.cmd` |
+| Linux | `install-echo-linux.sh` |
+| macOS | `install-echo-macos.command` |
+
+The launcher checks for Go 1.26+ and Node.js 22+ with npm. If a requirement is missing or outdated, it downloads a checksum-verified, portable copy into the ignored `.echo-tools/` directory without changing the system Go or Node.js installation. Build caches also stay in that directory. It then installs the locked frontend packages, builds the embedded web application and Echo server, and starts Echo at [http://localhost:3740](http://localhost:3740). Leave the terminal window open while using Echo. On a minimal Linux installation that lacks basic download/archive utilities, the launcher may ask for `sudo` so the system package manager can install them.
+
+On Linux, choose **Run** if the file manager asks whether to display or execute the script. Git checkouts preserve the executable bit; if an extracted archive does not, run `chmod +x install-echo-linux.sh` once. The launchers can also be run from a terminal and pass command-line options through to Echo, for example `./install-echo-linux.sh -port 8080`.
+
 ### Download a nightly build
 
 Open [GitHub Releases](https://github.com/BrentFarris/echo/releases) and download the nightly archive for your platform.
