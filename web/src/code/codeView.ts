@@ -247,7 +247,7 @@ class CodeView {
                   <div class="code-diff-unavailable" data-diff-unavailable hidden></div>
                 </section>
                 <footer class="code-statusbar" data-statusbar>
-                  <div><button type="button" class="code-mobile-explorer" data-mobile-explorer aria-label="Toggle Explorer" aria-expanded="false"><span class="codicon codicon-${explorerActive ? "files" : "source-control"}"></span></button><button type="button" data-status="branch" disabled><span class="codicon codicon-source-control"></span></button></div>
+                  <div><button type="button" class="code-mobile-explorer" data-mobile-explorer aria-label="Toggle Explorer" aria-expanded="false"><span class="codicon codicon-${explorerActive ? "files" : "source-control"}"></span></button></div>
                   <div class="code-status-right"><span data-status="cursor">Ln 1, Col 1</span><span>Spaces: 2</span><span>UTF-8</span><span data-status="eol">LF</span><span data-status="language">Plain Text</span></div>
                 </footer>
               </div>
