@@ -128,7 +128,7 @@ func TestGitInspectLogSearchAllRefsAndShow(t *testing.T) {
 		"operation":  "show",
 		"repository": "repo",
 		"revision":   researchHash[:10],
-		"path":       "repo/notes.txt",
+		"path":       "notes.txt",
 	}))
 	if !showResult.Success {
 		t.Fatalf("show failed: %+v", showResult.Error)
@@ -297,6 +297,39 @@ func TestGitInspectRejectsWrongRepositoryPathAndNestedRoot(t *testing.T) {
 	}))
 	if nestedResult.Success || nestedResult.Error == nil || nestedResult.Error.Code != "repository_not_root" {
 		t.Fatalf("expected nested-root rejection, got %+v", nestedResult)
+	}
+}
+
+func TestResolveGitInspectPathAcceptsRepositoryRelativeAndLabeledPaths(t *testing.T) {
+	root := t.TempDir()
+	repository := gitInspectRepository{Label: "kaiju", Path: root}
+	var resolvedRequests []string
+	execution := ExecutionContext{
+		Context: context.Background(),
+		WorkspaceRoots: []WorkspaceRoot{
+			{ID: "kaiju-root", Label: "kaiju", Path: root},
+		},
+		ResolveWorkspacePath: func(requested string) (string, error) {
+			resolvedRequests = append(resolvedRequests, requested)
+			const prefix = "kaiju/"
+			if !strings.HasPrefix(requested, prefix) {
+				t.Fatalf("resolver received unlabeled path %q", requested)
+			}
+			return filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(requested, prefix))), nil
+		},
+	}
+
+	for _, requested := range []string{"src/engine/ui/panel.go", "kaiju/src/engine/ui/panel.go"} {
+		resolved, err := resolveGitInspectPath(execution, repository, requested)
+		if err != nil {
+			t.Fatalf("resolve %q: %v", requested, err)
+		}
+		if resolved != "src/engine/ui/panel.go" {
+			t.Fatalf("resolve %q = %q", requested, resolved)
+		}
+	}
+	if len(resolvedRequests) != 2 || resolvedRequests[0] != "kaiju/src/engine/ui/panel.go" || resolvedRequests[1] != "kaiju/src/engine/ui/panel.go" {
+		t.Fatalf("unexpected resolver requests: %#v", resolvedRequests)
 	}
 }
 

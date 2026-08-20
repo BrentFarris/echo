@@ -71,7 +71,7 @@ func init() {
 					},
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Optional labeled workspace path for log, show, or diff; required for blame. " + labeledPathSchemaHint,
+						"description": "Optional path inside the selected repository for log, show, or diff; required for blame. Prefer a repository-relative path such as src/main.go. A workspace-labeled path such as echo/src/main.go is also accepted when its label matches repository.",
 					},
 					"skip": map[string]any{
 						"type":        "integer",
@@ -393,7 +393,32 @@ func resolveGitInspectPath(execution ExecutionContext, repository gitInspectRepo
 	if requested == "" {
 		return "", nil
 	}
-	resolved, err := resolveWorkspacePath(execution, requested)
+	if filepath.IsAbs(requested) {
+		return "", SafeError{Code: "path_outside_workspace", Message: "path must be relative to the selected repository"}
+	}
+
+	// The repository argument already identifies the workspace root, so accept
+	// the natural repository-relative form (for example src/main.go). Preserve
+	// labeled workspace paths for compatibility and reject paths that explicitly
+	// select a different workspace root.
+	pathToResolve := requested
+	requestedLabel, _ := splitWorkspaceLabeledPath(requested)
+	matchedWorkspaceLabel := ""
+	for _, root := range execution.workspaceRoots() {
+		if strings.EqualFold(root.Label, requestedLabel) {
+			matchedWorkspaceLabel = root.Label
+			break
+		}
+	}
+	if matchedWorkspaceLabel != "" {
+		if !strings.EqualFold(matchedWorkspaceLabel, repository.Label) {
+			return "", SafeError{Code: "path_outside_repository", Message: "path must belong to the selected repository"}
+		}
+	} else {
+		pathToResolve = repository.Label + "/" + strings.TrimPrefix(filepath.ToSlash(requested), "./")
+	}
+
+	resolved, err := resolveWorkspacePath(execution, pathToResolve)
 	if err != nil {
 		return "", err
 	}
