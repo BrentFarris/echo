@@ -184,13 +184,20 @@ ws.on("session_event", (message) => {
   const event = message.event || {};
   const chatId = message.chatId || binding.activeChatId;
   const tab = binding.tabs.find((candidate) => candidate.chatId === chatId);
+  let tabStateChanged = false;
   if (tab && (event.type === "turn_started" || event.type === "turn_rerun_started" || event.type === "turn_edit_started")) {
     tab.preview = normalizePreview(event.message) || "New chat";
     tab.busy = true;
+    tabStateChanged = true;
   } else if (tab && event.type === "turn_finished") {
     tab.busy = false;
+    tabStateChanged = true;
   }
-  emitWorkspaceState();
+  // Workspace listeners rebuild the tab strip. Rebuilding it for every streamed
+  // token can replace a tab button between pointerdown and click, which makes
+  // tab activation and close controls appear unresponsive while a reply runs.
+  // Only notify listeners when the public tab state actually changed.
+  if (tabStateChanged) emitWorkspaceState();
   if (chatId === binding.activeChatId) {
     applyEvent(event);
   }

@@ -106,6 +106,47 @@ describe("multi-chat WebSocket protocol", () => {
     unsubscribe();
   });
 
+  it("does not rebuild tab state for streamed content events", () => {
+    const listener = vi.fn();
+    const unsubscribe = onChatWorkspaceChange(listener);
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "chat-one",
+      tabs: [
+        { chatId: "chat-one", preview: "Running", busy: false },
+        { chatId: "chat-two", preview: "Older chat", busy: false },
+      ],
+      turns: [],
+    });
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 2,
+      event: { type: "turn_started", turnId: "live", message: "Running" },
+    });
+    const notificationsAfterStart = listener.mock.calls.length;
+
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 3,
+      event: { type: "assistant_turn_start", turnId: "live", turn: 0 },
+    });
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 4,
+      event: { type: "token", turnId: "live", turn: 0, content: "Still streaming" },
+    });
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 5,
+      event: { type: "reasoning", turnId: "live", turn: 0, content: "Working" },
+    });
+
+    expect(listener).toHaveBeenCalledTimes(notificationsAfterStart);
+
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 6,
+      event: { type: "turn_finished", turnId: "live", status: "done" },
+    });
+    expect(listener).toHaveBeenCalledTimes(notificationsAfterStart + 1);
+    unsubscribe();
+  });
+
   it("preserves manual transcript scrolling while messages stream", async () => {
     emit("session_snapshot", {
       type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
