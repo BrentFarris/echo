@@ -205,7 +205,6 @@ textarea:disabled {
 }
 
 .nav-icon-button {
-  display: grid;
   place-items: center;
   width: 44px;
   aspect-ratio: 1;
