@@ -183,6 +183,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(mainGoResult).toBeVisible();
   await mainGoResult.click();
   await expect(page.getByRole("tab", { name: /main\.go/ })).toBeVisible();
+  await expect(page.locator(".code-tree-row", { hasText: "main.go" })).toHaveAttribute("aria-selected", "true");
 
   await page.getByRole("tab", { name: /renamed\.py/ }).click({ button: "middle" });
   await expect(page.getByRole("tab", { name: /renamed\.py/ })).toHaveCount(0);

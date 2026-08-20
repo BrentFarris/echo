@@ -126,6 +126,7 @@ class CodeView {
   private codeChatOpen = false;
   private codeChatSurface: MountedChatSurface | null = null;
   private restoredTreeScrollTop = 0;
+  private explorerRevealGeneration = 0;
   private lastSequence = 0;
   private pollTimer = 0;
   private commands: Command[] = [];
@@ -865,6 +866,7 @@ class CodeView {
     this.updateEditorSurface();
     this.renderBreadcrumbs();
     this.renderStatus();
+    this.revealTabInExplorer(next);
     this.schedulePersist();
   }
 
@@ -1501,6 +1503,22 @@ class CodeView {
       const index = this.flatTree.findIndex((node) => node.key === current!.key);
       if (index >= 0) this.treeVirtualizer.scrollToIndex(index, { align: "auto" });
     }
+  }
+
+  private revealTabInExplorer(tab: OpenTab): void {
+    const ref = this.worktreeRef(tab);
+    const generation = ++this.explorerRevealGeneration;
+    if (!ref) return;
+    void this.expandTo(ref, false).then(() => {
+      if (this.abort.signal.aborted || generation !== this.explorerRevealGeneration || this.activeTabId !== tab.id) return;
+      const node = this.nodes.get(refKey(ref));
+      if (!node || node.kind !== "file") return;
+      this.selectedTreeKey = node.key;
+      this.renderTree();
+      const index = this.flatTree.findIndex((candidate) => candidate.key === node.key);
+      if (index >= 0) this.treeVirtualizer.scrollToIndex(index, { align: "auto" });
+      this.schedulePersist();
+    });
   }
 
   private showTreeMenu(event: MouseEvent, node: TreeNode): void {
