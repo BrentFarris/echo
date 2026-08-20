@@ -3105,11 +3105,18 @@ textarea:disabled {
   }
 
   .mobile-nav-tabs {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(44px, 1fr));
+    display: flex;
     align-items: center;
     gap: var(--space-sm);
     min-width: 0;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .mobile-nav-tabs::-webkit-scrollbar {
+    display: none;
   }
 
   .mobile-nav-tab {
