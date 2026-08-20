@@ -36,3 +36,51 @@ func TestParseStreamEmitsReasoningBeforeContentFromMixedDelta(t *testing.T) {
 		t.Fatalf("expected completion last, got %#v", got[3])
 	}
 }
+
+func TestParseStreamRejectsEOFBeforeTerminalEvent(t *testing.T) {
+	input := strings.NewReader("data: {\"choices\":[{\"delta\":{\"reasoning\":\"still thinking\"}}]}\n\n")
+	events := make(chan StreamEvent, 4)
+
+	parseStream(context.Background(), input, events, nil)
+	close(events)
+
+	got := make([]StreamEvent, 0, 2)
+	for event := range events {
+		got = append(got, event)
+	}
+	if len(got) != 2 || got[0].Type != EventReasoning {
+		t.Fatalf("expected reasoning followed by an error, got %#v", got)
+	}
+	if got[1].Type != EventError || got[1].Error != ErrStreamEndedBeforeCompletion.Error() {
+		t.Fatalf("expected incomplete-stream error, got %#v", got[1])
+	}
+}
+
+func TestParseStreamAcceptsDoneSentinelWithoutFinishReason(t *testing.T) {
+	input := strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"done\"}}]}\n\ndata: [DONE]\n\n")
+	events := make(chan StreamEvent, 4)
+
+	parseStream(context.Background(), input, events, nil)
+	close(events)
+
+	got := make([]StreamEvent, 0, 2)
+	for event := range events {
+		got = append(got, event)
+	}
+	if len(got) != 2 || got[0].Type != EventToken || got[1].Type != EventComplete {
+		t.Fatalf("expected token and compatible completion, got %#v", got)
+	}
+}
+
+func TestParseStreamTreatsSSECommentsAsActivity(t *testing.T) {
+	input := strings.NewReader(": keepalive\n\ndata: [DONE]\n\n")
+	events := make(chan StreamEvent, 2)
+	activity := 0
+
+	parseStreamWithActivity(context.Background(), input, events, nil, func() { activity++ })
+	close(events)
+
+	if activity != 4 {
+		t.Fatalf("expected every SSE line to reset activity, got %d", activity)
+	}
+}

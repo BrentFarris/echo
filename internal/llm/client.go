@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Client communicates with an OpenAI-compatible chat completions endpoint.
@@ -29,6 +31,66 @@ type Client struct {
 }
 
 type ClientOption func(*Client)
+
+type streamIdleWatchdog struct {
+	mu       sync.Mutex
+	timer    *time.Timer
+	timeout  time.Duration
+	cancel   context.CancelFunc
+	stopped  bool
+	timedOut atomic.Bool
+}
+
+func newStreamIdleWatchdog(timeout time.Duration, cancel context.CancelFunc) *streamIdleWatchdog {
+	if timeout <= 0 || cancel == nil {
+		return nil
+	}
+	watchdog := &streamIdleWatchdog{timeout: timeout, cancel: cancel}
+	watchdog.timer = time.AfterFunc(timeout, watchdog.expire)
+	return watchdog
+}
+
+func (w *streamIdleWatchdog) Activity() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopped || w.timedOut.Load() {
+		return
+	}
+	w.timer.Stop()
+	w.timer.Reset(w.timeout)
+}
+
+func (w *streamIdleWatchdog) Stop() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopped {
+		return
+	}
+	w.stopped = true
+	w.timer.Stop()
+}
+
+func (w *streamIdleWatchdog) TimedOut() bool {
+	return w != nil && w.timedOut.Load()
+}
+
+func (w *streamIdleWatchdog) expire() {
+	w.mu.Lock()
+	if w.stopped {
+		w.mu.Unlock()
+		return
+	}
+	w.timedOut.Store(true)
+	cancel := w.cancel
+	w.mu.Unlock()
+	cancel()
+}
 
 // Stream is a live chat completion stream. Read from Events until it closes;
 // the channel is closed when the stream finishes, errors, or is canceled.
@@ -101,21 +163,22 @@ func (c *Client) Complete(ctx context.Context, request ChatRequest) (ChatRespons
 		c.logger.Error("llm_error", "error", err.Error())
 		return ChatResponse{}, fmt.Errorf("create chat request: %w", err)
 	}
-	c.applyHeaders(httpRequest)
+	clientRequestID := c.applyHeaders(httpRequest)
 
 	response, err := c.httpClient.Do(httpRequest)
 	if err != nil {
-		c.logger.Error("llm_error", "error", err.Error())
+		c.logger.Error("llm_error", "client_request_id", clientRequestID, "error", err.Error())
 		return ChatResponse{}, fmt.Errorf("send chat request: %w", err)
 	}
 	defer response.Body.Close()
+	serverRequestID := response.Header.Get("x-request-id")
 
 	data, readErr := io.ReadAll(response.Body)
 	if readErr != nil {
 		c.logger.Error("llm_error", "error", readErr.Error())
 		return ChatResponse{}, fmt.Errorf("read chat response: %w", readErr)
 	}
-	c.logger.Debug("llm_response", "status", response.StatusCode, "payload", string(data))
+	c.logger.Debug("llm_response", "status", response.StatusCode, "request_id", serverRequestID, "client_request_id", clientRequestID, "payload", string(data))
 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return ChatResponse{}, responseErrorData(response.StatusCode, response.Status, data)
@@ -148,6 +211,8 @@ func (c *Client) StreamChat(ctx context.Context, request ChatRequest) *Stream {
 	go func() {
 		defer close(events)
 		defer c.forgetStream(streamID)
+		requestContext, cancelRequest := context.WithCancel(streamContext)
+		defer cancelRequest()
 
 		request.Stream = true
 		body, err := json.Marshal(request)
@@ -157,12 +222,12 @@ func (c *Client) StreamChat(ctx context.Context, request ChatRequest) *Stream {
 			return
 		}
 
-		httpRequest, err := http.NewRequestWithContext(streamContext, http.MethodPost, c.endpoint, bytes.NewReader(body))
+		httpRequest, err := http.NewRequestWithContext(requestContext, http.MethodPost, c.endpoint, bytes.NewReader(body))
 		if err != nil {
 			emitLogged(streamContext, events, StreamEvent{Type: EventError, Error: fmt.Sprintf("create chat request: %v", err)})
 			return
 		}
-		c.applyHeaders(httpRequest)
+		clientRequestID := c.applyHeaders(httpRequest)
 		httpRequest.Header.Set("Accept", "text/event-stream")
 
 		response, err := c.httpClient.Do(httpRequest)
@@ -178,13 +243,38 @@ func (c *Client) StreamChat(ctx context.Context, request ChatRequest) *Stream {
 
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 			data, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-			c.logger.Error("llm_response", "status", response.StatusCode, "payload", string(data))
+			c.logger.Error("llm_response", "status", response.StatusCode, "request_id", response.Header.Get("x-request-id"), "client_request_id", clientRequestID, "payload", string(data))
 			emitLogged(streamContext, events, StreamEvent{Type: EventError, Error: responseErrorData(response.StatusCode, response.Status, data).Error()})
 			return
 		}
-		c.logger.Debug("llm_response_started", "status", response.StatusCode)
+		c.logger.Debug("llm_response_started", "status", response.StatusCode, "request_id", response.Header.Get("x-request-id"), "client_request_id", clientRequestID)
 
-		parseStream(streamContext, response.Body, events, &stream.Usage)
+		idleTimeout := time.Duration(c.settings.StreamIdleTimeoutSeconds) * time.Second
+		watchdog := newStreamIdleWatchdog(idleTimeout, cancelRequest)
+		if watchdog != nil {
+			defer watchdog.Stop()
+		}
+		parsedEvents := make(chan StreamEvent, 32)
+		go func() {
+			defer close(parsedEvents)
+			parseStreamWithActivity(requestContext, response.Body, parsedEvents, &stream.Usage, watchdog.Activity)
+		}()
+		for event := range parsedEvents {
+			if watchdog.TimedOut() {
+				continue
+			}
+			if event.Type == EventCanceled {
+				emitCanceledLogged(events)
+				continue
+			}
+			emitLogged(streamContext, events, event)
+		}
+		if watchdog.TimedOut() && streamContext.Err() == nil {
+			emitLogged(streamContext, events, StreamEvent{
+				Type:  EventError,
+				Error: fmt.Sprintf("model stream was idle for %s", idleTimeout),
+			})
+		}
 	}()
 
 	return stream
@@ -250,7 +340,7 @@ func (c *Client) forgetStream(streamID string) {
 	delete(c.activeStreams, streamID)
 }
 
-func (c *Client) applyHeaders(request *http.Request) {
+func (c *Client) applyHeaders(request *http.Request) string {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
 	if c.apiKey != "" {
@@ -259,6 +349,10 @@ func (c *Client) applyHeaders(request *http.Request) {
 	for key, value := range c.settings.Headers {
 		request.Header.Set(key, value)
 	}
+	if strings.TrimSpace(request.Header.Get("X-Client-Request-Id")) == "" {
+		request.Header.Set("X-Client-Request-Id", uuid.NewString())
+	}
+	return request.Header.Get("X-Client-Request-Id")
 }
 
 func defaultHTTPClient(timeoutSeconds int) *http.Client {

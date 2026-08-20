@@ -17,6 +17,7 @@ const (
 	MaxResearchAgentConcurrency     = 8
 	DefaultMaxChatRounds            = 0
 	DefaultSearxngURL               = "http://localhost:8080/"
+	DefaultStreamIdleTimeoutSeconds = 600
 	defaultTimout                   = 600
 )
 
@@ -32,24 +33,25 @@ const (
 )
 
 type LLMEndpoint struct {
-	ID                    string            `json:"id"`
-	Name                  string            `json:"name"`
-	Endpoint              string            `json:"endpoint"`
-	Model                 string            `json:"model"`
-	Temperature           float64           `json:"temperature"`
-	TopK                  int               `json:"topK"`
-	TopP                  float64           `json:"topP"`
-	MinP                  float64           `json:"minP"`
-	ContextLength         int               `json:"contextLength"`
-	MaxTokens             int               `json:"maxTokens"`
-	FrequencyPenalty      float64           `json:"frequencyPenalty"`
-	PresencePenalty       float64           `json:"presencePenalty"`
-	RepetitionPenalty     float64           `json:"repetitionPenalty"`
-	TimeoutSeconds        int               `json:"timeoutSeconds"`
-	ThinkingTokenBudget   int               `json:"thinkingTokenBudget"`
-	ThinkingCorrection    bool              `json:"thinkingCorrection,omitempty"`
-	SystemPromptAppendage string            `json:"systemPromptAppendage,omitempty"`
-	Headers               map[string]string `json:"headers,omitempty"`
+	ID                       string            `json:"id"`
+	Name                     string            `json:"name"`
+	Endpoint                 string            `json:"endpoint"`
+	Model                    string            `json:"model"`
+	Temperature              float64           `json:"temperature"`
+	TopK                     int               `json:"topK"`
+	TopP                     float64           `json:"topP"`
+	MinP                     float64           `json:"minP"`
+	ContextLength            int               `json:"contextLength"`
+	MaxTokens                int               `json:"maxTokens"`
+	FrequencyPenalty         float64           `json:"frequencyPenalty"`
+	PresencePenalty          float64           `json:"presencePenalty"`
+	RepetitionPenalty        float64           `json:"repetitionPenalty"`
+	TimeoutSeconds           int               `json:"timeoutSeconds"`
+	StreamIdleTimeoutSeconds int               `json:"streamIdleTimeoutSeconds"`
+	ThinkingTokenBudget      int               `json:"thinkingTokenBudget"`
+	ThinkingCorrection       bool              `json:"thinkingCorrection,omitempty"`
+	SystemPromptAppendage    string            `json:"systemPromptAppendage,omitempty"`
+	Headers                  map[string]string `json:"headers,omitempty"`
 }
 
 type EndpointSelection struct {
@@ -76,6 +78,7 @@ type Settings struct {
 	PresencePenalty                   float64           `json:"presencePenalty"`
 	RepetitionPenalty                 float64           `json:"repetitionPenalty"`
 	TimeoutSeconds                    int               `json:"timeoutSeconds"`
+	StreamIdleTimeoutSeconds          int               `json:"streamIdleTimeoutSeconds"`
 	SearxngURL                        string            `json:"searxngUrl"`
 	ThinkingTokenBudget               int               `json:"thinkingTokenBudget"`
 	ThinkingCorrection                bool              `json:"thinkingCorrection,omitempty"`
@@ -117,6 +120,7 @@ func DefaultSettings() Settings {
 		PresencePenalty:          1.5,
 		RepetitionPenalty:        1.05,
 		TimeoutSeconds:           defaultTimout,
+		StreamIdleTimeoutSeconds: DefaultStreamIdleTimeoutSeconds,
 		SearxngURL:               DefaultSearxngURL,
 		ThinkingTokenBudget:      -1,
 		ResearchAgentConcurrency: DefaultResearchAgentConcurrency,
@@ -175,6 +179,9 @@ func normalizeSettingsGeneration(s Settings) Settings {
 	}
 	if s.TimeoutSeconds == 0 {
 		s.TimeoutSeconds = defaultTimout
+	}
+	if s.StreamIdleTimeoutSeconds == 0 {
+		s.StreamIdleTimeoutSeconds = DefaultStreamIdleTimeoutSeconds
 	}
 	if s.ResearchAgentConcurrency < 0 {
 		s.ResearchAgentConcurrency = 0
@@ -292,6 +299,9 @@ func (s Settings) Validate() error {
 	if s.TimeoutSeconds < 1 {
 		return fmt.Errorf("timeout must be at least 1 second")
 	}
+	if s.StreamIdleTimeoutSeconds < -1 {
+		return fmt.Errorf("stream idle timeout must be -1 or at least 1 second")
+	}
 	if err := s.Theme.Validate(); err != nil {
 		return err
 	}
@@ -305,16 +315,17 @@ func defaultLLMEndpoint() LLMEndpoint {
 		Endpoint: DefaultEndpoint,
 		Model:    DefaultModel,
 	}.WithGenerationFromSettings(Settings{
-		Temperature:         0.6,
-		TopK:                20,
-		TopP:                0.95,
-		MinP:                0,
-		ContextLength:       DefaultContextLength,
-		MaxTokens:           DefaultMaxTokens,
-		PresencePenalty:     1.5,
-		RepetitionPenalty:   1.05,
-		TimeoutSeconds:      defaultTimout,
-		ThinkingTokenBudget: -1,
+		Temperature:              0.6,
+		TopK:                     20,
+		TopP:                     0.95,
+		MinP:                     0,
+		ContextLength:            DefaultContextLength,
+		MaxTokens:                DefaultMaxTokens,
+		PresencePenalty:          1.5,
+		RepetitionPenalty:        1.05,
+		TimeoutSeconds:           defaultTimout,
+		StreamIdleTimeoutSeconds: DefaultStreamIdleTimeoutSeconds,
+		ThinkingTokenBudget:      -1,
 	})
 }
 
@@ -389,6 +400,7 @@ func (e LLMEndpoint) WithGenerationFromSettings(settings Settings) LLMEndpoint {
 	e.PresencePenalty = settings.PresencePenalty
 	e.RepetitionPenalty = settings.RepetitionPenalty
 	e.TimeoutSeconds = settings.TimeoutSeconds
+	e.StreamIdleTimeoutSeconds = settings.StreamIdleTimeoutSeconds
 	e.ThinkingTokenBudget = settings.ThinkingTokenBudget
 	e.ThinkingCorrection = settings.ThinkingCorrection
 	e.SystemPromptAppendage = settings.SystemPromptAppendage
@@ -409,6 +421,7 @@ func (e LLMEndpoint) ApplyToSettings(settings Settings) Settings {
 	settings.PresencePenalty = e.PresencePenalty
 	settings.RepetitionPenalty = e.RepetitionPenalty
 	settings.TimeoutSeconds = e.TimeoutSeconds
+	settings.StreamIdleTimeoutSeconds = e.StreamIdleTimeoutSeconds
 	settings.ThinkingTokenBudget = e.ThinkingTokenBudget
 	settings.ThinkingCorrection = e.ThinkingCorrection
 	settings.SystemPromptAppendage = e.SystemPromptAppendage
@@ -452,6 +465,9 @@ func (e LLMEndpoint) ValidateGeneration() error {
 	if settings.TimeoutSeconds < 1 {
 		return fmt.Errorf("timeout must be at least 1 second")
 	}
+	if settings.StreamIdleTimeoutSeconds < -1 {
+		return fmt.Errorf("stream idle timeout must be -1 or at least 1 second")
+	}
 	return nil
 }
 
@@ -466,6 +482,7 @@ func (e LLMEndpoint) hasGenerationConfig() bool {
 		e.PresencePenalty != 0 ||
 		e.RepetitionPenalty != 0 ||
 		e.TimeoutSeconds != 0 ||
+		e.StreamIdleTimeoutSeconds != 0 ||
 		e.ThinkingTokenBudget != 0 ||
 		e.ThinkingCorrection
 }
@@ -482,6 +499,9 @@ func normalizeEndpointGeneration(e LLMEndpoint) LLMEndpoint {
 	}
 	if e.TimeoutSeconds == 0 {
 		e.TimeoutSeconds = defaultTimout
+	}
+	if e.StreamIdleTimeoutSeconds == 0 {
+		e.StreamIdleTimeoutSeconds = DefaultStreamIdleTimeoutSeconds
 	}
 	return e
 }

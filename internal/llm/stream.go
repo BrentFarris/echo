@@ -4,10 +4,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 )
+
+var ErrStreamEndedBeforeCompletion = errors.New("model stream ended before completion")
 
 type streamChunk struct {
 	Choices []streamChoice `json:"choices"`
@@ -30,12 +33,19 @@ type streamDelta struct {
 }
 
 func parseStream(ctx context.Context, reader io.Reader, events chan<- StreamEvent, usageOut **Usage) {
+	parseStreamWithActivity(ctx, reader, events, usageOut, nil)
+}
+
+func parseStreamWithActivity(ctx context.Context, reader io.Reader, events chan<- StreamEvent, usageOut **Usage, onActivity func()) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	var dataLines []string
 	completed := false
 	for scanner.Scan() {
+		if onActivity != nil {
+			onActivity()
+		}
 		if ctx.Err() != nil {
 			emitCanceledLogged(events)
 			return
@@ -66,6 +76,10 @@ func parseStream(ctx context.Context, reader io.Reader, events chan<- StreamEven
 	}
 	if err := scanner.Err(); err != nil {
 		emitLogged(ctx, events, StreamEvent{Type: EventError, Error: fmt.Sprintf("read stream: %v", err)})
+		return
+	}
+	if !completed {
+		emitLogged(ctx, events, StreamEvent{Type: EventError, Error: ErrStreamEndedBeforeCompletion.Error()})
 	}
 }
 

@@ -73,10 +73,12 @@ type chatResearchAgentRun struct {
 }
 
 type researchStreamResult struct {
-	content   string
-	reasoning string
-	toolCalls []llm.ToolCall
-	usage     *llm.Usage
+	content      string
+	reasoning    string
+	toolCalls    []llm.ToolCall
+	usage        *llm.Usage
+	completed    bool
+	finishReason string
 }
 
 func newChatResearchRun(parent context.Context, session *chatSession, turnID string, settings, parentSettings llm.Settings, streamer chatStreamer, mode agentmodes.Mode) *chatResearchRun {
@@ -588,6 +590,8 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 	settings := r.settings
 	streamer := r.streamer
 	toolSchema := r.session.manager.server.tools.ResearchLLMSchemaForScopes(r.toolScopes)
+	emptyAssistantRetries := 0
+	transientStreamRetries := 0
 
 	for round := 0; round < maxResearchAgentRounds; round++ {
 		request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(toolSchema))
@@ -596,16 +600,31 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 		}
 		streamResult, err := r.collectResearchStream(ctx, streamer.StreamChat(ctx, request), agent)
 		if err != nil {
+			if isEmptyAssistantResponse(streamResult.content, streamResult.toolCalls) && transientStreamRetries < maxTransientStreamRetries && ctx.Err() == nil {
+				transientStreamRetries++
+				messages = append(messages, transientStreamRetryMessage())
+				continue
+			}
 			return "", messages, err
 		}
+		if finishErr := finishReasonError(streamResult.finishReason, len(streamResult.toolCalls) > 0); finishErr != nil {
+			return "", messages, finishErr
+		}
+		transientStreamRetries = 0
+		if isEmptyAssistantResponse(streamResult.content, streamResult.toolCalls) {
+			if emptyAssistantRetries >= maxEmptyAssistantRetries {
+				return "", messages, emptyAssistantResponseError()
+			}
+			emptyAssistantRetries++
+			messages = append(messages, emptyAssistantRetryMessage())
+			continue
+		}
+		emptyAssistantRetries = 0
 		assistant := llm.Message{Role: llm.RoleAssistant, Content: streamResult.content, ToolCalls: streamResult.toolCalls}
 		if streamResult.content != "" || len(streamResult.toolCalls) > 0 {
 			messages = append(messages, assistant)
 		}
 		if len(streamResult.toolCalls) == 0 {
-			if strings.TrimSpace(streamResult.content) == "" {
-				return "", messages, errors.New("research agent returned an empty report")
-			}
 			return streamResult.content, messages, nil
 		}
 
@@ -685,7 +704,13 @@ func (r *chatResearchRun) collectResearchStream(ctx context.Context, stream *llm
 					usage := *stream.Usage
 					result.usage = &usage
 				}
-				return result, firstErr
+				if firstErr != nil {
+					return result, firstErr
+				}
+				if !result.completed {
+					return result, llm.ErrStreamEndedBeforeCompletion
+				}
+				return result, nil
 			}
 			switch event.Type {
 			case llm.EventToken:
@@ -707,6 +732,10 @@ func (r *chatResearchRun) collectResearchStream(ctx context.Context, stream *llm
 				if event.Usage != nil {
 					usage := *event.Usage
 					result.usage = &usage
+				}
+				if event.Type == llm.EventComplete {
+					result.completed = true
+					result.finishReason = event.FinishReason
 				}
 			}
 		}

@@ -159,6 +159,7 @@ function newEndpoint() {
     presencePenalty: 1.5,
     repetitionPenalty: 1.05,
     timeoutSeconds: 600,
+    streamIdleTimeoutSeconds: 600,
     thinkingTokenBudget: -1,
     thinkingCorrection: false,
     systemPromptAppendage: "",
@@ -268,9 +269,12 @@ function renderEndpointEditor(e) {
         ${num("frequencyPenalty", "Frequency Penalty", { min: -2, max: 2, step: 0.01 })}
         ${num("presencePenalty", "Presence Penalty", { min: -2, max: 2, step: 0.01 })}
         ${num("repetitionPenalty", "Repetition Penalty", { min: 0, step: 0.01 })}
-        ${num("timeoutSeconds", "Timeout (seconds)", { min: 1, step: 1 })}
+        ${num("timeoutSeconds", "Request Timeout (seconds)", { min: 1, step: 1 })}
+        ${num("streamIdleTimeoutSeconds", "Stream Idle Timeout (seconds)", { min: -1, step: 1 })}
         ${num("thinkingTokenBudget", "Thinking Token Budget", { min: -1, step: 1 })}
       </div>
+
+      <p class="settings-card-help">Stream idle timeout is reset whenever provider data or an SSE heartbeat arrives. Set it to -1 to disable inactivity detection.</p>
 
       <label class="settings-toggle">
         <span>Thinking correction</span>

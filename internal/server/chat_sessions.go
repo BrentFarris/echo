@@ -1586,6 +1586,7 @@ type assistantStreamResult struct {
 	Content          string
 	Reasoning        string
 	ToolCalls        []llm.ToolCall
+	Completed        bool
 	FinishReason     string
 	Usage            *llm.Usage
 	StartedAt        time.Time
@@ -1596,6 +1597,8 @@ type assistantStreamResult struct {
 
 func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings llm.Settings, messages []llm.Message, turnID string, scopes *tools.ToolScopeChecker, mode agentmodes.Mode, researchEnabled bool) {
 	questionRounds := 0
+	emptyAssistantRetries := 0
+	transientStreamRetries := 0
 	planMode := mode.ID == agentmodes.PlanID
 	var research *chatResearchRun
 	if researchEnabled {
@@ -1640,9 +1643,6 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 		stream := streamer.StreamChat(ctx, turnRequest)
 		streamResult, err := s.collectAssistantTurn(stream, turnID, assistantNumber, requestStartedAt, publishResponse)
 		assistant := llm.Message{Role: llm.RoleAssistant, Content: streamResult.Content, ToolCalls: streamResult.ToolCalls}
-		if streamResult.Content != "" || len(streamResult.ToolCalls) > 0 {
-			messages = append(messages, assistant)
-		}
 		s.mu.Lock()
 		if s.isActiveLocked(turnID) {
 			streamError := ""
@@ -1661,14 +1661,6 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			})
 		}
 		s.mu.Unlock()
-		if err != nil {
-			if errors.Is(err, errChatCanceled) {
-				s.finish(turnID, "stopped", "", messages)
-			} else {
-				s.finish(turnID, "error", err.Error(), messages)
-			}
-			return
-		}
 
 		s.mu.Lock()
 		if !s.isActiveLocked(turnID) {
@@ -1677,11 +1669,46 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 		}
 		step := &s.active.AssistantTurns[len(s.active.AssistantTurns)-1]
 		step.HasToolCalls = len(streamResult.ToolCalls) > 0
-		s.emitLocked(map[string]any{
+		assistantTurnEnd := map[string]any{
 			"type": "assistant_turn_end", "turnId": turnID, "turn": assistantNumber,
 			"hasToolCalls": len(streamResult.ToolCalls) > 0,
-		})
+			"completed":    streamResult.Completed, "finishReason": streamResult.FinishReason,
+		}
+		if err != nil && !errors.Is(err, errChatCanceled) {
+			assistantTurnEnd["error"] = err.Error()
+		}
+		s.emitLocked(assistantTurnEnd)
 		s.mu.Unlock()
+
+		if err != nil {
+			if errors.Is(err, errChatCanceled) {
+				s.finish(turnID, "stopped", "", messages)
+				return
+			}
+			if isEmptyAssistantResponse(streamResult.Content, streamResult.ToolCalls) && transientStreamRetries < maxTransientStreamRetries {
+				transientStreamRetries++
+				messages = append(messages, transientStreamRetryMessage())
+				continue
+			}
+			s.finish(turnID, "error", err.Error(), messages)
+			return
+		}
+		if finishErr := finishReasonError(streamResult.FinishReason, len(streamResult.ToolCalls) > 0); finishErr != nil {
+			s.finish(turnID, "error", finishErr.Error(), messages)
+			return
+		}
+		transientStreamRetries = 0
+		if isEmptyAssistantResponse(streamResult.Content, streamResult.ToolCalls) {
+			if emptyAssistantRetries >= maxEmptyAssistantRetries {
+				s.finish(turnID, "error", emptyAssistantResponseError().Error(), messages)
+				return
+			}
+			emptyAssistantRetries++
+			messages = append(messages, emptyAssistantRetryMessage())
+			continue
+		}
+		emptyAssistantRetries = 0
+		messages = append(messages, assistant)
 
 		if len(streamResult.ToolCalls) == 0 && research != nil && research.HasOutstanding() {
 			researchFinalizationAttempts++
@@ -1947,6 +1974,7 @@ func (s *chatSession) collectAssistantTurn(stream *llm.Stream, turnID string, as
 				result.Usage = &usage
 			}
 		case llm.EventComplete:
+			result.Completed = true
 			result.FinishReason = event.FinishReason
 			if event.Usage != nil {
 				usage := *event.Usage
@@ -1967,6 +1995,9 @@ func (s *chatSession) collectAssistantTurn(stream *llm.Stream, turnID string, as
 	}
 	if firstErr != nil {
 		return result, firstErr
+	}
+	if !result.Completed {
+		return result, llm.ErrStreamEndedBeforeCompletion
 	}
 	return result, nil
 }

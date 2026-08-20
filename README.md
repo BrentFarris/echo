@@ -109,7 +109,7 @@ Common local base URLs include:
 | llama.cpp server | `http://localhost:8080/v1` |
 | Remote provider | The provider's OpenAI-compatible HTTPS URL |
 
-Each endpoint profile has its own model name, generation settings, timeout, optional system-prompt appendage, and custom headers. Custom headers can carry provider-specific authentication such as `Authorization: Bearer ...`.
+Each endpoint profile has its own model name, generation settings, request timeout, stream-idle timeout, optional system-prompt appendage, and custom headers. The stream-idle watchdog resets on provider data and SSE heartbeats; set it to `-1` for providers that legitimately remain silent for longer than the configured interval. Custom headers can carry provider-specific authentication such as `Authorization: Bearer ...`.
 
 Endpoint routing lets Chat, Research, Vision, and Inline Code use different profiles. The model picker in Chat can override the routed Chat model for the next conversation turn.
 

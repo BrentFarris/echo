@@ -443,6 +443,9 @@ func TestCompleteUsesOpenAICompatibleRequestShape(t *testing.T) {
 		if r.Header.Get("Accept") != "application/json" {
 			t.Fatalf("expected JSON accept header, got %q", r.Header.Get("Accept"))
 		}
+		if r.Header.Get("X-Client-Request-Id") == "" {
+			t.Fatal("expected a client request ID")
+		}
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
@@ -495,6 +498,31 @@ func TestChatCompletionsURLAcceptsFullPath(t *testing.T) {
 	}
 }
 
+func TestClientRequestIDsAreUniqueAndCustomizable(t *testing.T) {
+	settings := DefaultSettings()
+	client, err := NewClient(settings)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	first, _ := http.NewRequest(http.MethodPost, "https://example.test/v1/chat/completions", nil)
+	second, _ := http.NewRequest(http.MethodPost, "https://example.test/v1/chat/completions", nil)
+	firstID := client.applyHeaders(first)
+	secondID := client.applyHeaders(second)
+	if firstID == "" || secondID == "" || firstID == secondID {
+		t.Fatalf("expected unique client request IDs, got %q and %q", firstID, secondID)
+	}
+
+	settings.Headers = map[string]string{"X-Client-Request-Id": "caller-owned-id"}
+	client, err = NewClient(settings)
+	if err != nil {
+		t.Fatalf("new custom-header client: %v", err)
+	}
+	custom, _ := http.NewRequest(http.MethodPost, "https://example.test/v1/chat/completions", nil)
+	if got := client.applyHeaders(custom); got != "caller-owned-id" {
+		t.Fatalf("expected caller-provided request ID, got %q", got)
+	}
+}
+
 func TestConversationMessagesAreInMemoryAndCopied(t *testing.T) {
 	settings := DefaultSettings()
 	settings.Endpoint = "https://example.test/v1"
@@ -530,6 +558,9 @@ func TestStreamChatCancellationReleasesActiveStream(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Accept") != "text/event-stream" {
 			t.Errorf("expected SSE accept header, got %q", r.Header.Get("Accept"))
+		}
+		if r.Header.Get("X-Client-Request-Id") == "" {
+			t.Error("expected a client request ID")
 		}
 		if path.Clean(r.URL.Path) != "/v1/chat/completions" {
 			t.Errorf("unexpected stream path: %s", r.URL.Path)
@@ -624,6 +655,48 @@ func TestStreamChatDoesNotUseTotalRequestTimeout(t *testing.T) {
 	complete := nextEvent(t, stream.Events)
 	if complete.Type != EventComplete {
 		t.Fatalf("expected complete event, got %#v", complete)
+	}
+}
+
+func TestStreamChatReportsIdleProvider(t *testing.T) {
+	requestCanceled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning\":\"thinking\"}}]}\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+		close(requestCanceled)
+	}))
+	defer server.Close()
+
+	settings := DefaultSettings()
+	settings.Endpoint = server.URL + "/v1"
+	settings.StreamIdleTimeoutSeconds = 1
+	client, err := NewClient(settings)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	request, err := NewChatRequest(settings, []Message{{Role: RoleUser, Content: "hello"}})
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	stream := client.StreamChat(context.Background(), request)
+	reasoning := nextEvent(t, stream.Events)
+	if reasoning.Type != EventReasoning || reasoning.Content != "thinking" {
+		t.Fatalf("expected initial reasoning, got %#v", reasoning)
+	}
+	idle := nextEvent(t, stream.Events)
+	if idle.Type != EventError || !strings.Contains(idle.Error, "idle for 1s") {
+		t.Fatalf("expected idle timeout error, got %#v", idle)
+	}
+
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("idle timeout did not cancel the provider request")
 	}
 }
 
