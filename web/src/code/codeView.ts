@@ -222,10 +222,18 @@ class CodeView {
 
   private renderShell(): void {
     const workspaceName = this.workspace?.name || "No workspace";
+    const workspaceIconUrl = this.workspace?.iconExt
+      ? `/api/workspaces/${encodeURIComponent(this.workspace.id)}/icon`
+      : undefined;
     const explorerActive = this.activeSidebar === "explorer";
     this.root.innerHTML = `
       <div class="code-app-shell" style="--explorer-width:${this.explorerWidth}px;--code-chat-width:${this.codeChatWidth}px">
-        ${renderPrimaryNav({ active: this.activeSidebar, workspaceName })}
+        ${renderPrimaryNav({
+          active: this.activeSidebar,
+          workspaceName,
+          workspaceSelector: true,
+          workspaceIconUrl,
+        })}
         <section class="code-workbench">
           <div class="code-sidebar-backdrop" data-mobile-sidebar-backdrop aria-hidden="true"></div>
           <div class="code-sidebar">

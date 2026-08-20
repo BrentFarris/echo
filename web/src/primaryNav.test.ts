@@ -30,6 +30,21 @@ describe("primary navigation", () => {
     expect(git.querySelector("[data-code-sidebar=search]")?.classList.contains("is-active")).toBe(false);
   });
 
+  it("renders a custom workspace icon on a workspace selector", () => {
+    const nav = render({
+      active: "explorer",
+      workspaceName: "Example",
+      workspaceSelector: true,
+      workspaceIconUrl: "/api/workspaces/example/icon",
+    });
+
+    const selector = nav.querySelector("[data-nav=workspace]");
+    expect(selector?.classList.contains("workspace-dropdown-trigger")).toBe(true);
+    expect(selector?.getAttribute("aria-expanded")).toBe("false");
+    expect(selector?.querySelector("img")?.getAttribute("src")).toBe("/api/workspaces/example/icon");
+    expect(selector?.querySelector(".workspace-icon-label")?.textContent).toBe("");
+  });
+
   it("escapes workspace names", () => {
     const nav = render({ active: "explorer", workspaceName: '<script>alert("no")</script>' });
 

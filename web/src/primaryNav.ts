@@ -6,6 +6,7 @@ export type PrimaryNavOptions = {
   active: PrimaryNavView;
   workspaceName?: string;
   workspaceSelector?: boolean;
+  workspaceIconUrl?: string;
 };
 
 function escapeHTML(value: string): string {
@@ -33,6 +34,9 @@ function currentPage(active: boolean): string {
 export function renderPrimaryNav(options: PrimaryNavOptions): string {
   const workspaceName = options.workspaceName?.trim() || "No workspace";
   const initial = workspaceName.charAt(0).toUpperCase() || "E";
+  const workspaceIcon = options.workspaceIconUrl
+    ? `<img src="${escapeHTML(options.workspaceIconUrl)}" alt="" />`
+    : escapeHTML(initial);
   const workspaceSelectorClass = options.workspaceSelector ? " workspace-dropdown-trigger" : "";
   const workspaceTitle = options.workspaceSelector
     ? "Select workspace"
@@ -43,7 +47,7 @@ export function renderPrimaryNav(options: PrimaryNavOptions): string {
     <aside class="left-nav code-left-nav" aria-label="Primary">
       <div class="left-nav-workspace">
         <button class="nav-icon-button${workspaceSelectorClass}" type="button" title="${escapeHTML(workspaceTitle)}" aria-label="${escapeHTML(workspaceLabel)}"${options.workspaceSelector ? ' aria-expanded="false"' : ""} data-nav="workspace">
-          <span class="workspace-icon-label">${escapeHTML(initial)}</span>
+          <span class="workspace-icon-label">${workspaceIcon}</span>
         </button>
       </div>
       <nav class="left-nav-buttons" aria-label="Views">
