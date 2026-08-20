@@ -166,6 +166,51 @@ func TestTrackedDiscardRestoresIndexWithoutLosingStagedContent(t *testing.T) {
 	}
 }
 
+func TestTrackedDiscardDoesNotResurfaceFilterMismatch(t *testing.T) {
+	service, fs, workspaceID, root := newGitServiceTestWorkspace(t)
+	defer service.Close()
+	defer fs.Close()
+	writeTestFile(t, root, "asset.bin", "committed binary")
+	gitTestCommand(t, root, "add", ".")
+	gitTestCommand(t, root, "commit", "-m", "add binary")
+
+	// Model an LFS-style clean filter being added without renormalizing the
+	// already-committed binary. The filter output can never match its raw blob.
+	gitTestCommand(t, root, "config", "filter.echo-test.clean", "git hash-object --stdin")
+	writeTestFile(t, root, ".gitattributes", "*.bin filter=echo-test -text\n")
+	gitTestCommand(t, root, "add", ".gitattributes")
+	gitTestCommand(t, root, "commit", "-m", "add binary filter")
+	writeTestFile(t, root, "asset.bin", "changed binary")
+
+	repositories, err := service.Repositories(context.Background(), workspaceID)
+	if err != nil || len(repositories) != 1 {
+		t.Fatalf("discover repository: %#v err=%v", repositories, err)
+	}
+	repositoryID := repositories[0].ID
+	status, err := service.Status(context.Background(), workspaceID, repositoryID)
+	if err != nil || len(status.Unstaged) != 1 || status.Unstaged[0].Path != "asset.bin" {
+		t.Fatalf("expected changed binary before discard: %#v err=%v", status, err)
+	}
+
+	_, err = service.Action(context.Background(), workspaceID, repositoryID, ActionRequest{
+		RequestID: "discard-filtered", Action: "discard", Paths: []string{"asset.bin"}, Confirmed: true,
+	})
+	if err != nil {
+		t.Fatalf("discard filtered binary: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "asset.bin"))
+	if err != nil || string(content) != "committed binary" {
+		t.Fatalf("binary was not restored: %q err=%v", content, err)
+	}
+	if raw := gitTestCommand(t, root, "status", "--porcelain", "--", "asset.bin"); !strings.Contains(raw, "asset.bin") {
+		t.Fatalf("test did not reproduce Git's filter mismatch: %q", raw)
+	}
+	status, err = service.Status(context.Background(), workspaceID, repositoryID)
+	if err != nil || len(status.Unstaged) != 0 {
+		t.Fatalf("restored binary resurfaced in Echo status: %#v err=%v", status, err)
+	}
+}
+
 func TestUnbornDetachedAndRenamedDiffs(t *testing.T) {
 	service, fs, workspaceID, root := newGitServiceTestWorkspace(t)
 	defer service.Close()
