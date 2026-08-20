@@ -10,6 +10,7 @@ import { icons } from "../icons.js";
 import { del, get, post, put } from "../api.js";
 import { logout } from "../../src/auth/authGate.ts";
 import { hasDirtySessions } from "../../src/code/persistence.ts";
+import { getEchoUpdateSnapshot, refreshEchoUpdateStatus, syncEchoUpdateBadges } from "../../src/echoUpdate.ts";
 import { codeRouteHash, navigateBackFromSettings } from "../../src/navigation.ts";
 import { renderMobilePrimaryNav } from "../../src/primaryNav.ts";
 import { reloadForReplacementServer, waitForReplacementServer } from "../../src/rebuildRelaunch.ts";
@@ -20,6 +21,7 @@ let mountedRoot = null;
 let closeSettingsWorkspaceDropdown = null;
 let closeSettingsAddWorkspaceModal = null;
 let pluginCatalogListener = null;
+let updateStatusListener = null;
 
 // ---- Theme token table (matches OLD theme.ts, carried into the new SPA) ----
 const themeTokens = [
@@ -102,6 +104,14 @@ const state = {
   transportSecure: false,
   securityStatus: "",
   rebuild: {
+    running: false,
+    status: "",
+    logPath: "",
+  },
+  update: {
+    available: false,
+    checking: false,
+    checkError: "",
     running: false,
     status: "",
     logPath: "",
@@ -720,9 +730,29 @@ function pluginSourceLabel(source = {}) {
 
 function renderDevelopment() {
   const rebuildError = state.rebuild.status.startsWith("Error:");
+  const updateError = state.update.status.startsWith("Error:");
+  const developmentBusy = state.rebuild.running || state.update.running;
+  const showUpdateCard = state.update.available || state.update.running || state.update.status;
   return `
     <section class="settings-section">
       <h2 class="settings-section-title">Development</h2>
+
+      ${state.update.checkError ? `
+        <div class="settings-callout is-error" data-update-check-error>
+          <strong>Unable to check for Echo updates.</strong> ${esc(state.update.checkError)}
+          <button class="secondary-button compact-button" type="button" data-action="retry-update-check" ${state.update.checking ? "disabled" : ""}>${state.update.checking ? "Checking…" : "Retry"}</button>
+        </div>
+      ` : ""}
+
+      ${showUpdateCard ? `
+        <div class="settings-card echo-update-card">
+          <h3 class="settings-card-title">Update Echo</h3>
+          <p class="settings-card-help">Pulls the latest <code>master</code> from GitHub, then rebuilds and relaunches Echo.</p>
+          <button class="secondary-button" type="button" data-action="update-echo" ${developmentBusy ? "disabled aria-busy=\"true\"" : ""}>${state.update.running ? "Updating Echo…" : "Update Echo"}</button>
+          ${state.update.status ? `<p class="settings-status ${updateError ? "is-error" : ""}" data-update-status>${esc(state.update.status)}</p>` : ""}
+          ${state.update.logPath ? `<p class="field-help">Log: <code>${esc(state.update.logPath)}</code></p>` : ""}
+        </div>
+      ` : ""}
 
       <div class="settings-card">
         <h3 class="settings-card-title">AI flow logging</h3>
@@ -736,7 +766,7 @@ function renderDevelopment() {
       <div class="settings-card">
         <h3 class="settings-card-title">Rebuild &amp; Relaunch</h3>
         <p class="settings-card-help">Rebuilds the Echo application and relaunches it. Requires the Echo source workspace to be added.</p>
-        <button class="secondary-button danger-button" type="button" data-action="rebuild-relaunch" ${state.rebuild.running ? "disabled aria-busy=\"true\"" : ""}>${state.rebuild.running ? "Rebuilding Echo…" : "Rebuild &amp; Relaunch"}</button>
+        <button class="secondary-button danger-button" type="button" data-action="rebuild-relaunch" ${developmentBusy ? "disabled aria-busy=\"true\"" : ""}>${state.rebuild.running ? "Rebuilding Echo…" : "Rebuild &amp; Relaunch"}</button>
         ${state.rebuild.status ? `<p class="settings-status ${rebuildError ? "is-error" : ""}" data-rebuild-status>${esc(state.rebuild.status)}</p>` : ""}
         ${state.rebuild.logPath ? `<p class="field-help">Log: <code>${esc(state.rebuild.logPath)}</code></p>` : ""}
       </div>
@@ -782,10 +812,11 @@ function render() {
           ${sections.map((s) => `
             <li>
               <button
-                class="settings-nav-button ${state.activeSection === s.id ? "is-active" : ""}"
+                class="settings-nav-button ${s.id === "development" ? "echo-update-target " : ""}${state.activeSection === s.id ? "is-active" : ""}"
                 type="button"
                 data-section="${s.id}"
-              >${s.icon}<span>${esc(s.label)}</span></button>
+                ${s.id === "development" ? `data-echo-update-target data-echo-update-label="Development" title="Development" aria-label="Development"` : ""}
+              >${s.icon}<span>${esc(s.label)}</span>${s.id === "development" ? `<b class="echo-update-badge" data-echo-update-badge hidden aria-hidden="true"><span class="codicon codicon-arrow-down" aria-hidden="true"></span></b>` : ""}</button>
             </li>
           `).join("")}
         </ul>
@@ -797,6 +828,7 @@ function render() {
     </div>
   `;
   bindEvents(root);
+  syncEchoUpdateBadges(root);
 }
 
 function bindEvents(root) {
@@ -1171,6 +1203,33 @@ function bindEvents(root) {
       render();
     }
   });
+
+  root.querySelector("[data-action='retry-update-check']")?.addEventListener("click", () => {
+    void refreshEchoUpdateStatus();
+  });
+
+  root.querySelector("[data-action='update-echo']")?.addEventListener("click", async () => {
+    if (!window.confirm("Update and relaunch Echo?\n\nThis will pull GitHub master, rebuild the frontend and server, stop the current instance, and launch the new build. Active chats and terminals will be interrupted. Local edits are preserved when Git can update cleanly; otherwise the update stops with an error.")) return;
+
+    state.update.running = true;
+    state.update.status = "Pulling GitHub master and rebuilding Echo…";
+    state.update.logPath = "";
+    render();
+    try {
+      const result = await post("/api/development/update", {});
+      state.update.status = "Update succeeded. Waiting for the rebuilt server…";
+      state.update.logPath = result.logPath || "";
+      render();
+      await waitForReplacementServer(result.instanceId);
+      state.update.running = false;
+      reloadForReplacementServer();
+    } catch (err) {
+      state.update.running = false;
+      state.update.status = `Error: ${err.message}`;
+      state.update.logPath = err.payload?.details?.logPath || state.update.logPath;
+      render();
+    }
+  });
 }
 
 function capturePluginInstallFields(root) {
@@ -1285,11 +1344,17 @@ function collectPluginConfiguration(root, pluginId) {
 
 export function mount(root) {
   mountedRoot = root;
+  applyEchoUpdateSnapshot(getEchoUpdateSnapshot());
   pluginCatalogListener = (event) => {
     state.plugins.catalog = event.detail;
     if (state.activeSection === "plugins") render();
   };
+  updateStatusListener = (event) => {
+    applyEchoUpdateSnapshot(event.detail);
+    render();
+  };
   window.addEventListener("echo:plugin-catalog", pluginCatalogListener);
+  window.addEventListener("echo:update-status", updateStatusListener);
   render();
   loadSettings();
   loadAgentModes();
@@ -1306,7 +1371,15 @@ export function unmount() {
   closeSettingsAddWorkspaceModal = null;
   if (pluginCatalogListener) window.removeEventListener("echo:plugin-catalog", pluginCatalogListener);
   pluginCatalogListener = null;
+  if (updateStatusListener) window.removeEventListener("echo:update-status", updateStatusListener);
+  updateStatusListener = null;
   mountedRoot = null;
+}
+
+function applyEchoUpdateSnapshot(snapshot) {
+  state.update.available = snapshot.status?.updateAvailable === true;
+  state.update.checking = Boolean(snapshot.checking);
+  state.update.checkError = snapshot.error || "";
 }
 
 function chooseDirtyLogout() {

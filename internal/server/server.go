@@ -18,6 +18,7 @@ import (
 	"github.com/brent/echo/internal/agentmodes"
 	"github.com/brent/echo/internal/appdata"
 	"github.com/brent/echo/internal/auth"
+	"github.com/brent/echo/internal/echoupdate"
 	"github.com/brent/echo/internal/gitservice"
 	"github.com/brent/echo/internal/llm"
 	"github.com/brent/echo/internal/plugins"
@@ -66,6 +67,7 @@ type Server struct {
 	skillsMu         sync.Mutex
 	skills           map[string]*workspaceskills.Service
 	rebuilder        rebuildCoordinator
+	updateChecker    echoUpdateChecker
 	restartCh        chan struct{}
 	instanceID       string
 	processID        int
@@ -120,17 +122,18 @@ func NewWithAssetsOptions(addr string, assets iofs.FS, settingsPath string, opti
 func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options ServerOptions) *Server {
 	workingDir, _ := os.Getwd()
 	s := &Server{
-		webDir:      webDir,
-		webAssets:   assets,
-		hub:         NewHub(),
-		skills:      make(map[string]*workspaceskills.Service),
-		rebuilder:   rebuild.NewCoordinator(),
-		restartCh:   make(chan struct{}, 1),
-		instanceID:  uuid.NewString(),
-		processID:   os.Getpid(),
-		processArgs: append([]string(nil), os.Args[1:]...),
-		workingDir:  workingDir,
-		tools:       tools.CloneDefaultRegistry(),
+		webDir:        webDir,
+		webAssets:     assets,
+		hub:           NewHub(),
+		skills:        make(map[string]*workspaceskills.Service),
+		rebuilder:     rebuild.NewCoordinator(),
+		updateChecker: echoupdate.NewChecker(),
+		restartCh:     make(chan struct{}, 1),
+		instanceID:    uuid.NewString(),
+		processID:     os.Getpid(),
+		processArgs:   append([]string(nil), os.Args[1:]...),
+		workingDir:    workingDir,
+		tools:         tools.CloneDefaultRegistry(),
 	}
 	if settingsPath == "" {
 		path, err := settings.DefaultStorePath()
@@ -305,6 +308,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/echo", s.handleEcho)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
+	mux.HandleFunc("GET /api/development/update-status", s.handleEchoUpdateStatus)
+	mux.HandleFunc("POST /api/development/update", s.handleEchoUpdate)
 	mux.HandleFunc("POST /api/development/rebuild-relaunch", s.handleRebuildRelaunch)
 	mux.HandleFunc("GET /api/agent-modes", s.handleGetAgentModes)
 	mux.HandleFunc("POST /api/agent-modes", s.handleCreateAgentMode)

@@ -53,7 +53,7 @@ export function renderPrimaryNav(options: PrimaryNavOptions): string {
       <div class="left-nav-actions">
         <button class="nav-icon-button${activeClass(options.active === "explorer")}" type="button" title="Explorer" aria-label="Explorer" data-nav="code" data-code-sidebar="explorer"><span class="codicon codicon-code"></span></button>
         <button class="nav-icon-button code-git-activity${activeClass(options.active === "git")}" type="button" title="Source Control" aria-label="Source Control" data-nav="git" data-code-sidebar="git"><span class="codicon codicon-source-control"></span><b data-git-badge hidden></b></button>
-        <button class="nav-icon-button${activeClass(options.active === "settings")}" type="button" title="Settings" aria-label="Settings" data-nav="settings"><span class="codicon codicon-settings-gear"></span></button>
+        <button class="nav-icon-button echo-update-target${activeClass(options.active === "settings")}" type="button" title="Settings" aria-label="Settings" data-echo-update-target data-echo-update-label="Settings" data-nav="settings"><span class="codicon codicon-settings-gear"></span><b class="echo-update-badge" data-echo-update-badge hidden aria-hidden="true"><span class="codicon codicon-arrow-down" aria-hidden="true"></span></b></button>
       </div>
     </aside>
   `;
@@ -83,7 +83,7 @@ export function renderMobilePrimaryNav(options: PrimaryNavOptions): string {
         <button class="mobile-nav-tab${activeClass(options.active === "explorer")}" type="button" title="Code" aria-label="Code" data-nav="code" data-code-sidebar="explorer"${currentPage(options.active === "explorer")}><span class="codicon codicon-code" aria-hidden="true"></span></button>
         <button class="mobile-nav-tab code-git-activity${activeClass(options.active === "git")}" type="button" title="Source Control" aria-label="Source Control" data-nav="git" data-code-sidebar="git"${currentPage(options.active === "git")}><span class="codicon codicon-source-control" aria-hidden="true"></span><b data-git-badge hidden></b></button>
         <span class="mobile-plugin-slot" data-plugin-mobile-slot>${renderMobilePluginOverflowButton()}</span>
-        <button class="mobile-nav-tab${activeClass(options.active === "settings")}" type="button" title="Settings" aria-label="Settings" data-nav="settings"${currentPage(options.active === "settings")}><span class="codicon codicon-settings-gear" aria-hidden="true"></span></button>
+        <button class="mobile-nav-tab echo-update-target${activeClass(options.active === "settings")}" type="button" title="Settings" aria-label="Settings" data-echo-update-target data-echo-update-label="Settings" data-nav="settings"${currentPage(options.active === "settings")}><span class="codicon codicon-settings-gear" aria-hidden="true"></span><b class="echo-update-badge" data-echo-update-badge hidden aria-hidden="true"><span class="codicon codicon-arrow-down" aria-hidden="true"></span></b></button>
       </div>
     </nav>
   `;

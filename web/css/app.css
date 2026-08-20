@@ -319,6 +319,34 @@ textarea:disabled {
   margin-top: var(--space-md);
 }
 
+.echo-update-target {
+  position: relative;
+}
+
+.echo-update-badge {
+  position: absolute;
+  right: 4px;
+  bottom: 3px;
+  display: grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  line-height: 1;
+}
+
+.echo-update-badge > .codicon {
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.echo-update-badge[hidden] {
+  display: none !important;
+}
+
 .chat-panel.has-chat-tabs .chat-composer {
   margin-top: var(--space-3xl);
 }
@@ -3305,6 +3333,12 @@ textarea:disabled {
   margin: 0;
   color: var(--color-text-muted);
   font-size: var(--text-md-lg);
+}
+
+.settings-nav-button > .echo-update-badge {
+  position: static;
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 /* Plugin management */

@@ -5,6 +5,7 @@
 
 import * as ws from "./ws.js";
 import { ensureAuthenticated } from "../src/auth/authGate.ts";
+import { startEchoUpdateMonitor, stopEchoUpdateMonitor, syncEchoUpdateBadges } from "../src/echoUpdate.ts";
 import { recordNavigationRoute, routePathFromHash } from "../src/navigation.ts";
 import { initializePluginHost, mountPluginPage, resetPluginHost } from "../src/plugins/pluginHost.ts";
 
@@ -52,12 +53,14 @@ async function render() {
         return;
       }
       currentView = mounted;
+      syncEchoUpdateBadges(app);
       return;
     }
     const view = await loader();
     if (generation !== renderGeneration) return;
     currentView = view;
     view.mount(app);
+    syncEchoUpdateBadges(app);
   } catch (err) {
     if (generation !== renderGeneration) return;
     console.error("failed to load view:", err);
@@ -84,6 +87,7 @@ async function bootstrap() {
   try {
     ++renderGeneration;
     ws.stop();
+    stopEchoUpdateMonitor();
     resetPluginHost();
     if (currentView?.unmount) {
       try {
@@ -96,6 +100,7 @@ async function bootstrap() {
     app.innerHTML = "";
     await ensureAuthenticated(app);
     ws.start();
+    startEchoUpdateMonitor();
     await initializePluginHost();
     await render();
   } catch (err) {

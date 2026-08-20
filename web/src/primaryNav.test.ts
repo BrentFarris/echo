@@ -19,6 +19,7 @@ describe("primary navigation", () => {
     expect(chat.querySelector("[data-nav=chat]")?.classList.contains("is-active")).toBe(true);
     expect(chat.querySelector("[data-nav=code]")?.classList.contains("is-active")).toBe(false);
     expect(chat.querySelector("[aria-label=Tasks]")).toBeNull();
+    expect(chat.querySelector("[data-nav=settings] [data-echo-update-badge]")).not.toBeNull();
   });
 
   it("marks the selected Code sidebar item active", () => {
@@ -48,6 +49,7 @@ describe("primary navigation", () => {
     expect(host.querySelector("[data-nav=git]")?.getAttribute("aria-current")).toBe("page");
     expect(host.querySelector("[data-nav=code]")?.hasAttribute("aria-current")).toBe(false);
     expect(host.querySelector("[data-git-badge]")).not.toBeNull();
+    expect(host.querySelector("[data-nav=settings] [data-echo-update-badge]")).not.toBeNull();
     expect(host.querySelector(".workspace-dropdown-trigger")?.getAttribute("aria-expanded")).toBe("false");
   });
 
