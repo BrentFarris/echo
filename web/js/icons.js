@@ -31,5 +31,6 @@ export const icons = {
   star: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2.9 6.1 6.5.9-4.7 4.6 1.1 6.4L12 17.8 6.2 21l1.1-6.4L2.6 10l6.5-.9z"/></svg>`,
   image: `\u003csvg viewBox=\"0 0 24 24\" aria-hidden=\"true\"\u003e\u003crect x=\"3\" y=\"3\" width=\"18\" height=\"18\" rx=\"2\"/\u003e\u003ccircle cx=\"8.5\" cy=\"8.5\" r=\"1.5\"/\u003e\u003cpath d=\"m21 15-5-5L5 21\"/\u003e\u003c/svg\u003e`,
   video: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="15" height="14" rx="2"/><path d="m18 10 4-2v8l-4-2Z"/></svg>`,
+  eye: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>`,
   upload: `\u003csvg viewBox=\"0 0 24 24\" aria-hidden=\"true\"\u003e\u003cpath d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\"/\u003e\u003cpolyline points=\"17 8 12 3 7 8\"/\u003e\u003cline x1=\"12\" y1=\"3\" x2=\"12\" y2=\"15\"/\u003e\u003c/svg\u003e`,
 };

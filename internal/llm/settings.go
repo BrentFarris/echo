@@ -92,6 +92,10 @@ type Settings struct {
 	ComfyuiDefaultCheckpoint          string            `json:"comfyuiDefaultCheckpoint"`
 	ComfyuiTxt2imgWorkflow            string            `json:"comfyuiTxt2imgWorkflow"`
 	ComfyuiImg2imgWorkflow            string            `json:"comfyuiImg2imgWorkflow"`
+	// ComfyuiVideoWorkflow is a workspace-relative path to the default video
+	// generation workflow JSON (e.g., AnimateDiff, SVD) used by
+	// comfyui_generate_video when no explicit workflow is supplied.
+	ComfyuiVideoWorkflow string `json:"comfyuiVideoWorkflow,omitempty"`
 	Theme                             Theme             `json:"theme,omitempty"`
 	Headers                           map[string]string `json:"headers,omitempty"`
 }
@@ -159,6 +163,7 @@ func (s Settings) normalized(endpointProfilesAuthoritative bool) Settings {
 	s.ComfyuiURL = strings.TrimSpace(s.ComfyuiURL)
 	s.ComfyuiTxt2imgWorkflow = strings.TrimSpace(s.ComfyuiTxt2imgWorkflow)
 	s.ComfyuiImg2imgWorkflow = strings.TrimSpace(s.ComfyuiImg2imgWorkflow)
+	s.ComfyuiVideoWorkflow = strings.TrimSpace(s.ComfyuiVideoWorkflow)
 	s.Theme = s.Theme.Normalized()
 	return s
 }

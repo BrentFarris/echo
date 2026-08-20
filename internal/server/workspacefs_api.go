@@ -2,7 +2,9 @@ package server
 
 import (
 	"errors"
+	"io"
 	"net/http"
+	"os"
 	"strconv"
 
 	"github.com/brent/echo/internal/workspacefs"
@@ -162,6 +164,37 @@ func (s *Server) handleFSReveal(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, map[string]any{"revealed": true})
 }
 
+// handleFSMedia streams a previewable image or video file straight to the
+// browser for the code editor's media surface. The path boundary comes from
+// the same confined resolver as every other filesystem endpoint; symlinks
+// leaving the workspace are rejected. Oversized images stream their first
+// MaxMediaBytes chunk (browsers fail decoding the remainder gracefully),
+// while oversized videos are refused outright because partial video files do
+// not play.
+func (s *Server) handleFSMedia(w http.ResponseWriter, r *http.Request) {
+	ref := workspacefs.FileRef{RootID: r.URL.Query().Get("rootId"), Path: r.URL.Query().Get("path")}
+	path, size, mediaType, truncated, err := s.fs.MediaMeta(r.PathValue("id"), ref)
+	if err != nil {
+		writeWorkspaceFSError(w, err)
+		return
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		writeCodedError(w, http.StatusNotFound, "not_found", "file not found", nil)
+		return
+	}
+	defer file.Close()
+
+	w.Header().Set("Content-Type", mediaType)
+	w.Header().Set("Cache-Control", "no-store")
+	limit := size
+	if truncated {
+		limit = workspacefs.MaxMediaBytes
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(limit, 10))
+	_, _ = io.CopyN(w, file, limit)
+}
+
 func (s *Server) handleFSSearch(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	includeDirectories, _ := strconv.ParseBool(r.URL.Query().Get("includeDirectories"))
@@ -185,7 +218,7 @@ func writeWorkspaceFSError(w http.ResponseWriter, err error) {
 		status = http.StatusConflict
 	case "file_too_large":
 		status = http.StatusRequestEntityTooLarge
-	case "unsupported_file", "invalid_utf8":
+	case "unsupported_file", "invalid_utf8", "unsupported_preview":
 		status = http.StatusUnsupportedMediaType
 	}
 	var details any

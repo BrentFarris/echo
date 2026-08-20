@@ -30,9 +30,16 @@ func (c *Client) httpDoer() *http.Client {
 
 // GenerateResult holds the response from a ComfyUI generation.
 type GenerateResult struct {
-	PromptID      string   `json:"promptId"`
-	OutputImages  []string `json:"outputImages,omitempty"`
-	StatusMessage string   `json:"statusMessage,omitempty"`
+	PromptID     string   `json:"promptId"`
+	OutputImages []string `json:"outputImages,omitempty"`
+	// OutputVideos lists generated video/GIF artifacts (mp4, webm, gif, ...),
+	// each formatted as [subfolder/]filename for the /view endpoint.
+	OutputVideos []string `json:"outputVideos,omitempty"`
+	// MediaTypes maps each entry in OutputImages/OutputVideos to the storage
+	// type ComfyUI reported ("output", "temp", or "custom"). /view only finds
+	// files under the matching directory, so callers must pass this through.
+	MediaTypes    map[string]string `json:"mediaTypes,omitempty"`
+	StatusMessage string            `json:"statusMessage,omitempty"`
 }
 
 // ExecutionError represents a ComfyUI execution error returned in history.
@@ -286,31 +293,72 @@ func (c *Client) GetHistory(ctx context.Context, promptID string) (*GenerateResu
 		return nil, firstExecError
 	}
 
-	// No errors — collect output images.
-	var images []string
+	// No errors — collect output images and videos. Some SaveVideo/VideoCombine
+	// nodes report under "images", others under dedicated video keys, so both
+	// are scanned; artifacts are routed by file extension.
+	var images, videos []string
+	mediaTypes := map[string]string{}
+	videoExts := map[string]bool{".mp4": true, ".webm": true, ".avi": true, ".mov": true, ".mkv": true, ".gif": true}
+
+	addArtifact := func(path string, video bool, typ string) {
+		mediaTypes[path] = typ
+		if video {
+			videos = append(videos, path)
+		} else {
+			images = append(images, path)
+		}
+	}
+
 	for _, nodeOutputs := range outputs {
 		nodeMap, ok := nodeOutputs.(map[string]any)
 		if !ok {
 			continue
 		}
-		imgList, ok := nodeMap["images"].([]any)
-		if !ok {
-			continue
-		}
-		for _, imgAny := range imgList {
-			imgMap, ok := imgAny.(map[string]any)
-			if !ok {
-				continue
-			}
-			filename, _ := imgMap["filename"].(string)
-			subfolder, _ := imgMap["subfolder"].(string)
-			typ, _ := imgMap["type"].(string)
-			if typ == "output" && filename != "" {
+		// "images" key: SaveImage and some SaveVideo nodes use it.
+		if imgList, hasImages := nodeMap["images"].([]any); hasImages {
+			for _, imgAny := range imgList {
+				imgMap, ok := imgAny.(map[string]any)
+				if !ok {
+					continue
+				}
+				filename, _ := imgMap["filename"].(string)
+				subfolder, _ := imgMap["subfolder"].(string)
+				typ, _ := imgMap["type"].(string)
+				if typ != "output" || filename == "" {
+					continue
+				}
 				path := filename
 				if subfolder != "" {
 					path = subfolder + "/" + path
 				}
-				images = append(images, path)
+				addArtifact(path, videoExts[strings.ToLower(filepath.Ext(filename))], typ)
+			}
+		}
+		// Dedicated video keys (VideoCombine, SaveAnimatedGIF, etc.).
+		for _, key := range []string{"videos", "video", "gifs", "animated_gifs"} {
+			videoList, ok := nodeMap[key].([]any)
+			if !ok {
+				continue
+			}
+			for _, vAny := range videoList {
+				vMap, ok := vAny.(map[string]any)
+				if !ok {
+					continue
+				}
+				filename, _ := vMap["filename"].(string)
+				subfolder, _ := vMap["subfolder"].(string)
+				typ, _ := vMap["type"].(string)
+				if filename == "" {
+					continue
+				}
+				if typ != "" && typ != "output" && typ != "custom" {
+					continue
+				}
+				path := filename
+				if subfolder != "" {
+					path = subfolder + "/" + path
+				}
+				addArtifact(path, true, typ)
 			}
 		}
 	}
@@ -318,5 +366,7 @@ func (c *Client) GetHistory(ctx context.Context, promptID string) (*GenerateResu
 	return &GenerateResult{
 		PromptID:     promptID,
 		OutputImages: images,
+		OutputVideos: videos,
+		MediaTypes:   mediaTypes,
 	}, nil
 }

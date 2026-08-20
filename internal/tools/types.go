@@ -57,6 +57,22 @@ type AttachedImage struct {
 	DataURL   string `json:"dataUrl"`
 }
 
+// AttachedVideo carries video output metadata from media-producing tools (e.g.
+// comfyui_generate_video). The host registers results under VideoID so later
+// tool calls (save_video) can resolve the payload without re-fetching.
+type AttachedVideo struct {
+	Name      string `json:"name"`
+	MediaType string `json:"mediaType"`
+	Bytes     int64  `json:"bytes"`
+	DataURL   string `json:"dataUrl"`
+}
+
+// VideoIDProvider is implemented by tool output types that produce a unique
+// video ID usable by subsequent tool calls (e.g., save_video).
+type VideoIDProvider interface {
+	VideoID() string
+}
+
 // ExecutionContext carries the per-call state tools need to resolve and
 // validate workspace paths.
 type ExecutionContext struct {
@@ -82,6 +98,9 @@ type ExecutionContext struct {
 	// ComfyuiImg2imgWorkflow is a workspace-relative path to the default
 	// img2img workflow used by comfyui_generate when an input image is present.
 	ComfyuiImg2imgWorkflow string
+	// ComfyuiVideoWorkflow is a workspace-relative path to the default video
+	// generation workflow used by comfyui_generate_video when none is supplied.
+	ComfyuiVideoWorkflow string
 	// AttachedImages carries chat-attached images for tools that accept
 	// in-memory image input (e.g. comfyui_generate img2img).
 	AttachedImages []AttachedImage
@@ -91,6 +110,9 @@ type ExecutionContext struct {
 	// GeneratedImages tracks images produced by tools during the current turn,
 	// keyed by ImageID. Used by save_image to resolve image data.
 	GeneratedImages map[string]AttachedImage
+	// GeneratedVideos tracks videos produced by tools during the current turn,
+	// keyed by VideoID. Used by save_video to resolve video data.
+	GeneratedVideos map[string]AttachedVideo
 	// ToolScopes enforces the selected agent mode's tool and path allowlist.
 	ToolScopes *ToolScopeChecker
 	// AgentModes creates workspace-scoped custom agent modes when the

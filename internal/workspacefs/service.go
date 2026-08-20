@@ -23,6 +23,11 @@ import (
 
 const MaxEditableBytes int64 = 10 << 20
 
+// MaxMediaBytes caps files served to the browser preview surface. It is far
+// larger than the editor limit because images and video are only displayed,
+// never edited.
+const MaxMediaBytes int64 = 500 << 20
+
 var (
 	ErrNotFound        = errors.New("file or folder not found")
 	ErrOutsideRoot     = errors.New("path escapes the workspace root")
@@ -31,6 +36,7 @@ var (
 	ErrUnsupportedFile = errors.New("file is not editable text")
 	ErrTooLarge        = errors.New("file is too large to edit")
 	ErrInvalidPath     = errors.New("invalid workspace path")
+	ErrNotPreviewable  = errors.New("file is not a supported image or video type")
 )
 
 // Error carries a stable API error code without exposing unsafe filesystem

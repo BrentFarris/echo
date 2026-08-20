@@ -261,3 +261,72 @@ func renameCaseSafe(source, destination string) error {
 	}
 	return nil
 }
+
+// MediaTypeForName maps a file name to the media type the preview surface can
+// display. Empty means the browser cannot render this file as image or video.
+func MediaTypeForName(name string) string {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".svg":
+		return "image/svg+xml"
+	case ".bmp":
+		return "image/bmp"
+	case ".ico":
+		return "image/x-icon"
+	case ".avif":
+		return "image/avif"
+	case ".mp4", ".m4v":
+		return "video/mp4"
+	case ".webm":
+		return "video/webm"
+	case ".ogv":
+		return "video/ogg"
+	default:
+		return ""
+	}
+}
+
+// Previewable reports whether name identifies a file the browser preview
+// surface can display and returns its media type.
+func Previewable(name string) (bool, string) {
+	mediaType := MediaTypeForName(name)
+	return mediaType != "", mediaType
+}
+
+// MediaMeta resolves a previewable file and reports how much of it fits under
+// the preview cap. Truncated marks oversized files whose first chunk is still
+// useful for images; video players need the complete file so truncated videos
+// should not be served.
+func (s *Service) MediaMeta(workspaceID string, ref FileRef) (path string, size int64, mediaType string, truncated bool, err error) {
+	_, resolved, _, resolveErr := s.resolve(workspaceID, ref, false, false)
+	if resolveErr != nil {
+		err = resolveErr
+		return
+	}
+	info, statErr := os.Stat(resolved)
+	if statErr != nil || !info.Mode().IsRegular() {
+		err = &Error{Code: "not_found", Message: "file not found", Cause: ErrNotFound}
+		return
+	}
+	previewable, mapped := Previewable(filepath.Base(info.Name()))
+	if !previewable {
+		err = &Error{Code: "unsupported_preview", Message: "file is not a supported image or video type", Cause: ErrNotPreviewable}
+		return
+	}
+	size = info.Size()
+	truncated = size > MaxMediaBytes
+	if truncated && strings.HasPrefix(mapped, "video/") {
+		err = &Error{Code: "file_too_large", Message: "file is larger than the 500 MiB preview limit", Cause: ErrTooLarge}
+		return
+	}
+	path = resolved
+	mediaType = mapped
+	return
+}

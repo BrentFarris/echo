@@ -1084,11 +1084,94 @@ textarea:disabled {
   .trajectory-row-meta time { display: none; }
 }
 
+/* Collapsible chat media zone: a collapsed chip or an expanded header bar plus
+   the figure gallery. Media defaults to collapsed; state is runtime-only. */
 .chat-message-media {
+  display: grid;
+  gap: var(--space-md);
+  margin-bottom: var(--space-sm);
+}
+
+.chat-message-media[hidden] {
+  display: none;
+}
+
+.chat-message-media-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-lg);
+}
+
+.chat-message-media-bar > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.chat-message-media .chat-media-toggle {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+}
+
+.chat-message-media .chat-media-toggle svg {
+  width: 14px;
+  height: 14px;
+}
+
+.chat-media-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-md);
+  max-width: 100%;
+  padding: var(--space-md) var(--space-xl);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.chat-media-chip:hover,
+.chat-media-chip:active {
+  border-color: var(--color-accent);
+  color: var(--color-text);
+}
+
+.chat-media-chip > span:not(.chat-media-chip-icon):not(.chat-media-chip-toggle) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-media-chip-icon,
+.chat-media-chip-toggle {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+
+.chat-media-chip-icon svg,
+.chat-media-chip-toggle svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.chat-message-media-gallery {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
   gap: var(--space-md);
-  margin-bottom: var(--space-sm);
 }
 
 .chat-message-media-item {
@@ -1937,7 +2020,7 @@ textarea:disabled {
     width: 100%;
   }
 
-  .chat-message-media {
+  .chat-message-media-gallery {
     grid-template-columns: minmax(0, 1fr);
   }
 

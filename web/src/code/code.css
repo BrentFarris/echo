@@ -1329,6 +1329,70 @@
   display: none;
 }
 
+.code-media-preview {
+  position: absolute;
+  inset: 0;
+  background: var(--code-chrome-bg);
+}
+
+.code-media-preview[hidden] {
+  display: none;
+}
+
+.code-media-frame {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.code-media-frame img,
+.code-media-frame video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  background: transparent;
+}
+
+.code-media-frame video {
+  width: auto;
+  height: auto;
+}
+
+.code-media-error {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 4px;
+  color: var(--code-muted);
+  text-align: center;
+}
+
+.code-media-error[hidden] {
+  display: none;
+}
+
+.code-media-error > .codicon {
+  margin-bottom: 8px;
+  font-size: 44px;
+  opacity: 0.3;
+}
+
+.code-media-error h2 {
+  margin: 0 0 6px;
+  color: var(--code-fg);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.code-media-error p {
+  margin: 0;
+  max-width: 380px;
+}
+
 .code-editor-placeholder,
 .code-fatal {
   position: absolute;

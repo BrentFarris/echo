@@ -246,6 +246,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/workspaces/{id}/fs/trash/{trashId}/restore", s.handleFSRestoreTrash)
 	mux.HandleFunc("DELETE /api/workspaces/{id}/fs/trash/{trashId}", s.handleFSPurgeTrash)
 	mux.HandleFunc("POST /api/workspaces/{id}/fs/reveal", s.handleFSReveal)
+	mux.HandleFunc("GET /api/workspaces/{id}/fs/media", s.handleFSMedia)
 	mux.HandleFunc("GET /api/workspaces/{id}/fs/search", s.handleFSSearch)
 	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories", s.handleGitRepositories)
 	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories/{repositoryId}/status", s.handleGitStatus)

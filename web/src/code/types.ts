@@ -51,7 +51,7 @@ export type SearchResult = {
 };
 
 export type PersistedTab = {
-  kind?: "file" | "diff";
+  kind?: "file" | "diff" | "media";
   id: string;
   ref: FileRef | null;
   title: string;
