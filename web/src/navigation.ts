@@ -2,7 +2,7 @@ export const CHAT_ROUTE = "/home";
 export const SETTINGS_ROUTE = "/settings";
 export const CODE_ROUTE = "/code";
 
-export type CodeSidebar = "explorer" | "git";
+export type CodeSidebar = "explorer" | "search" | "git";
 export type CodeOpenTarget = { rootId: string; path: string };
 export type ChatCompletionTarget = {
   workspaceId: string;
@@ -21,12 +21,13 @@ export function codeSidebarFromHash(hash: string): CodeSidebar {
   if (routePathFromHash(hash) !== CODE_ROUTE) return "explorer";
   const queryIndex = hash.indexOf("?");
   if (queryIndex < 0) return "explorer";
-  return new URLSearchParams(hash.slice(queryIndex + 1)).get("sidebar") === "git" ? "git" : "explorer";
+  const sidebar = new URLSearchParams(hash.slice(queryIndex + 1)).get("sidebar");
+  return sidebar === "git" || sidebar === "search" ? sidebar : "explorer";
 }
 
 /** Builds the canonical hash for an Echo Code sidebar. */
 export function codeRouteHash(sidebar: CodeSidebar): string {
-  return `#${CODE_ROUTE}${sidebar === "git" ? "?sidebar=git" : ""}`;
+  return `#${CODE_ROUTE}${sidebar === "explorer" ? "" : `?sidebar=${sidebar}`}`;
 }
 
 /** Builds a transient Echo Code route that opens a specific workspace file. */

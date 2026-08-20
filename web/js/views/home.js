@@ -681,6 +681,7 @@ export function mount(root) {
   // The desktop activity bar and mobile bottom bar share the same actions.
   const settingsButtons = [...root.querySelectorAll("[data-nav='settings']")];
   const codeButtons = [...root.querySelectorAll("[data-nav='code']")];
+  const searchButtons = [...root.querySelectorAll("[data-nav='search']")];
   const gitButtons = [...root.querySelectorAll("[data-nav='git']")];
   const onSettingsClick = () => {
     location.hash = "#/settings";
@@ -688,6 +689,8 @@ export function mount(root) {
   settingsButtons.forEach((button) => button.addEventListener("click", onSettingsClick));
   const onCodeClick = () => { location.hash = "#/code"; };
   codeButtons.forEach((button) => button.addEventListener("click", onCodeClick));
+  const onSearchClick = () => { location.hash = codeRouteHash("search"); };
+  searchButtons.forEach((button) => button.addEventListener("click", onSearchClick));
   const onGitClick = () => { location.hash = codeRouteHash("git"); };
   gitButtons.forEach((button) => button.addEventListener("click", onGitClick));
 
@@ -1563,6 +1566,7 @@ export function mount(root) {
     unsubCommandError();
     settingsButtons.forEach((button) => button.removeEventListener("click", onSettingsClick));
     codeButtons.forEach((button) => button.removeEventListener("click", onCodeClick));
+    searchButtons.forEach((button) => button.removeEventListener("click", onSearchClick));
     gitButtons.forEach((button) => button.removeEventListener("click", onGitClick));
     workspaceTriggers.forEach((trigger) => trigger.removeEventListener("click", onWorkspaceTriggerClick));
     if (closeWorkspaceDropdown) {

@@ -18,6 +18,11 @@ describe("view route parsing", () => {
     expect(codeRouteHash("explorer")).toBe("#/code");
   });
 
+  it("round-trips the workspace Search sidebar", () => {
+    expect(codeSidebarFromHash("#/code?sidebar=search")).toBe("search");
+    expect(codeRouteHash("search")).toBe("#/code?sidebar=search");
+  });
+
   it("round-trips encoded file-open targets through the Code route", () => {
     const target = { rootId: "root:id", path: "docs/My File #1.md" };
     const hash = codeFileRouteHash(target);

@@ -185,6 +185,34 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(page.getByRole("tab", { name: /main\.go/ })).toBeVisible();
   await expect(page.locator(".code-tree-row", { hasText: "main.go" })).toHaveAttribute("aria-selected", "true");
 
+  // Workspace Search includes unsaved Monaco buffers, filters by glob, opens
+  // the exact result range, previews replacement, and safely saves dirty text.
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("// searchUnsavedToken");
+  await page.keyboard.press("Control+Shift+F");
+  const workspaceSearch = page.getByLabel("Search workspace");
+  await expect(workspaceSearch).toBeFocused();
+  await workspaceSearch.fill("searchUnsavedToken");
+  await page.getByRole("button", { name: /files to include \/ exclude/i }).click();
+  await page.getByLabel("Files to include").fill("*.go");
+  const unsavedResult = page.getByRole("treeitem", { name: /searchUnsavedToken/ });
+  await expect(unsavedResult).toBeVisible();
+  await unsavedResult.click();
+  await expect(page.locator(".view-lines")).toContainText("searchUnsavedToken");
+  await page.keyboard.press("Control+Shift+H");
+  const workspaceReplace = page.getByLabel("Replace in workspace");
+  await expect(workspaceReplace).toBeVisible();
+  await workspaceReplace.fill("searchSavedToken");
+  await expect(page.locator(".code-search-preview small")).toContainText("searchSavedToken");
+  await page.getByRole("button", { name: /Replace result on line/ }).click();
+  await page.getByRole("button", { name: "Replace", exact: true }).click();
+  const mainPath = join(state.workspace, "main.go");
+  await expect.poll(() => readFileSync(mainPath, "utf8")).toContain("searchSavedToken");
+  await expect(page.locator(".code-tab-dirty.is-visible")).toHaveCount(0);
+  await page.getByRole("button", { name: "Explorer", exact: true }).click();
+
   await page.getByRole("tab", { name: /renamed\.py/ }).click({ button: "middle" });
   await expect(page.getByRole("tab", { name: /renamed\.py/ })).toHaveCount(0);
   await expect(page.getByRole("tab", { name: /main\.go/ })).toBeVisible();
@@ -230,7 +258,6 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.keyboard.press("Enter");
   await page.keyboard.type("// saved by Playwright");
   await page.keyboard.press("Control+s");
-  const mainPath = join(state.workspace, "main.go");
   await expect.poll(() => readFileSync(mainPath, "utf8")).toContain("saved by Playwright");
 
   writeFileSync(mainPath, "package main\n\n// external reload\nfunc main() {}\n", "utf8");

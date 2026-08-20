@@ -13,7 +13,7 @@ import { buildCodeChatEditorContext, runCodeChatSavePreflight } from "./codeChat
 import { loadSession, saveSession } from "./persistence";
 import {
   CODE_ROUTE, chatCompletionTargetFromHash, codeOpenTargetFromHash, codeRouteHash,
-  codeSidebarFromHash, routePathFromHash, type ChatCompletionTarget,
+  codeSidebarFromHash, routePathFromHash, type ChatCompletionTarget, type CodeSidebar,
 } from "../navigation";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 import { setGitBadgeCount } from "../gitBadge";
@@ -21,9 +21,10 @@ import { randomUUID } from "../randomUUID";
 import { mountChatSurface, type EditorContextPayload, type MountedChatSurface } from "../chatSurface";
 import type { ChatReference } from "../chatMentions";
 import { detachTerminalDock, mountTerminalDock } from "../terminal";
+import { SearchView } from "./searchView";
 import type {
   FileRef, FileSnapshot, FsEntry, PersistedTab, PersistedWorkspaceSession,
-  SearchResult, TrashItem, WorkspaceRoot,
+  SearchResult, TextReplaceUpdate, TextSearchMatch, TextSearchOverlay, TrashItem, WorkspaceRoot,
 } from "./types";
 import { isRefWithin, joinRef, refKey } from "./types";
 import {
@@ -111,7 +112,8 @@ class CodeView {
   private editor!: MonacoEditor.IStandaloneCodeEditor;
   private diffEditor!: MonacoEditor.IStandaloneDiffEditor;
   private gitView: GitView | null = null;
-  private activeSidebar: "explorer" | "git" = "explorer";
+  private searchView: SearchView | null = null;
+  private activeSidebar: CodeSidebar = "explorer";
   private splitGitDiff = true;
   private leadingWhitespaceIndicators = true;
   private modelReferences = new Map<MonacoEditor.ITextModel, number>();
@@ -183,6 +185,7 @@ class CodeView {
       this.registerCommands();
       this.installEvents();
       this.initializeGitView();
+      this.initializeSearchView();
       await this.restoreWorkspace();
       if (this.abort.signal.aborted) return;
       if (this.roots.length) {
@@ -222,7 +225,7 @@ class CodeView {
     const explorerActive = this.activeSidebar === "explorer";
     this.root.innerHTML = `
       <div class="code-app-shell" style="--explorer-width:${this.explorerWidth}px;--code-chat-width:${this.codeChatWidth}px">
-        ${renderPrimaryNav({ active: explorerActive ? "explorer" : "git", workspaceName })}
+        ${renderPrimaryNav({ active: this.activeSidebar, workspaceName })}
         <section class="code-workbench">
           <div class="code-sidebar-backdrop" data-mobile-sidebar-backdrop aria-hidden="true"></div>
           <div class="code-sidebar">
@@ -241,7 +244,8 @@ class CodeView {
               <div class="code-tree-canvas" data-tree-canvas></div>
             </div>
           </aside>
-          <aside class="code-git-view" aria-label="Source Control" data-sidebar-view="git"${explorerActive ? " hidden" : ""}></aside>
+          <aside class="code-search-view" aria-label="Search" data-sidebar-view="search"${this.activeSidebar === "search" ? "" : " hidden"}></aside>
+          <aside class="code-git-view" aria-label="Source Control" data-sidebar-view="git"${this.activeSidebar === "git" ? "" : " hidden"}></aside>
           </div>
           <div class="code-explorer-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Explorer" tabindex="0"></div>
           <main class="code-editor-column">
@@ -269,7 +273,7 @@ class CodeView {
                   <div class="code-diff-unavailable" data-diff-unavailable hidden></div>
                 </section>
                 <footer class="code-statusbar" data-statusbar>
-                  <div><button type="button" class="code-mobile-explorer" data-mobile-explorer aria-label="Toggle Explorer" aria-expanded="false"><span class="codicon codicon-${explorerActive ? "files" : "source-control"}"></span></button></div>
+                  <div><button type="button" class="code-mobile-explorer" data-mobile-explorer aria-label="Toggle Sidebar" aria-expanded="false"><span class="codicon codicon-${this.sidebarIcon(this.activeSidebar)}"></span></button></div>
                   <div class="code-status-right"><span data-status="cursor">Ln 1, Col 1</span><span>Spaces: 2</span><span>UTF-8</span><span data-status="eol">LF</span><span data-status="language">Plain Text</span></div>
                 </footer>
               </div>
@@ -280,7 +284,7 @@ class CodeView {
           </main>
         </section>
         <div data-region="terminal"></div>
-        ${renderMobilePrimaryNav({ active: explorerActive ? "explorer" : "git", workspaceName, workspaceSelector: true })}
+        ${renderMobilePrimaryNav({ active: this.activeSidebar, workspaceName, workspaceSelector: true })}
       </div>
     `;
     mountTerminalDock(this.root.querySelector<HTMLElement>("[data-region=terminal]"), this.workspace);
@@ -295,7 +299,10 @@ class CodeView {
       button.addEventListener("click", () => { location.hash = "#/settings"; }, { signal });
     });
     this.root.querySelectorAll<HTMLElement>("[data-code-sidebar]").forEach((button) => {
-      button.addEventListener("click", () => this.setSidebar(button.dataset.codeSidebar === "git" ? "git" : "explorer"), { signal });
+      button.addEventListener("click", () => {
+        const view = button.dataset.codeSidebar;
+        this.setSidebar(view === "git" || view === "search" ? view : "explorer");
+      }, { signal });
     });
     this.root.querySelectorAll("[data-nav=workspace]:not(.workspace-dropdown-trigger)").forEach((button) => {
       button.addEventListener("click", () => { location.hash = "#/home"; }, { signal });
@@ -335,7 +342,23 @@ class CodeView {
     void this.gitView.start();
   }
 
-  private setSidebar(view: "explorer" | "git"): void {
+  private initializeSearchView(): void {
+    if (!this.workspace) return;
+    const host = this.root.querySelector<HTMLElement>("[data-sidebar-view=search]");
+    if (!host) return;
+    this.searchView = new SearchView(host, {
+      workspaceId: this.workspace.id,
+      signal: this.abort.signal,
+      getOverlays: () => this.searchOverlays(),
+      openResult: (ref, match, pin) => this.openSearchResult(ref, match, pin),
+      confirmReplace: (details) => this.confirmSearchReplace(details),
+      applyUpdates: (updates) => this.applySearchUpdates(updates),
+      focusEditor: () => this.focusActiveEditor(),
+    });
+    if (this.activeSidebar === "search") this.searchView.open();
+  }
+
+  private setSidebar(view: CodeSidebar): void {
     this.activeSidebar = view;
     this.root.querySelectorAll<HTMLElement>("[data-sidebar-view]").forEach((element) => { element.hidden = element.dataset.sidebarView !== view; });
     this.root.querySelectorAll<HTMLElement>("[data-code-sidebar]").forEach((button) => {
@@ -347,11 +370,119 @@ class CodeView {
       }
     });
     const mobile = this.root.querySelector<HTMLElement>("[data-mobile-explorer] .codicon");
-    if (mobile) mobile.className = `codicon codicon-${view === "git" ? "source-control" : "files"}`;
+    if (mobile) mobile.className = `codicon codicon-${this.sidebarIcon(view)}`;
     if (routePathFromHash(window.location.hash) === CODE_ROUTE) {
       window.history.replaceState(window.history.state, "", codeRouteHash(view));
     }
     if (window.innerWidth <= 720) this.setMobileExplorer(true);
+    if (view === "search") this.searchView?.open();
+  }
+
+  private sidebarIcon(view: CodeSidebar): string {
+    if (view === "git") return "source-control";
+    if (view === "search") return "search";
+    return "files";
+  }
+
+  private searchOverlays(): TextSearchOverlay[] {
+    const overlays: TextSearchOverlay[] = [];
+    const seen = new Set<string>();
+    for (const tab of this.tabs) {
+      const ref = this.worktreeRef(tab);
+      if (!ref || !tab.dirty) continue;
+      const key = refKey(ref);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      overlays.push({ ref, revision: tab.revision, content: tab.model.getValue(), hasBom: tab.hasBom });
+    }
+    return overlays;
+  }
+
+  private async openSearchResult(ref: FileRef, match: TextSearchMatch, pin: boolean): Promise<void> {
+    await this.openFile(ref, pin);
+    const tab = this.tabs.find((candidate) => {
+      const candidateRef = this.worktreeRef(candidate);
+      return candidateRef && refKey(candidateRef) === refKey(ref);
+    });
+    if (!tab) return;
+    this.activateTab(tab.id, false);
+    const target = tab.kind === "diff" ? this.diffEditor.getModifiedEditor() : this.editor;
+    target.setSelection({
+      startLineNumber: match.line, startColumn: match.column,
+      endLineNumber: match.endLine, endColumn: match.endColumn,
+    });
+    target.revealRangeInCenter({
+      startLineNumber: match.line, startColumn: match.column,
+      endLineNumber: match.endLine, endColumn: match.endColumn,
+    });
+    target.focus();
+  }
+
+  private async confirmSearchReplace(details: {
+    scope: "match" | "file" | "all";
+    matches: number;
+    files: number;
+    dirtyFiles: number;
+  }): Promise<boolean> {
+    const dirty = details.dirtyFiles
+      ? ` ${details.dirtyFiles} affected file${details.dirtyFiles === 1 ? " has" : "s have"} unsaved edits; those complete buffers will be saved.`
+      : "";
+    const choice = await choiceDialog({
+      title: details.scope === "all" ? "Replace all workspace results?" : "Save unsaved edits and replace?",
+      message: `Replace ${details.matches.toLocaleString()} result${details.matches === 1 ? "" : "s"} in ${details.files.toLocaleString()} file${details.files === 1 ? "" : "s"}.${dirty}`,
+      choices: [
+        { id: "cancel", label: "Cancel" },
+        { id: "replace", label: details.scope === "all" ? "Replace All" : "Replace", danger: true, primary: true },
+      ],
+    });
+    return choice === "replace";
+  }
+
+  private async applySearchUpdates(updates: TextReplaceUpdate[]): Promise<void> {
+    if (!this.workspace) return;
+    for (const update of updates) {
+      const tabs = this.tabs.filter((candidate) => {
+        const candidateRef = this.worktreeRef(candidate);
+        return candidateRef && refKey(candidateRef) === refKey(update.ref);
+      });
+      if (!tabs.length) continue;
+      let snapshot: FileSnapshot;
+      if (update.content !== undefined) {
+        snapshot = {
+          ref: update.ref, hostPath: tabs[0].hostPath, content: update.content,
+          revision: update.revision, size: update.size, modifiedAt: update.modifiedAt,
+          encoding: "utf-8", eol: update.eol, hasBom: update.hasBom,
+        };
+      } else {
+        snapshot = await editorAPI.readFile(this.workspace.id, update.ref);
+      }
+      const models = new Set<MonacoEditor.ITextModel>();
+      for (const tab of tabs) {
+        if (models.has(tab.model)) continue;
+        models.add(tab.model);
+        this.applyDiskSnapshot(tab, snapshot);
+      }
+    }
+    this.renderTabs();
+    this.schedulePersist();
+  }
+
+  private focusActiveEditor(): void {
+    const tab = this.activeTab();
+    if (tab?.kind === "diff") this.diffEditor.getModifiedEditor().focus();
+    else this.editor?.focus();
+  }
+
+  private showWorkspaceSearch(replace = false): void {
+    let seed = "";
+    const tab = this.activeTab();
+    const editor = tab?.kind === "diff" ? this.diffEditor.getModifiedEditor() : this.editor;
+    const selection = editor?.getSelection();
+    if (selection && selection.startLineNumber === selection.endLineNumber && !selection.isEmpty()) {
+      seed = editor.getModel()?.getValueInRange(selection) || "";
+    }
+    this.setSidebar("search");
+    this.searchView?.open({ replace, seed });
   }
 
   private async switchWorkspace(workspaceId: string): Promise<void> {
@@ -1513,8 +1644,10 @@ class CodeView {
       if (this.abort.signal.aborted || generation !== this.explorerRevealGeneration || this.activeTabId !== tab.id) return;
       const node = this.nodes.get(refKey(ref));
       if (!node || node.kind !== "file") return;
-      this.selectedTreeKey = node.key;
-      this.renderTree();
+      if (this.selectedTreeKey !== node.key) {
+        this.selectedTreeKey = node.key;
+        this.renderTree();
+      }
       const index = this.flatTree.findIndex((candidate) => candidate.key === node.key);
       if (index >= 0) this.treeVirtualizer.scrollToIndex(index, { align: "auto" });
       this.schedulePersist();
@@ -1645,6 +1778,8 @@ class CodeView {
       { id: "file.new", label: "File: New Untitled File", keybinding: "Ctrl+N", run: () => this.newUntitled() },
       { id: "file.quickOpen", label: "Go to File…", keybinding: "Ctrl+P", run: () => this.showQuickOpen() },
       { id: "view.commandPalette", label: "View: Show Command Palette", keybinding: "Ctrl+Shift+P", run: () => this.showCommandPalette() },
+      { id: "search.findInFiles", label: "Search: Find in Files", keybinding: "Ctrl+Shift+F", run: () => this.showWorkspaceSearch() },
+      { id: "search.replaceInFiles", label: "Search: Replace in Files", keybinding: "Ctrl+Shift+H", run: () => this.showWorkspaceSearch(true) },
       { id: "file.close", label: "View: Close Editor", keybinding: "Ctrl+W", run: () => { const tab = this.activeTab(); if (tab) return this.closeTab(tab); } },
       { id: "explorer.refresh", label: "Explorer: Refresh", run: () => this.refreshExplorer() },
       { id: "explorer.newFile", label: "Explorer: New File", run: () => this.createUnderSelection("file") },
@@ -1969,7 +2104,10 @@ class CodeView {
     }
     const modifier = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
-    if (modifier && event.shiftKey && key === "p") { event.preventDefault(); event.stopPropagation(); this.showCommandPalette(); }
+    if (modifier && event.shiftKey && key === "f") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(); }
+    else if (modifier && event.shiftKey && key === "h") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(true); }
+    else if (modifier && event.shiftKey && key === "j" && this.activeSidebar === "search") { event.preventDefault(); event.stopPropagation(); this.searchView?.toggleDetails(); }
+    else if (modifier && event.shiftKey && key === "p") { event.preventDefault(); event.stopPropagation(); this.showCommandPalette(); }
     else if (modifier && event.shiftKey && key === "s") { event.preventDefault(); event.stopPropagation(); void this.saveAsActive(); }
     else if (modifier && key === "p") { event.preventDefault(); event.stopPropagation(); this.showQuickOpen(); }
     else if (modifier && key === "s") { event.preventDefault(); event.stopPropagation(); void this.saveTab(); }
@@ -1984,6 +2122,9 @@ class CodeView {
     } else if (event.key === "F2" && this.treeScroller.contains(document.activeElement)) {
       const node = this.nodes.get(this.selectedTreeKey || "");
       if (node) { event.preventDefault(); void this.beginRename(node); }
+    } else if (event.key === "F4" && this.activeSidebar === "search") {
+      event.preventDefault();
+      this.searchView?.navigateResult(event.shiftKey ? -1 : 1);
     }
   }
 
@@ -2419,6 +2560,7 @@ class CodeView {
     }
     this.renderTabs();
     this.schedulePersist();
+    this.searchView?.refresh();
   }
 
   private async reloadCleanTab(tab: OpenTab): Promise<void> {

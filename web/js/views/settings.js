@@ -861,6 +861,9 @@ function bindEvents(root) {
   root.querySelectorAll("[data-nav='code']").forEach((button) => {
     button.addEventListener("click", () => { void leaveSettings("#/code"); });
   });
+  root.querySelectorAll("[data-nav='search']").forEach((button) => {
+    button.addEventListener("click", () => { void leaveSettings(codeRouteHash("search")); });
+  });
   root.querySelectorAll("[data-nav='git']").forEach((button) => {
     button.addEventListener("click", () => { void leaveSettings(codeRouteHash("git")); });
   });

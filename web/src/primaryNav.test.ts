@@ -27,6 +27,7 @@ describe("primary navigation", () => {
 
     expect(git.querySelector("[data-code-sidebar=git]")?.classList.contains("is-active")).toBe(true);
     expect(git.querySelector("[data-code-sidebar=explorer]")?.classList.contains("is-active")).toBe(false);
+    expect(git.querySelector("[data-code-sidebar=search]")?.classList.contains("is-active")).toBe(false);
   });
 
   it("escapes workspace names", () => {
@@ -44,7 +45,7 @@ describe("primary navigation", () => {
 
     expect(host.querySelector("[data-mobile-primary-nav]")).not.toBeNull();
     expect([...host.querySelectorAll(".mobile-nav-tab")].map((item) => item.getAttribute("aria-label")))
-      .toEqual(["Chat", "Code", "Source Control", "Settings"]);
+      .toEqual(["Chat", "Code", "Search", "Source Control", "Settings"]);
     expect(host.querySelector("[aria-label=Tasks]")).toBeNull();
     expect(host.querySelector("[data-nav=git]")?.getAttribute("aria-current")).toBe("page");
     expect(host.querySelector("[data-nav=code]")?.hasAttribute("aria-current")).toBe(false);

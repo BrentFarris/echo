@@ -1,9 +1,12 @@
 import { api } from "../../js/api.js";
-import type { FileRef, FileSnapshot, FsEntry, SearchResult, TrashItem, WorkspaceRoot } from "./types";
+import type {
+  FileRef, FileSnapshot, FsEntry, SearchResult, TextReplaceResponse, TextReplaceTarget, TextReplaceUpdate,
+  TextSearchRequest, TextSearchResponse, TrashItem, WorkspaceRoot,
+} from "./types";
 
 export type APIError = Error & {
   status?: number;
-  payload?: { code?: string; details?: { current?: FileSnapshot } };
+  payload?: { code?: string; details?: { current?: FileSnapshot; updated?: TextReplaceUpdate[] } };
 };
 
 function base(workspaceId: string): string {
@@ -95,4 +98,16 @@ export async function searchEntries(workspaceId: string, queryText: string, limi
     includeDirectories: "true",
   });
   return api(`${base(workspaceId)}/search?${query}`, { method: "GET" });
+}
+
+export async function searchText(workspaceId: string, request: TextSearchRequest, signal?: AbortSignal): Promise<TextSearchResponse> {
+  return api(`${base(workspaceId)}/text-search`, { method: "POST", body: request, signal });
+}
+
+export async function replaceText(workspaceId: string, request: {
+  search: TextSearchRequest;
+  scope: "match" | "file" | "all";
+  targets: TextReplaceTarget[];
+}): Promise<TextReplaceResponse> {
+  return api(`${base(workspaceId)}/text-replace`, { method: "POST", body: request });
 }

@@ -338,6 +338,7 @@ function bindPageCoreNavigation(root: HTMLElement): void {
     if (nav === "chat" || nav === "workspace") location.hash = "#/home";
     else if (nav === "settings") location.hash = "#/settings";
     else if (nav === "code") location.hash = "#/code";
+    else if (nav === "search") location.hash = codeRouteHash("search");
     else if (nav === "git") location.hash = codeRouteHash("git");
   }));
 }
