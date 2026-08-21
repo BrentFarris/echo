@@ -290,6 +290,23 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(page.getByRole("tab", { name: /main\.go/ })).toBeVisible();
   await expect(page.locator(".code-tree-row", { hasText: "main.go" })).toHaveAttribute("aria-selected", "true");
 
+  // Re-selecting the active tab keeps Monaco's live caret and selection. The
+  // tab's stored view state can lag behind normal editing and must only be
+  // restored after switching between different tabs.
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("Control+Home");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.down("Shift");
+  await page.keyboard.press("End");
+  await page.keyboard.up("Shift");
+  const cursorBeforeReselect = await page.locator('[data-status="cursor"]').textContent();
+  expect(cursorBeforeReselect).not.toBe("Ln 3, Col 1");
+  await page.getByRole("tab", { name: /main\.go/ }).click();
+  await expect(page.locator('[data-status="cursor"]')).toHaveText(cursorBeforeReselect!);
+  await page.keyboard.press("ArrowLeft");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 3, Col 1");
+
   // Tab and Shift+Tab indent and outdent every line in a multi-line selection.
   await page.locator(".view-lines").click();
   await page.keyboard.press("Control+Home");

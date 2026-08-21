@@ -1251,6 +1251,18 @@ class CodeView {
     const next = this.tabs.find((tab) => tab.id === id);
     if (!next) return;
     const active = this.activeTab();
+    // Re-selecting the current tab must not re-attach its model or restore the
+    // last captured view state. That state is intentionally only a snapshot
+    // for switching away and back; restoring it here rewinds the live caret
+    // and selection to an older editing position.
+    if (active?.id === next.id) {
+      if (focusEditor) {
+        if (next.kind === "diff") this.diffEditor.getModifiedEditor().focus();
+        else if (next.kind !== "media") this.editor.focus();
+      }
+      this.schedulePersist();
+      return;
+    }
     if (active && active.id !== next.id) {
       if (active.kind === "diff" && active.diff) active.diff.viewState = this.diffEditor.saveViewState();
       else active.viewState = this.editor.saveViewState();
