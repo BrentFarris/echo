@@ -30,6 +30,9 @@ type trashMetadata struct {
 }
 
 func (s *Service) Trash(workspaceID string, ref FileRef) (TrashItem, error) {
+	if IsProtectedWorkspaceMetadataPath(ref.Path) {
+		return TrashItem{}, protectedMetadataError()
+	}
 	root, source, visible, err := s.resolveEntry(workspaceID, ref, false, false)
 	if err != nil {
 		return TrashItem{}, err

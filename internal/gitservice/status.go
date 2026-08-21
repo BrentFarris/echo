@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/brent/echo/internal/workspacefs"
 )
 
 type statusRecord struct {
@@ -181,6 +183,9 @@ func buildStatusSnapshot(state *repositoryState, parsed parsedStatus) StatusSnap
 			if record.index != '.' && record.index != '?' && record.index != '!' {
 				snapshot.HiddenStagedCount++
 			}
+			continue
+		}
+		if workspacefs.IsProtectedWorkspaceMetadataPath(ref.Path) {
 			continue
 		}
 		visible++

@@ -168,10 +168,23 @@ func (s *Service) discard(ctx context.Context, state *repositoryState, request A
 }
 
 func (s *Service) commit(ctx context.Context, state *repositoryState, request ActionRequest) error {
-	status, err := s.loadStatus(ctx, state)
+	parsed, err := s.readStatus(ctx, state)
 	if err != nil {
 		return err
 	}
+	protectedStaged := 0
+	for _, record := range parsed.records {
+		if record.index != '.' && record.index != '?' && record.index != '!' && state.protectedMetadataPath(record.path) {
+			protectedStaged++
+		}
+	}
+	if protectedStaged > 0 {
+		return &Error{
+			Code: "protected_workspace_metadata", Message: "unstage Echo-managed workspace metadata before committing",
+			Details: map[string]any{"count": protectedStaged},
+		}
+	}
+	status := buildStatusSnapshot(state, parsed)
 	if status.HiddenStagedCount > 0 {
 		return &Error{
 			Code: "hidden_staged_changes", Message: "this parent repository has staged changes outside the workspace; open the repository root before committing",
