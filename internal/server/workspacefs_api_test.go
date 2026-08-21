@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,22 @@ import (
 	"github.com/brent/echo/internal/workspacefs"
 	"github.com/brent/echo/internal/workspaces"
 )
+
+func TestWorkspaceFSErrorIncludesUntypedFailureReason(t *testing.T) {
+	response := httptest.NewRecorder()
+	writeWorkspaceFSError(response, errors.New("save file: Access is denied."))
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("filesystem error returned status %d: %s", response.Code, response.Body.String())
+	}
+	var body errorEnvelope
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "filesystem_error" || body.Error != "save file: Access is denied." {
+		t.Fatalf("filesystem error omitted the operation failure reason: %#v", body)
+	}
+}
 
 func doJSONRequest(t *testing.T, server *Server, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()

@@ -205,7 +205,7 @@ func (s *Server) handleFSTextReplace(w http.ResponseWriter, r *http.Request) {
 func writeWorkspaceFSError(w http.ResponseWriter, err error) {
 	var fsError *workspacefs.Error
 	if !errors.As(err, &fsError) {
-		writeCodedError(w, http.StatusInternalServerError, "filesystem_error", "filesystem operation failed", nil)
+		writeCodedError(w, http.StatusInternalServerError, "filesystem_error", err.Error(), nil)
 		return
 	}
 	status := http.StatusBadRequest
