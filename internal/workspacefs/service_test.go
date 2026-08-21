@@ -96,6 +96,64 @@ func TestTraversalCreateRenameTrashRestore(t *testing.T) {
 	}
 }
 
+func TestMoveEntryBetweenWorkspaceDirectories(t *testing.T) {
+	service, workspaceID, rootPath, root := newTestService(t)
+	for _, directory := range []string{"source", "target", filepath.Join("parent", "child")} {
+		if err := os.MkdirAll(filepath.Join(rootPath, directory), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "source", "open.txt"), []byte("open\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	moved, err := service.Move(workspaceID,
+		FileRef{RootID: root.ID, Path: "source/open.txt"},
+		FileRef{RootID: root.ID, Path: "target"},
+	)
+	if err != nil || moved.Ref.Path != "target/open.txt" {
+		t.Fatalf("move: %+v %v", moved, err)
+	}
+	if _, err := os.Stat(filepath.Join(rootPath, "source", "open.txt")); !os.IsNotExist(err) {
+		t.Fatalf("source still exists after move: %v", err)
+	}
+	if content, err := os.ReadFile(filepath.Join(rootPath, "target", "open.txt")); err != nil || string(content) != "open\n" {
+		t.Fatalf("moved content: %q %v", content, err)
+	}
+	if err := os.Mkdir(filepath.Join(rootPath, "source", "folder"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "source", "folder", "nested.txt"), []byte("nested\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	movedDirectory, err := service.Move(workspaceID,
+		FileRef{RootID: root.ID, Path: "source/folder"},
+		FileRef{RootID: root.ID, Path: "target"},
+	)
+	if err != nil || movedDirectory.Ref.Path != "target/folder" {
+		t.Fatalf("move directory: %+v %v", movedDirectory, err)
+	}
+	if content, err := os.ReadFile(filepath.Join(rootPath, "target", "folder", "nested.txt")); err != nil || string(content) != "nested\n" {
+		t.Fatalf("moved directory content: %q %v", content, err)
+	}
+
+	if _, err := service.Move(workspaceID,
+		FileRef{RootID: root.ID, Path: "parent"},
+		FileRef{RootID: root.ID, Path: "parent/child"},
+	); !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("expected descendant move rejection, got %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "source", "open.txt"), []byte("collision\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Move(workspaceID,
+		FileRef{RootID: root.ID, Path: "source/open.txt"},
+		FileRef{RootID: root.ID, Path: "target"},
+	); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("expected move collision, got %v", err)
+	}
+}
+
 func TestProtectedWorkspaceMetadataCannotBeMutated(t *testing.T) {
 	service, workspaceID, rootPath, root := newTestService(t)
 	assertProtected := func(err error) {

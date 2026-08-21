@@ -61,6 +61,10 @@ export async function renameEntry(workspaceId: string, ref: FileRef, newName: st
   return api(`${base(workspaceId)}/entry`, { method: "PATCH", body: { ref, newName } });
 }
 
+export async function moveEntry(workspaceId: string, ref: FileRef, destinationParent: FileRef): Promise<{ entry: FsEntry; previousRef: FileRef }> {
+  return api(`${base(workspaceId)}/entry`, { method: "PATCH", body: { ref, destinationParent } });
+}
+
 export async function trashEntry(workspaceId: string, ref: FileRef): Promise<TrashItem> {
   const result = await api(`${base(workspaceId)}/entry`, { method: "DELETE", body: { ref } });
   return result.trash;

@@ -1283,6 +1283,19 @@
   background: var(--code-hover);
 }
 
+.code-tree-row[draggable="true"] {
+  cursor: grab;
+}
+
+.code-tree-row.is-dragging {
+  opacity: 0.45;
+}
+
+.code-tree-row.is-drop-target {
+  background: color-mix(in srgb, var(--code-accent) 24%, var(--code-hover));
+  box-shadow: inset 0 0 0 1px var(--code-accent);
+}
+
 .code-tree-row.is-selected {
   background: var(--code-selected);
 }

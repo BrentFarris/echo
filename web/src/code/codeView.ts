@@ -119,6 +119,10 @@ class CodeView {
   private expanded = new Set<string>();
   private selectedTreeKey: string | null = null;
   private renamingKey: string | null = null;
+  private draggingTreeKey: string | null = null;
+  private treeDropTargetKey: string | null = null;
+  private treeDropExpandKey: string | null = null;
+  private treeDropExpandTimer = 0;
   private tabs: OpenTab[] = [];
   private activeTabId: string | null = null;
   private untitledCounter = 1;
@@ -798,7 +802,10 @@ class CodeView {
       const label = this.renamingKey === node.key
         ? `<input class="code-tree-rename" data-rename-input value="${escapeHTML(node.name)}" aria-label="Rename ${escapeHTML(node.name)}">`
         : `<span class="code-tree-label">${escapeHTML(node.name)}</span>`;
-      return `<div class="code-tree-row ${selected ? "is-selected" : ""} ${node.blockedReason ? "is-blocked" : ""}" role="treeitem" aria-selected="${selected}" aria-expanded="${isDirectory ? expanded : undefined}" data-tree-key="${escapeHTML(node.key)}" style="transform:translateY(${virtual.start}px);padding-left:${indent}px" title="${escapeHTML(node.blockedReason || node.hostPath)}">${chevron}<span class="codicon codicon-${icon} code-tree-icon"></span>${label}</div>`;
+      const draggable = !node.isRoot && !node.blockedReason;
+      const dragging = node.key === this.draggingTreeKey;
+      const dropTarget = node.key === this.treeDropTargetKey;
+      return `<div class="code-tree-row ${selected ? "is-selected" : ""} ${node.blockedReason ? "is-blocked" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}" role="treeitem" aria-selected="${selected}" aria-expanded="${isDirectory ? expanded : undefined}" draggable="${draggable}" data-tree-key="${escapeHTML(node.key)}" data-tree-kind="${node.kind}" data-tree-root="${node.isRoot}" style="transform:translateY(${virtual.start}px);padding-left:${indent}px" title="${escapeHTML(node.blockedReason || node.hostPath)}">${chevron}<span class="codicon codicon-${icon} code-tree-icon"></span>${label}</div>`;
     }).join("");
     if (this.renamingKey) {
       requestAnimationFrame(() => {
@@ -1102,6 +1109,84 @@ class CodeView {
       if (choice === "reload") return await this.openFile(ref, pin, focusEditor, showErrors);
       if (choice === "reveal") await this.reveal(ref);
       return false;
+    }
+  }
+
+  private treeMoveDestination(source: TreeNode | undefined, target: TreeNode | undefined): TreeNode | null {
+    if (!source || source.isRoot || source.blockedReason || !target || target.kind !== "directory" || target.blockedReason) return null;
+    if (source.ref.rootId !== target.ref.rootId || source.parentKey === target.key || isRefWithin(target.ref, source.ref)) return null;
+    return target;
+  }
+
+  private setTreeDropTarget(key: string | null): void {
+    if (this.treeDropTargetKey === key) return;
+    if (this.treeDropTargetKey) {
+      this.treeCanvas.querySelector<HTMLElement>(`[data-tree-key="${CSS.escape(this.treeDropTargetKey)}"]`)?.classList.remove("is-drop-target");
+    }
+    this.treeDropTargetKey = key;
+    if (key) {
+      this.treeCanvas.querySelector<HTMLElement>(`[data-tree-key="${CSS.escape(key)}"]`)?.classList.add("is-drop-target");
+    }
+    window.clearTimeout(this.treeDropExpandTimer);
+    this.treeDropExpandTimer = 0;
+    this.treeDropExpandKey = null;
+    const target = key ? this.nodes.get(key) : null;
+    if (!target || this.expanded.has(target.key) || target.loading) return;
+    this.treeDropExpandKey = target.key;
+    this.treeDropExpandTimer = window.setTimeout(() => {
+      this.treeDropExpandTimer = 0;
+      if (this.treeDropExpandKey !== target.key || this.treeDropTargetKey !== target.key) return;
+      this.expanded.add(target.key);
+      void this.loadChildren(target).then(() => {
+        this.schedulePersist();
+        this.sendFilesystemSubscription();
+      });
+    }, 600);
+  }
+
+  private clearTreeDragState(): void {
+    window.clearTimeout(this.treeDropExpandTimer);
+    this.treeDropExpandTimer = 0;
+    this.treeDropExpandKey = null;
+    this.treeCanvas.querySelectorAll(".code-tree-row.is-dragging, .code-tree-row.is-drop-target")
+      .forEach((row) => row.classList.remove("is-dragging", "is-drop-target"));
+    this.draggingTreeKey = null;
+    this.treeDropTargetKey = null;
+  }
+
+  private scrollTreeDuringDrag(clientY: number): void {
+    const bounds = this.treeScroller.getBoundingClientRect();
+    const edge = 28;
+    if (clientY < bounds.top + edge) this.treeScroller.scrollTop -= 12;
+    else if (clientY > bounds.bottom - edge) this.treeScroller.scrollTop += 12;
+  }
+
+  private rewrittenTreeRef(candidate: FileRef, previous: FileRef, next: FileRef): FileRef {
+    if (!isRefWithin(candidate, previous)) return candidate;
+    const suffix = candidate.path.slice(previous.path.length).replace(/^\//, "");
+    return { rootId: next.rootId, path: suffix ? `${next.path}/${suffix}` : next.path };
+  }
+
+  private async moveTreeNode(node: TreeNode, destination: TreeNode): Promise<void> {
+    if (!this.workspace || !this.treeMoveDestination(node, destination)) return;
+    const previousRef = { ...node.ref };
+    const expandedRefs = [...this.expanded]
+      .map((key) => this.nodes.get(key)?.ref)
+      .filter((ref): ref is FileRef => Boolean(ref));
+    try {
+      const result = await editorAPI.moveEntry(this.workspace.id, previousRef, destination.ref);
+      const restoredExpansion = expandedRefs.map((ref) => this.rewrittenTreeRef(ref, previousRef, result.entry.ref));
+      this.codeNavigation?.remapRef(previousRef, result.entry.ref);
+      this.rewriteOpenRefs(previousRef, result.entry.ref, node.hostPath, result.entry.hostPath);
+      this.rewriteExpandedRefs(previousRef, result.entry.ref);
+      await this.refreshExplorer(restoredExpansion);
+      await this.expandTo(result.entry.ref);
+      this.schedulePersist();
+      this.searchView?.refresh();
+      this.sendFilesystemSubscription();
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), { sticky: true });
+      this.renderTreeRows();
     }
   }
 
@@ -2026,8 +2111,8 @@ class CodeView {
     }
   }
 
-  private async refreshExplorer(): Promise<void> {
-    const expandedRefs = [...this.expanded].map((key) => this.nodes.get(key)?.ref).filter(Boolean) as FileRef[];
+  private async refreshExplorer(preservedExpansion?: FileRef[]): Promise<void> {
+    const expandedRefs = preservedExpansion || [...this.expanded].map((key) => this.nodes.get(key)?.ref).filter(Boolean) as FileRef[];
     this.nodes.clear();
     this.expanded.clear();
     await Promise.all(this.roots.map((root) => this.ensureRoot(root)));
@@ -2533,6 +2618,44 @@ class CodeView {
       const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
       const node = row ? this.nodes.get(row.dataset.treeKey || "") : null;
       if (node) this.showTreeMenu(event, node);
+    }, { signal });
+    this.treeCanvas.addEventListener("dragstart", (event) => {
+      const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
+      const node = row ? this.nodes.get(row.dataset.treeKey || "") : null;
+      if (!row || !node || node.isRoot || node.blockedReason || !event.dataTransfer) {
+        event.preventDefault();
+        return;
+      }
+      this.renamingKey = null;
+      this.draggingTreeKey = node.key;
+      row.classList.add("is-dragging");
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("application/x-echo-tree-entry", node.key);
+      event.dataTransfer.setData("text/plain", node.name);
+    }, { signal });
+    this.treeCanvas.addEventListener("dragover", (event) => {
+      const source = this.nodes.get(this.draggingTreeKey || "");
+      const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
+      const target = row ? this.nodes.get(row.dataset.treeKey || "") : undefined;
+      const destination = this.treeMoveDestination(source, target);
+      this.setTreeDropTarget(destination?.key || null);
+      if (!destination || !event.dataTransfer) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      this.scrollTreeDuringDrag(event.clientY);
+    }, { signal });
+    this.treeCanvas.addEventListener("drop", (event) => {
+      const source = this.nodes.get(this.draggingTreeKey || "");
+      const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
+      const target = row ? this.nodes.get(row.dataset.treeKey || "") : undefined;
+      const destination = this.treeMoveDestination(source, target);
+      if (destination) event.preventDefault();
+      this.clearTreeDragState();
+      if (source && destination) void this.moveTreeNode(source, destination);
+    }, { signal });
+    this.treeCanvas.addEventListener("dragend", () => this.clearTreeDragState(), { signal });
+    this.treeCanvas.addEventListener("dragleave", (event) => {
+      if (!this.treeCanvas.contains(event.relatedTarget as Node | null)) this.setTreeDropTarget(null);
     }, { signal });
     this.treeCanvas.addEventListener("keydown", (event) => {
       const input = (event.target as Element).closest<HTMLInputElement>("[data-rename-input]");
@@ -3339,6 +3462,7 @@ class CodeView {
     this.codeChatSurface = null;
     this.abort.abort();
     window.clearTimeout(this.persistTimer);
+    window.clearTimeout(this.treeDropExpandTimer);
     window.clearInterval(this.pollTimer);
     closeContextMenu();
     this.editorOpener?.dispose();

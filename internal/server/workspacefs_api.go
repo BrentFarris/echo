@@ -88,14 +88,21 @@ func (s *Server) handleFSCreateEntry(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFSRenameEntry(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Ref     workspacefs.FileRef `json:"ref"`
-		NewName string              `json:"newName"`
+		Ref               workspacefs.FileRef  `json:"ref"`
+		NewName           string               `json:"newName"`
+		DestinationParent *workspacefs.FileRef `json:"destinationParent"`
 	}
 	if err := decodeLimitedJSON(w, r, &body, 64<<10); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	entry, err := s.fs.Rename(r.PathValue("id"), body.Ref, body.NewName)
+	var entry workspacefs.Entry
+	var err error
+	if body.DestinationParent != nil {
+		entry, err = s.fs.Move(r.PathValue("id"), body.Ref, *body.DestinationParent)
+	} else {
+		entry, err = s.fs.Rename(r.PathValue("id"), body.Ref, body.NewName)
+	}
 	if err != nil {
 		writeWorkspaceFSError(w, err)
 		return

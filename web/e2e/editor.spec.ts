@@ -1,5 +1,5 @@
-import { expect, test } from "@playwright/test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server as HTTPServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,19 @@ test.describe.configure({ mode: "serial" });
 let fakeLLM: HTTPServer;
 let fakeLLMPort = 0;
 let fakeStreamRound = 0;
+
+async function dragToTreeRow(page: Page, source: Locator, target: Locator): Promise<void> {
+  await expect(source).toHaveAttribute("draggable", "true");
+  const sourceBox = await source.boundingBox();
+  const targetBox = await target.boundingBox();
+  expect(sourceBox).not.toBeNull();
+  expect(targetBox).not.toBeNull();
+  await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(sourceBox!.x + sourceBox!.width / 2 + 8, sourceBox!.y + sourceBox!.height / 2, { steps: 2 });
+  await page.mouse.move(targetBox!.x + targetBox!.width / 2, targetBox!.y + targetBox!.height / 2, { steps: 8 });
+  await page.mouse.up();
+}
 
 test.beforeAll(async () => {
   fakeLLM = createServer(async (request, response) => {
@@ -281,6 +294,16 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect.poll(() => existsSync(join(state.workspace, "nested", "demo.py"))).toBe(false);
   await page.locator(".code-tree-label", { hasText: "renamed.py" }).dblclick();
   await expect(page.locator(".code-tab.is-preview", { hasText: "renamed.py" })).toHaveCount(0);
+
+  // Explorer drag/drop moves files into folders while preserving the open tab.
+  const renamedBeforeMove = page.locator(".code-tree-row", { hasText: "renamed.py" });
+  const workspaceRoot = page.locator('.code-tree-row[data-tree-root="true"]').first();
+  await dragToTreeRow(page, renamedBeforeMove, workspaceRoot);
+  await expect.poll(() => existsSync(join(state.workspace, "renamed.py"))).toBe(true);
+  await expect.poll(() => existsSync(join(state.workspace, "nested", "renamed.py"))).toBe(false);
+  await expect(page.getByRole("tab", { name: /renamed\.py/ })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".view-lines")).toContainText("print('echo')");
+  await expect(page.locator(".code-tree-row", { hasText: "renamed.py" })).toHaveAttribute("aria-selected", "true");
 
   await page.keyboard.press("Control+p");
   await page.getByLabel("Go to File").fill("main.go");
@@ -635,6 +658,76 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.keyboard.press("Escape");
   await expect(page.locator(".workspace-dropdown-anchor")).toHaveCount(0);
   await expect(finalWorkspace).toBeFocused();
+});
+
+test("drags an open explorer file into another folder", async ({ page }) => {
+  const state = JSON.parse(readFileSync(resolve(directory, "../test-results/e2e-runtime/state.json"), "utf8")) as {
+    setupCode: string;
+    workspace: string;
+  };
+  const dragWorkspace = join(dirname(state.workspace), "drag-workspace");
+  mkdirSync(join(dragWorkspace, "source"), { recursive: true });
+  mkdirSync(join(dragWorkspace, "target"), { recursive: true });
+  writeFileSync(join(dragWorkspace, "source", "move-me.ts"), "export const moved = true;\n", "utf8");
+
+  await page.goto("/");
+  if (await page.getByRole("heading", { name: "Secure this Echo server" }).isVisible()) {
+    await page.getByLabel("Setup code").fill(state.setupCode);
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByLabel("Confirm password").fill(password);
+    await page.getByLabel("Device name").fill("Playwright Drag Drop");
+    await page.getByRole("button", { name: "Finish setup" }).click();
+  } else {
+    await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByLabel("Device name").fill("Playwright Drag Drop");
+    await page.getByRole("button", { name: "Sign in" }).click();
+  }
+  await expect(page.locator(".app-shell")).toBeVisible();
+
+  const previousWorkspaceId = await page.evaluate(async ({ workspacePath, baselinePath }) => {
+    const request = async (path: string, method: string, body: unknown) => {
+      const response = await fetch(path, {
+        method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+      return payload.data;
+    };
+    const currentResponse = await fetch("/api/workspaces");
+    const currentPayload = await currentResponse.json();
+    let previousActiveId = currentPayload.data?.activeId as string | null;
+    if (!previousActiveId) {
+      const baseline = await request("/api/workspaces", "POST", { name: "E2E Workspace", mainPath: baselinePath, folders: [] });
+      previousActiveId = baseline.workspace.id as string;
+      await request("/api/workspaces/active", "PUT", { id: previousActiveId });
+    }
+    const created = await request("/api/workspaces", "POST", { name: "Drag Workspace", mainPath: workspacePath, folders: [] });
+    await request("/api/workspaces/active", "PUT", { id: created.workspace.id });
+    return previousActiveId;
+  }, { workspacePath: dragWorkspace, baselinePath: state.workspace });
+
+  await page.goto("/#/code");
+  await expect(page.locator(".code-app-shell")).toBeVisible();
+  await page.locator(".code-tree-row", { hasText: "source" }).click();
+  const source = page.locator(".code-tree-row", { hasText: "move-me.ts" });
+  await source.click();
+  await expect(page.locator(".code-tab.is-active", { hasText: "move-me.ts" })).toHaveAttribute("aria-selected", "true");
+  await dragToTreeRow(page, source, page.locator(".code-tree-row", { hasText: "target" }));
+
+  await expect.poll(() => existsSync(join(dragWorkspace, "target", "move-me.ts"))).toBe(true);
+  await expect.poll(() => existsSync(join(dragWorkspace, "source", "move-me.ts"))).toBe(false);
+  await expect(page.getByRole("tab", { name: /move-me\.ts/ })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".view-lines")).toContainText("export const moved = true");
+  await expect(page.locator(".code-tree-row", { hasText: "move-me.ts" })).toHaveAttribute("aria-selected", "true");
+  if (previousWorkspaceId) {
+    await page.evaluate(async (id) => {
+      const response = await fetch("/api/workspaces/active", {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }),
+      });
+      if (!response.ok) throw new Error(`Could not restore active workspace: HTTP ${response.status}`);
+    }, previousWorkspaceId);
+  }
 });
 
 test("runs the deterministic fake language server through Monaco and settings", async ({ page }) => {
