@@ -789,8 +789,18 @@ class CodeView {
     return "file-code";
   }
 
+  private syncTreeSelectionState(): void {
+    if (!this.treeCanvas) return;
+    this.treeCanvas.querySelectorAll<HTMLElement>("[data-tree-key]").forEach((element) => {
+      const selected = element.dataset.treeKey === this.selectedTreeKey;
+      element.classList.toggle("is-selected", selected);
+      element.setAttribute("aria-selected", String(selected));
+    });
+  }
+
   private async toggleNode(node: TreeNode): Promise<void> {
     this.selectedTreeKey = node.key;
+    this.syncTreeSelectionState();
     if (node.kind === "directory" && !node.blockedReason) {
       if (this.expanded.has(node.key)) this.expanded.delete(node.key);
       else {

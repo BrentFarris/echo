@@ -290,6 +290,20 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(page.getByRole("tab", { name: /main\.go/ })).toBeVisible();
   await expect(page.locator(".code-tree-row", { hasText: "main.go" })).toHaveAttribute("aria-selected", "true");
 
+  // Clicking already-open files updates the explorer selection immediately.
+  const mainTreeRow = page.locator(".code-tree-row", { hasText: "main.go" });
+  const renamedTreeRow = page.locator(".code-tree-row", { hasText: "renamed.py" });
+  await renamedTreeRow.click();
+  await expect(renamedTreeRow).toHaveAttribute("aria-selected", "true");
+  await expect(renamedTreeRow).toHaveClass(/is-selected/);
+  await expect(mainTreeRow).toHaveAttribute("aria-selected", "false");
+  await expect(page.locator(".view-lines")).toContainText("print('echo')");
+  await mainTreeRow.click();
+  await expect(mainTreeRow).toHaveAttribute("aria-selected", "true");
+  await expect(mainTreeRow).toHaveClass(/is-selected/);
+  await expect(renamedTreeRow).toHaveAttribute("aria-selected", "false");
+  await expect(page.locator(".view-lines")).toContainText("package main");
+
   // Switching existing tabs updates both Monaco and the tab strip's active state.
   const mainTab = page.getByRole("tab", { name: /main\.go/ });
   const renamedTab = page.getByRole("tab", { name: /renamed\.py/ });
