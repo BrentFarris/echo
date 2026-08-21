@@ -118,6 +118,12 @@ The nightly binaries are not currently code-signed or notarized. Your operating 
 
 If the owner password is lost, stop Echo and restart it with `-reset-auth`. This clears the password and all remembered sessions, then prints a new setup code.
 
+### Install Echo as a desktop app
+
+With the Echo server running, open [http://localhost:3740](http://localhost:3740) in Chrome or Edge and select the **Install Echo** icon in the address bar. The installed app opens in its own window without the browser toolbar. If Windows does not pin it automatically, right-click Echo in the taskbar and choose **Pin to taskbar**.
+
+The installed icon opens the web app but does not start the Echo server. Continue to start Echo with the launcher and leave its terminal window running while you use the installed app. Browser installation is available from `localhost`, `127.0.0.1`, or an HTTPS origin; a plain HTTP LAN address is not eligible.
+
 ## Configure a model
 
 Echo appends `/chat/completions` to the endpoint URL unless it is already present. The provider must accept OpenAI-compatible chat-completion requests and, for interactive chat, streamed server-sent events and OpenAI-style tool calls.
