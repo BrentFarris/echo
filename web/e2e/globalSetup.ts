@@ -20,6 +20,11 @@ function prepareRuntime(): { binary: string; workspace: string; secondaryWorkspa
   writeFileSync(join(workspace, "definition.go"), "package main\n\nfunc Target() {}\n", "utf8");
   writeFileSync(join(workspace, "usage.go"), "package main\n\nfunc useTarget() {\n\tTarget()\n}\n", "utf8");
   writeFileSync(join(workspace, "implementation.go"), "package main\n\ntype Runner interface {\n\tRun()\n}\n\ntype ConcreteRunner struct{}\n\nfunc (ConcreteRunner) Run() {}\n", "utf8");
+  writeFileSync(join(workspace, "navigation.go"), [
+    "package main", "",
+    ...Array.from({ length: 30 }, (_, index) => `// navigation line ${String(index + 1).padStart(2, "0")}`),
+    "", "var navigationValue = 1", "",
+  ].join("\n"), "utf8");
   writeFileSync(join(workspace, "nested", "demo.py"), "print('echo')\n", "utf8");
   writeFileSync(join(workspace, ".gitignore"), ".echo/\n", "utf8");
   const git = (...args: string[]) => execFileSync("git", ["-C", workspace, ...args], { stdio: "inherit" });

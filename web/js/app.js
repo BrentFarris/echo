@@ -7,7 +7,7 @@ import * as ws from "./ws.js";
 import { ensureAuthenticated } from "../src/auth/authGate.ts";
 import { startEchoUpdateMonitor, stopEchoUpdateMonitor, syncEchoUpdateBadges } from "../src/echoUpdate.ts";
 import { startCompletionNotifications } from "../src/completionNotifications.ts";
-import { recordNavigationRoute, routePathFromHash } from "../src/navigation.ts";
+import { isCodeNavigationHistoryState, recordNavigationRoute, routePathFromHash } from "../src/navigation.ts";
 import { initializePluginHost, mountPluginPage, resetPluginHost } from "../src/plugins/pluginHost.ts";
 
 // Route table: hash path -> () => Promise<view module>.
@@ -21,6 +21,7 @@ const routes = {
 
 const app = document.getElementById("app");
 let currentView = null;
+let mountedRoute = null;
 let renderGeneration = 0;
 
 function currentRoute() {
@@ -35,6 +36,14 @@ async function render() {
   const loader = routes[route];
   recordNavigationRoute(route);
 
+  // Code locations use real browser-history entries with the same route. If
+  // only the hash query changed while traversing those entries, keep Monaco
+  // and its language-server session mounted and let CodeView restore state.
+  if (route === "/code" && mountedRoute === route && isCodeNavigationHistoryState(window.history.state)) {
+    currentView?.routeChanged?.();
+    return;
+  }
+
   // Tear down the previous view.
   if (currentView?.unmount) {
     try {
@@ -44,6 +53,7 @@ async function render() {
     }
   }
   currentView = null;
+  mountedRoute = null;
   app.innerHTML = "";
 
   try {
@@ -54,12 +64,14 @@ async function render() {
         return;
       }
       currentView = mounted;
+      mountedRoute = route;
       syncEchoUpdateBadges(app);
       return;
     }
     const view = await loader();
     if (generation !== renderGeneration) return;
     currentView = view;
+    mountedRoute = route;
     view.mount(app);
     syncEchoUpdateBadges(app);
   } catch (err) {
@@ -98,6 +110,7 @@ async function bootstrap() {
       }
     }
     currentView = null;
+    mountedRoute = null;
     app.innerHTML = "";
     await ensureAuthenticated(app);
     await startCompletionNotifications();

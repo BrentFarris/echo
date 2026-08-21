@@ -698,11 +698,47 @@ test("runs the deterministic fake language server through Monaco and settings", 
   // Direct navigation activates only the selected target tab, attaches its
   // model, and applies Monaco's returned cursor position.
   await page.locator(".view-line", { hasText: /^\s*Target\(\)\s*$/ }).click();
+  const usageCursor = await page.locator('[data-status="cursor"]').textContent();
   await page.keyboard.press("F12");
   await expect(page.locator(".code-tab.is-active")).toContainText("definition.go");
   await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 3, Col 6");
   await expect(page.locator("[data-tabs-list] .code-tab")).toHaveCount(1);
   await expect(lspStatus).toHaveAttribute("data-lsp-state", "owned");
+
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await expect(page).toHaveURL(/#\/code\?sidebar=search$/);
+  await page.locator(".code-app-shell").evaluate((element) => { element.dataset.historyMount = "stable"; });
+
+  // Keyboard and browser traversal restore both sides of the F12 jump.
+  await page.keyboard.press("Alt+ArrowLeft");
+  await expect(page).toHaveURL(/#\/code$/);
+  await expect(page.locator(".code-app-shell")).toHaveAttribute("data-history-mount", "stable");
+  await expect(page.locator(".code-tab.is-active")).toContainText("usage.go");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText(usageCursor!);
+  await page.keyboard.press("Alt+ArrowRight");
+  await expect(page).toHaveURL(/#\/code\?sidebar=search$/);
+  await expect(page.locator(".code-app-shell")).toHaveAttribute("data-history-mount", "stable");
+  await expect(page.locator(".code-tab.is-active")).toContainText("definition.go");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 3, Col 6");
+  await page.goBack();
+  await expect(page.locator(".code-app-shell")).toHaveAttribute("data-history-mount", "stable");
+  await expect(page.locator(".code-tab.is-active")).toContainText("usage.go");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText(usageCursor!);
+  await page.goForward();
+  await expect(page.locator(".code-app-shell")).toHaveAttribute("data-history-mount", "stable");
+  await expect(page.locator(".code-tab.is-active")).toContainText("definition.go");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 3, Col 6");
+
+  // A closed destination is reopened when browser history returns to it.
+  await page.getByRole("button", { name: "Close definition.go" }).click();
+  await expect(page.locator("[data-tabs-list] .code-tab")).toHaveCount(0);
+  await page.keyboard.press("Alt+ArrowLeft");
+  await expect(page.locator(".code-tab.is-active")).toContainText("usage.go");
+  await page.keyboard.press("Alt+ArrowRight");
+  await expect(page.locator(".code-tab.is-active")).toContainText("definition.go");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 3, Col 6");
+  await page.getByRole("button", { name: "Explorer", exact: true }).click();
+  await page.getByRole("textbox", { name: "Editor content" }).focus();
 
   // F12 at the definition and the explicit peek shortcuts render Monaco's
   // native reference zone without turning every result into an Echo tab.
@@ -768,6 +804,22 @@ test("runs the deterministic fake language server through Monaco and settings", 
   await expect(page.getByRole("option", { name: /Go to Symbol in Workspace/ })).not.toContainText("Ctrl+T");
   await page.keyboard.press("Escape");
 
+  // A single cursor move of at least ten lines becomes a navigation entry.
+  await page.locator(".code-tree-label", { hasText: "navigation.go" }).click();
+  await page.locator(".view-line", { hasText: "navigation line 02" }).click();
+  const nearCursor = await page.locator('[data-status="cursor"]').textContent();
+  await page.locator(".view-line", { hasText: "navigation line 25" }).click();
+  const farCursor = await page.locator('[data-status="cursor"]').textContent();
+  await page.keyboard.press("Alt+ArrowLeft");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText(nearCursor!);
+  await page.keyboard.press("Alt+ArrowRight");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText(farCursor!);
+  await page.keyboard.press("Alt+ArrowLeft");
+  await page.locator(".view-line", { hasText: "navigation line 15" }).click();
+  const branchedCursor = await page.locator('[data-status="cursor"]').textContent();
+  expect(await page.goForward()).toBeNull();
+  await expect(page.locator('[data-status="cursor"]')).toHaveText(branchedCursor!);
+
   // Continue exercising the other providers on the original document.
   await page.locator(".code-tree-label", { hasText: "main.go" }).click();
   await expect(lspStatus).toHaveAttribute("data-lsp-state", "owned");
@@ -803,6 +855,21 @@ test("runs the deterministic fake language server through Monaco and settings", 
   }, workspaceId);
   expect(persisted.config.enabledProfileIds).toEqual(["fake-e2e-lsp"]);
   expect(persisted.config.formatOnSaveTimeoutMs).toBe(3000);
+
+  // Once Code's location entries are exhausted, Back leaves the route and
+  // Forward re-enters at the latest file and caret in this browser session.
+  const boundary = await page.evaluate(() => ({
+    steps: Number(history.state?.echoCodeNavigation?.sequence || 0) + 1,
+    cursor: document.querySelector('[data-status="cursor"]')?.textContent || "",
+    tab: document.querySelector(".code-tab.is-active .code-tab-title")?.textContent || "",
+  }));
+  await page.evaluate((steps) => history.go(-steps), boundary.steps);
+  await expect(page).not.toHaveURL(/#\/code/);
+  await expect(page.locator(".app-shell")).toBeVisible();
+  await page.evaluate((steps) => history.go(steps), boundary.steps);
+  await expect(page).toHaveURL(/#\/code/);
+  await expect(page.locator(".code-tab.is-active")).toContainText(boundary.tab);
+  await expect(page.locator('[data-status="cursor"]')).toHaveText(boundary.cursor);
 
   await page.goto("/#/settings?section=lsp");
   await expect(page.getByRole("heading", { name: "Language Servers" })).toBeVisible();

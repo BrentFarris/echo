@@ -1,6 +1,7 @@
 export const CHAT_ROUTE = "/home";
 export const SETTINGS_ROUTE = "/settings";
 export const CODE_ROUTE = "/code";
+export const CODE_NAVIGATION_HISTORY_STATE_KEY = "echoCodeNavigation";
 
 export type CodeSidebar = "explorer" | "search" | "git";
 export type CodeOpenTarget = { rootId: string; path: string };
@@ -9,6 +10,13 @@ export type ChatCompletionTarget = {
   chatId: string;
   surface: "chat" | "code";
 };
+
+/** Identifies same-route browser entries owned by Echo Code navigation. */
+export function isCodeNavigationHistoryState(state: unknown): boolean {
+  if (!state || typeof state !== "object") return false;
+  const entry = (state as Record<string, unknown>)[CODE_NAVIGATION_HISTORY_STATE_KEY];
+  return Boolean(entry && typeof entry === "object" && (entry as { version?: unknown }).version === 1);
+}
 
 /** Returns the routable path while leaving hash query parameters to the view. */
 export function routePathFromHash(hash: string): string {

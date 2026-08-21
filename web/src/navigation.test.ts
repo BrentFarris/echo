@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   CHAT_ROUTE, NavigationTracker, chatCompletionRouteHash, chatCompletionTargetFromHash,
-  codeFileRouteHash, codeOpenTargetFromHash, codeRouteHash, codeSidebarFromHash, routePathFromHash,
+  codeFileRouteHash, codeOpenTargetFromHash, codeRouteHash, codeSidebarFromHash,
+  isCodeNavigationHistoryState, routePathFromHash,
 } from "./navigation";
 
 describe("view route parsing", () => {
@@ -41,6 +42,12 @@ describe("view route parsing", () => {
     expect(chatCompletionTargetFromHash(chatCompletionRouteHash(code))).toEqual(code);
     expect(chatCompletionRouteHash(code)).toContain("chat=open");
     expect(chatCompletionTargetFromHash("#/code?workspaceId=one&chatId=two")).toBeNull();
+  });
+
+  it("recognizes only versioned Echo Code browser-history entries", () => {
+    expect(isCodeNavigationHistoryState({ echoCodeNavigation: { version: 1 } })).toBe(true);
+    expect(isCodeNavigationHistoryState({ echoCodeNavigation: { version: 2 } })).toBe(false);
+    expect(isCodeNavigationHistoryState(null)).toBe(false);
   });
 });
 
