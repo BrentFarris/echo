@@ -304,6 +304,16 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(renamedTreeRow).toHaveAttribute("aria-selected", "false");
   await expect(page.locator(".view-lines")).toContainText("package main");
 
+  // Ctrl+F searches within the active file using Monaco's find widget.
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("Control+f");
+  const editorFind = page.getByRole("textbox", { name: "Find", exact: true });
+  await expect(editorFind).toBeFocused();
+  await editorFind.fill("func main");
+  await expect(page.locator(".find-widget:visible .matchesCount")).toHaveText("1 of 1");
+  await page.keyboard.press("Escape");
+  await expect(editorFind).not.toBeVisible();
+
   // Switching existing tabs updates both Monaco and the tab strip's active state.
   const mainTab = page.getByRole("tab", { name: /main\.go/ });
   const renamedTab = page.getByRole("tab", { name: /renamed\.py/ });

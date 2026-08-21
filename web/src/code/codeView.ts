@@ -2174,8 +2174,8 @@ class CodeView {
       { id: "explorer.newFile", label: "Explorer: New File", run: () => this.createUnderSelection("file") },
       { id: "explorer.newFolder", label: "Explorer: New Folder", run: () => this.createUnderSelection("directory") },
       { id: "explorer.trash", label: "Explorer: Open Echo Trash", run: () => this.showTrash() },
-      { id: "editor.find", label: "Editor: Find", keybinding: "Ctrl+F", run: () => this.editor.trigger("echo", "actions.find", null) },
-      { id: "editor.replace", label: "Editor: Replace", keybinding: "Ctrl+H", run: () => this.editor.trigger("echo", "editor.action.startFindReplaceAction", null) },
+      { id: "editor.find", label: "Editor: Find", keybinding: "Ctrl+F", run: () => this.showEditorFind() },
+      { id: "editor.replace", label: "Editor: Replace", keybinding: "Ctrl+H", run: () => this.showEditorFind(true) },
       { id: "editor.gotoLine", label: "Go to Line/Column…", keybinding: "Ctrl+G", run: () => this.editor.trigger("echo", "editor.action.gotoLine", null) },
       { id: "editor.rename", label: "Editor: Rename Symbol", keybinding: "F2", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.rename", null) },
       { id: "editor.hover", label: "Editor: Show Hover", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.showHover", {}) },
@@ -2203,6 +2203,12 @@ class CodeView {
   private activeCodeEditor(): MonacoEditor.ICodeEditor | null {
     const tab = this.activeTab();
     return tab?.kind === "diff" ? this.diffEditor?.getModifiedEditor() || null : this.editor || null;
+  }
+
+  private showEditorFind(replace = false): void {
+    const editor = this.activeCodeEditor();
+    if (!editor?.getModel()) return;
+    editor.trigger("echo", replace ? "editor.action.startFindReplaceAction" : "actions.find", null);
   }
 
   private async formatActiveDocument(selectionOnly: boolean): Promise<void> {
@@ -2610,6 +2616,7 @@ class CodeView {
       event.stopPropagation();
       activeEditor.trigger("echo", event.shiftKey ? "outdent" : "tab", null);
     } else if (modifier && event.shiftKey && key === "f") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(); }
+    else if (modifier && !event.shiftKey && key === "f" && activeEditor?.getModel()) { event.preventDefault(); event.stopPropagation(); this.showEditorFind(); }
     else if (modifier && event.shiftKey && key === "o") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSymbols(); }
     else if (modifier && event.shiftKey && key === "f12" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.peekImplementation", null); }
     else if (modifier && !event.shiftKey && key === "f12" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.goToImplementation", null); }

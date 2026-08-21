@@ -14,6 +14,7 @@ import "monaco-editor/language/typescript/monaco.contribution";
 // the editor contributions that invoke them. Import only Echo's LSP v1 UI.
 import "monaco-editor/editor/contrib/codeAction/browser/codeActionContributions.js";
 import "monaco-editor/editor/contrib/documentSymbols/browser/documentSymbols.js";
+import "monaco-editor/editor/contrib/find/browser/findController.js";
 import "monaco-editor/editor/contrib/format/browser/formatActions.js";
 import "monaco-editor/editor/contrib/gotoSymbol/browser/goToCommands.js";
 import "monaco-editor/editor/contrib/hover/browser/hoverContribution.js";
