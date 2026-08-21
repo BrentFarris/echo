@@ -96,6 +96,61 @@ func TestTraversalCreateRenameTrashRestore(t *testing.T) {
 	}
 }
 
+func TestProtectedWorkspaceMetadataCannotBeMutated(t *testing.T) {
+	service, workspaceID, rootPath, root := newTestService(t)
+	assertProtected := func(err error) {
+		t.Helper()
+		var fsError *Error
+		if !errors.As(err, &fsError) || fsError.Code != "protected_workspace_metadata" || !errors.Is(err, ErrProtectedMetadata) {
+			t.Fatalf("expected protected workspace metadata error, got %T %v", err, err)
+		}
+	}
+	configRef := FileRef{RootID: root.ID, Path: ".echo/workspace.json"}
+	iconRef := FileRef{RootID: root.ID, Path: ".echo/icon.jpg"}
+	if err := os.WriteFile(filepath.Join(rootPath, ".echo", "icon.jpg"), []byte("icon"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Save(workspaceID, SaveRequest{Ref: configRef, Content: `{}`}); err == nil {
+		t.Fatal("expected workspace config save to be rejected")
+	} else {
+		assertProtected(err)
+	}
+	if _, err := service.Rename(workspaceID, configRef, "renamed.json"); err == nil {
+		t.Fatal("expected workspace config rename to be rejected")
+	} else {
+		assertProtected(err)
+	}
+	if _, err := service.Trash(workspaceID, iconRef); err == nil {
+		t.Fatal("expected workspace icon trash to be rejected")
+	} else {
+		assertProtected(err)
+	}
+	if _, err := service.Trash(workspaceID, FileRef{RootID: root.ID, Path: ".echo"}); err == nil {
+		t.Fatal("expected .echo directory trash to be rejected")
+	} else {
+		assertProtected(err)
+	}
+	if _, err := service.ResolveEntryHostPath(workspaceID, iconRef); err == nil {
+		t.Fatal("expected mutation path resolution for icon to be rejected")
+	} else {
+		assertProtected(err)
+	}
+
+	otherPath := filepath.Join(rootPath, ".echo", "notes.txt")
+	if err := os.WriteFile(otherPath, []byte("editable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	otherRef := FileRef{RootID: root.ID, Path: ".echo/notes.txt"}
+	if _, err := service.Rename(workspaceID, otherRef, "workspace.json"); err == nil {
+		t.Fatal("expected rename into a protected name to be rejected")
+	} else {
+		assertProtected(err)
+	}
+	if _, err := service.Trash(workspaceID, otherRef); err != nil {
+		t.Fatalf("ordinary .echo content should remain mutable: %v", err)
+	}
+}
+
 func TestRejectsBinaryAndOversizedFiles(t *testing.T) {
 	service, workspaceID, rootPath, root := newTestService(t)
 	if err := os.WriteFile(filepath.Join(rootPath, "binary.dat"), []byte{1, 0, 2}, 0o644); err != nil {

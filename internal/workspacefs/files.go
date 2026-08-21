@@ -58,6 +58,9 @@ func (s *Service) Read(workspaceID string, ref FileRef) (FileSnapshot, error) {
 }
 
 func (s *Service) Save(workspaceID string, request SaveRequest) (FileSnapshot, error) {
+	if IsProtectedWorkspaceMetadataPath(request.Ref.Path) {
+		return FileSnapshot{}, protectedMetadataError()
+	}
 	if !utf8.ValidString(request.Content) {
 		return FileSnapshot{}, &Error{Code: "invalid_utf8", Message: "editor content is not valid UTF-8", Cause: ErrUnsupportedFile}
 	}
@@ -126,6 +129,9 @@ func (s *Service) Create(workspaceID string, request CreateRequest) (Entry, *Fil
 		return Entry{}, nil, err
 	}
 	child := FileRef{RootID: request.Parent.RootID, Path: path.Join(parentRelative, strings.TrimSpace(request.Name))}
+	if IsProtectedWorkspaceMetadataPath(child.Path) {
+		return Entry{}, nil, protectedMetadataError()
+	}
 	if request.Kind == "file" {
 		snapshot, err := s.Save(workspaceID, SaveRequest{Ref: child, Content: request.Content, CreateOnly: true, HasBOM: request.HasBOM})
 		if err != nil {
@@ -165,6 +171,9 @@ func (s *Service) Create(workspaceID string, request CreateRequest) (Entry, *Fil
 }
 
 func (s *Service) Rename(workspaceID string, ref FileRef, newName string) (Entry, error) {
+	if IsProtectedWorkspaceMetadataPath(ref.Path) {
+		return Entry{}, protectedMetadataError()
+	}
 	if err := validateName(strings.TrimSpace(newName)); err != nil {
 		return Entry{}, err
 	}
@@ -176,6 +185,9 @@ func (s *Service) Rename(workspaceID string, ref FileRef, newName string) (Entry
 	newRef := FileRef{RootID: ref.RootID, Path: path.Join(path.Dir(relative), strings.TrimSpace(newName))}
 	if path.Dir(relative) == "." {
 		newRef.Path = strings.TrimSpace(newName)
+	}
+	if IsProtectedWorkspaceMetadataPath(newRef.Path) {
+		return Entry{}, protectedMetadataError()
 	}
 	_, destination, _, err := s.resolveEntry(workspaceID, newRef, false, true)
 	if err != nil {

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/brent/echo/internal/workspaces"
 )
 
 func TestGetWorkspacesEmpty(t *testing.T) {
@@ -30,6 +32,55 @@ func TestGetWorkspacesEmpty(t *testing.T) {
 	}
 	if len(env.Data.Workspaces) != 0 {
 		t.Fatalf("expected no workspaces, got %d", len(env.Data.Workspaces))
+	}
+}
+
+func TestGetWorkspacesPrunesMissingConfigAndClearsActiveID(t *testing.T) {
+	s, directory := newTestServer(t)
+	main := filepath.Join(directory, "missing-config")
+	if err := os.MkdirAll(main, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := s.workspaces.Create(workspaces.CreateRequest{Name: "Missing", MainPath: main})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.workspaces.SetActive(workspace.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(main, ".echo", "workspace.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := doRequest(t, s, http.MethodGet, "/api/workspaces")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var response struct {
+		Data struct {
+			Workspaces []map[string]any `json:"workspaces"`
+			ActiveID   string           `json:"activeId"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Data.Workspaces) != 0 || response.Data.ActiveID != "" {
+		t.Fatalf("stale workspace remained in API response: %+v", response.Data)
+	}
+	stored, err := os.ReadFile(filepath.Join(directory, "echo.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted struct {
+		Workspaces        []map[string]any `json:"workspaces"`
+		ActiveWorkspaceID string           `json:"activeWorkspaceId"`
+	}
+	if err := json.Unmarshal(stored, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted.Workspaces) != 0 || persisted.ActiveWorkspaceID != "" {
+		t.Fatalf("stale workspace remained in echo.json: %+v", persisted)
 	}
 }
 

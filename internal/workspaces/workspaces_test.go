@@ -252,6 +252,96 @@ func TestActiveWorkspacePersistsAcrossStoreInstances(t *testing.T) {
 	}
 }
 
+func TestListPrunesMissingWorkspaceConfigAndClearsActiveRegistration(t *testing.T) {
+	directory := t.TempDir()
+	staleMain := filepath.Join(directory, "stale")
+	validMain := filepath.Join(directory, "valid")
+	for _, main := range []string{staleMain, validMain} {
+		if err := os.MkdirAll(main, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dataPath := filepath.Join(directory, "echo.json")
+	manager := NewManager(dataPath)
+	stale, err := manager.Create(CreateRequest{Name: "Stale", MainPath: staleMain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid, err := manager.Create(CreateRequest{Name: "Valid", MainPath: validMain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetActive(stale.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(staleMain, EchoDirName, "workspace.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := manager.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ID != valid.ID {
+		t.Fatalf("missing workspace config was still listed: %+v", listed)
+	}
+	stored, err := appdata.NewStore(dataPath).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Workspaces) != 1 || stored.Workspaces[0].ID != valid.ID {
+		t.Fatalf("missing workspace registration was not pruned: %+v", stored.Workspaces)
+	}
+	if stored.ActiveWorkspaceID != "" {
+		t.Fatalf("stale active workspace id was not cleared: %q", stored.ActiveWorkspaceID)
+	}
+	if _, ok, err := manager.Get(stale.ID); err != nil || ok {
+		t.Fatalf("pruned workspace remained addressable: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestListRetainsUnavailableAndMalformedWorkspaceRegistrations(t *testing.T) {
+	directory := t.TempDir()
+	unavailableMain := filepath.Join(directory, "unavailable")
+	malformedMain := filepath.Join(directory, "malformed")
+	for _, main := range []string{unavailableMain, malformedMain} {
+		if err := os.MkdirAll(main, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dataPath := filepath.Join(directory, "echo.json")
+	manager := NewManager(dataPath)
+	unavailable, err := manager.Create(CreateRequest{Name: "Unavailable", MainPath: unavailableMain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	malformed, err := manager.Create(CreateRequest{Name: "Malformed", MainPath: malformedMain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(unavailableMain, unavailableMain+"-moved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(malformedMain, EchoDirName, "workspace.json"), []byte(`{`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := manager.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("recoverable registrations should remain listed: %+v", listed)
+	}
+	stored, err := appdata.NewStore(dataPath).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Workspaces) != 2 || stored.Workspaces[0].ID != unavailable.ID || stored.Workspaces[1].ID != malformed.ID {
+		t.Fatalf("recoverable registrations were unexpectedly pruned: %+v", stored.Workspaces)
+	}
+}
+
 func TestCreateDeduplicatesCanonicalFolderPaths(t *testing.T) {
 	directory := t.TempDir()
 	root := filepath.Join(directory, "root")

@@ -502,8 +502,13 @@ func (r *repositoryState) refForPath(gitPath string) (*workspacefs.FileRef, bool
 }
 
 func (r *repositoryState) pathAllowed(gitPath string) bool {
-	_, ok := r.refForPath(gitPath)
-	return ok
+	ref, ok := r.refForPath(gitPath)
+	return ok && !workspacefs.IsProtectedWorkspaceMetadataPath(ref.Path)
+}
+
+func (r *repositoryState) protectedMetadataPath(gitPath string) bool {
+	ref, ok := r.refForPath(gitPath)
+	return ok && workspacefs.IsProtectedWorkspaceMetadataPath(ref.Path)
 }
 
 func (r *repositoryState) validatePaths(paths []string) ([]string, error) {
@@ -514,7 +519,11 @@ func (r *repositoryState) validatePaths(paths []string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		if !r.pathAllowed(path) {
+		ref, scoped := r.refForPath(path)
+		if scoped && workspacefs.IsProtectedWorkspaceMetadataPath(ref.Path) {
+			return nil, &Error{Code: "protected_workspace_metadata", Message: "workspace metadata is managed by Echo and cannot be changed through source control"}
+		}
+		if !scoped {
 			return nil, &Error{Code: "path_outside_workspace", Message: "Git path is outside this workspace", Cause: ErrInvalidPath}
 		}
 		key := path
@@ -534,7 +543,7 @@ func (r *repositoryState) validatePaths(paths []string) ([]string, error) {
 
 func (r *repositoryState) scopePathspecs() []string {
 	seen := make(map[string]bool)
-	paths := make([]string, 0, len(r.scopes))
+	paths := make([]string, 0, len(r.scopes)*3)
 	for _, scope := range r.scopes {
 		path := scope.RepoPrefix
 		if path == "" {
@@ -543,6 +552,20 @@ func (r *repositoryState) scopePathspecs() []string {
 		if !seen[path] {
 			seen[path] = true
 			paths = append(paths, path)
+		}
+	}
+	for _, scope := range r.scopes {
+		prefix := strings.Trim(strings.TrimSpace(scope.RepoPrefix), "/")
+		for _, metadata := range []string{".echo/workspace.json", ".echo/icon.*"} {
+			path := metadata
+			if prefix != "" {
+				path = prefix + "/" + metadata
+			}
+			pathspec := ":(exclude)" + path
+			if !seen[pathspec] {
+				seen[pathspec] = true
+				paths = append(paths, pathspec)
+			}
 		}
 	}
 	return paths

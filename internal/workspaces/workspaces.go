@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -63,6 +64,7 @@ type workspaceFile struct {
 
 const (
 	ConfigMalformed       = "invalid_workspace_config"
+	ConfigMissing         = "workspace_config_missing"
 	ConfigMainMismatch    = "workspace_main_mismatch"
 	ConfigMainUnavailable = "workspace_main_unavailable"
 )
@@ -102,16 +104,56 @@ func (m *Manager) List() ([]Workspace, error) {
 		return nil, err
 	}
 	out := make([]Workspace, 0, len(f.Workspaces))
+	missing := make(map[string]struct{})
 	for _, w := range f.Workspaces {
 		workspace, resolveErr := resolveRegisteredWorkspace(w)
 		if resolveErr != nil {
+			if isMissingWorkspaceConfig(resolveErr) {
+				missing[w.ID] = struct{}{}
+				continue
+			}
 			// Keep the workspace picker usable so a moved workspace can be
 			// rebound. Operational lookups still return the configuration error.
 			workspace = workspaceFromRegistration(w)
 		}
 		out = append(out, workspace)
 	}
+	if len(missing) > 0 {
+		if err := m.pruneMissingWorkspaceConfigs(missing); err != nil {
+			return nil, err
+		}
+	}
 	return out, nil
+}
+
+// pruneMissingWorkspaceConfigs removes registrations whose main folder still
+// exists but no longer owns workspace.json. Each candidate is resolved again
+// inside the app-data transaction so a concurrently restored or rebound
+// workspace is never removed from echo.json.
+func (m *Manager) pruneMissingWorkspaceConfigs(candidates map[string]struct{}) error {
+	return m.data.Update(func(f *appdata.File) error {
+		kept := make([]appdata.Workspace, 0, len(f.Workspaces))
+		for _, registration := range f.Workspaces {
+			if _, candidate := candidates[registration.ID]; !candidate {
+				kept = append(kept, registration)
+				continue
+			}
+			if _, err := resolveRegisteredWorkspace(registration); !isMissingWorkspaceConfig(err) {
+				kept = append(kept, registration)
+				continue
+			}
+			if f.ActiveWorkspaceID == registration.ID {
+				f.ActiveWorkspaceID = ""
+			}
+		}
+		f.Workspaces = kept
+		return nil
+	})
+}
+
+func isMissingWorkspaceConfig(err error) bool {
+	var configErr *ConfigError
+	return errors.As(err, &configErr) && configErr.Code == ConfigMissing
 }
 
 // Create registers a new workspace or opens/rebinds an existing portable
@@ -392,7 +434,7 @@ func resolveRegisteredWorkspace(w appdata.Workspace) (Workspace, error) {
 		return Workspace{}, err
 	}
 	if !exists {
-		return Workspace{}, &ConfigError{Code: ConfigMalformed, Message: "workspace config is missing", Cause: os.ErrNotExist}
+		return Workspace{}, &ConfigError{Code: ConfigMissing, Message: "workspace config is missing", Cause: os.ErrNotExist}
 	}
 	return workspaceFromFile(w.ID, w.IconExt, echoDir, mainPath, wf)
 }

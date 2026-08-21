@@ -116,6 +116,76 @@ func TestDiscoveryStatusStageUnstageAndTrash(t *testing.T) {
 	}
 }
 
+func TestSourceControlProtectsEchoManagedWorkspaceMetadata(t *testing.T) {
+	requireGit(t)
+	root := t.TempDir()
+	dataPath := filepath.Join(t.TempDir(), "echo.json")
+	manager := workspaces.NewManager(dataPath)
+	workspace, err := manager.Create(workspaces.CreateRequest{Name: "protected", MainPath: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitTestCommand(t, root, "init", "-b", "main")
+	writeTestFile(t, root, ".echo/icon.jpg", "icon")
+	writeTestFile(t, root, "ordinary.txt", "ordinary")
+	fs := workspacefs.New(manager, dataPath)
+	defer fs.Close()
+	service := New(manager, fs)
+	defer service.Close()
+	repositories, err := service.Repositories(context.Background(), workspace.ID)
+	if err != nil || len(repositories) != 1 {
+		t.Fatalf("discover repository: %#v err=%v", repositories, err)
+	}
+	repositoryID := repositories[0].ID
+	status, err := service.Status(context.Background(), workspace.ID, repositoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Unstaged) != 1 || status.Unstaged[0].Path != "ordinary.txt" || status.TotalChangeCount != 1 {
+		t.Fatalf("managed metadata leaked into source control status: %#v", status)
+	}
+
+	_, err = service.Action(context.Background(), workspace.ID, repositoryID, ActionRequest{
+		RequestID: "stage-protected", Action: "stage", Paths: []string{".echo/workspace.json"},
+	})
+	var gitError *Error
+	if !errors.As(err, &gitError) || gitError.Code != "protected_workspace_metadata" {
+		t.Fatalf("expected explicit protected metadata rejection, got %T %v", err, err)
+	}
+	if _, err := service.Action(context.Background(), workspace.ID, repositoryID, ActionRequest{
+		RequestID: "stage-all-safe", Action: "stage_all",
+	}); err != nil {
+		t.Fatalf("stage all: %v", err)
+	}
+	tracked := gitTestCommand(t, root, "ls-files", "--cached")
+	if !strings.Contains(tracked, "ordinary.txt") || strings.Contains(tracked, ".echo/workspace.json") || strings.Contains(tracked, ".echo/icon.jpg") {
+		t.Fatalf("stage all included managed metadata: %q", tracked)
+	}
+
+	writeTestFile(t, root, "discard-me.txt", "discard")
+	if _, err := service.Action(context.Background(), workspace.ID, repositoryID, ActionRequest{
+		RequestID: "discard-all-safe", Action: "discard_all", Confirmed: true,
+	}); err != nil {
+		t.Fatalf("discard all: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "discard-me.txt")); !os.IsNotExist(err) {
+		t.Fatalf("ordinary untracked file was not discarded: %v", err)
+	}
+	for _, relative := range []string{".echo/workspace.json", ".echo/icon.jpg"} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative))); err != nil {
+			t.Fatalf("discard all removed protected metadata %s: %v", relative, err)
+		}
+	}
+
+	gitTestCommand(t, root, "add", "-f", ".echo/workspace.json")
+	_, err = service.Action(context.Background(), workspace.ID, repositoryID, ActionRequest{
+		RequestID: "commit-protected", Action: "commit_staged", Message: "must not commit",
+	})
+	if !errors.As(err, &gitError) || gitError.Code != "protected_workspace_metadata" {
+		t.Fatalf("expected commit with staged metadata to be rejected, got %T %v", err, err)
+	}
+}
+
 func TestStagedAndUnstagedDiffs(t *testing.T) {
 	service, fs, workspaceID, root := newGitServiceTestWorkspace(t)
 	defer service.Close()

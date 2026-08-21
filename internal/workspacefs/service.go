@@ -24,14 +24,38 @@ import (
 const MaxEditableBytes int64 = 10 << 20
 
 var (
-	ErrNotFound        = errors.New("file or folder not found")
-	ErrOutsideRoot     = errors.New("path escapes the workspace root")
-	ErrConflict        = errors.New("file changed on disk")
-	ErrAlreadyExists   = errors.New("file or folder already exists")
-	ErrUnsupportedFile = errors.New("file is not editable text")
-	ErrTooLarge        = errors.New("file is too large to edit")
-	ErrInvalidPath     = errors.New("invalid workspace path")
+	ErrNotFound          = errors.New("file or folder not found")
+	ErrOutsideRoot       = errors.New("path escapes the workspace root")
+	ErrConflict          = errors.New("file changed on disk")
+	ErrAlreadyExists     = errors.New("file or folder already exists")
+	ErrUnsupportedFile   = errors.New("file is not editable text")
+	ErrTooLarge          = errors.New("file is too large to edit")
+	ErrInvalidPath       = errors.New("invalid workspace path")
+	ErrProtectedMetadata = errors.New("workspace metadata is managed by Echo")
 )
+
+// IsProtectedWorkspaceMetadataPath reports whether a workspace-relative path
+// identifies configuration that Echo must keep in place to resolve and render
+// the workspace. Other .echo content, such as skills, remains user-editable.
+func IsProtectedWorkspaceMetadataPath(value string) bool {
+	normalized := path.Clean(strings.TrimSpace(strings.ReplaceAll(value, "\\", "/")))
+	parts := strings.Split(normalized, "/")
+	if len(parts) == 1 {
+		return strings.EqualFold(parts[0], workspaces.EchoDirName)
+	}
+	if len(parts) != 2 || !strings.EqualFold(parts[0], workspaces.EchoDirName) {
+		return false
+	}
+	name := strings.ToLower(parts[1])
+	return name == "workspace.json" || (strings.HasPrefix(name, "icon.") && len(name) > len("icon."))
+}
+
+func protectedMetadataError() error {
+	return &Error{
+		Code: "protected_workspace_metadata", Message: "workspace metadata is managed by Echo and cannot be modified here",
+		Cause: ErrProtectedMetadata,
+	}
+}
 
 // Error carries a stable API error code without exposing unsafe filesystem
 // implementation details to the browser.
@@ -481,6 +505,9 @@ func (s *Service) ResolveExistingHostPath(workspaceID string, ref FileRef, allow
 // ResolveEntryHostPath applies the same canonical parent confinement without
 // following the final component, allowing safe create/rename/delete callers.
 func (s *Service) ResolveEntryHostPath(workspaceID string, ref FileRef) (string, error) {
+	if IsProtectedWorkspaceMetadataPath(ref.Path) {
+		return "", protectedMetadataError()
+	}
 	_, resolved, _, err := s.resolveEntry(workspaceID, ref, false, true)
 	return resolved, err
 }
