@@ -1132,7 +1132,7 @@ func (f *videoToolStreamer) lastRequest() llm.ChatRequest {
 	return f.requests[len(f.requests)-1]
 }
 
-func TestChatToolCallingFeedsVideoToModel(t *testing.T) {
+func TestChatToolCallingKeepsVideoTextOnly(t *testing.T) {
 	s, _ := newTestServer(t)
 
 	wsDir := t.TempDir()
@@ -1191,23 +1191,26 @@ func TestChatToolCallingFeedsVideoToModel(t *testing.T) {
 		t.Fatal("expected chat_done")
 	}
 
-	// The follow-up request must carry the video as a user content part so the
-	// model can see it.
+	// Phase 1 contract: video tool results stay text-only in the LLM context
+	// (no base64 video_url content part), and video-only turns must not flip
+	// the chat onto the vision endpoint.
 	last := fake.lastRequest()
-	var foundVideo bool
+	var foundText bool
 	for _, m := range last.Messages {
-		if m.Role == llm.RoleUser && len(m.ContentParts) > 0 {
-			for _, part := range m.ContentParts {
-				if part.Type == "video_url" && part.VideoURL != nil && strings.HasPrefix(part.VideoURL.URL, "data:video/mp4;base64,") {
-					foundVideo = true
-				}
+		if !strings.Contains(m.Content, "Video returned by tool filesystem_read_video") {
+			continue
+		}
+		for _, part := range m.ContentParts {
+			if part.VideoURL != nil {
+				t.Fatalf("video data URL leaked into LLM context: %#v", part)
 			}
 		}
+		foundText = true
 	}
-	if !foundVideo {
-		t.Fatal("expected the video to be fed back to the model as a video_url content part")
+	if !foundText {
+		t.Fatal("expected text-only video tool result in follow-up request")
 	}
-	if transcript := loadActiveTabTranscript(t, ws); !transcript.Vision {
-		t.Fatal("reading a video did not persist Vision routing for the chat")
+	if transcript := loadActiveTabTranscript(t, ws); transcript.Vision {
+		t.Fatal("reading a video must not persist Vision routing for the chat")
 	}
 }

@@ -13,6 +13,7 @@ import type { GitChange, GitDiffDocument, GitRepository } from "./gitTypes";
 import { GitView } from "./gitView";
 import { buildCodeChatEditorContext, runCodeChatSavePreflight } from "./codeChatContext";
 import { loadSession, saveSession } from "./persistence";
+import { previewKindForPath, type PreviewKind } from "./preview";
 import {
   CODE_ROUTE, chatCompletionTargetFromHash, codeOpenTargetFromHash, codeRouteHash,
   codeSidebarFromHash, routePathFromHash, type ChatCompletionTarget, type CodeSidebar,
@@ -34,6 +35,7 @@ import {
   choiceDialog, closeContextMenu, copyText, escapeHTML, installMenuDismissal,
   promptDialog, showContextMenu, toast,
 } from "./ui";
+import { attachVideoVolumeControl } from "../mediaVolume";
 
 type Workspace = { id: string; name: string; mainPath: string; folders: string[]; iconExt?: string };
 
@@ -54,7 +56,7 @@ type TreeNode = {
 };
 
 type OpenTab = {
-  kind: "file" | "diff";
+  kind: "file" | "diff" | "media";
   id: string;
   ref: FileRef | null;
   title: string;
@@ -70,6 +72,7 @@ type OpenTab = {
   viewState: MonacoEditor.ICodeEditorViewState | null;
   changeDisposable: { dispose(): void };
   applying: boolean;
+  media?: { kind: PreviewKind; url: string };
   diff?: {
     repository: GitRepository;
     scope: "staged" | "unstaged" | "commit" | "stash";
@@ -303,6 +306,7 @@ class CodeView {
                     <button type="button" title="Toggle Inline Diff" aria-label="Toggle Inline Diff" data-diff-action="layout"><span class="codicon codicon-layout"></span></button>
                   </div>
                   <div class="code-monaco-diff-host" data-monaco-diff-host hidden></div>
+                  <div class="code-media-preview" data-media-preview-host hidden></div>
                   <div class="code-diff-unavailable" data-diff-unavailable hidden></div>
                 </section>
                 <footer class="code-statusbar" data-statusbar>
@@ -778,7 +782,8 @@ class CodeView {
 
   private fileIcon(name: string): string {
     const extension = name.split(".").pop()?.toLowerCase();
-    if (["png", "jpg", "jpeg", "gif", "svg", "webp"].includes(extension || "")) return "file-media";
+    if (["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico", "avif"].includes(extension || "")) return "file-media";
+    if (["mp4", "m4v", "webm", "ogv"].includes(extension || "")) return "play-circle";
     if (["json", "yaml", "yml", "toml", "ini"].includes(extension || "")) return "json";
     if (["md", "markdown", "txt"].includes(extension || "")) return "markdown";
     return "file-code";
@@ -1002,6 +1007,11 @@ class CodeView {
 
   private async openFile(ref: FileRef, pin: boolean, focusEditor = true): Promise<void> {
     if (!this.workspace) return;
+    const previewKind = previewKindForPath(ref.path);
+    if (previewKind) {
+      await this.openMedia(ref, pin, focusEditor);
+      return;
+    }
     const existing = this.tabs.find((tab) => tab.ref && refKey(tab.ref) === refKey(ref));
     if (existing) {
       if (pin) existing.pinned = true;
@@ -1047,6 +1057,55 @@ class CodeView {
       if (choice === "reload") await this.openFile(ref, pin, focusEditor);
       if (choice === "reveal") await this.reveal(ref);
     }
+  }
+
+  // Media tabs carry a placeholder text model so the shared tab machinery
+  // (view state, persistence, disposal) works unchanged; the visible surface
+  // is an <img>/<video> fed by the /fs/media stream.
+  private mediaStubModel(ref: FileRef): MonacoEditor.ITextModel {
+    const uri = monaco.Uri.from({
+      scheme: "echo-media", authority: this.workspace?.id || "workspace",
+      path: `/${encodeURIComponent(ref.rootId)}/${ref.path.split("/").map(encodeURIComponent).join("/")}`,
+    });
+    const model = monaco.editor.getModel(uri) || monaco.editor.createModel("", "plaintext", uri);
+    this.retainModel(model);
+    return model;
+  }
+
+  private async openMedia(ref: FileRef, pin: boolean, focusEditor = true): Promise<void> {
+    if (!this.workspace) return;
+    const kind = previewKindForPath(ref.path);
+    if (!kind) return;
+    const existing = this.tabs.find((tab) => tab.ref && refKey(tab.ref) === refKey(ref));
+    if (existing) {
+      if (pin) existing.pinned = true;
+      this.activateTab(existing.id, focusEditor);
+      this.renderTabs();
+      this.sendFilesystemSubscription();
+      return;
+    }
+    const tab: OpenTab = {
+      kind: "media", id: randomUUID(), ref, title: ref.path.split("/").pop() || ref.path,
+      hostPath: "", pinned: pin, dirty: false, deleted: false, conflict: false, revision: "",
+      hasBom: false, eol: "lf", model: this.mediaStubModel(ref), viewState: null,
+      changeDisposable: { dispose() {} }, applying: false,
+      media: { kind, url: editorAPI.mediaURL(this.workspace.id, ref) },
+    };
+    if (!pin) {
+      const previewIndex = this.tabs.findIndex((candidate) => !candidate.pinned && !candidate.dirty);
+      if (previewIndex >= 0) {
+        this.disposeTab(this.tabs[previewIndex]);
+        this.tabs.splice(previewIndex, 1, tab);
+      } else {
+        this.tabs.push(tab);
+      }
+    } else {
+      this.tabs.push(tab);
+    }
+    this.activateTab(tab.id, focusEditor);
+    this.renderTabs();
+    this.schedulePersist();
+    this.sendFilesystemSubscription();
   }
 
   private async openGitDiff(
@@ -1203,6 +1262,10 @@ class CodeView {
       this.diffEditor.setModel({ original: next.diff.originalModel, modified: next.model });
       if (next.diff.viewState) this.diffEditor.restoreViewState(next.diff.viewState);
       if (focusEditor) this.diffEditor.getModifiedEditor().focus();
+    } else if (next.kind === "media") {
+      this.editor.setModel(null);
+      this.diffEditor.setModel(null);
+      this.renderMediaPreview(next);
     } else {
       this.diffEditor.setModel(null);
       this.editor.setModel(next.model);
@@ -1226,7 +1289,7 @@ class CodeView {
     if (!list) return;
     list.innerHTML = this.tabs.map((tab) => `
       <div class="code-tab ${tab.id === this.activeTabId ? "is-active" : ""} ${!tab.pinned ? "is-preview" : ""}" role="tab" aria-selected="${tab.id === this.activeTabId}" tabindex="${tab.id === this.activeTabId ? 0 : -1}" data-tab-id="${escapeHTML(tab.id)}" title="${escapeHTML(tab.hostPath || tab.title)}">
-        <span class="codicon codicon-${tab.kind === "diff" ? "diff" : "file-code"} code-tab-icon"></span>
+        <span class="codicon codicon-${tab.kind === "diff" ? "diff" : tab.kind === "media" ? (tab.media?.kind === "video" ? "play-circle" : "file-media") : "file-code"} code-tab-icon"></span>
         <span class="code-tab-title">${escapeHTML(tab.title)}</span>
         ${tab.conflict ? `<span class="codicon codicon-warning code-tab-conflict" title="Changed on disk"></span>` : ""}
         ${tab.deleted ? `<span class="codicon codicon-trash code-tab-conflict" title="Deleted on disk"></span>` : ""}
@@ -1263,7 +1326,7 @@ class CodeView {
 
   private renderStatus(): void {
     const tab = this.activeTab();
-    const position = tab?.kind === "diff" ? this.diffEditor?.getModifiedEditor().getPosition() : this.editor?.getPosition();
+    const position = tab?.kind === "diff" ? this.diffEditor?.getModifiedEditor().getPosition() : tab && tab.kind !== "media" ? this.editor?.getPosition() : undefined;
     const cursor = this.root.querySelector<HTMLElement>("[data-status=cursor]");
     const eol = this.root.querySelector<HTMLElement>("[data-status=eol]");
     const language = this.root.querySelector<HTMLElement>("[data-status=language]");
@@ -1288,15 +1351,18 @@ class CodeView {
     const placeholder = this.root.querySelector<HTMLElement>("[data-editor-placeholder]");
     const host = this.root.querySelector<HTMLElement>("[data-monaco-host]");
     const diffHost = this.root.querySelector<HTMLElement>("[data-monaco-diff-host]");
+    const mediaHost = this.root.querySelector<HTMLElement>("[data-media-preview-host]");
     const toolbar = this.root.querySelector<HTMLElement>("[data-diff-toolbar]");
     const unavailable = this.root.querySelector<HTMLElement>("[data-diff-unavailable]");
     const tab = this.activeTab();
     const hasTab = Boolean(tab);
     const isDiff = tab?.kind === "diff" && Boolean(tab.diff);
+    const isMedia = tab?.kind === "media" && Boolean(tab.media);
     const diffUnavailable = isDiff && Boolean(tab?.diff?.unavailableReason);
     if (placeholder) placeholder.hidden = hasTab;
-    if (host) host.hidden = !hasTab || isDiff;
+    if (host) host.hidden = !hasTab || isDiff || isMedia;
     if (diffHost) diffHost.hidden = !isDiff || diffUnavailable;
+    if (mediaHost) mediaHost.hidden = !isMedia;
     if (toolbar) toolbar.hidden = !isDiff || diffUnavailable;
     if (unavailable) {
       unavailable.hidden = !diffUnavailable;
@@ -1306,6 +1372,42 @@ class CodeView {
     if (label && isDiff) label.textContent = tab?.diff?.editable ? "Working Tree (editable)" : "Read-only Git snapshot";
     this.editor?.layout();
     this.diffEditor?.layout();
+  }
+
+  private renderMediaPreview(tab: OpenTab): void {
+    const host = this.root.querySelector<HTMLElement>("[data-media-preview-host]");
+    if (!host || !tab.media) return;
+    const url = `${tab.media.url}&v=${Date.now()}`;
+    const icon = tab.media.kind === "video" ? "play-circle" : "file-media";
+    const noun = tab.media.kind === "video" ? "video" : "image";
+    const mediaTag = tab.media.kind === "video"
+      ? `<video src="${escapeHTML(url)}" controls loop playsinline muted></video>`
+      : `<img src="${escapeHTML(url)}" alt="${escapeHTML(tab.title)}">`;
+    host.innerHTML = `
+      <div class="code-media-frame">
+        ${mediaTag}
+        <div class="code-media-volume-slot"></div>
+        <div class="code-media-error" hidden>
+          <span class="codicon codicon-${icon}"></span>
+          <h2>This ${noun} cannot be displayed</h2>
+          <p>The file may be larger than the preview limit or its container format is not playable.</p>
+        </div>
+      </div>`;
+    const element = host.querySelector<HTMLVideoElement | HTMLImageElement>(tab.media.kind === "video" ? "video" : "img");
+    const errorPanel = host.querySelector<HTMLElement>(".code-media-error");
+    const volumeSlot = host.querySelector<HTMLElement>(".code-media-volume-slot");
+    if (tab.media.kind === "video" && element instanceof HTMLVideoElement && volumeSlot) {
+      volumeSlot.appendChild(attachVideoVolumeControl(element, "code-media-volume"));
+    }
+    // Both <img> and <video> raise "error" when the stream fails (missing
+    // file, oversized refusal, unplayable container), so one handler covers
+    // every failure mode.
+    element?.addEventListener("error", () => {
+      if (!element || !errorPanel) return;
+      element.hidden = true;
+      errorPanel.hidden = false;
+      if (volumeSlot) volumeSlot.hidden = true;
+    }, { once: true });
   }
 
   private updateDiffLayoutState(): void {
@@ -1378,6 +1480,10 @@ class CodeView {
   private async saveTab(tab = this.activeTab()): Promise<boolean> {
     if (!tab || !this.workspace) return false;
     if (tab.kind === "diff") return this.saveEditableDiff(tab);
+    if (tab.kind === "media") {
+      toast("Media previews are read-only.");
+      return false;
+    }
     if (!tab.ref) return this.saveUntitled(tab);
     if (tab.deleted) {
       const choice = await choiceDialog({
@@ -2702,9 +2808,11 @@ class CodeView {
     if (active) {
       this.activateTab(active.id);
       const persisted = saved.tabs.find((tab) => tab.id === active.id);
-      const restoredEditor = active.kind === "diff" ? this.diffEditor.getModifiedEditor() : this.editor;
-      if (persisted?.cursor) restoredEditor.setPosition(persisted.cursor);
-      if (typeof persisted?.scrollTop === "number") restoredEditor.setScrollTop(persisted.scrollTop);
+      if (active.kind !== "media") {
+        const restoredEditor = active.kind === "diff" ? this.diffEditor.getModifiedEditor() : this.editor;
+        if (persisted?.cursor) restoredEditor.setPosition(persisted.cursor);
+        if (typeof persisted?.scrollTop === "number") restoredEditor.setScrollTop(persisted.scrollTop);
+      }
     }
     this.restoredTreeScrollTop = saved.treeScrollTop || 0;
   }
@@ -2712,6 +2820,19 @@ class CodeView {
   private async restoreTab(persisted: PersistedTab): Promise<void> {
     if (!this.workspace) return;
     try {
+      if (persisted.kind === "media") {
+        const ref = persisted.ref;
+        if (!ref) return;
+        const existing = this.tabs.find((candidate) => candidate.ref && refKey(candidate.ref) === refKey(ref));
+        if (existing) {
+          existing.pinned = persisted.pinned;
+          return;
+        }
+        await this.openMedia(ref, true, false);
+        const opened = this.tabs.find((candidate) => candidate.ref && refKey(candidate.ref) === refKey(ref));
+        if (opened) opened.pinned = persisted.pinned;
+        return;
+      }
       if (persisted.kind === "diff" && persisted.diff) {
         await this.openGitDiff(
           persisted.diff.repository,
@@ -2937,6 +3058,7 @@ class CodeView {
   private async reloadCleanTab(tab: OpenTab): Promise<void> {
     const ref = this.worktreeRef(tab);
     if (!this.workspace || !ref || tab.dirty) return;
+    if (tab.kind === "media") return;
     try {
       const snapshot = await editorAPI.readFile(this.workspace.id, ref);
       tab.deleted = false;

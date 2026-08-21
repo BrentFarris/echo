@@ -3,7 +3,9 @@ package comfyui
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -19,6 +21,17 @@ type TemplateParams struct {
 	Steps          int
 	CfgScale       float64
 	Seed           int64
+	// Video generation params.
+	Frames int     `json:"-"` // number of frames for video output (default 16)
+	FPS    float64 `json:"-"` // frames per second for video output (default 8.0)
+	Format string  `json:"-"` // output format: "mp4", "gif" (default "mp4")
+	// Duration-driven video params (e.g., MiniMax H3 workflows): the workflow
+	// computes frame count from a duration in seconds and resolves resolution
+	// via an aspect ratio + megapixels selector, so callers never hand-compute
+	// frames or dimensions.
+	Duration    float64 `json:"-"` // video duration in seconds (default 5)
+	AspectRatio string  `json:"-"` // ResolutionSelector aspect ratio label (default "16:9 (Widescreen)")
+	Megapixels  float64 `json:"-"` // ResolutionSelector target megapixels (default 0.4)
 }
 
 // MaxWorkflowJSONBytes caps inline workflowJSON at 500KB.
@@ -177,12 +190,55 @@ func buildReplaceMap(params TemplateParams) map[string]string {
 	}
 	m["CFG_SCALE"] = strconv.FormatFloat(cfgScale, 'f', -1, 64)
 
-	// ComfyUI requires seed >= 0; use a large random-ish value instead of -1
+	// ComfyUI requires seed >= 0; use a random value for negative seeds.
+	// Bounded to 2^53 so the seed survives JSON float64 round-tripping.
 	seed := params.Seed
 	if seed < 0 {
-		seed = 847291053
+		seed = rand.Int63n(1 << 53)
 	}
 	m["SEED"] = strconv.FormatInt(seed, 10)
+
+	// Video-specific template variables.
+	frames := params.Frames
+	if frames <= 0 {
+		frames = 16
+	}
+	m["FRAMES"] = strconv.Itoa(frames)
+
+	fps := params.FPS
+	if fps <= 0 {
+		fps = 8.0
+	}
+	m["FPS"] = strconv.FormatFloat(fps, 'f', -1, 64)
+
+	format := strings.TrimSpace(params.Format)
+	if format == "" {
+		format = "mp4"
+	} else if !slices.Contains([]string{"mp4", "gif"}, strings.ToLower(format)) {
+		format = "mp4" // default for invalid values
+	} else {
+		format = strings.ToLower(format)
+	}
+	m["FORMAT"] = format
+
+	// Duration-driven video template variables (e.g., MiniMax H3 workflows).
+	duration := params.Duration
+	if duration <= 0 {
+		duration = 5.0
+	}
+	m["DURATION"] = strconv.FormatFloat(duration, 'f', -1, 64)
+
+	aspectRatio := strings.TrimSpace(params.AspectRatio)
+	if aspectRatio == "" {
+		aspectRatio = "16:9 (Widescreen)"
+	}
+	m["ASPECT_RATIO"] = aspectRatio
+
+	megapixels := params.Megapixels
+	if megapixels <= 0 {
+		megapixels = 0.4
+	}
+	m["MEGAPIXELS"] = strconv.FormatFloat(megapixels, 'f', -1, 64)
 	return m
 }
 

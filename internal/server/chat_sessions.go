@@ -1830,6 +1830,11 @@ type assistantStreamResult struct {
 
 func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings llm.Settings, prefix, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint, turnID string, scopes *tools.ToolScopeChecker, mode agentmodes.Mode, researchEnabled bool) {
 	questionRounds := 0
+	// Media produced by tools during this turn, keyed by the provider-reported
+	// image/video ID. Lets later tool calls in the same turn (save_image,
+	// save_video) resolve the payload without re-fetching from ComfyUI.
+	generatedImages := make(map[string]tools.AttachedImage)
+	generatedVideos := make(map[string]tools.AttachedVideo)
 	emptyAssistantRetries := 0
 	transientStreamRetries := 0
 	planMode := mode.ID == agentmodes.PlanID
@@ -2098,16 +2103,16 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			case call.Function.Name == contextHistorySearchToolName:
 				result = s.executeContextHistorySearch(canonical, checkpoint, json.RawMessage(call.Function.Arguments))
 			default:
-				toolCtx := s.toolContext(ctx, scopes)
-				toolCtx.FileChanges = func(changes []tools.FileChange) {
-					fileChanges = append(fileChanges, compactFileChanges(changes, toolCtx.WorkspaceRoots)...)
-				}
-				toolCtx.ResearchAgents = research
-				if tools.IsResearchAgentToolName(call.Function.Name) && research == nil {
-					result = tools.ExecutionResult{Tool: call.Function.Name, Error: &tools.ExecutionError{Code: "research_agents_disabled", Message: "research agents are disabled for this chat turn"}}
-				} else {
-					result = s.manager.server.tools.Execute(toolCtx, call.Function.Name, json.RawMessage(call.Function.Arguments))
-				}
+			toolCtx := s.toolContext(ctx, scopes, generatedImages, generatedVideos)
+			toolCtx.FileChanges = func(changes []tools.FileChange) {
+				fileChanges = append(fileChanges, compactFileChanges(changes, toolCtx.WorkspaceRoots)...)
+			}
+			toolCtx.ResearchAgents = research
+			if tools.IsResearchAgentToolName(call.Function.Name) && research == nil {
+				result = tools.ExecutionResult{Tool: call.Function.Name, Error: &tools.ExecutionError{Code: "research_agents_disabled", Message: "research agents are disabled for this chat turn"}}
+			} else {
+				result = s.manager.server.tools.Execute(toolCtx, call.Function.Name, json.RawMessage(call.Function.Arguments))
+			}
 			}
 			data, marshalErr := json.Marshal(result)
 			resultSuccess := result.Success
@@ -2124,6 +2129,11 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				canonical = append(canonical, videoMessage)
 				visualResult = true
 			}
+			// Media produced by the tool, extracted via provider interfaces so
+			// any media-emitting tool reaches the chat UI without parsing its
+			// private result JSON. Budgeted against what this assistant turn
+			// has already recorded (computed under the lock below).
+			var toolImages, toolVideos []sessions.MediaAttachment
 
 			s.mu.Lock()
 			if !s.isActiveLocked(turnID) {
@@ -2131,6 +2141,10 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				return
 			}
 			step = &s.active.AssistantTurns[len(s.active.AssistantTurns)-1]
+			toolImages, toolVideos = extractToolMedia(result, len(step.Images), len(step.Videos))
+			step.Images = append(step.Images, toolImages...)
+			step.Videos = append(step.Videos, toolVideos...)
+			s.trackGeneratedMediaLocked(generatedImages, generatedVideos, result)
 			if len(fileChanges) > 0 {
 				s.active.FileChanges = append(s.active.FileChanges, fileChanges...)
 			}
@@ -2157,6 +2171,12 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				"callId": callID, "callOrder": callOrder, "tool": call.Function.Name,
 				"success": resultSuccess, "content": string(data),
 			}
+			if len(toolImages) > 0 {
+				toolResultEvent["images"] = toolImages
+			}
+			if len(toolVideos) > 0 {
+				toolResultEvent["videos"] = toolVideos
+			}
 			if call.Function.Name == tools.AskUserQuestionsToolName {
 				toolResultEvent["answers"] = resolvedAnswers
 				toolResultEvent["skipped"] = questionsSkipped
@@ -2170,6 +2190,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				"success": resultSuccess, "result": json.RawMessage(data), "completedAt": toolCompletedAt,
 				"durationMs": toolCompletedAt.Sub(toolStartedAt).Milliseconds(),
 				"answers":    resolvedAnswers, "skipped": questionsSkipped,
+				"media": toolMediaSummary(toolImages, toolVideos),
 			})
 			s.emitLocked(toolResultEvent)
 			s.mu.Unlock()
@@ -2177,7 +2198,11 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				researchFinalizationAttempts = 0
 			}
 		}
-		if visualResult {
+		// Vision re-routing is gated on images only: video tool results are
+		// text-only in the LLM context (see toolResultVideoMessage), so a turn
+		// that produced just videos must not flip the chat onto the vision
+		// endpoint.
+		if visualResult && hasImageMedia(messages) {
 			s.mu.Lock()
 			if !s.isActiveLocked(turnID) {
 				s.mu.Unlock()
@@ -2376,7 +2401,7 @@ func (s *chatSession) isBusyLocked() bool {
 	return s.active != nil || s.idleCompressionRunning
 }
 
-func (s *chatSession) toolContext(ctx context.Context, scopes *tools.ToolScopeChecker) tools.ExecutionContext {
+func (s *chatSession) toolContext(ctx context.Context, scopes *tools.ToolScopeChecker, generatedImages map[string]tools.AttachedImage, generatedVideos map[string]tools.AttachedVideo) tools.ExecutionContext {
 	settings := s.manager.server.settings
 	roots := s.manager.server.confinedToolRoots(s.workspace)
 	return tools.ExecutionContext{
@@ -2384,11 +2409,48 @@ func (s *chatSession) toolContext(ctx context.Context, scopes *tools.ToolScopeCh
 		ResolveWorkspacePath:      s.manager.server.toolPathResolver(s.workspace.ID, roots, false),
 		ResolveWorkspaceChildPath: s.manager.server.toolPathResolver(s.workspace.ID, roots, true),
 		ComfyuiURL:                settings.ComfyuiURL, ComfyuiDefaultCheckpoint: settings.ComfyuiDefaultCheckpoint,
-		ComfyuiTxt2imgWorkflow: settings.ComfyuiTxt2imgWorkflow, ComfyuiImg2imgWorkflow: settings.ComfyuiImg2imgWorkflow,
-		AttachedImages: s.latestAttachedImages(), ToolScopes: scopes,
-		AgentModes:      agentModeToolProvider{manager: s.manager.server.modes, workspacePath: s.workspace.MainPath},
-		WorkspaceSkills: s.manager.server.workspaceSkills(s.workspace),
-		PluginAuthoring: s.manager.server.pluginAuthoring(s.workspace.ID, roots),
+		ComfyuiTxt2imgWorkflow: settings.ComfyuiTxt2imgWorkflow,
+		ComfyuiImg2imgWorkflow: settings.ComfyuiImg2imgWorkflow,
+		ComfyuiVideoWorkflow:   settings.ComfyuiVideoWorkflow,
+		AttachedImages:         s.latestAttachedImages(),
+		GeneratedImages:        generatedImages,
+		GeneratedVideos:        generatedVideos,
+		ToolScopes:             scopes,
+		AgentModes:             agentModeToolProvider{manager: s.manager.server.modes, workspacePath: s.workspace.MainPath},
+		WorkspaceSkills:        s.manager.server.workspaceSkills(s.workspace),
+		PluginAuthoring:        s.manager.server.pluginAuthoring(s.workspace.ID, roots),
+	}
+}
+
+// trackGeneratedMediaLocked records media-producing tool results under their
+// provider-reported IDs so subsequent tool calls in the same turn
+// (save_image, save_video) can resolve the payload from memory. The maps are
+// owned by the active turn's run loop; this must be called with s.mu held.
+func (s *chatSession) trackGeneratedMediaLocked(generatedImages map[string]tools.AttachedImage, generatedVideos map[string]tools.AttachedVideo, result tools.ExecutionResult) {
+	if !result.Success || result.Output == nil {
+		return
+	}
+	if provider, ok := result.Output.(tools.LLMImageContentProvider); ok {
+		if image, ok := provider.LLMImageContent(); ok && strings.TrimSpace(image.DataURL) != "" {
+			if idProvider, ok := result.Output.(tools.ImageIDProvider); ok {
+				if imageID := idProvider.GetImageID(); imageID != "" {
+					generatedImages[imageID] = tools.AttachedImage{Name: image.Name, MediaType: image.MediaType, DataURL: image.DataURL}
+					return
+				}
+			}
+			logf("tool %s returned image content but no resolvable image ID", result.Tool)
+		}
+	}
+	if provider, ok := result.Output.(tools.LLMVideoContentProvider); ok {
+		if video, ok := provider.LLMVideoContent(); ok && strings.TrimSpace(video.DataURL) != "" {
+			if idProvider, ok := result.Output.(tools.VideoIDProvider); ok {
+				if videoID := idProvider.VideoID(); videoID != "" {
+					generatedVideos[videoID] = tools.AttachedVideo{Name: video.Name, MediaType: video.MediaType, Bytes: video.Bytes, DataURL: video.DataURL}
+					return
+				}
+			}
+			logf("tool %s returned video content but no resolvable video ID", result.Tool)
+		}
 	}
 }
 
@@ -2432,7 +2494,7 @@ func sanitizeMessages(messages []llm.Message) []llm.Message {
 		if message.Role == llm.RoleSystem && (message.Name == "echo-agent-mode" || message.Name == "echo-code-context") {
 			continue
 		}
-		message.ContentParts = nil
+		message = stripMediaContentParts(message)
 		message.ToolCalls = append([]llm.ToolCall(nil), message.ToolCalls...)
 		out = append(out, message)
 	}
@@ -2462,6 +2524,9 @@ func (s *Server) agentModeSystemMessage(workspace workspaces.Workspace, mode age
 	}
 	if mode.ID == agentmodes.PlanID {
 		prompt.WriteString("\n\nAfter inspecting the workspace, use ask_user_questions only when important ambiguity remains in scope, target files, approach, constraints, or priorities that cannot be resolved from available context. Ask 1-3 concise questions with at most 3 suggested options each; free text is always available. Wait for the answers and incorporate them into the final plan. Ask no more than two rounds, do not ask questions you can resolve yourself, and if the user skips, finalize with your best judgment.")
+	}
+	if modeAllowsTool(mode, "comfyui_generate_video") {
+		prompt.WriteString("\n\ncomfyui_generate_video generates short videos using ComfyUI. Use frames to control length (default 16) and fps for frame rate (default 8); prefer duration over frames/fps for duration-driven workflows. To use a chat-attached image as the first frame, pass attachedImageIndex; a workspace file can be used via imagePath. The tool returns metadata including videoId — only call save_video with that ID when the user explicitly asks to save or download the video.")
 	}
 	if researchEnabled {
 		prompt.WriteString("\n\n")
@@ -2587,9 +2652,42 @@ func toolResultVideoMessage(toolName string, result tools.ExecutionResult) (llm.
 		label = "video"
 	}
 	text := fmt.Sprintf("Video returned by tool %s: %s (%s, %d bytes).", toolName, label, video.MediaType, video.Bytes)
-	part := llm.VideoURLContentPart(video.DataURL)
-	if video.Detail != "" && part.VideoURL != nil {
-		part.VideoURL.Detail = video.Detail
+	// Return text-only — do not embed the full base64 video data URL into the
+	// LLM context (videos are megabytes and exceed context windows). The chat
+	// UI renders the video inline from the tool_result event's structured
+	// videos[] attachments (see extractToolMedia), so the model never needs
+	// the payload itself.
+	return llm.Message{Role: llm.RoleUser, Content: text}, true
+}
+
+// stripMediaContentParts removes image and video ContentParts from a message,
+// keeping only the plain text Content. Applied to every message before it is
+// persisted in the transcript so multi-megabyte base64 payloads do not
+// accumulate across turns; user-uploaded media is rehydrated separately via
+// hydrateChatMediaHistory when history is rebuilt.
+func stripMediaContentParts(message llm.Message) llm.Message {
+	if len(message.ContentParts) == 0 {
+		return message
 	}
-	return llm.Message{Role: llm.RoleUser, Content: text, ContentParts: []llm.MessageContentPart{llm.TextContentPart(text), part}}, true
+	return llm.Message{
+		Role:       message.Role,
+		Content:    message.Content,
+		ToolCallID: message.ToolCallID,
+		Name:       message.Name,
+		ToolCalls:  message.ToolCalls,
+	}
+}
+
+// hasImageMedia reports whether any message carries an image content part.
+// Used to gate vision-endpoint routing on actual image payloads rather than
+// on the presence of video results (which stay text-only in the context).
+func hasImageMedia(messages []llm.Message) bool {
+	for _, message := range messages {
+		for _, part := range message.ContentParts {
+			if part.ImageURL != nil {
+				return true
+			}
+		}
+	}
+	return false
 }

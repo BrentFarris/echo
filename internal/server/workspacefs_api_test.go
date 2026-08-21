@@ -87,6 +87,53 @@ func TestFilesystemSearchDirectoryOptionAndRootReferenceLabel(t *testing.T) {
 	}
 }
 
+func TestFSMediaStreamsPreviewableFiles(t *testing.T) {
+	server, _ := newTestServer(t)
+	defer server.Shutdown(t.Context())
+	rootPath := t.TempDir()
+	workspace, err := server.workspaces.Create(workspaces.CreateRequest{Name: "Media", MainPath: rootPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots, err := server.fs.Roots(workspace.ID)
+	if err != nil || len(roots) != 1 {
+		t.Fatalf("roots: %#v %v", roots, err)
+	}
+	pngBytes := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 13}
+	if err := os.WriteFile(filepath.Join(rootPath, "pixel.png"), pngBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "notes.md"), []byte("# not media\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	base := "/api/workspaces/" + workspace.ID + "/fs/media?"
+	response := doRequest(t, server, http.MethodGet, base+"rootId="+roots[0].ID+"&path=pixel.png")
+	if response.Code != http.StatusOK {
+		t.Fatalf("media stream returned %d: %s", response.Code, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "image/png" {
+		t.Fatalf("content type = %q, want image/png", contentType)
+	}
+	body := response.Body.Bytes()
+	if len(body) != len(pngBytes) || string(body[:4]) != "\x89PNG" {
+		t.Fatalf("streamed %d bytes, want the %d-byte file", len(body), len(pngBytes))
+	}
+
+	response = doRequest(t, server, http.MethodGet, base+"rootId="+roots[0].ID+"&path=notes.md")
+	if response.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("non-previewable file returned %d: %s", response.Code, response.Body.String())
+	}
+	response = doRequest(t, server, http.MethodGet, base+"rootId="+roots[0].ID+"&path=missing.png")
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("missing file returned %d: %s", response.Code, response.Body.String())
+	}
+	response = doRequest(t, server, http.MethodGet, base+"rootId="+roots[0].ID+"&path=../escape.png")
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("traversal attempt returned %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestPermanentTrashDeletionRequiresExplicitConfirmation(t *testing.T) {
 	server, _ := newTestServer(t)
 	defer server.Shutdown(t.Context())

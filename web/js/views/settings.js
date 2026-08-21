@@ -95,6 +95,7 @@ const state = {
     comfyuiUrl: "",
     comfyuiTxt2imgWorkflow: "",
     comfyuiImg2imgWorkflow: "",
+    comfyuiVideoWorkflow: "",
   },
   rawSettings: {},
   settingsLoaded: false,
@@ -440,7 +441,7 @@ function renderExternal() {
 
       <div class="settings-card">
         <h3 class="settings-card-title">ComfyUI</h3>
-        <p class="settings-card-help">Remote ComfyUI instance for image generation.</p>
+        <p class="settings-card-help">Remote ComfyUI instance for image and video generation.</p>
         <div class="settings-grid">
           <label class="field field-wide">
             <span>ComfyUI Host URL</span>
@@ -453,6 +454,10 @@ function renderExternal() {
           <label class="field field-wide">
             <span>Img2img Workflow</span>
             <input type="text" value="${esc(state.external.comfyuiImg2imgWorkflow)}" placeholder="Path to img2img workflow JSON" autocomplete="off" data-external-field="comfyuiImg2imgWorkflow" />
+          </label>
+          <label class="field field-wide">
+            <span>Video Workflow</span>
+            <input type="text" value="${esc(state.external.comfyuiVideoWorkflow)}" placeholder="Path to default video workflow JSON (used by comfyui_generate_video)" autocomplete="off" data-external-field="comfyuiVideoWorkflow" />
           </label>
         </div>
       </div>
@@ -1812,6 +1817,7 @@ function applySettings(cfg) {
     comfyuiUrl: s.comfyuiUrl || "",
     comfyuiTxt2imgWorkflow: s.comfyuiTxt2imgWorkflow || "",
     comfyuiImg2imgWorkflow: s.comfyuiImg2imgWorkflow || "",
+    comfyuiVideoWorkflow: s.comfyuiVideoWorkflow || "",
   };
   state.researchAgentConcurrency = Math.max(0, Math.min(8, Number(s.researchAgentConcurrency ?? 4) || 0));
   state.git = {
@@ -1925,6 +1931,7 @@ function buildSettings() {
     comfyuiUrl: state.external.comfyuiUrl,
     comfyuiTxt2imgWorkflow: state.external.comfyuiTxt2imgWorkflow,
     comfyuiImg2imgWorkflow: state.external.comfyuiImg2imgWorkflow,
+    comfyuiVideoWorkflow: state.external.comfyuiVideoWorkflow,
     hideLeadingWhitespaceIndicators: !state.git.leadingWhitespaceIndicators,
     disableGitSplitDiffView: !state.git.splitDiffView,
     disableNotificationSounds: !state.messaging.notificationSounds,

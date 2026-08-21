@@ -121,7 +121,7 @@ export type TextReplaceUpdate = {
 export type TextReplaceResponse = { updated: TextReplaceUpdate[] };
 
 export type PersistedTab = {
-  kind?: "file" | "diff";
+  kind?: "file" | "diff" | "media";
   id: string;
   ref: FileRef | null;
   title: string;

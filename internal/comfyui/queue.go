@@ -64,9 +64,9 @@ func (c *Client) WaitForCompletion(ctx context.Context, clientID string, promptI
 					if info != nil {
 						executing, _ := info["executing"].(bool)
 						if !executing {
-							// Check if our prompt is done by polling history
+							// Check if our prompt is done by polling history.
 							result, histErr := c.GetHistory(ctx, promptID)
-							if histErr == nil && len(result.OutputImages) > 0 {
+							if histErr == nil && (len(result.OutputImages) > 0 || len(result.OutputVideos) > 0) {
 								return
 							}
 						}
@@ -135,14 +135,14 @@ func (c *Client) WaitForCompletionPoll(ctx context.Context, promptID string) (*G
 				continue
 			}
 			// GetHistory returned successfully, meaning the prompt is in history
-			// (execution has completed). If there are images, we're done.
-			if len(result.OutputImages) > 0 {
+			// (execution has completed). Images or videos mean we're done.
+			if len(result.OutputImages) > 0 || len(result.OutputVideos) > 0 {
 				return result, nil
 			}
-			// Completed but produced no output images.
-			// This can happen if the workflow has no image-saving nodes,
+			// Completed but produced no output media.
+			// This can happen if the workflow has no saving nodes,
 			// or execution finished without errors but also without output.
-			return nil, errors.New("generation completed but produced no output images")
+			return nil, errors.New("generation completed but produced no output images or videos")
 		}
 	}
 }
@@ -200,14 +200,27 @@ func connectWS(ctx context.Context, wsURL string) (*websocket.Conn, error) {
 
 // FetchImageBytes retrieves the actual image bytes from ComfyUI's /view endpoint.
 func (c *Client) FetchImageBytes(ctx context.Context, filename, subfolder, imgType string) ([]byte, error) {
+	return c.fetchViewBytes(ctx, filename, subfolder, imgType, "fetch image")
+}
+
+// FetchVideoBytes retrieves generated video/GIF bytes from ComfyUI's /view
+// endpoint. mediaType must be the storage type ComfyUI reported for the file
+// ("output" or "custom"); /view only serves files under the matching directory.
+func (c *Client) FetchVideoBytes(ctx context.Context, filename, subfolder, mediaType string) ([]byte, error) {
+	return c.fetchViewBytes(ctx, filename, subfolder, mediaType, "fetch video")
+}
+
+// fetchViewBytes downloads a single artifact via GET /view with the given
+// filename/subfolder/type query parameters.
+func (c *Client) fetchViewBytes(ctx context.Context, filename, subfolder, viewType, opLabel string) ([]byte, error) {
 	viewURL := strings.TrimRight(c.BaseURL, "/") + "/view"
 	query := url.Values{}
 	query.Set("filename", filename)
 	if subfolder != "" {
 		query.Set("subfolder", subfolder)
 	}
-	if imgType != "" {
-		query.Set("type", imgType)
+	if viewType != "" {
+		query.Set("type", viewType)
 	}
 	viewURL += "?" + query.Encode()
 
@@ -220,7 +233,7 @@ func (c *Client) FetchImageBytes(ctx context.Context, filename, subfolder, imgTy
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("fetch image: %w", err)
+		return nil, fmt.Errorf("%s: %w", opLabel, err)
 	}
 	defer resp.Body.Close()
 
@@ -232,13 +245,13 @@ func (c *Client) FetchImageBytes(ctx context.Context, filename, subfolder, imgTy
 	var mu sync.Mutex
 	writer := &syncWriter{buf: buf}
 
-	// Read in chunks to handle large images
-	buf2 := make([]byte, 32*1024)
+	// Read in chunks to handle large payloads.
+	chunk := make([]byte, 32*1024)
 	for {
-		n, readErr := resp.Body.Read(buf2)
+		n, readErr := resp.Body.Read(chunk)
 		if n > 0 {
 			mu.Lock()
-			writer.buf = append(writer.buf, buf2[:n]...)
+			writer.buf = append(writer.buf, chunk[:n]...)
 			mu.Unlock()
 		}
 		if readErr != nil {

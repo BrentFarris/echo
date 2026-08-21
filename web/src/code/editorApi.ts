@@ -30,6 +30,13 @@ export async function readFile(workspaceId: string, ref: FileRef): Promise<FileS
   return api(`${base(workspaceId)}/file?${query}`, { method: "GET" });
 }
 
+// mediaURL points at the raw image/video stream used by the preview surface.
+// It is fetched by <img>/<video> elements, not the JSON envelope helpers.
+export function mediaURL(workspaceId: string, ref: FileRef): string {
+  const query = new URLSearchParams({ rootId: ref.rootId, path: ref.path });
+  return `${base(workspaceId)}/media?${query}`;
+}
+
 export async function saveFile(workspaceId: string, request: {
   ref: FileRef;
   content: string;

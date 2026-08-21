@@ -172,6 +172,68 @@ func TestRejectsBinaryAndOversizedFiles(t *testing.T) {
 	}
 }
 
+func TestMediaMetaClassifiesPreviewableFiles(t *testing.T) {
+	service, workspaceID, rootPath, root := newTestService(t)
+	if err := os.WriteFile(filepath.Join(rootPath, "pixel.png"), []byte{0x89, 'P', 'N', 'G'}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "clip.mp4"), []byte{0, 0, 0, 24, 'f', 't', 'y', 'p'}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "HERO.AVIF"), []byte("avif-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "notes.md"), []byte("# hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	path, size, mediaType, truncated, err := service.MediaMeta(workspaceID, FileRef{RootID: root.ID, Path: "pixel.png"})
+	if err != nil || mediaType != "image/png" || truncated || size != int64(len([]byte{0x89, 'P', 'N', 'G'})) {
+		t.Fatalf("png meta: path=%q size=%d type=%q truncated=%v err=%v", path, size, mediaType, truncated, err)
+	}
+	if info, statErr := os.Stat(path); statErr != nil || info.Size() == 0 {
+		t.Fatalf("resolved media path is unusable: %v %v", info, statErr)
+	}
+
+	_, _, mediaType, _, err = service.MediaMeta(workspaceID, FileRef{RootID: root.ID, Path: "clip.mp4"})
+	if err != nil || mediaType != "video/mp4" {
+		t.Fatalf("mp4 meta: type=%q err=%v", mediaType, err)
+	}
+	_, _, mediaType, _, err = service.MediaMeta(workspaceID, FileRef{RootID: root.ID, Path: "HERO.AVIF"})
+	if err != nil || mediaType != "image/avif" {
+		t.Fatalf("uppercase-extension avif meta: type=%q err=%v", mediaType, err)
+	}
+
+	var fsError *Error
+	_, _, _, _, err = service.MediaMeta(workspaceID, FileRef{RootID: root.ID, Path: "notes.md"})
+	if !errors.As(err, &fsError) || fsError.Code != "unsupported_preview" || !errors.Is(fsError.Cause, ErrNotPreviewable) {
+		t.Fatalf("expected unsupported preview error, got %T %v", err, err)
+	}
+	_, _, _, _, err = service.MediaMeta(workspaceID, FileRef{RootID: root.ID, Path: "../escape.png"})
+	if !errors.Is(err, ErrOutsideRoot) {
+		t.Fatalf("expected traversal rejection, got %v", err)
+	}
+	_, _, _, _, err = service.MediaMeta(workspaceID, FileRef{RootID: root.ID, Path: "missing.png"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected not found, got %v", err)
+	}
+}
+
+func TestMediaTypeForNameCoversBrowserFormats(t *testing.T) {
+	cases := map[string]string{
+		"a.PNG": "image/png", "b.jpg": "image/jpeg", "c.jpeg": "image/jpeg",
+		"d.gif": "image/gif", "e.webp": "image/webp", "f.svg": "image/svg+xml",
+		"g.bmp": "image/bmp", "h.ico": "image/x-icon", "i.avif": "image/avif",
+		"j.mp4": "video/mp4", "k.m4v": "video/mp4", "l.webm": "video/webm",
+		"m.ogv": "video/ogg", "n.txt": "", "noext": "",
+	}
+	for name, want := range cases {
+		if got := MediaTypeForName(name); got != want {
+			t.Errorf("MediaTypeForName(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
 func TestSymlinkConfinementAndEntryMutations(t *testing.T) {
 	service, workspaceID, rootPath, root := newTestService(t)
 	target := filepath.Join(rootPath, "target.txt")

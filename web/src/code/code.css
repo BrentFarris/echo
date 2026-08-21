@@ -1731,6 +1731,127 @@
   display: none;
 }
 
+.code-media-preview {
+  position: absolute;
+  inset: 0;
+  background: var(--code-chrome-bg);
+}
+
+.code-media-preview[hidden] {
+  display: none;
+}
+
+.code-media-frame {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.code-media-frame img,
+.code-media-frame video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  background: transparent;
+}
+
+.code-media-frame video {
+  width: auto;
+  height: auto;
+}
+
+/* In-player volume pill (media-tab videos) */
+.code-media-volume-slot {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+}
+
+.code-media-volume {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(2px);
+}
+
+/* Desktop browsers expose a native volume control in the player; the custom
+   pill is only needed on touch devices where that UI is absent. */
+@media (hover: hover) and (pointer: fine) {
+  .code-media-volume {
+    display: none;
+  }
+}
+
+.code-media-volume-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--code-fg);
+  cursor: pointer;
+}
+
+.code-media-volume-toggle:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.code-media-volume-toggle svg {
+  width: 15px;
+  height: 15px;
+}
+
+.code-media-volume input[type="range"] {
+  width: 84px;
+  accent-color: var(--code-accent);
+  cursor: pointer;
+}
+
+.code-media-error {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 4px;
+  color: var(--code-muted);
+  text-align: center;
+}
+
+.code-media-error[hidden] {
+  display: none;
+}
+
+.code-media-error > .codicon {
+  margin-bottom: 8px;
+  font-size: 44px;
+  opacity: 0.3;
+}
+
+.code-media-error h2 {
+  margin: 0 0 6px;
+  color: var(--code-fg);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.code-media-error p {
+  margin: 0;
+  max-width: 380px;
+}
+
+
 .code-editor-placeholder,
 .code-fatal {
   position: absolute;

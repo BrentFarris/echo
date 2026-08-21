@@ -121,6 +121,12 @@ type AssistantTurn struct {
 	Reasoning    string         `json:"reasoning,omitempty"`
 	HasToolCalls bool           `json:"hasToolCalls,omitempty"`
 	Tools        []ToolActivity `json:"tools,omitempty"`
+	// Images and Videos carry media produced by tools during this assistant
+	// turn (e.g., ComfyUI generations). Like Turn.Images/Turn.Videos for user
+	// uploads, the DataURL payload lives on the persisted turn so snapshots
+	// restore it without re-running tools.
+	Images []MediaAttachment `json:"images,omitempty"`
+	Videos []MediaAttachment `json:"videos,omitempty"`
 }
 
 type ToolActivity struct {

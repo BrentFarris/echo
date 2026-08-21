@@ -8,6 +8,7 @@ import {
   queueMarkdownPatch,
 } from "../src/markdown.ts";
 import { copyText, toast } from "../src/code/ui.ts";
+import { attachVideoVolumeControl } from "../src/mediaVolume.ts";
 import { icons } from "./icons.js";
 import { del, post } from "./api.js";
 import { refreshPluginCatalog } from "../src/plugins/catalog.ts";
@@ -267,6 +268,7 @@ function applyEvent(event) {
       appendToolCall(findStream(event.turnId), event, event.turn);
       break;
     case "tool_result":
+      appendToolMedia(findStream(event.turnId), event.images, event.videos);
       completeToolCall(findStream(event.turnId), event, event.turn);
       break;
     case "research_agent_status":
@@ -350,6 +352,7 @@ function renderStoredTurn(turn, active) {
         completeToolCall(stream, { ...data, success: tool.success, content: tool.result || "" }, assistant.number);
       }
     }
+    appendToolMedia(stream, assistant.images, assistant.videos);
     for (const activity of compressions.filter((item) => item.phase !== "idle" && item.afterAssistantNumber === assistant.number)) {
       upsertCompressionActivity(stream, activity);
     }
@@ -395,7 +398,7 @@ function renderEmpty(log, text) {
   log.appendChild(empty);
 }
 
-function createMessageEl(role, text, images = [], videos = []) {
+function createMessageEl(role, text, images = [], videos = [], options = {}) {
   const el = document.createElement("div");
   el.className = `chat-message chat-message-${role}`;
   el.dataset.role = role;
@@ -415,7 +418,7 @@ function createMessageEl(role, text, images = [], videos = []) {
     content.hidden = text === "";
     body.appendChild(content);
   } else {
-    appendUserMedia(body, images, videos);
+    appendUserMedia(body, images, videos, options.turnId || "");
     const content = document.createElement("div");
     content.className = "chat-message-content markdown-body";
     patchMarkdownElement(content, text);
@@ -563,7 +566,7 @@ function messageActionButton({ action, label, icon, className = "", disabled = f
 }
 
 function createTurnView(turnId, userText, images = [], videos = [], options = {}) {
-  const user = createMessageEl("user", userText, images, videos);
+  const user = createMessageEl("user", userText, images, videos, { turnId });
   user.dataset.turnId = turnId;
   if (!options.userDeleted) binding.log.appendChild(user);
   const el = createMessageEl("assistant", "");
@@ -581,7 +584,9 @@ function createTurnView(turnId, userText, images = [], videos = [], options = {}
   return {
     id: turnId, el, user, timeline: el.querySelector(".chat-timeline"),
     content: el.querySelector(".chat-final-content"), done: false,
-    currentTurn: null, finalTurn: null, turns: new Map(), tools: new Map(), compressions: new Map(),
+    currentTurn: null, finalTurn: null, turns: new Map(), tools: new Map(),
+    mediaZone: null, mediaSeen: new Set(),
+    compressions: new Map(),
     fileChanges: [],
     researchAgents: new Map(), researchReasoning: new Map(), researchStatusContainer: null,
   };
@@ -681,31 +686,180 @@ function beginMessageEdit(message, role) {
   textarea.setSelectionRange(textarea.value.length, textarea.value.length);
 }
 
-function appendUserMedia(body, images, videos) {
-  if (!images.length && !videos.length) return;
+// --- Collapsible chat media zones -----------------------------------------
+// Every message that carries attachments renders one `.chat-message-media`
+// zone containing either a collapsed chip ("N images + M videos - size") or an
+// expanded header bar plus the figures. Media defaults to collapsed; expand
+// state is runtime-only per turn (not persisted), matching the Wails app.
+
+let userMediaCounter = 0;
+const nextUserMediaId = () => `user-media-${++userMediaCounter}`;
+
+function mediaSummaryLabel(images, videos) {
+  const parts = [];
+  if (images.length) parts.push(`${images.length} image${images.length === 1 ? "" : "s"}`);
+  if (videos.length) parts.push(`${videos.length} video${videos.length === 1 ? "" : "s"}`);
+  const totalBytes = [...images, ...videos].reduce((total, item) => total + (Number(item.bytes) || 0), 0);
+  return `${parts.join(" + ")} - ${formatMediaBytes(totalBytes)}`;
+}
+
+// createMediaZone builds the collapsible container for a set of attachments.
+// kind is "user" or "assistant"; ownerKey identifies the owning message/turn
+// for expand-state tracking. The canonical attachment lists live on the zone
+// itself (zone.mediaImages / zone.mediaVideos) so collapsing never loses the
+// payloads — toggling only swaps which view is rendered.
+function createMediaZone(kind, ownerKey, images, videos) {
+  const zone = document.createElement("div");
+  zone.className = "chat-message-media";
+  zone.dataset.mediaZone = kind;
+  zone.mediaImages = images.slice();
+  zone.mediaVideos = videos.slice();
+  renderMediaZone(zone, ownerKey);
+  return zone;
+}
+
+function renderMediaZone(zone, ownerKey) {
+  const images = zone.mediaImages || [];
+  const videos = zone.mediaVideos || [];
+  const attachments = [...images, ...videos];
+  const expanded = isMediaExpanded(ownerKey);
+  zone.classList.toggle("is-collapsed", !expanded);
+  zone.replaceChildren();
+
+  if (!expanded) {
+    const label = mediaSummaryLabel(images, videos);
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chat-media-chip";
+    chip.title = "Show media";
+    chip.setAttribute("aria-label", `Show media: ${label}`);
+    chip.addEventListener("click", () => toggleMediaZone(zone, ownerKey));
+    if (images.length) {
+      const span = document.createElement("span");
+      span.className = "chat-media-chip-icon";
+      span.innerHTML = icons.image;
+      chip.appendChild(span);
+    }
+    if (videos.length) {
+      const span = document.createElement("span");
+      span.className = "chat-media-chip-icon";
+      span.innerHTML = icons.video;
+      chip.appendChild(span);
+    }
+    const text = document.createElement("span");
+    text.textContent = label;
+    const toggle = document.createElement("span");
+    toggle.className = "chat-media-chip-toggle";
+    toggle.innerHTML = icons.eye;
+    chip.append(text, toggle);
+    zone.appendChild(chip);
+    return;
+  }
+
+  const label = mediaSummaryLabel(images, videos);
+  const bar = document.createElement("div");
+  bar.className = "chat-message-media-bar";
+  const barText = document.createElement("span");
+  barText.textContent = label;
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "icon-button chat-media-toggle";
+  toggle.title = "Hide media";
+  toggle.setAttribute("aria-label", `Hide media: ${label}`);
+  toggle.innerHTML = icons.collapse;
+  toggle.addEventListener("click", () => toggleMediaZone(zone, ownerKey));
+  bar.append(barText, toggle);
+  zone.appendChild(bar);
+
   const gallery = document.createElement("div");
-  gallery.className = "chat-message-media";
-  for (const attachment of images) {
-    const figure = document.createElement("figure");
-    figure.className = "chat-message-media-item is-image";
-    const image = document.createElement("img");
-    image.src = attachment.dataUrl || "";
-    image.alt = attachment.name || "Attached image";
-    figure.append(image, mediaCaption(attachment));
-    gallery.append(figure);
+  gallery.className = "chat-message-media-gallery";
+  for (const attachment of attachments) gallery.append(buildMediaFigure(attachment));
+  zone.appendChild(gallery);
+}
+
+function toggleMediaZone(zone, ownerKey) {
+  const expanded = isMediaExpanded(ownerKey);
+  if (expanded) collapseMediaState.delete(ownerKey);
+  else collapseMediaState.add(ownerKey);
+  // Re-render in place from the zone's canonical attachment lists; collapsing
+  // unmounts the figures but never discards the payloads.
+  renderMediaZone(zone, ownerKey);
+}
+
+const collapseMediaState = new Set();
+function isMediaExpanded(ownerKey) { return collapseMediaState.has(ownerKey); }
+
+function appendUserMedia(body, images, videos, turnId) {
+  if (!images.length && !videos.length) return;
+  const ownerKey = turnId || nextUserMediaId();
+  body.append(createMediaZone("user", ownerKey, images, videos));
+}
+
+// buildMediaFigure renders one uploaded or tool-generated media attachment as a
+// captioned <figure>. Video MIME types get a playable <video>, everything else
+// an <img> (animated GIFs included). Shared by user uploads and assistant-side
+// tool media so both directions look identical.
+function buildMediaFigure(attachment) {
+  const isVideo = String(attachment.mediaType || "").startsWith("video/");
+  const figure = document.createElement("figure");
+  figure.className = `chat-message-media-item ${isVideo ? "is-video" : "is-image"}`;
+  const media = document.createElement(isVideo ? "video" : "img");
+  media.src = attachment.dataUrl || "";
+  if (isVideo) {
+    media.controls = true;
+    media.loop = true;
+    media.muted = true;
+    media.preload = "metadata";
+    media.playsInline = true;
+  } else {
+    media.alt = attachment.name || "Attached image";
   }
-  for (const attachment of videos) {
-    const figure = document.createElement("figure");
-    figure.className = "chat-message-media-item is-video";
-    const video = document.createElement("video");
-    video.src = attachment.dataUrl || "";
-    video.controls = true;
-    video.preload = "metadata";
-    video.playsInline = true;
-    figure.append(video, mediaCaption(attachment));
-    gallery.append(figure);
+  if (isVideo) {
+    const stage = document.createElement("div");
+    stage.className = "chat-media-stage";
+    stage.append(media, attachVideoVolumeControl(media, "chat-media-volume"));
+    figure.append(stage, mediaCaption(attachment));
+  } else {
+    figure.append(media, mediaCaption(attachment));
   }
-  body.append(gallery);
+  return figure;
+}
+
+// ensureAssistantMediaZone lazily creates the single media zone for an
+// assistant message (after the final content) and remembers it on the stream.
+// One zone per turn regardless of how many sub-turns/tools contribute keeps
+// promoteFinalText cleanup away from media. The "-assistant" suffix keeps the
+// expand state independent from the user upload zone of the same turn.
+function ensureAssistantMediaZone(stream) {
+  if (!stream.mediaZone) {
+    const zone = createMediaZone("assistant", `${stream.id}-assistant`, [], []);
+    zone.hidden = true;
+    stream.el.querySelector(".chat-message-body").appendChild(zone);
+    stream.mediaZone = zone;
+  }
+  return stream.mediaZone;
+}
+
+// appendToolMedia ingests structured media from a tool_result event (or a
+// restored snapshot) into the assistant media zone, de-duplicating by
+// attachment id so replayed events cannot double-append.
+function appendToolMedia(stream, images = [], videos = []) {
+  if (!stream) return;
+  const attachments = [...images, ...videos];
+  if (!attachments.length) return;
+  const zone = ensureAssistantMediaZone(stream);
+  let changed = false;
+  for (const attachment of attachments) {
+    const id = attachment.id || `${attachment.mediaType}|${attachment.bytes ?? 0}|${attachment.dataUrl ? attachment.dataUrl.length : 0}`;
+    if (stream.mediaSeen.has(id)) continue;
+    stream.mediaSeen.add(id);
+    if (String(attachment.mediaType || "").startsWith("video/")) zone.mediaVideos.push(attachment);
+    else zone.mediaImages.push(attachment);
+    changed = true;
+  }
+  if (!changed) return;
+  zone.hidden = false;
+  renderMediaZone(zone, `${stream.id}-assistant`);
 }
 
 function mediaCaption(attachment) {

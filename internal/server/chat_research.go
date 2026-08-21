@@ -683,7 +683,7 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 			}
 			r.setAgentPhase(agent, "using "+call.Function.Name)
 			r.updateResearchToolActivity(agent, callID, callOrder, call.Function.Name, call.Function.Arguments, "", false, false)
-			toolCtx := r.session.toolContext(ctx, r.toolScopes)
+			toolCtx := r.session.toolContext(ctx, r.toolScopes, nil, nil)
 			toolCtx.ResearchAgents = nil
 			toolCtx.AgentModes = nil
 			var result tools.ExecutionResult
