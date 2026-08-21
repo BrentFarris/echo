@@ -18,6 +18,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
     workspace: string;
     secondaryWorkspace: string;
   };
+  const mainPath = join(state.workspace, "main.go");
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Secure this Echo server" })).toBeVisible();
   await page.getByLabel("Setup code").fill(state.setupCode);
@@ -187,6 +188,21 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(page.getByRole("tab", { name: /main\.go/ })).toBeVisible();
   await expect(page.locator(".code-tree-row", { hasText: "main.go" })).toHaveAttribute("aria-selected", "true");
 
+  // Tab and Shift+Tab indent and outdent every line in a multi-line selection.
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("Control+Home");
+  await page.keyboard.down("Shift");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.up("Shift");
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Control+s");
+  await expect.poll(() => readFileSync(mainPath, "utf8")).toMatch(/^[\t ]+package main/);
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Control+s");
+  await expect.poll(() => readFileSync(mainPath, "utf8")).toMatch(/^package main/);
+
   // Workspace Search includes unsaved Monaco buffers, filters by glob, opens
   // the exact result range, previews replacement, and safely saves dirty text.
   await page.locator(".view-lines").click();
@@ -212,7 +228,6 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(unsavedResult).toHaveCSS("padding-left", "40px");
   await page.getByRole("button", { name: /Replace result on line/ }).click();
   await page.getByRole("button", { name: "Replace", exact: true }).click();
-  const mainPath = join(state.workspace, "main.go");
   await expect.poll(() => readFileSync(mainPath, "utf8")).toContain("searchSavedToken");
   await expect(page.locator(".code-tab-dirty.is-visible")).toHaveCount(0);
   await page.getByRole("button", { name: "Explorer", exact: true }).click();

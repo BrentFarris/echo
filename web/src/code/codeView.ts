@@ -2449,7 +2449,16 @@ class CodeView {
     }
     const modifier = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
-    if (modifier && event.shiftKey && key === "f") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(); }
+    const activeEditor = this.activeCodeEditor();
+    const activeTab = this.activeTab();
+    const hasMultilineSelection = activeEditor?.hasTextFocus()
+      && activeEditor.getSelections()?.some((selection) => selection.startLineNumber !== selection.endLineNumber);
+    const selectionIsEditable = activeTab?.kind === "file" || activeTab?.diff?.editable === true;
+    if (activeEditor && !modifier && !event.altKey && key === "tab" && hasMultilineSelection && selectionIsEditable) {
+      event.preventDefault();
+      event.stopPropagation();
+      activeEditor.trigger("echo", event.shiftKey ? "outdent" : "tab", null);
+    } else if (modifier && event.shiftKey && key === "f") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(); }
     else if (modifier && event.shiftKey && key === "o") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSymbols(); }
     else if (modifier && event.shiftKey && key === "f12" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.peekImplementation", null); }
     else if (modifier && !event.shiftKey && key === "f12" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.goToImplementation", null); }
