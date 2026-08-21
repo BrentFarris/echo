@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer, type Server as HTTPServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7,6 +8,46 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const password = "Echo-E2E-Password!";
 
 test.describe.configure({ mode: "serial" });
+
+let fakeLLM: HTTPServer;
+let fakeLLMPort = 0;
+let fakeStreamRound = 0;
+
+test.beforeAll(async () => {
+  fakeLLM = createServer(async (request, response) => {
+    let raw = "";
+    for await (const chunk of request) raw += chunk.toString();
+    const body = JSON.parse(raw || "{}");
+    if (body.stream !== true) {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({
+        choices: [{ message: { role: "assistant", content: "## Goal\nContinue the E2E task.\n## Constraints & Preferences\nNone.\n## Progress\n### Done\nEarlier work.\n### In Progress\nContinue.\n### Blocked\nNone.\n## Key Decisions\nNone.\n## Relevant Files & Artifacts\nworkspace/main.go\n## Commands, Tests & Errors\nNone.\n## Next Steps\nContinue.\n## Critical Exact Context\nE2E." } }],
+        usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+      }));
+      return;
+    }
+    fakeStreamRound++;
+    response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+    if (fakeStreamRound === 1) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 900));
+      response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call-e2e-read", type: "function", function: { name: "filesystem_read_text", arguments: "{\"path\":\"workspace/main.go\"}" } }] } }] })}\n\n`);
+      response.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })}\n\n`);
+    } else {
+      response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "Finished after queued compression." } }] })}\n\n`);
+      response.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+    }
+    response.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 200, completion_tokens: 20, total_tokens: 220 } })}\n\n`);
+    response.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((resolveListen) => fakeLLM.listen(0, "127.0.0.1", resolveListen));
+  const address = fakeLLM.address();
+  if (!address || typeof address === "string") throw new Error("Fake LLM did not bind a TCP port");
+  fakeLLMPort = address.port;
+});
+
+test.afterAll(async () => {
+  await new Promise<void>((resolveClose, rejectClose) => fakeLLM.close((error) => error ? rejectClose(error) : resolveClose()));
+});
 
 test("first-run auth and the real Monaco filesystem workflow", async ({ page }) => {
   // This is a deliberately broad, real-process acceptance scenario. Plugin
@@ -53,6 +94,67 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   expect(workspaceIDs.secondary).toBeTruthy();
   await page.reload();
   await expect(page.locator(".app-shell")).toBeVisible();
+
+  // Exercise the real browser/WebSocket lifecycle: queue manual compression
+  // while a provider response is active, then verify the pending compression
+  // checkpoint does not interrupt the tool result or the following model round.
+  await page.evaluate(async ({ port }) => {
+    const response = await fetch("/api/settings");
+    const payload = await response.json();
+    const settings = payload.data.settings;
+    const endpoint = {
+      ...settings.endpoints[0], endpoint: `http://127.0.0.1:${port}/v1`, model: "echo-e2e-context",
+      contextLength: 65536, maxTokens: 512, contextCompressionEnabled: false,
+      contextCompressionThresholdPercent: 70,
+    };
+    settings.endpoints = [endpoint];
+    settings.endpointSelection = {
+      chat: endpoint.id, research: endpoint.id, vision: endpoint.id,
+      kanbanDecompose: endpoint.id, kanban: endpoint.id, inlineCode: endpoint.id,
+    };
+    const saved = await fetch("/api/settings", {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ settings }),
+    });
+    if (!saved.ok) throw new Error(`Could not configure fake LLM: HTTP ${saved.status}`);
+  }, { port: fakeLLMPort });
+  await page.reload();
+  await expect(page.locator(".app-shell")).toBeVisible();
+  await expect(page.locator("[data-mode-label]")).toHaveText("General");
+  await page.evaluate(({ workspaceId }) => new Promise<void>((resolveSend, rejectSend) => {
+    const protocol = location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${protocol}://${location.host}/ws`);
+    const timer = window.setTimeout(() => {
+      socket.close();
+      rejectSend(new Error("Timed out sending the compression E2E chat turn"));
+    }, 10_000);
+    socket.addEventListener("message", (event) => {
+      const message = JSON.parse(String(event.data));
+      if (message.type === "welcome") {
+        socket.send(JSON.stringify({ type: "session_subscribe", workspaceId }));
+      } else if (message.type === "session_snapshot") {
+        socket.send(JSON.stringify({
+          type: "chat_send", workspaceId, chatId: message.activeChatId,
+          requestId: "e2e-context-compression", agentModeId: "general",
+          message: "Read main.go, then continue after context compression.",
+        }));
+      } else if (message.type === "session_event" && message.event?.type === "turn_started") {
+        window.clearTimeout(timer);
+        socket.close();
+        resolveSend();
+      }
+    });
+    socket.addEventListener("error", () => {
+      window.clearTimeout(timer);
+      rejectSend(new Error("Compression E2E WebSocket failed"));
+    });
+  }), { workspaceId: workspaceIDs.primary });
+  await expect(page.locator(".chat-message-user")).toContainText("Read main.go");
+  await page.locator("[data-chat-more-trigger]").click();
+  await page.getByRole("menuitem", { name: "Compress context now" }).click();
+  await expect(page.locator(".chat-compression-item")).toContainText("Context compression queued");
+  await expect(page.locator(".chat-tool-item", { hasText: "filesystem_read_text" })).toHaveCount(1);
+  await expect(page.locator(".chat-final-content")).toContainText("Finished after queued compression.");
+  await expect(page.locator(".chat-compression-item")).toContainText("Context compression skipped");
 
   // Optional plugins install through a real reviewed stage. The Calculator
   // stays isolated and alive while Echo's statically owned routes change.

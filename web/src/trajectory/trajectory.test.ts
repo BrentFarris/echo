@@ -206,6 +206,40 @@ describe("TrajectoryView", () => {
     expect(host.querySelector("[data-trajectory-inspector]")?.textContent).toContain("ok");
   });
 
+  it("pairs compression timing and exposes the generated summary only in the inspector result", async () => {
+    const compressionEvents: TrajectoryTimelineEvent[] = [
+      {
+        record: "event", sequence: 1, timestamp: "2026-08-19T12:00:00.000Z",
+        type: "context/compression_start", turnId: "turn-1",
+        data: { compressionId: "compression-1", trigger: "automatic", model: "test-model", startedAt: "2026-08-19T12:00:00.000Z" },
+      },
+      {
+        record: "event", sequence: 2, timestamp: "2026-08-19T12:00:00.250Z",
+        type: "context/compression_complete", turnId: "turn-1",
+        data: {
+          compressionId: "compression-1", beforeTokens: 7000, afterTokens: 2800,
+          summary: "## Goal\nKeep this inspector-only summary", durationMs: 250,
+          completedAt: "2026-08-19T12:00:00.250Z", recoveryAvailable: true,
+        },
+      },
+    ];
+    const timeline = deriveTrajectoryTimeline(compressionEvents);
+    expect(timeline?.spans).toHaveLength(1);
+    expect(timeline?.spans[0]).toMatchObject({ lane: "system", start: 0, end: 250, pending: false });
+
+    api.get.mockResolvedValue({
+      header: { formatVersion: 1, chatId: "chat-1", surface: "chat", createdAt: "2026-08-19T12:00:00Z" },
+      events: compressionEvents, hasMore: false, oldestSeq: 1, newestSeq: 2,
+    });
+    await view.setTarget("workspace-1", "chat-1");
+
+    const compressionBlock = host.querySelector<HTMLElement>('[data-trajectory-overview] [data-trajectory-sequence="2"]');
+    expect(compressionBlock).not.toBeNull();
+    compressionBlock?.click();
+    host.querySelector<HTMLButtonElement>('[data-inspector-tab="result"]')?.click();
+    expect(host.querySelector("[data-trajectory-inspector]")?.textContent).toContain("Keep this inspector-only summary");
+  });
+
   it("can reveal raw chunks and follows live events for the selected chat", async () => {
     await view.setTarget("workspace-1", "chat-1");
     host.querySelector<HTMLButtonElement>("[data-trajectory-chunks]")?.click();

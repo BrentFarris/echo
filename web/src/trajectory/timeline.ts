@@ -35,7 +35,9 @@ const overviewTypes = new Set([
   "legacy/import", "user/message", "request/start", "assistant/message",
   "tool/call", "tool/result", "transcript/delete", "transcript/edit",
   "transcript/rewind", "auxiliary/request", "auxiliary/result",
-  "context/injection", "persistence/error",
+  "context/injection", "context/compression_queued", "context/compression_start",
+  "context/compression_complete", "context/compression_skipped", "context/compression_error",
+  "persistence/error",
 ]);
 
 export function trajectoryLaneFor(type: string): TrajectoryLane {
@@ -103,6 +105,11 @@ function toolKey(event: TrajectoryTimelineEvent): string | null {
   return `${event.turnId}\0${event.step ?? 0}\0${String(order)}`;
 }
 
+function compressionKey(event: TrajectoryTimelineEvent): string | null {
+  const compressionId = event.data?.compressionId;
+  return typeof compressionId === "string" && compressionId ? compressionId : null;
+}
+
 /**
  * Build the compact Duration projection used by the trajectory overview.
  * Completed request/result pairs become one operation and wall-clock gaps with
@@ -115,6 +122,8 @@ export function deriveTrajectoryTimeline(
   const completedRequests = new Set<string>();
   const toolCalls = new Map<string, TrajectoryTimelineEvent>();
   const completedTools = new Set<string>();
+  const compressionStarts = new Map<string, TrajectoryTimelineEvent>();
+  const completedCompressions = new Set<string>();
 
   for (const event of events) {
     if (event.type === "request/start") {
@@ -129,21 +138,32 @@ export function deriveTrajectoryTimeline(
     } else if (event.type === "tool/result") {
       const key = toolKey(event);
       if (key !== null) completedTools.add(key);
+    } else if (event.type === "context/compression_start") {
+      const key = compressionKey(event);
+      if (key !== null) compressionStarts.set(key, event);
+    } else if (["context/compression_complete", "context/compression_skipped", "context/compression_error"].includes(event.type)) {
+      const key = compressionKey(event);
+      if (key !== null) completedCompressions.add(key);
     }
   }
 
   const rawSpans: TrajectoryTimelineSpan[] = [];
   for (const event of events) {
     if (!overviewTypes.has(event.type)) continue;
-    const key = event.type.startsWith("tool/") ? toolKey(event) : requestKey(event);
+    const key = event.type.startsWith("tool/")
+      ? toolKey(event)
+      : event.type.startsWith("context/compression") ? compressionKey(event) : requestKey(event);
     if (event.type === "request/start" && key !== null && completedRequests.has(key)) continue;
     if (event.type === "tool/call" && key !== null && completedTools.has(key)) continue;
+    if (event.type === "context/compression_start" && key !== null && completedCompressions.has(key)) continue;
 
     let range: { start: number; end: number } | null;
     if (event.type === "assistant/message") {
       range = operationRange(event, key === null ? undefined : requestStarts.get(key));
     } else if (event.type === "tool/result") {
       range = operationRange(event, key === null ? undefined : toolCalls.get(key));
+    } else if (["context/compression_complete", "context/compression_skipped", "context/compression_error"].includes(event.type)) {
+      range = operationRange(event, key === null ? undefined : compressionStarts.get(key));
     } else if (durationOf(event) !== undefined || parseTime(event.data?.completedAt) !== undefined) {
       range = operationRange(event);
     } else {
@@ -154,7 +174,7 @@ export function deriveTrajectoryTimeline(
       event,
       lane: trajectoryLaneFor(event.type),
       ...range,
-      pending: event.type === "request/start" || event.type === "tool/call",
+      pending: event.type === "request/start" || event.type === "tool/call" || event.type === "context/compression_start",
     });
   }
   if (!rawSpans.length) return null;

@@ -6,7 +6,9 @@ const chat = vi.hoisted(() => {
   return {
     activateChatTab: vi.fn(() => true),
     canClearChat: vi.fn(() => false),
+    canCompressChat: vi.fn(() => true),
     clearChat: vi.fn(() => true),
+    compressChat: vi.fn(() => true),
     closeChatTab: vi.fn(() => true),
     closeWorkspaceSession: vi.fn(),
     createChatTab: vi.fn(() => true),

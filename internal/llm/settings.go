@@ -13,6 +13,9 @@ const (
 	DefaultEndpointName             = "Default"
 	DefaultContextLength            = 262144
 	DefaultMaxTokens                = 32168
+	DefaultCompressionThreshold     = 70
+	MinCompressionThreshold         = 10
+	MaxCompressionThreshold         = 95
 	DefaultResearchAgentConcurrency = 4
 	MaxResearchAgentConcurrency     = 8
 	DefaultMaxChatRounds            = 0
@@ -33,25 +36,27 @@ const (
 )
 
 type LLMEndpoint struct {
-	ID                       string            `json:"id"`
-	Name                     string            `json:"name"`
-	Endpoint                 string            `json:"endpoint"`
-	Model                    string            `json:"model"`
-	Temperature              float64           `json:"temperature"`
-	TopK                     int               `json:"topK"`
-	TopP                     float64           `json:"topP"`
-	MinP                     float64           `json:"minP"`
-	ContextLength            int               `json:"contextLength"`
-	MaxTokens                int               `json:"maxTokens"`
-	FrequencyPenalty         float64           `json:"frequencyPenalty"`
-	PresencePenalty          float64           `json:"presencePenalty"`
-	RepetitionPenalty        float64           `json:"repetitionPenalty"`
-	TimeoutSeconds           int               `json:"timeoutSeconds"`
-	StreamIdleTimeoutSeconds int               `json:"streamIdleTimeoutSeconds"`
-	ThinkingTokenBudget      int               `json:"thinkingTokenBudget"`
-	ThinkingCorrection       bool              `json:"thinkingCorrection,omitempty"`
-	SystemPromptAppendage    string            `json:"systemPromptAppendage,omitempty"`
-	Headers                  map[string]string `json:"headers,omitempty"`
+	ID                                 string            `json:"id"`
+	Name                               string            `json:"name"`
+	Endpoint                           string            `json:"endpoint"`
+	Model                              string            `json:"model"`
+	Temperature                        float64           `json:"temperature"`
+	TopK                               int               `json:"topK"`
+	TopP                               float64           `json:"topP"`
+	MinP                               float64           `json:"minP"`
+	ContextLength                      int               `json:"contextLength"`
+	MaxTokens                          int               `json:"maxTokens"`
+	ContextCompressionEnabled          *bool             `json:"contextCompressionEnabled"`
+	ContextCompressionThresholdPercent int               `json:"contextCompressionThresholdPercent"`
+	FrequencyPenalty                   float64           `json:"frequencyPenalty"`
+	PresencePenalty                    float64           `json:"presencePenalty"`
+	RepetitionPenalty                  float64           `json:"repetitionPenalty"`
+	TimeoutSeconds                     int               `json:"timeoutSeconds"`
+	StreamIdleTimeoutSeconds           int               `json:"streamIdleTimeoutSeconds"`
+	ThinkingTokenBudget                int               `json:"thinkingTokenBudget"`
+	ThinkingCorrection                 bool              `json:"thinkingCorrection,omitempty"`
+	SystemPromptAppendage              string            `json:"systemPromptAppendage,omitempty"`
+	Headers                            map[string]string `json:"headers,omitempty"`
 }
 
 type EndpointSelection struct {
@@ -64,39 +69,41 @@ type EndpointSelection struct {
 }
 
 type Settings struct {
-	Endpoint                          string            `json:"endpoint"`
-	Model                             string            `json:"model"`
-	Endpoints                         []LLMEndpoint     `json:"endpoints,omitempty"`
-	EndpointSelection                 EndpointSelection `json:"endpointSelection,omitempty"`
-	Temperature                       float64           `json:"temperature"`
-	TopK                              int               `json:"topK"`
-	TopP                              float64           `json:"topP"`
-	MinP                              float64           `json:"minP"`
-	ContextLength                     int               `json:"contextLength"`
-	MaxTokens                         int               `json:"maxTokens"`
-	FrequencyPenalty                  float64           `json:"frequencyPenalty"`
-	PresencePenalty                   float64           `json:"presencePenalty"`
-	RepetitionPenalty                 float64           `json:"repetitionPenalty"`
-	TimeoutSeconds                    int               `json:"timeoutSeconds"`
-	StreamIdleTimeoutSeconds          int               `json:"streamIdleTimeoutSeconds"`
-	SearxngURL                        string            `json:"searxngUrl"`
-	ThinkingTokenBudget               int               `json:"thinkingTokenBudget"`
-	ThinkingCorrection                bool              `json:"thinkingCorrection,omitempty"`
-	SystemPromptAppendage             string            `json:"systemPromptAppendage,omitempty"`
-	HideLeadingWhitespaceIndicators   bool              `json:"hideLeadingWhitespaceIndicators,omitempty"`
-	DisableNotificationSounds         bool              `json:"disableNotificationSounds,omitempty"`
-	EnableChatCompletionNotifications *bool             `json:"enableChatCompletionNotifications,omitempty"`
-	EnableKanbanCompleteNotifications bool              `json:"enableKanbanCompleteNotifications,omitempty"`
-	LimitKanbanConcurrency            bool              `json:"limitKanbanConcurrency,omitempty"`
-	ResearchAgentConcurrency          int               `json:"researchAgentConcurrency"`
-	MaxChatRounds                     int               `json:"maxChatRounds,omitempty"`
-	DisableGitSplitDiffView           bool              `json:"disableGitSplitDiffView,omitempty"`
-	ComfyuiURL                        string            `json:"comfyuiUrl"`
-	ComfyuiDefaultCheckpoint          string            `json:"comfyuiDefaultCheckpoint"`
-	ComfyuiTxt2imgWorkflow            string            `json:"comfyuiTxt2imgWorkflow"`
-	ComfyuiImg2imgWorkflow            string            `json:"comfyuiImg2imgWorkflow"`
-	Theme                             Theme             `json:"theme,omitempty"`
-	Headers                           map[string]string `json:"headers,omitempty"`
+	Endpoint                           string            `json:"endpoint"`
+	Model                              string            `json:"model"`
+	Endpoints                          []LLMEndpoint     `json:"endpoints,omitempty"`
+	EndpointSelection                  EndpointSelection `json:"endpointSelection,omitempty"`
+	Temperature                        float64           `json:"temperature"`
+	TopK                               int               `json:"topK"`
+	TopP                               float64           `json:"topP"`
+	MinP                               float64           `json:"minP"`
+	ContextLength                      int               `json:"contextLength"`
+	MaxTokens                          int               `json:"maxTokens"`
+	ContextCompressionEnabled          *bool             `json:"contextCompressionEnabled"`
+	ContextCompressionThresholdPercent int               `json:"contextCompressionThresholdPercent"`
+	FrequencyPenalty                   float64           `json:"frequencyPenalty"`
+	PresencePenalty                    float64           `json:"presencePenalty"`
+	RepetitionPenalty                  float64           `json:"repetitionPenalty"`
+	TimeoutSeconds                     int               `json:"timeoutSeconds"`
+	StreamIdleTimeoutSeconds           int               `json:"streamIdleTimeoutSeconds"`
+	SearxngURL                         string            `json:"searxngUrl"`
+	ThinkingTokenBudget                int               `json:"thinkingTokenBudget"`
+	ThinkingCorrection                 bool              `json:"thinkingCorrection,omitempty"`
+	SystemPromptAppendage              string            `json:"systemPromptAppendage,omitempty"`
+	HideLeadingWhitespaceIndicators    bool              `json:"hideLeadingWhitespaceIndicators,omitempty"`
+	DisableNotificationSounds          bool              `json:"disableNotificationSounds,omitempty"`
+	EnableChatCompletionNotifications  *bool             `json:"enableChatCompletionNotifications,omitempty"`
+	EnableKanbanCompleteNotifications  bool              `json:"enableKanbanCompleteNotifications,omitempty"`
+	LimitKanbanConcurrency             bool              `json:"limitKanbanConcurrency,omitempty"`
+	ResearchAgentConcurrency           int               `json:"researchAgentConcurrency"`
+	MaxChatRounds                      int               `json:"maxChatRounds,omitempty"`
+	DisableGitSplitDiffView            bool              `json:"disableGitSplitDiffView,omitempty"`
+	ComfyuiURL                         string            `json:"comfyuiUrl"`
+	ComfyuiDefaultCheckpoint           string            `json:"comfyuiDefaultCheckpoint"`
+	ComfyuiTxt2imgWorkflow             string            `json:"comfyuiTxt2imgWorkflow"`
+	ComfyuiImg2imgWorkflow             string            `json:"comfyuiImg2imgWorkflow"`
+	Theme                              Theme             `json:"theme,omitempty"`
+	Headers                            map[string]string `json:"headers,omitempty"`
 }
 
 type Theme struct {
@@ -107,24 +114,26 @@ type Theme struct {
 func DefaultSettings() Settings {
 	endpoint := defaultLLMEndpoint()
 	return Settings{
-		Endpoint:                 DefaultEndpoint,
-		Model:                    DefaultModel,
-		Endpoints:                []LLMEndpoint{endpoint},
-		EndpointSelection:        defaultEndpointSelection(endpoint.ID),
-		Temperature:              0.6,
-		TopK:                     20,
-		TopP:                     0.95,
-		MinP:                     0,
-		ContextLength:            DefaultContextLength,
-		MaxTokens:                DefaultMaxTokens,
-		PresencePenalty:          1.5,
-		RepetitionPenalty:        1.05,
-		TimeoutSeconds:           defaultTimout,
-		StreamIdleTimeoutSeconds: DefaultStreamIdleTimeoutSeconds,
-		SearxngURL:               DefaultSearxngURL,
-		ThinkingTokenBudget:      -1,
-		ResearchAgentConcurrency: DefaultResearchAgentConcurrency,
-		MaxChatRounds:            DefaultMaxChatRounds,
+		Endpoint:                           DefaultEndpoint,
+		Model:                              DefaultModel,
+		Endpoints:                          []LLMEndpoint{endpoint},
+		EndpointSelection:                  defaultEndpointSelection(endpoint.ID),
+		Temperature:                        0.6,
+		TopK:                               20,
+		TopP:                               0.95,
+		MinP:                               0,
+		ContextLength:                      DefaultContextLength,
+		MaxTokens:                          DefaultMaxTokens,
+		ContextCompressionEnabled:          boolPtr(true),
+		ContextCompressionThresholdPercent: DefaultCompressionThreshold,
+		PresencePenalty:                    1.5,
+		RepetitionPenalty:                  1.05,
+		TimeoutSeconds:                     defaultTimout,
+		StreamIdleTimeoutSeconds:           DefaultStreamIdleTimeoutSeconds,
+		SearxngURL:                         DefaultSearxngURL,
+		ThinkingTokenBudget:                -1,
+		ResearchAgentConcurrency:           DefaultResearchAgentConcurrency,
+		MaxChatRounds:                      DefaultMaxChatRounds,
 	}
 }
 
@@ -174,6 +183,12 @@ func normalizeSettingsGeneration(s Settings) Settings {
 	if s.MaxTokens == 0 {
 		s.MaxTokens = DefaultMaxTokens
 	}
+	if s.ContextCompressionEnabled == nil {
+		s.ContextCompressionEnabled = boolPtr(true)
+	}
+	if s.ContextCompressionThresholdPercent == 0 {
+		s.ContextCompressionThresholdPercent = DefaultCompressionThreshold
+	}
 	if s.RepetitionPenalty == 0 {
 		s.RepetitionPenalty = 1
 	}
@@ -197,8 +212,13 @@ func normalizeSettingsGeneration(s Settings) Settings {
 
 func (s Settings) Clone() Settings {
 	s.Endpoints = append([]LLMEndpoint(nil), s.Endpoints...)
+	for index := range s.Endpoints {
+		s.Endpoints[index].Headers = cloneStringMap(s.Endpoints[index].Headers)
+		s.Endpoints[index].ContextCompressionEnabled = cloneBool(s.Endpoints[index].ContextCompressionEnabled)
+	}
 	s.Theme = s.Theme.Clone()
 	s.Headers = cloneStringMap(s.Headers)
+	s.ContextCompressionEnabled = cloneBool(s.ContextCompressionEnabled)
 	return s
 }
 
@@ -284,6 +304,9 @@ func (s Settings) Validate() error {
 	if s.MaxTokens < 1 {
 		return fmt.Errorf("max tokens must be at least 1")
 	}
+	if s.ContextCompressionThresholdPercent < MinCompressionThreshold || s.ContextCompressionThresholdPercent > MaxCompressionThreshold {
+		return fmt.Errorf("context compression threshold must be between %d and %d percent", MinCompressionThreshold, MaxCompressionThreshold)
+	}
 	if s.ThinkingTokenBudget < -1 {
 		return fmt.Errorf("thinking token budget must be -1 or greater")
 	}
@@ -315,17 +338,19 @@ func defaultLLMEndpoint() LLMEndpoint {
 		Endpoint: DefaultEndpoint,
 		Model:    DefaultModel,
 	}.WithGenerationFromSettings(Settings{
-		Temperature:              0.6,
-		TopK:                     20,
-		TopP:                     0.95,
-		MinP:                     0,
-		ContextLength:            DefaultContextLength,
-		MaxTokens:                DefaultMaxTokens,
-		PresencePenalty:          1.5,
-		RepetitionPenalty:        1.05,
-		TimeoutSeconds:           defaultTimout,
-		StreamIdleTimeoutSeconds: DefaultStreamIdleTimeoutSeconds,
-		ThinkingTokenBudget:      -1,
+		Temperature:                        0.6,
+		TopK:                               20,
+		TopP:                               0.95,
+		MinP:                               0,
+		ContextLength:                      DefaultContextLength,
+		MaxTokens:                          DefaultMaxTokens,
+		ContextCompressionEnabled:          boolPtr(true),
+		ContextCompressionThresholdPercent: DefaultCompressionThreshold,
+		PresencePenalty:                    1.5,
+		RepetitionPenalty:                  1.05,
+		TimeoutSeconds:                     defaultTimout,
+		StreamIdleTimeoutSeconds:           DefaultStreamIdleTimeoutSeconds,
+		ThinkingTokenBudget:                -1,
 	})
 }
 
@@ -396,6 +421,8 @@ func (e LLMEndpoint) WithGenerationFromSettings(settings Settings) LLMEndpoint {
 	e.MinP = settings.MinP
 	e.ContextLength = settings.ContextLength
 	e.MaxTokens = settings.MaxTokens
+	e.ContextCompressionEnabled = cloneBool(settings.ContextCompressionEnabled)
+	e.ContextCompressionThresholdPercent = settings.ContextCompressionThresholdPercent
 	e.FrequencyPenalty = settings.FrequencyPenalty
 	e.PresencePenalty = settings.PresencePenalty
 	e.RepetitionPenalty = settings.RepetitionPenalty
@@ -417,6 +444,8 @@ func (e LLMEndpoint) ApplyToSettings(settings Settings) Settings {
 	settings.MinP = e.MinP
 	settings.ContextLength = e.ContextLength
 	settings.MaxTokens = e.MaxTokens
+	settings.ContextCompressionEnabled = cloneBool(e.ContextCompressionEnabled)
+	settings.ContextCompressionThresholdPercent = e.ContextCompressionThresholdPercent
 	settings.FrequencyPenalty = e.FrequencyPenalty
 	settings.PresencePenalty = e.PresencePenalty
 	settings.RepetitionPenalty = e.RepetitionPenalty
@@ -450,6 +479,9 @@ func (e LLMEndpoint) ValidateGeneration() error {
 	if settings.MaxTokens < 1 {
 		return fmt.Errorf("max tokens must be at least 1")
 	}
+	if settings.ContextCompressionThresholdPercent < MinCompressionThreshold || settings.ContextCompressionThresholdPercent > MaxCompressionThreshold {
+		return fmt.Errorf("context compression threshold must be between %d and %d percent", MinCompressionThreshold, MaxCompressionThreshold)
+	}
 	if settings.ThinkingTokenBudget < -1 {
 		return fmt.Errorf("thinking token budget must be -1 or greater")
 	}
@@ -478,6 +510,8 @@ func (e LLMEndpoint) hasGenerationConfig() bool {
 		e.MinP != 0 ||
 		e.ContextLength != 0 ||
 		e.MaxTokens != 0 ||
+		e.ContextCompressionEnabled != nil ||
+		e.ContextCompressionThresholdPercent != 0 ||
 		e.FrequencyPenalty != 0 ||
 		e.PresencePenalty != 0 ||
 		e.RepetitionPenalty != 0 ||
@@ -488,11 +522,18 @@ func (e LLMEndpoint) hasGenerationConfig() bool {
 }
 
 func normalizeEndpointGeneration(e LLMEndpoint) LLMEndpoint {
+	e.ContextCompressionEnabled = cloneBool(e.ContextCompressionEnabled)
 	if e.ContextLength == 0 {
 		e.ContextLength = DefaultContextLength
 	}
 	if e.MaxTokens == 0 {
 		e.MaxTokens = DefaultMaxTokens
+	}
+	if e.ContextCompressionEnabled == nil {
+		e.ContextCompressionEnabled = boolPtr(true)
+	}
+	if e.ContextCompressionThresholdPercent == 0 {
+		e.ContextCompressionThresholdPercent = DefaultCompressionThreshold
 	}
 	if e.RepetitionPenalty == 0 {
 		e.RepetitionPenalty = 1
@@ -504,6 +545,20 @@ func normalizeEndpointGeneration(e LLMEndpoint) LLMEndpoint {
 		e.StreamIdleTimeoutSeconds = DefaultStreamIdleTimeoutSeconds
 	}
 	return e
+}
+
+// CompressionEnabled resolves the migration-safe pointer setting. Missing
+// values from older settings files are enabled by default.
+func (s Settings) CompressionEnabled() bool {
+	return s.ContextCompressionEnabled == nil || *s.ContextCompressionEnabled
+}
+
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func uniqueEndpointID(id string, used map[string]struct{}) string {

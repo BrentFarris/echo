@@ -17,7 +17,7 @@ const socket = vi.hoisted(() => {
 vi.mock("../js/ws.js", () => ({ on: socket.on, onState: socket.onState, send: socket.send }));
 
 import {
-  activateChatTab, canClearChat, clearChat, closeChatTab, closeWorkspaceSession,
+  activateChatTab, canClearChat, canCompressChat, clearChat, compressChat, closeChatTab, closeWorkspaceSession,
   createChatTab, getChatWorkspaceState, onChatWorkspaceChange, openWorkspaceSession,
   sendMessage, stopStream,
 } from "../js/chat.js";
@@ -62,6 +62,11 @@ describe("multi-chat WebSocket protocol", () => {
       message: "next question", model: "model-a", agentModeId: "general",
     }));
     expect(canClearChat(log)).toBe(true);
+    expect(canCompressChat(log)).toBe(true);
+    expect(compressChat(log, "model-a")).toBe(true);
+    expect(socket.send).toHaveBeenLastCalledWith({
+      type: "chat_compress", workspaceId: "workspace-tabs", chatId: "chat-two", model: "model-a",
+    });
     expect(clearChat(log)).toBe(true);
     expect(socket.send).toHaveBeenLastCalledWith({
       type: "chat_clear", workspaceId: "workspace-tabs", chatId: "chat-two",
@@ -351,6 +356,84 @@ describe("multi-chat WebSocket protocol", () => {
     expect(log.querySelector(".chat-stream-status")?.textContent).toContain("stopped");
     expect(log.querySelector(".chat-file-change-path")?.textContent).toBe("echo/main.go");
     expect(log.querySelector(".chat-file-change-operation")?.textContent).toBe("Edited");
+  });
+
+  it("restores and updates metrics-only context compression activity", () => {
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "chat-one", tabs: [{ chatId: "chat-one", preview: "Compress", busy: true }],
+      turns: [{
+        id: "compressed", userContent: "Continue", status: "done",
+        assistantTurns: [{ number: 0, content: "Working", hasToolCalls: false }],
+        compressions: [{
+          id: "compression-1", trigger: "manual", phase: "idle", status: "running",
+          thresholdPercent: 70, usageSource: "estimated", startedAt: "2026-08-19T12:00:00Z",
+        }],
+      }],
+    });
+
+    const item = log.querySelector<HTMLElement>(".chat-compression-item")!;
+    expect(item.textContent).toContain("Compressing context");
+    expect(item.textContent).not.toContain("secret summary");
+
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 2,
+      event: {
+        type: "context_compression_completed", turnId: "compressed",
+        compression: {
+          id: "compression-1", trigger: "manual", phase: "idle", status: "completed",
+          beforeTokens: 7000, afterTokens: 2800, reclaimedTokens: 4200, durationMs: 1250,
+          usageSource: "provider", recoveryAvailable: true, summary: "secret summary",
+        },
+      },
+    });
+
+    expect(item.classList).toContain("is-completed");
+    expect(item.textContent).toContain("7,000 → 2,800 tokens");
+    expect(item.textContent).toContain("60% reclaimed");
+    expect(item.textContent).toContain("Compacted raw history remains searchable");
+    expect(item.textContent).not.toContain("secret summary");
+    expect(getChatWorkspaceState()?.tabs[0].busy).toBe(false);
+  });
+
+  it("keeps rendering tool execution after a queued manual compression checkpoint", () => {
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "chat-one", tabs: [{ chatId: "chat-one", preview: "Queued", busy: false }], turns: [],
+    });
+    const events = [
+      { type: "turn_started", turnId: "queued-compression", message: "Keep working" },
+      { type: "assistant_turn_start", turnId: "queued-compression", turn: 0 },
+      { type: "assistant_turn_end", turnId: "queued-compression", turn: 0, hasToolCalls: true },
+      { type: "tool_call", turnId: "queued-compression", turn: 0, callId: "call-1", callOrder: 0, tool: "read_file", arguments: "{}" },
+      {
+        type: "context_compression_queued", turnId: "queued-compression",
+        compression: { id: "compression-queued", trigger: "manual", phase: "mid_turn", status: "queued", afterAssistantNumber: 0 },
+      },
+      {
+        type: "context_compression_started", turnId: "queued-compression",
+        compression: { id: "compression-queued", trigger: "manual", phase: "mid_turn", status: "running", afterAssistantNumber: 0 },
+      },
+      {
+        type: "context_compression_completed", turnId: "queued-compression",
+        compression: {
+          id: "compression-queued", trigger: "manual", phase: "mid_turn", status: "completed", afterAssistantNumber: 0,
+          beforeTokens: 6000, afterTokens: 2400, durationMs: 500, recoveryAvailable: true,
+        },
+      },
+      { type: "tool_result", turnId: "queued-compression", turn: 0, callId: "call-1", callOrder: 0, tool: "read_file", success: true, content: "ok" },
+      { type: "assistant_turn_start", turnId: "queued-compression", turn: 1 },
+      { type: "token", turnId: "queued-compression", turn: 1, content: "Finished after compression." },
+      { type: "assistant_turn_end", turnId: "queued-compression", turn: 1, hasToolCalls: false },
+      { type: "turn_finished", turnId: "queued-compression", status: "done" },
+    ];
+    events.forEach((event, index) => emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: index + 2, event,
+    }));
+
+    expect(log.querySelector(".chat-compression-item")?.textContent).toContain("Context compressed");
+    expect(log.querySelector(".chat-tool-item")?.classList).toContain("is-success");
+    expect(log.querySelector(".chat-final-content")?.textContent).toContain("Finished after compression.");
   });
 
   it("isolates the code surface and sends editor context", () => {

@@ -24,27 +24,68 @@ type Transcript struct {
 	Messages    []llm.Message `json:"messages"`
 }
 
+// ContextCheckpoint is the compact model-facing view over the canonical raw
+// transcript. Messages before CompactedThrough remain durable and searchable;
+// the model receives ProtectedHeadIndex, Summary, then the raw suffix.
+type ContextCheckpoint struct {
+	Summary             string    `json:"summary"`
+	ProtectedHeadIndex  int       `json:"protectedHeadIndex"`
+	CompactedThrough    int       `json:"compactedThrough"`
+	Endpoint            string    `json:"endpoint,omitempty"`
+	Model               string    `json:"model,omitempty"`
+	UsageSource         string    `json:"usageSource,omitempty"`
+	BeforeTokens        int       `json:"beforeTokens,omitempty"`
+	AfterTokens         int       `json:"afterTokens,omitempty"`
+	CompressionCount    int       `json:"compressionCount,omitempty"`
+	LastCompactedAt     time.Time `json:"lastCompactedAt"`
+	LastAssistantNumber int       `json:"lastAssistantNumber,omitempty"`
+}
+
 type Turn struct {
-	ID                string              `json:"id"`
-	RequestID         string              `json:"requestId"`
-	UserContent       string              `json:"userContent"`
-	UserMessageIndex  int                 `json:"userMessageIndex,omitempty"`
-	Images            []MediaAttachment   `json:"images,omitempty"`
-	Videos            []MediaAttachment   `json:"videos,omitempty"`
-	Model             string              `json:"model,omitempty"`
-	AgentModeID       string              `json:"agentModeId,omitempty"`
-	AgentModeName     string              `json:"agentModeName,omitempty"`
-	Status            string              `json:"status"`
-	Error             string              `json:"error,omitempty"`
-	StartedAt         time.Time           `json:"startedAt"`
-	CompletedAt       *time.Time          `json:"completedAt,omitempty"`
-	AssistantTurns    []AssistantTurn     `json:"assistantTurns"`
-	ResearchAgents    []ResearchAgent     `json:"researchAgents,omitempty"`
-	ResearchReasoning []ResearchReasoning `json:"researchReasoning,omitempty"`
-	ResearchTools     []ToolActivity      `json:"researchTools,omitempty"`
-	FileChanges       []FileChange        `json:"fileChanges,omitempty"`
-	UserDeleted       bool                `json:"userDeleted,omitempty"`
-	AssistantDeleted  bool                `json:"assistantDeleted,omitempty"`
+	ID                string                `json:"id"`
+	RequestID         string                `json:"requestId"`
+	UserContent       string                `json:"userContent"`
+	UserMessageIndex  int                   `json:"userMessageIndex,omitempty"`
+	Images            []MediaAttachment     `json:"images,omitempty"`
+	Videos            []MediaAttachment     `json:"videos,omitempty"`
+	Model             string                `json:"model,omitempty"`
+	AgentModeID       string                `json:"agentModeId,omitempty"`
+	AgentModeName     string                `json:"agentModeName,omitempty"`
+	Status            string                `json:"status"`
+	Error             string                `json:"error,omitempty"`
+	StartedAt         time.Time             `json:"startedAt"`
+	CompletedAt       *time.Time            `json:"completedAt,omitempty"`
+	AssistantTurns    []AssistantTurn       `json:"assistantTurns"`
+	ResearchAgents    []ResearchAgent       `json:"researchAgents,omitempty"`
+	ResearchReasoning []ResearchReasoning   `json:"researchReasoning,omitempty"`
+	ResearchTools     []ToolActivity        `json:"researchTools,omitempty"`
+	FileChanges       []FileChange          `json:"fileChanges,omitempty"`
+	UserDeleted       bool                  `json:"userDeleted,omitempty"`
+	AssistantDeleted  bool                  `json:"assistantDeleted,omitempty"`
+	Compressions      []CompressionActivity `json:"compressions,omitempty"`
+}
+
+// CompressionActivity is the durable, display-safe lifecycle of one context
+// compression. The generated summary remains in the checkpoint/trajectory and
+// is intentionally not exposed through ordinary chat snapshots.
+type CompressionActivity struct {
+	ID                   string     `json:"id"`
+	Trigger              string     `json:"trigger"`
+	Phase                string     `json:"phase"`
+	Status               string     `json:"status"`
+	AfterAssistantNumber *int       `json:"afterAssistantNumber,omitempty"`
+	ThresholdPercent     int        `json:"thresholdPercent,omitempty"`
+	ContextLength        int        `json:"contextLength,omitempty"`
+	BeforeTokens         int        `json:"beforeTokens,omitempty"`
+	AfterTokens          int        `json:"afterTokens,omitempty"`
+	ReclaimedTokens      int        `json:"reclaimedTokens,omitempty"`
+	UsageSource          string     `json:"usageSource,omitempty"`
+	DurationMs           int64      `json:"durationMs,omitempty"`
+	RecoveryAvailable    bool       `json:"recoveryAvailable,omitempty"`
+	ErrorClass           string     `json:"errorClass,omitempty"`
+	Error                string     `json:"error,omitempty"`
+	StartedAt            time.Time  `json:"startedAt"`
+	CompletedAt          *time.Time `json:"completedAt,omitempty"`
 }
 
 // FileChange is the compact, durable portion of a tool-reported workspace

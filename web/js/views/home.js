@@ -7,7 +7,7 @@
 import { icons } from "../icons.js";
 import { get, post } from "../api.js";
 import {
-  activateChatTab, canClearChat, clearChat, closeChatTab, closeWorkspaceSession,
+  activateChatTab, canClearChat, canCompressChat, clearChat, compressChat, closeChatTab, closeWorkspaceSession,
   createChatTab, isStreaming, onChatCommandError, onChatWorkspaceChange,
   onStreamingChange, openWorkspaceSession, sendMessage, stopStream,
 } from "../chat.js";
@@ -798,6 +798,10 @@ export function mount(root) {
       ${icons.refresh}
       <span>Clear current chat</span>
     </button>
+    <button type="button" role="menuitem" title="Compress context now" aria-label="Compress context now" data-compress-chat-button>
+      ${icons.compress}
+      <span>Compress context now</span>
+    </button>
     <button type="button" role="menuitem" title="Create skill from this chat" aria-label="Create workspace skill from chat" data-create-skill-button>
       ${icons.star}
       <span>Create skill</span>
@@ -806,6 +810,7 @@ export function mount(root) {
   document.body.appendChild(moreMenu);
   const newTabButton = moreMenu.querySelector("[data-new-chat-tab-button]");
   const clearChatButton = moreMenu.querySelector("[data-clear-chat-button]");
+  const compressChatButton = moreMenu.querySelector("[data-compress-chat-button]");
   const createSkillButton = moreMenu.querySelector("[data-create-skill-button]");
 
   const attachmentMenu = document.createElement("div");
@@ -1014,8 +1019,9 @@ export function mount(root) {
   const updateChatMenuActions = () => {
     const busy = currentTabs.find((tab) => tab.chatId === currentChatId)?.busy || isStreaming();
     const creating = creatingChatSkills.has(currentChatId);
-    const hasTranscript = canClearChat(log);
-    clearChatButton.disabled = busy || creating || !hasTranscript;
+    const hasTranscript = canCompressChat(log);
+    clearChatButton.disabled = busy || creating || !canClearChat(log);
+    compressChatButton.disabled = creating || !hasTranscript;
     createSkillButton.disabled = !currentWorkspaceId || !currentChatId || busy || creating || !hasTranscript;
   };
 
@@ -1082,7 +1088,7 @@ export function mount(root) {
     const margin = 8;
     const gap = 6;
     const width = moreMenu.offsetWidth || 190;
-    const height = moreMenu.offsetHeight || 116;
+    const height = moreMenu.offsetHeight || 152;
     const left = Math.min(
       Math.max(margin, rect.left),
       Math.max(margin, window.innerWidth - width - margin),
@@ -1239,6 +1245,13 @@ export function mount(root) {
     requestTabClose(tab.dataset.chatTabActivate);
   };
 
+  const onCompressChatClick = (e) => {
+    e.stopPropagation();
+    closeMoreMenu();
+    if (compressChatButton.disabled) return;
+    if (!compressChat(log, selectedModel)) toast("Could not queue context compression.", { sticky: true });
+  };
+
   const onTabsContextMenu = (e) => {
     const tab = e.target.closest("[data-chat-tab-activate]");
     if (!tab) return;
@@ -1352,6 +1365,7 @@ export function mount(root) {
   attachmentMenu.addEventListener("click", onAttachmentMenuClick);
   newTabButton.addEventListener("click", onNewTabClick);
   clearChatButton.addEventListener("click", onClearChatClick);
+  compressChatButton.addEventListener("click", onCompressChatClick);
   createSkillButton.addEventListener("click", onCreateSkillClick);
   tabsHost.addEventListener("click", onTabsClick);
   tabsHost.addEventListener("auxclick", onTabsAuxClick);
@@ -1592,6 +1606,7 @@ export function mount(root) {
     attachmentMenu.removeEventListener("click", onAttachmentMenuClick);
     newTabButton.removeEventListener("click", onNewTabClick);
     clearChatButton.removeEventListener("click", onClearChatClick);
+    compressChatButton.removeEventListener("click", onCompressChatClick);
     createSkillButton.removeEventListener("click", onCreateSkillClick);
     tabsHost.removeEventListener("click", onTabsClick);
     tabsHost.removeEventListener("auxclick", onTabsAuxClick);

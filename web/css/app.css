@@ -1544,10 +1544,35 @@ textarea:disabled {
   color: var(--color-danger);
 }
 
+.chat-compression-item.is-completed .chat-activity-status {
+  color: var(--color-success);
+}
+
+.chat-compression-item.is-failed .chat-activity-status {
+  color: var(--color-danger);
+}
+
+.chat-compression-item.is-skipped .chat-activity-status {
+  color: var(--color-text-muted);
+}
+
 .chat-tool-item.is-running > summary,
 .chat-reasoning-item.is-running > summary,
-.chat-plan-question-item.is-running > summary {
+.chat-plan-question-item.is-running > summary,
+.chat-compression-item.is-running > summary {
   border-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+
+.chat-compression-item > summary {
+  border-left: 2px solid color-mix(in srgb, var(--color-accent) 52%, var(--color-border));
+}
+
+.chat-compression-metrics p {
+  margin: 0;
+}
+
+.chat-compression-metrics p + p {
+  margin-top: var(--space-xs);
 }
 
 .chat-research-statuses {

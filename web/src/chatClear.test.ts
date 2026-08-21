@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const chat = vi.hoisted(() => ({
   activateChatTab: vi.fn(() => true),
   canClearChat: vi.fn(() => true),
+  canCompressChat: vi.fn(() => true),
   clearChat: vi.fn(() => true),
+  compressChat: vi.fn(() => true),
   closeChatTab: vi.fn(() => true),
   closeWorkspaceSession: vi.fn(),
   createChatTab: vi.fn(() => true),
@@ -70,6 +72,7 @@ describe("clear current chat menu action", () => {
     document.body.innerHTML = "";
     vi.restoreAllMocks();
     chat.clearChat.mockClear();
+    chat.compressChat.mockClear();
     api.post.mockClear();
   });
 
@@ -99,6 +102,14 @@ describe("clear current chat menu action", () => {
 
     expect(chat.clearChat).not.toHaveBeenCalled();
     expect(input.textContent).toBe("keep this draft");
+  });
+
+  it("queues context compression with the composer model without confirmation", () => {
+    root.querySelector<HTMLButtonElement>("[data-chat-more-trigger]")!.click();
+    document.querySelector<HTMLButtonElement>("[data-compress-chat-button]")!.click();
+
+    expect(chat.compressChat).toHaveBeenCalledWith(expect.any(HTMLElement), null);
+    expect(document.querySelector<HTMLElement>(".chat-more-menu")!.hidden).toBe(true);
   });
 
   it("creates a skill from the captured active chat and reports success", async () => {

@@ -253,6 +253,8 @@ func (c *client) readPump(h *Hub) {
 			c.server.sessions.resolvePlanQuestions(c, msg.WorkspaceID, msg.ChatID, msg.Surface, msg.QuestionSetID, nil, true, msg.RequestID)
 		case "chat_clear":
 			c.server.sessions.clear(c, msg.WorkspaceID, msg.ChatID, msg.Surface)
+		case "chat_compress":
+			c.server.sessions.compress(c, msg.WorkspaceID, msg.ChatID, msg.Surface, msg.Model)
 		case "chat_message_delete":
 			c.server.sessions.deleteMessage(c, msg.WorkspaceID, msg.ChatID, msg.Surface, msg.TurnID, msg.Role)
 		case "chat_message_rerun":

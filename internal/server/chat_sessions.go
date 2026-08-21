@@ -128,18 +128,23 @@ type chatWorkspaceSession struct {
 }
 
 type chatSession struct {
-	manager              *chatSessionManager
-	parent               *chatWorkspaceSession
-	workspace            workspaces.Workspace
-	surface              chatSurface
-	mu                   sync.Mutex
-	transcript           sessions.TabTranscript
-	active               *sessions.Turn
-	cancel               context.CancelFunc
-	pendingPlanQuestions *planQuestionWait
-	trajectory           *trajectorylog.Store
-	trajectoryWarning    string
-	closed               bool
+	manager                  *chatSessionManager
+	parent                   *chatWorkspaceSession
+	workspace                workspaces.Workspace
+	surface                  chatSurface
+	mu                       sync.Mutex
+	transcript               sessions.TabTranscript
+	active                   *sessions.Turn
+	cancel                   context.CancelFunc
+	pendingPlanQuestions     *planQuestionWait
+	manualCompressionPending bool
+	manualCompressionModel   string
+	manualCompressionID      string
+	idleCompressionRunning   bool
+	idleCompressionCancel    context.CancelFunc
+	trajectory               *trajectorylog.Store
+	trajectoryWarning        string
+	closed                   bool
 }
 
 func newChatSessionManager(server *Server) *chatSessionManager {
@@ -350,22 +355,22 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		parent.sendSnapshot(c, surface)
 		return
 	}
-	if session.active != nil {
+	if session.isBusyLocked() {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "session_busy", "this chat already has an active response", requestID)
 		return
 	}
 
-	history := hydrateChatMediaHistory(session.transcript.Messages, session.transcript.Turns)
-	userMessageIndex := len(history)
+	canonical := hydrateChatMediaHistory(session.transcript.Messages, session.transcript.Turns)
+	userMessageIndex := len(canonical)
 	userMessage := llm.Message{Role: llm.RoleUser, Content: modelText}
 	userMessage.ContentParts = chatMediaContentParts(modelText, images, videos)
-	history = append(history, userMessage)
-	messages := []llm.Message{m.server.agentModeSystemMessage(session.workspace, mode, visibleText, researchEnabled)}
+	canonical = append(canonical, userMessage)
+	prefix := []llm.Message{m.server.agentModeSystemMessage(session.workspace, mode, visibleText, researchEnabled)}
 	if contextMessage != nil {
-		messages = append(messages, *contextMessage)
+		prefix = append(prefix, *contextMessage)
 	}
-	messages = append(messages, history...)
+	messages := append(cloneContextMessages(prefix), buildCompressedModelHistory(canonical, session.transcript.ContextCheckpoint)...)
 	visionMode := session.transcript.Vision || messagesRequireMedia(messages)
 	settings, streamer := m.server.routeMediaChat(settings, messages, visionMode)
 	planMode := mode.ID == agentmodes.PlanID
@@ -427,7 +432,7 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		session.run(ctx, streamer, settings, messages, turnID, scopes, mode, researchEnabled)
+		session.run(ctx, streamer, settings, prefix, canonical, cloneContextCheckpoint(session.transcript.ContextCheckpoint), turnID, scopes, mode, researchEnabled)
 	}()
 }
 
@@ -449,6 +454,9 @@ func (m *chatSessionManager) stop(c *client, workspaceID, chatID, surfaceValue s
 	}
 	session.mu.Lock()
 	cancel := session.cancel
+	if cancel == nil {
+		cancel = session.idleCompressionCancel
+	}
 	session.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -480,7 +488,7 @@ func (m *chatSessionManager) clear(c *client, workspaceID, chatID, surfaceValue 
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_load_failed", parent.loadErr.Error(), "")
 		return
 	}
-	if session.active != nil {
+	if session.isBusyLocked() {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_busy", "the current chat cannot be cleared while a response is active", "")
 		return
@@ -509,6 +517,212 @@ func (m *chatSessionManager) clear(c *client, workspaceID, chatID, surfaceValue 
 	parent.broadcastSnapshot(surface)
 }
 
+func (m *chatSessionManager) compress(c *client, workspaceID, chatID, surfaceValue, model string) {
+	surface, surfaceErr := normalizeChatSurface(surfaceValue)
+	if surfaceErr != nil || surface != chatSurfaceMain {
+		m.commandErrorForSurface(c, workspaceID, chatSurfaceMain, "invalid_surface", "manual context compression is available only in main chat", "")
+		return
+	}
+	parent, err := m.get(workspaceID)
+	if err != nil {
+		m.commandError(c, workspaceID, "invalid_workspace", err.Error(), "")
+		return
+	}
+	session, resolved, err := parent.resolveSurfaceTab(chatID, chatSurfaceMain)
+	if err != nil {
+		m.commandErrorForTab(c, workspaceID, chatID, "invalid_chat", err.Error(), "")
+		return
+	}
+	settings := m.server.llmSettings
+	if selected, ok := m.server.settingsForModel(model); ok {
+		settings = selected
+	}
+
+	session.mu.Lock()
+	if parent.loadErr != nil {
+		session.mu.Unlock()
+		m.commandErrorForTab(c, workspaceID, resolved, "session_load_failed", parent.loadErr.Error(), "")
+		return
+	}
+	if session.manualCompressionPending || session.idleCompressionRunning {
+		session.mu.Unlock()
+		return
+	}
+	compressionID := newSessionID("compression")
+	started := time.Now().UTC()
+	activity := sessions.CompressionActivity{
+		ID: compressionID, Trigger: "manual", Phase: "idle", Status: "queued",
+		ThresholdPercent: settings.ContextCompressionThresholdPercent, ContextLength: settings.ContextLength,
+		UsageSource: "estimated", StartedAt: started,
+	}
+	if session.active != nil {
+		activity.Phase = "mid_turn"
+		if len(session.active.AssistantTurns) > 0 {
+			anchor := session.active.AssistantTurns[len(session.active.AssistantTurns)-1].Number
+			activity.AfterAssistantNumber = &anchor
+		}
+		session.manualCompressionPending = true
+		session.manualCompressionModel = strings.TrimSpace(model)
+		session.manualCompressionID = compressionID
+		session.active.Compressions = append(session.active.Compressions, activity)
+		turnID := session.active.ID
+		session.appendTrajectoryLocked("context/compression_queued", turnID, nil, map[string]any{
+			"compressionId": compressionID, "trigger": "manual", "phase": activity.Phase,
+			"thresholdPercent": activity.ThresholdPercent, "contextLength": activity.ContextLength,
+			"model": settings.Model, "endpoint": settings.Endpoint, "queuedAt": started,
+		})
+		session.emitLocked(map[string]any{"type": "context_compression_queued", "turnId": turnID, "compression": activity})
+		session.mu.Unlock()
+		return
+	}
+	if len(session.transcript.Messages) == 0 || len(session.transcript.Turns) == 0 {
+		session.mu.Unlock()
+		m.commandErrorForTab(c, workspaceID, resolved, "nothing_to_compress", errNothingToCompress.Error(), "")
+		return
+	}
+	turnID := session.transcript.Turns[len(session.transcript.Turns)-1].ID
+	lastTurn := session.transcript.Turns[len(session.transcript.Turns)-1]
+	mode, modeErr := m.server.modes.Resolve(session.workspace.MainPath, lastTurn.AgentModeID)
+	if modeErr != nil {
+		session.mu.Unlock()
+		m.commandErrorForTab(c, workspaceID, resolved, "agent_mode_load_failed", modeErr.Error(), "")
+		return
+	}
+	scopes := tools.NewToolScopeChecker(agentmodes.PermissionList(mode))
+	_, researchStreamer := m.server.researchChat()
+	researchEnabled := m.server.settings.ResearchAgentConcurrency > 0 && researchStreamer != nil && modeAllowsResearch(mode)
+	prefix := []llm.Message{m.server.agentModeSystemMessage(session.workspace, mode, lastTurn.UserContent, researchEnabled)}
+	toolSchema := m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{
+		PlanMode: mode.ID == agentmodes.PlanID, ResearchEnabled: researchEnabled, WorkspaceID: session.workspace.ID,
+	})
+	if session.transcript.ContextCheckpoint != nil {
+		toolSchema = append(toolSchema, contextHistorySearchToolSchema())
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	session.idleCompressionRunning = true
+	session.idleCompressionCancel = cancel
+	updated := cloneTabTranscript(session.transcript)
+	last := &updated.Turns[len(updated.Turns)-1]
+	last.Compressions = append(last.Compressions, activity)
+	activity.Status = "running"
+	last.Compressions[len(last.Compressions)-1] = activity
+	updated.Revision++
+	if err := parent.persistTabLocked(updated); err != nil {
+		session.idleCompressionRunning = false
+		session.idleCompressionCancel = nil
+		cancel()
+		session.mu.Unlock()
+		m.commandErrorForTab(c, workspaceID, resolved, "compression_persist_failed", err.Error(), "")
+		return
+	}
+	session.transcript = updated
+	canonical := cloneContextMessages(updated.Messages)
+	checkpoint := cloneContextCheckpoint(updated.ContextCheckpoint)
+	session.appendTrajectoryLocked("context/compression_queued", turnID, nil, map[string]any{
+		"compressionId": compressionID, "trigger": "manual", "phase": "idle",
+		"thresholdPercent": activity.ThresholdPercent, "contextLength": activity.ContextLength,
+		"model": settings.Model, "endpoint": settings.Endpoint, "queuedAt": started,
+	})
+	session.appendTrajectoryLocked("context/compression_start", turnID, nil, map[string]any{
+		"compressionId": compressionID, "trigger": "manual", "phase": "idle",
+		"thresholdPercent": activity.ThresholdPercent, "contextLength": activity.ContextLength,
+		"model": settings.Model, "endpoint": settings.Endpoint, "usageSource": "estimated", "startedAt": started,
+	})
+	session.emitLocked(map[string]any{"type": "context_compression_started", "turnId": turnID, "compression": activity})
+	session.mu.Unlock()
+	parent.broadcastSnapshot(chatSurfaceMain)
+
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		defer cancel()
+		result, compressionErr := m.server.compressContext(ctx, settings, canonical, checkpoint, prefix, toolSchema, 0, "estimated")
+		completed := time.Now().UTC()
+		activity.CompletedAt = &completed
+		activity.DurationMs = completed.Sub(started).Milliseconds()
+		activity.BeforeTokens = result.BeforeTokens
+		activity.AfterTokens = result.AfterTokens
+		activity.ReclaimedTokens = max(0, result.BeforeTokens-result.AfterTokens)
+		if result.UsageSource != "" {
+			activity.UsageSource = result.UsageSource
+		}
+
+		session.mu.Lock()
+		if session.closed {
+			session.mu.Unlock()
+			return
+		}
+		trajectoryType := "context/compression_complete"
+		eventType := "context_compression_completed"
+		activity.Status = "completed"
+		activity.RecoveryAvailable = true
+		if compressionErr != nil {
+			activity.Error = compressionErr.Error()
+			activity.ErrorClass = classifyCompressionError(compressionErr)
+			activity.RecoveryAvailable = session.transcript.ContextCheckpoint != nil
+			trajectoryType = "context/compression_error"
+			eventType = "context_compression_failed"
+			activity.Status = "failed"
+			if errors.Is(compressionErr, errNothingToCompress) {
+				trajectoryType = "context/compression_skipped"
+				eventType = "context_compression_skipped"
+				activity.Status = "skipped"
+			}
+		}
+		stored := cloneTabTranscript(session.transcript)
+		updateTranscriptCompressionActivity(&stored, compressionID, activity)
+		if compressionErr == nil {
+			result.Checkpoint.LastCompactedAt = completed
+			stored.ContextCheckpoint = cloneContextCheckpoint(result.Checkpoint)
+		}
+		stored.Revision++
+		persistErr := parent.persistTabLocked(stored)
+		if persistErr == nil {
+			session.transcript = stored
+		} else {
+			activity.Status = "failed"
+			activity.Error = "persist compressed context: " + persistErr.Error()
+			activity.ErrorClass = "persistence"
+			activity.RecoveryAvailable = session.transcript.ContextCheckpoint != nil
+			updateTranscriptCompressionActivity(&session.transcript, compressionID, activity)
+			trajectoryType = "context/compression_error"
+			eventType = "context_compression_failed"
+		}
+		session.idleCompressionRunning = false
+		session.idleCompressionCancel = nil
+		data := map[string]any{
+			"compressionId": compressionID, "trigger": "manual", "phase": "idle", "status": activity.Status,
+			"thresholdPercent": settings.ContextCompressionThresholdPercent, "contextLength": settings.ContextLength,
+			"model": settings.Model, "endpoint": settings.Endpoint, "usageSource": activity.UsageSource,
+			"beforeTokens": result.BeforeTokens, "afterTokens": result.AfterTokens,
+			"reclaimedTokens": result.BeforeTokens - result.AfterTokens, "retiredMessages": result.RetiredMessages,
+			"summaryUsage": result.SummaryUsage, "chunkCount": result.ChunkCount,
+			"recoveryAvailable": activity.RecoveryAvailable, "durationMs": activity.DurationMs,
+			"completedAt": completed, "errorClass": activity.ErrorClass, "error": activity.Error,
+		}
+		if compressionErr == nil && persistErr == nil {
+			data["summary"] = result.Checkpoint.Summary
+		}
+		session.appendTrajectoryLocked(trajectoryType, turnID, nil, data)
+		session.emitLocked(map[string]any{"type": eventType, "turnId": turnID, "compression": activity})
+		session.mu.Unlock()
+		logf("context compression chat=%s trigger=manual status=%s before=%d after=%d duration_ms=%d", resolved, activity.Status, activity.BeforeTokens, activity.AfterTokens, activity.DurationMs)
+		parent.broadcastSnapshot(chatSurfaceMain)
+	}()
+}
+
+func updateTranscriptCompressionActivity(transcript *sessions.TabTranscript, compressionID string, activity sessions.CompressionActivity) {
+	for turnIndex := range transcript.Turns {
+		for activityIndex := range transcript.Turns[turnIndex].Compressions {
+			if transcript.Turns[turnIndex].Compressions[activityIndex].ID == compressionID {
+				transcript.Turns[turnIndex].Compressions[activityIndex] = activity
+				return
+			}
+		}
+	}
+}
+
 func (m *chatSessionManager) deleteMessage(c *client, workspaceID, chatID, surfaceValue, turnID, role string) {
 	surface, surfaceErr := normalizeChatSurface(surfaceValue)
 	if surfaceErr != nil {
@@ -532,7 +746,7 @@ func (m *chatSessionManager) deleteMessage(c *client, workspaceID, chatID, surfa
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_load_failed", parent.loadErr.Error(), "")
 		return
 	}
-	if session.active != nil {
+	if session.isBusyLocked() {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_busy", "messages cannot be deleted while a response is active", "")
 		return
@@ -615,7 +829,7 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_load_failed", parent.loadErr.Error(), "")
 		return
 	}
-	if session.active != nil {
+	if session.isBusyLocked() {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_busy", "messages cannot be rerun while a response is active", "")
 		return
@@ -653,7 +867,7 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 	requestID := newSessionID("request")
 
 	session.mu.Lock()
-	if session.active != nil {
+	if session.isBusyLocked() {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_busy", "messages cannot be rerun while a response is active", requestID)
 		return
@@ -670,13 +884,13 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 		return
 	}
 
-	history := hydrateChatMediaHistory(updated.Messages, updated.Turns)
-	userMessageIndex := len(history)
+	canonical := hydrateChatMediaHistory(updated.Messages, updated.Turns)
+	userMessageIndex := len(canonical)
 	userMessage := llm.Message{Role: llm.RoleUser, Content: modelText}
 	userMessage.ContentParts = chatMediaContentParts(modelText, images, videos)
-	history = append(history, userMessage)
-	messages := []llm.Message{m.server.agentModeSystemMessage(session.workspace, mode, visibleText, researchEnabled)}
-	messages = append(messages, history...)
+	canonical = append(canonical, userMessage)
+	prefix := []llm.Message{m.server.agentModeSystemMessage(session.workspace, mode, visibleText, researchEnabled)}
+	messages := append(cloneContextMessages(prefix), buildCompressedModelHistory(canonical, updated.ContextCheckpoint)...)
 	visionMode := updated.Vision || messagesRequireMedia(messages)
 	settings, streamer := m.server.routeMediaChat(settings, messages, visionMode)
 	planMode := mode.ID == agentmodes.PlanID
@@ -752,7 +966,7 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		session.run(ctx, streamer, settings, messages, newTurnID, scopes, mode, researchEnabled)
+		session.run(ctx, streamer, settings, prefix, canonical, cloneContextCheckpoint(updated.ContextCheckpoint), newTurnID, scopes, mode, researchEnabled)
 	}()
 }
 
@@ -785,7 +999,7 @@ func (m *chatSessionManager) editAssistantMessage(c *client, workspaceID, chatID
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_load_failed", parent.loadErr.Error(), "")
 		return
 	}
-	if session.active != nil {
+	if session.isBusyLocked() {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_busy", "messages cannot be edited while a response is active", "")
 		return
@@ -863,6 +1077,7 @@ func editAssistantTranscript(transcript *sessions.TabTranscript, turnID, content
 
 	turn.AssistantTurns[assistantIndex].Content = content
 	transcript.Messages[messageIndex].Content = content
+	transcript.ContextCheckpoint = nil
 	transcript.Revision++
 	return nil
 }
@@ -897,6 +1112,7 @@ func rerunTurn(transcript sessions.TabTranscript, turnID string) (sessions.Turn,
 	updated := transcript
 	updated.Turns = append([]sessions.Turn(nil), transcript.Turns[:turnIndex]...)
 	updated.Messages = append([]llm.Message(nil), transcript.Messages[:boundary]...)
+	updated.ContextCheckpoint = nil
 	updated.Revision++
 	selected.Images = append([]sessions.MediaAttachment(nil), selected.Images...)
 	selected.Videos = append([]sessions.MediaAttachment(nil), selected.Videos...)
@@ -920,8 +1136,16 @@ func cloneTabTranscript(transcript sessions.TabTranscript) sessions.TabTranscrip
 				[]sessions.ToolActivity(nil), transcript.Turns[index].AssistantTurns[assistantIndex].Tools...,
 			)
 		}
+		clone.Turns[index].Compressions = append([]sessions.CompressionActivity(nil), transcript.Turns[index].Compressions...)
+		for compressionIndex := range clone.Turns[index].Compressions {
+			if transcript.Turns[index].Compressions[compressionIndex].AfterAssistantNumber != nil {
+				value := *transcript.Turns[index].Compressions[compressionIndex].AfterAssistantNumber
+				clone.Turns[index].Compressions[compressionIndex].AfterAssistantNumber = &value
+			}
+		}
 	}
 	clone.Messages = append([]llm.Message(nil), transcript.Messages...)
+	clone.ContextCheckpoint = cloneContextCheckpoint(transcript.ContextCheckpoint)
 	return clone
 }
 
@@ -1016,6 +1240,7 @@ func deleteTranscriptMessage(transcript *sessions.TabTranscript, turnID, role st
 		transcript.Turns = append(transcript.Turns[:turnIndex], transcript.Turns[turnIndex+1:]...)
 	}
 	transcript.Preview = previewForTurns(transcript.Turns)
+	transcript.ContextCheckpoint = nil
 	transcript.Revision++
 	return nil
 }
@@ -1133,7 +1358,7 @@ func (m *chatSessionManager) closeTab(c *client, workspaceID, chatID string, sto
 		return
 	}
 	tab.mu.Lock()
-	if tab.active != nil && !stopIfBusy {
+	if tab.isBusyLocked() && !stopIfBusy {
 		tab.mu.Unlock()
 		parent.mu.Unlock()
 		m.commandErrorForTab(c, workspaceID, chatID, "session_busy", "chat is still running", "")
@@ -1188,9 +1413,12 @@ func (m *chatSessionManager) closeTab(c *client, workspaceID, chatID string, sto
 		return
 	}
 	cancel := tab.cancel
+	idleCancel := tab.idleCompressionCancel
 	tab.closed = true
 	tab.active = nil
 	tab.cancel = nil
+	tab.idleCompressionRunning = false
+	tab.idleCompressionCancel = nil
 	delete(parent.tabs, chatID)
 	parent.tabOrder = nextOrder
 	parent.activeChatID = nextActive
@@ -1205,6 +1433,9 @@ func (m *chatSessionManager) closeTab(c *client, workspaceID, chatID string, sto
 	parent.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	if idleCancel != nil {
+		idleCancel()
 	}
 	if trajectoryDeleteErr != nil {
 		m.commandErrorForTab(c, workspaceID, chatID, "trajectory_delete_failed", trajectoryDeleteErr.Error(), "")
@@ -1487,7 +1718,7 @@ func (w *chatWorkspaceSession) sendSnapshot(c *client, surface chatSurface) {
 			Type: "session_snapshot", WorkspaceID: w.workspace.ID, Surface: surface,
 			ChatID: codeChat.transcript.ChatID, ActiveChatID: codeChat.transcript.ChatID,
 			Sequence: w.codeSequence.Load(), Revision: codeChat.transcript.Revision,
-			Tabs:  []chatTabSummary{{ChatID: codeChat.transcript.ChatID, Preview: preview, Busy: codeChat.active != nil, Revision: codeChat.transcript.Revision}},
+			Tabs:  []chatTabSummary{{ChatID: codeChat.transcript.ChatID, Preview: preview, Busy: codeChat.isBusyLocked(), Revision: codeChat.transcript.Revision}},
 			Turns: codeChat.transcript.Turns, ActiveTurn: codeChat.active,
 		}
 		c.sendJSON(snapshot)
@@ -1511,7 +1742,7 @@ func (w *chatWorkspaceSession) sendSnapshot(c *client, surface chatSurface) {
 			preview = "New chat"
 		}
 		snapshot.Tabs = append(snapshot.Tabs, chatTabSummary{
-			ChatID: chatID, Preview: preview, Busy: tab.active != nil, Revision: tab.transcript.Revision,
+			ChatID: chatID, Preview: preview, Busy: tab.isBusyLocked(), Revision: tab.transcript.Revision,
 		})
 		if chatID == w.activeChatID {
 			active = tab
@@ -1583,19 +1814,21 @@ func (s *chatSession) appendTrajectoryLocked(eventType, turnID string, step *int
 }
 
 type assistantStreamResult struct {
-	Content          string
-	Reasoning        string
-	ToolCalls        []llm.ToolCall
-	Completed        bool
-	FinishReason     string
-	Usage            *llm.Usage
-	StartedAt        time.Time
-	FirstTokenAt     *time.Time
-	FirstReasoningAt *time.Time
-	CompletedAt      time.Time
+	Content                 string
+	Reasoning               string
+	ToolCalls               []llm.ToolCall
+	Completed               bool
+	FinishReason            string
+	Usage                   *llm.Usage
+	StartedAt               time.Time
+	FirstTokenAt            *time.Time
+	FirstReasoningAt        *time.Time
+	CompletedAt             time.Time
+	EstimatedOutputTokens   int
+	ContextThresholdCrossed bool
 }
 
-func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings llm.Settings, messages []llm.Message, turnID string, scopes *tools.ToolScopeChecker, mode agentmodes.Mode, researchEnabled bool) {
+func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings llm.Settings, prefix, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint, turnID string, scopes *tools.ToolScopeChecker, mode agentmodes.Mode, researchEnabled bool) {
 	questionRounds := 0
 	emptyAssistantRetries := 0
 	transientStreamRetries := 0
@@ -1610,18 +1843,69 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 	}
 	researchFinalizationAttempts := 0
 	forceFinalWithoutTools := false
+	var observedTokens int
+	usageSource := "estimated"
+	compressionCooldown := false
 	for assistantNumber := 0; ; assistantNumber++ {
 		if ctx.Err() != nil {
-			s.finish(turnID, "stopped", "", messages)
+			s.finish(turnID, "stopped", "", canonical, checkpoint)
 			return
 		}
-		requestOptions := []llm.RequestOption{llm.WithStream(true)}
+		toolSchema := []llm.Tool(nil)
 		if !forceFinalWithoutTools {
-			requestOptions = append(requestOptions, llm.WithTools(s.manager.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: research != nil, WorkspaceID: s.workspace.ID})))
+			toolSchema = s.manager.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: research != nil, WorkspaceID: s.workspace.ID})
+			if checkpoint != nil {
+				toolSchema = append(toolSchema, contextHistorySearchToolSchema())
+			}
+		}
+		manualCompression, manualCompressionID, manualCompressionModel := s.takeManualCompressionPending(turnID)
+		messages := append(cloneContextMessages(prefix), buildCompressedModelHistory(canonical, checkpoint)...)
+		currentTokens := contextRequestTokens(settings, messages, toolSchema)
+		hardLimitPreflight := currentTokens+settings.MaxTokens > settings.ContextLength
+		coolingDown := compressionCooldown
+		compressionCooldown = false
+		if hardLimitPreflight && !manualCompression && !settings.CompressionEnabled() {
+			s.finish(turnID, "error", "the next request would exceed the endpoint context window and automatic context compression is disabled", canonical, checkpoint)
+			return
+		}
+		shouldCompress := manualCompression || (settings.CompressionEnabled() &&
+			(hardLimitPreflight || (currentTokens >= compressionThresholdTokens(settings) && !coolingDown)))
+		if shouldCompress {
+			compressionSettings := settings
+			if manualCompressionModel != "" {
+				if selected, ok := s.manager.server.settingsForModel(manualCompressionModel); ok {
+					compressionSettings = selected
+				}
+			}
+			updated, result, compressionErr := s.compressActiveContext(ctx, compressionSettings, canonical, checkpoint, prefix, toolSchema, turnID, assistantNumber, manualCompression, manualCompressionID, observedTokens, usageSource)
+			compressionCooldown = true
+			if updated != nil {
+				checkpoint = updated
+				messages = append(cloneContextMessages(prefix), buildCompressedModelHistory(canonical, checkpoint)...)
+				observedTokens = result.AfterTokens
+				usageSource = result.UsageSource
+				if !forceFinalWithoutTools {
+					toolSchema = s.manager.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: research != nil, WorkspaceID: s.workspace.ID})
+					toolSchema = append(toolSchema, contextHistorySearchToolSchema())
+				}
+			}
+			currentTokens = contextRequestTokens(settings, messages, toolSchema)
+			if currentTokens+settings.MaxTokens > settings.ContextLength {
+				detail := "the compressed context still exceeds the endpoint context window"
+				if compressionErr != nil {
+					detail = "context compression could not reclaim enough space: " + compressionErr.Error()
+				}
+				s.finish(turnID, "error", "the next request would exceed the endpoint context window and "+detail, canonical, checkpoint)
+				return
+			}
+		}
+		requestOptions := []llm.RequestOption{llm.WithStream(true)}
+		if len(toolSchema) > 0 {
+			requestOptions = append(requestOptions, llm.WithTools(toolSchema))
 		}
 		turnRequest, requestErr := llm.NewChatRequest(settings, messages, requestOptions...)
 		if requestErr != nil {
-			s.finish(turnID, "error", requestErr.Error(), messages)
+			s.finish(turnID, "error", requestErr.Error(), canonical, checkpoint)
 			return
 		}
 		requestStartedAt := time.Now().UTC()
@@ -1641,7 +1925,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 
 		publishResponse := research == nil || !research.HasOutstanding()
 		stream := streamer.StreamChat(ctx, turnRequest)
-		streamResult, err := s.collectAssistantTurn(stream, turnID, assistantNumber, requestStartedAt, publishResponse)
+		streamResult, err := s.collectAssistantTurn(stream, turnID, assistantNumber, requestStartedAt, publishResponse, estimateChatRequestTokens(turnRequest), compressionThresholdTokens(settings))
 		assistant := llm.Message{Role: llm.RoleAssistant, Content: streamResult.Content, ToolCalls: streamResult.ToolCalls}
 		s.mu.Lock()
 		if s.isActiveLocked(turnID) {
@@ -1654,10 +1938,12 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				"toolCalls": streamResult.ToolCalls, "finishReason": streamResult.FinishReason,
 				"usage": streamResult.Usage, "streamError": streamError, "startedAt": streamResult.StartedAt,
 				"firstTokenAt": streamResult.FirstTokenAt, "firstReasoningAt": streamResult.FirstReasoningAt,
-				"completedAt": streamResult.CompletedAt,
-				"durationMs":  streamResult.CompletedAt.Sub(streamResult.StartedAt).Milliseconds(),
-				"ttftMs":      durationUntil(streamResult.StartedAt, streamResult.FirstTokenAt),
-				"suppressed":  !publishResponse,
+				"completedAt":                        streamResult.CompletedAt,
+				"durationMs":                         streamResult.CompletedAt.Sub(streamResult.StartedAt).Milliseconds(),
+				"ttftMs":                             durationUntil(streamResult.StartedAt, streamResult.FirstTokenAt),
+				"estimatedOutputTokens":              streamResult.EstimatedOutputTokens,
+				"contextCompressionThresholdCrossed": streamResult.ContextThresholdCrossed,
+				"suppressed":                         !publishResponse,
 			})
 		}
 		s.mu.Unlock()
@@ -1682,38 +1968,45 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 
 		if err != nil {
 			if errors.Is(err, errChatCanceled) {
-				s.finish(turnID, "stopped", "", messages)
+				s.finish(turnID, "stopped", "", canonical, checkpoint)
 				return
 			}
 			if isEmptyAssistantResponse(streamResult.Content, streamResult.ToolCalls) && transientStreamRetries < maxTransientStreamRetries {
 				transientStreamRetries++
-				messages = append(messages, transientStreamRetryMessage())
+				canonical = append(canonical, transientStreamRetryMessage())
 				continue
 			}
-			s.finish(turnID, "error", err.Error(), messages)
+			s.finish(turnID, "error", err.Error(), canonical, checkpoint)
 			return
 		}
 		if finishErr := finishReasonError(streamResult.FinishReason, len(streamResult.ToolCalls) > 0); finishErr != nil {
-			s.finish(turnID, "error", finishErr.Error(), messages)
+			s.finish(turnID, "error", finishErr.Error(), canonical, checkpoint)
 			return
 		}
 		transientStreamRetries = 0
 		if isEmptyAssistantResponse(streamResult.Content, streamResult.ToolCalls) {
 			if emptyAssistantRetries >= maxEmptyAssistantRetries {
-				s.finish(turnID, "error", emptyAssistantResponseError().Error(), messages)
+				s.finish(turnID, "error", emptyAssistantResponseError().Error(), canonical, checkpoint)
 				return
 			}
 			emptyAssistantRetries++
-			messages = append(messages, emptyAssistantRetryMessage())
+			canonical = append(canonical, emptyAssistantRetryMessage())
 			continue
 		}
 		emptyAssistantRetries = 0
-		messages = append(messages, assistant)
+		canonical = append(canonical, assistant)
+		if streamResult.Usage != nil {
+			observedTokens = streamResult.Usage.TotalTokens
+			if observedTokens == 0 {
+				observedTokens = streamResult.Usage.PromptTokens + streamResult.Usage.CompletionTokens
+			}
+			usageSource = "provider"
+		}
 
 		if len(streamResult.ToolCalls) == 0 && research != nil && research.HasOutstanding() {
 			researchFinalizationAttempts++
 			if researchFinalizationAttempts <= 3 {
-				messages = append(messages, llm.Message{Role: llm.RoleUser, Content: "Research agents are still running or have unread reports. Use research_agents_wait to collect the necessary reports before writing the final answer."})
+				canonical = append(canonical, llm.Message{Role: llm.RoleUser, Content: "Research agents are still running or have unread reports. Use research_agents_wait to collect the necessary reports before writing the final answer."})
 				continue
 			}
 			fallback := research.FallbackMarkdown()
@@ -1721,20 +2014,20 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			if fallback == "" {
 				fallback = "No research report was available before the orchestration deadline. State that limitation explicitly."
 			}
-			messages = append(messages, llm.Message{Role: llm.RoleUser, Content: "Synthesize the final answer now without calling more tools. The research coordinator supplied this bounded fallback:\n\n" + fallback})
+			canonical = append(canonical, llm.Message{Role: llm.RoleUser, Content: "Synthesize the final answer now without calling more tools. The research coordinator supplied this bounded fallback:\n\n" + fallback})
 			forceFinalWithoutTools = true
 			continue
 		}
 
 		if len(streamResult.ToolCalls) == 0 {
-			s.finish(turnID, "done", "", messages)
+			s.finish(turnID, "done", "", canonical, checkpoint)
 			return
 		}
 
 		visualResult := false
 		for callOrder, call := range streamResult.ToolCalls {
 			if ctx.Err() != nil {
-				s.finish(turnID, "stopped", "", messages)
+				s.finish(turnID, "stopped", "", canonical, checkpoint)
 				return
 			}
 			callID := call.ID
@@ -1802,6 +2095,8 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				result = tools.ExecutionResult{Tool: call.Function.Name, Error: questionError}
 			case questionWait != nil:
 				result = s.awaitPlanQuestions(ctx, questionWait)
+			case call.Function.Name == contextHistorySearchToolName:
+				result = s.executeContextHistorySearch(canonical, checkpoint, json.RawMessage(call.Function.Arguments))
 			default:
 				toolCtx := s.toolContext(ctx, scopes)
 				toolCtx.FileChanges = func(changes []tools.FileChange) {
@@ -1820,13 +2115,13 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				data = []byte(fmt.Sprintf(`{"tool":%q,"success":false,"error":{"code":"marshal_error","message":%q}}`, call.Function.Name, marshalErr.Error()))
 				resultSuccess = false
 			}
-			messages = append(messages, llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: string(data)})
+			canonical = append(canonical, llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: string(data)})
 			if imageMessage, ok := toolResultImageMessage(call.Function.Name, result); ok {
-				messages = append(messages, imageMessage)
+				canonical = append(canonical, imageMessage)
 				visualResult = true
 			}
 			if videoMessage, ok := toolResultVideoMessage(call.Function.Name, result); ok {
-				messages = append(messages, videoMessage)
+				canonical = append(canonical, videoMessage)
 				visualResult = true
 			}
 
@@ -1891,12 +2186,13 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			s.transcript.Vision = true
 			s.mu.Unlock()
 
+			messages = append(cloneContextMessages(prefix), buildCompressedModelHistory(canonical, checkpoint)...)
 			settings, streamer = s.manager.server.routeMediaChat(settings, messages, true)
 		}
 	}
 }
 
-func (s *chatSession) collectAssistantTurn(stream *llm.Stream, turnID string, assistantNumber int, startedAt time.Time, publish bool) (assistantStreamResult, error) {
+func (s *chatSession) collectAssistantTurn(stream *llm.Stream, turnID string, assistantNumber int, startedAt time.Time, publish bool, requestTokens, compressionThreshold int) (assistantStreamResult, error) {
 	var content strings.Builder
 	var reasoning strings.Builder
 	toolCalls := make(map[int]llm.ToolCall)
@@ -1918,6 +2214,11 @@ func (s *chatSession) collectAssistantTurn(stream *llm.Stream, turnID string, as
 		result.CompletedAt = at
 		return result
 	}
+	reconcileThreshold := func(usage *llm.Usage) {
+		if contextCompressionThresholdReached(requestTokens, result.EstimatedOutputTokens, compressionThreshold, usage) {
+			result.ContextThresholdCrossed = true
+		}
+	}
 	for event := range stream.Events {
 		now := time.Now().UTC()
 		s.mu.Lock()
@@ -1931,6 +2232,8 @@ func (s *chatSession) collectAssistantTurn(stream *llm.Stream, turnID string, as
 		}
 		switch event.Type {
 		case llm.EventToken, llm.EventReasoning:
+			result.EstimatedOutputTokens += estimateStreamEventTokens(event)
+			reconcileThreshold(event.Usage)
 			if event.Type == llm.EventToken {
 				content.WriteString(event.Content)
 				if result.FirstTokenAt == nil {
@@ -1958,6 +2261,8 @@ func (s *chatSession) collectAssistantTurn(stream *llm.Stream, turnID string, as
 			}
 		case llm.EventToolCall:
 			if event.ToolCall != nil {
+				result.EstimatedOutputTokens += estimateStreamEventTokens(event)
+				reconcileThreshold(event.Usage)
 				toolCalls[event.ToolCall.Index] = mergeToolDelta(toolCalls[event.ToolCall.Index], *event.ToolCall)
 			}
 		case llm.EventError:
@@ -1972,6 +2277,7 @@ func (s *chatSession) collectAssistantTurn(stream *llm.Stream, turnID string, as
 			if event.Usage != nil {
 				usage := *event.Usage
 				result.Usage = &usage
+				reconcileThreshold(&usage)
 			}
 		case llm.EventComplete:
 			result.Completed = true
@@ -1979,6 +2285,7 @@ func (s *chatSession) collectAssistantTurn(stream *llm.Stream, turnID string, as
 			if event.Usage != nil {
 				usage := *event.Usage
 				result.Usage = &usage
+				reconcileThreshold(&usage)
 			}
 		}
 		s.mu.Unlock()
@@ -1992,6 +2299,7 @@ func (s *chatSession) collectAssistantTurn(stream *llm.Stream, turnID string, as
 	if result.Usage == nil && stream.Usage != nil {
 		usage := *stream.Usage
 		result.Usage = &usage
+		reconcileThreshold(&usage)
 	}
 	if firstErr != nil {
 		return result, firstErr
@@ -2009,7 +2317,7 @@ func durationUntil(start time.Time, end *time.Time) any {
 	return end.Sub(start).Milliseconds()
 }
 
-func (s *chatSession) finish(turnID, status, message string, messages []llm.Message) {
+func (s *chatSession) finish(turnID, status, message string, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.isActiveLocked(turnID) {
@@ -2029,7 +2337,8 @@ func (s *chatSession) finish(turnID, status, message string, messages []llm.Mess
 		"durationMs": now.Sub(s.active.StartedAt).Milliseconds(),
 	})
 	s.transcript.Turns = append(s.transcript.Turns, completed)
-	s.transcript.Messages = sanitizeMessages(messages)
+	s.transcript.Messages = sanitizeMessages(canonical)
+	s.transcript.ContextCheckpoint = cloneContextCheckpoint(checkpoint)
 	s.transcript.Revision++
 	persistErr := s.parent.persistTabLocked(s.transcript)
 	if persistErr != nil {
@@ -2061,6 +2370,10 @@ func (s *chatSession) finish(turnID, status, message string, messages []llm.Mess
 
 func (s *chatSession) isActiveLocked(turnID string) bool {
 	return !s.closed && s.active != nil && s.active.ID == turnID
+}
+
+func (s *chatSession) isBusyLocked() bool {
+	return s.active != nil || s.idleCompressionRunning
 }
 
 func (s *chatSession) toolContext(ctx context.Context, scopes *tools.ToolScopeChecker) tools.ExecutionContext {

@@ -66,6 +66,7 @@ type chatResearchAgentRun struct {
 	deliveredSequence int
 	followUps         int
 	messages          []llm.Message
+	checkpoint        *sessions.ContextCheckpoint
 	pending           []string
 	workerActive      bool
 	canceled          bool
@@ -584,54 +585,97 @@ func (r *chatResearchRun) researchJobDeadline() time.Duration {
 
 func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchAgentRun, prompt string) (string, []llm.Message, error) {
 	r.mu.Lock()
-	messages := cloneResearchMessages(agent.messages)
+	canonical := cloneResearchMessages(agent.messages)
+	checkpoint := cloneContextCheckpoint(agent.checkpoint)
 	r.mu.Unlock()
-	messages = append(messages, llm.Message{Role: llm.RoleUser, Content: strings.TrimSpace(prompt)})
+	canonical = append(canonical, llm.Message{Role: llm.RoleUser, Content: strings.TrimSpace(prompt)})
 	settings := r.settings
 	streamer := r.streamer
-	toolSchema := r.session.manager.server.tools.ResearchLLMSchemaForScopes(r.toolScopes)
 	emptyAssistantRetries := 0
 	transientStreamRetries := 0
+	observedTokens := 0
+	usageSource := "estimated"
+	compressionCooldown := false
 
 	for round := 0; round < maxResearchAgentRounds; round++ {
+		toolSchema := r.session.manager.server.tools.ResearchLLMSchemaForScopes(r.toolScopes)
+		if checkpoint != nil {
+			toolSchema = append(toolSchema, contextHistorySearchToolSchema())
+		}
+		messages := buildCompressedModelHistory(canonical, checkpoint)
+		currentTokens := contextRequestTokens(settings, messages, toolSchema)
+		hardLimitPreflight := currentTokens+settings.MaxTokens > settings.ContextLength
+		coolingDown := compressionCooldown
+		compressionCooldown = false
+		if hardLimitPreflight && !settings.CompressionEnabled() {
+			return "", canonical, errors.New("research request would exceed the endpoint context window and automatic context compression is disabled")
+		}
+		if settings.CompressionEnabled() && (hardLimitPreflight || (currentTokens >= compressionThresholdTokens(settings) && !coolingDown)) {
+			r.setAgentPhase(agent, "compressing context")
+			updated, compressionErr := r.compressAgentContext(ctx, agent, settings, canonical, checkpoint, toolSchema, observedTokens, usageSource, round)
+			compressionCooldown = true
+			r.setAgentPhase(agent, "investigating")
+			if updated != nil {
+				checkpoint = updated
+				messages = buildCompressedModelHistory(canonical, checkpoint)
+				toolSchema = r.session.manager.server.tools.ResearchLLMSchemaForScopes(r.toolScopes)
+				toolSchema = append(toolSchema, contextHistorySearchToolSchema())
+			}
+			if contextRequestTokens(settings, messages, toolSchema)+settings.MaxTokens > settings.ContextLength {
+				if compressionErr != nil {
+					return "", canonical, fmt.Errorf("research context compression failed before the next request: %w", compressionErr)
+				}
+				return "", canonical, errors.New("compressed research context still exceeds the endpoint context window")
+			}
+		}
 		request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(toolSchema))
 		if err != nil {
-			return "", messages, err
+			return "", canonical, err
 		}
 		streamResult, err := r.collectResearchStream(ctx, streamer.StreamChat(ctx, request), agent)
 		if err != nil {
 			if isEmptyAssistantResponse(streamResult.content, streamResult.toolCalls) && transientStreamRetries < maxTransientStreamRetries && ctx.Err() == nil {
 				transientStreamRetries++
-				messages = append(messages, transientStreamRetryMessage())
+				canonical = append(canonical, transientStreamRetryMessage())
 				continue
 			}
-			return "", messages, err
+			return "", canonical, err
 		}
 		if finishErr := finishReasonError(streamResult.finishReason, len(streamResult.toolCalls) > 0); finishErr != nil {
-			return "", messages, finishErr
+			return "", canonical, finishErr
 		}
 		transientStreamRetries = 0
 		if isEmptyAssistantResponse(streamResult.content, streamResult.toolCalls) {
 			if emptyAssistantRetries >= maxEmptyAssistantRetries {
-				return "", messages, emptyAssistantResponseError()
+				return "", canonical, emptyAssistantResponseError()
 			}
 			emptyAssistantRetries++
-			messages = append(messages, emptyAssistantRetryMessage())
+			canonical = append(canonical, emptyAssistantRetryMessage())
 			continue
 		}
 		emptyAssistantRetries = 0
 		assistant := llm.Message{Role: llm.RoleAssistant, Content: streamResult.content, ToolCalls: streamResult.toolCalls}
 		if streamResult.content != "" || len(streamResult.toolCalls) > 0 {
-			messages = append(messages, assistant)
+			canonical = append(canonical, assistant)
+		}
+		if streamResult.usage != nil {
+			observedTokens = streamResult.usage.TotalTokens
+			if observedTokens == 0 {
+				observedTokens = streamResult.usage.PromptTokens + streamResult.usage.CompletionTokens
+			}
+			usageSource = "provider"
 		}
 		if len(streamResult.toolCalls) == 0 {
-			return streamResult.content, messages, nil
+			r.mu.Lock()
+			agent.checkpoint = cloneContextCheckpoint(checkpoint)
+			r.mu.Unlock()
+			return streamResult.content, canonical, nil
 		}
 
 		visualResult := false
 		for callOrder, call := range streamResult.toolCalls {
 			if err := ctx.Err(); err != nil {
-				return "", messages, err
+				return "", canonical, err
 			}
 			callID := strings.TrimSpace(call.ID)
 			if callID == "" {
@@ -642,28 +686,94 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 			toolCtx := r.session.toolContext(ctx, r.toolScopes)
 			toolCtx.ResearchAgents = nil
 			toolCtx.AgentModes = nil
-			result := r.session.manager.server.tools.Execute(toolCtx, call.Function.Name, json.RawMessage(call.Function.Arguments))
+			var result tools.ExecutionResult
+			if call.Function.Name == contextHistorySearchToolName {
+				result = r.session.executeContextHistorySearch(canonical, checkpoint, json.RawMessage(call.Function.Arguments))
+			} else {
+				result = r.session.manager.server.tools.Execute(toolCtx, call.Function.Name, json.RawMessage(call.Function.Arguments))
+			}
 			data, marshalErr := json.Marshal(result)
 			if marshalErr != nil {
 				data = []byte(fmt.Sprintf(`{"tool":%q,"success":false,"error":{"code":"marshal_error","message":%q}}`, call.Function.Name, marshalErr.Error()))
 			}
-			messages = append(messages, llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: string(data)})
+			canonical = append(canonical, llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: string(data)})
 			if imageMessage, ok := toolResultImageMessage(call.Function.Name, result); ok {
-				messages = append(messages, imageMessage)
+				canonical = append(canonical, imageMessage)
 				visualResult = true
 			}
 			if videoMessage, ok := toolResultVideoMessage(call.Function.Name, result); ok {
-				messages = append(messages, videoMessage)
+				canonical = append(canonical, videoMessage)
 				visualResult = true
 			}
 			r.updateResearchToolActivity(agent, callID, callOrder, call.Function.Name, call.Function.Arguments, string(data), true, result.Success && marshalErr == nil)
 		}
 		r.setAgentPhase(agent, "investigating")
 		if visualResult {
-			settings, streamer = r.session.manager.server.routeMediaChat(settings, messages, true)
+			settings, streamer = r.session.manager.server.routeMediaChat(settings, buildCompressedModelHistory(canonical, checkpoint), true)
 		}
 	}
-	return "", messages, fmt.Errorf("research agent exceeded %d model rounds", maxResearchAgentRounds)
+	return "", canonical, fmt.Errorf("research agent exceeded %d model rounds", maxResearchAgentRounds)
+}
+
+func (r *chatResearchRun) compressAgentContext(ctx context.Context, agent *chatResearchAgentRun, settings llm.Settings, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint, toolSchema []llm.Tool, observedTokens int, usageSource string, round int) (*sessions.ContextCheckpoint, error) {
+	compressionID := newSessionID("compression")
+	started := time.Now().UTC()
+	s := r.session
+	s.mu.Lock()
+	if !s.isActiveLocked(r.turnID) {
+		s.mu.Unlock()
+		return nil, errChatCanceled
+	}
+	s.appendTrajectoryLocked("context/compression_start", r.turnID, nil, map[string]any{
+		"compressionId": compressionID, "trigger": "automatic", "phase": "research",
+		"agentId": agent.id, "agentName": agent.name, "round": round,
+		"thresholdPercent": settings.ContextCompressionThresholdPercent, "contextLength": settings.ContextLength,
+		"model": settings.Model, "endpoint": settings.Endpoint, "usageSource": usageSource, "startedAt": started,
+	})
+	s.mu.Unlock()
+	result, err := s.manager.server.compressContext(ctx, settings, canonical, checkpoint, nil, toolSchema, observedTokens, usageSource)
+	completed := time.Now().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.isActiveLocked(r.turnID) {
+		return nil, errChatCanceled
+	}
+	if err != nil {
+		eventType := "context/compression_error"
+		if errors.Is(err, errNothingToCompress) {
+			eventType = "context/compression_skipped"
+		}
+		resultUsageSource := result.UsageSource
+		if resultUsageSource == "" {
+			resultUsageSource = usageSource
+		}
+		s.appendTrajectoryLocked(eventType, r.turnID, nil, map[string]any{
+			"compressionId": compressionID, "trigger": "automatic", "phase": "research",
+			"agentId": agent.id, "agentName": agent.name, "round": round,
+			"thresholdPercent": settings.ContextCompressionThresholdPercent, "contextLength": settings.ContextLength,
+			"model": settings.Model, "endpoint": settings.Endpoint, "usageSource": resultUsageSource,
+			"beforeTokens": result.BeforeTokens, "afterTokens": result.AfterTokens,
+			"reclaimedTokens": result.BeforeTokens - result.AfterTokens, "summaryUsage": result.SummaryUsage,
+			"chunkCount": result.ChunkCount, "recoveryAvailable": checkpoint != nil,
+			"errorClass": classifyCompressionError(err), "error": err.Error(), "durationMs": completed.Sub(started).Milliseconds(), "completedAt": completed,
+		})
+		logf("context compression chat=%s trigger=automatic phase=research agent=%s status=failed before=%d after=%d duration_ms=%d error=%q", s.transcript.ChatID, agent.id, result.BeforeTokens, result.AfterTokens, completed.Sub(started).Milliseconds(), err.Error())
+		return nil, err
+	}
+	result.Checkpoint.LastCompactedAt = completed
+	result.Checkpoint.LastAssistantNumber = round
+	s.appendTrajectoryLocked("context/compression_complete", r.turnID, nil, map[string]any{
+		"compressionId": compressionID, "trigger": "automatic", "phase": "research",
+		"agentId": agent.id, "agentName": agent.name, "round": round,
+		"thresholdPercent": settings.ContextCompressionThresholdPercent, "contextLength": settings.ContextLength,
+		"model": settings.Model, "endpoint": settings.Endpoint, "usageSource": result.UsageSource,
+		"beforeTokens": result.BeforeTokens, "afterTokens": result.AfterTokens,
+		"reclaimedTokens": result.BeforeTokens - result.AfterTokens, "retiredMessages": result.RetiredMessages,
+		"summaryUsage": result.SummaryUsage, "chunkCount": result.ChunkCount, "summary": result.Checkpoint.Summary,
+		"recoveryAvailable": true, "durationMs": completed.Sub(started).Milliseconds(), "completedAt": completed,
+	})
+	logf("context compression chat=%s trigger=automatic phase=research agent=%s status=completed before=%d after=%d duration_ms=%d", s.transcript.ChatID, agent.id, result.BeforeTokens, result.AfterTokens, completed.Sub(started).Milliseconds())
+	return cloneContextCheckpoint(result.Checkpoint), nil
 }
 
 func (r *chatResearchRun) setAgentPhase(agent *chatResearchAgentRun, phase string) {

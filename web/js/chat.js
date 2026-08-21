@@ -64,12 +64,17 @@ export function onChatCommandError(cb) {
   return () => commandErrorListeners.delete(cb);
 }
 
+function activeBindingChatBusy() {
+  return Boolean(binding?.tabs.find((tab) => tab.chatId === binding.activeChatId)?.busy);
+}
+
 export function canClearChat(log) {
   return Boolean(
     binding?.log === log
     && binding.workspaceId
     && binding.hasSnapshot
     && binding.turns.size > 0
+    && !activeBindingChatBusy()
     && activeStream == null,
   );
 }
@@ -189,6 +194,12 @@ ws.on("session_event", (message) => {
     tab.preview = normalizePreview(event.message) || "New chat";
     tab.busy = true;
     tabStateChanged = true;
+  } else if (tab && event.type === "context_compression_started" && event.compression?.phase === "idle") {
+    tab.busy = true;
+    tabStateChanged = true;
+  } else if (tab && ["context_compression_completed", "context_compression_skipped", "context_compression_failed"].includes(event.type) && event.compression?.phase === "idle") {
+    tab.busy = false;
+    tabStateChanged = true;
   } else if (tab && event.type === "turn_finished") {
     tab.busy = false;
     tabStateChanged = true;
@@ -270,6 +281,13 @@ function applyEvent(event) {
     case "plan_questions_resolved":
       resolvePlanQuestionItem(findStream(event.turnId), event, event.turn);
       break;
+    case "context_compression_queued":
+    case "context_compression_started":
+    case "context_compression_completed":
+    case "context_compression_skipped":
+    case "context_compression_failed":
+      upsertCompressionActivity(findStream(event.turnId), event.compression || {});
+      break;
     case "turn_finished": {
       const stream = findStream(event.turnId);
       finishStream(stream, event.status || "error", event.error || "");
@@ -284,7 +302,7 @@ export function sendMessage(log, text, model, agentModeId, options = {}) {
   text = text.trim();
   const images = Array.isArray(options.images) ? options.images : [];
   const videos = Array.isArray(options.videos) ? options.videos : [];
-  if ((!text && images.length === 0 && videos.length === 0) || activeStream || !binding?.workspaceId || !binding.activeChatId || binding.log !== log) return false;
+  if ((!text && images.length === 0 && videos.length === 0) || activeStream || activeBindingChatBusy() || !binding?.workspaceId || !binding.activeChatId || binding.log !== log) return false;
   const requestId = globalThis.crypto?.randomUUID?.() || `request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return ws.send({
     type: "chat_send", workspaceId: binding.workspaceId, chatId: binding.activeChatId, requestId,
@@ -310,6 +328,10 @@ function renderStoredTurn(turn, active) {
     assistantDeleted: Boolean(turn.assistantDeleted),
   });
   binding.turns.set(turn.id, stream);
+  const compressions = turn.assistantDeleted ? [] : (turn.compressions || []);
+  for (const activity of compressions.filter((item) => item.phase !== "idle" && item.afterAssistantNumber == null)) {
+    upsertCompressionActivity(stream, activity);
+  }
   for (const assistant of turn.assistantDeleted ? [] : (turn.assistantTurns || [])) {
     startTurn(stream, assistant.number);
     appendReasoning(stream, assistant.number, assistant.reasoning || "");
@@ -328,6 +350,9 @@ function renderStoredTurn(turn, active) {
         completeToolCall(stream, { ...data, success: tool.success, content: tool.result || "" }, assistant.number);
       }
     }
+    for (const activity of compressions.filter((item) => item.phase !== "idle" && item.afterAssistantNumber === assistant.number)) {
+      upsertCompressionActivity(stream, activity);
+    }
   }
   for (const reasoning of turn.assistantDeleted ? [] : (turn.researchReasoning || [])) {
     appendResearchReasoning(stream, {
@@ -345,6 +370,12 @@ function renderStoredTurn(turn, active) {
     if (tool.status !== "running") {
       completeToolCall(stream, { ...data, success: tool.success, content: tool.result || "" });
     }
+  }
+  for (const activity of compressions.filter((item) => item.phase === "idle" || (
+    item.afterAssistantNumber != null
+    && !(turn.assistantTurns || []).some((assistant) => assistant.number === item.afterAssistantNumber)
+  ))) {
+    upsertCompressionActivity(stream, activity);
   }
   if (!turn.assistantDeleted) recordFileChanges(stream, turn.fileChanges);
   if (active || turn.status === "streaming") {
@@ -391,6 +422,24 @@ function createMessageEl(role, text, images = [], videos = []) {
     body.appendChild(content);
   }
   return el;
+}
+
+export function canCompressChat(log) {
+  return Boolean(
+    binding?.log === log
+    && binding.workspaceId
+    && binding.surface === "chat"
+    && binding.hasSnapshot
+    && binding.turns.size > 0,
+  );
+}
+
+export function compressChat(log, model) {
+  if (!canCompressChat(log)) return false;
+  return ws.send({
+    type: "chat_compress", workspaceId: binding.workspaceId, chatId: binding.activeChatId,
+    ...(model ? { model } : {}),
+  });
 }
 
 function createMessageActions(message, role) {
@@ -532,7 +581,7 @@ function createTurnView(turnId, userText, images = [], videos = [], options = {}
   return {
     id: turnId, el, user, timeline: el.querySelector(".chat-timeline"),
     content: el.querySelector(".chat-final-content"), done: false,
-    currentTurn: null, finalTurn: null, turns: new Map(), tools: new Map(),
+    currentTurn: null, finalTurn: null, turns: new Map(), tools: new Map(), compressions: new Map(),
     fileChanges: [],
     researchAgents: new Map(), researchReasoning: new Map(), researchStatusContainer: null,
   };
@@ -682,7 +731,10 @@ function startTurn(stream, number) {
 
 function ensureTurn(stream, number) {
   let turn = stream.turns.get(number);
-  if (turn) return turn;
+  if (turn) {
+    if (!turn.el.isConnected && stream.timeline.isConnected) stream.timeline.appendChild(turn.el);
+    return turn;
+  }
   const el = document.createElement("div");
   el.className = "chat-turn";
   el.dataset.turn = String(number);
@@ -739,6 +791,102 @@ function createReasoningItem() {
   body.className = "chat-activity-body chat-reasoning-content";
   details.appendChild(body);
   return { details, label, body, text: "", complete: false };
+}
+
+function ensureCompressionTimeline(stream) {
+  if (!stream || stream.timeline.isConnected) return;
+  const body = stream.content?.parentElement;
+  if (!body) return;
+  const work = document.createElement("details");
+  work.className = "chat-work-disclosure";
+  const summary = document.createElement("summary");
+  summary.textContent = "Show work";
+  const content = document.createElement("div");
+  content.className = "chat-work-content";
+  stream.timeline.hidden = false;
+  content.appendChild(stream.timeline);
+  work.append(summary, content);
+  body.insertBefore(work, stream.content);
+}
+
+function compressionActivityHost(stream, activity) {
+  ensureCompressionTimeline(stream);
+  if (!stream?.timeline.isConnected) return null;
+  stream.timeline.hidden = false;
+  if (activity.phase === "idle") return stream.timeline;
+  return ensureTurn(stream, Number.isInteger(activity.afterAssistantNumber) ? activity.afterAssistantNumber : 0).el;
+}
+
+function formatCompressionTokens(value) {
+  const count = Number(value) || 0;
+  return count.toLocaleString();
+}
+
+function formatCompressionDuration(value) {
+  const milliseconds = Number(value) || 0;
+  if (milliseconds < 1000) return `${milliseconds} ms`;
+  return `${(milliseconds / 1000).toFixed(milliseconds < 10000 ? 1 : 0)} s`;
+}
+
+function updateCompressionItem(item, activity) {
+  const status = String(activity.status || "queued");
+  item.details.className = `chat-activity-item chat-compression-item is-${status}${status === "queued" || status === "running" ? " is-running" : ""}`;
+  item.details.dataset.compressionId = activity.id || "";
+  const names = {
+    queued: "Context compression queued",
+    running: "Compressing context…",
+    completed: "Context compressed",
+    skipped: "Context compression skipped",
+    failed: "Context compression failed",
+  };
+  item.name.textContent = names[status] || "Context compression";
+  if (status === "completed") {
+    const before = Number(activity.beforeTokens) || 0;
+    const after = Number(activity.afterTokens) || 0;
+    const reclaimedPercent = before > 0 ? Math.round(((before - after) / before) * 100) : 0;
+    item.status.textContent = `${formatCompressionTokens(before)} → ${formatCompressionTokens(after)} tokens · ${reclaimedPercent}% reclaimed · ${formatCompressionDuration(activity.durationMs)}`;
+  } else if (status === "running") {
+    item.status.textContent = "Summarizing safe history…";
+  } else if (status === "queued") {
+    item.status.textContent = "Waiting for a safe response boundary…";
+  } else {
+    item.status.textContent = activity.error || (status === "skipped" ? "Nothing safe to compress" : "Compression did not complete");
+  }
+  const metrics = [];
+  metrics.push(`${activity.trigger === "manual" ? "Manual" : "Automatic"} trigger${activity.thresholdPercent ? ` · ${activity.thresholdPercent}% threshold` : ""}`);
+  if (activity.beforeTokens || activity.afterTokens) {
+    metrics.push(`Context estimate: ${formatCompressionTokens(activity.beforeTokens)} before, ${formatCompressionTokens(activity.afterTokens)} after`);
+  }
+  if (activity.usageSource) metrics.push(`Usage source: ${activity.usageSource}`);
+  if (status === "completed") metrics.push(activity.recoveryAvailable ? "Compacted raw history remains searchable." : "History recovery is unavailable.");
+  if (activity.error && !item.status.textContent.includes(activity.error)) metrics.push(activity.error);
+  item.body.replaceChildren(...metrics.map((value) => {
+    const line = document.createElement("p");
+    line.textContent = value;
+    return line;
+  }));
+}
+
+function upsertCompressionActivity(stream, activity) {
+  if (!stream || !activity?.id) return;
+  let item = stream.compressions.get(activity.id);
+  if (!item) {
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    const name = document.createElement("span");
+    name.className = "chat-activity-name";
+    const status = document.createElement("span");
+    status.className = "chat-activity-status";
+    status.setAttribute("aria-live", "polite");
+    const body = document.createElement("div");
+    body.className = "chat-activity-body chat-compression-metrics";
+    summary.append(name, status);
+    details.append(summary, body);
+    item = { details, name, status, body };
+    stream.compressions.set(activity.id, item);
+  }
+  updateCompressionItem(item, activity);
+  compressionActivityHost(stream, activity)?.appendChild(item.details);
 }
 
 function completeReasoning(turn) {

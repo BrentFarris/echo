@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	WorkspaceVersion  = 2
+	WorkspaceVersion  = 3
 	WorkspaceFileName = "chat-workspace.json"
 )
 
@@ -29,12 +29,13 @@ type ChatWorkspace struct {
 
 // TabTranscript contains the durable history and display metadata for one tab.
 type TabTranscript struct {
-	ChatID   string        `json:"chatId"`
-	Preview  string        `json:"preview,omitempty"`
-	Revision uint64        `json:"revision"`
-	Vision   bool          `json:"vision,omitempty"`
-	Turns    []Turn        `json:"turns"`
-	Messages []llm.Message `json:"messages"`
+	ChatID            string             `json:"chatId"`
+	Preview           string             `json:"preview,omitempty"`
+	Revision          uint64             `json:"revision"`
+	Vision            bool               `json:"vision,omitempty"`
+	Turns             []Turn             `json:"turns"`
+	Messages          []llm.Message      `json:"messages"`
+	ContextCheckpoint *ContextCheckpoint `json:"contextCheckpoint,omitempty"`
 }
 
 // WorkspaceStore serializes atomic updates to the multi-tab chat file.
@@ -119,7 +120,7 @@ func normalizeAndValidateWorkspace(workspace *ChatWorkspace, workspaceID string)
 		workspace.Version = WorkspaceVersion
 		workspace.WorkspaceID = workspaceID
 	}
-	if workspace.Version == 1 {
+	if workspace.Version == 1 || workspace.Version == 2 {
 		workspace.Version = WorkspaceVersion
 	}
 	if workspace.Version != WorkspaceVersion {
@@ -146,6 +147,7 @@ func normalizeAndValidateWorkspace(workspace *ChatWorkspace, workspaceID string)
 		if tab.Messages == nil {
 			tab.Messages = []llm.Message{}
 		}
+		normalizeContextCheckpoint(tab)
 	}
 	if workspace.CodeChat != nil {
 		codeChat := workspace.CodeChat
@@ -162,6 +164,7 @@ func normalizeAndValidateWorkspace(workspace *ChatWorkspace, workspaceID string)
 		if codeChat.Messages == nil {
 			codeChat.Messages = []llm.Message{}
 		}
+		normalizeContextCheckpoint(codeChat)
 	}
 	if len(workspace.Tabs) == 0 {
 		workspace.ActiveChatID = ""
@@ -171,6 +174,19 @@ func normalizeAndValidateWorkspace(workspace *ChatWorkspace, workspaceID string)
 		return fmt.Errorf("active chat tab %q was not found", workspace.ActiveChatID)
 	}
 	return nil
+}
+
+func normalizeContextCheckpoint(tab *TabTranscript) {
+	checkpoint := tab.ContextCheckpoint
+	if checkpoint == nil {
+		return
+	}
+	checkpoint.Summary = strings.TrimSpace(checkpoint.Summary)
+	if checkpoint.Summary == "" || checkpoint.ProtectedHeadIndex < 0 || checkpoint.ProtectedHeadIndex >= len(tab.Messages) ||
+		tab.Messages[checkpoint.ProtectedHeadIndex].Role != llm.RoleUser ||
+		checkpoint.CompactedThrough <= checkpoint.ProtectedHeadIndex || checkpoint.CompactedThrough >= len(tab.Messages) {
+		tab.ContextCheckpoint = nil
+	}
 }
 
 func (s *WorkspaceStore) saveLocked(workspace ChatWorkspace) error {

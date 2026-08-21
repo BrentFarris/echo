@@ -179,6 +179,8 @@ function newEndpoint() {
     streamIdleTimeoutSeconds: 600,
     thinkingTokenBudget: -1,
     thinkingCorrection: false,
+    contextCompressionEnabled: true,
+    contextCompressionThresholdPercent: 70,
     systemPromptAppendage: "",
     headers: {},
   };
@@ -282,6 +284,7 @@ function renderEndpointEditor(e) {
         ${num("topP", "Top P", { min: 0, max: 1, step: 0.01 })}
         ${num("minP", "Min P", { min: 0, max: 1, step: 0.01 })}
         ${num("contextLength", "Context Length", { min: 1, step: 1 })}
+        ${num("contextCompressionThresholdPercent", "Compression Threshold (%)", { min: 10, max: 95, step: 1 })}
         ${num("maxTokens", "Max Tokens", { min: 1, step: 1 })}
         ${num("frequencyPenalty", "Frequency Penalty", { min: -2, max: 2, step: 0.01 })}
         ${num("presencePenalty", "Presence Penalty", { min: -2, max: 2, step: 0.01 })}
@@ -297,6 +300,12 @@ function renderEndpointEditor(e) {
         <span>Thinking correction</span>
         <input type="checkbox" ${e.thinkingCorrection ? "checked" : ""} data-endpoint-field="thinkingCorrection" />
       </label>
+
+      <label class="settings-toggle">
+        <span>Automatic context compression</span>
+        <input type="checkbox" ${e.contextCompressionEnabled !== false ? "checked" : ""} data-endpoint-field="contextCompressionEnabled" />
+      </label>
+      <p class="settings-card-help">At the configured percentage of the model context window, Echo summarizes safe middle exchanges and keeps the latest work verbatim. The threshold must be between 10% and 95%.</p>
 
       <label class="field">
         <span>System Prompt Appendage</span>
@@ -1111,8 +1120,8 @@ function bindEvents(root) {
       const key = field.dataset.endpointField;
       if (key === "headers") {
         ep.headers = textToHeaders(field.value);
-      } else if (key === "thinkingCorrection") {
-        ep.thinkingCorrection = field.checked;
+      } else if (key === "thinkingCorrection" || key === "contextCompressionEnabled") {
+        ep[key] = field.checked;
       } else if (key === "name" || key === "endpoint" || key === "model" || key === "systemPromptAppendage") {
         ep[key] = field.value;
       } else {
@@ -1785,7 +1794,12 @@ function applySettings(cfg) {
   const s = cfg.settings || cfg;
   state.rawSettings = { ...s };
   state.settingsLoaded = true;
-  state.endpoints = (s.endpoints || []).map((e) => ({ ...e, headers: e.headers || {} }));
+  state.endpoints = (s.endpoints || []).map((e) => ({
+    ...e,
+    contextCompressionEnabled: e.contextCompressionEnabled !== false,
+    contextCompressionThresholdPercent: Number(e.contextCompressionThresholdPercent) || 70,
+    headers: e.headers || {},
+  }));
   state.routing = {
     chat: s.endpointSelection?.chat || state.endpoints[0]?.id || "",
     research: s.endpointSelection?.research || state.endpoints[0]?.id || "",
