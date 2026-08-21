@@ -3732,6 +3732,20 @@ button.chat-file-change-row:focus-visible {
   grid-column: 1 / -1;
 }
 
+.field input[type="range"] {
+  padding: 0;
+  border: none;
+  background: transparent;
+  accent-color: var(--color-accent);
+  min-width: 0;
+  width: 100%;
+}
+
+.field .range-value {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
 .field-help {
   margin: 0;
   color: var(--color-text-muted);

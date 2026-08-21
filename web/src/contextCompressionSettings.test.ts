@@ -70,8 +70,9 @@ describe("context compression endpoint settings", () => {
     const threshold = root.querySelector<HTMLInputElement>('[data-endpoint-field="contextCompressionThresholdPercent"]')!;
     expect(enabled.checked).toBe(true);
     expect(threshold.value).toBe("70");
-    expect(threshold.min).toBe("10");
-    expect(threshold.max).toBe("95");
+    expect(threshold.type).toBe("range");
+    expect(threshold.min).toBe("1");
+    expect(threshold.max).toBe("99");
 
     enabled.checked = false;
     enabled.dispatchEvent(new Event("input", { bubbles: true }));

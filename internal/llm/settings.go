@@ -14,8 +14,8 @@ const (
 	DefaultContextLength            = 262144
 	DefaultMaxTokens                = 32168
 	DefaultCompressionThreshold     = 70
-	MinCompressionThreshold         = 10
-	MaxCompressionThreshold         = 95
+	MinCompressionThreshold         = 1
+	MaxCompressionThreshold         = 99
 	DefaultResearchAgentConcurrency = 4
 	MaxResearchAgentConcurrency     = 8
 	DefaultMaxChatRounds            = 0

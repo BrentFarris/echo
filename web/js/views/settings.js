@@ -254,6 +254,12 @@ function renderEndpointEditor(e) {
       <input type="number" step="${opts.step ?? "any"}" min="${opts.min ?? ""}" max="${opts.max ?? ""}" value="${e[key]}" data-endpoint-field="${key}" />
     </label>
   `;
+  const range = (key, label, opts = {}) => `
+    <label class="field">
+      <span>${label} <output class="range-value" data-range-value-for="${key}">${e[key]}</output>%</span>
+      <input type="range" min="${opts.min ?? ""}" max="${opts.max ?? ""}" step="${opts.step ?? 1}" value="${e[key]}" data-endpoint-field="${key}" />
+    </label>
+  `;
   return `
     <div class="settings-card endpoint-editor" data-endpoint-editor>
       <div class="settings-section-heading">
@@ -285,7 +291,7 @@ function renderEndpointEditor(e) {
         ${num("topP", "Top P", { min: 0, max: 1, step: 0.01 })}
         ${num("minP", "Min P", { min: 0, max: 1, step: 0.01 })}
         ${num("contextLength", "Context Length", { min: 1, step: 1 })}
-        ${num("contextCompressionThresholdPercent", "Compression Threshold (%)", { min: 10, max: 95, step: 1 })}
+        ${range("contextCompressionThresholdPercent", "Compression Threshold", { min: 1, max: 99, step: 1 })}
         ${num("maxTokens", "Max Tokens", { min: 1, step: 1 })}
         ${num("frequencyPenalty", "Frequency Penalty", { min: -2, max: 2, step: 0.01 })}
         ${num("presencePenalty", "Presence Penalty", { min: -2, max: 2, step: 0.01 })}
@@ -306,7 +312,7 @@ function renderEndpointEditor(e) {
         <span>Automatic context compression</span>
         <input type="checkbox" ${e.contextCompressionEnabled !== false ? "checked" : ""} data-endpoint-field="contextCompressionEnabled" />
       </label>
-      <p class="settings-card-help">At the configured percentage of the model context window, Echo summarizes safe middle exchanges and keeps the latest work verbatim. The threshold must be between 10% and 95%.</p>
+      <p class="settings-card-help">At the configured percentage of the model context window, Echo summarizes safe middle exchanges and keeps the latest work verbatim. The threshold must be between 1% and 99%.</p>
 
       <label class="field">
         <span>System Prompt Appendage</span>
@@ -1132,6 +1138,8 @@ function bindEvents(root) {
       } else {
         const n = Number(field.value);
         ep[key] = Number.isNaN(n) ? 0 : n;
+        const out = root.querySelector(`[data-range-value-for="${key}"]`);
+        if (out) out.textContent = ep[key];
       }
     });
   });

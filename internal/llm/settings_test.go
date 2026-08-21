@@ -78,12 +78,12 @@ func TestContextCompressionRoutingAndValidation(t *testing.T) {
 		t.Fatalf("research routing lost compression settings: %#v", routed)
 	}
 
-	settings.Endpoints[0].ContextCompressionThresholdPercent = MinCompressionThreshold - 1
+	settings.Endpoints[0].ContextCompressionThresholdPercent = -1
 	if err := settings.NormalizedEndpointProfiles().Validate(); err == nil {
-		t.Fatal("expected a compression threshold below 10 percent to fail validation")
+		t.Fatal("expected a compression threshold below 1 percent to fail validation")
 	}
 	settings.Endpoints[0].ContextCompressionThresholdPercent = MaxCompressionThreshold + 1
 	if err := settings.NormalizedEndpointProfiles().Validate(); err == nil {
-		t.Fatal("expected a compression threshold above 95 percent to fail validation")
+		t.Fatal("expected a compression threshold above 99 percent to fail validation")
 	}
 }
