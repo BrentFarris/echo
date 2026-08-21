@@ -18,6 +18,7 @@ import {
 import { prepareCompletionNotificationPermission } from "../../src/completionNotifications.ts";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../../src/primaryNav.ts";
 import { watchGitBadge } from "../../src/gitBadge.ts";
+import { mountSpeechRecognition } from "../../src/speechRecognition.ts";
 import { showContextMenu, toast } from "../../src/code/ui.ts";
 import { getRoots, revealEntry, searchEntries } from "../../src/code/editorApi.ts";
 import {
@@ -179,7 +180,7 @@ function chatPanel() {
             <div class="chat-composer-toolbar">
               <div class="chat-composer-toolbar-left">
                 <button class="chat-toolbar-icon" type="button" title="Attach file" aria-label="Attach file" aria-haspopup="menu" aria-expanded="false" data-chat-attachment-trigger>${icons.plus}</button>
-                <button class="chat-toolbar-icon chat-speech-recognition" type="button" title="Hold to speak" aria-label="Voice input">${icons.mic}</button>
+                <button class="chat-toolbar-icon chat-speech-recognition" type="button" title="Start voice input" aria-label="Start voice input" aria-pressed="false" data-chat-voice-input>${icons.mic}</button>
                 <button class="model-selector chat-toolbar-model" type="button" title="Select model" aria-haspopup="listbox" aria-expanded="false" data-model-trigger>
                   <span class="model-selector-label" data-model-label>Model</span>
                   <span class="model-selector-chevron">${icons.arrowDown}</span>
@@ -229,6 +230,7 @@ export function mount(root) {
   const input = root.querySelector("[data-chat-input]");
   const attachmentDrafts = root.querySelector("[data-chat-attachment-drafts]");
   const attachmentTrigger = root.querySelector("[data-chat-attachment-trigger]");
+  const voiceInput = root.querySelector("[data-chat-voice-input]");
   const sendBtn = root.querySelector(".send-button");
   const modelTrigger = root.querySelector("[data-model-trigger]");
   const modelLabel = root.querySelector("[data-model-label]");
@@ -248,6 +250,11 @@ export function mount(root) {
   let mentionTimer = 0;
   let mentionSequence = 0;
   const trajectoryView = new TrajectoryView(trajectoryHost, (view) => setChatView(view));
+  const speechRecognition = mountSpeechRecognition({
+    button: voiceInput,
+    input,
+    onError: (message) => toast(message, { sticky: true }),
+  });
 
   const finishCompletionNavigation = (message = "") => {
     if (message) toast(message, { sticky: true });
@@ -1365,6 +1372,7 @@ export function mount(root) {
   tabsResizeObserver?.observe(tabsHost);
 
   const submit = () => {
+    speechRecognition.stop();
     const text = composerText(input);
     const state = currentComposerState();
     const images = state?.images || [];
@@ -1401,6 +1409,7 @@ export function mount(root) {
     const previousChatId = currentChatId;
     if (currentWorkspaceId && currentChatId
       && (nextWorkspaceId !== currentWorkspaceId || nextChatId !== currentChatId)) {
+      speechRecognition.stop();
       saveCurrentComposer();
     }
 
@@ -1554,6 +1563,7 @@ export function mount(root) {
   // Store cleanup so unmount removes listeners.
   chatCleanup = () => {
     saveCurrentComposer();
+    speechRecognition.dispose();
     form.removeEventListener("submit", onFormSubmit);
     sendBtn.removeEventListener("click", onSendButtonClick);
     input.removeEventListener("keydown", onKeydown);

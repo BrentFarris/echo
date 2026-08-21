@@ -2350,6 +2350,38 @@ button.chat-file-change-row:focus-visible {
   color: var(--color-text);
 }
 
+.chat-toolbar-icon:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.chat-speech-recognition.is-starting,
+.chat-speech-recognition.is-listening,
+.chat-speech-recognition.is-stopping {
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  color: var(--color-danger);
+}
+
+.chat-speech-recognition.is-starting svg,
+.chat-speech-recognition.is-listening svg {
+  animation: chat-speech-pulse 1.2s ease-in-out infinite;
+}
+
+.chat-voice-transcript.is-interim {
+  color: var(--color-text-muted);
+}
+
+@keyframes chat-speech-pulse {
+  50% { opacity: 0.45; transform: scale(0.88); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-speech-recognition.is-starting svg,
+  .chat-speech-recognition.is-listening svg {
+    animation: none;
+  }
+}
+
 .chat-toolbar-icon[aria-expanded="true"] {
   background: var(--color-surface-muted);
   color: var(--color-text);

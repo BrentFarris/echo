@@ -57,6 +57,9 @@ func TestAuthenticationProtectsLegacyAPIsAndSetsSecurityHeaders(t *testing.T) {
 	if unauthorized.Header().Get("Content-Security-Policy") == "" || unauthorized.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("security headers missing: %v", unauthorized.Header())
 	}
+	if policy := unauthorized.Header().Get("Permissions-Policy"); !strings.Contains(policy, "microphone=(self)") {
+		t.Fatalf("first-party microphone access is not allowed: %q", policy)
+	}
 
 	setup := authRequest(t, s, http.MethodPost, "/api/auth/setup", map[string]any{
 		"setupCode": s.auth.SetupCode(), "password": "correct horse battery", "deviceName": "Test browser",

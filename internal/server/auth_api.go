@@ -114,7 +114,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Permissions-Policy", "camera=(), geolocation=(), payment=(), usb=()")
+		w.Header().Set("Permissions-Policy", "camera=(), geolocation=(), microphone=(self), payment=(), usb=()")
 		next.ServeHTTP(w, r)
 	})
 }
