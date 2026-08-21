@@ -28,6 +28,7 @@ import {
   choiceDialog, closeContextMenu, copyText, escapeHTML, installMenuDismissal,
   promptDialog, showContextMenu, toast,
 } from "./ui";
+import { attachVideoVolumeControl } from "../mediaVolume";
 
 type Workspace = { id: string; name: string; mainPath: string; folders: string[]; iconExt?: string };
 
@@ -988,11 +989,12 @@ class CodeView {
     const icon = tab.media.kind === "video" ? "play-circle" : "file-media";
     const noun = tab.media.kind === "video" ? "video" : "image";
     const mediaTag = tab.media.kind === "video"
-      ? `<video src="${escapeHTML(url)}" controls autoplay loop playsinline></video>`
+      ? `<video src="${escapeHTML(url)}" controls loop playsinline muted></video>`
       : `<img src="${escapeHTML(url)}" alt="${escapeHTML(tab.title)}">`;
     host.innerHTML = `
       <div class="code-media-frame">
         ${mediaTag}
+        <div class="code-media-volume-slot"></div>
         <div class="code-media-error" hidden>
           <span class="codicon codicon-${icon}"></span>
           <h2>This ${noun} cannot be displayed</h2>
@@ -1001,6 +1003,10 @@ class CodeView {
       </div>`;
     const element = host.querySelector<HTMLVideoElement | HTMLImageElement>(tab.media.kind === "video" ? "video" : "img");
     const errorPanel = host.querySelector<HTMLElement>(".code-media-error");
+    const volumeSlot = host.querySelector<HTMLElement>(".code-media-volume-slot");
+    if (tab.media.kind === "video" && element instanceof HTMLVideoElement && volumeSlot) {
+      volumeSlot.appendChild(attachVideoVolumeControl(element, "code-media-volume"));
+    }
     // Both <img> and <video> raise "error" when the stream fails (missing
     // file, oversized refusal, unplayable container), so one handler covers
     // every failure mode.
@@ -1008,6 +1014,7 @@ class CodeView {
       if (!element || !errorPanel) return;
       element.hidden = true;
       errorPanel.hidden = false;
+      if (volumeSlot) volumeSlot.hidden = true;
     }, { once: true });
   }
 

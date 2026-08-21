@@ -1360,6 +1360,62 @@
   height: auto;
 }
 
+/* In-player volume pill (media-tab videos) */
+.code-media-volume-slot {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+}
+
+.code-media-volume {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(2px);
+}
+
+/* Desktop browsers expose a native volume control in the player; the custom
+   pill is only needed on touch devices where that UI is absent. */
+@media (hover: hover) and (pointer: fine) {
+  .code-media-volume {
+    display: none;
+  }
+}
+
+.code-media-volume-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--code-fg);
+  cursor: pointer;
+}
+
+.code-media-volume-toggle:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.code-media-volume-toggle svg {
+  width: 15px;
+  height: 15px;
+}
+
+.code-media-volume input[type="range"] {
+  width: 84px;
+  accent-color: var(--code-accent);
+  cursor: pointer;
+}
+
 .code-media-error {
   position: absolute;
   inset: 0;
@@ -1392,6 +1448,7 @@
   margin: 0;
   max-width: 380px;
 }
+
 
 .code-editor-placeholder,
 .code-fatal {

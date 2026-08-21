@@ -1295,6 +1295,11 @@ textarea:disabled {
   background: #000;
 }
 
+/* In-player volume pill (chat videos): anchored to the video element */
+.chat-media-stage {
+  position: relative;
+}
+
 .chat-message-media-item figcaption {
   display: grid;
   gap: 2px;
@@ -1317,6 +1322,65 @@ textarea:disabled {
   color: var(--color-text-muted);
   font-size: var(--text-sm);
 }
+
+/* In-player volume pill (chat videos) */
+.chat-media-volume {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+/* Desktop browsers expose a native volume control in the player; the custom
+   pill is only needed on touch devices where that UI is absent. */
+@media (hover: hover) and (pointer: fine) {
+  .chat-media-volume {
+    display: none;
+  }
+}
+
+.chat-media-volume-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+}
+
+.chat-media-volume-toggle:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.chat-media-volume-toggle svg {
+  width: 15px;
+  height: 15px;
+}
+
+.chat-media-volume input[type="range"] {
+  width: 72px;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+@media (max-width: 720px) {
+  .chat-media-volume input[type="range"] {
+    width: 56px;
+  }
+}
+
 
 /* Assistant messages: nearly full width, small right margin. */
 .chat-message-assistant {

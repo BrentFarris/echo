@@ -8,6 +8,7 @@ import {
   queueMarkdownPatch,
 } from "../src/markdown.ts";
 import { copyText, toast } from "../src/code/ui.ts";
+import { attachVideoVolumeControl } from "../src/mediaVolume.ts";
 import { icons } from "./icons.js";
 
 let binding = null;
@@ -720,7 +721,14 @@ function buildMediaFigure(attachment) {
   } else {
     media.alt = attachment.name || "Attached image";
   }
-  figure.append(media, mediaCaption(attachment));
+  if (isVideo) {
+    const stage = document.createElement("div");
+    stage.className = "chat-media-stage";
+    stage.append(media, attachVideoVolumeControl(media, "chat-media-volume"));
+    figure.append(stage, mediaCaption(attachment));
+  } else {
+    figure.append(media, mediaCaption(attachment));
+  }
   return figure;
 }
 
