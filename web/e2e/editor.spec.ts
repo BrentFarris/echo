@@ -290,6 +290,20 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(page.getByRole("tab", { name: /main\.go/ })).toBeVisible();
   await expect(page.locator(".code-tree-row", { hasText: "main.go" })).toHaveAttribute("aria-selected", "true");
 
+  // Switching existing tabs updates both Monaco and the tab strip's active state.
+  const mainTab = page.getByRole("tab", { name: /main\.go/ });
+  const renamedTab = page.getByRole("tab", { name: /renamed\.py/ });
+  await renamedTab.click();
+  await expect(renamedTab).toHaveAttribute("aria-selected", "true");
+  await expect(renamedTab).toHaveClass(/is-active/);
+  await expect(mainTab).toHaveAttribute("aria-selected", "false");
+  await expect(page.locator(".view-lines")).toContainText("print('echo')");
+  await mainTab.click();
+  await expect(mainTab).toHaveAttribute("aria-selected", "true");
+  await expect(mainTab).toHaveClass(/is-active/);
+  await expect(renamedTab).toHaveAttribute("aria-selected", "false");
+  await expect(page.locator(".view-lines")).toContainText("package main");
+
   // Re-selecting the active tab keeps Monaco's live caret and selection. The
   // tab's stored view state can lag behind normal editing and must only be
   // restored after switching between different tabs.
@@ -318,9 +332,15 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.keyboard.press("Tab");
   await page.keyboard.press("Control+s");
   await expect.poll(() => readFileSync(mainPath, "utf8")).toMatch(/^[\t ]+package main/);
+  await page.keyboard.press("Control+Home");
+  await page.keyboard.down("Shift");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.up("Shift");
   await page.keyboard.press("Shift+Tab");
   await page.keyboard.press("Control+s");
-  await expect.poll(() => readFileSync(mainPath, "utf8")).toMatch(/^package main/);
+  await expect.poll(() => readFileSync(mainPath, "utf8")).toMatch(/^package main\n\nfunc main\(\)/);
 
   // Workspace Search includes unsaved Monaco buffers, filters by glob, opens
   // the exact result range, previews replacement, and safely saves dirty text.

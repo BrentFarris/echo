@@ -1256,6 +1256,7 @@ class CodeView {
     // for switching away and back; restoring it here rewinds the live caret
     // and selection to an older editing position.
     if (active?.id === next.id) {
+      this.syncActiveTabState();
       if (focusEditor) {
         if (next.kind === "diff") this.diffEditor.getModifiedEditor().focus();
         else if (next.kind !== "media") this.editor.focus();
@@ -1268,6 +1269,7 @@ class CodeView {
       else active.viewState = this.editor.saveViewState();
     }
     this.activeTabId = id;
+    this.syncActiveTabState();
     if (next.kind === "diff" && next.diff) {
       this.editor.setModel(null);
       this.diffEditor.updateOptions({ readOnly: !next.diff.editable, renderSideBySide: this.splitGitDiff });
@@ -1296,6 +1298,24 @@ class CodeView {
     return this.tabs.find((tab) => tab.id === this.activeTabId);
   }
 
+  private syncActiveTabState(): void {
+    const list = this.root.querySelector<HTMLElement>("[data-tabs-list]");
+    if (!list) return;
+    let activeElement: HTMLElement | null = null;
+    list.querySelectorAll<HTMLElement>("[data-tab-id]").forEach((element) => {
+      const active = element.dataset.tabId === this.activeTabId;
+      element.classList.toggle("is-active", active);
+      element.setAttribute("aria-selected", String(active));
+      element.tabIndex = active ? 0 : -1;
+      if (active) activeElement = element;
+    });
+    if (activeElement) {
+      requestAnimationFrame(() => {
+        if (activeElement?.isConnected) activeElement.scrollIntoView({ block: "nearest", inline: "nearest" });
+      });
+    }
+  }
+
   private renderTabs(): void {
     const list = this.root.querySelector<HTMLElement>("[data-tabs-list]");
     if (!list) return;
@@ -1309,7 +1329,7 @@ class CodeView {
         <button type="button" class="code-tab-close" data-tab-close aria-label="Close ${escapeHTML(tab.title)}"><span class="codicon codicon-close"></span></button>
       </div>
     `).join("");
-    requestAnimationFrame(() => list.querySelector<HTMLElement>(`.code-tab[data-tab-id="${CSS.escape(this.activeTabId || "")}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" }));
+    this.syncActiveTabState();
     this.renderBreadcrumbs();
   }
 
@@ -2569,10 +2589,13 @@ class CodeView {
     const key = event.key.toLowerCase();
     const activeEditor = this.activeCodeEditor();
     const activeTab = this.activeTab();
-    const hasMultilineSelection = activeEditor?.hasTextFocus()
-      && activeEditor.getSelections()?.some((selection) => selection.startLineNumber !== selection.endLineNumber);
+    const editorHasTextFocus = activeEditor?.hasTextFocus() === true;
+    const hasMultilineSelection = activeEditor?.getSelections()
+      ?.some((selection) => selection.startLineNumber !== selection.endLineNumber) === true;
     const selectionIsEditable = activeTab?.kind === "file" || activeTab?.diff?.editable === true;
-    if (activeEditor && !modifier && !event.altKey && key === "tab" && hasMultilineSelection && selectionIsEditable) {
+    const shouldHandleTab = (key === "tab" || event.code === "Tab")
+      && editorHasTextFocus && selectionIsEditable && (event.shiftKey || hasMultilineSelection);
+    if (activeEditor && !modifier && !event.altKey && shouldHandleTab) {
       event.preventDefault();
       event.stopPropagation();
       activeEditor.trigger("echo", event.shiftKey ? "outdent" : "tab", null);
