@@ -3,6 +3,7 @@ import type {
   FileRef, FileSnapshot, FsEntry, SearchResult, TextReplaceResponse, TextReplaceTarget, TextReplaceUpdate,
   TextSearchRequest, TextSearchResponse, TrashItem, WorkspaceRoot,
 } from "./types";
+import type { LSPProfile, WorkspaceLSPConfig, WorkspaceLSPResponse } from "./lspTypes";
 
 export type APIError = Error & {
   status?: number;
@@ -110,4 +111,20 @@ export async function replaceText(workspaceId: string, request: {
   targets: TextReplaceTarget[];
 }): Promise<TextReplaceResponse> {
   return api(`${base(workspaceId)}/text-replace`, { method: "POST", body: request });
+}
+
+export async function getLSPProfiles(): Promise<{ profiles: LSPProfile[]; templates: Array<{ id: string; description: string; profile: LSPProfile }> }> {
+  return api("/api/lsp/profiles", { method: "GET" });
+}
+
+export async function getWorkspaceLSPConfig(workspaceId: string): Promise<WorkspaceLSPResponse> {
+  return api(`/api/workspaces/${encodeURIComponent(workspaceId)}/lsp/config`, { method: "GET" });
+}
+
+export async function saveWorkspaceLSPConfig(workspaceId: string, config: WorkspaceLSPConfig): Promise<WorkspaceLSPResponse> {
+  return api(`/api/workspaces/${encodeURIComponent(workspaceId)}/lsp/config`, { method: "PUT", body: { config } });
+}
+
+export async function restartLanguageServer(workspaceId: string, profileId: string): Promise<void> {
+  await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/lsp/${encodeURIComponent(profileId)}/restart`, { method: "POST", body: {} });
 }

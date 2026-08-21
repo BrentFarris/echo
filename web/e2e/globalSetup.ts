@@ -10,12 +10,16 @@ const resultsRoot = resolve(webRoot, "test-results");
 const runtimeRoot = resolve(resultsRoot, "e2e-runtime");
 const statePath = join(runtimeRoot, "state.json");
 
-function prepareRuntime(): { binary: string; workspace: string; secondaryWorkspace: string; dataPath: string } {
+function prepareRuntime(): { binary: string; workspace: string; secondaryWorkspace: string; dataPath: string; nodePath: string; fakeLSPPath: string } {
   if (!runtimeRoot.startsWith(resultsRoot + sep)) throw new Error("Refusing to prepare an unsafe E2E runtime path");
   rmSync(runtimeRoot, { recursive: true, force: true });
   const workspace = join(runtimeRoot, "workspace");
   mkdirSync(join(workspace, "nested"), { recursive: true });
-  writeFileSync(join(workspace, "main.go"), "package main\n\nfunc main() {}\n", "utf8");
+  writeFileSync(join(workspace, "go.mod"), "module echo-e2e-workspace\n\ngo 1.24\n", "utf8");
+  writeFileSync(join(workspace, "main.go"), "package main\n\nfunc main() {\n\tTarget()\n}\n", "utf8");
+  writeFileSync(join(workspace, "definition.go"), "package main\n\nfunc Target() {}\n", "utf8");
+  writeFileSync(join(workspace, "usage.go"), "package main\n\nfunc useTarget() {\n\tTarget()\n}\n", "utf8");
+  writeFileSync(join(workspace, "implementation.go"), "package main\n\ntype Runner interface {\n\tRun()\n}\n\ntype ConcreteRunner struct{}\n\nfunc (ConcreteRunner) Run() {}\n", "utf8");
   writeFileSync(join(workspace, "nested", "demo.py"), "print('echo')\n", "utf8");
   writeFileSync(join(workspace, ".gitignore"), ".echo/\n", "utf8");
   const git = (...args: string[]) => execFileSync("git", ["-C", workspace, ...args], { stdio: "inherit" });
@@ -35,7 +39,10 @@ function prepareRuntime(): { binary: string; workspace: string; secondaryWorkspa
   secondaryGit("commit", "-m", "Initial secondary workspace");
   const binary = join(runtimeRoot, process.platform === "win32" ? "echo-e2e.exe" : "echo-e2e");
   execFileSync("go", ["build", "-o", binary, ".."], { cwd: webRoot, stdio: "inherit" });
-  return { binary, workspace, secondaryWorkspace, dataPath: join(runtimeRoot, "echo.json") };
+  return {
+    binary, workspace, secondaryWorkspace, dataPath: join(runtimeRoot, "echo.json"),
+    nodePath: process.execPath, fakeLSPPath: resolve(directory, "fake-lsp.mjs"),
+  };
 }
 
 async function waitForSetup(child: ChildProcess): Promise<string> {
@@ -86,6 +93,8 @@ export default async function globalSetup(_config: FullConfig): Promise<() => Pr
     setupCode,
     workspace: runtime.workspace,
     secondaryWorkspace: runtime.secondaryWorkspace,
+    nodePath: runtime.nodePath,
+    fakeLSPPath: runtime.fakeLSPPath,
   }, null, 2), "utf8");
 
   return async () => {

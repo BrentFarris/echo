@@ -44,6 +44,7 @@ type SavedCommand struct {
 type File struct {
 	Version           int                       `json:"version,omitempty"`
 	Settings          json.RawMessage           `json:"settings"`
+	LanguageServers   json.RawMessage           `json:"languageServerProfiles,omitempty"`
 	Auth              json.RawMessage           `json:"auth,omitempty"`
 	Workspaces        []Workspace               `json:"workspaces"`
 	ActiveWorkspaceID string                    `json:"activeWorkspaceId,omitempty"`

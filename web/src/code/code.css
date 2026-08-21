@@ -1805,6 +1805,19 @@
   opacity: 1;
 }
 
+.code-statusbar button[data-status="lsp"] {
+  width: auto;
+  min-width: 24px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+.code-statusbar button[data-status="lsp"]:hover,
+.code-statusbar button[data-status="lsp"]:focus-visible {
+  outline: none;
+  background: rgb(255 255 255 / 16%);
+}
+
 .code-mobile-explorer {
   display: none;
 }

@@ -53,6 +53,7 @@ const sections = [
   { id: "external", label: "External Connections", icon: icons.git },
   { id: "messaging", label: "Messaging", icon: icons.mic },
   { id: "git", label: "Git", icon: icons.git },
+  { id: "lsp", label: "Language Servers", icon: icons.code },
   { id: "theme", label: "Theme", icon: icons.dashboard },
   { id: "workspaces", label: "Workspaces", icon: icons.code },
   { id: "security", label: "Security", icon: icons.settings },
@@ -138,6 +139,18 @@ const state = {
     status: "",
     busy: false,
     logs: {},
+  },
+  lsp: {
+    profiles: [],
+    templates: [],
+    config: { enabledProfileIds: [], overrides: {}, formatOnSave: false, formatOnSaveTimeoutMs: 3000 },
+    effectiveProfiles: [],
+    statuses: [],
+    editingId: null,
+    draft: null,
+    overridesText: "{}",
+    status: "",
+    busy: false,
   },
 };
 
@@ -807,6 +820,82 @@ function renderDevelopment() {
   `;
 }
 
+function renderLanguageServers() {
+  const enabled = new Set(state.lsp.config.enabledProfileIds || []);
+  const statuses = new Map((state.lsp.statuses || []).map((status) => [status.profileId, status]));
+  const workspaceName = state.modeWorkspaceName ? ` in <strong>${esc(state.modeWorkspaceName)}</strong>` : "";
+  return `
+    <section class="settings-section lsp-settings-section">
+      <div class="settings-section-heading">
+        <div><h2 class="settings-section-title">Language Servers</h2><p class="settings-card-help">Configure reusable LSP processes globally, then enable them per workspace${workspaceName}.</p></div>
+        <button class="secondary-button compact-button" type="button" data-lsp-action="new-profile">${icons.plus}<span>New Profile</span></button>
+      </div>
+      ${state.lsp.status ? `<p class="settings-status ${state.lsp.status.startsWith("Error:") ? "is-error" : ""}">${esc(state.lsp.status)}</p>` : ""}
+
+      <div class="settings-card">
+        <h3 class="settings-card-title">Built-in templates</h3>
+        <p class="settings-card-help">Templates are immutable starting points. Echo never installs language-server executables.</p>
+        <div class="lsp-template-list">
+          ${(state.lsp.templates || []).map((template) => {
+            const exists = state.lsp.profiles.some((profile) => profile.id === template.profile.id);
+            return `<div class="endpoint-row"><div class="endpoint-row-main"><strong>${esc(template.profile.name)}</strong><span class="endpoint-row-summary"><code>${esc(template.profile.command)}</code> — ${esc(template.description)}</span></div><button class="secondary-button compact-button" type="button" data-lsp-action="add-template" data-template-id="${esc(template.id)}" ${exists || state.lsp.busy ? "disabled" : ""}>${exists ? "Added" : "Create profile"}</button></div>`;
+          }).join("") || `<p class="empty-state compact">Loading templates…</p>`}
+        </div>
+      </div>
+
+      ${state.lsp.draft ? renderLSPProfileEditor(state.lsp.draft) : ""}
+
+      <div class="settings-card">
+        <h3 class="settings-card-title">Profiles</h3>
+        <div class="endpoint-list">
+          ${state.lsp.profiles.map((profile) => {
+            const active = enabled.has(profile.id);
+            const runtime = statuses.get(profile.id);
+            return `<div class="endpoint-row lsp-profile-row"><label class="lsp-profile-enable"><input type="checkbox" data-lsp-enable="${esc(profile.id)}" ${active ? "checked" : ""} ${state.modeWorkspaceId ? "" : "disabled"}><span class="endpoint-row-main"><strong>${esc(profile.name)}</strong><span class="endpoint-row-summary"><code>${esc(profile.command)}</code> · ${esc((profile.selectors || []).map((selector) => selector.languageId).join(", "))}</span></span></label><div class="endpoint-row-actions"><span class="lsp-runtime-state is-${esc(runtime?.state || "inactive")}" title="${esc(runtime?.message || "")}">${esc(runtime?.state || (active ? "inactive" : "disabled"))}</span><button class="icon-button" type="button" title="Edit profile" data-lsp-action="edit-profile" data-profile-id="${esc(profile.id)}">${icons.settings}</button><button class="icon-button danger-button" type="button" title="Delete profile" data-lsp-action="delete-profile" data-profile-id="${esc(profile.id)}">${icons.trash}</button></div></div>`;
+          }).join("") || `<p class="empty-state compact">Create a profile from a template or add a custom server.</p>`}
+        </div>
+      </div>
+
+      <div class="settings-card">
+        <h3 class="settings-card-title">Workspace activation</h3>
+        <p class="settings-card-help">Overrides replace the corresponding profile field. Arrays and JSON objects are not merged.</p>
+        <label class="settings-toggle"><span><strong>Format on save</strong><span class="field-help">Formatting failure or timeout never prevents saving.</span></span><input type="checkbox" data-lsp-config="formatOnSave" ${state.lsp.config.formatOnSave ? "checked" : ""}></label>
+        <div class="settings-grid">
+          <label class="field"><span>Format timeout (ms)</span><input type="number" min="250" max="30000" step="250" value="${esc(state.lsp.config.formatOnSaveTimeoutMs || 3000)}" data-lsp-config="formatOnSaveTimeoutMs"></label>
+          <label class="field field-wide"><span>Profile overrides (JSON)</span><textarea rows="8" spellcheck="false" data-lsp-overrides>${esc(state.lsp.overridesText)}</textarea><span class="field-help">Keys are profile IDs. Supported fields: name, command, args, selectors, environment, initializationOptions, settings.</span></label>
+        </div>
+        <button class="primary-button" type="button" data-lsp-action="save-workspace" ${state.modeWorkspaceId && !state.lsp.busy ? "" : "disabled"}>Save Workspace LSP Settings</button>
+      </div>
+
+      <div class="settings-card">
+        <div class="settings-section-heading"><div><h3 class="settings-card-title">Runtime state</h3><p class="settings-card-help">Servers stay shared across browser clients until disabled or Echo exits.</p></div><button class="secondary-button compact-button" type="button" data-lsp-action="refresh">Refresh</button></div>
+        <div class="lsp-runtime-list">
+          ${(state.lsp.statuses || []).map((runtime) => `<article class="lsp-runtime-card"><div><strong>${esc(runtime.name || runtime.profileId)}</strong><span class="lsp-runtime-state is-${esc(runtime.state)}">${esc(runtime.state)}</span></div>${runtime.message ? `<p>${esc(runtime.message)}</p>` : ""}${runtime.stderr ? `<details><summary>Server stderr</summary><pre>${esc(runtime.stderr)}</pre></details>` : ""}<button class="secondary-button compact-button" type="button" data-lsp-action="restart" data-profile-id="${esc(runtime.profileId)}">Restart</button></article>`).join("") || `<p class="empty-state compact">No language servers are enabled in this workspace.</p>`}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderLSPProfileEditor(draft) {
+  return `<div class="settings-card lsp-profile-editor">
+    <div class="settings-section-heading"><div><h3 class="settings-card-title">${state.lsp.editingId ? "Edit profile" : "New profile"}</h3><p class="settings-card-help">The command is executed directly in the workspace folder without shell expansion.</p></div><button class="icon-button" type="button" title="Close" data-lsp-action="cancel-profile">${icons.x}</button></div>
+    <div class="settings-grid">
+      <label class="field"><span>ID</span><input type="text" value="${esc(draft.id)}" data-lsp-field="id" ${state.lsp.editingId ? "disabled" : ""} placeholder="my-language-server"></label>
+      <label class="field"><span>Name</span><input type="text" value="${esc(draft.name)}" data-lsp-field="name" placeholder="My Language Server"></label>
+      <label class="field field-wide"><span>Command</span><input type="text" value="${esc(draft.command)}" data-lsp-field="command" placeholder="language-server"></label>
+      <label class="field field-wide"><span>Arguments (one per line)</span><textarea rows="3" spellcheck="false" data-lsp-field="argsText">${esc(draft.argsText)}</textarea></label>
+    </div>
+    <div class="lsp-selector-list"><strong>Document selectors</strong>${draft.selectors.map((selector, index) => `<div class="lsp-selector-row"><label class="field"><span>Language ID</span><input value="${esc(selector.languageId)}" data-lsp-selector-field="languageId" data-selector-index="${index}" placeholder="go"></label><label class="field"><span>Extensions</span><input value="${esc(selector.extensionsText)}" data-lsp-selector-field="extensionsText" data-selector-index="${index}" placeholder=".go, .mod"></label><label class="field"><span>Filenames</span><input value="${esc(selector.filenamesText)}" data-lsp-selector-field="filenamesText" data-selector-index="${index}" placeholder="Makefile"></label><button class="icon-button danger-button" type="button" title="Remove selector" data-lsp-action="remove-selector" data-selector-index="${index}">${icons.trash}</button></div>`).join("")}<button class="secondary-button compact-button" type="button" data-lsp-action="add-selector">${icons.plus}<span>Add selector</span></button></div>
+    <div class="settings-grid">
+      <label class="field field-wide"><span>Environment (KEY=VALUE, one per line)</span><textarea rows="4" spellcheck="false" data-lsp-field="environmentText">${esc(draft.environmentText)}</textarea></label>
+      <label class="field field-wide"><span>Initialization options (JSON)</span><textarea rows="6" spellcheck="false" data-lsp-field="initializationOptionsText">${esc(draft.initializationOptionsText)}</textarea></label>
+      <label class="field field-wide"><span>Settings (JSON)</span><textarea rows="6" spellcheck="false" data-lsp-field="settingsText">${esc(draft.settingsText)}</textarea></label>
+    </div>
+    <div class="mode-editor-actions"><button class="secondary-button" type="button" data-lsp-action="cancel-profile">Cancel</button><button class="primary-button" type="button" data-lsp-action="save-profile" ${state.lsp.busy ? "disabled" : ""}>Save Profile</button></div>
+  </div>`;
+}
+
 const renderers = {
   llm: renderLLMEndpoints,
   modes: renderAgentModes,
@@ -814,6 +903,7 @@ const renderers = {
   external: renderExternal,
   messaging: renderMessaging,
   git: renderGit,
+  lsp: renderLanguageServers,
   theme: renderTheme,
   workspaces: renderWorkspaces,
   security: renderSecurity,
@@ -936,10 +1026,12 @@ function bindEvents(root) {
       render();
       if (state.activeSection === "security") loadSecurity();
       if (state.activeSection === "plugins") loadPlugins();
+      if (state.activeSection === "lsp") loadLanguageServers();
     });
   });
 
   bindPluginEvents(root);
+  bindLSPEvents(root);
 
   root.querySelectorAll("[data-action='set-theme-palette']").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1410,8 +1502,201 @@ function collectPluginConfiguration(root, pluginId) {
   return { workspaceId: state.modeWorkspaceId, values, secrets };
 }
 
+function lspDraft(profile = {}) {
+  const environment = profile.environment || {};
+  return {
+    id: profile.id || "",
+    name: profile.name || "",
+    command: profile.command || "",
+    argsText: (profile.args || []).join("\n"),
+    selectors: (profile.selectors?.length ? profile.selectors : [{ languageId: "", extensions: [], filenames: [] }]).map((selector) => ({
+      languageId: selector.languageId || "",
+      extensionsText: (selector.extensions || []).join(", "),
+      filenamesText: (selector.filenames || []).join(", "),
+    })),
+    environmentText: Object.entries(environment).map(([key, value]) => `${key}=${value}`).join("\n"),
+    initializationOptionsText: JSON.stringify(profile.initializationOptions || {}, null, 2),
+    settingsText: JSON.stringify(profile.settings || {}, null, 2),
+  };
+}
+
+function parseJSONObject(text, label) {
+  const value = JSON.parse(text.trim() || "{}");
+  if (!value || Array.isArray(value) || typeof value !== "object") throw new Error(`${label} must be a JSON object.`);
+  return value;
+}
+
+function profileFromLSPDraft(draft) {
+  const environment = {};
+  for (const line of draft.environmentText.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)) {
+    const equals = line.indexOf("=");
+    if (equals <= 0) throw new Error(`Environment line must use KEY=VALUE: ${line}`);
+    environment[line.slice(0, equals).trim()] = line.slice(equals + 1);
+  }
+  const splitMatches = (text) => text.split(",").map((value) => value.trim()).filter(Boolean);
+  return {
+    id: draft.id.trim().toLowerCase(),
+    name: draft.name.trim(),
+    command: draft.command.trim(),
+    args: draft.argsText.split(/\r?\n/).filter((value) => value.length > 0),
+    selectors: draft.selectors.map((selector) => ({
+      languageId: selector.languageId.trim(),
+      extensions: splitMatches(selector.extensionsText),
+      filenames: splitMatches(selector.filenamesText),
+    })),
+    environment,
+    initializationOptions: parseJSONObject(draft.initializationOptionsText, "Initialization options"),
+    settings: parseJSONObject(draft.settingsText, "Settings"),
+  };
+}
+
+function applyLSPWorkspaceResponse(data, resetOverrides = true) {
+  state.lsp.config = {
+    enabledProfileIds: data.config?.enabledProfileIds || [],
+    overrides: data.config?.overrides || {},
+    formatOnSave: data.config?.formatOnSave === true,
+    formatOnSaveTimeoutMs: data.config?.formatOnSaveTimeoutMs || 3000,
+  };
+  state.lsp.effectiveProfiles = data.profiles || [];
+  state.lsp.statuses = data.statuses || [];
+  if (resetOverrides) state.lsp.overridesText = JSON.stringify(state.lsp.config.overrides, null, 2);
+}
+
+async function loadLanguageServers(preserveStatus = false) {
+  const previousStatus = state.lsp.status;
+  try {
+    const global = await get("/api/lsp/profiles");
+    state.lsp.profiles = global.profiles || [];
+    state.lsp.templates = global.templates || [];
+    if (state.modeWorkspaceId) {
+      applyLSPWorkspaceResponse(await get(`/api/workspaces/${encodeURIComponent(state.modeWorkspaceId)}/lsp/config`));
+    } else {
+      applyLSPWorkspaceResponse({ config: {}, profiles: [], statuses: [] });
+    }
+    state.lsp.status = preserveStatus ? previousStatus : "";
+  } catch (err) {
+    state.lsp.status = `Error: ${err.message}`;
+  }
+  if (mountedRoot) render();
+}
+
+async function saveLSPWorkspaceConfig(parseOverrides = true) {
+  if (!state.modeWorkspaceId) return;
+  const config = { ...state.lsp.config };
+  if (parseOverrides) config.overrides = parseJSONObject(state.lsp.overridesText, "Profile overrides");
+  const data = await put(`/api/workspaces/${encodeURIComponent(state.modeWorkspaceId)}/lsp/config`, { config });
+  applyLSPWorkspaceResponse(data, parseOverrides);
+}
+
+function bindLSPEvents(root) {
+  root.querySelectorAll("[data-lsp-field]").forEach((field) => {
+    field.addEventListener("input", () => {
+      if (state.lsp.draft) state.lsp.draft[field.dataset.lspField] = field.value;
+    });
+  });
+  root.querySelectorAll("[data-lsp-selector-field]").forEach((field) => {
+    field.addEventListener("input", () => {
+      const selector = state.lsp.draft?.selectors[Number(field.dataset.selectorIndex)];
+      if (selector) selector[field.dataset.lspSelectorField] = field.value;
+    });
+  });
+  root.querySelector("[data-lsp-overrides]")?.addEventListener("input", (event) => { state.lsp.overridesText = event.currentTarget.value; });
+  root.querySelectorAll("[data-lsp-config]").forEach((field) => {
+    field.addEventListener("change", () => {
+      const key = field.dataset.lspConfig;
+      state.lsp.config[key] = field.type === "checkbox" ? field.checked : Math.max(250, Math.min(30000, Number(field.value) || 3000));
+    });
+  });
+  root.querySelectorAll("[data-lsp-enable]").forEach((field) => {
+    field.addEventListener("change", async () => {
+      const ids = new Set(state.lsp.config.enabledProfileIds || []);
+      if (field.checked) ids.add(field.dataset.lspEnable);
+      else ids.delete(field.dataset.lspEnable);
+      state.lsp.config.enabledProfileIds = [...ids];
+      try {
+        await saveLSPWorkspaceConfig(false);
+        state.lsp.status = `${field.checked ? "Enabled" : "Disabled"} ${field.dataset.lspEnable}.`;
+      } catch (err) {
+        state.lsp.status = `Error: ${err.message}`;
+        await loadLanguageServers(true);
+        return;
+      }
+      render();
+    });
+  });
+  root.querySelectorAll("[data-lsp-action]").forEach((button) => button.addEventListener("click", async () => {
+    const action = button.dataset.lspAction;
+    try {
+      if (action === "new-profile") {
+        state.lsp.editingId = null;
+        state.lsp.draft = lspDraft();
+        state.lsp.status = "";
+        render();
+        return;
+      }
+      if (action === "edit-profile") {
+        const profile = state.lsp.profiles.find((item) => item.id === button.dataset.profileId);
+        if (profile) {
+          state.lsp.editingId = profile.id;
+          state.lsp.draft = lspDraft(profile);
+          state.lsp.status = "";
+          render();
+        }
+        return;
+      }
+      if (action === "cancel-profile") {
+        state.lsp.editingId = null;
+        state.lsp.draft = null;
+        render();
+        return;
+      }
+      if (action === "add-selector") {
+        state.lsp.draft?.selectors.push({ languageId: "", extensionsText: "", filenamesText: "" });
+        render();
+        return;
+      }
+      if (action === "remove-selector") {
+        if (state.lsp.draft?.selectors.length > 1) state.lsp.draft.selectors.splice(Number(button.dataset.selectorIndex), 1);
+        render();
+        return;
+      }
+      state.lsp.busy = true;
+      if (action === "add-template") {
+        const result = await post("/api/lsp/profiles", { templateId: button.dataset.templateId });
+        state.lsp.status = `Created ${result.profile.name}. Enable it below to start the server.`;
+      } else if (action === "save-profile") {
+        const profile = profileFromLSPDraft(state.lsp.draft);
+        if (state.lsp.editingId) await put(`/api/lsp/profiles/${encodeURIComponent(state.lsp.editingId)}`, { profile });
+        else await post("/api/lsp/profiles", { profile });
+        state.lsp.status = `Saved ${profile.name}.`;
+        state.lsp.editingId = null;
+        state.lsp.draft = null;
+      } else if (action === "delete-profile") {
+        const profile = state.lsp.profiles.find((item) => item.id === button.dataset.profileId);
+        if (!profile || !confirm(`Delete the “${profile.name}” language-server profile?`)) return;
+        await del(`/api/lsp/profiles/${encodeURIComponent(profile.id)}`);
+        state.lsp.status = `Deleted ${profile.name}.`;
+      } else if (action === "save-workspace") {
+        await saveLSPWorkspaceConfig(true);
+        state.lsp.status = "Workspace language-server settings saved.";
+      } else if (action === "restart") {
+        await post(`/api/workspaces/${encodeURIComponent(state.modeWorkspaceId)}/lsp/${encodeURIComponent(button.dataset.profileId)}/restart`, {});
+        state.lsp.status = `Restarting ${button.dataset.profileId}…`;
+      }
+      await loadLanguageServers(true);
+    } catch (err) {
+      state.lsp.status = `Error: ${err.message}`;
+      render();
+    } finally {
+      state.lsp.busy = false;
+    }
+  }));
+}
+
 export function mount(root) {
   mountedRoot = root;
+  const requestedSection = new URLSearchParams(location.hash.split("?")[1] || "").get("section");
+  if (sections.some((section) => section.id === requestedSection)) state.activeSection = requestedSection;
   applyEchoUpdateSnapshot(getEchoUpdateSnapshot());
   pluginCatalogListener = (event) => {
     state.plugins.catalog = event.detail;
@@ -1562,13 +1847,14 @@ async function loadAgentModes() {
     if (!state.modeWorkspaceId) {
       state.modes = [];
       state.modeTools = [];
-      render();
+      await loadLanguageServers();
       return;
     }
     const data = await get("/api/agent-modes", { query: { workspaceId: state.modeWorkspaceId } });
     state.modes = data.modes || [];
     state.modeTools = data.tools || [];
     state.modeStatus = "";
+    await loadLanguageServers();
     render();
   } catch (err) {
     state.modeStatus = `Error: ${err.message}`;

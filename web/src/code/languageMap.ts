@@ -17,3 +17,24 @@ export function languageIdForPath(filePath: string): string {
   const extension = name.includes(".") ? name.split(".").pop() || "" : "";
   return extensions[extension] || extensions[extension.toLowerCase()] || "plaintext";
 }
+
+export function configuredLanguageIdForPath(filePath: string, profiles: LSPProfile[] = []): string {
+  for (const profile of profiles) {
+    for (const selector of profile.selectors || []) {
+      if (selectorMatchesPath(selector, filePath)) return selector.languageId;
+    }
+  }
+  return languageIdForPath(filePath);
+}
+
+export function profileMatchesDocument(profile: LSPProfile, languageId: string, filePath: string): boolean {
+  return (profile.selectors || []).some((selector) => selector.languageId === languageId && selectorMatchesPath(selector, filePath));
+}
+
+function selectorMatchesPath(selector: LSPProfile["selectors"][number], filePath: string): boolean {
+  const name = filePath.replace(/\\/g, "/").split("/").pop() || filePath;
+  const lowerName = name.toLowerCase();
+  return (selector.filenames || []).some((candidate) => candidate.toLowerCase() === lowerName)
+    || (selector.extensions || []).some((extension) => lowerName.endsWith(extension.toLowerCase()));
+}
+import type { LSPProfile } from "./lspTypes";

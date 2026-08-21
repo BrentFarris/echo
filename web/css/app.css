@@ -3686,6 +3686,28 @@ button.chat-file-change-row:focus-visible {
   background: color-mix(in srgb, var(--color-danger) 8%, transparent);
 }
 
+/* Language server settings */
+.lsp-settings-section { max-width: 900px; }
+.lsp-template-list,
+.lsp-runtime-list,
+.lsp-selector-list { display: grid; gap: var(--space-lg); }
+.lsp-profile-enable { display: flex; min-width: 0; flex: 1; align-items: center; gap: var(--space-lg); cursor: pointer; }
+.lsp-profile-enable input { width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--color-accent); }
+.lsp-runtime-state { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 999px; background: var(--color-surface-muted); color: var(--color-text-muted); font-size: var(--text-xs); text-transform: capitalize; }
+.lsp-runtime-state.is-running { background: color-mix(in srgb, var(--color-success) 12%, transparent); color: var(--color-success); }
+.lsp-runtime-state.is-failed { background: color-mix(in srgb, var(--color-danger) 12%, transparent); color: var(--color-danger); }
+.lsp-selector-row { display: grid; grid-template-columns: minmax(120px, .7fr) minmax(180px, 1fr) minmax(160px, 1fr) auto; align-items: end; gap: var(--space-lg); padding: var(--space-lg); border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface-muted); }
+.lsp-runtime-card { display: grid; gap: var(--space-md); padding: var(--space-lg); border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface-muted); }
+.lsp-runtime-card > div { display: flex; align-items: center; justify-content: space-between; gap: var(--space-lg); }
+.lsp-runtime-card p { margin: 0; color: var(--color-text-muted); }
+.lsp-runtime-card pre { max-height: 220px; overflow: auto; padding: var(--space-lg); border-radius: 6px; background: var(--code-editor-bg); color: var(--code-editor-text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.lsp-runtime-card button { justify-self: start; }
+
+@media (max-width: 760px) {
+  .lsp-selector-row { grid-template-columns: 1fr; }
+  .lsp-profile-row { align-items: flex-start; flex-direction: column; }
+}
+
 .settings-security-warning {
   display: flex;
   flex-direction: column;

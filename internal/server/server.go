@@ -21,6 +21,8 @@ import (
 	"github.com/brent/echo/internal/echoupdate"
 	"github.com/brent/echo/internal/gitservice"
 	"github.com/brent/echo/internal/llm"
+	lspruntime "github.com/brent/echo/internal/lsp"
+	"github.com/brent/echo/internal/lspconfig"
 	"github.com/brent/echo/internal/plugins"
 	"github.com/brent/echo/internal/rebuild"
 	"github.com/brent/echo/internal/settings"
@@ -50,6 +52,8 @@ type Server struct {
 	watcher          *workspacefs.WatchManager
 	git              *gitservice.Service
 	terminal         *terminalruntime.Service
+	lsp              *lspruntime.Service
+	lspProfiles      *lspconfig.Store
 	auth             *auth.Manager
 	authDisabled     bool
 	loginLimiter     *loginRateLimiter
@@ -149,6 +153,8 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 	s.data = appdata.NewStore(settingsPath)
 	s.store = settings.NewStoreWithData(s.data)
 	s.workspaces = workspaces.NewManagerWithData(s.data)
+	s.lspProfiles = lspconfig.NewStore(s.data)
+	s.lsp = lspruntime.NewService(s.lspProfiles, s.workspaces)
 	s.terminal = terminalruntime.New(s.workspaces, s.data)
 	s.terminal.SetNotifier(func(event terminalruntime.Event) {
 		s.hub.BroadcastWorkspaceTerminal(event.WorkspaceID, event)
@@ -212,6 +218,7 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 	s.modes = agentmodes.NewManager()
 	s.sessions = newChatSessionManager(s)
 	s.initLLM()
+	s.lsp.StartActiveWorkspace()
 	s.httpServer = &http.Server{
 		Addr:              addr,
 		Handler:           s.routes(),
@@ -310,6 +317,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/echo", s.handleEcho)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
+	mux.HandleFunc("GET /api/lsp/profiles", s.handleGetLSPProfiles)
+	mux.HandleFunc("POST /api/lsp/profiles", s.handleCreateLSPProfile)
+	mux.HandleFunc("PUT /api/lsp/profiles/{profileId}", s.handleUpdateLSPProfile)
+	mux.HandleFunc("DELETE /api/lsp/profiles/{profileId}", s.handleDeleteLSPProfile)
 	mux.HandleFunc("GET /api/development/update-status", s.handleEchoUpdateStatus)
 	mux.HandleFunc("POST /api/development/update", s.handleEchoUpdate)
 	mux.HandleFunc("POST /api/development/rebuild-relaunch", s.handleRebuildRelaunch)
@@ -350,6 +361,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/workspaces/{id}/fs/search", s.handleFSSearch)
 	mux.HandleFunc("POST /api/workspaces/{id}/fs/text-search", s.handleFSTextSearch)
 	mux.HandleFunc("POST /api/workspaces/{id}/fs/text-replace", s.handleFSTextReplace)
+	mux.HandleFunc("GET /api/workspaces/{id}/lsp/config", s.handleGetWorkspaceLSPConfig)
+	mux.HandleFunc("PUT /api/workspaces/{id}/lsp/config", s.handlePutWorkspaceLSPConfig)
+	mux.HandleFunc("POST /api/workspaces/{id}/lsp/{profileId}/restart", s.handleRestartLSP)
+	mux.HandleFunc("GET /api/workspaces/{id}/lsp/ws", s.handleLSPWebSocket)
 	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories", s.handleGitRepositories)
 	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories/{repositoryId}/status", s.handleGitStatus)
 	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories/{repositoryId}/diff", s.handleGitDiff)
@@ -481,6 +496,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.git.Close()
 	s.fs.Close()
 	s.sessions.shutdown(ctx)
+	if err := s.lsp.Shutdown(ctx); err != nil && ctx.Err() == nil {
+		logf("language server shutdown: %v", err)
+	}
 	if err := s.terminal.Shutdown(ctx); err != nil && ctx.Err() == nil {
 		logf("terminal shutdown: %v", err)
 	}
@@ -501,6 +519,7 @@ func (s *Server) refreshWorkspaceCaches(ctx context.Context, workspaceID string)
 		logf("refresh git workspace %s: %v", workspaceID, err)
 	}
 	s.fs.RefreshWorkspace(workspaceID)
+	s.lsp.RefreshWorkspace(workspaceID)
 	s.skillsMu.Lock()
 	delete(s.skills, workspaceID)
 	s.skillsMu.Unlock()

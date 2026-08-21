@@ -10,7 +10,19 @@ import "monaco-editor/language/json/monaco.contribution";
 import "monaco-editor/language/css/monaco.contribution";
 import "monaco-editor/language/html/monaco.contribution";
 import "monaco-editor/language/typescript/monaco.contribution";
-import { languageIdForPath } from "./languageMap";
+// The lean editor API exposes language-provider registries but does not load
+// the editor contributions that invoke them. Import only Echo's LSP v1 UI.
+import "monaco-editor/editor/contrib/codeAction/browser/codeActionContributions.js";
+import "monaco-editor/editor/contrib/documentSymbols/browser/documentSymbols.js";
+import "monaco-editor/editor/contrib/format/browser/formatActions.js";
+import "monaco-editor/editor/contrib/gotoSymbol/browser/goToCommands.js";
+import "monaco-editor/editor/contrib/hover/browser/hoverContribution.js";
+import "monaco-editor/editor/contrib/parameterHints/browser/parameterHints.js";
+import "monaco-editor/editor/contrib/rename/browser/rename.js";
+import "monaco-editor/editor/contrib/suggest/browser/suggestController.js";
+import "monaco-editor/editor/standalone/browser/referenceSearch/standaloneReferenceSearch.js";
+import { configuredLanguageIdForPath } from "./languageMap";
+import type { LSPProfile } from "./lspTypes";
 
 // Import the editor API rather than Monaco's aggregate entry point. The
 // aggregate also eagerly pulls language registrations into this lazy route;
@@ -59,8 +71,17 @@ function registerAssembly(): void {
   });
 }
 
-export function languageForPath(filePath: string): string {
-  const language = languageIdForPath(filePath);
+export function configuredLanguageForPath(filePath: string, profiles: LSPProfile[] = []): string {
+  return configuredLanguageIdForPath(filePath, profiles);
+}
+
+export function languageForPath(filePath: string, profiles: LSPProfile[] = []): string {
+  const language = configuredLanguageForPath(filePath, profiles);
+  const known = monaco.languages.getLanguages().some((candidate) => candidate.id === language);
+  if (!known && language !== "plaintext") {
+    const selector = profiles.flatMap((profile) => profile.selectors || []).find((candidate) => candidate.languageId === language);
+    monaco.languages.register({ id: language, extensions: selector?.extensions, filenames: selector?.filenames });
+  }
   if (language === "echo-asm") registerAssembly();
   return language;
 }

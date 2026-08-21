@@ -32,7 +32,7 @@ Connect Echo to a local or remote provider that exposes an OpenAI-compatible `/c
 | --- | --- |
 | **Chat** | Persistent workspace conversations, multiple chat tabs, per-chat model and agent-mode selection, streamed Markdown, reasoning, tool activity, stop and clear controls, skill creation, and an inspectable Trajectory event stream |
 | **Agent modes** | Built-in General and read-only Plan modes plus workspace-defined system instructions, tool allowlists, and path restrictions |
-| **Code** | Monaco editing, file tabs, workspace trees, quick open, text and file search, create/rename/save operations, external-change detection, recoverable trash, and browser hot-exit buffers |
+| **Code** | Monaco editing, generic opt-in LSP support, file tabs, workspace trees, quick open, text and file search, create/rename/save operations, external-change detection, recoverable trash, and browser hot-exit buffers |
 | **Git** | Repository discovery, working-tree status, staged and unstaged diffs, staging, commits, branches, remotes, fetch/pull/push/sync, history, tags, and stashes |
 | **Terminal** | Workspace-aware PTY sessions powered by xterm.js, resize, restart, stop, and reusable saved commands |
 | **Agent tools** | Workspace-scoped file inspection and editing, shell commands, text and file search, image/video reads, web fetch/search, image generation, and reusable workspace skills |
@@ -53,6 +53,14 @@ Echo also ships the read-only `builtin/echo-plugins` skill. You can ask Chat to 
 ![Echo Code and Source Control](docs/screenshots/echo-code-git.png)
 
 The Code view uses Monaco for editing and reviewing diffs. Its explorer watches the filesystem for changes, keeps unsaved browser buffers recoverable, and moves deleted entries into Echo's restorable trash. The source-control view supports common repository workflows without leaving the browser, while the integrated terminal provides a full PTY on the Echo server.
+
+### Language servers
+
+Open **Settings → Language Servers** to copy the built-in `gopls`, `clangd`, or `lua-language-server` template, edit its executable, arguments, selectors, environment, initialization options, and settings, then enable it for the current workspace. Echo starts enabled servers in the workspace's main folder and does not install or download executables.
+
+Profiles are reusable and stored globally in `echo.json`; workspace enablement, replacement overrides, and formatting controls are stored in `.echo/workspace.json`. Custom servers use the same profile fields, so adding another stdio LSP server requires no Echo code changes. Commands and arguments are executed directly without shell expansion. Format on save is off by default and fails open with a three-second default timeout.
+
+When the same file is open in multiple browsers, the first active editor owns its unsaved LSP document. The other browser can use **Take Over** in the Code status bar when it intentionally needs language-server control.
 
 ## Quick start
 

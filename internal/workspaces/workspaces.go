@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/brent/echo/internal/appdata"
+	"github.com/brent/echo/internal/lspconfig"
 )
 
 // EchoDirName is the name of the hidden directory Echo creates in a
@@ -27,12 +28,13 @@ const EchoDirName = ".echo"
 // Workspace is the resolved shape returned to runtime consumers and the
 // frontend. Its paths are always absolute even when workspace.json is portable.
 type Workspace struct {
-	ID                          string   `json:"id"`
-	Name                        string   `json:"name"`
-	MainPath                    string   `json:"mainPath"`
-	IconExt                     string   `json:"iconExt,omitempty"`
-	Folders                     []string `json:"folders,omitempty"`
-	SearchParentGitRepositories bool     `json:"searchParentGitRepositories,omitempty"`
+	ID                          string                    `json:"id"`
+	Name                        string                    `json:"name"`
+	MainPath                    string                    `json:"mainPath"`
+	IconExt                     string                    `json:"iconExt,omitempty"`
+	Folders                     []string                  `json:"folders,omitempty"`
+	SearchParentGitRepositories bool                      `json:"searchParentGitRepositories,omitempty"`
+	LanguageServers             lspconfig.WorkspaceConfig `json:"languageServers,omitempty"`
 }
 
 // CreateRequest is the payload accepted by the create-workspace endpoint.
@@ -52,10 +54,11 @@ type Icon struct {
 
 // workspaceFile is the on-disk shape of .echo/workspace.json.
 type workspaceFile struct {
-	Name                        string   `json:"name"`
-	MainPath                    string   `json:"mainPath"`
-	Folders                     []string `json:"folders"`
-	SearchParentGitRepositories bool     `json:"searchParentGitRepositories,omitempty"`
+	Name                        string                    `json:"name"`
+	MainPath                    string                    `json:"mainPath"`
+	Folders                     []string                  `json:"folders"`
+	SearchParentGitRepositories bool                      `json:"searchParentGitRepositories,omitempty"`
+	LanguageServers             lspconfig.WorkspaceConfig `json:"languageServers,omitempty"`
 }
 
 const (
@@ -319,6 +322,23 @@ func (m *Manager) SetSearchParentGitRepositories(id string, enabled bool) (Works
 	return workspace, nil
 }
 
+// SetLanguageServerConfig updates the portable language-server selection and
+// workspace overrides without copying machine-global profiles into the project.
+func (m *Manager) SetLanguageServerConfig(id string, config lspconfig.WorkspaceConfig) (Workspace, error) {
+	workspace, ok, err := m.Get(id)
+	if err != nil {
+		return Workspace{}, err
+	}
+	if !ok {
+		return Workspace{}, fmt.Errorf("workspace %q not found", id)
+	}
+	workspace.LanguageServers = config.Normalized()
+	if err := writeWorkspaceFile(filepath.Join(workspace.MainPath, EchoDirName), workspaceFileFromWorkspace(workspace)); err != nil {
+		return Workspace{}, err
+	}
+	return workspace, nil
+}
+
 // SetActive records the given workspace id as the active (last opened)
 // workspace, preserving settings and the workspace list.
 func (m *Manager) SetActive(id string) error {
@@ -405,6 +425,7 @@ func workspaceFromFile(id, iconExt, echoDir, expectedMain string, wf workspaceFi
 	return Workspace{
 		ID: id, Name: name, MainPath: expectedMain, IconExt: iconExt, Folders: folders,
 		SearchParentGitRepositories: wf.SearchParentGitRepositories,
+		LanguageServers:             wf.LanguageServers.Normalized(),
 	}, nil
 }
 
@@ -466,6 +487,7 @@ func workspaceFileFromWorkspace(ws Workspace) workspaceFile {
 	return workspaceFile{
 		Name: ws.Name, MainPath: ws.MainPath, Folders: append([]string(nil), ws.Folders...),
 		SearchParentGitRepositories: ws.SearchParentGitRepositories,
+		LanguageServers:             ws.LanguageServers.Normalized(),
 	}
 }
 

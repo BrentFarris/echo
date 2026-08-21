@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 const directory = dirname(fileURLToPath(import.meta.url));
 const password = "Echo-E2E-Password!";
 
+test.describe.configure({ mode: "serial" });
+
 test("first-run auth and the real Monaco filesystem workflow", async ({ page }) => {
   // This is a deliberately broad, real-process acceptance scenario. Plugin
   // installation adds an additional reviewed lifecycle and browser-isolation
@@ -455,4 +457,183 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.keyboard.press("Escape");
   await expect(page.locator(".workspace-dropdown-anchor")).toHaveCount(0);
   await expect(finalWorkspace).toBeFocused();
+});
+
+test("runs the deterministic fake language server through Monaco and settings", async ({ page }) => {
+  test.setTimeout(120_000);
+  const state = JSON.parse(readFileSync(resolve(directory, "../test-results/e2e-runtime/state.json"), "utf8")) as {
+    setupCode: string;
+    workspace: string;
+    nodePath: string;
+    fakeLSPPath: string;
+  };
+  await page.goto("/");
+  if (await page.getByRole("heading", { name: "Secure this Echo server" }).isVisible()) {
+    await page.getByLabel("Setup code").fill(state.setupCode);
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByLabel("Confirm password").fill(password);
+    await page.getByLabel("Device name").fill("Playwright LSP");
+    await page.getByRole("button", { name: "Finish setup" }).click();
+  } else {
+    await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByLabel("Device name").fill("Playwright LSP");
+    await page.getByRole("button", { name: "Sign in" }).click();
+  }
+  await expect(page.locator(".app-shell")).toBeVisible();
+
+  const workspaceId = await page.evaluate(async ({ command, script, workspacePath }) => {
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      const response = await fetch(path, {
+        method, headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+      return payload.data;
+    };
+    let workspaces = await request("/api/workspaces");
+    if (!workspaces.activeId) {
+      const created = await request("/api/workspaces", "POST", { name: "LSP E2E Workspace", mainPath: workspacePath, folders: [] });
+      await request("/api/workspaces/active", "PUT", { id: created.workspace.id });
+      workspaces = await request("/api/workspaces");
+    }
+    await request("/api/lsp/profiles", "POST", { profile: {
+      id: "fake-e2e-lsp", name: "Fake E2E LSP", command, args: [script],
+      selectors: [{ languageId: "go", extensions: [".go"] }],
+      environment: { ECHO_FAKE_LSP_LOG: `${workspacePath}/.echo/fake-lsp.log` },
+      initializationOptions: { deterministic: true }, settings: { fake: { enabled: true } },
+    } });
+    await request(`/api/workspaces/${encodeURIComponent(workspaces.activeId)}/lsp/config`, "PUT", { config: {
+      enabledProfileIds: ["fake-e2e-lsp"], formatOnSave: false, formatOnSaveTimeoutMs: 3000,
+    } });
+    return workspaces.activeId as string;
+  }, { command: state.nodePath, script: state.fakeLSPPath, workspacePath: state.workspace });
+
+  await page.goto("/#/code");
+  await expect(page.locator(".code-tree-label", { hasText: "usage.go" })).toBeVisible();
+  await page.locator(".code-tree-label", { hasText: "usage.go" }).click();
+  const lspStatus = page.locator('[data-status="lsp"]');
+  await expect(lspStatus).toContainText("Fake E2E LSP ✓", { timeout: 20_000 });
+  await expect(page.locator(".squiggly-warning").first()).toBeVisible();
+
+  // Direct navigation activates only the selected target tab, attaches its
+  // model, and applies Monaco's returned cursor position.
+  await page.locator(".view-line", { hasText: /^\s*Target\(\)\s*$/ }).click();
+  await page.keyboard.press("F12");
+  await expect(page.locator(".code-tab.is-active")).toContainText("definition.go");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 3, Col 6");
+  await expect(page.locator("[data-tabs-list] .code-tab")).toHaveCount(1);
+  await expect(lspStatus).toHaveAttribute("data-lsp-state", "owned");
+
+  // F12 at the definition and the explicit peek shortcuts render Monaco's
+  // native reference zone without turning every result into an Echo tab.
+  await page.keyboard.press("F12");
+  await expect(page.locator(".reference-zone-widget")).toBeVisible();
+  await expect(page.locator("[data-tabs-list] .code-tab")).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".reference-zone-widget")).toHaveCount(0);
+
+  await page.keyboard.press("Shift+F12");
+  await expect(page.locator(".reference-zone-widget")).toBeVisible();
+  await expect(page.locator("[data-tabs-list] .code-tab")).toHaveCount(1);
+  const referenceFiles = page.locator(".reference-zone-widget .reference-file");
+  await expect(referenceFiles).toHaveCount(3);
+  await referenceFiles.filter({ hasText: "usage.go" }).click();
+  const referenceMatches = page.locator(".reference-zone-widget .referenceMatch");
+  await expect(referenceMatches).toHaveCount(2);
+  await referenceMatches.last().click();
+  await expect(page.locator("[data-tabs-list] .code-tab")).toHaveCount(1);
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".reference-zone-widget .preview")).toContainText("func useTarget");
+  await referenceMatches.last().dblclick();
+  await expect(page.locator(".code-tab.is-active")).toContainText("usage.go");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 4, Col 2");
+  await expect(page.locator("[data-tabs-list] .code-tab")).toHaveCount(1);
+  await page.keyboard.press("Escape");
+
+  await page.keyboard.press("Alt+F12");
+  await expect(page.locator(".reference-zone-widget")).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await page.keyboard.press("Control+Shift+F12");
+  await expect(page.locator(".reference-zone-widget")).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await page.keyboard.press("Control+F12");
+  await expect(page.locator(".code-tab.is-active")).toContainText("implementation.go");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 9, Col 23");
+
+  await page.keyboard.press("Control+Shift+O");
+  const workspaceSymbols = page.getByLabel("Workspace Symbol Search");
+  await expect(workspaceSymbols).toBeFocused();
+  await workspaceSymbols.fill("Target");
+  await expect(page.getByRole("option", { name: /Target/ })).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".code-tab.is-active")).toContainText("definition.go");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 3, Col 6");
+
+  for (const command of [
+    "Go to Definition", "Peek Definition", "Go to Declaration", "Peek Declaration",
+    "Go to Type Definition", "Peek Type Definition", "Go to Implementations",
+    "Peek Implementations", "Peek References", "Go to Symbol in Workspace…",
+  ]) {
+    await page.keyboard.press("Control+Shift+P");
+    const palette = page.getByLabel("Command Palette");
+    await palette.fill(command);
+    await expect(page.getByRole("option", { name: new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) }).first()).toBeVisible();
+    await page.keyboard.press("Escape");
+  }
+  await page.keyboard.press("Control+Shift+P");
+  await page.getByLabel("Command Palette").fill("Go to Symbol in Workspace");
+  await expect(page.getByRole("option", { name: /Go to Symbol in Workspace/ })).toContainText("Ctrl+Shift+O");
+  await expect(page.getByRole("option", { name: /Go to Symbol in Workspace/ })).not.toContainText("Ctrl+T");
+  await page.keyboard.press("Escape");
+
+  // Continue exercising the other providers on the original document.
+  await page.locator(".code-tree-label", { hasText: "main.go" }).click();
+  await expect(lspStatus).toHaveAttribute("data-lsp-state", "owned");
+  const functionLine = page.locator(".view-line", { hasText: "func main" });
+  await functionLine.click({ position: { x: 62, y: 10 } });
+  await page.keyboard.press("Control+Shift+p");
+  await page.getByLabel("Command Palette").fill("Editor: Show Hover");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".monaco-hover:not(.hidden)")).toContainText("Echo fake hover");
+
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("fak");
+  await page.keyboard.press("Control+Space");
+  await expect(page.locator(".suggest-widget")).toContainText("fakeCompletion");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".view-lines")).toContainText("fakeCompletion");
+
+  await page.keyboard.press("F2");
+  const rename = page.locator(".rename-box input");
+  await expect(rename).toBeVisible();
+  await rename.fill("renamedMain");
+  await rename.press("Enter");
+  await expect(page.locator(".view-lines")).toContainText("renamedMain");
+
+  await page.keyboard.press("Shift+Alt+f");
+  await expect(page.locator(".view-lines")).toContainText("formatted by Echo fake LSP");
+
+  const persisted = await page.evaluate(async (id) => {
+    const response = await fetch(`/api/workspaces/${encodeURIComponent(id)}/lsp/config`);
+    return (await response.json()).data;
+  }, workspaceId);
+  expect(persisted.config.enabledProfileIds).toEqual(["fake-e2e-lsp"]);
+  expect(persisted.config.formatOnSaveTimeoutMs).toBe(3000);
+
+  await page.goto("/#/settings?section=lsp");
+  await expect(page.getByRole("heading", { name: "Language Servers" })).toBeVisible();
+  await expect(page.locator('[data-lsp-enable="fake-e2e-lsp"]')).toBeChecked();
+  await expect(page.locator(".lsp-runtime-card", { hasText: "Fake E2E LSP" })).toContainText("running");
+  await page.locator('[data-lsp-action="restart"][data-profile-id="fake-e2e-lsp"]').click();
+  await expect.poll(async () => page.evaluate(async (id) => {
+    const response = await fetch(`/api/workspaces/${encodeURIComponent(id)}/lsp/config`);
+    const data = (await response.json()).data;
+    return data.statuses.find((status: { profileId: string }) => status.profileId === "fake-e2e-lsp")?.state;
+  }, workspaceId)).toBe("running");
 });
