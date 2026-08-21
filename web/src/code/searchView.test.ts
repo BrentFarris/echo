@@ -117,4 +117,60 @@ describe("workspace Search view", () => {
     }));
     expect(applyUpdates).toHaveBeenCalledWith([]);
   });
+
+  it("cancels an in-flight search as soon as the input changes", async () => {
+    let resolveFirst!: (value: TextSearchResponse) => void;
+    const firstSearch = new Promise<TextSearchResponse>((resolve) => { resolveFirst = resolve; });
+    vi.mocked(editorAPI.searchText).mockReturnValueOnce(firstSearch).mockResolvedValue(response);
+    create();
+    const input = document.querySelector<HTMLInputElement>("[data-search-query]")!;
+
+    input.value = "camera";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(200);
+    const firstSignal = vi.mocked(editorAPI.searchText).mock.calls[0][2]!;
+
+    input.value = "cameraPosition";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(firstSignal.aborted).toBe(true);
+    resolveFirst(response);
+    await Promise.resolve();
+    expect(document.querySelector("[data-search-result]")).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(editorAPI.searchText).toHaveBeenCalledTimes(2);
+    expect(editorAPI.searchText).toHaveBeenLastCalledWith(
+      "workspace",
+      expect.objectContaining({ query: "cameraPosition" }),
+      expect.any(AbortSignal),
+    );
+    expect(document.querySelector("[data-search-result]")).not.toBeNull();
+  });
+
+  it("renders large result sets in bounded batches", async () => {
+    const matches = Array.from({ length: 450 }, (_, index) => ({
+      ...response.files[0].matches[0],
+      id: `match-${index}`,
+      line: index + 1,
+    }));
+    vi.mocked(editorAPI.searchText).mockResolvedValue({
+      ...response,
+      files: [{ ...response.files[0], matches }],
+      matchCount: matches.length,
+    });
+    create();
+    const input = document.querySelector<HTMLInputElement>("[data-search-query]")!;
+    input.value = "cameraPosition";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(document.querySelectorAll("[data-search-result]")).toHaveLength(200);
+    expect(document.querySelector("[data-search-summary]")?.textContent).toContain("showing first 200");
+    document.querySelector<HTMLButtonElement>("[data-search-action=show-more]")!.click();
+    expect(document.querySelectorAll("[data-search-result]")).toHaveLength(400);
+    expect(document.querySelector("[data-search-action=show-more]")?.textContent).toContain("Show 50 more results");
+    document.querySelector<HTMLButtonElement>("[data-search-action=show-more]")!.click();
+    expect(document.querySelectorAll("[data-search-result]")).toHaveLength(450);
+    expect(document.querySelector("[data-search-action=show-more]")).toBeNull();
+  });
 });

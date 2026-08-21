@@ -14,6 +14,9 @@ type ReplaceConfirmation = {
   dirtyFiles: number;
 };
 
+const initialRenderedMatches = 200;
+const additionalRenderedMatches = 200;
+
 export type SearchViewOptions = {
   workspaceId: string;
   signal: AbortSignal;
@@ -46,6 +49,7 @@ export class SearchView {
   private indexingTimer = 0;
   private generation = 0;
   private replacing = false;
+  private renderedMatchLimit = initialRenderedMatches;
 
   constructor(host: HTMLElement, options: SearchViewOptions) {
     this.host = host;
@@ -172,6 +176,10 @@ export class SearchView {
     else if (action === "toggle-replace") this.setReplaceOpen(!this.replaceOpen);
     else if (action === "toggle-details") this.toggleDetails();
     else if (action === "replace-all") void this.replace("all");
+    else if (action === "show-more") {
+      this.renderedMatchLimit += additionalRenderedMatches;
+      this.renderResults();
+    }
 
     const toggle = target.closest<HTMLElement>("[data-search-toggle]")?.dataset.searchToggle;
     if (toggle) this.toggle(toggle);
@@ -242,12 +250,15 @@ export class SearchView {
   private scheduleSearch(delay: number): void {
     window.clearTimeout(this.debounceTimer);
     window.clearTimeout(this.indexingTimer);
+    this.requestController?.abort();
+    this.requestController = null;
+    this.generation++;
     if (!this.queryInput.value) {
-      this.requestController?.abort();
       this.response = null;
       this.lastRequest = null;
       this.summary.textContent = "Enter text to search the workspace.";
       this.resultsHost.innerHTML = "";
+      this.host.classList.remove("is-searching");
       return;
     }
     this.debounceTimer = window.setTimeout(() => void this.search(), delay);
@@ -267,6 +278,7 @@ export class SearchView {
       if (controller.signal.aborted || generation !== this.generation) return;
       this.response = response;
       this.lastRequest = request;
+      this.renderedMatchLimit = initialRenderedMatches;
       this.renderResults();
       if (response.indexing) this.indexingTimer = window.setTimeout(() => void this.search(), 450);
     } catch (error) {
@@ -287,27 +299,44 @@ export class SearchView {
       this.resultsHost.innerHTML = "";
       return;
     }
+    const visibleFiles: Array<{ file: TextSearchFileResult; index: number; matchCount: number }> = [];
+    let displayedMatches = 0;
+    for (let index = 0; index < response.files.length && displayedMatches < this.renderedMatchLimit; index++) {
+      const file = response.files[index];
+      const matchCount = Math.min(file.matches.length, this.renderedMatchLimit - displayedMatches);
+      if (!matchCount) continue;
+      visibleFiles.push({ file, index, matchCount });
+      displayedMatches += matchCount;
+    }
     const suffix = response.truncated ? " (results truncated)" : response.indexing ? " (indexing…)" : "";
+    const displaySuffix = displayedMatches < response.matchCount
+      ? ` (showing first ${displayedMatches.toLocaleString()})`
+      : "";
     this.summary.textContent = response.matchCount
-      ? `${response.matchCount.toLocaleString()} result${response.matchCount === 1 ? "" : "s"} in ${response.files.length.toLocaleString()} file${response.files.length === 1 ? "" : "s"}${suffix}`
+      ? `${response.matchCount.toLocaleString()} result${response.matchCount === 1 ? "" : "s"} in ${response.files.length.toLocaleString()} file${response.files.length === 1 ? "" : "s"}${suffix}${displaySuffix}`
       : `No results found${suffix}`;
-    const roots = new Map<string, Array<{ file: TextSearchFileResult; index: number }>>();
-    response.files.forEach((file, index) => {
+    const roots = new Map<string, Array<{ file: TextSearchFileResult; index: number; matchCount: number }>>();
+    visibleFiles.forEach(({ file, index, matchCount }) => {
       const slash = file.referencePath.indexOf("/");
       const root = slash < 0 ? file.referencePath : file.referencePath.slice(0, slash);
       const items = roots.get(root) || [];
-      items.push({ file, index });
+      items.push({ file, index, matchCount });
       roots.set(root, items);
     });
+    const moreResults = response.matchCount - displayedMatches;
     this.resultsHost.innerHTML = [...roots.entries()].map(([root, files]) => `
       <section class="code-search-root" role="group" aria-label="${escapeHTML(root)}">
         ${roots.size > 1 ? `<div class="code-search-root-label">${escapeHTML(root)}</div>` : ""}
-        ${files.map(({ file, index }) => this.renderFile(file, index)).join("")}
+        ${files.map(({ file, index, matchCount }) => this.renderFile(file, index, matchCount)).join("")}
       </section>
-    `).join("");
+    `).join("") + (moreResults > 0 ? `
+      <button type="button" class="code-search-show-more" data-search-action="show-more">
+        Show ${Math.min(additionalRenderedMatches, moreResults).toLocaleString()} more result${Math.min(additionalRenderedMatches, moreResults) === 1 ? "" : "s"}
+        <span>${moreResults.toLocaleString()} remaining</span>
+      </button>` : "");
   }
 
-  private renderFile(file: TextSearchFileResult, fileIndex: number): string {
+  private renderFile(file: TextSearchFileResult, fileIndex: number, matchCount: number): string {
     const key = refKey(file.ref);
     const collapsed = this.collapsedFiles.has(key);
     const slash = file.referencePath.lastIndexOf("/");
@@ -323,7 +352,7 @@ export class SearchView {
           ${this.replaceOpen ? `<button type="button" title="Replace All in ${escapeHTML(file.name)}" aria-label="Replace All in ${escapeHTML(file.name)}" data-search-file-replace data-file-index="${fileIndex}"><span class="codicon codicon-replace-all"></span></button>` : ""}
         </div>
         <div class="code-search-file-matches" role="group"${collapsed ? " hidden" : ""}>
-          ${file.matches.map((match, matchIndex) => this.renderMatch(match, fileIndex, matchIndex)).join("")}
+          ${file.matches.slice(0, matchCount).map((match, matchIndex) => this.renderMatch(match, fileIndex, matchIndex)).join("")}
         </div>
       </div>`;
   }
@@ -394,6 +423,9 @@ export class SearchView {
     this.response = null;
     this.lastRequest = null;
     this.requestController?.abort();
+    this.requestController = null;
+    this.generation++;
+    this.host.classList.remove("is-searching");
     this.summary.textContent = "Enter text to search the workspace.";
     this.resultsHost.innerHTML = "";
     this.queryInput.focus();
