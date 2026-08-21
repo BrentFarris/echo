@@ -3,5 +3,11 @@
   "mainPath": "../",
   "folders": [
     "../"
-  ]
+  ],
+  "languageServers": {
+    "enabledProfileIds": [
+      "gopls"
+    ],
+    "formatOnSaveTimeoutMs": 3000
+  }
 }

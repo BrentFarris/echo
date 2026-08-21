@@ -24,23 +24,83 @@ type Transcript struct {
 	Messages    []llm.Message `json:"messages"`
 }
 
+// ContextCheckpoint is the compact model-facing view over the canonical raw
+// transcript. Messages before CompactedThrough remain durable and searchable;
+// the model receives ProtectedHeadIndex, Summary, then the raw suffix.
+type ContextCheckpoint struct {
+	Summary             string    `json:"summary"`
+	ProtectedHeadIndex  int       `json:"protectedHeadIndex"`
+	CompactedThrough    int       `json:"compactedThrough"`
+	Endpoint            string    `json:"endpoint,omitempty"`
+	Model               string    `json:"model,omitempty"`
+	UsageSource         string    `json:"usageSource,omitempty"`
+	BeforeTokens        int       `json:"beforeTokens,omitempty"`
+	AfterTokens         int       `json:"afterTokens,omitempty"`
+	CompressionCount    int       `json:"compressionCount,omitempty"`
+	LastCompactedAt     time.Time `json:"lastCompactedAt"`
+	LastAssistantNumber int       `json:"lastAssistantNumber,omitempty"`
+}
+
 type Turn struct {
-	ID               string            `json:"id"`
-	RequestID        string            `json:"requestId"`
-	UserContent      string            `json:"userContent"`
-	UserMessageIndex int               `json:"userMessageIndex,omitempty"`
-	Images           []MediaAttachment `json:"images,omitempty"`
-	Videos           []MediaAttachment `json:"videos,omitempty"`
-	Model            string            `json:"model,omitempty"`
-	AgentModeID      string            `json:"agentModeId,omitempty"`
-	AgentModeName    string            `json:"agentModeName,omitempty"`
-	Status           string            `json:"status"`
-	Error            string            `json:"error,omitempty"`
-	StartedAt        time.Time         `json:"startedAt"`
-	CompletedAt      *time.Time        `json:"completedAt,omitempty"`
-	AssistantTurns   []AssistantTurn   `json:"assistantTurns"`
-	UserDeleted      bool              `json:"userDeleted,omitempty"`
-	AssistantDeleted bool              `json:"assistantDeleted,omitempty"`
+	ID                string                `json:"id"`
+	RequestID         string                `json:"requestId"`
+	UserContent       string                `json:"userContent"`
+	UserMessageIndex  int                   `json:"userMessageIndex,omitempty"`
+	Images            []MediaAttachment     `json:"images,omitempty"`
+	Videos            []MediaAttachment     `json:"videos,omitempty"`
+	Model             string                `json:"model,omitempty"`
+	AgentModeID       string                `json:"agentModeId,omitempty"`
+	AgentModeName     string                `json:"agentModeName,omitempty"`
+	Status            string                `json:"status"`
+	Error             string                `json:"error,omitempty"`
+	StartedAt         time.Time             `json:"startedAt"`
+	CompletedAt       *time.Time            `json:"completedAt,omitempty"`
+	AssistantTurns    []AssistantTurn       `json:"assistantTurns"`
+	ResearchAgents    []ResearchAgent       `json:"researchAgents,omitempty"`
+	ResearchReasoning []ResearchReasoning   `json:"researchReasoning,omitempty"`
+	ResearchTools     []ToolActivity        `json:"researchTools,omitempty"`
+	FileChanges       []FileChange          `json:"fileChanges,omitempty"`
+	UserDeleted       bool                  `json:"userDeleted,omitempty"`
+	AssistantDeleted  bool                  `json:"assistantDeleted,omitempty"`
+	Compressions      []CompressionActivity `json:"compressions,omitempty"`
+}
+
+// CompressionActivity is the durable, display-safe lifecycle of one context
+// compression. The generated summary remains in the checkpoint/trajectory and
+// is intentionally not exposed through ordinary chat snapshots.
+type CompressionActivity struct {
+	ID                   string     `json:"id"`
+	Trigger              string     `json:"trigger"`
+	Phase                string     `json:"phase"`
+	Status               string     `json:"status"`
+	AfterAssistantNumber *int       `json:"afterAssistantNumber,omitempty"`
+	ThresholdPercent     int        `json:"thresholdPercent,omitempty"`
+	ContextLength        int        `json:"contextLength,omitempty"`
+	BeforeTokens         int        `json:"beforeTokens,omitempty"`
+	AfterTokens          int        `json:"afterTokens,omitempty"`
+	ReclaimedTokens      int        `json:"reclaimedTokens,omitempty"`
+	UsageSource          string     `json:"usageSource,omitempty"`
+	DurationMs           int64      `json:"durationMs,omitempty"`
+	RecoveryAvailable    bool       `json:"recoveryAvailable,omitempty"`
+	ErrorClass           string     `json:"errorClass,omitempty"`
+	Error                string     `json:"error,omitempty"`
+	StartedAt            time.Time  `json:"startedAt"`
+	CompletedAt          *time.Time `json:"completedAt,omitempty"`
+}
+
+// FileChange is the compact, durable portion of a tool-reported workspace
+// mutation. Full before/after snapshots remain private to tool execution.
+type FileChange struct {
+	Path      string         `json:"path"`
+	Operation string         `json:"operation"`
+	Ref       *FileReference `json:"ref,omitempty"`
+}
+
+// FileReference identifies an entry inside one of the workspace's confined
+// roots so clients can open a changed file without using a host path.
+type FileReference struct {
+	RootID string `json:"rootId"`
+	Path   string `json:"path"`
 }
 
 // MediaAttachment is a normalized image or video attached to a user turn.
@@ -80,6 +140,29 @@ type ToolActivity struct {
 	PlanQuestions *PlanQuestionSet `json:"planQuestions,omitempty"`
 	Answers       []PlanAnswer     `json:"answers,omitempty"`
 	Skipped       bool             `json:"skipped,omitempty"`
+	AgentID       string           `json:"agentId,omitempty"`
+	AgentName     string           `json:"agentName,omitempty"`
+}
+
+// ResearchAgent is transient progress state for a running child agent. The
+// server clears these indicators before persisting a completed turn.
+type ResearchAgent struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	Phase     string `json:"phase,omitempty"`
+	TaskLabel string `json:"taskLabel,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// ResearchReasoning is bounded, attributed reasoning retained with the turn
+// for the expandable work history. Replace marks a live event as a full value.
+type ResearchReasoning struct {
+	AgentID   string `json:"agentId"`
+	AgentName string `json:"agentName"`
+	Reasoning string `json:"reasoning"`
+	Truncated bool   `json:"truncated,omitempty"`
+	Replace   bool   `json:"replace,omitempty"`
 }
 
 // PlanQuestionSet is one interactive ask_user_questions call. QuestionSetID

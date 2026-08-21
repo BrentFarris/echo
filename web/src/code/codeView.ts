@@ -1,27 +1,34 @@
 import { Virtualizer, elementScroll, observeElementOffset, observeElementRect } from "@tanstack/virtual-core";
-import type { editor as MonacoEditor, Uri as MonacoUri } from "monaco-editor";
+import type { editor as MonacoEditor, IPosition as MonacoPosition, IRange as MonacoRange, languages as MonacoLanguages, Uri as MonacoUri } from "monaco-editor";
 import { api } from "../../js/api.js";
 import { openAddWorkspaceModal, openWorkspaceDropdown } from "../../js/workspaces.js";
 import { on as onSocket, onState as onSocketState, send as sendSocket } from "../../js/ws.js";
 import * as editorAPI from "./editorApi";
 import type { APIError } from "./editorApi";
 import { languageForPath, monaco } from "./language";
+import { EchoLSPClient, fromLSPRange, type LSPDocumentState } from "./lspClient";
+import type { LSPProfile, LSPStatus, LSPWorkspaceEdit, WorkspaceLSPResponse } from "./lspTypes";
 import { loadDiff as loadGitDiff } from "./gitApi";
 import type { GitChange, GitDiffDocument, GitRepository } from "./gitTypes";
 import { GitView } from "./gitView";
 import { buildCodeChatEditorContext, runCodeChatSavePreflight } from "./codeChatContext";
 import { loadSession, saveSession } from "./persistence";
 import { previewKindForPath, type PreviewKind } from "./preview";
-import { CODE_ROUTE, codeOpenTargetFromHash, codeRouteHash, codeSidebarFromHash, routePathFromHash } from "../navigation";
+import {
+  CODE_ROUTE, chatCompletionTargetFromHash, codeOpenTargetFromHash, codeRouteHash,
+  codeSidebarFromHash, routePathFromHash, type ChatCompletionTarget, type CodeSidebar,
+} from "../navigation";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 import { setGitBadgeCount } from "../gitBadge";
 import { randomUUID } from "../randomUUID";
 import { mountChatSurface, type EditorContextPayload, type MountedChatSurface } from "../chatSurface";
 import type { ChatReference } from "../chatMentions";
 import { detachTerminalDock, mountTerminalDock } from "../terminal";
+import { SearchView } from "./searchView";
+import { NavigationModelCache } from "./navigationModelCache";
 import type {
   FileRef, FileSnapshot, FsEntry, PersistedTab, PersistedWorkspaceSession,
-  SearchResult, TrashItem, WorkspaceRoot,
+  SearchResult, TextReplaceUpdate, TextSearchMatch, TextSearchOverlay, TrashItem, WorkspaceRoot,
 } from "./types";
 import { isRefWithin, joinRef, refKey } from "./types";
 import {
@@ -111,7 +118,8 @@ class CodeView {
   private editor!: MonacoEditor.IStandaloneCodeEditor;
   private diffEditor!: MonacoEditor.IStandaloneDiffEditor;
   private gitView: GitView | null = null;
-  private activeSidebar: "explorer" | "git" = "explorer";
+  private searchView: SearchView | null = null;
+  private activeSidebar: CodeSidebar = "explorer";
   private splitGitDiff = true;
   private leadingWhitespaceIndicators = true;
   private modelReferences = new Map<MonacoEditor.ITextModel, number>();
@@ -126,6 +134,7 @@ class CodeView {
   private codeChatOpen = false;
   private codeChatSurface: MountedChatSurface | null = null;
   private restoredTreeScrollTop = 0;
+  private explorerRevealGeneration = 0;
   private lastSequence = 0;
   private pollTimer = 0;
   private commands: Command[] = [];
@@ -134,18 +143,40 @@ class CodeView {
   private workspaceSwitching = false;
   private mediaTheme = window.matchMedia("(prefers-color-scheme: dark)");
   private openTarget: FileRef | null;
+  private completionTarget: ChatCompletionTarget | null;
+  private lsp: EchoLSPClient | null = null;
+  private lspProfiles: LSPProfile[] = [];
+  private lspState: LSPDocumentState = "none";
+  private lspStatus: LSPStatus | undefined;
+  private readonly navigationModels = new NavigationModelCache<MonacoEditor.ITextModel>(6);
+  private editorOpener: { dispose(): void } | null = null;
 
   constructor(root: HTMLElement) {
     this.root = root;
     this.activeSidebar = codeSidebarFromHash(window.location.hash);
     this.openTarget = codeOpenTargetFromHash(window.location.hash);
+    this.completionTarget = chatCompletionTargetFromHash(window.location.hash);
+    if (this.completionTarget?.surface !== "code") this.completionTarget = null;
   }
 
   async start(): Promise<void> {
     try {
       const data = await api("/api/workspaces", { method: "GET" }) as { workspaces: Workspace[]; activeId: string };
+      if (this.abort.signal.aborted) return;
       this.workspaces = data.workspaces || [];
-      this.workspace = data.workspaces.find((workspace) => workspace.id === data.activeId) || null;
+      const targetWorkspace = this.completionTarget
+        ? data.workspaces.find((workspace) => workspace.id === this.completionTarget!.workspaceId)
+        : null;
+      if (this.completionTarget && !targetWorkspace) {
+        toast("The workspace for that completed chat is no longer available.", { sticky: true });
+        this.completionTarget = null;
+        window.history.replaceState(window.history.state, "", codeRouteHash(this.activeSidebar));
+      }
+      if (targetWorkspace && targetWorkspace.id !== data.activeId) {
+        await api("/api/workspaces/active", { method: "PUT", body: { id: targetWorkspace.id } });
+        window.dispatchEvent(new CustomEvent("echo:workspace-changed", { detail: { workspaceId: targetWorkspace.id } }));
+      }
+      this.workspace = targetWorkspace || data.workspaces.find((workspace) => workspace.id === data.activeId) || null;
       this.renderShell();
       this.installNavigation();
       installMenuDismissal(this.abort.signal);
@@ -153,36 +184,65 @@ class CodeView {
         this.showNoWorkspace();
         return;
       }
-      const [roots, settingsData] = await Promise.all([
+      const [roots, settingsData, lspData] = await Promise.all([
         editorAPI.getRoots(this.workspace.id),
         api("/api/settings", { method: "GET" }).catch(() => null) as Promise<{ settings?: { disableGitSplitDiffView?: boolean; hideLeadingWhitespaceIndicators?: boolean } } | null>,
+        editorAPI.getWorkspaceLSPConfig(this.workspace.id).catch(() => ({ config: {}, profiles: [], statuses: [] } as WorkspaceLSPResponse)),
       ]);
+      if (this.abort.signal.aborted) return;
       this.roots = roots;
       this.splitGitDiff = settingsData?.settings?.disableGitSplitDiffView !== true;
       this.leadingWhitespaceIndicators = settingsData?.settings?.hideLeadingWhitespaceIndicators !== true;
+      this.lspProfiles = lspData.profiles || [];
       this.initializeEditor();
+      this.lsp = new EchoLSPClient({
+        workspaceId: this.workspace.id,
+        initial: lspData,
+        prepareWorkspaceEdit: (edit) => this.prepareLSPWorkspaceEdit(edit),
+        applyWorkspaceEdit: (edit) => this.applyLSPWorkspaceEdit(edit),
+        isURIAllowed: (uri) => Boolean(this.refForFileURI(uri)),
+        prepareURI: (uri) => this.prepareLSPURI(uri),
+        onDocumentState: (state, status) => {
+          this.lspState = state;
+          this.lspStatus = status;
+          this.renderStatus();
+        },
+        onMessage: (message, sticky) => toast(message, { sticky }),
+      });
       this.initializeTree();
       this.registerCommands();
       this.installEvents();
       this.initializeGitView();
+      this.initializeSearchView();
       await this.restoreWorkspace();
+      if (this.abort.signal.aborted) return;
       if (this.roots.length) {
         await Promise.all(this.roots.map((root) => this.ensureRoot(root)));
       }
+      if (this.abort.signal.aborted) return;
       await this.restoreTreeExpansion();
+      if (this.abort.signal.aborted) return;
       this.renderTree();
-      requestAnimationFrame(() => { this.treeScroller.scrollTop = this.restoredTreeScrollTop; });
+      requestAnimationFrame(() => {
+        if (!this.abort.signal.aborted) this.treeScroller.scrollTop = this.restoredTreeScrollTop;
+      });
       if (this.openTarget) {
         const target = this.openTarget;
         this.openTarget = null;
         await this.openFile(target, true, false);
+        if (this.abort.signal.aborted) return;
         await this.expandTo(target);
+        if (this.abort.signal.aborted) return;
         window.history.replaceState(window.history.state, "", codeRouteHash("explorer"));
       }
       this.renderTabs();
       this.updateEditorSurface();
       this.subscribeFilesystem();
+      if (this.completionTarget) {
+        this.setCodeChatOpen(true);
+      }
     } catch (error) {
+      if (this.abort.signal.aborted) return;
       console.error("code view startup failed", error);
       this.showFatal(error);
     }
@@ -190,10 +250,18 @@ class CodeView {
 
   private renderShell(): void {
     const workspaceName = this.workspace?.name || "No workspace";
+    const workspaceIconUrl = this.workspace?.iconExt
+      ? `/api/workspaces/${encodeURIComponent(this.workspace.id)}/icon`
+      : undefined;
     const explorerActive = this.activeSidebar === "explorer";
     this.root.innerHTML = `
       <div class="code-app-shell" style="--explorer-width:${this.explorerWidth}px;--code-chat-width:${this.codeChatWidth}px">
-        ${renderPrimaryNav({ active: explorerActive ? "explorer" : "git", workspaceName })}
+        ${renderPrimaryNav({
+          active: this.activeSidebar,
+          workspaceName,
+          workspaceSelector: true,
+          workspaceIconUrl,
+        })}
         <section class="code-workbench">
           <div class="code-sidebar-backdrop" data-mobile-sidebar-backdrop aria-hidden="true"></div>
           <div class="code-sidebar">
@@ -212,7 +280,8 @@ class CodeView {
               <div class="code-tree-canvas" data-tree-canvas></div>
             </div>
           </aside>
-          <aside class="code-git-view" aria-label="Source Control" data-sidebar-view="git"${explorerActive ? " hidden" : ""}></aside>
+          <aside class="code-search-view" aria-label="Search" data-sidebar-view="search"${this.activeSidebar === "search" ? "" : " hidden"}></aside>
+          <aside class="code-git-view" aria-label="Source Control" data-sidebar-view="git"${this.activeSidebar === "git" ? "" : " hidden"}></aside>
           </div>
           <div class="code-explorer-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Explorer" tabindex="0"></div>
           <main class="code-editor-column">
@@ -241,8 +310,8 @@ class CodeView {
                   <div class="code-diff-unavailable" data-diff-unavailable hidden></div>
                 </section>
                 <footer class="code-statusbar" data-statusbar>
-                  <div><button type="button" class="code-mobile-explorer" data-mobile-explorer aria-label="Toggle Explorer" aria-expanded="false"><span class="codicon codicon-${explorerActive ? "files" : "source-control"}"></span></button><button type="button" data-status="branch" disabled><span class="codicon codicon-source-control"></span></button></div>
-                  <div class="code-status-right"><span data-status="cursor">Ln 1, Col 1</span><span>Spaces: 2</span><span>UTF-8</span><span data-status="eol">LF</span><span data-status="language">Plain Text</span></div>
+                  <div><button type="button" class="code-mobile-explorer" data-mobile-explorer aria-label="Toggle Sidebar" aria-expanded="false"><span class="codicon codicon-${this.sidebarIcon(this.activeSidebar)}"></span></button></div>
+                  <div class="code-status-right"><button type="button" data-status="lsp" hidden>LSP</button><span data-status="cursor">Ln 1, Col 1</span><span>Spaces: 2</span><span>UTF-8</span><span data-status="eol">LF</span><span data-status="language">Plain Text</span></div>
                 </footer>
               </div>
               <div class="code-chat-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Code Chat" aria-valuemin="300" aria-valuemax="640" tabindex="0" hidden></div>
@@ -252,7 +321,7 @@ class CodeView {
           </main>
         </section>
         <div data-region="terminal"></div>
-        ${renderMobilePrimaryNav({ active: explorerActive ? "explorer" : "git", workspaceName, workspaceSelector: true })}
+        ${renderMobilePrimaryNav({ active: this.activeSidebar, workspaceName, workspaceSelector: true })}
       </div>
     `;
     mountTerminalDock(this.root.querySelector<HTMLElement>("[data-region=terminal]"), this.workspace);
@@ -267,7 +336,10 @@ class CodeView {
       button.addEventListener("click", () => { location.hash = "#/settings"; }, { signal });
     });
     this.root.querySelectorAll<HTMLElement>("[data-code-sidebar]").forEach((button) => {
-      button.addEventListener("click", () => this.setSidebar(button.dataset.codeSidebar === "git" ? "git" : "explorer"), { signal });
+      button.addEventListener("click", () => {
+        const view = button.dataset.codeSidebar;
+        this.setSidebar(view === "git" || view === "search" ? view : "explorer");
+      }, { signal });
     });
     this.root.querySelectorAll("[data-nav=workspace]:not(.workspace-dropdown-trigger)").forEach((button) => {
       button.addEventListener("click", () => { location.hash = "#/home"; }, { signal });
@@ -307,7 +379,23 @@ class CodeView {
     void this.gitView.start();
   }
 
-  private setSidebar(view: "explorer" | "git"): void {
+  private initializeSearchView(): void {
+    if (!this.workspace) return;
+    const host = this.root.querySelector<HTMLElement>("[data-sidebar-view=search]");
+    if (!host) return;
+    this.searchView = new SearchView(host, {
+      workspaceId: this.workspace.id,
+      signal: this.abort.signal,
+      getOverlays: () => this.searchOverlays(),
+      openResult: (ref, match, pin) => this.openSearchResult(ref, match, pin),
+      confirmReplace: (details) => this.confirmSearchReplace(details),
+      applyUpdates: (updates) => this.applySearchUpdates(updates),
+      focusEditor: () => this.focusActiveEditor(),
+    });
+    if (this.activeSidebar === "search") this.searchView.open();
+  }
+
+  private setSidebar(view: CodeSidebar): void {
     this.activeSidebar = view;
     this.root.querySelectorAll<HTMLElement>("[data-sidebar-view]").forEach((element) => { element.hidden = element.dataset.sidebarView !== view; });
     this.root.querySelectorAll<HTMLElement>("[data-code-sidebar]").forEach((button) => {
@@ -319,11 +407,119 @@ class CodeView {
       }
     });
     const mobile = this.root.querySelector<HTMLElement>("[data-mobile-explorer] .codicon");
-    if (mobile) mobile.className = `codicon codicon-${view === "git" ? "source-control" : "files"}`;
+    if (mobile) mobile.className = `codicon codicon-${this.sidebarIcon(view)}`;
     if (routePathFromHash(window.location.hash) === CODE_ROUTE) {
       window.history.replaceState(window.history.state, "", codeRouteHash(view));
     }
     if (window.innerWidth <= 720) this.setMobileExplorer(true);
+    if (view === "search") this.searchView?.open();
+  }
+
+  private sidebarIcon(view: CodeSidebar): string {
+    if (view === "git") return "source-control";
+    if (view === "search") return "search";
+    return "files";
+  }
+
+  private searchOverlays(): TextSearchOverlay[] {
+    const overlays: TextSearchOverlay[] = [];
+    const seen = new Set<string>();
+    for (const tab of this.tabs) {
+      const ref = this.worktreeRef(tab);
+      if (!ref || !tab.dirty) continue;
+      const key = refKey(ref);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      overlays.push({ ref, revision: tab.revision, content: tab.model.getValue(), hasBom: tab.hasBom });
+    }
+    return overlays;
+  }
+
+  private async openSearchResult(ref: FileRef, match: TextSearchMatch, pin: boolean): Promise<void> {
+    await this.openFile(ref, pin);
+    const tab = this.tabs.find((candidate) => {
+      const candidateRef = this.worktreeRef(candidate);
+      return candidateRef && refKey(candidateRef) === refKey(ref);
+    });
+    if (!tab) return;
+    this.activateTab(tab.id, false);
+    const target = tab.kind === "diff" ? this.diffEditor.getModifiedEditor() : this.editor;
+    target.setSelection({
+      startLineNumber: match.line, startColumn: match.column,
+      endLineNumber: match.endLine, endColumn: match.endColumn,
+    });
+    target.revealRangeInCenter({
+      startLineNumber: match.line, startColumn: match.column,
+      endLineNumber: match.endLine, endColumn: match.endColumn,
+    });
+    target.focus();
+  }
+
+  private async confirmSearchReplace(details: {
+    scope: "match" | "file" | "all";
+    matches: number;
+    files: number;
+    dirtyFiles: number;
+  }): Promise<boolean> {
+    const dirty = details.dirtyFiles
+      ? ` ${details.dirtyFiles} affected file${details.dirtyFiles === 1 ? " has" : "s have"} unsaved edits; those complete buffers will be saved.`
+      : "";
+    const choice = await choiceDialog({
+      title: details.scope === "all" ? "Replace all workspace results?" : "Save unsaved edits and replace?",
+      message: `Replace ${details.matches.toLocaleString()} result${details.matches === 1 ? "" : "s"} in ${details.files.toLocaleString()} file${details.files === 1 ? "" : "s"}.${dirty}`,
+      choices: [
+        { id: "cancel", label: "Cancel" },
+        { id: "replace", label: details.scope === "all" ? "Replace All" : "Replace", danger: true, primary: true },
+      ],
+    });
+    return choice === "replace";
+  }
+
+  private async applySearchUpdates(updates: TextReplaceUpdate[]): Promise<void> {
+    if (!this.workspace) return;
+    for (const update of updates) {
+      const tabs = this.tabs.filter((candidate) => {
+        const candidateRef = this.worktreeRef(candidate);
+        return candidateRef && refKey(candidateRef) === refKey(update.ref);
+      });
+      if (!tabs.length) continue;
+      let snapshot: FileSnapshot;
+      if (update.content !== undefined) {
+        snapshot = {
+          ref: update.ref, hostPath: tabs[0].hostPath, content: update.content,
+          revision: update.revision, size: update.size, modifiedAt: update.modifiedAt,
+          encoding: "utf-8", eol: update.eol, hasBom: update.hasBom,
+        };
+      } else {
+        snapshot = await editorAPI.readFile(this.workspace.id, update.ref);
+      }
+      const models = new Set<MonacoEditor.ITextModel>();
+      for (const tab of tabs) {
+        if (models.has(tab.model)) continue;
+        models.add(tab.model);
+        this.applyDiskSnapshot(tab, snapshot);
+      }
+    }
+    this.renderTabs();
+    this.schedulePersist();
+  }
+
+  private focusActiveEditor(): void {
+    const tab = this.activeTab();
+    if (tab?.kind === "diff") this.diffEditor.getModifiedEditor().focus();
+    else this.editor?.focus();
+  }
+
+  private showWorkspaceSearch(replace = false): void {
+    let seed = "";
+    const tab = this.activeTab();
+    const editor = tab?.kind === "diff" ? this.diffEditor.getModifiedEditor() : this.editor;
+    const selection = editor?.getSelection();
+    if (selection && selection.startLineNumber === selection.endLineNumber && !selection.isEmpty()) {
+      seed = editor.getModel()?.getValueInRange(selection) || "";
+    }
+    this.setSidebar("search");
+    this.searchView?.open({ replace, seed });
   }
 
   private async switchWorkspace(workspaceId: string): Promise<void> {
@@ -399,6 +595,16 @@ class CodeView {
       padding: { top: 4, bottom: 4 },
       scrollBeyondLastLine: false,
       fixedOverflowWidgets: true,
+      gotoLocation: {
+        multipleDefinitions: "peek",
+        multipleTypeDefinitions: "peek",
+        multipleDeclarations: "peek",
+        multipleImplementations: "peek",
+        multipleReferences: "peek",
+        alternativeDefinitionCommand: "editor.action.referenceSearch.trigger",
+        alternativeTypeDefinitionCommand: "editor.action.referenceSearch.trigger",
+        alternativeDeclarationCommand: "editor.action.referenceSearch.trigger",
+      },
     });
     this.editor.onDidChangeCursorPosition(() => this.renderStatus());
     this.editor.onDidScrollChange(() => this.schedulePersist());
@@ -424,10 +630,23 @@ class CodeView {
       scrollBeyondLastLine: false,
       fixedOverflowWidgets: true,
       padding: { top: 4, bottom: 4 },
+      gotoLocation: {
+        multipleDefinitions: "peek",
+        multipleTypeDefinitions: "peek",
+        multipleDeclarations: "peek",
+        multipleImplementations: "peek",
+        multipleReferences: "peek",
+        alternativeDefinitionCommand: "editor.action.referenceSearch.trigger",
+        alternativeTypeDefinitionCommand: "editor.action.referenceSearch.trigger",
+        alternativeDeclarationCommand: "editor.action.referenceSearch.trigger",
+      },
     });
     this.diffEditor.getModifiedEditor().onDidChangeCursorPosition(() => this.renderStatus());
     this.diffEditor.getModifiedEditor().onDidScrollChange(() => this.schedulePersist());
     this.updateDiffLayoutState();
+    this.editorOpener = monaco.editor.registerEditorOpener({
+      openCodeEditor: (_source, resource, selectionOrPosition) => this.openNavigationTarget(resource, selectionOrPosition),
+    });
     this.mediaTheme.addEventListener("change", () => monaco.editor.setTheme(this.mediaTheme.matches ? "vs-dark" : "vs"), { signal: this.abort.signal });
   }
 
@@ -588,10 +807,24 @@ class CodeView {
   }
 
   private createModel(snapshot: FileSnapshot, id: string): OpenTab {
-    const uri = this.modelURI(snapshot.ref);
+    const uri = this.modelURI(snapshot.ref, snapshot.hostPath);
     const shared = this.tabs.find((candidate) => candidate.kind === "diff" && candidate.diff?.editable && candidate.diff.fileRef && refKey(candidate.diff.fileRef) === refKey(snapshot.ref));
-    const reusable = shared?.model || monaco.editor.getModel(uri);
-    const model = reusable || monaco.editor.createModel(snapshot.content, languageForPath(snapshot.ref.path), uri);
+    let prepared = this.navigationModels.take(uri.toString());
+    if (!prepared) {
+      const equivalent = this.navigationModels.entries().find(([cachedURI]) => {
+        const cachedRef = this.refForFileURI(cachedURI);
+        return cachedRef && refKey(cachedRef) === refKey(snapshot.ref);
+      });
+      if (equivalent) prepared = this.navigationModels.take(equivalent[0]);
+    }
+    const reusable = shared?.model || prepared || monaco.editor.getModel(uri);
+    if (prepared && prepared !== reusable) prepared.dispose();
+    const model = reusable || monaco.editor.createModel(snapshot.content, languageForPath(snapshot.ref.path, this.lspProfiles), uri);
+    if (prepared === model && !shared) {
+      if (model.getValue() !== snapshot.content) model.setValue(snapshot.content);
+      model.setEOL(snapshot.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+    }
+    this.lsp?.trackModel(model);
     this.retainModel(model);
     if (!reusable) model.setEOL(snapshot.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
     const tab: OpenTab = {
@@ -607,11 +840,155 @@ class CodeView {
     return tab;
   }
 
-  private modelURI(ref: FileRef): MonacoUri {
-    return monaco.Uri.from({
-      scheme: "echo-workspace", authority: this.workspace?.id || "workspace",
-      path: `/${encodeURIComponent(ref.rootId)}/${ref.path.split("/").map(encodeURIComponent).join("/")}`,
+  private modelURI(ref: FileRef, hostPath?: string): MonacoUri {
+    if (hostPath) return monaco.Uri.file(hostPath);
+    const root = this.roots.find((candidate) => candidate.id === ref.rootId);
+    if (!root) throw new Error(`Workspace root ${ref.rootId} is unavailable`);
+    const separator = root.hostPath.includes("\\") ? "\\" : "/";
+    const joined = ref.path
+      ? `${root.hostPath.replace(/[\\/]$/, "")}${separator}${ref.path.replaceAll("/", separator)}`
+      : root.hostPath;
+    return monaco.Uri.file(joined);
+  }
+
+  private refForFileURI(uri: string): FileRef | null {
+    let hostPath: string;
+    try {
+      const parsed = monaco.Uri.parse(uri);
+      if (parsed.scheme !== "file") return null;
+      hostPath = parsed.fsPath;
+    } catch {
+      return null;
+    }
+    const normalizedTarget = hostPath.replaceAll("\\", "/").replace(/\/$/, "");
+    const roots = [...this.roots].sort((left, right) => right.hostPath.length - left.hostPath.length);
+    for (const root of roots) {
+      const normalizedRoot = root.hostPath.replaceAll("\\", "/").replace(/\/$/, "");
+      const caseInsensitive = /^[a-z]:/i.test(normalizedRoot) || root.hostPath.includes("\\");
+      const target = caseInsensitive ? normalizedTarget.toLowerCase() : normalizedTarget;
+      const base = caseInsensitive ? normalizedRoot.toLowerCase() : normalizedRoot;
+      if (target !== base && !target.startsWith(`${base}/`)) continue;
+      const path = normalizedTarget.slice(normalizedRoot.length).replace(/^\//, "");
+      return { rootId: root.id, path };
+    }
+    return null;
+  }
+
+  private async prepareLSPURI(uri: string): Promise<boolean> {
+    const ref = this.refForFileURI(uri);
+    if (!ref || !ref.path) return false;
+    let resource: MonacoUri;
+    try {
+      resource = monaco.Uri.parse(uri);
+    } catch {
+      return false;
+    }
+    const key = resource.toString();
+    const ready = await this.navigationModels.ensure(
+      key,
+      () => monaco.editor.getModel(resource),
+      async () => {
+        if (!this.workspace || this.abort.signal.aborted) return null;
+        try {
+          const snapshot = await editorAPI.readFile(this.workspace.id, ref);
+          if (this.abort.signal.aborted) return null;
+          const existing = monaco.editor.getModel(resource);
+          if (existing) return existing;
+          const model = monaco.editor.createModel(snapshot.content, languageForPath(ref.path, this.lspProfiles), resource);
+          model.setEOL(snapshot.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+          return model;
+        } catch {
+          return null;
+        }
+      },
+    );
+    if (ready && this.navigationModels.has(key)) this.sendFilesystemSubscription();
+    return ready;
+  }
+
+  private async openNavigationTarget(resource: MonacoUri, selectionOrPosition?: MonacoRange | MonacoPosition): Promise<boolean> {
+    const ref = this.refForFileURI(resource.toString());
+    if (!ref || !ref.path) return false;
+    if (!(await this.prepareLSPURI(resource.toString()))) return false;
+    await this.openFile(ref, false, false);
+    const tab = this.tabs.find((candidate) => {
+      const candidateRef = this.worktreeRef(candidate);
+      return candidateRef && refKey(candidateRef) === refKey(ref);
     });
+    if (!tab) return false;
+    this.activateTab(tab.id, false);
+    const editor = this.activeCodeEditor();
+    if (!editor) return false;
+    if (selectionOrPosition) {
+      if ("endLineNumber" in selectionOrPosition) {
+        editor.setSelection(selectionOrPosition);
+        editor.revealRangeInCenter(selectionOrPosition);
+      } else {
+        editor.setPosition(selectionOrPosition);
+        editor.revealPositionInCenter(selectionOrPosition);
+      }
+    }
+    editor.focus();
+    return true;
+  }
+
+  private async openLSPWorkspaceEditURI(uri: string): Promise<boolean> {
+    const ref = this.refForFileURI(uri);
+    if (!ref || !ref.path) return false;
+    const previous = this.activeTabId;
+    await this.openFile(ref, true, false);
+    if (previous && this.tabs.some((tab) => tab.id === previous)) this.activateTab(previous, false);
+    return this.tabs.some((tab) => {
+      const candidate = this.worktreeRef(tab);
+      return candidate && refKey(candidate) === refKey(ref);
+    });
+  }
+
+  private async prepareLSPWorkspaceEdit(edit: LSPWorkspaceEdit): Promise<MonacoLanguages.WorkspaceEdit> {
+    const pending: Array<{ uri: string; version?: number | null; edits: Array<{ range: { start: { line: number; character: number }; end: { line: number; character: number } }; newText: string }> }> = [];
+    for (const [uri, edits] of Object.entries(edit.changes || {})) pending.push({ uri, edits });
+    for (const change of edit.documentChanges || []) {
+      if ("kind" in change) throw new Error(`Language-server resource operation "${change.kind}" is not supported by Echo yet`);
+      pending.push({ uri: change.textDocument.uri, version: change.textDocument.version, edits: change.edits });
+    }
+    for (const item of pending) {
+      if (!this.refForFileURI(item.uri)) throw new Error(`Language server tried to edit a file outside this workspace: ${item.uri}`);
+      if (!(await this.openLSPWorkspaceEditURI(item.uri))) throw new Error(`Could not open language-server edit target: ${item.uri}`);
+    }
+    const workspaceEdits: MonacoLanguages.IWorkspaceTextEdit[] = [];
+    for (const item of pending) {
+      const resource = monaco.Uri.parse(item.uri);
+      const model = monaco.editor.getModel(resource);
+      if (!model) throw new Error(`Language-server edit target is unavailable: ${item.uri}`);
+      if (typeof item.version === "number" && item.version !== model.getVersionId()) {
+        throw new Error(`Language-server edit for ${resource.fsPath} is stale (expected version ${item.version}, current version ${model.getVersionId()})`);
+      }
+      for (const textEdit of item.edits) {
+        workspaceEdits.push({
+          resource,
+          versionId: model.getVersionId(),
+          textEdit: { range: fromLSPRange(textEdit.range), text: textEdit.newText },
+        });
+      }
+    }
+    return { edits: workspaceEdits };
+  }
+
+  private async applyLSPWorkspaceEdit(edit: LSPWorkspaceEdit): Promise<boolean> {
+    const prepared = await this.prepareLSPWorkspaceEdit(edit);
+    const grouped = new Map<MonacoEditor.ITextModel, MonacoEditor.IIdentifiedSingleEditOperation[]>();
+    for (const workspaceEdit of prepared.edits) {
+      if (!("textEdit" in workspaceEdit)) throw new Error("Language-server resource operations are not supported by Echo yet");
+      const model = monaco.editor.getModel(workspaceEdit.resource);
+      if (!model || (workspaceEdit.versionId !== undefined && workspaceEdit.versionId !== model.getVersionId())) {
+        throw new Error(`Language-server edit for ${workspaceEdit.resource.fsPath} became stale before it could be applied`);
+      }
+      const edits = grouped.get(model) || [];
+      edits.push({ range: workspaceEdit.textEdit.range, text: workspaceEdit.textEdit.text, forceMoveMarkers: true });
+      grouped.set(model, edits);
+    }
+    for (const [model, edits] of grouped) model.pushEditOperations([], edits, () => null);
+    return true;
   }
 
   private retainModel(model: MonacoEditor.ITextModel): void {
@@ -751,7 +1128,7 @@ class CodeView {
       const document = await loadGitDiff(this.workspace.id, repository.id, {
         scope, path: change.path, oldPath: change.oldPath, ref: reviewRef,
       });
-      const language = languageForPath(document.path);
+      const language = languageForPath(document.path, this.lspProfiles);
       const originalURI = monaco.Uri.from({
         scheme: "echo-git", authority: repository.id,
         path: `/${encodeURIComponent(scope)}/${encodeURIComponent(reviewRef || String(document.revision))}/${(document.oldPath || document.path).split("/").map(encodeURIComponent).join("/")}`,
@@ -780,6 +1157,7 @@ class CodeView {
         if (!reusable) modifiedModel.setEOL(document.modified.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
       }
       this.retainModel(modifiedModel);
+      this.lsp?.trackModel(modifiedModel);
       const qualifier = scope === "unstaged" ? "Working Tree" : scope === "staged" ? "Index" : scope === "stash" ? "Stash" : shortGitRef(reviewRef || "Commit");
       const tab: OpenTab = {
         kind: "diff", id: identity, ref: null, title: `${document.path.split("/").pop() || document.path} (${qualifier})`,
@@ -824,7 +1202,7 @@ class CodeView {
     pin: boolean,
     reason: string,
   ): void {
-    const language = languageForPath(change.path);
+    const language = languageForPath(change.path, this.lspProfiles);
     const originalModel = monaco.editor.createModel("", language, monaco.Uri.from({ scheme: "echo-git-missing", authority: repository.id, path: `/${randomUUID()}/original` }));
     const modifiedModel = monaco.editor.createModel("", language, monaco.Uri.from({ scheme: "echo-git-missing", authority: repository.id, path: `/${randomUUID()}/modified` }));
     this.retainModel(originalModel);
@@ -894,9 +1272,11 @@ class CodeView {
       if (next.viewState) this.editor.restoreViewState(next.viewState);
       if (focusEditor) this.editor.focus();
     }
+    this.lsp?.activateModel(next.model);
     this.updateEditorSurface();
     this.renderBreadcrumbs();
     this.renderStatus();
+    this.revealTabInExplorer(next);
     this.schedulePersist();
   }
 
@@ -950,9 +1330,21 @@ class CodeView {
     const cursor = this.root.querySelector<HTMLElement>("[data-status=cursor]");
     const eol = this.root.querySelector<HTMLElement>("[data-status=eol]");
     const language = this.root.querySelector<HTMLElement>("[data-status=language]");
+    const lsp = this.root.querySelector<HTMLButtonElement>("[data-status=lsp]");
     if (cursor) cursor.textContent = position ? `Ln ${position.lineNumber}, Col ${position.column}` : "Ln 1, Col 1";
     if (eol) eol.textContent = tab?.model.getEOL() === "\r\n" ? "CRLF" : "LF";
     if (language) language.textContent = tab ? monaco.languages.getLanguages().find((item) => item.id === tab.model.getLanguageId())?.aliases?.[0] || tab.model.getLanguageId() : "Plain Text";
+    if (lsp) {
+      const name = this.lspStatus?.name || this.lspStatus?.profileId || "LSP";
+      lsp.hidden = this.lspState === "none";
+      lsp.textContent = this.lspState === "owned" ? `${name} ✓`
+        : this.lspState === "denied" ? `${name}: Take Over`
+          : this.lspState === "failed" ? `${name}: Failed`
+            : this.lspState === "connecting" ? `${name}: Connecting`
+              : `${name}: Starting`;
+      lsp.dataset.lspState = this.lspState;
+      lsp.title = [this.lspStatus?.message, this.lspStatus?.stderr].filter(Boolean).join("\n\n") || "Language server status";
+    }
   }
 
   private updateEditorSurface(): void {
@@ -1053,6 +1445,7 @@ class CodeView {
       else {
         this.editor.setModel(null);
         this.diffEditor.setModel(null);
+        this.lsp?.activateModel(null);
         this.updateEditorSurface();
         this.renderBreadcrumbs();
       }
@@ -1099,6 +1492,7 @@ class CodeView {
       });
       if (choice !== "recreate") return false;
       try {
+        await this.lsp?.formatBeforeSave(tab.model);
         const parentPath = tab.ref.path.includes("/") ? tab.ref.path.slice(0, tab.ref.path.lastIndexOf("/")) : "";
         const result = await editorAPI.createEntry(this.workspace.id, {
           parent: { rootId: tab.ref.rootId, path: parentPath }, name: tab.title, kind: "file",
@@ -1106,6 +1500,7 @@ class CodeView {
         });
         if (result.file) this.applySavedSnapshot(tab, result.file);
         tab.deleted = false;
+        this.lsp?.didSave(tab.model);
         return true;
       } catch (error) {
         toast(error instanceof Error ? error.message : String(error));
@@ -1113,10 +1508,12 @@ class CodeView {
       }
     }
     try {
+      await this.lsp?.formatBeforeSave(tab.model);
       const snapshot = await editorAPI.saveFile(this.workspace.id, {
         ref: tab.ref, content: tab.model.getValue(), expectedRevision: tab.revision, hasBom: tab.hasBom,
       });
       this.applySavedSnapshot(tab, snapshot);
+      this.lsp?.didSave(tab.model);
       toast(`Saved ${tab.title}`);
       return true;
     } catch (error) {
@@ -1136,6 +1533,7 @@ class CodeView {
     }
     const ref = tab.diff.fileRef;
     try {
+      await this.lsp?.formatBeforeSave(tab.model);
       let snapshot: FileSnapshot;
       if (tab.deleted) {
         const parentPath = ref.path.includes("/") ? ref.path.slice(0, ref.path.lastIndexOf("/")) : "";
@@ -1151,6 +1549,7 @@ class CodeView {
         });
       }
       this.applySavedSnapshot(tab, snapshot);
+      this.lsp?.didSave(tab.model);
       toast(`Saved ${ref.path.split("/").pop() || ref.path}`);
       return true;
     } catch (error) {
@@ -1215,6 +1614,7 @@ class CodeView {
           ref: tab.ref, content: tab.model.getValue(), expectedRevision: disk.revision, hasBom: tab.hasBom,
         });
         this.applySavedSnapshot(tab, snapshot);
+        this.lsp?.didSave(tab.model);
         return true;
       } catch (error) {
         const next = error as APIError;
@@ -1331,15 +1731,16 @@ class CodeView {
 
   private adoptFile(tab: OpenTab, snapshot: FileSnapshot): void {
     const content = tab.model.getValue();
-    const language = languageForPath(snapshot.ref.path);
+    const language = languageForPath(snapshot.ref.path, this.lspProfiles);
     const viewState = tab.id === this.activeTabId ? this.editor.saveViewState() : tab.viewState;
     tab.changeDisposable.dispose();
     this.releaseModel(tab.model);
     tab.ref = snapshot.ref;
     tab.title = snapshot.ref.path.split("/").pop() || snapshot.ref.path;
     tab.hostPath = snapshot.hostPath;
-    tab.model = monaco.editor.createModel(content, language, this.modelURI(snapshot.ref));
+    tab.model = monaco.editor.createModel(content, language, this.modelURI(snapshot.ref, snapshot.hostPath));
     this.retainModel(tab.model);
+    this.lsp?.trackModel(tab.model);
     tab.changeDisposable = tab.model.onDidChangeContent(() => {
       if (tab.applying) return;
       tab.dirty = true;
@@ -1349,8 +1750,10 @@ class CodeView {
     });
     tab.viewState = viewState;
     this.applySavedSnapshot(tab, snapshot);
+    this.lsp?.didSave(tab.model);
     if (tab.id === this.activeTabId) {
       this.editor.setModel(tab.model);
+      this.lsp?.activateModel(tab.model);
       if (viewState) this.editor.restoreViewState(viewState);
     }
     this.renderBreadcrumbs();
@@ -1420,15 +1823,16 @@ class CodeView {
       const suffix = tab.ref.path.slice(previous.path.length).replace(/^\//, "");
       const nextRef = { rootId: next.rootId, path: suffix ? `${next.path}/${suffix}` : next.path };
       const content = tab.model.getValue();
-      const language = languageForPath(nextRef.path);
+      const language = languageForPath(nextRef.path, this.lspProfiles);
       const viewState = tab.id === this.activeTabId ? this.editor.saveViewState() : tab.viewState;
       tab.changeDisposable.dispose();
       this.releaseModel(tab.model);
       tab.ref = nextRef;
       tab.title = nextRef.path.split("/").pop() || nextRef.path;
       tab.hostPath = tab.hostPath.startsWith(previousHost) ? nextHost + tab.hostPath.slice(previousHost.length) : nextHost;
-      tab.model = monaco.editor.createModel(content, language, this.modelURI(nextRef));
+      tab.model = monaco.editor.createModel(content, language, this.modelURI(nextRef, tab.hostPath));
       this.retainModel(tab.model);
+      this.lsp?.trackModel(tab.model);
       tab.changeDisposable = tab.model.onDidChangeContent(() => {
         if (tab.applying) return;
         tab.dirty = true;
@@ -1439,6 +1843,7 @@ class CodeView {
       tab.viewState = viewState;
       if (tab.id === this.activeTabId) {
         this.editor.setModel(tab.model);
+        this.lsp?.activateModel(tab.model);
         if (viewState) this.editor.restoreViewState(viewState);
       }
     }
@@ -1578,6 +1983,24 @@ class CodeView {
     }
   }
 
+  private revealTabInExplorer(tab: OpenTab): void {
+    const ref = this.worktreeRef(tab);
+    const generation = ++this.explorerRevealGeneration;
+    if (!ref) return;
+    void this.expandTo(ref, false).then(() => {
+      if (this.abort.signal.aborted || generation !== this.explorerRevealGeneration || this.activeTabId !== tab.id) return;
+      const node = this.nodes.get(refKey(ref));
+      if (!node || node.kind !== "file") return;
+      if (this.selectedTreeKey !== node.key) {
+        this.selectedTreeKey = node.key;
+        this.renderTree();
+      }
+      const index = this.flatTree.findIndex((candidate) => candidate.key === node.key);
+      if (index >= 0) this.treeVirtualizer.scrollToIndex(index, { align: "auto" });
+      this.schedulePersist();
+    });
+  }
+
   private showTreeMenu(event: MouseEvent, node: TreeNode): void {
     this.selectedTreeKey = node.key;
     this.renderTreeRows();
@@ -1702,6 +2125,8 @@ class CodeView {
       { id: "file.new", label: "File: New Untitled File", keybinding: "Ctrl+N", run: () => this.newUntitled() },
       { id: "file.quickOpen", label: "Go to File…", keybinding: "Ctrl+P", run: () => this.showQuickOpen() },
       { id: "view.commandPalette", label: "View: Show Command Palette", keybinding: "Ctrl+Shift+P", run: () => this.showCommandPalette() },
+      { id: "search.findInFiles", label: "Search: Find in Files", keybinding: "Ctrl+Shift+F", run: () => this.showWorkspaceSearch() },
+      { id: "search.replaceInFiles", label: "Search: Replace in Files", keybinding: "Ctrl+Shift+H", run: () => this.showWorkspaceSearch(true) },
       { id: "file.close", label: "View: Close Editor", keybinding: "Ctrl+W", run: () => { const tab = this.activeTab(); if (tab) return this.closeTab(tab); } },
       { id: "explorer.refresh", label: "Explorer: Refresh", run: () => this.refreshExplorer() },
       { id: "explorer.newFile", label: "Explorer: New File", run: () => this.createUnderSelection("file") },
@@ -1710,6 +2135,20 @@ class CodeView {
       { id: "editor.find", label: "Editor: Find", keybinding: "Ctrl+F", run: () => this.editor.trigger("echo", "actions.find", null) },
       { id: "editor.replace", label: "Editor: Replace", keybinding: "Ctrl+H", run: () => this.editor.trigger("echo", "editor.action.startFindReplaceAction", null) },
       { id: "editor.gotoLine", label: "Go to Line/Column…", keybinding: "Ctrl+G", run: () => this.editor.trigger("echo", "editor.action.gotoLine", null) },
+      { id: "editor.rename", label: "Editor: Rename Symbol", keybinding: "F2", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.rename", null) },
+      { id: "editor.hover", label: "Editor: Show Hover", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.showHover", {}) },
+      { id: "editor.goToDefinition", label: "Go to Definition", keybinding: "F12", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.revealDefinition", null) },
+      { id: "editor.peekDefinition", label: "Peek Definition", keybinding: "Alt+F12", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.peekDefinition", null) },
+      { id: "editor.goToDeclaration", label: "Go to Declaration", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.revealDeclaration", null) },
+      { id: "editor.peekDeclaration", label: "Peek Declaration", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.peekDeclaration", null) },
+      { id: "editor.goToTypeDefinition", label: "Go to Type Definition", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.goToTypeDefinition", null) },
+      { id: "editor.peekTypeDefinition", label: "Peek Type Definition", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.peekTypeDefinition", null) },
+      { id: "editor.goToImplementation", label: "Go to Implementations", keybinding: "Ctrl+F12", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.goToImplementation", null) },
+      { id: "editor.peekImplementation", label: "Peek Implementations", keybinding: "Ctrl+Shift+F12", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.peekImplementation", null) },
+      { id: "editor.peekReferences", label: "Peek References", keybinding: "Shift+F12", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.referenceSearch.trigger", null) },
+      { id: "editor.format", label: "Editor: Format Document", keybinding: "Shift+Alt+F", run: () => this.formatActiveDocument(false) },
+      { id: "editor.formatSelection", label: "Editor: Format Selection", keybinding: "Ctrl+K Ctrl+F", run: () => this.formatActiveDocument(true) },
+      { id: "editor.workspaceSymbols", label: "Go to Symbol in Workspace…", keybinding: "Ctrl+Shift+O", run: () => this.showWorkspaceSymbols() },
       { id: "editor.undo", label: "Editor: Undo", keybinding: "Ctrl+Z", run: () => this.editor.trigger("echo", "undo", null) },
       { id: "editor.redo", label: "Editor: Redo", keybinding: "Ctrl+Shift+Z", run: () => this.editor.trigger("echo", "redo", null) },
       { id: "editor.cursorBelow", label: "Editor: Add Cursor Below", keybinding: "Ctrl+Alt+Down", run: () => this.editor.trigger("echo", "editor.action.insertCursorBelow", null) },
@@ -1717,6 +2156,27 @@ class CodeView {
       { id: "editor.unfold", label: "Editor: Unfold", run: () => this.editor.trigger("echo", "editor.unfold", null) },
       { id: "editor.bracket", label: "Editor: Go to Bracket", run: () => this.editor.trigger("echo", "editor.action.jumpToBracket", null) },
     ];
+  }
+
+  private activeCodeEditor(): MonacoEditor.ICodeEditor | null {
+    const tab = this.activeTab();
+    return tab?.kind === "diff" ? this.diffEditor?.getModifiedEditor() || null : this.editor || null;
+  }
+
+  private async formatActiveDocument(selectionOnly: boolean): Promise<void> {
+    const editor = this.activeCodeEditor();
+    const model = editor?.getModel();
+    if (!editor || !model || !this.lsp) return;
+    const selection = editor.getSelection();
+    if (selectionOnly && (!selection || selection.isEmpty())) {
+      toast("Select text before formatting a selection.");
+      return;
+    }
+    try {
+      await this.lsp.format(model, selectionOnly ? selection! : undefined);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), { sticky: true });
+    }
   }
 
   private async saveAsActive(): Promise<void> {
@@ -1736,7 +2196,7 @@ class CodeView {
   }
 
   private newUntitledFrom(content: string, title: string, id: string = randomUUID()): OpenTab {
-    const model = monaco.editor.createModel(content, languageForPath(title), monaco.Uri.from({ scheme: "untitled", authority: this.workspace?.id || "workspace", path: `/${id}` }));
+    const model = monaco.editor.createModel(content, languageForPath(title, this.lspProfiles), monaco.Uri.from({ scheme: "untitled", authority: this.workspace?.id || "workspace", path: `/${id}` }));
     this.retainModel(model);
     const tab: OpenTab = {
       kind: "file", id, ref: null, title, hostPath: "", pinned: true, dirty: true,
@@ -1889,6 +2349,17 @@ class CodeView {
     this.root.querySelector("[data-tree-action=new-folder]")?.addEventListener("click", () => void this.createUnderSelection("directory"), { signal });
     this.root.querySelector("[data-tree-action=refresh]")?.addEventListener("click", () => void this.refreshExplorer(), { signal });
     this.root.querySelector("[data-tree-action=trash]")?.addEventListener("click", () => void this.showTrash(), { signal });
+    this.root.querySelector("[data-status=lsp]")?.addEventListener("click", () => {
+      if (this.lspState === "denied") {
+        this.lsp?.takeOverActiveDocument();
+        return;
+      }
+      if (this.lspState === "failed" && this.workspace && this.lspStatus) {
+        void editorAPI.restartLanguageServer(this.workspace.id, this.lspStatus.profileId).catch((error) => toast(error instanceof Error ? error.message : String(error), { sticky: true }));
+        return;
+      }
+      location.hash = "#/settings?section=lsp";
+    }, { signal });
     this.root.querySelector("[data-mobile-explorer]")?.addEventListener("click", () => {
       const shell = this.root.querySelector<HTMLElement>(".code-app-shell");
       this.setMobileExplorer(!shell?.classList.contains("is-explorer-open"));
@@ -1973,6 +2444,64 @@ class CodeView {
     this.installCodeChatResizer();
   }
 
+  private showWorkspaceSymbols(): void {
+    if (!this.lsp) return;
+    const overlay = document.createElement("div");
+    overlay.className = "code-picker-overlay";
+    overlay.innerHTML = `<section class="code-picker" role="dialog" aria-modal="true"><div class="code-picker-input"><span class="codicon codicon-symbol-method"></span><input aria-label="Workspace Symbol Search" placeholder="Type a symbol name"></div><div class="code-picker-meta" data-picker-meta>Search symbols from running language servers</div><div class="code-picker-list" role="listbox" data-picker-list></div></section>`;
+    document.body.appendChild(overlay);
+    const input = overlay.querySelector<HTMLInputElement>("input")!;
+    const list = overlay.querySelector<HTMLElement>("[data-picker-list]")!;
+    const meta = overlay.querySelector<HTMLElement>("[data-picker-meta]")!;
+    let results: Array<{ name: string; containerName?: string; location?: { uri: string; range: { start: { line: number; character: number }; end: { line: number; character: number } } } }> = [];
+    let selected = 0;
+    let generation = 0;
+    let timer = 0;
+    const close = () => { window.clearTimeout(timer); overlay.remove(); };
+    const render = () => {
+      list.innerHTML = results.map((symbol, index) => `<button type="button" role="option" aria-selected="${index === selected}" class="${index === selected ? "is-selected" : ""}" data-symbol-index="${index}"><span class="codicon codicon-symbol-method"></span><strong>${escapeHTML(symbol.name)}</strong><span>${escapeHTML(symbol.containerName || symbol.location?.uri || "")}</span></button>`).join("");
+    };
+    const search = async () => {
+      const current = ++generation;
+      try {
+        const groups = await this.lsp!.workspaceSymbols(input.value.trim());
+        if (current !== generation || !overlay.isConnected) return;
+        results = groups.flatMap((group) => group.symbols).filter((symbol) => symbol?.location?.uri && this.refForFileURI(symbol.location.uri));
+        selected = Math.min(selected, Math.max(0, results.length - 1));
+        meta.textContent = `${results.length} symbol${results.length === 1 ? "" : "s"}`;
+        render();
+      } catch (error) {
+        if (current === generation) meta.textContent = error instanceof Error ? error.message : String(error);
+      }
+    };
+    const choose = async () => {
+      const symbol = results[selected];
+      if (!symbol?.location) return;
+      let resource: MonacoUri;
+      try {
+        resource = monaco.Uri.parse(symbol.location.uri);
+      } catch {
+        return;
+      }
+      const range = fromLSPRange(symbol.location.range);
+      if (await this.openNavigationTarget(resource, { lineNumber: range.startLineNumber, column: range.startColumn })) close();
+    };
+    input.addEventListener("input", () => { generation++; window.clearTimeout(timer); timer = window.setTimeout(search, 120); });
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) close();
+      const row = (event.target as Element).closest<HTMLElement>("[data-symbol-index]");
+      if (row) { selected = Number(row.dataset.symbolIndex); void choose(); }
+    });
+    overlay.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") close();
+      else if (event.key === "ArrowDown") { event.preventDefault(); selected = Math.min(results.length - 1, selected + 1); render(); }
+      else if (event.key === "ArrowUp") { event.preventDefault(); selected = Math.max(0, selected - 1); render(); }
+      else if (event.key === "Enter") { event.preventDefault(); void choose(); }
+    });
+    input.focus();
+    void search();
+  }
+
   private handleTreeKeyboard(event: KeyboardEvent): void {
     if ((event.target as Element).closest("[data-rename-input]")) return;
     const currentIndex = this.flatTree.findIndex((node) => node.key === this.selectedTreeKey);
@@ -2026,7 +2555,24 @@ class CodeView {
     }
     const modifier = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
-    if (modifier && event.shiftKey && key === "p") { event.preventDefault(); event.stopPropagation(); this.showCommandPalette(); }
+    const activeEditor = this.activeCodeEditor();
+    const activeTab = this.activeTab();
+    const hasMultilineSelection = activeEditor?.hasTextFocus()
+      && activeEditor.getSelections()?.some((selection) => selection.startLineNumber !== selection.endLineNumber);
+    const selectionIsEditable = activeTab?.kind === "file" || activeTab?.diff?.editable === true;
+    if (activeEditor && !modifier && !event.altKey && key === "tab" && hasMultilineSelection && selectionIsEditable) {
+      event.preventDefault();
+      event.stopPropagation();
+      activeEditor.trigger("echo", event.shiftKey ? "outdent" : "tab", null);
+    } else if (modifier && event.shiftKey && key === "f") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(); }
+    else if (modifier && event.shiftKey && key === "o") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSymbols(); }
+    else if (modifier && event.shiftKey && key === "f12" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.peekImplementation", null); }
+    else if (modifier && !event.shiftKey && key === "f12" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.goToImplementation", null); }
+    else if (!modifier && event.shiftKey && !event.altKey && key === "f12" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.referenceSearch.trigger", null); }
+    else if (!modifier && event.shiftKey && event.altKey && key === "f") { event.preventDefault(); event.stopPropagation(); void this.formatActiveDocument(false); }
+    else if (modifier && event.shiftKey && key === "h") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(true); }
+    else if (modifier && event.shiftKey && key === "j" && this.activeSidebar === "search") { event.preventDefault(); event.stopPropagation(); this.searchView?.toggleDetails(); }
+    else if (modifier && event.shiftKey && key === "p") { event.preventDefault(); event.stopPropagation(); this.showCommandPalette(); }
     else if (modifier && event.shiftKey && key === "s") { event.preventDefault(); event.stopPropagation(); void this.saveAsActive(); }
     else if (modifier && key === "p") { event.preventDefault(); event.stopPropagation(); this.showQuickOpen(); }
     else if (modifier && key === "s") { event.preventDefault(); event.stopPropagation(); void this.saveTab(); }
@@ -2041,6 +2587,12 @@ class CodeView {
     } else if (event.key === "F2" && this.treeScroller.contains(document.activeElement)) {
       const node = this.nodes.get(this.selectedTreeKey || "");
       if (node) { event.preventDefault(); void this.beginRename(node); }
+    } else if (event.key === "F2" && this.activeCodeEditor()?.hasTextFocus()) {
+      event.preventDefault();
+      this.activeCodeEditor()?.trigger("echo", "editor.action.rename", null);
+    } else if (event.key === "F4" && this.activeSidebar === "search") {
+      event.preventDefault();
+      this.searchView?.navigateResult(event.shiftKey ? -1 : 1);
     }
   }
 
@@ -2145,6 +2697,12 @@ class CodeView {
           const action = this.codeChatOpen ? "Close code assistant" : "Open code assistant";
           toggle.setAttribute("aria-label", streaming ? `${action} (response streaming)` : action);
         },
+        expectedChatId: this.completionTarget?.chatId,
+        onExpectedChatResolved: (found) => {
+          if (!found) toast("That completed Code Chat is no longer available.", { sticky: true });
+          this.completionTarget = null;
+          window.history.replaceState(window.history.state, "", codeRouteHash(this.activeSidebar));
+        },
       });
     }
     this.codeChatOpen = open;
@@ -2220,6 +2778,7 @@ class CodeView {
     if (!this.workspace) return;
     let saved: PersistedWorkspaceSession | null = null;
     try { saved = await loadSession(this.workspace.id); } catch (error) { console.warn("restore editor session", error); }
+    if (this.abort.signal.aborted) return;
     if (!saved || (saved.version !== 1 && saved.version !== 2 && saved.version !== 3)) {
       this.applyCodeChatWidth(this.codeChatWidth);
       return;
@@ -2230,7 +2789,11 @@ class CodeView {
     shell?.style.setProperty("--explorer-width", `${this.explorerWidth}px`);
     this.expanded = new Set(saved.expanded || []);
     this.selectedTreeKey = saved.selectedTreeKey || null;
-    for (const persisted of saved.tabs || []) await this.restoreTab(persisted);
+    for (const persisted of saved.tabs || []) {
+      if (this.abort.signal.aborted) return;
+      await this.restoreTab(persisted);
+    }
+    if (this.abort.signal.aborted) return;
     // restoreTab temporarily attaches models so Monaco can materialize their
     // view state. Clear that transient active marker before choosing the
     // persisted active editor, otherwise a later activation could save one
@@ -2278,6 +2841,7 @@ class CodeView {
           persisted.diff.reviewRef,
           true,
         );
+        if (this.abort.signal.aborted) return;
         const tab = this.tabs.find((candidate) => candidate.id === persisted.id);
         if (!tab) return;
         tab.pinned = persisted.pinned;
@@ -2300,6 +2864,7 @@ class CodeView {
       }
       let disk: FileSnapshot | null = null;
       try { disk = await editorAPI.readFile(this.workspace.id, persisted.ref); } catch { /* preserve dirty orphan below */ }
+      if (this.abort.signal.aborted) return;
       if (!disk && !persisted.dirty) return;
       const snapshot: FileSnapshot = disk || {
         ref: persisted.ref, hostPath: persisted.hostPath, content: persisted.content || "", revision: persisted.revision,
@@ -2319,7 +2884,7 @@ class CodeView {
       this.tabs.push(tab);
       this.captureRestoredViewState(tab, persisted);
     } catch (error) {
-      console.warn(`restore tab ${persisted.title}`, error);
+      if (!this.abort.signal.aborted) console.warn(`restore tab ${persisted.title}`, error);
     }
   }
 
@@ -2451,12 +3016,20 @@ class CodeView {
       const ref = this.worktreeRef(tab);
       if (ref) refs.set(refKey(ref), ref);
     }
+    for (const [uri] of this.navigationModels.entries()) {
+      const ref = this.refForFileURI(uri);
+      if (ref) refs.set(refKey(ref), ref);
+    }
     sendSocket({ type: "fs_subscribe", workspaceId: this.workspace.id, refs: [...refs.values()] });
   }
 
   private async applyFilesystemChanges(changes: Array<{ op: string; ref: FileRef }>): Promise<void> {
     const parents = new Map<string, FileRef>();
     for (const change of changes) {
+      this.navigationModels.invalidate((uri) => {
+        const ref = this.refForFileURI(uri);
+        return Boolean(ref && isRefWithin(ref, change.ref));
+      });
       const slash = change.ref.path.lastIndexOf("/");
       const parent = { rootId: change.ref.rootId, path: slash >= 0 ? change.ref.path.slice(0, slash) : "" };
       parents.set(refKey(parent), parent);
@@ -2478,6 +3051,8 @@ class CodeView {
     }
     this.renderTabs();
     this.schedulePersist();
+    this.searchView?.refresh();
+    this.sendFilesystemSubscription();
   }
 
   private async reloadCleanTab(tab: OpenTab): Promise<void> {
@@ -2546,9 +3121,14 @@ class CodeView {
     window.clearTimeout(this.persistTimer);
     window.clearInterval(this.pollTimer);
     closeContextMenu();
+    this.editorOpener?.dispose();
+    this.editorOpener = null;
+    this.lsp?.dispose();
+    this.lsp = null;
     this.disposeVirtualizer?.();
     for (const tab of this.tabs) this.disposeTab(tab);
     this.tabs = [];
+    this.navigationModels.dispose();
     this.editor?.dispose();
     this.diffEditor?.dispose();
   }

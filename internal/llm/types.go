@@ -171,14 +171,15 @@ type FunctionCall struct {
 }
 
 type ChatRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Tools       []Tool    `json:"tools,omitempty"`
-	ToolChoice  any       `json:"tool_choice,omitempty"`
-	Stream      bool      `json:"stream,omitempty"`
-	Temperature *float64  `json:"temperature,omitempty"`
-	TopK        *int      `json:"top_k,omitempty"`
-	TopP        *float64  `json:"top_p,omitempty"`
+	Model         string         `json:"model"`
+	Messages      []Message      `json:"messages"`
+	Tools         []Tool         `json:"tools,omitempty"`
+	ToolChoice    any            `json:"tool_choice,omitempty"`
+	Stream        bool           `json:"stream,omitempty"`
+	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
+	Temperature   *float64       `json:"temperature,omitempty"`
+	TopK          *int           `json:"top_k,omitempty"`
+	TopP          *float64       `json:"top_p,omitempty"`
 	// Temporarily removing MinP as it's not supported with MTP on vLLM
 	// MinP              *float64 `json:"min_p,omitempty"`
 	MinP               *float64            `json:"-"`
@@ -188,6 +189,10 @@ type ChatRequest struct {
 	PresencePenalty    *float64            `json:"presence_penalty,omitempty"`
 	RepetitionPenalty  *float64            `json:"repetition_penalty,omitempty"`
 	ChatTemplateKwargs *ChatTemplateKwargs `json:"chat_template_kwargs,omitempty"`
+}
+
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type ChatTemplateKwargs struct {
@@ -387,6 +392,11 @@ func appendPromptText(content string, addition string) string {
 func WithStream(stream bool) RequestOption {
 	return func(request *ChatRequest) {
 		request.Stream = stream
+		if stream {
+			request.StreamOptions = &StreamOptions{IncludeUsage: true}
+		} else {
+			request.StreamOptions = nil
+		}
 	}
 }
 

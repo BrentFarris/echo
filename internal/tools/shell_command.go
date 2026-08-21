@@ -173,7 +173,10 @@ func executeShellCommand(ctx ExecutionContext, arguments json.RawMessage) (any, 
 }
 
 func snapshotShellWorkspaceChanges(ctx ExecutionContext, workingDirectory string) workspaceSnapshot {
-	snapshotContext, cancel := context.WithTimeout(ctx.context(), shellChangeTrackingTimeout)
+	// A stopped chat may cancel the tool context immediately after the command
+	// mutated files. Keep the bounded after-snapshot alive long enough to report
+	// those real workspace changes in the terminal turn summary.
+	snapshotContext, cancel := context.WithTimeout(context.WithoutCancel(ctx.context()), shellChangeTrackingTimeout)
 	defer cancel()
 
 	snapshot, err := snapshotWorkspaceDirectoryChanges(snapshotContext, ctx, workingDirectory)

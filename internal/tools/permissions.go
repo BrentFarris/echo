@@ -35,6 +35,12 @@ func NewToolScopeChecker(permissions []ToolPermission) *ToolScopeChecker {
 	return checker
 }
 
+// NewDenyAllToolScopeChecker creates an explicit empty allowlist. It is used
+// for child agents when the parent grants no compatible read-only tools.
+func NewDenyAllToolScopeChecker() *ToolScopeChecker {
+	return &ToolScopeChecker{permissions: make(map[string]ToolPermission)}
+}
+
 func (c *ToolScopeChecker) HasTool(name string) bool {
 	if c == nil || c.allowAll {
 		return true

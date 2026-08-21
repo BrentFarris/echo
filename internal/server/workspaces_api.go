@@ -41,6 +41,10 @@ func (s *Server) handleSetActiveWorkspace(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := s.lsp.Activate(body.ID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	writeData(w, http.StatusOK, map[string]any{"activeId": body.ID})
 }
 

@@ -1,0 +1,118 @@
+{
+  "manifestVersion": 1,
+  "id": "showcase",
+  "name": "Echo Plugin Showcase",
+  "version": "1.0.0",
+  "description": "Developer reference for a page view, host settings, UI RPC, events, and an agent tool.",
+  "author": "Echo contributors",
+  "license": "MIT",
+  "echo": { "api": "^1" },
+  "permissions": [
+    {
+      "name": "network",
+      "reason": "The example discloses how a backend would connect to its configured service URL.",
+      "hosts": ["https://example.invalid"]
+    },
+    {
+      "name": "secrets",
+      "reason": "The example receives the configured API token only at the backend invocation boundary."
+    },
+    {
+      "name": "ui.notifications",
+      "reason": "The page can ask Echo to show a host-owned notification."
+    }
+  ],
+  "runtime": {
+    "protocol": "echo-jsonrpc-1",
+    "targets": {
+      "windows-amd64": { "path": "backend/windows-amd64/showcase.exe", "args": [] },
+      "linux-amd64": { "path": "backend/linux-amd64/showcase", "args": [] },
+      "darwin-amd64": { "path": "backend/darwin-amd64/showcase", "args": [] },
+      "darwin-arm64": { "path": "backend/darwin-arm64/showcase", "args": [] }
+    }
+  },
+  "contributes": {
+    "views": [
+      {
+        "id": "dashboard",
+        "kind": "page",
+        "title": "Plugin Showcase",
+        "icon": "assets/icon.svg",
+        "entry": "ui/dashboard/index.html",
+        "defaultSize": { "width": 960, "height": 680 },
+        "minimumSize": { "width": 420, "height": 320 }
+      }
+    ],
+    "tools": [
+      {
+        "name": "showcase_echo",
+        "description": "Echo a message through the developer showcase backend and report its effective scope.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "message": { "type": "string", "minLength": 1, "maxLength": 500 }
+          },
+          "required": ["message"],
+          "additionalProperties": false
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "message": { "type": "string" },
+            "scope": { "type": "string" },
+            "displayName": { "type": "string" },
+            "secretConfigured": { "type": "boolean" }
+          },
+          "required": ["message", "scope", "displayName", "secretConfigured"],
+          "additionalProperties": false
+        },
+        "method": "tools.echo",
+        "timeoutSeconds": 20,
+        "readOnly": true
+      }
+    ],
+    "settings": [
+      {
+        "key": "service-url",
+        "type": "url",
+        "scope": "global",
+        "label": "Service URL",
+        "help": "Demonstrates a validated global URL setting.",
+        "default": "https://example.invalid"
+      },
+      {
+        "key": "api-token",
+        "type": "secret",
+        "scope": "global",
+        "label": "API token",
+        "help": "Stored in the OS credential store, an environment reference, or memory for this session.",
+        "environment": "SHOWCASE_API_TOKEN"
+      },
+      {
+        "key": "display-name",
+        "type": "string",
+        "scope": "workspace",
+        "label": "Workspace display name",
+        "help": "Demonstrates workspace configuration overriding global defaults.",
+        "pattern": "^.{1,80}$",
+        "default": "Echo developer"
+      },
+      {
+        "key": "accent",
+        "type": "select",
+        "scope": "workspace",
+        "label": "Example accent",
+        "default": "blue",
+        "options": [
+          { "value": "blue", "label": "Blue" },
+          { "value": "violet", "label": "Violet" },
+          { "value": "green", "label": "Green" }
+        ]
+      }
+    ],
+    "rpc": [
+      { "method": "showcase.ping", "timeoutSeconds": 15 },
+      { "method": "showcase.emit", "timeoutSeconds": 15 }
+    ]
+  }
+}

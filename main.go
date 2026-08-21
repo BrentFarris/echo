@@ -24,18 +24,19 @@ func main() {
 	webDir := flag.String("web", "", "serve SPA assets from this directory instead of the embedded production build")
 	dataPath := flag.String("data", "", "path to Echo's application-data JSON (defaults to the platform config directory)")
 	resetAuth := flag.Bool("reset-auth", false, "clear the owner password and remembered sessions")
+	safeMode := flag.Bool("safe-mode", false, "start with all optional plugins disabled")
 	flag.Parse()
 
 	addr := fmt.Sprintf(":%d", *port)
 	var srv *server.Server
 	if *webDir != "" {
-		srv = server.NewWithSettingsPath(addr, *webDir, *dataPath)
+		srv = server.NewWithSettingsPathOptions(addr, *webDir, *dataPath, server.ServerOptions{SafeMode: *safeMode})
 	} else {
 		assets, err := fs.Sub(embeddedWeb, "web/dist")
 		if err != nil {
 			log.Fatalf("load embedded frontend: %v", err)
 		}
-		srv = server.NewWithAssets(addr, assets, *dataPath)
+		srv = server.NewWithAssetsOptions(addr, assets, *dataPath, server.ServerOptions{SafeMode: *safeMode})
 	}
 	if *resetAuth {
 		code, err := srv.ResetAuthentication()
@@ -67,6 +68,8 @@ func main() {
 		log.Printf("received signal %v, shutting down", sig)
 	case <-srv.RestartRequested():
 		log.Printf("rebuilt Echo is ready; shutting down for relaunch")
+	case <-srv.TerminationRequested():
+		log.Printf("termination requested from development settings; shutting down")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

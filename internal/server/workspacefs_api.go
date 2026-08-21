@@ -202,10 +202,43 @@ func (s *Server) handleFSSearch(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, result)
 }
 
+func (s *Server) handleFSTextSearch(w http.ResponseWriter, r *http.Request) {
+	var body workspacefs.TextSearchRequest
+	if err := decodeLimitedJSON(w, r, &body, workspacefs.MaxEditableBytes*6+(1<<20)); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	result, err := s.fs.SearchText(r.Context(), r.PathValue("id"), body)
+	if err != nil {
+		writeWorkspaceFSError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, result)
+}
+
+func (s *Server) handleFSTextReplace(w http.ResponseWriter, r *http.Request) {
+	var body workspacefs.TextReplaceRequest
+	if err := decodeLimitedJSON(w, r, &body, workspacefs.MaxEditableBytes*6+(1<<20)); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	result, err := s.fs.ReplaceText(r.Context(), r.PathValue("id"), body)
+	if err != nil {
+		var partial *workspacefs.PartialReplaceError
+		if errors.As(err, &partial) {
+			writeCodedError(w, http.StatusInternalServerError, "replace_partial", "replacement completed only partially", partial.Response)
+			return
+		}
+		writeWorkspaceFSError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, result)
+}
+
 func writeWorkspaceFSError(w http.ResponseWriter, err error) {
 	var fsError *workspacefs.Error
 	if !errors.As(err, &fsError) {
-		writeCodedError(w, http.StatusInternalServerError, "filesystem_error", "filesystem operation failed", nil)
+		writeCodedError(w, http.StatusInternalServerError, "filesystem_error", err.Error(), nil)
 		return
 	}
 	status := http.StatusBadRequest
@@ -215,6 +248,8 @@ func writeWorkspaceFSError(w http.ResponseWriter, err error) {
 	case "path_outside_workspace", "root_mutation_forbidden":
 		status = http.StatusForbidden
 	case "revision_conflict", "already_exists", "restore_collision":
+		status = http.StatusConflict
+	case "search_conflict":
 		status = http.StatusConflict
 	case "file_too_large":
 		status = http.StatusRequestEntityTooLarge

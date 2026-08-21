@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/brent/echo/internal/echoupdate"
 )
 
 func echoSource(t *testing.T) string {
@@ -130,6 +132,85 @@ func TestBuildFailureDoesNotPrepareLauncher(t *testing.T) {
 	}
 }
 
+func TestUpdateAndPreparePullsMasterBeforeSharedBuild(t *testing.T) {
+	source := echoSource(t)
+	type call struct {
+		name string
+		args []string
+	}
+	var calls []call
+	coordinator := NewCoordinator()
+	coordinator.run = func(_ context.Context, _ string, output io.Writer, name string, args ...string) error {
+		calls = append(calls, call{name: name, args: append([]string(nil), args...)})
+		if name == "git" && args[0] == "branch" {
+			_, _ = io.WriteString(output, "master\n")
+		}
+		return nil
+	}
+	coordinator.launch = func(launchSpec, string) error { return nil }
+
+	if _, err := coordinator.UpdateAndPrepare(context.Background(), Request{SourceDir: source, DataDir: t.TempDir()}); err != nil {
+		t.Fatalf("UpdateAndPrepare: %v", err)
+	}
+	if len(calls) != 4 {
+		t.Fatalf("commands = %#v", calls)
+	}
+	if calls[0].name != "git" || strings.Join(calls[0].args, " ") != "branch --show-current" {
+		t.Fatalf("branch command = %#v", calls[0])
+	}
+	wantPull := "pull --ff-only " + echoupdate.RepositoryURL + " " + echoupdate.MasterBranch
+	if calls[1].name != "git" || strings.Join(calls[1].args, " ") != wantPull {
+		t.Fatalf("pull command = %#v", calls[1])
+	}
+	if calls[2].args[0] != "run" || calls[3].name != "go" {
+		t.Fatalf("build commands = %#v", calls[2:])
+	}
+}
+
+func TestUpdateRequiresCheckedOutMasterWithoutPullingOrBuilding(t *testing.T) {
+	coordinator := NewCoordinator()
+	var calls int
+	coordinator.run = func(_ context.Context, _ string, output io.Writer, _ string, _ ...string) error {
+		calls++
+		_, _ = io.WriteString(output, "feature\n")
+		return nil
+	}
+	launched := false
+	coordinator.launch = func(launchSpec, string) error { launched = true; return nil }
+
+	_, err := coordinator.UpdateAndPrepare(context.Background(), Request{SourceDir: echoSource(t), DataDir: t.TempDir()})
+	if !errors.Is(err, ErrMasterNotCheckedOut) {
+		t.Fatalf("error = %v", err)
+	}
+	if calls != 1 || launched {
+		t.Fatalf("calls = %d, launched = %v", calls, launched)
+	}
+}
+
+func TestUpdatePullFailureDoesNotBuildOrPrepareLauncher(t *testing.T) {
+	coordinator := NewCoordinator()
+	var calls int
+	coordinator.run = func(_ context.Context, _ string, output io.Writer, _ string, args ...string) error {
+		calls++
+		if args[0] == "branch" {
+			_, _ = io.WriteString(output, "master\n")
+			return nil
+		}
+		return errors.New("local edits would be overwritten")
+	}
+	launched := false
+	coordinator.launch = func(launchSpec, string) error { launched = true; return nil }
+
+	_, err := coordinator.UpdateAndPrepare(context.Background(), Request{SourceDir: echoSource(t), DataDir: t.TempDir()})
+	var buildErr *BuildError
+	if !errors.As(err, &buildErr) || buildErr.Stage != "git pull" {
+		t.Fatalf("error = %v", err)
+	}
+	if calls != 2 || launched {
+		t.Fatalf("calls = %d, launched = %v", calls, launched)
+	}
+}
+
 func TestConcurrentBuildIsRejected(t *testing.T) {
 	coordinator := NewCoordinator()
 	started := make(chan struct{})
@@ -146,6 +227,9 @@ func TestConcurrentBuildIsRejected(t *testing.T) {
 	<-started
 	if _, err := coordinator.BuildAndPrepare(context.Background(), request); !errors.Is(err, ErrInProgress) {
 		t.Fatalf("concurrent error = %v", err)
+	}
+	if _, err := coordinator.UpdateAndPrepare(context.Background(), request); !errors.Is(err, ErrInProgress) {
+		t.Fatalf("concurrent update error = %v", err)
 	}
 	close(release)
 	if err := <-done; err != nil {

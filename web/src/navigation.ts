@@ -2,8 +2,13 @@ export const CHAT_ROUTE = "/home";
 export const SETTINGS_ROUTE = "/settings";
 export const CODE_ROUTE = "/code";
 
-export type CodeSidebar = "explorer" | "git";
+export type CodeSidebar = "explorer" | "search" | "git";
 export type CodeOpenTarget = { rootId: string; path: string };
+export type ChatCompletionTarget = {
+  workspaceId: string;
+  chatId: string;
+  surface: "chat" | "code";
+};
 
 /** Returns the routable path while leaving hash query parameters to the view. */
 export function routePathFromHash(hash: string): string {
@@ -16,12 +21,13 @@ export function codeSidebarFromHash(hash: string): CodeSidebar {
   if (routePathFromHash(hash) !== CODE_ROUTE) return "explorer";
   const queryIndex = hash.indexOf("?");
   if (queryIndex < 0) return "explorer";
-  return new URLSearchParams(hash.slice(queryIndex + 1)).get("sidebar") === "git" ? "git" : "explorer";
+  const sidebar = new URLSearchParams(hash.slice(queryIndex + 1)).get("sidebar");
+  return sidebar === "git" || sidebar === "search" ? sidebar : "explorer";
 }
 
 /** Builds the canonical hash for an Echo Code sidebar. */
 export function codeRouteHash(sidebar: CodeSidebar): string {
-  return `#${CODE_ROUTE}${sidebar === "git" ? "?sidebar=git" : ""}`;
+  return `#${CODE_ROUTE}${sidebar === "explorer" ? "" : `?sidebar=${sidebar}`}`;
 }
 
 /** Builds a transient Echo Code route that opens a specific workspace file. */
@@ -39,6 +45,27 @@ export function codeOpenTargetFromHash(hash: string): CodeOpenTarget | null {
   const rootId = query.get("rootId") || "";
   const path = query.get("path") || "";
   return rootId && path ? { rootId, path } : null;
+}
+
+/** Builds a transient route that focuses the chat named by a completion event. */
+export function chatCompletionRouteHash(target: ChatCompletionTarget): string {
+  const query = new URLSearchParams({ workspaceId: target.workspaceId, chatId: target.chatId });
+  if (target.surface === "code") query.set("chat", "open");
+  return `#${target.surface === "code" ? CODE_ROUTE : CHAT_ROUTE}?${query}`;
+}
+
+/** Returns the completion target embedded in a Chat or Code hash, if present. */
+export function chatCompletionTargetFromHash(hash: string): ChatCompletionTarget | null {
+  const route = routePathFromHash(hash);
+  if (route !== CHAT_ROUTE && route !== CODE_ROUTE) return null;
+  const queryIndex = hash.indexOf("?");
+  if (queryIndex < 0) return null;
+  const query = new URLSearchParams(hash.slice(queryIndex + 1));
+  const workspaceId = query.get("workspaceId") || "";
+  const chatId = query.get("chatId") || "";
+  if (!workspaceId || !chatId) return null;
+  if (route === CODE_ROUTE && query.get("chat") !== "open") return null;
+  return { workspaceId, chatId, surface: route === CODE_ROUTE ? "code" : "chat" };
 }
 
 /**

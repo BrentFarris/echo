@@ -104,7 +104,7 @@ type comfyuiOutput struct {
 	OutputImages  []string `json:"outputImages,omitempty"`
 	StatusMessage string   `json:"statusMessage"`
 	// Unique identifier for the generated image, usable by save_image tool.
-	ImageID       string   `json:"imageId,omitempty"`
+	ImageID string `json:"imageId,omitempty"`
 	// Image data for inline rendering (not serialized to JSON except imageID)
 	Name        string
 	MediaType   string

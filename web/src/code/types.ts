@@ -50,6 +50,76 @@ export type SearchResult = {
   score: number;
 };
 
+export type TextSearchOverlay = {
+  ref: FileRef;
+  revision: string;
+  content: string;
+  hasBom: boolean;
+};
+
+export type TextSearchRequest = {
+  query: string;
+  replacement: string;
+  regex: boolean;
+  caseSensitive: boolean;
+  wholeWord: boolean;
+  include: string[];
+  exclude: string[];
+  overlays: TextSearchOverlay[];
+};
+
+export type TextSearchMatch = {
+  id: string;
+  line: number;
+  column: number;
+  endLine: number;
+  endColumn: number;
+  preview: string;
+  previewMatchStart: number;
+  previewMatchEnd: number;
+  match: string;
+  replacementPreview: string;
+};
+
+export type TextSearchFileResult = {
+  ref: FileRef;
+  name: string;
+  referencePath: string;
+  revision: string;
+  contentRevision: string;
+  overlay: boolean;
+  matches: TextSearchMatch[];
+};
+
+export type TextSearchResponse = {
+  files: TextSearchFileResult[];
+  matchCount: number;
+  filesSearched: number;
+  filesSkipped: number;
+  indexing: boolean;
+  indexed: number;
+  truncated: boolean;
+};
+
+export type TextReplaceTarget = {
+  ref: FileRef;
+  revision: string;
+  contentRevision: string;
+  matchIds?: string[];
+};
+
+export type TextReplaceUpdate = {
+  ref: FileRef;
+  revision: string;
+  size: number;
+  modifiedAt: string;
+  eol: "lf" | "crlf";
+  hasBom: boolean;
+  content?: string;
+};
+
+export type TextReplaceResponse = { updated: TextReplaceUpdate[] };
+
 export type PersistedTab = {
   kind?: "file" | "diff" | "media";
   id: string;

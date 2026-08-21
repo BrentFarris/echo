@@ -166,7 +166,7 @@ func TestSkillCandidatesEnrichPromptWithoutBodyOrCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prompt := s.agentModeSystemMessage(workspace, mode, "Improve workspace file search").Content
+	prompt := s.agentModeSystemMessage(workspace, mode, "Improve workspace file search", false).Content
 	for _, expected := range []string{"file-database", "Cached workspace file search behavior.", "workspace_skill_read", "Recording a new skill is optional"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("prompt missing %q: %s", expected, prompt)
@@ -187,7 +187,7 @@ func TestPlanModeCanReadSkillsButCannotRecordThem(t *testing.T) {
 	if !modeAllowsTool(mode, "workspace_skill_search") || !modeAllowsTool(mode, "workspace_skill_read") || modeAllowsTool(mode, "workspace_skill_record") {
 		t.Fatalf("unexpected plan skill permissions: %#v", mode.Permissions)
 	}
-	prompt := s.agentModeSystemMessage(workspace, mode, "Plan workspace changes").Content
+	prompt := s.agentModeSystemMessage(workspace, mode, "Plan workspace changes", false).Content
 	if strings.Contains(prompt, "workspace_skill_record") || strings.Contains(prompt, "must complete") {
 		t.Fatalf("plan prompt enabled skill recording: %s", prompt)
 	}

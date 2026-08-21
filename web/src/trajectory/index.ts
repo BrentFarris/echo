@@ -43,7 +43,9 @@ const semanticTypes = new Set([
   "legacy/import", "turn/start", "turn/end", "user/message", "request/start",
   "assistant/message", "tool/call", "tool/result", "transcript/delete",
   "transcript/edit", "transcript/rewind", "auxiliary/request", "auxiliary/result",
-  "context/injection", "persistence/error",
+  "context/injection", "context/compression_queued", "context/compression_start",
+  "context/compression_complete", "context/compression_skipped", "context/compression_error",
+  "persistence/error",
 ]);
 
 const viewScroll = new Map<string, number>();
@@ -330,6 +332,11 @@ export class TrajectoryView {
     else if (event.type === "auxiliary/request") { title = "Auxiliary model request"; summary = text(data.operation); }
     else if (event.type === "auxiliary/result") { title = "Auxiliary model result"; summary = text(data.operation); }
     else if (event.type === "context/injection") { title = `Context · ${text(data.source)}`; summary = "Injected into the model request"; }
+    else if (event.type === "context/compression_queued") { title = "Context compression queued"; summary = `${text(data.trigger) || "automatic"} · ${text(data.phase) || "boundary"}`; }
+    else if (event.type === "context/compression_start") { title = "Context compression started"; summary = `${text(data.model)} · ${text(data.thresholdPercent)}% threshold`; }
+    else if (event.type === "context/compression_complete") { title = "Context compressed"; summary = `${text(data.beforeTokens)} → ${text(data.afterTokens)} tokens · history recovery available`; }
+    else if (event.type === "context/compression_skipped") { title = "Context compression skipped"; summary = text(data.error) || "Nothing safe to compress"; }
+    else if (event.type === "context/compression_error") { title = "Context compression failed"; summary = text(data.error); }
     else if (event.type === "persistence/error") { title = "Persistence error"; summary = text(data.error); }
     else if (event.type.startsWith("transcript/")) { title = event.type.replace("transcript/", "Transcript "); summary = text(data.role); }
     const duration = numberValue(data.durationMs);
@@ -486,6 +493,11 @@ function formatDuration(milliseconds: number): string {
 }
 
 function matchingOperationEvent(event: TrajectoryEvent, events: readonly TrajectoryEvent[], type: string): TrajectoryEvent | undefined {
+  if (event.type.startsWith("context/compression")) {
+    const compressionId = event.data?.compressionId;
+    if (typeof compressionId !== "string" || !compressionId) return undefined;
+    return events.find((candidate) => candidate.type === type && candidate.data?.compressionId === compressionId);
+  }
   if (event.type.startsWith("tool/")) {
     const callId = event.data?.callId;
     const callOrder = event.data?.callOrder;
@@ -517,14 +529,24 @@ function inspectorValue(event: TrajectoryEvent, tab: string, events: readonly Tr
   const resultEvent = event.type === "tool/call"
     ? matchingOperationEvent(event, events, "tool/result")
     : event.type === "tool/result" ? event : undefined;
+  const compressionStartEvent = ["context/compression_complete", "context/compression_skipped", "context/compression_error"].includes(event.type)
+    ? matchingOperationEvent(event, events, "context/compression_start")
+    : event.type === "context/compression_start" ? event : undefined;
+  const compressionResultEvent = event.type === "context/compression_start"
+    ? matchingOperationEvent(event, events, "context/compression_complete")
+      || matchingOperationEvent(event, events, "context/compression_skipped")
+      || matchingOperationEvent(event, events, "context/compression_error")
+    : ["context/compression_complete", "context/compression_skipped", "context/compression_error"].includes(event.type) ? event : undefined;
   if (tab === "payload") {
     if (requestEvent) return requestEvent.data?.request;
     if (callEvent) return { arguments: callEvent.data?.arguments, planQuestions: callEvent.data?.planQuestions };
+    if (compressionStartEvent) return compressionStartEvent.data;
     if (event.type === "assistant/chunk") return data.streamEvents || data.streamEvent;
     return data;
   }
   if (tab === "result") {
     if (resultEvent) return resultEvent.data?.result;
+    if (compressionResultEvent) return compressionResultEvent.data;
     if (assistantEvent) {
       const assistant = assistantEvent.data || {};
       return { content: assistant.content, reasoning: assistant.reasoning, toolCalls: assistant.toolCalls, finishReason: assistant.finishReason, usage: assistant.usage };
@@ -533,7 +555,7 @@ function inspectorValue(event: TrajectoryEvent, tab: string, events: readonly Tr
   }
   if (tab === "schema") return requestEvent ? (requestEvent.data?.request as Record<string, unknown>)?.tools : null;
   if (tab === "timing") {
-    const timing = { ...(requestEvent?.data || callEvent?.data || {}), ...(assistantEvent?.data || resultEvent?.data || data) };
+    const timing = { ...(requestEvent?.data || callEvent?.data || compressionStartEvent?.data || {}), ...(assistantEvent?.data || resultEvent?.data || compressionResultEvent?.data || data) };
     return Object.fromEntries(Object.entries(timing).filter(([key]) => /(?:At|Ms|usage|duration|ttft)/i.test(key)));
   }
   return event;

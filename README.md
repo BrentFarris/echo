@@ -32,10 +32,11 @@ Connect Echo to a local or remote provider that exposes an OpenAI-compatible `/c
 | --- | --- |
 | **Chat** | Persistent workspace conversations, multiple chat tabs, per-chat model and agent-mode selection, streamed Markdown, reasoning, tool activity, stop and clear controls, skill creation, and an inspectable Trajectory event stream |
 | **Agent modes** | Built-in General and read-only Plan modes plus workspace-defined system instructions, tool allowlists, and path restrictions |
-| **Code** | Monaco editing, file tabs, workspace trees, quick open, text and file search, create/rename/save operations, external-change detection, recoverable trash, and browser hot-exit buffers |
+| **Code** | Monaco editing, generic opt-in LSP support, file tabs, workspace trees, quick open, text and file search, create/rename/save operations, external-change detection, recoverable trash, and browser hot-exit buffers |
 | **Git** | Repository discovery, working-tree status, staged and unstaged diffs, staging, commits, branches, remotes, fetch/pull/push/sync, history, tags, and stashes |
 | **Terminal** | Workspace-aware PTY sessions powered by xterm.js, resize, restart, stop, and reusable saved commands |
 | **Agent tools** | Workspace-scoped file inspection and editing, shell commands, text and file search, image/video reads, web fetch/search, image generation, and reusable workspace skills |
+| **Plugins** | Reviewed local/GitHub packages with sandboxed page or floating views, optional native JSON-RPC tools, typed settings, secret references, immutable snapshots, and chat-driven authoring |
 | **Connections** | Multiple OpenAI-compatible LLM endpoints, custom HTTP headers, interaction routing, optional SearXNG research, and optional ComfyUI image generation |
 | **Access** | Owner-password authentication, remembered browser sessions, session revocation, WebSocket updates, and desktop/mobile browser layouts |
 
@@ -45,13 +46,37 @@ Echo gives the selected model tools for the active workspace rather than unrestr
 
 Reusable skills live in `.echo/skills/` inside a workspace. Echo can search and read them during a chat, record new skills through tool calls, or synthesize a skill from the current conversation.
 
+Echo also ships the read-only `builtin/echo-plugins` skill. You can ask Chat to scaffold, implement, validate, and stage an optional plugin; Echo then presents a trusted owner approval card before any generated or downloaded code can run. See the [Plugin API v1 guide](docs/plugins/README.md).
+
 ### Editor, Git, and terminal in one place
 
 ![Echo Code and Source Control](docs/screenshots/echo-code-git.png)
 
 The Code view uses Monaco for editing and reviewing diffs. Its explorer watches the filesystem for changes, keeps unsaved browser buffers recoverable, and moves deleted entries into Echo's restorable trash. The source-control view supports common repository workflows without leaving the browser, while the integrated terminal provides a full PTY on the Echo server.
 
+### Language servers
+
+Open **Settings → Language Servers** to copy the built-in `gopls`, `clangd`, or `lua-language-server` template, edit its executable, arguments, selectors, environment, initialization options, and settings, then enable it for the current workspace. Echo starts enabled servers in the workspace's main folder and does not install or download executables.
+
+Profiles are reusable and stored globally in `echo.json`; workspace enablement, replacement overrides, and formatting controls are stored in `.echo/workspace.json`. Custom servers use the same profile fields, so adding another stdio LSP server requires no Echo code changes. Commands and arguments are executed directly without shell expansion. Format on save is off by default and fails open with a three-second default timeout.
+
+When the same file is open in multiple browsers, the first active editor owns its unsaved LSP document. The other browser can use **Take Over** in the Code status bar when it intentionally needs language-server control.
+
 ## Quick start
+
+### Run from source with one click
+
+After cloning the repository or downloading and extracting its source archive, use the launcher for your operating system:
+
+| Platform | Double-click this file |
+| --- | --- |
+| Windows | `install-echo-windows.cmd` |
+| Linux | `install-echo-linux.sh` |
+| macOS | `install-echo-macos.command` |
+
+The launcher checks for Go 1.26+ and Node.js 22+ with npm. If a requirement is missing or outdated, it downloads a checksum-verified, portable copy into the ignored `.echo-tools/` directory without changing the system Go or Node.js installation. Build caches also stay in that directory. It then installs the locked frontend packages, builds the embedded web application and Echo server, and starts Echo at [http://localhost:3740](http://localhost:3740). Leave the terminal window open while using Echo. On a minimal Linux installation that lacks basic download/archive utilities, the launcher may ask for `sudo` so the system package manager can install them.
+
+On Linux, choose **Run** if the file manager asks whether to display or execute the script. Git checkouts preserve the executable bit; if an extracted archive does not, run `chmod +x install-echo-linux.sh` once. The launchers can also be run from a terminal and pass command-line options through to Echo, for example `./install-echo-linux.sh -port 8080`.
 
 ### Download a nightly build
 
@@ -93,6 +118,12 @@ The nightly binaries are not currently code-signed or notarized. Your operating 
 
 If the owner password is lost, stop Echo and restart it with `-reset-auth`. This clears the password and all remembered sessions, then prints a new setup code.
 
+### Install Echo as a desktop app
+
+With the Echo server running, open [http://localhost:3740](http://localhost:3740) in Chrome or Edge and select the **Install Echo** icon in the address bar. The installed app opens in its own window without the browser toolbar. If Windows does not pin it automatically, right-click Echo in the taskbar and choose **Pin to taskbar**.
+
+The installed icon opens the web app but does not start the Echo server. Continue to start Echo with the launcher and leave its terminal window running while you use the installed app. Browser installation is available from `localhost`, `127.0.0.1`, or an HTTPS origin; a plain HTTP LAN address is not eligible.
+
 ## Configure a model
 
 Echo appends `/chat/completions` to the endpoint URL unless it is already present. The provider must accept OpenAI-compatible chat-completion requests and, for interactive chat, streamed server-sent events and OpenAI-style tool calls.
@@ -106,7 +137,7 @@ Common local base URLs include:
 | llama.cpp server | `http://localhost:8080/v1` |
 | Remote provider | The provider's OpenAI-compatible HTTPS URL |
 
-Each endpoint profile has its own model name, generation settings, timeout, optional system-prompt appendage, and custom headers. Custom headers can carry provider-specific authentication such as `Authorization: Bearer ...`.
+Each endpoint profile has its own model name, generation settings, request timeout, stream-idle timeout, optional system-prompt appendage, and custom headers. The stream-idle watchdog resets on provider data and SSE heartbeats; set it to `-1` for providers that legitimately remain silent for longer than the configured interval. Custom headers can carry provider-specific authentication such as `Authorization: Bearer ...`.
 
 Endpoint routing lets Chat, Research, Vision, and Inline Code use different profiles. The model picker in Chat can override the routed Chat model for the next conversation turn.
 
@@ -126,6 +157,8 @@ Optional connections are configured under **Settings → External Connections**:
     Use this application-data JSON file instead of the platform config directory
 -reset-auth
     Clear the owner password and remembered sessions and issue a new setup code
+-safe-mode
+    Start with all optional plugins disabled while keeping plugin management available
 ```
 
 Echo listens on the selected port, including non-loopback interfaces. Control network access with the host firewall or a reverse proxy.
@@ -200,6 +233,7 @@ npm run test:e2e
 | **Frontend** | Frameworkless TypeScript and Vite, with Monaco for editing and diffs and xterm.js for PTY terminals |
 | **LLM** | OpenAI-compatible chat-completions client with streaming, reasoning, tool-call orchestration, model routing, and configurable headers |
 | **Workspace services** | Path-scoped filesystem operations, indexed search, file watching, recoverable trash, Git, terminals, custom agent modes, and skills |
+| **Plugin host** | Server-owned package/lifecycle manager, dynamic tool registry, supervised stdio JSON-RPC runtimes, sandboxed iframe sessions, and host-owned plugin navigation/windows |
 | **Persistence** | Atomic JSON stores for global configuration and workspace-owned state |
 
 The same SPA is served in production from the Go binary. During development, Vite serves the frontend and proxies API and WebSocket traffic to the backend.
@@ -215,6 +249,7 @@ The main folder of each workspace owns a `.echo/` directory. Current workspace f
 ├── workspace.json
 ├── chat-workspace.json
 ├── agent-modes.json
+├── plugins.json
 ├── trajectories/
 │   └── <chat-id>.jsonl
 └── skills/
@@ -226,7 +261,9 @@ stored relative to the `.echo` directory when possible (`mainPath` and the
 main `folders` entry are `../`), then resolved to absolute host paths whenever
 Echo opens the workspace or supplies paths to tools and other services.
 
-Configuration and transcript snapshots are written atomically. Trajectory logs are append-only JSONL audit streams containing the exact secret-free model requests, raw provider chunks, reasoning, tool activity, usage, and timing observed by Echo. Custom endpoint headers and credentials are never copied into trajectory records. Clearing or closing a chat deletes its trajectory; otherwise logs currently have no automatic retention limit. See [Trajectory storage and behavior](docs/trajectory.md) for the event model, APIs, legacy behavior, and current limitations.
+Machine-local plugin packages, immutable snapshots, logs, namespaced data, approvals, and non-secret global configuration live in a `plugins/` directory beside `echo.json`. Workspace `plugins.json` contains only portable public-GitHub pins, activation, non-secret configuration, and secret-source references; it never contains a local source path or secret value.
+
+Configuration and transcript snapshots are written atomically. Long-running Chat, Code Chat, vision, and research-agent loops use configurable provider-portable [context compression](docs/context-compression.md) while retaining canonical raw history. Trajectory logs are append-only JSONL audit streams containing the exact secret-free model requests, raw provider chunks, reasoning, tool activity, usage, and timing observed by Echo. Custom endpoint headers and credentials are never copied into trajectory records. Clearing or closing a chat deletes its trajectory; otherwise logs currently have no automatic retention limit. See [Trajectory storage and behavior](docs/trajectory.md) for the event model, APIs, legacy behavior, and current limitations.
 
 Deleted workspace entries are moved to a separate trash store beside the global data file so they can be restored from the Code view. Browser hot-exit state is local to that browser and is cleared when signing out.
 
@@ -240,6 +277,7 @@ Echo is a single-owner development tool, not a multi-tenant service.
 - Every authenticated device can edit workspace files, run Git operations, and execute arbitrary commands through terminals and enabled agent tools.
 - Agent modes reduce what is offered to a model, but the General mode is intentionally powerful. Use trusted models, keep work in version control, and expose only the folders Echo needs.
 - Custom endpoint headers may contain secrets and are stored in the local application-data file. Protect that file with the same care as other developer credentials.
+- Sandboxed plugin views cannot access Echo's DOM or APIs directly, but optional native plugin backends run with the Echo owner's OS permissions. Permissions are review disclosures rather than OS containment; install native plugins only from code you trust.
 
 ## Contributing
 

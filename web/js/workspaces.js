@@ -61,6 +61,7 @@ export function getActive() {
 export async function setActiveWorkspace(id) {
   await put("/api/workspaces/active", { id });
   activeId = id;
+  window.dispatchEvent(new CustomEvent("echo:workspace-changed", { detail: { workspaceId: id } }));
   return getActive();
 }
 
@@ -311,8 +312,9 @@ export function openAddWorkspaceModal({ onCreate } = {}) {
   // Folder list: add / remove.
   modal.addEventListener("click", (e) => {
     if (e.target.closest('[data-action="add-folder"]')) {
+      const index = folders.length;
       folders.push({ path: "", main: false });
-      renderFolders();
+      folderList.insertAdjacentHTML("beforeend", folderRow(index, false));
       const last = folderList.lastElementChild?.querySelector("input");
       last?.focus();
     } else if (e.target.closest('[data-action="remove-folder"]')) {

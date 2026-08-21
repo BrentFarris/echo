@@ -4,6 +4,7 @@ package rebuild
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -15,11 +16,16 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/brent/echo/internal/echoupdate"
 )
 
 const echoModule = "github.com/brent/echo"
 
-var ErrInProgress = errors.New("an Echo rebuild is already in progress")
+var (
+	ErrInProgress          = errors.New("an Echo rebuild or update is already in progress")
+	ErrMasterNotCheckedOut = errors.New("the Echo source checkout must be on master before updating")
+)
 
 // Request describes the current process and source tree that should replace it.
 type Request struct {
@@ -93,6 +99,16 @@ func IsEchoSource(dir string) bool {
 // BuildAndPrepare builds the frontend and a staged server binary, then starts
 // a detached launcher. The current process is not stopped by this method.
 func (c *Coordinator) BuildAndPrepare(ctx context.Context, request Request) (Result, error) {
+	return c.buildAndPrepare(ctx, request, false)
+}
+
+// UpdateAndPrepare fast-forwards the checked-out master branch from the
+// official Echo repository, then runs the same build and relaunch pipeline.
+func (c *Coordinator) UpdateAndPrepare(ctx context.Context, request Request) (Result, error) {
+	return c.buildAndPrepare(ctx, request, true)
+}
+
+func (c *Coordinator) buildAndPrepare(ctx context.Context, request Request, update bool) (Result, error) {
 	c.mu.Lock()
 	if c.running {
 		c.mu.Unlock()
@@ -137,8 +153,37 @@ func (c *Coordinator) BuildAndPrepare(ctx context.Context, request Request) (Res
 		return Result{}, fmt.Errorf("open rebuild log: %w", err)
 	}
 
-	logLine(logFile, "=== Echo rebuild started ===")
+	if update {
+		logLine(logFile, "=== Echo update and rebuild started ===")
+	} else {
+		logLine(logFile, "=== Echo rebuild started ===")
+	}
 	logLine(logFile, "Source: "+sourceDir)
+	if update {
+		var branch bytes.Buffer
+		if err := c.run(ctx, sourceDir, &branch, "git", "branch", "--show-current"); err != nil {
+			_ = logFile.Close()
+			return Result{}, &BuildError{Stage: "update branch check", LogPath: logPath, Err: err}
+		}
+		branchName := strings.TrimSpace(branch.String())
+		branchLabel := branchName
+		if branchLabel == "" {
+			branchLabel = "detached HEAD"
+		}
+		logLine(logFile, "Checked-out branch: "+branchLabel)
+		if branchName != echoupdate.MasterBranch {
+			_ = logFile.Close()
+			return Result{}, &BuildError{Stage: "update branch check", LogPath: logPath, Err: fmt.Errorf("%w (current branch: %s)", ErrMasterNotCheckedOut, branchLabel)}
+		}
+		logLine(logFile, "Pulling GitHub master with fast-forward-only history...")
+		pullCtx, cancelPull := context.WithTimeout(ctx, 5*time.Minute)
+		err := c.run(pullCtx, sourceDir, logFile, "git", "pull", "--ff-only", echoupdate.RepositoryURL, echoupdate.MasterBranch)
+		cancelPull()
+		if err != nil {
+			_ = logFile.Close()
+			return Result{}, &BuildError{Stage: "git pull", LogPath: logPath, Err: err}
+		}
+	}
 
 	npmName := "npm"
 	if runtime.GOOS == "windows" {
@@ -205,6 +250,7 @@ func runCommand(ctx context.Context, dir string, output io.Writer, name string, 
 	}
 	command := exec.CommandContext(ctx, commandPath, arguments...)
 	command.Dir = dir
+	command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	command.Stdout = output
 	command.Stderr = output
 	if err := command.Run(); err != nil {

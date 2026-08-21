@@ -9,6 +9,7 @@ import {
 } from "./chatMentions";
 import { getRoots, searchEntries } from "./code/editorApi";
 import type { FileRef, SearchResult, WorkspaceRoot } from "./code/types";
+import { prepareCompletionNotificationPermission } from "./completionNotifications";
 
 export type EditorContextDiff = {
   repository?: string;
@@ -39,6 +40,8 @@ export type ChatSurfaceOptions = {
   beforeSend?: () => Promise<EditorContextPayload | false | null>;
   onActivateReference?: (reference: ChatReference) => void | Promise<void>;
   onStreamingChange?: (streaming: boolean) => void;
+  expectedChatId?: string;
+  onExpectedChatResolved?: (found: boolean) => void;
 };
 
 export type MountedChatSurface = { dispose(): void; focus(): void };
@@ -302,6 +305,7 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
   const submit = async () => {
     const text = composerText(input);
     if (!text.trim() || submitting || isStreaming()) return;
+    prepareCompletionNotificationPermission();
     submitting = true;
     send.disabled = true;
     try {
@@ -375,8 +379,30 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
   }, { signal });
 
   const unsubscribeStreaming = onStreamingChange(setBusy);
-  const unsubscribeWorkspace = onChatWorkspaceChange(updateNewChatAvailability);
-  openWorkspaceSession(log, options.workspaceId, { surface });
+  let expectedChatResolved = false;
+  const unsubscribeWorkspace = onChatWorkspaceChange((workspace: {
+    hasSnapshot?: boolean;
+    workspaceId?: string;
+    surface?: string;
+    activeChatId?: string;
+  } | null) => {
+    updateNewChatAvailability();
+    if (!expectedChatResolved && options.expectedChatId && workspace?.hasSnapshot
+      && workspace.workspaceId === options.workspaceId && workspace.surface === surface) {
+      expectedChatResolved = true;
+      options.onExpectedChatResolved?.(workspace.activeChatId === options.expectedChatId);
+    }
+  });
+  openWorkspaceSession(log, options.workspaceId, {
+    surface,
+    onActivateFile: (ref: FileRef) => options.onActivateReference?.({
+      workspaceId: options.workspaceId,
+      ref,
+      kind: "file",
+      referencePath: ref.path,
+      label: ref.path.split("/").at(-1) || ref.path,
+    }),
+  });
 
   void Promise.all([
     api("/api/settings", { method: "GET" }).then((data: { settings?: { endpoints?: Endpoint[]; endpointSelection?: { chat?: string } }; endpoints?: Endpoint[]; endpointSelection?: { chat?: string } }) => {

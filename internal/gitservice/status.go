@@ -3,6 +3,12 @@ package gitservice
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"hash"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,6 +20,9 @@ type statusRecord struct {
 	kind      byte
 	path      string
 	oldPath   string
+	indexOID  string
+	indexMode string
+	workMode  string
 	index     byte
 	worktree  byte
 	submodule bool
@@ -67,7 +76,93 @@ func (s *Service) readStatus(parent context.Context, state *repositoryState) (pa
 	if err != nil {
 		return parsedStatus{}, err
 	}
+	parsed.records = clearFilterOnlyWorktreeChanges(ctx, state, parsed.records)
 	return parsed, nil
+}
+
+// A clean filter added after a file was committed can make Git report the
+// restored worktree copy as modified forever: checkout writes the raw index
+// blob, then status filters those same bytes and compares the transformed
+// result with the unfiltered blob in the index. If the raw worktree bytes
+// already hash to the index object, there is no worktree edit left to show.
+func clearFilterOnlyWorktreeChanges(ctx context.Context, state *repositoryState, records []statusRecord) []statusRecord {
+	filterPaths := pathsWithCleanFilters(ctx, state, records)
+	if len(filterPaths) == 0 {
+		return records
+	}
+	filtered := records[:0]
+	for _, record := range records {
+		if filterPaths[pathIdentity(record.path)] && record.worktree == 'M' && record.indexMode == record.workMode &&
+			!record.conflict && !record.submodule &&
+			rawFileMatchesIndexBlob(state.root, record.path, record.indexOID) {
+			record.worktree = '.'
+		}
+		if record.index == '.' && record.worktree == '.' && !record.conflict {
+			continue
+		}
+		filtered = append(filtered, record)
+	}
+	return filtered
+}
+
+func pathsWithCleanFilters(ctx context.Context, state *repositoryState, records []statusRecord) map[string]bool {
+	var input bytes.Buffer
+	for _, record := range records {
+		if record.worktree == 'M' && record.indexMode == record.workMode && !record.conflict && !record.submodule {
+			input.WriteString(record.path)
+			input.WriteByte(0)
+		}
+	}
+	if input.Len() == 0 {
+		return nil
+	}
+	output, err := runGit(ctx, state.root, input.Bytes(), true, "check-attr", "-z", "--stdin", "filter")
+	if err != nil {
+		return nil
+	}
+	fields := bytes.Split(output, []byte{0})
+	paths := make(map[string]bool)
+	for index := 0; index+2 < len(fields); index += 3 {
+		if string(fields[index+1]) != "filter" {
+			continue
+		}
+		value := string(fields[index+2])
+		if value != "" && value != "unspecified" && value != "unset" {
+			paths[pathIdentity(string(fields[index]))] = true
+		}
+	}
+	return paths
+}
+
+func rawFileMatchesIndexBlob(root, path, oid string) bool {
+	var digest hash.Hash
+	switch len(oid) {
+	case sha1.Size * 2:
+		digest = sha1.New()
+	case sha256.Size * 2:
+		digest = sha256.New()
+	default:
+		return false
+	}
+	clean, err := cleanGitPath(path)
+	if err != nil {
+		return false
+	}
+	fullPath := filepath.Join(root, filepath.FromSlash(clean))
+	info, err := os.Lstat(fullPath)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	file, err := os.Open(fullPath)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	_, _ = fmt.Fprintf(digest, "blob %d\x00", info.Size())
+	if _, err := io.Copy(digest, file); err != nil {
+		return false
+	}
+	return strings.EqualFold(hex.EncodeToString(digest.Sum(nil)), oid)
 }
 
 func buildStatusSnapshot(state *repositoryState, parsed parsedStatus) StatusSnapshot {
@@ -226,6 +321,8 @@ func parseStatusRecord(value string) (statusRecord, bool, error) {
 		}
 		record.kind, record.index, record.worktree = '1', fields[1][0], fields[1][1]
 		record.submodule = fields[2] != "N..."
+		record.indexMode, record.workMode = fields[4], fields[5]
+		record.indexOID = fields[7]
 		record.path = fields[8]
 	case '2':
 		fields := strings.SplitN(value, " ", 10)
@@ -234,6 +331,8 @@ func parseStatusRecord(value string) (statusRecord, bool, error) {
 		}
 		record.kind, record.index, record.worktree = '2', fields[1][0], fields[1][1]
 		record.submodule = fields[2] != "N..."
+		record.indexMode, record.workMode = fields[4], fields[5]
+		record.indexOID = fields[7]
 		record.path = fields[9]
 		return record, true, nil
 	case 'u':

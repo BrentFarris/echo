@@ -26,6 +26,7 @@ Echo records these semantic boundaries:
 
 - `turn/start`, `user/message`, and `turn/end`;
 - `context/injection` records identifying agent-mode, editor, and conversation-history context by source;
+- `context/compression_queued`, `context/compression_start`, `context/compression_complete`, `context/compression_skipped`, and `context/compression_error`, including the trigger, phase, endpoint/model, token metrics, duration, recovery status, and classified failure details;
 - `request/start` with the exact serialized `llm.ChatRequest` sent to the provider;
 - batched `assistant/chunk` records containing every raw provider stream event and its receive time;
 - `assistant/message` with assembled content, reasoning, tool calls, finish reason, token usage, total duration, and time to first token;
@@ -33,7 +34,7 @@ Echo records these semantic boundaries:
 - transcript rewind, edit, and delete mutations;
 - auxiliary skill-synthesis model requests and results.
 
-The request type does not contain endpoint credentials or custom HTTP headers, so those values never enter the trajectory. Requests can still contain prompts, attached media data, workspace context, tool results, and other sensitive conversation material. Treat trajectory files as private workspace data.
+The request type does not contain endpoint credentials or custom HTTP headers, so those values never enter the trajectory. Requests can still contain prompts, attached media data, workspace context, tool results, and other sensitive conversation material. Generated context summaries are retained only in the Trajectory compression-completion payload and the private context checkpoint; normal chat activity exposes metrics only. Treat trajectory files as private workspace data.
 
 Provider chunks are batched to avoid opening the log once per token. Each original `StreamEvent`, raw provider JSON frame, and receive timestamp remains present in the batch.
 

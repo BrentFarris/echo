@@ -1,13 +1,16 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -37,6 +40,9 @@ func TestNewChatRequestMapsSettings(t *testing.T) {
 	if !request.Stream {
 		t.Fatal("expected stream to be enabled")
 	}
+	if request.StreamOptions == nil || !request.StreamOptions.IncludeUsage {
+		t.Fatal("expected streaming usage to be requested")
+	}
 	assertFloatPtr(t, "temperature", request.Temperature, 0)
 	assertIntPtr(t, "top_k", request.TopK, 12)
 	assertFloatPtr(t, "top_p", request.TopP, 0.75)
@@ -52,6 +58,89 @@ func TestNewChatRequestMapsSettings(t *testing.T) {
 	assertIntPtr(t, "thinking_token_budget", request.ChatTemplateKwargs.ThinkingTokenBudget, -1)
 	if request.ChatTemplateKwargs.EnableThinking != nil {
 		t.Fatalf("expected default enable_thinking to be omitted, got %#v", request.ChatTemplateKwargs)
+	}
+}
+
+func TestCompleteDoesNotLogGeneratedContextSummary(t *testing.T) {
+	const summary = "PRIVATE GENERATED CONTEXT SUMMARY"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"role":"assistant","content":%q}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`, summary)
+	}))
+	defer server.Close()
+
+	settings := DefaultSettings()
+	settings.Endpoint = server.URL + "/v1"
+	settings.Endpoints[0].Endpoint = settings.Endpoint
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	client, err := NewClient(settings, WithLogger(logger))
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	request, err := NewChatRequest(settings, []Message{
+		{Role: RoleSystem, Name: "echo-context-summary", Content: "summarize"},
+		{Role: RoleUser, Content: "history"},
+	})
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if _, err := client.Complete(context.Background(), request); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if strings.Contains(logs.String(), summary) || !strings.Contains(logs.String(), "payload_bytes") || !strings.Contains(logs.String(), "TotalTokens:15") {
+		t.Fatalf("compression response logging was not metrics-only: %s", logs.String())
+	}
+}
+
+func TestStreamChatCachesUnsupportedUsageOption(t *testing.T) {
+	var calls atomic.Int32
+	usageOptions := make(chan bool, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			StreamOptions *StreamOptions `json:"stream_options"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		usageOptions <- payload.StreamOptions != nil && payload.StreamOptions.IncludeUsage
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"stream_options.include_usage is not supported"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	settings := DefaultSettings()
+	settings.Endpoint = server.URL + "/v1"
+	settings.Endpoints[0].Endpoint = settings.Endpoint
+	client, err := NewClient(settings)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	request, err := NewChatRequest(settings, []Message{{Role: RoleUser, Content: "hello"}}, WithStream(true))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	for range client.StreamChat(context.Background(), request).Events {
+	}
+	for range client.StreamChat(context.Background(), request).Events {
+	}
+
+	got := []bool{<-usageOptions, <-usageOptions, <-usageOptions}
+	want := []bool{true, false, false}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("request %d include_usage = %v, want %v (all: %v)", index+1, got[index], want[index], got)
+		}
+	}
+	if !client.streamUsageUnsupported.Load() {
+		t.Fatal("expected unsupported stream usage capability to be cached")
 	}
 }
 
@@ -443,6 +532,9 @@ func TestCompleteUsesOpenAICompatibleRequestShape(t *testing.T) {
 		if r.Header.Get("Accept") != "application/json" {
 			t.Fatalf("expected JSON accept header, got %q", r.Header.Get("Accept"))
 		}
+		if r.Header.Get("X-Client-Request-Id") == "" {
+			t.Fatal("expected a client request ID")
+		}
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
@@ -495,6 +587,31 @@ func TestChatCompletionsURLAcceptsFullPath(t *testing.T) {
 	}
 }
 
+func TestClientRequestIDsAreUniqueAndCustomizable(t *testing.T) {
+	settings := DefaultSettings()
+	client, err := NewClient(settings)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	first, _ := http.NewRequest(http.MethodPost, "https://example.test/v1/chat/completions", nil)
+	second, _ := http.NewRequest(http.MethodPost, "https://example.test/v1/chat/completions", nil)
+	firstID := client.applyHeaders(first)
+	secondID := client.applyHeaders(second)
+	if firstID == "" || secondID == "" || firstID == secondID {
+		t.Fatalf("expected unique client request IDs, got %q and %q", firstID, secondID)
+	}
+
+	settings.Headers = map[string]string{"X-Client-Request-Id": "caller-owned-id"}
+	client, err = NewClient(settings)
+	if err != nil {
+		t.Fatalf("new custom-header client: %v", err)
+	}
+	custom, _ := http.NewRequest(http.MethodPost, "https://example.test/v1/chat/completions", nil)
+	if got := client.applyHeaders(custom); got != "caller-owned-id" {
+		t.Fatalf("expected caller-provided request ID, got %q", got)
+	}
+}
+
 func TestConversationMessagesAreInMemoryAndCopied(t *testing.T) {
 	settings := DefaultSettings()
 	settings.Endpoint = "https://example.test/v1"
@@ -530,6 +647,9 @@ func TestStreamChatCancellationReleasesActiveStream(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Accept") != "text/event-stream" {
 			t.Errorf("expected SSE accept header, got %q", r.Header.Get("Accept"))
+		}
+		if r.Header.Get("X-Client-Request-Id") == "" {
+			t.Error("expected a client request ID")
 		}
 		if path.Clean(r.URL.Path) != "/v1/chat/completions" {
 			t.Errorf("unexpected stream path: %s", r.URL.Path)
@@ -624,6 +744,48 @@ func TestStreamChatDoesNotUseTotalRequestTimeout(t *testing.T) {
 	complete := nextEvent(t, stream.Events)
 	if complete.Type != EventComplete {
 		t.Fatalf("expected complete event, got %#v", complete)
+	}
+}
+
+func TestStreamChatReportsIdleProvider(t *testing.T) {
+	requestCanceled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning\":\"thinking\"}}]}\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+		close(requestCanceled)
+	}))
+	defer server.Close()
+
+	settings := DefaultSettings()
+	settings.Endpoint = server.URL + "/v1"
+	settings.StreamIdleTimeoutSeconds = 1
+	client, err := NewClient(settings)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	request, err := NewChatRequest(settings, []Message{{Role: RoleUser, Content: "hello"}})
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	stream := client.StreamChat(context.Background(), request)
+	reasoning := nextEvent(t, stream.Events)
+	if reasoning.Type != EventReasoning || reasoning.Content != "thinking" {
+		t.Fatalf("expected initial reasoning, got %#v", reasoning)
+	}
+	idle := nextEvent(t, stream.Events)
+	if idle.Type != EventError || !strings.Contains(idle.Error, "idle for 1s") {
+		t.Fatalf("expected idle timeout error, got %#v", idle)
+	}
+
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("idle timeout did not cancel the provider request")
 	}
 }
 

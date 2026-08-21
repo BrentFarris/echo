@@ -1,18 +1,65 @@
 import { expect, test } from "@playwright/test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer, type Server as HTTPServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const password = "Echo-E2E-Password!";
 
+test.describe.configure({ mode: "serial" });
+
+let fakeLLM: HTTPServer;
+let fakeLLMPort = 0;
+let fakeStreamRound = 0;
+
+test.beforeAll(async () => {
+  fakeLLM = createServer(async (request, response) => {
+    let raw = "";
+    for await (const chunk of request) raw += chunk.toString();
+    const body = JSON.parse(raw || "{}");
+    if (body.stream !== true) {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({
+        choices: [{ message: { role: "assistant", content: "## Goal\nContinue the E2E task.\n## Constraints & Preferences\nNone.\n## Progress\n### Done\nEarlier work.\n### In Progress\nContinue.\n### Blocked\nNone.\n## Key Decisions\nNone.\n## Relevant Files & Artifacts\nworkspace/main.go\n## Commands, Tests & Errors\nNone.\n## Next Steps\nContinue.\n## Critical Exact Context\nE2E." } }],
+        usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+      }));
+      return;
+    }
+    fakeStreamRound++;
+    response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+    if (fakeStreamRound === 1) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 900));
+      response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call-e2e-read", type: "function", function: { name: "filesystem_read_text", arguments: "{\"path\":\"workspace/main.go\"}" } }] } }] })}\n\n`);
+      response.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })}\n\n`);
+    } else {
+      response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "Finished after queued compression." } }] })}\n\n`);
+      response.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+    }
+    response.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 200, completion_tokens: 20, total_tokens: 220 } })}\n\n`);
+    response.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((resolveListen) => fakeLLM.listen(0, "127.0.0.1", resolveListen));
+  const address = fakeLLM.address();
+  if (!address || typeof address === "string") throw new Error("Fake LLM did not bind a TCP port");
+  fakeLLMPort = address.port;
+});
+
+test.afterAll(async () => {
+  await new Promise<void>((resolveClose, rejectClose) => fakeLLM.close((error) => error ? rejectClose(error) : resolveClose()));
+});
+
 test("first-run auth and the real Monaco filesystem workflow", async ({ page }) => {
-  test.setTimeout(300_000);
+  // This is a deliberately broad, real-process acceptance scenario. Plugin
+  // installation adds an additional reviewed lifecycle and browser-isolation
+  // pass before the existing editor/terminal/mobile coverage.
+  test.setTimeout(420_000);
   const state = JSON.parse(readFileSync(resolve(directory, "../test-results/e2e-runtime/state.json"), "utf8")) as {
     setupCode: string;
     workspace: string;
     secondaryWorkspace: string;
   };
+  const mainPath = join(state.workspace, "main.go");
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Secure this Echo server" })).toBeVisible();
   await page.getByLabel("Setup code").fill(state.setupCode);
@@ -47,6 +94,126 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   expect(workspaceIDs.secondary).toBeTruthy();
   await page.reload();
   await expect(page.locator(".app-shell")).toBeVisible();
+
+  // Exercise the real browser/WebSocket lifecycle: queue manual compression
+  // while a provider response is active, then verify the pending compression
+  // checkpoint does not interrupt the tool result or the following model round.
+  await page.evaluate(async ({ port }) => {
+    const response = await fetch("/api/settings");
+    const payload = await response.json();
+    const settings = payload.data.settings;
+    const endpoint = {
+      ...settings.endpoints[0], endpoint: `http://127.0.0.1:${port}/v1`, model: "echo-e2e-context",
+      contextLength: 65536, maxTokens: 512, contextCompressionEnabled: false,
+      contextCompressionThresholdPercent: 70,
+    };
+    settings.endpoints = [endpoint];
+    settings.endpointSelection = {
+      chat: endpoint.id, research: endpoint.id, vision: endpoint.id,
+      kanbanDecompose: endpoint.id, kanban: endpoint.id, inlineCode: endpoint.id,
+    };
+    const saved = await fetch("/api/settings", {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ settings }),
+    });
+    if (!saved.ok) throw new Error(`Could not configure fake LLM: HTTP ${saved.status}`);
+  }, { port: fakeLLMPort });
+  await page.reload();
+  await expect(page.locator(".app-shell")).toBeVisible();
+  await expect(page.locator("[data-mode-label]")).toHaveText("General");
+  await page.evaluate(({ workspaceId }) => new Promise<void>((resolveSend, rejectSend) => {
+    const protocol = location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${protocol}://${location.host}/ws`);
+    const timer = window.setTimeout(() => {
+      socket.close();
+      rejectSend(new Error("Timed out sending the compression E2E chat turn"));
+    }, 10_000);
+    socket.addEventListener("message", (event) => {
+      const message = JSON.parse(String(event.data));
+      if (message.type === "welcome") {
+        socket.send(JSON.stringify({ type: "session_subscribe", workspaceId }));
+      } else if (message.type === "session_snapshot") {
+        socket.send(JSON.stringify({
+          type: "chat_send", workspaceId, chatId: message.activeChatId,
+          requestId: "e2e-context-compression", agentModeId: "general",
+          message: "Read main.go, then continue after context compression.",
+        }));
+      } else if (message.type === "session_event" && message.event?.type === "turn_started") {
+        window.clearTimeout(timer);
+        socket.close();
+        resolveSend();
+      }
+    });
+    socket.addEventListener("error", () => {
+      window.clearTimeout(timer);
+      rejectSend(new Error("Compression E2E WebSocket failed"));
+    });
+  }), { workspaceId: workspaceIDs.primary });
+  await expect(page.locator(".chat-message-user")).toContainText("Read main.go");
+  await page.locator("[data-chat-more-trigger]").click();
+  await page.getByRole("menuitem", { name: "Compress context now" }).click();
+  await expect(page.locator(".chat-compression-item")).toContainText("Context compression queued");
+  await expect(page.locator(".chat-tool-item", { hasText: "filesystem_read_text" })).toHaveCount(1);
+  await expect(page.locator(".chat-final-content")).toContainText("Finished after queued compression.");
+  await expect(page.locator(".chat-compression-item")).toContainText("Context compression skipped");
+
+  // Optional plugins install through a real reviewed stage. The Calculator
+  // stays isolated and alive while Echo's statically owned routes change.
+  await page.evaluate(async () => {
+    const request = async (path: string, body: unknown) => {
+      const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+      return payload.data;
+    };
+    const staged = await request("/api/plugins/stages", { source: { type: "builtin", builtin: "calculator" } });
+    await request(`/api/plugins/stages/${encodeURIComponent(staged.stage.id)}/approve`, { scope: "global", enable: true });
+  });
+  const calculatorButton = page.getByRole("button", { name: "Calculator", exact: true });
+  await expect(calculatorButton).toBeVisible();
+  await calculatorButton.click();
+  const calculatorWindow = page.locator(".plugin-floating-window", { has: page.locator('iframe[title="Calculator plugin"]') });
+  await expect(calculatorWindow).toBeVisible();
+  const calculator = page.frameLocator('iframe[title="Calculator plugin"]');
+  await calculator.getByRole("button", { name: "7", exact: true }).click();
+  await calculator.getByRole("button", { name: "×", exact: true }).click();
+  await calculator.getByRole("button", { name: "6", exact: true }).click();
+  await calculator.getByRole("button", { name: "=", exact: true }).click();
+  await expect(calculator.locator("#display")).toHaveText("42");
+  const isolation = await calculator.locator("body").evaluate(async () => {
+    let dom = "available";
+    let api = "available";
+    try { void window.parent.document.body; } catch { dom = "blocked"; }
+    try { await fetch("/api/plugins"); } catch { api = "blocked"; }
+    return { dom, api };
+  });
+  expect(isolation).toEqual({ dom: "blocked", api: "blocked" });
+  const beforeMove = await calculatorWindow.boundingBox();
+  const header = calculatorWindow.locator(".plugin-window-header");
+  const headerBox = await header.boundingBox();
+  if (beforeMove && headerBox) {
+    await page.mouse.move(headerBox.x + 40, headerBox.y + 18);
+    await page.mouse.down();
+    await page.mouse.move(headerBox.x - 20, headerBox.y + 55, { steps: 4 });
+    await page.mouse.up();
+    await expect.poll(async () => (await calculatorWindow.boundingBox())?.x).not.toBe(beforeMove.x);
+  }
+  await page.getByRole("button", { name: "Explorer", exact: true }).click();
+  await expect(page).toHaveURL(/#\/code$/);
+  await expect(calculatorWindow).toBeVisible();
+  await page.getByRole("button", { name: "Source Control", exact: true }).click();
+  await expect(page).toHaveURL(/#\/code\?sidebar=git$/);
+  await expect(calculatorWindow).toBeVisible();
+  await page.getByRole("button", { name: "Chat", exact: true }).click();
+  await expect(page).toHaveURL(/#\/home$/);
+  await expect(calculatorWindow).toBeVisible();
+  await page.evaluate(async () => {
+    const response = await fetch("/api/plugins/calculator/actions", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "disable-global" }),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  });
+  await expect(calculatorWindow).toHaveCount(0);
+  await expect(calculatorButton).toHaveCount(0);
 
   // Chat @ references use the workspace index, render as compact rich chips,
   // and open files directly in Echo Code.
@@ -121,6 +288,51 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(mainGoResult).toBeVisible();
   await mainGoResult.click();
   await expect(page.getByRole("tab", { name: /main\.go/ })).toBeVisible();
+  await expect(page.locator(".code-tree-row", { hasText: "main.go" })).toHaveAttribute("aria-selected", "true");
+
+  // Tab and Shift+Tab indent and outdent every line in a multi-line selection.
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("Control+Home");
+  await page.keyboard.down("Shift");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.up("Shift");
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Control+s");
+  await expect.poll(() => readFileSync(mainPath, "utf8")).toMatch(/^[\t ]+package main/);
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Control+s");
+  await expect.poll(() => readFileSync(mainPath, "utf8")).toMatch(/^package main/);
+
+  // Workspace Search includes unsaved Monaco buffers, filters by glob, opens
+  // the exact result range, previews replacement, and safely saves dirty text.
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("// searchUnsavedToken");
+  await page.keyboard.press("Control+Shift+F");
+  const workspaceSearch = page.getByLabel("Search workspace");
+  await expect(workspaceSearch).toBeFocused();
+  await workspaceSearch.fill("searchUnsavedToken");
+  await page.getByRole("button", { name: "Toggle Search Details" }).click();
+  await page.getByLabel("Files to include").fill("*.go");
+  const unsavedResult = page.getByRole("treeitem", { name: /searchUnsavedToken/ });
+  await expect(unsavedResult).toBeVisible();
+  await unsavedResult.click();
+  await expect(page.locator(".view-lines")).toContainText("searchUnsavedToken");
+  await page.keyboard.press("Control+Shift+H");
+  const workspaceReplace = page.getByLabel("Replace in workspace");
+  await expect(workspaceReplace).toBeVisible();
+  await workspaceReplace.fill("searchSavedToken");
+  await expect(page.locator(".code-search-preview small")).toContainText("searchSavedToken");
+  await expect(unsavedResult).toHaveCSS("height", "22px");
+  await expect(unsavedResult).toHaveCSS("padding-left", "40px");
+  await page.getByRole("button", { name: /Replace result on line/ }).click();
+  await page.getByRole("button", { name: "Replace", exact: true }).click();
+  await expect.poll(() => readFileSync(mainPath, "utf8")).toContain("searchSavedToken");
+  await expect(page.locator(".code-tab-dirty.is-visible")).toHaveCount(0);
+  await page.getByRole("button", { name: "Explorer", exact: true }).click();
 
   await page.getByRole("tab", { name: /renamed\.py/ }).click({ button: "middle" });
   await expect(page.getByRole("tab", { name: /renamed\.py/ })).toHaveCount(0);
@@ -167,7 +379,6 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.keyboard.press("Enter");
   await page.keyboard.type("// saved by Playwright");
   await page.keyboard.press("Control+s");
-  const mainPath = join(state.workspace, "main.go");
   await expect.poll(() => readFileSync(mainPath, "utf8")).toContain("saved by Playwright");
 
   writeFileSync(mainPath, "package main\n\n// external reload\nfunc main() {}\n", "utf8");
@@ -363,4 +574,183 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.keyboard.press("Escape");
   await expect(page.locator(".workspace-dropdown-anchor")).toHaveCount(0);
   await expect(finalWorkspace).toBeFocused();
+});
+
+test("runs the deterministic fake language server through Monaco and settings", async ({ page }) => {
+  test.setTimeout(120_000);
+  const state = JSON.parse(readFileSync(resolve(directory, "../test-results/e2e-runtime/state.json"), "utf8")) as {
+    setupCode: string;
+    workspace: string;
+    nodePath: string;
+    fakeLSPPath: string;
+  };
+  await page.goto("/");
+  if (await page.getByRole("heading", { name: "Secure this Echo server" }).isVisible()) {
+    await page.getByLabel("Setup code").fill(state.setupCode);
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByLabel("Confirm password").fill(password);
+    await page.getByLabel("Device name").fill("Playwright LSP");
+    await page.getByRole("button", { name: "Finish setup" }).click();
+  } else {
+    await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByLabel("Device name").fill("Playwright LSP");
+    await page.getByRole("button", { name: "Sign in" }).click();
+  }
+  await expect(page.locator(".app-shell")).toBeVisible();
+
+  const workspaceId = await page.evaluate(async ({ command, script, workspacePath }) => {
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      const response = await fetch(path, {
+        method, headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+      return payload.data;
+    };
+    let workspaces = await request("/api/workspaces");
+    if (!workspaces.activeId) {
+      const created = await request("/api/workspaces", "POST", { name: "LSP E2E Workspace", mainPath: workspacePath, folders: [] });
+      await request("/api/workspaces/active", "PUT", { id: created.workspace.id });
+      workspaces = await request("/api/workspaces");
+    }
+    await request("/api/lsp/profiles", "POST", { profile: {
+      id: "fake-e2e-lsp", name: "Fake E2E LSP", command, args: [script],
+      selectors: [{ languageId: "go", extensions: [".go"] }],
+      environment: { ECHO_FAKE_LSP_LOG: `${workspacePath}/.echo/fake-lsp.log` },
+      initializationOptions: { deterministic: true }, settings: { fake: { enabled: true } },
+    } });
+    await request(`/api/workspaces/${encodeURIComponent(workspaces.activeId)}/lsp/config`, "PUT", { config: {
+      enabledProfileIds: ["fake-e2e-lsp"], formatOnSave: false, formatOnSaveTimeoutMs: 3000,
+    } });
+    return workspaces.activeId as string;
+  }, { command: state.nodePath, script: state.fakeLSPPath, workspacePath: state.workspace });
+
+  await page.goto("/#/code");
+  await expect(page.locator(".code-tree-label", { hasText: "usage.go" })).toBeVisible();
+  await page.locator(".code-tree-label", { hasText: "usage.go" }).click();
+  const lspStatus = page.locator('[data-status="lsp"]');
+  await expect(lspStatus).toContainText("Fake E2E LSP ✓", { timeout: 20_000 });
+  await expect(page.locator(".squiggly-warning").first()).toBeVisible();
+
+  // Direct navigation activates only the selected target tab, attaches its
+  // model, and applies Monaco's returned cursor position.
+  await page.locator(".view-line", { hasText: /^\s*Target\(\)\s*$/ }).click();
+  await page.keyboard.press("F12");
+  await expect(page.locator(".code-tab.is-active")).toContainText("definition.go");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 3, Col 6");
+  await expect(page.locator("[data-tabs-list] .code-tab")).toHaveCount(1);
+  await expect(lspStatus).toHaveAttribute("data-lsp-state", "owned");
+
+  // F12 at the definition and the explicit peek shortcuts render Monaco's
+  // native reference zone without turning every result into an Echo tab.
+  await page.keyboard.press("F12");
+  await expect(page.locator(".reference-zone-widget")).toBeVisible();
+  await expect(page.locator("[data-tabs-list] .code-tab")).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".reference-zone-widget")).toHaveCount(0);
+
+  await page.keyboard.press("Shift+F12");
+  await expect(page.locator(".reference-zone-widget")).toBeVisible();
+  await expect(page.locator("[data-tabs-list] .code-tab")).toHaveCount(1);
+  const referenceFiles = page.locator(".reference-zone-widget .reference-file");
+  await expect(referenceFiles).toHaveCount(3);
+  await referenceFiles.filter({ hasText: "usage.go" }).click();
+  const referenceMatches = page.locator(".reference-zone-widget .referenceMatch");
+  await expect(referenceMatches).toHaveCount(2);
+  await referenceMatches.last().click();
+  await expect(page.locator("[data-tabs-list] .code-tab")).toHaveCount(1);
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".reference-zone-widget .preview")).toContainText("func useTarget");
+  await referenceMatches.last().dblclick();
+  await expect(page.locator(".code-tab.is-active")).toContainText("usage.go");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 4, Col 2");
+  await expect(page.locator("[data-tabs-list] .code-tab")).toHaveCount(1);
+  await page.keyboard.press("Escape");
+
+  await page.keyboard.press("Alt+F12");
+  await expect(page.locator(".reference-zone-widget")).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await page.keyboard.press("Control+Shift+F12");
+  await expect(page.locator(".reference-zone-widget")).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await page.keyboard.press("Control+F12");
+  await expect(page.locator(".code-tab.is-active")).toContainText("implementation.go");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 9, Col 23");
+
+  await page.keyboard.press("Control+Shift+O");
+  const workspaceSymbols = page.getByLabel("Workspace Symbol Search");
+  await expect(workspaceSymbols).toBeFocused();
+  await workspaceSymbols.fill("Target");
+  await expect(page.getByRole("option", { name: /Target/ })).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".code-tab.is-active")).toContainText("definition.go");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 3, Col 6");
+
+  for (const command of [
+    "Go to Definition", "Peek Definition", "Go to Declaration", "Peek Declaration",
+    "Go to Type Definition", "Peek Type Definition", "Go to Implementations",
+    "Peek Implementations", "Peek References", "Go to Symbol in Workspace…",
+  ]) {
+    await page.keyboard.press("Control+Shift+P");
+    const palette = page.getByLabel("Command Palette");
+    await palette.fill(command);
+    await expect(page.getByRole("option", { name: new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) }).first()).toBeVisible();
+    await page.keyboard.press("Escape");
+  }
+  await page.keyboard.press("Control+Shift+P");
+  await page.getByLabel("Command Palette").fill("Go to Symbol in Workspace");
+  await expect(page.getByRole("option", { name: /Go to Symbol in Workspace/ })).toContainText("Ctrl+Shift+O");
+  await expect(page.getByRole("option", { name: /Go to Symbol in Workspace/ })).not.toContainText("Ctrl+T");
+  await page.keyboard.press("Escape");
+
+  // Continue exercising the other providers on the original document.
+  await page.locator(".code-tree-label", { hasText: "main.go" }).click();
+  await expect(lspStatus).toHaveAttribute("data-lsp-state", "owned");
+  const functionLine = page.locator(".view-line", { hasText: "func main" });
+  await functionLine.click({ position: { x: 62, y: 10 } });
+  await page.keyboard.press("Control+Shift+p");
+  await page.getByLabel("Command Palette").fill("Editor: Show Hover");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".monaco-hover:not(.hidden)")).toContainText("Echo fake hover");
+
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("fak");
+  await page.keyboard.press("Control+Space");
+  await expect(page.locator(".suggest-widget")).toContainText("fakeCompletion");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".view-lines")).toContainText("fakeCompletion");
+
+  await page.keyboard.press("F2");
+  const rename = page.locator(".rename-box input");
+  await expect(rename).toBeVisible();
+  await rename.fill("renamedMain");
+  await rename.press("Enter");
+  await expect(page.locator(".view-lines")).toContainText("renamedMain");
+
+  await page.keyboard.press("Shift+Alt+f");
+  await expect(page.locator(".view-lines")).toContainText("formatted by Echo fake LSP");
+
+  const persisted = await page.evaluate(async (id) => {
+    const response = await fetch(`/api/workspaces/${encodeURIComponent(id)}/lsp/config`);
+    return (await response.json()).data;
+  }, workspaceId);
+  expect(persisted.config.enabledProfileIds).toEqual(["fake-e2e-lsp"]);
+  expect(persisted.config.formatOnSaveTimeoutMs).toBe(3000);
+
+  await page.goto("/#/settings?section=lsp");
+  await expect(page.getByRole("heading", { name: "Language Servers" })).toBeVisible();
+  await expect(page.locator('[data-lsp-enable="fake-e2e-lsp"]')).toBeChecked();
+  await expect(page.locator(".lsp-runtime-card", { hasText: "Fake E2E LSP" })).toContainText("running");
+  await page.locator('[data-lsp-action="restart"][data-profile-id="fake-e2e-lsp"]').click();
+  await expect.poll(async () => page.evaluate(async (id) => {
+    const response = await fetch(`/api/workspaces/${encodeURIComponent(id)}/lsp/config`);
+    const data = (await response.json()).data;
+    return data.statuses.find((status: { profileId: string }) => status.profileId === "fake-e2e-lsp")?.state;
+  }, workspaceId)).toBe("running");
 });

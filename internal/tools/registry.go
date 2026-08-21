@@ -20,13 +20,68 @@ var planModeOnlyToolNames = map[string]bool{
 	AskUserQuestionsToolName: true,
 }
 
-type Registry struct {
-	mu    sync.RWMutex
-	tools map[string]Tool
+var researchAgentToolNames = map[string]bool{
+	ResearchAgentsSpawnToolName:  true,
+	ResearchAgentSendToolName:    true,
+	ResearchAgentsWaitToolName:   true,
+	ResearchAgentsCancelToolName: true,
 }
 
+var researchWorkerToolNames = map[string]bool{
+	"filesystem_list":             true,
+	"filesystem_read_image":       true,
+	"filesystem_read_text":        true,
+	"filesystem_read_video":       true,
+	"filesystem_search_text":      true,
+	"filesystem_search_workspace": true,
+	"filesystem_stat":             true,
+	"git_inspect":                 true,
+	"web_fetch":                   true,
+	"web_search":                  true,
+	"workspace_skill_read":        true,
+	"workspace_skill_search":      true,
+}
+
+type ChatSchemaOptions struct {
+	PlanMode        bool
+	ResearchEnabled bool
+	WorkspaceID     string
+}
+
+type Registry struct {
+	mu           sync.RWMutex
+	tools        map[string]toolRegistration
+	nextID       uint64
+	pluginPolicy func(pluginID, toolName, workspaceID string) bool
+}
+
+type toolRegistration struct {
+	id    uint64
+	owner string
+	tool  Tool
+}
+
+const CoreToolOwner = "core"
+
 func NewRegistry() *Registry {
-	return &Registry{tools: make(map[string]Tool)}
+	return &Registry{tools: make(map[string]toolRegistration)}
+}
+
+// CloneDefaultRegistry creates a server-owned registry containing immutable
+// snapshots of every statically registered core tool.
+func CloneDefaultRegistry() *Registry { return defaultRegistry.Clone() }
+
+func (r *Registry) Clone() *Registry {
+	clone := NewRegistry()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for name, registration := range r.tools {
+		clone.nextID++
+		registration.id = clone.nextID
+		clone.tools[name] = registration
+	}
+	clone.pluginPolicy = r.pluginPolicy
+	return clone
 }
 
 // Register self-registers a tool into the default registry. Tools call this
@@ -42,24 +97,63 @@ func MustRegister(registry *Registry, tool Tool) {
 }
 
 func (r *Registry) Register(tool Tool) error {
+	_, err := r.registerOwned(CoreToolOwner, tool)
+	return err
+}
+
+// RegisterOwned installs a dynamically disposable registration. The disposer
+// can remove only the exact registration it owns, so stale plugin lifecycle
+// callbacks cannot remove a replacement registration.
+func (r *Registry) RegisterOwned(owner string, tool Tool) (func(), error) {
+	owner = strings.TrimSpace(owner)
+	if owner == "" || owner == CoreToolOwner {
+		return nil, fmt.Errorf("plugin tool owner is required")
+	}
+	return r.registerOwned(owner, tool)
+}
+
+func (r *Registry) registerOwned(owner string, tool Tool) (func(), error) {
 	if tool == nil {
-		return fmt.Errorf("tool is required")
+		return nil, fmt.Errorf("tool is required")
 	}
 	metadata := tool.Metadata()
 	if metadata.Name == "" {
-		return fmt.Errorf("tool name is required")
+		return nil, fmt.Errorf("tool name is required")
 	}
 	if !toolNamePattern.MatchString(metadata.Name) {
-		return fmt.Errorf("tool name %q must match %s", metadata.Name, toolNamePattern.String())
+		return nil, fmt.Errorf("tool name %q must match %s", metadata.Name, toolNamePattern.String())
 	}
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if _, exists := r.tools[metadata.Name]; exists {
-		return fmt.Errorf("duplicate tool name: %s", metadata.Name)
+		r.mu.Unlock()
+		return nil, fmt.Errorf("duplicate tool name: %s", metadata.Name)
 	}
-	r.tools[metadata.Name] = tool
-	return nil
+	r.nextID++
+	registration := toolRegistration{id: r.nextID, owner: owner, tool: tool}
+	r.tools[metadata.Name] = registration
+	r.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			current, exists := r.tools[metadata.Name]
+			if exists && current.id == registration.id && current.owner == owner {
+				delete(r.tools, metadata.Name)
+			}
+		})
+	}, nil
+}
+
+// SetPluginPolicy supplies the execution-time activation and digest approval
+// check for non-core tools. It is consulted both when schemas are assembled
+// and immediately before a tool executes.
+func (r *Registry) SetPluginPolicy(policy func(pluginID, toolName, workspaceID string) bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pluginPolicy = policy
 }
 
 func Registered() []Tool {
@@ -78,7 +172,7 @@ func (r *Registry) Registered() []Tool {
 
 	registered := make([]Tool, 0, len(names))
 	for _, name := range names {
-		registered = append(registered, r.tools[name])
+		registered = append(registered, r.tools[name].tool)
 	}
 	return registered
 }
@@ -94,11 +188,24 @@ func LLMSchemaForScopes(scopes *ToolScopeChecker) []llm.Tool {
 	return defaultRegistry.LLMSchemaForScopes(scopes)
 }
 
-// ChatLLMSchemaForScopes optionally includes plan-mode-only orchestration
-// tools. Callers must pass includePlanModeTools only for the built-in Plan
-// mode; custom modes cannot opt into interactive orchestration implicitly.
-func ChatLLMSchemaForScopes(scopes *ToolScopeChecker, includePlanModeTools bool) []llm.Tool {
-	return defaultRegistry.chatLLMSchemaForScopes(scopes, includePlanModeTools)
+// ChatLLMSchemaForScopes includes chat-only orchestration tools according to
+// the active turn options while still enforcing the selected mode's scopes.
+func ChatLLMSchemaForScopes(scopes *ToolScopeChecker, options ChatSchemaOptions) []llm.Tool {
+	return defaultRegistry.chatLLMSchemaForScopes(scopes, options)
+}
+
+// ResearchLLMSchemaForScopes returns the non-mutating tools available to a
+// child research agent. Research orchestration itself is always excluded.
+func ResearchLLMSchemaForScopes(scopes *ToolScopeChecker) []llm.Tool {
+	return defaultRegistry.researchLLMSchemaForScopes(scopes)
+}
+
+func IsResearchAgentToolName(name string) bool {
+	return researchAgentToolNames[name]
+}
+
+func IsResearchWorkerToolName(name string) bool {
+	return researchWorkerToolNames[name]
 }
 
 func (r *Registry) LLMSchema() []llm.Tool {
@@ -106,15 +213,29 @@ func (r *Registry) LLMSchema() []llm.Tool {
 }
 
 func (r *Registry) LLMSchemaForScopes(scopes *ToolScopeChecker) []llm.Tool {
-	return r.chatLLMSchemaForScopes(scopes, false)
+	return r.chatLLMSchemaForScopes(scopes, ChatSchemaOptions{})
 }
 
-func (r *Registry) chatLLMSchemaForScopes(scopes *ToolScopeChecker, includePlanModeTools bool) []llm.Tool {
-	registered := r.Registered()
+func (r *Registry) ChatLLMSchemaForScopes(scopes *ToolScopeChecker, options ChatSchemaOptions) []llm.Tool {
+	return r.chatLLMSchemaForScopes(scopes, options)
+}
+
+func (r *Registry) ResearchLLMSchemaForScopes(scopes *ToolScopeChecker) []llm.Tool {
+	return r.researchLLMSchemaForScopes(scopes)
+}
+
+func (r *Registry) chatLLMSchemaForScopes(scopes *ToolScopeChecker, options ChatSchemaOptions) []llm.Tool {
+	registered, policy := r.registrations()
 	schema := make([]llm.Tool, 0, len(registered))
-	for _, tool := range registered {
-		metadata := tool.Metadata()
-		if planModeOnlyToolNames[metadata.Name] && !includePlanModeTools {
+	for _, registration := range registered {
+		metadata := registration.tool.Metadata()
+		if registration.owner != CoreToolOwner && (options.PlanMode || policy == nil || !policy(registration.owner, metadata.Name, options.WorkspaceID)) {
+			continue
+		}
+		if planModeOnlyToolNames[metadata.Name] && !options.PlanMode {
+			continue
+		}
+		if researchAgentToolNames[metadata.Name] && !options.ResearchEnabled {
 			continue
 		}
 		if scopes != nil && !scopes.HasTool(metadata.Name) {
@@ -126,6 +247,27 @@ func (r *Registry) chatLLMSchemaForScopes(scopes *ToolScopeChecker, includePlanM
 				Name:        metadata.Name,
 				Description: metadata.Description,
 				Parameters:  cloneSchema(metadata.Parameters),
+			},
+		})
+	}
+	return schema
+}
+
+func (r *Registry) researchLLMSchemaForScopes(scopes *ToolScopeChecker) []llm.Tool {
+	registered, _ := r.registrations()
+	schema := make([]llm.Tool, 0, len(researchWorkerToolNames))
+	for _, registration := range registered {
+		if registration.owner != CoreToolOwner {
+			continue
+		}
+		metadata := registration.tool.Metadata()
+		if !researchWorkerToolNames[metadata.Name] || (scopes != nil && !scopes.HasTool(metadata.Name)) {
+			continue
+		}
+		schema = append(schema, llm.Tool{
+			Type: "function",
+			Function: llm.ToolFunction{
+				Name: metadata.Name, Description: metadata.Description, Parameters: cloneSchema(metadata.Parameters),
 			},
 		})
 	}
@@ -165,13 +307,17 @@ func (r *Registry) Execute(ctx ExecutionContext, name string, arguments json.Raw
 		}
 	}
 
-	tool, ok := r.lookup(name)
+	registration, policy, ok := r.lookup(name)
 	if !ok {
 		result.Error = &ExecutionError{Code: "tool_not_found", Message: fmt.Sprintf("tool %q is not registered", name)}
 		return result
 	}
+	if registration.owner != CoreToolOwner && (policy == nil || !policy(registration.owner, name, ctx.WorkspaceID)) {
+		result.Error = &ExecutionError{Code: "tool_not_active", Message: fmt.Sprintf("plugin tool %q is not active or approved for this workspace", name)}
+		return result
+	}
 
-	output, err := tool.Execute(ctx, arguments)
+	output, err := registration.tool.Execute(ctx, arguments)
 	if err != nil {
 		if ctxErr := ctx.context().Err(); ctxErr != nil {
 			result.Error = &ExecutionError{Code: "canceled", Message: "tool execution was canceled"}
@@ -226,11 +372,26 @@ func isPathArgKey(key string) bool {
 	}
 }
 
-func (r *Registry) lookup(name string) (Tool, bool) {
+func (r *Registry) lookup(name string) (toolRegistration, func(string, string, string) bool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	tool, ok := r.tools[name]
-	return tool, ok
+	return tool, r.pluginPolicy, ok
+}
+
+func (r *Registry) registrations() ([]toolRegistration, func(string, string, string) bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	registered := make([]toolRegistration, 0, len(names))
+	for _, name := range names {
+		registered = append(registered, r.tools[name])
+	}
+	return registered, r.pluginPolicy
 }
 
 func cloneSchema(schema Schema) map[string]any {

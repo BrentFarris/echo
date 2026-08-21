@@ -96,13 +96,36 @@ func isPublicRequest(r *http.Request) bool {
 
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/plugin-ui/") {
+			assets := pluginAssetCSPSource(r)
+			w.Header().Set("Content-Security-Policy", "sandbox allow-scripts; default-src 'none'; script-src "+assets+"; style-src "+assets+" 'unsafe-inline'; img-src "+assets+" data:; media-src "+assets+" data: blob:; font-src "+assets+" data:; connect-src 'none'; worker-src 'none'; child-src 'none'; frame-src 'none'; object-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'; navigate-to 'none'; frame-ancestors 'self'")
+			// A sandboxed iframe without allow-same-origin has an opaque `null`
+			// origin. Module scripts consequently require CORS even though their
+			// tokenized URLs are served by Echo. The session token remains the
+			// capability boundary and credentials are never permitted here.
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("Referrer-Policy", "no-referrer")
+			w.Header().Set("Permissions-Policy", "camera=(), geolocation=(), microphone=(), payment=(), usb=()")
+			next.ServeHTTP(w, r)
+			return
+		}
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Permissions-Policy", "camera=(), geolocation=(), payment=(), usb=()")
+		w.Header().Set("Permissions-Policy", "camera=(), geolocation=(), microphone=(self), payment=(), usb=()")
 		next.ServeHTTP(w, r)
 	})
+}
+
+func pluginAssetCSPSource(r *http.Request) string {
+	remainder := strings.TrimPrefix(r.URL.Path, "/plugin-ui/")
+	token, _, _ := strings.Cut(remainder, "/")
+	path := "/plugin-ui/" + url.PathEscape(token) + "/"
+	httpSource := (&url.URL{Scheme: "http", Host: r.Host, Path: path}).String()
+	httpsSource := (&url.URL{Scheme: "https", Host: r.Host, Path: path}).String()
+	return httpSource + " " + httpsSource
 }
 
 func requestOriginAllowed(r *http.Request) bool {

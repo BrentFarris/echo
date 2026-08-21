@@ -15,8 +15,8 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, http.StatusOK, map[string]any{
-		"settings":     cfg,
-		"storagePath":  s.store.Path(),
+		"settings":    cfg,
+		"storagePath": s.store.Path(),
 	})
 }
 

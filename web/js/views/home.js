@@ -7,14 +7,18 @@
 import { icons } from "../icons.js";
 import { get, post } from "../api.js";
 import {
-  activateChatTab, canClearChat, clearChat, closeChatTab, closeWorkspaceSession,
+  activateChatTab, canClearChat, canCompressChat, clearChat, compressChat, closeChatTab, closeWorkspaceSession,
   createChatTab, isStreaming, onChatCommandError, onChatWorkspaceChange,
   onStreamingChange, openWorkspaceSession, sendMessage, stopStream,
 } from "../chat.js";
 import { loadWorkspaces, openWorkspaceDropdown, openAddWorkspaceModal, setActiveWorkspace, getActive, renderWorkspaceIcon } from "../workspaces.js";
-import { codeFileRouteHash, codeRouteHash } from "../../src/navigation.ts";
+import {
+  chatCompletionTargetFromHash, codeFileRouteHash, codeRouteHash,
+} from "../../src/navigation.ts";
+import { prepareCompletionNotificationPermission } from "../../src/completionNotifications.ts";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../../src/primaryNav.ts";
 import { watchGitBadge } from "../../src/gitBadge.ts";
+import { mountSpeechRecognition } from "../../src/speechRecognition.ts";
 import { showContextMenu, toast } from "../../src/code/ui.ts";
 import { getRoots, revealEntry, searchEntries } from "../../src/code/editorApi.ts";
 import {
@@ -176,7 +180,7 @@ function chatPanel() {
             <div class="chat-composer-toolbar">
               <div class="chat-composer-toolbar-left">
                 <button class="chat-toolbar-icon" type="button" title="Attach file" aria-label="Attach file" aria-haspopup="menu" aria-expanded="false" data-chat-attachment-trigger>${icons.plus}</button>
-                <button class="chat-toolbar-icon chat-speech-recognition" type="button" title="Hold to speak" aria-label="Voice input">${icons.mic}</button>
+                <button class="chat-toolbar-icon chat-speech-recognition" type="button" title="Start voice input" aria-label="Start voice input" aria-pressed="false" data-chat-voice-input>${icons.mic}</button>
                 <button class="model-selector chat-toolbar-model" type="button" title="Select model" aria-haspopup="listbox" aria-expanded="false" data-model-trigger>
                   <span class="model-selector-label" data-model-label>Model</span>
                   <span class="model-selector-chevron">${icons.arrowDown}</span>
@@ -200,6 +204,9 @@ function chatPanel() {
 }
 
 export function mount(root) {
+  let completionTarget = chatCompletionTargetFromHash(window.location.hash);
+  if (completionTarget?.surface !== "chat") completionTarget = null;
+  let completionActivationRequested = false;
   root.innerHTML = `
     <div class="app-shell">
       <div data-region="left-nav">${renderPrimaryNav({ active: "chat", workspaceName: "Echo", workspaceSelector: true })}</div>
@@ -223,6 +230,7 @@ export function mount(root) {
   const input = root.querySelector("[data-chat-input]");
   const attachmentDrafts = root.querySelector("[data-chat-attachment-drafts]");
   const attachmentTrigger = root.querySelector("[data-chat-attachment-trigger]");
+  const voiceInput = root.querySelector("[data-chat-voice-input]");
   const sendBtn = root.querySelector(".send-button");
   const modelTrigger = root.querySelector("[data-model-trigger]");
   const modelLabel = root.querySelector("[data-model-label]");
@@ -242,6 +250,18 @@ export function mount(root) {
   let mentionTimer = 0;
   let mentionSequence = 0;
   const trajectoryView = new TrajectoryView(trajectoryHost, (view) => setChatView(view));
+  const speechRecognition = mountSpeechRecognition({
+    button: voiceInput,
+    input,
+    onError: (message) => toast(message, { sticky: true }),
+  });
+
+  const finishCompletionNavigation = (message = "") => {
+    if (message) toast(message, { sticky: true });
+    completionTarget = null;
+    completionActivationRequested = false;
+    window.history.replaceState(window.history.state, "", "#/home");
+  };
 
   function activeView() {
     if (!currentWorkspaceId || !currentChatId) return "chat";
@@ -559,6 +579,13 @@ export function mount(root) {
     });
   };
 
+  const openMainWorkspaceSession = (workspaceId) => openWorkspaceSession(log, workspaceId, {
+    onActivateFile: (ref) => {
+      saveCurrentComposer();
+      location.hash = codeFileRouteHash(ref);
+    },
+  });
+
   const restoreCurrentComposer = () => {
     if (!currentWorkspaceId || !currentChatId) return;
     const key = tabStateKey(currentWorkspaceId, currentChatId);
@@ -661,6 +688,7 @@ export function mount(root) {
   // The desktop activity bar and mobile bottom bar share the same actions.
   const settingsButtons = [...root.querySelectorAll("[data-nav='settings']")];
   const codeButtons = [...root.querySelectorAll("[data-nav='code']")];
+  const searchButtons = [...root.querySelectorAll("[data-nav='search']")];
   const gitButtons = [...root.querySelectorAll("[data-nav='git']")];
   const onSettingsClick = () => {
     location.hash = "#/settings";
@@ -668,6 +696,8 @@ export function mount(root) {
   settingsButtons.forEach((button) => button.addEventListener("click", onSettingsClick));
   const onCodeClick = () => { location.hash = "#/code"; };
   codeButtons.forEach((button) => button.addEventListener("click", onCodeClick));
+  const onSearchClick = () => { location.hash = codeRouteHash("search"); };
+  searchButtons.forEach((button) => button.addEventListener("click", onSearchClick));
   const onGitClick = () => { location.hash = codeRouteHash("git"); };
   gitButtons.forEach((button) => button.addEventListener("click", onGitClick));
 
@@ -703,7 +733,7 @@ export function mount(root) {
           await setActiveWorkspace(id);
           updateWorkspaceNavigation();
           mountTerminalDock(terminalRegion, getActive());
-          openWorkspaceSession(log, id);
+          openMainWorkspaceSession(id);
           await loadAgentModes(id, modeLabel);
           restoreCurrentComposer();
         } catch (err) {
@@ -717,7 +747,7 @@ export function mount(root) {
               await setActiveWorkspace(workspace.id);
               updateWorkspaceNavigation();
               mountTerminalDock(terminalRegion, getActive());
-              openWorkspaceSession(log, workspace.id);
+              openMainWorkspaceSession(workspace.id);
               await loadAgentModes(workspace.id, modeLabel);
               restoreCurrentComposer();
             } catch (err) {
@@ -768,6 +798,10 @@ export function mount(root) {
       ${icons.refresh}
       <span>Clear current chat</span>
     </button>
+    <button type="button" role="menuitem" title="Compress context now" aria-label="Compress context now" data-compress-chat-button>
+      ${icons.compress}
+      <span>Compress context now</span>
+    </button>
     <button type="button" role="menuitem" title="Create skill from this chat" aria-label="Create workspace skill from chat" data-create-skill-button>
       ${icons.star}
       <span>Create skill</span>
@@ -776,6 +810,7 @@ export function mount(root) {
   document.body.appendChild(moreMenu);
   const newTabButton = moreMenu.querySelector("[data-new-chat-tab-button]");
   const clearChatButton = moreMenu.querySelector("[data-clear-chat-button]");
+  const compressChatButton = moreMenu.querySelector("[data-compress-chat-button]");
   const createSkillButton = moreMenu.querySelector("[data-create-skill-button]");
 
   const attachmentMenu = document.createElement("div");
@@ -984,8 +1019,9 @@ export function mount(root) {
   const updateChatMenuActions = () => {
     const busy = currentTabs.find((tab) => tab.chatId === currentChatId)?.busy || isStreaming();
     const creating = creatingChatSkills.has(currentChatId);
-    const hasTranscript = canClearChat(log);
-    clearChatButton.disabled = busy || creating || !hasTranscript;
+    const hasTranscript = canCompressChat(log);
+    clearChatButton.disabled = busy || creating || !canClearChat(log);
+    compressChatButton.disabled = creating || !hasTranscript;
     createSkillButton.disabled = !currentWorkspaceId || !currentChatId || busy || creating || !hasTranscript;
   };
 
@@ -1052,7 +1088,7 @@ export function mount(root) {
     const margin = 8;
     const gap = 6;
     const width = moreMenu.offsetWidth || 190;
-    const height = moreMenu.offsetHeight || 116;
+    const height = moreMenu.offsetHeight || 152;
     const left = Math.min(
       Math.max(margin, rect.left),
       Math.max(margin, window.innerWidth - width - margin),
@@ -1209,6 +1245,13 @@ export function mount(root) {
     requestTabClose(tab.dataset.chatTabActivate);
   };
 
+  const onCompressChatClick = (e) => {
+    e.stopPropagation();
+    closeMoreMenu();
+    if (compressChatButton.disabled) return;
+    if (!compressChat(log, selectedModel)) toast("Could not queue context compression.", { sticky: true });
+  };
+
   const onTabsContextMenu = (e) => {
     const tab = e.target.closest("[data-chat-tab-activate]");
     if (!tab) return;
@@ -1322,6 +1365,7 @@ export function mount(root) {
   attachmentMenu.addEventListener("click", onAttachmentMenuClick);
   newTabButton.addEventListener("click", onNewTabClick);
   clearChatButton.addEventListener("click", onClearChatClick);
+  compressChatButton.addEventListener("click", onCompressChatClick);
   createSkillButton.addEventListener("click", onCreateSkillClick);
   tabsHost.addEventListener("click", onTabsClick);
   tabsHost.addEventListener("auxclick", onTabsAuxClick);
@@ -1342,11 +1386,13 @@ export function mount(root) {
   tabsResizeObserver?.observe(tabsHost);
 
   const submit = () => {
+    speechRecognition.stop();
     const text = composerText(input);
     const state = currentComposerState();
     const images = state?.images || [];
     const videos = state?.videos || [];
     if (!text.trim() && images.length === 0 && videos.length === 0) return;
+    prepareCompletionNotificationPermission();
     if (sendMessage(log, text, selectedModel || undefined, selectedAgentModeId, { images, videos })) {
       if (state) {
         state.images = [];
@@ -1377,6 +1423,7 @@ export function mount(root) {
     const previousChatId = currentChatId;
     if (currentWorkspaceId && currentChatId
       && (nextWorkspaceId !== currentWorkspaceId || nextChatId !== currentChatId)) {
+      speechRecognition.stop();
       saveCurrentComposer();
     }
 
@@ -1420,6 +1467,18 @@ export function mount(root) {
     }
     updateChatMenuActions();
     updateAttachmentAvailability();
+
+    if (completionTarget && state?.hasSnapshot && currentWorkspaceId === completionTarget.workspaceId) {
+      const targetExists = currentTabs.some((tab) => tab.chatId === completionTarget.chatId);
+      if (!targetExists) {
+        finishCompletionNavigation("That completed chat is no longer available.");
+      } else if (currentChatId === completionTarget.chatId) {
+        finishCompletionNavigation();
+      } else if (!completionActivationRequested) {
+        completionActivationRequested = true;
+        activateChatTab(completionTarget.chatId);
+      }
+    }
 
     if (focusNewTab && state?.hasSnapshot && currentChatId) {
       focusNewTab = false;
@@ -1518,6 +1577,7 @@ export function mount(root) {
   // Store cleanup so unmount removes listeners.
   chatCleanup = () => {
     saveCurrentComposer();
+    speechRecognition.dispose();
     form.removeEventListener("submit", onFormSubmit);
     sendBtn.removeEventListener("click", onSendButtonClick);
     input.removeEventListener("keydown", onKeydown);
@@ -1530,6 +1590,7 @@ export function mount(root) {
     unsubCommandError();
     settingsButtons.forEach((button) => button.removeEventListener("click", onSettingsClick));
     codeButtons.forEach((button) => button.removeEventListener("click", onCodeClick));
+    searchButtons.forEach((button) => button.removeEventListener("click", onSearchClick));
     gitButtons.forEach((button) => button.removeEventListener("click", onGitClick));
     workspaceTriggers.forEach((trigger) => trigger.removeEventListener("click", onWorkspaceTriggerClick));
     if (closeWorkspaceDropdown) {
@@ -1545,6 +1606,7 @@ export function mount(root) {
     attachmentMenu.removeEventListener("click", onAttachmentMenuClick);
     newTabButton.removeEventListener("click", onNewTabClick);
     clearChatButton.removeEventListener("click", onClearChatClick);
+    compressChatButton.removeEventListener("click", onCompressChatClick);
     createSkillButton.removeEventListener("click", onCreateSkillClick);
     tabsHost.removeEventListener("click", onTabsClick);
     tabsHost.removeEventListener("auxclick", onTabsAuxClick);
@@ -1576,12 +1638,24 @@ export function mount(root) {
   loadEndpoints();
   // Load the registered workspaces so the selector dropdown can be populated,
   // then set the trigger icon to the active (last opened) workspace.
-  loadWorkspaces().then(async () => {
+  loadWorkspaces().then(async (workspaceList) => {
+    if (completionTarget) {
+      const targetWorkspace = workspaceList.find((workspace) => workspace.id === completionTarget.workspaceId);
+      if (!targetWorkspace) {
+        finishCompletionNavigation("The workspace for that completed chat is no longer available.");
+      } else if (getActive()?.id !== completionTarget.workspaceId) {
+        try {
+          await setActiveWorkspace(completionTarget.workspaceId);
+        } catch (error) {
+          finishCompletionNavigation(error instanceof Error ? error.message : String(error));
+        }
+      }
+    }
     updateWorkspaceNavigation();
     const activeWorkspace = getActive();
     const workspaceId = activeWorkspace?.id || "";
     mountTerminalDock(terminalRegion, activeWorkspace);
-    openWorkspaceSession(log, workspaceId);
+    openMainWorkspaceSession(workspaceId);
     await loadAgentModes(workspaceId, modeLabel);
     restoreCurrentComposer();
   });

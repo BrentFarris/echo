@@ -17,7 +17,7 @@ const socket = vi.hoisted(() => {
 vi.mock("../js/ws.js", () => ({ on: socket.on, onState: socket.onState, send: socket.send }));
 
 import {
-  activateChatTab, canClearChat, clearChat, closeChatTab, closeWorkspaceSession,
+  activateChatTab, canClearChat, canCompressChat, clearChat, compressChat, closeChatTab, closeWorkspaceSession,
   createChatTab, getChatWorkspaceState, onChatWorkspaceChange, openWorkspaceSession,
   sendMessage, stopStream,
 } from "../js/chat.js";
@@ -62,6 +62,11 @@ describe("multi-chat WebSocket protocol", () => {
       message: "next question", model: "model-a", agentModeId: "general",
     }));
     expect(canClearChat(log)).toBe(true);
+    expect(canCompressChat(log)).toBe(true);
+    expect(compressChat(log, "model-a")).toBe(true);
+    expect(socket.send).toHaveBeenLastCalledWith({
+      type: "chat_compress", workspaceId: "workspace-tabs", chatId: "chat-two", model: "model-a",
+    });
     expect(clearChat(log)).toBe(true);
     expect(socket.send).toHaveBeenLastCalledWith({
       type: "chat_clear", workspaceId: "workspace-tabs", chatId: "chat-two",
@@ -103,6 +108,47 @@ describe("multi-chat WebSocket protocol", () => {
       event: { type: "turn_finished", turnId: "inactive-turn", status: "done" },
     });
     expect(states.at(-1)?.tabs[1].busy).toBe(false);
+    unsubscribe();
+  });
+
+  it("does not rebuild tab state for streamed content events", () => {
+    const listener = vi.fn();
+    const unsubscribe = onChatWorkspaceChange(listener);
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "chat-one",
+      tabs: [
+        { chatId: "chat-one", preview: "Running", busy: false },
+        { chatId: "chat-two", preview: "Older chat", busy: false },
+      ],
+      turns: [],
+    });
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 2,
+      event: { type: "turn_started", turnId: "live", message: "Running" },
+    });
+    const notificationsAfterStart = listener.mock.calls.length;
+
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 3,
+      event: { type: "assistant_turn_start", turnId: "live", turn: 0 },
+    });
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 4,
+      event: { type: "token", turnId: "live", turn: 0, content: "Still streaming" },
+    });
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 5,
+      event: { type: "reasoning", turnId: "live", turn: 0, content: "Working" },
+    });
+
+    expect(listener).toHaveBeenCalledTimes(notificationsAfterStart);
+
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 6,
+      event: { type: "turn_finished", turnId: "live", status: "done" },
+    });
+    expect(listener).toHaveBeenCalledTimes(notificationsAfterStart + 1);
     unsubscribe();
   });
 
@@ -243,6 +289,151 @@ describe("multi-chat WebSocket protocol", () => {
     });
     expect(log.querySelectorAll(".chat-message-media img")).toHaveLength(2);
     expect(log.textContent).toContain("Please review the attached image(s).");
+  });
+
+  it("restores, collapses, and activates completed file changes", () => {
+    const activateFile = vi.fn();
+    closeWorkspaceSession(log);
+    openWorkspaceSession(log, "workspace-tabs", { onActivateFile: activateFile });
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "chat-one", tabs: [{ chatId: "chat-one", preview: "Changed files", busy: false }],
+      turns: [{
+        id: "changed", userContent: "Make changes", status: "done",
+        assistantTurns: [{ number: 0, content: "Done.", hasToolCalls: false }],
+        fileChanges: [
+          { path: "echo/src/new.ts", operation: "created", ref: { rootId: "root", path: "src/new.ts" } },
+          { path: "echo/src/new.ts", operation: "edited", ref: { rootId: "root", path: "src/new.ts" } },
+          { path: "echo/src/old.ts", operation: "edited", ref: { rootId: "root", path: "src/old.ts" } },
+          { path: "echo/src/old.ts", operation: "deleted" },
+          { path: "echo/src/restored.ts", operation: "deleted" },
+          { path: "echo/src/restored.ts", operation: "created", ref: { rootId: "root", path: "src/restored.ts" } },
+        ],
+      }],
+    });
+
+    const summary = log.querySelector<HTMLElement>(".chat-file-changes")!;
+    expect(summary.querySelector(".chat-file-changes-header")?.textContent).toContain("3 files");
+    const rows = [...summary.querySelectorAll<HTMLElement>(".chat-file-change-row")];
+    expect(rows.map((row) => row.querySelector("code")?.textContent)).toEqual([
+      "echo/src/new.ts", "echo/src/old.ts", "echo/src/restored.ts",
+    ]);
+    expect(rows.map((row) => row.querySelector(".chat-file-change-operation")?.textContent)).toEqual([
+      "Created", "Deleted", "Edited",
+    ]);
+    expect(rows[1].tagName).toBe("DIV");
+    expect(rows[1].getAttribute("aria-disabled")).toBe("true");
+
+    (rows[0] as HTMLButtonElement).click();
+    (rows[2] as HTMLButtonElement).click();
+    expect(activateFile).toHaveBeenNthCalledWith(1, { rootId: "root", path: "src/new.ts" });
+    expect(activateFile).toHaveBeenNthCalledWith(2, { rootId: "root", path: "src/restored.ts" });
+  });
+
+  it("shows live file changes after a stopped run", () => {
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "chat-one", tabs: [{ chatId: "chat-one", preview: "Stopped", busy: false }], turns: [],
+    });
+    const events = [
+      { type: "turn_started", turnId: "stopped", message: "Start" },
+      { type: "assistant_turn_start", turnId: "stopped", turn: 0 },
+      { type: "assistant_turn_end", turnId: "stopped", turn: 0, hasToolCalls: true },
+      { type: "tool_call", turnId: "stopped", turn: 0, callId: "call-edit", callOrder: 0, tool: "filesystem_edit_text", arguments: "{}" },
+      {
+        type: "tool_result", turnId: "stopped", turn: 0, callId: "call-edit", callOrder: 0,
+        tool: "filesystem_edit_text", success: true, content: "{}",
+        fileChanges: [{ path: "echo/main.go", operation: "edited", ref: { rootId: "root", path: "main.go" } }],
+      },
+      { type: "assistant_turn_start", turnId: "stopped", turn: 1 },
+      { type: "token", turnId: "stopped", turn: 1, content: "Partial response" },
+      { type: "turn_finished", turnId: "stopped", status: "stopped" },
+    ];
+    events.forEach((event, index) => emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: index + 2, event,
+    }));
+
+    expect(log.querySelector(".chat-stream-status")?.textContent).toContain("stopped");
+    expect(log.querySelector(".chat-file-change-path")?.textContent).toBe("echo/main.go");
+    expect(log.querySelector(".chat-file-change-operation")?.textContent).toBe("Edited");
+  });
+
+  it("restores and updates metrics-only context compression activity", () => {
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "chat-one", tabs: [{ chatId: "chat-one", preview: "Compress", busy: true }],
+      turns: [{
+        id: "compressed", userContent: "Continue", status: "done",
+        assistantTurns: [{ number: 0, content: "Working", hasToolCalls: false }],
+        compressions: [{
+          id: "compression-1", trigger: "manual", phase: "idle", status: "running",
+          thresholdPercent: 70, usageSource: "estimated", startedAt: "2026-08-19T12:00:00Z",
+        }],
+      }],
+    });
+
+    const item = log.querySelector<HTMLElement>(".chat-compression-item")!;
+    expect(item.textContent).toContain("Compressing context");
+    expect(item.textContent).not.toContain("secret summary");
+
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 2,
+      event: {
+        type: "context_compression_completed", turnId: "compressed",
+        compression: {
+          id: "compression-1", trigger: "manual", phase: "idle", status: "completed",
+          beforeTokens: 7000, afterTokens: 2800, reclaimedTokens: 4200, durationMs: 1250,
+          usageSource: "provider", recoveryAvailable: true, summary: "secret summary",
+        },
+      },
+    });
+
+    expect(item.classList).toContain("is-completed");
+    expect(item.textContent).toContain("7,000 → 2,800 tokens");
+    expect(item.textContent).toContain("60% reclaimed");
+    expect(item.textContent).toContain("Compacted raw history remains searchable");
+    expect(item.textContent).not.toContain("secret summary");
+    expect(getChatWorkspaceState()?.tabs[0].busy).toBe(false);
+  });
+
+  it("keeps rendering tool execution after a queued manual compression checkpoint", () => {
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "chat-one", tabs: [{ chatId: "chat-one", preview: "Queued", busy: false }], turns: [],
+    });
+    const events = [
+      { type: "turn_started", turnId: "queued-compression", message: "Keep working" },
+      { type: "assistant_turn_start", turnId: "queued-compression", turn: 0 },
+      { type: "assistant_turn_end", turnId: "queued-compression", turn: 0, hasToolCalls: true },
+      { type: "tool_call", turnId: "queued-compression", turn: 0, callId: "call-1", callOrder: 0, tool: "read_file", arguments: "{}" },
+      {
+        type: "context_compression_queued", turnId: "queued-compression",
+        compression: { id: "compression-queued", trigger: "manual", phase: "mid_turn", status: "queued", afterAssistantNumber: 0 },
+      },
+      {
+        type: "context_compression_started", turnId: "queued-compression",
+        compression: { id: "compression-queued", trigger: "manual", phase: "mid_turn", status: "running", afterAssistantNumber: 0 },
+      },
+      {
+        type: "context_compression_completed", turnId: "queued-compression",
+        compression: {
+          id: "compression-queued", trigger: "manual", phase: "mid_turn", status: "completed", afterAssistantNumber: 0,
+          beforeTokens: 6000, afterTokens: 2400, durationMs: 500, recoveryAvailable: true,
+        },
+      },
+      { type: "tool_result", turnId: "queued-compression", turn: 0, callId: "call-1", callOrder: 0, tool: "read_file", success: true, content: "ok" },
+      { type: "assistant_turn_start", turnId: "queued-compression", turn: 1 },
+      { type: "token", turnId: "queued-compression", turn: 1, content: "Finished after compression." },
+      { type: "assistant_turn_end", turnId: "queued-compression", turn: 1, hasToolCalls: false },
+      { type: "turn_finished", turnId: "queued-compression", status: "done" },
+    ];
+    events.forEach((event, index) => emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: index + 2, event,
+    }));
+
+    expect(log.querySelector(".chat-compression-item")?.textContent).toContain("Context compressed");
+    expect(log.querySelector(".chat-tool-item")?.classList).toContain("is-success");
+    expect(log.querySelector(".chat-final-content")?.textContent).toContain("Finished after compression.");
   });
 
   it("isolates the code surface and sends editor context", () => {

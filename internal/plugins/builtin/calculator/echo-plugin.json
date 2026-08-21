@@ -1,0 +1,27 @@
+{
+  "manifestVersion": 1,
+  "id": "calculator",
+  "name": "Calculator",
+  "version": "1.0.0",
+  "description": "A movable calculator that stays open while you work in Echo.",
+  "author": "Echo",
+  "license": "MIT",
+  "echo": { "api": "^1" },
+  "permissions": [],
+  "contributes": {
+    "views": [
+      {
+        "id": "calculator",
+        "kind": "floating",
+        "title": "Calculator",
+        "icon": "assets/calculator.svg",
+        "entry": "ui/calculator/index.html",
+        "defaultSize": { "width": 340, "height": 500 },
+        "minimumSize": { "width": 280, "height": 410 }
+      }
+    ],
+    "tools": [],
+    "settings": [],
+    "rpc": []
+  }
+}

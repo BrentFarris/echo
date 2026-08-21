@@ -19,6 +19,7 @@ describe("primary navigation", () => {
     expect(chat.querySelector("[data-nav=chat]")?.classList.contains("is-active")).toBe(true);
     expect(chat.querySelector("[data-nav=code]")?.classList.contains("is-active")).toBe(false);
     expect(chat.querySelector("[aria-label=Tasks]")).toBeNull();
+    expect(chat.querySelector("[data-nav=settings] [data-echo-update-badge]")).not.toBeNull();
   });
 
   it("marks the selected Code sidebar item active", () => {
@@ -26,6 +27,22 @@ describe("primary navigation", () => {
 
     expect(git.querySelector("[data-code-sidebar=git]")?.classList.contains("is-active")).toBe(true);
     expect(git.querySelector("[data-code-sidebar=explorer]")?.classList.contains("is-active")).toBe(false);
+    expect(git.querySelector("[data-code-sidebar=search]")?.classList.contains("is-active")).toBe(false);
+  });
+
+  it("renders a custom workspace icon on a workspace selector", () => {
+    const nav = render({
+      active: "explorer",
+      workspaceName: "Example",
+      workspaceSelector: true,
+      workspaceIconUrl: "/api/workspaces/example/icon",
+    });
+
+    const selector = nav.querySelector("[data-nav=workspace]");
+    expect(selector?.classList.contains("workspace-dropdown-trigger")).toBe(true);
+    expect(selector?.getAttribute("aria-expanded")).toBe("false");
+    expect(selector?.querySelector("img")?.getAttribute("src")).toBe("/api/workspaces/example/icon");
+    expect(selector?.querySelector(".workspace-icon-label")?.textContent).toBe("");
   });
 
   it("escapes workspace names", () => {
@@ -43,11 +60,12 @@ describe("primary navigation", () => {
 
     expect(host.querySelector("[data-mobile-primary-nav]")).not.toBeNull();
     expect([...host.querySelectorAll(".mobile-nav-tab")].map((item) => item.getAttribute("aria-label")))
-      .toEqual(["Chat", "Code", "Source Control", "Settings"]);
+      .toEqual(["Chat", "Code", "Search", "Source Control", "Settings"]);
     expect(host.querySelector("[aria-label=Tasks]")).toBeNull();
     expect(host.querySelector("[data-nav=git]")?.getAttribute("aria-current")).toBe("page");
     expect(host.querySelector("[data-nav=code]")?.hasAttribute("aria-current")).toBe(false);
     expect(host.querySelector("[data-git-badge]")).not.toBeNull();
+    expect(host.querySelector("[data-nav=settings] [data-echo-update-badge]")).not.toBeNull();
     expect(host.querySelector(".workspace-dropdown-trigger")?.getAttribute("aria-expanded")).toBe("false");
   });
 

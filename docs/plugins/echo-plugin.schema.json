@@ -1,0 +1,235 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/brent/echo/blob/main/docs/plugins/echo-plugin.schema.json",
+  "title": "Echo Plugin Manifest v1",
+  "description": "Declarative package contract for Echo Plugin API v1. Echo's static validator remains authoritative for package paths, files, tool namespaces, core collisions, and supported JSON Schema keywords.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifestVersion", "id", "name", "version", "echo"],
+  "properties": {
+    "manifestVersion": { "const": 1 },
+    "id": { "$ref": "#/$defs/kebabId" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "description": { "type": "string" },
+    "author": { "type": "string" },
+    "license": { "type": "string" },
+    "homepage": { "type": "string" },
+    "echo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["api"],
+      "properties": {
+        "api": { "type": "string", "pattern": "^(?:1|1\\.x|\\^1(?:\\.(?:0|[1-9][0-9]*)){0,2})$" }
+      }
+    },
+    "permissions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/permission" }
+    },
+    "runtime": { "$ref": "#/$defs/runtime" },
+    "contributes": { "$ref": "#/$defs/contributions" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "contributes": {
+            "properties": { "tools": { "type": "array", "minItems": 1 } },
+            "required": ["tools"]
+          }
+        },
+        "required": ["contributes"]
+      },
+      "then": { "required": ["runtime"] }
+    },
+    {
+      "if": {
+        "properties": {
+          "contributes": {
+            "properties": { "rpc": { "type": "array", "minItems": 1 } },
+            "required": ["rpc"]
+          }
+        },
+        "required": ["contributes"]
+      },
+      "then": { "required": ["runtime"] }
+    }
+  ],
+  "$defs": {
+    "kebabId": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "packagePath": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Package-relative path. Echo additionally rejects absolute paths, traversal, symlinks, and paths outside the package."
+    },
+    "permission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "reason"],
+      "properties": {
+        "name": {
+          "enum": [
+            "network",
+            "filesystem",
+            "process",
+            "secrets",
+            "ui.notifications",
+            "ui.clipboard-write",
+            "ui.external-links"
+          ]
+        },
+        "reason": { "type": "string", "minLength": 1 },
+        "hosts": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "targets"],
+      "properties": {
+        "protocol": { "const": "echo-jsonrpc-1" },
+        "targets": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^(windows|linux|darwin)-(amd64|arm64)$" },
+          "additionalProperties": { "$ref": "#/$defs/runtimeTarget" }
+        }
+      }
+    },
+    "runtimeTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "$ref": "#/$defs/packagePath" },
+        "args": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "contributions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "views": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/view" } },
+        "tools": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/tool" } },
+        "settings": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/setting" } },
+        "rpc": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/rpc" } }
+      }
+    },
+    "dimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "width": { "type": "integer", "minimum": 0, "maximum": 4096 },
+        "height": { "type": "integer", "minimum": 0, "maximum": 4096 }
+      }
+    },
+    "view": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "title", "entry"],
+      "properties": {
+        "id": { "$ref": "#/$defs/kebabId" },
+        "kind": { "enum": ["page", "floating"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "icon": { "$ref": "#/$defs/packagePath" },
+        "entry": { "$ref": "#/$defs/packagePath" },
+        "singleton": { "const": true },
+        "defaultSize": { "$ref": "#/$defs/dimensions" },
+        "minimumSize": { "$ref": "#/$defs/dimensions" }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description", "inputSchema", "method"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9_-]+$" },
+        "description": { "type": "string", "minLength": 1 },
+        "inputSchema": {
+          "type": "object",
+          "required": ["type"],
+          "properties": { "type": { "const": "object" } }
+        },
+        "outputSchema": { "type": "object" },
+        "method": { "$ref": "#/$defs/rpcMethod" },
+        "timeoutSeconds": { "type": "integer", "minimum": 0, "maximum": 600 },
+        "readOnly": { "type": "boolean" },
+        "mutating": { "type": "boolean" }
+      },
+      "oneOf": [
+        {
+          "required": ["readOnly"],
+          "properties": { "readOnly": { "const": true }, "mutating": { "const": false } }
+        },
+        {
+          "required": ["mutating"],
+          "properties": { "readOnly": { "const": false }, "mutating": { "const": true } }
+        }
+      ]
+    },
+    "settingOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "label"],
+      "properties": {
+        "value": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 }
+      }
+    },
+    "setting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "type", "scope", "label"],
+      "properties": {
+        "key": { "$ref": "#/$defs/kebabId" },
+        "type": { "enum": ["string", "url", "number", "boolean", "select", "secret"] },
+        "scope": { "enum": ["global", "workspace"] },
+        "label": { "type": "string", "minLength": 1 },
+        "help": { "type": "string" },
+        "required": { "type": "boolean" },
+        "default": true,
+        "environment": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "minimum": { "type": "number" },
+        "maximum": { "type": "number" },
+        "pattern": { "type": "string" },
+        "options": { "type": "array", "items": { "$ref": "#/$defs/settingOption" } }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "select" } }, "required": ["type"] },
+          "then": { "required": ["options"], "properties": { "options": { "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "secret" } }, "required": ["type"] },
+          "then": { "not": { "required": ["default"] } },
+          "else": { "not": { "required": ["environment"] } }
+        }
+      ]
+    },
+    "rpcMethod": {
+      "type": "string",
+      "pattern": "^(?!echo\\.)[A-Za-z][A-Za-z0-9_-]*(?:\\.[A-Za-z][A-Za-z0-9_-]*)*$"
+    },
+    "rpc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method"],
+      "properties": {
+        "method": { "$ref": "#/$defs/rpcMethod" },
+        "timeoutSeconds": { "type": "integer", "minimum": 0, "maximum": 600 }
+      }
+    }
+  }
+}

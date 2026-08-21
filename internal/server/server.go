@@ -18,11 +18,16 @@ import (
 	"github.com/brent/echo/internal/agentmodes"
 	"github.com/brent/echo/internal/appdata"
 	"github.com/brent/echo/internal/auth"
+	"github.com/brent/echo/internal/echoupdate"
 	"github.com/brent/echo/internal/gitservice"
 	"github.com/brent/echo/internal/llm"
+	lspruntime "github.com/brent/echo/internal/lsp"
+	"github.com/brent/echo/internal/lspconfig"
+	"github.com/brent/echo/internal/plugins"
 	"github.com/brent/echo/internal/rebuild"
 	"github.com/brent/echo/internal/settings"
 	terminalruntime "github.com/brent/echo/internal/terminal"
+	"github.com/brent/echo/internal/tools"
 	"github.com/brent/echo/internal/workspacefs"
 	"github.com/brent/echo/internal/workspaces"
 	"github.com/brent/echo/internal/workspaceskills"
@@ -33,37 +38,46 @@ import (
 // directory, hosts JSON API endpoints under /api, and runs a WebSocket hub for
 // real-time events.
 type Server struct {
-	httpServer     *http.Server
-	webDir         string
-	webAssets      iofs.FS
-	hub            *Hub
-	settingsPath   string
-	data           *appdata.Store
-	store          *settings.Store
-	workspaces     *workspaces.Manager
-	fs             *workspacefs.Service
-	watcher        *workspacefs.WatchManager
-	git            *gitservice.Service
-	terminal       *terminalruntime.Service
-	auth           *auth.Manager
-	authDisabled   bool
-	loginLimiter   *loginRateLimiter
-	modes          *agentmodes.Manager
-	sessions       *chatSessionManager
-	llm            chatStreamer
-	llmCompleter   chatCompleter
-	llmSettings    llm.Settings
-	visionLLM      chatStreamer
-	visionSettings llm.Settings
-	visionSeparate bool
-	skillsMu       sync.Mutex
-	skills         map[string]*workspaceskills.Service
-	rebuilder      rebuildCoordinator
-	restartCh      chan struct{}
-	instanceID     string
-	processID      int
-	processArgs    []string
-	workingDir     string
+	httpServer       *http.Server
+	webDir           string
+	webAssets        iofs.FS
+	hub              *Hub
+	settingsPath     string
+	plugins          *plugins.Manager
+	tools            *tools.Registry
+	data             *appdata.Store
+	store            *settings.Store
+	workspaces       *workspaces.Manager
+	fs               *workspacefs.Service
+	watcher          *workspacefs.WatchManager
+	git              *gitservice.Service
+	terminal         *terminalruntime.Service
+	lsp              *lspruntime.Service
+	lspProfiles      *lspconfig.Store
+	auth             *auth.Manager
+	authDisabled     bool
+	loginLimiter     *loginRateLimiter
+	modes            *agentmodes.Manager
+	sessions         *chatSessionManager
+	llm              chatStreamer
+	llmCompleter     chatCompleter
+	llmSettings      llm.Settings
+	researchLLM      chatStreamer
+	researchSettings llm.Settings
+	researchSeparate bool
+	visionLLM        chatStreamer
+	visionSettings   llm.Settings
+	visionSeparate   bool
+	skillsMu         sync.Mutex
+	skills           map[string]*workspaceskills.Service
+	rebuilder        rebuildCoordinator
+	updateChecker    echoUpdateChecker
+	restartCh        chan struct{}
+	terminateCh      chan struct{}
+	instanceID       string
+	processID        int
+	processArgs      []string
+	workingDir       string
 	// settings holds the full normalized settings (all endpoints) so the chat
 	// handler can resolve a user-selected model to its owning endpoint.
 	settings llm.Settings
@@ -89,28 +103,43 @@ func New(addr, webDir string) *Server {
 // to the settings file. When settingsPath is empty, the platform default
 // (echo/echo.json under the user config dir) is used.
 func NewWithSettingsPath(addr, webDir, settingsPath string) *Server {
-	return newServer(addr, webDir, nil, settingsPath)
+	return newServer(addr, webDir, nil, settingsPath, ServerOptions{})
 }
 
 // NewWithAssets constructs a Server that serves an embedded production SPA.
 // The supplied filesystem's root must contain index.html.
 func NewWithAssets(addr string, assets iofs.FS, settingsPath string) *Server {
-	return newServer(addr, "", assets, settingsPath)
+	return newServer(addr, "", assets, settingsPath, ServerOptions{})
 }
 
-func newServer(addr, webDir string, assets iofs.FS, settingsPath string) *Server {
+type ServerOptions struct {
+	SafeMode bool
+}
+
+func NewWithSettingsPathOptions(addr, webDir, settingsPath string, options ServerOptions) *Server {
+	return newServer(addr, webDir, nil, settingsPath, options)
+}
+
+func NewWithAssetsOptions(addr string, assets iofs.FS, settingsPath string, options ServerOptions) *Server {
+	return newServer(addr, "", assets, settingsPath, options)
+}
+
+func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options ServerOptions) *Server {
 	workingDir, _ := os.Getwd()
 	s := &Server{
-		webDir:      webDir,
-		webAssets:   assets,
-		hub:         NewHub(),
-		skills:      make(map[string]*workspaceskills.Service),
-		rebuilder:   rebuild.NewCoordinator(),
-		restartCh:   make(chan struct{}, 1),
-		instanceID:  uuid.NewString(),
-		processID:   os.Getpid(),
-		processArgs: append([]string(nil), os.Args[1:]...),
-		workingDir:  workingDir,
+		webDir:        webDir,
+		webAssets:     assets,
+		hub:           NewHub(),
+		skills:        make(map[string]*workspaceskills.Service),
+		rebuilder:     rebuild.NewCoordinator(),
+		updateChecker: echoupdate.NewChecker(),
+		restartCh:     make(chan struct{}, 1),
+		terminateCh:   make(chan struct{}, 1),
+		instanceID:    uuid.NewString(),
+		processID:     os.Getpid(),
+		processArgs:   append([]string(nil), os.Args[1:]...),
+		workingDir:    workingDir,
+		tools:         tools.CloneDefaultRegistry(),
 	}
 	if settingsPath == "" {
 		path, err := settings.DefaultStorePath()
@@ -124,6 +153,8 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string) *Server
 	s.data = appdata.NewStore(settingsPath)
 	s.store = settings.NewStoreWithData(s.data)
 	s.workspaces = workspaces.NewManagerWithData(s.data)
+	s.lspProfiles = lspconfig.NewStore(s.data)
+	s.lsp = lspruntime.NewService(s.lspProfiles, s.workspaces)
 	s.terminal = terminalruntime.New(s.workspaces, s.data)
 	s.terminal.SetNotifier(func(event terminalruntime.Event) {
 		s.hub.BroadcastWorkspaceTerminal(event.WorkspaceID, event)
@@ -137,6 +168,47 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string) *Server
 		s.hub.BroadcastWorkspaceFS(event.WorkspaceID, event)
 		s.git.InvalidateWorkspace(event.WorkspaceID)
 	})
+	coreToolNames := map[string]bool{}
+	for _, tool := range s.tools.Registered() {
+		coreToolNames[tool.Metadata().Name] = true
+	}
+	pluginManager, pluginErr := plugins.NewManager(plugins.Options{
+		RootDir: filepath.Join(filepath.Dir(settingsPath), "plugins"), CoreToolNames: coreToolNames,
+		SafeMode: options.SafeMode, Builtins: plugins.BuiltinPackages(),
+		WorkspacePath: func(workspaceID string) (string, error) {
+			workspace, ok, err := s.workspaces.Get(workspaceID)
+			if err != nil {
+				return "", err
+			}
+			if !ok {
+				return "", fmt.Errorf("workspace %q was not found", workspaceID)
+			}
+			return workspace.MainPath, nil
+		},
+		WorkspaceIDs: func() []string {
+			workspaces, err := s.workspaces.List()
+			if err != nil {
+				return nil
+			}
+			ids := make([]string, 0, len(workspaces))
+			for _, workspace := range workspaces {
+				ids = append(ids, workspace.ID)
+			}
+			return ids
+		},
+		Notify: func() { s.hub.Broadcast(map[string]any{"type": "plugins_changed"}) },
+		RuntimeEvent: func(event plugins.RuntimeEvent) {
+			s.hub.Broadcast(map[string]any{"type": "plugin_runtime_event", "event": event})
+		},
+	})
+	if pluginErr != nil {
+		logf("initialize plugins: %v", pluginErr)
+	} else {
+		s.plugins = pluginManager
+		if err := s.plugins.BindTools(s.tools); err != nil {
+			logf("register plugin tools: %v", err)
+		}
+	}
 	authManager, authErr := auth.New(s.data)
 	s.auth = authManager
 	if authErr != nil {
@@ -146,6 +218,7 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string) *Server
 	s.modes = agentmodes.NewManager()
 	s.sessions = newChatSessionManager(s)
 	s.initLLM()
+	s.lsp.StartActiveWorkspace()
 	s.httpServer = &http.Server{
 		Addr:              addr,
 		Handler:           s.routes(),
@@ -167,10 +240,13 @@ func (s *Server) initLLM() {
 	cfg = cfg.NormalizedEndpointProfiles()
 	s.settings = cfg
 	s.llmSettings = cfg.ForInteraction(llm.InteractionChat)
+	s.researchSettings = cfg.ForInteraction(llm.InteractionResearch)
 	s.visionSettings = cfg.ForInteraction(llm.InteractionVision)
 	s.llm = nil
 	s.llmCompleter = nil
+	s.researchLLM = nil
 	s.visionLLM = nil
+	s.researchSeparate = cfg.EndpointSelection.Research != cfg.EndpointSelection.Chat
 	s.visionSeparate = cfg.EndpointSelection.Vision != cfg.EndpointSelection.Chat
 	client, err := llm.NewClient(s.llmSettings)
 	if err != nil {
@@ -179,6 +255,16 @@ func (s *Server) initLLM() {
 	}
 	s.llm = client
 	s.llmCompleter = client
+	if !s.researchSeparate {
+		s.researchLLM = client
+	} else {
+		researchClient, researchErr := llm.NewClient(s.researchSettings)
+		if researchErr != nil {
+			logf("init research llm client: %v", researchErr)
+		} else {
+			s.researchLLM = researchClient
+		}
+	}
 	if !s.visionSeparate {
 		s.visionLLM = client
 		return
@@ -189,6 +275,13 @@ func (s *Server) initLLM() {
 		return
 	}
 	s.visionLLM = visionClient
+}
+
+func (s *Server) researchChat() (llm.Settings, chatStreamer) {
+	if !s.researchSeparate {
+		return s.researchSettings, s.llm
+	}
+	return s.researchSettings, s.researchLLM
 }
 
 // settingsForModel returns the settings for the endpoint that owns the given
@@ -224,11 +317,30 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/echo", s.handleEcho)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
+	mux.HandleFunc("GET /api/lsp/profiles", s.handleGetLSPProfiles)
+	mux.HandleFunc("POST /api/lsp/profiles", s.handleCreateLSPProfile)
+	mux.HandleFunc("PUT /api/lsp/profiles/{profileId}", s.handleUpdateLSPProfile)
+	mux.HandleFunc("DELETE /api/lsp/profiles/{profileId}", s.handleDeleteLSPProfile)
+	mux.HandleFunc("GET /api/development/update-status", s.handleEchoUpdateStatus)
+	mux.HandleFunc("POST /api/development/update", s.handleEchoUpdate)
 	mux.HandleFunc("POST /api/development/rebuild-relaunch", s.handleRebuildRelaunch)
+	mux.HandleFunc("POST /api/development/terminate", s.handleTerminateEcho)
 	mux.HandleFunc("GET /api/agent-modes", s.handleGetAgentModes)
 	mux.HandleFunc("POST /api/agent-modes", s.handleCreateAgentMode)
 	mux.HandleFunc("PUT /api/agent-modes/{id}", s.handleUpdateAgentMode)
 	mux.HandleFunc("DELETE /api/agent-modes/{id}", s.handleDeleteAgentMode)
+	mux.HandleFunc("GET /api/plugins", s.handlePluginCatalog)
+	mux.HandleFunc("POST /api/plugins/stages", s.handlePluginStage)
+	mux.HandleFunc("POST /api/plugins/stages/{stageId}/approve", s.handlePluginApprove)
+	mux.HandleFunc("DELETE /api/plugins/stages/{stageId}", s.handlePluginReject)
+	mux.HandleFunc("POST /api/plugins/{id}/actions", s.handlePluginAction)
+	mux.HandleFunc("PUT /api/plugins/{id}/config", s.handlePluginConfig)
+	mux.HandleFunc("GET /api/plugins/{id}/logs", s.handlePluginLog)
+	mux.HandleFunc("GET /api/plugins/{id}/icon/{viewId}", s.handlePluginIcon)
+	mux.HandleFunc("POST /api/plugins/{id}/views/{viewId}/sessions", s.handlePluginUISession)
+	mux.HandleFunc("POST /api/plugins/ui-sessions/{token}/bridge", s.handlePluginUIBridge)
+	mux.HandleFunc("DELETE /api/plugins/ui-sessions/{token}", s.handlePluginUIClose)
+	mux.HandleFunc("POST /api/plugins/{id}/remove-data", s.handlePluginRemoveData)
 
 	// Workspace endpoints.
 	mux.HandleFunc("GET /api/workspaces", s.handleGetWorkspaces)
@@ -248,6 +360,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/workspaces/{id}/fs/reveal", s.handleFSReveal)
 	mux.HandleFunc("GET /api/workspaces/{id}/fs/media", s.handleFSMedia)
 	mux.HandleFunc("GET /api/workspaces/{id}/fs/search", s.handleFSSearch)
+	mux.HandleFunc("POST /api/workspaces/{id}/fs/text-search", s.handleFSTextSearch)
+	mux.HandleFunc("POST /api/workspaces/{id}/fs/text-replace", s.handleFSTextReplace)
+	mux.HandleFunc("GET /api/workspaces/{id}/lsp/config", s.handleGetWorkspaceLSPConfig)
+	mux.HandleFunc("PUT /api/workspaces/{id}/lsp/config", s.handlePutWorkspaceLSPConfig)
+	mux.HandleFunc("POST /api/workspaces/{id}/lsp/{profileId}/restart", s.handleRestartLSP)
+	mux.HandleFunc("GET /api/workspaces/{id}/lsp/ws", s.handleLSPWebSocket)
 	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories", s.handleGitRepositories)
 	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories/{repositoryId}/status", s.handleGitStatus)
 	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories/{repositoryId}/diff", s.handleGitDiff)
@@ -275,6 +393,7 @@ func (s *Server) routes() http.Handler {
 
 	// WebSocket endpoint for real-time push.
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
+	mux.HandleFunc("GET /plugin-ui/{token}/{path...}", s.handlePluginUIAsset)
 
 	// Static assets from the web directory.
 	var fileServer http.Handler
@@ -289,7 +408,7 @@ func (s *Server) routes() http.Handler {
 	// enabling client-side routing.
 	spa := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Never rewrite API or WebSocket paths.
-		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/ws" {
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/plugin-ui/") || r.URL.Path == "/ws" {
 			mux.ServeHTTP(w, r)
 			return
 		}
@@ -359,14 +478,35 @@ func (s *Server) requestRestart() {
 	}
 }
 
+// TerminationRequested is consumed by the host lifecycle when the owner asks
+// Echo to exit without starting a replacement process.
+func (s *Server) TerminationRequested() <-chan struct{} {
+	return s.terminateCh
+}
+
+func (s *Server) requestTermination() {
+	select {
+	case s.terminateCh <- struct{}{}:
+	default:
+	}
+}
+
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.watcher.Close()
 	s.git.Close()
 	s.fs.Close()
 	s.sessions.shutdown(ctx)
+	if err := s.lsp.Shutdown(ctx); err != nil && ctx.Err() == nil {
+		logf("language server shutdown: %v", err)
+	}
 	if err := s.terminal.Shutdown(ctx); err != nil && ctx.Err() == nil {
 		logf("terminal shutdown: %v", err)
+	}
+	if s.plugins != nil {
+		if err := s.plugins.Shutdown(ctx); err != nil && ctx.Err() == nil {
+			logf("plugin shutdown: %v", err)
+		}
 	}
 	s.hub.Shutdown()
 	return s.httpServer.Shutdown(ctx)
@@ -380,6 +520,7 @@ func (s *Server) refreshWorkspaceCaches(ctx context.Context, workspaceID string)
 		logf("refresh git workspace %s: %v", workspaceID, err)
 	}
 	s.fs.RefreshWorkspace(workspaceID)
+	s.lsp.RefreshWorkspace(workspaceID)
 	s.skillsMu.Lock()
 	delete(s.skills, workspaceID)
 	s.skillsMu.Unlock()

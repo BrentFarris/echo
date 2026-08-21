@@ -48,7 +48,19 @@ func TestWorkspaceStoreRoundTripPreservesOrderAndActiveTab(t *testing.T) {
 		Version: WorkspaceVersion, WorkspaceID: "ws-1", Revision: 7, ActiveChatID: "chat-b",
 		Tabs: []TabTranscript{
 			{ChatID: "chat-a", Preview: "first prompt", Turns: []Turn{}, Messages: []llm.Message{}},
-			{ChatID: "chat-b", Preview: "latest prompt", Revision: 3, Turns: []Turn{}, Messages: []llm.Message{{Role: llm.RoleUser, Content: "latest prompt"}}},
+			{
+				ChatID: "chat-b", Preview: "latest prompt", Revision: 3,
+				Turns: []Turn{{ID: "turn-b", UserContent: "latest prompt", UserMessageIndex: 2}},
+				Messages: []llm.Message{
+					{Role: llm.RoleUser, Content: "opening"},
+					{Role: llm.RoleAssistant, Content: "older answer"},
+					{Role: llm.RoleUser, Content: "latest prompt"},
+				},
+				ContextCheckpoint: &ContextCheckpoint{
+					Summary: "## Goal\nContinue", ProtectedHeadIndex: 0, CompactedThrough: 2,
+					Endpoint: "http://localhost/v1", Model: "model", BeforeTokens: 4000, AfterTokens: 1200,
+				},
+			},
 		},
 	}
 	if err := store.Save(want); err != nil {
@@ -60,6 +72,9 @@ func TestWorkspaceStoreRoundTripPreservesOrderAndActiveTab(t *testing.T) {
 	}
 	if got.ActiveChatID != "chat-b" || len(got.Tabs) != 2 || got.Tabs[0].ChatID != "chat-a" || got.Tabs[1].Preview != "latest prompt" {
 		t.Fatalf("unexpected workspace round trip: %#v", got)
+	}
+	if got.Tabs[1].ContextCheckpoint == nil || got.Tabs[1].ContextCheckpoint.Summary != "## Goal\nContinue" || got.Tabs[1].Turns[0].UserMessageIndex != 2 || len(got.Tabs[1].Messages) != 3 {
+		t.Fatalf("raw history or context checkpoint changed during round trip: %#v", got.Tabs[1])
 	}
 }
 
@@ -175,7 +190,7 @@ func TestWorkspaceStoreMigratesVersionOneAndPreservesNormalTabs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"version": 2`) {
+	if !strings.Contains(string(data), `"version": 3`) {
 		t.Fatalf("migration was not persisted: %s", data)
 	}
 }

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Calculator</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="calculator" aria-label="Calculator">
+    <div class="history" id="history" aria-live="polite"></div>
+    <output class="display" id="display" aria-live="polite">0</output>
+    <div class="keys" id="keys">
+      <button data-action="clear" class="utility">AC</button>
+      <button data-action="backspace" class="utility" aria-label="Backspace">⌫</button>
+      <button data-value="(" class="utility">(</button>
+      <button data-value=")" class="utility">)</button>
+      <button data-value="7">7</button><button data-value="8">8</button><button data-value="9">9</button><button data-value="/" class="operator">÷</button>
+      <button data-value="4">4</button><button data-value="5">5</button><button data-value="6">6</button><button data-value="*" class="operator">×</button>
+      <button data-value="1">1</button><button data-value="2">2</button><button data-value="3">3</button><button data-value="-" class="operator">−</button>
+      <button data-value="0" class="wide">0</button><button data-value=".">.</button><button data-value="+" class="operator">+</button>
+      <button data-action="equals" class="equals">=</button>
+    </div>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

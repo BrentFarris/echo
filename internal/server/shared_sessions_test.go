@@ -23,6 +23,15 @@ type gatedStreamer struct {
 	once    sync.Once
 }
 
+type errorStreamer struct{}
+
+func (errorStreamer) StreamChat(context.Context, llm.ChatRequest) *llm.Stream {
+	events := make(chan llm.StreamEvent, 1)
+	events <- llm.StreamEvent{Type: llm.EventError, Error: "model failed"}
+	close(events)
+	return &llm.Stream{ID: "error", Events: events}
+}
+
 func (f *gatedStreamer) StreamChat(ctx context.Context, _ llm.ChatRequest) *llm.Stream {
 	events := make(chan llm.StreamEvent, 4)
 	events <- llm.StreamEvent{Type: llm.EventReasoning, Content: "thinking"}
@@ -85,6 +94,133 @@ func readUntilSessionEvent(t *testing.T, conn *websocket.Conn, eventType string)
 		if event["type"] == eventType {
 			return event
 		}
+	}
+}
+
+func readUntilMessageType(t *testing.T, conn *websocket.Conn, messageType string) map[string]any {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for {
+		var message map[string]any
+		if err := conn.ReadJSON(&message); err != nil {
+			t.Fatalf("read %s message: %v", messageType, err)
+		}
+		if message["type"] == messageType {
+			return message
+		}
+	}
+}
+
+func TestSuccessfulChatCompletionBroadcastsExactInactiveAndCodeTargets(t *testing.T) {
+	s, _ := newTestServer(t)
+	workspace := createChatWorkspace(t, s, "completion-targets")
+	fake := &gatedStreamer{started: make(chan struct{}), release: make(chan struct{})}
+	s.llm = fake
+	url := startWebSocketTestServer(t, s)
+	chatClient := dialSharedClient(t, url)
+	observer := dialSharedClient(t, url)
+
+	if err := chatClient.WriteJSON(map[string]any{"type": "session_subscribe", "workspaceId": workspace.ID}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := readChatSnapshot(t, chatClient)
+	firstChatID := snapshot["activeChatId"].(string)
+	if err := chatClient.WriteJSON(map[string]any{
+		"type": "chat_send", "workspaceId": workspace.ID, "chatId": firstChatID,
+		"requestId": "completion-main", "message": "finish in the background",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	readSessionEventForChat(t, chatClient, firstChatID, "token")
+	if err := chatClient.WriteJSON(map[string]any{"type": "chat_tab_create", "workspaceId": workspace.ID}); err != nil {
+		t.Fatal(err)
+	}
+	created := readChatSnapshot(t, chatClient)
+	if created["activeChatId"] == firstChatID {
+		t.Fatalf("expected the running chat to become inactive: %v", created)
+	}
+	close(fake.release)
+
+	mainCompletion := readUntilMessageType(t, observer, "chat_completed")
+	if mainCompletion["workspaceId"] != workspace.ID || mainCompletion["workspaceName"] != workspace.Name ||
+		mainCompletion["surface"] != "chat" || mainCompletion["chatId"] != firstChatID ||
+		mainCompletion["preview"] != "finish in the background" {
+		t.Fatalf("unexpected main completion target: %v", mainCompletion)
+	}
+
+	s.llm = &historyStreamer{}
+	codeClient := dialSharedClient(t, url)
+	codeSnapshot := subscribeCodeChat(t, codeClient, workspace.ID)
+	codeChatID := codeSnapshot["activeChatId"].(string)
+	if err := codeClient.WriteJSON(map[string]any{
+		"type": "chat_send", "surface": "code", "workspaceId": workspace.ID, "chatId": codeChatID,
+		"requestId": "completion-code", "message": "review code completion",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	codeCompletion := readUntilMessageType(t, observer, "chat_completed")
+	if codeCompletion["surface"] != "code" || codeCompletion["chatId"] != codeChatID ||
+		codeCompletion["turnId"] == "" || codeCompletion["completedAt"] == nil {
+		t.Fatalf("unexpected code completion target: %v", codeCompletion)
+	}
+}
+
+func TestStoppedChatDoesNotBroadcastCompletion(t *testing.T) {
+	s, _ := newTestServer(t)
+	workspace := createChatWorkspace(t, s, "no-stopped-completion")
+	started := make(chan struct{})
+	s.llm = &cancellableStreamer{started: started}
+	url := startWebSocketTestServer(t, s)
+	chatClient := dialSharedClient(t, url)
+	observer := dialSharedClient(t, url)
+	subscribeChat(t, chatClient, workspace.ID)
+	if err := chatClient.WriteJSON(map[string]any{
+		"type": "chat_send", "workspaceId": workspace.ID, "requestId": "completion-stop", "message": "stop me",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("chat did not start")
+	}
+	if err := chatClient.WriteJSON(map[string]any{"type": "chat_stop", "workspaceId": workspace.ID}); err != nil {
+		t.Fatal(err)
+	}
+	finished := readUntilSessionEvent(t, chatClient, "turn_finished")
+	if finished["status"] != "stopped" {
+		t.Fatalf("expected stopped turn, got %v", finished)
+	}
+
+	observer.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	var message map[string]any
+	if err := observer.ReadJSON(&message); err == nil {
+		t.Fatalf("stopped chat unexpectedly broadcast a global event: %v", message)
+	}
+}
+
+func TestFailedChatDoesNotBroadcastCompletion(t *testing.T) {
+	s, _ := newTestServer(t)
+	workspace := createChatWorkspace(t, s, "no-failed-completion")
+	s.llm = errorStreamer{}
+	url := startWebSocketTestServer(t, s)
+	chatClient := dialSharedClient(t, url)
+	observer := dialSharedClient(t, url)
+	subscribeChat(t, chatClient, workspace.ID)
+	if err := chatClient.WriteJSON(map[string]any{
+		"type": "chat_send", "workspaceId": workspace.ID, "requestId": "completion-error", "message": "fail me",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finished := readUntilSessionEvent(t, chatClient, "turn_finished")
+	if finished["status"] != "error" {
+		t.Fatalf("expected failed turn, got %v", finished)
+	}
+
+	observer.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	var message map[string]any
+	if err := observer.ReadJSON(&message); err == nil {
+		t.Fatalf("failed chat unexpectedly broadcast a global event: %v", message)
 	}
 }
 

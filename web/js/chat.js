@@ -10,6 +10,8 @@ import {
 import { copyText, toast } from "../src/code/ui.ts";
 import { attachVideoVolumeControl } from "../src/mediaVolume.ts";
 import { icons } from "./icons.js";
+import { del, post } from "./api.js";
+import { refreshPluginCatalog } from "../src/plugins/catalog.ts";
 
 let binding = null;
 let activeStream = null;
@@ -63,12 +65,17 @@ export function onChatCommandError(cb) {
   return () => commandErrorListeners.delete(cb);
 }
 
+function activeBindingChatBusy() {
+  return Boolean(binding?.tabs.find((tab) => tab.chatId === binding.activeChatId)?.busy);
+}
+
 export function canClearChat(log) {
   return Boolean(
     binding?.log === log
     && binding.workspaceId
     && binding.hasSnapshot
     && binding.turns.size > 0
+    && !activeBindingChatBusy()
     && activeStream == null,
   );
 }
@@ -105,6 +112,7 @@ export function openWorkspaceSession(log, workspaceId, options = {}) {
   setStreaming(false);
   binding = {
     log, workspaceId: workspaceId || "", surface: options.surface === "code" ? "code" : "chat",
+    onActivateFile: typeof options.onActivateFile === "function" ? options.onActivateFile : null,
     sequence: 0, hasSnapshot: false,
     activeChatId: "", tabs: [], turns: new Map(),
   };
@@ -182,13 +190,26 @@ ws.on("session_event", (message) => {
   const event = message.event || {};
   const chatId = message.chatId || binding.activeChatId;
   const tab = binding.tabs.find((candidate) => candidate.chatId === chatId);
+  let tabStateChanged = false;
   if (tab && (event.type === "turn_started" || event.type === "turn_rerun_started" || event.type === "turn_edit_started")) {
     tab.preview = normalizePreview(event.message) || "New chat";
     tab.busy = true;
+    tabStateChanged = true;
+  } else if (tab && event.type === "context_compression_started" && event.compression?.phase === "idle") {
+    tab.busy = true;
+    tabStateChanged = true;
+  } else if (tab && ["context_compression_completed", "context_compression_skipped", "context_compression_failed"].includes(event.type) && event.compression?.phase === "idle") {
+    tab.busy = false;
+    tabStateChanged = true;
   } else if (tab && event.type === "turn_finished") {
     tab.busy = false;
+    tabStateChanged = true;
   }
-  emitWorkspaceState();
+  // Workspace listeners rebuild the tab strip. Rebuilding it for every streamed
+  // token can replace a tab button between pointerdown and click, which makes
+  // tab activation and close controls appear unresponsive while a reply runs.
+  // Only notify listeners when the public tab state actually changed.
+  if (tabStateChanged) emitWorkspaceState();
   if (chatId === binding.activeChatId) {
     applyEvent(event);
   }
@@ -250,8 +271,24 @@ function applyEvent(event) {
       appendToolMedia(findStream(event.turnId), event.images, event.videos);
       completeToolCall(findStream(event.turnId), event, event.turn);
       break;
+    case "research_agent_status":
+      updateResearchAgentStatus(findStream(event.turnId), event.researchAgent || {});
+      break;
+    case "research_agents_clear":
+      clearResearchAgentStatuses(findStream(event.turnId));
+      break;
+    case "research_reasoning":
+      appendResearchReasoning(findStream(event.turnId), event);
+      break;
     case "plan_questions_resolved":
       resolvePlanQuestionItem(findStream(event.turnId), event, event.turn);
+      break;
+    case "context_compression_queued":
+    case "context_compression_started":
+    case "context_compression_completed":
+    case "context_compression_skipped":
+    case "context_compression_failed":
+      upsertCompressionActivity(findStream(event.turnId), event.compression || {});
       break;
     case "turn_finished": {
       const stream = findStream(event.turnId);
@@ -267,7 +304,7 @@ export function sendMessage(log, text, model, agentModeId, options = {}) {
   text = text.trim();
   const images = Array.isArray(options.images) ? options.images : [];
   const videos = Array.isArray(options.videos) ? options.videos : [];
-  if ((!text && images.length === 0 && videos.length === 0) || activeStream || !binding?.workspaceId || !binding.activeChatId || binding.log !== log) return false;
+  if ((!text && images.length === 0 && videos.length === 0) || activeStream || activeBindingChatBusy() || !binding?.workspaceId || !binding.activeChatId || binding.log !== log) return false;
   const requestId = globalThis.crypto?.randomUUID?.() || `request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return ws.send({
     type: "chat_send", workspaceId: binding.workspaceId, chatId: binding.activeChatId, requestId,
@@ -293,6 +330,10 @@ function renderStoredTurn(turn, active) {
     assistantDeleted: Boolean(turn.assistantDeleted),
   });
   binding.turns.set(turn.id, stream);
+  const compressions = turn.assistantDeleted ? [] : (turn.compressions || []);
+  for (const activity of compressions.filter((item) => item.phase !== "idle" && item.afterAssistantNumber == null)) {
+    upsertCompressionActivity(stream, activity);
+  }
   for (const assistant of turn.assistantDeleted ? [] : (turn.assistantTurns || [])) {
     startTurn(stream, assistant.number);
     appendReasoning(stream, assistant.number, assistant.reasoning || "");
@@ -312,8 +353,36 @@ function renderStoredTurn(turn, active) {
       }
     }
     appendToolMedia(stream, assistant.images, assistant.videos);
+    for (const activity of compressions.filter((item) => item.phase !== "idle" && item.afterAssistantNumber === assistant.number)) {
+      upsertCompressionActivity(stream, activity);
+    }
   }
+  for (const reasoning of turn.assistantDeleted ? [] : (turn.researchReasoning || [])) {
+    appendResearchReasoning(stream, {
+      agentId: reasoning.agentId, agentName: reasoning.agentName,
+      content: reasoning.reasoning || "", replace: true, truncated: Boolean(reasoning.truncated),
+    }, true);
+  }
+  for (const tool of turn.assistantDeleted ? [] : (turn.researchTools || [])) {
+    const data = {
+      callId: tool.callId, callOrder: tool.callOrder, tool: tool.name,
+      arguments: tool.arguments || "", status: tool.status, agentId: tool.agentId,
+      agentName: tool.agentName, research: true,
+    };
+    appendToolCall(stream, data);
+    if (tool.status !== "running") {
+      completeToolCall(stream, { ...data, success: tool.success, content: tool.result || "" });
+    }
+  }
+  for (const activity of compressions.filter((item) => item.phase === "idle" || (
+    item.afterAssistantNumber != null
+    && !(turn.assistantTurns || []).some((assistant) => assistant.number === item.afterAssistantNumber)
+  ))) {
+    upsertCompressionActivity(stream, activity);
+  }
+  if (!turn.assistantDeleted) recordFileChanges(stream, turn.fileChanges);
   if (active || turn.status === "streaming") {
+    for (const agent of turn.researchAgents || []) updateResearchAgentStatus(stream, agent);
     activeStream = stream;
     return;
   }
@@ -356,6 +425,24 @@ function createMessageEl(role, text, images = [], videos = [], options = {}) {
     body.appendChild(content);
   }
   return el;
+}
+
+export function canCompressChat(log) {
+  return Boolean(
+    binding?.log === log
+    && binding.workspaceId
+    && binding.surface === "chat"
+    && binding.hasSnapshot
+    && binding.turns.size > 0,
+  );
+}
+
+export function compressChat(log, model) {
+  if (!canCompressChat(log)) return false;
+  return ws.send({
+    type: "chat_compress", workspaceId: binding.workspaceId, chatId: binding.activeChatId,
+    ...(model ? { model } : {}),
+  });
 }
 
 function createMessageActions(message, role) {
@@ -499,6 +586,9 @@ function createTurnView(turnId, userText, images = [], videos = [], options = {}
     content: el.querySelector(".chat-final-content"), done: false,
     currentTurn: null, finalTurn: null, turns: new Map(), tools: new Map(),
     mediaZone: null, mediaSeen: new Set(),
+    compressions: new Map(),
+    fileChanges: [],
+    researchAgents: new Map(), researchReasoning: new Map(), researchStatusContainer: null,
   };
 }
 
@@ -526,6 +616,7 @@ function beginMessageEdit(message, role) {
     toast("Message has no editable text.", { sticky: true });
     return;
   }
+  message.classList.add("is-editing");
 
   const form = document.createElement("form");
   form.className = "chat-edit-form";
@@ -557,6 +648,7 @@ function beginMessageEdit(message, role) {
   const close = () => {
     form.remove();
     content.hidden = false;
+    message.classList.remove("is-editing");
   };
   cancel.addEventListener("click", close);
   textarea.addEventListener("keydown", (event) => {
@@ -588,6 +680,7 @@ function beginMessageEdit(message, role) {
       ...(binding.surface === "code" ? { surface: "code" } : {}),
     });
     if (!sent) toast("Could not send the edit request.", { sticky: true });
+    else message.classList.remove("is-editing");
   });
   textarea.focus();
   textarea.setSelectionRange(textarea.value.length, textarea.value.length);
@@ -792,7 +885,10 @@ function startTurn(stream, number) {
 
 function ensureTurn(stream, number) {
   let turn = stream.turns.get(number);
-  if (turn) return turn;
+  if (turn) {
+    if (!turn.el.isConnected && stream.timeline.isConnected) stream.timeline.appendChild(turn.el);
+    return turn;
+  }
   const el = document.createElement("div");
   el.className = "chat-turn";
   el.dataset.turn = String(number);
@@ -851,12 +947,185 @@ function createReasoningItem() {
   return { details, label, body, text: "", complete: false };
 }
 
+function ensureCompressionTimeline(stream) {
+  if (!stream || stream.timeline.isConnected) return;
+  const body = stream.content?.parentElement;
+  if (!body) return;
+  const work = document.createElement("details");
+  work.className = "chat-work-disclosure";
+  const summary = document.createElement("summary");
+  summary.textContent = "Show work";
+  const content = document.createElement("div");
+  content.className = "chat-work-content";
+  stream.timeline.hidden = false;
+  content.appendChild(stream.timeline);
+  work.append(summary, content);
+  body.insertBefore(work, stream.content);
+}
+
+function compressionActivityHost(stream, activity) {
+  ensureCompressionTimeline(stream);
+  if (!stream?.timeline.isConnected) return null;
+  stream.timeline.hidden = false;
+  if (activity.phase === "idle") return stream.timeline;
+  return ensureTurn(stream, Number.isInteger(activity.afterAssistantNumber) ? activity.afterAssistantNumber : 0).el;
+}
+
+function formatCompressionTokens(value) {
+  const count = Number(value) || 0;
+  return count.toLocaleString();
+}
+
+function formatCompressionDuration(value) {
+  const milliseconds = Number(value) || 0;
+  if (milliseconds < 1000) return `${milliseconds} ms`;
+  return `${(milliseconds / 1000).toFixed(milliseconds < 10000 ? 1 : 0)} s`;
+}
+
+function updateCompressionItem(item, activity) {
+  const status = String(activity.status || "queued");
+  item.details.className = `chat-activity-item chat-compression-item is-${status}${status === "queued" || status === "running" ? " is-running" : ""}`;
+  item.details.dataset.compressionId = activity.id || "";
+  const names = {
+    queued: "Context compression queued",
+    running: "Compressing context…",
+    completed: "Context compressed",
+    skipped: "Context compression skipped",
+    failed: "Context compression failed",
+  };
+  item.name.textContent = names[status] || "Context compression";
+  if (status === "completed") {
+    const before = Number(activity.beforeTokens) || 0;
+    const after = Number(activity.afterTokens) || 0;
+    const reclaimedPercent = before > 0 ? Math.round(((before - after) / before) * 100) : 0;
+    item.status.textContent = `${formatCompressionTokens(before)} → ${formatCompressionTokens(after)} tokens · ${reclaimedPercent}% reclaimed · ${formatCompressionDuration(activity.durationMs)}`;
+  } else if (status === "running") {
+    item.status.textContent = "Summarizing safe history…";
+  } else if (status === "queued") {
+    item.status.textContent = "Waiting for a safe response boundary…";
+  } else {
+    item.status.textContent = activity.error || (status === "skipped" ? "Nothing safe to compress" : "Compression did not complete");
+  }
+  const metrics = [];
+  metrics.push(`${activity.trigger === "manual" ? "Manual" : "Automatic"} trigger${activity.thresholdPercent ? ` · ${activity.thresholdPercent}% threshold` : ""}`);
+  if (activity.beforeTokens || activity.afterTokens) {
+    metrics.push(`Context estimate: ${formatCompressionTokens(activity.beforeTokens)} before, ${formatCompressionTokens(activity.afterTokens)} after`);
+  }
+  if (activity.usageSource) metrics.push(`Usage source: ${activity.usageSource}`);
+  if (status === "completed") metrics.push(activity.recoveryAvailable ? "Compacted raw history remains searchable." : "History recovery is unavailable.");
+  if (activity.error && !item.status.textContent.includes(activity.error)) metrics.push(activity.error);
+  item.body.replaceChildren(...metrics.map((value) => {
+    const line = document.createElement("p");
+    line.textContent = value;
+    return line;
+  }));
+}
+
+function upsertCompressionActivity(stream, activity) {
+  if (!stream || !activity?.id) return;
+  let item = stream.compressions.get(activity.id);
+  if (!item) {
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    const name = document.createElement("span");
+    name.className = "chat-activity-name";
+    const status = document.createElement("span");
+    status.className = "chat-activity-status";
+    status.setAttribute("aria-live", "polite");
+    const body = document.createElement("div");
+    body.className = "chat-activity-body chat-compression-metrics";
+    summary.append(name, status);
+    details.append(summary, body);
+    item = { details, name, status, body };
+    stream.compressions.set(activity.id, item);
+  }
+  updateCompressionItem(item, activity);
+  compressionActivityHost(stream, activity)?.appendChild(item.details);
+}
+
 function completeReasoning(turn) {
   const reasoning = turn?.reasoning;
   if (!reasoning || reasoning.complete) return;
   reasoning.complete = true;
   reasoning.label.textContent = "Thinking";
   reasoning.details.classList.remove("is-running");
+}
+
+function updateResearchAgentStatus(stream, agent) {
+  if (!stream || !agent?.id) return;
+  const status = String(agent.status || "running");
+  const active = status === "queued" || status === "running" || status === "summarizing";
+  if (!active) {
+    stream.researchAgents.get(agent.id)?.remove();
+    stream.researchAgents.delete(agent.id);
+    if (stream.researchStatusContainer && !stream.researchStatusContainer.childElementCount) {
+      stream.researchStatusContainer.remove();
+      stream.researchStatusContainer = null;
+    }
+    const reasoning = stream.researchReasoning.get(agent.id);
+    if (reasoning) {
+      reasoning.details.classList.remove("is-running");
+      reasoning.label.textContent = `${reasoning.agentName} thinking`;
+    }
+    return;
+  }
+  if (!stream.researchStatusContainer) {
+    const container = document.createElement("div");
+    container.className = "chat-research-statuses";
+    stream.timeline.hidden = false;
+    stream.timeline.appendChild(container);
+    stream.researchStatusContainer = container;
+  }
+  let chip = stream.researchAgents.get(agent.id);
+  if (!chip) {
+    chip = document.createElement("span");
+    chip.className = "chat-research-status";
+    stream.researchAgents.set(agent.id, chip);
+    stream.researchStatusContainer.appendChild(chip);
+  }
+  chip.className = `chat-research-status is-${status}`;
+  chip.textContent = `${agent.name || "Researcher"}${agent.phase ? ` · ${agent.phase}` : ` · ${status}`}`;
+  chip.title = agent.taskLabel || agent.error || chip.textContent;
+}
+
+function clearResearchAgentStatuses(stream) {
+  if (!stream) return;
+  stream.researchStatusContainer?.remove();
+  stream.researchStatusContainer = null;
+  stream.researchAgents.clear();
+  for (const item of stream.researchReasoning.values()) {
+    item.details.classList.remove("is-running");
+    item.label.textContent = `${item.agentName} thinking`;
+  }
+}
+
+function appendResearchReasoning(stream, data, complete = false) {
+  if (!stream || !data?.agentId || !data.content) return;
+  let item = stream.researchReasoning.get(data.agentId);
+  if (!item) {
+    const details = document.createElement("details");
+    details.className = "chat-activity-item chat-reasoning-item chat-research-reasoning is-running";
+    const summary = document.createElement("summary");
+    const label = document.createElement("span");
+    label.className = "chat-activity-name";
+    const agentName = data.agentName || "Researcher";
+    label.textContent = `${agentName} thinking…`;
+    summary.appendChild(label);
+    const body = document.createElement("div");
+    body.className = "chat-activity-body chat-reasoning-content";
+    details.append(summary, body);
+    item = { details, label, body, text: "", agentName };
+    stream.researchReasoning.set(data.agentId, item);
+    stream.timeline.hidden = false;
+    stream.timeline.appendChild(details);
+  }
+  item.text = data.replace ? data.content : item.text + data.content;
+  item.body.textContent = item.text;
+  if (data.truncated) item.details.classList.add("is-truncated");
+  if (complete) {
+    item.details.classList.remove("is-running");
+    item.label.textContent = `${item.agentName} thinking`;
+  }
 }
 
 function endTurn(stream, turnNumber, hasToolCalls) {
@@ -902,20 +1171,21 @@ function appendToolCall(stream, data, turnNumber) {
     : null;
   const item = questionSet
     ? createPlanQuestionItem(questionSet)
-    : createToolItem(data.tool || "tool", data.arguments || "");
+    : createToolItem(data.tool || "tool", data.arguments || "", data.agentName || "");
+  if (data.research) item.details.classList.add("is-research-tool");
   item.details.dataset.callId = callId;
   stream.timeline.hidden = false;
   stream.timeline.appendChild(item.details);
   stream.tools.set(callId, item);
 }
 
-function createToolItem(toolName, args) {
+function createToolItem(toolName, args, agentName = "") {
   const details = document.createElement("details");
   details.className = "chat-activity-item chat-tool-item is-running";
   const summary = document.createElement("summary");
   const name = document.createElement("span");
   name.className = "chat-activity-name";
-  name.textContent = toolName;
+  name.textContent = agentName ? `${agentName} · ${toolName}` : toolName;
   const status = document.createElement("span");
   status.className = "chat-activity-status";
   status.textContent = "Running…";
@@ -927,7 +1197,7 @@ function createToolItem(toolName, args) {
   const result = createToolSection("Result", "Waiting for result…");
   body.appendChild(result.section);
   details.appendChild(body);
-  return { details, status, result: result.content };
+  return { details, body, status, result: result.content, toolName };
 }
 
 function normalizePlanQuestionSet(value, args, callId) {
@@ -1089,6 +1359,7 @@ function createToolSection(labelText, value) {
 
 function completeToolCall(stream, data, turnNumber) {
   if (!stream) return;
+  recordFileChanges(stream, data.fileChanges);
   const callOrder = Number.isInteger(data.callOrder) ? data.callOrder : stream.tools.size;
   const callId = data.callId || `turn-${turnNumber}-call-${callOrder}`;
   if (!stream.tools.has(callId)) appendToolCall(stream, { ...data, callId }, turnNumber);
@@ -1114,6 +1385,123 @@ function completeToolCall(stream, data, turnNumber) {
   item.details.classList.add(succeeded ? "is-success" : "is-error");
   item.status.textContent = succeeded ? "Completed" : "Failed";
   item.result.textContent = formatStructured(data.content) || "No result";
+  if (succeeded && item.toolName === "echo_plugin_stage") {
+    const stage = pluginStageFromToolResult(data.content);
+    if (stage && !stream.timeline.querySelector(`[data-plugin-approval-stage="${CSS.escape(stage.id)}"]`)) {
+      stream.timeline.appendChild(createPluginApprovalCard(stage));
+    }
+  }
+}
+
+function pluginStageFromToolResult(content) {
+  let value = content;
+  if (typeof value === "string") {
+    try { value = JSON.parse(value); } catch { return null; }
+  }
+  const output = value?.output || value;
+  const stage = output?.stage;
+  if (!stage || typeof stage.id !== "string" || !/^stage-[a-z0-9-]{16,}$/.test(stage.id)) return null;
+  if (!stage.validation?.manifest?.id || !stage.validation?.digest) return null;
+  return stage;
+}
+
+function createPluginApprovalCard(stage) {
+  const card = document.createElement("section");
+  card.className = "chat-plugin-approval-card";
+  card.dataset.pluginApprovalStage = stage.id;
+  const heading = document.createElement("div");
+  heading.className = "chat-plugin-approval-heading";
+  const title = document.createElement("div");
+  const kicker = document.createElement("span");
+  kicker.textContent = "Owner approval required";
+  const name = document.createElement("strong");
+  name.textContent = `${stage.validation.manifest.name || stage.validation.manifest.id} v${stage.validation.manifest.version || ""}`;
+  title.append(kicker, name);
+  const trust = document.createElement("span");
+  trust.className = "chat-plugin-trust-badge";
+  trust.textContent = "Echo verified stage";
+  heading.append(title, trust);
+  const description = document.createElement("p");
+  description.textContent = stage.validation.manifest.description || "Review this generated plugin snapshot before Echo installs any of it.";
+  const facts = document.createElement("dl");
+  for (const [label, value] of [["Plugin ID", stage.validation.manifest.id], ["Target", stage.validation.target], ["Digest", stage.validation.digest]]) {
+    const term = document.createElement("dt"); term.textContent = label;
+    const detail = document.createElement("dd"); const code = document.createElement("code"); code.textContent = value; detail.append(code);
+    facts.append(term, detail);
+  }
+  const warning = document.createElement("p");
+  warning.className = "chat-plugin-approval-warning";
+  warning.textContent = stage.validation.manifest.runtime
+    ? "This package contains native code that will run with your OS account permissions. Permission declarations are not an OS sandbox."
+    : "This UI-only package will run in an opaque-origin sandboxed iframe.";
+  const contributions = document.createElement("p");
+  const permissionNames = (stage.validation.manifest.permissions || []).map(permission => permission.name);
+  const toolNames = (stage.validation.manifest.contributes?.tools || []).map(tool => tool.name);
+  const settingNames = (stage.validation.manifest.contributes?.settings || []).map(setting => `${setting.key} (${setting.scope})`);
+  contributions.textContent = `Permissions: ${permissionNames.join(", ") || "none"}. Agent tools: ${toolNames.join(", ") || "none"}. Settings: ${settingNames.join(", ") || "none"}.`;
+	const toolReview = document.createElement("div");
+	toolReview.className = "chat-plugin-tool-review";
+	for (const tool of stage.validation.manifest.contributes?.tools || []) {
+		const details = document.createElement("details");
+		const summary = document.createElement("summary");
+		summary.textContent = `${tool.name} — ${tool.readOnly ? "read-only" : "mutating"}`;
+		const schema = document.createElement("pre");
+		schema.textContent = `RPC: ${tool.method}\nInput schema:\n${JSON.stringify(tool.inputSchema || {}, null, 2)}${tool.outputSchema ? `\nOutput schema:\n${JSON.stringify(tool.outputSchema, null, 2)}` : ""}`;
+		details.append(summary, schema);
+		toolReview.append(details);
+	}
+  const status = document.createElement("p");
+  status.className = "chat-plugin-approval-status";
+  const actions = document.createElement("div");
+  actions.className = "chat-plugin-approval-actions";
+  const choices = [
+    ["Install, keep current scopes", "none"],
+    ["Enable in this workspace", "workspace"],
+    ["Enable globally", "global"],
+  ];
+  for (const [label, scope] of choices) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = scope === "global" ? "primary-button compact-button" : "secondary-button compact-button";
+    button.textContent = label;
+    if (scope === "workspace" && !binding?.workspaceId) button.disabled = true;
+    button.addEventListener("click", async () => {
+      setPluginApprovalBusy(card, true);
+      status.textContent = "Installing approved snapshot…";
+      try {
+        await post(`/api/plugins/stages/${encodeURIComponent(stage.id)}/approve`, { scope, workspaceId: binding?.workspaceId || "", enable: scope !== "none" });
+        status.textContent = "Installed. Navigation and approved tools are refreshing.";
+        card.classList.add("is-approved");
+        await refreshPluginCatalog();
+      } catch (error) {
+        status.textContent = `Could not install: ${error.message}`;
+        setPluginApprovalBusy(card, false);
+      }
+    });
+    actions.append(button);
+  }
+  const reject = document.createElement("button");
+  reject.type = "button";
+  reject.className = "secondary-button compact-button danger-button";
+  reject.textContent = "Reject";
+  reject.addEventListener("click", async () => {
+    setPluginApprovalBusy(card, true);
+    try {
+      await del(`/api/plugins/stages/${encodeURIComponent(stage.id)}`);
+      status.textContent = "Rejected. The staged snapshot was removed.";
+      card.classList.add("is-rejected");
+    } catch (error) {
+      status.textContent = `Could not reject: ${error.message}`;
+      setPluginApprovalBusy(card, false);
+    }
+  });
+  actions.append(reject);
+	card.append(heading, description, facts, warning, contributions, toolReview, actions, status);
+  return card;
+}
+
+function setPluginApprovalBusy(card, busy) {
+  card.querySelectorAll("button").forEach(button => { button.disabled = busy; });
 }
 
 function resolvePlanQuestionItem(stream, data, turnNumber) {
@@ -1190,6 +1578,7 @@ function finishStream(stream, outcome, message = "") {
   if (!stream || stream.done) return;
   stream.done = true;
   stream.el.classList.remove("is-streaming");
+  clearResearchAgentStatuses(stream);
   for (const turn of stream.turns.values()) {
     completeReasoning(turn);
     flushTurnTextBlock(turn);
@@ -1204,6 +1593,7 @@ function finishStream(stream, outcome, message = "") {
     markRunningToolsInterrupted(stream, outcome);
     appendStreamStatus(stream, outcome, message);
   }
+  renderFileChangeSummary(stream);
   if (activeStream === stream) {
     activeStream = null;
     setStreaming(false);
@@ -1217,6 +1607,8 @@ function finalizeSuccessfulResponse(stream) {
   for (const item of questionItems) {
     stream.content.parentElement.insertBefore(item, stream.content);
   }
+  const pluginApprovals = [...stream.timeline.children].filter((child) => child.classList.contains("chat-plugin-approval-card"));
+  for (const card of pluginApprovals) stream.content.parentElement.insertBefore(card, stream.content);
   if (!stream.timeline.childElementCount) {
     stream.timeline.remove();
     return;
@@ -1230,6 +1622,100 @@ function finalizeSuccessfulResponse(stream) {
   body.appendChild(stream.timeline);
   work.append(summary, body);
   stream.content.parentElement.insertBefore(work, stream.content);
+}
+
+function recordFileChanges(stream, changes) {
+  if (!stream || !Array.isArray(changes)) return;
+  for (const change of changes) {
+    const path = String(change?.path || "").trim();
+    const operation = String(change?.operation || "").trim().toLowerCase();
+    if (!path || !["created", "edited", "deleted"].includes(operation)) continue;
+    const rootId = String(change?.ref?.rootId || "").trim();
+    const refPath = typeof change?.ref?.path === "string" ? change.ref.path : "";
+    stream.fileChanges.push({
+      path,
+      operation,
+      ...(rootId ? { ref: { rootId, path: refPath } } : {}),
+    });
+  }
+}
+
+function aggregateFileChanges(changes) {
+  const byPath = new Map();
+  for (const change of changes || []) {
+    let aggregate = byPath.get(change.path);
+    if (!aggregate) {
+      aggregate = {
+        path: change.path,
+        ref: change.ref || null,
+        initiallyExisted: change.operation !== "created",
+        exists: change.operation !== "deleted",
+      };
+      byPath.set(change.path, aggregate);
+      continue;
+    }
+    aggregate.exists = change.operation !== "deleted";
+    if (change.ref) aggregate.ref = change.ref;
+  }
+  return [...byPath.values()].map((change) => ({
+    path: change.path,
+    ref: change.ref,
+    operation: !change.exists ? "deleted" : (change.initiallyExisted ? "edited" : "created"),
+  }));
+}
+
+function renderFileChangeSummary(stream) {
+  stream.el.querySelector(":scope .chat-file-changes")?.remove();
+  const changes = aggregateFileChanges(stream.fileChanges);
+  if (!changes.length) return;
+
+  const section = document.createElement("section");
+  section.className = "chat-file-changes";
+  section.setAttribute("aria-label", "Files changed");
+  const header = document.createElement("div");
+  header.className = "chat-file-changes-header";
+  const title = document.createElement("strong");
+  title.textContent = "Files changed";
+  const count = document.createElement("span");
+  count.textContent = `${changes.length} ${changes.length === 1 ? "file" : "files"}`;
+  header.append(title, count);
+
+  const list = document.createElement("ul");
+  list.className = "chat-file-change-list";
+  for (const change of changes) {
+    const item = document.createElement("li");
+    const canOpen = change.operation !== "deleted" && change.ref && typeof binding?.onActivateFile === "function";
+    const row = document.createElement(canOpen ? "button" : "div");
+    row.className = `chat-file-change-row is-${change.operation}`;
+    if (canOpen) {
+      row.type = "button";
+      row.title = `Open ${change.path} in Echo Code`;
+      row.addEventListener("click", async () => {
+        try {
+          await binding.onActivateFile(change.ref);
+        } catch (error) {
+          toast(error instanceof Error ? error.message : "Could not open the changed file.", { sticky: true });
+        }
+      });
+    } else if (change.operation === "deleted") {
+      row.setAttribute("aria-disabled", "true");
+      row.title = `${change.path} was deleted`;
+    }
+    const icon = document.createElement("span");
+    icon.className = `codicon codicon-${change.operation === "deleted" ? "trash" : "file-code"}`;
+    icon.setAttribute("aria-hidden", "true");
+    const path = document.createElement("code");
+    path.className = "chat-file-change-path";
+    path.textContent = change.path;
+    const badge = document.createElement("span");
+    badge.className = "chat-file-change-operation";
+    badge.textContent = change.operation === "created" ? "Created" : change.operation === "edited" ? "Edited" : "Deleted";
+    row.append(icon, path, badge);
+    item.appendChild(row);
+    list.appendChild(item);
+  }
+  section.append(header, list);
+  stream.content.parentElement.appendChild(section);
 }
 
 function removeEmptyTurn(turn) { if (turn?.el && !turn.el.childElementCount) turn.el.remove(); }

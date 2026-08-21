@@ -258,6 +258,28 @@ func (i *Index) Search(workspaceID, query string, limit int, includeDirectories 
 	return SearchResponse{Items: matches, Indexing: building, Indexed: indexed, Truncated: truncated}
 }
 
+// ContentCandidates returns the current file-only index snapshot for workspace
+// text search. The snapshot may be partial while the asynchronous Quick Open
+// index is still building; callers can surface Indexing and retry later.
+func (i *Index) ContentCandidates(workspaceID string) (entries []SearchResult, indexing bool, indexed int, truncated bool) {
+	i.mu.RLock()
+	state := i.states[workspaceID]
+	if state == nil {
+		i.mu.RUnlock()
+		i.Start(workspaceID)
+		return []SearchResult{}, true, 0, false
+	}
+	entries = make([]SearchResult, 0, len(state.entries))
+	for _, entry := range state.entries {
+		if entry.Kind == "file" {
+			entries = append(entries, entry)
+		}
+	}
+	indexing, truncated = state.building, state.truncated
+	i.mu.RUnlock()
+	return entries, indexing, len(entries), truncated
+}
+
 func (i *Index) build(ctx context.Context, workspaceID string, generation uint64) {
 	roots, err := i.service.resolvedRoots(workspaceID)
 	if err != nil {

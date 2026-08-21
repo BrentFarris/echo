@@ -26,4 +26,8 @@ describe("chat tab visual contracts", () => {
     const overviewRule = css.match(/\.trajectory-overview\s*\{[\s\S]*?\}/)?.[0] || "";
     expect(overviewRule).not.toContain("position: sticky");
   });
+
+  it("bounds completed file changes in a vertical scroller", () => {
+    expect(css).toMatch(/\.chat-file-change-list\s*\{[\s\S]*?max-height:\s*190px;[\s\S]*?overflow-y:\s*auto;/);
+  });
 });
