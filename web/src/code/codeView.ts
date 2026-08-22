@@ -298,6 +298,7 @@ class CodeView {
                 <button type="button" title="New File" aria-label="New File" data-tree-action="new-file"><span class="codicon codicon-new-file"></span></button>
                 <button type="button" title="New Folder" aria-label="New Folder" data-tree-action="new-folder"><span class="codicon codicon-new-folder"></span></button>
                 <button type="button" title="Refresh Explorer" aria-label="Refresh Explorer" data-tree-action="refresh"><span class="codicon codicon-refresh"></span></button>
+                <button type="button" title="Collapse All" aria-label="Collapse All" data-tree-action="collapse-all"><span class="codicon codicon-collapse-all"></span></button>
                 <button type="button" title="Trash" aria-label="Trash" data-tree-action="trash"><span class="codicon codicon-trash"></span></button>
               </div>
             </header>
@@ -834,6 +835,13 @@ class CodeView {
       element.classList.toggle("is-selected", selected);
       element.setAttribute("aria-selected", String(selected));
     });
+  }
+
+  private collapseAll(): void {
+    this.expanded.clear();
+    this.renderTree();
+    this.schedulePersist();
+    this.sendFilesystemSubscription();
   }
 
   private async toggleNode(node: TreeNode): Promise<void> {
@@ -2295,6 +2303,7 @@ class CodeView {
       { id: "search.replaceInFiles", label: "Search: Replace in Files", keybinding: "Ctrl+Shift+H", run: () => this.showWorkspaceSearch(true) },
       { id: "file.close", label: "View: Close Editor", keybinding: "Ctrl+W", run: () => { const tab = this.activeTab(); if (tab) return this.closeTab(tab); } },
       { id: "explorer.refresh", label: "Explorer: Refresh", run: () => this.refreshExplorer() },
+      { id: "explorer.collapseAll", label: "Explorer: Collapse All", run: () => this.collapseAll() },
       { id: "explorer.newFile", label: "Explorer: New File", run: () => this.createUnderSelection("file") },
       { id: "explorer.newFolder", label: "Explorer: New Folder", run: () => this.createUnderSelection("directory") },
       { id: "explorer.trash", label: "Explorer: Open Echo Trash", run: () => this.showTrash() },
@@ -2677,6 +2686,7 @@ class CodeView {
     this.root.querySelector("[data-tree-action=new-file]")?.addEventListener("click", () => void this.createUnderSelection("file"), { signal });
     this.root.querySelector("[data-tree-action=new-folder]")?.addEventListener("click", () => void this.createUnderSelection("directory"), { signal });
     this.root.querySelector("[data-tree-action=refresh]")?.addEventListener("click", () => void this.refreshExplorer(), { signal });
+    this.root.querySelector("[data-tree-action=collapse-all]")?.addEventListener("click", () => this.collapseAll(), { signal });
     this.root.querySelector("[data-tree-action=trash]")?.addEventListener("click", () => void this.showTrash(), { signal });
     this.root.querySelector("[data-status=lsp]")?.addEventListener("click", () => {
       if (this.lspState === "denied") {
