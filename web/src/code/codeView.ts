@@ -92,6 +92,9 @@ type OpenTab = {
 type Command = { id: string; label: string; keybinding?: string; run(): unknown | Promise<unknown> };
 
 const treeRowHeight = 22;
+const minEditorFontSize = 8;
+const maxEditorFontSize = 30;
+const defaultEditorFontSize = 13.5;
 let mountedView: CodeView | null = null;
 
 export function mount(root: HTMLElement): void {
@@ -133,6 +136,9 @@ class CodeView {
   private activeSidebar: CodeSidebar = "explorer";
   private splitGitDiff = true;
   private leadingWhitespaceIndicators = true;
+  private editorFontSize = 13.5;
+  private fullSettings: Record<string, unknown> = {};
+  private editorFontSizeSaveTimer = 0;
   private modelReferences = new Map<MonacoEditor.ITextModel, number>();
   private treeScroller!: HTMLElement;
   private treeCanvas!: HTMLElement;
@@ -203,13 +209,15 @@ class CodeView {
       }
       const [roots, settingsData, lspData] = await Promise.all([
         editorAPI.getRoots(this.workspace.id),
-        api("/api/settings", { method: "GET" }).catch(() => null) as Promise<{ settings?: { disableGitSplitDiffView?: boolean; hideLeadingWhitespaceIndicators?: boolean } } | null>,
+        api("/api/settings", { method: "GET" }).catch(() => null) as Promise<{ settings?: { disableGitSplitDiffView?: boolean; hideLeadingWhitespaceIndicators?: boolean; editorFontSize?: number } } | null>,
         editorAPI.getWorkspaceLSPConfig(this.workspace.id).catch(() => ({ config: {}, profiles: [], statuses: [] } as WorkspaceLSPResponse)),
       ]);
       if (this.abort.signal.aborted) return;
       this.roots = roots;
       this.splitGitDiff = settingsData?.settings?.disableGitSplitDiffView !== true;
       this.leadingWhitespaceIndicators = settingsData?.settings?.hideLeadingWhitespaceIndicators !== true;
+      if (settingsData?.settings) this.fullSettings = { ...(settingsData.settings as Record<string, unknown>) };
+      this.editorFontSize = this.clampEditorFontSize((settingsData?.settings?.editorFontSize as number | undefined) || 13.5);
       this.lspProfiles = lspData.profiles || [];
       this.codeNavigation = new CodeNavigationHistory(this.workspace.id, { createId: randomUUID });
       const historyLocation = this.openTarget ? null : this.codeNavigation.initialLocation();
@@ -613,8 +621,8 @@ class CodeView {
       theme: this.mediaTheme.matches ? "vs-dark" : "vs",
       automaticLayout: true,
       fontFamily: "Cascadia Code, JetBrains Mono, Consolas, monospace",
-      fontSize: 13.5,
-      lineHeight: 20,
+      fontSize: this.editorFontSize,
+      lineHeight: Math.round(this.editorFontSize * 1.48),
       lineNumbers: "on",
       minimap: { enabled: true, maxColumn: 120, renderCharacters: true, showSlider: "mouseover" },
       folding: true,
@@ -649,8 +657,8 @@ class CodeView {
       theme: this.mediaTheme.matches ? "vs-dark" : "vs",
       automaticLayout: true,
       fontFamily: "Cascadia Code, JetBrains Mono, Consolas, monospace",
-      fontSize: 13.5,
-      lineHeight: 20,
+      fontSize: this.editorFontSize,
+      lineHeight: Math.round(this.editorFontSize * 1.48),
       lineNumbers: "on",
       minimap: { enabled: true, maxColumn: 120, showSlider: "mouseover" },
       renderSideBySide: this.splitGitDiff,
@@ -842,6 +850,27 @@ class CodeView {
     this.renderTree();
     this.schedulePersist();
     this.sendFilesystemSubscription();
+  }
+
+  private clampEditorFontSize(value: number): number {
+    if (!Number.isFinite(value) || value <= 0) return defaultEditorFontSize;
+    return Math.min(maxEditorFontSize, Math.max(minEditorFontSize, value));
+  }
+
+  private setEditorFontSize(value: number): void {
+    const next = this.clampEditorFontSize(value);
+    if (next === this.editorFontSize) return;
+    this.editorFontSize = next;
+    const lineHeight = Math.round(next * 1.48);
+    this.editor?.updateOptions({ fontSize: next, lineHeight });
+    this.diffEditor?.updateOptions({ fontSize: next, lineHeight });
+    window.clearTimeout(this.editorFontSizeSaveTimer);
+    const settings = { ...this.fullSettings, editorFontSize: next };
+    this.editorFontSizeSaveTimer = window.setTimeout(() => {
+      void api("/api/settings", { method: "PUT", body: { settings } }).catch(() => {
+        /* best-effort persistence */
+      });
+    }, 150);
   }
 
   private async toggleNode(node: TreeNode): Promise<void> {
@@ -2774,6 +2803,15 @@ class CodeView {
     }, { signal });
 
     document.addEventListener("keydown", (event) => this.handleGlobalKeyboard(event), { signal, capture: true });
+    document.addEventListener("wheel", (event) => {
+      if (!event.ctrlKey) return;
+      const target = event.target as Element | null;
+      const inEditor = Boolean(target?.closest && target.closest("[data-monaco-host], [data-monaco-diff-host]"));
+      if (!inEditor) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.setEditorFontSize(this.editorFontSize + (event.deltaY < 0 ? 1 : -1));
+    }, { signal, capture: true, passive: false });
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") void this.persistNow(); }, { signal });
     window.addEventListener("beforeunload", (event) => {
       void this.persistNow();

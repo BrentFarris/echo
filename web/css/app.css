@@ -4115,6 +4115,26 @@ button.chat-file-change-row:focus-visible {
   box-shadow: var(--shadow-soft);
 }
 
+.theme-font-size-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-lg);
+  max-width: 320px;
+  margin-bottom: var(--space-2xl);
+  font-size: var(--text-md-lg);
+}
+
+.theme-font-size-field input {
+  width: 96px;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--text-md-lg);
+}
+
 .theme-token-group {
   margin-bottom: var(--space-2xl);
 }

@@ -22,6 +22,9 @@ const (
 	DefaultSearxngURL               = "http://localhost:8080/"
 	DefaultStreamIdleTimeoutSeconds = 600
 	defaultTimout                   = 600
+	DefaultEditorFontSize           = 13.5
+	MinEditorFontSize               = 8
+	MaxEditorFontSize               = 30
 )
 
 type Interaction string
@@ -91,6 +94,7 @@ type Settings struct {
 	ThinkingCorrection                 bool              `json:"thinkingCorrection,omitempty"`
 	SystemPromptAppendage              string            `json:"systemPromptAppendage,omitempty"`
 	HideLeadingWhitespaceIndicators    bool              `json:"hideLeadingWhitespaceIndicators,omitempty"`
+	EditorFontSize                     float64           `json:"editorFontSize"`
 	DisableNotificationSounds          bool              `json:"disableNotificationSounds,omitempty"`
 	DisablePlanQuestionSounds          bool              `json:"disablePlanQuestionSounds,omitempty"`
 	EnableChatCompletionNotifications  *bool             `json:"enableChatCompletionNotifications,omitempty"`
@@ -136,6 +140,7 @@ func DefaultSettings() Settings {
 		TimeoutSeconds:                     defaultTimout,
 		StreamIdleTimeoutSeconds:           DefaultStreamIdleTimeoutSeconds,
 		SearxngURL:                         DefaultSearxngURL,
+		EditorFontSize:                     DefaultEditorFontSize,
 		ThinkingTokenBudget:                -1,
 		ResearchAgentConcurrency:           DefaultResearchAgentConcurrency,
 		MaxChatRounds:                      DefaultMaxChatRounds,
@@ -179,6 +184,15 @@ func (s Settings) normalized(endpointProfilesAuthoritative bool) Settings {
 	s.ComfyuiImg2imgWorkflow = strings.TrimSpace(s.ComfyuiImg2imgWorkflow)
 	s.ComfyuiVideoWorkflow = strings.TrimSpace(s.ComfyuiVideoWorkflow)
 	s.Theme = s.Theme.Normalized()
+	if s.EditorFontSize <= 0 {
+		s.EditorFontSize = DefaultEditorFontSize
+	}
+	if s.EditorFontSize < MinEditorFontSize {
+		s.EditorFontSize = MinEditorFontSize
+	}
+	if s.EditorFontSize > MaxEditorFontSize {
+		s.EditorFontSize = MaxEditorFontSize
+	}
 	return s
 }
 

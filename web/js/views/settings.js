@@ -45,6 +45,16 @@ const themeTokens = [
 ];
 const themeGroups = ["Base", "Text", "Action", "Status"];
 
+// ---- Editor font size helpers ----
+const minEditorFontSize = 8;
+const maxEditorFontSize = 30;
+const defaultEditorFontSize = 13.5;
+
+function clampEditorFontSize(value) {
+  if (!Number.isFinite(value) || value <= 0) return defaultEditorFontSize;
+  return Math.min(maxEditorFontSize, Math.max(minEditorFontSize, value));
+}
+
 // ---- Sections ----
 const sections = [
   { id: "llm", label: "LLM Endpoints", icon: icons.settings },
@@ -72,6 +82,7 @@ const routingTopics = [
 const state = {
   activeSection: "llm",
   themePalette: "light",
+  editorFontSize: 13.5,
   endpoints: [],
   routing: {
     chat: "",
@@ -543,6 +554,19 @@ function renderTheme() {
               data-theme-palette="${name}"
             >${name === "light" ? "Light" : "Dark"}</button>
           `).join("")}
+        </div>
+
+        <div class="theme-font-size-field">
+          <span>Editor Font Size</span>
+          <input
+            type="number"
+            min="${minEditorFontSize}"
+            max="${maxEditorFontSize}"
+            step="1"
+            value="${state.editorFontSize}"
+            data-editor-font-size
+            aria-label="Code editor font size"
+          />
         </div>
 
         ${themeGroups.map((group) => `
@@ -1339,6 +1363,15 @@ function bindEvents(root) {
     void requestCompletionNotificationPermission().then(() => render());
   });
 
+  root.querySelectorAll("[data-editor-font-size]").forEach((field) => {
+    field.addEventListener("change", () => {
+      const value = Number.parseFloat(field.value);
+      state.editorFontSize = clampEditorFontSize(Number.isNaN(value) ? 0 : value);
+      field.value = String(state.editorFontSize);
+      saveSettings();
+    });
+  });
+
   root.querySelectorAll("[data-research-agent-concurrency]").forEach((field) => {
     field.addEventListener("change", () => {
       const value = Number.parseInt(field.value, 10);
@@ -1829,6 +1862,7 @@ function applySettings(cfg) {
     comfyuiImg2imgWorkflow: s.comfyuiImg2imgWorkflow || "",
     comfyuiVideoWorkflow: s.comfyuiVideoWorkflow || "",
   };
+  state.editorFontSize = clampEditorFontSize(Number(s.editorFontSize) || 13.5);
   state.researchAgentConcurrency = Math.max(0, Math.min(8, Number(s.researchAgentConcurrency ?? 4) || 0));
   state.git = {
     leadingWhitespaceIndicators: s.hideLeadingWhitespaceIndicators !== true,
@@ -1948,6 +1982,7 @@ function buildSettings() {
     disableNotificationSounds: !state.messaging.notificationSounds,
     disablePlanQuestionSounds: !state.messaging.planQuestionSounds,
     enableChatCompletionNotifications: state.messaging.chatCompletionNotifications,
+    editorFontSize: state.editorFontSize,
     researchAgentConcurrency: state.researchAgentConcurrency,
   };
 }

@@ -33,6 +33,31 @@ func TestStreamIdleTimeoutValidation(t *testing.T) {
 	}
 }
 
+func TestEditorFontSizeDefaultAndClamp(t *testing.T) {
+	settings := DefaultSettings()
+	if settings.EditorFontSize != DefaultEditorFontSize {
+		t.Fatalf("expected default editor font size %v, got %v", DefaultEditorFontSize, settings.EditorFontSize)
+	}
+
+	settings.EditorFontSize = 0
+	normalized := settings.NormalizedEndpointProfiles()
+	if normalized.EditorFontSize != DefaultEditorFontSize {
+		t.Fatalf("expected zero editor font size to default to %v, got %v", DefaultEditorFontSize, normalized.EditorFontSize)
+	}
+
+	settings.EditorFontSize = MinEditorFontSize - 1
+	normalized = settings.NormalizedEndpointProfiles()
+	if normalized.EditorFontSize != MinEditorFontSize {
+		t.Fatalf("expected editor font size clamped to min %v, got %v", MinEditorFontSize, normalized.EditorFontSize)
+	}
+
+	settings.EditorFontSize = MaxEditorFontSize + 1
+	normalized = settings.NormalizedEndpointProfiles()
+	if normalized.EditorFontSize != MaxEditorFontSize {
+		t.Fatalf("expected editor font size clamped to max %v, got %v", MaxEditorFontSize, normalized.EditorFontSize)
+	}
+}
+
 func TestContextCompressionDefaultsAndExplicitDisable(t *testing.T) {
 	legacy := DefaultSettings()
 	legacy.ContextCompressionEnabled = nil
