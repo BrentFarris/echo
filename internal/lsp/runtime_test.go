@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -166,6 +167,41 @@ func TestDocumentLeaseDenialTakeoverDisconnectAndStaleVersion(t *testing.T) {
 		t.Fatalf("lease events were not emitted: first=%d second=%d", firstMessages, secondMessages)
 	}
 	first.Close()
+}
+
+func TestPublishDiagnosticsMatchesNormalizedDocumentURI(t *testing.T) {
+	workspace := workspaces.Workspace{ID: "workspace"}
+	profile := lspconfig.Profile{ID: "gopls"}
+	current := &serverRuntime{workspace: workspace, profile: profile}
+	service := NewService(nil, nil)
+	browserURI := "file:///C%3A/Users/test/project/main.go"
+	serverURI := "file:///C:/Users/test/project/main.go"
+	var received json.RawMessage
+	client := &Client{
+		ID: "browser", WorkspaceID: workspace.ID,
+		documents: map[string]Document{}, pending: map[string]chan serverRequestResponse{},
+		send: func(value any) {
+			message := value.(map[string]any)
+			received = append(json.RawMessage(nil), message["params"].(json.RawMessage)...)
+		},
+	}
+	service.clients[client.ID] = client
+	service.leases[leaseKey(workspace.ID, profile.ID, browserURI)] = &documentLease{clientID: client.ID, uri: browserURI}
+	service.runtimeNotification(current, "textDocument/publishDiagnostics", json.RawMessage(`{"uri":"`+serverURI+`","diagnostics":[]}`))
+	if uri := documentURI(received); uri != browserURI {
+		t.Fatalf("forwarded diagnostic URI = %q, want browser URI %q", uri, browserURI)
+	}
+}
+
+func TestLeaseKeyIgnoresWindowsFileURICasing(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows file URI casing is platform-specific")
+	}
+	browserURI := "file:///c%3A/Users/Test/Project/main.go"
+	serverURI := "file:///C:/users/test/project/main.go"
+	if browser, server := leaseKey("workspace", "gopls", browserURI), leaseKey("workspace", "gopls", serverURI); browser != server {
+		t.Fatalf("equivalent Windows URI lease keys differ:\n%q\n%q", browser, server)
+	}
 }
 
 func TestMalformedServerStreamTriggersSupervision(t *testing.T) {

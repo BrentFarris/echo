@@ -81,14 +81,17 @@ function handle(message) {
   if (method === "exit") process.exit(0);
   if (method === "textDocument/didOpen") {
     documents.set(params.textDocument.uri, params.textDocument.text);
+    // Match gopls on Windows, which normalizes Monaco's encoded, lowercase
+    // drive URI before it publishes diagnostics.
+    const diagnosticURI = params.textDocument.uri.replace(/^file:\/\/\/([a-z])%3A/i, (_match, drive) => `file:///${drive.toUpperCase()}:`);
     notification("textDocument/publishDiagnostics", {
-      uri: params.textDocument.uri,
+      uri: diagnosticURI,
       version: params.textDocument.version,
       diagnostics: [{
         range: { start: { line: 0, character: 0 }, end: { line: 0, character: 7 } },
-        severity: 2,
+        severity: 1,
         source: "Echo Fake LSP",
-        message: "deterministic fake diagnostic",
+        message: "deterministic fake error",
       }],
     });
     return;

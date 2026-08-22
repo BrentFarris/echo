@@ -800,7 +800,7 @@ test("runs the deterministic fake language server through Monaco and settings", 
   await page.locator(".code-tree-label", { hasText: "usage.go" }).click();
   const lspStatus = page.locator('[data-status="lsp"]');
   await expect(lspStatus).toContainText("Fake E2E LSP ✓", { timeout: 20_000 });
-  await expect(page.locator(".squiggly-warning").first()).toBeVisible();
+  await expect(page.locator(".squiggly-error").first()).toBeVisible();
 
   // Direct navigation activates only the selected target tab, attaches its
   // model, and applies Monaco's returned cursor position.

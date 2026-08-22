@@ -69,6 +69,7 @@ type documentLease struct {
 	clientID string
 	version  int
 	language string
+	uri      string
 }
 
 type serverRequestResponse struct {
@@ -424,7 +425,7 @@ func (s *Service) ClaimDocument(client *Client, profileID string, document Docum
 	if lease != nil {
 		previousOwner = lease.clientID
 	}
-	s.leases[key] = &documentLease{clientID: client.ID, version: document.Version, language: document.LanguageID}
+	s.leases[key] = &documentLease{clientID: client.ID, version: document.Version, language: document.LanguageID, uri: document.URI}
 	s.mu.Unlock()
 
 	if previousOwner != "" && previousOwner != client.ID {
@@ -602,25 +603,35 @@ func (s *Service) runtimeStatusChanged(current *serverRuntime) {
 }
 
 func (s *Service) runtimeNotification(current *serverRuntime, method string, params json.RawMessage) {
-	message := map[string]any{
-		"type": "lsp_notification", "profileId": current.profile.ID, "method": method, "params": params,
-	}
 	if method == "textDocument/publishDiagnostics" {
 		uri := documentURI(params)
 		key := leaseKey(current.workspace.ID, current.profile.ID, uri)
 		s.mu.Lock()
 		lease := s.leases[key]
 		var client *Client
+		ownerURI := ""
 		if lease != nil {
 			client = s.clients[lease.clientID]
+			ownerURI = lease.uri
 		}
 		s.mu.Unlock()
 		if client != nil {
-			client.send(message)
+			// Language servers may normalize an opened file URI before publishing
+			// diagnostics (notably gopls on Windows changes Monaco's
+			// file:///c%3A/... to file:///C:/...). Send the owning browser the URI
+			// it used to open the model so Monaco can resolve the marker target.
+			if ownerURI != "" && ownerURI != uri {
+				params = replaceDocumentURI(params, ownerURI)
+			}
+			client.send(map[string]any{
+				"type": "lsp_notification", "profileId": current.profile.ID, "method": method, "params": params,
+			})
 		}
 		return
 	}
-	s.broadcast(current.workspace.ID, message)
+	s.broadcast(current.workspace.ID, map[string]any{
+		"type": "lsp_notification", "profileId": current.profile.ID, "method": method, "params": params,
+	})
 }
 
 func (s *Service) broadcast(workspaceID string, message any) {
@@ -758,6 +769,23 @@ func documentURI(params json.RawMessage) string {
 	return payload.URI
 }
 
+func replaceDocumentURI(params json.RawMessage, uri string) json.RawMessage {
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(params, &payload) != nil {
+		return params
+	}
+	replacement, err := json.Marshal(uri)
+	if err != nil {
+		return params
+	}
+	payload["uri"] = replacement
+	updated, err := json.Marshal(payload)
+	if err != nil {
+		return params
+	}
+	return updated
+}
+
 func filePath(uri string) (string, error) {
 	parsed, err := url.Parse(uri)
 	if err != nil || parsed.Scheme != "file" {
@@ -786,7 +814,18 @@ func pathWithinWorkspace(workspace workspaces.Workspace, candidate string) bool 
 
 func runtimeKey(workspaceID, profileID string) string { return workspaceID + "\x00" + profileID }
 func leaseKey(workspaceID, profileID, uri string) string {
-	return runtimeKey(workspaceID, profileID) + "\x00" + uri
+	return runtimeKey(workspaceID, profileID) + "\x00" + documentURIKey(uri)
+}
+
+func documentURIKey(uri string) string {
+	path, err := filePath(uri)
+	if err != nil {
+		return uri
+	}
+	if runtime.GOOS == "windows" {
+		path = strings.ToLower(path)
+	}
+	return "file\x00" + filepath.ToSlash(filepath.Clean(path))
 }
 
 func stopRuntimes(runtimes []*serverRuntime) {
