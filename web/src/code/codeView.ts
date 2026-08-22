@@ -1714,7 +1714,6 @@ class CodeView {
       });
       this.applySavedSnapshot(tab, snapshot);
       this.lsp?.didSave(tab.model);
-      toast(`Saved ${tab.title}`);
       return true;
     } catch (error) {
       const apiError = error as APIError;
@@ -1750,7 +1749,6 @@ class CodeView {
       }
       this.applySavedSnapshot(tab, snapshot);
       this.lsp?.didSave(tab.model);
-      toast(`Saved ${ref.path.split("/").pop() || ref.path}`);
       return true;
     } catch (error) {
       const apiError = error as APIError;
