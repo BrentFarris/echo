@@ -3,6 +3,8 @@ package llm
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/brent/echo/internal/toolargs"
 )
 
 const (
@@ -297,11 +299,31 @@ func chatTemplateKwargsForSettings(settings Settings) *ChatTemplateKwargs {
 
 func messagesForRequest(settings Settings, messages []Message) []Message {
 	output := removeEmptyAssistantMessages(cloneMessages(messages))
+	normalizeToolCallArguments(output)
 	appendSystemPromptAppendage(output, settings.SystemPromptAppendage)
 	if settings.ThinkingTokenBudget != 0 && settings.ThinkingCorrection {
 		appendThinkingCorrectionToLatestUserMessage(output)
 	}
 	return output
+}
+
+func normalizeToolCallArguments(messages []Message) {
+	for messageIndex := range messages {
+		for callIndex := range messages[messageIndex].ToolCalls {
+			arguments := strings.TrimSpace(messages[messageIndex].ToolCalls[callIndex].Function.Arguments)
+			if json.Valid([]byte(arguments)) {
+				continue
+			}
+			if repaired, ok := toolargs.RepairJSON(json.RawMessage(arguments)); ok {
+				messages[messageIndex].ToolCalls[callIndex].Function.Arguments = string(repaired)
+				continue
+			}
+			// Preserve tool-call/result ordering even when an old or interrupted
+			// call is beyond deterministic repair. Providers parse this field as
+			// JSON before inference, so an empty object keeps the chat recoverable.
+			messages[messageIndex].ToolCalls[callIndex].Function.Arguments = `{}`
+		}
+	}
 }
 
 func appendSystemPromptAppendage(messages []Message, appendage string) {

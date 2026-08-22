@@ -474,6 +474,49 @@ func TestNewChatRequestRemovesEmptyAssistantHistory(t *testing.T) {
 	}
 }
 
+func TestNewChatRequestRepairsMalformedHistoricalToolArguments(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoint = "https://example.test/v1"
+	messages := []Message{
+		{Role: RoleUser, Content: "inspect the file"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{
+			ID: "call-1", Type: "function",
+			Function: FunctionCall{Name: "read_file", Arguments: `{"path":"internal/server/chat_sessions.go`},
+		}}},
+		{Role: RoleTool, ToolCallID: "call-1", Content: `{"success":true}`},
+		{Role: RoleUser, Content: "continue"},
+	}
+
+	request, err := NewChatRequest(settings, messages)
+	if err != nil {
+		t.Fatalf("new chat request: %v", err)
+	}
+	got := request.Messages[1].ToolCalls[0].Function.Arguments
+	if got != `{"path":"internal/server/chat_sessions.go"}` {
+		t.Fatalf("expected repaired tool arguments, got %q", got)
+	}
+	if messages[1].ToolCalls[0].Function.Arguments == got {
+		t.Fatal("expected source history to remain unchanged")
+	}
+}
+
+func TestNewChatRequestReplacesIrreparableHistoricalToolArguments(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoint = "https://example.test/v1"
+	messages := []Message{{Role: RoleAssistant, ToolCalls: []ToolCall{{
+		ID: "call-1", Type: "function",
+		Function: FunctionCall{Name: "read_file", Arguments: `not json`},
+	}}}}
+
+	request, err := NewChatRequest(settings, messages)
+	if err != nil {
+		t.Fatalf("new chat request: %v", err)
+	}
+	if got := request.Messages[0].ToolCalls[0].Function.Arguments; got != `{}` {
+		t.Fatalf("expected safe empty arguments, got %q", got)
+	}
+}
+
 func TestMessageSerializesTextAndImageContentParts(t *testing.T) {
 	message := Message{
 		Role:    RoleUser,
