@@ -799,6 +799,26 @@
   opacity: 0.52;
 }
 
+/* Spin the sync icon while a sync/pull/push operation is running. */
+.git-repository-actions button.is-syncing .codicon-sync,
+.git-commit-button.is-syncing .codicon-sync {
+  display: inline-block;
+  animation: echo-git-sync-spin 1s linear infinite;
+}
+
+@keyframes echo-git-sync-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .git-repository-actions button.is-syncing .codicon-sync,
+  .git-commit-button.is-syncing .codicon-sync {
+    animation: none;
+  }
+}
+
 .git-warning {
   display: flex;
   align-items: flex-start;
