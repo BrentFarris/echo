@@ -7,6 +7,7 @@ import * as ws from "./ws.js";
 import { ensureAuthenticated } from "../src/auth/authGate.ts";
 import { startEchoUpdateMonitor, stopEchoUpdateMonitor, syncEchoUpdateBadges } from "../src/echoUpdate.ts";
 import { startCompletionNotifications } from "../src/completionNotifications.ts";
+import { startPlanQuestionSound } from "../src/planQuestionSound.ts";
 import { isCodeNavigationHistoryState, recordNavigationRoute, routePathFromHash } from "../src/navigation.ts";
 import { initializePluginHost, mountPluginPage, resetPluginHost } from "../src/plugins/pluginHost.ts";
 
@@ -114,6 +115,7 @@ async function bootstrap() {
     app.innerHTML = "";
     await ensureAuthenticated(app);
     await startCompletionNotifications();
+    await startPlanQuestionSound();
     ws.start();
     startEchoUpdateMonitor();
     await initializePluginHost();

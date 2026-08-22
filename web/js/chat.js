@@ -9,6 +9,7 @@ import {
 } from "../src/markdown.ts";
 import { copyText, toast } from "../src/code/ui.ts";
 import { attachVideoVolumeControl } from "../src/mediaVolume.ts";
+import { playPlanQuestionSound } from "../src/planQuestionSound.ts";
 import { icons } from "./icons.js";
 import { del, post } from "./api.js";
 import { refreshPluginCatalog } from "../src/plugins/catalog.ts";
@@ -1172,6 +1173,7 @@ function appendToolCall(stream, data, turnNumber) {
   const item = questionSet
     ? createPlanQuestionItem(questionSet)
     : createToolItem(data.tool || "tool", data.arguments || "", data.agentName || "");
+  if (questionSet && data.status === "awaiting_input") playPlanQuestionSound();
   if (data.research) item.details.classList.add("is-research-tool");
   item.details.dataset.callId = callId;
   stream.timeline.hidden = false;

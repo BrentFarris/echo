@@ -16,6 +16,14 @@ const socket = vi.hoisted(() => {
 
 vi.mock("../js/ws.js", () => ({ on: socket.on, onState: socket.onState, send: socket.send }));
 
+const planQuestionSound = vi.hoisted(() => ({
+  play: vi.fn(),
+}));
+
+vi.mock("../src/planQuestionSound.ts", () => ({
+  playPlanQuestionSound: planQuestionSound.play,
+}));
+
 import { closeWorkspaceSession, openWorkspaceSession } from "../js/chat.js";
 
 function emit(type: string, message: any) {
@@ -41,6 +49,7 @@ describe("Plan-mode clarifying questions", () => {
 
   beforeEach(() => {
     socket.send.mockClear();
+    planQuestionSound.play.mockClear();
     log = document.createElement("div");
     document.body.append(log);
     openWorkspaceSession(log, "workspace-plan");
@@ -69,6 +78,7 @@ describe("Plan-mode clarifying questions", () => {
     const card = log.querySelector<HTMLDetailsElement>(".chat-plan-question-item")!;
     expect(card).not.toBeNull();
     expect(card.open).toBe(true);
+    expect(planQuestionSound.play).toHaveBeenCalledOnce();
     const fields = [...card.querySelectorAll<HTMLFieldSetElement>(".chat-plan-question-field")];
     const extended = fields[0].querySelector<HTMLInputElement>('input[type="radio"][value="1"]')!;
     extended.checked = true;
@@ -157,5 +167,49 @@ describe("Plan-mode clarifying questions", () => {
     expect(card.textContent).toContain("Rust");
     expect(card.closest(".chat-work-disclosure")).toBeNull();
     expect(card.nextElementSibling?.classList.contains("chat-final-content")).toBe(true);
+  });
+
+  it("plays the question sound on live waiting-for-input and on restoring a pending question, but not answered ones", () => {
+    sessionEvent(2, { type: "turn_started", turnId: "turn-a", message: "Plan it" });
+    sessionEvent(3, {
+      type: "tool_call", turnId: "turn-a", turn: 0, callId: "call-a", callOrder: 0,
+      tool: "ask_user_questions", status: "awaiting_input", planQuestions: questionSet,
+    });
+    expect(planQuestionSound.play).toHaveBeenCalledOnce();
+
+    // Restoring an already-answered question set must stay silent.
+    planQuestionSound.play.mockClear();
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-plan", sequence: 30,
+      activeChatId: "chat-plan", tabs: [{ chatId: "chat-plan", preview: "Stored", busy: false }],
+      turns: [{
+        id: "stored", userContent: "Plan it", status: "done",
+        assistantTurns: [{
+          number: 0, hasToolCalls: true, tools: [{
+            callId: "call-questions", callOrder: 0, name: "ask_user_questions", status: "complete",
+            success: true, planQuestions: questionSet,
+            answers: [{ questionId: "scope", optionIndex: 0 }], result: "{}",
+          }],
+        }],
+      }],
+    });
+    expect(planQuestionSound.play).not.toHaveBeenCalled();
+
+    // Restoring a still-pending (awaiting_input) question must play the sound.
+    planQuestionSound.play.mockClear();
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-plan", sequence: 40,
+      activeChatId: "chat-plan", tabs: [{ chatId: "chat-plan", preview: "Pending", busy: false }],
+      turns: [{
+        id: "pending", userContent: "Plan it", status: "running",
+        assistantTurns: [{
+          number: 0, hasToolCalls: true, tools: [{
+            callId: "call-pending", callOrder: 0, name: "ask_user_questions", status: "awaiting_input",
+            planQuestions: questionSet,
+          }],
+        }],
+      }],
+    });
+    expect(planQuestionSound.play).toHaveBeenCalledOnce();
   });
 });

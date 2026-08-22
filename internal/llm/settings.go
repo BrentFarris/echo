@@ -92,6 +92,7 @@ type Settings struct {
 	SystemPromptAppendage              string            `json:"systemPromptAppendage,omitempty"`
 	HideLeadingWhitespaceIndicators    bool              `json:"hideLeadingWhitespaceIndicators,omitempty"`
 	DisableNotificationSounds          bool              `json:"disableNotificationSounds,omitempty"`
+	DisablePlanQuestionSounds          bool              `json:"disablePlanQuestionSounds,omitempty"`
 	EnableChatCompletionNotifications  *bool             `json:"enableChatCompletionNotifications,omitempty"`
 	EnableKanbanCompleteNotifications  bool              `json:"enableKanbanCompleteNotifications,omitempty"`
 	LimitKanbanConcurrency             bool              `json:"limitKanbanConcurrency,omitempty"`

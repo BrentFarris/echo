@@ -106,6 +106,7 @@ const state = {
   },
   messaging: {
     notificationSounds: true,
+    planQuestionSounds: true,
     chatCompletionNotifications: true,
   },
   storagePath: "",
@@ -474,6 +475,7 @@ function renderExternal() {
 function renderMessaging() {
   const toggles = [
     { key: "notificationSounds", label: "Notification sounds", checked: state.messaging.notificationSounds },
+    { key: "planQuestionSounds", label: "Planning question sounds", checked: state.messaging.planQuestionSounds },
     { key: "chatCompletionNotifications", label: "Chat completion notifications", checked: state.messaging.chatCompletionNotifications },
   ];
   const permission = completionNotificationPermission();
@@ -1834,6 +1836,7 @@ function applySettings(cfg) {
   };
   state.messaging = {
     notificationSounds: s.disableNotificationSounds !== true,
+    planQuestionSounds: s.disablePlanQuestionSounds !== true,
     chatCompletionNotifications: s.enableChatCompletionNotifications !== false,
   };
   updateCompletionNotificationSettings(s);
@@ -1943,6 +1946,7 @@ function buildSettings() {
     hideLeadingWhitespaceIndicators: !state.git.leadingWhitespaceIndicators,
     disableGitSplitDiffView: !state.git.splitDiffView,
     disableNotificationSounds: !state.messaging.notificationSounds,
+    disablePlanQuestionSounds: !state.messaging.planQuestionSounds,
     enableChatCompletionNotifications: state.messaging.chatCompletionNotifications,
     researchAgentConcurrency: state.researchAgentConcurrency,
   };
