@@ -831,6 +831,7 @@ class CodeView {
     const extension = name.split(".").pop()?.toLowerCase();
     if (["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico", "avif"].includes(extension || "")) return "file-media";
     if (["mp4", "m4v", "webm", "ogv"].includes(extension || "")) return "play-circle";
+    if (["mp3", "wav", "ogg", "oga", "opus", "flac", "m4a", "aac", "weba"].includes(extension || "")) return "music";
     if (["json", "yaml", "yml", "toml", "ini"].includes(extension || "")) return "json";
     if (["md", "markdown", "txt"].includes(extension || "")) return "markdown";
     return "file-code";
@@ -1489,7 +1490,7 @@ class CodeView {
     if (!list) return;
     list.innerHTML = this.tabs.map((tab) => `
       <div class="code-tab ${tab.id === this.activeTabId ? "is-active" : ""} ${!tab.pinned ? "is-preview" : ""}" role="tab" aria-selected="${tab.id === this.activeTabId}" tabindex="${tab.id === this.activeTabId ? 0 : -1}" data-tab-id="${escapeHTML(tab.id)}" title="${escapeHTML(tab.hostPath || tab.title)}">
-        <span class="codicon codicon-${tab.kind === "diff" ? "diff" : tab.kind === "media" ? (tab.media?.kind === "video" ? "play-circle" : "file-media") : "file-code"} code-tab-icon"></span>
+        <span class="codicon codicon-${tab.kind === "diff" ? "diff" : tab.kind === "media" ? (tab.media?.kind === "video" ? "play-circle" : tab.media?.kind === "audio" ? "music" : "file-media") : "file-code"} code-tab-icon"></span>
         <span class="code-tab-title">${escapeHTML(tab.title)}</span>
         ${tab.conflict ? `<span class="codicon codicon-warning code-tab-conflict" title="Changed on disk"></span>` : ""}
         ${tab.deleted ? `<span class="codicon codicon-trash code-tab-conflict" title="Deleted on disk"></span>` : ""}
@@ -1578,13 +1579,15 @@ class CodeView {
     const host = this.root.querySelector<HTMLElement>("[data-media-preview-host]");
     if (!host || !tab.media) return;
     const url = `${tab.media.url}&v=${Date.now()}`;
-    const icon = tab.media.kind === "video" ? "play-circle" : "file-media";
-    const noun = tab.media.kind === "video" ? "video" : "image";
+    const icon = tab.media.kind === "video" ? "play-circle" : tab.media.kind === "audio" ? "music" : "file-media";
+    const noun = tab.media.kind === "video" ? "video" : tab.media.kind === "audio" ? "audio" : "image";
     const mediaTag = tab.media.kind === "video"
       ? `<video src="${escapeHTML(url)}" controls loop playsinline muted></video>`
-      : `<img src="${escapeHTML(url)}" alt="${escapeHTML(tab.title)}">`;
+      : tab.media.kind === "audio"
+        ? `<audio src="${escapeHTML(url)}" controls preload="metadata"></audio>`
+        : `<img src="${escapeHTML(url)}" alt="${escapeHTML(tab.title)}">`;
     host.innerHTML = `
-      <div class="code-media-frame">
+      <div class="code-media-frame${tab.media.kind === "audio" ? " code-media-frame-audio" : ""}">
         ${mediaTag}
         <div class="code-media-volume-slot"></div>
         <div class="code-media-error" hidden>
@@ -1593,15 +1596,17 @@ class CodeView {
           <p>The file may be larger than the preview limit or its container format is not playable.</p>
         </div>
       </div>`;
-    const element = host.querySelector<HTMLVideoElement | HTMLImageElement>(tab.media.kind === "video" ? "video" : "img");
+    const element = host.querySelector<HTMLVideoElement | HTMLImageElement | HTMLAudioElement>(
+      tab.media.kind === "video" ? "video" : tab.media.kind === "audio" ? "audio" : "img",
+    );
     const errorPanel = host.querySelector<HTMLElement>(".code-media-error");
     const volumeSlot = host.querySelector<HTMLElement>(".code-media-volume-slot");
     if (tab.media.kind === "video" && element instanceof HTMLVideoElement && volumeSlot) {
       volumeSlot.appendChild(attachVideoVolumeControl(element, "code-media-volume"));
     }
-    // Both <img> and <video> raise "error" when the stream fails (missing
-    // file, oversized refusal, unplayable container), so one handler covers
-    // every failure mode.
+    // <img>, <video>, and <audio> all raise "error" when the stream fails
+    // (missing file, oversized refusal, unplayable container), so one handler
+    // covers every failure mode.
     element?.addEventListener("error", () => {
       if (!element || !errorPanel) return;
       element.hidden = true;

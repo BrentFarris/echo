@@ -283,7 +283,11 @@ func TestMediaTypeForNameCoversBrowserFormats(t *testing.T) {
 		"d.gif": "image/gif", "e.webp": "image/webp", "f.svg": "image/svg+xml",
 		"g.bmp": "image/bmp", "h.ico": "image/x-icon", "i.avif": "image/avif",
 		"j.mp4": "video/mp4", "k.m4v": "video/mp4", "l.webm": "video/webm",
-		"m.ogv": "video/ogg", "n.txt": "", "noext": "",
+		"m.ogv": "video/ogg",
+		"n.mp3": "audio/mpeg", "o.wav": "audio/wav", "p.ogg": "audio/ogg",
+		"q.oga": "audio/ogg", "r.opus": "audio/ogg", "s.flac": "audio/flac",
+		"t.m4a": "audio/mp4", "u.aac": "audio/aac", "v.weba": "audio/webm",
+		"z.txt": "", "noext": "",
 	}
 	for name, want := range cases {
 		if got := MediaTypeForName(name); got != want {

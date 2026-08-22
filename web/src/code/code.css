@@ -1784,7 +1784,8 @@
 }
 
 .code-media-frame img,
-.code-media-frame video {
+.code-media-frame video,
+.code-media-frame audio {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
@@ -1794,6 +1795,11 @@
 .code-media-frame video {
   width: auto;
   height: auto;
+}
+
+/* Audio players occupy a compact, centered strip rather than the full frame. */
+.code-media-frame-audio audio {
+  width: min(560px, 78%);
 }
 
 /* In-player volume pill (media-tab videos) */
