@@ -637,7 +637,7 @@ class CodeView {
       cursorSmoothCaretAnimation: "off",
       wordWrap: "off",
       padding: { top: 4, bottom: 4 },
-      scrollBeyondLastLine: false,
+      scrollBeyondLastLine: true,
       fixedOverflowWidgets: true,
       gotoLocation: {
         multipleDefinitions: "peek",
@@ -671,7 +671,7 @@ class CodeView {
       ignoreTrimWhitespace: false,
       hideUnchangedRegions: { enabled: false },
       renderWhitespace: this.leadingWhitespaceIndicators ? "boundary" : "none",
-      scrollBeyondLastLine: false,
+      scrollBeyondLastLine: true,
       fixedOverflowWidgets: true,
       padding: { top: 4, bottom: 4 },
       gotoLocation: {
