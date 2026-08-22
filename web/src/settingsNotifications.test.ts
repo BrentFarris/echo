@@ -64,9 +64,11 @@ describe("completion notification settings", () => {
   it("defaults both controls on and persists explicit opt-outs", async () => {
     const sounds = root.querySelector<HTMLInputElement>("[data-notification-setting=notificationSounds]")!;
     const planSounds = root.querySelector<HTMLInputElement>("[data-notification-setting=planQuestionSounds]")!;
+    const planNotifications = root.querySelector<HTMLInputElement>("[data-notification-setting=planQuestionNotifications]")!;
     const chat = root.querySelector<HTMLInputElement>("[data-notification-setting=chatCompletionNotifications]")!;
     expect(sounds.checked).toBe(true);
     expect(planSounds.checked).toBe(true);
+    expect(planNotifications.checked).toBe(true);
     expect(chat.checked).toBe(true);
 
     sounds.checked = false;
@@ -76,6 +78,7 @@ describe("completion notification settings", () => {
     expect(api.put.mock.calls.at(-1)?.[1].settings).toEqual(expect.objectContaining({
       disableNotificationSounds: true,
       disablePlanQuestionSounds: false,
+      enablePlanQuestionNotifications: true,
       enableChatCompletionNotifications: true,
     }));
 
@@ -85,6 +88,17 @@ describe("completion notification settings", () => {
     expect(api.put.mock.calls.at(-1)?.[1].settings).toEqual(expect.objectContaining({
       disableNotificationSounds: true,
       disablePlanQuestionSounds: true,
+      enablePlanQuestionNotifications: true,
+      enableChatCompletionNotifications: true,
+    }));
+
+    planNotifications.checked = false;
+    planNotifications.dispatchEvent(new Event("change", { bubbles: true }));
+    await Promise.resolve();
+    expect(api.put.mock.calls.at(-1)?.[1].settings).toEqual(expect.objectContaining({
+      disableNotificationSounds: true,
+      disablePlanQuestionSounds: true,
+      enablePlanQuestionNotifications: false,
       enableChatCompletionNotifications: true,
     }));
 
@@ -95,6 +109,7 @@ describe("completion notification settings", () => {
     expect(api.put.mock.calls.at(-1)?.[1].settings).toEqual(expect.objectContaining({
       disableNotificationSounds: true,
       disablePlanQuestionSounds: true,
+      enablePlanQuestionNotifications: false,
       enableChatCompletionNotifications: false,
     }));
     expect(notifications.update).toHaveBeenCalled();

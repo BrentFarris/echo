@@ -76,6 +76,17 @@ type chatCompletedMessage struct {
 	CompletedAt   time.Time   `json:"completedAt"`
 }
 
+type planQuestionsMessage struct {
+	Type          string                     `json:"type"`
+	WorkspaceID   string                     `json:"workspaceId"`
+	WorkspaceName string                     `json:"workspaceName"`
+	Surface       chatSurface                `json:"surface"`
+	ChatID        string                     `json:"chatId"`
+	TurnID        string                     `json:"turnId"`
+	CallID        string                     `json:"callId"`
+	Questions     []sessions.PlanQuestion    `json:"questions"`
+}
+
 type trajectoryEventMessage struct {
 	Type        string              `json:"type"`
 	WorkspaceID string              `json:"workspaceId"`
@@ -2091,6 +2102,18 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				"startedAt": toolStartedAt, "planQuestions": activity.PlanQuestions,
 			})
 			s.emitLocked(toolCallEvent)
+			if questionWait != nil && activity.PlanQuestions != nil {
+				s.manager.server.hub.Broadcast(planQuestionsMessage{
+					Type:          "plan_questions_awaiting",
+					WorkspaceID:   s.workspace.ID,
+					WorkspaceName: s.workspace.Name,
+					Surface:       s.surface,
+					ChatID:        s.transcript.ChatID,
+					TurnID:        turnID,
+					CallID:        callID,
+					Questions:     activity.PlanQuestions.Questions,
+				})
+			}
 			s.mu.Unlock()
 
 			var result tools.ExecutionResult

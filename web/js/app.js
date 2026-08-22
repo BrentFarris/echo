@@ -8,6 +8,7 @@ import { ensureAuthenticated } from "../src/auth/authGate.ts";
 import { startEchoUpdateMonitor, stopEchoUpdateMonitor, syncEchoUpdateBadges } from "../src/echoUpdate.ts";
 import { startCompletionNotifications } from "../src/completionNotifications.ts";
 import { startPlanQuestionSound } from "../src/planQuestionSound.ts";
+import { startPlanQuestionNotifications } from "../src/planQuestionNotifications.ts";
 import { isCodeNavigationHistoryState, recordNavigationRoute, routePathFromHash } from "../src/navigation.ts";
 import { initializePluginHost, mountPluginPage, resetPluginHost } from "../src/plugins/pluginHost.ts";
 
@@ -116,6 +117,7 @@ async function bootstrap() {
     await ensureAuthenticated(app);
     await startCompletionNotifications();
     await startPlanQuestionSound();
+    await startPlanQuestionNotifications();
     ws.start();
     startEchoUpdateMonitor();
     await initializePluginHost();

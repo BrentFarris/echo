@@ -20,6 +20,10 @@ import {
   completionNotificationPermission, requestCompletionNotificationPermission,
   updateCompletionNotificationSettings,
 } from "../../src/completionNotifications.ts";
+import {
+  requestPlanQuestionNotificationPermission,
+  updatePlanQuestionNotificationSettings,
+} from "../../src/planQuestionNotifications.ts";
 
 let mountedRoot = null;
 let closeSettingsWorkspaceDropdown = null;
@@ -118,6 +122,7 @@ const state = {
   messaging: {
     notificationSounds: true,
     planQuestionSounds: true,
+    planQuestionNotifications: true,
     chatCompletionNotifications: true,
   },
   storagePath: "",
@@ -487,6 +492,7 @@ function renderMessaging() {
   const toggles = [
     { key: "notificationSounds", label: "Notification sounds", checked: state.messaging.notificationSounds },
     { key: "planQuestionSounds", label: "Planning question sounds", checked: state.messaging.planQuestionSounds },
+    { key: "planQuestionNotifications", label: "Planning question notifications", checked: state.messaging.planQuestionNotifications },
     { key: "chatCompletionNotifications", label: "Chat completion notifications", checked: state.messaging.chatCompletionNotifications },
   ];
   const permission = completionNotificationPermission();
@@ -1352,8 +1358,12 @@ function bindEvents(root) {
     field.addEventListener("change", () => {
       state.messaging[field.dataset.notificationSetting] = field.checked;
       updateCompletionNotificationSettings(buildSettings());
+      updatePlanQuestionNotificationSettings(buildSettings());
       if (field.dataset.notificationSetting === "chatCompletionNotifications" && field.checked) {
         void requestCompletionNotificationPermission().then(() => render());
+      }
+      if (field.dataset.notificationSetting === "planQuestionNotifications" && field.checked) {
+        void requestPlanQuestionNotificationPermission().then(() => render());
       }
       saveSettings();
     });
@@ -1871,9 +1881,11 @@ function applySettings(cfg) {
   state.messaging = {
     notificationSounds: s.disableNotificationSounds !== true,
     planQuestionSounds: s.disablePlanQuestionSounds !== true,
+    planQuestionNotifications: s.enablePlanQuestionNotifications !== false,
     chatCompletionNotifications: s.enableChatCompletionNotifications !== false,
   };
   updateCompletionNotificationSettings(s);
+  updatePlanQuestionNotificationSettings(s);
   render();
 }
 
@@ -1981,6 +1993,7 @@ function buildSettings() {
     disableGitSplitDiffView: !state.git.splitDiffView,
     disableNotificationSounds: !state.messaging.notificationSounds,
     disablePlanQuestionSounds: !state.messaging.planQuestionSounds,
+    enablePlanQuestionNotifications: state.messaging.planQuestionNotifications,
     enableChatCompletionNotifications: state.messaging.chatCompletionNotifications,
     editorFontSize: state.editorFontSize,
     researchAgentConcurrency: state.researchAgentConcurrency,

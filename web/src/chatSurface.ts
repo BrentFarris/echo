@@ -10,6 +10,7 @@ import {
 import { getRoots, searchEntries } from "./code/editorApi";
 import type { FileRef, SearchResult, WorkspaceRoot } from "./code/types";
 import { prepareCompletionNotificationPermission } from "./completionNotifications";
+import { preparePlanQuestionNotificationPermission } from "./planQuestionNotifications";
 
 export type EditorContextDiff = {
   repository?: string;
@@ -306,6 +307,7 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
     const text = composerText(input);
     if (!text.trim() || submitting || isStreaming()) return;
     prepareCompletionNotificationPermission();
+    preparePlanQuestionNotificationPermission();
     submitting = true;
     send.disabled = true;
     try {

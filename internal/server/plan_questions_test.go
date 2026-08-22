@@ -11,6 +11,46 @@ import (
 	"github.com/brent/echo/internal/tools"
 )
 
+// TestPlanQuestionsPauseBroadcastsGlobally verifies that when a plan-mode
+// question set begins awaiting input, a global plan_questions_awaiting message
+// is broadcast to every connected client (regardless of the surface/tab they
+// are viewing), so a client elsewhere can notify the user.
+func TestPlanQuestionsPauseBroadcastsGlobally(t *testing.T) {
+	server, _ := newTestServer(t)
+	workspace := createChatWorkspace(t, server, "plan-questions-broadcast")
+	server.llm = &planQuestionsStreamer{}
+
+	url := startWebSocketTestServer(t, server)
+	chatClient := dialSharedClient(t, url)
+	// Deliberately leave the observer unsubscribed: the broadcast must reach
+	// unsubscribed clients, like the chat_completed notification it mirrors.
+	observer := dialSharedClient(t, url)
+
+	subscribeChat(t, chatClient, workspace.ID)
+	if err := chatClient.WriteJSON(map[string]any{
+		"type": "chat_send", "workspaceId": workspace.ID, "requestId": "plan-broadcast",
+		"message": "Plan this feature", "agentModeId": "plan",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	awaiting := readUntilMessageType(t, observer, "plan_questions_awaiting")
+	if awaiting["workspaceId"] != workspace.ID || awaiting["workspaceName"] != workspace.Name {
+		t.Fatalf("unexpected workspace on global broadcast: %#v", awaiting)
+	}
+	if awaiting["surface"] != "chat" || awaiting["chatId"] == "" || awaiting["turnId"] == "" || awaiting["callId"] == "" {
+		t.Fatalf("expected target metadata on global broadcast: %#v", awaiting)
+	}
+	questions, ok := awaiting["questions"].([]any)
+	if !ok || len(questions) != 2 {
+		t.Fatalf("expected questions on global broadcast: %#v", awaiting)
+	}
+	first, ok := questions[0].(map[string]any)
+	if !ok || first["question"] == "" {
+		t.Fatalf("expected question text on global broadcast: %#v", awaiting)
+	}
+}
+
 type planQuestionsStreamer struct {
 	mu       sync.Mutex
 	requests []llm.ChatRequest

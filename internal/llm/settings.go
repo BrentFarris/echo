@@ -97,6 +97,7 @@ type Settings struct {
 	EditorFontSize                     float64           `json:"editorFontSize"`
 	DisableNotificationSounds          bool              `json:"disableNotificationSounds,omitempty"`
 	DisablePlanQuestionSounds          bool              `json:"disablePlanQuestionSounds,omitempty"`
+	EnablePlanQuestionNotifications    *bool             `json:"enablePlanQuestionNotifications,omitempty"`
 	EnableChatCompletionNotifications  *bool             `json:"enableChatCompletionNotifications,omitempty"`
 	EnableKanbanCompleteNotifications  bool              `json:"enableKanbanCompleteNotifications,omitempty"`
 	LimitKanbanConcurrency             bool              `json:"limitKanbanConcurrency,omitempty"`

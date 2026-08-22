@@ -16,6 +16,7 @@ import {
   chatCompletionTargetFromHash, codeFileRouteHash, codeRouteHash,
 } from "../../src/navigation.ts";
 import { prepareCompletionNotificationPermission } from "../../src/completionNotifications.ts";
+import { preparePlanQuestionNotificationPermission } from "../../src/planQuestionNotifications.ts";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../../src/primaryNav.ts";
 import { watchGitBadge } from "../../src/gitBadge.ts";
 import { mountSpeechRecognition } from "../../src/speechRecognition.ts";
@@ -1393,6 +1394,7 @@ export function mount(root) {
     const videos = state?.videos || [];
     if (!text.trim() && images.length === 0 && videos.length === 0) return;
     prepareCompletionNotificationPermission();
+    preparePlanQuestionNotificationPermission();
     if (sendMessage(log, text, selectedModel || undefined, selectedAgentModeId, { images, videos })) {
       if (state) {
         state.images = [];
