@@ -368,6 +368,20 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.keyboard.press("ArrowLeft");
   await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 3, Col 1");
 
+  // A plain click inside selected text collapses the selection at that point.
+  // Monaco's pointer handler delegates this case to its drag-and-drop
+  // contribution even when the pointer never moves.
+  await page.keyboard.down("Shift");
+  await page.keyboard.press("End");
+  await page.keyboard.up("Shift");
+  const selectedText = page.locator(".monaco-editor .selected-text").first();
+  await expect(selectedText).toBeVisible();
+  const selectionBox = await selectedText.boundingBox();
+  expect(selectionBox).not.toBeNull();
+  await page.mouse.click(selectionBox!.x + selectionBox!.width / 2, selectionBox!.y + selectionBox!.height / 2);
+  await expect(page.locator(".monaco-editor .selected-text")).toHaveCount(0);
+  await expect(page.locator('[data-status="cursor"]')).not.toHaveText("Ln 3, Col 1");
+
   // Tab and Shift+Tab indent and outdent every line in a multi-line selection.
   await page.locator(".view-lines").click();
   await page.keyboard.press("Control+Home");
