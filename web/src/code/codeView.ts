@@ -29,6 +29,7 @@ import { NavigationModelCache } from "./navigationModelCache";
 import {
   CodeNavigationHistory, isLargeCodeNavigationJump, type CodeNavigationLocation,
 } from "./codeNavigationHistory";
+import { beginMruCycle, nextMruCycle, pruneMruCycle, removeFromMru, type MruCycleState } from "./mruTabOrder";
 import type {
   FileRef, FileSnapshot, FsEntry, PersistedTab, PersistedWorkspaceSession,
   SearchResult, TextReplaceUpdate, TextSearchMatch, TextSearchOverlay, TrashItem, WorkspaceRoot,
@@ -128,6 +129,8 @@ class CodeView {
   private treeDropExpandTimer = 0;
   private tabs: OpenTab[] = [];
   private activeTabId: string | null = null;
+  private mruTabIds: string[] = [];
+  private mruCycle: MruCycleState | null = null;
   private untitledCounter = 1;
   private editor!: MonacoEditor.IStandaloneCodeEditor;
   private diffEditor!: MonacoEditor.IStandaloneDiffEditor;
@@ -1416,9 +1419,10 @@ class CodeView {
     this.schedulePersist();
   }
 
-  private activateTab(id: string, focusEditor = true): void {
+  private activateTab(id: string, focusEditor = true, mru = true): void {
     const next = this.tabs.find((tab) => tab.id === id);
     if (!next) return;
+    if (mru) this.touchMru(id);
     const active = this.activeTab();
     // Re-selecting the current tab must not re-attach its model or restore the
     // last captured view state. That state is intentionally only a snapshot
@@ -1461,6 +1465,11 @@ class CodeView {
     this.renderStatus();
     this.revealTabInExplorer(next);
     this.schedulePersist();
+  }
+
+  private touchMru(id: string): void {
+    if (this.mruTabIds[0] === id) return;
+    this.mruTabIds = [id, ...this.mruTabIds.filter((candidate) => candidate !== id)];
   }
 
   private activeTab(): OpenTab | undefined {
@@ -1642,6 +1651,8 @@ class CodeView {
     }
     const index = this.tabs.indexOf(tab);
     this.tabs.splice(index, 1);
+    this.mruTabIds = removeFromMru(this.mruTabIds, tab.id);
+    if (this.mruCycle) this.mruCycle = pruneMruCycle(this.mruCycle, this.tabs.map((t) => t.id));
     this.disposeTab(tab);
     if (tab.id === this.activeTabId) {
       const next = this.tabs[Math.min(index, this.tabs.length - 1)];
@@ -2806,6 +2817,16 @@ class CodeView {
     }, { signal });
 
     document.addEventListener("keydown", (event) => this.handleGlobalKeyboard(event), { signal, capture: true });
+    const endCodeTabCycle = () => {
+      if (!this.mruCycle) return;
+      const finalId = this.mruCycle.order[this.mruCycle.index];
+      if (finalId) this.touchMru(finalId);
+      this.mruCycle = null;
+    };
+    document.addEventListener("keyup", (event) => {
+      if (event.key === "Control" || event.key === "Meta") endCodeTabCycle();
+    }, { signal });
+    window.addEventListener("blur", endCodeTabCycle, { signal });
     document.addEventListener("wheel", (event) => {
       if (!event.ctrlKey) return;
       const target = event.target as Element | null;
@@ -2973,10 +2994,8 @@ class CodeView {
     else if (modifier && key === "n") { event.preventDefault(); event.stopPropagation(); this.newUntitled(); }
     else if (modifier && key === "tab") {
       event.preventDefault();
-      const index = this.tabs.findIndex((tab) => tab.id === this.activeTabId);
-      const direction = event.shiftKey ? -1 : 1;
-      const next = this.tabs[(index + direction + this.tabs.length) % this.tabs.length];
-      if (next) void this.recordCodeNavigation(() => this.activateTab(next.id));
+      event.stopPropagation();
+      this.cycleCodeTabs(event.shiftKey);
     } else if (event.key === "F2" && this.treeScroller.contains(document.activeElement)) {
       const node = this.nodes.get(this.selectedTreeKey || "");
       if (node) { event.preventDefault(); void this.beginRename(node); }
@@ -2987,6 +3006,20 @@ class CodeView {
       event.preventDefault();
       this.searchView?.navigateResult(event.shiftKey ? -1 : 1);
     }
+  }
+
+  private cycleCodeTabs(reverse: boolean): void {
+    if (this.tabs.length <= 1) return;
+    if (!this.mruCycle) {
+      this.mruCycle = beginMruCycle(
+        this.mruTabIds,
+        this.activeTabId,
+        this.tabs.map((tab) => tab.id),
+      );
+    }
+    const { nextId, state } = nextMruCycle(this.mruCycle, reverse);
+    this.mruCycle = state;
+    if (nextId) void this.recordCodeNavigation(() => this.activateTab(nextId, true, false));
   }
 
   private installResizer(): void {
