@@ -56,7 +56,13 @@ func TestCodeChatIsPersistentAndIndependentFromMainTabs(t *testing.T) {
 		"type": "chat_send", "surface": "code", "workspaceId": workspace.ID, "chatId": codeID,
 		"requestId": "code-context-request", "message": "review the open code",
 		"editorContext": map[string]any{"tabs": []any{
-			map[string]any{"kind": "file", "title": "main.go", "active": true, "ref": map[string]any{"rootId": "root", "path": "main.go"}, "reference": "workspace/main.go"},
+			map[string]any{
+				"kind": "file", "title": "main.go", "active": true,
+				"ref": map[string]any{"rootId": "root", "path": "main.go"}, "reference": "workspace/main.go",
+				"selections": []any{map[string]any{
+					"startLine": 3, "startColumn": 1, "endLine": 3, "endColumn": 13, "text": "focused code",
+				}},
+			},
 			map[string]any{"kind": "untitled", "title": "Untitled-1", "dirty": true, "content": "package draft"},
 		}},
 	}); err != nil {
@@ -77,7 +83,8 @@ func TestCodeChatIsPersistentAndIndependentFromMainTabs(t *testing.T) {
 		return values
 	}()...)
 	fake.mu.Unlock()
-	if len(requests) != 1 || !strings.Contains(requests[0], "workspace/main.go") || !strings.Contains(requests[0], "package draft") {
+	if len(requests) != 1 || !strings.Contains(requests[0], "workspace/main.go") || !strings.Contains(requests[0], "package draft") ||
+		!strings.Contains(requests[0], "focused code") || !strings.Contains(requests[0], "user's focused context") {
 		t.Fatalf("model did not receive editor context: %#v", requests)
 	}
 
@@ -118,5 +125,34 @@ func TestEditorContextLimitsAreValidated(t *testing.T) {
 	context = &editorContext{Tabs: []editorContextTab{{Kind: "file", Title: "main.go", Content: "untrusted inline file"}}}
 	if _, err := editorContextMessage(chatSurfaceCode, context); err == nil || !strings.Contains(err.Error(), "non-untitled") {
 		t.Fatalf("expected file-content validation error, got %v", err)
+	}
+	context = &editorContext{Tabs: []editorContextTab{{
+		Kind: "file", Title: "main.go", Active: true,
+		Selections: []editorContextSelection{{StartLine: 4, StartColumn: 8, EndLine: 4, EndColumn: 2, Text: "backwards"}},
+	}}}
+	if _, err := editorContextMessage(chatSurfaceCode, context); err == nil || !strings.Contains(err.Error(), "invalid range") {
+		t.Fatalf("expected selection range error, got %v", err)
+	}
+	context = &editorContext{Tabs: []editorContextTab{{
+		Kind: "diff", Title: "main.go", Active: true,
+		Selections: []editorContextSelection{{Side: "working", StartLine: 1, StartColumn: 1, EndLine: 1, EndColumn: 2, Text: "x"}},
+	}}}
+	if _, err := editorContextMessage(chatSurfaceCode, context); err == nil || !strings.Contains(err.Error(), "invalid diff side") {
+		t.Fatalf("expected diff-side error, got %v", err)
+	}
+	selections := make([]editorContextSelection, maxEditorContextSelections+1)
+	for index := range selections {
+		selections[index] = editorContextSelection{StartLine: index + 1, StartColumn: 1, EndLine: index + 1, EndColumn: 2, Text: "x"}
+	}
+	context = &editorContext{Tabs: []editorContextTab{{Kind: "file", Title: "main.go", Active: true, Selections: selections}}}
+	if _, err := editorContextMessage(chatSurfaceCode, context); err == nil || !strings.Contains(err.Error(), "more than") {
+		t.Fatalf("expected selection limit error, got %v", err)
+	}
+	context = &editorContext{Tabs: []editorContextTab{{
+		Kind: "untitled", Title: "draft", Active: true, Content: "buffer",
+		Selections: []editorContextSelection{{StartLine: 1, StartColumn: 1, EndLine: 1, EndColumn: 2, Text: strings.Repeat("x", maxEditorContextBytes)}},
+	}}}
+	if _, err := editorContextMessage(chatSurfaceCode, context); err == nil || !strings.Contains(err.Error(), "inline content") {
+		t.Fatalf("expected combined inline-content error, got %v", err)
 	}
 }

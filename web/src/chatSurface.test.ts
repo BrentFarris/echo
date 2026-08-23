@@ -88,6 +88,21 @@ describe("compact chat surface", () => {
     surface.dispose();
   });
 
+  it("shows and clears the selected-context notice", () => {
+    const surface = mountChatSurface(host, { workspaceId: "workspace-notice", surface: "code" });
+    const notice = host.querySelector<HTMLElement>("[data-chat-context-notice]")!;
+
+    expect(notice.hidden).toBe(true);
+    surface.setContextNotice("Selected context: main.go, lines 12\u201327 will be included.");
+    expect(notice.hidden).toBe(false);
+    expect(notice.textContent).toBe("Selected context: main.go, lines 12\u201327 will be included.");
+
+    surface.setContextNotice(null);
+    expect(notice.hidden).toBe(true);
+    expect(notice.textContent).toBe("");
+    surface.dispose();
+  });
+
   it("routes changed files through the Code Chat reference activator", async () => {
     const onActivateReference = vi.fn();
     const surface = mountChatSurface(host, { workspaceId: "workspace-files", surface: "code", onActivateReference });

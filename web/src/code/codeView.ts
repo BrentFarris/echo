@@ -11,7 +11,9 @@ import type { LSPProfile, LSPStatus, LSPWorkspaceEdit, WorkspaceLSPResponse } fr
 import { loadDiff as loadGitDiff } from "./gitApi";
 import type { GitChange, GitDiffDocument, GitRepository } from "./gitTypes";
 import { GitView } from "./gitView";
-import { buildCodeChatEditorContext, runCodeChatSavePreflight } from "./codeChatContext";
+import {
+  buildCodeChatEditorContext, formatCodeChatSelectionNotice, runCodeChatSavePreflight,
+} from "./codeChatContext";
 import { loadSession, saveSession } from "./persistence";
 import { previewKindForPath, type PreviewKind } from "./preview";
 import {
@@ -21,7 +23,9 @@ import {
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 import { setGitBadgeCount } from "../gitBadge";
 import { randomUUID } from "../randomUUID";
-import { mountChatSurface, type EditorContextPayload, type MountedChatSurface } from "../chatSurface";
+import {
+  mountChatSurface, type EditorContextPayload, type EditorContextSelection, type MountedChatSurface,
+} from "../chatSurface";
 import type { ChatReference } from "../chatMentions";
 import { detachTerminalDock, mountTerminalDock } from "../terminal";
 import { SearchView } from "./searchView";
@@ -153,6 +157,7 @@ class CodeView {
   private codeChatWidth = 360;
   private codeChatOpen = false;
   private codeChatSurface: MountedChatSurface | null = null;
+  private diffSelectionSides = new Map<string, "original" | "modified">();
   private restoredTreeScrollTop = 0;
   private explorerRevealGeneration = 0;
   private lastSequence = 0;
@@ -654,6 +659,7 @@ class CodeView {
       },
     });
     this.editor.onDidChangeCursorPosition(() => { this.renderStatus(); this.observeNavigationLocation(true); });
+    this.editor.onDidChangeCursorSelection(() => this.updateCodeChatSelectionNotice());
     this.editor.onDidScrollChange(() => { this.observeNavigationLocation(false); this.schedulePersist(); });
     const diffHost = this.root.querySelector<HTMLElement>("[data-monaco-diff-host]")!;
     this.diffEditor = monaco.editor.createDiffEditor(diffHost, {
@@ -688,7 +694,19 @@ class CodeView {
         alternativeDeclarationCommand: "editor.action.referenceSearch.trigger",
       },
     });
-    this.diffEditor.getModifiedEditor().onDidChangeCursorPosition(() => { this.renderStatus(); this.observeNavigationLocation(true); });
+    const originalDiffEditor = this.diffEditor.getOriginalEditor();
+    const modifiedDiffEditor = this.diffEditor.getModifiedEditor();
+    originalDiffEditor.onDidFocusEditorText(() => this.setActiveDiffSelectionSide("original"));
+    modifiedDiffEditor.onDidFocusEditorText(() => this.setActiveDiffSelectionSide("modified"));
+    originalDiffEditor.onDidChangeCursorSelection(() => {
+      if (originalDiffEditor.hasTextFocus()) this.setActiveDiffSelectionSide("original");
+      else this.updateCodeChatSelectionNotice();
+    });
+    modifiedDiffEditor.onDidChangeCursorSelection(() => {
+      if (modifiedDiffEditor.hasTextFocus()) this.setActiveDiffSelectionSide("modified");
+      else this.updateCodeChatSelectionNotice();
+    });
+    modifiedDiffEditor.onDidChangeCursorPosition(() => { this.renderStatus(); this.observeNavigationLocation(true); });
     this.diffEditor.getModifiedEditor().onDidScrollChange(() => { this.observeNavigationLocation(false); this.schedulePersist(); });
     this.updateDiffLayoutState();
     this.editorOpener = monaco.editor.registerEditorOpener({
@@ -1434,6 +1452,7 @@ class CodeView {
         if (next.kind === "diff") this.diffEditor.getModifiedEditor().focus();
         else if (next.kind !== "media") this.editor.focus();
       }
+      this.updateCodeChatSelectionNotice();
       this.schedulePersist();
       return;
     }
@@ -1464,6 +1483,7 @@ class CodeView {
     this.renderBreadcrumbs();
     this.renderStatus();
     this.revealTabInExplorer(next);
+    this.updateCodeChatSelectionNotice();
     this.schedulePersist();
   }
 
@@ -1667,6 +1687,7 @@ class CodeView {
       }
     }
     this.renderTabs();
+    this.updateCodeChatSelectionNotice();
     this.schedulePersist();
     this.sendFilesystemSubscription();
     return true;
@@ -3130,6 +3151,7 @@ class CodeView {
           window.history.replaceState(window.history.state, "", codeRouteHash(this.activeSidebar));
         },
       });
+      this.updateCodeChatSelectionNotice();
     }
     this.codeChatOpen = open;
     shell.classList.toggle("is-code-chat-open", open);
@@ -3172,7 +3194,41 @@ class CodeView {
     return this.buildEditorContext();
   }
 
+  private setActiveDiffSelectionSide(side: "original" | "modified"): void {
+    const tab = this.activeTab();
+    if (tab?.kind === "diff") this.diffSelectionSides.set(tab.id, side);
+    this.updateCodeChatSelectionNotice();
+  }
+
+  private activeEditorSelections(): EditorContextSelection[] {
+    const tab = this.activeTab();
+    if (!tab || tab.kind === "media") return [];
+    const side = tab.kind === "diff" ? this.diffSelectionSides.get(tab.id) || "modified" : undefined;
+    const editor = tab.kind === "diff"
+      ? side === "original" ? this.diffEditor.getOriginalEditor() : this.diffEditor.getModifiedEditor()
+      : this.editor;
+    const model = editor.getModel();
+    if (!model) return [];
+    return (editor.getSelections() || [])
+      .filter((selection) => !selection.isEmpty())
+      .map((selection) => ({
+        ...(side ? { side } : {}),
+        startLine: selection.startLineNumber,
+        startColumn: selection.startColumn,
+        endLine: selection.endLineNumber,
+        endColumn: selection.endColumn,
+        text: model.getValueInRange(selection),
+      }));
+  }
+
+  private updateCodeChatSelectionNotice(): void {
+    const tab = this.activeTab();
+    const selections = this.activeEditorSelections();
+    this.codeChatSurface?.setContextNotice(tab ? formatCodeChatSelectionNotice(tab.title, selections) : null);
+  }
+
   private buildEditorContext(): EditorContextPayload {
+    const activeSelections = this.activeEditorSelections();
     return buildCodeChatEditorContext(this.tabs.map((tab) => {
       const ref = tab.kind === "diff" ? tab.diff?.fileRef || tab.ref || undefined : tab.ref || undefined;
       const root = ref ? this.roots.find((candidate) => candidate.id === ref.rootId) : undefined;
@@ -3184,6 +3240,7 @@ class CodeView {
         ref,
         reference: ref ? `${root?.referenceLabel || root?.label || "workspace"}${ref.path ? `/${ref.path}` : ""}` : undefined,
         content: !ref && tab.kind !== "diff" ? tab.model.getValue() : undefined,
+        selections: tab.id === this.activeTabId ? activeSelections : undefined,
         diff: tab.diff ? {
           repository: tab.diff.repository.label,
           scope: tab.diff.scope,

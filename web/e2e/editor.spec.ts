@@ -437,7 +437,13 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(page.getByRole("tab", { name: /main\.go/ })).toBeVisible();
 
   // Code Chat is collapsed by default, opens beneath the editor tabs, keeps
-  // the compact reference picker, and exposes an accessible width control.
+  // the compact reference picker, surfaces selected editor context, and
+  // exposes an accessible width control.
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("Control+Home");
+  await page.keyboard.down("Shift");
+  await page.keyboard.press("End");
+  await page.keyboard.up("Shift");
   const codeChatToggle = page.getByRole("button", { name: "Open code assistant" });
   const codeChatToggleControl = page.locator("[data-code-chat-toggle]");
   await expect(codeChatToggleControl).toHaveAttribute("aria-expanded", "false");
@@ -445,6 +451,11 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await codeChatToggle.click();
   await expect(page.locator("[data-code-chat-dock]")).toBeVisible();
   await expect(codeChatToggleControl).toHaveAttribute("aria-expanded", "true");
+  const selectedContextNotice = page.locator("[data-chat-context-notice]");
+  await expect(selectedContextNotice).toHaveText("Selected context: main.go, line 1 will be included.");
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("ArrowRight");
+  await expect(selectedContextNotice).toBeHidden();
   const codeChatInput = page.getByLabel("Message Echo about this code");
   await codeChatInput.fill("Review @main");
   await expect(page.getByRole("option", { name: /main\.go/ })).toBeVisible();
