@@ -88,6 +88,46 @@ describe("compact chat surface", () => {
     surface.dispose();
   });
 
+  it("lets plain Enter insert a newline on coarse-pointer devices instead of submitting", async () => {
+    const originalMatchMedia = window.matchMedia;
+    const setCoarse = (coarse: boolean) => {
+      window.matchMedia = ((query: string) => ({
+        matches: query === "(pointer: coarse)" ? coarse : false,
+        media: query,
+        onchange: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+      })) as unknown as typeof window.matchMedia;
+    };
+
+    try {
+      const surface = mountChatSurface(host, { workspaceId: "workspace-coarse", surface: "code" });
+      const input = host.querySelector<HTMLElement>("[data-chat-input]")!;
+      input.textContent = "Line one";
+      const keydown = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+
+      setCoarse(true);
+      input.dispatchEvent(keydown);
+      expect(chat.sendMessage).not.toHaveBeenCalled();
+      expect(input.textContent).toBe("Line one");
+
+      surface.dispose();
+
+      const surface2 = mountChatSurface(host, { workspaceId: "workspace-fine", surface: "code" });
+      const input2 = host.querySelector<HTMLElement>("[data-chat-input]")!;
+      input2.textContent = "Line one";
+      setCoarse(false);
+      input2.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      await vi.waitFor(() => expect(chat.sendMessage).toHaveBeenCalled());
+      surface2.dispose();
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
+  });
+
   it("shows and clears the selected-context notice", () => {
     const surface = mountChatSurface(host, { workspaceId: "workspace-notice", surface: "code" });
     const notice = host.querySelector<HTMLElement>("[data-chat-context-notice]")!;

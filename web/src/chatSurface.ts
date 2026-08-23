@@ -1,4 +1,5 @@
 import { api } from "../js/api.js";
+import { isCoarsePointer } from "./device";
 import {
   canClearChat, clearChat, closeWorkspaceSession, isStreaming, onChatWorkspaceChange,
   onStreamingChange, openWorkspaceSession, sendMessage, stopStream,
@@ -368,7 +369,7 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
         event.preventDefault(); selectMention(mention.selectedIndex); return;
       }
     }
-    if (keyboard.key === "Enter" && !keyboard.shiftKey && !keyboard.isComposing) {
+    if (keyboard.key === "Enter" && !keyboard.shiftKey && !keyboard.isComposing && !isCoarsePointer()) {
       event.preventDefault(); void submit();
     }
   }, { signal });

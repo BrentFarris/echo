@@ -17,6 +17,7 @@ import {
 } from "../../src/navigation.ts";
 import { prepareCompletionNotificationPermission } from "../../src/completionNotifications.ts";
 import { preparePlanQuestionNotificationPermission } from "../../src/planQuestionNotifications.ts";
+import { isCoarsePointer } from "../../src/device.ts";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../../src/primaryNav.ts";
 import { watchGitBadge } from "../../src/gitBadge.ts";
 import { mountSpeechRecognition } from "../../src/speechRecognition.ts";
@@ -1518,8 +1519,9 @@ export function mount(root) {
       return;
     }
     if (handleMentionKeydown(e)) return;
-    // Enter sends (Shift+Enter inserts a newline).
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    // Desktop: Enter sends (Shift+Enter inserts a newline).
+    // Mobile (coarse pointer): plain Enter inserts a newline; submit via the Send button.
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !isCoarsePointer()) {
       e.preventDefault();
       submit();
     }
