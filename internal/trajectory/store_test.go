@@ -1,9 +1,11 @@
 package trajectory
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestStoreAppendPageSearchAndDelete(t *testing.T) {
@@ -44,6 +46,64 @@ func TestStoreAppendPageSearchAndDelete(t *testing.T) {
 	}
 	if _, err := os.Stat(store.Path()); !os.IsNotExist(err) {
 		t.Fatalf("trajectory was not deleted: %v", err)
+	}
+}
+
+func TestStoreAppendBatchPreservesIndividualOrderedRecords(t *testing.T) {
+	store, err := New(t.TempDir(), "chat-batch", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := 2
+	firstAt := time.Date(2026, time.August, 23, 12, 0, 0, 0, time.FixedZone("test", -5*60*60))
+	secondAt := firstAt.Add(250 * time.Millisecond)
+	events, err := store.AppendBatch([]AppendEntry{
+		{Timestamp: firstAt, Type: "assistant/chunk", TurnID: "turn-1", Step: &step, Data: map[string]any{"part": 1}},
+		{Timestamp: secondAt, Type: "assistant/chunk", TurnID: "turn-1", Step: &step, Data: map[string]any{"part": 2}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Sequence != 1 || events[1].Sequence != 2 {
+		t.Fatalf("unexpected batch sequences: %#v", events)
+	}
+	if !events[0].Timestamp.Equal(firstAt) || !events[1].Timestamp.Equal(secondAt) {
+		t.Fatalf("capture timestamps were not preserved: %#v", events)
+	}
+	if events[0].Step == nil || *events[0].Step != step || events[1].Step == nil || *events[1].Step != step {
+		t.Fatalf("assistant step was not preserved: %#v", events)
+	}
+
+	data, err := os.ReadFile(store.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := bytes.Count(data, []byte{'\n'}); lines != 3 {
+		t.Fatalf("expected one header and two event lines, got %d: %s", lines, data)
+	}
+	page, err := store.Page(0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 2 || !bytes.Contains(page.Events[0].Data, []byte(`"part":1`)) || !bytes.Contains(page.Events[1].Data, []byte(`"part":2`)) {
+		t.Fatalf("batch records did not round-trip independently: %#v", page.Events)
+	}
+}
+
+func TestStoreAppendBatchValidatesBeforeWriting(t *testing.T) {
+	store, err := New(t.TempDir(), "chat-batch-invalid", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.AppendBatch([]AppendEntry{
+		{Type: "turn/start", Data: map[string]any{"ok": true}},
+		{Type: "assistant/chunk", Data: make(chan int)},
+	})
+	if err == nil {
+		t.Fatal("expected an unsupported payload to reject the batch")
+	}
+	if _, statErr := os.Stat(store.Path()); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid batch wrote a partial file: %v", statErr)
 	}
 }
 
