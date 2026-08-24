@@ -68,6 +68,7 @@ type Server struct {
 	visionLLM        chatStreamer
 	visionSettings   llm.Settings
 	visionSeparate   bool
+	endpointLLMs     map[string]chatStreamer
 	skillsMu         sync.Mutex
 	skills           map[string]*workspaceskills.Service
 	rebuilder        rebuildCoordinator
@@ -246,6 +247,7 @@ func (s *Server) initLLM() {
 	s.llmCompleter = nil
 	s.researchLLM = nil
 	s.visionLLM = nil
+	s.endpointLLMs = make(map[string]chatStreamer, len(cfg.Endpoints))
 	s.researchSeparate = cfg.EndpointSelection.Research != cfg.EndpointSelection.Chat
 	s.visionSeparate = cfg.EndpointSelection.Vision != cfg.EndpointSelection.Chat
 	client, err := llm.NewClient(s.llmSettings)
@@ -255,26 +257,43 @@ func (s *Server) initLLM() {
 	}
 	s.llm = client
 	s.llmCompleter = client
+	s.endpointLLMs[cfg.EndpointSelection.Chat] = client
 	if !s.researchSeparate {
 		s.researchLLM = client
+		s.endpointLLMs[cfg.EndpointSelection.Research] = client
 	} else {
 		researchClient, researchErr := llm.NewClient(s.researchSettings)
 		if researchErr != nil {
 			logf("init research llm client: %v", researchErr)
 		} else {
 			s.researchLLM = researchClient
+			s.endpointLLMs[cfg.EndpointSelection.Research] = researchClient
 		}
 	}
 	if !s.visionSeparate {
 		s.visionLLM = client
-		return
+		s.endpointLLMs[cfg.EndpointSelection.Vision] = client
+	} else {
+		visionClient, visionErr := llm.NewClient(s.visionSettings)
+		if visionErr != nil {
+			logf("init vision llm client: %v", visionErr)
+		} else {
+			s.visionLLM = visionClient
+			s.endpointLLMs[cfg.EndpointSelection.Vision] = visionClient
+		}
 	}
-	visionClient, visionErr := llm.NewClient(s.visionSettings)
-	if visionErr != nil {
-		logf("init vision llm client: %v", visionErr)
-		return
+	for _, endpoint := range cfg.Endpoints {
+		if s.endpointLLMs[endpoint.ID] != nil {
+			continue
+		}
+		endpointSettings := endpoint.ApplyToSettings(cfg)
+		endpointClient, endpointErr := llm.NewClient(endpointSettings)
+		if endpointErr != nil {
+			logf("init endpoint %q llm client: %v", endpoint.Name, endpointErr)
+			continue
+		}
+		s.endpointLLMs[endpoint.ID] = endpointClient
 	}
-	s.visionLLM = visionClient
 }
 
 func (s *Server) researchChat() (llm.Settings, chatStreamer) {
@@ -299,6 +318,32 @@ func (s *Server) settingsForModel(model string) (llm.Settings, bool) {
 		}
 	}
 	return llm.Settings{}, false
+}
+
+// streamerForSettings returns the initialized client for the endpoint that
+// supplied settings. Model selection changes both request generation settings
+// and the destination client; using the default Chat client here would send a
+// selected model name to the wrong provider.
+func (s *Server) streamerForSettings(settings llm.Settings) chatStreamer {
+	for _, endpoint := range s.settings.Endpoints {
+		if strings.TrimSpace(endpoint.Endpoint) != strings.TrimSpace(settings.Endpoint) ||
+			strings.TrimSpace(endpoint.Model) != strings.TrimSpace(settings.Model) {
+			continue
+		}
+		if endpoint.ID == s.settings.EndpointSelection.Chat && s.llm != nil {
+			return s.llm
+		}
+		if endpoint.ID == s.settings.EndpointSelection.Research && s.researchLLM != nil {
+			return s.researchLLM
+		}
+		if endpoint.ID == s.settings.EndpointSelection.Vision && s.visionLLM != nil {
+			return s.visionLLM
+		}
+		if streamer := s.endpointLLMs[endpoint.ID]; streamer != nil {
+			return streamer
+		}
+	}
+	return nil
 }
 
 // routes builds the HTTP handler tree for the server.

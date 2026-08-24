@@ -1,6 +1,9 @@
 package llm
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestStreamIdleTimeoutNormalization(t *testing.T) {
 	settings := DefaultSettings()
@@ -110,5 +113,53 @@ func TestContextCompressionRoutingAndValidation(t *testing.T) {
 	settings.Endpoints[0].ContextCompressionThresholdPercent = MaxCompressionThreshold + 1
 	if err := settings.NormalizedEndpointProfiles().Validate(); err == nil {
 		t.Fatal("expected a compression threshold above 99 percent to fail validation")
+	}
+}
+
+func TestReasoningEffortNormalizationRoutingAndValidation(t *testing.T) {
+	settings := DefaultSettings()
+	research := settings.Endpoints[0]
+	research.ID = "research"
+	research.Name = "Research"
+	research.Model = "reasoning-model"
+	research.ReasoningEffort = " XHIGH "
+	settings.Endpoints = append(settings.Endpoints, research)
+	settings.EndpointSelection.Research = research.ID
+
+	normalized := settings.NormalizedEndpointProfiles()
+	if got := normalized.Endpoints[1].ReasoningEffort; got != ReasoningEffortXHigh {
+		t.Fatalf("expected normalized reasoning effort %q, got %q", ReasoningEffortXHigh, got)
+	}
+	if got := normalized.ForInteraction(InteractionResearch).ReasoningEffort; got != ReasoningEffortXHigh {
+		t.Fatalf("expected routed reasoning effort %q, got %q", ReasoningEffortXHigh, got)
+	}
+
+	normalized.Endpoints[1].ReasoningEffort = "turbo"
+	if err := normalized.NormalizedEndpointProfiles().Validate(); err == nil {
+		t.Fatal("expected unsupported reasoning effort to fail validation")
+	}
+	settings = DefaultSettings()
+	settings.Endpoints[0].ReasoningEffort = "turbo"
+	if err := settings.Validate(); err == nil {
+		t.Fatal("expected an invalid selected endpoint effort to fail before legacy mirrors are applied")
+	}
+}
+
+func TestLegacySettingsKeepTokenBudgetReasoningMode(t *testing.T) {
+	var legacy Settings
+	if err := json.Unmarshal([]byte(`{
+		"endpoint":"https://example.test/v1",
+		"model":"legacy-model",
+		"thinkingTokenBudget":-1
+	}`), &legacy); err != nil {
+		t.Fatalf("decode legacy settings: %v", err)
+	}
+
+	normalized := legacy.NormalizedEndpointProfiles()
+	if normalized.ReasoningEffort != "" || len(normalized.Endpoints) != 1 || normalized.Endpoints[0].ReasoningEffort != "" {
+		t.Fatalf("legacy settings unexpectedly gained a reasoning effort: %#v", normalized)
+	}
+	if normalized.ThinkingTokenBudget != -1 || normalized.Endpoints[0].ThinkingTokenBudget != -1 {
+		t.Fatalf("legacy thinking token budget was not preserved: %#v", normalized)
 	}
 }

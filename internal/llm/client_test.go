@@ -356,6 +356,49 @@ func TestNewChatRequestAddsThinkingTokenBudget(t *testing.T) {
 	}
 }
 
+func TestNewChatRequestAddsReasoningEffortWithoutTemplateKwargs(t *testing.T) {
+	for _, effort := range []string{ReasoningEffortMax, ReasoningEffortXHigh, ReasoningEffortNone} {
+		t.Run(effort, func(t *testing.T) {
+			settings := DefaultSettings()
+			settings.Endpoint = "https://example.test/v1"
+			settings.ReasoningEffort = effort
+			settings.ThinkingTokenBudget = 0
+			settings.ThinkingCorrection = true
+
+			request, err := NewChatRequest(settings, []Message{{Role: RoleUser, Content: "hello"}})
+			if err != nil {
+				t.Fatalf("new chat request: %v", err)
+			}
+
+			if request.ReasoningEffort != effort {
+				t.Fatalf("expected reasoning effort %q, got %q", effort, request.ReasoningEffort)
+			}
+			if request.ChatTemplateKwargs != nil {
+				t.Fatalf("expected reasoning effort to omit chat template kwargs, got %#v", request.ChatTemplateKwargs)
+			}
+			hasCorrection := strings.Contains(request.Messages[0].Content, ThinkingCorrectionText)
+			if wantCorrection := effort != ReasoningEffortNone; hasCorrection != wantCorrection {
+				t.Fatalf("thinking correction presence = %v, want %v for %q", hasCorrection, wantCorrection, effort)
+			}
+
+			data, err := json.Marshal(request)
+			if err != nil {
+				t.Fatalf("marshal request: %v", err)
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if decoded["reasoning_effort"] != effort {
+				t.Fatalf("expected serialized reasoning effort %q, got %#v", effort, decoded)
+			}
+			if _, exists := decoded["chat_template_kwargs"]; exists {
+				t.Fatalf("expected chat_template_kwargs to be omitted, got %#v", decoded)
+			}
+		})
+	}
+}
+
 func TestChatRequestSerialization(t *testing.T) {
 	request := ChatRequest{
 		Model: "model-a",

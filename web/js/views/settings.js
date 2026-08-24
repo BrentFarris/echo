@@ -82,6 +82,16 @@ const routingTopics = [
   { key: "inlineCode", label: "Inline Code" },
 ];
 
+const reasoningEffortOptions = [
+  { value: "", label: "Provider default / token budget" },
+  { value: "none", label: "None" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "XHigh" },
+  { value: "max", label: "Max" },
+];
+
 // ---- State ----
 const state = {
   activeSection: "llm",
@@ -196,6 +206,7 @@ function newEndpoint() {
     timeoutSeconds: 600,
     streamIdleTimeoutSeconds: 600,
     thinkingTokenBudget: -1,
+    reasoningEffort: "max",
     thinkingCorrection: false,
     contextCompressionEnabled: true,
     contextCompressionThresholdPercent: 70,
@@ -268,7 +279,7 @@ function renderEndpointEditor(e) {
   const num = (key, label, opts = {}) => `
     <label class="field">
       <span>${label}</span>
-      <input type="number" step="${opts.step ?? "any"}" min="${opts.min ?? ""}" max="${opts.max ?? ""}" value="${e[key]}" data-endpoint-field="${key}" />
+      <input type="number" step="${opts.step ?? "any"}" min="${opts.min ?? ""}" max="${opts.max ?? ""}" value="${e[key]}" data-endpoint-field="${key}" ${opts.disabled ? "disabled" : ""} />
     </label>
   `;
   const range = (key, label, opts = {}) => `
@@ -315,14 +326,21 @@ function renderEndpointEditor(e) {
         ${num("repetitionPenalty", "Repetition Penalty", { min: 0, step: 0.01 })}
         ${num("timeoutSeconds", "Request Timeout (seconds)", { min: 1, step: 1 })}
         ${num("streamIdleTimeoutSeconds", "Stream Idle Timeout (seconds)", { min: -1, step: 1 })}
-        ${num("thinkingTokenBudget", "Thinking Token Budget", { min: -1, step: 1 })}
+        <label class="field">
+          <span>Reasoning Effort</span>
+          <select data-endpoint-field="reasoningEffort">
+            ${reasoningEffortOptions.map((option) => `<option value="${option.value}" ${e.reasoningEffort === option.value ? "selected" : ""}>${option.label}</option>`).join("")}
+          </select>
+        </label>
+        ${num("thinkingTokenBudget", "Thinking Token Budget", { min: -1, step: 1, disabled: e.reasoningEffort !== "" })}
       </div>
 
       <p class="settings-card-help">Stream idle timeout is reset whenever provider data or an SSE heartbeat arrives. Set it to -1 to disable inactivity detection.</p>
+      <p class="settings-card-help">A named reasoning effort is sent as <code>reasoning_effort</code> and takes precedence over the local-model thinking-token budget. Unsupported values return the provider's request error without retrying or stepping down.</p>
 
       <label class="settings-toggle">
         <span>Thinking correction</span>
-        <input type="checkbox" ${e.thinkingCorrection ? "checked" : ""} data-endpoint-field="thinkingCorrection" />
+        <input type="checkbox" ${e.thinkingCorrection ? "checked" : ""} data-endpoint-field="thinkingCorrection" ${e.reasoningEffort === "none" || e.reasoningEffort === "" && Number(e.thinkingTokenBudget) === 0 ? "disabled" : ""} />
       </label>
 
       <label class="settings-toggle">
@@ -1170,13 +1188,19 @@ function bindEvents(root) {
         ep.headers = textToHeaders(field.value);
       } else if (key === "thinkingCorrection" || key === "contextCompressionEnabled") {
         ep[key] = field.checked;
-      } else if (key === "name" || key === "endpoint" || key === "model" || key === "systemPromptAppendage") {
+      } else if (key === "name" || key === "endpoint" || key === "model" || key === "reasoningEffort" || key === "systemPromptAppendage") {
         ep[key] = field.value;
       } else {
         const n = Number(field.value);
         ep[key] = Number.isNaN(n) ? 0 : n;
         const out = root.querySelector(`[data-range-value-for="${key}"]`);
         if (out) out.textContent = ep[key];
+      }
+      if (key === "reasoningEffort" || key === "thinkingTokenBudget") {
+        const budget = root.querySelector('[data-endpoint-field="thinkingTokenBudget"]');
+        const correction = root.querySelector('[data-endpoint-field="thinkingCorrection"]');
+        if (budget) budget.disabled = ep.reasoningEffort !== "";
+        if (correction) correction.disabled = ep.reasoningEffort === "none" || ep.reasoningEffort === "" && Number(ep.thinkingTokenBudget) === 0;
       }
     });
   });
@@ -1874,6 +1898,7 @@ function applySettings(cfg) {
   state.settingsLoaded = true;
   state.endpoints = (s.endpoints || []).map((e) => ({
     ...e,
+    reasoningEffort: e.reasoningEffort || "",
     contextCompressionEnabled: e.contextCompressionEnabled !== false,
     contextCompressionThresholdPercent: Number(e.contextCompressionThresholdPercent) || 70,
     headers: e.headers || {},

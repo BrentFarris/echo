@@ -190,6 +190,7 @@ type ChatRequest struct {
 	FrequencyPenalty   *float64            `json:"frequency_penalty,omitempty"`
 	PresencePenalty    *float64            `json:"presence_penalty,omitempty"`
 	RepetitionPenalty  *float64            `json:"repetition_penalty,omitempty"`
+	ReasoningEffort    string              `json:"reasoning_effort,omitempty"`
 	ChatTemplateKwargs *ChatTemplateKwargs `json:"chat_template_kwargs,omitempty"`
 }
 
@@ -276,11 +277,14 @@ func NewChatRequest(settings Settings, messages []Message, options ...RequestOpt
 		FrequencyPenalty:  float64Ptr(settings.FrequencyPenalty),
 		PresencePenalty:   float64Ptr(settings.PresencePenalty),
 		RepetitionPenalty: float64Ptr(settings.RepetitionPenalty),
+		ReasoningEffort:   settings.ReasoningEffort,
 	}
 	if settings.TopK > 0 {
 		request.TopK = intPtr(settings.TopK)
 	}
-	request.ChatTemplateKwargs = chatTemplateKwargsForSettings(settings)
+	if request.ReasoningEffort == "" {
+		request.ChatTemplateKwargs = chatTemplateKwargsForSettings(settings)
+	}
 	for _, option := range options {
 		option(&request)
 	}
@@ -301,10 +305,17 @@ func messagesForRequest(settings Settings, messages []Message) []Message {
 	output := removeEmptyAssistantMessages(cloneMessages(messages))
 	normalizeToolCallArguments(output)
 	appendSystemPromptAppendage(output, settings.SystemPromptAppendage)
-	if settings.ThinkingTokenBudget != 0 && settings.ThinkingCorrection {
+	if reasoningEnabled(settings) && settings.ThinkingCorrection {
 		appendThinkingCorrectionToLatestUserMessage(output)
 	}
 	return output
+}
+
+func reasoningEnabled(settings Settings) bool {
+	if settings.ReasoningEffort != "" {
+		return settings.ReasoningEffort != ReasoningEffortNone
+	}
+	return settings.ThinkingTokenBudget != 0
 }
 
 func normalizeToolCallArguments(messages []Message) {
