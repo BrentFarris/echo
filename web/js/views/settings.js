@@ -823,7 +823,14 @@ function renderDevelopment() {
   const updateError = state.update.status.startsWith("Error:");
   const terminateError = state.terminate.status.startsWith("Error:");
   const developmentBusy = state.rebuild.running || state.update.running || state.terminate.running;
-  const showUpdateCard = state.update.available || state.update.running || state.update.status;
+  const canUpdate = state.update.available || state.update.running;
+  const updateButtonLabel = state.update.running
+    ? "Updating Echo…"
+    : state.update.checking
+      ? "Checking for Updates…"
+      : canUpdate
+        ? "Update Echo"
+        : "Check for Updates";
   return `
     <section class="settings-section">
       <h2 class="settings-section-title">Development</h2>
@@ -835,15 +842,13 @@ function renderDevelopment() {
         </div>
       ` : ""}
 
-      ${showUpdateCard ? `
-        <div class="settings-card echo-update-card">
-          <h3 class="settings-card-title">Update Echo</h3>
-          <p class="settings-card-help">Pulls the latest <code>master</code> from GitHub, then rebuilds and relaunches Echo.</p>
-          <button class="secondary-button" type="button" data-action="update-echo" ${developmentBusy ? "disabled aria-busy=\"true\"" : ""}>${state.update.running ? "Updating Echo…" : "Update Echo"}</button>
-          ${state.update.status ? `<p class="settings-status ${updateError ? "is-error" : ""}" data-update-status>${esc(state.update.status)}</p>` : ""}
-          ${state.update.logPath ? `<p class="field-help">Log: <code>${esc(state.update.logPath)}</code></p>` : ""}
-        </div>
-      ` : ""}
+      <div class="settings-card echo-update-card">
+        <h3 class="settings-card-title">Update Echo</h3>
+        <p class="settings-card-help">Checks GitHub <code>master</code> for updates. When one is available, Echo can pull it, rebuild, and relaunch.</p>
+        <button class="secondary-button" type="button" data-action="${canUpdate ? "update-echo" : "check-for-updates"}" ${developmentBusy || state.update.checking ? "disabled aria-busy=\"true\"" : ""}>${updateButtonLabel}</button>
+        ${state.update.status ? `<p class="settings-status ${updateError ? "is-error" : ""}" data-update-status>${esc(state.update.status)}</p>` : ""}
+        ${state.update.logPath ? `<p class="field-help">Log: <code>${esc(state.update.logPath)}</code></p>` : ""}
+      </div>
 
       <div class="settings-card">
         <h3 class="settings-card-title">AI flow logging</h3>
@@ -1431,8 +1436,19 @@ function bindEvents(root) {
     }
   });
 
-  root.querySelector("[data-action='retry-update-check']")?.addEventListener("click", () => {
-    void refreshEchoUpdateStatus();
+  root.querySelectorAll("[data-action='check-for-updates'], [data-action='retry-update-check']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      state.update.status = "Checking GitHub master for updates…";
+      render();
+      const snapshot = await refreshEchoUpdateStatus();
+      applyEchoUpdateSnapshot(snapshot);
+      state.update.status = snapshot.error
+        ? ""
+        : snapshot.status?.updateAvailable
+          ? "An Echo update is available."
+          : "Echo is up to date.";
+      render();
+    });
   });
 
   root.querySelector("[data-action='update-echo']")?.addEventListener("click", async () => {
@@ -1797,7 +1813,11 @@ export function unmount() {
 }
 
 function applyEchoUpdateSnapshot(snapshot) {
-  state.update.available = snapshot.status?.updateAvailable === true;
+  const available = snapshot.status?.updateAvailable === true;
+  const priorCheckResult = state.update.status === "Echo is up to date."
+    || state.update.status === "An Echo update is available.";
+  if (priorCheckResult && state.update.available !== available) state.update.status = "";
+  state.update.available = available;
   state.update.checking = Boolean(snapshot.checking);
   state.update.checkError = snapshot.error || "";
 }
