@@ -36,7 +36,7 @@ Echo records these semantic boundaries:
 
 The request type does not contain endpoint credentials or custom HTTP headers, so those values never enter the trajectory. Requests can still contain prompts, attached media data, workspace context, tool results, and other sensitive conversation material. Generated context summaries are retained only in the Trajectory compression-completion payload and the private context checkpoint; normal chat activity exposes metrics only. Treat trajectory files as private workspace data.
 
-Provider chunks are batched to avoid opening the log once per token. Each original `StreamEvent`, raw provider JSON frame, and receive timestamp remains present in the batch.
+Provider chunks remain grouped into JSONL records of up to 16 events. Those records are buffered and appended with one file write at semantic stream boundaries (reasoning, visible content, and tool calls), on completion/error/cancellation, or when the buffer reaches 1 MiB or 15 seconds. This bounds crash-loss and memory use without repeatedly opening the log throughout a long thinking phase. Each original `StreamEvent`, raw provider JSON frame, and receive timestamp remains present in the batch, and every JSONL event is still published individually to live Trajectory viewers after persistence.
 
 ## Legacy chats and lifecycle
 

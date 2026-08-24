@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/brent/echo/internal/llm"
 )
@@ -15,8 +16,10 @@ type trajectoryStreamer struct{}
 
 func (trajectoryStreamer) StreamChat(_ context.Context, _ llm.ChatRequest) *llm.Stream {
 	usage := &llm.Usage{PromptTokens: 11, CompletionTokens: 3, TotalTokens: 14}
-	events := make(chan llm.StreamEvent, 4)
-	events <- llm.StreamEvent{Type: llm.EventReasoning, Content: "inspect", Raw: json.RawMessage(`{"choices":[{"delta":{"reasoning_content":"inspect"}}]}`)}
+	events := make(chan llm.StreamEvent, 40)
+	for range 35 {
+		events <- llm.StreamEvent{Type: llm.EventReasoning, Content: "inspect", Raw: json.RawMessage(`{"choices":[{"delta":{"reasoning_content":"inspect"}}]}`)}
+	}
 	events <- llm.StreamEvent{Type: llm.EventToken, Content: "answer", Raw: json.RawMessage(`{"choices":[{"delta":{"content":"answer"}}]}`)}
 	events <- llm.StreamEvent{Type: llm.EventUsage, Usage: usage, Raw: json.RawMessage(`{"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}`)}
 	events <- llm.StreamEvent{Type: llm.EventComplete, FinishReason: "stop", Usage: usage, Raw: json.RawMessage(`{"choices":[{"finish_reason":"stop"}]}`)}
@@ -46,7 +49,28 @@ func TestTrajectoryCaptureAPIExportAndClear(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	finished := readSessionEventForChat(t, conn, chatID, "turn_finished")
+	liveTypes := make(map[string]int)
+	var finished map[string]any
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for finished == nil {
+		var message map[string]any
+		if err := conn.ReadJSON(&message); err != nil {
+			t.Fatalf("read trajectory chat completion: %v", err)
+		}
+		if message["type"] == "trajectory_event" && message["chatId"] == chatID {
+			event, _ := message["event"].(map[string]any)
+			if eventType, ok := event["type"].(string); ok {
+				liveTypes[eventType]++
+			}
+			continue
+		}
+		if message["type"] == "session_event" && message["chatId"] == chatID {
+			event, _ := message["event"].(map[string]any)
+			if event["type"] == "turn_finished" {
+				finished = event
+			}
+		}
+	}
 	if finished["status"] != "done" {
 		t.Fatalf("chat did not complete: %v", finished)
 	}
@@ -59,6 +83,7 @@ func TestTrajectoryCaptureAPIExportAndClear(t *testing.T) {
 		"turn/start": false, "user/message": false, "request/start": false,
 		"assistant/chunk": false, "assistant/message": false, "turn/end": false,
 	}
+	chunkCount := 0
 	for _, event := range page.Events {
 		if _, ok := wanted[event.Type]; ok {
 			wanted[event.Type] = true
@@ -71,11 +96,20 @@ func TestTrajectoryCaptureAPIExportAndClear(t *testing.T) {
 				t.Fatalf("raw provider frame was not retained: %s", event.Data)
 			}
 		}
+		if event.Type == "assistant/chunk" {
+			chunkCount++
+		}
 	}
 	for eventType, found := range wanted {
 		if !found {
 			t.Fatalf("trajectory did not capture %s: %#v", eventType, page.Events)
 		}
+	}
+	if chunkCount != 4 {
+		t.Fatalf("expected three reasoning chunks and one content/completion chunk, got %d", chunkCount)
+	}
+	if liveTypes["assistant/chunk"] != chunkCount || liveTypes["assistant/message"] != 1 || liveTypes["turn/end"] != 1 {
+		t.Fatalf("live trajectory events did not mirror persisted records: live=%v chunks=%d", liveTypes, chunkCount)
 	}
 
 	base := "/api/workspaces/" + workspace.ID + "/chats/" + chatID + "/trajectory"

@@ -329,7 +329,8 @@ func renameCaseSafe(source, destination string) error {
 }
 
 // MediaTypeForName maps a file name to the media type the preview surface can
-// display. Empty means the browser cannot render this file as image or video.
+// display. Empty means the browser cannot render this file as image, video, or
+// audio.
 func MediaTypeForName(name string) string {
 	switch strings.ToLower(filepath.Ext(name)) {
 	case ".png":
@@ -354,6 +355,20 @@ func MediaTypeForName(name string) string {
 		return "video/webm"
 	case ".ogv":
 		return "video/ogg"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".wav":
+		return "audio/wav"
+	case ".ogg", ".oga", ".opus":
+		return "audio/ogg"
+	case ".flac":
+		return "audio/flac"
+	case ".m4a":
+		return "audio/mp4"
+	case ".aac":
+		return "audio/aac"
+	case ".weba":
+		return "audio/webm"
 	default:
 		return ""
 	}
@@ -383,12 +398,12 @@ func (s *Service) MediaMeta(workspaceID string, ref FileRef) (path string, size 
 	}
 	previewable, mapped := Previewable(filepath.Base(info.Name()))
 	if !previewable {
-		err = &Error{Code: "unsupported_preview", Message: "file is not a supported image or video type", Cause: ErrNotPreviewable}
+		err = &Error{Code: "unsupported_preview", Message: "file is not a supported image, video, or audio type", Cause: ErrNotPreviewable}
 		return
 	}
 	size = info.Size()
 	truncated = size > MaxMediaBytes
-	if truncated && strings.HasPrefix(mapped, "video/") {
+	if truncated && (strings.HasPrefix(mapped, "video/") || strings.HasPrefix(mapped, "audio/")) {
 		err = &Error{Code: "file_too_large", Message: "file is larger than the 500 MiB preview limit", Cause: ErrTooLarge}
 		return
 	}

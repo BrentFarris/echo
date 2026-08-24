@@ -10,6 +10,10 @@ describe("previewKindForPath", () => {
     ["media/intro.mp4", "video"],
     ["clips/take-01.WEBM", "video"],
     ["archive/movie.m4v", "video"],
+    ["tracks/song.mp3", "audio"],
+    ["voice/memo.WAV", "audio"],
+    ["sounds/loop.flac", "audio"],
+    ["podcast/episode.ogg", "audio"],
   ])("maps %s to %s", (path, expected) => {
     expect(previewKindForPath(path)).toBe(expected);
   });
@@ -26,9 +30,10 @@ describe("previewKindForPath", () => {
 });
 
 describe("isPreviewableName", () => {
-  it("accepts image and video names only", () => {
+  it("accepts image, video, and audio names only", () => {
     expect(isPreviewableName("a.gif")).toBe(true);
     expect(isPreviewableName("b.ogv")).toBe(true);
-    expect(isPreviewableName("c.txt")).toBe(false);
+    expect(isPreviewableName("c.mp3")).toBe(true);
+    expect(isPreviewableName("d.txt")).toBe(false);
   });
 });

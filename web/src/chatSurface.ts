@@ -1,4 +1,5 @@
 import { api } from "../js/api.js";
+import { isCoarsePointer } from "./device";
 import {
   canClearChat, clearChat, closeWorkspaceSession, isStreaming, onChatWorkspaceChange,
   onStreamingChange, openWorkspaceSession, sendMessage, stopStream,
@@ -19,6 +20,15 @@ export type EditorContextDiff = {
   oldPath?: string;
 };
 
+export type EditorContextSelection = {
+  side?: "original" | "modified";
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+  text: string;
+};
+
 export type EditorContextTab = {
   kind: "file" | "diff" | "untitled";
   title: string;
@@ -28,6 +38,7 @@ export type EditorContextTab = {
   reference?: string;
   content?: string;
   diff?: EditorContextDiff;
+  selections?: EditorContextSelection[];
 };
 
 export type EditorContextPayload = { tabs: EditorContextTab[]; truncated?: boolean };
@@ -45,7 +56,11 @@ export type ChatSurfaceOptions = {
   onExpectedChatResolved?: (found: boolean) => void;
 };
 
-export type MountedChatSurface = { dispose(): void; focus(): void };
+export type MountedChatSurface = {
+  dispose(): void;
+  focus(): void;
+  setContextNotice(message: string | null): void;
+};
 
 type Endpoint = { id: string; name?: string; model?: string };
 type AgentMode = { id: string; name: string };
@@ -120,6 +135,7 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
       </header>
       <div class="chat-log" data-chat-log><div class="empty-state chat-empty">Loading conversation…</div></div>
       <form class="chat-composer" data-chat-form>
+        <div class="code-chat-context-notice" data-chat-context-notice hidden></div>
         <div class="chat-composer-main" data-chat-input-wrap>
           <div class="chat-composer-editor" contenteditable="true" role="textbox" aria-multiline="true"
             aria-label="Message Echo about this code" aria-autocomplete="list" aria-expanded="false"
@@ -137,6 +153,7 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
 
   const log = host.querySelector<HTMLElement>("[data-chat-log]")!;
   const form = host.querySelector<HTMLFormElement>("[data-chat-form]")!;
+  const contextNotice = host.querySelector<HTMLElement>("[data-chat-context-notice]")!;
   const inputWrap = host.querySelector<HTMLElement>("[data-chat-input-wrap]")!;
   const input = host.querySelector<HTMLElement>("[data-chat-input]")!;
   const send = host.querySelector<HTMLButtonElement>(".send-button")!;
@@ -352,7 +369,7 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
         event.preventDefault(); selectMention(mention.selectedIndex); return;
       }
     }
-    if (keyboard.key === "Enter" && !keyboard.shiftKey && !keyboard.isComposing) {
+    if (keyboard.key === "Enter" && !keyboard.shiftKey && !keyboard.isComposing && !isCoarsePointer()) {
       event.preventDefault(); void submit();
     }
   }, { signal });
@@ -424,6 +441,10 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
 
   return {
     focus: () => input.focus(),
+    setContextNotice: (message) => {
+      contextNotice.textContent = message || "";
+      contextNotice.hidden = !message;
+    },
     dispose: () => {
       saveDraft();
       abort.abort();

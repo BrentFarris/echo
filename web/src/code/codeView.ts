@@ -11,7 +11,9 @@ import type { LSPProfile, LSPStatus, LSPWorkspaceEdit, WorkspaceLSPResponse } fr
 import { loadDiff as loadGitDiff } from "./gitApi";
 import type { GitChange, GitDiffDocument, GitRepository } from "./gitTypes";
 import { GitView } from "./gitView";
-import { buildCodeChatEditorContext, runCodeChatSavePreflight } from "./codeChatContext";
+import {
+  buildCodeChatEditorContext, formatCodeChatSelectionNotice, runCodeChatSavePreflight,
+} from "./codeChatContext";
 import { loadSession, saveSession } from "./persistence";
 import { previewKindForPath, type PreviewKind } from "./preview";
 import {
@@ -21,7 +23,9 @@ import {
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 import { setGitBadgeCount } from "../gitBadge";
 import { randomUUID } from "../randomUUID";
-import { mountChatSurface, type EditorContextPayload, type MountedChatSurface } from "../chatSurface";
+import {
+  mountChatSurface, type EditorContextPayload, type EditorContextSelection, type MountedChatSurface,
+} from "../chatSurface";
 import type { ChatReference } from "../chatMentions";
 import { detachTerminalDock, mountTerminalDock } from "../terminal";
 import { SearchView } from "./searchView";
@@ -29,6 +33,7 @@ import { NavigationModelCache } from "./navigationModelCache";
 import {
   CodeNavigationHistory, isLargeCodeNavigationJump, type CodeNavigationLocation,
 } from "./codeNavigationHistory";
+import { beginMruCycle, nextMruCycle, pruneMruCycle, removeFromMru, type MruCycleState } from "./mruTabOrder";
 import type {
   FileRef, FileSnapshot, FsEntry, PersistedTab, PersistedWorkspaceSession,
   SearchResult, TextReplaceUpdate, TextSearchMatch, TextSearchOverlay, TrashItem, WorkspaceRoot,
@@ -128,6 +133,8 @@ class CodeView {
   private treeDropExpandTimer = 0;
   private tabs: OpenTab[] = [];
   private activeTabId: string | null = null;
+  private mruTabIds: string[] = [];
+  private mruCycle: MruCycleState | null = null;
   private untitledCounter = 1;
   private editor!: MonacoEditor.IStandaloneCodeEditor;
   private diffEditor!: MonacoEditor.IStandaloneDiffEditor;
@@ -150,6 +157,7 @@ class CodeView {
   private codeChatWidth = 360;
   private codeChatOpen = false;
   private codeChatSurface: MountedChatSurface | null = null;
+  private diffSelectionSides = new Map<string, "original" | "modified">();
   private restoredTreeScrollTop = 0;
   private explorerRevealGeneration = 0;
   private lastSequence = 0;
@@ -651,6 +659,7 @@ class CodeView {
       },
     });
     this.editor.onDidChangeCursorPosition(() => { this.renderStatus(); this.observeNavigationLocation(true); });
+    this.editor.onDidChangeCursorSelection(() => this.updateCodeChatSelectionNotice());
     this.editor.onDidScrollChange(() => { this.observeNavigationLocation(false); this.schedulePersist(); });
     const diffHost = this.root.querySelector<HTMLElement>("[data-monaco-diff-host]")!;
     this.diffEditor = monaco.editor.createDiffEditor(diffHost, {
@@ -685,7 +694,19 @@ class CodeView {
         alternativeDeclarationCommand: "editor.action.referenceSearch.trigger",
       },
     });
-    this.diffEditor.getModifiedEditor().onDidChangeCursorPosition(() => { this.renderStatus(); this.observeNavigationLocation(true); });
+    const originalDiffEditor = this.diffEditor.getOriginalEditor();
+    const modifiedDiffEditor = this.diffEditor.getModifiedEditor();
+    originalDiffEditor.onDidFocusEditorText(() => this.setActiveDiffSelectionSide("original"));
+    modifiedDiffEditor.onDidFocusEditorText(() => this.setActiveDiffSelectionSide("modified"));
+    originalDiffEditor.onDidChangeCursorSelection(() => {
+      if (originalDiffEditor.hasTextFocus()) this.setActiveDiffSelectionSide("original");
+      else this.updateCodeChatSelectionNotice();
+    });
+    modifiedDiffEditor.onDidChangeCursorSelection(() => {
+      if (modifiedDiffEditor.hasTextFocus()) this.setActiveDiffSelectionSide("modified");
+      else this.updateCodeChatSelectionNotice();
+    });
+    modifiedDiffEditor.onDidChangeCursorPosition(() => { this.renderStatus(); this.observeNavigationLocation(true); });
     this.diffEditor.getModifiedEditor().onDidScrollChange(() => { this.observeNavigationLocation(false); this.schedulePersist(); });
     this.updateDiffLayoutState();
     this.editorOpener = monaco.editor.registerEditorOpener({
@@ -831,6 +852,7 @@ class CodeView {
     const extension = name.split(".").pop()?.toLowerCase();
     if (["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico", "avif"].includes(extension || "")) return "file-media";
     if (["mp4", "m4v", "webm", "ogv"].includes(extension || "")) return "play-circle";
+    if (["mp3", "wav", "ogg", "oga", "opus", "flac", "m4a", "aac", "weba"].includes(extension || "")) return "music";
     if (["json", "yaml", "yml", "toml", "ini"].includes(extension || "")) return "json";
     if (["md", "markdown", "txt"].includes(extension || "")) return "markdown";
     return "file-code";
@@ -1415,9 +1437,10 @@ class CodeView {
     this.schedulePersist();
   }
 
-  private activateTab(id: string, focusEditor = true): void {
+  private activateTab(id: string, focusEditor = true, mru = true): void {
     const next = this.tabs.find((tab) => tab.id === id);
     if (!next) return;
+    if (mru) this.touchMru(id);
     const active = this.activeTab();
     // Re-selecting the current tab must not re-attach its model or restore the
     // last captured view state. That state is intentionally only a snapshot
@@ -1429,6 +1452,7 @@ class CodeView {
         if (next.kind === "diff") this.diffEditor.getModifiedEditor().focus();
         else if (next.kind !== "media") this.editor.focus();
       }
+      this.updateCodeChatSelectionNotice();
       this.schedulePersist();
       return;
     }
@@ -1459,7 +1483,13 @@ class CodeView {
     this.renderBreadcrumbs();
     this.renderStatus();
     this.revealTabInExplorer(next);
+    this.updateCodeChatSelectionNotice();
     this.schedulePersist();
+  }
+
+  private touchMru(id: string): void {
+    if (this.mruTabIds[0] === id) return;
+    this.mruTabIds = [id, ...this.mruTabIds.filter((candidate) => candidate !== id)];
   }
 
   private activeTab(): OpenTab | undefined {
@@ -1489,7 +1519,7 @@ class CodeView {
     if (!list) return;
     list.innerHTML = this.tabs.map((tab) => `
       <div class="code-tab ${tab.id === this.activeTabId ? "is-active" : ""} ${!tab.pinned ? "is-preview" : ""}" role="tab" aria-selected="${tab.id === this.activeTabId}" tabindex="${tab.id === this.activeTabId ? 0 : -1}" data-tab-id="${escapeHTML(tab.id)}" title="${escapeHTML(tab.hostPath || tab.title)}">
-        <span class="codicon codicon-${tab.kind === "diff" ? "diff" : tab.kind === "media" ? (tab.media?.kind === "video" ? "play-circle" : "file-media") : "file-code"} code-tab-icon"></span>
+        <span class="codicon codicon-${tab.kind === "diff" ? "diff" : tab.kind === "media" ? (tab.media?.kind === "video" ? "play-circle" : tab.media?.kind === "audio" ? "music" : "file-media") : "file-code"} code-tab-icon"></span>
         <span class="code-tab-title">${escapeHTML(tab.title)}</span>
         ${tab.conflict ? `<span class="codicon codicon-warning code-tab-conflict" title="Changed on disk"></span>` : ""}
         ${tab.deleted ? `<span class="codicon codicon-trash code-tab-conflict" title="Deleted on disk"></span>` : ""}
@@ -1578,13 +1608,15 @@ class CodeView {
     const host = this.root.querySelector<HTMLElement>("[data-media-preview-host]");
     if (!host || !tab.media) return;
     const url = `${tab.media.url}&v=${Date.now()}`;
-    const icon = tab.media.kind === "video" ? "play-circle" : "file-media";
-    const noun = tab.media.kind === "video" ? "video" : "image";
+    const icon = tab.media.kind === "video" ? "play-circle" : tab.media.kind === "audio" ? "music" : "file-media";
+    const noun = tab.media.kind === "video" ? "video" : tab.media.kind === "audio" ? "audio" : "image";
     const mediaTag = tab.media.kind === "video"
       ? `<video src="${escapeHTML(url)}" controls loop playsinline muted></video>`
-      : `<img src="${escapeHTML(url)}" alt="${escapeHTML(tab.title)}">`;
+      : tab.media.kind === "audio"
+        ? `<audio src="${escapeHTML(url)}" controls preload="metadata"></audio>`
+        : `<img src="${escapeHTML(url)}" alt="${escapeHTML(tab.title)}">`;
     host.innerHTML = `
-      <div class="code-media-frame">
+      <div class="code-media-frame${tab.media.kind === "audio" ? " code-media-frame-audio" : ""}">
         ${mediaTag}
         <div class="code-media-volume-slot"></div>
         <div class="code-media-error" hidden>
@@ -1593,15 +1625,17 @@ class CodeView {
           <p>The file may be larger than the preview limit or its container format is not playable.</p>
         </div>
       </div>`;
-    const element = host.querySelector<HTMLVideoElement | HTMLImageElement>(tab.media.kind === "video" ? "video" : "img");
+    const element = host.querySelector<HTMLVideoElement | HTMLImageElement | HTMLAudioElement>(
+      tab.media.kind === "video" ? "video" : tab.media.kind === "audio" ? "audio" : "img",
+    );
     const errorPanel = host.querySelector<HTMLElement>(".code-media-error");
     const volumeSlot = host.querySelector<HTMLElement>(".code-media-volume-slot");
     if (tab.media.kind === "video" && element instanceof HTMLVideoElement && volumeSlot) {
       volumeSlot.appendChild(attachVideoVolumeControl(element, "code-media-volume"));
     }
-    // Both <img> and <video> raise "error" when the stream fails (missing
-    // file, oversized refusal, unplayable container), so one handler covers
-    // every failure mode.
+    // <img>, <video>, and <audio> all raise "error" when the stream fails
+    // (missing file, oversized refusal, unplayable container), so one handler
+    // covers every failure mode.
     element?.addEventListener("error", () => {
       if (!element || !errorPanel) return;
       element.hidden = true;
@@ -1637,6 +1671,8 @@ class CodeView {
     }
     const index = this.tabs.indexOf(tab);
     this.tabs.splice(index, 1);
+    this.mruTabIds = removeFromMru(this.mruTabIds, tab.id);
+    if (this.mruCycle) this.mruCycle = pruneMruCycle(this.mruCycle, this.tabs.map((t) => t.id));
     this.disposeTab(tab);
     if (tab.id === this.activeTabId) {
       const next = this.tabs[Math.min(index, this.tabs.length - 1)];
@@ -1651,6 +1687,7 @@ class CodeView {
       }
     }
     this.renderTabs();
+    this.updateCodeChatSelectionNotice();
     this.schedulePersist();
     this.sendFilesystemSubscription();
     return true;
@@ -1714,7 +1751,6 @@ class CodeView {
       });
       this.applySavedSnapshot(tab, snapshot);
       this.lsp?.didSave(tab.model);
-      toast(`Saved ${tab.title}`);
       return true;
     } catch (error) {
       const apiError = error as APIError;
@@ -1750,7 +1786,6 @@ class CodeView {
       }
       this.applySavedSnapshot(tab, snapshot);
       this.lsp?.didSave(tab.model);
-      toast(`Saved ${ref.path.split("/").pop() || ref.path}`);
       return true;
     } catch (error) {
       const apiError = error as APIError;
@@ -2803,6 +2838,16 @@ class CodeView {
     }, { signal });
 
     document.addEventListener("keydown", (event) => this.handleGlobalKeyboard(event), { signal, capture: true });
+    const endCodeTabCycle = () => {
+      if (!this.mruCycle) return;
+      const finalId = this.mruCycle.order[this.mruCycle.index];
+      if (finalId) this.touchMru(finalId);
+      this.mruCycle = null;
+    };
+    document.addEventListener("keyup", (event) => {
+      if (event.key === "Control" || event.key === "Meta") endCodeTabCycle();
+    }, { signal });
+    window.addEventListener("blur", endCodeTabCycle, { signal });
     document.addEventListener("wheel", (event) => {
       if (!event.ctrlKey) return;
       const target = event.target as Element | null;
@@ -2970,10 +3015,8 @@ class CodeView {
     else if (modifier && key === "n") { event.preventDefault(); event.stopPropagation(); this.newUntitled(); }
     else if (modifier && key === "tab") {
       event.preventDefault();
-      const index = this.tabs.findIndex((tab) => tab.id === this.activeTabId);
-      const direction = event.shiftKey ? -1 : 1;
-      const next = this.tabs[(index + direction + this.tabs.length) % this.tabs.length];
-      if (next) void this.recordCodeNavigation(() => this.activateTab(next.id));
+      event.stopPropagation();
+      this.cycleCodeTabs(event.shiftKey);
     } else if (event.key === "F2" && this.treeScroller.contains(document.activeElement)) {
       const node = this.nodes.get(this.selectedTreeKey || "");
       if (node) { event.preventDefault(); void this.beginRename(node); }
@@ -2984,6 +3027,20 @@ class CodeView {
       event.preventDefault();
       this.searchView?.navigateResult(event.shiftKey ? -1 : 1);
     }
+  }
+
+  private cycleCodeTabs(reverse: boolean): void {
+    if (this.tabs.length <= 1) return;
+    if (!this.mruCycle) {
+      this.mruCycle = beginMruCycle(
+        this.mruTabIds,
+        this.activeTabId,
+        this.tabs.map((tab) => tab.id),
+      );
+    }
+    const { nextId, state } = nextMruCycle(this.mruCycle, reverse);
+    this.mruCycle = state;
+    if (nextId) void this.recordCodeNavigation(() => this.activateTab(nextId, true, false));
   }
 
   private installResizer(): void {
@@ -3094,6 +3151,7 @@ class CodeView {
           window.history.replaceState(window.history.state, "", codeRouteHash(this.activeSidebar));
         },
       });
+      this.updateCodeChatSelectionNotice();
     }
     this.codeChatOpen = open;
     shell.classList.toggle("is-code-chat-open", open);
@@ -3136,7 +3194,41 @@ class CodeView {
     return this.buildEditorContext();
   }
 
+  private setActiveDiffSelectionSide(side: "original" | "modified"): void {
+    const tab = this.activeTab();
+    if (tab?.kind === "diff") this.diffSelectionSides.set(tab.id, side);
+    this.updateCodeChatSelectionNotice();
+  }
+
+  private activeEditorSelections(): EditorContextSelection[] {
+    const tab = this.activeTab();
+    if (!tab || tab.kind === "media") return [];
+    const side = tab.kind === "diff" ? this.diffSelectionSides.get(tab.id) || "modified" : undefined;
+    const editor = tab.kind === "diff"
+      ? side === "original" ? this.diffEditor.getOriginalEditor() : this.diffEditor.getModifiedEditor()
+      : this.editor;
+    const model = editor.getModel();
+    if (!model) return [];
+    return (editor.getSelections() || [])
+      .filter((selection) => !selection.isEmpty())
+      .map((selection) => ({
+        ...(side ? { side } : {}),
+        startLine: selection.startLineNumber,
+        startColumn: selection.startColumn,
+        endLine: selection.endLineNumber,
+        endColumn: selection.endColumn,
+        text: model.getValueInRange(selection),
+      }));
+  }
+
+  private updateCodeChatSelectionNotice(): void {
+    const tab = this.activeTab();
+    const selections = this.activeEditorSelections();
+    this.codeChatSurface?.setContextNotice(tab ? formatCodeChatSelectionNotice(tab.title, selections) : null);
+  }
+
   private buildEditorContext(): EditorContextPayload {
+    const activeSelections = this.activeEditorSelections();
     return buildCodeChatEditorContext(this.tabs.map((tab) => {
       const ref = tab.kind === "diff" ? tab.diff?.fileRef || tab.ref || undefined : tab.ref || undefined;
       const root = ref ? this.roots.find((candidate) => candidate.id === ref.rootId) : undefined;
@@ -3148,6 +3240,7 @@ class CodeView {
         ref,
         reference: ref ? `${root?.referenceLabel || root?.label || "workspace"}${ref.path ? `/${ref.path}` : ""}` : undefined,
         content: !ref && tab.kind !== "diff" ? tab.model.getValue() : undefined,
+        selections: tab.id === this.activeTabId ? activeSelections : undefined,
         diff: tab.diff ? {
           repository: tab.diff.repository.label,
           scope: tab.diff.scope,

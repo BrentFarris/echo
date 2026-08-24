@@ -39,6 +39,16 @@ type Event struct {
 	Data      json.RawMessage `json:"data,omitempty"`
 }
 
+// AppendEntry describes one event to append. Timestamp may be supplied when
+// events are buffered before persistence; a zero value uses the append time.
+type AppendEntry struct {
+	Timestamp time.Time
+	Type      string
+	TurnID    string
+	Step      *int
+	Data      any
+}
+
 type Page struct {
 	Header     Header  `json:"header"`
 	Events     []Event `json:"events"`
@@ -92,52 +102,91 @@ func (s *Store) Exists() bool {
 }
 
 func (s *Store) Append(eventType, turnID string, step *int, data any) (Event, error) {
+	events, err := s.AppendBatch([]AppendEntry{{Type: eventType, TurnID: turnID, Step: step, Data: data}})
+	if err != nil {
+		return Event{}, err
+	}
+	return events[0], nil
+}
+
+// AppendBatch persists multiple JSONL events with one open/write/close cycle.
+// Every event remains a separate line with its own sequence and timestamp.
+func (s *Store) AppendBatch(entries []AppendEntry) ([]Event, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.initializeLocked(); err != nil {
-		return Event{}, err
+		return nil, err
 	}
-	payload, err := json.Marshal(data)
-	if err != nil {
-		return Event{}, fmt.Errorf("marshal trajectory event: %w", err)
-	}
-	event := Event{
-		Record: "event", Sequence: s.nextSeq, Timestamp: time.Now().UTC(),
-		Type: strings.TrimSpace(eventType), TurnID: strings.TrimSpace(turnID), Step: step, Data: payload,
-	}
-	if event.Type == "" {
-		return Event{}, errors.New("trajectory event type is required")
+	events := make([]Event, 0, len(entries))
+	for index, entry := range entries {
+		payload, err := json.Marshal(entry.Data)
+		if err != nil {
+			return nil, fmt.Errorf("marshal trajectory event %d: %w", index+1, err)
+		}
+		eventType := strings.TrimSpace(entry.Type)
+		if eventType == "" {
+			return nil, errors.New("trajectory event type is required")
+		}
+		timestamp := entry.Timestamp
+		if timestamp.IsZero() {
+			timestamp = time.Now()
+		}
+		var step *int
+		if entry.Step != nil {
+			value := *entry.Step
+			step = &value
+		}
+		events = append(events, Event{
+			Record: "event", Sequence: s.nextSeq + uint64(index), Timestamp: timestamp.UTC(),
+			Type: eventType, TurnID: strings.TrimSpace(entry.TurnID), Step: step, Data: payload,
+		})
 	}
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-		return Event{}, fmt.Errorf("create trajectory directory: %w", err)
+		return nil, fmt.Errorf("create trajectory directory: %w", err)
 	}
 	if s.incomplete {
 		if err := s.repairTrailingRecordLocked(); err != nil {
-			return Event{}, err
+			return nil, err
 		}
 	}
 	file, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		return Event{}, fmt.Errorf("open trajectory log: %w", err)
+		return nil, fmt.Errorf("open trajectory log: %w", err)
 	}
+	var output bytes.Buffer
 	if info, statErr := file.Stat(); statErr != nil {
 		_ = file.Close()
-		return Event{}, fmt.Errorf("stat trajectory log: %w", statErr)
+		return nil, fmt.Errorf("stat trajectory log: %w", statErr)
 	} else if info.Size() == 0 {
-		if err := writeLine(file, s.header); err != nil {
+		if err := writeLine(&output, s.header); err != nil {
 			_ = file.Close()
-			return Event{}, err
+			return nil, err
 		}
 	}
-	if err := writeLine(file, event); err != nil {
+	for _, event := range events {
+		if err := writeLine(&output, event); err != nil {
+			_ = file.Close()
+			return nil, err
+		}
+	}
+	written, writeErr := file.Write(output.Bytes())
+	if writeErr != nil || written != output.Len() {
 		_ = file.Close()
-		return Event{}, err
+		s.initialized = false
+		if writeErr != nil {
+			return nil, fmt.Errorf("write trajectory log: %w", writeErr)
+		}
+		return nil, fmt.Errorf("write trajectory log: %w", io.ErrShortWrite)
 	}
 	if err := file.Close(); err != nil {
-		return Event{}, fmt.Errorf("close trajectory log: %w", err)
+		s.initialized = false
+		return nil, fmt.Errorf("close trajectory log: %w", err)
 	}
-	s.nextSeq++
-	return event, nil
+	s.nextSeq += uint64(len(events))
+	return events, nil
 }
 
 func (s *Store) repairTrailingRecordLocked() error {

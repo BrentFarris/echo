@@ -1699,6 +1699,21 @@
   background: var(--code-editor-surface);
 }
 
+.code-chat-context-notice {
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 2px 3px;
+  color: var(--code-muted);
+  font-size: 10px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.code-chat-context-notice[hidden] {
+  display: none;
+}
+
 .code-chat-surface .chat-composer [data-chat-input] {
   min-height: 46px;
   max-height: min(220px, 35vh);
@@ -1784,7 +1799,8 @@
 }
 
 .code-media-frame img,
-.code-media-frame video {
+.code-media-frame video,
+.code-media-frame audio {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
@@ -1794,6 +1810,11 @@
 .code-media-frame video {
   width: auto;
   height: auto;
+}
+
+/* Audio players occupy a compact, centered strip rather than the full frame. */
+.code-media-frame-audio audio {
+  width: min(560px, 78%);
 }
 
 /* In-player volume pill (media-tab videos) */
