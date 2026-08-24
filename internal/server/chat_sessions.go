@@ -2152,7 +2152,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			return
 		}
 
-		visualResult := false
+		imageResult := false
 		for callOrder, call := range streamResult.ToolCalls {
 			if ctx.Err() != nil {
 				s.finish(turnID, "stopped", "", canonical, checkpoint)
@@ -2258,11 +2258,10 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			canonical = append(canonical, llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: string(data)})
 			if imageMessage, ok := toolResultImageMessage(call.Function.Name, result); ok {
 				canonical = append(canonical, imageMessage)
-				visualResult = true
+				imageResult = true
 			}
 			if videoMessage, ok := toolResultVideoMessage(call.Function.Name, result); ok {
 				canonical = append(canonical, videoMessage)
-				visualResult = true
 			}
 			// Media produced by the tool, extracted via provider interfaces so
 			// any media-emitting tool reaches the chat UI without parsing its
@@ -2333,11 +2332,12 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				researchFinalizationAttempts = 0
 			}
 		}
-		// Vision re-routing is gated on images only: video tool results are
-		// text-only in the LLM context (see toolResultVideoMessage), so a turn
-		// that produced just videos must not flip the chat onto the vision
-		// endpoint.
-		if visualResult && hasImageMedia(messages) {
+		// Vision re-routing is gated on successful image results only: video
+		// tool results are text-only in the LLM context (see
+		// toolResultVideoMessage), so a turn that produced just videos must not
+		// flip the chat onto the vision endpoint.
+		if imageResult {
+			messages = append(cloneContextMessages(prefix), buildCompressedModelHistory(canonical, checkpoint)...)
 			s.mu.Lock()
 			if !s.isActiveLocked(turnID) {
 				s.mu.Unlock()
@@ -2346,7 +2346,6 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			s.transcript.Vision = true
 			s.mu.Unlock()
 
-			messages = append(cloneContextMessages(prefix), buildCompressedModelHistory(canonical, checkpoint)...)
 			settings, streamer = s.manager.server.routeMediaChat(settings, messages, true)
 		}
 	}
