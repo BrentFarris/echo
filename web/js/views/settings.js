@@ -934,7 +934,7 @@ function renderLanguageServers() {
       <div class="settings-card">
         <h3 class="settings-card-title">Workspace activation</h3>
         <p class="settings-card-help">Overrides replace the corresponding profile field. Arrays and JSON objects are not merged.</p>
-        <label class="settings-toggle"><span><strong>Format on save</strong><span class="field-help">Formatting failure or timeout never prevents saving.</span></span><input type="checkbox" data-lsp-config="formatOnSave" ${state.lsp.config.formatOnSave ? "checked" : ""}></label>
+        <label class="settings-toggle"><span><strong>Format on save</strong><span class="field-help">Formats code and organizes supported imports; failures or timeouts never prevent saving.</span></span><input type="checkbox" data-lsp-config="formatOnSave" ${state.lsp.config.formatOnSave ? "checked" : ""}></label>
         <div class="settings-grid">
           <label class="field"><span>Format timeout (ms)</span><input type="number" min="250" max="30000" step="250" value="${esc(state.lsp.config.formatOnSaveTimeoutMs || 3000)}" data-lsp-config="formatOnSaveTimeoutMs"></label>
           <label class="field field-wide"><span>Profile overrides (JSON)</span><textarea rows="8" spellcheck="false" data-lsp-overrides>${esc(state.lsp.overridesText)}</textarea><span class="field-help">Keys are profile IDs. Supported fields: name, command, args, selectors, environment, initializationOptions, settings.</span></label>

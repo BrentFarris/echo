@@ -100,6 +100,19 @@ func TestServerRuntimeInitializationRoutingStderrAndShutdown(t *testing.T) {
 	service.mu.Unlock()
 }
 
+func TestClientCapabilitiesAdvertiseOrganizeImports(t *testing.T) {
+	textDocument := clientCapabilities()["textDocument"].(map[string]any)
+	codeAction := textDocument["codeAction"].(map[string]any)
+	literal := codeAction["codeActionLiteralSupport"].(map[string]any)
+	kinds := literal["codeActionKind"].(map[string]any)["valueSet"].([]string)
+	for _, kind := range kinds {
+		if kind == "source.organizeImports" {
+			return
+		}
+	}
+	t.Fatalf("source.organizeImports missing from code action kinds: %v", kinds)
+}
+
 func TestDocumentLeaseDenialTakeoverDisconnectAndStaleVersion(t *testing.T) {
 	current, service, workspace, _ := startTestRuntime(t)
 	defer func() {

@@ -2,7 +2,7 @@ import type * as Monaco from "monaco-editor";
 import { monaco } from "./language";
 import { profileMatchesDocument } from "./languageMap";
 import type {
-  LSPProfile, LSPRange, LSPStatus, LSPWorkspaceEdit, WorkspaceLSPConfig, WorkspaceLSPResponse,
+  LSPCodeAction, LSPCommand, LSPProfile, LSPRange, LSPStatus, LSPWorkspaceEdit, WorkspaceLSPConfig, WorkspaceLSPResponse,
 } from "./lspTypes";
 import { registerLSPProviders } from "./lspProviders";
 
@@ -240,14 +240,61 @@ export class EchoLSPClient {
     return true;
   }
 
+  async organizeImports(model: Monaco.editor.ITextModel, timeoutMS = 15000): Promise<boolean> {
+    const profile = this.profileForModel(model);
+    if (!profile || !this.owns(model)) throw new Error("Language server import organization is unavailable for this document");
+    if (!this.supports(profile.id, "codeActionProvider")) return false;
+    const actions = await this.requestForModel<Array<LSPCodeAction | LSPCommand> | null>(model, "textDocument/codeAction", {
+      textDocument: { uri: model.uri.toString() },
+      range: toLSPRange(model.getFullModelRange()),
+      context: { diagnostics: [], only: ["source.organizeImports"], triggerKind: 2 },
+    }, undefined, timeoutMS);
+    for (const candidate of actions || []) {
+      if (isLSPCommand(candidate)) {
+        await this.request(profile.id, "workspace/executeCommand", {
+          command: candidate.command, arguments: candidate.arguments || [],
+        }, undefined, timeoutMS);
+        return true;
+      }
+      let action = candidate;
+      if (action.disabled) continue;
+      if (!action.edit && !action.command && action.data !== undefined && this.supports(profile.id, "codeActionProvider.resolveProvider")) {
+        action = await this.request<LSPCodeAction>(profile.id, "codeAction/resolve", action, undefined, timeoutMS);
+        if (action.disabled) continue;
+      }
+      let applied = false;
+      if (action.edit) {
+        if (!(await this.options.applyWorkspaceEdit(action.edit))) throw new Error("Language server import edit could not be applied");
+        applied = true;
+      }
+      if (action.command) {
+        await this.request(profile.id, "workspace/executeCommand", {
+          command: action.command.command, arguments: action.command.arguments || [],
+        }, undefined, timeoutMS);
+        applied = true;
+      }
+      if (applied) return true;
+    }
+    return false;
+  }
+
   async formatBeforeSave(model: Monaco.editor.ITextModel): Promise<void> {
     if (this.config.formatOnSave !== true) return;
     const timeout = this.config.formatOnSaveTimeoutMs || 3000;
+    const deadline = Date.now() + timeout;
+    const remaining = () => Math.max(1, deadline - Date.now());
+    const failures: string[] = [];
     try {
-      await this.format(model, undefined, timeout);
+      await this.organizeImports(model, remaining());
     } catch (error) {
-      this.options.onMessage(`Saved without LSP formatting: ${error instanceof Error ? error.message : String(error)}`);
+      failures.push(`import organization: ${error instanceof Error ? error.message : String(error)}`);
     }
+    try {
+      await this.format(model, undefined, remaining());
+    } catch (error) {
+      failures.push(`formatting: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (failures.length) this.options.onMessage(`Saved without all LSP save actions: ${failures.join("; ")}`);
   }
 
   prepareWorkspaceEdit(edit: LSPWorkspaceEdit): Promise<Monaco.languages.WorkspaceEdit> {
@@ -519,6 +566,10 @@ export function toLSPRange(range: Monaco.IRange): LSPRange {
 
 export function fromLSPRange(range: LSPRange): Monaco.Range {
   return new monaco.Range(range.start.line + 1, range.start.character + 1, range.end.line + 1, range.end.character + 1);
+}
+
+function isLSPCommand(value: LSPCodeAction | LSPCommand): value is LSPCommand {
+  return typeof value.command === "string";
 }
 
 function markerRange(range: LSPRange): Pick<Monaco.editor.IMarkerData, "startLineNumber" | "startColumn" | "endLineNumber" | "endColumn"> {

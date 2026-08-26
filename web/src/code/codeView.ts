@@ -1066,21 +1066,41 @@ class CodeView {
     }
     const workspaceEdits: MonacoLanguages.IWorkspaceTextEdit[] = [];
     for (const item of pending) {
-      const resource = monaco.Uri.parse(item.uri);
-      const model = monaco.editor.getModel(resource);
+      const model = this.modelForLSPWorkspaceEditURI(item.uri);
       if (!model) throw new Error(`Language-server edit target is unavailable: ${item.uri}`);
       if (typeof item.version === "number" && item.version !== model.getVersionId()) {
-        throw new Error(`Language-server edit for ${resource.fsPath} is stale (expected version ${item.version}, current version ${model.getVersionId()})`);
+        throw new Error(`Language-server edit for ${model.uri.fsPath} is stale (expected version ${item.version}, current version ${model.getVersionId()})`);
       }
       for (const textEdit of item.edits) {
         workspaceEdits.push({
-          resource,
+          resource: model.uri,
           versionId: model.getVersionId(),
           textEdit: { range: fromLSPRange(textEdit.range), text: textEdit.newText },
         });
       }
     }
     return { edits: workspaceEdits };
+  }
+
+  private modelForLSPWorkspaceEditURI(uri: string): MonacoEditor.ITextModel | null {
+    try {
+      const exact = monaco.editor.getModel(monaco.Uri.parse(uri));
+      if (exact) return exact;
+    } catch {
+      return null;
+    }
+    const ref = this.refForFileURI(uri);
+    if (!ref) return null;
+    const key = refKey(ref);
+    const tab = this.tabs.find((candidate) => {
+      const candidateRef = this.worktreeRef(candidate);
+      return candidateRef && refKey(candidateRef) === key;
+    });
+    if (tab && tab.kind !== "media") return tab.model;
+    return monaco.editor.getModels().find((model) => {
+      const candidateRef = this.refForFileURI(model.uri.toString());
+      return candidateRef && refKey(candidateRef) === key;
+    }) || null;
   }
 
   private async applyLSPWorkspaceEdit(edit: LSPWorkspaceEdit): Promise<boolean> {
