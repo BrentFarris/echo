@@ -2816,6 +2816,14 @@ class CodeView {
       if ((event.target as Element).closest("[data-tab-close]")) void this.closeTab(tab);
       else void this.recordCodeNavigation(() => this.activateTab(tab.id));
     }, { signal });
+    tabs.addEventListener("mousedown", (event) => {
+      // Suppress the browser's native middle-click autoscroll when the tab bar
+      // overflows and becomes scrollable, so middle-click keeps closing tabs
+      // instead of starting a horizontal scroll drag.
+      if (event.button !== 1) return;
+      if (!(event.target as Element).closest("[data-tab-id]")) return;
+      event.preventDefault();
+    }, { signal });
     tabs.addEventListener("auxclick", (event) => {
       if (event.button !== 1) return;
       const element = (event.target as Element).closest<HTMLElement>("[data-tab-id]");
