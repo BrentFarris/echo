@@ -776,6 +776,97 @@ test("drags an open explorer file into another folder", async ({ page }) => {
   }
 });
 
+test("auto-scrolls the explorer while dragging near the bottom edge", async ({ page }) => {
+  test.setTimeout(120_000);
+  const state = JSON.parse(readFileSync(resolve(directory, "../test-results/e2e-runtime/state.json"), "utf8")) as {
+    setupCode: string;
+    workspace: string;
+  };
+  const scrollWorkspace = join(dirname(state.workspace), "scroll-workspace");
+  mkdirSync(scrollWorkspace, { recursive: true });
+  // Enough rows (22px each) to overflow the explorer and make scrolling meaningful.
+  for (let i = 0; i < 60; i++) {
+    writeFileSync(join(scrollWorkspace, `file-${String(i).padStart(2, "0")}.txt`), `file ${i}\n`, "utf8");
+  }
+
+  await page.goto("/");
+  if (await page.getByRole("heading", { name: "Secure this Echo server" }).isVisible()) {
+    await page.getByLabel("Setup code").fill(state.setupCode);
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByLabel("Confirm password").fill(password);
+    await page.getByLabel("Device name").fill("Playwright Scroll");
+    await page.getByRole("button", { name: "Finish setup" }).click();
+  } else {
+    await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByLabel("Device name").fill("Playwright Scroll");
+    await page.getByRole("button", { name: "Sign in" }).click();
+  }
+  await expect(page.locator(".app-shell")).toBeVisible();
+
+  const previousWorkspaceId = await page.evaluate(async ({ workspacePath, baselinePath }) => {
+    const request = async (path: string, method: string, body: unknown) => {
+      const response = await fetch(path, {
+        method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+      return payload.data;
+    };
+    const currentResponse = await fetch("/api/workspaces");
+    const currentPayload = await currentResponse.json();
+    let previousActiveId = currentPayload.data?.activeId as string | null;
+    if (!previousActiveId) {
+      const baseline = await request("/api/workspaces", "POST", { name: "E2E Workspace", mainPath: baselinePath, folders: [] });
+      previousActiveId = baseline.workspace.id as string;
+      await request("/api/workspaces/active", "PUT", { id: previousActiveId });
+    }
+    const created = await request("/api/workspaces", "POST", { name: "Scroll Workspace", mainPath: workspacePath, folders: [] });
+    await request("/api/workspaces/active", "PUT", { id: created.workspace.id });
+    return previousActiveId;
+  }, { workspacePath: scrollWorkspace, baselinePath: state.workspace });
+
+  await page.goto("/#/code");
+  await expect(page.locator(".code-app-shell")).toBeVisible();
+
+  const tree = page.locator("[data-code-tree]");
+  const firstFile = page.locator(".code-tree-row", { hasText: "file-00.txt" });
+  await expect(firstFile).toBeVisible();
+
+  const treeBox = await tree.boundingBox();
+  expect(treeBox).not.toBeNull();
+  const scrollable = await tree.evaluate((element) => element.scrollHeight > element.clientHeight);
+  expect(scrollable).toBe(true);
+
+  const sourceBox = await firstFile.boundingBox();
+  expect(sourceBox).not.toBeNull();
+
+  // Begin dragging the first file, then hold it just inside the bottom edge.
+  await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(sourceBox!.x + sourceBox!.width / 2 + 8, sourceBox!.y + sourceBox!.height / 2, { steps: 2 });
+  const bottomEdgeY = treeBox!.y + treeBox!.height - 10;
+  await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, bottomEdgeY, { steps: 8 });
+
+  // The rAF auto-scroll should keep advancing while the cursor rests in the edge zone.
+  await expect.poll(() => tree.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  const scrollTopAfter = await tree.evaluate((element) => element.scrollTop);
+  await page.waitForTimeout(300);
+  const scrollTopLater = await tree.evaluate((element) => element.scrollTop);
+  expect(scrollTopLater).toBeGreaterThan(scrollTopAfter);
+
+  await page.mouse.up();
+
+  if (previousWorkspaceId) {
+    await page.evaluate(async (id) => {
+      const response = await fetch("/api/workspaces/active", {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }),
+      });
+      if (!response.ok) throw new Error(`Could not restore active workspace: HTTP ${response.status}`);
+    }, previousWorkspaceId);
+  }
+});
+
 test("runs the deterministic fake language server through Monaco and settings", async ({ page }) => {
   test.setTimeout(120_000);
   const state = JSON.parse(readFileSync(resolve(directory, "../test-results/e2e-runtime/state.json"), "utf8")) as {

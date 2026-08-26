@@ -131,6 +131,9 @@ class CodeView {
   private treeDropTargetKey: string | null = null;
   private treeDropExpandKey: string | null = null;
   private treeDropExpandTimer = 0;
+  private treeDragScrollFrame = 0;
+  private treeDragScrollClientY = 0;
+  private treeDragScrollActive = false;
   private tabs: OpenTab[] = [];
   private activeTabId: string | null = null;
   private mruTabIds: string[] = [];
@@ -1227,17 +1230,38 @@ class CodeView {
     window.clearTimeout(this.treeDropExpandTimer);
     this.treeDropExpandTimer = 0;
     this.treeDropExpandKey = null;
+    if (this.treeDragScrollFrame) {
+      cancelAnimationFrame(this.treeDragScrollFrame);
+      this.treeDragScrollFrame = 0;
+    }
+    this.treeDragScrollActive = false;
     this.treeCanvas.querySelectorAll(".code-tree-row.is-dragging, .code-tree-row.is-drop-target")
       .forEach((row) => row.classList.remove("is-dragging", "is-drop-target"));
     this.draggingTreeKey = null;
     this.treeDropTargetKey = null;
   }
 
-  private scrollTreeDuringDrag(clientY: number): void {
-    const bounds = this.treeScroller.getBoundingClientRect();
-    const edge = 28;
-    if (clientY < bounds.top + edge) this.treeScroller.scrollTop -= 12;
-    else if (clientY > bounds.bottom - edge) this.treeScroller.scrollTop += 12;
+  private startTreeDragScroll(clientY: number): void {
+    this.treeDragScrollClientY = clientY;
+    if (this.treeDragScrollActive) return;
+    this.treeDragScrollActive = true;
+    const step = () => {
+      this.treeDragScrollFrame = 0;
+      if (!this.treeDragScrollActive) return;
+      const bounds = this.treeScroller.getBoundingClientRect();
+      const edge = 28;
+      const speed = 12;
+      if (this.treeDragScrollClientY < bounds.top + edge) {
+        this.treeScroller.scrollTop -= speed;
+      } else if (this.treeDragScrollClientY > bounds.bottom - edge) {
+        this.treeScroller.scrollTop += speed;
+      } else {
+        this.treeDragScrollActive = false;
+        return;
+      }
+      this.treeDragScrollFrame = requestAnimationFrame(step);
+    };
+    this.treeDragScrollFrame = requestAnimationFrame(step);
   }
 
   private rewrittenTreeRef(candidate: FileRef, previous: FileRef, next: FileRef): FileRef {
@@ -2733,10 +2757,10 @@ class CodeView {
       const target = row ? this.nodes.get(row.dataset.treeKey || "") : undefined;
       const destination = this.treeMoveDestination(source, target);
       this.setTreeDropTarget(destination?.key || null);
+      this.startTreeDragScroll(event.clientY);
       if (!destination || !event.dataTransfer) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = "move";
-      this.scrollTreeDuringDrag(event.clientY);
     }, { signal });
     this.treeCanvas.addEventListener("drop", (event) => {
       const source = this.nodes.get(this.draggingTreeKey || "");
@@ -3652,6 +3676,7 @@ class CodeView {
     this.abort.abort();
     window.clearTimeout(this.persistTimer);
     window.clearTimeout(this.treeDropExpandTimer);
+    if (this.treeDragScrollFrame) cancelAnimationFrame(this.treeDragScrollFrame);
     window.clearInterval(this.pollTimer);
     closeContextMenu();
     this.editorOpener?.dispose();
