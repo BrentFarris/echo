@@ -451,6 +451,27 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await codeChatToggle.click();
   await expect(page.locator("[data-code-chat-dock]")).toBeVisible();
   await expect(codeChatToggleControl).toHaveAttribute("aria-expanded", "true");
+
+  // ESC while a file search/replace is active must dismiss the search first,
+  // leaving the code chat open; a second ESC closes the chat.
+  await page.keyboard.press("Control+Shift+F");
+  const chatSearchInput = page.getByLabel("Search workspace");
+  await expect(chatSearchInput).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("[data-code-chat-dock]")).toBeVisible();
+  await expect(codeChatToggleControl).toHaveAttribute("aria-expanded", "true");
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("Control+f");
+  const chatFindInput = page.getByRole("textbox", { name: "Find", exact: true });
+  await expect(chatFindInput).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("[data-code-chat-dock]")).toBeVisible();
+  await expect(codeChatToggleControl).toHaveAttribute("aria-expanded", "true");
+  await page.keyboard.press("Escape");
+  await expect(page.locator("[data-code-chat-dock]")).toBeHidden();
+  await codeChatToggle.click();
+  await expect(page.locator("[data-code-chat-dock]")).toBeVisible();
+
   const selectedContextNotice = page.locator("[data-chat-context-notice]");
   await expect(selectedContextNotice).toHaveText("Selected context: main.go, line 1 will be included.");
   await page.locator(".view-lines").click();

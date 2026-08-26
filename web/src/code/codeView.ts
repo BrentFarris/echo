@@ -2987,6 +2987,9 @@ class CodeView {
     if (document.querySelector(".code-modal-overlay, .code-picker-overlay")) return;
     if (event.key === "Escape" && this.root.querySelector("[data-chat-mention-picker]") && document.activeElement?.closest(".code-chat-surface")) return;
     if (event.key === "Escape" && this.codeChatOpen) {
+      // When a file search/replace is active, Escape closes the search first;
+      // only fall through to closing the code chat once the search is dismissed.
+      if (this.searchIsActive()) return;
       event.preventDefault();
       this.setCodeChatOpen(false, true);
       return;
@@ -3049,6 +3052,20 @@ class CodeView {
       event.preventDefault();
       this.searchView?.navigateResult(event.shiftKey ? -1 : 1);
     }
+  }
+
+  /**
+   * True while a file search/replace is currently active: either the workspace
+   * search sidebar input is focused, or Monaco's in-editor find/replace widget
+   * is visible. Used so Escape closes the active search before falling back to
+   * closing the code chat.
+   */
+  private searchIsActive(): boolean {
+    if (this.activeSidebar === "search" && document.activeElement instanceof HTMLInputElement) return true;
+    const editor = this.activeCodeEditor();
+    if (!editor) return false;
+    const findController = editor.getContribution<MonacoEditor.IEditorContribution & { getState(): { isRevealed: boolean } }>("editor.contrib.findController");
+    return findController?.getState().isRevealed === true;
   }
 
   private cycleCodeTabs(reverse: boolean): void {
