@@ -1303,12 +1303,17 @@ test("runs the deterministic fake language server through Monaco and settings", 
   await page.keyboard.press("Enter");
   await expect(page.locator(".view-lines")).toContainText("fakeCompletion");
 
+  // The fake server also edits the currently closed definition.go. Preparing
+  // that model must not switch Monaco's active model while this request runs.
   await page.keyboard.press("F2");
   const rename = page.locator(".rename-box input");
   await expect(rename).toBeVisible();
   await rename.fill("renamedMain");
   await rename.press("Enter");
   await expect(page.locator(".view-lines")).toContainText("renamedMain");
+  await expect(page.locator(".code-tab.is-active")).toContainText("main.go");
+  await expect(page.getByRole("textbox", { name: "Editor content" })).toBeFocused();
+  await expect(page.locator(".code-tab", { hasText: "definition.go" }).locator(".code-tab-dirty")).toHaveClass(/is-visible/);
 
   await page.keyboard.press("Shift+Alt+f");
   await expect(page.locator(".view-lines")).toContainText("formatted by Echo fake LSP");

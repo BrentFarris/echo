@@ -127,7 +127,11 @@ function handle(message) {
   } else if (method === "textDocument/prepareRename") {
     response(message, { range: mainRange(uri), placeholder: "main" });
   } else if (method === "textDocument/rename") {
-    response(message, { changes: { [uri]: [{ range: mainRange(uri), newText: params.newName }] } });
+    const definitionURI = workspaceURI("definition.go");
+    response(message, { changes: {
+      [uri]: [{ range: mainRange(uri), newText: params.newName }],
+      [definitionURI]: [{ range: targetRange(definitionURI, 2), newText: params.newName }],
+    } });
   } else if (method === "textDocument/formatting") {
     response(message, [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: "// formatted by Echo fake LSP\n" }]);
   } else if (method === "workspace/symbol") {

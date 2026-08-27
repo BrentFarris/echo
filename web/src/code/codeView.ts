@@ -1075,9 +1075,11 @@ class CodeView {
   private async openLSPWorkspaceEditURI(uri: string): Promise<boolean> {
     const ref = this.refForFileURI(uri);
     if (!ref || !ref.path) return false;
-    const previous = this.activeTabId;
-    await this.openFile(ref, true, false);
-    if (previous && this.tabs.some((tab) => tab.id === previous)) this.activateTab(previous, false);
+    // Monaco cancels rename/code-action requests when their owning editor
+    // changes models. Workspace edits still need real tabs so their models are
+    // retained and marked dirty, but preparing those tabs must not activate
+    // them while the provider request is in flight.
+    await this.openFile(ref, true, false, false, false);
     return this.tabs.some((tab) => {
       const candidate = this.worktreeRef(tab);
       return candidate && refKey(candidate) === refKey(ref);
@@ -1165,7 +1167,7 @@ class CodeView {
     model.dispose();
   }
 
-  private async openFile(ref: FileRef, pin: boolean, focusEditor = true, showErrors = true): Promise<boolean> {
+  private async openFile(ref: FileRef, pin: boolean, focusEditor = true, showErrors = true, activate = true): Promise<boolean> {
     if (!this.workspace) return false;
     const previewKind = previewKindForPath(ref.path);
     if (previewKind) {
@@ -1175,7 +1177,7 @@ class CodeView {
     const existing = this.tabs.find((tab) => tab.ref && refKey(tab.ref) === refKey(ref));
     if (existing) {
       if (pin) existing.pinned = true;
-      this.activateTab(existing.id, focusEditor);
+      if (activate) this.activateTab(existing.id, focusEditor);
       this.renderTabs();
       this.sendFilesystemSubscription();
       return true;
@@ -1195,7 +1197,7 @@ class CodeView {
       } else {
         this.tabs.push(tab);
       }
-      this.activateTab(tab.id, focusEditor);
+      if (activate) this.activateTab(tab.id, focusEditor);
       this.renderTabs();
       this.schedulePersist();
       this.sendFilesystemSubscription();
@@ -1216,7 +1218,7 @@ class CodeView {
           { id: "reveal", label: "Reveal on Echo host", primary: true },
         ],
       });
-      if (choice === "reload") return await this.openFile(ref, pin, focusEditor, showErrors);
+      if (choice === "reload") return await this.openFile(ref, pin, focusEditor, showErrors, activate);
       if (choice === "reveal") await this.reveal(ref);
       return false;
     }
