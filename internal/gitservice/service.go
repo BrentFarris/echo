@@ -436,6 +436,7 @@ func cleanGitPath(value string) (string, error) {
 }
 
 var credentialURLPattern = regexp.MustCompile(`(?i)(https?://)[^/@\s]+@`)
+var gitLineEndingWarningPattern = regexp.MustCompile(`(?i)^warning: (?:in the working copy of '.+', )?(?:LF|CRLF) will be replaced by (?:LF|CRLF)(?: the next time Git touches it| in .+)\.?$`)
 
 func isAuthenticationFailure(message string) bool {
 	lower := strings.ToLower(message)
@@ -463,11 +464,40 @@ func sanitizeGitOutput(message, root string) string {
 			message = strings.ReplaceAll(message, value, "<repository>")
 		}
 	}
+	message = stripHarmlessGitWarnings(message)
 	const safeOutputLimit = 8 << 10
 	if len(message) > safeOutputLimit {
 		message = message[:safeOutputLimit] + "…"
 	}
-	return strings.TrimSpace(message)
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return "Git command failed"
+	}
+	return message
+}
+
+// stripHarmlessGitWarnings removes Git's line-ending conversion notices from
+// failed-command output. Those notices can number in the thousands and bury
+// the actual error that caused the command to fail. Other warnings and hints
+// remain visible.
+func stripHarmlessGitWarnings(message string) string {
+	lines := strings.Split(strings.ReplaceAll(message, "\r\n", "\n"), "\n")
+	filtered := make([]string, 0, len(lines))
+	skipLegacyDetail := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if gitLineEndingWarningPattern.MatchString(trimmed) {
+			skipLegacyDetail = !strings.Contains(strings.ToLower(trimmed), "the next time git touches it")
+			continue
+		}
+		if skipLegacyDetail && strings.EqualFold(trimmed, "The file will have its original line endings in your working directory.") {
+			skipLegacyDetail = false
+			continue
+		}
+		skipLegacyDetail = false
+		filtered = append(filtered, line)
+	}
+	return strings.Join(filtered, "\n")
 }
 
 func relativeWithin(root, target string) (string, bool) {
