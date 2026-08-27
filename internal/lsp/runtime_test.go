@@ -190,6 +190,7 @@ func TestPublishDiagnosticsMatchesNormalizedDocumentURI(t *testing.T) {
 	browserURI := "file:///C%3A/Users/test/project/main.go"
 	serverURI := "file:///C:/Users/test/project/main.go"
 	var received json.RawMessage
+	observerMessages := 0
 	client := &Client{
 		ID: "browser", WorkspaceID: workspace.ID,
 		documents: map[string]Document{}, pending: map[string]chan serverRequestResponse{},
@@ -199,10 +200,66 @@ func TestPublishDiagnosticsMatchesNormalizedDocumentURI(t *testing.T) {
 		},
 	}
 	service.clients[client.ID] = client
+	service.clients["observer"] = &Client{
+		ID: "observer", WorkspaceID: workspace.ID,
+		documents: map[string]Document{}, pending: map[string]chan serverRequestResponse{},
+		send: func(any) { observerMessages++ },
+	}
 	service.leases[leaseKey(workspace.ID, profile.ID, browserURI)] = &documentLease{clientID: client.ID, uri: browserURI}
 	service.runtimeNotification(current, "textDocument/publishDiagnostics", json.RawMessage(`{"uri":"`+serverURI+`","diagnostics":[]}`))
 	if uri := documentURI(received); uri != browserURI {
 		t.Fatalf("forwarded diagnostic URI = %q, want browser URI %q", uri, browserURI)
+	}
+	if observerMessages != 0 {
+		t.Fatalf("leased diagnostics reached a non-owning browser: %d messages", observerMessages)
+	}
+}
+
+func TestPublishDiagnosticsBroadcastsUnleasedWorkspaceFiles(t *testing.T) {
+	workspace := workspaces.Workspace{ID: "workspace", MainPath: t.TempDir()}
+	profile := lspconfig.Profile{ID: "gopls"}
+	current := &serverRuntime{workspace: workspace, profile: profile}
+	service := NewService(nil, nil)
+	messages := map[string][]map[string]any{"first": {}, "second": {}}
+	otherWorkspaceMessages := 0
+	for _, id := range []string{"first", "second"} {
+		id := id
+		service.clients[id] = &Client{
+			ID: id, WorkspaceID: workspace.ID,
+			documents: map[string]Document{}, pending: map[string]chan serverRequestResponse{},
+			send: func(value any) { messages[id] = append(messages[id], value.(map[string]any)) },
+		}
+	}
+	service.clients["other-workspace"] = &Client{
+		ID: "other-workspace", WorkspaceID: "other",
+		documents: map[string]Document{}, pending: map[string]chan serverRequestResponse{},
+		send: func(any) { otherWorkspaceMessages++ },
+	}
+	uri := fileURI(filepath.Join(workspace.MainPath, "sibling.go"))
+	service.runtimeNotification(current, "textDocument/publishDiagnostics", json.RawMessage(`{"uri":"`+uri+`","diagnostics":[{"severity":1,"message":"broken"}]}`))
+	service.runtimeNotification(current, "textDocument/publishDiagnostics", json.RawMessage(`{"uri":"`+uri+`","diagnostics":[]}`))
+	for id, received := range messages {
+		if len(received) != 2 {
+			t.Fatalf("%s received %d workspace diagnostic messages, want 2", id, len(received))
+		}
+		if received[0]["profileId"] != profile.ID || received[0]["method"] != "textDocument/publishDiagnostics" {
+			t.Fatalf("%s received malformed diagnostic envelope: %#v", id, received[0])
+		}
+		if got := documentURI(received[1]["params"].(json.RawMessage)); got != uri {
+			t.Fatalf("%s clear diagnostic URI = %q, want %q", id, got, uri)
+		}
+	}
+	if otherWorkspaceMessages != 0 {
+		t.Fatalf("workspace diagnostics reached another workspace: %d messages", otherWorkspaceMessages)
+	}
+
+	outsideURI := fileURI(filepath.Join(t.TempDir(), "outside.go"))
+	service.runtimeNotification(current, "textDocument/publishDiagnostics", json.RawMessage(`{"uri":"`+outsideURI+`","diagnostics":[]}`))
+	service.runtimeNotification(current, "textDocument/publishDiagnostics", json.RawMessage(`{"uri":"untitled:outside","diagnostics":[]}`))
+	for id, received := range messages {
+		if len(received) != 2 {
+			t.Fatalf("%s received out-of-workspace diagnostics: %d messages", id, len(received))
+		}
 	}
 }
 

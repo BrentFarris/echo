@@ -241,6 +241,10 @@ class CodeView {
         prepareWorkspaceEdit: (edit) => this.prepareLSPWorkspaceEdit(edit),
         applyWorkspaceEdit: (edit) => this.applyLSPWorkspaceEdit(edit),
         isURIAllowed: (uri) => Boolean(this.refForFileURI(uri)),
+        diagnosticKey: (uri) => {
+          const ref = this.refForFileURI(uri);
+          return ref ? refKey(ref) : uri;
+        },
         prepareURI: (uri) => this.prepareLSPURI(uri),
         onDocumentState: (state, status) => {
           this.lspState = state;

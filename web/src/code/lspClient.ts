@@ -25,12 +25,18 @@ type TrackedModel = {
 export type LSPDocumentState = "none" | "connecting" | "starting" | "owned" | "denied" | "failed";
 export type LSPDiagnosticSeverity = "error" | "warning";
 
+type TrackedDiagnostic = {
+  uri: string;
+  severity: LSPDiagnosticSeverity;
+};
+
 export type LSPClientOptions = {
   workspaceId: string;
   initial: WorkspaceLSPResponse;
   prepareWorkspaceEdit(edit: LSPWorkspaceEdit): Promise<Monaco.languages.WorkspaceEdit>;
   applyWorkspaceEdit(edit: LSPWorkspaceEdit): Promise<boolean>;
   isURIAllowed(uri: string): boolean;
+  diagnosticKey(uri: string): string;
   prepareURI(uri: string): Promise<boolean>;
   onDocumentState(state: LSPDocumentState, status?: LSPStatus): void;
   onDiagnosticsChange(uri: string, severity: LSPDiagnosticSeverity | null): void;
@@ -50,7 +56,7 @@ export class EchoLSPClient {
   private profiles: LSPProfile[];
   private config: WorkspaceLSPConfig;
   private statuses = new Map<string, LSPStatus>();
-  private diagnostics = new Map<string, Map<string, LSPDiagnosticSeverity>>();
+  private diagnostics = new Map<string, Map<string, TrackedDiagnostic>>();
   private providerDisposables: Monaco.IDisposable[] = [];
   private commandDisposable: Monaco.IDisposable | null = null;
 
@@ -107,7 +113,6 @@ export class EchoLSPClient {
     tracked.change = model.onDidChangeContent((event) => this.didChange(tracked, event));
     tracked.dispose = model.onWillDispose(() => {
       this.send({ type: "lsp_close", profileId: tracked.profileId, uri });
-      this.clearDocumentDiagnostics(tracked.profileId, uri);
       tracked.change.dispose();
       this.tracked.delete(uri);
       if (this.activeURI === uri) {
@@ -553,8 +558,8 @@ export class EchoLSPClient {
   }
 
   private clearDiagnostics(profileId: string): void {
-    for (const uri of [...(this.diagnostics.get(profileId)?.keys() || [])]) {
-      this.setDiagnosticSeverity(profileId, uri, null);
+    for (const diagnostic of [...(this.diagnostics.get(profileId)?.values() || [])]) {
+      this.setDiagnosticSeverity(profileId, diagnostic.uri, null);
     }
     for (const model of monaco.editor.getModels()) monaco.editor.setModelMarkers(model, markerOwner(profileId), []);
   }
@@ -576,26 +581,27 @@ export class EchoLSPClient {
   }
 
   private setDiagnosticSeverity(profileId: string, uri: string, severity: LSPDiagnosticSeverity | null): void {
-    const previous = this.diagnosticSeverityForURI(uri);
+    const key = this.options.diagnosticKey(uri) || uri;
+    const previous = this.diagnosticSeverityForKey(key);
     let profileDiagnostics = this.diagnostics.get(profileId);
     if (severity) {
       if (!profileDiagnostics) {
         profileDiagnostics = new Map();
         this.diagnostics.set(profileId, profileDiagnostics);
       }
-      profileDiagnostics.set(uri, severity);
+      profileDiagnostics.set(key, { uri, severity });
     } else if (profileDiagnostics) {
-      profileDiagnostics.delete(uri);
+      profileDiagnostics.delete(key);
       if (!profileDiagnostics.size) this.diagnostics.delete(profileId);
     }
-    const next = this.diagnosticSeverityForURI(uri);
+    const next = this.diagnosticSeverityForKey(key);
     if (next !== previous) this.options.onDiagnosticsChange(uri, next);
   }
 
-  private diagnosticSeverityForURI(uri: string): LSPDiagnosticSeverity | null {
+  private diagnosticSeverityForKey(key: string): LSPDiagnosticSeverity | null {
     let warning = false;
     for (const diagnostics of this.diagnostics.values()) {
-      const severity = diagnostics.get(uri);
+      const severity = diagnostics.get(key)?.severity;
       if (severity === "error") return "error";
       if (severity === "warning") warning = true;
     }

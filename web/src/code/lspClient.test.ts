@@ -56,7 +56,7 @@ describe("LSP Monaco conversions", () => {
 describe("LSP diagnostic decorations", () => {
   const uri = "file:///workspace/main.go";
 
-  function createClient(onDiagnosticsChange = vi.fn()): EchoLSPClient {
+  function createClient(onDiagnosticsChange = vi.fn(), diagnosticKey = (candidate: string) => candidate): EchoLSPClient {
     return new EchoLSPClient({
       workspaceId: "workspace",
       initial: {
@@ -65,13 +65,13 @@ describe("LSP diagnostic decorations", () => {
         statuses: [],
       },
       prepareWorkspaceEdit: vi.fn(), applyWorkspaceEdit: vi.fn(async () => true),
-      isURIAllowed: () => true, prepareURI: async () => true,
+      isURIAllowed: () => true, diagnosticKey, prepareURI: async () => true,
       onDocumentState: vi.fn(), onDiagnosticsChange, onMessage: vi.fn(),
     });
   }
 
-  function publish(client: EchoLSPClient, profileId: string, diagnostics: Array<{ severity?: number }>): void {
-    (client as any).handleNotification(profileId, "textDocument/publishDiagnostics", { uri, diagnostics });
+  function publish(client: EchoLSPClient, profileId: string, diagnostics: Array<{ severity?: number }>, diagnosticURI = uri): void {
+    (client as any).handleNotification(profileId, "textDocument/publishDiagnostics", { uri: diagnosticURI, diagnostics });
   }
 
   it("aggregates profiles and decorates only errors and warnings", () => {
@@ -95,6 +95,24 @@ describe("LSP diagnostic decorations", () => {
     client.dispose();
   });
 
+  it("treats normalized URI aliases as the same workspace file", () => {
+    const onDiagnosticsChange = vi.fn();
+    const serverURI = "file:///C:/workspace/main.go";
+    const browserURI = "file:///c%3A/workspace/main.go";
+    const client = createClient(onDiagnosticsChange, () => "root:main.go");
+
+    publish(client, "gopls", [{ severity: 2 }], serverURI);
+    publish(client, "gopls", [{ severity: 1 }], browserURI);
+    publish(client, "gopls", [], serverURI);
+
+    expect(onDiagnosticsChange.mock.calls).toEqual([
+      [serverURI, "warning"],
+      [browserURI, "error"],
+      [serverURI, null],
+    ]);
+    client.dispose();
+  });
+
   it("clears stale decorations across document and server lifecycles", () => {
     const onDiagnosticsChange = vi.fn();
     const client = createClient(onDiagnosticsChange);
@@ -114,6 +132,8 @@ describe("LSP diagnostic decorations", () => {
     publish(client, "gopls", [{ severity: 2 }]);
     onDiagnosticsChange.mockClear();
     disposeModel();
+    expect(onDiagnosticsChange).not.toHaveBeenCalled();
+    publish(client, "gopls", []);
     expect(onDiagnosticsChange).toHaveBeenLastCalledWith(uri, null);
 
     publish(client, "gopls", [{ severity: 1 }]);
@@ -150,7 +170,7 @@ describe("LSP save actions", () => {
         }],
       },
       prepareWorkspaceEdit: vi.fn(), applyWorkspaceEdit,
-      isURIAllowed: () => true, prepareURI: async () => true,
+      isURIAllowed: () => true, diagnosticKey: (candidate) => candidate, prepareURI: async () => true,
       onDocumentState: vi.fn(), onDiagnosticsChange: vi.fn(), onMessage,
     });
     const uri = { scheme: "file", path: "/workspace/main.go", toString: () => "file:///workspace/main.go" };
@@ -198,7 +218,7 @@ describe("LSP save actions", () => {
         }],
       },
       prepareWorkspaceEdit: vi.fn(), applyWorkspaceEdit: vi.fn(async () => true),
-      isURIAllowed: () => true, prepareURI: async () => true,
+      isURIAllowed: () => true, diagnosticKey: (candidate) => candidate, prepareURI: async () => true,
       onDocumentState: vi.fn(), onDiagnosticsChange: vi.fn(), onMessage,
     });
     const uri = { scheme: "file", path: "/workspace/main.go", toString: () => "file:///workspace/main.go" };

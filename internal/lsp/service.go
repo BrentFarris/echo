@@ -605,9 +605,13 @@ func (s *Service) runtimeStatusChanged(current *serverRuntime) {
 func (s *Service) runtimeNotification(current *serverRuntime, method string, params json.RawMessage) {
 	if method == "textDocument/publishDiagnostics" {
 		uri := documentURI(params)
+		if uri == "" {
+			return
+		}
 		key := leaseKey(current.workspace.ID, current.profile.ID, uri)
 		s.mu.Lock()
 		lease := s.leases[key]
+		leased := lease != nil
 		var client *Client
 		ownerURI := ""
 		if lease != nil {
@@ -615,7 +619,10 @@ func (s *Service) runtimeNotification(current *serverRuntime, method string, par
 			ownerURI = lease.uri
 		}
 		s.mu.Unlock()
-		if client != nil {
+		if leased {
+			if client == nil {
+				return
+			}
 			// Language servers may normalize an opened file URI before publishing
 			// diagnostics (notably gopls on Windows changes Monaco's
 			// file:///c%3A/... to file:///C:/...). Send the owning browser the URI
@@ -626,7 +633,15 @@ func (s *Service) runtimeNotification(current *serverRuntime, method string, par
 			client.send(map[string]any{
 				"type": "lsp_notification", "profileId": current.profile.ID, "method": method, "params": params,
 			})
+			return
 		}
+		path, err := filePath(uri)
+		if err != nil || !pathWithinWorkspace(current.workspace, path) {
+			return
+		}
+		s.broadcast(current.workspace.ID, map[string]any{
+			"type": "lsp_notification", "profileId": current.profile.ID, "method": method, "params": params,
+		})
 		return
 	}
 	s.broadcast(current.workspace.ID, map[string]any{
