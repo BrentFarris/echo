@@ -10,6 +10,8 @@
   --code-fg: #3b3b3b;
   --code-muted: #6f6f6f;
   --code-accent: #0078d4;
+  --code-diagnostic-error: #b42332;
+  --code-diagnostic-warning: #875a00;
   --code-menu-bg: #ffffff;
   --code-menu-shadow: 0 2px 8px rgba(0, 0, 0, 0.24);
 }
@@ -27,6 +29,8 @@
     --code-fg: #cccccc;
     --code-muted: #969696;
     --code-accent: #0078d4;
+    --code-diagnostic-error: #ff7b8b;
+    --code-diagnostic-warning: #d29922;
     --code-menu-bg: #252526;
     --code-menu-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
   }
@@ -1347,6 +1351,14 @@
 .code-tree-label {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.code-tree-label.has-diagnostic-error {
+  color: var(--code-diagnostic-error);
+}
+
+.code-tree-label.has-diagnostic-warning {
+  color: var(--code-diagnostic-warning);
 }
 
 .code-tree-rename {

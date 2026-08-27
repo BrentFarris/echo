@@ -6,7 +6,7 @@ import { on as onSocket, onState as onSocketState, send as sendSocket } from "..
 import * as editorAPI from "./editorApi";
 import type { APIError } from "./editorApi";
 import { languageForPath, monaco } from "./language";
-import { EchoLSPClient, fromLSPRange, type LSPDocumentState } from "./lspClient";
+import { EchoLSPClient, fromLSPRange, type LSPDiagnosticSeverity, type LSPDocumentState } from "./lspClient";
 import type { LSPProfile, LSPStatus, LSPWorkspaceEdit, WorkspaceLSPResponse } from "./lspTypes";
 import { loadDiff as loadGitDiff } from "./gitApi";
 import type { GitChange, GitDiffDocument, GitRepository } from "./gitTypes";
@@ -30,6 +30,7 @@ import type { ChatReference } from "../chatMentions";
 import { detachTerminalDock, mountTerminalDock } from "../terminal";
 import { SearchView } from "./searchView";
 import { NavigationModelCache } from "./navigationModelCache";
+import { explorerDiagnosticPresentation, updateExplorerDiagnostic } from "./explorerDiagnostics";
 import {
   CodeNavigationHistory, isLargeCodeNavigationJump, type CodeNavigationLocation,
 } from "./codeNavigationHistory";
@@ -176,6 +177,7 @@ class CodeView {
   private lspProfiles: LSPProfile[] = [];
   private lspState: LSPDocumentState = "none";
   private lspStatus: LSPStatus | undefined;
+  private fileDiagnostics = new Map<string, LSPDiagnosticSeverity>();
   private readonly navigationModels = new NavigationModelCache<MonacoEditor.ITextModel>(6);
   private editorOpener: { dispose(): void } | null = null;
   private codeNavigation: CodeNavigationHistory | null = null;
@@ -245,6 +247,7 @@ class CodeView {
           this.lspStatus = status;
           this.renderStatus();
         },
+        onDiagnosticsChange: (uri, severity) => this.updateFileDiagnostic(uri, severity),
         onMessage: (message, sticky) => toast(message, { sticky }),
       });
       this.initializeTree();
@@ -825,6 +828,8 @@ class CodeView {
       const selected = node.key === this.selectedTreeKey;
       const expanded = this.expanded.has(node.key);
       const isDirectory = node.kind === "directory";
+      const diagnostic = isDirectory ? undefined : this.fileDiagnostics.get(node.key);
+      const diagnosticPresentation = explorerDiagnosticPresentation(diagnostic);
       const indent = 7 + node.depth * 14;
       const icon = isDirectory
         ? (expanded ? "folder-opened" : "folder")
@@ -834,11 +839,13 @@ class CodeView {
         : `<span class="code-tree-spacer"></span>`;
       const label = this.renamingKey === node.key
         ? `<input class="code-tree-rename" data-rename-input value="${escapeHTML(node.name)}" aria-label="Rename ${escapeHTML(node.name)}">`
-        : `<span class="code-tree-label">${escapeHTML(node.name)}</span>`;
+        : `<span class="code-tree-label${diagnosticPresentation.className ? ` ${diagnosticPresentation.className}` : ""}">${escapeHTML(node.name)}</span>`;
       const draggable = !node.isRoot && !node.blockedReason;
       const dragging = node.key === this.draggingTreeKey;
       const dropTarget = node.key === this.treeDropTargetKey;
-      return `<div class="code-tree-row ${selected ? "is-selected" : ""} ${node.blockedReason ? "is-blocked" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}" role="treeitem" aria-selected="${selected}" aria-expanded="${isDirectory ? expanded : undefined}" draggable="${draggable}" data-tree-key="${escapeHTML(node.key)}" data-tree-kind="${node.kind}" data-tree-root="${node.isRoot}" style="transform:translateY(${virtual.start}px);padding-left:${indent}px" title="${escapeHTML(node.blockedReason || node.hostPath)}">${chevron}<span class="codicon codicon-${icon} code-tree-icon"></span>${label}</div>`;
+      const ariaLabel = diagnosticPresentation.description ? `${node.name}, ${diagnosticPresentation.description}` : node.name;
+      const title = node.blockedReason || (diagnosticPresentation.description ? `${node.hostPath} — ${diagnosticPresentation.description}` : node.hostPath);
+      return `<div class="code-tree-row ${selected ? "is-selected" : ""} ${node.blockedReason ? "is-blocked" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}" role="treeitem" aria-label="${escapeHTML(ariaLabel)}" aria-selected="${selected}" aria-expanded="${isDirectory ? expanded : undefined}" draggable="${draggable}" data-tree-key="${escapeHTML(node.key)}" data-tree-kind="${node.kind}" data-tree-root="${node.isRoot}" style="transform:translateY(${virtual.start}px);padding-left:${indent}px" title="${escapeHTML(title)}">${chevron}<span class="codicon codicon-${icon} code-tree-icon"></span>${label}</div>`;
     }).join("");
     if (this.renamingKey) {
       requestAnimationFrame(() => {
@@ -859,6 +866,12 @@ class CodeView {
     if (["json", "yaml", "yml", "toml", "ini"].includes(extension || "")) return "json";
     if (["md", "markdown", "txt"].includes(extension || "")) return "markdown";
     return "file-code";
+  }
+
+  private updateFileDiagnostic(uri: string, severity: LSPDiagnosticSeverity | null): void {
+    if (updateExplorerDiagnostic(this.fileDiagnostics, uri, severity, (candidate) => this.refForFileURI(candidate))) {
+      this.renderTreeRows();
+    }
   }
 
   private syncTreeSelectionState(): void {

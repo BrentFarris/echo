@@ -23,6 +23,7 @@ type TrackedModel = {
 };
 
 export type LSPDocumentState = "none" | "connecting" | "starting" | "owned" | "denied" | "failed";
+export type LSPDiagnosticSeverity = "error" | "warning";
 
 export type LSPClientOptions = {
   workspaceId: string;
@@ -32,6 +33,7 @@ export type LSPClientOptions = {
   isURIAllowed(uri: string): boolean;
   prepareURI(uri: string): Promise<boolean>;
   onDocumentState(state: LSPDocumentState, status?: LSPStatus): void;
+  onDiagnosticsChange(uri: string, severity: LSPDiagnosticSeverity | null): void;
   onMessage(message: string, sticky?: boolean): void;
 };
 
@@ -48,6 +50,7 @@ export class EchoLSPClient {
   private profiles: LSPProfile[];
   private config: WorkspaceLSPConfig;
   private statuses = new Map<string, LSPStatus>();
+  private diagnostics = new Map<string, Map<string, LSPDiagnosticSeverity>>();
   private providerDisposables: Monaco.IDisposable[] = [];
   private commandDisposable: Monaco.IDisposable | null = null;
 
@@ -104,6 +107,7 @@ export class EchoLSPClient {
     tracked.change = model.onDidChangeContent((event) => this.didChange(tracked, event));
     tracked.dispose = model.onWillDispose(() => {
       this.send({ type: "lsp_close", profileId: tracked.profileId, uri });
+      this.clearDocumentDiagnostics(tracked.profileId, uri);
       tracked.change.dispose();
       this.tracked.delete(uri);
       if (this.activeURI === uri) {
@@ -347,6 +351,7 @@ export class EchoLSPClient {
     switch (message.type) {
       case "lsp_ready":
       case "lsp_configuration":
+        this.clearAllDiagnostics();
         this.config = message.config || {};
         this.profiles = message.profiles || [];
         this.statuses.clear();
@@ -382,6 +387,7 @@ export class EchoLSPClient {
         if (tracked && tracked.profileId === message.profileId) {
           tracked.leased = false;
           tracked.denied = true;
+          this.clearDocumentDiagnostics(tracked.profileId, message.uri);
           if (this.activeURI === message.uri) this.options.onDocumentState("denied", this.statuses.get(tracked.profileId));
         }
         break;
@@ -391,6 +397,7 @@ export class EchoLSPClient {
         if (tracked && tracked.profileId === message.profileId) {
           tracked.leased = false;
           tracked.denied = true;
+          this.clearDocumentDiagnostics(tracked.profileId, message.uri);
           if (this.activeURI === message.uri) {
             this.options.onDocumentState("denied", this.statuses.get(tracked.profileId));
             this.options.onMessage("Another browser took over language-server synchronization for this file.");
@@ -475,9 +482,12 @@ export class EchoLSPClient {
   private handleNotification(profileId: string, method: string, params: any): void {
     if (method !== "textDocument/publishDiagnostics") return;
     const uri = String(params?.uri || "");
+    if (!uri) return;
+    const diagnostics = Array.isArray(params?.diagnostics) ? params.diagnostics : [];
+    this.setDiagnosticSeverity(profileId, uri, diagnosticDecorationSeverity(diagnostics));
     const model = monaco.editor.getModel(monaco.Uri.parse(uri));
     if (!model) return;
-    const markers: Monaco.editor.IMarkerData[] = (params?.diagnostics || []).map((diagnostic: any) => ({
+    const markers: Monaco.editor.IMarkerData[] = diagnostics.map((diagnostic: any) => ({
       ...markerRange(diagnostic.range),
       severity: diagnosticSeverity(diagnostic.severity),
       message: String(diagnostic.message || "Language server diagnostic"),
@@ -517,11 +527,15 @@ export class EchoLSPClient {
       const profile = this.profileForDocument(tracked.model);
       if (!profile) {
         this.send({ type: "lsp_close", profileId: tracked.profileId, uri });
+        this.clearDocumentDiagnostics(tracked.profileId, uri);
         tracked.change.dispose();
         tracked.dispose.dispose();
         this.tracked.delete(uri);
       } else {
-        if (profile.id !== tracked.profileId) this.send({ type: "lsp_close", profileId: tracked.profileId, uri });
+        if (profile.id !== tracked.profileId) {
+          this.send({ type: "lsp_close", profileId: tracked.profileId, uri });
+          this.clearDocumentDiagnostics(tracked.profileId, uri);
+        }
         tracked.profileId = profile.id;
         tracked.leased = false;
         tracked.denied = false;
@@ -539,11 +553,53 @@ export class EchoLSPClient {
   }
 
   private clearDiagnostics(profileId: string): void {
+    for (const uri of [...(this.diagnostics.get(profileId)?.keys() || [])]) {
+      this.setDiagnosticSeverity(profileId, uri, null);
+    }
     for (const model of monaco.editor.getModels()) monaco.editor.setModelMarkers(model, markerOwner(profileId), []);
   }
 
   private clearAllDiagnostics(): void {
-    for (const profile of this.profiles) this.clearDiagnostics(profile.id);
+    const profileIDs = new Set([...this.profiles.map((profile) => profile.id), ...this.diagnostics.keys()]);
+    for (const profileID of profileIDs) this.clearDiagnostics(profileID);
+  }
+
+  private clearDocumentDiagnostics(profileId: string, uri: string): void {
+    this.setDiagnosticSeverity(profileId, uri, null);
+    let model: Monaco.editor.ITextModel | null = null;
+    try {
+      model = monaco.editor.getModel(monaco.Uri.parse(uri));
+    } catch {
+      return;
+    }
+    if (model) monaco.editor.setModelMarkers(model, markerOwner(profileId), []);
+  }
+
+  private setDiagnosticSeverity(profileId: string, uri: string, severity: LSPDiagnosticSeverity | null): void {
+    const previous = this.diagnosticSeverityForURI(uri);
+    let profileDiagnostics = this.diagnostics.get(profileId);
+    if (severity) {
+      if (!profileDiagnostics) {
+        profileDiagnostics = new Map();
+        this.diagnostics.set(profileId, profileDiagnostics);
+      }
+      profileDiagnostics.set(uri, severity);
+    } else if (profileDiagnostics) {
+      profileDiagnostics.delete(uri);
+      if (!profileDiagnostics.size) this.diagnostics.delete(profileId);
+    }
+    const next = this.diagnosticSeverityForURI(uri);
+    if (next !== previous) this.options.onDiagnosticsChange(uri, next);
+  }
+
+  private diagnosticSeverityForURI(uri: string): LSPDiagnosticSeverity | null {
+    let warning = false;
+    for (const diagnostics of this.diagnostics.values()) {
+      const severity = diagnostics.get(uri);
+      if (severity === "error") return "error";
+      if (severity === "warning") warning = true;
+    }
+    return warning ? "warning" : null;
   }
 
   private send(message: unknown): boolean {
@@ -586,6 +642,15 @@ function diagnosticSeverity(value: number | undefined): Monaco.MarkerSeverity {
   if (value === 2) return monaco.MarkerSeverity.Warning;
   if (value === 3) return monaco.MarkerSeverity.Info;
   return monaco.MarkerSeverity.Hint;
+}
+
+function diagnosticDecorationSeverity(diagnostics: Array<{ severity?: number }>): LSPDiagnosticSeverity | null {
+  let warning = false;
+  for (const diagnostic of diagnostics) {
+    if (diagnostic?.severity === 1) return "error";
+    if (diagnostic?.severity === 2) warning = true;
+  }
+  return warning ? "warning" : null;
 }
 
 function markerOwner(profileId: string): string {

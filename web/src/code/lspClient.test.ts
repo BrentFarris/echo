@@ -8,8 +8,11 @@ vi.mock("./language", () => ({
         public endLineNumber: number, public endColumn: number,
       ) {}
     },
+    MarkerSeverity: { Error: 8, Warning: 4, Info: 2, Hint: 1 },
+    Uri: { parse: vi.fn((value: string) => ({ scheme: "file", path: value, toString: () => value })) },
     editor: {
       registerCommand: vi.fn(() => ({ dispose() {} })),
+      getModel: vi.fn(() => null),
       getModels: vi.fn(() => []),
       setModelMarkers: vi.fn(),
     },
@@ -50,6 +53,86 @@ describe("LSP Monaco conversions", () => {
   });
 });
 
+describe("LSP diagnostic decorations", () => {
+  const uri = "file:///workspace/main.go";
+
+  function createClient(onDiagnosticsChange = vi.fn()): EchoLSPClient {
+    return new EchoLSPClient({
+      workspaceId: "workspace",
+      initial: {
+        config: {},
+        profiles: [],
+        statuses: [],
+      },
+      prepareWorkspaceEdit: vi.fn(), applyWorkspaceEdit: vi.fn(async () => true),
+      isURIAllowed: () => true, prepareURI: async () => true,
+      onDocumentState: vi.fn(), onDiagnosticsChange, onMessage: vi.fn(),
+    });
+  }
+
+  function publish(client: EchoLSPClient, profileId: string, diagnostics: Array<{ severity?: number }>): void {
+    (client as any).handleNotification(profileId, "textDocument/publishDiagnostics", { uri, diagnostics });
+  }
+
+  it("aggregates profiles and decorates only errors and warnings", () => {
+    const onDiagnosticsChange = vi.fn();
+    const client = createClient(onDiagnosticsChange);
+
+    publish(client, "gopls", [{ severity: 3 }, { severity: 4 }, {}]);
+    expect(onDiagnosticsChange).not.toHaveBeenCalled();
+
+    publish(client, "gopls", [{ severity: 2 }, { severity: 3 }]);
+    publish(client, "secondary", [{ severity: 1 }, { severity: 2 }]);
+    publish(client, "secondary", []);
+    publish(client, "gopls", [{ severity: 4 }]);
+
+    expect(onDiagnosticsChange.mock.calls).toEqual([
+      [uri, "warning"],
+      [uri, "error"],
+      [uri, "warning"],
+      [uri, null],
+    ]);
+    client.dispose();
+  });
+
+  it("clears stale decorations across document and server lifecycles", () => {
+    const onDiagnosticsChange = vi.fn();
+    const client = createClient(onDiagnosticsChange);
+    let disposeModel = () => {};
+    const model = {
+      uri: { scheme: "file", path: "/workspace/main.go", toString: () => uri },
+      getLanguageId: () => "go",
+      onDidChangeContent: () => ({ dispose() {} }),
+      onWillDispose: (callback: () => void) => {
+        disposeModel = callback;
+        return { dispose() {} };
+      },
+    };
+    (client as any).profiles = [{ id: "gopls", name: "gopls", command: "gopls", selectors: [{ languageId: "go", extensions: [".go"] }] }];
+    client.trackModel(model as never);
+
+    publish(client, "gopls", [{ severity: 2 }]);
+    onDiagnosticsChange.mockClear();
+    disposeModel();
+    expect(onDiagnosticsChange).toHaveBeenLastCalledWith(uri, null);
+
+    publish(client, "gopls", [{ severity: 1 }]);
+    onDiagnosticsChange.mockClear();
+    (client as any).handleStatus({ workspaceId: "workspace", profileId: "gopls", name: "gopls", state: "failed", capabilities: {} });
+    expect(onDiagnosticsChange).toHaveBeenLastCalledWith(uri, null);
+
+    publish(client, "gopls", [{ severity: 2 }]);
+    onDiagnosticsChange.mockClear();
+    (client as any).receive(JSON.stringify({ type: "lsp_configuration", config: {}, profiles: [], statuses: [] }));
+    expect(onDiagnosticsChange).toHaveBeenLastCalledWith(uri, null);
+
+    publish(client, "gopls", [{ severity: 1 }]);
+    onDiagnosticsChange.mockClear();
+    client.dispose();
+    expect(onDiagnosticsChange).toHaveBeenLastCalledWith(uri, null);
+  });
+});
+
 describe("LSP save actions", () => {
   it("organizes imports before formatting when format on save is enabled", async () => {
     const workspaceEdit = { changes: { "file:///workspace/main.go": [{
@@ -68,7 +151,7 @@ describe("LSP save actions", () => {
       },
       prepareWorkspaceEdit: vi.fn(), applyWorkspaceEdit,
       isURIAllowed: () => true, prepareURI: async () => true,
-      onDocumentState: vi.fn(), onMessage,
+      onDocumentState: vi.fn(), onDiagnosticsChange: vi.fn(), onMessage,
     });
     const uri = { scheme: "file", path: "/workspace/main.go", toString: () => "file:///workspace/main.go" };
     const model = {
@@ -116,7 +199,7 @@ describe("LSP save actions", () => {
       },
       prepareWorkspaceEdit: vi.fn(), applyWorkspaceEdit: vi.fn(async () => true),
       isURIAllowed: () => true, prepareURI: async () => true,
-      onDocumentState: vi.fn(), onMessage,
+      onDocumentState: vi.fn(), onDiagnosticsChange: vi.fn(), onMessage,
     });
     const uri = { scheme: "file", path: "/workspace/main.go", toString: () => "file:///workspace/main.go" };
     const model = {
