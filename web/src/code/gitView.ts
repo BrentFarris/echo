@@ -20,6 +20,14 @@ type GitViewCallbacks = {
 };
 
 type Review = { ref: string; kind: "commit" | "stash"; detail: GitCommitDetail };
+type CommitInputState = {
+  repositoryId: string;
+  selectionStart: number;
+  selectionEnd: number;
+  selectionDirection: "forward" | "backward" | "none";
+  scrollTop: number;
+  scrollLeft: number;
+};
 
 const rowHeight = 22;
 const historyRowHeight = 38;
@@ -43,6 +51,7 @@ export class GitView {
   private listScroll = new Map<string, number>();
   private repositoryListExpanded = true;
   private searchParents = false;
+  private sidebarScroll = 0;
   private loading = true;
   private disposed = false;
 
@@ -125,6 +134,7 @@ export class GitView {
     const current = this.statuses.get(status.repositoryId);
     if (current && status.revision < current.revision) return;
     this.statuses.set(status.repositoryId, status);
+    if (current && sameStatusContent(current, status)) return;
     this.render();
   }
 
@@ -141,13 +151,42 @@ export class GitView {
   }
 
   private rememberListScroll(): void {
+    this.sidebarScroll = this.host.querySelector<HTMLElement>("[data-git-scroll]")?.scrollTop || 0;
     this.host.querySelectorAll<HTMLElement>("[data-git-scroll-key]").forEach((element) => {
       this.listScroll.set(element.dataset.gitScrollKey || "", element.scrollTop);
     });
   }
 
+  private commitInputState(): CommitInputState | null {
+    const input = document.activeElement;
+    if (!(input instanceof HTMLTextAreaElement) || !this.host.contains(input) || !input.matches("[data-git-commit-message]")) return null;
+    const repositoryId = input.closest<HTMLElement>("[data-git-repository]")?.dataset.gitRepository;
+    if (!repositoryId) return null;
+    return {
+      repositoryId,
+      selectionStart: input.selectionStart,
+      selectionEnd: input.selectionEnd,
+      selectionDirection: input.selectionDirection || "none",
+      scrollTop: input.scrollTop,
+      scrollLeft: input.scrollLeft,
+    };
+  }
+
+  private restoreCommitInputState(state: CommitInputState | null): void {
+    if (!state) return;
+    const repository = [...this.host.querySelectorAll<HTMLElement>("[data-git-repository]")]
+      .find((element) => element.dataset.gitRepository === state.repositoryId);
+    const input = repository?.querySelector<HTMLTextAreaElement>("[data-git-commit-message]");
+    if (!input || input.disabled) return;
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(state.selectionStart, state.selectionEnd, state.selectionDirection);
+    input.scrollTop = state.scrollTop;
+    input.scrollLeft = state.scrollLeft;
+  }
+
   private render(): void {
     if (this.disposed) return;
+    const commitInputState = this.commitInputState();
     this.rememberListScroll();
     const total = [...this.statuses.values()].reduce((sum, status) => sum + status.totalChangeCount, 0);
     this.callbacks.updateBadge(total);
@@ -176,8 +215,11 @@ export class GitView {
         </section>
       </div>
     `;
+    const sidebar = this.host.querySelector<HTMLElement>("[data-git-scroll]");
+    if (sidebar) sidebar.scrollTop = this.sidebarScroll;
     this.mountVirtualLists();
     this.mountVirtualHistory();
+    this.restoreCommitInputState(commitInputState);
   }
 
   private renderError(error: unknown): void {
@@ -832,4 +874,10 @@ function statusClass(status: string): string {
 function formatDate(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(date);
+}
+
+function sameStatusContent(left: GitStatus, right: GitStatus): boolean {
+  const { revision: _leftRevision, ...leftContent } = left;
+  const { revision: _rightRevision, ...rightContent } = right;
+  return JSON.stringify(leftContent) === JSON.stringify(rightContent);
 }
