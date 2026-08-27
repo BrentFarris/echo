@@ -7,7 +7,7 @@
 // incrementally replacing the earlier visual stubs.
 
 import { icons } from "../icons.js";
-import { del, get, post, put } from "../api.js";
+import { del, get, patch, post, put } from "../api.js";
 import { logout } from "../../src/auth/authGate.ts";
 import { hasDirtySessions } from "../../src/code/persistence.ts";
 import { getEchoUpdateSnapshot, refreshEchoUpdateStatus, syncEchoUpdateBadges } from "../../src/echoUpdate.ts";
@@ -89,6 +89,7 @@ const state = {
   modeDraft: null,
   modeStatus: "",
   workspaces: [],
+  editingWorkspaceId: null,
   // External connection settings (SearXNG + ComfyUI).
   external: {
     searxngUrl: "",
@@ -568,9 +569,11 @@ function renderTheme() {
 }
 
 function renderWorkspaces() {
+  const editing = state.editingWorkspaceId ? state.workspaces.find((w) => w.id === state.editingWorkspaceId) : null;
   return `
     <section class="settings-section">
       <h2 class="settings-section-title">Workspaces</h2>
+      ${editing ? renderWorkspaceEditor(editing) : ""}
       <div class="settings-card">
         ${state.workspaces.length ? state.workspaces.map((w) => `
           <div class="workspace-row">
@@ -582,12 +585,49 @@ function renderWorkspaces() {
               </div>
             </div>
             <div class="endpoint-row-actions">
-              <button class="icon-button" type="button" title="Configure">${icons.settings}</button>
+              <button class="icon-button" type="button" title="Configure" data-action="edit-workspace" data-workspace-id="${esc(w.id)}">${icons.settings}</button>
+              <button class="icon-button danger-button" type="button" title="Delete" data-action="delete-workspace" data-workspace-id="${esc(w.id)}" ${state.workspaces.length <= 1 ? "disabled" : ""}>${icons.trash}</button>
             </div>
           </div>
         `).join("") : `<p class="empty-state compact">No workspaces added.</p>`}
       </div>
     </section>
+  `;
+}
+
+function renderWorkspaceEditor(workspace) {
+  const additionalFolders = (workspace.folders || []).filter((f) => f !== workspace.mainPath);
+  return `
+    <div class="settings-card workspace-editor" data-workspace-editor>
+      <div class="settings-section-heading">
+        <h3 class="settings-card-title">Edit Workspace</h3>
+        <div class="endpoint-row-actions">
+          <button class="secondary-button compact-button" type="button" data-action="save-workspace">${icons.check}<span>Save</span></button>
+          <button class="icon-button" type="button" title="Close editor" aria-label="Close editor" data-action="cancel-edit-workspace">${icons.x}</button>
+        </div>
+      </div>
+      <label class="field">
+        <span>Name</span>
+        <input type="text" value="${esc(workspace.name)}" data-workspace-field="name" placeholder="Workspace name" autocomplete="off" />
+      </label>
+      <label class="field">
+        <span>Main folder</span>
+        <input type="text" value="${esc(workspace.mainPath)}" disabled title="Change main folder by creating a new workspace" />
+      </label>
+      <div>
+        <strong>Folders</strong>
+        <p class="settings-card-help">Additional folders included in this workspace. The main folder is always included.</p>
+        <div class="workspace-folder-list">
+          ${additionalFolders.map((f, i) => `
+            <div class="workspace-folder-row">
+              <input type="text" value="${esc(f)}" data-workspace-folder="${i}" autocomplete="off" />
+              <button class="icon-button danger-button" type="button" title="Remove folder" data-action="remove-workspace-folder">${icons.trash}</button>
+            </div>
+          `).join("")}
+        </div>
+        <button class="secondary-button compact-button" type="button" data-action="add-workspace-folder">${icons.plus}<span>Add folder</span></button>
+      </div>
+    </div>
   `;
 }
 
@@ -1052,6 +1092,110 @@ function bindEvents(root) {
 
   bindPluginEvents(root);
   bindLSPEvents(root);
+
+  // --- Workspace edit management ---
+
+  root.querySelectorAll("[data-action='edit-workspace']").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.editingWorkspaceId = btn.dataset.workspaceId;
+      render();
+    });
+  });
+
+  root.querySelectorAll("[data-action='cancel-edit-workspace']").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.editingWorkspaceId = null;
+      render();
+    });
+  });
+
+  root.querySelectorAll("[data-action='save-workspace']").forEach(async (btn) => {
+    btn.addEventListener("click", async () => {
+      const nameInput = root.querySelector('[data-workspace-field="name"]');
+      if (!nameInput) return;
+      const newName = nameInput.value.trim();
+      if (!newName) return;
+
+      // Collect additional folder paths (exclude mainPath)
+      const workspace = state.workspaces.find((w) => w.id === state.editingWorkspaceId);
+      const folderInputs = root.querySelectorAll("[data-workspace-folder]");
+      const folders = [];
+      for (const input of folderInputs) {
+        const v = input.value.trim();
+        if (v && v !== workspace.mainPath) {
+          folders.push(v);
+        }
+      }
+
+      try {
+        await patch(`/api/workspaces/${state.editingWorkspaceId}`, { name: newName, folders });
+        state.editingWorkspaceId = null;
+        const res = await get("/api/workspaces");
+        state.workspaces = res.workspaces || [];
+        render();
+      } catch (err) {
+        alert(`Failed to update workspace: ${err.message}`);
+      }
+    });
+  });
+
+  root.querySelectorAll("[data-action='add-workspace-folder']").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const list = root.querySelector(".workspace-folder-list");
+      if (!list) return;
+      const count = list.children.length;
+      const row = document.createElement("div");
+      row.className = "workspace-folder-row";
+      row.innerHTML = `
+        <input type="text" value="" data-workspace-folder="${count}" placeholder="Folder path" autocomplete="off" />
+        <button class="icon-button danger-button" type="button" title="Remove folder" data-action="remove-workspace-folder">${icons.trash}</button>
+      `;
+      list.appendChild(row);
+      row.querySelector("input").focus();
+      // Re-bind the remove button on this new row
+      row.querySelector("[data-action='remove-workspace-folder']").addEventListener("click", () => {
+        row.remove();
+        // Re-index remaining folder inputs
+        [...list.querySelectorAll("[data-workspace-folder]")].forEach((input, i) => {
+          input.dataset.workspaceFolder = i;
+        });
+      });
+    });
+  });
+
+  root.querySelectorAll("[data-action='remove-workspace-folder']").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const row = btn.closest(".workspace-folder-row");
+      if (row) row.remove();
+      // Re-index remaining folder inputs
+      const list = root.querySelector(".workspace-folder-list");
+      if (list) {
+        [...list.querySelectorAll("[data-workspace-folder]")].forEach((input, i) => {
+          input.dataset.workspaceFolder = i;
+        });
+      }
+    });
+  });
+
+  root.querySelectorAll("[data-action='delete-workspace']").forEach(async (btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.workspaceId;
+      if (!id) return;
+      if (!confirm("Delete this workspace? This will remove it from Echo but will not delete any files on disk.")) return;
+      try {
+        await del(`/api/workspaces/${id}`);
+        state.editingWorkspaceId = null;
+        const res = await get("/api/workspaces");
+        state.workspaces = res.workspaces || [];
+        if (state.modeWorkspaceId === id) {
+          window.dispatchEvent(new CustomEvent("echo:workspace-changed", { detail: { workspaceId: "" } }));
+        }
+        render();
+      } catch (err) {
+        alert(`Failed to delete workspace: ${err.message}`);
+      }
+    });
+  });
 
   root.querySelectorAll("[data-action='set-theme-palette']").forEach((btn) => {
     btn.addEventListener("click", () => {

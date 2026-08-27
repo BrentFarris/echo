@@ -180,6 +180,13 @@ func (m *Manager) Create(req CreateRequest) (Workspace, error) {
 
 	workspace := Workspace{MainPath: mainPath}
 	if fileExists {
+		// If the existing workspace.json has no name or invalid mainPath, use the requested values.
+		if strings.TrimSpace(loadedFile.Name) == "" && strings.TrimSpace(req.Name) != "" {
+			loadedFile.Name = strings.TrimSpace(req.Name)
+		}
+		if strings.TrimSpace(loadedFile.MainPath) == "" {
+			loadedFile.MainPath = "../" // portable path from .echo to its parent (the resolved mainPath)
+		}
 		workspace, err = workspaceFromFile("", "", echoDir, mainPath, loadedFile)
 		if err != nil {
 			return Workspace{}, err
@@ -333,6 +340,80 @@ func (m *Manager) ActiveID() (string, error) {
 		return "", err
 	}
 	return f.ActiveWorkspaceID, nil
+}
+
+// Delete removes a workspace from the shared app data store. It does not
+// delete the .echo directory or any workspace files on disk.
+func (m *Manager) Delete(id string) error {
+	return m.data.Update(func(f *appdata.File) error {
+		for i, w := range f.Workspaces {
+			if w.ID == id {
+				f.Workspaces = append(f.Workspaces[:i], f.Workspaces[i+1:]...)
+				if f.ActiveWorkspaceID == id {
+					f.ActiveWorkspaceID = ""
+				}
+				return nil
+			}
+		}
+		return fmt.Errorf("workspace %q not found", id)
+	})
+}
+
+// Update patches selected workspace properties (name and/or folders).
+// An empty name means "do not change the name". A nil folders slice means
+// "do not change folders"; an empty slice replaces all additional folders.
+func (m *Manager) Update(id string, name string, folders []string) (Workspace, error) {
+	workspace, ok, err := m.Get(id)
+	if err != nil {
+		return Workspace{}, err
+	}
+	if !ok {
+		return Workspace{}, fmt.Errorf("workspace %q not found", id)
+	}
+
+	name = strings.TrimSpace(name)
+	if name != "" {
+		workspace.Name = name
+	}
+
+	if folders != nil {
+		// Build new folder list: main path first, then provided additional folders.
+		newFolders := []string{workspace.MainPath}
+		for _, requested := range folders {
+			requested = strings.TrimSpace(requested)
+			if requested == "" {
+				continue
+			}
+			folder, resolveErr := absolutePath("", requested)
+			if resolveErr != nil {
+				return Workspace{}, fmt.Errorf("resolve workspace folder %q: %w", requested, resolveErr)
+			}
+			newFolders = append(newFolders, folder)
+		}
+		newFolders = append([]string{workspace.MainPath}, cleanFolders(newFolders[1:], workspace.MainPath)...)
+		for _, folder := range newFolders {
+			if err := requireDirectory(folder, "", fmt.Sprintf("path %q is not accessible", folder)); err != nil {
+				return Workspace{}, err
+			}
+		}
+		workspace.Folders = newFolders
+	}
+
+	if err := writeWorkspaceFile(filepath.Join(workspace.MainPath, EchoDirName), workspaceFileFromWorkspace(workspace)); err != nil {
+		return Workspace{}, err
+	}
+	if err := m.data.Update(func(f *appdata.File) error {
+		for index := range f.Workspaces {
+			if f.Workspaces[index].ID == id {
+				f.Workspaces[index] = workspaceRegistration(workspace)
+				return nil
+			}
+		}
+		return fmt.Errorf("workspace %q not found", id)
+	}); err != nil {
+		return Workspace{}, err
+	}
+	return workspace, nil
 }
 
 // SetSearchParentGitRepositories updates the workspace-scoped parent

@@ -80,6 +80,47 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusCreated, map[string]any{"workspace": ws})
 }
 
+// handleUpdateWorkspace patches selected workspace properties (name and/or folders).
+func (s *Server) handleUpdateWorkspace(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "workspace ID is required")
+		return
+	}
+	var body struct {
+		Name    string   `json:"name"`
+		Folders []string `json:"folders,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	ws, err := s.workspaces.Update(id, body.Name, body.Folders)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.refreshWorkspaceCaches(r.Context(), id)
+	writeData(w, http.StatusOK, map[string]any{"workspace": ws})
+}
+
+// handleDeleteWorkspace removes a workspace from the app data store. It does
+// not delete the .echo directory or any workspace files on disk.
+func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "workspace ID is required")
+		return
+	}
+	if err := s.workspaces.Delete(id); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.refreshWorkspaceCaches(r.Context(), id)
+	writeData(w, http.StatusOK, map[string]any{"deleted": id})
+}
+
 // handleGetWorkspaceIcon serves a workspace's icon image from its .echo folder.
 func (s *Server) handleGetWorkspaceIcon(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")

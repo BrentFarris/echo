@@ -98,6 +98,7 @@ type Settings struct {
 	ResearchAgentConcurrency           int               `json:"researchAgentConcurrency"`
 	MaxChatRounds                      int               `json:"maxChatRounds,omitempty"`
 	DisableGitSplitDiffView            bool              `json:"disableGitSplitDiffView,omitempty"`
+	EnableVimKeybindings               bool              `json:"enableVimKeybindings,omitempty"`
 	ComfyuiURL                         string            `json:"comfyuiUrl"`
 	ComfyuiDefaultCheckpoint           string            `json:"comfyuiDefaultCheckpoint"`
 	ComfyuiTxt2imgWorkflow             string            `json:"comfyuiTxt2imgWorkflow"`

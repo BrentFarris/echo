@@ -4202,6 +4202,25 @@ button.chat-file-change-row:focus-visible {
   white-space: nowrap;
 }
 
+/* Workspace folder list in the workspace editor */
+.workspace-folder-list {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.workspace-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.workspace-folder-row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+}
+
 /* Eyebrow / muted helpers */
 .eyebrow {
   font-size: var(--text-xs);

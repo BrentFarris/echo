@@ -161,6 +161,7 @@ export type PersistedWorkspaceSession = {
   expanded: string[];
   selectedTreeKey?: string | null;
   explorerWidth: number;
+  explorerCollapsed?: boolean;
   codeChatWidth?: number;
   treeScrollTop: number;
 };

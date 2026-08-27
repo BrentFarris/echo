@@ -345,6 +345,8 @@ func (s *Server) routes() http.Handler {
 	// Workspace endpoints.
 	mux.HandleFunc("GET /api/workspaces", s.handleGetWorkspaces)
 	mux.HandleFunc("POST /api/workspaces", s.handleCreateWorkspace)
+	mux.HandleFunc("PATCH /api/workspaces/{id}", s.handleUpdateWorkspace)
+	mux.HandleFunc("DELETE /api/workspaces/{id}", s.handleDeleteWorkspace)
 	mux.HandleFunc("PUT /api/workspaces/active", s.handleSetActiveWorkspace)
 	mux.HandleFunc("GET /api/workspaces/{id}/icon", s.handleGetWorkspaceIcon)
 	mux.HandleFunc("GET /api/workspaces/{id}/fs/roots", s.handleFSRoots)

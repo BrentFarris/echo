@@ -108,6 +108,16 @@
   overflow: hidden;
 }
 
+/* When collapsed, the --explorer-width is set to 0px inline.
+   These rules hide the resizer and sidebar contents so they don't bleed. */
+.code-app-shell.is-explorer-collapsed .code-sidebar {
+  overflow: hidden;
+}
+
+.code-app-shell.is-explorer-collapsed .code-explorer-resizer {
+  visibility: hidden;
+}
+
 .code-explorer {
   display: grid;
   grid-template-rows: 35px 23px minmax(0, 1fr);
@@ -1349,6 +1359,35 @@
 .code-explorer-resizer:focus-visible::after {
   width: 2px;
   background: var(--code-accent);
+}
+
+/* Sidebar expand toggle — visible only when sidebar is collapsed */
+.code-sidebar-expand-toggle {
+  display: none;
+  position: absolute;
+  top: 4px;
+  left: 0;
+  z-index: 5;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--code-muted);
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+}
+
+.code-sidebar-expand-toggle:hover,
+.code-sidebar-expand-toggle:focus-visible {
+  background: var(--code-hover);
+  color: var(--code-fg);
+}
+
+.code-sidebar-expand-toggle.is-visible {
+  display: flex;
 }
 
 .code-editor-column {

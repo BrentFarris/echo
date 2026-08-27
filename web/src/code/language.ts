@@ -87,4 +87,6 @@ export function languageForPath(filePath: string, profiles: LSPProfile[] = []): 
   return language;
 }
 
-export { monaco };
+import { initVimMode } from "monaco-vim";
+
+export { monaco, initVimMode };

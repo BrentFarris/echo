@@ -5,7 +5,7 @@ import { openAddWorkspaceModal, openWorkspaceDropdown } from "../../js/workspace
 import { on as onSocket, onState as onSocketState, send as sendSocket } from "../../js/ws.js";
 import * as editorAPI from "./editorApi";
 import type { APIError } from "./editorApi";
-import { languageForPath, monaco } from "./language";
+import { languageForPath, monaco, initVimMode } from "./language";
 import { EchoLSPClient, fromLSPRange, type LSPDocumentState } from "./lspClient";
 import type { LSPProfile, LSPStatus, LSPWorkspaceEdit, WorkspaceLSPResponse } from "./lspTypes";
 import { loadDiff as loadGitDiff } from "./gitApi";
@@ -122,6 +122,7 @@ class CodeView {
   private activeSidebar: CodeSidebar = "explorer";
   private splitGitDiff = true;
   private leadingWhitespaceIndicators = true;
+  private enableVimKeybindings = false;
   private modelReferences = new Map<MonacoEditor.ITextModel, number>();
   private treeScroller!: HTMLElement;
   private treeCanvas!: HTMLElement;
@@ -132,6 +133,7 @@ class CodeView {
   private explorerWidth = 280;
   private codeChatWidth = 360;
   private codeChatOpen = false;
+  private explorerCollapsed = false;
   private codeChatSurface: MountedChatSurface | null = null;
   private restoredTreeScrollTop = 0;
   private explorerRevealGeneration = 0;
@@ -186,13 +188,14 @@ class CodeView {
       }
       const [roots, settingsData, lspData] = await Promise.all([
         editorAPI.getRoots(this.workspace.id),
-        api("/api/settings", { method: "GET" }).catch(() => null) as Promise<{ settings?: { disableGitSplitDiffView?: boolean; hideLeadingWhitespaceIndicators?: boolean } } | null>,
+        api("/api/settings", { method: "GET" }).catch(() => null) as Promise<{ settings?: { disableGitSplitDiffView?: boolean; hideLeadingWhitespaceIndicators?: boolean; enableVimKeybindings?: boolean } } | null>,
         editorAPI.getWorkspaceLSPConfig(this.workspace.id).catch(() => ({ config: {}, profiles: [], statuses: [] } as WorkspaceLSPResponse)),
       ]);
       if (this.abort.signal.aborted) return;
       this.roots = roots;
       this.splitGitDiff = settingsData?.settings?.disableGitSplitDiffView !== true;
       this.leadingWhitespaceIndicators = settingsData?.settings?.hideLeadingWhitespaceIndicators !== true;
+      this.enableVimKeybindings = settingsData?.settings?.enableVimKeybindings === true;
       this.lspProfiles = lspData.profiles || [];
       this.initializeEditor();
       this.lsp = new EchoLSPClient({
@@ -273,6 +276,7 @@ class CodeView {
                 <button type="button" title="New Folder" aria-label="New Folder" data-tree-action="new-folder"><span class="codicon codicon-new-folder"></span></button>
                 <button type="button" title="Refresh Explorer" aria-label="Refresh Explorer" data-tree-action="refresh"><span class="codicon codicon-refresh"></span></button>
                 <button type="button" title="Trash" aria-label="Trash" data-tree-action="trash"><span class="codicon codicon-trash"></span></button>
+                <button type="button" title="${this.explorerCollapsed ? 'Expand Explorer' : 'Collapse Explorer'}" aria-label="${this.explorerCollapsed ? 'Expand Explorer' : 'Collapse Explorer'}" data-explorer-collapse-btn><span class="codicon codicon-${this.explorerCollapsed ? 'chevron-right' : 'collapse-all'}"></span></button>
               </div>
             </header>
             <div class="code-workspace-title" title="${escapeHTML(workspaceName)}"><span class="codicon codicon-chevron-down"></span><strong>${escapeHTML(workspaceName)}</strong></div>
@@ -284,6 +288,7 @@ class CodeView {
           <aside class="code-git-view" aria-label="Source Control" data-sidebar-view="git"${this.activeSidebar === "git" ? "" : " hidden"}></aside>
           </div>
           <div class="code-explorer-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Explorer" tabindex="0"></div>
+          <button type="button" class="code-sidebar-expand-toggle" title="Show Sidebar" aria-label="Expand sidebar" data-sidebar-expand><span class="codicon codicon-chevron-right"></span></button>
           <main class="code-editor-column">
             <div class="code-tabs-scroll" role="tablist" aria-label="Open editors" data-code-tabs><div class="code-tabs" data-tabs-list></div></div>
             <div class="code-editor-workspace">
@@ -412,6 +417,10 @@ class CodeView {
       window.history.replaceState(window.history.state, "", codeRouteHash(view));
     }
     if (window.innerWidth <= 720) this.setMobileExplorer(true);
+    // Auto-expand sidebar when switching to it while collapsed
+    if (this.explorerCollapsed && (view === "explorer" || view === "git" || view === "search")) {
+      this.setExplorerCollapsed(false);
+    }
     if (view === "search") this.searchView?.open();
   }
 
@@ -608,6 +617,7 @@ class CodeView {
     });
     this.editor.onDidChangeCursorPosition(() => this.renderStatus());
     this.editor.onDidScrollChange(() => this.schedulePersist());
+    if (this.enableVimKeybindings) initVimMode(this.editor);
     const diffHost = this.root.querySelector<HTMLElement>("[data-monaco-diff-host]")!;
     this.diffEditor = monaco.editor.createDiffEditor(diffHost, {
       theme: this.mediaTheme.matches ? "vs-dark" : "vs",
@@ -643,6 +653,7 @@ class CodeView {
     });
     this.diffEditor.getModifiedEditor().onDidChangeCursorPosition(() => this.renderStatus());
     this.diffEditor.getModifiedEditor().onDidScrollChange(() => this.schedulePersist());
+    if (this.enableVimKeybindings) initVimMode(this.diffEditor.getModifiedEditor());
     this.updateDiffLayoutState();
     this.editorOpener = monaco.editor.registerEditorOpener({
       openCodeEditor: (_source, resource, selectionOrPosition) => this.openNavigationTarget(resource, selectionOrPosition),
@@ -2415,6 +2426,12 @@ class CodeView {
     this.root.querySelector("[data-code-chat-backdrop]")?.addEventListener("click", () => {
       this.setCodeChatOpen(false, true);
     }, { signal });
+    this.root.querySelector("[data-explorer-collapse-btn]")?.addEventListener("click", () => {
+      this.setExplorerCollapsed(!this.explorerCollapsed);
+    }, { signal });
+    this.root.querySelector("[data-sidebar-expand]")?.addEventListener("click", () => {
+      this.setExplorerCollapsed(false);
+    }, { signal });
     this.root.querySelector("[data-diff-toolbar]")?.addEventListener("click", (event) => {
       const action = (event.target as Element).closest<HTMLElement>("[data-diff-action]")?.dataset.diffAction;
       if (action === "previous" || action === "next") void this.diffEditor.goToDiff(action);
@@ -2609,7 +2626,8 @@ class CodeView {
       event.preventDefault();
       event.stopPropagation();
       activeEditor.trigger("echo", event.shiftKey ? "outdent" : "tab", null);
-    } else if (modifier && event.shiftKey && key === "f") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(); }
+    }    else if (modifier && event.shiftKey && key === "a") { event.preventDefault(); event.stopPropagation(); this.setCodeChatOpen(!this.codeChatOpen); }
+    else if (modifier && event.shiftKey && key === "f") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(); }
     else if (modifier && event.shiftKey && key === "o") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSymbols(); }
     else if (modifier && event.shiftKey && key === "f12" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.peekImplementation", null); }
     else if (modifier && !event.shiftKey && key === "f12" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.goToImplementation", null); }
@@ -2623,6 +2641,7 @@ class CodeView {
     else if (modifier && key === "s") { event.preventDefault(); event.stopPropagation(); void this.saveTab(); }
     else if (modifier && key === "w") { const tab = this.activeTab(); if (tab) { event.preventDefault(); event.stopPropagation(); void this.closeTab(tab); } }
     else if (modifier && key === "n") { event.preventDefault(); event.stopPropagation(); this.newUntitled(); }
+    else if (modifier && key === "b") { event.preventDefault(); event.stopPropagation(); this.setExplorerCollapsed(!this.explorerCollapsed); }
     else if (modifier && key === "tab") {
       event.preventDefault();
       const index = this.tabs.findIndex((tab) => tab.id === this.activeTabId);
@@ -2767,6 +2786,37 @@ class CodeView {
     });
   }
 
+  private setExplorerCollapsed(collapsed: boolean): void {
+    if (!this.workspace) return;
+    const shell = this.root.querySelector<HTMLElement>(".code-app-shell");
+    const sidebar = this.root.querySelector<HTMLElement>(".code-sidebar");
+    const resizer = this.root.querySelector<HTMLElement>(".code-explorer-resizer");
+    const toggle = this.root.querySelector<HTMLButtonElement>("[data-explorer-collapse-btn]");
+    const expandBtn = this.root.querySelector<HTMLElement>("[data-sidebar-expand]");
+    if (!shell || !sidebar || !resizer) return;
+    this.explorerCollapsed = collapsed;
+    shell.classList.toggle("is-explorer-collapsed", collapsed);
+    if (collapsed) {
+      shell.style.setProperty("--explorer-width", "0px");
+    } else {
+      shell.style.setProperty("--explorer-width", `${this.explorerWidth}px`);
+    }
+    expandBtn?.classList.toggle("is-visible", collapsed);
+    if (toggle) {
+      const chevron = toggle.querySelector(".codicon");
+      if (chevron) {
+        chevron.classList.toggle("codicon-chevron-right", collapsed);
+        chevron.classList.toggle("codicon-collapse-all", !collapsed);
+      }
+      toggle.title = collapsed ? "Expand Explorer" : "Collapse Explorer";
+      toggle.setAttribute("aria-label", collapsed ? "Expand Explorer" : "Collapse Explorer");
+    }
+    requestAnimationFrame(() => {
+      this.editor?.layout();
+      this.diffEditor?.layout();
+    });
+  }
+
   private async activateChatReference(reference: ChatReference): Promise<void> {
     if (reference.kind === "file") {
       await this.openFile(reference.ref, true);
@@ -2832,6 +2882,7 @@ class CodeView {
     this.applyCodeChatWidth(saved.codeChatWidth || 360);
     const shell = this.root.querySelector<HTMLElement>(".code-app-shell");
     shell?.style.setProperty("--explorer-width", `${this.explorerWidth}px`);
+    this.explorerCollapsed = saved.explorerCollapsed || false;
     this.expanded = new Set(saved.expanded || []);
     this.selectedTreeKey = saved.selectedTreeKey || null;
     for (const persisted of saved.tabs || []) {
@@ -2860,6 +2911,7 @@ class CodeView {
       }
     }
     this.restoredTreeScrollTop = saved.treeScrollTop || 0;
+    if (this.explorerCollapsed) this.setExplorerCollapsed(true);
   }
 
   private async restoreTab(persisted: PersistedTab): Promise<void> {
@@ -2993,7 +3045,7 @@ class CodeView {
       await saveSession(this.workspace.id, {
         version: 3, activeTabId: this.activeTabId, tabs, expanded: [...this.expanded],
         selectedTreeKey: this.selectedTreeKey,
-        explorerWidth: this.explorerWidth, codeChatWidth: this.codeChatWidth,
+        explorerWidth: this.explorerWidth, explorerCollapsed: this.explorerCollapsed, codeChatWidth: this.codeChatWidth,
         treeScrollTop: this.treeScroller?.scrollTop || 0,
       });
       this.persistenceFailed = false;
