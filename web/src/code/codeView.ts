@@ -36,6 +36,10 @@ import {
   CodeNavigationHistory, isLargeCodeNavigationJump, type CodeNavigationLocation,
 } from "./codeNavigationHistory";
 import { beginMruCycle, nextMruCycle, pruneMruCycle, removeFromMru, type MruCycleState } from "./mruTabOrder";
+import {
+  commandPalettePresentation, loadRecentCommandIds, pruneRecentCommandIds,
+  recordRecentCommandId, saveRecentCommandIds,
+} from "./commandHistory";
 import type {
   FileRef, FileSnapshot, FsEntry, PersistedTab, PersistedWorkspaceSession,
   SearchResult, TextReplaceUpdate, TextSearchMatch, TextSearchOverlay, TrashItem, WorkspaceRoot,
@@ -169,6 +173,7 @@ class CodeView {
   private lastSequence = 0;
   private pollTimer = 0;
   private commands: Command[] = [];
+  private recentCommandIds = loadRecentCommandIds();
   private closeWorkspaceDropdown: (() => void) | null = null;
   private closeAddWorkspaceModal: (() => void) | null = null;
   private workspaceSwitching = false;
@@ -2588,6 +2593,8 @@ class CodeView {
       { id: "editor.unfold", label: "Editor: Unfold", run: () => this.editor.trigger("echo", "editor.unfold", null) },
       { id: "editor.bracket", label: "Editor: Go to Bracket", run: () => this.editor.trigger("echo", "editor.action.jumpToBracket", null) },
     ];
+    this.recentCommandIds = pruneRecentCommandIds(this.recentCommandIds, this.commands.map((command) => command.id));
+    saveRecentCommandIds(this.recentCommandIds);
   }
 
   private activeCodeEditor(): MonacoEditor.ICodeEditor | null {
@@ -2848,12 +2855,30 @@ class CodeView {
     let selected = 0;
     const close = () => overlay.remove();
     const render = () => {
-      const query = input.value.trim().toLowerCase();
-      filtered = this.commands.filter((command) => command.label.toLowerCase().includes(query));
+      const presentation = commandPalettePresentation(this.commands, this.recentCommandIds, input.value);
+      filtered = presentation.commands;
       selected = Math.min(selected, Math.max(0, filtered.length - 1));
-      list.innerHTML = filtered.map((command, index) => `<button type="button" role="option" class="${index === selected ? "is-selected" : ""}" data-command-index="${index}"><span class="codicon codicon-terminal"></span><strong>${escapeHTML(command.label)}</strong>${command.keybinding ? `<kbd>${escapeHTML(command.keybinding)}</kbd>` : ""}</button>`).join("");
+      let commandIndex = 0;
+      list.innerHTML = presentation.groups.map((group) => {
+        const heading = group.label
+          ? `<div class="code-picker-section-label" role="presentation" aria-hidden="true">${group.label}</div>`
+          : "";
+        const rows = group.commands.map((command) => {
+          const index = commandIndex++;
+          const active = index === selected;
+          return `<button type="button" role="option" aria-selected="${active}" class="${active ? "is-selected" : ""}" data-command-index="${index}"><span class="codicon codicon-terminal"></span><strong>${escapeHTML(command.label)}</strong>${command.keybinding ? `<kbd>${escapeHTML(command.keybinding)}</kbd>` : ""}</button>`;
+        }).join("");
+        return heading + rows;
+      }).join("");
     };
-    const choose = () => { const command = filtered[selected]; close(); if (command) void command.run(); };
+    const choose = () => {
+      const command = filtered[selected];
+      close();
+      if (!command) return;
+      this.recentCommandIds = recordRecentCommandId(this.recentCommandIds, command.id);
+      saveRecentCommandIds(this.recentCommandIds);
+      void command.run();
+    };
     input.addEventListener("input", render);
     overlay.addEventListener("click", (event) => {
       if (event.target === overlay) close();

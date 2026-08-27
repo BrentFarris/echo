@@ -478,6 +478,61 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await mainTab.click();
   await expect(page.locator(".view-lines")).toContainText("package main");
 
+  // Command-palette selections form a persistent five-item MRU. Section
+  // headings remain outside the option index, so Enter immediately repeats
+  // the last command and search continues to rank matching recents first.
+  const commandHistoryKey = "echo.code.commandPalette.recent.v1";
+  await page.evaluate((key) => localStorage.removeItem(key), commandHistoryKey);
+  await page.reload();
+  await expect(page.locator(".code-app-shell")).toBeVisible();
+  const explorerRoot = page.locator('.code-tree-row[data-tree-root="true"]').first();
+  if (await explorerRoot.getAttribute("aria-expanded") !== "true") await explorerRoot.click();
+  await expect(explorerRoot).toHaveAttribute("aria-expanded", "true");
+
+  await page.keyboard.press("Control+Shift+P");
+  await page.getByLabel("Command Palette").fill("Explorer: Collapse All");
+  await page.keyboard.press("Enter");
+  await expect(explorerRoot).toHaveAttribute("aria-expanded", "false");
+
+  await explorerRoot.click();
+  await expect(explorerRoot).toHaveAttribute("aria-expanded", "true");
+  await page.keyboard.press("Control+Shift+P");
+  let paletteOptions = page.locator(".code-picker-list").getByRole("option");
+  await expect(page.locator(".code-picker-section-label", { hasText: "Recent" })).toBeVisible();
+  await expect(paletteOptions.first()).toContainText("Explorer: Collapse All");
+  await page.keyboard.press("Enter");
+  await expect(explorerRoot).toHaveAttribute("aria-expanded", "false");
+
+  await page.keyboard.press("Control+Shift+P");
+  await page.getByLabel("Command Palette").fill("Explorer: Refresh");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Control+Shift+P");
+  paletteOptions = page.locator(".code-picker-list").getByRole("option");
+  await expect(paletteOptions.nth(0)).toContainText("Explorer: Refresh");
+  await expect(paletteOptions.nth(1)).toContainText("Explorer: Collapse All");
+  await expect(page.getByRole("option", { name: /Explorer: Refresh/ })).toHaveCount(1);
+  await expect(page.getByRole("option", { name: /Explorer: Collapse All/ })).toHaveCount(1);
+  await page.getByLabel("Command Palette").fill("Explorer: Collapse All");
+  await page.keyboard.press("Enter");
+
+  await page.keyboard.press("Control+Shift+P");
+  paletteOptions = page.locator(".code-picker-list").getByRole("option");
+  await expect(paletteOptions.nth(0)).toContainText("Explorer: Collapse All");
+  await expect(paletteOptions.nth(1)).toContainText("Explorer: Refresh");
+  await page.getByLabel("Command Palette").fill("Explorer");
+  await expect(page.locator(".code-picker-section-label")).toHaveCount(0);
+  await expect(paletteOptions.nth(0)).toContainText("Explorer: Collapse All");
+  await expect(paletteOptions.nth(1)).toContainText("Explorer: Refresh");
+  await page.keyboard.press("Escape");
+
+  await page.reload();
+  await expect(page.locator(".code-app-shell")).toBeVisible();
+  await page.keyboard.press("Control+Shift+P");
+  paletteOptions = page.locator(".code-picker-list").getByRole("option");
+  await expect(paletteOptions.nth(0)).toContainText("Explorer: Collapse All");
+  await expect(paletteOptions.nth(1)).toContainText("Explorer: Refresh");
+  await page.keyboard.press("Escape");
+
   // Echo exposes Monaco's native VS Code-style case transforms through its
   // command palette, preserving selection and grouping each edit for Undo.
   await page.keyboard.press("Control+n");
