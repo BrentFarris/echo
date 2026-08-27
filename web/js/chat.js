@@ -114,6 +114,7 @@ export function openWorkspaceSession(log, workspaceId, options = {}) {
   binding = {
     log, workspaceId: workspaceId || "", surface: options.surface === "code" ? "code" : "chat",
     onActivateFile: typeof options.onActivateFile === "function" ? options.onActivateFile : null,
+    onActivateResource: typeof options.onActivateResource === "function" ? options.onActivateResource : null,
     sequence: 0, hasSnapshot: false,
     activeChatId: "", tabs: [], turns: new Map(),
   };
@@ -237,7 +238,9 @@ function applyEvent(event) {
   switch (event.type) {
     case "turn_started": {
       binding.log.querySelector(".chat-empty")?.remove();
-      const stream = createTurnView(event.turnId, event.message || "", event.images || [], event.videos || []);
+      const stream = createTurnView(event.turnId, event.message || "", event.images || [], event.videos || [], {
+        references: event.references, editorContext: event.editorContext,
+      });
       binding.turns.set(event.turnId, stream);
       activeStream = stream;
       setStreaming(true);
@@ -247,7 +250,9 @@ function applyEvent(event) {
     case "turn_edit_started": {
       rewindTurnViews(event.fromTurnId);
       binding.log.querySelector(".chat-empty")?.remove();
-      const stream = createTurnView(event.turnId, event.message || "", event.images || [], event.videos || []);
+      const stream = createTurnView(event.turnId, event.message || "", event.images || [], event.videos || [], {
+        references: event.references, editorContext: event.editorContext,
+      });
       binding.turns.set(event.turnId, stream);
       activeStream = stream;
       setStreaming(true);
@@ -305,6 +310,7 @@ export function sendMessage(log, text, model, agentModeId, options = {}) {
   text = text.trim();
   const images = Array.isArray(options.images) ? options.images : [];
   const videos = Array.isArray(options.videos) ? options.videos : [];
+  const references = Array.isArray(options.references) ? options.references : [];
   if ((!text && images.length === 0 && videos.length === 0) || activeStream || activeBindingChatBusy() || !binding?.workspaceId || !binding.activeChatId || binding.log !== log) return false;
   const requestId = globalThis.crypto?.randomUUID?.() || `request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return ws.send({
@@ -313,6 +319,7 @@ export function sendMessage(log, text, model, agentModeId, options = {}) {
     ...(images.length ? { images } : {}), ...(videos.length ? { videos } : {}),
     ...(binding.surface === "code" ? { surface: "code" } : {}),
     ...(options.editorContext ? { editorContext: options.editorContext } : {}),
+    ...(binding.surface === "code" && references.length ? { references } : {}),
   });
 }
 
@@ -329,6 +336,8 @@ function renderStoredTurn(turn, active) {
   const stream = createTurnView(turn.id, turn.userContent || "", turn.images || [], turn.videos || [], {
     userDeleted: Boolean(turn.userDeleted),
     assistantDeleted: Boolean(turn.assistantDeleted),
+    references: turn.references,
+    editorContext: turn.editorContext,
   });
   binding.turns.set(turn.id, stream);
   const compressions = turn.assistantDeleted ? [] : (turn.compressions || []);
@@ -399,6 +408,137 @@ function renderEmpty(log, text) {
   log.appendChild(empty);
 }
 
+function promptResourceCountLabel(count, singular, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function promptSelectionLabel(selection) {
+  const side = selection.side ? ` · ${selection.side}` : "";
+  if (selection.startLine === selection.endLine) {
+    return `Line ${selection.startLine}, columns ${selection.startColumn}–${selection.endColumn}${side}`;
+  }
+  return `Lines ${selection.startLine}:${selection.startColumn}–${selection.endLine}:${selection.endColumn}${side}`;
+}
+
+function promptResourceIcon(kind) {
+  if (kind === "directory") return "folder";
+  if (kind === "diff") return "diff";
+  if (kind === "untitled") return "new-file";
+  return "file-code";
+}
+
+function promptResourceRow(resource, label, badges = [], selection = false) {
+  const navigable = typeof binding?.onActivateResource === "function";
+  const row = document.createElement(navigable ? "button" : "div");
+  if (row instanceof HTMLButtonElement) row.type = "button";
+  row.className = `chat-prompt-resource-row${selection ? " is-selection" : ""}`;
+  row.dataset.promptResource = resource.kind || "file";
+  const icon = document.createElement("span");
+  icon.className = `chat-prompt-resource-icon codicon codicon-${selection ? "selection" : promptResourceIcon(resource.kind)}`;
+  const path = document.createElement("span");
+  path.className = "chat-prompt-resource-path";
+  path.textContent = label;
+  row.append(icon, path);
+  for (const value of badges.filter(Boolean)) {
+    const badge = document.createElement("span");
+    badge.className = "chat-prompt-resource-badge";
+    badge.textContent = value;
+    row.append(badge);
+  }
+  if (navigable) {
+    row.setAttribute("aria-label", `Open ${label}`);
+    row.addEventListener("click", () => {
+      Promise.resolve(binding?.onActivateResource?.(resource)).catch((error) => {
+        toast(error instanceof Error ? error.message : "Could not open the historical resource.", { sticky: true });
+      });
+    });
+  }
+  return row;
+}
+
+function promptResourceSection(title, entries) {
+  const section = document.createElement("section");
+  section.className = "chat-prompt-resource-section";
+  const heading = document.createElement("h4");
+  heading.textContent = title;
+  const list = document.createElement("ul");
+  list.className = "chat-prompt-resource-list";
+  for (const entry of entries) {
+    const item = document.createElement("li");
+    item.append(entry);
+    list.append(item);
+  }
+  section.append(heading, list);
+  return section;
+}
+
+function appendPromptResources(body, referencesValue, editorContextValue) {
+  const references = Array.isArray(referencesValue) ? referencesValue : [];
+  const editorContext = editorContextValue && typeof editorContextValue === "object" ? editorContextValue : null;
+  const tabs = Array.isArray(editorContext?.tabs) ? editorContext.tabs : [];
+  const selectionCount = tabs.reduce((total, tab) => total + (Array.isArray(tab.selections) ? tab.selections.length : 0), 0);
+  if (!references.length && !tabs.length) return;
+
+  const counts = [];
+  if (tabs.length) counts.push(promptResourceCountLabel(tabs.length, "tab"));
+  if (selectionCount) counts.push(promptResourceCountLabel(selectionCount, "selection"));
+  if (references.length) counts.push(promptResourceCountLabel(references.length, "mention"));
+  const details = document.createElement("details");
+  details.className = "chat-prompt-resources";
+  const summary = document.createElement("summary");
+  const summaryIcon = document.createElement("span");
+  summaryIcon.className = "codicon codicon-references";
+  const summaryLabel = document.createElement("span");
+  summaryLabel.textContent = counts.join(" · ");
+  summary.append(summaryIcon, summaryLabel);
+  if (editorContext?.truncated) {
+    const truncated = document.createElement("span");
+    truncated.className = "chat-prompt-resource-truncated";
+    truncated.textContent = "Truncated";
+    summary.append(truncated);
+  }
+  details.append(summary);
+
+  const content = document.createElement("div");
+  content.className = "chat-prompt-resources-content";
+  if (references.length) {
+    content.append(promptResourceSection("Mentioned", references.map((reference) => promptResourceRow({
+      kind: reference.kind === "directory" ? "directory" : "file",
+      label: reference.label || reference.referencePath || reference.ref?.path || "Resource",
+      referencePath: reference.referencePath,
+      ref: reference.ref,
+    }, reference.referencePath || reference.label || reference.ref?.path || "Resource"))));
+  }
+  if (tabs.length) {
+    const entries = [];
+    for (const tab of tabs) {
+      const kind = tab.kind === "diff" ? "diff" : tab.kind === "untitled" ? "untitled" : "file";
+      const resource = {
+        kind, label: tab.title || tab.reference || "Editor tab", referencePath: tab.reference,
+        ref: tab.ref, diff: tab.diff,
+      };
+      const badges = [];
+      if (tab.active) badges.push("Active");
+      if (tab.diff?.scope) badges.push(tab.diff.scope);
+      else if (kind === "untitled") badges.push("Untitled");
+      if (tab.dirty) badges.push("Unsaved");
+      entries.push(promptResourceRow(resource, tab.reference || tab.title || "Editor tab", badges));
+      for (const selection of Array.isArray(tab.selections) ? tab.selections : []) {
+        entries.push(promptResourceRow({ ...resource, selection }, promptSelectionLabel(selection), [], true));
+      }
+    }
+    content.append(promptResourceSection("Editor context", entries));
+  }
+  if (editorContext?.truncated) {
+    const note = document.createElement("p");
+    note.className = "chat-prompt-resources-note";
+    note.textContent = "Some submitted editor context was truncated to fit the prompt limit.";
+    content.append(note);
+  }
+  details.append(content);
+  body.append(details);
+}
+
 function createMessageEl(role, text, images = [], videos = [], options = {}) {
   const el = document.createElement("div");
   el.className = `chat-message chat-message-${role}`;
@@ -424,6 +564,7 @@ function createMessageEl(role, text, images = [], videos = [], options = {}) {
     content.className = "chat-message-content markdown-body";
     patchMarkdownElement(content, text);
     body.appendChild(content);
+    appendPromptResources(body, options.references, options.editorContext);
   }
   return el;
 }
@@ -567,7 +708,9 @@ function messageActionButton({ action, label, icon, className = "", disabled = f
 }
 
 function createTurnView(turnId, userText, images = [], videos = [], options = {}) {
-  const user = createMessageEl("user", userText, images, videos, { turnId });
+  const user = createMessageEl("user", userText, images, videos, {
+    turnId, references: options.references, editorContext: options.editorContext,
+  });
   user.dataset.turnId = turnId;
   if (!options.userDeleted) binding.log.appendChild(user);
   const el = createMessageEl("assistant", "");

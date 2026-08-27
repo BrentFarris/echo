@@ -48,6 +48,8 @@ type Turn struct {
 	UserMessageIndex  int                   `json:"userMessageIndex,omitempty"`
 	Images            []MediaAttachment     `json:"images,omitempty"`
 	Videos            []MediaAttachment     `json:"videos,omitempty"`
+	References        []PromptReference     `json:"references,omitempty"`
+	EditorContext     *EditorContextSummary `json:"editorContext,omitempty"`
 	Model             string                `json:"model,omitempty"`
 	AgentModeID       string                `json:"agentModeId,omitempty"`
 	AgentModeName     string                `json:"agentModeName,omitempty"`
@@ -63,6 +65,50 @@ type Turn struct {
 	UserDeleted       bool                  `json:"userDeleted,omitempty"`
 	AssistantDeleted  bool                  `json:"assistantDeleted,omitempty"`
 	Compressions      []CompressionActivity `json:"compressions,omitempty"`
+}
+
+// PromptReference is display-safe metadata for a file or directory explicitly
+// mentioned by the user. File contents are never copied into the transcript.
+type PromptReference struct {
+	Ref           FileReference `json:"ref"`
+	Kind          string        `json:"kind"`
+	ReferencePath string        `json:"referencePath"`
+	Label         string        `json:"label"`
+}
+
+// EditorContextSummary records which editor resources accompanied a Code Chat
+// prompt without duplicating selected text or untitled-buffer contents.
+type EditorContextSummary struct {
+	Tabs      []EditorContextTab `json:"tabs"`
+	Truncated bool               `json:"truncated,omitempty"`
+}
+
+type EditorContextTab struct {
+	Kind       string                   `json:"kind"`
+	Title      string                   `json:"title"`
+	Active     bool                     `json:"active,omitempty"`
+	Dirty      bool                     `json:"dirty,omitempty"`
+	Ref        *FileReference           `json:"ref,omitempty"`
+	Reference  string                   `json:"reference,omitempty"`
+	Diff       *EditorContextDiff       `json:"diff,omitempty"`
+	Selections []EditorContextSelection `json:"selections,omitempty"`
+}
+
+type EditorContextSelection struct {
+	Side        string `json:"side,omitempty"`
+	StartLine   int    `json:"startLine"`
+	StartColumn int    `json:"startColumn"`
+	EndLine     int    `json:"endLine"`
+	EndColumn   int    `json:"endColumn"`
+}
+
+type EditorContextDiff struct {
+	RepositoryID string `json:"repositoryId,omitempty"`
+	Repository   string `json:"repository,omitempty"`
+	Scope        string `json:"scope,omitempty"`
+	ReviewRef    string `json:"reviewRef,omitempty"`
+	OldPath      string `json:"oldPath,omitempty"`
+	Path         string `json:"path,omitempty"`
 }
 
 // CompressionActivity is the durable, display-safe lifecycle of one context

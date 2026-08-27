@@ -1,10 +1,12 @@
 package server
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/brent/echo/internal/sessions"
+	"github.com/brent/echo/internal/workspacefs"
 	"github.com/gorilla/websocket"
 )
 
@@ -55,12 +57,17 @@ func TestCodeChatIsPersistentAndIndependentFromMainTabs(t *testing.T) {
 	if err := codeClient.WriteJSON(map[string]any{
 		"type": "chat_send", "surface": "code", "workspaceId": workspace.ID, "chatId": codeID,
 		"requestId": "code-context-request", "message": "review the open code",
+		"references": []any{map[string]any{
+			"kind": "directory", "label": "docs", "referencePath": "workspace/docs",
+			"ref": map[string]any{"rootId": "root", "path": "docs"},
+		}},
 		"editorContext": map[string]any{"tabs": []any{
 			map[string]any{
-				"kind": "file", "title": "main.go", "active": true,
+				"kind": "diff", "title": "main.go (Index)", "active": true,
 				"ref": map[string]any{"rootId": "root", "path": "main.go"}, "reference": "workspace/main.go",
+				"diff": map[string]any{"repositoryId": "repo-1", "repository": "workspace", "scope": "staged", "path": "main.go"},
 				"selections": []any{map[string]any{
-					"startLine": 3, "startColumn": 1, "endLine": 3, "endColumn": 13, "text": "focused code",
+					"side": "original", "startLine": 3, "startColumn": 1, "endLine": 3, "endColumn": 13, "text": "focused code",
 				}},
 			},
 			map[string]any{"kind": "untitled", "title": "Untitled-1", "dirty": true, "content": "package draft"},
@@ -95,6 +102,19 @@ func TestCodeChatIsPersistentAndIndependentFromMainTabs(t *testing.T) {
 	if stored.CodeChat == nil || len(stored.CodeChat.Turns) != 1 || len(stored.Tabs) != 1 || stored.ActiveChatID != mainSnapshot["activeChatId"] {
 		t.Fatalf("code chat was not persisted independently: %#v", stored)
 	}
+	turn := stored.CodeChat.Turns[0]
+	if len(turn.References) != 1 || turn.References[0].ReferencePath != "workspace/docs" || turn.EditorContext == nil ||
+		len(turn.EditorContext.Tabs) != 2 || turn.EditorContext.Tabs[0].Diff == nil ||
+		turn.EditorContext.Tabs[0].Diff.RepositoryID != "repo-1" || len(turn.EditorContext.Tabs[0].Selections) != 1 {
+		t.Fatalf("display-safe prompt resources were not persisted: %#v", turn)
+	}
+	encodedTurn, err := json.Marshal(turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encodedTurn), "focused code") || strings.Contains(string(encodedTurn), "package draft") {
+		t.Fatalf("prompt resource summary retained inline editor contents: %s", encodedTurn)
+	}
 	for _, message := range stored.CodeChat.Messages {
 		if message.Name == "echo-code-context" || message.Name == "echo-agent-mode" {
 			t.Fatalf("ephemeral system context was persisted: %#v", stored.CodeChat.Messages)
@@ -107,6 +127,24 @@ func TestCodeChatIsPersistentAndIndependentFromMainTabs(t *testing.T) {
 	cleared := readChatSnapshot(t, codeClient)
 	if turns, ok := cleared["turns"].([]any); !ok || len(turns) != 0 {
 		t.Fatalf("code chat was not cleared: %v", cleared)
+	}
+}
+
+func TestPromptReferencesAreBoundedDeduplicatedAndCodeOnly(t *testing.T) {
+	input := []chatReferenceInput{
+		{Kind: "file", Label: "main.go", ReferencePath: "workspace/main.go", Ref: workspacefs.FileRef{RootID: "root", Path: "main.go"}},
+		{Kind: "file", Label: "duplicate", ReferencePath: "other/main.go", Ref: workspacefs.FileRef{RootID: "root", Path: "main.go"}},
+	}
+	references, err := promptReferences(chatSurfaceCode, input)
+	if err != nil || len(references) != 1 || references[0].Label != "main.go" {
+		t.Fatalf("prompt references were not deduplicated in first-seen order: %#v, %v", references, err)
+	}
+	if _, err := promptReferences(chatSurfaceMain, input[:1]); err == nil || !strings.Contains(err.Error(), "code chat") {
+		t.Fatalf("expected main-chat references to be rejected, got %v", err)
+	}
+	tooMany := make([]chatReferenceInput, maxPromptReferences+1)
+	if _, err := promptReferences(chatSurfaceCode, tooMany); err == nil || !strings.Contains(err.Error(), "at most") {
+		t.Fatalf("expected reference limit validation, got %v", err)
 	}
 }
 

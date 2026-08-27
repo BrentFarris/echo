@@ -195,6 +195,7 @@ type inboundMessage struct {
 	Answers       []sessions.PlanAnswer `json:"answers,omitempty"`
 	Refs          []workspacefs.FileRef `json:"refs,omitempty"`
 	EditorContext *editorContext        `json:"editorContext,omitempty"`
+	References    []chatReferenceInput  `json:"references,omitempty"`
 	Images        []chatMediaInput      `json:"images,omitempty"`
 	Videos        []chatMediaInput      `json:"videos,omitempty"`
 }

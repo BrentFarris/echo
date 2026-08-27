@@ -690,6 +690,23 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.keyboard.press("ArrowLeft");
   const widthAfter = Number(await codeChatResizer.getAttribute("aria-valuenow"));
   expect(widthAfter).toBeGreaterThan(widthBefore);
+
+  // Persist the exact tabs, selection range, and explicit mention used by a
+  // Code Chat prompt, then restore and navigate that context after reload.
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("Control+Home");
+  await page.keyboard.down("Shift");
+  await page.keyboard.press("End");
+  await page.keyboard.up("Shift");
+  await codeChatInput.focus();
+  await page.keyboard.press("Enter");
+  const promptResources = page.locator(".chat-message-user .chat-prompt-resources").last();
+  await expect(promptResources).toBeVisible();
+  await expect(promptResources.locator("summary")).toContainText("tab");
+  await expect(promptResources.locator("summary")).toContainText("1 selection");
+  await expect(promptResources.locator("summary")).toContainText("1 mention");
+  await expect(page.locator(".chat-message-assistant.is-streaming")).toHaveCount(0);
+
   await codeChatInput.fill("Inspect @nest");
   const folderMention = page.locator("[data-chat-mention-option]", { has: page.locator(".chat-mention-kind", { hasText: "Folder" }) });
   await expect(folderMention).toBeVisible();
@@ -704,6 +721,15 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(page.locator("[data-code-chat-toggle]")).toHaveAttribute("aria-expanded", "false");
   await page.getByRole("button", { name: "Open code assistant" }).click();
   await expect(page.getByRole("separator", { name: "Resize Code Chat" })).toHaveAttribute("aria-valuenow", String(widthAfter));
+  const restoredResources = page.locator(".chat-message-user .chat-prompt-resources").last();
+  await expect(restoredResources).toBeVisible();
+  await restoredResources.locator("summary").click();
+  await expect(restoredResources).toHaveAttribute("open", "");
+  await expect(restoredResources).toContainText("main.go");
+  await restoredResources.locator(".chat-prompt-resource-row.is-selection").click();
+  await expect(page.locator(".code-tab.is-active")).toContainText("main.go");
+  await expect(page.getByRole("textbox", { name: "Editor content" })).toBeFocused();
+  await expect(selectedContextNotice).toHaveText("Selected context: main.go, line 1 will be included.");
   await page.getByRole("button", { name: "Close chat" }).click();
 
   await page.locator(".view-lines").click();

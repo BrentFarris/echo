@@ -2207,6 +2207,23 @@
   background: rgba(0, 0, 0, 0.12);
 }
 
+.code-chat-surface .chat-prompt-resources {
+  margin-inline: 4px;
+  font-size: 10px;
+}
+
+.code-chat-surface .chat-prompt-resources-content {
+  max-height: 190px;
+}
+
+.code-chat-surface .chat-prompt-resource-row {
+  padding: 5px 6px;
+}
+
+.code-chat-surface .chat-prompt-resource-row.is-selection {
+  padding-left: 24px;
+}
+
 .code-picker {
   width: min(640px, calc(100vw - 32px));
   overflow: hidden;

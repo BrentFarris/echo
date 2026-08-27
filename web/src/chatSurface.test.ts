@@ -88,6 +88,38 @@ describe("compact chat surface", () => {
     surface.dispose();
   });
 
+  it("sends deduplicated structured mentions without changing prompt text", async () => {
+    const surface = mountChatSurface(host, { workspaceId: "workspace-mentions", surface: "code" });
+    const input = host.querySelector<HTMLElement>("[data-chat-input]")!;
+    const mention = () => {
+      const chip = document.createElement("span");
+      chip.dataset.chatFileMention = "";
+      chip.dataset.workspaceId = "workspace-mentions";
+      chip.dataset.rootId = "root";
+      chip.dataset.workspacePath = "src/main.ts";
+      chip.dataset.workspaceKind = "file";
+      chip.dataset.referencePath = "echo/src/main.ts";
+      chip.dataset.referenceLabel = "main.ts";
+      chip.textContent = "main.ts";
+      return chip;
+    };
+    input.append("Review ", mention(), " and ", mention());
+
+    host.querySelector<HTMLFormElement>("[data-chat-form]")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(chat.sendMessage).toHaveBeenCalledOnce());
+
+    expect(chat.sendMessage).toHaveBeenCalledWith(
+      expect.any(HTMLElement), "Review @echo/src/main.ts and @echo/src/main.ts", undefined, "general", {
+        editorContext: undefined,
+        references: [{
+          ref: { rootId: "root", path: "src/main.ts" }, kind: "file",
+          referencePath: "echo/src/main.ts", label: "main.ts",
+        }],
+      },
+    );
+    surface.dispose();
+  });
+
   it("lets plain Enter insert a newline on coarse-pointer devices instead of submitting", async () => {
     const originalMatchMedia = window.matchMedia;
     const setCoarse = (coarse: boolean) => {
@@ -157,6 +189,24 @@ describe("compact chat surface", () => {
       referencePath: "src/main.ts",
       label: "main.ts",
     });
+    surface.dispose();
+  });
+
+  it("routes historical resources through the Code Chat resource activator", async () => {
+    const onActivateHistoricalResource = vi.fn();
+    const surface = mountChatSurface(host, {
+      workspaceId: "workspace-history", surface: "code", onActivateHistoricalResource,
+    });
+    const sessionOptions = chat.openWorkspaceSession.mock.calls.at(-1)?.[2];
+    const resource = {
+      kind: "diff", label: "main.go (Index)", referencePath: "echo/main.go",
+      diff: { repositoryId: "repo", path: "main.go", scope: "staged" },
+      selection: { side: "original", startLine: 3, startColumn: 1, endLine: 4, endColumn: 2 },
+    };
+
+    await sessionOptions.onActivateResource(resource);
+
+    expect(onActivateHistoricalResource).toHaveBeenCalledWith(resource);
     surface.dispose();
   });
 

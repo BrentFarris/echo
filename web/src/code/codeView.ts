@@ -8,7 +8,7 @@ import type { APIError } from "./editorApi";
 import { languageForPath, monaco } from "./language";
 import { EchoLSPClient, fromLSPRange, type LSPDiagnosticSeverity, type LSPDocumentState } from "./lspClient";
 import type { LSPProfile, LSPStatus, LSPWorkspaceEdit, WorkspaceLSPResponse } from "./lspTypes";
-import { loadDiff as loadGitDiff } from "./gitApi";
+import { listRepositories as listGitRepositories, loadDiff as loadGitDiff } from "./gitApi";
 import type { GitChange, GitDiffDocument, GitRepository } from "./gitTypes";
 import { GitView } from "./gitView";
 import {
@@ -24,7 +24,8 @@ import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 import { setGitBadgeCount } from "../gitBadge";
 import { randomUUID } from "../randomUUID";
 import {
-  mountChatSurface, type EditorContextPayload, type EditorContextSelection, type MountedChatSurface,
+  mountChatSurface, type EditorContextPayload, type EditorContextSelection, type HistoricalChatResource,
+  type MountedChatSurface,
 } from "../chatSurface";
 import type { ChatReference } from "../chatMentions";
 import { detachTerminalDock, mountTerminalDock } from "../terminal";
@@ -3413,6 +3414,7 @@ class CodeView {
         onClose: () => this.setCodeChatOpen(false, true),
         beforeSend: () => this.prepareEditorContext(),
         onActivateReference: (reference) => this.activateChatReference(reference),
+        onActivateHistoricalResource: (resource) => this.activateHistoricalChatResource(resource),
         onStreamingChange: (streaming) => {
           toggle.classList.toggle("is-streaming", streaming);
           const action = this.codeChatOpen ? "Close code assistant" : "Open code assistant";
@@ -3453,6 +3455,74 @@ class CodeView {
     await this.expandTo(reference.ref);
     this.selectedTreeKey = refKey(reference.ref);
     this.renderTree();
+  }
+
+  private async activateHistoricalChatResource(resource: HistoricalChatResource): Promise<void> {
+    if (resource.kind === "directory") {
+      if (!resource.ref) return;
+      await this.activateChatReference({
+        workspaceId: this.workspace?.id || "", ref: resource.ref, kind: "directory",
+        referencePath: resource.referencePath || resource.label, label: resource.label,
+      });
+      return;
+    }
+    await this.recordCodeNavigation(async () => {
+      let tab: OpenTab | undefined;
+      if (resource.kind === "diff") {
+        const diff = resource.diff;
+        const scope = diff?.scope;
+        if (!this.workspace || !diff?.repositoryId || !diff.path ||
+          (scope !== "staged" && scope !== "unstaged" && scope !== "commit" && scope !== "stash")) {
+          toast("This historical diff no longer has enough information to reopen it.");
+          return;
+        }
+        try {
+          const repositories = await listGitRepositories(this.workspace.id);
+          const repository = repositories.repositories.find((candidate) => candidate.id === diff.repositoryId);
+          if (!repository) {
+            toast("The repository for this historical diff is no longer available.");
+            return;
+          }
+          await this.openGitDiff(repository, {
+            path: diff.path, oldPath: diff.oldPath, ref: resource.ref,
+          }, scope, diff.reviewRef, true);
+          tab = this.activeTab();
+        } catch (error) {
+          toast(error instanceof Error ? error.message : String(error), { sticky: true });
+          return;
+        }
+      } else if (resource.ref) {
+        if (!(await this.openFile(resource.ref, true, false))) return;
+        tab = this.tabs.find((candidate) => {
+          const ref = this.worktreeRef(candidate);
+          return ref && refKey(ref) === refKey(resource.ref!);
+        });
+        if (tab) this.activateTab(tab.id, false);
+      } else {
+        tab = this.tabs.find((candidate) => candidate.kind === "file" && !candidate.ref && !candidate.diff && candidate.title === resource.label);
+        if (!tab) {
+          toast(`${resource.label} is no longer open.`);
+          return;
+        }
+        this.activateTab(tab.id, false);
+      }
+      if (!tab || tab.kind === "media") return;
+      const side = tab.kind === "diff" ? resource.selection?.side || "modified" : undefined;
+      const editor = tab.kind === "diff" && side === "original"
+        ? this.diffEditor.getOriginalEditor()
+        : tab.kind === "diff" ? this.diffEditor.getModifiedEditor() : this.editor;
+      const model = editor.getModel();
+      if (model && resource.selection) {
+        const selection = model.validateRange(new monaco.Range(
+          resource.selection.startLine, resource.selection.startColumn,
+          resource.selection.endLine, resource.selection.endColumn,
+        ));
+        editor.setSelection(selection);
+        editor.revealRangeInCenter(selection);
+        if (tab.kind === "diff" && side) this.setActiveDiffSelectionSide(side);
+      }
+      editor.focus();
+    });
   }
 
   private async prepareEditorContext(): Promise<EditorContextPayload | false> {
@@ -3516,10 +3586,12 @@ class CodeView {
         content: !ref && tab.kind !== "diff" ? tab.model.getValue() : undefined,
         selections: tab.id === this.activeTabId ? activeSelections : undefined,
         diff: tab.diff ? {
+          repositoryId: tab.diff.repository.id,
           repository: tab.diff.repository.label,
           scope: tab.diff.scope,
           reviewRef: tab.diff.reviewRef,
           oldPath: tab.diff.oldPath,
+          path: tab.hostPath,
         } : undefined,
       };
     }), this.activeTabId);

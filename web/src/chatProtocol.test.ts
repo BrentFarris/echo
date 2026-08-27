@@ -472,4 +472,58 @@ describe("multi-chat WebSocket protocol", () => {
       type: "chat_clear", surface: "code", workspaceId: "workspace-tabs", chatId: "code-chat-one",
     });
   });
+
+  it("renders and activates persisted and live Code Chat prompt resources", () => {
+    closeWorkspaceSession(log);
+    const activateResource = vi.fn();
+    openWorkspaceSession(log, "workspace-tabs", { surface: "code", onActivateResource: activateResource });
+    const references = [{
+      ref: { rootId: "root", path: "docs" }, kind: "directory",
+      referencePath: "echo/docs", label: "docs",
+    }];
+    const editorContext = {
+      tabs: [
+        {
+          kind: "diff", title: "main.go (Index)", active: true,
+          ref: { rootId: "root", path: "main.go" }, reference: "echo/main.go",
+          diff: { repositoryId: "repo", repository: "echo", scope: "staged", path: "main.go" },
+          selections: [{ side: "original", startLine: 3, startColumn: 2, endLine: 4, endColumn: 5 }],
+        },
+        { kind: "untitled", title: "Untitled-1", dirty: true },
+      ],
+      truncated: true,
+    };
+    emit("session_snapshot", {
+      type: "session_snapshot", surface: "code", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "code-chat", tabs: [{ chatId: "code-chat", preview: "Review", busy: false }],
+      turns: [{ id: "stored-resources", userContent: "Review it", status: "done", assistantTurns: [], references, editorContext }],
+    });
+
+    const stored = log.querySelector<HTMLDetailsElement>(".chat-prompt-resources")!;
+    expect(stored.querySelector("summary")?.textContent).toContain("2 tabs · 1 selection · 1 mention");
+    expect(stored.querySelector("summary")?.textContent).toContain("Truncated");
+    stored.open = true;
+    expect(stored.textContent).toContain("Mentioned");
+    expect(stored.textContent).toContain("Editor context");
+    expect(stored.textContent).toContain("Lines 3:2–4:5 · original");
+    expect(stored.textContent).not.toContain("selected source text");
+
+    const selection = stored.querySelector<HTMLButtonElement>(".chat-prompt-resource-row.is-selection")!;
+    selection.click();
+    expect(activateResource).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "diff", label: "main.go (Index)", ref: { rootId: "root", path: "main.go" },
+      diff: expect.objectContaining({ repositoryId: "repo", scope: "staged", path: "main.go" }),
+      selection: { side: "original", startLine: 3, startColumn: 2, endLine: 4, endColumn: 5 },
+    }));
+
+    emit("session_snapshot", {
+      type: "session_snapshot", surface: "code", workspaceId: "workspace-tabs", sequence: 2,
+      activeChatId: "code-chat", tabs: [{ chatId: "code-chat", preview: "New", busy: false }], turns: [],
+    });
+    emit("session_event", {
+      type: "session_event", surface: "code", workspaceId: "workspace-tabs", chatId: "code-chat", sequence: 3,
+      event: { type: "turn_started", turnId: "live-resources", message: "Live", references, editorContext },
+    });
+    expect(log.querySelector(".chat-prompt-resources summary")?.textContent).toContain("2 tabs · 1 selection · 1 mention");
+  });
 });

@@ -14,18 +14,23 @@ import { prepareCompletionNotificationPermission } from "./completionNotificatio
 import { preparePlanQuestionNotificationPermission } from "./planQuestionNotifications";
 
 export type EditorContextDiff = {
+  repositoryId?: string;
   repository?: string;
   scope?: string;
   reviewRef?: string;
   oldPath?: string;
+  path?: string;
 };
 
-export type EditorContextSelection = {
+export type EditorContextRange = {
   side?: "original" | "modified";
   startLine: number;
   startColumn: number;
   endLine: number;
   endColumn: number;
+};
+
+export type EditorContextSelection = EditorContextRange & {
   text: string;
 };
 
@@ -43,6 +48,17 @@ export type EditorContextTab = {
 
 export type EditorContextPayload = { tabs: EditorContextTab[]; truncated?: boolean };
 
+export type HistoricalChatResource = {
+  kind: "file" | "directory" | "diff" | "untitled";
+  label: string;
+  referencePath?: string;
+  ref?: FileRef;
+  diff?: EditorContextDiff;
+  selection?: EditorContextRange;
+};
+
+type PromptReference = Omit<ChatReference, "workspaceId">;
+
 export type ChatSurfaceOptions = {
   workspaceId: string;
   surface?: "chat" | "code";
@@ -51,6 +67,7 @@ export type ChatSurfaceOptions = {
   onClose?: () => void;
   beforeSend?: () => Promise<EditorContextPayload | false | null>;
   onActivateReference?: (reference: ChatReference) => void | Promise<void>;
+  onActivateHistoricalResource?: (resource: HistoricalChatResource) => void | Promise<void>;
   onStreamingChange?: (streaming: boolean) => void;
   expectedChatId?: string;
   onExpectedChatResolved?: (found: boolean) => void;
@@ -321,6 +338,7 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
   };
 
   const submit = async () => {
+    const segments = snapshotComposer(input);
     const text = composerText(input);
     if (!text.trim() || submitting || isStreaming()) return;
     prepareCompletionNotificationPermission();
@@ -330,7 +348,24 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
     try {
       const editorContext = await options.beforeSend?.();
       if (editorContext === false) return;
-      if (sendMessage(log, text, modelSelect.value || undefined, modeSelect.value || "general", { editorContext: editorContext || undefined })) {
+      const referenceMap = new Map<string, PromptReference>();
+      if (surface === "code") {
+        for (const segment of segments) {
+          if (segment.type !== "reference") continue;
+          const key = `${segment.kind}\0${segment.ref.rootId}\0${segment.ref.path}`;
+          if (!referenceMap.has(key)) {
+            referenceMap.set(key, {
+              ref: segment.ref, kind: segment.kind,
+              referencePath: segment.referencePath, label: segment.label,
+            });
+          }
+        }
+      }
+      const sendOptions: { editorContext?: EditorContextPayload; references?: PromptReference[] } = {
+        editorContext: editorContext || undefined,
+      };
+      if (referenceMap.size) sendOptions.references = [...referenceMap.values()];
+      if (sendMessage(log, text, modelSelect.value || undefined, modeSelect.value || "general", sendOptions)) {
         input.replaceChildren();
         clearMention();
         input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -421,6 +456,7 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
       referencePath: ref.path,
       label: ref.path.split("/").at(-1) || ref.path,
     }),
+    onActivateResource: (resource: HistoricalChatResource) => options.onActivateHistoricalResource?.(resource),
   });
 
   void Promise.all([
