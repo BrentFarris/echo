@@ -10,8 +10,9 @@ import { icons } from "../icons.js";
 import { del, get, post, put } from "../api.js";
 import { logout } from "../../src/auth/authGate.ts";
 import { hasDirtySessions } from "../../src/code/persistence.ts";
+import { installChatMap } from "../../src/chatMap.ts";
 import { getEchoUpdateSnapshot, refreshEchoUpdateStatus, syncEchoUpdateBadges } from "../../src/echoUpdate.ts";
-import { codeRouteHash, navigateBackFromSettings } from "../../src/navigation.ts";
+import { chatTargetRouteHash, codeRouteHash, navigateBackFromSettings } from "../../src/navigation.ts";
 import { renderMobilePrimaryNav } from "../../src/primaryNav.ts";
 import { reloadForReplacementServer, waitForReplacementServer } from "../../src/rebuildRelaunch.ts";
 import { openAddWorkspaceModal, openWorkspaceDropdown } from "../workspaces.js";
@@ -28,6 +29,7 @@ import {
 let mountedRoot = null;
 let closeSettingsWorkspaceDropdown = null;
 let closeSettingsAddWorkspaceModal = null;
+let disposeSettingsChatMap = null;
 let pluginCatalogListener = null;
 let updateStatusListener = null;
 
@@ -994,6 +996,8 @@ function render() {
   if (!root) return;
   closeSettingsWorkspaceDropdown?.();
   closeSettingsWorkspaceDropdown = null;
+  disposeSettingsChatMap?.();
+  disposeSettingsChatMap = null;
   const activeWorkspace = state.workspaces.find((workspace) => workspace.id === state.modeWorkspaceId) || null;
   root.innerHTML = `
     <div class="settings-view">
@@ -1035,6 +1039,10 @@ function bindEvents(root) {
     await saveSettings();
     location.hash = hash;
   };
+
+  disposeSettingsChatMap = installChatMap(root, {
+    navigate: (target) => leaveSettings(chatTargetRouteHash(target)),
+  });
 
   root.querySelectorAll("[data-nav='chat']").forEach((button) => {
     button.addEventListener("click", () => { void leaveSettings("#/home"); });
@@ -1829,6 +1837,8 @@ export function unmount() {
   closeSettingsWorkspaceDropdown = null;
   closeSettingsAddWorkspaceModal?.();
   closeSettingsAddWorkspaceModal = null;
+  disposeSettingsChatMap?.();
+  disposeSettingsChatMap = null;
   if (pluginCatalogListener) window.removeEventListener("echo:plugin-catalog", pluginCatalogListener);
   pluginCatalogListener = null;
   if (updateStatusListener) window.removeEventListener("echo:update-status", updateStatusListener);

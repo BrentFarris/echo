@@ -19,6 +19,7 @@ import { prepareCompletionNotificationPermission } from "../../src/completionNot
 import { preparePlanQuestionNotificationPermission } from "../../src/planQuestionNotifications.ts";
 import { isCoarsePointer } from "../../src/device.ts";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../../src/primaryNav.ts";
+import { installChatMap } from "../../src/chatMap.ts";
 import { watchGitBadge } from "../../src/gitBadge.ts";
 import { mountSpeechRecognition } from "../../src/speechRecognition.ts";
 import { showContextMenu, toast } from "../../src/code/ui.ts";
@@ -702,6 +703,7 @@ export function mount(root) {
   searchButtons.forEach((button) => button.addEventListener("click", onSearchClick));
   const onGitClick = () => { location.hash = codeRouteHash("git"); };
   gitButtons.forEach((button) => button.addEventListener("click", onGitClick));
+  const disposeChatMap = installChatMap(root);
 
   // Workspace selector: open the dropdown, and the "+ Add a workspace" modal.
   const workspaceTriggers = [...root.querySelectorAll(".workspace-dropdown-trigger")];
@@ -1474,7 +1476,7 @@ export function mount(root) {
     if (completionTarget && state?.hasSnapshot && currentWorkspaceId === completionTarget.workspaceId) {
       const targetExists = currentTabs.some((tab) => tab.chatId === completionTarget.chatId);
       if (!targetExists) {
-        finishCompletionNavigation("That completed chat is no longer available.");
+        finishCompletionNavigation("That chat is no longer available.");
       } else if (currentChatId === completionTarget.chatId) {
         finishCompletionNavigation();
       } else if (!completionActivationRequested) {
@@ -1596,6 +1598,7 @@ export function mount(root) {
     codeButtons.forEach((button) => button.removeEventListener("click", onCodeClick));
     searchButtons.forEach((button) => button.removeEventListener("click", onSearchClick));
     gitButtons.forEach((button) => button.removeEventListener("click", onGitClick));
+    disposeChatMap();
     workspaceTriggers.forEach((trigger) => trigger.removeEventListener("click", onWorkspaceTriggerClick));
     if (closeWorkspaceDropdown) {
       closeWorkspaceDropdown();
@@ -1646,7 +1649,7 @@ export function mount(root) {
     if (completionTarget) {
       const targetWorkspace = workspaceList.find((workspace) => workspace.id === completionTarget.workspaceId);
       if (!targetWorkspace) {
-        finishCompletionNavigation("The workspace for that completed chat is no longer available.");
+        finishCompletionNavigation("The workspace for that chat is no longer available.");
       } else if (getActive()?.id !== completionTarget.workspaceId) {
         try {
           await setActiveWorkspace(completionTarget.workspaceId);

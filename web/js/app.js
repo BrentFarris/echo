@@ -9,7 +9,7 @@ import { startEchoUpdateMonitor, stopEchoUpdateMonitor, syncEchoUpdateBadges } f
 import { startCompletionNotifications } from "../src/completionNotifications.ts";
 import { startPlanQuestionSound } from "../src/planQuestionSound.ts";
 import { startPlanQuestionNotifications } from "../src/planQuestionNotifications.ts";
-import { isCodeNavigationHistoryState, recordNavigationRoute, routePathFromHash } from "../src/navigation.ts";
+import { recordNavigationRoute, routePathFromHash, shouldReuseCodeView } from "../src/navigation.ts";
 import { initializePluginHost, mountPluginPage, resetPluginHost } from "../src/plugins/pluginHost.ts";
 
 // Route table: hash path -> () => Promise<view module>.
@@ -41,7 +41,7 @@ async function render() {
   // Code locations use real browser-history entries with the same route. If
   // only the hash query changed while traversing those entries, keep Monaco
   // and its language-server session mounted and let CodeView restore state.
-  if (route === "/code" && mountedRoute === route && isCodeNavigationHistoryState(window.history.state)) {
+  if (route === "/code" && mountedRoute === route && shouldReuseCodeView(window.location.hash, window.history.state)) {
     currentView?.routeChanged?.();
     return;
   }

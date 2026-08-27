@@ -201,7 +201,9 @@ textarea:disabled {
   display: grid;
   gap: var(--space-lg-md);
   margin-top: auto;
+  padding-top: 10px;
   width: 100%;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
 }
 
 .nav-icon-button {
@@ -3648,6 +3650,15 @@ button.chat-file-change-row:focus-visible {
     display: none;
   }
 
+  .mobile-nav-global-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-left: var(--space-sm);
+    padding-left: var(--space-lg-md);
+    border-left: 1px solid var(--color-border);
+  }
+
   .mobile-nav-tab {
     display: grid;
     place-items: center;
@@ -4627,6 +4638,137 @@ button.chat-file-change-row:focus-visible {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 2;
+}
+
+/* ==========================================================================
+   Chat Map popup.
+   ========================================================================== */
+
+.chat-map-anchor {
+  position: fixed;
+  z-index: 1100;
+  width: min(380px, calc(100vw - 16px));
+}
+
+.chat-map-popup {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+}
+
+.chat-map-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text);
+  font-size: var(--text-base-md);
+}
+
+.chat-map-header .codicon {
+  color: var(--color-accent-strong);
+  font-size: 18px;
+}
+
+.chat-map-content {
+  max-height: min(480px, calc(100dvh - 32px));
+  overflow-y: auto;
+}
+
+.chat-map-list {
+  display: grid;
+  gap: 2px;
+  padding: 5px;
+}
+
+.chat-map-item {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-map-item:hover,
+.chat-map-item:focus-visible {
+  background: var(--color-surface-muted);
+  outline: none;
+}
+
+.chat-map-item > .codicon {
+  color: var(--color-text-muted);
+  font-size: 18px;
+  text-align: center;
+}
+
+.chat-map-item-content {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.chat-map-item-content strong,
+.chat-map-item-content span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-map-item-content strong {
+  font-size: var(--text-base-md);
+  font-weight: 650;
+}
+
+.chat-map-item-content span {
+  color: var(--color-text-muted);
+  font-size: var(--text-base-sm);
+}
+
+.chat-map-loading,
+.chat-map-empty,
+.chat-map-warning,
+.chat-map-error {
+  margin: 0;
+  padding: 13px;
+  color: var(--color-text-muted);
+  font-size: var(--text-base-sm);
+}
+
+.chat-map-warning {
+  border-top: 1px solid var(--color-border);
+  color: var(--color-warning);
+}
+
+.chat-map-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-lg-md);
+  color: var(--color-danger);
+}
+
+.chat-map-error p {
+  margin: 0;
+}
+
+.chat-map-error button {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  cursor: pointer;
 }
 
 /* ---- Add-workspace modal ---- */

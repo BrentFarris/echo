@@ -5,11 +5,12 @@ export const CODE_NAVIGATION_HISTORY_STATE_KEY = "echoCodeNavigation";
 
 export type CodeSidebar = "explorer" | "search" | "git";
 export type CodeOpenTarget = { rootId: string; path: string };
-export type ChatCompletionTarget = {
+export type ChatTarget = {
   workspaceId: string;
   chatId: string;
   surface: "chat" | "code";
 };
+export type ChatCompletionTarget = ChatTarget;
 
 /** Identifies same-route browser entries owned by Echo Code navigation. */
 export function isCodeNavigationHistoryState(state: unknown): boolean {
@@ -55,15 +56,15 @@ export function codeOpenTargetFromHash(hash: string): CodeOpenTarget | null {
   return rootId && path ? { rootId, path } : null;
 }
 
-/** Builds a transient route that focuses the chat named by a completion event. */
-export function chatCompletionRouteHash(target: ChatCompletionTarget): string {
+/** Builds a transient route that focuses one exact Main or Code chat. */
+export function chatTargetRouteHash(target: ChatTarget): string {
   const query = new URLSearchParams({ workspaceId: target.workspaceId, chatId: target.chatId });
   if (target.surface === "code") query.set("chat", "open");
   return `#${target.surface === "code" ? CODE_ROUTE : CHAT_ROUTE}?${query}`;
 }
 
-/** Returns the completion target embedded in a Chat or Code hash, if present. */
-export function chatCompletionTargetFromHash(hash: string): ChatCompletionTarget | null {
+/** Returns the exact-chat target embedded in a Chat or Code hash, if present. */
+export function chatTargetFromHash(hash: string): ChatTarget | null {
   const route = routePathFromHash(hash);
   if (route !== CHAT_ROUTE && route !== CODE_ROUTE) return null;
   const queryIndex = hash.indexOf("?");
@@ -74,6 +75,22 @@ export function chatCompletionTargetFromHash(hash: string): ChatCompletionTarget
   if (!workspaceId || !chatId) return null;
   if (route === CODE_ROUTE && query.get("chat") !== "open") return null;
   return { workspaceId, chatId, surface: route === CODE_ROUTE ? "code" : "chat" };
+}
+
+/** Backward-compatible completion aliases used by notification flows. */
+export function chatCompletionRouteHash(target: ChatCompletionTarget): string {
+  return chatTargetRouteHash(target);
+}
+
+export function chatCompletionTargetFromHash(hash: string): ChatCompletionTarget | null {
+  return chatTargetFromHash(hash);
+}
+
+/** True when an in-place Code history transition can keep the workbench mounted. */
+export function shouldReuseCodeView(hash: string, state: unknown): boolean {
+  return routePathFromHash(hash) === CODE_ROUTE
+    && isCodeNavigationHistoryState(state)
+    && chatTargetFromHash(hash) === null;
 }
 
 /**

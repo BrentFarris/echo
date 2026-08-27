@@ -1,5 +1,5 @@
 #echo-plugin-host { position: fixed; inset: 0; z-index: 35; pointer-events: none; }
-.left-nav-plugins { display: grid; gap: var(--space-lg-md); width: 100%; align-content: start; overflow: auto; padding-top: 10px; border-top: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent); }
+.left-nav-plugins { display: grid; gap: var(--space-lg-md); width: 100%; align-content: start; overflow: auto; }
 .plugin-nav-icon { display: block; width: 21px; height: 21px; object-fit: contain; color: currentColor; }
 .plugin-count { position: absolute; translate: 8px -8px; min-width: 15px; height: 15px; display: grid; place-items: center; border-radius: 20px; padding: 0 3px; background: var(--color-accent); color: var(--color-on-accent); font-size: .58rem; }
 .plugin-floating-window { position: fixed; display: grid; grid-template-rows: 40px minmax(0, 1fr); min-width: 260px; min-height: 320px; pointer-events: auto; overflow: hidden; border: 1px solid var(--color-border); border-radius: 13px; background: var(--color-surface); box-shadow: var(--shadow-modal); }

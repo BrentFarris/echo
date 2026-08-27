@@ -46,7 +46,7 @@ describe("plugin host", () => {
     await initializePluginHost();
 
     expect([...document.querySelectorAll("[data-nav]")].map(node => node.getAttribute("data-nav")))
-      .toEqual(["workspace", "chat", "code", "search", "git", "settings", "workspace", "chat", "code", "search", "git", "settings"]);
+      .toEqual(["workspace", "chat", "code", "search", "git", "map", "settings", "workspace", "chat", "code", "search", "git", "map", "settings"]);
     expect(document.querySelectorAll("[data-plugin-nav-section] [data-plugin-id]")).toHaveLength(2);
     expect(document.querySelector("[data-plugin-overflow]")).not.toBeNull();
 

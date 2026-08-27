@@ -17,10 +17,11 @@ import {
 import { loadSession, saveSession } from "./persistence";
 import { previewKindForPath, type PreviewKind } from "./preview";
 import {
-  CODE_ROUTE, chatCompletionTargetFromHash, codeOpenTargetFromHash, codeRouteHash,
-  codeSidebarFromHash, routePathFromHash, type ChatCompletionTarget, type CodeSidebar,
+  CODE_ROUTE, chatCompletionTargetFromHash, chatTargetRouteHash, codeOpenTargetFromHash, codeRouteHash,
+  codeSidebarFromHash, routePathFromHash, type ChatCompletionTarget, type ChatTarget, type CodeSidebar,
 } from "../navigation";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
+import { installChatMap } from "../chatMap";
 import { setGitBadgeCount } from "../gitBadge";
 import { randomUUID } from "../randomUUID";
 import {
@@ -211,7 +212,7 @@ class CodeView {
         ? data.workspaces.find((workspace) => workspace.id === this.completionTarget!.workspaceId)
         : null;
       if (this.completionTarget && !targetWorkspace) {
-        toast("The workspace for that completed chat is no longer available.", { sticky: true });
+        toast("The workspace for that chat is no longer available.", { sticky: true });
         this.completionTarget = null;
         window.history.replaceState(window.history.state, "", codeRouteHash(this.activeSidebar));
       }
@@ -389,6 +390,7 @@ class CodeView {
 
   private installNavigation(): void {
     const signal = this.abort.signal;
+    installChatMap(this.root, { signal, navigate: (target) => this.navigateToChat(target) });
     this.root.querySelectorAll("[data-nav=chat]").forEach((button) => {
       button.addEventListener("click", () => { location.hash = "#/home"; }, { signal });
     });
@@ -1692,6 +1694,14 @@ class CodeView {
     requestAnimationFrame(() => {
       if (selected?.isConnected) selected.scrollIntoView({ block: "nearest" });
     });
+  }
+
+  private async navigateToChat(target: ChatTarget): Promise<boolean> {
+    const hasDirtyBuffers = this.tabs.some((tab) => tab.dirty);
+    const persisted = await this.persistNow();
+    if (!persisted && hasDirtyBuffers) return false;
+    window.location.hash = chatTargetRouteHash(target);
+    return true;
   }
 
   private removeMruSwitcher(): void {
@@ -3447,7 +3457,7 @@ class CodeView {
         },
         expectedChatId: this.completionTarget?.chatId,
         onExpectedChatResolved: (found) => {
-          if (!found) toast("That completed Code Chat is no longer available.", { sticky: true });
+          if (!found) toast("That Code Chat is no longer available.", { sticky: true });
           this.completionTarget = null;
           window.history.replaceState(window.history.state, "", codeRouteHash(this.activeSidebar));
         },
