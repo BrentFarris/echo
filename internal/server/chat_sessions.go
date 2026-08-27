@@ -2023,9 +2023,12 @@ type assistantStreamResult struct {
 	ContextThresholdCrossed bool
 }
 
-type assistantTrajectoryBuffer struct {
+type streamTrajectoryBuffer struct {
 	turnID         string
 	step           int
+	omitStep       bool
+	eventType      string
+	baseData       map[string]any
 	phase          llm.EventType
 	chunk          []map[string]any
 	pending        []trajectorylog.AppendEntry
@@ -2042,12 +2045,12 @@ func assistantTrajectoryPhase(eventType llm.EventType) llm.EventType {
 	}
 }
 
-func (b *assistantTrajectoryBuffer) changesPhase(eventType llm.EventType) bool {
+func (b *streamTrajectoryBuffer) changesPhase(eventType llm.EventType) bool {
 	next := assistantTrajectoryPhase(eventType)
 	return next != "" && b.phase != "" && next != b.phase
 }
 
-func (b *assistantTrajectoryBuffer) add(event llm.StreamEvent, receivedAt time.Time) bool {
+func (b *streamTrajectoryBuffer) add(event llm.StreamEvent, receivedAt time.Time) bool {
 	if phase := assistantTrajectoryPhase(event.Type); phase != "" {
 		b.phase = phase
 	}
@@ -2065,20 +2068,33 @@ func (b *assistantTrajectoryBuffer) add(event llm.StreamEvent, receivedAt time.T
 	return b.bufferedBytes >= trajectoryStreamMaxBufferedBytes
 }
 
-func (b *assistantTrajectoryBuffer) queueChunk() {
+func (b *streamTrajectoryBuffer) queueChunk() {
 	if len(b.chunk) == 0 {
 		return
 	}
 	streamEvents := append([]map[string]any(nil), b.chunk...)
-	step := b.step
+	payload := make(map[string]any, len(b.baseData)+1)
+	for key, value := range b.baseData {
+		payload[key] = value
+	}
+	payload["streamEvents"] = streamEvents
+	eventType := b.eventType
+	if eventType == "" {
+		eventType = "assistant/chunk"
+	}
+	var step *int
+	if !b.omitStep {
+		value := b.step
+		step = &value
+	}
 	b.pending = append(b.pending, trajectorylog.AppendEntry{
-		Timestamp: b.lastReceivedAt, Type: "assistant/chunk", TurnID: b.turnID, Step: &step,
-		Data: map[string]any{"streamEvents": streamEvents},
+		Timestamp: b.lastReceivedAt, Type: eventType, TurnID: b.turnID, Step: step,
+		Data: payload,
 	})
 	b.chunk = make([]map[string]any, 0, trajectoryStreamChunkEvents)
 }
 
-func (b *assistantTrajectoryBuffer) drain() []trajectorylog.AppendEntry {
+func (b *streamTrajectoryBuffer) drain() []trajectorylog.AppendEntry {
 	b.queueChunk()
 	entries := b.pending
 	b.pending = nil
@@ -2086,9 +2102,14 @@ func (b *assistantTrajectoryBuffer) drain() []trajectorylog.AppendEntry {
 	return entries
 }
 
-func (b *assistantTrajectoryBuffer) hasData() bool {
+func (b *streamTrajectoryBuffer) hasData() bool {
 	return len(b.chunk) > 0 || len(b.pending) > 0
 }
+
+// assistantTrajectoryBuffer is retained as an alias for the parent stream and
+// its focused tests. Research streams use the same buffering implementation
+// with a different event type and actor metadata.
+type assistantTrajectoryBuffer = streamTrajectoryBuffer
 
 func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings llm.Settings, prefix, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint, turnID string, scopes *tools.ToolScopeChecker, mode agentmodes.Mode, researchEnabled bool) {
 	questionRounds := 0

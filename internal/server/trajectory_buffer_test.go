@@ -73,3 +73,25 @@ func TestAssistantTrajectoryBufferEnforcesByteLimit(t *testing.T) {
 		t.Fatalf("expected the oversized event to remain persistable, got %d entries", len(entries))
 	}
 }
+
+func TestResearchTrajectoryBufferUsesSharedBoundsAndActorMetadata(t *testing.T) {
+	receivedAt := time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
+	buffer := streamTrajectoryBuffer{
+		turnID: "turn-research", omitStep: true, eventType: "research/chunk",
+		baseData: map[string]any{"agentId": "agent-2", "agentName": "Docs", "jobId": "agent-2-job-1", "jobNumber": 1, "round": 0},
+		chunk:    make([]map[string]any, 0, trajectoryStreamChunkEvents),
+	}
+	buffer.add(llm.StreamEvent{Type: llm.EventToken, Content: "evidence"}, receivedAt)
+	entries := buffer.drain()
+	if len(entries) != 1 || entries[0].Type != "research/chunk" || entries[0].Step != nil {
+		t.Fatalf("unexpected research chunk envelope: %#v", entries)
+	}
+	data := entries[0].Data.(map[string]any)
+	if data["agentId"] != "agent-2" || data["jobId"] != "agent-2-job-1" || data["round"] != 0 {
+		t.Fatalf("research identity was not retained: %#v", data)
+	}
+	streamEvents := data["streamEvents"].([]map[string]any)
+	if len(streamEvents) != 1 || streamEvents[0]["receivedAt"] != receivedAt {
+		t.Fatalf("research stream event was not retained exactly: %#v", streamEvents)
+	}
+}

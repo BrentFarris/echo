@@ -911,9 +911,19 @@ button.chat-prompt-resource-row:focus-visible {
   font-size: var(--text-md);
 }
 
+.trajectory-notice {
+  margin-top: var(--space-lg);
+  padding: var(--space-md) var(--space-lg);
+  border: 1px solid color-mix(in srgb, var(--color-info) 38%, var(--color-border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-info) 7%, var(--color-bg));
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+}
+
 .trajectory-overview {
   display: grid;
-  grid-template-columns: 50px minmax(0, 1fr);
+  grid-template-columns: 112px minmax(0, 1fr);
   gap: var(--space-md);
   margin-top: var(--space-xl);
   padding: var(--space-md);
@@ -925,7 +935,7 @@ button.chat-prompt-resource-row:focus-visible {
 .trajectory-overview-labels,
 .trajectory-overview-tracks {
   display: grid;
-  grid-template-rows: repeat(4, 14px);
+  grid-auto-rows: 14px;
   gap: 4px;
 }
 
@@ -933,10 +943,30 @@ button.chat-prompt-resource-row:focus-visible {
   min-width: 0;
 }
 
-.trajectory-overview-labels span {
+.trajectory-overview-labels span,
+.trajectory-research-toggle {
+  min-width: 0;
+  overflow: hidden;
   color: var(--color-text-muted);
   font-size: 10px;
   line-height: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trajectory-overview-labels span.is-research-agent {
+  padding-left: 14px;
+  color: var(--color-text);
+}
+
+.trajectory-research-toggle {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 10px;
+  text-align: left;
+  cursor: pointer;
 }
 
 .trajectory-track {
@@ -956,6 +986,25 @@ button.chat-prompt-resource-row:focus-visible {
   background: var(--color-info);
   cursor: pointer;
   z-index: 1;
+}
+
+.trajectory-track.is-group {
+  background: transparent;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-info) 25%, var(--color-border));
+}
+
+.trajectory-track button.kind-input { background: #55ae7c; }
+.trajectory-track button.kind-model { background: #9b78d0; }
+.trajectory-track button.kind-tool { background: #df8a28; }
+.trajectory-track button.kind-system { background: #6f879b; }
+.trajectory-track button.kind-status { background: #4aa6a8; }
+.trajectory-track button.kind-report { background: #55ae7c; }
+.trajectory-track button.kind-job {
+  top: 0;
+  height: 14px;
+  border: 1px solid color-mix(in srgb, var(--color-info) 58%, var(--color-border));
+  background: color-mix(in srgb, var(--color-info) 14%, transparent);
+  z-index: 0;
 }
 
 .trajectory-track button.is-instant {
@@ -983,10 +1032,6 @@ button.chat-prompt-resource-row:focus-visible {
   background: color-mix(in srgb, var(--color-text-muted) 36%, transparent);
   pointer-events: none;
 }
-
-.trajectory-track:nth-child(2) button { background: #9b78d0; }
-.trajectory-track:nth-child(3) button { background: #df8a28; }
-.trajectory-track:nth-child(4) button { background: #6f879b; }
 
 .trajectory-overview-empty {
   grid-row: 1 / -1;
@@ -1109,6 +1154,7 @@ button.chat-prompt-resource-row:focus-visible {
 .trajectory-row.lane-input .trajectory-row-dot { background: #55ae7c; }
 .trajectory-row.lane-model .trajectory-row-dot { background: #9b78d0; }
 .trajectory-row.lane-tools .trajectory-row-dot { background: #df8a28; }
+.trajectory-row.lane-research .trajectory-row-dot { background: #4aa6a8; }
 
 .trajectory-row-kind,
 .trajectory-source {
@@ -1231,6 +1277,24 @@ button.chat-prompt-resource-row:focus-visible {
 .trajectory-inspector-content dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .trajectory-inspector-content p { line-height: 1.5; white-space: pre-wrap; }
 
+.trajectory-related-agents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  align-items: center;
+  margin-top: var(--space-lg);
+}
+
+.trajectory-related-agents button {
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--color-info) 45%, var(--color-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-info) 8%, var(--color-bg));
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
 @media (max-width: 850px) {
   .trajectory-toolbar { align-items: stretch; flex-direction: column; }
   .trajectory-search { flex-basis: auto; max-width: none; }
@@ -1240,7 +1304,7 @@ button.chat-prompt-resource-row:focus-visible {
 
 @media (max-width: 560px) {
   .trajectory-header { align-items: flex-start; }
-  .trajectory-overview { grid-template-columns: 44px minmax(0, 1fr); }
+  .trajectory-overview { grid-template-columns: 72px minmax(0, 1fr); }
   .trajectory-row { grid-template-columns: 9px minmax(0, 1fr) auto; }
   .trajectory-row-kind { display: none; }
   .trajectory-row-meta time { display: none; }
