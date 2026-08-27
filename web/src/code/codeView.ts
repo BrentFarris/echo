@@ -654,6 +654,9 @@ class CodeView {
       smoothScrolling: false,
       cursorSmoothCaretAnimation: "off",
       wordWrap: "off",
+      selectionHighlight: true,
+      selectionHighlightMultiline: false,
+      occurrencesHighlight: "singleFile",
       padding: { top: 4, bottom: 4 },
       scrollBeyondLastLine: true,
       fixedOverflowWidgets: true,
@@ -687,6 +690,9 @@ class CodeView {
       diffAlgorithm: "advanced",
       renderIndicators: true,
       renderOverviewRuler: true,
+      selectionHighlight: true,
+      selectionHighlightMultiline: false,
+      occurrencesHighlight: "singleFile",
       ignoreTrimWhitespace: false,
       hideUnchangedRegions: { enabled: false },
       renderWhitespace: this.leadingWhitespaceIndicators ? "boundary" : "none",
@@ -1379,6 +1385,7 @@ class CodeView {
       const document = await loadGitDiff(this.workspace.id, repository.id, {
         scope, path: change.path, oldPath: change.oldPath, ref: reviewRef,
       });
+      if (this.abort.signal.aborted) return;
       const language = languageForPath(document.path, this.lspProfiles);
       const originalURI = monaco.Uri.from({
         scheme: "echo-git", authority: repository.id,
@@ -1934,6 +1941,8 @@ class CodeView {
       const diff = monaco.editor.createDiffEditor(overlay.querySelector<HTMLElement>("[data-diff-host]")!, {
         theme: this.mediaTheme.matches ? "vs-dark" : "vs", automaticLayout: true, readOnly: true,
         originalEditable: false, minimap: { enabled: false }, renderSideBySide: true,
+        selectionHighlight: true, selectionHighlightMultiline: false,
+        occurrencesHighlight: "singleFile",
       });
       diff.setModel({ original, modified });
       const close = () => {

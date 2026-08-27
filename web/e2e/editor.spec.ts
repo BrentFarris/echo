@@ -351,6 +351,28 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(renamedTab).toHaveAttribute("aria-selected", "false");
   await expect(page.locator(".view-lines")).toContainText("package main");
 
+  // Selection and caret occurrence highlighting use Monaco's native subtle
+  // decorations, including markers in the overview ruler and minimap.
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("Control+Home");
+  await page.keyboard.press("End");
+  await page.keyboard.press("Control+Shift+ArrowLeft");
+  await expect(page.locator(".monaco-editor .selected-text")).toHaveCount(1);
+  await expect(page.locator(".monaco-editor .selectionHighlight")).toHaveCount(1);
+  await expect(page.locator(".monaco-editor canvas.decorationsOverviewRuler")).toBeVisible();
+  await expect(page.locator(".monaco-editor .minimap")).toBeVisible();
+
+  // Collapsing the selection keeps whole-word caret occurrences highlighted.
+  await page.keyboard.press("ArrowLeft");
+  await expect(page.locator(".monaco-editor .selected-text")).toHaveCount(0);
+  await expect(page.locator(".monaco-editor .selectionHighlight")).toHaveCount(0);
+  await expect(page.locator(".monaco-editor .wordHighlightText")).toHaveCount(2);
+
+  // Leaving the word for an empty line clears all occurrence decorations.
+  await page.keyboard.press("Control+Home");
+  await page.keyboard.press("ArrowDown");
+  await expect(page.locator(".monaco-editor .wordHighlightText")).toHaveCount(0);
+
   // Re-selecting the active tab keeps Monaco's live caret and selection. The
   // tab's stored view state can lag behind normal editing and must only be
   // restored after switching between different tabs.
@@ -471,6 +493,11 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(page.locator("[data-code-chat-dock]")).toBeHidden();
   await codeChatToggle.click();
   await expect(page.locator("[data-code-chat-dock]")).toBeVisible();
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("Control+Home");
+  await page.keyboard.down("Shift");
+  await page.keyboard.press("End");
+  await page.keyboard.up("Shift");
 
   const selectedContextNotice = page.locator("[data-chat-context-notice]");
   await expect(selectedContextNotice).toHaveText("Selected context: main.go, line 1 will be included.");
@@ -514,6 +541,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   writeFileSync(mainPath, "package main\n\n// external reload\nfunc main() {}\n", "utf8");
   await expect(page.locator(".view-lines")).toContainText("external reload");
 
+  await page.getByRole("button", { name: "Explorer", exact: true }).click();
   await page.locator(".code-tree-label", { hasText: "main.go" }).click({ button: "right" });
   await page.getByRole("menuitem", { name: /Delete/ }).click();
   await page.getByRole("button", { name: "Move to Trash" }).click();
@@ -674,6 +702,8 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(page.locator(".app-shell")).toBeVisible();
   await page.setViewportSize({ width: 320, height: 700 });
   mobileNav = page.locator("[data-mobile-primary-nav]");
+  await expect(page.locator(".code-toast", { hasText: "InstantiationService has been disposed" })).toHaveCount(0);
+  await page.locator(".code-toast-close").evaluateAll((buttons) => buttons.forEach((button) => (button as HTMLButtonElement).click()));
   await page.getByRole("button", { name: "Open terminal" }).click();
   await expect(page.locator(".terminal-dock")).toHaveClass(/is-open/);
   await expect(page.locator(".terminal-status-text")).toHaveText("Running");
