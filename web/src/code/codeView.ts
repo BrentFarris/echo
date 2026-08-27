@@ -1055,8 +1055,12 @@ class CodeView {
       if (!editor) return false;
       if (selectionOrPosition) {
         if ("endLineNumber" in selectionOrPosition) {
-          editor.setSelection(selectionOrPosition);
-          editor.revealRangeInCenter(selectionOrPosition);
+          const position = {
+            lineNumber: selectionOrPosition.startLineNumber,
+            column: selectionOrPosition.startColumn,
+          };
+          editor.setPosition(position);
+          editor.revealPositionInCenter(position);
         } else {
           editor.setPosition(selectionOrPosition);
           editor.revealPositionInCenter(selectionOrPosition);
@@ -2917,6 +2921,7 @@ class CodeView {
     }, { signal });
 
     document.addEventListener("keydown", (event) => this.handleGlobalKeyboard(event), { signal, capture: true });
+    document.addEventListener("click", (event) => this.handleReferencePeekClick(event), { signal, capture: true });
     const endCodeTabCycle = () => {
       if (!this.mruCycle) return;
       const finalId = this.mruCycle.order[this.mruCycle.index];
@@ -3043,6 +3048,7 @@ class CodeView {
 
   private handleGlobalKeyboard(event: KeyboardEvent): void {
     if (document.querySelector(".code-modal-overlay, .code-picker-overlay")) return;
+    if (this.handleReferencePeekKeyboard(event)) return;
     if (event.key === "Escape" && this.root.querySelector("[data-chat-mention-picker]") && document.activeElement?.closest(".code-chat-surface")) return;
     if (event.key === "Escape" && this.codeChatOpen) {
       // When a file search/replace is active, Escape closes the search first;
@@ -3110,6 +3116,56 @@ class CodeView {
       event.preventDefault();
       this.searchView?.navigateResult(event.shiftKey ? -1 : 1);
     }
+  }
+
+  private referencePeekContext(target: EventTarget | null): {
+    editor: MonacoEditor.ICodeEditor;
+    tree: HTMLElement;
+    match: HTMLElement | null;
+  } | null {
+    if (!(target instanceof Element)) return null;
+    const tree = target.closest<HTMLElement>(".reference-zone-widget .ref-tree");
+    if (!tree) return null;
+    const editors = [
+      this.editor,
+      this.diffEditor.getOriginalEditor(),
+      this.diffEditor.getModifiedEditor(),
+    ];
+    const editor = editors.find((candidate) => candidate.getDomNode()?.contains(tree));
+    if (!editor) return null;
+    return {
+      editor,
+      tree,
+      match: tree.querySelector<HTMLElement>(".monaco-list-row.focused .referenceMatch"),
+    };
+  }
+
+  private handleReferencePeekKeyboard(event: KeyboardEvent): boolean {
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return false;
+    const context = this.referencePeekContext(event.target);
+    if (!context) return false;
+    if (event.key === "Enter" && context.match) {
+      event.preventDefault();
+      event.stopPropagation();
+      context.editor.trigger("echo", "openReference", null);
+      return true;
+    }
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      requestAnimationFrame(() => {
+        if (this.abort.signal.aborted || !context.tree.isConnected) return;
+        this.referencePeekContext(context.tree)?.match?.click();
+      });
+    }
+    return false;
+  }
+
+  private handleReferencePeekClick(event: MouseEvent): void {
+    if (event.button !== 0 || event.detail !== 2 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    const context = this.referencePeekContext(event.target);
+    if (!context?.match || !context.match.contains(event.target as Node)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    context.editor.trigger("echo", "openReference", null);
   }
 
   /**

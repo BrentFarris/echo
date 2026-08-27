@@ -905,6 +905,9 @@ test("runs the deterministic fake language server through Monaco and settings", 
     nodePath: string;
     fakeLSPPath: string;
   };
+  writeFileSync(join(state.workspace, "main.go"), "package main\n\nfunc main() {\n\tTarget()\n}\n", "utf8");
+  writeFileSync(join(state.workspace, "definition.go"), "package main\n\nfunc Target() {}\n", "utf8");
+  writeFileSync(join(state.workspace, "usage.go"), "package main\n\nfunc useTarget() {\n\tTarget()\n}\n", "utf8");
   await page.goto("/");
   if (await page.getByRole("heading", { name: "Secure this Echo server" }).isVisible()) {
     await page.getByLabel("Setup code").fill(state.setupCode);
@@ -1013,22 +1016,40 @@ test("runs the deterministic fake language server through Monaco and settings", 
   await expect(page.locator("[data-tabs-list] .code-tab")).toHaveCount(1);
   const referenceFiles = page.locator(".reference-zone-widget .reference-file");
   await expect(referenceFiles).toHaveCount(3);
-  await referenceFiles.filter({ hasText: "usage.go" }).click();
-  const referenceMatches = page.locator(".reference-zone-widget .referenceMatch");
-  await expect(referenceMatches).toHaveCount(2);
-  await referenceMatches.last().click();
-  await expect(page.locator("[data-tabs-list] .code-tab")).toHaveCount(1);
-  await page.keyboard.press("Enter");
-  await expect(page.locator(".reference-zone-widget .preview")).toContainText("func useTarget");
-  await referenceMatches.last().dblclick();
-  await expect(page.locator(".code-tab.is-active")).toContainText("usage.go");
-  await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 4, Col 2");
-  await expect(page.locator("[data-tabs-list] .code-tab")).toHaveCount(1);
-  await page.keyboard.press("Escape");
 
+  // Moving from a file group into a reference updates the preview without
+  // committing a navigation away from the source editor.
+  await referenceFiles.filter({ hasText: "main.go" }).click();
+  await page.keyboard.press("ArrowDown");
+  await expect(page.locator(".reference-zone-widget .monaco-list-row.focused .referenceMatch")).toContainText("Target()");
+  await expect(page.locator(".reference-zone-widget .preview")).toContainText("func main");
+  await expect(page.locator(".code-tab.is-active")).toContainText("definition.go");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 3, Col 6");
+  await expect(page.locator("[data-tabs-list] .code-tab")).toHaveCount(1);
+
+  // Enter commits the focused reference through Echo's editor opener.
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".reference-zone-widget")).toHaveCount(0);
+  await expect(page.locator(".code-tab.is-active")).toContainText("main.go");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 4, Col 2");
+  await expect(page.getByRole("textbox", { name: "Editor content" })).toBeFocused();
+  await expect(page.locator("[data-tabs-list] .code-tab")).toHaveCount(1);
+
+  await page.keyboard.press("Alt+ArrowLeft");
+  await expect(page.locator(".code-tab.is-active")).toContainText("definition.go");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 3, Col 6");
+  await page.keyboard.press("Alt+ArrowRight");
+  await expect(page.locator(".code-tab.is-active")).toContainText("main.go");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 4, Col 2");
+
+  // Double-clicking a result in an explicit peek commits exactly like Enter.
   await page.keyboard.press("Alt+F12");
   await expect(page.locator(".reference-zone-widget")).toBeVisible();
-  await page.keyboard.press("Escape");
+  await page.locator(".reference-zone-widget .referenceMatch").dblclick();
+  await expect(page.locator(".reference-zone-widget")).toHaveCount(0);
+  await expect(page.locator(".code-tab.is-active")).toContainText("definition.go");
+  await expect(page.locator('[data-status="cursor"]')).toHaveText("Ln 3, Col 6");
+  await expect(page.getByRole("textbox", { name: "Editor content" })).toBeFocused();
 
   await page.keyboard.press("Control+Shift+F12");
   await expect(page.locator(".reference-zone-widget")).toBeVisible();
