@@ -2558,6 +2558,13 @@ class CodeView {
       { id: "editor.gotoLine", label: "Go to Line/Column…", keybinding: "Ctrl+G", run: () => this.editor.trigger("echo", "editor.action.gotoLine", null) },
       { id: "editor.rename", label: "Editor: Rename Symbol", keybinding: "F2", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.rename", null) },
       { id: "editor.duplicateSelection", label: "Editor: Duplicate Selection", keybinding: "Ctrl+D", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.duplicateSelection", null) },
+      { id: "editor.action.transformToUppercase", label: "Transform to Uppercase", run: () => this.runCaseTransform("editor.action.transformToUppercase") },
+      { id: "editor.action.transformToLowercase", label: "Transform to Lowercase", run: () => this.runCaseTransform("editor.action.transformToLowercase") },
+      { id: "editor.action.transformToCamelcase", label: "Transform to Camel Case", run: () => this.runCaseTransform("editor.action.transformToCamelcase") },
+      { id: "editor.action.transformToKebabcase", label: "Transform to Kebab Case", run: () => this.runCaseTransform("editor.action.transformToKebabcase") },
+      { id: "editor.action.transformToPascalcase", label: "Transform to Pascal Case", run: () => this.runCaseTransform("editor.action.transformToPascalcase") },
+      { id: "editor.action.transformToSnakecase", label: "Transform to Snake Case", run: () => this.runCaseTransform("editor.action.transformToSnakecase") },
+      { id: "editor.action.transformToTitlecase", label: "Transform to Title Case", run: () => this.runCaseTransform("editor.action.transformToTitlecase") },
       { id: "editor.hover", label: "Editor: Show Hover", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.showHover", {}) },
       { id: "editor.goToDefinition", label: "Go to Definition", keybinding: "F12", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.revealDefinition", null) },
       { id: "editor.peekDefinition", label: "Peek Definition", keybinding: "Alt+F12", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.peekDefinition", null) },
@@ -2583,6 +2590,15 @@ class CodeView {
   private activeCodeEditor(): MonacoEditor.ICodeEditor | null {
     const tab = this.activeTab();
     return tab?.kind === "diff" ? this.diffEditor?.getModifiedEditor() || null : this.editor || null;
+  }
+
+  private runCaseTransform(actionId: string): void {
+    const editor = this.activeCodeEditor();
+    if (!editor) return;
+    editor.trigger("echo", actionId, null);
+    requestAnimationFrame(() => {
+      if (!this.abort.signal.aborted && editor === this.activeCodeEditor()) editor.focus();
+    });
   }
 
   private captureNavigationLocation(): CodeNavigationLocation | null {

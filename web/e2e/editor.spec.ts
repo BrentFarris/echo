@@ -461,6 +461,71 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await mainTab.click();
   await expect(page.locator(".view-lines")).toContainText("package main");
 
+  // Echo exposes Monaco's native VS Code-style case transforms through its
+  // command palette, preserving selection and grouping each edit for Undo.
+  await page.keyboard.press("Control+n");
+  const scratchLines = page.locator("[data-monaco-host] .view-line");
+  const chooseCaseTransform = async (label: string) => {
+    await page.keyboard.press("Control+Shift+P");
+    const palette = page.getByLabel("Command Palette");
+    await palette.fill(label);
+    await expect(page.getByRole("option", { name: new RegExp(label) })).toBeVisible();
+    await page.keyboard.press("Enter");
+  };
+  const undoCaseTransform = async () => {
+    await page.keyboard.press("Control+Shift+P");
+    await page.getByLabel("Command Palette").fill("Editor: Undo");
+    await page.keyboard.press("Enter");
+  };
+  const replaceScratchText = async (text: string) => {
+    await editorInput.focus();
+    await page.keyboard.press("Control+a");
+    await page.keyboard.insertText(text);
+  };
+  for (const transform of [
+    { label: "Transform to Uppercase", input: "MiXeD Case", output: "MIXED CASE" },
+    { label: "Transform to Lowercase", input: "MiXeD Case", output: "mixed case" },
+    { label: "Transform to Camel Case", input: "hello world-test_value", output: "helloWorldTestValue" },
+    { label: "Transform to Kebab Case", input: "helloWorld_testValue", output: "hello-world-test-value" },
+    { label: "Transform to Pascal Case", input: "hello world-test_value", output: "HelloWorldTestValue" },
+    { label: "Transform to Snake Case", input: "helloWorldValue", output: "hello_world_value" },
+    { label: "Transform to Title Case", input: "hELLO wORLD", output: "Hello World" },
+  ]) {
+    await replaceScratchText(transform.input);
+    await page.keyboard.press("Control+a");
+    await chooseCaseTransform(transform.label);
+    await expect(scratchLines).toHaveText(transform.output);
+    await undoCaseTransform();
+    await expect(scratchLines).toHaveText(transform.input);
+  }
+
+  // Multiple selections transform together in one undo step.
+  await replaceScratchText("alpha\nbeta");
+  await page.keyboard.press("Control+Home");
+  await page.keyboard.press("Shift+End");
+  await page.keyboard.press("Control+Alt+ArrowDown");
+  await chooseCaseTransform("Transform to Uppercase");
+  await expect(scratchLines).toHaveCount(2);
+  await expect(scratchLines.nth(0)).toHaveText("ALPHA");
+  await expect(scratchLines.nth(1)).toHaveText("BETA");
+  await undoCaseTransform();
+  await expect(scratchLines.nth(0)).toHaveText("alpha");
+  await expect(scratchLines.nth(1)).toHaveText("beta");
+
+  // A plain caret uses Monaco's native word-under-caret fallback.
+  await replaceScratchText("before mixedWord after");
+  await page.keyboard.press("Control+Home");
+  for (let offset = 0; offset < 9; offset++) await page.keyboard.press("ArrowRight");
+  await chooseCaseTransform("Transform to Uppercase");
+  await expect(scratchLines).toHaveText("before MIXEDWORD after");
+  await undoCaseTransform();
+  await expect(scratchLines).toHaveText("before mixedWord after");
+
+  await page.keyboard.press("Control+w");
+  await page.getByRole("button", { name: "Discard", exact: true }).click();
+  await mainTab.click();
+  await expect(page.locator(".view-lines")).toContainText("package main");
+
   // Selection and caret occurrence highlighting use Monaco's native subtle
   // decorations, including markers in the overview ruler and minimap.
   await page.locator(".view-lines").click();
@@ -711,6 +776,14 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(stagedMain).toBeVisible();
   await expect(stagedTrash).toBeVisible();
   await stagedMain.click();
+  await expect(page.locator(".code-tab.is-active")).toContainText("main.go (Index)");
+  const readOnlyModified = page.locator("[data-monaco-diff-host] .modified-in-monaco-diff-editor .view-lines");
+  await expect(readOnlyModified).toBeVisible();
+  const readOnlyText = await readOnlyModified.textContent();
+  await readOnlyModified.click();
+  await page.keyboard.press("Control+a");
+  await chooseCaseTransform("Transform to Uppercase");
+  await expect(readOnlyModified).toHaveText(readOnlyText!);
   await stagedTrash.click({ modifiers: ["Control"] });
   await stagedTrash.hover();
   await stagedTrash.getByRole("button", { name: "Unstage Changes" }).click();
