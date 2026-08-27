@@ -351,6 +351,116 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(renamedTab).toHaveAttribute("aria-selected", "false");
   await expect(page.locator(".view-lines")).toContainText("package main");
 
+  // Ctrl+Tab keeps the existing immediate MRU activation behavior while a
+  // picker-style switcher visualizes the stable cycle until Ctrl is released.
+  const definitionTreeRow = page.locator(".code-tree-label", { hasText: "definition.go" });
+  await definitionTreeRow.click();
+  const definitionTab = page.getByRole("tab", { name: /definition\.go/ });
+  await expect(definitionTab).toHaveAttribute("aria-selected", "true");
+  await definitionTab.dblclick();
+  await mainTab.click();
+  const editorInput = page.getByRole("textbox", { name: "Editor content" });
+  const mruSwitcher = page.getByRole("listbox", { name: "Recently used editors" });
+
+  await page.keyboard.down("Control");
+  await page.keyboard.press("Tab");
+  await expect(mruSwitcher).toBeVisible();
+  await expect(mruSwitcher.getByRole("option")).toHaveCount(3);
+  const sourceOption = mruSwitcher.getByRole("option", { name: /main\.go/ });
+  const definitionOption = mruSwitcher.getByRole("option", { name: /definition\.go/ });
+  const renamedOption = mruSwitcher.getByRole("option", { name: /renamed\.py/ });
+  await expect(mruSwitcher.getByRole("option").nth(0)).toHaveAttribute("data-mru-tab-id", await mainTab.getAttribute("data-tab-id") || "");
+  await expect(sourceOption).toHaveAttribute("aria-selected", "false");
+  await expect(definitionOption).toHaveAttribute("aria-selected", "true");
+  await expect(definitionOption.locator(".code-mru-switcher-context")).toContainText("workspace");
+  await expect(definitionTab).toHaveAttribute("aria-selected", "true");
+  await expect(editorInput).toBeFocused();
+
+  await page.keyboard.press("Tab");
+  await expect(renamedOption).toHaveAttribute("aria-selected", "true");
+  await expect(renamedTab).toHaveAttribute("aria-selected", "true");
+  await expect(editorInput).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(sourceOption).toHaveAttribute("aria-selected", "true");
+  await expect(mainTab).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Tab");
+  await page.keyboard.down("Shift");
+  await page.keyboard.press("Tab");
+  await page.keyboard.up("Shift");
+  await expect(definitionOption).toHaveAttribute("aria-selected", "true");
+  await expect(definitionTab).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.up("Control");
+  await expect(mruSwitcher).toHaveCount(0);
+  await expect(definitionTab).toHaveAttribute("aria-selected", "true");
+
+  // Releasing Ctrl commits the chosen tab to the front of the next MRU cycle.
+  await page.keyboard.down("Control");
+  await page.keyboard.press("Tab");
+  await expect(mruSwitcher.getByRole("option", { name: /main\.go/ })).toHaveAttribute("aria-selected", "true");
+  await expect(mainTab).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.up("Control");
+
+  // Clicking a different row commits it immediately and returns focus to its
+  // editor even though the modifier remains held until after the click.
+  await page.keyboard.down("Control");
+  await page.keyboard.press("Tab");
+  await mruSwitcher.getByRole("option", { name: /renamed\.py/ }).click();
+  await expect(mruSwitcher).toHaveCount(0);
+  await expect(renamedTab).toHaveAttribute("aria-selected", "true");
+  await expect(editorInput).toBeFocused();
+  await page.keyboard.up("Control");
+
+  // Backdrop clicks and window blur accept the current selection and clean up
+  // the switcher without restoring the tab that started the cycle.
+  await mainTab.click();
+  await page.keyboard.down("Control");
+  await page.keyboard.press("Tab");
+  const activeAfterBackdrop = await page.locator(".code-tab.is-active").textContent();
+  await page.locator(".code-mru-switcher-overlay").click({ position: { x: 4, y: 4 } });
+  await expect(mruSwitcher).toHaveCount(0);
+  await expect(page.locator(".code-tab.is-active")).toHaveText(activeAfterBackdrop!);
+  await expect(editorInput).toBeFocused();
+  await page.keyboard.up("Control");
+  await page.keyboard.down("Control");
+  await page.keyboard.press("Tab");
+  await expect(mruSwitcher).toBeVisible();
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await expect(mruSwitcher).toHaveCount(0);
+  await page.keyboard.up("Control");
+
+  // Closing the selected tab prunes it from the visible stable cycle. The next
+  // Tab press selects the remaining candidate and normal cycling continues.
+  await mainTab.click();
+  await page.keyboard.down("Control");
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Tab");
+  await expect(definitionTab).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("w");
+  await expect(definitionTab).toHaveCount(0);
+  await expect(mruSwitcher.getByRole("option", { name: /definition\.go/ })).toHaveCount(0);
+  await expect(mruSwitcher.getByRole("option")).toHaveCount(2);
+  await expect(mruSwitcher.getByRole("option", { name: /main\.go/ })).toBeVisible();
+  await page.keyboard.press("Tab");
+  await expect(renamedTab).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.up("Control");
+
+  // Leaving Code while a cycle is open disposes its body-level overlay. Return
+  // to the editor and restore main.go for the remaining editor scenarios.
+  await mainTab.click();
+  await page.keyboard.down("Control");
+  await page.keyboard.press("Tab");
+  await expect(mruSwitcher).toBeVisible();
+  await page.evaluate(() => { window.location.hash = "#/home"; });
+  await expect(page).toHaveURL(/#\/home$/);
+  await expect(mruSwitcher).toHaveCount(0);
+  await page.keyboard.up("Control");
+  await page.getByRole("button", { name: "Explorer", exact: true }).click();
+  await expect(page).toHaveURL(/#\/code$/);
+  if (await mainTab.count() === 0) await page.locator(".code-tree-label", { hasText: "main.go" }).dblclick();
+  await mainTab.click();
+  await expect(page.locator(".view-lines")).toContainText("package main");
+
   // Selection and caret occurrence highlighting use Monaco's native subtle
   // decorations, including markers in the overview ruler and minimap.
   await page.locator(".view-lines").click();

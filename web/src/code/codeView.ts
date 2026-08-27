@@ -139,6 +139,7 @@ class CodeView {
   private activeTabId: string | null = null;
   private mruTabIds: string[] = [];
   private mruCycle: MruCycleState | null = null;
+  private mruSwitcherOverlay: HTMLElement | null = null;
   private untitledCounter = 1;
   private editor!: MonacoEditor.IStandaloneCodeEditor;
   private diffEditor!: MonacoEditor.IStandaloneDiffEditor;
@@ -1591,7 +1592,7 @@ class CodeView {
     if (!list) return;
     list.innerHTML = this.tabs.map((tab) => `
       <div class="code-tab ${tab.id === this.activeTabId ? "is-active" : ""} ${!tab.pinned ? "is-preview" : ""}" role="tab" aria-selected="${tab.id === this.activeTabId}" tabindex="${tab.id === this.activeTabId ? 0 : -1}" data-tab-id="${escapeHTML(tab.id)}" title="${escapeHTML(tab.hostPath || tab.title)}">
-        <span class="codicon codicon-${tab.kind === "diff" ? "diff" : tab.kind === "media" ? (tab.media?.kind === "video" ? "play-circle" : tab.media?.kind === "audio" ? "music" : "file-media") : "file-code"} code-tab-icon"></span>
+        <span class="codicon codicon-${this.tabIcon(tab)} code-tab-icon"></span>
         <span class="code-tab-title">${escapeHTML(tab.title)}</span>
         ${tab.conflict ? `<span class="codicon codicon-warning code-tab-conflict" title="Changed on disk"></span>` : ""}
         ${tab.deleted ? `<span class="codicon codicon-trash code-tab-conflict" title="Deleted on disk"></span>` : ""}
@@ -1601,6 +1602,113 @@ class CodeView {
     `).join("");
     this.syncActiveTabState();
     this.renderBreadcrumbs();
+    if (this.mruCycle) this.renderMruSwitcher();
+  }
+
+  private tabIcon(tab: OpenTab): string {
+    if (tab.kind === "diff") return "diff";
+    if (tab.kind !== "media") return "file-code";
+    if (tab.media?.kind === "video") return "play-circle";
+    if (tab.media?.kind === "audio") return "music";
+    return "file-media";
+  }
+
+  private mruTabContext(tab: OpenTab): string {
+    const directoryFor = (path: string): string => {
+      const normalized = path.replace(/\\/g, "/");
+      return normalized.includes("/") ? normalized.slice(0, normalized.lastIndexOf("/")) : "";
+    };
+    if (tab.kind === "diff" && tab.diff) {
+      const path = tab.diff.fileRef?.path || tab.diff.oldPath || tab.hostPath;
+      const directory = directoryFor(path);
+      const scope = tab.diff.scope === "unstaged" ? "Working Tree"
+        : tab.diff.scope === "staged" ? "Index"
+          : tab.diff.scope === "stash" ? "Stash"
+            : shortGitRef(tab.diff.reviewRef || "Commit");
+      return [tab.diff.repository.label, directory, scope].filter(Boolean).join(" · ");
+    }
+    if (tab.ref) {
+      const root = this.roots.find((candidate) => candidate.id === tab.ref?.rootId);
+      return [root?.label, directoryFor(tab.ref.path)].filter(Boolean).join(" · ");
+    }
+    return tab.kind === "file" ? "Untitled" : "";
+  }
+
+  private renderMruSwitcher(): void {
+    const state = this.mruCycle;
+    if (!state?.order.length) {
+      this.removeMruSwitcher();
+      return;
+    }
+    if (!this.mruSwitcherOverlay) {
+      const overlay = document.createElement("div");
+      overlay.className = "code-mru-switcher-overlay";
+      overlay.innerHTML = `
+        <section class="code-picker code-mru-switcher" aria-label="Recently used editors">
+          <div class="code-picker-meta">Recently used editors</div>
+          <div class="code-picker-list code-mru-switcher-list" role="listbox" aria-label="Recently used editors" data-mru-switcher-list></div>
+        </section>`;
+      overlay.addEventListener("click", (event) => {
+        const row = (event.target as Element).closest<HTMLElement>("[data-mru-tab-id]");
+        if (row?.dataset.mruTabId) {
+          this.chooseMruTab(row.dataset.mruTabId);
+        } else if (event.target === overlay) {
+          this.finishMruCycle(true);
+        }
+      });
+      document.body.appendChild(overlay);
+      this.mruSwitcherOverlay = overlay;
+    }
+    const list = this.mruSwitcherOverlay.querySelector<HTMLElement>("[data-mru-switcher-list]");
+    if (!list) return;
+    list.innerHTML = state.order.map((id, index) => {
+      const tab = this.tabs.find((candidate) => candidate.id === id);
+      if (!tab) return "";
+      const selected = index === state.index;
+      const context = this.mruTabContext(tab);
+      const states = [tab.dirty ? "Unsaved changes" : "", tab.deleted ? "Deleted on disk" : "", tab.conflict ? "Changed on disk" : ""].filter(Boolean);
+      const accessibleName = [tab.title, context, ...states].filter(Boolean).join(", ");
+      return `
+        <button type="button" role="option" tabindex="-1" aria-label="${escapeHTML(accessibleName)}" aria-selected="${selected}" class="${selected ? "is-selected" : ""}" data-mru-tab-id="${escapeHTML(tab.id)}">
+          <span class="codicon codicon-${this.tabIcon(tab)}"></span>
+          <strong>${escapeHTML(tab.title)}</strong>
+          <span class="code-mru-switcher-context">${escapeHTML(context)}</span>
+          <span class="code-mru-switcher-status" aria-hidden="true">
+            ${tab.dirty ? `<span class="code-mru-switcher-dirty" title="Unsaved changes"></span>` : ""}
+            ${tab.deleted ? `<span class="codicon codicon-trash" title="Deleted on disk"></span>` : ""}
+            ${tab.conflict ? `<span class="codicon codicon-warning" title="Changed on disk"></span>` : ""}
+          </span>
+        </button>`;
+    }).join("");
+    const selected = list.querySelector<HTMLElement>("[aria-selected=true]");
+    requestAnimationFrame(() => {
+      if (selected?.isConnected) selected.scrollIntoView({ block: "nearest" });
+    });
+  }
+
+  private removeMruSwitcher(): void {
+    this.mruSwitcherOverlay?.remove();
+    this.mruSwitcherOverlay = null;
+  }
+
+  private finishMruCycle(focusEditor = false): void {
+    const state = this.mruCycle;
+    if (state) {
+      const finalId = state.order[state.index];
+      if (finalId) this.touchMru(finalId);
+    }
+    this.mruCycle = null;
+    this.removeMruSwitcher();
+    if (focusEditor && this.activeTab()?.kind !== "media") this.focusActiveEditor();
+  }
+
+  private chooseMruTab(id: string): void {
+    const state = this.mruCycle;
+    const index = state?.order.indexOf(id) ?? -1;
+    if (!state || index < 0 || !this.tabs.some((tab) => tab.id === id)) return;
+    this.mruCycle = { ...state, index };
+    void this.recordCodeNavigation(() => this.activateTab(id, true, false));
+    this.finishMruCycle();
   }
 
   private renderBreadcrumbs(): void {
@@ -2922,16 +3030,10 @@ class CodeView {
 
     document.addEventListener("keydown", (event) => this.handleGlobalKeyboard(event), { signal, capture: true });
     document.addEventListener("click", (event) => this.handleReferencePeekClick(event), { signal, capture: true });
-    const endCodeTabCycle = () => {
-      if (!this.mruCycle) return;
-      const finalId = this.mruCycle.order[this.mruCycle.index];
-      if (finalId) this.touchMru(finalId);
-      this.mruCycle = null;
-    };
     document.addEventListener("keyup", (event) => {
-      if (event.key === "Control" || event.key === "Meta") endCodeTabCycle();
+      if (event.key === "Control" || event.key === "Meta") this.finishMruCycle();
     }, { signal });
-    window.addEventListener("blur", endCodeTabCycle, { signal });
+    window.addEventListener("blur", () => this.finishMruCycle(), { signal });
     document.addEventListener("wheel", (event) => {
       if (!event.ctrlKey) return;
       const target = event.target as Element | null;
@@ -3194,6 +3296,7 @@ class CodeView {
     const { nextId, state } = nextMruCycle(this.mruCycle, reverse);
     this.mruCycle = state;
     if (nextId) void this.recordCodeNavigation(() => this.activateTab(nextId, true, false));
+    this.renderMruSwitcher();
   }
 
   private installResizer(): void {
@@ -3745,6 +3848,7 @@ class CodeView {
 
   dispose(): void {
     if (this.abort.signal.aborted) return;
+    this.finishMruCycle();
     detachTerminalDock(this.root.querySelector<HTMLElement>("[data-region=terminal]"));
     void this.persistNow();
     this.codeNavigation?.dispose(this.captureNavigationLocation());

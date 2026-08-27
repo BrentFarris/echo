@@ -2,21 +2,37 @@ import { describe, expect, it } from "vitest";
 import { beginMruCycle, nextMruCycle, pruneMruCycle, removeFromMru } from "./mruTabOrder";
 
 describe("beginMruCycle", () => {
-  it("orders candidates most-recent-first, excluding the active tab", () => {
+  it("puts the initiating tab first, followed by most-recent candidates", () => {
     // Most recent: c, then b, then a. Active is c.
     const state = beginMruCycle(["c", "b", "a"], "c", ["a", "b", "c"]);
-    expect(state.order).toEqual(["b", "a"]);
+    expect(state.order).toEqual(["c", "b", "a"]);
     expect(state.index).toBe(-1);
+    expect(state.sourceId).toBe("c");
   });
 
   it("excludes ids that are no longer open", () => {
     const state = beginMruCycle(["c", "d", "b", "a"], "a", ["a", "b", "c"]);
-    expect(state.order).toEqual(["c", "b"]);
+    expect(state.order).toEqual(["a", "c", "b"]);
   });
 
-  it("yields an empty order when there is only the active tab", () => {
+  it("falls back to every other open tab when restored tabs have no history", () => {
+    const state = beginMruCycle([], "b", ["a", "b", "c", "d"]);
+    expect(state.order).toEqual(["b", "a", "c", "d"]);
+  });
+
+  it("appends tabs missing from partial history in tab-strip order", () => {
+    const state = beginMruCycle(["d", "b"], "d", ["a", "b", "c", "d", "e"]);
+    expect(state.order).toEqual(["d", "b", "a", "c", "e"]);
+  });
+
+  it("deduplicates history before appending fallback tabs", () => {
+    const state = beginMruCycle(["c", "a", "a", "missing"], "c", ["a", "b", "c"]);
+    expect(state.order).toEqual(["c", "a", "b"]);
+  });
+
+  it("retains the source when it is the only open tab", () => {
     const state = beginMruCycle(["a"], "a", ["a"]);
-    expect(state.order).toEqual([]);
+    expect(state.order).toEqual(["a"]);
   });
 });
 
@@ -36,14 +52,14 @@ describe("nextMruCycle", () => {
       seen.push(nextId!);
       state = next;
     }
-    // c's previous is b, then a, then wraps to b again.
-    expect(seen).toEqual(["b", "a", "b"]);
+    // c's previous is b, then a, then wraps back to the initiating tab.
+    expect(seen).toEqual(["b", "a", "c"]);
   });
 
   it("reverse (Shift) reverses stepping from the current walk position", () => {
-    // active=c, MRU c > b > a; order = [b, a].
+    // active=c, MRU c > b > a; order = [c, b, a].
     let state = beginMruCycle(["c", "b", "a"], "c", ["a", "b", "c"]);
-    // Forward twice: b (idx 0) then a (idx 1).
+    // Forward twice: b (idx 1) then a (idx 2).
     state = nextMruCycle(state, false).state;
     expect(nextMruCycle(state, false).nextId).toBe("a");
     const atA = nextMruCycle(state, false).state;
@@ -60,7 +76,7 @@ describe("nextMruCycle", () => {
   });
 
   it("returns null when there are no candidates and never mutates", () => {
-    const state = beginMruCycle(["a"], "a", ["a"]);
+    const state = beginMruCycle([], null, []);
     const { nextId, state: next } = nextMruCycle(state, false);
     expect(nextId).toBeNull();
     expect(next).toEqual(state);
@@ -71,12 +87,12 @@ describe("pruneMruCycle", () => {
   it("drops closed tabs from the walk order", () => {
     const state = beginMruCycle(["c", "b", "a"], "c", ["a", "b", "c"]);
     const pruned = pruneMruCycle(state, ["a", "c"]); // b closed
-    expect(pruned.order).toEqual(["a"]);
+    expect(pruned.order).toEqual(["c", "a"]);
   });
 
   it("resets the index when the cursor is past the pruned order", () => {
     let state = beginMruCycle(["c", "b", "a"], "c", ["a", "b", "c"]);
-    state = nextMruCycle(state, false).state; // index 0 -> b
+    state = nextMruCycle(state, false).state; // index 1 -> b
     const pruned = pruneMruCycle(state, ["c", "a"]); // b closed
     expect(pruned.index).toBe(-1);
   });

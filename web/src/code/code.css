@@ -2095,7 +2095,8 @@
 }
 
 .code-modal-overlay,
-.code-picker-overlay {
+.code-picker-overlay,
+.code-mru-switcher-overlay {
   position: fixed;
   z-index: 10010;
   inset: 0;
@@ -2199,7 +2200,8 @@
   font-weight: 400;
 }
 
-.code-picker-overlay {
+.code-picker-overlay,
+.code-mru-switcher-overlay {
   place-items: start center;
   padding-top: min(11vh, 90px);
   background: rgba(0, 0, 0, 0.12);
@@ -2275,6 +2277,52 @@
 }
 
 .code-picker-list button.is-selected > span {
+  color: #fff;
+}
+
+.code-mru-switcher {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.code-mru-switcher > .code-picker-meta {
+  padding: 8px 11px 5px;
+}
+
+.code-mru-switcher-list {
+  max-height: min(50vh, 360px);
+}
+
+.code-mru-switcher-list button {
+  grid-template-columns: 20px minmax(90px, auto) minmax(0, 1fr) auto;
+}
+
+.code-mru-switcher-list button > strong,
+.code-mru-switcher-context {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.code-mru-switcher-status {
+  display: inline-flex;
+  min-width: 12px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.code-mru-switcher-status .codicon-warning {
+  color: #cca700;
+}
+
+.code-mru-switcher-dirty {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.code-mru-switcher-list button.is-selected .code-mru-switcher-status .codicon {
   color: #fff;
 }
 
