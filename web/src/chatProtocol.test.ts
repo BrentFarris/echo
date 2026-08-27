@@ -153,6 +153,16 @@ describe("multi-chat WebSocket protocol", () => {
   });
 
   it("preserves manual transcript scrolling while messages stream", async () => {
+    let scrollPosition = 37;
+    Object.defineProperties(log, {
+      scrollHeight: { configurable: true, get: () => 1000 },
+      clientHeight: { configurable: true, get: () => 200 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollPosition,
+        set: (value: number) => { scrollPosition = value; },
+      },
+    });
     emit("session_snapshot", {
       type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
       activeChatId: "chat-one", tabs: [{ chatId: "chat-one", preview: "Main", busy: false }],
@@ -161,7 +171,8 @@ describe("multi-chat WebSocket protocol", () => {
         assistantTurns: [{ number: 0, content: "Earlier answer", hasToolCalls: false }],
       }],
     });
-    log.scrollTop = 37;
+    expect(sendMessage(log, "New question", "model-a", "general")).toBe(true);
+    expect(scrollPosition).toBe(37);
 
     emit("session_event", {
       type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 2,
@@ -179,6 +190,51 @@ describe("multi-chat WebSocket protocol", () => {
     });
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     expect(log.scrollTop).toBe(37);
+  });
+
+  it("follows immediate and delayed Markdown growth while the transcript is at the bottom", async () => {
+    let scrollHeight = 1000;
+    let scrollPosition = 800;
+    Object.defineProperties(log, {
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      clientHeight: { configurable: true, get: () => 200 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollPosition,
+        set: (value: number) => { scrollPosition = Math.min(value, scrollHeight - 200); },
+      },
+    });
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "chat-one", tabs: [{ chatId: "chat-one", preview: "Main", busy: false }],
+      turns: [{
+        id: "stored", userContent: "Earlier question", status: "done",
+        assistantTurns: [{ number: 0, content: "Earlier answer", hasToolCalls: false }],
+      }],
+    });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+    scrollHeight = 1100;
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 2,
+      event: { type: "turn_started", turnId: "live", message: "New question" },
+    });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(scrollPosition).toBe(900);
+
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 3,
+      event: { type: "assistant_turn_start", turnId: "live", turn: 0 },
+    });
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 4,
+      event: { type: "token", turnId: "live", turn: 0, content: "Streaming **Markdown**" },
+    });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    scrollHeight = 1200;
+    await new Promise((resolve) => window.setTimeout(resolve, 80));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(scrollPosition).toBe(1000);
   });
 
   it("rewinds selected and later messages before rendering a rerun", () => {

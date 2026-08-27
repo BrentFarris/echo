@@ -13,6 +13,7 @@ import { playPlanQuestionSound } from "../src/planQuestionSound.ts";
 import { icons } from "./icons.js";
 import { del, post } from "./api.js";
 import { refreshPluginCatalog } from "../src/plugins/catalog.ts";
+import { createChatScrollFollower } from "../src/chatScroll.ts";
 
 let binding = null;
 let activeStream = null;
@@ -109,17 +110,20 @@ export function closeChatTab(chatId, stopIfBusy = false) {
 
 export function openWorkspaceSession(log, workspaceId, options = {}) {
   cancelBindingMarkdownPatches();
+  binding?.scrollFollower?.dispose();
   activeStream = null;
   setStreaming(false);
+  const scrollFollower = createChatScrollFollower(log);
   binding = {
     log, workspaceId: workspaceId || "", surface: options.surface === "code" ? "code" : "chat",
     onActivateFile: typeof options.onActivateFile === "function" ? options.onActivateFile : null,
     onActivateResource: typeof options.onActivateResource === "function" ? options.onActivateResource : null,
     sequence: 0, hasSnapshot: false,
-    activeChatId: "", tabs: [], turns: new Map(),
+    activeChatId: "", tabs: [], turns: new Map(), scrollFollower,
   };
   emitWorkspaceState();
   renderEmpty(log, workspaceId ? "Loading conversation…" : "Select a workspace to start chatting.");
+  scrollFollower.reset();
   if (workspaceId) ws.send({
     type: "session_subscribe", workspaceId,
     ...(binding.surface === "code" ? { surface: "code" } : {}),
@@ -128,6 +132,7 @@ export function openWorkspaceSession(log, workspaceId, options = {}) {
 
 export function closeWorkspaceSession(log) {
   if (binding?.log === log) cancelBindingMarkdownPatches();
+  if (binding?.log === log) binding.scrollFollower?.dispose();
   if (binding?.log === log) binding = null;
   activeStream = null;
   setStreaming(false);
@@ -165,6 +170,7 @@ ws.on("session_snapshot", (snapshot) => {
   for (const turn of snapshot.turns || []) renderStoredTurn(turn, false);
   if (snapshot.activeTurn) renderStoredTurn(snapshot.activeTurn, true);
   if (!binding.log.childElementCount) renderEmpty(binding.log, "Ask Echo to inspect, plan, or build in this workspace.");
+  binding.scrollFollower?.reset();
   setStreaming(activeStream != null);
   emitWorkspaceState();
 });
@@ -214,6 +220,7 @@ ws.on("session_event", (message) => {
   if (tabStateChanged) emitWorkspaceState();
   if (chatId === binding.activeChatId) {
     applyEvent(event);
+    binding.scrollFollower?.contentChanged();
   }
 });
 
@@ -1059,7 +1066,9 @@ function appendTurnText(stream, turnNumber, text) {
   turn.lastKind = "text";
   turn.text += text;
   turn.textBlockText += text;
-  queueMarkdownPatch(turn.textBlock, turn.textBlockText);
+  queueMarkdownPatch(turn.textBlock, turn.textBlockText, () => {
+    if (binding?.log?.contains(stream.el)) binding.scrollFollower?.contentChanged();
+  });
 }
 
 function appendReasoning(stream, turnNumber, text) {

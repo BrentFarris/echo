@@ -158,7 +158,7 @@ function chatPanel() {
               <button type="button" role="tab" aria-selected="true" class="is-active" data-chat-view="chat">Chat</button>
               <button type="button" role="tab" aria-selected="false" data-chat-view="trajectory">Trajectory</button>
             </div>
-            <div class="chat-log" id="chat-transcript" data-chat-log>
+            <div class="chat-log" id="chat-transcript" role="region" tabindex="0" aria-label="Conversation transcript" data-chat-log>
               <div class="empty-state chat-empty">Ask Echo to inspect, plan, or break down work for this workspace.</div>
             </div>
           </div>

@@ -12,6 +12,7 @@ test.describe.configure({ mode: "serial" });
 let fakeLLM: HTTPServer;
 let fakeLLMPort = 0;
 let fakeStreamRound = 0;
+let releaseScrollStreamChunk: (() => void) | null = null;
 
 async function dragToTreeRow(page: Page, source: Locator, target: Locator): Promise<void> {
   await expect(source).toHaveAttribute("draggable", "true");
@@ -41,6 +42,20 @@ test.beforeAll(async () => {
     }
     fakeStreamRound++;
     response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+    if (JSON.stringify(body.messages || []).includes("scroll-follow-e2e")) {
+      const writeContent = (content: string) => response.write(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`);
+      writeContent(Array.from({ length: 100 }, (_, index) => `Scroll follow first ${index + 1}`).join("\n\n"));
+      await new Promise<void>((resolveChunk) => { releaseScrollStreamChunk = resolveChunk; });
+      releaseScrollStreamChunk = null;
+      writeContent(Array.from({ length: 30 }, (_, index) => `Scroll follow manual ${index + 1}`).join("\n\n"));
+      await new Promise<void>((resolveChunk) => { releaseScrollStreamChunk = resolveChunk; });
+      releaseScrollStreamChunk = null;
+      writeContent("Scroll follow resumed at the tail.");
+      response.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+      response.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 200, completion_tokens: 130, total_tokens: 330 } })}\n\n`);
+      response.end("data: [DONE]\n\n");
+      return;
+    }
     if (fakeStreamRound === 1) {
       await new Promise((resolveWait) => setTimeout(resolveWait, 900));
       response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call-e2e-read", type: "function", function: { name: "filesystem_read_text", arguments: "{\"path\":\"workspace/main.go\"}" } }] } }] })}\n\n`);
@@ -59,6 +74,8 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
+  releaseScrollStreamChunk?.();
+  releaseScrollStreamChunk = null;
   await new Promise<void>((resolveClose, rejectClose) => fakeLLM.close((error) => error ? rejectClose(error) : resolveClose()));
 });
 
@@ -730,6 +747,35 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(page.locator(".code-tab.is-active")).toContainText("main.go");
   await expect(page.getByRole("textbox", { name: "Editor content" })).toBeFocused();
   await expect(selectedContextNotice).toHaveText("Selected context: main.go, line 1 will be included.");
+
+  // Stream following stays at the tail until an upward wheel gesture hands
+  // control back to the user, then resumes only after End reaches the bottom.
+  const codeChatLog = page.locator("[data-code-chat-dock] [data-chat-log]");
+  await codeChatLog.focus();
+  await page.keyboard.press("End");
+  await expect.poll(() => codeChatLog.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(2);
+  await codeChatInput.fill("scroll-follow-e2e");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".code-chat-surface .chat-progress-text").last()).toContainText("Scroll follow first 100");
+  await expect.poll(() => codeChatLog.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(2);
+
+  await codeChatLog.hover();
+  await page.mouse.wheel(0, -480);
+  await expect.poll(() => codeChatLog.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeGreaterThan(20);
+  const manualScrollTop = await codeChatLog.evaluate((element) => element.scrollTop);
+  expect(releaseScrollStreamChunk).not.toBeNull();
+  releaseScrollStreamChunk?.();
+  await expect(page.locator(".code-chat-surface .chat-progress-text").last()).toContainText("Scroll follow manual 30");
+  await expect.poll(() => codeChatLog.evaluate((element) => element.scrollTop)).toBe(manualScrollTop);
+
+  await codeChatLog.focus();
+  await page.keyboard.press("End");
+  await expect.poll(() => codeChatLog.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(2);
+  expect(releaseScrollStreamChunk).not.toBeNull();
+  releaseScrollStreamChunk?.();
+  await expect(page.locator(".code-chat-surface .chat-final-content").last()).toContainText("Scroll follow resumed at the tail.");
+  await expect(page.locator(".code-chat-surface .chat-message-assistant.is-streaming")).toHaveCount(0);
+  await expect.poll(() => codeChatLog.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(2);
   await page.getByRole("button", { name: "Close chat" }).click();
 
   await page.locator(".view-lines").click();

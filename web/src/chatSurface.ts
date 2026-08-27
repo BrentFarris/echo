@@ -150,7 +150,7 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
           ${options.onClose ? '<button type="button" title="Close chat" aria-label="Close chat" data-code-chat-close><span class="codicon codicon-close"></span></button>' : ""}
         </div>
       </header>
-      <div class="chat-log" data-chat-log><div class="empty-state chat-empty">Loading conversation…</div></div>
+      <div class="chat-log" role="region" tabindex="0" aria-label="Conversation transcript" data-chat-log><div class="empty-state chat-empty">Loading conversation…</div></div>
       <form class="chat-composer" data-chat-form>
         <div class="code-chat-context-notice" data-chat-context-notice hidden></div>
         <div class="chat-composer-main" data-chat-input-wrap>

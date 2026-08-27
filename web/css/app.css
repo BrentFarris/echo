@@ -565,6 +565,11 @@ textarea:disabled {
   padding-right: var(--space-sm);
 }
 
+.chat-log:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--color-info) 72%, transparent);
+  outline-offset: 2px;
+}
+
 .chat-empty {
   min-height: 100%;
 }
