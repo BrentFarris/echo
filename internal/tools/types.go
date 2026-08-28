@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/brent/echo/internal/sandbox"
 )
 
 type Schema map[string]any
@@ -81,6 +83,14 @@ type ExecutionContext struct {
 	WorkspaceID    string
 	WorkspacePath  string
 	WorkspaceRoots []WorkspaceRoot
+	// Sandbox routes process and network operations for enabled workspaces.
+	// It is nil for standalone tool tests and non-server callers.
+	Sandbox *sandbox.Manager
+	// SandboxEnabled carries the workspace policy captured when the chat turn
+	// began. It keeps execution fail-closed if workspace.json becomes
+	// temporarily unreadable instead of silently selecting the host.
+	SandboxEnabled bool
+	TurnID         string
 	// ResolveWorkspacePath and ResolveWorkspaceChildPath let the host route
 	// tools through its canonical workspace confinement service. Tests and
 	// standalone callers retain the local fallback when these are nil.
@@ -130,6 +140,10 @@ type ExecutionContext struct {
 	// PluginAuthoring exposes non-approving core plugin-development operations.
 	// It can scaffold, inspect, and stage, but never approve or execute a stage.
 	PluginAuthoring PluginAuthoringProvider
+}
+
+func (ctx ExecutionContext) UsesSandbox() bool {
+	return ctx.Sandbox != nil && (ctx.SandboxEnabled || ctx.Sandbox.IsEnabled(ctx.WorkspaceID))
 }
 
 type PluginScaffoldRequest struct {

@@ -258,7 +258,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(page).toHaveURL(/#\/code$/);
   await expect(page.getByRole("tab", { name: /main\.go/ })).toBeVisible();
   await page.getByRole("button", { name: "Close main.go" }).click();
-  await page.getByRole("button", { name: "Chat" }).click();
+  await page.getByRole("button", { name: "Chat", exact: true }).click();
   await expect(page.locator(".app-shell")).toBeVisible();
 
   // The terminal is a single workspace session shared across Chat and Code.
@@ -1008,7 +1008,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.getByRole("button", { name: "Git", exact: true }).click();
   await expect(page.getByLabel("Split Git diff view")).toBeVisible();
 
-  await mobileNav.getByRole("button", { name: "Chat" }).click();
+  await mobileNav.getByRole("button", { name: "Chat", exact: true }).click();
   await expect(page.locator(".app-shell")).toBeVisible();
   await page.setViewportSize({ width: 320, height: 700 });
   mobileNav = page.locator("[data-mobile-primary-nav]");

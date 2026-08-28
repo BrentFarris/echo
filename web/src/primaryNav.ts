@@ -1,6 +1,6 @@
 import { renderDesktopPluginButtons, renderMobilePluginOverflowButton } from "./plugins/catalog";
 
-export type PrimaryNavView = "chat" | "explorer" | "search" | "git" | "settings" | "plugin";
+export type PrimaryNavView = "chat" | "explorer" | "search" | "git" | "sandbox" | "settings" | "plugin";
 
 export type PrimaryNavOptions = {
   active: PrimaryNavView;
@@ -55,6 +55,7 @@ export function renderPrimaryNav(options: PrimaryNavOptions): string {
         <button class="nav-icon-button${activeClass(options.active === "explorer")}" type="button" title="Explorer" aria-label="Explorer" data-nav="code" data-code-sidebar="explorer"><span class="codicon codicon-code"></span></button>
         <button class="nav-icon-button${activeClass(options.active === "search")}" type="button" title="Search" aria-label="Search" data-nav="search" data-code-sidebar="search"><span class="codicon codicon-search"></span></button>
         <button class="nav-icon-button code-git-activity${activeClass(options.active === "git")}" type="button" title="Source Control" aria-label="Source Control" data-nav="git" data-code-sidebar="git"><span class="codicon codicon-source-control"></span><b data-git-badge hidden></b></button>
+        <button class="nav-icon-button${activeClass(options.active === "sandbox")}" type="button" title="Linux Sandbox" aria-label="Linux Sandbox" data-nav="sandbox"><span class="codicon codicon-vm"></span></button>
       </nav>
       <nav class="left-nav-plugins" aria-label="Plugin views" data-plugin-nav-section>${renderDesktopPluginButtons()}</nav>
       <div class="left-nav-actions">
@@ -89,6 +90,7 @@ export function renderMobilePrimaryNav(options: PrimaryNavOptions): string {
         <button class="mobile-nav-tab${activeClass(options.active === "explorer")}" type="button" title="Code" aria-label="Code" data-nav="code" data-code-sidebar="explorer"${currentPage(options.active === "explorer")}><span class="codicon codicon-code" aria-hidden="true"></span></button>
         <button class="mobile-nav-tab${activeClass(options.active === "search")}" type="button" title="Search" aria-label="Search" data-nav="search" data-code-sidebar="search"${currentPage(options.active === "search")}><span class="codicon codicon-search" aria-hidden="true"></span></button>
         <button class="mobile-nav-tab code-git-activity${activeClass(options.active === "git")}" type="button" title="Source Control" aria-label="Source Control" data-nav="git" data-code-sidebar="git"${currentPage(options.active === "git")}><span class="codicon codicon-source-control" aria-hidden="true"></span><b data-git-badge hidden></b></button>
+        <button class="mobile-nav-tab${activeClass(options.active === "sandbox")}" type="button" title="Linux Sandbox" aria-label="Linux Sandbox" data-nav="sandbox"${currentPage(options.active === "sandbox")}><span class="codicon codicon-vm" aria-hidden="true"></span></button>
         <span class="mobile-plugin-slot" data-plugin-mobile-slot>${renderMobilePluginOverflowButton()}</span>
         <span class="mobile-nav-global-actions">
           <button class="mobile-nav-tab" type="button" title="Chat Map" aria-label="Chat Map" aria-haspopup="menu" aria-expanded="false" data-nav="map"><span class="codicon codicon-map" aria-hidden="true"></span></button>

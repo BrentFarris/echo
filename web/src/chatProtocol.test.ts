@@ -322,6 +322,7 @@ describe("multi-chat WebSocket protocol", () => {
       }],
     });
 
+    log.querySelector<HTMLButtonElement>(".chat-message-media .chat-media-chip")!.click();
     const restoredImage = log.querySelector<HTMLImageElement>(".chat-message-media img")!;
     const restoredVideo = log.querySelector<HTMLVideoElement>(".chat-message-media video")!;
     expect(restoredImage.alt).toBe("diagram.png");
@@ -343,6 +344,7 @@ describe("multi-chat WebSocket protocol", () => {
         images: [{ ...storedImage, id: "live-image" }], videos: [],
       },
     });
+    [...log.querySelectorAll<HTMLButtonElement>(".chat-message-media .chat-media-chip")].at(-1)!.click();
     expect(log.querySelectorAll(".chat-message-media img")).toHaveLength(2);
     expect(log.textContent).toContain("Please review the attached image(s).");
   });

@@ -32,6 +32,8 @@ type client struct {
 	gitSubscriptions      map[string]bool
 	terminalMu            sync.RWMutex
 	terminalSubscriptions map[string]bool
+	sandboxMu             sync.RWMutex
+	sandboxSubscriptions  map[string]bool
 }
 
 func (c *client) close() {
@@ -163,6 +165,19 @@ func (h *Hub) BroadcastWorkspaceTerminal(workspaceID string, event any) {
 	}
 }
 
+func (h *Hub) BroadcastWorkspaceSandbox(workspaceID string, event any) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.clients {
+		c.sandboxMu.RLock()
+		subscribed := c.sandboxSubscriptions[workspaceID]
+		c.sandboxMu.RUnlock()
+		if subscribed {
+			c.sendJSON(event)
+		}
+	}
+}
+
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -173,6 +188,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		conn: conn, send: make(chan []byte, 1024), done: make(chan struct{}), server: s,
 		fsSubscriptions: make(map[string]bool), gitSubscriptions: make(map[string]bool),
 		terminalSubscriptions: make(map[string]bool),
+		sandboxSubscriptions:  make(map[string]bool),
 	}
 	go c.writePump()
 	s.hub.register <- c
@@ -206,6 +222,7 @@ func (c *client) readPump(h *Hub) {
 		c.unsubscribeAllFS()
 		c.unsubscribeAllGit()
 		c.unsubscribeAllTerminals()
+		c.unsubscribeAllSandboxes()
 		select {
 		case h.unregister <- c:
 		case <-h.shutdown:
@@ -244,6 +261,10 @@ func (c *client) readPump(h *Hub) {
 			c.subscribeTerminal(msg.WorkspaceID)
 		case "terminal_unsubscribe":
 			c.unsubscribeTerminal(msg.WorkspaceID)
+		case "sandbox_subscribe":
+			c.subscribeSandbox(msg.WorkspaceID)
+		case "sandbox_unsubscribe":
+			c.unsubscribeSandbox(msg.WorkspaceID)
 		case "chat_send":
 			c.server.sessions.send(c, msg)
 		case "chat_stop":
@@ -272,6 +293,34 @@ func (c *client) readPump(h *Hub) {
 			c.sendJSON(map[string]any{"type": "command_error", "workspaceId": msg.WorkspaceID, "code": "unknown_command", "error": "unsupported message type"})
 		}
 	}
+}
+
+func (c *client) subscribeSandbox(workspaceID string) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		c.sendJSON(map[string]any{"type": "command_error", "code": "missing_workspace", "error": "workspaceId is required"})
+		return
+	}
+	if _, ok, err := c.server.workspaces.Get(workspaceID); err != nil || !ok {
+		c.sendJSON(map[string]any{"type": "command_error", "workspaceId": workspaceID, "code": "sandbox_subscribe_failed", "error": "workspace was not found"})
+		return
+	}
+	c.sandboxMu.Lock()
+	c.sandboxSubscriptions[workspaceID] = true
+	c.sandboxMu.Unlock()
+	c.sendJSON(map[string]any{"type": "sandbox_subscribed", "workspaceId": workspaceID})
+}
+
+func (c *client) unsubscribeSandbox(workspaceID string) {
+	c.sandboxMu.Lock()
+	delete(c.sandboxSubscriptions, workspaceID)
+	c.sandboxMu.Unlock()
+}
+
+func (c *client) unsubscribeAllSandboxes() {
+	c.sandboxMu.Lock()
+	c.sandboxSubscriptions = make(map[string]bool)
+	c.sandboxMu.Unlock()
 }
 
 func (c *client) subscribeTerminal(workspaceID string) {

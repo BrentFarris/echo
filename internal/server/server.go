@@ -25,6 +25,7 @@ import (
 	"github.com/brent/echo/internal/lspconfig"
 	"github.com/brent/echo/internal/plugins"
 	"github.com/brent/echo/internal/rebuild"
+	"github.com/brent/echo/internal/sandbox"
 	"github.com/brent/echo/internal/settings"
 	terminalruntime "github.com/brent/echo/internal/terminal"
 	"github.com/brent/echo/internal/tools"
@@ -54,6 +55,7 @@ type Server struct {
 	terminal         *terminalruntime.Service
 	lsp              *lspruntime.Service
 	lspProfiles      *lspconfig.Store
+	sandbox          *sandbox.Manager
 	auth             *auth.Manager
 	authDisabled     bool
 	loginLimiter     *loginRateLimiter
@@ -154,14 +156,31 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 	s.data = appdata.NewStore(settingsPath)
 	s.store = settings.NewStoreWithData(s.data)
 	s.workspaces = workspaces.NewManagerWithData(s.data)
+	dockerEngine, dockerErr := sandbox.NewDockerEngine()
+	var sandboxEngine sandbox.Engine = dockerEngine
+	if dockerErr != nil {
+		sandboxEngine = sandbox.NewUnavailableEngine(dockerErr)
+	}
+	s.sandbox = sandbox.NewManager(
+		s.workspaces,
+		sandbox.StateRootForSettings(settingsPath),
+		sandbox.InstallationID(settingsPath),
+		sandboxEngine,
+	)
+	s.sandbox.SetNotifier(func(event sandbox.Event) {
+		s.hub.BroadcastWorkspaceSandbox(event.WorkspaceID, event)
+	})
 	s.lspProfiles = lspconfig.NewStore(s.data)
 	s.lsp = lspruntime.NewService(s.lspProfiles, s.workspaces)
+	s.lsp.SetSandbox(s.sandbox)
 	s.terminal = terminalruntime.New(s.workspaces, s.data)
+	s.terminal.SetSandbox(s.sandbox)
 	s.terminal.SetNotifier(func(event terminalruntime.Event) {
 		s.hub.BroadcastWorkspaceTerminal(event.WorkspaceID, event)
 	})
 	s.fs = workspacefs.New(s.workspaces, settingsPath)
 	s.git = gitservice.New(s.workspaces, s.fs)
+	s.git.SetSandbox(s.sandbox)
 	s.git.SetNotifier(func(event gitservice.Event) {
 		s.hub.BroadcastWorkspaceGit(event.WorkspaceID, event)
 	})
@@ -219,6 +238,16 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 	s.modes = agentmodes.NewManager()
 	s.sessions = newChatSessionManager(s)
 	s.initLLM()
+	// Enabled sandbox starts wait on Manager's reconciliation barrier. Running
+	// this in the background keeps Docker-free, non-sandbox workspaces on the
+	// existing fast startup path without allowing a first-start race.
+	go func() {
+		reconcileContext, reconcileCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer reconcileCancel()
+		if err := s.sandbox.Reconcile(reconcileContext); err != nil {
+			logf("sandbox startup reconciliation: %v", err)
+		}
+	}()
 	s.lsp.StartActiveWorkspace()
 	s.httpServer = &http.Server{
 		Addr:              addr,
@@ -393,6 +422,18 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/workspaces", s.handleCreateWorkspace)
 	mux.HandleFunc("PUT /api/workspaces/active", s.handleSetActiveWorkspace)
 	mux.HandleFunc("GET /api/workspaces/{id}/icon", s.handleGetWorkspaceIcon)
+	mux.HandleFunc("GET /api/sandbox/host", s.handleSandboxHost)
+	mux.HandleFunc("GET /api/workspaces/{id}/sandbox", s.handleGetWorkspaceSandbox)
+	mux.HandleFunc("PUT /api/workspaces/{id}/sandbox", s.handlePutWorkspaceSandbox)
+	mux.HandleFunc("DELETE /api/workspaces/{id}/sandbox", s.handleDeleteWorkspaceSandbox)
+	mux.HandleFunc("POST /api/workspaces/{id}/sandbox/actions", s.handleWorkspaceSandboxAction)
+	mux.HandleFunc("GET /api/workspaces/{id}/sandbox/network-grants", s.handleGetSandboxNetworkGrants)
+	mux.HandleFunc("POST /api/workspaces/{id}/sandbox/network-grants", s.handleCreateSandboxNetworkGrant)
+	mux.HandleFunc("DELETE /api/workspaces/{id}/sandbox/network-grants", s.handleDeleteSandboxNetworkGrant)
+	mux.HandleFunc("POST /api/workspaces/{id}/sandbox/desktop-sessions", s.handleCreateSandboxDesktopSession)
+	mux.HandleFunc("DELETE /api/workspaces/{id}/sandbox/desktop-sessions", s.handleDeleteSandboxDesktopSession)
+	mux.HandleFunc("POST /api/workspaces/{id}/sandbox/desktop-control", s.handleSandboxDesktopControl)
+	mux.HandleFunc("GET /api/workspaces/{id}/sandbox/desktop-ws", s.handleSandboxDesktopWebSocket)
 	mux.HandleFunc("GET /api/workspaces/{id}/fs/roots", s.handleFSRoots)
 	mux.HandleFunc("GET /api/workspaces/{id}/fs/entries", s.handleFSEntries)
 	mux.HandleFunc("POST /api/workspaces/{id}/fs/entries", s.handleFSCreateEntry)
@@ -548,6 +589,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if err := s.terminal.Shutdown(ctx); err != nil && ctx.Err() == nil {
 		logf("terminal shutdown: %v", err)
+	}
+	if err := s.sandbox.Shutdown(ctx); err != nil && ctx.Err() == nil {
+		logf("sandbox shutdown: %v", err)
 	}
 	if s.plugins != nil {
 		if err := s.plugins.Shutdown(ctx); err != nil && ctx.Err() == nil {

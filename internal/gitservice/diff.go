@@ -19,6 +19,7 @@ type blobResult struct {
 }
 
 func (s *Service) Diff(ctx context.Context, workspaceID, repositoryID, scope, path, oldPath, ref string) (DiffDocument, error) {
+	ctx = s.executionContext(ctx, workspaceID)
 	state, err := s.repository(ctx, workspaceID, repositoryID)
 	if err != nil {
 		return DiffDocument{}, err

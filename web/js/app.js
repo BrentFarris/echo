@@ -19,6 +19,7 @@ const routes = {
   "/home": () => import("./views/home.js"),
   "/settings": () => import("./views/settings.js"),
   "/code": () => import("../src/code/codeView.ts"),
+  "/sandbox": () => import("../src/sandbox/sandboxView.ts"),
 };
 
 const app = document.getElementById("app");

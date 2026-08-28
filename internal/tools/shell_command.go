@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/brent/echo/internal/sandbox"
 )
 
 const (
@@ -28,7 +30,7 @@ func init() {
 	Register(ToolFunc{
 		Meta: Metadata{
 			Name:        "shell_command",
-			Description: "Execute a command in the local system shell from inside the active workspace. Commands run with the app user's OS permissions.",
+			Description: "Execute a command in the workspace shell. Sandbox-enabled workspaces use isolated Linux Bash; other workspaces use the local system shell.",
 			Parameters: Schema{
 				"type":                 "object",
 				"additionalProperties": false,
@@ -118,20 +120,6 @@ func executeShellCommand(ctx ExecutionContext, arguments json.RawMessage) (any, 
 	commandContext, cancel := context.WithTimeout(ctx.context(), time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
-	shellName, shellArgs, err := shellCommandInvocation(args.Command)
-	if err != nil {
-		return nil, err
-	}
-	command := exec.CommandContext(commandContext, shellName, shellArgs...)
-	command.Dir = workingDirectory
-	configureToolCommandProcess(command)
-	command.WaitDelay = shellCommandWaitDelay
-
-	stdout := newLimitedBuffer(outputLimit)
-	stderr := newLimitedBuffer(outputLimit)
-	command.Stdout = stdout
-	command.Stderr = stderr
-
 	var before workspaceSnapshot
 	trackChanges := ctx.FileChanges != nil
 	if trackChanges {
@@ -139,7 +127,47 @@ func executeShellCommand(ctx ExecutionContext, arguments json.RawMessage) (any, 
 	}
 
 	started := time.Now()
-	runErr := command.Run()
+	var shellName string
+	var exitCode int
+	var stdoutText, stderrText string
+	var stdoutTruncated, stderrTruncated bool
+	var runErr error
+	if ctx.UsesSandbox() {
+		guestDirectory, mapErr := ctx.Sandbox.HostToGuest(ctx.WorkspaceID, workingDirectory)
+		if mapErr != nil {
+			return nil, SafeError{Code: "sandbox_path_mapping_failed", Message: mapErr.Error()}
+		}
+		result, executeErr := ctx.Sandbox.Execute(commandContext, ctx.WorkspaceID, sandbox.ExecRequest{
+			Command: []string{"/bin/bash", "-lc", args.Command}, WorkingDirectory: guestDirectory,
+			OutputLimit: outputLimit,
+		})
+		shellName, runErr = "Sandbox Bash", executeErr
+		exitCode, stdoutText, stderrText = result.ExitCode, string(result.Stdout), string(result.Stderr)
+		stdoutTruncated, stderrTruncated = result.StdoutTruncated, result.StderrTruncated
+	} else {
+		var shellArgs []string
+		shellName, shellArgs, err = shellCommandInvocation(args.Command)
+		if err != nil {
+			return nil, err
+		}
+		command := exec.CommandContext(commandContext, shellName, shellArgs...)
+		command.Dir = workingDirectory
+		configureToolCommandProcess(command)
+		command.WaitDelay = shellCommandWaitDelay
+		stdout, stderr := newLimitedBuffer(outputLimit), newLimitedBuffer(outputLimit)
+		command.Stdout, command.Stderr = stdout, stderr
+		runErr = command.Run()
+		stdoutText, stderrText = stdout.String(), stderr.String()
+		stdoutTruncated, stderrTruncated = stdout.Truncated(), stderr.Truncated()
+		exitCode = 0
+		if runErr != nil {
+			exitCode = -1
+			var exitErr *exec.ExitError
+			if errors.As(runErr, &exitErr) {
+				exitCode = exitErr.ExitCode()
+			}
+		}
+	}
 	duration := time.Since(started)
 	if trackChanges && before != nil {
 		if after := snapshotShellWorkspaceChanges(ctx, workingDirectory); after != nil {
@@ -147,13 +175,15 @@ func executeShellCommand(ctx ExecutionContext, arguments json.RawMessage) (any, 
 		}
 	}
 	timedOut := commandContext.Err() == context.DeadlineExceeded
-	exitCode := 0
 	if runErr != nil {
-		exitCode = -1
 		var exitErr *exec.ExitError
-		if errors.As(runErr, &exitErr) {
+		if errors.As(runErr, &exitErr) && !ctx.UsesSandbox() {
 			exitCode = exitErr.ExitCode()
 		} else if !timedOut {
+			var sandboxError *sandbox.Error
+			if errors.As(runErr, &sandboxError) {
+				return nil, SafeError{Code: sandboxError.Code, Message: sandboxError.Message}
+			}
 			return nil, fmt.Errorf("run shell command: %w", runErr)
 		}
 	}
@@ -163,10 +193,10 @@ func executeShellCommand(ctx ExecutionContext, arguments json.RawMessage) (any, 
 		WorkingDirectory:     relativeWorkspacePath(ctx, workingDirectory),
 		Shell:                shellName,
 		ExitCode:             exitCode,
-		Stdout:               stdout.String(),
-		Stderr:               stderr.String(),
-		StdoutTruncated:      stdout.Truncated(),
-		StderrTruncated:      stderr.Truncated(),
+		Stdout:               stdoutText,
+		Stderr:               stderrText,
+		StdoutTruncated:      stdoutTruncated,
+		StderrTruncated:      stderrTruncated,
 		TimedOut:             timedOut,
 		DurationMilliseconds: duration.Milliseconds(),
 	}, nil

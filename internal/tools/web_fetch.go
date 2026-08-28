@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/brent/echo/internal/sandbox"
 )
 
 const (
@@ -136,6 +139,16 @@ func webFetch(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
 
 	timeout := time.Duration(normalized.TimeoutSeconds) * time.Second
 	client := &http.Client{Timeout: timeout}
+	if ctx.UsesSandbox() {
+		client, err = ctx.Sandbox.HTTPClient(ctx.context(), ctx.WorkspaceID, timeout)
+		if err != nil {
+			var sandboxError *sandbox.Error
+			if errors.As(err, &sandboxError) {
+				return nil, SafeError{Code: sandboxError.Code, Message: sandboxError.Message}
+			}
+			return nil, SafeError{Code: "sandbox_egress_unavailable", Message: err.Error()}
+		}
+	}
 	start := time.Now()
 	response, err := client.Do(request)
 	if err != nil {

@@ -948,7 +948,7 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 			toolCallData["startedAt"] = toolStartedAt
 			r.appendTrajectoryAt("research/tool_call", toolStartedAt, toolCallData, true)
 			r.updateResearchToolActivity(agent, callID, callOrder, call.Function.Name, call.Function.Arguments, "", false, false)
-			toolCtx := r.session.toolContext(ctx, r.toolScopes, nil, nil)
+			toolCtx := r.session.toolContext(ctx, r.turnID, r.toolScopes, nil, nil)
 			toolCtx.ResearchAgents = nil
 			toolCtx.AgentModes = nil
 			var result tools.ExecutionResult

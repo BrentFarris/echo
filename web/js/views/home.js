@@ -693,6 +693,7 @@ export function mount(root) {
   const codeButtons = [...root.querySelectorAll("[data-nav='code']")];
   const searchButtons = [...root.querySelectorAll("[data-nav='search']")];
   const gitButtons = [...root.querySelectorAll("[data-nav='git']")];
+  const sandboxButtons = [...root.querySelectorAll("[data-nav='sandbox']")];
   const onSettingsClick = () => {
     location.hash = "#/settings";
   };
@@ -703,6 +704,7 @@ export function mount(root) {
   searchButtons.forEach((button) => button.addEventListener("click", onSearchClick));
   const onGitClick = () => { location.hash = codeRouteHash("git"); };
   gitButtons.forEach((button) => button.addEventListener("click", onGitClick));
+  sandboxButtons.forEach((button) => button.addEventListener("click", () => { location.hash = "#/sandbox"; }));
   const disposeChatMap = installChatMap(root);
 
   // Workspace selector: open the dropdown, and the "+ Add a workspace" modal.

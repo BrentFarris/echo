@@ -33,6 +33,7 @@ export type LSPStatus = {
   stderr?: string;
   restartCount?: number;
   capabilities?: Record<string, unknown>;
+  sandbox?: boolean;
 };
 
 export type WorkspaceLSPResponse = {

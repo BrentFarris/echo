@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/brent/echo/internal/lspconfig"
+	"github.com/brent/echo/internal/sandbox"
 	"github.com/brent/echo/internal/workspaces"
 	"github.com/google/uuid"
 )
@@ -44,6 +45,23 @@ type Service struct {
 	leases        map[string]*documentLease
 	lastRequester map[string]string
 	requestSeq    atomic.Uint64
+	sandbox       *sandbox.Manager
+}
+
+func (s *Service) SetSandbox(manager *sandbox.Manager) {
+	s.mu.Lock()
+	s.sandbox = manager
+	s.mu.Unlock()
+}
+
+func (s *Service) sandboxManager(workspaceID string) *sandbox.Manager {
+	s.mu.Lock()
+	manager := s.sandbox
+	s.mu.Unlock()
+	if manager != nil && manager.IsEnabled(workspaceID) {
+		return manager
+	}
+	return nil
 }
 
 type Client struct {
@@ -262,6 +280,22 @@ func (s *Service) RefreshWorkspace(workspaceID string) {
 	}
 }
 
+// StopWorkspaceProcesses stops active runtimes without immediately
+// reconciling them. Configuration transitions use it to avoid starting a
+// process against the old execution target between stop and save.
+func (s *Service) StopWorkspaceProcesses(workspaceID string) {
+	s.mu.Lock()
+	var stopped []*serverRuntime
+	for key, current := range s.runtimes {
+		if current.workspace.ID == workspaceID {
+			stopped = append(stopped, current)
+			delete(s.runtimes, key)
+		}
+	}
+	s.mu.Unlock()
+	stopRuntimes(stopped)
+}
+
 func (s *Service) ReconcileActivated() {
 	s.mu.Lock()
 	ids := make([]string, 0, len(s.activated))
@@ -299,6 +333,7 @@ func (s *Service) reconcile(workspaceID string, force bool) error {
 
 	var stopped []*serverRuntime
 	var started []*serverRuntime
+	sandboxManager := s.sandboxManager(workspaceID)
 	s.mu.Lock()
 	if !s.activated[workspaceID] {
 		s.mu.Unlock()
@@ -321,7 +356,7 @@ func (s *Service) reconcile(workspaceID string, force bool) error {
 		delete(wanted, current.profile.ID)
 	}
 	for _, profile := range wanted {
-		current := newServerRuntime(s, workspace, profile)
+		current := newServerRuntimeWithSandbox(s, workspace, profile, sandboxManager)
 		s.runtimes[runtimeKey(workspaceID, profile.ID)] = current
 		started = append(started, current)
 	}
@@ -341,7 +376,7 @@ func (s *Service) Statuses(workspaceID string, effective []lspconfig.Profile) []
 		if current := s.runtimes[runtimeKey(workspaceID, profile.ID)]; current != nil {
 			result = append(result, current.status())
 		} else {
-			result = append(result, Status{WorkspaceID: workspaceID, ProfileID: profile.ID, Name: profile.Name, State: "inactive"})
+			result = append(result, Status{WorkspaceID: workspaceID, ProfileID: profile.ID, Name: profile.Name, State: "inactive", Sandbox: s.sandbox != nil && s.sandbox.IsEnabled(workspaceID)})
 		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })

@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/brent/echo/internal/sandbox"
 )
 
 const (
@@ -285,6 +287,7 @@ func executeGitInspect(execution ExecutionContext, arguments json.RawMessage) (a
 
 	ctx, cancel := context.WithTimeout(execution.context(), gitInspectTimeout)
 	defer cancel()
+	ctx = context.WithValue(ctx, gitInspectSandboxContextKey{}, execution)
 	if err := ensureGitInspectRepositoryRoot(ctx, repository); err != nil {
 		return nil, err
 	}
@@ -380,6 +383,11 @@ func ensureGitInspectRepositoryRoot(ctx context.Context, repository gitInspectRe
 		return err
 	}
 	top := strings.TrimSpace(string(output))
+	if execution, ok := ctx.Value(gitInspectSandboxContextKey{}).(ExecutionContext); ok && execution.UsesSandbox() {
+		if mapped, mapErr := execution.Sandbox.GuestToHost(execution.WorkspaceID, top); mapErr == nil {
+			top = mapped
+		}
+	}
 	topInfo, topErr := os.Stat(top)
 	rootInfo, rootErr := os.Stat(repository.Path)
 	if topErr != nil || rootErr != nil || !os.SameFile(topInfo, rootInfo) {
@@ -1159,6 +1167,44 @@ func runGitInspectCommand(ctx context.Context, repositoryPath string, outputLimi
 		"-c", "submodule.recurse=false",
 		"-C", repositoryPath,
 	}, args...)
+	if execution, ok := ctx.Value(gitInspectSandboxContextKey{}).(ExecutionContext); ok && execution.UsesSandbox() {
+		guestPath, err := execution.Sandbox.HostToGuest(execution.WorkspaceID, repositoryPath)
+		if err != nil {
+			return nil, false, SafeError{Code: "sandbox_path_mapping_failed", Message: err.Error()}
+		}
+		for index := range commandArgs {
+			if commandArgs[index] == repositoryPath {
+				commandArgs[index] = guestPath
+			}
+		}
+		result, executeErr := execution.Sandbox.Execute(ctx, execution.WorkspaceID, sandbox.ExecRequest{
+			Command: append([]string{"git"}, commandArgs...), WorkingDirectory: guestPath,
+			Environment: []string{"GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "GIT_PAGER=cat"}, OutputLimit: outputLimit,
+		})
+		if ctx.Err() != nil {
+			return result.Stdout, result.StdoutTruncated, SafeError{Code: "git_timeout", Message: "Git inspection timed out or was canceled"}
+		}
+		if executeErr != nil {
+			var sandboxError *sandbox.Error
+			if errors.As(executeErr, &sandboxError) {
+				return nil, false, SafeError{Code: sandboxError.Code, Message: sandboxError.Message}
+			}
+			return nil, false, SafeError{Code: "git_failed", Message: executeErr.Error()}
+		}
+		if result.ExitCode != 0 {
+			message := strings.TrimSpace(strings.ToValidUTF8(string(result.Stderr), "\uFFFD"))
+			if message == "" {
+				message = fmt.Sprintf("Git exited with code %d", result.ExitCode)
+			}
+			code := "git_failed"
+			lower := strings.ToLower(message)
+			if strings.Contains(lower, "not a git repository") {
+				code, message = "not_git_repository", "workspace folder is not a Git repository"
+			}
+			return result.Stdout, result.StdoutTruncated, SafeError{Code: code, Message: message}
+		}
+		return result.Stdout, result.StdoutTruncated, nil
+	}
 	command := newGitInspectCommand(ctx, commandArgs...)
 	command.Env = append(os.Environ(),
 		"GIT_OPTIONAL_LOCKS=0",
@@ -1195,6 +1241,8 @@ func runGitInspectCommand(ctx context.Context, repositoryPath string, outputLimi
 	}
 	return []byte(stdout.String()), stdout.Truncated(), nil
 }
+
+type gitInspectSandboxContextKey struct{}
 
 func newGitInspectCommand(ctx context.Context, args ...string) *exec.Cmd {
 	command := exec.CommandContext(ctx, "git", args...)

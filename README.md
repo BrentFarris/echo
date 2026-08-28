@@ -35,6 +35,7 @@ Connect Echo to a local or remote provider that exposes an OpenAI-compatible `/c
 | **Code** | Monaco editing, generic opt-in LSP support, file tabs, workspace trees, quick open, text and file search, create/rename/save operations, external-change detection, recoverable trash, and browser hot-exit buffers |
 | **Git** | Repository discovery, working-tree status, staged and unstaged diffs, staging, commits, branches, remotes, fetch/pull/push/sync, history, tags, and stashes |
 | **Terminal** | Workspace-aware PTY sessions powered by xterm.js, resize, restart, stop, and reusable saved commands |
+| **Linux sandbox** | Optional per-workspace Docker workbench plus visible Xfce/Chromium desktop, browser takeover, persistent Linux/browser state, and deny-by-default egress |
 | **Agent tools** | Workspace-scoped file inspection and editing, shell commands, text and file search, image/video reads, web fetch/search, image generation, and reusable workspace skills |
 | **Plugins** | Reviewed local/GitHub packages with sandboxed page or floating views, optional native JSON-RPC tools, typed settings, secret references, immutable snapshots, and chat-driven authoring |
 | **Connections** | Multiple OpenAI-compatible LLM endpoints, custom HTTP headers, interaction routing, optional SearXNG research, and optional ComfyUI image generation |
@@ -53,6 +54,10 @@ Echo also ships the read-only `builtin/echo-plugins` skill. You can ask Chat to 
 ![Echo Code and Source Control](docs/screenshots/echo-code-git.png)
 
 The Code view uses Monaco for editing and reviewing diffs. Its explorer watches the filesystem for changes, keeps unsaved browser buffers recoverable, and moves deleted entries into Echo's restorable trash. The source-control view supports common repository workflows without leaving the browser, while the integrated terminal provides a full PTY on the Echo server.
+
+### Optional Linux sandbox and desktop
+
+On Windows x64 with Docker Desktop in Linux-container mode, or Linux x86-64 with Docker Engine, a workspace can opt into an isolated Ubuntu workbench and visible Xfce/Chromium desktop. Commands, terminals, Git, LSPs, builds, tests, and web fetches then run through the sandbox with no host fallback; registered workspace files remain canonical host bind mounts. The user can watch the AI, take over the desktop to sign in without logging keystrokes, and return the same persistent browser profile to the AI. See the [Linux sandbox guide](docs/sandbox.md) for setup, persistence, network grants, reset boundaries, and the container-isolation security model.
 
 ### Language servers
 
@@ -172,6 +177,8 @@ Echo listens on the selected port, including non-loopback interfaces. Control ne
 - Git
 - A modern browser
 
+Docker is optional. Sandbox-enabled workspaces require Docker Desktop (Windows x64, Linux-container mode) or Docker Engine (Linux x86-64); Echo diagnoses but does not install Docker.
+
 Clone the repository, build the frontend, and then compile the Go server so the production assets are embedded in the executable:
 
 ```bash
@@ -278,6 +285,7 @@ Echo is a single-owner development tool, not a multi-tenant service.
 - Agent modes reduce what is offered to a model, but the General mode is intentionally powerful. Use trusted models, keep work in version control, and expose only the folders Echo needs.
 - Custom endpoint headers may contain secrets and are stored in the local application-data file. Protect that file with the same care as other developer credentials.
 - Sandboxed plugin views cannot access Echo's DOM or APIs directly, but optional native plugin backends run with the Echo owner's OS permissions. Permissions are review disclosures rather than OS containment; install native plugins only from code you trust.
+- The optional workspace Linux sandbox isolates command and GUI execution from host files outside registered roots, but containers are not hardware VMs. Protect Docker and Echo's machine-local sandbox volumes; a signed-in browser profile can be used by the AI after control is returned.
 
 ## Contributing
 

@@ -415,7 +415,7 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	visionMode := session.transcript.Vision || messagesRequireMedia(messages)
 	settings, streamer := m.server.routeMediaChat(settings, messages, visionMode)
 	planMode := mode.ID == agentmodes.PlanID
-	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: researchEnabled, WorkspaceID: session.workspace.ID})))
+	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID})))
 	if err != nil {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "invalid_request", err.Error(), requestID)
@@ -643,7 +643,7 @@ func (m *chatSessionManager) compress(c *client, workspaceID, chatID, surfaceVal
 	researchEnabled := m.server.settings.ResearchAgentConcurrency > 0 && researchStreamer != nil && modeAllowsResearch(mode)
 	prefix := []llm.Message{m.server.agentModeSystemMessage(session.workspace, mode, lastTurn.UserContent, researchEnabled)}
 	toolSchema := m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{
-		PlanMode: mode.ID == agentmodes.PlanID, ResearchEnabled: researchEnabled, WorkspaceID: session.workspace.ID,
+		PlanMode: mode.ID == agentmodes.PlanID, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID,
 	})
 	if session.transcript.ContextCheckpoint != nil {
 		toolSchema = append(toolSchema, contextHistorySearchToolSchema())
@@ -948,7 +948,7 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 	visionMode := updated.Vision || messagesRequireMedia(messages)
 	settings, streamer := m.server.routeMediaChat(settings, messages, visionMode)
 	planMode := mode.ID == agentmodes.PlanID
-	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: researchEnabled, WorkspaceID: session.workspace.ID})))
+	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID})))
 	if err != nil {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "invalid_request", err.Error(), requestID)
@@ -1498,6 +1498,10 @@ func (m *chatSessionManager) closeTab(c *client, workspaceID, chatID string, sto
 	}
 	cancel := tab.cancel
 	idleCancel := tab.idleCompressionCancel
+	activeTurnID := ""
+	if tab.active != nil {
+		activeTurnID = tab.active.ID
+	}
 	tab.closed = true
 	tab.active = nil
 	tab.cancel = nil
@@ -1517,6 +1521,9 @@ func (m *chatSessionManager) closeTab(c *client, workspaceID, chatID string, sto
 	parent.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	if activeTurnID != "" && m.server.sandbox != nil {
+		m.server.sandbox.ReleaseAIControl(workspaceID, activeTurnID)
 	}
 	if idleCancel != nil {
 		idleCancel()
@@ -2141,7 +2148,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 		}
 		toolSchema := []llm.Tool(nil)
 		if !forceFinalWithoutTools {
-			toolSchema = s.manager.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: research != nil, WorkspaceID: s.workspace.ID})
+			toolSchema = s.manager.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: research != nil, SandboxGUI: s.manager.server.sandboxGUIEnabled(s.workspace.ID), WorkspaceID: s.workspace.ID})
 			if checkpoint != nil {
 				toolSchema = append(toolSchema, contextHistorySearchToolSchema())
 			}
@@ -2173,7 +2180,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				observedTokens = result.AfterTokens
 				usageSource = result.UsageSource
 				if !forceFinalWithoutTools {
-					toolSchema = s.manager.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: research != nil, WorkspaceID: s.workspace.ID})
+					toolSchema = s.manager.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: research != nil, SandboxGUI: s.manager.server.sandboxGUIEnabled(s.workspace.ID), WorkspaceID: s.workspace.ID})
 					toolSchema = append(toolSchema, contextHistorySearchToolSchema())
 				}
 			}
@@ -2398,7 +2405,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			case call.Function.Name == contextHistorySearchToolName:
 				result = s.executeContextHistorySearch(canonical, checkpoint, json.RawMessage(call.Function.Arguments))
 			default:
-				toolCtx := s.toolContext(ctx, scopes, generatedImages, generatedVideos)
+				toolCtx := s.toolContext(ctx, turnID, scopes, generatedImages, generatedVideos)
 				toolCtx.FileChanges = func(changes []tools.FileChange) {
 					fileChanges = append(fileChanges, compactFileChanges(changes, toolCtx.WorkspaceRoots)...)
 				}
@@ -2666,10 +2673,16 @@ func durationUntil(start time.Time, end *time.Time) any {
 
 func (s *chatSession) finish(turnID, status, message string, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.isActiveLocked(turnID) {
+		s.mu.Unlock()
 		return
 	}
+	defer func() {
+		s.mu.Unlock()
+		if s.manager.server.sandbox != nil {
+			s.manager.server.sandbox.ReleaseAIControl(s.workspace.ID, turnID)
+		}
+	}()
 	now := time.Now().UTC()
 	s.active.Status = status
 	s.active.Error = message
@@ -2723,11 +2736,14 @@ func (s *chatSession) isBusyLocked() bool {
 	return s.active != nil || s.idleCompressionRunning
 }
 
-func (s *chatSession) toolContext(ctx context.Context, scopes *tools.ToolScopeChecker, generatedImages map[string]tools.AttachedImage, generatedVideos map[string]tools.AttachedVideo) tools.ExecutionContext {
+func (s *chatSession) toolContext(ctx context.Context, turnID string, scopes *tools.ToolScopeChecker, generatedImages map[string]tools.AttachedImage, generatedVideos map[string]tools.AttachedVideo) tools.ExecutionContext {
 	settings := s.manager.server.settings
 	roots := s.manager.server.confinedToolRoots(s.workspace)
 	return tools.ExecutionContext{
 		Context: ctx, WorkspaceID: s.workspace.ID, WorkspacePath: s.workspace.MainPath, WorkspaceRoots: roots, SearxngURL: settings.SearxngURL,
+		Sandbox:                   s.manager.server.sandbox,
+		SandboxEnabled:            s.workspace.Sandbox.Enabled,
+		TurnID:                    turnID,
 		ResolveWorkspacePath:      s.manager.server.toolPathResolver(s.workspace.ID, roots, false),
 		ResolveWorkspaceChildPath: s.manager.server.toolPathResolver(s.workspace.ID, roots, true),
 		ComfyuiURL:                settings.ComfyuiURL, ComfyuiDefaultCheckpoint: settings.ComfyuiDefaultCheckpoint,

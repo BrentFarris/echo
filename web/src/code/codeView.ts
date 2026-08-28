@@ -397,6 +397,9 @@ class CodeView {
     this.root.querySelectorAll("[data-nav=settings]").forEach((button) => {
       button.addEventListener("click", () => { location.hash = "#/settings"; }, { signal });
     });
+    this.root.querySelectorAll("[data-nav=sandbox]").forEach((button) => {
+      button.addEventListener("click", () => { location.hash = "#/sandbox"; }, { signal });
+    });
     this.root.querySelectorAll<HTMLElement>("[data-code-sidebar]").forEach((button) => {
       button.addEventListener("click", () => {
         const view = button.dataset.codeSidebar;
@@ -1764,12 +1767,13 @@ class CodeView {
     if (language) language.textContent = tab ? monaco.languages.getLanguages().find((item) => item.id === tab.model.getLanguageId())?.aliases?.[0] || tab.model.getLanguageId() : "Plain Text";
     if (lsp) {
       const name = this.lspStatus?.name || this.lspStatus?.profileId || "LSP";
+      const sandboxLabel = this.lspStatus?.sandbox ? "Sandbox · " : "";
       lsp.hidden = this.lspState === "none";
-      lsp.textContent = this.lspState === "owned" ? `${name} ✓`
+      lsp.textContent = this.lspState === "owned" ? `${sandboxLabel}${name} ✓`
         : this.lspState === "denied" ? `${name}: Take Over`
-          : this.lspState === "failed" ? `${name}: Failed`
-            : this.lspState === "connecting" ? `${name}: Connecting`
-              : `${name}: Starting`;
+          : this.lspState === "failed" ? `${sandboxLabel}${name}: Failed`
+            : this.lspState === "connecting" ? `${sandboxLabel}${name}: Connecting`
+              : `${sandboxLabel}${name}: Starting`;
       lsp.dataset.lspState = this.lspState;
       lsp.title = [this.lspStatus?.message, this.lspStatus?.stderr].filter(Boolean).join("\n\n") || "Language server status";
     }

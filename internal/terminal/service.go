@@ -17,6 +17,7 @@ import (
 
 	ptylib "github.com/aymanbagabas/go-pty"
 	"github.com/brent/echo/internal/appdata"
+	"github.com/brent/echo/internal/sandbox"
 	"github.com/brent/echo/internal/workspaces"
 	"github.com/google/uuid"
 )
@@ -96,6 +97,61 @@ type Backend interface {
 
 type realBackend struct{ pty ptylib.Pty }
 type realProcess struct{ cmd *ptylib.Cmd }
+
+type sandboxBackend struct {
+	manager     *sandbox.Manager
+	workspaceID string
+	pty         sandbox.PTY
+	cols        int
+	rows        int
+}
+
+type sandboxProcess struct{ pty sandbox.PTY }
+
+func (b *sandboxBackend) Read(buffer []byte) (int, error) {
+	if b.pty == nil {
+		return 0, io.ErrClosedPipe
+	}
+	return b.pty.Read(buffer)
+}
+
+func (b *sandboxBackend) Write(buffer []byte) (int, error) {
+	if b.pty == nil {
+		return 0, io.ErrClosedPipe
+	}
+	return b.pty.Write(buffer)
+}
+
+func (b *sandboxBackend) Close() error {
+	if b.pty == nil {
+		return nil
+	}
+	return b.pty.Close()
+}
+
+func (b *sandboxBackend) Resize(cols, rows int) error {
+	b.cols, b.rows = cols, rows
+	if b.pty == nil {
+		return nil
+	}
+	return b.pty.Resize(cols, rows)
+}
+
+func (b *sandboxBackend) Start(ctx context.Context, spec CommandSpec) (Process, error) {
+	command := append([]string{spec.Name}, spec.Args...)
+	pty, err := b.manager.OpenPTY(ctx, b.workspaceID, sandbox.ExecRequest{
+		Command: command, WorkingDirectory: spec.Dir, Environment: spec.Env,
+		TTY: true, Columns: b.cols, Rows: b.rows,
+	})
+	if err != nil {
+		return nil, err
+	}
+	b.pty = pty
+	return &sandboxProcess{pty: pty}, nil
+}
+
+func (p *sandboxProcess) Wait() (int, error) { return p.pty.Wait() }
+func (p *sandboxProcess) Kill() error        { return p.pty.Kill() }
 
 func newRealBackend() (Backend, error) {
 	value, err := ptylib.New()
@@ -179,6 +235,7 @@ type Service struct {
 	mu         sync.Mutex
 	sessions   map[string]*session
 	newBackend func() (Backend, error)
+	sandbox    *sandbox.Manager
 	notify     func(Event)
 }
 
@@ -194,6 +251,12 @@ func New(workspaceManager workspaceResolver, data *appdata.Store) *Service {
 func (s *Service) SetNotifier(notify func(Event)) {
 	s.mu.Lock()
 	s.notify = notify
+	s.mu.Unlock()
+}
+
+func (s *Service) SetSandbox(manager *sandbox.Manager) {
+	s.mu.Lock()
+	s.sandbox = manager
 	s.mu.Unlock()
 }
 
@@ -224,9 +287,23 @@ func (s *Service) Start(workspaceID string, cols, rows int) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	shellName, shellArgs, shellLabel, err := resolveInteractiveShell()
-	if err != nil {
-		return Snapshot{}, err
+	s.mu.Lock()
+	sandboxManager := s.sandbox
+	s.mu.Unlock()
+	sandboxEnabled := sandboxManager != nil && sandboxManager.IsEnabled(workspaceID)
+	var shellName, shellLabel string
+	var shellArgs []string
+	if sandboxEnabled {
+		workingDir, err = sandboxManager.HostToGuest(workspaceID, workingDir)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("map sandbox working directory: %w", err)
+		}
+		shellName, shellArgs, shellLabel = "/bin/bash", []string{"-l"}, "Sandbox Bash"
+	} else {
+		shellName, shellArgs, shellLabel, err = resolveInteractiveShell()
+		if err != nil {
+			return Snapshot{}, err
+		}
 	}
 	cols, rows = ClampSize(cols, rows)
 
@@ -236,7 +313,12 @@ func (s *Service) Start(workspaceID string, cols, rows int) (Snapshot, error) {
 		return current.snapshot(0), nil
 	}
 	factory := s.newBackend
-	backend, err := factory()
+	var backend Backend
+	if sandboxEnabled {
+		backend = &sandboxBackend{manager: sandboxManager, workspaceID: workspaceID}
+	} else {
+		backend, err = factory()
+	}
 	if err != nil {
 		s.mu.Unlock()
 		return Snapshot{}, fmt.Errorf("create terminal: %w", err)
@@ -247,8 +329,12 @@ func (s *Service) Start(workspaceID string, cols, rows int) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("size terminal: %w", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	environment := terminalEnvironment()
+	if sandboxEnabled {
+		environment = sandboxTerminalEnvironment()
+	}
 	process, err := backend.Start(ctx, CommandSpec{
-		Name: shellName, Args: shellArgs, Dir: workingDir, Env: terminalEnvironment(),
+		Name: shellName, Args: shellArgs, Dir: workingDir, Env: environment,
 	})
 	if err != nil {
 		cancel()
@@ -692,6 +778,13 @@ func terminalEnvironment() []string {
 	values = setEnvironment(values, "COLORTERM", "truecolor")
 	values = setEnvironment(values, "TERM_PROGRAM", "Echo")
 	return values
+}
+
+func sandboxTerminalEnvironment() []string {
+	return []string{
+		"TERM=xterm-256color", "COLORTERM=truecolor", "TERM_PROGRAM=Echo",
+		"LANG=C.UTF-8", "LC_ALL=C.UTF-8", "ECHO_SANDBOX=1",
+	}
 }
 
 func setEnvironment(values []string, key, value string) []string {

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/brent/echo/internal/lspconfig"
+	"github.com/brent/echo/internal/sandbox"
 	"github.com/brent/echo/internal/workspaces"
 )
 
@@ -30,6 +31,7 @@ type Status struct {
 	Stderr       string          `json:"stderr,omitempty"`
 	RestartCount int             `json:"restartCount,omitempty"`
 	Capabilities json.RawMessage `json:"capabilities,omitempty"`
+	Sandbox      bool            `json:"sandbox,omitempty"`
 }
 
 type serverRuntime struct {
@@ -43,7 +45,8 @@ type serverRuntime struct {
 
 	mu           sync.Mutex
 	peer         *rpcPeer
-	command      *exec.Cmd
+	command      lspProcess
+	mapper       *sandbox.PathMapper
 	state        string
 	message      string
 	stderr       []byte
@@ -52,12 +55,46 @@ type serverRuntime struct {
 	intentional  bool
 }
 
+type lspProcess interface {
+	Wait() (int, error)
+	Kill() error
+}
+
+type localLSPProcess struct{ command *exec.Cmd }
+
+func (p *localLSPProcess) Wait() (int, error) {
+	err := p.command.Wait()
+	if p.command.ProcessState != nil {
+		return p.command.ProcessState.ExitCode(), err
+	}
+	if err != nil {
+		return -1, err
+	}
+	return 0, nil
+}
+func (p *localLSPProcess) Kill() error {
+	if p.command.Process == nil {
+		return nil
+	}
+	return p.command.Process.Kill()
+}
+
 func newServerRuntime(service *Service, workspace workspaces.Workspace, profile lspconfig.Profile) *serverRuntime {
+	return newServerRuntimeWithSandbox(service, workspace, profile, service.sandboxManager(workspace.ID))
+}
+
+func newServerRuntimeWithSandbox(service *Service, workspace workspaces.Workspace, profile lspconfig.Profile, manager *sandbox.Manager) *serverRuntime {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &serverRuntime{
+	runtime := &serverRuntime{
 		service: service, workspace: workspace, profile: profile.Clone(),
 		ctx: ctx, cancel: cancel, done: make(chan struct{}), state: "stopped",
 	}
+	if manager != nil {
+		if mapper, err := manager.PathMapper(workspace.ID); err == nil {
+			runtime.mapper = &mapper
+		}
+	}
+	return runtime
 }
 
 func (r *serverRuntime) start() {
@@ -108,29 +145,53 @@ func (r *serverRuntime) run() {
 }
 
 func (r *serverRuntime) launch() (time.Time, error) {
-	command := exec.CommandContext(r.ctx, r.profile.Command, r.profile.Args...)
-	command.Dir = r.workspace.MainPath
-	command.Env = processEnvironment(r.profile.Environment)
-	stdin, err := command.StdinPipe()
-	if err != nil {
-		return time.Time{}, fmt.Errorf("open stdin: %w", err)
-	}
-	stdout, err := command.StdoutPipe()
-	if err != nil {
-		_ = stdin.Close()
-		return time.Time{}, fmt.Errorf("open stdout: %w", err)
-	}
-	stderr, err := command.StderrPipe()
-	if err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		return time.Time{}, fmt.Errorf("open stderr: %w", err)
-	}
-	if err := command.Start(); err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		_ = stderr.Close()
-		return time.Time{}, fmt.Errorf("start %s: %w", r.profile.Command, err)
+	var command lspProcess
+	var stdin io.WriteCloser
+	var stdout, stderr io.ReadCloser
+	if manager := r.service.sandboxManager(r.workspace.ID); manager != nil {
+		guestDirectory, err := manager.HostToGuest(r.workspace.ID, r.workspace.MainPath)
+		if err != nil {
+			return time.Time{}, err
+		}
+		commandName, commandArgs, err := r.sandboxCommand(manager)
+		if err != nil {
+			return time.Time{}, err
+		}
+		process, err := manager.OpenProcess(r.ctx, r.workspace.ID, sandbox.ExecRequest{
+			Command: append([]string{commandName}, commandArgs...), WorkingDirectory: guestDirectory,
+			Environment: sandboxProcessEnvironment(r.profile.Environment),
+		})
+		if err != nil {
+			return time.Time{}, fmt.Errorf("start %s in sandbox: %w", r.profile.Command, err)
+		}
+		command, stdin, stdout, stderr = process, process.Stdin(), process.Stdout(), process.Stderr()
+	} else {
+		localCommand := exec.CommandContext(r.ctx, r.profile.Command, r.profile.Args...)
+		localCommand.Dir = r.workspace.MainPath
+		localCommand.Env = processEnvironment(r.profile.Environment)
+		var err error
+		stdin, err = localCommand.StdinPipe()
+		if err != nil {
+			return time.Time{}, fmt.Errorf("open stdin: %w", err)
+		}
+		stdout, err = localCommand.StdoutPipe()
+		if err != nil {
+			_ = stdin.Close()
+			return time.Time{}, fmt.Errorf("open stdout: %w", err)
+		}
+		stderr, err = localCommand.StderrPipe()
+		if err != nil {
+			_ = stdin.Close()
+			_ = stdout.Close()
+			return time.Time{}, fmt.Errorf("open stderr: %w", err)
+		}
+		if err := localCommand.Start(); err != nil {
+			_ = stdin.Close()
+			_ = stdout.Close()
+			_ = stderr.Close()
+			return time.Time{}, fmt.Errorf("start %s: %w", r.profile.Command, err)
+		}
+		command = &localLSPProcess{command: localCommand}
 	}
 	peer := newRPCPeer(stdout, stdin, &pipeCloser{stdin: stdin, stdout: stdout}, r.handleRequest, r.handleNotification)
 	r.mu.Lock()
@@ -144,8 +205,8 @@ func (r *serverRuntime) launch() (time.Time, error) {
 	defer cancel()
 	result, err := peer.Call(initializeContext, "initialize", r.initializeParams())
 	if err != nil {
-		_ = command.Process.Kill()
-		_ = command.Wait()
+		_ = command.Kill()
+		_, _ = command.Wait()
 		_ = peer.Close()
 		return time.Time{}, fmt.Errorf("initialize %s: %w", r.profile.Name, err)
 	}
@@ -153,8 +214,8 @@ func (r *serverRuntime) launch() (time.Time, error) {
 		Capabilities json.RawMessage `json:"capabilities"`
 	}
 	if err := json.Unmarshal(result, &initialized); err != nil {
-		_ = command.Process.Kill()
-		_ = command.Wait()
+		_ = command.Kill()
+		_, _ = command.Wait()
 		_ = peer.Close()
 		return time.Time{}, fmt.Errorf("decode initialize response: %w", err)
 	}
@@ -180,7 +241,13 @@ func (r *serverRuntime) wait() error {
 		return errors.New("language server process is unavailable")
 	}
 	processDone := make(chan error, 1)
-	go func() { processDone <- command.Wait() }()
+	go func() {
+		code, waitErr := command.Wait()
+		if waitErr == nil && code != 0 {
+			waitErr = fmt.Errorf("language server exited with code %d", code)
+		}
+		processDone <- waitErr
+	}()
 	var err error
 	if peer == nil {
 		err = <-processDone
@@ -189,9 +256,7 @@ func (r *serverRuntime) wait() error {
 		case err = <-processDone:
 		case <-peer.Done():
 			transportErr := peer.Err()
-			if command.Process != nil {
-				_ = command.Process.Kill()
-			}
+			_ = command.Kill()
 			err = <-processDone
 			if transportErr != nil {
 				err = fmt.Errorf("language server transport failed: %w", transportErr)
@@ -227,13 +292,13 @@ func (r *serverRuntime) stop(ctx context.Context) {
 		_ = peer.Notify("exit", nil)
 	}
 	r.cancel()
-	if command != nil && command.Process != nil {
+	if command != nil {
 		select {
 		case <-r.done:
 		case <-time.After(500 * time.Millisecond):
-			_ = command.Process.Kill()
+			_ = command.Kill()
 		case <-ctx.Done():
-			_ = command.Process.Kill()
+			_ = command.Kill()
 		}
 	}
 	select {
@@ -250,7 +315,15 @@ func (r *serverRuntime) call(ctx context.Context, method string, params json.Raw
 	if peer == nil || state != "running" {
 		return nil, fmt.Errorf("language server %q is not running", r.profile.Name)
 	}
-	return peer.Call(ctx, method, params)
+	translated, err := r.translateJSON(params, true)
+	if err != nil {
+		return nil, fmt.Errorf("translate LSP request paths: %w", err)
+	}
+	result, err := peer.Call(ctx, method, translated)
+	if err != nil {
+		return nil, err
+	}
+	return r.translateJSON(result, false)
 }
 
 func (r *serverRuntime) notify(method string, params any) error {
@@ -261,7 +334,11 @@ func (r *serverRuntime) notify(method string, params any) error {
 	if peer == nil || state != "running" {
 		return fmt.Errorf("language server %q is not running", r.profile.Name)
 	}
-	return peer.Notify(method, params)
+	translated, err := r.translateValue(params, true)
+	if err != nil {
+		return fmt.Errorf("translate LSP notification paths: %w", err)
+	}
+	return peer.Notify(method, translated)
 }
 
 func (r *serverRuntime) updateSettings(settings map[string]any) {
@@ -287,7 +364,7 @@ func (r *serverRuntime) status() Status {
 	return Status{
 		WorkspaceID: r.workspace.ID, ProfileID: r.profile.ID, Name: r.profile.Name,
 		State: r.state, Message: r.message, Stderr: string(r.stderr), RestartCount: r.restarts,
-		Capabilities: append(json.RawMessage(nil), r.capabilities...),
+		Capabilities: append(json.RawMessage(nil), r.capabilities...), Sandbox: r.mapper != nil,
 	}
 }
 
@@ -321,7 +398,7 @@ func (r *serverRuntime) captureStderr(reader io.ReadCloser) {
 func (r *serverRuntime) initializeParams() map[string]any {
 	folders := workspaceFolders(r.workspace)
 	rootURI := fileURI(r.workspace.MainPath)
-	return map[string]any{
+	params := map[string]any{
 		"processId":             os.Getpid(),
 		"clientInfo":            map[string]any{"name": "Echo", "version": "0.1.0"},
 		"locale":                "en-US",
@@ -331,9 +408,23 @@ func (r *serverRuntime) initializeParams() map[string]any {
 		"capabilities":          clientCapabilities(),
 		"trace":                 "off",
 	}
+	if r.mapper != nil {
+		params["processId"] = nil
+		if translated, err := r.translateValue(params, true); err == nil {
+			if object, ok := translated.(map[string]any); ok {
+				return object
+			}
+		}
+	}
+	return params
 }
 
 func (r *serverRuntime) handleRequest(ctx context.Context, method string, params json.RawMessage) (any, *RPCError) {
+	if translated, err := r.translateJSON(params, false); err == nil {
+		params = translated
+	} else {
+		return nil, &RPCError{Code: -32602, Message: err.Error()}
+	}
 	switch method {
 	case "workspace/configuration":
 		var request struct {
@@ -350,7 +441,11 @@ func (r *serverRuntime) handleRequest(ctx context.Context, method string, params
 		}
 		return result, nil
 	case "workspace/workspaceFolders":
-		return workspaceFolders(r.workspace), nil
+		folders := any(workspaceFolders(r.workspace))
+		if translated, err := r.translateValue(folders, true); err == nil {
+			folders = translated
+		}
+		return folders, nil
 	case "client/registerCapability", "client/unregisterCapability", "window/workDoneProgress/create":
 		return nil, nil
 	case "workspace/applyEdit":
@@ -358,14 +453,69 @@ func (r *serverRuntime) handleRequest(ctx context.Context, method string, params
 		if err != nil {
 			return map[string]any{"applied": false, "failureReason": err.Error()}, nil
 		}
-		return result, nil
+		translated, translateErr := r.translateValue(result, true)
+		if translateErr != nil {
+			return nil, &RPCError{Code: -32603, Message: translateErr.Error()}
+		}
+		return translated, nil
 	default:
 		return nil, &RPCError{Code: -32601, Message: "method not supported by Echo"}
 	}
 }
 
 func (r *serverRuntime) handleNotification(method string, params json.RawMessage) {
+	if translated, err := r.translateJSON(params, false); err == nil {
+		params = translated
+	} else {
+		return
+	}
 	r.service.runtimeNotification(r, method, params)
+}
+
+func (r *serverRuntime) translateJSON(data json.RawMessage, hostToGuest bool) (json.RawMessage, error) {
+	if r.mapper == nil {
+		return data, nil
+	}
+	return r.mapper.TranslateJSON(data, hostToGuest)
+}
+
+func (r *serverRuntime) translateValue(value any, hostToGuest bool) (any, error) {
+	if r.mapper == nil {
+		return value, nil
+	}
+	return r.mapper.TranslateValue(value, hostToGuest)
+}
+
+func (r *serverRuntime) sandboxCommand(manager *sandbox.Manager) (string, []string, error) {
+	command := strings.TrimSpace(r.profile.Command)
+	if filepath.IsAbs(command) {
+		mapped, err := manager.HostToGuest(r.workspace.ID, command)
+		if err != nil {
+			return "", nil, fmt.Errorf("language server executable is outside registered workspace roots")
+		}
+		command = mapped
+	}
+	args := append([]string(nil), r.profile.Args...)
+	for index, argument := range args {
+		if strings.HasPrefix(strings.ToLower(argument), "file:") {
+			mapper, err := manager.PathMapper(r.workspace.ID)
+			if err != nil {
+				return "", nil, err
+			}
+			mapped, err := mapper.HostURIToGuest(argument)
+			if err != nil {
+				return "", nil, err
+			}
+			args[index] = mapped
+		} else if filepath.IsAbs(argument) {
+			mapped, err := manager.HostToGuest(r.workspace.ID, argument)
+			if err != nil {
+				return "", nil, fmt.Errorf("language server argument path is outside registered workspace roots")
+			}
+			args[index] = mapped
+		}
+	}
+	return command, args, nil
 }
 
 func clientCapabilities() map[string]any {
@@ -493,6 +643,26 @@ func processEnvironment(overrides map[string]string) []string {
 	result := make([]string, 0, len(identities))
 	for _, identity := range identities {
 		result = append(result, keys[identity]+"="+values[identity])
+	}
+	return result
+}
+
+func sandboxProcessEnvironment(overrides map[string]string) []string {
+	values := map[string]string{
+		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/echo/go/bin",
+		"HOME": "/home/echo", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "ECHO_SANDBOX": "1",
+	}
+	for key, value := range overrides {
+		values[key] = value
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, key+"="+values[key])
 	}
 	return result
 }
