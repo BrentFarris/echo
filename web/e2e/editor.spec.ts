@@ -270,7 +270,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.keyboard.press("Enter");
   await expect(page.locator(".terminal-xterm-instance .xterm-rows")).toContainText("ECHO_TERMINAL_ROUTE_OK");
 
-  await page.getByRole("button", { name: "Source Control" }).click();
+  await page.getByRole("button", { name: "Source Control", exact: true }).click();
   await expect(page.locator(".code-app-shell")).toBeVisible();
   await expect(page).toHaveURL(/#\/code\?sidebar=git$/);
   await expect(page.getByText("SOURCE CONTROL", { exact: true })).toBeVisible();
@@ -875,7 +875,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   // untracked reverts.
   const trashPath = join(state.workspace, "trash-me.txt");
   writeFileSync(trashPath, "recoverable\n", "utf8");
-  await page.getByRole("button", { name: "Source Control" }).click();
+  await page.getByRole("button", { name: "Source Control", exact: true }).click();
   await expect(page.getByText("SOURCE CONTROL", { exact: true })).toBeVisible();
   const changes = page.locator(".git-change-group[data-git-group='unstaged']");
   const trashRow = changes.locator(".git-change-row", { hasText: "trash-me.txt" });
@@ -931,7 +931,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.getByRole("button", { name: "Back to previous view" }).click();
   await expect(page.locator(".code-app-shell")).toBeVisible();
   writeFileSync(mainPath, "package main\n\n// inline diff setting\nfunc main() {}\n", "utf8");
-  await page.getByRole("button", { name: "Source Control" }).click();
+  await page.getByRole("button", { name: "Source Control", exact: true }).click();
   const inlineMain = page.locator(".git-change-group[data-git-group='unstaged'] .git-change-row", { hasText: "main.go" });
   await expect(inlineMain).toBeVisible();
   await inlineMain.click();
@@ -988,11 +988,11 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(page.locator(".code-app-shell")).not.toHaveClass(/is-code-chat-open/);
   await expect(mobileCodeChatToggle).toBeFocused();
 
-  await mobileNav.getByRole("button", { name: "Source Control" }).click();
+  await mobileNav.getByRole("button", { name: "Source Control", exact: true }).click();
   await expect(page).toHaveURL(/#\/code\?sidebar=git$/);
   await expect(page.locator(".code-app-shell")).toHaveClass(/is-explorer-open/);
   await expect(page.getByText("SOURCE CONTROL", { exact: true })).toBeVisible();
-  await expect(mobileNav.getByRole("button", { name: "Source Control" })).toHaveAttribute("aria-current", "page");
+  await expect(mobileNav.getByRole("button", { name: "Source Control", exact: true })).toHaveAttribute("aria-current", "page");
 
   const codeWorkspace = mobileNav.locator(".workspace-dropdown-trigger");
   await codeWorkspace.click();
