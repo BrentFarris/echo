@@ -174,10 +174,51 @@ func TestDockerIntegrationLifecycle(t *testing.T) {
 	if err != nil || !strings.Contains(string(snapshot), `"tabId"`) || !strings.Contains(string(snapshot), `"screenshot"`) {
 		t.Fatalf("headed browser bridge is unavailable: %s, %v", snapshot, err)
 	}
+	var initialBrowser struct {
+		TabID string `json:"tabId"`
+	}
+	if err := json.Unmarshal(snapshot, &initialBrowser); err != nil || initialBrowser.TabID == "" {
+		t.Fatalf("headed browser snapshot did not include a tab ID: %s, %v", snapshot, err)
+	}
+	if _, err := engine.BrowserCall(ctx, state, "tabs", json.RawMessage(`{"action":"close","tabId":"`+initialBrowser.TabID+`"}`)); err != nil {
+		t.Fatalf("could not close the initial managed browser tab: %v", err)
+	}
+	launcher, err := engine.Exec(ctx, state, ExecRequest{
+		Role: "desktop", OutputLimit: 64 << 10,
+		Command: []string{"/bin/bash", "-lc", "set -eu; grep -qx 'WebBrowser=echo-browser' \"$HOME/.config/xfce4/helpers.rc\"; test \"$(readlink -f /usr/bin/x-www-browser)\" = /opt/echo-browser/browser-launcher.mjs; DISPLAY=:1 exo-open --launch WebBrowser"},
+	})
+	if err != nil || launcher.ExitCode != 0 {
+		t.Fatalf("Xfce default browser launcher failed: exit=%d stdout=%q stderr=%q err=%v", launcher.ExitCode, launcher.Stdout, launcher.Stderr, err)
+	}
+	if err := waitForBrowserTab(ctx, engine, state); err != nil {
+		t.Fatal(err)
+	}
 	image, mediaType, err := engine.DesktopScreenshot(ctx, state)
 	if err != nil || len(image) == 0 || (mediaType != "image/png" && mediaType != "image/jpeg") {
 		t.Fatalf("desktop screenshot failed: bytes=%d type=%q err=%v", len(image), mediaType, err)
 	}
+}
+
+func waitForBrowserTab(ctx context.Context, engine *DockerEngine, state MachineState) error {
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		result, err := engine.BrowserCall(ctx, state, "tabs", json.RawMessage(`{}`))
+		if err == nil {
+			var response struct {
+				Tabs []struct {
+					ID string `json:"id"`
+				} `json:"tabs"`
+			}
+			if decodeErr := json.Unmarshal(result, &response); decodeErr != nil {
+				return decodeErr
+			}
+			if len(response.Tabs) > 0 && response.Tabs[0].ID != "" {
+				return nil
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return errors.New("Xfce browser launcher did not reopen the managed browser")
 }
 
 func logDockerIntegrationState(t *testing.T, engine *DockerEngine, state MachineState) {

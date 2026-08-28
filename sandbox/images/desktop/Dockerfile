@@ -32,10 +32,16 @@ COPY sandbox/images/desktop/package.json ./package.json
 RUN npm install --omit=dev --ignore-scripts --no-audit --no-fund \
  && npm cache clean --force
 COPY sandbox/images/desktop/browser-bridge.mjs ./browser-bridge.mjs
+COPY sandbox/images/desktop/browser-launcher.mjs ./browser-launcher.mjs
+COPY sandbox/images/desktop/echo-browser.desktop /usr/share/xfce4/helpers/echo-browser.desktop
 COPY sandbox/images/desktop/entrypoint.sh /usr/local/bin/echo-desktop-entrypoint
 COPY --from=agent-build /out/echo-sandbox-agent /usr/local/bin/echo-sandbox-agent
 RUN sed -i 's/\r$//' /usr/local/bin/echo-desktop-entrypoint \
+ && sed -i 's/\r$//' /opt/echo-browser/browser-launcher.mjs \
  && chmod 0755 /usr/local/bin/echo-desktop-entrypoint /usr/local/bin/echo-sandbox-agent \
+      /opt/echo-browser/browser-launcher.mjs \
+ && ln -s /opt/echo-browser/browser-launcher.mjs /usr/local/bin/echo-browser \
+ && update-alternatives --install /usr/bin/x-www-browser x-www-browser /usr/local/bin/echo-browser 200 \
  && chown -R echo:echo /opt/echo-browser
 LABEL org.opencontainers.image.title="Echo Sandbox Desktop" \
       org.opencontainers.image.source="$ECHO_SOURCE_REPOSITORY"

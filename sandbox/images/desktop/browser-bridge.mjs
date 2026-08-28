@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { readFileSync } from "node:fs";
+import { chmodSync, readFileSync, unlinkSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { timingSafeEqual } from "node:crypto";
 import path from "node:path";
@@ -7,6 +7,7 @@ import { chromium } from "playwright";
 
 const profilePath = "/home/echo/.config/chromium";
 const downloadPath = "/exchange/downloads";
+const launcherSocketPath = "/run/echo/browser/launcher.sock";
 const maximumBodyBytes = 1 << 20;
 const maximumScreenshotBytes = 5 << 20;
 const maximumElements = 400;
@@ -14,6 +15,7 @@ const maximumElements = 400;
 let context;
 let activePage;
 let startError = "";
+let launchPromise;
 let nextTabID = 1;
 let nextNavigation = 1;
 let references = new Map();
@@ -142,38 +144,56 @@ function trackPage(page) {
 }
 
 async function launch() {
-  try {
-    context = await chromium.launchPersistentContext(profilePath, {
-      headless: false,
-      chromiumSandbox: true,
-      viewport: { width: 1440, height: 900 },
-      screen: { width: 1440, height: 900 },
-      acceptDownloads: true,
-      downloadsPath: downloadPath,
-      proxy: { server: "http://gateway:3128", bypass: "localhost,127.0.0.1,gateway,workbench,desktop" },
-      locale: "en-US",
-      args: ["--disable-features=Translate"],
-    });
-    await context.addInitScript(() => {
-      const install = () => {
-        if (window.__echoSandboxObserver) return;
-        window.__echoSandboxDOMRevision = 1;
-        const observer = new MutationObserver(() => { window.__echoSandboxDOMRevision += 1; });
-        observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
-        window.__echoSandboxObserver = observer;
-      };
-      if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", install, { once: true });
-      else install();
-    });
-    for (const page of context.pages()) trackPage(page);
-    context.on("page", trackPage);
-    activePage ||= await context.newPage();
-  } catch (error) {
-    startError = String(error?.message || error);
-  }
+  if (context) return context;
+  if (launchPromise) return launchPromise;
+  launchPromise = (async () => {
+    try {
+      const launched = await chromium.launchPersistentContext(profilePath, {
+        headless: false,
+        chromiumSandbox: true,
+        viewport: { width: 1440, height: 900 },
+        screen: { width: 1440, height: 900 },
+        acceptDownloads: true,
+        downloadsPath: downloadPath,
+        proxy: { server: "http://gateway:3128", bypass: "localhost,127.0.0.1,gateway,workbench,desktop" },
+        locale: "en-US",
+        args: ["--disable-features=Translate"],
+      });
+      context = launched;
+      startError = "";
+      await launched.addInitScript(() => {
+        const install = () => {
+          if (window.__echoSandboxObserver) return;
+          window.__echoSandboxDOMRevision = 1;
+          const observer = new MutationObserver(() => { window.__echoSandboxDOMRevision += 1; });
+          observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+          window.__echoSandboxObserver = observer;
+        };
+        if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", install, { once: true });
+        else install();
+      });
+      for (const page of launched.pages()) trackPage(page);
+      launched.on("page", trackPage);
+      launched.on("close", () => {
+        if (context !== launched) return;
+        context = undefined;
+        activePage = undefined;
+        references.clear();
+      });
+      activePage ||= await launched.newPage();
+      return launched;
+    } catch (error) {
+      startError = String(error?.message || error);
+      return undefined;
+    } finally {
+      launchPromise = undefined;
+    }
+  })();
+  return launchPromise;
 }
 
 async function currentPage(params = {}) {
+  if (!context) await launch();
   if (!context) throw coded("browser_unavailable", startError || "browser is still starting", 503);
   if (params.tabId) {
     const selected = context.pages().find((page) => pageID(page) === params.tabId);
@@ -415,10 +435,37 @@ const server = createServer(async (request, response) => {
   }
 });
 
+const launcherServer = createServer(async (request, response) => {
+  try {
+    if (request.method !== "POST" || request.url !== "/open") {
+      return json(response, 404, { ok: false, code: "not_found", error: "not found" });
+    }
+    const payload = await bodyJSON(request);
+    const target = String(payload.url || "").trim();
+    const hadContext = Boolean(context);
+    if (!context) await launch();
+    if (!context) throw coded("browser_unavailable", startError || "browser is still starting", 503);
+    let page = !hadContext ? context.pages().find((candidate) => !candidate.isClosed()) : undefined;
+    page ||= await context.newPage();
+    activePage = page;
+    await page.bringToFront();
+    if (target) void page.goto(absoluteWebURL(target), { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+    return json(response, 200, { ok: true });
+  } catch (error) {
+    return json(response, Number(error.status) || 500, {
+      ok: false,
+      code: error.code || "browser_launch_failed",
+      error: error.code ? error.message : "browser launch failed",
+    });
+  }
+});
+
 try {
   leaseToken = readFileSync(3, "utf8").trim();
   if (leaseToken.length < 32) throw new Error("lease token is invalid");
   server.listen(3000, "0.0.0.0");
+  try { unlinkSync(launcherSocketPath); } catch (error) { if (error?.code !== "ENOENT") throw error; }
+  launcherServer.listen(launcherSocketPath, () => chmodSync(launcherSocketPath, 0o600));
   launch();
 } catch (error) {
   console.error(`browser bridge startup failed: ${String(error?.message || error)}`);
@@ -427,6 +474,8 @@ try {
 
 async function shutdown() {
   await context?.close().catch(() => {});
+  launcherServer.close();
+  try { unlinkSync(launcherSocketPath); } catch {}
   server.close(() => process.exit(0));
 }
 process.on("SIGTERM", shutdown);
