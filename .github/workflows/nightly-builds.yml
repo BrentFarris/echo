@@ -218,7 +218,7 @@ jobs:
         run: go test ./internal/sandbox -run TestDockerIntegrationLifecycle -count=1 -v
 
       - name: Scan workbench image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ steps.refs.outputs.workbench }}
           format: json
@@ -228,7 +228,7 @@ jobs:
           exit-code: "0"
 
       - name: Scan desktop image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ steps.refs.outputs.desktop }}
           format: json
@@ -238,7 +238,7 @@ jobs:
           exit-code: "0"
 
       - name: Scan egress gateway image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ steps.refs.outputs.gateway }}
           format: json
