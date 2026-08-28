@@ -153,6 +153,16 @@ describe("multi-chat WebSocket protocol", () => {
   });
 
   it("preserves manual transcript scrolling while messages stream", async () => {
+    let scrollPosition = 37;
+    Object.defineProperties(log, {
+      scrollHeight: { configurable: true, get: () => 1000 },
+      clientHeight: { configurable: true, get: () => 200 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollPosition,
+        set: (value: number) => { scrollPosition = value; },
+      },
+    });
     emit("session_snapshot", {
       type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
       activeChatId: "chat-one", tabs: [{ chatId: "chat-one", preview: "Main", busy: false }],
@@ -161,7 +171,8 @@ describe("multi-chat WebSocket protocol", () => {
         assistantTurns: [{ number: 0, content: "Earlier answer", hasToolCalls: false }],
       }],
     });
-    log.scrollTop = 37;
+    expect(sendMessage(log, "New question", "model-a", "general")).toBe(true);
+    expect(scrollPosition).toBe(37);
 
     emit("session_event", {
       type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 2,
@@ -179,6 +190,51 @@ describe("multi-chat WebSocket protocol", () => {
     });
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     expect(log.scrollTop).toBe(37);
+  });
+
+  it("follows immediate and delayed Markdown growth while the transcript is at the bottom", async () => {
+    let scrollHeight = 1000;
+    let scrollPosition = 800;
+    Object.defineProperties(log, {
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      clientHeight: { configurable: true, get: () => 200 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollPosition,
+        set: (value: number) => { scrollPosition = Math.min(value, scrollHeight - 200); },
+      },
+    });
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "chat-one", tabs: [{ chatId: "chat-one", preview: "Main", busy: false }],
+      turns: [{
+        id: "stored", userContent: "Earlier question", status: "done",
+        assistantTurns: [{ number: 0, content: "Earlier answer", hasToolCalls: false }],
+      }],
+    });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+    scrollHeight = 1100;
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 2,
+      event: { type: "turn_started", turnId: "live", message: "New question" },
+    });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(scrollPosition).toBe(900);
+
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 3,
+      event: { type: "assistant_turn_start", turnId: "live", turn: 0 },
+    });
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 4,
+      event: { type: "token", turnId: "live", turn: 0, content: "Streaming **Markdown**" },
+    });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    scrollHeight = 1200;
+    await new Promise((resolve) => window.setTimeout(resolve, 80));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(scrollPosition).toBe(1000);
   });
 
   it("rewinds selected and later messages before rendering a rerun", () => {
@@ -266,6 +322,7 @@ describe("multi-chat WebSocket protocol", () => {
       }],
     });
 
+    log.querySelector<HTMLButtonElement>(".chat-message-media .chat-media-chip")!.click();
     const restoredImage = log.querySelector<HTMLImageElement>(".chat-message-media img")!;
     const restoredVideo = log.querySelector<HTMLVideoElement>(".chat-message-media video")!;
     expect(restoredImage.alt).toBe("diagram.png");
@@ -287,6 +344,7 @@ describe("multi-chat WebSocket protocol", () => {
         images: [{ ...storedImage, id: "live-image" }], videos: [],
       },
     });
+    [...log.querySelectorAll<HTMLButtonElement>(".chat-message-media .chat-media-chip")].at(-1)!.click();
     expect(log.querySelectorAll(".chat-message-media img")).toHaveLength(2);
     expect(log.textContent).toContain("Please review the attached image(s).");
   });
@@ -471,5 +529,59 @@ describe("multi-chat WebSocket protocol", () => {
     expect(socket.send).toHaveBeenLastCalledWith({
       type: "chat_clear", surface: "code", workspaceId: "workspace-tabs", chatId: "code-chat-one",
     });
+  });
+
+  it("renders and activates persisted and live Code Chat prompt resources", () => {
+    closeWorkspaceSession(log);
+    const activateResource = vi.fn();
+    openWorkspaceSession(log, "workspace-tabs", { surface: "code", onActivateResource: activateResource });
+    const references = [{
+      ref: { rootId: "root", path: "docs" }, kind: "directory",
+      referencePath: "echo/docs", label: "docs",
+    }];
+    const editorContext = {
+      tabs: [
+        {
+          kind: "diff", title: "main.go (Index)", active: true,
+          ref: { rootId: "root", path: "main.go" }, reference: "echo/main.go",
+          diff: { repositoryId: "repo", repository: "echo", scope: "staged", path: "main.go" },
+          selections: [{ side: "original", startLine: 3, startColumn: 2, endLine: 4, endColumn: 5 }],
+        },
+        { kind: "untitled", title: "Untitled-1", dirty: true },
+      ],
+      truncated: true,
+    };
+    emit("session_snapshot", {
+      type: "session_snapshot", surface: "code", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "code-chat", tabs: [{ chatId: "code-chat", preview: "Review", busy: false }],
+      turns: [{ id: "stored-resources", userContent: "Review it", status: "done", assistantTurns: [], references, editorContext }],
+    });
+
+    const stored = log.querySelector<HTMLDetailsElement>(".chat-prompt-resources")!;
+    expect(stored.querySelector("summary")?.textContent).toContain("2 tabs · 1 selection · 1 mention");
+    expect(stored.querySelector("summary")?.textContent).toContain("Truncated");
+    stored.open = true;
+    expect(stored.textContent).toContain("Mentioned");
+    expect(stored.textContent).toContain("Editor context");
+    expect(stored.textContent).toContain("Lines 3:2–4:5 · original");
+    expect(stored.textContent).not.toContain("selected source text");
+
+    const selection = stored.querySelector<HTMLButtonElement>(".chat-prompt-resource-row.is-selection")!;
+    selection.click();
+    expect(activateResource).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "diff", label: "main.go (Index)", ref: { rootId: "root", path: "main.go" },
+      diff: expect.objectContaining({ repositoryId: "repo", scope: "staged", path: "main.go" }),
+      selection: { side: "original", startLine: 3, startColumn: 2, endLine: 4, endColumn: 5 },
+    }));
+
+    emit("session_snapshot", {
+      type: "session_snapshot", surface: "code", workspaceId: "workspace-tabs", sequence: 2,
+      activeChatId: "code-chat", tabs: [{ chatId: "code-chat", preview: "New", busy: false }], turns: [],
+    });
+    emit("session_event", {
+      type: "session_event", surface: "code", workspaceId: "workspace-tabs", chatId: "code-chat", sequence: 3,
+      event: { type: "turn_started", turnId: "live-resources", message: "Live", references, editorContext },
+    });
+    expect(log.querySelector(".chat-prompt-resources summary")?.textContent).toContain("2 tabs · 1 selection · 1 mention");
   });
 });

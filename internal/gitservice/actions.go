@@ -13,6 +13,7 @@ import (
 var simpleGitName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/@{}+-]*$`)
 
 func (s *Service) Action(ctx context.Context, workspaceID, repositoryID string, request ActionRequest) (result ActionResult, resultErr error) {
+	ctx = s.executionContext(ctx, workspaceID)
 	state, err := s.repository(ctx, workspaceID, repositoryID)
 	if err != nil {
 		return ActionResult{}, err
@@ -514,6 +515,7 @@ func currentBranch(parent context.Context, state *repositoryState) string {
 }
 
 func (s *Service) Clone(ctx context.Context, workspaceID string, request CloneRequest) ([]Repository, error) {
+	ctx = s.executionContext(ctx, workspaceID)
 	url := strings.TrimSpace(request.URL)
 	if url == "" || strings.ContainsRune(url, 0) {
 		return nil, &Error{Code: "clone_url_required", Message: "repository URL is required"}
@@ -540,6 +542,7 @@ func (s *Service) Clone(ctx context.Context, workspaceID string, request CloneRe
 }
 
 func (s *Service) Initialize(ctx context.Context, workspaceID string, request InitRequest) ([]Repository, error) {
+	ctx = s.executionContext(ctx, workspaceID)
 	ref := workspacefs.FileRef{RootID: request.RootID, Path: request.Path}
 	directory, err := s.fs.ResolveExistingHostPath(workspaceID, ref, true)
 	if err != nil {

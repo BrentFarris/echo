@@ -43,6 +43,7 @@ type parsedStatus struct {
 }
 
 func (s *Service) Status(ctx context.Context, workspaceID, repositoryID string) (StatusSnapshot, error) {
+	ctx = s.executionContext(ctx, workspaceID)
 	state, err := s.repository(ctx, workspaceID, repositoryID)
 	if err != nil {
 		return StatusSnapshot{}, err
@@ -53,6 +54,7 @@ func (s *Service) Status(ctx context.Context, workspaceID, repositoryID string) 
 }
 
 func (s *Service) loadStatus(parent context.Context, state *repositoryState) (StatusSnapshot, error) {
+	parent = s.executionContext(parent, state.workspaceID)
 	parsed, err := s.readStatus(parent, state)
 	if err != nil {
 		return StatusSnapshot{}, err

@@ -10,8 +10,9 @@ import { icons } from "../icons.js";
 import { del, get, patch, post, put } from "../api.js";
 import { logout } from "../../src/auth/authGate.ts";
 import { hasDirtySessions } from "../../src/code/persistence.ts";
+import { installChatMap } from "../../src/chatMap.ts";
 import { getEchoUpdateSnapshot, refreshEchoUpdateStatus, syncEchoUpdateBadges } from "../../src/echoUpdate.ts";
-import { codeRouteHash, navigateBackFromSettings } from "../../src/navigation.ts";
+import { chatTargetRouteHash, codeRouteHash, navigateBackFromSettings } from "../../src/navigation.ts";
 import { renderMobilePrimaryNav } from "../../src/primaryNav.ts";
 import { reloadForReplacementServer, waitForReplacementServer } from "../../src/rebuildRelaunch.ts";
 import { openAddWorkspaceModal, openWorkspaceDropdown } from "../workspaces.js";
@@ -20,10 +21,15 @@ import {
   completionNotificationPermission, requestCompletionNotificationPermission,
   updateCompletionNotificationSettings,
 } from "../../src/completionNotifications.ts";
+import {
+  requestPlanQuestionNotificationPermission,
+  updatePlanQuestionNotificationSettings,
+} from "../../src/planQuestionNotifications.ts";
 
 let mountedRoot = null;
 let closeSettingsWorkspaceDropdown = null;
 let closeSettingsAddWorkspaceModal = null;
+let disposeSettingsChatMap = null;
 let pluginCatalogListener = null;
 let updateStatusListener = null;
 
@@ -44,6 +50,16 @@ const themeTokens = [
   { key: "warning", label: "Warning", group: "Status", light: "#9a6700", dark: "#d29922" },
 ];
 const themeGroups = ["Base", "Text", "Action", "Status"];
+
+// ---- Editor font size helpers ----
+const minEditorFontSize = 8;
+const maxEditorFontSize = 30;
+const defaultEditorFontSize = 13.5;
+
+function clampEditorFontSize(value) {
+  if (!Number.isFinite(value) || value <= 0) return defaultEditorFontSize;
+  return Math.min(maxEditorFontSize, Math.max(minEditorFontSize, value));
+}
 
 // ---- Sections ----
 const sections = [
@@ -68,10 +84,21 @@ const routingTopics = [
   { key: "inlineCode", label: "Inline Code" },
 ];
 
+const reasoningEffortOptions = [
+  { value: "", label: "Provider default / token budget" },
+  { value: "none", label: "None" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "XHigh" },
+  { value: "max", label: "Max" },
+];
+
 // ---- State ----
 const state = {
   activeSection: "llm",
   themePalette: "light",
+  editorFontSize: 13.5,
   endpoints: [],
   routing: {
     chat: "",
@@ -107,6 +134,8 @@ const state = {
   },
   messaging: {
     notificationSounds: true,
+    planQuestionSounds: true,
+    planQuestionNotifications: true,
     chatCompletionNotifications: true,
   },
   storagePath: "",
@@ -180,6 +209,7 @@ function newEndpoint() {
     timeoutSeconds: 600,
     streamIdleTimeoutSeconds: 600,
     thinkingTokenBudget: -1,
+    reasoningEffort: "max",
     thinkingCorrection: false,
     contextCompressionEnabled: true,
     contextCompressionThresholdPercent: 70,
@@ -252,7 +282,7 @@ function renderEndpointEditor(e) {
   const num = (key, label, opts = {}) => `
     <label class="field">
       <span>${label}</span>
-      <input type="number" step="${opts.step ?? "any"}" min="${opts.min ?? ""}" max="${opts.max ?? ""}" value="${e[key]}" data-endpoint-field="${key}" />
+      <input type="number" step="${opts.step ?? "any"}" min="${opts.min ?? ""}" max="${opts.max ?? ""}" value="${e[key]}" data-endpoint-field="${key}" ${opts.disabled ? "disabled" : ""} />
     </label>
   `;
   const range = (key, label, opts = {}) => `
@@ -299,14 +329,21 @@ function renderEndpointEditor(e) {
         ${num("repetitionPenalty", "Repetition Penalty", { min: 0, step: 0.01 })}
         ${num("timeoutSeconds", "Request Timeout (seconds)", { min: 1, step: 1 })}
         ${num("streamIdleTimeoutSeconds", "Stream Idle Timeout (seconds)", { min: -1, step: 1 })}
-        ${num("thinkingTokenBudget", "Thinking Token Budget", { min: -1, step: 1 })}
+        <label class="field">
+          <span>Reasoning Effort</span>
+          <select data-endpoint-field="reasoningEffort">
+            ${reasoningEffortOptions.map((option) => `<option value="${option.value}" ${e.reasoningEffort === option.value ? "selected" : ""}>${option.label}</option>`).join("")}
+          </select>
+        </label>
+        ${num("thinkingTokenBudget", "Thinking Token Budget", { min: -1, step: 1, disabled: e.reasoningEffort !== "" })}
       </div>
 
       <p class="settings-card-help">Stream idle timeout is reset whenever provider data or an SSE heartbeat arrives. Set it to -1 to disable inactivity detection.</p>
+      <p class="settings-card-help">A named reasoning effort is sent as <code>reasoning_effort</code> and takes precedence over the local-model thinking-token budget. Unsupported values return the provider's request error without retrying or stepping down.</p>
 
       <label class="settings-toggle">
         <span>Thinking correction</span>
-        <input type="checkbox" ${e.thinkingCorrection ? "checked" : ""} data-endpoint-field="thinkingCorrection" />
+        <input type="checkbox" ${e.thinkingCorrection ? "checked" : ""} data-endpoint-field="thinkingCorrection" ${e.reasoningEffort === "none" || e.reasoningEffort === "" && Number(e.thinkingTokenBudget) === 0 ? "disabled" : ""} />
       </label>
 
       <label class="settings-toggle">
@@ -475,6 +512,8 @@ function renderExternal() {
 function renderMessaging() {
   const toggles = [
     { key: "notificationSounds", label: "Notification sounds", checked: state.messaging.notificationSounds },
+    { key: "planQuestionSounds", label: "Planning question sounds", checked: state.messaging.planQuestionSounds },
+    { key: "planQuestionNotifications", label: "Planning question notifications", checked: state.messaging.planQuestionNotifications },
     { key: "chatCompletionNotifications", label: "Chat completion notifications", checked: state.messaging.chatCompletionNotifications },
   ];
   const permission = completionNotificationPermission();
@@ -542,6 +581,19 @@ function renderTheme() {
               data-theme-palette="${name}"
             >${name === "light" ? "Light" : "Dark"}</button>
           `).join("")}
+        </div>
+
+        <div class="theme-font-size-field">
+          <span>Editor Font Size</span>
+          <input
+            type="number"
+            min="${minEditorFontSize}"
+            max="${maxEditorFontSize}"
+            step="1"
+            value="${state.editorFontSize}"
+            data-editor-font-size
+            aria-label="Code editor font size"
+          />
         </div>
 
         ${themeGroups.map((group) => `
@@ -831,7 +883,14 @@ function renderDevelopment() {
   const updateError = state.update.status.startsWith("Error:");
   const terminateError = state.terminate.status.startsWith("Error:");
   const developmentBusy = state.rebuild.running || state.update.running || state.terminate.running;
-  const showUpdateCard = state.update.available || state.update.running || state.update.status;
+  const canUpdate = state.update.available || state.update.running;
+  const updateButtonLabel = state.update.running
+    ? "Updating Echo…"
+    : state.update.checking
+      ? "Checking for Updates…"
+      : canUpdate
+        ? "Update Echo"
+        : "Check for Updates";
   return `
     <section class="settings-section">
       <h2 class="settings-section-title">Development</h2>
@@ -843,15 +902,13 @@ function renderDevelopment() {
         </div>
       ` : ""}
 
-      ${showUpdateCard ? `
-        <div class="settings-card echo-update-card">
-          <h3 class="settings-card-title">Update Echo</h3>
-          <p class="settings-card-help">Pulls the latest <code>master</code> from GitHub, then rebuilds and relaunches Echo.</p>
-          <button class="secondary-button" type="button" data-action="update-echo" ${developmentBusy ? "disabled aria-busy=\"true\"" : ""}>${state.update.running ? "Updating Echo…" : "Update Echo"}</button>
-          ${state.update.status ? `<p class="settings-status ${updateError ? "is-error" : ""}" data-update-status>${esc(state.update.status)}</p>` : ""}
-          ${state.update.logPath ? `<p class="field-help">Log: <code>${esc(state.update.logPath)}</code></p>` : ""}
-        </div>
-      ` : ""}
+      <div class="settings-card echo-update-card">
+        <h3 class="settings-card-title">Update Echo</h3>
+        <p class="settings-card-help">Checks GitHub <code>master</code> for updates. When one is available, Echo can pull it, rebuild, and relaunch.</p>
+        <button class="secondary-button" type="button" data-action="${canUpdate ? "update-echo" : "check-for-updates"}" ${developmentBusy || state.update.checking ? "disabled aria-busy=\"true\"" : ""}>${updateButtonLabel}</button>
+        ${state.update.status ? `<p class="settings-status ${updateError ? "is-error" : ""}" data-update-status>${esc(state.update.status)}</p>` : ""}
+        ${state.update.logPath ? `<p class="field-help">Log: <code>${esc(state.update.logPath)}</code></p>` : ""}
+      </div>
 
       <div class="settings-card">
         <h3 class="settings-card-title">AI flow logging</h3>
@@ -919,7 +976,7 @@ function renderLanguageServers() {
       <div class="settings-card">
         <h3 class="settings-card-title">Workspace activation</h3>
         <p class="settings-card-help">Overrides replace the corresponding profile field. Arrays and JSON objects are not merged.</p>
-        <label class="settings-toggle"><span><strong>Format on save</strong><span class="field-help">Formatting failure or timeout never prevents saving.</span></span><input type="checkbox" data-lsp-config="formatOnSave" ${state.lsp.config.formatOnSave ? "checked" : ""}></label>
+        <label class="settings-toggle"><span><strong>Format on save</strong><span class="field-help">Formats code and organizes supported imports; failures or timeouts never prevent saving.</span></span><input type="checkbox" data-lsp-config="formatOnSave" ${state.lsp.config.formatOnSave ? "checked" : ""}></label>
         <div class="settings-grid">
           <label class="field"><span>Format timeout (ms)</span><input type="number" min="250" max="30000" step="250" value="${esc(state.lsp.config.formatOnSaveTimeoutMs || 3000)}" data-lsp-config="formatOnSaveTimeoutMs"></label>
           <label class="field field-wide"><span>Profile overrides (JSON)</span><textarea rows="8" spellcheck="false" data-lsp-overrides>${esc(state.lsp.overridesText)}</textarea><span class="field-help">Keys are profile IDs. Supported fields: name, command, args, selectors, environment, initializationOptions, settings.</span></label>
@@ -979,6 +1036,8 @@ function render() {
   if (!root) return;
   closeSettingsWorkspaceDropdown?.();
   closeSettingsWorkspaceDropdown = null;
+  disposeSettingsChatMap?.();
+  disposeSettingsChatMap = null;
   const activeWorkspace = state.workspaces.find((workspace) => workspace.id === state.modeWorkspaceId) || null;
   root.innerHTML = `
     <div class="settings-view">
@@ -1021,6 +1080,10 @@ function bindEvents(root) {
     location.hash = hash;
   };
 
+  disposeSettingsChatMap = installChatMap(root, {
+    navigate: (target) => leaveSettings(chatTargetRouteHash(target)),
+  });
+
   root.querySelectorAll("[data-nav='chat']").forEach((button) => {
     button.addEventListener("click", () => { void leaveSettings("#/home"); });
   });
@@ -1032,6 +1095,9 @@ function bindEvents(root) {
   });
   root.querySelectorAll("[data-nav='git']").forEach((button) => {
     button.addEventListener("click", () => { void leaveSettings(codeRouteHash("git")); });
+  });
+  root.querySelectorAll("[data-nav='sandbox']").forEach((button) => {
+    button.addEventListener("click", () => { void leaveSettings("#/sandbox"); });
   });
 
   root.querySelectorAll(".workspace-dropdown-trigger").forEach((trigger) => {
@@ -1277,13 +1343,19 @@ function bindEvents(root) {
         ep.headers = textToHeaders(field.value);
       } else if (key === "thinkingCorrection" || key === "contextCompressionEnabled") {
         ep[key] = field.checked;
-      } else if (key === "name" || key === "endpoint" || key === "model" || key === "systemPromptAppendage") {
+      } else if (key === "name" || key === "endpoint" || key === "model" || key === "reasoningEffort" || key === "systemPromptAppendage") {
         ep[key] = field.value;
       } else {
         const n = Number(field.value);
         ep[key] = Number.isNaN(n) ? 0 : n;
         const out = root.querySelector(`[data-range-value-for="${key}"]`);
         if (out) out.textContent = ep[key];
+      }
+      if (key === "reasoningEffort" || key === "thinkingTokenBudget") {
+        const budget = root.querySelector('[data-endpoint-field="thinkingTokenBudget"]');
+        const correction = root.querySelector('[data-endpoint-field="thinkingCorrection"]');
+        if (budget) budget.disabled = ep.reasoningEffort !== "";
+        if (correction) correction.disabled = ep.reasoningEffort === "none" || ep.reasoningEffort === "" && Number(ep.thinkingTokenBudget) === 0;
       }
     });
   });
@@ -1470,8 +1542,12 @@ function bindEvents(root) {
     field.addEventListener("change", () => {
       state.messaging[field.dataset.notificationSetting] = field.checked;
       updateCompletionNotificationSettings(buildSettings());
+      updatePlanQuestionNotificationSettings(buildSettings());
       if (field.dataset.notificationSetting === "chatCompletionNotifications" && field.checked) {
         void requestCompletionNotificationPermission().then(() => render());
+      }
+      if (field.dataset.notificationSetting === "planQuestionNotifications" && field.checked) {
+        void requestPlanQuestionNotificationPermission().then(() => render());
       }
       saveSettings();
     });
@@ -1479,6 +1555,15 @@ function bindEvents(root) {
 
   root.querySelector("[data-action='enable-browser-notifications']")?.addEventListener("click", () => {
     void requestCompletionNotificationPermission().then(() => render());
+  });
+
+  root.querySelectorAll("[data-editor-font-size]").forEach((field) => {
+    field.addEventListener("change", () => {
+      const value = Number.parseFloat(field.value);
+      state.editorFontSize = clampEditorFontSize(Number.isNaN(value) ? 0 : value);
+      field.value = String(state.editorFontSize);
+      saveSettings();
+    });
   });
 
   root.querySelectorAll("[data-research-agent-concurrency]").forEach((field) => {
@@ -1530,8 +1615,19 @@ function bindEvents(root) {
     }
   });
 
-  root.querySelector("[data-action='retry-update-check']")?.addEventListener("click", () => {
-    void refreshEchoUpdateStatus();
+  root.querySelectorAll("[data-action='check-for-updates'], [data-action='retry-update-check']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      state.update.status = "Checking GitHub master for updates…";
+      render();
+      const snapshot = await refreshEchoUpdateStatus();
+      applyEchoUpdateSnapshot(snapshot);
+      state.update.status = snapshot.error
+        ? ""
+        : snapshot.status?.updateAvailable
+          ? "An Echo update is available."
+          : "Echo is up to date.";
+      render();
+    });
   });
 
   root.querySelector("[data-action='update-echo']")?.addEventListener("click", async () => {
@@ -1888,6 +1984,8 @@ export function unmount() {
   closeSettingsWorkspaceDropdown = null;
   closeSettingsAddWorkspaceModal?.();
   closeSettingsAddWorkspaceModal = null;
+  disposeSettingsChatMap?.();
+  disposeSettingsChatMap = null;
   if (pluginCatalogListener) window.removeEventListener("echo:plugin-catalog", pluginCatalogListener);
   pluginCatalogListener = null;
   if (updateStatusListener) window.removeEventListener("echo:update-status", updateStatusListener);
@@ -1896,7 +1994,11 @@ export function unmount() {
 }
 
 function applyEchoUpdateSnapshot(snapshot) {
-  state.update.available = snapshot.status?.updateAvailable === true;
+  const available = snapshot.status?.updateAvailable === true;
+  const priorCheckResult = state.update.status === "Echo is up to date."
+    || state.update.status === "An Echo update is available.";
+  if (priorCheckResult && state.update.available !== available) state.update.status = "";
+  state.update.available = available;
   state.update.checking = Boolean(snapshot.checking);
   state.update.checkError = snapshot.error || "";
 }
@@ -1953,6 +2055,7 @@ function applySettings(cfg) {
   state.settingsLoaded = true;
   state.endpoints = (s.endpoints || []).map((e) => ({
     ...e,
+    reasoningEffort: e.reasoningEffort || "",
     contextCompressionEnabled: e.contextCompressionEnabled !== false,
     contextCompressionThresholdPercent: Number(e.contextCompressionThresholdPercent) || 70,
     headers: e.headers || {},
@@ -1971,6 +2074,7 @@ function applySettings(cfg) {
     comfyuiImg2imgWorkflow: s.comfyuiImg2imgWorkflow || "",
     comfyuiVideoWorkflow: s.comfyuiVideoWorkflow || "",
   };
+  state.editorFontSize = clampEditorFontSize(Number(s.editorFontSize) || 13.5);
   state.researchAgentConcurrency = Math.max(0, Math.min(8, Number(s.researchAgentConcurrency ?? 4) || 0));
   state.git = {
     leadingWhitespaceIndicators: s.hideLeadingWhitespaceIndicators !== true,
@@ -1978,9 +2082,12 @@ function applySettings(cfg) {
   };
   state.messaging = {
     notificationSounds: s.disableNotificationSounds !== true,
+    planQuestionSounds: s.disablePlanQuestionSounds !== true,
+    planQuestionNotifications: s.enablePlanQuestionNotifications !== false,
     chatCompletionNotifications: s.enableChatCompletionNotifications !== false,
   };
   updateCompletionNotificationSettings(s);
+  updatePlanQuestionNotificationSettings(s);
   render();
 }
 
@@ -2087,7 +2194,10 @@ function buildSettings() {
     hideLeadingWhitespaceIndicators: !state.git.leadingWhitespaceIndicators,
     disableGitSplitDiffView: !state.git.splitDiffView,
     disableNotificationSounds: !state.messaging.notificationSounds,
+    disablePlanQuestionSounds: !state.messaging.planQuestionSounds,
+    enablePlanQuestionNotifications: state.messaging.planQuestionNotifications,
     enableChatCompletionNotifications: state.messaging.chatCompletionNotifications,
+    editorFontSize: state.editorFontSize,
     researchAgentConcurrency: state.researchAgentConcurrency,
   };
 }

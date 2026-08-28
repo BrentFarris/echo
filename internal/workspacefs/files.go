@@ -171,27 +171,81 @@ func (s *Service) Create(workspaceID string, request CreateRequest) (Entry, *Fil
 }
 
 func (s *Service) Rename(workspaceID string, ref FileRef, newName string) (Entry, error) {
+	newName = strings.TrimSpace(newName)
+	if err := validateName(newName); err != nil {
+		return Entry{}, err
+	}
+	relative, err := normalizeRelative(ref.Path, false)
+	if err != nil {
+		return Entry{}, err
+	}
+	parentPath := path.Dir(relative)
+	if parentPath == "." {
+		parentPath = ""
+	}
+	return s.moveEntry(workspaceID, ref, FileRef{RootID: ref.RootID, Path: parentPath}, newName)
+}
+
+// Move relocates an entry to another directory in the same workspace root.
+// The entry keeps its current name; Rename uses the same confined operation
+// with a different name and its existing parent.
+func (s *Service) Move(workspaceID string, ref, destinationParent FileRef) (Entry, error) {
+	relative, err := normalizeRelative(ref.Path, false)
+	if err != nil {
+		return Entry{}, err
+	}
+	return s.moveEntry(workspaceID, ref, destinationParent, path.Base(relative))
+}
+
+func (s *Service) moveEntry(workspaceID string, ref, destinationParent FileRef, newName string) (Entry, error) {
 	if IsProtectedWorkspaceMetadataPath(ref.Path) {
 		return Entry{}, protectedMetadataError()
 	}
-	if err := validateName(strings.TrimSpace(newName)); err != nil {
+	if strings.TrimSpace(ref.RootID) != strings.TrimSpace(destinationParent.RootID) {
+		return Entry{}, &Error{Code: "cross_root_move_unsupported", Message: "files cannot be moved between workspace folders", Cause: ErrInvalidPath}
+	}
+	if err := validateName(newName); err != nil {
 		return Entry{}, err
+	}
+	parentRelative, err := normalizeRelative(destinationParent.Path, true)
+	if err != nil {
+		return Entry{}, err
+	}
+	newRef := FileRef{RootID: destinationParent.RootID, Path: path.Join(parentRelative, newName)}
+	if IsProtectedWorkspaceMetadataPath(newRef.Path) {
+		return Entry{}, protectedMetadataError()
 	}
 	_, source, _, err := s.resolveEntry(workspaceID, ref, false, false)
 	if err != nil {
 		return Entry{}, err
 	}
-	relative, _ := normalizeRelative(ref.Path, false)
-	newRef := FileRef{RootID: ref.RootID, Path: path.Join(path.Dir(relative), strings.TrimSpace(newName))}
-	if path.Dir(relative) == "." {
-		newRef.Path = strings.TrimSpace(newName)
+	_, destinationDirectory, _, err := s.resolve(workspaceID, destinationParent, true, false)
+	if err != nil {
+		return Entry{}, err
 	}
-	if IsProtectedWorkspaceMetadataPath(newRef.Path) {
-		return Entry{}, protectedMetadataError()
+	directoryInfo, err := os.Stat(destinationDirectory)
+	if err != nil {
+		return Entry{}, err
+	}
+	if !directoryInfo.IsDir() {
+		return Entry{}, &Error{Code: "invalid_move_destination", Message: "move destination must be a folder", Cause: ErrInvalidPath}
+	}
+	sourceInfo, err := os.Lstat(source)
+	if err != nil {
+		return Entry{}, err
+	}
+	if sourceInfo.IsDir() {
+		if relative, relativeErr := filepath.Rel(source, destinationDirectory); relativeErr == nil &&
+			(relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))) {
+			return Entry{}, &Error{Code: "invalid_move_destination", Message: "a folder cannot be moved into itself", Cause: ErrInvalidPath}
+		}
 	}
 	_, destination, _, err := s.resolveEntry(workspaceID, newRef, false, true)
 	if err != nil {
 		return Entry{}, err
+	}
+	if source == destination {
+		return s.entryFor(workspaceID, ref)
 	}
 	unlock := s.lockPaths(source, destination)
 	defer unlock()
@@ -203,7 +257,7 @@ func (s *Service) Rename(workspaceID string, ref FileRef, newName string) (Entry
 		return Entry{}, statErr
 	}
 	if err := renameCaseSafe(source, destination); err != nil {
-		return Entry{}, fmt.Errorf("rename entry: %w", err)
+		return Entry{}, fmt.Errorf("move entry: %w", err)
 	}
 	s.index.ApplyChanges(workspaceID, []Change{
 		{Op: "rename", Ref: ref},
@@ -275,7 +329,8 @@ func renameCaseSafe(source, destination string) error {
 }
 
 // MediaTypeForName maps a file name to the media type the preview surface can
-// display. Empty means the browser cannot render this file as image or video.
+// display. Empty means the browser cannot render this file as image, video, or
+// audio.
 func MediaTypeForName(name string) string {
 	switch strings.ToLower(filepath.Ext(name)) {
 	case ".png":
@@ -300,6 +355,20 @@ func MediaTypeForName(name string) string {
 		return "video/webm"
 	case ".ogv":
 		return "video/ogg"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".wav":
+		return "audio/wav"
+	case ".ogg", ".oga", ".opus":
+		return "audio/ogg"
+	case ".flac":
+		return "audio/flac"
+	case ".m4a":
+		return "audio/mp4"
+	case ".aac":
+		return "audio/aac"
+	case ".weba":
+		return "audio/webm"
 	default:
 		return ""
 	}
@@ -329,12 +398,12 @@ func (s *Service) MediaMeta(workspaceID string, ref FileRef) (path string, size 
 	}
 	previewable, mapped := Previewable(filepath.Base(info.Name()))
 	if !previewable {
-		err = &Error{Code: "unsupported_preview", Message: "file is not a supported image or video type", Cause: ErrNotPreviewable}
+		err = &Error{Code: "unsupported_preview", Message: "file is not a supported image, video, or audio type", Cause: ErrNotPreviewable}
 		return
 	}
 	size = info.Size()
 	truncated = size > MaxMediaBytes
-	if truncated && strings.HasPrefix(mapped, "video/") {
+	if truncated && (strings.HasPrefix(mapped, "video/") || strings.HasPrefix(mapped, "audio/")) {
 		err = &Error{Code: "file_too_large", Message: "file is larger than the 500 MiB preview limit", Cause: ErrTooLarge}
 		return
 	}

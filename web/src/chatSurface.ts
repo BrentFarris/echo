@@ -1,4 +1,5 @@
 import { api } from "../js/api.js";
+import { isCoarsePointer } from "./device";
 import {
   canClearChat, clearChat, closeWorkspaceSession, isStreaming, onChatWorkspaceChange,
   onStreamingChange, openWorkspaceSession, sendMessage, stopStream,
@@ -10,12 +11,27 @@ import {
 import { getRoots, searchEntries } from "./code/editorApi";
 import type { FileRef, SearchResult, WorkspaceRoot } from "./code/types";
 import { prepareCompletionNotificationPermission } from "./completionNotifications";
+import { preparePlanQuestionNotificationPermission } from "./planQuestionNotifications";
 
 export type EditorContextDiff = {
+  repositoryId?: string;
   repository?: string;
   scope?: string;
   reviewRef?: string;
   oldPath?: string;
+  path?: string;
+};
+
+export type EditorContextRange = {
+  side?: "original" | "modified";
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+};
+
+export type EditorContextSelection = EditorContextRange & {
+  text: string;
 };
 
 export type EditorContextTab = {
@@ -27,9 +43,21 @@ export type EditorContextTab = {
   reference?: string;
   content?: string;
   diff?: EditorContextDiff;
+  selections?: EditorContextSelection[];
 };
 
 export type EditorContextPayload = { tabs: EditorContextTab[]; truncated?: boolean };
+
+export type HistoricalChatResource = {
+  kind: "file" | "directory" | "diff" | "untitled";
+  label: string;
+  referencePath?: string;
+  ref?: FileRef;
+  diff?: EditorContextDiff;
+  selection?: EditorContextRange;
+};
+
+type PromptReference = Omit<ChatReference, "workspaceId">;
 
 export type ChatSurfaceOptions = {
   workspaceId: string;
@@ -39,12 +67,17 @@ export type ChatSurfaceOptions = {
   onClose?: () => void;
   beforeSend?: () => Promise<EditorContextPayload | false | null>;
   onActivateReference?: (reference: ChatReference) => void | Promise<void>;
+  onActivateHistoricalResource?: (resource: HistoricalChatResource) => void | Promise<void>;
   onStreamingChange?: (streaming: boolean) => void;
   expectedChatId?: string;
   onExpectedChatResolved?: (found: boolean) => void;
 };
 
-export type MountedChatSurface = { dispose(): void; focus(): void };
+export type MountedChatSurface = {
+  dispose(): void;
+  focus(): void;
+  setContextNotice(message: string | null): void;
+};
 
 type Endpoint = { id: string; name?: string; model?: string };
 type AgentMode = { id: string; name: string };
@@ -117,8 +150,9 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
           ${options.onClose ? '<button type="button" title="Close chat" aria-label="Close chat" data-code-chat-close><span class="codicon codicon-close"></span></button>' : ""}
         </div>
       </header>
-      <div class="chat-log" data-chat-log><div class="empty-state chat-empty">Loading conversation…</div></div>
+      <div class="chat-log" role="region" tabindex="0" aria-label="Conversation transcript" data-chat-log><div class="empty-state chat-empty">Loading conversation…</div></div>
       <form class="chat-composer" data-chat-form>
+        <div class="code-chat-context-notice" data-chat-context-notice hidden></div>
         <div class="chat-composer-main" data-chat-input-wrap>
           <div class="chat-composer-editor" contenteditable="true" role="textbox" aria-multiline="true"
             aria-label="Message Echo about this code" aria-autocomplete="list" aria-expanded="false"
@@ -136,6 +170,7 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
 
   const log = host.querySelector<HTMLElement>("[data-chat-log]")!;
   const form = host.querySelector<HTMLFormElement>("[data-chat-form]")!;
+  const contextNotice = host.querySelector<HTMLElement>("[data-chat-context-notice]")!;
   const inputWrap = host.querySelector<HTMLElement>("[data-chat-input-wrap]")!;
   const input = host.querySelector<HTMLElement>("[data-chat-input]")!;
   const send = host.querySelector<HTMLButtonElement>(".send-button")!;
@@ -303,15 +338,34 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
   };
 
   const submit = async () => {
+    const segments = snapshotComposer(input);
     const text = composerText(input);
     if (!text.trim() || submitting || isStreaming()) return;
     prepareCompletionNotificationPermission();
+    preparePlanQuestionNotificationPermission();
     submitting = true;
     send.disabled = true;
     try {
       const editorContext = await options.beforeSend?.();
       if (editorContext === false) return;
-      if (sendMessage(log, text, modelSelect.value || undefined, modeSelect.value || "general", { editorContext: editorContext || undefined })) {
+      const referenceMap = new Map<string, PromptReference>();
+      if (surface === "code") {
+        for (const segment of segments) {
+          if (segment.type !== "reference") continue;
+          const key = `${segment.kind}\0${segment.ref.rootId}\0${segment.ref.path}`;
+          if (!referenceMap.has(key)) {
+            referenceMap.set(key, {
+              ref: segment.ref, kind: segment.kind,
+              referencePath: segment.referencePath, label: segment.label,
+            });
+          }
+        }
+      }
+      const sendOptions: { editorContext?: EditorContextPayload; references?: PromptReference[] } = {
+        editorContext: editorContext || undefined,
+      };
+      if (referenceMap.size) sendOptions.references = [...referenceMap.values()];
+      if (sendMessage(log, text, modelSelect.value || undefined, modeSelect.value || "general", sendOptions)) {
         input.replaceChildren();
         clearMention();
         input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -350,7 +404,7 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
         event.preventDefault(); selectMention(mention.selectedIndex); return;
       }
     }
-    if (keyboard.key === "Enter" && !keyboard.shiftKey && !keyboard.isComposing) {
+    if (keyboard.key === "Enter" && !keyboard.shiftKey && !keyboard.isComposing && !isCoarsePointer()) {
       event.preventDefault(); void submit();
     }
   }, { signal });
@@ -402,6 +456,7 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
       referencePath: ref.path,
       label: ref.path.split("/").at(-1) || ref.path,
     }),
+    onActivateResource: (resource: HistoricalChatResource) => options.onActivateHistoricalResource?.(resource),
   });
 
   void Promise.all([
@@ -422,6 +477,10 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
 
   return {
     focus: () => input.focus(),
+    setContextNotice: (message) => {
+      contextNotice.textContent = message || "";
+      contextNotice.hidden = !message;
+    },
     dispose: () => {
       saveDraft();
       abort.abort();

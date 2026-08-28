@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   CHAT_ROUTE, NavigationTracker, chatCompletionRouteHash, chatCompletionTargetFromHash,
-  codeFileRouteHash, codeOpenTargetFromHash, codeRouteHash, codeSidebarFromHash, routePathFromHash,
+  chatTargetFromHash, chatTargetRouteHash,
+  codeFileRouteHash, codeOpenTargetFromHash, codeRouteHash, codeSidebarFromHash,
+  isCodeNavigationHistoryState, routePathFromHash, shouldReuseCodeView,
 } from "./navigation";
 
 describe("view route parsing", () => {
@@ -41,6 +43,19 @@ describe("view route parsing", () => {
     expect(chatCompletionTargetFromHash(chatCompletionRouteHash(code))).toEqual(code);
     expect(chatCompletionRouteHash(code)).toContain("chat=open");
     expect(chatCompletionTargetFromHash("#/code?workspaceId=one&chatId=two")).toBeNull();
+    expect(chatTargetFromHash(chatTargetRouteHash(main))).toEqual(main);
+  });
+
+  it("does not reuse an in-place Code history entry for an exact Code Chat target", () => {
+    const state = { echoCodeNavigation: { version: 1 } };
+    expect(shouldReuseCodeView("#/code?sidebar=git", state)).toBe(true);
+    expect(shouldReuseCodeView("#/code?workspaceId=one&chatId=two&chat=open", state)).toBe(false);
+  });
+
+  it("recognizes only versioned Echo Code browser-history entries", () => {
+    expect(isCodeNavigationHistoryState({ echoCodeNavigation: { version: 1 } })).toBe(true);
+    expect(isCodeNavigationHistoryState({ echoCodeNavigation: { version: 2 } })).toBe(false);
+    expect(isCodeNavigationHistoryState(null)).toBe(false);
   });
 });
 

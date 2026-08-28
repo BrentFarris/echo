@@ -14,6 +14,7 @@ import (
 	"github.com/brent/echo/internal/llm"
 	"github.com/brent/echo/internal/sessions"
 	"github.com/brent/echo/internal/tools"
+	trajectorylog "github.com/brent/echo/internal/trajectory"
 )
 
 const (
@@ -67,19 +68,37 @@ type chatResearchAgentRun struct {
 	followUps         int
 	messages          []llm.Message
 	checkpoint        *sessions.ContextCheckpoint
-	pending           []string
+	pending           []*chatResearchJob
+	currentJob        *chatResearchJob
+	lastJob           *chatResearchJob
+	nextJobNumber     int
 	workerActive      bool
 	canceled          bool
 	currentCancel     context.CancelFunc
+	trajectoryStatus  string
+}
+
+type chatResearchJob struct {
+	id               string
+	number           int
+	kind             string
+	prompt           string
+	queuedAt         time.Time
+	startedAt        time.Time
+	terminalRecorded bool
 }
 
 type researchStreamResult struct {
-	content      string
-	reasoning    string
-	toolCalls    []llm.ToolCall
-	usage        *llm.Usage
-	completed    bool
-	finishReason string
+	content          string
+	reasoning        string
+	toolCalls        []llm.ToolCall
+	usage            *llm.Usage
+	completed        bool
+	finishReason     string
+	startedAt        time.Time
+	firstTokenAt     *time.Time
+	firstReasoningAt *time.Time
+	completedAt      time.Time
 }
 
 func newChatResearchRun(parent context.Context, session *chatSession, turnID string, settings, parentSettings llm.Settings, streamer chatStreamer, mode agentmodes.Mode) *chatResearchRun {
@@ -96,6 +115,103 @@ func newChatResearchRun(parent context.Context, session *chatSession, turnID str
 		settings: settings, parentSettings: parentSettings, streamer: streamer,
 		toolScopes: researchToolScopes(mode), semaphore: make(chan struct{}, concurrency),
 		agents: make(map[string]*chatResearchAgentRun), updates: make(chan struct{}, 1),
+	}
+}
+
+func (r *chatResearchRun) newJobLocked(agent *chatResearchAgentRun, prompt, kind string) *chatResearchJob {
+	agent.nextJobNumber++
+	job := &chatResearchJob{
+		id: fmt.Sprintf("%s-job-%d", agent.id, agent.nextJobNumber), number: agent.nextJobNumber,
+		kind: kind, prompt: strings.TrimSpace(prompt), queuedAt: time.Now().UTC(),
+	}
+	agent.pending = append(agent.pending, job)
+	return job
+}
+
+func researchJobData(agent *chatResearchAgentRun, job *chatResearchJob) map[string]any {
+	data := map[string]any{"agentId": agent.id, "agentName": agent.name}
+	if job != nil {
+		data["jobId"] = job.id
+		data["jobNumber"] = job.number
+		data["jobKind"] = job.kind
+	}
+	return data
+}
+
+func researchRoundData(agent *chatResearchAgentRun, job *chatResearchJob, round int) map[string]any {
+	data := researchJobData(agent, job)
+	data["round"] = round
+	return data
+}
+
+func (r *chatResearchRun) trajectoryRoundData(agent *chatResearchAgentRun, job *chatResearchJob, round int) map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return researchRoundData(agent, job, round)
+}
+
+func cloneTrajectoryData(data map[string]any) map[string]any {
+	cloned := make(map[string]any, len(data))
+	for key, value := range data {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func (r *chatResearchRun) appendTrajectoryAt(eventType string, at time.Time, data map[string]any, requireActive bool) {
+	s := r.session
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if requireActive && !s.isActiveLocked(r.turnID) {
+		return
+	}
+	if !requireActive && (s.trajectory == nil || !s.trajectory.Exists()) {
+		return
+	}
+	s.appendTrajectoryBatchLocked([]trajectorylog.AppendEntry{{
+		Timestamp: at, Type: eventType, TurnID: r.turnID, Data: data,
+	}})
+}
+
+func (r *chatResearchRun) appendTrajectory(eventType string, data map[string]any) {
+	r.appendTrajectoryAt(eventType, time.Now().UTC(), data, true)
+}
+
+func (r *chatResearchRun) appendJobQueued(agent *chatResearchAgentRun, job *chatResearchJob) {
+	r.mu.Lock()
+	data := researchJobData(agent, job)
+	data["prompt"] = job.prompt
+	data["status"] = "queued"
+	data["queuedAt"] = job.queuedAt
+	r.mu.Unlock()
+	r.appendTrajectoryAt("research/job_queued", job.queuedAt, data, true)
+}
+
+func (r *chatResearchRun) markJobTerminalLocked(agent *chatResearchAgentRun, job *chatResearchJob, status, report, errText string, completedAt time.Time) map[string]any {
+	if job == nil || job.terminalRecorded {
+		return nil
+	}
+	job.terminalRecorded = true
+	agent.lastJob = job
+	startedAt := job.startedAt
+	if startedAt.IsZero() {
+		startedAt = job.queuedAt
+	}
+	data := researchJobData(agent, job)
+	data["prompt"] = job.prompt
+	data["status"] = status
+	data["report"] = report
+	data["error"] = errText
+	data["queuedAt"] = job.queuedAt
+	data["startedAt"] = startedAt
+	data["completedAt"] = completedAt
+	data["durationMs"] = completedAt.Sub(startedAt).Milliseconds()
+	return data
+}
+
+func (r *chatResearchRun) appendJobTerminal(data map[string]any, completedAt time.Time, requireActive bool) {
+	if data != nil {
+		r.appendTrajectoryAt("research/job_end", completedAt, data, requireActive)
 	}
 }
 
@@ -141,14 +257,43 @@ func (r *chatResearchRun) Close() {
 	}
 	r.closed = true
 	r.cancel()
+	completedAt := time.Now().UTC()
+	terminal := make([]map[string]any, 0)
+	statuses := make([]map[string]any, 0)
 	for _, agent := range r.agents {
+		outstanding := agent.currentJob != nil || len(agent.pending) > 0 || agent.workerActive
 		agent.canceled = true
+		if outstanding {
+			agent.status = "canceled"
+			agent.phase = ""
+			if agent.errText == "" {
+				agent.errText = "Research was canceled."
+			}
+			if data := r.markJobTerminalLocked(agent, agent.currentJob, "canceled", "", agent.errText, completedAt); data != nil {
+				terminal = append(terminal, data)
+			}
+			for _, job := range agent.pending {
+				if data := r.markJobTerminalLocked(agent, job, "canceled", "", agent.errText, completedAt); data != nil {
+					terminal = append(terminal, data)
+				}
+			}
+			status := researchJobData(agent, agent.currentJob)
+			status["status"] = agent.status
+			status["error"] = agent.errText
+			statuses = append(statuses, status)
+		}
 		agent.pending = nil
 		if agent.currentCancel != nil {
 			agent.currentCancel()
 		}
 	}
 	r.mu.Unlock()
+	for _, data := range terminal {
+		r.appendJobTerminal(data, completedAt, false)
+	}
+	for _, data := range statuses {
+		r.appendTrajectoryAt("research/status", completedAt, data, false)
+	}
 
 	done := make(chan struct{})
 	go func() { r.wg.Wait(); close(done) }()
@@ -173,17 +318,29 @@ func (r *chatResearchRun) SpawnResearchAgents(ctx context.Context, specs []tools
 		return nil, fmt.Errorf("a chat turn can own at most %d research agents", tools.MaxResearchAgentsPerTurn)
 	}
 	created := make([]*chatResearchAgentRun, 0, len(specs))
+	createdJobs := make([]*chatResearchJob, 0, len(specs))
+	createdEvents := make([]map[string]any, 0, len(specs))
+	createdAt := make([]time.Time, 0, len(specs))
 	for _, spec := range specs {
 		id := fmt.Sprintf("agent-%d", len(r.order)+1)
 		name := normalizeResearchAgentName(spec.Name, len(r.order)+1)
 		task := strings.TrimSpace(spec.Task)
 		agent := &chatResearchAgentRun{
 			id: id, name: name, task: task, status: "queued", phase: "waiting for a research slot",
-			pending: []string{task}, messages: []llm.Message{r.researchSystemMessage(task)},
+			messages: []llm.Message{r.researchSystemMessage(task)},
 		}
+		job := r.newJobLocked(agent, task, "initial")
 		r.agents[id] = agent
 		r.order = append(r.order, id)
 		created = append(created, agent)
+		createdJobs = append(createdJobs, job)
+		data := researchJobData(agent, job)
+		data["task"] = agent.task
+		data["status"] = agent.status
+		data["phase"] = agent.phase
+		data["createdAt"] = job.queuedAt
+		createdEvents = append(createdEvents, data)
+		createdAt = append(createdAt, job.queuedAt)
 	}
 	snapshots := make([]tools.ResearchAgentSnapshot, 0, len(created))
 	for _, agent := range created {
@@ -191,7 +348,9 @@ func (r *chatResearchRun) SpawnResearchAgents(ctx context.Context, specs []tools
 	}
 	r.mu.Unlock()
 
-	for _, agent := range created {
+	for index, agent := range created {
+		r.appendTrajectoryAt("research/agent_created", createdAt[index], createdEvents[index], true)
+		r.appendJobQueued(agent, createdJobs[index])
 		r.publishAgent(agent)
 		r.startWorker(agent)
 	}
@@ -217,7 +376,7 @@ func (r *chatResearchRun) SendResearchAgentMessage(ctx context.Context, agentID,
 		return tools.ResearchAgentSnapshot{}, fmt.Errorf("research agent %q reached the follow-up limit", agentID)
 	}
 	agent.followUps++
-	agent.pending = append(agent.pending, strings.TrimSpace(message))
+	job := r.newJobLocked(agent, message, "follow_up")
 	if !agent.workerActive {
 		agent.status = "queued"
 		agent.phase = "follow-up queued"
@@ -225,6 +384,7 @@ func (r *chatResearchRun) SendResearchAgentMessage(ctx context.Context, agentID,
 	snapshot := r.snapshotLocked(agent, false)
 	shouldStart := !agent.workerActive
 	r.mu.Unlock()
+	r.appendJobQueued(agent, job)
 	r.publishAgent(agent)
 	if shouldStart {
 		r.startWorker(agent)
@@ -244,8 +404,9 @@ func (r *chatResearchRun) WaitResearchAgents(ctx context.Context, agentIDs []str
 		}
 		met := researchWaitCondition(selected, waitFor)
 		if met {
-			result := r.waitResultLocked(selected, true)
+			result, deliveries := r.waitResultLocked(selected, true)
 			r.mu.Unlock()
+			r.appendReportDeliveries(deliveries)
 			return result, nil
 		}
 		r.mu.Unlock()
@@ -262,8 +423,9 @@ func (r *chatResearchRun) WaitResearchAgents(ctx context.Context, agentIDs []str
 				r.mu.Unlock()
 				return tools.ResearchAgentWaitResult{}, err
 			}
-			result := r.waitResultLocked(selected, researchWaitCondition(selected, waitFor))
+			result, deliveries := r.waitResultLocked(selected, researchWaitCondition(selected, waitFor))
 			r.mu.Unlock()
+			r.appendReportDeliveries(deliveries)
 			return result, nil
 		}
 	}
@@ -276,13 +438,23 @@ func (r *chatResearchRun) CancelResearchAgents(_ context.Context, agentIDs []str
 		r.mu.Unlock()
 		return nil, err
 	}
+	completedAt := time.Now().UTC()
+	terminal := make([]map[string]any, 0)
 	for _, agent := range selected {
 		agent.canceled = true
-		agent.pending = nil
 		agent.status = "canceled"
 		agent.phase = ""
 		agent.errText = "Canceled by the parent chat agent."
 		agent.deliveredSequence = agent.sequence
+		if data := r.markJobTerminalLocked(agent, agent.currentJob, "canceled", "", agent.errText, completedAt); data != nil {
+			terminal = append(terminal, data)
+		}
+		for _, job := range agent.pending {
+			if data := r.markJobTerminalLocked(agent, job, "canceled", "", agent.errText, completedAt); data != nil {
+				terminal = append(terminal, data)
+			}
+		}
+		agent.pending = nil
 		if agent.currentCancel != nil {
 			agent.currentCancel()
 		}
@@ -292,6 +464,9 @@ func (r *chatResearchRun) CancelResearchAgents(_ context.Context, agentIDs []str
 		snapshots = append(snapshots, r.snapshotLocked(agent, false))
 	}
 	r.mu.Unlock()
+	for _, data := range terminal {
+		r.appendJobTerminal(data, completedAt, true)
+	}
 	for _, agent := range selected {
 		r.publishAgent(agent)
 	}
@@ -343,12 +518,14 @@ func researchWaitCondition(agents []*chatResearchAgentRun, waitFor string) bool 
 	return terminal == len(agents)
 }
 
-func (r *chatResearchRun) waitResultLocked(agents []*chatResearchAgentRun, met bool) tools.ResearchAgentWaitResult {
+func (r *chatResearchRun) waitResultLocked(agents []*chatResearchAgentRun, met bool) (tools.ResearchAgentWaitResult, []map[string]any) {
 	snapshots := make([]tools.ResearchAgentSnapshot, 0, len(agents))
+	delivered := make([]bool, 0, len(agents))
 	reports := 0
 	for _, agent := range agents {
 		include := agent.sequence > agent.deliveredSequence
 		snapshots = append(snapshots, r.snapshotLocked(agent, include))
+		delivered = append(delivered, include)
 		if include {
 			agent.deliveredSequence = agent.sequence
 			reports++
@@ -362,7 +539,27 @@ func (r *chatResearchRun) waitResultLocked(agents []*chatResearchAgentRun, met b
 			}
 		}
 	}
-	return tools.ResearchAgentWaitResult{ConditionMet: met, Agents: snapshots}
+	deliveries := make([]map[string]any, 0, reports)
+	for index, include := range delivered {
+		if !include {
+			continue
+		}
+		agent := agents[index]
+		data := researchJobData(agent, agent.lastJob)
+		data["status"] = snapshots[index].Status
+		data["report"] = snapshots[index].Report
+		data["error"] = snapshots[index].Error
+		data["reportSequence"] = snapshots[index].Sequence
+		data["conditionMet"] = met
+		deliveries = append(deliveries, data)
+	}
+	return tools.ResearchAgentWaitResult{ConditionMet: met, Agents: snapshots}, deliveries
+}
+
+func (r *chatResearchRun) appendReportDeliveries(deliveries []map[string]any) {
+	for _, data := range deliveries {
+		r.appendTrajectory("research/report_delivered", data)
+	}
 }
 
 func (r *chatResearchRun) snapshotLocked(agent *chatResearchAgentRun, includeReport bool) tools.ResearchAgentSnapshot {
@@ -488,14 +685,15 @@ func (r *chatResearchRun) runWorker(agent *chatResearchAgentRun) {
 			r.notify()
 			return
 		}
-		prompt := agent.pending[0]
+		job := agent.pending[0]
 		agent.pending = agent.pending[1:]
+		agent.currentJob = job
 		r.mu.Unlock()
 
 		select {
 		case r.semaphore <- struct{}{}:
 		case <-r.ctx.Done():
-			r.finishCanceledAgent(agent)
+			r.finishCanceledAgent(agent, job)
 			return
 		}
 
@@ -503,17 +701,24 @@ func (r *chatResearchRun) runWorker(agent *chatResearchAgentRun) {
 		if r.closed || agent.canceled {
 			r.mu.Unlock()
 			<-r.semaphore
-			r.finishCanceledAgent(agent)
+			r.finishCanceledAgent(agent, job)
 			return
 		}
 		agent.status = "running"
 		agent.phase = "investigating"
+		job.startedAt = time.Now().UTC()
 		jobCtx, cancel := context.WithTimeout(r.ctx, r.researchJobDeadline())
 		agent.currentCancel = cancel
+		jobStartedAt := job.startedAt
+		jobStart := researchJobData(agent, job)
+		jobStart["prompt"] = job.prompt
+		jobStart["status"] = "running"
+		jobStart["startedAt"] = jobStartedAt
 		r.mu.Unlock()
+		r.appendTrajectoryAt("research/job_start", jobStartedAt, jobStart, true)
 		r.publishAgent(agent)
 
-		report, updatedMessages, err := r.runAgentTurn(jobCtx, agent, prompt)
+		report, updatedMessages, err := r.runAgentTurn(jobCtx, agent, job)
 		cancel()
 		<-r.semaphore
 
@@ -522,14 +727,17 @@ func (r *chatResearchRun) runWorker(agent *chatResearchAgentRun) {
 		if len(updatedMessages) > 0 {
 			agent.messages = updatedMessages
 		}
+		terminalStatus := "completed"
 		switch {
 		case agent.canceled || r.closed || errors.Is(err, context.Canceled):
+			terminalStatus = "canceled"
 			agent.status = "canceled"
 			agent.phase = ""
 			if agent.errText == "" {
 				agent.errText = "Research was canceled."
 			}
 		case err != nil:
+			terminalStatus = "failed"
 			agent.status = "failed"
 			agent.phase = ""
 			agent.errText = err.Error()
@@ -542,6 +750,13 @@ func (r *chatResearchRun) runWorker(agent *chatResearchAgentRun) {
 			agent.report = limitResearchText(strings.TrimSpace(report), r.reportMaxBytes())
 			agent.sequence++
 		}
+		completedAt := time.Now().UTC()
+		terminalReport := ""
+		if terminalStatus == "completed" {
+			terminalReport = agent.report
+		}
+		terminalData := r.markJobTerminalLocked(agent, job, terminalStatus, terminalReport, agent.errText, completedAt)
+		agent.currentJob = nil
 		more := !agent.canceled && !r.closed && len(agent.pending) > 0
 		if more {
 			agent.status = "queued"
@@ -550,6 +765,7 @@ func (r *chatResearchRun) runWorker(agent *chatResearchAgentRun) {
 			agent.workerActive = false
 		}
 		r.mu.Unlock()
+		r.appendJobTerminal(terminalData, completedAt, true)
 		r.publishAgent(agent)
 		r.notify()
 		if !more {
@@ -558,7 +774,7 @@ func (r *chatResearchRun) runWorker(agent *chatResearchAgentRun) {
 	}
 }
 
-func (r *chatResearchRun) finishCanceledAgent(agent *chatResearchAgentRun) {
+func (r *chatResearchRun) finishCanceledAgent(agent *chatResearchAgentRun, job *chatResearchJob) {
 	r.mu.Lock()
 	agent.workerActive = false
 	agent.status = "canceled"
@@ -566,7 +782,22 @@ func (r *chatResearchRun) finishCanceledAgent(agent *chatResearchAgentRun) {
 	if agent.errText == "" {
 		agent.errText = "Research was canceled."
 	}
+	completedAt := time.Now().UTC()
+	terminal := make([]map[string]any, 0, len(agent.pending)+1)
+	if data := r.markJobTerminalLocked(agent, job, "canceled", "", agent.errText, completedAt); data != nil {
+		terminal = append(terminal, data)
+	}
+	for _, pending := range agent.pending {
+		if data := r.markJobTerminalLocked(agent, pending, "canceled", "", agent.errText, completedAt); data != nil {
+			terminal = append(terminal, data)
+		}
+	}
+	agent.pending = nil
+	agent.currentJob = nil
 	r.mu.Unlock()
+	for _, data := range terminal {
+		r.appendJobTerminal(data, completedAt, true)
+	}
 	r.publishAgent(agent)
 	r.notify()
 }
@@ -583,12 +814,12 @@ func (r *chatResearchRun) researchJobDeadline() time.Duration {
 	return duration
 }
 
-func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchAgentRun, prompt string) (string, []llm.Message, error) {
+func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchAgentRun, job *chatResearchJob) (string, []llm.Message, error) {
 	r.mu.Lock()
 	canonical := cloneResearchMessages(agent.messages)
 	checkpoint := cloneContextCheckpoint(agent.checkpoint)
 	r.mu.Unlock()
-	canonical = append(canonical, llm.Message{Role: llm.RoleUser, Content: strings.TrimSpace(prompt)})
+	canonical = append(canonical, llm.Message{Role: llm.RoleUser, Content: strings.TrimSpace(job.prompt)})
 	settings := r.settings
 	streamer := r.streamer
 	emptyAssistantRetries := 0
@@ -612,7 +843,7 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 		}
 		if settings.CompressionEnabled() && (hardLimitPreflight || (currentTokens >= compressionThresholdTokens(settings) && !coolingDown)) {
 			r.setAgentPhase(agent, "compressing context")
-			updated, compressionErr := r.compressAgentContext(ctx, agent, settings, canonical, checkpoint, toolSchema, observedTokens, usageSource, round)
+			updated, compressionErr := r.compressAgentContext(ctx, agent, job, settings, canonical, checkpoint, toolSchema, observedTokens, usageSource, round)
 			compressionCooldown = true
 			r.setAgentPhase(agent, "investigating")
 			if updated != nil {
@@ -632,7 +863,32 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 		if err != nil {
 			return "", canonical, err
 		}
-		streamResult, err := r.collectResearchStream(ctx, streamer.StreamChat(ctx, request), agent)
+		requestStartedAt := time.Now().UTC()
+		requestData := r.trajectoryRoundData(agent, job, round)
+		requestData["request"] = request
+		requestData["model"] = request.Model
+		requestData["startedAt"] = requestStartedAt
+		r.appendTrajectoryAt("research/request_start", requestStartedAt, requestData, true)
+		streamResult, err := r.collectResearchStream(ctx, streamer.StreamChat(ctx, request), agent, job, round, requestStartedAt)
+		streamError := ""
+		if err != nil {
+			streamError = err.Error()
+		}
+		messageData := r.trajectoryRoundData(agent, job, round)
+		messageData["content"] = streamResult.content
+		messageData["reasoning"] = streamResult.reasoning
+		messageData["toolCalls"] = streamResult.toolCalls
+		messageData["finishReason"] = streamResult.finishReason
+		messageData["usage"] = streamResult.usage
+		messageData["streamError"] = streamError
+		messageData["completed"] = streamResult.completed
+		messageData["startedAt"] = streamResult.startedAt
+		messageData["firstTokenAt"] = streamResult.firstTokenAt
+		messageData["firstReasoningAt"] = streamResult.firstReasoningAt
+		messageData["completedAt"] = streamResult.completedAt
+		messageData["durationMs"] = streamResult.completedAt.Sub(streamResult.startedAt).Milliseconds()
+		messageData["ttftMs"] = durationUntil(streamResult.startedAt, streamResult.firstTokenAt)
+		r.appendTrajectoryAt("research/assistant_message", streamResult.completedAt, messageData, true)
 		if err != nil {
 			if isEmptyAssistantResponse(streamResult.content, streamResult.toolCalls) && transientStreamRetries < maxTransientStreamRetries && ctx.Err() == nil {
 				transientStreamRetries++
@@ -682,8 +938,17 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 				callID = fmt.Sprintf("research-%d-call-%d", round, callOrder)
 			}
 			r.setAgentPhase(agent, "using "+call.Function.Name)
+			toolStartedAt := time.Now().UTC()
+			toolCallData := r.trajectoryRoundData(agent, job, round)
+			toolCallData["callId"] = callID
+			toolCallData["callOrder"] = callOrder
+			toolCallData["tool"] = call.Function.Name
+			toolCallData["arguments"] = call.Function.Arguments
+			toolCallData["status"] = "running"
+			toolCallData["startedAt"] = toolStartedAt
+			r.appendTrajectoryAt("research/tool_call", toolStartedAt, toolCallData, true)
 			r.updateResearchToolActivity(agent, callID, callOrder, call.Function.Name, call.Function.Arguments, "", false, false)
-			toolCtx := r.session.toolContext(ctx, r.toolScopes, nil, nil)
+			toolCtx := r.session.toolContext(ctx, r.turnID, r.toolScopes, nil, nil)
 			toolCtx.ResearchAgents = nil
 			toolCtx.AgentModes = nil
 			var result tools.ExecutionResult
@@ -705,7 +970,19 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 				canonical = append(canonical, videoMessage)
 				visualResult = true
 			}
-			r.updateResearchToolActivity(agent, callID, callOrder, call.Function.Name, call.Function.Arguments, string(data), true, result.Success && marshalErr == nil)
+			toolCompletedAt := time.Now().UTC()
+			resultSuccess := result.Success && marshalErr == nil
+			toolResultData := r.trajectoryRoundData(agent, job, round)
+			toolResultData["callId"] = callID
+			toolResultData["callOrder"] = callOrder
+			toolResultData["tool"] = call.Function.Name
+			toolResultData["success"] = resultSuccess
+			toolResultData["result"] = json.RawMessage(data)
+			toolResultData["startedAt"] = toolStartedAt
+			toolResultData["completedAt"] = toolCompletedAt
+			toolResultData["durationMs"] = toolCompletedAt.Sub(toolStartedAt).Milliseconds()
+			r.appendTrajectoryAt("research/tool_result", toolCompletedAt, toolResultData, true)
+			r.updateResearchToolActivity(agent, callID, callOrder, call.Function.Name, call.Function.Arguments, string(data), true, resultSuccess)
 		}
 		r.setAgentPhase(agent, "investigating")
 		if visualResult {
@@ -715,21 +992,27 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 	return "", canonical, fmt.Errorf("research agent exceeded %d model rounds", maxResearchAgentRounds)
 }
 
-func (r *chatResearchRun) compressAgentContext(ctx context.Context, agent *chatResearchAgentRun, settings llm.Settings, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint, toolSchema []llm.Tool, observedTokens int, usageSource string, round int) (*sessions.ContextCheckpoint, error) {
+func (r *chatResearchRun) compressAgentContext(ctx context.Context, agent *chatResearchAgentRun, job *chatResearchJob, settings llm.Settings, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint, toolSchema []llm.Tool, observedTokens int, usageSource string, round int) (*sessions.ContextCheckpoint, error) {
 	compressionID := newSessionID("compression")
 	started := time.Now().UTC()
+	identity := r.trajectoryRoundData(agent, job, round)
+	startData := cloneTrajectoryData(identity)
+	startData["compressionId"] = compressionID
+	startData["trigger"] = "automatic"
+	startData["phase"] = "research"
+	startData["thresholdPercent"] = settings.ContextCompressionThresholdPercent
+	startData["contextLength"] = settings.ContextLength
+	startData["model"] = settings.Model
+	startData["endpoint"] = settings.Endpoint
+	startData["usageSource"] = usageSource
+	startData["startedAt"] = started
 	s := r.session
 	s.mu.Lock()
 	if !s.isActiveLocked(r.turnID) {
 		s.mu.Unlock()
 		return nil, errChatCanceled
 	}
-	s.appendTrajectoryLocked("context/compression_start", r.turnID, nil, map[string]any{
-		"compressionId": compressionID, "trigger": "automatic", "phase": "research",
-		"agentId": agent.id, "agentName": agent.name, "round": round,
-		"thresholdPercent": settings.ContextCompressionThresholdPercent, "contextLength": settings.ContextLength,
-		"model": settings.Model, "endpoint": settings.Endpoint, "usageSource": usageSource, "startedAt": started,
-	})
+	s.appendTrajectoryLocked("context/compression_start", r.turnID, nil, startData)
 	s.mu.Unlock()
 	result, err := s.manager.server.compressContext(ctx, settings, canonical, checkpoint, nil, toolSchema, observedTokens, usageSource)
 	completed := time.Now().UTC()
@@ -747,31 +1030,51 @@ func (r *chatResearchRun) compressAgentContext(ctx context.Context, agent *chatR
 		if resultUsageSource == "" {
 			resultUsageSource = usageSource
 		}
-		s.appendTrajectoryLocked(eventType, r.turnID, nil, map[string]any{
-			"compressionId": compressionID, "trigger": "automatic", "phase": "research",
-			"agentId": agent.id, "agentName": agent.name, "round": round,
-			"thresholdPercent": settings.ContextCompressionThresholdPercent, "contextLength": settings.ContextLength,
-			"model": settings.Model, "endpoint": settings.Endpoint, "usageSource": resultUsageSource,
-			"beforeTokens": result.BeforeTokens, "afterTokens": result.AfterTokens,
-			"reclaimedTokens": result.BeforeTokens - result.AfterTokens, "summaryUsage": result.SummaryUsage,
-			"chunkCount": result.ChunkCount, "recoveryAvailable": checkpoint != nil,
-			"errorClass": classifyCompressionError(err), "error": err.Error(), "durationMs": completed.Sub(started).Milliseconds(), "completedAt": completed,
-		})
+		errorData := cloneTrajectoryData(identity)
+		errorData["compressionId"] = compressionID
+		errorData["trigger"] = "automatic"
+		errorData["phase"] = "research"
+		errorData["thresholdPercent"] = settings.ContextCompressionThresholdPercent
+		errorData["contextLength"] = settings.ContextLength
+		errorData["model"] = settings.Model
+		errorData["endpoint"] = settings.Endpoint
+		errorData["usageSource"] = resultUsageSource
+		errorData["beforeTokens"] = result.BeforeTokens
+		errorData["afterTokens"] = result.AfterTokens
+		errorData["reclaimedTokens"] = result.BeforeTokens - result.AfterTokens
+		errorData["summaryUsage"] = result.SummaryUsage
+		errorData["chunkCount"] = result.ChunkCount
+		errorData["recoveryAvailable"] = checkpoint != nil
+		errorData["errorClass"] = classifyCompressionError(err)
+		errorData["error"] = err.Error()
+		errorData["durationMs"] = completed.Sub(started).Milliseconds()
+		errorData["completedAt"] = completed
+		s.appendTrajectoryLocked(eventType, r.turnID, nil, errorData)
 		logf("context compression chat=%s trigger=automatic phase=research agent=%s status=failed before=%d after=%d duration_ms=%d error=%q", s.transcript.ChatID, agent.id, result.BeforeTokens, result.AfterTokens, completed.Sub(started).Milliseconds(), err.Error())
 		return nil, err
 	}
 	result.Checkpoint.LastCompactedAt = completed
 	result.Checkpoint.LastAssistantNumber = round
-	s.appendTrajectoryLocked("context/compression_complete", r.turnID, nil, map[string]any{
-		"compressionId": compressionID, "trigger": "automatic", "phase": "research",
-		"agentId": agent.id, "agentName": agent.name, "round": round,
-		"thresholdPercent": settings.ContextCompressionThresholdPercent, "contextLength": settings.ContextLength,
-		"model": settings.Model, "endpoint": settings.Endpoint, "usageSource": result.UsageSource,
-		"beforeTokens": result.BeforeTokens, "afterTokens": result.AfterTokens,
-		"reclaimedTokens": result.BeforeTokens - result.AfterTokens, "retiredMessages": result.RetiredMessages,
-		"summaryUsage": result.SummaryUsage, "chunkCount": result.ChunkCount, "summary": result.Checkpoint.Summary,
-		"recoveryAvailable": true, "durationMs": completed.Sub(started).Milliseconds(), "completedAt": completed,
-	})
+	completeData := cloneTrajectoryData(identity)
+	completeData["compressionId"] = compressionID
+	completeData["trigger"] = "automatic"
+	completeData["phase"] = "research"
+	completeData["thresholdPercent"] = settings.ContextCompressionThresholdPercent
+	completeData["contextLength"] = settings.ContextLength
+	completeData["model"] = settings.Model
+	completeData["endpoint"] = settings.Endpoint
+	completeData["usageSource"] = result.UsageSource
+	completeData["beforeTokens"] = result.BeforeTokens
+	completeData["afterTokens"] = result.AfterTokens
+	completeData["reclaimedTokens"] = result.BeforeTokens - result.AfterTokens
+	completeData["retiredMessages"] = result.RetiredMessages
+	completeData["summaryUsage"] = result.SummaryUsage
+	completeData["chunkCount"] = result.ChunkCount
+	completeData["summary"] = result.Checkpoint.Summary
+	completeData["recoveryAvailable"] = true
+	completeData["durationMs"] = completed.Sub(started).Milliseconds()
+	completeData["completedAt"] = completed
+	s.appendTrajectoryLocked("context/compression_complete", r.turnID, nil, completeData)
 	logf("context compression chat=%s trigger=automatic phase=research agent=%s status=completed before=%d after=%d duration_ms=%d", s.transcript.ChatID, agent.id, result.BeforeTokens, result.AfterTokens, completed.Sub(started).Milliseconds())
 	return cloneContextCheckpoint(result.Checkpoint), nil
 }
@@ -795,21 +1098,46 @@ func cloneResearchMessages(messages []llm.Message) []llm.Message {
 	return output
 }
 
-func (r *chatResearchRun) collectResearchStream(ctx context.Context, stream *llm.Stream, agent *chatResearchAgentRun) (researchStreamResult, error) {
+func (r *chatResearchRun) collectResearchStream(ctx context.Context, stream *llm.Stream, agent *chatResearchAgentRun, job *chatResearchJob, round int, startedAt time.Time) (researchStreamResult, error) {
 	var content strings.Builder
 	var reasoning strings.Builder
 	toolCalls := make(map[int]llm.ToolCall)
-	result := researchStreamResult{}
+	result := researchStreamResult{startedAt: startedAt}
 	var firstErr error
+	trajectoryBuffer := streamTrajectoryBuffer{
+		turnID: r.turnID, omitStep: true, eventType: "research/chunk",
+		baseData: r.trajectoryRoundData(agent, job, round), chunk: make([]map[string]any, 0, trajectoryStreamChunkEvents),
+	}
+	flushTrajectory := func() {
+		entries := trajectoryBuffer.drain()
+		if len(entries) == 0 {
+			return
+		}
+		s := r.session
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.isActiveLocked(r.turnID) {
+			s.appendTrajectoryBatchLocked(entries)
+		}
+	}
+	finalize := func(at time.Time) researchStreamResult {
+		result.content = content.String()
+		result.reasoning = reasoning.String()
+		result.toolCalls = orderedToolCalls(toolCalls)
+		result.completedAt = at
+		return result
+	}
+	flushTicker := time.NewTicker(trajectoryStreamFlushInterval)
+	defer flushTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return result, ctx.Err()
+			flushTrajectory()
+			return finalize(time.Now().UTC()), ctx.Err()
 		case event, ok := <-stream.Events:
 			if !ok {
-				result.content = content.String()
-				result.reasoning = reasoning.String()
-				result.toolCalls = orderedToolCalls(toolCalls)
+				flushTrajectory()
+				result = finalize(time.Now().UTC())
 				if result.usage == nil && stream.Usage != nil {
 					usage := *stream.Usage
 					result.usage = &usage
@@ -822,11 +1150,26 @@ func (r *chatResearchRun) collectResearchStream(ctx context.Context, stream *llm
 				}
 				return result, nil
 			}
+			now := time.Now().UTC()
+			if trajectoryBuffer.changesPhase(event.Type) {
+				flushTrajectory()
+			}
+			if trajectoryBuffer.add(event, now) {
+				flushTrajectory()
+			}
 			switch event.Type {
 			case llm.EventToken:
 				content.WriteString(event.Content)
+				if result.firstTokenAt == nil {
+					first := now
+					result.firstTokenAt = &first
+				}
 			case llm.EventReasoning:
 				reasoning.WriteString(event.Content)
+				if result.firstReasoningAt == nil {
+					first := now
+					result.firstReasoningAt = &first
+				}
 				r.appendResearchReasoning(agent, event.Content)
 			case llm.EventToolCall:
 				if event.ToolCall != nil {
@@ -837,7 +1180,8 @@ func (r *chatResearchRun) collectResearchStream(ctx context.Context, stream *llm
 					firstErr = errors.New(event.Error)
 				}
 			case llm.EventCanceled:
-				return result, context.Canceled
+				flushTrajectory()
+				return finalize(now), context.Canceled
 			case llm.EventUsage, llm.EventComplete:
 				if event.Usage != nil {
 					usage := *event.Usage
@@ -847,6 +1191,13 @@ func (r *chatResearchRun) collectResearchStream(ctx context.Context, stream *llm
 					result.completed = true
 					result.finishReason = event.FinishReason
 				}
+			}
+			if event.Type == llm.EventComplete || event.Type == llm.EventError {
+				flushTrajectory()
+			}
+		case <-flushTicker.C:
+			if trajectoryBuffer.hasData() {
+				flushTrajectory()
 			}
 		}
 	}
@@ -858,10 +1209,33 @@ func (r *chatResearchRun) publishAgent(agent *chatResearchAgentRun) {
 		ID: agent.id, Name: agent.name, Status: agent.status, Phase: agent.phase,
 		TaskLabel: limitResearchText(agent.task, 160), Error: agent.errText,
 	}
+	job := agent.currentJob
+	if job == nil && public.Status == "queued" && len(agent.pending) > 0 {
+		job = agent.pending[0]
+	}
+	if job == nil {
+		job = agent.lastJob
+	}
+	jobID := ""
+	if job != nil {
+		jobID = job.id
+	}
+	statusKey := strings.Join([]string{public.Status, public.Phase, public.Error, jobID}, "\x00")
+	var statusData map[string]any
+	if statusKey != agent.trajectoryStatus {
+		agent.trajectoryStatus = statusKey
+		statusData = researchJobData(agent, job)
+		statusData["status"] = public.Status
+		statusData["phase"] = public.Phase
+		statusData["error"] = public.Error
+	}
 	closed := r.closed
 	r.mu.Unlock()
 	if closed {
 		return
+	}
+	if statusData != nil {
+		r.appendTrajectory("research/status", statusData)
 	}
 
 	s := r.session

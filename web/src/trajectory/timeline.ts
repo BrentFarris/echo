@@ -8,11 +8,20 @@ export type TrajectoryTimelineEvent = {
   data?: Record<string, unknown>;
 };
 
-export type TrajectoryLane = "input" | "model" | "tools" | "system";
+export type TrajectoryLane = "input" | "model" | "tools" | "system" | "research";
+
+export type TrajectorySpanKind = "input" | "model" | "tool" | "system" | "job" | "status" | "report";
+
+export type TrajectoryResearchAgent = {
+  id: string;
+  name: string;
+};
 
 export type TrajectoryTimelineSpan = {
   event: TrajectoryTimelineEvent;
   lane: TrajectoryLane;
+  trackKey: string;
+  kind: TrajectorySpanKind;
   start: number;
   end: number;
   pending: boolean;
@@ -28,6 +37,7 @@ export type TrajectoryTimelineModel = {
   end: number;
   spans: TrajectoryTimelineSpan[];
   turnBoundaries: TrajectoryTurnBoundary[];
+  researchAgents: TrajectoryResearchAgent[];
   compressedIdleMs: number;
 };
 
@@ -37,13 +47,44 @@ const overviewTypes = new Set([
   "transcript/rewind", "auxiliary/request", "auxiliary/result",
   "context/injection", "context/compression_queued", "context/compression_start",
   "context/compression_complete", "context/compression_skipped", "context/compression_error",
+  "research/agent_created", "research/job_queued", "research/job_start", "research/job_end",
+  "research/status", "research/request_start", "research/assistant_message",
+  "research/tool_call", "research/tool_result", "research/report_delivered",
   "persistence/error",
 ]);
 
-export function trajectoryLaneFor(type: string): TrajectoryLane {
+export function trajectoryLaneFor(type: string, data?: Record<string, unknown>): TrajectoryLane {
+  if (type.startsWith("research/")) return "research";
+  if (type.startsWith("context/compression") && data?.phase === "research" && typeof data.agentId === "string") return "research";
   if (type.startsWith("user/")) return "input";
   if (type.startsWith("assistant/") || type.startsWith("request/") || type.startsWith("auxiliary/")) return "model";
   if (type.startsWith("tool/")) return "tools";
+  return "system";
+}
+
+function textValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function researchAgentId(event: TrajectoryTimelineEvent): string {
+  if (event.type.startsWith("research/") || event.data?.phase === "research") {
+    return textValue(event.data?.agentId);
+  }
+  return "";
+}
+
+function trackKeyFor(event: TrajectoryTimelineEvent, lane: TrajectoryLane): string {
+  const agentId = researchAgentId(event);
+  return lane === "research" && agentId ? `research:${agentId}` : lane;
+}
+
+function spanKindFor(event: TrajectoryTimelineEvent, lane: TrajectoryLane): TrajectorySpanKind {
+  if (event.type === "research/job_end" || event.type === "research/job_start" || event.type === "research/job_queued") return "job";
+  if (event.type === "research/status" || event.type === "research/agent_created") return "status";
+  if (event.type === "research/report_delivered") return "report";
+  if (event.type === "research/tool_result" || event.type === "research/tool_call" || lane === "tools") return "tool";
+  if (event.type === "research/assistant_message" || event.type === "research/request_start" || lane === "model") return "model";
+  if (lane === "input") return "input";
   return "system";
 }
 
@@ -110,6 +151,29 @@ function compressionKey(event: TrajectoryTimelineEvent): string | null {
   return typeof compressionId === "string" && compressionId ? compressionId : null;
 }
 
+function researchJobKey(event: TrajectoryTimelineEvent): string | null {
+  const agentId = researchAgentId(event);
+  const jobId = textValue(event.data?.jobId);
+  return agentId && jobId ? `${event.turnId ?? ""}\0${agentId}\0${jobId}` : null;
+}
+
+function researchRequestKey(event: TrajectoryTimelineEvent): string | null {
+  const job = researchJobKey(event);
+  const round = event.data?.round;
+  return job !== null && (typeof round === "number" || typeof round === "string") ? `${job}\0${String(round)}` : null;
+}
+
+function researchToolKey(event: TrajectoryTimelineEvent): string | null {
+  const request = researchRequestKey(event);
+  const callId = textValue(event.data?.callId);
+  return request !== null && callId ? `${request}\0${callId}` : null;
+}
+
+function pendingRange(event: TrajectoryTimelineEvent, now: number): { start: number; end: number } | null {
+  const start = eventStartedAt(event);
+  return start === undefined ? null : { start, end: Math.max(start, now) };
+}
+
 /**
  * Build the compact Duration projection used by the trajectory overview.
  * Completed request/result pairs become one operation and wall-clock gaps with
@@ -117,6 +181,7 @@ function compressionKey(event: TrajectoryTimelineEvent): string | null {
  */
 export function deriveTrajectoryTimeline(
   events: readonly TrajectoryTimelineEvent[],
+  now = Date.now(),
 ): TrajectoryTimelineModel | null {
   const requestStarts = new Map<string, TrajectoryTimelineEvent>();
   const completedRequests = new Set<string>();
@@ -124,6 +189,14 @@ export function deriveTrajectoryTimeline(
   const completedTools = new Set<string>();
   const compressionStarts = new Map<string, TrajectoryTimelineEvent>();
   const completedCompressions = new Set<string>();
+  const researchJobQueued = new Map<string, TrajectoryTimelineEvent>();
+  const researchJobStarts = new Map<string, TrajectoryTimelineEvent>();
+  const startedResearchJobs = new Set<string>();
+  const completedResearchJobs = new Set<string>();
+  const researchRequestStarts = new Map<string, TrajectoryTimelineEvent>();
+  const completedResearchRequests = new Set<string>();
+  const researchToolCalls = new Map<string, TrajectoryTimelineEvent>();
+  const completedResearchTools = new Set<string>();
 
   for (const event of events) {
     if (event.type === "request/start") {
@@ -144,6 +217,30 @@ export function deriveTrajectoryTimeline(
     } else if (["context/compression_complete", "context/compression_skipped", "context/compression_error"].includes(event.type)) {
       const key = compressionKey(event);
       if (key !== null) completedCompressions.add(key);
+    } else if (event.type === "research/job_queued") {
+      const key = researchJobKey(event);
+      if (key !== null) researchJobQueued.set(key, event);
+    } else if (event.type === "research/job_start") {
+      const key = researchJobKey(event);
+      if (key !== null) {
+        researchJobStarts.set(key, event);
+        startedResearchJobs.add(key);
+      }
+    } else if (event.type === "research/job_end") {
+      const key = researchJobKey(event);
+      if (key !== null) completedResearchJobs.add(key);
+    } else if (event.type === "research/request_start") {
+      const key = researchRequestKey(event);
+      if (key !== null) researchRequestStarts.set(key, event);
+    } else if (event.type === "research/assistant_message") {
+      const key = researchRequestKey(event);
+      if (key !== null) completedResearchRequests.add(key);
+    } else if (event.type === "research/tool_call") {
+      const key = researchToolKey(event);
+      if (key !== null) researchToolCalls.set(key, event);
+    } else if (event.type === "research/tool_result") {
+      const key = researchToolKey(event);
+      if (key !== null) completedResearchTools.add(key);
     }
   }
 
@@ -156,6 +253,14 @@ export function deriveTrajectoryTimeline(
     if (event.type === "request/start" && key !== null && completedRequests.has(key)) continue;
     if (event.type === "tool/call" && key !== null && completedTools.has(key)) continue;
     if (event.type === "context/compression_start" && key !== null && completedCompressions.has(key)) continue;
+    const researchJob = researchJobKey(event);
+    const researchRequest = researchRequestKey(event);
+    const researchTool = researchToolKey(event);
+    if (event.type === "research/job_queued" && researchJob !== null
+      && (startedResearchJobs.has(researchJob) || completedResearchJobs.has(researchJob))) continue;
+    if (event.type === "research/job_start" && researchJob !== null && completedResearchJobs.has(researchJob)) continue;
+    if (event.type === "research/request_start" && researchRequest !== null && completedResearchRequests.has(researchRequest)) continue;
+    if (event.type === "research/tool_call" && researchTool !== null && completedResearchTools.has(researchTool)) continue;
 
     let range: { start: number; end: number } | null;
     if (event.type === "assistant/message") {
@@ -164,17 +269,31 @@ export function deriveTrajectoryTimeline(
       range = operationRange(event, key === null ? undefined : toolCalls.get(key));
     } else if (["context/compression_complete", "context/compression_skipped", "context/compression_error"].includes(event.type)) {
       range = operationRange(event, key === null ? undefined : compressionStarts.get(key));
+    } else if (event.type === "research/job_end") {
+      range = operationRange(event, researchJob === null ? undefined : researchJobStarts.get(researchJob) || researchJobQueued.get(researchJob));
+    } else if (event.type === "research/assistant_message") {
+      range = operationRange(event, researchRequest === null ? undefined : researchRequestStarts.get(researchRequest));
+    } else if (event.type === "research/tool_result") {
+      range = operationRange(event, researchTool === null ? undefined : researchToolCalls.get(researchTool));
+    } else if (event.type === "research/job_queued" || event.type === "research/job_start" || event.type === "research/request_start" || event.type === "research/tool_call") {
+      range = pendingRange(event, now);
+    } else if (event.type === "request/start" || event.type === "tool/call" || event.type === "context/compression_start") {
+      range = pendingRange(event, now);
     } else if (durationOf(event) !== undefined || parseTime(event.data?.completedAt) !== undefined) {
       range = operationRange(event);
     } else {
       range = instantRange(event);
     }
     if (range === null) continue;
+    const lane = trajectoryLaneFor(event.type, event.data);
     rawSpans.push({
       event,
-      lane: trajectoryLaneFor(event.type),
+      lane,
+      trackKey: trackKeyFor(event, lane),
+      kind: spanKindFor(event, lane),
       ...range,
-      pending: event.type === "request/start" || event.type === "tool/call" || event.type === "context/compression_start",
+      pending: event.type === "request/start" || event.type === "tool/call" || event.type === "context/compression_start"
+        || event.type === "research/job_queued" || event.type === "research/job_start" || event.type === "research/request_start" || event.type === "research/tool_call",
     });
   }
   if (!rawSpans.length) return null;
@@ -213,11 +332,21 @@ export function deriveTrajectoryTimeline(
     .map(([turnId, time]) => ({ turnId, time }))
     .sort((left, right) => left.time - right.time);
 
+  const researchAgents: TrajectoryResearchAgent[] = [];
+  const knownAgents = new Set<string>();
+  for (const event of events) {
+    const id = researchAgentId(event);
+    if (!id || knownAgents.has(id)) continue;
+    knownAgents.add(id);
+    researchAgents.push({ id, name: textValue(event.data?.agentName) || id });
+  }
+
   return {
     start: 0,
     end: Math.max(...spans.map((span) => span.end), 1),
     spans,
     turnBoundaries,
+    researchAgents,
     compressedIdleMs,
   };
 }

@@ -12,17 +12,23 @@ import "monaco-editor/language/html/monaco.contribution";
 import "monaco-editor/language/typescript/monaco.contribution";
 // The lean editor API exposes language-provider registries but does not load
 // the editor contributions that invoke them. Import only Echo's LSP v1 UI.
+import "monaco-editor/editor/browser/services/contribution.js";
 import "monaco-editor/editor/contrib/codeAction/browser/codeActionContributions.js";
 import "monaco-editor/editor/contrib/documentSymbols/browser/documentSymbols.js";
+import "monaco-editor/editor/contrib/dnd/browser/dnd.js";
+import "monaco-editor/editor/contrib/find/browser/findController.js";
 import "monaco-editor/editor/contrib/format/browser/formatActions.js";
 import "monaco-editor/editor/contrib/gotoSymbol/browser/goToCommands.js";
 import "monaco-editor/editor/contrib/hover/browser/hoverContribution.js";
+import "monaco-editor/editor/contrib/multicursor/browser/multicursor.js";
 import "monaco-editor/editor/contrib/parameterHints/browser/parameterHints.js";
 import "monaco-editor/editor/contrib/rename/browser/rename.js";
 import "monaco-editor/editor/contrib/find/browser/findController.js";
 import "monaco-editor/editor/contrib/wordOperations/browser/wordOperations.js";
+import "monaco-editor/editor/contrib/linesOperations/browser/linesOperations.js";
 import "monaco-editor/editor/contrib/suggest/browser/suggestController.js";
 import "monaco-editor/editor/standalone/browser/referenceSearch/standaloneReferenceSearch.js";
+import "monaco-editor/editor/contrib/wordHighlighter/browser/wordHighlighter.js";
 import { configuredLanguageIdForPath } from "./languageMap";
 import type { LSPProfile } from "./lspTypes";
 

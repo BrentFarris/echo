@@ -8,6 +8,7 @@ import (
 )
 
 func (s *Service) Metadata(ctx context.Context, workspaceID, repositoryID string) (Metadata, error) {
+	ctx = s.executionContext(ctx, workspaceID)
 	state, err := s.repository(ctx, workspaceID, repositoryID)
 	if err != nil {
 		return Metadata{}, err
@@ -44,6 +45,7 @@ func (s *Service) Metadata(ctx context.Context, workspaceID, repositoryID string
 }
 
 func (s *Service) History(ctx context.Context, workspaceID, repositoryID string, offset, limit int) (History, error) {
+	ctx = s.executionContext(ctx, workspaceID)
 	state, err := s.repository(ctx, workspaceID, repositoryID)
 	if err != nil {
 		return History{}, err
@@ -79,6 +81,7 @@ func (s *Service) History(ctx context.Context, workspaceID, repositoryID string,
 }
 
 func (s *Service) CommitDetail(ctx context.Context, workspaceID, repositoryID, ref string, stash bool) (CommitDetail, error) {
+	ctx = s.executionContext(ctx, workspaceID)
 	state, err := s.repository(ctx, workspaceID, repositoryID)
 	if err != nil {
 		return CommitDetail{}, err

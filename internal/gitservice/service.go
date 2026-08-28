@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/brent/echo/internal/sandbox"
 	"github.com/brent/echo/internal/workspacefs"
 	"github.com/brent/echo/internal/workspaces"
 )
@@ -74,25 +76,79 @@ func (r *repositoryState) public() Repository {
 }
 
 type Service struct {
-	workspaces  *workspaces.Manager
-	fs          *workspacefs.Service
-	mu          sync.RWMutex
-	repos       map[string]map[string]*repositoryState
-	notify      func(Event)
-	watches     map[string]*workspaceWatch
-	statusSlots chan struct{}
+	workspaces   *workspaces.Manager
+	fs           *workspacefs.Service
+	mu           sync.RWMutex
+	repos        map[string]map[string]*repositoryState
+	notify       func(Event)
+	watches      map[string]*workspaceWatch
+	statusSlots  chan struct{}
+	sandbox      *sandbox.Manager
+	execStops    map[string]context.CancelFunc
+	execContexts map[string]context.Context
 }
 
 func New(workspaces *workspaces.Manager, fs *workspacefs.Service) *Service {
 	return &Service{
 		workspaces: workspaces, fs: fs, repos: make(map[string]map[string]*repositoryState),
 		watches: make(map[string]*workspaceWatch), statusSlots: make(chan struct{}, 4),
+		execStops: make(map[string]context.CancelFunc), execContexts: make(map[string]context.Context),
 	}
 }
 
 func (s *Service) SetNotifier(notify func(Event)) {
 	s.mu.Lock()
 	s.notify = notify
+	s.mu.Unlock()
+}
+
+func (s *Service) SetSandbox(manager *sandbox.Manager) {
+	s.mu.Lock()
+	s.sandbox = manager
+	s.mu.Unlock()
+}
+
+type gitExecutionContextKey struct{}
+
+type gitExecutionContext struct {
+	manager     *sandbox.Manager
+	workspaceID string
+	stop        context.Context
+}
+
+func (s *Service) executionContext(ctx context.Context, workspaceID string) context.Context {
+	s.mu.Lock()
+	manager := s.sandbox
+	if s.execContexts == nil {
+		s.execContexts = make(map[string]context.Context)
+		s.execStops = make(map[string]context.CancelFunc)
+	}
+	stop := s.execContexts[workspaceID]
+	if stop == nil {
+		var cancel context.CancelFunc
+		stop, cancel = context.WithCancel(context.Background())
+		s.execContexts[workspaceID], s.execStops[workspaceID] = stop, cancel
+	}
+	s.mu.Unlock()
+	if manager == nil || !manager.IsEnabled(workspaceID) {
+		return ctx
+	}
+	return context.WithValue(ctx, gitExecutionContextKey{}, gitExecutionContext{manager: manager, workspaceID: workspaceID, stop: stop})
+}
+
+// StopWorkspaceProcesses invalidates the current sandbox Git execution epoch.
+// New operations receive a fresh context after the routing transition.
+func (s *Service) StopWorkspaceProcesses(workspaceID string) {
+	s.mu.Lock()
+	if s.execContexts == nil {
+		s.execContexts = make(map[string]context.Context)
+		s.execStops = make(map[string]context.CancelFunc)
+	}
+	if cancel := s.execStops[workspaceID]; cancel != nil {
+		cancel()
+	}
+	stop, cancel := context.WithCancel(context.Background())
+	s.execContexts[workspaceID], s.execStops[workspaceID] = stop, cancel
 	s.mu.Unlock()
 }
 
@@ -106,6 +162,7 @@ func (s *Service) emit(event Event) {
 }
 
 func (s *Service) Repositories(ctx context.Context, workspaceID string) ([]Repository, error) {
+	ctx = s.executionContext(ctx, workspaceID)
 	states, err := s.discover(ctx, strings.TrimSpace(workspaceID))
 	if err != nil {
 		return nil, err
@@ -126,6 +183,7 @@ func (s *Service) Repositories(ctx context.Context, workspaceID string) ([]Repos
 }
 
 func (s *Service) discover(ctx context.Context, workspaceID string) ([]*repositoryState, error) {
+	ctx = s.executionContext(ctx, workspaceID)
 	workspace, ok, err := s.workspaces.Get(workspaceID)
 	if err != nil {
 		return nil, err
@@ -277,6 +335,7 @@ func scopesForRepository(repositoryRoot string, roots []rootInfo) ([]repositoryS
 }
 
 func (s *Service) repository(ctx context.Context, workspaceID, repositoryID string) (*repositoryState, error) {
+	ctx = s.executionContext(ctx, workspaceID)
 	s.mu.RLock()
 	state := s.repos[workspaceID][repositoryID]
 	s.mu.RUnlock()
@@ -332,7 +391,7 @@ func discoverRepositoryRoot(parent context.Context, directory string) (string, e
 	if err != nil {
 		return "", err
 	}
-	return canonicalExisting(strings.TrimSpace(string(output)))
+	return canonicalExisting(mappedGitPath(ctx, strings.TrimSpace(string(output))))
 }
 
 func discoverGitDir(parent context.Context, root string) (string, error) {
@@ -342,7 +401,7 @@ func discoverGitDir(parent context.Context, root string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return canonicalExisting(strings.TrimSpace(string(output)))
+	return canonicalExisting(mappedGitPath(ctx, strings.TrimSpace(string(output))))
 }
 
 func discoverCommonGitDir(parent context.Context, root string) (string, error) {
@@ -352,10 +411,55 @@ func discoverCommonGitDir(parent context.Context, root string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return canonicalExisting(strings.TrimSpace(string(output)))
+	return canonicalExisting(mappedGitPath(ctx, strings.TrimSpace(string(output))))
+}
+
+func mappedGitPath(ctx context.Context, value string) string {
+	execution, ok := ctx.Value(gitExecutionContextKey{}).(gitExecutionContext)
+	if !ok || execution.manager == nil {
+		return value
+	}
+	hostPath, err := execution.manager.GuestToHost(execution.workspaceID, value)
+	if err != nil {
+		return value
+	}
+	return hostPath
 }
 
 func runGit(ctx context.Context, root string, input []byte, readOnly bool, args ...string) ([]byte, error) {
+	if execution, ok := ctx.Value(gitExecutionContextKey{}).(gitExecutionContext); ok && execution.manager != nil {
+		executionContext, cancelExecution := context.WithCancel(ctx)
+		stopExecution := context.AfterFunc(execution.stop, cancelExecution)
+		defer func() { stopExecution(); cancelExecution() }()
+		guestRoot, err := execution.manager.HostToGuest(execution.workspaceID, root)
+		if err != nil {
+			return nil, &Error{Code: "sandbox_path_mapping_failed", Message: "Git path could not be mapped into the sandbox", Cause: err}
+		}
+		commandArgs := []string{"git", "-c", "core.quotepath=false", "-C", guestRoot}
+		commandArgs = append(commandArgs, args...)
+		environment := []string{"GIT_TERMINAL_PROMPT=0"}
+		if readOnly {
+			environment = append(environment, "GIT_OPTIONAL_LOCKS=0")
+		}
+		result, executeErr := execution.manager.Execute(executionContext, execution.workspaceID, sandbox.ExecRequest{
+			Command: commandArgs, WorkingDirectory: guestRoot, Environment: environment,
+			Input: input, OutputLimit: maximumCommandOutput,
+		})
+		if executeErr != nil {
+			return nil, &Error{Code: sandbox.ErrorCode(executeErr), Message: executeErr.Error(), Cause: executeErr}
+		}
+		if result.ExitCode != 0 {
+			message := strings.TrimSpace(string(result.Stderr))
+			if message == "" {
+				message = strings.TrimSpace(string(result.Stdout))
+			}
+			if message == "" {
+				message = fmt.Sprintf("Git exited with code %d", result.ExitCode)
+			}
+			return result.Stdout, &Error{Code: "git_command_failed", Message: message}
+		}
+		return result.Stdout, nil
+	}
 	commandArgs := []string{"-c", "core.quotepath=false", "-C", root}
 	commandArgs = append(commandArgs, args...)
 	command := exec.CommandContext(ctx, "git", commandArgs...)
@@ -436,6 +540,7 @@ func cleanGitPath(value string) (string, error) {
 }
 
 var credentialURLPattern = regexp.MustCompile(`(?i)(https?://)[^/@\s]+@`)
+var gitLineEndingWarningPattern = regexp.MustCompile(`(?i)^warning: (?:in the working copy of '.+', )?(?:LF|CRLF) will be replaced by (?:LF|CRLF)(?: the next time Git touches it| in .+)\.?$`)
 
 func isAuthenticationFailure(message string) bool {
 	lower := strings.ToLower(message)
@@ -463,11 +568,40 @@ func sanitizeGitOutput(message, root string) string {
 			message = strings.ReplaceAll(message, value, "<repository>")
 		}
 	}
+	message = stripHarmlessGitWarnings(message)
 	const safeOutputLimit = 8 << 10
 	if len(message) > safeOutputLimit {
 		message = message[:safeOutputLimit] + "…"
 	}
-	return strings.TrimSpace(message)
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return "Git command failed"
+	}
+	return message
+}
+
+// stripHarmlessGitWarnings removes Git's line-ending conversion notices from
+// failed-command output. Those notices can number in the thousands and bury
+// the actual error that caused the command to fail. Other warnings and hints
+// remain visible.
+func stripHarmlessGitWarnings(message string) string {
+	lines := strings.Split(strings.ReplaceAll(message, "\r\n", "\n"), "\n")
+	filtered := make([]string, 0, len(lines))
+	skipLegacyDetail := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if gitLineEndingWarningPattern.MatchString(trimmed) {
+			skipLegacyDetail = !strings.Contains(strings.ToLower(trimmed), "the next time git touches it")
+			continue
+		}
+		if skipLegacyDetail && strings.EqualFold(trimmed, "The file will have its original line endings in your working directory.") {
+			skipLegacyDetail = false
+			continue
+		}
+		skipLegacyDetail = false
+		filtered = append(filtered, line)
+	}
+	return strings.Join(filtered, "\n")
 }
 
 func relativeWithin(root, target string) (string, bool) {

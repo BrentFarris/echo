@@ -3,4 +3,5 @@ import "./css/app.css";
 import "./src/auth/auth.css";
 import "./src/code/code.css";
 import "./src/plugins/plugin.css";
+import "./src/sandbox/sandbox.css";
 import "./js/app.js";

@@ -81,14 +81,17 @@ function handle(message) {
   if (method === "exit") process.exit(0);
   if (method === "textDocument/didOpen") {
     documents.set(params.textDocument.uri, params.textDocument.text);
+    // Match gopls on Windows, which normalizes Monaco's encoded, lowercase
+    // drive URI before it publishes diagnostics.
+    const diagnosticURI = params.textDocument.uri.replace(/^file:\/\/\/([a-z])%3A/i, (_match, drive) => `file:///${drive.toUpperCase()}:`);
     notification("textDocument/publishDiagnostics", {
-      uri: params.textDocument.uri,
+      uri: diagnosticURI,
       version: params.textDocument.version,
       diagnostics: [{
         range: { start: { line: 0, character: 0 }, end: { line: 0, character: 7 } },
-        severity: 2,
+        severity: 1,
         source: "Echo Fake LSP",
-        message: "deterministic fake diagnostic",
+        message: "deterministic fake error",
       }],
     });
     return;
@@ -124,7 +127,11 @@ function handle(message) {
   } else if (method === "textDocument/prepareRename") {
     response(message, { range: mainRange(uri), placeholder: "main" });
   } else if (method === "textDocument/rename") {
-    response(message, { changes: { [uri]: [{ range: mainRange(uri), newText: params.newName }] } });
+    const definitionURI = workspaceURI("definition.go");
+    response(message, { changes: {
+      [uri]: [{ range: mainRange(uri), newText: params.newName }],
+      [definitionURI]: [{ range: targetRange(definitionURI, 2), newText: params.newName }],
+    } });
   } else if (method === "textDocument/formatting") {
     response(message, [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: "// formatted by Echo fake LSP\n" }]);
   } else if (method === "workspace/symbol") {

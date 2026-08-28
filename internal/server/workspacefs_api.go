@@ -88,14 +88,21 @@ func (s *Server) handleFSCreateEntry(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFSRenameEntry(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Ref     workspacefs.FileRef `json:"ref"`
-		NewName string              `json:"newName"`
+		Ref               workspacefs.FileRef  `json:"ref"`
+		NewName           string               `json:"newName"`
+		DestinationParent *workspacefs.FileRef `json:"destinationParent"`
 	}
 	if err := decodeLimitedJSON(w, r, &body, 64<<10); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	entry, err := s.fs.Rename(r.PathValue("id"), body.Ref, body.NewName)
+	var entry workspacefs.Entry
+	var err error
+	if body.DestinationParent != nil {
+		entry, err = s.fs.Move(r.PathValue("id"), body.Ref, *body.DestinationParent)
+	} else {
+		entry, err = s.fs.Rename(r.PathValue("id"), body.Ref, body.NewName)
+	}
 	if err != nil {
 		writeWorkspaceFSError(w, err)
 		return
@@ -164,13 +171,13 @@ func (s *Server) handleFSReveal(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, map[string]any{"revealed": true})
 }
 
-// handleFSMedia streams a previewable image or video file straight to the
+// handleFSMedia streams a previewable image, video, or audio file straight to the
 // browser for the code editor's media surface. The path boundary comes from
 // the same confined resolver as every other filesystem endpoint; symlinks
 // leaving the workspace are rejected. Oversized images stream their first
 // MaxMediaBytes chunk (browsers fail decoding the remainder gracefully),
-// while oversized videos are refused outright because partial video files do
-// not play.
+// while oversized videos and audio are refused outright because partial media
+// files do not play.
 func (s *Server) handleFSMedia(w http.ResponseWriter, r *http.Request) {
 	ref := workspacefs.FileRef{RootID: r.URL.Query().Get("rootId"), Path: r.URL.Query().Get("path")}
 	path, size, mediaType, truncated, err := s.fs.MediaMeta(r.PathValue("id"), ref)

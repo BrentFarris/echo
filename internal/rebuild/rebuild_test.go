@@ -29,6 +29,9 @@ func echoSource(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(dir, "web", "package.json"), []byte("{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "web", "package-lock.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	return dir
 }
 
@@ -87,18 +90,21 @@ func TestBuildAndPrepareRunsFrontendThenServerAndSanitizesRelaunch(t *testing.T)
 	if err != nil {
 		t.Fatalf("BuildAndPrepare: %v", err)
 	}
-	if len(calls) != 2 {
-		t.Fatalf("commands = %d, want 2", len(calls))
+	if len(calls) != 3 {
+		t.Fatalf("commands = %d, want 3", len(calls))
 	}
 	wantNPM := "npm"
 	if runtime.GOOS == "windows" {
 		wantNPM = "npm.cmd"
 	}
-	if calls[0].name != wantNPM || calls[0].dir != filepath.Join(source, "web") || strings.Join(calls[0].args, " ") != "run build" {
-		t.Fatalf("frontend command = %#v", calls[0])
+	if calls[0].name != wantNPM || calls[0].dir != filepath.Join(source, "web") || strings.Join(calls[0].args, " ") != "ci --no-audit --no-fund" {
+		t.Fatalf("frontend dependency command = %#v", calls[0])
 	}
-	if calls[1].name != "go" || calls[1].dir != source || len(calls[1].args) != 4 || calls[1].args[0] != "build" || calls[1].args[1] != "-o" || calls[1].args[3] != "." {
-		t.Fatalf("server command = %#v", calls[1])
+	if calls[1].name != wantNPM || calls[1].dir != filepath.Join(source, "web") || strings.Join(calls[1].args, " ") != "run build" {
+		t.Fatalf("frontend build command = %#v", calls[1])
+	}
+	if calls[2].name != "go" || calls[2].dir != source || len(calls[2].args) != 4 || calls[2].args[0] != "build" || calls[2].args[1] != "-o" || calls[2].args[3] != "." {
+		t.Fatalf("server command = %#v", calls[2])
 	}
 	if launched.ProcessID != 42 {
 		t.Fatalf("launcher pid = %d", launched.ProcessID)
@@ -116,8 +122,11 @@ func TestBuildAndPrepareRunsFrontendThenServerAndSanitizesRelaunch(t *testing.T)
 
 func TestBuildFailureDoesNotPrepareLauncher(t *testing.T) {
 	coordinator := NewCoordinator()
-	coordinator.run = func(_ context.Context, _ string, _ io.Writer, _ string, _ ...string) error {
-		return errors.New("typescript failed")
+	coordinator.run = func(_ context.Context, _ string, _ io.Writer, _ string, args ...string) error {
+		if len(args) > 1 && args[0] == "run" && args[1] == "build" {
+			return errors.New("typescript failed")
+		}
+		return nil
 	}
 	launched := false
 	coordinator.launch = func(launchSpec, string) error { launched = true; return nil }
@@ -129,6 +138,49 @@ func TestBuildFailureDoesNotPrepareLauncher(t *testing.T) {
 	}
 	if launched {
 		t.Fatal("prepared a launcher after a failed build")
+	}
+}
+
+func TestBuildAndPrepareFallsBackToNPMInstallWithoutLockfile(t *testing.T) {
+	source := echoSource(t)
+	if err := os.Remove(filepath.Join(source, "web", "package-lock.json")); err != nil {
+		t.Fatal(err)
+	}
+	var firstArguments []string
+	coordinator := NewCoordinator()
+	coordinator.run = func(_ context.Context, _ string, _ io.Writer, _ string, args ...string) error {
+		if firstArguments == nil {
+			firstArguments = append([]string(nil), args...)
+		}
+		return nil
+	}
+	coordinator.launch = func(launchSpec, string) error { return nil }
+
+	if _, err := coordinator.BuildAndPrepare(context.Background(), Request{SourceDir: source, DataDir: t.TempDir()}); err != nil {
+		t.Fatalf("BuildAndPrepare: %v", err)
+	}
+	if got := strings.Join(firstArguments, " "); got != "install --no-audit --no-fund" {
+		t.Fatalf("frontend dependency arguments = %q", got)
+	}
+}
+
+func TestDependencyFailureDoesNotBuildOrPrepareLauncher(t *testing.T) {
+	coordinator := NewCoordinator()
+	var calls int
+	coordinator.run = func(_ context.Context, _ string, _ io.Writer, _ string, _ ...string) error {
+		calls++
+		return errors.New("registry unavailable")
+	}
+	launched := false
+	coordinator.launch = func(launchSpec, string) error { launched = true; return nil }
+
+	_, err := coordinator.BuildAndPrepare(context.Background(), Request{SourceDir: echoSource(t), DataDir: t.TempDir()})
+	var buildErr *BuildError
+	if !errors.As(err, &buildErr) || buildErr.Stage != "frontend dependencies" {
+		t.Fatalf("error = %v", err)
+	}
+	if calls != 1 || launched {
+		t.Fatalf("calls = %d, launched = %v", calls, launched)
 	}
 }
 
@@ -152,7 +204,7 @@ func TestUpdateAndPreparePullsMasterBeforeSharedBuild(t *testing.T) {
 	if _, err := coordinator.UpdateAndPrepare(context.Background(), Request{SourceDir: source, DataDir: t.TempDir()}); err != nil {
 		t.Fatalf("UpdateAndPrepare: %v", err)
 	}
-	if len(calls) != 4 {
+	if len(calls) != 5 {
 		t.Fatalf("commands = %#v", calls)
 	}
 	if calls[0].name != "git" || strings.Join(calls[0].args, " ") != "branch --show-current" {
@@ -162,7 +214,7 @@ func TestUpdateAndPreparePullsMasterBeforeSharedBuild(t *testing.T) {
 	if calls[1].name != "git" || strings.Join(calls[1].args, " ") != wantPull {
 		t.Fatalf("pull command = %#v", calls[1])
 	}
-	if calls[2].args[0] != "run" || calls[3].name != "go" {
+	if calls[2].args[0] != "ci" || calls[3].args[0] != "run" || calls[4].name != "go" {
 		t.Fatalf("build commands = %#v", calls[2:])
 	}
 }

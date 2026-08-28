@@ -22,6 +22,15 @@ const (
 	DefaultSearxngURL               = "http://localhost:8080/"
 	DefaultStreamIdleTimeoutSeconds = 600
 	defaultTimout                   = 600
+	DefaultEditorFontSize           = 13.5
+	MinEditorFontSize               = 8
+	MaxEditorFontSize               = 30
+	ReasoningEffortNone             = "none"
+	ReasoningEffortLow              = "low"
+	ReasoningEffortMedium           = "medium"
+	ReasoningEffortHigh             = "high"
+	ReasoningEffortXHigh            = "xhigh"
+	ReasoningEffortMax              = "max"
 )
 
 type Interaction string
@@ -54,6 +63,7 @@ type LLMEndpoint struct {
 	TimeoutSeconds                     int               `json:"timeoutSeconds"`
 	StreamIdleTimeoutSeconds           int               `json:"streamIdleTimeoutSeconds"`
 	ThinkingTokenBudget                int               `json:"thinkingTokenBudget"`
+	ReasoningEffort                    string            `json:"reasoningEffort,omitempty"`
 	ThinkingCorrection                 bool              `json:"thinkingCorrection,omitempty"`
 	SystemPromptAppendage              string            `json:"systemPromptAppendage,omitempty"`
 	Headers                            map[string]string `json:"headers,omitempty"`
@@ -88,10 +98,14 @@ type Settings struct {
 	StreamIdleTimeoutSeconds           int               `json:"streamIdleTimeoutSeconds"`
 	SearxngURL                         string            `json:"searxngUrl"`
 	ThinkingTokenBudget                int               `json:"thinkingTokenBudget"`
+	ReasoningEffort                    string            `json:"reasoningEffort,omitempty"`
 	ThinkingCorrection                 bool              `json:"thinkingCorrection,omitempty"`
 	SystemPromptAppendage              string            `json:"systemPromptAppendage,omitempty"`
 	HideLeadingWhitespaceIndicators    bool              `json:"hideLeadingWhitespaceIndicators,omitempty"`
+	EditorFontSize                     float64           `json:"editorFontSize"`
 	DisableNotificationSounds          bool              `json:"disableNotificationSounds,omitempty"`
+	DisablePlanQuestionSounds          bool              `json:"disablePlanQuestionSounds,omitempty"`
+	EnablePlanQuestionNotifications    *bool             `json:"enablePlanQuestionNotifications,omitempty"`
 	EnableChatCompletionNotifications  *bool             `json:"enableChatCompletionNotifications,omitempty"`
 	EnableKanbanCompleteNotifications  bool              `json:"enableKanbanCompleteNotifications,omitempty"`
 	LimitKanbanConcurrency             bool              `json:"limitKanbanConcurrency,omitempty"`
@@ -106,9 +120,9 @@ type Settings struct {
 	// ComfyuiVideoWorkflow is a workspace-relative path to the default video
 	// generation workflow JSON (e.g., AnimateDiff, SVD) used by
 	// comfyui_generate_video when no explicit workflow is supplied.
-	ComfyuiVideoWorkflow string `json:"comfyuiVideoWorkflow,omitempty"`
-	Theme                              Theme             `json:"theme,omitempty"`
-	Headers                            map[string]string `json:"headers,omitempty"`
+	ComfyuiVideoWorkflow string            `json:"comfyuiVideoWorkflow,omitempty"`
+	Theme                Theme             `json:"theme,omitempty"`
+	Headers              map[string]string `json:"headers,omitempty"`
 }
 
 type Theme struct {
@@ -136,6 +150,7 @@ func DefaultSettings() Settings {
 		TimeoutSeconds:                     defaultTimout,
 		StreamIdleTimeoutSeconds:           DefaultStreamIdleTimeoutSeconds,
 		SearxngURL:                         DefaultSearxngURL,
+		EditorFontSize:                     DefaultEditorFontSize,
 		ThinkingTokenBudget:                -1,
 		ResearchAgentConcurrency:           DefaultResearchAgentConcurrency,
 		MaxChatRounds:                      DefaultMaxChatRounds,
@@ -179,10 +194,20 @@ func (s Settings) normalized(endpointProfilesAuthoritative bool) Settings {
 	s.ComfyuiImg2imgWorkflow = strings.TrimSpace(s.ComfyuiImg2imgWorkflow)
 	s.ComfyuiVideoWorkflow = strings.TrimSpace(s.ComfyuiVideoWorkflow)
 	s.Theme = s.Theme.Normalized()
+	if s.EditorFontSize <= 0 {
+		s.EditorFontSize = DefaultEditorFontSize
+	}
+	if s.EditorFontSize < MinEditorFontSize {
+		s.EditorFontSize = MinEditorFontSize
+	}
+	if s.EditorFontSize > MaxEditorFontSize {
+		s.EditorFontSize = MaxEditorFontSize
+	}
 	return s
 }
 
 func normalizeSettingsGeneration(s Settings) Settings {
+	s.ReasoningEffort = normalizeReasoningEffort(s.ReasoningEffort)
 	if s.ContextLength == 0 {
 		s.ContextLength = DefaultContextLength
 	}
@@ -250,6 +275,14 @@ func (s Settings) ForInteraction(interaction Interaction) Settings {
 }
 
 func (s Settings) Validate() error {
+	if err := validateReasoningEffort(s.ReasoningEffort); err != nil {
+		return err
+	}
+	for _, endpoint := range s.Endpoints {
+		if err := validateReasoningEffort(endpoint.ReasoningEffort); err != nil {
+			return err
+		}
+	}
 	s = s.Normalized()
 	if s.Endpoint == "" {
 		return fmt.Errorf("endpoint is required")
@@ -315,6 +348,9 @@ func (s Settings) Validate() error {
 	}
 	if s.ThinkingTokenBudget < -1 {
 		return fmt.Errorf("thinking token budget must be -1 or greater")
+	}
+	if err := validateReasoningEffort(s.ReasoningEffort); err != nil {
+		return err
 	}
 	if s.FrequencyPenalty < -2 || s.FrequencyPenalty > 2 {
 		return fmt.Errorf("frequency penalty must be between -2 and 2")
@@ -435,6 +471,7 @@ func (e LLMEndpoint) WithGenerationFromSettings(settings Settings) LLMEndpoint {
 	e.TimeoutSeconds = settings.TimeoutSeconds
 	e.StreamIdleTimeoutSeconds = settings.StreamIdleTimeoutSeconds
 	e.ThinkingTokenBudget = settings.ThinkingTokenBudget
+	e.ReasoningEffort = settings.ReasoningEffort
 	e.ThinkingCorrection = settings.ThinkingCorrection
 	e.SystemPromptAppendage = settings.SystemPromptAppendage
 	e.Headers = cloneStringMap(settings.Headers)
@@ -458,6 +495,7 @@ func (e LLMEndpoint) ApplyToSettings(settings Settings) Settings {
 	settings.TimeoutSeconds = e.TimeoutSeconds
 	settings.StreamIdleTimeoutSeconds = e.StreamIdleTimeoutSeconds
 	settings.ThinkingTokenBudget = e.ThinkingTokenBudget
+	settings.ReasoningEffort = e.ReasoningEffort
 	settings.ThinkingCorrection = e.ThinkingCorrection
 	settings.SystemPromptAppendage = e.SystemPromptAppendage
 	settings.Headers = cloneStringMap(e.Headers)
@@ -490,6 +528,9 @@ func (e LLMEndpoint) ValidateGeneration() error {
 	}
 	if settings.ThinkingTokenBudget < -1 {
 		return fmt.Errorf("thinking token budget must be -1 or greater")
+	}
+	if err := validateReasoningEffort(settings.ReasoningEffort); err != nil {
+		return err
 	}
 	if settings.FrequencyPenalty < -2 || settings.FrequencyPenalty > 2 {
 		return fmt.Errorf("frequency penalty must be between -2 and 2")
@@ -524,10 +565,12 @@ func (e LLMEndpoint) hasGenerationConfig() bool {
 		e.TimeoutSeconds != 0 ||
 		e.StreamIdleTimeoutSeconds != 0 ||
 		e.ThinkingTokenBudget != 0 ||
+		e.ReasoningEffort != "" ||
 		e.ThinkingCorrection
 }
 
 func normalizeEndpointGeneration(e LLMEndpoint) LLMEndpoint {
+	e.ReasoningEffort = normalizeReasoningEffort(e.ReasoningEffort)
 	e.ContextCompressionEnabled = cloneBool(e.ContextCompressionEnabled)
 	if e.ContextLength == 0 {
 		e.ContextLength = DefaultContextLength
@@ -551,6 +594,19 @@ func normalizeEndpointGeneration(e LLMEndpoint) LLMEndpoint {
 		e.StreamIdleTimeoutSeconds = DefaultStreamIdleTimeoutSeconds
 	}
 	return e
+}
+
+func normalizeReasoningEffort(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func validateReasoningEffort(value string) error {
+	switch normalizeReasoningEffort(value) {
+	case "", ReasoningEffortNone, ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh, ReasoningEffortXHigh, ReasoningEffortMax:
+		return nil
+	default:
+		return fmt.Errorf("reasoning effort must be one of none, low, medium, high, xhigh, or max")
+	}
 }
 
 // CompressionEnabled resolves the migration-safe pointer setting. Missing

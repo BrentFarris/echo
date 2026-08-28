@@ -16,7 +16,10 @@ import {
   chatCompletionTargetFromHash, codeFileRouteHash, codeRouteHash,
 } from "../../src/navigation.ts";
 import { prepareCompletionNotificationPermission } from "../../src/completionNotifications.ts";
+import { preparePlanQuestionNotificationPermission } from "../../src/planQuestionNotifications.ts";
+import { isCoarsePointer } from "../../src/device.ts";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../../src/primaryNav.ts";
+import { installChatMap } from "../../src/chatMap.ts";
 import { watchGitBadge } from "../../src/gitBadge.ts";
 import { mountSpeechRecognition } from "../../src/speechRecognition.ts";
 import { showContextMenu, toast } from "../../src/code/ui.ts";
@@ -156,7 +159,7 @@ function chatPanel() {
               <button type="button" role="tab" aria-selected="true" class="is-active" data-chat-view="chat">Chat</button>
               <button type="button" role="tab" aria-selected="false" data-chat-view="trajectory">Trajectory</button>
             </div>
-            <div class="chat-log" id="chat-transcript" data-chat-log>
+            <div class="chat-log" id="chat-transcript" role="region" tabindex="0" aria-label="Conversation transcript" data-chat-log>
               <div class="empty-state chat-empty">Ask Echo to inspect, plan, or break down work for this workspace.</div>
             </div>
           </div>
@@ -690,6 +693,7 @@ export function mount(root) {
   const codeButtons = [...root.querySelectorAll("[data-nav='code']")];
   const searchButtons = [...root.querySelectorAll("[data-nav='search']")];
   const gitButtons = [...root.querySelectorAll("[data-nav='git']")];
+  const sandboxButtons = [...root.querySelectorAll("[data-nav='sandbox']")];
   const onSettingsClick = () => {
     location.hash = "#/settings";
   };
@@ -700,6 +704,8 @@ export function mount(root) {
   searchButtons.forEach((button) => button.addEventListener("click", onSearchClick));
   const onGitClick = () => { location.hash = codeRouteHash("git"); };
   gitButtons.forEach((button) => button.addEventListener("click", onGitClick));
+  sandboxButtons.forEach((button) => button.addEventListener("click", () => { location.hash = "#/sandbox"; }));
+  const disposeChatMap = installChatMap(root);
 
   // Workspace selector: open the dropdown, and the "+ Add a workspace" modal.
   const workspaceTriggers = [...root.querySelectorAll(".workspace-dropdown-trigger")];
@@ -1393,6 +1399,7 @@ export function mount(root) {
     const videos = state?.videos || [];
     if (!text.trim() && images.length === 0 && videos.length === 0) return;
     prepareCompletionNotificationPermission();
+    preparePlanQuestionNotificationPermission();
     if (sendMessage(log, text, selectedModel || undefined, selectedAgentModeId, { images, videos })) {
       if (state) {
         state.images = [];
@@ -1471,7 +1478,7 @@ export function mount(root) {
     if (completionTarget && state?.hasSnapshot && currentWorkspaceId === completionTarget.workspaceId) {
       const targetExists = currentTabs.some((tab) => tab.chatId === completionTarget.chatId);
       if (!targetExists) {
-        finishCompletionNavigation("That completed chat is no longer available.");
+        finishCompletionNavigation("That chat is no longer available.");
       } else if (currentChatId === completionTarget.chatId) {
         finishCompletionNavigation();
       } else if (!completionActivationRequested) {
@@ -1516,8 +1523,9 @@ export function mount(root) {
       return;
     }
     if (handleMentionKeydown(e)) return;
-    // Enter sends (Shift+Enter inserts a newline).
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    // Desktop: Enter sends (Shift+Enter inserts a newline).
+    // Mobile (coarse pointer): plain Enter inserts a newline; submit via the Send button.
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !isCoarsePointer()) {
       e.preventDefault();
       submit();
     }
@@ -1592,6 +1600,7 @@ export function mount(root) {
     codeButtons.forEach((button) => button.removeEventListener("click", onCodeClick));
     searchButtons.forEach((button) => button.removeEventListener("click", onSearchClick));
     gitButtons.forEach((button) => button.removeEventListener("click", onGitClick));
+    disposeChatMap();
     workspaceTriggers.forEach((trigger) => trigger.removeEventListener("click", onWorkspaceTriggerClick));
     if (closeWorkspaceDropdown) {
       closeWorkspaceDropdown();
@@ -1642,7 +1651,7 @@ export function mount(root) {
     if (completionTarget) {
       const targetWorkspace = workspaceList.find((workspace) => workspace.id === completionTarget.workspaceId);
       if (!targetWorkspace) {
-        finishCompletionNavigation("The workspace for that completed chat is no longer available.");
+        finishCompletionNavigation("The workspace for that chat is no longer available.");
       } else if (getActive()?.id !== completionTarget.workspaceId) {
         try {
           await setActiveWorkspace(completionTarget.workspaceId);

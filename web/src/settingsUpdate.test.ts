@@ -29,7 +29,11 @@ const updateMonitor = vi.hoisted(() => ({
     checking: false,
     error: "",
   },
-  refresh: vi.fn(async () => undefined),
+  refresh: vi.fn<() => Promise<{
+    status: null | Record<string, unknown>;
+    checking: boolean;
+    error: string;
+  }>>(),
 }));
 
 vi.mock("../js/api.js", () => api);
@@ -64,6 +68,7 @@ describe("Development Echo update", () => {
       checking: false,
       error: "",
     };
+    updateMonitor.refresh.mockImplementation(async () => updateMonitor.snapshot);
     root = document.createElement("div");
     document.body.appendChild(root);
     mount(root);
@@ -83,7 +88,7 @@ describe("Development Echo update", () => {
     replacement.reloadForReplacementServer.mockClear();
   });
 
-  it("shows the Development arrow and updates through the replacement server", async () => {
+  it("offers an immediate check, shows the Development arrow, and updates through the replacement server", async () => {
     updateMonitor.snapshot = {
       status: { ...updateMonitor.snapshot.status!, updateAvailable: false },
       checking: false,
@@ -91,6 +96,14 @@ describe("Development Echo update", () => {
     };
     window.dispatchEvent(new CustomEvent("echo:update-status", { detail: updateMonitor.snapshot }));
     expect(root.querySelector("[data-action=update-echo]")).toBeNull();
+    expect(root.querySelector("[data-action=check-for-updates]")?.textContent).toBe("Check for Updates");
+
+    root.querySelector<HTMLButtonElement>("[data-action=check-for-updates]")!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(updateMonitor.refresh).toHaveBeenCalledOnce();
+    expect(root.querySelector("[data-update-status]")?.textContent).toContain("up to date");
 
     updateMonitor.snapshot = {
       status: { ...updateMonitor.snapshot.status!, updateAvailable: true },
@@ -100,6 +113,7 @@ describe("Development Echo update", () => {
     window.dispatchEvent(new CustomEvent("echo:update-status", { detail: updateMonitor.snapshot }));
     expect(root.querySelector<HTMLElement>("[data-section=development] [data-echo-update-badge]")!.hidden).toBe(false);
     expect(root.querySelector("[data-action=update-echo]")).not.toBeNull();
+    expect(root.textContent).not.toContain("Echo is up to date.");
 
     let finish!: (value: { instanceId: string; logPath: string }) => void;
     api.post.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));

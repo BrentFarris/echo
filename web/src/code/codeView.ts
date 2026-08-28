@@ -6,26 +6,41 @@ import { on as onSocket, onState as onSocketState, send as sendSocket } from "..
 import * as editorAPI from "./editorApi";
 import type { APIError } from "./editorApi";
 import { languageForPath, monaco, initVimMode, VimMode } from "./language";
-import { EchoLSPClient, fromLSPRange, type LSPDocumentState } from "./lspClient";
+import { EchoLSPClient, fromLSPRange, type LSPDiagnosticSeverity, type LSPDocumentState } from "./lspClient";
 import type { LSPProfile, LSPStatus, LSPWorkspaceEdit, WorkspaceLSPResponse } from "./lspTypes";
-import { loadDiff as loadGitDiff } from "./gitApi";
+import { listRepositories as listGitRepositories, loadDiff as loadGitDiff } from "./gitApi";
 import type { GitChange, GitDiffDocument, GitRepository } from "./gitTypes";
 import { GitView } from "./gitView";
-import { buildCodeChatEditorContext, runCodeChatSavePreflight } from "./codeChatContext";
+import {
+  buildCodeChatEditorContext, formatCodeChatSelectionNotice, runCodeChatSavePreflight,
+} from "./codeChatContext";
 import { loadSession, saveSession } from "./persistence";
 import { previewKindForPath, type PreviewKind } from "./preview";
 import {
-  CODE_ROUTE, chatCompletionTargetFromHash, codeOpenTargetFromHash, codeRouteHash,
-  codeSidebarFromHash, routePathFromHash, type ChatCompletionTarget, type CodeSidebar,
+  CODE_ROUTE, chatCompletionTargetFromHash, chatTargetRouteHash, codeOpenTargetFromHash, codeRouteHash,
+  codeSidebarFromHash, routePathFromHash, type ChatCompletionTarget, type ChatTarget, type CodeSidebar,
 } from "../navigation";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
+import { installChatMap } from "../chatMap";
 import { setGitBadgeCount } from "../gitBadge";
 import { randomUUID } from "../randomUUID";
-import { mountChatSurface, type EditorContextPayload, type MountedChatSurface } from "../chatSurface";
+import {
+  mountChatSurface, type EditorContextPayload, type EditorContextSelection, type HistoricalChatResource,
+  type MountedChatSurface,
+} from "../chatSurface";
 import type { ChatReference } from "../chatMentions";
 import { detachTerminalDock, mountTerminalDock } from "../terminal";
 import { SearchView } from "./searchView";
 import { NavigationModelCache } from "./navigationModelCache";
+import { explorerDiagnosticPresentation, updateExplorerDiagnostic } from "./explorerDiagnostics";
+import {
+  CodeNavigationHistory, isLargeCodeNavigationJump, type CodeNavigationLocation,
+} from "./codeNavigationHistory";
+import { beginMruCycle, nextMruCycle, pruneMruCycle, removeFromMru, type MruCycleState } from "./mruTabOrder";
+import {
+  commandPalettePresentation, loadRecentCommandIds, pruneRecentCommandIds,
+  recordRecentCommandId, saveRecentCommandIds,
+} from "./commandHistory";
 import type {
   FileRef, FileSnapshot, FsEntry, PersistedTab, PersistedWorkspaceSession,
   SearchResult, TextReplaceUpdate, TextSearchMatch, TextSearchOverlay, TrashItem, WorkspaceRoot,
@@ -89,6 +104,9 @@ type OpenTab = {
 type Command = { id: string; label: string; keybinding?: string; run(): unknown | Promise<unknown> };
 
 const treeRowHeight = 22;
+const minEditorFontSize = 8;
+const maxEditorFontSize = 30;
+const defaultEditorFontSize = 13.5;
 let mountedView: CodeView | null = null;
 
 export function mount(root: HTMLElement): void {
@@ -99,6 +117,10 @@ export function mount(root: HTMLElement): void {
 export function unmount(): void {
   mountedView?.dispose();
   mountedView = null;
+}
+
+export function routeChanged(): void {
+  mountedView?.handleRouteChange();
 }
 
 class CodeView {
@@ -112,8 +134,18 @@ class CodeView {
   private expanded = new Set<string>();
   private selectedTreeKey: string | null = null;
   private renamingKey: string | null = null;
+  private draggingTreeKey: string | null = null;
+  private treeDropTargetKey: string | null = null;
+  private treeDropExpandKey: string | null = null;
+  private treeDropExpandTimer = 0;
+  private treeDragScrollFrame = 0;
+  private treeDragScrollClientY = 0;
+  private treeDragScrollActive = false;
   private tabs: OpenTab[] = [];
   private activeTabId: string | null = null;
+  private mruTabIds: string[] = [];
+  private mruCycle: MruCycleState | null = null;
+  private mruSwitcherOverlay: HTMLElement | null = null;
   private untitledCounter = 1;
   private editor!: MonacoEditor.IStandaloneCodeEditor;
   private diffEditor!: MonacoEditor.IStandaloneDiffEditor;
@@ -123,6 +155,9 @@ class CodeView {
   private splitGitDiff = true;
   private leadingWhitespaceIndicators = true;
   private enableVimKeybindings = false;
+  private editorFontSize = 13.5;
+  private fullSettings: Record<string, unknown> = {};
+  private editorFontSizeSaveTimer = 0;
   private modelReferences = new Map<MonacoEditor.ITextModel, number>();
   private treeScroller!: HTMLElement;
   private treeCanvas!: HTMLElement;
@@ -135,11 +170,13 @@ class CodeView {
   private codeChatOpen = false;
   private explorerCollapsed = false;
   private codeChatSurface: MountedChatSurface | null = null;
+  private diffSelectionSides = new Map<string, "original" | "modified">();
   private restoredTreeScrollTop = 0;
   private explorerRevealGeneration = 0;
   private lastSequence = 0;
   private pollTimer = 0;
   private commands: Command[] = [];
+  private recentCommandIds = loadRecentCommandIds();
   private closeWorkspaceDropdown: (() => void) | null = null;
   private closeAddWorkspaceModal: (() => void) | null = null;
   private workspaceSwitching = false;
@@ -150,8 +187,15 @@ class CodeView {
   private lspProfiles: LSPProfile[] = [];
   private lspState: LSPDocumentState = "none";
   private lspStatus: LSPStatus | undefined;
+  private fileDiagnostics = new Map<string, LSPDiagnosticSeverity>();
   private readonly navigationModels = new NavigationModelCache<MonacoEditor.ITextModel>(6);
   private editorOpener: { dispose(): void } | null = null;
+  private codeNavigation: CodeNavigationHistory | null = null;
+  private navigationReady = false;
+  private navigationSuppression = 0;
+  private navigationRestoreGeneration = 0;
+  private navigationSkipping = false;
+  private lastNavigationLocation: CodeNavigationLocation | null = null;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -170,7 +214,7 @@ class CodeView {
         ? data.workspaces.find((workspace) => workspace.id === this.completionTarget!.workspaceId)
         : null;
       if (this.completionTarget && !targetWorkspace) {
-        toast("The workspace for that completed chat is no longer available.", { sticky: true });
+        toast("The workspace for that chat is no longer available.", { sticky: true });
         this.completionTarget = null;
         window.history.replaceState(window.history.state, "", codeRouteHash(this.activeSidebar));
       }
@@ -188,7 +232,7 @@ class CodeView {
       }
       const [roots, settingsData, lspData] = await Promise.all([
         editorAPI.getRoots(this.workspace.id),
-        api("/api/settings", { method: "GET" }).catch(() => null) as Promise<{ settings?: { disableGitSplitDiffView?: boolean; hideLeadingWhitespaceIndicators?: boolean; enableVimKeybindings?: boolean } } | null>,
+        api("/api/settings", { method: "GET" }).catch(() => null) as Promise<{ settings?: { disableGitSplitDiffView?: boolean; hideLeadingWhitespaceIndicators?: boolean; enableVimKeybindings?: boolean; editorFontSize?: number } } | null>,
         editorAPI.getWorkspaceLSPConfig(this.workspace.id).catch(() => ({ config: {}, profiles: [], statuses: [] } as WorkspaceLSPResponse)),
       ]);
       if (this.abort.signal.aborted) return;
@@ -196,7 +240,11 @@ class CodeView {
       this.splitGitDiff = settingsData?.settings?.disableGitSplitDiffView !== true;
       this.leadingWhitespaceIndicators = settingsData?.settings?.hideLeadingWhitespaceIndicators !== true;
       this.enableVimKeybindings = settingsData?.settings?.enableVimKeybindings === true;
+      if (settingsData?.settings) this.fullSettings = { ...(settingsData.settings as Record<string, unknown>) };
+      this.editorFontSize = this.clampEditorFontSize((settingsData?.settings?.editorFontSize as number | undefined) || 13.5);
       this.lspProfiles = lspData.profiles || [];
+      this.codeNavigation = new CodeNavigationHistory(this.workspace.id, { createId: randomUUID });
+      const historyLocation = this.openTarget ? null : this.codeNavigation.initialLocation();
       this.initializeEditor();
       this.lsp = new EchoLSPClient({
         workspaceId: this.workspace.id,
@@ -204,12 +252,17 @@ class CodeView {
         prepareWorkspaceEdit: (edit) => this.prepareLSPWorkspaceEdit(edit),
         applyWorkspaceEdit: (edit) => this.applyLSPWorkspaceEdit(edit),
         isURIAllowed: (uri) => Boolean(this.refForFileURI(uri)),
+        diagnosticKey: (uri) => {
+          const ref = this.refForFileURI(uri);
+          return ref ? refKey(ref) : uri;
+        },
         prepareURI: (uri) => this.prepareLSPURI(uri),
         onDocumentState: (state, status) => {
           this.lspState = state;
           this.lspStatus = status;
           this.renderStatus();
         },
+        onDiagnosticsChange: (uri, severity) => this.updateFileDiagnostic(uri, severity),
         onMessage: (message, sticky) => toast(message, { sticky }),
       });
       this.initializeTree();
@@ -237,6 +290,13 @@ class CodeView {
         await this.expandTo(target);
         if (this.abort.signal.aborted) return;
         window.history.replaceState(window.history.state, "", codeRouteHash("explorer"));
+      }
+      if (historyLocation) await this.restoreNavigationLocation(historyLocation);
+      this.navigationReady = true;
+      const initialNavigationLocation = this.captureNavigationLocation();
+      if (initialNavigationLocation) {
+        this.codeNavigation.attachInitial(initialNavigationLocation);
+        this.lastNavigationLocation = initialNavigationLocation;
       }
       this.renderTabs();
       this.updateEditorSurface();
@@ -275,6 +335,7 @@ class CodeView {
                 <button type="button" title="New File" aria-label="New File" data-tree-action="new-file"><span class="codicon codicon-new-file"></span></button>
                 <button type="button" title="New Folder" aria-label="New Folder" data-tree-action="new-folder"><span class="codicon codicon-new-folder"></span></button>
                 <button type="button" title="Refresh Explorer" aria-label="Refresh Explorer" data-tree-action="refresh"><span class="codicon codicon-refresh"></span></button>
+                <button type="button" title="Collapse All" aria-label="Collapse All" data-tree-action="collapse-all"><span class="codicon codicon-collapse-all"></span></button>
                 <button type="button" title="Trash" aria-label="Trash" data-tree-action="trash"><span class="codicon codicon-trash"></span></button>
                 <button type="button" title="${this.explorerCollapsed ? 'Expand Explorer' : 'Collapse Explorer'}" aria-label="${this.explorerCollapsed ? 'Expand Explorer' : 'Collapse Explorer'}" data-explorer-collapse-btn><span class="codicon codicon-${this.explorerCollapsed ? 'chevron-right' : 'collapse-all'}"></span></button>
               </div>
@@ -334,11 +395,15 @@ class CodeView {
 
   private installNavigation(): void {
     const signal = this.abort.signal;
+    installChatMap(this.root, { signal, navigate: (target) => this.navigateToChat(target) });
     this.root.querySelectorAll("[data-nav=chat]").forEach((button) => {
       button.addEventListener("click", () => { location.hash = "#/home"; }, { signal });
     });
     this.root.querySelectorAll("[data-nav=settings]").forEach((button) => {
       button.addEventListener("click", () => { location.hash = "#/settings"; }, { signal });
+    });
+    this.root.querySelectorAll("[data-nav=sandbox]").forEach((button) => {
+      button.addEventListener("click", () => { location.hash = "#/sandbox"; }, { signal });
     });
     this.root.querySelectorAll<HTMLElement>("[data-code-sidebar]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -377,8 +442,10 @@ class CodeView {
     if (!host) return;
     this.gitView = new GitView(host, this.workspace.id, this.abort.signal, {
       roots: () => this.roots,
-      openFile: (ref, pin) => this.openFile(ref, pin),
-      openDiff: (repository, change, scope, ref, pin) => this.openGitDiff(repository, change, scope, ref, pin),
+      openFile: async (ref, pin) => { await this.recordCodeNavigation(() => this.openFile(ref, pin)); },
+      openDiff: async (repository, change, scope, ref, pin) => {
+        await this.recordCodeNavigation(() => this.openGitDiff(repository, change, scope, ref, pin));
+      },
       updateBadge: (count) => setGitBadgeCount(this.root, count),
     });
     void this.gitView.start();
@@ -400,7 +467,12 @@ class CodeView {
     if (this.activeSidebar === "search") this.searchView.open();
   }
 
-  private setSidebar(view: CodeSidebar): void {
+  handleRouteChange(): void {
+    if (routePathFromHash(window.location.hash) !== CODE_ROUTE) return;
+    this.setSidebar(codeSidebarFromHash(window.location.hash), false);
+  }
+
+  private setSidebar(view: CodeSidebar, updateRoute = true): void {
     this.activeSidebar = view;
     this.root.querySelectorAll<HTMLElement>("[data-sidebar-view]").forEach((element) => { element.hidden = element.dataset.sidebarView !== view; });
     this.root.querySelectorAll<HTMLElement>("[data-code-sidebar]").forEach((button) => {
@@ -413,7 +485,7 @@ class CodeView {
     });
     const mobile = this.root.querySelector<HTMLElement>("[data-mobile-explorer] .codicon");
     if (mobile) mobile.className = `codicon codicon-${this.sidebarIcon(view)}`;
-    if (routePathFromHash(window.location.hash) === CODE_ROUTE) {
+    if (updateRoute && routePathFromHash(window.location.hash) === CODE_ROUTE) {
       window.history.replaceState(window.history.state, "", codeRouteHash(view));
     }
     if (window.innerWidth <= 720) this.setMobileExplorer(true);
@@ -445,23 +517,25 @@ class CodeView {
   }
 
   private async openSearchResult(ref: FileRef, match: TextSearchMatch, pin: boolean): Promise<void> {
-    await this.openFile(ref, pin);
-    const tab = this.tabs.find((candidate) => {
-      const candidateRef = this.worktreeRef(candidate);
-      return candidateRef && refKey(candidateRef) === refKey(ref);
+    await this.recordCodeNavigation(async () => {
+      await this.openFile(ref, pin);
+      const tab = this.tabs.find((candidate) => {
+        const candidateRef = this.worktreeRef(candidate);
+        return candidateRef && refKey(candidateRef) === refKey(ref);
+      });
+      if (!tab) return;
+      this.activateTab(tab.id, false);
+      const target = tab.kind === "diff" ? this.diffEditor.getModifiedEditor() : this.editor;
+      target.setSelection({
+        startLineNumber: match.line, startColumn: match.column,
+        endLineNumber: match.endLine, endColumn: match.endColumn,
+      });
+      target.revealRangeInCenter({
+        startLineNumber: match.line, startColumn: match.column,
+        endLineNumber: match.endLine, endColumn: match.endColumn,
+      });
+      target.focus();
     });
-    if (!tab) return;
-    this.activateTab(tab.id, false);
-    const target = tab.kind === "diff" ? this.diffEditor.getModifiedEditor() : this.editor;
-    target.setSelection({
-      startLineNumber: match.line, startColumn: match.column,
-      endLineNumber: match.endLine, endColumn: match.endColumn,
-    });
-    target.revealRangeInCenter({
-      startLineNumber: match.line, startColumn: match.column,
-      endLineNumber: match.endLine, endColumn: match.endColumn,
-    });
-    target.focus();
   }
 
   private async confirmSearchReplace(details: {
@@ -586,8 +660,8 @@ class CodeView {
       theme: this.mediaTheme.matches ? "vs-dark" : "vs",
       automaticLayout: true,
       fontFamily: "Cascadia Code, JetBrains Mono, Consolas, monospace",
-      fontSize: 13.5,
-      lineHeight: 20,
+      fontSize: this.editorFontSize,
+      lineHeight: Math.round(this.editorFontSize * 1.48),
       lineNumbers: "on",
       minimap: { enabled: true, maxColumn: 120, renderCharacters: true, showSlider: "mouseover" },
       folding: true,
@@ -601,8 +675,11 @@ class CodeView {
       smoothScrolling: false,
       cursorSmoothCaretAnimation: "off",
       wordWrap: "off",
+      selectionHighlight: true,
+      selectionHighlightMultiline: false,
+      occurrencesHighlight: "singleFile",
       padding: { top: 4, bottom: 4 },
-      scrollBeyondLastLine: false,
+      scrollBeyondLastLine: true,
       fixedOverflowWidgets: true,
       gotoLocation: {
         multipleDefinitions: "peek",
@@ -615,8 +692,9 @@ class CodeView {
         alternativeDeclarationCommand: "editor.action.referenceSearch.trigger",
       },
     });
-    this.editor.onDidChangeCursorPosition(() => this.renderStatus());
-    this.editor.onDidScrollChange(() => this.schedulePersist());
+    this.editor.onDidChangeCursorPosition(() => { this.renderStatus(); this.observeNavigationLocation(true); });
+    this.editor.onDidChangeCursorSelection(() => this.updateCodeChatSelectionNotice());
+    this.editor.onDidScrollChange(() => { this.observeNavigationLocation(false); this.schedulePersist(); });
     const vimStatusBar = this.enableVimKeybindings
       ? (() => {
           const el = document.createElement("div");
@@ -627,7 +705,6 @@ class CodeView {
       : null;
     if (this.enableVimKeybindings && vimStatusBar) {
       initVimMode(this.editor, vimStatusBar);
-      // Register :w ex command to save the current buffer immediately
       const vimApi = (VimMode as any).Vim;
       if (vimApi?.defineEx) {
         vimApi.defineEx("write", "w", () => {
@@ -641,8 +718,8 @@ class CodeView {
       theme: this.mediaTheme.matches ? "vs-dark" : "vs",
       automaticLayout: true,
       fontFamily: "Cascadia Code, JetBrains Mono, Consolas, monospace",
-      fontSize: 13.5,
-      lineHeight: 20,
+      fontSize: this.editorFontSize,
+      lineHeight: Math.round(this.editorFontSize * 1.48),
       lineNumbers: "on",
       minimap: { enabled: true, maxColumn: 120, showSlider: "mouseover" },
       renderSideBySide: this.splitGitDiff,
@@ -652,10 +729,13 @@ class CodeView {
       diffAlgorithm: "advanced",
       renderIndicators: true,
       renderOverviewRuler: true,
+      selectionHighlight: true,
+      selectionHighlightMultiline: false,
+      occurrencesHighlight: "singleFile",
       ignoreTrimWhitespace: false,
       hideUnchangedRegions: { enabled: false },
       renderWhitespace: this.leadingWhitespaceIndicators ? "boundary" : "none",
-      scrollBeyondLastLine: false,
+      scrollBeyondLastLine: true,
       fixedOverflowWidgets: true,
       padding: { top: 4, bottom: 4 },
       gotoLocation: {
@@ -669,8 +749,20 @@ class CodeView {
         alternativeDeclarationCommand: "editor.action.referenceSearch.trigger",
       },
     });
-    this.diffEditor.getModifiedEditor().onDidChangeCursorPosition(() => this.renderStatus());
-    this.diffEditor.getModifiedEditor().onDidScrollChange(() => this.schedulePersist());
+    const originalDiffEditor = this.diffEditor.getOriginalEditor();
+    const modifiedDiffEditor = this.diffEditor.getModifiedEditor();
+    originalDiffEditor.onDidFocusEditorText(() => this.setActiveDiffSelectionSide("original"));
+    modifiedDiffEditor.onDidFocusEditorText(() => this.setActiveDiffSelectionSide("modified"));
+    originalDiffEditor.onDidChangeCursorSelection(() => {
+      if (originalDiffEditor.hasTextFocus()) this.setActiveDiffSelectionSide("original");
+      else this.updateCodeChatSelectionNotice();
+    });
+    modifiedDiffEditor.onDidChangeCursorSelection(() => {
+      if (modifiedDiffEditor.hasTextFocus()) this.setActiveDiffSelectionSide("modified");
+      else this.updateCodeChatSelectionNotice();
+    });
+    modifiedDiffEditor.onDidChangeCursorPosition(() => { this.renderStatus(); this.observeNavigationLocation(true); });
+    this.diffEditor.getModifiedEditor().onDidScrollChange(() => { this.observeNavigationLocation(false); this.schedulePersist(); });
     if (this.enableVimKeybindings && vimStatusBar) initVimMode(this.diffEditor.getModifiedEditor(), vimStatusBar);
     this.updateDiffLayoutState();
     this.editorOpener = monaco.editor.registerEditorOpener({
@@ -786,6 +878,8 @@ class CodeView {
       const selected = node.key === this.selectedTreeKey;
       const expanded = this.expanded.has(node.key);
       const isDirectory = node.kind === "directory";
+      const diagnostic = isDirectory ? undefined : this.fileDiagnostics.get(node.key);
+      const diagnosticPresentation = explorerDiagnosticPresentation(diagnostic);
       const indent = 7 + node.depth * 14;
       const icon = isDirectory
         ? (expanded ? "folder-opened" : "folder")
@@ -795,8 +889,13 @@ class CodeView {
         : `<span class="code-tree-spacer"></span>`;
       const label = this.renamingKey === node.key
         ? `<input class="code-tree-rename" data-rename-input value="${escapeHTML(node.name)}" aria-label="Rename ${escapeHTML(node.name)}">`
-        : `<span class="code-tree-label">${escapeHTML(node.name)}</span>`;
-      return `<div class="code-tree-row ${selected ? "is-selected" : ""} ${node.blockedReason ? "is-blocked" : ""}" role="treeitem" aria-selected="${selected}" aria-expanded="${isDirectory ? expanded : undefined}" data-tree-key="${escapeHTML(node.key)}" style="transform:translateY(${virtual.start}px);padding-left:${indent}px" title="${escapeHTML(node.blockedReason || node.hostPath)}">${chevron}<span class="codicon codicon-${icon} code-tree-icon"></span>${label}</div>`;
+        : `<span class="code-tree-label${diagnosticPresentation.className ? ` ${diagnosticPresentation.className}` : ""}">${escapeHTML(node.name)}</span>`;
+      const draggable = !node.isRoot && !node.blockedReason;
+      const dragging = node.key === this.draggingTreeKey;
+      const dropTarget = node.key === this.treeDropTargetKey;
+      const ariaLabel = diagnosticPresentation.description ? `${node.name}, ${diagnosticPresentation.description}` : node.name;
+      const title = node.blockedReason || (diagnosticPresentation.description ? `${node.hostPath} — ${diagnosticPresentation.description}` : node.hostPath);
+      return `<div class="code-tree-row ${selected ? "is-selected" : ""} ${node.blockedReason ? "is-blocked" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}" role="treeitem" aria-label="${escapeHTML(ariaLabel)}" aria-selected="${selected}" aria-expanded="${isDirectory ? expanded : undefined}" draggable="${draggable}" data-tree-key="${escapeHTML(node.key)}" data-tree-kind="${node.kind}" data-tree-root="${node.isRoot}" style="transform:translateY(${virtual.start}px);padding-left:${indent}px" title="${escapeHTML(title)}">${chevron}<span class="codicon codicon-${icon} code-tree-icon"></span>${label}</div>`;
     }).join("");
     if (this.renamingKey) {
       requestAnimationFrame(() => {
@@ -813,9 +912,16 @@ class CodeView {
     const extension = name.split(".").pop()?.toLowerCase();
     if (["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico", "avif"].includes(extension || "")) return "file-media";
     if (["mp4", "m4v", "webm", "ogv"].includes(extension || "")) return "play-circle";
+    if (["mp3", "wav", "ogg", "oga", "opus", "flac", "m4a", "aac", "weba"].includes(extension || "")) return "music";
     if (["json", "yaml", "yml", "toml", "ini"].includes(extension || "")) return "json";
     if (["md", "markdown", "txt"].includes(extension || "")) return "markdown";
     return "file-code";
+  }
+
+  private updateFileDiagnostic(uri: string, severity: LSPDiagnosticSeverity | null): void {
+    if (updateExplorerDiagnostic(this.fileDiagnostics, uri, severity, (candidate) => this.refForFileURI(candidate))) {
+      this.renderTreeRows();
+    }
   }
 
   private syncTreeSelectionState(): void {
@@ -825,6 +931,34 @@ class CodeView {
       element.classList.toggle("is-selected", selected);
       element.setAttribute("aria-selected", String(selected));
     });
+  }
+
+  private collapseAll(): void {
+    this.expanded.clear();
+    this.renderTree();
+    this.schedulePersist();
+    this.sendFilesystemSubscription();
+  }
+
+  private clampEditorFontSize(value: number): number {
+    if (!Number.isFinite(value) || value <= 0) return defaultEditorFontSize;
+    return Math.min(maxEditorFontSize, Math.max(minEditorFontSize, value));
+  }
+
+  private setEditorFontSize(value: number): void {
+    const next = this.clampEditorFontSize(value);
+    if (next === this.editorFontSize) return;
+    this.editorFontSize = next;
+    const lineHeight = Math.round(next * 1.48);
+    this.editor?.updateOptions({ fontSize: next, lineHeight });
+    this.diffEditor?.updateOptions({ fontSize: next, lineHeight });
+    window.clearTimeout(this.editorFontSizeSaveTimer);
+    const settings = { ...this.fullSettings, editorFontSize: next };
+    this.editorFontSizeSaveTimer = window.setTimeout(() => {
+      void api("/api/settings", { method: "PUT", body: { settings } }).catch(() => {
+        /* best-effort persistence */
+      });
+    }, 150);
   }
 
   private async toggleNode(node: TreeNode): Promise<void> {
@@ -840,7 +974,7 @@ class CodeView {
       this.schedulePersist();
       this.sendFilesystemSubscription();
     } else if (node.kind === "file" && !node.blockedReason) {
-      await this.openFile(node.ref, false, false);
+      await this.recordCodeNavigation(() => this.openFile(node.ref, false, false));
       if (window.innerWidth <= 720) this.setMobileExplorer(false);
     }
   }
@@ -946,37 +1080,45 @@ class CodeView {
   }
 
   private async openNavigationTarget(resource: MonacoUri, selectionOrPosition?: MonacoRange | MonacoPosition): Promise<boolean> {
-    const ref = this.refForFileURI(resource.toString());
-    if (!ref || !ref.path) return false;
-    if (!(await this.prepareLSPURI(resource.toString()))) return false;
-    await this.openFile(ref, false, false);
-    const tab = this.tabs.find((candidate) => {
-      const candidateRef = this.worktreeRef(candidate);
-      return candidateRef && refKey(candidateRef) === refKey(ref);
-    });
-    if (!tab) return false;
-    this.activateTab(tab.id, false);
-    const editor = this.activeCodeEditor();
-    if (!editor) return false;
-    if (selectionOrPosition) {
-      if ("endLineNumber" in selectionOrPosition) {
-        editor.setSelection(selectionOrPosition);
-        editor.revealRangeInCenter(selectionOrPosition);
-      } else {
-        editor.setPosition(selectionOrPosition);
-        editor.revealPositionInCenter(selectionOrPosition);
+    return await this.recordCodeNavigation(async () => {
+      const ref = this.refForFileURI(resource.toString());
+      if (!ref || !ref.path) return false;
+      if (!(await this.prepareLSPURI(resource.toString()))) return false;
+      await this.openFile(ref, false, false);
+      const tab = this.tabs.find((candidate) => {
+        const candidateRef = this.worktreeRef(candidate);
+        return candidateRef && refKey(candidateRef) === refKey(ref);
+      });
+      if (!tab) return false;
+      this.activateTab(tab.id, false);
+      const editor = this.activeCodeEditor();
+      if (!editor) return false;
+      if (selectionOrPosition) {
+        if ("endLineNumber" in selectionOrPosition) {
+          const position = {
+            lineNumber: selectionOrPosition.startLineNumber,
+            column: selectionOrPosition.startColumn,
+          };
+          editor.setPosition(position);
+          editor.revealPositionInCenter(position);
+        } else {
+          editor.setPosition(selectionOrPosition);
+          editor.revealPositionInCenter(selectionOrPosition);
+        }
       }
-    }
-    editor.focus();
-    return true;
+      editor.focus();
+      return true;
+    });
   }
 
   private async openLSPWorkspaceEditURI(uri: string): Promise<boolean> {
     const ref = this.refForFileURI(uri);
     if (!ref || !ref.path) return false;
-    const previous = this.activeTabId;
-    await this.openFile(ref, true, false);
-    if (previous && this.tabs.some((tab) => tab.id === previous)) this.activateTab(previous, false);
+    // Monaco cancels rename/code-action requests when their owning editor
+    // changes models. Workspace edits still need real tabs so their models are
+    // retained and marked dirty, but preparing those tabs must not activate
+    // them while the provider request is in flight.
+    await this.openFile(ref, true, false, false, false);
     return this.tabs.some((tab) => {
       const candidate = this.worktreeRef(tab);
       return candidate && refKey(candidate) === refKey(ref);
@@ -996,21 +1138,41 @@ class CodeView {
     }
     const workspaceEdits: MonacoLanguages.IWorkspaceTextEdit[] = [];
     for (const item of pending) {
-      const resource = monaco.Uri.parse(item.uri);
-      const model = monaco.editor.getModel(resource);
+      const model = this.modelForLSPWorkspaceEditURI(item.uri);
       if (!model) throw new Error(`Language-server edit target is unavailable: ${item.uri}`);
       if (typeof item.version === "number" && item.version !== model.getVersionId()) {
-        throw new Error(`Language-server edit for ${resource.fsPath} is stale (expected version ${item.version}, current version ${model.getVersionId()})`);
+        throw new Error(`Language-server edit for ${model.uri.fsPath} is stale (expected version ${item.version}, current version ${model.getVersionId()})`);
       }
       for (const textEdit of item.edits) {
         workspaceEdits.push({
-          resource,
+          resource: model.uri,
           versionId: model.getVersionId(),
           textEdit: { range: fromLSPRange(textEdit.range), text: textEdit.newText },
         });
       }
     }
     return { edits: workspaceEdits };
+  }
+
+  private modelForLSPWorkspaceEditURI(uri: string): MonacoEditor.ITextModel | null {
+    try {
+      const exact = monaco.editor.getModel(monaco.Uri.parse(uri));
+      if (exact) return exact;
+    } catch {
+      return null;
+    }
+    const ref = this.refForFileURI(uri);
+    if (!ref) return null;
+    const key = refKey(ref);
+    const tab = this.tabs.find((candidate) => {
+      const candidateRef = this.worktreeRef(candidate);
+      return candidateRef && refKey(candidateRef) === key;
+    });
+    if (tab && tab.kind !== "media") return tab.model;
+    return monaco.editor.getModels().find((model) => {
+      const candidateRef = this.refForFileURI(model.uri.toString());
+      return candidateRef && refKey(candidateRef) === key;
+    }) || null;
   }
 
   private async applyLSPWorkspaceEdit(edit: LSPWorkspaceEdit): Promise<boolean> {
@@ -1044,20 +1206,20 @@ class CodeView {
     model.dispose();
   }
 
-  private async openFile(ref: FileRef, pin: boolean, focusEditor = true): Promise<void> {
-    if (!this.workspace) return;
+  private async openFile(ref: FileRef, pin: boolean, focusEditor = true, showErrors = true, activate = true): Promise<boolean> {
+    if (!this.workspace) return false;
     const previewKind = previewKindForPath(ref.path);
     if (previewKind) {
       await this.openMedia(ref, pin, focusEditor);
-      return;
+      return false;
     }
     const existing = this.tabs.find((tab) => tab.ref && refKey(tab.ref) === refKey(ref));
     if (existing) {
       if (pin) existing.pinned = true;
-      this.activateTab(existing.id, focusEditor);
+      if (activate) this.activateTab(existing.id, focusEditor);
       this.renderTabs();
       this.sendFilesystemSubscription();
-      return;
+      return true;
     }
     try {
       const snapshot = await editorAPI.readFile(this.workspace.id, ref);
@@ -1074,11 +1236,13 @@ class CodeView {
       } else {
         this.tabs.push(tab);
       }
-      this.activateTab(tab.id, focusEditor);
+      if (activate) this.activateTab(tab.id, focusEditor);
       this.renderTabs();
       this.schedulePersist();
       this.sendFilesystemSubscription();
+      return true;
     } catch (error) {
+      if (!showErrors) return false;
       const apiError = error as APIError;
       const message = apiError.payload?.code === "file_too_large"
         ? "This file is larger than Echo Code's 10 MiB editor limit."
@@ -1093,8 +1257,108 @@ class CodeView {
           { id: "reveal", label: "Reveal on Echo host", primary: true },
         ],
       });
-      if (choice === "reload") await this.openFile(ref, pin, focusEditor);
+      if (choice === "reload") return await this.openFile(ref, pin, focusEditor, showErrors, activate);
       if (choice === "reveal") await this.reveal(ref);
+      return false;
+    }
+  }
+
+  private treeMoveDestination(source: TreeNode | undefined, target: TreeNode | undefined): TreeNode | null {
+    if (!source || source.isRoot || source.blockedReason || !target || target.kind !== "directory" || target.blockedReason) return null;
+    if (source.ref.rootId !== target.ref.rootId || source.parentKey === target.key || isRefWithin(target.ref, source.ref)) return null;
+    return target;
+  }
+
+  private setTreeDropTarget(key: string | null): void {
+    if (this.treeDropTargetKey === key) return;
+    if (this.treeDropTargetKey) {
+      this.treeCanvas.querySelector<HTMLElement>(`[data-tree-key="${CSS.escape(this.treeDropTargetKey)}"]`)?.classList.remove("is-drop-target");
+    }
+    this.treeDropTargetKey = key;
+    if (key) {
+      this.treeCanvas.querySelector<HTMLElement>(`[data-tree-key="${CSS.escape(key)}"]`)?.classList.add("is-drop-target");
+    }
+    window.clearTimeout(this.treeDropExpandTimer);
+    this.treeDropExpandTimer = 0;
+    this.treeDropExpandKey = null;
+    const target = key ? this.nodes.get(key) : null;
+    if (!target || this.expanded.has(target.key) || target.loading) return;
+    this.treeDropExpandKey = target.key;
+    this.treeDropExpandTimer = window.setTimeout(() => {
+      this.treeDropExpandTimer = 0;
+      if (this.treeDropExpandKey !== target.key || this.treeDropTargetKey !== target.key) return;
+      this.expanded.add(target.key);
+      void this.loadChildren(target).then(() => {
+        this.schedulePersist();
+        this.sendFilesystemSubscription();
+      });
+    }, 600);
+  }
+
+  private clearTreeDragState(): void {
+    window.clearTimeout(this.treeDropExpandTimer);
+    this.treeDropExpandTimer = 0;
+    this.treeDropExpandKey = null;
+    if (this.treeDragScrollFrame) {
+      cancelAnimationFrame(this.treeDragScrollFrame);
+      this.treeDragScrollFrame = 0;
+    }
+    this.treeDragScrollActive = false;
+    this.treeCanvas.querySelectorAll(".code-tree-row.is-dragging, .code-tree-row.is-drop-target")
+      .forEach((row) => row.classList.remove("is-dragging", "is-drop-target"));
+    this.draggingTreeKey = null;
+    this.treeDropTargetKey = null;
+  }
+
+  private startTreeDragScroll(clientY: number): void {
+    this.treeDragScrollClientY = clientY;
+    if (this.treeDragScrollActive) return;
+    this.treeDragScrollActive = true;
+    const step = () => {
+      this.treeDragScrollFrame = 0;
+      if (!this.treeDragScrollActive) return;
+      const bounds = this.treeScroller.getBoundingClientRect();
+      const edge = 28;
+      const speed = 12;
+      if (this.treeDragScrollClientY < bounds.top + edge) {
+        this.treeScroller.scrollTop -= speed;
+      } else if (this.treeDragScrollClientY > bounds.bottom - edge) {
+        this.treeScroller.scrollTop += speed;
+      } else {
+        this.treeDragScrollActive = false;
+        return;
+      }
+      this.treeDragScrollFrame = requestAnimationFrame(step);
+    };
+    this.treeDragScrollFrame = requestAnimationFrame(step);
+  }
+
+  private rewrittenTreeRef(candidate: FileRef, previous: FileRef, next: FileRef): FileRef {
+    if (!isRefWithin(candidate, previous)) return candidate;
+    const suffix = candidate.path.slice(previous.path.length).replace(/^\//, "");
+    return { rootId: next.rootId, path: suffix ? `${next.path}/${suffix}` : next.path };
+  }
+
+  private async moveTreeNode(node: TreeNode, destination: TreeNode): Promise<void> {
+    if (!this.workspace || !this.treeMoveDestination(node, destination)) return;
+    const previousRef = { ...node.ref };
+    const expandedRefs = [...this.expanded]
+      .map((key) => this.nodes.get(key)?.ref)
+      .filter((ref): ref is FileRef => Boolean(ref));
+    try {
+      const result = await editorAPI.moveEntry(this.workspace.id, previousRef, destination.ref);
+      const restoredExpansion = expandedRefs.map((ref) => this.rewrittenTreeRef(ref, previousRef, result.entry.ref));
+      this.codeNavigation?.remapRef(previousRef, result.entry.ref);
+      this.rewriteOpenRefs(previousRef, result.entry.ref, node.hostPath, result.entry.hostPath);
+      this.rewriteExpandedRefs(previousRef, result.entry.ref);
+      await this.refreshExplorer(restoredExpansion);
+      await this.expandTo(result.entry.ref);
+      this.schedulePersist();
+      this.searchView?.refresh();
+      this.sendFilesystemSubscription();
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), { sticky: true });
+      this.renderTreeRows();
     }
   }
 
@@ -1167,6 +1431,7 @@ class CodeView {
       const document = await loadGitDiff(this.workspace.id, repository.id, {
         scope, path: change.path, oldPath: change.oldPath, ref: reviewRef,
       });
+      if (this.abort.signal.aborted) return;
       const language = languageForPath(document.path, this.lspProfiles);
       const originalURI = monaco.Uri.from({
         scheme: "echo-git", authority: repository.id,
@@ -1286,9 +1551,10 @@ class CodeView {
     this.schedulePersist();
   }
 
-  private activateTab(id: string, focusEditor = true): void {
+  private activateTab(id: string, focusEditor = true, mru = true): void {
     const next = this.tabs.find((tab) => tab.id === id);
     if (!next) return;
+    if (mru) this.touchMru(id);
     const active = this.activeTab();
     // Re-selecting the current tab must not re-attach its model or restore the
     // last captured view state. That state is intentionally only a snapshot
@@ -1300,6 +1566,7 @@ class CodeView {
         if (next.kind === "diff") this.diffEditor.getModifiedEditor().focus();
         else if (next.kind !== "media") this.editor.focus();
       }
+      this.updateCodeChatSelectionNotice();
       this.schedulePersist();
       return;
     }
@@ -1330,7 +1597,13 @@ class CodeView {
     this.renderBreadcrumbs();
     this.renderStatus();
     this.revealTabInExplorer(next);
+    this.updateCodeChatSelectionNotice();
     this.schedulePersist();
+  }
+
+  private touchMru(id: string): void {
+    if (this.mruTabIds[0] === id) return;
+    this.mruTabIds = [id, ...this.mruTabIds.filter((candidate) => candidate !== id)];
   }
 
   private activeTab(): OpenTab | undefined {
@@ -1360,7 +1633,7 @@ class CodeView {
     if (!list) return;
     list.innerHTML = this.tabs.map((tab) => `
       <div class="code-tab ${tab.id === this.activeTabId ? "is-active" : ""} ${!tab.pinned ? "is-preview" : ""}" role="tab" aria-selected="${tab.id === this.activeTabId}" tabindex="${tab.id === this.activeTabId ? 0 : -1}" data-tab-id="${escapeHTML(tab.id)}" title="${escapeHTML(tab.hostPath || tab.title)}">
-        <span class="codicon codicon-${tab.kind === "diff" ? "diff" : tab.kind === "media" ? (tab.media?.kind === "video" ? "play-circle" : "file-media") : "file-code"} code-tab-icon"></span>
+        <span class="codicon codicon-${this.tabIcon(tab)} code-tab-icon"></span>
         <span class="code-tab-title">${escapeHTML(tab.title)}</span>
         ${tab.conflict ? `<span class="codicon codicon-warning code-tab-conflict" title="Changed on disk"></span>` : ""}
         ${tab.deleted ? `<span class="codicon codicon-trash code-tab-conflict" title="Deleted on disk"></span>` : ""}
@@ -1370,6 +1643,121 @@ class CodeView {
     `).join("");
     this.syncActiveTabState();
     this.renderBreadcrumbs();
+    if (this.mruCycle) this.renderMruSwitcher();
+  }
+
+  private tabIcon(tab: OpenTab): string {
+    if (tab.kind === "diff") return "diff";
+    if (tab.kind !== "media") return "file-code";
+    if (tab.media?.kind === "video") return "play-circle";
+    if (tab.media?.kind === "audio") return "music";
+    return "file-media";
+  }
+
+  private mruTabContext(tab: OpenTab): string {
+    const directoryFor = (path: string): string => {
+      const normalized = path.replace(/\\/g, "/");
+      return normalized.includes("/") ? normalized.slice(0, normalized.lastIndexOf("/")) : "";
+    };
+    if (tab.kind === "diff" && tab.diff) {
+      const path = tab.diff.fileRef?.path || tab.diff.oldPath || tab.hostPath;
+      const directory = directoryFor(path);
+      const scope = tab.diff.scope === "unstaged" ? "Working Tree"
+        : tab.diff.scope === "staged" ? "Index"
+          : tab.diff.scope === "stash" ? "Stash"
+            : shortGitRef(tab.diff.reviewRef || "Commit");
+      return [tab.diff.repository.label, directory, scope].filter(Boolean).join(" · ");
+    }
+    if (tab.ref) {
+      const root = this.roots.find((candidate) => candidate.id === tab.ref?.rootId);
+      return [root?.label, directoryFor(tab.ref.path)].filter(Boolean).join(" · ");
+    }
+    return tab.kind === "file" ? "Untitled" : "";
+  }
+
+  private renderMruSwitcher(): void {
+    const state = this.mruCycle;
+    if (!state?.order.length) {
+      this.removeMruSwitcher();
+      return;
+    }
+    if (!this.mruSwitcherOverlay) {
+      const overlay = document.createElement("div");
+      overlay.className = "code-mru-switcher-overlay";
+      overlay.innerHTML = `
+        <section class="code-picker code-mru-switcher" aria-label="Recently used editors">
+          <div class="code-picker-meta">Recently used editors</div>
+          <div class="code-picker-list code-mru-switcher-list" role="listbox" aria-label="Recently used editors" data-mru-switcher-list></div>
+        </section>`;
+      overlay.addEventListener("click", (event) => {
+        const row = (event.target as Element).closest<HTMLElement>("[data-mru-tab-id]");
+        if (row?.dataset.mruTabId) {
+          this.chooseMruTab(row.dataset.mruTabId);
+        } else if (event.target === overlay) {
+          this.finishMruCycle(true);
+        }
+      });
+      document.body.appendChild(overlay);
+      this.mruSwitcherOverlay = overlay;
+    }
+    const list = this.mruSwitcherOverlay.querySelector<HTMLElement>("[data-mru-switcher-list]");
+    if (!list) return;
+    list.innerHTML = state.order.map((id, index) => {
+      const tab = this.tabs.find((candidate) => candidate.id === id);
+      if (!tab) return "";
+      const selected = index === state.index;
+      const context = this.mruTabContext(tab);
+      const states = [tab.dirty ? "Unsaved changes" : "", tab.deleted ? "Deleted on disk" : "", tab.conflict ? "Changed on disk" : ""].filter(Boolean);
+      const accessibleName = [tab.title, context, ...states].filter(Boolean).join(", ");
+      return `
+        <button type="button" role="option" tabindex="-1" aria-label="${escapeHTML(accessibleName)}" aria-selected="${selected}" class="${selected ? "is-selected" : ""}" data-mru-tab-id="${escapeHTML(tab.id)}">
+          <span class="codicon codicon-${this.tabIcon(tab)}"></span>
+          <strong>${escapeHTML(tab.title)}</strong>
+          <span class="code-mru-switcher-context">${escapeHTML(context)}</span>
+          <span class="code-mru-switcher-status" aria-hidden="true">
+            ${tab.dirty ? `<span class="code-mru-switcher-dirty" title="Unsaved changes"></span>` : ""}
+            ${tab.deleted ? `<span class="codicon codicon-trash" title="Deleted on disk"></span>` : ""}
+            ${tab.conflict ? `<span class="codicon codicon-warning" title="Changed on disk"></span>` : ""}
+          </span>
+        </button>`;
+    }).join("");
+    const selected = list.querySelector<HTMLElement>("[aria-selected=true]");
+    requestAnimationFrame(() => {
+      if (selected?.isConnected) selected.scrollIntoView({ block: "nearest" });
+    });
+  }
+
+  private async navigateToChat(target: ChatTarget): Promise<boolean> {
+    const hasDirtyBuffers = this.tabs.some((tab) => tab.dirty);
+    const persisted = await this.persistNow();
+    if (!persisted && hasDirtyBuffers) return false;
+    window.location.hash = chatTargetRouteHash(target);
+    return true;
+  }
+
+  private removeMruSwitcher(): void {
+    this.mruSwitcherOverlay?.remove();
+    this.mruSwitcherOverlay = null;
+  }
+
+  private finishMruCycle(focusEditor = false): void {
+    const state = this.mruCycle;
+    if (state) {
+      const finalId = state.order[state.index];
+      if (finalId) this.touchMru(finalId);
+    }
+    this.mruCycle = null;
+    this.removeMruSwitcher();
+    if (focusEditor && this.activeTab()?.kind !== "media") this.focusActiveEditor();
+  }
+
+  private chooseMruTab(id: string): void {
+    const state = this.mruCycle;
+    const index = state?.order.indexOf(id) ?? -1;
+    if (!state || index < 0 || !this.tabs.some((tab) => tab.id === id)) return;
+    this.mruCycle = { ...state, index };
+    void this.recordCodeNavigation(() => this.activateTab(id, true, false));
+    this.finishMruCycle();
   }
 
   private renderBreadcrumbs(): void {
@@ -1407,12 +1795,13 @@ class CodeView {
     if (language) language.textContent = tab ? monaco.languages.getLanguages().find((item) => item.id === tab.model.getLanguageId())?.aliases?.[0] || tab.model.getLanguageId() : "Plain Text";
     if (lsp) {
       const name = this.lspStatus?.name || this.lspStatus?.profileId || "LSP";
+      const sandboxLabel = this.lspStatus?.sandbox ? "Sandbox · " : "";
       lsp.hidden = this.lspState === "none";
-      lsp.textContent = this.lspState === "owned" ? `${name} ✓`
+      lsp.textContent = this.lspState === "owned" ? `${sandboxLabel}${name} ✓`
         : this.lspState === "denied" ? `${name}: Take Over`
-          : this.lspState === "failed" ? `${name}: Failed`
-            : this.lspState === "connecting" ? `${name}: Connecting`
-              : `${name}: Starting`;
+          : this.lspState === "failed" ? `${sandboxLabel}${name}: Failed`
+            : this.lspState === "connecting" ? `${sandboxLabel}${name}: Connecting`
+              : `${sandboxLabel}${name}: Starting`;
       lsp.dataset.lspState = this.lspState;
       lsp.title = [this.lspStatus?.message, this.lspStatus?.stderr].filter(Boolean).join("\n\n") || "Language server status";
     }
@@ -1449,13 +1838,15 @@ class CodeView {
     const host = this.root.querySelector<HTMLElement>("[data-media-preview-host]");
     if (!host || !tab.media) return;
     const url = `${tab.media.url}&v=${Date.now()}`;
-    const icon = tab.media.kind === "video" ? "play-circle" : "file-media";
-    const noun = tab.media.kind === "video" ? "video" : "image";
+    const icon = tab.media.kind === "video" ? "play-circle" : tab.media.kind === "audio" ? "music" : "file-media";
+    const noun = tab.media.kind === "video" ? "video" : tab.media.kind === "audio" ? "audio" : "image";
     const mediaTag = tab.media.kind === "video"
       ? `<video src="${escapeHTML(url)}" controls loop playsinline muted></video>`
-      : `<img src="${escapeHTML(url)}" alt="${escapeHTML(tab.title)}">`;
+      : tab.media.kind === "audio"
+        ? `<audio src="${escapeHTML(url)}" controls preload="metadata"></audio>`
+        : `<img src="${escapeHTML(url)}" alt="${escapeHTML(tab.title)}">`;
     host.innerHTML = `
-      <div class="code-media-frame">
+      <div class="code-media-frame${tab.media.kind === "audio" ? " code-media-frame-audio" : ""}">
         ${mediaTag}
         <div class="code-media-volume-slot"></div>
         <div class="code-media-error" hidden>
@@ -1464,15 +1855,17 @@ class CodeView {
           <p>The file may be larger than the preview limit or its container format is not playable.</p>
         </div>
       </div>`;
-    const element = host.querySelector<HTMLVideoElement | HTMLImageElement>(tab.media.kind === "video" ? "video" : "img");
+    const element = host.querySelector<HTMLVideoElement | HTMLImageElement | HTMLAudioElement>(
+      tab.media.kind === "video" ? "video" : tab.media.kind === "audio" ? "audio" : "img",
+    );
     const errorPanel = host.querySelector<HTMLElement>(".code-media-error");
     const volumeSlot = host.querySelector<HTMLElement>(".code-media-volume-slot");
     if (tab.media.kind === "video" && element instanceof HTMLVideoElement && volumeSlot) {
       volumeSlot.appendChild(attachVideoVolumeControl(element, "code-media-volume"));
     }
-    // Both <img> and <video> raise "error" when the stream fails (missing
-    // file, oversized refusal, unplayable container), so one handler covers
-    // every failure mode.
+    // <img>, <video>, and <audio> all raise "error" when the stream fails
+    // (missing file, oversized refusal, unplayable container), so one handler
+    // covers every failure mode.
     element?.addEventListener("error", () => {
       if (!element || !errorPanel) return;
       element.hidden = true;
@@ -1508,6 +1901,8 @@ class CodeView {
     }
     const index = this.tabs.indexOf(tab);
     this.tabs.splice(index, 1);
+    this.mruTabIds = removeFromMru(this.mruTabIds, tab.id);
+    if (this.mruCycle) this.mruCycle = pruneMruCycle(this.mruCycle, this.tabs.map((t) => t.id));
     this.disposeTab(tab);
     if (tab.id === this.activeTabId) {
       const next = this.tabs[Math.min(index, this.tabs.length - 1)];
@@ -1522,6 +1917,7 @@ class CodeView {
       }
     }
     this.renderTabs();
+    this.updateCodeChatSelectionNotice();
     this.schedulePersist();
     this.sendFilesystemSubscription();
     return true;
@@ -1585,7 +1981,6 @@ class CodeView {
       });
       this.applySavedSnapshot(tab, snapshot);
       this.lsp?.didSave(tab.model);
-      toast(`Saved ${tab.title}`);
       return true;
     } catch (error) {
       const apiError = error as APIError;
@@ -1621,7 +2016,6 @@ class CodeView {
       }
       this.applySavedSnapshot(tab, snapshot);
       this.lsp?.didSave(tab.model);
-      toast(`Saved ${ref.path.split("/").pop() || ref.path}`);
       return true;
     } catch (error) {
       const apiError = error as APIError;
@@ -1709,6 +2103,8 @@ class CodeView {
       const diff = monaco.editor.createDiffEditor(overlay.querySelector<HTMLElement>("[data-diff-host]")!, {
         theme: this.mediaTheme.matches ? "vs-dark" : "vs", automaticLayout: true, readOnly: true,
         originalEditable: false, minimap: { enabled: false }, renderSideBySide: true,
+        selectionHighlight: true, selectionHighlightMultiline: false,
+        occurrencesHighlight: "singleFile",
       });
       diff.setModel({ original, modified });
       const close = () => {
@@ -1875,6 +2271,7 @@ class CodeView {
     try {
       const previousRef = node.ref;
       const result = await editorAPI.renameEntry(this.workspace.id, previousRef, newName);
+      this.codeNavigation?.remapRef(previousRef, result.entry.ref);
       this.rewriteOpenRefs(previousRef, result.entry.ref, node.hostPath, result.entry.hostPath);
       this.rewriteExpandedRefs(previousRef, result.entry.ref);
       const parent = node.parentKey ? this.nodes.get(node.parentKey) : null;
@@ -1990,7 +2387,7 @@ class CodeView {
       await this.reloadChildrenPreservingExpansion(parent);
       this.selectedTreeKey = refKey(result.entry.ref);
       this.renderTree();
-      if (kind === "file") await this.openFile(result.entry.ref, true);
+      if (kind === "file") await this.recordCodeNavigation(() => this.openFile(result.entry.ref, true));
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error));
     }
@@ -2018,8 +2415,8 @@ class CodeView {
     }
   }
 
-  private async refreshExplorer(): Promise<void> {
-    const expandedRefs = [...this.expanded].map((key) => this.nodes.get(key)?.ref).filter(Boolean) as FileRef[];
+  private async refreshExplorer(preservedExpansion?: FileRef[]): Promise<void> {
+    const expandedRefs = preservedExpansion || [...this.expanded].map((key) => this.nodes.get(key)?.ref).filter(Boolean) as FileRef[];
     this.nodes.clear();
     this.expanded.clear();
     await Promise.all(this.roots.map((root) => this.ensureRoot(root)));
@@ -2196,17 +2593,28 @@ class CodeView {
       { id: "file.new", label: "File: New Untitled File", keybinding: "Ctrl+N", run: () => this.newUntitled() },
       { id: "file.quickOpen", label: "Go to File…", keybinding: "Ctrl+P", run: () => this.showQuickOpen() },
       { id: "view.commandPalette", label: "View: Show Command Palette", keybinding: "Ctrl+Shift+P", run: () => this.showCommandPalette() },
+      { id: "navigation.back", label: "Go: Back", keybinding: "Alt+Left", run: () => window.history.back() },
+      { id: "navigation.forward", label: "Go: Forward", keybinding: "Alt+Right", run: () => window.history.forward() },
       { id: "search.findInFiles", label: "Search: Find in Files", keybinding: "Ctrl+Shift+F", run: () => this.showWorkspaceSearch() },
       { id: "search.replaceInFiles", label: "Search: Replace in Files", keybinding: "Ctrl+Shift+H", run: () => this.showWorkspaceSearch(true) },
       { id: "file.close", label: "View: Close Editor", keybinding: "Ctrl+W", run: () => { const tab = this.activeTab(); if (tab) return this.closeTab(tab); } },
       { id: "explorer.refresh", label: "Explorer: Refresh", run: () => this.refreshExplorer() },
+      { id: "explorer.collapseAll", label: "Explorer: Collapse All", run: () => this.collapseAll() },
       { id: "explorer.newFile", label: "Explorer: New File", run: () => this.createUnderSelection("file") },
       { id: "explorer.newFolder", label: "Explorer: New Folder", run: () => this.createUnderSelection("directory") },
       { id: "explorer.trash", label: "Explorer: Open Echo Trash", run: () => this.showTrash() },
-      { id: "editor.find", label: "Editor: Find", keybinding: "Ctrl+F", run: () => this.editor.trigger("echo", "actions.find", null) },
-      { id: "editor.replace", label: "Editor: Replace", keybinding: "Ctrl+H", run: () => this.editor.trigger("echo", "editor.action.startFindReplaceAction", null) },
+      { id: "editor.find", label: "Editor: Find", keybinding: "Ctrl+F", run: () => this.showEditorFind() },
+      { id: "editor.replace", label: "Editor: Replace", keybinding: "Ctrl+H", run: () => this.showEditorFind(true) },
       { id: "editor.gotoLine", label: "Go to Line/Column…", keybinding: "Ctrl+G", run: () => this.editor.trigger("echo", "editor.action.gotoLine", null) },
       { id: "editor.rename", label: "Editor: Rename Symbol", keybinding: "F2", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.rename", null) },
+      { id: "editor.duplicateSelection", label: "Editor: Duplicate Selection", keybinding: "Ctrl+D", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.duplicateSelection", null) },
+      { id: "editor.action.transformToUppercase", label: "Transform to Uppercase", run: () => this.runCaseTransform("editor.action.transformToUppercase") },
+      { id: "editor.action.transformToLowercase", label: "Transform to Lowercase", run: () => this.runCaseTransform("editor.action.transformToLowercase") },
+      { id: "editor.action.transformToCamelcase", label: "Transform to Camel Case", run: () => this.runCaseTransform("editor.action.transformToCamelcase") },
+      { id: "editor.action.transformToKebabcase", label: "Transform to Kebab Case", run: () => this.runCaseTransform("editor.action.transformToKebabcase") },
+      { id: "editor.action.transformToPascalcase", label: "Transform to Pascal Case", run: () => this.runCaseTransform("editor.action.transformToPascalcase") },
+      { id: "editor.action.transformToSnakecase", label: "Transform to Snake Case", run: () => this.runCaseTransform("editor.action.transformToSnakecase") },
+      { id: "editor.action.transformToTitlecase", label: "Transform to Title Case", run: () => this.runCaseTransform("editor.action.transformToTitlecase") },
       { id: "editor.hover", label: "Editor: Show Hover", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.showHover", {}) },
       { id: "editor.goToDefinition", label: "Go to Definition", keybinding: "F12", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.revealDefinition", null) },
       { id: "editor.peekDefinition", label: "Peek Definition", keybinding: "Alt+F12", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.peekDefinition", null) },
@@ -2227,11 +2635,145 @@ class CodeView {
       { id: "editor.unfold", label: "Editor: Unfold", run: () => this.editor.trigger("echo", "editor.unfold", null) },
       { id: "editor.bracket", label: "Editor: Go to Bracket", run: () => this.editor.trigger("echo", "editor.action.jumpToBracket", null) },
     ];
+    this.recentCommandIds = pruneRecentCommandIds(this.recentCommandIds, this.commands.map((command) => command.id));
+    saveRecentCommandIds(this.recentCommandIds);
   }
 
   private activeCodeEditor(): MonacoEditor.ICodeEditor | null {
     const tab = this.activeTab();
     return tab?.kind === "diff" ? this.diffEditor?.getModifiedEditor() || null : this.editor || null;
+  }
+
+  private runCaseTransform(actionId: string): void {
+    const editor = this.activeCodeEditor();
+    if (!editor) return;
+    editor.trigger("echo", actionId, null);
+    requestAnimationFrame(() => {
+      if (!this.abort.signal.aborted && editor === this.activeCodeEditor()) editor.focus();
+    });
+  }
+
+  private captureNavigationLocation(): CodeNavigationLocation | null {
+    const tab = this.activeTab();
+    if (!this.workspace || !tab || tab.kind === "media" || (tab.kind === "diff" && !tab.diff?.editable)) return null;
+    const ref = this.worktreeRef(tab);
+    const editor = this.activeCodeEditor();
+    if (!ref || !editor?.getModel()) return null;
+    return {
+      workspaceId: this.workspace.id,
+      ref: { ...ref },
+      tabId: tab.id,
+      editorKind: tab.kind === "diff" ? "diff" : "file",
+      selections: (editor.getSelections() || []).map((selection) => ({
+        selectionStartLineNumber: selection.selectionStartLineNumber,
+        selectionStartColumn: selection.selectionStartColumn,
+        positionLineNumber: selection.positionLineNumber,
+        positionColumn: selection.positionColumn,
+      })),
+      scrollTop: editor.getScrollTop(),
+      scrollLeft: editor.getScrollLeft(),
+    };
+  }
+
+  private observeNavigationLocation(recordLargeJump: boolean): void {
+    if (!this.navigationReady || this.navigationSuppression || !this.codeNavigation) return;
+    const next = this.captureNavigationLocation();
+    if (!next) return;
+    const previous = this.lastNavigationLocation;
+    if (recordLargeJump && isLargeCodeNavigationJump(previous, next)) {
+      this.codeNavigation.recordTransition(previous, next);
+    } else {
+      this.codeNavigation.updateCurrent(next);
+    }
+    this.lastNavigationLocation = next;
+  }
+
+  private async recordCodeNavigation<T>(operation: () => T | Promise<T>): Promise<T> {
+    if (!this.navigationReady || !this.codeNavigation) return await operation();
+    const source = this.captureNavigationLocation();
+    this.navigationSuppression++;
+    try {
+      return await operation();
+    } finally {
+      this.navigationSuppression--;
+      const destination = this.captureNavigationLocation();
+      this.codeNavigation.recordTransition(source, destination);
+      this.lastNavigationLocation = destination;
+    }
+  }
+
+  private async restoreNavigationLocation(location: CodeNavigationLocation): Promise<boolean> {
+    if (!this.workspace || location.workspaceId !== this.workspace.id) return false;
+    this.navigationSuppression++;
+    try {
+      let tab = location.tabId ? this.tabs.find((candidate) => candidate.id === location.tabId) : undefined;
+      const existingTabRef = tab ? this.worktreeRef(tab) : null;
+      if (!tab || !existingTabRef || refKey(existingTabRef) !== refKey(location.ref)) {
+        if (!(await this.openFile(location.ref, false, false, false))) return false;
+        tab = this.tabs.find((candidate) => {
+          const ref = this.worktreeRef(candidate);
+          return ref && refKey(ref) === refKey(location.ref);
+        });
+      }
+      if (!tab) return false;
+      const tabRef = this.worktreeRef(tab);
+      if (!tabRef || refKey(tabRef) !== refKey(location.ref)) return false;
+      /* A closed editable diff falls back to its workspace file because the
+         location deliberately stores no Git snapshot payload. */
+      if (tab.kind === "media" || (tab.kind === "diff" && !tab.diff?.editable)) return false;
+      this.activateTab(tab.id, false);
+      const editor = this.activeCodeEditor();
+      const model = editor?.getModel();
+      if (!editor || !model) return false;
+      const selections = location.selections.map((selection) => {
+        const start = model.validatePosition({
+          lineNumber: selection.selectionStartLineNumber,
+          column: selection.selectionStartColumn,
+        });
+        const position = model.validatePosition({
+          lineNumber: selection.positionLineNumber,
+          column: selection.positionColumn,
+        });
+        return {
+          selectionStartLineNumber: start.lineNumber,
+          selectionStartColumn: start.column,
+          positionLineNumber: position.lineNumber,
+          positionColumn: position.column,
+        };
+      });
+      if (selections.length) editor.setSelections(selections);
+      editor.setScrollPosition({ scrollTop: Math.max(0, location.scrollTop), scrollLeft: Math.max(0, location.scrollLeft) });
+      editor.focus();
+      const restored = this.captureNavigationLocation() || location;
+      this.codeNavigation?.finishTraversal(restored);
+      this.lastNavigationLocation = restored;
+      return true;
+    } finally {
+      this.navigationSuppression--;
+    }
+  }
+
+  private async handleNavigationTraversal(state: unknown): Promise<void> {
+    if (!this.codeNavigation) return;
+    const departing = this.navigationSkipping ? null : this.captureNavigationLocation();
+    this.navigationSkipping = false;
+    const traversal = this.codeNavigation.beginTraversal(state, departing);
+    if (routePathFromHash(window.location.hash) !== CODE_ROUTE || !traversal) return;
+    this.setSidebar(codeSidebarFromHash(window.location.hash), false);
+    const generation = ++this.navigationRestoreGeneration;
+    if (await this.restoreNavigationLocation(traversal.location)) return;
+    if (generation !== this.navigationRestoreGeneration) return;
+    toast(`Could not restore ${traversal.location.ref.path}; skipping that navigation location.`);
+    if (traversal.direction) {
+      this.navigationSkipping = true;
+      window.history.go(traversal.direction);
+    }
+  }
+
+  private showEditorFind(replace = false): void {
+    const editor = this.activeCodeEditor();
+    if (!editor?.getModel()) return;
+    editor.trigger("echo", replace ? "editor.action.startFindReplaceAction" : "actions.find", null);
   }
 
   private async formatActiveDocument(selectionOnly: boolean): Promise<void> {
@@ -2322,7 +2864,7 @@ class CodeView {
       const result = results[selected];
       if (!result) return;
       close();
-      await this.openFile(result.ref, true);
+      await this.recordCodeNavigation(() => this.openFile(result.ref, true));
     };
     input.addEventListener("input", () => {
       searchGeneration++;
@@ -2355,12 +2897,30 @@ class CodeView {
     let selected = 0;
     const close = () => overlay.remove();
     const render = () => {
-      const query = input.value.trim().toLowerCase();
-      filtered = this.commands.filter((command) => command.label.toLowerCase().includes(query));
+      const presentation = commandPalettePresentation(this.commands, this.recentCommandIds, input.value);
+      filtered = presentation.commands;
       selected = Math.min(selected, Math.max(0, filtered.length - 1));
-      list.innerHTML = filtered.map((command, index) => `<button type="button" role="option" class="${index === selected ? "is-selected" : ""}" data-command-index="${index}"><span class="codicon codicon-terminal"></span><strong>${escapeHTML(command.label)}</strong>${command.keybinding ? `<kbd>${escapeHTML(command.keybinding)}</kbd>` : ""}</button>`).join("");
+      let commandIndex = 0;
+      list.innerHTML = presentation.groups.map((group) => {
+        const heading = group.label
+          ? `<div class="code-picker-section-label" role="presentation" aria-hidden="true">${group.label}</div>`
+          : "";
+        const rows = group.commands.map((command) => {
+          const index = commandIndex++;
+          const active = index === selected;
+          return `<button type="button" role="option" aria-selected="${active}" class="${active ? "is-selected" : ""}" data-command-index="${index}"><span class="codicon codicon-terminal"></span><strong>${escapeHTML(command.label)}</strong>${command.keybinding ? `<kbd>${escapeHTML(command.keybinding)}</kbd>` : ""}</button>`;
+        }).join("");
+        return heading + rows;
+      }).join("");
     };
-    const choose = () => { const command = filtered[selected]; close(); if (command) void command.run(); };
+    const choose = () => {
+      const command = filtered[selected];
+      close();
+      if (!command) return;
+      this.recentCommandIds = recordRecentCommandId(this.recentCommandIds, command.id);
+      saveRecentCommandIds(this.recentCommandIds);
+      void command.run();
+    };
     input.addEventListener("input", render);
     overlay.addEventListener("click", (event) => {
       if (event.target === overlay) close();
@@ -2379,6 +2939,8 @@ class CodeView {
 
   private installEvents(): void {
     const signal = this.abort.signal;
+    window.addEventListener("popstate", (event) => { void this.handleNavigationTraversal(event.state); }, { signal });
+    window.addEventListener("pagehide", () => this.codeNavigation?.dispose(this.captureNavigationLocation()), { signal });
     this.treeCanvas.addEventListener("click", (event) => {
       if ((event.target as Element).closest("[data-rename-input]")) return;
       const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
@@ -2391,13 +2953,51 @@ class CodeView {
     this.treeCanvas.addEventListener("dblclick", (event) => {
       const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
       const node = row ? this.nodes.get(row.dataset.treeKey || "") : null;
-      if (node?.kind === "file" && !node.blockedReason) void this.openFile(node.ref, true, false);
+      if (node?.kind === "file" && !node.blockedReason) void this.recordCodeNavigation(() => this.openFile(node.ref, true, false));
     }, { signal });
     this.treeCanvas.addEventListener("contextmenu", (event) => {
       event.preventDefault();
       const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
       const node = row ? this.nodes.get(row.dataset.treeKey || "") : null;
       if (node) this.showTreeMenu(event, node);
+    }, { signal });
+    this.treeCanvas.addEventListener("dragstart", (event) => {
+      const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
+      const node = row ? this.nodes.get(row.dataset.treeKey || "") : null;
+      if (!row || !node || node.isRoot || node.blockedReason || !event.dataTransfer) {
+        event.preventDefault();
+        return;
+      }
+      this.renamingKey = null;
+      this.draggingTreeKey = node.key;
+      row.classList.add("is-dragging");
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("application/x-echo-tree-entry", node.key);
+      event.dataTransfer.setData("text/plain", node.name);
+    }, { signal });
+    this.treeCanvas.addEventListener("dragover", (event) => {
+      const source = this.nodes.get(this.draggingTreeKey || "");
+      const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
+      const target = row ? this.nodes.get(row.dataset.treeKey || "") : undefined;
+      const destination = this.treeMoveDestination(source, target);
+      this.setTreeDropTarget(destination?.key || null);
+      this.startTreeDragScroll(event.clientY);
+      if (!destination || !event.dataTransfer) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+    }, { signal });
+    this.treeCanvas.addEventListener("drop", (event) => {
+      const source = this.nodes.get(this.draggingTreeKey || "");
+      const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
+      const target = row ? this.nodes.get(row.dataset.treeKey || "") : undefined;
+      const destination = this.treeMoveDestination(source, target);
+      if (destination) event.preventDefault();
+      this.clearTreeDragState();
+      if (source && destination) void this.moveTreeNode(source, destination);
+    }, { signal });
+    this.treeCanvas.addEventListener("dragend", () => this.clearTreeDragState(), { signal });
+    this.treeCanvas.addEventListener("dragleave", (event) => {
+      if (!this.treeCanvas.contains(event.relatedTarget as Node | null)) this.setTreeDropTarget(null);
     }, { signal });
     this.treeCanvas.addEventListener("keydown", (event) => {
       const input = (event.target as Element).closest<HTMLInputElement>("[data-rename-input]");
@@ -2419,6 +3019,7 @@ class CodeView {
     this.root.querySelector("[data-tree-action=new-file]")?.addEventListener("click", () => void this.createUnderSelection("file"), { signal });
     this.root.querySelector("[data-tree-action=new-folder]")?.addEventListener("click", () => void this.createUnderSelection("directory"), { signal });
     this.root.querySelector("[data-tree-action=refresh]")?.addEventListener("click", () => void this.refreshExplorer(), { signal });
+    this.root.querySelector("[data-tree-action=collapse-all]")?.addEventListener("click", () => this.collapseAll(), { signal });
     this.root.querySelector("[data-tree-action=trash]")?.addEventListener("click", () => void this.showTrash(), { signal });
     this.root.querySelector("[data-status=lsp]")?.addEventListener("click", () => {
       if (this.lspState === "denied") {
@@ -2467,7 +3068,15 @@ class CodeView {
       const tab = this.tabs.find((candidate) => candidate.id === element.dataset.tabId);
       if (!tab) return;
       if ((event.target as Element).closest("[data-tab-close]")) void this.closeTab(tab);
-      else this.activateTab(tab.id);
+      else void this.recordCodeNavigation(() => this.activateTab(tab.id));
+    }, { signal });
+    tabs.addEventListener("mousedown", (event) => {
+      // Suppress the browser's native middle-click autoscroll when the tab bar
+      // overflows and becomes scrollable, so middle-click keeps closing tabs
+      // instead of starting a horizontal scroll drag.
+      if (event.button !== 1) return;
+      if (!(event.target as Element).closest("[data-tab-id]")) return;
+      event.preventDefault();
     }, { signal });
     tabs.addEventListener("auxclick", (event) => {
       if (event.button !== 1) return;
@@ -2512,6 +3121,20 @@ class CodeView {
     }, { signal });
 
     document.addEventListener("keydown", (event) => this.handleGlobalKeyboard(event), { signal, capture: true });
+    document.addEventListener("click", (event) => this.handleReferencePeekClick(event), { signal, capture: true });
+    document.addEventListener("keyup", (event) => {
+      if (event.key === "Control" || event.key === "Meta") this.finishMruCycle();
+    }, { signal });
+    window.addEventListener("blur", () => this.finishMruCycle(), { signal });
+    document.addEventListener("wheel", (event) => {
+      if (!event.ctrlKey) return;
+      const target = event.target as Element | null;
+      const inEditor = Boolean(target?.closest && target.closest("[data-monaco-host], [data-monaco-diff-host]"));
+      if (!inEditor) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.setEditorFontSize(this.editorFontSize + (event.deltaY < 0 ? 1 : -1));
+    }, { signal, capture: true, passive: false });
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") void this.persistNow(); }, { signal });
     window.addEventListener("beforeunload", (event) => {
       void this.persistNow();
@@ -2619,8 +3242,12 @@ class CodeView {
 
   private handleGlobalKeyboard(event: KeyboardEvent): void {
     if (document.querySelector(".code-modal-overlay, .code-picker-overlay")) return;
+    if (this.handleReferencePeekKeyboard(event)) return;
     if (event.key === "Escape" && this.root.querySelector("[data-chat-mention-picker]") && document.activeElement?.closest(".code-chat-surface")) return;
     if (event.key === "Escape" && this.codeChatOpen) {
+      // When a file search/replace is active, Escape closes the search first;
+      // only fall through to closing the code chat once the search is dismissed.
+      if (this.searchIsActive()) return;
       event.preventDefault();
       this.setCodeChatOpen(false, true);
       return;
@@ -2643,12 +3270,21 @@ class CodeView {
     const selectionIsEditable = activeTab?.kind === "file" || activeTab?.diff?.editable === true;
     const shouldHandleTab = (key === "tab" || event.code === "Tab")
       && editorHasTextFocus && selectionIsEditable && (event.shiftKey || hasMultilineSelection);
-    if (activeEditor && !modifier && !event.altKey && shouldHandleTab) {
+    if (!modifier && event.altKey && !event.shiftKey && key === "arrowleft") {
+      event.preventDefault();
+      event.stopPropagation();
+      window.history.back();
+    } else if (!modifier && event.altKey && !event.shiftKey && key === "arrowright") {
+      event.preventDefault();
+      event.stopPropagation();
+      window.history.forward();
+    } else if (activeEditor && !modifier && !event.altKey && shouldHandleTab) {
       event.preventDefault();
       event.stopPropagation();
       activeEditor.trigger("echo", event.shiftKey ? "outdent" : "tab", null);
-    }    else if (modifier && event.shiftKey && key === "a") { event.preventDefault(); event.stopPropagation(); this.setCodeChatOpen(!this.codeChatOpen); }
+    } else if (modifier && event.shiftKey && key === "a") { event.preventDefault(); event.stopPropagation(); this.setCodeChatOpen(!this.codeChatOpen); }
     else if (modifier && event.shiftKey && key === "f") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(); }
+    else if (modifier && !event.shiftKey && key === "f" && activeEditor?.getModel()) { event.preventDefault(); event.stopPropagation(); this.showEditorFind(); }
     else if (modifier && event.shiftKey && key === "o") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSymbols(); }
     else if (modifier && event.shiftKey && key === "f12" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.peekImplementation", null); }
     else if (modifier && !event.shiftKey && key === "f12" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.goToImplementation", null); }
@@ -2660,15 +3296,15 @@ class CodeView {
     else if (modifier && event.shiftKey && key === "s") { event.preventDefault(); event.stopPropagation(); void this.saveAsActive(); }
     else if (modifier && key === "p") { event.preventDefault(); event.stopPropagation(); this.showQuickOpen(); }
     else if (modifier && key === "s") { event.preventDefault(); event.stopPropagation(); void this.saveTab(); }
+    else if (modifier && !event.shiftKey && key === "e") { event.preventDefault(); event.stopPropagation(); this.setCodeChatOpen(!this.codeChatOpen); }
     else if (modifier && key === "w") { const tab = this.activeTab(); if (tab) { event.preventDefault(); event.stopPropagation(); void this.closeTab(tab); } }
     else if (modifier && key === "n") { event.preventDefault(); event.stopPropagation(); this.newUntitled(); }
     else if (modifier && key === "b") { event.preventDefault(); event.stopPropagation(); this.setExplorerCollapsed(!this.explorerCollapsed); }
+    else if (modifier && !event.shiftKey && key === "d" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.duplicateSelection", null); }
     else if (modifier && key === "tab") {
       event.preventDefault();
-      const index = this.tabs.findIndex((tab) => tab.id === this.activeTabId);
-      const direction = event.shiftKey ? -1 : 1;
-      const next = this.tabs[(index + direction + this.tabs.length) % this.tabs.length];
-      if (next) this.activateTab(next.id);
+      event.stopPropagation();
+      this.cycleCodeTabs(event.shiftKey);
     } else if (event.key === "F2" && this.treeScroller.contains(document.activeElement)) {
       const node = this.nodes.get(this.selectedTreeKey || "");
       if (node) { event.preventDefault(); void this.beginRename(node); }
@@ -2679,6 +3315,85 @@ class CodeView {
       event.preventDefault();
       this.searchView?.navigateResult(event.shiftKey ? -1 : 1);
     }
+  }
+
+  private referencePeekContext(target: EventTarget | null): {
+    editor: MonacoEditor.ICodeEditor;
+    tree: HTMLElement;
+    match: HTMLElement | null;
+  } | null {
+    if (!(target instanceof Element)) return null;
+    const tree = target.closest<HTMLElement>(".reference-zone-widget .ref-tree");
+    if (!tree) return null;
+    const editors = [
+      this.editor,
+      this.diffEditor.getOriginalEditor(),
+      this.diffEditor.getModifiedEditor(),
+    ];
+    const editor = editors.find((candidate) => candidate.getDomNode()?.contains(tree));
+    if (!editor) return null;
+    return {
+      editor,
+      tree,
+      match: tree.querySelector<HTMLElement>(".monaco-list-row.focused .referenceMatch"),
+    };
+  }
+
+  private handleReferencePeekKeyboard(event: KeyboardEvent): boolean {
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return false;
+    const context = this.referencePeekContext(event.target);
+    if (!context) return false;
+    if (event.key === "Enter" && context.match) {
+      event.preventDefault();
+      event.stopPropagation();
+      context.editor.trigger("echo", "openReference", null);
+      return true;
+    }
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      requestAnimationFrame(() => {
+        if (this.abort.signal.aborted || !context.tree.isConnected) return;
+        this.referencePeekContext(context.tree)?.match?.click();
+      });
+    }
+    return false;
+  }
+
+  private handleReferencePeekClick(event: MouseEvent): void {
+    if (event.button !== 0 || event.detail !== 2 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    const context = this.referencePeekContext(event.target);
+    if (!context?.match || !context.match.contains(event.target as Node)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    context.editor.trigger("echo", "openReference", null);
+  }
+
+  /**
+   * True while a file search/replace is currently active: either the workspace
+   * search sidebar input is focused, or Monaco's in-editor find/replace widget
+   * is visible. Used so Escape closes the active search before falling back to
+   * closing the code chat.
+   */
+  private searchIsActive(): boolean {
+    if (this.activeSidebar === "search" && document.activeElement instanceof HTMLInputElement) return true;
+    const editor = this.activeCodeEditor();
+    if (!editor) return false;
+    const findController = editor.getContribution<MonacoEditor.IEditorContribution & { getState(): { isRevealed: boolean } }>("editor.contrib.findController");
+    return findController?.getState().isRevealed === true;
+  }
+
+  private cycleCodeTabs(reverse: boolean): void {
+    if (this.tabs.length <= 1) return;
+    if (!this.mruCycle) {
+      this.mruCycle = beginMruCycle(
+        this.mruTabIds,
+        this.activeTabId,
+        this.tabs.map((tab) => tab.id),
+      );
+    }
+    const { nextId, state } = nextMruCycle(this.mruCycle, reverse);
+    this.mruCycle = state;
+    if (nextId) void this.recordCodeNavigation(() => this.activateTab(nextId, true, false));
+    this.renderMruSwitcher();
   }
 
   private installResizer(): void {
@@ -2777,6 +3492,7 @@ class CodeView {
         onClose: () => this.setCodeChatOpen(false, true),
         beforeSend: () => this.prepareEditorContext(),
         onActivateReference: (reference) => this.activateChatReference(reference),
+        onActivateHistoricalResource: (resource) => this.activateHistoricalChatResource(resource),
         onStreamingChange: (streaming) => {
           toggle.classList.toggle("is-streaming", streaming);
           const action = this.codeChatOpen ? "Close code assistant" : "Open code assistant";
@@ -2784,11 +3500,12 @@ class CodeView {
         },
         expectedChatId: this.completionTarget?.chatId,
         onExpectedChatResolved: (found) => {
-          if (!found) toast("That completed Code Chat is no longer available.", { sticky: true });
+          if (!found) toast("That Code Chat is no longer available.", { sticky: true });
           this.completionTarget = null;
           window.history.replaceState(window.history.state, "", codeRouteHash(this.activeSidebar));
         },
       });
+      this.updateCodeChatSelectionNotice();
     }
     this.codeChatOpen = open;
     shell.classList.toggle("is-code-chat-open", open);
@@ -2840,13 +3557,81 @@ class CodeView {
 
   private async activateChatReference(reference: ChatReference): Promise<void> {
     if (reference.kind === "file") {
-      await this.openFile(reference.ref, true);
+      await this.recordCodeNavigation(() => this.openFile(reference.ref, true));
       return;
     }
     this.setSidebar("explorer");
     await this.expandTo(reference.ref);
     this.selectedTreeKey = refKey(reference.ref);
     this.renderTree();
+  }
+
+  private async activateHistoricalChatResource(resource: HistoricalChatResource): Promise<void> {
+    if (resource.kind === "directory") {
+      if (!resource.ref) return;
+      await this.activateChatReference({
+        workspaceId: this.workspace?.id || "", ref: resource.ref, kind: "directory",
+        referencePath: resource.referencePath || resource.label, label: resource.label,
+      });
+      return;
+    }
+    await this.recordCodeNavigation(async () => {
+      let tab: OpenTab | undefined;
+      if (resource.kind === "diff") {
+        const diff = resource.diff;
+        const scope = diff?.scope;
+        if (!this.workspace || !diff?.repositoryId || !diff.path ||
+          (scope !== "staged" && scope !== "unstaged" && scope !== "commit" && scope !== "stash")) {
+          toast("This historical diff no longer has enough information to reopen it.");
+          return;
+        }
+        try {
+          const repositories = await listGitRepositories(this.workspace.id);
+          const repository = repositories.repositories.find((candidate) => candidate.id === diff.repositoryId);
+          if (!repository) {
+            toast("The repository for this historical diff is no longer available.");
+            return;
+          }
+          await this.openGitDiff(repository, {
+            path: diff.path, oldPath: diff.oldPath, ref: resource.ref,
+          }, scope, diff.reviewRef, true);
+          tab = this.activeTab();
+        } catch (error) {
+          toast(error instanceof Error ? error.message : String(error), { sticky: true });
+          return;
+        }
+      } else if (resource.ref) {
+        if (!(await this.openFile(resource.ref, true, false))) return;
+        tab = this.tabs.find((candidate) => {
+          const ref = this.worktreeRef(candidate);
+          return ref && refKey(ref) === refKey(resource.ref!);
+        });
+        if (tab) this.activateTab(tab.id, false);
+      } else {
+        tab = this.tabs.find((candidate) => candidate.kind === "file" && !candidate.ref && !candidate.diff && candidate.title === resource.label);
+        if (!tab) {
+          toast(`${resource.label} is no longer open.`);
+          return;
+        }
+        this.activateTab(tab.id, false);
+      }
+      if (!tab || tab.kind === "media") return;
+      const side = tab.kind === "diff" ? resource.selection?.side || "modified" : undefined;
+      const editor = tab.kind === "diff" && side === "original"
+        ? this.diffEditor.getOriginalEditor()
+        : tab.kind === "diff" ? this.diffEditor.getModifiedEditor() : this.editor;
+      const model = editor.getModel();
+      if (model && resource.selection) {
+        const selection = model.validateRange(new monaco.Range(
+          resource.selection.startLine, resource.selection.startColumn,
+          resource.selection.endLine, resource.selection.endColumn,
+        ));
+        editor.setSelection(selection);
+        editor.revealRangeInCenter(selection);
+        if (tab.kind === "diff" && side) this.setActiveDiffSelectionSide(side);
+      }
+      editor.focus();
+    });
   }
 
   private async prepareEditorContext(): Promise<EditorContextPayload | false> {
@@ -2862,7 +3647,41 @@ class CodeView {
     return this.buildEditorContext();
   }
 
+  private setActiveDiffSelectionSide(side: "original" | "modified"): void {
+    const tab = this.activeTab();
+    if (tab?.kind === "diff") this.diffSelectionSides.set(tab.id, side);
+    this.updateCodeChatSelectionNotice();
+  }
+
+  private activeEditorSelections(): EditorContextSelection[] {
+    const tab = this.activeTab();
+    if (!tab || tab.kind === "media") return [];
+    const side = tab.kind === "diff" ? this.diffSelectionSides.get(tab.id) || "modified" : undefined;
+    const editor = tab.kind === "diff"
+      ? side === "original" ? this.diffEditor.getOriginalEditor() : this.diffEditor.getModifiedEditor()
+      : this.editor;
+    const model = editor.getModel();
+    if (!model) return [];
+    return (editor.getSelections() || [])
+      .filter((selection) => !selection.isEmpty())
+      .map((selection) => ({
+        ...(side ? { side } : {}),
+        startLine: selection.startLineNumber,
+        startColumn: selection.startColumn,
+        endLine: selection.endLineNumber,
+        endColumn: selection.endColumn,
+        text: model.getValueInRange(selection),
+      }));
+  }
+
+  private updateCodeChatSelectionNotice(): void {
+    const tab = this.activeTab();
+    const selections = this.activeEditorSelections();
+    this.codeChatSurface?.setContextNotice(tab ? formatCodeChatSelectionNotice(tab.title, selections) : null);
+  }
+
   private buildEditorContext(): EditorContextPayload {
+    const activeSelections = this.activeEditorSelections();
     return buildCodeChatEditorContext(this.tabs.map((tab) => {
       const ref = tab.kind === "diff" ? tab.diff?.fileRef || tab.ref || undefined : tab.ref || undefined;
       const root = ref ? this.roots.find((candidate) => candidate.id === ref.rootId) : undefined;
@@ -2874,11 +3693,14 @@ class CodeView {
         ref,
         reference: ref ? `${root?.referenceLabel || root?.label || "workspace"}${ref.path ? `/${ref.path}` : ""}` : undefined,
         content: !ref && tab.kind !== "diff" ? tab.model.getValue() : undefined,
+        selections: tab.id === this.activeTabId ? activeSelections : undefined,
         diff: tab.diff ? {
+          repositoryId: tab.diff.repository.id,
           repository: tab.diff.repository.label,
           scope: tab.diff.scope,
           reviewRef: tab.diff.reviewRef,
           oldPath: tab.diff.oldPath,
+          path: tab.hostPath,
         } : undefined,
       };
     }), this.activeTabId);
@@ -3227,8 +4049,11 @@ class CodeView {
 
   dispose(): void {
     if (this.abort.signal.aborted) return;
+    this.finishMruCycle();
     detachTerminalDock(this.root.querySelector<HTMLElement>("[data-region=terminal]"));
     void this.persistNow();
+    this.codeNavigation?.dispose(this.captureNavigationLocation());
+    this.codeNavigation = null;
     this.closeWorkspaceDropdown?.();
     this.closeWorkspaceDropdown = null;
     this.closeAddWorkspaceModal?.();
@@ -3237,6 +4062,8 @@ class CodeView {
     this.codeChatSurface = null;
     this.abort.abort();
     window.clearTimeout(this.persistTimer);
+    window.clearTimeout(this.treeDropExpandTimer);
+    if (this.treeDragScrollFrame) cancelAnimationFrame(this.treeDragScrollFrame);
     window.clearInterval(this.pollTimer);
     closeContextMenu();
     this.editorOpener?.dispose();

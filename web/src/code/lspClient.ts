@@ -2,7 +2,7 @@ import type * as Monaco from "monaco-editor";
 import { monaco } from "./language";
 import { profileMatchesDocument } from "./languageMap";
 import type {
-  LSPProfile, LSPRange, LSPStatus, LSPWorkspaceEdit, WorkspaceLSPConfig, WorkspaceLSPResponse,
+  LSPCodeAction, LSPCommand, LSPProfile, LSPRange, LSPStatus, LSPWorkspaceEdit, WorkspaceLSPConfig, WorkspaceLSPResponse,
 } from "./lspTypes";
 import { registerLSPProviders } from "./lspProviders";
 
@@ -23,6 +23,12 @@ type TrackedModel = {
 };
 
 export type LSPDocumentState = "none" | "connecting" | "starting" | "owned" | "denied" | "failed";
+export type LSPDiagnosticSeverity = "error" | "warning";
+
+type TrackedDiagnostic = {
+  uri: string;
+  severity: LSPDiagnosticSeverity;
+};
 
 export type LSPClientOptions = {
   workspaceId: string;
@@ -30,8 +36,10 @@ export type LSPClientOptions = {
   prepareWorkspaceEdit(edit: LSPWorkspaceEdit): Promise<Monaco.languages.WorkspaceEdit>;
   applyWorkspaceEdit(edit: LSPWorkspaceEdit): Promise<boolean>;
   isURIAllowed(uri: string): boolean;
+  diagnosticKey(uri: string): string;
   prepareURI(uri: string): Promise<boolean>;
   onDocumentState(state: LSPDocumentState, status?: LSPStatus): void;
+  onDiagnosticsChange(uri: string, severity: LSPDiagnosticSeverity | null): void;
   onMessage(message: string, sticky?: boolean): void;
 };
 
@@ -48,6 +56,7 @@ export class EchoLSPClient {
   private profiles: LSPProfile[];
   private config: WorkspaceLSPConfig;
   private statuses = new Map<string, LSPStatus>();
+  private diagnostics = new Map<string, Map<string, TrackedDiagnostic>>();
   private providerDisposables: Monaco.IDisposable[] = [];
   private commandDisposable: Monaco.IDisposable | null = null;
 
@@ -240,14 +249,61 @@ export class EchoLSPClient {
     return true;
   }
 
+  async organizeImports(model: Monaco.editor.ITextModel, timeoutMS = 15000): Promise<boolean> {
+    const profile = this.profileForModel(model);
+    if (!profile || !this.owns(model)) throw new Error("Language server import organization is unavailable for this document");
+    if (!this.supports(profile.id, "codeActionProvider")) return false;
+    const actions = await this.requestForModel<Array<LSPCodeAction | LSPCommand> | null>(model, "textDocument/codeAction", {
+      textDocument: { uri: model.uri.toString() },
+      range: toLSPRange(model.getFullModelRange()),
+      context: { diagnostics: [], only: ["source.organizeImports"], triggerKind: 2 },
+    }, undefined, timeoutMS);
+    for (const candidate of actions || []) {
+      if (isLSPCommand(candidate)) {
+        await this.request(profile.id, "workspace/executeCommand", {
+          command: candidate.command, arguments: candidate.arguments || [],
+        }, undefined, timeoutMS);
+        return true;
+      }
+      let action = candidate;
+      if (action.disabled) continue;
+      if (!action.edit && !action.command && action.data !== undefined && this.supports(profile.id, "codeActionProvider.resolveProvider")) {
+        action = await this.request<LSPCodeAction>(profile.id, "codeAction/resolve", action, undefined, timeoutMS);
+        if (action.disabled) continue;
+      }
+      let applied = false;
+      if (action.edit) {
+        if (!(await this.options.applyWorkspaceEdit(action.edit))) throw new Error("Language server import edit could not be applied");
+        applied = true;
+      }
+      if (action.command) {
+        await this.request(profile.id, "workspace/executeCommand", {
+          command: action.command.command, arguments: action.command.arguments || [],
+        }, undefined, timeoutMS);
+        applied = true;
+      }
+      if (applied) return true;
+    }
+    return false;
+  }
+
   async formatBeforeSave(model: Monaco.editor.ITextModel): Promise<void> {
     if (this.config.formatOnSave !== true) return;
     const timeout = this.config.formatOnSaveTimeoutMs || 3000;
+    const deadline = Date.now() + timeout;
+    const remaining = () => Math.max(1, deadline - Date.now());
+    const failures: string[] = [];
     try {
-      await this.format(model, undefined, timeout);
+      await this.organizeImports(model, remaining());
     } catch (error) {
-      this.options.onMessage(`Saved without LSP formatting: ${error instanceof Error ? error.message : String(error)}`);
+      failures.push(`import organization: ${error instanceof Error ? error.message : String(error)}`);
     }
+    try {
+      await this.format(model, undefined, remaining());
+    } catch (error) {
+      failures.push(`formatting: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (failures.length) this.options.onMessage(`Saved without all LSP save actions: ${failures.join("; ")}`);
   }
 
   prepareWorkspaceEdit(edit: LSPWorkspaceEdit): Promise<Monaco.languages.WorkspaceEdit> {
@@ -300,6 +356,7 @@ export class EchoLSPClient {
     switch (message.type) {
       case "lsp_ready":
       case "lsp_configuration":
+        this.clearAllDiagnostics();
         this.config = message.config || {};
         this.profiles = message.profiles || [];
         this.statuses.clear();
@@ -335,6 +392,7 @@ export class EchoLSPClient {
         if (tracked && tracked.profileId === message.profileId) {
           tracked.leased = false;
           tracked.denied = true;
+          this.clearDocumentDiagnostics(tracked.profileId, message.uri);
           if (this.activeURI === message.uri) this.options.onDocumentState("denied", this.statuses.get(tracked.profileId));
         }
         break;
@@ -344,6 +402,7 @@ export class EchoLSPClient {
         if (tracked && tracked.profileId === message.profileId) {
           tracked.leased = false;
           tracked.denied = true;
+          this.clearDocumentDiagnostics(tracked.profileId, message.uri);
           if (this.activeURI === message.uri) {
             this.options.onDocumentState("denied", this.statuses.get(tracked.profileId));
             this.options.onMessage("Another browser took over language-server synchronization for this file.");
@@ -428,9 +487,12 @@ export class EchoLSPClient {
   private handleNotification(profileId: string, method: string, params: any): void {
     if (method !== "textDocument/publishDiagnostics") return;
     const uri = String(params?.uri || "");
+    if (!uri) return;
+    const diagnostics = Array.isArray(params?.diagnostics) ? params.diagnostics : [];
+    this.setDiagnosticSeverity(profileId, uri, diagnosticDecorationSeverity(diagnostics));
     const model = monaco.editor.getModel(monaco.Uri.parse(uri));
     if (!model) return;
-    const markers: Monaco.editor.IMarkerData[] = (params?.diagnostics || []).map((diagnostic: any) => ({
+    const markers: Monaco.editor.IMarkerData[] = diagnostics.map((diagnostic: any) => ({
       ...markerRange(diagnostic.range),
       severity: diagnosticSeverity(diagnostic.severity),
       message: String(diagnostic.message || "Language server diagnostic"),
@@ -470,11 +532,15 @@ export class EchoLSPClient {
       const profile = this.profileForDocument(tracked.model);
       if (!profile) {
         this.send({ type: "lsp_close", profileId: tracked.profileId, uri });
+        this.clearDocumentDiagnostics(tracked.profileId, uri);
         tracked.change.dispose();
         tracked.dispose.dispose();
         this.tracked.delete(uri);
       } else {
-        if (profile.id !== tracked.profileId) this.send({ type: "lsp_close", profileId: tracked.profileId, uri });
+        if (profile.id !== tracked.profileId) {
+          this.send({ type: "lsp_close", profileId: tracked.profileId, uri });
+          this.clearDocumentDiagnostics(tracked.profileId, uri);
+        }
         tracked.profileId = profile.id;
         tracked.leased = false;
         tracked.denied = false;
@@ -492,11 +558,54 @@ export class EchoLSPClient {
   }
 
   private clearDiagnostics(profileId: string): void {
+    for (const diagnostic of [...(this.diagnostics.get(profileId)?.values() || [])]) {
+      this.setDiagnosticSeverity(profileId, diagnostic.uri, null);
+    }
     for (const model of monaco.editor.getModels()) monaco.editor.setModelMarkers(model, markerOwner(profileId), []);
   }
 
   private clearAllDiagnostics(): void {
-    for (const profile of this.profiles) this.clearDiagnostics(profile.id);
+    const profileIDs = new Set([...this.profiles.map((profile) => profile.id), ...this.diagnostics.keys()]);
+    for (const profileID of profileIDs) this.clearDiagnostics(profileID);
+  }
+
+  private clearDocumentDiagnostics(profileId: string, uri: string): void {
+    this.setDiagnosticSeverity(profileId, uri, null);
+    let model: Monaco.editor.ITextModel | null = null;
+    try {
+      model = monaco.editor.getModel(monaco.Uri.parse(uri));
+    } catch {
+      return;
+    }
+    if (model) monaco.editor.setModelMarkers(model, markerOwner(profileId), []);
+  }
+
+  private setDiagnosticSeverity(profileId: string, uri: string, severity: LSPDiagnosticSeverity | null): void {
+    const key = this.options.diagnosticKey(uri) || uri;
+    const previous = this.diagnosticSeverityForKey(key);
+    let profileDiagnostics = this.diagnostics.get(profileId);
+    if (severity) {
+      if (!profileDiagnostics) {
+        profileDiagnostics = new Map();
+        this.diagnostics.set(profileId, profileDiagnostics);
+      }
+      profileDiagnostics.set(key, { uri, severity });
+    } else if (profileDiagnostics) {
+      profileDiagnostics.delete(key);
+      if (!profileDiagnostics.size) this.diagnostics.delete(profileId);
+    }
+    const next = this.diagnosticSeverityForKey(key);
+    if (next !== previous) this.options.onDiagnosticsChange(uri, next);
+  }
+
+  private diagnosticSeverityForKey(key: string): LSPDiagnosticSeverity | null {
+    let warning = false;
+    for (const diagnostics of this.diagnostics.values()) {
+      const severity = diagnostics.get(key)?.severity;
+      if (severity === "error") return "error";
+      if (severity === "warning") warning = true;
+    }
+    return warning ? "warning" : null;
   }
 
   private send(message: unknown): boolean {
@@ -521,6 +630,10 @@ export function fromLSPRange(range: LSPRange): Monaco.Range {
   return new monaco.Range(range.start.line + 1, range.start.character + 1, range.end.line + 1, range.end.character + 1);
 }
 
+function isLSPCommand(value: LSPCodeAction | LSPCommand): value is LSPCommand {
+  return typeof value.command === "string";
+}
+
 function markerRange(range: LSPRange): Pick<Monaco.editor.IMarkerData, "startLineNumber" | "startColumn" | "endLineNumber" | "endColumn"> {
   return {
     startLineNumber: range?.start?.line + 1 || 1,
@@ -535,6 +648,15 @@ function diagnosticSeverity(value: number | undefined): Monaco.MarkerSeverity {
   if (value === 2) return monaco.MarkerSeverity.Warning;
   if (value === 3) return monaco.MarkerSeverity.Info;
   return monaco.MarkerSeverity.Hint;
+}
+
+function diagnosticDecorationSeverity(diagnostics: Array<{ severity?: number }>): LSPDiagnosticSeverity | null {
+  let warning = false;
+  for (const diagnostic of diagnostics) {
+    if (diagnostic?.severity === 1) return "error";
+    if (diagnostic?.severity === 2) warning = true;
+  }
+  return warning ? "warning" : null;
 }
 
 function markerOwner(profileId: string): string {

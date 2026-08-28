@@ -522,9 +522,12 @@ func TestChatRoutesToSelectedModel(t *testing.T) {
 	}
 	s.initLLM()
 
-	// Inject a capturing streamer so we can inspect the routed model.
+	// Inject distinct streamers so the test proves both the request model and
+	// the owning endpoint client are selected.
+	defaultCapturing := &capturingStreamer{}
 	capturing := &capturingStreamer{}
-	s.llm = capturing
+	s.llm = defaultCapturing
+	s.endpointLLMs["second"] = capturing
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -559,6 +562,9 @@ func TestChatRoutesToSelectedModel(t *testing.T) {
 
 	if got := capturing.lastRequest().Model; got != "model-b" {
 		t.Fatalf("expected routed model model-b, got %q", got)
+	}
+	if got := defaultCapturing.lastRequest().Model; got != "" {
+		t.Fatalf("selected model was sent through the default endpoint client: %q", got)
 	}
 }
 

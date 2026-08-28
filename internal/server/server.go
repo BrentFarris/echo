@@ -25,6 +25,7 @@ import (
 	"github.com/brent/echo/internal/lspconfig"
 	"github.com/brent/echo/internal/plugins"
 	"github.com/brent/echo/internal/rebuild"
+	"github.com/brent/echo/internal/sandbox"
 	"github.com/brent/echo/internal/settings"
 	terminalruntime "github.com/brent/echo/internal/terminal"
 	"github.com/brent/echo/internal/tools"
@@ -54,6 +55,7 @@ type Server struct {
 	terminal         *terminalruntime.Service
 	lsp              *lspruntime.Service
 	lspProfiles      *lspconfig.Store
+	sandbox          *sandbox.Manager
 	auth             *auth.Manager
 	authDisabled     bool
 	loginLimiter     *loginRateLimiter
@@ -68,6 +70,7 @@ type Server struct {
 	visionLLM        chatStreamer
 	visionSettings   llm.Settings
 	visionSeparate   bool
+	endpointLLMs     map[string]chatStreamer
 	skillsMu         sync.Mutex
 	skills           map[string]*workspaceskills.Service
 	rebuilder        rebuildCoordinator
@@ -153,14 +156,31 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 	s.data = appdata.NewStore(settingsPath)
 	s.store = settings.NewStoreWithData(s.data)
 	s.workspaces = workspaces.NewManagerWithData(s.data)
+	dockerEngine, dockerErr := sandbox.NewDockerEngine()
+	var sandboxEngine sandbox.Engine = dockerEngine
+	if dockerErr != nil {
+		sandboxEngine = sandbox.NewUnavailableEngine(dockerErr)
+	}
+	s.sandbox = sandbox.NewManager(
+		s.workspaces,
+		sandbox.StateRootForSettings(settingsPath),
+		sandbox.InstallationID(settingsPath),
+		sandboxEngine,
+	)
+	s.sandbox.SetNotifier(func(event sandbox.Event) {
+		s.hub.BroadcastWorkspaceSandbox(event.WorkspaceID, event)
+	})
 	s.lspProfiles = lspconfig.NewStore(s.data)
 	s.lsp = lspruntime.NewService(s.lspProfiles, s.workspaces)
+	s.lsp.SetSandbox(s.sandbox)
 	s.terminal = terminalruntime.New(s.workspaces, s.data)
+	s.terminal.SetSandbox(s.sandbox)
 	s.terminal.SetNotifier(func(event terminalruntime.Event) {
 		s.hub.BroadcastWorkspaceTerminal(event.WorkspaceID, event)
 	})
 	s.fs = workspacefs.New(s.workspaces, settingsPath)
 	s.git = gitservice.New(s.workspaces, s.fs)
+	s.git.SetSandbox(s.sandbox)
 	s.git.SetNotifier(func(event gitservice.Event) {
 		s.hub.BroadcastWorkspaceGit(event.WorkspaceID, event)
 	})
@@ -218,6 +238,16 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 	s.modes = agentmodes.NewManager()
 	s.sessions = newChatSessionManager(s)
 	s.initLLM()
+	// Enabled sandbox starts wait on Manager's reconciliation barrier. Running
+	// this in the background keeps Docker-free, non-sandbox workspaces on the
+	// existing fast startup path without allowing a first-start race.
+	go func() {
+		reconcileContext, reconcileCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer reconcileCancel()
+		if err := s.sandbox.Reconcile(reconcileContext); err != nil {
+			logf("sandbox startup reconciliation: %v", err)
+		}
+	}()
 	s.lsp.StartActiveWorkspace()
 	s.httpServer = &http.Server{
 		Addr:              addr,
@@ -246,6 +276,7 @@ func (s *Server) initLLM() {
 	s.llmCompleter = nil
 	s.researchLLM = nil
 	s.visionLLM = nil
+	s.endpointLLMs = make(map[string]chatStreamer, len(cfg.Endpoints))
 	s.researchSeparate = cfg.EndpointSelection.Research != cfg.EndpointSelection.Chat
 	s.visionSeparate = cfg.EndpointSelection.Vision != cfg.EndpointSelection.Chat
 	client, err := llm.NewClient(s.llmSettings)
@@ -255,26 +286,43 @@ func (s *Server) initLLM() {
 	}
 	s.llm = client
 	s.llmCompleter = client
+	s.endpointLLMs[cfg.EndpointSelection.Chat] = client
 	if !s.researchSeparate {
 		s.researchLLM = client
+		s.endpointLLMs[cfg.EndpointSelection.Research] = client
 	} else {
 		researchClient, researchErr := llm.NewClient(s.researchSettings)
 		if researchErr != nil {
 			logf("init research llm client: %v", researchErr)
 		} else {
 			s.researchLLM = researchClient
+			s.endpointLLMs[cfg.EndpointSelection.Research] = researchClient
 		}
 	}
 	if !s.visionSeparate {
 		s.visionLLM = client
-		return
+		s.endpointLLMs[cfg.EndpointSelection.Vision] = client
+	} else {
+		visionClient, visionErr := llm.NewClient(s.visionSettings)
+		if visionErr != nil {
+			logf("init vision llm client: %v", visionErr)
+		} else {
+			s.visionLLM = visionClient
+			s.endpointLLMs[cfg.EndpointSelection.Vision] = visionClient
+		}
 	}
-	visionClient, visionErr := llm.NewClient(s.visionSettings)
-	if visionErr != nil {
-		logf("init vision llm client: %v", visionErr)
-		return
+	for _, endpoint := range cfg.Endpoints {
+		if s.endpointLLMs[endpoint.ID] != nil {
+			continue
+		}
+		endpointSettings := endpoint.ApplyToSettings(cfg)
+		endpointClient, endpointErr := llm.NewClient(endpointSettings)
+		if endpointErr != nil {
+			logf("init endpoint %q llm client: %v", endpoint.Name, endpointErr)
+			continue
+		}
+		s.endpointLLMs[endpoint.ID] = endpointClient
 	}
-	s.visionLLM = visionClient
 }
 
 func (s *Server) researchChat() (llm.Settings, chatStreamer) {
@@ -299,6 +347,32 @@ func (s *Server) settingsForModel(model string) (llm.Settings, bool) {
 		}
 	}
 	return llm.Settings{}, false
+}
+
+// streamerForSettings returns the initialized client for the endpoint that
+// supplied settings. Model selection changes both request generation settings
+// and the destination client; using the default Chat client here would send a
+// selected model name to the wrong provider.
+func (s *Server) streamerForSettings(settings llm.Settings) chatStreamer {
+	for _, endpoint := range s.settings.Endpoints {
+		if strings.TrimSpace(endpoint.Endpoint) != strings.TrimSpace(settings.Endpoint) ||
+			strings.TrimSpace(endpoint.Model) != strings.TrimSpace(settings.Model) {
+			continue
+		}
+		if endpoint.ID == s.settings.EndpointSelection.Chat && s.llm != nil {
+			return s.llm
+		}
+		if endpoint.ID == s.settings.EndpointSelection.Research && s.researchLLM != nil {
+			return s.researchLLM
+		}
+		if endpoint.ID == s.settings.EndpointSelection.Vision && s.visionLLM != nil {
+			return s.visionLLM
+		}
+		if streamer := s.endpointLLMs[endpoint.ID]; streamer != nil {
+			return streamer
+		}
+	}
+	return nil
 }
 
 // routes builds the HTTP handler tree for the server.
@@ -344,11 +418,24 @@ func (s *Server) routes() http.Handler {
 
 	// Workspace endpoints.
 	mux.HandleFunc("GET /api/workspaces", s.handleGetWorkspaces)
+	mux.HandleFunc("GET /api/chats", s.handleGetChats)
 	mux.HandleFunc("POST /api/workspaces", s.handleCreateWorkspace)
 	mux.HandleFunc("PATCH /api/workspaces/{id}", s.handleUpdateWorkspace)
 	mux.HandleFunc("DELETE /api/workspaces/{id}", s.handleDeleteWorkspace)
 	mux.HandleFunc("PUT /api/workspaces/active", s.handleSetActiveWorkspace)
 	mux.HandleFunc("GET /api/workspaces/{id}/icon", s.handleGetWorkspaceIcon)
+	mux.HandleFunc("GET /api/sandbox/host", s.handleSandboxHost)
+	mux.HandleFunc("GET /api/workspaces/{id}/sandbox", s.handleGetWorkspaceSandbox)
+	mux.HandleFunc("PUT /api/workspaces/{id}/sandbox", s.handlePutWorkspaceSandbox)
+	mux.HandleFunc("DELETE /api/workspaces/{id}/sandbox", s.handleDeleteWorkspaceSandbox)
+	mux.HandleFunc("POST /api/workspaces/{id}/sandbox/actions", s.handleWorkspaceSandboxAction)
+	mux.HandleFunc("GET /api/workspaces/{id}/sandbox/network-grants", s.handleGetSandboxNetworkGrants)
+	mux.HandleFunc("POST /api/workspaces/{id}/sandbox/network-grants", s.handleCreateSandboxNetworkGrant)
+	mux.HandleFunc("DELETE /api/workspaces/{id}/sandbox/network-grants", s.handleDeleteSandboxNetworkGrant)
+	mux.HandleFunc("POST /api/workspaces/{id}/sandbox/desktop-sessions", s.handleCreateSandboxDesktopSession)
+	mux.HandleFunc("DELETE /api/workspaces/{id}/sandbox/desktop-sessions", s.handleDeleteSandboxDesktopSession)
+	mux.HandleFunc("POST /api/workspaces/{id}/sandbox/desktop-control", s.handleSandboxDesktopControl)
+	mux.HandleFunc("GET /api/workspaces/{id}/sandbox/desktop-ws", s.handleSandboxDesktopWebSocket)
 	mux.HandleFunc("GET /api/workspaces/{id}/fs/roots", s.handleFSRoots)
 	mux.HandleFunc("GET /api/workspaces/{id}/fs/entries", s.handleFSEntries)
 	mux.HandleFunc("POST /api/workspaces/{id}/fs/entries", s.handleFSCreateEntry)
@@ -504,6 +591,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if err := s.terminal.Shutdown(ctx); err != nil && ctx.Err() == nil {
 		logf("terminal shutdown: %v", err)
+	}
+	if err := s.sandbox.Shutdown(ctx); err != nil && ctx.Err() == nil {
+		logf("sandbox shutdown: %v", err)
 	}
 	if s.plugins != nil {
 		if err := s.plugins.Shutdown(ctx); err != nil && ctx.Err() == nil {

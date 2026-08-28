@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+
+	"github.com/brent/echo/internal/llm"
 )
 
 func TestOwnedPluginRegistrationFilteringAndDisposal(t *testing.T) {
@@ -55,5 +57,34 @@ func TestRestrictedModeMustExplicitlyIncludePluginTool(t *testing.T) {
 	}
 	if schema := registry.ResearchLLMSchemaForScopes(allowed); len(schema) != 0 {
 		t.Fatalf("research worker exposed plugin: %#v", schema)
+	}
+}
+
+func TestSandboxGUIToolsRespectGeneralCustomAndPlanModes(t *testing.T) {
+	registry := CloneDefaultRegistry()
+	hasTool := func(schema []llm.Tool, name string) bool {
+		for _, tool := range schema {
+			if tool.Function.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+	if hasTool(registry.ChatLLMSchemaForScopes(nil, ChatSchemaOptions{}), "browser_open") {
+		t.Fatal("GUI tool was exposed without a ready sandbox")
+	}
+	if !hasTool(registry.ChatLLMSchemaForScopes(nil, ChatSchemaOptions{SandboxGUI: true}), "browser_open") {
+		t.Fatal("general mode did not receive sandbox GUI tools")
+	}
+	if hasTool(registry.ChatLLMSchemaForScopes(nil, ChatSchemaOptions{SandboxGUI: true, PlanMode: true}), "browser_open") {
+		t.Fatal("plan mode received sandbox GUI tools")
+	}
+	denied := NewToolScopeChecker([]ToolPermission{{Name: "shell_command"}})
+	if hasTool(registry.ChatLLMSchemaForScopes(denied, ChatSchemaOptions{SandboxGUI: true}), "browser_open") {
+		t.Fatal("custom mode received an unnamed sandbox GUI tool")
+	}
+	allowed := NewToolScopeChecker([]ToolPermission{{Name: "browser_open"}})
+	if !hasTool(registry.ChatLLMSchemaForScopes(allowed, ChatSchemaOptions{SandboxGUI: true}), "browser_open") {
+		t.Fatal("custom mode could not explicitly enable a sandbox GUI tool")
 	}
 }

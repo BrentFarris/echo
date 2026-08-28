@@ -436,6 +436,30 @@ func requireGit(t *testing.T) {
 	}
 }
 
+func TestSanitizeGitOutputDropsLineEndingWarningsButKeepsFailure(t *testing.T) {
+	message := strings.Repeat("warning: in the working copy of 'src/first.go', LF will be replaced by CRLF the next time Git touches it\r\n", 256) + strings.Join([]string{
+		"warning: CRLF will be replaced by LF in src/legacy.go.",
+		"The file will have its original line endings in your working directory.",
+		"warning: a useful warning",
+		"fatal: pathspec 'missing.go' did not match any files",
+	}, "\r\n")
+
+	got := sanitizeGitOutput(message, "/workspace")
+	if strings.Contains(got, "working copy") || strings.Contains(got, "original line endings") {
+		t.Fatalf("line-ending warnings were not removed: %q", got)
+	}
+	if !strings.Contains(got, "warning: a useful warning") || !strings.Contains(got, "fatal: pathspec") {
+		t.Fatalf("actionable Git output was removed: %q", got)
+	}
+}
+
+func TestSanitizeGitOutputUsesFallbackWhenOnlyLineEndingWarningsRemain(t *testing.T) {
+	got := sanitizeGitOutput("warning: in the working copy of 'main.go', LF will be replaced by CRLF the next time Git touches it", "")
+	if got != "Git command failed" {
+		t.Fatalf("unexpected fallback: %q", got)
+	}
+}
+
 func gitTestCommand(t *testing.T, root string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", append([]string{"-C", root}, args...)...)

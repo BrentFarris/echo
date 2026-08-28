@@ -28,6 +28,9 @@ func executeRestart(ctx ExecutionContext, arguments json.RawMessage) (any, error
 	if err := ctx.context().Err(); err != nil {
 		return nil, err
 	}
+	if ctx.UsesSandbox() {
+		return nil, SafeError{Code: "host_tool_blocked", Message: "restart is unavailable in sandbox-enabled workspaces"}
+	}
 
 	workspaceDir := ctx.WorkspacePath
 	if workspaceDir == "" {

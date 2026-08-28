@@ -87,6 +87,40 @@ func TestFilesystemSearchDirectoryOptionAndRootReferenceLabel(t *testing.T) {
 	}
 }
 
+func TestFSMoveEntry(t *testing.T) {
+	server, _ := newTestServer(t)
+	defer server.Shutdown(t.Context())
+	rootPath := t.TempDir()
+	if err := os.Mkdir(filepath.Join(rootPath, "destination"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "move-me.txt"), []byte("move me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := server.workspaces.Create(workspaces.CreateRequest{Name: "Move", MainPath: rootPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots, err := server.fs.Roots(workspace.ID)
+	if err != nil || len(roots) != 1 {
+		t.Fatalf("roots: %#v %v", roots, err)
+	}
+
+	response := doJSONRequest(t, server, http.MethodPatch, "/api/workspaces/"+workspace.ID+"/fs/entry", map[string]any{
+		"ref":               workspacefs.FileRef{RootID: roots[0].ID, Path: "move-me.txt"},
+		"destinationParent": workspacefs.FileRef{RootID: roots[0].ID, Path: "destination"},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("move response: %d %s", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(rootPath, "move-me.txt")); !os.IsNotExist(err) {
+		t.Fatalf("source still exists after API move: %v", err)
+	}
+	if content, err := os.ReadFile(filepath.Join(rootPath, "destination", "move-me.txt")); err != nil || string(content) != "move me\n" {
+		t.Fatalf("moved content: %q %v", content, err)
+	}
+}
+
 func TestFSMediaStreamsPreviewableFiles(t *testing.T) {
 	server, _ := newTestServer(t)
 	defer server.Shutdown(t.Context())

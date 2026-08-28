@@ -59,7 +59,7 @@ func TestChatToolContextCreatesWorkspaceAgentMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := tools.Execute(tab.toolContext(context.Background(), tools.NewToolScopeChecker(nil), nil, nil), "create_agent_mode", json.RawMessage(`{
+	result := tools.Execute(tab.toolContext(context.Background(), "", tools.NewToolScopeChecker(nil), nil, nil), "create_agent_mode", json.RawMessage(`{
 		"name":"Tool-created reviewer",
 		"prompt":"Review changes.",
 		"permissions":{"filesystem_read_text":[]}

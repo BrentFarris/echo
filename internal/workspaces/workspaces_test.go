@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/brent/echo/internal/appdata"
@@ -110,6 +111,91 @@ func TestCreateWritesEchoLayoutAndRegisters(t *testing.T) {
 	}
 	if list[0].MainPath != main {
 		t.Fatalf("unexpected main path: %q", list[0].MainPath)
+	}
+}
+
+func TestSandboxConfigLegacyDefaultsAndExplicitPersistence(t *testing.T) {
+	directory := t.TempDir()
+	main := filepath.Join(directory, "legacy workspace")
+	if err := os.MkdirAll(main, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(filepath.Join(directory, "echo.json"))
+	workspace, err := manager.Create(CreateRequest{Name: "Legacy", MainPath: main})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(main, EchoDirName, "workspace.json")
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(before), `"sandbox"`) {
+		t.Fatal("new/legacy workspace was rewritten with opt-in sandbox policy")
+	}
+	loaded, ok, err := manager.Get(workspace.ID)
+	if err != nil || !ok {
+		t.Fatalf("load workspace: ok=%v err=%v", ok, err)
+	}
+	if loaded.Sandbox != DefaultSandboxConfig() {
+		t.Fatalf("unexpected defaults: %+v", loaded.Sandbox)
+	}
+	afterRead, _ := os.ReadFile(configPath)
+	if string(afterRead) != string(before) {
+		t.Fatal("reading a legacy workspace rewrote workspace.json")
+	}
+
+	want := SandboxConfig{Enabled: true, CPULimit: 8, MemoryMiB: 12288, IdleTimeoutMinutes: 0}
+	updated, err := manager.SetSandboxConfig(workspace.ID, want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Sandbox != want {
+		t.Fatalf("sandbox config = %+v, want %+v", updated.Sandbox, want)
+	}
+	persisted, _ := os.ReadFile(configPath)
+	if !strings.Contains(string(persisted), `"sandbox"`) || !strings.Contains(string(persisted), `"memoryMiB": 12288`) {
+		t.Fatalf("sandbox config was not persisted: %s", persisted)
+	}
+}
+
+func TestNormalizeSandboxConfigBoundaries(t *testing.T) {
+	defaults, err := NormalizeSandboxConfig(SandboxConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaults.CPULimit != 4 || defaults.MemoryMiB != 6144 || defaults.IdleTimeoutMinutes != 0 {
+		t.Fatalf("unexpected normalized explicit values: %+v", defaults)
+	}
+	valid := SandboxConfig{Enabled: true, CPULimit: 16, MemoryMiB: 32768, IdleTimeoutMinutes: 1440}
+	if normalized, err := NormalizeSandboxConfig(valid); err != nil || normalized != valid {
+		t.Fatalf("valid boundary rejected: %+v %v", normalized, err)
+	}
+	for _, invalid := range []SandboxConfig{
+		{CPULimit: 17, MemoryMiB: 6144}, {CPULimit: -1, MemoryMiB: 6144},
+		{CPULimit: 4, MemoryMiB: 4095}, {CPULimit: 4, MemoryMiB: 32769},
+		{CPULimit: 4, MemoryMiB: 6144, IdleTimeoutMinutes: -1}, {CPULimit: 4, MemoryMiB: 6144, IdleTimeoutMinutes: 1441},
+	} {
+		if _, err := NormalizeSandboxConfig(invalid); err == nil {
+			t.Fatalf("invalid config accepted: %+v", invalid)
+		}
+	}
+}
+
+func TestSandboxConfigJSONDistinguishesMissingIdleFromExplicitZero(t *testing.T) {
+	var missing SandboxConfig
+	if err := json.Unmarshal([]byte(`{"enabled":true}`), &missing); err != nil {
+		t.Fatal(err)
+	}
+	if missing.CPULimit != 4 || missing.MemoryMiB != 6144 || missing.IdleTimeoutMinutes != 30 {
+		t.Fatalf("missing values did not receive defaults: %+v", missing)
+	}
+	var explicit SandboxConfig
+	if err := json.Unmarshal([]byte(`{"enabled":true,"idleTimeoutMinutes":0}`), &explicit); err != nil {
+		t.Fatal(err)
+	}
+	if explicit.IdleTimeoutMinutes != 0 {
+		t.Fatalf("explicit zero idle timeout was lost: %+v", explicit)
 	}
 }
 

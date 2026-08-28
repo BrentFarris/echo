@@ -20,6 +20,11 @@ describe("primary navigation", () => {
     expect(chat.querySelector("[data-nav=code]")?.classList.contains("is-active")).toBe(false);
     expect(chat.querySelector("[aria-label=Tasks]")).toBeNull();
     expect(chat.querySelector("[data-nav=settings] [data-echo-update-badge]")).not.toBeNull();
+    expect([...chat.querySelectorAll(".left-nav-buttons [data-nav]")].map((item) => item.getAttribute("data-nav")))
+      .toEqual(["chat", "code", "search", "git", "sandbox"]);
+    expect([...chat.querySelectorAll(".left-nav-actions [data-nav]")].map((item) => item.getAttribute("data-nav")))
+      .toEqual(["map", "settings"]);
+    expect(chat.querySelector("[data-nav=map]")?.getAttribute("aria-expanded")).toBe("false");
   });
 
   it("marks the selected Code sidebar item active", () => {
@@ -60,12 +65,14 @@ describe("primary navigation", () => {
 
     expect(host.querySelector("[data-mobile-primary-nav]")).not.toBeNull();
     expect([...host.querySelectorAll(".mobile-nav-tab")].map((item) => item.getAttribute("aria-label")))
-      .toEqual(["Chat", "Code", "Search", "Source Control", "Settings"]);
+      .toEqual(["Chat", "Code", "Search", "Source Control", "Linux Sandbox", "Chat Map", "Settings"]);
     expect(host.querySelector("[aria-label=Tasks]")).toBeNull();
     expect(host.querySelector("[data-nav=git]")?.getAttribute("aria-current")).toBe("page");
     expect(host.querySelector("[data-nav=code]")?.hasAttribute("aria-current")).toBe(false);
     expect(host.querySelector("[data-git-badge]")).not.toBeNull();
     expect(host.querySelector("[data-nav=settings] [data-echo-update-badge]")).not.toBeNull();
+    expect(host.querySelector(".mobile-nav-global-actions [data-nav=map]")?.nextElementSibling?.getAttribute("data-nav"))
+      .toBe("settings");
     expect(host.querySelector(".workspace-dropdown-trigger")?.getAttribute("aria-expanded")).toBe("false");
   });
 

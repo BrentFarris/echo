@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/brent/echo/internal/llm"
 	"github.com/brent/echo/internal/tools"
@@ -65,12 +67,12 @@ func (f *researchFlowStreamer) StreamChat(_ context.Context, request llm.ChatReq
 	events := make(chan llm.StreamEvent, 6)
 	if isResearch {
 		if callCount == 1 {
-			events <- llm.StreamEvent{Type: llm.EventReasoning, Content: "Inspecting the workspace."}
+			events <- llm.StreamEvent{Type: llm.EventReasoning, Content: "Inspecting the workspace.", Raw: json.RawMessage(`{"choices":[{"delta":{"reasoning_content":"Inspecting"}}]}`)}
 			events <- researchToolCall("child-list", "filesystem_list", `{"path":"`+f.workspaceLabel+`"}`)
 			events <- llm.StreamEvent{Type: llm.EventComplete, FinishReason: "tool_calls"}
 		} else if callCount == 2 {
 			events <- llm.StreamEvent{Type: llm.EventToken, Content: "The workspace listing was inspected and contains the expected files."}
-			events <- llm.StreamEvent{Type: llm.EventComplete, FinishReason: "stop"}
+			events <- llm.StreamEvent{Type: llm.EventComplete, FinishReason: "stop", Usage: &llm.Usage{PromptTokens: 12, CompletionTokens: 8, TotalTokens: 20}}
 		} else {
 			events <- llm.StreamEvent{Type: llm.EventToken, Content: "Follow-up confirmed the original workspace evidence."}
 			events <- llm.StreamEvent{Type: llm.EventComplete, FinishReason: "stop"}
@@ -164,6 +166,54 @@ func TestResearchAgentsRunPrivatelyAndGuardFinalization(t *testing.T) {
 		t.Fatalf("attributed research tool activity missing: %#v", turn.ResearchTools)
 	}
 
+	parent, err := server.sessions.get(workspace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _, err := parent.resolveSurfaceTab(transcript.ChatID, chatSurfaceMain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := session.trajectory.Page(0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantedResearch := map[string]int{
+		"research/agent_created": 1, "research/job_queued": 2, "research/job_start": 2,
+		"research/job_end": 2, "research/request_start": 3, "research/assistant_message": 3,
+		"research/tool_call": 1, "research/tool_result": 1, "research/report_delivered": 2,
+	}
+	seenResearch := make(map[string]int)
+	for _, event := range page.Events {
+		if strings.HasPrefix(event.Type, "research/") {
+			seenResearch[event.Type]++
+		}
+		payload := string(event.Data)
+		switch event.Type {
+		case "research/request_start":
+			if !strings.Contains(payload, `"agentId":"agent-1"`) || !strings.Contains(payload, `"jobId":"agent-1-job-`) || !strings.Contains(payload, "Inspect the workspace listing") {
+				t.Fatalf("research request was not fully attributed: %s", event.Data)
+			}
+		case "research/chunk":
+			if strings.Contains(payload, "reasoning_content") && !strings.Contains(payload, `"raw"`) {
+				t.Fatalf("research provider raw frame was not retained: %s", event.Data)
+			}
+		case "research/assistant_message":
+			if strings.Contains(payload, "expected files") && !strings.Contains(payload, `"total_tokens":20`) {
+				t.Fatalf("research usage was not retained: %s", event.Data)
+			}
+		case "research/tool_result":
+			if !strings.Contains(payload, `"tool":"filesystem_list"`) || !strings.Contains(payload, `"result"`) || !strings.Contains(payload, `"durationMs"`) {
+				t.Fatalf("research tool result was incomplete: %s", event.Data)
+			}
+		}
+	}
+	for eventType, minimum := range wantedResearch {
+		if seenResearch[eventType] < minimum {
+			t.Fatalf("trajectory captured %d %s events, want at least %d: %#v", seenResearch[eventType], eventType, minimum, seenResearch)
+		}
+	}
+
 	parentRequests, researchRequests := streamer.requests()
 	if len(parentRequests) != 6 || len(researchRequests) != 3 {
 		t.Fatalf("unexpected request counts: parent=%d research=%d", len(parentRequests), len(researchRequests))
@@ -191,6 +241,29 @@ func messagesContain(messages []llm.Message, text string) bool {
 		}
 	}
 	return false
+}
+
+func TestResearchJobTerminalEventIsRecordedOnce(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
+	completedAt := startedAt.Add(325 * time.Millisecond)
+	run := &chatResearchRun{}
+	agent := &chatResearchAgentRun{id: "agent-1", name: "Docs"}
+	job := &chatResearchJob{
+		id: "agent-1-job-2", number: 2, kind: "follow_up", prompt: "Verify the exact source",
+		queuedAt: startedAt.Add(-time.Second), startedAt: startedAt,
+	}
+
+	run.mu.Lock()
+	first := run.markJobTerminalLocked(agent, job, "completed", "Verified.", "", completedAt)
+	second := run.markJobTerminalLocked(agent, job, "canceled", "", "late cancellation", completedAt.Add(time.Second))
+	run.mu.Unlock()
+
+	if first == nil || second != nil {
+		t.Fatalf("terminal event was not deduplicated: first=%#v second=%#v", first, second)
+	}
+	if first["prompt"] != job.prompt || first["jobNumber"] != 2 || first["durationMs"] != int64(325) {
+		t.Fatalf("terminal event lost job identity or timing: %#v", first)
+	}
 }
 
 func TestDisabledResearchToolsAreHiddenAndFailHallucinatedCalls(t *testing.T) {

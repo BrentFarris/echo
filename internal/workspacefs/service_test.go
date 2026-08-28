@@ -96,6 +96,64 @@ func TestTraversalCreateRenameTrashRestore(t *testing.T) {
 	}
 }
 
+func TestMoveEntryBetweenWorkspaceDirectories(t *testing.T) {
+	service, workspaceID, rootPath, root := newTestService(t)
+	for _, directory := range []string{"source", "target", filepath.Join("parent", "child")} {
+		if err := os.MkdirAll(filepath.Join(rootPath, directory), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "source", "open.txt"), []byte("open\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	moved, err := service.Move(workspaceID,
+		FileRef{RootID: root.ID, Path: "source/open.txt"},
+		FileRef{RootID: root.ID, Path: "target"},
+	)
+	if err != nil || moved.Ref.Path != "target/open.txt" {
+		t.Fatalf("move: %+v %v", moved, err)
+	}
+	if _, err := os.Stat(filepath.Join(rootPath, "source", "open.txt")); !os.IsNotExist(err) {
+		t.Fatalf("source still exists after move: %v", err)
+	}
+	if content, err := os.ReadFile(filepath.Join(rootPath, "target", "open.txt")); err != nil || string(content) != "open\n" {
+		t.Fatalf("moved content: %q %v", content, err)
+	}
+	if err := os.Mkdir(filepath.Join(rootPath, "source", "folder"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "source", "folder", "nested.txt"), []byte("nested\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	movedDirectory, err := service.Move(workspaceID,
+		FileRef{RootID: root.ID, Path: "source/folder"},
+		FileRef{RootID: root.ID, Path: "target"},
+	)
+	if err != nil || movedDirectory.Ref.Path != "target/folder" {
+		t.Fatalf("move directory: %+v %v", movedDirectory, err)
+	}
+	if content, err := os.ReadFile(filepath.Join(rootPath, "target", "folder", "nested.txt")); err != nil || string(content) != "nested\n" {
+		t.Fatalf("moved directory content: %q %v", content, err)
+	}
+
+	if _, err := service.Move(workspaceID,
+		FileRef{RootID: root.ID, Path: "parent"},
+		FileRef{RootID: root.ID, Path: "parent/child"},
+	); !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("expected descendant move rejection, got %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "source", "open.txt"), []byte("collision\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Move(workspaceID,
+		FileRef{RootID: root.ID, Path: "source/open.txt"},
+		FileRef{RootID: root.ID, Path: "target"},
+	); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("expected move collision, got %v", err)
+	}
+}
+
 func TestProtectedWorkspaceMetadataCannotBeMutated(t *testing.T) {
 	service, workspaceID, rootPath, root := newTestService(t)
 	assertProtected := func(err error) {
@@ -225,7 +283,11 @@ func TestMediaTypeForNameCoversBrowserFormats(t *testing.T) {
 		"d.gif": "image/gif", "e.webp": "image/webp", "f.svg": "image/svg+xml",
 		"g.bmp": "image/bmp", "h.ico": "image/x-icon", "i.avif": "image/avif",
 		"j.mp4": "video/mp4", "k.m4v": "video/mp4", "l.webm": "video/webm",
-		"m.ogv": "video/ogg", "n.txt": "", "noext": "",
+		"m.ogv": "video/ogg",
+		"n.mp3": "audio/mpeg", "o.wav": "audio/wav", "p.ogg": "audio/ogg",
+		"q.oga": "audio/ogg", "r.opus": "audio/ogg", "s.flac": "audio/flac",
+		"t.m4a": "audio/mp4", "u.aac": "audio/aac", "v.weba": "audio/webm",
+		"z.txt": "", "noext": "",
 	}
 	for name, want := range cases {
 		if got := MediaTypeForName(name); got != want {
@@ -399,12 +461,21 @@ func TestRevealCommandKeepsPathInOneArgument(t *testing.T) {
 	if command == "" || len(arguments) == 0 {
 		t.Fatalf("invalid reveal command: %q %#v", command, arguments)
 	}
-	joined := strings.Join(arguments, "")
-	if !strings.Contains(joined, "name; echo injected.txt") {
-		t.Fatalf("path was not preserved as an argument: %#v", arguments)
-	}
-	if runtime.GOOS != "darwin" && len(arguments) != 1 {
-		t.Fatalf("path was split into multiple arguments: %#v", arguments)
+	switch runtime.GOOS {
+	case "windows":
+		if len(arguments) != 1 || !strings.Contains(arguments[0], "name; echo injected.txt") {
+			t.Fatalf("Windows selection path was not preserved as one argument: %#v", arguments)
+		}
+	case "darwin":
+		if len(arguments) != 2 || arguments[0] != "-R" || arguments[1] != path {
+			t.Fatalf("macOS selection path was not preserved as one argument: %#v", arguments)
+		}
+	default:
+		// xdg-open cannot select a file, so Reveal intentionally opens its
+		// containing directory. The untrusted filename is not passed at all.
+		if len(arguments) != 1 || arguments[0] != filepath.Dir(path) {
+			t.Fatalf("Linux containing directory was not preserved as one argument: %#v", arguments)
+		}
 	}
 }
 

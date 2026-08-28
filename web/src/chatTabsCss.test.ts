@@ -27,6 +27,12 @@ describe("chat tab visual contracts", () => {
     expect(overviewRule).not.toContain("position: sticky");
   });
 
+  it("lets the trajectory overview grow for research-agent swimlanes", () => {
+    expect(css).toMatch(/\.trajectory-overview-labels,[\s\S]*?\.trajectory-overview-tracks\s*\{[\s\S]*?grid-auto-rows:\s*14px;/);
+    expect(css).toMatch(/\.trajectory-overview-labels span\.is-research-agent\s*\{[\s\S]*?text-overflow:/);
+    expect(css).toMatch(/@media \(max-width:\s*560px\)[\s\S]*?\.trajectory-overview\s*\{\s*grid-template-columns:\s*72px minmax\(0, 1fr\);/);
+  });
+
   it("bounds completed file changes in a vertical scroller", () => {
     expect(css).toMatch(/\.chat-file-change-list\s*\{[\s\S]*?max-height:\s*190px;[\s\S]*?overflow-y:\s*auto;/);
   });

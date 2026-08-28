@@ -14,6 +14,7 @@
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="#configure-a-model">Model setup</a> ·
+  <a href="#linux-sandbox">Linux sandbox</a> ·
   <a href="#build-from-source">Build from source</a> ·
   <a href="#security">Security</a>
 </p>
@@ -35,6 +36,7 @@ Connect Echo to a local or remote provider that exposes an OpenAI-compatible `/c
 | **Code** | Monaco editing, generic opt-in LSP support, file tabs, workspace trees, quick open, text and file search, create/rename/save operations, external-change detection, recoverable trash, and browser hot-exit buffers |
 | **Git** | Repository discovery, working-tree status, staged and unstaged diffs, staging, commits, branches, remotes, fetch/pull/push/sync, history, tags, and stashes |
 | **Terminal** | Workspace-aware PTY sessions powered by xterm.js, resize, restart, stop, and reusable saved commands |
+| **Linux sandbox** | Optional per-workspace Docker workbench plus visible Xfce/Chromium desktop, browser takeover, persistent Linux/browser state, and deny-by-default egress |
 | **Agent tools** | Workspace-scoped file inspection and editing, shell commands, text and file search, image/video reads, web fetch/search, image generation, and reusable workspace skills |
 | **Plugins** | Reviewed local/GitHub packages with sandboxed page or floating views, optional native JSON-RPC tools, typed settings, secret references, immutable snapshots, and chat-driven authoring |
 | **Connections** | Multiple OpenAI-compatible LLM endpoints, custom HTTP headers, interaction routing, optional SearXNG research, and optional ComfyUI image generation |
@@ -53,6 +55,10 @@ Echo also ships the read-only `builtin/echo-plugins` skill. You can ask Chat to 
 ![Echo Code and Source Control](docs/screenshots/echo-code-git.png)
 
 The Code view uses Monaco for editing and reviewing diffs. Its explorer watches the filesystem for changes, keeps unsaved browser buffers recoverable, and moves deleted entries into Echo's restorable trash. The source-control view supports common repository workflows without leaving the browser, while the integrated terminal provides a full PTY on the Echo server.
+
+### Optional Linux sandbox and desktop
+
+On Windows x64 with Docker Desktop in Linux-container mode, or Linux x86-64 with Docker Engine, a workspace can opt into an isolated Ubuntu workbench and visible Xfce/Chromium desktop. Commands, terminals, Git, LSPs, builds, tests, and web fetches then run through the sandbox with no host fallback; registered workspace files remain canonical host bind mounts. The user can watch the AI, take over the desktop to sign in without logging keystrokes, and return the same persistent browser profile to the AI. See the [Linux sandbox guide](docs/sandbox.md) for setup, persistence, network grants, reset boundaries, and the container-isolation security model.
 
 ### Language servers
 
@@ -124,6 +130,78 @@ With the Echo server running, open [http://localhost:3740](http://localhost:3740
 
 The installed icon opens the web app but does not start the Echo server. Continue to start Echo with the launcher and leave its terminal window running while you use the installed app. Browser installation is available from `localhost`, `127.0.0.1`, or an HTTPS origin; a plain HTTP LAN address is not eligible.
 
+## Linux sandbox
+
+Echo can opt an individual workspace into a Docker-backed Ubuntu environment with a browser-accessible Linux desktop. It is disabled by default, and workspaces that do not enable it continue running exactly as before without requiring Docker.
+
+| Host platform | Sandbox requirement | Support |
+| --- | --- | --- |
+| Windows x64 | Docker Desktop running Linux containers | Supported |
+| Linux x86-64 | An accessible Docker Engine | Supported |
+| macOS | Docker Desktop | Experimental |
+
+Echo checks and diagnoses Docker but never installs or reconfigures it. The initial images are `linux/amd64`; ARM hosts and Podman are not currently supported. This is container isolation rather than a hardware virtual machine, so Docker Engine and the host kernel remain trusted components.
+
+Official nightly binaries pin all three images by immutable digest. Builds made directly from the source tree use the public `protocol-1` image channel so the one-click source launchers can install the matching images; release builds never rely on a mutable tag.
+
+### Enable a workspace sandbox
+
+1. Install and start Docker Desktop or Docker Engine.
+2. Select the workspace, then open **Linux Sandbox** from Echo's activity bar.
+3. Pull the pinned Workbench, Desktop, and Egress images when prompted.
+4. Choose CPU, memory, and idle-stop limits, then select **Enable sandbox**.
+
+Before enabling, Echo verifies the Docker engine, Linux mode, x86-64 architecture, image compatibility, every workspace mount, write access, and the read-only `.echo` mask. A failed preflight leaves the workspace disabled. The default allocation is 4 CPUs, 6144 MiB of memory, and a 30-minute idle timeout; an idle timeout of zero keeps the sandbox running until it is stopped explicitly.
+
+The sandbox starts lazily when a terminal, agent command, Git or LSP operation, web fetch, GUI tool, or Desktop visit needs it. If Docker later becomes unavailable, Echo reports the failure and does **not** silently run the operation on the host. Disabling the sandbox stops active sandbox processes before returning that workspace to normal host execution.
+
+### Runtime layout
+
+| Component | Runs |
+| --- | --- |
+| **Echo host** | Authentication, UI/API serving, path-confined file editing and search, file watching, and the canonical workspace files |
+| **Workbench** | Ubuntu 24.04, Bash and PTYs, Git, LSPs, builds, tests, formatters, Python, Node 22, Go 1.26, and common development tools |
+| **Desktop** | Xfce, headed Chromium, Playwright browser automation, a file manager, and a text editor |
+| **Egress gateway** | The sandbox's only external network route, with filtered DNS, HTTP proxying, and SOCKS5 |
+
+Registered host folders are mounted read-write at stable `/workspace/<root-id>` paths and remain the source of truth. Their `.echo` directories are masked read-only. A persistent `/exchange` volume is shared by the workbench and desktop; Chromium downloads are saved under `/exchange/downloads`.
+
+Echo does not give the containers the host home directory, SSH configuration, host credentials, devices, host namespaces, or the Docker socket. Integrated terminals, `shell_command`, Git subprocesses, LSPs, builds, tests, formatting, and `web_fetch` use the sandbox target. Host-side file editing, search, and watching continue against the confined bind mounts.
+
+### Desktop access and AI takeover
+
+The Sandbox view displays the live Xfce desktop through an authenticated noVNC connection, so the user can watch browser and desktop actions directly in Echo. One workspace-wide lease controls graphical input:
+
+- An AI GUI action acquires control for its chat turn.
+- **Take Control** immediately preempts and cancels in-flight AI GUI actions.
+- The user can sign in or handle sensitive prompts, then select **Return Control** when finished.
+- Other authenticated devices remain view-only; a disconnected controller has a two-minute reconnect grace period.
+
+Human VNC keystrokes, including passwords, are not copied into chat requests, tool arguments, or Trajectory logs. However, after control is returned, the AI can use the same persistent Chromium profile and therefore the authority of any signed-in website sessions. Browser data is protected by host and Docker storage permissions rather than Echo encryption.
+
+### Network access
+
+The Workbench and Desktop containers have no direct external route. The gateway blocks loopback, host, LAN/private, link-local, carrier-grade NAT, reserved, and cloud-metadata destinations, rechecking every DNS result to prevent rebinding.
+
+The owner can grant one exact hostname or IP and TCP port from the Sandbox view. Wildcards and subnets are not accepted, and revocation takes effect without recreating the containers. Configured SearXNG and ComfyUI endpoints remain explicit Echo host services and are not exposed to the sandbox automatically.
+
+### Persistence, setup, and resets
+
+Workbench state, desktop state, the Chromium profile, and `/exchange` use separate Docker volumes. Their reset boundaries are intentionally independent:
+
+| Action | Workbench home | Desktop home | Browser profile | Exchange | Host workspace files |
+| --- | --- | --- | --- | --- | --- |
+| Stop/start or recreate containers | Kept | Kept | Kept | Kept | Kept |
+| Reset workbench | Deleted | Kept | Kept | Kept | Kept |
+| Reset browser data | Kept | Kept | Deleted | Kept | Kept |
+| Delete sandbox data | Deleted | Deleted | Deleted | Deleted | **Kept** |
+
+For reproducible customization, add `.echo/sandbox/setup.sh`. Echo hashes the recipe and requires owner approval before running a new digest as root for both `ECHO_SANDBOX_ROLE=workbench` and `ECHO_SANDBOX_ROLE=desktop`. Approved recipes rerun after relevant resets or image replacement. Ad-hoc `sudo` changes can survive a stop, but not container recreation unless they are captured in the recipe.
+
+Portable resource settings live in `.echo/workspace.json`; image digests, approved setup state, network grants, and volume names are machine-local beside Echo's global configuration. Runtime VNC, agent, lease, and proxy credentials remain memory-only.
+
+See the [Echo Workspace Linux Sandbox guide](docs/sandbox.md) for the full security model, setup recipe behavior, image build instructions, diagnostics, and implementation details.
+
 ## Configure a model
 
 Echo appends `/chat/completions` to the endpoint URL unless it is already present. The provider must accept OpenAI-compatible chat-completion requests and, for interactive chat, streamed server-sent events and OpenAI-style tool calls.
@@ -137,7 +215,7 @@ Common local base URLs include:
 | llama.cpp server | `http://localhost:8080/v1` |
 | Remote provider | The provider's OpenAI-compatible HTTPS URL |
 
-Each endpoint profile has its own model name, generation settings, request timeout, stream-idle timeout, optional system-prompt appendage, and custom headers. The stream-idle watchdog resets on provider data and SSE heartbeats; set it to `-1` for providers that legitimately remain silent for longer than the configured interval. Custom headers can carry provider-specific authentication such as `Authorization: Bearer ...`.
+Each endpoint profile has its own model name, generation settings, request timeout, stream-idle timeout, optional system-prompt appendage, and custom headers. **Reasoning Effort** sends the OpenAI-compatible `reasoning_effort` request field; named efforts take precedence over Echo's local-model thinking-token budget. Use **Provider default / token budget** for servers that instead support `chat_template_kwargs.thinking_token_budget`. Echo does not detect supported effort levels or retry with a lower value when a provider rejects one. The stream-idle watchdog resets on provider data and SSE heartbeats; set it to `-1` for providers that legitimately remain silent for longer than the configured interval. Custom headers can carry provider-specific authentication such as `Authorization: Bearer ...`.
 
 Endpoint routing lets Chat, Research, Vision, and Inline Code use different profiles. The model picker in Chat can override the routed Chat model for the next conversation turn.
 
@@ -171,6 +249,8 @@ Echo listens on the selected port, including non-loopback interfaces. Control ne
 - Node.js 22 and npm
 - Git
 - A modern browser
+
+Docker is optional. Sandbox-enabled workspaces require Docker Desktop (Windows x64, Linux-container mode) or Docker Engine (Linux x86-64); Echo diagnoses but does not install Docker.
 
 Clone the repository, build the frontend, and then compile the Go server so the production assets are embedded in the executable:
 
@@ -233,6 +313,7 @@ npm run test:e2e
 | **Frontend** | Frameworkless TypeScript and Vite, with Monaco for editing and diffs and xterm.js for PTY terminals |
 | **LLM** | OpenAI-compatible chat-completions client with streaming, reasoning, tool-call orchestration, model routing, and configurable headers |
 | **Workspace services** | Path-scoped filesystem operations, indexed search, file watching, recoverable trash, Git, terminals, custom agent modes, and skills |
+| **Sandbox runtime** | Per-workspace Docker lifecycle, authenticated Linux agents and PTYs, Xfce/Chromium desktop bridging, graphical control leases, path translation, and deny-by-default egress |
 | **Plugin host** | Server-owned package/lifecycle manager, dynamic tool registry, supervised stdio JSON-RPC runtimes, sandboxed iframe sessions, and host-owned plugin navigation/windows |
 | **Persistence** | Atomic JSON stores for global configuration and workspace-owned state |
 
@@ -278,6 +359,7 @@ Echo is a single-owner development tool, not a multi-tenant service.
 - Agent modes reduce what is offered to a model, but the General mode is intentionally powerful. Use trusted models, keep work in version control, and expose only the folders Echo needs.
 - Custom endpoint headers may contain secrets and are stored in the local application-data file. Protect that file with the same care as other developer credentials.
 - Sandboxed plugin views cannot access Echo's DOM or APIs directly, but optional native plugin backends run with the Echo owner's OS permissions. Permissions are review disclosures rather than OS containment; install native plugins only from code you trust.
+- The optional workspace Linux sandbox isolates command and GUI execution from host files outside registered roots, but containers are not hardware VMs. Protect Docker and Echo's machine-local sandbox volumes; a signed-in browser profile can be used by the AI after control is returned.
 
 ## Contributing
 

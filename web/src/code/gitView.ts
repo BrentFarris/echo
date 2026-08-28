@@ -20,6 +20,14 @@ type GitViewCallbacks = {
 };
 
 type Review = { ref: string; kind: "commit" | "stash"; detail: GitCommitDetail };
+type CommitInputState = {
+  repositoryId: string;
+  selectionStart: number;
+  selectionEnd: number;
+  selectionDirection: "forward" | "backward" | "none";
+  scrollTop: number;
+  scrollLeft: number;
+};
 
 const rowHeight = 22;
 const historyRowHeight = 38;
@@ -43,6 +51,7 @@ export class GitView {
   private listScroll = new Map<string, number>();
   private repositoryListExpanded = true;
   private searchParents = false;
+  private sidebarScroll = 0;
   private loading = true;
   private disposed = false;
 
@@ -125,6 +134,7 @@ export class GitView {
     const current = this.statuses.get(status.repositoryId);
     if (current && status.revision < current.revision) return;
     this.statuses.set(status.repositoryId, status);
+    if (current && sameStatusContent(current, status)) return;
     this.render();
   }
 
@@ -141,13 +151,42 @@ export class GitView {
   }
 
   private rememberListScroll(): void {
+    this.sidebarScroll = this.host.querySelector<HTMLElement>("[data-git-scroll]")?.scrollTop || 0;
     this.host.querySelectorAll<HTMLElement>("[data-git-scroll-key]").forEach((element) => {
       this.listScroll.set(element.dataset.gitScrollKey || "", element.scrollTop);
     });
   }
 
+  private commitInputState(): CommitInputState | null {
+    const input = document.activeElement;
+    if (!(input instanceof HTMLTextAreaElement) || !this.host.contains(input) || !input.matches("[data-git-commit-message]")) return null;
+    const repositoryId = input.closest<HTMLElement>("[data-git-repository]")?.dataset.gitRepository;
+    if (!repositoryId) return null;
+    return {
+      repositoryId,
+      selectionStart: input.selectionStart,
+      selectionEnd: input.selectionEnd,
+      selectionDirection: input.selectionDirection || "none",
+      scrollTop: input.scrollTop,
+      scrollLeft: input.scrollLeft,
+    };
+  }
+
+  private restoreCommitInputState(state: CommitInputState | null): void {
+    if (!state) return;
+    const repository = [...this.host.querySelectorAll<HTMLElement>("[data-git-repository]")]
+      .find((element) => element.dataset.gitRepository === state.repositoryId);
+    const input = repository?.querySelector<HTMLTextAreaElement>("[data-git-commit-message]");
+    if (!input || input.disabled) return;
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(state.selectionStart, state.selectionEnd, state.selectionDirection);
+    input.scrollTop = state.scrollTop;
+    input.scrollLeft = state.scrollLeft;
+  }
+
   private render(): void {
     if (this.disposed) return;
+    const commitInputState = this.commitInputState();
     this.rememberListScroll();
     const total = [...this.statuses.values()].reduce((sum, status) => sum + status.totalChangeCount, 0);
     this.callbacks.updateBadge(total);
@@ -176,8 +215,11 @@ export class GitView {
         </section>
       </div>
     `;
+    const sidebar = this.host.querySelector<HTMLElement>("[data-git-scroll]");
+    if (sidebar) sidebar.scrollTop = this.sidebarScroll;
     this.mountVirtualLists();
     this.mountVirtualHistory();
+    this.restoreCommitInputState(commitInputState);
   }
 
   private renderError(error: unknown): void {
@@ -213,7 +255,7 @@ export class GitView {
           ${status?.branch ? `<span class="git-branch-label" title="${escapeHTML(status.upstream || "No upstream")}"><span class="codicon codicon-git-branch"></span>${escapeHTML(status.branch)}${status.ahead || status.behind ? ` ↑${status.ahead} ↓${status.behind}` : ""}</span>` : ""}
           ${operation ? `<span class="spinner" title="${escapeHTML(operation.action)}"></span>` : ""}
           <button type="button" title="Refresh" data-git-repo-action="refresh"><span class="codicon codicon-refresh"></span></button>
-          <button type="button" title="${sync ? "Sync pending commits" : "Commit staged changes"}" data-git-repo-action="${sync ? "sync" : "commit"}" ${operation ? "disabled" : ""}><span class="codicon codicon-${sync ? "sync" : "check"}"></span></button>
+          <button type="button" title="${sync ? "Sync pending commits" : "Commit staged changes"}" data-git-repo-action="${sync ? "sync" : "commit"}" ${operation ? "disabled" : ""} class="${operation?.action === "sync" ? "is-syncing" : ""}"><span class="codicon codicon-${sync ? "sync" : "check"}"></span></button>
           <button type="button" title="More Actions" data-git-repo-action="menu"><span class="codicon codicon-ellipsis"></span></button>
         </div>
       </header>
@@ -225,10 +267,11 @@ export class GitView {
     if (!status) return `<div class="git-empty compact"><span class="spinner"></span> Loading changes…</div>`;
     const draft = this.drafts.get(repository.id) || "";
     const busy = this.busyRepositories.has(repository.id);
+    const operation = this.busyRepositories.get(repository.id);
     const sync = shouldShowSyncAction(status);
     return `<div class="git-repository-body">
       <label class="git-commit-input"><span class="sr-only">Commit message</span><textarea rows="2" data-git-commit-message placeholder="Message (Ctrl+Enter to commit staged changes)" ${busy ? "disabled" : ""}>${escapeHTML(draft)}</textarea></label>
-      <button type="button" class="git-commit-button" data-git-repo-action="${sync ? "sync" : "commit"}" ${busy || (!sync && (!draft.trim() || status.staged.length === 0)) ? "disabled" : ""}><span class="codicon codicon-${sync ? "sync" : "check"}"></span> ${sync ? "Sync" : "Commit"}</button>
+      <button type="button" class="git-commit-button ${busy && operation?.action === "sync" ? "is-syncing" : ""}" data-git-repo-action="${sync ? "sync" : "commit"}" ${busy || (!sync && (!draft.trim() || status.staged.length === 0)) ? "disabled" : ""}><span class="codicon codicon-${sync ? "sync" : "check"}"></span> ${sync ? "Sync" : "Commit"}</button>
       ${status.hiddenStagedCount ? `<div class="git-warning"><span class="codicon codicon-warning"></span>${status.hiddenStagedCount} staged change${status.hiddenStagedCount === 1 ? " is" : "s are"} outside this workspace; commit is blocked.</div>` : ""}
       ${status.truncated ? `<div class="git-warning"><span class="codicon codicon-warning"></span>Showing the first 10,000 changed files.</div>` : ""}
       ${this.renderGroup(repository, "conflict", "Merge Changes", status.conflicts, "stage_all")}
@@ -831,4 +874,10 @@ function statusClass(status: string): string {
 function formatDate(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(date);
+}
+
+function sameStatusContent(left: GitStatus, right: GitStatus): boolean {
+  const { revision: _leftRevision, ...leftContent } = left;
+  const { revision: _rightRevision, ...rightContent } = right;
+  return JSON.stringify(leftContent) === JSON.stringify(rightContent);
 }

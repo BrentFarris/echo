@@ -36,6 +36,84 @@ type Workspace struct {
 	Folders                     []string                  `json:"folders,omitempty"`
 	SearchParentGitRepositories bool                      `json:"searchParentGitRepositories,omitempty"`
 	LanguageServers             lspconfig.WorkspaceConfig `json:"languageServers,omitempty"`
+	Sandbox                     SandboxConfig             `json:"sandbox"`
+	sandboxConfigured           bool
+}
+
+const (
+	DefaultSandboxCPULimit           = 4
+	DefaultSandboxMemoryMiB          = 6144
+	DefaultSandboxIdleTimeoutMinutes = 30
+	MinSandboxCPULimit               = 1
+	MaxSandboxCPULimit               = 16
+	MinSandboxMemoryMiB              = 4096
+	MaxSandboxMemoryMiB              = 32768
+	MaxSandboxIdleTimeoutMinutes     = 1440
+)
+
+// SandboxConfig is the portable, workspace-owned Linux sandbox policy. A
+// missing sandbox object is equivalent to the normalized disabled defaults.
+type SandboxConfig struct {
+	Enabled            bool `json:"enabled"`
+	CPULimit           int  `json:"cpuLimit"`
+	MemoryMiB          int  `json:"memoryMiB"`
+	IdleTimeoutMinutes int  `json:"idleTimeoutMinutes"`
+}
+
+func (config *SandboxConfig) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Enabled            *bool `json:"enabled"`
+		CPULimit           *int  `json:"cpuLimit"`
+		MemoryMiB          *int  `json:"memoryMiB"`
+		IdleTimeoutMinutes *int  `json:"idleTimeoutMinutes"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*config = DefaultSandboxConfig()
+	if wire.Enabled != nil {
+		config.Enabled = *wire.Enabled
+	}
+	if wire.CPULimit != nil {
+		config.CPULimit = *wire.CPULimit
+	}
+	if wire.MemoryMiB != nil {
+		config.MemoryMiB = *wire.MemoryMiB
+	}
+	if wire.IdleTimeoutMinutes != nil {
+		config.IdleTimeoutMinutes = *wire.IdleTimeoutMinutes
+	}
+	return nil
+}
+
+// DefaultSandboxConfig returns the disabled v1 sandbox defaults.
+func DefaultSandboxConfig() SandboxConfig {
+	return SandboxConfig{
+		CPULimit:           DefaultSandboxCPULimit,
+		MemoryMiB:          DefaultSandboxMemoryMiB,
+		IdleTimeoutMinutes: DefaultSandboxIdleTimeoutMinutes,
+	}
+}
+
+// NormalizeSandboxConfig fills omitted CPU and memory values and validates the
+// public resource limits. Zero idle timeout intentionally means never stop.
+func NormalizeSandboxConfig(config SandboxConfig) (SandboxConfig, error) {
+	if config.CPULimit == 0 {
+		config.CPULimit = DefaultSandboxCPULimit
+	}
+	if config.MemoryMiB == 0 {
+		config.MemoryMiB = DefaultSandboxMemoryMiB
+	}
+	if config.CPULimit < MinSandboxCPULimit || config.CPULimit > MaxSandboxCPULimit {
+		return SandboxConfig{}, fmt.Errorf("cpuLimit must be between %d and %d", MinSandboxCPULimit, MaxSandboxCPULimit)
+	}
+	if config.MemoryMiB < MinSandboxMemoryMiB || config.MemoryMiB > MaxSandboxMemoryMiB {
+		return SandboxConfig{}, fmt.Errorf("memoryMiB must be between %d and %d", MinSandboxMemoryMiB, MaxSandboxMemoryMiB)
+	}
+	if config.IdleTimeoutMinutes < 0 || config.IdleTimeoutMinutes > MaxSandboxIdleTimeoutMinutes {
+		return SandboxConfig{}, fmt.Errorf("idleTimeoutMinutes must be between 0 and %d", MaxSandboxIdleTimeoutMinutes)
+	}
+	return config, nil
 }
 
 // CreateRequest is the payload accepted by the create-workspace endpoint.
@@ -60,6 +138,7 @@ type workspaceFile struct {
 	Folders                     []string                  `json:"folders"`
 	SearchParentGitRepositories bool                      `json:"searchParentGitRepositories,omitempty"`
 	LanguageServers             lspconfig.WorkspaceConfig `json:"languageServers,omitempty"`
+	Sandbox                     *SandboxConfig            `json:"sandbox,omitempty"`
 }
 
 const (
@@ -178,7 +257,7 @@ func (m *Manager) Create(req CreateRequest) (Workspace, error) {
 		return Workspace{}, err
 	}
 
-	workspace := Workspace{MainPath: mainPath}
+	workspace := Workspace{MainPath: mainPath, Sandbox: DefaultSandboxConfig()}
 	if fileExists {
 		// If the existing workspace.json has no name or invalid mainPath, use the requested values.
 		if strings.TrimSpace(loadedFile.Name) == "" && strings.TrimSpace(req.Name) != "" {
@@ -462,6 +541,28 @@ func (m *Manager) SetLanguageServerConfig(id string, config lspconfig.WorkspaceC
 	return workspace, nil
 }
 
+// SetSandboxConfig validates and persists the portable sandbox configuration.
+// Host-specific runtime state and credentials deliberately live elsewhere.
+func (m *Manager) SetSandboxConfig(id string, config SandboxConfig) (Workspace, error) {
+	workspace, ok, err := m.Get(id)
+	if err != nil {
+		return Workspace{}, err
+	}
+	if !ok {
+		return Workspace{}, fmt.Errorf("workspace %q not found", id)
+	}
+	normalized, err := NormalizeSandboxConfig(config)
+	if err != nil {
+		return Workspace{}, err
+	}
+	workspace.Sandbox = normalized
+	workspace.sandboxConfigured = true
+	if err := writeWorkspaceFile(filepath.Join(workspace.MainPath, EchoDirName), workspaceFileFromWorkspace(workspace)); err != nil {
+		return Workspace{}, err
+	}
+	return workspace, nil
+}
+
 // SetActive records the given workspace id as the active (last opened)
 // workspace, preserving settings and the workspace list.
 func (m *Manager) SetActive(id string) error {
@@ -498,6 +599,7 @@ func workspaceFromRegistration(w appdata.Workspace) Workspace {
 	return Workspace{
 		ID: w.ID, Name: w.Name, MainPath: mainPath, IconExt: w.IconExt, Folders: folders,
 		SearchParentGitRepositories: w.SearchParentGitRepositories,
+		Sandbox:                     DefaultSandboxConfig(),
 	}
 }
 
@@ -545,10 +647,20 @@ func workspaceFromFile(id, iconExt, echoDir, expectedMain string, wf workspaceFi
 		folders = append(folders, folder)
 	}
 	folders = append([]string{expectedMain}, cleanFolders(folders[1:], expectedMain)...)
+	sandboxConfig := DefaultSandboxConfig()
+	sandboxConfigured := wf.Sandbox != nil
+	if sandboxConfigured {
+		sandboxConfig, err = NormalizeSandboxConfig(*wf.Sandbox)
+		if err != nil {
+			return Workspace{}, &ConfigError{Code: ConfigMalformed, Message: "workspace sandbox configuration is invalid", Cause: err}
+		}
+	}
 	return Workspace{
 		ID: id, Name: name, MainPath: expectedMain, IconExt: iconExt, Folders: folders,
 		SearchParentGitRepositories: wf.SearchParentGitRepositories,
 		LanguageServers:             wf.LanguageServers.Normalized(),
+		Sandbox:                     sandboxConfig,
+		sandboxConfigured:           sandboxConfigured,
 	}, nil
 }
 
@@ -607,11 +719,16 @@ func workspaceRegistration(ws Workspace) appdata.Workspace {
 }
 
 func workspaceFileFromWorkspace(ws Workspace) workspaceFile {
-	return workspaceFile{
+	wf := workspaceFile{
 		Name: ws.Name, MainPath: ws.MainPath, Folders: append([]string(nil), ws.Folders...),
 		SearchParentGitRepositories: ws.SearchParentGitRepositories,
 		LanguageServers:             ws.LanguageServers.Normalized(),
 	}
+	if ws.sandboxConfigured {
+		config := ws.Sandbox
+		wf.Sandbox = &config
+	}
+	return wf
 }
 
 func absolutePath(base, value string) (string, error) {

@@ -15,6 +15,8 @@ func deletionTestTranscript() sessions.TabTranscript {
 		Turns: []sessions.Turn{
 			{
 				ID: "turn-one", UserContent: "first prompt", UserMessageIndex: 0, Status: "done",
+				References:        []sessions.PromptReference{{Kind: "file", Label: "main.go", ReferencePath: "echo/main.go", Ref: sessions.FileReference{RootID: "root", Path: "main.go"}}},
+				EditorContext:     &sessions.EditorContextSummary{Tabs: []sessions.EditorContextTab{{Kind: "file", Title: "main.go", Active: true}}},
 				FileChanges:       []sessions.FileChange{{Path: "echo/main.go", Operation: tools.FileChangeEdited, Ref: &sessions.FileReference{RootID: "root", Path: "main.go"}}},
 				ResearchReasoning: []sessions.ResearchReasoning{{AgentID: "agent-one", AgentName: "Scout", Reasoning: "private work"}},
 				ResearchTools:     []sessions.ToolActivity{{CallID: "agent-one:read", Name: "filesystem_read_text", AgentID: "agent-one"}},
@@ -76,6 +78,16 @@ func TestDeleteTranscriptHalvesInEitherOrderRemovesEmptyTurn(t *testing.T) {
 	}
 }
 
+func TestDeleteTranscriptUserClearsPromptResources(t *testing.T) {
+	transcript := deletionTestTranscript()
+	if err := deleteTranscriptMessage(&transcript, "turn-one", llm.RoleUser); err != nil {
+		t.Fatal(err)
+	}
+	if len(transcript.Turns[0].References) != 0 || transcript.Turns[0].EditorContext != nil {
+		t.Fatalf("deleted user prompt retained resources: %#v", transcript.Turns[0])
+	}
+}
+
 func TestRerunTurnReturnsInputAndDropsSelectedAndLaterContext(t *testing.T) {
 	transcript := deletionTestTranscript()
 	transcript.Turns[0].Model = "model-one"
@@ -86,7 +98,8 @@ func TestRerunTurnReturnsInputAndDropsSelectedAndLaterContext(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if selected.UserContent != "first prompt" || selected.Model != "model-one" || selected.AgentModeID != "general" || len(selected.Images) != 1 {
+	if selected.UserContent != "first prompt" || selected.Model != "model-one" || selected.AgentModeID != "general" || len(selected.Images) != 1 ||
+		len(selected.References) != 1 || selected.EditorContext == nil {
 		t.Fatalf("selected input was not preserved: %#v", selected)
 	}
 	if len(selected.FileChanges) != 0 {

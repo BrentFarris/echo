@@ -30,8 +30,8 @@ export async function readFile(workspaceId: string, ref: FileRef): Promise<FileS
   return api(`${base(workspaceId)}/file?${query}`, { method: "GET" });
 }
 
-// mediaURL points at the raw image/video stream used by the preview surface.
-// It is fetched by <img>/<video> elements, not the JSON envelope helpers.
+// mediaURL points at the raw image/video/audio stream used by the preview surface.
+// It is fetched by <img>/<video>/<audio> elements, not the JSON envelope helpers.
 export function mediaURL(workspaceId: string, ref: FileRef): string {
   const query = new URLSearchParams({ rootId: ref.rootId, path: ref.path });
   return `${base(workspaceId)}/media?${query}`;
@@ -59,6 +59,10 @@ export async function createEntry(workspaceId: string, request: {
 
 export async function renameEntry(workspaceId: string, ref: FileRef, newName: string): Promise<{ entry: FsEntry; previousRef: FileRef }> {
   return api(`${base(workspaceId)}/entry`, { method: "PATCH", body: { ref, newName } });
+}
+
+export async function moveEntry(workspaceId: string, ref: FileRef, destinationParent: FileRef): Promise<{ entry: FsEntry; previousRef: FileRef }> {
+  return api(`${base(workspaceId)}/entry`, { method: "PATCH", body: { ref, destinationParent } });
 }
 
 export async function trashEntry(workspaceId: string, ref: FileRef): Promise<TrashItem> {

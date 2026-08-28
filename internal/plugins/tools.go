@@ -56,6 +56,9 @@ func (m *Manager) reconcileTools() error {
 					Parameters: echotools.Schema(contribution.InputSchema),
 				},
 				Run: func(ctx echotools.ExecutionContext, arguments json.RawMessage) (any, error) {
+					if ctx.UsesSandbox() {
+						return nil, echotools.SafeError{Code: "host_tool_blocked", Message: "native plugin tools are unavailable in sandbox-enabled workspaces"}
+					}
 					roots := make([]map[string]string, 0, len(ctx.WorkspaceRoots))
 					for _, root := range ctx.WorkspaceRoots {
 						roots = append(roots, map[string]string{"id": root.ID, "label": root.Label, "path": root.Path})

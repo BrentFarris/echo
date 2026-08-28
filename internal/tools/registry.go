@@ -45,6 +45,7 @@ var researchWorkerToolNames = map[string]bool{
 type ChatSchemaOptions struct {
 	PlanMode        bool
 	ResearchEnabled bool
+	SandboxGUI      bool
 	WorkspaceID     string
 }
 
@@ -236,6 +237,9 @@ func (r *Registry) chatLLMSchemaForScopes(scopes *ToolScopeChecker, options Chat
 			continue
 		}
 		if researchAgentToolNames[metadata.Name] && !options.ResearchEnabled {
+			continue
+		}
+		if sandboxGUIToolNames[metadata.Name] && (options.PlanMode || !options.SandboxGUI) {
 			continue
 		}
 		if scopes != nil && !scopes.HasTool(metadata.Name) {
