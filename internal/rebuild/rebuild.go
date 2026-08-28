@@ -190,6 +190,18 @@ func (c *Coordinator) buildAndPrepare(ctx context.Context, request Request, upda
 		npmName = "npm.cmd"
 	}
 	webDir := filepath.Join(sourceDir, "web")
+	installArgument := "install"
+	if _, err := os.Stat(filepath.Join(webDir, "package-lock.json")); err == nil {
+		installArgument = "ci"
+	} else if !errors.Is(err, os.ErrNotExist) {
+		_ = logFile.Close()
+		return Result{}, &BuildError{Stage: "frontend dependency check", LogPath: logPath, Err: err}
+	}
+	logLine(logFile, "Running npm "+installArgument+"...")
+	if err := c.run(ctx, webDir, logFile, npmName, installArgument, "--no-audit", "--no-fund"); err != nil {
+		_ = logFile.Close()
+		return Result{}, &BuildError{Stage: "frontend dependencies", LogPath: logPath, Err: err}
+	}
 	logLine(logFile, "Running npm run build...")
 	if err := c.run(ctx, webDir, logFile, npmName, "run", "build"); err != nil {
 		_ = logFile.Close()
