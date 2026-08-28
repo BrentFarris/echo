@@ -16,15 +16,20 @@ let releaseScrollStreamChunk: (() => void) | null = null;
 
 async function dragToTreeRow(page: Page, source: Locator, target: Locator): Promise<void> {
   await expect(source).toHaveAttribute("draggable", "true");
+  await expect(source).toBeVisible();
+  await expect(target).toBeVisible();
   const sourceBox = await source.boundingBox();
   const targetBox = await target.boundingBox();
   expect(sourceBox).not.toBeNull();
   expect(targetBox).not.toBeNull();
   await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
   await page.mouse.down();
-  await page.mouse.move(sourceBox!.x + sourceBox!.width / 2 + 8, sourceBox!.y + sourceBox!.height / 2, { steps: 2 });
-  await page.mouse.move(targetBox!.x + targetBox!.width / 2, targetBox!.y + targetBox!.height / 2, { steps: 8 });
-  await page.mouse.up();
+  try {
+    await page.mouse.move(sourceBox!.x + sourceBox!.width / 2 + 8, sourceBox!.y + sourceBox!.height / 2, { steps: 2 });
+    await page.mouse.move(targetBox!.x + targetBox!.width / 2, targetBox!.y + targetBox!.height / 2, { steps: 8 });
+  } finally {
+    await page.mouse.up();
+  }
 }
 
 test.beforeAll(async () => {
@@ -315,6 +320,10 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   // Explorer drag/drop moves files into folders while preserving the open tab.
   const renamedBeforeMove = page.locator(".code-tree-row", { hasText: "renamed.py" });
   const workspaceRoot = page.locator('.code-tree-row[data-tree-root="true"]').first();
+  const explorerTree = page.locator("[data-code-tree]:visible").first();
+  await explorerTree.evaluate((element) => { element.scrollTop = 0; });
+  await expect(workspaceRoot).toBeVisible();
+  await expect(renamedBeforeMove).toBeVisible();
   await dragToTreeRow(page, renamedBeforeMove, workspaceRoot);
   await expect.poll(() => existsSync(join(state.workspace, "renamed.py"))).toBe(true);
   await expect.poll(() => existsSync(join(state.workspace, "nested", "renamed.py"))).toBe(false);
@@ -357,6 +366,27 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   // Switching existing tabs updates both Monaco and the tab strip's active state.
   const mainTab = page.getByRole("tab", { name: /main\.go/ });
   const renamedTab = page.getByRole("tab", { name: /renamed\.py/ });
+  const ensureMainTab = async () => {
+    try {
+      await mainTab.waitFor({ state: "visible", timeout: 2_000 });
+      return;
+    } catch {
+      // Route transitions and reloads restore persisted tabs asynchronously.
+      // If main.go was only a preview and was not persisted, reopen it through
+      // the visible Explorer instead of racing the global keyboard handler.
+    }
+
+    const tree = page.locator("[data-code-tree]:visible").first();
+    await expect(tree).toBeVisible();
+    const root = tree.locator('.code-tree-row[data-tree-root="true"]').first();
+    await expect(root).toBeVisible();
+    if (await root.getAttribute("aria-expanded") !== "true") await root.click();
+    await tree.evaluate((element) => { element.scrollTop = 0; });
+    const mainFile = tree.locator(".code-tree-label", { hasText: "main.go" });
+    await expect(mainFile).toBeVisible();
+    await mainFile.dblclick();
+    await expect(mainTab).toBeVisible();
+  };
   await renamedTab.click();
   await expect(renamedTab).toHaveAttribute("aria-selected", "true");
   await expect(renamedTab).toHaveClass(/is-active/);
@@ -474,7 +504,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.keyboard.up("Control");
   await page.getByRole("button", { name: "Explorer", exact: true }).click();
   await expect(page).toHaveURL(/#\/code$/);
-  if (await mainTab.count() === 0) await page.locator(".code-tree-label", { hasText: "main.go" }).dblclick();
+  await ensureMainTab();
   await mainTab.click();
   await expect(page.locator(".view-lines")).toContainText("package main");
 
@@ -595,6 +625,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
 
   await page.keyboard.press("Control+w");
   await page.getByRole("button", { name: "Discard", exact: true }).click();
+  await ensureMainTab();
   await mainTab.click();
   await expect(page.locator(".view-lines")).toContainText("package main");
 
@@ -839,6 +870,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.keyboard.type("// saved by Playwright");
   await page.keyboard.press("Control+s");
   await expect.poll(() => readFileSync(mainPath, "utf8")).toContain("saved by Playwright");
+  await expect(mainTab.locator(".code-tab-dirty")).not.toHaveClass(/is-visible/);
 
   writeFileSync(mainPath, "package main\n\n// external reload\nfunc main() {}\n", "utf8");
   await expect(page.locator(".view-lines")).toContainText("external reload");
