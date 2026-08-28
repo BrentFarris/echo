@@ -224,7 +224,7 @@ func buildCompressedModelHistory(canonical []llm.Message, checkpoint *sessions.C
 	if checkpoint == nil || strings.TrimSpace(checkpoint.Summary) == "" ||
 		checkpoint.ProtectedHeadIndex < 0 || checkpoint.ProtectedHeadIndex >= len(canonical) ||
 		checkpoint.CompactedThrough <= checkpoint.ProtectedHeadIndex || checkpoint.CompactedThrough > len(canonical) {
-		return cloneContextMessages(canonical)
+		return sanitizeContextToolPairs(canonical)
 	}
 	output := make([]llm.Message, 0, checkpoint.ProtectedHeadIndex+2+len(canonical)-checkpoint.CompactedThrough)
 	output = append(output, cloneContextMessages(canonical[:checkpoint.ProtectedHeadIndex+1])...)
@@ -235,7 +235,11 @@ func buildCompressedModelHistory(canonical []llm.Message, checkpoint *sessions.C
 			"Use conversation_history_search when an exact archived detail is needed.\n\n" + strings.TrimSpace(checkpoint.Summary),
 	})
 	output = append(output, cloneContextMessages(canonical[checkpoint.CompactedThrough:])...)
-	return output
+	// Sanitize the history returned to every model-request path, not only the
+	// temporary copies used for compression validation and token accounting.
+	// Otherwise a checkpoint can validate successfully while its retained raw
+	// tail still contains a dangling tool call that the provider will reject.
+	return sanitizeContextToolPairs(output)
 }
 
 func cloneContextMessages(messages []llm.Message) []llm.Message {
@@ -262,6 +266,7 @@ func cloneContextCheckpoint(checkpoint *sessions.ContextCheckpoint) *sessions.Co
 //     injected at the point where the next non-tool message interrupts them;
 //   - tool results with no matching pending call are dropped;
 //   - tool calls without an id are stripped (unusable by any provider).
+//
 // The input is cloned; the canonical transcript is never mutated.
 func sanitizeContextToolPairs(messages []llm.Message) []llm.Message {
 	const stub = "[Tool result unavailable: the exchange was interrupted before it completed]"
@@ -641,7 +646,7 @@ func excerptLongToolOutputs(messages []llm.Message, maxChars int) []llm.Message 
 		if message.Role != llm.RoleTool || len(message.Content) <= maxChars {
 			continue
 		}
-		head := maxChars*3/4
+		head := maxChars * 3 / 4
 		tail := maxChars - head
 		marker := "…[truncated for context compression: middle omitted]"
 		message.Content = strings.TrimSpace(message.Content[:head] + marker + message.Content[len(message.Content)-tail:])
@@ -664,21 +669,32 @@ func estimateSummaryRequestTokens(previous string, chunk []llm.Message) int {
 }
 
 // chunkSummaryUnits splits retired exchanges into summary chunks whose real
-// request size stays under limit, aligning on user-exchange boundaries so tool
-// call/result groups are never split. Units pack into a chunk while the
-// accumulated payload fits; a unit that still overflows the limit is degraded
-// in order: tool outputs pruned, then excerpted; if even that does not fit (a
-// single exchange larger than the whole summary window), the unit is dropped
-// from the summary and recorded so the activity can report it. The raw
-// transcript always retains the full content for recovery search.
+// request size stays under limit. User messages start normal exchange units
+// and remain attached to the first assistant response. Additional assistant
+// rounds start new units, which gives long agent-only tool loops safe split
+// points even when they have no later user messages. Tool results remain
+// attached to the assistant call immediately before them. Units pack into a
+// chunk while the accumulated payload fits; a unit that still overflows the
+// limit is degraded in order: tool outputs excerpted, then pruned; if even that
+// does not fit (a single exchange larger than the whole summary window), the
+// unit is dropped from the summary and recorded so the activity can report it.
+// The raw transcript always retains the full content for recovery search.
 func chunkSummaryUnits(previous string, retired []llm.Message, limit int) (chunks [][]llm.Message, dropped int) {
 	if len(retired) == 0 {
 		return nil, 0
 	}
 	boundaries := []int{0}
+	seenAssistant := retired[0].Role == llm.RoleAssistant
 	for index := 1; index < len(retired); index++ {
-		if retired[index].Role == llm.RoleUser {
+		switch retired[index].Role {
+		case llm.RoleUser:
 			boundaries = append(boundaries, index)
+			seenAssistant = false
+		case llm.RoleAssistant:
+			if seenAssistant {
+				boundaries = append(boundaries, index)
+			}
+			seenAssistant = true
 		}
 	}
 	boundaries = append(boundaries, len(retired))
@@ -695,10 +711,10 @@ func chunkSummaryUnits(previous string, retired []llm.Message, limit int) (chunk
 			current = nil
 		}
 		if !fits(unit) {
-			if pruned := pruneToolOutputs(unit); fits(pruned) {
-				unit = pruned
-			} else if excerpted := excerptLongToolOutputs(unit, 4096); fits(excerpted) {
+			if excerpted := excerptLongToolOutputs(unit, 4096); fits(excerpted) {
 				unit = excerpted
+			} else if pruned := pruneToolOutputs(unit); fits(pruned) {
+				unit = pruned
 			} else {
 				dropped++
 				continue

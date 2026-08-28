@@ -2290,9 +2290,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				// forcing compression against the observed limit and retrying
 				// the round instead of failing the turn.
 				contextLengthRecoveries++
-				if observed := parseObservedContextLimit(err); observed > 0 {
-					settings.ContextLength = observed
-				}
+				settings.ContextLength = contextLengthAfterRejection(settings, err, currentTokens)
 				compressionCooldownRounds = 0
 				updated, result, compressionErr := s.compressActiveContext(ctx, settings, canonical, checkpoint, prefix, toolSchema, turnID, assistantNumber, false, "", observedTokens, usageSource)
 				if updated != nil {

@@ -32,8 +32,11 @@ const (
 var errTruncatedResponse = errors.New("response hit the token limit")
 
 var observedContextLimitPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`"n_ctx"\s*:\s*(\d+)`),
-	regexp.MustCompile(`available context size \((\d+)\)`),
+	regexp.MustCompile(`(?i)"?(?:n_ctx|num_ctx)"?\s*:\s*"?([\d,]+)`),
+	regexp.MustCompile(`(?i)available context size\s*(?:is|of|:)?\s*\(?([\d,]+)`),
+	regexp.MustCompile(`(?i)maximum context length\s*(?:is|of|:)?\s*([\d,]+)`),
+	regexp.MustCompile(`(?i)context window(?: size| length)?\s*(?:is|of|:)?\s*([\d,]+)`),
+	regexp.MustCompile(`(?i)configured limit of\s*([\d,]+)\s*tokens?`),
 }
 
 // parseObservedContextLimit extracts the endpoint's real context window from a
@@ -48,13 +51,45 @@ func parseObservedContextLimit(err error) int {
 	for _, pattern := range observedContextLimitPatterns {
 		match := pattern.FindStringSubmatch(text)
 		if len(match) > 1 {
-			value, convErr := strconv.Atoi(match[1])
+			value, convErr := strconv.Atoi(strings.ReplaceAll(match[1], ",", ""))
 			if convErr == nil && value > 0 {
 				return value
 			}
 		}
 	}
 	return 0
+}
+
+// contextLengthAfterRejection returns the context window to use for a retry
+// after the provider rejects a request as too large. A parsed provider limit is
+// authoritative but never allowed to increase the configured limit. When the
+// error omits its limit, reduce the estimated rejected request by 25 percent;
+// repeated bounded recoveries can then converge instead of retrying against
+// the same optimistic configuration unchanged.
+func contextLengthAfterRejection(settings llm.Settings, err error, promptTokens int) int {
+	current := max(1, settings.ContextLength)
+	if observed := parseObservedContextLimit(err); observed > 0 {
+		return min(current, observed)
+	}
+
+	estimatedRequest := promptTokens + max(0, settings.MaxTokens)
+	if estimatedRequest <= 0 {
+		estimatedRequest = current
+	}
+	target := estimatedRequest * 3 / 4
+	if target >= current {
+		target = current * 3 / 4
+	}
+	// Keep enough room for a useful completion when that floor still lies
+	// below the rejected configured window.
+	floor := max(2048, settings.MaxTokens+1024)
+	if floor < current && target < floor {
+		target = floor
+	}
+	if target >= current {
+		target = current - 1
+	}
+	return max(1, target)
 }
 
 func finishReasonError(finishReason string, hasToolCalls bool) error {

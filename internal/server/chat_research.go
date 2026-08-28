@@ -909,13 +909,11 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 				// forcing compression against the observed limit and retrying
 				// the round instead of failing the agent.
 				contextLengthRecoveries++
-				if observed := parseObservedContextLimit(err); observed > 0 {
-					settings.ContextLength = observed
-				}
-			compressionCooldownRounds = 0
-			r.setAgentPhase(agent, "compressing context")
-			updated, compressionErr := r.compressAgentContext(ctx, agent, job, settings, canonical, checkpoint, toolSchema, observedTokens, usageSource, round)
-			r.setAgentPhase(agent, "investigating")
+				settings.ContextLength = contextLengthAfterRejection(settings, err, currentTokens)
+				compressionCooldownRounds = 0
+				r.setAgentPhase(agent, "compressing context")
+				updated, compressionErr := r.compressAgentContext(ctx, agent, job, settings, canonical, checkpoint, toolSchema, observedTokens, usageSource, round)
+				r.setAgentPhase(agent, "investigating")
 				if updated != nil {
 					checkpoint = updated
 				}

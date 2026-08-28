@@ -241,8 +241,33 @@ func TestCompressContextRepairsMalformedHistoryInsteadOfFailing(t *testing.T) {
 	}
 	// The rebuilt context must validate (stub injected for the dangling call).
 	rebuilt := buildCompressedModelHistory(canonical, result.Checkpoint)
-	if err := validateContextMessageOrdering(sanitizeContextToolPairs(rebuilt)); err != nil {
+	if err := validateContextMessageOrdering(rebuilt); err != nil {
 		t.Fatalf("rebuilt compressed history should validate: %v", err)
+	}
+	if rebuilt[len(rebuilt)-1].Role != llm.RoleTool || rebuilt[len(rebuilt)-1].ToolCallID != "call-interrupted" {
+		t.Fatalf("model-bound history did not receive the missing tool-result stub: %#v", rebuilt)
+	}
+}
+
+func TestCompressContextChunksAgentOnlyHistory(t *testing.T) {
+	settings := compressionTestSettings()
+	canonical := []llm.Message{{Role: llm.RoleUser, Content: "Build the feature and keep going."}}
+	for index := 0; index < 12; index++ {
+		canonical = append(canonical,
+			llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: fmt.Sprintf("call-%d", index), Type: "function", Function: llm.FunctionCall{Name: "read_file"}}}},
+			llm.Message{Role: llm.RoleTool, ToolCallID: fmt.Sprintf("call-%d", index), Content: "ok"},
+			llm.Message{Role: llm.RoleAssistant, Content: strings.Repeat("analysis and implementation detail ", 300)},
+		)
+	}
+	completer := &contextCompressionCompleter{summary: "## Goal\nContinue."}
+	server := &Server{llmCompleter: completer, llmSettings: settings}
+
+	result, err := server.compressContext(context.Background(), settings, canonical, nil, nil, nil, 0, "estimated")
+	if err != nil {
+		t.Fatalf("agent-only history should be split into summary chunks: %v", err)
+	}
+	if result.ChunkCount < 2 || len(completer.requests) < 2 {
+		t.Fatalf("expected multiple summary chunks for agent-only history: result=%#v requests=%d", result, len(completer.requests))
 	}
 }
 
@@ -306,6 +331,23 @@ func TestCompressionChunkingDropsExchangeThatCannotFitSummaryWindow(t *testing.T
 	}
 	if len(chunks) != 1 || len(chunks[0]) != 2 || chunks[0][0].Role != llm.RoleUser {
 		t.Fatalf("expected only the small exchange to be summarized: %#v", chunks)
+	}
+}
+
+func TestCompressionChunkingExcerptsToolOutputBeforePruningIt(t *testing.T) {
+	toolGroup := []llm.Message{
+		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call-large", Type: "function", Function: llm.FunctionCall{Name: "read_file"}}}},
+		{Role: llm.RoleTool, ToolCallID: "call-large", Content: strings.Repeat("result", 3000)},
+	}
+	excerpted := excerptLongToolOutputs(toolGroup, 4096)
+	limit := estimateSummaryRequestTokens("", excerpted)
+	chunks, dropped := chunkSummaryUnits("", toolGroup, limit)
+	if dropped != 0 || len(chunks) != 1 || len(chunks[0]) != 2 {
+		t.Fatalf("expected one excerpted tool group, got dropped=%d chunks=%#v", dropped, chunks)
+	}
+	content := chunks[0][1].Content
+	if !strings.Contains(content, "truncated for context compression") || content == "[Old tool output cleared to save context space]" {
+		t.Fatalf("expected the bounded head/tail excerpt before the pruning fallback, got %q", content)
 	}
 }
 

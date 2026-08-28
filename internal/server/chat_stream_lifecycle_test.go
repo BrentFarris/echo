@@ -184,12 +184,30 @@ func TestChatBoundsLengthFinishReasonContinues(t *testing.T) {
 func TestParseObservedContextLimit(t *testing.T) {
 	for message, want := range map[string]int{
 		`llm endpoint returned 400 Bad Request: {"error":{"code":400,"message":"request (131887 tokens) exceeds the available context size (131072 tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":131887,"n_ctx":131072}}`: 131072,
-		`llm endpoint returned 400 Bad Request: request exceeds the available context size (65536)`: 65536,
-		"llm endpoint returned 500 Internal Server Error": 0,
+		`llm endpoint returned 400 Bad Request: request exceeds the available context size (65536)`:       65536,
+		`This model's maximum context length is 128,000 tokens. Your messages resulted in 130000 tokens.`: 128000,
+		`request exceeds context window size: 32768 tokens`:                                               32768,
+		`prompt exceeds the configured limit of 16,384 tokens`:                                            16384,
+		"llm endpoint returned 500 Internal Server Error":                                                 0,
 	} {
 		if got := parseObservedContextLimit(fmt.Errorf("%s", message)); got != want {
 			t.Fatalf("parseObservedContextLimit(%q) = %d, want %d", message, got, want)
 		}
+	}
+}
+
+func TestContextLengthAfterRejectionUsesConservativeFallback(t *testing.T) {
+	settings := llm.DefaultSettings()
+	settings.ContextLength = 200000
+	settings.MaxTokens = 1024
+
+	parsed := contextLengthAfterRejection(settings, fmt.Errorf("maximum context length is 65,536 tokens"), 40000)
+	if parsed != 65536 {
+		t.Fatalf("expected the parsed provider limit, got %d", parsed)
+	}
+	fallback := contextLengthAfterRejection(settings, fmt.Errorf("too many tokens"), 40000)
+	if fallback >= settings.ContextLength || fallback >= 40000+settings.MaxTokens || fallback < settings.MaxTokens+1024 {
+		t.Fatalf("expected a smaller but usable fallback context window, got %d", fallback)
 	}
 }
 
@@ -306,7 +324,7 @@ func TestChatBacksOffAfterFailedCompression(t *testing.T) {
 	if err := conn.WriteJSON(map[string]any{
 		"type": "chat_send", "workspaceId": workspace.ID, "chatId": chatID,
 		"requestId": "compression-backoff-request",
-		"message":    "inspect " + strings.Repeat("x", 140000),
+		"message":   "inspect " + strings.Repeat("x", 140000),
 	}); err != nil {
 		t.Fatal(err)
 	}
