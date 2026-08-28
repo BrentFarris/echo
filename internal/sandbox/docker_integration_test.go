@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -89,9 +90,10 @@ func TestDockerIntegrationLifecycle(t *testing.T) {
 		t.Fatalf("%v (daemon cause: %v)", err, errors.Unwrap(err))
 	}
 
+	expectedUID := strconv.Itoa(sandboxHostUID())
 	result, err := engine.Exec(ctx, state, ExecRequest{
 		Role: "workbench", WorkingDirectory: "/workspace/root-main", OutputLimit: 64 << 10,
-		Command: []string{"/bin/bash", "-lc", "set -eu; test \"$(uname -s)\" = Linux; test \"$(id -u)\" = 1000; test \"$HTTP_PROXY\" = http://gateway:3128; test ! -w .echo; test ! -e /var/run/docker.sock; sudo -n true; printf guest-write > integration-write.txt; printf '%s' \"$(uname -s)\""},
+		Command: []string{"/bin/bash", "-lc", "set -eu; test \"$(uname -s)\" = Linux; test \"$(id -u)\" = " + expectedUID + "; test \"$HTTP_PROXY\" = http://gateway:3128; test ! -w .echo; test ! -e /var/run/docker.sock; sudo -n true; printf guest-write > integration-write.txt; printf '%s' \"$(uname -s)\""},
 	})
 	if err != nil || result.ExitCode != 0 || string(result.Stdout) != "Linux" {
 		t.Fatalf("workbench execution failed: exit=%d stdout=%q stderr=%q err=%v", result.ExitCode, result.Stdout, result.Stderr, err)
@@ -101,6 +103,13 @@ func TestDockerIntegrationLifecycle(t *testing.T) {
 	}
 	if _, _, err := engine.serviceRequest(ctx, state, "workbench", agentPort, "GET", "/v1/health", "wrong-token", nil, 64<<10); err == nil {
 		t.Fatal("workbench agent accepted an invalid management token")
+	}
+	desktopIdentity, err := engine.Exec(ctx, state, ExecRequest{
+		Role: "desktop", OutputLimit: 64 << 10,
+		Command: []string{"/bin/bash", "-lc", "printf '%s' \"$(id -u)\""},
+	})
+	if err != nil || desktopIdentity.ExitCode != 0 || string(desktopIdentity.Stdout) != expectedUID {
+		t.Fatalf("desktop user mapping failed: expected=%s exit=%d stdout=%q stderr=%q err=%v", expectedUID, desktopIdentity.ExitCode, desktopIdentity.Stdout, desktopIdentity.Stderr, err)
 	}
 	desktopStream, err := engine.OpenDesktop(ctx, state)
 	if err != nil {

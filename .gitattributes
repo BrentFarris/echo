@@ -1,5 +1,7 @@
 /install-echo-linux.sh text eol=lf
 /install-echo-macos.command text eol=lf
 /scripts/install-and-run-unix.sh text eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf
 /install-echo-windows.cmd text eol=crlf
 /scripts/install-and-run-windows.ps1 text eol=crlf
