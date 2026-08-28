@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -147,6 +148,70 @@ func WithLogger(logger *slog.Logger) ClientOption {
 
 // Complete performs a single non-streaming chat completion request.
 func (c *Client) Complete(ctx context.Context, request ChatRequest) (ChatResponse, error) {
+	response, err := c.completeNonStreaming(ctx, request)
+	if err != nil && isContextCompressionRequest(request) && isRetryableCompletionError(err) {
+		// Some OpenAI-compatible backends only accept chat completions as SSE
+		// streams. A hung non-streaming summary call would otherwise abort the
+		// whole context compression (and its turn), so retry it streamed.
+		c.logger.Debug("llm_complete_fallback", "model", request.Model, "reason", err.Error())
+		streamed, streamErr := c.completeStreaming(ctx, request)
+		if streamErr != nil {
+			return ChatResponse{}, fmt.Errorf("%w (streaming fallback: %v)", err, streamErr)
+		}
+		return streamed, nil
+	}
+	if err == nil && isContextCompressionRequest(request) && compressionContentEmpty(response) {
+		// The endpoint accepted the non-streaming request but produced no
+		// usable content. Broken or budget-starved non-streaming paths are
+		// common on local inference servers, so retry the same request as a
+		// streamed completion before reporting an empty summary. If the
+		// streamed attempt also fails, return the empty response so the
+		// caller's retry/continue logic can nudge the conversation.
+		c.logger.Debug("llm_complete_empty_fallback", "model", request.Model)
+		if streamed, streamErr := c.completeStreaming(ctx, request); streamErr == nil {
+			return streamed, nil
+		} else {
+			c.logger.Debug("llm_complete_empty_fallback_failed", "model", request.Model, "reason", streamErr.Error())
+		}
+	}
+	return response, err
+}
+
+// compressionContentEmpty reports whether a completion response carries no
+// usable answer content.
+func compressionContentEmpty(response ChatResponse) bool {
+	if len(response.Choices) == 0 {
+		return true
+	}
+	message := response.Choices[0].Message
+	return strings.TrimSpace(message.Content) == "" && len(message.ToolCalls) == 0
+}
+
+// isRetryableCompletionError reports whether a non-streaming completion failure
+// is worth retrying as a streaming request. Context cancellation from the user
+// stopping the chat is not retried; timeouts and connection failures are.
+func isRetryableCompletionError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"context deadline exceeded",
+		"timeout",
+		"connection reset",
+		"eof",
+		"bad gateway",
+		"service unavailable",
+		"gateway timeout",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) completeNonStreaming(ctx context.Context, request ChatRequest) (ChatResponse, error) {
 	request.Stream = false
 	request.StreamOptions = nil
 
@@ -197,6 +262,75 @@ func (c *Client) Complete(ctx context.Context, request ChatRequest) (ChatRespons
 		c.logger.Debug("llm_response", "status", response.StatusCode, "request_id", serverRequestID, "client_request_id", clientRequestID, "payload_bytes", len(data), "usage", chatResponse.Usage)
 	}
 	return chatResponse, nil
+}
+
+// completeStreaming runs a completion as an SSE stream and folds the events
+// into a single ChatResponse. It is used when a non-streaming request is not
+// supported by the endpoint.
+func (c *Client) completeStreaming(ctx context.Context, request ChatRequest) (ChatResponse, error) {
+	stream := c.StreamChat(ctx, request)
+	response := ChatResponse{Model: request.Model}
+	var firstErr error
+	for event := range stream.Events {
+		switch event.Type {
+		case EventToken:
+			if len(response.Choices) == 0 {
+				response.Choices = []ChatChoice{{}}
+			}
+			response.Choices[0].Message.Content += event.Content
+		case EventToolCall:
+			if event.ToolCall != nil && event.ToolCall.Index < 1 {
+				if len(response.Choices) == 0 {
+					response.Choices = []ChatChoice{{}}
+				}
+				called := response.Choices[0].Message.ToolCalls
+				if event.ToolCall.Index >= len(called) {
+					called = append(called, make([]ToolCall, event.ToolCall.Index-len(called)+1)...)
+				}
+				called[event.ToolCall.Index] = mergeStreamToolDelta(called[event.ToolCall.Index], *event.ToolCall)
+			}
+		case EventUsage:
+			if event.Usage != nil {
+				usage := *event.Usage
+				response.Usage = &usage
+			}
+		case EventComplete:
+			if len(response.Choices) == 0 {
+				response.Choices = []ChatChoice{{}}
+			}
+			response.Choices[0].FinishReason = event.FinishReason
+			if event.Usage != nil {
+				usage := *event.Usage
+				response.Usage = &usage
+			}
+		case EventError:
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%s", event.Error)
+			}
+		}
+	}
+	if firstErr != nil {
+		return ChatResponse{}, firstErr
+	}
+	if len(response.Choices) == 0 {
+		return ChatResponse{}, errors.New("streamed completion returned no choices")
+	}
+	return response, nil
+}
+
+// mergeStreamToolDelta folds one streamed tool-call delta into an accumulated
+// ToolCall. It mirrors the assistant-turn assembly in the chat loop so the
+// streaming fallback produces the same shape as a non-streaming response.
+func mergeStreamToolDelta(existing ToolCall, delta ToolCallDelta) ToolCall {
+	if existing.ID == "" {
+		existing.ID = delta.ID
+	}
+	if existing.Type == "" {
+		existing.Type = delta.Type
+	}
+	existing.Function.Name += delta.Function.Name
+	existing.Function.Arguments += delta.Function.Arguments
+	return existing
 }
 
 func isContextCompressionRequest(request ChatRequest) bool {

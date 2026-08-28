@@ -2127,6 +2127,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 	generatedVideos := make(map[string]tools.AttachedVideo)
 	emptyAssistantRetries := 0
 	transientStreamRetries := 0
+	truncationContinues := 0
 	planMode := mode.ID == agentmodes.PlanID
 	var research *chatResearchRun
 	if researchEnabled {
@@ -2140,7 +2141,9 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 	forceFinalWithoutTools := false
 	var observedTokens int
 	usageSource := "estimated"
-	compressionCooldown := false
+	compressionCooldownRounds := 0
+	contextLengthRecoveries := 0
+	thinkingSuppressed := false
 	for assistantNumber := 0; ; assistantNumber++ {
 		if ctx.Err() != nil {
 			s.finish(turnID, "stopped", "", canonical, checkpoint)
@@ -2157,8 +2160,10 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 		messages := append(cloneContextMessages(prefix), buildCompressedModelHistory(canonical, checkpoint)...)
 		currentTokens := contextRequestTokens(settings, messages, toolSchema)
 		hardLimitPreflight := currentTokens+settings.MaxTokens > settings.ContextLength
-		coolingDown := compressionCooldown
-		compressionCooldown = false
+		coolingDown := compressionCooldownRounds > 0
+		if coolingDown {
+			compressionCooldownRounds--
+		}
 		if hardLimitPreflight && !manualCompression && !settings.CompressionEnabled() {
 			s.finish(turnID, "error", "the next request would exceed the endpoint context window and automatic context compression is disabled", canonical, checkpoint)
 			return
@@ -2173,16 +2178,24 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				}
 			}
 			updated, result, compressionErr := s.compressActiveContext(ctx, compressionSettings, canonical, checkpoint, prefix, toolSchema, turnID, assistantNumber, manualCompression, manualCompressionID, observedTokens, usageSource)
-			compressionCooldown = true
 			if updated != nil {
 				checkpoint = updated
 				messages = append(cloneContextMessages(prefix), buildCompressedModelHistory(canonical, checkpoint)...)
 				observedTokens = result.AfterTokens
 				usageSource = result.UsageSource
+				compressionCooldownRounds = 1
 				if !forceFinalWithoutTools {
 					toolSchema = s.manager.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: research != nil, SandboxGUI: s.manager.server.sandboxGUIEnabled(s.workspace.ID), WorkspaceID: s.workspace.ID})
 					toolSchema = append(toolSchema, contextHistorySearchToolSchema())
 				}
+			} else if compressionErr != nil {
+				// The attempt failed or could not reclaim anything (summary
+				// error, empty response, or the recent tail alone exceeds the
+				// target). Back off for several rounds instead of retrying the
+				// same failing attempt every other round until the hard limit
+				// trips. Hard-limit preflights below still run every round as
+				// the safety valve.
+				compressionCooldownRounds = compressionFailureCooldownRounds
 			}
 			currentTokens = contextRequestTokens(settings, messages, toolSchema)
 			if currentTokens+settings.MaxTokens > settings.ContextLength {
@@ -2198,7 +2211,11 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 		if len(toolSchema) > 0 {
 			requestOptions = append(requestOptions, llm.WithTools(toolSchema))
 		}
-		turnRequest, requestErr := llm.NewChatRequest(settings, messages, requestOptions...)
+		requestSettings := settings
+		if thinkingSuppressed {
+			requestSettings = withoutThinkingSettings(settings)
+		}
+		turnRequest, requestErr := llm.NewChatRequest(requestSettings, messages, requestOptions...)
 		if requestErr != nil {
 			s.finish(turnID, "error", requestErr.Error(), canonical, checkpoint)
 			return
@@ -2266,6 +2283,34 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				s.finish(turnID, "stopped", "", canonical, checkpoint)
 				return
 			}
+			if llm.IsContextLengthExceeded(err) && contextLengthRecoveries < maxContextLengthRecoveries {
+				// The provider rejected the request as too large. This happens
+				// when the configured Context Length overestimates the model's
+				// real window, so the preflight never triggered. Recover by
+				// forcing compression against the observed limit and retrying
+				// the round instead of failing the turn.
+				contextLengthRecoveries++
+				if observed := parseObservedContextLimit(err); observed > 0 {
+					settings.ContextLength = observed
+				}
+				compressionCooldownRounds = 0
+				updated, result, compressionErr := s.compressActiveContext(ctx, settings, canonical, checkpoint, prefix, toolSchema, turnID, assistantNumber, false, "", observedTokens, usageSource)
+				if updated != nil {
+					checkpoint = updated
+					observedTokens = result.AfterTokens
+					usageSource = result.UsageSource
+				}
+				recoveredMessages := append(cloneContextMessages(prefix), buildCompressedModelHistory(canonical, checkpoint)...)
+				if contextRequestTokens(settings, recoveredMessages, toolSchema)+settings.MaxTokens > settings.ContextLength {
+					detail := "the compressed context still exceeds the endpoint context window"
+					if compressionErr != nil {
+						detail = "context compression could not reclaim enough space: " + compressionErr.Error()
+					}
+					s.finish(turnID, "error", "the next request would exceed the endpoint context window and "+detail, canonical, checkpoint)
+					return
+				}
+				continue
+			}
 			if isEmptyAssistantResponse(streamResult.Content, streamResult.ToolCalls) && transientStreamRetries < maxTransientStreamRetries {
 				transientStreamRetries++
 				canonical = append(canonical, transientStreamRetryMessage())
@@ -2275,10 +2320,29 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			return
 		}
 		if finishErr := finishReasonError(streamResult.FinishReason, len(streamResult.ToolCalls) > 0); finishErr != nil {
+			if isTruncationFinishError(finishErr) && truncationContinues < maxTruncationContinues {
+				// The model hit its output token limit. Keep the partial turn
+				// and auto-continue from where it stopped instead of failing
+				// the whole turn. Tool calls are dropped: a truncated call has
+				// invalid partial arguments that providers reject on replay.
+				// Thinking is suppressed for the continuation so reasoning
+				// cannot consume the output budget again before any answer or
+				// tool call is produced.
+				truncationContinues++
+				thinkingSuppressed = true
+				canonical = append(canonical, llm.Message{Role: llm.RoleAssistant, Content: streamResult.Content})
+				canonical = append(canonical, truncationContinueMessage())
+				continue
+			}
+			if isTruncationFinishError(finishErr) {
+				s.finish(turnID, "error", truncationExhaustedError(maxTruncationContinues+1).Error(), canonical, checkpoint)
+				return
+			}
 			s.finish(turnID, "error", finishErr.Error(), canonical, checkpoint)
 			return
 		}
 		transientStreamRetries = 0
+		thinkingSuppressed = false
 		if isEmptyAssistantResponse(streamResult.Content, streamResult.ToolCalls) {
 			if emptyAssistantRetries >= maxEmptyAssistantRetries {
 				s.finish(turnID, "error", emptyAssistantResponseError().Error(), canonical, checkpoint)
