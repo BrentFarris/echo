@@ -5,7 +5,7 @@ import { openAddWorkspaceModal, openWorkspaceDropdown } from "../../js/workspace
 import { on as onSocket, onState as onSocketState, send as sendSocket } from "../../js/ws.js";
 import * as editorAPI from "./editorApi";
 import type { APIError } from "./editorApi";
-import { languageForPath, monaco, initVimMode } from "./language";
+import { languageForPath, monaco, initVimMode, VimMode } from "./language";
 import { EchoLSPClient, fromLSPRange, type LSPDocumentState } from "./lspClient";
 import type { LSPProfile, LSPStatus, LSPWorkspaceEdit, WorkspaceLSPResponse } from "./lspTypes";
 import { loadDiff as loadGitDiff } from "./gitApi";
@@ -617,7 +617,25 @@ class CodeView {
     });
     this.editor.onDidChangeCursorPosition(() => this.renderStatus());
     this.editor.onDidScrollChange(() => this.schedulePersist());
-    if (this.enableVimKeybindings) initVimMode(this.editor);
+    const vimStatusBar = this.enableVimKeybindings
+      ? (() => {
+          const el = document.createElement("div");
+          el.style.cssText = "position:absolute;bottom:0;left:0;right:0;height:24px;display:none;z-index:1000;background:#333;color:#ccc;font-size:12px;padding:2px 8px;font-family:monospace;";
+          this.root.querySelector<HTMLElement>(".code-editor-column")!.appendChild(el);
+          return el;
+        })()
+      : null;
+    if (this.enableVimKeybindings && vimStatusBar) {
+      initVimMode(this.editor, vimStatusBar);
+      // Register :w ex command to save the current buffer immediately
+      const vimApi = (VimMode as any).Vim;
+      if (vimApi?.defineEx) {
+        vimApi.defineEx("write", "w", () => {
+          console.log("[vim] :w triggered");
+          void this.persistNow();
+        });
+      }
+    }
     const diffHost = this.root.querySelector<HTMLElement>("[data-monaco-diff-host]")!;
     this.diffEditor = monaco.editor.createDiffEditor(diffHost, {
       theme: this.mediaTheme.matches ? "vs-dark" : "vs",
@@ -653,7 +671,7 @@ class CodeView {
     });
     this.diffEditor.getModifiedEditor().onDidChangeCursorPosition(() => this.renderStatus());
     this.diffEditor.getModifiedEditor().onDidScrollChange(() => this.schedulePersist());
-    if (this.enableVimKeybindings) initVimMode(this.diffEditor.getModifiedEditor());
+    if (this.enableVimKeybindings && vimStatusBar) initVimMode(this.diffEditor.getModifiedEditor(), vimStatusBar);
     this.updateDiffLayoutState();
     this.editorOpener = monaco.editor.registerEditorOpener({
       openCodeEditor: (_source, resource, selectionOrPosition) => this.openNavigationTarget(resource, selectionOrPosition),
@@ -2612,6 +2630,9 @@ class CodeView {
       this.setMobileExplorer(false);
       return;
     }
+    // When vim mode is active and the editor has text focus, let monaco-vim
+    // handle all keystrokes (normal-mode commands, /, :, Ctrl+N/P, etc.).
+    if (this.enableVimKeybindings && this.activeCodeEditor()?.hasTextFocus()) return;
     const modifier = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
     const activeEditor = this.activeCodeEditor();

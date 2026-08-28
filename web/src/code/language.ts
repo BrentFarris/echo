@@ -19,6 +19,7 @@ import "monaco-editor/editor/contrib/gotoSymbol/browser/goToCommands.js";
 import "monaco-editor/editor/contrib/hover/browser/hoverContribution.js";
 import "monaco-editor/editor/contrib/parameterHints/browser/parameterHints.js";
 import "monaco-editor/editor/contrib/rename/browser/rename.js";
+import "monaco-editor/editor/contrib/find/browser/findController.js";
 import "monaco-editor/editor/contrib/wordOperations/browser/wordOperations.js";
 import "monaco-editor/editor/contrib/suggest/browser/suggestController.js";
 import "monaco-editor/editor/standalone/browser/referenceSearch/standaloneReferenceSearch.js";
@@ -87,6 +88,6 @@ export function languageForPath(filePath: string, profiles: LSPProfile[] = []): 
   return language;
 }
 
-import { initVimMode } from "monaco-vim";
+import { initVimMode, VimMode } from "monaco-vim";
 
-export { monaco, initVimMode };
+export { monaco, initVimMode, VimMode };
