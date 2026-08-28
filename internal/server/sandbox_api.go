@@ -346,7 +346,7 @@ func writeSandboxError(w http.ResponseWriter, err error) {
 		status = http.StatusBadRequest
 	case "setup_approval_required", "desktop_control_conflict", "user_control_active", "network_grant_exists", "network_alias_conflict", "sandbox_transitioning", "sandbox_protocol_mismatch":
 		status = http.StatusConflict
-	case "sandbox_unavailable", "docker_unavailable", "docker_linux_engine_required", "docker_architecture_unsupported", "sandbox_images_missing", "desktop_unavailable", "sandbox_agent_unavailable", "sandbox_service_unavailable", "egress_unavailable":
+	case "sandbox_unavailable", "docker_unavailable", "docker_linux_engine_required", "docker_architecture_unsupported", "sandbox_images_missing", "image_pull_failed", "desktop_unavailable", "sandbox_agent_unavailable", "sandbox_service_unavailable", "egress_unavailable":
 		status = http.StatusServiceUnavailable
 	}
 	message := err.Error()

@@ -149,11 +149,11 @@ func (e *DockerEngine) Pull(ctx context.Context, images ImageSet, progress func(
 		}
 		response, err := e.client.ImagePull(ctx, reference, client.ImagePullOptions{Platforms: []ocispec.Platform{{OS: "linux", Architecture: "amd64"}}})
 		if err != nil {
-			return Wrap("image_pull_failed", "Could not pull the "+role+" sandbox image", err)
+			return imagePullError(role, reference, err)
 		}
 		if err := response.Wait(ctx); err != nil {
 			_ = response.Close()
-			return Wrap("image_pull_failed", "Could not pull the "+role+" sandbox image", err)
+			return imagePullError(role, reference, err)
 		}
 		_ = response.Close()
 		if progress != nil {
@@ -161,6 +161,24 @@ func (e *DockerEngine) Pull(ctx context.Context, images ImageSet, progress func(
 		}
 	}
 	return nil
+}
+
+func imagePullError(role, reference string, cause error) error {
+	message := fmt.Sprintf("Could not pull the %s sandbox image %q", role, reference)
+	detail := strings.ToLower(cause.Error())
+	switch {
+	case strings.Contains(detail, "denied"), strings.Contains(detail, "unauthorized"):
+		message += ": the registry denied access; verify that the image is published publicly"
+	case strings.Contains(detail, "manifest unknown"), strings.Contains(detail, "not found"):
+		message += ": the image or tag is not published"
+	case errors.Is(cause, context.Canceled):
+		message += ": the pull was canceled"
+	case errors.Is(cause, context.DeadlineExceeded):
+		message += ": the registry request timed out"
+	default:
+		message += ": Docker could not download it; check Docker's registry and proxy connectivity"
+	}
+	return Wrap("image_pull_failed", message, cause)
 }
 
 func (e *DockerEngine) Ensure(ctx context.Context, spec WorkspaceSpec, state MachineState, secrets RuntimeSecrets) (MachineState, error) {

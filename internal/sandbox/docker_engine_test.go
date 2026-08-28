@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -46,6 +47,28 @@ func TestChromiumSeccompProfileExtendsDefaultWithOnlyNamespaceCalls(t *testing.T
 	}
 	if !found {
 		t.Fatal("Chromium namespace seccomp rule is missing")
+	}
+}
+
+func TestImagePullErrorIdentifiesReferenceAndAction(t *testing.T) {
+	reference := "ghcr.io/brentfarris/echo-sandbox-egress:protocol-1"
+	tests := []struct {
+		cause error
+		want  string
+	}{
+		{errors.New("pull access denied"), "published publicly"},
+		{errors.New("manifest unknown"), "image or tag is not published"},
+		{context.DeadlineExceeded, "registry request timed out"},
+		{errors.New("proxyconnect tcp: connection refused"), "registry and proxy connectivity"},
+	}
+	for _, test := range tests {
+		err := imagePullError("gateway", reference, test.cause)
+		if ErrorCode(err) != "image_pull_failed" || !strings.Contains(err.Error(), reference) || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("imagePullError(%v) = %q", test.cause, err)
+		}
+		if !errors.Is(err, test.cause) {
+			t.Fatalf("imagePullError(%v) did not retain its cause", test.cause)
+		}
 	}
 }
 

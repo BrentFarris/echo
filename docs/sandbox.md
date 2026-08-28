@@ -12,6 +12,8 @@ The v1 acceptance targets are:
 
 Echo diagnoses Docker but never installs or reconfigures it. Podman, ARM images, hardware-VM isolation, and portable per-volume disk quotas are not part of v1.
 
+Official nightly binaries embed immutable GHCR digest references. Builds made directly from the source tree use the public `protocol-1` channel for each image, allowing the one-click source launchers to pull protocol-compatible images without requiring a local Docker build. CI moves that channel only after the image test and scan stages pass; the packaged nightly binaries continue to use the exact digests produced by that run.
+
 ## What is isolated
 
 Each enabled workspace gets three `linux/amd64` containers on a dedicated internal network:
@@ -124,7 +126,7 @@ ECHO_SANDBOX_INTEGRATION=1 go test ./internal/sandbox -run TestDockerIntegration
 
 Development builds intentionally use local `:dev` tags. Nightly CI builds/publishes all three images first, runs the real Docker acceptance test, scans each image, emits SPDX SBOM/license data, and embeds immutable `name@sha256:digest` references into Windows, Linux, and macOS binaries through Go linker values.
 
-Each image carries an OCI source label that links its GHCR package to this public repository. CI logs out of GHCR and verifies that every digest is anonymously pullable before releasing binaries; repository/package visibility must remain inherited and public.
+Each image carries an OCI source label that links its GHCR package to this public repository. GitHub creates a container package as private on its first publication, so the package owner must change each of the three packages to **Public** once in its GHCR package settings. CI uses a clean anonymous Docker configuration to verify every digest and the source-build `protocol-1` tags before releasing binaries; later releases fail closed if package visibility regresses.
 
 The release-blocking Windows job expects a self-hosted runner labeled `self-hosted`, `Windows`, `X64`, and `echo-sandbox`, with Docker Desktop already running Linux containers. Echo's installer still installs only Echo.
 

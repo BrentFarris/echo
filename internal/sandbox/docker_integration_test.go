@@ -23,6 +23,15 @@ func TestDockerIntegrationLifecycle(t *testing.T) {
 	if os.Getenv("ECHO_SANDBOX_INTEGRATION") != "1" {
 		t.Skip("set ECHO_SANDBOX_INTEGRATION=1 after building the sandbox images")
 	}
+	previousImages := BuildImages()
+	WorkbenchImage = "echo-sandbox-workbench:dev"
+	DesktopImage = "echo-sandbox-desktop:dev"
+	GatewayImage = "echo-sandbox-egress:dev"
+	t.Cleanup(func() {
+		WorkbenchImage = previousImages.Workbench
+		DesktopImage = previousImages.Desktop
+		GatewayImage = previousImages.Gateway
+	})
 	engine, err := NewDockerEngine()
 	if err != nil {
 		t.Fatal(err)

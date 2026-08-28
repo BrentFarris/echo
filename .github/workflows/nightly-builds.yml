@@ -272,13 +272,24 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Verify released digests are anonymously pullable
+      - name: Publish source-build protocol channel
         shell: bash
         run: |
-          docker logout ghcr.io
-          docker pull "${{ steps.refs.outputs.workbench }}"
-          docker pull "${{ steps.refs.outputs.desktop }}"
-          docker pull "${{ steps.refs.outputs.gateway }}"
+          docker buildx imagetools create --tag "${{ steps.names.outputs.workbench }}:protocol-1" "${{ steps.refs.outputs.workbench }}"
+          docker buildx imagetools create --tag "${{ steps.names.outputs.desktop }}:protocol-1" "${{ steps.refs.outputs.desktop }}"
+          docker buildx imagetools create --tag "${{ steps.names.outputs.gateway }}:protocol-1" "${{ steps.refs.outputs.gateway }}"
+
+      - name: Verify released images are anonymously pullable
+        shell: bash
+        run: |
+          anonymous_config="$(mktemp -d)"
+          trap 'rm -rf "$anonymous_config"' EXIT
+          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.refs.outputs.workbench }}"
+          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.refs.outputs.desktop }}"
+          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.refs.outputs.gateway }}"
+          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.names.outputs.workbench }}:protocol-1"
+          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.names.outputs.desktop }}:protocol-1"
+          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.names.outputs.gateway }}:protocol-1"
 
   windows-sandbox-acceptance:
     name: Windows Docker Desktop sandbox acceptance

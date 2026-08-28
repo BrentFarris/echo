@@ -22,12 +22,14 @@ const (
 	SetupRecipePath = ".echo/sandbox/setup.sh"
 )
 
-// Image references are replaced with immutable digest references by release
-// builds. The development defaults intentionally name local-only image tags.
+// Release builds replace these source-build defaults with immutable digest
+// references. Source builds use the public channel for this protocol version
+// so the one-click installers can pull compatible images without requiring a
+// local Docker build.
 var (
-	WorkbenchImage = "echo-sandbox-workbench:dev"
-	DesktopImage   = "echo-sandbox-desktop:dev"
-	GatewayImage   = "echo-sandbox-egress:dev"
+	WorkbenchImage = "ghcr.io/brentfarris/echo-sandbox-workbench:protocol-1"
+	DesktopImage   = "ghcr.io/brentfarris/echo-sandbox-desktop:protocol-1"
+	GatewayImage   = "ghcr.io/brentfarris/echo-sandbox-egress:protocol-1"
 )
 
 type State string

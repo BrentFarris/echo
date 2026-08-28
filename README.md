@@ -142,6 +142,8 @@ Echo can opt an individual workspace into a Docker-backed Ubuntu environment wit
 
 Echo checks and diagnoses Docker but never installs or reconfigures it. The initial images are `linux/amd64`; ARM hosts and Podman are not currently supported. This is container isolation rather than a hardware virtual machine, so Docker Engine and the host kernel remain trusted components.
 
+Official nightly binaries pin all three images by immutable digest. Builds made directly from the source tree use the public `protocol-1` image channel so the one-click source launchers can install the matching images; release builds never rely on a mutable tag.
+
 ### Enable a workspace sandbox
 
 1. Install and start Docker Desktop or Docker Engine.

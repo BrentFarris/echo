@@ -461,12 +461,21 @@ func TestRevealCommandKeepsPathInOneArgument(t *testing.T) {
 	if command == "" || len(arguments) == 0 {
 		t.Fatalf("invalid reveal command: %q %#v", command, arguments)
 	}
-	joined := strings.Join(arguments, "")
-	if !strings.Contains(joined, "name; echo injected.txt") {
-		t.Fatalf("path was not preserved as an argument: %#v", arguments)
-	}
-	if runtime.GOOS != "darwin" && len(arguments) != 1 {
-		t.Fatalf("path was split into multiple arguments: %#v", arguments)
+	switch runtime.GOOS {
+	case "windows":
+		if len(arguments) != 1 || !strings.Contains(arguments[0], "name; echo injected.txt") {
+			t.Fatalf("Windows selection path was not preserved as one argument: %#v", arguments)
+		}
+	case "darwin":
+		if len(arguments) != 2 || arguments[0] != "-R" || arguments[1] != path {
+			t.Fatalf("macOS selection path was not preserved as one argument: %#v", arguments)
+		}
+	default:
+		// xdg-open cannot select a file, so Reveal intentionally opens its
+		// containing directory. The untrusted filename is not passed at all.
+		if len(arguments) != 1 || arguments[0] != filepath.Dir(path) {
+			t.Fatalf("Linux containing directory was not preserved as one argument: %#v", arguments)
+		}
 	}
 }
 
