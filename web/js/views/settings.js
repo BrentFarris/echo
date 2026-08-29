@@ -15,7 +15,10 @@ import { getEchoUpdateSnapshot, refreshEchoUpdateStatus, syncEchoUpdateBadges } 
 import { chatTargetRouteHash, codeRouteHash, navigateBackFromSettings } from "../../src/navigation.ts";
 import { renderMobilePrimaryNav } from "../../src/primaryNav.ts";
 import { reloadForReplacementServer, waitForReplacementServer } from "../../src/rebuildRelaunch.ts";
-import { openAddWorkspaceModal, openWorkspaceDropdown } from "../workspaces.js";
+import {
+  openAddWorkspaceModal, openEditWorkspaceModal, openWorkspaceDropdown,
+  renderWorkspaceIcon, unregisterWorkspace,
+} from "../workspaces.js";
 import { refreshPluginCatalog } from "../../src/plugins/catalog.ts";
 import {
   completionNotificationPermission, requestCompletionNotificationPermission,
@@ -29,6 +32,7 @@ import {
 let mountedRoot = null;
 let closeSettingsWorkspaceDropdown = null;
 let closeSettingsAddWorkspaceModal = null;
+let closeSettingsEditWorkspaceModal = null;
 let disposeSettingsChatMap = null;
 let pluginCatalogListener = null;
 let updateStatusListener = null;
@@ -116,6 +120,7 @@ const state = {
   modeDraft: null,
   modeStatus: "",
   workspaces: [],
+  workspaceStatus: "",
   // External connection settings (SearXNG + ComfyUI).
   external: {
     searxngUrl: "",
@@ -622,22 +627,35 @@ function renderTheme() {
 function renderWorkspaces() {
   return `
     <section class="settings-section">
-      <h2 class="settings-section-title">Workspaces</h2>
+      <div class="settings-section-heading">
+        <div>
+          <h2 class="settings-section-title">Workspaces</h2>
+          <p class="settings-card-help">Manage the folders Echo can access. Removing a workspace keeps its project files and <code>.echo</code> history.</p>
+        </div>
+        <button class="secondary-button compact-button" type="button" data-action="add-settings-workspace">${icons.plus}<span>Add Workspace</span></button>
+      </div>
+      ${state.workspaceStatus ? `<p class="settings-status ${state.workspaceStatus.startsWith("Error:") ? "is-error" : ""}">${esc(state.workspaceStatus)}</p>` : ""}
       <div class="settings-card">
-        ${state.workspaces.length ? state.workspaces.map((w) => `
+        <div class="workspace-list">
+        ${state.workspaces.length ? state.workspaces.map((w) => {
+          const additionalFolders = Math.max(0, (w.folders?.length || 1) - 1);
+          return `
           <div class="workspace-row">
             <div class="workspace-row-heading">
-              <span class="workspace-icon-label">${esc(w.name[0].toUpperCase())}</span>
+              <span class="workspace-icon-label">${renderWorkspaceIcon(w)}</span>
               <div>
-                <strong>${esc(w.name)}</strong>
+                <span class="workspace-row-title"><strong>${esc(w.name)}</strong>${w.id === state.modeWorkspaceId ? `<span class="workspace-active-badge">Active</span>` : ""}</span>
                 <span class="workspace-row-path">${esc(w.mainPath)}</span>
+                <span class="workspace-row-summary">${additionalFolders ? `${additionalFolders} additional folder${additionalFolders === 1 ? "" : "s"}` : "Main folder only"}</span>
               </div>
             </div>
             <div class="endpoint-row-actions">
-              <button class="icon-button" type="button" title="Configure">${icons.settings}</button>
+              <button class="icon-button" type="button" title="Configure ${esc(w.name)}" aria-label="Configure ${esc(w.name)}" data-action="configure-workspace" data-workspace-id="${esc(w.id)}">${icons.settings}</button>
+              <button class="icon-button danger-button" type="button" title="Remove ${esc(w.name)}" aria-label="Remove ${esc(w.name)}" data-action="delete-workspace" data-workspace-id="${esc(w.id)}">${icons.trash}</button>
             </div>
           </div>
-        `).join("") : `<p class="empty-state compact">No workspaces added.</p>`}
+        `; }).join("") : `<p class="empty-state compact">No workspaces added.</p>`}
+        </div>
       </div>
     </section>
   `;
@@ -1039,6 +1057,25 @@ function bindEvents(root) {
     await saveSettings();
     location.hash = hash;
   };
+  const addSettingsWorkspace = () => {
+    closeSettingsAddWorkspaceModal?.();
+    closeSettingsAddWorkspaceModal = openAddWorkspaceModal({
+      onCreate: async (workspace) => {
+        closeSettingsAddWorkspaceModal = null;
+        try {
+          captureExternalFields(root);
+          await saveSettings();
+          await put("/api/workspaces/active", { id: workspace.id });
+          state.workspaceStatus = `Added ${workspace.name}.`;
+          window.dispatchEvent(new CustomEvent("echo:workspace-changed", { detail: { workspaceId: workspace.id } }));
+          await loadAgentModes();
+        } catch (err) {
+          state.workspaceStatus = `Error: ${err.message}`;
+          render();
+        }
+      },
+    });
+  };
 
   disposeSettingsChatMap = installChatMap(root, {
     navigate: (target) => leaveSettings(chatTargetRouteHash(target)),
@@ -1083,22 +1120,7 @@ function bindEvents(root) {
             render();
           }
         },
-        onAdd: () => {
-          closeSettingsAddWorkspaceModal = openAddWorkspaceModal({
-            onCreate: async (workspace) => {
-              try {
-                captureExternalFields(root);
-                await saveSettings();
-                await put("/api/workspaces/active", { id: workspace.id });
-                window.dispatchEvent(new CustomEvent("echo:workspace-changed", { detail: { workspaceId: workspace.id } }));
-                await loadAgentModes();
-              } catch (err) {
-                state.modeStatus = `Error: ${err.message}`;
-                render();
-              }
-            },
-          });
-        },
+        onAdd: addSettingsWorkspace,
       });
     });
   });
@@ -1113,6 +1135,44 @@ function bindEvents(root) {
       if (state.activeSection === "security") loadSecurity();
       if (state.activeSection === "plugins") loadPlugins();
       if (state.activeSection === "lsp") loadLanguageServers();
+    });
+  });
+
+  root.querySelectorAll('[data-action="add-settings-workspace"]').forEach((button) => {
+    button.addEventListener("click", addSettingsWorkspace);
+  });
+
+  root.querySelectorAll('[data-action="configure-workspace"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      const workspace = state.workspaces.find((candidate) => candidate.id === button.dataset.workspaceId);
+      if (!workspace) return;
+      closeSettingsEditWorkspaceModal?.();
+      closeSettingsEditWorkspaceModal = openEditWorkspaceModal(workspace, {
+        onUpdate: async (updated) => {
+          closeSettingsEditWorkspaceModal = null;
+          state.workspaceStatus = `Saved ${updated.name}.`;
+          if (updated.id === state.modeWorkspaceId) {
+            window.dispatchEvent(new CustomEvent("echo:workspace-changed", { detail: { workspaceId: state.modeWorkspaceId } }));
+          }
+          await loadAgentModes();
+        },
+      });
+    });
+  });
+
+  root.querySelectorAll('[data-action="delete-workspace"]').forEach((button) => {
+    button.addEventListener("click", async () => {
+      const workspace = state.workspaces.find((candidate) => candidate.id === button.dataset.workspaceId);
+      if (!workspace || !confirm(`Remove “${workspace.name}” from Echo?\n\nLive chats, terminals, language servers, Git operations, and sandbox containers for this workspace will stop. Project files and .echo history will be kept.`)) return;
+      button.disabled = true;
+      try {
+        await unregisterWorkspace(workspace.id);
+        state.workspaceStatus = `Removed ${workspace.name}. Project files and .echo history were kept.`;
+        await loadAgentModes();
+      } catch (err) {
+        state.workspaceStatus = `Error: ${err.message}`;
+        render();
+      }
     });
   });
 
@@ -1840,6 +1900,8 @@ export function unmount() {
   closeSettingsWorkspaceDropdown = null;
   closeSettingsAddWorkspaceModal?.();
   closeSettingsAddWorkspaceModal = null;
+  closeSettingsEditWorkspaceModal?.();
+  closeSettingsEditWorkspaceModal = null;
   disposeSettingsChatMap?.();
   disposeSettingsChatMap = null;
   if (pluginCatalogListener) window.removeEventListener("echo:plugin-catalog", pluginCatalogListener);

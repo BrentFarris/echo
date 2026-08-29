@@ -2,8 +2,10 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
+	"slices"
 
 	"github.com/brent/echo/internal/workspaces"
 )
@@ -80,6 +82,70 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusCreated, map[string]any{"workspace": ws})
 }
 
+// handleUpdateWorkspace updates the user-editable workspace metadata. The main
+// folder remains fixed because it owns the workspace's .echo directory.
+func (s *Server) handleUpdateWorkspace(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body workspaces.UpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	before, ok, err := s.workspaces.Get(id)
+	if err != nil {
+		writeWorkspaceMutationError(w, err)
+		return
+	}
+	if !ok {
+		writeWorkspaceMutationError(w, workspaces.ErrWorkspaceNotFound)
+		return
+	}
+	updated, err := s.workspaces.Update(id, body)
+	if err != nil {
+		writeWorkspaceMutationError(w, err)
+		return
+	}
+	if !slices.Equal(before.Folders, updated.Folders) {
+		if err := s.sandbox.StopRetainingData(r.Context(), id); err != nil {
+			logf("stop sandbox after workspace root update %s: %v", id, err)
+		}
+		s.refreshWorkspaceCaches(r.Context(), id)
+	}
+	writeData(w, http.StatusOK, map[string]any{"workspace": updated})
+}
+
+// handleDeleteWorkspace unregisters a workspace while retaining its project
+// folder, .echo directory, and persistent sandbox data.
+func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.sandbox.StopRetainingData(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to stop workspace sandbox: "+err.Error())
+		return
+	}
+	activeID, err := s.workspaces.Unregister(id)
+	if err != nil {
+		writeWorkspaceMutationError(w, err)
+		return
+	}
+	s.removeWorkspaceCaches(id)
+	if activeID != "" {
+		if err := s.lsp.Activate(activeID); err != nil {
+			logf("activate replacement workspace %s: %v", activeID, err)
+		}
+	}
+	writeData(w, http.StatusOK, map[string]any{
+		"deletedId": id, "activeId": activeID, "workspaceFilesRetained": true,
+	})
+}
+
+func writeWorkspaceMutationError(w http.ResponseWriter, err error) {
+	if errors.Is(err, workspaces.ErrWorkspaceNotFound) {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeError(w, http.StatusBadRequest, err.Error())
+}
+
 // handleGetWorkspaceIcon serves a workspace's icon image from its .echo folder.
 func (s *Server) handleGetWorkspaceIcon(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -96,5 +162,6 @@ func (s *Server) handleGetWorkspaceIcon(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "workspace icon not found")
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	http.ServeFile(w, r, path)
 }

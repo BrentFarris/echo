@@ -4398,6 +4398,12 @@ button.chat-file-change-row:focus-visible {
 }
 
 /* Workspaces */
+.workspace-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
 .workspace-row-heading {
   display: flex;
   align-items: center;
@@ -4423,12 +4429,46 @@ button.chat-file-change-row:focus-visible {
   min-width: 0;
 }
 
+.workspace-row-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
+.workspace-active-badge {
+  padding: 2px var(--space-sm);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  color: var(--color-accent-strong);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .workspace-row-path {
   font-size: var(--text-base-md);
   color: var(--color-text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.workspace-row-summary {
+  color: var(--color-text-muted);
+  font-size: var(--text-base-sm);
+}
+
+@media (max-width: 720px) {
+  .workspace-row {
+    align-items: flex-start;
+  }
+
+  .workspace-row .icon-button {
+    min-width: 44px;
+    min-height: 44px;
+  }
 }
 
 /* Eyebrow / muted helpers */
@@ -4907,6 +4947,12 @@ button.chat-file-change-row:focus-visible {
   gap: var(--space-sm);
 }
 
+.icon-upload-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
 .icon-upload-name {
   color: var(--color-text-muted);
   font-size: var(--text-base-sm);
@@ -4938,6 +4984,12 @@ button.chat-file-change-row:focus-visible {
 .folder-row input:focus {
   outline: 2px solid var(--color-accent);
   outline-offset: -1px;
+}
+
+.folder-row input[readonly] {
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  cursor: not-allowed;
 }
 
 .folder-main-tag {

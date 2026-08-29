@@ -124,6 +124,17 @@ type CreateRequest struct {
 	Icon     *Icon    `json:"icon,omitempty"`
 }
 
+// UpdateRequest is the editable subset of a workspace. The main folder is
+// deliberately immutable because it owns the workspace's .echo directory.
+// Folders contains additional folders only; the main folder is always kept as
+// the first resolved workspace root.
+type UpdateRequest struct {
+	Name       string   `json:"name"`
+	Folders    []string `json:"folders"`
+	Icon       *Icon    `json:"icon,omitempty"`
+	RemoveIcon bool     `json:"removeIcon,omitempty"`
+}
+
 // Icon carries an uploaded workspace icon image. Data is the raw file bytes and
 // Ext is the detected extension (without a leading dot), e.g. "png".
 type Icon struct {
@@ -147,6 +158,8 @@ const (
 	ConfigMainMismatch    = "workspace_main_mismatch"
 	ConfigMainUnavailable = "workspace_main_unavailable"
 )
+
+var ErrWorkspaceNotFound = errors.New("workspace not found")
 
 // ConfigError reports a stable workspace-configuration failure code while
 // retaining the underlying filesystem or JSON error for logs and tests.
@@ -326,6 +339,154 @@ func (m *Manager) Create(req CreateRequest) (Workspace, error) {
 		return Workspace{}, err
 	}
 	return workspace, nil
+}
+
+// Update changes the user-editable workspace fields while preserving the main
+// folder and all unrelated workspace-owned configuration.
+func (m *Manager) Update(id string, req UpdateRequest) (Workspace, error) {
+	if req.Icon != nil && req.RemoveIcon {
+		return Workspace{}, fmt.Errorf("icon and removeIcon cannot be used together")
+	}
+	workspace, ok, err := m.Get(id)
+	if err != nil {
+		return Workspace{}, err
+	}
+	if !ok {
+		return Workspace{}, workspaceNotFound(id)
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return Workspace{}, fmt.Errorf("workspace name is required")
+	}
+
+	folders := []string{workspace.MainPath}
+	for _, requested := range req.Folders {
+		requested = strings.TrimSpace(requested)
+		if requested == "" {
+			continue
+		}
+		folder, resolveErr := absolutePath("", requested)
+		if resolveErr != nil {
+			return Workspace{}, fmt.Errorf("resolve workspace folder %q: %w", requested, resolveErr)
+		}
+		if err := requireDirectory(folder, "", fmt.Sprintf("path %q is not accessible", folder)); err != nil {
+			return Workspace{}, err
+		}
+		folders = append(folders, folder)
+	}
+	workspace.Name = name
+	workspace.Folders = append([]string{workspace.MainPath}, cleanFolders(folders[1:], workspace.MainPath)...)
+
+	registrations, err := m.data.Load()
+	if err != nil {
+		return Workspace{}, err
+	}
+	for _, candidate := range registrations.Workspaces {
+		if candidate.ID == id {
+			continue
+		}
+		candidateName := strings.TrimSpace(candidate.Name)
+		if resolved, resolveErr := resolveRegisteredWorkspace(candidate); resolveErr == nil {
+			candidateName = strings.TrimSpace(resolved.Name)
+		}
+		if strings.EqualFold(candidateName, name) {
+			return Workspace{}, fmt.Errorf("a workspace named %q already exists", name)
+		}
+	}
+
+	echoDir := filepath.Join(workspace.MainPath, EchoDirName)
+	if req.RemoveIcon {
+		if err := removeWorkspaceIcons(echoDir, ""); err != nil {
+			return Workspace{}, err
+		}
+		workspace.IconExt = ""
+	} else if req.Icon != nil {
+		ext := sanitizeExt(req.Icon.Ext)
+		if ext == "" || len(req.Icon.Data) == 0 {
+			return Workspace{}, fmt.Errorf("icon has an unsupported file extension or no data")
+		}
+		temporary, err := os.CreateTemp(echoDir, ".icon-*")
+		if err != nil {
+			return Workspace{}, fmt.Errorf("create icon temp file: %w", err)
+		}
+		temporaryPath := temporary.Name()
+		defer os.Remove(temporaryPath)
+		if _, err := temporary.Write(req.Icon.Data); err != nil {
+			temporary.Close()
+			return Workspace{}, fmt.Errorf("write icon temp file: %w", err)
+		}
+		if err := temporary.Chmod(0o644); err != nil {
+			temporary.Close()
+			return Workspace{}, fmt.Errorf("chmod icon temp file: %w", err)
+		}
+		if err := temporary.Close(); err != nil {
+			return Workspace{}, fmt.Errorf("close icon temp file: %w", err)
+		}
+		targetPath := filepath.Join(echoDir, "icon."+ext)
+		if err := os.Rename(temporaryPath, targetPath); err != nil {
+			return Workspace{}, fmt.Errorf("replace icon: %w", err)
+		}
+		if err := removeWorkspaceIcons(echoDir, targetPath); err != nil {
+			return Workspace{}, err
+		}
+		workspace.IconExt = ext
+	}
+
+	if err := writeWorkspaceFile(echoDir, workspaceFileFromWorkspace(workspace)); err != nil {
+		return Workspace{}, err
+	}
+	if err := m.data.Update(func(f *appdata.File) error {
+		for _, candidate := range f.Workspaces {
+			if candidate.ID != id && strings.EqualFold(strings.TrimSpace(candidate.Name), name) {
+				return fmt.Errorf("a workspace named %q already exists", name)
+			}
+		}
+		for index := range f.Workspaces {
+			if f.Workspaces[index].ID == id {
+				f.Workspaces[index] = workspaceRegistration(workspace)
+				return nil
+			}
+		}
+		return workspaceNotFound(id)
+	}); err != nil {
+		return Workspace{}, err
+	}
+	return workspace, nil
+}
+
+// Unregister removes a workspace from this machine without touching its main
+// folder or .echo directory. If the active workspace is removed, the next
+// resolvable registration is selected in list order, wrapping at the end.
+func (m *Manager) Unregister(id string) (string, error) {
+	activeID := ""
+	err := m.data.Update(func(f *appdata.File) error {
+		index := -1
+		for candidateIndex := range f.Workspaces {
+			if f.Workspaces[candidateIndex].ID == id {
+				index = candidateIndex
+				break
+			}
+		}
+		if index < 0 {
+			return workspaceNotFound(id)
+		}
+		f.Workspaces = append(f.Workspaces[:index], f.Workspaces[index+1:]...)
+		if f.ActiveWorkspaceID != id {
+			activeID = f.ActiveWorkspaceID
+			return nil
+		}
+		f.ActiveWorkspaceID = ""
+		for offset := 0; offset < len(f.Workspaces); offset++ {
+			candidate := f.Workspaces[(index+offset)%len(f.Workspaces)]
+			if _, resolveErr := resolveRegisteredWorkspace(candidate); resolveErr == nil {
+				f.ActiveWorkspaceID = candidate.ID
+				break
+			}
+		}
+		activeID = f.ActiveWorkspaceID
+		return nil
+	})
+	return activeID, err
 }
 
 // register adds or rebinds a workspace in shared app data, preserving all
@@ -692,6 +853,25 @@ func detectIconExt(echoDir string) string {
 	return ""
 }
 
+func removeWorkspaceIcons(echoDir, keep string) error {
+	matches, err := filepath.Glob(filepath.Join(echoDir, "icon.*"))
+	if err != nil {
+		return fmt.Errorf("find workspace icons: %w", err)
+	}
+	for _, match := range matches {
+		if keep != "" && filepath.Clean(match) == filepath.Clean(keep) {
+			continue
+		}
+		if sanitizeExt(filepath.Ext(match)) == "" {
+			continue
+		}
+		if err := os.Remove(match); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove workspace icon: %w", err)
+		}
+	}
+	return nil
+}
+
 func (m *Manager) find(id string) (appdata.Workspace, bool, error) {
 	f, err := m.data.Load()
 	if err != nil {
@@ -703,6 +883,10 @@ func (m *Manager) find(id string) (appdata.Workspace, bool, error) {
 		}
 	}
 	return appdata.Workspace{}, false, nil
+}
+
+func workspaceNotFound(id string) error {
+	return fmt.Errorf("%w: %q", ErrWorkspaceNotFound, id)
 }
 
 // writeWorkspaceFile writes the workspace settings JSON atomically.

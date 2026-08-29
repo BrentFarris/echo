@@ -163,6 +163,22 @@ func (m *WatchManager) Refresh(workspaceID string) {
 	}
 }
 
+// RemoveWorkspace stops and forgets a workspace watcher without recreating
+// subscriptions. Clients may still send later unsubscribe messages; those are
+// intentionally harmless after the registration has gone away.
+func (m *WatchManager) RemoveWorkspace(workspaceID string) {
+	m.mu.Lock()
+	workspace := m.workspaces[workspaceID]
+	if workspace == nil {
+		m.mu.Unlock()
+		return
+	}
+	delete(m.workspaces, workspaceID)
+	close(workspace.stop)
+	m.mu.Unlock()
+	<-workspace.done
+}
+
 func (m *WatchManager) Close() {
 	m.mu.Lock()
 	workspaces := make([]*watchedWorkspace, 0, len(m.workspaces))

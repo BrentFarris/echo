@@ -421,6 +421,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/chats", s.handleGetChats)
 	mux.HandleFunc("POST /api/workspaces", s.handleCreateWorkspace)
 	mux.HandleFunc("PUT /api/workspaces/active", s.handleSetActiveWorkspace)
+	mux.HandleFunc("PUT /api/workspaces/{id}", s.handleUpdateWorkspace)
+	mux.HandleFunc("DELETE /api/workspaces/{id}", s.handleDeleteWorkspace)
 	mux.HandleFunc("GET /api/workspaces/{id}/icon", s.handleGetWorkspaceIcon)
 	mux.HandleFunc("GET /api/sandbox/host", s.handleSandboxHost)
 	mux.HandleFunc("GET /api/workspaces/{id}/sandbox", s.handleGetWorkspaceSandbox)
@@ -611,6 +613,18 @@ func (s *Server) refreshWorkspaceCaches(ctx context.Context, workspaceID string)
 	}
 	s.fs.RefreshWorkspace(workspaceID)
 	s.lsp.RefreshWorkspace(workspaceID)
+	s.skillsMu.Lock()
+	delete(s.skills, workspaceID)
+	s.skillsMu.Unlock()
+}
+
+func (s *Server) removeWorkspaceCaches(workspaceID string) {
+	s.sessions.invalidate(workspaceID)
+	s.terminal.StopWorkspace(workspaceID)
+	s.watcher.RemoveWorkspace(workspaceID)
+	s.git.RemoveWorkspace(workspaceID)
+	s.fs.RefreshWorkspace(workspaceID)
+	s.lsp.DeactivateWorkspace(workspaceID)
 	s.skillsMu.Lock()
 	delete(s.skills, workspaceID)
 	s.skillsMu.Unlock()

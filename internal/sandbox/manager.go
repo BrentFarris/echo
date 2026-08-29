@@ -573,6 +573,35 @@ func (m *Manager) Stop(ctx context.Context, workspaceID string) error {
 	return nil
 }
 
+// StopRetainingData stops sandbox containers for a workspace ID without
+// resolving the workspace registration and without deleting its persistent
+// volumes or machine state. This allows unavailable workspaces to be safely
+// unregistered.
+func (m *Manager) StopRetainingData(ctx context.Context, workspaceID string) error {
+	if err := m.awaitStartupReconcile(ctx); err != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	unlock := m.lock(workspaceID)
+	defer unlock()
+	state, exists, err := m.store.Load(workspaceID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	m.transition(workspaceID, StateStopping, "", "Stopping sandbox")
+	if err := m.engine.Stop(ctx, state); err != nil {
+		m.transition(workspaceID, StateError, ErrorCode(err), "Could not stop sandbox")
+		return err
+	}
+	m.mu.Lock()
+	delete(m.secrets, workspaceID)
+	m.mu.Unlock()
+	m.transition(workspaceID, StateStopped, "", "Sandbox stopped")
+	return nil
+}
+
 func (m *Manager) UpdateResources(ctx context.Context, workspaceID string, next workspaces.SandboxConfig) error {
 	if err := m.awaitStartupReconcile(ctx); err != nil && ctx.Err() != nil {
 		return ctx.Err()
