@@ -425,6 +425,37 @@ func TestNewChatRequestAppendsModelInstructionsToSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestNewChatRequestMergesLeadingSystemMessages(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoint = "https://example.test/v1"
+	messages := []Message{
+		{Role: RoleSystem, Name: "echo-agent-mode", Content: "Be helpful."},
+		{Role: RoleSystem, Name: "echo-code-context", Content: "Selected code: answer := 42"},
+		{Role: RoleUser, Content: "Explain this selection."},
+	}
+
+	request, err := NewChatRequest(settings, messages)
+	if err != nil {
+		t.Fatalf("new chat request: %v", err)
+	}
+
+	if len(request.Messages) != 2 {
+		t.Fatalf("expected one system message and one user message, got %#v", request.Messages)
+	}
+	if request.Messages[0].Role != RoleSystem || request.Messages[0].Name != "echo-agent-mode" {
+		t.Fatalf("expected the first system message to remain the request prefix, got %#v", request.Messages[0])
+	}
+	if got, want := request.Messages[0].Content, "Be helpful.\n\nSelected code: answer := 42"; got != want {
+		t.Fatalf("expected merged system content %q, got %q", want, got)
+	}
+	if request.Messages[1].Role != RoleUser || request.Messages[1].Content != "Explain this selection." {
+		t.Fatalf("expected user message after the merged system prefix, got %#v", request.Messages[1])
+	}
+	if messages[0].Content != "Be helpful." || messages[1].Content != "Selected code: answer := 42" {
+		t.Fatalf("expected source messages to remain unchanged, got %#v", messages)
+	}
+}
+
 func TestNewChatRequestAddsThinkingCorrectionAsFinalContentPart(t *testing.T) {
 	settings := DefaultSettings()
 	settings.Endpoint = "https://example.test/v1"

@@ -82,7 +82,7 @@ func TestCodeChatIsPersistentAndIndependentFromMainTabs(t *testing.T) {
 		values := make([]string, 0, len(fake.requests))
 		for _, request := range fake.requests {
 			for _, message := range request.Messages {
-				if message.Name == "echo-code-context" {
+				if strings.Contains(message.Content, "Current Echo Code editor context") {
 					values = append(values, message.Content)
 				}
 			}
