@@ -2566,7 +2566,8 @@
 
   .code-sidebar > .code-explorer,
   .code-sidebar > .code-search-view,
-  .code-sidebar > .code-git-view {
+  .code-sidebar > .code-git-view,
+  .code-sidebar > .code-debug-view {
     position: static;
     width: 100%;
     height: 100%;

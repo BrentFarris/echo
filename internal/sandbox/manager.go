@@ -817,6 +817,42 @@ func (m *Manager) OpenProcess(ctx context.Context, workspaceID string, request E
 	return &activityProcess{Process: process, done: func() { m.touch(workspaceID, -1) }}, nil
 }
 
+func (m *Manager) OpenDAP(ctx context.Context, workspaceID string, request DAPRequest) (Process, error) {
+	if err := m.Start(ctx, workspaceID); err != nil {
+		return nil, err
+	}
+	m.touch(workspaceID, 1)
+	state, err := m.machineState(workspaceID)
+	if err != nil {
+		m.touch(workspaceID, -1)
+		return nil, err
+	}
+	if request.Mode == "connect" && !isLoopbackDAPHost(request.Host) {
+		allowed := false
+		for _, grant := range state.NetworkGrants {
+			if grant.Port == request.Port && (strings.EqualFold(grant.Host, request.Host) || (grant.SandboxAlias != "" && strings.EqualFold(grant.SandboxAlias, request.Host))) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			m.touch(workspaceID, -1)
+			return nil, &Error{Code: "sandbox_network_grant_required", Message: "non-loopback debug adapter connections require an exact sandbox network grant"}
+		}
+	}
+	process, err := m.engine.OpenDAP(ctx, state, request)
+	if err != nil {
+		m.touch(workspaceID, -1)
+		return nil, err
+	}
+	return &activityProcess{Process: process, done: func() { m.touch(workspaceID, -1) }}, nil
+}
+
+func isLoopbackDAPHost(host string) bool {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	return host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
 type activityProcess struct {
 	Process
 	once sync.Once

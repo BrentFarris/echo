@@ -21,12 +21,12 @@ describe("primary navigation", () => {
     expect(chat.querySelector("[aria-label=Tasks]")).toBeNull();
     expect(chat.querySelector("[data-nav=settings] [data-echo-update-badge]")).not.toBeNull();
     expect([...chat.querySelectorAll(".left-nav-buttons [data-nav]")].map((item) => item.getAttribute("data-nav")))
-      .toEqual(["chat", "code", "search", "git", "sandbox"]);
+      .toEqual(["chat", "code", "search", "git", "debug", "sandbox"]);
     expect([...chat.querySelectorAll(".left-nav-actions [data-nav]")].map((item) => item.getAttribute("data-nav")))
       .toEqual(["map", "settings"]);
     expect(chat.querySelector("[data-nav=map]")?.getAttribute("aria-expanded")).toBe("false");
     expect([...chat.querySelectorAll("[aria-keyshortcuts]")].map((item) => item.getAttribute("aria-keyshortcuts")))
-      .toEqual(["Control+1", "Control+2", "Control+3", "Control+4", "Control+5", "Control+/", "Control+0"]);
+      .toEqual(["Control+1", "Control+2", "Control+3", "Control+4", "Control+5", "Control+6", "Control+/", "Control+0"]);
   });
 
   it("marks the selected Code sidebar item active", () => {
@@ -67,7 +67,7 @@ describe("primary navigation", () => {
 
     expect(host.querySelector("[data-mobile-primary-nav]")).not.toBeNull();
     expect([...host.querySelectorAll(".mobile-nav-tab")].map((item) => item.getAttribute("aria-label")))
-      .toEqual(["Chat", "Code", "Search", "Source Control", "Linux Sandbox", "Chat Map", "Settings"]);
+      .toEqual(["Chat", "Code", "Search", "Source Control", "Run and Debug", "Linux Sandbox", "Chat Map", "Settings"]);
     expect(host.querySelector("[aria-label=Tasks]")).toBeNull();
     expect(host.querySelector("[data-nav=git]")?.getAttribute("aria-current")).toBe("page");
     expect(host.querySelector("[data-nav=code]")?.hasAttribute("aria-current")).toBe(false);

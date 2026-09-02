@@ -1093,6 +1093,9 @@ function bindEvents(root) {
   root.querySelectorAll("[data-nav='git']").forEach((button) => {
     button.addEventListener("click", () => { void leaveSettings(codeRouteHash("git")); });
   });
+  root.querySelectorAll("[data-nav='debug']").forEach((button) => {
+    button.addEventListener("click", () => { void leaveSettings(codeRouteHash("debug")); });
+  });
   root.querySelectorAll("[data-nav='sandbox']").forEach((button) => {
     button.addEventListener("click", () => { void leaveSettings("#/sandbox"); });
   });

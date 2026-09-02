@@ -51,6 +51,14 @@ beforeEach(() => {
 });
 
 describe("sandbox view", () => {
+  it("opens Code with the Run and Debug sidebar selected", async () => {
+    const root = document.createElement("div"); document.body.append(root); mount(root); await settle();
+
+    root.querySelector<HTMLButtonElement>("[data-nav=debug]")?.click();
+
+    expect(location.hash).toBe("#/code?sidebar=debug");
+  });
+
   it.each(["disabled", "unavailable", "pulling", "creating", "starting", "ready", "stopping", "stopped", "error"])(
     "renders the %s lifecycle state",
     async (state) => {

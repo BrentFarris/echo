@@ -343,6 +343,7 @@ function bindPageCoreNavigation(root: HTMLElement): void {
     else if (nav === "code") location.hash = "#/code";
     else if (nav === "search") location.hash = codeRouteHash("search");
     else if (nav === "git") location.hash = codeRouteHash("git");
+    else if (nav === "debug") location.hash = codeRouteHash("debug");
     else if (nav === "sandbox") location.hash = "#/sandbox";
   }));
 }

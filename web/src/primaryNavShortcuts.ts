@@ -1,4 +1,4 @@
-export type PrimaryNavShortcut = "chat" | "code" | "search" | "git" | "sandbox" | "settings" | "map";
+export type PrimaryNavShortcut = "chat" | "code" | "search" | "git" | "debug" | "sandbox" | "settings" | "map";
 
 const shortcutByKey: Record<string, PrimaryNavShortcut> = {
   Digit0: "settings",
@@ -6,14 +6,16 @@ const shortcutByKey: Record<string, PrimaryNavShortcut> = {
   Digit2: "code",
   Digit3: "search",
   Digit4: "git",
-  Digit5: "sandbox",
+  Digit5: "debug",
+  Digit6: "sandbox",
   Slash: "map",
   "0": "settings",
   "1": "chat",
   "2": "code",
   "3": "search",
   "4": "git",
-  "5": "sandbox",
+  "5": "debug",
+  "6": "sandbox",
   "/": "map",
 };
 

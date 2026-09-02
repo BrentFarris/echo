@@ -9,7 +9,8 @@ describe("primary navigation shortcuts", () => {
     ["Digit2", "2", "code"],
     ["Digit3", "3", "search"],
     ["Digit4", "4", "git"],
-    ["Digit5", "5", "sandbox"],
+    ["Digit5", "5", "debug"],
+    ["Digit6", "6", "sandbox"],
     ["Digit0", "0", "settings"],
     ["Slash", "/", "map"],
   ])("maps Ctrl+%s to %s", (code, key, nav) => {
@@ -25,12 +26,12 @@ describe("primary navigation shortcuts", () => {
     expect(primaryNavShortcut(new KeyboardEvent("keydown", { code: "Digit1", ctrlKey: true, isComposing: true }))).toBeNull();
   });
 
-  it("clicks the mounted view control and consumes the shortcut", () => {
-    document.body.innerHTML = '<button data-nav="search">Search</button>';
+  it("opens the mounted Debug control with Ctrl+5 and consumes the shortcut", () => {
+    document.body.innerHTML = '<button data-nav="debug">Run and Debug</button>';
     const click = vi.fn();
     document.querySelector("button")?.addEventListener("click", click);
     const dispose = installPrimaryNavShortcuts();
-    const event = new KeyboardEvent("keydown", { code: "Digit3", key: "3", ctrlKey: true, bubbles: true, cancelable: true });
+    const event = new KeyboardEvent("keydown", { code: "Digit5", key: "5", ctrlKey: true, bubbles: true, cancelable: true });
 
     document.dispatchEvent(event);
 
@@ -41,7 +42,7 @@ describe("primary navigation shortcuts", () => {
 
   it("leaves browser shortcuts alone when the current view has no matching control", () => {
     const dispose = installPrimaryNavShortcuts();
-    const event = new KeyboardEvent("keydown", { code: "Digit5", key: "5", ctrlKey: true, bubbles: true, cancelable: true });
+    const event = new KeyboardEvent("keydown", { code: "Digit6", key: "6", ctrlKey: true, bubbles: true, cancelable: true });
 
     document.dispatchEvent(event);
 

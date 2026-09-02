@@ -11,6 +11,7 @@ import (
 	"flag"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -49,6 +50,7 @@ func main() {
 	mux.HandleFunc("POST /v1/exec", service.auth(service.execute))
 	mux.HandleFunc("GET /v1/pty", service.auth(service.openPTY))
 	mux.HandleFunc("GET /v1/process", service.auth(service.openProcess))
+	mux.HandleFunc("GET /v1/dap", service.auth(service.openDAP))
 	mux.HandleFunc("GET /v1/screenshot", service.auth(service.screenshot))
 	mux.HandleFunc("POST /v1/desktop/action", service.auth(service.desktopAction))
 	server := &http.Server{Addr: *listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 16 << 10}
@@ -77,7 +79,7 @@ func (a *agent) auth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (a *agent) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "role": a.role, "protocolVersion": "1", "uptimeSeconds": int(time.Since(a.started).Seconds())})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "role": a.role, "protocolVersion": "2", "uptimeSeconds": int(time.Since(a.started).Seconds())})
 }
 
 func (a *agent) heartbeat(w http.ResponseWriter, _ *http.Request) {
@@ -294,7 +296,7 @@ func (a *agent) openProcess(w http.ResponseWriter, r *http.Request) {
 		_ = connection.WriteJSON(map[string]any{"type": "error", "error": "could not start process"})
 		return
 	}
-	processContext, cancelProcess := context.WithCancel(context.Background())
+	processContext, cancelProcess := context.WithCancel(r.Context())
 	defer cancelProcess()
 
 	writes := make(chan processWrite, 64)
@@ -313,8 +315,6 @@ func (a *agent) openProcess(w http.ResponseWriter, r *http.Request) {
 		case writes <- processWrite{messageType: messageType, data: copyData}:
 			return true
 		case <-writerFinished:
-			return false
-		case <-processContext.Done():
 			return false
 		}
 	}
@@ -395,6 +395,261 @@ func (a *agent) openProcess(w http.ResponseWriter, r *http.Request) {
 	closeStdin.Do(func() { _ = stdin.Close() })
 	streams.Wait()
 	exit, _ := json.Marshal(map[string]any{"type": "exit", "exitCode": commandExitCode(waitErr)})
+	_ = send(websocket.TextMessage, exit)
+	close(writes)
+	<-writerFinished
+}
+
+type dapStart struct {
+	Mode             string   `json:"mode"`
+	Command          []string `json:"command"`
+	Dir              string   `json:"dir"`
+	Env              []string `json:"env"`
+	Host             string   `json:"host"`
+	Port             int      `json:"port"`
+	StartupTimeoutMS int      `json:"startupTimeoutMs"`
+}
+
+// openDAP keeps server-adapter ports on guest loopback. Binary frames use the
+// process protocol: 0 is DAP input, 1 is DAP output, and 2 is adapter logging.
+func (a *agent) openDAP(w http.ResponseWriter, r *http.Request) {
+	connection, err := ptyUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer connection.Close()
+	var start dapStart
+	if err := connection.ReadJSON(&start); err != nil {
+		return
+	}
+	start.Mode = strings.ToLower(strings.TrimSpace(start.Mode))
+	if start.Mode != "server" && start.Mode != "connect" {
+		_ = connection.WriteJSON(map[string]any{"type": "error", "error": "invalid DAP bridge mode"})
+		return
+	}
+	if start.Mode == "server" && len(start.Command) == 0 {
+		_ = connection.WriteJSON(map[string]any{"type": "error", "error": "spawned DAP bridge requires a command"})
+		return
+	}
+	if start.StartupTimeoutMS < 1000 {
+		start.StartupTimeoutMS = 15000
+	}
+	if start.StartupTimeoutMS > 120000 {
+		start.StartupTimeoutMS = 120000
+	}
+
+	processContext, cancelProcess := context.WithCancel(context.Background())
+	defer cancelProcess()
+	writes := make(chan processWrite, 64)
+	writerFinished := make(chan struct{})
+	go func() {
+		defer close(writerFinished)
+		for message := range writes {
+			if connection.WriteMessage(message.messageType, message.data) != nil {
+				return
+			}
+		}
+	}()
+	send := func(messageType int, data []byte) bool {
+		copyData := append([]byte(nil), data...)
+		select {
+		case writes <- processWrite{messageType: messageType, data: copyData}:
+			return true
+		case <-writerFinished:
+			return false
+		}
+	}
+	sendError := func(message string) {
+		payload, _ := json.Marshal(map[string]any{"type": "error", "error": message})
+		_ = send(websocket.TextMessage, payload)
+	}
+
+	var command *exec.Cmd
+	var waitDone chan error
+	var streams sync.WaitGroup
+	var logReaders []io.ReadCloser
+	if start.Mode == "server" {
+		listener, listenErr := net.Listen("tcp", "127.0.0.1:0")
+		if listenErr != nil {
+			sendError("could not allocate guest DAP port")
+			close(writes)
+			<-writerFinished
+			return
+		}
+		start.Port = listener.Addr().(*net.TCPAddr).Port
+		_ = listener.Close()
+		port := strconv.Itoa(start.Port)
+		for index := range start.Command {
+			start.Command[index] = strings.ReplaceAll(start.Command[index], "${debugAdapterPort}", port)
+		}
+		for index := range start.Env {
+			start.Env[index] = strings.ReplaceAll(start.Env[index], "${debugAdapterPort}", port)
+		}
+		command = exec.Command(start.Command[0], start.Command[1:]...)
+		command.Dir = start.Dir
+		command.Env = append(baseEnvironment(), start.Env...)
+		command.SysProcAttr = processAttributes(false)
+		stdout, stdoutErr := command.StdoutPipe()
+		stderr, stderrErr := command.StderrPipe()
+		if stdoutErr != nil || stderrErr != nil || command.Start() != nil {
+			sendError("could not start DAP adapter")
+			close(writes)
+			<-writerFinished
+			return
+		}
+		logReaders = []io.ReadCloser{stdout, stderr}
+		waitDone = make(chan error, 1)
+		go func() { waitDone <- waitForCommand(processContext, command) }()
+	} else {
+		if start.Port < 1 || start.Port > 65535 {
+			sendError("connect DAP bridge requires a valid port")
+			close(writes)
+			<-writerFinished
+			return
+		}
+	}
+
+	host := strings.TrimSpace(start.Host)
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	address := net.JoinHostPort(host, strconv.Itoa(start.Port))
+	deadline := time.Now().Add(time.Duration(start.StartupTimeoutMS) * time.Millisecond)
+	var adapter net.Conn
+	var dialErr error
+dialLoop:
+	for time.Now().Before(deadline) {
+		dialer := net.Dialer{Timeout: 250 * time.Millisecond}
+		adapter, dialErr = dialer.DialContext(processContext, "tcp", address)
+		if dialErr == nil {
+			break
+		}
+		if waitDone != nil {
+			select {
+			case waitErr := <-waitDone:
+				sendError("DAP adapter exited before accepting a connection (exit " + strconv.Itoa(commandExitCode(waitErr)) + ")")
+				cancelProcess()
+				streams.Wait()
+				close(writes)
+				<-writerFinished
+				return
+			default:
+			}
+		}
+		select {
+		case <-processContext.Done():
+			break dialLoop
+		case <-time.After(40 * time.Millisecond):
+		}
+	}
+	if adapter == nil {
+		sendError("could not connect to guest DAP server at " + address)
+		cancelProcess()
+		if waitDone != nil {
+			<-waitDone
+		}
+		streams.Wait()
+		close(writes)
+		<-writerFinished
+		return
+	}
+	started, _ := json.Marshal(map[string]any{"type": "started", "port": start.Port})
+	if !send(websocket.TextMessage, started) {
+		_ = adapter.Close()
+		cancelProcess()
+		return
+	}
+	for _, reader := range logReaders {
+		streams.Add(1)
+		go func(reader io.ReadCloser) {
+			defer streams.Done()
+			defer reader.Close()
+			buffer := make([]byte, 32<<10)
+			for {
+				count, readErr := reader.Read(buffer)
+				if count > 0 {
+					frame := make([]byte, count+1)
+					frame[0] = 2
+					copy(frame[1:], buffer[:count])
+					if !send(websocket.BinaryMessage, frame) {
+						return
+					}
+				}
+				if readErr != nil {
+					return
+				}
+			}
+		}(reader)
+	}
+
+	adapterDone := make(chan struct{})
+	go func() {
+		defer close(adapterDone)
+		buffer := make([]byte, 32<<10)
+		for {
+			count, readErr := adapter.Read(buffer)
+			if count > 0 {
+				frame := make([]byte, count+1)
+				frame[0] = 1
+				copy(frame[1:], buffer[:count])
+				if !send(websocket.BinaryMessage, frame) {
+					return
+				}
+			}
+			if readErr != nil {
+				return
+			}
+		}
+	}()
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		for {
+			messageType, data, readErr := connection.ReadMessage()
+			if readErr != nil {
+				return
+			}
+			if messageType == websocket.BinaryMessage {
+				if len(data) > 0 && data[0] == 0 {
+					if _, err := adapter.Write(data[1:]); err != nil {
+						return
+					}
+				}
+				continue
+			}
+			var control struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(data, &control) != nil {
+				continue
+			}
+			switch control.Type {
+			case "kill":
+				cancelProcess()
+				return
+			case "close_stdin":
+				if tcp, ok := adapter.(*net.TCPConn); ok {
+					_ = tcp.CloseWrite()
+				}
+			}
+		}
+	}()
+
+	select {
+	case <-adapterDone:
+	case <-readDone:
+	case <-writerFinished:
+	case <-processContext.Done():
+	}
+	_ = adapter.Close()
+	cancelProcess()
+	<-adapterDone
+	exitCode := 0
+	if waitDone != nil {
+		exitCode = commandExitCode(<-waitDone)
+	}
+	streams.Wait()
+	exit, _ := json.Marshal(map[string]any{"type": "exit", "exitCode": exitCode})
 	_ = send(websocket.TextMessage, exit)
 	close(writes)
 	<-writerFinished

@@ -15,6 +15,15 @@ type terminalSizeRequest struct {
 	Rows int `json:"rows"`
 }
 
+func (s *Server) handleListTerminalSessions(w http.ResponseWriter, r *http.Request) {
+	sessions, err := s.terminal.List(r.PathValue("id"))
+	if err != nil {
+		writeTerminalError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, map[string]any{"sessions": sessions})
+}
+
 func (s *Server) handleStartTerminalSession(w http.ResponseWriter, r *http.Request) {
 	var body terminalSizeRequest
 	if err := decodeOptionalJSON(r, &body); err != nil {

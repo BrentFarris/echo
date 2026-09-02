@@ -128,6 +128,9 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.removeWorkspaceCaches(id)
+	if err := s.debugState.Delete(id); err != nil {
+		logf("delete debug state for workspace %s: %v", id, err)
+	}
 	if activeID != "" {
 		if err := s.lsp.Activate(activeID); err != nil {
 			logf("activate replacement workspace %s: %v", activeID, err)

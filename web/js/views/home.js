@@ -693,6 +693,7 @@ export function mount(root) {
   const codeButtons = [...root.querySelectorAll("[data-nav='code']")];
   const searchButtons = [...root.querySelectorAll("[data-nav='search']")];
   const gitButtons = [...root.querySelectorAll("[data-nav='git']")];
+  const debugButtons = [...root.querySelectorAll("[data-nav='debug']")];
   const sandboxButtons = [...root.querySelectorAll("[data-nav='sandbox']")];
   const onSettingsClick = () => {
     location.hash = "#/settings";
@@ -704,6 +705,8 @@ export function mount(root) {
   searchButtons.forEach((button) => button.addEventListener("click", onSearchClick));
   const onGitClick = () => { location.hash = codeRouteHash("git"); };
   gitButtons.forEach((button) => button.addEventListener("click", onGitClick));
+  const onDebugClick = () => { location.hash = codeRouteHash("debug"); };
+  debugButtons.forEach((button) => button.addEventListener("click", onDebugClick));
   sandboxButtons.forEach((button) => button.addEventListener("click", () => { location.hash = "#/sandbox"; }));
   const disposeChatMap = installChatMap(root);
 

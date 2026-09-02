@@ -4,6 +4,9 @@ export type TerminalOutputChunk = { sequence: number; data: string };
 export type TerminalSnapshot = {
   workspaceId: string;
   id: string;
+  name?: string;
+  kind?: "default" | "debug";
+  ownerSessionId?: string;
   shell: string;
   workingDirectory: string;
   status: string;
@@ -17,6 +20,9 @@ export type TerminalEvent = {
   type: "terminal_event";
   workspaceId: string;
   sessionId: string;
+  name?: string;
+  kind?: "default" | "debug";
+  ownerSessionId?: string;
   event: "started" | "data" | "exited";
   sequence?: number;
   data?: string;
@@ -34,6 +40,10 @@ function sessionBase(workspaceId: string, sessionId: string): string {
 
 export function startTerminal(workspaceId: string, cols: number, rows: number): Promise<TerminalSnapshot> {
   return api(`${base(workspaceId)}/sessions`, { method: "POST", body: { cols, rows } });
+}
+export async function listTerminalSessions(workspaceId: string): Promise<TerminalSnapshot[]> {
+  const result = await get(`${base(workspaceId)}/sessions`);
+  return result.sessions || [];
 }
 export function syncTerminal(workspaceId: string, sessionId: string, afterSequence: number): Promise<TerminalSnapshot> {
   return api(`${sessionBase(workspaceId, sessionId)}?afterSequence=${encodeURIComponent(String(afterSequence))}`, { method: "GET" });

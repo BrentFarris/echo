@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -195,6 +196,104 @@ func TestSessionLifecycleReplayAndExit(t *testing.T) {
 	}
 	if err := service.Write(workspace.ID, started.ID, "x"); !errors.Is(err, ErrSessionNotRunning) {
 		t.Fatalf("write after exit = %v", err)
+	}
+}
+
+func TestDebugTerminalIsNamedOwnedAndIndependentOfDefaultShell(t *testing.T) {
+	service, workspace, _ := newTestService(t)
+	defaultBackend := newFakeBackend()
+	debugBackend := newFakeBackend()
+	backends := []Backend{defaultBackend, debugBackend}
+	var backendMu sync.Mutex
+	service.SetBackendFactory(func() (Backend, error) {
+		backendMu.Lock()
+		defer backendMu.Unlock()
+		if len(backends) == 0 {
+			return nil, errors.New("no fake backend")
+		}
+		next := backends[0]
+		backends = backends[1:]
+		return next, nil
+	})
+	t.Cleanup(func() { shutdownTestService(t, service) })
+
+	defaultSession, err := service.Start(workspace.ID, 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := service.StartDebugDAP(context.Background(), workspace.ID, "debug-owner", map[string]any{
+		"kind": "integrated", "title": "API Process", "cwd": workspace.MainPath,
+		"args": []any{"example-debuggee", "--port", "4000"},
+		"env":  map[string]any{"ECHO_MODE": "debug"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	debugID, _ := response["sessionId"].(string)
+	if debugID == "" || debugID == defaultSession.ID {
+		t.Fatalf("debug response = %#v", response)
+	}
+	debugSnapshot, err := service.Sync(workspace.ID, debugID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if debugSnapshot.Kind != "debug" || debugSnapshot.Name != "API Process" || debugSnapshot.OwnerSessionID != "debug-owner" {
+		t.Fatalf("debug snapshot = %#v", debugSnapshot)
+	}
+	if debugBackend.spec.Name != "example-debuggee" || len(debugBackend.spec.Args) != 2 {
+		t.Fatalf("debug argv = %#v", debugBackend.spec)
+	}
+	foundEnvironment := false
+	for _, value := range debugBackend.spec.Env {
+		if value == "ECHO_MODE=debug" {
+			foundEnvironment = true
+		}
+	}
+	if !foundEnvironment {
+		t.Fatalf("debug environment = %#v", debugBackend.spec.Env)
+	}
+	reconnect, err := service.List(workspace.ID)
+	if err != nil || len(reconnect) != 2 {
+		t.Fatalf("terminal reconnect list = %#v, %v", reconnect, err)
+	}
+	foundDebug := false
+	for _, snapshot := range reconnect {
+		if snapshot.ID == debugID && snapshot.Kind == "debug" && snapshot.OwnerSessionID == "debug-owner" {
+			foundDebug = true
+		}
+	}
+	if !foundDebug {
+		t.Fatalf("debug terminal missing from reconnect list: %#v", reconnect)
+	}
+
+	service.StopOwner(workspace.ID, "debug-owner")
+	if _, err := service.Sync(workspace.ID, debugID, 0); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("owned terminal still exists: %v", err)
+	}
+	if snapshot, err := service.Sync(workspace.ID, defaultSession.ID, 0); err != nil || snapshot.Status != "running" {
+		t.Fatalf("default terminal was disturbed: %#v, %v", snapshot, err)
+	}
+}
+
+func TestDebugTerminalFailsClosedWithoutSandboxRuntime(t *testing.T) {
+	service, workspace, _ := newTestService(t)
+	manager := service.workspaces.(*workspaces.Manager)
+	config := workspaces.DefaultSandboxConfig()
+	config.Enabled = true
+	if _, err := manager.SetSandboxConfig(workspace.ID, config); err != nil {
+		t.Fatal(err)
+	}
+	backend := newFakeBackend()
+	service.SetBackendFactory(func() (Backend, error) { return backend, nil })
+
+	_, err := service.StartDebugDAP(context.Background(), workspace.ID, "debug-owner", map[string]any{
+		"kind": "integrated", "args": []any{"example-debuggee"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "sandbox debug terminal runtime is unavailable") {
+		t.Fatalf("sandbox debug terminal error = %v", err)
+	}
+	if backend.spec.Name != "" {
+		t.Fatalf("host backend was started for sandbox workspace: %#v", backend.spec)
 	}
 }
 

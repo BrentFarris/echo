@@ -135,6 +135,7 @@ class SandboxView {
     this.root.querySelectorAll("[data-nav=code]").forEach((item) => item.addEventListener("click", () => { location.hash = "#/code"; }, { signal }));
     this.root.querySelectorAll("[data-nav=search]").forEach((item) => item.addEventListener("click", () => { location.hash = codeRouteHash("search"); }, { signal }));
     this.root.querySelectorAll("[data-nav=git]").forEach((item) => item.addEventListener("click", () => { location.hash = codeRouteHash("git"); }, { signal }));
+    this.root.querySelectorAll("[data-nav=debug]").forEach((item) => item.addEventListener("click", () => { location.hash = codeRouteHash("debug"); }, { signal }));
     this.root.querySelectorAll("[data-nav=settings]").forEach((item) => item.addEventListener("click", () => { location.hash = "#/settings"; }, { signal }));
     this.root.querySelectorAll<HTMLElement>(".workspace-dropdown-trigger").forEach((trigger) => trigger.addEventListener("click", (event) => {
       event.stopPropagation();

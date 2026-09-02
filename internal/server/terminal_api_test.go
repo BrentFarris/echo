@@ -110,6 +110,12 @@ func TestTerminalLifecycleAPI(t *testing.T) {
 	if started.ID == "" || started.Status != "running" {
 		t.Fatalf("start = %#v", started)
 	}
+	listed := terminalRequest[struct {
+		Sessions []terminalruntime.Snapshot `json:"sessions"`
+	}](t, s, http.MethodGet, base, "", http.StatusOK)
+	if len(listed.Sessions) != 1 || listed.Sessions[0].ID != started.ID {
+		t.Fatalf("terminal session list = %#v", listed.Sessions)
+	}
 	again := terminalRequest[terminalruntime.Snapshot](t, s, http.MethodPost, base, `{"cols":80,"rows":24}`, http.StatusOK)
 	if again.ID != started.ID {
 		t.Fatalf("idempotent start id = %q, want %q", again.ID, started.ID)

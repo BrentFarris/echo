@@ -42,13 +42,15 @@ type SavedCommand struct {
 // owns parsing it. ActiveWorkspaceID records the last workspace the user
 // opened so Echo can restore it as the current workspace on startup.
 type File struct {
-	Version           int                       `json:"version,omitempty"`
-	Settings          json.RawMessage           `json:"settings"`
-	LanguageServers   json.RawMessage           `json:"languageServerProfiles,omitempty"`
-	Auth              json.RawMessage           `json:"auth,omitempty"`
-	Workspaces        []Workspace               `json:"workspaces"`
-	ActiveWorkspaceID string                    `json:"activeWorkspaceId,omitempty"`
-	SavedCommands     map[string][]SavedCommand `json:"savedCommands,omitempty"`
+	Version           int                        `json:"version,omitempty"`
+	Settings          json.RawMessage            `json:"settings"`
+	LanguageServers   json.RawMessage            `json:"languageServerProfiles,omitempty"`
+	DebugAdapters     json.RawMessage            `json:"debugAdapterProfiles,omitempty"`
+	DebugState        map[string]json.RawMessage `json:"debugState,omitempty"`
+	Auth              json.RawMessage            `json:"auth,omitempty"`
+	Workspaces        []Workspace                `json:"workspaces"`
+	ActiveWorkspaceID string                     `json:"activeWorkspaceId,omitempty"`
+	SavedCommands     map[string][]SavedCommand  `json:"savedCommands,omitempty"`
 }
 
 // DefaultStorePath returns the platform-appropriate path to the Echo app data

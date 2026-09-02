@@ -37,6 +37,7 @@ var (
 	ErrWorkspaceUnavailable = errors.New("workspace has no available folders")
 	ErrSessionNotFound      = errors.New("terminal session was not found")
 	ErrSessionNotRunning    = errors.New("terminal session is not running")
+	ErrExternalUnsupported  = errors.New("external debug terminals are not supported; use an integrated terminal")
 	ErrInputTooLarge        = errors.New("terminal input is too large")
 	ErrSavedCommandNotFound = errors.New("saved command was not found")
 )
@@ -49,6 +50,9 @@ type OutputChunk struct {
 type Snapshot struct {
 	WorkspaceID      string        `json:"workspaceId"`
 	ID               string        `json:"id"`
+	Name             string        `json:"name,omitempty"`
+	Kind             string        `json:"kind,omitempty"`
+	OwnerSessionID   string        `json:"ownerSessionId,omitempty"`
 	Shell            string        `json:"shell"`
 	WorkingDirectory string        `json:"workingDirectory"`
 	Status           string        `json:"status"`
@@ -60,14 +64,17 @@ type Snapshot struct {
 }
 
 type Event struct {
-	Type        string `json:"type"`
-	WorkspaceID string `json:"workspaceId"`
-	SessionID   string `json:"sessionId"`
-	Event       string `json:"event"`
-	Sequence    uint64 `json:"sequence,omitempty"`
-	Data        string `json:"data,omitempty"`
-	ExitCode    *int   `json:"exitCode,omitempty"`
-	Message     string `json:"message,omitempty"`
+	Type           string `json:"type"`
+	WorkspaceID    string `json:"workspaceId"`
+	SessionID      string `json:"sessionId"`
+	Name           string `json:"name,omitempty"`
+	Kind           string `json:"kind,omitempty"`
+	OwnerSessionID string `json:"ownerSessionId,omitempty"`
+	Event          string `json:"event"`
+	Sequence       uint64 `json:"sequence,omitempty"`
+	Data           string `json:"data,omitempty"`
+	ExitCode       *int   `json:"exitCode,omitempty"`
+	Message        string `json:"message,omitempty"`
 }
 
 type SavedCommand struct {
@@ -167,6 +174,7 @@ func (b *realBackend) Close() error                     { return b.pty.Close() }
 func (b *realBackend) Resize(cols, rows int) error      { return b.pty.Resize(cols, rows) }
 func (b *realBackend) Start(ctx context.Context, spec CommandSpec) (Process, error) {
 	command := b.pty.CommandContext(ctx, spec.Name, spec.Args...)
+	configurePTYCommand(command)
 	command.Dir = spec.Dir
 	command.Env = spec.Env
 	if err := command.Start(); err != nil {
@@ -190,11 +198,17 @@ func (p *realProcess) Kill() error {
 	if p.cmd.Process == nil {
 		return nil
 	}
-	err := p.cmd.Process.Kill()
+	err := killPTYCommand(p.cmd)
 	if errors.Is(err, os.ErrProcessDone) {
 		return nil
 	}
 	return err
+}
+func (p *realProcess) PID() int {
+	if p.cmd.Process == nil {
+		return 0
+	}
+	return p.cmd.Process.Pid
 }
 
 type bufferedChunk struct {
@@ -205,6 +219,9 @@ type bufferedChunk struct {
 type session struct {
 	workspaceID string
 	id          string
+	name        string
+	kind        string
+	ownerID     string
 	shell       string
 	workingDir  string
 	backend     Backend
@@ -234,6 +251,7 @@ type Service struct {
 
 	mu         sync.Mutex
 	sessions   map[string]*session
+	defaults   map[string]string
 	newBackend func() (Backend, error)
 	sandbox    *sandbox.Manager
 	notify     func(Event)
@@ -244,6 +262,7 @@ func New(workspaceManager workspaceResolver, data *appdata.Store) *Service {
 		workspaces: workspaceManager,
 		data:       data,
 		sessions:   make(map[string]*session),
+		defaults:   make(map[string]string),
 		newBackend: newRealBackend,
 	}
 }
@@ -278,7 +297,7 @@ func (s *Service) Start(workspaceID string, cols, rows int) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	s.mu.Lock()
-	existing := s.sessions[workspaceID]
+	existing := s.sessions[s.defaults[workspaceID]]
 	s.mu.Unlock()
 	if existing != nil {
 		return existing.snapshot(0), nil
@@ -290,7 +309,12 @@ func (s *Service) Start(workspaceID string, cols, rows int) (Snapshot, error) {
 	s.mu.Lock()
 	sandboxManager := s.sandbox
 	s.mu.Unlock()
-	sandboxEnabled := sandboxManager != nil && sandboxManager.IsEnabled(workspaceID)
+	// The portable workspace policy is authoritative. A missing sandbox
+	// runtime must never turn a sandbox-owned debuggee into a host process.
+	sandboxEnabled := workspace.Sandbox.Enabled || (sandboxManager != nil && sandboxManager.IsEnabled(workspaceID))
+	if sandboxEnabled && sandboxManager == nil {
+		return Snapshot{}, errors.New("sandbox terminal runtime is unavailable")
+	}
 	var shellName, shellLabel string
 	var shellArgs []string
 	if sandboxEnabled {
@@ -308,7 +332,7 @@ func (s *Service) Start(workspaceID string, cols, rows int) (Snapshot, error) {
 	cols, rows = ClampSize(cols, rows)
 
 	s.mu.Lock()
-	if current := s.sessions[workspaceID]; current != nil {
+	if current := s.sessions[s.defaults[workspaceID]]; current != nil {
 		s.mu.Unlock()
 		return current.snapshot(0), nil
 	}
@@ -345,6 +369,8 @@ func (s *Service) Start(workspaceID string, cols, rows int) (Snapshot, error) {
 	current := &session{
 		workspaceID: workspaceID,
 		id:          uuid.NewString(),
+		name:        "Terminal",
+		kind:        "default",
 		shell:       shellLabel,
 		workingDir:  workingDir,
 		backend:     backend,
@@ -354,12 +380,125 @@ func (s *Service) Start(workspaceID string, cols, rows int) (Snapshot, error) {
 		status:      "running",
 		output:      make([]bufferedChunk, 0, 64),
 	}
-	s.sessions[workspaceID] = current
+	s.sessions[current.id] = current
+	s.defaults[workspaceID] = current.id
 	s.mu.Unlock()
 
-	s.emit(Event{Type: "terminal_event", WorkspaceID: workspaceID, SessionID: current.id, Event: "started"})
+	s.emit(Event{Type: "terminal_event", WorkspaceID: workspaceID, SessionID: current.id, Name: current.name, Kind: current.kind, Event: "started"})
 	go s.run(current)
 	return current.snapshot(0), nil
+}
+
+// StartDebugDAP implements DAP's runInTerminal reverse request using an
+// integrated, debugger-owned PTY. The process is intentionally independent of
+// the browser request context; StopOwner ties its lifetime to the DAP session.
+func (s *Service) StartDebugDAP(ctx context.Context, workspaceID, ownerSessionID string, arguments map[string]any) (map[string]any, error) {
+	if strings.EqualFold(stringFromAny(arguments["kind"]), "external") {
+		return nil, ErrExternalUnsupported
+	}
+	if interpreted, _ := arguments["argsCanBeInterpretedByShell"].(bool); interpreted {
+		return nil, errors.New("debug terminal shell-interpreted arguments are not supported; provide direct argv")
+	}
+	argv, err := dapArgv(arguments["args"])
+	if err != nil {
+		return nil, err
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	workspace, err := s.workspace(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	workingDir := strings.TrimSpace(stringFromAny(arguments["cwd"]))
+	if workingDir == "" {
+		workingDir, err = availableWorkingDirectory(workspace)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	s.mu.Lock()
+	sandboxManager := s.sandbox
+	factory := s.newBackend
+	s.mu.Unlock()
+	// Reverse requests are process launches, so use the same fail-closed policy
+	// as the normal terminal path instead of treating a missing manager as host.
+	sandboxEnabled := workspace.Sandbox.Enabled || (sandboxManager != nil && sandboxManager.IsEnabled(workspaceID))
+	if sandboxEnabled && sandboxManager == nil {
+		return nil, errors.New("sandbox debug terminal runtime is unavailable")
+	}
+	if sandboxEnabled && !strings.HasPrefix(filepath.ToSlash(workingDir), "/") {
+		workingDir, err = sandboxManager.HostToGuest(workspaceID, workingDir)
+		if err != nil {
+			return nil, fmt.Errorf("map debug terminal working directory: %w", err)
+		}
+	}
+	environment := terminalEnvironment()
+	if sandboxEnabled {
+		environment = sandboxTerminalEnvironment()
+	}
+	environment = mergeDAPEnvironment(environment, arguments["env"])
+
+	cols, rows := ClampSize(120, 30)
+	var backend Backend
+	if sandboxEnabled {
+		backend = &sandboxBackend{manager: sandboxManager, workspaceID: workspaceID}
+	} else {
+		backend, err = factory()
+	}
+	if err != nil {
+		return nil, fmt.Errorf("create debug terminal: %w", err)
+	}
+	if err := backend.Resize(cols, rows); err != nil {
+		_ = backend.Close()
+		return nil, fmt.Errorf("size debug terminal: %w", err)
+	}
+	processContext, cancel := context.WithCancel(context.Background())
+	process, err := backend.Start(processContext, CommandSpec{Name: argv[0], Args: argv[1:], Dir: workingDir, Env: environment})
+	if err != nil {
+		cancel()
+		_ = backend.Close()
+		return nil, fmt.Errorf("start debug terminal: %w", err)
+	}
+	title := strings.TrimSpace(stringFromAny(arguments["title"]))
+	if title == "" {
+		title = "Debug Terminal"
+	}
+	current := &session{
+		workspaceID: workspaceID, id: uuid.NewString(), name: title, kind: "debug", ownerID: ownerSessionID,
+		shell: filepath.Base(argv[0]), workingDir: workingDir, backend: backend, process: process,
+		cancel: cancel, done: make(chan struct{}), status: "running", output: make([]bufferedChunk, 0, 64),
+	}
+	s.mu.Lock()
+	s.sessions[current.id] = current
+	s.mu.Unlock()
+	s.emit(Event{Type: "terminal_event", WorkspaceID: workspaceID, SessionID: current.id, Name: current.name, Kind: current.kind, OwnerSessionID: current.ownerID, Event: "started"})
+	go s.run(current)
+	response := map[string]any{"sessionId": current.id}
+	if process, ok := process.(interface{ PID() int }); ok && process.PID() > 0 {
+		response["processId"] = process.PID()
+	}
+	return response, nil
+}
+
+// StopOwner terminates every integrated terminal created for one debugger
+// session without disturbing the workspace's normal shell.
+func (s *Service) StopOwner(workspaceID, ownerSessionID string) {
+	s.mu.Lock()
+	all := make([]*session, 0)
+	for id, current := range s.sessions {
+		if current.workspaceID == workspaceID && current.ownerID == ownerSessionID && current.kind == "debug" {
+			all = append(all, current)
+			delete(s.sessions, id)
+		}
+	}
+	s.mu.Unlock()
+	for _, current := range all {
+		current.stopAndWait()
+	}
 }
 
 func (s *Service) Sync(workspaceID, sessionID string, afterSequence uint64) (Snapshot, error) {
@@ -371,6 +510,37 @@ func (s *Service) Sync(workspaceID, sessionID string, afterSequence uint64) (Sna
 		return Snapshot{}, err
 	}
 	return current.snapshot(afterSequence), nil
+}
+
+// List returns the server-owned terminal sessions for reconnecting browsers.
+// In particular, debug PTYs cannot be reconstructed from a DAP snapshot alone
+// because runInTerminal assigns their own independent session IDs.
+func (s *Service) List(workspaceID string) ([]Snapshot, error) {
+	if _, err := s.workspace(workspaceID); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	current := make([]*session, 0, len(s.sessions))
+	for _, candidate := range s.sessions {
+		if candidate.workspaceID == workspaceID {
+			current = append(current, candidate)
+		}
+	}
+	s.mu.Unlock()
+	result := make([]Snapshot, 0, len(current))
+	for _, candidate := range current {
+		result = append(result, candidate.snapshot(0))
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Kind != result[j].Kind {
+			return result[i].Kind < result[j].Kind
+		}
+		if result[i].Name != result[j].Name {
+			return result[i].Name < result[j].Name
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result, nil
 }
 
 func (s *Service) Write(workspaceID, sessionID, data string) error {
@@ -425,10 +595,16 @@ func (s *Service) Stop(workspaceID, sessionID string) error {
 // rebound. A subsequent Start resolves the new authoritative workspace path.
 func (s *Service) StopWorkspace(workspaceID string) {
 	s.mu.Lock()
-	current := s.sessions[workspaceID]
-	delete(s.sessions, workspaceID)
+	all := make([]*session, 0)
+	for id, current := range s.sessions {
+		if current.workspaceID == workspaceID {
+			all = append(all, current)
+			delete(s.sessions, id)
+		}
+	}
+	delete(s.defaults, workspaceID)
 	s.mu.Unlock()
-	if current != nil {
+	for _, current := range all {
 		current.stopAndWait()
 	}
 }
@@ -438,9 +614,15 @@ func (s *Service) Restart(workspaceID, sessionID string, cols, rows int) (Snapsh
 	if err != nil {
 		return Snapshot{}, err
 	}
+	if current.kind != "default" {
+		return Snapshot{}, errors.New("debug-owned terminals are restarted with their debug session")
+	}
 	s.mu.Lock()
-	if s.sessions[workspaceID] == current {
-		delete(s.sessions, workspaceID)
+	if s.sessions[sessionID] == current {
+		delete(s.sessions, sessionID)
+	}
+	if s.defaults[workspaceID] == sessionID {
+		delete(s.defaults, workspaceID)
 	}
 	s.mu.Unlock()
 	current.stopAndWait()
@@ -454,6 +636,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		all = append(all, current)
 	}
 	s.sessions = make(map[string]*session)
+	s.defaults = make(map[string]string)
 	s.mu.Unlock()
 	for _, current := range all {
 		current.stop()
@@ -566,9 +749,9 @@ func (s *Service) current(workspaceID, sessionID string) (*session, error) {
 	workspaceID = strings.TrimSpace(workspaceID)
 	sessionID = strings.TrimSpace(sessionID)
 	s.mu.Lock()
-	current := s.sessions[workspaceID]
+	current := s.sessions[sessionID]
 	s.mu.Unlock()
-	if current == nil || sessionID == "" || current.id != sessionID {
+	if current == nil || sessionID == "" || current.workspaceID != workspaceID {
 		return nil, ErrSessionNotFound
 	}
 	return current, nil
@@ -635,6 +818,7 @@ func (s *Service) run(current *session) {
 	current.mu.Unlock()
 	s.emit(Event{
 		Type: "terminal_event", WorkspaceID: current.workspaceID, SessionID: current.id,
+		Name: current.name, Kind: current.kind, OwnerSessionID: current.ownerID,
 		Event: "exited", Sequence: lastSequence, ExitCode: &exitCode, Message: message,
 	})
 }
@@ -653,6 +837,7 @@ func (s *Service) emitOutput(current *session, data []byte) {
 	current.mu.Unlock()
 	s.emit(Event{
 		Type: "terminal_event", WorkspaceID: current.workspaceID, SessionID: current.id,
+		Name: current.name, Kind: current.kind, OwnerSessionID: current.ownerID,
 		Event: "data", Sequence: sequence, Data: base64.StdEncoding.EncodeToString(value),
 	})
 }
@@ -686,7 +871,8 @@ func (current *session) snapshot(afterSequence uint64) Snapshot {
 		exitCode = &value
 	}
 	return Snapshot{
-		WorkspaceID: current.workspaceID, ID: current.id, Shell: current.shell,
+		WorkspaceID: current.workspaceID, ID: current.id, Name: current.name, Kind: current.kind,
+		OwnerSessionID: current.ownerID, Shell: current.shell,
 		WorkingDirectory: current.workingDir, Status: current.status, ExitCode: exitCode,
 		Message: current.message, LastSequence: current.sequence, Reset: reset, Output: output,
 	}
@@ -796,6 +982,55 @@ func setEnvironment(values []string, key, value string) []string {
 		}
 	}
 	return append(values, key+"="+value)
+}
+
+func removeEnvironment(values []string, key string) []string {
+	prefix := strings.ToUpper(key) + "="
+	result := values[:0]
+	for _, existing := range values {
+		if !strings.HasPrefix(strings.ToUpper(existing), prefix) {
+			result = append(result, existing)
+		}
+	}
+	return result
+}
+
+func mergeDAPEnvironment(values []string, raw any) []string {
+	environment, ok := raw.(map[string]any)
+	if !ok {
+		return values
+	}
+	for key, value := range environment {
+		if value == nil {
+			values = removeEnvironment(values, key)
+			continue
+		}
+		if text, ok := value.(string); ok {
+			values = setEnvironment(values, key, text)
+		}
+	}
+	return values
+}
+
+func dapArgv(raw any) ([]string, error) {
+	values, ok := raw.([]any)
+	if !ok || len(values) == 0 {
+		return nil, errors.New("debug terminal requires a non-empty args array")
+	}
+	result := make([]string, len(values))
+	for index, value := range values {
+		text, ok := value.(string)
+		if !ok || strings.ContainsRune(text, 0) || (index == 0 && strings.TrimSpace(text) == "") {
+			return nil, fmt.Errorf("debug terminal argument %d is invalid", index)
+		}
+		result[index] = text
+	}
+	return result, nil
+}
+
+func stringFromAny(value any) string {
+	text, _ := value.(string)
+	return text
 }
 
 func validateSavedCommand(name, command string) (string, string, error) {

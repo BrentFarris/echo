@@ -33,7 +33,7 @@ Connect Echo to a local or remote provider that exposes an OpenAI-compatible `/c
 | --- | --- |
 | **Chat** | Persistent workspace conversations, multiple chat tabs, per-chat model and agent-mode selection, streamed Markdown, reasoning, tool activity, stop and clear controls, skill creation, and an inspectable Trajectory event stream |
 | **Agent modes** | Built-in General and read-only Plan modes plus workspace-defined system instructions, tool allowlists, and path restrictions |
-| **Code** | Monaco editing, generic opt-in LSP support, file tabs, workspace trees, quick open, text and file search, create/rename/save operations, external-change detection, recoverable trash, and browser hot-exit buffers |
+| **Code** | Monaco editing, generic opt-in LSP and DAP debugging, file tabs, workspace trees, quick open, text and file search, create/rename/save operations, external-change detection, recoverable trash, and browser hot-exit buffers |
 | **Git** | Repository discovery, working-tree status, staged and unstaged diffs, staging, commits, branches, remotes, fetch/pull/push/sync, history, tags, and stashes |
 | **Terminal** | Workspace-aware PTY sessions powered by xterm.js, resize, restart, stop, and reusable saved commands |
 | **Linux sandbox** | Optional per-workspace Docker workbench plus visible Xfce/Chromium desktop, browser takeover, persistent Linux/browser state, and deny-by-default egress |
@@ -67,6 +67,10 @@ Open **Settings → Language Servers** to copy the built-in `gopls`, `clangd`, o
 Profiles are reusable and stored globally in `echo.json`; workspace enablement, replacement overrides, and formatting controls are stored in `.echo/workspace.json`. Custom servers use the same profile fields, so adding another stdio LSP server requires no Echo code changes. Commands and arguments are executed directly without shell expansion. Format on save is off by default and fails open with a three-second default timeout.
 
 When the same file is open in multiple browsers, the first active editor owns its unsaved LSP document. The other browser can use **Take Over** in the Code status bar when it intentionally needs language-server control.
+
+### Debugging
+
+Open **Run and Debug** in Echo Code to configure a user-installed Delve, debugpy, js-debug, CodeLLDB, or custom DAP adapter. Debug profiles are machine-local; launch/attach configurations and compounds are portable workspace settings; personal breakpoints and watches remain outside the repository. Echo supports concurrent and child sessions, revision-safe multi-browser controls, reconnectable debug terminals, the standard stepping and inspection workflow, and capability-gated advanced breakpoints, mutation, reverse execution, memory, disassembly, modules, and virtual sources. See [Debugging in Echo](docs/debugging.md) for configuration, VS Code import, keybindings, sandbox behavior, and cleanup guarantees.
 
 ## Quick start
 

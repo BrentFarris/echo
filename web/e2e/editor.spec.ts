@@ -1510,3 +1510,104 @@ test("runs the deterministic fake language server through Monaco and settings", 
     return data.statuses.find((status: { profileId: string }) => status.profileId === "fake-e2e-lsp")?.state;
   }, workspaceId)).toBe("running");
 });
+
+test("debugs through a deterministic DAP adapter and reconnects the workbench", async ({ page }) => {
+  test.setTimeout(120_000);
+  const state = JSON.parse(readFileSync(resolve(directory, "../test-results/e2e-runtime/state.json"), "utf8")) as {
+    setupCode: string;
+    workspace: string;
+    nodePath: string;
+  };
+  const fakeDAPPath = resolve(directory, "fake-dap.mjs");
+  writeFileSync(join(state.workspace, "main.go"), "package main\n\nfunc main() {\n\tTarget()\n}\n", "utf8");
+
+  await page.goto("/");
+  if (await page.getByRole("heading", { name: "Secure this Echo server" }).isVisible()) {
+    await page.getByLabel("Setup code").fill(state.setupCode);
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByLabel("Confirm password").fill(password);
+    await page.getByLabel("Device name").fill("Playwright DAP");
+    await page.getByRole("button", { name: "Finish setup" }).click();
+  } else {
+    await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByLabel("Device name").fill("Playwright DAP");
+    await page.getByRole("button", { name: "Sign in" }).click();
+  }
+  await expect(page.locator(".app-shell")).toBeVisible();
+
+  const workspaceId = await page.evaluate(async ({ command, script, workspacePath }) => {
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      const response = await fetch(path, {
+        method, headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+      return payload.data;
+    };
+    const workspaceData = await request("/api/workspaces");
+    let workspace = (workspaceData.workspaces || []).find((candidate: { mainPath: string }) => candidate.mainPath === workspacePath);
+    if (!workspace) workspace = (await request("/api/workspaces", "POST", { name: "DAP E2E Workspace", mainPath: workspacePath, folders: [] })).workspace;
+    await request("/api/workspaces/active", "PUT", { id: workspace.id });
+    const profiles = await request("/api/debug/adapter-profiles");
+    if (!(profiles.profiles || []).some((profile: { id: string }) => profile.id === "fake-e2e-dap")) {
+      await request("/api/debug/adapter-profiles", "POST", { profile: {
+        id: "fake-e2e-dap", name: "Fake E2E DAP", adapterId: "echo-fake",
+        command, args: [script], environment: {}, selectors: [{ languageId: "go", extensions: [".go"] }],
+        transport: { kind: "stdio", startupTimeoutMs: 15000 },
+      } });
+    }
+    await request(`/api/workspaces/${encodeURIComponent(workspace.id)}/debug/config`, "PUT", {
+      version: 1, enabledAdapterProfileIds: ["fake-e2e-dap"], overrides: {},
+      configurations: [{
+        id: "fake-main", name: "Fake: Main", adapterProfileId: "fake-e2e-dap", request: "launch",
+        arguments: { program: "${file}" },
+      }], compounds: [], inputs: [],
+    });
+    return workspace.id as string;
+  }, { command: state.nodePath, script: fakeDAPPath, workspacePath: state.workspace });
+
+  await page.goto("/#/code");
+  await expect(page.locator(".code-tree-label", { hasText: "main.go" })).toBeVisible();
+  await page.locator(".code-tree-label", { hasText: "main.go" }).click();
+  await page.locator(".view-line", { hasText: "Target()" }).click();
+  await page.keyboard.press("F9");
+  await expect(page.locator(".cgmr.echo-debug-breakpoint")).toBeVisible();
+
+  await page.keyboard.press("Control+5");
+  await expect(page.getByLabel("Debug configuration")).toHaveValue("fake-main");
+  await page.keyboard.press("F8");
+  await expect(page.locator(".debug-session-row .debug-status.is-stopped")).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator(".debug-variable", { hasText: "x" }).first()).toContainText("42");
+  await expect(page.getByRole("button", { name: /^main main\.go:/ })).toBeVisible();
+
+  await page.getByRole("button", { name: "Add Watch Expression" }).click();
+  const watchExpression = page.getByRole("textbox", { name: "Expression", exact: true });
+  await watchExpression.fill("x");
+  await watchExpression.press("Enter");
+  await expect(page.locator(".debug-watch-row", { hasText: "x" })).toContainText("42");
+
+  await page.getByRole("tab", { name: "Debug Console" }).click();
+  const repl = page.getByLabel("Debug Console expression");
+  await repl.fill("x");
+  await repl.press("Enter");
+  await expect(page.locator(".debug-console-entry", { hasText: "42" })).toBeVisible();
+
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("F10");
+  await expect(page.locator(".debug-session-row .debug-status.is-stopped")).toBeVisible();
+  await expect(page.getByRole("button", { name: /^main main\.go:/ })).toContainText("5");
+
+  await page.reload();
+  await expect(page.locator(".code-app-shell")).toBeVisible();
+  await expect(page.locator(".debug-session-row .debug-status.is-stopped")).toBeVisible({ timeout: 20_000 });
+  const snapshot = await page.evaluate(async (id) => {
+    const response = await fetch(`/api/workspaces/${encodeURIComponent(id)}/debug/snapshot`);
+    return (await response.json()).data.snapshot;
+  }, workspaceId);
+  expect(snapshot.sessions.some((session: { status: string; configuration: string }) => session.status === "stopped" && session.configuration === "Fake: Main")).toBe(true);
+
+  await page.locator(".debug-floating-toolbar [data-debug-action=stop]").click();
+  await expect(page.locator(".debug-floating-toolbar")).toHaveCount(0);
+});

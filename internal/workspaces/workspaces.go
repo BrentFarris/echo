@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/brent/echo/internal/appdata"
+	"github.com/brent/echo/internal/debugconfig"
 	"github.com/brent/echo/internal/lspconfig"
 )
 
@@ -29,14 +30,15 @@ const EchoDirName = ".echo"
 // Workspace is the resolved shape returned to runtime consumers and the
 // frontend. Its paths are always absolute even when workspace.json is portable.
 type Workspace struct {
-	ID                          string                    `json:"id"`
-	Name                        string                    `json:"name"`
-	MainPath                    string                    `json:"mainPath"`
-	IconExt                     string                    `json:"iconExt,omitempty"`
-	Folders                     []string                  `json:"folders,omitempty"`
-	SearchParentGitRepositories bool                      `json:"searchParentGitRepositories,omitempty"`
-	LanguageServers             lspconfig.WorkspaceConfig `json:"languageServers,omitempty"`
-	Sandbox                     SandboxConfig             `json:"sandbox"`
+	ID                          string                      `json:"id"`
+	Name                        string                      `json:"name"`
+	MainPath                    string                      `json:"mainPath"`
+	IconExt                     string                      `json:"iconExt,omitempty"`
+	Folders                     []string                    `json:"folders,omitempty"`
+	SearchParentGitRepositories bool                        `json:"searchParentGitRepositories,omitempty"`
+	LanguageServers             lspconfig.WorkspaceConfig   `json:"languageServers,omitempty"`
+	Debug                       debugconfig.WorkspaceConfig `json:"debug,omitempty"`
+	Sandbox                     SandboxConfig               `json:"sandbox"`
 	sandboxConfigured           bool
 }
 
@@ -144,12 +146,13 @@ type Icon struct {
 
 // workspaceFile is the on-disk shape of .echo/workspace.json.
 type workspaceFile struct {
-	Name                        string                    `json:"name"`
-	MainPath                    string                    `json:"mainPath"`
-	Folders                     []string                  `json:"folders"`
-	SearchParentGitRepositories bool                      `json:"searchParentGitRepositories,omitempty"`
-	LanguageServers             lspconfig.WorkspaceConfig `json:"languageServers,omitempty"`
-	Sandbox                     *SandboxConfig            `json:"sandbox,omitempty"`
+	Name                        string                      `json:"name"`
+	MainPath                    string                      `json:"mainPath"`
+	Folders                     []string                    `json:"folders"`
+	SearchParentGitRepositories bool                        `json:"searchParentGitRepositories,omitempty"`
+	LanguageServers             lspconfig.WorkspaceConfig   `json:"languageServers,omitempty"`
+	Debug                       debugconfig.WorkspaceConfig `json:"debug,omitempty"`
+	Sandbox                     *SandboxConfig              `json:"sandbox,omitempty"`
 }
 
 const (
@@ -621,6 +624,27 @@ func (m *Manager) SetLanguageServerConfig(id string, config lspconfig.WorkspaceC
 	return workspace, nil
 }
 
+// SetDebugConfig validates and persists the portable workspace debugger
+// configuration without copying machine-local adapter profiles into the repo.
+func (m *Manager) SetDebugConfig(id string, config debugconfig.WorkspaceConfig) (Workspace, error) {
+	workspace, ok, err := m.Get(id)
+	if err != nil {
+		return Workspace{}, err
+	}
+	if !ok {
+		return Workspace{}, fmt.Errorf("workspace %q not found", id)
+	}
+	config = config.Normalized()
+	if err := config.ValidateStructure(); err != nil {
+		return Workspace{}, err
+	}
+	workspace.Debug = config
+	if err := writeWorkspaceFile(filepath.Join(workspace.MainPath, EchoDirName), workspaceFileFromWorkspace(workspace)); err != nil {
+		return Workspace{}, err
+	}
+	return workspace, nil
+}
+
 // SetSandboxConfig validates and persists the portable sandbox configuration.
 // Host-specific runtime state and credentials deliberately live elsewhere.
 func (m *Manager) SetSandboxConfig(id string, config SandboxConfig) (Workspace, error) {
@@ -735,10 +759,15 @@ func workspaceFromFile(id, iconExt, echoDir, expectedMain string, wf workspaceFi
 			return Workspace{}, &ConfigError{Code: ConfigMalformed, Message: "workspace sandbox configuration is invalid", Cause: err}
 		}
 	}
+	debugConfig := wf.Debug.Normalized()
+	if err := debugConfig.ValidateStructure(); err != nil {
+		return Workspace{}, &ConfigError{Code: ConfigMalformed, Message: "workspace debugger configuration is invalid", Cause: err}
+	}
 	return Workspace{
 		ID: id, Name: name, MainPath: expectedMain, IconExt: iconExt, Folders: folders,
 		SearchParentGitRepositories: wf.SearchParentGitRepositories,
 		LanguageServers:             wf.LanguageServers.Normalized(),
+		Debug:                       debugConfig,
 		Sandbox:                     sandboxConfig,
 		sandboxConfigured:           sandboxConfigured,
 	}, nil
@@ -803,6 +832,7 @@ func workspaceFileFromWorkspace(ws Workspace) workspaceFile {
 		Name: ws.Name, MainPath: ws.MainPath, Folders: append([]string(nil), ws.Folders...),
 		SearchParentGitRepositories: ws.SearchParentGitRepositories,
 		LanguageServers:             ws.LanguageServers.Normalized(),
+		Debug:                       ws.Debug.Normalized(),
 	}
 	if ws.sandboxConfigured {
 		config := ws.Sandbox

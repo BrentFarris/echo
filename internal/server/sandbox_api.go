@@ -166,6 +166,7 @@ func (s *Server) handleDeleteWorkspaceSandbox(w http.ResponseWriter, r *http.Req
 
 func (s *Server) stopSandboxWorkspaceProcesses(workspaceID string) {
 	s.sessions.invalidate(workspaceID)
+	s.debugger.StopWorkspace(workspaceID)
 	s.terminal.StopWorkspace(workspaceID)
 	s.lsp.StopWorkspaceProcesses(workspaceID)
 	s.git.StopWorkspaceProcesses(workspaceID)

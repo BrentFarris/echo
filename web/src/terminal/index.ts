@@ -7,7 +7,7 @@ import { icons } from "../../js/icons.js";
 import { on as onSocket, onState as onSocketState, send as sendSocket } from "../../js/ws.js";
 import { toast } from "../code/ui";
 import {
-  createSavedCommand, deleteSavedCommand, listSavedCommands, resizeTerminal,
+  createSavedCommand, deleteSavedCommand, listSavedCommands, listTerminalSessions, resizeTerminal,
   restartTerminal as restartTerminalAPI, startTerminal, stopTerminal as stopTerminalAPI,
   syncTerminal, updateSavedCommand, writeTerminal,
   type SavedCommand, type TerminalEvent, type TerminalSnapshot,
@@ -33,7 +33,14 @@ type TerminalMeta = {
   message?: string;
   lastSequence: number;
 };
-type TerminalPreference = { open?: boolean; maximized?: boolean; height?: number };
+type TerminalPreference = { open?: boolean; maximized?: boolean; height?: number; activePanel?: string };
+export type WorkbenchPanel = {
+  id: string;
+  label: string;
+  icon?: string;
+  mount(host: HTMLElement): void;
+  unmount?(): void;
+};
 
 const preferenceKey = "echo.terminalDock.v1";
 const defaultHeight = 280;
@@ -49,13 +56,19 @@ const maximizedWorkspaces = new Set<string>();
 const heights = new Map<string, number>();
 const savedMenus = new Set<string>();
 const subscribed = new Set<string>();
+const workbenchPanels = new Map<string, Map<string, WorkbenchPanel>>();
+const activePanels = new Map<string, string>();
+const debugPanelUnregister = new Map<string, () => void>();
 const subscriptionWaits = new Map<string, { promise: Promise<void>; resolve(): void }>();
+const terminalRestorePromises = new Map<string, Promise<void>>();
 let preferencesLoaded = false;
 let mountedRegion: HTMLElement | null = null;
 let mountedWorkspace: TerminalWorkspace | null = null;
 
 class TerminalController {
   readonly workspaceId: string;
+  readonly key: string;
+  readonly fixedSession: boolean;
   readonly host: HTMLDivElement;
   readonly terminal: Terminal;
   readonly fitAddon: FitAddon;
@@ -70,8 +83,11 @@ class TerminalController {
   private sessionId = "";
   private lastSequence = 0;
 
-  constructor(workspaceId: string) {
+  constructor(workspaceId: string, sessionId = "") {
     this.workspaceId = workspaceId;
+    this.fixedSession = Boolean(sessionId);
+    this.sessionId = sessionId;
+    this.key = this.fixedSession ? debugTerminalKey(workspaceId, sessionId) : workspaceId;
     this.host = document.createElement("div");
     this.host.className = "terminal-xterm-instance";
     this.host.dataset.terminalXtermWorkspace = workspaceId;
@@ -90,9 +106,9 @@ class TerminalController {
     this.terminal.loadAddon(this.fitAddon);
     this.terminal.loadAddon(new WebLinksAddon());
     this.terminal.onData((data) => {
-      const current = meta.get(this.workspaceId);
+      const current = meta.get(this.key);
       if (current?.status === "exited") {
-        if (data.includes("\r") || data.includes("\n")) void this.restart();
+        if (!this.fixedSession && (data.includes("\r") || data.includes("\n"))) void this.restart();
         return;
       }
       this.queueInput(data);
@@ -117,6 +133,12 @@ class TerminalController {
   }
 
   async ensureStarted(): Promise<void> {
+    if (this.fixedSession) {
+      if (meta.has(this.key)) return;
+      if (this.startPromise) return this.startPromise;
+      this.startPromise = this.resync().finally(() => { this.startPromise = null; });
+      return this.startPromise;
+    }
     if (this.sessionId) return;
     if (this.startPromise) return this.startPromise;
     this.startPromise = this.start().finally(() => { this.startPromise = null; });
@@ -129,7 +151,11 @@ class TerminalController {
     this.syncPromise = subscribeWorkspace(this.workspaceId)
       .then(() => syncTerminal(this.workspaceId, this.sessionId, this.lastSequence))
       .then((snapshot) => this.applySnapshot(snapshot))
-      .catch(async () => {
+      .catch(async (error) => {
+        if (this.fixedSession) {
+          this.setMeta({ status: "error", message: errorMessage(error) });
+          return;
+        }
         const snapshot = await startTerminal(this.workspaceId, this.terminal.cols, this.terminal.rows);
         this.applySnapshot(snapshot, snapshot.id !== this.sessionId);
       })
@@ -139,7 +165,7 @@ class TerminalController {
 
   applyEvent(event: TerminalEvent): void {
     if (event.event === "started" && event.sessionId !== this.sessionId) {
-      if (!this.startPromise) void this.startFromCurrentSession();
+      if (!this.fixedSession && event.kind !== "debug" && !this.startPromise) void this.startFromCurrentSession();
       return;
     }
     if (!this.sessionId || event.sessionId !== this.sessionId) return;
@@ -153,22 +179,23 @@ class TerminalController {
       }
       this.terminal.write(decodeTerminalBase64(event.data || ""));
       this.lastSequence = sequence;
-      updateMeta(this.workspaceId, { lastSequence: sequence }, false);
+      this.setMeta({ lastSequence: sequence }, false);
       return;
     }
     if (event.event === "exited") {
-      updateMeta(this.workspaceId, {
+      this.setMeta({
         status: "exited",
         exitCode: event.exitCode,
         message: event.message,
         lastSequence: Number(event.sequence ?? this.lastSequence),
       });
+      if (this.fixedSession) this.terminal.writeln(`\r\n[Process exited with code ${event.exitCode ?? "?"}]`);
     }
   }
 
   async stop(): Promise<void> {
     if (!this.sessionId) return;
-    updateMeta(this.workspaceId, { status: "stopping" });
+    this.setMeta({ status: "stopping" });
     try {
       await stopTerminalAPI(this.workspaceId, this.sessionId);
     } catch (error) {
@@ -212,7 +239,7 @@ class TerminalController {
       this.terminal.focus();
     } catch (error) {
       this.inputBuffer = "";
-      updateMeta(this.workspaceId, {
+      this.setMeta({
         id: "", shell: "Terminal", workingDirectory: "", status: "error",
         message: errorMessage(error), lastSequence: 0,
       });
@@ -242,7 +269,7 @@ class TerminalController {
       this.lastSequence = chunk.sequence;
     }
     this.lastSequence = Math.max(this.lastSequence, snapshot.lastSequence || 0);
-    meta.set(this.workspaceId, {
+    meta.set(this.key, {
       id: snapshot.id,
       shell: snapshot.shell || "Terminal",
       workingDirectory: snapshot.workingDirectory || "",
@@ -253,6 +280,19 @@ class TerminalController {
     });
     this.flushInput();
     renderMountedDock();
+  }
+
+  restore(snapshot: TerminalSnapshot): void {
+    this.applySnapshot(snapshot, this.sessionId !== snapshot.id);
+  }
+
+  private setMeta(patch: Partial<TerminalMeta>, rerender = true): void {
+    const current = meta.get(this.key) || {
+      id: this.sessionId, shell: this.fixedSession ? "Debug Terminal" : "Terminal",
+      workingDirectory: "", status: "idle", lastSequence: 0,
+    };
+    meta.set(this.key, { ...current, ...patch });
+    if (rerender && mountedWorkspace?.id === this.workspaceId) renderMountedDock();
   }
 
   private queueInput(data: string): void {
@@ -294,7 +334,7 @@ class TerminalController {
 export function mountTerminalDock(region: HTMLElement | null, workspace: TerminalWorkspace | null): void {
   loadPreferences();
   if (mountedWorkspace && (mountedWorkspace.id !== workspace?.id || mountedRegion !== region)) {
-    controllers.get(mountedWorkspace.id)?.unmount();
+    unmountWorkspaceTerminals(mountedWorkspace.id);
   }
   mountedRegion = region;
   mountedWorkspace = workspace;
@@ -308,9 +348,36 @@ export function mountTerminalDock(region: HTMLElement | null, workspace: Termina
 
 export function detachTerminalDock(region?: HTMLElement | null): void {
   if (region && mountedRegion !== region) return;
-  if (mountedWorkspace) controllers.get(mountedWorkspace.id)?.unmount();
+  if (mountedWorkspace) unmountWorkspaceTerminals(mountedWorkspace.id);
   mountedRegion = null;
   mountedWorkspace = null;
+}
+
+export function registerWorkbenchPanel(workspaceId: string, panel: WorkbenchPanel): () => void {
+  let panels = workbenchPanels.get(workspaceId);
+  if (!panels) {
+    panels = new Map();
+    workbenchPanels.set(workspaceId, panels);
+  }
+  panels.set(panel.id, panel);
+  if (mountedWorkspace?.id === workspaceId) renderMountedDock();
+  return () => {
+    panel.unmount?.();
+    const current = workbenchPanels.get(workspaceId);
+    current?.delete(panel.id);
+    if (!current?.size) workbenchPanels.delete(workspaceId);
+    if (activePanels.get(workspaceId) === panel.id) activePanels.set(workspaceId, "terminal");
+    if (mountedWorkspace?.id === workspaceId) renderMountedDock();
+  };
+}
+
+export function openWorkbenchPanel(workspaceId: string, panelId: string, focus = false): void {
+  if (panelId !== "terminal" && !workbenchPanels.get(workspaceId)?.has(panelId)) return;
+  activePanels.set(workspaceId, panelId);
+  openWorkspaces.add(workspaceId);
+  persistPreferences();
+  renderMountedDock();
+  if (focus) requestAnimationFrame(() => mountedRegion?.querySelector<HTMLElement>("[data-workbench-panel-host]")?.focus());
 }
 
 function renderMountedDock(): void {
@@ -323,35 +390,47 @@ function renderMountedDock(): void {
   const savedOpen = savedMenus.has(workspaceId);
   const current = meta.get(workspaceId);
   const status = terminalStatus(current);
+  const panels = [...(workbenchPanels.get(workspaceId)?.values() || [])];
+  let activePanel = activePanels.get(workspaceId) || "terminal";
+  if (activePanel !== "terminal" && !panels.some((panel) => panel.id === activePanel)) activePanel = "terminal";
+  activePanels.set(workspaceId, activePanel);
+  const activeRegistration = panels.find((panel) => panel.id === activePanel);
+  unmountWorkspaceTerminals(workspaceId);
   region.innerHTML = `
     <section class="terminal-dock${open ? " is-open" : ""}${maximized ? " is-maximized" : ""}" data-terminal-dock data-workspace-id="${escapeAttribute(workspaceId)}" style="--terminal-dock-height:${terminalHeight(workspaceId)}px" aria-label="Integrated terminal">
       ${open ? `<div class="terminal-resize-handle" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" tabindex="0" data-terminal-resize-handle></div>` : ""}
       <header class="terminal-toolbar">
         <button class="terminal-title-button" type="button" data-terminal-action="toggle" aria-expanded="${open}">
-          ${icons.terminal}<span class="terminal-title">Terminal</span>
+          ${activeRegistration?.icon ? `<span class="codicon codicon-${escapeAttribute(activeRegistration.icon)}"></span>` : icons.terminal}<span class="terminal-title">${escapeHTML(activeRegistration?.label || "Terminal")}</span>
+          ${activePanel === "terminal" ? `
           <span class="terminal-session-label">${escapeHTML(current?.shell || "Terminal")}</span>
           <span class="terminal-workspace-label" title="${escapeAttribute(current?.workingDirectory || workspace.mainPath)}">${escapeHTML(workspace.name)}</span>
           <span class="terminal-status-indicator is-${escapeAttribute(status.tone)}" title="${escapeAttribute(status.detail)}"></span>
-          <span class="terminal-status-text">${escapeHTML(status.label)}</span>
+          <span class="terminal-status-text">${escapeHTML(status.label)}</span>` : ""}
         </button>
+        <div class="terminal-panel-tabs" role="tablist" aria-label="Panel views">
+          ${[{ id: "terminal", label: "Terminal", icon: "terminal" }, ...panels].map((panel) => `<button type="button" role="tab" aria-selected="${activePanel === panel.id}" class="${activePanel === panel.id ? "is-active" : ""}" data-terminal-action="panel" data-panel-id="${escapeAttribute(panel.id)}"><span class="codicon codicon-${escapeAttribute(panel.icon || "output")}"></span>${escapeHTML(panel.label)}</button>`).join("")}
+        </div>
         <div class="terminal-toolbar-actions">
+          ${activePanel === "terminal" ? `
           <div class="terminal-saved-menu-wrap">
             <button class="terminal-toolbar-button" type="button" title="Saved commands" aria-label="Saved commands" aria-expanded="${savedOpen}" data-terminal-action="saved">${icons.star}<span>Saved</span></button>
             ${savedOpen ? renderSavedMenu(workspaceId) : ""}
           </div>
           <button class="terminal-toolbar-button icon-only" type="button" title="Restart terminal" aria-label="Restart terminal" data-terminal-action="restart">${icons.refresh}</button>
           <button class="terminal-toolbar-button icon-only danger" type="button" title="Kill terminal" aria-label="Kill terminal" data-terminal-action="stop" ${current?.status === "running" || current?.status === "stopping" ? "" : "disabled"}>${icons.trash}</button>
+          ` : ""}
           <button class="terminal-toolbar-button icon-only terminal-maximize-button" type="button" title="${maximized ? "Restore terminal size" : "Maximize terminal"}" aria-label="${maximized ? "Restore terminal size" : "Maximize terminal"}" data-terminal-action="maximize" ${open ? "" : "disabled"}>${maximized ? icons.collapse : icons.expand}</button>
           <button class="terminal-toolbar-button icon-only" type="button" title="${open ? "Close terminal" : "Open terminal"}" aria-label="${open ? "Close terminal" : "Open terminal"}" data-terminal-action="toggle">${open ? icons.x : icons.arrowUp}</button>
         </div>
       </header>
-      ${open ? `<div class="terminal-viewport" data-terminal-viewport>
+      ${open && activePanel === "terminal" ? `<div class="terminal-viewport" data-terminal-viewport>
         ${current?.status === "error" ? renderProcessMessage(current.message || "Terminal could not start.", "error") : ""}
         ${current?.status === "exited" ? renderProcessMessage(`Process exited with code ${current.exitCode ?? "?"}. Press Enter or restart to launch a new shell.`, "exited") : ""}
-      </div>` : ""}
+      </div>` : open ? `<div class="terminal-custom-panel" data-workbench-panel-host tabindex="-1"></div>` : ""}
     </section>`;
   bindDock(region, workspace);
-  if (open) {
+  if (open && activePanel === "terminal") {
     const viewport = region.querySelector<HTMLElement>("[data-terminal-viewport]");
     if (viewport) {
       const controller = terminalController(workspaceId);
@@ -360,8 +439,10 @@ function renderMountedDock(): void {
       if (!alreadyMounted) controller.terminal.focus();
       void controller.ensureStarted();
     }
-  } else {
-    controllers.get(workspaceId)?.unmount();
+  }
+  if (open && activeRegistration) {
+    const host = region.querySelector<HTMLElement>("[data-workbench-panel-host]");
+    if (host) activeRegistration.mount(host);
   }
 }
 
@@ -376,6 +457,7 @@ function bindDock(region: HTMLElement, workspace: TerminalWorkspace): void {
     else if (action === "restart") void restartWorkspaceTerminal(workspaceId);
     else if (action === "stop") void stopWorkspaceTerminal(workspaceId);
     else if (action === "saved") toggleSavedMenu(workspaceId);
+    else if (action === "panel") openWorkbenchPanel(workspaceId, button.dataset.panelId || "terminal", true);
     else if (action === "run") runSaved(workspaceId, button.dataset.commandId || "");
     else if (action === "add") openSavedCommandDialog(workspaceId, null);
     else if (action === "edit") openSavedCommandDialog(workspaceId, button.dataset.commandId || "");
@@ -411,6 +493,31 @@ function terminalController(workspaceId: string): TerminalController {
   return controller;
 }
 
+function unmountWorkspaceTerminals(workspaceId: string): void {
+  for (const controller of controllers.values()) if (controller.workspaceId === workspaceId) controller.unmount();
+}
+
+function debugTerminalKey(workspaceId: string, sessionId: string): string { return `${workspaceId}:debug:${sessionId}`; }
+function debugTerminalPanelID(sessionId: string): string { return `debug-terminal-${sessionId}`; }
+function debugTerminalController(workspaceId: string, sessionId: string, name: string): TerminalController {
+  const key = debugTerminalKey(workspaceId, sessionId);
+  let controller = controllers.get(key);
+  if (!controller) {
+    controller = new TerminalController(workspaceId, sessionId);
+    controllers.set(key, controller);
+  }
+  if (!debugPanelUnregister.has(key)) {
+    const registered = controller;
+    debugPanelUnregister.set(key, registerWorkbenchPanel(workspaceId, {
+      id: debugTerminalPanelID(sessionId), label: name, icon: "terminal",
+      mount(host) { registered.mount(host); void registered.ensureStarted(); },
+      unmount() { registered.unmount(); },
+    }));
+  }
+  void subscribeWorkspace(workspaceId);
+  return controller;
+}
+
 function subscribeWorkspace(workspaceId: string): Promise<void> {
   if (subscribed.has(workspaceId)) return Promise.resolve();
   let wait = subscriptionWaits.get(workspaceId);
@@ -429,7 +536,9 @@ onSocketState((state) => {
     subscribed.clear();
     return;
   }
-  for (const workspaceId of controllers.keys()) sendSocket({ type: "terminal_subscribe", workspaceId });
+  for (const workspaceId of new Set([...controllers.values()].map((controller) => controller.workspaceId))) {
+    sendSocket({ type: "terminal_subscribe", workspaceId });
+  }
 });
 onSocket("terminal_subscribed", (message: object) => {
   const workspaceId = String((message as { workspaceId?: string }).workspaceId || "");
@@ -438,13 +547,37 @@ onSocket("terminal_subscribed", (message: object) => {
   const wait = subscriptionWaits.get(workspaceId);
   wait?.resolve();
   subscriptionWaits.delete(workspaceId);
-  const controller = controllers.get(workspaceId);
-  if (controller) void controller.resync();
+  for (const controller of controllers.values()) {
+    if (controller.workspaceId === workspaceId) void controller.resync();
+  }
+  void restoreDebugTerminals(workspaceId);
 });
 onSocket("terminal_event", (message: object) => {
   const event = message as TerminalEvent;
+  if (event.kind === "debug" || controllers.has(debugTerminalKey(event.workspaceId, event.sessionId))) {
+    const controller = debugTerminalController(event.workspaceId, event.sessionId, event.name || "Debug Terminal");
+    controller.applyEvent(event);
+    if (event.event === "started") openWorkbenchPanel(event.workspaceId, debugTerminalPanelID(event.sessionId), true);
+    return;
+  }
   controllers.get(event.workspaceId)?.applyEvent(event);
 });
+
+function restoreDebugTerminals(workspaceId: string): Promise<void> {
+  const existing = terminalRestorePromises.get(workspaceId);
+  if (existing) return existing;
+  const restore = listTerminalSessions(workspaceId)
+    .then((sessions) => {
+      for (const snapshot of sessions) {
+        if (snapshot.kind !== "debug") continue;
+        debugTerminalController(workspaceId, snapshot.id, snapshot.name || "Debug Terminal").restore(snapshot);
+      }
+    })
+    .catch((error) => toast(`Could not restore debug terminals: ${errorMessage(error)}`))
+    .finally(() => terminalRestorePromises.delete(workspaceId));
+  terminalRestorePromises.set(workspaceId, restore);
+  return restore;
+}
 
 function toggleTerminal(workspaceId: string): void {
   if (openWorkspaces.has(workspaceId)) {
@@ -630,15 +763,17 @@ function loadPreferences(): void {
     if (preference.open) openWorkspaces.add(workspaceId);
     if (preference.maximized) maximizedWorkspaces.add(workspaceId);
     if (Number.isFinite(preference.height)) heights.set(workspaceId, clampTerminalHeight(Number(preference.height)));
+    if (typeof preference.activePanel === "string" && preference.activePanel) activePanels.set(workspaceId, preference.activePanel);
   }
 }
 function persistPreferences(): void {
-  const workspaceIds = new Set([...openWorkspaces, ...maximizedWorkspaces, ...heights.keys()]);
+  const workspaceIds = new Set([...openWorkspaces, ...maximizedWorkspaces, ...heights.keys(), ...activePanels.keys()]);
   const preferences: Record<string, TerminalPreference> = {};
   for (const workspaceId of workspaceIds) preferences[workspaceId] = {
     open: openWorkspaces.has(workspaceId),
     maximized: maximizedWorkspaces.has(workspaceId),
     height: terminalHeight(workspaceId),
+    activePanel: activePanels.get(workspaceId) || "terminal",
   };
   try { window.localStorage.setItem(preferenceKey, JSON.stringify(preferences)); } catch { /* Optional. */ }
 }

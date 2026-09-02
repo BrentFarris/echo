@@ -18,6 +18,8 @@ import (
 	"github.com/brent/echo/internal/agentmodes"
 	"github.com/brent/echo/internal/appdata"
 	"github.com/brent/echo/internal/auth"
+	"github.com/brent/echo/internal/debugconfig"
+	"github.com/brent/echo/internal/debugger"
 	"github.com/brent/echo/internal/echoupdate"
 	"github.com/brent/echo/internal/gitservice"
 	"github.com/brent/echo/internal/llm"
@@ -55,6 +57,9 @@ type Server struct {
 	terminal         *terminalruntime.Service
 	lsp              *lspruntime.Service
 	lspProfiles      *lspconfig.Store
+	debugger         *debugger.Service
+	debugProfiles    *debugconfig.ProfileStore
+	debugState       *debugconfig.StateStore
 	sandbox          *sandbox.Manager
 	auth             *auth.Manager
 	authDisabled     bool
@@ -179,6 +184,15 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 		s.hub.BroadcastWorkspaceTerminal(event.WorkspaceID, event)
 	})
 	s.fs = workspacefs.New(s.workspaces, settingsPath)
+	s.debugProfiles = debugconfig.NewProfileStore(s.data)
+	s.debugState = debugconfig.NewStateStore(s.data)
+	s.debugger = debugger.New(s.debugProfiles, s.debugState, s.workspaces, s.fs)
+	s.debugger.SetSandbox(s.sandbox)
+	s.debugger.SetRunInTerminal(s.terminal.StartDebugDAP)
+	s.debugger.SetStopDebugTerminals(s.terminal.StopOwner)
+	s.debugger.SetNotifier(func(event debugger.Event) {
+		s.hub.BroadcastWorkspaceDebug(event.WorkspaceID, event)
+	})
 	s.git = gitservice.New(s.workspaces, s.fs)
 	s.git.SetSandbox(s.sandbox)
 	s.git.SetNotifier(func(event gitservice.Event) {
@@ -395,6 +409,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/lsp/profiles", s.handleCreateLSPProfile)
 	mux.HandleFunc("PUT /api/lsp/profiles/{profileId}", s.handleUpdateLSPProfile)
 	mux.HandleFunc("DELETE /api/lsp/profiles/{profileId}", s.handleDeleteLSPProfile)
+	mux.HandleFunc("GET /api/debug/adapter-profiles", s.handleGetDebugAdapterProfiles)
+	mux.HandleFunc("POST /api/debug/adapter-profiles", s.handleCreateDebugAdapterProfile)
+	mux.HandleFunc("PUT /api/debug/adapter-profiles/{profileId}", s.handleUpdateDebugAdapterProfile)
+	mux.HandleFunc("DELETE /api/debug/adapter-profiles/{profileId}", s.handleDeleteDebugAdapterProfile)
 	mux.HandleFunc("GET /api/development/update-status", s.handleEchoUpdateStatus)
 	mux.HandleFunc("POST /api/development/update", s.handleEchoUpdate)
 	mux.HandleFunc("POST /api/development/rebuild-relaunch", s.handleRebuildRelaunch)
@@ -455,6 +473,23 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("PUT /api/workspaces/{id}/lsp/config", s.handlePutWorkspaceLSPConfig)
 	mux.HandleFunc("POST /api/workspaces/{id}/lsp/{profileId}/restart", s.handleRestartLSP)
 	mux.HandleFunc("GET /api/workspaces/{id}/lsp/ws", s.handleLSPWebSocket)
+	mux.HandleFunc("GET /api/workspaces/{id}/debug/config", s.handleGetWorkspaceDebugConfig)
+	mux.HandleFunc("PUT /api/workspaces/{id}/debug/config", s.handlePutWorkspaceDebugConfig)
+	mux.HandleFunc("GET /api/workspaces/{id}/debug/state", s.handleGetWorkspaceDebugState)
+	mux.HandleFunc("PUT /api/workspaces/{id}/debug/state", s.handlePutWorkspaceDebugState)
+	mux.HandleFunc("POST /api/workspaces/{id}/debug/import-vscode/preview", s.handlePreviewVSCodeDebugImport)
+	mux.HandleFunc("POST /api/workspaces/{id}/debug/adapters/{profileId}/diagnostic", s.handleDebugAdapterDiagnostic)
+	mux.HandleFunc("GET /api/workspaces/{id}/debug/snapshot", s.handleDebugSnapshot)
+	mux.HandleFunc("GET /api/workspaces/{id}/debug/processes", s.handleDebugProcesses)
+	mux.HandleFunc("POST /api/workspaces/{id}/debug/sessions", s.handleStartDebugSession)
+	mux.HandleFunc("POST /api/workspaces/{id}/debug/sessions/{sessionId}/requests/{command}", s.handleDebugRequest)
+	mux.HandleFunc("POST /api/workspaces/{id}/debug/sessions/{sessionId}/trace", s.handleSetDebugTrace)
+	mux.HandleFunc("POST /api/workspaces/{id}/debug/sessions/{sessionId}/stop", s.handleStopDebugSession)
+	mux.HandleFunc("POST /api/workspaces/{id}/debug/sessions/{sessionId}/disconnect", s.handleDisconnectDebugSession)
+	mux.HandleFunc("POST /api/workspaces/{id}/debug/sessions/{sessionId}/terminate", s.handleTerminateDebugSession)
+	mux.HandleFunc("POST /api/workspaces/{id}/debug/sessions/{sessionId}/restart", s.handleRestartDebugSession)
+	mux.HandleFunc("POST /api/workspaces/{id}/debug/groups/{groupId}/stop", s.handleStopDebugGroup)
+	mux.HandleFunc("POST /api/workspaces/{id}/debug/groups/{groupId}/restart", s.handleRestartDebugGroup)
 	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories", s.handleGitRepositories)
 	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories/{repositoryId}/status", s.handleGitStatus)
 	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories/{repositoryId}/diff", s.handleGitDiff)
@@ -470,6 +505,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/workspaces/{id}/chats/{chatId}/trajectory/search", s.handleSearchTrajectory)
 	mux.HandleFunc("GET /api/workspaces/{id}/chats/{chatId}/trajectory/export", s.handleExportTrajectory)
 	mux.HandleFunc("POST /api/workspaces/{id}/terminal/sessions", s.handleStartTerminalSession)
+	mux.HandleFunc("GET /api/workspaces/{id}/terminal/sessions", s.handleListTerminalSessions)
 	mux.HandleFunc("GET /api/workspaces/{id}/terminal/sessions/{sessionId}", s.handleSyncTerminalSession)
 	mux.HandleFunc("POST /api/workspaces/{id}/terminal/sessions/{sessionId}/input", s.handleWriteTerminalSession)
 	mux.HandleFunc("PUT /api/workspaces/{id}/terminal/sessions/{sessionId}/size", s.handleResizeTerminalSession)
@@ -584,8 +620,10 @@ func (s *Server) requestTermination() {
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.watcher.Close()
 	s.git.Close()
-	s.fs.Close()
 	s.sessions.shutdown(ctx)
+	if err := s.debugger.Shutdown(ctx); err != nil && ctx.Err() == nil {
+		logf("debugger shutdown: %v", err)
+	}
 	if err := s.lsp.Shutdown(ctx); err != nil && ctx.Err() == nil {
 		logf("language server shutdown: %v", err)
 	}
@@ -595,6 +633,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if err := s.sandbox.Shutdown(ctx); err != nil && ctx.Err() == nil {
 		logf("sandbox shutdown: %v", err)
 	}
+	s.fs.Close()
 	if s.plugins != nil {
 		if err := s.plugins.Shutdown(ctx); err != nil && ctx.Err() == nil {
 			logf("plugin shutdown: %v", err)
@@ -606,6 +645,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) refreshWorkspaceCaches(ctx context.Context, workspaceID string) {
 	s.sessions.invalidate(workspaceID)
+	s.debugger.StopWorkspace(workspaceID)
 	s.terminal.StopWorkspace(workspaceID)
 	s.watcher.Refresh(workspaceID)
 	if err := s.git.ResetWorkspace(ctx, workspaceID); err != nil {
@@ -620,6 +660,7 @@ func (s *Server) refreshWorkspaceCaches(ctx context.Context, workspaceID string)
 
 func (s *Server) removeWorkspaceCaches(workspaceID string) {
 	s.sessions.invalidate(workspaceID)
+	s.debugger.StopWorkspace(workspaceID)
 	s.terminal.StopWorkspace(workspaceID)
 	s.watcher.RemoveWorkspace(workspaceID)
 	s.git.RemoveWorkspace(workspaceID)
