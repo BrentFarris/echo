@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/brent/echo/internal/debugconfig"
+	"github.com/brent/echo/internal/debugger"
 	"github.com/gorilla/websocket"
 )
 
@@ -68,6 +69,43 @@ func TestDebugWebSocketBroadcastsOnlyToSubscribedWorkspace(t *testing.T) {
 	clientB.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
 	if err := clientB.ReadJSON(&event); err == nil {
 		t.Fatalf("workspace B received workspace A debug event: %#v", event)
+	}
+}
+
+func TestDebugStopAttentionBroadcastReachesUnsubscribedBrowsers(t *testing.T) {
+	s, _ := newTestServer(t)
+	workspace := createChatWorkspace(t, s, "debug-attention")
+	url := startWebSocketTestServer(t, s)
+	subscribed := dialSharedClient(t, url)
+	unsubscribed := dialSharedClient(t, url)
+	subscribeDebugClient(t, subscribed, workspace.ID)
+
+	s.broadcastDebugEvent(debugger.Event{
+		Type: "debug_event", WorkspaceID: workspace.ID, SessionID: "session-1", Sequence: 7, Event: "stopped",
+		Session: &debugger.SessionSnapshot{ID: "session-1", WorkspaceID: workspace.ID, Configuration: "Editor", Status: debugger.StatusStopped, StopGeneration: 2, StoppedReason: "breakpoint"},
+	})
+
+	subscribed.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var event map[string]any
+	if err := subscribed.ReadJSON(&event); err != nil {
+		t.Fatal(err)
+	}
+	if event["type"] != "debug_event" {
+		t.Fatalf("subscribed event = %#v", event)
+	}
+	if err := subscribed.ReadJSON(&event); err != nil {
+		t.Fatal(err)
+	}
+	if event["type"] != "debug_stopped" || event["sessionId"] != "session-1" || event["phase"] != "stopped" {
+		t.Fatalf("subscribed attention event = %#v", event)
+	}
+
+	unsubscribed.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := unsubscribed.ReadJSON(&event); err != nil {
+		t.Fatal(err)
+	}
+	if event["type"] != "debug_stopped" || event["workspaceId"] != workspace.ID {
+		t.Fatalf("unsubscribed attention event = %#v", event)
 	}
 }
 

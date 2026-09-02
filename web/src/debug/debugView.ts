@@ -14,6 +14,10 @@ import {
   activeDebugSession, applyDebugEvent, breakpointDecorationClass, capability,
   commandSupported, debugKeyAction,
 } from "./state";
+import {
+  debugStopNotificationPermission, debugStopNotificationsEnabled,
+  requestDebugStopNotificationPermission, setDebugStopNotificationsEnabled,
+} from "./debugNotifications";
 import type {
   AdapterProfile, DAPScope, DAPStackFrame, DAPThread, DAPVariable, DataBreakpoint, DebugConfiguration,
   DebugEvent, DebugInput, DebugOutput, DebugPersistentState, DebugSession, DebugSnapshot,
@@ -1538,7 +1542,15 @@ export class DebugView {
     const overlay = document.createElement("div");
     overlay.className = "debug-settings-overlay";
     const configurations = draft.configurations || [];
-    overlay.innerHTML = `<section class="debug-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="debug-settings-title"><header><div><h2 id="debug-settings-title">Workspace Debugging</h2><p>Adapter executables stay user-installed. Workspace launches are saved in <code>.echo/workspace.json</code>; breakpoints and watches stay machine-local.</p></div><button type="button" aria-label="Close" data-settings-action="close"><span class="codicon codicon-close"></span></button></header><div class="debug-settings-body"><section><h3>Adapter profiles</h3><div class="debug-profile-list">${this.profiles.map((profile) => `<div><span class="codicon codicon-extensions"></span><div><strong>${escapeHTML(profile.name)}</strong><small>${escapeHTML(profile.adapterId)} · ${escapeHTML(profile.transport.kind)} · ${escapeHTML(profile.command || `${profile.transport.host}:${profile.transport.port}`)}</small></div><button type="button" data-settings-action="test-profile" data-profile-id="${profile.id}">Test</button><button type="button" data-settings-action="edit-profile" data-profile-id="${profile.id}">Edit</button><button type="button" data-settings-action="delete-profile" data-profile-id="${profile.id}" aria-label="Delete ${escapeHTML(profile.name)}"><span class="codicon codicon-trash"></span></button></div>`).join("") || `<p>No machine adapter profiles yet.</p>`}</div><div class="debug-template-list">${this.templates.filter((template) => !this.profiles.some((profile) => profile.id === template.profile.id)).map((template) => `<button type="button" data-settings-action="add-template" data-template-id="${template.id}" title="${escapeHTML(template.installGuide)}"><span class="codicon codicon-add"></span>${escapeHTML(template.profile.name)}</button>`).join("")}</div></section><section class="debug-config-editor"><div><h3>Workspace configuration</h3><button type="button" data-settings-action="import">Preview VS Code Import</button></div><textarea aria-label="Workspace debug configuration" spellcheck="false" data-debug-config-json>${escapeHTML(JSON.stringify(this.config, null, 2))}</textarea><p class="debug-settings-error" data-settings-error></p></section></div><footer><button type="button" data-settings-action="close">Cancel</button><button type="button" class="is-primary" data-settings-action="save">Save Workspace Configuration</button></footer></section>`;
+    const notificationPermission = debugStopNotificationPermission();
+    const notificationStatus = notificationPermission === "granted"
+      ? "Browser notifications are allowed."
+      : notificationPermission === "denied"
+        ? "Browser notifications are blocked in browser or operating-system settings."
+        : notificationPermission === "unsupported"
+          ? "Browser notifications are unavailable in this environment."
+          : `Browser permission is required. <button type="button" data-settings-action="allow-stop-notifications">Allow notifications</button>`;
+    overlay.innerHTML = `<section class="debug-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="debug-settings-title"><header><div><h2 id="debug-settings-title">Workspace Debugging</h2><p>Adapter executables stay user-installed. Workspace launches are saved in <code>.echo/workspace.json</code>; breakpoints and watches stay machine-local.</p></div><button type="button" aria-label="Close" data-settings-action="close"><span class="codicon codicon-close"></span></button></header><div class="debug-settings-body"><section><h3>Adapter profiles</h3><div class="debug-profile-list">${this.profiles.map((profile) => `<div><span class="codicon codicon-extensions"></span><div><strong>${escapeHTML(profile.name)}</strong><small>${escapeHTML(profile.adapterId)} · ${escapeHTML(profile.transport.kind)} · ${escapeHTML(profile.command || `${profile.transport.host}:${profile.transport.port}`)}</small></div><button type="button" data-settings-action="test-profile" data-profile-id="${profile.id}">Test</button><button type="button" data-settings-action="edit-profile" data-profile-id="${profile.id}">Edit</button><button type="button" data-settings-action="delete-profile" data-profile-id="${profile.id}" aria-label="Delete ${escapeHTML(profile.name)}"><span class="codicon codicon-trash"></span></button></div>`).join("") || `<p>No machine adapter profiles yet.</p>`}</div><div class="debug-template-list">${this.templates.filter((template) => !this.profiles.some((profile) => profile.id === template.profile.id)).map((template) => `<button type="button" data-settings-action="add-template" data-template-id="${template.id}" title="${escapeHTML(template.installGuide)}"><span class="codicon codicon-add"></span>${escapeHTML(template.profile.name)}</button>`).join("")}</div><div class="debug-stop-notification-setting"><h4>Debugger attention</h4><label><input type="checkbox" data-debug-stop-notifications ${debugStopNotificationsEnabled() ? "checked" : ""}> Notify when the debugger stops while Echo is in the background</label><small>${notificationStatus}</small></div></section><section class="debug-config-editor"><div><h3>Workspace configuration</h3><button type="button" data-settings-action="import">Preview VS Code Import</button></div><textarea aria-label="Workspace debug configuration" spellcheck="false" data-debug-config-json>${escapeHTML(JSON.stringify(this.config, null, 2))}</textarea><p class="debug-settings-error" data-settings-error></p></section></div><footer><button type="button" data-settings-action="close">Cancel</button><button type="button" class="is-primary" data-settings-action="save">Save Workspace Configuration</button></footer></section>`;
     overlay.querySelector<HTMLTextAreaElement>("[data-debug-config-json]")!.value = JSON.stringify(draft, null, 2);
     const profileHeading = overlay.querySelector<HTMLElement>(".debug-settings-body > section:first-child h3")!;
     const profileHeadingRow = document.createElement("div");
@@ -1568,6 +1580,14 @@ export class DebugView {
       else if (action === "edit-configuration") void this.editConfiguration(button.dataset.configurationId || "", overlay);
       else if (action === "remove-configuration") this.removeConfiguration(button.dataset.configurationId || "", overlay);
       else if (action === "import") void this.importVSCode(overlay);
+      else if (action === "allow-stop-notifications") void requestDebugStopNotificationPermission().then(() => { if (overlay.isConnected) { const latest = this.settingsDraft(overlay); overlay.remove(); this.showSettings(latest); } });
+    });
+    overlay.querySelector<HTMLInputElement>("[data-debug-stop-notifications]")?.addEventListener("change", (event) => {
+      const enabled = (event.currentTarget as HTMLInputElement).checked;
+      setDebugStopNotificationsEnabled(enabled);
+      if (enabled && debugStopNotificationPermission() === "default") {
+        void requestDebugStopNotificationPermission().then(() => { if (overlay.isConnected) { const latest = this.settingsDraft(overlay); overlay.remove(); this.showSettings(latest); } });
+      }
     });
     overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
     document.body.appendChild(overlay);

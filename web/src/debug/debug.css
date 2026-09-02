@@ -421,6 +421,12 @@
 .debug-profile-list > div > div { display: grid; min-width: 0; }
 .debug-profile-list small { overflow: hidden; color: var(--code-muted); text-overflow: ellipsis; white-space: nowrap; }
 .debug-template-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+.debug-stop-notification-setting { display: grid; gap: 7px; margin-top: 16px; padding: 10px; border: 1px solid var(--code-border); border-radius: 4px; }
+.debug-stop-notification-setting h4 { margin: 0; }
+.debug-stop-notification-setting label { display: flex; align-items: flex-start; gap: 7px; line-height: 1.4; }
+.debug-stop-notification-setting input { margin-top: 2px; }
+.debug-stop-notification-setting small { color: var(--code-muted); line-height: 1.4; }
+.debug-stop-notification-setting small button { margin-left: 5px; }
 .debug-config-editor { display: grid; grid-template-rows: auto auto minmax(260px, 1fr) auto; gap: 8px; }
 .debug-config-editor > div:first-child { display: flex; align-items: center; justify-content: space-between; }
 .debug-configuration-list { display: grid; gap: 5px; padding: 8px; border: 1px solid var(--code-border); border-radius: 4px; }

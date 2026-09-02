@@ -73,6 +73,8 @@ Default keys:
 
 The command palette also exposes start-new-instance, start-without-debugging, pause/continue all, compound controls, reverse execution, run to cursor, console/output navigation, and settings. Browser defaults are suppressed only while Echo Code owns keyboard focus and no input or modal is active.
 
+**Debug Settings → Debugger attention** can enable browser-local stop notifications. When a breakpoint, exception, or other debugger stop occurs while Echo is hidden or unfocused, Echo shows a browser notification. Clicking it focuses Echo, opens Run and Debug, and restores the stopped session. Echo does not notify for stops that occur while its browser window is already focused, and browser notification permission must be allowed for that browser profile.
+
 ## Sessions, terminals, and cleanup
 
 Sessions live in the Echo server rather than in a browser tab. Every authenticated browser subscribed to the workspace receives sequenced debug events and may issue revision-checked controls. A sequence gap or reconnect triggers a REST snapshot; refreshing or closing the initiating browser does not stop the debuggee. Active debug PTYs are separately discoverable and reattach with buffered output after refresh.

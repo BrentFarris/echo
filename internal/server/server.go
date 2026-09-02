@@ -190,9 +190,7 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 	s.debugger.SetSandbox(s.sandbox)
 	s.debugger.SetRunInTerminal(s.terminal.StartDebugDAP)
 	s.debugger.SetStopDebugTerminals(s.terminal.StopOwner)
-	s.debugger.SetNotifier(func(event debugger.Event) {
-		s.hub.BroadcastWorkspaceDebug(event.WorkspaceID, event)
-	})
+	s.debugger.SetNotifier(s.broadcastDebugEvent)
 	s.git = gitservice.New(s.workspaces, s.fs)
 	s.git.SetSandbox(s.sandbox)
 	s.git.SetNotifier(func(event gitservice.Event) {
@@ -271,6 +269,31 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 		MaxHeaderBytes:    1 << 20,
 	}
 	return s
+}
+
+func (s *Server) broadcastDebugEvent(event debugger.Event) {
+	s.hub.BroadcastWorkspaceDebug(event.WorkspaceID, event)
+	if notification := debugStopNotification(event); notification != nil {
+		s.hub.Broadcast(notification)
+	}
+}
+
+func debugStopNotification(event debugger.Event) map[string]any {
+	if event.Session == nil || event.Session.Status != debugger.StatusStopped || (event.Event != "stopped" && event.Event != "location") {
+		return nil
+	}
+	return map[string]any{
+		"type":           "debug_stopped",
+		"phase":          event.Event,
+		"workspaceId":    event.WorkspaceID,
+		"sessionId":      event.Session.ID,
+		"groupId":        event.Session.GroupID,
+		"configuration":  event.Session.Configuration,
+		"stopGeneration": event.Session.StopGeneration,
+		"stoppedReason":  event.Session.StoppedReason,
+		"stoppedText":    event.Session.StoppedText,
+		"location":       event.Session.Location,
+	}
 }
 
 // initLLM builds the LLM client used by the chat endpoint. It loads settings
