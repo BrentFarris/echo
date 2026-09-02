@@ -7,6 +7,7 @@ import {
 import * as ws from "../../js/ws.js";
 import { codeRouteHash } from "../navigation";
 import { escapeHTML } from "../code/ui";
+import { installChatMap } from "../chatMap";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 
 type SandboxState = "disabled" | "unavailable" | "pulling" | "creating" | "starting" | "ready" | "stopping" | "stopped" | "error";
@@ -129,6 +130,7 @@ class SandboxView {
 
   private bindNavigation(): void {
     const signal = this.abort.signal;
+    installChatMap(this.root, { signal });
     this.root.querySelectorAll("[data-nav=chat]").forEach((item) => item.addEventListener("click", () => { location.hash = "#/home"; }, { signal }));
     this.root.querySelectorAll("[data-nav=code]").forEach((item) => item.addEventListener("click", () => { location.hash = "#/code"; }, { signal }));
     this.root.querySelectorAll("[data-nav=search]").forEach((item) => item.addEventListener("click", () => { location.hash = codeRouteHash("search"); }, { signal }));
