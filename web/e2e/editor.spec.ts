@@ -1577,7 +1577,7 @@ test("debugs through a deterministic DAP adapter and reconnects the workbench", 
 
   await page.keyboard.press("Control+5");
   await expect(page.getByLabel("Debug configuration")).toHaveValue("fake-main");
-  await page.keyboard.press("F8");
+  await page.keyboard.press("F5");
   await expect(page.locator(".debug-session-row .debug-status.is-stopped")).toBeVisible({ timeout: 20_000 });
   await expect(page.locator(".debug-variable", { hasText: "x" }).first()).toContainText("42");
   await expect(page.getByRole("button", { name: /^main main\.go:/ })).toBeVisible();

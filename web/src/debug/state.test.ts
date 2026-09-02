@@ -70,11 +70,13 @@ describe("debug editor state", () => {
     expect(breakpointDecorationClass(breakpoint, [session({ breakpoints: [{ stateId: "bp-1", kind: "source", verified: true, line: 12 }] })])).toBe("echo-debug-breakpoint-relocated");
   });
 
-  it("uses the F8 keymap only in an unobstructed Echo Code context", () => {
+  it("uses the debug keymap only in an unobstructed Echo Code context", () => {
     const clear = { codeActive: true, modalOpen: false, inputFocused: false };
-    expect(debugKeyAction({ key: "F8", ctrlKey: false, metaKey: false, shiftKey: false, altKey: false }, clear)).toBe("toggle");
+    expect(debugKeyAction({ key: "F5", ctrlKey: false, metaKey: false, shiftKey: false, altKey: false }, clear)).toBe("toggle");
     expect(debugKeyAction({ key: "F8", ctrlKey: false, metaKey: false, shiftKey: true, altKey: false }, clear)).toBe("stop");
     expect(debugKeyAction({ key: "F8", ctrlKey: true, metaKey: false, shiftKey: true, altKey: false }, clear)).toBe("restart");
+    expect(debugKeyAction({ key: "F8", ctrlKey: false, metaKey: false, shiftKey: false, altKey: false }, clear)).toBeNull();
+    expect(debugKeyAction({ key: "F5", ctrlKey: false, metaKey: false, shiftKey: false, altKey: false }, { ...clear, inputFocused: true })).toBeNull();
     expect(debugKeyAction({ key: "F9", ctrlKey: false, metaKey: false, shiftKey: false, altKey: false }, { ...clear, inputFocused: true })).toBeNull();
     expect(debugKeyAction({ key: "d", ctrlKey: true, metaKey: false, shiftKey: true, altKey: false }, clear)).toBeNull();
   });

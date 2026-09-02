@@ -387,7 +387,7 @@ export class DebugView {
         <select aria-label="Debug configuration" data-debug-launch ${launches.length ? "" : "disabled"}>
           ${launches.length ? launches.map((item) => `<option value="${escapeHTML(item.id)}" ${item.id === this.selectedLaunchId ? "selected" : ""}>${escapeHTML(item.name)} · ${escapeHTML(item.kind)}</option>`).join("") : `<option>Configure a debugger…</option>`}
         </select>
-        <button type="button" class="debug-start" title="Start Debugging (F8)" aria-label="Start Debugging" data-debug-action="start" ${launches.length ? "" : "disabled"}><span class="codicon codicon-debug-start"></span></button>
+        <button type="button" class="debug-start" title="Start Debugging (F5)" aria-label="Start Debugging" data-debug-action="start" ${launches.length ? "" : "disabled"}><span class="codicon codicon-debug-start"></span></button>
         <button type="button" title="Start Without Debugging" aria-label="Start Without Debugging" data-debug-action="start-without" ${launches.length ? "" : "disabled"}><span class="codicon codicon-run"></span></button>
       </div>
       ${launches.length ? "" : `<div class="debug-empty"><span class="codicon codicon-debug-alt"></span><p>Create or import a launch configuration for this workspace.</p><button type="button" data-debug-action="settings">Configure Debugging</button></div>`}
@@ -431,7 +431,7 @@ export class DebugView {
     const canTerminateDebuggee = capability(session, "supportsTerminateRequest") || capability(session, "supportTerminateDebuggee");
     this.options.toolbarHost.innerHTML = `<div class="debug-floating-toolbar" role="toolbar" aria-label="Debug controls">
       ${live.length > 1 ? `<select aria-label="Active session" data-debug-toolbar-session>${live.map((item) => `<option value="${item.id}" ${item.id === session.id ? "selected" : ""}>${escapeHTML(item.configuration)}</option>`).join("")}</select>` : `<span class="debug-toolbar-label">${escapeHTML(session.configuration)}</span>`}
-      <button type="button" title="${stopped ? "Continue (F8)" : "Pause (F8)"}" aria-label="${stopped ? "Continue" : "Pause"}" data-debug-control="${stopped ? "continue" : "pause"}" ${controllable ? "" : "disabled"}><span class="codicon codicon-debug-${stopped ? "continue" : "pause"}"></span></button>
+      <button type="button" title="${stopped ? "Continue (F5)" : "Pause (F5)"}" aria-label="${stopped ? "Continue" : "Pause"}" data-debug-control="${stopped ? "continue" : "pause"}" ${controllable ? "" : "disabled"}><span class="codicon codicon-debug-${stopped ? "continue" : "pause"}"></span></button>
       <button type="button" title="Step Over (F10)" aria-label="Step Over" data-debug-control="next" ${stopped ? "" : "disabled"}><span class="codicon codicon-debug-step-over"></span></button>
       <button type="button" title="Step Into (F11)" aria-label="Step Into" data-debug-control="stepIn" ${stopped ? "" : "disabled"}><span class="codicon codicon-debug-step-into"></span></button>
       <button type="button" title="Step Out (Shift+F11)" aria-label="Step Out" data-debug-control="stepOut" ${stopped ? "" : "disabled"}><span class="codicon codicon-debug-step-out"></span></button>

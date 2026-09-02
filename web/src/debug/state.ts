@@ -92,7 +92,7 @@ export function debugKeyAction(event: Pick<KeyboardEvent, "key" | "ctrlKey" | "m
   const modifier = event.ctrlKey || event.metaKey;
   if (modifier && event.shiftKey && event.key === "F8") return "restart";
   if (!modifier && event.shiftKey && event.key === "F8") return "stop";
-  if (!modifier && !event.shiftKey && event.key === "F8") return "toggle";
+  if (!modifier && !event.shiftKey && event.key === "F5") return "toggle";
   if (!modifier && !event.shiftKey && event.key === "F9") return "breakpoint";
   if (!modifier && !event.shiftKey && event.key === "F10") return "next";
   if (!modifier && !event.shiftKey && event.key === "F11") return "stepIn";

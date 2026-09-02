@@ -2677,7 +2677,7 @@ class CodeView {
       { id: "file.quickOpen", label: "Go to File…", keybinding: "Ctrl+P", run: () => this.showQuickOpen() },
       { id: "view.commandPalette", label: "View: Show Command Palette", keybinding: "Ctrl+Shift+P", run: () => this.showCommandPalette() },
       { id: "debug.open", label: "View: Run and Debug", keybinding: "Ctrl+5", run: () => this.setSidebar("debug") },
-      { id: "debug.startPauseContinue", label: "Debug: Start / Pause / Continue", keybinding: "F8", run: () => this.debugView?.toggleLifecycle() },
+      { id: "debug.startPauseContinue", label: "Debug: Start / Pause / Continue", keybinding: "F5", run: () => this.debugView?.toggleLifecycle() },
       { id: "debug.startNew", label: "Debug: Start New Instance", run: () => this.debugView?.launch(false) },
       { id: "debug.startWithout", label: "Debug: Start Without Debugging", run: () => this.debugView?.launch(true) },
       { id: "debug.pauseAll", label: "Debug: Pause All Sessions", run: () => this.debugView?.controlAll("pause") },
