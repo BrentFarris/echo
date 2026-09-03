@@ -32,7 +32,7 @@ Connect Echo to a local or remote provider that exposes an OpenAI-compatible `/c
 | Area | Current capabilities |
 | --- | --- |
 | **Chat** | Persistent workspace conversations, multiple chat tabs, per-chat model and agent-mode selection, streamed Markdown, reasoning, tool activity, stop and clear controls, skill creation, and an inspectable Trajectory event stream |
-| **Agent modes** | Built-in General and read-only Plan modes plus workspace-defined system instructions, tool allowlists, and path restrictions |
+| **Agent modes** | Built-in General, read-only Plan, and durable autonomous Goal modes plus workspace-defined system instructions, tool allowlists, and path restrictions |
 | **Code** | Monaco editing, generic opt-in LSP and DAP debugging, file tabs, workspace trees, quick open, text and file search, create/rename/save operations, external-change detection, recoverable trash, and browser hot-exit buffers |
 | **Git** | Repository discovery, working-tree status, staged and unstaged diffs, staging, commits, branches, remotes, fetch/pull/push/sync, history, tags, and stashes |
 | **Terminal** | Workspace-aware PTY sessions powered by xterm.js, resize, restart, stop, and reusable saved commands |
@@ -44,7 +44,7 @@ Connect Echo to a local or remote provider that exposes an OpenAI-compatible `/c
 
 ### Workspace-scoped agents
 
-Echo gives the selected model tools for the active workspace rather than unrestricted filesystem context. The built-in Plan mode exposes inspection and research tools without mutation tools. Custom modes can change the system instructions, choose exactly which tools are available, and limit path-aware tools with workspace-relative glob patterns.
+Echo gives the selected model tools for the active workspace rather than unrestricted filesystem context. The built-in Plan mode exposes inspection and research tools without mutation tools. Goal mode keeps a fixed objective and model running across durable checkpoints until it verifies completion, reaches a genuine blocker, or is paused or cleared. Custom modes can change the system instructions, choose exactly which tools are available, and limit path-aware tools with workspace-relative glob patterns.
 
 Reusable skills live in `.echo/skills/` inside a workspace. Echo can search and read them during a chat, record new skills through tool calls, or synthesize a skill from the current conversation.
 

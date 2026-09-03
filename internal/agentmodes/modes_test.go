@@ -21,16 +21,16 @@ func TestManagerCRUDPersistsWorkspaceModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if len(modes) != 3 || modes[2].ID == "" {
+	if len(modes) != 4 || modes[3].ID == "" {
 		t.Fatalf("unexpected modes after create: %+v", modes)
 	}
-	createdID := modes[2].ID
+	createdID := modes[3].ID
 
 	reloaded, err := NewManager().List(workspace)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	permission := reloaded[2].Permissions["filesystem_read_text"]
+	permission := reloaded[3].Permissions["filesystem_read_text"]
 	if permission.Name != "filesystem_read_text" || len(permission.Paths) != 1 || permission.Paths[0] != "src/**" {
 		t.Fatalf("permission did not persist: %+v", permission)
 	}
@@ -39,8 +39,8 @@ func TestManagerCRUDPersistsWorkspaceModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if modes[2].Name != "QA Reviewer" {
-		t.Fatalf("unexpected updated mode: %+v", modes[2])
+	if modes[3].Name != "QA Reviewer" {
+		t.Fatalf("unexpected updated mode: %+v", modes[3])
 	}
 	if _, err := os.Stat(filepath.Join(workspace, ".echo", fileName)); err != nil {
 		t.Fatalf("expected persisted mode file: %v", err)
@@ -50,7 +50,7 @@ func TestManagerCRUDPersistsWorkspaceModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if len(modes) != 2 {
+	if len(modes) != 3 {
 		t.Fatalf("expected only built-ins after delete, got %+v", modes)
 	}
 }
@@ -66,7 +66,7 @@ func TestManagerModesAreWorkspaceScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(modes) != 2 {
+	if len(modes) != 3 {
 		t.Fatalf("mode leaked to another workspace: %+v", modes)
 	}
 }
@@ -91,8 +91,22 @@ func TestManagerAllowsPermissionsOnlyMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(modes) != 3 || modes[2].Prompt != "" {
+	if len(modes) != 4 || modes[3].Prompt != "" {
 		t.Fatalf("unexpected mode: %+v", modes)
+	}
+}
+
+func TestGoalModeIsThirdImmutableBuiltIn(t *testing.T) {
+	defaults := Defaults()
+	if len(defaults) != 3 || defaults[2].ID != GoalID || defaults[2].Name != "Goal" || !defaults[2].BuiltIn {
+		t.Fatalf("unexpected built-in modes: %+v", defaults)
+	}
+	manager := NewManager()
+	if _, err := manager.Update(t.TempDir(), GoalID, Mode{Name: "Changed"}); err == nil {
+		t.Fatal("expected Goal mode update to be rejected")
+	}
+	if _, err := manager.Delete(t.TempDir(), GoalID); err == nil {
+		t.Fatal("expected Goal mode deletion to be rejected")
 	}
 }
 

@@ -7,7 +7,9 @@ const chat = vi.hoisted(() => {
     streamingListeners,
     canClearChat: vi.fn(() => false),
     clearChat: vi.fn(() => false),
+    clearGoal: vi.fn(() => true),
     closeWorkspaceSession: vi.fn(),
+    editGoal: vi.fn(() => true),
     isStreaming: vi.fn(() => false),
     onChatWorkspaceChange: vi.fn((callback: (workspace?: any) => void) => {
       workspaceListener = callback;
@@ -20,7 +22,11 @@ const chat = vi.hoisted(() => {
       return () => streamingListeners.splice(streamingListeners.indexOf(callback), 1);
     }),
     openWorkspaceSession: vi.fn(),
+    pauseGoal: vi.fn(() => true),
+    resumeGoal: vi.fn(() => true),
     sendMessage: vi.fn(() => true),
+    startGoal: vi.fn(() => true),
+    steerGoal: vi.fn(() => true),
     stopStream: vi.fn(),
     emitWorkspace(workspace: any) { workspaceListener?.(workspace); },
   };
@@ -28,7 +34,9 @@ const chat = vi.hoisted(() => {
 
 vi.mock("../js/chat.js", () => chat);
 vi.mock("../js/api.js", () => ({
-  api: vi.fn((path: string) => Promise.resolve(path === "/api/agent-modes" ? { modes: [] } : { settings: {} })),
+  api: vi.fn((path: string) => Promise.resolve(path === "/api/agent-modes"
+    ? { modes: [{ id: "general", name: "General" }, { id: "goal", name: "Goal" }] }
+    : { settings: {} })),
 }));
 vi.mock("./code/editorApi", () => ({
   getRoots: vi.fn(() => Promise.resolve([])),
@@ -44,6 +52,12 @@ describe("compact chat surface", () => {
     host = document.createElement("div");
     document.body.append(host);
     chat.sendMessage.mockClear();
+    chat.startGoal.mockClear();
+    chat.steerGoal.mockClear();
+    chat.pauseGoal.mockClear();
+    chat.resumeGoal.mockClear();
+    chat.editGoal.mockClear();
+    chat.clearGoal.mockClear();
     chat.openWorkspaceSession.mockClear();
     chat.canClearChat.mockReturnValue(false);
   });
@@ -222,6 +236,66 @@ describe("compact chat surface", () => {
     chat.canClearChat.mockReturnValue(false);
     chat.streamingListeners.at(-1)!(true);
     expect(newChat.disabled).toBe(true);
+    surface.dispose();
+  });
+
+  it("locks Goal mode, sends steering, and exposes lifecycle controls", async () => {
+    const surface = mountChatSurface(host, { workspaceId: "workspace-goal", surface: "code" });
+    const mode = host.querySelector<HTMLSelectElement>("[data-code-chat-mode]")!;
+    const model = host.querySelector<HTMLSelectElement>("[data-code-chat-model]")!;
+    const input = host.querySelector<HTMLElement>("[data-chat-input]")!;
+    const form = host.querySelector<HTMLFormElement>("[data-chat-form]")!;
+    const goalBar = host.querySelector<HTMLElement>("[data-goal-bar]")!;
+    await vi.waitFor(() => expect([...mode.options].map((option) => option.value)).toContain("goal"));
+
+    chat.emitWorkspace({
+      workspaceId: "workspace-goal", surface: "code", activeChatId: "code-goal", hasSnapshot: true,
+      goal: {
+        id: "goal-1", objective: "Ship a verified change", status: "active", model: "",
+        activeSeconds: 12, stepCount: 2, pendingSteering: 0,
+      },
+    });
+    expect(goalBar.hidden).toBe(false);
+    expect(goalBar.textContent).toContain("Ship a verified change");
+    expect(goalBar.textContent).toContain("2 steps");
+    expect(mode.value).toBe("goal");
+    expect(mode.disabled).toBe(true);
+    expect(model.disabled).toBe(true);
+    expect(input.dataset.placeholder).toBe("Add guidance to this goal");
+
+    input.textContent = "Run the Code Chat regression";
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(chat.steerGoal).toHaveBeenCalledOnce());
+    expect(chat.steerGoal).toHaveBeenCalledWith(
+      expect.any(HTMLElement), "Run the Code Chat regression", { editorContext: undefined },
+    );
+    expect(chat.startGoal).not.toHaveBeenCalled();
+
+    host.querySelector<HTMLButtonElement>("[data-goal-action='pause']")!.click();
+    expect(chat.pauseGoal).toHaveBeenCalledOnce();
+    chat.emitWorkspace({
+      workspaceId: "workspace-goal", surface: "code", activeChatId: "code-goal", hasSnapshot: true,
+      goal: { id: "goal-1", objective: "Ship a verified change", status: "paused", activeSeconds: 13, stepCount: 2, pendingSteering: 1 },
+    });
+    expect(input.dataset.placeholder).toBe("Queue guidance, then resume when ready");
+    host.querySelector<HTMLButtonElement>("[data-goal-action='resume']")!.click();
+    expect(chat.resumeGoal).toHaveBeenCalledOnce();
+
+    chat.emitWorkspace({
+      workspaceId: "workspace-goal", surface: "code", activeChatId: "code-goal", hasSnapshot: true,
+      goal: { id: "goal-1", objective: "Ship a verified change", status: "blocked", activeSeconds: 13, stepCount: 3, pendingSteering: 0 },
+    });
+    expect(mode.disabled).toBe(false);
+    expect(model.disabled).toBe(false);
+    host.querySelector<HTMLButtonElement>("[data-goal-action='new']")!.click();
+    expect(mode.value).toBe("goal");
+    expect(input.dataset.placeholder).toBe("Describe the new goal and its completion criteria");
+    input.textContent = "Start a replacement goal";
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(chat.startGoal).toHaveBeenCalledOnce());
+    expect(chat.startGoal).toHaveBeenCalledWith(
+      expect.any(HTMLElement), "Start a replacement goal", undefined, { editorContext: undefined },
+    );
     surface.dispose();
   });
 

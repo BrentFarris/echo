@@ -9,7 +9,8 @@ import { get, post } from "../api.js";
 import {
   activateChatTab, canClearChat, canCompressChat, clearChat, compressChat, closeChatTab, closeWorkspaceSession,
   createChatTab, isStreaming, onChatCommandError, onChatWorkspaceChange,
-  onStreamingChange, openWorkspaceSession, sendMessage, stopStream,
+  onStreamingChange, openWorkspaceSession, sendMessage, startGoal, steerGoal,
+  pauseGoal, resumeGoal, editGoal, clearGoal, stopStream,
 } from "../chat.js";
 import { loadWorkspaces, openWorkspaceDropdown, openAddWorkspaceModal, setActiveWorkspace, getActive, renderWorkspaceIcon } from "../workspaces.js";
 import {
@@ -164,6 +165,20 @@ function chatPanel() {
             </div>
           </div>
           <div class="trajectory-view" data-chat-view-pane="trajectory" data-trajectory-host hidden></div>
+          <div class="chat-goal-bar" data-goal-bar hidden>
+            <div class="chat-goal-main">
+              <span class="chat-goal-status" data-goal-status></span>
+              <span class="chat-goal-objective" data-goal-objective></span>
+              <span class="chat-goal-stats" data-goal-stats></span>
+            </div>
+            <div class="chat-goal-actions">
+              <button type="button" data-goal-action="pause">Pause</button>
+              <button type="button" data-goal-action="resume">Resume</button>
+              <button type="button" data-goal-action="edit">Edit</button>
+              <button type="button" data-goal-action="new">New goal</button>
+              <button type="button" data-goal-action="clear">Clear</button>
+            </div>
+          </div>
           <form class="chat-composer" data-chat-form>
             <div class="chat-composer-main" data-chat-input-wrap>
               <div class="chat-attachment-drafts" data-chat-attachment-drafts hidden></div>
@@ -229,6 +244,10 @@ export function mount(root) {
   const tabsScrollPrevious = root.querySelector("[data-chat-tabs-scroll='previous']");
   const tabsScrollNext = root.querySelector("[data-chat-tabs-scroll='next']");
   const form = root.querySelector("[data-chat-form]");
+  const goalBar = root.querySelector("[data-goal-bar]");
+  const goalStatus = root.querySelector("[data-goal-status]");
+  const goalObjective = root.querySelector("[data-goal-objective]");
+  const goalStats = root.querySelector("[data-goal-stats]");
   const inputWrap = root.querySelector("[data-chat-input-wrap]");
   const input = root.querySelector("[data-chat-input]");
   const attachmentDrafts = root.querySelector("[data-chat-attachment-drafts]");
@@ -243,6 +262,10 @@ export function mount(root) {
   let currentWorkspaceId = "";
   let currentChatId = "";
   let currentTabs = [];
+  let currentGoal = null;
+  let goalStateReceivedAt = Date.now();
+  let streaming = false;
+  let startingNewGoal = false;
   let stopGitBadge = () => {};
   const creatingChatSkills = new Set();
   let focusNewTab = false;
@@ -659,7 +682,9 @@ export function mount(root) {
       close.className = "chat-tab-close";
       close.dataset.chatTabClose = tab.chatId;
       close.setAttribute("aria-label", `Close ${tab.preview || "New chat"}`);
-      close.title = "Close chat";
+      const goalProtected = ["active", "paused", "blocked"].includes(tab.goalStatus);
+      close.disabled = goalProtected;
+      close.title = goalProtected ? "Clear the current goal before closing this chat" : "Close chat";
       close.innerHTML = icons.x;
       item.append(activate, close);
       tabsHost.append(item);
@@ -679,6 +704,10 @@ export function mount(root) {
   const requestTabClose = async (chatId, forceConfirmation = false) => {
     const tab = currentTabs.find((candidate) => candidate.chatId === chatId);
     if (!tab) return;
+    if (["active", "paused", "blocked"].includes(tab.goalStatus)) {
+      toast("Clear the current goal before closing this chat.", { sticky: true });
+      return;
+    }
     let stopIfBusy = false;
     if (tab.busy || forceConfirmation) {
       stopIfBusy = await confirmBusyChatClose();
@@ -998,10 +1027,96 @@ export function mount(root) {
     attachmentTrigger?.setAttribute("aria-expanded", "true");
   };
 
+  const formatGoalDuration = (seconds) => {
+    const total = Math.max(0, Number(seconds) || 0);
+    if (total < 60) return `${total}s`;
+    if (total < 3600) return `${Math.floor(total / 60)}m`;
+    return `${Math.floor(total / 3600)}h ${Math.floor((total % 3600) / 60)}m`;
+  };
+
+  const goalLocksComposer = () => ["active", "paused"].includes(currentGoal?.status);
+  const goalAcceptsSteering = () => ["active", "paused", "blocked"].includes(currentGoal?.status) && !startingNewGoal;
+
+  const renderGoalBar = () => {
+    goalBar.hidden = !currentGoal;
+    if (!currentGoal) {
+      startingNewGoal = false;
+      modelTrigger.disabled = false;
+      modeTrigger.disabled = false;
+      input.dataset.placeholder = "Describe what to build";
+      return;
+    }
+    const labels = { active: "Running", paused: "Paused", blocked: "Blocked", completed: "Complete" };
+    goalStatus.textContent = labels[currentGoal.status] || currentGoal.status;
+    goalStatus.dataset.status = currentGoal.status;
+    goalObjective.textContent = currentGoal.objective;
+    goalObjective.title = currentGoal.objective;
+    const elapsed = (currentGoal.activeSeconds || 0) + (currentGoal.status === "active" ? Math.floor((Date.now() - goalStateReceivedAt) / 1000) : 0);
+    const stats = [`${currentGoal.stepCount || 0} step${currentGoal.stepCount === 1 ? "" : "s"}`, formatGoalDuration(elapsed)];
+    if (currentGoal.pendingSteering) stats.push(`${currentGoal.pendingSteering} queued`);
+    goalStats.textContent = stats.join(" · ");
+    for (const button of goalBar.querySelectorAll("[data-goal-action]")) {
+      const action = button.dataset.goalAction;
+      button.hidden = !(
+        (action === "pause" && currentGoal.status === "active")
+        || (action === "resume" && ["paused", "blocked"].includes(currentGoal.status))
+        || (action === "edit" && ["active", "paused", "blocked"].includes(currentGoal.status))
+        || (action === "new" && ["blocked", "completed"].includes(currentGoal.status))
+        || action === "clear"
+      );
+      button.disabled = action === "resume" && streaming;
+    }
+    const locked = goalLocksComposer();
+    modelTrigger.disabled = locked;
+    modeTrigger.disabled = locked;
+    if (locked) {
+      selectedAgentModeId = "goal";
+      modeLabel.textContent = "Goal";
+      if (currentGoal.model) {
+        selectedModel = currentGoal.model;
+        modelLabel.textContent = endpoints.find((endpoint) => endpoint.model === currentGoal.model)?.name || currentGoal.model;
+      }
+    }
+    if (startingNewGoal) input.dataset.placeholder = "Describe the new goal and its completion criteria";
+    else if (currentGoal.status === "active") input.dataset.placeholder = "Add guidance to this goal";
+    else if (currentGoal.status === "paused") input.dataset.placeholder = "Queue guidance, then resume when ready";
+    else if (currentGoal.status === "blocked" && selectedAgentModeId === "goal") input.dataset.placeholder = "Add guidance to resume this goal";
+    else input.dataset.placeholder = "Describe what to build";
+  };
+
+  const onGoalActionClick = (event) => {
+    const button = event.target.closest("[data-goal-action]");
+    if (!button || !currentGoal) return;
+    switch (button.dataset.goalAction) {
+      case "pause":
+        pauseGoal();
+        break;
+      case "resume":
+        resumeGoal();
+        break;
+      case "edit": {
+        const objective = window.prompt("Edit goal", currentGoal.objective);
+        if (objective != null && objective.trim() && !editGoal(objective)) toast("Could not edit the goal.", { sticky: true });
+        break;
+      }
+      case "new":
+        startingNewGoal = true;
+        selectedAgentModeId = "goal";
+        modeLabel.textContent = "Goal";
+        renderGoalBar();
+        input.focus();
+        break;
+      case "clear":
+        if (!clearGoal()) toast("Could not clear the goal.", { sticky: true });
+        break;
+    }
+  };
+
   const activeChatBusy = () => Boolean(currentTabs.find((tab) => tab.chatId === currentChatId)?.busy || isStreaming());
+  const canSteerBusyGoal = () => selectedAgentModeId === "goal" && goalAcceptsSteering();
 
   const updateAttachmentAvailability = () => {
-    attachmentTrigger.disabled = !currentWorkspaceId || !currentChatId || activeChatBusy();
+    attachmentTrigger.disabled = !currentWorkspaceId || !currentChatId || (activeChatBusy() && !canSteerBusyGoal());
     if (attachmentTrigger.disabled) closeAttachmentMenu();
   };
 
@@ -1127,6 +1242,7 @@ export function mount(root) {
 
   const onModeTriggerClick = (e) => {
     e.stopPropagation();
+    if (modeTrigger.disabled) return;
     closeModelDropdown();
     closeMoreMenu();
     closeAttachmentMenu();
@@ -1144,9 +1260,11 @@ export function mount(root) {
     const item = e.target.closest("[data-mode-id]");
     if (!item) return;
     selectedAgentModeId = item.dataset.modeId || "general";
+    if (selectedAgentModeId !== "goal") startingNewGoal = false;
     const selected = agentModes.find((mode) => mode.id === selectedAgentModeId);
     modeLabel.textContent = selected?.name || "General";
     saveCurrentComposer();
+    setSendButtonBusy(streaming);
     closeModeDropdown();
   };
 
@@ -1168,6 +1286,7 @@ export function mount(root) {
 
   const onModelTriggerClick = (e) => {
     e.stopPropagation();
+    if (modelTrigger.disabled) return;
     toggleModelDropdown();
   };
 
@@ -1266,11 +1385,14 @@ export function mount(root) {
     if (!tab) return;
     e.preventDefault();
     const chatId = tab.dataset.chatTabActivate;
+    const goalProtected = ["active", "paused", "blocked"].includes(
+      currentTabs.find((candidate) => candidate.chatId === chatId)?.goalStatus,
+    );
     const view = tabViewState.get(tabStateKey(currentWorkspaceId, chatId)) || "chat";
     showContextMenu(e.clientX, e.clientY, [
       { label: "Open chat", icon: "comment-discussion", disabled: view === "chat", run: () => setChatView("chat", chatId) },
       { label: "Open trajectory", icon: "pulse", disabled: view === "trajectory", run: () => setChatView("trajectory", chatId) },
-      { label: "Close chat", icon: "close", separatorBefore: true, run: () => requestTabClose(chatId) },
+      { label: "Close chat", icon: "close", separatorBefore: true, disabled: goalProtected, run: () => requestTabClose(chatId) },
     ]);
   };
 
@@ -1393,6 +1515,9 @@ export function mount(root) {
     ? new ResizeObserver(updateTabOverflow)
     : null;
   tabsResizeObserver?.observe(tabsHost);
+  const goalElapsedTimer = window.setInterval(() => {
+    if (currentGoal?.status === "active") renderGoalBar();
+  }, 1000);
 
   const submit = () => {
     speechRecognition.stop();
@@ -1403,7 +1528,16 @@ export function mount(root) {
     if (!text.trim() && images.length === 0 && videos.length === 0) return;
     prepareCompletionNotificationPermission();
     preparePlanQuestionNotificationPermission();
-    if (sendMessage(log, text, selectedModel || undefined, selectedAgentModeId, { images, videos })) {
+    let sent = false;
+    if (selectedAgentModeId === "goal") {
+      sent = goalAcceptsSteering()
+        ? steerGoal(log, text, { images, videos })
+        : startGoal(log, text, selectedModel || undefined, { images, videos });
+    } else {
+      sent = sendMessage(log, text, selectedModel || undefined, selectedAgentModeId, { images, videos });
+    }
+    if (sent) {
+      startingNewGoal = false;
       if (state) {
         state.images = [];
         state.videos = [];
@@ -1419,10 +1553,17 @@ export function mount(root) {
   // setSendButtonBusy toggles the send button between send and stop while a
   // reply is streaming, matching the OLD Echo behavior.
   const setSendButtonBusy = (busy) => {
-    sendBtn.classList.toggle("is-busy", busy);
-    sendBtn.innerHTML = busy ? icons.stop : icons.send;
-    sendBtn.title = busy ? "Stop" : "Send";
-    sendBtn.setAttribute("aria-label", busy ? "Stop stream" : "Send message");
+    streaming = busy;
+    renderGoalBar();
+    const goalGuidanceAction = selectedAgentModeId === "goal" && goalAcceptsSteering();
+    const stopAction = busy && !goalGuidanceAction;
+    const sendTitle = goalGuidanceAction
+      ? (currentGoal?.status === "paused" ? "Queue goal guidance" : "Steer goal")
+      : "Send";
+    sendBtn.classList.toggle("is-busy", stopAction);
+    sendBtn.innerHTML = stopAction ? icons.stop : icons.send;
+    sendBtn.title = stopAction ? "Stop" : sendTitle;
+    sendBtn.setAttribute("aria-label", stopAction ? "Stop stream" : (goalGuidanceAction ? sendTitle : "Send message"));
     updateChatMenuActions();
     updateAttachmentAvailability();
   };
@@ -1441,6 +1582,9 @@ export function mount(root) {
     currentWorkspaceId = nextWorkspaceId;
     currentChatId = nextChatId;
     currentTabs = state?.tabs || [];
+    currentGoal = state?.goal || null;
+    goalStateReceivedAt = Date.now();
+    if (currentGoal?.status === "active") startingNewGoal = false;
 
     if (previousWorkspaceId !== currentWorkspaceId) {
       clearMention();
@@ -1465,6 +1609,7 @@ export function mount(root) {
       && (previousWorkspaceId !== currentWorkspaceId || previousChatId !== currentChatId)) {
       restoreCurrentComposer();
     }
+    setSendButtonBusy(streaming);
     renderTabs();
     setChatView(activeView());
     const activeTab = currentTabs.find((tab) => tab.chatId === currentChatId);
@@ -1511,7 +1656,7 @@ export function mount(root) {
 
   // While streaming, the button stops the reply; otherwise it sends.
   const onSendButtonClick = () => {
-    if (isStreaming()) {
+    if (isStreaming() && !canSteerBusyGoal()) {
       stopStream();
     } else {
       submit();
@@ -1540,7 +1685,7 @@ export function mount(root) {
   };
 
   const onPaste = (event) => {
-    if (activeChatBusy()) return;
+    if (activeChatBusy() && !canSteerBusyGoal()) return;
     const files = Array.from(event.clipboardData?.items || [])
       .filter((item) => item.kind === "file")
       .map((item) => item.getAsFile())
@@ -1574,6 +1719,7 @@ export function mount(root) {
   };
   form.addEventListener("submit", onFormSubmit);
   sendBtn.addEventListener("click", onSendButtonClick);
+  goalBar.addEventListener("click", onGoalActionClick);
   input.addEventListener("keydown", onKeydown);
   input.addEventListener("input", onInput);
   input.addEventListener("paste", onPaste);
@@ -1591,6 +1737,7 @@ export function mount(root) {
     speechRecognition.dispose();
     form.removeEventListener("submit", onFormSubmit);
     sendBtn.removeEventListener("click", onSendButtonClick);
+    goalBar.removeEventListener("click", onGoalActionClick);
     input.removeEventListener("keydown", onKeydown);
     input.removeEventListener("input", onInput);
     input.removeEventListener("paste", onPaste);
@@ -1631,6 +1778,7 @@ export function mount(root) {
     chatPane.removeEventListener("click", onViewSwitcherClick);
     log.removeEventListener("scroll", onChatLogScroll);
     tabsResizeObserver?.disconnect();
+    window.clearInterval(goalElapsedTimer);
     moreMenu.removeEventListener("keydown", onMoreMenuKeydown);
     document.removeEventListener("click", onDocClick);
     window.removeEventListener("resize", onResize);

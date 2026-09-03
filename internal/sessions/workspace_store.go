@@ -7,12 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/brent/echo/internal/llm"
 )
 
 const (
-	WorkspaceVersion  = 3
+	WorkspaceVersion  = 4
 	WorkspaceFileName = "chat-workspace.json"
 )
 
@@ -36,6 +37,8 @@ type TabTranscript struct {
 	Turns             []Turn             `json:"turns"`
 	Messages          []llm.Message      `json:"messages"`
 	ContextCheckpoint *ContextCheckpoint `json:"contextCheckpoint,omitempty"`
+	Goals             []GoalState        `json:"goals,omitempty"`
+	CurrentGoalID     string             `json:"currentGoalId,omitempty"`
 }
 
 // WorkspaceStore serializes atomic updates to the multi-tab chat file.
@@ -53,7 +56,17 @@ func (s *WorkspaceStore) Path() string { return s.path }
 func (s *WorkspaceStore) Load(workspaceID string) (ChatWorkspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.loadLocked(workspaceID)
+	return s.loadLocked(workspaceID, false)
+}
+
+// LoadRecoveringGoals is used when constructing the live chat supervisor.
+// Any goal left active by a prior process is durably paused before it is
+// returned; ordinary read paths use Load so inspecting state cannot interrupt
+// a currently running process.
+func (s *WorkspaceStore) LoadRecoveringGoals(workspaceID string) (ChatWorkspace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadLocked(workspaceID, true)
 }
 
 func (s *WorkspaceStore) Save(workspace ChatWorkspace) error {
@@ -70,7 +83,7 @@ func (s *WorkspaceStore) Save(workspace ChatWorkspace) error {
 func (s *WorkspaceStore) Update(workspaceID string, update func(*ChatWorkspace) error) (ChatWorkspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	workspace, err := s.loadLocked(workspaceID)
+	workspace, err := s.loadLocked(workspaceID, false)
 	if err != nil {
 		return ChatWorkspace{}, err
 	}
@@ -86,7 +99,7 @@ func (s *WorkspaceStore) Update(workspaceID string, update func(*ChatWorkspace) 
 	return workspace, nil
 }
 
-func (s *WorkspaceStore) loadLocked(workspaceID string) (ChatWorkspace, error) {
+func (s *WorkspaceStore) loadLocked(workspaceID string, recoverInterruptedGoals bool) (ChatWorkspace, error) {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -103,7 +116,11 @@ func (s *WorkspaceStore) loadLocked(workspaceID string) (ChatWorkspace, error) {
 	if err := normalizeAndValidateWorkspace(&workspace, workspaceID); err != nil {
 		return ChatWorkspace{}, err
 	}
-	if previousVersion != workspace.Version || (previousWorkspaceID != "" && previousWorkspaceID != workspaceID) {
+	goalsPaused := false
+	if recoverInterruptedGoals {
+		goalsPaused = pauseActiveGoalsAfterLoad(&workspace)
+	}
+	if previousVersion != workspace.Version || goalsPaused || (previousWorkspaceID != "" && previousWorkspaceID != workspaceID) {
 		// Workspace IDs live in the machine-local registry. When a portable
 		// workspace is opened after that registry was recreated or rebound, the
 		// file location is the ownership boundary and its chat state can safely
@@ -120,7 +137,7 @@ func normalizeAndValidateWorkspace(workspace *ChatWorkspace, workspaceID string)
 		workspace.Version = WorkspaceVersion
 		workspace.WorkspaceID = workspaceID
 	}
-	if workspace.Version == 1 || workspace.Version == 2 {
+	if workspace.Version == 1 || workspace.Version == 2 || workspace.Version == 3 {
 		workspace.Version = WorkspaceVersion
 	}
 	if workspace.Version != WorkspaceVersion {
@@ -148,6 +165,9 @@ func normalizeAndValidateWorkspace(workspace *ChatWorkspace, workspaceID string)
 			tab.Messages = []llm.Message{}
 		}
 		normalizeContextCheckpoint(tab)
+		if err := normalizeGoals(tab); err != nil {
+			return fmt.Errorf("chat tab %q: %w", tab.ChatID, err)
+		}
 	}
 	if workspace.CodeChat != nil {
 		codeChat := workspace.CodeChat
@@ -165,6 +185,9 @@ func normalizeAndValidateWorkspace(workspace *ChatWorkspace, workspaceID string)
 			codeChat.Messages = []llm.Message{}
 		}
 		normalizeContextCheckpoint(codeChat)
+		if err := normalizeGoals(codeChat); err != nil {
+			return fmt.Errorf("code chat: %w", err)
+		}
 	}
 	if len(workspace.Tabs) == 0 {
 		workspace.ActiveChatID = ""
@@ -174,6 +197,102 @@ func normalizeAndValidateWorkspace(workspace *ChatWorkspace, workspaceID string)
 		return fmt.Errorf("active chat tab %q was not found", workspace.ActiveChatID)
 	}
 	return nil
+}
+
+func normalizeGoals(tab *TabTranscript) error {
+	tab.CurrentGoalID = strings.TrimSpace(tab.CurrentGoalID)
+	seen := make(map[string]struct{}, len(tab.Goals))
+	currentFound := tab.CurrentGoalID == ""
+	for index := range tab.Goals {
+		goal := &tab.Goals[index]
+		goal.ID = strings.TrimSpace(goal.ID)
+		goal.Objective = strings.TrimSpace(goal.Objective)
+		goal.Model = strings.TrimSpace(goal.Model)
+		goal.Outcome = strings.TrimSpace(goal.Outcome)
+		goal.LastError = strings.TrimSpace(goal.LastError)
+		goal.PendingOutcome = strings.TrimSpace(goal.PendingOutcome)
+		if goal.ID == "" || goal.Objective == "" {
+			return fmt.Errorf("goal %d requires an id and objective", index)
+		}
+		if _, exists := seen[goal.ID]; exists {
+			return fmt.Errorf("duplicate goal id %q", goal.ID)
+		}
+		seen[goal.ID] = struct{}{}
+		if goal.ID == tab.CurrentGoalID {
+			currentFound = true
+		}
+		switch goal.Status {
+		case GoalStatusActive, GoalStatusPaused, GoalStatusBlocked, GoalStatusCompleted, GoalStatusCleared:
+		default:
+			return fmt.Errorf("goal %q has invalid status %q", goal.ID, goal.Status)
+		}
+		switch goal.PendingStatus {
+		case "", GoalStatusCompleted, GoalStatusBlocked:
+		default:
+			return fmt.Errorf("goal %q has invalid pending status %q", goal.ID, goal.PendingStatus)
+		}
+		if goal.PendingStatus != "" && goal.PendingOutcome == "" {
+			return fmt.Errorf("goal %q has a pending status without an outcome", goal.ID)
+		}
+		if goal.PendingStatus == "" {
+			goal.PendingOutcome = ""
+		}
+		for steeringIndex := range goal.PendingSteering {
+			steering := &goal.PendingSteering[steeringIndex]
+			steering.ID = strings.TrimSpace(steering.ID)
+			steering.Content = strings.TrimSpace(steering.Content)
+			if steering.ID == "" || (steering.Content == "" && len(steering.Images) == 0 && len(steering.Videos) == 0) {
+				return fmt.Errorf("goal %q has invalid queued steering", goal.ID)
+			}
+		}
+	}
+	if !currentFound {
+		return fmt.Errorf("current goal %q was not found", tab.CurrentGoalID)
+	}
+	return nil
+}
+
+func pauseActiveGoalsAfterLoad(workspace *ChatWorkspace) bool {
+	changed := false
+	pause := func(tab *TabTranscript) {
+		for index := range tab.Goals {
+			goal := &tab.Goals[index]
+			if goal.Status != GoalStatusActive {
+				continue
+			}
+			now := time.Now().UTC()
+			if goal.ActiveSince != nil {
+				goal.ActiveSeconds += maxInt64(0, int64(now.Sub(*goal.ActiveSince).Seconds()))
+			}
+			goal.ActiveSince = nil
+			goal.Status = GoalStatusPaused
+			goal.PendingStatus = ""
+			goal.PendingOutcome = ""
+			goal.Outcome = ""
+			goal.CompletedAt = nil
+			goal.LastError = "Echo restarted while this goal was running. Resume to inspect the current workspace state and continue."
+			goal.UpdatedAt = now
+			tab.Revision++
+			changed = true
+		}
+	}
+	for index := range workspace.Tabs {
+		pause(&workspace.Tabs[index])
+	}
+	if workspace.CodeChat != nil {
+		pause(workspace.CodeChat)
+	}
+	if changed {
+		workspace.Revision++
+	}
+	return changed
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func normalizeContextCheckpoint(tab *TabTranscript) {

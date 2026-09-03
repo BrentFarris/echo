@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/brent/echo/internal/agentmodes"
 	"github.com/brent/echo/internal/sessions"
 	"github.com/brent/echo/internal/workspacefs"
 	"github.com/gorilla/websocket"
@@ -288,6 +289,19 @@ func (c *client) readPump(h *Hub) {
 			c.unsubscribeDebug(msg.WorkspaceID)
 		case "chat_send":
 			c.server.sessions.send(c, msg)
+		case "goal_start":
+			msg.AgentModeID = agentmodes.GoalID
+			c.server.sessions.send(c, msg)
+		case "goal_steer":
+			c.server.sessions.steerGoal(c, msg)
+		case "goal_pause":
+			c.server.sessions.pauseGoal(c, msg.WorkspaceID, msg.ChatID, msg.Surface)
+		case "goal_resume":
+			c.server.sessions.resumeGoal(c, msg.WorkspaceID, msg.ChatID, msg.Surface, msg.RequestID)
+		case "goal_edit":
+			c.server.sessions.editGoal(c, msg.WorkspaceID, msg.ChatID, msg.Surface, msg.Message)
+		case "goal_clear":
+			c.server.sessions.clearGoal(c, msg.WorkspaceID, msg.ChatID, msg.Surface)
 		case "chat_stop":
 			c.server.sessions.stop(c, msg.WorkspaceID, msg.ChatID, msg.Surface)
 		case "plan_questions_submit":

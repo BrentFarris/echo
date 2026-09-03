@@ -44,6 +44,7 @@ function publicWorkspaceState() {
     activeChatId: binding.activeChatId,
     hasSnapshot: binding.hasSnapshot,
     tabs: binding.tabs.map((tab) => ({ ...tab })),
+    goal: binding.goal ? { ...binding.goal } : null,
   };
 }
 
@@ -78,7 +79,8 @@ export function canClearChat(log) {
     && binding.hasSnapshot
     && binding.turns.size > 0
     && !activeBindingChatBusy()
-    && activeStream == null,
+    && activeStream == null
+    && !["active", "paused", "blocked"].includes(binding.goal?.status)
   );
 }
 
@@ -102,6 +104,8 @@ export function activateChatTab(chatId) {
 
 export function closeChatTab(chatId, stopIfBusy = false) {
   if (!binding?.workspaceId || !chatId) return false;
+  const tab = binding.tabs.find((candidate) => candidate.chatId === chatId);
+  if (["active", "paused", "blocked"].includes(tab?.goalStatus)) return false;
   return ws.send({
     type: "chat_tab_close", workspaceId: binding.workspaceId, chatId,
     ...(stopIfBusy ? { stopIfBusy: true } : {}),
@@ -119,7 +123,7 @@ export function openWorkspaceSession(log, workspaceId, options = {}) {
     onActivateFile: typeof options.onActivateFile === "function" ? options.onActivateFile : null,
     onActivateResource: typeof options.onActivateResource === "function" ? options.onActivateResource : null,
     sequence: 0, hasSnapshot: false,
-    activeChatId: "", tabs: [], turns: new Map(), scrollFollower,
+    activeChatId: "", tabs: [], turns: new Map(), goal: null, scrollFollower,
   };
   emitWorkspaceState();
   renderEmpty(log, workspaceId ? "Loading conversation…" : "Select a workspace to start chatting.");
@@ -163,12 +167,15 @@ ws.on("session_snapshot", (snapshot) => {
     preview: tab.preview || "New chat",
     busy: Boolean(tab.busy),
     revision: Number(tab.revision) || 0,
+    goalStatus: tab.goalStatus || "",
   }));
+  binding.goal = normalizeGoal(snapshot.goal);
   binding.turns.clear();
   activeStream = null;
   binding.log.textContent = "";
   for (const turn of snapshot.turns || []) renderStoredTurn(turn, false);
   if (snapshot.activeTurn) renderStoredTurn(snapshot.activeTurn, true);
+  for (const steering of binding.goal?.pendingInputs || []) renderPendingGoalSteering(steering);
   if (!binding.log.childElementCount) renderEmpty(binding.log, "Ask Echo to inspect, plan, or build in this workspace.");
   binding.scrollFollower?.reset();
   setStreaming(activeStream != null);
@@ -199,8 +206,15 @@ ws.on("session_event", (message) => {
   const chatId = message.chatId || binding.activeChatId;
   const tab = binding.tabs.find((candidate) => candidate.chatId === chatId);
   let tabStateChanged = false;
+  if (event.type === "goal_updated") {
+    const nextGoal = normalizeGoal(event.goal);
+    if (chatId === binding.activeChatId) binding.goal = nextGoal;
+    if (tab) tab.goalStatus = nextGoal?.status || "";
+    tabStateChanged = true;
+  }
   if (tab && (event.type === "turn_started" || event.type === "turn_rerun_started" || event.type === "turn_edit_started")) {
-    tab.preview = normalizePreview(event.message) || "New chat";
+    const preview = normalizePreview(event.message);
+    if (preview) tab.preview = preview;
     tab.busy = true;
     tabStateChanged = true;
   } else if (tab && event.type === "context_compression_started" && event.compression?.phase === "idle") {
@@ -241,12 +255,28 @@ ws.on("command_error", (message) => {
 
 function normalizePreview(value) { return String(value || "").trim().replace(/\s+/g, " "); }
 
+function normalizeGoal(value) {
+  if (!value || typeof value !== "object" || !value.id) return null;
+  return {
+    id: String(value.id), objective: String(value.objective || ""),
+    objectiveRevision: Number(value.objectiveRevision) || 0,
+    status: String(value.status || "paused"), model: String(value.model || ""),
+    createdAt: value.createdAt || "", updatedAt: value.updatedAt || "",
+    completedAt: value.completedAt || "", activeSeconds: Number(value.activeSeconds) || 0,
+    stepCount: Number(value.stepCount) || 0, tokensUsed: Number(value.tokensUsed) || 0,
+    outcome: String(value.outcome || ""), lastError: String(value.lastError || ""),
+    pendingSteering: Number(value.pendingSteering) || 0,
+    pendingInputs: Array.isArray(value.pendingInputs) ? value.pendingInputs.map((input) => ({ ...input })) : [],
+  };
+}
+
 function applyEvent(event) {
   switch (event.type) {
     case "turn_started": {
       binding.log.querySelector(".chat-empty")?.remove();
       const stream = createTurnView(event.turnId, event.message || "", event.images || [], event.videos || [], {
         references: event.references, editorContext: event.editorContext,
+        goalId: event.goalId, goalOrigin: event.goalOrigin,
       });
       binding.turns.set(event.turnId, stream);
       activeStream = stream;
@@ -275,7 +305,7 @@ function applyEvent(event) {
       appendReasoning(findStream(event.turnId), event.turn, event.content || "");
       break;
     case "assistant_turn_end":
-      endTurn(findStream(event.turnId), event.turn, Boolean(event.hasToolCalls));
+      endTurn(findStream(event.turnId), event.turn, Boolean(event.hasToolCalls), Boolean(event.goalCheckpoint));
       break;
     case "tool_call":
       appendToolCall(findStream(event.turnId), event, event.turn);
@@ -296,6 +326,23 @@ function applyEvent(event) {
     case "plan_questions_resolved":
       resolvePlanQuestionItem(findStream(event.turnId), event, event.turn);
       break;
+    case "goal_steering_queued":
+      renderPendingGoalSteering({
+        id: event.steeringId, content: event.message, images: event.images, videos: event.videos,
+        references: event.references, editorContext: event.editorContext,
+      });
+      break;
+    case "goal_steering_applied": {
+      const stream = findStream(event.turnId) || activeStream;
+      if (!stream?.goalGuidance.has(event.steeringId)) {
+        findGoalSteeringElement(event.steeringId)?.remove();
+      }
+      appendGoalGuidance(stream, {
+        id: event.steeringId, content: event.message, images: event.images, videos: event.videos,
+        references: event.references, editorContext: event.editorContext,
+      }, "applied");
+      break;
+    }
     case "context_compression_queued":
     case "context_compression_started":
     case "context_compression_completed":
@@ -345,6 +392,8 @@ function renderStoredTurn(turn, active) {
     assistantDeleted: Boolean(turn.assistantDeleted),
     references: turn.references,
     editorContext: turn.editorContext,
+    goalId: turn.goalId,
+    goalOrigin: turn.goalOrigin,
   });
   binding.turns.set(turn.id, stream);
   const compressions = turn.assistantDeleted ? [] : (turn.compressions || []);
@@ -355,7 +404,7 @@ function renderStoredTurn(turn, active) {
     startTurn(stream, assistant.number);
     appendReasoning(stream, assistant.number, assistant.reasoning || "");
     appendTurnText(stream, assistant.number, assistant.content || "");
-    endTurn(stream, assistant.number, Boolean(assistant.hasToolCalls));
+    endTurn(stream, assistant.number, Boolean(assistant.hasToolCalls), Boolean(assistant.goalCheckpoint));
     for (const tool of assistant.tools || []) {
       const data = {
         turn: assistant.number, callId: tool.callId, callOrder: tool.callOrder,
@@ -398,6 +447,7 @@ function renderStoredTurn(turn, active) {
     upsertCompressionActivity(stream, activity);
   }
   if (!turn.assistantDeleted) recordFileChanges(stream, turn.fileChanges);
+  for (const steering of turn.goalSteering || []) appendGoalGuidance(stream, steering, "applied");
   if (active || turn.status === "streaming") {
     for (const agent of turn.researchAgents || []) updateResearchAgentStatus(stream, agent);
     activeStream = stream;
@@ -576,6 +626,123 @@ function createMessageEl(role, text, images = [], videos = [], options = {}) {
   return el;
 }
 
+function goalMessagePayload(type, text, options = {}) {
+  const images = Array.isArray(options.images) ? options.images : [];
+  const videos = Array.isArray(options.videos) ? options.videos : [];
+  const references = Array.isArray(options.references) ? options.references : [];
+  const requestId = globalThis.crypto?.randomUUID?.() || `request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return {
+    type, workspaceId: binding.workspaceId, chatId: binding.activeChatId, requestId,
+    message: text,
+    ...(images.length ? { images } : {}), ...(videos.length ? { videos } : {}),
+    ...(binding.surface === "code" ? { surface: "code" } : {}),
+    ...(options.editorContext ? { editorContext: options.editorContext } : {}),
+    ...(binding.surface === "code" && references.length ? { references } : {}),
+  };
+}
+
+export function startGoal(log, text, model, options = {}) {
+  text = text.trim();
+  const images = Array.isArray(options.images) ? options.images : [];
+  const videos = Array.isArray(options.videos) ? options.videos : [];
+  if ((!text && images.length === 0 && videos.length === 0) || activeStream || activeBindingChatBusy()
+    || ["active", "paused"].includes(binding?.goal?.status)
+    || !binding?.workspaceId || !binding.activeChatId || binding.log !== log) return false;
+  return ws.send({ ...goalMessagePayload("goal_start", text, options), ...(model ? { model } : {}) });
+}
+
+export function steerGoal(log, text, options = {}) {
+  text = text.trim();
+  const images = Array.isArray(options.images) ? options.images : [];
+  const videos = Array.isArray(options.videos) ? options.videos : [];
+  if ((!text && images.length === 0 && videos.length === 0) || !binding?.goal
+    || !["active", "paused", "blocked"].includes(binding.goal.status)
+    || !binding.workspaceId || !binding.activeChatId || binding.log !== log) return false;
+  return ws.send(goalMessagePayload("goal_steer", text, options));
+}
+
+function sendGoalControl(type, extra = {}) {
+  if (!binding?.workspaceId || !binding.activeChatId) return false;
+  return ws.send({
+    type, workspaceId: binding.workspaceId, chatId: binding.activeChatId,
+    ...(binding.surface === "code" ? { surface: "code" } : {}), ...extra,
+  });
+}
+
+export function pauseGoal() {
+  return binding?.goal?.status === "active" && sendGoalControl("goal_pause");
+}
+export function resumeGoal() {
+  if (!binding?.goal || !["paused", "blocked"].includes(binding.goal.status)) return false;
+  const requestId = globalThis.crypto?.randomUUID?.() || `request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return sendGoalControl("goal_resume", { requestId });
+}
+export function editGoal(objective) {
+  objective = String(objective || "").trim();
+  return objective && binding?.goal && ["active", "paused", "blocked"].includes(binding.goal.status)
+    ? sendGoalControl("goal_edit", { message: objective }) : false;
+}
+export function clearGoal() { return Boolean(binding?.goal) && sendGoalControl("goal_clear"); }
+
+function appendGoalGuidance(stream, input, status = "applied") {
+  if (!stream || !input?.id) return;
+  let item = stream.goalGuidance.get(input.id);
+  if (!item) {
+    const el = document.createElement("div");
+    el.className = "chat-goal-guidance";
+    el.dataset.goalSteeringId = input.id;
+    const header = document.createElement("div");
+    header.className = "chat-goal-guidance-header";
+    const label = document.createElement("strong");
+    label.textContent = "Goal guidance";
+    const badge = document.createElement("span");
+    badge.className = "chat-goal-guidance-status";
+    header.append(label, badge);
+    const content = document.createElement("div");
+    content.className = "chat-goal-guidance-content markdown-body";
+    patchMarkdownElement(content, input.content || "");
+    const body = document.createElement("div");
+    body.className = "chat-goal-guidance-body";
+    appendUserMedia(body, input.images || [], input.videos || [], "");
+    body.append(content);
+    appendPromptResources(body, input.references, input.editorContext);
+    el.append(header, body);
+    stream.timeline.hidden = false;
+    stream.timeline.appendChild(el);
+    item = { el, badge, content };
+    stream.goalGuidance.set(input.id, item);
+  }
+  item.badge.textContent = status === "queued" ? "Queued" : "Applied";
+  item.el.classList.toggle("is-queued", status === "queued");
+}
+
+function renderPendingGoalSteering(input) {
+  if (!input?.id || !binding?.log) return;
+  if (activeStream) {
+    appendGoalGuidance(activeStream, input, "queued");
+    return;
+  }
+  if (findGoalSteeringElement(input.id)) return;
+  binding.log.querySelector(".chat-empty")?.remove();
+  const message = createMessageEl("user", input.content || "", input.images || [], input.videos || [], {
+    references: input.references, editorContext: input.editorContext,
+  });
+  message.classList.add("chat-goal-guidance-message", "is-queued");
+  message.dataset.goalSteeringId = input.id;
+  message.querySelector(".chat-message-actions")?.remove();
+  const badge = document.createElement("span");
+  badge.className = "chat-goal-guidance-status";
+  badge.textContent = "Queued goal guidance";
+  message.prepend(badge);
+  binding.log.appendChild(message);
+}
+
+function findGoalSteeringElement(id) {
+  if (!binding?.log || !id) return null;
+  return [...binding.log.querySelectorAll("[data-goal-steering-id]")]
+    .find((element) => element.dataset.goalSteeringId === id) || null;
+}
+
 export function canCompressChat(log) {
   return Boolean(
     binding?.log === log
@@ -719,7 +886,10 @@ function createTurnView(turnId, userText, images = [], videos = [], options = {}
     turnId, references: options.references, editorContext: options.editorContext,
   });
   user.dataset.turnId = turnId;
-  if (!options.userDeleted) binding.log.appendChild(user);
+  const hideSyntheticGoalUser = Boolean(options.goalId)
+    && ["resume", "continuation"].includes(options.goalOrigin)
+    && !userText && images.length === 0 && videos.length === 0;
+  if (!options.userDeleted && !hideSyntheticGoalUser) binding.log.appendChild(user);
   const el = createMessageEl("assistant", "");
   el.classList.add("is-streaming");
   el.dataset.turnId = turnId;
@@ -732,6 +902,12 @@ function createTurnView(turnId, userText, images = [], videos = [], options = {}
     }
   }
   if (!options.assistantDeleted) binding.log.appendChild(el);
+  if (options.goalId) {
+    for (const message of [user, el]) {
+      message.classList.add("is-goal-message");
+      for (const action of message.querySelectorAll("[data-message-action='edit'], [data-message-action='rerun'], [data-message-action='delete']")) action.remove();
+    }
+  }
   return {
     id: turnId, el, user, timeline: el.querySelector(".chat-timeline"),
     content: el.querySelector(".chat-final-content"), done: false,
@@ -740,6 +916,7 @@ function createTurnView(turnId, userText, images = [], videos = [], options = {}
     compressions: new Map(),
     fileChanges: [],
     researchAgents: new Map(), researchReasoning: new Map(), researchStatusContainer: null,
+    goalId: options.goalId || "", goalOrigin: options.goalOrigin || "", goalGuidance: new Map(),
   };
 }
 
@@ -1281,14 +1458,15 @@ function appendResearchReasoning(stream, data, complete = false) {
   }
 }
 
-function endTurn(stream, turnNumber, hasToolCalls) {
+function endTurn(stream, turnNumber, hasToolCalls, goalCheckpoint = false) {
   if (!stream) return;
   const turn = ensureTurn(stream, Number.isInteger(turnNumber) ? turnNumber : 0);
   completeReasoning(turn);
   flushTurnTextBlock(turn);
   turn.lastKind = "";
-  if (hasToolCalls) {
+  if (hasToolCalls || goalCheckpoint) {
     turn.el.classList.add("is-progress-turn");
+    if (goalCheckpoint) turn.el.classList.add("is-goal-checkpoint");
   } else {
     stream.finalTurn = turn;
     promoteFinalText(stream, turn);
@@ -1741,7 +1919,7 @@ function finishStream(stream, outcome, message = "") {
     promoteFinalText(stream, stream.currentTurn);
     stream.finalTurn = stream.currentTurn;
   }
-  if (outcome === "done") {
+  if (outcome === "done" || outcome === "goal_checkpoint") {
     finalizeSuccessfulResponse(stream);
   } else {
     markRunningToolsInterrupted(stream, outcome);

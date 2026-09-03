@@ -20,6 +20,10 @@ var planModeOnlyToolNames = map[string]bool{
 	AskUserQuestionsToolName: true,
 }
 
+var goalModeOnlyToolNames = map[string]bool{
+	UpdateGoalToolName: true,
+}
+
 var researchAgentToolNames = map[string]bool{
 	ResearchAgentsSpawnToolName:  true,
 	ResearchAgentSendToolName:    true,
@@ -44,6 +48,7 @@ var researchWorkerToolNames = map[string]bool{
 
 type ChatSchemaOptions struct {
 	PlanMode        bool
+	GoalMode        bool
 	ResearchEnabled bool
 	SandboxGUI      bool
 	WorkspaceID     string
@@ -234,6 +239,9 @@ func (r *Registry) chatLLMSchemaForScopes(scopes *ToolScopeChecker, options Chat
 			continue
 		}
 		if planModeOnlyToolNames[metadata.Name] && !options.PlanMode {
+			continue
+		}
+		if goalModeOnlyToolNames[metadata.Name] && !options.GoalMode {
 			continue
 		}
 		if researchAgentToolNames[metadata.Name] && !options.ResearchEnabled {
