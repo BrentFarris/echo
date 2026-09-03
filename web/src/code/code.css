@@ -1463,6 +1463,36 @@
   user-select: none;
 }
 
+@media (hover: hover) and (pointer: fine) {
+  .code-tab[draggable="true"] {
+    cursor: grab;
+  }
+}
+
+.code-tab.is-dragging {
+  opacity: 0.45;
+}
+
+.code-tab.is-drop-before::after,
+.code-tab.is-drop-after::after {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--code-accent);
+  content: "";
+  pointer-events: none;
+}
+
+.code-tab.is-drop-before::after {
+  left: -1px;
+}
+
+.code-tab.is-drop-after::after {
+  right: -1px;
+}
+
 .code-tab.is-active {
   background: var(--code-tab-active);
   color: var(--code-fg);

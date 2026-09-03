@@ -37,6 +37,7 @@ import {
   CodeNavigationHistory, isLargeCodeNavigationJump, type CodeNavigationLocation,
 } from "./codeNavigationHistory";
 import { beginMruCycle, nextMruCycle, pruneMruCycle, removeFromMru, type MruCycleState } from "./mruTabOrder";
+import { reorderTabs, type TabDropPosition } from "./tabOrder";
 import {
   commandPalettePresentation, loadRecentCommandIds, pruneRecentCommandIds,
   recordRecentCommandId, saveRecentCommandIds,
@@ -111,6 +112,7 @@ const treeRowHeight = 22;
 const minEditorFontSize = 8;
 const maxEditorFontSize = 30;
 const defaultEditorFontSize = 13.5;
+const codeTabDragType = "application/x-echo-code-tab";
 let mountedView: CodeView | null = null;
 
 export function mount(root: HTMLElement): void {
@@ -147,6 +149,11 @@ class CodeView {
   private treeDragScrollActive = false;
   private tabs: OpenTab[] = [];
   private activeTabId: string | null = null;
+  private draggingTabId: string | null = null;
+  private tabDragStartedOnClose = false;
+  private tabDragScrollFrame = 0;
+  private tabDragScrollClientX = 0;
+  private tabDragScrollActive = false;
   private mruTabIds: string[] = [];
   private mruCycle: MruCycleState | null = null;
   private mruSwitcherOverlay: HTMLElement | null = null;
@@ -1638,17 +1645,83 @@ class CodeView {
     }
   }
 
+  private tabDropFromEvent(event: DragEvent): { targetId: string | null; position: TabDropPosition } | null {
+    if (!this.draggingTabId) return null;
+    const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-tab-id]") : null;
+    const targetId = target?.dataset.tabId || null;
+    const position: TabDropPosition = target && event.clientX < target.getBoundingClientRect().left + target.offsetWidth / 2
+      ? "before"
+      : "after";
+    return reorderTabs(this.tabs, this.draggingTabId, targetId, position) ? { targetId, position } : null;
+  }
+
+  private setTabDropIndicator(targetId: string | null, position: TabDropPosition): void {
+    const list = this.root.querySelector<HTMLElement>("[data-tabs-list]");
+    if (!list) return;
+    list.querySelectorAll(".code-tab.is-drop-before, .code-tab.is-drop-after")
+      .forEach((tab) => tab.classList.remove("is-drop-before", "is-drop-after"));
+    const indicator = targetId
+      ? list.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(targetId)}"]`)
+      : list.lastElementChild as HTMLElement | null;
+    indicator?.classList.add(position === "before" ? "is-drop-before" : "is-drop-after");
+  }
+
+  private clearTabDropIndicator(): void {
+    this.root.querySelectorAll(".code-tab.is-drop-before, .code-tab.is-drop-after")
+      .forEach((tab) => tab.classList.remove("is-drop-before", "is-drop-after"));
+  }
+
+  private stopTabDragScroll(): void {
+    this.tabDragScrollActive = false;
+    if (this.tabDragScrollFrame) cancelAnimationFrame(this.tabDragScrollFrame);
+    this.tabDragScrollFrame = 0;
+  }
+
+  private startTabDragScroll(scroller: HTMLElement, clientX: number): void {
+    this.tabDragScrollClientX = clientX;
+    if (this.tabDragScrollActive) return;
+    this.tabDragScrollActive = true;
+    const step = () => {
+      this.tabDragScrollFrame = 0;
+      if (!this.tabDragScrollActive) return;
+      const bounds = scroller.getBoundingClientRect();
+      const edge = 36;
+      const speed = 12;
+      const previous = scroller.scrollLeft;
+      if (this.tabDragScrollClientX < bounds.left + edge) scroller.scrollLeft -= speed;
+      else if (this.tabDragScrollClientX > bounds.right - edge) scroller.scrollLeft += speed;
+      else {
+        this.tabDragScrollActive = false;
+        return;
+      }
+      if (scroller.scrollLeft === previous) {
+        this.tabDragScrollActive = false;
+        return;
+      }
+      this.tabDragScrollFrame = requestAnimationFrame(step);
+    };
+    this.tabDragScrollFrame = requestAnimationFrame(step);
+  }
+
+  private clearTabDragState(): void {
+    this.stopTabDragScroll();
+    this.clearTabDropIndicator();
+    this.root.querySelectorAll(".code-tab.is-dragging").forEach((tab) => tab.classList.remove("is-dragging"));
+    this.draggingTabId = null;
+    this.tabDragStartedOnClose = false;
+  }
+
   private renderTabs(): void {
     const list = this.root.querySelector<HTMLElement>("[data-tabs-list]");
     if (!list) return;
     list.innerHTML = this.tabs.map((tab) => `
-      <div class="code-tab ${tab.id === this.activeTabId ? "is-active" : ""} ${!tab.pinned ? "is-preview" : ""}" role="tab" aria-selected="${tab.id === this.activeTabId}" tabindex="${tab.id === this.activeTabId ? 0 : -1}" data-tab-id="${escapeHTML(tab.id)}" title="${escapeHTML(tab.hostPath || tab.title)}">
+      <div class="code-tab ${tab.id === this.activeTabId ? "is-active" : ""} ${!tab.pinned ? "is-preview" : ""}" role="tab" aria-selected="${tab.id === this.activeTabId}" tabindex="${tab.id === this.activeTabId ? 0 : -1}" draggable="true" data-tab-id="${escapeHTML(tab.id)}" title="${escapeHTML(tab.hostPath || tab.title)}">
         <span class="codicon codicon-${this.tabIcon(tab)} code-tab-icon"></span>
         <span class="code-tab-title">${escapeHTML(tab.title)}</span>
         ${tab.conflict ? `<span class="codicon codicon-warning code-tab-conflict" title="Changed on disk"></span>` : ""}
         ${tab.deleted ? `<span class="codicon codicon-trash code-tab-conflict" title="Deleted on disk"></span>` : ""}
         <span class="code-tab-dirty ${tab.dirty ? "is-visible" : ""}" aria-label="${tab.dirty ? "Unsaved changes" : ""}"></span>
-        <button type="button" class="code-tab-close" data-tab-close aria-label="Close ${escapeHTML(tab.title)}"><span class="codicon codicon-close"></span></button>
+        <button type="button" class="code-tab-close" draggable="false" data-tab-close aria-label="Close ${escapeHTML(tab.title)}"><span class="codicon codicon-close"></span></button>
       </div>
     `).join("");
     this.syncActiveTabState();
@@ -3160,6 +3233,48 @@ class CodeView {
     }, { signal });
 
     const tabs = this.root.querySelector<HTMLElement>("[data-code-tabs]")!;
+    tabs.addEventListener("dragstart", (event) => {
+      const element = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-tab-id]") : null;
+      const tab = element ? this.tabs.find((candidate) => candidate.id === element.dataset.tabId) : null;
+      const startedOnClose = this.tabDragStartedOnClose;
+      this.clearTabDragState();
+      if (!element || !tab || startedOnClose || !event.dataTransfer) {
+        event.preventDefault();
+        return;
+      }
+      this.draggingTabId = tab.id;
+      element.classList.add("is-dragging");
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData(codeTabDragType, tab.id);
+      event.dataTransfer.setData("text/plain", tab.title);
+    }, { signal });
+    tabs.addEventListener("dragover", (event) => {
+      if (!this.draggingTabId || !event.dataTransfer) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      const drop = this.tabDropFromEvent(event);
+      if (drop) this.setTabDropIndicator(drop.targetId, drop.position);
+      else this.clearTabDropIndicator();
+      this.startTabDragScroll(tabs, event.clientX);
+    }, { signal });
+    tabs.addEventListener("drop", (event) => {
+      if (!this.draggingTabId) return;
+      event.preventDefault();
+      const sourceId = this.draggingTabId;
+      const drop = this.tabDropFromEvent(event);
+      const reordered = drop ? reorderTabs(this.tabs, sourceId, drop.targetId, drop.position) : null;
+      this.clearTabDragState();
+      if (!reordered) return;
+      this.tabs = reordered;
+      this.renderTabs();
+      this.schedulePersist();
+    }, { signal });
+    tabs.addEventListener("dragend", () => this.clearTabDragState(), { signal });
+    tabs.addEventListener("dragleave", (event) => {
+      if (tabs.contains(event.relatedTarget as Node | null)) return;
+      this.stopTabDragScroll();
+      this.clearTabDropIndicator();
+    }, { signal });
     tabs.addEventListener("click", (event) => {
       const element = (event.target as Element).closest<HTMLElement>("[data-tab-id]");
       if (!element) return;
@@ -3169,6 +3284,7 @@ class CodeView {
       else void this.recordCodeNavigation(() => this.activateTab(tab.id));
     }, { signal });
     tabs.addEventListener("mousedown", (event) => {
+      this.tabDragStartedOnClose = event.button === 0 && Boolean((event.target as Element).closest("[data-tab-close]"));
       // Suppress the browser's native middle-click autoscroll when the tab bar
       // overflows and becomes scrollable, so middle-click keeps closing tabs
       // instead of starting a horizontal scroll drag.
@@ -3207,6 +3323,7 @@ class CodeView {
         event.preventDefault();
       }
     }, { signal, passive: false });
+    document.addEventListener("mouseup", () => { this.tabDragStartedOnClose = false; }, { signal });
 
     this.root.querySelector("[data-breadcrumbs]")?.addEventListener("click", (event) => {
       const button = (event.target as Element).closest<HTMLElement>("[data-breadcrumb-index]");
@@ -4111,6 +4228,7 @@ class CodeView {
   dispose(): void {
     if (this.abort.signal.aborted) return;
     this.finishMruCycle();
+    this.clearTabDragState();
     detachTerminalDock(this.root.querySelector<HTMLElement>("[data-region=terminal]"));
     void this.persistNow();
     this.codeNavigation?.dispose(this.captureNavigationLocation());

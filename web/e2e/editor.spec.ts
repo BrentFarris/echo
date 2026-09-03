@@ -32,6 +32,27 @@ async function dragToTreeRow(page: Page, source: Locator, target: Locator): Prom
   }
 }
 
+async function dragTabTo(page: Page, source: Locator, target: Locator, position: "before" | "after"): Promise<void> {
+  await expect(source).toHaveAttribute("draggable", "true");
+  await expect(source).toBeVisible();
+  await expect(target).toBeVisible();
+  const sourceBox = await source.boundingBox();
+  const targetBox = await target.boundingBox();
+  expect(sourceBox).not.toBeNull();
+  expect(targetBox).not.toBeNull();
+  await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
+  await page.mouse.down();
+  try {
+    await page.mouse.move(sourceBox!.x + sourceBox!.width / 2 + 8, sourceBox!.y + sourceBox!.height / 2, { steps: 2 });
+    const targetX = targetBox!.x + targetBox!.width * (position === "before" ? 0.25 : 0.75);
+    await page.mouse.move(targetX, targetBox!.y + targetBox!.height / 2, { steps: 8 });
+    await expect(page.locator(".code-tab.is-dragging")).toHaveCount(1);
+    await expect(page.locator(`.code-tab.is-drop-${position}`)).toHaveCount(1);
+  } finally {
+    await page.mouse.up();
+  }
+}
+
 test.beforeAll(async () => {
   fakeLLM = createServer(async (request, response) => {
     let raw = "";
@@ -1076,6 +1097,121 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.keyboard.press("Escape");
   await expect(page.locator(".workspace-dropdown-anchor")).toHaveCount(0);
   await expect(finalWorkspace).toBeFocused();
+});
+
+test("reorders code editor tabs and restores their persisted order", async ({ page }) => {
+  test.setTimeout(120_000);
+  const state = JSON.parse(readFileSync(resolve(directory, "../test-results/e2e-runtime/state.json"), "utf8")) as {
+    setupCode: string;
+    workspace: string;
+  };
+  const tabWorkspace = join(dirname(state.workspace), "tab-order-workspace");
+  mkdirSync(tabWorkspace, { recursive: true });
+  for (let index = 0; index < 18; index++) {
+    writeFileSync(join(tabWorkspace, `tab-${String(index).padStart(2, "0")}.ts`), `export const tabIndex = ${index};\n`, "utf8");
+  }
+
+  await page.goto("/");
+  if (await page.getByRole("heading", { name: "Secure this Echo server" }).isVisible()) {
+    await page.getByLabel("Setup code").fill(state.setupCode);
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByLabel("Confirm password").fill(password);
+    await page.getByLabel("Device name").fill("Playwright Tab Order");
+    await page.getByRole("button", { name: "Finish setup" }).click();
+  } else {
+    await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByLabel("Device name").fill("Playwright Tab Order");
+    await page.getByRole("button", { name: "Sign in" }).click();
+  }
+  await expect(page.locator(".app-shell")).toBeVisible();
+
+  const previousWorkspaceId = await page.evaluate(async ({ workspacePath, baselinePath }) => {
+    const request = async (path: string, method: string, body: unknown) => {
+      const response = await fetch(path, {
+        method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+      return payload.data;
+    };
+    const currentResponse = await fetch("/api/workspaces");
+    const currentPayload = await currentResponse.json();
+    let previousActiveId = currentPayload.data?.activeId as string | null;
+    if (!previousActiveId) {
+      const baseline = await request("/api/workspaces", "POST", { name: "E2E Workspace", mainPath: baselinePath, folders: [] });
+      previousActiveId = baseline.workspace.id as string;
+    }
+    const created = await request("/api/workspaces", "POST", { name: "Tab Order Workspace", mainPath: workspacePath, folders: [] });
+    await request("/api/workspaces/active", "PUT", { id: created.workspace.id });
+    return previousActiveId;
+  }, { workspacePath: tabWorkspace, baselinePath: state.workspace });
+
+  try {
+    await page.goto("/#/code");
+    await expect(page.locator(".code-app-shell")).toBeVisible();
+    const openPinnedTab = async (name: string) => {
+      const row = page.locator(".code-tree-label", { hasText: name });
+      await row.click();
+      const tab = page.getByRole("tab", { name: new RegExp(name.replace(".", "\\.")) });
+      await expect(tab).toBeVisible();
+      await tab.dblclick();
+    };
+    await openPinnedTab("tab-00.ts");
+    await openPinnedTab("tab-01.ts");
+    await openPinnedTab("tab-02.ts");
+
+    const tabTitles = page.locator("[data-tabs-list] > .code-tab > .code-tab-title");
+    const firstTab = page.getByRole("tab", { name: /tab-00\.ts/ });
+    const activeTab = page.getByRole("tab", { name: /tab-01\.ts/ });
+    const lastTab = page.getByRole("tab", { name: /tab-02\.ts/ });
+    await activeTab.click();
+    await expect(page.locator(".view-lines")).toContainText("tabIndex = 1");
+
+    await dragTabTo(page, firstTab, lastTab, "after");
+    await expect(tabTitles).toHaveText(["tab-01.ts", "tab-02.ts", "tab-00.ts"]);
+    await expect(activeTab).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator(".view-lines")).toContainText("tabIndex = 1");
+    await expect(page.locator(".code-tab.is-dragging, .code-tab.is-drop-before, .code-tab.is-drop-after")).toHaveCount(0);
+
+    await page.waitForTimeout(900);
+    await page.reload();
+    await expect(tabTitles).toHaveText(["tab-01.ts", "tab-02.ts", "tab-00.ts"]);
+    await expect(activeTab).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator(".view-lines")).toContainText("tabIndex = 1");
+
+    for (let index = 3; index < 18; index++) await openPinnedTab(`tab-${String(index).padStart(2, "0")}.ts`);
+    const tabScroller = page.locator("[data-code-tabs]");
+    await expect.poll(() => tabScroller.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+    await tabScroller.evaluate((element) => { element.scrollLeft = 0; });
+    const overflowSource = page.getByRole("tab", { name: /tab-01\.ts/ });
+    const sourceBox = await overflowSource.boundingBox();
+    const scrollerBox = await tabScroller.boundingBox();
+    expect(sourceBox).not.toBeNull();
+    expect(scrollerBox).not.toBeNull();
+    await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
+    await page.mouse.down();
+    try {
+      await page.mouse.move(sourceBox!.x + sourceBox!.width / 2 + 8, sourceBox!.y + sourceBox!.height / 2, { steps: 2 });
+      await page.mouse.move(scrollerBox!.x + scrollerBox!.width - 8, scrollerBox!.y + scrollerBox!.height / 2, { steps: 8 });
+      await expect.poll(() => tabScroller.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+      const firstScrollLeft = await tabScroller.evaluate((element) => element.scrollLeft);
+      await page.waitForTimeout(250);
+      await expect.poll(() => tabScroller.evaluate((element) => element.scrollLeft)).toBeGreaterThan(firstScrollLeft);
+    } finally {
+      await page.mouse.up();
+    }
+    await expect(page.locator(".code-tab.is-dragging, .code-tab.is-drop-before, .code-tab.is-drop-after")).toHaveCount(0);
+  } finally {
+    if (previousWorkspaceId) {
+      await page.evaluate(async (id) => {
+        const response = await fetch("/api/workspaces/active", {
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }),
+        });
+        if (!response.ok) throw new Error(`Could not restore active workspace: HTTP ${response.status}`);
+      }, previousWorkspaceId);
+    }
+  }
 });
 
 test("drags an open explorer file into another folder", async ({ page }) => {
