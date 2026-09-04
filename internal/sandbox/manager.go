@@ -573,6 +573,35 @@ func (m *Manager) Stop(ctx context.Context, workspaceID string) error {
 	return nil
 }
 
+// StopRetainingData stops sandbox containers for a workspace ID without
+// resolving the workspace registration and without deleting its persistent
+// volumes or machine state. This allows unavailable workspaces to be safely
+// unregistered.
+func (m *Manager) StopRetainingData(ctx context.Context, workspaceID string) error {
+	if err := m.awaitStartupReconcile(ctx); err != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	unlock := m.lock(workspaceID)
+	defer unlock()
+	state, exists, err := m.store.Load(workspaceID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	m.transition(workspaceID, StateStopping, "", "Stopping sandbox")
+	if err := m.engine.Stop(ctx, state); err != nil {
+		m.transition(workspaceID, StateError, ErrorCode(err), "Could not stop sandbox")
+		return err
+	}
+	m.mu.Lock()
+	delete(m.secrets, workspaceID)
+	m.mu.Unlock()
+	m.transition(workspaceID, StateStopped, "", "Sandbox stopped")
+	return nil
+}
+
 func (m *Manager) UpdateResources(ctx context.Context, workspaceID string, next workspaces.SandboxConfig) error {
 	if err := m.awaitStartupReconcile(ctx); err != nil && ctx.Err() != nil {
 		return ctx.Err()
@@ -786,6 +815,42 @@ func (m *Manager) OpenProcess(ctx context.Context, workspaceID string, request E
 		return nil, err
 	}
 	return &activityProcess{Process: process, done: func() { m.touch(workspaceID, -1) }}, nil
+}
+
+func (m *Manager) OpenDAP(ctx context.Context, workspaceID string, request DAPRequest) (Process, error) {
+	if err := m.Start(ctx, workspaceID); err != nil {
+		return nil, err
+	}
+	m.touch(workspaceID, 1)
+	state, err := m.machineState(workspaceID)
+	if err != nil {
+		m.touch(workspaceID, -1)
+		return nil, err
+	}
+	if request.Mode == "connect" && !isLoopbackDAPHost(request.Host) {
+		allowed := false
+		for _, grant := range state.NetworkGrants {
+			if grant.Port == request.Port && (strings.EqualFold(grant.Host, request.Host) || (grant.SandboxAlias != "" && strings.EqualFold(grant.SandboxAlias, request.Host))) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			m.touch(workspaceID, -1)
+			return nil, &Error{Code: "sandbox_network_grant_required", Message: "non-loopback debug adapter connections require an exact sandbox network grant"}
+		}
+	}
+	process, err := m.engine.OpenDAP(ctx, state, request)
+	if err != nil {
+		m.touch(workspaceID, -1)
+		return nil, err
+	}
+	return &activityProcess{Process: process, done: func() { m.touch(workspaceID, -1) }}, nil
+}
+
+func isLoopbackDAPHost(host string) bool {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	return host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 type activityProcess struct {

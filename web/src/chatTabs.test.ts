@@ -8,10 +8,12 @@ const chat = vi.hoisted(() => {
     canClearChat: vi.fn(() => false),
     canCompressChat: vi.fn(() => true),
     clearChat: vi.fn(() => true),
+    clearGoal: vi.fn(() => true),
     compressChat: vi.fn(() => true),
     closeChatTab: vi.fn(() => true),
     closeWorkspaceSession: vi.fn(),
     createChatTab: vi.fn(() => true),
+    editGoal: vi.fn(() => true),
     isStreaming: vi.fn(() => false),
     onChatCommandError: vi.fn((callback: (message: any) => boolean) => {
       commandErrorHandler = callback;
@@ -33,7 +35,11 @@ const chat = vi.hoisted(() => {
       return vi.fn();
     }),
     openWorkspaceSession: vi.fn(),
+    pauseGoal: vi.fn(() => true),
+    resumeGoal: vi.fn(() => true),
     sendMessage: vi.fn((_log: unknown, _text: string, _model?: string, _mode?: string, _options?: any) => true),
+    startGoal: vi.fn(() => true),
+    steerGoal: vi.fn(() => true),
     stopStream: vi.fn(),
     emitWorkspace(state: any) { workspaceHandler?.(state); },
     emitCommandError(message: any) { return commandErrorHandler?.(message); },
@@ -80,6 +86,7 @@ vi.mock("../js/api.js", () => ({
       }
     : { modes: [
         { id: "general", name: "General", builtIn: true },
+        { id: "goal", name: "Goal", builtIn: true },
         { id: "review", name: "Review", builtIn: false, prompt: "Review changes" },
       ] }),
 }));
@@ -124,6 +131,12 @@ describe("multi-chat tab UI", () => {
     chat.activateChatTab.mockClear();
     chat.closeChatTab.mockClear();
     chat.createChatTab.mockClear();
+    chat.pauseGoal.mockClear();
+    chat.resumeGoal.mockClear();
+    chat.editGoal.mockClear();
+    chat.clearGoal.mockClear();
+    chat.startGoal.mockClear();
+    chat.steerGoal.mockClear();
     chat.canClearChat.mockReturnValue(false);
     api.post.mockReset();
     editorAPI.searchEntries.mockClear();
@@ -243,6 +256,67 @@ describe("multi-chat tab UI", () => {
     expect(root.querySelector("[data-mode-label]")?.textContent).toBe("Review");
     chat.emitWorkspace(twoTabs("chat-two"));
     expect(editor.textContent).toBe("draft for two");
+  });
+
+  it("locks Main Chat to an active goal and routes guidance and lifecycle actions", () => {
+    chat.sendMessage.mockClear();
+    chat.steerGoal.mockClear();
+    chat.startGoal.mockClear();
+    const goalWorkspace = (status: string, extra: Record<string, unknown> = {}) => ({
+      workspaceId: "workspace-tabs", activeChatId: "chat-goal", hasSnapshot: true,
+      tabs: [{ chatId: "chat-goal", preview: "Goal chat", busy: status === "active" }],
+      goal: {
+        id: "goal-1", objective: "Ship the durable loop", status, model: "model-fast",
+        activeSeconds: 65, stepCount: 4, pendingSteering: 0, ...extra,
+      },
+    });
+    chat.emitWorkspace(goalWorkspace("active", { pendingSteering: 2 }));
+
+    const goalBar = root.querySelector<HTMLElement>("[data-goal-bar]")!;
+    const editor = root.querySelector<HTMLElement>("[data-chat-input]")!;
+    const modeTrigger = root.querySelector<HTMLButtonElement>("[data-mode-trigger]")!;
+    const modelTrigger = root.querySelector<HTMLButtonElement>("[data-model-trigger]")!;
+    expect(goalBar.hidden).toBe(false);
+    expect(goalBar.textContent).toContain("Ship the durable loop");
+    expect(goalBar.textContent).toContain("4 steps");
+    expect(goalBar.textContent).toContain("2 queued");
+    expect(modeTrigger.disabled).toBe(true);
+    expect(modelTrigger.disabled).toBe(true);
+    expect(root.querySelector("[data-mode-label]")?.textContent).toBe("Goal");
+    expect(root.querySelector("[data-model-label]")?.textContent).toBe("Fast");
+    expect(editor.dataset.placeholder).toBe("Add guidance to this goal");
+
+    editor.textContent = "Keep the migration backward compatible";
+    root.querySelector<HTMLButtonElement>(".send-button")!.click();
+    expect(chat.steerGoal).toHaveBeenCalledWith(
+      expect.any(HTMLElement), "Keep the migration backward compatible", { images: [], videos: [] },
+    );
+    expect(chat.sendMessage).not.toHaveBeenCalled();
+    root.querySelector<HTMLButtonElement>("[data-goal-action='pause']")!.click();
+    expect(chat.pauseGoal).toHaveBeenCalledOnce();
+
+    chat.emitWorkspace(goalWorkspace("paused", { activeSeconds: 66 }));
+    expect(editor.dataset.placeholder).toBe("Queue guidance, then resume when ready");
+    root.querySelector<HTMLButtonElement>("[data-goal-action='resume']")!.click();
+    expect(chat.resumeGoal).toHaveBeenCalledOnce();
+
+    chat.emitWorkspace(goalWorkspace("blocked", { activeSeconds: 66, stepCount: 5 }));
+    expect(modeTrigger.disabled).toBe(false);
+    expect(modelTrigger.disabled).toBe(false);
+    modeTrigger.click();
+    document.querySelector<HTMLButtonElement>("[data-mode-id='review']")!.click();
+    editor.textContent = "Review while the goal is blocked";
+    root.querySelector<HTMLButtonElement>(".send-button")!.click();
+    expect(chat.sendMessage.mock.calls.at(-1)?.[3]).toBe("review");
+
+    root.querySelector<HTMLButtonElement>("[data-goal-action='new']")!.click();
+    expect(root.querySelector("[data-mode-label]")?.textContent).toBe("Goal");
+    expect(editor.dataset.placeholder).toBe("Describe the new goal and its completion criteria");
+    editor.textContent = "Start a fresh goal";
+    root.querySelector<HTMLButtonElement>(".send-button")!.click();
+    expect(chat.startGoal).toHaveBeenCalledWith(
+      expect.any(HTMLElement), "Start a fresh goal", "model-fast", { images: [], videos: [] },
+    );
   });
 
   it("activates and cleans an exact completion deep link", async () => {

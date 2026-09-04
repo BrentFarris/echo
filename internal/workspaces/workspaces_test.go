@@ -159,6 +159,51 @@ func TestSandboxConfigLegacyDefaultsAndExplicitPersistence(t *testing.T) {
 	}
 }
 
+func TestTestingConfigDefaultsWithoutRewritingLegacyWorkspace(t *testing.T) {
+	directory := t.TempDir()
+	main := filepath.Join(directory, "legacy testing workspace")
+	if err := os.MkdirAll(main, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(filepath.Join(directory, "echo.json"))
+	workspace, err := manager.Create(CreateRequest{Name: "Legacy Testing", MainPath: main})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(main, EchoDirName, "workspace.json")
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(before), `"testing"`) {
+		t.Fatalf("new workspace unexpectedly persisted default testing settings: %s", before)
+	}
+	loaded, ok, err := manager.Get(workspace.ID)
+	if err != nil || !ok {
+		t.Fatalf("load workspace: ok=%v err=%v", ok, err)
+	}
+	if !loaded.Testing.Go.CodeLens || !loaded.Testing.Go.Coverage || loaded.Testing.Go.Timeout != "30s" {
+		t.Fatalf("testing defaults = %+v", loaded.Testing.Go)
+	}
+	afterRead, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterRead) != string(before) {
+		t.Fatal("reading a legacy workspace rewrote workspace.json")
+	}
+	if _, err := manager.SetLanguageServerConfig(workspace.ID, loaded.LanguageServers); err != nil {
+		t.Fatal(err)
+	}
+	afterUnrelatedSave, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(afterUnrelatedSave), `"testing"`) {
+		t.Fatalf("unrelated save persisted default testing settings: %s", afterUnrelatedSave)
+	}
+}
+
 func TestNormalizeSandboxConfigBoundaries(t *testing.T) {
 	defaults, err := NormalizeSandboxConfig(SandboxConfig{})
 	if err != nil {
@@ -215,6 +260,152 @@ func TestCreateRejectsDuplicateName(t *testing.T) {
 	// Case-insensitive duplicate.
 	if _, err := m.Create(CreateRequest{Name: "dup", MainPath: mainB}); err == nil {
 		t.Fatal("expected duplicate name error")
+	}
+}
+
+func TestUpdateWorkspaceEditableFieldsAndPreservesConfiguration(t *testing.T) {
+	directory := t.TempDir()
+	main := filepath.Join(directory, "main")
+	extra := filepath.Join(directory, "extra")
+	for _, folder := range []string{main, extra} {
+		if err := os.MkdirAll(folder, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager := NewManager(filepath.Join(directory, "echo.json"))
+	workspace, err := manager.Create(CreateRequest{
+		Name: "Original", MainPath: main, Icon: &Icon{Data: []byte("old"), Ext: "png"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.SetSearchParentGitRepositories(workspace.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	wantSandbox := SandboxConfig{Enabled: true, CPULimit: 6, MemoryMiB: 8192, IdleTimeoutMinutes: 12}
+	if _, err := manager.SetSandboxConfig(workspace.ID, wantSandbox); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := manager.Update(workspace.ID, UpdateRequest{
+		Name: "Renamed", Folders: []string{extra, extra, main}, Icon: &Icon{Data: []byte("new"), Ext: "webp"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "Renamed" || updated.MainPath != main || updated.IconExt != "webp" {
+		t.Fatalf("unexpected update: %+v", updated)
+	}
+	if len(updated.Folders) != 2 || updated.Folders[0] != main || updated.Folders[1] != extra {
+		t.Fatalf("folders were not normalized: %v", updated.Folders)
+	}
+	if !updated.SearchParentGitRepositories || updated.Sandbox != wantSandbox {
+		t.Fatalf("unrelated configuration was lost: %+v", updated)
+	}
+	if _, err := os.Stat(filepath.Join(main, EchoDirName, "icon.png")); !os.IsNotExist(err) {
+		t.Fatalf("old icon remains: %v", err)
+	}
+	icon, err := os.ReadFile(filepath.Join(main, EchoDirName, "icon.webp"))
+	if err != nil || string(icon) != "new" {
+		t.Fatalf("replacement icon = %q, %v", icon, err)
+	}
+	if _, err := manager.Update(workspace.ID, UpdateRequest{
+		Name: "Renamed", Folders: []string{extra}, Icon: &Icon{Data: []byte("newer"), Ext: "webp"},
+	}); err != nil {
+		t.Fatalf("replace same-extension icon: %v", err)
+	}
+	icon, err = os.ReadFile(filepath.Join(main, EchoDirName, "icon.webp"))
+	if err != nil || string(icon) != "newer" {
+		t.Fatalf("same-extension replacement icon = %q, %v", icon, err)
+	}
+
+	withoutIcon, err := manager.Update(workspace.ID, UpdateRequest{Name: "Renamed", Folders: []string{extra}, RemoveIcon: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withoutIcon.IconExt != "" {
+		t.Fatalf("icon was not cleared: %+v", withoutIcon)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(main, EchoDirName, "icon.*")); len(matches) != 0 {
+		t.Fatalf("icon files remain: %v", matches)
+	}
+}
+
+func TestUpdateWorkspaceValidatesNameFoldersAndIconAction(t *testing.T) {
+	directory := t.TempDir()
+	mainA := filepath.Join(directory, "a")
+	mainB := filepath.Join(directory, "b")
+	for _, folder := range []string{mainA, mainB} {
+		if err := os.MkdirAll(folder, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager := NewManager(filepath.Join(directory, "echo.json"))
+	first, err := manager.Create(CreateRequest{Name: "First", MainPath: mainA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Create(CreateRequest{Name: "Second", MainPath: mainB}); err != nil {
+		t.Fatal(err)
+	}
+	for name, request := range map[string]UpdateRequest{
+		"missing name":     {Name: ""},
+		"duplicate name":   {Name: "second"},
+		"missing folder":   {Name: "First", Folders: []string{filepath.Join(directory, "missing")}},
+		"conflicting icon": {Name: "First", Icon: &Icon{Data: []byte("x"), Ext: "png"}, RemoveIcon: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := manager.Update(first.ID, request); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+}
+
+func TestUnregisterRetainsWorkspaceFilesAndSelectsNextValidWorkspace(t *testing.T) {
+	directory := t.TempDir()
+	manager := NewManager(filepath.Join(directory, "echo.json"))
+	created := make([]Workspace, 0, 3)
+	for _, name := range []string{"First", "Second", "Third"} {
+		main := filepath.Join(directory, strings.ToLower(name))
+		if err := os.MkdirAll(main, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		workspace, err := manager.Create(CreateRequest{Name: name, MainPath: main})
+		if err != nil {
+			t.Fatal(err)
+		}
+		created = append(created, workspace)
+	}
+	if err := manager.SetActive(created[1].ID); err != nil {
+		t.Fatal(err)
+	}
+	activeID, err := manager.Unregister(created[1].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activeID != created[2].ID {
+		t.Fatalf("active workspace = %q, want %q", activeID, created[2].ID)
+	}
+	if _, err := os.Stat(filepath.Join(created[1].MainPath, EchoDirName, "workspace.json")); err != nil {
+		t.Fatalf("workspace-owned config was removed: %v", err)
+	}
+
+	if err := os.RemoveAll(created[0].MainPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Unregister(created[0].ID); err != nil {
+		t.Fatalf("unregister unavailable workspace: %v", err)
+	}
+	activeID, err = manager.Unregister(created[2].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activeID != "" {
+		t.Fatalf("expected no active workspace, got %q", activeID)
+	}
+	if _, err := manager.Unregister("missing"); !errors.Is(err, ErrWorkspaceNotFound) {
+		t.Fatalf("missing unregister error = %v", err)
 	}
 }
 

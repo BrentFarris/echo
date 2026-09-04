@@ -296,6 +296,22 @@ func (s *Service) StopWorkspaceProcesses(workspaceID string) {
 	stopRuntimes(stopped)
 }
 
+// DeactivateWorkspace stops active runtimes and forgets activation state for
+// a workspace that is no longer registered.
+func (s *Service) DeactivateWorkspace(workspaceID string) {
+	s.mu.Lock()
+	delete(s.activated, workspaceID)
+	var stopped []*serverRuntime
+	for key, current := range s.runtimes {
+		if current.workspace.ID == workspaceID {
+			stopped = append(stopped, current)
+			delete(s.runtimes, key)
+		}
+	}
+	s.mu.Unlock()
+	stopRuntimes(stopped)
+}
+
 func (s *Service) ReconcileActivated() {
 	s.mu.Lock()
 	ids := make([]string, 0, len(s.activated))

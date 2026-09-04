@@ -188,11 +188,20 @@ func TestChatMediaPromptHydrationRoutingAndToolContext(t *testing.T) {
 		t.Fatalf("unexpected attachment-only prompt: %q", got)
 	}
 
-	messages := []llm.Message{{Role: llm.RoleUser, Content: "Review these files."}}
-	turns := []sessions.Turn{{UserMessageIndex: 0, Images: []sessions.MediaAttachment{imageAttachment}, Videos: []sessions.MediaAttachment{videoAttachment}}}
+	messages := []llm.Message{
+		{Role: llm.RoleUser, Content: "Review these files."},
+		{Role: llm.RoleUser, Content: "Use this steering image too."},
+	}
+	turns := []sessions.Turn{{
+		UserMessageIndex: 0, Images: []sessions.MediaAttachment{imageAttachment}, Videos: []sessions.MediaAttachment{videoAttachment},
+		GoalSteering: []sessions.GoalSteering{{UserMessageIndex: 1, Images: []sessions.MediaAttachment{imageAttachment}}},
+	}}
 	hydrated := hydrateChatMediaHistory(messages, turns)
 	if len(hydrated[0].ContentParts) != 3 || hydrated[0].ContentParts[1].ImageURL == nil || hydrated[0].ContentParts[2].VideoURL == nil {
 		t.Fatalf("media history was not rehydrated: %#v", hydrated[0].ContentParts)
+	}
+	if len(hydrated[1].ContentParts) != 2 || hydrated[1].ContentParts[1].ImageURL == nil {
+		t.Fatalf("goal steering media history was not rehydrated: %#v", hydrated[1].ContentParts)
 	}
 	if len(messages[0].ContentParts) != 0 {
 		t.Fatal("hydration mutated persisted messages")

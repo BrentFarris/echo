@@ -1,12 +1,14 @@
 import type * as Monaco from "monaco-editor";
 import { monaco } from "./language";
 import { fromLSPRange, toLSPPosition, toLSPRange, type EchoLSPClient } from "./lspClient";
-import type { LSPCodeAction, LSPRange, LSPTextEdit, LSPWorkspaceEdit } from "./lspTypes";
+import type { LSPCodeAction, LSPCodeLens, LSPRange, LSPTextEdit, LSPWorkspaceEdit } from "./lspTypes";
+import { builtInGoTestLensKeys, codeLensIdentity } from "./codeLensDedupe";
 
 type LSPMarkup = string | { kind?: string; value?: string } | Array<string | { language?: string; value?: string }>;
 type LSPCompletion = Record<string, any>;
 type ProviderCompletion = Monaco.languages.CompletionItem & { lsp?: LSPCompletion; profileId?: string };
 type ProviderCodeAction = Monaco.languages.CodeAction & { lsp?: LSPCodeAction; profileId?: string };
+type ProviderCodeLens = Monaco.languages.CodeLens & { lsp?: LSPCodeLens; profileId?: string };
 
 export function registerLSPProviders(client: EchoLSPClient): Monaco.IDisposable[] {
   const disposables: Monaco.IDisposable[] = [];
@@ -161,6 +163,29 @@ function registerLanguage(client: EchoLSPClient, languageId: string, out: Monaco
     },
   }, { providedCodeActionKinds: ["quickfix", "refactor", "source"] }));
 
+  out.push(monaco.languages.registerCodeLensProvider(languageId, {
+    onDidChange: (listener) => client.onCodeLensRefresh(listener),
+    async provideCodeLenses(model, token) {
+      if (!can(model, "codeLensProvider")) return { lenses: [], dispose() {} };
+      const profileId = profileFor(model)!.id;
+      const lenses = await client.requestForModel<LSPCodeLens[] | null>(model, "textDocument/codeLens", {
+        textDocument: { uri: model.uri.toString() },
+      }, token);
+      let composed = lenses || [];
+      if (model.getLanguageId() === "go" && model.uri.path.toLowerCase().endsWith("_test.go")) {
+        const builtIn = await builtInGoTestLensKeys(model);
+        composed = composed.filter((item) => !item.command || !builtIn.has(codeLensIdentity({ range: item.range, title: item.command.title })));
+      }
+      return { lenses: composed.map((item) => codeLens(item, profileId)), dispose() {} };
+    },
+    async resolveCodeLens(_model, item, token) {
+      const local = item as ProviderCodeLens;
+      if (!local.lsp || !local.profileId || !client.supports(local.profileId, "codeLensProvider.resolveProvider")) return item;
+      const resolved = await client.request<LSPCodeLens>(local.profileId, "codeLens/resolve", local.lsp, token);
+      return codeLens(resolved, local.profileId);
+    },
+  }));
+
   out.push(monaco.languages.registerDocumentFormattingEditProvider(languageId, {
     displayName: "Language Server",
     async provideDocumentFormattingEdits(model, options, token) {
@@ -225,6 +250,18 @@ function codeAction(action: any, profileId: string, preparedEdit?: Monaco.langua
     edit: preparedEdit,
     command: command ? { id: "echo.lsp.executeCommand", title: command.title || command.command, arguments: [profileId, command.command, command.arguments] } : undefined,
     lsp: action, profileId,
+  };
+}
+
+function codeLens(item: LSPCodeLens, profileId: string): ProviderCodeLens {
+  return {
+    range: fromLSPRange(item.range),
+    command: item.command ? {
+      id: "echo.lsp.executeCommand", title: item.command.title || item.command.command,
+      arguments: [profileId, item.command.command, item.command.arguments],
+    } : undefined,
+    lsp: item,
+    profileId,
   };
 }
 

@@ -19,6 +19,19 @@ export type ChatCompletedMessage = ChatCompletionTarget & {
   completedAt: string;
 };
 
+export type GoalAttentionMessage = ChatCompletionTarget & {
+  type: "goal_attention";
+  workspaceName: string;
+  turnId: string;
+  goal: {
+    objective: string;
+    status: "paused" | "blocked";
+    outcome?: string;
+    lastError?: string;
+  };
+  occurredAt: string;
+};
+
 type VisibleSession = ChatCompletionTarget;
 export type CompletionNotificationPermission = NotificationPermission | "unsupported";
 
@@ -94,7 +107,7 @@ function elementIsDisplayed(element: HTMLElement | null): boolean {
   return element !== null;
 }
 
-export function isCompletedChatVisible(message: ChatCompletedMessage): boolean {
+export function isCompletedChatVisible(message: ChatCompletionTarget): boolean {
   if (document.visibilityState !== "visible" || !document.hasFocus()) return false;
   if (!visibleSession
     || visibleSession.workspaceId !== message.workspaceId
@@ -110,7 +123,7 @@ export function isCompletedChatVisible(message: ChatCompletedMessage): boolean {
     && elementIsDisplayed(document.querySelector<HTMLElement>("[data-chat-view-pane='chat']"));
 }
 
-function notificationBody(message: ChatCompletedMessage): string {
+function notificationBody(message: { workspaceName: string; preview?: string }): string {
   const workspace = message.workspaceName?.trim() || "Echo";
   const preview = String(message.preview || "").trim().replace(/\s+/g, " ");
   if (!preview) return workspace;
@@ -124,6 +137,26 @@ function showCompletionNotification(message: ChatCompletedMessage): void {
     const notification = new Notification(message.surface === "code" ? "Code Chat ready" : "Chat ready", {
       body: notificationBody(message),
     });
+    notification.onclick = () => {
+      notification.close();
+      window.focus();
+      window.location.hash = chatCompletionRouteHash(message);
+    };
+  } catch {
+    // Permission and platform support can change while Echo is open.
+  }
+}
+
+function showGoalAttentionNotification(message: GoalAttentionMessage): void {
+  if (!notificationsEnabled || isCompletedChatVisible(message)) return;
+  if (completionNotificationPermission() !== "granted") return;
+  const detail = String(message.goal.lastError || message.goal.outcome || message.goal.objective || "").trim();
+  const body = notificationBody({ workspaceName: message.workspaceName, preview: detail });
+  try {
+    const notification = new Notification(
+      message.surface === "code" ? "Code goal needs attention" : "Goal needs attention",
+      { body },
+    );
     notification.onclick = () => {
       notification.close();
       window.focus();
@@ -162,11 +195,37 @@ function handleChatCompleted(input: object): void {
   showCompletionNotification(message);
 }
 
+function handleGoalAttention(input: object): void {
+  const value = input as Record<string, unknown>;
+  const surface = value.surface === "code" ? "code" : value.surface === "chat" ? "chat" : null;
+  const rawGoal = value.goal && typeof value.goal === "object" ? value.goal as Record<string, unknown> : null;
+  const status = rawGoal?.status === "blocked" ? "blocked" : rawGoal?.status === "paused" ? "paused" : null;
+  if (!surface || !status || typeof value.workspaceId !== "string" || typeof value.chatId !== "string") return;
+  const message: GoalAttentionMessage = {
+    type: "goal_attention",
+    workspaceId: value.workspaceId,
+    workspaceName: typeof value.workspaceName === "string" ? value.workspaceName : "Echo",
+    surface,
+    chatId: value.chatId,
+    turnId: typeof value.turnId === "string" ? value.turnId : "",
+    goal: {
+      objective: typeof rawGoal?.objective === "string" ? rawGoal.objective : "",
+      status,
+      outcome: typeof rawGoal?.outcome === "string" ? rawGoal.outcome : "",
+      lastError: typeof rawGoal?.lastError === "string" ? rawGoal.lastError : "",
+    },
+    occurredAt: typeof value.occurredAt === "string" ? value.occurredAt : "",
+  };
+  playCompletionSound();
+  showGoalAttentionNotification(message);
+}
+
 export async function startCompletionNotifications(): Promise<void> {
   if (!started) {
     started = true;
     ws.on("session_snapshot", handleSessionSnapshot);
     ws.on("chat_completed", handleChatCompleted);
+    ws.on("goal_attention", handleGoalAttention);
   }
   await refreshCompletionNotificationSettings();
 }

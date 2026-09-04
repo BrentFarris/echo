@@ -103,6 +103,24 @@ describe("chat completion notifications", () => {
     expect(created[0].close).toHaveBeenCalledOnce();
   });
 
+  it("uses a needs-attention notification for blocked or error-paused goals", () => {
+    socket.emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-1", surface: "chat", activeChatId: "chat-2",
+    });
+    socket.emit("goal_attention", {
+      type: "goal_attention", workspaceId: "workspace-1", workspaceName: "Echo repo",
+      surface: "chat", chatId: "chat-1", turnId: "turn-goal", occurredAt: "2026-08-19T12:00:00Z",
+      goal: { objective: "Deploy safely", status: "blocked", outcome: "Need the staging target" },
+    });
+
+    expect(play).toHaveBeenCalledOnce();
+    expect(created).toHaveLength(1);
+    expect(created[0].title).toBe("Goal needs attention");
+    expect(created[0].options?.body).toContain("Echo repo — Need the staging target");
+    created[0].onclick?.();
+    expect(window.location.hash).toContain("#/home?workspaceId=workspace-1&chatId=chat-1");
+  });
+
   it("alerts when trajectory is visible or the matching Code Chat dock is closed", () => {
     socket.emit("session_snapshot", {
       type: "session_snapshot", workspaceId: "workspace-1", surface: "chat", activeChatId: "chat-1",

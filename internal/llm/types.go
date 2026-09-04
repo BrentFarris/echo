@@ -303,12 +303,32 @@ func chatTemplateKwargsForSettings(settings Settings) *ChatTemplateKwargs {
 
 func messagesForRequest(settings Settings, messages []Message) []Message {
 	output := removeEmptyAssistantMessages(cloneMessages(messages))
+	output = mergeLeadingSystemMessages(output)
 	normalizeToolCallArguments(output)
 	appendSystemPromptAppendage(output, settings.SystemPromptAppendage)
 	if reasoningEnabled(settings) && settings.ThinkingCorrection {
 		appendThinkingCorrectionToLatestUserMessage(output)
 	}
 	return output
+}
+
+// mergeLeadingSystemMessages emits the single initial system turn required by
+// stricter OpenAI-compatible chat templates. Echo builds independent ephemeral
+// system messages for agent instructions and editor context; providers that
+// only permit a system role at index zero reject the second one even though the
+// system messages are contiguous. Keep the richer internal representation and
+// normalize only the cloned wire request.
+func mergeLeadingSystemMessages(messages []Message) []Message {
+	if len(messages) < 2 || messages[0].Role != RoleSystem || messages[1].Role != RoleSystem {
+		return messages
+	}
+
+	end := 1
+	for end < len(messages) && messages[end].Role == RoleSystem {
+		messages[0].Content = appendPromptText(messages[0].Content, messages[end].Content)
+		end++
+	}
+	return append(messages[:1], messages[end:]...)
 }
 
 func reasoningEnabled(settings Settings) bool {

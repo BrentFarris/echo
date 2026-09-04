@@ -5,6 +5,7 @@ const emptyCatalog: PluginCatalog = { safeMode: false, plugins: [], stages: [] }
 let catalog: PluginCatalog = emptyCatalog;
 let activeWorkspaceId = "";
 let refreshPromise: Promise<PluginCatalog> | null = null;
+let refreshQueued = false;
 
 export function getPluginCatalog(): PluginCatalog { return catalog; }
 export function getPluginWorkspaceId(): string { return activeWorkspaceId; }
@@ -19,14 +20,32 @@ export function getEffectivePluginViews(): Array<{ plugin: CatalogPlugin; view: 
 }
 
 export async function refreshPluginCatalog(): Promise<PluginCatalog> {
+  refreshQueued = true;
   if (refreshPromise) return refreshPromise;
-  refreshPromise = (async () => {
-    const workspaceData = await get("/api/workspaces") as { activeId?: string };
-    activeWorkspaceId = workspaceData.activeId || "";
-    catalog = await get("/api/plugins", { query: { workspaceId: activeWorkspaceId } }) as PluginCatalog;
-    window.dispatchEvent(new CustomEvent("echo:plugin-catalog", { detail: catalog }));
+
+  const run = async (): Promise<PluginCatalog> => {
+    do {
+      refreshQueued = false;
+      const workspaceData = await get("/api/workspaces") as { activeId?: string };
+      activeWorkspaceId = workspaceData.activeId || "";
+      catalog = await get("/api/plugins", { query: { workspaceId: activeWorkspaceId } }) as PluginCatalog;
+      window.dispatchEvent(new CustomEvent("echo:plugin-catalog", { detail: catalog }));
+    } while (refreshQueued);
     return catalog;
-  })().finally(() => { refreshPromise = null; });
+  };
+
+  const active = run();
+  refreshPromise = active.then(
+    (latest) => {
+      refreshPromise = null;
+      return refreshQueued ? refreshPluginCatalog() : latest;
+    },
+    (error) => {
+      refreshPromise = null;
+      if (refreshQueued) return refreshPluginCatalog();
+      throw error;
+    },
+  );
   return refreshPromise;
 }
 

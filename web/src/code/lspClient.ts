@@ -59,6 +59,7 @@ export class EchoLSPClient {
   private diagnostics = new Map<string, Map<string, TrackedDiagnostic>>();
   private providerDisposables: Monaco.IDisposable[] = [];
   private commandDisposable: Monaco.IDisposable | null = null;
+  private codeLensListeners = new Set<(provider: Monaco.languages.CodeLensProvider) => unknown>();
 
   constructor(options: LSPClientOptions) {
     this.options = options;
@@ -90,6 +91,7 @@ export class EchoLSPClient {
     this.providerDisposables = [];
     this.commandDisposable?.dispose();
     this.commandDisposable = null;
+    this.codeLensListeners.clear();
     this.clearAllDiagnostics();
   }
 
@@ -314,6 +316,15 @@ export class EchoLSPClient {
     return this.request(profileId, "workspace/executeCommand", { command, arguments: args || [] });
   }
 
+  onCodeLensRefresh(listener: (provider: Monaco.languages.CodeLensProvider) => unknown): Monaco.IDisposable {
+    this.codeLensListeners.add(listener);
+    return { dispose: () => this.codeLensListeners.delete(listener) };
+  }
+
+  refreshCodeLenses(): void {
+    for (const listener of [...this.codeLensListeners]) listener(undefined as unknown as Monaco.languages.CodeLensProvider);
+  }
+
   async workspaceSymbols(query: string): Promise<Array<{ profileId: string; symbols: any[] }>> {
     const profiles = this.profiles.filter((profile) => this.supports(profile.id, "workspaceSymbolProvider"));
     return Promise.all(profiles.map(async (profile) => ({
@@ -469,6 +480,7 @@ export class EchoLSPClient {
       // Trigger characters and other provider metadata arrive with the
       // initialize result. Re-register adapters once that metadata is live.
       this.registerProviders();
+      this.refreshCodeLenses();
     }
     if (status.state !== "running") {
       for (const tracked of this.tracked.values()) {
@@ -485,6 +497,14 @@ export class EchoLSPClient {
   }
 
   private handleNotification(profileId: string, method: string, params: any): void {
+    if (method === "window/showMessage") {
+      this.options.onMessage(String(params?.message || "Language server message"), Number(params?.type || 3) <= 2);
+      return;
+    }
+    if (method === "window/logMessage") {
+      if (Number(params?.type || 4) <= 2) this.options.onMessage(String(params?.message || "Language server error"));
+      return;
+    }
     if (method !== "textDocument/publishDiagnostics") return;
     const uri = String(params?.uri || "");
     if (!uri) return;
@@ -508,6 +528,11 @@ export class EchoLSPClient {
   }
 
   private async handleServerRequest(message: Record<string, any>): Promise<void> {
+    if (message.method === "workspace/codeLens/refresh") {
+      this.refreshCodeLenses();
+      this.send({ type: "lsp_server_response", id: message.id, profileId: message.profileId, result: null });
+      return;
+    }
     if (message.method !== "workspace/applyEdit") {
       this.send({ type: "lsp_server_response", id: message.id, profileId: message.profileId, error: { code: -32601, message: "Unsupported server request" } });
       return;

@@ -30,7 +30,7 @@ func TestAgentModeToolProviderPersistsPerToolPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reloaded) != 3 || reloaded[2].ID != created.ID {
+	if len(reloaded) != 4 || reloaded[3].ID != created.ID {
 		t.Fatalf("mode did not persist: %+v", reloaded)
 	}
 }
@@ -71,7 +71,7 @@ func TestChatToolContextCreatesWorkspaceAgentMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(modes) != 3 || modes[2].Name != "Tool-created reviewer" {
+	if len(modes) != 4 || modes[3].Name != "Tool-created reviewer" {
 		t.Fatalf("tool-created mode did not persist: %+v", modes)
 	}
 }

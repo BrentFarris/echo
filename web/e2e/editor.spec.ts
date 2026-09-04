@@ -16,15 +16,41 @@ let releaseScrollStreamChunk: (() => void) | null = null;
 
 async function dragToTreeRow(page: Page, source: Locator, target: Locator): Promise<void> {
   await expect(source).toHaveAttribute("draggable", "true");
+  await expect(source).toBeVisible();
+  await expect(target).toBeVisible();
   const sourceBox = await source.boundingBox();
   const targetBox = await target.boundingBox();
   expect(sourceBox).not.toBeNull();
   expect(targetBox).not.toBeNull();
   await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
   await page.mouse.down();
-  await page.mouse.move(sourceBox!.x + sourceBox!.width / 2 + 8, sourceBox!.y + sourceBox!.height / 2, { steps: 2 });
-  await page.mouse.move(targetBox!.x + targetBox!.width / 2, targetBox!.y + targetBox!.height / 2, { steps: 8 });
-  await page.mouse.up();
+  try {
+    await page.mouse.move(sourceBox!.x + sourceBox!.width / 2 + 8, sourceBox!.y + sourceBox!.height / 2, { steps: 2 });
+    await page.mouse.move(targetBox!.x + targetBox!.width / 2, targetBox!.y + targetBox!.height / 2, { steps: 8 });
+  } finally {
+    await page.mouse.up();
+  }
+}
+
+async function dragTabTo(page: Page, source: Locator, target: Locator, position: "before" | "after"): Promise<void> {
+  await expect(source).toHaveAttribute("draggable", "true");
+  await expect(source).toBeVisible();
+  await expect(target).toBeVisible();
+  const sourceBox = await source.boundingBox();
+  const targetBox = await target.boundingBox();
+  expect(sourceBox).not.toBeNull();
+  expect(targetBox).not.toBeNull();
+  await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
+  await page.mouse.down();
+  try {
+    await page.mouse.move(sourceBox!.x + sourceBox!.width / 2 + 8, sourceBox!.y + sourceBox!.height / 2, { steps: 2 });
+    const targetX = targetBox!.x + targetBox!.width * (position === "before" ? 0.25 : 0.75);
+    await page.mouse.move(targetX, targetBox!.y + targetBox!.height / 2, { steps: 8 });
+    await expect(page.locator(".code-tab.is-dragging")).toHaveCount(1);
+    await expect(page.locator(`.code-tab.is-drop-${position}`)).toHaveCount(1);
+  } finally {
+    await page.mouse.up();
+  }
 }
 
 test.beforeAll(async () => {
@@ -315,6 +341,10 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   // Explorer drag/drop moves files into folders while preserving the open tab.
   const renamedBeforeMove = page.locator(".code-tree-row", { hasText: "renamed.py" });
   const workspaceRoot = page.locator('.code-tree-row[data-tree-root="true"]').first();
+  const explorerTree = page.locator("[data-code-tree]:visible").first();
+  await explorerTree.evaluate((element) => { element.scrollTop = 0; });
+  await expect(workspaceRoot).toBeVisible();
+  await expect(renamedBeforeMove).toBeVisible();
   await dragToTreeRow(page, renamedBeforeMove, workspaceRoot);
   await expect.poll(() => existsSync(join(state.workspace, "renamed.py"))).toBe(true);
   await expect.poll(() => existsSync(join(state.workspace, "nested", "renamed.py"))).toBe(false);
@@ -357,6 +387,27 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   // Switching existing tabs updates both Monaco and the tab strip's active state.
   const mainTab = page.getByRole("tab", { name: /main\.go/ });
   const renamedTab = page.getByRole("tab", { name: /renamed\.py/ });
+  const ensureMainTab = async () => {
+    try {
+      await mainTab.waitFor({ state: "visible", timeout: 2_000 });
+      return;
+    } catch {
+      // Route transitions and reloads restore persisted tabs asynchronously.
+      // If main.go was only a preview and was not persisted, reopen it through
+      // the visible Explorer instead of racing the global keyboard handler.
+    }
+
+    const tree = page.locator("[data-code-tree]:visible").first();
+    await expect(tree).toBeVisible();
+    const root = tree.locator('.code-tree-row[data-tree-root="true"]').first();
+    await expect(root).toBeVisible();
+    if (await root.getAttribute("aria-expanded") !== "true") await root.click();
+    await tree.evaluate((element) => { element.scrollTop = 0; });
+    const mainFile = tree.locator(".code-tree-label", { hasText: "main.go" });
+    await expect(mainFile).toBeVisible();
+    await mainFile.dblclick();
+    await expect(mainTab).toBeVisible();
+  };
   await renamedTab.click();
   await expect(renamedTab).toHaveAttribute("aria-selected", "true");
   await expect(renamedTab).toHaveClass(/is-active/);
@@ -474,7 +525,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.keyboard.up("Control");
   await page.getByRole("button", { name: "Explorer", exact: true }).click();
   await expect(page).toHaveURL(/#\/code$/);
-  if (await mainTab.count() === 0) await page.locator(".code-tree-label", { hasText: "main.go" }).dblclick();
+  await ensureMainTab();
   await mainTab.click();
   await expect(page.locator(".view-lines")).toContainText("package main");
 
@@ -595,6 +646,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
 
   await page.keyboard.press("Control+w");
   await page.getByRole("button", { name: "Discard", exact: true }).click();
+  await ensureMainTab();
   await mainTab.click();
   await expect(page.locator(".view-lines")).toContainText("package main");
 
@@ -839,6 +891,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.keyboard.type("// saved by Playwright");
   await page.keyboard.press("Control+s");
   await expect.poll(() => readFileSync(mainPath, "utf8")).toContain("saved by Playwright");
+  await expect(mainTab.locator(".code-tab-dirty")).not.toHaveClass(/is-visible/);
 
   writeFileSync(mainPath, "package main\n\n// external reload\nfunc main() {}\n", "utf8");
   await expect(page.locator(".view-lines")).toContainText("external reload");
@@ -1044,6 +1097,121 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.keyboard.press("Escape");
   await expect(page.locator(".workspace-dropdown-anchor")).toHaveCount(0);
   await expect(finalWorkspace).toBeFocused();
+});
+
+test("reorders code editor tabs and restores their persisted order", async ({ page }) => {
+  test.setTimeout(120_000);
+  const state = JSON.parse(readFileSync(resolve(directory, "../test-results/e2e-runtime/state.json"), "utf8")) as {
+    setupCode: string;
+    workspace: string;
+  };
+  const tabWorkspace = join(dirname(state.workspace), "tab-order-workspace");
+  mkdirSync(tabWorkspace, { recursive: true });
+  for (let index = 0; index < 18; index++) {
+    writeFileSync(join(tabWorkspace, `tab-${String(index).padStart(2, "0")}.ts`), `export const tabIndex = ${index};\n`, "utf8");
+  }
+
+  await page.goto("/");
+  if (await page.getByRole("heading", { name: "Secure this Echo server" }).isVisible()) {
+    await page.getByLabel("Setup code").fill(state.setupCode);
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByLabel("Confirm password").fill(password);
+    await page.getByLabel("Device name").fill("Playwright Tab Order");
+    await page.getByRole("button", { name: "Finish setup" }).click();
+  } else {
+    await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByLabel("Device name").fill("Playwright Tab Order");
+    await page.getByRole("button", { name: "Sign in" }).click();
+  }
+  await expect(page.locator(".app-shell")).toBeVisible();
+
+  const previousWorkspaceId = await page.evaluate(async ({ workspacePath, baselinePath }) => {
+    const request = async (path: string, method: string, body: unknown) => {
+      const response = await fetch(path, {
+        method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+      return payload.data;
+    };
+    const currentResponse = await fetch("/api/workspaces");
+    const currentPayload = await currentResponse.json();
+    let previousActiveId = currentPayload.data?.activeId as string | null;
+    if (!previousActiveId) {
+      const baseline = await request("/api/workspaces", "POST", { name: "E2E Workspace", mainPath: baselinePath, folders: [] });
+      previousActiveId = baseline.workspace.id as string;
+    }
+    const created = await request("/api/workspaces", "POST", { name: "Tab Order Workspace", mainPath: workspacePath, folders: [] });
+    await request("/api/workspaces/active", "PUT", { id: created.workspace.id });
+    return previousActiveId;
+  }, { workspacePath: tabWorkspace, baselinePath: state.workspace });
+
+  try {
+    await page.goto("/#/code");
+    await expect(page.locator(".code-app-shell")).toBeVisible();
+    const openPinnedTab = async (name: string) => {
+      const row = page.locator(".code-tree-label", { hasText: name });
+      await row.click();
+      const tab = page.getByRole("tab", { name: new RegExp(name.replace(".", "\\.")) });
+      await expect(tab).toBeVisible();
+      await tab.dblclick();
+    };
+    await openPinnedTab("tab-00.ts");
+    await openPinnedTab("tab-01.ts");
+    await openPinnedTab("tab-02.ts");
+
+    const tabTitles = page.locator("[data-tabs-list] > .code-tab > .code-tab-title");
+    const firstTab = page.getByRole("tab", { name: /tab-00\.ts/ });
+    const activeTab = page.getByRole("tab", { name: /tab-01\.ts/ });
+    const lastTab = page.getByRole("tab", { name: /tab-02\.ts/ });
+    await activeTab.click();
+    await expect(page.locator(".view-lines")).toContainText("tabIndex = 1");
+
+    await dragTabTo(page, firstTab, lastTab, "after");
+    await expect(tabTitles).toHaveText(["tab-01.ts", "tab-02.ts", "tab-00.ts"]);
+    await expect(activeTab).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator(".view-lines")).toContainText("tabIndex = 1");
+    await expect(page.locator(".code-tab.is-dragging, .code-tab.is-drop-before, .code-tab.is-drop-after")).toHaveCount(0);
+
+    await page.waitForTimeout(900);
+    await page.reload();
+    await expect(tabTitles).toHaveText(["tab-01.ts", "tab-02.ts", "tab-00.ts"]);
+    await expect(activeTab).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator(".view-lines")).toContainText("tabIndex = 1");
+
+    for (let index = 3; index < 18; index++) await openPinnedTab(`tab-${String(index).padStart(2, "0")}.ts`);
+    const tabScroller = page.locator("[data-code-tabs]");
+    await expect.poll(() => tabScroller.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+    await tabScroller.evaluate((element) => { element.scrollLeft = 0; });
+    const overflowSource = page.getByRole("tab", { name: /tab-01\.ts/ });
+    const sourceBox = await overflowSource.boundingBox();
+    const scrollerBox = await tabScroller.boundingBox();
+    expect(sourceBox).not.toBeNull();
+    expect(scrollerBox).not.toBeNull();
+    await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
+    await page.mouse.down();
+    try {
+      await page.mouse.move(sourceBox!.x + sourceBox!.width / 2 + 8, sourceBox!.y + sourceBox!.height / 2, { steps: 2 });
+      await page.mouse.move(scrollerBox!.x + scrollerBox!.width - 8, scrollerBox!.y + scrollerBox!.height / 2, { steps: 8 });
+      await expect.poll(() => tabScroller.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+      const firstScrollLeft = await tabScroller.evaluate((element) => element.scrollLeft);
+      await page.waitForTimeout(250);
+      await expect.poll(() => tabScroller.evaluate((element) => element.scrollLeft)).toBeGreaterThan(firstScrollLeft);
+    } finally {
+      await page.mouse.up();
+    }
+    await expect(page.locator(".code-tab.is-dragging, .code-tab.is-drop-before, .code-tab.is-drop-after")).toHaveCount(0);
+  } finally {
+    if (previousWorkspaceId) {
+      await page.evaluate(async (id) => {
+        const response = await fetch("/api/workspaces/active", {
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }),
+        });
+        if (!response.ok) throw new Error(`Could not restore active workspace: HTTP ${response.status}`);
+      }, previousWorkspaceId);
+    }
+  }
 });
 
 test("drags an open explorer file into another folder", async ({ page }) => {
@@ -1477,4 +1645,195 @@ test("runs the deterministic fake language server through Monaco and settings", 
     const data = (await response.json()).data;
     return data.statuses.find((status: { profileId: string }) => status.profileId === "fake-e2e-lsp")?.state;
   }, workspaceId)).toBe("running");
+});
+
+test("debugs through a deterministic DAP adapter and reconnects the workbench", async ({ page }) => {
+  test.setTimeout(120_000);
+  const state = JSON.parse(readFileSync(resolve(directory, "../test-results/e2e-runtime/state.json"), "utf8")) as {
+    setupCode: string;
+    workspace: string;
+    nodePath: string;
+  };
+  const fakeDAPPath = resolve(directory, "fake-dap.mjs");
+  writeFileSync(join(state.workspace, "main.go"), "package main\n\nfunc main() {\n\tTarget()\n}\n", "utf8");
+  writeFileSync(join(state.workspace, "definition.go"), `package main
+
+func Target() {}
+
+func CoverageBranch(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+`, "utf8");
+  writeFileSync(join(state.workspace, "sample_test.go"), `package main
+
+import (
+	"flag"
+	"testing"
+	"time"
+)
+
+func TestPass(t *testing.T) {
+	if CoverageBranch(true) != 1 {
+		t.Fatal("unexpected branch result")
+	}
+}
+
+func TestFail(t *testing.T) {
+	if flag.Lookup("test.run").Value.String() == "^TestFail$" {
+		t.Fatal("intentional failure")
+	}
+}
+
+func TestSubtests(t *testing.T) {
+	t.Run("nested name", func(child *testing.T) {})
+}
+
+func TestSlow(t *testing.T) {
+	time.Sleep(5 * time.Second)
+}
+`, "utf8");
+
+  await page.goto("/");
+  if (await page.getByRole("heading", { name: "Secure this Echo server" }).isVisible()) {
+    await page.getByLabel("Setup code").fill(state.setupCode);
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByLabel("Confirm password").fill(password);
+    await page.getByLabel("Device name").fill("Playwright DAP");
+    await page.getByRole("button", { name: "Finish setup" }).click();
+  } else {
+    await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByLabel("Device name").fill("Playwright DAP");
+    await page.getByRole("button", { name: "Sign in" }).click();
+  }
+  await expect(page.locator(".app-shell")).toBeVisible();
+
+  const workspaceId = await page.evaluate(async ({ command, script, workspacePath }) => {
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      const response = await fetch(path, {
+        method, headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+      return payload.data;
+    };
+    const workspaceData = await request("/api/workspaces");
+    let workspace = (workspaceData.workspaces || []).find((candidate: { mainPath: string }) => candidate.mainPath === workspacePath);
+    if (!workspace) workspace = (await request("/api/workspaces", "POST", { name: "DAP E2E Workspace", mainPath: workspacePath, folders: [] })).workspace;
+    await request("/api/workspaces/active", "PUT", { id: workspace.id });
+    const profiles = await request("/api/debug/adapter-profiles");
+    if (!(profiles.profiles || []).some((profile: { id: string }) => profile.id === "fake-e2e-dap")) {
+      await request("/api/debug/adapter-profiles", "POST", { profile: {
+        id: "fake-e2e-dap", name: "Fake E2E DAP", adapterId: "go",
+        command, args: [script], environment: {}, selectors: [{ languageId: "go", extensions: [".go"] }],
+        transport: { kind: "stdio", startupTimeoutMs: 15000 },
+      } });
+    }
+    await request(`/api/workspaces/${encodeURIComponent(workspace.id)}/debug/config`, "PUT", {
+      version: 1, enabledAdapterProfileIds: ["fake-e2e-dap"], overrides: {},
+      configurations: [{
+        id: "fake-main", name: "Fake: Main", adapterProfileId: "fake-e2e-dap", request: "launch",
+        arguments: { program: "${file}" },
+      }], compounds: [], inputs: [],
+    });
+    return workspace.id as string;
+  }, { command: state.nodePath, script: fakeDAPPath, workspacePath: state.workspace });
+
+  await page.goto("/#/code");
+  await expect(page.locator(".code-tree-label", { hasText: "main.go" })).toBeVisible();
+  await page.locator(".code-tree-label", { hasText: "main.go" }).click();
+  await page.locator(".view-line", { hasText: "Target()" }).click();
+  await page.keyboard.press("F9");
+  await expect(page.locator(".cgmr.echo-debug-breakpoint")).toBeVisible();
+
+  await page.keyboard.press("Control+5");
+  await expect(page.getByLabel("Debug configuration")).toHaveValue("fake-main");
+  await page.keyboard.press("F5");
+  await expect(page.locator(".debug-session-row .debug-status.is-stopped")).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator(".debug-variable", { hasText: "x" }).first()).toContainText("42");
+  await expect(page.getByRole("button", { name: /^main main\.go:/ })).toBeVisible();
+
+  await page.getByRole("button", { name: "Add Watch Expression" }).click();
+  const watchExpression = page.getByRole("textbox", { name: "Expression", exact: true });
+  await watchExpression.fill("x");
+  await watchExpression.press("Enter");
+  await expect(page.locator(".debug-watch-row", { hasText: "x" })).toContainText("42");
+
+  await page.getByRole("tab", { name: "Debug Console" }).click();
+  const repl = page.getByLabel("Debug Console expression");
+  await repl.fill("x");
+  await repl.press("Enter");
+  await expect(page.locator(".debug-console-entry", { hasText: "42" })).toBeVisible();
+
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("F10");
+  await expect(page.locator(".debug-session-row .debug-status.is-stopped")).toBeVisible();
+  await expect(page.getByRole("button", { name: /^main main\.go:/ })).toContainText("5");
+
+  await page.reload();
+  await expect(page.locator(".code-app-shell")).toBeVisible();
+  await expect(page.locator(".debug-session-row .debug-status.is-stopped")).toBeVisible({ timeout: 20_000 });
+  const snapshot = await page.evaluate(async (id) => {
+    const response = await fetch(`/api/workspaces/${encodeURIComponent(id)}/debug/snapshot`);
+    return (await response.json()).data.snapshot;
+  }, workspaceId);
+  expect(snapshot.sessions.some((session: { status: string; configuration: string }) => session.status === "stopped" && session.configuration === "Fake: Main")).toBe(true);
+
+  await page.locator(".debug-floating-toolbar [data-debug-action=stop]").click();
+  await expect(page.locator(".debug-floating-toolbar")).toHaveCount(0);
+
+  // Built-in Go CodeLens runs without gopls and uses the same bottom workbench
+  // and transient DAP session exercised above.
+  await page.getByRole("button", { name: "Explorer", exact: true }).click();
+  await expect(page.locator(".code-tree-label", { hasText: "sample_test.go" })).toBeVisible();
+  await page.locator(".code-tree-label", { hasText: "sample_test.go" }).click();
+  await expect(page.getByText("run package tests", { exact: true })).toBeVisible();
+  await expect(page.getByText("run file tests", { exact: true })).toBeVisible();
+  const runLenses = page.getByText("run test", { exact: true });
+  const debugLenses = page.getByText("debug test", { exact: true });
+  await expect(runLenses).toHaveCount(5);
+  await expect(debugLenses).toHaveCount(5);
+
+  await runLenses.first().click();
+  await expect(page.getByRole("tab", { name: "Test Output" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".go-test-status")).toContainText("Passed", { timeout: 30_000 });
+  await expect(page.locator("[data-test-output-text]")).toContainText("go test");
+
+  await runLenses.nth(1).click();
+  await expect(page.locator(".go-test-status")).toContainText("Failed", { timeout: 30_000 });
+  await expect(page.locator("[data-test-output-text]")).toContainText("intentional failure");
+
+  await page.getByRole("button", { name: "Close terminal" }).click();
+  await runLenses.last().click();
+  await expect(page.locator(".go-test-status")).toContainText("Running");
+  await runLenses.first().click();
+  await expect(page.locator(".go-test-status")).toContainText("Passed", { timeout: 30_000 });
+  await expect(page.locator("[data-test-output-text]")).toContainText("^TestPass$");
+
+  await page.getByText("run package tests", { exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Test Output" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".go-test-status")).toContainText("Passed", { timeout: 30_000 });
+
+  await debugLenses.first().click();
+  await expect(page.locator(".debug-session-row .debug-status.is-stopped")).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator(".debug-session-row", { hasText: "Debug Test: TestPass" })).toBeVisible();
+  await page.locator(".debug-floating-toolbar [data-debug-action=stop]").click();
+
+  await page.getByRole("button", { name: "Explorer", exact: true }).click();
+  await page.locator(".code-tree-label", { hasText: "definition.go" }).click();
+  await expect(page.locator(".view-lines .go-coverage-covered")).not.toHaveCount(0);
+  await expect(page.locator(".view-lines .go-coverage-uncovered")).not.toHaveCount(0);
+
+  await page.locator(".code-tree-label", { hasText: "sample_test.go" }).click();
+  await expect(page.locator(".view-lines .go-coverage-covered, .view-lines .go-coverage-uncovered")).toHaveCount(0);
+  await page.locator(".code-tree-label", { hasText: "definition.go" }).click();
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Control+s");
+  await expect(page.locator(".view-lines .go-coverage-covered, .view-lines .go-coverage-uncovered")).toHaveCount(0);
 });

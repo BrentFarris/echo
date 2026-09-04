@@ -1,7 +1,7 @@
 export const terminalInputChunkSize = 48 * 1024;
 const encoder = new TextEncoder();
 
-export type TerminalPreferenceValue = { open: boolean; maximized: boolean; height: number };
+export type TerminalPreferenceValue = { open: boolean; maximized: boolean; height: number; activePanel?: string };
 export type TerminalSequenceAction = "apply" | "ignore" | "resync";
 
 export function splitTerminalInput(value: string, limit = terminalInputChunkSize): string[] {
@@ -52,13 +52,14 @@ export function parseTerminalPreferences(
   const result: Record<string, TerminalPreferenceValue> = {};
   for (const [workspaceId, value] of Object.entries(parsed)) {
     if (!workspaceId || !value || typeof value !== "object" || Array.isArray(value)) continue;
-    const candidate = value as { open?: unknown; maximized?: unknown; height?: unknown };
+    const candidate = value as { open?: unknown; maximized?: unknown; height?: unknown; activePanel?: unknown };
     const maximized = candidate.maximized === true;
     const numericHeight = typeof candidate.height === "number" ? candidate.height : 280;
     result[workspaceId] = {
       open: candidate.open === true || maximized,
       maximized,
       height: clampTerminalHeight(Number.isFinite(numericHeight) ? numericHeight : 280, viewportHeight),
+      ...(typeof candidate.activePanel === "string" && candidate.activePanel ? { activePanel: candidate.activePanel } : {}),
     };
   }
   return result;

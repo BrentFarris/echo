@@ -378,3 +378,113 @@ func TestSetActiveWorkspace(t *testing.T) {
 		t.Fatalf("expected 400 for unknown id, got %d", badRR.Code)
 	}
 }
+
+func TestUpdateWorkspaceAPI(t *testing.T) {
+	s, directory := newTestServer(t)
+	main := filepath.Join(directory, "main")
+	extra := filepath.Join(directory, "extra")
+	for _, folder := range []string{main, extra} {
+		if err := os.MkdirAll(folder, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	workspace, err := s.workspaces.Create(workspaces.CreateRequest{
+		Name: "Before", MainPath: main, Icon: &workspaces.Icon{Data: []byte("old"), Ext: "png"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"name": "After", "folders": []string{extra},
+		"icon": map[string]any{"data": []byte("new"), "ext": "webp"},
+	})
+	request := httptest.NewRequest(http.MethodPut, "/api/workspaces/"+workspace.ID, strings.NewReader(string(payload)))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	s.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data struct {
+			Workspace workspaces.Workspace `json:"workspace"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	updated := response.Data.Workspace
+	if updated.ID != workspace.ID || updated.Name != "After" || updated.IconExt != "webp" || len(updated.Folders) != 2 || updated.Folders[1] != extra {
+		t.Fatalf("unexpected update response: %+v", updated)
+	}
+	icon := doRequest(t, s, http.MethodGet, "/api/workspaces/"+workspace.ID+"/icon")
+	if icon.Code != http.StatusOK || icon.Body.String() != "new" || icon.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("updated icon response: status=%d cache=%q body=%q", icon.Code, icon.Header().Get("Cache-Control"), icon.Body.String())
+	}
+}
+
+func TestDeleteWorkspaceAPISelectsNextAndRetainsFiles(t *testing.T) {
+	s, directory := newTestServer(t)
+	created := make([]workspaces.Workspace, 0, 2)
+	for _, name := range []string{"First", "Second"} {
+		main := filepath.Join(directory, strings.ToLower(name))
+		if err := os.MkdirAll(main, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		workspace, err := s.workspaces.Create(workspaces.CreateRequest{Name: name, MainPath: main})
+		if err != nil {
+			t.Fatal(err)
+		}
+		created = append(created, workspace)
+	}
+	if err := s.workspaces.SetActive(created[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	recorder := doRequest(t, s, http.MethodDelete, "/api/workspaces/"+created[0].ID)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data struct {
+			DeletedID              string `json:"deletedId"`
+			ActiveID               string `json:"activeId"`
+			WorkspaceFilesRetained bool   `json:"workspaceFilesRetained"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Data.DeletedID != created[0].ID || response.Data.ActiveID != created[1].ID || !response.Data.WorkspaceFilesRetained {
+		t.Fatalf("unexpected delete response: %+v", response.Data)
+	}
+	if _, err := os.Stat(filepath.Join(created[0].MainPath, ".echo", "workspace.json")); err != nil {
+		t.Fatalf("workspace config was removed: %v", err)
+	}
+	list := doRequest(t, s, http.MethodGet, "/api/workspaces")
+	if strings.Contains(list.Body.String(), created[0].ID) || !strings.Contains(list.Body.String(), created[1].ID) {
+		t.Fatalf("unexpected workspace list: %s", list.Body.String())
+	}
+}
+
+func TestDeleteUnavailableWorkspaceAPI(t *testing.T) {
+	s, directory := newTestServer(t)
+	main := filepath.Join(directory, "unavailable")
+	if err := os.MkdirAll(main, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := s.workspaces.Create(workspaces.CreateRequest{Name: "Unavailable", MainPath: main})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(main); err != nil {
+		t.Fatal(err)
+	}
+	recorder := doRequest(t, s, http.MethodDelete, "/api/workspaces/"+workspace.ID)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected unavailable workspace deletion to succeed, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	missing := doRequest(t, s, http.MethodDelete, "/api/workspaces/missing")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing workspace, got %d: %s", missing.Code, missing.Body.String())
+	}
+}

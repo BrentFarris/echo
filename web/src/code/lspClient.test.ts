@@ -153,6 +153,26 @@ describe("LSP diagnostic decorations", () => {
   });
 });
 
+describe("LSP CodeLens refresh", () => {
+  it("invalidates providers and acknowledges workspace refresh requests", async () => {
+    const client = new EchoLSPClient({
+      workspaceId: "workspace", initial: { config: {}, profiles: [], statuses: [] },
+      prepareWorkspaceEdit: vi.fn(), applyWorkspaceEdit: vi.fn(async () => true),
+      isURIAllowed: () => true, diagnosticKey: (candidate) => candidate, prepareURI: async () => true,
+      onDocumentState: vi.fn(), onDiagnosticsChange: vi.fn(), onMessage: vi.fn(),
+    });
+    const listener = vi.fn();
+    client.onCodeLensRefresh(listener);
+    const send = vi.spyOn(client as any, "send");
+
+    await (client as any).handleServerRequest({ id: "refresh-1", profileId: "gopls", method: "workspace/codeLens/refresh", params: {} });
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledWith({ type: "lsp_server_response", id: "refresh-1", profileId: "gopls", result: null });
+    client.dispose();
+  });
+});
+
 describe("LSP save actions", () => {
   it("organizes imports before formatting when format on save is enabled", async () => {
     const workspaceEdit = { changes: { "file:///workspace/main.go": [{

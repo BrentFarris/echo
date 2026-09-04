@@ -93,6 +93,185 @@ func TestCompleteDoesNotLogGeneratedContextSummary(t *testing.T) {
 	}
 }
 
+func TestCompleteFallsBackToStreamingForContextSummaryTimeout(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Stream bool `json:"stream"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		switch calls.Add(1) {
+		case 1:
+			if payload.Stream {
+				t.Error("first completion attempt must be non-streaming")
+			}
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = fmt.Fprint(w, `{"error":"upstream timed out"}`)
+		default:
+			if !payload.Stream {
+				t.Error("fallback completion attempt must be streaming")
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprint(w, `data: {"choices":[{"delta":{"role":"assistant","content":"## Goal\n"}}]}` + "\n\n")
+			_, _ = fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"Continue the build."},"finish_reason":null}]}` + "\n\n")
+			_, _ = fmt.Fprint(w, `data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}}` + "\n\n")
+			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		}
+	}))
+	defer server.Close()
+
+	settings := DefaultSettings()
+	settings.Endpoint = server.URL + "/v1"
+	settings.Endpoints[0].Endpoint = settings.Endpoint
+	client, err := NewClient(settings)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	request, err := NewChatRequest(settings, []Message{
+		{Role: RoleSystem, Name: "echo-context-summary", Content: "summarize"},
+		{Role: RoleUser, Content: "history"},
+	})
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	response, err := client.Complete(context.Background(), request)
+	if err != nil {
+		t.Fatalf("complete with streaming fallback: %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("expected one non-streaming attempt plus one streamed retry, got %d calls", calls.Load())
+	}
+	if len(response.Choices) != 1 || response.Choices[0].Message.Content != "## Goal\nContinue the build." {
+		t.Fatalf("streamed fallback did not assemble the summary: %#v", response)
+	}
+	if response.Usage == nil || response.Usage.TotalTokens != 14 {
+		t.Fatalf("streamed fallback lost usage: %#v", response.Usage)
+	}
+}
+
+func TestCompleteFallsBackToStreamingForEmptyCompressionContent(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Stream bool `json:"stream"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		switch calls.Add(1) {
+		case 1:
+			if payload.Stream {
+				t.Error("first completion attempt must be non-streaming")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"stop"}]}`)
+		default:
+			if !payload.Stream {
+				t.Error("fallback completion attempt must be streaming")
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"## Goal\nFix the build."}}]}` + "\n\n")
+			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		}
+	}))
+	defer server.Close()
+
+	settings := DefaultSettings()
+	settings.Endpoint = server.URL + "/v1"
+	settings.Endpoints[0].Endpoint = settings.Endpoint
+	client, err := NewClient(settings)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	request, err := NewChatRequest(settings, []Message{
+		{Role: RoleSystem, Name: "echo-context-summary", Content: "summarize"},
+		{Role: RoleUser, Content: "history"},
+	})
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	response, err := client.Complete(context.Background(), request)
+	if err != nil {
+		t.Fatalf("complete with empty-content fallback: %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("expected one non-streaming attempt plus one streamed retry, got %d calls", calls.Load())
+	}
+	if len(response.Choices) != 1 || response.Choices[0].Message.Content != "## Goal\nFix the build." {
+		t.Fatalf("streamed fallback did not assemble the summary: %#v", response)
+	}
+}
+
+func TestCompleteDoesNotRetryNonCompressionOrCanceledRequests(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = fmt.Fprint(w, `{"error":"upstream timed out"}`)
+	}))
+	defer server.Close()
+
+	settings := DefaultSettings()
+	settings.Endpoint = server.URL + "/v1"
+	settings.Endpoints[0].Endpoint = settings.Endpoint
+	client, err := NewClient(settings)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	plainRequest, err := NewChatRequest(settings, []Message{{Role: RoleUser, Content: "hello"}})
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if _, err := client.Complete(context.Background(), plainRequest); err == nil {
+		t.Fatal("expected the non-streaming failure to surface")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("non-compression request must not be retried: %d calls", calls.Load())
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	compressionRequest, err := NewChatRequest(settings, []Message{
+		{Role: RoleSystem, Name: "echo-context-summary", Content: "summarize"},
+		{Role: RoleUser, Content: "history"},
+	})
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if _, err := client.Complete(cancelled, compressionRequest); err == nil {
+		t.Fatal("expected the canceled request to fail")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("canceled compression request must not be retried: %d calls", calls.Load())
+	}
+}
+
+func TestIsRetryableCompletionError(t *testing.T) {
+	for _, message := range []string{
+		`send chat request: Post "http://10.0.0.11:30000/v1/chat/completions": context deadline exceeded`,
+		"read chat response: EOF",
+		"llm endpoint returned 502 Bad Gateway: upstream timeout",
+	} {
+		if !isRetryableCompletionError(fmt.Errorf("%s", message)) {
+			t.Fatalf("expected completion error to be retryable: %s", message)
+		}
+	}
+	for _, message := range []string{
+		"operation canceled",
+		`generate context summary: endpoint returned an empty summary`,
+		`llm endpoint returned 401 Unauthorized: invalid api key`,
+	} {
+		if isRetryableCompletionError(fmt.Errorf("%s", message)) {
+			t.Fatalf("expected completion error to be non-retryable: %s", message)
+		}
+	}
+}
+
 func TestStreamChatCachesUnsupportedUsageOption(t *testing.T) {
 	var calls atomic.Int32
 	usageOptions := make(chan bool, 3)
@@ -243,6 +422,37 @@ func TestNewChatRequestAppendsModelInstructionsToSystemPrompt(t *testing.T) {
 	}
 	if messages[0].Content != "Be helpful." {
 		t.Fatalf("expected source system prompt to remain unchanged, got %q", messages[0].Content)
+	}
+}
+
+func TestNewChatRequestMergesLeadingSystemMessages(t *testing.T) {
+	settings := DefaultSettings()
+	settings.Endpoint = "https://example.test/v1"
+	messages := []Message{
+		{Role: RoleSystem, Name: "echo-agent-mode", Content: "Be helpful."},
+		{Role: RoleSystem, Name: "echo-code-context", Content: "Selected code: answer := 42"},
+		{Role: RoleUser, Content: "Explain this selection."},
+	}
+
+	request, err := NewChatRequest(settings, messages)
+	if err != nil {
+		t.Fatalf("new chat request: %v", err)
+	}
+
+	if len(request.Messages) != 2 {
+		t.Fatalf("expected one system message and one user message, got %#v", request.Messages)
+	}
+	if request.Messages[0].Role != RoleSystem || request.Messages[0].Name != "echo-agent-mode" {
+		t.Fatalf("expected the first system message to remain the request prefix, got %#v", request.Messages[0])
+	}
+	if got, want := request.Messages[0].Content, "Be helpful.\n\nSelected code: answer := 42"; got != want {
+		t.Fatalf("expected merged system content %q, got %q", want, got)
+	}
+	if request.Messages[1].Role != RoleUser || request.Messages[1].Content != "Explain this selection." {
+		t.Fatalf("expected user message after the merged system prefix, got %#v", request.Messages[1])
+	}
+	if messages[0].Content != "Be helpful." || messages[1].Content != "Selected code: answer := 42" {
+		t.Fatalf("expected source messages to remain unchanged, got %#v", messages)
 	}
 }
 

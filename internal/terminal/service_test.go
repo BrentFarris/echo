@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -39,6 +40,12 @@ type fakeProcess struct {
 	backend  *fakeBackend
 	waitCh   chan fakeWaitResult
 	waitOnce sync.Once
+}
+
+type startErrorBackend struct{ *fakeBackend }
+
+func (b *startErrorBackend) Start(context.Context, CommandSpec) (Process, error) {
+	return nil, errors.New("process startup failed")
 }
 
 func newFakeBackend() *fakeBackend {
@@ -195,6 +202,276 @@ func TestSessionLifecycleReplayAndExit(t *testing.T) {
 	}
 	if err := service.Write(workspace.ID, started.ID, "x"); !errors.Is(err, ErrSessionNotRunning) {
 		t.Fatalf("write after exit = %v", err)
+	}
+}
+
+func TestTaskLifecycleStatusEnvironmentAndReplacement(t *testing.T) {
+	service, workspace, _ := newTestService(t)
+	first, second := newFakeBackend(), newFakeBackend()
+	firstCompletion := make(chan TaskResult, 2)
+	backends := []Backend{first, second}
+	service.SetBackendFactory(func() (Backend, error) {
+		next := backends[0]
+		backends = backends[1:]
+		return next, nil
+	})
+	t.Cleanup(func() { shutdownTestService(t, service) })
+
+	started, err := service.StartTask(workspace.ID, TaskRequest{
+		Name: "Test Output", Command: "go", Args: []string{"test", "."}, WorkingDirectory: workspace.MainPath,
+		Environment: map[string]string{"ECHO_TEST": "yes"}, DisplayCommand: "go test .",
+		OnExit: func(result TaskResult) { firstCompletion <- result },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Kind != "test" || started.TaskStatus != "running" || len(started.Output) != 1 {
+		t.Fatalf("task snapshot = %#v", started)
+	}
+	foundEnvironment := false
+	for _, item := range first.spec.Env {
+		foundEnvironment = foundEnvironment || item == "ECHO_TEST=yes"
+	}
+	if !foundEnvironment {
+		t.Fatalf("task environment = %#v", first.spec.Env)
+	}
+
+	replaced, err := service.StartTask(workspace.ID, TaskRequest{
+		Name: "Test Output", Command: "go", Args: []string{"test", "-run", "TestOne", "."}, WorkingDirectory: workspace.MainPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced.ID == started.ID {
+		t.Fatal("replacement reused task session id")
+	}
+	completion := <-firstCompletion
+	if completion.SessionID != started.ID || completion.Status != "stopped" {
+		t.Fatalf("replacement completion = %#v", completion)
+	}
+	select {
+	case duplicate := <-firstCompletion:
+		t.Fatalf("duplicate replacement completion = %#v", duplicate)
+	default:
+	}
+	if _, err := service.Sync(workspace.ID, started.ID, 0); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("replaced task is still retained: %v", err)
+	}
+	second.process.complete(0, nil)
+	exited := waitStatus(t, service, workspace.ID, replaced.ID, "exited")
+	if exited.TaskStatus != "passed" || exited.ExitCode == nil || *exited.ExitCode != 0 {
+		t.Fatalf("completed task = %#v", exited)
+	}
+}
+
+func TestTaskCompletionRunsOnceAfterFinalOutputAndStatus(t *testing.T) {
+	service, workspace, _ := newTestService(t)
+	backend := newFakeBackend()
+	service.SetBackendFactory(func() (Backend, error) { return backend, nil })
+	t.Cleanup(func() { shutdownTestService(t, service) })
+
+	completed := make(chan TaskResult, 2)
+	started, err := service.StartTask(workspace.ID, TaskRequest{
+		Name: "Test Output", Command: "go", Args: []string{"test", "."}, WorkingDirectory: workspace.MainPath,
+		OnExit: func(result TaskResult) { completed <- result },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.readCh <- []byte("final output")
+	backend.process.complete(0, nil)
+	result := <-completed
+	if result.SessionID != started.ID || result.Status != "passed" || result.ExitCode != 0 {
+		t.Fatalf("completion = %#v", result)
+	}
+	snapshot, err := service.Sync(workspace.ID, started.ID, 0)
+	if err != nil || snapshot.Status != "exited" || len(snapshot.Output) != 1 {
+		t.Fatalf("snapshot before callback = %#v, %v", snapshot, err)
+	}
+	select {
+	case duplicate := <-completed:
+		t.Fatalf("duplicate completion = %#v", duplicate)
+	case <-time.After(25 * time.Millisecond):
+	}
+}
+
+func TestTaskCompletionReportsFailureAndStop(t *testing.T) {
+	for _, scenario := range []struct {
+		name string
+		want string
+		end  func(*Service, workspaces.Workspace, *fakeBackend, string) error
+	}{
+		{
+			name: "failure", want: "failed",
+			end: func(_ *Service, _ workspaces.Workspace, backend *fakeBackend, _ string) error {
+				backend.process.complete(2, errors.New("exit status 2"))
+				return nil
+			},
+		},
+		{
+			name: "stop", want: "stopped",
+			end: func(service *Service, workspace workspaces.Workspace, _ *fakeBackend, sessionID string) error {
+				return service.Stop(workspace.ID, sessionID)
+			},
+		},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			service, workspace, _ := newTestService(t)
+			backend := newFakeBackend()
+			service.SetBackendFactory(func() (Backend, error) { return backend, nil })
+			t.Cleanup(func() { shutdownTestService(t, service) })
+			completed := make(chan TaskResult, 2)
+			started, err := service.StartTask(workspace.ID, TaskRequest{
+				Name: "Test Output", Command: "go", Args: []string{"test", "."}, WorkingDirectory: workspace.MainPath,
+				OnExit: func(result TaskResult) { completed <- result },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := scenario.end(service, workspace, backend, started.ID); err != nil {
+				t.Fatal(err)
+			}
+			result := <-completed
+			if result.SessionID != started.ID || result.Status != scenario.want {
+				t.Fatalf("completion = %#v, want status %q", result, scenario.want)
+			}
+			select {
+			case duplicate := <-completed:
+				t.Fatalf("duplicate completion = %#v", duplicate)
+			case <-time.After(25 * time.Millisecond):
+			}
+		})
+	}
+}
+
+func TestTaskStartupFailureKeepsStoppedOutputForRecovery(t *testing.T) {
+	service, workspace, _ := newTestService(t)
+	first := newFakeBackend()
+	failed := &startErrorBackend{fakeBackend: newFakeBackend()}
+	backends := []Backend{first, failed}
+	service.SetBackendFactory(func() (Backend, error) {
+		next := backends[0]
+		backends = backends[1:]
+		return next, nil
+	})
+	t.Cleanup(func() { shutdownTestService(t, service) })
+
+	started, err := service.StartTask(workspace.ID, TaskRequest{
+		Name: "Test Output", Command: "go", Args: []string{"test", "."}, WorkingDirectory: workspace.MainPath,
+		DisplayCommand: "go test .",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.StartTask(workspace.ID, TaskRequest{
+		Name: "Test Output", Command: "go", Args: []string{"test", "./broken"}, WorkingDirectory: workspace.MainPath,
+	}); err == nil {
+		t.Fatal("task startup failure was not returned")
+	}
+	recovered, err := service.Sync(workspace.ID, started.ID, 0)
+	if err != nil {
+		t.Fatalf("stopped task output was discarded: %v", err)
+	}
+	if recovered.TaskStatus != "stopped" || len(recovered.Output) == 0 {
+		t.Fatalf("recovered task = %#v", recovered)
+	}
+}
+
+func TestDebugTerminalIsNamedOwnedAndIndependentOfDefaultShell(t *testing.T) {
+	service, workspace, _ := newTestService(t)
+	defaultBackend := newFakeBackend()
+	debugBackend := newFakeBackend()
+	backends := []Backend{defaultBackend, debugBackend}
+	var backendMu sync.Mutex
+	service.SetBackendFactory(func() (Backend, error) {
+		backendMu.Lock()
+		defer backendMu.Unlock()
+		if len(backends) == 0 {
+			return nil, errors.New("no fake backend")
+		}
+		next := backends[0]
+		backends = backends[1:]
+		return next, nil
+	})
+	t.Cleanup(func() { shutdownTestService(t, service) })
+
+	defaultSession, err := service.Start(workspace.ID, 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := service.StartDebugDAP(context.Background(), workspace.ID, "debug-owner", map[string]any{
+		"kind": "integrated", "title": "API Process", "cwd": workspace.MainPath,
+		"args": []any{"example-debuggee", "--port", "4000"},
+		"env":  map[string]any{"ECHO_MODE": "debug"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	debugID, _ := response["sessionId"].(string)
+	if debugID == "" || debugID == defaultSession.ID {
+		t.Fatalf("debug response = %#v", response)
+	}
+	debugSnapshot, err := service.Sync(workspace.ID, debugID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if debugSnapshot.Kind != "debug" || debugSnapshot.Name != "API Process" || debugSnapshot.OwnerSessionID != "debug-owner" {
+		t.Fatalf("debug snapshot = %#v", debugSnapshot)
+	}
+	if debugBackend.spec.Name != "example-debuggee" || len(debugBackend.spec.Args) != 2 {
+		t.Fatalf("debug argv = %#v", debugBackend.spec)
+	}
+	foundEnvironment := false
+	for _, value := range debugBackend.spec.Env {
+		if value == "ECHO_MODE=debug" {
+			foundEnvironment = true
+		}
+	}
+	if !foundEnvironment {
+		t.Fatalf("debug environment = %#v", debugBackend.spec.Env)
+	}
+	reconnect, err := service.List(workspace.ID)
+	if err != nil || len(reconnect) != 2 {
+		t.Fatalf("terminal reconnect list = %#v, %v", reconnect, err)
+	}
+	foundDebug := false
+	for _, snapshot := range reconnect {
+		if snapshot.ID == debugID && snapshot.Kind == "debug" && snapshot.OwnerSessionID == "debug-owner" {
+			foundDebug = true
+		}
+	}
+	if !foundDebug {
+		t.Fatalf("debug terminal missing from reconnect list: %#v", reconnect)
+	}
+
+	service.StopOwner(workspace.ID, "debug-owner")
+	if _, err := service.Sync(workspace.ID, debugID, 0); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("owned terminal still exists: %v", err)
+	}
+	if snapshot, err := service.Sync(workspace.ID, defaultSession.ID, 0); err != nil || snapshot.Status != "running" {
+		t.Fatalf("default terminal was disturbed: %#v, %v", snapshot, err)
+	}
+}
+
+func TestDebugTerminalFailsClosedWithoutSandboxRuntime(t *testing.T) {
+	service, workspace, _ := newTestService(t)
+	manager := service.workspaces.(*workspaces.Manager)
+	config := workspaces.DefaultSandboxConfig()
+	config.Enabled = true
+	if _, err := manager.SetSandboxConfig(workspace.ID, config); err != nil {
+		t.Fatal(err)
+	}
+	backend := newFakeBackend()
+	service.SetBackendFactory(func() (Backend, error) { return backend, nil })
+
+	_, err := service.StartDebugDAP(context.Background(), workspace.ID, "debug-owner", map[string]any{
+		"kind": "integrated", "args": []any{"example-debuggee"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "sandbox debug terminal runtime is unavailable") {
+		t.Fatalf("sandbox debug terminal error = %v", err)
+	}
+	if backend.spec.Name != "" {
+		t.Fatalf("host backend was started for sandbox workspace: %#v", backend.spec)
 	}
 }
 

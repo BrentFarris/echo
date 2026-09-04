@@ -824,9 +824,12 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 	streamer := r.streamer
 	emptyAssistantRetries := 0
 	transientStreamRetries := 0
+	truncationContinues := 0
+	contextLengthRecoveries := 0
+	thinkingSuppressed := false
 	observedTokens := 0
 	usageSource := "estimated"
-	compressionCooldown := false
+	compressionCooldownRounds := 0
 
 	for round := 0; round < maxResearchAgentRounds; round++ {
 		toolSchema := r.session.manager.server.tools.ResearchLLMSchemaForScopes(r.toolScopes)
@@ -836,21 +839,28 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 		messages := buildCompressedModelHistory(canonical, checkpoint)
 		currentTokens := contextRequestTokens(settings, messages, toolSchema)
 		hardLimitPreflight := currentTokens+settings.MaxTokens > settings.ContextLength
-		coolingDown := compressionCooldown
-		compressionCooldown = false
+		coolingDown := compressionCooldownRounds > 0
+		if coolingDown {
+			compressionCooldownRounds--
+		}
 		if hardLimitPreflight && !settings.CompressionEnabled() {
 			return "", canonical, errors.New("research request would exceed the endpoint context window and automatic context compression is disabled")
 		}
 		if settings.CompressionEnabled() && (hardLimitPreflight || (currentTokens >= compressionThresholdTokens(settings) && !coolingDown)) {
 			r.setAgentPhase(agent, "compressing context")
 			updated, compressionErr := r.compressAgentContext(ctx, agent, job, settings, canonical, checkpoint, toolSchema, observedTokens, usageSource, round)
-			compressionCooldown = true
 			r.setAgentPhase(agent, "investigating")
 			if updated != nil {
 				checkpoint = updated
 				messages = buildCompressedModelHistory(canonical, checkpoint)
 				toolSchema = r.session.manager.server.tools.ResearchLLMSchemaForScopes(r.toolScopes)
 				toolSchema = append(toolSchema, contextHistorySearchToolSchema())
+				compressionCooldownRounds = 1
+			} else if compressionErr != nil {
+				// The attempt failed or could not reclaim anything. Back off
+				// for several rounds instead of retrying the same failing
+				// attempt every other round until the hard limit trips.
+				compressionCooldownRounds = compressionFailureCooldownRounds
 			}
 			if contextRequestTokens(settings, messages, toolSchema)+settings.MaxTokens > settings.ContextLength {
 				if compressionErr != nil {
@@ -859,7 +869,11 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 				return "", canonical, errors.New("compressed research context still exceeds the endpoint context window")
 			}
 		}
-		request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(toolSchema))
+		requestSettings := settings
+		if thinkingSuppressed {
+			requestSettings = withoutThinkingSettings(settings)
+		}
+		request, err := llm.NewChatRequest(requestSettings, messages, llm.WithStream(true), llm.WithTools(toolSchema))
 		if err != nil {
 			return "", canonical, err
 		}
@@ -890,6 +904,29 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 		messageData["ttftMs"] = durationUntil(streamResult.startedAt, streamResult.firstTokenAt)
 		r.appendTrajectoryAt("research/assistant_message", streamResult.completedAt, messageData, true)
 		if err != nil {
+			if llm.IsContextLengthExceeded(err) && contextLengthRecoveries < maxContextLengthRecoveries {
+				// The provider rejected the request as too large. Recover by
+				// forcing compression against the observed limit and retrying
+				// the round instead of failing the agent.
+				contextLengthRecoveries++
+				settings.ContextLength = contextLengthAfterRejection(settings, err, currentTokens)
+				compressionCooldownRounds = 0
+				r.setAgentPhase(agent, "compressing context")
+				updated, compressionErr := r.compressAgentContext(ctx, agent, job, settings, canonical, checkpoint, toolSchema, observedTokens, usageSource, round)
+				r.setAgentPhase(agent, "investigating")
+				if updated != nil {
+					checkpoint = updated
+				}
+				recoveredMessages := buildCompressedModelHistory(canonical, checkpoint)
+				if contextRequestTokens(settings, recoveredMessages, toolSchema)+settings.MaxTokens > settings.ContextLength {
+					detail := "the compressed research context still exceeds the endpoint context window"
+					if compressionErr != nil {
+						detail = "research context compression could not reclaim enough space: " + compressionErr.Error()
+					}
+					return "", canonical, fmt.Errorf("the next request would exceed the endpoint context window and %s", detail)
+				}
+				continue
+			}
 			if isEmptyAssistantResponse(streamResult.content, streamResult.toolCalls) && transientStreamRetries < maxTransientStreamRetries && ctx.Err() == nil {
 				transientStreamRetries++
 				canonical = append(canonical, transientStreamRetryMessage())
@@ -898,9 +935,26 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 			return "", canonical, err
 		}
 		if finishErr := finishReasonError(streamResult.finishReason, len(streamResult.toolCalls) > 0); finishErr != nil {
+			if isTruncationFinishError(finishErr) && truncationContinues < maxTruncationContinues {
+				// The model hit its output token limit. Keep the partial turn
+				// and auto-continue from where it stopped instead of failing
+				// the agent round. Tool calls are dropped: a truncated call has
+				// invalid partial arguments that providers reject on replay.
+				// Thinking is suppressed for the continuation so reasoning
+				// cannot consume the output budget again.
+				truncationContinues++
+				thinkingSuppressed = true
+				canonical = append(canonical, llm.Message{Role: llm.RoleAssistant, Content: streamResult.content})
+				canonical = append(canonical, truncationContinueMessage())
+				continue
+			}
+			if isTruncationFinishError(finishErr) {
+				return "", canonical, truncationExhaustedError(maxTruncationContinues + 1)
+			}
 			return "", canonical, finishErr
 		}
 		transientStreamRetries = 0
+		thinkingSuppressed = false
 		if isEmptyAssistantResponse(streamResult.content, streamResult.toolCalls) {
 			if emptyAssistantRetries >= maxEmptyAssistantRetries {
 				return "", canonical, emptyAssistantResponseError()

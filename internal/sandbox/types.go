@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	ProtocolVersion = "1"
+	ProtocolVersion = "2"
 	SetupRecipePath = ".echo/sandbox/setup.sh"
 )
 
@@ -283,6 +283,19 @@ type Process interface {
 	Kill() error
 }
 
+// DAPRequest asks the authenticated guest agent to connect to an existing DAP
+// server or spawn one on a guest-only loopback port. The resulting Process
+// multiplexes DAP bytes as stdin/stdout and adapter diagnostics as stderr.
+type DAPRequest struct {
+	Mode             string
+	Command          []string
+	WorkingDirectory string
+	Environment      []string
+	Host             string
+	Port             int
+	StartupTimeoutMS int
+}
+
 type DeleteScope struct {
 	Containers bool
 	Network    bool
@@ -321,6 +334,7 @@ type Engine interface {
 	Exec(context.Context, MachineState, ExecRequest) (ExecResult, error)
 	OpenPTY(context.Context, MachineState, ExecRequest) (PTY, error)
 	OpenProcess(context.Context, MachineState, ExecRequest) (Process, error)
+	OpenDAP(context.Context, MachineState, DAPRequest) (Process, error)
 	Usage(context.Context, MachineState) (ResourceUsage, error)
 	ApplyNetworkGrants(context.Context, MachineState, []NetworkGrant) error
 	Heartbeat(context.Context, MachineState) error
@@ -366,6 +380,9 @@ func (e *unavailableEngine) OpenPTY(context.Context, MachineState, ExecRequest) 
 	return nil, e.failure()
 }
 func (e *unavailableEngine) OpenProcess(context.Context, MachineState, ExecRequest) (Process, error) {
+	return nil, e.failure()
+}
+func (e *unavailableEngine) OpenDAP(context.Context, MachineState, DAPRequest) (Process, error) {
 	return nil, e.failure()
 }
 func (e *unavailableEngine) Usage(context.Context, MachineState) (ResourceUsage, error) {

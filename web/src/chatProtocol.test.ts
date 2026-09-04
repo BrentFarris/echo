@@ -18,8 +18,8 @@ vi.mock("../js/ws.js", () => ({ on: socket.on, onState: socket.onState, send: so
 
 import {
   activateChatTab, canClearChat, canCompressChat, clearChat, compressChat, closeChatTab, closeWorkspaceSession,
-  createChatTab, getChatWorkspaceState, onChatWorkspaceChange, openWorkspaceSession,
-  sendMessage, stopStream,
+  createChatTab, editGoal, getChatWorkspaceState, onChatWorkspaceChange, openWorkspaceSession,
+  pauseGoal, resumeGoal, sendMessage, startGoal, steerGoal, stopStream, clearGoal,
 } from "../js/chat.js";
 
 function emit(type: string, message: any) {
@@ -78,6 +78,98 @@ describe("multi-chat WebSocket protocol", () => {
     expect(socket.send).toHaveBeenLastCalledWith({
       type: "chat_tab_close", workspaceId: "workspace-tabs", chatId: "chat-one", stopIfBusy: true,
     });
+  });
+
+  it("reconciles goal state and emits lifecycle commands for the active chat", () => {
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "chat-goal", tabs: [{ chatId: "chat-goal", preview: "Goal", busy: false, goalStatus: "paused" }],
+      turns: [{
+        id: "goal-checkpoint", userContent: "", goalId: "goal-1", goalOrigin: "resume", status: "goal_checkpoint",
+        assistantTurns: [{ number: 0, content: "Checkpoint progress", goalCheckpoint: true }],
+      }],
+      goal: {
+        id: "goal-1", objective: "Ship the verified feature", status: "paused", model: "model-a",
+        activeSeconds: 42, stepCount: 3, pendingSteering: 1,
+        pendingInputs: [{ id: "steer-existing", content: "Preserve compatibility" }],
+      },
+    });
+
+    expect(getChatWorkspaceState()?.goal).toMatchObject({
+      id: "goal-1", status: "paused", model: "model-a", pendingSteering: 1,
+    });
+    expect(canClearChat(log)).toBe(false);
+    expect(closeChatTab("chat-goal")).toBe(false);
+    expect(log.querySelectorAll(".chat-message-user")).toHaveLength(1);
+    expect(log.querySelector(".chat-message-user")?.textContent).toContain("Preserve compatibility");
+    expect(log.querySelector(".is-goal-checkpoint")?.textContent).toContain("Checkpoint progress");
+    expect(log.querySelector("[data-turn-id='goal-checkpoint'] [data-message-action='edit']")).toBeNull();
+
+    expect(startGoal(log, "A replacement", "model-b")).toBe(false);
+    expect(pauseGoal()).toBe(false);
+    expect(steerGoal(log, "Use the compatibility path", { references: [{ label: "main.ts" }] })).toBe(true);
+    expect(socket.send).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: "goal_steer", workspaceId: "workspace-tabs", chatId: "chat-goal",
+      message: "Use the compatibility path",
+    }));
+    expect(editGoal("Ship the verified feature safely")).toBe(true);
+    expect(socket.send).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: "goal_edit", message: "Ship the verified feature safely",
+    }));
+    expect(resumeGoal()).toBe(true);
+    expect(socket.send).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: "goal_resume", workspaceId: "workspace-tabs", chatId: "chat-goal", requestId: expect.any(String),
+    }));
+    expect(clearGoal()).toBe(true);
+    expect(socket.send).toHaveBeenLastCalledWith({
+      type: "goal_clear", workspaceId: "workspace-tabs", chatId: "chat-goal",
+    });
+
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-goal", sequence: 2,
+      event: { type: "goal_updated", goal: { id: "goal-1", objective: "Ship", status: "active", pendingSteering: 0 } },
+    });
+    expect(getChatWorkspaceState()?.goal?.status).toBe("active");
+    expect(getChatWorkspaceState()?.tabs[0].goalStatus).toBe("active");
+    expect(pauseGoal()).toBe(true);
+    expect(socket.send).toHaveBeenLastCalledWith({
+      type: "goal_pause", workspaceId: "workspace-tabs", chatId: "chat-goal",
+    });
+  });
+
+  it("keeps queued guidance visible when it is applied to the active goal turn", () => {
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "chat-goal", tabs: [{ chatId: "chat-goal", preview: "Goal", busy: false }], turns: [],
+      goal: { id: "goal-1", objective: "Finish", status: "active", pendingSteering: 0 },
+    });
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-goal", sequence: 2,
+      event: { type: "turn_started", turnId: "goal-turn", message: "Finish", goalId: "goal-1", goalOrigin: "start" },
+    });
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-goal", sequence: 3,
+      event: {
+        type: "goal_steering_queued", steeringId: "steer-1", message: "Run the compatibility test",
+        images: [{ id: "steer-image", name: "expected.png", mediaType: "image/png", dataUrl: "data:image/png;base64,YQ==", bytes: 1 }],
+      },
+    });
+    expect(log.querySelector("[data-goal-steering-id='steer-1']")?.classList).toContain("is-queued");
+
+    emit("session_event", {
+      type: "session_event", workspaceId: "workspace-tabs", chatId: "chat-goal", sequence: 4,
+      event: {
+        type: "goal_steering_applied", turnId: "goal-turn", steeringId: "steer-1", message: "Run the compatibility test",
+        images: [{ id: "steer-image", name: "expected.png", mediaType: "image/png", dataUrl: "data:image/png;base64,YQ==", bytes: 1 }],
+      },
+    });
+    const guidance = log.querySelector("[data-goal-steering-id='steer-1']");
+    expect(guidance).not.toBeNull();
+    expect(guidance?.classList).not.toContain("is-queued");
+    expect(guidance?.textContent).toContain("Applied");
+    expect(guidance?.textContent).toContain("Run the compatibility test");
+    guidance?.querySelector<HTMLButtonElement>(".chat-media-chip")?.click();
+    expect(guidance?.querySelector("img")?.getAttribute("src")).toBe("data:image/png;base64,YQ==");
   });
 
   it("tracks an inactive stream without replacing the active transcript", () => {

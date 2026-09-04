@@ -14,11 +14,22 @@ if [[ "$target_uid" =~ ^[0-9]+$ ]] && (( target_uid > 0 )) && [[ "$(id -u echo)"
   usermod --uid "$target_uid" echo
 fi
 
-install -d -o echo -g echo /home/echo /home/echo/.config/chromium /home/echo/.config/gtk-3.0 /exchange /exchange/downloads
+install -d -o echo -g echo /home/echo /home/echo/.config/chromium /home/echo/.config/gtk-3.0 \
+  /home/echo/.config/xfce4 /exchange /exchange/downloads
+install -d -m 0700 -o echo -g echo /run/echo/browser
 chown -R echo:echo /home/echo
 chown echo:echo /exchange /exchange/downloads
 printf 'file:///workspace Workspace\nfile:///exchange Exchange\n' >/home/echo/.config/gtk-3.0/bookmarks
 chown echo:echo /home/echo/.config/gtk-3.0/bookmarks
+
+helpers_file=/home/echo/.config/xfce4/helpers.rc
+touch "$helpers_file"
+if grep -q '^WebBrowser=' "$helpers_file"; then
+  sed -i 's/^WebBrowser=.*/WebBrowser=echo-browser/' "$helpers_file"
+else
+  printf 'WebBrowser=echo-browser\n' >>"$helpers_file"
+fi
+chown echo:echo "$helpers_file"
 
 while [[ ! -s /run/echo/agent.token || ! -s /run/echo/vnc.password || ! -s /run/echo/lease.token ]]; do
   sleep 0.1

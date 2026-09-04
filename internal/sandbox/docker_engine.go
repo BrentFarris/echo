@@ -751,6 +751,26 @@ func (e *DockerEngine) OpenProcess(ctx context.Context, state MachineState, requ
 	return newAgentProcess(ctx, connection)
 }
 
+func (e *DockerEngine) OpenDAP(ctx context.Context, state MachineState, request DAPRequest) (Process, error) {
+	connection, err := e.agentWebSocket(ctx, state, "workbench", "/v1/dap")
+	if err != nil {
+		return nil, err
+	}
+	if err := connection.WriteJSON(map[string]any{
+		"mode": request.Mode, "command": request.Command, "dir": request.WorkingDirectory,
+		"env": request.Environment, "host": request.Host, "port": request.Port,
+		"startupTimeoutMs": request.StartupTimeoutMS,
+	}); err != nil {
+		_ = connection.Close()
+		return nil, err
+	}
+	timeout := time.Duration(request.StartupTimeoutMS)*time.Millisecond + 2*time.Second
+	if timeout < 12*time.Second {
+		timeout = 12 * time.Second
+	}
+	return newAgentProcessWithTimeout(ctx, connection, timeout)
+}
+
 func (e *DockerEngine) agentToken(workspaceID, role string) string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -886,6 +906,10 @@ type agentProcessStdin struct {
 }
 
 func newAgentProcess(ctx context.Context, connection *websocket.Conn) (*agentProcess, error) {
+	return newAgentProcessWithTimeout(ctx, connection, 10*time.Second)
+}
+
+func newAgentProcessWithTimeout(ctx context.Context, connection *websocket.Conn, startupTimeout time.Duration) (*agentProcess, error) {
 	stdout, stdoutWriter := io.Pipe()
 	stderr, stderrWriter := io.Pipe()
 	process := &agentProcess{
@@ -904,7 +928,7 @@ func newAgentProcess(ctx context.Context, connection *websocket.Conn) (*agentPro
 	case <-ctx.Done():
 		_ = connection.Close()
 		return nil, ctx.Err()
-	case <-time.After(10 * time.Second):
+	case <-time.After(startupTimeout):
 		_ = connection.Close()
 		return nil, &Error{Code: "sandbox_agent_unavailable", Message: "sandbox process did not start"}
 	}

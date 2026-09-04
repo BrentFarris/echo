@@ -100,6 +100,17 @@ type chatCompletedMessage struct {
 	CompletedAt   time.Time   `json:"completedAt"`
 }
 
+type goalAttentionMessage struct {
+	Type          string        `json:"type"`
+	WorkspaceID   string        `json:"workspaceId"`
+	WorkspaceName string        `json:"workspaceName"`
+	Surface       chatSurface   `json:"surface"`
+	ChatID        string        `json:"chatId"`
+	TurnID        string        `json:"turnId,omitempty"`
+	Goal          *goalSnapshot `json:"goal"`
+	OccurredAt    time.Time     `json:"occurredAt"`
+}
+
 type planQuestionsMessage struct {
 	Type          string                  `json:"type"`
 	WorkspaceID   string                  `json:"workspaceId"`
@@ -120,10 +131,39 @@ type trajectoryEventMessage struct {
 }
 
 type chatTabSummary struct {
-	ChatID   string `json:"chatId"`
-	Preview  string `json:"preview"`
-	Busy     bool   `json:"busy"`
-	Revision uint64 `json:"revision"`
+	ChatID     string              `json:"chatId"`
+	Preview    string              `json:"preview"`
+	Busy       bool                `json:"busy"`
+	Revision   uint64              `json:"revision"`
+	GoalStatus sessions.GoalStatus `json:"goalStatus,omitempty"`
+}
+
+type goalSnapshot struct {
+	ID                string              `json:"id"`
+	Objective         string              `json:"objective"`
+	ObjectiveRevision uint64              `json:"objectiveRevision,omitempty"`
+	Status            sessions.GoalStatus `json:"status"`
+	Model             string              `json:"model,omitempty"`
+	CreatedAt         time.Time           `json:"createdAt"`
+	UpdatedAt         time.Time           `json:"updatedAt"`
+	CompletedAt       *time.Time          `json:"completedAt,omitempty"`
+	ActiveSeconds     int64               `json:"activeSeconds,omitempty"`
+	StepCount         int                 `json:"stepCount,omitempty"`
+	TokensUsed        int                 `json:"tokensUsed,omitempty"`
+	Outcome           string              `json:"outcome,omitempty"`
+	LastError         string              `json:"lastError,omitempty"`
+	PendingSteering   int                 `json:"pendingSteering"`
+	PendingInputs     []goalSteeringView  `json:"pendingInputs,omitempty"`
+}
+
+type goalSteeringView struct {
+	ID            string                         `json:"id"`
+	Content       string                         `json:"content"`
+	Images        []sessions.MediaAttachment     `json:"images,omitempty"`
+	Videos        []sessions.MediaAttachment     `json:"videos,omitempty"`
+	References    []sessions.PromptReference     `json:"references,omitempty"`
+	EditorContext *sessions.EditorContextSummary `json:"editorContext,omitempty"`
+	CreatedAt     time.Time                      `json:"createdAt"`
 }
 
 type sessionSnapshot struct {
@@ -137,6 +177,7 @@ type sessionSnapshot struct {
 	Revision     uint64           `json:"revision"`
 	Turns        []sessions.Turn  `json:"turns"`
 	ActiveTurn   *sessions.Turn   `json:"activeTurn,omitempty"`
+	Goal         *goalSnapshot    `json:"goal,omitempty"`
 }
 
 type chatSessionManager struct {
@@ -223,7 +264,7 @@ func (m *chatSessionManager) get(workspaceID string) (*chatWorkspaceSession, err
 		return nil, fmt.Errorf("workspace %q not found", workspaceID)
 	}
 	store := sessions.NewWorkspaceStore(workspace.MainPath)
-	stored, loadErr := store.Load(workspaceID)
+	stored, loadErr := store.LoadRecoveringGoals(workspaceID)
 	parent := &chatWorkspaceSession{
 		manager: m, workspace: workspace, store: store,
 		tabs: make(map[string]*chatSession), subscribers: make(map[*client]chatSurface), loadErr: loadErr,
@@ -381,6 +422,11 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "agent_mode_load_failed", err.Error(), requestID)
 		return
 	}
+	goalMode := mode.ID == agentmodes.GoalID
+	if goalMode && len(visibleText) > 4000 {
+		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "invalid_goal", "goal objective must contain at most 4000 characters", requestID)
+		return
+	}
 	scopes := tools.NewToolScopeChecker(agentmodes.PermissionList(mode))
 	_, researchStreamer := m.server.researchChat()
 	researchEnabled := m.server.settings.ResearchAgentConcurrency > 0 && researchStreamer != nil && modeAllowsResearch(mode)
@@ -396,10 +442,30 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		parent.sendSnapshot(c, surface)
 		return
 	}
+	if currentGoal, _ := session.currentGoalLocked(); currentGoal != nil &&
+		(currentGoal.Status == sessions.GoalStatusActive || currentGoal.Status == sessions.GoalStatusPaused) && !goalMode {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "goal_mode_locked", "this chat has a running or paused goal; clear it before using another mode", requestID)
+		return
+	}
 	if session.isBusyLocked() {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "session_busy", "this chat already has an active response", requestID)
 		return
+	}
+	var pendingGoal sessions.GoalState
+	if goalMode {
+		if currentGoal, _ := session.currentGoalLocked(); currentGoal != nil &&
+			(currentGoal.Status == sessions.GoalStatusActive || currentGoal.Status == sessions.GoalStatusPaused) {
+			session.mu.Unlock()
+			m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "goal_exists", "this chat already has a running or paused goal", requestID)
+			return
+		}
+		now := time.Now().UTC()
+		pendingGoal = sessions.GoalState{
+			ID: newSessionID("goal"), Objective: visibleText, ObjectiveRevision: 1,
+			Status: sessions.GoalStatusActive, CreatedAt: now, UpdatedAt: now, ActiveSince: &now,
+		}
 	}
 
 	canonical := hydrateChatMediaHistory(session.transcript.Messages, session.transcript.Turns)
@@ -408,6 +474,9 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	userMessage.ContentParts = chatMediaContentParts(modelText, images, videos)
 	canonical = append(canonical, userMessage)
 	prefix := []llm.Message{m.server.agentModeSystemMessage(session.workspace, mode, visibleText, researchEnabled)}
+	if goalMode {
+		prefix = append(prefix, goalSystemMessage(pendingGoal))
+	}
 	if contextMessage != nil {
 		prefix = append(prefix, *contextMessage)
 	}
@@ -415,11 +484,15 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	visionMode := session.transcript.Vision || messagesRequireMedia(messages)
 	settings, streamer := m.server.routeMediaChat(settings, messages, visionMode)
 	planMode := mode.ID == agentmodes.PlanID
-	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID})))
+	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, GoalMode: goalMode, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID})))
 	if err != nil {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "invalid_request", err.Error(), requestID)
 		return
+	}
+	var goalRollback sessions.TabTranscript
+	if goalMode {
+		goalRollback = cloneTabTranscript(session.transcript)
 	}
 	if visionMode {
 		session.transcript.Vision = true
@@ -427,7 +500,8 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	ctx, cancel := context.WithCancel(context.Background())
 	session.cancel = cancel
 	session.transcript.Preview = chatPreview(visibleText)
-	session.active = &sessions.Turn{
+	turnStartedAt := time.Now().UTC()
+	activeTurn := &sessions.Turn{
 		ID:               newSessionID("turn"),
 		RequestID:        requestID,
 		UserContent:      visibleText,
@@ -439,10 +513,34 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		Model:            request.Model,
 		AgentModeID:      mode.ID,
 		AgentModeName:    mode.Name,
+		GoalID:           pendingGoal.ID,
 		Status:           "streaming",
-		StartedAt:        time.Now().UTC(),
+		StartedAt:        turnStartedAt,
 		AssistantTurns:   []sessions.AssistantTurn{},
 	}
+	if goalMode {
+		activeTurn.GoalOrigin = "start"
+		pendingGoal.Model = request.Model
+		session.transcript.Goals = append(session.transcript.Goals, pendingGoal)
+		session.transcript.CurrentGoalID = pendingGoal.ID
+		initialBoundary := *activeTurn
+		initialBoundary.Status = "goal_checkpoint"
+		initialBoundary.AssistantDeleted = true
+		initialBoundary.CompletedAt = &turnStartedAt
+		session.transcript.Turns = append(session.transcript.Turns, initialBoundary)
+		session.transcript.Messages = sanitizeMessages(canonical)
+		session.transcript.Revision++
+		if persistErr := session.parent.persistTabLocked(session.transcript); persistErr != nil {
+			session.transcript = goalRollback
+			session.cancel = nil
+			cancel()
+			session.mu.Unlock()
+			m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "goal_persist_failed", persistErr.Error(), requestID)
+			return
+		}
+		session.emitLocked(map[string]any{"type": "goal_updated", "goal": session.goalSnapshotLocked()})
+	}
+	session.active = activeTurn
 	turnID := session.active.ID
 	session.appendTrajectoryLocked("turn/start", turnID, nil, map[string]any{
 		"requestId": requestID, "model": request.Model, "agentModeId": mode.ID,
@@ -456,6 +554,12 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		"source": "agent-mode", "message": messages[0],
 	})
 	contextOffset := 1
+	if goalMode {
+		session.appendTrajectoryLocked("context/injection", turnID, nil, map[string]any{
+			"source": "goal", "message": messages[contextOffset],
+		})
+		contextOffset++
+	}
 	if contextMessage != nil {
 		session.appendTrajectoryLocked("context/injection", turnID, nil, map[string]any{
 			"source": "editor", "message": *contextMessage,
@@ -469,6 +573,10 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		"type": "turn_started", "turnId": turnID, "requestId": requestID,
 		"message": visibleText, "images": images, "videos": videos,
 		"model": request.Model, "agentModeId": mode.ID, "agentModeName": mode.Name, "startedAt": session.active.StartedAt,
+	}
+	if goalMode {
+		startedEvent["goalId"] = pendingGoal.ID
+		startedEvent["goalOrigin"] = "start"
 	}
 	if len(references) > 0 {
 		startedEvent["references"] = references
@@ -515,6 +623,347 @@ func (m *chatSessionManager) stop(c *client, workspaceID, chatID, surfaceValue s
 	}
 }
 
+func (m *chatSessionManager) steerGoal(c *client, msg inboundMessage) {
+	surface, surfaceErr := normalizeChatSurface(msg.Surface)
+	if surfaceErr != nil {
+		m.commandErrorForSurface(c, msg.WorkspaceID, chatSurfaceMain, "invalid_surface", surfaceErr.Error(), msg.RequestID)
+		return
+	}
+	parent, err := m.get(msg.WorkspaceID)
+	if err != nil {
+		m.commandErrorForSurface(c, msg.WorkspaceID, surface, "invalid_workspace", err.Error(), msg.RequestID)
+		return
+	}
+	if surface == chatSurfaceCode {
+		if len(msg.Images) > 0 || len(msg.Videos) > 0 {
+			m.commandErrorForSurface(c, msg.WorkspaceID, surface, "invalid_attachments_surface", "media attachments are only supported in Main Chat", msg.RequestID)
+			return
+		}
+		if err := parent.ensureCodeChat(); err != nil {
+			m.commandErrorForSurface(c, msg.WorkspaceID, surface, "session_load_failed", err.Error(), msg.RequestID)
+			return
+		}
+	}
+	session, resolved, err := parent.resolveSurfaceTab(msg.ChatID, surface)
+	if err != nil {
+		m.commandErrorForTabSurface(c, msg.WorkspaceID, msg.ChatID, surface, "invalid_chat", err.Error(), msg.RequestID)
+		return
+	}
+	images, videos, err := prepareChatMedia(msg.Images, msg.Videos)
+	if err != nil {
+		m.commandErrorForTabSurface(c, msg.WorkspaceID, resolved, surface, "invalid_attachments", err.Error(), msg.RequestID)
+		return
+	}
+	text := strings.TrimSpace(msg.Message)
+	if text == "" && len(images) == 0 && len(videos) == 0 {
+		m.commandErrorForTabSurface(c, msg.WorkspaceID, resolved, surface, "invalid_message", "message is required", msg.RequestID)
+		return
+	}
+	visibleText := text
+	if visibleText == "" {
+		visibleText = chatMediaDefaultPrompt(images, videos)
+	}
+	contextMessage, err := editorContextMessage(surface, msg.EditorContext)
+	if err != nil {
+		m.commandErrorForTabSurface(c, msg.WorkspaceID, resolved, surface, "invalid_editor_context", err.Error(), msg.RequestID)
+		return
+	}
+	references, err := promptReferences(surface, msg.References)
+	if err != nil {
+		m.commandErrorForTabSurface(c, msg.WorkspaceID, resolved, surface, "invalid_references", err.Error(), msg.RequestID)
+		return
+	}
+	requestID := strings.TrimSpace(msg.RequestID)
+	if requestID == "" {
+		requestID = newSessionID("steer")
+	}
+	steering := sessions.GoalSteering{
+		ID: requestID, Content: visibleText, ModelContent: chatMediaTextContent(text, images, videos),
+		Images: append([]sessions.MediaAttachment(nil), images...), Videos: append([]sessions.MediaAttachment(nil), videos...),
+		References: references, EditorContext: summarizeEditorContext(msg.EditorContext), CreatedAt: time.Now().UTC(),
+	}
+	if contextMessage != nil {
+		steering.ContextPrompt = contextMessage.Content
+	}
+
+	session.mu.Lock()
+	goal, _ := session.currentGoalLocked()
+	if goal == nil || goal.Status == sessions.GoalStatusCompleted || goal.Status == sessions.GoalStatusCleared {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, msg.WorkspaceID, resolved, surface, "goal_not_steerable", "this chat has no running, paused, or blocked goal", requestID)
+		return
+	}
+	if session.hasGoalSteeringLocked(requestID) {
+		session.mu.Unlock()
+		parent.sendSnapshot(c, surface)
+		return
+	}
+	previousTranscript := cloneTabTranscript(session.transcript)
+	goal.PendingSteering = append(goal.PendingSteering, steering)
+	goal.UpdatedAt = steering.CreatedAt
+	if err := session.persistAndEmitGoalLocked(); err != nil {
+		session.transcript = previousTranscript
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, msg.WorkspaceID, resolved, surface, "goal_persist_failed", err.Error(), requestID)
+		return
+	}
+	session.emitLocked(map[string]any{
+		"type": "goal_steering_queued", "goalId": goal.ID, "steeringId": steering.ID,
+		"message": steering.Content, "images": steering.Images, "videos": steering.Videos,
+		"references": steering.References, "editorContext": steering.EditorContext,
+	})
+	autoResume := goal.Status == sessions.GoalStatusBlocked && !session.isBusyLocked()
+	session.mu.Unlock()
+	if autoResume {
+		m.resumeGoal(c, msg.WorkspaceID, resolved, string(surface), requestID+"-resume")
+	}
+}
+
+func (m *chatSessionManager) pauseGoal(c *client, workspaceID, chatID, surfaceValue string) {
+	surface, surfaceErr := normalizeChatSurface(surfaceValue)
+	if surfaceErr != nil {
+		m.commandErrorForSurface(c, workspaceID, chatSurfaceMain, "invalid_surface", surfaceErr.Error(), "")
+		return
+	}
+	parent, err := m.get(workspaceID)
+	if err != nil {
+		m.commandErrorForSurface(c, workspaceID, surface, "invalid_workspace", err.Error(), "")
+		return
+	}
+	session, resolved, err := parent.resolveSurfaceTab(chatID, surface)
+	if err != nil {
+		m.commandErrorForTabSurface(c, workspaceID, chatID, surface, "invalid_chat", err.Error(), "")
+		return
+	}
+	session.mu.Lock()
+	goal, _ := session.currentGoalLocked()
+	if goal == nil || goal.Status != sessions.GoalStatusActive {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "goal_not_running", "this chat has no running goal", "")
+		return
+	}
+	previousTranscript := cloneTabTranscript(session.transcript)
+	now := time.Now().UTC()
+	closeGoalActivePeriod(goal, now)
+	goal.Status = sessions.GoalStatusPaused
+	goal.UpdatedAt = now
+	goal.PendingStatus = ""
+	goal.PendingOutcome = ""
+	goal.LastError = "Paused by the user. Resume by inspecting the current workspace state before retrying interrupted work."
+	if err := session.persistAndEmitGoalLocked(); err != nil {
+		session.transcript = previousTranscript
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "goal_persist_failed", err.Error(), "")
+		return
+	}
+	cancel := session.cancel
+	session.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (m *chatSessionManager) resumeGoal(c *client, workspaceID, chatID, surfaceValue, requestID string) {
+	surface, surfaceErr := normalizeChatSurface(surfaceValue)
+	if surfaceErr != nil {
+		m.commandErrorForSurface(c, workspaceID, chatSurfaceMain, "invalid_surface", surfaceErr.Error(), requestID)
+		return
+	}
+	parent, err := m.get(workspaceID)
+	if err != nil {
+		m.commandErrorForSurface(c, workspaceID, surface, "invalid_workspace", err.Error(), requestID)
+		return
+	}
+	if surface == chatSurfaceCode {
+		if err := parent.ensureCodeChat(); err != nil {
+			m.commandErrorForSurface(c, workspaceID, surface, "session_load_failed", err.Error(), requestID)
+			return
+		}
+	}
+	session, resolved, err := parent.resolveSurfaceTab(chatID, surface)
+	if err != nil {
+		m.commandErrorForTabSurface(c, workspaceID, chatID, surface, "invalid_chat", err.Error(), requestID)
+		return
+	}
+	mode, err := m.server.modes.Resolve(session.workspace.MainPath, agentmodes.GoalID)
+	if err != nil {
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "agent_mode_load_failed", err.Error(), requestID)
+		return
+	}
+	_, researchStreamer := m.server.researchChat()
+	researchEnabled := m.server.settings.ResearchAgentConcurrency > 0 && researchStreamer != nil && modeAllowsResearch(mode)
+
+	session.mu.Lock()
+	if session.isBusyLocked() {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_busy", "this chat already has an active response", requestID)
+		return
+	}
+	goal, _ := session.currentGoalLocked()
+	if goal == nil || (goal.Status != sessions.GoalStatusPaused && goal.Status != sessions.GoalStatusBlocked) {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "goal_not_resumable", "this goal is not paused or blocked", requestID)
+		return
+	}
+	settings, modelAvailable := m.server.settingsForModel(goal.Model)
+	if !modelAvailable {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "goal_model_unavailable", "the model locked to this goal is no longer configured", requestID)
+		return
+	}
+	canonical := hydrateChatMediaHistory(session.transcript.Messages, session.transcript.Turns)
+	canonical = append(canonical, goalContinuationMessage())
+	prefix := []llm.Message{
+		m.server.agentModeSystemMessage(session.workspace, mode, goal.Objective, researchEnabled),
+		goalSystemMessage(*goal),
+	}
+	routeCanonical := appendGoalSteeringMessages(append([]llm.Message(nil), canonical...), goal.PendingSteering, false)
+	messages := append(cloneContextMessages(prefix), buildCompressedModelHistory(routeCanonical, session.transcript.ContextCheckpoint)...)
+	visionMode := session.transcript.Vision || messagesRequireMedia(messages)
+	settings, streamer := m.server.routeMediaChat(settings, messages, visionMode)
+	previousTranscript := cloneTabTranscript(session.transcript)
+	if visionMode {
+		session.transcript.Vision = true
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		requestID = newSessionID("request")
+	}
+	now := time.Now().UTC()
+	goal.Status = sessions.GoalStatusActive
+	goal.ActiveSince = &now
+	goal.UpdatedAt = now
+	goal.CompletedAt = nil
+	goal.Outcome = ""
+	goal.PendingStatus = ""
+	goal.PendingOutcome = ""
+	session.active = &sessions.Turn{
+		ID: newSessionID("turn"), RequestID: requestID, UserMessageIndex: len(canonical) - 1,
+		Model: goal.Model, AgentModeID: mode.ID, AgentModeName: mode.Name,
+		GoalID: goal.ID, GoalOrigin: "resume", Status: "streaming", StartedAt: now,
+		AssistantTurns: []sessions.AssistantTurn{},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	session.cancel = cancel
+	turnID := session.active.ID
+	session.appendTrajectoryLocked("turn/start", turnID, nil, map[string]any{
+		"requestId": requestID, "model": goal.Model, "agentModeId": mode.ID,
+		"agentModeName": mode.Name, "startedAt": now, "origin": "goal_resume", "goalId": goal.ID,
+	})
+	if err := session.persistAndEmitGoalLocked(); err != nil {
+		session.transcript = previousTranscript
+		session.active = nil
+		session.cancel = nil
+		cancel()
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "goal_persist_failed", err.Error(), requestID)
+		return
+	}
+	session.emitLocked(map[string]any{
+		"type": "turn_started", "turnId": turnID, "requestId": requestID, "message": "",
+		"model": goal.Model, "agentModeId": mode.ID, "agentModeName": mode.Name,
+		"goalId": goal.ID, "goalOrigin": "resume", "startedAt": now,
+	})
+	checkpoint := cloneContextCheckpoint(session.transcript.ContextCheckpoint)
+	session.mu.Unlock()
+
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		session.run(ctx, streamer, settings, prefix, canonical, checkpoint, turnID, tools.NewToolScopeChecker(agentmodes.PermissionList(mode)), mode, researchEnabled)
+	}()
+}
+
+func (m *chatSessionManager) editGoal(c *client, workspaceID, chatID, surfaceValue, objective string) {
+	objective = strings.TrimSpace(objective)
+	if objective == "" || len(objective) > 4000 {
+		m.commandError(c, workspaceID, "invalid_goal", "goal objective must contain 1-4000 characters", "")
+		return
+	}
+	surface, surfaceErr := normalizeChatSurface(surfaceValue)
+	if surfaceErr != nil {
+		m.commandErrorForSurface(c, workspaceID, chatSurfaceMain, "invalid_surface", surfaceErr.Error(), "")
+		return
+	}
+	parent, err := m.get(workspaceID)
+	if err != nil {
+		m.commandErrorForSurface(c, workspaceID, surface, "invalid_workspace", err.Error(), "")
+		return
+	}
+	session, resolved, err := parent.resolveSurfaceTab(chatID, surface)
+	if err != nil {
+		m.commandErrorForTabSurface(c, workspaceID, chatID, surface, "invalid_chat", err.Error(), "")
+		return
+	}
+	session.mu.Lock()
+	goal, _ := session.currentGoalLocked()
+	if goal == nil || goal.Status == sessions.GoalStatusCompleted || goal.Status == sessions.GoalStatusCleared {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "goal_not_editable", "this chat has no editable goal", "")
+		return
+	}
+	previousTranscript := cloneTabTranscript(session.transcript)
+	goal.Objective = objective
+	goal.ObjectiveRevision++
+	goal.PendingStatus = ""
+	goal.PendingOutcome = ""
+	goal.UpdatedAt = time.Now().UTC()
+	if err := session.persistAndEmitGoalLocked(); err != nil {
+		session.transcript = previousTranscript
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "goal_persist_failed", err.Error(), "")
+		return
+	}
+	session.mu.Unlock()
+}
+
+func (m *chatSessionManager) clearGoal(c *client, workspaceID, chatID, surfaceValue string) {
+	surface, surfaceErr := normalizeChatSurface(surfaceValue)
+	if surfaceErr != nil {
+		m.commandErrorForSurface(c, workspaceID, chatSurfaceMain, "invalid_surface", surfaceErr.Error(), "")
+		return
+	}
+	parent, err := m.get(workspaceID)
+	if err != nil {
+		m.commandErrorForSurface(c, workspaceID, surface, "invalid_workspace", err.Error(), "")
+		return
+	}
+	session, resolved, err := parent.resolveSurfaceTab(chatID, surface)
+	if err != nil {
+		m.commandErrorForTabSurface(c, workspaceID, chatID, surface, "invalid_chat", err.Error(), "")
+		return
+	}
+	session.mu.Lock()
+	goal, _ := session.currentGoalLocked()
+	if goal == nil {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "goal_not_found", "this chat has no current goal", "")
+		return
+	}
+	previousTranscript := cloneTabTranscript(session.transcript)
+	now := time.Now().UTC()
+	closeGoalActivePeriod(goal, now)
+	goal.Status = sessions.GoalStatusCleared
+	goal.UpdatedAt = now
+	goal.CompletedAt = &now
+	goal.Outcome = "Cleared by the user."
+	goal.PendingStatus = ""
+	goal.PendingOutcome = ""
+	goal.PendingSteering = nil
+	session.transcript.CurrentGoalID = ""
+	if err := session.persistAndEmitGoalLocked(); err != nil {
+		session.transcript = previousTranscript
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "goal_persist_failed", err.Error(), "")
+		return
+	}
+	cancel := session.cancel
+	session.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 func (m *chatSessionManager) clear(c *client, workspaceID, chatID, surfaceValue string) {
 	surface, surfaceErr := normalizeChatSurface(surfaceValue)
 	if surfaceErr != nil {
@@ -541,6 +990,11 @@ func (m *chatSessionManager) clear(c *client, workspaceID, chatID, surfaceValue 
 	if session.isBusyLocked() {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_busy", "the current chat cannot be cleared while a response is active", "")
+		return
+	}
+	if session.goalProtectsTranscriptLocked() {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "goal_transcript_locked", "clear the current goal before clearing this chat", "")
 		return
 	}
 
@@ -643,7 +1097,8 @@ func (m *chatSessionManager) compress(c *client, workspaceID, chatID, surfaceVal
 	researchEnabled := m.server.settings.ResearchAgentConcurrency > 0 && researchStreamer != nil && modeAllowsResearch(mode)
 	prefix := []llm.Message{m.server.agentModeSystemMessage(session.workspace, mode, lastTurn.UserContent, researchEnabled)}
 	toolSchema := m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{
-		PlanMode: mode.ID == agentmodes.PlanID, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID,
+		PlanMode: mode.ID == agentmodes.PlanID, GoalMode: mode.ID == agentmodes.GoalID,
+		ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID,
 	})
 	if session.transcript.ContextCheckpoint != nil {
 		toolSchema = append(toolSchema, contextHistorySearchToolSchema())
@@ -801,6 +1256,11 @@ func (m *chatSessionManager) deleteMessage(c *client, workspaceID, chatID, surfa
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_busy", "messages cannot be deleted while a response is active", "")
 		return
 	}
+	if session.goalProtectsTranscriptLocked() {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "goal_transcript_locked", "messages cannot be deleted while the current goal can still resume", "")
+		return
+	}
 
 	updated := cloneTabTranscript(session.transcript)
 	if err := deleteTranscriptMessage(&updated, turnID, role); err != nil {
@@ -884,6 +1344,11 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_busy", "messages cannot be rerun while a response is active", "")
 		return
 	}
+	if session.goalProtectsTranscriptLocked() {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "goal_transcript_locked", "messages cannot be rerun or edited while the current goal can still resume", "")
+		return
+	}
 	selected, _, err := rerunTurn(session.transcript, turnID)
 	if err != nil {
 		session.mu.Unlock()
@@ -926,6 +1391,11 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_busy", "messages cannot be rerun while a response is active", requestID)
 		return
 	}
+	if session.goalProtectsTranscriptLocked() {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "goal_transcript_locked", "messages cannot be rerun or edited while the current goal can still resume", requestID)
+		return
+	}
 	if session.transcript.Revision != expectedRevision {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "message_rerun_conflict", "the conversation changed before the message could be rerun", requestID)
@@ -948,7 +1418,7 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 	visionMode := updated.Vision || messagesRequireMedia(messages)
 	settings, streamer := m.server.routeMediaChat(settings, messages, visionMode)
 	planMode := mode.ID == agentmodes.PlanID
-	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID})))
+	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, GoalMode: mode.ID == agentmodes.GoalID, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID})))
 	if err != nil {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "invalid_request", err.Error(), requestID)
@@ -1061,6 +1531,11 @@ func (m *chatSessionManager) editAssistantMessage(c *client, workspaceID, chatID
 	if session.isBusyLocked() {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_busy", "messages cannot be edited while a response is active", "")
+		return
+	}
+	if session.goalProtectsTranscriptLocked() {
+		session.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "goal_transcript_locked", "messages cannot be edited while the current goal can still resume", "")
 		return
 	}
 	updated := cloneTabTranscript(session.transcript)
@@ -1192,6 +1667,15 @@ func cloneTabTranscript(transcript sessions.TabTranscript) sessions.TabTranscrip
 		clone.Turns[index].Videos = append([]sessions.MediaAttachment(nil), transcript.Turns[index].Videos...)
 		clone.Turns[index].References = append([]sessions.PromptReference(nil), transcript.Turns[index].References...)
 		clone.Turns[index].EditorContext = cloneEditorContextSummary(transcript.Turns[index].EditorContext)
+		clone.Turns[index].GoalSteering = append([]sessions.GoalSteering(nil), transcript.Turns[index].GoalSteering...)
+		for steeringIndex := range clone.Turns[index].GoalSteering {
+			steering := &clone.Turns[index].GoalSteering[steeringIndex]
+			original := &transcript.Turns[index].GoalSteering[steeringIndex]
+			steering.Images = append([]sessions.MediaAttachment(nil), original.Images...)
+			steering.Videos = append([]sessions.MediaAttachment(nil), original.Videos...)
+			steering.References = append([]sessions.PromptReference(nil), original.References...)
+			steering.EditorContext = cloneEditorContextSummary(original.EditorContext)
+		}
 		clone.Turns[index].FileChanges = cloneFileChanges(transcript.Turns[index].FileChanges)
 		clone.Turns[index].AssistantTurns = append([]sessions.AssistantTurn(nil), transcript.Turns[index].AssistantTurns...)
 		for assistantIndex := range clone.Turns[index].AssistantTurns {
@@ -1209,6 +1693,28 @@ func cloneTabTranscript(transcript sessions.TabTranscript) sessions.TabTranscrip
 	}
 	clone.Messages = append([]llm.Message(nil), transcript.Messages...)
 	clone.ContextCheckpoint = cloneContextCheckpoint(transcript.ContextCheckpoint)
+	clone.Goals = append([]sessions.GoalState(nil), transcript.Goals...)
+	for index := range clone.Goals {
+		goal := &clone.Goals[index]
+		original := &transcript.Goals[index]
+		if original.CompletedAt != nil {
+			value := *original.CompletedAt
+			goal.CompletedAt = &value
+		}
+		if original.ActiveSince != nil {
+			value := *original.ActiveSince
+			goal.ActiveSince = &value
+		}
+		goal.PendingSteering = append([]sessions.GoalSteering(nil), original.PendingSteering...)
+		for steeringIndex := range goal.PendingSteering {
+			steering := &goal.PendingSteering[steeringIndex]
+			originalSteering := &original.PendingSteering[steeringIndex]
+			steering.Images = append([]sessions.MediaAttachment(nil), originalSteering.Images...)
+			steering.Videos = append([]sessions.MediaAttachment(nil), originalSteering.Videos...)
+			steering.References = append([]sessions.PromptReference(nil), originalSteering.References...)
+			steering.EditorContext = cloneEditorContextSummary(originalSteering.EditorContext)
+		}
+	}
 	return clone
 }
 
@@ -1442,6 +1948,12 @@ func (m *chatSessionManager) closeTab(c *client, workspaceID, chatID string, sto
 		return
 	}
 	tab.mu.Lock()
+	if tab.goalProtectsTranscriptLocked() {
+		tab.mu.Unlock()
+		parent.mu.Unlock()
+		m.commandErrorForTab(c, workspaceID, chatID, "goal_transcript_locked", "clear the current goal before closing this chat", "")
+		return
+	}
 	if tab.isBusyLocked() && !stopIfBusy {
 		tab.mu.Unlock()
 		parent.mu.Unlock()
@@ -1547,6 +2059,9 @@ func (m *chatSessionManager) commandErrorForSurface(c *client, workspaceID strin
 }
 
 func (m *chatSessionManager) commandErrorForTabSurface(c *client, workspaceID, chatID string, surface chatSurface, code, message, requestID string) {
+	if c == nil {
+		return
+	}
 	payload := map[string]any{
 		"type": "command_error", "workspaceId": workspaceID, "code": code,
 		"error": message, "requestId": requestID, "surface": surface,
@@ -1914,8 +2429,11 @@ func (w *chatWorkspaceSession) sendSnapshot(c *client, surface chatSurface) {
 			Type: "session_snapshot", WorkspaceID: w.workspace.ID, Surface: surface,
 			ChatID: codeChat.transcript.ChatID, ActiveChatID: codeChat.transcript.ChatID,
 			Sequence: w.codeSequence.Load(), Revision: codeChat.transcript.Revision,
-			Tabs:  []chatTabSummary{{ChatID: codeChat.transcript.ChatID, Preview: preview, Busy: codeChat.isBusyLocked(), Revision: codeChat.transcript.Revision}},
-			Turns: codeChat.transcript.Turns, ActiveTurn: codeChat.active,
+			Tabs: []chatTabSummary{{
+				ChatID: codeChat.transcript.ChatID, Preview: preview, Busy: codeChat.isBusyLocked(),
+				Revision: codeChat.transcript.Revision, GoalStatus: codeChat.currentGoalStatusLocked(),
+			}},
+			Turns: codeChat.transcriptTurnsForSnapshotLocked(), ActiveTurn: codeChat.active, Goal: codeChat.goalSnapshotLocked(),
 		}
 		c.sendJSON(snapshot)
 		codeChat.mu.Unlock()
@@ -1939,12 +2457,14 @@ func (w *chatWorkspaceSession) sendSnapshot(c *client, surface chatSurface) {
 		}
 		snapshot.Tabs = append(snapshot.Tabs, chatTabSummary{
 			ChatID: chatID, Preview: preview, Busy: tab.isBusyLocked(), Revision: tab.transcript.Revision,
+			GoalStatus: tab.currentGoalStatusLocked(),
 		})
 		if chatID == w.activeChatID {
 			active = tab
 			snapshot.Revision = tab.transcript.Revision
-			snapshot.Turns = tab.transcript.Turns
+			snapshot.Turns = tab.transcriptTurnsForSnapshotLocked()
 			snapshot.ActiveTurn = tab.active
+			snapshot.Goal = tab.goalSnapshotLocked()
 		} else {
 			tab.mu.Unlock()
 		}
@@ -1978,6 +2498,145 @@ func (s *chatSession) hasRequestLocked(requestID string) bool {
 		}
 	}
 	return false
+}
+
+func (s *chatSession) hasGoalSteeringLocked(steeringID string) bool {
+	if steeringID == "" {
+		return false
+	}
+	if s.active != nil {
+		for _, steering := range s.active.GoalSteering {
+			if steering.ID == steeringID {
+				return true
+			}
+		}
+	}
+	for _, goal := range s.transcript.Goals {
+		for _, steering := range goal.PendingSteering {
+			if steering.ID == steeringID {
+				return true
+			}
+		}
+	}
+	for _, turn := range s.transcript.Turns {
+		for _, steering := range turn.GoalSteering {
+			if steering.ID == steeringID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *chatSession) currentGoalLocked() (*sessions.GoalState, int) {
+	if strings.TrimSpace(s.transcript.CurrentGoalID) == "" {
+		return nil, -1
+	}
+	for index := range s.transcript.Goals {
+		if s.transcript.Goals[index].ID == s.transcript.CurrentGoalID {
+			return &s.transcript.Goals[index], index
+		}
+	}
+	return nil, -1
+}
+
+func (s *chatSession) goalByIDLocked(goalID string) *sessions.GoalState {
+	for index := range s.transcript.Goals {
+		if s.transcript.Goals[index].ID == goalID {
+			return &s.transcript.Goals[index]
+		}
+	}
+	return nil
+}
+
+func (s *chatSession) transcriptTurnsForSnapshotLocked() []sessions.Turn {
+	if s.active == nil {
+		return s.transcript.Turns
+	}
+	turns := make([]sessions.Turn, 0, len(s.transcript.Turns))
+	for _, turn := range s.transcript.Turns {
+		if turn.ID != s.active.ID {
+			turns = append(turns, turn)
+		}
+	}
+	return turns
+}
+
+func (s *chatSession) currentGoalStatusLocked() sessions.GoalStatus {
+	goal, _ := s.currentGoalLocked()
+	if goal == nil {
+		return ""
+	}
+	return goal.Status
+}
+
+func (s *chatSession) goalProtectsTranscriptLocked() bool {
+	goal, _ := s.currentGoalLocked()
+	if goal == nil {
+		return false
+	}
+	switch goal.Status {
+	case sessions.GoalStatusActive, sessions.GoalStatusPaused, sessions.GoalStatusBlocked:
+		return true
+	default:
+		return false
+	}
+}
+
+func snapshotGoal(goal *sessions.GoalState) *goalSnapshot {
+	if goal == nil {
+		return nil
+	}
+	activeSeconds := goal.ActiveSeconds
+	if goal.Status == sessions.GoalStatusActive && goal.ActiveSince != nil {
+		activeSeconds += max(int64(0), int64(time.Since(*goal.ActiveSince).Seconds()))
+	}
+	snapshot := &goalSnapshot{
+		ID: goal.ID, Objective: goal.Objective, ObjectiveRevision: goal.ObjectiveRevision,
+		Status: goal.Status, Model: goal.Model, CreatedAt: goal.CreatedAt, UpdatedAt: goal.UpdatedAt,
+		CompletedAt: goal.CompletedAt, ActiveSeconds: activeSeconds, StepCount: goal.StepCount,
+		TokensUsed: goal.TokensUsed, Outcome: goal.Outcome, LastError: goal.LastError,
+		PendingSteering: len(goal.PendingSteering),
+	}
+	for _, steering := range goal.PendingSteering {
+		snapshot.PendingInputs = append(snapshot.PendingInputs, goalSteeringView{
+			ID: steering.ID, Content: steering.Content, Images: steering.Images, Videos: steering.Videos,
+			References: steering.References, EditorContext: steering.EditorContext, CreatedAt: steering.CreatedAt,
+		})
+	}
+	return snapshot
+}
+
+func (s *chatSession) goalSnapshotLocked() *goalSnapshot {
+	goal, _ := s.currentGoalLocked()
+	return snapshotGoal(goal)
+}
+
+func closeGoalActivePeriod(goal *sessions.GoalState, now time.Time) {
+	if goal.ActiveSince != nil {
+		goal.ActiveSeconds += max(int64(0), int64(now.Sub(*goal.ActiveSince).Seconds()))
+		goal.ActiveSince = nil
+	}
+}
+
+func cancelPendingGoalTerminalForSteering(goal *sessions.GoalState, now time.Time) bool {
+	if goal == nil || goal.Status != sessions.GoalStatusActive || goal.PendingStatus == "" || len(goal.PendingSteering) == 0 {
+		return false
+	}
+	goal.PendingStatus = ""
+	goal.PendingOutcome = ""
+	goal.UpdatedAt = now
+	return true
+}
+
+func (s *chatSession) persistAndEmitGoalLocked() error {
+	s.transcript.Revision++
+	if err := s.parent.persistTabLocked(s.transcript); err != nil {
+		s.transcript.Revision--
+		return err
+	}
+	s.emitLocked(map[string]any{"type": "goal_updated", "goal": s.goalSnapshotLocked()})
+	return nil
 }
 
 func (s *chatSession) emitLocked(event map[string]any) {
@@ -2127,7 +2786,10 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 	generatedVideos := make(map[string]tools.AttachedVideo)
 	emptyAssistantRetries := 0
 	transientStreamRetries := 0
+	truncationContinues := 0
 	planMode := mode.ID == agentmodes.PlanID
+	goalMode := mode.ID == agentmodes.GoalID
+	goalTerminalPending := false
 	var research *chatResearchRun
 	if researchEnabled {
 		researchSettings, researchStreamer := s.manager.server.researchChat()
@@ -2142,14 +2804,69 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 	usageSource := "estimated"
 	compressionCooldown := false
 	contextLengthRetries := 0
+	compressionCooldownRounds := 0
+	contextLengthRecoveries := 0
+	thinkingSuppressed := false
 	for assistantNumber := 0; ; assistantNumber++ {
+		goalStepOrigin := ""
 		if ctx.Err() != nil {
 			s.finish(turnID, "stopped", "", canonical, checkpoint)
 			return
 		}
+		if goalMode {
+			s.mu.Lock()
+			if !s.isActiveLocked(turnID) {
+				s.mu.Unlock()
+				return
+			}
+			goal := s.goalByIDLocked(s.active.GoalID)
+			if goalTerminalPending && goal != nil && goal.Status == sessions.GoalStatusActive {
+				if goal.PendingStatus == "" || cancelPendingGoalTerminalForSteering(goal, time.Now().UTC()) {
+					goalTerminalPending = false
+					forceFinalWithoutTools = false
+				}
+			}
+			if goal == nil || goal.Status != sessions.GoalStatusActive {
+				s.mu.Unlock()
+				s.finish(turnID, "stopped", "", canonical, checkpoint)
+				return
+			}
+			canonicalLength := len(canonical)
+			activeSteeringLength := len(s.active.GoalSteering)
+			var steeringRollback sessions.TabTranscript
+			if len(goal.PendingSteering) > 0 {
+				steeringRollback = cloneTabTranscript(s.transcript)
+			}
+			var appliedSteering []sessions.GoalSteering
+			canonical, appliedSteering = s.takeGoalSteeringLocked(turnID, canonical)
+			if len(appliedSteering) > 0 {
+				goalStepOrigin = "steering"
+			} else if assistantNumber == 0 {
+				goalStepOrigin = s.active.GoalOrigin
+			} else {
+				goalStepOrigin = "continuation"
+			}
+			prefix = replaceGoalSystemMessage(prefix, *goal)
+			var persistErr error
+			if len(appliedSteering) > 0 {
+				persistErr = s.checkpointGoalProgressLocked(turnID, canonical, checkpoint)
+				if persistErr != nil {
+					s.transcript = steeringRollback
+					s.active.GoalSteering = s.active.GoalSteering[:activeSteeringLength]
+					canonical = canonical[:canonicalLength]
+				} else {
+					s.emitAppliedGoalSteeringLocked(turnID, appliedSteering)
+				}
+			}
+			s.mu.Unlock()
+			if persistErr != nil {
+				s.finish(turnID, "error", "could not persist queued goal guidance: "+persistErr.Error(), canonical, checkpoint)
+				return
+			}
+		}
 		toolSchema := []llm.Tool(nil)
 		if !forceFinalWithoutTools {
-			toolSchema = s.manager.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: research != nil, SandboxGUI: s.manager.server.sandboxGUIEnabled(s.workspace.ID), WorkspaceID: s.workspace.ID})
+			toolSchema = s.manager.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, GoalMode: goalMode, ResearchEnabled: research != nil, SandboxGUI: s.manager.server.sandboxGUIEnabled(s.workspace.ID), WorkspaceID: s.workspace.ID})
 			if checkpoint != nil {
 				toolSchema = append(toolSchema, contextHistorySearchToolSchema())
 			}
@@ -2158,8 +2875,10 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 		messages := append(cloneContextMessages(prefix), buildCompressedModelHistory(canonical, checkpoint)...)
 		currentTokens := contextRequestTokens(settings, messages, toolSchema)
 		hardLimitPreflight := currentTokens+settings.MaxTokens > settings.ContextLength
-		coolingDown := compressionCooldown
-		compressionCooldown = false
+		coolingDown := compressionCooldownRounds > 0
+		if coolingDown {
+			compressionCooldownRounds--
+		}
 		if hardLimitPreflight && !manualCompression && !settings.CompressionEnabled() {
 			s.finish(turnID, "error", "the next request would exceed the endpoint context window and automatic context compression is disabled", canonical, checkpoint)
 			return
@@ -2174,16 +2893,24 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				}
 			}
 			updated, result, compressionErr := s.compressActiveContext(ctx, compressionSettings, canonical, checkpoint, prefix, toolSchema, turnID, assistantNumber, manualCompression, manualCompressionID, observedTokens, usageSource)
-			compressionCooldown = true
 			if updated != nil {
 				checkpoint = updated
 				messages = append(cloneContextMessages(prefix), buildCompressedModelHistory(canonical, checkpoint)...)
 				observedTokens = result.AfterTokens
 				usageSource = result.UsageSource
+				compressionCooldownRounds = 1
 				if !forceFinalWithoutTools {
-					toolSchema = s.manager.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, ResearchEnabled: research != nil, SandboxGUI: s.manager.server.sandboxGUIEnabled(s.workspace.ID), WorkspaceID: s.workspace.ID})
+					toolSchema = s.manager.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, GoalMode: goalMode, ResearchEnabled: research != nil, SandboxGUI: s.manager.server.sandboxGUIEnabled(s.workspace.ID), WorkspaceID: s.workspace.ID})
 					toolSchema = append(toolSchema, contextHistorySearchToolSchema())
 				}
+			} else if compressionErr != nil {
+				// The attempt failed or could not reclaim anything (summary
+				// error, empty response, or the recent tail alone exceeds the
+				// target). Back off for several rounds instead of retrying the
+				// same failing attempt every other round until the hard limit
+				// trips. Hard-limit preflights below still run every round as
+				// the safety valve.
+				compressionCooldownRounds = compressionFailureCooldownRounds
 			}
 			currentTokens = contextRequestTokens(settings, messages, toolSchema)
 			if currentTokens+settings.MaxTokens > settings.ContextLength {
@@ -2199,7 +2926,11 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 		if len(toolSchema) > 0 {
 			requestOptions = append(requestOptions, llm.WithTools(toolSchema))
 		}
-		turnRequest, requestErr := llm.NewChatRequest(settings, messages, requestOptions...)
+		requestSettings := settings
+		if thinkingSuppressed {
+			requestSettings = withoutThinkingSettings(settings)
+		}
+		turnRequest, requestErr := llm.NewChatRequest(requestSettings, messages, requestOptions...)
 		if requestErr != nil {
 			s.finish(turnID, "error", requestErr.Error(), canonical, checkpoint)
 			return
@@ -2211,7 +2942,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			return
 		}
 		s.active.Model = turnRequest.Model
-		s.active.AssistantTurns = append(s.active.AssistantTurns, sessions.AssistantTurn{Number: assistantNumber})
+		s.active.AssistantTurns = append(s.active.AssistantTurns, sessions.AssistantTurn{Number: assistantNumber, GoalOrigin: goalStepOrigin})
 		stepNumber := assistantNumber
 		s.appendTrajectoryLocked("request/start", turnID, &stepNumber, map[string]any{
 			"request": turnRequest, "startedAt": requestStartedAt,
@@ -2251,10 +2982,14 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 		}
 		step := &s.active.AssistantTurns[len(s.active.AssistantTurns)-1]
 		step.HasToolCalls = len(streamResult.ToolCalls) > 0
+		step.GoalCheckpoint = goalMode && len(streamResult.ToolCalls) == 0 && !goalTerminalPending
 		assistantTurnEnd := map[string]any{
 			"type": "assistant_turn_end", "turnId": turnID, "turn": assistantNumber,
 			"hasToolCalls": len(streamResult.ToolCalls) > 0,
 			"completed":    streamResult.Completed, "finishReason": streamResult.FinishReason,
+		}
+		if step.GoalCheckpoint {
+			assistantTurnEnd["goalCheckpoint"] = true
 		}
 		if err != nil && !errors.Is(err, errChatCanceled) {
 			assistantTurnEnd["error"] = err.Error()
@@ -2272,6 +3007,30 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				contextLengthRetries++
 				compressionCooldown = false // force the preflight compression check next round
 				canonical = append(canonical, assistant) // retain partial response so it can be retired by compression
+			} else if llm.IsContextLengthExceeded(err) && contextLengthRecoveries < maxContextLengthRecoveries {
+				// The provider rejected the request as too large. This happens
+				// when the configured Context Length overestimates the model's
+				// real window, so the preflight never triggered. Recover by
+				// forcing compression against the observed limit and retrying
+				// the round instead of failing the turn.
+				contextLengthRecoveries++
+				settings.ContextLength = contextLengthAfterRejection(settings, err, currentTokens)
+				compressionCooldownRounds = 0
+				updated, result, compressionErr := s.compressActiveContext(ctx, settings, canonical, checkpoint, prefix, toolSchema, turnID, assistantNumber, false, "", observedTokens, usageSource)
+				if updated != nil {
+					checkpoint = updated
+					observedTokens = result.AfterTokens
+					usageSource = result.UsageSource
+				}
+				recoveredMessages := append(cloneContextMessages(prefix), buildCompressedModelHistory(canonical, checkpoint)...)
+				if contextRequestTokens(settings, recoveredMessages, toolSchema)+settings.MaxTokens > settings.ContextLength {
+					detail := "the compressed context still exceeds the endpoint context window"
+					if compressionErr != nil {
+						detail = "context compression could not reclaim enough space: " + compressionErr.Error()
+					}
+					s.finish(turnID, "error", "the next request would exceed the endpoint context window and "+detail, canonical, checkpoint)
+					return
+				}
 				continue
 			}
 			if isEmptyAssistantResponse(streamResult.Content, streamResult.ToolCalls) && transientStreamRetries < maxTransientStreamRetries {
@@ -2301,10 +3060,29 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				canonical = append(canonical, lengthContinuationMessage(interruptedTool))
 				continue
 			}
+			if isTruncationFinishError(finishErr) && truncationContinues < maxTruncationContinues {
+				// The model hit its output token limit. Keep the partial turn
+				// and auto-continue from where it stopped instead of failing
+				// the whole turn. Tool calls are dropped: a truncated call has
+				// invalid partial arguments that providers reject on replay.
+				// Thinking is suppressed for the continuation so reasoning
+				// cannot consume the output budget again before any answer or
+				// tool call is produced.
+				truncationContinues++
+				thinkingSuppressed = true
+				canonical = append(canonical, llm.Message{Role: llm.RoleAssistant, Content: streamResult.Content})
+				canonical = append(canonical, truncationContinueMessage())
+				continue
+			}
+			if isTruncationFinishError(finishErr) {
+				s.finish(turnID, "error", truncationExhaustedError(maxTruncationContinues+1).Error(), canonical, checkpoint)
+				return
+			}
 			s.finish(turnID, "error", finishErr.Error(), canonical, checkpoint)
 			return
 		}
 		transientStreamRetries = 0
+		thinkingSuppressed = false
 		if isEmptyAssistantResponse(streamResult.Content, streamResult.ToolCalls) {
 			if emptyAssistantRetries >= maxEmptyAssistantRetries {
 				s.finish(turnID, "error", emptyAssistantResponseError().Error(), canonical, checkpoint)
@@ -2323,11 +3101,35 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			}
 			usageSource = "provider"
 		}
+		if goalMode {
+			stepTokens := currentTokens + streamResult.EstimatedOutputTokens
+			if streamResult.Usage != nil {
+				stepTokens = streamResult.Usage.TotalTokens
+				if stepTokens == 0 {
+					stepTokens = streamResult.Usage.PromptTokens + streamResult.Usage.CompletionTokens
+				}
+			}
+			s.mu.Lock()
+			if s.isActiveLocked(turnID) {
+				if goal := s.goalByIDLocked(s.active.GoalID); goal != nil {
+					goal.StepCount++
+					goal.TokensUsed += max(0, stepTokens)
+					goal.UpdatedAt = time.Now().UTC()
+				}
+			}
+			s.mu.Unlock()
+		}
 
 		if len(streamResult.ToolCalls) == 0 && research != nil && research.HasOutstanding() {
 			researchFinalizationAttempts++
 			if researchFinalizationAttempts <= 3 {
 				canonical = append(canonical, llm.Message{Role: llm.RoleUser, Content: "Research agents are still running or have unread reports. Use research_agents_wait to collect the necessary reports before writing the final answer."})
+				if goalMode {
+					if err := s.checkpointGoalProgress(turnID, canonical, checkpoint); err != nil {
+						s.finish(turnID, "error", "could not persist goal progress: "+err.Error(), canonical, checkpoint)
+						return
+					}
+				}
 				continue
 			}
 			fallback := research.FallbackMarkdown()
@@ -2337,15 +3139,84 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			}
 			canonical = append(canonical, llm.Message{Role: llm.RoleUser, Content: "Synthesize the final answer now without calling more tools. The research coordinator supplied this bounded fallback:\n\n" + fallback})
 			forceFinalWithoutTools = true
+			if goalMode {
+				if err := s.checkpointGoalProgress(turnID, canonical, checkpoint); err != nil {
+					s.finish(turnID, "error", "could not persist goal progress: "+err.Error(), canonical, checkpoint)
+					return
+				}
+			}
 			continue
 		}
 
 		if len(streamResult.ToolCalls) == 0 {
-			s.finish(turnID, "done", "", canonical, checkpoint)
-			return
+			if goalMode && goalTerminalPending {
+				s.mu.Lock()
+				continueGoal := false
+				if s.isActiveLocked(turnID) {
+					goal := s.goalByIDLocked(s.active.GoalID)
+					if goal != nil && goal.Status == sessions.GoalStatusActive {
+						continueGoal = goal.PendingStatus == "" || cancelPendingGoalTerminalForSteering(goal, time.Now().UTC())
+					}
+					if continueGoal {
+						s.active.AssistantTurns[len(s.active.AssistantTurns)-1].GoalCheckpoint = true
+					}
+				}
+				s.mu.Unlock()
+				if continueGoal {
+					goalTerminalPending = false
+					forceFinalWithoutTools = false
+					if err := s.checkpointGoalProgress(turnID, canonical, checkpoint); err != nil {
+						s.finish(turnID, "error", "could not persist goal progress: "+err.Error(), canonical, checkpoint)
+						return
+					}
+					canonical = append(canonical, goalContinuationMessage())
+					continue
+				}
+			}
+			if goalMode && !goalTerminalPending {
+				if err := s.checkpointGoalProgress(turnID, canonical, checkpoint); err != nil {
+					s.finish(turnID, "error", "could not persist goal progress: "+err.Error(), canonical, checkpoint)
+					return
+				}
+				canonical = append(canonical, goalContinuationMessage())
+				forceFinalWithoutTools = false
+				continue
+			}
+			if s.finish(turnID, "done", "", canonical, checkpoint) {
+				return
+			}
+			s.mu.Lock()
+			goalStillActive := false
+			if s.isActiveLocked(turnID) {
+				goal := s.goalByIDLocked(s.active.GoalID)
+				goalStillActive = goal != nil && goal.Status == sessions.GoalStatusActive
+			}
+			s.mu.Unlock()
+			if !goalStillActive {
+				continue
+			}
+			goalTerminalPending = false
+			forceFinalWithoutTools = false
+			if err := s.checkpointGoalProgress(turnID, canonical, checkpoint); err != nil {
+				s.finish(turnID, "error", "could not persist goal progress: "+err.Error(), canonical, checkpoint)
+				return
+			}
+			canonical = append(canonical, goalContinuationMessage())
+			continue
 		}
 
 		imageResult := false
+		goalTerminalAccepted := false
+		finalGoalToolBatch := goalMode && goalTerminalPending
+		mixedGoalTerminalCall := false
+		if len(streamResult.ToolCalls) > 1 {
+			for _, call := range streamResult.ToolCalls {
+				if call.Function.Name == tools.UpdateGoalToolName {
+					mixedGoalTerminalCall = true
+					break
+				}
+			}
+		}
 		for callOrder, call := range streamResult.ToolCalls {
 			if ctx.Err() != nil {
 				s.finish(turnID, "stopped", "", canonical, checkpoint)
@@ -2359,7 +3230,9 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 
 			var questionWait *planQuestionWait
 			var questionError *tools.ExecutionError
-			if call.Function.Name == tools.AskUserQuestionsToolName {
+			var goalUpdate *tools.UpdateGoalArgs
+			var goalUpdateError *tools.ExecutionError
+			if !finalGoalToolBatch && !mixedGoalTerminalCall && call.Function.Name == tools.AskUserQuestionsToolName {
 				questionRounds++
 				questionSet, prepareErr := preparePlanQuestions(callID, call.Function.Arguments, planMode, questionRounds)
 				if prepareErr != nil {
@@ -2368,6 +3241,23 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 					questionWait = &planQuestionWait{
 						turnID: turnID, assistantTurn: assistantNumber, callID: callID, callOrder: callOrder,
 						set: questionSet, resolved: make(chan planQuestionResolution, 1),
+					}
+				}
+			}
+			if finalGoalToolBatch {
+				goalUpdateError = &tools.ExecutionError{Code: "goal_final_response_tools_disabled", Message: "the final goal response cannot call tools after update_goal was accepted"}
+			} else if mixedGoalTerminalCall {
+				goalUpdateError = &tools.ExecutionError{Code: "goal_status_must_be_solo", Message: "a step containing update_goal cannot execute any other tool calls"}
+			} else if call.Function.Name == tools.UpdateGoalToolName {
+				switch {
+				case !goalMode:
+					goalUpdateError = &tools.ExecutionError{Code: "goal_mode_required", Message: "update_goal is only available in Goal mode"}
+				default:
+					parsed, parseErr := tools.ParseUpdateGoalArgs(json.RawMessage(call.Function.Arguments))
+					if parseErr != nil {
+						goalUpdateError = &tools.ExecutionError{Code: "invalid_arguments", Message: parseErr.Error()}
+					} else {
+						goalUpdate = &parsed
 					}
 				}
 			}
@@ -2428,6 +3318,19 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				result = tools.ExecutionResult{Tool: call.Function.Name, Error: questionError}
 			case questionWait != nil:
 				result = s.awaitPlanQuestions(ctx, questionWait)
+			case goalUpdateError != nil:
+				result = tools.ExecutionResult{Tool: call.Function.Name, Error: goalUpdateError}
+			case goalUpdate != nil:
+				if research != nil && research.HasOutstanding() {
+					result = tools.ExecutionResult{Tool: call.Function.Name, Error: &tools.ExecutionError{Code: "goal_research_pending", Message: "collect or cancel outstanding research before updating the goal status"}}
+				} else if terminalErr := s.setGoalTerminal(turnID, *goalUpdate); terminalErr != nil {
+					result = tools.ExecutionResult{Tool: call.Function.Name, Error: terminalErr}
+				} else {
+					goalTerminalAccepted = true
+					result = tools.ExecutionResult{Tool: call.Function.Name, Success: true, Output: map[string]any{
+						"status": goalUpdate.Status, "reason": goalUpdate.Reason,
+					}}
+				}
 			case call.Function.Name == contextHistorySearchToolName:
 				result = s.executeContextHistorySearch(canonical, checkpoint, json.RawMessage(call.Function.Arguments))
 			default:
@@ -2523,6 +3426,24 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			s.mu.Unlock()
 			if tools.IsResearchAgentToolName(call.Function.Name) {
 				researchFinalizationAttempts = 0
+			}
+		}
+		if finalGoalToolBatch {
+			message := "the model attempted to call tools during the tools-disabled final goal response"
+			if err := s.checkpointGoalProgress(turnID, canonical, checkpoint); err != nil {
+				message = "could not persist the rejected final goal response: " + err.Error()
+			}
+			s.finish(turnID, "error", message, canonical, checkpoint)
+			return
+		}
+		if goalTerminalAccepted {
+			goalTerminalPending = true
+			forceFinalWithoutTools = true
+		}
+		if goalMode {
+			if err := s.checkpointGoalProgress(turnID, canonical, checkpoint); err != nil {
+				s.finish(turnID, "error", "could not persist goal progress: "+err.Error(), canonical, checkpoint)
+				return
 			}
 		}
 		// Vision re-routing is gated on successful image results only: video
@@ -2697,19 +3618,170 @@ func durationUntil(start time.Time, end *time.Time) any {
 	return end.Sub(start).Milliseconds()
 }
 
-func (s *chatSession) finish(turnID, status, message string, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint) {
+func appendGoalSteeringMessages(canonical []llm.Message, steering []sessions.GoalSteering, recordIndices bool) []llm.Message {
+	for index := range steering {
+		input := &steering[index]
+		if input.ContextPrompt != "" {
+			canonical = append(canonical, llm.Message{Role: llm.RoleSystem, Name: "echo-goal-steering-context", Content: input.ContextPrompt})
+		}
+		content := input.ModelContent
+		if strings.TrimSpace(content) == "" {
+			content = input.Content
+		}
+		message := llm.Message{Role: llm.RoleUser, Content: content}
+		message.ContentParts = chatMediaContentParts(content, input.Images, input.Videos)
+		if recordIndices {
+			input.UserMessageIndex = len(canonical)
+		}
+		canonical = append(canonical, message)
+	}
+	return canonical
+}
+
+func (s *chatSession) takeGoalSteeringLocked(turnID string, canonical []llm.Message) ([]llm.Message, []sessions.GoalSteering) {
+	if !s.isActiveLocked(turnID) || s.active.GoalID == "" {
+		return canonical, nil
+	}
+	goal := s.goalByIDLocked(s.active.GoalID)
+	if goal == nil || len(goal.PendingSteering) == 0 {
+		return canonical, nil
+	}
+	steering := append([]sessions.GoalSteering(nil), goal.PendingSteering...)
+	goal.PendingSteering = nil
+	goal.UpdatedAt = time.Now().UTC()
+	canonical = appendGoalSteeringMessages(canonical, steering, true)
+	s.active.GoalSteering = append(s.active.GoalSteering, steering...)
+	return canonical, steering
+}
+
+func (s *chatSession) emitAppliedGoalSteeringLocked(turnID string, steering []sessions.GoalSteering) {
+	for _, input := range steering {
+		s.emitLocked(map[string]any{
+			"type": "goal_steering_applied", "turnId": turnID, "goalId": s.active.GoalID, "steeringId": input.ID,
+			"message": input.Content, "images": input.Images, "videos": input.Videos,
+			"references": input.References, "editorContext": input.EditorContext,
+		})
+	}
+}
+
+func (s *chatSession) checkpointGoalProgressLocked(turnID string, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint) error {
+	if !s.isActiveLocked(turnID) || s.active.GoalID == "" {
+		return nil
+	}
+	previousTranscript := cloneTabTranscript(s.transcript)
+	now := time.Now().UTC()
+	checkpointTurn := *s.active
+	checkpointTurn.Status = "goal_checkpoint"
+	checkpointTurn.CompletedAt = &now
+	checkpointTurn.ResearchAgents = nil
+	for index := range checkpointTurn.ResearchReasoning {
+		checkpointTurn.ResearchReasoning[index].Replace = false
+	}
+	replaced := false
+	for index := range s.transcript.Turns {
+		if s.transcript.Turns[index].ID == turnID {
+			s.transcript.Turns[index] = checkpointTurn
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		s.transcript.Turns = append(s.transcript.Turns, checkpointTurn)
+	}
+	s.transcript.Messages = sanitizeMessages(canonical)
+	s.transcript.ContextCheckpoint = cloneContextCheckpoint(checkpoint)
+	s.transcript.Revision++
+	if err := s.parent.persistTabLocked(s.transcript); err != nil {
+		s.transcript = previousTranscript
+		s.appendTrajectoryLocked("persistence/error", turnID, nil, map[string]any{
+			"operation": "save_goal_checkpoint", "error": err.Error(),
+		})
+		return err
+	}
+	s.emitLocked(map[string]any{"type": "goal_updated", "goal": s.goalSnapshotLocked()})
+	return nil
+}
+
+func (s *chatSession) checkpointGoalProgress(turnID string, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.checkpointGoalProgressLocked(turnID, canonical, checkpoint)
+}
+
+func (s *chatSession) setGoalTerminal(turnID string, update tools.UpdateGoalArgs) *tools.ExecutionError {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.isActiveLocked(turnID) || s.active.GoalID == "" {
+		return &tools.ExecutionError{Code: "goal_not_active", Message: "the goal is no longer active"}
+	}
+	goal := s.goalByIDLocked(s.active.GoalID)
+	if goal == nil || goal.Status != sessions.GoalStatusActive {
+		return &tools.ExecutionError{Code: "goal_not_active", Message: "the goal is no longer active"}
+	}
+	if len(goal.PendingSteering) > 0 {
+		return &tools.ExecutionError{Code: "goal_steering_pending", Message: "new user guidance is waiting; incorporate it before updating the goal status"}
+	}
+	previousTranscript := cloneTabTranscript(s.transcript)
+	now := time.Now().UTC()
+	if update.Status == "complete" {
+		goal.PendingStatus = sessions.GoalStatusCompleted
+	} else {
+		goal.PendingStatus = sessions.GoalStatusBlocked
+	}
+	goal.PendingOutcome = update.Reason
+	goal.Outcome = ""
+	goal.LastError = ""
+	goal.UpdatedAt = now
+	goal.CompletedAt = nil
+	s.transcript.Revision++
+	if err := s.parent.persistTabLocked(s.transcript); err != nil {
+		s.transcript = previousTranscript
+		return &tools.ExecutionError{Code: "goal_persist_failed", Message: err.Error()}
+	}
+	return nil
+}
+
+func (s *chatSession) finish(turnID, status, message string, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint) bool {
 	s.mu.Lock()
 	if !s.isActiveLocked(turnID) {
 		s.mu.Unlock()
-		return
+		return false
+	}
+	now := time.Now().UTC()
+	goal := s.goalByIDLocked(s.active.GoalID)
+	goalStateChanged := false
+	resumeQueuedGoal := false
+	resumeChatID := ""
+	if goal != nil && status == "done" {
+		if goal.Status != sessions.GoalStatusActive || (goal.PendingStatus != sessions.GoalStatusCompleted && goal.PendingStatus != sessions.GoalStatusBlocked) || len(goal.PendingSteering) > 0 {
+			if goal.Status == sessions.GoalStatusActive {
+				cancelPendingGoalTerminalForSteering(goal, now)
+				if len(s.active.AssistantTurns) > 0 {
+					s.active.AssistantTurns[len(s.active.AssistantTurns)-1].GoalCheckpoint = true
+				}
+			}
+			s.mu.Unlock()
+			return false
+		}
+		closeGoalActivePeriod(goal, now)
+		goal.Status = goal.PendingStatus
+		goal.Outcome = goal.PendingOutcome
+		goal.PendingStatus = ""
+		goal.PendingOutcome = ""
+		goal.LastError = ""
+		goal.CompletedAt = &now
+		goal.UpdatedAt = now
+		goalStateChanged = true
 	}
 	defer func() {
 		s.mu.Unlock()
 		if s.manager.server.sandbox != nil {
 			s.manager.server.sandbox.ReleaseAIControl(s.workspace.ID, turnID)
 		}
+		if resumeQueuedGoal {
+			s.manager.resumeGoal(nil, s.workspace.ID, resumeChatID, string(s.surface), newSessionID("request"))
+		}
 	}()
-	now := time.Now().UTC()
 	s.active.Status = status
 	s.active.Error = message
 	s.active.CompletedAt = &now
@@ -2718,29 +3790,93 @@ func (s *chatSession) finish(turnID, status, message string, canonical []llm.Mes
 		s.active.ResearchReasoning[index].Replace = false
 	}
 	completed := *s.active
+	preserveGoalBoundary := goal != nil && (status == "error" || status == "stopped")
+	goalAttention := false
+	if goal != nil {
+		switch {
+		case status == "error" && goal.Status != sessions.GoalStatusPaused && goal.Status != sessions.GoalStatusCleared:
+			closeGoalActivePeriod(goal, now)
+			goal.Status = sessions.GoalStatusPaused
+			goal.CompletedAt = nil
+			goal.Outcome = ""
+			goal.PendingStatus = ""
+			goal.PendingOutcome = ""
+			goal.LastError = message
+			goal.UpdatedAt = now
+			goalAttention = true
+			goalStateChanged = true
+		case status == "stopped" && goal.Status != sessions.GoalStatusPaused && goal.Status != sessions.GoalStatusCleared:
+			closeGoalActivePeriod(goal, now)
+			goal.Status = sessions.GoalStatusPaused
+			goal.CompletedAt = nil
+			goal.Outcome = ""
+			goal.PendingStatus = ""
+			goal.PendingOutcome = ""
+			goal.LastError = "The goal run was stopped. Resume by inspecting the current workspace state before retrying interrupted work."
+			goal.UpdatedAt = now
+			goalStateChanged = true
+		}
+	}
 	s.appendTrajectoryLocked("turn/end", turnID, nil, map[string]any{
 		"status": status, "error": message, "completedAt": now,
 		"durationMs": now.Sub(s.active.StartedAt).Milliseconds(),
 	})
-	s.transcript.Turns = append(s.transcript.Turns, completed)
-	s.transcript.Messages = sanitizeMessages(canonical)
-	s.transcript.ContextCheckpoint = cloneContextCheckpoint(checkpoint)
+	replaced := false
+	for index := range s.transcript.Turns {
+		if s.transcript.Turns[index].ID == completed.ID {
+			s.transcript.Turns[index] = completed
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		s.transcript.Turns = append(s.transcript.Turns, completed)
+	}
+	if !preserveGoalBoundary {
+		s.transcript.Messages = sanitizeMessages(canonical)
+		s.transcript.ContextCheckpoint = cloneContextCheckpoint(checkpoint)
+	}
 	s.transcript.Revision++
 	persistErr := s.parent.persistTabLocked(s.transcript)
 	if persistErr != nil {
 		s.appendTrajectoryLocked("persistence/error", turnID, nil, map[string]any{
 			"operation": "save_transcript", "error": persistErr.Error(),
 		})
+		if goal != nil && goal.Status != sessions.GoalStatusCleared {
+			previousError := strings.TrimSpace(goal.LastError)
+			closeGoalActivePeriod(goal, now)
+			goal.Status = sessions.GoalStatusPaused
+			goal.CompletedAt = nil
+			goal.Outcome = ""
+			goal.PendingStatus = ""
+			goal.PendingOutcome = ""
+			goal.LastError = "Could not persist the latest goal boundary: " + persistErr.Error()
+			if previousError != "" {
+				goal.LastError += " Previous run error: " + previousError
+			}
+			goal.UpdatedAt = now
+			goalAttention = true
+			goalStateChanged = true
+		}
 	}
 	s.active = nil
 	s.cancel = nil
+	if goal == nil {
+		if currentGoal, _ := s.currentGoalLocked(); currentGoal != nil && currentGoal.Status == sessions.GoalStatusBlocked && len(currentGoal.PendingSteering) > 0 {
+			resumeQueuedGoal = true
+			resumeChatID = s.transcript.ChatID
+		}
+	}
 	event := map[string]any{"type": "turn_finished", "turnId": turnID, "status": status, "error": message, "completedAt": now}
 	if persistErr != nil {
 		event["persistenceError"] = persistErr.Error()
 		logf("persist chat session %s: %v", s.workspace.ID, persistErr)
 	}
 	s.emitLocked(event)
-	if status == "done" {
+	if goal != nil && goalStateChanged {
+		s.emitLocked(map[string]any{"type": "goal_updated", "goal": s.goalSnapshotLocked()})
+	}
+	if persistErr == nil && status == "done" && (goal == nil || goal.Status == sessions.GoalStatusCompleted) {
 		s.manager.server.hub.Broadcast(chatCompletedMessage{
 			Type:          "chat_completed",
 			WorkspaceID:   s.workspace.ID,
@@ -2752,6 +3888,14 @@ func (s *chatSession) finish(turnID, status, message string, canonical []llm.Mes
 			CompletedAt:   now,
 		})
 	}
+	if goal != nil && (goal.Status == sessions.GoalStatusBlocked || goalAttention) {
+		s.manager.server.hub.Broadcast(goalAttentionMessage{
+			Type: "goal_attention", WorkspaceID: s.workspace.ID, WorkspaceName: s.workspace.Name,
+			Surface: s.surface, ChatID: s.transcript.ChatID, TurnID: turnID,
+			Goal: snapshotGoal(goal), OccurredAt: now,
+		})
+	}
+	return true
 }
 
 func (s *chatSession) isActiveLocked(turnID string) bool {
@@ -2858,7 +4002,7 @@ func compactFileChanges(changes []tools.FileChange, roots []tools.WorkspaceRoot)
 func sanitizeMessages(messages []llm.Message) []llm.Message {
 	out := make([]llm.Message, 0, len(messages))
 	for _, message := range messages {
-		if message.Role == llm.RoleSystem && (message.Name == "echo-agent-mode" || message.Name == "echo-code-context") {
+		if message.Role == llm.RoleSystem && (message.Name == "echo-agent-mode" || message.Name == "echo-code-context" || message.Name == "echo-goal") {
 			continue
 		}
 		message = stripMediaContentParts(message)
@@ -2866,6 +4010,38 @@ func sanitizeMessages(messages []llm.Message) []llm.Message {
 		out = append(out, message)
 	}
 	return out
+}
+
+func goalSystemMessage(goal sessions.GoalState) llm.Message {
+	content := fmt.Sprintf(`Durable Goal
+
+Objective:
+%s
+
+Continue working autonomously toward this objective across as many model and tool steps as necessary. An ordinary response is a progress checkpoint, not completion. Before declaring completion, verify the result with appropriate tests or direct inspection. Call update_goal with status "complete" and concrete evidence only when the objective is satisfied. Call update_goal with status "blocked" only when progress genuinely requires user input, authorization, or an external state change. update_goal must be the only tool call in its assistant step.`, goal.Objective)
+	if goal.LastError != "" {
+		content += "\n\nRecovery context:\n" + goal.LastError
+	}
+	return llm.Message{Role: llm.RoleSystem, Name: "echo-goal", Content: content}
+}
+
+func replaceGoalSystemMessage(prefix []llm.Message, goal sessions.GoalState) []llm.Message {
+	updated := cloneContextMessages(prefix)
+	message := goalSystemMessage(goal)
+	for index := range updated {
+		if updated[index].Name == "echo-goal" {
+			updated[index] = message
+			return updated
+		}
+	}
+	return append(updated, message)
+}
+
+func goalContinuationMessage() llm.Message {
+	return llm.Message{
+		Role: llm.RoleUser, Name: "echo-goal-continuation",
+		Content: "Continue making concrete progress toward the durable goal. Do not merely restate the checkpoint. Use update_goal only when completion is verified or a genuine external blocker prevents further progress.",
+	}
 }
 
 func (s *Server) agentModeSystemMessage(workspace workspaces.Workspace, mode agentmodes.Mode, query string, researchEnabled bool) llm.Message {

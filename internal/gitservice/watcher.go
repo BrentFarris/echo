@@ -174,6 +174,34 @@ func (s *Service) ResetWorkspace(ctx context.Context, workspaceID string) error 
 	return nil
 }
 
+// RemoveWorkspace stops watchers and pending work for an unregistered
+// workspace without recreating subscriptions against an invalid ID.
+func (s *Service) RemoveWorkspace(workspaceID string) {
+	s.mu.Lock()
+	watch := s.watches[workspaceID]
+	if watch != nil {
+		delete(s.watches, workspaceID)
+		close(watch.stop)
+	}
+	for _, state := range s.repos[workspaceID] {
+		state.scheduleMu.Lock()
+		if state.refreshTimer != nil {
+			state.refreshTimer.Stop()
+		}
+		state.scheduleMu.Unlock()
+	}
+	delete(s.repos, workspaceID)
+	if cancel := s.execStops[workspaceID]; cancel != nil {
+		cancel()
+	}
+	delete(s.execStops, workspaceID)
+	delete(s.execContexts, workspaceID)
+	s.mu.Unlock()
+	if watch != nil {
+		<-watch.done
+	}
+}
+
 func (s *Service) scheduleStatusRefresh(state *repositoryState) {
 	state.scheduleMu.Lock()
 	if state.refreshTimer != nil {

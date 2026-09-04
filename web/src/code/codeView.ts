@@ -37,6 +37,7 @@ import {
   CodeNavigationHistory, isLargeCodeNavigationJump, type CodeNavigationLocation,
 } from "./codeNavigationHistory";
 import { beginMruCycle, nextMruCycle, pruneMruCycle, removeFromMru, type MruCycleState } from "./mruTabOrder";
+import { reorderTabs, type TabDropPosition } from "./tabOrder";
 import {
   commandPalettePresentation, loadRecentCommandIds, pruneRecentCommandIds,
   recordRecentCommandId, saveRecentCommandIds,
@@ -51,6 +52,9 @@ import {
   promptDialog, showContextMenu, toast,
 } from "./ui";
 import { attachVideoVolumeControl } from "../mediaVolume";
+import { DebugView } from "../debug/debugView";
+import type { DebugSource } from "../debug/types";
+import { registerGoTestCodeLens } from "./goTestCodeLens";
 
 type Workspace = { id: string; name: string; mainPath: string; folders: string[]; iconExt?: string };
 
@@ -87,6 +91,8 @@ type OpenTab = {
   viewState: MonacoEditor.ICodeEditorViewState | null;
   changeDisposable: { dispose(): void };
   applying: boolean;
+	readOnly?: boolean;
+	transient?: boolean;
   media?: { kind: PreviewKind; url: string };
   diff?: {
     repository: GitRepository;
@@ -107,6 +113,7 @@ const treeRowHeight = 22;
 const minEditorFontSize = 8;
 const maxEditorFontSize = 30;
 const defaultEditorFontSize = 13.5;
+const codeTabDragType = "application/x-echo-code-tab";
 let mountedView: CodeView | null = null;
 
 export function mount(root: HTMLElement): void {
@@ -143,6 +150,11 @@ class CodeView {
   private treeDragScrollActive = false;
   private tabs: OpenTab[] = [];
   private activeTabId: string | null = null;
+  private draggingTabId: string | null = null;
+  private tabDragStartedOnClose = false;
+  private tabDragScrollFrame = 0;
+  private tabDragScrollClientX = 0;
+  private tabDragScrollActive = false;
   private mruTabIds: string[] = [];
   private mruCycle: MruCycleState | null = null;
   private mruSwitcherOverlay: HTMLElement | null = null;
@@ -151,6 +163,8 @@ class CodeView {
   private diffEditor!: MonacoEditor.IStandaloneDiffEditor;
   private gitView: GitView | null = null;
   private searchView: SearchView | null = null;
+  private debugView: DebugView | null = null;
+  private goTestCodeLens: { dispose(): void } | null = null;
   private activeSidebar: CodeSidebar = "explorer";
   private splitGitDiff = true;
   private leadingWhitespaceIndicators = true;
@@ -270,6 +284,8 @@ class CodeView {
       this.installEvents();
       this.initializeGitView();
       this.initializeSearchView();
+      this.initializeDebugView();
+      this.initializeGoTestCodeLens();
       await this.restoreWorkspace();
       if (this.abort.signal.aborted) return;
       if (this.roots.length) {
@@ -347,6 +363,7 @@ class CodeView {
           </aside>
           <aside class="code-search-view" aria-label="Search" data-sidebar-view="search"${this.activeSidebar === "search" ? "" : " hidden"}></aside>
           <aside class="code-git-view" aria-label="Source Control" data-sidebar-view="git"${this.activeSidebar === "git" ? "" : " hidden"}></aside>
+          <aside class="code-debug-view" aria-label="Run and Debug" data-sidebar-view="debug"${this.activeSidebar === "debug" ? "" : " hidden"}></aside>
           </div>
           <div class="code-explorer-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Explorer" tabindex="0"></div>
           <button type="button" class="code-sidebar-expand-toggle" title="Show Sidebar" aria-label="Expand sidebar" data-sidebar-expand><span class="codicon codicon-chevron-right"></span></button>
@@ -359,6 +376,7 @@ class CodeView {
                   <button type="button" class="code-chat-toggle" title="Open Code Chat" aria-label="Open code assistant" aria-expanded="false" aria-controls="code-chat-dock" data-code-chat-toggle><span class="codicon codicon-comment-discussion"></span></button>
                 </nav>
                 <section class="code-editor-area">
+                  <div class="debug-toolbar-host" data-debug-toolbar-host></div>
                   <div class="code-editor-placeholder" data-editor-placeholder>
                     <span class="codicon codicon-code"></span>
                     <h2>Echo Code</h2>
@@ -408,7 +426,7 @@ class CodeView {
     this.root.querySelectorAll<HTMLElement>("[data-code-sidebar]").forEach((button) => {
       button.addEventListener("click", () => {
         const view = button.dataset.codeSidebar;
-        this.setSidebar(view === "git" || view === "search" ? view : "explorer");
+        this.setSidebar(view === "git" || view === "search" || view === "debug" ? view : "explorer");
       }, { signal });
     });
     this.root.querySelectorAll("[data-nav=workspace]:not(.workspace-dropdown-trigger)").forEach((button) => {
@@ -467,6 +485,33 @@ class CodeView {
     if (this.activeSidebar === "search") this.searchView.open();
   }
 
+  private initializeDebugView(): void {
+    if (!this.workspace) return;
+    const host = this.root.querySelector<HTMLElement>("[data-sidebar-view=debug]");
+    const toolbarHost = this.root.querySelector<HTMLElement>("[data-debug-toolbar-host]");
+    if (!host || !toolbarHost) return;
+    this.debugView = new DebugView({
+      workspaceId: this.workspace.id,
+      host,
+      toolbarHost,
+      editor: this.editor,
+      signal: this.abort.signal,
+      activeFile: () => {
+        const tab = this.activeTab();
+        return tab && !tab.readOnly ? this.worktreeRef(tab) : null;
+      },
+      selectedText: () => {
+        const selection = this.editor.getSelection();
+        return selection && !selection.isEmpty() ? this.editor.getModel()?.getValueInRange(selection) || "" : "";
+      },
+      saveAll: () => this.saveAllForDebug(),
+      showSidebar: () => this.setSidebar("debug"),
+      openSource: (source, line, column) => this.openDebugSource(source, line, column),
+      openVirtualSource: (title, content, mimeType) => this.openVirtualDebugSource(title, content, mimeType),
+    });
+    void this.debugView.start();
+  }
+
   handleRouteChange(): void {
     if (routePathFromHash(window.location.hash) !== CODE_ROUTE) return;
     this.setSidebar(codeSidebarFromHash(window.location.hash), false);
@@ -499,6 +544,7 @@ class CodeView {
   private sidebarIcon(view: CodeSidebar): string {
     if (view === "git") return "source-control";
     if (view === "search") return "search";
+    if (view === "debug") return "debug-alt";
     return "files";
   }
 
@@ -665,8 +711,9 @@ class CodeView {
       lineNumbers: "on",
       minimap: { enabled: true, maxColumn: 120, renderCharacters: true, showSlider: "mouseover" },
       folding: true,
+      codeLens: true,
       foldingHighlight: true,
-      glyphMargin: false,
+      glyphMargin: true,
       renderLineHighlight: "line",
       renderWhitespace: this.leadingWhitespaceIndicators ? "boundary" : "none",
       bracketPairColorization: { enabled: true, independentColorPoolPerBracketType: true },
@@ -1588,17 +1635,19 @@ class CodeView {
       this.renderMediaPreview(next);
     } else {
       this.diffEditor.setModel(null);
+		this.editor.updateOptions({ readOnly: Boolean(next.readOnly) });
       this.editor.setModel(next.model);
       if (next.viewState) this.editor.restoreViewState(next.viewState);
       if (focusEditor) this.editor.focus();
     }
-    this.lsp?.activateModel(next.model);
+	this.lsp?.activateModel(next.readOnly ? null : next.model);
     this.updateEditorSurface();
     this.renderBreadcrumbs();
     this.renderStatus();
     this.revealTabInExplorer(next);
     this.updateCodeChatSelectionNotice();
     this.schedulePersist();
+	this.debugView?.onEditorContextChanged();
   }
 
   private touchMru(id: string): void {
@@ -1628,17 +1677,83 @@ class CodeView {
     }
   }
 
+  private tabDropFromEvent(event: DragEvent): { targetId: string | null; position: TabDropPosition } | null {
+    if (!this.draggingTabId) return null;
+    const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-tab-id]") : null;
+    const targetId = target?.dataset.tabId || null;
+    const position: TabDropPosition = target && event.clientX < target.getBoundingClientRect().left + target.offsetWidth / 2
+      ? "before"
+      : "after";
+    return reorderTabs(this.tabs, this.draggingTabId, targetId, position) ? { targetId, position } : null;
+  }
+
+  private setTabDropIndicator(targetId: string | null, position: TabDropPosition): void {
+    const list = this.root.querySelector<HTMLElement>("[data-tabs-list]");
+    if (!list) return;
+    list.querySelectorAll(".code-tab.is-drop-before, .code-tab.is-drop-after")
+      .forEach((tab) => tab.classList.remove("is-drop-before", "is-drop-after"));
+    const indicator = targetId
+      ? list.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(targetId)}"]`)
+      : list.lastElementChild as HTMLElement | null;
+    indicator?.classList.add(position === "before" ? "is-drop-before" : "is-drop-after");
+  }
+
+  private clearTabDropIndicator(): void {
+    this.root.querySelectorAll(".code-tab.is-drop-before, .code-tab.is-drop-after")
+      .forEach((tab) => tab.classList.remove("is-drop-before", "is-drop-after"));
+  }
+
+  private stopTabDragScroll(): void {
+    this.tabDragScrollActive = false;
+    if (this.tabDragScrollFrame) cancelAnimationFrame(this.tabDragScrollFrame);
+    this.tabDragScrollFrame = 0;
+  }
+
+  private startTabDragScroll(scroller: HTMLElement, clientX: number): void {
+    this.tabDragScrollClientX = clientX;
+    if (this.tabDragScrollActive) return;
+    this.tabDragScrollActive = true;
+    const step = () => {
+      this.tabDragScrollFrame = 0;
+      if (!this.tabDragScrollActive) return;
+      const bounds = scroller.getBoundingClientRect();
+      const edge = 36;
+      const speed = 12;
+      const previous = scroller.scrollLeft;
+      if (this.tabDragScrollClientX < bounds.left + edge) scroller.scrollLeft -= speed;
+      else if (this.tabDragScrollClientX > bounds.right - edge) scroller.scrollLeft += speed;
+      else {
+        this.tabDragScrollActive = false;
+        return;
+      }
+      if (scroller.scrollLeft === previous) {
+        this.tabDragScrollActive = false;
+        return;
+      }
+      this.tabDragScrollFrame = requestAnimationFrame(step);
+    };
+    this.tabDragScrollFrame = requestAnimationFrame(step);
+  }
+
+  private clearTabDragState(): void {
+    this.stopTabDragScroll();
+    this.clearTabDropIndicator();
+    this.root.querySelectorAll(".code-tab.is-dragging").forEach((tab) => tab.classList.remove("is-dragging"));
+    this.draggingTabId = null;
+    this.tabDragStartedOnClose = false;
+  }
+
   private renderTabs(): void {
     const list = this.root.querySelector<HTMLElement>("[data-tabs-list]");
     if (!list) return;
     list.innerHTML = this.tabs.map((tab) => `
-      <div class="code-tab ${tab.id === this.activeTabId ? "is-active" : ""} ${!tab.pinned ? "is-preview" : ""}" role="tab" aria-selected="${tab.id === this.activeTabId}" tabindex="${tab.id === this.activeTabId ? 0 : -1}" data-tab-id="${escapeHTML(tab.id)}" title="${escapeHTML(tab.hostPath || tab.title)}">
+      <div class="code-tab ${tab.id === this.activeTabId ? "is-active" : ""} ${!tab.pinned ? "is-preview" : ""}" role="tab" aria-selected="${tab.id === this.activeTabId}" tabindex="${tab.id === this.activeTabId ? 0 : -1}" draggable="true" data-tab-id="${escapeHTML(tab.id)}" title="${escapeHTML(tab.hostPath || tab.title)}">
         <span class="codicon codicon-${this.tabIcon(tab)} code-tab-icon"></span>
         <span class="code-tab-title">${escapeHTML(tab.title)}</span>
         ${tab.conflict ? `<span class="codicon codicon-warning code-tab-conflict" title="Changed on disk"></span>` : ""}
         ${tab.deleted ? `<span class="codicon codicon-trash code-tab-conflict" title="Deleted on disk"></span>` : ""}
         <span class="code-tab-dirty ${tab.dirty ? "is-visible" : ""}" aria-label="${tab.dirty ? "Unsaved changes" : ""}"></span>
-        <button type="button" class="code-tab-close" data-tab-close aria-label="Close ${escapeHTML(tab.title)}"><span class="codicon codicon-close"></span></button>
+        <button type="button" class="code-tab-close" draggable="false" data-tab-close aria-label="Close ${escapeHTML(tab.title)}"><span class="codicon codicon-close"></span></button>
       </div>
     `).join("");
     this.syncActiveTabState();
@@ -1832,6 +1947,7 @@ class CodeView {
     if (label && isDiff) label.textContent = tab?.diff?.editable ? "Working Tree (editable)" : "Read-only Git snapshot";
     this.editor?.layout();
     this.diffEditor?.layout();
+	this.debugView?.onEditorContextChanged();
   }
 
   private renderMediaPreview(tab: OpenTab): void {
@@ -1944,8 +2060,103 @@ class CodeView {
     this.renderTabs();
   }
 
+  private async saveAllForDebug(requireActiveFile = false): Promise<boolean> {
+    for (const tab of this.tabs) {
+      if ((!tab.dirty && !tab.conflict) || tab.readOnly || !this.worktreeRef(tab)) continue;
+      if (!(await this.saveTab(tab))) {
+        toast(`Debugging was not started because ${tab.title} could not be saved.`, { sticky: true });
+        return false;
+      }
+    }
+	const active = this.activeTab();
+	if (requireActiveFile && !active) {
+		toast("This debug configuration requires an active saved file. Open a workspace file before starting.", { sticky: true });
+		return false;
+	}
+	if (requireActiveFile && active && !this.worktreeRef(active)) {
+		if (active.kind !== "file" || active.readOnly || active.transient) {
+			toast("This debug configuration requires an active saved file. Select or save a workspace file before starting.", { sticky: true });
+			return false;
+		}
+		const choice = await choiceDialog({
+			title: `Save ${active.title} before debugging?`,
+			message: "The selected debug configuration uses an active-file variable, so this untitled editor needs a workspace path.",
+			choices: [{ id: "cancel", label: "Cancel" }, { id: "save", label: "Save As…", primary: true }],
+		});
+		if (choice !== "save" || !(await this.saveTab(active))) return false;
+	}
+    return true;
+  }
+
+  private async saveAllForGoTest(): Promise<boolean> {
+    for (const tab of this.tabs) {
+      if ((!tab.dirty && !tab.conflict) || tab.readOnly) continue;
+      if (!(await this.saveTab(tab))) {
+        toast(`The test action was not started because ${tab.title} could not be saved.`, { sticky: true });
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private initializeGoTestCodeLens(): void {
+    if (!this.workspace) return;
+    this.goTestCodeLens = registerGoTestCodeLens({
+      workspaceId: this.workspace.id,
+      refForModel: (model) => this.refForFileURI(model.uri.toString()),
+      saveAll: () => this.saveAllForGoTest(),
+      acceptDebugSnapshot: (snapshot) => this.debugView?.acceptExternalSnapshot(snapshot),
+      openDebugSettings: () => { this.setSidebar("debug"); this.debugView?.openSettings(); },
+      message: (value, sticky) => toast(value, { sticky }),
+    });
+  }
+
+  private async openDebugSource(source: DebugSource, line: number, column: number): Promise<void> {
+    const ref = source.echoRef;
+    if (!ref) {
+      toast("The adapter source is outside this workspace. Open it from Loaded Sources to request its contents.");
+      return;
+    }
+    if (!(await this.openFile(ref, true, false))) return;
+    const tab = this.tabs.find((candidate) => candidate.ref && refKey(candidate.ref) === refKey(ref));
+    if (!tab) return;
+    this.activateTab(tab.id, false);
+    const position = { lineNumber: Math.max(1, line || 1), column: Math.max(1, column || 1) };
+    this.editor.setPosition(position);
+    this.editor.revealPositionInCenter(position);
+    this.debugView?.onEditorContextChanged();
+  }
+
+  private async openVirtualDebugSource(title: string, content: string, mimeType?: string): Promise<void> {
+    const existing = this.tabs.find((tab) => tab.transient && tab.title === title);
+    if (existing) {
+      existing.applying = true;
+      existing.model.setValue(content);
+      existing.applying = false;
+      this.activateTab(existing.id);
+      return;
+    }
+    const id = randomUUID();
+    const extension = mimeType?.includes("json") ? ".json" : mimeType?.includes("javascript") ? ".js" : mimeType?.includes("python") ? ".py" : "";
+    const uri = monaco.Uri.from({ scheme: "echo-debug", authority: this.workspace?.id || "workspace", path: `/${id}/${title.replace(/[\\/]/g, "-")}${extension}` });
+    const model = monaco.editor.createModel(content, languageForPath(title + extension, this.lspProfiles), uri);
+    this.retainModel(model);
+    const tab: OpenTab = {
+      kind: "file", id, ref: null, title, hostPath: uri.toString(), pinned: true, dirty: false,
+      deleted: false, conflict: false, revision: "", hasBom: false, eol: "lf", model,
+      viewState: null, changeDisposable: { dispose() {} }, applying: false, readOnly: true, transient: true,
+    };
+    this.tabs.push(tab);
+    this.activateTab(tab.id);
+    this.renderTabs();
+  }
+
   private async saveTab(tab = this.activeTab()): Promise<boolean> {
     if (!tab || !this.workspace) return false;
+	if (tab.readOnly) {
+		toast("Debugger sources, memory, and disassembly views are read-only.");
+		return false;
+	}
     if (tab.kind === "diff") return this.saveEditableDiff(tab);
     if (tab.kind === "media") {
       toast("Media previews are read-only.");
@@ -2593,6 +2804,27 @@ class CodeView {
       { id: "file.new", label: "File: New Untitled File", keybinding: "Ctrl+N", run: () => this.newUntitled() },
       { id: "file.quickOpen", label: "Go to File…", keybinding: "Ctrl+P", run: () => this.showQuickOpen() },
       { id: "view.commandPalette", label: "View: Show Command Palette", keybinding: "Ctrl+Shift+P", run: () => this.showCommandPalette() },
+      { id: "debug.open", label: "View: Run and Debug", keybinding: "Ctrl+5", run: () => this.setSidebar("debug") },
+      { id: "debug.startPauseContinue", label: "Debug: Start / Pause / Continue", keybinding: "F5", run: () => this.debugView?.toggleLifecycle() },
+      { id: "debug.startNew", label: "Debug: Start New Instance", run: () => this.debugView?.launch(false) },
+      { id: "debug.startWithout", label: "Debug: Start Without Debugging", run: () => this.debugView?.launch(true) },
+      { id: "debug.pauseAll", label: "Debug: Pause All Sessions", run: () => this.debugView?.controlAll("pause") },
+      { id: "debug.continueAll", label: "Debug: Continue All Sessions", run: () => this.debugView?.controlAll("continue") },
+      { id: "debug.stop", label: "Debug: Stop", keybinding: "Shift+F8", run: () => this.debugView?.stopActive() },
+      { id: "debug.restart", label: "Debug: Restart", keybinding: "Ctrl+Shift+F8", run: () => this.debugView?.restartActive() },
+      { id: "debug.restartCompound", label: "Debug: Restart Compound", run: () => this.debugView?.restartActiveCompound() },
+      { id: "debug.stopCompound", label: "Debug: Stop Compound", run: () => this.debugView?.stopActiveCompound() },
+      { id: "debug.toggleBreakpoint", label: "Debug: Toggle Breakpoint", keybinding: "F9", run: () => this.debugView?.toggleBreakpointAtCursor() },
+      { id: "debug.stepOver", label: "Debug: Step Over", keybinding: "F10", run: () => this.debugView?.control("next") },
+      { id: "debug.stepInto", label: "Debug: Step Into", keybinding: "F11", run: () => this.debugView?.control("stepIn") },
+      { id: "debug.stepOut", label: "Debug: Step Out", keybinding: "Shift+F11", run: () => this.debugView?.control("stepOut") },
+      { id: "debug.stepBack", label: "Debug: Step Back", run: () => this.debugView?.control("stepBack") },
+      { id: "debug.reverseContinue", label: "Debug: Reverse Continue", run: () => this.debugView?.control("reverseContinue") },
+      { id: "debug.runToCursor", label: "Debug: Run to Cursor", run: () => this.debugView?.runToCursorAtEditor() },
+      { id: "debug.terminate", label: "Debug: Terminate Attached Process", run: () => this.debugView?.stopActive(true) },
+      { id: "debug.console", label: "Debug: Open Debug Console", run: () => this.debugView?.openPanel("debug-console") },
+      { id: "debug.output", label: "Debug: Open Debug Output", run: () => this.debugView?.openPanel("debug-output") },
+      { id: "debug.settings", label: "Debug: Open Workspace Debug Settings", run: () => this.debugView?.openSettings() },
       { id: "navigation.back", label: "Go: Back", keybinding: "Alt+Left", run: () => window.history.back() },
       { id: "navigation.forward", label: "Go: Forward", keybinding: "Alt+Right", run: () => window.history.forward() },
       { id: "search.findInFiles", label: "Search: Find in Files", keybinding: "Ctrl+Shift+F", run: () => this.showWorkspaceSearch() },
@@ -3062,6 +3294,48 @@ class CodeView {
     }, { signal });
 
     const tabs = this.root.querySelector<HTMLElement>("[data-code-tabs]")!;
+    tabs.addEventListener("dragstart", (event) => {
+      const element = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-tab-id]") : null;
+      const tab = element ? this.tabs.find((candidate) => candidate.id === element.dataset.tabId) : null;
+      const startedOnClose = this.tabDragStartedOnClose;
+      this.clearTabDragState();
+      if (!element || !tab || startedOnClose || !event.dataTransfer) {
+        event.preventDefault();
+        return;
+      }
+      this.draggingTabId = tab.id;
+      element.classList.add("is-dragging");
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData(codeTabDragType, tab.id);
+      event.dataTransfer.setData("text/plain", tab.title);
+    }, { signal });
+    tabs.addEventListener("dragover", (event) => {
+      if (!this.draggingTabId || !event.dataTransfer) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      const drop = this.tabDropFromEvent(event);
+      if (drop) this.setTabDropIndicator(drop.targetId, drop.position);
+      else this.clearTabDropIndicator();
+      this.startTabDragScroll(tabs, event.clientX);
+    }, { signal });
+    tabs.addEventListener("drop", (event) => {
+      if (!this.draggingTabId) return;
+      event.preventDefault();
+      const sourceId = this.draggingTabId;
+      const drop = this.tabDropFromEvent(event);
+      const reordered = drop ? reorderTabs(this.tabs, sourceId, drop.targetId, drop.position) : null;
+      this.clearTabDragState();
+      if (!reordered) return;
+      this.tabs = reordered;
+      this.renderTabs();
+      this.schedulePersist();
+    }, { signal });
+    tabs.addEventListener("dragend", () => this.clearTabDragState(), { signal });
+    tabs.addEventListener("dragleave", (event) => {
+      if (tabs.contains(event.relatedTarget as Node | null)) return;
+      this.stopTabDragScroll();
+      this.clearTabDropIndicator();
+    }, { signal });
     tabs.addEventListener("click", (event) => {
       const element = (event.target as Element).closest<HTMLElement>("[data-tab-id]");
       if (!element) return;
@@ -3071,6 +3345,7 @@ class CodeView {
       else void this.recordCodeNavigation(() => this.activateTab(tab.id));
     }, { signal });
     tabs.addEventListener("mousedown", (event) => {
+      this.tabDragStartedOnClose = event.button === 0 && Boolean((event.target as Element).closest("[data-tab-close]"));
       // Suppress the browser's native middle-click autoscroll when the tab bar
       // overflows and becomes scrollable, so middle-click keeps closing tabs
       // instead of starting a horizontal scroll drag.
@@ -3109,6 +3384,7 @@ class CodeView {
         event.preventDefault();
       }
     }, { signal, passive: false });
+    document.addEventListener("mouseup", () => { this.tabDragStartedOnClose = false; }, { signal });
 
     this.root.querySelector("[data-breadcrumbs]")?.addEventListener("click", (event) => {
       const button = (event.target as Element).closest<HTMLElement>("[data-breadcrumb-index]");
@@ -3243,6 +3519,7 @@ class CodeView {
   private handleGlobalKeyboard(event: KeyboardEvent): void {
     if (document.querySelector(".code-modal-overlay, .code-picker-overlay")) return;
     if (this.handleReferencePeekKeyboard(event)) return;
+    if (this.debugView?.handleKeydown(event)) return;
     if (event.key === "Escape" && this.root.querySelector("[data-chat-mention-picker]") && document.activeElement?.closest(".code-chat-surface")) return;
     if (event.key === "Escape" && this.codeChatOpen) {
       // When a file search/replace is active, Escape closes the search first;
@@ -3289,7 +3566,7 @@ class CodeView {
     const editorHasTextFocus = activeEditor?.hasTextFocus() === true;
     const hasMultilineSelection = activeEditor?.getSelections()
       ?.some((selection) => selection.startLineNumber !== selection.endLineNumber) === true;
-    const selectionIsEditable = activeTab?.kind === "file" || activeTab?.diff?.editable === true;
+    const selectionIsEditable = (activeTab?.kind === "file" && !activeTab.readOnly) || activeTab?.diff?.editable === true;
     const shouldHandleTab = (key === "tab" || event.code === "Tab")
       && editorHasTextFocus && selectionIsEditable && (event.shiftKey || hasMultilineSelection);
     if (!modifier && event.altKey && !event.shiftKey && key === "arrowleft") {
@@ -3885,7 +4162,7 @@ class CodeView {
     const active = this.activeTab();
     if (active?.kind === "diff" && active.diff) active.diff.viewState = this.diffEditor.saveViewState();
     else if (active) active.viewState = this.editor.saveViewState();
-    const tabs: PersistedTab[] = this.tabs.map((tab) => {
+    const tabs: PersistedTab[] = this.tabs.filter((tab) => !tab.transient).map((tab) => {
       const diffState = tab.diff?.viewState?.modified;
       const position = tab.id === this.activeTabId
         ? (tab.kind === "diff" ? this.diffEditor.getModifiedEditor().getPosition() : this.editor.getPosition()) || undefined
@@ -4072,6 +4349,7 @@ class CodeView {
   dispose(): void {
     if (this.abort.signal.aborted) return;
     this.finishMruCycle();
+    this.clearTabDragState();
     detachTerminalDock(this.root.querySelector<HTMLElement>("[data-region=terminal]"));
     void this.persistNow();
     this.codeNavigation?.dispose(this.captureNavigationLocation());
@@ -4082,6 +4360,10 @@ class CodeView {
     this.closeAddWorkspaceModal = null;
     this.codeChatSurface?.dispose();
     this.codeChatSurface = null;
+	this.debugView?.dispose();
+	this.debugView = null;
+    this.goTestCodeLens?.dispose();
+    this.goTestCodeLens = null;
     this.abort.abort();
     window.clearTimeout(this.persistTimer);
     window.clearTimeout(this.treeDropExpandTimer);

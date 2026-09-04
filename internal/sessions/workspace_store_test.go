@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/brent/echo/internal/llm"
 )
@@ -190,7 +191,55 @@ func TestWorkspaceStoreMigratesVersionOneAndPreservesNormalTabs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"version": 3`) {
+	if !strings.Contains(string(data), `"version": 4`) {
 		t.Fatalf("migration was not persisted: %s", data)
+	}
+}
+
+func TestWorkspaceStoreRoundTripsGoalHistoryAndPausesActiveGoalOnLoad(t *testing.T) {
+	root := t.TempDir()
+	store := NewWorkspaceStore(root)
+	now := time.Now().UTC().Add(-2 * time.Second)
+	want := ChatWorkspace{
+		Version: WorkspaceVersion, WorkspaceID: "ws-1", ActiveChatID: "chat-a",
+		Tabs: []TabTranscript{{
+			ChatID: "chat-a", Turns: []Turn{}, Messages: []llm.Message{}, CurrentGoalID: "goal-2",
+			Goals: []GoalState{
+				{ID: "goal-1", Objective: "Finished", Status: GoalStatusCompleted, CreatedAt: now, UpdatedAt: now},
+				{
+					ID: "goal-2", Objective: "Keep going", Status: GoalStatusActive, Model: "model-a",
+					CreatedAt: now, UpdatedAt: now, ActiveSince: &now,
+					PendingStatus: GoalStatusCompleted, PendingOutcome: "Awaiting the final summary.",
+					PendingSteering: []GoalSteering{{ID: "steer-1", Content: "Use the new API", CreatedAt: now}},
+				},
+			},
+		}},
+	}
+	if err := store.Save(want); err != nil {
+		t.Fatal(err)
+	}
+	inspected, err := store.Load("ws-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspected.Tabs[0].Goals[1].Status != GoalStatusActive {
+		t.Fatalf("ordinary reads must not interrupt a live goal: %#v", inspected.Tabs[0].Goals[1])
+	}
+	if _, err := store.Update("ws-1", func(workspace *ChatWorkspace) error {
+		workspace.Revision++
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.LoadRecoveringGoals("ws-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	goal := got.Tabs[0].Goals[1]
+	if goal.Status != GoalStatusPaused || goal.ActiveSince != nil || goal.ActiveSeconds < 1 || len(goal.PendingSteering) != 1 || goal.PendingStatus != "" || goal.PendingOutcome != "" {
+		t.Fatalf("active goal was not restored paused with its queue: %#v", goal)
+	}
+	if !strings.Contains(goal.LastError, "restarted") || got.Tabs[0].Goals[0].Status != GoalStatusCompleted {
+		t.Fatalf("goal history was not preserved: %#v", got.Tabs[0].Goals)
 	}
 }

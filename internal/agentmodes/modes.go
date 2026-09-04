@@ -18,6 +18,7 @@ import (
 const (
 	GeneralID = "general"
 	PlanID    = "plan"
+	GoalID    = "goal"
 	fileName  = "agent-modes.json"
 )
 
@@ -67,6 +68,21 @@ func Defaults() []Mode {
 				"web_search":                  {Name: "web_search"},
 			},
 		},
+		{
+			ID:      GoalID,
+			Name:    "Goal",
+			BuiltIn: true,
+			Prompt:  "Pursue the chat's durable goal autonomously. Keep making concrete progress until the goal is verifiably complete or genuinely blocked, and use the goal status tool instead of ending after an ordinary response.",
+		},
+	}
+}
+
+func IsBuiltIn(id string) bool {
+	switch strings.TrimSpace(id) {
+	case GeneralID, PlanID, GoalID:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -122,7 +138,7 @@ func (m *Manager) Create(workspacePath string, mode Mode) ([]Mode, error) {
 
 func (m *Manager) Update(workspacePath, id string, mode Mode) ([]Mode, error) {
 	id = strings.TrimSpace(id)
-	if id == GeneralID || id == PlanID {
+	if IsBuiltIn(id) {
 		return nil, fmt.Errorf("built-in agent modes cannot be edited")
 	}
 	m.mu.Lock()
@@ -159,7 +175,7 @@ func (m *Manager) Update(workspacePath, id string, mode Mode) ([]Mode, error) {
 
 func (m *Manager) Delete(workspacePath, id string) ([]Mode, error) {
 	id = strings.TrimSpace(id)
-	if id == GeneralID || id == PlanID {
+	if IsBuiltIn(id) {
 		return nil, fmt.Errorf("built-in agent modes cannot be deleted")
 	}
 	m.mu.Lock()

@@ -239,14 +239,21 @@ func chatMediaContentParts(text string, images, videos []sessions.MediaAttachmen
 func hydrateChatMediaHistory(messages []llm.Message, turns []sessions.Turn) []llm.Message {
 	hydrated := append([]llm.Message(nil), messages...)
 	for _, turn := range turns {
-		if len(turn.Images) == 0 && len(turn.Videos) == 0 {
-			continue
+		if len(turn.Images) > 0 || len(turn.Videos) > 0 {
+			index := turn.UserMessageIndex
+			if index >= 0 && index < len(hydrated) && hydrated[index].Role == llm.RoleUser {
+				hydrated[index].ContentParts = chatMediaContentParts(hydrated[index].Content, turn.Images, turn.Videos)
+			}
 		}
-		index := turn.UserMessageIndex
-		if index < 0 || index >= len(hydrated) || hydrated[index].Role != llm.RoleUser {
-			continue
+		for _, steering := range turn.GoalSteering {
+			if len(steering.Images) == 0 && len(steering.Videos) == 0 {
+				continue
+			}
+			index := steering.UserMessageIndex
+			if index >= 0 && index < len(hydrated) && hydrated[index].Role == llm.RoleUser {
+				hydrated[index].ContentParts = chatMediaContentParts(hydrated[index].Content, steering.Images, steering.Videos)
+			}
 		}
-		hydrated[index].ContentParts = chatMediaContentParts(hydrated[index].Content, turn.Images, turn.Videos)
 	}
 	return hydrated
 }

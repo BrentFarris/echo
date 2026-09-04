@@ -9,8 +9,10 @@ import { startEchoUpdateMonitor, stopEchoUpdateMonitor, syncEchoUpdateBadges } f
 import { startCompletionNotifications } from "../src/completionNotifications.ts";
 import { startPlanQuestionSound } from "../src/planQuestionSound.ts";
 import { startPlanQuestionNotifications } from "../src/planQuestionNotifications.ts";
+import { startDebugStopNotifications } from "../src/debug/debugNotifications.ts";
 import { recordNavigationRoute, routePathFromHash, shouldReuseCodeView } from "../src/navigation.ts";
 import { initializePluginHost, mountPluginPage, resetPluginHost } from "../src/plugins/pluginHost.ts";
+import { installPrimaryNavShortcuts } from "../src/primaryNavShortcuts.ts";
 
 // Route table: hash path -> () => Promise<view module>.
 // Views are lazy-loaded so the shell stays light.
@@ -26,6 +28,8 @@ const app = document.getElementById("app");
 let currentView = null;
 let mountedRoute = null;
 let renderGeneration = 0;
+
+installPrimaryNavShortcuts(document);
 
 function currentRoute() {
   return routePathFromHash(location.hash);
@@ -119,6 +123,7 @@ async function bootstrap() {
     await startCompletionNotifications();
     await startPlanQuestionSound();
     await startPlanQuestionNotifications();
+    startDebugStopNotifications();
     ws.start();
     startEchoUpdateMonitor();
     await initializePluginHost();

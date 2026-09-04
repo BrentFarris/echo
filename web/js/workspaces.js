@@ -7,7 +7,7 @@
 // Submitting POSTs to /api/workspaces, which validates and persists it.
 
 import { icons } from "./icons.js";
-import { get, post, put } from "./api.js";
+import { del, get, post, put } from "./api.js";
 
 // ---- State ----
 let workspaces = [];
@@ -102,27 +102,43 @@ export function renderWorkspaceDropdown(items = workspaces, selectedId = activeI
 
 // ---- Modal ----
 export function renderAddWorkspaceModal() {
+  return renderWorkspaceModal(null);
+}
+
+export function renderEditWorkspaceModal(workspace) {
+  return renderWorkspaceModal(workspace);
+}
+
+function renderWorkspaceModal(workspace) {
+  const editing = Boolean(workspace);
+  const title = editing ? `Configure ${workspace.name}` : "Add a workspace";
+  const icon = editing && workspace.iconExt
+    ? `<img src="/api/workspaces/${encodeURIComponent(workspace.id)}/icon" alt="" />`
+    : icons.image;
   return `
-    <div class="modal-backdrop" data-add-workspace-backdrop>
-      <div class="modal" role="dialog" aria-modal="true" aria-label="Add workspace">
+    <div class="modal-backdrop" data-workspace-modal-backdrop ${editing ? "data-edit-workspace-backdrop" : "data-add-workspace-backdrop"}>
+      <div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}">
         <header class="modal-header">
-          <h2>Add a workspace</h2>
-          <button type="button" class="icon-button" data-action="close-add-workspace" title="Close" aria-label="Close">${icons.x}</button>
+          <h2>${esc(title)}</h2>
+          <button type="button" class="icon-button" data-action="close-workspace-modal" title="Close" aria-label="Close">${icons.x}</button>
         </header>
 
         <div class="modal-body">
           <label class="field">
             <span>Workspace name</span>
-            <input type="text" data-field="name" placeholder="My workspace" autocomplete="off" />
+            <input type="text" data-field="name" value="${esc(workspace?.name || "")}" placeholder="My workspace" autocomplete="off" />
           </label>
 
           <div class="field">
             <span>Icon</span>
             <div class="icon-upload">
-              <div class="icon-upload-preview" data-icon-preview>${icons.image}</div>
+              <div class="icon-upload-preview" data-icon-preview>${icon}</div>
               <div class="icon-upload-controls">
-                <button type="button" class="secondary-button compact-button" data-action="pick-icon">${icons.upload}<span>Choose image</span></button>
-                <span class="icon-upload-name" data-icon-name>No image selected</span>
+                <div class="icon-upload-actions">
+                  <button type="button" class="secondary-button compact-button" data-action="pick-icon">${icons.upload}<span>${editing && workspace.iconExt ? "Replace image" : "Choose image"}</span></button>
+                  <button type="button" class="secondary-button compact-button danger-button" data-action="remove-icon" ${editing && workspace.iconExt ? "" : "hidden"}>Remove image</button>
+                </div>
+                <span class="icon-upload-name" data-icon-name>${editing && workspace.iconExt ? `Current .${esc(workspace.iconExt)} image` : "No image selected"}</span>
               </div>
               <input type="file" accept="image/png,image/gif,image/jpeg,image/webp,image/bmp,image/svg+xml,image/x-icon" data-icon-input hidden />
             </div>
@@ -131,26 +147,27 @@ export function renderAddWorkspaceModal() {
           <div class="field">
             <span>Folders</span>
             <div class="folder-list" data-folder-list></div>
+            ${editing ? `<span class="field-help">The main folder owns <code>.echo</code> and cannot be changed here.</span>` : ""}
             <button type="button" class="secondary-button compact-button folder-add" data-action="add-folder">${icons.plus}<span>Add folder</span></button>
           </div>
         </div>
 
         <footer class="modal-footer">
           <span class="modal-error" data-modal-error></span>
-          <button type="button" class="secondary-button" data-action="cancel-add-workspace">Cancel</button>
-          <button type="button" class="primary-button" data-action="create-workspace">${icons.check}<span>Create</span></button>
+          <button type="button" class="secondary-button" data-action="cancel-workspace-modal">Cancel</button>
+          <button type="button" class="primary-button" data-action="save-workspace">${icons.check}<span>${editing ? "Save" : "Create"}</span></button>
         </footer>
       </div>
     </div>
   `;
 }
 
-function folderRow(index, isMain) {
+function folderRow(index, isMain, path = "", mainReadOnly = false) {
   return `
     <div class="folder-row" data-folder-row="${index}">
-      <input type="text" data-folder-path="${index}" placeholder="C:\\path\\to\\folder" autocomplete="off" />
+      <input type="text" data-folder-path="${index}" value="${esc(path)}" placeholder="C:\\path\\to\\folder" autocomplete="off" ${isMain && mainReadOnly ? "readonly aria-readonly=\"true\"" : ""} />
       ${isMain ? `<span class="folder-main-tag" title="Primary folder that owns the .echo directory">main</span>` : ""}
-      <button type="button" class="icon-button" data-action="remove-folder" data-index="${index}" title="Remove folder" aria-label="Remove folder">${icons.x}</button>
+      <button type="button" class="icon-button" data-action="remove-folder" data-index="${index}" title="Remove folder" aria-label="Remove folder" ${isMain ? "hidden" : ""}>${icons.x}</button>
     </div>
   `;
 }
@@ -270,22 +287,47 @@ export function openWorkspaceDropdown(trigger, options = {}) {
 // cleanup function. onCreate is called with the created workspace after a
 // successful POST.
 export function openAddWorkspaceModal({ onCreate } = {}) {
+  return openWorkspaceModal({ onCreate });
+}
+
+// openEditWorkspaceModal edits a workspace without allowing its main folder to
+// move. onUpdate receives the resolved workspace returned by the server.
+export function openEditWorkspaceModal(workspace, { onUpdate } = {}) {
+  return openWorkspaceModal({ workspace, onUpdate });
+}
+
+export async function unregisterWorkspace(id) {
+  const previousActiveId = activeId;
+  const data = await del(`/api/workspaces/${encodeURIComponent(id)}`);
+  workspaces = workspaces.filter((workspace) => workspace.id !== id);
+  activeId = data.activeId || "";
+  if (id === previousActiveId || activeId !== previousActiveId) {
+    window.dispatchEvent(new CustomEvent("echo:workspace-changed", { detail: { workspaceId: activeId } }));
+  }
+  return data;
+}
+
+function openWorkspaceModal({ workspace = null, onCreate, onUpdate } = {}) {
+  const editing = Boolean(workspace);
   const root = document.createElement("div");
-  root.innerHTML = renderAddWorkspaceModal();
+  root.innerHTML = editing ? renderEditWorkspaceModal(workspace) : renderAddWorkspaceModal();
   const modal = root.firstElementChild;
   document.body.appendChild(modal);
 
-  const folders = [{ path: "", main: true }];
+  const additionalFolders = Array.isArray(workspace?.folders)
+    ? workspace.folders.filter((path, index) => index > 0 && path !== workspace.mainPath)
+    : [];
+  const folders = [
+    { path: workspace?.mainPath || "", main: true },
+    ...additionalFolders.map((path) => ({ path, main: false })),
+  ];
   const folderList = modal.querySelector("[data-folder-list]");
   const errorEl = modal.querySelector("[data-modal-error]");
   let iconData = null;
+  let removeIcon = false;
 
   const renderFolders = () => {
-    folderList.innerHTML = folders.map((f, i) => folderRow(i, f.main)).join("");
-    // Only allow removing non-main folders.
-    folderList.querySelectorAll("[data-action='remove-folder']").forEach((btn) => {
-      btn.hidden = btn.dataset.index === "0";
-    });
+    folderList.innerHTML = folders.map((folder, index) => folderRow(index, folder.main, folder.path, editing)).join("");
   };
   renderFolders();
 
@@ -296,6 +338,7 @@ export function openAddWorkspaceModal({ onCreate } = {}) {
 
   const close = () => {
     document.removeEventListener("keydown", onKeydown);
+    if (iconPreview._url) URL.revokeObjectURL(iconPreview._url);
     modal.remove();
   };
 
@@ -339,6 +382,7 @@ export function openAddWorkspaceModal({ onCreate } = {}) {
   const iconInput = modal.querySelector("[data-icon-input]");
   const iconPreview = modal.querySelector("[data-icon-preview]");
   const iconNameEl = modal.querySelector("[data-icon-name]");
+  const removeIconButton = modal.querySelector('[data-action="remove-icon"]');
   modal.querySelector('[data-action="pick-icon"]').addEventListener("click", () => iconInput.click());
   iconInput.addEventListener("change", () => {
     const file = iconInput.files?.[0];
@@ -348,21 +392,35 @@ export function openAddWorkspaceModal({ onCreate } = {}) {
     reader.onload = () => {
       // Send the raw bytes as a base64 string, which Go's []byte decodes from.
       iconData = { data: arrayBufferToBase64(reader.result), ext };
+      removeIcon = false;
       iconNameEl.textContent = file.name;
+      if (iconPreview._url) URL.revokeObjectURL(iconPreview._url);
       const url = URL.createObjectURL(file);
       iconPreview.innerHTML = `<img src="${url}" alt="" />`;
-      // Revoke the object URL on next change or close.
       iconPreview._url = url;
+      removeIconButton.hidden = false;
     };
     reader.readAsArrayBuffer(file);
   });
+  removeIconButton.addEventListener("click", () => {
+    if (iconPreview._url) {
+      URL.revokeObjectURL(iconPreview._url);
+      iconPreview._url = "";
+    }
+    iconData = null;
+    removeIcon = true;
+    iconInput.value = "";
+    iconPreview.innerHTML = icons.image;
+    iconNameEl.textContent = "Image will be removed";
+    removeIconButton.hidden = true;
+  });
 
   // Close / cancel.
-  modal.querySelector('[data-action="close-add-workspace"]').addEventListener("click", close);
-  modal.querySelector('[data-action="cancel-add-workspace"]').addEventListener("click", close);
+  modal.querySelector('[data-action="close-workspace-modal"]').addEventListener("click", close);
+  modal.querySelector('[data-action="cancel-workspace-modal"]').addEventListener("click", close);
 
-  // Create.
-  modal.querySelector('[data-action="create-workspace"]').addEventListener("click", async () => {
+  // Create or update.
+  modal.querySelector('[data-action="save-workspace"]').addEventListener("click", async () => {
     const name = modal.querySelector('[data-field="name"]').value.trim();
     const mainPath = folders[0].path.trim();
     const rest = folders.slice(1).map((f) => f.path.trim()).filter(Boolean);
@@ -375,25 +433,29 @@ export function openAddWorkspaceModal({ onCreate } = {}) {
       return;
     }
     setError("");
-    const createBtn = modal.querySelector('[data-action="create-workspace"]');
-    createBtn.disabled = true;
+    const saveButton = modal.querySelector('[data-action="save-workspace"]');
+    saveButton.disabled = true;
     try {
-      const data = await post("/api/workspaces", {
-        name,
-        mainPath,
-        folders: rest,
-        icon: iconData || undefined,
-      });
+      const payload = { name, folders: rest };
+      if (iconData) payload.icon = iconData;
+      if (removeIcon) payload.removeIcon = true;
+      const data = editing
+        ? await put(`/api/workspaces/${encodeURIComponent(workspace.id)}`, payload)
+        : await post("/api/workspaces", { ...payload, mainPath });
       const ws = data.workspace;
-      workspaces.push(ws);
-      if (iconPreview._url) URL.revokeObjectURL(iconPreview._url);
+      const existingIndex = workspaces.findIndex((candidate) => candidate.id === ws.id);
+      if (existingIndex >= 0) workspaces[existingIndex] = ws;
+      else workspaces.push(ws);
       close();
-      onCreate?.(ws);
+      if (editing) onUpdate?.(ws);
+      else onCreate?.(ws);
     } catch (err) {
-      setError(err.message || "Failed to create workspace.");
-      createBtn.disabled = false;
+      setError(err.message || `Failed to ${editing ? "update" : "create"} workspace.`);
+      saveButton.disabled = false;
     }
   });
+
+  modal.querySelector('[data-field="name"]')?.focus();
 
   return close;
 }

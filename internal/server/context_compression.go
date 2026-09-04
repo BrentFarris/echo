@@ -224,7 +224,7 @@ func buildCompressedModelHistory(canonical []llm.Message, checkpoint *sessions.C
 	if checkpoint == nil || strings.TrimSpace(checkpoint.Summary) == "" ||
 		checkpoint.ProtectedHeadIndex < 0 || checkpoint.ProtectedHeadIndex >= len(canonical) ||
 		checkpoint.CompactedThrough <= checkpoint.ProtectedHeadIndex || checkpoint.CompactedThrough > len(canonical) {
-		return cloneContextMessages(canonical)
+		return sanitizeContextToolPairs(canonical)
 	}
 	output := make([]llm.Message, 0, checkpoint.ProtectedHeadIndex+2+len(canonical)-checkpoint.CompactedThrough)
 	output = append(output, cloneContextMessages(canonical[:checkpoint.ProtectedHeadIndex+1])...)
@@ -235,7 +235,11 @@ func buildCompressedModelHistory(canonical []llm.Message, checkpoint *sessions.C
 			"Use conversation_history_search when an exact archived detail is needed.\n\n" + strings.TrimSpace(checkpoint.Summary),
 	})
 	output = append(output, cloneContextMessages(canonical[checkpoint.CompactedThrough:])...)
-	return output
+	// Sanitize the history returned to every model-request path, not only the
+	// temporary copies used for compression validation and token accounting.
+	// Otherwise a checkpoint can validate successfully while its retained raw
+	// tail still contains a dangling tool call that the provider will reject.
+	return sanitizeContextToolPairs(output)
 }
 
 func cloneContextMessages(messages []llm.Message) []llm.Message {
@@ -255,6 +259,57 @@ func cloneContextCheckpoint(checkpoint *sessions.ContextCheckpoint) *sessions.Co
 	return &copy
 }
 
+// sanitizeContextToolPairs repairs malformed tool groups in a context copy
+// (Hermes-style _sanitize_tool_pairs) so a dangling or orphaned exchange can
+// never block compression:
+//   - assistant tool calls whose results were never recorded get stub results
+//     injected at the point where the next non-tool message interrupts them;
+//   - tool results with no matching pending call are dropped;
+//   - tool calls without an id are stripped (unusable by any provider).
+//
+// The input is cloned; the canonical transcript is never mutated.
+func sanitizeContextToolPairs(messages []llm.Message) []llm.Message {
+	const stub = "[Tool result unavailable: the exchange was interrupted before it completed]"
+	var output []llm.Message
+	pending := map[string]struct{}{}
+	flushPending := func() {
+		for id := range pending {
+			output = append(output, llm.Message{Role: llm.RoleTool, ToolCallID: id, Content: stub})
+		}
+		pending = map[string]struct{}{}
+	}
+	for _, message := range messages {
+		if len(pending) > 0 && message.Role != llm.RoleTool {
+			flushPending()
+		}
+		switch message.Role {
+		case llm.RoleAssistant:
+			var kept []llm.ToolCall
+			for _, call := range message.ToolCalls {
+				callID := strings.TrimSpace(call.ID)
+				if callID == "" {
+					continue
+				}
+				pending[callID] = struct{}{}
+				kept = append(kept, llm.ToolCall{ID: callID, Type: call.Type, Function: call.Function})
+			}
+			message.ToolCalls = kept
+			output = append(output, message)
+		case llm.RoleTool:
+			callID := strings.TrimSpace(message.ToolCallID)
+			if _, ok := pending[callID]; !ok {
+				continue
+			}
+			delete(pending, callID)
+			output = append(output, message)
+		default:
+			output = append(output, message)
+		}
+	}
+	flushPending()
+	return output
+}
+
 func validateContextMessageOrdering(messages []llm.Message) error {
 	pending := map[string]struct{}{}
 	for index, message := range messages {
@@ -266,10 +321,7 @@ func validateContextMessageOrdering(messages []llm.Message) error {
 			for _, call := range message.ToolCalls {
 				callID := strings.TrimSpace(call.ID)
 				if callID == "" {
-					return fmt.Errorf("assistant message %d contains a tool call without an id", index)
-				}
-				if _, exists := pending[callID]; exists {
-					return fmt.Errorf("assistant message %d repeats tool call id %q", index, callID)
+					continue
 				}
 				pending[callID] = struct{}{}
 			}
@@ -391,6 +443,13 @@ func firstRealUserIndex(messages []llm.Message) int {
 	return -1
 }
 
+// selectCompressionBoundary chooses where to cut the retired region. Cut
+// points are any assistant or user message: tool groups stay intact because a
+// cut never lands on a tool result. Long agent runs rarely contain user
+// messages after the first one, so restricting cuts to user exchanges made
+// them incompressible ("not enough completed history"). A cut at an assistant
+// message with pending tool calls is safe: the tail starts with that call and
+// its results, keeping the group intact.
 func selectCompressionBoundary(settings llm.Settings, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint, prefix []llm.Message, tools []llm.Tool) (head, start, cutoff int, err error) {
 	head = firstRealUserIndex(canonical)
 	if head < 0 {
@@ -406,7 +465,7 @@ func selectCompressionBoundary(settings llm.Settings, canonical []llm.Message, c
 	full := append(cloneContextMessages(prefix), buildCompressedModelHistory(canonical, checkpoint)...)
 	minimumRetired := max(1024, contextRequestTokens(settings, full, tools)/10)
 	for index := start + 1; index < len(canonical); index++ {
-		if canonical[index].Role != llm.RoleUser {
+		if canonical[index].Role == llm.RoleTool {
 			continue
 		}
 		if estimateMessagesTokens(canonical[start:index]) < minimumRetired {
@@ -449,7 +508,7 @@ func (s *Server) compressContext(ctx context.Context, settings llm.Settings, can
 		return compressionResult{}, err
 	}
 	beforeHistory := buildCompressedModelHistory(canonical, checkpoint)
-	beforeMessages := append(cloneContextMessages(prefix), beforeHistory...)
+	beforeMessages := sanitizeContextToolPairs(append(cloneContextMessages(prefix), beforeHistory...))
 	if err := validateContextMessageOrdering(beforeMessages); err != nil {
 		return compressionResult{}, fmt.Errorf("validate context before compression: %w", err)
 	}
@@ -469,7 +528,9 @@ func (s *Server) compressContext(ctx context.Context, settings llm.Settings, can
 		previous = strings.TrimSpace(checkpoint.Summary)
 		compressionCount = checkpoint.CompressionCount
 	}
-	chunks := splitCompressionChunks(retired, max(2048, settings.ContextLength/2))
+	summaryOutputReserve := min(12000, max(1024, settings.ContextLength*5/100))
+	summaryLimit := max(2048, settings.ContextLength-summaryOutputReserve-settings.ContextLength/10)
+	chunks, _ := chunkSummaryUnits(previous, retired, summaryLimit)
 	if len(chunks) == 0 {
 		return compressionResult{}, errNothingToCompress
 	}
@@ -479,21 +540,39 @@ func (s *Server) compressContext(ctx context.Context, settings llm.Settings, can
 	}
 	var totalUsage llm.Usage
 	var usage *llm.Usage
-	contextRetry := false
 	for index := 0; index < len(chunks); index++ {
 		chunk := chunks[index]
 		nextSummary, nextUsage, summarizeErr := summarizeCompressionChunk(ctx, completer, settings, previous, chunk)
 		err = summarizeErr
-		if err != nil {
-			if !contextRetry && llm.IsContextLengthExceeded(err) {
-				smaller := splitCompressionChunks(chunk, max(1024, estimateMessagesTokens(chunk)/2))
-				if len(smaller) > 1 {
-					contextRetry = true
+		if err != nil && llm.IsContextLengthExceeded(err) {
+			// The size estimate was optimistic for this unit. Re-chunk it at
+			// the current limit: raw units split or degrade into pruned and
+			// excerpted forms that fit.
+			smaller, _ := chunkSummaryUnits(previous, chunk, summaryLimit)
+			if chunksShrank(chunk, smaller) {
+				chunks = append(append(append([][]llm.Message(nil), chunks[:index]...), smaller...), chunks[index+1:]...)
+				index--
+				continue
+			}
+			// Re-chunking cannot shrink this unit further (already pruned or
+			// excerpted). Halve the limit once to force tighter packing; if
+			// that still does not help, drop the unit from the summary rather
+			// than failing the whole compression. The raw transcript keeps the
+			// full content for recovery search.
+			if summaryLimit >= 4096 {
+				summaryLimit /= 2
+				smaller, _ = chunkSummaryUnits(previous, chunk, summaryLimit)
+				if chunksShrank(chunk, smaller) {
 					chunks = append(append(append([][]llm.Message(nil), chunks[:index]...), smaller...), chunks[index+1:]...)
 					index--
 					continue
 				}
 			}
+			chunks = append(chunks[:index], chunks[index+1:]...)
+			index--
+			continue
+		}
+		if err != nil {
 			return compressionResult{}, err
 		}
 		previous = nextSummary
@@ -510,17 +589,22 @@ func (s *Server) compressContext(ctx context.Context, settings llm.Settings, can
 		BeforeTokens: before, CompressionCount: compressionCount + 1,
 	}
 	afterHistory := buildCompressedModelHistory(canonical, checkpointResult)
-	afterMessages := append(cloneContextMessages(prefix), afterHistory...)
+	afterMessages := sanitizeContextToolPairs(append(cloneContextMessages(prefix), afterHistory...))
 	if err := validateContextMessageOrdering(afterMessages); err != nil {
 		return compressionResult{}, fmt.Errorf("validate compressed context: %w", err)
 	}
 	after := contextRequestTokens(settings, afterMessages, tools)
 	target := max(1024, compressionThresholdTokens(settings)/2)
-	if after > target {
-		return compressionResult{}, fmt.Errorf("%w: compressed context is %d tokens, above the %d-token target", errNothingToCompress, after, target)
-	}
 	minimumReclaim := max(512, before/20)
-	if after >= before || before-after < minimumReclaim {
+	if after > target {
+		// The selected boundary could not fit the rebuilt context under the
+		// target (typically one oversized exchange in the recent tail). Commit
+		// anyway when it still reclaims meaningfully so the next attempt starts
+		// from a smaller base instead of failing and retrying unchanged.
+		if after >= before || before-after < minimumReclaim {
+			return compressionResult{}, fmt.Errorf("%w: compressed context is %d tokens, above the %d-token target", errNothingToCompress, after, target)
+		}
+	} else if after >= before || before-after < minimumReclaim {
 		return compressionResult{}, fmt.Errorf("%w: compression would reclaim only %d tokens", errNothingToCompress, max(0, before-after))
 	}
 	checkpointResult.AfterTokens = after
@@ -535,32 +619,133 @@ func (s *Server) compressContext(ctx context.Context, settings llm.Settings, can
 	}, nil
 }
 
-func splitCompressionChunks(messages []llm.Message, maxTokens int) [][]llm.Message {
-	if len(messages) == 0 {
-		return nil
+// pruneToolOutputs replaces archived tool results in a summary payload with a
+// compact stub (Hermes-style pre-summarization pruning). The canonical
+// transcript is never touched; the stub keeps the role and tool_call_id so
+// message ordering stays valid. This removes the largest, least information-
+// dense content (file dumps, command output) before it inflates the summary
+// request past the endpoint context window.
+func pruneToolOutputs(messages []llm.Message) []llm.Message {
+	pruned := cloneContextMessages(messages)
+	for index := range pruned {
+		if pruned[index].Role == llm.RoleTool && len(pruned[index].Content) > 160 {
+			pruned[index].Content = "[Old tool output cleared to save context space]"
+		}
+	}
+	return pruned
+}
+
+// excerptLongToolOutputs caps each archived tool result at maxChars (head plus
+// tail with a truncation marker). This is the fallback when pruning alone does
+// not fit a chunk: it keeps bounded, summary-relevant output instead of either
+// sending the full payload or dropping the exchange entirely.
+func excerptLongToolOutputs(messages []llm.Message, maxChars int) []llm.Message {
+	excerpted := cloneContextMessages(messages)
+	for index := range excerpted {
+		message := &excerpted[index]
+		if message.Role != llm.RoleTool || len(message.Content) <= maxChars {
+			continue
+		}
+		head := maxChars * 3 / 4
+		tail := maxChars - head
+		marker := "…[truncated for context compression: middle omitted]"
+		message.Content = strings.TrimSpace(message.Content[:head] + marker + message.Content[len(message.Content)-tail:])
+	}
+	return excerpted
+}
+
+// estimateSummaryRequestTokens sizes the real summary request that will be
+// sent for a chunk: system prompt, rolling previous summary, and the
+// JSON-marshaled (escaped) exchange payload. Chunk caps must use this instead
+// of raw content estimates because escaping and framing inflate tool-heavy
+// history well beyond its unmarshaled size.
+func estimateSummaryRequestTokens(previous string, chunk []llm.Message) int {
+	data, err := json.Marshal(chunk)
+	if err != nil {
+		return estimateMessagesTokens(chunk) * 2
+	}
+	framing := contextCompressionSystemPrompt + previous
+	return estimateTextTokens(framing) + 512/3 + estimateTextTokens(string(data))*6/5
+}
+
+// chunkSummaryUnits splits retired exchanges into summary chunks whose real
+// request size stays under limit. User messages start normal exchange units
+// and remain attached to the first assistant response. Additional assistant
+// rounds start new units, which gives long agent-only tool loops safe split
+// points even when they have no later user messages. Tool results remain
+// attached to the assistant call immediately before them. Units pack into a
+// chunk while the accumulated payload fits; a unit that still overflows the
+// limit is degraded in order: tool outputs excerpted, then pruned; if even that
+// does not fit (a single exchange larger than the whole summary window), the
+// unit is dropped from the summary and recorded so the activity can report it.
+// The raw transcript always retains the full content for recovery search.
+func chunkSummaryUnits(previous string, retired []llm.Message, limit int) (chunks [][]llm.Message, dropped int) {
+	if len(retired) == 0 {
+		return nil, 0
 	}
 	boundaries := []int{0}
-	for index := 1; index < len(messages); index++ {
-		if messages[index].Role == llm.RoleUser {
+	seenAssistant := retired[0].Role == llm.RoleAssistant
+	for index := 1; index < len(retired); index++ {
+		switch retired[index].Role {
+		case llm.RoleUser:
 			boundaries = append(boundaries, index)
+			seenAssistant = false
+		case llm.RoleAssistant:
+			if seenAssistant {
+				boundaries = append(boundaries, index)
+			}
+			seenAssistant = true
 		}
 	}
-	boundaries = append(boundaries, len(messages))
-	var chunks [][]llm.Message
+	boundaries = append(boundaries, len(retired))
+	fits := func(unit []llm.Message) bool { return estimateSummaryRequestTokens(previous, unit) <= limit }
 	var current []llm.Message
 	for index := 0; index+1 < len(boundaries); index++ {
-		unit := messages[boundaries[index]:boundaries[index+1]]
-		candidate := append(cloneContextMessages(current), unit...)
-		if len(current) > 0 && estimateMessagesTokens(candidate) > maxTokens {
-			chunks = append(chunks, cloneContextMessages(current))
+		unit := retired[boundaries[index]:boundaries[index+1]]
+		if len(current) > 0 && fits(append(cloneContextMessages(current), unit...)) {
+			current = append(current, cloneContextMessages(unit)...)
+			continue
+		}
+		if len(current) > 0 {
+			chunks = append(chunks, current)
 			current = nil
 		}
-		current = append(current, cloneContextMessages(unit)...)
+		if !fits(unit) {
+			if excerpted := excerptLongToolOutputs(unit, 4096); fits(excerpted) {
+				unit = excerpted
+			} else if pruned := pruneToolOutputs(unit); fits(pruned) {
+				unit = pruned
+			} else {
+				dropped++
+				continue
+			}
+		}
+		current = cloneContextMessages(unit)
 	}
 	if len(current) > 0 {
-		chunks = append(chunks, cloneContextMessages(current))
+		chunks = append(chunks, current)
 	}
-	return chunks
+	return chunks, dropped
+}
+
+// chunksShrank reports whether re-chunking a unit produced strictly different
+// work than resending it unchanged: an empty result (unit dropped), multiple
+// units (split), or a single unit with degraded content. Identical output
+// means the unit is already fully degraded and resending it would fail again.
+func chunksShrank(original []llm.Message, smaller [][]llm.Message) bool {
+	if len(smaller) != 1 {
+		return true
+	}
+	unit := smaller[0]
+	if len(unit) != len(original) {
+		return true
+	}
+	for index := range unit {
+		if unit[index].Content != original[index].Content {
+			return true
+		}
+	}
+	return false
 }
 
 func summarizeCompressionChunk(ctx context.Context, completer chatCompleter, settings llm.Settings, previous string, messages []llm.Message) (string, *llm.Usage, error) {
@@ -570,6 +755,11 @@ func summarizeCompressionChunk(ctx context.Context, completer chatCompleter, set
 	}
 	settings.MaxTokens = min(12000, max(1024, settings.ContextLength*5/100))
 	settings.Temperature = 0.2
+	// Summary generation must not spend the output budget on reasoning: when
+	// it does, the model stops with an empty answer and the compressed context
+	// is lost. Disable thinking for summary calls (backends that do not support
+	// the kwarg ignore it) so MaxTokens buys summary text instead.
+	settings.ThinkingTokenBudget = 0
 	var prompt strings.Builder
 	prompt.WriteString("Update the structured continuation summary using the archived completed exchanges below. Preserve exact user constraints, file paths, identifiers, commands, test results, and error strings. Do not invent work. Return only the summary with all required headings.\n\n")
 	if strings.TrimSpace(previous) != "" {
@@ -579,28 +769,89 @@ func summarizeCompressionChunk(ctx context.Context, completer chatCompleter, set
 	}
 	prompt.WriteString("New archived exchanges (JSON):\n")
 	prompt.Write(data)
-	request, err := llm.NewChatRequest(settings, []llm.Message{
+	conversation := []llm.Message{
 		{Role: llm.RoleSystem, Name: contextSummaryName, Content: contextCompressionSystemPrompt},
 		{Role: llm.RoleUser, Content: prompt.String()},
-	})
-	if err != nil {
-		return "", nil, err
 	}
-	response, err := completer.Complete(ctx, request)
-	if err != nil {
-		return "", nil, fmt.Errorf("generate context summary: %w", err)
+	var totalUsage llm.Usage
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			// Mirror the chat loop's empty-response retry/continue logic: record
+			// the empty assistant turn and ask the model to continue. The
+			// request builder strips the empty assistant message, so the
+			// continue instruction lands as a follow-up user message, exactly
+			// like in normal chat turns.
+			conversation = append(conversation,
+				llm.Message{Role: llm.RoleAssistant},
+				contextSummaryContinueMessage(),
+			)
+			if attempt == maxEmptyAssistantRetries {
+				// Final retry: escalate to the stricter no-preamble prompt for
+				// models that keep spending their output budget on reasoning.
+				conversation[0].Content = contextCompressionNoPreamblePrompt
+			}
+		}
+		request, err := llm.NewChatRequest(settings, conversation)
+		if err != nil {
+			return "", nil, err
+		}
+		response, err := completer.Complete(ctx, request)
+		if err != nil {
+			return "", nil, fmt.Errorf("generate context summary: %w", err)
+		}
+		addSummaryUsage(&totalUsage, response.Usage)
+		summary := ""
+		if len(response.Choices) > 0 {
+			summary = strings.TrimSpace(response.Choices[0].Message.Content)
+		}
+		if summary != "" {
+			var usage *llm.Usage
+			if totalUsage.PromptTokens > 0 || totalUsage.CompletionTokens > 0 || totalUsage.TotalTokens > 0 {
+				usage = &totalUsage
+			}
+			return summary, usage, nil
+		}
+		if attempt >= maxEmptyAssistantRetries {
+			break
+		}
 	}
-	if len(response.Choices) == 0 {
-		return "", response.Usage, errors.New("generate context summary: endpoint returned no choices")
+	var usage *llm.Usage
+	if totalUsage.PromptTokens > 0 || totalUsage.CompletionTokens > 0 || totalUsage.TotalTokens > 0 {
+		usage = &totalUsage
 	}
-	summary := strings.TrimSpace(response.Choices[0].Message.Content)
-	if summary == "" {
-		return "", response.Usage, errors.New("generate context summary: endpoint returned an empty summary")
+	return "", usage, errors.New("generate context summary: endpoint returned an empty summary")
+}
+
+// addSummaryUsage accumulates usage across all summary attempts for a chunk so
+// compression activity reports the true token cost of retries.
+func addSummaryUsage(total *llm.Usage, usage *llm.Usage) {
+	if usage == nil {
+		return
 	}
-	return summary, response.Usage, nil
+	total.PromptTokens += usage.PromptTokens
+	total.CompletionTokens += usage.CompletionTokens
+	total.TotalTokens += usage.TotalTokens
 }
 
 const contextCompressionSystemPrompt = `You maintain continuation state for a long-running coding agent. Produce a compact, faithful Markdown summary with exactly these headings:
+## Goal
+## Constraints & Preferences
+## Progress
+### Done
+### In Progress
+### Blocked
+## Key Decisions
+## Relevant Files & Artifacts
+## Commands, Tests & Errors
+## Next Steps
+## Critical Exact Context
+
+Prefer exact paths, symbols, IDs, values, commands, test outcomes, and error text over narrative. Preserve unresolved user instructions. Fold new facts into the existing state, remove superseded detail, and never claim work was completed unless the exchanges establish it.`
+
+// contextCompressionNoPreamblePrompt is used when a summary call returns an
+// empty answer. Reasoning models sometimes spend their output budget on
+// thinking or preamble, so the retry forbids anything but the summary itself.
+const contextCompressionNoPreamblePrompt = `You maintain continuation state for a long-running coding agent. Your entire response must be the Markdown summary and nothing else: no reasoning, no commentary, no preamble, no code fences. Start the first character with "## Goal". Use exactly these headings:
 ## Goal
 ## Constraints & Preferences
 ## Progress

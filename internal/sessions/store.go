@@ -41,6 +41,56 @@ type ContextCheckpoint struct {
 	LastAssistantNumber int       `json:"lastAssistantNumber,omitempty"`
 }
 
+type GoalStatus string
+
+const (
+	GoalStatusActive    GoalStatus = "active"
+	GoalStatusPaused    GoalStatus = "paused"
+	GoalStatusBlocked   GoalStatus = "blocked"
+	GoalStatusCompleted GoalStatus = "completed"
+	GoalStatusCleared   GoalStatus = "cleared"
+)
+
+// GoalState is the durable lifecycle for one autonomous goal. Completed,
+// blocked, and cleared goals remain in the transcript as history; a tab may
+// have at most one CurrentGoalID.
+type GoalState struct {
+	ID                string     `json:"id"`
+	Objective         string     `json:"objective"`
+	ObjectiveRevision uint64     `json:"objectiveRevision,omitempty"`
+	Status            GoalStatus `json:"status"`
+	Model             string     `json:"model,omitempty"`
+	CreatedAt         time.Time  `json:"createdAt"`
+	UpdatedAt         time.Time  `json:"updatedAt"`
+	CompletedAt       *time.Time `json:"completedAt,omitempty"`
+	ActiveSince       *time.Time `json:"activeSince,omitempty"`
+	ActiveSeconds     int64      `json:"activeSeconds,omitempty"`
+	StepCount         int        `json:"stepCount,omitempty"`
+	TokensUsed        int        `json:"tokensUsed,omitempty"`
+	Outcome           string     `json:"outcome,omitempty"`
+	LastError         string     `json:"lastError,omitempty"`
+	// PendingStatus is a durable terminal declaration that is committed to
+	// Status only after the tools-disabled final response succeeds.
+	PendingStatus   GoalStatus     `json:"pendingStatus,omitempty"`
+	PendingOutcome  string         `json:"pendingOutcome,omitempty"`
+	PendingSteering []GoalSteering `json:"pendingSteering,omitempty"`
+}
+
+// GoalSteering is guidance queued while a goal is running or paused. It uses
+// the same durable attachment/context summaries as an ordinary user turn.
+type GoalSteering struct {
+	ID               string                `json:"id"`
+	Content          string                `json:"content"`
+	ModelContent     string                `json:"modelContent,omitempty"`
+	ContextPrompt    string                `json:"contextPrompt,omitempty"`
+	UserMessageIndex int                   `json:"userMessageIndex,omitempty"`
+	Images           []MediaAttachment     `json:"images,omitempty"`
+	Videos           []MediaAttachment     `json:"videos,omitempty"`
+	References       []PromptReference     `json:"references,omitempty"`
+	EditorContext    *EditorContextSummary `json:"editorContext,omitempty"`
+	CreatedAt        time.Time             `json:"createdAt"`
+}
+
 type Turn struct {
 	ID                string                `json:"id"`
 	RequestID         string                `json:"requestId"`
@@ -53,6 +103,9 @@ type Turn struct {
 	Model             string                `json:"model,omitempty"`
 	AgentModeID       string                `json:"agentModeId,omitempty"`
 	AgentModeName     string                `json:"agentModeName,omitempty"`
+	GoalID            string                `json:"goalId,omitempty"`
+	GoalOrigin        string                `json:"goalOrigin,omitempty"`
+	GoalSteering      []GoalSteering        `json:"goalSteering,omitempty"`
 	Status            string                `json:"status"`
 	Error             string                `json:"error,omitempty"`
 	StartedAt         time.Time             `json:"startedAt"`
@@ -162,11 +215,13 @@ type MediaAttachment struct {
 }
 
 type AssistantTurn struct {
-	Number       int            `json:"number"`
-	Content      string         `json:"content,omitempty"`
-	Reasoning    string         `json:"reasoning,omitempty"`
-	HasToolCalls bool           `json:"hasToolCalls,omitempty"`
-	Tools        []ToolActivity `json:"tools,omitempty"`
+	Number         int            `json:"number"`
+	Content        string         `json:"content,omitempty"`
+	Reasoning      string         `json:"reasoning,omitempty"`
+	HasToolCalls   bool           `json:"hasToolCalls,omitempty"`
+	GoalCheckpoint bool           `json:"goalCheckpoint,omitempty"`
+	GoalOrigin     string         `json:"goalOrigin,omitempty"`
+	Tools          []ToolActivity `json:"tools,omitempty"`
 	// Images and Videos carry media produced by tools during this assistant
 	// turn (e.g., ComfyUI generations). Like Turn.Images/Turn.Videos for user
 	// uploads, the DataURL payload lives on the persisted turn so snapshots

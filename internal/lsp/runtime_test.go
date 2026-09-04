@@ -113,6 +113,23 @@ func TestClientCapabilitiesAdvertiseOrganizeImports(t *testing.T) {
 	t.Fatalf("source.organizeImports missing from code action kinds: %v", kinds)
 }
 
+func TestClientCapabilitiesAdvertiseCodeLensAndRefresh(t *testing.T) {
+	capabilities := clientCapabilities()
+	textDocument := capabilities["textDocument"].(map[string]any)
+	codeLens := textDocument["codeLens"].(map[string]any)
+	if codeLens["dynamicRegistration"] != false {
+		t.Fatalf("code lens capabilities = %#v", codeLens)
+	}
+	resolve := codeLens["resolveSupport"].(map[string]any)["properties"].([]string)
+	if len(resolve) != 1 || resolve[0] != "command" {
+		t.Fatalf("code lens resolve support = %#v", resolve)
+	}
+	workspace := capabilities["workspace"].(map[string]any)
+	if workspace["codeLens"].(map[string]any)["refreshSupport"] != true {
+		t.Fatalf("workspace code lens capabilities = %#v", workspace["codeLens"])
+	}
+}
+
 func TestDocumentLeaseDenialTakeoverDisconnectAndStaleVersion(t *testing.T) {
 	current, service, workspace, _ := startTestRuntime(t)
 	defer func() {

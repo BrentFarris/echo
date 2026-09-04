@@ -1,8 +1,9 @@
 import { api } from "../js/api.js";
 import { isCoarsePointer } from "./device";
 import {
-  canClearChat, clearChat, closeWorkspaceSession, isStreaming, onChatWorkspaceChange,
-  onStreamingChange, openWorkspaceSession, sendMessage, stopStream,
+  canClearChat, clearChat, clearGoal, closeWorkspaceSession, editGoal, isStreaming,
+  onChatWorkspaceChange, onStreamingChange, openWorkspaceSession, pauseGoal, resumeGoal,
+  sendMessage, startGoal, steerGoal, stopStream,
 } from "../js/chat.js";
 import {
   activeMentionMatch, composerText, insertReferenceChip, restoreComposer, snapshotComposer,
@@ -81,6 +82,15 @@ export type MountedChatSurface = {
 
 type Endpoint = { id: string; name?: string; model?: string };
 type AgentMode = { id: string; name: string };
+type GoalState = {
+  id: string;
+  objective: string;
+  status: "active" | "paused" | "blocked" | "completed" | "cleared";
+  model?: string;
+  activeSeconds?: number;
+  stepCount?: number;
+  pendingSteering?: number;
+};
 type MentionState = {
   workspaceId: string;
   triggerStart: number;
@@ -151,6 +161,20 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
         </div>
       </header>
       <div class="chat-log" role="region" tabindex="0" aria-label="Conversation transcript" data-chat-log><div class="empty-state chat-empty">Loading conversation…</div></div>
+      <div class="chat-goal-bar" data-goal-bar hidden>
+        <div class="chat-goal-main">
+          <span class="chat-goal-status" data-goal-status></span>
+          <span class="chat-goal-objective" data-goal-objective></span>
+          <span class="chat-goal-stats" data-goal-stats></span>
+        </div>
+        <div class="chat-goal-actions">
+          <button type="button" data-goal-action="pause">Pause</button>
+          <button type="button" data-goal-action="resume">Resume</button>
+          <button type="button" data-goal-action="edit">Edit</button>
+          <button type="button" data-goal-action="new">New goal</button>
+          <button type="button" data-goal-action="clear">Clear</button>
+        </div>
+      </div>
       <form class="chat-composer" data-chat-form>
         <div class="code-chat-context-notice" data-chat-context-notice hidden></div>
         <div class="chat-composer-main" data-chat-input-wrap>
@@ -169,6 +193,10 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
     </section>`;
 
   const log = host.querySelector<HTMLElement>("[data-chat-log]")!;
+  const goalBar = host.querySelector<HTMLElement>("[data-goal-bar]")!;
+  const goalStatus = host.querySelector<HTMLElement>("[data-goal-status]")!;
+  const goalObjective = host.querySelector<HTMLElement>("[data-goal-objective]")!;
+  const goalStats = host.querySelector<HTMLElement>("[data-goal-stats]")!;
   const form = host.querySelector<HTMLFormElement>("[data-chat-form]")!;
   const contextNotice = host.querySelector<HTMLElement>("[data-chat-context-notice]")!;
   const inputWrap = host.querySelector<HTMLElement>("[data-chat-input-wrap]")!;
@@ -185,9 +213,74 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
   let mentionSequence = 0;
   let submitting = false;
   let rootsPromise: Promise<WorkspaceRoot[]> | null = null;
+  let currentGoal: GoalState | null = null;
+  let goalStateReceivedAt = Date.now();
+  let streaming = false;
+  let startingNewGoal = false;
+
+  const goalLocksComposer = () => currentGoal?.status === "active" || currentGoal?.status === "paused";
+  const goalAcceptsSteering = () => Boolean(
+    currentGoal && ["active", "paused", "blocked"].includes(currentGoal.status) && !startingNewGoal,
+  );
 
   const updateNewChatAvailability = () => {
-    newChat.disabled = !canClearChat(log);
+    newChat.disabled = goalLocksComposer() || !canClearChat(log);
+  };
+
+  const formatGoalDuration = (seconds: number) => {
+    const total = Math.max(0, Number(seconds) || 0);
+    if (total < 60) return `${total}s`;
+    if (total < 3600) return `${Math.floor(total / 60)}m`;
+    return `${Math.floor(total / 3600)}h ${Math.floor((total % 3600) / 60)}m`;
+  };
+
+  const renderGoalBar = () => {
+    goalBar.hidden = !currentGoal;
+    if (!currentGoal) {
+      startingNewGoal = false;
+      modelSelect.disabled = false;
+      modeSelect.disabled = false;
+      input.dataset.placeholder = options.placeholder || "Ask about the open files";
+      updateNewChatAvailability();
+      return;
+    }
+    const labels: Record<string, string> = {
+      active: "Running", paused: "Paused", blocked: "Blocked", completed: "Complete", cleared: "Cleared",
+    };
+    goalStatus.textContent = labels[currentGoal.status] || currentGoal.status;
+    goalStatus.dataset.status = currentGoal.status;
+    goalObjective.textContent = currentGoal.objective;
+    goalObjective.title = currentGoal.objective;
+    const elapsed = (currentGoal.activeSeconds || 0)
+      + (currentGoal.status === "active" ? Math.floor((Date.now() - goalStateReceivedAt) / 1000) : 0);
+    const steps = currentGoal.stepCount || 0;
+    const stats = [`${steps} step${steps === 1 ? "" : "s"}`, formatGoalDuration(elapsed)];
+    if (currentGoal.pendingSteering) stats.push(`${currentGoal.pendingSteering} queued`);
+    goalStats.textContent = stats.join(" · ");
+    goalBar.querySelectorAll<HTMLButtonElement>("[data-goal-action]").forEach((button) => {
+      const action = button.dataset.goalAction;
+      button.hidden = !(
+        (action === "pause" && currentGoal?.status === "active")
+        || (action === "resume" && (currentGoal?.status === "paused" || currentGoal?.status === "blocked"))
+        || (action === "edit" && Boolean(currentGoal && ["active", "paused", "blocked"].includes(currentGoal.status)))
+        || (action === "new" && (currentGoal?.status === "blocked" || currentGoal?.status === "completed"))
+        || action === "clear"
+      );
+      button.disabled = action === "resume" && streaming;
+    });
+    const locked = goalLocksComposer();
+    modelSelect.disabled = locked;
+    modeSelect.disabled = locked;
+    if (locked) {
+      modeSelect.value = "goal";
+      if (currentGoal.model) modelSelect.value = currentGoal.model;
+    }
+    if (startingNewGoal) input.dataset.placeholder = "Describe the new goal and its completion criteria";
+    else if (currentGoal.status === "active") input.dataset.placeholder = "Add guidance to this goal";
+    else if (currentGoal.status === "paused") input.dataset.placeholder = "Queue guidance, then resume when ready";
+    else if (currentGoal.status === "blocked" && modeSelect.value === "goal") input.dataset.placeholder = "Add guidance to resume this goal";
+    else input.dataset.placeholder = options.placeholder || "Ask about the open files";
+    updateNewChatAvailability();
   };
 
   const saveDraft = () => {
@@ -329,18 +422,25 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
   };
 
   const setBusy = (busy: boolean) => {
-    send.classList.toggle("is-busy", busy);
-    send.innerHTML = `<span class="codicon codicon-${busy ? "debug-stop" : "send"}"></span>`;
-    send.title = busy ? "Stop" : "Send";
-    send.setAttribute("aria-label", busy ? "Stop stream" : "Send message");
-    updateNewChatAvailability();
+    streaming = busy;
+    renderGoalBar();
+    const goalGuidanceAction = modeSelect.value === "goal" && goalAcceptsSteering();
+    const stopAction = busy && !goalGuidanceAction;
+    const sendTitle = goalGuidanceAction
+      ? currentGoal?.status === "paused" ? "Queue goal guidance" : "Steer goal"
+      : "Send";
+    send.classList.toggle("is-busy", stopAction);
+    send.innerHTML = `<span class="codicon codicon-${stopAction ? "debug-stop" : "send"}"></span>`;
+    send.title = stopAction ? "Stop" : sendTitle;
+    send.setAttribute("aria-label", stopAction ? "Stop stream" : goalGuidanceAction ? sendTitle : "Send message");
     options.onStreamingChange?.(busy);
   };
 
   const submit = async () => {
     const segments = snapshotComposer(input);
     const text = composerText(input);
-    if (!text.trim() || submitting || isStreaming()) return;
+    const canSteerBusyGoal = modeSelect.value === "goal" && goalAcceptsSteering();
+    if (!text.trim() || submitting || (isStreaming() && !canSteerBusyGoal)) return;
     prepareCompletionNotificationPermission();
     preparePlanQuestionNotificationPermission();
     submitting = true;
@@ -365,7 +465,16 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
         editorContext: editorContext || undefined,
       };
       if (referenceMap.size) sendOptions.references = [...referenceMap.values()];
-      if (sendMessage(log, text, modelSelect.value || undefined, modeSelect.value || "general", sendOptions)) {
+      let sent = false;
+      if (modeSelect.value === "goal") {
+        sent = goalAcceptsSteering()
+          ? steerGoal(log, text, sendOptions)
+          : startGoal(log, text, modelSelect.value || undefined, sendOptions);
+      } else {
+        sent = sendMessage(log, text, modelSelect.value || undefined, modeSelect.value || "general", sendOptions);
+      }
+      if (sent) {
+        startingNewGoal = false;
         input.replaceChildren();
         clearMention();
         input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -379,7 +488,7 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (isStreaming()) stopStream();
+    if (isStreaming() && !(modeSelect.value === "goal" && goalAcceptsSteering())) stopStream();
     else void submit();
   }, { signal });
   input.addEventListener("input", () => { saveDraft(); syncMention(); }, { signal });
@@ -416,7 +525,37 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
     if (reference) void options.onActivateReference?.(reference);
   }, { signal });
   modelSelect.addEventListener("change", saveDraft, { signal });
-  modeSelect.addEventListener("change", saveDraft, { signal });
+  modeSelect.addEventListener("change", () => {
+    startingNewGoal = false;
+    saveDraft();
+    setBusy(streaming);
+  }, { signal });
+  goalBar.addEventListener("click", (event) => {
+    const button = (event.target as Element).closest<HTMLButtonElement>("[data-goal-action]");
+    if (!button || !currentGoal) return;
+    switch (button.dataset.goalAction) {
+      case "pause":
+        pauseGoal();
+        break;
+      case "resume":
+        resumeGoal();
+        break;
+      case "edit": {
+        const objective = window.prompt("Edit goal", currentGoal.objective);
+        if (objective != null && objective.trim()) editGoal(objective);
+        break;
+      }
+      case "new":
+        startingNewGoal = true;
+        modeSelect.value = "goal";
+        renderGoalBar();
+        input.focus();
+        break;
+      case "clear":
+        clearGoal();
+        break;
+    }
+  }, { signal });
   close?.addEventListener("click", () => options.onClose?.(), { signal });
   newChat.addEventListener("click", () => {
     if (!canClearChat(log) || !window.confirm("Start a new code chat? This clears the current code-chat history.")) return;
@@ -439,7 +578,12 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
     workspaceId?: string;
     surface?: string;
     activeChatId?: string;
+    goal?: GoalState | null;
   } | null) => {
+    currentGoal = workspace?.goal || null;
+    goalStateReceivedAt = Date.now();
+    if (currentGoal?.status === "active") startingNewGoal = false;
+    setBusy(streaming);
     updateNewChatAvailability();
     if (!expectedChatResolved && options.expectedChatId && workspace?.hasSnapshot
       && workspace.workspaceId === options.workspaceId && workspace.surface === surface) {
@@ -473,7 +617,14 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
       if (![...modeSelect.options].some((option) => option.value === "general")) modeSelect.prepend(new Option("General", "general"));
       modeSelect.value = "general";
     }),
-  ]).catch((error) => console.error("load code chat controls", error)).finally(restoreDraft);
+  ]).catch((error) => console.error("load code chat controls", error)).finally(() => {
+    restoreDraft();
+    renderGoalBar();
+  });
+
+  const goalElapsedTimer = window.setInterval(() => {
+    if (currentGoal?.status === "active") renderGoalBar();
+  }, 1000);
 
   return {
     focus: () => input.focus(),
@@ -487,6 +638,7 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
       clearMention();
       unsubscribeStreaming();
       unsubscribeWorkspace();
+      window.clearInterval(goalElapsedTimer);
       closeWorkspaceSession(log);
       host.replaceChildren();
     },

@@ -102,6 +102,9 @@ func (e *fakeEngine) OpenPTY(context.Context, MachineState, ExecRequest) (PTY, e
 func (e *fakeEngine) OpenProcess(context.Context, MachineState, ExecRequest) (Process, error) {
 	return nil, errors.New("not implemented")
 }
+func (e *fakeEngine) OpenDAP(context.Context, MachineState, DAPRequest) (Process, error) {
+	return nil, errors.New("not implemented")
+}
 func (e *fakeEngine) Usage(context.Context, MachineState) (ResourceUsage, error) {
 	return ResourceUsage{MemoryBytes: 64}, nil
 }

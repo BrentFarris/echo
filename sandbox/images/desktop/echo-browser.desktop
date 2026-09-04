@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Icon=chromium
+Type=X-XFCE-Helper
+Name=Echo Managed Browser
+StartupNotify=true
+X-XFCE-Binaries=echo-browser;
+X-XFCE-Category=WebBrowser
+X-XFCE-Commands=%B;
+X-XFCE-CommandsWithParameter=%B "%s";

@@ -31,10 +31,10 @@ describe("terminal event sequencing", () => {
 describe("terminal preferences", () => {
   it("restores per-workspace values and clamps heights", () => {
     const restored = parseTerminalPreferences(JSON.stringify({
-      alpha: { open: true, maximized: false, height: 9999 },
+      alpha: { open: true, maximized: false, height: 9999, activePanel: "debug-console" },
       beta: { open: false, maximized: true, height: 10 },
     }), 1000);
-    expect(restored.alpha).toEqual({ open: true, maximized: false, height: 700 });
+    expect(restored.alpha).toEqual({ open: true, maximized: false, height: 700, activePanel: "debug-console" });
     expect(restored.beta).toEqual({ open: true, maximized: true, height: 160 });
     expect(clampTerminalHeight(280, 1000)).toBe(280);
   });
