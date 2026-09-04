@@ -141,6 +141,34 @@ func executeSourceControlInspect(execution ExecutionContext, arguments json.RawM
 		if targetErr != nil {
 			return nil, targetErr
 		}
+		if strings.EqualFold(strings.TrimSpace(args.Comparison), "included") {
+			status, statusErr := execution.SourceControl.Status(ctx, execution.WorkspaceID, repository.ID)
+			if statusErr != nil {
+				return nil, safeSourceControlInspectError(statusErr)
+			}
+			groupID := ""
+			hasIncludedGroup := false
+		includedGroups:
+			for _, group := range status.Groups {
+				if group.Role != "included" {
+					continue
+				}
+				hasIncludedGroup = true
+				for _, change := range group.Changes {
+					if change.Path == args.Path {
+						groupID = group.ID
+						break includedGroups
+					}
+				}
+			}
+			if !hasIncludedGroup {
+				return nil, SafeError{Code: "unsupported_source_control_capability", Message: "this provider does not have an included changes area"}
+			}
+			if groupID == "" {
+				return nil, SafeError{Code: "invalid_arguments", Message: "path is not in the included changes group"}
+			}
+			target.GroupID = groupID
+		}
 		diff, diffErr := execution.SourceControl.Diff(ctx, execution.WorkspaceID, repository.ID, target)
 		if diffErr != nil {
 			return nil, safeSourceControlInspectError(diffErr)
@@ -236,7 +264,7 @@ func selectSourceControlRepository(repositories []sourcecontrol.Repository, requ
 	return sourcecontrol.Repository{}, SafeError{Code: "ambiguous_repository", Message: "repository matches multiple providers; pass provider: " + strings.Join(labels, ", ")}
 }
 
-func sourceControlInspectionDiffTarget(providerID string, args sourceControlInspectArgs) (sourcecontrol.DiffTarget, error) {
+func sourceControlInspectionDiffTarget(_ string, args sourceControlInspectArgs) (sourcecontrol.DiffTarget, error) {
 	comparison := strings.ToLower(strings.TrimSpace(args.Comparison))
 	if comparison == "" {
 		comparison = "working_tree"
@@ -249,13 +277,10 @@ func sourceControlInspectionDiffTarget(providerID string, args sourceControlInsp
 		}
 		target.Kind, target.GroupID = "change", "working"
 	case "included":
-		if providerID != "git" {
-			return target, SafeError{Code: "unsupported_source_control_capability", Message: "this provider does not have an included/staging area"}
-		}
 		if args.Base != "" || args.Target != "" {
 			return target, SafeError{Code: "invalid_arguments", Message: "included diff does not accept base or target"}
 		}
-		target.Kind, target.GroupID = "change", "staged"
+		target.Kind, target.GroupID = "change", "included"
 	case "revision":
 		if strings.TrimSpace(args.Target) == "" || args.Base != "" {
 			return target, SafeError{Code: "invalid_arguments", Message: "revision diff requires target and does not accept base"}

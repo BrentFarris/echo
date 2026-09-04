@@ -2,6 +2,7 @@ package fossil
 
 import (
 	"context"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -16,11 +17,21 @@ type statusRecord struct {
 	kind    string
 }
 
+var fossilRenameSeparator = regexp.MustCompile(`\s+->\s+`)
+
 func (p *Provider) Status(ctx context.Context, workspaceID, repositoryID string) (sourcecontrol.StatusSnapshot, error) {
 	state, err := p.repository(ctx, workspaceID, repositoryID)
 	if err != nil {
 		return sourcecontrol.StatusSnapshot{}, err
 	}
+	state.rootMu.Lock()
+	if err := p.recoverProtectedCommitState(ctx, state); err != nil {
+		state.rootMu.Unlock()
+		return sourcecontrol.StatusSnapshot{}, err
+	}
+	state.rootMu.Unlock()
+	state.rootMu.RLock()
+	defer state.rootMu.RUnlock()
 	return p.loadStatus(ctx, state)
 }
 
@@ -38,10 +49,17 @@ func (p *Provider) loadStatus(ctx context.Context, state *repositoryState) (sour
 	if extrasErr == nil {
 		records = append(records, parseExtras(string(extrasOutput))...)
 	}
+	manifest, err := p.loadCheckpoint(state)
+	if err != nil {
+		return sourcecontrol.StatusSnapshot{}, err
+	}
+	protectedEntries := checkpointEntries(manifest)
+	protectedDiagnostic := checkpointStale(manifest, state, info.Checkout)
 
-	groups := map[string][]sourcecontrol.Change{"conflicts": {}, "working": {}, "untracked": {}}
+	groups := map[string][]sourcecontrol.Change{"conflicts": {}, protectedGroupID: {}, "working": {}, "untracked": {}}
 	hidden := 0
 	seen := make(map[string]bool)
+	seenProtected := make(map[string]bool)
 	merge := false
 	for _, record := range records {
 		key := record.group + "\x00" + pathIdentity(record.path)
@@ -58,14 +76,50 @@ func (p *Provider) loadStatus(ctx context.Context, state *repositoryState) (sour
 			}
 			continue
 		}
+		protectedEntry, recordIsProtected := protectedEntryForRecord(protectedEntries, record)
+		if recordIsProtected {
+			seenProtected[pathIdentity(protectedEntry.Path)] = true
+		}
+		if record.group == "conflicts" || strings.Contains(record.code, "MERGE") || strings.Contains(record.code, "INTEGRATE") {
+			merge = true
+		}
+		if record.group == "conflicts" {
+			ref, _ := state.refForPath(record.path)
+			groups["conflicts"] = append(groups["conflicts"], sourcecontrol.Change{
+				Path: record.path, OldPath: record.oldPath, Ref: ref, Status: statusLabel(record.code),
+				StatusCode: record.code, Kind: record.kind, GroupID: "conflicts",
+			})
+			continue
+		}
+		if recordIsProtected {
+			matched, matchErr := p.fileStateMatchesWorking(state, protectedEntry)
+			if matchErr != nil {
+				return sourcecontrol.StatusSnapshot{}, matchErr
+			}
+			if !matched {
+				copy := record
+				groups["working"] = append(groups["working"], p.laterChange(state, protectedEntry, &copy))
+			}
+			continue
+		}
 		ref, _ := state.refForPath(record.path)
 		change := sourcecontrol.Change{
 			Path: record.path, OldPath: record.oldPath, Ref: ref, Status: statusLabel(record.code),
 			StatusCode: record.code, Kind: record.kind, GroupID: record.group,
 		}
 		groups[record.group] = append(groups[record.group], change)
-		if record.group == "conflicts" || strings.Contains(record.code, "MERGE") || strings.Contains(record.code, "INTEGRATE") {
-			merge = true
+	}
+	for _, entry := range protectedEntries {
+		groups[protectedGroupID] = append(groups[protectedGroupID], protectedChange(entry, state))
+		if seenProtected[pathIdentity(entry.Path)] {
+			continue
+		}
+		matched, matchErr := p.fileStateMatchesWorking(state, entry)
+		if matchErr != nil {
+			return sourcecontrol.StatusSnapshot{}, matchErr
+		}
+		if !matched {
+			groups["working"] = append(groups["working"], p.laterChange(state, entry, nil))
 		}
 	}
 	for id := range groups {
@@ -81,7 +135,7 @@ func (p *Provider) loadStatus(ctx context.Context, state *repositoryState) (sour
 	truncated := total > sourcecontrol.StatusLimit
 	if truncated {
 		remaining := sourcecontrol.StatusLimit
-		for _, id := range []string{"conflicts", "working", "untracked"} {
+		for _, id := range []string{"conflicts", protectedGroupID, "working", "untracked"} {
 			if len(groups[id]) > remaining {
 				groups[id] = groups[id][:remaining]
 			}
@@ -91,13 +145,35 @@ func (p *Provider) loadStatus(ctx context.Context, state *repositoryState) (sour
 			}
 		}
 	}
+	workingActions := []string{"discard", "protect", "untrack"}
+	untrackedActions := []string{"protect", "track", "discard"}
+	protectedActions := []string{}
+	if manifest == nil {
+		workingActions = append(workingActions, "commit_selected")
+	} else {
+		// The unprotect action also serves as the provider-neutral signal that
+		// a checkpoint exists. Unlike the rendered change count, it is not lost
+		// if an unusually large status is truncated before this group.
+		protectedActions = append(protectedActions, "unprotect")
+		if protectedDiagnostic == "" {
+			protectedActions = append(protectedActions, "commit_protected")
+		} else {
+			workingActions = nil
+			untrackedActions = nil
+		}
+	}
+	conflictActions := []string{"discard"}
+	if protectedDiagnostic != "" {
+		conflictActions = nil
+	}
 	return sourcecontrol.StatusSnapshot{
 		WorkspaceID: state.workspaceID, RepositoryID: sourcecontrol.RepositoryID(state.workspaceID, ID, state.root), ProviderID: ID,
 		Revision: state.revision.Load(), Branch: info.Branch, Head: info.Checkout,
 		Groups: []sourcecontrol.ChangeGroup{
-			{ID: "conflicts", Label: "Merge Changes", Role: "conflicts", Changes: groups["conflicts"], Actions: []string{"discard"}},
-			{ID: "working", Label: "Changes", Role: "working", Changes: groups["working"], Actions: []string{"discard", "commit_selected", "untrack"}},
-			{ID: "untracked", Label: "Untracked Files", Role: "untracked", Changes: groups["untracked"], Actions: []string{"track", "discard"}},
+			{ID: "conflicts", Label: "Merge Changes", Role: "conflicts", Changes: groups["conflicts"], Actions: conflictActions},
+			{ID: protectedGroupID, Label: "Protected Changes", Role: "included", Changes: groups[protectedGroupID], Actions: protectedActions, Diagnostic: protectedDiagnostic},
+			{ID: "working", Label: "Changes", Role: "working", Changes: groups["working"], Actions: workingActions},
+			{ID: "untracked", Label: "Untracked Files", Role: "untracked", Changes: groups["untracked"], Actions: untrackedActions},
 		},
 		HiddenChangeCount: hidden, Truncated: truncated, TotalChangeCount: total,
 		State: sourcecontrol.RepositoryState{MergeInProgress: merge},
@@ -129,12 +205,18 @@ func parseClassifiedChanges(output string) []statusRecord {
 			record.kind = "deleted"
 		case "RENAMED":
 			record.kind = "renamed"
-			if oldPath, newPath, ok := strings.Cut(pathValue, " -> "); ok {
-				record.oldPath = filepathClean(oldPath)
-				record.path = filepathClean(newPath)
-			}
 		case "UPDATED_BY_MERGE", "UPDATED_BY_INTEGRATE", "UPDATED_BY_CHERRY_PICK", "UPDATED_BY_BACKOUT":
 			record.kind = "modified"
+		}
+		// Fossil 2.27 classifies a renamed file whose content also changed as
+		// EDITED and prints "old  ->  new". Treat the arrow as the rename
+		// signal independently of the leading classification token.
+		if record.group != "conflicts" && record.group != "untracked" {
+			if endpoints := fossilRenameSeparator.Split(pathValue, 2); len(endpoints) == 2 {
+				record.code, record.kind = "RENAMED", "renamed"
+				record.oldPath = filepathClean(endpoints[0])
+				record.path = filepathClean(endpoints[1])
+			}
 		}
 		if record.path != "" {
 			result = append(result, record)

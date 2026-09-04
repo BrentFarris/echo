@@ -13,7 +13,7 @@ const fossilRepository: SourceControlRepository = {
   scopes: [{ rootId: "root", rootLabel: "Project", repoPrefix: "" }],
   revision: 1,
   available: true,
-  capabilities: ["status", "diff", "history", "track", "commitAll", "commitSelected", "update", "sync"],
+  capabilities: ["status", "diff", "history", "track", "protect", "commitAll", "commitSelected", "update", "sync"],
 };
 
 function fossilStatus(groups: SourceControlStatus["groups"]): SourceControlStatus {
@@ -35,14 +35,35 @@ function fossilStatus(groups: SourceControlStatus["groups"]): SourceControlStatu
 describe("Source Control presentation adapters", () => {
   it("models Fossil as a native no-staging workflow", () => {
     const status = fossilStatus([
-      { id: "working", label: "Changes", role: "working", actions: ["discard", "commit_selected", "untrack"], changes: [{ path: "edited.txt", status: "Modified", statusCode: "EDITED", kind: "modified", groupId: "working" }] },
-      { id: "untracked", label: "Untracked Files", role: "untracked", actions: ["track", "discard"], changes: [{ path: "new.txt", status: "Untracked", statusCode: "EXTRA", kind: "untracked", groupId: "untracked" }] },
+      { id: "working", label: "Changes", role: "working", actions: ["discard", "protect", "commit_selected", "untrack"], changes: [{ path: "edited.txt", status: "Modified", statusCode: "EDITED", kind: "modified", groupId: "working" }] },
+      { id: "untracked", label: "Untracked Files", role: "untracked", actions: ["protect", "track", "discard"], changes: [{ path: "new.txt", status: "Untracked", statusCode: "EXTRA", kind: "untracked", groupId: "untracked" }] },
     ]);
     const presentation = presentationFor(fossilRepository);
     expect(presentation.usesStagingArea).toBe(false);
     expect(presentation.commit(fossilRepository, status, [])).toMatchObject({ action: "commit_all", label: "Commit All", enabled: true });
     expect(presentation.commit(fossilRepository, status, [status.unstaged[0]])).toMatchObject({ action: "commit_selected", label: "Commit 1 Selected", enabled: true });
-    expect(presentation.changeAction(fossilRepository, status.groups[1], status.unstaged[1])).toMatchObject({ action: "track" });
+    expect(presentation.changeAction(fossilRepository, status.groups[1], status.unstaged[1])).toMatchObject({ action: "protect", label: "Protect This Version" });
+  });
+
+  it("makes a protected checkpoint the Fossil commit target", () => {
+    const status = fossilStatus([
+      { id: "protected", label: "Protected Changes", role: "included", actions: ["unprotect", "commit_protected"], changes: [{ path: "frozen.txt", status: "Modified", statusCode: "EDITED", kind: "modified", groupId: "protected" }] },
+      { id: "working", label: "Changes", role: "working", actions: ["discard", "protect"], changes: [{ path: "frozen.txt", status: "Modified", statusCode: "EDITED", kind: "modified", groupId: "working" }] },
+    ]);
+    const presentation = presentationFor(fossilRepository);
+    expect(presentation.commit(fossilRepository, status, status.unstaged)).toMatchObject({ action: "commit_protected", label: "Commit Protected", enabled: true });
+    expect(presentation.changeAction(fossilRepository, status.groups[0], status.staged[0])).toMatchObject({ action: "unprotect", label: "Remove Protection" });
+    expect(presentation.groupAction(fossilRepository, status.groups[0])).toMatchObject({ action: "unprotect_all", pathSource: "none" });
+  });
+
+  it("keeps the protected commit target when its rows are status-truncated", () => {
+    const status = fossilStatus([
+      { id: "protected", label: "Protected Changes", role: "included", actions: ["unprotect", "commit_protected"], changes: [] },
+      { id: "working", label: "Changes", role: "working", actions: ["discard", "protect"], changes: [] },
+    ]);
+    expect(presentationFor(fossilRepository).commit(fossilRepository, status, [])).toMatchObject({
+      action: "commit_protected", label: "Commit Protected", enabled: true,
+    });
   });
 
   it("blocks Fossil commits while merge conflicts remain", () => {

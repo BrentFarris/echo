@@ -10,6 +10,7 @@ import (
 
 type recordingSourceControlInspector struct {
 	repositories []sourcecontrol.Repository
+	status       sourcecontrol.StatusSnapshot
 	statusCalls  []string
 	diffTargets  []sourcecontrol.DiffTarget
 }
@@ -20,7 +21,25 @@ func (f *recordingSourceControlInspector) Repositories(context.Context, string) 
 
 func (f *recordingSourceControlInspector) Status(_ context.Context, _, repositoryID string) (sourcecontrol.StatusSnapshot, error) {
 	f.statusCalls = append(f.statusCalls, repositoryID)
+	if f.status.RepositoryID != "" || len(f.status.Groups) > 0 {
+		return f.status, nil
+	}
 	return sourcecontrol.StatusSnapshot{RepositoryID: repositoryID, ProviderID: "fossil", Revision: 7}, nil
+}
+
+func TestSourceControlInspectResolvesIncludedRoleForFossil(t *testing.T) {
+	inspector := &recordingSourceControlInspector{
+		repositories: []sourcecontrol.Repository{{ID: "fossil-id", ProviderID: "fossil", ProviderLabel: "Fossil", Label: "project", Available: true}},
+		status: sourcecontrol.StatusSnapshot{RepositoryID: "fossil-id", ProviderID: "fossil", Groups: []sourcecontrol.ChangeGroup{
+			{ID: "included-empty", Role: "included"},
+			{ID: "protected", Role: "included", Changes: []sourcecontrol.Change{{Path: "src/main.go", GroupID: "protected"}}},
+		}},
+	}
+	execution := ExecutionContext{Context: context.Background(), WorkspaceID: "workspace", SourceControl: inspector}
+	result := Execute(execution, SourceControlInspectToolName, json.RawMessage(`{"operation":"diff","repository":"project","path":"src/main.go","comparison":"included"}`))
+	if !result.Success || len(inspector.diffTargets) != 1 || inspector.diffTargets[0].GroupID != "protected" {
+		t.Fatalf("included Fossil diff was not resolved through the semantic group: result=%#v targets=%#v", result, inspector.diffTargets)
+	}
 }
 
 func (f *recordingSourceControlInspector) Diff(_ context.Context, _, repositoryID string, target sourcecontrol.DiffTarget) (sourcecontrol.DiffDocument, error) {

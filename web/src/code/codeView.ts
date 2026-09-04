@@ -9,7 +9,7 @@ import { languageForPath, monaco } from "./language";
 import { EchoLSPClient, fromLSPRange, type LSPDiagnosticSeverity, type LSPDocumentState } from "./lspClient";
 import type { LSPProfile, LSPStatus, LSPWorkspaceEdit, WorkspaceLSPResponse } from "./lspTypes";
 import { listRepositories as listSourceControlRepositories, loadDiff as loadSourceControlDiff } from "./sourceControlApi";
-import type { SourceControlDiffRequest, SourceControlRepository } from "./sourceControlTypes";
+import type { SourceControlDiffRequest, SourceControlDiffScope, SourceControlRepository } from "./sourceControlTypes";
 import { normalizePersistedSourceControlRepository, persistedSourceControlGroupId } from "./sourceControlSession";
 import { SourceControlView } from "./sourceControlView";
 import {
@@ -97,7 +97,7 @@ type OpenTab = {
   media?: { kind: PreviewKind; url: string };
   diff?: {
     repository: SourceControlRepository;
-    scope: "staged" | "unstaged" | "commit" | "stash";
+    scope: SourceControlDiffScope;
     groupId?: string;
     reviewRef?: string;
     fileRef?: FileRef;
@@ -1499,7 +1499,7 @@ class CodeView {
       }
       this.retainModel(modifiedModel);
       this.lsp?.trackModel(modifiedModel);
-      const qualifier = scope === "unstaged" ? "Working Tree" : scope === "staged" ? "Index" : scope === "stash" ? "Stash" : shortRevision(reviewRef || "Commit");
+      const qualifier = sourceControlScopeLabel(scope, repository, reviewRef);
       const tab: OpenTab = {
         kind: "diff", id: identity, ref: null, title: `${document.path.split("/").pop() || document.path} (${qualifier})`,
         hostPath: document.path, pinned: pin, dirty: shared?.dirty || false, deleted: !document.modified.exists,
@@ -1538,7 +1538,7 @@ class CodeView {
     identity: string,
     repository: SourceControlRepository,
     target: SourceControlDiffRequest,
-    scope: "staged" | "unstaged" | "commit" | "stash",
+    scope: SourceControlDiffScope,
     reviewRef: string | undefined,
     pin: boolean,
     reason: string,
@@ -1549,7 +1549,7 @@ class CodeView {
     this.retainModel(originalModel);
     this.retainModel(modifiedModel);
     const tab: OpenTab = {
-      kind: "diff", id: identity, ref: null, title: `${target.path.split("/").pop() || target.path} (${scope})`,
+      kind: "diff", id: identity, ref: null, title: `${target.path.split("/").pop() || target.path} (${sourceControlScopeLabel(scope, repository, reviewRef)})`,
       hostPath: target.path, pinned: pin, dirty: false, deleted: false, conflict: false, revision: "",
       hasBom: false, eol: "lf", model: modifiedModel, viewState: null, applying: false,
       changeDisposable: { dispose() {} },
@@ -1767,10 +1767,7 @@ class CodeView {
     if (tab.kind === "diff" && tab.diff) {
       const path = tab.diff.fileRef?.path || tab.diff.oldPath || tab.hostPath;
       const directory = directoryFor(path);
-      const scope = tab.diff.scope === "unstaged" ? "Working Tree"
-        : tab.diff.scope === "staged" ? "Index"
-          : tab.diff.scope === "stash" ? "Stash"
-            : shortRevision(tab.diff.reviewRef || "Commit");
+      const scope = sourceControlScopeLabel(tab.diff.scope, tab.diff.repository, tab.diff.reviewRef);
       return [tab.diff.repository.label, directory, scope].filter(Boolean).join(" · ");
     }
     if (tab.ref) {
@@ -1873,7 +1870,7 @@ class CodeView {
       return;
     }
     if (tab.kind === "diff" && tab.diff) {
-      target.innerHTML = `<span>${escapeHTML(tab.diff.repository.label)}</span><span class="codicon codicon-chevron-right"></span><span>${escapeHTML(tab.diff.oldPath || tab.title)}</span><span class="codicon codicon-chevron-right"></span><span>${escapeHTML(tab.diff.scope === "unstaged" ? "Working Tree" : tab.diff.scope === "staged" ? "Index" : tab.diff.scope)}</span>`;
+      target.innerHTML = `<span>${escapeHTML(tab.diff.repository.label)}</span><span class="codicon codicon-chevron-right"></span><span>${escapeHTML(tab.diff.oldPath || tab.title)}</span><span class="codicon codicon-chevron-right"></span><span>${escapeHTML(sourceControlScopeLabel(tab.diff.scope, tab.diff.repository, tab.diff.reviewRef))}</span>`;
       return;
     }
     if (!tab.ref) {
@@ -3806,7 +3803,7 @@ class CodeView {
         const diff = resource.diff;
         const scope = diff?.scope;
         if (!this.workspace || !diff?.repositoryId || !diff.path ||
-          (scope !== "staged" && scope !== "unstaged" && scope !== "commit" && scope !== "stash")) {
+          (scope !== "included" && scope !== "working" && scope !== "staged" && scope !== "unstaged" && scope !== "commit" && scope !== "stash")) {
           toast("This historical diff no longer has enough information to reopen it.");
           return;
         }
@@ -3817,8 +3814,9 @@ class CodeView {
             toast("The repository for this historical diff is no longer available.");
             return;
           }
+          const groupId = persistedSourceControlGroupId(repository, scope, diff.groupId);
           await this.openSourceControlDiff(repository, {
-            ...sourceControlTargetFromLegacy(scope, diff.path, diff.oldPath, diff.reviewRef, diff.groupId),
+            ...sourceControlTargetFromLegacy(scope, diff.path, diff.oldPath, diff.reviewRef, groupId),
             fileRef: resource.ref,
           }, true);
           tab = this.activeTab();
@@ -3946,7 +3944,7 @@ class CodeView {
     let saved: PersistedWorkspaceSession | null = null;
     try { saved = await loadSession(this.workspace.id); } catch (error) { console.warn("restore editor session", error); }
     if (this.abort.signal.aborted) return;
-    if (!saved || (saved.version !== 1 && saved.version !== 2 && saved.version !== 3 && saved.version !== 4)) {
+    if (!saved || (saved.version !== 1 && saved.version !== 2 && saved.version !== 3 && saved.version !== 4 && saved.version !== 5)) {
       this.applyCodeChatWidth(this.codeChatWidth);
       return;
     }
@@ -4138,7 +4136,7 @@ class CodeView {
     });
     try {
       await saveSession(this.workspace.id, {
-        version: 4, activeTabId: this.activeTabId, tabs, expanded: [...this.expanded],
+        version: 5, activeTabId: this.activeTabId, tabs, expanded: [...this.expanded],
         selectedTreeKey: this.selectedTreeKey,
         explorerWidth: this.explorerWidth, codeChatWidth: this.codeChatWidth,
         treeScrollTop: this.treeScroller?.scrollTop || 0,
@@ -4336,14 +4334,17 @@ class CodeView {
   }
 }
 
-function sourceControlTabScope(target: SourceControlDiffRequest): "staged" | "unstaged" | "commit" | "stash" {
+function sourceControlTabScope(target: SourceControlDiffRequest): SourceControlDiffScope {
   if (target.kind === "revision" || target.kind === "revisions") return "commit";
   if (target.kind === "stash") return "stash";
-  return target.groupId === "staged" || target.groupId === "included" ? "staged" : "unstaged";
+  if (target.scope === "included" || target.scope === "working") return target.scope;
+  if (target.scope === "staged") return "included";
+  if (target.scope === "unstaged") return "working";
+  return target.groupId === "staged" || target.groupId === "included" || target.groupId === "protected" ? "included" : "working";
 }
 
 function sourceControlTargetFromLegacy(
-  scope: "staged" | "unstaged" | "commit" | "stash",
+  scope: SourceControlDiffScope,
   path: string,
   oldPath?: string,
   reviewRef?: string,
@@ -4352,11 +4353,19 @@ function sourceControlTargetFromLegacy(
   const kind = scope === "commit" ? "revision" : scope === "stash" ? "stash" : "change";
   return {
     kind,
-    groupId: kind === "change" ? groupId || (scope === "staged" ? "staged" : "unstaged") : undefined,
+    groupId: kind === "change" ? groupId || (scope === "staged" || scope === "included" ? "staged" : "unstaged") : undefined,
     path,
     oldPath,
+    scope: scope === "staged" ? "included" : scope === "unstaged" ? "working" : scope,
     ref: kind === "revision" || kind === "stash" ? reviewRef : undefined,
   };
+}
+
+function sourceControlScopeLabel(scope: SourceControlDiffScope, repository: SourceControlRepository, reviewRef?: string): string {
+  if (scope === "working" || scope === "unstaged" || scope === "conflict") return "Working Tree";
+  if (scope === "included" || scope === "staged") return repository.providerId === "fossil" ? "Protected" : "Index";
+  if (scope === "stash") return "Stash";
+  return shortRevision(reviewRef || "Commit");
 }
 
 function shortRevision(ref: string): string {

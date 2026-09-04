@@ -9,7 +9,7 @@ import type {
 } from "./sourceControlTypes";
 import { normalizeStatus } from "./sourceControlTypes";
 import { aggregateSourceControlChangeCount } from "./sourceControlIdentity";
-import { presentationFor, supports } from "./sourceControlPresentation";
+import { presentationFor, supports, type ChangeActionPresentation } from "./sourceControlPresentation";
 import type { FileRef, WorkspaceRoot } from "./types";
 import { choiceDialog, escapeHTML, promptDialog, showContextMenu, toast } from "./ui";
 import { randomUUID } from "../randomUUID";
@@ -306,11 +306,12 @@ export class SourceControlView {
     const expanded = this.expandedGroups.has(key);
     const groupAction = presentationFor(repository).groupAction(repository, group);
     const busy = this.busyRepositories.has(repository.id);
-    return `<section class="git-change-group" data-git-group="${escapeHTML(scope)}">
+    return `<section class="git-change-group" data-git-group="${escapeHTML(scope)}" data-git-group-id="${escapeHTML(group.id)}">
       <header>
         <button type="button" data-git-group-toggle="${escapeHTML(scope)}" aria-expanded="${expanded}"><span class="codicon codicon-chevron-${expanded ? "down" : "right"}"></span><span>${escapeHTML(group.label)}</span><b>${changes.length}</b></button>
         ${groupAction ? `<button type="button" title="${escapeHTML(groupAction.label)}" aria-label="${escapeHTML(groupAction.label)}" data-git-group-action="${escapeHTML(groupAction.action)}" ${busy ? "disabled" : ""}><span class="codicon codicon-${escapeHTML(groupAction.icon)}"></span></button>` : ""}
       </header>
+      ${group.diagnostic ? `<div class="git-warning"><span class="codicon codicon-warning"></span>${escapeHTML(group.diagnostic)}</div>` : ""}
       ${expanded ? `<div class="git-change-list" data-git-scroll-key="${escapeHTML(key)}" data-git-list-key="${escapeHTML(key)}" data-git-list-repository="${escapeHTML(repository.id)}" data-git-list-scope="${escapeHTML(scope)}" role="listbox" aria-multiselectable="true"><div class="git-change-canvas"></div></div>` : ""}
     </section>`;
   }
@@ -402,7 +403,7 @@ export class SourceControlView {
     return `<div class="git-change-row ${selected ? "is-selected" : ""}" style="transform:translateY(${index * rowHeight}px)" role="option" aria-selected="${selected}" tabindex="${selected ? 0 : -1}" data-git-change-index="${index}">
       <span class="codicon codicon-${change.submodule ? "file-submodule" : "file-code"}"></span><span class="git-change-name">${escapeHTML(filename)}</span><small>${escapeHTML(directory)}</small>
       <div class="git-change-actions">
-        ${scope !== "staged" ? `<button type="button" title="Open File" aria-label="Open File" data-git-file-action="open"><span class="codicon codicon-go-to-file"></span></button>` : ""}
+        ${group?.role !== "included" ? `<button type="button" title="Open File" aria-label="Open File" data-git-file-action="open"><span class="codicon codicon-go-to-file"></span></button>` : ""}
         ${canDiscard ? `<button type="button" title="Revert Changes" aria-label="Revert Changes" data-git-file-action="discard" ${busy ? "disabled" : ""}><span class="codicon codicon-discard"></span></button>` : ""}
         ${changeAction ? `<button type="button" title="${changeAction.label}" aria-label="${changeAction.label}" data-git-file-action="${changeAction.action}" ${busy ? "disabled" : ""}><span class="codicon codicon-${changeAction.icon}"></span></button>` : ""}
       </div>
@@ -490,14 +491,14 @@ export class SourceControlView {
     }
     const groupAction = target.closest<HTMLElement>("[data-git-group-action]");
     if (groupAction) {
-      const action = groupAction.dataset.gitGroupAction || "";
-      if (action === "track_group") {
-        const scope = groupAction.closest<HTMLElement>("[data-git-group]")?.dataset.gitGroup || "";
-        const status = this.statuses.get(repository.id);
-        const paths = status ? this.changesForScope(status, scope).map((change) => change.path) : [];
-        if (paths.length) await this.run(repository, { requestId: randomUUID(), action: "track", paths });
-      } else {
-        await this.run(repository, { requestId: randomUUID(), action });
+      const groupElement = groupAction.closest<HTMLElement>("[data-git-group]");
+      const groupId = groupElement?.dataset.gitGroupId || "";
+      const status = this.statuses.get(repository.id);
+      const group = status?.groups.find((candidate) => candidate.id === groupId);
+      const presented = group ? presentationFor(repository).groupAction(repository, group) : null;
+      if (group && presented && presented.action === groupAction.dataset.gitGroupAction) {
+        const groupPaths = this.groupChanges(status!, group).map((change) => change.path);
+        await this.runPresentedAction(repository, presented, [], [], groupPaths);
       }
       return;
     }
@@ -541,6 +542,7 @@ export class SourceControlView {
     if (!event.ctrlKey && !event.metaKey && !event.shiftKey) await this.callbacks.openDiff(repository, {
       kind: "change", groupId: context.change.groupId, path: context.change.path,
       oldPath: context.change.oldPath, fileRef: context.change.ref,
+      scope: diffScopeForGroup(this.statuses.get(repository.id)?.groups.find((group) => group.id === context.change.groupId)),
     }, false);
     this.render();
   }
@@ -563,6 +565,7 @@ export class SourceControlView {
     if (context && repository) await this.callbacks.openDiff(repository, {
       kind: "change", groupId: context.change.groupId, path: context.change.path,
       oldPath: context.change.oldPath, fileRef: context.change.ref,
+      scope: diffScopeForGroup(this.statuses.get(repository.id)?.groups.find((group) => group.id === context.change.groupId)),
     }, pin);
   }
 
@@ -576,16 +579,52 @@ export class SourceControlView {
     const selectedKeys = actionKeys(this.selection(repository.id, scope), this.changeKey(change));
     const paths = changes.filter((candidate) => selectedKeys.includes(this.changeKey(candidate))).map((candidate) => candidate.path);
     if (action === "discard") {
+      const protectedActive = hasProtectedChanges(this.statuses.get(repository.id));
       const answer = await choiceDialog({
         title: "Revert changes?", message: paths.length === 1 ? `Revert changes to ${paths[0]}?` : `Revert changes to ${paths.length} files?`,
-        detail: "Tracked edits cannot be recovered. Untracked files will be moved to Echo Trash and can be restored.",
+        detail: protectedActive
+          ? "Protected files return to their frozen versions and remain protected. Other tracked edits cannot be recovered; untracked files go to Echo Trash."
+          : "Tracked edits cannot be recovered. Untracked files will be moved to Echo Trash and can be restored.",
         choices: [{ id: "cancel", label: "Cancel" }, { id: "revert", label: "Revert", danger: true, primary: true }],
       });
       if (answer !== "revert") return;
       await this.run(repository, { requestId: randomUUID(), action: "discard", paths, confirmed: true });
       return;
     }
-    await this.run(repository, { requestId: randomUUID(), action, paths });
+    const group = this.statuses.get(repository.id)?.groups.find((candidate) => candidate.id === change.groupId);
+    const presented = group ? presentationFor(repository).changeAction(repository, group, change) : null;
+    if (presented && presented.action === action) {
+      const groupPaths = group ? this.groupChanges(this.statuses.get(repository.id)!, group).map((candidate) => candidate.path) : [];
+      await this.runPresentedAction(repository, presented, [change.path], paths, groupPaths);
+    }
+  }
+
+  private async runPresentedAction(
+    repository: SourceControlRepository,
+    presentation: ChangeActionPresentation,
+    rowPaths: string[],
+    selectedPaths: string[],
+    groupPaths: string[],
+  ): Promise<void> {
+    if (presentation.confirmation) {
+      const answer = await choiceDialog({
+        title: presentation.confirmation.title,
+        message: presentation.confirmation.message,
+        choices: [
+          { id: "cancel", label: "Cancel" },
+          { id: "confirm", label: presentation.confirmation.confirmLabel, danger: true, primary: true },
+        ],
+      });
+      if (answer !== "confirm") return;
+    }
+    const paths = presentation.pathSource === "row" ? rowPaths
+      : presentation.pathSource === "selection" ? selectedPaths
+        : presentation.pathSource === "group" ? groupPaths : undefined;
+    if (presentation.pathSource !== "none" && !paths?.length) return;
+    await this.run(repository, {
+      requestId: randomUUID(), action: presentation.action, paths,
+      confirmed: presentation.confirmation ? true : undefined,
+    });
   }
 
   private async commit(repositoryId: string, action: string): Promise<void> {
@@ -621,7 +660,7 @@ export class SourceControlView {
       const actionRequest = { ...request, expectedRevision: status?.revision } as SourceControlActionRequest;
       const result = await sourceControlAPI.runAction(this.workspaceId, repository.id, actionRequest);
       this.applyPrediction(repository.id, request, result);
-      if (!["stage", "stage_all", "unstage", "unstage_all", "discard", "discard_all"].includes(request.action)) {
+      if (!["stage", "stage_all", "unstage", "unstage_all", "protect", "protect_all", "unprotect", "unprotect_all", "discard", "discard_all"].includes(request.action)) {
         this.metadata.delete(repository.id);
         this.history.delete(repository.id);
         if (this.historyExpanded.has(repository.id)) void this.loadHistory(repository.id);
@@ -688,7 +727,7 @@ export class SourceControlView {
     if (supports(repository, "commitAll") || supports(repository, "commitSelected")) {
       actions.push({ label: "Commit…", icon: "git-commit", separatorBefore: true, run: () => this.showCommitMenu(repository, x, y) });
     }
-    if (supports(repository, "stage") || supports(repository, "track")) {
+    if (supports(repository, "stage") || supports(repository, "track") || supports(repository, "protect")) {
       actions.push({ label: "Changes…", icon: "list-selection", run: () => this.showChangesMenu(repository, x, y) });
     }
     if (supports(repository, "update") || supports(repository, "sync") || supports(repository, "pull") || supports(repository, "push")) {
@@ -717,6 +756,15 @@ export class SourceControlView {
       const allCommit = status ? presentation.commit(repository, status, []) : null;
       const selectedCommit = status ? presentation.commit(repository, status, selected) : null;
       const actions: Parameters<typeof showContextMenu>[2] = [];
+      if (allCommit?.action === "commit_protected") {
+        actions.push({ label: "Commit Protected", icon: "git-commit", disabled: disabled || !allCommit.enabled, run: () => this.commit(repository.id, "commit_protected") });
+        actions.push(
+          { label: "Commit All", detail: "Clear protection first", icon: "git-commit", disabled: true, run: () => undefined },
+          { label: "Commit Selected", detail: "Clear protection first", icon: "list-selection", disabled: true, run: () => undefined },
+        );
+        showContextMenu(x, y, actions);
+        return;
+      }
       if (supports(repository, "commitAll")) actions.push({ label: "Commit All", icon: "git-commit", disabled: disabled || !allCommit?.enabled, run: () => this.commit(repository.id, "commit_all") });
       if (supports(repository, "commitSelected")) actions.push({ label: `Commit Selected${selected.length ? ` (${selected.length})` : ""}`, icon: "list-selection", disabled: disabled || !selectedCommit?.enabled || selected.length === 0, run: () => this.commit(repository.id, "commit_selected") });
       showContextMenu(x, y, actions);
@@ -737,10 +785,22 @@ export class SourceControlView {
     const status = this.statuses.get(repository.id);
     if (presentationFor(repository).workflow !== "git") {
       const untracked = status?.unstaged.filter((change) => change.kind === "untracked") || [];
+      const protectedActive = hasProtectedChanges(status);
+      const staleProtection = protectedChangesDiagnostic(status);
       const actions: Parameters<typeof showContextMenu>[2] = [];
-      if (supports(repository, "track")) actions.push({ label: "Track All Files", icon: "add", disabled: untracked.length === 0, run: () => this.run(repository, { requestId: randomUUID(), action: "track", paths: untracked.map((change) => change.path) }) });
-      if (status?.groups.some((group) => group.actions.includes("discard"))) actions.push({ label: "Discard All Changes", icon: "discard", danger: true, separatorBefore: actions.length > 0, disabled: !status.totalChangeCount, run: async () => {
-        const choice = await choiceDialog({ title: "Discard all changes?", message: "Tracked changes will be reverted. Untracked files will be moved to Echo Trash.", choices: [{ id: "cancel", label: "Cancel" }, { id: "discard", label: "Discard All", danger: true, primary: true }] });
+      if (supports(repository, "track")) actions.push({ label: "Track All Files", detail: staleProtection || undefined, icon: "add", disabled: untracked.length === 0 || Boolean(staleProtection), run: () => this.run(repository, { requestId: randomUUID(), action: "track", paths: untracked.map((change) => change.path) }) });
+      if (protectedActive) actions.push({ label: "Clear Protection", icon: "remove", danger: true, separatorBefore: actions.length > 0, run: async () => {
+        const choice = await choiceDialog({ title: "Clear Protected Changes?", message: "The working files will not be changed. Their frozen versions will no longer be kept for the next commit.", choices: [{ id: "cancel", label: "Cancel" }, { id: "clear", label: "Clear Protection", danger: true, primary: true }] });
+        if (choice === "clear") await this.run(repository, { requestId: randomUUID(), action: "unprotect_all", confirmed: true });
+      } });
+      if (status?.groups.some((group) => group.actions.includes("discard"))) actions.push({ label: protectedActive ? "Discard Unprotected Changes" : "Discard All Changes", icon: "discard", danger: true, separatorBefore: actions.length > 0, disabled: !status.totalChangeCount, run: async () => {
+        const choice = await choiceDialog({
+          title: protectedActive ? "Discard unprotected changes?" : "Discard all changes?",
+          message: protectedActive
+            ? "Protected files return to their frozen versions and remain protected. Other tracked changes are reverted, and other untracked files go to Echo Trash."
+            : "Tracked changes will be reverted. Untracked files will be moved to Echo Trash.",
+          choices: [{ id: "cancel", label: "Cancel" }, { id: "discard", label: protectedActive ? "Discard Unprotected" : "Discard All", danger: true, primary: true }],
+        });
         if (choice === "discard") await this.run(repository, { requestId: randomUUID(), action: "discard_all", confirmed: true });
       } });
       showContextMenu(x, y, actions);
@@ -758,9 +818,10 @@ export class SourceControlView {
 
   private showNetworkMenu(repository: SourceControlRepository, x: number, y: number): void {
     if (presentationFor(repository).workflow !== "git") {
+      const protectedActive = hasProtectedChanges(this.statuses.get(repository.id));
       const actions: Parameters<typeof showContextMenu>[2] = [];
       if (supports(repository, "sync")) actions.push({ label: "Sync", icon: "sync", run: () => this.runSimple(repository, "sync") });
-      if (supports(repository, "update")) actions.push({ label: "Update Checkout", icon: "refresh", separatorBefore: actions.length > 0, run: () => this.runSimple(repository, "update") });
+      if (supports(repository, "update")) actions.push({ label: "Update Checkout", detail: protectedActive ? "Clear protection first" : undefined, icon: "refresh", separatorBefore: actions.length > 0, disabled: protectedActive, run: () => this.runSimple(repository, "update") });
       if (supports(repository, "pull")) actions.push({ label: "Pull", icon: "cloud-download", run: () => this.runSimple(repository, "pull") });
       if (supports(repository, "push")) actions.push({ label: "Push", icon: "cloud-upload", run: () => this.runSimple(repository, "push") });
       showContextMenu(x, y, actions);
@@ -789,13 +850,14 @@ export class SourceControlView {
     const metadata = await this.ensureMetadata(repository.id);
     if (!metadata) return;
     if (presentationFor(repository).workflow !== "git") {
+      const protectedActive = hasProtectedChanges(this.statuses.get(repository.id));
       const actions: Parameters<typeof showContextMenu>[2] = [];
       if (supports(repository, "branches")) actions.push(
-        { label: "Switch To…", icon: "git-branch", run: () => this.chooseRefAction(repository, "checkout", metadata.branches.map((branch) => branch.name)) },
-        { label: "Create Branch…", icon: "git-branch-create", separatorBefore: true, run: () => this.promptNameAction(repository, "create_branch", "Create Branch", "Branch name") },
-        { label: "Create Branch From…", icon: "git-branch-create", run: () => this.createBranchFrom(repository, metadata) },
+        { label: "Switch To…", detail: protectedActive ? "Clear protection first" : undefined, icon: "git-branch", disabled: protectedActive, run: () => this.chooseRefAction(repository, "checkout", metadata.branches.map((branch) => branch.name)) },
+        { label: "Create Branch…", detail: protectedActive ? "Clear protection first" : undefined, icon: "git-branch-create", separatorBefore: true, disabled: protectedActive, run: () => this.promptNameAction(repository, "create_branch", "Create Branch", "Branch name") },
+        { label: "Create Branch From…", detail: protectedActive ? "Clear protection first" : undefined, icon: "git-branch-create", disabled: protectedActive, run: () => this.createBranchFrom(repository, metadata) },
       );
-      if (supports(repository, "merge")) actions.push({ label: "Merge Branch…", icon: "git-merge", separatorBefore: actions.length > 0, run: () => this.chooseRefAction(repository, "merge", metadata.branches.filter((branch) => !branch.current && !branch.closed).map((branch) => branch.name)) });
+      if (supports(repository, "merge")) actions.push({ label: "Merge Branch…", detail: protectedActive ? "Clear protection first" : undefined, icon: "git-merge", separatorBefore: actions.length > 0, disabled: protectedActive, run: () => this.chooseRefAction(repository, "merge", metadata.branches.filter((branch) => !branch.current && !branch.closed).map((branch) => branch.name)) });
       showContextMenu(x, y, actions);
       return;
     }
@@ -830,13 +892,14 @@ export class SourceControlView {
     const hasStash = metadata.stashes.length > 0;
     const workflow = presentationFor(repository).workflow;
     if (workflow === "fossil") {
+      const protectedActive = hasProtectedChanges(this.statuses.get(repository.id));
       showContextMenu(x, y, [
-        { label: "Stash Changes", icon: "archive", run: () => this.runSimple(repository, "stash") },
-        { label: "Snapshot Changes", icon: "archive", run: () => this.runSimple(repository, "stash_snapshot") },
-        { label: "Apply Latest Stash", icon: "check", separatorBefore: true, disabled: !hasStash, run: () => this.runSimple(repository, "apply_latest_stash") },
-        { label: "Apply Stash…", icon: "check", disabled: !hasStash, run: () => this.chooseStashAction(repository, metadata, "apply_stash") },
-        { label: "Pop Latest Stash", icon: "move", disabled: !hasStash, run: () => this.runSimple(repository, "pop_latest_stash") },
-        { label: "Pop Stash…", icon: "move", disabled: !hasStash, run: () => this.chooseStashAction(repository, metadata, "pop_stash") },
+        { label: "Stash Changes", detail: protectedActive ? "Clear protection first" : undefined, icon: "archive", disabled: protectedActive, run: () => this.runSimple(repository, "stash") },
+        { label: "Snapshot Changes", detail: protectedActive ? "Clear protection first" : undefined, icon: "archive", disabled: protectedActive, run: () => this.runSimple(repository, "stash_snapshot") },
+        { label: "Apply Latest Stash", detail: protectedActive ? "Clear protection first" : undefined, icon: "check", separatorBefore: true, disabled: !hasStash || protectedActive, run: () => this.runSimple(repository, "apply_latest_stash") },
+        { label: "Apply Stash…", detail: protectedActive ? "Clear protection first" : undefined, icon: "check", disabled: !hasStash || protectedActive, run: () => this.chooseStashAction(repository, metadata, "apply_stash") },
+        { label: "Pop Latest Stash", detail: protectedActive ? "Clear protection first" : undefined, icon: "move", disabled: !hasStash || protectedActive, run: () => this.runSimple(repository, "pop_latest_stash") },
+        { label: "Pop Stash…", detail: protectedActive ? "Clear protection first" : undefined, icon: "move", disabled: !hasStash || protectedActive, run: () => this.chooseStashAction(repository, metadata, "pop_stash") },
         { label: "View Stash…", icon: "eye", separatorBefore: true, disabled: !hasStash, run: async () => {
           const ref = await choose("View Stash", metadata.stashes.map((stash) => stash.ref), metadata.stashes.map((stash) => stash.message));
           if (ref) await this.loadReview(repository.id, ref, "stash");
@@ -1045,4 +1108,16 @@ function sameStatusContent(left: SourceControlStatus, right: SourceControlStatus
 function shouldShowRepositorySync(repository: SourceControlRepository, status: SourceControlStatus | undefined): boolean {
   const presentation = presentationFor(repository);
   return presentation.promotesPendingSync && supports(repository, "sync") && presentation.showSync(status);
+}
+
+function diffScopeForGroup(group: SourceControlChangeGroup | undefined): "included" | "working" {
+  return group?.role === "included" ? "included" : "working";
+}
+
+function hasProtectedChanges(status: SourceControlStatus | undefined): boolean {
+  return Boolean(status?.groups.some((group) => group.role === "included" && group.id === "protected" && group.actions.includes("unprotect")));
+}
+
+function protectedChangesDiagnostic(status: SourceControlStatus | undefined): string {
+  return status?.groups.find((group) => group.role === "included" && group.id === "protected")?.diagnostic || "";
 }

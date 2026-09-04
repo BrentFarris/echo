@@ -38,6 +38,7 @@ const (
 	CapabilityDiff           Capability = "diff"
 	CapabilityHistory        Capability = "history"
 	CapabilityStage          Capability = "stage"
+	CapabilityProtect        Capability = "protect"
 	CapabilityTrack          Capability = "track"
 	CapabilityCommitAll      Capability = "commitAll"
 	CapabilityCommitSelected Capability = "commitSelected"
@@ -93,11 +94,12 @@ type Change struct {
 }
 
 type ChangeGroup struct {
-	ID      string   `json:"id"`
-	Label   string   `json:"label"`
-	Role    string   `json:"role"`
-	Changes []Change `json:"changes"`
-	Actions []string `json:"actions"`
+	ID         string   `json:"id"`
+	Label      string   `json:"label"`
+	Role       string   `json:"role"`
+	Changes    []Change `json:"changes"`
+	Actions    []string `json:"actions"`
+	Diagnostic string   `json:"diagnostic,omitempty"`
 }
 
 type RepositoryState struct {

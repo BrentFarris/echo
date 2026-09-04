@@ -3,7 +3,6 @@ package fossil
 import (
 	"bytes"
 	"context"
-	"errors"
 	"net/url"
 	"os"
 	"sort"
@@ -12,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/brent/echo/internal/sourcecontrol"
+	"github.com/brent/echo/internal/sourcecontrol/checkpoint"
 	"github.com/brent/echo/internal/workspacefs"
 )
 
@@ -20,6 +20,14 @@ func (p *Provider) Diff(ctx context.Context, workspaceID, repositoryID string, t
 	if err != nil {
 		return sourcecontrol.DiffDocument{}, err
 	}
+	state.rootMu.Lock()
+	if err := p.recoverProtectedCommitState(ctx, state); err != nil {
+		state.rootMu.Unlock()
+		return sourcecontrol.DiffDocument{}, err
+	}
+	state.rootMu.Unlock()
+	state.rootMu.RLock()
+	defer state.rootMu.RUnlock()
 	pathValue, err := cleanPath(target.Path)
 	if err != nil || !state.pathAllowed(pathValue) {
 		return sourcecontrol.DiffDocument{}, &sourcecontrol.Error{Code: "path_outside_workspace", Message: "source control path is outside this workspace", Cause: sourcecontrol.ErrInvalidPath}
@@ -36,6 +44,20 @@ func (p *Provider) Diff(ctx context.Context, workspaceID, repositoryID string, t
 	document := sourcecontrol.DiffDocument{
 		RepositoryID: repositoryID, ProviderID: ID, Target: target, Ref: ref,
 		Revision: state.revision.Load(), Editable: target.Kind == "change" || target.Kind == "",
+	}
+	manifest, checkpointErr := p.loadCheckpoint(state)
+	if checkpointErr != nil {
+		return sourcecontrol.DiffDocument{}, checkpointErr
+	}
+	protectedEntries := checkpointEntries(manifest)
+	protectedEntry, isProtected := protectedEntries[pathIdentity(pathValue)]
+	if !isProtected && target.GroupID == "working" && target.OldPath != "" {
+		protectedEntry, isProtected = protectedEntryForRecord(protectedEntries, statusRecord{
+			path: pathValue, oldPath: target.OldPath, kind: "renamed",
+		})
+	}
+	if target.GroupID == protectedGroupID && !isProtected {
+		return sourcecontrol.DiffDocument{}, &sourcecontrol.Error{Code: "protected_change_not_found", Message: "the protected file version is no longer available", Cause: sourcecontrol.ErrNotFound}
 	}
 
 	var original, modified []byte
@@ -114,6 +136,32 @@ func (p *Provider) Diff(ctx context.Context, workspaceID, repositoryID string, t
 		document.Kind = "unavailable"
 		document.UnavailableReason = "Fossil stash patches can be reviewed from the stash menu but do not expose stable two-sided file content"
 		return document, nil
+	} else if target.GroupID == protectedGroupID && isProtected {
+		basePath := pathValue
+		if protectedEntry.OldPath != "" {
+			basePath = protectedEntry.OldPath
+		}
+		original, originalExists, err = p.revisionFile(ctx, state, manifest.Baseline, basePath)
+		if err == nil {
+			modified, modifiedExists, err = p.checkpointFileContent(state, protectedEntry)
+		}
+		if err != nil {
+			return sourcecontrol.DiffDocument{}, err
+		}
+		document.Editable = false
+		document.Original.Label = "Checkout"
+		document.Modified.Label = "Protected"
+	} else if target.GroupID == "working" && isProtected {
+		original, originalExists, err = p.checkpointFileContent(state, protectedEntry)
+		if err == nil {
+			modified, modifiedExists, err = p.readWorkingFile(state, pathValue)
+		}
+		if err != nil {
+			return sourcecontrol.DiffDocument{}, err
+		}
+		document.Editable = true
+		document.Original.Label = "Protected"
+		document.Modified.Label = "Working Tree"
 	} else {
 		basePath := pathValue
 		if target.OldPath != "" {
@@ -154,6 +202,17 @@ func (p *Provider) Diff(ctx context.Context, workspaceID, repositoryID string, t
 	return document, nil
 }
 
+func (p *Provider) checkpointFileContent(state *repositoryState, entry checkpoint.FileState) ([]byte, bool, error) {
+	if !entry.Exists {
+		return nil, false, nil
+	}
+	if entry.Symlink {
+		return []byte(entry.SymlinkTarget), true, nil
+	}
+	data, err := p.checkpointContent(state, entry)
+	return data, true, err
+}
+
 func (p *Provider) revisionFile(ctx context.Context, state *repositoryState, revision, pathValue string) ([]byte, bool, error) {
 	output, err := p.run(ctx, state.workspaceID, state.root, false, "finfo", "-p", "-r", revision, "./"+pathValue)
 	if err != nil {
@@ -179,13 +238,23 @@ func (p *Provider) readWorkingFile(state *repositoryState, pathValue string) ([]
 	if !ok || ref == nil {
 		return nil, false, &sourcecontrol.Error{Code: "path_outside_workspace", Message: "source control path is outside this workspace", Cause: sourcecontrol.ErrInvalidPath}
 	}
-	hostPath, err := p.fs.ResolveExistingHostPath(state.workspaceID, *ref, false)
+	hostPath, err := p.fs.ResolveEntryHostPath(state.workspaceID, *ref)
 	if err != nil {
-		var fsError *workspacefs.Error
-		if os.IsNotExist(err) || (errors.As(err, &fsError) && fsError.Code == "not_found") {
-			return nil, false, nil
-		}
 		return nil, false, &sourcecontrol.Error{Code: "worktree_read_failed", Message: "working file is unavailable", Cause: err}
+	}
+	info, err := os.Lstat(hostPath)
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, &sourcecontrol.Error{Code: "worktree_read_failed", Message: "working file is unavailable", Cause: err}
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, readErr := os.Readlink(hostPath)
+		if readErr != nil {
+			return nil, false, &sourcecontrol.Error{Code: "worktree_read_failed", Message: "working symbolic link is unavailable", Cause: readErr}
+		}
+		return []byte(target), true, nil
 	}
 	data, err := os.ReadFile(hostPath)
 	if os.IsNotExist(err) {

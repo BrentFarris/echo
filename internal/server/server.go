@@ -208,7 +208,7 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 	if err := s.sourceControl.Register(gitProvider); err != nil {
 		logf("register Git source control provider: %v", err)
 	}
-	if err := s.sourceControl.Register(fossilprovider.New(s.workspaces, s.fs, s.sandbox)); err != nil {
+	if err := s.sourceControl.Register(fossilprovider.New(s.workspaces, s.fs, s.sandbox, filepath.Join(filepath.Dir(settingsPath), "source-control", "fossil"))); err != nil {
 		logf("register Fossil source control provider: %v", err)
 	}
 	s.sourceControl.SetNotifier(func(event sourcecontrol.Event) {

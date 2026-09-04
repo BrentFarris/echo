@@ -13,7 +13,14 @@ export type CommitPresentation = {
   enabled: boolean;
 };
 
-export type ChangeActionPresentation = { action: string; label: string; icon: string };
+export type ActionPathSource = "none" | "row" | "selection" | "group";
+export type ChangeActionPresentation = {
+  action: string;
+  label: string;
+  icon: string;
+  pathSource: ActionPathSource;
+  confirmation?: { title: string; message: string; confirmLabel: string };
+};
 
 export interface SourceControlPresentationAdapter {
   readonly id: string;
@@ -64,16 +71,16 @@ const gitPresentation: SourceControlPresentationAdapter = {
     if (group.role === "included" && !group.actions.includes("unstage")) return null;
     if (group.role !== "included" && !group.actions.includes("stage")) return null;
     return group.role === "included"
-      ? { action: "unstage_all", label: "Unstage All Changes", icon: "remove" }
-      : { action: "stage_all", label: "Stage All Changes", icon: "add" };
+      ? { action: "unstage_all", label: "Unstage All Changes", icon: "remove", pathSource: "none" }
+      : { action: "stage_all", label: "Stage All Changes", icon: "add", pathSource: "none" };
   },
   changeAction(repository, group) {
     if (!supports(repository, "stage")) return null;
     if (group.role === "included" && !group.actions.includes("unstage")) return null;
     if (group.role !== "included" && !group.actions.includes("stage")) return null;
     return group.role === "included"
-      ? { action: "unstage", label: "Unstage Changes", icon: "remove" }
-      : { action: "stage", label: "Stage Changes", icon: "add" };
+      ? { action: "unstage", label: "Unstage Changes", icon: "remove", pathSource: "selection" }
+      : { action: "stage", label: "Stage Changes", icon: "add", pathSource: "selection" };
   },
 };
 
@@ -87,6 +94,17 @@ const fossilPresentation: SourceControlPresentationAdapter = {
   promotesPendingSync: false,
   showSync() { return false; },
   commit(repository, status, selected) {
+    const protectedGroup = status.groups.find((group) => group.role === "included" && group.actions.includes("unprotect"));
+    if (protectedGroup) {
+      return {
+        action: "commit_protected",
+        label: "Commit Protected",
+        title: protectedGroup.diagnostic || "Commit the exact protected file versions",
+        placeholder: "Message (Ctrl+Enter to commit Protected Changes)",
+        enabled: !hasConflicts(status) && !protectedGroup.diagnostic
+          && protectedGroup.actions.includes("commit_protected") && supports(repository, "protect"),
+      };
+    }
     const selectedTracked = selected.filter((change) => change.kind !== "untracked");
     const tracked = [...status.conflicts, ...status.unstaged].filter((change) => change.kind !== "untracked");
     const selectedMode = selected.length > 0;
@@ -101,13 +119,28 @@ const fossilPresentation: SourceControlPresentationAdapter = {
     };
   },
   groupAction(repository, group) {
-    if (group.role !== "untracked" || !group.actions.includes("track") || !supports(repository, "track")) return null;
-    return { action: "track_group", label: "Track All Files", icon: "add" };
+    if (!supports(repository, "protect")) return null;
+    if (group.role === "included" && group.actions.includes("unprotect")) return {
+      action: "unprotect_all", label: "Clear Protection", icon: "remove", pathSource: "none",
+      confirmation: {
+        title: "Clear Protected Changes?",
+        message: "The working files will not be changed. Their frozen versions will no longer be kept for the next commit.",
+        confirmLabel: "Clear Protection",
+      },
+    };
+    if ((group.role === "working" || group.role === "untracked") && group.actions.includes("protect")) {
+      return { action: "protect_all", label: "Protect All in Group", icon: "add", pathSource: "group" };
+    }
+    return null;
   },
-  changeAction(repository, _group, change) {
-    if (!supports(repository, "track")) return null;
-    if (change.kind === "untracked" && _group.actions.includes("track")) return { action: "track", label: "Track File", icon: "add" };
-    if (change.kind === "added" && _group.actions.includes("untrack")) return { action: "untrack", label: "Untrack File", icon: "remove" };
+  changeAction(repository, group) {
+    if (!supports(repository, "protect")) return null;
+    if (group.role === "included" && group.actions.includes("unprotect")) {
+      return { action: "unprotect", label: "Remove Protection", icon: "remove", pathSource: "selection" };
+    }
+    if ((group.role === "working" || group.role === "untracked") && group.actions.includes("protect")) {
+      return { action: "protect", label: "Protect This Version", icon: "add", pathSource: "selection" };
+    }
     return null;
   },
 };

@@ -44,12 +44,14 @@ export async function loadStatus(workspaceId: string, repositoryId: string): Pro
 }
 
 export async function loadDiff(workspaceId: string, repositoryId: string, options: SourceControlDiffRequest & { scope?: string }, signal?: AbortSignal): Promise<SourceControlDiffDocument> {
+  // Semantic v5 scopes describe presentation only. Provider group IDs travel
+  // with the row/session and must not be guessed as Git's staged/unstaged IDs.
   const groupId = options.groupId || (options.scope === "staged" ? "staged" : options.scope === "unstaged" ? "working" : options.scope === "conflict" ? "conflicts" : undefined);
   const kind = options.kind || (options.scope === "commit" ? "revision" : options.scope === "stash" ? "stash" : "change");
   let wire: SourceControlDiffDocument;
   if (legacyGitWorkspaces.has(workspaceId)) {
     wire = await gitAPI.loadDiff(workspaceId, repositoryId, {
-      scope: (options.scope || (groupId === "staged" ? "staged" : "unstaged")) as "staged" | "unstaged" | "commit" | "stash",
+      scope: (options.scope === "included" ? "staged" : options.scope === "working" ? "unstaged" : options.scope || (groupId === "staged" ? "staged" : "unstaged")) as "staged" | "unstaged" | "commit" | "stash",
       path: options.path, oldPath: options.oldPath, ref: options.ref,
     }, signal) as SourceControlDiffDocument;
   } else {
@@ -57,7 +59,7 @@ export async function loadDiff(workspaceId: string, repositoryId: string, option
   }
   return {
     ...wire,
-    scope: options.scope || (wire.target?.kind === "revision" ? "commit" : wire.target?.kind === "stash" ? "stash" : wire.target?.groupId === "staged" ? "staged" : "unstaged"),
+    scope: options.scope || (wire.target?.kind === "revision" ? "commit" : wire.target?.kind === "stash" ? "stash" : wire.target?.groupId === "staged" || wire.target?.groupId === "protected" ? "included" : "working"),
     path: wire.target?.path || options.path,
     oldPath: wire.target?.oldPath || options.oldPath,
   } as SourceControlDiffDocument;

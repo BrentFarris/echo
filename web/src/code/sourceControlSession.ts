@@ -17,15 +17,20 @@ export function normalizePersistedSourceControlRepository(repository: PersistedR
   };
 }
 
-/** Translate pre-v4 Git scopes into provider-neutral group targets. */
+/** Translate legacy presentation scopes into provider-native group targets. */
 export function persistedSourceControlGroupId(
   repository: SourceControlRepository,
   scope: NonNullable<PersistedTab["diff"]>["scope"],
   groupId?: string,
 ): string | undefined {
   if (groupId) return groupId;
-  if (repository.providerId !== "git") return undefined;
-  if (scope === "staged") return "staged";
-  if (scope === "unstaged") return "unstaged";
+  if (repository.providerId === "git") {
+    if (scope === "staged" || scope === "included") return "staged";
+    if (scope === "unstaged" || scope === "working") return "unstaged";
+  }
+  if (repository.providerId === "fossil") {
+    if (scope === "included") return "protected";
+    if (scope === "working") return "working";
+  }
   return undefined;
 }

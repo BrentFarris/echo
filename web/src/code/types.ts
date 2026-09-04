@@ -150,7 +150,7 @@ export type PersistedTab = {
       diagnostic?: string;
       capabilities?: string[];
     };
-    scope: "staged" | "unstaged" | "commit" | "stash";
+    scope: "included" | "working" | "commit" | "stash" | "staged" | "unstaged" | "conflict";
     groupId?: string;
     reviewRef?: string;
     fileRef?: FileRef;
@@ -161,7 +161,7 @@ export type PersistedTab = {
 };
 
 export type PersistedWorkspaceSession = {
-  version: 1 | 2 | 3 | 4;
+  version: 1 | 2 | 3 | 4 | 5;
   activeTabId: string | null;
   tabs: PersistedTab[];
   expanded: string[];

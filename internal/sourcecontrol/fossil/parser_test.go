@@ -1,6 +1,7 @@
 package fossil
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/brent/echo/internal/sourcecontrol"
+	"github.com/brent/echo/internal/sourcecontrol/checkpoint"
 )
 
 func TestCheckoutMarkersAreCrossPlatformAndDoNotIncludeArbitraryFossilFiles(t *testing.T) {
@@ -48,17 +50,21 @@ func TestParseClassifiedChangesAndExtras(t *testing.T) {
 		"DELETED     old.txt",
 		"MISSING     gone.txt",
 		"RENAMED     old name.txt -> 新しい name.txt",
+		"EDITED      original.txt  ->  renamed and edited.txt",
 		"CONFLICT    merge.txt",
 		"UPDATED_BY_MERGE merged.txt",
 		"EXTRA       scratch notes.txt",
 	}, "\r\n"))
-	if len(changes) != 8 {
+	if len(changes) != 9 {
 		t.Fatalf("changes = %#v", changes)
 	}
 	if changes[4].oldPath != "old name.txt" || changes[4].path != "新しい name.txt" || changes[4].kind != "renamed" {
 		t.Fatalf("rename = %#v", changes[4])
 	}
-	if changes[5].group != "conflicts" || changes[7].group != "untracked" {
+	if changes[5].code != "RENAMED" || changes[5].oldPath != "original.txt" || changes[5].path != "renamed and edited.txt" || changes[5].kind != "renamed" {
+		t.Fatalf("edited rename = %#v", changes[5])
+	}
+	if changes[6].group != "conflicts" || changes[8].group != "untracked" {
 		t.Fatalf("groups = %#v", changes)
 	}
 	extras := parseExtras("loose file.txt\n資料/notes.md\n")
@@ -113,6 +119,45 @@ func TestSandboxCheckoutFailureHasActionableDiagnostic(t *testing.T) {
 	}
 	if !strings.Contains(sandboxCheckoutDiagnostic, "disable the sandbox") || !strings.Contains(sandboxCheckoutDiagnostic, "workspace folder") {
 		t.Fatalf("sandbox diagnostic is not actionable: %q", sandboxCheckoutDiagnostic)
+	}
+}
+
+func TestProtectedEntryAssociationFollowsLaterRenames(t *testing.T) {
+	entries := map[string]checkpoint.FileState{
+		pathIdentity("src/original.txt"): {Path: "src/original.txt", Kind: "modified"},
+	}
+	entry, ok := protectedEntryForRecord(entries, statusRecord{code: "RENAMED", kind: "renamed", oldPath: "src/original.txt", path: "src/later.txt"})
+	if !ok || entry.Path != "src/original.txt" {
+		t.Fatalf("later rename was not associated with protection: %#v, %v", entry, ok)
+	}
+	if _, ok := protectedEntryForRecord(entries, statusRecord{code: "EXTRA", kind: "untracked", path: "src/later.txt"}); ok {
+		t.Fatal("an unrelated extra was associated with protection")
+	}
+
+	renamed := []checkpoint.FileState{{Path: "src/new.txt", OldPath: "src/old.txt", Kind: "renamed"}}
+	if err := validateCheckpointEntries(renamed); err != nil {
+		t.Fatalf("one protected rename was rejected: %v", err)
+	}
+	if err := validateCheckpointEntries(append(renamed, checkpoint.FileState{Path: "src/old.txt", Kind: "added"})); err == nil {
+		t.Fatal("overlapping protected rename endpoints were accepted")
+	}
+}
+
+func TestProtectedRenameAcrossWorkspaceScopeFailsBeforeCapture(t *testing.T) {
+	root := t.TempDir()
+	state := &repositoryState{
+		root: root,
+		scopes: []repositoryScope{{
+			Scope: sourceControlScope("root", "project", "visible"), rootPath: filepath.Join(root, "visible"),
+		}},
+	}
+	_, _, err := (&Provider{}).captureAffectedStates(state,
+		[]checkpoint.FileState{{Path: "visible/original.txt", Exists: true}},
+		[]statusRecord{{code: "RENAMED", kind: "renamed", oldPath: "visible/original.txt", path: "hidden/later.txt"}},
+	)
+	var sourceErr *sourcecontrol.Error
+	if !errors.As(err, &sourceErr) || sourceErr.Code != "protected_changes_hidden_rename" {
+		t.Fatalf("cross-scope protected rename error = %v", err)
 	}
 }
 

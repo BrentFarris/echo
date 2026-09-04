@@ -2,6 +2,7 @@ import type { FileRef } from "./types";
 
 export type SourceControlCapability =
   | "status" | "diff" | "history" | "stage" | "track" | "commitAll" | "commitSelected"
+  | "protect"
   | "update" | "sync" | "pull" | "push" | "branches" | "merge" | "stashes" | "initialize" | "clone";
 
 export type SourceControlProvider = {
@@ -47,6 +48,7 @@ export type SourceControlChangeGroup = {
   role: "conflicts" | "included" | "working" | "untracked" | string;
   changes: Array<Omit<SourceControlChange, "scope">>;
   actions: string[];
+  diagnostic?: string;
 };
 
 export type SourceControlStatus = {
@@ -89,7 +91,9 @@ export type SourceControlDiffTarget = {
   ref?: string;
 };
 
-export type SourceControlDiffRequest = SourceControlDiffTarget & { fileRef?: FileRef };
+export type SourceControlDiffScope = "included" | "working" | "commit" | "stash" | "staged" | "unstaged" | "conflict";
+
+export type SourceControlDiffRequest = SourceControlDiffTarget & { fileRef?: FileRef; scope?: SourceControlDiffScope };
 
 export type SourceControlDiffDocument = {
   repositoryId: string;

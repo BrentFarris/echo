@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/brent/echo/internal/sourcecontrol"
+	"github.com/brent/echo/internal/sourcecontrol/checkpoint"
 )
 
 var simpleName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/@{}+-]*$`)
@@ -22,8 +23,11 @@ func (p *Provider) Action(ctx context.Context, workspaceID, repositoryID string,
 	if request.RequestID == "" {
 		return sourcecontrol.ActionResult{}, &sourcecontrol.Error{Code: "request_id_required", Message: "requestId is required"}
 	}
-	state.mutationMu.Lock()
-	defer state.mutationMu.Unlock()
+	state.rootMu.Lock()
+	defer state.rootMu.Unlock()
+	if err := p.recoverProtectedCommitState(ctx, state); err != nil {
+		return sourcecontrol.ActionResult{}, err
+	}
 	if request.ExpectedRevision != 0 && request.ExpectedRevision != state.revision.Load() {
 		return sourcecontrol.ActionResult{}, &sourcecontrol.Error{Code: "stale_source_control_revision", Message: "source control changed; refresh and try again", Details: map[string]any{"revision": state.revision.Load()}}
 	}
@@ -39,7 +43,34 @@ func (p *Provider) Action(ctx context.Context, workspaceID, repositoryID string,
 }
 
 func (p *Provider) executeAction(ctx context.Context, state *repositoryState, request sourcecontrol.ActionRequest) ([]string, []string, error) {
+	manifest, err := p.loadCheckpoint(state)
+	if err != nil {
+		return nil, nil, err
+	}
+	if manifest != nil && request.Action != "unprotect" && request.Action != "unprotect_all" && request.Action != "sync" && request.Action != "pull" && request.Action != "push" {
+		info, infoErr := p.checkoutInfo(ctx, state.workspaceID, state.root)
+		if infoErr != nil {
+			return nil, nil, infoErr
+		}
+		if diagnostic := checkpointStale(manifest, state, info.Checkout); diagnostic != "" {
+			return nil, nil, &sourcecontrol.Error{Code: "protected_changes_stale", Message: diagnostic}
+		}
+	}
+	if manifest != nil && blockedWhileProtected(request.Action) {
+		return nil, nil, &sourcecontrol.Error{
+			Code:    "protected_changes_active",
+			Message: "Protected Changes are active; commit them or clear protection before changing the checkout",
+		}
+	}
 	switch request.Action {
+	case "protect", "protect_all":
+		paths, err := p.protect(ctx, state, request)
+		return paths, nil, err
+	case "unprotect", "unprotect_all":
+		paths, err := p.unprotect(state, request)
+		return paths, nil, err
+	case "commit_protected":
+		return p.commitProtected(ctx, state, request)
 	case "track":
 		paths, err := state.validatePaths(request.Paths)
 		if err != nil {
@@ -178,17 +209,35 @@ func (p *Provider) executeAction(ctx context.Context, state *repositoryState, re
 	}
 }
 
+func blockedWhileProtected(action string) bool {
+	switch action {
+	case "commit_all", "commit_selected", "update", "checkout", "merge", "create_branch", "create_branch_from",
+		"stash", "stash_untracked", "stash_snapshot", "apply_latest_stash", "apply_stash", "pop_latest_stash", "pop_stash":
+		return true
+	default:
+		return false
+	}
+}
+
 func (p *Provider) discard(ctx context.Context, state *repositoryState, request sourcecontrol.ActionRequest) ([]string, []string, error) {
 	records, err := p.rawStatus(ctx, state)
 	if err != nil {
 		return nil, nil, err
 	}
+	manifest, err := p.loadCheckpoint(state)
+	if err != nil {
+		return nil, nil, err
+	}
+	protected := checkpointEntries(manifest)
 	requested := request.Paths
 	if request.Action == "discard_all" {
 		for _, record := range records {
 			if state.pathAllowed(record.path) {
 				requested = append(requested, record.path)
 			}
+		}
+		for _, entry := range protected {
+			requested = append(requested, entry.Path)
 		}
 	}
 	paths, err := state.validatePaths(requested)
@@ -199,18 +248,49 @@ func (p *Provider) discard(ctx context.Context, state *repositoryState, request 
 		return nil, nil, err
 	}
 	untracked := make(map[string]bool)
+	recordByPath := make(map[string]statusRecord)
 	for _, record := range records {
+		recordByPath[pathIdentity(record.path)] = record
 		if record.group == "untracked" {
 			untracked[pathIdentity(record.path)] = true
 		}
 	}
 	tracked := []string{}
+	untrackedPaths := []string{}
+	protectedToRestore := make(map[string]checkpoint.FileState)
 	trashIDs := []string{}
 	for _, pathValue := range paths {
+		entry, isProtected := protected[pathIdentity(pathValue)]
+		if !isProtected {
+			if record, ok := recordByPath[pathIdentity(pathValue)]; ok {
+				entry, isProtected = protectedEntryForRecord(protected, record)
+			}
+		}
+		if isProtected {
+			protectedToRestore[pathIdentity(entry.Path)] = entry
+			continue
+		}
 		if !untracked[pathIdentity(pathValue)] {
 			tracked = append(tracked, pathValue)
 			continue
 		}
+		untrackedPaths = append(untrackedPaths, pathValue)
+	}
+	protectedEntries := make([]checkpoint.FileState, 0, len(protectedToRestore))
+	for _, entry := range protectedToRestore {
+		protectedEntries = append(protectedEntries, entry)
+	}
+	sort.SliceStable(protectedEntries, func(i, j int) bool {
+		return strings.ToLower(protectedEntries[i].Path) < strings.ToLower(protectedEntries[j].Path)
+	})
+	var protectedCurrent []checkpoint.FileState
+	if len(protectedEntries) > 0 {
+		protectedCurrent, _, err = p.captureAffectedStates(state, protectedEntries, records)
+		if err != nil {
+			return paths, nil, err
+		}
+	}
+	for _, pathValue := range untrackedPaths {
 		ref, ok := state.refForPath(pathValue)
 		if !ok || ref == nil {
 			return paths, trashIDs, &sourcecontrol.Error{Code: "path_outside_workspace", Message: "untracked file is outside this workspace"}
@@ -225,6 +305,11 @@ func (p *Provider) discard(ctx context.Context, state *repositoryState, request 
 		args := append([]string{"revert"}, fossilPaths(tracked)...)
 		if _, err := p.run(ctx, state.workspaceID, state.root, false, args...); err != nil {
 			return paths, trashIDs, err
+		}
+	}
+	if len(protectedEntries) > 0 {
+		if err := p.restoreProtectedEntries(ctx, state, manifest, protectedEntries, protectedCurrent); err != nil {
+			return paths, trashIDs, &sourcecontrol.Error{Code: "protected_changes_restore_failed", Message: "the protected files could not be restored", Cause: err}
 		}
 	}
 	return paths, trashIDs, nil

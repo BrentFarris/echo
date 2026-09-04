@@ -24,5 +24,12 @@ describe("Source Control session migration", () => {
     expect(persistedSourceControlGroupId(migrated, "unstaged")).toBe("unstaged");
     expect(persistedSourceControlGroupId(migrated, "commit")).toBeUndefined();
     expect(persistedSourceControlGroupId(migrated, "unstaged", "working")).toBe("working");
+    expect(persistedSourceControlGroupId(migrated, "included")).toBe("staged");
+  });
+
+  it("maps v5 semantic scopes for Fossil checkpoints", () => {
+    const fossil = normalizePersistedSourceControlRepository({ ...legacyRepository, providerId: "fossil", providerLabel: "Fossil", capabilities: ["protect"] });
+    expect(persistedSourceControlGroupId(fossil, "included")).toBe("protected");
+    expect(persistedSourceControlGroupId(fossil, "working")).toBe("working");
   });
 });

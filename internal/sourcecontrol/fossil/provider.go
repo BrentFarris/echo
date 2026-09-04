@@ -14,6 +14,7 @@ import (
 
 	"github.com/brent/echo/internal/sandbox"
 	"github.com/brent/echo/internal/sourcecontrol"
+	"github.com/brent/echo/internal/sourcecontrol/checkpoint"
 	"github.com/brent/echo/internal/workspacefs"
 	"github.com/brent/echo/internal/workspaces"
 )
@@ -22,7 +23,7 @@ const ID = "fossil"
 
 var capabilities = []sourcecontrol.Capability{
 	sourcecontrol.CapabilityStatus, sourcecontrol.CapabilityDiff, sourcecontrol.CapabilityHistory,
-	sourcecontrol.CapabilityTrack, sourcecontrol.CapabilityCommitAll, sourcecontrol.CapabilityCommitSelected,
+	sourcecontrol.CapabilityTrack, sourcecontrol.CapabilityProtect, sourcecontrol.CapabilityCommitAll, sourcecontrol.CapabilityCommitSelected,
 	sourcecontrol.CapabilityUpdate, sourcecontrol.CapabilitySync, sourcecontrol.CapabilityPull,
 	sourcecontrol.CapabilityPush, sourcecontrol.CapabilityBranches, sourcecontrol.CapabilityMerge,
 	sourcecontrol.CapabilityStashes,
@@ -40,17 +41,18 @@ type rootInfo struct {
 }
 
 type repositoryState struct {
-	workspaceID string
-	root        string
-	repository  string
-	label       string
-	parent      bool
-	rootRef     *workspacefs.FileRef
-	scopes      []repositoryScope
-	available   bool
-	diagnostic  string
-	revision    atomic.Uint64
-	mutationMu  sync.Mutex
+	workspaceID        string
+	root               string
+	repository         string
+	label              string
+	parent             bool
+	rootRef            *workspacefs.FileRef
+	scopes             []repositoryScope
+	available          bool
+	diagnostic         string
+	recoveryDiagnostic string
+	revision           atomic.Uint64
+	rootMu             *sync.RWMutex
 }
 
 func (r *repositoryState) public() sourcecontrol.Repository {
@@ -63,23 +65,41 @@ func (r *repositoryState) public() sourcecontrol.Repository {
 		copy := *r.rootRef
 		rootRef = &copy
 	}
+	available := r.available && r.recoveryDiagnostic == ""
+	diagnostic := r.diagnostic
+	if r.recoveryDiagnostic != "" {
+		diagnostic = r.recoveryDiagnostic
+	}
 	return sourcecontrol.Repository{
 		ID: sourcecontrol.RepositoryID(r.workspaceID, ID, r.root), ProviderID: ID, ProviderLabel: "Fossil",
 		Label: r.label, RootRef: rootRef, Parent: r.parent, Scopes: scopes, Revision: r.revision.Load(),
-		Available: r.available, Diagnostic: r.diagnostic, Capabilities: append([]sourcecontrol.Capability(nil), capabilities...),
+		Available: available, Diagnostic: diagnostic, Capabilities: append([]sourcecontrol.Capability(nil), capabilities...),
 	}
 }
 
 type Provider struct {
-	workspaces *workspaces.Manager
-	fs         *workspacefs.Service
-	sandbox    *sandbox.Manager
-	mu         sync.RWMutex
-	repos      map[string]map[string]*repositoryState
+	workspaces  *workspaces.Manager
+	fs          *workspacefs.Service
+	sandbox     *sandbox.Manager
+	checkpoints *checkpoint.Store
+	// protectedCommitFault is nil in production and lets integration tests
+	// simulate process interruption at durable transaction boundaries.
+	protectedCommitFault func(string) error
+	mu                   sync.RWMutex
+	repos                map[string]map[string]*repositoryState
+	rootLocks            map[string]*sync.RWMutex
 }
 
-func New(workspaces *workspaces.Manager, fs *workspacefs.Service, sandboxManager *sandbox.Manager) *Provider {
-	return &Provider{workspaces: workspaces, fs: fs, sandbox: sandboxManager, repos: make(map[string]map[string]*repositoryState)}
+func New(workspaces *workspaces.Manager, fs *workspacefs.Service, sandboxManager *sandbox.Manager, checkpointRoots ...string) *Provider {
+	checkpointRoot := filepath.Join(os.TempDir(), "echo-source-control-checkpoints", "fossil")
+	if len(checkpointRoots) > 0 && strings.TrimSpace(checkpointRoots[0]) != "" {
+		checkpointRoot = checkpointRoots[0]
+	}
+	return &Provider{
+		workspaces: workspaces, fs: fs, sandbox: sandboxManager,
+		checkpoints: checkpoint.New(checkpointRoot), repos: make(map[string]map[string]*repositoryState),
+		rootLocks: make(map[string]*sync.RWMutex),
+	}
 }
 
 func (p *Provider) Descriptor(ctx context.Context, workspaceID string) sourcecontrol.ProviderDescriptor {
@@ -207,8 +227,11 @@ func (p *Provider) discover(ctx context.Context, workspaceID string) ([]*reposit
 		id := sourcecontrol.RepositoryID(workspaceID, ID, item.root)
 		state := existing[id]
 		if state == nil {
-			state = &repositoryState{workspaceID: workspaceID, root: item.root}
+			state = &repositoryState{workspaceID: workspaceID, root: item.root, rootMu: p.lockForRootLocked(item.root)}
 			state.revision.Store(1)
+		}
+		if state.rootMu == nil {
+			state.rootMu = p.lockForRootLocked(item.root)
 		}
 		state.repository = item.repository
 		state.label = filepath.Base(item.root)
@@ -217,6 +240,9 @@ func (p *Provider) discover(ctx context.Context, workspaceID string) ([]*reposit
 		state.scopes = scopes
 		state.available = item.available
 		state.diagnostic = item.diagnostic
+		if !state.available {
+			state.recoveryDiagnostic = ""
+		}
 		next[id] = state
 		states = append(states, state)
 	}
@@ -241,6 +267,14 @@ func (p *Provider) discover(ctx context.Context, workspaceID string) ([]*reposit
 		}
 	}
 	p.fs.SetSourceControlMetadata(workspaceID, ID, metadataRefs)
+	for _, state := range states {
+		if !state.available {
+			continue
+		}
+		state.rootMu.Lock()
+		_ = p.recoverProtectedCommitState(ctx, state)
+		state.rootMu.Unlock()
+	}
 	return states, nil
 }
 
@@ -282,7 +316,10 @@ func (p *Provider) InvalidateWorkspace(workspaceID string) {
 }
 
 func (p *Provider) ResetWorkspace(ctx context.Context, workspaceID string) error {
-	p.RemoveWorkspace(workspaceID)
+	p.mu.Lock()
+	delete(p.repos, workspaceID)
+	p.mu.Unlock()
+	p.fs.RemoveSourceControlMetadata(workspaceID, ID)
 	_, err := p.discover(ctx, workspaceID)
 	return err
 }
@@ -292,9 +329,29 @@ func (p *Provider) RemoveWorkspace(workspaceID string) {
 	delete(p.repos, workspaceID)
 	p.mu.Unlock()
 	p.fs.RemoveSourceControlMetadata(workspaceID, ID)
+	_ = p.checkpoints.RemoveWorkspace(workspaceID)
 }
 
 func (p *Provider) StopWorkspaceProcesses(string) {}
+
+// lockForRootLocked is called while p.mu is held by discovery.
+func (p *Provider) lockForRootLocked(root string) *sync.RWMutex {
+	key := pathIdentity(root)
+	lock := p.rootLocks[key]
+	if lock == nil {
+		lock = &sync.RWMutex{}
+		p.rootLocks[key] = lock
+	}
+	return lock
+}
+
+func (r *repositoryState) repositoryID() string {
+	return sourcecontrol.RepositoryID(r.workspaceID, ID, r.root)
+}
+
+func (r *repositoryState) checkoutFingerprint() string {
+	return sourcecontrol.RepositoryID("checkout", ID, pathIdentity(r.root)+"\x00"+pathIdentity(r.repository))
+}
 
 func hasCheckoutMarker(directory string) bool {
 	for _, name := range []string{".fslckout", "_FOSSIL_", ".fos"} {
