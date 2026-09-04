@@ -88,3 +88,28 @@ test("keeps the compact mention picker within a narrow composer", async ({ page 
   expect(bounds.width).toBeLessThanOrEqual(440);
   expect(bounds.rowHeight).toBeLessThanOrEqual(40);
 });
+
+test("wraps long inline code inside chat markdown on narrow viewports", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 700 });
+  await page.setContent(`
+    <div class="chat-log">
+      <div class="chat-message">
+        <div class="chat-message-body">
+          <div class="chat-final-content">
+            <div class="markdown-body">
+              <p>See <code>https://example.com/very/long/path/that/should/wrap/on/mobile/screens</code> for details.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `);
+  await page.addStyleTag({ path: resolve(directory, "../css/app.css") });
+
+  const bounds = await page.locator(".markdown-body code").evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    return { right: rect.right, viewportWidth: window.innerWidth };
+  });
+
+  expect(bounds.right).toBeLessThanOrEqual(bounds.viewportWidth);
+});

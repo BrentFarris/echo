@@ -2141,6 +2141,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 	var observedTokens int
 	usageSource := "estimated"
 	compressionCooldown := false
+	contextLengthRetries := 0
 	for assistantNumber := 0; ; assistantNumber++ {
 		if ctx.Err() != nil {
 			s.finish(turnID, "stopped", "", canonical, checkpoint)
@@ -2266,6 +2267,13 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				s.finish(turnID, "stopped", "", canonical, checkpoint)
 				return
 			}
+			// Provider rejected the request over context size: compress and retry.
+			if contextLengthRetries < maxContextLengthRetries && llm.IsContextLengthExceeded(err) && settings.CompressionEnabled() {
+				contextLengthRetries++
+				compressionCooldown = false // force the preflight compression check next round
+				canonical = append(canonical, assistant) // retain partial response so it can be retired by compression
+				continue
+			}
 			if isEmptyAssistantResponse(streamResult.Content, streamResult.ToolCalls) && transientStreamRetries < maxTransientStreamRetries {
 				transientStreamRetries++
 				canonical = append(canonical, transientStreamRetryMessage())
@@ -2275,6 +2283,24 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			return
 		}
 		if finishErr := finishReasonError(streamResult.FinishReason, len(streamResult.ToolCalls) > 0); finishErr != nil {
+			// The output hit the token budget: preserve the partial response,
+			// ask the model to resume in smaller steps, and let the preflight
+			// pass compress the context before the next request.
+			if contextLengthRetries < maxContextLengthRetries && strings.TrimSpace(streamResult.FinishReason) == "length" {
+				contextLengthRetries++
+				compressionCooldown = false
+				interruptedTool := ""
+				if len(streamResult.ToolCalls) > 0 {
+					interruptedTool = streamResult.ToolCalls[0].Function.Name
+				}
+				if strings.TrimSpace(streamResult.Content) != "" {
+					partial := assistant
+					partial.ToolCalls = nil // truncated tool-call JSON is unusable
+					canonical = append(canonical, partial)
+				}
+				canonical = append(canonical, lengthContinuationMessage(interruptedTool))
+				continue
+			}
 			s.finish(turnID, "error", finishErr.Error(), canonical, checkpoint)
 			return
 		}
@@ -2750,6 +2776,9 @@ func (s *chatSession) toolContext(ctx context.Context, turnID string, scopes *to
 		ComfyuiTxt2imgWorkflow: settings.ComfyuiTxt2imgWorkflow,
 		ComfyuiImg2imgWorkflow: settings.ComfyuiImg2imgWorkflow,
 		ComfyuiVideoWorkflow:   settings.ComfyuiVideoWorkflow,
+		JiraHost:               settings.JiraHost,
+		JiraUsername:           settings.JiraUsername,
+		JiraAPIToken:           settings.JiraAPIToken,
 		AttachedImages:         s.latestAttachedImages(),
 		GeneratedImages:        generatedImages,
 		GeneratedVideos:        generatedVideos,

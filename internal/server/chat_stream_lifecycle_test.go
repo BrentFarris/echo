@@ -124,26 +124,48 @@ func TestChatBoundsReasoningOnlyRetries(t *testing.T) {
 	}
 }
 
-func TestChatReportsLengthFinishReasonAndExcludesPartialHistory(t *testing.T) {
-	streamer := &lifecycleSequenceStreamer{sequences: [][]llm.StreamEvent{{
-		{Type: llm.EventToken, Content: "Partial answer"},
-		{Type: llm.EventComplete, FinishReason: "length"},
-	}}}
+func TestChatResumesAfterLengthFinishReason(t *testing.T) {
+	streamer := &lifecycleSequenceStreamer{sequences: [][]llm.StreamEvent{
+		{{Type: llm.EventToken, Content: "Partial answer"}, {Type: llm.EventComplete, FinishReason: "length"}},
+		{{Type: llm.EventToken, Content: "Continued after cutoff."}, {Type: llm.EventComplete, FinishReason: "stop"}},
+	}}
 
-	finished, transcript := runLifecycleChat(t, streamer, "answer this")
-	if finished["status"] != "error" || !strings.Contains(finished["error"].(string), "token limit") {
-		t.Fatalf("expected token-limit error, got %v", finished)
+	finished, _ := runLifecycleChat(t, streamer, "answer this")
+	if finished["status"] != "done" {
+		t.Fatalf("expected length-cutoff resume to complete, got %v", finished)
 	}
-	if len(streamer.snapshot()) != 1 {
-		t.Fatalf("partial visible output should not be retried automatically")
+	requests := streamer.snapshot()
+	if len(requests) != 2 {
+		t.Fatalf("expected exactly one length retry, got %d requests", len(requests))
 	}
-	for _, message := range transcript.Messages {
-		if message.Role == llm.RoleAssistant {
-			t.Fatalf("partial response was added to model history: %#v", transcript.Messages)
+	lastRequestMessage := requests[1].Messages[len(requests[1].Messages)-1]
+	if lastRequestMessage.Role != llm.RoleUser || !strings.Contains(lastRequestMessage.Content, "hit the output token limit") {
+		t.Fatalf("expected length-cutoff resume guidance, got %#v", requests[1].Messages)
+	}
+	var sawPartial bool
+	for _, message := range requests[1].Messages {
+		if message.Role == llm.RoleAssistant && strings.Contains(message.Content, "Partial answer") {
+			sawPartial = true
 		}
 	}
-	if len(transcript.Turns) != 1 || len(transcript.Turns[0].AssistantTurns) != 1 || transcript.Turns[0].AssistantTurns[0].Content != "Partial answer" {
-		t.Fatalf("partial response was not preserved for the user: %#v", transcript.Turns)
+	if !sawPartial {
+		t.Fatalf("partial response was not preserved for the resume: %#v", requests[1].Messages)
+	}
+}
+
+func TestChatBoundsLengthCutoffRetries(t *testing.T) {
+	lengthCut := []llm.StreamEvent{
+		{Type: llm.EventToken, Content: "unbounded work"},
+		{Type: llm.EventComplete, FinishReason: "length"},
+	}
+	streamer := &lifecycleSequenceStreamer{sequences: [][]llm.StreamEvent{lengthCut, lengthCut, lengthCut, lengthCut}}
+
+	finished, _ := runLifecycleChat(t, streamer, "answer this")
+	if finished["status"] != "error" || !strings.Contains(finished["error"].(string), "token limit") {
+		t.Fatalf("expected bounded token-limit error, got %v", finished)
+	}
+	if got := len(streamer.snapshot()); got != maxContextLengthRetries+1 {
+		t.Fatalf("expected %d attempts, got %d", maxContextLengthRetries+1, got)
 	}
 }
 

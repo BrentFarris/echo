@@ -11,6 +11,7 @@ import (
 const (
 	maxEmptyAssistantRetries  = 2
 	maxTransientStreamRetries = 1
+	maxContextLengthRetries   = 3
 )
 
 func finishReasonError(finishReason string, hasToolCalls bool) error {
@@ -50,6 +51,18 @@ func emptyAssistantResponseError() error {
 			"It may be exhausting its output budget on reasoning.",
 		maxEmptyAssistantRetries+1,
 	)
+}
+
+// lengthContinuationMessage asks the model to resume after an output token
+// cutoff instead of repeating the whole response. Resuming leaves only the
+// unfinished remainder to produce, which is what lets the next request fit.
+func lengthContinuationMessage(interruptedTool string) llm.Message {
+	content := "Your previous response was cut off because it hit the output token limit."
+	if interruptedTool != "" {
+		content += fmt.Sprintf(" Your last tool call (%s) was interrupted before it completed.", interruptedTool)
+	}
+	content += " Resume from exactly where you stopped. Keep this response shorter than the last one: split large edits or long outputs across several smaller steps."
+	return llm.Message{Role: llm.RoleUser, Content: content}
 }
 
 func transientStreamRetryMessage() llm.Message {

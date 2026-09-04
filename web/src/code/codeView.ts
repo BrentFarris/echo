@@ -3258,8 +3258,30 @@ class CodeView {
       return;
     }
     // When vim mode is active and the editor has text focus, let monaco-vim
-    // handle all keystrokes (normal-mode commands, /, :, Ctrl+N/P, etc.).
-    if (this.enableVimKeybindings && this.activeCodeEditor()?.hasTextFocus()) return;
+    // handle normal-mode keystrokes, but intercept application-level shortcuts.
+    const vimActive = this.enableVimKeybindings && this.activeCodeEditor()?.hasTextFocus();
+    if (vimActive) {
+      const modifier = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+      if (modifier && !event.shiftKey && key === "s") { event.preventDefault(); event.stopPropagation(); void this.saveTab(); return; }
+      if (modifier && event.shiftKey && key === "s") { event.preventDefault(); event.stopPropagation(); void this.saveAsActive(); return; }
+      if (modifier && event.shiftKey && key === "p") { event.preventDefault(); event.stopPropagation(); this.showCommandPalette(); return; }
+      if (modifier && !event.shiftKey && key === "p") { event.preventDefault(); event.stopPropagation(); this.showQuickOpen(); return; }
+      if (modifier && key === "w") { const tab = this.activeTab(); if (tab) { event.preventDefault(); event.stopPropagation(); void this.closeTab(tab); return; } }
+      if (modifier && key === "b") { event.preventDefault(); event.stopPropagation(); this.setExplorerCollapsed(!this.explorerCollapsed); return; }
+      if (modifier && !event.shiftKey && key === "e") { event.preventDefault(); event.stopPropagation(); this.setCodeChatOpen(!this.codeChatOpen); return; }
+      if (modifier && event.shiftKey && key === "a") { event.preventDefault(); event.stopPropagation(); this.setCodeChatOpen(!this.codeChatOpen); return; }
+      if (modifier && key === "tab") { event.preventDefault(); event.stopPropagation(); this.cycleCodeTabs(event.shiftKey); return; }
+      if (modifier && event.shiftKey && key === "f") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(); return; }
+      if (modifier && !event.shiftKey && key === "f" && this.activeCodeEditor()?.getModel()) { event.preventDefault(); event.stopPropagation(); this.showEditorFind(); return; }
+      if (modifier && event.shiftKey && key === "h") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(true); return; }
+      if (modifier && event.shiftKey && key === "o") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSymbols(); return; }
+      if (!modifier && event.altKey && !event.shiftKey && key === "arrowleft") { event.preventDefault(); event.stopPropagation(); window.history.back(); return; }
+      if (!modifier && event.altKey && !event.shiftKey && key === "arrowright") { event.preventDefault(); event.stopPropagation(); window.history.forward(); return; }
+      if (event.key === "F2" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); this.activeCodeEditor()?.trigger("echo", "editor.action.rename", null); return; }
+      if (event.key === "F4" && this.activeSidebar === "search") { event.preventDefault(); this.searchView?.navigateResult(event.shiftKey ? -1 : 1); return; }
+    }
+    if (vimActive) return;
     const modifier = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
     const activeEditor = this.activeCodeEditor();

@@ -140,6 +140,12 @@ type ExecutionContext struct {
 	// PluginAuthoring exposes non-approving core plugin-development operations.
 	// It can scaffold, inspect, and stage, but never approve or execute a stage.
 	PluginAuthoring PluginAuthoringProvider
+	// JiraHost is the configured Jira instance base URL (e.g., "https://company.atlassian.net").
+	JiraHost string
+	// JiraUsername is the email address for Basic auth (email:API token).
+	JiraUsername string
+	// JiraAPIToken is the Atlassian API token. Falls back to ATLASSIAN_AUTH_TOKEN env var if empty.
+	JiraAPIToken string
 }
 
 func (ctx ExecutionContext) UsesSandbox() bool {

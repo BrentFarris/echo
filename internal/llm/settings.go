@@ -97,6 +97,9 @@ type Settings struct {
 	TimeoutSeconds                     int               `json:"timeoutSeconds"`
 	StreamIdleTimeoutSeconds           int               `json:"streamIdleTimeoutSeconds"`
 	SearxngURL                         string            `json:"searxngUrl"`
+	JiraHost                           string            `json:"jiraHost"`
+	JiraUsername                       string            `json:"jiraUsername"`
+	JiraAPIToken                       string            `json:"jiraApiToken"`
 	ThinkingTokenBudget                int               `json:"thinkingTokenBudget"`
 	ReasoningEffort                    string            `json:"reasoningEffort,omitempty"`
 	ThinkingCorrection                 bool              `json:"thinkingCorrection,omitempty"`
@@ -193,6 +196,9 @@ func (s Settings) normalized(endpointProfilesAuthoritative bool) Settings {
 	s.ComfyuiTxt2imgWorkflow = strings.TrimSpace(s.ComfyuiTxt2imgWorkflow)
 	s.ComfyuiImg2imgWorkflow = strings.TrimSpace(s.ComfyuiImg2imgWorkflow)
 	s.ComfyuiVideoWorkflow = strings.TrimSpace(s.ComfyuiVideoWorkflow)
+	s.JiraHost = strings.TrimSpace(s.JiraHost)
+	s.JiraUsername = strings.TrimSpace(s.JiraUsername)
+	s.JiraAPIToken = strings.TrimSpace(s.JiraAPIToken)
 	s.Theme = s.Theme.Normalized()
 	if s.EditorFontSize <= 0 {
 		s.EditorFontSize = DefaultEditorFontSize
@@ -321,6 +327,11 @@ func (s Settings) Validate() error {
 	}
 	if s.ComfyuiURL != "" {
 		if err := validateHTTPURL(s.ComfyuiURL, "comfyui url"); err != nil {
+			return err
+		}
+	}
+	if s.JiraHost != "" {
+		if err := validateHTTPURL(s.JiraHost, "jira host url"); err != nil {
 			return err
 		}
 	}
