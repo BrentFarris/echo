@@ -56,6 +56,8 @@ import { attachVideoVolumeControl } from "../mediaVolume";
 import { DebugView } from "../debug/debugView";
 import type { DebugSource } from "../debug/types";
 import { registerGoTestCodeLens } from "./goTestCodeLens";
+import { registerCTestCodeLens } from "./cTestCodeLens";
+import { TestOutput } from "./testOutput";
 
 type Workspace = { id: string; name: string; mainPath: string; folders: string[]; iconExt?: string };
 
@@ -167,6 +169,8 @@ class CodeView {
   private searchView: SearchView | null = null;
   private debugView: DebugView | null = null;
   private goTestCodeLens: { dispose(): void } | null = null;
+  private cTestCodeLens: { dispose(): void } | null = null;
+  private testOutput: TestOutput | null = null;
   private activeSidebar: CodeSidebar = "explorer";
   private splitGitDiff = true;
   private leadingWhitespaceIndicators = true;
@@ -288,7 +292,7 @@ class CodeView {
       this.initializeSourceControlView();
       this.initializeSearchView();
       this.initializeDebugView();
-      this.initializeGoTestCodeLens();
+      this.initializeTesting();
       await this.restoreWorkspace();
       if (this.abort.signal.aborted) return;
       if (this.roots.length) {
@@ -2075,7 +2079,7 @@ class CodeView {
     return true;
   }
 
-  private async saveAllForGoTest(): Promise<boolean> {
+  private async saveAllForTest(): Promise<boolean> {
     for (const tab of this.tabs) {
       if ((!tab.dirty && !tab.conflict) || tab.readOnly) continue;
       if (!(await this.saveTab(tab))) {
@@ -2086,12 +2090,23 @@ class CodeView {
     return true;
   }
 
-  private initializeGoTestCodeLens(): void {
+  private initializeTesting(): void {
     if (!this.workspace) return;
+    this.testOutput = new TestOutput(this.workspace.id, () => this.saveAllForTest());
     this.goTestCodeLens = registerGoTestCodeLens({
       workspaceId: this.workspace.id,
       refForModel: (model) => this.refForFileURI(model.uri.toString()),
-      saveAll: () => this.saveAllForGoTest(),
+      saveAll: () => this.saveAllForTest(),
+      acceptTestSnapshot: (snapshot) => this.testOutput?.adopt(snapshot),
+      acceptDebugSnapshot: (snapshot) => this.debugView?.acceptExternalSnapshot(snapshot),
+      openDebugSettings: () => { this.setSidebar("debug"); this.debugView?.openSettings(); },
+      message: (value, sticky) => toast(value, { sticky }),
+    });
+    this.cTestCodeLens = registerCTestCodeLens({
+      workspaceId: this.workspace.id,
+      refForModel: (model) => this.refForFileURI(model.uri.toString()),
+      saveAll: () => this.saveAllForTest(),
+      acceptTestSnapshot: (snapshot) => this.testOutput?.adopt(snapshot),
       acceptDebugSnapshot: (snapshot) => this.debugView?.acceptExternalSnapshot(snapshot),
       openDebugSettings: () => { this.setSidebar("debug"); this.debugView?.openSettings(); },
       message: (value, sticky) => toast(value, { sticky }),
@@ -4315,6 +4330,10 @@ class CodeView {
 	this.debugView = null;
     this.goTestCodeLens?.dispose();
     this.goTestCodeLens = null;
+    this.cTestCodeLens?.dispose();
+    this.cTestCodeLens = null;
+    this.testOutput?.dispose();
+    this.testOutput = null;
     this.abort.abort();
     window.clearTimeout(this.persistTimer);
     window.clearTimeout(this.treeDropExpandTimer);

@@ -18,6 +18,7 @@ import (
 	"github.com/brent/echo/internal/agentmodes"
 	"github.com/brent/echo/internal/appdata"
 	"github.com/brent/echo/internal/auth"
+	"github.com/brent/echo/internal/ctest"
 	"github.com/brent/echo/internal/debugconfig"
 	"github.com/brent/echo/internal/debugger"
 	"github.com/brent/echo/internal/echoupdate"
@@ -64,6 +65,7 @@ type Server struct {
 	lspProfiles      *lspconfig.Store
 	debugger         *debugger.Service
 	goTests          *gotest.Service
+	cTests           *ctest.Service
 	debugProfiles    *debugconfig.ProfileStore
 	debugState       *debugconfig.StateStore
 	sandbox          *sandbox.Manager
@@ -201,6 +203,10 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 	s.goTests.SetCoverageNotifier(func(event gotest.CoverageEvent) {
 		s.hub.BroadcastWorkspaceTerminal(event.WorkspaceID, event)
 	})
+	s.cTests = ctest.New(s.workspaces, s.fs, s.terminal, s.debugger, s.sandbox)
+	s.cTests.SetCoverageNotifier(func(event ctest.CoverageEvent) {
+		s.hub.BroadcastWorkspaceTerminal(event.WorkspaceID, event)
+	})
 	s.git = gitservice.New(s.workspaces, s.fs)
 	s.git.SetSandbox(s.sandbox)
 	s.sourceControl = sourcecontrol.New()
@@ -225,6 +231,7 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 	})
 	s.watcher = workspacefs.NewWatchManager(s.fs, func(event workspacefs.WatchEvent) {
 		s.goTests.HandleWorkspaceChanges(event.WorkspaceID, event.Changes)
+		s.cTests.HandleWorkspaceChanges(event.WorkspaceID, event.Changes)
 		s.hub.BroadcastWorkspaceFS(event.WorkspaceID, event)
 		s.sourceControl.InvalidateWorkspace(event.WorkspaceID)
 	})
@@ -531,6 +538,14 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/workspaces/{id}/testing/go/runs", s.handleStartGoTestingRun)
 	mux.HandleFunc("POST /api/workspaces/{id}/testing/go/runs/{sessionId}/rerun", s.handleRerunGoTestingRun)
 	mux.HandleFunc("POST /api/workspaces/{id}/testing/go/debug-sessions", s.handleStartGoTestingDebugSession)
+	mux.HandleFunc("GET /api/workspaces/{id}/testing/c/config", s.handleGetCTestingConfig)
+	mux.HandleFunc("PUT /api/workspaces/{id}/testing/c/config", s.handlePutCTestingConfig)
+	mux.HandleFunc("GET /api/workspaces/{id}/testing/c/coverage", s.handleGetCTestingCoverage)
+	mux.HandleFunc("POST /api/workspaces/{id}/testing/c/lenses", s.handleCTestingLenses)
+	mux.HandleFunc("POST /api/workspaces/{id}/testing/c/runs", s.handleStartCTestingRun)
+	mux.HandleFunc("POST /api/workspaces/{id}/testing/c/runs/{sessionId}/rerun", s.handleRerunCTestingRun)
+	mux.HandleFunc("POST /api/workspaces/{id}/testing/c/debug-sessions", s.handleStartCTestingDebugSession)
+	mux.HandleFunc("POST /api/workspaces/{id}/testing/runs/{sessionId}/rerun", s.handleRerunTestingRun)
 	mux.HandleFunc("GET /api/workspaces/{id}/debug/config", s.handleGetWorkspaceDebugConfig)
 	mux.HandleFunc("PUT /api/workspaces/{id}/debug/config", s.handlePutWorkspaceDebugConfig)
 	mux.HandleFunc("GET /api/workspaces/{id}/debug/state", s.handleGetWorkspaceDebugState)
@@ -714,6 +729,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) refreshWorkspaceCaches(ctx context.Context, workspaceID string) {
 	s.sessions.invalidate(workspaceID)
 	s.goTests.ClearCoverage(workspaceID)
+	s.cTests.ClearCoverage(workspaceID)
 	s.debugger.StopWorkspace(workspaceID)
 	s.terminal.StopWorkspace(workspaceID)
 	s.watcher.Refresh(workspaceID)
@@ -730,6 +746,7 @@ func (s *Server) refreshWorkspaceCaches(ctx context.Context, workspaceID string)
 func (s *Server) removeWorkspaceCaches(workspaceID string) {
 	s.sessions.invalidate(workspaceID)
 	s.goTests.RemoveWorkspace(workspaceID)
+	s.cTests.RemoveWorkspace(workspaceID)
 	s.debugger.StopWorkspace(workspaceID)
 	s.terminal.StopWorkspace(workspaceID)
 	s.watcher.RemoveWorkspace(workspaceID)

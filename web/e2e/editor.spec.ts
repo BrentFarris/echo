@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { createServer, type Server as HTTPServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1655,6 +1656,24 @@ test("debugs through a deterministic DAP adapter and reconnects the workbench", 
     nodePath: string;
   };
   const fakeDAPPath = resolve(directory, "fake-dap.mjs");
+	const cCoverageAvailable = ["gcc", "gcov"].every((tool) => spawnSync(tool, ["--version"], { windowsHide: true }).status === 0);
+	const cExecutable = join(state.workspace, "c-tests", "build", process.platform === "win32" ? "c-tests.exe" : "c-tests");
+	mkdirSync(join(state.workspace, "c-tests", "build"), { recursive: true });
+	writeFileSync(join(state.workspace, "c-tests", "test_main.c"), `static int classify(int value) {
+    if (value > 0) return 1;
+    if (value == 0) return 0;
+    return -1;
+}
+
+static int branchy(int value) {
+    if (value) { value++; } else { value--; }
+    return value;
+}
+
+int main(void) {
+    return classify(1) == 1 && branchy(1) == 2 ? 0 : 1;
+}
+`, "utf8");
   writeFileSync(join(state.workspace, "main.go"), "package main\n\nfunc main() {\n\tTarget()\n}\n", "utf8");
   writeFileSync(join(state.workspace, "definition.go"), `package main
 
@@ -1711,7 +1730,7 @@ func TestSlow(t *testing.T) {
   }
   await expect(page.locator(".app-shell")).toBeVisible();
 
-  const workspaceId = await page.evaluate(async ({ command, script, workspacePath }) => {
+  const workspaceId = await page.evaluate(async ({ command, script, workspacePath, cCoverageAvailable, cExecutable }) => {
     const request = async (path: string, method = "GET", body?: unknown) => {
       const response = await fetch(path, {
         method, headers: body === undefined ? undefined : { "Content-Type": "application/json" },
@@ -1733,15 +1752,32 @@ func TestSlow(t *testing.T) {
         transport: { kind: "stdio", startupTimeoutMs: 15000 },
       } });
     }
+		if (cCoverageAvailable && !(profiles.profiles || []).some((profile: { id: string }) => profile.id === "fake-e2e-lldb")) {
+			await request("/api/debug/adapter-profiles", "POST", { profile: {
+				id: "fake-e2e-lldb", name: "Fake E2E CodeLLDB", adapterId: "lldb",
+				command, args: [script], environment: {}, selectors: [{ languageId: "cpp", extensions: [".c", ".h"] }],
+				transport: { kind: "stdio", startupTimeoutMs: 15000 },
+			} });
+		}
     await request(`/api/workspaces/${encodeURIComponent(workspace.id)}/debug/config`, "PUT", {
-      version: 1, enabledAdapterProfileIds: ["fake-e2e-dap"], overrides: {},
+			version: 1, enabledAdapterProfileIds: cCoverageAvailable ? ["fake-e2e-dap", "fake-e2e-lldb"] : ["fake-e2e-dap"], overrides: {},
       configurations: [{
         id: "fake-main", name: "Fake: Main", adapterProfileId: "fake-e2e-dap", request: "launch",
         arguments: { program: "${file}" },
       }], compounds: [], inputs: [],
     });
+		if (cCoverageAvailable) {
+			await request(`/api/workspaces/${encodeURIComponent(workspace.id)}/testing/c/config`, "PUT", { config: {
+				codeLens: true, coverage: true, targets: [{
+					id: "unit", name: "Unit tests", entry: { file: "${workspaceFolder}/c-tests/test_main.c", function: "main" },
+					build: { command: "gcc", args: ["--coverage", "-O0", "${workspaceFolder}/c-tests/test_main.c", "-o", cExecutable], cwd: "${workspaceFolder}", environment: {}, timeout: "5m" },
+					executable: cExecutable, args: [], cwd: "${workspaceFolder}", environment: {}, timeout: "30s",
+					sourceRoots: ["${workspaceFolder}/c-tests"], coverage: { provider: "gcov", objectRoots: ["${workspaceFolder}/c-tests/build"] },
+				}],
+			} });
+		}
     return workspace.id as string;
-  }, { command: state.nodePath, script: fakeDAPPath, workspacePath: state.workspace });
+  }, { command: state.nodePath, script: fakeDAPPath, workspacePath: state.workspace, cCoverageAvailable, cExecutable });
 
   await page.goto("/#/code");
   await expect(page.locator(".code-tree-label", { hasText: "main.go" })).toBeVisible();
@@ -1836,4 +1872,25 @@ func TestSlow(t *testing.T) {
   await page.keyboard.press("Enter");
   await page.keyboard.press("Control+s");
   await expect(page.locator(".view-lines .go-coverage-covered, .view-lines .go-coverage-uncovered")).toHaveCount(0);
+
+	if (cCoverageAvailable) {
+		await page.getByRole("button", { name: "Explorer", exact: true }).click();
+		await page.locator(".code-tree-label", { hasText: "c-tests" }).click();
+		await page.locator(".code-tree-label", { hasText: "test_main.c" }).click();
+		const runC = page.getByText("run C tests: Unit tests", { exact: true });
+		const debugC = page.getByText("debug C tests: Unit tests", { exact: true });
+		await expect(runC).toBeVisible();
+		await expect(debugC).toBeVisible();
+		await runC.click();
+		await expect(page.locator(".go-test-status")).toContainText("Passed", { timeout: 30_000 });
+		await expect(page.locator("[data-test-output-text]")).toContainText("gcc");
+		await expect(page.locator(".monaco-editor .c-coverage-covered")).not.toHaveCount(0);
+		await expect(page.locator(".monaco-editor .c-coverage-partial")).not.toHaveCount(0);
+		await expect(page.locator(".monaco-editor .c-coverage-uncovered")).not.toHaveCount(0);
+		await page.locator("[data-test-output-action=rerun]").click();
+		await expect(page.locator(".go-test-status")).toContainText("Passed", { timeout: 30_000 });
+		await debugC.click();
+		await expect(page.locator(".debug-session-row", { hasText: "Debug C Tests: Unit tests" })).toBeVisible({ timeout: 20_000 });
+		await page.locator(".debug-floating-toolbar [data-debug-action=stop]").click();
+	}
 });

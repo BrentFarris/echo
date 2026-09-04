@@ -190,6 +190,7 @@ const state = {
   },
   testing: {
     config: { codeLens: true, coverage: true, timeout: "30s", flags: [], tags: "", environment: {} },
+    cConfig: { codeLens: true, coverage: true, targets: [] },
     flagsText: "[]",
     environmentText: "{}",
     status: "",
@@ -998,7 +999,62 @@ function renderTesting() {
       </div>
       <button class="primary-button" type="button" data-go-testing-action="save" ${state.modeWorkspaceId && !state.testing.busy ? "" : "disabled"}>Save Workspace Testing Settings</button>
     </div>
+    <div class="settings-card">
+      <div class="settings-section-heading"><div><h3 class="settings-card-title">C tests</h3><p class="settings-card-help">Each named target anchors actions at one saved C function. Your executable and its own test ledger decide what runs.</p></div><button class="secondary-button compact-button" type="button" data-c-testing-action="add" ${state.modeWorkspaceId && !state.testing.busy ? "" : "disabled"}>${icons.plus}<span>Add target</span></button></div>
+      <div class="settings-grid">
+        <label class="toggle-row field-wide"><input type="checkbox" data-c-testing-config="codeLens" ${state.testing.cConfig.codeLens !== false ? "checked" : ""}><span><strong>Show C test CodeLens</strong><small>Show Run and Debug above each configured entry-function definition.</small></span></label>
+        <label class="toggle-row field-wide"><input type="checkbox" data-c-testing-config="coverage" ${state.testing.cConfig.coverage !== false ? "checked" : ""}><span><strong>Show C coverage</strong><small>Publish green, amber, and red whole-line coverage after a passing suite.</small></span></label>
+      </div>
+      <div class="lsp-runtime-list">
+        ${(state.testing.cConfig.targets || []).map(renderCTestingTarget).join("") || `<p class="empty-state compact">No C test targets configured.</p>`}
+      </div>
+      <p class="settings-card-help">Paths support <code>\${workspaceFolder}</code>, named workspace folders, <code>\${pathSeparator}</code>, and environment variables. Commands execute directly without shell expansion.</p>
+      <button class="primary-button" type="button" data-c-testing-action="save" ${state.modeWorkspaceId && !state.testing.busy ? "" : "disabled"}>Save C Testing Settings</button>
+    </div>
   </section>`;
+}
+
+function renderCTestingTarget(target, index) {
+  const provider = target.coverage?.provider || "gcov";
+  const build = target.build || null;
+  return `<article class="lsp-runtime-card" data-c-testing-target="${index}">
+    <div class="settings-section-heading"><div><strong>${esc(target.name || target.id || `C target ${index + 1}`)}</strong><span class="lsp-runtime-state">${esc(provider)}</span></div><button class="icon-button danger-button" type="button" title="Remove target" data-c-testing-action="remove" data-target-index="${index}">${icons.trash}</button></div>
+    <div class="settings-grid">
+      ${cInput(index, "id", "Target ID", target.id, "unit")}
+      ${cInput(index, "name", "Display name", target.name, "Unit tests")}
+      ${cInput(index, "entryFile", "Entry file", target.entry?.file, "${workspaceFolder}/tests/test_main.c", true)}
+      ${cInput(index, "entryFunction", "Entry function", target.entry?.function, "main")}
+      ${cInput(index, "executable", "Executable", target.executable, "${workspaceFolder}/build/unit_tests.exe", true)}
+      ${cInput(index, "cwd", "Working directory", target.cwd || "${workspaceFolder}", "${workspaceFolder}")}
+      ${cInput(index, "timeout", "Test timeout", target.timeout || "30s", "30s")}
+      <label class="field"><span>Coverage provider</span><select data-c-target-field="provider"><option value="gcov" ${provider === "gcov" ? "selected" : ""}>gcov</option><option value="llvm" ${provider === "llvm" ? "selected" : ""}>LLVM</option></select></label>
+      ${cJSON(index, "args", "Executable arguments", target.args || [], 3)}
+      ${cJSON(index, "environment", "Executable environment", target.environment || {}, 3)}
+      ${cJSON(index, "sourceRoots", "Source roots", target.sourceRoots || [], 4)}
+      ${provider === "gcov" ? cJSON(index, "objectRoots", "gcov object roots", target.coverage?.objectRoots || [], 4) : cJSON(index, "objects", "Additional LLVM coverage objects", target.coverage?.objects || [], 4)}
+      <label class="toggle-row field-wide"><input type="checkbox" data-c-build-enabled ${build ? "checked" : ""}><span><strong>Run a build step</strong><small>The build must add the selected provider's coverage instrumentation.</small></span></label>
+      ${build ? `${cInput(index, "buildCommand", "Build command", build.command, "cmake", true)}${cInput(index, "buildCwd", "Build working directory", build.cwd || "${workspaceFolder}", "${workspaceFolder}")}${cInput(index, "buildTimeout", "Build timeout", build.timeout || "5m", "5m")}${cJSON(index, "buildArgs", "Build arguments", build.args || [], 4)}${cJSON(index, "buildEnvironment", "Build environment", build.environment || {}, 4)}` : ""}
+    </div>
+  </article>`;
+}
+
+function cInput(_index, field, label, value, placeholder, wide = false) {
+  return `<label class="field ${wide ? "field-wide" : ""}"><span>${esc(label)}</span><input type="text" value="${esc(value || "")}" placeholder="${esc(placeholder || "")}" data-c-target-field="${field}"></label>`;
+}
+
+function cJSON(_index, field, label, value, rows) {
+  return `<label class="field field-wide"><span>${esc(label)} (JSON)</span><textarea rows="${rows}" spellcheck="false" data-c-target-field="${field}">${esc(JSON.stringify(value, null, 2))}</textarea></label>`;
+}
+
+function newCTestingTarget() {
+  const suffix = (state.testing.cConfig.targets?.length || 0) + 1;
+  return {
+    id: `c-tests-${suffix}`, name: `C tests ${suffix}`,
+    entry: { file: "${workspaceFolder}/tests/test_main.c", function: "main" },
+    build: null, executable: "${workspaceFolder}/build/tests.exe", args: [], cwd: "${workspaceFolder}",
+    environment: {}, timeout: "30s", sourceRoots: ["${workspaceFolder}/src", "${workspaceFolder}/include"],
+    coverage: { provider: "gcov", objectRoots: ["${workspaceFolder}/build"] },
+  };
 }
 
 function renderLSPProfileEditor(draft) {
@@ -1909,9 +1965,15 @@ function bindLSPEvents(root) {
 async function loadGoTesting(preserveStatus = false) {
   const previousStatus = state.testing.status;
   try {
-    const data = state.modeWorkspaceId
-      ? await get(`/api/workspaces/${encodeURIComponent(state.modeWorkspaceId)}/testing/go/config`)
-      : { config: { codeLens: true, coverage: true, timeout: "30s", flags: [], tags: "", environment: {} } };
+    const [data, cData] = state.modeWorkspaceId
+      ? await Promise.all([
+        get(`/api/workspaces/${encodeURIComponent(state.modeWorkspaceId)}/testing/go/config`),
+        get(`/api/workspaces/${encodeURIComponent(state.modeWorkspaceId)}/testing/c/config`),
+      ])
+      : [
+        { config: { codeLens: true, coverage: true, timeout: "30s", flags: [], tags: "", environment: {} } },
+        { config: { codeLens: true, coverage: true, targets: [] } },
+      ];
     state.testing.config = {
       codeLens: data.config?.codeLens !== false,
       coverage: data.config?.coverage !== false,
@@ -1922,6 +1984,11 @@ async function loadGoTesting(preserveStatus = false) {
     };
     state.testing.flagsText = JSON.stringify(state.testing.config.flags, null, 2);
     state.testing.environmentText = JSON.stringify(state.testing.config.environment, null, 2);
+    state.testing.cConfig = {
+      codeLens: cData.config?.codeLens !== false,
+      coverage: cData.config?.coverage !== false,
+      targets: cData.config?.targets || [],
+    };
     state.testing.status = preserveStatus ? previousStatus : "";
   } catch (err) {
     state.testing.status = `Error: ${err.message}`;
@@ -1960,6 +2027,73 @@ function bindGoTestingEvents(root) {
       render();
     }
   });
+  root.querySelectorAll("[data-c-testing-config]").forEach((field) => {
+    field.addEventListener("input", () => { state.testing.cConfig[field.dataset.cTestingConfig] = field.checked; });
+  });
+  root.querySelector("[data-c-testing-action='add']")?.addEventListener("click", () => {
+    try { state.testing.cConfig = readCTestingForm(root); } catch (err) { state.testing.status = `Error: ${err.message}`; render(); return; }
+    state.testing.cConfig.targets.push(newCTestingTarget());
+    render();
+  });
+  root.querySelectorAll("[data-c-testing-action='remove']").forEach((button) => button.addEventListener("click", () => {
+    try { state.testing.cConfig = readCTestingForm(root); } catch (err) { state.testing.status = `Error: ${err.message}`; render(); return; }
+    state.testing.cConfig.targets.splice(Number(button.dataset.targetIndex), 1);
+    render();
+  }));
+  root.querySelectorAll("[data-c-target-field='provider'], [data-c-build-enabled]").forEach((field) => field.addEventListener("change", () => {
+    try { state.testing.cConfig = readCTestingForm(root); state.testing.status = ""; } catch (err) { state.testing.status = `Error: ${err.message}`; }
+    render();
+  }));
+  root.querySelector("[data-c-testing-action='save']")?.addEventListener("click", async () => {
+    if (!state.modeWorkspaceId) return;
+    state.testing.busy = true;
+    try {
+      const config = readCTestingForm(root);
+      const data = await put(`/api/workspaces/${encodeURIComponent(state.modeWorkspaceId)}/testing/c/config`, { config });
+      state.testing.cConfig = data.config;
+      state.testing.status = "Workspace C testing settings saved.";
+    } catch (err) {
+      state.testing.status = `Error: ${err.message}`;
+    } finally {
+      state.testing.busy = false;
+      render();
+    }
+  });
+}
+
+function readCTestingForm(root) {
+  const codeLens = root.querySelector("[data-c-testing-config='codeLens']")?.checked ?? true;
+  const coverage = root.querySelector("[data-c-testing-config='coverage']")?.checked ?? true;
+  const targets = [...root.querySelectorAll("[data-c-testing-target]")].map((card, index) => {
+    const value = (field) => card.querySelector(`[data-c-target-field='${field}']`)?.value?.trim() || "";
+    const strings = (field, label) => {
+      const parsed = JSON.parse(value(field) || "[]");
+      if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "string")) throw new Error(`${label} for C target ${index + 1} must be a JSON array of strings.`);
+      return parsed;
+    };
+    const environment = (field, label) => {
+      const parsed = parseJSONObject(value(field), `${label} for C target ${index + 1}`);
+      if (Object.values(parsed).some((item) => typeof item !== "string")) throw new Error(`${label} for C target ${index + 1} must contain only string values.`);
+      return parsed;
+    };
+    const provider = value("provider") || "gcov";
+    const target = {
+      id: value("id"), name: value("name"), entry: { file: value("entryFile"), function: value("entryFunction") },
+      executable: value("executable"), args: strings("args", "Executable arguments"), cwd: value("cwd"),
+      environment: environment("environment", "Executable environment"), timeout: value("timeout"),
+      sourceRoots: strings("sourceRoots", "Source roots"), coverage: { provider },
+    };
+    if (provider === "gcov") target.coverage.objectRoots = strings("objectRoots", "gcov object roots");
+    else target.coverage.objects = strings("objects", "LLVM objects");
+    if (card.querySelector("[data-c-build-enabled]")?.checked) {
+      target.build = {
+        command: value("buildCommand"), args: strings("buildArgs", "Build arguments"), cwd: value("buildCwd"),
+        environment: environment("buildEnvironment", "Build environment"), timeout: value("buildTimeout"),
+      };
+    }
+    return target;
+  });
+  return { codeLens, coverage, targets };
 }
 
 export function mount(root) {

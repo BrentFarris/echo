@@ -43,9 +43,21 @@ type fakeProcess struct {
 }
 
 type startErrorBackend struct{ *fakeBackend }
+type contextAwareBackend struct{ *fakeBackend }
 
 func (b *startErrorBackend) Start(context.Context, CommandSpec) (Process, error) {
 	return nil, errors.New("process startup failed")
+}
+
+func (b *contextAwareBackend) Start(ctx context.Context, spec CommandSpec) (Process, error) {
+	process, err := b.fakeBackend.Start(ctx, spec)
+	if err == nil {
+		go func() {
+			<-ctx.Done()
+			b.process.complete(-1, ctx.Err())
+		}()
+	}
+	return process, err
 }
 
 func newFakeBackend() *fakeBackend {
@@ -273,6 +285,72 @@ func TestTaskLifecycleStatusEnvironmentAndReplacement(t *testing.T) {
 	exited := waitStatus(t, service, workspace.ID, replaced.ID, "exited")
 	if exited.TaskStatus != "passed" || exited.ExitCode == nil || *exited.ExitCode != 0 {
 		t.Fatalf("completed task = %#v", exited)
+	}
+}
+
+func TestStagedTaskRunsBuildThenExecutableInOneSession(t *testing.T) {
+	service, workspace, _ := newTestService(t)
+	build, run := newFakeBackend(), newFakeBackend()
+	backends := []Backend{build, run}
+	service.SetBackendFactory(func() (Backend, error) {
+		next := backends[0]
+		backends = backends[1:]
+		return next, nil
+	})
+	t.Cleanup(func() { shutdownTestService(t, service) })
+	prepared := make(chan struct{}, 1)
+	started, err := service.StartTask(workspace.ID, TaskRequest{Name: "Test Output", Steps: []TaskStep{
+		{Command: "go", Args: []string{"build"}, WorkingDirectory: workspace.MainPath, DisplayCommand: "go build", After: func() error { prepared <- struct{}{}; return nil }},
+		{Command: "go", Args: []string{"test"}, WorkingDirectory: workspace.MainPath, DisplayCommand: "tests.exe"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	build.send([]byte("build output\n"))
+	build.process.complete(0, nil)
+	select {
+	case <-prepared:
+	case <-time.After(time.Second):
+		t.Fatal("build completion hook did not run")
+	}
+	deadline := time.Now().Add(time.Second)
+	for run.spec.Name == "" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !strings.HasPrefix(strings.ToLower(filepath.Base(build.spec.Name)), "go") || !strings.HasPrefix(strings.ToLower(filepath.Base(run.spec.Name)), "go") || len(run.spec.Args) != 1 || run.spec.Args[0] != "test" {
+		t.Fatalf("stages = build %#v, run %#v", build.spec, run.spec)
+	}
+	run.send([]byte("test output\n"))
+	run.process.complete(0, nil)
+	exited := waitStatus(t, service, workspace.ID, started.ID, "exited")
+	if exited.TaskStatus != "passed" || len(exited.Output) < 4 {
+		t.Fatalf("staged snapshot = %#v", exited)
+	}
+}
+
+func TestTaskStepTimeoutStopsThePipeline(t *testing.T) {
+	service, workspace, _ := newTestService(t)
+	first := &contextAwareBackend{fakeBackend: newFakeBackend()}
+	second := newFakeBackend()
+	created := 0
+	service.SetBackendFactory(func() (Backend, error) {
+		created++
+		if created == 1 {
+			return first, nil
+		}
+		return second, nil
+	})
+	t.Cleanup(func() { shutdownTestService(t, service) })
+	started, err := service.StartTask(workspace.ID, TaskRequest{Steps: []TaskStep{
+		{Command: "go", WorkingDirectory: workspace.MainPath, Timeout: 10 * time.Millisecond},
+		{Command: "go", WorkingDirectory: workspace.MainPath},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exited := waitStatus(t, service, workspace.ID, started.ID, "exited")
+	if exited.TaskStatus != "failed" || exited.Message != "task step timed out" || created != 1 {
+		t.Fatalf("timeout snapshot = %#v, backends = %d", exited, created)
 	}
 }
 

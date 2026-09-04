@@ -68,6 +68,10 @@ Profiles are reusable and stored globally in `echo.json`; workspace enablement, 
 
 When the same file is open in multiple browsers, the first active editor owns its unsaved LSP document. The other browser can use **Take Over** in the Code status bar when it intentionally needs language-server control.
 
+### Testing and coverage
+
+Go tests and framework-free C test executables share CodeLens Run/Debug actions and the reconnectable **Test Output** panel. C workspaces can define multiple named GCC/gcov or Clang/LLVM coverage targets without adopting a test library or build-system convention. See [Testing and coverage](docs/testing.md) for instrumentation, target configuration, path rules, and coverage behavior.
+
 ### Debugging
 
 Open **Run and Debug** in Echo Code to configure a user-installed Delve, debugpy, js-debug, CodeLLDB, or custom DAP adapter. Debug profiles are machine-local; launch/attach configurations and compounds are portable workspace settings; personal breakpoints and watches remain outside the repository. Echo supports concurrent and child sessions, revision-safe multi-browser controls, reconnectable debug terminals, the standard stepping and inspection workflow, and capability-gated advanced breakpoints, mutation, reverse execution, memory, disassembly, modules, and virtual sources. See [Debugging in Echo](docs/debugging.md) for configuration, VS Code import, keybindings, sandbox behavior, and cleanup guarantees.

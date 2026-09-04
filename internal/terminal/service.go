@@ -104,6 +104,19 @@ type TaskResult struct {
 	Message     string
 }
 
+// TaskStep is one direct process in a trusted server-owned task. Steps run in
+// order inside one logical terminal session; a non-zero exit or callback error
+// stops the remaining pipeline.
+type TaskStep struct {
+	Command          string
+	Args             []string
+	WorkingDirectory string
+	Environment      map[string]string
+	DisplayCommand   string
+	Timeout          time.Duration
+	After            func() error
+}
+
 // TaskRequest is a trusted, server-constructed direct process invocation.
 // Browser APIs never accept this shape directly.
 type TaskRequest struct {
@@ -113,7 +126,18 @@ type TaskRequest struct {
 	WorkingDirectory string
 	Environment      map[string]string
 	DisplayCommand   string
+	Steps            []TaskStep
 	OnExit           func(TaskResult)
+}
+
+type taskRuntimeStep struct {
+	command     string
+	args        []string
+	dir         string
+	environment []string
+	display     string
+	timeout     time.Duration
+	after       func() error
 }
 
 type Process interface {
@@ -256,7 +280,6 @@ type session struct {
 	mu          sync.Mutex
 	writeMu     sync.Mutex
 	stopOnce    sync.Once
-	closeOnce   sync.Once
 	done        chan struct{}
 	status      string
 	exitCode    *int
@@ -266,6 +289,12 @@ type session struct {
 	output      []bufferedChunk
 	outputBytes int
 	onExit      func(TaskResult)
+	taskSteps   []taskRuntimeStep
+	taskIndex   int
+	taskFactory func() (Backend, error)
+	taskSandbox bool
+	processCtx  context.Context
+	closed      map[Backend]bool
 }
 
 type workspaceResolver interface {
@@ -306,15 +335,15 @@ func (s *Service) StartTask(workspaceID string, request TaskRequest) (Snapshot, 
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if strings.TrimSpace(request.Command) == "" {
-		return Snapshot{}, errors.New("task command is required")
+	steps := append([]TaskStep(nil), request.Steps...)
+	if len(steps) == 0 {
+		steps = []TaskStep{{
+			Command: request.Command, Args: request.Args, WorkingDirectory: request.WorkingDirectory,
+			Environment: request.Environment, DisplayCommand: request.DisplayCommand,
+		}}
 	}
-	workingDir := filepath.Clean(strings.TrimSpace(request.WorkingDirectory))
-	if workingDir == "." || workingDir == "" {
-		workingDir, err = availableWorkingDirectory(workspace)
-		if err != nil {
-			return Snapshot{}, err
-		}
+	if len(steps) > 16 {
+		return Snapshot{}, errors.New("task may contain at most 16 steps")
 	}
 
 	s.mu.Lock()
@@ -330,56 +359,47 @@ func (s *Service) StartTask(workspaceID string, request TaskRequest) (Snapshot, 
 	if sandboxEnabled && sandboxManager == nil {
 		return Snapshot{}, errors.New("sandbox task runtime is unavailable")
 	}
-	command := request.Command
-	if !sandboxEnabled {
-		command, err = exec.LookPath(command)
-		if err != nil {
-			return Snapshot{}, fmt.Errorf("resolve task command %q: %w", request.Command, err)
+	runtimeSteps := make([]taskRuntimeStep, 0, len(steps))
+	for _, step := range steps {
+		command := strings.TrimSpace(step.Command)
+		if command == "" {
+			return Snapshot{}, errors.New("task command is required")
 		}
-	}
-	if sandboxEnabled {
-		workingDir, err = sandboxManager.HostToGuest(workspaceID, workingDir)
-		if err != nil {
-			return Snapshot{}, fmt.Errorf("map task working directory: %w", err)
+		workingDir := filepath.Clean(strings.TrimSpace(step.WorkingDirectory))
+		if workingDir == "." || workingDir == "" {
+			workingDir, err = availableWorkingDirectory(workspace)
+			if err != nil {
+				return Snapshot{}, err
+			}
 		}
+		if sandboxEnabled {
+			workingDir, err = sandboxManager.HostToGuest(workspaceID, workingDir)
+			if err != nil {
+				return Snapshot{}, fmt.Errorf("map task working directory: %w", err)
+			}
+		}
+		environment := terminalEnvironment()
+		if sandboxEnabled {
+			environment = sandboxTerminalEnvironment()
+		}
+		runtimeSteps = append(runtimeSteps, taskRuntimeStep{
+			command: command, args: append([]string(nil), step.Args...), dir: workingDir,
+			environment: mergeTaskEnvironment(environment, step.Environment), display: strings.TrimSpace(step.DisplayCommand),
+			timeout: step.Timeout, after: step.After,
+		})
 	}
 	cols, rows := ClampSize(120, 30)
-	var backend Backend
-	if sandboxEnabled {
-		backend = &sandboxBackend{manager: sandboxManager, workspaceID: workspaceID}
-	} else {
-		backend, err = factory()
-	}
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("create task terminal: %w", err)
-	}
-	if err := backend.Resize(cols, rows); err != nil {
-		_ = backend.Close()
-		return Snapshot{}, fmt.Errorf("size task terminal: %w", err)
-	}
-	environment := terminalEnvironment()
-	if sandboxEnabled {
-		environment = sandboxTerminalEnvironment()
-	}
-	environment = mergeTaskEnvironment(environment, request.Environment)
-	processContext, cancel := context.WithCancel(context.Background())
-	process, err := backend.Start(processContext, CommandSpec{
-		Name: command, Args: append([]string(nil), request.Args...), Dir: workingDir, Env: environment,
-	})
-	if err != nil {
-		cancel()
-		_ = backend.Close()
-		return Snapshot{}, fmt.Errorf("start task: %w", err)
-	}
 	name := strings.TrimSpace(request.Name)
 	if name == "" {
 		name = "Task Output"
 	}
 	current := &session{
 		workspaceID: workspaceID, id: uuid.NewString(), name: name, kind: "test",
-		shell: filepath.Base(command), workingDir: workingDir, backend: backend, process: process,
-		cancel: cancel, done: make(chan struct{}), status: "running", taskStatus: "running", output: make([]bufferedChunk, 0, 64),
-		onExit: request.OnExit,
+		done: make(chan struct{}), status: "running", taskStatus: "running", output: make([]bufferedChunk, 0, 64),
+		onExit: request.OnExit, taskSteps: runtimeSteps, taskFactory: factory, taskSandbox: sandboxEnabled,
+	}
+	if err := s.startTaskStep(current, sandboxManager, cols, rows); err != nil {
+		return Snapshot{}, err
 	}
 	s.mu.Lock()
 	if previous != nil {
@@ -389,11 +409,65 @@ func (s *Service) StartTask(workspaceID string, request TaskRequest) (Snapshot, 
 	s.tasks[workspaceID] = current.id
 	s.mu.Unlock()
 	s.emit(Event{Type: "terminal_event", WorkspaceID: workspaceID, SessionID: current.id, Name: current.name, Kind: current.kind, Event: "started", TaskStatus: current.taskStatus})
-	if display := strings.TrimSpace(request.DisplayCommand); display != "" {
+	if display := runtimeSteps[0].display; display != "" {
 		s.emitOutput(current, []byte("Running tool: "+display+"\r\n\r\n"))
 	}
 	go s.run(current)
 	return current.snapshot(0), nil
+}
+
+func (s *Service) startTaskStep(current *session, sandboxManager *sandbox.Manager, cols, rows int) error {
+	if current.stopping() {
+		return context.Canceled
+	}
+	step := current.taskSteps[current.taskIndex]
+	command := step.command
+	var backend Backend
+	var err error
+	if current.taskSandbox {
+		backend = &sandboxBackend{manager: sandboxManager, workspaceID: current.workspaceID}
+	} else {
+		command, err = exec.LookPath(command)
+		if err != nil {
+			return fmt.Errorf("resolve task command %q: %w", step.command, err)
+		}
+		backend, err = current.taskFactory()
+	}
+	if err != nil {
+		return fmt.Errorf("create task terminal: %w", err)
+	}
+	if err := backend.Resize(cols, rows); err != nil {
+		_ = backend.Close()
+		return fmt.Errorf("size task terminal: %w", err)
+	}
+	processContext := context.Background()
+	var cancel context.CancelFunc
+	if step.timeout > 0 {
+		processContext, cancel = context.WithTimeout(processContext, step.timeout)
+	} else {
+		processContext, cancel = context.WithCancel(processContext)
+	}
+	process, err := backend.Start(processContext, CommandSpec{Name: command, Args: step.args, Dir: step.dir, Env: step.environment})
+	if err != nil {
+		cancel()
+		_ = backend.Close()
+		return fmt.Errorf("start task: %w", err)
+	}
+	current.mu.Lock()
+	current.shell = filepath.Base(command)
+	current.workingDir = step.dir
+	current.backend = backend
+	current.process = process
+	current.cancel = cancel
+	current.processCtx = processContext
+	current.mu.Unlock()
+	if current.stopping() {
+		cancel()
+		_ = process.Kill()
+		current.closeBackend(backend)
+		return context.Canceled
+	}
+	return nil
 }
 
 func (s *Service) SetNotifier(notify func(Event)) {
@@ -904,12 +978,54 @@ func (s *Service) currentRunning(workspaceID, sessionID string) (*session, error
 
 func (s *Service) run(current *session) {
 	defer close(current.done)
+	if len(current.taskSteps) == 0 {
+		exitCode, message := s.runTaskProcess(current)
+		s.finishTask(current, exitCode, message, current.stopping())
+		return
+	}
+	for {
+		exitCode, message := s.runTaskProcess(current)
+		wasStopping := current.stopping()
+		if !wasStopping && exitCode == 0 && message == "" {
+			step := current.taskSteps[current.taskIndex]
+			if step.after != nil {
+				if err := step.after(); err != nil {
+					exitCode, message = -1, err.Error()
+				}
+			}
+		}
+		wasStopping = current.stopping()
+		if !wasStopping && exitCode == 0 && message == "" && current.taskIndex+1 < len(current.taskSteps) {
+			current.taskIndex++
+			s.mu.Lock()
+			manager := s.sandbox
+			s.mu.Unlock()
+			cols, rows := ClampSize(120, 30)
+			if err := s.startTaskStep(current, manager, cols, rows); err == nil {
+				if display := current.taskSteps[current.taskIndex].display; display != "" {
+					s.emitOutput(current, []byte("\r\nRunning tool: "+display+"\r\n\r\n"))
+				}
+				continue
+			} else {
+				exitCode, message = -1, err.Error()
+				wasStopping = current.stopping()
+			}
+		}
+		s.finishTask(current, exitCode, message, wasStopping)
+		return
+	}
+}
+
+func (s *Service) runTaskProcess(current *session) (int, string) {
+	current.mu.Lock()
+	process, backend, processContext := current.process, current.backend, current.processCtx
+	current.mu.Unlock()
 	waitResult := make(chan struct {
 		exitCode int
 		err      error
 	}, 1)
 	go func() {
-		exitCode, err := current.process.Wait()
+		exitCode, err := process.Wait()
 		waitResult <- struct {
 			exitCode int
 			err      error
@@ -920,7 +1036,7 @@ func (s *Service) run(current *session) {
 	go func() {
 		buffer := make([]byte, readBytes)
 		for {
-			count, err := current.backend.Read(buffer)
+			count, err := backend.Read(buffer)
 			if count > 0 {
 				s.emitOutput(current, buffer[:count])
 			}
@@ -940,11 +1056,16 @@ func (s *Service) run(current *session) {
 		// ConPTY can keep Read blocked after a short-lived process exits. Give
 		// trailing output a chance to drain, then close the PTY deterministically.
 		forcedClose = true
-		current.closeBackend()
+		current.closeBackend(backend)
 		readErr = <-readResult
 	}
-	current.closeBackend()
-	current.cancel()
+	current.closeBackend(backend)
+	current.mu.Lock()
+	cancel := current.cancel
+	current.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 
 	message := ""
 	if readErr != nil && !errors.Is(readErr, io.EOF) && !forcedClose && !current.stopping() {
@@ -952,9 +1073,14 @@ func (s *Service) run(current *session) {
 	} else if result.err != nil && result.exitCode < 0 && !current.stopping() {
 		message = result.err.Error()
 	}
-	wasStopping := current.stopping()
+	if processContext != nil && errors.Is(processContext.Err(), context.DeadlineExceeded) && !current.stopping() {
+		message = "task step timed out"
+	}
+	return result.exitCode, message
+}
+
+func (s *Service) finishTask(current *session, exitCode int, message string, wasStopping bool) {
 	current.mu.Lock()
-	exitCode := result.exitCode
 	current.exitCode = &exitCode
 	current.status = "exited"
 	if current.kind == "test" {
@@ -1049,10 +1175,17 @@ func (current *session) stop() {
 				current.taskStatus = "stopped"
 			}
 		}
+		process := current.process
+		cancel := current.cancel
+		backend := current.backend
 		current.mu.Unlock()
-		current.cancel()
-		_ = current.process.Kill()
-		current.closeBackend()
+		if cancel != nil {
+			cancel()
+		}
+		if process != nil {
+			_ = process.Kill()
+		}
+		current.closeBackend(backend)
 	})
 }
 
@@ -1088,8 +1221,21 @@ func mergeTaskEnvironment(base []string, values map[string]string) []string {
 	return result
 }
 
-func (current *session) closeBackend() {
-	current.closeOnce.Do(func() { _ = current.backend.Close() })
+func (current *session) closeBackend(backend Backend) {
+	if backend == nil {
+		return
+	}
+	current.mu.Lock()
+	if current.closed == nil {
+		current.closed = make(map[Backend]bool)
+	}
+	if current.closed[backend] {
+		current.mu.Unlock()
+		return
+	}
+	current.closed[backend] = true
+	current.mu.Unlock()
+	_ = backend.Close()
 }
 func (current *session) stopAndWait() { current.stop(); <-current.done }
 func (current *session) stopping() bool {
