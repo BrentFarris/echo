@@ -32,6 +32,10 @@ func TestGoTestingConfigLensAndTargetValidationAPI(t *testing.T) {
 	}
 	ref := workspacefs.FileRef{RootID: roots[0].ID, Path: "sample_test.go"}
 	base := "/api/workspaces/" + workspace.ID + "/testing/go"
+	coverage := doJSONRequest(t, server, http.MethodGet, base+"/coverage", nil)
+	if coverage.Code != http.StatusOK || !strings.Contains(coverage.Body.String(), `"coverage":null`) {
+		t.Fatalf("initial coverage: %d %s", coverage.Code, coverage.Body.String())
+	}
 
 	response := doJSONRequest(t, server, http.MethodPost, base+"/lenses", gotest.LensRequest{Ref: ref, Text: source})
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"title":"run package tests"`) || !strings.Contains(response.Body.String(), `"title":"debug test"`) {
@@ -39,7 +43,7 @@ func TestGoTestingConfigLensAndTargetValidationAPI(t *testing.T) {
 	}
 
 	update := doJSONRequest(t, server, http.MethodPut, base+"/config", map[string]any{"config": gotestconfig.GoConfig{
-		CodeLens: false, Timeout: "5s", Flags: []string{"-count=1"}, Environment: map[string]string{"ECHO_ENV": "test"},
+		CodeLens: false, Coverage: false, Timeout: "5s", Flags: []string{"-count=1"}, Environment: map[string]string{"ECHO_ENV": "test"},
 	}})
 	if update.Code != http.StatusOK {
 		t.Fatalf("config update: %d %s", update.Code, update.Body.String())
@@ -52,7 +56,7 @@ func TestGoTestingConfigLensAndTargetValidationAPI(t *testing.T) {
 	if err := json.Unmarshal(update.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.Data.Config.CodeLens || envelope.Data.Config.Timeout != "5s" {
+	if envelope.Data.Config.CodeLens || envelope.Data.Config.Coverage || envelope.Data.Config.Timeout != "5s" {
 		t.Fatalf("updated config = %#v", envelope.Data.Config)
 	}
 

@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   commands: new Map<string, (...args: any[]) => void>(),
   adopt: vi.fn(),
   disposeOutput: vi.fn(),
+  disposeCoverage: vi.fn(),
 }));
 
 vi.mock("../../js/api.js", () => ({ api: mocks.api }));
@@ -14,6 +15,9 @@ vi.mock("./goTestOutput", () => ({
     adopt = mocks.adopt;
     dispose = mocks.disposeOutput;
   },
+}));
+vi.mock("./goCoverage", () => ({
+  GoCoverageController: class { dispose = mocks.disposeCoverage; },
 }));
 vi.mock("./language", () => ({
   monaco: {
@@ -45,6 +49,7 @@ describe("Go test CodeLens", () => {
     mocks.api.mockReset();
     mocks.adopt.mockReset();
     mocks.disposeOutput.mockReset();
+    mocks.disposeCoverage.mockReset();
     mocks.commands.clear();
     mocks.provider = null;
   });
@@ -72,6 +77,7 @@ describe("Go test CodeLens", () => {
     });
     disposable.dispose();
     expect(mocks.disposeOutput).toHaveBeenCalledOnce();
+    expect(mocks.disposeCoverage).toHaveBeenCalledOnce();
   });
 
   it("saves before running and adopts the shared output session", async () => {

@@ -8,6 +8,7 @@ import { fromLSPRange } from "./lspClient";
 import type { LSPRange } from "./lspTypes";
 import { GoTestOutput } from "./goTestOutput";
 import { beginGoTestLensComposition } from "./codeLensDedupe";
+import { GoCoverageController } from "./goCoverage";
 
 export type GoTestTarget = {
   kind: "package_tests" | "file_tests" | "test" | "example" | "fuzz" | "subtest"
@@ -29,6 +30,9 @@ type Options = {
 
 export function registerGoTestCodeLens(options: Options): Monaco.IDisposable {
   const output = new GoTestOutput(options.workspaceId, options.saveAll);
+  const coverage = new GoCoverageController({
+    workspaceId: options.workspaceId, refForModel: options.refForModel, message: options.message,
+  });
   const provider = monaco.languages.registerCodeLensProvider("go", {
     async provideCodeLenses(model, token) {
       const ref = options.refForModel(model);
@@ -91,6 +95,7 @@ export function registerGoTestCodeLens(options: Options): Monaco.IDisposable {
       runCommand.dispose();
       debugCommand.dispose();
       output.dispose();
+      coverage.dispose();
     },
   };
 }

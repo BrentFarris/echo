@@ -189,7 +189,7 @@ const state = {
     busy: false,
   },
   testing: {
-    config: { codeLens: true, timeout: "30s", flags: [], tags: "", environment: {} },
+    config: { codeLens: true, coverage: true, timeout: "30s", flags: [], tags: "", environment: {} },
     flagsText: "[]",
     environmentText: "{}",
     status: "",
@@ -990,6 +990,7 @@ function renderTesting() {
       <p class="settings-card-help">These settings apply to normal runs and transient Delve debug launches.</p>
       <div class="settings-grid">
         <label class="toggle-row field-wide"><input type="checkbox" data-go-testing-field="codeLens" ${state.testing.config.codeLens !== false ? "checked" : ""}><span><strong>Show test CodeLens</strong><small>Show package, file, function, benchmark, fuzz, and static subtest actions in <code>*_test.go</code> files.</small></span></label>
+        <label class="toggle-row field-wide"><input type="checkbox" data-go-testing-field="coverage" ${state.testing.config.coverage !== false ? "checked" : ""}><span><strong>Show package test coverage</strong><small>Highlight covered and uncovered statements after successful package test runs.</small></span></label>
         <label class="field"><span>Test timeout</span><input type="text" value="${esc(state.testing.config.timeout || "30s")}" data-go-testing-field="timeout" placeholder="30s"><span class="field-help">A non-negative Go duration; <code>0s</code> disables the timeout.</span></label>
         <label class="field"><span>Build tags</span><input type="text" value="${esc(state.testing.config.tags || "")}" data-go-testing-field="tags" placeholder="integration,linux"></label>
         <label class="field field-wide"><span>Test flags (JSON array)</span><textarea rows="6" spellcheck="false" data-go-testing-text="flags">${esc(state.testing.flagsText)}</textarea><span class="field-help">Arguments are passed directly without shell expansion. Use <code>-args</code> before test-binary arguments.</span></label>
@@ -1910,9 +1911,10 @@ async function loadGoTesting(preserveStatus = false) {
   try {
     const data = state.modeWorkspaceId
       ? await get(`/api/workspaces/${encodeURIComponent(state.modeWorkspaceId)}/testing/go/config`)
-      : { config: { codeLens: true, timeout: "30s", flags: [], tags: "", environment: {} } };
+      : { config: { codeLens: true, coverage: true, timeout: "30s", flags: [], tags: "", environment: {} } };
     state.testing.config = {
       codeLens: data.config?.codeLens !== false,
+      coverage: data.config?.coverage !== false,
       timeout: data.config?.timeout || "30s",
       flags: data.config?.flags || [],
       tags: data.config?.tags || "",

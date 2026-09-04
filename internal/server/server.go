@@ -194,12 +194,16 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 	s.debugger.SetStopDebugTerminals(s.terminal.StopOwner)
 	s.debugger.SetNotifier(s.broadcastDebugEvent)
 	s.goTests = gotest.New(s.workspaces, s.fs, s.terminal, s.debugger)
+	s.goTests.SetCoverageNotifier(func(event gotest.CoverageEvent) {
+		s.hub.BroadcastWorkspaceTerminal(event.WorkspaceID, event)
+	})
 	s.git = gitservice.New(s.workspaces, s.fs)
 	s.git.SetSandbox(s.sandbox)
 	s.git.SetNotifier(func(event gitservice.Event) {
 		s.hub.BroadcastWorkspaceGit(event.WorkspaceID, event)
 	})
 	s.watcher = workspacefs.NewWatchManager(s.fs, func(event workspacefs.WatchEvent) {
+		s.goTests.HandleWorkspaceChanges(event.WorkspaceID, event.Changes)
 		s.hub.BroadcastWorkspaceFS(event.WorkspaceID, event)
 		s.git.InvalidateWorkspace(event.WorkspaceID)
 	})
@@ -501,6 +505,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/workspaces/{id}/lsp/ws", s.handleLSPWebSocket)
 	mux.HandleFunc("GET /api/workspaces/{id}/testing/go/config", s.handleGetGoTestingConfig)
 	mux.HandleFunc("PUT /api/workspaces/{id}/testing/go/config", s.handlePutGoTestingConfig)
+	mux.HandleFunc("GET /api/workspaces/{id}/testing/go/coverage", s.handleGetGoTestingCoverage)
 	mux.HandleFunc("POST /api/workspaces/{id}/testing/go/lenses", s.handleGoTestingLenses)
 	mux.HandleFunc("POST /api/workspaces/{id}/testing/go/runs", s.handleStartGoTestingRun)
 	mux.HandleFunc("POST /api/workspaces/{id}/testing/go/runs/{sessionId}/rerun", s.handleRerunGoTestingRun)
@@ -677,6 +682,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) refreshWorkspaceCaches(ctx context.Context, workspaceID string) {
 	s.sessions.invalidate(workspaceID)
+	s.goTests.ClearCoverage(workspaceID)
 	s.debugger.StopWorkspace(workspaceID)
 	s.terminal.StopWorkspace(workspaceID)
 	s.watcher.Refresh(workspaceID)
@@ -692,6 +698,7 @@ func (s *Server) refreshWorkspaceCaches(ctx context.Context, workspaceID string)
 
 func (s *Server) removeWorkspaceCaches(workspaceID string) {
 	s.sessions.invalidate(workspaceID)
+	s.goTests.RemoveWorkspace(workspaceID)
 	s.debugger.StopWorkspace(workspaceID)
 	s.terminal.StopWorkspace(workspaceID)
 	s.watcher.RemoveWorkspace(workspaceID)

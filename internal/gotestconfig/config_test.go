@@ -11,14 +11,14 @@ func TestGoConfigDefaultsAndExplicitDisable(t *testing.T) {
 		t.Fatal(err)
 	}
 	defaults := workspace.Normalized().Go
-	if !defaults.CodeLens || defaults.Timeout != "30s" {
+	if !defaults.CodeLens || !defaults.Coverage || defaults.Timeout != "30s" {
 		t.Fatalf("defaults = %#v", defaults)
 	}
-	if err := json.Unmarshal([]byte(`{"go":{"codeLens":false}}`), &workspace); err != nil {
+	if err := json.Unmarshal([]byte(`{"go":{"codeLens":false,"coverage":false}}`), &workspace); err != nil {
 		t.Fatal(err)
 	}
 	disabled := workspace.Normalized().Go
-	if disabled.CodeLens || disabled.Timeout != "30s" {
+	if disabled.CodeLens || disabled.Coverage || disabled.Timeout != "30s" {
 		t.Fatalf("explicit disable = %#v", disabled)
 	}
 }

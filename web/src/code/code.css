@@ -2681,3 +2681,5 @@
 .go-test-status.is-failed > span { background: var(--code-diagnostic-error); }
 .go-test-status.is-stopped > span { background: var(--code-diagnostic-warning); }
 .go-test-exit { position: absolute; right: 12px; bottom: 8px; color: var(--code-muted); font-size: 11px; }
+.monaco-editor .go-coverage-covered { background-color: rgba(64, 128, 128, .5); }
+.monaco-editor .go-coverage-uncovered { background-color: rgba(128, 64, 64, .25); }

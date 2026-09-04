@@ -12,6 +12,9 @@ const api = vi.hoisted(() => ({
     if (path === "/api/agent-modes") return { modes: [], tools: [] };
     if (path === "/api/lsp/profiles") return { profiles: [], templates: [] };
     if (path.includes("/lsp/config")) return { config: {}, profiles: [], statuses: [] };
+    if (path.includes("/testing/go/config")) return {
+      config: { codeLens: true, coverage: true, timeout: "30s", flags: [], tags: "", environment: {} },
+    };
     if (path === "/api/auth/status") return { transportSecure: true };
     if (path === "/api/auth/sessions") return { sessions: [] };
     return {};
@@ -33,6 +36,7 @@ const api = vi.hoisted(() => ({
       fixture.activeId = String(body.id || "");
       return { activeId: fixture.activeId };
     }
+    if (path.includes("/testing/go/config")) return { config: body.config };
     if (path.startsWith("/api/workspaces/")) {
       const id = decodeURIComponent(path.slice("/api/workspaces/".length));
       const index = fixture.workspaces.findIndex((workspace) => workspace.id === id);
@@ -147,5 +151,18 @@ describe("workspace settings", () => {
     expect(root.textContent).toContain("Second");
     expect(root.textContent).toContain("Active");
     expect(changed).toHaveBeenCalled();
+  });
+
+  it("configures package coverage in workspace Testing settings", async () => {
+    root.querySelector<HTMLButtonElement>('[data-section="testing"]')!.click();
+    await vi.waitFor(() => expect(api.get).toHaveBeenCalledWith("/api/workspaces/first/testing/go/config"));
+    const coverage = root.querySelector<HTMLInputElement>('[data-go-testing-field="coverage"]')!;
+    expect(coverage.checked).toBe(true);
+    coverage.click();
+    root.querySelector<HTMLButtonElement>('[data-go-testing-action="save"]')!.click();
+    await vi.waitFor(() => expect(api.put).toHaveBeenCalledWith(
+      "/api/workspaces/first/testing/go/config",
+      { config: expect.objectContaining({ coverage: false }) },
+    ));
   });
 });

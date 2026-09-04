@@ -20,20 +20,23 @@ type WorkspaceConfig struct {
 
 type GoConfig struct {
 	CodeLens    bool              `json:"codeLens"`
+	Coverage    bool              `json:"coverage"`
 	Timeout     string            `json:"timeout"`
 	Flags       []string          `json:"flags,omitempty"`
 	Tags        string            `json:"tags,omitempty"`
 	Environment map[string]string `json:"environment,omitempty"`
 	codeLensSet bool
+	coverageSet bool
 }
 
 func DefaultGoConfig() GoConfig {
-	return GoConfig{CodeLens: true, Timeout: DefaultTimeout, codeLensSet: true}
+	return GoConfig{CodeLens: true, Coverage: true, Timeout: DefaultTimeout, codeLensSet: true, coverageSet: true}
 }
 
 func (config *GoConfig) UnmarshalJSON(data []byte) error {
 	var wire struct {
 		CodeLens    *bool             `json:"codeLens"`
+		Coverage    *bool             `json:"coverage"`
 		Timeout     string            `json:"timeout"`
 		Flags       []string          `json:"flags"`
 		Tags        string            `json:"tags"`
@@ -47,6 +50,10 @@ func (config *GoConfig) UnmarshalJSON(data []byte) error {
 		config.CodeLens = *wire.CodeLens
 		config.codeLensSet = true
 	}
+	if wire.Coverage != nil {
+		config.Coverage = *wire.Coverage
+		config.coverageSet = true
+	}
 	config.Timeout = wire.Timeout
 	config.Flags = wire.Flags
 	config.Tags = wire.Tags
@@ -58,7 +65,11 @@ func (config GoConfig) Normalized() GoConfig {
 	if !config.codeLensSet && config.Timeout == "" && len(config.Flags) == 0 && config.Tags == "" && len(config.Environment) == 0 {
 		config.CodeLens = true
 	}
+	if !config.coverageSet {
+		config.Coverage = true
+	}
 	config.codeLensSet = true
+	config.coverageSet = true
 	config.Timeout = strings.TrimSpace(config.Timeout)
 	if config.Timeout == "" {
 		config.Timeout = DefaultTimeout

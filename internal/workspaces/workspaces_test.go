@@ -182,7 +182,7 @@ func TestTestingConfigDefaultsWithoutRewritingLegacyWorkspace(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("load workspace: ok=%v err=%v", ok, err)
 	}
-	if !loaded.Testing.Go.CodeLens || loaded.Testing.Go.Timeout != "30s" {
+	if !loaded.Testing.Go.CodeLens || !loaded.Testing.Go.Coverage || loaded.Testing.Go.Timeout != "30s" {
 		t.Fatalf("testing defaults = %+v", loaded.Testing.Go)
 	}
 	afterRead, err := os.ReadFile(configPath)

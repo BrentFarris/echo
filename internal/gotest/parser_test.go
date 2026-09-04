@@ -207,3 +207,22 @@ func TestBuildCommandRespectsUserTagsAndRemovesSelectors(t *testing.T) {
 		t.Fatalf("args = %#v, want %#v", plan.Args, want)
 	}
 }
+
+func TestBuildCommandOwnsPackageCoverageProfile(t *testing.T) {
+	info := sourceInfo{Tests: []string{"TestAlpha"}}
+	config := gotestconfig.GoConfig{
+		CodeLens: true, Coverage: true, Timeout: "30s",
+		Flags: []string{"-covermode=count", "-coverprofile", "user.out", "-count=1", "-args", "-coverprofile=binary-value"},
+	}
+	plan, err := buildCommand(Target{Kind: TargetPackageTests}, info, config, ".echo-cover-owned.out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"test", "-timeout", "30s", "-coverprofile", ".echo-cover-owned.out", ".",
+		"-covermode=count", "-count=1", "-args", "-coverprofile=binary-value",
+	}
+	if !reflect.DeepEqual(plan.Args, want) {
+		t.Fatalf("args = %#v, want %#v", plan.Args, want)
+	}
+}

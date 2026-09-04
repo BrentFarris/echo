@@ -18,7 +18,7 @@ type commandPlan struct {
 	DebugArguments []string
 }
 
-func buildCommand(target Target, info sourceInfo, config gotestconfig.GoConfig) (commandPlan, error) {
+func buildCommand(target Target, info sourceInfo, config gotestconfig.GoConfig, coverageProfile ...string) (commandPlan, error) {
 	config = config.Normalized()
 	if err := config.Validate(); err != nil {
 		return commandPlan{}, err
@@ -29,6 +29,13 @@ func buildCommand(target Target, info sourceInfo, config gotestconfig.GoConfig) 
 	}
 	goFlags, binaryArguments := splitArgs(config.Flags)
 	goFlags = removeSelectorFlags(goFlags)
+	profile := ""
+	if len(coverageProfile) > 0 {
+		profile = strings.TrimSpace(coverageProfile[0])
+	}
+	if profile != "" {
+		goFlags = removeNamedFlags(goFlags, "coverprofile", "test.coverprofile")
+	}
 	args := []string{"test", "-timeout", config.Timeout}
 	if config.Tags != "" && !hasTagsFlag(goFlags) {
 		args = append(args, "-tags", config.Tags)
@@ -37,6 +44,9 @@ func buildCommand(target Target, info sourceInfo, config gotestconfig.GoConfig) 
 		args = append(args, "-benchmem", "-run=^$", "-bench", selector)
 	} else if selector != "" {
 		args = append(args, "-run", selector)
+	}
+	if profile != "" {
+		args = append(args, "-coverprofile", profile)
 	}
 	args = append(args, ".")
 	args = append(args, goFlags...)
@@ -60,6 +70,28 @@ func buildCommand(target Target, info sourceInfo, config gotestconfig.GoConfig) 
 		Args: args, Display: displayCommand("go", args), Selector: selector, Benchmark: benchmark,
 		BuildFlags: strings.Join(quoteArguments(debugBuildFlags), " "), DebugArguments: debugArguments,
 	}, nil
+}
+
+func removeNamedFlags(flags []string, names ...string) []string {
+	remove := make(map[string]bool, len(names))
+	for _, name := range names {
+		remove[name] = true
+	}
+	result := make([]string, 0, len(flags))
+	for index := 0; index < len(flags); index++ {
+		key := strings.TrimLeft(flags[index], "-")
+		if equals := strings.IndexByte(key, '='); equals >= 0 {
+			key = key[:equals]
+		}
+		if !remove[key] {
+			result = append(result, flags[index])
+			continue
+		}
+		if !strings.Contains(flags[index], "=") && index+1 < len(flags) {
+			index++
+		}
+	}
+	return result
 }
 
 func selectorFor(target Target, info sourceInfo) (string, bool, error) {

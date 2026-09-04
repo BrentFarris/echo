@@ -38,6 +38,15 @@ func (s *Server) handlePutGoTestingConfig(w http.ResponseWriter, r *http.Request
 	writeData(w, http.StatusOK, map[string]any{"config": config})
 }
 
+func (s *Server) handleGetGoTestingCoverage(w http.ResponseWriter, r *http.Request) {
+	coverage, revision, err := s.goTests.Coverage(r.PathValue("id"))
+	if err != nil {
+		writeGoTestingError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, map[string]any{"coverage": coverage, "revision": revision})
+}
+
 func (s *Server) handleGoTestingLenses(w http.ResponseWriter, r *http.Request) {
 	var body gotest.LensRequest
 	if err := decodeLimitedJSON(w, r, &body, maxGoTestingRequestBytes); err != nil {

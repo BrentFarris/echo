@@ -1656,21 +1656,39 @@ test("debugs through a deterministic DAP adapter and reconnects the workbench", 
   };
   const fakeDAPPath = resolve(directory, "fake-dap.mjs");
   writeFileSync(join(state.workspace, "main.go"), "package main\n\nfunc main() {\n\tTarget()\n}\n", "utf8");
+  writeFileSync(join(state.workspace, "definition.go"), `package main
+
+func Target() {}
+
+func CoverageBranch(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+`, "utf8");
   writeFileSync(join(state.workspace, "sample_test.go"), `package main
 
 import (
+	"flag"
 	"testing"
 	"time"
 )
 
-func TestPass(t *testing.T) {}
-
-func TestSubtests(t *testing.T) {
-	t.Run("nested name", func(child *testing.T) {})
+func TestPass(t *testing.T) {
+	if CoverageBranch(true) != 1 {
+		t.Fatal("unexpected branch result")
+	}
 }
 
 func TestFail(t *testing.T) {
-	t.Fatal("intentional failure")
+	if flag.Lookup("test.run").Value.String() == "^TestFail$" {
+		t.Fatal("intentional failure")
+	}
+}
+
+func TestSubtests(t *testing.T) {
+	t.Run("nested name", func(child *testing.T) {})
 }
 
 func TestSlow(t *testing.T) {
@@ -1770,7 +1788,7 @@ func TestSlow(t *testing.T) {
 
   // Built-in Go CodeLens runs without gopls and uses the same bottom workbench
   // and transient DAP session exercised above.
-  await page.getByRole("button", { name: "Explorer" }).click();
+  await page.getByRole("button", { name: "Explorer", exact: true }).click();
   await expect(page.locator(".code-tree-label", { hasText: "sample_test.go" })).toBeVisible();
   await page.locator(".code-tree-label", { hasText: "sample_test.go" }).click();
   await expect(page.getByText("run package tests", { exact: true })).toBeVisible();
@@ -1785,7 +1803,7 @@ func TestSlow(t *testing.T) {
   await expect(page.locator(".go-test-status")).toContainText("Passed", { timeout: 30_000 });
   await expect(page.locator("[data-test-output-text]")).toContainText("go test");
 
-  await runLenses.nth(3).click();
+  await runLenses.nth(1).click();
   await expect(page.locator(".go-test-status")).toContainText("Failed", { timeout: 30_000 });
   await expect(page.locator("[data-test-output-text]")).toContainText("intentional failure");
 
@@ -1796,8 +1814,26 @@ func TestSlow(t *testing.T) {
   await expect(page.locator(".go-test-status")).toContainText("Passed", { timeout: 30_000 });
   await expect(page.locator("[data-test-output-text]")).toContainText("^TestPass$");
 
+  await page.getByText("run package tests", { exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Test Output" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".go-test-status")).toContainText("Passed", { timeout: 30_000 });
+
   await debugLenses.first().click();
   await expect(page.locator(".debug-session-row .debug-status.is-stopped")).toBeVisible({ timeout: 20_000 });
   await expect(page.locator(".debug-session-row", { hasText: "Debug Test: TestPass" })).toBeVisible();
   await page.locator(".debug-floating-toolbar [data-debug-action=stop]").click();
+
+  await page.getByRole("button", { name: "Explorer", exact: true }).click();
+  await page.locator(".code-tree-label", { hasText: "definition.go" }).click();
+  await expect(page.locator(".view-lines .go-coverage-covered")).not.toHaveCount(0);
+  await expect(page.locator(".view-lines .go-coverage-uncovered")).not.toHaveCount(0);
+
+  await page.locator(".code-tree-label", { hasText: "sample_test.go" }).click();
+  await expect(page.locator(".view-lines .go-coverage-covered, .view-lines .go-coverage-uncovered")).toHaveCount(0);
+  await page.locator(".code-tree-label", { hasText: "definition.go" }).click();
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Control+s");
+  await expect(page.locator(".view-lines .go-coverage-covered, .view-lines .go-coverage-uncovered")).toHaveCount(0);
 });

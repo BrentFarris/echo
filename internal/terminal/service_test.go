@@ -208,6 +208,7 @@ func TestSessionLifecycleReplayAndExit(t *testing.T) {
 func TestTaskLifecycleStatusEnvironmentAndReplacement(t *testing.T) {
 	service, workspace, _ := newTestService(t)
 	first, second := newFakeBackend(), newFakeBackend()
+	firstCompletion := make(chan TaskResult, 2)
 	backends := []Backend{first, second}
 	service.SetBackendFactory(func() (Backend, error) {
 		next := backends[0]
@@ -219,6 +220,7 @@ func TestTaskLifecycleStatusEnvironmentAndReplacement(t *testing.T) {
 	started, err := service.StartTask(workspace.ID, TaskRequest{
 		Name: "Test Output", Command: "go", Args: []string{"test", "."}, WorkingDirectory: workspace.MainPath,
 		Environment: map[string]string{"ECHO_TEST": "yes"}, DisplayCommand: "go test .",
+		OnExit: func(result TaskResult) { firstCompletion <- result },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -243,6 +245,15 @@ func TestTaskLifecycleStatusEnvironmentAndReplacement(t *testing.T) {
 	if replaced.ID == started.ID {
 		t.Fatal("replacement reused task session id")
 	}
+	completion := <-firstCompletion
+	if completion.SessionID != started.ID || completion.Status != "stopped" {
+		t.Fatalf("replacement completion = %#v", completion)
+	}
+	select {
+	case duplicate := <-firstCompletion:
+		t.Fatalf("duplicate replacement completion = %#v", duplicate)
+	default:
+	}
 	if _, err := service.Sync(workspace.ID, started.ID, 0); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("replaced task is still retained: %v", err)
 	}
@@ -250,6 +261,86 @@ func TestTaskLifecycleStatusEnvironmentAndReplacement(t *testing.T) {
 	exited := waitStatus(t, service, workspace.ID, replaced.ID, "exited")
 	if exited.TaskStatus != "passed" || exited.ExitCode == nil || *exited.ExitCode != 0 {
 		t.Fatalf("completed task = %#v", exited)
+	}
+}
+
+func TestTaskCompletionRunsOnceAfterFinalOutputAndStatus(t *testing.T) {
+	service, workspace, _ := newTestService(t)
+	backend := newFakeBackend()
+	service.SetBackendFactory(func() (Backend, error) { return backend, nil })
+	t.Cleanup(func() { shutdownTestService(t, service) })
+
+	completed := make(chan TaskResult, 2)
+	started, err := service.StartTask(workspace.ID, TaskRequest{
+		Name: "Test Output", Command: "go", Args: []string{"test", "."}, WorkingDirectory: workspace.MainPath,
+		OnExit: func(result TaskResult) { completed <- result },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.readCh <- []byte("final output")
+	backend.process.complete(0, nil)
+	result := <-completed
+	if result.SessionID != started.ID || result.Status != "passed" || result.ExitCode != 0 {
+		t.Fatalf("completion = %#v", result)
+	}
+	snapshot, err := service.Sync(workspace.ID, started.ID, 0)
+	if err != nil || snapshot.Status != "exited" || len(snapshot.Output) != 1 {
+		t.Fatalf("snapshot before callback = %#v, %v", snapshot, err)
+	}
+	select {
+	case duplicate := <-completed:
+		t.Fatalf("duplicate completion = %#v", duplicate)
+	case <-time.After(25 * time.Millisecond):
+	}
+}
+
+func TestTaskCompletionReportsFailureAndStop(t *testing.T) {
+	for _, scenario := range []struct {
+		name string
+		want string
+		end  func(*Service, workspaces.Workspace, *fakeBackend, string) error
+	}{
+		{
+			name: "failure", want: "failed",
+			end: func(_ *Service, _ workspaces.Workspace, backend *fakeBackend, _ string) error {
+				backend.process.complete(2, errors.New("exit status 2"))
+				return nil
+			},
+		},
+		{
+			name: "stop", want: "stopped",
+			end: func(service *Service, workspace workspaces.Workspace, _ *fakeBackend, sessionID string) error {
+				return service.Stop(workspace.ID, sessionID)
+			},
+		},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			service, workspace, _ := newTestService(t)
+			backend := newFakeBackend()
+			service.SetBackendFactory(func() (Backend, error) { return backend, nil })
+			t.Cleanup(func() { shutdownTestService(t, service) })
+			completed := make(chan TaskResult, 2)
+			started, err := service.StartTask(workspace.ID, TaskRequest{
+				Name: "Test Output", Command: "go", Args: []string{"test", "."}, WorkingDirectory: workspace.MainPath,
+				OnExit: func(result TaskResult) { completed <- result },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := scenario.end(service, workspace, backend, started.ID); err != nil {
+				t.Fatal(err)
+			}
+			result := <-completed
+			if result.SessionID != started.ID || result.Status != scenario.want {
+				t.Fatalf("completion = %#v, want status %q", result, scenario.want)
+			}
+			select {
+			case duplicate := <-completed:
+				t.Fatalf("duplicate completion = %#v", duplicate)
+			case <-time.After(25 * time.Millisecond):
+			}
+		})
 	}
 }
 

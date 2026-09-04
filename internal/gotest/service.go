@@ -39,16 +39,21 @@ type runRecord struct {
 }
 
 type Service struct {
-	workspaces *workspaces.Manager
-	fs         *workspacefs.Service
-	terminal   *terminal.Service
-	debugger   *debugger.Service
-	mu         sync.Mutex
-	latest     map[string]runRecord
+	workspaces     *workspaces.Manager
+	fs             *workspacefs.Service
+	terminal       *terminal.Service
+	debugger       *debugger.Service
+	mu             sync.Mutex
+	latest         map[string]runRecord
+	coverage       map[string]coverageRecord
+	coverageNotify func(CoverageEvent)
 }
 
 func New(workspaceManager *workspaces.Manager, fs *workspacefs.Service, terminalService *terminal.Service, debuggerService *debugger.Service) *Service {
-	return &Service{workspaces: workspaceManager, fs: fs, terminal: terminalService, debugger: debuggerService, latest: map[string]runRecord{}}
+	return &Service{
+		workspaces: workspaceManager, fs: fs, terminal: terminalService, debugger: debuggerService,
+		latest: map[string]runRecord{}, coverage: map[string]coverageRecord{},
+	}
 }
 
 func (s *Service) Config(workspaceID string) (gotestconfig.GoConfig, error) {
@@ -71,7 +76,11 @@ func (s *Service) SetConfig(workspaceID string, config gotestconfig.GoConfig) (g
 	if err != nil {
 		return gotestconfig.GoConfig{}, err
 	}
-	return workspace.Testing.Go.Normalized(), nil
+	updated := workspace.Testing.Go.Normalized()
+	if !updated.Coverage {
+		s.ClearCoverage(workspaceID)
+	}
+	return updated, nil
 }
 
 func (s *Service) Lenses(workspaceID string, request LensRequest) ([]Lens, error) {
@@ -98,15 +107,56 @@ func (s *Service) Run(workspaceID string, request RunRequest) (terminal.Snapshot
 	if err != nil {
 		return terminal.Snapshot{}, err
 	}
-	plan, err := buildCommand(request.Target, info, config)
+	packageDirectory := filepath.Dir(hostPath)
+	packageRef := workspacefs.FileRef{RootID: request.Ref.RootID, Path: referenceDirectory(request.Ref.Path)}
+	profilePath := ""
+	generation := ""
+	fingerprint := ""
+	coverageEnabled := config.Coverage && request.Target.Kind == TargetPackageTests
+	if coverageEnabled {
+		fingerprint, err = packageFingerprint(packageDirectory)
+		if err != nil {
+			return terminal.Snapshot{}, fmt.Errorf("fingerprint Go package for coverage: %w", err)
+		}
+		profile, createErr := os.CreateTemp(packageDirectory, ".echo-cover-*.out")
+		if createErr != nil {
+			return terminal.Snapshot{}, fmt.Errorf("prepare Go coverage profile: %w", createErr)
+		}
+		profilePath = profile.Name()
+		if closeErr := profile.Close(); closeErr != nil {
+			_ = os.Remove(profilePath)
+			return terminal.Snapshot{}, fmt.Errorf("prepare Go coverage profile: %w", closeErr)
+		}
+	}
+	var plan commandPlan
+	if coverageEnabled {
+		plan, err = buildCommand(request.Target, info, config, filepath.Base(profilePath))
+	} else {
+		plan, err = buildCommand(request.Target, info, config)
+	}
 	if err != nil {
+		if profilePath != "" {
+			_ = os.Remove(profilePath)
+		}
 		return terminal.Snapshot{}, err
 	}
+	if coverageEnabled {
+		generation = s.beginCoverage(workspaceID, packageDirectory, fingerprint, packageRef)
+	}
 	snapshot, err := s.terminal.StartTask(workspaceID, terminal.TaskRequest{
-		Name: "Test Output", Command: "go", Args: plan.Args, WorkingDirectory: filepath.Dir(hostPath),
+		Name: "Test Output", Command: "go", Args: plan.Args, WorkingDirectory: packageDirectory,
 		Environment: config.Environment, DisplayCommand: plan.Display,
+		OnExit: func(result terminal.TaskResult) {
+			if coverageEnabled {
+				s.finishCoverage(workspaceID, generation, profilePath, packageDirectory, fingerprint, packageRef, result)
+			}
+		},
 	})
 	if err != nil {
+		if profilePath != "" {
+			_ = os.Remove(profilePath)
+			s.abortCoverage(workspaceID, generation)
+		}
 		return terminal.Snapshot{}, err
 	}
 	s.mu.Lock()

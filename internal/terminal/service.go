@@ -94,6 +94,16 @@ type CommandSpec struct {
 	Env  []string
 }
 
+// TaskResult is delivered to trusted in-process task owners after all PTY
+// output has drained and the terminal lifecycle status has been finalized.
+type TaskResult struct {
+	WorkspaceID string
+	SessionID   string
+	ExitCode    int
+	Status      string
+	Message     string
+}
+
 // TaskRequest is a trusted, server-constructed direct process invocation.
 // Browser APIs never accept this shape directly.
 type TaskRequest struct {
@@ -103,6 +113,7 @@ type TaskRequest struct {
 	WorkingDirectory string
 	Environment      map[string]string
 	DisplayCommand   string
+	OnExit           func(TaskResult)
 }
 
 type Process interface {
@@ -254,6 +265,7 @@ type session struct {
 	sequence    uint64
 	output      []bufferedChunk
 	outputBytes int
+	onExit      func(TaskResult)
 }
 
 type workspaceResolver interface {
@@ -367,6 +379,7 @@ func (s *Service) StartTask(workspaceID string, request TaskRequest) (Snapshot, 
 		workspaceID: workspaceID, id: uuid.NewString(), name: name, kind: "test",
 		shell: filepath.Base(command), workingDir: workingDir, backend: backend, process: process,
 		cancel: cancel, done: make(chan struct{}), status: "running", taskStatus: "running", output: make([]bufferedChunk, 0, 64),
+		onExit: request.OnExit,
 	}
 	s.mu.Lock()
 	if previous != nil {
@@ -958,6 +971,12 @@ func (s *Service) run(current *session) {
 	lastSequence := current.sequence
 	taskStatus := current.taskStatus
 	current.mu.Unlock()
+	if current.onExit != nil {
+		current.onExit(TaskResult{
+			WorkspaceID: current.workspaceID, SessionID: current.id, ExitCode: exitCode,
+			Status: taskStatus, Message: message,
+		})
+	}
 	s.emit(Event{
 		Type: "terminal_event", WorkspaceID: current.workspaceID, SessionID: current.id,
 		Name: current.name, Kind: current.kind, OwnerSessionID: current.ownerID,
