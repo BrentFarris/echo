@@ -448,9 +448,12 @@ func (r *serverRuntime) handleRequest(ctx context.Context, method string, params
 		return folders, nil
 	case "client/registerCapability", "client/unregisterCapability", "window/workDoneProgress/create":
 		return nil, nil
-	case "workspace/applyEdit":
+	case "workspace/applyEdit", "workspace/codeLens/refresh":
 		result, err := r.service.forwardServerRequest(ctx, r, method, params)
 		if err != nil {
+			if method == "workspace/codeLens/refresh" {
+				return nil, &RPCError{Code: -32603, Message: err.Error()}
+			}
 			return map[string]any{"applied": false, "failureReason": err.Error()}, nil
 		}
 		translated, translateErr := r.translateValue(result, true)
@@ -524,7 +527,8 @@ func clientCapabilities() map[string]any {
 		"workspace": map[string]any{
 			"applyEdit": true, "configuration": true,
 			"workspaceFolders": true, "workspaceEdit": map[string]any{"documentChanges": true},
-			"symbol": map[string]any{"dynamicRegistration": false},
+			"symbol":   map[string]any{"dynamicRegistration": false},
+			"codeLens": map[string]any{"refreshSupport": true},
 		},
 		"window": map[string]any{"workDoneProgress": true, "showDocument": map[string]any{"support": false}},
 		"textDocument": map[string]any{
@@ -542,6 +546,10 @@ func clientCapabilities() map[string]any {
 			"references":     map[string]any{"dynamicRegistration": false},
 			"documentSymbol": map[string]any{"dynamicRegistration": false, "hierarchicalDocumentSymbolSupport": true},
 			"rename":         map[string]any{"dynamicRegistration": false, "prepareSupport": true},
+			"codeLens": map[string]any{
+				"dynamicRegistration": false,
+				"resolveSupport":      map[string]any{"properties": []string{"command"}},
+			},
 			"codeAction": map[string]any{
 				"dynamicRegistration": false,
 				"isPreferredSupport":  true,

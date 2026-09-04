@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	ptylib "github.com/aymanbagabas/go-pty"
 	"github.com/brent/echo/internal/appdata"
@@ -58,6 +59,7 @@ type Snapshot struct {
 	Status           string        `json:"status"`
 	ExitCode         *int          `json:"exitCode,omitempty"`
 	Message          string        `json:"message,omitempty"`
+	TaskStatus       string        `json:"taskStatus,omitempty"`
 	LastSequence     uint64        `json:"lastSequence"`
 	Reset            bool          `json:"reset,omitempty"`
 	Output           []OutputChunk `json:"output"`
@@ -75,6 +77,7 @@ type Event struct {
 	Data           string `json:"data,omitempty"`
 	ExitCode       *int   `json:"exitCode,omitempty"`
 	Message        string `json:"message,omitempty"`
+	TaskStatus     string `json:"taskStatus,omitempty"`
 }
 
 type SavedCommand struct {
@@ -89,6 +92,17 @@ type CommandSpec struct {
 	Args []string
 	Dir  string
 	Env  []string
+}
+
+// TaskRequest is a trusted, server-constructed direct process invocation.
+// Browser APIs never accept this shape directly.
+type TaskRequest struct {
+	Name             string
+	Command          string
+	Args             []string
+	WorkingDirectory string
+	Environment      map[string]string
+	DisplayCommand   string
 }
 
 type Process interface {
@@ -236,6 +250,7 @@ type session struct {
 	status      string
 	exitCode    *int
 	message     string
+	taskStatus  string
 	sequence    uint64
 	output      []bufferedChunk
 	outputBytes int
@@ -252,6 +267,8 @@ type Service struct {
 	mu         sync.Mutex
 	sessions   map[string]*session
 	defaults   map[string]string
+	tasks      map[string]string
+	taskMu     sync.Mutex
 	newBackend func() (Backend, error)
 	sandbox    *sandbox.Manager
 	notify     func(Event)
@@ -263,8 +280,107 @@ func New(workspaceManager workspaceResolver, data *appdata.Store) *Service {
 		data:       data,
 		sessions:   make(map[string]*session),
 		defaults:   make(map[string]string),
+		tasks:      make(map[string]string),
 		newBackend: newRealBackend,
 	}
+}
+
+// StartTask starts one server-owned, non-interactive task for a workspace.
+// Only the latest task is retained; a new task stops and replaces its predecessor.
+func (s *Service) StartTask(workspaceID string, request TaskRequest) (Snapshot, error) {
+	s.taskMu.Lock()
+	defer s.taskMu.Unlock()
+	workspace, err := s.workspace(workspaceID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if strings.TrimSpace(request.Command) == "" {
+		return Snapshot{}, errors.New("task command is required")
+	}
+	workingDir := filepath.Clean(strings.TrimSpace(request.WorkingDirectory))
+	if workingDir == "." || workingDir == "" {
+		workingDir, err = availableWorkingDirectory(workspace)
+		if err != nil {
+			return Snapshot{}, err
+		}
+	}
+
+	s.mu.Lock()
+	previous := s.sessions[s.tasks[workspaceID]]
+	sandboxManager := s.sandbox
+	factory := s.newBackend
+	s.mu.Unlock()
+	if previous != nil {
+		previous.stopAndWait()
+	}
+
+	sandboxEnabled := workspace.Sandbox.Enabled || (sandboxManager != nil && sandboxManager.IsEnabled(workspaceID))
+	if sandboxEnabled && sandboxManager == nil {
+		return Snapshot{}, errors.New("sandbox task runtime is unavailable")
+	}
+	command := request.Command
+	if !sandboxEnabled {
+		command, err = exec.LookPath(command)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("resolve task command %q: %w", request.Command, err)
+		}
+	}
+	if sandboxEnabled {
+		workingDir, err = sandboxManager.HostToGuest(workspaceID, workingDir)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("map task working directory: %w", err)
+		}
+	}
+	cols, rows := ClampSize(120, 30)
+	var backend Backend
+	if sandboxEnabled {
+		backend = &sandboxBackend{manager: sandboxManager, workspaceID: workspaceID}
+	} else {
+		backend, err = factory()
+	}
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("create task terminal: %w", err)
+	}
+	if err := backend.Resize(cols, rows); err != nil {
+		_ = backend.Close()
+		return Snapshot{}, fmt.Errorf("size task terminal: %w", err)
+	}
+	environment := terminalEnvironment()
+	if sandboxEnabled {
+		environment = sandboxTerminalEnvironment()
+	}
+	environment = mergeTaskEnvironment(environment, request.Environment)
+	processContext, cancel := context.WithCancel(context.Background())
+	process, err := backend.Start(processContext, CommandSpec{
+		Name: command, Args: append([]string(nil), request.Args...), Dir: workingDir, Env: environment,
+	})
+	if err != nil {
+		cancel()
+		_ = backend.Close()
+		return Snapshot{}, fmt.Errorf("start task: %w", err)
+	}
+	name := strings.TrimSpace(request.Name)
+	if name == "" {
+		name = "Task Output"
+	}
+	current := &session{
+		workspaceID: workspaceID, id: uuid.NewString(), name: name, kind: "test",
+		shell: filepath.Base(command), workingDir: workingDir, backend: backend, process: process,
+		cancel: cancel, done: make(chan struct{}), status: "running", taskStatus: "running", output: make([]bufferedChunk, 0, 64),
+	}
+	s.mu.Lock()
+	if previous != nil {
+		delete(s.sessions, previous.id)
+	}
+	s.sessions[current.id] = current
+	s.tasks[workspaceID] = current.id
+	s.mu.Unlock()
+	s.emit(Event{Type: "terminal_event", WorkspaceID: workspaceID, SessionID: current.id, Name: current.name, Kind: current.kind, Event: "started", TaskStatus: current.taskStatus})
+	if display := strings.TrimSpace(request.DisplayCommand); display != "" {
+		s.emitOutput(current, []byte("Running tool: "+display+"\r\n\r\n"))
+	}
+	go s.run(current)
+	return current.snapshot(0), nil
 }
 
 func (s *Service) SetNotifier(notify func(Event)) {
@@ -603,6 +719,7 @@ func (s *Service) StopWorkspace(workspaceID string) {
 		}
 	}
 	delete(s.defaults, workspaceID)
+	delete(s.tasks, workspaceID)
 	s.mu.Unlock()
 	for _, current := range all {
 		current.stopAndWait()
@@ -637,6 +754,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 	s.sessions = make(map[string]*session)
 	s.defaults = make(map[string]string)
+	s.tasks = make(map[string]string)
 	s.mu.Unlock()
 	for _, current := range all {
 		current.stop()
@@ -785,41 +903,65 @@ func (s *Service) run(current *session) {
 		}{exitCode: exitCode, err: err}
 	}()
 
-	buffer := make([]byte, readBytes)
-	var readErr error
-	for {
-		count, err := current.backend.Read(buffer)
-		if count > 0 {
-			s.emitOutput(current, buffer[:count])
-		}
-		if err != nil {
-			if !errors.Is(err, io.EOF) && !current.stopping() {
-				readErr = err
+	readResult := make(chan error, 1)
+	go func() {
+		buffer := make([]byte, readBytes)
+		for {
+			count, err := current.backend.Read(buffer)
+			if count > 0 {
+				s.emitOutput(current, buffer[:count])
 			}
-			break
+			if err != nil {
+				readResult <- err
+				return
+			}
 		}
-	}
+	}()
+
 	result := <-waitResult
+	var readErr error
+	forcedClose := false
+	select {
+	case readErr = <-readResult:
+	case <-time.After(150 * time.Millisecond):
+		// ConPTY can keep Read blocked after a short-lived process exits. Give
+		// trailing output a chance to drain, then close the PTY deterministically.
+		forcedClose = true
+		current.closeBackend()
+		readErr = <-readResult
+	}
 	current.closeBackend()
 	current.cancel()
 
 	message := ""
-	if readErr != nil {
+	if readErr != nil && !errors.Is(readErr, io.EOF) && !forcedClose && !current.stopping() {
 		message = readErr.Error()
 	} else if result.err != nil && result.exitCode < 0 && !current.stopping() {
 		message = result.err.Error()
 	}
+	wasStopping := current.stopping()
 	current.mu.Lock()
 	exitCode := result.exitCode
 	current.exitCode = &exitCode
 	current.status = "exited"
+	if current.kind == "test" {
+		switch {
+		case wasStopping:
+			current.taskStatus = "stopped"
+		case exitCode == 0 && message == "":
+			current.taskStatus = "passed"
+		default:
+			current.taskStatus = "failed"
+		}
+	}
 	current.message = message
 	lastSequence := current.sequence
+	taskStatus := current.taskStatus
 	current.mu.Unlock()
 	s.emit(Event{
 		Type: "terminal_event", WorkspaceID: current.workspaceID, SessionID: current.id,
 		Name: current.name, Kind: current.kind, OwnerSessionID: current.ownerID,
-		Event: "exited", Sequence: lastSequence, ExitCode: &exitCode, Message: message,
+		Event: "exited", Sequence: lastSequence, ExitCode: &exitCode, Message: message, TaskStatus: taskStatus,
 	})
 }
 
@@ -834,11 +976,12 @@ func (s *Service) emitOutput(current *session, data []byte) {
 		current.outputBytes -= len(current.output[0].data)
 		current.output = current.output[1:]
 	}
+	taskStatus := current.taskStatus
 	current.mu.Unlock()
 	s.emit(Event{
 		Type: "terminal_event", WorkspaceID: current.workspaceID, SessionID: current.id,
 		Name: current.name, Kind: current.kind, OwnerSessionID: current.ownerID,
-		Event: "data", Sequence: sequence, Data: base64.StdEncoding.EncodeToString(value),
+		Event: "data", Sequence: sequence, Data: base64.StdEncoding.EncodeToString(value), TaskStatus: taskStatus,
 	})
 }
 
@@ -874,7 +1017,7 @@ func (current *session) snapshot(afterSequence uint64) Snapshot {
 		WorkspaceID: current.workspaceID, ID: current.id, Name: current.name, Kind: current.kind,
 		OwnerSessionID: current.ownerID, Shell: current.shell,
 		WorkingDirectory: current.workingDir, Status: current.status, ExitCode: exitCode,
-		Message: current.message, LastSequence: current.sequence, Reset: reset, Output: output,
+		Message: current.message, TaskStatus: current.taskStatus, LastSequence: current.sequence, Reset: reset, Output: output,
 	}
 }
 
@@ -883,12 +1026,47 @@ func (current *session) stop() {
 		current.mu.Lock()
 		if current.status == "running" {
 			current.status = "stopping"
+			if current.kind == "test" {
+				current.taskStatus = "stopped"
+			}
 		}
 		current.mu.Unlock()
 		current.cancel()
 		_ = current.process.Kill()
 		current.closeBackend()
 	})
+}
+
+func mergeTaskEnvironment(base []string, values map[string]string) []string {
+	if len(values) == 0 {
+		return base
+	}
+	merged := make(map[string]string, len(base)+len(values))
+	for _, item := range base {
+		if index := strings.IndexByte(item, '='); index > 0 {
+			merged[item[:index]] = item[index+1:]
+		}
+	}
+	for key, value := range values {
+		if runtime.GOOS == "windows" {
+			for existing := range merged {
+				if strings.EqualFold(existing, key) {
+					delete(merged, existing)
+				}
+			}
+		}
+		merged[key] = value
+	}
+	keys := make([]string, 0, len(merged))
+	for key := range merged {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, key+"="+merged[key])
+	}
+	return result
 }
 
 func (current *session) closeBackend() {

@@ -339,6 +339,51 @@ func (s *Service) Start(ctx context.Context, workspaceID string, request StartRe
 	return s.Snapshot(workspaceID)
 }
 
+// EnabledAdapterProfile returns the first enabled, effective profile for an
+// adapter. Workspace order is significant and mirrors the Debug settings UI.
+func (s *Service) EnabledAdapterProfile(workspaceID, adapterID string) (debugconfig.AdapterProfile, error) {
+	workspace, err := s.workspace(workspaceID)
+	if err != nil {
+		return debugconfig.AdapterProfile{}, err
+	}
+	for _, profileID := range workspace.Debug.Normalized().EnabledAdapterProfileIDs {
+		profile, profileErr := s.effectiveProfile(workspace, profileID)
+		if profileErr != nil {
+			return debugconfig.AdapterProfile{}, profileErr
+		}
+		if strings.EqualFold(profile.AdapterID, strings.TrimSpace(adapterID)) {
+			return profile, nil
+		}
+	}
+	return debugconfig.AdapterProfile{}, fmt.Errorf("no enabled %s debug adapter profile is configured", strings.TrimSpace(adapterID))
+}
+
+// StartTransient launches a validated configuration without persisting it in
+// workspace.json. It is used by contextual editor actions such as Go CodeLens.
+func (s *Service) StartTransient(ctx context.Context, workspaceID string, configuration debugconfig.Configuration, request StartRequest) (Snapshot, error) {
+	workspace, err := s.workspace(workspaceID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	profiles, err := s.profiles.Profiles()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	config := debugconfig.WorkspaceConfig{
+		EnabledAdapterProfileIDs: append([]string(nil), workspace.Debug.EnabledAdapterProfileIDs...),
+		Overrides:                workspace.Debug.Overrides,
+		Configurations:           []debugconfig.Configuration{configuration},
+	}.Normalized()
+	if err := config.Validate(profiles); err != nil {
+		return Snapshot{}, err
+	}
+	entry := config.Configurations[0]
+	if _, err := s.createSession(workspace, entry, "", "", request); err != nil {
+		return Snapshot{}, err
+	}
+	return s.Snapshot(workspaceID)
+}
+
 func (s *Service) createSession(workspace workspaces.Workspace, configuration debugconfig.Configuration, groupID, parentID string, request StartRequest) (string, error) {
 	profile, err := s.effectiveProfile(workspace, configuration.AdapterProfileID)
 	if err != nil {

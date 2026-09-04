@@ -55,6 +55,7 @@ export type LSPWorkspaceEdit = {
 };
 
 export type LSPCommand = { title: string; command: string; arguments?: unknown[] };
+export type LSPCodeLens = { range: LSPRange; command?: LSPCommand; data?: unknown };
 export type LSPCodeAction = {
   title: string;
   kind?: string;

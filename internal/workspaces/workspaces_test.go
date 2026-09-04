@@ -159,6 +159,51 @@ func TestSandboxConfigLegacyDefaultsAndExplicitPersistence(t *testing.T) {
 	}
 }
 
+func TestTestingConfigDefaultsWithoutRewritingLegacyWorkspace(t *testing.T) {
+	directory := t.TempDir()
+	main := filepath.Join(directory, "legacy testing workspace")
+	if err := os.MkdirAll(main, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(filepath.Join(directory, "echo.json"))
+	workspace, err := manager.Create(CreateRequest{Name: "Legacy Testing", MainPath: main})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(main, EchoDirName, "workspace.json")
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(before), `"testing"`) {
+		t.Fatalf("new workspace unexpectedly persisted default testing settings: %s", before)
+	}
+	loaded, ok, err := manager.Get(workspace.ID)
+	if err != nil || !ok {
+		t.Fatalf("load workspace: ok=%v err=%v", ok, err)
+	}
+	if !loaded.Testing.Go.CodeLens || loaded.Testing.Go.Timeout != "30s" {
+		t.Fatalf("testing defaults = %+v", loaded.Testing.Go)
+	}
+	afterRead, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterRead) != string(before) {
+		t.Fatal("reading a legacy workspace rewrote workspace.json")
+	}
+	if _, err := manager.SetLanguageServerConfig(workspace.ID, loaded.LanguageServers); err != nil {
+		t.Fatal(err)
+	}
+	afterUnrelatedSave, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(afterUnrelatedSave), `"testing"`) {
+		t.Fatalf("unrelated save persisted default testing settings: %s", afterUnrelatedSave)
+	}
+}
+
 func TestNormalizeSandboxConfigBoundaries(t *testing.T) {
 	defaults, err := NormalizeSandboxConfig(SandboxConfig{})
 	if err != nil {

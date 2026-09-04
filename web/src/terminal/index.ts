@@ -56,6 +56,7 @@ const maximizedWorkspaces = new Set<string>();
 const heights = new Map<string, number>();
 const savedMenus = new Set<string>();
 const subscribed = new Set<string>();
+const requestedSubscriptions = new Set<string>();
 const workbenchPanels = new Map<string, Map<string, WorkbenchPanel>>();
 const activePanels = new Map<string, string>();
 const debugPanelUnregister = new Map<string, () => void>();
@@ -165,7 +166,7 @@ class TerminalController {
 
   applyEvent(event: TerminalEvent): void {
     if (event.event === "started" && event.sessionId !== this.sessionId) {
-      if (!this.fixedSession && event.kind !== "debug" && !this.startPromise) void this.startFromCurrentSession();
+      if (!this.fixedSession && (!event.kind || event.kind === "default") && !this.startPromise) void this.startFromCurrentSession();
       return;
     }
     if (!this.sessionId || event.sessionId !== this.sessionId) return;
@@ -519,6 +520,7 @@ function debugTerminalController(workspaceId: string, sessionId: string, name: s
 }
 
 function subscribeWorkspace(workspaceId: string): Promise<void> {
+  requestedSubscriptions.add(workspaceId);
   if (subscribed.has(workspaceId)) return Promise.resolve();
   let wait = subscriptionWaits.get(workspaceId);
   if (!wait) {
@@ -536,7 +538,7 @@ onSocketState((state) => {
     subscribed.clear();
     return;
   }
-  for (const workspaceId of new Set([...controllers.values()].map((controller) => controller.workspaceId))) {
+  for (const workspaceId of requestedSubscriptions) {
     sendSocket({ type: "terminal_subscribe", workspaceId });
   }
 });
@@ -554,6 +556,7 @@ onSocket("terminal_subscribed", (message: object) => {
 });
 onSocket("terminal_event", (message: object) => {
   const event = message as TerminalEvent;
+  if (event.kind === "test") return;
   if (event.kind === "debug" || controllers.has(debugTerminalKey(event.workspaceId, event.sessionId))) {
     const controller = debugTerminalController(event.workspaceId, event.sessionId, event.name || "Debug Terminal");
     controller.applyEvent(event);
@@ -562,6 +565,10 @@ onSocket("terminal_event", (message: object) => {
   }
   controllers.get(event.workspaceId)?.applyEvent(event);
 });
+
+export function subscribeTerminalWorkspace(workspaceId: string): Promise<void> {
+  return subscribeWorkspace(workspaceId);
+}
 
 function restoreDebugTerminals(workspaceId: string): Promise<void> {
   const existing = terminalRestorePromises.get(workspaceId);

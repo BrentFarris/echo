@@ -183,6 +183,14 @@ export class DebugView {
 
   openSettings(): void { this.showSettings(); }
 
+  acceptExternalSnapshot(snapshot: DebugSnapshot): void {
+    this.applySnapshot(snapshot);
+    const newest = [...this.snapshot.sessions].sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt)).at(-1);
+    if (newest) this.selectedSessionId = newest.id;
+    this.options.showSidebar();
+    this.render();
+  }
+
   async launch(noDebug: boolean): Promise<void> {
     if (!this.selectedLaunchId) {
       this.showSettings();

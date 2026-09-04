@@ -54,6 +54,7 @@ import {
 import { attachVideoVolumeControl } from "../mediaVolume";
 import { DebugView } from "../debug/debugView";
 import type { DebugSource } from "../debug/types";
+import { registerGoTestCodeLens } from "./goTestCodeLens";
 
 type Workspace = { id: string; name: string; mainPath: string; folders: string[]; iconExt?: string };
 
@@ -163,6 +164,7 @@ class CodeView {
   private gitView: GitView | null = null;
   private searchView: SearchView | null = null;
   private debugView: DebugView | null = null;
+  private goTestCodeLens: { dispose(): void } | null = null;
   private activeSidebar: CodeSidebar = "explorer";
   private splitGitDiff = true;
   private leadingWhitespaceIndicators = true;
@@ -280,6 +282,7 @@ class CodeView {
       this.initializeGitView();
       this.initializeSearchView();
       this.initializeDebugView();
+      this.initializeGoTestCodeLens();
       await this.restoreWorkspace();
       if (this.abort.signal.aborted) return;
       if (this.roots.length) {
@@ -699,6 +702,7 @@ class CodeView {
       lineNumbers: "on",
       minimap: { enabled: true, maxColumn: 120, renderCharacters: true, showSlider: "mouseover" },
       folding: true,
+      codeLens: true,
       foldingHighlight: true,
       glyphMargin: true,
       renderLineHighlight: "line",
@@ -2054,6 +2058,29 @@ class CodeView {
 		if (choice !== "save" || !(await this.saveTab(active))) return false;
 	}
     return true;
+  }
+
+  private async saveAllForGoTest(): Promise<boolean> {
+    for (const tab of this.tabs) {
+      if ((!tab.dirty && !tab.conflict) || tab.readOnly) continue;
+      if (!(await this.saveTab(tab))) {
+        toast(`The test action was not started because ${tab.title} could not be saved.`, { sticky: true });
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private initializeGoTestCodeLens(): void {
+    if (!this.workspace) return;
+    this.goTestCodeLens = registerGoTestCodeLens({
+      workspaceId: this.workspace.id,
+      refForModel: (model) => this.refForFileURI(model.uri.toString()),
+      saveAll: () => this.saveAllForGoTest(),
+      acceptDebugSnapshot: (snapshot) => this.debugView?.acceptExternalSnapshot(snapshot),
+      openDebugSettings: () => { this.setSidebar("debug"); this.debugView?.openSettings(); },
+      message: (value, sticky) => toast(value, { sticky }),
+    });
   }
 
   private async openDebugSource(source: DebugSource, line: number, column: number): Promise<void> {
@@ -4241,6 +4268,8 @@ class CodeView {
     this.codeChatSurface = null;
 	this.debugView?.dispose();
 	this.debugView = null;
+    this.goTestCodeLens?.dispose();
+    this.goTestCodeLens = null;
     this.abort.abort();
     window.clearTimeout(this.persistTimer);
     window.clearTimeout(this.treeDropExpandTimer);

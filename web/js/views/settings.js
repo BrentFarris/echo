@@ -74,6 +74,7 @@ const sections = [
   { id: "messaging", label: "Messaging", icon: icons.mic },
   { id: "git", label: "Git", icon: icons.git },
   { id: "lsp", label: "Language Servers", icon: icons.code },
+  { id: "testing", label: "Testing", icon: icons.execute },
   { id: "theme", label: "Theme", icon: icons.dashboard },
   { id: "workspaces", label: "Workspaces", icon: icons.code },
   { id: "security", label: "Security", icon: icons.settings },
@@ -184,6 +185,13 @@ const state = {
     editingId: null,
     draft: null,
     overridesText: "{}",
+    status: "",
+    busy: false,
+  },
+  testing: {
+    config: { codeLens: true, timeout: "30s", flags: [], tags: "", environment: {} },
+    flagsText: "[]",
+    environmentText: "{}",
     status: "",
     busy: false,
   },
@@ -972,6 +980,26 @@ function renderLanguageServers() {
   `;
 }
 
+function renderTesting() {
+  const workspaceName = state.modeWorkspaceName ? ` for <strong>${esc(state.modeWorkspaceName)}</strong>` : "";
+  return `<section class="settings-section">
+    <div class="settings-section-heading"><div><h2 class="settings-section-title">Testing</h2><p class="settings-card-help">Configure CodeLens test actions${workspaceName}.</p></div></div>
+    ${state.testing.status ? `<p class="settings-status ${state.testing.status.startsWith("Error:") ? "is-error" : ""}">${esc(state.testing.status)}</p>` : ""}
+    <div class="settings-card">
+      <h3 class="settings-card-title">Go tests</h3>
+      <p class="settings-card-help">These settings apply to normal runs and transient Delve debug launches.</p>
+      <div class="settings-grid">
+        <label class="toggle-row field-wide"><input type="checkbox" data-go-testing-field="codeLens" ${state.testing.config.codeLens !== false ? "checked" : ""}><span><strong>Show test CodeLens</strong><small>Show package, file, function, benchmark, fuzz, and static subtest actions in <code>*_test.go</code> files.</small></span></label>
+        <label class="field"><span>Test timeout</span><input type="text" value="${esc(state.testing.config.timeout || "30s")}" data-go-testing-field="timeout" placeholder="30s"><span class="field-help">A non-negative Go duration; <code>0s</code> disables the timeout.</span></label>
+        <label class="field"><span>Build tags</span><input type="text" value="${esc(state.testing.config.tags || "")}" data-go-testing-field="tags" placeholder="integration,linux"></label>
+        <label class="field field-wide"><span>Test flags (JSON array)</span><textarea rows="6" spellcheck="false" data-go-testing-text="flags">${esc(state.testing.flagsText)}</textarea><span class="field-help">Arguments are passed directly without shell expansion. Use <code>-args</code> before test-binary arguments.</span></label>
+        <label class="field field-wide"><span>Environment (JSON object)</span><textarea rows="6" spellcheck="false" data-go-testing-text="environment">${esc(state.testing.environmentText)}</textarea><span class="field-help">Values are stored as ordinary plaintext workspace configuration, not secrets.</span></label>
+      </div>
+      <button class="primary-button" type="button" data-go-testing-action="save" ${state.modeWorkspaceId && !state.testing.busy ? "" : "disabled"}>Save Workspace Testing Settings</button>
+    </div>
+  </section>`;
+}
+
 function renderLSPProfileEditor(draft) {
   return `<div class="settings-card lsp-profile-editor">
     <div class="settings-section-heading"><div><h3 class="settings-card-title">${state.lsp.editingId ? "Edit profile" : "New profile"}</h3><p class="settings-card-help">The command is executed directly in the workspace folder without shell expansion.</p></div><button class="icon-button" type="button" title="Close" data-lsp-action="cancel-profile">${icons.x}</button></div>
@@ -999,6 +1027,7 @@ const renderers = {
   messaging: renderMessaging,
   git: renderGit,
   lsp: renderLanguageServers,
+  testing: renderTesting,
   theme: renderTheme,
   workspaces: renderWorkspaces,
   security: renderSecurity,
@@ -1138,6 +1167,7 @@ function bindEvents(root) {
       if (state.activeSection === "security") loadSecurity();
       if (state.activeSection === "plugins") loadPlugins();
       if (state.activeSection === "lsp") loadLanguageServers();
+      if (state.activeSection === "testing") loadGoTesting();
     });
   });
 
@@ -1181,6 +1211,7 @@ function bindEvents(root) {
 
   bindPluginEvents(root);
   bindLSPEvents(root);
+  bindGoTestingEvents(root);
 
   root.querySelectorAll("[data-action='set-theme-palette']").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1874,6 +1905,61 @@ function bindLSPEvents(root) {
   }));
 }
 
+async function loadGoTesting(preserveStatus = false) {
+  const previousStatus = state.testing.status;
+  try {
+    const data = state.modeWorkspaceId
+      ? await get(`/api/workspaces/${encodeURIComponent(state.modeWorkspaceId)}/testing/go/config`)
+      : { config: { codeLens: true, timeout: "30s", flags: [], tags: "", environment: {} } };
+    state.testing.config = {
+      codeLens: data.config?.codeLens !== false,
+      timeout: data.config?.timeout || "30s",
+      flags: data.config?.flags || [],
+      tags: data.config?.tags || "",
+      environment: data.config?.environment || {},
+    };
+    state.testing.flagsText = JSON.stringify(state.testing.config.flags, null, 2);
+    state.testing.environmentText = JSON.stringify(state.testing.config.environment, null, 2);
+    state.testing.status = preserveStatus ? previousStatus : "";
+  } catch (err) {
+    state.testing.status = `Error: ${err.message}`;
+  }
+  if (mountedRoot) render();
+}
+
+function bindGoTestingEvents(root) {
+  root.querySelectorAll("[data-go-testing-field]").forEach((field) => {
+    field.addEventListener("input", () => {
+      const key = field.dataset.goTestingField;
+      state.testing.config[key] = field.type === "checkbox" ? field.checked : field.value;
+    });
+  });
+  root.querySelectorAll("[data-go-testing-text]").forEach((field) => {
+    field.addEventListener("input", () => { state.testing[`${field.dataset.goTestingText}Text`] = field.value; });
+  });
+  root.querySelector("[data-go-testing-action='save']")?.addEventListener("click", async () => {
+    if (!state.modeWorkspaceId) return;
+    state.testing.busy = true;
+    try {
+      const flags = JSON.parse(state.testing.flagsText.trim() || "[]");
+      if (!Array.isArray(flags) || flags.some((value) => typeof value !== "string")) throw new Error("Test flags must be a JSON array of strings.");
+      const environment = parseJSONObject(state.testing.environmentText, "Environment");
+      if (Object.values(environment).some((value) => typeof value !== "string")) throw new Error("Environment values must be strings.");
+      const config = { ...state.testing.config, flags, environment };
+      const data = await put(`/api/workspaces/${encodeURIComponent(state.modeWorkspaceId)}/testing/go/config`, { config });
+      state.testing.config = data.config;
+      state.testing.flagsText = JSON.stringify(data.config.flags || [], null, 2);
+      state.testing.environmentText = JSON.stringify(data.config.environment || {}, null, 2);
+      state.testing.status = "Workspace Go testing settings saved.";
+    } catch (err) {
+      state.testing.status = `Error: ${err.message}`;
+    } finally {
+      state.testing.busy = false;
+      render();
+    }
+  });
+}
+
 export function mount(root) {
   mountedRoot = root;
   const requestedSection = new URLSearchParams(location.hash.split("?")[1] || "").get("section");
@@ -2048,6 +2134,7 @@ async function loadAgentModes() {
       state.modes = [];
       state.modeTools = [];
       await loadLanguageServers();
+      await loadGoTesting();
       return;
     }
     const data = await get("/api/agent-modes", { query: { workspaceId: state.modeWorkspaceId } });
@@ -2055,6 +2142,7 @@ async function loadAgentModes() {
     state.modeTools = data.tools || [];
     state.modeStatus = "";
     await loadLanguageServers();
+    await loadGoTesting();
     render();
   } catch (err) {
     state.modeStatus = `Error: ${err.message}`;

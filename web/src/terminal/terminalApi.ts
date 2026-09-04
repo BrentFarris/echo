@@ -5,13 +5,14 @@ export type TerminalSnapshot = {
   workspaceId: string;
   id: string;
   name?: string;
-  kind?: "default" | "debug";
+  kind?: "default" | "debug" | "test";
   ownerSessionId?: string;
   shell: string;
   workingDirectory: string;
   status: string;
   exitCode?: number;
   message?: string;
+  taskStatus?: "running" | "passed" | "failed" | "stopped";
   lastSequence: number;
   reset?: boolean;
   output: TerminalOutputChunk[];
@@ -21,13 +22,14 @@ export type TerminalEvent = {
   workspaceId: string;
   sessionId: string;
   name?: string;
-  kind?: "default" | "debug";
+  kind?: "default" | "debug" | "test";
   ownerSessionId?: string;
   event: "started" | "data" | "exited";
   sequence?: number;
   data?: string;
   exitCode?: number;
   message?: string;
+  taskStatus?: "running" | "passed" | "failed" | "stopped";
 };
 export type SavedCommand = { id: string; name: string; command: string; order: number };
 

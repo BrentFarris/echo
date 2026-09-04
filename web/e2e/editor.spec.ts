@@ -1656,6 +1656,27 @@ test("debugs through a deterministic DAP adapter and reconnects the workbench", 
   };
   const fakeDAPPath = resolve(directory, "fake-dap.mjs");
   writeFileSync(join(state.workspace, "main.go"), "package main\n\nfunc main() {\n\tTarget()\n}\n", "utf8");
+  writeFileSync(join(state.workspace, "sample_test.go"), `package main
+
+import (
+	"testing"
+	"time"
+)
+
+func TestPass(t *testing.T) {}
+
+func TestSubtests(t *testing.T) {
+	t.Run("nested name", func(child *testing.T) {})
+}
+
+func TestFail(t *testing.T) {
+	t.Fatal("intentional failure")
+}
+
+func TestSlow(t *testing.T) {
+	time.Sleep(5 * time.Second)
+}
+`, "utf8");
 
   await page.goto("/");
   if (await page.getByRole("heading", { name: "Secure this Echo server" }).isVisible()) {
@@ -1689,7 +1710,7 @@ test("debugs through a deterministic DAP adapter and reconnects the workbench", 
     const profiles = await request("/api/debug/adapter-profiles");
     if (!(profiles.profiles || []).some((profile: { id: string }) => profile.id === "fake-e2e-dap")) {
       await request("/api/debug/adapter-profiles", "POST", { profile: {
-        id: "fake-e2e-dap", name: "Fake E2E DAP", adapterId: "echo-fake",
+        id: "fake-e2e-dap", name: "Fake E2E DAP", adapterId: "go",
         command, args: [script], environment: {}, selectors: [{ languageId: "go", extensions: [".go"] }],
         transport: { kind: "stdio", startupTimeoutMs: 15000 },
       } });
@@ -1746,4 +1767,37 @@ test("debugs through a deterministic DAP adapter and reconnects the workbench", 
 
   await page.locator(".debug-floating-toolbar [data-debug-action=stop]").click();
   await expect(page.locator(".debug-floating-toolbar")).toHaveCount(0);
+
+  // Built-in Go CodeLens runs without gopls and uses the same bottom workbench
+  // and transient DAP session exercised above.
+  await page.getByRole("button", { name: "Explorer" }).click();
+  await expect(page.locator(".code-tree-label", { hasText: "sample_test.go" })).toBeVisible();
+  await page.locator(".code-tree-label", { hasText: "sample_test.go" }).click();
+  await expect(page.getByText("run package tests", { exact: true })).toBeVisible();
+  await expect(page.getByText("run file tests", { exact: true })).toBeVisible();
+  const runLenses = page.getByText("run test", { exact: true });
+  const debugLenses = page.getByText("debug test", { exact: true });
+  await expect(runLenses).toHaveCount(5);
+  await expect(debugLenses).toHaveCount(5);
+
+  await runLenses.first().click();
+  await expect(page.getByRole("tab", { name: "Test Output" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".go-test-status")).toContainText("Passed", { timeout: 30_000 });
+  await expect(page.locator("[data-test-output-text]")).toContainText("go test");
+
+  await runLenses.nth(3).click();
+  await expect(page.locator(".go-test-status")).toContainText("Failed", { timeout: 30_000 });
+  await expect(page.locator("[data-test-output-text]")).toContainText("intentional failure");
+
+  await page.getByRole("button", { name: "Close terminal" }).click();
+  await runLenses.last().click();
+  await expect(page.locator(".go-test-status")).toContainText("Running");
+  await runLenses.first().click();
+  await expect(page.locator(".go-test-status")).toContainText("Passed", { timeout: 30_000 });
+  await expect(page.locator("[data-test-output-text]")).toContainText("^TestPass$");
+
+  await debugLenses.first().click();
+  await expect(page.locator(".debug-session-row .debug-status.is-stopped")).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator(".debug-session-row", { hasText: "Debug Test: TestPass" })).toBeVisible();
+  await page.locator(".debug-floating-toolbar [data-debug-action=stop]").click();
 });

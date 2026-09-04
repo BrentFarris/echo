@@ -20,6 +20,7 @@ import (
 
 	"github.com/brent/echo/internal/appdata"
 	"github.com/brent/echo/internal/debugconfig"
+	"github.com/brent/echo/internal/gotestconfig"
 	"github.com/brent/echo/internal/lspconfig"
 )
 
@@ -30,15 +31,17 @@ const EchoDirName = ".echo"
 // Workspace is the resolved shape returned to runtime consumers and the
 // frontend. Its paths are always absolute even when workspace.json is portable.
 type Workspace struct {
-	ID                          string                      `json:"id"`
-	Name                        string                      `json:"name"`
-	MainPath                    string                      `json:"mainPath"`
-	IconExt                     string                      `json:"iconExt,omitempty"`
-	Folders                     []string                    `json:"folders,omitempty"`
-	SearchParentGitRepositories bool                        `json:"searchParentGitRepositories,omitempty"`
-	LanguageServers             lspconfig.WorkspaceConfig   `json:"languageServers,omitempty"`
-	Debug                       debugconfig.WorkspaceConfig `json:"debug,omitempty"`
-	Sandbox                     SandboxConfig               `json:"sandbox"`
+	ID                          string                       `json:"id"`
+	Name                        string                       `json:"name"`
+	MainPath                    string                       `json:"mainPath"`
+	IconExt                     string                       `json:"iconExt,omitempty"`
+	Folders                     []string                     `json:"folders,omitempty"`
+	SearchParentGitRepositories bool                         `json:"searchParentGitRepositories,omitempty"`
+	LanguageServers             lspconfig.WorkspaceConfig    `json:"languageServers,omitempty"`
+	Debug                       debugconfig.WorkspaceConfig  `json:"debug,omitempty"`
+	Testing                     gotestconfig.WorkspaceConfig `json:"testing,omitempty"`
+	Sandbox                     SandboxConfig                `json:"sandbox"`
+	testingConfigured           bool
 	sandboxConfigured           bool
 }
 
@@ -146,13 +149,14 @@ type Icon struct {
 
 // workspaceFile is the on-disk shape of .echo/workspace.json.
 type workspaceFile struct {
-	Name                        string                      `json:"name"`
-	MainPath                    string                      `json:"mainPath"`
-	Folders                     []string                    `json:"folders"`
-	SearchParentGitRepositories bool                        `json:"searchParentGitRepositories,omitempty"`
-	LanguageServers             lspconfig.WorkspaceConfig   `json:"languageServers,omitempty"`
-	Debug                       debugconfig.WorkspaceConfig `json:"debug,omitempty"`
-	Sandbox                     *SandboxConfig              `json:"sandbox,omitempty"`
+	Name                        string                        `json:"name"`
+	MainPath                    string                        `json:"mainPath"`
+	Folders                     []string                      `json:"folders"`
+	SearchParentGitRepositories bool                          `json:"searchParentGitRepositories,omitempty"`
+	LanguageServers             lspconfig.WorkspaceConfig     `json:"languageServers,omitempty"`
+	Debug                       debugconfig.WorkspaceConfig   `json:"debug,omitempty"`
+	Testing                     *gotestconfig.WorkspaceConfig `json:"testing,omitempty"`
+	Sandbox                     *SandboxConfig                `json:"sandbox,omitempty"`
 }
 
 const (
@@ -645,6 +649,27 @@ func (m *Manager) SetDebugConfig(id string, config debugconfig.WorkspaceConfig) 
 	return workspace, nil
 }
 
+// SetTestingConfig validates and persists portable workspace testing settings.
+func (m *Manager) SetTestingConfig(id string, config gotestconfig.WorkspaceConfig) (Workspace, error) {
+	workspace, ok, err := m.Get(id)
+	if err != nil {
+		return Workspace{}, err
+	}
+	if !ok {
+		return Workspace{}, workspaceNotFound(id)
+	}
+	config = config.Normalized()
+	if err := config.Validate(); err != nil {
+		return Workspace{}, err
+	}
+	workspace.Testing = config
+	workspace.testingConfigured = true
+	if err := writeWorkspaceFile(filepath.Join(workspace.MainPath, EchoDirName), workspaceFileFromWorkspace(workspace)); err != nil {
+		return Workspace{}, err
+	}
+	return workspace, nil
+}
+
 // SetSandboxConfig validates and persists the portable sandbox configuration.
 // Host-specific runtime state and credentials deliberately live elsewhere.
 func (m *Manager) SetSandboxConfig(id string, config SandboxConfig) (Workspace, error) {
@@ -763,14 +788,24 @@ func workspaceFromFile(id, iconExt, echoDir, expectedMain string, wf workspaceFi
 	if err := debugConfig.ValidateStructure(); err != nil {
 		return Workspace{}, &ConfigError{Code: ConfigMalformed, Message: "workspace debugger configuration is invalid", Cause: err}
 	}
-	return Workspace{
+	testingConfig := gotestconfig.WorkspaceConfig{}.Normalized()
+	if wf.Testing != nil {
+		testingConfig = wf.Testing.Normalized()
+		if err := testingConfig.Validate(); err != nil {
+			return Workspace{}, &ConfigError{Code: ConfigMalformed, Message: "workspace testing configuration is invalid", Cause: err}
+		}
+	}
+	workspace := Workspace{
 		ID: id, Name: name, MainPath: expectedMain, IconExt: iconExt, Folders: folders,
 		SearchParentGitRepositories: wf.SearchParentGitRepositories,
 		LanguageServers:             wf.LanguageServers.Normalized(),
 		Debug:                       debugConfig,
+		Testing:                     testingConfig,
+		testingConfigured:           wf.Testing != nil,
 		Sandbox:                     sandboxConfig,
 		sandboxConfigured:           sandboxConfigured,
-	}, nil
+	}
+	return workspace, nil
 }
 
 func readWorkspaceFile(echoDir string) (workspaceFile, bool, error) {
@@ -833,6 +868,10 @@ func workspaceFileFromWorkspace(ws Workspace) workspaceFile {
 		SearchParentGitRepositories: ws.SearchParentGitRepositories,
 		LanguageServers:             ws.LanguageServers.Normalized(),
 		Debug:                       ws.Debug.Normalized(),
+	}
+	if ws.testingConfigured {
+		config := ws.Testing.Normalized()
+		wf.Testing = &config
 	}
 	if ws.sandboxConfigured {
 		config := ws.Sandbox

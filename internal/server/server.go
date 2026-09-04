@@ -22,6 +22,7 @@ import (
 	"github.com/brent/echo/internal/debugger"
 	"github.com/brent/echo/internal/echoupdate"
 	"github.com/brent/echo/internal/gitservice"
+	"github.com/brent/echo/internal/gotest"
 	"github.com/brent/echo/internal/llm"
 	lspruntime "github.com/brent/echo/internal/lsp"
 	"github.com/brent/echo/internal/lspconfig"
@@ -58,6 +59,7 @@ type Server struct {
 	lsp              *lspruntime.Service
 	lspProfiles      *lspconfig.Store
 	debugger         *debugger.Service
+	goTests          *gotest.Service
 	debugProfiles    *debugconfig.ProfileStore
 	debugState       *debugconfig.StateStore
 	sandbox          *sandbox.Manager
@@ -191,6 +193,7 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 	s.debugger.SetRunInTerminal(s.terminal.StartDebugDAP)
 	s.debugger.SetStopDebugTerminals(s.terminal.StopOwner)
 	s.debugger.SetNotifier(s.broadcastDebugEvent)
+	s.goTests = gotest.New(s.workspaces, s.fs, s.terminal, s.debugger)
 	s.git = gitservice.New(s.workspaces, s.fs)
 	s.git.SetSandbox(s.sandbox)
 	s.git.SetNotifier(func(event gitservice.Event) {
@@ -496,6 +499,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("PUT /api/workspaces/{id}/lsp/config", s.handlePutWorkspaceLSPConfig)
 	mux.HandleFunc("POST /api/workspaces/{id}/lsp/{profileId}/restart", s.handleRestartLSP)
 	mux.HandleFunc("GET /api/workspaces/{id}/lsp/ws", s.handleLSPWebSocket)
+	mux.HandleFunc("GET /api/workspaces/{id}/testing/go/config", s.handleGetGoTestingConfig)
+	mux.HandleFunc("PUT /api/workspaces/{id}/testing/go/config", s.handlePutGoTestingConfig)
+	mux.HandleFunc("POST /api/workspaces/{id}/testing/go/lenses", s.handleGoTestingLenses)
+	mux.HandleFunc("POST /api/workspaces/{id}/testing/go/runs", s.handleStartGoTestingRun)
+	mux.HandleFunc("POST /api/workspaces/{id}/testing/go/runs/{sessionId}/rerun", s.handleRerunGoTestingRun)
+	mux.HandleFunc("POST /api/workspaces/{id}/testing/go/debug-sessions", s.handleStartGoTestingDebugSession)
 	mux.HandleFunc("GET /api/workspaces/{id}/debug/config", s.handleGetWorkspaceDebugConfig)
 	mux.HandleFunc("PUT /api/workspaces/{id}/debug/config", s.handlePutWorkspaceDebugConfig)
 	mux.HandleFunc("GET /api/workspaces/{id}/debug/state", s.handleGetWorkspaceDebugState)

@@ -42,6 +42,12 @@ type fakeProcess struct {
 	waitOnce sync.Once
 }
 
+type startErrorBackend struct{ *fakeBackend }
+
+func (b *startErrorBackend) Start(context.Context, CommandSpec) (Process, error) {
+	return nil, errors.New("process startup failed")
+}
+
 func newFakeBackend() *fakeBackend {
 	backend := &fakeBackend{readCh: make(chan []byte, 128), closed: make(chan struct{})}
 	backend.process = &fakeProcess{backend: backend, waitCh: make(chan fakeWaitResult, 1)}
@@ -196,6 +202,87 @@ func TestSessionLifecycleReplayAndExit(t *testing.T) {
 	}
 	if err := service.Write(workspace.ID, started.ID, "x"); !errors.Is(err, ErrSessionNotRunning) {
 		t.Fatalf("write after exit = %v", err)
+	}
+}
+
+func TestTaskLifecycleStatusEnvironmentAndReplacement(t *testing.T) {
+	service, workspace, _ := newTestService(t)
+	first, second := newFakeBackend(), newFakeBackend()
+	backends := []Backend{first, second}
+	service.SetBackendFactory(func() (Backend, error) {
+		next := backends[0]
+		backends = backends[1:]
+		return next, nil
+	})
+	t.Cleanup(func() { shutdownTestService(t, service) })
+
+	started, err := service.StartTask(workspace.ID, TaskRequest{
+		Name: "Test Output", Command: "go", Args: []string{"test", "."}, WorkingDirectory: workspace.MainPath,
+		Environment: map[string]string{"ECHO_TEST": "yes"}, DisplayCommand: "go test .",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Kind != "test" || started.TaskStatus != "running" || len(started.Output) != 1 {
+		t.Fatalf("task snapshot = %#v", started)
+	}
+	foundEnvironment := false
+	for _, item := range first.spec.Env {
+		foundEnvironment = foundEnvironment || item == "ECHO_TEST=yes"
+	}
+	if !foundEnvironment {
+		t.Fatalf("task environment = %#v", first.spec.Env)
+	}
+
+	replaced, err := service.StartTask(workspace.ID, TaskRequest{
+		Name: "Test Output", Command: "go", Args: []string{"test", "-run", "TestOne", "."}, WorkingDirectory: workspace.MainPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced.ID == started.ID {
+		t.Fatal("replacement reused task session id")
+	}
+	if _, err := service.Sync(workspace.ID, started.ID, 0); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("replaced task is still retained: %v", err)
+	}
+	second.process.complete(0, nil)
+	exited := waitStatus(t, service, workspace.ID, replaced.ID, "exited")
+	if exited.TaskStatus != "passed" || exited.ExitCode == nil || *exited.ExitCode != 0 {
+		t.Fatalf("completed task = %#v", exited)
+	}
+}
+
+func TestTaskStartupFailureKeepsStoppedOutputForRecovery(t *testing.T) {
+	service, workspace, _ := newTestService(t)
+	first := newFakeBackend()
+	failed := &startErrorBackend{fakeBackend: newFakeBackend()}
+	backends := []Backend{first, failed}
+	service.SetBackendFactory(func() (Backend, error) {
+		next := backends[0]
+		backends = backends[1:]
+		return next, nil
+	})
+	t.Cleanup(func() { shutdownTestService(t, service) })
+
+	started, err := service.StartTask(workspace.ID, TaskRequest{
+		Name: "Test Output", Command: "go", Args: []string{"test", "."}, WorkingDirectory: workspace.MainPath,
+		DisplayCommand: "go test .",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.StartTask(workspace.ID, TaskRequest{
+		Name: "Test Output", Command: "go", Args: []string{"test", "./broken"}, WorkingDirectory: workspace.MainPath,
+	}); err == nil {
+		t.Fatal("task startup failure was not returned")
+	}
+	recovered, err := service.Sync(workspace.ID, started.ID, 0)
+	if err != nil {
+		t.Fatalf("stopped task output was discarded: %v", err)
+	}
+	if recovered.TaskStatus != "stopped" || len(recovered.Output) == 0 {
+		t.Fatalf("recovered task = %#v", recovered)
 	}
 }
 
