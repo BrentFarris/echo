@@ -47,6 +47,12 @@ func (l *loginRateLimiter) Allow(address string) bool {
 	return true
 }
 
+func (l *loginRateLimiter) Reset(address string) {
+	l.mu.Lock()
+	delete(l.attempts, address)
+	l.mu.Unlock()
+}
+
 func (s *Server) requireAuthentication(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.authDisabled || isPublicRequest(r) {
@@ -224,6 +230,7 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, err.Error())
 		return
 	}
+	s.loginLimiter.Reset(ip)
 	setSessionCookie(w, r, token)
 	writeData(w, http.StatusOK, map[string]any{"session": session})
 }

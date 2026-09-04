@@ -31,12 +31,14 @@ export function codeSidebarFromHash(hash: string): CodeSidebar {
   const queryIndex = hash.indexOf("?");
   if (queryIndex < 0) return "explorer";
   const sidebar = new URLSearchParams(hash.slice(queryIndex + 1)).get("sidebar");
-  return sidebar === "git" || sidebar === "search" || sidebar === "debug" ? sidebar : "explorer";
+  if (sidebar === "source-control" || sidebar === "git") return "git";
+  return sidebar === "search" || sidebar === "debug" ? sidebar : "explorer";
 }
 
 /** Builds the canonical hash for an Echo Code sidebar. */
 export function codeRouteHash(sidebar: CodeSidebar): string {
-  return `#${CODE_ROUTE}${sidebar === "explorer" ? "" : `?sidebar=${sidebar}`}`;
+  const routeName = sidebar === "git" ? "source-control" : sidebar;
+  return `#${CODE_ROUTE}${routeName === "explorer" ? "" : `?sidebar=${routeName}`}`;
 }
 
 /** Builds a transient Echo Code route that opens a specific workspace file. */

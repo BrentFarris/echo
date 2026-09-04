@@ -40,6 +40,7 @@ var researchWorkerToolNames = map[string]bool{
 	"filesystem_search_workspace": true,
 	"filesystem_stat":             true,
 	"git_inspect":                 true,
+	SourceControlInspectToolName:  true,
 	"web_fetch":                   true,
 	"web_search":                  true,
 	"workspace_skill_read":        true,

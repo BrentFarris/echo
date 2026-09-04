@@ -139,13 +139,19 @@ export type PersistedTab = {
   diff?: {
     repository: {
       id: string;
+      providerId?: string;
+      providerLabel?: string;
       label: string;
       rootRef?: FileRef;
       parent: boolean;
       scopes: Array<{ rootId: string; rootLabel: string; repoPrefix: string }>;
       revision: number;
+      available?: boolean;
+      diagnostic?: string;
+      capabilities?: string[];
     };
     scope: "staged" | "unstaged" | "commit" | "stash";
+    groupId?: string;
     reviewRef?: string;
     fileRef?: FileRef;
     oldPath?: string;
@@ -155,7 +161,7 @@ export type PersistedTab = {
 };
 
 export type PersistedWorkspaceSession = {
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
   activeTabId: string | null;
   tabs: PersistedTab[];
   expanded: string[];

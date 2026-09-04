@@ -111,11 +111,14 @@ type Settings struct {
 	LimitKanbanConcurrency             bool              `json:"limitKanbanConcurrency,omitempty"`
 	ResearchAgentConcurrency           int               `json:"researchAgentConcurrency"`
 	MaxChatRounds                      int               `json:"maxChatRounds,omitempty"`
-	DisableGitSplitDiffView            bool              `json:"disableGitSplitDiffView,omitempty"`
-	ComfyuiURL                         string            `json:"comfyuiUrl"`
-	ComfyuiDefaultCheckpoint           string            `json:"comfyuiDefaultCheckpoint"`
-	ComfyuiTxt2imgWorkflow             string            `json:"comfyuiTxt2imgWorkflow"`
-	ComfyuiImg2imgWorkflow             string            `json:"comfyuiImg2imgWorkflow"`
+	DisableSourceControlSplitDiffView  *bool             `json:"disableSourceControlSplitDiffView,omitempty"`
+	// DisableGitSplitDiffView is read for one compatibility release. New clients
+	// write DisableSourceControlSplitDiffView exclusively.
+	DisableGitSplitDiffView  bool   `json:"disableGitSplitDiffView,omitempty"`
+	ComfyuiURL               string `json:"comfyuiUrl"`
+	ComfyuiDefaultCheckpoint string `json:"comfyuiDefaultCheckpoint"`
+	ComfyuiTxt2imgWorkflow   string `json:"comfyuiTxt2imgWorkflow"`
+	ComfyuiImg2imgWorkflow   string `json:"comfyuiImg2imgWorkflow"`
 	// ComfyuiVideoWorkflow is a workspace-relative path to the default video
 	// generation workflow JSON (e.g., AnimateDiff, SVD) used by
 	// comfyui_generate_video when no explicit workflow is supplied.

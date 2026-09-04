@@ -63,6 +63,18 @@ func (b *fakeBackend) Read(buffer []byte) (int, error) {
 		return count, nil
 	}
 	b.mu.Unlock()
+	// Process completion closes the fake backend immediately. Drain output that
+	// was queued before that close deterministically instead of letting select
+	// randomly choose EOF and making the final-output ordering test flaky.
+	select {
+	case value := <-b.readCh:
+		b.mu.Lock()
+		count := copy(buffer, value)
+		b.pending = append(b.pending[:0], value[count:]...)
+		b.mu.Unlock()
+		return count, nil
+	default:
+	}
 	select {
 	case value := <-b.readCh:
 		b.mu.Lock()

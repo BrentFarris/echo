@@ -72,7 +72,7 @@ const sections = [
   { id: "plugins", label: "Plugins", icon: icons.dashboard },
   { id: "external", label: "External Connections", icon: icons.git },
   { id: "messaging", label: "Messaging", icon: icons.mic },
-  { id: "git", label: "Git", icon: icons.git },
+  { id: "source-control", label: "Source Control", icon: icons.git },
   { id: "lsp", label: "Language Servers", icon: icons.code },
   { id: "testing", label: "Testing", icon: icons.execute },
   { id: "theme", label: "Theme", icon: icons.dashboard },
@@ -133,7 +133,7 @@ const state = {
   rawSettings: {},
   settingsLoaded: false,
   researchAgentConcurrency: 4,
-  git: {
+  sourceControl: {
     leadingWhitespaceIndicators: true,
     splitDiffView: true,
   },
@@ -553,19 +553,19 @@ function renderMessaging() {
   `;
 }
 
-function renderGit() {
+function renderSourceControl() {
   const toggles = [
-    { key: "leadingWhitespaceIndicators", checked: state.git.leadingWhitespaceIndicators, label: "Leading whitespace indicators", help: "Show leading whitespace changes in Git diffs." },
-    { key: "splitDiffView", checked: state.git.splitDiffView, label: "Split Git diff view", help: "Use a side-by-side diff layout on wide windows." },
+    { key: "leadingWhitespaceIndicators", checked: state.sourceControl.leadingWhitespaceIndicators, label: "Leading whitespace indicators", help: "Show leading whitespace changes in Source Control diffs." },
+    { key: "splitDiffView", checked: state.sourceControl.splitDiffView, label: "Split diff view", help: "Use a side-by-side Source Control diff layout on wide windows." },
   ];
   return `
     <section class="settings-section">
-      <h2 class="settings-section-title">Git</h2>
+      <h2 class="settings-section-title">Source Control</h2>
       <div class="settings-card">
         ${toggles.map((t) => `
           <label class="settings-toggle" title="${esc(t.help)}">
             <span>${esc(t.label)}</span>
-            <input type="checkbox" data-git-setting="${t.key}" ${t.checked ? "checked" : ""} ${state.settingsLoaded ? "" : "disabled"} />
+            <input type="checkbox" data-source-control-setting="${t.key}" ${t.checked ? "checked" : ""} ${state.settingsLoaded ? "" : "disabled"} />
           </label>
         `).join("")}
       </div>
@@ -1026,7 +1026,7 @@ const renderers = {
   plugins: renderPlugins,
   external: renderExternal,
   messaging: renderMessaging,
-  git: renderGit,
+  "source-control": renderSourceControl,
   lsp: renderLanguageServers,
   testing: renderTesting,
   theme: renderTheme,
@@ -1330,9 +1330,9 @@ function bindEvents(root) {
     });
   });
 
-  root.querySelectorAll("[data-git-setting]").forEach((field) => {
+  root.querySelectorAll("[data-source-control-setting]").forEach((field) => {
     field.addEventListener("change", () => {
-      state.git[field.dataset.gitSetting] = field.checked;
+      state.sourceControl[field.dataset.sourceControlSetting] = field.checked;
       saveSettings();
     });
   });
@@ -1964,7 +1964,8 @@ function bindGoTestingEvents(root) {
 
 export function mount(root) {
   mountedRoot = root;
-  const requestedSection = new URLSearchParams(location.hash.split("?")[1] || "").get("section");
+  const requested = new URLSearchParams(location.hash.split("?")[1] || "").get("section");
+  const requestedSection = requested === "git" ? "source-control" : requested;
   if (sections.some((section) => section.id === requestedSection)) state.activeSection = requestedSection;
   applyEchoUpdateSnapshot(getEchoUpdateSnapshot());
   pluginCatalogListener = (event) => {
@@ -2085,9 +2086,9 @@ function applySettings(cfg) {
   };
   state.editorFontSize = clampEditorFontSize(Number(s.editorFontSize) || 13.5);
   state.researchAgentConcurrency = Math.max(0, Math.min(8, Number(s.researchAgentConcurrency ?? 4) || 0));
-  state.git = {
+  state.sourceControl = {
     leadingWhitespaceIndicators: s.hideLeadingWhitespaceIndicators !== true,
-    splitDiffView: s.disableGitSplitDiffView !== true,
+    splitDiffView: (s.disableSourceControlSplitDiffView ?? s.disableGitSplitDiffView) !== true,
   };
   state.messaging = {
     notificationSounds: s.disableNotificationSounds !== true,
@@ -2188,7 +2189,7 @@ async function saveAgentMode() {
 // buildSettings serializes the current view state into an llm.Settings payload
 // shaped like the Go Settings struct.
 function buildSettings() {
-  return {
+  const settings = {
     ...state.rawSettings,
     endpoints: state.endpoints.map((e) => ({ ...e })),
     endpointSelection: {
@@ -2202,8 +2203,8 @@ function buildSettings() {
     comfyuiTxt2imgWorkflow: state.external.comfyuiTxt2imgWorkflow,
     comfyuiImg2imgWorkflow: state.external.comfyuiImg2imgWorkflow,
     comfyuiVideoWorkflow: state.external.comfyuiVideoWorkflow,
-    hideLeadingWhitespaceIndicators: !state.git.leadingWhitespaceIndicators,
-    disableGitSplitDiffView: !state.git.splitDiffView,
+    hideLeadingWhitespaceIndicators: !state.sourceControl.leadingWhitespaceIndicators,
+    disableSourceControlSplitDiffView: !state.sourceControl.splitDiffView,
     disableNotificationSounds: !state.messaging.notificationSounds,
     disablePlanQuestionSounds: !state.messaging.planQuestionSounds,
     enablePlanQuestionNotifications: state.messaging.planQuestionNotifications,
@@ -2211,6 +2212,8 @@ function buildSettings() {
     editorFontSize: state.editorFontSize,
     researchAgentConcurrency: state.researchAgentConcurrency,
   };
+  delete settings.disableGitSplitDiffView;
+  return settings;
 }
 
 async function loadPlugins(renderAfter = true) {

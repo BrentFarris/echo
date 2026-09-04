@@ -825,6 +825,28 @@ func TestPortableWorkspacePathFallsBackAcrossWindowsVolumes(t *testing.T) {
 	}
 }
 
+func TestSourceControlParentSearchSettingPrefersNewKeyAndWritesOnlyIt(t *testing.T) {
+	var file workspaceFile
+	if err := json.Unmarshal([]byte(`{"name":"Project","mainPath":"../","searchParentRepositories":false,"searchParentGitRepositories":true}`), &file); err != nil {
+		t.Fatal(err)
+	}
+	if file.SearchParentRepositories || file.SearchParentGitRepositories {
+		t.Fatalf("new false setting did not override the legacy true value: %+v", file)
+	}
+
+	encoded, err := json.Marshal(workspaceFileFromWorkspace(Workspace{SearchParentGitRepositories: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	if !strings.Contains(text, `"searchParentRepositories":true`) {
+		t.Fatalf("provider-neutral setting was not written: %s", text)
+	}
+	if strings.Contains(text, "searchParentGitRepositories") {
+		t.Fatalf("legacy Git setting was written back: %s", text)
+	}
+}
+
 func writeRawWorkspaceFile(t *testing.T, echoDir string, wf workspaceFile) {
 	t.Helper()
 	data, err := json.MarshalIndent(wf, "", "  ")

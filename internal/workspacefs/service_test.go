@@ -209,6 +209,67 @@ func TestProtectedWorkspaceMetadataCannotBeMutated(t *testing.T) {
 	}
 }
 
+func TestProviderMetadataIsHiddenAndProtectedIncludingParentOperations(t *testing.T) {
+	service, workspaceID, rootPath, root := newTestService(t)
+	t.Cleanup(service.Close)
+	metadataDirectory := filepath.Join(rootPath, "storage")
+	if err := os.MkdirAll(metadataDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	metadataPath := filepath.Join(metadataDirectory, "project.fossil")
+	if err := os.WriteFile(metadataPath, []byte("repository database"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref := FileRef{RootID: root.ID, Path: "storage/project.fossil"}
+	service.SetSourceControlMetadata(workspaceID, "fossil", []FileRef{ref})
+
+	entries, err := service.List(workspaceID, FileRef{RootID: root.ID, Path: "storage"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("provider metadata was exposed by List: %#v", entries)
+	}
+	search := waitForSearch(t, service, workspaceID, "project.fossil", true)
+	if len(search.Items) != 0 {
+		t.Fatalf("provider metadata was exposed by search: %#v", search.Items)
+	}
+	assertProtected := func(err error) {
+		t.Helper()
+		var fsError *Error
+		if !errors.As(err, &fsError) || fsError.Code != "protected_workspace_metadata" || !errors.Is(err, ErrProtectedMetadata) {
+			t.Fatalf("expected protected provider metadata error, got %T %v", err, err)
+		}
+	}
+	if _, err := service.Save(workspaceID, SaveRequest{Ref: ref, Content: "overwrite"}); err == nil {
+		t.Fatal("expected provider metadata save to be rejected")
+	} else {
+		assertProtected(err)
+	}
+	if _, err := service.Rename(workspaceID, ref, "renamed.fossil"); err == nil {
+		t.Fatal("expected provider metadata rename to be rejected")
+	} else {
+		assertProtected(err)
+	}
+	parent := FileRef{RootID: root.ID, Path: "storage"}
+	if _, err := service.Trash(workspaceID, parent); err == nil {
+		t.Fatal("expected trashing a metadata parent to be rejected")
+	} else {
+		assertProtected(err)
+	}
+	if _, err := service.Move(workspaceID, parent, FileRef{RootID: root.ID}); err == nil {
+		t.Fatal("expected moving a metadata parent to be rejected")
+	} else {
+		assertProtected(err)
+	}
+
+	service.RemoveSourceControlMetadata(workspaceID, "fossil")
+	entries, err = service.List(workspaceID, parent)
+	if err != nil || len(entries) != 1 || entries[0].Name != "project.fossil" {
+		t.Fatalf("removing provider protection did not restore visibility: %#v %v", entries, err)
+	}
+}
+
 func TestRejectsBinaryAndOversizedFiles(t *testing.T) {
 	service, workspaceID, rootPath, root := newTestService(t)
 	if err := os.WriteFile(filepath.Join(rootPath, "binary.dat"), []byte{1, 0, 2}, 0o644); err != nil {

@@ -8,9 +8,10 @@ import type { APIError } from "./editorApi";
 import { languageForPath, monaco } from "./language";
 import { EchoLSPClient, fromLSPRange, type LSPDiagnosticSeverity, type LSPDocumentState } from "./lspClient";
 import type { LSPProfile, LSPStatus, LSPWorkspaceEdit, WorkspaceLSPResponse } from "./lspTypes";
-import { listRepositories as listGitRepositories, loadDiff as loadGitDiff } from "./gitApi";
-import type { GitChange, GitDiffDocument, GitRepository } from "./gitTypes";
-import { GitView } from "./gitView";
+import { listRepositories as listSourceControlRepositories, loadDiff as loadSourceControlDiff } from "./sourceControlApi";
+import type { SourceControlDiffRequest, SourceControlRepository } from "./sourceControlTypes";
+import { normalizePersistedSourceControlRepository, persistedSourceControlGroupId } from "./sourceControlSession";
+import { SourceControlView } from "./sourceControlView";
 import {
   buildCodeChatEditorContext, formatCodeChatSelectionNotice, runCodeChatSavePreflight,
 } from "./codeChatContext";
@@ -22,7 +23,7 @@ import {
 } from "../navigation";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 import { installChatMap } from "../chatMap";
-import { setGitBadgeCount } from "../gitBadge";
+import { setSourceControlBadgeCount } from "../gitBadge";
 import { randomUUID } from "../randomUUID";
 import {
   mountChatSurface, type EditorContextPayload, type EditorContextSelection, type HistoricalChatResource,
@@ -95,8 +96,9 @@ type OpenTab = {
 	transient?: boolean;
   media?: { kind: PreviewKind; url: string };
   diff?: {
-    repository: GitRepository;
+    repository: SourceControlRepository;
     scope: "staged" | "unstaged" | "commit" | "stash";
+    groupId?: string;
     reviewRef?: string;
     fileRef?: FileRef;
     oldPath?: string;
@@ -161,7 +163,7 @@ class CodeView {
   private untitledCounter = 1;
   private editor!: MonacoEditor.IStandaloneCodeEditor;
   private diffEditor!: MonacoEditor.IStandaloneDiffEditor;
-  private gitView: GitView | null = null;
+  private sourceControlView: SourceControlView | null = null;
   private searchView: SearchView | null = null;
   private debugView: DebugView | null = null;
   private goTestCodeLens: { dispose(): void } | null = null;
@@ -208,6 +210,8 @@ class CodeView {
   private navigationRestoreGeneration = 0;
   private navigationSkipping = false;
   private lastNavigationLocation: CodeNavigationLocation | null = null;
+  private restoredTabIdAliases = new Map<string, string>();
+  private sourceControlRepositoryLookup: Promise<SourceControlRepository[]> | null = null;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -244,12 +248,14 @@ class CodeView {
       }
       const [roots, settingsData, lspData] = await Promise.all([
         editorAPI.getRoots(this.workspace.id),
-        api("/api/settings", { method: "GET" }).catch(() => null) as Promise<{ settings?: { disableGitSplitDiffView?: boolean; hideLeadingWhitespaceIndicators?: boolean; editorFontSize?: number } } | null>,
+        api("/api/settings", { method: "GET" }).catch(() => null) as Promise<{ settings?: { disableSourceControlSplitDiffView?: boolean; disableGitSplitDiffView?: boolean; hideLeadingWhitespaceIndicators?: boolean; editorFontSize?: number } } | null>,
         editorAPI.getWorkspaceLSPConfig(this.workspace.id).catch(() => ({ config: {}, profiles: [], statuses: [] } as WorkspaceLSPResponse)),
       ]);
       if (this.abort.signal.aborted) return;
       this.roots = roots;
-      this.splitGitDiff = settingsData?.settings?.disableGitSplitDiffView !== true;
+      const disableSplitDiff = settingsData?.settings?.disableSourceControlSplitDiffView
+        ?? settingsData?.settings?.disableGitSplitDiffView;
+      this.splitGitDiff = disableSplitDiff !== true;
       this.leadingWhitespaceIndicators = settingsData?.settings?.hideLeadingWhitespaceIndicators !== true;
       if (settingsData?.settings) this.fullSettings = { ...(settingsData.settings as Record<string, unknown>) };
       this.editorFontSize = this.clampEditorFontSize((settingsData?.settings?.editorFontSize as number | undefined) || 13.5);
@@ -279,7 +285,7 @@ class CodeView {
       this.initializeTree();
       this.registerCommands();
       this.installEvents();
-      this.initializeGitView();
+      this.initializeSourceControlView();
       this.initializeSearchView();
       this.initializeDebugView();
       this.initializeGoTestCodeLens();
@@ -449,19 +455,19 @@ class CodeView {
     });
   }
 
-  private initializeGitView(): void {
+  private initializeSourceControlView(): void {
     if (!this.workspace) return;
     const host = this.root.querySelector<HTMLElement>("[data-sidebar-view=git]");
     if (!host) return;
-    this.gitView = new GitView(host, this.workspace.id, this.abort.signal, {
+    this.sourceControlView = new SourceControlView(host, this.workspace.id, this.abort.signal, {
       roots: () => this.roots,
       openFile: async (ref, pin) => { await this.recordCodeNavigation(() => this.openFile(ref, pin)); },
-      openDiff: async (repository, change, scope, ref, pin) => {
-        await this.recordCodeNavigation(() => this.openGitDiff(repository, change, scope, ref, pin));
+      openDiff: async (repository, target, pin) => {
+        await this.recordCodeNavigation(() => this.openSourceControlDiff(repository, target, pin));
       },
-      updateBadge: (count) => setGitBadgeCount(this.root, count),
+      updateBadge: (count) => setSourceControlBadgeCount(this.root, count),
     });
-    void this.gitView.start();
+    void this.sourceControlView.start();
   }
 
   private initializeSearchView(): void {
@@ -1242,6 +1248,18 @@ class CodeView {
     }
     try {
       const snapshot = await editorAPI.readFile(this.workspace.id, ref);
+      // A double-click emits both click and dblclick handlers. Their reads can
+      // overlap, so check again after I/O before creating a second tab for the
+      // same file. The pinned request wins regardless of completion order.
+      const concurrentlyOpened = this.tabs.find((tab) => tab.ref && refKey(tab.ref) === refKey(ref));
+      if (concurrentlyOpened) {
+        if (pin) concurrentlyOpened.pinned = true;
+        if (activate) this.activateTab(concurrentlyOpened.id, focusEditor);
+        this.renderTabs();
+        this.schedulePersist();
+        this.sendFilesystemSubscription();
+        return true;
+      }
       const tab = this.createModel(snapshot, randomUUID());
       tab.pinned = pin;
       if (!pin) {
@@ -1430,15 +1448,15 @@ class CodeView {
     this.sendFilesystemSubscription();
   }
 
-  private async openGitDiff(
-    repository: GitRepository,
-    change: GitChange | { path: string; oldPath?: string; ref?: FileRef },
-    scope: "staged" | "unstaged" | "commit" | "stash",
-    reviewRef: string | undefined,
+  private async openSourceControlDiff(
+    repository: SourceControlRepository,
+    target: SourceControlDiffRequest,
     pin: boolean,
   ): Promise<void> {
     if (!this.workspace) return;
-    const identity = `${repository.id}:${scope}:${reviewRef || ""}:${change.path}`;
+    const scope = sourceControlTabScope(target);
+    const reviewRef = target.kind === "revision" || target.kind === "stash" ? target.ref : undefined;
+    const identity = `${repository.id}:${target.kind}:${target.groupId || ""}:${reviewRef || ""}:${target.path}`;
     const existing = this.tabs.find((tab) => tab.kind === "diff" && tab.id === identity);
     if (existing) {
       if (pin) existing.pinned = true;
@@ -1447,13 +1465,13 @@ class CodeView {
       return;
     }
     try {
-      const document = await loadGitDiff(this.workspace.id, repository.id, {
-        scope, path: change.path, oldPath: change.oldPath, ref: reviewRef,
+      const document = await loadSourceControlDiff(this.workspace.id, repository.id, {
+        ...target, scope,
       });
       if (this.abort.signal.aborted) return;
       const language = languageForPath(document.path, this.lspProfiles);
       const originalURI = monaco.Uri.from({
-        scheme: "echo-git", authority: repository.id,
+        scheme: "echo-source-control", authority: repository.id,
         path: `/${encodeURIComponent(scope)}/${encodeURIComponent(reviewRef || String(document.revision))}/${(document.oldPath || document.path).split("/").map(encodeURIComponent).join("/")}`,
       });
       const originalModel = monaco.editor.getModel(originalURI) || monaco.editor.createModel(document.original.content || "", language, originalURI);
@@ -1471,7 +1489,7 @@ class CodeView {
         modifiedModel = shared.model;
       } else {
         const modifiedURI = document.editable && document.ref ? this.modelURI(document.ref) : monaco.Uri.from({
-          scheme: "echo-git", authority: repository.id,
+          scheme: "echo-source-control", authority: repository.id,
           path: `/${encodeURIComponent(scope)}/${encodeURIComponent(reviewRef || String(document.revision))}/${document.path.split("/").map(encodeURIComponent).join("/")}`,
           query: randomUUID(),
         });
@@ -1481,7 +1499,7 @@ class CodeView {
       }
       this.retainModel(modifiedModel);
       this.lsp?.trackModel(modifiedModel);
-      const qualifier = scope === "unstaged" ? "Working Tree" : scope === "staged" ? "Index" : scope === "stash" ? "Stash" : shortGitRef(reviewRef || "Commit");
+      const qualifier = scope === "unstaged" ? "Working Tree" : scope === "staged" ? "Index" : scope === "stash" ? "Stash" : shortRevision(reviewRef || "Commit");
       const tab: OpenTab = {
         kind: "diff", id: identity, ref: null, title: `${document.path.split("/").pop() || document.path} (${qualifier})`,
         hostPath: document.path, pinned: pin, dirty: shared?.dirty || false, deleted: !document.modified.exists,
@@ -1489,9 +1507,9 @@ class CodeView {
         hasBom: shared?.hasBom ?? Boolean(document.modified.hasBom), eol: shared?.eol || document.modified.eol,
         model: modifiedModel, viewState: null, changeDisposable: { dispose() {} }, applying: false,
         diff: {
-          repository, scope, reviewRef, fileRef: document.ref, oldPath: document.oldPath,
+          repository, scope, groupId: target.groupId, reviewRef, fileRef: document.ref, oldPath: document.oldPath,
           originalModel, viewState: null, editable: document.editable && document.kind === "text",
-          unavailableReason: document.kind === "text" ? undefined : document.unavailableReason || "This Git object cannot be shown as text.",
+          unavailableReason: document.kind === "text" ? undefined : document.unavailableReason || `This ${repository.providerLabel} object cannot be shown as text.`,
         },
       };
       tab.changeDisposable = modifiedModel.onDidChangeContent(() => {
@@ -1511,34 +1529,34 @@ class CodeView {
       this.sendFilesystemSubscription();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.openUnavailableGitDiff(identity, repository, change, scope, reviewRef, pin, message);
+      this.openUnavailableSourceControlDiff(identity, repository, target, scope, reviewRef, pin, message);
       toast(message, { sticky: true });
     }
   }
 
-  private openUnavailableGitDiff(
+  private openUnavailableSourceControlDiff(
     identity: string,
-    repository: GitRepository,
-    change: GitChange | { path: string; oldPath?: string; ref?: FileRef },
+    repository: SourceControlRepository,
+    target: SourceControlDiffRequest,
     scope: "staged" | "unstaged" | "commit" | "stash",
     reviewRef: string | undefined,
     pin: boolean,
     reason: string,
   ): void {
-    const language = languageForPath(change.path, this.lspProfiles);
-    const originalModel = monaco.editor.createModel("", language, monaco.Uri.from({ scheme: "echo-git-missing", authority: repository.id, path: `/${randomUUID()}/original` }));
-    const modifiedModel = monaco.editor.createModel("", language, monaco.Uri.from({ scheme: "echo-git-missing", authority: repository.id, path: `/${randomUUID()}/modified` }));
+    const language = languageForPath(target.path, this.lspProfiles);
+    const originalModel = monaco.editor.createModel("", language, monaco.Uri.from({ scheme: "echo-source-control-missing", authority: repository.id, path: `/${randomUUID()}/original` }));
+    const modifiedModel = monaco.editor.createModel("", language, monaco.Uri.from({ scheme: "echo-source-control-missing", authority: repository.id, path: `/${randomUUID()}/modified` }));
     this.retainModel(originalModel);
     this.retainModel(modifiedModel);
     const tab: OpenTab = {
-      kind: "diff", id: identity, ref: null, title: `${change.path.split("/").pop() || change.path} (${scope})`,
-      hostPath: change.path, pinned: pin, dirty: false, deleted: false, conflict: false, revision: "",
+      kind: "diff", id: identity, ref: null, title: `${target.path.split("/").pop() || target.path} (${scope})`,
+      hostPath: target.path, pinned: pin, dirty: false, deleted: false, conflict: false, revision: "",
       hasBom: false, eol: "lf", model: modifiedModel, viewState: null, applying: false,
       changeDisposable: { dispose() {} },
       diff: {
-        repository, scope, reviewRef, fileRef: change.ref, oldPath: change.oldPath,
+        repository, scope, groupId: target.groupId, reviewRef, fileRef: target.fileRef, oldPath: target.oldPath,
         originalModel, viewState: null, editable: false,
-        unavailableReason: `${reason} The Git revision may no longer be available; refresh Source Control and reopen this diff.`,
+        unavailableReason: `${reason} The ${repository.providerLabel} revision may no longer be available; refresh Source Control and reopen this diff.`,
       },
     };
     if (!pin) {
@@ -1752,7 +1770,7 @@ class CodeView {
       const scope = tab.diff.scope === "unstaged" ? "Working Tree"
         : tab.diff.scope === "staged" ? "Index"
           : tab.diff.scope === "stash" ? "Stash"
-            : shortGitRef(tab.diff.reviewRef || "Commit");
+            : shortRevision(tab.diff.reviewRef || "Commit");
       return [tab.diff.repository.label, directory, scope].filter(Boolean).join(" · ");
     }
     if (tab.ref) {
@@ -1916,7 +1934,7 @@ class CodeView {
       unavailable.innerHTML = diffUnavailable ? `<span class="codicon codicon-file-binary"></span><h2>Diff unavailable</h2><p>${escapeHTML(tab?.diff?.unavailableReason || "")}</p>` : "";
     }
     const label = this.root.querySelector<HTMLElement>("[data-diff-label]");
-    if (label && isDiff) label.textContent = tab?.diff?.editable ? "Working Tree (editable)" : "Read-only Git snapshot";
+    if (label && isDiff) label.textContent = tab?.diff?.editable ? "Working Tree (editable)" : `Read-only ${tab?.diff?.repository.providerLabel || "source control"} snapshot`;
     this.editor?.layout();
     this.diffEditor?.layout();
 	this.debugView?.onEditorContextChanged();
@@ -2177,7 +2195,7 @@ class CodeView {
 
   private async saveEditableDiff(tab: OpenTab): Promise<boolean> {
     if (!this.workspace || !tab.diff?.editable || !tab.diff.fileRef) {
-      toast("This Git snapshot is read-only.");
+      toast(`This ${tab.diff?.repository.providerLabel || "source control"} snapshot is read-only.`);
       return false;
     }
     const ref = tab.diff.fileRef;
@@ -2923,7 +2941,7 @@ class CodeView {
       const tabRef = this.worktreeRef(tab);
       if (!tabRef || refKey(tabRef) !== refKey(location.ref)) return false;
       /* A closed editable diff falls back to its workspace file because the
-         location deliberately stores no Git snapshot payload. */
+         location deliberately stores no source-control snapshot payload. */
       if (tab.kind === "media" || (tab.kind === "diff" && !tab.diff?.editable)) return false;
       this.activateTab(tab.id, false);
       const editor = this.activeCodeEditor();
@@ -3793,15 +3811,16 @@ class CodeView {
           return;
         }
         try {
-          const repositories = await listGitRepositories(this.workspace.id);
+          const repositories = await listSourceControlRepositories(this.workspace.id);
           const repository = repositories.repositories.find((candidate) => candidate.id === diff.repositoryId);
           if (!repository) {
             toast("The repository for this historical diff is no longer available.");
             return;
           }
-          await this.openGitDiff(repository, {
-            path: diff.path, oldPath: diff.oldPath, ref: resource.ref,
-          }, scope, diff.reviewRef, true);
+          await this.openSourceControlDiff(repository, {
+            ...sourceControlTargetFromLegacy(scope, diff.path, diff.oldPath, diff.reviewRef, diff.groupId),
+            fileRef: resource.ref,
+          }, true);
           tab = this.activeTab();
         } catch (error) {
           toast(error instanceof Error ? error.message : String(error), { sticky: true });
@@ -3904,7 +3923,10 @@ class CodeView {
         diff: tab.diff ? {
           repositoryId: tab.diff.repository.id,
           repository: tab.diff.repository.label,
+          providerId: tab.diff.repository.providerId,
+          kind: tab.diff.scope === "commit" ? "revision" : tab.diff.scope === "stash" ? "stash" : "change",
           scope: tab.diff.scope,
+          groupId: tab.diff.groupId,
           reviewRef: tab.diff.reviewRef,
           oldPath: tab.diff.oldPath,
           path: tab.hostPath,
@@ -3924,7 +3946,7 @@ class CodeView {
     let saved: PersistedWorkspaceSession | null = null;
     try { saved = await loadSession(this.workspace.id); } catch (error) { console.warn("restore editor session", error); }
     if (this.abort.signal.aborted) return;
-    if (!saved || (saved.version !== 1 && saved.version !== 2 && saved.version !== 3)) {
+    if (!saved || (saved.version !== 1 && saved.version !== 2 && saved.version !== 3 && saved.version !== 4)) {
       this.applyCodeChatWidth(this.codeChatWidth);
       return;
     }
@@ -3949,10 +3971,11 @@ class CodeView {
       .filter(Boolean)
       .map((match) => Number(match![1]));
     this.untitledCounter = Math.max(1, ...untitledNumbers.map((value) => value + 1));
-    const active = this.tabs.find((tab) => tab.id === saved!.activeTabId) || this.tabs[0];
+    const restoredActiveId = saved.activeTabId ? this.restoredTabIdAliases.get(saved.activeTabId) || saved.activeTabId : null;
+    const active = this.tabs.find((tab) => tab.id === restoredActiveId) || this.tabs[0];
     if (active) {
       this.activateTab(active.id);
-      const persisted = saved.tabs.find((tab) => tab.id === active.id);
+      const persisted = saved.tabs.find((tab) => (this.restoredTabIdAliases.get(tab.id) || tab.id) === active.id);
       if (active.kind !== "media") {
         const restoredEditor = active.kind === "diff" ? this.diffEditor.getModifiedEditor() : this.editor;
         if (persisted?.cursor) restoredEditor.setPosition(persisted.cursor);
@@ -3979,16 +4002,20 @@ class CodeView {
         return;
       }
       if (persisted.kind === "diff" && persisted.diff) {
-        await this.openGitDiff(
-          persisted.diff.repository,
-          { path: persisted.diff.path, oldPath: persisted.diff.oldPath, ref: persisted.diff.fileRef },
-          persisted.diff.scope,
-          persisted.diff.reviewRef,
+        const repository = await this.resolvePersistedSourceControlRepository(persisted.diff.repository);
+        const groupId = persistedSourceControlGroupId(repository, persisted.diff.scope, persisted.diff.groupId);
+        await this.openSourceControlDiff(
+          repository,
+          {
+            ...sourceControlTargetFromLegacy(persisted.diff.scope, persisted.diff.path, persisted.diff.oldPath, persisted.diff.reviewRef, groupId),
+            fileRef: persisted.diff.fileRef,
+          },
           true,
         );
         if (this.abort.signal.aborted) return;
-        const tab = this.tabs.find((candidate) => candidate.id === persisted.id);
+        const tab = this.activeTab();
         if (!tab) return;
+        this.restoredTabIdAliases.set(persisted.id, tab.id);
         tab.pinned = persisted.pinned;
         if (persisted.dirty && persisted.content !== undefined && tab.diff?.editable) {
           tab.applying = true;
@@ -4047,6 +4074,26 @@ class CodeView {
     tab.viewState = this.editor.saveViewState();
   }
 
+  private async resolvePersistedSourceControlRepository(repository: NonNullable<NonNullable<PersistedTab["diff"]>["repository"]>): Promise<SourceControlRepository> {
+    const normalized = normalizePersistedSourceControlRepository(repository);
+    if (!this.workspace) return normalized;
+    this.sourceControlRepositoryLookup ||= listSourceControlRepositories(this.workspace.id)
+      .then((response) => response.repositories || [])
+      .catch(() => []);
+    const repositories = await this.sourceControlRepositoryLookup;
+    const exact = repositories.find((candidate) => candidate.id === normalized.id);
+    if (exact) return exact;
+    const sameProvider = repositories.filter((candidate) => candidate.providerId === normalized.providerId);
+    const rootMatch = normalized.rootRef && sameProvider.find((candidate) => candidate.rootRef
+      && candidate.rootRef.rootId === normalized.rootRef!.rootId
+      && candidate.rootRef.path === normalized.rootRef!.path);
+    if (rootMatch) return rootMatch;
+    const scopeKey = normalized.scopes.map((scope) => `${scope.rootId}:${scope.repoPrefix}`).sort().join("|");
+    return sameProvider.find((candidate) => candidate.scopes.map((scope) => `${scope.rootId}:${scope.repoPrefix}`).sort().join("|") === scopeKey)
+      || sameProvider.find((candidate) => candidate.label === normalized.label)
+      || normalized;
+  }
+
   private async restoreTreeExpansion(): Promise<void> {
     const refs = [...this.expanded].map((key) => {
       const separator = key.indexOf(":");
@@ -4083,7 +4130,7 @@ class CodeView {
           ? (tab.kind === "diff" ? this.diffEditor.getModifiedEditor().getScrollTop() : this.editor.getScrollTop())
           : tab.kind === "diff" ? diffState?.viewState.scrollTop : tab.viewState?.viewState.scrollTop,
         diff: tab.diff ? {
-          repository: tab.diff.repository, scope: tab.diff.scope, reviewRef: tab.diff.reviewRef,
+          repository: tab.diff.repository, scope: tab.diff.scope, groupId: tab.diff.groupId, reviewRef: tab.diff.reviewRef,
           fileRef: tab.diff.fileRef, oldPath: tab.diff.oldPath, path: tab.hostPath,
           editable: tab.diff.editable,
         } : undefined,
@@ -4091,7 +4138,7 @@ class CodeView {
     });
     try {
       await saveSession(this.workspace.id, {
-        version: 3, activeTabId: this.activeTabId, tabs, expanded: [...this.expanded],
+        version: 4, activeTabId: this.activeTabId, tabs, expanded: [...this.expanded],
         selectedTreeKey: this.selectedTreeKey,
         explorerWidth: this.explorerWidth, codeChatWidth: this.codeChatWidth,
         treeScrollTop: this.treeScroller?.scrollTop || 0,
@@ -4289,6 +4336,29 @@ class CodeView {
   }
 }
 
-function shortGitRef(ref: string): string {
+function sourceControlTabScope(target: SourceControlDiffRequest): "staged" | "unstaged" | "commit" | "stash" {
+  if (target.kind === "revision" || target.kind === "revisions") return "commit";
+  if (target.kind === "stash") return "stash";
+  return target.groupId === "staged" || target.groupId === "included" ? "staged" : "unstaged";
+}
+
+function sourceControlTargetFromLegacy(
+  scope: "staged" | "unstaged" | "commit" | "stash",
+  path: string,
+  oldPath?: string,
+  reviewRef?: string,
+  groupId?: string,
+): SourceControlDiffRequest {
+  const kind = scope === "commit" ? "revision" : scope === "stash" ? "stash" : "change";
+  return {
+    kind,
+    groupId: kind === "change" ? groupId || (scope === "staged" ? "staged" : "unstaged") : undefined,
+    path,
+    oldPath,
+    ref: kind === "revision" || kind === "stash" ? reviewRef : undefined,
+  };
+}
+
+function shortRevision(ref: string): string {
   return /^[0-9a-f]{10,}$/i.test(ref) ? ref.slice(0, 9) : ref;
 }

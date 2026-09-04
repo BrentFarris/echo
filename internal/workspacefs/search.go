@@ -187,7 +187,7 @@ func (i *Index) ApplyChanges(workspaceID string, changes []Change) {
 			rebuild = true
 			break
 		}
-		if info.Mode()&os.ModeSymlink != 0 || strings.HasPrefix(cleanPath, ".git/") || strings.HasPrefix(cleanPath, ".echo/") {
+		if info.Mode()&os.ModeSymlink != 0 || i.service.isProtectedMetadata(workspaceID, change.Ref) || strings.HasPrefix(cleanPath, ".echo/") {
 			continue
 		}
 		if matcher := matchers[root.ID]; matcher != nil && matcher.MatchesPath(cleanPath) {
@@ -314,7 +314,7 @@ func (i *Index) build(ctx context.Context, workspaceID string, generation uint64
 			}
 			relative = filepath.ToSlash(relative)
 			if item.IsDir() {
-				if relative == ".git" || strings.HasPrefix(relative, ".git/") || relative == ".echo" || strings.HasPrefix(relative, ".echo/") {
+				if i.service.isProtectedMetadata(workspaceID, FileRef{RootID: root.ID, Path: relative}) || relative == ".echo" || strings.HasPrefix(relative, ".echo/") {
 					return filepath.SkipDir
 				}
 				if relative != "." && matcher != nil && matcher.MatchesPath(relative+"/") {
@@ -329,7 +329,7 @@ func (i *Index) build(ctx context.Context, workspaceID string, generation uint64
 				}
 				return nil
 			}
-			if item.Type()&os.ModeSymlink != 0 || (matcher != nil && matcher.MatchesPath(relative)) {
+			if item.Type()&os.ModeSymlink != 0 || i.service.isProtectedMetadata(workspaceID, FileRef{RootID: root.ID, Path: relative}) || (matcher != nil && matcher.MatchesPath(relative)) {
 				return nil
 			}
 			entries = append(entries, SearchResult{

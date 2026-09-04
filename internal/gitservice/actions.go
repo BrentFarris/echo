@@ -23,13 +23,19 @@ func (s *Service) Action(ctx context.Context, workspaceID, repositoryID string, 
 	if request.RequestID == "" {
 		return ActionResult{}, &Error{Code: "request_id_required", Message: "requestId is required"}
 	}
+	state.mutationMu.Lock()
+	defer state.mutationMu.Unlock()
+	if request.ExpectedRevision != 0 && request.ExpectedRevision != state.revision.Load() {
+		return ActionResult{}, &Error{
+			Code: "stale_source_control_revision", Message: "source control changed; refresh and try again",
+			Details: map[string]any{"revision": state.revision.Load()},
+		}
+	}
 	operation := Operation{
 		WorkspaceID: workspaceID, RepositoryID: repositoryID, RequestID: request.RequestID,
 		Action: request.Action, State: "running",
 	}
 	s.emit(Event{Type: "git_operation", WorkspaceID: workspaceID, RepositoryID: repositoryID, Operation: &operation})
-	state.mutationMu.Lock()
-	defer state.mutationMu.Unlock()
 	defer func() {
 		operation.State = "completed"
 		if resultErr != nil {

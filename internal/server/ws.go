@@ -22,21 +22,23 @@ var upgrader = websocket.Upgrader{
 }
 
 type client struct {
-	conn                  *websocket.Conn
-	send                  chan []byte
-	done                  chan struct{}
-	closeOnce             sync.Once
-	server                *Server
-	fsMu                  sync.RWMutex
-	fsSubscriptions       map[string]bool
-	gitMu                 sync.RWMutex
-	gitSubscriptions      map[string]bool
-	terminalMu            sync.RWMutex
-	terminalSubscriptions map[string]bool
-	sandboxMu             sync.RWMutex
-	sandboxSubscriptions  map[string]bool
-	debugMu               sync.RWMutex
-	debugSubscriptions    map[string]bool
+	conn                       *websocket.Conn
+	send                       chan []byte
+	done                       chan struct{}
+	closeOnce                  sync.Once
+	server                     *Server
+	fsMu                       sync.RWMutex
+	fsSubscriptions            map[string]bool
+	gitMu                      sync.RWMutex
+	gitSubscriptions           map[string]bool
+	sourceControlMu            sync.RWMutex
+	sourceControlSubscriptions map[string]bool
+	terminalMu                 sync.RWMutex
+	terminalSubscriptions      map[string]bool
+	sandboxMu                  sync.RWMutex
+	sandboxSubscriptions       map[string]bool
+	debugMu                    sync.RWMutex
+	debugSubscriptions         map[string]bool
 }
 
 func (c *client) close() {
@@ -155,6 +157,19 @@ func (h *Hub) BroadcastWorkspaceGit(workspaceID string, event any) {
 	}
 }
 
+func (h *Hub) BroadcastWorkspaceSourceControl(workspaceID string, event any) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.clients {
+		c.sourceControlMu.RLock()
+		subscribed := c.sourceControlSubscriptions[workspaceID]
+		c.sourceControlMu.RUnlock()
+		if subscribed {
+			c.sendJSON(event)
+		}
+	}
+}
+
 func (h *Hub) BroadcastWorkspaceTerminal(workspaceID string, event any) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -203,9 +218,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	c := &client{
 		conn: conn, send: make(chan []byte, 1024), done: make(chan struct{}), server: s,
 		fsSubscriptions: make(map[string]bool), gitSubscriptions: make(map[string]bool),
-		terminalSubscriptions: make(map[string]bool),
-		sandboxSubscriptions:  make(map[string]bool),
-		debugSubscriptions:    make(map[string]bool),
+		sourceControlSubscriptions: make(map[string]bool),
+		terminalSubscriptions:      make(map[string]bool),
+		sandboxSubscriptions:       make(map[string]bool),
+		debugSubscriptions:         make(map[string]bool),
 	}
 	go c.writePump()
 	s.hub.register <- c
@@ -238,6 +254,7 @@ func (c *client) readPump(h *Hub) {
 		c.server.sessions.unsubscribe(c)
 		c.unsubscribeAllFS()
 		c.unsubscribeAllGit()
+		c.unsubscribeAllSourceControl()
 		c.unsubscribeAllTerminals()
 		c.unsubscribeAllSandboxes()
 		c.unsubscribeAllDebug()
@@ -275,6 +292,10 @@ func (c *client) readPump(h *Hub) {
 			c.subscribeGit(msg.WorkspaceID)
 		case "git_unsubscribe":
 			c.unsubscribeGit(msg.WorkspaceID)
+		case "source_control_subscribe":
+			c.subscribeSourceControl(msg.WorkspaceID)
+		case "source_control_unsubscribe":
+			c.unsubscribeSourceControl(msg.WorkspaceID)
 		case "terminal_subscribe":
 			c.subscribeTerminal(msg.WorkspaceID)
 		case "terminal_unsubscribe":
@@ -518,6 +539,56 @@ func (c *client) unsubscribeAllGit() {
 	c.gitMu.Unlock()
 	for _, workspaceID := range workspaceIDs {
 		c.server.git.Unsubscribe(workspaceID)
+	}
+}
+
+func (c *client) subscribeSourceControl(workspaceID string) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		c.sendJSON(map[string]any{"type": "command_error", "code": "missing_workspace", "error": "workspaceId is required"})
+		return
+	}
+	c.sourceControlMu.RLock()
+	already := c.sourceControlSubscriptions[workspaceID]
+	c.sourceControlMu.RUnlock()
+	if already {
+		return
+	}
+	c.sourceControlMu.Lock()
+	c.sourceControlSubscriptions[workspaceID] = true
+	c.sourceControlMu.Unlock()
+	if err := c.server.sourceControl.Subscribe(context.Background(), workspaceID); err != nil {
+		c.sourceControlMu.Lock()
+		delete(c.sourceControlSubscriptions, workspaceID)
+		c.sourceControlMu.Unlock()
+		c.sendJSON(map[string]any{"type": "command_error", "workspaceId": workspaceID, "code": "source_control_watch_failed", "error": err.Error()})
+		c.sendJSON(map[string]any{"type": "source_control_resync_required", "workspaceId": workspaceID})
+		return
+	}
+	c.sendJSON(map[string]any{"type": "source_control_subscribed", "workspaceId": workspaceID})
+}
+
+func (c *client) unsubscribeSourceControl(workspaceID string) {
+	c.sourceControlMu.Lock()
+	if !c.sourceControlSubscriptions[workspaceID] {
+		c.sourceControlMu.Unlock()
+		return
+	}
+	delete(c.sourceControlSubscriptions, workspaceID)
+	c.sourceControlMu.Unlock()
+	c.server.sourceControl.Unsubscribe(workspaceID)
+}
+
+func (c *client) unsubscribeAllSourceControl() {
+	c.sourceControlMu.Lock()
+	workspaceIDs := make([]string, 0, len(c.sourceControlSubscriptions))
+	for workspaceID := range c.sourceControlSubscriptions {
+		workspaceIDs = append(workspaceIDs, workspaceID)
+	}
+	c.sourceControlSubscriptions = make(map[string]bool)
+	c.sourceControlMu.Unlock()
+	for _, workspaceID := range workspaceIDs {
+		c.server.sourceControl.Unsubscribe(workspaceID)
 	}
 }
 

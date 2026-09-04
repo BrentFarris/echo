@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/brent/echo/internal/sandbox"
+	"github.com/brent/echo/internal/sourcecontrol"
 )
 
 type Schema map[string]any
@@ -140,6 +141,17 @@ type ExecutionContext struct {
 	// PluginAuthoring exposes non-approving core plugin-development operations.
 	// It can scaffold, inspect, and stage, but never approve or execute a stage.
 	PluginAuthoring PluginAuthoringProvider
+	// SourceControl exposes provider-neutral, read-only repository inspection.
+	SourceControl SourceControlInspector
+}
+
+type SourceControlInspector interface {
+	Repositories(context.Context, string) ([]sourcecontrol.Repository, error)
+	Status(context.Context, string, string) (sourcecontrol.StatusSnapshot, error)
+	Diff(context.Context, string, string, sourcecontrol.DiffTarget) (sourcecontrol.DiffDocument, error)
+	History(context.Context, string, string, int, int) (sourcecontrol.History, error)
+	RevisionDetail(context.Context, string, string, string, string) (sourcecontrol.RevisionDetail, error)
+	Annotate(context.Context, string, string, string, string, int, int) (sourcecontrol.Annotation, error)
 }
 
 func (ctx ExecutionContext) UsesSandbox() bool {

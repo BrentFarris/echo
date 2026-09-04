@@ -30,6 +30,9 @@ import (
 	"github.com/brent/echo/internal/rebuild"
 	"github.com/brent/echo/internal/sandbox"
 	"github.com/brent/echo/internal/settings"
+	"github.com/brent/echo/internal/sourcecontrol"
+	fossilprovider "github.com/brent/echo/internal/sourcecontrol/fossil"
+	"github.com/brent/echo/internal/sourcecontrol/gitprovider"
 	terminalruntime "github.com/brent/echo/internal/terminal"
 	"github.com/brent/echo/internal/tools"
 	"github.com/brent/echo/internal/workspacefs"
@@ -55,6 +58,7 @@ type Server struct {
 	fs               *workspacefs.Service
 	watcher          *workspacefs.WatchManager
 	git              *gitservice.Service
+	sourceControl    *sourcecontrol.Service
 	terminal         *terminalruntime.Service
 	lsp              *lspruntime.Service
 	lspProfiles      *lspconfig.Store
@@ -199,13 +203,30 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 	})
 	s.git = gitservice.New(s.workspaces, s.fs)
 	s.git.SetSandbox(s.sandbox)
+	s.sourceControl = sourcecontrol.New()
+	gitProvider := gitprovider.New(s.git)
+	if err := s.sourceControl.Register(gitProvider); err != nil {
+		logf("register Git source control provider: %v", err)
+	}
+	if err := s.sourceControl.Register(fossilprovider.New(s.workspaces, s.fs, s.sandbox)); err != nil {
+		logf("register Fossil source control provider: %v", err)
+	}
+	s.sourceControl.SetNotifier(func(event sourcecontrol.Event) {
+		s.hub.BroadcastWorkspaceSourceControl(event.WorkspaceID, event)
+	})
 	s.git.SetNotifier(func(event gitservice.Event) {
 		s.hub.BroadcastWorkspaceGit(event.WorkspaceID, event)
+		if event.Status != nil {
+			status := gitprovider.StatusFromGit(*event.Status)
+			s.sourceControl.Emit(sourcecontrol.Event{Type: "source_control_status", WorkspaceID: event.WorkspaceID, RepositoryID: event.RepositoryID, ProviderID: gitprovider.ID, Status: &status})
+		} else if event.Type == "git_resync_required" {
+			s.sourceControl.Emit(sourcecontrol.Event{Type: "source_control_resync_required", WorkspaceID: event.WorkspaceID, ProviderID: gitprovider.ID})
+		}
 	})
 	s.watcher = workspacefs.NewWatchManager(s.fs, func(event workspacefs.WatchEvent) {
 		s.goTests.HandleWorkspaceChanges(event.WorkspaceID, event.Changes)
 		s.hub.BroadcastWorkspaceFS(event.WorkspaceID, event)
-		s.git.InvalidateWorkspace(event.WorkspaceID)
+		s.sourceControl.InvalidateWorkspace(event.WorkspaceID)
 	})
 	coreToolNames := map[string]bool{}
 	for _, tool := range s.tools.Registered() {
@@ -537,6 +558,16 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/workspaces/{id}/git/clone", s.handleGitClone)
 	mux.HandleFunc("POST /api/workspaces/{id}/git/initialize", s.handleGitInitialize)
 	mux.HandleFunc("PUT /api/workspaces/{id}/git/settings", s.handleGitSettings)
+	mux.HandleFunc("GET /api/workspaces/{id}/source-control/providers", s.handleSourceControlProviders)
+	mux.HandleFunc("GET /api/workspaces/{id}/source-control/repositories", s.handleSourceControlRepositories)
+	mux.HandleFunc("GET /api/workspaces/{id}/source-control/repositories/{repositoryId}/status", s.handleSourceControlStatus)
+	mux.HandleFunc("GET /api/workspaces/{id}/source-control/repositories/{repositoryId}/diff", s.handleSourceControlDiff)
+	mux.HandleFunc("GET /api/workspaces/{id}/source-control/repositories/{repositoryId}/metadata", s.handleSourceControlMetadata)
+	mux.HandleFunc("GET /api/workspaces/{id}/source-control/repositories/{repositoryId}/history", s.handleSourceControlHistory)
+	mux.HandleFunc("GET /api/workspaces/{id}/source-control/repositories/{repositoryId}/detail", s.handleSourceControlRevisionDetail)
+	mux.HandleFunc("POST /api/workspaces/{id}/source-control/repositories/{repositoryId}/actions", s.handleSourceControlAction)
+	mux.HandleFunc("GET /api/workspaces/{id}/source-control/settings", s.handleSourceControlSettings)
+	mux.HandleFunc("PUT /api/workspaces/{id}/source-control/settings", s.handleSourceControlSettings)
 	mux.HandleFunc("POST /api/workspaces/{id}/chats/{chatId}/skills", s.handleCreateSkillFromChat)
 	mux.HandleFunc("GET /api/workspaces/{id}/chats/{chatId}/trajectory", s.handleGetTrajectory)
 	mux.HandleFunc("GET /api/workspaces/{id}/chats/{chatId}/trajectory/search", s.handleSearchTrajectory)
@@ -656,7 +687,7 @@ func (s *Server) requestTermination() {
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.watcher.Close()
-	s.git.Close()
+	s.sourceControl.Close()
 	s.sessions.shutdown(ctx)
 	if err := s.debugger.Shutdown(ctx); err != nil && ctx.Err() == nil {
 		logf("debugger shutdown: %v", err)
@@ -686,8 +717,8 @@ func (s *Server) refreshWorkspaceCaches(ctx context.Context, workspaceID string)
 	s.debugger.StopWorkspace(workspaceID)
 	s.terminal.StopWorkspace(workspaceID)
 	s.watcher.Refresh(workspaceID)
-	if err := s.git.ResetWorkspace(ctx, workspaceID); err != nil {
-		logf("refresh git workspace %s: %v", workspaceID, err)
+	if err := s.sourceControl.ResetWorkspace(ctx, workspaceID); err != nil {
+		logf("refresh source control workspace %s: %v", workspaceID, err)
 	}
 	s.fs.RefreshWorkspace(workspaceID)
 	s.lsp.RefreshWorkspace(workspaceID)
@@ -702,7 +733,7 @@ func (s *Server) removeWorkspaceCaches(workspaceID string) {
 	s.debugger.StopWorkspace(workspaceID)
 	s.terminal.StopWorkspace(workspaceID)
 	s.watcher.RemoveWorkspace(workspaceID)
-	s.git.RemoveWorkspace(workspaceID)
+	s.sourceControl.RemoveWorkspace(workspaceID)
 	s.fs.RefreshWorkspace(workspaceID)
 	s.lsp.DeactivateWorkspace(workspaceID)
 	s.skillsMu.Lock()

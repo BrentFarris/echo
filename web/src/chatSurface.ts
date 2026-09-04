@@ -17,7 +17,10 @@ import { preparePlanQuestionNotificationPermission } from "./planQuestionNotific
 export type EditorContextDiff = {
   repositoryId?: string;
   repository?: string;
+  providerId?: string;
+  kind?: string;
   scope?: string;
+  groupId?: string;
   reviewRef?: string;
   oldPath?: string;
   path?: string;

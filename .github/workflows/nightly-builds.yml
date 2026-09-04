@@ -85,6 +85,20 @@ jobs:
         working-directory: web
         run: npm ci
 
+      - name: Install pinned Fossil 2.27
+        env:
+          FOSSIL_VERSION: "2.27"
+          FOSSIL_CHECKIN: "99675884a93c09125dbfbef0ca47959626c81545c132e247e67a08bd12ac7256"
+        run: |
+          build_dir="$(mktemp -d)"
+          curl -fsSL "https://fossil-scm.org/home/tarball/${FOSSIL_CHECKIN}/fossil-src-${FOSSIL_VERSION}.tar.gz" -o "$build_dir/fossil-src.tar.gz"
+          tar -xzf "$build_dir/fossil-src.tar.gz" -C "$build_dir"
+          cd "$build_dir/fossil-src-${FOSSIL_VERSION}"
+          ./configure --disable-fusefs
+          make -j2 fossil
+          sudo install -m 0755 fossil /usr/local/bin/fossil
+          fossil version
+
       - name: Run Go tests
         run: go test ./...
 

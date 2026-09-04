@@ -58,6 +58,7 @@ func Defaults() []Mode {
 				"filesystem_search_workspace": {Name: "filesystem_search_workspace"},
 				"filesystem_stat":             {Name: "filesystem_stat"},
 				"git_inspect":                 {Name: "git_inspect"},
+				"source_control_inspect":      {Name: "source_control_inspect"},
 				"research_agent_send":         {Name: "research_agent_send"},
 				"research_agents_cancel":      {Name: "research_agents_cancel"},
 				"research_agents_spawn":       {Name: "research_agents_spawn"},

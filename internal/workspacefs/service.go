@@ -29,14 +29,14 @@ const MaxEditableBytes int64 = 10 << 20
 const MaxMediaBytes int64 = 500 << 20
 
 var (
-	ErrNotFound        = errors.New("file or folder not found")
-	ErrOutsideRoot     = errors.New("path escapes the workspace root")
-	ErrConflict        = errors.New("file changed on disk")
-	ErrAlreadyExists   = errors.New("file or folder already exists")
-	ErrUnsupportedFile = errors.New("file is not editable text")
-	ErrTooLarge        = errors.New("file is too large to edit")
-	ErrInvalidPath     = errors.New("invalid workspace path")
-	ErrNotPreviewable  = errors.New("file is not a supported image or video type")
+	ErrNotFound          = errors.New("file or folder not found")
+	ErrOutsideRoot       = errors.New("path escapes the workspace root")
+	ErrConflict          = errors.New("file changed on disk")
+	ErrAlreadyExists     = errors.New("file or folder already exists")
+	ErrUnsupportedFile   = errors.New("file is not editable text")
+	ErrTooLarge          = errors.New("file is too large to edit")
+	ErrInvalidPath       = errors.New("invalid workspace path")
+	ErrNotPreviewable    = errors.New("file is not a supported image or video type")
 	ErrProtectedMetadata = errors.New("workspace metadata is managed by Echo")
 )
 
@@ -46,6 +46,12 @@ var (
 func IsProtectedWorkspaceMetadataPath(value string) bool {
 	normalized := path.Clean(strings.TrimSpace(strings.ReplaceAll(value, "\\", "/")))
 	parts := strings.Split(normalized, "/")
+	for _, part := range parts {
+		switch strings.ToLower(part) {
+		case ".git", ".fslckout", "_fossil_":
+			return true
+		}
+	}
 	if len(parts) == 1 {
 		return strings.EqualFold(parts[0], workspaces.EchoDirName)
 	}
@@ -145,10 +151,17 @@ type Service struct {
 	locksMu    sync.Mutex
 	locks      map[string]*referencedPathLock
 	index      *Index
+	metadataMu sync.RWMutex
+	// workspace -> provider -> root/path identities. Providers replace only
+	// their own entries so Git and Fossil metadata can coexist.
+	sourceControlMetadata map[string]map[string]map[string]bool
 }
 
 func New(workspaces *workspaces.Manager, dataPath string) *Service {
-	service := &Service{workspaces: workspaces, dataPath: dataPath, locks: make(map[string]*referencedPathLock)}
+	service := &Service{
+		workspaces: workspaces, dataPath: dataPath, locks: make(map[string]*referencedPathLock),
+		sourceControlMetadata: make(map[string]map[string]map[string]bool),
+	}
 	service.index = newIndex(service)
 	return service
 }
@@ -162,6 +175,83 @@ func (s *Service) Close() {
 // is rebound to a different main folder.
 func (s *Service) RefreshWorkspace(workspaceID string) {
 	s.index.Invalidate(workspaceID)
+}
+
+// SetSourceControlMetadata replaces the protected paths owned by one provider.
+// Paths must already be workspace-relative FileRefs discovered by trusted code.
+func (s *Service) SetSourceControlMetadata(workspaceID, providerID string, refs []FileRef) {
+	entries := make(map[string]bool, len(refs))
+	for _, ref := range refs {
+		if strings.TrimSpace(ref.RootID) == "" || strings.TrimSpace(ref.Path) == "" {
+			continue
+		}
+		entries[sourceControlMetadataKey(ref)] = true
+	}
+	s.metadataMu.Lock()
+	providers := s.sourceControlMetadata[workspaceID]
+	if providers == nil {
+		providers = make(map[string]map[string]bool)
+		s.sourceControlMetadata[workspaceID] = providers
+	}
+	providers[providerID] = entries
+	s.metadataMu.Unlock()
+	s.index.Invalidate(workspaceID)
+}
+
+func (s *Service) RemoveSourceControlMetadata(workspaceID, providerID string) {
+	s.metadataMu.Lock()
+	if providers := s.sourceControlMetadata[workspaceID]; providers != nil {
+		delete(providers, providerID)
+		if len(providers) == 0 {
+			delete(s.sourceControlMetadata, workspaceID)
+		}
+	}
+	s.metadataMu.Unlock()
+	s.index.Invalidate(workspaceID)
+}
+
+func (s *Service) isProtectedMetadata(workspaceID string, ref FileRef) bool {
+	if IsProtectedWorkspaceMetadataPath(ref.Path) {
+		return true
+	}
+	key := sourceControlMetadataKey(ref)
+	s.metadataMu.RLock()
+	defer s.metadataMu.RUnlock()
+	for _, entries := range s.sourceControlMetadata[workspaceID] {
+		if entries[key] {
+			return true
+		}
+	}
+	return false
+}
+
+// wouldAffectProtectedMetadata also matches an ancestor of provider-owned
+// metadata. Directory rename, move, and trash operations must not be able to
+// carry a hidden checkout database along indirectly.
+func (s *Service) wouldAffectProtectedMetadata(workspaceID string, ref FileRef) bool {
+	if s.isProtectedMetadata(workspaceID, ref) {
+		return true
+	}
+	key := sourceControlMetadataKey(ref)
+	prefix := key + "/"
+	s.metadataMu.RLock()
+	defer s.metadataMu.RUnlock()
+	for _, entries := range s.sourceControlMetadata[workspaceID] {
+		for protected := range entries {
+			if strings.HasPrefix(protected, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sourceControlMetadataKey(ref FileRef) string {
+	value := path.Clean(strings.TrimSpace(strings.ReplaceAll(ref.Path, "\\", "/")))
+	if runtime.GOOS == "windows" {
+		value = strings.ToLower(value)
+	}
+	return ref.RootID + "\x00" + value
 }
 
 func (s *Service) Roots(workspaceID string) ([]Root, error) {
@@ -511,7 +601,7 @@ func (s *Service) ResolveExistingHostPath(workspaceID string, ref FileRef, allow
 // ResolveEntryHostPath applies the same canonical parent confinement without
 // following the final component, allowing safe create/rename/delete callers.
 func (s *Service) ResolveEntryHostPath(workspaceID string, ref FileRef) (string, error) {
-	if IsProtectedWorkspaceMetadataPath(ref.Path) {
+	if s.wouldAffectProtectedMetadata(workspaceID, ref) {
 		return "", protectedMetadataError()
 	}
 	_, resolved, _, err := s.resolveEntry(workspaceID, ref, false, true)
@@ -533,6 +623,13 @@ func (s *Service) List(workspaceID string, ref FileRef) ([]Entry, error) {
 	baseRelative, _ := normalizeRelative(ref.Path, true)
 	entries := make([]Entry, 0, len(children))
 	for _, child := range children {
+		childRef := FileRef{RootID: root.ID, Path: path.Join(baseRelative, child.Name())}
+		if baseRelative == "" {
+			childRef.Path = child.Name()
+		}
+		if s.isProtectedMetadata(workspaceID, childRef) {
+			continue
+		}
 		childPath := filepath.Join(directory, child.Name())
 		visiblePath := filepath.Join(visible, child.Name())
 		info, infoErr := os.Lstat(childPath)
@@ -556,10 +653,7 @@ func (s *Service) List(workspaceID string, ref FileRef) ([]Entry, error) {
 		if statInfo.IsDir() {
 			kind = "directory"
 		}
-		relative := path.Join(baseRelative, child.Name())
-		if baseRelative == "" {
-			relative = child.Name()
-		}
+		relative := childRef.Path
 		entries = append(entries, Entry{
 			Ref: FileRef{RootID: root.ID, Path: relative}, Name: child.Name(), HostPath: visiblePath,
 			Kind: kind, IsSymlink: isSymlink, BlockedReason: blocked,

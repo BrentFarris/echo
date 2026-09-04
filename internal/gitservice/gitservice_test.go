@@ -80,9 +80,23 @@ func TestDiscoveryStatusStageUnstageAndTrash(t *testing.T) {
 	if status.Branch != "main" || len(status.Unstaged) != 2 || len(status.Staged) != 0 {
 		t.Fatalf("unexpected initial status: %#v", status)
 	}
+	if _, err := service.Action(context.Background(), workspaceID, repositoryID, ActionRequest{
+		RequestID: "stale-stage", Action: "stage", ExpectedRevision: status.Revision + 1, Paths: []string{"tracked.txt"},
+	}); err == nil {
+		t.Fatal("expected a stale source control revision error")
+	} else {
+		var gitErr *Error
+		if !errors.As(err, &gitErr) || gitErr.Code != "stale_source_control_revision" {
+			t.Fatalf("unexpected stale revision error: %v", err)
+		}
+	}
+	afterStale, err := service.Status(context.Background(), workspaceID, repositoryID)
+	if err != nil || afterStale.Revision != status.Revision || len(afterStale.Staged) != 0 {
+		t.Fatalf("stale action must not mutate repository state: %#v err=%v", afterStale, err)
+	}
 
 	result, err := service.Action(context.Background(), workspaceID, repositoryID, ActionRequest{
-		RequestID: "stage-1", Action: "stage", Paths: []string{"tracked.txt", "new file.txt"},
+		RequestID: "stage-1", Action: "stage", ExpectedRevision: status.Revision, Paths: []string{"tracked.txt", "new file.txt"},
 	})
 	if err != nil || result.Revision <= status.Revision {
 		t.Fatalf("stage: %#v err=%v", result, err)

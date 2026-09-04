@@ -58,7 +58,7 @@ func (s *Service) Read(workspaceID string, ref FileRef) (FileSnapshot, error) {
 }
 
 func (s *Service) Save(workspaceID string, request SaveRequest) (FileSnapshot, error) {
-	if IsProtectedWorkspaceMetadataPath(request.Ref.Path) {
+	if s.isProtectedMetadata(workspaceID, request.Ref) {
 		return FileSnapshot{}, protectedMetadataError()
 	}
 	if !utf8.ValidString(request.Content) {
@@ -129,7 +129,7 @@ func (s *Service) Create(workspaceID string, request CreateRequest) (Entry, *Fil
 		return Entry{}, nil, err
 	}
 	child := FileRef{RootID: request.Parent.RootID, Path: path.Join(parentRelative, strings.TrimSpace(request.Name))}
-	if IsProtectedWorkspaceMetadataPath(child.Path) {
+	if s.isProtectedMetadata(workspaceID, child) {
 		return Entry{}, nil, protectedMetadataError()
 	}
 	if request.Kind == "file" {
@@ -198,7 +198,7 @@ func (s *Service) Move(workspaceID string, ref, destinationParent FileRef) (Entr
 }
 
 func (s *Service) moveEntry(workspaceID string, ref, destinationParent FileRef, newName string) (Entry, error) {
-	if IsProtectedWorkspaceMetadataPath(ref.Path) {
+	if s.wouldAffectProtectedMetadata(workspaceID, ref) {
 		return Entry{}, protectedMetadataError()
 	}
 	if strings.TrimSpace(ref.RootID) != strings.TrimSpace(destinationParent.RootID) {
@@ -212,7 +212,7 @@ func (s *Service) moveEntry(workspaceID string, ref, destinationParent FileRef, 
 		return Entry{}, err
 	}
 	newRef := FileRef{RootID: destinationParent.RootID, Path: path.Join(parentRelative, newName)}
-	if IsProtectedWorkspaceMetadataPath(newRef.Path) {
+	if s.wouldAffectProtectedMetadata(workspaceID, newRef) {
 		return Entry{}, protectedMetadataError()
 	}
 	_, source, _, err := s.resolveEntry(workspaceID, ref, false, false)

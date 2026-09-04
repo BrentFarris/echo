@@ -257,7 +257,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(page).toHaveURL(/#\/code$/);
   await expect(calculatorWindow).toBeVisible();
   await page.getByRole("button", { name: "Source Control", exact: true }).click();
-  await expect(page).toHaveURL(/#\/code\?sidebar=git$/);
+  await expect(page).toHaveURL(/#\/code\?sidebar=source-control$/);
   await expect(calculatorWindow).toBeVisible();
   await page.getByRole("button", { name: "Chat", exact: true }).click();
   await expect(page).toHaveURL(/#\/home$/);
@@ -298,7 +298,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
 
   await page.getByRole("button", { name: "Source Control", exact: true }).click();
   await expect(page.locator(".code-app-shell")).toBeVisible();
-  await expect(page).toHaveURL(/#\/code\?sidebar=git$/);
+  await expect(page).toHaveURL(/#\/code\?sidebar=source-control$/);
   await expect(page.getByText("SOURCE CONTROL", { exact: true })).toBeVisible();
   await expect(page.locator(".terminal-xterm-instance .xterm-rows")).toContainText("ECHO_TERMINAL_ROUTE_OK");
 
@@ -976,8 +976,8 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
 
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(page.locator(".settings-view")).toBeVisible();
-  await page.getByRole("button", { name: "Git", exact: true }).click();
-  const splitDiff = page.getByLabel("Split Git diff view");
+  await page.getByLabel("Settings sections").getByRole("button", { name: "Source Control", exact: true }).click();
+  const splitDiff = page.getByLabel("Split diff view");
   await expect(splitDiff).toBeChecked();
   await splitDiff.uncheck();
   await page.waitForTimeout(200);
@@ -1042,7 +1042,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(mobileCodeChatToggle).toBeFocused();
 
   await mobileNav.getByRole("button", { name: "Source Control", exact: true }).click();
-  await expect(page).toHaveURL(/#\/code\?sidebar=git$/);
+  await expect(page).toHaveURL(/#\/code\?sidebar=source-control$/);
   await expect(page.locator(".code-app-shell")).toHaveClass(/is-explorer-open/);
   await expect(page.getByText("SOURCE CONTROL", { exact: true })).toBeVisible();
   await expect(mobileNav.getByRole("button", { name: "Source Control", exact: true })).toHaveAttribute("aria-current", "page");
@@ -1050,7 +1050,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   const codeWorkspace = mobileNav.locator(".workspace-dropdown-trigger");
   await codeWorkspace.click();
   await page.getByRole("menuitem", { name: /E2E Workspace/ }).click();
-  await expect(page).toHaveURL(/#\/code\?sidebar=git$/);
+  await expect(page).toHaveURL(/#\/code\?sidebar=source-control$/);
   await expect(page.locator("[data-mobile-workspace-name]")).toHaveText("E2E Workspace");
 
   mobileNav = page.locator("[data-mobile-primary-nav]");
@@ -1058,8 +1058,8 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(page.locator(".settings-view")).toBeVisible();
   mobileNav = page.locator("[data-mobile-primary-nav]");
   await expect(mobileNav.getByRole("button", { name: "Settings" })).toHaveAttribute("aria-current", "page");
-  await page.getByRole("button", { name: "Git", exact: true }).click();
-  await expect(page.getByLabel("Split Git diff view")).toBeVisible();
+  await page.getByLabel("Settings sections").getByRole("button", { name: "Source Control", exact: true }).click();
+  await expect(page.getByLabel("Split diff view")).toBeVisible();
 
   await mobileNav.getByRole("button", { name: "Chat", exact: true }).click();
   await expect(page.locator(".app-shell")).toBeVisible();
