@@ -59,6 +59,60 @@ func TestTemplatesAreCloned(t *testing.T) {
 	}
 }
 
+func TestTemplatesCanBeSaved(t *testing.T) {
+	for _, template := range Templates() {
+		t.Run(template.ID, func(t *testing.T) {
+			store := NewStore(appdata.NewStore(filepath.Join(t.TempDir(), "echo.json")))
+			profile, ok := TemplateByID(template.ID)
+			if !ok {
+				t.Fatal("template missing")
+			}
+			if _, err := store.Add(profile); err != nil {
+				t.Fatalf("create profile from template: %v", err)
+			}
+			profiles, err := store.Load()
+			if err != nil || len(profiles) != 1 {
+				t.Fatalf("load saved template: profiles=%+v err=%v", profiles, err)
+			}
+			if profiles[0].ID != template.ID {
+				t.Fatalf("saved profile ID = %q, want %q", profiles[0].ID, template.ID)
+			}
+		})
+	}
+}
+
+func TestProfileSelectorFileMatches(t *testing.T) {
+	for _, field := range []string{"extensions", "filenames"} {
+		t.Run(field, func(t *testing.T) {
+			for _, tc := range []struct {
+				name    string
+				value   string
+				wantErr bool
+			}{
+				{name: "letter x", value: ".cxx"},
+				{name: "digit zero", value: "file0"},
+				{name: "forward slash", value: "dir/file", wantErr: true},
+				{name: "backslash", value: `dir\file`, wantErr: true},
+				{name: "null byte", value: "file\x00name", wantErr: true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					profile := testProfile("server", "cpp")
+					selector := DocumentSelector{LanguageID: "cpp"}
+					if field == "extensions" {
+						selector.Extensions = []string{tc.value}
+					} else {
+						selector.Filenames = []string{tc.value}
+					}
+					profile.Selectors = []DocumentSelector{selector}
+					if err := profile.Validate(); (err != nil) != tc.wantErr {
+						t.Fatalf("Validate() for %q = %v, want error = %v", tc.value, err, tc.wantErr)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestWorkspaceOverridesReplaceFieldsAndDetectOverlap(t *testing.T) {
 	goProfile := testProfile("go-one", "go")
 	otherGo := testProfile("go-two", "go")
