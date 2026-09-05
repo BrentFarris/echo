@@ -2841,7 +2841,7 @@ class CodeView {
       { id: "explorer.trash", label: "Explorer: Open Echo Trash", run: () => this.showTrash() },
       { id: "editor.find", label: "Editor: Find", keybinding: "Ctrl+F", run: () => this.showEditorFind() },
       { id: "editor.replace", label: "Editor: Replace", keybinding: "Ctrl+H", run: () => this.showEditorFind(true) },
-      { id: "editor.gotoLine", label: "Go to Line/Column…", keybinding: "Ctrl+G", run: () => this.editor.trigger("echo", "editor.action.gotoLine", null) },
+      { id: "editor.gotoLine", label: "Go to Line/Column…", keybinding: "Ctrl+G", run: () => this.showGoToLine() },
       { id: "editor.rename", label: "Editor: Rename Symbol", keybinding: "F2", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.rename", null) },
       { id: "editor.duplicateSelection", label: "Editor: Duplicate Selection", keybinding: "Ctrl+D", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.duplicateSelection", null) },
       { id: "editor.action.transformToUppercase", label: "Transform to Uppercase", run: () => this.runCaseTransform("editor.action.transformToUppercase") },
@@ -2878,6 +2878,14 @@ class CodeView {
   private activeCodeEditor(): MonacoEditor.ICodeEditor | null {
     const tab = this.activeTab();
     return tab?.kind === "diff" ? this.diffEditor?.getModifiedEditor() || null : this.editor || null;
+  }
+
+  private showGoToLine(): void {
+    const tab = this.activeTab();
+    const editor = this.activeCodeEditor();
+    if (!tab || tab.kind === "media" || !editor?.getModel()) return;
+    editor.focus();
+    editor.trigger("echo", "editor.action.gotoLine", null);
   }
 
   private runCaseTransform(actionId: string): void {
@@ -3516,6 +3524,8 @@ class CodeView {
 
   private handleGlobalKeyboard(event: KeyboardEvent): void {
     if (document.querySelector(".code-modal-overlay, .code-picker-overlay")) return;
+    // Monaco owns navigation and cancellation while its quick input is focused.
+    if (event.target instanceof Element && event.target.closest(".quick-input-widget")) return;
     if (this.handleReferencePeekKeyboard(event)) return;
     if (this.debugView?.handleKeydown(event)) return;
     if (event.key === "Escape" && this.root.querySelector("[data-chat-mention-picker]") && document.activeElement?.closest(".code-chat-surface")) return;

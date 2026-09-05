@@ -84,6 +84,8 @@ class TerminalController {
   private inputBuffer = "";
   private inputFrame = 0;
   private resizeTimer = 0;
+  private resizeChain: Promise<void> = Promise.resolve();
+  private resizeKey = "";
   private sessionId = "";
   private lastSequence = 0;
   private disposed = false;
@@ -135,6 +137,8 @@ class TerminalController {
   unmount(): void {
     this.resizeObserver?.disconnect();
     this.viewport = null;
+    window.clearTimeout(this.resizeTimer);
+    this.resizeKey = "";
   }
 
   dispose(): void {
@@ -240,10 +244,18 @@ class TerminalController {
 
   fit(): void {
     if (!this.viewport || !openWorkspaces.has(this.workspaceId)) return;
-    window.requestAnimationFrame(() => {
-      if (!this.viewport || this.viewport.clientWidth <= 0 || this.viewport.clientHeight <= 0) return;
-      try { this.fitAddon.fit(); } catch { /* The dock may be between route fragments. */ }
-    });
+    window.requestAnimationFrame(() => this.fitNow());
+  }
+
+  private fitNow(): void {
+    if (this.disposed || !openWorkspaces.has(this.workspaceId) || !this.viewport?.isConnected
+      || this.viewport.clientWidth <= 0 || this.viewport.clientHeight <= 0) return;
+    try {
+      this.fitAddon.fit();
+      // onResize only fires when xterm's dimensions change. A newly attached
+      // PTY still needs our size even if xterm was already fitted before start.
+      this.queueResize(this.terminal.cols, this.terminal.rows);
+    } catch { /* The dock may be between route fragments. */ }
   }
 
   refreshTheme(): void { this.terminal.options.theme = readTerminalTheme(); }
@@ -251,6 +263,7 @@ class TerminalController {
   private async start(): Promise<void> {
     try {
       await subscribeWorkspace(this.workspaceId);
+      this.fitNow();
       const snapshot = await startTerminal(this.workspaceId, this.terminal.cols, this.terminal.rows);
       this.applySnapshot(snapshot, true);
       this.fit();
@@ -281,6 +294,8 @@ class TerminalController {
       this.lastSequence = 0;
     }
     this.sessionId = snapshot.id;
+    // The server may have retained a different size while we were disconnected.
+    this.resizeKey = "";
     const output = [...(snapshot.output || [])].sort((a, b) => a.sequence - b.sequence);
     for (const chunk of output) {
       if (chunk.sequence <= this.lastSequence) continue;
@@ -301,6 +316,7 @@ class TerminalController {
     });
     this.flushInput();
     renderMountedDock();
+    this.fit();
   }
 
   restore(snapshot: TerminalSnapshot): void {
@@ -345,10 +361,25 @@ class TerminalController {
   }
 
   private queueResize(cols: number, rows: number): void {
-    if (!this.sessionId) return;
+    if (this.disposed || !this.sessionId || meta.get(this.key)?.status !== "running") return;
+    const sessionId = this.sessionId;
+    const key = `${sessionId}:${cols}:${rows}`;
+    if (this.resizeKey === key) return;
+    this.resizeKey = key;
     window.clearTimeout(this.resizeTimer);
     this.resizeTimer = window.setTimeout(() => {
-      void resizeTerminal(this.workspaceId, this.sessionId, cols, rows).catch(() => this.resync());
+      // Serialize requests so a slow older resize cannot win over the latest.
+      this.resizeChain = this.resizeChain.then(async () => {
+        if (this.disposed || this.sessionId !== sessionId || this.resizeKey !== key
+          || !this.viewport?.isConnected || !openWorkspaces.has(this.workspaceId)
+          || meta.get(this.key)?.status !== "running") return;
+        await resizeTerminal(this.workspaceId, sessionId, cols, rows);
+      }).catch((error) => {
+        if (this.disposed || this.sessionId !== sessionId || this.resizeKey !== key) return;
+        this.resizeKey = "";
+        // Resync also resizes; retrying it here would loop on a resize failure.
+        if (meta.get(this.key)?.status === "running") toast(errorMessage(error));
+      });
     }, 100);
   }
 }
