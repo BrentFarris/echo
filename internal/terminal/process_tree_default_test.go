@@ -24,7 +24,7 @@ func TestRealPTYStartsWithControllingTerminalAndProcessGroup(t *testing.T) {
 	defer cancel()
 	process, err := backend.Start(ctx, CommandSpec{
 		Name: "/bin/sh",
-		Args: []string{"-c", "test -t 0 && test -t 1 && test -t 2 && test -r /dev/tty || exit 1; printf 'PTY_READY\\n'; read -r line; [ \"$line\" = done ] || exit 2; exit 7"},
+		Args: []string{"-c", "test -t 0 && test -t 1 && test -t 2 && : </dev/tty || exit 1; printf 'PTY_READY\\n'; read -r line; [ \"$line\" = done ] || exit 2; exit 7"},
 		Dir:  t.TempDir(),
 		Env:  terminalEnvironment(),
 	})
