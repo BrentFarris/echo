@@ -587,7 +587,10 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
 
   // Echo exposes Monaco's native VS Code-style case transforms through its
   // command palette, preserving selection and grouping each edit for Undo.
+  // Reload restores tabs and navigation asynchronously after the shell appears.
+  await expect(page.locator(".code-app-shell")).toHaveAttribute("aria-busy", "false");
   await page.keyboard.press("Control+n");
+  await expect(page.locator(".code-tab.is-active")).toContainText("Untitled-");
   const scratchLines = page.locator("[data-monaco-host] .view-line");
   const chooseCaseTransform = async (label: string) => {
     await page.keyboard.press("Control+Shift+P");
@@ -605,6 +608,8 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
     await editorInput.focus();
     await page.keyboard.press("Control+a");
     await page.keyboard.insertText(text);
+    // Wait for Monaco to apply the text before sending selection shortcuts.
+    await expect(scratchLines).toHaveText(text.split("\n"));
   };
   for (const transform of [
     { label: "Transform to Uppercase", input: "MiXeD Case", output: "MIXED CASE" },

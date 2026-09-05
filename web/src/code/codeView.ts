@@ -331,6 +331,8 @@ class CodeView {
       if (this.abort.signal.aborted) return;
       console.error("code view startup failed", error);
       this.showFatal(error);
+    } finally {
+      if (!this.abort.signal.aborted) this.root.querySelector(".code-app-shell")?.setAttribute("aria-busy", "false");
     }
   }
 
@@ -341,7 +343,7 @@ class CodeView {
       : undefined;
     const explorerActive = this.activeSidebar === "explorer";
     this.root.innerHTML = `
-      <div class="code-app-shell" style="--explorer-width:${this.explorerWidth}px;--code-chat-width:${this.codeChatWidth}px">
+      <div class="code-app-shell" aria-busy="true" style="--explorer-width:${this.explorerWidth}px;--code-chat-width:${this.codeChatWidth}px">
         ${renderPrimaryNav({
           active: this.activeSidebar,
           workspaceName,
