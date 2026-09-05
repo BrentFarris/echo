@@ -31,6 +31,15 @@ func (p *Provider) Action(ctx context.Context, workspaceID, repositoryID string,
 	if request.ExpectedRevision != 0 && request.ExpectedRevision != state.revision.Load() {
 		return sourcecontrol.ActionResult{}, &sourcecontrol.Error{Code: "stale_source_control_revision", Message: "source control changed; refresh and try again", Details: map[string]any{"revision": state.revision.Load()}}
 	}
+	// Opening Fossil's local web UI does not change checkout state. Keep it out
+	// of the mutating action path so it neither advances the revision token nor
+	// applies Protected Changes' checkout-changing restrictions.
+	if request.Action == "open_ui" {
+		if err := p.openFossilUI(state); err != nil {
+			return sourcecontrol.ActionResult{}, err
+		}
+		return sourcecontrol.ActionResult{RequestID: request.RequestID, RepositoryID: repositoryID, Revision: state.revision.Load()}, nil
+	}
 	// A failed VCS command may still have changed checkout state (for example,
 	// a merge that stops on conflicts), so every accepted mutation attempt
 	// advances the token. Stale requests return above without changing it.

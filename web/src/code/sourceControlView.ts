@@ -660,7 +660,7 @@ export class SourceControlView {
       const actionRequest = { ...request, expectedRevision: status?.revision } as SourceControlActionRequest;
       const result = await sourceControlAPI.runAction(this.workspaceId, repository.id, actionRequest);
       this.applyPrediction(repository.id, request, result);
-      if (!["stage", "stage_all", "unstage", "unstage_all", "protect", "protect_all", "unprotect", "unprotect_all", "discard", "discard_all"].includes(request.action)) {
+      if (!["stage", "stage_all", "unstage", "unstage_all", "protect", "protect_all", "unprotect", "unprotect_all", "discard", "discard_all", "open_ui"].includes(request.action)) {
         this.metadata.delete(repository.id);
         this.history.delete(repository.id);
         if (this.historyExpanded.has(repository.id)) void this.loadHistory(repository.id);
@@ -744,6 +744,17 @@ export class SourceControlView {
         else { this.historyExpanded.add(repository.id); if (!this.history.has(repository.id)) void this.loadHistory(repository.id); }
         this.render();
       } });
+    for (const [index, action] of (presentation.repositoryActions?.(repository) || []).entries()) {
+      const availability = repository.actionAvailability?.[action.action];
+      actions.push({
+        label: action.label,
+        detail: availability?.enabled === false ? availability.diagnostic : undefined,
+        icon: action.icon,
+        separatorBefore: index === 0,
+        disabled: this.busyRepositories.has(repository.id) || availability?.enabled === false,
+        run: () => this.runSimple(repository, action.action),
+      });
+    }
     showContextMenu(x, y, actions);
   }
 

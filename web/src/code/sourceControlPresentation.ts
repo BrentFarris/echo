@@ -22,6 +22,12 @@ export type ChangeActionPresentation = {
   confirmation?: { title: string; message: string; confirmLabel: string };
 };
 
+export type RepositoryActionPresentation = {
+  action: string;
+  label: string;
+  icon: string;
+};
+
 export interface SourceControlPresentationAdapter {
   readonly id: string;
   readonly usesStagingArea: boolean;
@@ -35,6 +41,7 @@ export interface SourceControlPresentationAdapter {
   commit(repository: SourceControlRepository, status: SourceControlStatus, selected: SourceControlChange[]): CommitPresentation;
   groupAction(repository: SourceControlRepository, group: SourceControlChangeGroup): ChangeActionPresentation | null;
   changeAction(repository: SourceControlRepository, group: SourceControlChangeGroup, change: SourceControlChange): ChangeActionPresentation | null;
+  repositoryActions?(repository: SourceControlRepository): RepositoryActionPresentation[];
 }
 
 export function supports(repository: SourceControlRepository, capability: SourceControlCapability): boolean {
@@ -93,6 +100,9 @@ const fossilPresentation: SourceControlPresentationAdapter = {
   supportsTagAdministration: false,
   promotesPendingSync: false,
   showSync() { return false; },
+  repositoryActions(repository) {
+    return supports(repository, "webUI") ? [{ action: "open_ui", label: "Fossil UI", icon: "globe" }] : [];
+  },
   commit(repository, status, selected) {
     const protectedGroup = status.groups.find((group) => group.role === "included" && group.actions.includes("unprotect"));
     if (protectedGroup) {

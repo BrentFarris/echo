@@ -3,7 +3,7 @@ import type { FileRef } from "./types";
 export type SourceControlCapability =
   | "status" | "diff" | "history" | "stage" | "track" | "commitAll" | "commitSelected"
   | "protect"
-  | "update" | "sync" | "pull" | "push" | "branches" | "merge" | "stashes" | "initialize" | "clone";
+  | "update" | "sync" | "pull" | "push" | "branches" | "merge" | "stashes" | "webUI" | "initialize" | "clone";
 
 export type SourceControlProvider = {
   id: string;
@@ -26,6 +26,7 @@ export type SourceControlRepository = {
   available: boolean;
   diagnostic?: string;
   capabilities: SourceControlCapability[];
+  actionAvailability?: Record<string, { enabled: boolean; diagnostic?: string }>;
 };
 
 export type SourceControlChange = {

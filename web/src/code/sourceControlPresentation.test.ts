@@ -13,7 +13,7 @@ const fossilRepository: SourceControlRepository = {
   scopes: [{ rootId: "root", rootLabel: "Project", repoPrefix: "" }],
   revision: 1,
   available: true,
-  capabilities: ["status", "diff", "history", "track", "protect", "commitAll", "commitSelected", "update", "sync"],
+  capabilities: ["status", "diff", "history", "track", "protect", "commitAll", "commitSelected", "update", "sync", "webUI"],
 };
 
 function fossilStatus(groups: SourceControlStatus["groups"]): SourceControlStatus {
@@ -43,6 +43,7 @@ describe("Source Control presentation adapters", () => {
     expect(presentation.commit(fossilRepository, status, [])).toMatchObject({ action: "commit_all", label: "Commit All", enabled: true });
     expect(presentation.commit(fossilRepository, status, [status.unstaged[0]])).toMatchObject({ action: "commit_selected", label: "Commit 1 Selected", enabled: true });
     expect(presentation.changeAction(fossilRepository, status.groups[1], status.unstaged[1])).toMatchObject({ action: "protect", label: "Protect This Version" });
+    expect(presentation.repositoryActions?.(fossilRepository)).toEqual([{ action: "open_ui", label: "Fossil UI", icon: "globe" }]);
   });
 
   it("makes a protected checkpoint the Fossil commit target", () => {
@@ -71,6 +72,11 @@ describe("Source Control presentation adapters", () => {
       { id: "conflicts", label: "Merge Changes", role: "conflicts", actions: ["discard"], changes: [{ path: "conflict.txt", status: "Conflict", statusCode: "CONFLICT", kind: "conflict", groupId: "conflicts" }] },
     ]);
     expect(presentationFor(fossilRepository).commit(fossilRepository, status, []).enabled).toBe(false);
+  });
+
+  it("does not add Fossil repository actions to Git", () => {
+    const git = { ...fossilRepository, providerId: "git", providerLabel: "Git" };
+    expect(presentationFor(git).repositoryActions?.(git) || []).toEqual([]);
   });
 });
 

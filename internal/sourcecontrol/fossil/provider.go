@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/brent/echo/internal/sandbox"
 	"github.com/brent/echo/internal/sourcecontrol"
@@ -26,7 +27,7 @@ var capabilities = []sourcecontrol.Capability{
 	sourcecontrol.CapabilityTrack, sourcecontrol.CapabilityProtect, sourcecontrol.CapabilityCommitAll, sourcecontrol.CapabilityCommitSelected,
 	sourcecontrol.CapabilityUpdate, sourcecontrol.CapabilitySync, sourcecontrol.CapabilityPull,
 	sourcecontrol.CapabilityPush, sourcecontrol.CapabilityBranches, sourcecontrol.CapabilityMerge,
-	sourcecontrol.CapabilityStashes,
+	sourcecontrol.CapabilityStashes, sourcecontrol.CapabilityWebUI,
 }
 
 type repositoryScope struct {
@@ -55,7 +56,7 @@ type repositoryState struct {
 	rootMu             *sync.RWMutex
 }
 
-func (r *repositoryState) public() sourcecontrol.Repository {
+func (r *repositoryState) public(sandboxed bool) sourcecontrol.Repository {
 	scopes := make([]sourcecontrol.Scope, len(r.scopes))
 	for index := range r.scopes {
 		scopes[index] = r.scopes[index].Scope
@@ -70,10 +71,17 @@ func (r *repositoryState) public() sourcecontrol.Repository {
 	if r.recoveryDiagnostic != "" {
 		diagnostic = r.recoveryDiagnostic
 	}
+	var actionAvailability map[string]sourcecontrol.ActionAvailability
+	if sandboxed {
+		actionAvailability = map[string]sourcecontrol.ActionAvailability{
+			"open_ui": {Enabled: false, Diagnostic: "Disable the workspace sandbox first"},
+		}
+	}
 	return sourcecontrol.Repository{
 		ID: sourcecontrol.RepositoryID(r.workspaceID, ID, r.root), ProviderID: ID, ProviderLabel: "Fossil",
 		Label: r.label, RootRef: rootRef, Parent: r.parent, Scopes: scopes, Revision: r.revision.Load(),
 		Available: available, Diagnostic: diagnostic, Capabilities: append([]sourcecontrol.Capability(nil), capabilities...),
+		ActionAvailability: actionAvailability,
 	}
 }
 
@@ -88,6 +96,13 @@ type Provider struct {
 	mu                   sync.RWMutex
 	repos                map[string]map[string]*repositoryState
 	rootLocks            map[string]*sync.RWMutex
+	uiMu                 sync.Mutex
+	uiProcesses          map[string]*fossilUISession
+	uiWorkspaceEpoch     map[string]uint64
+	uiStarter            fossilUIStarter
+	uiStartupGrace       time.Duration
+	uiStopTimeout        time.Duration
+	uiClosed             bool
 }
 
 func New(workspaces *workspaces.Manager, fs *workspacefs.Service, sandboxManager *sandbox.Manager, checkpointRoots ...string) *Provider {
@@ -98,7 +113,9 @@ func New(workspaces *workspaces.Manager, fs *workspacefs.Service, sandboxManager
 	return &Provider{
 		workspaces: workspaces, fs: fs, sandbox: sandboxManager,
 		checkpoints: checkpoint.New(checkpointRoot), repos: make(map[string]map[string]*repositoryState),
-		rootLocks: make(map[string]*sync.RWMutex),
+		rootLocks: make(map[string]*sync.RWMutex), uiProcesses: make(map[string]*fossilUISession),
+		uiWorkspaceEpoch: make(map[string]uint64), uiStarter: startLocalFossilUI,
+		uiStartupGrace: fossilUIStartupGrace, uiStopTimeout: fossilUIStopTimeout,
 	}
 }
 
@@ -128,8 +145,9 @@ func (p *Provider) Repositories(ctx context.Context, workspaceID string) ([]sour
 		return nil, err
 	}
 	repositories := make([]sourcecontrol.Repository, 0, len(states))
+	sandboxed := p.sandbox != nil && p.sandbox.IsEnabled(workspaceID)
 	for _, state := range states {
-		repositories = append(repositories, state.public())
+		repositories = append(repositories, state.public(sandboxed))
 	}
 	sort.SliceStable(repositories, func(i, j int) bool {
 		left, right := strings.ToLower(repositories[i].Label), strings.ToLower(repositories[j].Label)
@@ -301,7 +319,7 @@ func (p *Provider) repository(ctx context.Context, workspaceID, repositoryID str
 
 func (p *Provider) Subscribe(context.Context, string) error { return nil }
 func (p *Provider) Unsubscribe(string)                      {}
-func (p *Provider) Close()                                  {}
+func (p *Provider) Close()                                  { p.closeFossilUIProcesses() }
 
 func (p *Provider) InvalidateWorkspace(workspaceID string) {
 	p.mu.RLock()
@@ -316,6 +334,7 @@ func (p *Provider) InvalidateWorkspace(workspaceID string) {
 }
 
 func (p *Provider) ResetWorkspace(ctx context.Context, workspaceID string) error {
+	p.StopWorkspaceProcesses(workspaceID)
 	p.mu.Lock()
 	delete(p.repos, workspaceID)
 	p.mu.Unlock()
@@ -325,6 +344,7 @@ func (p *Provider) ResetWorkspace(ctx context.Context, workspaceID string) error
 }
 
 func (p *Provider) RemoveWorkspace(workspaceID string) {
+	p.StopWorkspaceProcesses(workspaceID)
 	p.mu.Lock()
 	delete(p.repos, workspaceID)
 	p.mu.Unlock()
@@ -332,7 +352,9 @@ func (p *Provider) RemoveWorkspace(workspaceID string) {
 	_ = p.checkpoints.RemoveWorkspace(workspaceID)
 }
 
-func (p *Provider) StopWorkspaceProcesses(string) {}
+func (p *Provider) StopWorkspaceProcesses(workspaceID string) {
+	p.stopWorkspaceFossilUIProcesses(workspaceID)
+}
 
 // lockForRootLocked is called while p.mu is held by discovery.
 func (p *Provider) lockForRootLocked(root string) *sync.RWMutex {

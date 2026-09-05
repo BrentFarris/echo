@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -29,9 +30,12 @@ var credentialQueryPattern = regexp.MustCompile(`(?i)([?&](?:access_?token|auth|
 type cappedBuffer struct {
 	buffer bytes.Buffer
 	limit  int
+	mu     sync.Mutex
 }
 
 func (b *cappedBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	original := len(data)
 	remaining := b.limit - b.buffer.Len()
 	if remaining > 0 {
@@ -43,8 +47,24 @@ func (b *cappedBuffer) Write(data []byte) (int, error) {
 	return original, nil
 }
 
-func (b *cappedBuffer) Bytes() []byte  { return b.buffer.Bytes() }
-func (b *cappedBuffer) String() string { return b.buffer.String() }
+func (b *cappedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buffer.Bytes()...)
+}
+
+func (b *cappedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
+
+func fossilCommandEnvironment() []string {
+	return []string{
+		"LC_ALL=C", "LANG=C", "NO_COLOR=1", "FOSSIL_PAGER=cat", "PAGER=cat", "GIT_PAGER=cat",
+		"FOSSIL_EDITOR=true", "VISUAL=true", "EDITOR=true",
+	}
+}
 
 func (p *Provider) run(parent context.Context, workspaceID, root string, network bool, args ...string) ([]byte, error) {
 	timeout := localCommandTimeout
@@ -53,10 +73,7 @@ func (p *Provider) run(parent context.Context, workspaceID, root string, network
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	environment := []string{
-		"LC_ALL=C", "LANG=C", "NO_COLOR=1", "FOSSIL_PAGER=cat", "PAGER=cat", "GIT_PAGER=cat",
-		"FOSSIL_EDITOR=true", "VISUAL=true", "EDITOR=true",
-	}
+	environment := fossilCommandEnvironment()
 	if p.sandbox != nil && p.sandbox.IsEnabled(workspaceID) {
 		guestRoot, err := p.sandbox.HostToGuest(workspaceID, root)
 		if err != nil {

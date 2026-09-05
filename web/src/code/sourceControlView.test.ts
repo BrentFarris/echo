@@ -27,7 +27,7 @@ const repository = {
   scopes: [{ rootId: "root", rootLabel: "Project", repoPrefix: "" }],
   revision: 1,
   available: true,
-  capabilities: ["status", "diff", "history", "track", "protect", "commitAll", "commitSelected", "update", "sync", "pull", "push", "branches", "merge", "stashes"],
+  capabilities: ["status", "diff", "history", "track", "protect", "commitAll", "commitSelected", "update", "sync", "pull", "push", "branches", "merge", "stashes", "webUI"],
 };
 
 const status: SourceControlStatus = normalizeStatus({
@@ -135,5 +135,48 @@ describe("Source Control Fossil view", () => {
       repository.id,
       expect.objectContaining({ action: "protect_all", paths: ["edited.txt"], expectedRevision: 2 }),
     ));
+  });
+
+  it("opens Fossil UI from the repository menu", async () => {
+    const view = new SourceControlView(host, "workspace", controller.signal, {
+      roots: () => [],
+      openFile: vi.fn(),
+      openDiff: vi.fn(),
+      updateBadge: vi.fn(),
+    });
+    await view.start();
+
+    host.querySelector<HTMLElement>("[data-git-repository='fossil-repository'] [data-git-repo-action='menu']")?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 10, clientY: 10 }));
+    const button = [...document.querySelectorAll<HTMLButtonElement>("[role='menuitem']")].find((item) => item.textContent?.includes("Fossil UI"));
+    expect(button).toBeDefined();
+    expect(button?.querySelector(".codicon-globe")).not.toBeNull();
+    button?.click();
+    await vi.waitFor(() => expect(sourceControlAPI.runAction).toHaveBeenCalledWith(
+      "workspace",
+      repository.id,
+      expect.objectContaining({ action: "open_ui", expectedRevision: 1 }),
+    ));
+  });
+
+  it("shows Fossil UI disabled with a sandbox explanation", async () => {
+    sourceControlAPI.listRepositories.mockResolvedValue({
+      providers: [{ id: "fossil", label: "Fossil", available: true, capabilities: repository.capabilities }],
+      repositories: [{
+        ...repository,
+        actionAvailability: { open_ui: { enabled: false, diagnostic: "Disable the workspace sandbox first" } },
+      }],
+      searchParentRepositories: false,
+    });
+    const view = new SourceControlView(host, "workspace", controller.signal, {
+      roots: () => [], openFile: vi.fn(), openDiff: vi.fn(), updateBadge: vi.fn(),
+    });
+    await view.start();
+
+    host.querySelector<HTMLElement>("[data-git-repository='fossil-repository'] [data-git-repo-action='menu']")?.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 10, clientY: 10 }));
+    const button = [...document.querySelectorAll<HTMLButtonElement>("[role='menuitem']")].find((item) => item.textContent?.includes("Fossil UI"));
+    expect(button?.disabled).toBe(true);
+    expect(button?.textContent).toContain("Disable the workspace sandbox first");
+    button?.click();
+    expect(sourceControlAPI.runAction).not.toHaveBeenCalled();
   });
 });

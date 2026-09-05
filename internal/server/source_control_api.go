@@ -161,11 +161,11 @@ func writeSourceControlError(w http.ResponseWriter, err error) {
 		status = http.StatusConflict
 	case "git_authentication_failed", "fossil_authentication_failed":
 		status = http.StatusUnauthorized
-	case "git_unavailable", "fossil_unavailable", "fossil_checkout_unavailable_in_sandbox":
+	case "git_unavailable", "fossil_unavailable", "fossil_checkout_unavailable_in_sandbox", "fossil_ui_unavailable_in_sandbox":
 		status = http.StatusServiceUnavailable
-	case "git_timeout", "fossil_timeout":
+	case "git_timeout", "fossil_timeout", "fossil_ui_stop_timeout":
 		status = http.StatusGatewayTimeout
-	case "git_command_failed", "fossil_command_failed", "invalid_fossil_checkout":
+	case "git_command_failed", "fossil_command_failed", "invalid_fossil_checkout", "fossil_ui_start_failed", "fossil_ui_restart_failed":
 		status = http.StatusUnprocessableEntity
 	}
 	writeCodedError(w, status, sourceError.Code, sourceError.Message, sourceError.Details)

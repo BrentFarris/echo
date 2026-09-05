@@ -49,9 +49,18 @@ const (
 	CapabilityBranches       Capability = "branches"
 	CapabilityMerge          Capability = "merge"
 	CapabilityStashes        Capability = "stashes"
+	CapabilityWebUI          Capability = "webUI"
 	CapabilityInitialize     Capability = "initialize"
 	CapabilityClone          Capability = "clone"
 )
+
+// ActionAvailability lets providers explain why an otherwise supported
+// action is temporarily unavailable in the current execution environment.
+// Missing entries mean the action is available.
+type ActionAvailability struct {
+	Enabled    bool   `json:"enabled"`
+	Diagnostic string `json:"diagnostic,omitempty"`
+}
 
 type ProviderDescriptor struct {
 	ID           string       `json:"id"`
@@ -69,17 +78,18 @@ type Scope struct {
 }
 
 type Repository struct {
-	ID            string               `json:"id"`
-	ProviderID    string               `json:"providerId"`
-	ProviderLabel string               `json:"providerLabel"`
-	Label         string               `json:"label"`
-	RootRef       *workspacefs.FileRef `json:"rootRef,omitempty"`
-	Parent        bool                 `json:"parent"`
-	Scopes        []Scope              `json:"scopes"`
-	Revision      uint64               `json:"revision"`
-	Available     bool                 `json:"available"`
-	Diagnostic    string               `json:"diagnostic,omitempty"`
-	Capabilities  []Capability         `json:"capabilities"`
+	ID                 string                        `json:"id"`
+	ProviderID         string                        `json:"providerId"`
+	ProviderLabel      string                        `json:"providerLabel"`
+	Label              string                        `json:"label"`
+	RootRef            *workspacefs.FileRef          `json:"rootRef,omitempty"`
+	Parent             bool                          `json:"parent"`
+	Scopes             []Scope                       `json:"scopes"`
+	Revision           uint64                        `json:"revision"`
+	Available          bool                          `json:"available"`
+	Diagnostic         string                        `json:"diagnostic,omitempty"`
+	Capabilities       []Capability                  `json:"capabilities"`
+	ActionAvailability map[string]ActionAvailability `json:"actionAvailability,omitempty"`
 }
 
 type Change struct {
