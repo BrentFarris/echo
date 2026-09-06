@@ -68,7 +68,13 @@ func (s *Service) loadLLVMCoverage(workspaceID, scratch string, target resolvedT
 		return nil, fmt.Errorf("llvm-profdata did not produce a merged profile")
 	}
 
-	exportArgs := []string{"export", "-format=text", "-instr-profile=" + runtimeMerged, target.runtimeExecutable}
+	// Echo only consumes per-file segments and branches. Omitting function and
+	// macro-expansion records keeps exports for macro-heavy sources (for example,
+	// SQLite's amalgamation) small enough to process without exhausting llvm-cov.
+	exportArgs := []string{
+		"export", "-format=text", "-skip-functions", "-skip-expansions",
+		"-instr-profile=" + runtimeMerged, target.runtimeExecutable,
+	}
 	for _, object := range target.runtimeObjects {
 		exportArgs = append(exportArgs, "-object", object)
 	}
