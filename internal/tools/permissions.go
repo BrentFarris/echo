@@ -16,6 +16,7 @@ type ToolPermission struct {
 type ToolScopeChecker struct {
 	permissions map[string]ToolPermission
 	allowAll    bool
+	denied      map[string]bool
 }
 
 // NewToolScopeChecker treats an empty permission list as unrestricted, which
@@ -42,7 +43,13 @@ func NewDenyAllToolScopeChecker() *ToolScopeChecker {
 }
 
 func (c *ToolScopeChecker) HasTool(name string) bool {
-	if c == nil || c.allowAll {
+	if c == nil {
+		return true
+	}
+	if c.denied[name] {
+		return false
+	}
+	if c.allowAll {
 		return true
 	}
 	_, ok := c.permissions[name]
@@ -50,7 +57,13 @@ func (c *ToolScopeChecker) HasTool(name string) bool {
 }
 
 func (c *ToolScopeChecker) Allowed(name, path string) bool {
-	if c == nil || c.allowAll {
+	if c == nil {
+		return true
+	}
+	if !c.HasTool(name) {
+		return false
+	}
+	if c.allowAll {
 		return true
 	}
 	permission, ok := c.permissions[name]
@@ -67,6 +80,19 @@ func (c *ToolScopeChecker) Allowed(name, path string) bool {
 		}
 	}
 	return false
+}
+
+// DenyTool removes one tool from an otherwise unrestricted legacy scope. It
+// lets additive tools remain opt-in for existing custom modes without changing
+// the persisted meaning of their empty permission maps.
+func (c *ToolScopeChecker) DenyTool(name string) {
+	if c == nil || strings.TrimSpace(name) == "" {
+		return
+	}
+	if c.denied == nil {
+		c.denied = make(map[string]bool)
+	}
+	c.denied[strings.TrimSpace(name)] = true
 }
 
 func matchPathGlob(path, pattern string) bool {

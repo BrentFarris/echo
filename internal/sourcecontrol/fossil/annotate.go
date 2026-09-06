@@ -10,10 +10,11 @@ import (
 const maxAnnotationLines = 500
 
 func (p *Provider) Annotate(ctx context.Context, workspaceID, repositoryID, pathValue, revision string, startLine, endLine int) (sourcecontrol.Annotation, error) {
-	state, err := p.repository(ctx, workspaceID, repositoryID)
+	state, release, err := p.acquireInspectionState(ctx, workspaceID, repositoryID)
 	if err != nil {
 		return sourcecontrol.Annotation{}, err
 	}
+	defer release()
 	pathValue, err = cleanPath(pathValue)
 	if err != nil || !state.pathAllowed(pathValue) {
 		return sourcecontrol.Annotation{}, &sourcecontrol.Error{Code: "path_outside_workspace", Message: "source control path is outside this workspace", Cause: sourcecontrol.ErrInvalidPath}

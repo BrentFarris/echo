@@ -427,7 +427,7 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "invalid_goal", "goal objective must contain at most 4000 characters", requestID)
 		return
 	}
-	scopes := tools.NewToolScopeChecker(agentmodes.PermissionList(mode))
+	scopes := toolScopesForAgentMode(mode)
 	_, researchStreamer := m.server.researchChat()
 	researchEnabled := m.server.settings.ResearchAgentConcurrency > 0 && researchStreamer != nil && modeAllowsResearch(mode)
 
@@ -870,7 +870,7 @@ func (m *chatSessionManager) resumeGoal(c *client, workspaceID, chatID, surfaceV
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		session.run(ctx, streamer, settings, prefix, canonical, checkpoint, turnID, tools.NewToolScopeChecker(agentmodes.PermissionList(mode)), mode, researchEnabled)
+		session.run(ctx, streamer, settings, prefix, canonical, checkpoint, turnID, toolScopesForAgentMode(mode), mode, researchEnabled)
 	}()
 }
 
@@ -1092,7 +1092,7 @@ func (m *chatSessionManager) compress(c *client, workspaceID, chatID, surfaceVal
 		m.commandErrorForTab(c, workspaceID, resolved, "agent_mode_load_failed", modeErr.Error(), "")
 		return
 	}
-	scopes := tools.NewToolScopeChecker(agentmodes.PermissionList(mode))
+	scopes := toolScopesForAgentMode(mode)
 	_, researchStreamer := m.server.researchChat()
 	researchEnabled := m.server.settings.ResearchAgentConcurrency > 0 && researchStreamer != nil && modeAllowsResearch(mode)
 	prefix := []llm.Message{m.server.agentModeSystemMessage(session.workspace, mode, lastTurn.UserContent, researchEnabled)}
@@ -1369,7 +1369,7 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "agent_mode_load_failed", err.Error(), "")
 		return
 	}
-	scopes := tools.NewToolScopeChecker(agentmodes.PermissionList(mode))
+	scopes := toolScopesForAgentMode(mode)
 	_, researchStreamer := m.server.researchChat()
 	researchEnabled := m.server.settings.ResearchAgentConcurrency > 0 && researchStreamer != nil && modeAllowsResearch(mode)
 	images := append([]sessions.MediaAttachment(nil), selected.Images...)
@@ -4070,11 +4070,22 @@ func (s *Server) agentModeSystemMessage(workspace workspaces.Workspace, mode age
 }
 
 func modeAllowsTool(mode agentmodes.Mode, name string) bool {
+	if name == tools.FossilInspectToolName && (mode.ID == agentmodes.GoalID || (!mode.BuiltIn && len(mode.Permissions) == 0)) {
+		return false
+	}
 	if len(mode.Permissions) == 0 {
 		return true
 	}
 	_, ok := mode.Permissions[name]
 	return ok
+}
+
+func toolScopesForAgentMode(mode agentmodes.Mode) *tools.ToolScopeChecker {
+	scopes := tools.NewToolScopeChecker(agentmodes.PermissionList(mode))
+	if mode.ID == agentmodes.GoalID || (!mode.BuiltIn && len(mode.Permissions) == 0) {
+		scopes.DenyTool(tools.FossilInspectToolName)
+	}
+	return scopes
 }
 
 func newSessionID(prefix string) string {

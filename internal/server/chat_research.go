@@ -220,6 +220,9 @@ func researchToolScopes(mode agentmodes.Mode) *tools.ToolScopeChecker {
 	for _, schema := range tools.ResearchLLMSchemaForScopes(nil) {
 		name := schema.Function.Name
 		if len(mode.Permissions) == 0 {
+			if name == tools.FossilInspectToolName && !mode.BuiltIn {
+				continue
+			}
 			permissions = append(permissions, tools.ToolPermission{Name: name})
 			continue
 		}

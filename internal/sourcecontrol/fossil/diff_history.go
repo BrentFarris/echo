@@ -370,29 +370,13 @@ func parseStashes(output string) []sourcecontrol.Stash {
 }
 
 func (p *Provider) History(ctx context.Context, workspaceID, repositoryID string, offset, limit int) (sourcecontrol.History, error) {
-	state, err := p.repository(ctx, workspaceID, repositoryID)
-	if err != nil {
-		return sourcecontrol.History{}, err
-	}
 	if offset < 0 {
 		offset = 0
 	}
 	if limit <= 0 || limit > sourcecontrol.HistoryPageSize {
 		limit = sourcecontrol.HistoryPageSize
 	}
-	separator := "\x1f"
-	format := strings.Join([]string{"%H", "%p", "%a", "%d", "%b", "%t", "%c"}, separator)
-	output, err := p.run(ctx, state.workspaceID, state.root, false,
-		"timeline", "-t", "ci", "-n", strconv.Itoa(limit+1), "--offset", strconv.Itoa(offset), "-W", "0", "--format", format)
-	if err != nil {
-		return sourcecontrol.History{}, err
-	}
-	commits := parseTimeline(string(output), separator)
-	hasMore := len(commits) > limit
-	if hasMore {
-		commits = commits[:limit]
-	}
-	return sourcecontrol.History{Commits: commits, NextOffset: offset + len(commits), HasMore: hasMore}, nil
+	return p.QueryHistory(ctx, workspaceID, repositoryID, sourcecontrol.HistoryQuery{Offset: offset, Limit: limit})
 }
 
 func parseTimeline(output, separator string) []sourcecontrol.Commit {
@@ -420,10 +404,11 @@ func parseTimeline(output, separator string) []sourcecontrol.Commit {
 }
 
 func (p *Provider) RevisionDetail(ctx context.Context, workspaceID, repositoryID, ref, kind string) (sourcecontrol.RevisionDetail, error) {
-	state, err := p.repository(ctx, workspaceID, repositoryID)
+	state, release, err := p.acquireInspectionState(ctx, workspaceID, repositoryID)
 	if err != nil {
 		return sourcecontrol.RevisionDetail{}, err
 	}
+	defer release()
 	if kind == "stash" {
 		if _, parseErr := strconv.Atoi(ref); parseErr != nil {
 			return sourcecontrol.RevisionDetail{}, &sourcecontrol.Error{Code: "invalid_stash", Message: "Fossil stash ID is invalid"}
@@ -442,6 +427,13 @@ func (p *Provider) RevisionDetail(ctx context.Context, workspaceID, repositoryID
 		return sourcecontrol.RevisionDetail{}, err
 	}
 	info := parseInfo(string(infoOutput))
+	commit, err := p.inspectCommit(ctx, state, ref, string(infoOutput))
+	if err != nil {
+		return sourcecontrol.RevisionDetail{}, err
+	}
+	if len(commit.Parents) == 0 && info.Parent != "" {
+		commit.Parents = []string{info.Parent}
+	}
 	if info.Parent == "" {
 		output, listErr := p.run(ctx, state.workspaceID, state.root, false, "ls", "-r", ref)
 		if listErr != nil {
@@ -453,7 +445,7 @@ func (p *Provider) RevisionDetail(ctx context.Context, workspaceID, repositoryID
 				files = append(files, sourcecontrol.RevisionFile{Path: pathValue, Status: "A"})
 			}
 		}
-		return sourcecontrol.RevisionDetail{Ref: ref, Files: files}, nil
+		return sourcecontrol.RevisionDetail{Ref: ref, Commit: commit, Files: files}, nil
 	}
 	output, err := p.run(ctx, state.workspaceID, state.root, false, "diff", "--from", info.Parent, "--to", ref, "--internal", "--brief")
 	if err != nil {
@@ -466,7 +458,7 @@ func (p *Provider) RevisionDetail(ctx context.Context, workspaceID, repositoryID
 			filtered = append(filtered, file)
 		}
 	}
-	return sourcecontrol.RevisionDetail{Ref: ref, Files: filtered}, nil
+	return sourcecontrol.RevisionDetail{Ref: ref, Commit: commit, Files: filtered}, nil
 }
 
 func parseBriefDiff(output string) []sourcecontrol.RevisionFile {
@@ -484,10 +476,24 @@ func parseBriefDiff(output string) []sourcecontrol.RevisionFile {
 		}
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
+			pathValue := briefBarePath(line)
+			if pathValue != "" && !seen[pathValue] {
+				seen[pathValue] = true
+				result = append(result, sourcecontrol.RevisionFile{Path: pathValue, Status: "M"})
+			}
 			continue
 		}
 		code := strings.ToUpper(strings.TrimSuffix(fields[0], ":"))
 		if code != "ADDED" && code != "DELETED" && code != "CHANGED" && code != "RENAMED" {
+			// Fossil's documented --brief form may be a bare filename. It
+			// intentionally omits change classification, so represent it as a
+			// generic modification while preserving the complete path.
+			pathValue := briefBarePath(line)
+			if pathValue == "" || seen[pathValue] {
+				continue
+			}
+			seen[pathValue] = true
+			result = append(result, sourcecontrol.RevisionFile{Path: pathValue, Status: "M"})
 			continue
 		}
 		pathValue := filepathClean(strings.TrimSpace(line[len(fields[0]):]))
@@ -500,6 +506,16 @@ func parseBriefDiff(output string) []sourcecontrol.RevisionFile {
 	}
 	sort.SliceStable(result, func(i, j int) bool { return result[i].Path < result[j].Path })
 	return result
+}
+
+func briefBarePath(line string) string {
+	trimmed := strings.TrimSpace(line)
+	for _, prefix := range []string{"--- ", "+++ ", "@@", "===", "+", "-"} {
+		if strings.HasPrefix(trimmed, prefix) {
+			return ""
+		}
+	}
+	return filepathClean(trimmed)
 }
 
 func parsePatchFiles(output string) []sourcecontrol.RevisionFile { return parseBriefDiff(output) }

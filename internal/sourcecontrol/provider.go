@@ -26,6 +26,21 @@ type HistoryProvider interface {
 	RevisionDetail(context.Context, string, string, string, string) (RevisionDetail, error)
 }
 
+// HistoryQueryProvider, PatchProvider, and RepositorySearchProvider are
+// optional read-only inspection capabilities. Keeping them separate avoids
+// forcing future providers to emulate concepts their VCS does not expose.
+type HistoryQueryProvider interface {
+	QueryHistory(context.Context, string, string, HistoryQuery) (History, error)
+}
+
+type PatchProvider interface {
+	Patch(context.Context, string, string, PatchRequest) (PatchResult, error)
+}
+
+type RepositorySearchProvider interface {
+	Search(context.Context, string, string, RepositorySearchRequest) (RepositorySearchResult, error)
+}
+
 type AnnotateProvider interface {
 	Annotate(context.Context, string, string, string, string, int, int) (Annotation, error)
 }

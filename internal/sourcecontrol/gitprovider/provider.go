@@ -192,7 +192,10 @@ func (p *Provider) History(ctx context.Context, workspaceID, repositoryID string
 	}
 	result := sourcecontrol.History{NextOffset: history.NextOffset, HasMore: history.HasMore}
 	for _, commit := range history.Commits {
-		result.Commits = append(result.Commits, sourcecontrol.Commit(commit))
+		result.Commits = append(result.Commits, sourcecontrol.Commit{
+			Hash: commit.Hash, Parents: append([]string(nil), commit.Parents...), Author: commit.Author,
+			AuthoredAt: commit.AuthoredAt, Refs: append([]string(nil), commit.Refs...), Subject: commit.Subject,
+		})
 	}
 	return result, nil
 }

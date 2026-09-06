@@ -154,6 +154,15 @@ type SourceControlInspector interface {
 	Annotate(context.Context, string, string, string, string, int, int) (sourcecontrol.Annotation, error)
 }
 
+// SourceControlAdvancedInspector is implemented by the provider registry when
+// richer, additive read-only inspection capabilities are available. It stays
+// separate so existing source_control_inspect integrations remain compatible.
+type SourceControlAdvancedInspector interface {
+	QueryHistory(context.Context, string, string, sourcecontrol.HistoryQuery) (sourcecontrol.History, error)
+	Patch(context.Context, string, string, sourcecontrol.PatchRequest) (sourcecontrol.PatchResult, error)
+	Search(context.Context, string, string, sourcecontrol.RepositorySearchRequest) (sourcecontrol.RepositorySearchResult, error)
+}
+
 func (ctx ExecutionContext) UsesSandbox() bool {
 	return ctx.Sandbox != nil && (ctx.SandboxEnabled || ctx.Sandbox.IsEnabled(ctx.WorkspaceID))
 }

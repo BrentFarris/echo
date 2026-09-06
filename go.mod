@@ -13,6 +13,7 @@ require (
 	github.com/moby/moby/api v1.55.0
 	github.com/moby/moby/client v0.5.1
 	github.com/opencontainers/image-spec v1.1.1
+	github.com/pmezard/go-difflib v1.0.0
 	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06
 	golang.org/x/crypto v0.55.0
 	golang.org/x/image v0.12.0

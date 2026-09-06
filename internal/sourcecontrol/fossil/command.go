@@ -28,9 +28,10 @@ var credentialURLPattern = regexp.MustCompile(`(?i)((?:https?|ssh)://)([^/@\s]+)
 var credentialQueryPattern = regexp.MustCompile(`(?i)([?&](?:access_?token|auth|key|password|passwd|signature|token)=)[^&\s]+`)
 
 type cappedBuffer struct {
-	buffer bytes.Buffer
-	limit  int
-	mu     sync.Mutex
+	buffer    bytes.Buffer
+	limit     int
+	truncated bool
+	mu        sync.Mutex
 }
 
 func (b *cappedBuffer) Write(data []byte) (int, error) {
@@ -40,9 +41,12 @@ func (b *cappedBuffer) Write(data []byte) (int, error) {
 	remaining := b.limit - b.buffer.Len()
 	if remaining > 0 {
 		if len(data) > remaining {
+			b.truncated = true
 			data = data[:remaining]
 		}
 		_, _ = b.buffer.Write(data)
+	} else if len(data) > 0 {
+		b.truncated = true
 	}
 	return original, nil
 }
@@ -59,6 +63,12 @@ func (b *cappedBuffer) String() string {
 	return b.buffer.String()
 }
 
+func (b *cappedBuffer) Truncated() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.truncated
+}
+
 func fossilCommandEnvironment() []string {
 	return []string{
 		"LC_ALL=C", "LANG=C", "NO_COLOR=1", "FOSSIL_PAGER=cat", "PAGER=cat", "GIT_PAGER=cat",
@@ -67,6 +77,14 @@ func fossilCommandEnvironment() []string {
 }
 
 func (p *Provider) run(parent context.Context, workspaceID, root string, network bool, args ...string) ([]byte, error) {
+	output, _, err := p.runLimited(parent, workspaceID, root, network, maximumCommandOutput, args...)
+	return output, err
+}
+
+func (p *Provider) runLimited(parent context.Context, workspaceID, root string, network bool, outputLimit int, args ...string) ([]byte, bool, error) {
+	if outputLimit <= 0 || outputLimit > maximumCommandOutput {
+		outputLimit = maximumCommandOutput
+	}
 	timeout := localCommandTimeout
 	if network {
 		timeout = networkCommandTimeout
@@ -77,14 +95,14 @@ func (p *Provider) run(parent context.Context, workspaceID, root string, network
 	if p.sandbox != nil && p.sandbox.IsEnabled(workspaceID) {
 		guestRoot, err := p.sandbox.HostToGuest(workspaceID, root)
 		if err != nil {
-			return nil, &sourcecontrol.Error{Code: "sandbox_path_mapping_failed", Message: "Fossil checkout could not be mapped into the sandbox", Cause: err}
+			return nil, false, &sourcecontrol.Error{Code: "sandbox_path_mapping_failed", Message: "Fossil checkout could not be mapped into the sandbox", Cause: err}
 		}
 		result, executeErr := p.sandbox.Execute(ctx, workspaceID, sandbox.ExecRequest{
 			Command: append([]string{"fossil"}, args...), WorkingDirectory: guestRoot,
-			Environment: environment, OutputLimit: maximumCommandOutput,
+			Environment: environment, OutputLimit: outputLimit,
 		})
 		if executeErr != nil {
-			return nil, &sourcecontrol.Error{Code: sandbox.ErrorCode(executeErr), Message: executeErr.Error(), Cause: executeErr}
+			return nil, false, &sourcecontrol.Error{Code: sandbox.ErrorCode(executeErr), Message: executeErr.Error(), Cause: executeErr}
 		}
 		if result.ExitCode != 0 {
 			message := commandMessage(result.Stderr, result.Stdout, result.ExitCode)
@@ -92,16 +110,16 @@ func (p *Provider) run(parent context.Context, workspaceID, root string, network
 			if code == "fossil_checkout_unavailable_in_sandbox" {
 				message = sandboxCheckoutDiagnostic
 			}
-			return result.Stdout, &sourcecontrol.Error{Code: code, Message: sanitizeOutput(message, root)}
+			return result.Stdout, result.StdoutTruncated, &sourcecontrol.Error{Code: code, Message: sanitizeOutput(message, root)}
 		}
-		return result.Stdout, nil
+		return result.Stdout, result.StdoutTruncated, nil
 	}
 
 	command := exec.CommandContext(ctx, "fossil", args...)
 	command.Dir = root
 	command.Env = append(os.Environ(), environment...)
 	var stdout, stderr cappedBuffer
-	stdout.limit = maximumCommandOutput
+	stdout.limit = outputLimit
 	stderr.limit = 4 << 20
 	command.Stdout = &stdout
 	command.Stderr = &stderr
@@ -120,9 +138,9 @@ func (p *Provider) run(parent context.Context, workspaceID, root string, network
 		} else if errors.Is(err, exec.ErrNotFound) {
 			code, message = "fossil_unavailable", "Fossil is not installed or is not available on PATH"
 		}
-		return stdout.Bytes(), &sourcecontrol.Error{Code: code, Message: sanitizeOutput(message, root), Cause: err}
+		return stdout.Bytes(), stdout.Truncated(), &sourcecontrol.Error{Code: code, Message: sanitizeOutput(message, root), Cause: err}
 	}
-	return stdout.Bytes(), nil
+	return stdout.Bytes(), stdout.Truncated(), nil
 }
 
 func commandMessage(stderr, stdout []byte, exitCode int) string {

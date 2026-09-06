@@ -70,6 +70,68 @@ func newFossilIntegration(t *testing.T) *fossilIntegration {
 	}
 }
 
+func TestFossilIntegrationAdvancedInspectionIsReadOnly(t *testing.T) {
+	integration := newFossilIntegration(t)
+	ctx := context.Background()
+	writeFossilIntegrationFile(t, integration.root, "tracked.txt", "second revision\n")
+	runFossilIntegration(t, integration.binary, integration.root, "commit", "--nosync", "--no-prompt", "--no-warnings", "-m", "Second revision")
+	infoBefore, err := integration.provider.checkoutInfo(ctx, integration.workspaceID, integration.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stashesBefore := runFossilIntegration(t, integration.binary, integration.root, "stash", "list")
+	writeFossilIntegrationFile(t, integration.root, "tracked.txt", "later working edit\n")
+	writeFossilIntegrationFile(t, integration.root, "untracked.txt", "must not enter ordinary diff\n")
+
+	history, err := integration.provider.QueryHistory(ctx, integration.workspaceID, integration.repositoryID, sourcecontrol.HistoryQuery{
+		Query: "INITIAL FILE", Path: "tracked.txt", Limit: 20,
+	})
+	if err != nil || len(history.Commits) != 1 || !strings.Contains(strings.ToLower(history.Commits[0].Message), "initial file") {
+		t.Fatalf("filtered history = %#v, %v", history, err)
+	}
+	search, err := integration.provider.Search(ctx, integration.workspaceID, integration.repositoryID, sourcecontrol.RepositorySearchRequest{Query: "initial file"})
+	if err != nil || !strings.Contains(strings.ToLower(search.Output), "initial file") {
+		t.Fatalf("check-in search = %#v, %v", search, err)
+	}
+	detail, err := integration.provider.RevisionDetail(ctx, integration.workspaceID, integration.repositoryID, infoBefore.Checkout, "commit")
+	if err != nil || detail.Commit == nil || detail.Commit.Hash == "" || detail.Commit.Author == "" || len(detail.Commit.Parents) != 1 || len(detail.Files) != 1 || detail.Files[0].Path != "tracked.txt" {
+		t.Fatalf("revision detail = %#v, %v", detail, err)
+	}
+	show, err := integration.provider.Patch(ctx, integration.workspaceID, integration.repositoryID, sourcecontrol.PatchRequest{
+		Comparison: "revision", Ref: infoBefore.Checkout, ContextLines: 3, IncludePatch: true, MaxOutputBytes: sourcecontrol.InspectionDefaultOutputMax,
+	})
+	if err != nil || show.FileCount != 1 || !strings.Contains(show.Patch, "tracked.txt") || !strings.Contains(show.Patch, "second revision") {
+		t.Fatalf("show patch = %#v, %v", show, err)
+	}
+	working, err := integration.provider.Patch(ctx, integration.workspaceID, integration.repositoryID, sourcecontrol.PatchRequest{
+		Comparison: "working_tree", ContextLines: 3, IncludePatch: true, MaxOutputBytes: sourcecontrol.InspectionDefaultOutputMax,
+	})
+	if err != nil || !strings.Contains(working.Patch, "later working edit") || strings.Contains(working.Patch, "untracked.txt") {
+		t.Fatalf("working patch = %#v, %v", working, err)
+	}
+	annotation, err := integration.provider.Annotate(ctx, integration.workspaceID, integration.repositoryID, "tracked.txt", "current", 1, 5)
+	if err != nil || annotation.Text == "" || annotation.Path != "tracked.txt" {
+		t.Fatalf("annotation = %#v, %v", annotation, err)
+	}
+	root, err := integration.provider.Patch(ctx, integration.workspaceID, integration.repositoryID, sourcecontrol.PatchRequest{
+		Comparison: "revision", Ref: detail.Commit.Parents[0], ContextLines: 3, IncludePatch: true, MaxOutputBytes: sourcecontrol.InspectionDefaultOutputMax,
+	})
+	if err != nil || root.FileCount != 2 || !strings.Contains(root.Patch, "/dev/null") {
+		t.Fatalf("root check-in patch = %#v, %v", root, err)
+	}
+
+	infoAfter, err := integration.provider.checkoutInfo(ctx, integration.workspaceID, integration.root)
+	if err != nil || infoAfter.Checkout != infoBefore.Checkout {
+		t.Fatalf("inspection changed checkout: before=%#v after=%#v err=%v", infoBefore, infoAfter, err)
+	}
+	if stashesAfter := runFossilIntegration(t, integration.binary, integration.root, "stash", "list"); stashesAfter != stashesBefore {
+		t.Fatalf("inspection changed stashes: before=%q after=%q", stashesBefore, stashesAfter)
+	}
+	if content, readErr := os.ReadFile(filepath.Join(integration.root, "tracked.txt")); readErr != nil || string(content) != "later working edit\n" {
+		t.Fatalf("inspection changed working content: %q, %v", content, readErr)
+	}
+}
+
 func TestFossilIntegrationProtectedChangesFreezeDiscardAndCommit(t *testing.T) {
 	integration := newFossilIntegration(t)
 	writeFossilIntegrationFile(t, integration.root, "delete-me.txt", "user stash content\n")

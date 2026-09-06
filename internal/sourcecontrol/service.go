@@ -161,6 +161,48 @@ func (s *Service) History(ctx context.Context, workspaceID, repositoryID string,
 	return capability.History(ctx, workspaceID, repositoryID, offset, limit)
 }
 
+func (s *Service) QueryHistory(ctx context.Context, workspaceID, repositoryID string, query HistoryQuery) (History, error) {
+	provider, err := s.providerForRepository(ctx, workspaceID, repositoryID)
+	if err != nil {
+		return History{}, err
+	}
+	if capability, ok := provider.(HistoryQueryProvider); ok {
+		return capability.QueryHistory(ctx, workspaceID, repositoryID, query)
+	}
+	if query.Revision != "" || query.Branch != "" || query.Path != "" || query.Query != "" || query.Author != "" || query.Since != "" || query.Until != "" {
+		return History{}, unsupported("history queries")
+	}
+	capability, ok := provider.(HistoryProvider)
+	if !ok {
+		return History{}, unsupported("history")
+	}
+	return capability.History(ctx, workspaceID, repositoryID, query.Offset, query.Limit)
+}
+
+func (s *Service) Patch(ctx context.Context, workspaceID, repositoryID string, request PatchRequest) (PatchResult, error) {
+	provider, err := s.providerForRepository(ctx, workspaceID, repositoryID)
+	if err != nil {
+		return PatchResult{}, err
+	}
+	capability, ok := provider.(PatchProvider)
+	if !ok {
+		return PatchResult{}, unsupported("patch inspection")
+	}
+	return capability.Patch(ctx, workspaceID, repositoryID, request)
+}
+
+func (s *Service) Search(ctx context.Context, workspaceID, repositoryID string, request RepositorySearchRequest) (RepositorySearchResult, error) {
+	provider, err := s.providerForRepository(ctx, workspaceID, repositoryID)
+	if err != nil {
+		return RepositorySearchResult{}, err
+	}
+	capability, ok := provider.(RepositorySearchProvider)
+	if !ok {
+		return RepositorySearchResult{}, unsupported("repository search")
+	}
+	return capability.Search(ctx, workspaceID, repositoryID, request)
+}
+
 func (s *Service) RevisionDetail(ctx context.Context, workspaceID, repositoryID, ref, kind string) (RevisionDetail, error) {
 	provider, err := s.providerForRepository(ctx, workspaceID, repositoryID)
 	if err != nil {

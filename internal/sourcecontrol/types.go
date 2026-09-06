@@ -11,8 +11,11 @@ import (
 )
 
 const (
-	StatusLimit     = 10_000
-	HistoryPageSize = 100
+	StatusLimit                = 10_000
+	HistoryPageSize            = 100
+	InspectionFileLimit        = 500
+	InspectionDefaultOutputMax = 64 << 10
+	InspectionMaximumOutputMax = 256 << 10
 )
 
 var (
@@ -197,17 +200,36 @@ type Metadata struct {
 
 type Commit struct {
 	Hash       string   `json:"hash"`
+	ShortHash  string   `json:"shortHash,omitempty"`
 	Parents    []string `json:"parents"`
 	Author     string   `json:"author"`
 	AuthoredAt string   `json:"authoredAt"`
+	Branch     string   `json:"branch,omitempty"`
+	Tags       []string `json:"tags,omitempty"`
 	Refs       []string `json:"refs"`
 	Subject    string   `json:"subject"`
+	Message    string   `json:"message,omitempty"`
 }
 
 type History struct {
 	Commits    []Commit `json:"commits"`
 	NextOffset int      `json:"nextOffset,omitempty"`
 	HasMore    bool     `json:"hasMore"`
+	Truncated  bool     `json:"truncated,omitempty"`
+}
+
+// HistoryQuery is an additive inspection contract. Providers which support it
+// may combine native history constraints with bounded in-memory filtering.
+type HistoryQuery struct {
+	Offset   int    `json:"offset,omitempty"`
+	Limit    int    `json:"limit,omitempty"`
+	Revision string `json:"revision,omitempty"`
+	Branch   string `json:"branch,omitempty"`
+	Path     string `json:"path,omitempty"`
+	Query    string `json:"query,omitempty"`
+	Author   string `json:"author,omitempty"`
+	Since    string `json:"since,omitempty"`
+	Until    string `json:"until,omitempty"`
 }
 
 type RevisionFile struct {
@@ -217,8 +239,48 @@ type RevisionFile struct {
 }
 
 type RevisionDetail struct {
-	Ref   string         `json:"ref"`
-	Files []RevisionFile `json:"files"`
+	Ref    string         `json:"ref"`
+	Commit *Commit        `json:"commit,omitempty"`
+	Files  []RevisionFile `json:"files"`
+}
+
+// PatchRequest describes a bounded provider-native or provider-generated
+// unified patch. Comparison values are provider-neutral inspection concepts.
+type PatchRequest struct {
+	Comparison     string `json:"comparison"`
+	Path           string `json:"path,omitempty"`
+	BaseRef        string `json:"baseRef,omitempty"`
+	Ref            string `json:"ref,omitempty"`
+	ContextLines   int    `json:"contextLines,omitempty"`
+	IncludePatch   bool   `json:"includePatch"`
+	MaxOutputBytes int    `json:"maxOutputBytes,omitempty"`
+}
+
+type PatchResult struct {
+	Comparison     string         `json:"comparison"`
+	BaseRef        string         `json:"baseRef,omitempty"`
+	Ref            string         `json:"ref,omitempty"`
+	Files          []RevisionFile `json:"files"`
+	FileCount      int            `json:"fileCount"`
+	FilesTruncated bool           `json:"filesTruncated,omitempty"`
+	Statistics     string         `json:"statistics,omitempty"`
+	Patch          string         `json:"patch,omitempty"`
+	PatchTruncated bool           `json:"patchTruncated,omitempty"`
+}
+
+type RepositorySearchRequest struct {
+	Query          string   `json:"query"`
+	Scopes         []string `json:"scopes,omitempty"`
+	Limit          int      `json:"limit,omitempty"`
+	MaxOutputBytes int      `json:"maxOutputBytes,omitempty"`
+}
+
+type RepositorySearchResult struct {
+	Query     string   `json:"query"`
+	Scopes    []string `json:"scopes"`
+	Limit     int      `json:"limit"`
+	Output    string   `json:"output"`
+	Truncated bool     `json:"truncated,omitempty"`
 }
 
 type Annotation struct {

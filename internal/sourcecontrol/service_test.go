@@ -3,14 +3,18 @@ package sourcecontrol
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 )
 
 type contractProvider struct {
-	id           string
-	repositories []Repository
-	status       StatusSnapshot
-	actions      int
+	id            string
+	repositories  []Repository
+	status        StatusSnapshot
+	actions       int
+	historyQuery  HistoryQuery
+	patchRequest  PatchRequest
+	searchRequest RepositorySearchRequest
 }
 
 func (p *contractProvider) Descriptor(context.Context, string) ProviderDescriptor {
@@ -30,6 +34,18 @@ func (p *contractProvider) History(context.Context, string, string, int, int) (H
 }
 func (p *contractProvider) RevisionDetail(context.Context, string, string, string, string) (RevisionDetail, error) {
 	return RevisionDetail{Ref: p.id + "-revision"}, nil
+}
+func (p *contractProvider) QueryHistory(_ context.Context, _, _ string, query HistoryQuery) (History, error) {
+	p.historyQuery = query
+	return History{Commits: []Commit{{Hash: p.id + "-query"}}}, nil
+}
+func (p *contractProvider) Patch(_ context.Context, _, _ string, request PatchRequest) (PatchResult, error) {
+	p.patchRequest = request
+	return PatchResult{Comparison: request.Comparison}, nil
+}
+func (p *contractProvider) Search(_ context.Context, _, _ string, request RepositorySearchRequest) (RepositorySearchResult, error) {
+	p.searchRequest = request
+	return RepositorySearchResult{Query: request.Query}, nil
 }
 func (p *contractProvider) Annotate(_ context.Context, _, repositoryID, path, ref string, start, end int) (Annotation, error) {
 	return Annotation{RepositoryID: repositoryID, ProviderID: p.id, Path: path, Revision: ref, StartLine: start, EndLine: end}, nil
@@ -87,6 +103,18 @@ func TestRegistryKeepsMixedSameRootRepositoriesAndDispatchesCapabilities(t *test
 	annotation, err := service.Annotate(ctx, "workspace", fossilID, "main.go", "current", 1, 10)
 	if err != nil || annotation.ProviderID != "fossil" {
 		t.Fatalf("annotation = %#v, %v", annotation, err)
+	}
+	history, err := service.QueryHistory(ctx, "workspace", fossilID, HistoryQuery{Branch: "trunk", Limit: 17})
+	if err != nil || len(history.Commits) != 1 || fossil.historyQuery.Branch != "trunk" {
+		t.Fatalf("history query = %#v, provider=%#v, %v", history, fossil.historyQuery, err)
+	}
+	patch, err := service.Patch(ctx, "workspace", fossilID, PatchRequest{Comparison: "protected"})
+	if err != nil || patch.Comparison != "protected" || fossil.patchRequest.Comparison != "protected" {
+		t.Fatalf("patch = %#v, provider=%#v, %v", patch, fossil.patchRequest, err)
+	}
+	search, err := service.Search(ctx, "workspace", fossilID, RepositorySearchRequest{Query: "architecture"})
+	if err != nil || search.Query != "architecture" || fossil.searchRequest.Query != "architecture" {
+		t.Fatalf("search = %#v, provider=%#v, %v", search, fossil.searchRequest, err)
 	}
 }
 
@@ -155,4 +183,43 @@ func (p *statusOnlyDiscovery) Repositories(context.Context, string) ([]Repositor
 }
 func (p *statusOnlyDiscovery) Status(context.Context, string, string) (StatusSnapshot, error) {
 	return StatusSnapshot{RepositoryID: p.repositoryID, ProviderID: p.id}, nil
+}
+
+type legacyHistoryProvider struct {
+	id           string
+	repositoryID string
+}
+
+func (p *legacyHistoryProvider) Descriptor(context.Context, string) ProviderDescriptor {
+	return ProviderDescriptor{ID: p.id, Label: p.id, Available: true, Capabilities: []Capability{CapabilityHistory}}
+}
+func (p *legacyHistoryProvider) Repositories(context.Context, string) ([]Repository, error) {
+	return []Repository{{ID: p.repositoryID, ProviderID: p.id, Label: "project", Available: true}}, nil
+}
+func (p *legacyHistoryProvider) History(_ context.Context, _, _ string, offset, limit int) (History, error) {
+	return History{Commits: []Commit{{Hash: fmt.Sprintf("%d-%d", offset, limit)}}}, nil
+}
+func (p *legacyHistoryProvider) RevisionDetail(context.Context, string, string, string, string) (RevisionDetail, error) {
+	return RevisionDetail{}, nil
+}
+
+func TestAdvancedHistoryQueryFallsBackWithoutChangingLegacyProviders(t *testing.T) {
+	service := New()
+	repositoryID := RepositoryID("workspace", "legacy", "/project")
+	provider := &legacyHistoryProvider{id: "legacy", repositoryID: repositoryID}
+	if err := service.Register(provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Repositories(context.Background(), "workspace"); err != nil {
+		t.Fatal(err)
+	}
+	history, err := service.QueryHistory(context.Background(), "workspace", repositoryID, HistoryQuery{Offset: 3, Limit: 7})
+	if err != nil || len(history.Commits) != 1 || history.Commits[0].Hash != "3-7" {
+		t.Fatalf("fallback history = %#v, %v", history, err)
+	}
+	_, err = service.QueryHistory(context.Background(), "workspace", repositoryID, HistoryQuery{Query: "filtered"})
+	var sourceError *Error
+	if !errors.As(err, &sourceError) || sourceError.Code != "unsupported_source_control_capability" {
+		t.Fatalf("filtered fallback error = %v", err)
+	}
 }
