@@ -126,6 +126,97 @@ func TestCheckpointCaptureAndMaterializeSymlink(t *testing.T) {
 	}
 }
 
+func TestCheckpointCapturesMissingFileBelowDeletedParents(t *testing.T) {
+	provider, state, root := newCheckpointFileTest(t)
+	pathValue := "deleted folder/資料/missing.txt"
+	entry, blobs, err := provider.captureFileState(state, pathValue, "", "MISSING", "deleted")
+	if err != nil {
+		t.Fatalf("capture missing file: %v (cause %v)", err, errors.Unwrap(err))
+	}
+	if entry.Exists || len(blobs) != 0 {
+		t.Fatalf("missing capture has content: %#v, %#v", entry, blobs)
+	}
+	wantParents := []string{"deleted folder/資料", "deleted folder"}
+	if len(entry.MissingParents) != len(wantParents) {
+		t.Fatalf("missing parents = %#v, want %#v", entry.MissingParents, wantParents)
+	}
+	for index := range wantParents {
+		if entry.MissingParents[index] != wantParents[index] {
+			t.Fatalf("missing parents = %#v, want %#v", entry.MissingParents, wantParents)
+		}
+	}
+	if err := provider.materializeFileState(state, entry); err != nil {
+		t.Fatalf("materialize absent file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "deleted folder")); !os.IsNotExist(err) {
+		t.Fatalf("capturing/materializing absence created parent directories: %v", err)
+	}
+	data, exists, err := provider.readWorkingFile(state, pathValue)
+	if err != nil || exists || data != nil {
+		t.Fatalf("read absent working file = %q, %v, %v", data, exists, err)
+	}
+}
+
+func TestPruneRecordedMissingParentsIsPrecise(t *testing.T) {
+	provider, state, root := newCheckpointFileTest(t)
+	entry := checkpoint.FileState{
+		Path: "temporary/nested/missing.txt", Kind: "deleted",
+		MissingParents: []string{"temporary/nested", "temporary"},
+	}
+	if err := os.MkdirAll(filepath.Join(root, "temporary", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.pruneRecordedMissingParents(state, []checkpoint.FileState{entry}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "temporary")); !os.IsNotExist(err) {
+		t.Fatalf("transaction-created directory remains: %v", err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(root, "preserved", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "preserved", "nested", "later.txt"), []byte("later"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	preserved := checkpoint.FileState{
+		Path: "preserved/nested/missing.txt", Kind: "deleted",
+		MissingParents: []string{"preserved/nested", "preserved"},
+	}
+	if err := provider.pruneRecordedMissingParents(state, []checkpoint.FileState{preserved}); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "preserved", "nested", "later.txt")); err != nil || string(data) != "later" {
+		t.Fatalf("later content was not preserved: %q, %v", data, err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(root, "preexisting-empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.pruneRecordedMissingParents(state, []checkpoint.FileState{{Path: "preexisting-empty/missing.txt"}}); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Join(root, "preexisting-empty")); err != nil || !info.IsDir() {
+		t.Fatalf("pre-existing empty directory was removed: %v, %v", info, err)
+	}
+}
+
+func TestPruneRecordedMissingParentsRejectsReplacementFile(t *testing.T) {
+	provider, state, root := newCheckpointFileTest(t)
+	if err := os.WriteFile(filepath.Join(root, "collision"), []byte("user file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := provider.pruneRecordedMissingParents(state, []checkpoint.FileState{{
+		Path: "collision/missing.txt", MissingParents: []string{"collision"},
+	}})
+	if err == nil {
+		t.Fatal("replacement file at a recorded directory path was not rejected")
+	}
+	if data, readErr := os.ReadFile(filepath.Join(root, "collision")); readErr != nil || string(data) != "user file" {
+		t.Fatalf("replacement file changed: %q, %v", data, readErr)
+	}
+}
+
 func TestRecoveryRejectsInconsistentJournalPhases(t *testing.T) {
 	for _, test := range []struct {
 		name        string

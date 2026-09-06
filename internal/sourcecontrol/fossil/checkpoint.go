@@ -255,13 +255,18 @@ func (p *Provider) captureFileState(state *repositoryState, pathValue, oldPath, 
 	// Resolve the canonical parent without following the final component. A
 	// Fossil symlink is content in its own right (its target string), not the
 	// file it happens to point at.
-	hostPath, err := p.fs.ResolveEntryHostPath(state.workspaceID, *ref)
+	resolved, err := p.fs.ResolveProspectiveEntryHostPath(state.workspaceID, *ref)
 	if err != nil {
 		return entry, nil, &sourcecontrol.Error{Code: "protected_changes_read_failed", Message: "file could not be captured for protection", Cause: err, Details: map[string]any{"path": pathValue}}
 	}
+	hostPath := resolved.HostPath
 	info, err := os.Lstat(hostPath)
 	if err != nil {
 		if os.IsNotExist(err) {
+			entry.MissingParents, err = missingParentPaths(pathValue, resolved.MissingParentCount)
+			if err != nil {
+				return entry, nil, &sourcecontrol.Error{Code: "protected_changes_read_failed", Message: "file could not be captured for protection", Cause: err, Details: map[string]any{"path": pathValue}}
+			}
 			return entry, nil, nil
 		}
 		return entry, nil, err
@@ -328,10 +333,11 @@ func (p *Provider) fileStateMatchesWorking(state *repositoryState, entry checkpo
 	if !ok || oldRef == nil {
 		return false, nil
 	}
-	oldHostPath, oldErr := p.fs.ResolveEntryHostPath(state.workspaceID, *oldRef)
+	oldResolved, oldErr := p.fs.ResolveProspectiveEntryHostPath(state.workspaceID, *oldRef)
 	if oldErr != nil {
 		return false, oldErr
 	}
+	oldHostPath := oldResolved.HostPath
 	if _, oldErr = os.Lstat(oldHostPath); oldErr == nil {
 		return false, nil
 	}
@@ -346,10 +352,11 @@ func (p *Provider) materializeFileState(state *repositoryState, entry checkpoint
 	if !ok || ref == nil {
 		return &sourcecontrol.Error{Code: "path_outside_workspace", Message: "source control path is outside this workspace", Cause: sourcecontrol.ErrInvalidPath}
 	}
-	hostPath, err := p.fs.ResolveEntryHostPath(state.workspaceID, *ref)
+	resolved, err := p.fs.ResolveProspectiveEntryHostPath(state.workspaceID, *ref)
 	if err != nil {
 		return err
 	}
+	hostPath := resolved.HostPath
 	if !entry.Exists {
 		if info, statErr := os.Lstat(hostPath); statErr == nil {
 			if info.IsDir() {
@@ -389,6 +396,21 @@ func (p *Provider) materializeFileState(state *repositoryState, entry checkpoint
 		return err
 	}
 	return os.Chmod(hostPath, mode)
+}
+
+func missingParentPaths(pathValue string, count int) ([]string, error) {
+	if count == 0 {
+		return nil, nil
+	}
+	parts := strings.Split(pathValue, "/")
+	if count < 0 || count >= len(parts) {
+		return nil, fmt.Errorf("invalid missing-parent count for %q", pathValue)
+	}
+	parents := make([]string, 0, count)
+	for offset := 0; offset < count; offset++ {
+		parents = append(parents, strings.Join(parts[:len(parts)-1-offset], "/"))
+	}
+	return parents, nil
 }
 
 func protectedChange(entry checkpoint.FileState, state *repositoryState) sourcecontrol.Change {

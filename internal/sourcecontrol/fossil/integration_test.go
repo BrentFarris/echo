@@ -372,6 +372,122 @@ func TestFossilIntegrationProtectedDeletionAndRename(t *testing.T) {
 	})
 }
 
+func TestFossilIntegrationProtectsDeletedDirectoryFiles(t *testing.T) {
+	t.Run("protect discard and commit", func(t *testing.T) {
+		integration := newFossilIntegration(t)
+		directory := filepath.Join(integration.root, "deleted folder", "資料")
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFossilIntegrationFile(t, integration.root, "deleted folder/資料/one.txt", "one\n")
+		writeFossilIntegrationFile(t, integration.root, "deleted folder/資料/two.txt", "two\n")
+		runFossilIntegration(t, integration.binary, integration.root, "add", "./deleted folder/資料/one.txt", "./deleted folder/資料/two.txt")
+		runFossilIntegration(t, integration.binary, integration.root, "commit", "--nosync", "--no-prompt", "--no-warnings", "-m", "nested files")
+		if err := os.RemoveAll(filepath.Join(integration.root, "deleted folder")); err != nil {
+			t.Fatal(err)
+		}
+
+		status := integration.status(t)
+		assertFossilIntegrationChange(t, status, "working", "deleted folder/資料/one.txt", "deleted")
+		assertFossilIntegrationChange(t, status, "working", "deleted folder/資料/two.txt", "deleted")
+		diff, err := integration.provider.Diff(context.Background(), integration.workspaceID, integration.repositoryID, sourcecontrol.DiffTarget{
+			Kind: "change", GroupID: "working", Path: "deleted folder/資料/one.txt",
+		})
+		if err != nil || diff.Modified.Exists || diff.Original.Content != "one\n" {
+			t.Fatalf("missing nested-file diff = %#v, %v", diff, err)
+		}
+
+		integration.action(t, sourcecontrol.ActionRequest{
+			Action: "protect_all", Paths: []string{"deleted folder/資料/one.txt", "deleted folder/資料/two.txt"},
+		})
+		if _, err := os.Stat(filepath.Join(integration.root, "deleted folder")); !os.IsNotExist(err) {
+			t.Fatalf("protection recreated the deleted directory: %v", err)
+		}
+		status = integration.status(t)
+		assertFossilIntegrationChange(t, status, protectedGroupID, "deleted folder/資料/one.txt", "deleted")
+		assertFossilIntegrationChange(t, status, protectedGroupID, "deleted folder/資料/two.txt", "deleted")
+
+		integration.action(t, sourcecontrol.ActionRequest{Action: "discard_all", Confirmed: true})
+		if _, err := os.Stat(filepath.Join(integration.root, "deleted folder")); !os.IsNotExist(err) {
+			t.Fatalf("discard left temporary empty directories: %v", err)
+		}
+		integration.action(t, sourcecontrol.ActionRequest{Action: "commit_protected", Message: "delete nested files"})
+		if _, err := os.Stat(filepath.Join(integration.root, "deleted folder")); !os.IsNotExist(err) {
+			t.Fatalf("protected commit left temporary empty directories: %v", err)
+		}
+		for _, pathValue := range []string{"deleted folder/資料/one.txt", "deleted folder/資料/two.txt"} {
+			if _, exists, err := integration.provider.revisionFile(context.Background(), integration.providerState(t), "current", pathValue); err != nil || exists {
+				t.Fatalf("protected nested deletion %q was not committed: exists=%v err=%v", pathValue, exists, err)
+			}
+		}
+	})
+
+	t.Run("restore later content", func(t *testing.T) {
+		integration := newFossilIntegration(t)
+		pathValue := "deleted/later/file.txt"
+		if err := os.MkdirAll(filepath.Join(integration.root, "deleted", "later"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFossilIntegrationFile(t, integration.root, pathValue, "baseline\n")
+		runFossilIntegration(t, integration.binary, integration.root, "add", "./"+pathValue)
+		runFossilIntegration(t, integration.binary, integration.root, "commit", "--nosync", "--no-prompt", "--no-warnings", "-m", "nested baseline")
+		if err := os.RemoveAll(filepath.Join(integration.root, "deleted")); err != nil {
+			t.Fatal(err)
+		}
+		integration.action(t, sourcecontrol.ActionRequest{Action: "protect", Paths: []string{pathValue}})
+
+		if err := os.MkdirAll(filepath.Join(integration.root, "deleted", "later"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFossilIntegrationFile(t, integration.root, pathValue, "later recreation\n")
+		integration.action(t, sourcecontrol.ActionRequest{Action: "commit_protected", Message: "protected nested deletion"})
+		if _, exists, err := integration.provider.revisionFile(context.Background(), integration.providerState(t), "current", pathValue); err != nil || exists {
+			t.Fatalf("protected deletion was not committed: exists=%v err=%v", exists, err)
+		}
+		if content, err := os.ReadFile(filepath.Join(integration.root, filepath.FromSlash(pathValue))); err != nil || string(content) != "later recreation\n" {
+			t.Fatalf("later nested content was not restored: %q, %v", content, err)
+		}
+	})
+}
+
+func TestFossilIntegrationDeletedDirectoryRecoveryPrunesTemporaryParents(t *testing.T) {
+	for _, stage := range []string{"before_materialization", "after_commit"} {
+		t.Run(stage, func(t *testing.T) {
+			integration := newFossilIntegration(t)
+			pathValue := "deleted/recovery/file.txt"
+			if err := os.MkdirAll(filepath.Join(integration.root, "deleted", "recovery"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFossilIntegrationFile(t, integration.root, pathValue, "baseline\n")
+			runFossilIntegration(t, integration.binary, integration.root, "add", "./"+pathValue)
+			runFossilIntegration(t, integration.binary, integration.root, "commit", "--nosync", "--no-prompt", "--no-warnings", "-m", "recovery baseline")
+			if err := os.RemoveAll(filepath.Join(integration.root, "deleted")); err != nil {
+				t.Fatal(err)
+			}
+			integration.action(t, sourcecontrol.ActionRequest{Action: "protect", Paths: []string{pathValue}})
+			before := integration.status(t)
+			integration.provider.protectedCommitFault = func(current string) error {
+				if current == stage {
+					return errors.New("injected deleted-directory interruption")
+				}
+				return nil
+			}
+			_, err := integration.provider.Action(context.Background(), integration.workspaceID, integration.repositoryID, sourcecontrol.ActionRequest{
+				RequestID: "missing-parent-" + stage, Action: "commit_protected", ExpectedRevision: before.Revision, Message: "recovery deletion",
+			})
+			var sourceErr *sourcecontrol.Error
+			if !errors.As(err, &sourceErr) || sourceErr.Code != "protected_changes_recovery_required" {
+				t.Fatalf("fault result = %v", err)
+			}
+			integration.provider.protectedCommitFault = nil
+			_ = integration.status(t)
+			if _, err := os.Stat(filepath.Join(integration.root, "deleted")); !os.IsNotExist(err) {
+				t.Fatalf("recovery left temporary empty directories: %v", err)
+			}
+		})
+	}
+}
+
 func TestFossilIntegrationStaleProtectionFailsClosed(t *testing.T) {
 	integration := newFossilIntegration(t)
 	writeFossilIntegrationFile(t, integration.root, "tracked.txt", "protected A\n")

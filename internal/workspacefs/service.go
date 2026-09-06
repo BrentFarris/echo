@@ -86,6 +86,14 @@ type FileRef struct {
 	Path   string `json:"path"`
 }
 
+// ProspectiveEntryPath identifies a confined workspace entry even when some
+// of its parent directories do not exist. Resolving a prospective path never
+// creates those directories.
+type ProspectiveEntryPath struct {
+	HostPath           string
+	MissingParentCount int
+}
+
 type Root struct {
 	ID             string `json:"id"`
 	Label          string `json:"label"`
@@ -606,6 +614,82 @@ func (s *Service) ResolveEntryHostPath(workspaceID string, ref FileRef) (string,
 	}
 	_, resolved, _, err := s.resolveEntry(workspaceID, ref, false, true)
 	return resolved, err
+}
+
+// ResolveProspectiveEntryHostPath applies the entry path boundary while
+// permitting a missing suffix of parent directories. It resolves and checks
+// every existing ancestor, then returns the confined lexical destination and
+// the number of missing parents without creating anything on disk.
+func (s *Service) ResolveProspectiveEntryHostPath(workspaceID string, ref FileRef) (ProspectiveEntryPath, error) {
+	if s.wouldAffectProtectedMetadata(workspaceID, ref) {
+		return ProspectiveEntryPath{}, protectedMetadataError()
+	}
+	root, err := s.rootFor(workspaceID, strings.TrimSpace(ref.RootID))
+	if err != nil {
+		return ProspectiveEntryPath{}, err
+	}
+	relative, err := normalizeRelative(ref.Path, false)
+	if err != nil {
+		return ProspectiveEntryPath{}, err
+	}
+	parts := strings.Split(relative, "/")
+	lexical := filepath.Join(root.realPath, filepath.FromSlash(relative))
+	if err := ensureWithin(root.realPath, lexical); err != nil {
+		return ProspectiveEntryPath{}, err
+	}
+
+	parent := root.realPath
+	missingParents := 0
+	for index, name := range parts[:len(parts)-1] {
+		candidate := filepath.Join(parent, name)
+		info, statErr := os.Lstat(candidate)
+		if os.IsNotExist(statErr) {
+			missingParents = len(parts) - 1 - index
+			parent = filepath.Join(parent, filepath.Join(parts[index:len(parts)-1]...))
+			break
+		}
+		if statErr != nil {
+			return ProspectiveEntryPath{}, &Error{Code: "path_unavailable", Message: "path could not be resolved", Cause: statErr}
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			realTarget, targetErr := filepath.EvalSymlinks(candidate)
+			if targetErr != nil {
+				return ProspectiveEntryPath{}, &Error{Code: "symlink_unavailable", Message: "symlink target is unavailable", Cause: targetErr}
+			}
+			if err := ensureWithin(root.realPath, realTarget); err != nil {
+				return ProspectiveEntryPath{}, err
+			}
+			followed, targetErr := os.Stat(realTarget)
+			if targetErr != nil {
+				return ProspectiveEntryPath{}, &Error{Code: "symlink_unavailable", Message: "symlink target is unavailable", Cause: targetErr}
+			}
+			if !followed.IsDir() {
+				return ProspectiveEntryPath{}, &Error{Code: "parent_not_found", Message: "parent folder not found", Cause: ErrNotFound}
+			}
+			parent = realTarget
+			continue
+		}
+		if !info.IsDir() {
+			return ProspectiveEntryPath{}, &Error{Code: "parent_not_found", Message: "parent folder not found", Cause: ErrNotFound}
+		}
+		parent = candidate
+	}
+	target := filepath.Join(parent, parts[len(parts)-1])
+	if err := ensureWithin(root.realPath, target); err != nil {
+		return ProspectiveEntryPath{}, err
+	}
+	if entryInfo, statErr := os.Lstat(target); statErr == nil && entryInfo.Mode()&os.ModeSymlink != 0 {
+		realTarget, targetErr := filepath.EvalSymlinks(target)
+		if targetErr != nil {
+			return ProspectiveEntryPath{}, &Error{Code: "symlink_unavailable", Message: "symlink target is unavailable", Cause: targetErr}
+		}
+		if err := ensureWithin(root.realPath, realTarget); err != nil {
+			return ProspectiveEntryPath{}, err
+		}
+	} else if statErr != nil && !os.IsNotExist(statErr) {
+		return ProspectiveEntryPath{}, &Error{Code: "path_unavailable", Message: "path could not be resolved", Cause: statErr}
+	}
+	return ProspectiveEntryPath{HostPath: target, MissingParentCount: missingParents}, nil
 }
 
 func (s *Service) List(workspaceID string, ref FileRef) ([]Entry, error) {

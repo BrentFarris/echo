@@ -26,7 +26,7 @@ describe("primary navigation", () => {
       .toEqual(["map", "settings"]);
     expect(chat.querySelector("[data-nav=map]")?.getAttribute("aria-expanded")).toBe("false");
     expect([...chat.querySelectorAll("[aria-keyshortcuts]")].map((item) => item.getAttribute("aria-keyshortcuts")))
-      .toEqual(["Control+1", "Control+2", "Control+3", "Control+4", "Control+5", "Control+6", "Control+/", "Control+0"]);
+      .toEqual(["Control+1", "Control+2", "Control+3", "Control+4", "Control+5", "Control+6", "Control+m", "Control+0"]);
   });
 
   it("marks the selected Code sidebar item active", () => {

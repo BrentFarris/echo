@@ -60,7 +60,7 @@ export function renderPrimaryNav(options: PrimaryNavOptions): string {
       </nav>
       <nav class="left-nav-plugins" aria-label="Plugin views" data-plugin-nav-section>${renderDesktopPluginButtons()}</nav>
       <div class="left-nav-actions">
-        <button class="nav-icon-button" type="button" title="Chat Map (Ctrl+/)" aria-label="Chat Map" aria-keyshortcuts="Control+/" aria-haspopup="menu" aria-expanded="false" data-nav="map"><span class="codicon codicon-map"></span></button>
+        <button class="nav-icon-button" type="button" title="Chat Map (Ctrl+M)" aria-label="Chat Map" aria-keyshortcuts="Control+m" aria-haspopup="menu" aria-expanded="false" data-nav="map"><span class="codicon codicon-map"></span></button>
         <button class="nav-icon-button echo-update-target${activeClass(options.active === "settings")}" type="button" title="Settings (Ctrl+0)" aria-label="Settings" aria-keyshortcuts="Control+0" data-echo-update-target data-echo-update-label="Settings" data-nav="settings"><span class="codicon codicon-settings-gear"></span><b class="echo-update-badge" data-echo-update-badge hidden aria-hidden="true"><span class="codicon codicon-arrow-down" aria-hidden="true"></span></b></button>
       </div>
     </aside>
@@ -95,7 +95,7 @@ export function renderMobilePrimaryNav(options: PrimaryNavOptions): string {
         <button class="mobile-nav-tab${activeClass(options.active === "sandbox")}" type="button" title="Linux Sandbox (Ctrl+6)" aria-label="Linux Sandbox" aria-keyshortcuts="Control+6" data-nav="sandbox"${currentPage(options.active === "sandbox")}><span class="codicon codicon-vm" aria-hidden="true"></span></button>
         <span class="mobile-plugin-slot" data-plugin-mobile-slot>${renderMobilePluginOverflowButton()}</span>
         <span class="mobile-nav-global-actions">
-          <button class="mobile-nav-tab" type="button" title="Chat Map (Ctrl+/)" aria-label="Chat Map" aria-keyshortcuts="Control+/" aria-haspopup="menu" aria-expanded="false" data-nav="map"><span class="codicon codicon-map" aria-hidden="true"></span></button>
+          <button class="mobile-nav-tab" type="button" title="Chat Map (Ctrl+M)" aria-label="Chat Map" aria-keyshortcuts="Control+m" aria-haspopup="menu" aria-expanded="false" data-nav="map"><span class="codicon codicon-map" aria-hidden="true"></span></button>
           <button class="mobile-nav-tab echo-update-target${activeClass(options.active === "settings")}" type="button" title="Settings (Ctrl+0)" aria-label="Settings" aria-keyshortcuts="Control+0" data-echo-update-target data-echo-update-label="Settings" data-nav="settings"${currentPage(options.active === "settings")}><span class="codicon codicon-settings-gear" aria-hidden="true"></span><b class="echo-update-badge" data-echo-update-badge hidden aria-hidden="true"><span class="codicon codicon-arrow-down" aria-hidden="true"></span></b></button>
         </span>
       </div>

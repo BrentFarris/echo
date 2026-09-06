@@ -193,6 +193,11 @@ func TestProtectedWorkspaceMetadataCannotBeMutated(t *testing.T) {
 	} else {
 		assertProtected(err)
 	}
+	if _, err := service.ResolveProspectiveEntryHostPath(workspaceID, iconRef); err == nil {
+		t.Fatal("expected prospective path resolution for icon to be rejected")
+	} else {
+		assertProtected(err)
+	}
 
 	otherPath := filepath.Join(rootPath, ".echo", "notes.txt")
 	if err := os.WriteFile(otherPath, []byte("editable"), 0o644); err != nil {
@@ -206,6 +211,64 @@ func TestProtectedWorkspaceMetadataCannotBeMutated(t *testing.T) {
 	}
 	if _, err := service.Trash(workspaceID, otherRef); err != nil {
 		t.Fatalf("ordinary .echo content should remain mutable: %v", err)
+	}
+}
+
+func TestResolveProspectiveEntryWithMissingParents(t *testing.T) {
+	service, workspaceID, rootPath, root := newTestService(t)
+	ref := FileRef{RootID: root.ID, Path: "deleted folder/資料/nested file.txt"}
+
+	if _, err := service.ResolveEntryHostPath(workspaceID, ref); err == nil {
+		t.Fatal("ordinary entry resolution unexpectedly accepted missing parents")
+	} else {
+		var fsError *Error
+		if !errors.As(err, &fsError) || fsError.Code != "parent_not_found" {
+			t.Fatalf("ordinary entry resolution error = %v", err)
+		}
+	}
+	resolved, err := service.ResolveProspectiveEntryHostPath(workspaceID, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(rootPath, "deleted folder", "資料", "nested file.txt")
+	if resolved.HostPath != want || resolved.MissingParentCount != 2 {
+		t.Fatalf("prospective path = %#v, want %q with 2 missing parents", resolved, want)
+	}
+	if _, err := os.Stat(filepath.Join(rootPath, "deleted folder")); !os.IsNotExist(err) {
+		t.Fatalf("prospective resolution created a directory: %v", err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(rootPath, "existing parent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existingParent, err := service.ResolveProspectiveEntryHostPath(workspaceID, FileRef{RootID: root.ID, Path: "existing parent/new.txt"})
+	if err != nil || existingParent.MissingParentCount != 0 || existingParent.HostPath != filepath.Join(rootPath, "existing parent", "new.txt") {
+		t.Fatalf("existing-parent prospective path = %#v, %v", existingParent, err)
+	}
+}
+
+func TestResolveProspectiveEntryRejectsExistingSymlinkEscape(t *testing.T) {
+	service, workspaceID, rootPath, root := newTestService(t)
+	outside := filepath.Join(filepath.Dir(rootPath), "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(rootPath, "escape")); err != nil {
+		t.Skipf("symbolic links are unavailable: %v", err)
+	}
+	_, err := service.ResolveProspectiveEntryHostPath(workspaceID, FileRef{RootID: root.ID, Path: "escape/missing/file.txt"})
+	if !errors.Is(err, ErrOutsideRoot) {
+		t.Fatalf("expected prospective symlink escape rejection, got %v", err)
+	}
+
+	dangling := filepath.Join(rootPath, "dangling")
+	if err := os.Symlink(filepath.Join(rootPath, "does-not-exist"), dangling); err != nil {
+		t.Skipf("dangling symbolic links are unavailable: %v", err)
+	}
+	_, err = service.ResolveProspectiveEntryHostPath(workspaceID, FileRef{RootID: root.ID, Path: "dangling/missing/file.txt"})
+	var fsError *Error
+	if !errors.As(err, &fsError) || fsError.Code != "symlink_unavailable" {
+		t.Fatalf("expected dangling parent symlink rejection, got %v", err)
 	}
 }
 

@@ -238,10 +238,11 @@ func (p *Provider) readWorkingFile(state *repositoryState, pathValue string) ([]
 	if !ok || ref == nil {
 		return nil, false, &sourcecontrol.Error{Code: "path_outside_workspace", Message: "source control path is outside this workspace", Cause: sourcecontrol.ErrInvalidPath}
 	}
-	hostPath, err := p.fs.ResolveEntryHostPath(state.workspaceID, *ref)
+	resolved, err := p.fs.ResolveProspectiveEntryHostPath(state.workspaceID, *ref)
 	if err != nil {
 		return nil, false, &sourcecontrol.Error{Code: "worktree_read_failed", Message: "working file is unavailable", Cause: err}
 	}
+	hostPath := resolved.HostPath
 	info, err := os.Lstat(hostPath)
 	if os.IsNotExist(err) {
 		return nil, false, nil

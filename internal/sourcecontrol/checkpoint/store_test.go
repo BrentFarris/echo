@@ -84,7 +84,10 @@ func TestRecoveryJournalSurvivesRestartAndCanBeClearedIndependently(t *testing.T
 	journal := Journal{
 		Version: Version, WorkspaceID: manifest.WorkspaceID, ProviderID: manifest.ProviderID, RepositoryID: manifest.RepositoryID,
 		CheckoutFingerprint: manifest.CheckoutFingerprint, Baseline: manifest.Baseline, Phase: "prepared",
-		Current: []FileState{{Path: "file.txt", Exists: true, Hash: journalID, Blob: journalID}},
+		Current: []FileState{
+			{Path: "file.txt", Exists: true, Hash: journalID, Blob: journalID},
+			{Path: "deleted/nested/file.txt", Kind: "deleted", MissingParents: []string{"deleted/nested", "deleted"}},
+		},
 	}
 	if err := store.WriteJournal(journal, map[string][]byte{journalID: journalData}); err != nil {
 		t.Fatal(err)
@@ -93,6 +96,9 @@ func TestRecoveryJournalSurvivesRestartAndCanBeClearedIndependently(t *testing.T
 	loadedJournal, err := restarted.LoadJournal(manifest.WorkspaceID, manifest.ProviderID, manifest.RepositoryID)
 	if err != nil || loadedJournal == nil || loadedJournal.Phase != "prepared" {
 		t.Fatalf("journal after restart = %#v, %v", loadedJournal, err)
+	}
+	if len(loadedJournal.Current) != 2 || len(loadedJournal.Current[1].MissingParents) != 2 {
+		t.Fatalf("journal missing-parent metadata after restart = %#v", loadedJournal.Current)
 	}
 	if err := restarted.ClearJournal(manifest.WorkspaceID, manifest.ProviderID, manifest.RepositoryID); err != nil {
 		t.Fatal(err)
@@ -147,6 +153,36 @@ func TestStorePreservesSymlinkAndExecutableMetadata(t *testing.T) {
 	entry := loaded.Entries[0]
 	if !entry.Symlink || entry.SymlinkTarget != target || entry.Mode != 0o777 || entry.Hash != symlink.Hash {
 		t.Fatalf("symlink metadata changed: %#v", entry)
+	}
+}
+
+func TestStorePreservesAndValidatesMissingParents(t *testing.T) {
+	store := New(filepath.Join(t.TempDir(), "checkpoints"))
+	manifest := manifestFor(FileState{
+		Path: "deleted folder/資料/file.txt", Kind: "deleted",
+		MissingParents: []string{"deleted folder/資料", "deleted folder"},
+	})
+	if err := store.ReplaceManifest(manifest, nil); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.LoadManifest(manifest.WorkspaceID, manifest.ProviderID, manifest.RepositoryID)
+	if err != nil || loaded == nil || len(loaded.Entries) != 1 {
+		t.Fatalf("loaded missing-parent manifest = %#v, %v", loaded, err)
+	}
+	parents := loaded.Entries[0].MissingParents
+	if len(parents) != 2 || parents[0] != "deleted folder/資料" || parents[1] != "deleted folder" {
+		t.Fatalf("missing parents changed during persistence: %#v", parents)
+	}
+
+	for _, test := range []FileState{
+		{Path: "folder/file.txt", MissingParents: []string{"../outside"}},
+		{Path: "folder/file.txt", MissingParents: []string{"other"}},
+		{Path: "folder/file.txt", MissingParents: []string{"folder", "folder"}},
+		{Path: "folder/file.txt", Exists: true, MissingParents: []string{"folder"}, Hash: BlobID(nil), Blob: BlobID(nil)},
+	} {
+		if err := store.ReplaceManifest(manifestFor(test), map[string][]byte{BlobID(nil): nil}); err == nil {
+			t.Fatalf("invalid missing-parent metadata was accepted: %#v", test)
+		}
 	}
 }
 

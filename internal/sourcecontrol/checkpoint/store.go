@@ -28,16 +28,17 @@ const (
 // FileState is an exact filesystem state. Blob is a SHA-256 reference for a
 // regular file; symlink targets are kept inline and absent files use neither.
 type FileState struct {
-	Path          string `json:"path"`
-	OldPath       string `json:"oldPath,omitempty"`
-	StatusCode    string `json:"statusCode,omitempty"`
-	Kind          string `json:"kind,omitempty"`
-	Exists        bool   `json:"exists"`
-	Mode          uint32 `json:"mode,omitempty"`
-	Symlink       bool   `json:"symlink,omitempty"`
-	SymlinkTarget string `json:"symlinkTarget,omitempty"`
-	Hash          string `json:"hash,omitempty"`
-	Blob          string `json:"blob,omitempty"`
+	Path           string   `json:"path"`
+	OldPath        string   `json:"oldPath,omitempty"`
+	StatusCode     string   `json:"statusCode,omitempty"`
+	Kind           string   `json:"kind,omitempty"`
+	Exists         bool     `json:"exists"`
+	Mode           uint32   `json:"mode,omitempty"`
+	Symlink        bool     `json:"symlink,omitempty"`
+	SymlinkTarget  string   `json:"symlinkTarget,omitempty"`
+	Hash           string   `json:"hash,omitempty"`
+	Blob           string   `json:"blob,omitempty"`
+	MissingParents []string `json:"missingParents,omitempty"`
 }
 
 type Manifest struct {
@@ -319,6 +320,16 @@ func validateFileStates(states []FileState, requireEntries bool) error {
 		seen[entry.Path] = true
 		if entry.OldPath != "" && !validRelativePath(entry.OldPath) {
 			return fmt.Errorf("source-control checkpoint contains an invalid old path")
+		}
+		if entry.Exists && len(entry.MissingParents) > 0 {
+			return fmt.Errorf("existing source-control checkpoint state has missing parents for %q", entry.Path)
+		}
+		seenParents := make(map[string]bool, len(entry.MissingParents))
+		for _, parent := range entry.MissingParents {
+			if !validRelativePath(parent) || seenParents[parent] || !strings.HasPrefix(entry.Path, parent+"/") {
+				return fmt.Errorf("source-control checkpoint contains invalid missing-parent metadata for %q", entry.Path)
+			}
+			seenParents[parent] = true
 		}
 		switch {
 		case !entry.Exists:

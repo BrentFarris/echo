@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -514,7 +516,7 @@ func (p *Provider) restoreJournal(ctx context.Context, state *repositoryState, j
 			return fmt.Errorf("working version of %q could not be restored", entry.Path)
 		}
 	}
-	return nil
+	return p.pruneRecordedMissingParents(state, journal.Current)
 }
 
 func journalOldPathAfterCommit(oldPath string, committed *checkpoint.Manifest) string {
@@ -554,5 +556,64 @@ func (p *Provider) restoreProtectedEntries(ctx context.Context, state *repositor
 	if err := p.materializeProtectedEntries(ctx, state, entries, false); err != nil {
 		return err
 	}
-	return p.verifyMaterialized(state, entries)
+	if err := p.verifyMaterialized(state, entries); err != nil {
+		return err
+	}
+	return p.pruneRecordedMissingParents(state, current)
+}
+
+// pruneRecordedMissingParents removes only directory suffixes that were absent
+// when the working state was captured. Fossil revert may temporarily recreate
+// them while a protected snapshot is materialized. Non-empty directories are
+// user state and are deliberately preserved.
+func (p *Provider) pruneRecordedMissingParents(state *repositoryState, entries []checkpoint.FileState) error {
+	parents := make(map[string]string)
+	for _, entry := range entries {
+		for _, parent := range entry.MissingParents {
+			parents[pathIdentity(parent)] = parent
+		}
+	}
+	ordered := make([]string, 0, len(parents))
+	for _, parent := range parents {
+		ordered = append(ordered, parent)
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		leftDepth := strings.Count(ordered[i], "/")
+		rightDepth := strings.Count(ordered[j], "/")
+		if leftDepth != rightDepth {
+			return leftDepth > rightDepth
+		}
+		return strings.ToLower(ordered[i]) < strings.ToLower(ordered[j])
+	})
+	for _, parent := range ordered {
+		ref, ok := state.refForPath(parent)
+		if !ok || ref == nil || !state.pathAllowed(parent) {
+			return fmt.Errorf("refusing to prune unconfined directory %q", parent)
+		}
+		resolved, err := p.fs.ResolveProspectiveEntryHostPath(state.workspaceID, *ref)
+		if err != nil {
+			return err
+		}
+		info, err := os.Lstat(resolved.HostPath)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("refusing to remove non-directory at recorded path %q", parent)
+		}
+		children, err := os.ReadDir(resolved.HostPath)
+		if err != nil {
+			return err
+		}
+		if len(children) != 0 {
+			continue
+		}
+		if err := os.Remove(resolved.HostPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove temporary directory %q: %w", filepath.ToSlash(parent), err)
+		}
+	}
+	return nil
 }
