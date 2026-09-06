@@ -2077,7 +2077,8 @@
   opacity: 1;
 }
 
-.code-statusbar button[data-status="lsp"] {
+.code-statusbar button[data-status="lsp"],
+.code-statusbar button[data-status="indentation"] {
   width: auto;
   min-width: 24px;
   padding: 0 6px;
@@ -2085,9 +2086,45 @@
 }
 
 .code-statusbar button[data-status="lsp"]:hover,
-.code-statusbar button[data-status="lsp"]:focus-visible {
+.code-statusbar button[data-status="lsp"]:focus-visible,
+.code-statusbar button[data-status="indentation"]:hover,
+.code-statusbar button[data-status="indentation"]:focus-visible {
   outline: none;
   background: rgb(255 255 255 / 16%);
+}
+
+.code-indentation-popover {
+  position: fixed;
+  z-index: 1000;
+  width: min(280px, calc(100vw - 8px));
+  padding: 12px;
+  border: 1px solid var(--code-border);
+  border-radius: 6px;
+  background: var(--code-menu-bg);
+  color: var(--code-fg);
+  box-shadow: 0 4px 18px rgb(0 0 0 / 25%);
+  font-size: 12px;
+}
+
+.code-indentation-popover p {
+  margin: 6px 0 12px;
+}
+
+.code-indentation-popover label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.code-indentation-popover select {
+  width: 110px;
+  padding: 4px;
+  border: 1px solid var(--code-border);
+  border-radius: 3px;
+  background: var(--code-menu-bg);
+  color: inherit;
 }
 
 .code-mobile-explorer {

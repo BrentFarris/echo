@@ -16,6 +16,7 @@ import {
   buildCodeChatEditorContext, formatCodeChatSelectionNotice, runCodeChatSavePreflight,
 } from "./codeChatContext";
 import { loadSession, saveSession } from "./persistence";
+import { editorSettingsWriter, indentationDefaults, indentationLabel, openIndentationPopover, type Indentation } from "./indentation";
 import { previewKindForPath, type PreviewKind } from "./preview";
 import {
   CODE_ROUTE, chatCompletionTargetFromHash, chatTargetRouteHash, codeOpenTargetFromHash, codeRouteHash,
@@ -175,7 +176,12 @@ class CodeView {
   private splitGitDiff = true;
   private leadingWhitespaceIndicators = true;
   private editorFontSize = 13.5;
-  private fullSettings: Record<string, unknown> = {};
+  private indentation: Indentation = indentationDefaults({});
+  private closeIndentationPopover: (() => void) | null = null;
+  private saveEditorSettings = editorSettingsWriter(
+    async () => (await api("/api/settings", { method: "GET" })).settings,
+    async (settings) => { await api("/api/settings", { method: "PUT", body: { settings } }); },
+  );
   private editorFontSizeSaveTimer = 0;
   private modelReferences = new Map<MonacoEditor.ITextModel, number>();
   private treeScroller!: HTMLElement;
@@ -252,7 +258,7 @@ class CodeView {
       }
       const [roots, settingsData, lspData] = await Promise.all([
         editorAPI.getRoots(this.workspace.id),
-        api("/api/settings", { method: "GET" }).catch(() => null) as Promise<{ settings?: { disableSourceControlSplitDiffView?: boolean; disableGitSplitDiffView?: boolean; hideLeadingWhitespaceIndicators?: boolean; editorFontSize?: number } } | null>,
+        api("/api/settings", { method: "GET" }).catch(() => null) as Promise<{ settings?: { disableSourceControlSplitDiffView?: boolean; disableGitSplitDiffView?: boolean; hideLeadingWhitespaceIndicators?: boolean; editorFontSize?: number; editorInsertSpaces?: boolean; editorTabSize?: number } } | null>,
         editorAPI.getWorkspaceLSPConfig(this.workspace.id).catch(() => ({ config: {}, profiles: [], statuses: [] } as WorkspaceLSPResponse)),
       ]);
       if (this.abort.signal.aborted) return;
@@ -261,7 +267,7 @@ class CodeView {
         ?? settingsData?.settings?.disableGitSplitDiffView;
       this.splitGitDiff = disableSplitDiff !== true;
       this.leadingWhitespaceIndicators = settingsData?.settings?.hideLeadingWhitespaceIndicators !== true;
-      if (settingsData?.settings) this.fullSettings = { ...(settingsData.settings as Record<string, unknown>) };
+      this.indentation = indentationDefaults(settingsData?.settings || {});
       this.editorFontSize = this.clampEditorFontSize((settingsData?.settings?.editorFontSize as number | undefined) || 13.5);
       this.lspProfiles = lspData.profiles || [];
       this.codeNavigation = new CodeNavigationHistory(this.workspace.id, { createId: randomUUID });
@@ -323,6 +329,7 @@ class CodeView {
       }
       this.renderTabs();
       this.updateEditorSurface();
+      this.renderStatus();
       this.subscribeFilesystem();
       if (this.completionTarget) {
         this.setCodeChatOpen(true);
@@ -402,7 +409,7 @@ class CodeView {
                 </section>
                 <footer class="code-statusbar" data-statusbar>
                   <div><button type="button" class="code-mobile-explorer" data-mobile-explorer aria-label="Toggle Sidebar" aria-expanded="false"><span class="codicon codicon-${this.sidebarIcon(this.activeSidebar)}"></span></button></div>
-                  <div class="code-status-right"><button type="button" data-status="lsp" hidden>LSP</button><span data-status="cursor">Ln 1, Col 1</span><span>Spaces: 2</span><span>UTF-8</span><span data-status="eol">LF</span><span data-status="language">Plain Text</span></div>
+                  <div class="code-status-right"><button type="button" data-status="lsp" hidden>LSP</button><span data-status="cursor">Ln 1, Col 1</span><button type="button" data-status="indentation" aria-haspopup="dialog" aria-expanded="false" title="Change indentation for the current file and saved default">Tabs: 4</button><span>UTF-8</span><span data-status="eol">LF</span><span data-status="language">Plain Text</span></div>
                 </footer>
               </div>
               <div class="code-chat-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Code Chat" aria-valuemin="300" aria-valuemax="640" tabindex="0" hidden></div>
@@ -984,12 +991,42 @@ class CodeView {
     this.editor?.updateOptions({ fontSize: next, lineHeight });
     this.diffEditor?.updateOptions({ fontSize: next, lineHeight });
     window.clearTimeout(this.editorFontSizeSaveTimer);
-    const settings = { ...this.fullSettings, editorFontSize: next };
     this.editorFontSizeSaveTimer = window.setTimeout(() => {
-      void api("/api/settings", { method: "PUT", body: { settings } }).catch(() => {
-        /* best-effort persistence */
-      });
+      this.editorFontSizeSaveTimer = 0;
+      this.persistEditorSettings({ editorFontSize: next });
     }, 150);
+  }
+
+  private persistEditorSettings(patch: Record<string, unknown>): void {
+    void this.saveEditorSettings(patch).catch((error) => {
+      toast(`Could not save editor preferences: ${error instanceof Error ? error.message : String(error)}`, { sticky: true });
+    });
+  }
+
+  private createEditorModel(content: string, language?: string, uri?: MonacoUri): MonacoEditor.ITextModel {
+    const model = monaco.editor.createModel(content, language, uri);
+    model.detectIndentation(this.indentation.insertSpaces, this.indentation.tabSize);
+    model.onDidChangeOptions(() => {
+      if (this.activeTab()?.model === model) this.renderStatus();
+    });
+    return model;
+  }
+
+  private showIndentationPopover(button: HTMLButtonElement): void {
+    if (button.getAttribute("aria-expanded") === "true") {
+      this.closeIndentationPopover?.();
+      return;
+    }
+    this.closeIndentationPopover?.();
+    closeContextMenu();
+    const tab = this.activeTab();
+    const model = tab && tab.kind !== "media" ? tab.model : null;
+    this.closeIndentationPopover = openIndentationPopover(button, model?.getOptions() || this.indentation, (options) => {
+      this.indentation = options;
+      if (model && !model.isDisposed()) model.updateOptions({ ...options, indentSize: options.tabSize });
+      this.renderStatus();
+      this.persistEditorSettings({ editorInsertSpaces: options.insertSpaces, editorTabSize: options.tabSize });
+    });
   }
 
   private async toggleNode(node: TreeNode): Promise<void> {
@@ -1023,7 +1060,7 @@ class CodeView {
     }
     const reusable = shared?.model || prepared || monaco.editor.getModel(uri);
     if (prepared && prepared !== reusable) prepared.dispose();
-    const model = reusable || monaco.editor.createModel(snapshot.content, languageForPath(snapshot.ref.path, this.lspProfiles), uri);
+    const model = reusable || this.createEditorModel(snapshot.content, languageForPath(snapshot.ref.path, this.lspProfiles), uri);
     if (prepared === model && !shared) {
       if (model.getValue() !== snapshot.content) model.setValue(snapshot.content);
       model.setEOL(snapshot.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
@@ -1098,7 +1135,7 @@ class CodeView {
           if (this.abort.signal.aborted) return null;
           const existing = monaco.editor.getModel(resource);
           if (existing) return existing;
-          const model = monaco.editor.createModel(snapshot.content, languageForPath(ref.path, this.lspProfiles), resource);
+          const model = this.createEditorModel(snapshot.content, languageForPath(ref.path, this.lspProfiles), resource);
           model.setEOL(snapshot.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
           return model;
         } catch {
@@ -1413,7 +1450,7 @@ class CodeView {
       scheme: "echo-media", authority: this.workspace?.id || "workspace",
       path: `/${encodeURIComponent(ref.rootId)}/${ref.path.split("/").map(encodeURIComponent).join("/")}`,
     });
-    const model = monaco.editor.getModel(uri) || monaco.editor.createModel("", "plaintext", uri);
+    const model = monaco.editor.getModel(uri) || this.createEditorModel("", "plaintext", uri);
     this.retainModel(model);
     return model;
   }
@@ -1480,7 +1517,7 @@ class CodeView {
         scheme: "echo-source-control", authority: repository.id,
         path: `/${encodeURIComponent(scope)}/${encodeURIComponent(reviewRef || String(document.revision))}/${(document.oldPath || document.path).split("/").map(encodeURIComponent).join("/")}`,
       });
-      const originalModel = monaco.editor.getModel(originalURI) || monaco.editor.createModel(document.original.content || "", language, originalURI);
+      const originalModel = monaco.editor.getModel(originalURI) || this.createEditorModel(document.original.content || "", language, originalURI);
       this.retainModel(originalModel);
       originalModel.setEOL(document.original.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
 
@@ -1500,7 +1537,7 @@ class CodeView {
           query: randomUUID(),
         });
         const reusable = monaco.editor.getModel(modifiedURI);
-        modifiedModel = reusable || monaco.editor.createModel(document.modified.content || "", language, modifiedURI);
+        modifiedModel = reusable || this.createEditorModel(document.modified.content || "", language, modifiedURI);
         if (!reusable) modifiedModel.setEOL(document.modified.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
       }
       this.retainModel(modifiedModel);
@@ -1550,8 +1587,8 @@ class CodeView {
     reason: string,
   ): void {
     const language = languageForPath(target.path, this.lspProfiles);
-    const originalModel = monaco.editor.createModel("", language, monaco.Uri.from({ scheme: "echo-source-control-missing", authority: repository.id, path: `/${randomUUID()}/original` }));
-    const modifiedModel = monaco.editor.createModel("", language, monaco.Uri.from({ scheme: "echo-source-control-missing", authority: repository.id, path: `/${randomUUID()}/modified` }));
+    const originalModel = this.createEditorModel("", language, monaco.Uri.from({ scheme: "echo-source-control-missing", authority: repository.id, path: `/${randomUUID()}/original` }));
+    const modifiedModel = this.createEditorModel("", language, monaco.Uri.from({ scheme: "echo-source-control-missing", authority: repository.id, path: `/${randomUUID()}/modified` }));
     this.retainModel(originalModel);
     this.retainModel(modifiedModel);
     const tab: OpenTab = {
@@ -1898,6 +1935,8 @@ class CodeView {
     const eol = this.root.querySelector<HTMLElement>("[data-status=eol]");
     const language = this.root.querySelector<HTMLElement>("[data-status=language]");
     const lsp = this.root.querySelector<HTMLButtonElement>("[data-status=lsp]");
+    const indentation = this.root.querySelector<HTMLButtonElement>("[data-status=indentation]");
+    if (indentation) indentation.textContent = indentationLabel(tab && tab.kind !== "media" ? tab.model.getOptions() : this.indentation);
     if (cursor) cursor.textContent = position ? `Ln ${position.lineNumber}, Col ${position.column}` : "Ln 1, Col 1";
     if (eol) eol.textContent = tab?.model.getEOL() === "\r\n" ? "CRLF" : "LF";
     if (language) language.textContent = tab ? monaco.languages.getLanguages().find((item) => item.id === tab.model.getLanguageId())?.aliases?.[0] || tab.model.getLanguageId() : "Plain Text";
@@ -2023,6 +2062,7 @@ class CodeView {
         this.lsp?.activateModel(null);
         this.updateEditorSurface();
         this.renderBreadcrumbs();
+        this.renderStatus();
       }
     }
     this.renderTabs();
@@ -2035,7 +2075,7 @@ class CodeView {
   private newUntitled(): void {
     const title = `Untitled-${this.untitledCounter++}`;
     const id = randomUUID();
-    const model = monaco.editor.createModel("", "plaintext", monaco.Uri.from({ scheme: "untitled", authority: this.workspace?.id || "workspace", path: `/${id}` }));
+    const model = this.createEditorModel("", "plaintext", monaco.Uri.from({ scheme: "untitled", authority: this.workspace?.id || "workspace", path: `/${id}` }));
     this.retainModel(model);
     const tab: OpenTab = {
       kind: "file", id, ref: null, title, hostPath: "", pinned: true, dirty: false,
@@ -2143,7 +2183,7 @@ class CodeView {
     const id = randomUUID();
     const extension = mimeType?.includes("json") ? ".json" : mimeType?.includes("javascript") ? ".js" : mimeType?.includes("python") ? ".py" : "";
     const uri = monaco.Uri.from({ scheme: "echo-debug", authority: this.workspace?.id || "workspace", path: `/${id}/${title.replace(/[\\/]/g, "-")}${extension}` });
-    const model = monaco.editor.createModel(content, languageForPath(title + extension, this.lspProfiles), uri);
+    const model = this.createEditorModel(content, languageForPath(title + extension, this.lspProfiles), uri);
     this.retainModel(model);
     const tab: OpenTab = {
       kind: "file", id, ref: null, title, hostPath: uri.toString(), pinned: true, dirty: false,
@@ -2313,8 +2353,8 @@ class CodeView {
       overlay.className = "code-modal-overlay code-diff-overlay";
       overlay.innerHTML = `<section class="code-diff-dialog" role="dialog" aria-modal="true"><header><strong>Disk ↔ Unsaved — ${escapeHTML(tab.title)}</strong><button type="button" aria-label="Close"><span class="codicon codicon-close"></span></button></header><div data-diff-host></div></section>`;
       document.body.appendChild(overlay);
-      const original = monaco.editor.createModel(disk.content, tab.model.getLanguageId());
-      const modified = monaco.editor.createModel(tab.model.getValue(), tab.model.getLanguageId());
+      const original = this.createEditorModel(disk.content, tab.model.getLanguageId());
+      const modified = this.createEditorModel(tab.model.getValue(), tab.model.getLanguageId());
       const diff = monaco.editor.createDiffEditor(overlay.querySelector<HTMLElement>("[data-diff-host]")!, {
         theme: this.mediaTheme.matches ? "vs-dark" : "vs", automaticLayout: true, readOnly: true,
         originalEditable: false, minimap: { enabled: false }, renderSideBySide: true,
@@ -2420,7 +2460,7 @@ class CodeView {
     tab.ref = snapshot.ref;
     tab.title = snapshot.ref.path.split("/").pop() || snapshot.ref.path;
     tab.hostPath = snapshot.hostPath;
-    tab.model = monaco.editor.createModel(content, language, this.modelURI(snapshot.ref, snapshot.hostPath));
+    tab.model = this.createEditorModel(content, language, this.modelURI(snapshot.ref, snapshot.hostPath));
     this.retainModel(tab.model);
     this.lsp?.trackModel(tab.model);
     tab.changeDisposable = tab.model.onDidChangeContent(() => {
@@ -2513,7 +2553,7 @@ class CodeView {
       tab.ref = nextRef;
       tab.title = nextRef.path.split("/").pop() || nextRef.path;
       tab.hostPath = tab.hostPath.startsWith(previousHost) ? nextHost + tab.hostPath.slice(previousHost.length) : nextHost;
-      tab.model = monaco.editor.createModel(content, language, this.modelURI(nextRef, tab.hostPath));
+      tab.model = this.createEditorModel(content, language, this.modelURI(nextRef, tab.hostPath));
       this.retainModel(tab.model);
       this.lsp?.trackModel(tab.model);
       tab.changeDisposable = tab.model.onDidChangeContent(() => {
@@ -3053,7 +3093,7 @@ class CodeView {
   }
 
   private newUntitledFrom(content: string, title: string, id: string = randomUUID()): OpenTab {
-    const model = monaco.editor.createModel(content, languageForPath(title, this.lspProfiles), monaco.Uri.from({ scheme: "untitled", authority: this.workspace?.id || "workspace", path: `/${id}` }));
+    const model = this.createEditorModel(content, languageForPath(title, this.lspProfiles), monaco.Uri.from({ scheme: "untitled", authority: this.workspace?.id || "workspace", path: `/${id}` }));
     this.retainModel(model);
     const tab: OpenTab = {
       kind: "file", id, ref: null, title, hostPath: "", pinned: true, dirty: true,
@@ -3265,6 +3305,9 @@ class CodeView {
     this.root.querySelector("[data-tree-action=refresh]")?.addEventListener("click", () => void this.refreshExplorer(), { signal });
     this.root.querySelector("[data-tree-action=collapse-all]")?.addEventListener("click", () => this.collapseAll(), { signal });
     this.root.querySelector("[data-tree-action=trash]")?.addEventListener("click", () => void this.showTrash(), { signal });
+    this.root.querySelector<HTMLButtonElement>("[data-status=indentation]")?.addEventListener("click", (event) => {
+      this.showIndentationPopover(event.currentTarget as HTMLButtonElement);
+    }, { signal });
     this.root.querySelector("[data-status=lsp]")?.addEventListener("click", () => {
       if (this.lspState === "denied") {
         this.lsp?.takeOverActiveDocument();
@@ -4045,6 +4088,7 @@ class CodeView {
         if (persisted.dirty && persisted.content !== undefined && tab.diff?.editable) {
           tab.applying = true;
           tab.model.setValue(persisted.content);
+          tab.model.detectIndentation(this.indentation.insertSpaces, this.indentation.tabSize);
           tab.applying = false;
           this.markModelDirty(tab.model);
         }
@@ -4325,6 +4369,12 @@ class CodeView {
   }
 
   dispose(): void {
+    this.closeIndentationPopover?.();
+    if (this.editorFontSizeSaveTimer) {
+      window.clearTimeout(this.editorFontSizeSaveTimer);
+      this.editorFontSizeSaveTimer = 0;
+      this.persistEditorSettings({ editorFontSize: this.editorFontSize });
+    }
     if (this.abort.signal.aborted) return;
     this.finishMruCycle();
     this.clearTabDragState();

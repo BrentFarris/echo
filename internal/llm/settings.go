@@ -103,6 +103,8 @@ type Settings struct {
 	SystemPromptAppendage              string            `json:"systemPromptAppendage,omitempty"`
 	HideLeadingWhitespaceIndicators    bool              `json:"hideLeadingWhitespaceIndicators,omitempty"`
 	EditorFontSize                     float64           `json:"editorFontSize"`
+	EditorInsertSpaces                 bool              `json:"editorInsertSpaces"`
+	EditorTabSize                      int               `json:"editorTabSize"`
 	DisableNotificationSounds          bool              `json:"disableNotificationSounds,omitempty"`
 	DisablePlanQuestionSounds          bool              `json:"disablePlanQuestionSounds,omitempty"`
 	EnablePlanQuestionNotifications    *bool             `json:"enablePlanQuestionNotifications,omitempty"`
@@ -153,6 +155,7 @@ func DefaultSettings() Settings {
 		StreamIdleTimeoutSeconds:           DefaultStreamIdleTimeoutSeconds,
 		SearxngURL:                         DefaultSearxngURL,
 		EditorFontSize:                     DefaultEditorFontSize,
+		EditorTabSize:                      4,
 		ThinkingTokenBudget:                -1,
 		ResearchAgentConcurrency:           DefaultResearchAgentConcurrency,
 		MaxChatRounds:                      DefaultMaxChatRounds,
@@ -196,6 +199,9 @@ func (s Settings) normalized(endpointProfilesAuthoritative bool) Settings {
 	s.ComfyuiImg2imgWorkflow = strings.TrimSpace(s.ComfyuiImg2imgWorkflow)
 	s.ComfyuiVideoWorkflow = strings.TrimSpace(s.ComfyuiVideoWorkflow)
 	s.Theme = s.Theme.Normalized()
+	if s.EditorTabSize == 0 {
+		s.EditorTabSize = 4
+	}
 	if s.EditorFontSize <= 0 {
 		s.EditorFontSize = DefaultEditorFontSize
 	}
@@ -277,6 +283,9 @@ func (s Settings) ForInteraction(interaction Interaction) Settings {
 }
 
 func (s Settings) Validate() error {
+	if s.EditorTabSize < 0 || s.EditorTabSize > 8 {
+		return fmt.Errorf("editor tab size must be between 1 and 8")
+	}
 	if err := validateReasoningEffort(s.ReasoningEffort); err != nil {
 		return err
 	}
