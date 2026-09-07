@@ -427,9 +427,9 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "invalid_goal", "goal objective must contain at most 4000 characters", requestID)
 		return
 	}
-	scopes := toolScopesForAgentMode(mode)
 	_, researchStreamer := m.server.researchChat()
 	researchEnabled := m.server.settings.ResearchAgentConcurrency > 0 && researchStreamer != nil && modeAllowsResearch(mode)
+	systemMessage, scopes, sourceControlProfile := m.server.agentModeContext(session.workspace, mode, visibleText, researchEnabled)
 
 	session.mu.Lock()
 	if parent.loadErr != nil {
@@ -473,7 +473,7 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	userMessage := llm.Message{Role: llm.RoleUser, Content: modelText}
 	userMessage.ContentParts = chatMediaContentParts(modelText, images, videos)
 	canonical = append(canonical, userMessage)
-	prefix := []llm.Message{m.server.agentModeSystemMessage(session.workspace, mode, visibleText, researchEnabled)}
+	prefix := []llm.Message{systemMessage}
 	if goalMode {
 		prefix = append(prefix, goalSystemMessage(pendingGoal))
 	}
@@ -590,7 +590,7 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		session.run(ctx, streamer, settings, prefix, canonical, cloneContextCheckpoint(session.transcript.ContextCheckpoint), turnID, scopes, mode, researchEnabled)
+		session.run(ctx, streamer, settings, prefix, canonical, cloneContextCheckpoint(session.transcript.ContextCheckpoint), turnID, scopes, mode, researchEnabled, sourceControlProfile)
 	}()
 }
 
@@ -813,8 +813,9 @@ func (m *chatSessionManager) resumeGoal(c *client, workspaceID, chatID, surfaceV
 	}
 	canonical := hydrateChatMediaHistory(session.transcript.Messages, session.transcript.Turns)
 	canonical = append(canonical, goalContinuationMessage())
+	systemMessage, scopes, sourceControlProfile := m.server.agentModeContext(session.workspace, mode, goal.Objective, researchEnabled)
 	prefix := []llm.Message{
-		m.server.agentModeSystemMessage(session.workspace, mode, goal.Objective, researchEnabled),
+		systemMessage,
 		goalSystemMessage(*goal),
 	}
 	routeCanonical := appendGoalSteeringMessages(append([]llm.Message(nil), canonical...), goal.PendingSteering, false)
@@ -870,7 +871,7 @@ func (m *chatSessionManager) resumeGoal(c *client, workspaceID, chatID, surfaceV
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		session.run(ctx, streamer, settings, prefix, canonical, checkpoint, turnID, toolScopesForAgentMode(mode), mode, researchEnabled)
+		session.run(ctx, streamer, settings, prefix, canonical, checkpoint, turnID, scopes, mode, researchEnabled, sourceControlProfile)
 	}()
 }
 
@@ -1092,10 +1093,10 @@ func (m *chatSessionManager) compress(c *client, workspaceID, chatID, surfaceVal
 		m.commandErrorForTab(c, workspaceID, resolved, "agent_mode_load_failed", modeErr.Error(), "")
 		return
 	}
-	scopes := toolScopesForAgentMode(mode)
 	_, researchStreamer := m.server.researchChat()
 	researchEnabled := m.server.settings.ResearchAgentConcurrency > 0 && researchStreamer != nil && modeAllowsResearch(mode)
-	prefix := []llm.Message{m.server.agentModeSystemMessage(session.workspace, mode, lastTurn.UserContent, researchEnabled)}
+	systemMessage, scopes, _ := m.server.agentModeContext(session.workspace, mode, lastTurn.UserContent, researchEnabled)
+	prefix := []llm.Message{systemMessage}
 	toolSchema := m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{
 		PlanMode: mode.ID == agentmodes.PlanID, GoalMode: mode.ID == agentmodes.GoalID,
 		ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID,
@@ -1369,7 +1370,6 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "agent_mode_load_failed", err.Error(), "")
 		return
 	}
-	scopes := toolScopesForAgentMode(mode)
 	_, researchStreamer := m.server.researchChat()
 	researchEnabled := m.server.settings.ResearchAgentConcurrency > 0 && researchStreamer != nil && modeAllowsResearch(mode)
 	images := append([]sessions.MediaAttachment(nil), selected.Images...)
@@ -1378,6 +1378,7 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 	if editing {
 		visibleText = strings.TrimSpace(replacement)
 	}
+	systemMessage, scopes, sourceControlProfile := m.server.agentModeContext(session.workspace, mode, visibleText, researchEnabled)
 	var references []sessions.PromptReference
 	if !editing {
 		references = append([]sessions.PromptReference(nil), selected.References...)
@@ -1413,7 +1414,7 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 	userMessage := llm.Message{Role: llm.RoleUser, Content: modelText}
 	userMessage.ContentParts = chatMediaContentParts(modelText, images, videos)
 	canonical = append(canonical, userMessage)
-	prefix := []llm.Message{m.server.agentModeSystemMessage(session.workspace, mode, visibleText, researchEnabled)}
+	prefix := []llm.Message{systemMessage}
 	messages := append(cloneContextMessages(prefix), buildCompressedModelHistory(canonical, updated.ContextCheckpoint)...)
 	visionMode := updated.Vision || messagesRequireMedia(messages)
 	settings, streamer := m.server.routeMediaChat(settings, messages, visionMode)
@@ -1495,7 +1496,7 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		session.run(ctx, streamer, settings, prefix, canonical, cloneContextCheckpoint(updated.ContextCheckpoint), newTurnID, scopes, mode, researchEnabled)
+		session.run(ctx, streamer, settings, prefix, canonical, cloneContextCheckpoint(updated.ContextCheckpoint), newTurnID, scopes, mode, researchEnabled, sourceControlProfile)
 	}()
 }
 
@@ -2777,7 +2778,7 @@ func (b *streamTrajectoryBuffer) hasData() bool {
 // with a different event type and actor metadata.
 type assistantTrajectoryBuffer = streamTrajectoryBuffer
 
-func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings llm.Settings, prefix, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint, turnID string, scopes *tools.ToolScopeChecker, mode agentmodes.Mode, researchEnabled bool) {
+func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings llm.Settings, prefix, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint, turnID string, scopes *tools.ToolScopeChecker, mode agentmodes.Mode, researchEnabled bool, sourceControlProfile workspaceSourceControlProfile) {
 	questionRounds := 0
 	// Media produced by tools during this turn, keyed by the provider-reported
 	// image/video ID. Lets later tool calls in the same turn (save_image,
@@ -2794,7 +2795,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 	if researchEnabled {
 		researchSettings, researchStreamer := s.manager.server.researchChat()
 		if researchStreamer != nil {
-			research = newChatResearchRun(ctx, s, turnID, researchSettings, settings, researchStreamer, mode)
+			research = newChatResearchRun(ctx, s, turnID, researchSettings, settings, researchStreamer, mode, sourceControlProfile)
 			defer research.Close()
 		}
 	}
@@ -4017,7 +4018,58 @@ func goalContinuationMessage() llm.Message {
 	}
 }
 
+type workspaceSourceControlProfile struct {
+	hasGit    bool
+	hasFossil bool
+}
+
+func (p workspaceSourceControlProfile) restrictToolScopes(scopes *tools.ToolScopeChecker) {
+	if scopes == nil {
+		return
+	}
+	switch {
+	case p.hasFossil && !p.hasGit:
+		scopes.DenyTool("git_inspect")
+	case p.hasGit && !p.hasFossil:
+		scopes.DenyTool(tools.FossilInspectToolName)
+	}
+}
+
+func (s *Server) workspaceSourceControlProfile(workspace workspaces.Workspace) workspaceSourceControlProfile {
+	if s.sourceControl == nil || strings.TrimSpace(workspace.ID) == "" {
+		return workspaceSourceControlProfile{}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	repositories, err := s.sourceControl.Repositories(ctx, workspace.ID)
+	if err != nil {
+		return workspaceSourceControlProfile{}
+	}
+	profile := workspaceSourceControlProfile{}
+	for _, repository := range repositories {
+		switch strings.ToLower(strings.TrimSpace(repository.ProviderID)) {
+		case "fossil":
+			profile.hasFossil = true
+		case "git":
+			profile.hasGit = true
+		}
+	}
+	return profile
+}
+
+func (s *Server) agentModeContext(workspace workspaces.Workspace, mode agentmodes.Mode, query string, researchEnabled bool) (llm.Message, *tools.ToolScopeChecker, workspaceSourceControlProfile) {
+	profile := s.workspaceSourceControlProfile(workspace)
+	scopes := toolScopesForAgentMode(mode)
+	profile.restrictToolScopes(scopes)
+	return s.agentModeSystemMessageWithSourceControl(workspace, mode, query, researchEnabled, profile, scopes), scopes, profile
+}
+
 func (s *Server) agentModeSystemMessage(workspace workspaces.Workspace, mode agentmodes.Mode, query string, researchEnabled bool) llm.Message {
+	message, _, _ := s.agentModeContext(workspace, mode, query, researchEnabled)
+	return message
+}
+
+func (s *Server) agentModeSystemMessageWithSourceControl(workspace workspaces.Workspace, mode agentmodes.Mode, query string, researchEnabled bool, profile workspaceSourceControlProfile, scopes *tools.ToolScopeChecker) llm.Message {
 	var prompt strings.Builder
 	prompt.WriteString("You are Echo, an AI assistant working inside the user's active workspace. Use the available tools when workspace facts or changes are needed. Carry out requested implementation work directly, verify meaningful changes, and keep the final response concrete and concise.")
 	if len(workspace.Folders) > 0 {
@@ -4030,6 +4082,10 @@ func (s *Server) agentModeSystemMessage(workspace workspaces.Workspace, mode age
 			prompt.WriteString(root.Label)
 		}
 		prompt.WriteString(". Start file paths with the appropriate label. When the user mentions @path, treat it as a labeled workspace file or directory reference; read referenced files and list or search referenced directories before relying on their contents.")
+	}
+	if guidance := sourceControlSystemGuidance(profile, scopes); guidance != "" {
+		prompt.WriteString("\n\n")
+		prompt.WriteString(guidance)
 	}
 	if strings.TrimSpace(mode.Prompt) != "" {
 		prompt.WriteString("\n\nAgent mode instructions (follow these for this turn):\n")
@@ -4067,6 +4123,45 @@ func (s *Server) agentModeSystemMessage(workspace workspaces.Workspace, mode age
 		}
 	}
 	return llm.Message{Role: llm.RoleSystem, Name: "echo-agent-mode", Content: prompt.String()}
+}
+
+func sourceControlSystemGuidance(profile workspaceSourceControlProfile, scopes *tools.ToolScopeChecker) string {
+	if !profile.hasFossil && !profile.hasGit {
+		return ""
+	}
+
+	var guidance strings.Builder
+	switch {
+	case profile.hasFossil && profile.hasGit:
+		guidance.WriteString("Source control: this workspace contains both Fossil and Git repositories. ")
+	case profile.hasFossil:
+		guidance.WriteString("Source control: this is a Fossil repository workspace, not a Git repository workspace. ")
+	default:
+		guidance.WriteString("Source control: this is a Git repository workspace, not a Fossil repository workspace. ")
+	}
+	if profile.hasFossil {
+		if scopes.HasTool(tools.FossilInspectToolName) {
+			guidance.WriteString("Use fossil_inspect for Fossil repository status, history, check-ins, diffs, searches, and blame. ")
+		} else {
+			guidance.WriteString("The dedicated fossil_inspect tool is unavailable in this agent mode. ")
+		}
+	} else {
+		guidance.WriteString("Do not use fossil_inspect on a Git repository. ")
+	}
+	if profile.hasGit {
+		if scopes.HasTool("git_inspect") {
+			if profile.hasFossil {
+				guidance.WriteString("Use git_inspect only for the Git repositories; never use it on a Fossil repository.")
+			} else {
+				guidance.WriteString("Use git_inspect for Git repository status, history, commits, diffs, and blame.")
+			}
+		} else {
+			guidance.WriteString("The dedicated git_inspect tool is unavailable in this agent mode.")
+		}
+	} else {
+		guidance.WriteString("Do not use git_inspect on a Fossil repository.")
+	}
+	return guidance.String()
 }
 
 func modeAllowsTool(mode agentmodes.Mode, name string) bool {

@@ -45,6 +45,7 @@ type chatResearchRun struct {
 	parentSettings llm.Settings
 	streamer       chatStreamer
 	toolScopes     *tools.ToolScopeChecker
+	sourceControl  workspaceSourceControlProfile
 	semaphore      chan struct{}
 
 	mu      sync.Mutex
@@ -101,7 +102,7 @@ type researchStreamResult struct {
 	completedAt      time.Time
 }
 
-func newChatResearchRun(parent context.Context, session *chatSession, turnID string, settings, parentSettings llm.Settings, streamer chatStreamer, mode agentmodes.Mode) *chatResearchRun {
+func newChatResearchRun(parent context.Context, session *chatSession, turnID string, settings, parentSettings llm.Settings, streamer chatStreamer, mode agentmodes.Mode, sourceControlProfile workspaceSourceControlProfile) *chatResearchRun {
 	ctx, cancel := context.WithCancel(parent)
 	concurrency := settings.Normalized().ResearchAgentConcurrency
 	if concurrency < 1 {
@@ -110,10 +111,12 @@ func newChatResearchRun(parent context.Context, session *chatSession, turnID str
 	if concurrency > tools.MaxResearchAgentsPerTurn {
 		concurrency = tools.MaxResearchAgentsPerTurn
 	}
+	toolScopes := researchToolScopes(mode)
+	sourceControlProfile.restrictToolScopes(toolScopes)
 	return &chatResearchRun{
 		session: session, ctx: ctx, cancel: cancel, turnID: turnID,
 		settings: settings, parentSettings: parentSettings, streamer: streamer,
-		toolScopes: researchToolScopes(mode), semaphore: make(chan struct{}, concurrency),
+		toolScopes: toolScopes, sourceControl: sourceControlProfile, semaphore: make(chan struct{}, concurrency),
 		agents: make(map[string]*chatResearchAgentRun), updates: make(chan struct{}, 1),
 	}
 }
@@ -652,6 +655,10 @@ func (r *chatResearchRun) researchSystemMessage(task string) llm.Message {
 			prompt.WriteString(root.Label)
 		}
 		prompt.WriteString(".")
+	}
+	if guidance := sourceControlSystemGuidance(r.sourceControl, r.toolScopes); guidance != "" {
+		prompt.WriteString("\n\n")
+		prompt.WriteString(guidance)
 	}
 	prompt.WriteString("\n\nAssigned investigation:\n")
 	prompt.WriteString(strings.TrimSpace(task))
