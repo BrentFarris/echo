@@ -108,6 +108,7 @@ type Entry struct {
 	HostPath      string  `json:"hostPath"`
 	Kind          string  `json:"kind"`
 	IsSymlink     bool    `json:"isSymlink"`
+	ReadOnly      bool    `json:"readOnly,omitempty"`
 	BlockedReason string  `json:"blockedReason,omitempty"`
 	Size          int64   `json:"size,omitempty"`
 	ModifiedAt    string  `json:"modifiedAt"`
@@ -711,7 +712,12 @@ func (s *Service) List(workspaceID string, ref FileRef) ([]Entry, error) {
 		if baseRelative == "" {
 			childRef.Path = child.Name()
 		}
-		if s.isProtectedMetadata(workspaceID, childRef) {
+		readOnly := s.isProtectedMetadata(workspaceID, childRef)
+		isEchoContainer := baseRelative == "" && subtleStringEqual(childRef.Path, workspaces.EchoDirName)
+		if readOnly && !isEchoContainer {
+			continue
+		}
+		if subtleStringEqual(baseRelative, workspaces.EchoDirName) && !subtleStringEqual(child.Name(), "skills") {
 			continue
 		}
 		childPath := filepath.Join(directory, child.Name())
@@ -740,7 +746,7 @@ func (s *Service) List(workspaceID string, ref FileRef) ([]Entry, error) {
 		relative := childRef.Path
 		entries = append(entries, Entry{
 			Ref: FileRef{RootID: root.ID, Path: relative}, Name: child.Name(), HostPath: visiblePath,
-			Kind: kind, IsSymlink: isSymlink, BlockedReason: blocked,
+			Kind: kind, IsSymlink: isSymlink, ReadOnly: readOnly, BlockedReason: blocked,
 			Size: statInfo.Size(), ModifiedAt: statInfo.ModTime().UTC().Format(time.RFC3339Nano),
 		})
 	}

@@ -14,6 +14,7 @@ export type FsEntry = {
   hostPath: string;
   kind: "file" | "directory";
   isSymlink: boolean;
+  readOnly?: boolean;
   blockedReason?: string;
   size?: number;
   modifiedAt: string;

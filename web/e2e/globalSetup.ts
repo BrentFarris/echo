@@ -15,6 +15,7 @@ function prepareRuntime(): { binary: string; workspace: string; secondaryWorkspa
   rmSync(runtimeRoot, { recursive: true, force: true });
   const workspace = join(runtimeRoot, "workspace");
   mkdirSync(join(workspace, "nested"), { recursive: true });
+  mkdirSync(join(workspace, ".echo", "skills", "explorer-skill"), { recursive: true });
   writeFileSync(join(workspace, "go.mod"), "module echo-e2e-workspace\n\ngo 1.24\n", "utf8");
   writeFileSync(join(workspace, "main.go"), "package main\n\nfunc main() {\n\tTarget()\n}\n", "utf8");
   writeFileSync(join(workspace, "definition.go"), "package main\n\nfunc Target() {}\n", "utf8");
@@ -26,6 +27,8 @@ function prepareRuntime(): { binary: string; workspace: string; secondaryWorkspa
     "", "var navigationValue = 1", "",
   ].join("\n"), "utf8");
   writeFileSync(join(workspace, "nested", "demo.py"), "print('echo')\n", "utf8");
+  writeFileSync(join(workspace, ".echo", "skills", "explorer-skill", "SKILL.md"), "# Explorer skill\n\nEditable from the Code explorer.\n", "utf8");
+  writeFileSync(join(workspace, ".echo", "chat-workspace.json"), "{}\n", "utf8");
   writeFileSync(join(workspace, ".gitignore"), ".echo/\n", "utf8");
   const git = (...args: string[]) => execFileSync("git", ["-C", workspace, ...args], { stdio: "inherit" });
   git("init", "-b", "main");

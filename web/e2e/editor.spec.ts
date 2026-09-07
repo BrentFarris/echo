@@ -326,6 +326,41 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.getByRole("button", { name: "Explorer", exact: true }).click();
   await expect(page).toHaveURL(/#\/code$/);
   await expect(page.locator(".code-tree-label", { hasText: "main.go" })).toBeVisible();
+
+  // The explorer exposes only workspace skills beneath a protected .echo container.
+  const echoRow = page.getByRole("treeitem", { name: ".echo", exact: true });
+  await expect(echoRow).toBeVisible();
+  await expect(echoRow).toHaveAttribute("draggable", "false");
+  await echoRow.click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "New File" })).toBeDisabled();
+  await expect(page.getByRole("menuitem", { name: "New Folder" })).toBeDisabled();
+  await expect(page.getByRole("menuitem", { name: /Rename/ })).toBeDisabled();
+  await expect(page.getByRole("menuitem", { name: /Delete/ })).toBeDisabled();
+  await page.keyboard.press("Escape");
+
+  const mainGoBeforeProtectedDrop = page.getByRole("treeitem", { name: "main.go", exact: true });
+  await dragToTreeRow(page, mainGoBeforeProtectedDrop, echoRow);
+  await expect.poll(() => existsSync(join(state.workspace, "main.go"))).toBe(true);
+  await expect.poll(() => existsSync(join(state.workspace, ".echo", "main.go"))).toBe(false);
+
+  await echoRow.click();
+  const skillsRow = page.getByRole("treeitem", { name: "skills", exact: true });
+  await expect(skillsRow).toBeVisible();
+  await expect(page.getByRole("treeitem", { name: "workspace.json", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("treeitem", { name: "chat-workspace.json", exact: true })).toHaveCount(0);
+  await skillsRow.click();
+  await page.getByRole("treeitem", { name: "explorer-skill", exact: true }).click();
+  await page.getByRole("treeitem", { name: "SKILL.md", exact: true }).click();
+  await expect(page.locator(".view-lines")).toContainText("Editable from the Code explorer.");
+  await page.locator(".view-lines").click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("Saved through Echo.");
+  await page.keyboard.press("Control+s");
+  await expect.poll(() => readFileSync(join(state.workspace, ".echo", "skills", "explorer-skill", "SKILL.md"), "utf8")).toContain("Saved through Echo.");
+  await page.keyboard.press("Control+w");
+  await expect(page.getByRole("tab", { name: /SKILL\.md/ })).toHaveCount(0);
+
   await page.locator(".code-tree-label", { hasText: "main.go" }).click();
   await expect(page.locator(".code-tab.is-preview", { hasText: "main.go" })).toBeVisible();
   await page.locator(".code-tree-label", { hasText: "nested" }).click();

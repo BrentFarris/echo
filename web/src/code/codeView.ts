@@ -70,6 +70,7 @@ type TreeNode = {
   kind: "file" | "directory";
   isRoot: boolean;
   isSymlink: boolean;
+  readOnly: boolean;
   blockedReason?: string;
   depth: number;
   parentKey: string | null;
@@ -832,7 +833,7 @@ class CodeView {
     if (!this.nodes.has(key)) {
       this.nodes.set(key, {
         key, ref: { rootId: root.id, path: "" }, name: root.label, hostPath: root.hostPath,
-        kind: "directory", isRoot: true, isSymlink: false, depth: 0, parentKey: null,
+        kind: "directory", isRoot: true, isSymlink: false, readOnly: false, depth: 0, parentKey: null,
         blockedReason: root.blockedReason, loaded: false, loading: false, children: [],
       });
     }
@@ -864,7 +865,7 @@ class CodeView {
   private entryNode(entry: FsEntry, parent: TreeNode): TreeNode {
     return {
       key: refKey(entry.ref), ref: entry.ref, name: entry.name, hostPath: entry.hostPath,
-      kind: entry.kind, isRoot: false, isSymlink: entry.isSymlink, blockedReason: entry.blockedReason,
+      kind: entry.kind, isRoot: false, isSymlink: entry.isSymlink, readOnly: Boolean(entry.readOnly), blockedReason: entry.blockedReason,
       depth: parent.depth + 1, parentKey: parent.key, loaded: false, loading: false, children: [],
     };
   }
@@ -928,7 +929,7 @@ class CodeView {
       const label = this.renamingKey === node.key
         ? `<input class="code-tree-rename" data-rename-input value="${escapeHTML(node.name)}" aria-label="Rename ${escapeHTML(node.name)}">`
         : `<span class="code-tree-label${diagnosticPresentation.className ? ` ${diagnosticPresentation.className}` : ""}">${escapeHTML(node.name)}</span>`;
-      const draggable = !node.isRoot && !node.blockedReason;
+      const draggable = !node.isRoot && !node.readOnly && !node.blockedReason;
       const dragging = node.key === this.draggingTreeKey;
       const dropTarget = node.key === this.treeDropTargetKey;
       const ariaLabel = diagnosticPresentation.description ? `${node.name}, ${diagnosticPresentation.description}` : node.name;
@@ -1344,7 +1345,7 @@ class CodeView {
   }
 
   private treeMoveDestination(source: TreeNode | undefined, target: TreeNode | undefined): TreeNode | null {
-    if (!source || source.isRoot || source.blockedReason || !target || target.kind !== "directory" || target.blockedReason) return null;
+    if (!source || source.isRoot || source.readOnly || source.blockedReason || !target || target.kind !== "directory" || target.readOnly || target.blockedReason) return null;
     if (source.ref.rootId !== target.ref.rootId || source.parentKey === target.key || isRefWithin(target.ref, source.ref)) return null;
     return target;
   }
@@ -2510,7 +2511,7 @@ class CodeView {
   }
 
   private async beginRename(node: TreeNode): Promise<void> {
-    if (node.isRoot) return;
+    if (node.isRoot || node.readOnly) return;
     this.selectedTreeKey = node.key;
     this.renamingKey = node.key;
     this.renderTreeRows();
@@ -2588,7 +2589,7 @@ class CodeView {
   }
 
   private async deleteNode(node: TreeNode): Promise<void> {
-    if (node.isRoot || !this.workspace) return;
+    if (node.isRoot || node.readOnly || !this.workspace) return;
     const affected = this.tabs.filter((tab) => tab.ref && isRefWithin(tab.ref, node.ref));
     if (affected.some((tab) => tab.dirty)) {
       const choice = await choiceDialog({
@@ -2634,6 +2635,10 @@ class CodeView {
     const selected = this.selectedTreeKey ? this.nodes.get(this.selectedTreeKey) : null;
     const parent = selected?.kind === "directory" ? selected : selected?.parentKey ? this.nodes.get(selected.parentKey) : this.nodes.get(refKey({ rootId: this.roots[0].id, path: "" }));
     if (!parent) return;
+    if (parent.readOnly) {
+      toast("This folder is managed by Echo.");
+      return;
+    }
     const name = await promptDialog({ title: kind === "file" ? "New File" : "New Folder", label: "Name", confirmLabel: "Create" });
     if (!name) return;
     try {
@@ -2729,11 +2734,11 @@ class CodeView {
     this.renderTreeRows();
     showContextMenu(event.clientX, event.clientY, [
       ...(node.kind === "directory" ? [
-        { label: "New File", icon: "new-file", run: () => this.createUnderSelection("file") },
-        { label: "New Folder", icon: "new-folder", run: () => this.createUnderSelection("directory") },
+        { label: "New File", icon: "new-file", disabled: node.readOnly, run: () => this.createUnderSelection("file") },
+        { label: "New Folder", icon: "new-folder", disabled: node.readOnly, run: () => this.createUnderSelection("directory") },
       ] : []),
-      { label: "Rename", detail: "F2", icon: "edit", disabled: node.isRoot, separatorBefore: node.kind === "directory", run: () => this.beginRename(node) },
-      { label: "Delete", detail: "Del", icon: "trash", danger: true, disabled: node.isRoot, run: () => this.deleteNode(node) },
+      { label: "Rename", detail: "F2", icon: "edit", disabled: node.isRoot || node.readOnly, separatorBefore: node.kind === "directory", run: () => this.beginRename(node) },
+      { label: "Delete", detail: "Del", icon: "trash", danger: true, disabled: node.isRoot || node.readOnly, run: () => this.deleteNode(node) },
       { label: "Reveal in File Browser", icon: "folder-opened", separatorBefore: true, run: () => this.reveal(node.ref) },
     ]);
   }
@@ -3248,7 +3253,7 @@ class CodeView {
     this.treeCanvas.addEventListener("dragstart", (event) => {
       const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
       const node = row ? this.nodes.get(row.dataset.treeKey || "") : null;
-      if (!row || !node || node.isRoot || node.blockedReason || !event.dataTransfer) {
+      if (!row || !node || node.isRoot || node.readOnly || node.blockedReason || !event.dataTransfer) {
         event.preventDefault();
         return;
       }

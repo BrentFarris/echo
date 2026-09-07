@@ -288,7 +288,8 @@ func (s *Service) entryFor(workspaceID string, ref FileRef) (Entry, error) {
 	}
 	return Entry{
 		Ref: FileRef{RootID: root.ID, Path: filepath.ToSlash(ref.Path)}, Name: filepath.Base(visible), HostPath: visible,
-		Kind: kind, IsSymlink: isSymlink, Size: statInfo.Size(), ModifiedAt: statInfo.ModTime().UTC().Format(time.RFC3339Nano),
+		Kind: kind, IsSymlink: isSymlink, ReadOnly: s.isProtectedMetadata(workspaceID, ref),
+		Size: statInfo.Size(), ModifiedAt: statInfo.ModTime().UTC().Format(time.RFC3339Nano),
 	}, nil
 }
 

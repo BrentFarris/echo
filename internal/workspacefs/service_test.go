@@ -214,6 +214,74 @@ func TestProtectedWorkspaceMetadataCannotBeMutated(t *testing.T) {
 	}
 }
 
+func TestListExposesOnlyEditableWorkspaceSkillsUnderEcho(t *testing.T) {
+	service, workspaceID, rootPath, root := newTestService(t)
+	skillDirectory := filepath.Join(rootPath, ".echo", "skills", "explorer-skill")
+	if err := os.MkdirAll(skillDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillPath := filepath.Join(skillDirectory, "SKILL.md")
+	if err := os.WriteFile(skillPath, []byte("# Explorer skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"autosave.json", "chat-workspace.json", "tasks.json"} {
+		if err := os.WriteFile(filepath.Join(rootPath, ".echo", name), []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(rootPath, ".echo", "trajectories"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	rootEntries, err := service.List(workspaceID, FileRef{RootID: root.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var echoEntry *Entry
+	for index := range rootEntries {
+		if rootEntries[index].Name == ".echo" {
+			echoEntry = &rootEntries[index]
+			break
+		}
+	}
+	if echoEntry == nil || echoEntry.Kind != "directory" || !echoEntry.ReadOnly {
+		t.Fatalf("expected a read-only .echo directory in the workspace root, got %#v", echoEntry)
+	}
+
+	echoEntries, err := service.List(workspaceID, echoEntry.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(echoEntries) != 1 || echoEntries[0].Name != "skills" || echoEntries[0].ReadOnly {
+		t.Fatalf("expected only editable skills under .echo, got %#v", echoEntries)
+	}
+
+	skillsRef := echoEntries[0].Ref
+	skillEntries, err := service.List(workspaceID, skillsRef)
+	if err != nil || len(skillEntries) != 1 || skillEntries[0].Name != "explorer-skill" || skillEntries[0].ReadOnly {
+		t.Fatalf("list skills: %#v %v", skillEntries, err)
+	}
+	snapshot, err := service.Read(workspaceID, FileRef{RootID: root.ID, Path: ".echo/skills/explorer-skill/SKILL.md"})
+	if err != nil || snapshot.Content != "# Explorer skill\n" {
+		t.Fatalf("read skill: %#v %v", snapshot, err)
+	}
+	saved, err := service.Save(workspaceID, SaveRequest{Ref: snapshot.Ref, Content: "# Updated explorer skill\n", ExpectedRevision: snapshot.Revision})
+	if err != nil || saved.Content != "# Updated explorer skill\n" {
+		t.Fatalf("save skill: %#v %v", saved, err)
+	}
+	created, _, err := service.Create(workspaceID, CreateRequest{Parent: skillsRef, Name: "draft", Kind: "directory"})
+	if err != nil {
+		t.Fatalf("create skill directory: %v", err)
+	}
+	renamed, err := service.Rename(workspaceID, created.Ref, "renamed")
+	if err != nil {
+		t.Fatalf("rename skill directory: %v", err)
+	}
+	if _, err := service.Trash(workspaceID, renamed.Ref); err != nil {
+		t.Fatalf("trash skill directory: %v", err)
+	}
+}
+
 func TestResolveProspectiveEntryWithMissingParents(t *testing.T) {
 	service, workspaceID, rootPath, root := newTestService(t)
 	ref := FileRef{RootID: root.ID, Path: "deleted folder/資料/nested file.txt"}
