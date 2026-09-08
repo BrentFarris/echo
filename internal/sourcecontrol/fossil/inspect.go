@@ -3,6 +3,7 @@ package fossil
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +26,8 @@ const (
 	timelineFieldSeparator  = "\x1f"
 	timelineRecordSeparator = "\x1e"
 )
+
+var timelineFooterPattern = regexp.MustCompile(`^\+\+\+ (?:no more data|end of timeline) \([0-9]+\) \+\+\+$`)
 
 func (p *Provider) acquireInspectionState(ctx context.Context, workspaceID, repositoryID string) (*repositoryState, func(), error) {
 	state, err := p.repository(ctx, workspaceID, repositoryID)
@@ -150,6 +153,11 @@ func (p *Provider) QueryHistory(ctx context.Context, workspaceID, repositoryID s
 			if !until.IsZero() && hasTime && when.After(until) {
 				continue
 			}
+			// Fossil 2.27 has no timeline --for-user option. Filter before
+			// counting matches so pagination is over the requested author.
+			if query.Author != "" && commit.Author != query.Author {
+				continue
+			}
 			if needle != "" && !strings.Contains(strings.ToLower(commit.Message), needle) {
 				continue
 			}
@@ -222,12 +230,10 @@ func (p *Provider) inspectCommit(ctx context.Context, state *repositoryState, re
 
 func timelineInspectArgs(query sourcecontrol.HistoryQuery, offset, limit int) []string {
 	format := strings.Join([]string{"%H", "%h", "%p", "%a", "%d", "%b", "%t", "%c"}, timelineFieldSeparator) + timelineRecordSeparator
-	args := []string{"timeline", "-q", "-t", "ci", "-n", strconv.Itoa(limit), "--offset", strconv.Itoa(offset), "-W", "0", "--format", format}
+	// Fossil 2.27 does not support -q; the parser handles its result footer.
+	args := []string{"timeline", "-t", "ci", "-n", strconv.Itoa(limit), "--offset", strconv.Itoa(offset), "-W", "0", "--format", format}
 	if query.Branch != "" {
 		args = append(args, "--branch", query.Branch)
-	}
-	if query.Author != "" {
-		args = append(args, "--for-user", query.Author)
 	}
 	if query.Path != "" {
 		args = append(args, "--path", "./"+query.Path)
@@ -242,6 +248,12 @@ func timelineInspectArgs(query sourcecontrol.HistoryQuery, offset, limit int) []
 
 func parseInspectionTimeline(output string) ([]sourcecontrol.Commit, error) {
 	normalized := strings.ReplaceAll(output, "\r\n", "\n")
+	// Older Fossil versions append a notification even with --format. Only
+	// accept the known footer after the last record, never inside a comment.
+	footerStart := strings.LastIndex(normalized, timelineRecordSeparator) + len(timelineRecordSeparator)
+	if timelineFooterPattern.MatchString(strings.TrimSpace(normalized[footerStart:])) {
+		normalized = normalized[:footerStart]
+	}
 	result := make([]sourcecontrol.Commit, 0)
 	for _, raw := range strings.Split(normalized, timelineRecordSeparator) {
 		raw = strings.Trim(raw, "\r\n \t")

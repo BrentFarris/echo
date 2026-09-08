@@ -28,12 +28,21 @@ type fossilIntegration struct {
 	request      int
 }
 
-func newFossilIntegration(t *testing.T) *fossilIntegration {
+func requireFossilIntegrationBinary(t *testing.T) string {
 	t.Helper()
 	binary, err := exec.LookPath("fossil")
 	if err != nil {
+		if os.Getenv("ECHO_REQUIRE_FOSSIL") == "1" {
+			t.Fatal("fossil executable is required by ECHO_REQUIRE_FOSSIL but is not installed")
+		}
 		t.Skip("fossil executable is not installed")
 	}
+	return binary
+}
+
+func newFossilIntegration(t *testing.T) *fossilIntegration {
+	t.Helper()
+	binary := requireFossilIntegrationBinary(t)
 	directory := t.TempDir()
 	repository := filepath.Join(directory, "repository.fossil")
 	root := filepath.Join(directory, "checkout space ü")
@@ -72,6 +81,9 @@ func newFossilIntegration(t *testing.T) *fossilIntegration {
 
 func TestFossilIntegrationAdvancedInspectionIsReadOnly(t *testing.T) {
 	integration := newFossilIntegration(t)
+	// Search scopes are disabled by default in a fresh Fossil repository.
+	// Configure the fixture before checking that inspection is read-only.
+	runFossilIntegration(t, integration.binary, integration.root, "fts-config", "enable", "check-in")
 	ctx := context.Background()
 	writeFossilIntegrationFile(t, integration.root, "tracked.txt", "second revision\n")
 	runFossilIntegration(t, integration.binary, integration.root, "commit", "--nosync", "--no-prompt", "--no-warnings", "-m", "Second revision")
@@ -90,7 +102,9 @@ func TestFossilIntegrationAdvancedInspectionIsReadOnly(t *testing.T) {
 		t.Fatalf("filtered history = %#v, %v", history, err)
 	}
 	search, err := integration.provider.Search(ctx, integration.workspaceID, integration.repositoryID, sourcecontrol.RepositorySearchRequest{Query: "initial file"})
-	if err != nil || !strings.Contains(strings.ToLower(search.Output), "initial file") {
+	// With color disabled, Fossil can retain MARK tags around matched words.
+	searchText := strings.NewReplacer("<mark>", "", "</mark>", "").Replace(strings.ToLower(search.Output))
+	if err != nil || !strings.Contains(searchText, "initial file") {
 		t.Fatalf("check-in search = %#v, %v", search, err)
 	}
 	detail, err := integration.provider.RevisionDetail(ctx, integration.workspaceID, integration.repositoryID, infoBefore.Checkout, "commit")
@@ -129,6 +143,45 @@ func TestFossilIntegrationAdvancedInspectionIsReadOnly(t *testing.T) {
 	}
 	if content, readErr := os.ReadFile(filepath.Join(integration.root, "tracked.txt")); readErr != nil || string(content) != "later working edit\n" {
 		t.Fatalf("inspection changed working content: %q, %v", content, readErr)
+	}
+}
+
+func TestFossilIntegrationHistoryAuthorPagination(t *testing.T) {
+	integration := newFossilIntegration(t)
+	ctx := context.Background()
+	for i, author := range []string{"echo-test", "another-author", "echo-test"} {
+		writeFossilIntegrationFile(t, integration.root, "tracked.txt", strings.Repeat("history change\n", i+1))
+		runFossilIntegration(t, integration.binary, integration.root, "commit", "--nosync", "--no-prompt", "--no-warnings",
+			"--user-override", author, "--allow-older", "--date-override", fmt.Sprintf("2020-01-0%dT12:00:00", i+1),
+			"-m", fmt.Sprintf("history page %d", i))
+	}
+	query := sourcecontrol.HistoryQuery{Author: "echo-test", Query: "history page", Limit: 1}
+	for offset := 0; offset < 3; offset++ {
+		query.Offset = offset
+		history, err := integration.provider.QueryHistory(ctx, integration.workspaceID, integration.repositoryID, query)
+		if err != nil {
+			t.Fatalf("page %d: %v", offset, err)
+		}
+		if offset == 2 {
+			if len(history.Commits) != 0 || history.HasMore || history.NextOffset != 2 {
+				t.Fatalf("exhausted history = %#v", history)
+			}
+			continue
+		}
+		if len(history.Commits) != 1 || history.Commits[0].Subject != fmt.Sprintf("history page %d", 2-2*offset) || history.Commits[0].Author != query.Author || history.NextOffset != offset+1 || history.HasMore != (offset == 0) || history.Truncated {
+			t.Fatalf("page %d = %#v", offset, history)
+		}
+	}
+	query.Author = "missing-author"
+	query.Offset = 0
+	history, err := integration.provider.QueryHistory(ctx, integration.workspaceID, integration.repositoryID, query)
+	if err != nil || len(history.Commits) != 0 || history.HasMore || history.NextOffset != 0 {
+		t.Fatalf("unmatched author = %#v, %v", history, err)
+	}
+	query = sourcecontrol.HistoryQuery{Until: "1900-01-01", Limit: 1}
+	history, err = integration.provider.QueryHistory(ctx, integration.workspaceID, integration.repositoryID, query)
+	if err != nil || len(history.Commits) != 0 || history.HasMore || history.NextOffset != 0 {
+		t.Fatalf("empty native timeline = %#v, %v", history, err)
 	}
 }
 
@@ -208,10 +261,7 @@ func TestFossilIntegrationProtectedChangesFreezeDiscardAndCommit(t *testing.T) {
 }
 
 func TestFossilIntegrationProtectedCommitPreservesHiddenParentChanges(t *testing.T) {
-	binary, err := exec.LookPath("fossil")
-	if err != nil {
-		t.Skip("fossil executable is not installed")
-	}
+	binary := requireFossilIntegrationBinary(t)
 	directory := t.TempDir()
 	repository := filepath.Join(directory, "repository.fossil")
 	checkout := filepath.Join(directory, "parent checkout")

@@ -100,7 +100,10 @@ jobs:
           fossil version
 
       - name: Run Go tests
-        run: go test ./...
+        env:
+          ECHO_REQUIRE_FOSSIL: "1"
+        # Run against the installed Fossil even when setup-go restores cached tests.
+        run: go test ./... -count=1
 
       - name: Test showcase plugin backend
         working-directory: examples/plugins/showcase/backend-src
