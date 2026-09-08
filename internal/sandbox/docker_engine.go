@@ -1302,11 +1302,8 @@ func (e *DockerEngine) waitForServices(ctx context.Context, state MachineState) 
 		for {
 			data, _, err := e.serviceRequest(waitContext, state, check.role, check.port, http.MethodGet, "/v1/health", check.token, nil, 64<<10)
 			if err == nil {
-				var health struct {
-					ProtocolVersion string `json:"protocolVersion"`
-				}
-				if json.Unmarshal(data, &health) != nil || health.ProtocolVersion != ProtocolVersion {
-					return ErrProtocolMismatch
+				if healthErr := validateServiceProtocol(check.role, check.port, data); healthErr != nil {
+					return healthErr
 				}
 				break
 			}
@@ -1316,6 +1313,21 @@ func (e *DockerEngine) waitForServices(ctx context.Context, state MachineState) 
 			case <-time.After(200 * time.Millisecond):
 			}
 		}
+	}
+	return nil
+}
+
+func validateServiceProtocol(role, port string, data []byte) error {
+	var health struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	if err := json.Unmarshal(data, &health); err != nil {
+		return Wrap(ErrProtocolMismatch.Code, ErrProtocolMismatch.Message,
+			fmt.Errorf("%s service on %s returned invalid health JSON: %w", role, port, err))
+	}
+	if health.ProtocolVersion != ProtocolVersion {
+		return Wrap(ErrProtocolMismatch.Code, ErrProtocolMismatch.Message,
+			fmt.Errorf("%s service on %s reports protocol %q; Echo requires %q", role, port, health.ProtocolVersion, ProtocolVersion))
 	}
 	return nil
 }

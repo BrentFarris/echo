@@ -4,6 +4,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/echo-sandbox-agent ./cmd/echo-sandbox-agent
+COPY internal/sandboxprotocol ./internal/sandboxprotocol
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/echo-sandbox-agent ./cmd/echo-sandbox-agent
 
 FROM mcr.microsoft.com/playwright:v1.62.1-noble
@@ -32,6 +33,7 @@ COPY sandbox/images/desktop/package.json ./package.json
 RUN npm install --omit=dev --ignore-scripts --no-audit --no-fund \
  && npm cache clean --force
 COPY sandbox/images/desktop/browser-bridge.mjs ./browser-bridge.mjs
+COPY internal/sandboxprotocol/version.txt ./protocol-version.txt
 COPY sandbox/images/desktop/browser-launcher.mjs ./browser-launcher.mjs
 COPY sandbox/images/desktop/echo-browser.desktop /usr/share/xfce4/helpers/echo-browser.desktop
 COPY sandbox/images/desktop/entrypoint.sh /usr/local/bin/echo-desktop-entrypoint

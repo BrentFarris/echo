@@ -162,6 +162,9 @@ jobs:
         shell: bash
         run: |
           owner="${GITHUB_REPOSITORY_OWNER,,}"
+          protocol="$(tr -d '\r\n' < internal/sandboxprotocol/version.txt)"
+          [[ "$protocol" =~ ^[0-9]+$ ]]
+          echo "channel=protocol-${protocol}" >> "$GITHUB_OUTPUT"
           echo "workbench=ghcr.io/${owner}/echo-sandbox-workbench" >> "$GITHUB_OUTPUT"
           echo "desktop=ghcr.io/${owner}/echo-sandbox-desktop" >> "$GITHUB_OUTPUT"
           echo "gateway=ghcr.io/${owner}/echo-sandbox-egress" >> "$GITHUB_OUTPUT"
@@ -292,9 +295,9 @@ jobs:
       - name: Publish source-build protocol channel
         shell: bash
         run: |
-          docker buildx imagetools create --tag "${{ steps.names.outputs.workbench }}:protocol-1" "${{ steps.refs.outputs.workbench }}"
-          docker buildx imagetools create --tag "${{ steps.names.outputs.desktop }}:protocol-1" "${{ steps.refs.outputs.desktop }}"
-          docker buildx imagetools create --tag "${{ steps.names.outputs.gateway }}:protocol-1" "${{ steps.refs.outputs.gateway }}"
+          docker buildx imagetools create --tag "${{ steps.names.outputs.workbench }}:${{ steps.names.outputs.channel }}" "${{ steps.refs.outputs.workbench }}"
+          docker buildx imagetools create --tag "${{ steps.names.outputs.desktop }}:${{ steps.names.outputs.channel }}" "${{ steps.refs.outputs.desktop }}"
+          docker buildx imagetools create --tag "${{ steps.names.outputs.gateway }}:${{ steps.names.outputs.channel }}" "${{ steps.refs.outputs.gateway }}"
 
       - name: Verify released images are anonymously pullable
         shell: bash
@@ -304,9 +307,9 @@ jobs:
           DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.refs.outputs.workbench }}"
           DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.refs.outputs.desktop }}"
           DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.refs.outputs.gateway }}"
-          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.names.outputs.workbench }}:protocol-1"
-          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.names.outputs.desktop }}:protocol-1"
-          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.names.outputs.gateway }}:protocol-1"
+          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.names.outputs.workbench }}:${{ steps.names.outputs.channel }}"
+          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.names.outputs.desktop }}:${{ steps.names.outputs.channel }}"
+          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.names.outputs.gateway }}:${{ steps.names.outputs.channel }}"
 
   windows-sandbox-acceptance:
     name: Windows Docker Desktop sandbox acceptance

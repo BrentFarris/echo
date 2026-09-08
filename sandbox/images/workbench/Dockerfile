@@ -4,6 +4,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/echo-sandbox-agent ./cmd/echo-sandbox-agent
+COPY internal/sandboxprotocol ./internal/sandboxprotocol
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/echo-sandbox-agent ./cmd/echo-sandbox-agent
 
 FROM node:22-bookworm-slim AS node-runtime
