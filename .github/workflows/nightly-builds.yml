@@ -59,7 +59,7 @@ jobs:
           fi
 
   verify:
-    name: Test Go, frontend, and Monaco
+    name: Test Go and frontend
     needs: check-changes
     if: needs.check-changes.outputs.should_build == 'true'
     runs-on: ubuntu-latest
@@ -118,28 +118,6 @@ jobs:
       - name: Build embedded frontend
         working-directory: web
         run: npm run build
-
-      - name: Install Chromium
-        working-directory: web
-        run: npx playwright install --with-deps chromium
-
-      - name: Run authenticated Monaco acceptance test
-        id: monaco
-        working-directory: web
-        run: npm run test:e2e
-
-      - name: Upload Monaco failure artifacts
-        if: failure() && steps.monaco.outcome == 'failure'
-        uses: actions/upload-artifact@v4
-        with:
-          name: monaco-failure-artifacts
-          path: |
-            web/test-results/**/trace.zip
-            web/test-results/**/test-failed-*.png
-            web/test-results/**/video.webm
-            web/test-results/**/error-context.md
-          if-no-files-found: ignore
-          retention-days: 14
 
   sandbox-images:
     name: Build, test, scan, and publish sandbox images

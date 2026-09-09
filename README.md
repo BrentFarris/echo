@@ -313,6 +313,8 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
+The [Browser Acceptance workflow](.github/workflows/browser-acceptance.yml) runs this suite daily and can also be started manually from GitHub Actions. Failures remain visible in that workflow, with traces, screenshots, and videos retained for 14 days. It runs independently of nightly publishing. The nightly release gates remain Go tests, frontend type checking and unit tests, builds, and sandbox validation. The long browser scenarios need to be split into isolated tests before any subset becomes a release gate again.
+
 ## Architecture
 
 | Layer | Implementation |
