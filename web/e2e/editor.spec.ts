@@ -1140,6 +1140,154 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(finalWorkspace).toBeFocused();
 });
 
+test("toggles language-aware line comments with Ctrl+/", async ({ page }) => {
+  test.setTimeout(90_000);
+  const state = JSON.parse(readFileSync(resolve(directory, "../test-results/e2e-runtime/state.json"), "utf8")) as {
+    setupCode: string;
+    workspace: string;
+  };
+  const workspace = join(dirname(state.workspace), "comment-workspace");
+  mkdirSync(workspace, { recursive: true });
+  const mainPath = join(workspace, "main.go");
+  const goContent = "package main\n\nfunc main() {\n\tprintln(1)\n}\n";
+  writeFileSync(mainPath, goContent, "utf8");
+  writeFileSync(join(workspace, "demo.py"), "print('echo')\n", "utf8");
+  const git = (...args: string[]) => {
+    const result = spawnSync("git", ["-C", workspace, ...args], { encoding: "utf8", windowsHide: true });
+    if (result.status !== 0) throw new Error(result.stderr || String(result.error));
+  };
+  git("init", "-b", "main");
+  git("add", ".");
+  git("-c", "user.name=Echo E2E", "-c", "user.email=echo-e2e@example.com", "commit", "-m", "Comment fixture");
+  const stagedContent = goContent + "// staged change\n";
+  writeFileSync(mainPath, stagedContent, "utf8");
+  git("add", "main.go");
+  const workingContent = stagedContent + "// working change\n";
+  writeFileSync(mainPath, workingContent, "utf8");
+
+  await page.goto("/");
+  if (await page.getByRole("heading", { name: "Secure this Echo server" }).isVisible()) {
+    await page.getByLabel("Setup code").fill(state.setupCode);
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByLabel("Confirm password").fill(password);
+    await page.getByLabel("Device name").fill("Playwright Comments");
+    await page.getByRole("button", { name: "Finish setup" }).click();
+  } else {
+    await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByLabel("Device name").fill("Playwright Comments");
+    await page.getByRole("button", { name: "Sign in" }).click();
+  }
+  await expect(page.locator(".app-shell")).toBeVisible();
+  const previousWorkspaceId = await page.evaluate(async (workspacePath) => {
+    const current = await (await fetch("/api/workspaces")).json();
+    const createdResponse = await fetch("/api/workspaces", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Comment Workspace", mainPath: workspacePath, folders: [] }),
+    });
+    const created = await createdResponse.json();
+    if (!createdResponse.ok || !created.data?.workspace) throw new Error("Could not create comment workspace");
+    const activated = await fetch("/api/workspaces/active", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: created.data.workspace.id }),
+    });
+    if (!activated.ok) throw new Error("Could not activate comment workspace");
+    return current.data?.activeId as string | undefined;
+  }, workspace);
+  try {
+    await page.goto("/#/code");
+    await expect(page.locator(".code-app-shell")).toHaveAttribute("aria-busy", "false");
+    await page.locator(".code-tree-label", { hasText: "main.go" }).dblclick();
+    const editorInput = page.getByRole("textbox", { name: "Editor content" });
+    const goLines = page.locator("[data-monaco-host] .view-line");
+    await expect(goLines.first()).toHaveText("package main");
+    const originalGoLines = await goLines.allTextContents();
+    await editorInput.focus();
+    await page.keyboard.press("Control+Home");
+    await page.keyboard.press("Control+/");
+    await expect(goLines.first()).toHaveText("// package main");
+    await page.keyboard.press("Control+/");
+    await expect(goLines).toHaveText(originalGoLines);
+
+    // A partial selection still toggles the entire line.
+    await page.keyboard.press("Control+Home");
+    await page.keyboard.press("Shift+ArrowRight");
+    await page.keyboard.press("Control+/");
+    await expect(goLines.first()).toHaveText("// package main");
+    await page.keyboard.press("Control+/");
+    await expect(goLines).toHaveText(originalGoLines);
+
+    // Mixed selections add a comment layer; toggling again removes that layer.
+    // Undo and redo act on the whole selection in one step, including indentation.
+    await page.keyboard.press("Control+Home");
+    await page.keyboard.press("Control+/");
+    await page.keyboard.press("Control+a");
+    await page.keyboard.press("Control+/");
+    await expect(goLines.first()).toHaveText("// // package main");
+    await expect(goLines.nth(2)).toHaveText("// func main() {");
+    await expect(goLines.nth(3)).toHaveText("// println(1)");
+    const commentedGoLines = await goLines.allTextContents();
+    await page.keyboard.press("Control+z");
+    await expect(goLines.first()).toHaveText("// package main");
+    await expect(goLines.nth(2)).toHaveText("func main() {");
+    await page.keyboard.press("Control+y");
+    await expect(goLines).toHaveText(commentedGoLines);
+    await page.keyboard.press("Control+/");
+    await expect(goLines.first()).toHaveText("// package main");
+    await expect(goLines.nth(2)).toHaveText("func main() {");
+    await page.keyboard.press("Control+Home");
+    await page.keyboard.press("Control+/");
+    await expect(goLines).toHaveText(originalGoLines);
+    await page.keyboard.press("Control+s");
+    await expect(page.locator(".code-tab.is-active .code-tab-dirty")).not.toHaveClass(/is-visible/);
+    expect(readFileSync(mainPath, "utf8")).toBe(workingContent);
+
+    await page.locator(".code-tree-label", { hasText: "demo.py" }).dblclick();
+    await expect(goLines.first()).toHaveText("print('echo')");
+    await editorInput.focus();
+    await page.keyboard.press("Control+Home");
+    await page.keyboard.press("Control+/");
+    await expect(goLines.first()).toHaveText("# print('echo')");
+    await page.keyboard.press("Control+/");
+    await expect(goLines.first()).toHaveText("print('echo')");
+    await page.keyboard.press("Control+s");
+    await expect(page.locator(".code-tab.is-active .code-tab-dirty")).not.toHaveClass(/is-visible/);
+
+    await page.getByRole("button", { name: "Source Control", exact: true }).click();
+    await page.locator(".git-change-group[data-git-group='unstaged'] .git-change-row", { hasText: "main.go" }).click();
+    const modified = page.locator("[data-monaco-diff-host] .modified-in-monaco-diff-editor");
+    await expect(modified).toBeVisible();
+    await modified.locator(".view-lines").click();
+    await page.keyboard.press("Control+Home");
+    await page.keyboard.press("Control+/");
+    await expect(modified.locator(".view-line").first()).toHaveText("// package main");
+    await page.keyboard.press("Control+/");
+    await expect(modified.locator(".view-line").first()).toHaveText("package main");
+    await page.keyboard.press("Control+s");
+    await expect(page.locator(".code-tab.is-active .code-tab-dirty")).not.toHaveClass(/is-visible/);
+
+    await page.locator(".git-change-group[data-git-group='staged'] .git-change-row", { hasText: "main.go" }).click();
+    await expect(page.locator(".code-tab.is-active")).toContainText("main.go (Index)");
+    const readOnlyLines = modified.locator(".view-line");
+    await expect(readOnlyLines.first()).toHaveText("package main");
+    const originalReadOnlyLines = await readOnlyLines.allTextContents();
+    await modified.locator(".view-lines").click();
+    await page.keyboard.press("Control+a");
+    await page.keyboard.press("Control+/");
+    await expect(readOnlyLines).toHaveText(originalReadOnlyLines);
+    expect(readFileSync(mainPath, "utf8")).toBe(workingContent);
+  } finally {
+    if (previousWorkspaceId) {
+      await page.evaluate(async (id) => {
+        const response = await fetch("/api/workspaces/active", {
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }),
+        });
+        if (!response.ok) throw new Error("Could not restore active workspace");
+      }, previousWorkspaceId);
+    }
+  }
+});
+
 test("navigates with Ctrl+G and the Go to Line command", async ({ page }) => {
   const state = JSON.parse(readFileSync(resolve(directory, "../test-results/e2e-runtime/state.json"), "utf8")) as {
     setupCode: string;

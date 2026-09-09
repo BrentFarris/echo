@@ -15,6 +15,7 @@ import "monaco-editor/language/typescript/monaco.contribution";
 import "monaco-editor/editor/browser/services/contribution.js";
 import "monaco-editor/editor/contrib/codeAction/browser/codeActionContributions.js";
 import "monaco-editor/editor/contrib/codelens/browser/codelensController.js";
+import "monaco-editor/editor/contrib/comment/browser/comment.js";
 import "monaco-editor/editor/contrib/documentSymbols/browser/documentSymbols.js";
 import "monaco-editor/editor/contrib/dnd/browser/dnd.js";
 import "monaco-editor/editor/contrib/find/browser/findController.js";
