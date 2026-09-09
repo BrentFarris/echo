@@ -358,6 +358,8 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await page.keyboard.type("Saved through Echo.");
   await page.keyboard.press("Control+s");
   await expect.poll(() => readFileSync(join(state.workspace, ".echo", "skills", "explorer-skill", "SKILL.md"), "utf8")).toContain("Saved through Echo.");
+  // The disk write can precede the save response; wait for the editor to acknowledge it before closing.
+  await expect(page.getByRole("tab", { name: /SKILL\.md/ }).locator(".code-tab-dirty")).not.toHaveClass(/is-visible/);
   await page.keyboard.press("Control+w");
   await expect(page.getByRole("tab", { name: /SKILL\.md/ })).toHaveCount(0);
 
@@ -614,6 +616,8 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
 
   await page.reload();
   await expect(page.locator(".code-app-shell")).toBeVisible();
+  // Reload restores tabs and keyboard handlers asynchronously after the shell appears.
+  await expect(page.locator(".code-app-shell")).toHaveAttribute("aria-busy", "false");
   await page.keyboard.press("Control+Shift+P");
   paletteOptions = page.locator(".code-picker-list").getByRole("option");
   await expect(paletteOptions.nth(0)).toContainText("Explorer: Collapse All");
@@ -622,8 +626,6 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
 
   // Echo exposes Monaco's native VS Code-style case transforms through its
   // command palette, preserving selection and grouping each edit for Undo.
-  // Reload restores tabs and navigation asynchronously after the shell appears.
-  await expect(page.locator(".code-app-shell")).toHaveAttribute("aria-busy", "false");
   await page.keyboard.press("Control+n");
   await expect(page.locator(".code-tab.is-active")).toContainText("Untitled-");
   const scratchLines = page.locator("[data-monaco-host] .view-line");
