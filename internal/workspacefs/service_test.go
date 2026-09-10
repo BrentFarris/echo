@@ -193,6 +193,11 @@ func TestProtectedWorkspaceMetadataCannotBeMutated(t *testing.T) {
 	} else {
 		assertProtected(err)
 	}
+	if _, err := service.ResolveProspectiveEntryHostPath(workspaceID, iconRef); err == nil {
+		t.Fatal("expected prospective path resolution for icon to be rejected")
+	} else {
+		assertProtected(err)
+	}
 
 	otherPath := filepath.Join(rootPath, ".echo", "notes.txt")
 	if err := os.WriteFile(otherPath, []byte("editable"), 0o644); err != nil {
@@ -206,6 +211,193 @@ func TestProtectedWorkspaceMetadataCannotBeMutated(t *testing.T) {
 	}
 	if _, err := service.Trash(workspaceID, otherRef); err != nil {
 		t.Fatalf("ordinary .echo content should remain mutable: %v", err)
+	}
+}
+
+func TestListExposesOnlyEditableWorkspaceSkillsUnderEcho(t *testing.T) {
+	service, workspaceID, rootPath, root := newTestService(t)
+	skillDirectory := filepath.Join(rootPath, ".echo", "skills", "explorer-skill")
+	if err := os.MkdirAll(skillDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillPath := filepath.Join(skillDirectory, "SKILL.md")
+	if err := os.WriteFile(skillPath, []byte("# Explorer skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"autosave.json", "chat-workspace.json", "tasks.json"} {
+		if err := os.WriteFile(filepath.Join(rootPath, ".echo", name), []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(rootPath, ".echo", "trajectories"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	rootEntries, err := service.List(workspaceID, FileRef{RootID: root.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var echoEntry *Entry
+	for index := range rootEntries {
+		if rootEntries[index].Name == ".echo" {
+			echoEntry = &rootEntries[index]
+			break
+		}
+	}
+	if echoEntry == nil || echoEntry.Kind != "directory" || !echoEntry.ReadOnly {
+		t.Fatalf("expected a read-only .echo directory in the workspace root, got %#v", echoEntry)
+	}
+
+	echoEntries, err := service.List(workspaceID, echoEntry.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(echoEntries) != 1 || echoEntries[0].Name != "skills" || echoEntries[0].ReadOnly {
+		t.Fatalf("expected only editable skills under .echo, got %#v", echoEntries)
+	}
+
+	skillsRef := echoEntries[0].Ref
+	skillEntries, err := service.List(workspaceID, skillsRef)
+	if err != nil || len(skillEntries) != 1 || skillEntries[0].Name != "explorer-skill" || skillEntries[0].ReadOnly {
+		t.Fatalf("list skills: %#v %v", skillEntries, err)
+	}
+	snapshot, err := service.Read(workspaceID, FileRef{RootID: root.ID, Path: ".echo/skills/explorer-skill/SKILL.md"})
+	if err != nil || snapshot.Content != "# Explorer skill\n" {
+		t.Fatalf("read skill: %#v %v", snapshot, err)
+	}
+	saved, err := service.Save(workspaceID, SaveRequest{Ref: snapshot.Ref, Content: "# Updated explorer skill\n", ExpectedRevision: snapshot.Revision})
+	if err != nil || saved.Content != "# Updated explorer skill\n" {
+		t.Fatalf("save skill: %#v %v", saved, err)
+	}
+	created, _, err := service.Create(workspaceID, CreateRequest{Parent: skillsRef, Name: "draft", Kind: "directory"})
+	if err != nil {
+		t.Fatalf("create skill directory: %v", err)
+	}
+	renamed, err := service.Rename(workspaceID, created.Ref, "renamed")
+	if err != nil {
+		t.Fatalf("rename skill directory: %v", err)
+	}
+	if _, err := service.Trash(workspaceID, renamed.Ref); err != nil {
+		t.Fatalf("trash skill directory: %v", err)
+	}
+}
+
+func TestResolveProspectiveEntryWithMissingParents(t *testing.T) {
+	service, workspaceID, rootPath, root := newTestService(t)
+	ref := FileRef{RootID: root.ID, Path: "deleted folder/資料/nested file.txt"}
+
+	if _, err := service.ResolveEntryHostPath(workspaceID, ref); err == nil {
+		t.Fatal("ordinary entry resolution unexpectedly accepted missing parents")
+	} else {
+		var fsError *Error
+		if !errors.As(err, &fsError) || fsError.Code != "parent_not_found" {
+			t.Fatalf("ordinary entry resolution error = %v", err)
+		}
+	}
+	resolved, err := service.ResolveProspectiveEntryHostPath(workspaceID, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(rootPath, "deleted folder", "資料", "nested file.txt")
+	if resolved.HostPath != want || resolved.MissingParentCount != 2 {
+		t.Fatalf("prospective path = %#v, want %q with 2 missing parents", resolved, want)
+	}
+	if _, err := os.Stat(filepath.Join(rootPath, "deleted folder")); !os.IsNotExist(err) {
+		t.Fatalf("prospective resolution created a directory: %v", err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(rootPath, "existing parent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existingParent, err := service.ResolveProspectiveEntryHostPath(workspaceID, FileRef{RootID: root.ID, Path: "existing parent/new.txt"})
+	if err != nil || existingParent.MissingParentCount != 0 || existingParent.HostPath != filepath.Join(rootPath, "existing parent", "new.txt") {
+		t.Fatalf("existing-parent prospective path = %#v, %v", existingParent, err)
+	}
+}
+
+func TestResolveProspectiveEntryRejectsExistingSymlinkEscape(t *testing.T) {
+	service, workspaceID, rootPath, root := newTestService(t)
+	outside := filepath.Join(filepath.Dir(rootPath), "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(rootPath, "escape")); err != nil {
+		t.Skipf("symbolic links are unavailable: %v", err)
+	}
+	_, err := service.ResolveProspectiveEntryHostPath(workspaceID, FileRef{RootID: root.ID, Path: "escape/missing/file.txt"})
+	if !errors.Is(err, ErrOutsideRoot) {
+		t.Fatalf("expected prospective symlink escape rejection, got %v", err)
+	}
+
+	dangling := filepath.Join(rootPath, "dangling")
+	if err := os.Symlink(filepath.Join(rootPath, "does-not-exist"), dangling); err != nil {
+		t.Skipf("dangling symbolic links are unavailable: %v", err)
+	}
+	_, err = service.ResolveProspectiveEntryHostPath(workspaceID, FileRef{RootID: root.ID, Path: "dangling/missing/file.txt"})
+	var fsError *Error
+	if !errors.As(err, &fsError) || fsError.Code != "symlink_unavailable" {
+		t.Fatalf("expected dangling parent symlink rejection, got %v", err)
+	}
+}
+
+func TestProviderMetadataIsHiddenAndProtectedIncludingParentOperations(t *testing.T) {
+	service, workspaceID, rootPath, root := newTestService(t)
+	t.Cleanup(service.Close)
+	metadataDirectory := filepath.Join(rootPath, "storage")
+	if err := os.MkdirAll(metadataDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	metadataPath := filepath.Join(metadataDirectory, "project.fossil")
+	if err := os.WriteFile(metadataPath, []byte("repository database"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref := FileRef{RootID: root.ID, Path: "storage/project.fossil"}
+	service.SetSourceControlMetadata(workspaceID, "fossil", []FileRef{ref})
+
+	entries, err := service.List(workspaceID, FileRef{RootID: root.ID, Path: "storage"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("provider metadata was exposed by List: %#v", entries)
+	}
+	search := waitForSearch(t, service, workspaceID, "project.fossil", true)
+	if len(search.Items) != 0 {
+		t.Fatalf("provider metadata was exposed by search: %#v", search.Items)
+	}
+	assertProtected := func(err error) {
+		t.Helper()
+		var fsError *Error
+		if !errors.As(err, &fsError) || fsError.Code != "protected_workspace_metadata" || !errors.Is(err, ErrProtectedMetadata) {
+			t.Fatalf("expected protected provider metadata error, got %T %v", err, err)
+		}
+	}
+	if _, err := service.Save(workspaceID, SaveRequest{Ref: ref, Content: "overwrite"}); err == nil {
+		t.Fatal("expected provider metadata save to be rejected")
+	} else {
+		assertProtected(err)
+	}
+	if _, err := service.Rename(workspaceID, ref, "renamed.fossil"); err == nil {
+		t.Fatal("expected provider metadata rename to be rejected")
+	} else {
+		assertProtected(err)
+	}
+	parent := FileRef{RootID: root.ID, Path: "storage"}
+	if _, err := service.Trash(workspaceID, parent); err == nil {
+		t.Fatal("expected trashing a metadata parent to be rejected")
+	} else {
+		assertProtected(err)
+	}
+	if _, err := service.Move(workspaceID, parent, FileRef{RootID: root.ID}); err == nil {
+		t.Fatal("expected moving a metadata parent to be rejected")
+	} else {
+		assertProtected(err)
+	}
+
+	service.RemoveSourceControlMetadata(workspaceID, "fossil")
+	entries, err = service.List(workspaceID, parent)
+	if err != nil || len(entries) != 1 || entries[0].Name != "project.fossil" {
+		t.Fatalf("removing provider protection did not restore visibility: %#v %v", entries, err)
 	}
 }
 

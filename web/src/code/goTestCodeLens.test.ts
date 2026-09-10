@@ -5,17 +5,10 @@ const mocks = vi.hoisted(() => ({
   provider: null as any,
   commands: new Map<string, (...args: any[]) => void>(),
   adopt: vi.fn(),
-  disposeOutput: vi.fn(),
   disposeCoverage: vi.fn(),
 }));
 
 vi.mock("../../js/api.js", () => ({ api: mocks.api }));
-vi.mock("./goTestOutput", () => ({
-  GoTestOutput: class {
-    adopt = mocks.adopt;
-    dispose = mocks.disposeOutput;
-  },
-}));
 vi.mock("./goCoverage", () => ({
   GoCoverageController: class { dispose = mocks.disposeCoverage; },
 }));
@@ -48,7 +41,6 @@ describe("Go test CodeLens", () => {
   beforeEach(() => {
     mocks.api.mockReset();
     mocks.adopt.mockReset();
-    mocks.disposeOutput.mockReset();
     mocks.disposeCoverage.mockReset();
     mocks.commands.clear();
     mocks.provider = null;
@@ -61,7 +53,8 @@ describe("Go test CodeLens", () => {
     }] });
     const disposable = registerGoTestCodeLens({
       workspaceId: "workspace", refForModel: () => ({ rootId: "root", path: "sample_test.go" }),
-      saveAll: vi.fn(async () => true), acceptDebugSnapshot: vi.fn(), openDebugSettings: vi.fn(), message: vi.fn(),
+      saveAll: vi.fn(async () => true), acceptTestSnapshot: mocks.adopt,
+      acceptDebugSnapshot: vi.fn(), openDebugSettings: vi.fn(), message: vi.fn(),
     });
     const result = await mocks.provider.provideCodeLenses({
       uri: { toString: () => "file:///workspace/sample_test.go" }, getVersionId: () => 1,
@@ -76,7 +69,6 @@ describe("Go test CodeLens", () => {
       command: { id: "echo.goTest.run", title: "run test" },
     });
     disposable.dispose();
-    expect(mocks.disposeOutput).toHaveBeenCalledOnce();
     expect(mocks.disposeCoverage).toHaveBeenCalledOnce();
   });
 
@@ -86,7 +78,7 @@ describe("Go test CodeLens", () => {
     mocks.api.mockResolvedValue({ session });
     registerGoTestCodeLens({
       workspaceId: "workspace", refForModel: () => null, saveAll,
-      acceptDebugSnapshot: vi.fn(), openDebugSettings: vi.fn(), message: vi.fn(),
+      acceptTestSnapshot: mocks.adopt, acceptDebugSnapshot: vi.fn(), openDebugSettings: vi.fn(), message: vi.fn(),
     });
     const ref = { rootId: "root", path: "sample_test.go" };
     const target = { kind: "test", name: "TestOne", path: ["TestOne"] };

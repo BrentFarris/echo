@@ -635,7 +635,7 @@
 
 .git-repository-selector {
   display: grid;
-  grid-template-columns: 17px minmax(0, 1fr) auto auto;
+  grid-template-columns: 17px minmax(0, 1fr) auto auto auto;
   width: 100%;
   height: 23px;
   align-items: center;
@@ -722,6 +722,26 @@
   color: #b18b00;
   font-size: 9px;
   font-style: normal;
+}
+
+.source-control-provider {
+  padding: 1px 4px;
+  border: 1px solid color-mix(in srgb, var(--code-muted) 35%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--code-muted) 10%, transparent);
+  color: var(--code-muted);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 600;
+  line-height: 12px;
+  text-transform: uppercase;
+}
+
+.git-repository-header .source-control-provider {
+  border-color: color-mix(in srgb, var(--code-muted) 35%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--code-muted) 10%, transparent);
+  color: var(--code-muted);
 }
 
 .git-repository-actions,
@@ -2097,7 +2117,8 @@
   opacity: 1;
 }
 
-.code-statusbar button[data-status="lsp"] {
+.code-statusbar button[data-status="lsp"],
+.code-statusbar button[data-status="indentation"] {
   width: auto;
   min-width: 24px;
   padding: 0 6px;
@@ -2105,9 +2126,45 @@
 }
 
 .code-statusbar button[data-status="lsp"]:hover,
-.code-statusbar button[data-status="lsp"]:focus-visible {
+.code-statusbar button[data-status="lsp"]:focus-visible,
+.code-statusbar button[data-status="indentation"]:hover,
+.code-statusbar button[data-status="indentation"]:focus-visible {
   outline: none;
   background: rgb(255 255 255 / 16%);
+}
+
+.code-indentation-popover {
+  position: fixed;
+  z-index: 1000;
+  width: min(280px, calc(100vw - 8px));
+  padding: 12px;
+  border: 1px solid var(--code-border);
+  border-radius: 6px;
+  background: var(--code-menu-bg);
+  color: var(--code-fg);
+  box-shadow: 0 4px 18px rgb(0 0 0 / 25%);
+  font-size: 12px;
+}
+
+.code-indentation-popover p {
+  margin: 6px 0 12px;
+}
+
+.code-indentation-popover label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.code-indentation-popover select {
+  width: 110px;
+  padding: 4px;
+  border: 1px solid var(--code-border);
+  border-radius: 3px;
+  background: var(--code-menu-bg);
+  color: inherit;
 }
 
 .code-mobile-explorer {
@@ -2706,20 +2763,23 @@
     grid-column: span 1;
   }
 }
-.go-test-output { position: relative; height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: var(--code-editor-surface); color: var(--code-fg); }
-.go-test-output > header { display: flex; align-items: center; justify-content: space-between; min-height: 34px; padding: 0 10px; border-bottom: 1px solid var(--code-border); }
-.go-test-output > header > div { display: flex; gap: 6px; }
-.go-test-output button { border: 1px solid var(--code-border); border-radius: 4px; background: transparent; color: inherit; padding: 3px 9px; }
-.go-test-output button:not(:disabled):hover { background: var(--code-hover); }
-.go-test-output button:disabled { opacity: .45; }
-.go-test-output pre { min-height: 0; overflow: auto; margin: 0; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 "Cascadia Mono", "SFMono-Regular", Consolas, monospace; user-select: text; }
-.go-test-output footer { padding: 5px 12px; border-top: 1px solid var(--code-border); color: var(--code-diagnostic-error); }
-.go-test-status { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; }
-.go-test-status > span { width: 8px; height: 8px; border-radius: 50%; background: var(--code-muted); }
-.go-test-status.is-running > span { background: var(--code-info); }
-.go-test-status.is-passed > span { background: var(--code-success); }
-.go-test-status.is-failed > span { background: var(--code-diagnostic-error); }
-.go-test-status.is-stopped > span { background: var(--code-diagnostic-warning); }
-.go-test-exit { position: absolute; right: 12px; bottom: 8px; color: var(--code-muted); font-size: 11px; }
+.test-output { position: relative; height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: var(--code-editor-surface); color: var(--code-fg); }
+.test-output > header { display: flex; align-items: center; justify-content: space-between; min-height: 34px; padding: 0 10px; border-bottom: 1px solid var(--code-border); }
+.test-output > header > div { display: flex; gap: 6px; }
+.test-output button { border: 1px solid var(--code-border); border-radius: 4px; background: transparent; color: inherit; padding: 3px 9px; }
+.test-output button:not(:disabled):hover { background: var(--code-hover); }
+.test-output button:disabled { opacity: .45; }
+.test-output pre { min-height: 0; overflow: auto; margin: 0; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 "Cascadia Mono", "SFMono-Regular", Consolas, monospace; user-select: text; }
+.test-output footer { padding: 5px 12px; border-top: 1px solid var(--code-border); color: var(--code-diagnostic-error); }
+.test-status { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; }
+.test-status > span { width: 8px; height: 8px; border-radius: 50%; background: var(--code-muted); }
+.test-status.is-running > span { background: var(--code-info); }
+.test-status.is-passed > span { background: var(--code-success); }
+.test-status.is-failed > span { background: var(--code-diagnostic-error); }
+.test-status.is-stopped > span { background: var(--code-diagnostic-warning); }
+.test-exit { position: absolute; right: 12px; bottom: 8px; color: var(--code-muted); font-size: 11px; }
 .monaco-editor .go-coverage-covered { background-color: rgba(64, 128, 128, .5); }
 .monaco-editor .go-coverage-uncovered { background-color: rgba(128, 64, 64, .25); }
+.monaco-editor .c-coverage-covered { background-color: rgba(64, 128, 96, .32); }
+.monaco-editor .c-coverage-partial { background-color: rgba(184, 128, 32, .34); }
+.monaco-editor .c-coverage-uncovered { background-color: rgba(144, 48, 48, .28); }

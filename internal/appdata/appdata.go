@@ -25,7 +25,33 @@ type Workspace struct {
 	MainPath                    string   `json:"mainPath"`
 	IconExt                     string   `json:"iconExt,omitempty"`
 	Folders                     []string `json:"folders,omitempty"`
+	SearchParentRepositories    bool     `json:"searchParentRepositories,omitempty"`
 	SearchParentGitRepositories bool     `json:"searchParentGitRepositories,omitempty"`
+	searchParentRepositoriesSet bool
+}
+
+func (w *Workspace) UnmarshalJSON(data []byte) error {
+	type wire Workspace
+	var decoded wire
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	*w = Workspace(decoded)
+	_, w.searchParentRepositoriesSet = keys["searchParentRepositories"]
+	return nil
+}
+
+// ParentRepositorySearchEnabled applies the provider-neutral setting first,
+// including an explicitly persisted false, then falls back to the legacy key.
+func (w Workspace) ParentRepositorySearchEnabled() bool {
+	if w.searchParentRepositoriesSet || w.SearchParentRepositories {
+		return w.SearchParentRepositories
+	}
+	return w.SearchParentGitRepositories
 }
 
 // SavedCommand is a user-defined terminal command stored for a workspace.

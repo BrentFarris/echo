@@ -72,7 +72,16 @@ func (s *Service) SetConfig(workspaceID string, config gotestconfig.GoConfig) (g
 	if err := config.Validate(); err != nil {
 		return gotestconfig.GoConfig{}, err
 	}
-	workspace, err := s.workspaces.SetTestingConfig(workspaceID, gotestconfig.WorkspaceConfig{Go: config})
+	workspace, ok, err := s.workspaces.Get(workspaceID)
+	if err != nil {
+		return gotestconfig.GoConfig{}, err
+	}
+	if !ok {
+		return gotestconfig.GoConfig{}, fmt.Errorf("%w: %q", workspaces.ErrWorkspaceNotFound, workspaceID)
+	}
+	testing := workspace.Testing
+	testing.Go = config
+	workspace, err = s.workspaces.SetTestingConfig(workspaceID, testing)
 	if err != nil {
 		return gotestconfig.GoConfig{}, err
 	}

@@ -1259,6 +1259,7 @@ export class DebugView {
         if (this.inspectionCurrent(session, generation)) this.watchResults.set(watch.id, { error: errorMessage(error) });
       }
     }));
+    if (this.inspectionCurrent(session, generation)) this.render();
   }
 
   private async loadModules(): Promise<void> {

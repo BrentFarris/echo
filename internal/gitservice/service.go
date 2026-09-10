@@ -3,8 +3,6 @@ package gitservice
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +18,7 @@ import (
 	"time"
 
 	"github.com/brent/echo/internal/sandbox"
+	"github.com/brent/echo/internal/sourcecontrol"
 	"github.com/brent/echo/internal/workspacefs"
 	"github.com/brent/echo/internal/workspaces"
 )
@@ -106,6 +105,22 @@ func (s *Service) SetSandbox(manager *sandbox.Manager) {
 	s.mu.Lock()
 	s.sandbox = manager
 	s.mu.Unlock()
+}
+
+func (s *Service) Version(ctx context.Context, workspaceID string) (string, error) {
+	roots, err := s.fs.Roots(workspaceID)
+	if err != nil {
+		return "", err
+	}
+	if len(roots) == 0 {
+		return "", &Error{Code: "workspace_not_found", Message: "workspace folders are unavailable"}
+	}
+	ctx = s.executionContext(ctx, workspaceID)
+	output, err := runGit(ctx, roots[0].HostPath, nil, true, "--version")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(output)), "git version")), nil
 }
 
 type gitExecutionContextKey struct{}
@@ -225,7 +240,7 @@ func (s *Service) discover(ctx context.Context, workspaceID string) ([]*reposito
 				}
 			}
 		}
-		if workspace.SearchParentGitRepositories {
+		if workspace.SearchParentRepositories || workspace.SearchParentGitRepositories {
 			candidates[root.canonical] = true
 		}
 	}
@@ -284,6 +299,24 @@ func (s *Service) discover(ctx context.Context, workspaceID string) ([]*reposito
 	}
 	s.repos[workspaceID] = next
 	s.mu.Unlock()
+	metadataRefs := make([]workspacefs.FileRef, 0, len(states)*3)
+	for _, state := range states {
+		if ref, ok := state.refForPath(".git"); ok && ref != nil {
+			metadataRefs = append(metadataRefs, *ref)
+		}
+		for _, metadataPath := range []string{state.gitDir, state.commonDir} {
+			if strings.TrimSpace(metadataPath) == "" {
+				continue
+			}
+			for _, root := range rootInfos {
+				if relative, ok := relativeWithin(root.canonical, metadataPath); ok && relative != "" {
+					metadataRefs = append(metadataRefs, workspacefs.FileRef{RootID: root.ID, Path: relative})
+					break
+				}
+			}
+		}
+	}
+	s.fs.SetSourceControlMetadata(workspaceID, "git", metadataRefs)
 	return states, nil
 }
 
@@ -355,8 +388,7 @@ func (s *Service) repository(ctx context.Context, workspaceID, repositoryID stri
 }
 
 func repositoryID(workspaceID, root string) string {
-	digest := sha256.Sum256([]byte(workspaceID + "\x00" + pathIdentity(root)))
-	return hex.EncodeToString(digest[:16])
+	return sourcecontrol.RepositoryID(workspaceID, "git", root)
 }
 
 func pathIdentity(value string) string {

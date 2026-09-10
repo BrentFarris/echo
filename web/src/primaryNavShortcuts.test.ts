@@ -12,7 +12,7 @@ describe("primary navigation shortcuts", () => {
     ["Digit5", "5", "debug"],
     ["Digit6", "6", "sandbox"],
     ["Digit0", "0", "settings"],
-    ["Slash", "/", "map"],
+    ["KeyM", "m", "map"],
   ])("maps Ctrl+%s to %s", (code, key, nav) => {
     const event = new KeyboardEvent("keydown", { code, key, ctrlKey: true });
     expect(primaryNavShortcut(event)).toBe(nav);

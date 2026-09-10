@@ -31,11 +31,15 @@ const EchoDirName = ".echo"
 // Workspace is the resolved shape returned to runtime consumers and the
 // frontend. Its paths are always absolute even when workspace.json is portable.
 type Workspace struct {
-	ID                          string                       `json:"id"`
-	Name                        string                       `json:"name"`
-	MainPath                    string                       `json:"mainPath"`
-	IconExt                     string                       `json:"iconExt,omitempty"`
-	Folders                     []string                     `json:"folders,omitempty"`
+	ID                       string   `json:"id"`
+	Name                     string   `json:"name"`
+	MainPath                 string   `json:"mainPath"`
+	IconExt                  string   `json:"iconExt,omitempty"`
+	Folders                  []string `json:"folders,omitempty"`
+	SearchParentRepositories bool     `json:"searchParentRepositories,omitempty"`
+	// SearchParentGitRepositories is retained in runtime responses for one
+	// compatibility cycle. Portable workspace files are written with the
+	// provider-neutral key only.
 	SearchParentGitRepositories bool                         `json:"searchParentGitRepositories,omitempty"`
 	LanguageServers             lspconfig.WorkspaceConfig    `json:"languageServers,omitempty"`
 	Debug                       debugconfig.WorkspaceConfig  `json:"debug,omitempty"`
@@ -152,11 +156,33 @@ type workspaceFile struct {
 	Name                        string                        `json:"name"`
 	MainPath                    string                        `json:"mainPath"`
 	Folders                     []string                      `json:"folders"`
+	SearchParentRepositories    bool                          `json:"searchParentRepositories,omitempty"`
 	SearchParentGitRepositories bool                          `json:"searchParentGitRepositories,omitempty"`
 	LanguageServers             lspconfig.WorkspaceConfig     `json:"languageServers,omitempty"`
 	Debug                       debugconfig.WorkspaceConfig   `json:"debug,omitempty"`
 	Testing                     *gotestconfig.WorkspaceConfig `json:"testing,omitempty"`
 	Sandbox                     *SandboxConfig                `json:"sandbox,omitempty"`
+	searchParentRepositoriesSet bool
+}
+
+func (wf *workspaceFile) UnmarshalJSON(data []byte) error {
+	type wire workspaceFile
+	var decoded wire
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	*wf = workspaceFile(decoded)
+	_, wf.searchParentRepositoriesSet = keys["searchParentRepositories"]
+	if wf.searchParentRepositoriesSet {
+		// Keep in-process compatibility readers coherent without writing the
+		// deprecated key back to disk.
+		wf.SearchParentGitRepositories = wf.SearchParentRepositories
+	}
+	return nil
 }
 
 const (
@@ -606,10 +632,9 @@ func (m *Manager) Delete(id string) error {
 	})
 }
 
-// SetSearchParentGitRepositories updates the workspace-scoped parent
-// repository discovery preference in both the shared app data and the
-// workspace-owned settings file.
-func (m *Manager) SetSearchParentGitRepositories(id string, enabled bool) (Workspace, error) {
+// SetSearchParentRepositories updates the provider-neutral parent repository
+// discovery preference in both app data and the workspace-owned settings.
+func (m *Manager) SetSearchParentRepositories(id string, enabled bool) (Workspace, error) {
 	workspace, ok, err := m.Get(id)
 	if err != nil {
 		return Workspace{}, err
@@ -617,6 +642,7 @@ func (m *Manager) SetSearchParentGitRepositories(id string, enabled bool) (Works
 	if !ok {
 		return Workspace{}, fmt.Errorf("workspace %q not found", id)
 	}
+	workspace.SearchParentRepositories = enabled
 	workspace.SearchParentGitRepositories = enabled
 	if err := writeWorkspaceFile(filepath.Join(workspace.MainPath, EchoDirName), workspaceFileFromWorkspace(workspace)); err != nil {
 		return Workspace{}, err
@@ -633,6 +659,41 @@ func (m *Manager) SetSearchParentGitRepositories(id string, enabled bool) (Works
 		return Workspace{}, err
 	}
 	return workspace, nil
+}
+
+// SetSearchParentGitRepositories is the deprecated Git API alias.
+func (m *Manager) SetSearchParentGitRepositories(id string, enabled bool) (Workspace, error) {
+	return m.SetSearchParentRepositories(id, enabled)
+}
+	workspace, ok, err := m.Get(id)
+	if err != nil {
+		return Workspace{}, err
+	}
+	if !ok {
+		return Workspace{}, fmt.Errorf("workspace %q not found", id)
+	}
+	workspace.SearchParentRepositories = enabled
+	workspace.SearchParentGitRepositories = enabled
+	if err := writeWorkspaceFile(filepath.Join(workspace.MainPath, EchoDirName), workspaceFileFromWorkspace(workspace)); err != nil {
+		return Workspace{}, err
+	}
+	if err := m.data.Update(func(f *appdata.File) error {
+		for index := range f.Workspaces {
+			if f.Workspaces[index].ID == id {
+				f.Workspaces[index] = workspaceRegistration(workspace)
+				return nil
+			}
+		}
+		return fmt.Errorf("workspace %q not found", id)
+	}); err != nil {
+		return Workspace{}, err
+	}
+	return workspace, nil
+}
+
+// SetSearchParentGitRepositories is the deprecated Git API alias.
+func (m *Manager) SetSearchParentGitRepositories(id string, enabled bool) (Workspace, error) {
+	return m.SetSearchParentRepositories(id, enabled)
 }
 
 // SetLanguageServerConfig updates the portable language-server selection and
@@ -749,9 +810,11 @@ func workspaceFromRegistration(w appdata.Workspace) Workspace {
 	if mainPath != "" {
 		folders = append([]string{mainPath}, cleanFolders(folders[1:], mainPath)...)
 	}
+	searchParents := w.ParentRepositorySearchEnabled()
 	return Workspace{
 		ID: w.ID, Name: w.Name, MainPath: mainPath, IconExt: w.IconExt, Folders: folders,
-		SearchParentGitRepositories: w.SearchParentGitRepositories,
+		SearchParentRepositories:    searchParents,
+		SearchParentGitRepositories: searchParents,
 		Sandbox:                     DefaultSandboxConfig(),
 	}
 }
@@ -819,9 +882,14 @@ func workspaceFromFile(id, iconExt, echoDir, expectedMain string, wf workspaceFi
 			return Workspace{}, &ConfigError{Code: ConfigMalformed, Message: "workspace testing configuration is invalid", Cause: err}
 		}
 	}
+	searchParents := wf.SearchParentRepositories
+	if !wf.searchParentRepositoriesSet && !wf.SearchParentRepositories {
+		searchParents = wf.SearchParentGitRepositories
+	}
 	workspace := Workspace{
 		ID: id, Name: name, MainPath: expectedMain, IconExt: iconExt, Folders: folders,
-		SearchParentGitRepositories: wf.SearchParentGitRepositories,
+		SearchParentRepositories:    searchParents,
+		SearchParentGitRepositories: searchParents,
 		LanguageServers:             wf.LanguageServers.Normalized(),
 		Debug:                       debugConfig,
 		Testing:                     testingConfig,
@@ -881,17 +949,17 @@ func registrationForWorkspace(existing []appdata.Workspace, workspace Workspace,
 func workspaceRegistration(ws Workspace) appdata.Workspace {
 	return appdata.Workspace{
 		ID: ws.ID, Name: ws.Name, MainPath: ws.MainPath, IconExt: ws.IconExt,
-		Folders:                     append([]string(nil), ws.Folders...),
-		SearchParentGitRepositories: ws.SearchParentGitRepositories,
+		Folders:                  append([]string(nil), ws.Folders...),
+		SearchParentRepositories: ws.SearchParentRepositories || ws.SearchParentGitRepositories,
 	}
 }
 
 func workspaceFileFromWorkspace(ws Workspace) workspaceFile {
 	wf := workspaceFile{
 		Name: ws.Name, MainPath: ws.MainPath, Folders: append([]string(nil), ws.Folders...),
-		SearchParentGitRepositories: ws.SearchParentGitRepositories,
-		LanguageServers:             ws.LanguageServers.Normalized(),
-		Debug:                       ws.Debug.Normalized(),
+		SearchParentRepositories: ws.SearchParentRepositories || ws.SearchParentGitRepositories,
+		LanguageServers:          ws.LanguageServers.Normalized(),
+		Debug:                    ws.Debug.Normalized(),
 	}
 	if ws.testingConfigured {
 		config := ws.Testing.Normalized()

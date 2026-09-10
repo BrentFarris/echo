@@ -69,3 +69,21 @@ func TestLoadMissingFileReturnsEmpty(t *testing.T) {
 		t.Fatalf("expected empty file, got %+v", f)
 	}
 }
+
+func TestWorkspaceParentSearchPrefersProviderNeutralKey(t *testing.T) {
+	var explicit Workspace
+	if err := json.Unmarshal([]byte(`{"searchParentRepositories":false,"searchParentGitRepositories":true}`), &explicit); err != nil {
+		t.Fatal(err)
+	}
+	if explicit.ParentRepositorySearchEnabled() {
+		t.Fatal("explicit provider-neutral false must override the deprecated true value")
+	}
+
+	var legacy Workspace
+	if err := json.Unmarshal([]byte(`{"searchParentGitRepositories":true}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if !legacy.ParentRepositorySearchEnabled() {
+		t.Fatal("deprecated value was not used when the provider-neutral key was absent")
+	}
+}

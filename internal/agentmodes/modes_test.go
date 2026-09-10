@@ -115,6 +115,9 @@ func TestPlanModeAllowsGitInspection(t *testing.T) {
 	if _, ok := plan.Permissions["git_inspect"]; !ok {
 		t.Fatal("Plan mode must expose the read-only git_inspect tool")
 	}
+	if _, ok := plan.Permissions["fossil_inspect"]; !ok {
+		t.Fatal("Plan mode must expose the read-only fossil_inspect tool")
+	}
 	if _, ok := plan.Permissions["create_agent_mode"]; ok {
 		t.Fatal("Plan mode must not expose create_agent_mode")
 	}

@@ -5,7 +5,7 @@ const storeName = "workspace-sessions";
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    // The IndexedDB schema stays at version 2. Payload versions 1–3 share the
+    // The IndexedDB schema stays at version 2. Payload versions 1–4 share the
     // same keyed store and are restored compatibly by the Code view.
     const request = indexedDB.open(databaseName, 2);
     request.onupgradeneeded = () => {

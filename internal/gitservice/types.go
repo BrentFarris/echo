@@ -158,21 +158,31 @@ type CommitDetail struct {
 	Files []CommitFile `json:"files"`
 }
 
+type Annotation struct {
+	Revision  string
+	Path      string
+	StartLine int
+	EndLine   int
+	Text      string
+	Truncated bool
+}
+
 // ActionRequest is decoded once and then validated according to Action. The
 // frontend exposes it as a discriminated union even though Go uses one wire
 // struct for compact handler code.
 type ActionRequest struct {
-	RequestID  string   `json:"requestId"`
-	Action     string   `json:"action"`
-	Paths      []string `json:"paths,omitempty"`
-	Message    string   `json:"message,omitempty"`
-	Ref        string   `json:"ref,omitempty"`
-	StartPoint string   `json:"startPoint,omitempty"`
-	Name       string   `json:"name,omitempty"`
-	Remote     string   `json:"remote,omitempty"`
-	Branch     string   `json:"branch,omitempty"`
-	URL        string   `json:"url,omitempty"`
-	Confirmed  bool     `json:"confirmed,omitempty"`
+	RequestID        string   `json:"requestId"`
+	Action           string   `json:"action"`
+	ExpectedRevision uint64   `json:"expectedRevision,omitempty"`
+	Paths            []string `json:"paths,omitempty"`
+	Message          string   `json:"message,omitempty"`
+	Ref              string   `json:"ref,omitempty"`
+	StartPoint       string   `json:"startPoint,omitempty"`
+	Name             string   `json:"name,omitempty"`
+	Remote           string   `json:"remote,omitempty"`
+	Branch           string   `json:"branch,omitempty"`
+	URL              string   `json:"url,omitempty"`
+	Confirmed        bool     `json:"confirmed,omitempty"`
 }
 
 type ActionResult struct {

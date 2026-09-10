@@ -6,7 +6,6 @@ import { monaco } from "./language";
 import type { FileRef } from "./types";
 import { fromLSPRange } from "./lspClient";
 import type { LSPRange } from "./lspTypes";
-import { GoTestOutput } from "./goTestOutput";
 import { beginGoTestLensComposition } from "./codeLensDedupe";
 import { GoCoverageController } from "./goCoverage";
 
@@ -23,13 +22,13 @@ type Options = {
   workspaceId: string;
   refForModel(model: Monaco.editor.ITextModel): FileRef | null;
   saveAll(): Promise<boolean>;
+  acceptTestSnapshot(snapshot: TerminalSnapshot): void;
   acceptDebugSnapshot(snapshot: DebugSnapshot): void;
   openDebugSettings(): void;
   message(value: string, sticky?: boolean): void;
 };
 
 export function registerGoTestCodeLens(options: Options): Monaco.IDisposable {
-  const output = new GoTestOutput(options.workspaceId, options.saveAll);
   const coverage = new GoCoverageController({
     workspaceId: options.workspaceId, refForModel: options.refForModel, message: options.message,
   });
@@ -80,7 +79,7 @@ export function registerGoTestCodeLens(options: Options): Monaco.IDisposable {
       const result = await api(`/api/workspaces/${encodeURIComponent(options.workspaceId)}/testing/go/${endpoint}`, {
         method: "POST", body: { ref, target },
       }) as { session?: TerminalSnapshot; snapshot?: DebugSnapshot };
-      if (action === "run" && result.session) output.adopt(result.session);
+      if (action === "run" && result.session) options.acceptTestSnapshot(result.session);
       if (action === "debug" && result.snapshot) options.acceptDebugSnapshot(result.snapshot);
     } catch (error) {
       const message = errorMessage(error);
@@ -94,7 +93,6 @@ export function registerGoTestCodeLens(options: Options): Monaco.IDisposable {
       provider.dispose();
       runCommand.dispose();
       debugCommand.dispose();
-      output.dispose();
       coverage.dispose();
     },
   };

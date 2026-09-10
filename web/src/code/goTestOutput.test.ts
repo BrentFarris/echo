@@ -102,7 +102,7 @@ describe("Go test output panel", () => {
     });
     host.querySelector<HTMLButtonElement>("[data-test-output-action=rerun]")?.click();
     await vi.waitFor(() => expect(mocks.api).toHaveBeenCalledWith(
-      "/api/workspaces/workspace/testing/go/runs/first/rerun", { method: "POST", body: {} },
+      "/api/workspaces/workspace/testing/runs/first/rerun", { method: "POST", body: {} },
     ));
     expect(beforeRun).toHaveBeenCalledOnce();
     expect(host.textContent).toContain("Running");

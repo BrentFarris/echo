@@ -89,6 +89,9 @@ func listDirectory(ctx ExecutionContext, arguments json.RawMessage) (any, error)
 		if err := ctx.context().Err(); err != nil {
 			return nil, err
 		}
+		if IsIgnoredChangePath(entry.Name()) && (strings.EqualFold(entry.Name(), ".git") || strings.EqualFold(entry.Name(), ".fslckout") || strings.EqualFold(entry.Name(), "_FOSSIL_")) {
+			continue
+		}
 		if !args.IncludeHidden && len(entry.Name()) > 0 && entry.Name()[0] == '.' {
 			continue
 		}

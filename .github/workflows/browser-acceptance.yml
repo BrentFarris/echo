@@ -1,0 +1,66 @@
+name: Browser Acceptance
+
+on:
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+
+# Keep browser failures visible without gating nightly image or binary publishing.
+jobs:
+  browser-acceptance:
+    name: Test authenticated browser workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build embedded frontend
+        working-directory: web
+        run: npm run build
+
+      - name: Install Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: Run authenticated browser acceptance tests
+        id: browser
+        working-directory: web
+        run: npm run test:e2e
+
+      - name: Upload browser failure artifacts
+        if: failure() && steps.browser.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-failure-artifacts
+          path: |
+            web/test-results/**/trace.zip
+            web/test-results/**/test-failed-*.png
+            web/test-results/**/video.webm
+            web/test-results/**/error-context.md
+          if-no-files-found: ignore
+          retention-days: 14

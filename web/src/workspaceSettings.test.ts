@@ -15,6 +15,7 @@ const api = vi.hoisted(() => ({
     if (path.includes("/testing/go/config")) return {
       config: { codeLens: true, coverage: true, timeout: "30s", flags: [], tags: "", environment: {} },
     };
+    if (path.includes("/testing/c/config")) return { config: { codeLens: true, coverage: true, targets: [] } };
     if (path === "/api/auth/status") return { transportSecure: true };
     if (path === "/api/auth/sessions") return { sessions: [] };
     return {};
@@ -37,6 +38,7 @@ const api = vi.hoisted(() => ({
       return { activeId: fixture.activeId };
     }
     if (path.includes("/testing/go/config")) return { config: body.config };
+    if (path.includes("/testing/c/config")) return { config: body.config };
     if (path.startsWith("/api/workspaces/")) {
       const id = decodeURIComponent(path.slice("/api/workspaces/".length));
       const index = fixture.workspaces.findIndex((workspace) => workspace.id === id);
@@ -164,5 +166,38 @@ describe("workspace settings", () => {
       "/api/workspaces/first/testing/go/config",
       { config: expect.objectContaining({ coverage: false }) },
     ));
+  });
+
+  it("adds and saves a structured gcov C target", async () => {
+    root.querySelector<HTMLButtonElement>('[data-section="testing"]')!.click();
+    await vi.waitFor(() => expect(api.get).toHaveBeenCalledWith("/api/workspaces/first/testing/c/config"));
+    root.querySelector<HTMLButtonElement>('[data-c-testing-action="add"]')!.click();
+    expect(root.querySelectorAll("[data-c-testing-target]")).toHaveLength(1);
+    const name = root.querySelector<HTMLInputElement>('[data-c-target-field="name"]')!;
+    name.value = "Ledger tests";
+    root.querySelector<HTMLButtonElement>('[data-c-testing-action="save"]')!.click();
+    await vi.waitFor(() => expect(api.put).toHaveBeenCalledWith(
+      "/api/workspaces/first/testing/c/config",
+      { config: expect.objectContaining({
+        codeLens: true, coverage: true,
+        targets: [expect.objectContaining({
+          id: "c-tests-1", name: "Ledger tests", entry: { file: "${workspaceFolder}/tests/test_main.c", function: "main" },
+          coverage: { provider: "gcov", objectRoots: ["${workspaceFolder}/build"] },
+        })],
+      }) },
+    ));
+  });
+
+  it("switches conditional LLVM fields and removes C targets", async () => {
+    root.querySelector<HTMLButtonElement>('[data-section="testing"]')!.click();
+    await vi.waitFor(() => expect(api.get).toHaveBeenCalledWith("/api/workspaces/first/testing/c/config"));
+    root.querySelector<HTMLButtonElement>('[data-c-testing-action="add"]')!.click();
+    const provider = root.querySelector<HTMLSelectElement>('[data-c-target-field="provider"]')!;
+    provider.value = "llvm";
+    provider.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(root.querySelector('[data-c-target-field="objects"]')).not.toBeNull();
+    expect(root.querySelector('[data-c-target-field="objectRoots"]')).toBeNull();
+    root.querySelector<HTMLButtonElement>('[data-c-testing-action="remove"]')!.click();
+    expect(root.querySelectorAll("[data-c-testing-target]")).toHaveLength(0);
   });
 });

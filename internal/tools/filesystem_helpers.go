@@ -338,6 +338,8 @@ var ignoredChangePathNames = map[string]bool{
 	".cache":       true,
 	".echo":        true,
 	".git":         true,
+	".fslckout":    true,
+	"_fossil_":     true,
 	".next":        true,
 	".vite":        true,
 	"bin":          true,

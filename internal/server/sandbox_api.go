@@ -169,7 +169,7 @@ func (s *Server) stopSandboxWorkspaceProcesses(workspaceID string) {
 	s.debugger.StopWorkspace(workspaceID)
 	s.terminal.StopWorkspace(workspaceID)
 	s.lsp.StopWorkspaceProcesses(workspaceID)
-	s.git.StopWorkspaceProcesses(workspaceID)
+	s.sourceControl.StopWorkspaceProcesses(workspaceID)
 }
 
 func (s *Server) handleGetSandboxNetworkGrants(w http.ResponseWriter, r *http.Request) {

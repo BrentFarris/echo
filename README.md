@@ -68,6 +68,10 @@ Profiles are reusable and stored globally in `echo.json`; workspace enablement, 
 
 When the same file is open in multiple browsers, the first active editor owns its unsaved LSP document. The other browser can use **Take Over** in the Code status bar when it intentionally needs language-server control.
 
+### Testing and coverage
+
+Go tests and framework-free C test executables share CodeLens Run/Debug actions and the reconnectable **Test Output** panel. C workspaces can define multiple named GCC/gcov or Clang/LLVM coverage targets without adopting a test library or build-system convention. See [Testing and coverage](docs/testing.md) for instrumentation, target configuration, path rules, and coverage behavior.
+
 ### Debugging
 
 Open **Run and Debug** in Echo Code to configure a user-installed Delve, debugpy, js-debug, CodeLLDB, or custom DAP adapter. Debug profiles are machine-local; launch/attach configurations and compounds are portable workspace settings; personal breakpoints and watches remain outside the repository. Echo supports concurrent and child sessions, revision-safe multi-browser controls, reconnectable debug terminals, the standard stepping and inspection workflow, and capability-gated advanced breakpoints, mutation, reverse execution, memory, disassembly, modules, and virtual sources. See [Debugging in Echo](docs/debugging.md) for configuration, VS Code import, keybindings, sandbox behavior, and cleanup guarantees.
@@ -146,7 +150,7 @@ Echo can opt an individual workspace into a Docker-backed Ubuntu environment wit
 
 Echo checks and diagnoses Docker but never installs or reconfigures it. The initial images are `linux/amd64`; ARM hosts and Podman are not currently supported. This is container isolation rather than a hardware virtual machine, so Docker Engine and the host kernel remain trusted components.
 
-Official nightly binaries pin all three images by immutable digest. Builds made directly from the source tree use the public `protocol-1` image channel so the one-click source launchers can install the matching images; release builds never rely on a mutable tag.
+Official nightly binaries pin all three images by immutable digest. Builds made directly from the source tree use the public `protocol-2` image channel so the one-click source launchers can install the matching images; release builds never rely on a mutable tag.
 
 ### Enable a workspace sandbox
 
@@ -308,6 +312,8 @@ cd web
 npx playwright install chromium
 npm run test:e2e
 ```
+
+The [Browser Acceptance workflow](.github/workflows/browser-acceptance.yml) runs this suite daily and can also be started manually from GitHub Actions. Failures remain visible in that workflow, with traces, screenshots, and videos retained for 14 days. It runs independently of nightly publishing. The nightly release gates remain Go tests, frontend type checking and unit tests, builds, and sandbox validation. The long browser scenarios need to be split into isolated tests before any subset becomes a release gate again.
 
 ## Architecture
 

@@ -14,22 +14,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/brent/echo/internal/sandboxprotocol"
 	"github.com/brent/echo/internal/workspaces"
 )
 
-const (
-	ProtocolVersion = "2"
-	SetupRecipePath = ".echo/sandbox/setup.sh"
-)
+const SetupRecipePath = ".echo/sandbox/setup.sh"
+
+var ProtocolVersion = sandboxprotocol.Version
 
 // Release builds replace these source-build defaults with immutable digest
 // references. Source builds use the public channel for this protocol version
 // so the one-click installers can pull compatible images without requiring a
 // local Docker build.
 var (
-	WorkbenchImage = "ghcr.io/brentfarris/echo-sandbox-workbench:protocol-1"
-	DesktopImage   = "ghcr.io/brentfarris/echo-sandbox-desktop:protocol-1"
-	GatewayImage   = "ghcr.io/brentfarris/echo-sandbox-egress:protocol-1"
+	WorkbenchImage string
+	DesktopImage   string
+	GatewayImage   string
 )
 
 type State string
@@ -102,7 +102,13 @@ type ImageSet struct {
 }
 
 func BuildImages() ImageSet {
-	return ImageSet{Workbench: WorkbenchImage, Desktop: DesktopImage, Gateway: GatewayImage}
+	image := func(override, name string) string {
+		if override != "" {
+			return override
+		}
+		return "ghcr.io/brentfarris/echo-sandbox-" + name + ":protocol-" + ProtocolVersion
+	}
+	return ImageSet{Workbench: image(WorkbenchImage, "workbench"), Desktop: image(DesktopImage, "desktop"), Gateway: image(GatewayImage, "egress")}
 }
 
 func (images ImageSet) Roles() map[string]string {

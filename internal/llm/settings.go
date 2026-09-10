@@ -106,6 +106,8 @@ type Settings struct {
 	SystemPromptAppendage              string            `json:"systemPromptAppendage,omitempty"`
 	HideLeadingWhitespaceIndicators    bool              `json:"hideLeadingWhitespaceIndicators,omitempty"`
 	EditorFontSize                     float64           `json:"editorFontSize"`
+	EditorInsertSpaces                 bool              `json:"editorInsertSpaces"`
+	EditorTabSize                      int               `json:"editorTabSize"`
 	DisableNotificationSounds          bool              `json:"disableNotificationSounds,omitempty"`
 	DisablePlanQuestionSounds          bool              `json:"disablePlanQuestionSounds,omitempty"`
 	EnablePlanQuestionNotifications    *bool             `json:"enablePlanQuestionNotifications,omitempty"`
@@ -114,6 +116,9 @@ type Settings struct {
 	LimitKanbanConcurrency             bool              `json:"limitKanbanConcurrency,omitempty"`
 	ResearchAgentConcurrency           int               `json:"researchAgentConcurrency"`
 	MaxChatRounds                      int               `json:"maxChatRounds,omitempty"`
+	DisableSourceControlSplitDiffView  *bool             `json:"disableSourceControlSplitDiffView,omitempty"`
+	// DisableGitSplitDiffView is read for one compatibility release. New clients
+	// write DisableSourceControlSplitDiffView exclusively.
 	DisableGitSplitDiffView            bool              `json:"disableGitSplitDiffView,omitempty"`
 	EnableVimKeybindings               bool              `json:"enableVimKeybindings,omitempty"`
 	ComfyuiURL                         string            `json:"comfyuiUrl"`
@@ -123,7 +128,7 @@ type Settings struct {
 	// ComfyuiVideoWorkflow is a workspace-relative path to the default video
 	// generation workflow JSON (e.g., AnimateDiff, SVD) used by
 	// comfyui_generate_video when no explicit workflow is supplied.
-	ComfyuiVideoWorkflow string            `json:"comfyuiVideoWorkflow,omitempty"`
+	ComfyuiVideoWorkflow               string            `json:"comfyuiVideoWorkflow,omitempty"`
 	Theme                Theme             `json:"theme,omitempty"`
 	Headers              map[string]string `json:"headers,omitempty"`
 }
@@ -154,6 +159,7 @@ func DefaultSettings() Settings {
 		StreamIdleTimeoutSeconds:           DefaultStreamIdleTimeoutSeconds,
 		SearxngURL:                         DefaultSearxngURL,
 		EditorFontSize:                     DefaultEditorFontSize,
+		EditorTabSize:                      4,
 		ThinkingTokenBudget:                -1,
 		ResearchAgentConcurrency:           DefaultResearchAgentConcurrency,
 		MaxChatRounds:                      DefaultMaxChatRounds,
@@ -200,6 +206,9 @@ func (s Settings) normalized(endpointProfilesAuthoritative bool) Settings {
 	s.JiraUsername = strings.TrimSpace(s.JiraUsername)
 	s.JiraAPIToken = strings.TrimSpace(s.JiraAPIToken)
 	s.Theme = s.Theme.Normalized()
+	if s.EditorTabSize == 0 {
+		s.EditorTabSize = 4
+	}
 	if s.EditorFontSize <= 0 {
 		s.EditorFontSize = DefaultEditorFontSize
 	}
@@ -281,6 +290,9 @@ func (s Settings) ForInteraction(interaction Interaction) Settings {
 }
 
 func (s Settings) Validate() error {
+	if s.EditorTabSize < 0 || s.EditorTabSize > 8 {
+		return fmt.Errorf("editor tab size must be between 1 and 8")
+	}
 	if err := validateReasoningEffort(s.ReasoningEffort); err != nil {
 		return err
 	}

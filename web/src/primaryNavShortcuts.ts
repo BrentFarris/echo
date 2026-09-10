@@ -8,7 +8,7 @@ const shortcutByKey: Record<string, PrimaryNavShortcut> = {
   Digit4: "git",
   Digit5: "debug",
   Digit6: "sandbox",
-  Slash: "map",
+  KeyM: "map",
   "0": "settings",
   "1": "chat",
   "2": "code",
@@ -16,7 +16,7 @@ const shortcutByKey: Record<string, PrimaryNavShortcut> = {
   "4": "git",
   "5": "debug",
   "6": "sandbox",
-  "/": "map",
+  m: "map",
 };
 
 /** Resolves Echo's global primary-navigation shortcut, if any. */

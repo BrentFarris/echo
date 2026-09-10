@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/brent/echo/internal/sandboxprotocol"
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 )
@@ -79,7 +80,7 @@ func (a *agent) auth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (a *agent) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "role": a.role, "protocolVersion": "2", "uptimeSeconds": int(time.Since(a.started).Seconds())})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "role": a.role, "protocolVersion": sandboxprotocol.Version, "uptimeSeconds": int(time.Since(a.started).Seconds())})
 }
 
 func (a *agent) heartbeat(w http.ResponseWriter, _ *http.Request) {

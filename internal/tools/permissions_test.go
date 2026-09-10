@@ -34,3 +34,14 @@ func TestToolScopesEnforcePathGlobs(t *testing.T) {
 		t.Fatal("unexpected path permission")
 	}
 }
+
+func TestToolScopeCheckerCanDenyAdditiveToolFromLegacyAllowAll(t *testing.T) {
+	scopes := NewToolScopeChecker(nil)
+	scopes.DenyTool(FossilInspectToolName)
+	if scopes.HasTool(FossilInspectToolName) || scopes.Allowed(FossilInspectToolName, "") {
+		t.Fatal("explicitly denied tool remained available")
+	}
+	if !scopes.HasTool("filesystem_read_text") {
+		t.Fatal("denying one tool changed the remaining allow-all scope")
+	}
+}

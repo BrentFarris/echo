@@ -51,7 +51,7 @@ func TestChromiumSeccompProfileExtendsDefaultWithOnlyNamespaceCalls(t *testing.T
 }
 
 func TestImagePullErrorIdentifiesReferenceAndAction(t *testing.T) {
-	reference := "ghcr.io/brentfarris/echo-sandbox-egress:protocol-1"
+	reference := BuildImages().Gateway
 	tests := []struct {
 		cause error
 		want  string
@@ -69,6 +69,53 @@ func TestImagePullErrorIdentifiesReferenceAndAction(t *testing.T) {
 		if !errors.Is(err, test.cause) {
 			t.Fatalf("imagePullError(%v) did not retain its cause", test.cause)
 		}
+	}
+}
+
+func TestBuildImagesUsesMatchingProtocolAndPreservesReleaseOverrides(t *testing.T) {
+	previous := ImageSet{WorkbenchImage, DesktopImage, GatewayImage}
+	t.Cleanup(func() {
+		WorkbenchImage, DesktopImage, GatewayImage = previous.Workbench, previous.Desktop, previous.Gateway
+	})
+	WorkbenchImage, DesktopImage, GatewayImage = "", "", ""
+	for role, ref := range BuildImages().Roles() {
+		if !strings.HasSuffix(ref, ":protocol-"+ProtocolVersion) {
+			t.Fatalf("%s uses an incompatible image channel: %s", role, ref)
+		}
+	}
+	WorkbenchImage = "registry.example/workbench@sha256:" + strings.Repeat("a", 64)
+	DesktopImage = "registry.example/desktop@sha256:" + strings.Repeat("b", 64)
+	GatewayImage = "registry.example/egress@sha256:" + strings.Repeat("c", 64)
+	if got := BuildImages(); got != (ImageSet{WorkbenchImage, DesktopImage, GatewayImage}) || !got.Immutable() {
+		t.Fatalf("release image overrides were lost: %+v", got)
+	}
+}
+
+func TestServiceProtocolValidationIdentifiesIncompatibleService(t *testing.T) {
+	for _, tt := range []struct {
+		name, body, diagnostic string
+	}{
+		{"compatible", `{"protocolVersion":"` + ProtocolVersion + `"}`, ""},
+		{"old browser", `{"protocolVersion":"1"}`, `reports protocol "1"`},
+		{"missing version", `{"ok":true}`, `reports protocol ""`},
+		{"malformed health", `not json`, "invalid health JSON"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateServiceProtocol("desktop", playwrightPort, []byte(tt.body))
+			if tt.diagnostic == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if ErrorCode(err) != ErrProtocolMismatch.Code || errors.Unwrap(err) == nil {
+				t.Fatalf("mismatch lost its error code or diagnostic: %v", err)
+			}
+			cause := errors.Unwrap(err).Error()
+			if !strings.Contains(cause, "desktop service on 3000/tcp") || !strings.Contains(cause, tt.diagnostic) {
+				t.Fatalf("incomplete diagnostic: %s", cause)
+			}
+		})
 	}
 }
 
@@ -104,7 +151,7 @@ func TestContainerPoliciesDoNotExposeHostOrDangerousPrivileges(t *testing.T) {
 		Roots: []RootMount{{ID: "main", HostPath: root, GuestPath: "/workspace/main", Main: true}},
 	}
 	gateway := netip.MustParseAddr("172.28.0.2")
-	_, workbench, _, err := dockerContainerConfig("workbench", WorkbenchImage, spec, state, gateway, nil)
+	_, workbench, _, err := dockerContainerConfig("workbench", BuildImages().Workbench, spec, state, gateway, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +172,7 @@ func TestContainerPoliciesDoNotExposeHostOrDangerousPrivileges(t *testing.T) {
 		}
 	}
 
-	_, desktop, _, err := dockerContainerConfig("desktop", DesktopImage, spec, state, gateway, nil)
+	_, desktop, _, err := dockerContainerConfig("desktop", BuildImages().Desktop, spec, state, gateway, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +201,7 @@ func TestContainerPoliciesDoNotExposeHostOrDangerousPrivileges(t *testing.T) {
 		t.Fatalf("desktop home and browser profile are not independently persistent: %+v", desktopMounts)
 	}
 
-	_, gatewayHost, _, err := dockerContainerConfig("gateway", GatewayImage, spec, state, gateway, nil)
+	_, gatewayHost, _, err := dockerContainerConfig("gateway", BuildImages().Gateway, spec, state, gateway, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

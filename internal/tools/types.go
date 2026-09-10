@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/brent/echo/internal/sandbox"
+	"github.com/brent/echo/internal/sourcecontrol"
 )
 
 type Schema map[string]any
@@ -146,6 +147,26 @@ type ExecutionContext struct {
 	JiraUsername string
 	// JiraAPIToken is the Atlassian API token. Falls back to ATLASSIAN_AUTH_TOKEN env var if empty.
 	JiraAPIToken string
+	// SourceControl exposes provider-neutral, read-only repository inspection.
+	SourceControl SourceControlInspector
+}
+
+type SourceControlInspector interface {
+	Repositories(context.Context, string) ([]sourcecontrol.Repository, error)
+	Status(context.Context, string, string) (sourcecontrol.StatusSnapshot, error)
+	Diff(context.Context, string, string, sourcecontrol.DiffTarget) (sourcecontrol.DiffDocument, error)
+	History(context.Context, string, string, int, int) (sourcecontrol.History, error)
+	RevisionDetail(context.Context, string, string, string, string) (sourcecontrol.RevisionDetail, error)
+	Annotate(context.Context, string, string, string, string, int, int) (sourcecontrol.Annotation, error)
+}
+
+// SourceControlAdvancedInspector is implemented by the provider registry when
+// richer, additive read-only inspection capabilities are available. It stays
+// separate so existing source_control_inspect integrations remain compatible.
+type SourceControlAdvancedInspector interface {
+	QueryHistory(context.Context, string, string, sourcecontrol.HistoryQuery) (sourcecontrol.History, error)
+	Patch(context.Context, string, string, sourcecontrol.PatchRequest) (sourcecontrol.PatchResult, error)
+	Search(context.Context, string, string, sourcecontrol.RepositorySearchRequest) (sourcecontrol.RepositorySearchResult, error)
 }
 
 func (ctx ExecutionContext) UsesSandbox() bool {

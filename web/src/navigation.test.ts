@@ -10,7 +10,8 @@ describe("view route parsing", () => {
   it("routes a Source Control deep link through Echo Code", () => {
     expect(routePathFromHash("#/code?sidebar=git")).toBe("/code");
     expect(codeSidebarFromHash("#/code?sidebar=git")).toBe("git");
-    expect(codeRouteHash("git")).toBe("#/code?sidebar=git");
+    expect(codeSidebarFromHash("#/code?sidebar=source-control")).toBe("git");
+    expect(codeRouteHash("git")).toBe("#/code?sidebar=source-control");
   });
 
   it("defaults Code and unrelated routes to Explorer", () => {

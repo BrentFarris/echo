@@ -159,7 +159,7 @@ func (p Profile) Validate() error {
 			return fmt.Errorf("language server %q selector %q requires an extension or filename", p.ID, selector.LanguageID)
 		}
 		for _, value := range append(append([]string(nil), selector.Extensions...), selector.Filenames...) {
-			if strings.ContainsAny(value, `/\\\x00`) {
+			if strings.ContainsAny(value, "/\\\x00") {
 				return fmt.Errorf("language server %q selector contains an invalid file match", p.ID)
 			}
 		}

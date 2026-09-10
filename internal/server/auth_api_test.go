@@ -94,6 +94,12 @@ func TestLoginRateLimitAndOriginValidation(t *testing.T) {
 	if setup.Code != http.StatusCreated {
 		t.Fatalf("setup: %s", setup.Body.String())
 	}
+	for attempt := 0; attempt < 6; attempt++ {
+		response := authRequest(t, s, http.MethodPost, "/api/auth/login", map[string]any{"password": "correct horse battery"}, nil, "http://echo.test")
+		if response.Code != http.StatusOK {
+			t.Fatalf("successful login %d consumed the rate limit: %d %s", attempt+1, response.Code, response.Body.String())
+		}
+	}
 	for attempt := 0; attempt < 5; attempt++ {
 		response := authRequest(t, s, http.MethodPost, "/api/auth/login", map[string]any{"password": "incorrect password"}, nil, "http://echo.test")
 		if response.Code != http.StatusUnauthorized {

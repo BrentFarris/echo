@@ -11,7 +11,8 @@ import (
 )
 
 func configurePTYCommand(command *ptylib.Cmd) {
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// go-pty sets Setsid and Setctty, which also give the child its own
+	// process group. Adding Setpgid makes startup fail with EPERM on Unix.
 	command.Cancel = func() error { return killPTYCommand(command) }
 }
 

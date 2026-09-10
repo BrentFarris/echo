@@ -105,6 +105,74 @@ func (s *Service) Diff(ctx context.Context, workspaceID, repositoryID, scope, pa
 	return document, nil
 }
 
+// DiffBetween returns a confined per-file diff between two revisions, or from
+// a revision to the working tree when target is empty.
+func (s *Service) DiffBetween(ctx context.Context, workspaceID, repositoryID, path, oldPath, base, target string) (DiffDocument, error) {
+	ctx = s.executionContext(ctx, workspaceID)
+	state, err := s.repository(ctx, workspaceID, repositoryID)
+	if err != nil {
+		return DiffDocument{}, err
+	}
+	path, err = cleanGitPath(path)
+	if err != nil || !state.pathAllowed(path) {
+		return DiffDocument{}, &Error{Code: "path_outside_workspace", Message: "Git path is outside this workspace", Cause: ErrInvalidPath}
+	}
+	if strings.TrimSpace(oldPath) == "" {
+		oldPath = path
+	} else if oldPath, err = cleanGitPath(oldPath); err != nil || !state.pathAllowed(oldPath) {
+		return DiffDocument{}, &Error{Code: "path_outside_workspace", Message: "Git path is outside this workspace", Cause: ErrInvalidPath}
+	}
+	base, err = validateCommitRef(ctx, state, base)
+	if err != nil {
+		return DiffDocument{}, err
+	}
+	original, err := readBlob(ctx, state, base+":"+oldPath, shortGitRevision(base))
+	if err != nil {
+		return DiffDocument{}, err
+	}
+	var modified blobResult
+	editable := strings.TrimSpace(target) == ""
+	if editable {
+		fileRef, _ := state.refForPath(path)
+		modified, err = s.readWorktreeFile(workspaceID, fileRef, path)
+	} else {
+		target, err = validateCommitRef(ctx, state, target)
+		if err == nil {
+			modified, err = readBlob(ctx, state, target+":"+path, shortGitRevision(target))
+		}
+	}
+	if err != nil {
+		return DiffDocument{}, err
+	}
+	fileRef, _ := state.refForPath(path)
+	document := DiffDocument{
+		RepositoryID: repositoryID, Scope: "revisions", Path: path, OldPath: oldPath,
+		Ref: fileRef, Revision: state.revision.Load(), Original: original.side, Modified: modified.side,
+		ModifiedRevision: modified.revision, Editable: editable, Kind: "text",
+	}
+	for _, result := range []blobResult{original, modified} {
+		if result.kind == "too-large" {
+			document.Kind, document.Editable = "too-large", false
+			document.UnavailableReason = "This diff exceeds Echo Code's 10 MiB editor limit."
+			document.Original.Content, document.Modified.Content = "", ""
+			break
+		}
+		if result.kind == "binary" {
+			document.Kind, document.Editable = "binary", false
+			document.UnavailableReason = "Binary or non-UTF-8 files cannot be displayed as a text diff."
+			document.Original.Content, document.Modified.Content = "", ""
+		}
+	}
+	return document, nil
+}
+
+func shortGitRevision(revision string) string {
+	if len(revision) > 10 {
+		return revision[:10]
+	}
+	return revision
+}
+
 func readBlob(parent context.Context, state *repositoryState, specification, label string) (blobResult, error) {
 	ctx, cancel := context.WithTimeout(parent, localCommandTimeout)
 	defer cancel()

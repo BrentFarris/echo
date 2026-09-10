@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GitStatus } from "./code/gitTypes";
+import type { SourceControlStatus } from "./code/sourceControlTypes";
 
-const gitAPI = vi.hoisted(() => ({
+const sourceControlAPI = vi.hoisted(() => ({
   listRepositories: vi.fn(),
   loadStatus: vi.fn(),
 }));
@@ -27,23 +27,32 @@ const socket = vi.hoisted(() => {
   };
 });
 
-vi.mock("./code/gitApi", () => gitAPI);
+vi.mock("./code/sourceControlApi", () => sourceControlAPI);
 vi.mock("../js/ws.js", () => ({ on: socket.on, onState: socket.onState, send: socket.send }));
 
 import { setGitBadgeCount, watchGitBadge } from "./gitBadge";
 
-function status(repositoryId: string, totalChangeCount: number, revision = 1): GitStatus {
+function status(repositoryId: string, totalChangeCount: number, revision = 1): SourceControlStatus {
+  const changes = Array.from({ length: totalChangeCount }, (_, index) => ({
+    path: `${repositoryId}-${index}.txt`,
+    status: "Modified",
+    statusCode: "M",
+    groupId: "working",
+    scope: "unstaged",
+  }));
   return {
     workspaceId: "workspace-one",
     repositoryId,
+    providerId: "git",
     revision,
     branch: "main",
     detached: false,
     ahead: 0,
     behind: 0,
+    groups: [{ id: "working", label: "Changes", role: "working", actions: [], changes }],
     conflicts: [],
     staged: [],
-    unstaged: [],
+    unstaged: changes,
     totalChangeCount,
     state: {},
   };
@@ -55,14 +64,15 @@ describe("Git activity badge", () => {
   beforeEach(() => {
     root = document.createElement("div");
     root.innerHTML = "<b data-git-badge></b><b data-git-badge></b>";
-    gitAPI.listRepositories.mockResolvedValue({
+    sourceControlAPI.listRepositories.mockResolvedValue({
       repositories: [
-        { id: "repo-one", label: "One", parent: false, scopes: [], revision: 1 },
-        { id: "repo-two", label: "Two", parent: false, scopes: [], revision: 1 },
+        { id: "repo-one", providerId: "git", providerLabel: "Git", label: "One", parent: false, scopes: [], revision: 1, available: true, capabilities: ["status"] },
+        { id: "repo-two", providerId: "git", providerLabel: "Git", label: "Two", parent: false, scopes: [], revision: 1, available: true, capabilities: ["status"] },
       ],
-      searchParentGitRepositories: false,
+      providers: [],
+      searchParentRepositories: false,
     });
-    gitAPI.loadStatus.mockImplementation(async (_workspaceId: string, repositoryId: string) => (
+    sourceControlAPI.loadStatus.mockImplementation(async (_workspaceId: string, repositoryId: string) => (
       repositoryId === "repo-one" ? status(repositoryId, 2) : status(repositoryId, 3)
     ));
   });
@@ -86,7 +96,7 @@ describe("Git activity badge", () => {
     const stop = watchGitBadge(root, "workspace-one");
 
     await vi.waitFor(() => expect(root.querySelector("[data-git-badge]")?.textContent).toBe("5"));
-    expect(gitAPI.loadStatus).toHaveBeenCalledTimes(2);
+    expect(sourceControlAPI.loadStatus).toHaveBeenCalledTimes(2);
 
     socket.emit("git_status", {
       workspaceId: "workspace-one",

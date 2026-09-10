@@ -11,7 +11,7 @@ import { escapeHTML, toast } from "./ui";
 
 const panelId = "test-output";
 
-export class GoTestOutput {
+export class TestOutput {
   private readonly workspaceId: string;
   private readonly unregisterPanel: () => void;
   private readonly unsubscribe: Array<() => void> = [];
@@ -153,15 +153,15 @@ export class GoTestOutput {
     const follow = !output || output.scrollHeight - output.scrollTop - output.clientHeight < 32;
     const status = this.taskStatus || "idle";
     const statusLabel = status === "running" ? "Running" : status === "passed" ? "Passed" : status === "failed" ? "Failed" : status === "stopped" ? "Stopped" : "Ready";
-    this.host.innerHTML = `<section class="go-test-output">
-      <header><span class="go-test-status is-${escapeHTML(status)}"><span></span>${statusLabel}</span><div>
+    this.host.innerHTML = `<section class="test-output go-test-output">
+      <header><span class="test-status go-test-status is-${escapeHTML(status)}"><span></span>${statusLabel}</span><div>
         <button type="button" data-test-output-action="clear">Clear</button>
         <button type="button" data-test-output-action="rerun" ${this.sessionId && status !== "running" ? "" : "disabled"}>Rerun</button>
         <button type="button" data-test-output-action="stop" ${status === "running" ? "" : "disabled"}>Stop</button>
       </div></header>
       <pre tabindex="0" data-test-output-text>${escapeHTML(stripANSI(this.output))}</pre>
       ${this.message ? `<footer>${escapeHTML(this.message)}</footer>` : ""}
-      ${this.exitCode !== undefined && status !== "running" ? `<span class="go-test-exit">Exit code ${this.exitCode}</span>` : ""}
+      ${this.exitCode !== undefined && status !== "running" ? `<span class="test-exit go-test-exit">Exit code ${this.exitCode}</span>` : ""}
     </section>`;
     this.host.onclick = (event) => {
       const button = (event.target as Element).closest<HTMLButtonElement>("[data-test-output-action]");
@@ -196,13 +196,16 @@ export class GoTestOutput {
     if (!this.sessionId) return;
     if (!(await this.beforeRun())) return;
     try {
-      const result = await api(`/api/workspaces/${encodeURIComponent(this.workspaceId)}/testing/go/runs/${encodeURIComponent(this.sessionId)}/rerun`, { method: "POST", body: {} }) as { session: TerminalSnapshot };
+      const result = await api(`/api/workspaces/${encodeURIComponent(this.workspaceId)}/testing/runs/${encodeURIComponent(this.sessionId)}/rerun`, { method: "POST", body: {} }) as { session: TerminalSnapshot };
       this.adopt(result.session);
     } catch (error) {
       toast(errorMessage(error), { sticky: true });
     }
   }
 }
+
+// Keep the historical export for extensions that imported the Go-only name.
+export { TestOutput as GoTestOutput };
 
 function stripANSI(value: string): string {
   return value.replace(/[\u001B\u009B][[\]()#;?]*(?:(?:(?:;[-a-zA-Z\d\/#&.:=?%@~_]+)*|[a-zA-Z\d]+(?:;[-a-zA-Z\d\/#&.:=?%@~_]*)*)?\u0007|(?:(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g, "");

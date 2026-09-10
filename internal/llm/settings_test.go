@@ -36,6 +36,47 @@ func TestStreamIdleTimeoutValidation(t *testing.T) {
 	}
 }
 
+func TestEditorIndentationSettings(t *testing.T) {
+	settings := DefaultSettings()
+	if settings.EditorInsertSpaces || settings.EditorTabSize != 4 {
+		t.Fatal("new settings must default to tabs at width 4")
+	}
+	var legacy Settings
+	if err := json.Unmarshal([]byte(`{}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	legacy = legacy.NormalizedEndpointProfiles()
+	if legacy.EditorInsertSpaces || legacy.EditorTabSize != 4 {
+		t.Fatal("legacy settings must default to tabs at width 4")
+	}
+	for _, width := range []int{0, 1, 2, 4, 8} {
+		settings.EditorTabSize = width
+		if err := settings.Validate(); err != nil {
+			t.Fatalf("valid width %d rejected: %v", width, err)
+		}
+	}
+	for _, width := range []int{-1, 9} {
+		settings.EditorTabSize = width
+		if err := settings.Validate(); err == nil {
+			t.Fatalf("invalid width %d accepted", width)
+		}
+	}
+	settings.EditorInsertSpaces = true
+	settings.EditorTabSize = 2
+	data, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored Settings
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatal(err)
+	}
+	restored = restored.NormalizedEndpointProfiles()
+	if !restored.EditorInsertSpaces || restored.EditorTabSize != 2 {
+		t.Fatal("indentation preferences did not survive serialization")
+	}
+}
+
 func TestEditorFontSizeDefaultAndClamp(t *testing.T) {
 	settings := DefaultSettings()
 	if settings.EditorFontSize != DefaultEditorFontSize {

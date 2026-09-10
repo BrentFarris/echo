@@ -5,6 +5,7 @@ import { timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import { chromium } from "playwright";
 
+const protocolVersion = readFileSync(new URL("./protocol-version.txt", import.meta.url), "utf8").trim();
 const profilePath = "/home/echo/.config/chromium";
 const downloadPath = "/exchange/downloads";
 const launcherSocketPath = "/run/echo/browser/launcher.sock";
@@ -417,7 +418,7 @@ const server = createServer(async (request, response) => {
   try {
     if (!await authorized(request)) return json(response, 401, { ok: false, code: "unauthorized", error: "unauthorized" });
     if (request.method === "GET" && request.url === "/v1/health") {
-      return json(response, context ? 200 : 503, { ok: Boolean(context), protocolVersion: "1", error: startError || undefined });
+      return json(response, context ? 200 : 503, { ok: Boolean(context), protocolVersion, error: startError || undefined });
     }
     if (request.method !== "POST" || request.url !== "/v1/call") return json(response, 404, { ok: false, code: "not_found", error: "not found" });
     const payload = await bodyJSON(request);
