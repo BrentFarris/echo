@@ -665,36 +665,6 @@ func (m *Manager) SetSearchParentRepositories(id string, enabled bool) (Workspac
 func (m *Manager) SetSearchParentGitRepositories(id string, enabled bool) (Workspace, error) {
 	return m.SetSearchParentRepositories(id, enabled)
 }
-	workspace, ok, err := m.Get(id)
-	if err != nil {
-		return Workspace{}, err
-	}
-	if !ok {
-		return Workspace{}, fmt.Errorf("workspace %q not found", id)
-	}
-	workspace.SearchParentRepositories = enabled
-	workspace.SearchParentGitRepositories = enabled
-	if err := writeWorkspaceFile(filepath.Join(workspace.MainPath, EchoDirName), workspaceFileFromWorkspace(workspace)); err != nil {
-		return Workspace{}, err
-	}
-	if err := m.data.Update(func(f *appdata.File) error {
-		for index := range f.Workspaces {
-			if f.Workspaces[index].ID == id {
-				f.Workspaces[index] = workspaceRegistration(workspace)
-				return nil
-			}
-		}
-		return fmt.Errorf("workspace %q not found", id)
-	}); err != nil {
-		return Workspace{}, err
-	}
-	return workspace, nil
-}
-
-// SetSearchParentGitRepositories is the deprecated Git API alias.
-func (m *Manager) SetSearchParentGitRepositories(id string, enabled bool) (Workspace, error) {
-	return m.SetSearchParentRepositories(id, enabled)
-}
 
 // SetLanguageServerConfig updates the portable language-server selection and
 // workspace overrides without copying machine-global profiles into the project.
