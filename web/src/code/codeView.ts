@@ -271,7 +271,6 @@ class CodeView {
       this.splitGitDiff = disableSplitDiff !== true;
       this.leadingWhitespaceIndicators = settingsData?.settings?.hideLeadingWhitespaceIndicators !== true;
       this.enableVimKeybindings = settingsData?.settings?.enableVimKeybindings === true;
-      if (settingsData?.settings) this.fullSettings = { ...(settingsData.settings as Record<string, unknown>) };
       this.indentation = indentationDefaults(settingsData?.settings || {});
       this.editorFontSize = this.clampEditorFontSize((settingsData?.settings?.editorFontSize as number | undefined) || 13.5);
       this.lspProfiles = lspData.profiles || [];
