@@ -2802,7 +2802,6 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 	forceFinalWithoutTools := false
 	var observedTokens int
 	usageSource := "estimated"
-	compressionCooldown := false
 	contextLengthRetries := 0
 	compressionCooldownRounds := 0
 	contextLengthRecoveries := 0
@@ -3005,7 +3004,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			// Provider rejected the request over context size: compress and retry.
 			if contextLengthRetries < maxContextLengthRetries && llm.IsContextLengthExceeded(err) && settings.CompressionEnabled() {
 				contextLengthRetries++
-				compressionCooldown = false // force the preflight compression check next round
+				compressionCooldownRounds = 0 // force the preflight compression check next round
 				canonical = append(canonical, assistant) // retain partial response so it can be retired by compression
 			} else if llm.IsContextLengthExceeded(err) && contextLengthRecoveries < maxContextLengthRecoveries {
 				// The provider rejected the request as too large. This happens
@@ -3047,7 +3046,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			// pass compress the context before the next request.
 			if contextLengthRetries < maxContextLengthRetries && strings.TrimSpace(streamResult.FinishReason) == "length" {
 				contextLengthRetries++
-				compressionCooldown = false
+				compressionCooldownRounds = 0 // force the preflight compression check next round
 				interruptedTool := ""
 				if len(streamResult.ToolCalls) > 0 {
 					interruptedTool = streamResult.ToolCalls[0].Function.Name

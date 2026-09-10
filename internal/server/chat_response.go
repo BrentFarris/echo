@@ -27,6 +27,10 @@ const (
 	// a provider context-size rejection by forcing compression against the
 	// observed limit before failing.
 	maxContextLengthRetries = 3
+	// maxContextLengthRecoveries bounds how many times a turn may recover from
+	// a provider context-size rejection when the preflight compression check
+	// did not trigger (e.g., configured window overestimates the real one).
+	maxContextLengthRecoveries = 2
 )
 
 var errTruncatedResponse = errors.New("response hit the token limit")

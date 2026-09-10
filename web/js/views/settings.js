@@ -72,6 +72,7 @@ const sections = [
   { id: "plugins", label: "Plugins", icon: icons.dashboard },
   { id: "external", label: "External Connections", icon: icons.git },
   { id: "messaging", label: "Messaging", icon: icons.mic },
+  { id: "editor", label: "Editor", icon: icons.code },
   { id: "git", label: "Git", icon: icons.git },
   { id: "lsp", label: "Language Servers", icon: icons.code },
   { id: "testing", label: "Testing", icon: icons.execute },
@@ -134,6 +135,9 @@ const state = {
   rawSettings: {},
   settingsLoaded: false,
   researchAgentConcurrency: 4,
+  editor: {
+    enableVimKeybindings: false,
+  },
   git: {
     leadingWhitespaceIndicators: true,
     splitDiffView: true,
@@ -569,6 +573,20 @@ function renderGit() {
             <input type="checkbox" data-git-setting="${t.key}" ${t.checked ? "checked" : ""} ${state.settingsLoaded ? "" : "disabled"} />
           </label>
         `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderEditor() {
+  return `
+    <section class="settings-section">
+      <h2 class="settings-section-title">Editor</h2>
+      <div class="settings-card">
+        <label class="settings-toggle" title="Use Vim-style keybindings in the code editor.">
+          <span>Vim keybindings</span>
+          <input type="checkbox" data-editor-setting="enableVimKeybindings" ${state.editor.enableVimKeybindings ? "checked" : ""} ${state.settingsLoaded ? "" : "disabled"} />
+        </label>
       </div>
     </section>
   `;
@@ -1069,6 +1087,7 @@ const renderers = {
   external: renderExternal,
   messaging: renderMessaging,
   git: renderGit,
+  editor: renderEditor,
   lsp: renderLanguageServers,
   testing: renderTesting,
   theme: renderTheme,
@@ -1479,6 +1498,13 @@ function bindEvents(root) {
   root.querySelectorAll("[data-git-setting]").forEach((field) => {
     field.addEventListener("change", () => {
       state.git[field.dataset.gitSetting] = field.checked;
+      saveSettings();
+    });
+  });
+
+  root.querySelectorAll("[data-editor-setting]").forEach((field) => {
+    field.addEventListener("change", () => {
+      state.editor[field.dataset.editorSetting] = field.checked;
       saveSettings();
     });
   });
@@ -2231,6 +2257,9 @@ function applySettings(cfg) {
   };
   state.editorFontSize = clampEditorFontSize(Number(s.editorFontSize) || 13.5);
   state.researchAgentConcurrency = Math.max(0, Math.min(8, Number(s.researchAgentConcurrency ?? 4) || 0));
+  state.editor = {
+    enableVimKeybindings: s.enableVimKeybindings === true,
+  };
   state.git = {
     leadingWhitespaceIndicators: s.hideLeadingWhitespaceIndicators !== true,
     splitDiffView: s.disableGitSplitDiffView !== true,
@@ -2355,6 +2384,7 @@ function buildSettings() {
     enablePlanQuestionNotifications: state.messaging.planQuestionNotifications,
     enableChatCompletionNotifications: state.messaging.chatCompletionNotifications,
     editorFontSize: state.editorFontSize,
+    enableVimKeybindings: state.editor.enableVimKeybindings,
     researchAgentConcurrency: state.researchAgentConcurrency,
   };
 }

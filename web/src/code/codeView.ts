@@ -746,7 +746,7 @@ class CodeView {
       ? (() => {
           const el = document.createElement("div");
           el.style.cssText = "position:absolute;bottom:0;left:0;right:0;height:24px;display:none;z-index:1000;background:#333;color:#ccc;font-size:12px;padding:2px 8px;font-family:monospace;";
-          this.root.querySelector<HTMLElement>(".code-editor-column")!.appendChild(el);
+          this.root.querySelector<HTMLElement>(".code-editor-pane")!.appendChild(el);
           return el;
         })()
       : null;
@@ -3522,6 +3522,9 @@ class CodeView {
     if (this.debugView?.handleKeydown(event)) return;
     if (event.key === "Escape" && this.root.querySelector("[data-chat-mention-picker]") && document.activeElement?.closest(".code-chat-surface")) return;
     if (event.key === "Escape" && this.codeChatOpen) {
+      // When Vim mode is active and the editor has focus, let monaco-vim
+      // handle Escape (exit insert mode) instead of closing the chat panel.
+      if (this.enableVimKeybindings && this.activeCodeEditor()?.hasTextFocus()) return;
       // When a file search/replace is active, Escape closes the search first;
       // only fall through to closing the code chat once the search is dismissed.
       if (this.searchIsActive()) return;

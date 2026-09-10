@@ -1462,6 +1462,7 @@
 }
 
 .code-editor-pane {
+  position: relative;
   display: grid;
   grid-template-rows: 24px minmax(0, 1fr) 22px;
   min-width: 0;

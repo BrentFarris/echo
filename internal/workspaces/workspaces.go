@@ -606,63 +606,6 @@ func (m *Manager) Delete(id string) error {
 	})
 }
 
-// Update patches selected workspace properties (name and/or folders).
-// An empty name means "do not change the name". A nil folders slice means
-// "do not change folders"; an empty slice replaces all additional folders.
-func (m *Manager) Update(id string, name string, folders []string) (Workspace, error) {
-	workspace, ok, err := m.Get(id)
-	if err != nil {
-		return Workspace{}, err
-	}
-	if !ok {
-		return Workspace{}, fmt.Errorf("workspace %q not found", id)
-	}
-
-	name = strings.TrimSpace(name)
-	if name != "" {
-		workspace.Name = name
-	}
-
-	if folders != nil {
-		// Build new folder list: main path first, then provided additional folders.
-		newFolders := []string{workspace.MainPath}
-		for _, requested := range folders {
-			requested = strings.TrimSpace(requested)
-			if requested == "" {
-				continue
-			}
-			folder, resolveErr := absolutePath("", requested)
-			if resolveErr != nil {
-				return Workspace{}, fmt.Errorf("resolve workspace folder %q: %w", requested, resolveErr)
-			}
-			newFolders = append(newFolders, folder)
-		}
-		newFolders = append([]string{workspace.MainPath}, cleanFolders(newFolders[1:], workspace.MainPath)...)
-		for _, folder := range newFolders {
-			if err := requireDirectory(folder, "", fmt.Sprintf("path %q is not accessible", folder)); err != nil {
-				return Workspace{}, err
-			}
-		}
-		workspace.Folders = newFolders
-	}
-
-	if err := writeWorkspaceFile(filepath.Join(workspace.MainPath, EchoDirName), workspaceFileFromWorkspace(workspace)); err != nil {
-		return Workspace{}, err
-	}
-	if err := m.data.Update(func(f *appdata.File) error {
-		for index := range f.Workspaces {
-			if f.Workspaces[index].ID == id {
-				f.Workspaces[index] = workspaceRegistration(workspace)
-				return nil
-			}
-		}
-		return fmt.Errorf("workspace %q not found", id)
-	}); err != nil {
-		return Workspace{}, err
-	}
-	return workspace, nil
-}
-
 // SetSearchParentGitRepositories updates the workspace-scoped parent
 // repository discovery preference in both the shared app data and the
 // workspace-owned settings file.
