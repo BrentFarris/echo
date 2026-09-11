@@ -44,6 +44,9 @@ RUN test "$TARGETARCH" = "amd64" \
  && printf 'echo ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/echo \
  && chmod 0440 /etc/sudoers.d/echo \
  && install -d -o echo -g echo /exchange /workspace
+# Echo owns the desktop/browser session and maps its UID to the host at startup.
+# The unused Playwright account reserves UID 1001, used by Linux CI runners.
+RUN if getent passwd pwuser >/dev/null; then userdel pwuser; fi
 COPY --from=agent-build /usr/local/go /usr/local/go
 COPY --from=agent-build /out/echo-sandbox-agent /usr/local/bin/echo-sandbox-agent
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
