@@ -15,7 +15,9 @@ if [[ "$target_uid" =~ ^[0-9]+$ ]] && (( target_uid > 0 )) && [[ "$(id -u echo)"
   usermod --uid "$target_uid" echo
 fi
 
-install -d -o echo -g echo /home/echo /home/echo/go /home/echo/.config/chromium /home/echo/.config/gtk-3.0 \
+# install assigns ownership only to the named directories, not implicit parents.
+# Chromium's crash reporter and desktop apps also write beside the managed profile.
+install -d -o echo -g echo /home/echo /home/echo/go /home/echo/.config /home/echo/.config/chromium /home/echo/.config/gtk-3.0 \
   /home/echo/.config/xfce4 /exchange /exchange/downloads
 install -d -m 0700 -o echo -g echo /run/echo/browser
 if [[ "$original_uid" != "$(id -u echo)" ]]; then
