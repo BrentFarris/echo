@@ -19,7 +19,7 @@ import (
 
 // TestDockerIntegrationLifecycle is opt-in because it creates and deletes real
 // Docker resources. CI builds the two :dev images first and enables it on a
-// Linux runner and on the release-blocking Windows Docker Desktop runner.
+// Linux runner and on the optional Windows Docker Desktop runner.
 func TestDockerIntegrationLifecycle(t *testing.T) {
 	if os.Getenv("ECHO_SANDBOX_INTEGRATION") != "1" {
 		t.Skip("set ECHO_SANDBOX_INTEGRATION=1 after building the sandbox images")

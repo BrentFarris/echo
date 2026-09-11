@@ -137,11 +137,11 @@ docker build --platform linux/amd64 -f sandbox/images/gateway/Dockerfile -t echo
 ECHO_SANDBOX_INTEGRATION=1 go test ./internal/sandbox -run TestDockerIntegration -count=1 -v
 ```
 
-Development builds intentionally use local `:dev` tags. Nightly CI builds two candidate images, scans them, emits SPDX SBOM/license data, and runs real Docker acceptance on Linux and Windows Docker Desktop before publishing. It embeds immutable `name@sha256:digest` references into Windows, Linux, and macOS binaries through Go linker values.
+Development builds intentionally use local `:dev` tags. Nightly CI builds two candidate images, scans them, emits SPDX SBOM/license data, and requires real Docker acceptance on Linux before publishing. It embeds immutable `name@sha256:digest` references into Windows, Linux, and macOS binaries through Go linker values.
 
 Each image carries an OCI source label that links its GHCR package to this public repository. GitHub creates a container package as private on its first publication, so the package owner must change each of the two packages to **Public** once in its GHCR package settings. CI uses a clean anonymous Docker configuration to verify every digest and the source-build `protocol-3` tags before releasing binaries; later releases fail closed if package visibility regresses.
 
-The release-blocking Windows job expects a self-hosted runner labeled `self-hosted`, `Windows`, `X64`, and `echo-sandbox`, with Docker Desktop already running Linux containers. Echo's installer still installs only Echo.
+Windows Docker Desktop acceptance is optional and does not gate image publication or application releases. To run it, open **Actions → Nightly Builds → Run workflow** and enable **Run Windows Docker Desktop acceptance** (`windows_sandbox_acceptance`). This input defaults to false; scheduled nightlies skip the Windows job. When enabled, it tests the same candidate images on a self-hosted runner labeled `self-hosted`, `Windows`, `X64`, and `echo-sandbox`, with Docker Desktop already running Linux containers. Register and start that runner before opting in. Echo's installer still installs only Echo.
 
 The protocol-2 channels remain unchanged. Candidate images are transferred between acceptance jobs as artifacts; only accepted images are published to protocol-3 and embedded by digest.
 

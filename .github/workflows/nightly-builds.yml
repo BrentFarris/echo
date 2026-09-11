@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "17 8 * * *"
   workflow_dispatch:
+    inputs:
+      windows_sandbox_acceptance:
+        description: Run Windows Docker Desktop acceptance (requires an echo-sandbox runner)
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   actions: read
@@ -219,7 +225,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Export candidates for Windows acceptance
+      - name: Export candidates for publication and optional Windows acceptance
         run: docker save -o sandbox-candidates.tar echo-sandbox-runtime:dev echo-sandbox-egress:dev
 
       - name: Upload candidate images
@@ -231,9 +237,9 @@ jobs:
           retention-days: 2
 
   windows-sandbox-acceptance:
-    name: Windows Docker Desktop sandbox acceptance
+    name: Windows Docker Desktop sandbox acceptance (manual)
     needs: [check-changes, verify, sandbox-images]
-    if: needs.check-changes.outputs.should_build == 'true'
+    if: github.event_name == 'workflow_dispatch' && inputs.windows_sandbox_acceptance && needs.check-changes.outputs.should_build == 'true'
     runs-on: [self-hosted, Windows, X64, echo-sandbox]
     timeout-minutes: 45
     steps:
@@ -270,7 +276,7 @@ jobs:
 
   publish-sandbox-images:
     name: Publish accepted protocol-3 images
-    needs: [check-changes, sandbox-images, windows-sandbox-acceptance]
+    needs: [check-changes, sandbox-images]
     if: needs.check-changes.outputs.should_build == 'true'
     runs-on: ubuntu-24.04
     outputs:
@@ -286,7 +292,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Publish images after Linux and Windows acceptance
+      - name: Publish images after Linux acceptance
         id: publish
         shell: bash
         run: |
