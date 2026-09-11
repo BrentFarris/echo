@@ -1677,7 +1677,7 @@
 
 .code-chat-surface {
   display: grid;
-  grid-template-rows: 35px minmax(0, 1fr) auto;
+  grid-template-rows: 35px minmax(0, 1fr) auto auto;
   width: 100%;
   height: 100%;
   gap: 0;
@@ -1687,6 +1687,36 @@
   background: var(--code-editor-surface);
   box-shadow: none;
   color: var(--code-fg);
+}
+
+.code-chat-surface > .code-chat-header { grid-row: 1; }
+.code-chat-surface > .chat-log { grid-row: 2; }
+.code-chat-surface > .chat-goal-bar { grid-row: 3; }
+.code-chat-surface > .chat-composer { grid-row: 4; }
+
+.code-chat-surface .chat-goal-bar {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.code-chat-surface .chat-goal-main,
+.code-chat-surface .chat-goal-actions {
+  flex-wrap: wrap;
+}
+
+.code-chat-surface .chat-goal-objective {
+  flex: 1 1 100%;
+  min-width: 0;
+  order: 3;
+}
+
+.code-chat-surface .chat-goal-stats {
+  flex-shrink: 1;
+  overflow-wrap: anywhere;
+}
+
+.code-chat-surface .chat-goal-actions button {
+  flex: 0 0 auto;
 }
 
 .code-chat-header {

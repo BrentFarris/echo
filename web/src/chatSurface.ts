@@ -227,7 +227,7 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
   );
 
   const updateNewChatAvailability = () => {
-    newChat.disabled = goalLocksComposer() || !canClearChat(log);
+    newChat.disabled = !canClearChat(log);
   };
 
   const formatGoalDuration = (seconds: number) => {
@@ -561,7 +561,10 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
   }, { signal });
   close?.addEventListener("click", () => options.onClose?.(), { signal });
   newChat.addEventListener("click", () => {
-    if (!canClearChat(log) || !window.confirm("Start a new code chat? This clears the current code-chat history.")) return;
+    const confirmation = currentGoal
+      ? "Start a new code chat? This clears the current goal and code-chat history."
+      : "Start a new code chat? This clears the current code-chat history.";
+    if (!canClearChat(log) || !window.confirm(confirmation)) return;
     if (clearChat(log)) {
       input.replaceChildren();
       saveDraft();

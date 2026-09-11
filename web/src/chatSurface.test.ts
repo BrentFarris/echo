@@ -58,11 +58,12 @@ describe("compact chat surface", () => {
     chat.resumeGoal.mockClear();
     chat.editGoal.mockClear();
     chat.clearGoal.mockClear();
+    chat.clearChat.mockReset();
     chat.openWorkspaceSession.mockClear();
     chat.canClearChat.mockReturnValue(false);
   });
 
-  afterEach(() => document.body.replaceChildren());
+  afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); });
 
   it("preserves the composer when save preflight cancels the send", async () => {
     const beforeSend = vi.fn(async () => false as const);
@@ -236,6 +237,43 @@ describe("compact chat surface", () => {
     chat.canClearChat.mockReturnValue(false);
     chat.streamingListeners.at(-1)!(true);
     expect(newChat.disabled).toBe(true);
+    surface.dispose();
+  });
+
+  it.each(["paused", "blocked"])("confirms and resets a %s goal without changing model or mode", async (status) => {
+    const surface = mountChatSurface(host, { workspaceId: `reset-${status}`, surface: "code" });
+    const model = host.querySelector<HTMLSelectElement>("[data-code-chat-model]")!;
+    const mode = host.querySelector<HTMLSelectElement>("[data-code-chat-mode]")!;
+    await vi.waitFor(() => expect([...mode.options].some((option) => option.value === "goal")).toBe(true));
+    model.add(new Option("Missing model", "missing-model"));
+    model.value = "missing-model";
+    mode.value = "goal";
+    chat.canClearChat.mockReturnValue(true);
+    const workspace = { workspaceId: `reset-${status}`, surface: "code", hasSnapshot: true,
+      goal: { id: "goal-1", objective: "Finish", model: "missing-model", status } };
+    chat.emitWorkspace(workspace);
+    const reset = host.querySelector<HTMLButtonElement>("[data-code-chat-new]")!;
+    const input = host.querySelector<HTMLElement>("[data-chat-input]")!;
+    input.textContent = "Queued draft";
+    expect(reset.disabled).toBe(false);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    reset.click();
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("current goal and code-chat history"));
+    expect(chat.clearChat).not.toHaveBeenCalled();
+    expect(input.textContent).toBe("Queued draft");
+    confirm.mockReturnValue(true);
+    chat.clearChat.mockReturnValue(true);
+    reset.click();
+    expect(chat.clearChat).toHaveBeenCalledOnce();
+    expect(chat.clearGoal).not.toHaveBeenCalled();
+    expect(input.textContent).toBe("");
+    chat.canClearChat.mockReturnValue(false);
+    chat.emitWorkspace({ ...workspace, goal: null });
+    expect(host.querySelector<HTMLElement>("[data-goal-bar]")!.hidden).toBe(true);
+    expect(model.disabled).toBe(false);
+    expect(mode.disabled).toBe(false);
+    expect(model.value).toBe("missing-model");
+    expect(mode.value).toBe("goal");
     surface.dispose();
   });
 

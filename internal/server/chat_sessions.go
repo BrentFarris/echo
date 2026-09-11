@@ -993,7 +993,10 @@ func (m *chatSessionManager) clear(c *client, workspaceID, chatID, surfaceValue 
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_busy", "the current chat cannot be cleared while a response is active", "")
 		return
 	}
-	if session.goalProtectsTranscriptLocked() {
+	goal, _ := session.currentGoalLocked()
+	canResetGoal := surface == chatSurfaceCode && goal != nil &&
+		(goal.Status == sessions.GoalStatusPaused || goal.Status == sessions.GoalStatusBlocked)
+	if session.goalProtectsTranscriptLocked() && !canResetGoal {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "goal_transcript_locked", "clear the current goal before clearing this chat", "")
 		return

@@ -80,6 +80,50 @@ describe("multi-chat WebSocket protocol", () => {
     });
   });
 
+  it.each(["paused", "blocked"])("resets an idle %s Code Chat goal restored from a snapshot", (status) => {
+    openWorkspaceSession(log, "workspace-tabs", { surface: "code" });
+    expect(canClearChat(log)).toBe(false);
+    const snapshot = {
+      type: "session_snapshot", workspaceId: "workspace-tabs", surface: "code", sequence: 1,
+      activeChatId: "code-goal", tabs: [{ chatId: "code-goal", busy: false }],
+      turns: [{ id: "failed", userContent: "Finish", status: "error", error: "Model not found", assistantTurns: [] }],
+      goal: { id: "goal-1", objective: "Finish", status, model: "missing-model" },
+    };
+    emit("session_snapshot", snapshot);
+    expect(canClearChat(log)).toBe(true);
+    expect(clearChat(log)).toBe(true);
+    expect(socket.send).toHaveBeenLastCalledWith({
+      type: "chat_clear", workspaceId: "workspace-tabs", surface: "code", chatId: "code-goal",
+    });
+    emit("session_snapshot", { ...snapshot, tabs: [{ chatId: "code-goal", busy: true }] });
+    expect(clearChat(log)).toBe(false);
+    emit("session_snapshot", { ...snapshot, goal: { ...snapshot.goal, status: "active" } });
+    expect(clearChat(log)).toBe(false);
+    emit("session_snapshot", { ...snapshot, turns: [], goal: null });
+    expect(getChatWorkspaceState()?.goal).toBeNull();
+    expect(log.textContent).not.toContain("Model not found");
+    expect(canClearChat(log)).toBe(false);
+  });
+
+  it("unlocks reset after a Code Chat goal fails and the turn finishes", () => {
+    openWorkspaceSession(log, "workspace-tabs", { surface: "code" });
+    const envelope = { workspaceId: "workspace-tabs", surface: "code", chatId: "code-goal" };
+    emit("session_snapshot", {
+      ...envelope, sequence: 1, activeChatId: "code-goal", turns: [],
+      tabs: [{ chatId: "code-goal", busy: false }],
+      goal: { id: "goal-1", objective: "Finish", status: "active" },
+    });
+    emit("session_event", { ...envelope, sequence: 2,
+      event: { type: "turn_started", turnId: "failed", message: "Finish", goalId: "goal-1" } });
+    emit("session_event", { ...envelope, sequence: 3,
+      event: { type: "goal_updated", goal: { id: "goal-1", objective: "Finish", status: "paused" } } });
+    expect(canClearChat(log)).toBe(false);
+    emit("session_event", { ...envelope, sequence: 4,
+      event: { type: "turn_finished", turnId: "failed", status: "error", error: "Model not found" } });
+    expect(canClearChat(log)).toBe(true);
+    expect(log.textContent).toContain("Model not found");
+  });
+
   it("reconciles goal state and emits lifecycle commands for the active chat", () => {
     emit("session_snapshot", {
       type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,

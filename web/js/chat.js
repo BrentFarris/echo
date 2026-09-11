@@ -77,10 +77,11 @@ export function canClearChat(log) {
     binding?.log === log
     && binding.workspaceId
     && binding.hasSnapshot
-    && binding.turns.size > 0
+    && (binding.turns.size > 0 || (binding.surface === "code" && binding.goal))
     && !activeBindingChatBusy()
     && activeStream == null
-    && !["active", "paused", "blocked"].includes(binding.goal?.status)
+    && binding.goal?.status !== "active"
+    && (binding.surface === "code" || !["paused", "blocked"].includes(binding.goal?.status))
   );
 }
 
