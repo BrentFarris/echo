@@ -24,8 +24,8 @@ vi.mock("@novnc/novnc", () => ({ default: class FakeRFB extends EventTarget {
 
 import { mount, unmount } from "./sandboxView";
 
-const hostStatus = { available: true, supported: true, linuxEngine: true, architecture: "amd64", serverVersion: "28.0", images: { workbench: { present: true }, desktop: { present: true }, gateway: { present: true } } };
-const readyStatus = { state: "ready", enabled: true, protocolVersion: "1", controlOwner: "none", activeViewers: 0, resources: { memoryBytes: 1024, memoryLimitBytes: 4096, activeProcesses: 3 }, setup: { state: "succeeded" } };
+const hostStatus = { available: true, supported: true, linuxEngine: true, architecture: "amd64", serverVersion: "28.0", images: { runtime: { present: true }, gateway: { present: true } } };
+const readyStatus = { state: "ready", enabled: true, protocolVersion: "3", controlOwner: "none", activeViewers: 0, resources: { memoryBytes: 1024, memoryLimitBytes: 4096, activeProcesses: 3 }, setup: { state: "succeeded" } };
 const config = { enabled: true, cpuLimit: 4, memoryMiB: 6144, idleTimeoutMinutes: 30 };
 
 function responses(): void {
@@ -138,4 +138,27 @@ describe("sandbox view", () => {
     expect(api.post).toHaveBeenCalledWith(expect.stringContaining("/actions"), { action: "reset_browser" });
     expect(localStorage.getItem("echo:sandbox-signin-warning:v1:workspace-one")).toBeNull();
   });
+  it("requires an explicit upgrade and shows progress without offering Start", async () => {
+    api.get.mockImplementation(async (path: string) => {
+      if (path === "/api/sandbox/host") return hostStatus;
+      if (path.endsWith("/network-grants")) return { grants: [] };
+      return { config, status: { ...readyStatus, state: "upgrade_required" } };
+    });
+    const root = document.createElement("div"); document.body.append(root); mount(root); await settle();
+    expect(root.querySelector("[data-sandbox-state]")?.textContent).toBe("Upgrade required");
+    expect(root.querySelector("[data-action=start]")).toBeNull();
+    root.querySelector<HTMLButtonElement>("[data-action=upgrade]")?.click(); await settle();
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("Original containers and volumes are retained"));
+    expect(api.post).toHaveBeenCalledWith(expect.stringContaining("/actions"), { action: "upgrade" });
+    wsHandlers.get("sandbox_event")?.({ workspaceId: "workspace-one", event: "status", status: { ...readyStatus, state: "upgrading", message: "Preserving homes" } });
+    expect(root.querySelector("[data-sandbox-state]")?.textContent).toBe("Upgrading sandbox");
+    expect(root.querySelector<HTMLButtonElement>(".sandbox-toolbar-primary .primary-button")?.disabled).toBe(true);
+  });
+  it("uses Reset environment and explains that takeover leaves programs running", async () => {
+    const root = document.createElement("div"); document.body.append(root); mount(root); await settle();
+    expect(root.querySelector("[data-action=take-control]")?.getAttribute("title")).toContain("background jobs keep running");
+    root.querySelector<HTMLButtonElement>("[data-action=reset-environment]")?.click(); await settle();
+    expect(api.post).toHaveBeenCalledWith(expect.stringContaining("/actions"), { action: "reset_environment" });
+  });
+
 });

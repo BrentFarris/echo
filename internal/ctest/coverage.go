@@ -357,7 +357,7 @@ func (s *Service) runTool(ctx context.Context, workspaceID, command string, args
 			return toolResult{}, fmt.Errorf("sandbox runtime is unavailable")
 		}
 		result, err := s.sandbox.Execute(ctx, workspaceID, sandbox.ExecRequest{
-			Role: "workbench", Command: append([]string{command}, args...), WorkingDirectory: cwd,
+			Role: "runtime", Command: append([]string{command}, args...), WorkingDirectory: cwd,
 			Environment: environmentList(environment), OutputLimit: maxCoverageBytes,
 		})
 		if err != nil {

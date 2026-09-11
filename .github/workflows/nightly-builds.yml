@@ -119,16 +119,20 @@ jobs:
         working-directory: web
         run: npm run build
 
+      - name: Install Chromium for sandbox browser acceptance
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify sandbox upgrade and takeover UI
+        working-directory: web
+        run: npm run test:e2e -- sandbox.spec.ts
+
   sandbox-images:
-    name: Build, test, scan, and publish sandbox images
+    name: Build, test, and scan candidate sandbox images
     needs: [check-changes, verify]
     if: needs.check-changes.outputs.should_build == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 75
-    outputs:
-      workbench: ${{ steps.refs.outputs.workbench }}
-      desktop: ${{ steps.refs.outputs.desktop }}
-      gateway: ${{ steps.refs.outputs.gateway }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -142,109 +146,47 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Sign in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-
-      - name: Resolve image names
-        id: names
-        shell: bash
-        run: |
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
-          protocol="$(tr -d '\r\n' < internal/sandboxprotocol/version.txt)"
-          [[ "$protocol" =~ ^[0-9]+$ ]]
-          echo "channel=protocol-${protocol}" >> "$GITHUB_OUTPUT"
-          echo "workbench=ghcr.io/${owner}/echo-sandbox-workbench" >> "$GITHUB_OUTPUT"
-          echo "desktop=ghcr.io/${owner}/echo-sandbox-desktop" >> "$GITHUB_OUTPUT"
-          echo "gateway=ghcr.io/${owner}/echo-sandbox-egress" >> "$GITHUB_OUTPUT"
-
-      - name: Build and publish workbench image
-        id: workbench
+      - name: Build candidate runtime image
+        id: runtime
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: sandbox/images/workbench/Dockerfile
+          file: sandbox/images/runtime/Dockerfile
           platforms: linux/amd64
-          push: true
-          provenance: true
-          sbom: true
+          load: true
+          provenance: false
+          sbom: false
           build-args: ECHO_SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
-          tags: ${{ steps.names.outputs.workbench }}:${{ github.sha }}
-          cache-from: type=gha,scope=sandbox-workbench
-          cache-to: type=gha,mode=max,scope=sandbox-workbench
+          tags: echo-sandbox-runtime:dev
+          cache-from: type=gha,scope=sandbox-runtime
+          cache-to: type=gha,mode=max,scope=sandbox-runtime
 
-      - name: Build and publish desktop image
-        id: desktop
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: sandbox/images/desktop/Dockerfile
-          platforms: linux/amd64
-          push: true
-          provenance: true
-          sbom: true
-          build-args: ECHO_SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
-          tags: ${{ steps.names.outputs.desktop }}:${{ github.sha }}
-          cache-from: type=gha,scope=sandbox-desktop
-          cache-to: type=gha,mode=max,scope=sandbox-desktop
-
-      - name: Build and publish egress gateway image
+      - name: Build candidate egress gateway image
         id: gateway
         uses: docker/build-push-action@v6
         with:
           context: .
           file: sandbox/images/gateway/Dockerfile
           platforms: linux/amd64
-          push: true
-          provenance: true
-          sbom: true
+          load: true
+          provenance: false
+          sbom: false
           build-args: ECHO_SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
-          tags: ${{ steps.names.outputs.gateway }}:${{ github.sha }}
+          tags: echo-sandbox-egress:dev
           cache-from: type=gha,scope=sandbox-gateway
           cache-to: type=gha,mode=max,scope=sandbox-gateway
-
-      - name: Resolve immutable image references
-        id: refs
-        shell: bash
-        run: |
-          echo "workbench=${{ steps.names.outputs.workbench }}@${{ steps.workbench.outputs.digest }}" >> "$GITHUB_OUTPUT"
-          echo "desktop=${{ steps.names.outputs.desktop }}@${{ steps.desktop.outputs.digest }}" >> "$GITHUB_OUTPUT"
-          echo "gateway=${{ steps.names.outputs.gateway }}@${{ steps.gateway.outputs.digest }}" >> "$GITHUB_OUTPUT"
-
-      - name: Load immutable images for integration tests
-        shell: bash
-        run: |
-          docker pull "${{ steps.refs.outputs.workbench }}"
-          docker pull "${{ steps.refs.outputs.desktop }}"
-          docker pull "${{ steps.refs.outputs.gateway }}"
-          docker tag "${{ steps.refs.outputs.workbench }}" echo-sandbox-workbench:dev
-          docker tag "${{ steps.refs.outputs.desktop }}" echo-sandbox-desktop:dev
-          docker tag "${{ steps.refs.outputs.gateway }}" echo-sandbox-egress:dev
 
       - name: Run Linux Docker sandbox acceptance test
         env:
           ECHO_SANDBOX_INTEGRATION: "1"
-        run: go test ./internal/sandbox -run TestDockerIntegrationLifecycle -count=1 -v
+        run: go test ./internal/sandbox -run TestDockerIntegration -count=1 -v
 
-      - name: Scan workbench image
+      - name: Scan runtime image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ${{ steps.refs.outputs.workbench }}
+          image-ref: echo-sandbox-runtime:dev
           format: json
-          output: sandbox-workbench-trivy.json
-          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "0"
-
-      - name: Scan desktop image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ${{ steps.refs.outputs.desktop }}
-          format: json
-          output: sandbox-desktop-trivy.json
+          output: sandbox-runtime-trivy.json
           severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "0"
@@ -252,7 +194,7 @@ jobs:
       - name: Scan egress gateway image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ${{ steps.refs.outputs.gateway }}
+          image-ref: echo-sandbox-egress:dev
           format: json
           output: sandbox-egress-trivy.json
           severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
@@ -262,46 +204,31 @@ jobs:
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@v0
 
-      - name: Emit image SBOMs, licenses, and digest manifest
+      - name: Emit candidate image SBOMs and licenses
         shell: bash
         run: |
-          syft "${{ steps.refs.outputs.workbench }}" -o spdx-json=sandbox-workbench.spdx.json
-          syft "${{ steps.refs.outputs.desktop }}" -o spdx-json=sandbox-desktop.spdx.json
-          syft "${{ steps.refs.outputs.gateway }}" -o spdx-json=sandbox-egress.spdx.json
-          printf '%s\n' \
-            "workbench=${{ steps.refs.outputs.workbench }}" \
-            "desktop=${{ steps.refs.outputs.desktop }}" \
-            "gateway=${{ steps.refs.outputs.gateway }}" > sandbox-image-digests.txt
-
+          syft "echo-sandbox-runtime:dev" -o spdx-json=sandbox-runtime.spdx.json
+          syft "echo-sandbox-egress:dev" -o spdx-json=sandbox-egress.spdx.json
       - name: Upload sandbox image notices and scan reports
         uses: actions/upload-artifact@v4
         with:
-          name: sandbox-image-metadata
+          name: sandbox-image-reports
           path: |
-            sandbox-image-digests.txt
             sandbox-*.spdx.json
             sandbox-*-trivy.json
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish source-build protocol channel
-        shell: bash
-        run: |
-          docker buildx imagetools create --tag "${{ steps.names.outputs.workbench }}:${{ steps.names.outputs.channel }}" "${{ steps.refs.outputs.workbench }}"
-          docker buildx imagetools create --tag "${{ steps.names.outputs.desktop }}:${{ steps.names.outputs.channel }}" "${{ steps.refs.outputs.desktop }}"
-          docker buildx imagetools create --tag "${{ steps.names.outputs.gateway }}:${{ steps.names.outputs.channel }}" "${{ steps.refs.outputs.gateway }}"
+      - name: Export candidates for Windows acceptance
+        run: docker save -o sandbox-candidates.tar echo-sandbox-runtime:dev echo-sandbox-egress:dev
 
-      - name: Verify released images are anonymously pullable
-        shell: bash
-        run: |
-          anonymous_config="$(mktemp -d)"
-          trap 'rm -rf "$anonymous_config"' EXIT
-          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.refs.outputs.workbench }}"
-          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.refs.outputs.desktop }}"
-          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.refs.outputs.gateway }}"
-          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.names.outputs.workbench }}:${{ steps.names.outputs.channel }}"
-          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.names.outputs.desktop }}:${{ steps.names.outputs.channel }}"
-          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.names.outputs.gateway }}:${{ steps.names.outputs.channel }}"
+      - name: Upload candidate images
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-candidates
+          path: sandbox-candidates.tar
+          compression-level: 0
+          retention-days: 2
 
   windows-sandbox-acceptance:
     name: Windows Docker Desktop sandbox acceptance
@@ -319,12 +246,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Sign in to GitHub Container Registry
-        uses: docker/login-action@v3
+      - name: Download candidates
+        uses: actions/download-artifact@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
+          name: sandbox-candidates
 
       - name: Verify Linux-container mode and load immutable images
         shell: pwsh
@@ -334,22 +259,76 @@ jobs:
           if ($engineOS -ne 'linux' -or @('x86_64', 'amd64') -notcontains $architecture) {
             throw "Docker Desktop must run linux/amd64 containers; got $engineOS/$architecture"
           }
-          docker pull '${{ needs.sandbox-images.outputs.workbench }}'
-          docker pull '${{ needs.sandbox-images.outputs.desktop }}'
-          docker pull '${{ needs.sandbox-images.outputs.gateway }}'
-          docker tag '${{ needs.sandbox-images.outputs.workbench }}' echo-sandbox-workbench:dev
-          docker tag '${{ needs.sandbox-images.outputs.desktop }}' echo-sandbox-desktop:dev
-          docker tag '${{ needs.sandbox-images.outputs.gateway }}' echo-sandbox-egress:dev
+          docker load -i sandbox-candidates.tar
+          if ($LASTEXITCODE -ne 0) { throw "Could not load sandbox candidates" }
 
       - name: Run Windows Docker Desktop sandbox acceptance test
         shell: pwsh
         env:
           ECHO_SANDBOX_INTEGRATION: "1"
-        run: go test ./internal/sandbox -run TestDockerIntegrationLifecycle -count=1 -v
+        run: go test ./internal/sandbox -run TestDockerIntegration -count=1 -v
+
+  publish-sandbox-images:
+    name: Publish accepted protocol-3 images
+    needs: [check-changes, sandbox-images, windows-sandbox-acceptance]
+    if: needs.check-changes.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      runtime: ${{ steps.publish.outputs.runtime }}
+      gateway: ${{ steps.publish.outputs.gateway }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: sandbox-candidates
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish images after Linux and Windows acceptance
+        id: publish
+        shell: bash
+        run: |
+          docker load -i sandbox-candidates.tar
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          protocol="$(tr -d '\r\n' < internal/sandboxprotocol/version.txt)"
+          test "$protocol" = 3
+          for role in runtime gateway; do
+            image=echo-sandbox-runtime
+            if [[ "$role" == gateway ]]; then image=echo-sandbox-egress; fi
+            reference="ghcr.io/${owner}/${image}"
+            docker tag "${image}:dev" "${reference}:${GITHUB_SHA}"
+            docker push "${reference}:${GITHUB_SHA}"
+            digest="$(docker inspect --format '{{index .RepoDigests 0}}' "${reference}:${GITHUB_SHA}")"
+            [[ "$digest" == "${reference}@sha256:"* ]]
+            echo "${role}=${digest}" >> "$GITHUB_OUTPUT"
+            echo "${role}=${digest}" >> sandbox-image-digests.txt
+            docker tag "${image}:dev" "${reference}:protocol-${protocol}"
+            docker push "${reference}:protocol-${protocol}"
+          done
+      - name: Verify anonymous image access
+        shell: bash
+        run: |
+          anonymous_config="$(mktemp -d)"
+          trap 'rm -rf "$anonymous_config"' EXIT
+          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.publish.outputs.runtime }}"
+          DOCKER_CONFIG="$anonymous_config" docker pull "${{ steps.publish.outputs.gateway }}"
+      - uses: actions/download-artifact@v4
+        with:
+          name: sandbox-image-reports
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-image-metadata
+          path: |
+            sandbox-image-digests.txt
+            sandbox-*.spdx.json
+            sandbox-*-trivy.json
+          if-no-files-found: error
 
   build:
     name: Build ${{ matrix.target }}
-    needs: [check-changes, verify, sandbox-images, windows-sandbox-acceptance]
+    needs: [check-changes, verify, publish-sandbox-images]
     if: needs.check-changes.outputs.should_build == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -396,7 +375,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path build | Out-Null
-          $sandboxLdflags = "-X github.com/brent/echo/internal/sandbox.WorkbenchImage=${{ needs.sandbox-images.outputs.workbench }} -X github.com/brent/echo/internal/sandbox.DesktopImage=${{ needs.sandbox-images.outputs.desktop }} -X github.com/brent/echo/internal/sandbox.GatewayImage=${{ needs.sandbox-images.outputs.gateway }}"
+          $sandboxLdflags = "-X github.com/brent/echo/internal/sandbox.RuntimeImage=${{ needs.publish-sandbox-images.outputs.runtime }} -X github.com/brent/echo/internal/sandbox.GatewayImage=${{ needs.publish-sandbox-images.outputs.gateway }}"
           if ($env:RUNNER_OS -eq "Windows") {
             go build -trimpath -ldflags $sandboxLdflags -o build/echo.exe .
           } else {
@@ -423,7 +402,7 @@ jobs:
 
   release:
     name: Create nightly release
-    needs: [check-changes, verify, sandbox-images, windows-sandbox-acceptance, build]
+    needs: [check-changes, verify, publish-sandbox-images, build]
     if: needs.check-changes.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10

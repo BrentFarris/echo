@@ -182,6 +182,9 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 	)
 	s.sandbox.SetNotifier(func(event sandbox.Event) {
 		s.hub.BroadcastWorkspaceSandbox(event.WorkspaceID, event)
+		if event.Event == "desktop_lease" && s.sessions != nil {
+			s.sessions.sandboxControlChanged(event.WorkspaceID)
+		}
 	})
 	s.lspProfiles = lspconfig.NewStore(s.data)
 	s.lsp = lspruntime.NewService(s.lspProfiles, s.workspaces)

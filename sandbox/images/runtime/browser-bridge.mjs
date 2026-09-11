@@ -156,7 +156,7 @@ async function launch() {
         screen: { width: 1440, height: 900 },
         acceptDownloads: true,
         downloadsPath: downloadPath,
-        proxy: { server: "http://gateway:3128", bypass: "localhost,127.0.0.1,gateway,workbench,desktop" },
+        proxy: { server: "http://gateway:3128", bypass: "localhost,127.0.0.1,gateway,runtime,workbench,desktop" },
         locale: "en-US",
         args: ["--disable-features=Translate"],
       });
@@ -308,6 +308,7 @@ function safeUploadPath(value) {
 async function call(method, params = {}, signal) {
   ensureActive(signal);
   switch (method) {
+    case "invalidate_references": references.clear(); return { invalidated: true };
     case "open": {
       const target = absoluteWebURL(params.url);
       const page = await currentPage(params);

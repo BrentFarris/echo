@@ -56,13 +56,19 @@ func (s *StateStore) Load(workspaceID string) (MachineState, bool, error) {
 }
 
 func (s *StateStore) Save(state MachineState) error {
-	directory, err := s.workspaceDir(state.WorkspaceID)
+	if state.Version == 0 {
+		state.Version = 2
+	}
+	state.UpdatedAt = time.Now().UTC()
+	return s.saveJSON(state.WorkspaceID, "state.json", state)
+}
+
+func (s *StateStore) saveJSON(workspaceID, name string, value any) error {
+	directory, err := s.workspaceDir(workspaceID)
 	if err != nil {
 		return err
 	}
-	state.Version = 1
-	state.UpdatedAt = time.Now().UTC()
-	data, err := json.MarshalIndent(state, "", "  ")
+	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode sandbox state: %w", err)
 	}
@@ -93,10 +99,38 @@ func (s *StateStore) Save(state MachineState) error {
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("close sandbox state: %w", err)
 	}
-	if err := replaceFile(temporaryPath, filepath.Join(directory, "state.json")); err != nil {
+	if err := replaceFile(temporaryPath, filepath.Join(directory, name)); err != nil {
 		return fmt.Errorf("replace sandbox state: %w", err)
 	}
 	return nil
+}
+
+func (s *StateStore) SaveMigration(journal MigrationJournal) error {
+	return s.saveJSON(journal.Original.WorkspaceID, "migration.json", journal)
+}
+
+func (s *StateStore) LoadMigration(workspaceID string) (MigrationJournal, bool, error) {
+	directory, err := s.workspaceDir(workspaceID)
+	if err != nil {
+		return MigrationJournal{}, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, err := os.ReadFile(filepath.Join(directory, "migration.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return MigrationJournal{}, false, nil
+	}
+	if err != nil {
+		return MigrationJournal{}, false, err
+	}
+	var journal MigrationJournal
+	if err := json.Unmarshal(data, &journal); err != nil {
+		return journal, true, err
+	}
+	if journal.Original.WorkspaceID != workspaceID || journal.Candidate.WorkspaceID != workspaceID {
+		return journal, true, fmt.Errorf("migration belongs to a different workspace")
+	}
+	return journal, true, nil
 }
 
 func (s *StateStore) Delete(workspaceID string) error {

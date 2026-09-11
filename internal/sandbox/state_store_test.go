@@ -28,7 +28,7 @@ func TestStateStoreIsolatesWorkspacesAndNeverPersistsRuntimeSecrets(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"agentToken", "workbenchAgentToken", "desktopAgentToken", "vncToken", "proxyToken", "leaseToken", "browserToken", "credential"} {
+	for _, forbidden := range []string{"agentToken", "runtimeAgentToken", "workbenchAgentToken", "desktopAgentToken", "vncToken", "proxyToken", "leaseToken", "browserToken", "credential"} {
 		if strings.Contains(strings.ToLower(string(data)), strings.ToLower(forbidden)) {
 			t.Fatalf("machine state persisted %q", forbidden)
 		}
@@ -51,10 +51,10 @@ func TestDeterministicNamesAndLabels(t *testing.T) {
 	left := DefaultMachineState("installation", "workspace", BuildImages())
 	right := DefaultMachineState("installation", "workspace", BuildImages())
 	other := DefaultMachineState("installation", "other", BuildImages())
-	if left.NetworkName != right.NetworkName || left.ContainerNames["desktop"] != right.ContainerNames["desktop"] {
+	if left.NetworkName != right.NetworkName || left.ContainerNames["runtime"] != right.ContainerNames["runtime"] {
 		t.Fatal("resource names are not deterministic")
 	}
-	for _, role := range []string{"workbench", "desktop", "browser", "exchange", "gateway"} {
+	for _, role := range []string{"runtime", "browser", "exchange", "gateway"} {
 		if left.VolumeNames[role] == "" {
 			t.Fatalf("missing deterministic %s volume name", role)
 		}
@@ -62,7 +62,7 @@ func TestDeterministicNamesAndLabels(t *testing.T) {
 	if left.NetworkName == other.NetworkName {
 		t.Fatal("workspaces share resource names")
 	}
-	labels := ResourceLabels("install", "workspace", "desktop", "image@sha256:abc")
+	labels := ResourceLabels("install", "workspace", "runtime", "image@sha256:abc")
 	for _, key := range []string{LabelManaged, LabelInstallation, LabelWorkspace, LabelRole, LabelImage, LabelProtocol} {
 		if labels[key] == "" {
 			t.Fatalf("missing label %s", key)

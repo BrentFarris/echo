@@ -36,7 +36,7 @@ Connect Echo to a local or remote provider that exposes an OpenAI-compatible `/c
 | **Code** | Monaco editing, generic opt-in LSP and DAP debugging, file tabs, workspace trees, quick open, text and file search, create/rename/save operations, external-change detection, recoverable trash, and browser hot-exit buffers |
 | **Git** | Repository discovery, working-tree status, staged and unstaged diffs, staging, commits, branches, remotes, fetch/pull/push/sync, history, tags, and stashes |
 | **Terminal** | Workspace-aware PTY sessions powered by xterm.js, resize, restart, stop, and reusable saved commands |
-| **Linux sandbox** | Optional per-workspace Docker workbench plus visible Xfce/Chromium desktop, browser takeover, persistent Linux/browser state, and deny-by-default egress |
+| **Linux sandbox** | Optional per-workspace Docker runtime with a shared shell and visible Xfce/Chromium desktop, browser takeover, persistent Linux/browser state, and deny-by-default egress |
 | **Agent tools** | Workspace-scoped file inspection and editing, shell commands, text and file search, image/video reads, web fetch/search, image generation, and reusable workspace skills |
 | **Plugins** | Reviewed local/GitHub packages with sandboxed page or floating views, optional native JSON-RPC tools, typed settings, secret references, immutable snapshots, and chat-driven authoring |
 | **Connections** | Multiple OpenAI-compatible LLM endpoints, custom HTTP headers, interaction routing, optional SearXNG research, and optional ComfyUI image generation |
@@ -58,7 +58,7 @@ The Code view uses Monaco for editing and reviewing diffs. Its explorer watches 
 
 ### Optional Linux sandbox and desktop
 
-On Windows x64 with Docker Desktop in Linux-container mode, or Linux x86-64 with Docker Engine, a workspace can opt into an isolated Ubuntu workbench and visible Xfce/Chromium desktop. Commands, terminals, Git, LSPs, builds, tests, and web fetches then run through the sandbox with no host fallback; registered workspace files remain canonical host bind mounts. The user can watch the AI, take over the desktop to sign in without logging keystrokes, and return the same persistent browser profile to the AI. See the [Linux sandbox guide](docs/sandbox.md) for setup, persistence, network grants, reset boundaries, and the container-isolation security model.
+On Windows x64 with Docker Desktop in Linux-container mode, or Linux x86-64 with Docker Engine, a workspace can opt into one isolated Ubuntu runtime sharing its shell environment with the visible Xfce/Chromium desktop. Commands, terminals, Git, LSPs, builds, tests, and web fetches then run through the sandbox with no host fallback; registered workspace files remain canonical host bind mounts. The user can watch the AI, take over the desktop to sign in without logging keystrokes, and return the same persistent browser profile to the AI. See the [Linux sandbox guide](docs/sandbox.md) for setup, persistence, network grants, reset boundaries, and the container-isolation security model.
 
 ### Language servers
 
@@ -150,7 +150,7 @@ Echo can opt an individual workspace into a Docker-backed Ubuntu environment wit
 
 Echo checks and diagnoses Docker but never installs or reconfigures it. The initial images are `linux/amd64`; ARM hosts and Podman are not currently supported. This is container isolation rather than a hardware virtual machine, so Docker Engine and the host kernel remain trusted components.
 
-Official nightly binaries pin all three images by immutable digest. Builds made directly from the source tree use the public `protocol-2` image channel so the one-click source launchers can install the matching images; release builds never rely on a mutable tag.
+Official nightly binaries pin both images by immutable digest. Builds made directly from the source tree use the public `protocol-3` image channel so the one-click source launchers can install the matching images; release builds never rely on a mutable tag.
 
 ### Enable a workspace sandbox
 
@@ -172,7 +172,7 @@ The sandbox starts lazily when a terminal, agent command, Git or LSP operation, 
 | **Desktop** | Xfce, headed Chromium, Playwright browser automation, a file manager, and a text editor |
 | **Egress gateway** | The sandbox's only external network route, with filtered DNS, HTTP proxying, and SOCKS5 |
 
-Registered host folders are mounted read-write at stable `/workspace/<root-id>` paths and remain the source of truth. Their `.echo` directories are masked read-only. A persistent `/exchange` volume is shared by the workbench and desktop; Chromium downloads are saved under `/exchange/downloads`.
+Registered host folders are mounted read-write at stable `/workspace/<root-id>` paths and remain the source of truth. Their `.echo` directories are masked read-only. A persistent `/exchange` volume is shared by shell and desktop applications; Chromium downloads are saved under `/exchange/downloads`.
 
 Echo does not give the containers the host home directory, SSH configuration, host credentials, devices, host namespaces, or the Docker socket. Integrated terminals, `shell_command`, Git subprocesses, LSPs, builds, tests, formatting, and `web_fetch` use the sandbox target. Host-side file editing, search, and watching continue against the confined bind mounts.
 
@@ -181,30 +181,25 @@ Echo does not give the containers the host home directory, SSH configuration, ho
 The Sandbox view displays the live Xfce desktop through an authenticated noVNC connection, so the user can watch browser and desktop actions directly in Echo. One workspace-wide lease controls graphical input:
 
 - An AI GUI action acquires control for its chat turn.
-- **Take Control** immediately preempts and cancels in-flight AI GUI actions.
-- The user can sign in or handle sensitive prompts, then select **Return Control** when finished.
+- **Take Control** pauses new AI actions across workspace chats and research, and cancels in-flight GUI interactions. Existing applications, terminals, and background jobs keep running.
+- **Return Control** resumes waiting tasks automatically with refreshed context. Pending actions from before takeover are discarded, and files must be reread before edits.
 - Other authenticated devices remain view-only; a disconnected controller has a two-minute reconnect grace period.
 
 Human VNC keystrokes, including passwords, are not copied into chat requests, tool arguments, or Trajectory logs. However, after control is returned, the AI can use the same persistent Chromium profile and therefore the authority of any signed-in website sessions. Browser data is protected by host and Docker storage permissions rather than Echo encryption.
 
 ### Network access
 
-The Workbench and Desktop containers have no direct external route. The gateway blocks loopback, host, LAN/private, link-local, carrier-grade NAT, reserved, and cloud-metadata destinations, rechecking every DNS result to prevent rebinding.
+The runtime container has no direct external route. The gateway blocks loopback, host, LAN/private, link-local, carrier-grade NAT, reserved, and cloud-metadata destinations, rechecking every DNS result to prevent rebinding.
 
 The owner can grant one exact hostname or IP and TCP port from the Sandbox view. Wildcards and subnets are not accepted, and revocation takes effect without recreating the containers. Configured SearXNG and ComfyUI endpoints remain explicit Echo host services and are not exposed to the sandbox automatically.
 
 ### Persistence, setup, and resets
 
-Workbench state, desktop state, the Chromium profile, and `/exchange` use separate Docker volumes. Their reset boundaries are intentionally independent:
+The unified home, Chromium profile, and `/exchange` use separate Docker volumes. **Reset environment** resets the home/container while retaining browser, exchange, recovery data, and host workspace files. **Reset browser data** removes only the browser profile. Only **Delete sandbox data** removes retained upgrade backups; it preserves host workspace files.
 
-| Action | Workbench home | Desktop home | Browser profile | Exchange | Host workspace files |
-| --- | --- | --- | --- | --- | --- |
-| Stop/start or recreate containers | Kept | Kept | Kept | Kept | Kept |
-| Reset workbench | Deleted | Kept | Kept | Kept | Kept |
-| Reset browser data | Kept | Kept | Deleted | Kept | Kept |
-| Delete sandbox data | Deleted | Deleted | Deleted | Deleted | **Kept** |
+Protocol-2 sandboxes require an explicit **Upgrade sandbox** action. Echo stops sandbox processes, copies data into new versioned volumes, validates the candidate, and commits atomically. The original volumes and stopped containers remain available for recovery. Home conflicts preserve both versions under `~/sandbox-migration-conflicts-*/`, with a report. Failed upgrades can be retried.
 
-For reproducible customization, add `.echo/sandbox/setup.sh`. Echo hashes the recipe and requires owner approval before running a new digest as root for both `ECHO_SANDBOX_ROLE=workbench` and `ECHO_SANDBOX_ROLE=desktop`. Approved recipes rerun after relevant resets or image replacement. Ad-hoc `sudo` changes can survive a stop, but not container recreation unless they are captured in the recipe.
+For reproducible customization, add `.echo/sandbox/setup.sh`. Approval is tied to its digest and sandbox protocol. Review old scripts before running them once with `ECHO_SANDBOX_ROLE=runtime`; old operating-system layers are not merged, so additional system packages must be installed again. Approved recipes rerun after relevant resets or recreation.
 
 Portable resource settings live in `.echo/workspace.json`; image digests, approved setup state, network grants, and volume names are machine-local beside Echo's global configuration. Runtime VNC, agent, lease, and proxy credentials remain memory-only.
 

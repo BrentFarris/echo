@@ -33,8 +33,7 @@ const (
 	vncPort                   = "5900/tcp"
 	playwrightPort            = "3000/tcp"
 	gatewayProxyPort          = "3129/tcp"
-	workbenchAgentForwardPort = "17777/tcp"
-	desktopAgentForwardPort   = "27777/tcp"
+	runtimeAgentForwardPort   = "17777/tcp"
 	desktopVNCForwardPort     = "25900/tcp"
 	desktopBrowserForwardPort = "23000/tcp"
 )
@@ -102,9 +101,9 @@ func (e *DockerEngine) ProbeWorkspace(ctx context.Context, spec WorkspaceSpec) e
 	created, err := e.client.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Name: name, Platform: &ocispec.Platform{OS: "linux", Architecture: "amd64"},
 		Config: &container.Config{
-			Image: BuildImages().Workbench, User: strconv.Itoa(sandboxHostUID()) + ":1000",
+			Image: BuildImages().Runtime, User: strconv.Itoa(sandboxHostUID()) + ":1000",
 			Entrypoint: []string{"/bin/bash", "-lc"}, Cmd: []string{strings.Join(commandParts, " && ")},
-			Labels: ResourceLabels(spec.Installation, spec.ID, "probe", BuildImages().Workbench),
+			Labels: ResourceLabels(spec.Installation, spec.ID, "probe", BuildImages().Runtime),
 		},
 		HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode(network.NetworkNone), Mounts: mounts, AutoRemove: false, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges=true"}},
 	})
@@ -142,7 +141,7 @@ func (e *DockerEngine) waitContainer(ctx context.Context, containerID string) in
 }
 
 func (e *DockerEngine) Pull(ctx context.Context, images ImageSet, progress func(string, string, int)) error {
-	for _, role := range []string{"gateway", "workbench", "desktop"} {
+	for _, role := range []string{"gateway", "runtime"} {
 		reference := images.Roles()[role]
 		if progress != nil {
 			progress(role, "Pulling "+reference, 0)
@@ -185,9 +184,12 @@ func (e *DockerEngine) Ensure(ctx context.Context, spec WorkspaceSpec, state Mac
 	e.mu.Lock()
 	previousSecrets := e.secret[spec.ID]
 	e.mu.Unlock()
-	freshCredentials := previousSecrets.WorkbenchAgentToken == ""
+	freshCredentials := previousSecrets.RuntimeAgentToken == ""
 	if state.WorkspaceID == "" {
 		state = DefaultMachineState(spec.Installation, spec.ID, BuildImages())
+	}
+	if state.NeedsUpgrade() {
+		return state, ErrUpgradeRequired
 	}
 	if state.ProtocolVersion != "" && state.ProtocolVersion != ProtocolVersion {
 		return state, ErrProtocolMismatch
@@ -243,7 +245,7 @@ func (e *DockerEngine) Ensure(ctx context.Context, spec WorkspaceSpec, state Mac
 	if err != nil {
 		return state, Wrap("docker_network_error", "Could not allocate sandbox DNS gateway address", err)
 	}
-	for _, role := range []string{"gateway", "workbench", "desktop"} {
+	for _, role := range []string{"gateway", "runtime"} {
 		image := state.Images.Roles()[role]
 		name := state.ContainerNames[role]
 		if inspect, err := e.client.ContainerInspect(ctx, name, client.ContainerInspectOptions{}); err == nil {
@@ -338,45 +340,34 @@ func dockerContainerConfig(role, image string, spec WorkspaceSpec, state Machine
 		host.DNSOptions = []string{"ndots:0"}
 	}
 	switch role {
-	case "workbench":
+	case "runtime":
 		configuration.Env = append(configuration.Env, "ECHO_SANDBOX_UID="+strconv.Itoa(sandboxHostUID()))
-		host.SecurityOpt = nil // setup.sh may intentionally use passwordless sudo.
+		// Keep workbench package installation and Chromium's user-namespace sandbox.
+		host.SecurityOpt = []string{"seccomp=" + chromiumSeccompJSON}
 		host.CapAdd = []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "NET_BIND_SERVICE", "SETFCAP", "SETGID", "SETUID", "SYS_CHROOT"}
-		host.Mounts = workspaceDockerMounts(spec.Roots)
-		host.Mounts = append(host.Mounts,
-			mount.Mount{Type: mount.TypeVolume, Source: state.VolumeNames["workbench"], Target: "/home/echo", VolumeOptions: &mount.VolumeOptions{NoCopy: false}},
-			mount.Mount{Type: mount.TypeVolume, Source: state.VolumeNames["exchange"], Target: "/exchange"},
-		)
-		configuration.Env = append(configuration.Env, proxyEnvironment()...)
-		configuration.ExposedPorts = portSet(agentPort)
-	case "desktop":
-		configuration.Env = append(configuration.Env, "ECHO_SANDBOX_UID="+strconv.Itoa(sandboxHostUID()))
-		host.SecurityOpt = []string{"no-new-privileges=true", "seccomp=" + chromiumSeccompJSON}
-		host.CapAdd = []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "KILL", "SETGID", "SETUID", "SYS_CHROOT"}
 		host.ShmSize = 1 << 30
 		host.Mounts = workspaceDockerMounts(spec.Roots)
 		host.Mounts = append(host.Mounts,
-			mount.Mount{Type: mount.TypeVolume, Source: state.VolumeNames["desktop"], Target: "/home/echo", VolumeOptions: &mount.VolumeOptions{NoCopy: false}},
+			mount.Mount{Type: mount.TypeVolume, Source: state.VolumeNames["runtime"], Target: "/home/echo", VolumeOptions: &mount.VolumeOptions{NoCopy: false}},
 			mount.Mount{Type: mount.TypeVolume, Source: state.VolumeNames["browser"], Target: "/home/echo/.config/chromium"},
 			mount.Mount{Type: mount.TypeVolume, Source: state.VolumeNames["exchange"], Target: "/exchange"},
 		)
 		configuration.Env = append(configuration.Env, proxyEnvironment()...)
 		configuration.ExposedPorts = portSet(agentPort, vncPort, playwrightPort)
+		networking.EndpointsConfig[state.NetworkName].Aliases = []string{"runtime", "workbench", "desktop"}
 	case "gateway":
-		workbenchAddress, _ := sandboxRoleAddress(gatewayAddress, "workbench")
-		desktopAddress, _ := sandboxRoleAddress(gatewayAddress, "desktop")
+		runtimeAddress, _ := sandboxRoleAddress(gatewayAddress, "runtime")
 		configuration.Env = append(configuration.Env,
-			"ECHO_WORKBENCH_AGENT_TARGET="+net.JoinHostPort(workbenchAddress.String(), "7777"),
-			"ECHO_DESKTOP_AGENT_TARGET="+net.JoinHostPort(desktopAddress.String(), "7777"),
-			"ECHO_DESKTOP_VNC_TARGET="+net.JoinHostPort(desktopAddress.String(), "5900"),
-			"ECHO_DESKTOP_BROWSER_TARGET="+net.JoinHostPort(desktopAddress.String(), "3000"),
+			"ECHO_RUNTIME_AGENT_TARGET="+net.JoinHostPort(runtimeAddress.String(), "7777"),
+			"ECHO_DESKTOP_VNC_TARGET="+net.JoinHostPort(runtimeAddress.String(), "5900"),
+			"ECHO_DESKTOP_BROWSER_TARGET="+net.JoinHostPort(runtimeAddress.String(), "3000"),
 		)
 		host.ReadonlyRootfs = true
 		host.CapAdd = []string{"NET_BIND_SERVICE"}
 		host.Mounts = []mount.Mount{{Type: mount.TypeVolume, Source: state.VolumeNames["gateway"], Target: "/var/lib/echo-egress"}}
 		configuration.WorkingDir = "/"
-		configuration.ExposedPorts = portSet("1080/tcp", "1081/tcp", "3128/tcp", gatewayProxyPort, "53/tcp", "53/udp", workbenchAgentForwardPort, desktopAgentForwardPort, desktopVNCForwardPort, desktopBrowserForwardPort)
-		host.PortBindings = localhostBindings("1081/tcp", gatewayProxyPort, workbenchAgentForwardPort, desktopAgentForwardPort, desktopVNCForwardPort, desktopBrowserForwardPort)
+		configuration.ExposedPorts = portSet("1080/tcp", "1081/tcp", "3128/tcp", gatewayProxyPort, "53/tcp", "53/udp", runtimeAgentForwardPort, desktopVNCForwardPort, desktopBrowserForwardPort)
+		host.PortBindings = localhostBindings("1081/tcp", gatewayProxyPort, runtimeAgentForwardPort, desktopVNCForwardPort, desktopBrowserForwardPort)
 	default:
 		return nil, nil, nil, fmt.Errorf("unknown sandbox role %q", role)
 	}
@@ -387,10 +378,8 @@ func sandboxRoleAddress(gatewayAddress netip.Addr, role string) (netip.Addr, err
 	switch role {
 	case "gateway":
 		return gatewayAddress, nil
-	case "workbench":
+	case "runtime":
 		return gatewayAddress.Next(), nil
-	case "desktop":
-		return gatewayAddress.Next().Next(), nil
 	default:
 		return netip.Addr{}, fmt.Errorf("unknown sandbox role %q", role)
 	}
@@ -423,10 +412,8 @@ func roleResources(role string, config workspaces.SandboxConfig) container.Resou
 	switch role {
 	case "gateway":
 		return container.Resources{NanoCPUs: gatewayCPU, Memory: gatewayMemory, PidsLimit: int64Pointer(128)}
-	case "desktop":
-		return container.Resources{NanoCPUs: remainingCPU * 35 / 100, Memory: remainingMemory * 40 / 100, PidsLimit: int64Pointer(2048)}
 	default:
-		return container.Resources{NanoCPUs: remainingCPU - remainingCPU*35/100, Memory: remainingMemory - remainingMemory*40/100, PidsLimit: int64Pointer(2048)}
+		return container.Resources{NanoCPUs: remainingCPU, Memory: remainingMemory, PidsLimit: int64Pointer(4096)}
 	}
 }
 
@@ -447,7 +434,7 @@ func workspacesEchoDir() string { return ".echo" }
 func proxyEnvironment() []string {
 	return []string{
 		"HTTP_PROXY=http://gateway:3128", "HTTPS_PROXY=http://gateway:3128",
-		"ALL_PROXY=socks5h://gateway:1080", "NO_PROXY=localhost,127.0.0.1,::1,gateway,workbench,desktop",
+		"ALL_PROXY=socks5h://gateway:1080", "NO_PROXY=localhost,127.0.0.1,::1,gateway,runtime,workbench,desktop",
 	}
 }
 
@@ -475,7 +462,7 @@ func boolPointer(value bool) *bool    { return &value }
 func int64Pointer(value int64) *int64 { return &value }
 
 func (e *DockerEngine) Start(ctx context.Context, state MachineState) error {
-	for _, role := range []string{"gateway", "workbench", "desktop"} {
+	for _, role := range []string{"gateway", "runtime"} {
 		name := state.ContainerNames[role]
 		inspect, err := e.client.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
 		if err != nil {
@@ -490,7 +477,7 @@ func (e *DockerEngine) Start(ctx context.Context, state MachineState) error {
 	e.mu.Lock()
 	secrets := e.secret[state.WorkspaceID]
 	e.mu.Unlock()
-	if secrets.WorkbenchAgentToken == "" || secrets.DesktopAgentToken == "" || secrets.BrowserToken == "" {
+	if secrets.RuntimeAgentToken == "" || secrets.BrowserToken == "" {
 		return &Error{Code: "sandbox_credentials_missing", Message: "sandbox runtime credentials are unavailable; recreate the sandbox"}
 	}
 	files := runtimeSecretFiles(secrets, state.NetworkGrants)
@@ -507,9 +494,8 @@ func (e *DockerEngine) Start(ctx context.Context, state MachineState) error {
 
 func runtimeSecretFiles(secrets RuntimeSecrets, grants []NetworkGrant) map[string]map[string]secretFile {
 	return map[string]map[string]secretFile{
-		"gateway":   {"proxy.token": {data: []byte(secrets.ProxyToken), mode: 0o400}, "grants.json": {data: grantsJSON(grants), mode: 0o400}},
-		"workbench": {"agent.token": {data: []byte(secrets.WorkbenchAgentToken), mode: 0o400}},
-		"desktop":   {"agent.token": {data: []byte(secrets.DesktopAgentToken), mode: 0o400}, "vnc.password": {data: []byte(secrets.VNCToken), mode: 0o400}, "lease.token": {data: []byte(secrets.BrowserToken), mode: 0o400}},
+		"gateway": {"proxy.token": {data: []byte(secrets.ProxyToken), mode: 0o400}, "grants.json": {data: grantsJSON(grants), mode: 0o400}},
+		"runtime": {"agent.token": {data: []byte(secrets.RuntimeAgentToken), mode: 0o400}, "vnc.password": {data: []byte(secrets.VNCToken), mode: 0o400}, "lease.token": {data: []byte(secrets.BrowserToken), mode: 0o400}},
 	}
 }
 
@@ -567,8 +553,11 @@ func grantsJSON(grants []NetworkGrant) []byte { data, _ := json.Marshal(grants);
 func (e *DockerEngine) Stop(ctx context.Context, state MachineState) error {
 	timeout := 10
 	var joined error
-	for _, role := range []string{"desktop", "workbench", "gateway"} {
+	for _, role := range []string{"runtime", "desktop", "workbench", "gateway"} {
 		name := state.ContainerNames[role]
+		if name == "" {
+			continue
+		}
 		inspect, err := e.client.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
 		if cerrdefs.IsNotFound(err) {
 			continue
@@ -591,7 +580,7 @@ func (e *DockerEngine) Stop(ctx context.Context, state MachineState) error {
 
 func (e *DockerEngine) UpdateResources(ctx context.Context, state MachineState, previous, next workspaces.SandboxConfig) error {
 	updated := make([]string, 0, 3)
-	for _, role := range []string{"gateway", "workbench", "desktop"} {
+	for _, role := range []string{"gateway", "runtime"} {
 		resources := roleResources(role, next)
 		if _, err := e.client.ContainerUpdate(ctx, state.ContainerNames[role], client.ContainerUpdateOptions{Resources: &resources}); err != nil {
 			for _, rollbackRole := range updated {
@@ -609,21 +598,31 @@ func (e *DockerEngine) Delete(ctx context.Context, state MachineState, scope Del
 	roles := []string{}
 	if scope.Containers {
 		switch {
+		case scope.Network:
+			roles = []string{"runtime", "desktop", "workbench", "gateway"}
+		case !state.NeedsUpgrade() && (scope.Runtime || scope.Browser) && !scope.Network:
+			roles = []string{"runtime"}
 		case scope.Workbench && !scope.Browser:
 			roles = []string{"workbench"}
 		case scope.Browser && !scope.Workbench:
 			roles = []string{"desktop"}
 		default:
-			roles = []string{"desktop", "workbench", "gateway"}
+			roles = []string{"runtime", "desktop", "workbench", "gateway"}
 		}
 	}
 	var joined error
 	for _, role := range roles {
+		if state.ContainerNames[role] == "" {
+			continue
+		}
 		if _, err := e.client.ContainerRemove(ctx, state.ContainerNames[role], client.ContainerRemoveOptions{Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
 			joined = errors.Join(joined, err)
 		}
 	}
 	volumeRoles := []string{}
+	if scope.Runtime {
+		volumeRoles = append(volumeRoles, "runtime")
+	}
 	if scope.Workbench {
 		volumeRoles = append(volumeRoles, "workbench")
 	}
@@ -636,10 +635,13 @@ func (e *DockerEngine) Delete(ctx context.Context, state MachineState, scope Del
 	if scope.Exchange {
 		volumeRoles = append(volumeRoles, "exchange")
 	}
-	if scope.Network && scope.Workbench && scope.Desktop && scope.Browser && scope.Exchange {
+	if scope.Network && (scope.Runtime || (scope.Workbench && scope.Desktop)) && scope.Browser && scope.Exchange {
 		volumeRoles = append(volumeRoles, "gateway")
 	}
 	for _, role := range volumeRoles {
+		if state.VolumeNames[role] == "" {
+			continue
+		}
 		if _, err := e.client.VolumeRemove(ctx, state.VolumeNames[role], client.VolumeRemoveOptions{Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
 			joined = errors.Join(joined, err)
 		}
@@ -661,7 +663,7 @@ func (e *DockerEngine) Delete(ctx context.Context, state MachineState, scope Del
 func (e *DockerEngine) Exec(ctx context.Context, state MachineState, request ExecRequest) (ExecResult, error) {
 	role := request.Role
 	if role == "" {
-		role = "workbench"
+		role = "runtime"
 	}
 	if state.ContainerNames[role] == "" {
 		return ExecResult{}, &Error{Code: "invalid_sandbox_role", Message: "sandbox execution role is invalid"}
@@ -717,7 +719,7 @@ func (e *DockerEngine) OpenPTY(ctx context.Context, state MachineState, request 
 	if len(request.Command) == 0 {
 		request.Command = []string{"/bin/bash", "-l"}
 	}
-	connection, err := e.agentWebSocket(ctx, state, "workbench", "/v1/pty")
+	connection, err := e.agentWebSocket(ctx, state, "runtime", "/v1/pty")
 	if err != nil {
 		return nil, err
 	}
@@ -734,7 +736,7 @@ func (e *DockerEngine) OpenPTY(ctx context.Context, state MachineState, request 
 func (e *DockerEngine) OpenProcess(ctx context.Context, state MachineState, request ExecRequest) (Process, error) {
 	role := request.Role
 	if role == "" {
-		role = "workbench"
+		role = "runtime"
 	}
 	containerName := state.ContainerNames[role]
 	if containerName == "" || len(request.Command) == 0 {
@@ -752,7 +754,7 @@ func (e *DockerEngine) OpenProcess(ctx context.Context, state MachineState, requ
 }
 
 func (e *DockerEngine) OpenDAP(ctx context.Context, state MachineState, request DAPRequest) (Process, error) {
-	connection, err := e.agentWebSocket(ctx, state, "workbench", "/v1/dap")
+	connection, err := e.agentWebSocket(ctx, state, "runtime", "/v1/dap")
 	if err != nil {
 		return nil, err
 	}
@@ -774,10 +776,7 @@ func (e *DockerEngine) OpenDAP(ctx context.Context, state MachineState, request 
 func (e *DockerEngine) agentToken(workspaceID, role string) string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if role == "desktop" {
-		return e.secret[workspaceID].DesktopAgentToken
-	}
-	return e.secret[workspaceID].WorkbenchAgentToken
+	return e.secret[workspaceID].RuntimeAgentToken
 }
 
 func (e *DockerEngine) agentWebSocket(ctx context.Context, state MachineState, role, requestPath string) (*websocket.Conn, error) {
@@ -1044,7 +1043,7 @@ func (w *agentProcessStdin) Close() error {
 
 func (e *DockerEngine) Usage(ctx context.Context, state MachineState) (ResourceUsage, error) {
 	var usage ResourceUsage
-	for _, role := range []string{"workbench", "desktop", "gateway"} {
+	for _, role := range []string{"runtime", "gateway"} {
 		stats, err := e.client.ContainerStats(ctx, state.ContainerNames[role], client.ContainerStatsOptions{Stream: false})
 		if err != nil {
 			if cerrdefs.IsNotFound(err) {
@@ -1105,11 +1104,21 @@ func (e *DockerEngine) ApplyNetworkGrants(ctx context.Context, state MachineStat
 
 func (e *DockerEngine) Heartbeat(ctx context.Context, state MachineState) error {
 	var joined error
-	for _, role := range []string{"workbench", "desktop"} {
+	for _, role := range []string{"runtime"} {
 		_, _, err := e.serviceRequest(ctx, state, role, agentPort, http.MethodPost, "/v1/heartbeat", e.agentToken(state.WorkspaceID, role), nil, 64<<10)
 		if err != nil {
 			joined = errors.Join(joined, err)
 		}
+	}
+	e.mu.Lock()
+	browserToken := e.secret[state.WorkspaceID].BrowserToken
+	e.mu.Unlock()
+	for _, check := range []struct{ port, token string }{{agentPort, e.agentToken(state.WorkspaceID, "runtime")}, {playwrightPort, browserToken}} {
+		data, _, err := e.serviceRequest(ctx, state, "runtime", check.port, http.MethodGet, "/v1/health", check.token, nil, 64<<10)
+		if err == nil {
+			err = validateServiceProtocol("runtime", check.port, data)
+		}
+		joined = errors.Join(joined, err)
 	}
 	created, err := e.client.ExecCreate(ctx, state.ContainerNames["gateway"], client.ExecCreateOptions{Cmd: []string{"/bin/touch", "/run/echo/heartbeat"}})
 	if err != nil {
@@ -1121,7 +1130,7 @@ func (e *DockerEngine) Heartbeat(ctx context.Context, state MachineState) error 
 }
 
 func (e *DockerEngine) OpenDesktop(ctx context.Context, state MachineState) (io.ReadWriteCloser, error) {
-	endpoint, err := e.endpointForPort(ctx, state, "desktop", vncPort)
+	endpoint, err := e.endpointForPort(ctx, state, "runtime", vncPort)
 	if err != nil {
 		return nil, err
 	}
@@ -1143,7 +1152,7 @@ func (e *DockerEngine) BrowserCall(ctx context.Context, state MachineState, meth
 	e.mu.Lock()
 	token := e.secret[state.WorkspaceID].BrowserToken
 	e.mu.Unlock()
-	response, _, err := e.serviceRequest(ctx, state, "desktop", playwrightPort, http.MethodPost, "/v1/call", token, payload, 8<<20)
+	response, _, err := e.serviceRequest(ctx, state, "runtime", playwrightPort, http.MethodPost, "/v1/call", token, payload, 8<<20)
 	if err != nil {
 		return nil, err
 	}
@@ -1174,17 +1183,17 @@ func (e *DockerEngine) DesktopAction(ctx context.Context, state MachineState, ac
 		return err
 	}
 	e.mu.Lock()
-	token := e.secret[state.WorkspaceID].DesktopAgentToken
+	token := e.secret[state.WorkspaceID].RuntimeAgentToken
 	e.mu.Unlock()
-	_, _, err = e.serviceRequest(ctx, state, "desktop", agentPort, http.MethodPost, "/v1/desktop/action", token, payload, 64<<10)
+	_, _, err = e.serviceRequest(ctx, state, "runtime", agentPort, http.MethodPost, "/v1/desktop/action", token, payload, 64<<10)
 	return err
 }
 
 func (e *DockerEngine) DesktopScreenshot(ctx context.Context, state MachineState) ([]byte, string, error) {
 	e.mu.Lock()
-	token := e.secret[state.WorkspaceID].DesktopAgentToken
+	token := e.secret[state.WorkspaceID].RuntimeAgentToken
 	e.mu.Unlock()
-	data, mediaType, err := e.serviceRequest(ctx, state, "desktop", agentPort, http.MethodGet, "/v1/screenshot", token, nil, (5<<20)+1)
+	data, mediaType, err := e.serviceRequest(ctx, state, "runtime", agentPort, http.MethodGet, "/v1/screenshot", token, nil, (5<<20)+1)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1270,13 +1279,11 @@ func (e *DockerEngine) endpointForPort(ctx context.Context, state MachineState, 
 
 func forwardedManagementPort(role, portName string) (string, bool) {
 	switch role + "/" + portName {
-	case "workbench/" + agentPort:
-		return workbenchAgentForwardPort, true
-	case "desktop/" + agentPort:
-		return desktopAgentForwardPort, true
-	case "desktop/" + vncPort:
+	case "runtime/" + agentPort:
+		return runtimeAgentForwardPort, true
+	case "runtime/" + vncPort:
 		return desktopVNCForwardPort, true
-	case "desktop/" + playwrightPort:
+	case "runtime/" + playwrightPort:
 		return desktopBrowserForwardPort, true
 	default:
 		return "", false
@@ -1294,9 +1301,8 @@ func (e *DockerEngine) waitForServices(ctx context.Context, state MachineState) 
 		port  string
 		token string
 	}{
-		{"workbench", agentPort, secrets.WorkbenchAgentToken},
-		{"desktop", agentPort, secrets.DesktopAgentToken},
-		{"desktop", playwrightPort, secrets.BrowserToken},
+		{"runtime", agentPort, secrets.RuntimeAgentToken},
+		{"runtime", playwrightPort, secrets.BrowserToken},
 	}
 	for _, check := range checks {
 		for {

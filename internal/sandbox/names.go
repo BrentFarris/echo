@@ -41,20 +41,18 @@ func InstallationID(settingsPath string) string {
 }
 
 func DefaultMachineState(installation, workspaceID string, images ImageSet) MachineState {
-	prefix := deterministicPrefix(installation, workspaceID)
+	prefix := deterministicPrefix(installation, workspaceID) + "-v3"
 	return MachineState{
-		Version: 1, WorkspaceID: workspaceID, ProtocolVersion: ProtocolVersion, Images: images,
+		Version: 2, WorkspaceID: workspaceID, ProtocolVersion: ProtocolVersion, Images: images,
 		VolumeNames: map[string]string{
-			"workbench": prefix + "-home",
-			"desktop":   prefix + "-desktop-home",
-			"browser":   prefix + "-browser",
-			"exchange":  prefix + "-exchange",
-			"gateway":   prefix + "-gateway",
+			"runtime":  prefix + "-home",
+			"browser":  prefix + "-browser",
+			"exchange": prefix + "-exchange",
+			"gateway":  prefix + "-gateway",
 		},
 		ContainerNames: map[string]string{
-			"workbench": prefix + "-workbench",
-			"desktop":   prefix + "-desktop",
-			"gateway":   prefix + "-gateway",
+			"runtime": prefix + "-runtime",
+			"gateway": prefix + "-gateway",
 		},
 		NetworkName: prefix + "-internal",
 	}

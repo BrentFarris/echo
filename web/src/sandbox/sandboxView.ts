@@ -10,13 +10,14 @@ import { escapeHTML } from "../code/ui";
 import { installChatMap } from "../chatMap";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 
-type SandboxState = "disabled" | "unavailable" | "pulling" | "creating" | "starting" | "ready" | "stopping" | "stopped" | "error";
+type SandboxState = "upgrade_required" | "upgrading" | "disabled" | "unavailable" | "pulling" | "creating" | "starting" | "ready" | "stopping" | "stopped" | "error";
 type SandboxConfig = { enabled: boolean; cpuLimit: number; memoryMiB: number; idleTimeoutMinutes: number };
 type DesktopLease = { owner: "none" | "ai" | "user"; revision: number; browserSessionId?: string; chatTurnId?: string; expiresAt?: string };
 type SandboxStatus = {
   state: SandboxState; enabled: boolean; errorCode?: string; message?: string; protocolVersion: string;
   resources?: { memoryBytes?: number; memoryLimitBytes?: number; activeProcesses?: number; diskBytes?: number };
   setup?: { state?: string; recipeDigest?: string; approvedDigest?: string; message?: string; lastRunAt?: string };
+  migration?: { stage: string; message?: string };
   activeViewers?: number; controlOwner?: "none" | "ai" | "user"; desktopLease?: DesktopLease;
 };
 type HostStatus = {
@@ -215,9 +216,9 @@ class SandboxView {
     const status = this.status;
     const state = status?.state || (this.workspace ? "unavailable" : "disabled");
     const stateElement = this.root.querySelector<HTMLElement>("[data-sandbox-state]");
-    if (stateElement) { stateElement.textContent = state; stateElement.dataset.state = state; }
+    if (stateElement) { stateElement.textContent = state === "upgrade_required" ? "Upgrade required" : state === "upgrading" ? "Upgrading sandbox" : state; stateElement.dataset.state = state; }
     const message = this.root.querySelector<HTMLElement>("[data-sandbox-message]");
-    if (message) message.textContent = status?.message || "";
+    if (message) message.textContent = status?.message || status?.migration?.message || "";
     this.renderToolbar();
     this.renderHost();
     this.renderConfig();
@@ -233,20 +234,22 @@ class SandboxView {
     const enabled = this.config.enabled;
     const ready = this.status?.state === "ready";
     const userControl = this.localControl;
+    const upgrade = this.status?.state === "upgrade_required";
+    const upgrading = this.status?.state === "upgrading";
     host.innerHTML = `
       <div class="sandbox-toolbar-primary">
-        <button type="button" class="primary-button" data-action="${ready ? "stop" : "start"}" ${!enabled || this.busy ? "disabled" : ""}><span class="codicon codicon-${ready ? "debug-stop" : "play"}"></span>${ready ? "Stop" : "Start"}</button>
+        <button type="button" class="primary-button" data-action="${upgrade ? "upgrade" : ready ? "stop" : "start"}" ${!enabled || this.busy || upgrading ? "disabled" : ""}><span aria-hidden="true" class="codicon codicon-${ready ? "debug-stop" : "play"}"></span>${upgrade ? "Upgrade sandbox" : upgrading ? "Upgrading…" : ready ? "Stop" : "Start"}</button>
         <button type="button" class="secondary-button" data-action="pull" ${this.busy ? "disabled" : ""}><span class="codicon codicon-cloud-download"></span>Pull images</button>
         <button type="button" class="secondary-button" data-action="run-setup" ${!ready || this.busy ? "disabled" : ""}><span class="codicon codicon-run-all"></span>Run setup</button>
       </div>
       <div class="sandbox-toolbar-control">
         <span class="sandbox-lease"><i data-owner="${escapeHTML(this.status?.controlOwner || "none")}"></i>${this.controlLabel()}</span>
-        <button type="button" class="${userControl ? "secondary-button" : "primary-button"}" data-action="${userControl ? "return-control" : "take-control"}" ${!ready || this.busy ? "disabled" : ""}>${userControl ? "Return Control" : "Take Control"}</button>
+        <button type="button" class="${userControl ? "secondary-button" : "primary-button"}" title="Pauses further AI actions. Open applications and background jobs keep running. Return Control resumes tasks with refreshed context." data-action="${userControl ? "return-control" : "take-control"}" ${!ready || this.busy ? "disabled" : ""}>${userControl ? "Return Control" : "Take Control"}</button>
       </div>`;
   }
 
   private controlLabel(): string {
-    if (this.localControl) return "You have control";
+    if (this.localControl) return "AI paused while you control the desktop";
     if (this.status?.controlOwner === "ai") return "AI is controlling";
     if (this.status?.controlOwner === "user") return "Another device is controlling";
     return "View only";
@@ -278,7 +281,7 @@ class SandboxView {
     if (!panel) return;
     const resource = this.status?.resources || {};
     const memory = resource.memoryLimitBytes ? `${formatBytes(resource.memoryBytes || 0)} / ${formatBytes(resource.memoryLimitBytes)}` : "—";
-    panel.innerHTML = `<header><h2>Runtime</h2><span>Protocol ${escapeHTML(this.status?.protocolVersion || "—")}</span></header><dl><div><dt>Memory</dt><dd>${memory}</dd></div><div><dt>Disk</dt><dd>${resource.diskBytes ? formatBytes(resource.diskBytes) : "—"}</dd></div><div><dt>Processes</dt><dd>${resource.activeProcesses ?? 0}</dd></div><div><dt>Viewers</dt><dd>${this.status?.activeViewers ?? 0}</dd></div><div><dt>Setup</dt><dd>${escapeHTML(this.status?.setup?.state || "Not run")}</dd></div></dl>`;
+    panel.innerHTML = `<header><h2>Runtime</h2><span>Protocol ${escapeHTML(this.status?.protocolVersion || "—")}</span></header><dl><div><dt>Memory</dt><dd>${memory}</dd></div><div><dt>Disk</dt><dd>${resource.diskBytes ? formatBytes(resource.diskBytes) : "—"}</dd></div><div><dt>Processes</dt><dd>${resource.activeProcesses ?? 0}</dd></div><div><dt>Viewers</dt><dd>${this.status?.activeViewers ?? 0}</dd></div><div><dt>Setup</dt><dd>${escapeHTML(this.status?.setup?.state || "Not run")}</dd></div></dl>${this.status?.setup?.message ? `<p class="sandbox-panel-copy">${escapeHTML(this.status.setup.message)}</p>` : ""}`;
   }
 
   private renderNetwork(): void {
@@ -292,7 +295,7 @@ class SandboxView {
   private renderReset(): void {
     const panel = this.root.querySelector<HTMLElement>("[data-reset-panel]");
     if (!panel) return;
-    panel.innerHTML = `<header><h2>Reset & remove</h2></header><p class="sandbox-panel-copy">These actions never delete registered host workspace files.</p><div class="sandbox-reset-grid"><button type="button" data-action="reset-workbench">Reset workbench</button><button type="button" data-action="reset-browser">Reset browser data</button><button type="button" data-action="recreate">Recreate containers</button><button type="button" class="is-danger" data-action="delete-sandbox">Delete sandbox data</button></div>`;
+    panel.innerHTML = `<header><h2>Reset & remove</h2></header><p class="sandbox-panel-copy">Reset environment preserves browser, exchange, recovery data, and host workspace files. Delete sandbox data also removes retained upgrade backups.</p><div class="sandbox-reset-grid"><button type="button" data-action="reset-environment">Reset environment</button><button type="button" data-action="reset-browser">Reset browser data</button><button type="button" data-action="recreate">Recreate containers</button><button type="button" class="is-danger" data-action="delete-sandbox">Delete sandbox data</button></div>`;
   }
 
   private updateDesktop(): void {
@@ -370,13 +373,14 @@ class SandboxView {
     if (action === "delete-grant") { await this.deleteGrant(button.dataset.grantId || ""); return; }
     if (action === "save-config" || action === "enable" || action === "disable") { await this.saveConfig(action); return; }
     const destructive: Record<string, string> = {
-      "reset-workbench": "Reset the persistent Linux home and recreate the workbench? Workspace files are retained.",
-      "reset-browser": "Delete browser cookies, profiles, and signed-in sessions? Workspace and workbench data are retained.",
-      recreate: "Recreate sandbox containers? Persistent workbench and browser volumes are retained.",
-      "delete-sandbox": "Delete all sandbox containers, volumes, browser data, workbench state, grants, and machine state? Host workspace files are retained.",
+      "upgrade": "Upgrade and restart this sandbox? Active sandbox processes will stop. Original containers and volumes are retained for recovery. Conflicting home files are saved under ~/sandbox-migration-conflicts-*/ with a report. Review the existing setup script before reinstalling additional system packages.",
+      "reset-environment": "Reset the unified Linux home and container? Browser, exchange, recovery data, and host workspace files are retained.",
+      "reset-browser": "Delete browser cookies, profiles, and signed-in sessions? Environment and recovery data are retained.",
+      recreate: "Recreate sandbox containers? Persistent environment, browser, exchange, and recovery volumes are retained.",
+      "delete-sandbox": "Delete all sandbox containers, volumes, browser data, environment state, grants, machine state, and all retained recovery data? Host workspace files are retained.",
     };
     if (destructive[action] && !window.confirm(destructive[action])) return;
-    const actionMap: Record<string, string> = { start: "start", stop: "stop", pull: "pull", "run-setup": "run_setup", "reset-workbench": "reset_workbench", "reset-browser": "reset_browser", recreate: "recreate" };
+    const actionMap: Record<string, string> = { start: "start", upgrade: "upgrade", stop: "stop", pull: "pull", "run-setup": "run_setup", "reset-environment": "reset_environment", "reset-browser": "reset_browser", recreate: "recreate" };
     if (action === "delete-sandbox") {
       await this.runBusy(async () => {
         this.disconnectDesktop();
@@ -396,7 +400,7 @@ class SandboxView {
       catch (error: any) {
         if (backendAction === "run_setup" && error?.payload?.code === "setup_approval_required" && error.payload.details?.recipeDigest) {
           const digest = error.payload.details.recipeDigest;
-          if (window.confirm(`The setup recipe changed (${digest}). Approve and run it as root in both sandbox roles?`)) await post(`/api/workspaces/${encodeURIComponent(this.workspace!.id)}/sandbox/actions`, { action: backendAction, approvedDigest: digest });
+          if (window.confirm(`Review .echo/sandbox/setup.sh (${digest}) for the unified environment before approving. Run it once as root with ECHO_SANDBOX_ROLE=runtime?`)) await post(`/api/workspaces/${encodeURIComponent(this.workspace!.id)}/sandbox/actions`, { action: backendAction, approvedDigest: digest });
           return;
         }
         throw error;

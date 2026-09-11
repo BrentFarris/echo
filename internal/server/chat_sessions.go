@@ -167,17 +167,18 @@ type goalSteeringView struct {
 }
 
 type sessionSnapshot struct {
-	Type         string           `json:"type"`
-	WorkspaceID  string           `json:"workspaceId"`
-	Surface      chatSurface      `json:"surface"`
-	ChatID       string           `json:"chatId"`
-	ActiveChatID string           `json:"activeChatId"`
-	Tabs         []chatTabSummary `json:"tabs"`
-	Sequence     uint64           `json:"sequence"`
-	Revision     uint64           `json:"revision"`
-	Turns        []sessions.Turn  `json:"turns"`
-	ActiveTurn   *sessions.Turn   `json:"activeTurn,omitempty"`
-	Goal         *goalSnapshot    `json:"goal,omitempty"`
+	Type          string           `json:"type"`
+	WorkspaceID   string           `json:"workspaceId"`
+	Surface       chatSurface      `json:"surface"`
+	ChatID        string           `json:"chatId"`
+	ActiveChatID  string           `json:"activeChatId"`
+	Tabs          []chatTabSummary `json:"tabs"`
+	Sequence      uint64           `json:"sequence"`
+	Revision      uint64           `json:"revision"`
+	Turns         []sessions.Turn  `json:"turns"`
+	ActiveTurn    *sessions.Turn   `json:"activeTurn,omitempty"`
+	ExecutionHeld bool             `json:"executionHeld,omitempty"`
+	Goal          *goalSnapshot    `json:"goal,omitempty"`
 }
 
 type chatSessionManager struct {
@@ -221,6 +222,7 @@ type chatSession struct {
 	trajectory               *trajectorylog.Store
 	trajectoryWarning        string
 	closed                   bool
+	executionHeld            bool
 }
 
 func newChatSessionManager(server *Server) *chatSessionManager {
@@ -1146,7 +1148,7 @@ func (m *chatSessionManager) compress(c *client, workspaceID, chatID, surfaceVal
 	go func() {
 		defer m.wg.Done()
 		defer cancel()
-		result, compressionErr := m.server.compressContext(ctx, settings, canonical, checkpoint, prefix, toolSchema, 0, "estimated")
+		result, compressionErr := m.server.compressContext(session.sandboxRequestContext(ctx), settings, canonical, checkpoint, prefix, toolSchema, 0, "estimated")
 		completed := time.Now().UTC()
 		activity.CompletedAt = &completed
 		activity.DurationMs = completed.Sub(started).Milliseconds()
@@ -2437,7 +2439,7 @@ func (w *chatWorkspaceSession) sendSnapshot(c *client, surface chatSurface) {
 				ChatID: codeChat.transcript.ChatID, Preview: preview, Busy: codeChat.isBusyLocked(),
 				Revision: codeChat.transcript.Revision, GoalStatus: codeChat.currentGoalStatusLocked(),
 			}},
-			Turns: codeChat.transcriptTurnsForSnapshotLocked(), ActiveTurn: codeChat.active, Goal: codeChat.goalSnapshotLocked(),
+			Turns: codeChat.transcriptTurnsForSnapshotLocked(), ActiveTurn: codeChat.active, ExecutionHeld: codeChat.executionHeld, Goal: codeChat.goalSnapshotLocked(),
 		}
 		c.sendJSON(snapshot)
 		codeChat.mu.Unlock()
@@ -2468,6 +2470,7 @@ func (w *chatWorkspaceSession) sendSnapshot(c *client, surface chatSurface) {
 			snapshot.Revision = tab.transcript.Revision
 			snapshot.Turns = tab.transcriptTurnsForSnapshotLocked()
 			snapshot.ActiveTurn = tab.active
+			snapshot.ExecutionHeld = tab.executionHeld
 			snapshot.Goal = tab.goalSnapshotLocked()
 		} else {
 			tab.mu.Unlock()
@@ -2782,6 +2785,7 @@ func (b *streamTrajectoryBuffer) hasData() bool {
 type assistantTrajectoryBuffer = streamTrajectoryBuffer
 
 func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings llm.Settings, prefix, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint, turnID string, scopes *tools.ToolScopeChecker, mode agentmodes.Mode, researchEnabled bool, sourceControlProfile workspaceSourceControlProfile) {
+	ctx = s.sandboxRequestContext(ctx)
 	questionRounds := 0
 	// Media produced by tools during this turn, keyed by the provider-reported
 	// image/video ID. Lets later tool calls in the same turn (save_image,
@@ -2809,7 +2813,17 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 	compressionCooldownRounds := 0
 	contextLengthRecoveries := 0
 	thinkingSuppressed := false
+	var contextGeneration uint64
 	for assistantNumber := 0; ; assistantNumber++ {
+		roundGeneration, holdErr := s.waitForSandboxControl(ctx)
+		if holdErr != nil {
+			s.finish(turnID, "stopped", "", canonical, checkpoint)
+			return
+		}
+		if roundGeneration != contextGeneration {
+			canonical = append(canonical, sandboxResumeMessage())
+			contextGeneration = roundGeneration
+		}
 		goalStepOrigin := ""
 		if ctx.Err() != nil {
 			s.finish(turnID, "stopped", "", canonical, checkpoint)
@@ -2936,6 +2950,14 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 		if requestErr != nil {
 			s.finish(turnID, "error", requestErr.Error(), canonical, checkpoint)
 			return
+		}
+		latestGeneration, holdErr := s.waitForSandboxControl(ctx)
+		if holdErr != nil {
+			s.finish(turnID, "stopped", "", canonical, checkpoint)
+			return
+		}
+		if latestGeneration != roundGeneration {
+			continue
 		}
 		requestStartedAt := time.Now().UTC()
 		s.mu.Lock()
@@ -3127,6 +3149,14 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			continue
 		}
 
+		postGeneration, holdErr := s.waitForSandboxControl(ctx)
+		if holdErr != nil {
+			s.finish(turnID, "stopped", "", canonical, checkpoint)
+			return
+		}
+		if len(streamResult.ToolCalls) == 0 && postGeneration != roundGeneration {
+			continue
+		}
 		if len(streamResult.ToolCalls) == 0 {
 			if goalMode && goalTerminalPending {
 				s.mu.Lock()
@@ -3223,6 +3253,13 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 					}
 				}
 			}
+			var admissionErr error
+			if manager := s.manager.server.sandbox; manager != nil {
+				admissionErr = manager.AdmitAIAction(s.workspace.ID, roundGeneration)
+			}
+			if admissionErr != nil {
+				questionWait = nil
+			}
 			if finalGoalToolBatch {
 				goalUpdateError = &tools.ExecutionError{Code: "goal_final_response_tools_disabled", Message: "the final goal response cannot call tools after update_goal was accepted"}
 			} else if mixedGoalTerminalCall {
@@ -3293,6 +3330,8 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			var result tools.ExecutionResult
 			var fileChanges []sessions.FileChange
 			switch {
+			case admissionErr != nil:
+				result = tools.ExecutionResult{Tool: call.Function.Name, Error: &tools.ExecutionError{Code: "user_control_interrupted", Message: admissionErr.Error()}}
 			case questionError != nil:
 				result = tools.ExecutionResult{Tool: call.Function.Name, Error: questionError}
 			case questionWait != nil:
@@ -3314,6 +3353,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				result = s.executeContextHistorySearch(canonical, checkpoint, json.RawMessage(call.Function.Arguments))
 			default:
 				toolCtx := s.toolContext(ctx, turnID, scopes, generatedImages, generatedVideos)
+				toolCtx.AIGeneration = &roundGeneration
 				toolCtx.FileChanges = func(changes []tools.FileChange) {
 					fileChanges = append(fileChanges, compactFileChanges(changes, toolCtx.WorkspaceRoots)...)
 				}
@@ -3366,6 +3406,9 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			for i := range step.Tools {
 				if step.Tools[i].CallID == callID {
 					step.Tools[i].Status = "complete"
+					if result.Error != nil && result.Error.Code == "user_control_interrupted" {
+						step.Tools[i].Status = "interrupted"
+					}
 					step.Tools[i].Success = resultSuccess
 					step.Tools[i].Result = string(data)
 					if call.Function.Name == tools.AskUserQuestionsToolName {
@@ -3840,6 +3883,7 @@ func (s *chatSession) finish(turnID, status, message string, canonical []llm.Mes
 	}
 	s.active = nil
 	s.cancel = nil
+	s.executionHeld = false
 	if goal == nil {
 		if currentGoal, _ := s.currentGoalLocked(); currentGoal != nil && currentGoal.Status == sessions.GoalStatusBlocked && len(currentGoal.PendingSteering) > 0 {
 			resumeQueuedGoal = true
@@ -4074,6 +4118,7 @@ func (s *Server) agentModeSystemMessage(workspace workspaces.Workspace, mode age
 
 func (s *Server) agentModeSystemMessageWithSourceControl(workspace workspaces.Workspace, mode agentmodes.Mode, query string, researchEnabled bool, profile workspaceSourceControlProfile, scopes *tools.ToolScopeChecker) llm.Message {
 	var prompt strings.Builder
+	prompt.WriteString(sandboxSystemGuidance(workspace))
 	prompt.WriteString("You are Echo, an AI assistant working inside the user's active workspace. Use the available tools when workspace facts or changes are needed. Carry out requested implementation work directly, verify meaningful changes, and keep the final response concrete and concise.")
 	if len(workspace.Folders) > 0 {
 		prompt.WriteString("\n\nWorkspace folders are addressed by their labels: ")

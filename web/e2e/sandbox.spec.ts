@@ -54,13 +54,14 @@ test("enables, starts, observes, takes over, reconnects, and resets the sandbox"
   let controlOwner: "none" | "ai" | "user" = "none";
   let leaseRevision = 0;
   let browserResetCalls = 0;
+  let upgradeCalls = 0;
   let desktopSessionCalls = 0;
   let desktopSocketCalls = 0;
   const sandboxConfig = () => ({ enabled: sandboxEnabled, cpuLimit: 4, memoryMiB: 6144, idleTimeoutMinutes: 30 });
   const sandboxStatus = () => ({
     state: sandboxState,
     enabled: sandboxEnabled,
-    protocolVersion: "1",
+    protocolVersion: "3",
     controlOwner,
     desktopLease: { owner: controlOwner, revision: leaseRevision },
     activeViewers: desktopSessionCalls > 0 ? 1 : 0,
@@ -81,8 +82,7 @@ test("enables, starts, observes, takes over, reconnects, and resets the sandbox"
     operatingSystem: "Docker Desktop",
     serverVersion: "28.0",
     images: {
-      workbench: { reference: "workbench@sha256:test", present: true },
-      desktop: { reference: "desktop@sha256:test", present: true },
+      runtime: { reference: "runtime@sha256:test", present: true },
       gateway: { reference: "gateway@sha256:test", present: true },
     },
   }));
@@ -97,6 +97,7 @@ test("enables, starts, observes, takes over, reconnects, and resets the sandbox"
   await page.route(`**/api/workspaces/${workspaceId}/sandbox/network-grants**`, (route) => fulfill(route, { grants: [] }));
   await page.route(`**/api/workspaces/${workspaceId}/sandbox/actions`, async (route) => {
     const request = route.request().postDataJSON() as { action: string };
+    if (request.action === "upgrade") { upgradeCalls++; sandboxState = "stopped"; }
     if (request.action === "start") {
       sandboxState = "ready";
       controlOwner = "ai";
@@ -133,7 +134,15 @@ test("enables, starts, observes, takes over, reconnects, and resets the sandbox"
   await expect(page.locator("[data-sandbox-state]")).toHaveText("disabled");
   await page.getByRole("button", { name: "Enable sandbox" }).click();
   await expect(page.locator("[data-sandbox-state]")).toHaveText("stopped");
-  await page.getByRole("button", { name: "Start" }).click();
+  // Emulate an existing protocol-2 sandbox requiring the explicit upgrade.
+  sandboxState = "upgrade_required";
+  await page.reload();
+  await expect(page.locator("[data-sandbox-state]")).toHaveText("Upgrade required");
+  await expect(page.getByRole("button", { name: "Start", exact: true })).toHaveCount(0);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Upgrade sandbox", exact: true }).click();
+  await expect.poll(() => upgradeCalls).toBe(1);
+  await page.getByRole("button", { name: "Start", exact: true }).click();
   await expect(page.locator("[data-sandbox-state]")).toHaveText("ready");
   await expect(page.locator(".sandbox-lease")).toContainText("AI is controlling");
   await page.getByRole("button", { name: "I understand — open desktop" }).click();
@@ -143,7 +152,7 @@ test("enables, starts, observes, takes over, reconnects, and resets the sandbox"
 
   await page.getByRole("button", { name: "Take Control" }).click();
   await expect(page.getByRole("button", { name: "Return Control" })).toBeVisible();
-  await expect(page.locator(".sandbox-lease")).toContainText("You have control");
+  await expect(page.locator(".sandbox-lease")).toContainText("AI paused while you control the desktop");
   await page.getByRole("button", { name: "Return Control" }).click();
   await expect(page.locator(".sandbox-lease")).toContainText("View only");
 

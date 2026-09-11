@@ -91,7 +91,10 @@ type ExecutionContext struct {
 	// began. It keeps execution fail-closed if workspace.json becomes
 	// temporarily unreadable instead of silently selecting the host.
 	SandboxEnabled bool
-	TurnID         string
+	// AIGeneration is captured when the model request starts. User-initiated
+	// filesystem/terminal operations omit it and do not use the AI hold.
+	AIGeneration *uint64
+	TurnID       string
 	// ResolveWorkspacePath and ResolveWorkspaceChildPath let the host route
 	// tools through its canonical workspace confinement service. Tests and
 	// standalone callers retain the local fallback when these are nil.

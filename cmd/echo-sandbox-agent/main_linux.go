@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,7 +80,20 @@ func (a *agent) auth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (a *agent) health(w http.ResponseWriter, _ *http.Request) {
+func (a *agent) health(w http.ResponseWriter, r *http.Request) {
+	if a.role == "runtime" {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		probe := exec.CommandContext(ctx, "xprop", "-root", "_NET_SUPPORTING_WM_CHECK")
+		probe.Env = baseEnvironment()
+		probe.SysProcAttr = processAttributes(false)
+		output, err := probe.Output()
+		_, busErr := os.Stat(filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "bus"))
+		if err != nil || busErr != nil || !strings.Contains(string(output), "window id") {
+			http.Error(w, "desktop session is not ready", http.StatusServiceUnavailable)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "role": a.role, "protocolVersion": sandboxprotocol.Version, "uptimeSeconds": int(time.Since(a.started).Seconds())})
 }
 
@@ -657,7 +671,7 @@ dialLoop:
 }
 
 func (a *agent) screenshot(w http.ResponseWriter, r *http.Request) {
-	if a.role != "desktop" {
+	if a.role != "runtime" {
 		http.Error(w, "desktop only", http.StatusNotFound)
 		return
 	}
@@ -692,7 +706,7 @@ type desktopAction struct {
 }
 
 func (a *agent) desktopAction(w http.ResponseWriter, r *http.Request) {
-	if a.role != "desktop" {
+	if a.role != "runtime" {
 		http.Error(w, "desktop only", http.StatusNotFound)
 		return
 	}
@@ -820,11 +834,15 @@ func touch(path string) error {
 	return file.Close()
 }
 func baseEnvironment() []string {
+	path := strings.TrimSpace(os.Getenv("PATH"))
+	if path == "" {
+		path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	}
 	values := []string{
-		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/echo/go/bin",
+		"PATH=/usr/local/go/bin:/home/echo/go/bin:" + path,
 		"HOME=/home/echo", "LANG=C.UTF-8", "LC_ALL=C.UTF-8", "TERM=xterm-256color", "ECHO_SANDBOX=1",
 	}
-	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"} {
+	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "ECHO_SANDBOX_ROLE"} {
 		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 			values = append(values, key+"="+value)
 		}

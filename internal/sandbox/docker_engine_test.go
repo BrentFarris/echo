@@ -73,20 +73,19 @@ func TestImagePullErrorIdentifiesReferenceAndAction(t *testing.T) {
 }
 
 func TestBuildImagesUsesMatchingProtocolAndPreservesReleaseOverrides(t *testing.T) {
-	previous := ImageSet{WorkbenchImage, DesktopImage, GatewayImage}
+	previous := ImageSet{Runtime: RuntimeImage, Gateway: GatewayImage}
 	t.Cleanup(func() {
-		WorkbenchImage, DesktopImage, GatewayImage = previous.Workbench, previous.Desktop, previous.Gateway
+		RuntimeImage, GatewayImage = previous.Runtime, previous.Gateway
 	})
-	WorkbenchImage, DesktopImage, GatewayImage = "", "", ""
+	RuntimeImage, GatewayImage = "", ""
 	for role, ref := range BuildImages().Roles() {
 		if !strings.HasSuffix(ref, ":protocol-"+ProtocolVersion) {
 			t.Fatalf("%s uses an incompatible image channel: %s", role, ref)
 		}
 	}
-	WorkbenchImage = "registry.example/workbench@sha256:" + strings.Repeat("a", 64)
-	DesktopImage = "registry.example/desktop@sha256:" + strings.Repeat("b", 64)
+	RuntimeImage = "registry.example/runtime@sha256:" + strings.Repeat("a", 64)
 	GatewayImage = "registry.example/egress@sha256:" + strings.Repeat("c", 64)
-	if got := BuildImages(); got != (ImageSet{WorkbenchImage, DesktopImage, GatewayImage}) || !got.Immutable() {
+	if got := BuildImages(); got != (ImageSet{Runtime: RuntimeImage, Gateway: GatewayImage}) || !got.Immutable() {
 		t.Fatalf("release image overrides were lost: %+v", got)
 	}
 }
@@ -121,15 +120,18 @@ func TestServiceProtocolValidationIdentifiesIncompatibleService(t *testing.T) {
 
 func TestRuntimeSecretsAreRoleSeparatedAndRootOnly(t *testing.T) {
 	secrets := RuntimeSecrets{
-		WorkbenchAgentToken: "workbench", DesktopAgentToken: "desktop", BrowserToken: "browser",
+		RuntimeAgentToken: "runtime", BrowserToken: "browser",
 		ProxyToken: "proxy", VNCToken: "vnc",
 	}
 	files := runtimeSecretFiles(secrets, nil)
-	if len(files["workbench"]) != 1 || string(files["workbench"]["agent.token"].data) != "workbench" {
-		t.Fatalf("workbench received unrelated management credentials: %+v", files["workbench"])
+	if len(files["runtime"]) != 3 || string(files["runtime"]["agent.token"].data) != "runtime" || string(files["runtime"]["lease.token"].data) != "browser" {
+		t.Fatalf("runtime credentials are incomplete: %+v", files["runtime"])
 	}
-	if string(files["desktop"]["agent.token"].data) != "desktop" || string(files["desktop"]["lease.token"].data) != "browser" {
-		t.Fatalf("desktop credentials are not role-separated: %+v", files["desktop"])
+	if _, ok := files["gateway"]["agent.token"]; ok {
+		t.Fatal("gateway received the runtime agent credential")
+	}
+	if _, ok := files["runtime"]["proxy.token"]; ok {
+		t.Fatal("runtime received the host proxy credential")
 	}
 	for role, roleFiles := range files {
 		for name, file := range roleFiles {
@@ -151,7 +153,7 @@ func TestContainerPoliciesDoNotExposeHostOrDangerousPrivileges(t *testing.T) {
 		Roots: []RootMount{{ID: "main", HostPath: root, GuestPath: "/workspace/main", Main: true}},
 	}
 	gateway := netip.MustParseAddr("172.28.0.2")
-	_, workbench, _, err := dockerContainerConfig("workbench", BuildImages().Workbench, spec, state, gateway, nil)
+	_, workbench, _, err := dockerContainerConfig("runtime", BuildImages().Runtime, spec, state, gateway, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +174,7 @@ func TestContainerPoliciesDoNotExposeHostOrDangerousPrivileges(t *testing.T) {
 		}
 	}
 
-	_, desktop, _, err := dockerContainerConfig("desktop", BuildImages().Desktop, spec, state, gateway, nil)
+	_, desktop, _, err := dockerContainerConfig("runtime", BuildImages().Runtime, spec, state, gateway, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,8 +189,8 @@ func TestContainerPoliciesDoNotExposeHostOrDangerousPrivileges(t *testing.T) {
 			t.Fatalf("desktop capability %s must stay dropped", forbidden)
 		}
 	}
-	if len(desktop.SecurityOpt) != 2 || desktop.SecurityOpt[0] != "no-new-privileges=true" || !strings.HasPrefix(desktop.SecurityOpt[1], "seccomp=") {
-		t.Fatalf("desktop seccomp/no-new-privileges policy is missing: %v", desktop.SecurityOpt)
+	if len(desktop.SecurityOpt) != 1 || !strings.HasPrefix(desktop.SecurityOpt[0], "seccomp=") {
+		t.Fatalf("runtime Chromium seccomp policy is missing: %v", desktop.SecurityOpt)
 	}
 	if len(workbench.PortBindings) != 0 || len(desktop.PortBindings) != 0 {
 		t.Fatal("internal-only workbench or desktop unexpectedly publishes a host port")
@@ -197,7 +199,7 @@ func TestContainerPoliciesDoNotExposeHostOrDangerousPrivileges(t *testing.T) {
 	for _, item := range desktop.Mounts {
 		desktopMounts[item.Target] = item.Source
 	}
-	if desktopMounts["/home/echo"] != state.VolumeNames["desktop"] || desktopMounts["/home/echo/.config/chromium"] != state.VolumeNames["browser"] {
+	if desktopMounts["/home/echo"] != state.VolumeNames["runtime"] || desktopMounts["/home/echo/.config/chromium"] != state.VolumeNames["browser"] {
 		t.Fatalf("desktop home and browser profile are not independently persistent: %+v", desktopMounts)
 	}
 
@@ -205,7 +207,7 @@ func TestContainerPoliciesDoNotExposeHostOrDangerousPrivileges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, value := range []string{workbenchAgentForwardPort, desktopAgentForwardPort, desktopVNCForwardPort, desktopBrowserForwardPort} {
+	for _, value := range []string{runtimeAgentForwardPort, desktopVNCForwardPort, desktopBrowserForwardPort} {
 		port, err := network.ParsePort(value)
 		if err != nil || len(gatewayHost.PortBindings[port]) != 1 || gatewayHost.PortBindings[port][0].HostIP.String() != "127.0.0.1" {
 			t.Fatalf("gateway management port %s is not loopback-only: %v", value, gatewayHost.PortBindings[port])
@@ -215,10 +217,9 @@ func TestContainerPoliciesDoNotExposeHostOrDangerousPrivileges(t *testing.T) {
 
 func TestForwardedManagementPortsAreRoleScoped(t *testing.T) {
 	tests := []struct{ role, service, forward string }{
-		{"workbench", agentPort, workbenchAgentForwardPort},
-		{"desktop", agentPort, desktopAgentForwardPort},
-		{"desktop", vncPort, desktopVNCForwardPort},
-		{"desktop", playwrightPort, desktopBrowserForwardPort},
+		{"runtime", agentPort, runtimeAgentForwardPort},
+		{"runtime", vncPort, desktopVNCForwardPort},
+		{"runtime", playwrightPort, desktopBrowserForwardPort},
 	}
 	for _, test := range tests {
 		if got, ok := forwardedManagementPort(test.role, test.service); !ok || got != test.forward {
@@ -232,17 +233,16 @@ func TestForwardedManagementPortsAreRoleScoped(t *testing.T) {
 
 func TestLogicalResourceLimitIsSplitAcrossRoles(t *testing.T) {
 	config := workspaces.SandboxConfig{CPULimit: 4, MemoryMiB: 6144}
-	workbench := roleResources("workbench", config)
-	desktop := roleResources("desktop", config)
+	runtime := roleResources("runtime", config)
 	gateway := roleResources("gateway", config)
-	if got, want := workbench.NanoCPUs+desktop.NanoCPUs+gateway.NanoCPUs, int64(4_000_000_000); got != want {
+	if got, want := runtime.NanoCPUs+gateway.NanoCPUs, int64(4_000_000_000); got != want {
 		t.Fatalf("CPU shares total %d, want %d", got, want)
 	}
-	if got, want := workbench.Memory+desktop.Memory+gateway.Memory, int64(6144<<20); got != want {
+	if got, want := runtime.Memory+gateway.Memory, int64(6144<<20); got != want {
 		t.Fatalf("memory shares total %d, want %d", got, want)
 	}
-	if workbench.NanoCPUs <= desktop.NanoCPUs || workbench.Memory <= desktop.Memory {
-		t.Fatal("workbench did not receive the larger build-oriented share")
+	if runtime.NanoCPUs <= gateway.NanoCPUs || runtime.Memory <= gateway.Memory {
+		t.Fatal("runtime did not receive the budget remaining after the gateway reservation")
 	}
 }
 
@@ -261,7 +261,7 @@ func TestInternalGatewayAddressUsesFirstUnallocatedContainerAddress(t *testing.T
 
 func TestSandboxRoleAddressesAreStableAndDistinct(t *testing.T) {
 	gateway := netip.MustParseAddr("10.72.4.2")
-	want := map[string]string{"gateway": "10.72.4.2", "workbench": "10.72.4.3", "desktop": "10.72.4.4"}
+	want := map[string]string{"gateway": "10.72.4.2", "runtime": "10.72.4.3"}
 	seen := map[netip.Addr]bool{}
 	for role, expected := range want {
 		address, err := sandboxRoleAddress(gateway, role)

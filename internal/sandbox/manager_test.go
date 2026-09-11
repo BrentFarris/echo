@@ -320,7 +320,7 @@ func TestManagerResetAndDeleteBoundariesRetainWorkspaceFiles(t *testing.T) {
 	engine.mu.Lock()
 	scopes := append([]DeleteScope(nil), engine.deleteScopes...)
 	engine.mu.Unlock()
-	if len(scopes) != 2 || !scopes[0].Containers || !scopes[0].Workbench || scopes[0].Browser || !scopes[1].Browser || scopes[1].Workbench {
+	if len(scopes) != 2 || !scopes[0].Containers || !scopes[0].Runtime || scopes[0].Browser || !scopes[1].Browser || scopes[1].Runtime {
 		t.Fatalf("unexpected reset scopes: %+v", scopes)
 	}
 	if _, err := os.Stat(sentinel); err != nil {
@@ -361,7 +361,7 @@ func TestSetupRecipeRequiresDigestApprovalAndRunsOnlyApprovedRecipeAsRoot(t *tes
 	engine.mu.Lock()
 	requests := append([]ExecRequest(nil), engine.execRequests...)
 	engine.mu.Unlock()
-	if len(requests) != 2 || requests[0].Role != "workbench" || requests[1].Role != "desktop" {
+	if len(requests) != 1 || requests[0].Role != "runtime" {
 		t.Fatalf("setup roles: %+v", requests)
 	}
 	for _, request := range requests {
@@ -379,7 +379,7 @@ func TestSetupRecipeRequiresDigestApprovalAndRunsOnlyApprovedRecipeAsRoot(t *tes
 	engine.mu.Lock()
 	requests = append([]ExecRequest(nil), engine.execRequests...)
 	engine.mu.Unlock()
-	if len(requests) != 4 || requests[2].Role != "workbench" || requests[3].Role != "desktop" {
+	if len(requests) != 2 || requests[1].Role != "runtime" {
 		t.Fatalf("approved setup was not reapplied after recreation: %+v", requests)
 	}
 
@@ -392,7 +392,7 @@ func TestSetupRecipeRequiresDigestApprovalAndRunsOnlyApprovedRecipeAsRoot(t *tes
 	engine.mu.Lock()
 	requests = append([]ExecRequest(nil), engine.execRequests...)
 	engine.mu.Unlock()
-	if len(requests) != 4 {
+	if len(requests) != 2 {
 		t.Fatalf("changed setup ran without renewed approval: %+v", requests)
 	}
 	status, err := manager.Status(context.Background(), workspace.ID)
@@ -482,7 +482,7 @@ func TestGeneratedRuntimeCredentialsAreIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	values := []string{secret.WorkbenchAgentToken, secret.DesktopAgentToken, secret.ProxyToken, secret.BrowserToken, secret.VNCToken}
+	values := []string{secret.RuntimeAgentToken, secret.ProxyToken, secret.BrowserToken, secret.VNCToken}
 	seen := map[string]bool{}
 	for _, value := range values {
 		if len(value) < 20 || seen[value] {

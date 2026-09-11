@@ -29,14 +29,23 @@ type workspaceResolver interface {
 }
 
 type runtimeState struct {
-	status     SandboxStatus
-	lastActive time.Time
-	active     int
-	viewers    map[string]DesktopSession
-	connected  map[string]bool
-	lease      DesktopLease
-	guiCancel  context.CancelFunc
-	guiContext context.Context
+	status                       SandboxStatus
+	lastActive                   time.Time
+	active                       int
+	viewers                      map[string]DesktopSession
+	connected                    map[string]bool
+	lease                        DesktopLease
+	guiCancel                    context.CancelFunc
+	guiContext                   context.Context
+	upgrading                    bool
+	upgradeCancel                context.CancelFunc
+	upgradeDone                  chan struct{}
+	controlGeneration            uint64
+	freshFiles                   map[string]uint64
+	controlChanged               chan struct{}
+	needsFreshDesktop            bool
+	browserGeneration            uint64
+	browserInvalidatedGeneration uint64
 }
 
 type Manager struct {
@@ -101,8 +110,9 @@ func (m *Manager) runtimeFor(workspaceID string) *runtimeState {
 	if runtime == nil {
 		runtime = &runtimeState{
 			lastActive: time.Now(), viewers: make(map[string]DesktopSession), connected: make(map[string]bool),
-			lease:  DesktopLease{Owner: LeaseNone},
-			status: SandboxStatus{State: StateStopped, ProtocolVersion: ProtocolVersion, ImageVersion: m.images, ControlOwner: LeaseNone},
+			lease:          DesktopLease{Owner: LeaseNone},
+			controlChanged: make(chan struct{}),
+			status:         SandboxStatus{State: StateStopped, ProtocolVersion: ProtocolVersion, ImageVersion: m.images, ControlOwner: LeaseNone},
 		}
 		m.runtime[workspaceID] = runtime
 	}
@@ -166,6 +176,12 @@ func (m *Manager) EndPolicyTransition(workspaceID string, enabled bool) {
 	runtime := m.runtimeFor(workspaceID)
 	runtime.status.Enabled = enabled
 	if !enabled {
+		if runtime.guiCancel != nil {
+			runtime.guiCancel()
+		}
+		runtime.guiCancel, runtime.guiContext = nil, nil
+		runtime.lease = DesktopLease{Owner: LeaseNone, Revision: runtime.lease.Revision + 1}
+		m.signalControlChangedLocked(runtime)
 		runtime.status.State = StateDisabled
 	} else if runtime.status.State == StateDisabled {
 		runtime.status.State = StateStopped
@@ -349,12 +365,21 @@ func (m *Manager) Status(ctx context.Context, workspaceID string) (SandboxStatus
 	status.Enabled = true
 	status.ActiveViewers = connectedViewerCount(runtime)
 	status.DesktopLease = runtime.lease
+	status.ControlGeneration = runtime.controlGeneration
 	status.ControlOwner = runtime.lease.Owner
 	m.mu.Unlock()
-	if status.State == "" || status.State == StateStopped {
+	if status.State != StateUpgrading {
 		if state, exists, loadErr := m.store.Load(workspaceID); loadErr == nil && exists {
 			status.Setup = state.LastSetup
-			status.State = StateStopped
+			if state.NeedsUpgrade() {
+				status.State = StateUpgradeRequired
+				if status.ErrorCode == "" {
+					status.ErrorCode, status.Message = ErrUpgradeRequired.Code, ErrUpgradeRequired.Message
+				}
+			}
+			if journal, found, journalErr := m.store.LoadMigration(workspaceID); journalErr == nil && found {
+				status.Migration = &journal.Status
+			}
 		}
 	}
 	if status.State == StateReady {
@@ -394,7 +419,7 @@ func (m *Manager) machineState(workspaceID string) (MachineState, error) {
 func (m *Manager) credentials(workspaceID string) (RuntimeSecrets, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if secret := m.secrets[workspaceID]; secret.WorkbenchAgentToken != "" {
+	if secret := m.secrets[workspaceID]; secret.RuntimeAgentToken != "" {
 		return secret, nil
 	}
 	randomHex := func() (string, error) {
@@ -405,7 +430,7 @@ func (m *Manager) credentials(workspaceID string) (RuntimeSecrets, error) {
 		return hex.EncodeToString(buffer), nil
 	}
 	secret := RuntimeSecrets{}
-	values := []*string{&secret.WorkbenchAgentToken, &secret.DesktopAgentToken, &secret.ProxyToken, &secret.BrowserToken}
+	values := []*string{&secret.RuntimeAgentToken, &secret.ProxyToken, &secret.BrowserToken}
 	for _, target := range values {
 		value, err := randomHex()
 		if err != nil {
@@ -514,6 +539,10 @@ func (m *Manager) Start(ctx context.Context, workspaceID string) error {
 	state, err := m.machineState(workspaceID)
 	if err != nil {
 		return err
+	}
+	if state.NeedsUpgrade() {
+		m.transition(workspaceID, StateUpgradeRequired, ErrUpgradeRequired.Code, ErrUpgradeRequired.Message)
+		return ErrUpgradeRequired
 	}
 	if state.ProtocolVersion != "" && state.ProtocolVersion != ProtocolVersion {
 		m.transition(workspaceID, StateError, ErrProtocolMismatch.Code, ErrProtocolMismatch.Message)
@@ -646,6 +675,9 @@ func (m *Manager) Recreate(ctx context.Context, workspaceID string) error {
 	if err != nil {
 		return err
 	}
+	if state.NeedsUpgrade() {
+		return ErrUpgradeRequired
+	}
 	if err := m.engine.Delete(ctx, state, DeleteScope{Containers: true, Network: true}); err != nil {
 		return err
 	}
@@ -681,6 +713,9 @@ func (m *Manager) startLocked(ctx context.Context, workspaceID string) error {
 	if err != nil {
 		return err
 	}
+	if state.NeedsUpgrade() {
+		return ErrUpgradeRequired
+	}
 	secrets, err := m.credentials(workspaceID)
 	if err != nil {
 		return err
@@ -711,14 +746,17 @@ func (m *Manager) Reset(ctx context.Context, workspaceID, scope string) error {
 	if err != nil {
 		return err
 	}
+	if state.NeedsUpgrade() {
+		return ErrUpgradeRequired
+	}
 	deleteScope := DeleteScope{Containers: true}
 	switch scope {
-	case "workbench":
-		deleteScope.Workbench = true
+	case "runtime", "workbench":
+		deleteScope.Runtime = true
 	case "browser":
 		deleteScope.Browser = true
 	default:
-		return &Error{Code: "invalid_reset_scope", Message: "reset scope must be workbench or browser"}
+		return &Error{Code: "invalid_reset_scope", Message: "reset scope must be runtime or browser"}
 	}
 	if err := m.engine.Delete(ctx, state, deleteScope); err != nil {
 		return err
@@ -754,8 +792,21 @@ func (m *Manager) Delete(ctx context.Context, workspaceID string) error {
 	if !exists {
 		state = DefaultMachineState(m.installation, workspaceID, m.images)
 	}
-	if err := m.engine.Delete(ctx, state, DeleteScope{Containers: true, Network: true, Workbench: true, Desktop: true, Browser: true, Exchange: true}); err != nil {
+	if err := m.engine.Delete(ctx, state, DeleteScope{Containers: true, Network: true, Runtime: true, Workbench: true, Desktop: true, Browser: true, Exchange: true}); err != nil {
 		return err
+	}
+	for _, recovery := range state.Recovery {
+		if err := m.engine.Delete(ctx, recovery, DeleteScope{Containers: true, Network: true, Runtime: true, Workbench: true, Desktop: true, Browser: true, Exchange: true}); err != nil {
+			return err
+		}
+	}
+	// A failed upgrade can own candidate resources without committing state.
+	if journal, exists, loadErr := m.store.LoadMigration(workspaceID); loadErr != nil {
+		return loadErr
+	} else if exists && state.NeedsUpgrade() {
+		if err := m.engine.Delete(ctx, journal.Candidate, DeleteScope{Containers: true, Network: true, Runtime: true, Browser: true, Exchange: true}); err != nil {
+			return err
+		}
 	}
 	if err := m.store.Delete(workspaceID); err != nil {
 		return err
@@ -947,11 +998,15 @@ func (m *Manager) RunSetup(ctx context.Context, workspaceID, approvedDigest stri
 	if err != nil {
 		return SetupStatus{}, err
 	}
-	if state.ApprovedSetupDigest != digest {
+	if state.NeedsUpgrade() {
+		return SetupStatus{}, ErrUpgradeRequired
+	}
+	if state.ApprovedSetupDigest != digest || state.ApprovedSetupProtocol != ProtocolVersion {
 		if approvedDigest != digest {
 			return SetupStatus{RecipeDigest: digest, ApprovedDigest: state.ApprovedSetupDigest, State: "approval_required"}, ErrSetupApproval
 		}
 		state.ApprovedSetupDigest = digest
+		state.ApprovedSetupProtocol = ProtocolVersion
 		if err := m.store.Save(state); err != nil {
 			return SetupStatus{}, err
 		}
@@ -986,7 +1041,7 @@ func (m *Manager) rerunApprovedSetupLocked(ctx context.Context, workspaceID stri
 	if err != nil {
 		return err
 	}
-	if state.ApprovedSetupDigest != digest {
+	if state.ApprovedSetupDigest != digest || state.ApprovedSetupProtocol != ProtocolVersion {
 		state.LastSetup = SetupStatus{
 			RecipeDigest: digest, ApprovedDigest: state.ApprovedSetupDigest,
 			State: "approval_required", Message: "Setup recipe changed and requires owner approval",
@@ -1027,7 +1082,7 @@ func (m *Manager) runSetupLocked(ctx context.Context, workspaceID string, spec W
 		return setup, ErrSetupApproval
 	}
 	setup.RecipeDigest, setup.ApprovedDigest, setup.State = digest, digest, "running"
-	for _, role := range []string{"workbench", "desktop"} {
+	for _, role := range []string{"runtime"} {
 		setup.LastRole = role
 		m.emit(Event{WorkspaceID: workspaceID, Event: "setup", Role: role, Message: "Running approved setup recipe"})
 		result, runErr := m.engine.Exec(ctx, state, ExecRequest{
@@ -1219,6 +1274,10 @@ func (m *Manager) TakeUserControl(workspaceID, browserSessionID string, confirmP
 	}
 	runtime.guiCancel, runtime.guiContext = nil, nil
 	lease.Owner, lease.BrowserSessionID, lease.ChatTurnID = LeaseUser, browserSessionID, ""
+	runtime.controlGeneration++
+	runtime.freshFiles = make(map[string]uint64)
+	runtime.needsFreshDesktop = true
+	m.signalControlChangedLocked(runtime)
 	lease.ExpiresAt, lease.Revision = time.Now().Add(2*time.Minute).UTC(), lease.Revision+1
 	if hasConnectedBrowserSession(runtime, browserSessionID) {
 		lease.ExpiresAt = time.Time{}
@@ -1247,6 +1306,7 @@ func (m *Manager) ReleaseUserControl(workspaceID, browserSessionID string) (Desk
 	}
 	lease = DesktopLease{Owner: LeaseNone, Revision: lease.Revision + 1}
 	runtime.lease = lease
+	m.signalControlChangedLocked(runtime)
 	go m.emit(Event{WorkspaceID: workspaceID, Event: "desktop_lease", Message: "Desktop control returned"})
 	return lease, nil
 }
@@ -1271,6 +1331,8 @@ func (m *Manager) AcquireAIControl(workspaceID, turnID string, timeout time.Dura
 		runtime.guiCancel, runtime.guiContext = nil, nil
 		lease = DesktopLease{Owner: LeaseNone, Revision: lease.Revision + 1}
 		runtime.lease = lease
+		m.signalControlChangedLocked(runtime)
+		go m.emit(Event{WorkspaceID: workspaceID, Event: "desktop_lease", Message: "Desktop control expired"})
 	}
 	if lease.Owner == LeaseUser {
 		m.mu.Unlock()
@@ -1312,6 +1374,11 @@ func (m *Manager) AcquireAIControl(workspaceID, turnID string, timeout time.Dura
 func (m *Manager) ReleaseAIControl(workspaceID, turnID string) {
 	m.mu.Lock()
 	runtime := m.runtimeFor(workspaceID)
+	for key := range runtime.freshFiles {
+		if strings.HasPrefix(key, turnID+"\x00") || strings.HasPrefix(key, turnID+":research:") {
+			delete(runtime.freshFiles, key)
+		}
+	}
 	if runtime.lease.Owner != LeaseAI || runtime.lease.ChatTurnID != turnID {
 		m.mu.Unlock()
 		return
@@ -1329,6 +1396,9 @@ func (m *Manager) BrowserCall(ctx context.Context, workspaceID, turnID, method s
 	if err := m.Start(ctx, workspaceID); err != nil {
 		return nil, err
 	}
+	if err := m.checkAIControlContext(ctx, workspaceID); err != nil {
+		return nil, err
+	}
 	leaseCtx, _, err := m.AcquireAIControl(workspaceID, turnID, 2*time.Minute)
 	if err != nil {
 		return nil, err
@@ -1341,7 +1411,29 @@ func (m *Manager) BrowserCall(ctx context.Context, workspaceID, turnID, method s
 	}
 	m.touch(workspaceID, 1)
 	defer m.touch(workspaceID, -1)
+	m.mu.Lock()
+	runtime := m.runtimeFor(workspaceID)
+	generation := runtime.controlGeneration
+	invalidate := runtime.browserInvalidatedGeneration != generation
+	fresh := runtime.browserGeneration == generation
+	m.mu.Unlock()
+	if invalidate {
+		if _, err := m.engine.BrowserCall(callCtx, state, "invalidate_references", nil); err != nil {
+			return nil, err
+		}
+		m.mu.Lock()
+		m.runtimeFor(workspaceID).browserInvalidatedGeneration = generation
+		m.mu.Unlock()
+	}
+	if !fresh && method != "snapshot" {
+		return nil, &Error{Code: "desktop_context_stale", Message: "the user had control; call browser_snapshot before another browser action"}
+	}
 	result, callErr := m.engine.BrowserCall(callCtx, state, method, params)
+	if callErr == nil && method == "snapshot" {
+		m.mu.Lock()
+		m.runtimeFor(workspaceID).browserGeneration = generation
+		m.mu.Unlock()
+	}
 	if callErr != nil && m.userControlActive(workspaceID) {
 		return nil, ErrUserControlActive
 	}
@@ -1352,6 +1444,9 @@ func (m *Manager) DesktopAction(ctx context.Context, workspaceID, turnID string,
 	if err := m.Start(ctx, workspaceID); err != nil {
 		return err
 	}
+	if err := m.checkAIControlContext(ctx, workspaceID); err != nil {
+		return err
+	}
 	leaseCtx, _, err := m.AcquireAIControl(workspaceID, turnID, 2*time.Minute)
 	if err != nil {
 		return err
@@ -1364,6 +1459,12 @@ func (m *Manager) DesktopAction(ctx context.Context, workspaceID, turnID string,
 	}
 	m.touch(workspaceID, 1)
 	defer m.touch(workspaceID, -1)
+	m.mu.Lock()
+	needsFresh := m.runtimeFor(workspaceID).needsFreshDesktop
+	m.mu.Unlock()
+	if needsFresh {
+		return &Error{Code: "desktop_context_stale", Message: "the user had control; take a desktop snapshot before another desktop action"}
+	}
 	callErr := m.engine.DesktopAction(callCtx, state, action)
 	if callErr != nil && m.userControlActive(workspaceID) {
 		return ErrUserControlActive
@@ -1375,6 +1476,9 @@ func (m *Manager) DesktopScreenshot(ctx context.Context, workspaceID, turnID str
 	if err := m.Start(ctx, workspaceID); err != nil {
 		return nil, "", err
 	}
+	if err := m.checkAIControlContext(ctx, workspaceID); err != nil {
+		return nil, "", err
+	}
 	leaseCtx, _, err := m.AcquireAIControl(workspaceID, turnID, 2*time.Minute)
 	if err != nil {
 		return nil, "", err
@@ -1387,7 +1491,15 @@ func (m *Manager) DesktopScreenshot(ctx context.Context, workspaceID, turnID str
 	}
 	m.touch(workspaceID, 1)
 	defer m.touch(workspaceID, -1)
+	generation, _ := m.AIControl(workspaceID)
 	image, mediaType, captureErr := m.engine.DesktopScreenshot(callCtx, state)
+	if captureErr == nil {
+		m.mu.Lock()
+		if m.runtimeFor(workspaceID).controlGeneration == generation {
+			m.runtimeFor(workspaceID).needsFreshDesktop = false
+		}
+		m.mu.Unlock()
+	}
 	if captureErr != nil && m.userControlActive(workspaceID) {
 		return nil, "", ErrUserControlActive
 	}
@@ -1495,6 +1607,7 @@ func (m *Manager) maintain(now time.Time) {
 			}
 			runtime.guiCancel, runtime.guiContext = nil, nil
 			runtime.lease = DesktopLease{Owner: LeaseNone, Revision: runtime.lease.Revision + 1}
+			m.signalControlChangedLocked(runtime)
 			releasedLeases = append(releasedLeases, workspaceID)
 		}
 		if runtime.status.State == StateReady {
@@ -1522,7 +1635,9 @@ func (m *Manager) maintain(now time.Time) {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = m.engine.Heartbeat(ctx, state)
+		if err := m.engine.Heartbeat(ctx, state); err != nil {
+			m.transition(workspaceID, StateError, ErrorCode(err), "Sandbox services are unavailable; restart the sandbox")
+		}
 		cancel()
 	}
 	for _, candidate := range stops {
@@ -1605,6 +1720,24 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	case <-m.done:
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+	m.mu.Lock()
+	var upgrades []chan struct{}
+	for _, runtime := range m.runtime {
+		if runtime.upgradeCancel != nil {
+			runtime.upgradeCancel()
+		}
+		if runtime.upgrading && runtime.upgradeDone != nil {
+			upgrades = append(upgrades, runtime.upgradeDone)
+		}
+	}
+	m.mu.Unlock()
+	for _, done := range upgrades {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	workspaceSet := map[string]bool{}
 	m.mu.Lock()

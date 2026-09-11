@@ -67,10 +67,9 @@ func main() {
 	go func() { errorsChannel <- internal.serveDNS(":53") }()
 	go func() { errorsChannel <- internal.serveDNSTCP(":53") }()
 	for _, forward := range []struct{ listen, target string }{
-		{":17777", environment("ECHO_WORKBENCH_AGENT_TARGET", "workbench:7777")},
-		{":27777", environment("ECHO_DESKTOP_AGENT_TARGET", "desktop:7777")},
-		{":25900", environment("ECHO_DESKTOP_VNC_TARGET", "desktop:5900")},
-		{":23000", environment("ECHO_DESKTOP_BROWSER_TARGET", "desktop:3000")},
+		{":17777", environment("ECHO_RUNTIME_AGENT_TARGET", "runtime:7777")},
+		{":25900", environment("ECHO_DESKTOP_VNC_TARGET", "runtime:5900")},
+		{":23000", environment("ECHO_DESKTOP_BROWSER_TARGET", "runtime:3000")},
 	} {
 		forward := forward
 		go func() { errorsChannel <- serveTCPForward(forward.listen, forward.target) }()
@@ -449,7 +448,7 @@ func (g *gateway) answerDNS(request []byte) []byte {
 	}
 	for _, address := range addresses {
 		normalized := address.Unmap()
-		internalService := host == "gateway" || host == "workbench" || host == "desktop"
+		internalService := host == "runtime" || host == "gateway" || host == "workbench" || host == "desktop"
 		if blockedAddress(normalized) && !internalService && !g.policy.hasHostGrant(lookupHost) && lookupHost == host {
 			continue
 		}

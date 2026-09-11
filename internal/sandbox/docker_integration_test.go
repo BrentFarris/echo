@@ -18,19 +18,23 @@ import (
 )
 
 // TestDockerIntegrationLifecycle is opt-in because it creates and deletes real
-// Docker resources. CI builds the three :dev images first and enables it on a
+// Docker resources. CI builds the two :dev images first and enables it on a
 // Linux runner and on the release-blocking Windows Docker Desktop runner.
 func TestDockerIntegrationLifecycle(t *testing.T) {
 	if os.Getenv("ECHO_SANDBOX_INTEGRATION") != "1" {
 		t.Skip("set ECHO_SANDBOX_INTEGRATION=1 after building the sandbox images")
 	}
 	previousImages := BuildImages()
-	WorkbenchImage = "echo-sandbox-workbench:dev"
-	DesktopImage = "echo-sandbox-desktop:dev"
-	GatewayImage = "echo-sandbox-egress:dev"
+	RuntimeImage = os.Getenv("ECHO_SANDBOX_RUNTIME_IMAGE")
+	if RuntimeImage == "" {
+		RuntimeImage = "echo-sandbox-runtime:dev"
+	}
+	GatewayImage = os.Getenv("ECHO_SANDBOX_GATEWAY_IMAGE")
+	if GatewayImage == "" {
+		GatewayImage = "echo-sandbox-egress:dev"
+	}
 	t.Cleanup(func() {
-		WorkbenchImage = previousImages.Workbench
-		DesktopImage = previousImages.Desktop
+		RuntimeImage = previousImages.Runtime
 		GatewayImage = previousImages.Gateway
 	})
 	engine, err := NewDockerEngine()
@@ -66,14 +70,14 @@ func TestDockerIntegrationLifecycle(t *testing.T) {
 	}
 	state := DefaultMachineState(spec.Installation, spec.ID, BuildImages())
 	secrets := RuntimeSecrets{
-		WorkbenchAgentToken: strings.Repeat("w", 64), DesktopAgentToken: strings.Repeat("d", 64),
-		VNCToken: strings.Repeat("v", 24), ProxyToken: strings.Repeat("p", 64), BrowserToken: strings.Repeat("b", 64),
+		RuntimeAgentToken: strings.Repeat("w", 64),
+		VNCToken:          strings.Repeat("v", 24), ProxyToken: strings.Repeat("p", 64), BrowserToken: strings.Repeat("b", 64),
 	}
 	defer func() {
 		cleanup, cleanupCancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cleanupCancel()
 		_ = engine.Stop(cleanup, state)
-		if err := engine.Delete(cleanup, state, DeleteScope{Containers: true, Network: true, Workbench: true, Desktop: true, Browser: true, Exchange: true}); err != nil {
+		if err := engine.Delete(cleanup, state, DeleteScope{Containers: true, Network: true, Runtime: true, Workbench: true, Desktop: true, Browser: true, Exchange: true}); err != nil {
 			t.Errorf("sandbox cleanup: %v", err)
 		}
 	}()
@@ -92,7 +96,7 @@ func TestDockerIntegrationLifecycle(t *testing.T) {
 
 	expectedUID := strconv.Itoa(sandboxHostUID())
 	result, err := engine.Exec(ctx, state, ExecRequest{
-		Role: "workbench", WorkingDirectory: "/workspace/root-main", OutputLimit: 64 << 10,
+		Role: "runtime", WorkingDirectory: "/workspace/root-main", OutputLimit: 64 << 10,
 		Command: []string{"/bin/bash", "-lc", "set -eu; test \"$(uname -s)\" = Linux; test \"$(id -u)\" = " + expectedUID + "; test \"$HTTP_PROXY\" = http://gateway:3128; test ! -w .echo; test ! -e /var/run/docker.sock; sudo -n true; printf guest-write > integration-write.txt; printf '%s' \"$(uname -s)\""},
 	})
 	if err != nil || result.ExitCode != 0 || string(result.Stdout) != "Linux" {
@@ -101,11 +105,11 @@ func TestDockerIntegrationLifecycle(t *testing.T) {
 	if content, err := os.ReadFile(filepath.Join(root, "integration-write.txt")); err != nil || string(content) != "guest-write" {
 		t.Fatalf("guest write was not reflected in canonical host files: %q, %v", content, err)
 	}
-	if _, _, err := engine.serviceRequest(ctx, state, "workbench", agentPort, "GET", "/v1/health", "wrong-token", nil, 64<<10); err == nil {
+	if _, _, err := engine.serviceRequest(ctx, state, "runtime", agentPort, "GET", "/v1/health", "wrong-token", nil, 64<<10); err == nil {
 		t.Fatal("workbench agent accepted an invalid management token")
 	}
 	desktopIdentity, err := engine.Exec(ctx, state, ExecRequest{
-		Role: "desktop", OutputLimit: 64 << 10,
+		Role: "runtime", OutputLimit: 64 << 10,
 		Command: []string{"/bin/bash", "-lc", "printf '%s' \"$(id -u)\""},
 	})
 	if err != nil || desktopIdentity.ExitCode != 0 || string(desktopIdentity.Stdout) != expectedUID {
@@ -126,7 +130,7 @@ func TestDockerIntegrationLifecycle(t *testing.T) {
 	}
 
 	process, err := engine.OpenProcess(ctx, state, ExecRequest{
-		Role: "workbench", WorkingDirectory: "/workspace/root-main",
+		Role: "runtime", WorkingDirectory: "/workspace/root-main",
 		Command: []string{"/bin/bash", "-lc", "IFS= read -r line; printf 'out:%s' \"$line\"; printf 'err:%s' \"$line\" >&2"},
 	})
 	if err != nil {
@@ -157,17 +161,42 @@ func TestDockerIntegrationLifecycle(t *testing.T) {
 	cancelContext, cancelCommand := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancelCommand()
 	started := time.Now()
-	_, cancelErr := engine.Exec(cancelContext, state, ExecRequest{Role: "workbench", Command: []string{"/bin/bash", "-lc", "sleep 30 & wait"}})
+	_, cancelErr := engine.Exec(cancelContext, state, ExecRequest{Role: "runtime", Command: []string{"/bin/bash", "-lc", "sleep 30 & wait"}})
 	if cancelErr == nil || time.Since(started) > 5*time.Second {
 		t.Fatalf("canceled process tree did not terminate promptly: elapsed=%s err=%v", time.Since(started), cancelErr)
 	}
 
 	blocked, err := engine.Exec(ctx, state, ExecRequest{
-		Role: "workbench", WorkingDirectory: "/workspace/root-main", OutputLimit: 64 << 10,
+		Role: "runtime", WorkingDirectory: "/workspace/root-main", OutputLimit: 64 << 10,
 		Command: []string{"/bin/bash", "-lc", "if curl -fsS --max-time 5 http://169.254.169.254/latest/meta-data/ >/dev/null 2>&1; then exit 91; fi"},
 	})
 	if err != nil || blocked.ExitCode != 0 {
 		t.Fatalf("metadata endpoint was not blocked: exit=%d stderr=%q err=%v", blocked.ExitCode, blocked.Stderr, err)
+	}
+
+	// All command and desktop paths must see the same user, session, toolchain,
+	// GUI windows and localhost services without exporting DISPLAY manually.
+	unified, err := engine.Exec(ctx, state, ExecRequest{Command: []string{"/bin/bash", "-lc", `set -eu
+test "$HOME" = /home/echo
+test "$DISPLAY" = :1
+test -S "$XDG_RUNTIME_DIR/bus"
+test "$DBUS_SESSION_BUS_ADDRESS" = "unix:path=$XDG_RUNTIME_DIR/bus"
+for tool in go node python3 gcc fossil git; do command -v "$tool"; done
+printf shared-localhost > /tmp/index.html
+nohup python3 -m http.server 18765 --bind 127.0.0.1 --directory /tmp >/tmp/http.log 2>&1 </dev/null &
+nohup mousepad /tmp/index.html >/tmp/mousepad.log 2>&1 </dev/null &
+found=0
+for i in {1..50}; do if xdotool search --onlyvisible --class mousepad >/dev/null && curl -fsS http://127.0.0.1:18765/; then found=1; break; fi; sleep .1; done
+test "$found" = 1`}})
+	if err != nil || unified.ExitCode != 0 {
+		t.Fatalf("unified desktop/session check: exit=%d %s %s %v", unified.ExitCode, unified.Stdout, unified.Stderr, err)
+	}
+	if _, err := engine.BrowserCall(ctx, state, "open", json.RawMessage(`{"url":"http://127.0.0.1:18765/"}`)); err != nil {
+		t.Fatalf("browser could not reach shell localhost server: %v", err)
+	}
+	localPage, err := engine.BrowserCall(ctx, state, "snapshot", json.RawMessage(`{}`))
+	if err != nil || !strings.Contains(string(localPage), "shared-localhost") {
+		t.Fatalf("browser did not see shell server: %s %v", localPage, err)
 	}
 
 	snapshot, err := engine.BrowserCall(ctx, state, "snapshot", json.RawMessage(`{"screenshot":true}`))
@@ -184,8 +213,8 @@ func TestDockerIntegrationLifecycle(t *testing.T) {
 		t.Fatalf("could not close the initial managed browser tab: %v", err)
 	}
 	launcher, err := engine.Exec(ctx, state, ExecRequest{
-		Role: "desktop", OutputLimit: 64 << 10,
-		Command: []string{"/bin/bash", "-lc", "set -eu; grep -qx 'WebBrowser=echo-browser' \"$HOME/.config/xfce4/helpers.rc\"; test \"$(readlink -f /usr/bin/x-www-browser)\" = /opt/echo-browser/browser-launcher.mjs; DISPLAY=:1 exo-open --launch WebBrowser"},
+		Role: "runtime", OutputLimit: 64 << 10,
+		Command: []string{"/bin/bash", "-lc", "set -eu; grep -qx 'WebBrowser=echo-browser' \"$HOME/.config/xfce4/helpers.rc\"; test \"$(readlink -f /usr/bin/x-www-browser)\" = /opt/echo-browser/browser-launcher.mjs; exo-open --launch WebBrowser"},
 	})
 	if err != nil || launcher.ExitCode != 0 {
 		t.Fatalf("Xfce default browser launcher failed: exit=%d stdout=%q stderr=%q err=%v", launcher.ExitCode, launcher.Stdout, launcher.Stderr, err)
@@ -223,7 +252,7 @@ func waitForBrowserTab(ctx context.Context, engine *DockerEngine, state MachineS
 
 func logDockerIntegrationState(t *testing.T, engine *DockerEngine, state MachineState) {
 	t.Helper()
-	for _, role := range []string{"gateway", "workbench", "desktop"} {
+	for _, role := range []string{"gateway", "runtime"} {
 		name := state.ContainerNames[role]
 		inspect, err := engine.client.ContainerInspect(context.Background(), name, client.ContainerInspectOptions{})
 		if err != nil {

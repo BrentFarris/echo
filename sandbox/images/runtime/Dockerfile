@@ -9,12 +9,13 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o
 
 FROM node:22-bookworm-slim AS node-runtime
 
-FROM ubuntu:24.04
+FROM mcr.microsoft.com/playwright:v1.62.1-noble
 ARG TARGETARCH
 ARG ECHO_SOURCE_REPOSITORY=https://github.com/BrentFarris/echo
 ARG FOSSIL_VERSION=2.27
 ARG FOSSIL_CHECKIN=99675884a93c09125dbfbef0ca47959626c81545c132e247e67a08bd12ac7256
 ENV DEBIAN_FRONTEND=noninteractive \
+    DISPLAY=:1 HOME=/home/echo \
     PATH=/usr/local/go/bin:/home/echo/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 RUN test "$TARGETARCH" = "amd64" \
  && apt-get update \
@@ -22,6 +23,8 @@ RUN test "$TARGETARCH" = "amd64" \
       bash build-essential ca-certificates clang cmake curl file git jq less make \
       openssh-client pkg-config python3 python3-pip python3-venv ripgrep rsync \
       sudo tcl-dev unzip xz-utils zlib1g-dev libssl-dev \
+      dbus-x11 gosu imagemagick mousepad thunar x11-utils xdg-utils \
+      tigervnc-standalone-server tigervnc-tools xdotool xfce4 xfce4-terminal \
  && rm -rf /var/lib/apt/lists/* \
  && curl -fsSL "https://fossil-scm.org/home/tarball/${FOSSIL_CHECKIN}/fossil-src-${FOSSIL_VERSION}.tar.gz" -o /tmp/fossil-src.tar.gz \
  && tar -xzf /tmp/fossil-src.tar.gz -C /tmp \
@@ -46,12 +49,23 @@ COPY --from=agent-build /out/echo-sandbox-agent /usr/local/bin/echo-sandbox-agen
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
- && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
-COPY sandbox/images/workbench/entrypoint.sh /usr/local/bin/echo-workbench-entrypoint
-RUN sed -i 's/\r$//' /usr/local/bin/echo-workbench-entrypoint \
- && chmod 0755 /usr/local/bin/echo-workbench-entrypoint /usr/local/bin/echo-sandbox-agent
-LABEL org.opencontainers.image.title="Echo Sandbox Workbench" \
+ && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+ && printf 'export PATH=/usr/local/go/bin:/home/echo/go/bin:$PATH\n' >/etc/profile.d/echo-toolchain.sh
+WORKDIR /opt/echo-browser
+COPY sandbox/images/runtime/package.json ./package.json
+RUN npm install --omit=dev --ignore-scripts --no-audit --no-fund && npm cache clean --force
+COPY sandbox/images/runtime/browser-bridge.mjs ./browser-bridge.mjs
+COPY internal/sandboxprotocol/version.txt ./protocol-version.txt
+COPY sandbox/images/runtime/browser-launcher.mjs ./browser-launcher.mjs
+COPY sandbox/images/runtime/echo-browser.desktop /usr/share/xfce4/helpers/echo-browser.desktop
+COPY sandbox/images/runtime/entrypoint.sh /usr/local/bin/echo-runtime-entrypoint
+RUN sed -i 's/\r$//' /usr/local/bin/echo-runtime-entrypoint /opt/echo-browser/browser-launcher.mjs \
+ && chmod 0755 /usr/local/bin/echo-runtime-entrypoint /usr/local/bin/echo-sandbox-agent /opt/echo-browser/browser-launcher.mjs \
+ && ln -s /opt/echo-browser/browser-launcher.mjs /usr/local/bin/echo-browser \
+ && update-alternatives --install /usr/bin/x-www-browser x-www-browser /usr/local/bin/echo-browser 200 \
+ && chown -R echo:echo /opt/echo-browser
+LABEL org.opencontainers.image.title="Echo Sandbox Runtime" \
       org.opencontainers.image.source="$ECHO_SOURCE_REPOSITORY"
-EXPOSE 7777
-ENTRYPOINT ["/usr/local/bin/echo-workbench-entrypoint"]
-CMD ["/usr/local/bin/echo-sandbox-agent", "-role=workbench"]
+EXPOSE 3000 5900 7777
+ENTRYPOINT ["/usr/local/bin/echo-runtime-entrypoint"]
+CMD ["/usr/local/bin/echo-sandbox-agent", "-role=runtime"]

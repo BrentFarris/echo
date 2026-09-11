@@ -161,7 +161,7 @@ func (s *Service) startSandboxAdapter(ctx context.Context, workspaceID, name str
 		go streamLog(process.Stderr(), "adapter", logOutput)
 		return &adapterHandle{transport: &stdioTransport{reader: process.Stdout(), writer: process.Stdin(), closeFn: stop}, stop: stop}, nil
 	}
-	process, err := manager.OpenProcess(ctx, workspaceID, sandbox.ExecRequest{Role: "workbench", Command: append([]string{name}, args...), WorkingDirectory: workingDirectory, Environment: environmentList(environment)})
+	process, err := manager.OpenProcess(ctx, workspaceID, sandbox.ExecRequest{Role: "runtime", Command: append([]string{name}, args...), WorkingDirectory: workingDirectory, Environment: environmentList(environment)})
 	if err != nil {
 		return nil, err
 	}
@@ -202,7 +202,7 @@ func (s *Service) runHook(ctx context.Context, workspace workspaces.Workspace, h
 		if manager == nil {
 			return fmt.Errorf("sandbox lifecycle runtime is unavailable")
 		}
-		result, err := manager.Execute(hookCtx, workspace.ID, sandbox.ExecRequest{Role: "workbench", Command: append([]string{name}, args...), WorkingDirectory: cwd, Environment: environmentList(environment), OutputLimit: 4 << 20})
+		result, err := manager.Execute(hookCtx, workspace.ID, sandbox.ExecRequest{Role: "runtime", Command: append([]string{name}, args...), WorkingDirectory: cwd, Environment: environmentList(environment), OutputLimit: 4 << 20})
 		if len(result.Stdout) > 0 {
 			logOutput(category, string(result.Stdout))
 		}

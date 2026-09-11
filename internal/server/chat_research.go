@@ -645,6 +645,7 @@ func limitResearchText(value string, maxBytes int) string {
 func (r *chatResearchRun) researchSystemMessage(task string) llm.Message {
 	var prompt strings.Builder
 	prompt.WriteString(researchAgentSystemPrompt)
+	prompt.WriteString(sandboxSystemGuidance(r.session.workspace))
 	roots := workspaceToolRoots(r.session.workspace)
 	if len(roots) > 0 {
 		prompt.WriteString("\n\nWorkspace paths must start with one of these folder labels: ")
@@ -825,6 +826,7 @@ func (r *chatResearchRun) researchJobDeadline() time.Duration {
 }
 
 func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchAgentRun, job *chatResearchJob) (string, []llm.Message, error) {
+	ctx = r.session.sandboxRequestContext(ctx)
 	r.mu.Lock()
 	canonical := cloneResearchMessages(agent.messages)
 	checkpoint := cloneContextCheckpoint(agent.checkpoint)
@@ -841,7 +843,16 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 	usageSource := "estimated"
 	compressionCooldownRounds := 0
 
+	var contextGeneration uint64
 	for round := 0; round < maxResearchAgentRounds; round++ {
+		roundGeneration, holdErr := r.session.waitForSandboxControl(ctx)
+		if holdErr != nil {
+			return "", canonical, holdErr
+		}
+		if contextGeneration != roundGeneration {
+			canonical = append(canonical, sandboxResumeMessage())
+			contextGeneration = roundGeneration
+		}
 		toolSchema := r.session.manager.server.tools.ResearchLLMSchemaForScopes(r.toolScopes)
 		if checkpoint != nil {
 			toolSchema = append(toolSchema, contextHistorySearchToolSchema())
@@ -886,6 +897,13 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 		request, err := llm.NewChatRequest(requestSettings, messages, llm.WithStream(true), llm.WithTools(toolSchema))
 		if err != nil {
 			return "", canonical, err
+		}
+		latestGeneration, holdErr := r.session.waitForSandboxControl(ctx)
+		if holdErr != nil {
+			return "", canonical, holdErr
+		}
+		if latestGeneration != roundGeneration {
+			continue
 		}
 		requestStartedAt := time.Now().UTC()
 		requestData := r.trajectoryRoundData(agent, job, round)
@@ -985,6 +1003,13 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 			}
 			usageSource = "provider"
 		}
+		postGeneration, holdErr := r.session.waitForSandboxControl(ctx)
+		if holdErr != nil {
+			return "", canonical, holdErr
+		}
+		if len(streamResult.toolCalls) == 0 && postGeneration != roundGeneration {
+			continue
+		}
 		if len(streamResult.toolCalls) == 0 {
 			r.mu.Lock()
 			agent.checkpoint = cloneContextCheckpoint(checkpoint)
@@ -1014,9 +1039,13 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 			r.updateResearchToolActivity(agent, callID, callOrder, call.Function.Name, call.Function.Arguments, "", false, false)
 			toolCtx := r.session.toolContext(ctx, r.turnID, r.toolScopes, nil, nil)
 			toolCtx.ResearchAgents = nil
+			toolCtx.AIGeneration = &roundGeneration
+			toolCtx.TurnID = r.turnID + ":research:" + agent.id
 			toolCtx.AgentModes = nil
 			var result tools.ExecutionResult
-			if call.Function.Name == contextHistorySearchToolName {
+			if manager := r.session.manager.server.sandbox; manager != nil && manager.AdmitAIAction(r.session.workspace.ID, roundGeneration) != nil {
+				result = tools.ExecutionResult{Tool: call.Function.Name, Error: &tools.ExecutionError{Code: "user_control_interrupted", Message: sandboxResumedGuidance}}
+			} else if call.Function.Name == contextHistorySearchToolName {
 				result = r.session.executeContextHistorySearch(canonical, checkpoint, json.RawMessage(call.Function.Arguments))
 			} else {
 				result = r.session.manager.server.tools.Execute(toolCtx, call.Function.Name, json.RawMessage(call.Function.Arguments))
@@ -1405,6 +1434,10 @@ func (r *chatResearchRun) updateResearchToolActivity(agent *chatResearchAgentRun
 	}
 	if complete {
 		activity.Status = "complete"
+		var execution tools.ExecutionResult
+		if json.Unmarshal([]byte(result), &execution) == nil && execution.Error != nil && execution.Error.Code == "user_control_interrupted" {
+			activity.Status = "interrupted"
+		}
 		activity.Success = success
 		activity.Result = limitResearchText(result, researchToolResultBytes)
 	}

@@ -176,6 +176,7 @@ ws.on("session_snapshot", (snapshot) => {
   binding.log.textContent = "";
   for (const turn of snapshot.turns || []) renderStoredTurn(turn, false);
   if (snapshot.activeTurn) renderStoredTurn(snapshot.activeTurn, true);
+  renderExecutionHold(Boolean(snapshot.executionHeld));
   for (const steering of binding.goal?.pendingInputs || []) renderPendingGoalSteering(steering);
   if (!binding.log.childElementCount) renderEmpty(binding.log, "Ask Echo to inspect, plan, or build in this workspace.");
   binding.scrollFollower?.reset();
@@ -271,8 +272,20 @@ function normalizeGoal(value) {
   };
 }
 
+function renderExecutionHold(held) {
+  binding?.log.querySelector("[data-execution-hold]")?.remove();
+  if (!held || !binding) return;
+  const status = document.createElement("div");
+  status.className = "chat-stream-status";
+  status.dataset.executionHold = "true";
+  status.setAttribute("role", "status");
+  status.textContent = "Paused while you control the desktop";
+  binding.log.appendChild(status);
+}
+
 function applyEvent(event) {
   switch (event.type) {
+    case "execution_hold": renderExecutionHold(Boolean(event.held)); break;
     case "turn_started": {
       binding.log.querySelector(".chat-empty")?.remove();
       const stream = createTurnView(event.turnId, event.message || "", event.images || [], event.videos || [], {
@@ -352,6 +365,7 @@ function applyEvent(event) {
       upsertCompressionActivity(findStream(event.turnId), event.compression || {});
       break;
     case "turn_finished": {
+      renderExecutionHold(false);
       const stream = findStream(event.turnId);
       finishStream(stream, event.status || "error", event.error || "");
       break;

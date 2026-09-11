@@ -42,6 +42,16 @@ describe("multi-chat WebSocket protocol", () => {
     document.body.innerHTML = "";
   });
 
+  it("shows a desktop hold while retaining Stop and clears it on return", () => {
+    emit("session_snapshot", { workspaceId: "workspace-tabs", sequence: 1, activeChatId: "chat-one", turns: [], executionHeld: true,
+      activeTurn: { id: "turn-held", userContent: "Work", status: "running", assistantTurns: [] } });
+    expect(log.querySelector("[data-execution-hold]")?.textContent).toBe("Paused while you control the desktop");
+    stopStream();
+    expect(socket.send).toHaveBeenLastCalledWith(expect.objectContaining({ type: "chat_stop" }));
+    emit("session_event", { workspaceId: "workspace-tabs", chatId: "chat-one", sequence: 2, event: { type: "execution_hold", held: false } });
+    expect(log.querySelector("[data-execution-hold]")).toBeNull();
+  });
+
   it("routes commands to the active or explicit chat", () => {
     emit("session_snapshot", {
       type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 7,
