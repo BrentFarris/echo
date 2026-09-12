@@ -239,7 +239,7 @@ func TestHTTPActivityTracksResponseBodyLifetime(t *testing.T) {
 	}
 }
 
-func newSandboxManagerForTest(t *testing.T, engine *fakeEngine) (*Manager, workspaces.Workspace, string) {
+func newSandboxManagerForTest(t *testing.T, engine Engine) (*Manager, workspaces.Workspace, string) {
 	t.Helper()
 	root := t.TempDir()
 	main := filepath.Join(root, "workspace with spaces Ω")

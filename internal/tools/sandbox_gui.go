@@ -75,7 +75,7 @@ func registerBrowserTools() {
 			"milliseconds": map[string]any{"type": "integer", "minimum": 0, "maximum": 30000}, "timeoutMs": timeoutProperty(),
 		})}, Run: browserWait},
 		{Meta: Metadata{Name: "browser_upload", Description: "Upload files from registered workspace folders or /exchange using a file-input element reference.", Parameters: objectSchema([]any{"ref"}, map[string]any{
-			"ref": stringProperty("Stable file input reference."), "path": stringProperty("One labeled workspace path or /exchange path."),
+			"ref": stringProperty("File input reference from ui_observe or a legacy browser_snapshot."), "path": stringProperty("One labeled workspace path or /exchange path."),
 			"paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 20},
 		})}, Run: browserUpload},
 	}

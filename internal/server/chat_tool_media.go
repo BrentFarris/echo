@@ -30,11 +30,21 @@ func extractToolMedia(result tools.ExecutionResult, existingImages, existingVide
 	}
 	dropped := 0
 
-	if provider, ok := result.Output.(tools.LLMImageContentProvider); ok {
-		image, ok := provider.LLMImageContent()
+	var toolImage tools.LLMImageContent
+	var hasImage bool
+	purpose := ""
+	if provider, ok := result.Output.(tools.GUIPreviewProvider); ok {
+		toolImage, hasImage = provider.GUIPreview()
+		purpose = "gui_preview"
+	} else if provider, ok := result.Output.(tools.LLMImageContentProvider); ok {
+		toolImage, hasImage = provider.LLMImageContent()
+	}
+	if hasImage {
+		image, ok := toolImage, hasImage
 		if ok && strings.TrimSpace(image.DataURL) != "" {
 			if budget > 0 {
 				images = append(images, sessions.MediaAttachment{
+					Purpose:   purpose,
 					ID:        newSessionID("gen-img"),
 					Name:      mediaName(firstNonBlank(image.Name, image.Path), "generated-image"),
 					MediaType: image.MediaType,

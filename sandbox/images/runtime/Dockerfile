@@ -24,6 +24,7 @@ RUN test "$TARGETARCH" = "amd64" \
       openssh-client pkg-config python3 python3-pip python3-venv ripgrep rsync \
       sudo tcl-dev unzip xz-utils zlib1g-dev libssl-dev \
       dbus-x11 gosu imagemagick mousepad thunar x11-utils xdg-utils \
+      python3-gi gir1.2-atspi-2.0 gir1.2-gtk-3.0 at-spi2-core libatk-adaptor \
       tigervnc-standalone-server tigervnc-tools xdotool xfce4 xfce4-terminal \
  && rm -rf /var/lib/apt/lists/* \
  && curl -fsSL "https://fossil-scm.org/home/tarball/${FOSSIL_CHECKIN}/fossil-src-${FOSSIL_VERSION}.tar.gz" -o /tmp/fossil-src.tar.gz \
@@ -58,6 +59,8 @@ WORKDIR /opt/echo-browser
 COPY sandbox/images/runtime/package.json ./package.json
 RUN npm install --omit=dev --ignore-scripts --no-audit --no-fund && npm cache clean --force
 COPY sandbox/images/runtime/browser-bridge.mjs ./browser-bridge.mjs
+COPY sandbox/images/runtime/browser-ui.mjs ./browser-ui.mjs
+COPY sandbox/images/runtime/desktop-accessibility.py ./desktop-accessibility.py
 COPY internal/sandboxprotocol/version.txt ./protocol-version.txt
 COPY sandbox/images/runtime/browser-launcher.mjs ./browser-launcher.mjs
 COPY sandbox/images/runtime/echo-browser.desktop /usr/share/xfce4/helpers/echo-browser.desktop

@@ -55,6 +55,7 @@ func main() {
 	mux.HandleFunc("GET /v1/dap", service.auth(service.openDAP))
 	mux.HandleFunc("GET /v1/screenshot", service.auth(service.screenshot))
 	mux.HandleFunc("POST /v1/desktop/action", service.auth(service.desktopAction))
+	mux.HandleFunc("POST /v1/ui/call", service.auth(service.uiCall))
 	server := &http.Server{Addr: *listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 16 << 10}
 	go service.watchHeartbeat(server)
 	log.Printf("echo sandbox agent listening on %s (%s)", *listen, *role)
@@ -94,7 +95,8 @@ func (a *agent) health(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "role": a.role, "protocolVersion": sandboxprotocol.Version, "uptimeSeconds": int(time.Since(a.started).Seconds())})
+	_, accessibilityErr := os.Stat(accessibilitySocket)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "role": a.role, "protocolVersion": sandboxprotocol.Version, "uptimeSeconds": int(time.Since(a.started).Seconds()), "capabilities": map[string]bool{"ui-v1": true, "native-accessibility": accessibilityErr == nil}})
 }
 
 func (a *agent) heartbeat(w http.ResponseWriter, _ *http.Request) {
@@ -842,7 +844,7 @@ func baseEnvironment() []string {
 		"PATH=/usr/local/go/bin:/home/echo/go/bin:" + path,
 		"HOME=/home/echo", "LANG=C.UTF-8", "LC_ALL=C.UTF-8", "TERM=xterm-256color", "ECHO_SANDBOX=1",
 	}
-	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "ECHO_SANDBOX_ROLE"} {
+	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "GTK_MODULES", "NO_AT_BRIDGE", "ECHO_SANDBOX_ROLE"} {
 		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 			values = append(values, key+"="+value)
 		}

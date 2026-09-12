@@ -191,6 +191,7 @@ test "$found" = 1`}})
 	if err != nil || unified.ExitCode != 0 {
 		t.Fatalf("unified desktop/session check: exit=%d %s %s %v", unified.ExitCode, unified.Stdout, unified.Stderr, err)
 	}
+	t.Run("native UI targeting", func(t *testing.T) { testNativeUIIntegration(t, ctx, engine, state) })
 	if _, err := engine.BrowserCall(ctx, state, "open", json.RawMessage(`{"url":"http://127.0.0.1:18765/"}`)); err != nil {
 		t.Fatalf("browser could not reach shell localhost server: %v", err)
 	}

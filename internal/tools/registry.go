@@ -253,6 +253,9 @@ func (r *Registry) chatLLMSchemaForScopes(scopes *ToolScopeChecker, options Chat
 		if sandboxGUIToolNames[metadata.Name] && (options.PlanMode || !options.SandboxGUI) {
 			continue
 		}
+		if legacyUITools[metadata.Name] && (scopes == nil || scopes.allowAll) {
+			continue
+		}
 		if scopes != nil && !scopes.HasTool(metadata.Name) {
 			continue
 		}
@@ -366,6 +369,12 @@ func (r *Registry) Execute(ctx ExecutionContext, name string, arguments json.Raw
 		return result
 	}
 	if err := ctx.context().Err(); err != nil {
+		if name == "ui_act" {
+			if ui, ok := output.(uiOutput); ok && ui.UIResult != nil && ui.Execution != "" {
+				result.Success, result.Output = true, output
+				return result
+			}
+		}
 		result.Error = &ExecutionError{Code: "canceled", Message: "tool execution was canceled"}
 		return result
 	}

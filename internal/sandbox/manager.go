@@ -29,6 +29,7 @@ type workspaceResolver interface {
 }
 
 type runtimeState struct {
+	ui                           *uiState
 	status                       SandboxStatus
 	lastActive                   time.Time
 	active                       int
@@ -46,6 +47,7 @@ type runtimeState struct {
 	needsFreshDesktop            bool
 	browserGeneration            uint64
 	browserInvalidatedGeneration uint64
+	browserTurn                  string
 }
 
 type Manager struct {
@@ -1374,6 +1376,7 @@ func (m *Manager) AcquireAIControl(workspaceID, turnID string, timeout time.Dura
 func (m *Manager) ReleaseAIControl(workspaceID, turnID string) {
 	m.mu.Lock()
 	runtime := m.runtimeFor(workspaceID)
+	m.clearUITurnLocked(runtime, turnID)
 	for key := range runtime.freshFiles {
 		if strings.HasPrefix(key, turnID+"\x00") || strings.HasPrefix(key, turnID+":research:") {
 			delete(runtime.freshFiles, key)
@@ -1393,6 +1396,11 @@ func (m *Manager) ReleaseAIControl(workspaceID, turnID string) {
 }
 
 func (m *Manager) BrowserCall(ctx context.Context, workspaceID, turnID, method string, params json.RawMessage) (json.RawMessage, error) {
+	ctx, unlock, lockErr := m.lockGUI(ctx, workspaceID)
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer unlock()
 	if err := m.Start(ctx, workspaceID); err != nil {
 		return nil, err
 	}
@@ -1414,15 +1422,19 @@ func (m *Manager) BrowserCall(ctx context.Context, workspaceID, turnID, method s
 	m.mu.Lock()
 	runtime := m.runtimeFor(workspaceID)
 	generation := runtime.controlGeneration
-	invalidate := runtime.browserInvalidatedGeneration != generation
+	invalidate := runtime.browserInvalidatedGeneration != generation || runtime.browserTurn != turnID
 	fresh := runtime.browserGeneration == generation
 	m.mu.Unlock()
 	if invalidate {
 		if _, err := m.engine.BrowserCall(callCtx, state, "invalidate_references", nil); err != nil {
+			if m.userControlActive(workspaceID) {
+				return nil, ErrUserControlActive
+			}
 			return nil, err
 		}
 		m.mu.Lock()
 		m.runtimeFor(workspaceID).browserInvalidatedGeneration = generation
+		m.runtimeFor(workspaceID).browserTurn = turnID
 		m.mu.Unlock()
 	}
 	if !fresh && method != "snapshot" {
@@ -1441,6 +1453,11 @@ func (m *Manager) BrowserCall(ctx context.Context, workspaceID, turnID, method s
 }
 
 func (m *Manager) DesktopAction(ctx context.Context, workspaceID, turnID string, action DesktopActionRequest) error {
+	ctx, unlock, lockErr := m.lockGUI(ctx, workspaceID)
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	if err := m.Start(ctx, workspaceID); err != nil {
 		return err
 	}
@@ -1473,6 +1490,11 @@ func (m *Manager) DesktopAction(ctx context.Context, workspaceID, turnID string,
 }
 
 func (m *Manager) DesktopScreenshot(ctx context.Context, workspaceID, turnID string) ([]byte, string, error) {
+	ctx, unlock, lockErr := m.lockGUI(ctx, workspaceID)
+	if lockErr != nil {
+		return nil, "", lockErr
+	}
+	defer unlock()
 	if err := m.Start(ctx, workspaceID); err != nil {
 		return nil, "", err
 	}

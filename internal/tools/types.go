@@ -95,6 +95,8 @@ type ExecutionContext struct {
 	// filesystem/terminal operations omit it and do not use the AI hold.
 	AIGeneration *uint64
 	TurnID       string
+	ToolCallID   string
+	UIVision     sandbox.UIVision
 	// ResolveWorkspacePath and ResolveWorkspaceChildPath let the host route
 	// tools through its canonical workspace confinement service. Tests and
 	// standalone callers retain the local fallback when these are nil.

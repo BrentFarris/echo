@@ -4,6 +4,7 @@ import { stat } from "node:fs/promises";
 import { timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import { chromium } from "playwright";
+import { BrowserUI } from "./browser-ui.mjs";
 
 const protocolVersion = readFileSync(new URL("./protocol-version.txt", import.meta.url), "utf8").trim();
 const profilePath = "/home/echo/.config/chromium";
@@ -11,7 +12,6 @@ const downloadPath = "/exchange/downloads";
 const launcherSocketPath = "/run/echo/browser/launcher.sock";
 const maximumBodyBytes = 1 << 20;
 const maximumScreenshotBytes = 5 << 20;
-const maximumElements = 400;
 
 let context;
 let activePage;
@@ -19,10 +19,10 @@ let startError = "";
 let launchPromise;
 let nextTabID = 1;
 let nextNavigation = 1;
-let references = new Map();
 const pageIDs = new Map();
 const navigationIDs = new Map();
 let leaseToken = "";
+const ui = new BrowserUI({ currentPage, pageID, tabList, screenshot });
 
 function constantTimeEqual(left, right) {
   const a = Buffer.from(left);
@@ -107,18 +107,8 @@ function abortable(operation, signal, onAbort) {
 }
 
 async function cancellableLocatorAction(operation, signal, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    ensureActive(signal);
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) return operation(1);
-    try {
-      return await operation(Math.min(remaining, 250));
-    } catch (error) {
-      ensureActive(signal);
-      if (error?.name !== "TimeoutError" || Date.now() >= deadline) throw error;
-    }
-  }
+  ensureActive(signal);
+  return operation(timeoutMs);
 }
 
 function pageID(page) {
@@ -127,19 +117,18 @@ function pageID(page) {
 }
 
 function trackPage(page) {
+  ui.track(page);
   pageID(page);
   navigationIDs.set(page, nextNavigation++);
   activePage = page;
   page.on("framenavigated", (frame) => {
     if (frame === page.mainFrame()) {
       navigationIDs.set(page, nextNavigation++);
-      references.clear();
     }
   });
   page.on("close", () => {
     pageIDs.delete(page);
     navigationIDs.delete(page);
-    references.clear();
     if (activePage === page) activePage = context?.pages().find((candidate) => !candidate.isClosed());
   });
 }
@@ -162,24 +151,13 @@ async function launch() {
       });
       context = launched;
       startError = "";
-      await launched.addInitScript(() => {
-        const install = () => {
-          if (window.__echoSandboxObserver) return;
-          window.__echoSandboxDOMRevision = 1;
-          const observer = new MutationObserver(() => { window.__echoSandboxDOMRevision += 1; });
-          observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
-          window.__echoSandboxObserver = observer;
-        };
-        if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", install, { once: true });
-        else install();
-      });
       for (const page of launched.pages()) trackPage(page);
       launched.on("page", trackPage);
       launched.on("close", () => {
         if (context !== launched) return;
         context = undefined;
         activePage = undefined;
-        references.clear();
+        ui.invalidate();
       });
       activePage ||= await launched.newPage();
       return launched;
@@ -207,8 +185,7 @@ async function currentPage(params = {}) {
 }
 
 async function revision(page) {
-  const dom = await page.evaluate(() => Number(window.__echoSandboxDOMRevision || 0)).catch(() => 0);
-  return `${pageID(page)}:${navigationIDs.get(page) || 0}:${dom}`;
+  return `${pageID(page)}:${navigationIDs.get(page) || 0}`;
 }
 
 async function tabList() {
@@ -221,77 +198,26 @@ async function tabList() {
   })));
 }
 
-async function screenshot(page) {
-  let data = await page.screenshot({ type: "png", fullPage: false, animations: "disabled" });
+async function screenshot(page, signal) {
+  let data = await page.screenshot({ type: "png", fullPage: false, animations: "disabled", scale: "css", signal });
   let mediaType = "image/png";
   if (data.length > maximumScreenshotBytes) {
-    data = await page.screenshot({ type: "jpeg", quality: 65, fullPage: false, animations: "disabled" });
+    data = await page.screenshot({ type: "jpeg", quality: 65, fullPage: false, animations: "disabled", scale: "css", signal });
     mediaType = "image/jpeg";
   }
   if (data.length > maximumScreenshotBytes) throw coded("screenshot_too_large", "browser screenshot exceeds the 5 MiB limit", 413);
-  return { mediaType, bytes: data.length, dataBase64: data.toString("base64") };
-}
-
-async function describeElement(locator) {
-  return locator.evaluate((element) => {
-    const style = getComputedStyle(element);
-    const rect = element.getBoundingClientRect();
-    if (style.visibility === "hidden" || style.display === "none" || rect.width === 0 || rect.height === 0) return null;
-    const role = element.getAttribute("role") || ({
-      A: "link", BUTTON: "button", INPUT: "input", SELECT: "combobox", TEXTAREA: "textbox",
-      SUMMARY: "button", IMG: "img",
-    })[element.tagName] || element.tagName.toLowerCase();
-    const name = element.getAttribute("aria-label") || element.getAttribute("title") || element.getAttribute("alt")
-      || (element.labels?.[0]?.innerText) || element.innerText || element.getAttribute("placeholder") || element.getAttribute("name") || "";
-    return {
-      role,
-      name: String(name).replace(/\s+/g, " ").trim().slice(0, 240),
-      disabled: Boolean(element.disabled) || element.getAttribute("aria-disabled") === "true",
-      checked: typeof element.checked === "boolean" ? element.checked : undefined,
-      value: ["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName) && element.type !== "password"
-        ? String(element.value || "").slice(0, 240) : undefined,
-    };
-  }).catch(() => null);
+  const viewport = page.viewportSize();
+  return { mediaType, bytes: data.length, dataBase64: data.toString("base64"), space: "browser-viewport", width: viewport.width, height: viewport.height, originX: 0, originY: 0, scaleX: 1, scaleY: 1 };
 }
 
 async function browserSnapshot(params, signal) {
-  ensureActive(signal);
-  const page = await currentPage(params);
-  await page.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => {});
-  ensureActive(signal);
-  const snapshotRevision = await revision(page);
-  const nextReferences = new Map();
-  const selector = "a,button,input,select,textarea,summary,[role],[contenteditable='true']";
-  const candidates = page.locator(selector);
-  const count = Math.min(await candidates.count(), maximumElements);
-  const elements = [];
-  for (let index = 0; index < count; index++) {
-    ensureActive(signal);
-    const locator = candidates.nth(index);
-    const description = await describeElement(locator);
-    if (!description) continue;
-    const ref = `e${elements.length + 1}`;
-    nextReferences.set(ref, { page, locator, revision: snapshotRevision });
-    elements.push({ ref, ...description });
-  }
-  const accessibility = await page.locator("body").ariaSnapshot({ timeout: 5000 }).catch(() => "");
-  const result = {
-    tabId: pageID(page), url: page.url(), title: await page.title().catch(() => ""),
-    revision: snapshotRevision, accessibility, elements, tabs: await tabList(),
-  };
-  if (params.screenshot) result.screenshot = await screenshot(page);
-  ensureActive(signal);
-  references = nextReferences;
-  return result;
+  const result = await ui.observe(params, signal);
+  return { ...result, tabId: result.surface.id, url: result.surface.url, title: result.surface.title,
+    revision: result.surface.epoch, elements: result.targets.map(target => ({ ...target, ...target.states })), tabs: await tabList() };
 }
 
 async function referenced(params) {
-  const item = references.get(String(params.ref || ""));
-  if (!item) throw coded("stale_element_reference", "element reference is missing or expired", 409);
-  if (item.page.isClosed() || await revision(item.page) !== item.revision) {
-    references.clear();
-    throw coded("stale_element_reference", "page changed after the element reference was created", 409);
-  }
+  const item = await ui.resolve(String(params.ref || ""));
   activePage = item.page;
   return item;
 }
@@ -308,11 +234,14 @@ function safeUploadPath(value) {
 async function call(method, params = {}, signal) {
   ensureActive(signal);
   switch (method) {
-    case "invalidate_references": references.clear(); return { invalidated: true };
+    case "invalidate_references": ui.invalidate(); return { invalidated: true };
+    case "ui_observe": return ui.observe(params, signal);
+    case "ui_act": return ui.act(params, signal);
+    case "ui_verify": return ui.verify(params, signal);
     case "open": {
       const target = absoluteWebURL(params.url);
       const page = await currentPage(params);
-      await page.goto(target, { waitUntil: params.waitUntil || "domcontentloaded", timeout: Math.min(Number(params.timeoutMs) || 30000, 120000) });
+      await page.goto(target, { waitUntil: params.waitUntil || "domcontentloaded", timeout: Math.min(Number(params.timeoutMs) || 30000, 120000), signal });
       ensureActive(signal);
       return { tabId: pageID(page), url: page.url(), title: await page.title() };
     }
@@ -320,7 +249,7 @@ async function call(method, params = {}, signal) {
     case "click": {
       const item = await referenced(params);
       await cancellableLocatorAction((timeout) => item.locator.click({
-        button: params.button || "left", clickCount: params.clickCount || 1, timeout, noWaitAfter: true,
+        button: params.button || "left", clickCount: params.clickCount || 1, timeout, signal, noWaitAfter: true,
       }), signal, Math.min(Number(params.timeoutMs) || 10000, 60000));
       ensureActive(signal);
       return { ok: true, revision: await revision(item.page) };
@@ -330,7 +259,7 @@ async function call(method, params = {}, signal) {
       const text = String(params.text ?? "");
       if (text.length > 32768) throw coded("text_too_large", "text is larger than 32 KiB");
       if (params.append) {
-        await cancellableLocatorAction((timeout) => item.locator.focus({ timeout }), signal, Math.min(Number(params.timeoutMs) || 10000, 60000));
+        await cancellableLocatorAction((timeout) => item.locator.focus({ timeout, signal }), signal, Math.min(Number(params.timeoutMs) || 10000, 60000));
         const delay = Math.min(Number(params.delayMs) || 0, 1000);
         for (const character of text) {
           ensureActive(signal);
@@ -338,11 +267,11 @@ async function call(method, params = {}, signal) {
           if (delay) await abortable(item.page.waitForTimeout(delay), signal);
         }
       } else {
-        await cancellableLocatorAction((timeout) => item.locator.fill(text, { timeout }), signal, Math.min(Number(params.timeoutMs) || 10000, 60000));
+        await cancellableLocatorAction((timeout) => item.locator.fill(text, { timeout, signal }), signal, Math.min(Number(params.timeoutMs) || 10000, 60000));
       }
       ensureActive(signal);
       if (params.submit) {
-        await cancellableLocatorAction((timeout) => item.locator.press("Enter", { timeout, noWaitAfter: true }), signal, Math.min(Number(params.timeoutMs) || 10000, 60000));
+        await cancellableLocatorAction((timeout) => item.locator.press("Enter", { timeout, signal, noWaitAfter: true }), signal, Math.min(Number(params.timeoutMs) || 10000, 60000));
       }
       ensureActive(signal);
       return { ok: true, revision: await revision(item.page) };
@@ -350,7 +279,7 @@ async function call(method, params = {}, signal) {
     case "select": {
       const item = await referenced(params);
       const values = Array.isArray(params.values) ? params.values.map(String) : [String(params.value ?? "")];
-      const selected = await cancellableLocatorAction((timeout) => item.locator.selectOption(values, { timeout }), signal, 10000);
+      const selected = await cancellableLocatorAction((timeout) => item.locator.selectOption(values, { timeout, signal }), signal, 10000);
       ensureActive(signal);
       return { ok: true, selected, revision: await revision(item.page) };
     }
@@ -360,7 +289,7 @@ async function call(method, params = {}, signal) {
       if (!key || key.length > 100) throw coded("invalid_key", "key is invalid");
       if (params.ref) {
         const item = await referenced(params);
-        await cancellableLocatorAction((timeout) => item.locator.press(key, { timeout, noWaitAfter: true }), signal, 10000);
+        await cancellableLocatorAction((timeout) => item.locator.press(key, { timeout, signal, noWaitAfter: true }), signal, 10000);
       }
       else await page.keyboard.press(key);
       ensureActive(signal);
@@ -404,7 +333,7 @@ async function call(method, params = {}, signal) {
         const info = await stat(filename).catch(() => null);
         if (!info?.isFile()) throw coded("upload_file_not_found", "upload file was not found", 404);
       }
-      await cancellableLocatorAction((timeout) => item.locator.setInputFiles(paths, { timeout }), signal, 10000);
+      await cancellableLocatorAction((timeout) => item.locator.setInputFiles(paths, { timeout, signal }), signal, 10000);
       ensureActive(signal);
       return { ok: true, files: paths.map((filename) => path.posix.basename(filename)), revision: await revision(item.page) };
     }
@@ -419,7 +348,7 @@ const server = createServer(async (request, response) => {
   try {
     if (!await authorized(request)) return json(response, 401, { ok: false, code: "unauthorized", error: "unauthorized" });
     if (request.method === "GET" && request.url === "/v1/health") {
-      return json(response, context ? 200 : 503, { ok: Boolean(context), protocolVersion, error: startError || undefined });
+      return json(response, context ? 200 : 503, { ok: Boolean(context), protocolVersion, capabilities: ["ui-v1", "aria-targets", "abort-signal", "viewport-screenshot"], error: startError || undefined });
     }
     if (request.method !== "POST" || request.url !== "/v1/call") return json(response, 404, { ok: false, code: "not_found", error: "not found" });
     const payload = await bodyJSON(request);

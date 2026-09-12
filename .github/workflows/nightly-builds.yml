@@ -133,6 +133,9 @@ jobs:
         working-directory: web
         run: npm run test:e2e -- sandbox.spec.ts
 
+      - name: Verify semantic browser targeting and cancellation
+        run: node --test sandbox/images/runtime/browser-ui.test.mjs
+
   sandbox-images:
     name: Build, test, and scan candidate sandbox images
     needs: [check-changes, verify]

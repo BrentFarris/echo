@@ -20,6 +20,7 @@ fi
 install -d -o echo -g echo /home/echo /home/echo/go /home/echo/.config /home/echo/.config/chromium /home/echo/.config/gtk-3.0 \
   /home/echo/.config/xfce4 /exchange /exchange/downloads
 install -d -m 0700 -o echo -g echo /run/echo/browser
+install -d -m 0700 -o echo -g echo /run/echo/accessibility
 if [[ "$original_uid" != "$(id -u echo)" ]]; then
   find /home/echo -uid "$original_uid" -exec chown -h echo {} +
 fi
@@ -49,6 +50,7 @@ chmod 0600 /run/echo/vnc.passwd
 export DISPLAY=:1 HOME=/home/echo
 export XDG_RUNTIME_DIR="/run/user/$(id -u echo)"
 export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+export GTK_MODULES=gail:atk-bridge NO_AT_BRIDGE=0
 install -d -m 0700 -o echo -g echo "$XDG_RUNTIME_DIR"
 service_pids=()
 shutdown() {
@@ -72,6 +74,11 @@ gosu echo dbus-daemon --session --nofork --address="$DBUS_SESSION_BUS_ADDRESS" &
 service_pids+=("$!")
 for _ in $(seq 1 100); do [[ -S "$XDG_RUNTIME_DIR/bus" ]] && break; sleep 0.1; done
 [[ -S "$XDG_RUNTIME_DIR/bus" ]] || { echo "Session bus did not start" >&2; exit 1; }
+# Start accessibility before applications so GTK controls join the same bus.
+gosu echo dbus-send --session --dest=org.a11y.Bus --type=method_call --print-reply \
+  /org/a11y/bus org.a11y.Bus.GetAddress >/dev/null
+gosu echo python3 /opt/echo-browser/desktop-accessibility.py &
+service_pids+=("$!")
 gosu echo startxfce4 &
 service_pids+=("$!")
 # The source token stays root-only. The unprivileged bridge inherits a single

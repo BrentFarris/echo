@@ -1038,6 +1038,7 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 			r.appendTrajectoryAt("research/tool_call", toolStartedAt, toolCallData, true)
 			r.updateResearchToolActivity(agent, callID, callOrder, call.Function.Name, call.Function.Arguments, "", false, false)
 			toolCtx := r.session.toolContext(ctx, r.turnID, r.toolScopes, nil, nil)
+			toolCtx.ToolCallID = callID
 			toolCtx.ResearchAgents = nil
 			toolCtx.AIGeneration = &roundGeneration
 			toolCtx.TurnID = r.turnID + ":research:" + agent.id

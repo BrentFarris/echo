@@ -3353,6 +3353,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				result = s.executeContextHistorySearch(canonical, checkpoint, json.RawMessage(call.Function.Arguments))
 			default:
 				toolCtx := s.toolContext(ctx, turnID, scopes, generatedImages, generatedVideos)
+				toolCtx.ToolCallID = callID
 				toolCtx.AIGeneration = &roundGeneration
 				toolCtx.FileChanges = func(changes []tools.FileChange) {
 					fileChanges = append(fileChanges, compactFileChanges(changes, toolCtx.WorkspaceRoots)...)
@@ -3937,6 +3938,7 @@ func (s *chatSession) toolContext(ctx context.Context, turnID string, scopes *to
 		Sandbox:                   s.manager.server.sandbox,
 		SandboxEnabled:            s.workspace.Sandbox.Enabled,
 		TurnID:                    turnID,
+		UIVision:                  s.manager.server.uiVision,
 		ResolveWorkspacePath:      s.manager.server.toolPathResolver(s.workspace.ID, roots, false),
 		ResolveWorkspaceChildPath: s.manager.server.toolPathResolver(s.workspace.ID, roots, true),
 		ComfyuiURL:                settings.ComfyuiURL, ComfyuiDefaultCheckpoint: settings.ComfyuiDefaultCheckpoint,
@@ -3960,6 +3962,9 @@ func (s *chatSession) toolContext(ctx context.Context, turnID string, scopes *to
 // owned by the active turn's run loop; this must be called with s.mu held.
 func (s *chatSession) trackGeneratedMediaLocked(generatedImages map[string]tools.AttachedImage, generatedVideos map[string]tools.AttachedVideo, result tools.ExecutionResult) {
 	if !result.Success || result.Output == nil {
+		return
+	}
+	if _, preview := result.Output.(tools.GUIPreviewProvider); preview {
 		return
 	}
 	if provider, ok := result.Output.(tools.LLMImageContentProvider); ok {
@@ -4277,6 +4282,9 @@ func orderedToolCalls(calls map[int]llm.ToolCall) []llm.ToolCall {
 
 func toolResultImageMessage(toolName string, result tools.ExecutionResult) (llm.Message, bool) {
 	if !result.Success || result.Output == nil {
+		return llm.Message{}, false
+	}
+	if _, previewOnly := result.Output.(tools.GUIPreviewProvider); previewOnly {
 		return llm.Message{}, false
 	}
 	provider, ok := result.Output.(tools.LLMImageContentProvider)

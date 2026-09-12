@@ -127,6 +127,46 @@ Human VNC keystrokes—including passwords—do not become chat messages, tool a
 
 Chromium runs headed with a persistent profile and a 1 GiB `/dev/shm`. The runtime applies Moby's default seccomp policy plus only `clone`, `setns`, and `unshare` for Chromium's user-namespace sandbox. Dangerous capabilities, privileged mode, raw networking, host namespaces, and host devices remain disabled.
 
+## Reliable UI tools
+
+General and Goal modes expose `ui_observe`, `ui_act`, `ui_verify`, and `ui_locate`, alongside `browser_open`, `browser_tabs`, and `browser_upload`. Custom modes keep their explicit allowlists; the previous browser and `desktop_control` tools remain registered for compatibility. Plan mode does not expose GUI execution tools.
+
+The normal workflow is to observe a surface, choose a target using its role, label and ancestor context, act once, and check an expected result. `ui_observe` accepts `surface: "browser"` for Chromium or `surface: "desktop"` for native applications. `list: true` discovers tabs/windows; `search`, `scopeRef` and `nextCursor` keep large trees inspectable. Expanding a scope requires its `observationId`. Act and verify references must belong to the supplied observation, workspace and chat turn.
+
+Browser targets use Playwright 1.62.1 AI accessibility references, normalized semantic locators, and context fingerprints. Open shadow roots and iframe controls are included. Unrelated DOM mutations do not invalidate targets. A detached control can be replaced once only when its normalized locator is unambiguous and its semantic context still matches. Changed rows, ambiguous replacements and frame navigation require a new observation. Action calls use native cancellation signals; timeouts never cause automatic repetition of input.
+
+Native controls use a persistent Python GI/AT-SPI helper, started on the session accessibility bus before applications. The helper runs as `echo`, listens on a private Unix socket, and is accessible through the authenticated sandbox agent. It retains accessible object identities rather than tree indexes. It supports activation, editable text, check state, focus and selection when the application exposes those interfaces. A defunct or changed object is rejected. Traversal, stored references, D-Bus calls and request duration are bounded. Unsupported controls return an explicit capability error; canvas/custom widgets can use visual assistance.
+
+`ui_act` separates input delivery from verification:
+
+| Field | Meaning |
+| --- | --- |
+| `execution: not_started` | Preconditions failed before input was attempted. |
+| `execution: completed` | The backend completed the requested input operation. |
+| `execution: unknown` | Input may have occurred, but its completion could not be established. Observe before deciding what to do next. |
+| `verification.status: passed` | The specified condition was observed; inspect `method` to distinguish deterministic evidence from model assessment. |
+| `verification.status: unverified` | No postcondition was supplied or established. A click alone does not mean the task succeeded. |
+
+Fill, check, select and focus have intrinsic checks. Explicit predicates cover visible/hidden state, exact text/value, checked/selected state, focus, browser URL/dialog, and native window title as supported by each backend. Verification defaults to five seconds. Fresh observations accompany action and verification results when the surface remains accessible. The runtime caches action outcomes by host tool-call ID, including unknown outcomes. This prevents a transport retry from submitting twice within that runtime; it is not an exactly-once guarantee across crashes or a newly generated tool-call ID.
+
+All canonical and legacy GUI calls share one cancellable queue and ownership lease. Take Control invalidates the observation generation and cancels execution/verification. Turn completion discards host observation records. Diagnostic tool results record the backend, execution, verification evidence, recovery and specialist token usage; screenshot bytes use the existing transcript media storage and retention.
+
+### Optional visual assistance
+
+Capture with `ui_observe` and `screenshot: true`, then pass its `observationId` and a precise `description` to `ui_locate`. This sends only the screenshot and bounded target description to the endpoint selected for **Vision**. It does not send planner history or tools, and it remains a separate request when Vision and Chat use the same model. A missing or image-incapable endpoint returns `ui_vision_unavailable`; semantic control remains available.
+
+The specialist must return a bounded rectangle, `absent`, or `ambiguous`. Invalid output gets at most one format correction. A rectangle creates a target reference without executing input. Screenshot metadata preserves source dimensions, coordinate space and transforms. Image transport fits within 1280 × 800 while preserving aspect ratio. A `region` in source pixels provides a detailed crop before resizing. Browser points use viewport coordinates; native points use display coordinates.
+
+Before visual input, Echo captures the surface again and checks geometry and pixels inside the target plus a small margin. Changes elsewhere do not invalidate it. A changed target requires a fresh observation and location. Visual references support click, hover, type, key, scroll and drag; a visual drag requires both references in the same observation. Exact pixel comparison is deliberately conservative for animated targets, and visual grounding can still select the wrong control. Supply a postcondition or use `ui_verify` with `visual: true` and a description of the visible result. Such verification is explicitly `model_assessed`.
+
+Screenshot previews are tagged `gui_preview` and displayed/persisted separately from model input. They do not reroute the main conversation to Vision and are excluded from media hydration after reload or compression.
+
+### Runtime compatibility
+
+This is an additive protocol-3 update. Browser/runtime health responses advertise UI capabilities. Older images keep legacy operations and report `ui_capability_unavailable` for new operations. Build/pull the updated runtime, then use the existing image refresh/recreate flow; existing home, Chromium profile and exchange volumes are retained. Publishing the new image and replacing an already-running workspace are separate deployment operations.
+
+The deterministic browser suite runs with `node --test sandbox/images/runtime/browser-ui.test.mjs` after installing the pinned browser through `web`. The Docker lifecycle acceptance test also checks real GTK controls, Mousepad/Thunar discovery, window movement, defunct targets and duplicate submissions. For the opt-in model comparison and its limits, see [UI evaluation](ui-evaluation.md).
+
 ## Building development images
 
 From the repository root on a `linux/amd64` Docker Engine:
