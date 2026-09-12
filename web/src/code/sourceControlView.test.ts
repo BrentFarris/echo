@@ -4,6 +4,7 @@ import { normalizeStatus, type SourceControlStatus } from "./sourceControlTypes"
 const sourceControlAPI = vi.hoisted(() => ({
   listRepositories: vi.fn(),
   loadStatus: vi.fn(),
+  loadHistory: vi.fn(),
   runAction: vi.fn(),
 }));
 
@@ -78,6 +79,7 @@ describe("Source Control Fossil view", () => {
       searchParentRepositories: false,
     });
     sourceControlAPI.loadStatus.mockResolvedValue(status);
+    sourceControlAPI.loadHistory.mockResolvedValue({ commits: [], hasMore: false });
     sourceControlAPI.runAction.mockResolvedValue({ requestId: "action", repositoryId: repository.id, revision: 3 });
   });
 
@@ -135,6 +137,38 @@ describe("Source Control Fossil view", () => {
       repository.id,
       expect.objectContaining({ action: "protect_all", paths: ["edited.txt"], expectedRevision: 2 }),
     ));
+  });
+
+  it("renders tagged and untagged commits when history is expanded", async () => {
+    sourceControlAPI.loadHistory.mockResolvedValue({
+      commits: [
+        { hash: "tagged", parents: ["parent"], author: "Echo", authoredAt: "2026-09-12T12:00:00Z", refs: ["trunk"], subject: "Tagged commit" },
+        { hash: "untagged", parents: [], author: "Echo", authoredAt: "2026-09-11T12:00:00Z", refs: [], subject: "Untagged commit" },
+      ],
+      hasMore: false,
+    });
+    const view = new SourceControlView(host, "workspace", controller.signal, {
+      roots: () => [], openFile: vi.fn(), openDiff: vi.fn(), updateBadge: vi.fn(),
+    });
+    await view.start();
+
+    host.querySelector<HTMLElement>("[data-git-history-toggle]")?.click();
+
+    await vi.waitFor(() => expect(host.querySelectorAll(".git-history-row")).toHaveLength(2));
+    expect([...host.querySelectorAll(".git-history-row strong")].map((element) => element.textContent)).toEqual(["Tagged commit", "Untagged commit"]);
+    expect(host.textContent).toContain("trunk");
+  });
+
+  it("shows an explicit empty state for a repository without commits", async () => {
+    const view = new SourceControlView(host, "workspace", controller.signal, {
+      roots: () => [], openFile: vi.fn(), openDiff: vi.fn(), updateBadge: vi.fn(),
+    });
+    await view.start();
+
+    host.querySelector<HTMLElement>("[data-git-history-toggle]")?.click();
+
+    await vi.waitFor(() => expect(host.textContent).toContain("No commits yet"));
+    expect(host.querySelector(".git-history-row")).toBeNull();
   });
 
   it("opens Fossil UI from the repository menu", async () => {

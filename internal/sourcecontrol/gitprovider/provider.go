@@ -190,14 +190,22 @@ func (p *Provider) History(ctx context.Context, workspaceID, repositoryID string
 	if err != nil {
 		return sourcecontrol.History{}, convertError(err)
 	}
-	result := sourcecontrol.History{NextOffset: history.NextOffset, HasMore: history.HasMore}
+	return historyFromGit(history), nil
+}
+
+func historyFromGit(history gitservice.History) sourcecontrol.History {
+	result := sourcecontrol.History{
+		Commits:    make([]sourcecontrol.Commit, 0, len(history.Commits)),
+		NextOffset: history.NextOffset,
+		HasMore:    history.HasMore,
+	}
 	for _, commit := range history.Commits {
 		result.Commits = append(result.Commits, sourcecontrol.Commit{
-			Hash: commit.Hash, Parents: append([]string(nil), commit.Parents...), Author: commit.Author,
-			AuthoredAt: commit.AuthoredAt, Refs: append([]string(nil), commit.Refs...), Subject: commit.Subject,
+			Hash: commit.Hash, Parents: append([]string{}, commit.Parents...), Author: commit.Author,
+			AuthoredAt: commit.AuthoredAt, Refs: append([]string{}, commit.Refs...), Subject: commit.Subject,
 		})
 	}
-	return result, nil
+	return result
 }
 
 func (p *Provider) RevisionDetail(ctx context.Context, workspaceID, repositoryID, ref, kind string) (sourcecontrol.RevisionDetail, error) {

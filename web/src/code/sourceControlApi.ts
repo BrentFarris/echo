@@ -12,6 +12,24 @@ import { normalizeStatus } from "./sourceControlTypes";
 // retried after an arbitrary failure, which prevents duplicate Git actions.
 const legacyGitWorkspaces = new Set<string>();
 
+type SourceControlHistoryWire = Omit<SourceControlHistory, "commits"> & {
+  commits?: Array<Omit<SourceControlHistory["commits"][number], "parents" | "refs"> & {
+    parents?: string[] | null;
+    refs?: string[] | null;
+  }> | null;
+};
+
+function normalizeHistory(history: SourceControlHistoryWire): SourceControlHistory {
+  return {
+    ...history,
+    commits: Array.isArray(history.commits) ? history.commits.map((commit) => ({
+      ...commit,
+      parents: Array.isArray(commit.parents) ? commit.parents : [],
+      refs: Array.isArray(commit.refs) ? commit.refs : [],
+    })) : [],
+  };
+}
+
 function legacyEndpointUnavailable(error: unknown): boolean {
   const candidate = error as { status?: number; message?: string } | null;
   return candidate?.status === 404 || candidate?.status === 405
@@ -71,8 +89,9 @@ export async function loadMetadata(workspaceId: string, repositoryId: string): P
 }
 
 export async function loadHistory(workspaceId: string, repositoryId: string, offset = 0): Promise<SourceControlHistory> {
-  if (legacyGitWorkspaces.has(workspaceId)) return gitAPI.loadHistory(workspaceId, repositoryId, offset);
-  return api(`${repositoryBase(workspaceId, repositoryId)}/history`, { method: "GET", query: { offset, limit: 100 } });
+  if (legacyGitWorkspaces.has(workspaceId)) return normalizeHistory(await gitAPI.loadHistory(workspaceId, repositoryId, offset));
+  const history = await api(`${repositoryBase(workspaceId, repositoryId)}/history`, { method: "GET", query: { offset, limit: 100 } }) as SourceControlHistoryWire;
+  return normalizeHistory(history);
 }
 
 export async function loadRevisionDetail(workspaceId: string, repositoryId: string, ref: string, kind: "commit" | "stash" = "commit"): Promise<SourceControlRevisionDetail> {
