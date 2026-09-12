@@ -760,6 +760,7 @@ function renderPlugins() {
         <div class="plugin-install-actions">
           <button class="secondary-button" type="button" data-plugin-action="stage-source" ${state.plugins.busy ? "disabled" : ""}>Stage for review</button>
           <button class="secondary-button" type="button" data-plugin-action="stage-calculator" ${state.plugins.busy ? "disabled" : ""}>Try built-in Calculator</button>
+          <button class="secondary-button" type="button" data-plugin-action="stage-notes" ${state.plugins.busy ? "disabled" : ""}>Try built-in Notes</button>
         </div>
       </div>
 
@@ -1707,6 +1708,9 @@ function bindPluginEvents(root) {
       } else if (action === "stage-calculator") {
         await post("/api/plugins/stages", { source: { type: "builtin", builtin: "calculator" } });
         state.plugins.status = "Built-in Calculator staged for review.";
+      } else if (action === "stage-notes") {
+        await post("/api/plugins/stages", { source: { type: "builtin", builtin: "notes" } });
+        state.plugins.status = "Built-in Notes staged for review.";
       } else if (action === "stage-requirement") {
         await post("/api/plugins/stages", { source: { type: "github", repository: button.dataset.repository, ref: button.dataset.commit, commit: button.dataset.commit, subdirectory: button.dataset.subdirectory } });
         state.plugins.status = "Pinned workspace package staged for review.";

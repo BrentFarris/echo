@@ -272,6 +272,82 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
   await expect(calculatorWindow).toHaveCount(0);
   await expect(calculatorButton).toHaveCount(0);
 
+  // The built-in Notes page stores Markdown in plugin-owned workspace storage.
+  // It remains isolated, autosaves safely, and keeps each workspace separate.
+  await page.evaluate(async () => {
+    const request = async (path: string, body: unknown) => {
+      const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+      return payload.data;
+    };
+    const staged = await request("/api/plugins/stages", { source: { type: "builtin", builtin: "notes" } });
+    await request(`/api/plugins/stages/${encodeURIComponent(staged.stage.id)}/approve`, { scope: "global", enable: true });
+  });
+  const notesButton = page.getByRole("button", { name: "Notes", exact: true });
+  await expect(notesButton).toBeVisible();
+  await notesButton.click();
+  await expect(page).toHaveURL(/#\/plugins\/notes\/notes$/);
+  let notesFrame = page.frameLocator('iframe[title="Notes plugin"]');
+  await notesFrame.locator("#empty-new-note").click();
+  await expect(notesFrame.getByLabel("Note title")).toHaveValue("Untitled note");
+  await notesFrame.getByLabel("Note title").fill("Roadmap");
+  await notesFrame.getByLabel("Markdown source").fill([
+    "# Roadmap", "", "A **safe** preview with [docs](https://example.com).", "",
+    "- Ship Notes", "- Keep scripts inert", "", "<script>window.notesOwned = true</script>",
+  ].join("\n"));
+  await expect(notesFrame.getByRole("status")).toContainText("Unsaved changes");
+  await notesFrame.getByRole("tab", { name: "Preview" }).click();
+  await expect(notesFrame.getByRole("status")).toHaveText("Saved");
+  await expect(notesFrame.locator("#preview-panel h1")).toHaveText("Roadmap");
+  await expect(notesFrame.locator("#preview-panel strong")).toHaveText("safe");
+  await expect(notesFrame.locator("#preview-panel script")).toHaveCount(0);
+  await expect(notesFrame.locator("#preview-panel a")).toHaveCount(0);
+  expect(await notesFrame.locator("body").evaluate(() => (window as Window & { notesOwned?: boolean }).notesOwned)).toBeUndefined();
+
+  await notesFrame.locator("#new-note").click();
+  await expect(notesFrame.getByLabel("Note title")).toHaveValue("Untitled note");
+  await notesFrame.getByLabel("Note title").fill("Roadmap");
+  await expect(notesFrame.getByRole("status")).toHaveText("Saved");
+  await expect(notesFrame.locator("#note-filename")).toHaveText("roadmap-2.md");
+  await notesFrame.getByLabel("Filter notes").fill("roadmap-2.md");
+  await expect(notesFrame.locator("#note-list button")).toHaveCount(1);
+  await notesFrame.getByLabel("Filter notes").fill("");
+  await expect(notesFrame.locator("#note-list button")).toHaveCount(2);
+
+  await page.getByRole("button", { name: "Chat", exact: true }).click();
+  await notesButton.click();
+  notesFrame = page.frameLocator('iframe[title="Notes plugin"]');
+  await expect(notesFrame.locator("#note-list button")).toHaveCount(2);
+
+  await page.evaluate(async (workspaceId) => {
+    const response = await fetch("/api/workspaces/active", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: workspaceId }) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  }, workspaceIDs.secondary);
+  await page.reload();
+  const secondaryNotesButton = page.getByRole("button", { name: "Notes", exact: true });
+  await expect(secondaryNotesButton).toBeVisible();
+  await secondaryNotesButton.click();
+  notesFrame = page.frameLocator('iframe[title="Notes plugin"]');
+  await expect(notesFrame.getByRole("heading", { name: "Create your first note" })).toBeVisible();
+
+  await page.evaluate(async (workspaceId) => {
+    const response = await fetch("/api/workspaces/active", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: workspaceId }) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  }, workspaceIDs.primary);
+  await page.reload();
+  const primaryNotesButton = page.getByRole("button", { name: "Notes", exact: true });
+  await expect(primaryNotesButton).toBeVisible();
+  await primaryNotesButton.click();
+  notesFrame = page.frameLocator('iframe[title="Notes plugin"]');
+  await expect(notesFrame.locator("#note-list button")).toHaveCount(2);
+  await notesFrame.getByRole("button", { name: "Delete note" }).click();
+  await expect(notesFrame.getByRole("dialog", { name: "Delete this note?" })).toBeVisible();
+  await notesFrame.getByRole("button", { name: "Delete permanently" }).click();
+  await expect(notesFrame.locator("#note-list button")).toHaveCount(1);
+  await page.getByRole("button", { name: "Chat", exact: true }).click();
+  await expect(page).toHaveURL(/#\/home$/);
+
   // Chat @ references use the workspace index, render as compact rich chips,
   // and open files directly in Echo Code.
   const composer = page.locator("[data-chat-input]");

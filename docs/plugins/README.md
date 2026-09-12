@@ -14,7 +14,7 @@ Start with:
 - [Packaging](packaging.md) for local/GitHub distribution and CI.
 - [Troubleshooting](troubleshooting.md) for validation, runtime, and recovery failures.
 
-The [Calculator](../../internal/plugins/builtin/calculator/echo-plugin.json) is the first-party floating-UI example. The [developer showcase](../../examples/plugins/showcase/README.md) demonstrates a page, settings, secrets, backend RPC, events, and an agent tool.
+The [Calculator](../../internal/plugins/builtin/calculator/echo-plugin.json) is the first-party floating-UI example. The [Notes](../../internal/plugins/builtin/notes/echo-plugin.json) plugin demonstrates a workspace-scoped page backed by namespaced plugin storage. The [developer showcase](../../examples/plugins/showcase/README.md) demonstrates a page, settings, secrets, backend RPC, events, and an agent tool.
 
 ## Lifecycle at a glance
 
