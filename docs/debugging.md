@@ -77,7 +77,7 @@ The command palette also exposes start-new-instance, start-without-debugging, pa
 
 ## Sessions, terminals, and cleanup
 
-Sessions live in the Echo server rather than in a browser tab. Every authenticated browser subscribed to the workspace receives sequenced debug events and may issue revision-checked controls. A sequence gap or reconnect triggers a REST snapshot; refreshing or closing the initiating browser does not stop the debuggee. Active debug PTYs are separately discoverable and reattach with buffered output after refresh.
+Sessions live in the Echo server rather than in a browser tab. Every authenticated browser subscribed to the workspace receives sequenced debug events and may issue revision-checked controls. A sequence gap or reconnect triggers a REST snapshot; refreshing or closing the initiating browser does not stop the debuggee. Active debug PTYs are separately discoverable and reattach with buffered output after refresh. Launch, attach, and adapter-native restart wait without an elapsed-time limit so first-time compilation can finish; the Stop control remains available throughout startup and configuration.
 
 Stop terminates a launch debuggee by default. Stop on an attach configuration disconnects without terminating; adapters that advertise process termination expose an explicit **Terminate Process** action. Echo uses an adapter-native restart when available and otherwise performs a clean relaunch. Adapter processes, owned launch processes, pre/post hooks, child sessions, and debug terminals are tied to workspace removal/rebind, sandbox reset/transition, and server shutdown. Host processes are terminated as process trees; sandbox processes are terminated as guest process groups.
 
