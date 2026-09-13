@@ -131,12 +131,15 @@ export type DebugOutput = {
 };
 
 export type DebugSource = {
+  echoSourceId?: string;
   name?: string;
   path?: string;
   sourceReference?: number;
   echoRef?: FileRef;
   presentationHint?: string;
 };
+
+export type DebugSourceNavigation = { key: string; line: number; column: number };
 
 export type DebugLocation = DebugSource & { ref?: FileRef; line?: number; column?: number };
 

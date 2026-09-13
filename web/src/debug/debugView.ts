@@ -2,6 +2,7 @@ import type { editor as MonacoEditor, IDisposable } from "monaco-editor";
 import { on as onSocket, onState as onSocketState, send as sendSocket } from "../../js/ws.js";
 import type { FileRef } from "../code/types";
 import { refKey } from "../code/types";
+import { debugHoverExpression, debugSourceKey } from "./sources";
 import { monaco } from "../code/language";
 import { copyText, escapeHTML, promptDialog, showContextMenu, toast } from "../code/ui";
 import { openWorkbenchPanel, registerWorkbenchPanel } from "../terminal";
@@ -21,7 +22,7 @@ import {
 import type {
   AdapterProfile, DAPScope, DAPStackFrame, DAPThread, DAPVariable, DataBreakpoint, DebugConfiguration,
   DebugEvent, DebugInput, DebugOutput, DebugPersistentState, DebugSession, DebugSnapshot,
-  DebugSource, SourceBreakpoint, WorkspaceDebugConfig,
+  DebugSource, DebugSourceNavigation, SourceBreakpoint, WorkspaceDebugConfig,
 } from "./types";
 
 export type DebugViewOptions = {
@@ -34,8 +35,9 @@ export type DebugViewOptions = {
   selectedText(): string;
   saveAll(requireActiveFile?: boolean): Promise<boolean>;
   showSidebar(): void;
-  openSource(source: DebugSource, line: number, column: number): Promise<void>;
-  openVirtualSource(title: string, content: string, mimeType?: string): Promise<void>;
+  openSource(source: DebugSource, line: number, column: number, isCurrent?: () => boolean): Promise<void>;
+  openVirtualSource(title: string, content: string, mimeType?: string, navigation?: DebugSourceNavigation): Promise<void>;
+  activeDebugSourceKey?(): string | undefined;
 };
 
 type FrameSelection = { sessionId: string; threadId: number; frame: DAPStackFrame };
@@ -45,7 +47,7 @@ type DebugBrowserPreferences = {
   selectedSessionId?: string;
   collapsed?: string[];
   consoleHistory?: string[];
-  frame?: { sessionId: string; threadId: number; frameId: number };
+  frame?: { sessionId: string; threadId: number; frameId: number; stopGeneration?: number };
 };
 
 const defaultSnapshot = (workspaceId: string): DebugSnapshot => ({
@@ -221,23 +223,26 @@ export class DebugView {
   async control(command: string): Promise<void> {
     const session = this.activeSession();
     if (!session || !commandSupported(session, command)) return;
+    const moving = ["continue", "next", "stepIn", "stepOut", "stepBack", "reverseContinue"].includes(command);
+    if (moving && session.status !== "stopped") return;
+    const threadId = this.frameSelection?.sessionId === session.id ? this.frameSelection.threadId : session.threadId;
+    if (moving) this.invalidateInspection();
     try {
-      await dapRequest(this.options.workspaceId, session.id, command, session.revision, session.stopGeneration, {});
-      if (["continue", "next", "stepIn", "stepOut", "stepBack", "reverseContinue"].includes(command)) {
-        this.invalidateInspection();
-      }
+      await dapRequest(this.options.workspaceId, session.id, command, session.revision, session.stopGeneration, threadId === undefined ? {} : { threadId });
     } catch (error) {
       await this.handleRequestError(error);
+      const current = this.activeSession();
+      if (current?.id === session.id && current.status === "stopped" && current.stopGeneration === session.stopGeneration) void this.inspectStopped(current);
     }
   }
 
   async controlAll(command: "pause" | "continue"): Promise<void> {
     const targets = this.snapshot.sessions.filter((session) => command === "pause" ? session.status === "running" : session.status === "stopped");
+    if (command === "continue") this.invalidateInspection();
     await Promise.all(targets.map(async (session) => {
       try { await dapRequest(this.options.workspaceId, session.id, command, session.revision, session.stopGeneration, {}); }
       catch (error) { await this.handleRequestError(error); }
     }));
-    if (command === "continue") this.invalidateInspection();
   }
 
   async restartActiveCompound(): Promise<void> {
@@ -337,7 +342,10 @@ export class DebugView {
       if (event.session.stoppedReason !== "exception") this.exceptionDetails.delete(event.session.id);
       void this.inspectStopped(event.session);
     } else if (["continued", "session_running", "terminated", "failed", "invalidated"].includes(event.event)) {
-      this.invalidateInspection();
+      if (event.sessionId === this.selectedSessionId) {
+        this.invalidateInspection();
+        if (event.event === "invalidated" && event.session?.status === "stopped") void this.inspectStopped(event.session);
+      }
       if (event.event === "failed") openWorkbenchPanel(this.options.workspaceId, "debug-output");
       if ((event.event === "terminated" || event.event === "failed") && event.sessionId) this.sessionDataBreakpoints.delete(event.sessionId);
       if ((event.event === "terminated" || event.event === "failed") && event.sessionId) {
@@ -683,12 +691,12 @@ export class DebugView {
           const selection = this.options.editor.getSelection();
           const expression = selection && !selection.isEmpty() && selection.containsPosition(position)
             ? model.getValueInRange(selection)
-            : model.getWordAtPosition(position)?.word || "";
+            : debugHoverExpression(model.getLineContent(position.lineNumber), position.column);
           if (!expression) return null;
           const generation = this.inspectionGeneration;
           try {
             const result = await dapRequest<{ result?: string; type?: string }>(this.options.workspaceId, session.id, "evaluate", session.revision, session.stopGeneration, { expression, frameId: frame.id, context: "hover" });
-            if (token.isCancellationRequested || generation !== this.inspectionGeneration || session.stopGeneration !== this.activeSession()?.stopGeneration) return null;
+            if (token.isCancellationRequested || !this.inspectionCurrent(session, generation) || frame !== this.frameSelection?.frame || model !== this.options.editor.getModel()) return null;
             return { range: selection && !selection.isEmpty() ? selection : undefined, contents: [{ value: `**${escapeMarkdown(expression)}**${result.body.type ? ` · \`${escapeMarkdown(result.body.type)}\`` : ""}\n\n\`${escapeMarkdown(result.body.result || "") }\`` }] };
           } catch { return null; }
         },
@@ -715,6 +723,21 @@ export class DebugView {
       }
       const selected = this.frameSelection?.frame;
       if (selected && selected.id !== undefined && selected.source?.echoRef && refKey(selected.source.echoRef) === refKey(ref) && selected.line && selected.line !== session?.location?.line) {
+        decorations.push({ range: new monaco.Range(selected.line, 1, selected.line, 1), options: { isWholeLine: true, className: "echo-debug-selected-line", glyphMarginClassName: "echo-debug-selected-arrow" } });
+        ids.push("__selected__");
+      }
+    }
+    const sourceKey = this.options.activeDebugSourceKey?.();
+    const session = this.activeSession();
+    if (model && sourceKey && session?.status === "stopped") {
+      const location = session.location;
+      const current = location && debugSourceKey(session.id, location) === sourceKey;
+      if (current && location.line) {
+        decorations.push({ range: new monaco.Range(location.line, 1, location.line, 1), options: { isWholeLine: true, className: "echo-debug-current-line", glyphMarginClassName: "echo-debug-current-arrow" } });
+        ids.push("__current__");
+      }
+      const selected = this.frameSelection?.frame;
+      if (selected?.source && debugSourceKey(session.id, selected.source) === sourceKey && selected.line && (!current || selected.line !== location?.line)) {
         decorations.push({ range: new monaco.Range(selected.line, 1, selected.line, 1), options: { isWholeLine: true, className: "echo-debug-selected-line", glyphMarginClassName: "echo-debug-selected-arrow" } });
         ids.push("__selected__");
       }
@@ -935,7 +958,17 @@ export class DebugView {
   }
 
   private async inspectStopped(session: DebugSession): Promise<void> {
-    const generation = ++this.inspectionGeneration;
+    this.invalidateInspection();
+    const generation = this.inspectionGeneration;
+    this.threads.delete(session.id);
+    for (const key of this.frames.keys()) {
+      if (key.startsWith(`${session.id}:`)) {
+        this.frames.delete(key);
+        this.frameTotals.delete(key);
+        this.completeFrameStacks.delete(key);
+      }
+    }
+    this.render();
     try {
       const threadResponse = await dapRequest<{ threads?: DAPThread[] }>(this.options.workspaceId, session.id, "threads", session.revision, session.stopGeneration);
       if (!this.inspectionCurrent(session, generation)) return;
@@ -953,10 +986,11 @@ export class DebugView {
         }
       }));
       if (!this.inspectionCurrent(session, generation)) return;
-      const targetThread = (this.savedFrame?.sessionId === session.id ? threads.find((thread) => thread.id === this.savedFrame?.threadId) : undefined)
+      const restoreFrame = this.savedFrame?.sessionId === session.id && this.savedFrame.stopGeneration === session.stopGeneration;
+      const targetThread = (restoreFrame ? threads.find((thread) => thread.id === this.savedFrame?.threadId) : undefined)
         || threads.find((thread) => thread.id === session.threadId) || threads[0];
       const threadFrames = targetThread ? this.frames.get(`${session.id}:${targetThread.id}`) || [] : [];
-      const firstFrame = (this.savedFrame?.sessionId === session.id ? threadFrames.find((frame) => frame.id === this.savedFrame?.frameId) : undefined) || threadFrames[0];
+      const firstFrame = (restoreFrame ? threadFrames.find((frame) => frame.id === this.savedFrame?.frameId) : undefined) || threadFrames[0];
       if (session.stoppedReason === "exception" && session.threadId && commandSupported(session, "exceptionInfo")) void this.loadExceptionDetails(session);
       if (targetThread && firstFrame) await this.selectFrame(session, targetThread.id, firstFrame, generation);
       if (capability(session, "supportsModulesRequest")) void this.loadModules();
@@ -969,9 +1003,11 @@ export class DebugView {
     const session = this.snapshot.sessions.find((item) => item.id === sessionId);
     const key = `${sessionId}:${threadId}`;
     if (!session || session.status !== "stopped" || this.completeFrameStacks.has(key)) return;
+    const generation = this.inspectionGeneration;
     const current = this.frames.get(key) || [];
     try {
       const response = await dapRequest<{ stackFrames?: DAPStackFrame[]; totalFrames?: number }>(this.options.workspaceId, session.id, "stackTrace", session.revision, session.stopGeneration, { threadId, startFrame: current.length, levels: 50 });
+      if (!this.inspectionCurrent(session, generation)) return;
       const page = response.body.stackFrames || [];
       this.frames.set(key, [...current, ...page]);
       if (response.body.totalFrames) this.frameTotals.set(key, response.body.totalFrames);
@@ -993,22 +1029,26 @@ export class DebugView {
   private async selectFrameByID(sessionId: string, threadId: number, frameId: number): Promise<void> {
     const session = this.snapshot.sessions.find((item) => item.id === sessionId);
     const frame = this.frames.get(`${sessionId}:${threadId}`)?.find((item) => item.id === frameId);
-    if (!session || !frame) return;
+    if (!session || session.status !== "stopped" || !frame) return;
     this.selectedSessionId = session.id;
-    await this.selectFrame(session, threadId, frame, this.inspectionGeneration);
+    const generation = ++this.inspectionGeneration;
+    try { await this.selectFrame(session, threadId, frame, generation); }
+    catch (error) { if (this.inspectionCurrent(session, generation)) await this.handleRequestError(error); }
   }
 
   private async selectFrame(session: DebugSession, threadId: number, frame: DAPStackFrame, generation: number): Promise<void> {
     this.frameSelection = { sessionId: session.id, threadId, frame };
-    this.savedFrame = { sessionId: session.id, threadId, frameId: frame.id };
+    this.savedFrame = { sessionId: session.id, threadId, frameId: frame.id, stopGeneration: session.stopGeneration };
     this.persistBrowserPreferences();
     this.scopes = [];
     this.variables.clear();
+    this.watchResults.clear();
     this.variableTotals.clear();
     this.completeVariableReferences.clear();
     this.expandedVariables.clear();
     this.render();
-    if (frame.source) await this.openDebugSource(frame.source, frame.line, frame.column || 1);
+    if (frame.source) await this.openDebugSource(frame.source, frame.line, frame.column || 1, generation);
+    if (!this.inspectionCurrent(session, generation)) return;
     const response = await dapRequest<{ scopes?: DAPScope[] }>(this.options.workspaceId, session.id, "scopes", session.revision, session.stopGeneration, { frameId: frame.id });
     if (!this.inspectionCurrent(session, generation) || this.frameSelection?.frame.id !== frame.id) return;
     this.scopes = response.body.scopes || [];
@@ -1282,19 +1322,22 @@ export class DebugView {
     } catch (error) { await this.handleRequestError(error); }
   }
 
-  private async openDebugSource(source?: DebugSource, line = 1, column = 1): Promise<void> {
+  private async openDebugSource(source?: DebugSource, line = 1, column = 1, generation = this.inspectionGeneration): Promise<void> {
     if (!source) return;
-    if (source.echoRef) {
-      await this.options.openSource(source, line, column);
-      return;
-    }
     const session = this.activeSession();
     if (!session) return;
+    const isCurrent = () => !this.options.signal.aborted && generation === this.inspectionGeneration && session.id === this.activeSession()?.id && session.stopGeneration === this.activeSession()?.stopGeneration;
     try {
+      if (source.echoRef && !source.sourceReference) {
+        await this.options.openSource(source, line, column, isCurrent);
+        return;
+      }
       const response = await dapRequest<{ content?: string; mimeType?: string }>(this.options.workspaceId, session.id, "source", session.revision, session.stopGeneration, { source, sourceReference: source.sourceReference || 0 });
-      await this.options.openVirtualSource(source.name || source.path || `Source ${source.sourceReference || "adapter"}`, response.body.content || "", response.body.mimeType);
+      if (!isCurrent()) return;
+      await this.options.openVirtualSource(source.name || source.path || `Source ${source.sourceReference || "adapter"}`, response.body.content || "", response.body.mimeType, { key: debugSourceKey(session.id, source), line, column });
+      this.refreshEditorDecorations();
     } catch (error) {
-      toast(`The adapter could not provide this out-of-workspace source: ${errorMessage(error)}`, { sticky: true });
+      if (generation === this.inspectionGeneration) toast(`Debug source unavailable: ${errorMessage(error)}`, { sticky: true });
     }
   }
 
@@ -1409,6 +1452,7 @@ export class DebugView {
     expression = expression.trim();
     const session = this.activeSession();
     if (!expression || !session || session.status !== "stopped") return;
+    const generation = this.inspectionGeneration;
     this.consoleHistory.push(expression);
     this.consoleHistory = this.consoleHistory.slice(-100);
     this.consoleHistoryIndex = this.consoleHistory.length;
@@ -1417,9 +1461,9 @@ export class DebugView {
     if (input) input.value = "";
     try {
       const response = await dapRequest<{ result?: string; type?: string }>(this.options.workspaceId, session.id, "evaluate", session.revision, session.stopGeneration, { expression, frameId: this.frameSelection?.frame.id, context: "repl" });
-      this.consoleEntries.push({ expression, value: response.body.result || "", category: "result" });
+      if (this.inspectionCurrent(session, generation)) this.consoleEntries.push({ expression, value: response.body.result || "", category: "result" });
     } catch (error) {
-      this.consoleEntries.push({ expression, value: errorMessage(error), category: "error" });
+      if (this.inspectionCurrent(session, generation)) this.consoleEntries.push({ expression, value: errorMessage(error), category: "error" });
     }
     this.renderConsoleHost(host);
   }
@@ -1492,7 +1536,7 @@ export class DebugView {
 
   private inspectionCurrent(session: DebugSession, generation: number): boolean {
     const current = this.snapshot.sessions.find((item) => item.id === session.id);
-    return generation === this.inspectionGeneration && current?.status === "stopped" && current.stopGeneration === session.stopGeneration;
+    return !this.options.signal.aborted && this.selectedSessionId === session.id && generation === this.inspectionGeneration && current?.status === "stopped" && current.stopGeneration === session.stopGeneration;
   }
 
   private persistBrowserPreferences(): void {

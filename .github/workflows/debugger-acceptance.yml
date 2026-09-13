@@ -1,0 +1,62 @@
+name: Go and C Debugger Acceptance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - internal/debugger/**
+      - internal/debugconfig/**
+      - go.mod
+      - go.sum
+      - .github/workflows/debugger-acceptance.yml
+  push:
+    branches: [main]
+    paths:
+      - internal/debugger/**
+      - internal/debugconfig/**
+      - go.mod
+      - go.sum
+      - .github/workflows/debugger-acceptance.yml
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Native CGO on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            shell: bash
+          - os: windows-latest
+            shell: msys2 {0}
+          - os: macos-latest
+            shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install Windows C compiler
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          path-type: inherit
+          install: mingw-w64-x86_64-gcc
+      - name: Test real Delve, C values, mixed stacks, and callbacks
+        shell: ${{ matrix.shell }}
+        env:
+          CGO_ENABLED: "1"
+          ECHO_TEST_DELVE: "1"
+        run: |
+          go install github.com/go-delve/delve/cmd/dlv@v1.27.1
+          if [ "$RUNNER_OS" = macOS ]; then
+            codesign --force --sign - "$(go env GOPATH)/bin/dlv"
+          fi
+          go test ./internal/debugger -race -count=1 -v -timeout=5m

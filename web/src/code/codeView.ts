@@ -55,7 +55,7 @@ import {
 } from "./ui";
 import { attachVideoVolumeControl } from "../mediaVolume";
 import { DebugView } from "../debug/debugView";
-import type { DebugSource } from "../debug/types";
+import type { DebugSource, DebugSourceNavigation } from "../debug/types";
 import { registerGoTestCodeLens } from "./goTestCodeLens";
 import { registerCTestCodeLens } from "./cTestCodeLens";
 import { TestOutput } from "./testOutput";
@@ -98,6 +98,7 @@ type OpenTab = {
   applying: boolean;
 	readOnly?: boolean;
 	transient?: boolean;
+  debugSourceKey?: string;
   media?: { kind: PreviewKind; url: string };
   diff?: {
     repository: SourceControlRepository;
@@ -521,8 +522,9 @@ class CodeView {
       },
       saveAll: () => this.saveAllForDebug(),
       showSidebar: () => this.setSidebar("debug"),
-      openSource: (source, line, column) => this.openDebugSource(source, line, column),
-      openVirtualSource: (title, content, mimeType) => this.openVirtualDebugSource(title, content, mimeType),
+      openSource: (source, line, column, isCurrent) => this.openDebugSource(source, line, column, isCurrent),
+      openVirtualSource: (title, content, mimeType, navigation) => this.openVirtualDebugSource(title, content, mimeType, navigation),
+      activeDebugSourceKey: () => this.activeTab()?.debugSourceKey,
     });
     void this.debugView.start();
   }
@@ -1275,8 +1277,8 @@ class CodeView {
     model.dispose();
   }
 
-  private async openFile(ref: FileRef, pin: boolean, focusEditor = true, showErrors = true, activate = true): Promise<boolean> {
-    if (!this.workspace) return false;
+  private async openFile(ref: FileRef, pin: boolean, focusEditor = true, showErrors = true, activate = true, isCurrent?: () => boolean): Promise<boolean> {
+    if (!this.workspace || isCurrent?.() === false) return false;
     const previewKind = previewKindForPath(ref.path);
     if (previewKind) {
       await this.openMedia(ref, pin, focusEditor);
@@ -1292,6 +1294,7 @@ class CodeView {
     }
     try {
       const snapshot = await editorAPI.readFile(this.workspace.id, ref);
+      if (isCurrent?.() === false) return false;
       // A double-click emits both click and dblclick handlers. Their reads can
       // overlap, so check again after I/O before creating a second tab for the
       // same file. The pinned request wins regardless of completion order.
@@ -1323,7 +1326,7 @@ class CodeView {
       this.sendFilesystemSubscription();
       return true;
     } catch (error) {
-      if (!showErrors) return false;
+      if (!showErrors || isCurrent?.() === false) return false;
       const apiError = error as APIError;
       const message = apiError.payload?.code === "file_too_large"
         ? "This file is larger than Echo Code's 10 MiB editor limit."
@@ -1338,7 +1341,7 @@ class CodeView {
           { id: "reveal", label: "Reveal on Echo host", primary: true },
         ],
       });
-      if (choice === "reload") return await this.openFile(ref, pin, focusEditor, showErrors, activate);
+      if (choice === "reload") return await this.openFile(ref, pin, focusEditor, showErrors, activate, isCurrent);
       if (choice === "reveal") await this.reveal(ref);
       return false;
     }
@@ -2156,13 +2159,13 @@ class CodeView {
     });
   }
 
-  private async openDebugSource(source: DebugSource, line: number, column: number): Promise<void> {
+  private async openDebugSource(source: DebugSource, line: number, column: number, isCurrent?: () => boolean): Promise<void> {
     const ref = source.echoRef;
     if (!ref) {
       toast("The adapter source is outside this workspace. Open it from Loaded Sources to request its contents.");
       return;
     }
-    if (!(await this.openFile(ref, true, false))) return;
+    if (!(await this.openFile(ref, true, false, true, true, isCurrent)) || isCurrent?.() === false) return;
     const tab = this.tabs.find((candidate) => candidate.ref && refKey(candidate.ref) === refKey(ref));
     if (!tab) return;
     this.activateTab(tab.id, false);
@@ -2172,13 +2175,22 @@ class CodeView {
     this.debugView?.onEditorContextChanged();
   }
 
-  private async openVirtualDebugSource(title: string, content: string, mimeType?: string): Promise<void> {
-    const existing = this.tabs.find((tab) => tab.transient && tab.title === title);
+  private async openVirtualDebugSource(title: string, content: string, mimeType?: string, navigation?: DebugSourceNavigation): Promise<void> {
+    const reveal = () => {
+      if (navigation) {
+        const position = { lineNumber: Math.max(1, navigation.line), column: Math.max(1, navigation.column) };
+        this.editor.setPosition(position);
+        this.editor.revealPositionInCenter(position);
+      }
+      this.debugView?.onEditorContextChanged();
+    };
+    const existing = this.tabs.find((tab) => tab.transient && (navigation ? tab.debugSourceKey === navigation.key : !tab.debugSourceKey && tab.title === title));
     if (existing) {
       existing.applying = true;
       existing.model.setValue(content);
       existing.applying = false;
       this.activateTab(existing.id);
+      reveal();
       return;
     }
     const id = randomUUID();
@@ -2190,10 +2202,12 @@ class CodeView {
       kind: "file", id, ref: null, title, hostPath: uri.toString(), pinned: true, dirty: false,
       deleted: false, conflict: false, revision: "", hasBom: false, eol: "lf", model,
       viewState: null, changeDisposable: { dispose() {} }, applying: false, readOnly: true, transient: true,
+      debugSourceKey: navigation?.key,
     };
     this.tabs.push(tab);
     this.activateTab(tab.id);
     this.renderTabs();
+    reveal();
   }
 
   private async saveTab(tab = this.activeTab()): Promise<boolean> {

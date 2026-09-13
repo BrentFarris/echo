@@ -73,6 +73,9 @@ type session struct {
 	postDone             chan struct{}
 	traceDAP             bool
 	controlMu            sync.Mutex
+	step                 *stepOperation
+	sources              map[string]adapterSource
+	cFrames              map[int]bool
 }
 
 // Service owns every active debug adapter. Browser clients are observers of
@@ -429,7 +432,7 @@ func (s *Service) Request(ctx context.Context, workspaceID, sessionID, command s
 		}
 		return RequestResponse{}, ErrSessionNotFound
 	}
-	if request.ExpectedRevision != 0 && request.ExpectedRevision != current.revision {
+	if request.ExpectedRevision != 0 && request.ExpectedRevision != current.revision && (isSerializedCommand(command) || request.StopGeneration == 0) {
 		actual := current.revision
 		s.mu.Unlock()
 		return RequestResponse{}, &RevisionError{Expected: request.ExpectedRevision, Actual: actual}
@@ -446,11 +449,34 @@ func (s *Service) Request(ctx context.Context, workspaceID, sessionID, command s
 	connection := current.conn
 	sessionContext := current.ctx
 	threadID := current.threadID
+	generation := current.stopGeneration
+	if command == "pause" && current.step != nil {
+		current.step.cancel()
+		result := RequestResponse{WorkspaceID: workspaceID, SessionID: sessionID, Revision: current.revision, StopGeneration: current.stopGeneration}
+		s.mu.Unlock()
+		return result, nil
+	}
+	if current.step != nil && isSerializedCommand(command) {
+		s.mu.Unlock()
+		return RequestResponse{}, fmt.Errorf("a debug step is in progress; pause or stop it first")
+	}
 	s.mu.Unlock()
 	if connection == nil {
 		return RequestResponse{}, fmt.Errorf("debug adapter is not connected")
 	}
 	arguments := cloneMap(request.Arguments)
+	if command == "source" {
+		return s.sourceRequest(ctx, current, request)
+	}
+	if command == "evaluate" {
+		s.mu.Lock()
+		if strings.EqualFold(current.profile.AdapterID, "go") && current.cFrames[intValue(arguments["frameId"])] {
+			if expression, ok := arguments["expression"].(string); ok {
+				arguments["expression"] = delveCExpression(expression)
+			}
+		}
+		s.mu.Unlock()
+	}
 	translatedArguments, translateErr := s.translateDAPArguments(workspaceID, arguments)
 	if translateErr != nil {
 		return RequestResponse{}, translateErr
@@ -458,6 +484,9 @@ func (s *Service) Request(ctx context.Context, workspaceID, sessionID, command s
 	arguments, _ = translatedArguments.(map[string]any)
 	if usesThread(command) && arguments["threadId"] == nil && threadID != 0 {
 		arguments["threadId"] = threadID
+	}
+	if result, started := s.startSourceStep(current, command, arguments); started {
+		return result, nil
 	}
 	callCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
@@ -473,8 +502,9 @@ func (s *Service) Request(ctx context.Context, workspaceID, sessionID, command s
 		return RequestResponse{}, err
 	}
 	if command == "continue" || command == "next" || command == "stepIn" || command == "stepOut" || command == "stepBack" || command == "reverseContinue" {
-		s.markRunning(workspaceID, sessionID, command)
+		s.markRunningIfGeneration(workspaceID, sessionID, command, generation)
 	}
+	body := s.translateSessionBody(current, response.Body)
 	s.mu.Lock()
 	current, err = s.sessionLocked(workspaceID, sessionID)
 	if err != nil {
@@ -486,7 +516,21 @@ func (s *Service) Request(ctx context.Context, workspaceID, sessionID, command s
 		s.mu.Unlock()
 		return RequestResponse{}, &RevisionError{Expected: request.StopGeneration, Actual: actual, Stop: true}
 	}
-	body := s.translateDAPBody(workspaceID, response.Body)
+	// Frame IDs may be reused after a stop. A late stack response must not
+	// change how expressions in the new stop's selected frame are parsed.
+	if command == "stackTrace" && generation == current.stopGeneration {
+		var stack struct {
+			Frames []stepFrame `json:"stackFrames"`
+		}
+		if json.Unmarshal(response.Body, &stack) == nil {
+			if current.cFrames == nil {
+				current.cFrames = map[int]bool{}
+			}
+			for _, frame := range stack.Frames {
+				current.cFrames[frame.ID] = strings.HasPrefix(frame.Name, "C.")
+			}
+		}
+	}
 	result := RequestResponse{WorkspaceID: workspaceID, SessionID: sessionID, Revision: current.revision, StopGeneration: current.stopGeneration, Body: body}
 	s.mu.Unlock()
 	return result, nil
@@ -584,7 +628,7 @@ func (s *Service) RestartChecked(ctx context.Context, workspaceID, sessionID str
 		s.mu.Unlock()
 		return Snapshot{}, &RevisionError{Expected: expectedRevision, Actual: actual}
 	}
-	nativeRestart := current.conn != nil && boolCapability(current.capabilities, "supportsRestartRequest") && !isTerminalStatus(current.status)
+	nativeRestart := current.conn != nil && current.step == nil && boolCapability(current.capabilities, "supportsRestartRequest") && !isTerminalStatus(current.status)
 	s.mu.Unlock()
 	if nativeRestart {
 		return s.restartInAdapter(ctx, workspaceID, sessionID, expectedRevision, current)

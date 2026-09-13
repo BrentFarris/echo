@@ -41,6 +41,7 @@ type OutputEntry struct {
 }
 
 type SourceLocation struct {
+	EchoSourceID    string                 `json:"echoSourceId,omitempty"`
 	Name            string                 `json:"name,omitempty"`
 	Path            string                 `json:"path,omitempty"`
 	Ref             *debugconfig.SourceRef `json:"ref,omitempty"`

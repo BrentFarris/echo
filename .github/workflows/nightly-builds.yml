@@ -190,6 +190,11 @@ jobs:
           ECHO_SANDBOX_INTEGRATION: "1"
         run: go test ./internal/sandbox -run TestDockerIntegration -count=1 -v
 
+      - name: Verify Go and C debugging through the sandbox agent
+        env:
+          ECHO_SANDBOX_INTEGRATION: "1"
+        run: go test ./internal/debugger -run TestDockerIntegrationCGOStepping -count=1 -v -timeout=7m
+
       - name: Scan runtime image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
