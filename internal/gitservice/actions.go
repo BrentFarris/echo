@@ -61,6 +61,9 @@ func (s *Service) Action(ctx context.Context, workspaceID, repositoryID string, 
 func (s *Service) executeAction(ctx context.Context, state *repositoryState, request ActionRequest) ([]string, []string, error) {
 	action := request.Action
 	switch action {
+	case "stage_hunk", "unstage_hunk":
+		paths, err := s.applyHunk(ctx, state, request)
+		return paths, nil, err
 	case "stage":
 		paths, err := state.validatePaths(request.Paths)
 		if err != nil {

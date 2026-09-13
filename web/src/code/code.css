@@ -1172,6 +1172,38 @@
   inset: 0;
 }
 
+.code-diff-hunk-gutter {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  overflow: hidden;
+  pointer-events: none;
+}
+.code-diff-hunk-actions {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  width: 20px;
+  pointer-events: auto;
+  border-radius: 3px;
+  background: var(--code-hover);
+}
+.code-diff-hunk-actions[hidden] { display: none; }
+.code-diff-hunk-actions button {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 17px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  color: var(--code-fg);
+  background: transparent;
+  cursor: pointer;
+}
+.code-diff-hunk-actions button:hover { background: var(--code-selected); }
+.code-diff-hunk-actions button:focus-visible { outline: 1px solid var(--code-accent); outline-offset: 1px; }
+.code-diff-hunk-actions button:disabled { opacity: .4; cursor: default; }
 .code-monaco-diff-host[hidden],
 .code-diff-toolbar[hidden],
 .code-diff-unavailable[hidden] {

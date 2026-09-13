@@ -150,6 +150,7 @@ func (p *Provider) Diff(ctx context.Context, workspaceID, repositoryID string, t
 		Revision: document.Revision, ModifiedRevision: document.ModifiedRevision,
 		Original: sourcecontrol.DiffSide(document.Original), Modified: sourcecontrol.DiffSide(document.Modified),
 		Editable: document.Editable, Kind: document.Kind, UnavailableReason: document.UnavailableReason,
+		HunkActions: document.HunkActions, HunkToken: document.HunkToken,
 	}, nil
 }
 
@@ -223,6 +224,7 @@ func (p *Provider) RevisionDetail(ctx context.Context, workspaceID, repositoryID
 func (p *Provider) Action(ctx context.Context, workspaceID, repositoryID string, request sourcecontrol.ActionRequest) (sourcecontrol.ActionResult, error) {
 	result, err := p.service.Action(ctx, workspaceID, repositoryID, gitservice.ActionRequest{
 		RequestID: request.RequestID, Action: request.Action, ExpectedRevision: request.ExpectedRevision,
+		Hunk:  request.Hunk,
 		Paths: request.Paths, Message: request.Message,
 		Ref: request.Ref, StartPoint: request.StartPoint, Name: request.Name, Remote: request.Remote,
 		Branch: request.Branch, URL: request.URL, Confirmed: request.Confirmed,

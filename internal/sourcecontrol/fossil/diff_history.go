@@ -28,6 +28,11 @@ func (p *Provider) Diff(ctx context.Context, workspaceID, repositoryID string, t
 	state.rootMu.Unlock()
 	state.rootMu.RLock()
 	defer state.rootMu.RUnlock()
+	return p.diffState(ctx, state, target)
+}
+
+func (p *Provider) diffState(ctx context.Context, state *repositoryState, target sourcecontrol.DiffTarget) (sourcecontrol.DiffDocument, error) {
+	repositoryID := state.repositoryID()
 	pathValue, err := cleanPath(target.Path)
 	if err != nil || !state.pathAllowed(pathValue) {
 		return sourcecontrol.DiffDocument{}, &sourcecontrol.Error{Code: "path_outside_workspace", Message: "source control path is outside this workspace", Cause: sourcecontrol.ErrInvalidPath}
@@ -55,9 +60,6 @@ func (p *Provider) Diff(ctx context.Context, workspaceID, repositoryID string, t
 		protectedEntry, isProtected = protectedEntryForRecord(protectedEntries, statusRecord{
 			path: pathValue, oldPath: target.OldPath, kind: "renamed",
 		})
-	}
-	if target.GroupID == protectedGroupID && !isProtected {
-		return sourcecontrol.DiffDocument{}, &sourcecontrol.Error{Code: "protected_change_not_found", Message: "the protected file version is no longer available", Cause: sourcecontrol.ErrNotFound}
 	}
 
 	var original, modified []byte
@@ -136,6 +138,14 @@ func (p *Provider) Diff(ctx context.Context, workspaceID, repositoryID string, t
 		document.Kind = "unavailable"
 		document.UnavailableReason = "Fossil stash patches can be reviewed from the stash menu but do not expose stable two-sided file content"
 		return document, nil
+	} else if target.GroupID == protectedGroupID && !isProtected {
+		original, originalExists, err = p.revisionFile(ctx, state, "current", pathValue)
+		if err != nil {
+			return sourcecontrol.DiffDocument{}, err
+		}
+		modified, modifiedExists = original, originalExists
+		document.Editable = false
+		document.Original.Label, document.Modified.Label = "Checkout", "Protected"
 	} else if target.GroupID == protectedGroupID && isProtected {
 		basePath := pathValue
 		if protectedEntry.OldPath != "" {
@@ -151,7 +161,7 @@ func (p *Provider) Diff(ctx context.Context, workspaceID, repositoryID string, t
 		document.Editable = false
 		document.Original.Label = "Checkout"
 		document.Modified.Label = "Protected"
-	} else if target.GroupID == "working" && isProtected {
+	} else if (target.GroupID == "working" || target.GroupID == "untracked") && isProtected {
 		original, originalExists, err = p.checkpointFileContent(state, protectedEntry)
 		if err == nil {
 			modified, modifiedExists, err = p.readWorkingFile(state, pathValue)
@@ -199,6 +209,17 @@ func (p *Provider) Diff(ctx context.Context, workspaceID, repositoryID string, t
 		document.Editable = false
 		document.UnavailableReason = "File is larger than the diff editor limit"
 	}
+	if document.Editable && document.Kind == "text" && document.Modified.Exists && document.Ref != nil {
+		// Editable diffs must carry the filesystem revision used by Save, just
+		// like ordinary editor tabs. Use that same snapshot as the diff side.
+		snapshot, readErr := p.fs.Read(state.workspaceID, *document.Ref)
+		if readErr != nil {
+			return sourcecontrol.DiffDocument{}, readErr
+		}
+		document.Modified = sourcecontrol.DiffSide{Label: document.Modified.Label, Content: snapshot.Content, Exists: true, EOL: snapshot.EOL, HasBOM: snapshot.HasBOM}
+		document.ModifiedRevision = snapshot.Revision
+	}
+	p.describeHunks(ctx, state, &document, manifest)
 	return document, nil
 }
 

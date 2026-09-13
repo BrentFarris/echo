@@ -19,6 +19,8 @@ type SourceControlViewCallbacks = {
   openFile(ref: FileRef, pin: boolean): Promise<void>;
   openDiff(repository: SourceControlRepository, target: SourceControlDiffRequest, pin: boolean): Promise<void>;
   updateBadge(count: number): void;
+  statusChanged?(repositoryId: string): void;
+  operationChanged?(repositoryId: string, busy: boolean): void;
 };
 
 type Review = { ref: string; kind: "commit" | "stash"; detail: SourceControlRevisionDetail };
@@ -96,6 +98,7 @@ export class SourceControlView {
       if (event.workspaceId !== this.workspaceId || !event.operation) return;
       if (event.operation.state === "running") this.busyRepositories.set(event.operation.repositoryId, event.operation);
       else this.busyRepositories.delete(event.operation.repositoryId);
+      this.callbacks.operationChanged?.(event.operation.repositoryId, event.operation.state === "running");
       this.render();
     });
     const unsubscribeResync = onSocket("source_control_resync_required", (data: object) => {
@@ -132,7 +135,7 @@ export class SourceControlView {
     }
   }
 
-  private async refreshStatus(repositoryId: string): Promise<void> {
+  async refreshStatus(repositoryId: string): Promise<void> {
     try {
       this.acceptStatus(await sourceControlAPI.loadStatus(this.workspaceId, repositoryId));
     } catch (error) {
@@ -145,6 +148,7 @@ export class SourceControlView {
     const current = this.statuses.get(status.repositoryId);
     if (current && status.revision < current.revision) return;
     this.statuses.set(status.repositoryId, status);
+    if (!current || current.revision !== status.revision || !sameStatusContent(current, status)) this.callbacks.statusChanged?.(status.repositoryId);
     if (current && sameStatusContent(current, status)) return;
     this.render();
   }
@@ -654,6 +658,7 @@ export class SourceControlView {
   private async run(repository: SourceControlRepository, request: SourceControlActionRequest): Promise<void> {
     const operation: SourceControlOperationEvent = { workspaceId: this.workspaceId, repositoryId: repository.id, providerId: repository.providerId, requestId: request.requestId, action: request.action, state: "running" };
     this.busyRepositories.set(repository.id, operation);
+    this.callbacks.operationChanged?.(repository.id, true);
     this.render();
     try {
       const status = this.statuses.get(repository.id);
@@ -681,6 +686,7 @@ export class SourceControlView {
       void this.refreshStatus(repository.id);
     } finally {
       this.busyRepositories.delete(repository.id);
+      this.callbacks.operationChanged?.(repository.id, false);
       this.render();
     }
   }

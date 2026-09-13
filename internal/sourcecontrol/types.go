@@ -7,6 +7,7 @@ package sourcecontrol
 import (
 	"errors"
 
+	"github.com/brent/echo/internal/sourcecontrol/hunk"
 	"github.com/brent/echo/internal/workspacefs"
 )
 
@@ -158,6 +159,8 @@ type DiffTarget struct {
 }
 
 type DiffDocument struct {
+	HunkActions       []string             `json:"hunkActions,omitempty"`
+	HunkToken         string               `json:"hunkToken,omitempty"`
 	RepositoryID      string               `json:"repositoryId"`
 	ProviderID        string               `json:"providerId"`
 	Target            DiffTarget           `json:"target"`
@@ -297,18 +300,19 @@ type Annotation struct {
 // ActionRequest deliberately has a small common envelope. Each provider
 // validates the fields used by its registered action IDs.
 type ActionRequest struct {
-	RequestID        string   `json:"requestId"`
-	Action           string   `json:"action"`
-	ExpectedRevision uint64   `json:"expectedRevision,omitempty"`
-	Paths            []string `json:"paths,omitempty"`
-	Message          string   `json:"message,omitempty"`
-	Ref              string   `json:"ref,omitempty"`
-	StartPoint       string   `json:"startPoint,omitempty"`
-	Name             string   `json:"name,omitempty"`
-	Remote           string   `json:"remote,omitempty"`
-	Branch           string   `json:"branch,omitempty"`
-	URL              string   `json:"url,omitempty"`
-	Confirmed        bool     `json:"confirmed,omitempty"`
+	Hunk             *hunk.Request `json:"hunk,omitempty"`
+	RequestID        string        `json:"requestId"`
+	Action           string        `json:"action"`
+	ExpectedRevision uint64        `json:"expectedRevision,omitempty"`
+	Paths            []string      `json:"paths,omitempty"`
+	Message          string        `json:"message,omitempty"`
+	Ref              string        `json:"ref,omitempty"`
+	StartPoint       string        `json:"startPoint,omitempty"`
+	Name             string        `json:"name,omitempty"`
+	Remote           string        `json:"remote,omitempty"`
+	Branch           string        `json:"branch,omitempty"`
+	URL              string        `json:"url,omitempty"`
+	Confirmed        bool          `json:"confirmed,omitempty"`
 }
 
 type ActionResult struct {

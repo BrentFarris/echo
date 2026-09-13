@@ -24,6 +24,15 @@ func (s *Service) Diff(ctx context.Context, workspaceID, repositoryID, scope, pa
 	if err != nil {
 		return DiffDocument{}, err
 	}
+	state.mutationMu.Lock()
+	defer state.mutationMu.Unlock()
+	return s.diffState(ctx, state, repositoryID, scope, path, oldPath, ref)
+}
+
+// diffState is also used while an action holds the repository mutation lock.
+func (s *Service) diffState(ctx context.Context, state *repositoryState, repositoryID, scope, path, oldPath, ref string) (DiffDocument, error) {
+	workspaceID := state.workspaceID
+	var err error
 	path, err = cleanGitPath(path)
 	if err != nil {
 		return DiffDocument{}, err
@@ -38,6 +47,9 @@ func (s *Service) Diff(ctx context.Context, workspaceID, repositoryID, scope, pa
 		if err != nil {
 			return DiffDocument{}, err
 		}
+	}
+	if !state.pathAllowed(oldPath) {
+		return DiffDocument{}, &Error{Code: "path_outside_workspace", Message: "both diff paths must be inside this workspace", Cause: ErrInvalidPath}
 	}
 	fileRef, _ := state.refForPath(path)
 	document := DiffDocument{
@@ -63,6 +75,22 @@ func (s *Service) Diff(ctx context.Context, workspaceID, repositoryID, scope, pa
 		original, err = readBlob(ctx, state, ":"+path, "Index")
 		if err == nil && !original.side.Exists && oldPath != path {
 			original, err = readBlob(ctx, state, ":"+oldPath, "Index")
+		}
+		if err == nil && original.side.Exists && original.kind == "" {
+			indexPath := path
+			if oldPath != path {
+				if current, readErr := readBlob(ctx, state, ":"+path, "Index"); readErr == nil && !current.side.Exists {
+					indexPath = oldPath
+				}
+			}
+			var filtered []byte
+			filtered, err = readHunkGit(ctx, state, "cat-file", "--filters", ":"+indexPath)
+			if err == nil {
+				original = textBlob("Index", filtered)
+				if int64(len(filtered)) > workspacefs.MaxEditableBytes {
+					original.kind = "too-large"
+				}
+			}
 		}
 		if err == nil {
 			modified, err = s.readWorktreeFile(workspaceID, fileRef, path)
@@ -102,6 +130,7 @@ func (s *Service) Diff(ctx context.Context, workspaceID, repositoryID, scope, pa
 			document.Modified.Content = ""
 		}
 	}
+	s.describeHunks(ctx, state, &document)
 	return document, nil
 }
 

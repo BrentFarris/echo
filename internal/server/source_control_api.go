@@ -157,7 +157,7 @@ func writeSourceControlError(w http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 	case "path_outside_workspace":
 		status = http.StatusForbidden
-	case "hidden_changes", "hidden_staged_changes", "stale_source_control_revision", "clone_destination_exists":
+	case "hidden_changes", "hidden_staged_changes", "stale_source_control_revision", "stale_diff", "clone_destination_exists":
 		status = http.StatusConflict
 	case "git_authentication_failed", "fossil_authentication_failed":
 		status = http.StatusUnauthorized

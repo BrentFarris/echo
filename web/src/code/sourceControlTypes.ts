@@ -96,7 +96,18 @@ export type SourceControlDiffScope = "included" | "working" | "commit" | "stash"
 
 export type SourceControlDiffRequest = SourceControlDiffTarget & { fileRef?: FileRef; scope?: SourceControlDiffScope };
 
+export type SourceControlHunkAction = "stage_hunk" | "unstage_hunk" | "protect_hunk" | "unprotect_hunk" | "revert_hunk";
+export type SourceControlHunkRange = { start: number; end: number };
+export type SourceControlHunk = {
+  target: SourceControlDiffTarget;
+  token: string;
+  original: SourceControlHunkRange;
+  modified: SourceControlHunkRange;
+};
+
 export type SourceControlDiffDocument = {
+  hunkActions?: SourceControlHunkAction[];
+  hunkToken?: string;
   repositoryId: string;
   providerId: string;
   target: SourceControlDiffTarget;
@@ -139,6 +150,7 @@ export type SourceControlRevisionDetail = { ref: string; files: Array<{ path: st
 // common envelope stays extensible without adding provider fields to the core
 // renderer every time another VCS is registered.
 export type SourceControlActionRequest = {
+  hunk?: SourceControlHunk;
   requestId: string;
   action: string;
   expectedRevision?: number;
