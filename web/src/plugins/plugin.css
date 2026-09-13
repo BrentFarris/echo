@@ -1,6 +1,7 @@
 #echo-plugin-host { position: fixed; inset: 0; z-index: 35; pointer-events: none; }
 .left-nav-plugins { display: grid; gap: var(--space-lg-md); width: 100%; align-content: start; overflow: auto; }
 .plugin-nav-icon { display: block; width: 21px; height: 21px; object-fit: contain; color: currentColor; }
+.plugin-nav-icon-mask { background-color: currentColor; mask-position: center; mask-size: contain; mask-repeat: no-repeat; }
 .plugin-count { position: absolute; translate: 8px -8px; min-width: 15px; height: 15px; display: grid; place-items: center; border-radius: 20px; padding: 0 3px; background: var(--color-accent); color: var(--color-on-accent); font-size: .58rem; }
 .plugin-floating-window { position: fixed; display: grid; grid-template-rows: 40px minmax(0, 1fr); min-width: 260px; min-height: 320px; pointer-events: auto; overflow: hidden; border: 1px solid var(--color-border); border-radius: 13px; background: var(--color-surface); box-shadow: var(--shadow-modal); }
 .plugin-window-header { display: flex; align-items: center; gap: 8px; padding: 0 6px 0 13px; background: color-mix(in srgb, var(--color-surface-muted) 82%, transparent); border-bottom: 1px solid var(--color-border); cursor: move; user-select: none; touch-action: none; }
@@ -18,7 +19,7 @@
 .plugin-mobile-menu > strong { padding: 5px 9px 8px; font-size: var(--text-sm); color: var(--color-text-muted); text-transform: uppercase; letter-spacing: .08em; }
 .plugin-mobile-menu button { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 9px; border-radius: 8px; color: var(--color-text); background: transparent; text-align: left; cursor: pointer; }
 .plugin-mobile-menu button:hover { background: var(--color-surface-muted); }
-.plugin-mobile-menu img { width: 22px; height: 22px; object-fit: contain; }
+.plugin-mobile-menu .plugin-nav-icon { width: 22px; height: 22px; }
 .plugin-mobile-menu small { color: var(--color-text-muted); }
 .plugin-notice { position: absolute; right: 18px; bottom: 18px; max-width: min(420px, calc(100vw - 36px)); padding: 11px 14px; pointer-events: auto; border: 1px solid var(--color-border); border-radius: 9px; color: var(--color-text); background: var(--color-surface); box-shadow: var(--shadow-soft); }
 .plugin-notice.is-error { border-color: color-mix(in srgb, var(--color-danger) 55%, var(--color-border)); }

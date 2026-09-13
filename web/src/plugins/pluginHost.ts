@@ -11,6 +11,7 @@ import {
   refreshPluginCatalog,
   renderDesktopPluginButtons,
   renderMobilePluginOverflowButton,
+  renderPluginIcon,
 } from "./catalog";
 import type { CatalogPlugin, PluginUISession, PluginView } from "./types";
 
@@ -150,7 +151,7 @@ function openMobileMenu(anchor: HTMLElement): void {
   mobileMenu.dataset.pluginMobileMenu = "";
   mobileMenu.innerHTML = `<strong>Plugins</strong>${views.map(({ plugin, view }) => `
     <button type="button" data-plugin-id="${escapeHTML(plugin.id)}" data-plugin-view-id="${escapeHTML(view.id)}">
-      ${view.icon ? `<img src="${escapeHTML(view.icon)}" alt="">` : '<span class="codicon codicon-extensions"></span>'}
+      ${renderPluginIcon(plugin, view)}
       <span>${escapeHTML(view.title)}</span><small>${view.kind === "floating" ? "Window" : plugin.name}</small>
     </button>`).join("")}`;
   document.body.append(mobileMenu);
