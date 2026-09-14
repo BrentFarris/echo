@@ -60,6 +60,50 @@ shutdown() {
 }
 trap shutdown TERM INT EXIT
 
+# UI adapters process untrusted application state and third-party accessibility
+# trees. A native library or browser failure must fail the current UI call, not
+# terminate PID 1 and take the shell, desktop, and agent down with it. Keep each
+# adapter behind a stable supervisor; if the adapter exits, its socket/port is
+# briefly unavailable and callers can retry after the clean restart.
+supervise_ui_service() {
+  local name="$1"
+  shift
+  local child_pid=""
+  local status=0
+  stop_ui_service() {
+    trap - TERM INT
+    if [[ -n "$child_pid" ]]; then
+      kill -TERM "$child_pid" 2>/dev/null || true
+      wait "$child_pid" 2>/dev/null || true
+    fi
+    exit 0
+  }
+  trap stop_ui_service TERM INT
+  while true; do
+    "$@" &
+    child_pid="$!"
+    if wait "$child_pid"; then
+      status=0
+    else
+      status="$?"
+    fi
+    child_pid=""
+    echo "$name exited with status $status; restarting" >&2
+    sleep 1 &
+    child_pid="$!"
+    wait "$child_pid" || true
+    child_pid=""
+  done
+}
+
+start_accessibility() {
+  exec gosu echo python3 /opt/echo-browser/desktop-accessibility.py
+}
+
+start_browser_bridge() {
+  exec gosu echo node /opt/echo-browser/browser-bridge.mjs 3</run/echo/lease.token
+}
+
 gosu echo Xvnc :1 -geometry 1440x900 -depth 24 -rfbport 5900 -localhost no \
   -SecurityTypes VncAuth -PasswordFile /run/echo/vnc.passwd -AlwaysShared=1 -DisconnectClients=0 -ac &
 service_pids+=("$!")
@@ -77,13 +121,13 @@ for _ in $(seq 1 100); do [[ -S "$XDG_RUNTIME_DIR/bus" ]] && break; sleep 0.1; d
 # Start accessibility before applications so GTK controls join the same bus.
 gosu echo dbus-send --session --dest=org.a11y.Bus --type=method_call --print-reply \
   /org/a11y/bus org.a11y.Bus.GetAddress >/dev/null
-gosu echo python3 /opt/echo-browser/desktop-accessibility.py &
+supervise_ui_service "desktop accessibility service" start_accessibility &
 service_pids+=("$!")
 gosu echo startxfce4 &
 service_pids+=("$!")
 # The source token stays root-only. The unprivileged bridge inherits a single
 # already-open descriptor and retains the value only in process memory.
-gosu echo node /opt/echo-browser/browser-bridge.mjs 3</run/echo/lease.token &
+supervise_ui_service "browser bridge" start_browser_bridge &
 service_pids+=("$!")
 
 "$@" &

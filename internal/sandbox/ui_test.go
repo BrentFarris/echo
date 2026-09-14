@@ -18,9 +18,10 @@ import (
 
 type uiTestEngine struct {
 	fakeEngine
-	shot    *UIImage
-	actions atomic.Int32
-	action  func(context.Context, json.RawMessage) (json.RawMessage, error)
+	shot            *UIImage
+	actions         atomic.Int32
+	observeFailures atomic.Int32
+	action          func(context.Context, json.RawMessage) (json.RawMessage, error)
 }
 
 func (e *uiTestEngine) BrowserCall(ctx context.Context, _ MachineState, method string, params json.RawMessage) (json.RawMessage, error) {
@@ -28,6 +29,9 @@ func (e *uiTestEngine) BrowserCall(ctx context.Context, _ MachineState, method s
 	case "invalidate_references":
 		return json.RawMessage(`{}`), nil
 	case "ui_observe":
+		if e.observeFailures.Load() > 0 && e.observeFailures.Add(-1) >= 0 {
+			return nil, &Error{Code: "sandbox_service_unavailable", Message: "UI helper restarted"}
+		}
 		var request UIRequest
 		_ = json.Unmarshal(params, &request)
 		observation := UIObservation{Surface: UISurface{Kind: "browser", ID: "tab-1", Epoch: "runtime-1:page-1"}, Targets: []UITarget{{Ref: "e1", Role: "button", Name: "Save"}}}
@@ -43,6 +47,19 @@ func (e *uiTestEngine) BrowserCall(ctx context.Context, _ MachineState, method s
 		return json.RawMessage(`{"execution":"completed","verification":{"status":"unverified","method":"none"},"backend":"browser"}`), nil
 	}
 	return nil, errors.New("unexpected method")
+}
+
+func TestUIObserveRetriesRestartingHelper(t *testing.T) {
+	engine := &uiTestEngine{}
+	engine.observeFailures.Store(1)
+	m, workspace, _ := newSandboxManagerForTest(t, engine)
+	result, err := m.UICall(context.Background(), workspace.ID, "turn", "observe", "ui_observe", UIRequest{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Observation == nil || result.Observation.Surface.ID != "tab-1" {
+		t.Fatalf("observation did not recover after helper restart: %+v", result)
+	}
 }
 
 func testShot(t *testing.T, width, height int, pixelX, pixelY int) *UIImage {

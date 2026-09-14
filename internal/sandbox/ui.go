@@ -217,15 +217,32 @@ func (m *Manager) uiBackend(ctx context.Context, state MachineState, surface, me
 	if err != nil {
 		return nil, err
 	}
-	var result json.RawMessage
-	if surface == "browser" {
-		result, err = m.engine.BrowserCall(ctx, state, method, data)
-	} else {
+	call := func() (json.RawMessage, error) {
+		if surface == "browser" {
+			return m.engine.BrowserCall(ctx, state, method, data)
+		}
 		engine, ok := m.engine.(NativeUIEngine)
 		if !ok {
 			return nil, uiFailure("ui_capability_unavailable", "Native accessibility requires a refreshed sandbox runtime image")
 		}
-		result, err = engine.NativeUICall(ctx, state, method, data)
+		return engine.NativeUICall(ctx, state, method, data)
+	}
+	result, err := call()
+	// Observations and reference invalidation are read-only. If a UI adapter
+	// crashes while servicing either operation, give its runtime supervisor a
+	// brief chance to replace it instead of failing the AI's first observation.
+	if method == "ui_observe" || method == "invalidate_references" {
+		deadline := time.Now().Add(3 * time.Second)
+		for err != nil && transientUIServiceError(err) && time.Now().Before(deadline) {
+			timer := time.NewTimer(100 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+			result, err = call()
+		}
 	}
 	if err != nil {
 		code := ErrorCode(err)
@@ -234,6 +251,15 @@ func (m *Manager) uiBackend(ctx context.Context, state MachineState, surface, me
 		}
 	}
 	return result, err
+}
+
+func transientUIServiceError(err error) bool {
+	switch ErrorCode(err) {
+	case "sandbox_service_unavailable", "sandbox_service_error", "browser_unavailable", "ui_native_interrupted", "ui_capability_unavailable":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *Manager) saveObservation(workspace, turn string, generation uint64, observation *UIObservation) {
@@ -309,7 +335,7 @@ func (m *Manager) observeUI(ctx context.Context, state MachineState, workspace, 
 		invalidate := runtime.browserInvalidatedGeneration != generation || runtime.browserTurn != turn
 		m.mu.Unlock()
 		if invalidate {
-			if _, err := m.engine.BrowserCall(ctx, state, "invalidate_references", nil); err != nil {
+			if _, err := m.uiBackend(ctx, state, "browser", "invalidate_references", struct{}{}); err != nil {
 				return nil, err
 			}
 			m.mu.Lock()

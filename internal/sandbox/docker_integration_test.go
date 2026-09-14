@@ -199,6 +199,16 @@ test "$found" = 1`}})
 		t.Fatalf("unified desktop/session check: exit=%d %s %s %v", unified.ExitCode, unified.Stdout, unified.Stderr, err)
 	}
 	t.Run("native UI targeting", func(t *testing.T) { testNativeUIIntegration(t, ctx, engine, state) })
+	t.Run("native UI helper restart", func(t *testing.T) {
+		killRuntimeHelper(t, ctx, engine, state, `^python3 /opt/echo-browser/desktop-accessibility\.py$`)
+		if err := waitForUICall(ctx, func() error {
+			_, err := engine.NativeUICall(ctx, state, "ui_observe", json.RawMessage(`{"list":true}`))
+			return err
+		}); err != nil {
+			logDockerIntegrationState(t, engine, state)
+			t.Fatalf("native UI helper did not recover without stopping the runtime: %v", err)
+		}
+	})
 	if _, err := engine.BrowserCall(ctx, state, "open", json.RawMessage(`{"url":"http://127.0.0.1:18765/"}`)); err != nil {
 		t.Fatalf("browser could not reach shell localhost server: %v", err)
 	}
@@ -234,6 +244,45 @@ test "$found" = 1`}})
 	if err != nil || len(image) == 0 || (mediaType != "image/png" && mediaType != "image/jpeg") {
 		t.Fatalf("desktop screenshot failed: bytes=%d type=%q err=%v", len(image), mediaType, err)
 	}
+	t.Run("browser UI helper restart", func(t *testing.T) {
+		killRuntimeHelper(t, ctx, engine, state, `^node /opt/echo-browser/browser-bridge\.mjs$`)
+		if err := waitForUICall(ctx, func() error {
+			_, err := engine.BrowserCall(ctx, state, "ui_observe", json.RawMessage(`{}`))
+			return err
+		}); err != nil {
+			logDockerIntegrationState(t, engine, state)
+			t.Fatalf("browser UI helper did not recover without stopping the runtime: %v", err)
+		}
+	})
+}
+
+func killRuntimeHelper(t *testing.T, ctx context.Context, engine *DockerEngine, state MachineState, pattern string) {
+	t.Helper()
+	result, err := engine.Exec(ctx, state, ExecRequest{
+		Role: "runtime", Root: true, OutputLimit: 64 << 10,
+		Command: []string{"/usr/bin/pkill", "-KILL", "-f", pattern},
+	})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("could not terminate runtime helper %q: exit=%d stdout=%q stderr=%q err=%v", pattern, result.ExitCode, result.Stdout, result.Stderr, err)
+	}
+}
+
+func waitForUICall(ctx context.Context, call func() error) error {
+	deadline := time.Now().Add(20 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if err := call(); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return lastErr
 }
 
 func waitForBrowserTab(ctx context.Context, engine *DockerEngine, state MachineState) error {
