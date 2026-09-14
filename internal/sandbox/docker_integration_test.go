@@ -93,6 +93,13 @@ func TestDockerIntegrationLifecycle(t *testing.T) {
 		logDockerIntegrationState(t, engine, state)
 		t.Fatalf("%v (daemon cause: %v)", err, errors.Unwrap(err))
 	}
+	// A service failure can mark the manager unhealthy while its containers
+	// remain running. Starting again must replace the existing mode-0400
+	// credentials instead of failing to truncate them in the restricted gateway.
+	if err := engine.Start(ctx, state); err != nil {
+		logDockerIntegrationState(t, engine, state)
+		t.Fatalf("repeated start could not reinstall runtime credentials: %v (daemon cause: %v)", err, errors.Unwrap(err))
+	}
 
 	expectedUID := strconv.Itoa(sandboxHostUID())
 	result, err := engine.Exec(ctx, state, ExecRequest{

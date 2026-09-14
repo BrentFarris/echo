@@ -504,6 +504,20 @@ type secretFile struct {
 	mode int64
 }
 
+// Replace credentials through a new file in /run/echo instead of truncating
+// the destination. Existing credentials are mode 0400, and the gateway drops
+// CAP_DAC_OVERRIDE; after a transient service failure its still-running
+// container therefore cannot open those files for writing even as uid 0.
+// Rename only requires ownership and write access to the containing tmpfs and
+// also prevents services from observing a partially rewritten credential.
+const runtimeFileInstallerScript = `set -eu
+temporary="$(mktemp "$1.echo-tmp.XXXXXX")"
+trap 'rm -f "$temporary"' 0 1 2 15
+umask 077
+cat > "$temporary"
+chmod "$2" "$temporary"
+mv -f "$temporary" "$1"`
+
 // Runtime files live only in each container's /run/echo tmpfs. Delivering them
 // over attached exec stdin works consistently with both read-only roots and
 // Docker Desktop's internal-only networks, without putting secrets in env vars.
@@ -515,7 +529,7 @@ func (e *DockerEngine) writeFilesWithExec(ctx context.Context, containerName str
 		destination := path.Join("/run/echo", name)
 		created, err := e.client.ExecCreate(ctx, containerName, client.ExecCreateOptions{
 			AttachStdin: true,
-			Cmd:         []string{"/bin/sh", "-c", `umask 077; cat > "$1" && chmod "$2" "$1"`, "echo-secret", destination, strconv.FormatInt(file.mode, 8)},
+			Cmd:         []string{"/bin/sh", "-c", runtimeFileInstallerScript, "echo-secret", destination, strconv.FormatInt(file.mode, 8)},
 		})
 		if err != nil {
 			return err
